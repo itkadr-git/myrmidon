@@ -505,6 +505,32 @@ it("does not hold provider_garbage runs for reconciliation; ordinary failures st
   })).toBe(true);
 });
 
+// myrmidon(PROVIDER-OUTAGE-RECOVERY, OPE-12506): a provider outage that never
+// reached provider execution is retried by the quota monitor even after the
+// ordinary retry budget is exhausted; without both the outage classification
+// and the bootstrap evidence the outcome is unknown and stays held.
+it("does not hold a provider outage whose bootstrap evidence proves no provider work, even after the retry budget", () => {
+  const outage = {
+    runtimeMode: "legacy", status: "failed", errorCode: "hermes_gateway_run_failed",
+    scheduledRetryAttempt: 3,
+    resultJson: {
+      errorMessage: "HTTP 429: No deployments available. All deployments in cooldown.",
+      errorFamily: "provider_quota",
+      executionRecovery: { kind: "bootstrap", providerWorkStarted: false },
+    },
+  };
+  expect(legacyExecutionNeedsReconciliation(outage)).toBe(false);
+  expect(legacyExecutionNeedsReconciliation({
+    ...outage, resultJson: { errorMessage: outage.resultJson.errorMessage, errorFamily: "provider_quota" },
+  })).toBe(true);
+  expect(legacyExecutionNeedsReconciliation({
+    ...outage, resultJson: { executionRecovery: { kind: "bootstrap", providerWorkStarted: false } },
+  })).toBe(true);
+  expect(legacyExecutionNeedsReconciliation({
+    ...outage, resultJson: { ...outage.resultJson, executionRecovery: { kind: "bootstrap", providerWorkStarted: true } },
+  })).toBe(true);
+});
+
 // myrmidon(CONTINUATION-WAIT-HOLD): a queued review/response wait is cancelled
 // before provider startup and must not create an execution reconciliation hold.
 it("does not hold queued continuations cancelled before provider startup", () => {

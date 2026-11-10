@@ -95,6 +95,17 @@ export function legacyExecutionNeedsReconciliation(
   // that the bootstrap evidence proves never started. Keep unknown outcomes held.
   if ((run.errorCode === "workspace_git_scan_timeout" || run.errorCode === "workspace_git_scan_saturated") &&
       evidence?.kind === "bootstrap" && evidence.providerWorkStarted === false) return false;
+  // myrmidon(PROVIDER-OUTAGE-RECOVERY, OPE-12506): a classified provider outage
+  // (errorFamily provider_quota: 429/402/503, "no deployments available",
+  // "insufficient_quota") whose bootstrap evidence proves provider work never
+  // started is an external channel wait owned by the durable quota monitor. The
+  // exhausted retry budget must not turn it into a reconciliation hold, or the
+  // monitor wake can never issue the bounded retry once the channel recovers.
+  // Without both pieces of evidence the outcome stays unknown and is held.
+  if (
+    (run.resultJson as Record<string, unknown> | null | undefined)?.errorFamily === "provider_quota" &&
+    evidence?.kind === "bootstrap" && evidence.providerWorkStarted === false
+  ) return false;
   if (executionFailureRetryCount(run) >= 2) return true;
   return !(
     evidence?.kind === "bootstrap" && evidence.providerWorkStarted === false

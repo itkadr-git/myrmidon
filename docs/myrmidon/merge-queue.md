@@ -9,7 +9,7 @@ together PRs that were each green on their own: between
 
 ## How it works
 
-`main-protection` keeps requiring on the PR head: `CI result` and `hot-files-review`. A PR head
+`main-protection` keeps requiring on the PR head: `CI result` and `hot-files-review` (check-run `hot files review`). A PR head
 green alone is not enough to enter the queue — the same checks are re-run on the **candidate
 commit**: `main` plus all PRs queued ahead of yours. Only when the candidate is green does
 GitHub push it to `main` — and immediately starts checking the next group with your commit
@@ -37,15 +37,15 @@ depends on every `main` commit having exactly one parent.
   the cancellation itself would be a loss; the PR head and the previous candidate still get
   cancelled as usual.
 - `myrmidon-hot-files-review.yml` also fires on `merge_group`, but review is enforced on the
-  PR: the job just reports `hot-files-review` as success on the candidate commit and exits, so
+  PR: the job reports success for commit statuses `hot-files-review` and `hot files review` and check-run `hot files review` on the candidate commit and exits, so
   the gate does not hold up the queue.
 
 ## Process: reviewer and steward
 
 1. The **reviewer** (adm-dev-review or the maintainer) reads the diff, checks that the test
    fails without the change, and sets the `review-approved` label on the PR (for hot files this
-   is what turns `hot-files-review` green — see [CONVENTIONS.md](CONVENTIONS.md), section 6).
-   A new push removes the label and review starts over.
+   is what turns `hot-files-review` and check-run `hot files review` green — see [CONVENTIONS.md](CONVENTIONS.md), section 6).
+   A new push (`synchronize`, excluding update-branch merges from `main`) removes the label and review starts over.
 2. The **steward** (the role that merges) sends an approved PR with green CI on its head into
    the queue:
 

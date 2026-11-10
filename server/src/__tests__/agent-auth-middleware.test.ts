@@ -324,6 +324,54 @@ describe("agent auth middleware", () => {
   });
 
   it.each([
+    "/api/myrmidon/monitoring/intake/webhook",
+    "/myrmidon/monitoring/intake/webhook",
+    "/api/myrmidon/monitoring/intake/webhook?source=github",
+  ])("leaves signed webhook intake bearers for the route handler on POST (%s)", async (path) => {
+    const { db } = createDbState({ agent: { id: randomUUID(), companyId: randomUUID() } });
+    const app = createApp(db, "authenticated");
+    app.post("/api/myrmidon/monitoring/intake/webhook", (req, res) => {
+      res.json({ authorization: req.header("authorization") });
+    });
+    app.post("/myrmidon/monitoring/intake/webhook", (req, res) => {
+      res.json({ authorization: req.header("authorization") });
+    });
+
+    const res = await request(app).post(path).set("Authorization", "Bearer signed-intake-token");
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual({ authorization: "Bearer signed-intake-token" });
+  });
+
+  it.each([
+    ["get", "/api/myrmidon/monitoring/intake/webhook"],
+    ["delete", "/api/myrmidon/monitoring/intake/webhook"],
+    ["put", "/api/myrmidon/monitoring/intake/webhook"],
+  ])("does not bypass actor authentication for non-POST signed webhook intake methods (%s %s)", async (method, path) => {
+    const { db } = createDbState({ agent: { id: randomUUID(), companyId: randomUUID() } });
+    const app = createApp(db, "local_trusted");
+    (app as any)[method]("/api/myrmidon/monitoring/intake/webhook", (_req: any, res: any) => res.json({ reached: true }));
+
+    const res = await (request(app) as any)[method](path).set("Authorization", "Bearer invalid-token");
+
+    expect(res.status).toBe(401);
+    expect(res.body.error).toContain("Agent token did not verify");
+  });
+
+  it.each([
+    "/api/myrmidon/monitoring/intake/webhook/extra",
+    "/api/myrmidon/monitoring/intake/webhok",
+  ])("does not bypass actor authentication for lookalike signed webhook intake paths (%s)", async (path) => {
+    const { db } = createDbState({ agent: { id: randomUUID(), companyId: randomUUID() } });
+    const app = createApp(db, "local_trusted");
+    app.post("/api/myrmidon/monitoring/intake/webhook/*splat", (_req, res) => res.json({ reached: true }));
+
+    const res = await request(app).post(path).set("Authorization", "Bearer invalid-token");
+
+    expect(res.status).toBe(401);
+    expect(res.body.error).toContain("Agent token did not verify");
+  });
+
+  it.each([
     ["terminated", "Agent is terminated"],
     ["pending_approval", "Agent is pending approval"],
   ])("rejects a %s agent JWT instead of retaining local-board", async (status, error) => {

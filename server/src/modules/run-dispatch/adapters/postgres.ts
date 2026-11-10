@@ -1110,11 +1110,42 @@ export function createPostgresRunDispatchAdapter(
       };
   }
 
+  // myrmidon(OPE-12577): the wake of the assignee's manager after a final run guard
+  // stop does not continue the assignee's execution. The stopped run keeps its
+  // environment lease for a moment after the stop, and that execution hold
+  // (execution_owner_active) must not make the manager's queued run stale: it was
+  // cancelled as execution_reconciliation_required and the task stayed blocked.
+  // Bound like isRunGuardStopNeedsInputWake: exact source and reason, a blocked
+  // issue, the run's agent being the assignee's reports_to or `adm`.
+  async function isRunGuardStopManagerRun(
+    tx: Db,
+    run: HeartbeatRun,
+    contextSnapshot: Record<string, unknown>,
+    issueId: string,
+  ): Promise<boolean> {
+    if (run.invocationSource !== "automation") return false;
+    if (contextSnapshot.source !== RUN_GUARD_STOP_NEEDS_INPUT_SOURCE) return false;
+    if (readNonEmptyString(contextSnapshot.wakeReason) !== RUN_GUARD_STOP_NEEDS_INPUT_WAKE_REASON) return false;
+    const [issue] = await tx
+      .select({ status: issues.status, assigneeAgentId: issues.assigneeAgentId })
+      .from(issues)
+      .where(and(eq(issues.companyId, run.companyId), eq(issues.id, issueId)))
+      .limit(1);
+    if (!issue || issue.status !== "blocked") return false;
+    return isRunGuardStopWakeRecipient(tx, {
+      companyId: run.companyId,
+      assigneeAgentId: issue.assigneeAgentId,
+      agentId: run.agentId,
+    });
+  }
+
   async function decideCurrentRunStaleness(tx: Db, run: HeartbeatRun, now: Date) {
     const contextSnapshot = parseObject(run.contextSnapshot);
     const issueId = readNonEmptyString(contextSnapshot.issueId);
     if (!issueId) return { issueId: null, facts: null, decision: { stale: false as const } };
-    const recovery = await getExecutionBlocker(tx, run.companyId, issueId, { conversationResetCommentId: deriveCommentId(contextSnapshot) });
+    const recovery = (await isRunGuardStopManagerRun(tx, run, contextSnapshot, issueId))
+      ? null
+      : await getExecutionBlocker(tx, run.companyId, issueId, { conversationResetCommentId: deriveCommentId(contextSnapshot) });
     if (recovery) return { issueId, facts: null, decision: { stale: true as const,
       errorCode: "execution_reconciliation_required" as const, reason: recovery.nextAction,
       details: { issueId, recoveryActionId: recovery.recoveryActionId },

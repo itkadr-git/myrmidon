@@ -114,6 +114,7 @@ import { getBotContainerRuntime } from "../myrmidon/bot-containers/routes-wiring
 import { badRequest, conflict, forbidden, HttpError, notFound, unprocessable } from "../errors.js";
 import { CHAT_INBOUND_WAKE_KEY_PREFIX } from "../myrmidon/chat-holds/chat-backed.js"; // myrmidon(1.6.5 OWNER-CHAT-ADMISSION)
 import { PAPERCLIP_CORE_SKILL_KEYS } from "../services/company-skills.js";
+import { agentExchangeStore } from "../myrmidon/agent-exchange/store.js"; // myrmidon(1.7 AGENT-EXCHANGE-METRICS, OPE-12097)
 import { createRunSecretRedactionRegistry } from "../services/run-secret-redaction.js";
 import { assertAuthenticated, assertBoard, assertCompanyAccess, assertInstanceAdmin, buildActorSecretContext, getAccessibleResource, getActorInfo, hasCompanyAccess } from "./authz.js";
 import { runAdapterLoginStartSpine } from "./adapter-login-route-spine.js";
@@ -4673,6 +4674,24 @@ function getActorIdentityPart(req: Request): string {
         sessionParamsJson: redactEventPayload(session.sessionParamsJson ?? null),
       })),
     );
+  });
+
+  // myrmidon(1.7 AGENT-EXCHANGE-METRICS, OPE-12097): the experience-exchange
+  // session counters of an agent. `exchanges_started` counts every room whose
+  // frozen roster names the agent; `exchanges_completed` counts only the rooms
+  // that finished with the summary (status `completed`). The counters are
+  // derived on read from `agent_exchange_rooms` — no second state to keep in
+  // sync: a session starts when the room is opened, completes when the room
+  // closes with a summary, and a stopped room stays started-but-not-completed.
+  router.get("/agents/:id/stats", async (req, res) => {
+    assertBoard(req);
+    const id = req.params.id as string;
+    const agent = await getAccessibleResource(req, res, svc.getById(id), "Agent not found");
+    if (!agent) return;
+    await assertBoardCanManageAgentsForCompany(req, agent.companyId);
+
+    const counts = (await agentExchangeStore(db).countAgentSessions?.(id)) ?? { started: 0, completed: 0 };
+    res.json({ exchanges_started: counts.started, exchanges_completed: counts.completed });
   });
 
   router.post("/agents/:id/runtime-state/reset-session", validate(resetAgentSessionSchema), async (req, res) => {
