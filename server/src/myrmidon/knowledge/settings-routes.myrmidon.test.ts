@@ -119,7 +119,7 @@ describe("myrmidonKnowledgeSettingsRoutes", () => {
         autoAcceptEnabled: true,
         schedule: "0 3 * * *",
       },
-      expect.objectContaining({ actorType: "board", actorId: "user-1" }),
+      expect.objectContaining({ actorType: "user", actorId: "user-1" }),
     );
   });
 });
