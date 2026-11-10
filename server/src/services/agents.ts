@@ -53,8 +53,13 @@ import {
   mergeCompanyBaseSkillsIntoAgentConfig,
 } from "./company-base-skill-keys.js";
 import { readCompanyBaseSkillKeysPort } from "./company-base-skill-keys-port.js";
-import { conflict, notFound, unprocessable, badRequest } from "../errors.js";
+import { conflict, notFound, unprocessable, badRequest, forbidden } from "../errors.js";
 import { isForeignKeyViolation } from "../db-errors.js";
+import {
+  createAgentsModule,
+  AgentQuotaExceededError,
+  type AgentsModule,
+} from "../modules/agents/index.js";
 import {
   collectSecretRefs,
   collectUserSecretRefs,
@@ -386,9 +391,11 @@ export function agentService(
     castes?: AgentCasteDirectoryPort;
     /** Cleans an enabled bot container before lifecycle state or row changes. */
     cleanupBotContainer?: (agent: { id: string; adapterType: string; adapterConfig: Record<string, unknown> }) => Promise<void>;
+    agentsModule?: AgentsModule;
   },
 ) {
   const secretsSvc = secretService(db);
+  const agentsMod = ports?.agentsModule ?? createAgentsModule(db);
 
   async function cleanupBotContainerIfEnabled(existing: { id: string; adapterType: string; adapterConfig: unknown }): Promise<void> {
     const config = existing.adapterConfig;
@@ -1134,6 +1141,16 @@ export function agentService(
       await assertRoleIsCompanyCaste(companyId, data.role);
       if (data.reportsTo) {
         await ensureManager(companyId, data.reportsTo);
+      }
+
+      // myrmidon(1.7 TIER-QUOTA-CHECK OPE-12092): enforce agent quota per company subscription tier
+      try {
+        await agentsMod.assertCompanyAgentQuota(companyId);
+      } catch (err: unknown) {
+        if (err instanceof AgentQuotaExceededError) {
+          throw forbidden(err.message, { code: "quota_exceeded" });
+        }
+        throw err;
       }
 
       const existingAgents = await db
