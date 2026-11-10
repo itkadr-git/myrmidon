@@ -10,7 +10,7 @@
 // K-2 (UI/API) and K-3 (delivery read path) call this module through the
 // object returned here; the plugin bridge stays until the K-6 transfer.
 
-import { createPgKnowledgeSearchIndex, type Db } from "@paperclipai/db";
+import { createPgKnowledgeSearchIndex, type Db } from "@myrmidon/db";
 import { redactNestText } from "../redact/service.js";
 import { createKnowledgeService, type KnowledgeServiceOptions } from "./store.js";
 import type { KnowledgeRevisionLang, SearchIndex } from "./domain.js";

@@ -1,6 +1,6 @@
 import { eq } from "drizzle-orm";
-import { nestRedactSettings, type Db } from "@paperclipai/db";
-import { defaultNestRedactConfig, mergeNestRedactConfig, type NestRedactConfig, type NestRedactConfigPatch } from "@paperclipai/shared";
+import { nestRedactSettings, type Db } from "@myrmidon/db";
+import { defaultNestRedactConfig, mergeNestRedactConfig, type NestRedactConfig, type NestRedactConfigPatch } from "@myrmidon/shared";
 
 export async function readNestRedactConfig(db: Db, nestId: string): Promise<NestRedactConfig> {
   const row = await db.select({ config: nestRedactSettings.config }).from(nestRedactSettings)

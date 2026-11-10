@@ -1,11 +1,11 @@
 import { and, eq, inArray } from "drizzle-orm";
 import { Router } from "express";
-import { companies } from "@paperclipai/db";
-import { nestRedactConfigSchema } from "@paperclipai/shared";
+import { companies } from "@myrmidon/db";
+import { nestRedactConfigSchema } from "@myrmidon/shared";
 import { badRequest } from "../../errors.js";
 import { assertBoardOrgAccess, assertInstanceAdmin } from "../../routes/authz.js";
 import { readNestRedactConfig, writeNestRedactConfig } from "./store.js";
-import type { Db } from "@paperclipai/db";
+import type { Db } from "@myrmidon/db";
 
 export function nestRedactRoutes(db: Db) {
   const router = Router();
