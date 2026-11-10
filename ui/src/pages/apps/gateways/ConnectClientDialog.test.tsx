@@ -172,12 +172,11 @@ describe("ConnectClientDialog", () => {
    * pattern is used in App.test.tsx and api/auth.test.ts.
    */
   async function waitForEnabledSnippetCopyButton(): Promise<HTMLButtonElement> {
-    let button: HTMLButtonElement | null = null;
-    await vi.waitFor(() => {
-      button = findSnippetCopyButton();
+    return vi.waitFor(() => {
+      const button = findSnippetCopyButton();
       expect(button.disabled).toBe(false);
+      return button;
     });
-    return button as HTMLButtonElement;
   }
 
   it("copies a complete client snippet with the selected token and explains the gateway boundary", async () => {
