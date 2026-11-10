@@ -312,7 +312,7 @@ describe("SERVER-ONBOARD logic", () => {
       getServer: mockGetServer,
     });
 
-    await service.addServer({
+    const { serverId, job: initialJob } = await service.addServer({
       companyId: "company-1",
       slug: "srv-2",
       name: "Srv 2",
@@ -327,10 +327,18 @@ describe("SERVER-ONBOARD logic", () => {
 
     expect(store.servers[0].onboardState).toBe("new");
 
+    // Complete initial job before starting subsequent job
+    await service.claim("company-1", "valid-executor-token");
+    await service.report("valid-executor-token", {
+      companyId: "company-1",
+      jobId: initialJob.id,
+      status: "succeeded",
+    });
+
     // Start subsequent recheck job
     const job = await service.startJob({
       companyId: "company-1",
-      serverId: "server-1",
+      serverId,
       kind: "recheck",
       createdBy: "actor-2",
     });
