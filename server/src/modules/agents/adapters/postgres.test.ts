@@ -36,18 +36,9 @@ function connectionFailure(cause = "connection refused"): { execute: never; sele
 }
 
 function selectCountChain(rows: Row[]): { select: unknown } {
-  const chain = {
-    from: () => chain,
-    where: () => chain,
-    then: undefined,
-  };
-  const select = vi.fn(() => {
-    // Awaiting the builder resolves the count rows.
-    return Promise.resolve(rows);
-  });
-  chain.select = select as unknown;
-  void chain.from;
-  void chain.where;
+  const where = vi.fn(async () => rows);
+  const from = vi.fn(() => ({ where }));
+  const select = vi.fn(() => ({ from }));
   return { select };
 }
 

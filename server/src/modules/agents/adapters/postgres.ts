@@ -47,7 +47,7 @@ function isUndefinedObjectError(err: unknown): boolean {
   return err instanceof Error && /undefined_object/i.test(err.message);
 }
 
-export function createPostgresCompanyTierReader(db: Db): CompanyTierReader {
+export function createPostgresCompanyTierReader(db: Db): Required<CompanyTierReader> {
   return {
     async isSchemaDeployed(): Promise<boolean> {
       try {

@@ -9,7 +9,7 @@ function createFakeReader(params: {
   tierInfo?: CompanyTierInfo | null;
   activeCount?: number;
   schemaDeployed?: boolean;
-}): CompanyTierReader {
+}): Required<CompanyTierReader> {
   return {
     isSchemaDeployed: vi.fn(async () => params.schemaDeployed ?? true),
     getCompanyTier: vi.fn(async () => params.tierInfo ?? null),
