@@ -96,8 +96,11 @@ export function computeCancelInProgress({
   runAttempt = 1,
   ref = '',
 }) {
+  // 10.11: main runs run to completion again (see .github/workflows/myrmidon-ci.yml).
+  // The concurrency group keeps one running and one pending main run, so they
+  // do not pile up (the OPE-12103 queue had no group at all).
   if (eventName === 'push' && ref === 'refs/heads/main') {
-    return true;
+    return false;
   }
   if (eventName === 'merge_group') {
     return false;

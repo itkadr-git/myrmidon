@@ -48,9 +48,14 @@ concurrency:
   # by any other label (review-in-progress, needs-rebase, ...) goes to its own
   # group, so it cannot cancel the real run, and every job in it is skipped.
   group: myrmidon-ci-${{ (contains(github.event.pull_request.title, 'rc.') || contains(github.event.pull_request.title, 'release') || contains(github.event.pull_request.labels.*.name, 'release') || startsWith(github.head_ref, 'rel/') || startsWith(github.base_ref, 'rel/')) && 'release-' || '' }}${{ github.event.pull_request.number || github.ref }}${{ (github.event_name != 'pull_request' || github.event.action != 'labeled' || github.event.label.name == 'full-ci') && '' || '-label-noop' }}
-  # OPE-12103: PR runs and pushes to main cancel superseded runs.
+  # OPE-12103: PR runs cancel superseded runs.
   # Manual re-runs (run_attempt > 1) do not cancel the current head run.
-  cancel-in-progress: ${{ (github.event_name == 'pull_request' && github.run_attempt == 1 && (github.event.action != 'labeled' || github.event.label.name == 'full-ci')) || (github.event_name == 'push' && github.ref == 'refs/heads/main') }}
+  # Pushes to main do not cancel the running main run (10.11): with merges more
+  # often than a full run (~25 min) every main run was cancelled and main had no
+  # completed run for hours, so main-green-gate never turned green. Without the
+  # cancel GitHub keeps the running main run and one pending run (a newer push
+  # replaces the pending one), so a recent main commit always completes.
+  cancel-in-progress: ${{ github.event_name == 'pull_request' && github.run_attempt == 1 && (github.event.action != 'labeled' || github.event.label.name == 'full-ci') }}
 
 env:
   NPM_CONFIG_AUDIT: "false"
