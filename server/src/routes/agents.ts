@@ -6128,67 +6128,35 @@ function getActorIdentityPart(req: Request): string {
           // transaction rolls back the agent update too, so a failed audit
           // can never be reported as a successful compliant mutation.
           const postCommitPublications: ActivityPublication[] = [];
-          const transaction = (db as unknown as {
-            transaction?: <T>(callback: (tx: unknown) => Promise<T>) => Promise<T>;
-          }).transaction;
-          const agent = typeof transaction === "function"
-            ? await transaction.call(db, async (tx) => {
-                const updated = await svc.update(agentId, patchData, {
-                  recordRevision: {
-                    createdByAgentId: actor.agentId,
-                    createdByUserId: actor.actorType === "user" ? actor.actorId : null,
-                    source: "bulk-update-model",
-                  },
-                  // Run the mutation on the caller's tx so a logActivity
-                  // failure rolls back the agent update atomically.
-                  db: tx as unknown as Db,
-                });
-                if (!updated) return null;
-                await logActivity(tx as unknown as Db, {
-                  companyId: updated.companyId,
-                  actorType: actor.actorType,
-                  actorId: actor.actorId,
-                  agentId: actor.agentId,
-                  runId: actor.runId,
-                  agentApiKeyId: actor.agentApiKeyId,
-                  action: "agent.updated",
-                  entityType: "agent",
-                  entityId: updated.id,
-                  details: {
-                    ...summarizeAgentUpdateDetails(patchData),
-                    bulkUpdate: true,
-                  },
-                }, postCommitPublications);
-                return updated;
-              })
-            : await (async () => {
-                // Fallback for tests / adapters without transaction support:
-                // run sequentially but still propagate logActivity failure.
-                const updated = await svc.update(agentId, patchData, {
-                  recordRevision: {
-                    createdByAgentId: actor.agentId,
-                    createdByUserId: actor.actorType === "user" ? actor.actorId : null,
-                    source: "bulk-update-model",
-                  },
-                });
-                if (!updated) return null;
-                await logActivity(db, {
-                  companyId: updated.companyId,
-                  actorType: actor.actorType,
-                  actorId: actor.actorId,
-                  agentId: actor.agentId,
-                  runId: actor.runId,
-                  agentApiKeyId: actor.agentApiKeyId,
-                  action: "agent.updated",
-                  entityType: "agent",
-                  entityId: updated.id,
-                  details: {
-                    ...summarizeAgentUpdateDetails(patchData),
-                    bulkUpdate: true,
-                  },
-                });
-                return updated;
-              })();
+          const agent = await db.transaction(async (tx) => {
+            const updated = await svc.update(agentId, patchData, {
+              recordRevision: {
+                createdByAgentId: actor.agentId,
+                createdByUserId: actor.actorType === "user" ? actor.actorId : null,
+                source: "bulk-update-model",
+              },
+              // Run the mutation on the caller's tx so a logActivity
+              // failure rolls back the agent update atomically.
+              db: tx,
+            });
+            if (!updated) return null;
+            await logActivity(tx, {
+              companyId: updated.companyId,
+              actorType: actor.actorType,
+              actorId: actor.actorId,
+              agentId: actor.agentId,
+              runId: actor.runId,
+              agentApiKeyId: actor.agentApiKeyId,
+              action: "agent.updated",
+              entityType: "agent",
+              entityId: updated.id,
+              details: {
+                ...summarizeAgentUpdateDetails(patchData),
+                bulkUpdate: true,
+              },
+            }, postCommitPublications);
+            return updated;
+          });
           if (!agent) {
             failed.push({ id: agentId, reason: "Agent not found" });
             continue;
