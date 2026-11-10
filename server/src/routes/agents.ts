@@ -6128,7 +6128,12 @@ function getActorIdentityPart(req: Request): string {
           // transaction rolls back the agent update too, so a failed audit
           // can never be reported as a successful compliant mutation.
           const postCommitPublications: ActivityPublication[] = [];
-          const agent = await db.transaction(async (tx) => {
+          const agent = await db.transaction(async (rawTx) => {
+            // drizzle types the tx callback param as PgTransaction, which is
+            // structurally a Db for the operations svc.update and logActivity
+            // run on it. Cast once here (same pattern the tests use) so the
+            // option types stay Db without leaking drizzle generics.
+            const tx = rawTx as unknown as Db;
             const updated = await svc.update(agentId, patchData, {
               recordRevision: {
                 createdByAgentId: actor.agentId,
