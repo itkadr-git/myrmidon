@@ -25,7 +25,7 @@
 
 import { describe, expect, it } from "vitest";
 import { readdirSync, readFileSync, statSync } from "node:fs";
-import { join, dirname, sep } from "node:path";
+import { join, dirname, relative, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
   behaviorSettingRegistry,
@@ -97,7 +97,10 @@ const FIXED_SCAN_ROOTS = ["server/src", "cli/src", "ui/src", "extension/src"] as
 
 const SKIPPED_TREE_NAMES = new Set(["node_modules", "dist", ".git"]);
 
-function collectPackageSrcRoots(packagesDir: string): string[] {
+function collectPackageSrcRoots(
+  packagesDir: string,
+  repoRoot: string = REPO_ROOT,
+): string[] {
   let entries: string[];
   try {
     entries = readdirSync(packagesDir);
@@ -115,16 +118,15 @@ function collectPackageSrcRoots(packagesDir: string): string[] {
       continue;
     }
     if (!stats.isDirectory()) continue;
-    // A package's own `src` tree is scanned; nested packages (adapters/*,
-    // plugins/*, runner devtools/examples) are still enumerated below it.
-    let srcStats;
-    try {
-      srcStats = statSync(join(full, "src"));
-    } catch {
-      continue; // no own `src` — keep descending for nested packages
+    // A package's own `src` tree is scanned AND the walker keeps descending
+    // into the directory either way (OPE-12677 review): grouping directories
+    // and packages without their own `src` (packages/plugins, devtools/,
+    // examples/, sandbox-providers/*) hold nested package `src` trees that
+    // must not be silently skipped.
+    if (statSync(join(full, "src"), { throwIfNoEntry: false })?.isDirectory()) {
+      roots.push(relative(repoRoot, join(full, "src")));
     }
-    if (srcStats.isDirectory()) roots.push(join("packages", entry, "src"));
-    roots.push(...collectPackageSrcRoots(full));
+    roots.push(...collectPackageSrcRoots(full, repoRoot));
   }
   return roots;
 }
@@ -249,5 +251,27 @@ describe("myrmidon(1.7 SETTINGS-HONESTY) every registered behavior setting has a
     // The ratchet's own bookkeeping: the frozen list must still cover exactly
     // the settings it claims to cover.
     expect(unwiredStill.sort()).toEqual([...UNWIRED_SETTINGS].sort());
+  });
+
+  it("enumerates nested package src trees under grouping directories (OPE-12677 review)", () => {
+    const packagesDir = join(REPO_ROOT, "packages");
+    const roots = collectPackageSrcRoots(packagesDir);
+    const relRoots = roots.map((root) => root.split(sep).join("/"));
+
+    // Grouping directories and packages WITHOUT their own `src` must still
+    // contribute the nested package `src` trees below them — the previous
+    // walker bailed out on them and silently skipped these readers
+    // (packages/plugins has no own src; paperclip-runner has one but its
+    // devtools/examples trees sit deeper).
+    expect(relRoots).toContain("packages/plugins/sdk/src");
+    expect(relRoots).toContain("packages/plugins/sandbox-providers/docker/src");
+    expect(relRoots).toContain("packages/paperclip-runner/devtools/browser/src");
+    expect(relRoots).toContain("packages/paperclip-runner/examples/mini-consumer/src");
+    // Top-level packages keep their own roots.
+    expect(relRoots).toContain("packages/shared/src");
+    expect(relRoots).toContain("packages/db/src");
+    // Every enumerated root exists exactly once (no duplicates from the
+    // always-descend traversal).
+    expect(new Set(relRoots).size).toBe(relRoots.length);
   });
 });
