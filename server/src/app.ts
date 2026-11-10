@@ -167,6 +167,7 @@ import {
   boardLoadRequestMiddleware,
   myrmidonMonitoringAlertsRoutes,
   myrmidonZabbixSinkRoutes,
+  myrmidonWebhookIntakeRoutes,
   swarmClaimApp,
   createCasteDirectoryReader,
   myrmidonEmergencyStopRoutes,
@@ -1368,6 +1369,7 @@ export async function createApp(
   api.use(myrmidonForagingRoutes(db)); // myrmidon(1.6-FORAGE): source registry, findings and the manual sweep
   api.use(myrmidonMonitoringAlertsRoutes(db)); // myrmidon(1.6.6-ALERTS): monitoring alerts webhook (Zabbix/Alertmanager) and its settings
   api.use(myrmidonZabbixSinkRoutes(db)); // myrmidon(1.7-ZABBIX-SINK / OPE-12126): Zabbix alarm sink -> role-task draft
+  api.use(myrmidonWebhookIntakeRoutes(db)); // myrmidon(1.7 WEBHOOK-INTAKE, OPE-12041): signed inbound webhook drafts (signature + dedup + raw payload)
   api.use(myrmidonMonitoringDashboardRoutes(db)); // myrmidon(1.6.6 MONITORING C): fleet dashboard from VictoriaMetrics + Zabbix, connection settings, selfcheck
   api.use(myrmidonForagingIdleGateRoutes(db)); // myrmidon(1.6.3-FORAGING-IDLE-GATE): the idle-gate toggle
   api.use(myrmidonForagingPassRoutes(db)); // myrmidon(1.6.3-FORAGING-IDLE-GATE, UI half): the pass history

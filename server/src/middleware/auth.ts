@@ -229,6 +229,10 @@ interface ActorMiddlewareOptions {
 const publicMcpGatewayProtocolPath = /^\/mcp\/gateways\/gw_[a-f0-9]{32}\/?$/i;
 const monitoringAlertsWebhookPath = /^\/(?:api\/)?myrmidon\/monitoring\/alerts\/webhook\/?(?:\?.*)?$/i;
 const intakeWebhookPath = /^\/(?:api\/)?intake\/[a-zA-Z0-9_\-\.]+\/?(?:\?.*)?$/i;
+// myrmidon(1.7 WEBHOOK-INTAKE, OPE-12041): the signed inbound webhook intake.
+// The route verifies the HMAC-SHA256 signature of the raw body itself, so the
+// actor middleware must not consume the bearer-shaped signature header first.
+const webhookIntakePath = /^\/(?:api\/)?myrmidon\/monitoring\/intake\/webhook\/?(?:\?.*)?$/i;
 
 export function actorMiddleware(db: Db, opts: ActorMiddlewareOptions): RequestHandler {
   const boardAuth = boardAuthService(db);
@@ -264,7 +268,8 @@ export function actorMiddleware(db: Db, opts: ActorMiddlewareOptions): RequestHa
       hasBearerCredentials &&
       (publicMcpGatewayProtocolPath.test(req.path) ||
         monitoringAlertsWebhookPath.test(req.originalUrl) ||
-        (req.method === "POST" && intakeWebhookPath.test(req.originalUrl)))
+        (req.method === "POST" && intakeWebhookPath.test(req.originalUrl)) ||
+        webhookIntakePath.test(req.originalUrl))
     ) {
       if (runIdHeader) req.actor.runId = runIdHeader;
       if (req.actor.type === "none" && !req.actorNoneReason) {

@@ -370,3 +370,5 @@ export {
   type BillingEventRow,
   type NewBillingEventRow,
 } from "./billing_events.js";
+// myrmidon(1.7 WEBHOOK-INTAKE, OPE-12041): raw inbound webhook drafts (signature + dedup).
+export { webhookIntakeDrafts } from "./webhook_intake_drafts.js";

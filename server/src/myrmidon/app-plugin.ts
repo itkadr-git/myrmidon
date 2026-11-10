@@ -100,6 +100,7 @@ export { siteHealthRoutes } from "./bot-containers/site-health-routes.js"; // my
 export { myrmidonPromptBudgetAdviceRoutes } from "./prompt-budget-advice/index.js"; // myrmidon(1.6.3 PROMPT-BUDGET C)
 export { myrmidonMonitoringLinkRoutes } from "./monitoring/links/index.js"; // myrmidon(1.6.6 MONITORING E)
 export { myrmidonMonitoringDashboardRoutes } from "./monitoring/dashboard/index.js"; // myrmidon(1.6.6 MONITORING C)
+export { myrmidonWebhookIntakeRoutes } from "./monitoring/intake/index.js"; // myrmidon(1.7 WEBHOOK-INTAKE, OPE-12041)
 export { myrmidonCloudConnectorRoutes } from "./cloud-connector/index.js"; // myrmidon(CLOUD-CONNECTOR)
 export { myrmidonBoardProcessRegistryRoutes } from "./process-registry/index.js"; // myrmidon(1.6.6 PROCS-0.1)
 export { poolChatRoutes } from "./pool-chat/routes.js";
