@@ -38,6 +38,12 @@ needs one. It is an independent product maintained as a fork of
 
 - [Corpus server integration](../myrmidon/changes/ope-7844-corpus-integration.md) — configuration and end-to-end verification.
 
+## Operations
+
+- [Server onboarding dry-run](Server-onboarding-dry-run) — read-only DNS, SSH,
+  and permissions probes with stable result codes; the legacy SSH dry-run alias
+  remains available for compatibility.
+
 ## Getting started
 
 - [System requirements](System-requirements) — supported OS and
