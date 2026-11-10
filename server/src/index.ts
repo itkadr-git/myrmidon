@@ -207,7 +207,7 @@ import { createRunStallSweepFromHeartbeat, registerRunStallSweep, startRunStall 
 import { sweepGatewayRunReattach, GATEWAY_REATTACH_SWEEP_INTERVAL_MS } from "./myrmidon/gateway-run-reattach.js";
 import { GATEWAY_REMOTE_CLOSE_SWEEP_INTERVAL_MS } from "./myrmidon/gateway-run-close.js";
 import { readHotRestartIntent } from "./services/hot-restart.js"; // myrmidon(T1.6): predecessor boot id for the startup reattach pass
-import { createTaskPrSyncScheduler, reconcileClosedIssuePullRequests } from "./myrmidon/task-pr-sync/index.js"; // myrmidon(TASK-PR-SYNC)
+import { createTaskPrSyncScheduler, reconcileClosedIssuePullRequests, backfillPullRequestWorkProducts } from "./myrmidon/task-pr-sync/index.js"; // myrmidon(TASK-PR-SYNC)
 import { createBoardJanitorScheduler } from "./myrmidon/board-janitor/index.js"; // myrmidon(BOARD-JANITOR)
 import { createStaleBlockScheduler, createDefaultEventReader } from "./myrmidon/stale-block/index.js"; // myrmidon(STALE-BLOCK)
 import { createOwnerCardTtlScheduler } from "./myrmidon/owner-reply/index.js"; // myrmidon(1.6.5-F21-B)
@@ -1336,7 +1336,11 @@ async function startServerWithDatabaseTeardown(
   let startupListenerBound = false;
   try {
   // myrmidon(OPE-11755): runnerd is local; bind its URL to the actual listening socket.
-  if (processRoleProfile.role === "all") {
+  // myrmidon(OPE-12274): `executesRuns` roles own runnerd registrations (worker in
+  // single mode serves the public port itself), so the PRP upgrade handler must
+  // live on the primary listener there too — in worker mode `openWorkerLoopbackListener`
+  // opens nothing and `runner_prp_websocket_server_not_configured` fired on every session.
+  if (processRoleProfile.executesRuns || processRoleProfile.role === "all") {
     setupRunnerPrpWebSocketServer(server);
   }
   setupEnvironmentCustomImageTerminalWebSocketServer(server, db as any, {
@@ -1955,6 +1959,13 @@ async function startServerWithDatabaseTeardown(
     const now = Date.now();
     if (now - lastClosedTaskReconcileAt < closedTaskReconcileIntervalMs) return;
     lastClosedTaskReconcileAt = now;
+    trackTaskPrSyncWork(backfillPullRequestWorkProducts({
+      db: db as any,
+    }).then((result) => {
+      if (result.linked > 0 || result.failed > 0) logger.info(result, "backfilled bot PR work products on tasks");
+    }).catch((err) => {
+      logger.warn({ errorKind: "task_pr_backfill_failed", errorName: err instanceof Error ? err.name : typeof err }, "bot PR work-product backfill failed");
+    }));
     trackTaskPrSyncWork(reconcileClosedIssuePullRequests({
       db: db as any,
       resolvePullRequestDetails: createPullRequestMergeDetailsResolver(db as any),
@@ -2020,6 +2031,9 @@ async function startServerWithDatabaseTeardown(
     wakeup: ((agentId: string, options: Record<string, unknown>) =>
       backgroundHeartbeat.wakeup(agentId, options as any)),
     track: trackHeartbeatSchedulerWork,
+    // myrmidon(OPE-12397): one GitHub read per PR per pass needs one sweeper —
+    // the same "scheduler" leadership gate TASK-PR-SYNC already uses.
+    isLeader: () => !heartbeatSchedulerStopped && leaderLeaseManager.isLeader("scheduler"),
   });
   // myrmidon(1.6.6 GUARD-RETURN): code tasks of dev projects must not stall on
   // non-coding roles (reviewer, lead, operator). Automatically returns tasks with
@@ -2241,6 +2255,9 @@ async function startServerWithDatabaseTeardown(
     wakeup: backgroundHeartbeat.wakeup,
     assignmentWakeup: backgroundHeartbeat.wakeup,
   });
+  // myrmidon(GITHUB-APP-WEBHOOK): the public App-webhook route (mounted in
+  // createApp, before this exists) ingests through this very instance.
+  app.locals.githubConnectionEvents = githubConnectionEvents;
   const tools = toolAccessService(db as any, {
     deploymentMode: config.deploymentMode,
     deploymentExposure: config.deploymentExposure,

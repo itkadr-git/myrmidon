@@ -115,3 +115,116 @@ func TestAllow_A20_DockerPrefixRoute(t *testing.T) {
 	res := r.send("PUT", "/v1.45/containers/myrmidon-bot-"+r.key()+"/config/update", jsonHdr, body)
 	wantStatus(t, res, 200)
 }
+
+// A21 (OPE-12337): GET one enrolled bot's dockergate-side limits and ceilings.
+func TestAllow_A21_GetBotLimits(t *testing.T) {
+	r := newA20Rig(t)
+	r.seedMain("running")
+
+	for _, target := range []string{
+		"/myrmidon/bots/" + r.key() + "/limits",
+		"/myrmidon/config/bots/" + r.key(),
+		"/v1.45/containers/myrmidon-bot-" + r.key() + "/config/limits",
+		"/v1.45/containers/myrmidon-bot-" + r.key() + "/config/update",
+	} {
+		res := r.send("GET", target, nil, nil)
+		wantStatus(t, res, 200)
+		var resp struct {
+			OK     bool    `json:"ok"`
+			BotKey string  `json:"botKey"`
+			Memory int64   `json:"memoryMb"`
+			CPUs   float64 `json:"cpus"`
+			Pids   int64   `json:"pidsLimit"`
+		}
+		if err := json.Unmarshal(res.Body, &resp); err != nil {
+			t.Fatalf("%s: unmarshal: %v", target, err)
+		}
+		if !resp.OK || resp.BotKey != r.key() || resp.Memory != 2048 || resp.CPUs != 4 || resp.Pids != 2048 {
+			t.Errorf("%s: unexpected limits: %+v", target, resp)
+		}
+	}
+
+	// Ceiling and effective fields are present even when unset (zero values).
+	var resp struct {
+		CeilingMemory   int64   `json:"ceilingMemoryMb"`
+		CeilingCPUs     float64 `json:"ceilingCpus"`
+		CeilingPids     int64   `json:"ceilingPids"`
+		EffectiveMemory int64   `json:"effectiveMemoryMb"`
+		EffectiveCPUs   float64 `json:"effectiveCpus"`
+		EffectivePids   int64   `json:"effectivePidsLimit"`
+	}
+	res := r.send("GET", "/myrmidon/bots/"+r.key()+"/limits", nil, nil)
+	if err := json.Unmarshal(res.Body, &resp); err != nil {
+		t.Fatalf("unmarshal ceilings: %v", err)
+	}
+	if resp.CeilingMemory < 0 || resp.CeilingCPUs < 0 || resp.CeilingPids < 0 {
+		t.Errorf("negative ceilings: %+v", resp)
+	}
+	if resp.EffectiveMemory < 0 || resp.EffectiveCPUs < 0 || resp.EffectivePids < 0 {
+		t.Errorf("negative effective limits: %+v", resp)
+	}
+}
+
+// A21 (OPE-12337): PlatformLimits lower than bot limits cap the effective limits.
+func TestAllow_A21_CeilingsBelowBotLimits(t *testing.T) {
+	r := newA20Rig(t, withConfig(func(c *config.Config) {
+		c.VolumeRoot = "/srv/test-bots"
+		c.PlatformLimits = &config.PlatformLimits{
+			MaxMemoryMB: 1024,
+			MaxCPUs:     2.0,
+			MaxPids:     500,
+		}
+	}))
+	r.seedMain("running")
+
+	res := r.send("GET", "/myrmidon/bots/"+r.key()+"/limits", nil, nil)
+	wantStatus(t, res, 200)
+
+	var resp struct {
+		OK              bool    `json:"ok"`
+		BotKey          string  `json:"botKey"`
+		Memory          int64   `json:"memoryMb"`
+		CPUs            float64 `json:"cpus"`
+		Pids            int64   `json:"pidsLimit"`
+		CeilingMemory   int64   `json:"ceilingMemoryMb"`
+		CeilingCPUs     float64 `json:"ceilingCpus"`
+		CeilingPids     int64   `json:"ceilingPids"`
+		EffectiveMemory int64   `json:"effectiveMemoryMb"`
+		EffectiveCPUs   float64 `json:"effectiveCpus"`
+		EffectivePids   int64   `json:"effectivePidsLimit"`
+	}
+	if err := json.Unmarshal(res.Body, &resp); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if !resp.OK || resp.BotKey != r.key() {
+		t.Fatalf("unexpected bot: %+v", resp)
+	}
+	// Enrolled bot-level limits remain unchanged
+	if resp.Memory != 2048 || resp.CPUs != 4 || resp.Pids != 2048 {
+		t.Errorf("expected bot limits (2048, 4, 2048), got (%d, %g, %d)", resp.Memory, resp.CPUs, resp.Pids)
+	}
+	// Ceilings match platformLimits
+	if resp.CeilingMemory != 1024 || resp.CeilingCPUs != 2.0 || resp.CeilingPids != 500 {
+		t.Errorf("expected ceilings (1024, 2.0, 500), got (%d, %g, %d)", resp.CeilingMemory, resp.CeilingCPUs, resp.CeilingPids)
+	}
+	// Effective limits are min(bot, ceiling)
+	if resp.EffectiveMemory != 1024 || resp.EffectiveCPUs != 2.0 || resp.EffectivePids != 500 {
+		t.Errorf("expected effective limits (1024, 2.0, 500), got (%d, %g, %d)", resp.EffectiveMemory, resp.EffectiveCPUs, resp.EffectivePids)
+	}
+}
+
+func TestDeny_A21_BotNotEnrolled(t *testing.T) {
+	r := newA20Rig(t)
+	r.seedMain("running")
+
+	res := r.send("GET", "/myrmidon/bots/00000000-0000-0000-0000-000000000000/limits", nil, nil)
+	wantDeny(t, res, deny.BotNotEnrolled)
+}
+
+func TestDeny_A21_MethodNotAllowed(t *testing.T) {
+	r := newA20Rig(t)
+	r.seedMain("running")
+
+	res := r.send("POST", "/myrmidon/bots/"+r.key()+"/limits", jsonHdr, configUpdateBody(512, 1, 100))
+	wantDeny(t, res, deny.RouteNotAllowed)
+}

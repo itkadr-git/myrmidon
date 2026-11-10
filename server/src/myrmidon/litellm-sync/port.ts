@@ -23,13 +23,25 @@ export interface LitellmChannelView {
 
 export interface LitellmSyncPort {
   /**
-   * Registers a model in LiteLLM with credential reference.
-   * The credential value itself is never passed through this call - only the
-   * secret reference that LiteLLM will resolve internally.
+   * Registers a deployment in LiteLLM (`POST /model/new`).
+   *
+   * LiteLLM has no secret manager on our deployments, so the credential is
+   * sent as a VALUE (`credentialValue`), resolved on the board from the
+   * company secrets. A `secrets/<name>` reference would be stored verbatim and
+   * sent upstream as the API key. Routing order goes through
+   * `litellm_params.order`: `/model/update` persists only `litellm_params`, and
+   * `priority`, `disabled` and `provider` are not LiteLLM parameters at all
+   * (the router has no per-deployment disabled flag), so none of them is sent.
    */
   registerModel(input: {
-    /** The model name LiteLLM will recognize. */
+    /** The model name (group) LiteLLM will recognize; the board's registry name. */
     litellmModelName: string;
+    /**
+     * The upstream model identifier without the provider prefix (`gpt-4o`).
+     * Defaults to `litellmModelName`; set it whenever the registry name is not
+     * the provider's own spelling (`kimi/kimi-for-coding` -> `kimi-for-coding`).
+     */
+    providerModel?: string;
     /** The provider type (e.g., 'openai', 'dashscope'). */
     providerType: string;
     /** The provider's base URL; null means default. */
@@ -38,41 +50,48 @@ export interface LitellmSyncPort {
     credentialValue?: string;
     /** @deprecated retained for adapter compatibility; production wiring sends credentialValue. */
     credentialSecretName?: string;
-    /** Priority order of the channel within the model group. */
+    /** Routing order of the channel within the model group (`litellm_params.order`; lowest first). */
     order?: number;
-    /** Routing weight for load balancing. */
+    /** Routing weight for load balancing (`litellm_params.weight`). */
     weight?: number;
-    /** Whether the channel is disabled. */
-    disabled?: boolean;
     /** Additional LiteLLM-specific configuration. */
     additionalConfig?: Record<string, unknown>;
   }): Promise<void>;
 
   /**
-   * Removes a model registration from LiteLLM.
+   * Removes the deployments registered under a model name from LiteLLM.
+   *
+   * `/model/delete` takes only a deployment id (`{ id }`), so the client looks
+   * the deployments up in `/model/info` and deletes each by `model_info.id`.
+   * With `match.baseUrl` set (a string, or `null` for "no api_base") only the
+   * deployments with that api_base are removed, so a deployment the board does
+   * not own under the same name stays. Deployments that live in the static
+   * gateway config cannot be deleted through the API and are never targeted.
+   * A name with no deployment is a no-op: the call is safe to repeat.
    */
-  unregisterModel(litellmModelName: string): Promise<void>;
+  unregisterModel(litellmModelName: string, match?: { baseUrl?: string | null }): Promise<void>;
 
   /**
-   * Updates the credential reference of an existing deployment in place
-   * (`POST /model/update`, addressed by deployment id). No second deployment is
-   * created and the model is never absent from the gateway.
+   * Updates an existing deployment in place (`POST /model/update`, addressed by
+   * deployment id; LiteLLM merges `litellm_params` and ignores `model_info`).
+   * No second deployment is created and the model is never absent from the
+   * gateway.
    */
   updateDeployment(input: {
     modelId: string;
     litellmModelName: string;
+    /** The upstream model identifier without the provider prefix; defaults to `litellmModelName`. */
+    providerModel?: string;
     providerType: string;
     baseUrl: string | null;
-    /** The credential value to pass to LiteLLM; LiteLLM encrypts it in its DB. */
+    /** The credential value to pass to LiteLLM; LiteLLM encrypts it in its DB. Omitted: the stored key is kept. */
     credentialValue?: string;
     /** @deprecated retained for adapter compatibility; never sent by production wiring. */
     credentialSecretName?: string;
-    /** Priority order of the channel within the model group. */
+    /** Routing order of the channel within the model group (`litellm_params.order`). */
     order?: number;
-    /** Routing weight for load balancing. */
+    /** Routing weight for load balancing (`litellm_params.weight`). */
     weight?: number;
-    /** Whether the channel is disabled. */
-    disabled?: boolean;
     additionalConfig?: Record<string, unknown>;
   }): Promise<void>;
 
@@ -97,8 +116,14 @@ export interface LitellmSyncPort {
     providerType: string;
     /** The base URL used. */
     baseUrl: string | null;
-    /** The credential secret name reference. */
+    /** The credential secret name reference; empty when the key is stored as a value (the gateway never reveals it). */
     credentialSecretName: string;
+    /**
+     * True when the deployment lives in the gateway database (added through
+     * the admin API), false when it comes from the gateway config file.
+     * Absent when the gateway does not say.
+     */
+    dbModel?: boolean;
   }>>;
 
   /**

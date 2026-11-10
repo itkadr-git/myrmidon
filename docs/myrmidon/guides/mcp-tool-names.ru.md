@@ -63,7 +63,7 @@ capability-инвентаря, поэтому переименование ли�
    `tool-aliases.ts`, его тест и вызов `withMyrmidonToolNames(...)` в
    `index.ts`.
 3. В том же PR перегенерировать контракты runner'а (при заданном
-   `PAPERCLIP_EVALS_ROOT`: `pnpm --filter @paperclipai/paperclip-runner
+   `PAPERCLIP_EVALS_ROOT`: `pnpm --filter @myrmidon/paperclip-runner
    generate:capability-inventory && generate:capability-contract &&
    generate:protocol-coverage`). В карте свёрток
    `legacyMcpFoldTargets` (`scripts/lib/capability-inventory.mjs`) добавить
@@ -73,7 +73,7 @@ capability-инвентаря, поэтому переименование ли�
 
 ## Как проверить
 
-- Тесты: `pnpm --filter @paperclipai/mcp-server test` —
+- Тесты: `pnpm --filter @myrmidon/mcp-server test` —
   `src/tool-aliases.test.ts` проверяет покрытие таблицей всех 42 старых имён,
   присутствие `myrmidon*` в публикуемом списке, пометку `deprecated` у каждого
   алиаса, совпадение ссылки на обработчик у обоих имён и identical-вызов

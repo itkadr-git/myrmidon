@@ -1,4 +1,5 @@
 [
+  "api.use(apiPathAliasMiddleware())",
   "api.use(createPluginReadinessRouter(pluginReadiness))",
   "api.use(boardLoadRequestMiddleware())",
   "api.use(boardMutationGuard())",
@@ -126,6 +127,7 @@
   "api.use(myrmidonAgentMemorySettingsRoutes(db))",
   "api.use(\"/myrmidon/hindsight/model-groups\", myrmidonHindsightModelsRoutes(db))",
   "api.use(\"/myrmidon/agent-memory/model-groups\", myrmidonHindsightModelsRoutes(db))",
+  "api.use(\n    \"/myrmidon/companies/:companyId/hindsight/model-groups\",\n    myrmidonHindsightModelsRoutes(db),\n  )",
   "api.use(myrmidonToolPolicyCacheRoutes(db))",
   "api.use(myrmidonSkillLifecycleRoutes(db))",
   "api.use(myrmidonStackRegistryRoutes(db))",

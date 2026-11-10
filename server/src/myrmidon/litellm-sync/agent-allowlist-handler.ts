@@ -6,8 +6,21 @@
 // model set: when models are enabled/disabled in the provider registry (or
 // reconciled at startup), every agent key that exists is updated through the
 // gateway's `/key/update` with `models` — the allowlist the key may call.
-// `/key/update` with the alias but no `key` field keeps the installed value,
-// so an agent's stored secret never needs a rotation to change its allowlist.
+// `/key/update` is a merge patch, so an agent's stored secret never needs a
+// rotation to change its allowlist.
+//
+// Where an agent's key is found (first hit wins):
+//  1. the card's env binding `adapter_config.env.MYRMIDON_LLM_API_KEY` (or the
+//     env name `MYRMIDON_LITELLM_AGENT_KEY_ENV` names) — a `secret_ref` to the
+//     company secret that carries the key the bot authenticates with;
+//  2. the card's `apiKey` binding, a `secret_ref` too, when the card has no env
+//     binding;
+//  3. the board-managed secret `llm-gateway-key-<name>-<id>` that
+//     `createAgentGatewayKey` writes (addressed by its alias, as before).
+// Bindings 1 and 2 are followed to the secret VALUE; the gateway is addressed
+// by its sha256 (`/key/update` `key`): LiteLLM v1.104.1 reads a `key` that does
+// not start with "sk-" as an already-hashed token, and the board's keys are
+// 64 hex characters, so only the hash is correct for every key shape.
 //
 // Rules this module keeps:
 //  - The admin key is a company secret NAME in the env
@@ -19,33 +32,170 @@
 //    forbidden" — the operator opts in by enabling models.
 //  - One agent's failure never stops the company pass: results count every
 //    attempted key and name every skip; nothing here throws per agent.
+//  - The pass can run as a DRY RUN (`apply: false`): it reads every key and
+//    reports what would be added and removed, and sends nothing. The startup
+//    check and the provider-change hooks run this way; only an explicit admin
+//    action applies the pass to the agents' keys (the board's
+//    `POST .../litellm/keys/allowlist-sync?apply=true`). Applying adds every
+//    enabled registry model to every restricted key, which can widen a curated
+//    list, so it is never a side effect.
 
+import { createHash } from "node:crypto";
 import { and, eq } from "drizzle-orm";
 import { agents, modelProviderModels, modelProviders, type Db } from "@myrmidon/db";
 import { agentKeySecretName, DISABLED_MODEL_SENTINEL, readGatewayKeySettings } from "@myrmidon/shared";
 import { notFound, unprocessable } from "../../errors.js";
 import { type AgentGatewayKeyDeps } from "../litellm-keys/agent-keys.js";
 
+/** sha256 hex of a key value: the form the gateway stores (same as `gatewayKeyValueHash`). */
+function keyValueHash(value: string): string {
+  return createHash("sha256").update(value).digest("hex");
+}
+
+/** The env name the card projects an agent's gateway key into when no instance setting names another. */
+const DEFAULT_AGENT_KEY_ENV = "MYRMIDON_LLM_API_KEY";
+
+/** How an agent's gateway key is addressed for one update. */
+interface AgentKeyRef {
+  /** The board-derived alias (`llm-gateway-key-<name>-<id>`). */
+  alias: string;
+  /** sha256 of the key value found through the card's bindings; absent: address by alias. */
+  keyHash?: string;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+/** A `secret_ref` binding -> the secret id and the version selector; null for anything else. */
+function secretRefOf(value: unknown): { secretId: string; version: number | "latest" } | null {
+  if (!isRecord(value) || value.type !== "secret_ref") return null;
+  const secretId = typeof value.secretId === "string" ? value.secretId.trim() : "";
+  if (!secretId) return null;
+  const version =
+    typeof value.version === "number" && Number.isInteger(value.version) && value.version > 0
+      ? value.version
+      : "latest";
+  return { secretId, version };
+}
+
+/** The key bindings of a card, in lookup order. */
+function cardKeyBindings(
+  adapterConfig: unknown,
+  agentKeyEnv: string | null,
+): Array<{ secretId: string; version: number | "latest" }> {
+  const config = isRecord(adapterConfig) ? adapterConfig : {};
+  const env = isRecord(config.env) ? config.env : {};
+  const bindings: Array<{ secretId: string; version: number | "latest" }> = [];
+  for (const name of new Set([agentKeyEnv, DEFAULT_AGENT_KEY_ENV])) {
+    const ref = name ? secretRefOf(env[name]) : null;
+    if (ref) bindings.push(ref);
+  }
+  if (bindings.length === 0) {
+    const ref = secretRefOf(config.apiKey);
+    if (ref) bindings.push(ref);
+  }
+  return bindings;
+}
+
+/**
+ * Finds how to address one agent's gateway key: through the card's bindings
+ * (secret value -> sha256) first, then the board-managed secret by alias.
+ * `bindingUnresolved` tells "the card names a key secret that holds no value"
+ * from "the agent has no key at all".
+ */
+async function resolveAgentKeyRef(
+  deps: AgentGatewayKeyDeps,
+  companyId: string,
+  agent: { id: string; name: string; adapterConfig?: unknown },
+  agentKeyEnv: string | null,
+): Promise<{ ref: AgentKeyRef | null; bindingUnresolved: boolean }> {
+  const alias = agentKeySecretName({ agentId: agent.id, agentSlug: agent.name });
+  let bindingUnresolved = false;
+  if (deps.readSecretValueById) {
+    for (const binding of cardKeyBindings(agent.adapterConfig, agentKeyEnv)) {
+      const value = await deps.readSecretValueById(companyId, binding.secretId, binding.version);
+      if (value) return { ref: { alias, keyHash: keyValueHash(value) }, bindingUnresolved: false };
+      bindingUnresolved = true;
+    }
+  }
+  // An agent without a managed key yet has no allowlist to update; creating
+  // keys is M2-B's job (the board), not this pass's.
+  const secretId = await deps.findSecretId(companyId, alias);
+  if (secretId) return { ref: { alias }, bindingUnresolved: false };
+  return { ref: null, bindingUnresolved };
+}
+
+/** The address fields a gateway call takes. */
+function keyAddress(ref: AgentKeyRef): { alias: string; keyHash?: string } {
+  return ref.keyHash ? { alias: ref.alias, keyHash: ref.keyHash } : { alias: ref.alias };
+}
+
+/** What a pass would change on one agent key. */
+export interface AllowlistKeyChange {
+  agentId: string;
+  /** Model names the key does not hold and the pass would add. */
+  add: string[];
+  /** Model names the key holds and the pass would remove. */
+  remove: string[];
+}
+
+/** The report of a dry run: nothing was sent to the gateway. */
+export interface AllowlistDryRunReport {
+  /** Keys whose list would change. */
+  wouldChange: number;
+  /** Keys whose list already is what the pass would set. */
+  unchanged: number;
+  /** Model name -> number of keys it would be added to. */
+  added: Record<string, number>;
+  /** Model name -> number of keys it would be removed from. */
+  removed: Record<string, number>;
+  /** The per-key changes (agent ids only, never secret names or values). */
+  changes: AllowlistKeyChange[];
+}
+
 export interface AllowlistSyncResult {
-  /** Agents whose key the pass tried to update. */
+  /** Agents whose key the pass tried to update (a dry run: examined). */
   attempted: number;
-  /** Keys the gateway acknowledged. */
+  /** Keys the gateway acknowledged (a dry run: always 0). */
   updated: number;
   /** Machine-readable skip reasons (no secret names, no values). */
   skipped: string[];
+  /** Present only on a dry run (`apply: false`). */
+  dryRun?: AllowlistDryRunReport;
+}
+
+export interface AllowlistSyncOptions {
+  /**
+   * false: read the keys and report the differences, send nothing.
+   * Default true, the behavior every earlier caller relies on.
+   */
+  apply?: boolean;
+  /**
+   * false: leave the provider registry out, so the pass handles only the names
+   * the caller passes (the plugin lifecycle does this). Default true.
+   */
+  includeRegistryModels?: boolean;
 }
 
 /** The company's model names and enabled state as registered in the gateway. */
 async function listCompanyModels(db: Db, companyId: string): Promise<{ name: string; enabled: boolean }[]> {
+  // Explicit, flat columns: a bare `select()` over a join returns the rows
+  // keyed by the SQL table names (`model_provider_models`), not by the
+  // drizzle export names, and the pass then saw no enabled model at all.
   const rows = await db
-    .select()
+    .select({
+      modelName: modelProviderModels.modelName,
+      litellmModelName: modelProviderModels.litellmModelName,
+      enabled: modelProviderModels.enabled,
+    })
     .from(modelProviderModels)
     .innerJoin(modelProviders, eq(modelProviderModels.providerId, modelProviders.id))
     .where(eq(modelProviders.companyId, companyId));
   return rows.map((row: any) => {
-    // Drizzle returns joined tables under their table keys; keeping the flat
-    // fallback makes this port easy to exercise with lightweight adapters.
-    const model = row.modelProviderModels ?? row;
+    // The flat columns are the normal shape. A nested row (an adapter that
+    // returns the joined tables under their names) is read as well.
+    const model = row.model_provider_models ?? row.modelProviderModels ?? row;
     return {
       name: model.litellmModelName ?? model.modelName,
       enabled: model.enabled === true,
@@ -66,8 +216,22 @@ export async function updateAgentAllowlistsForCompany(
   additionalModelNames: readonly string[] = [],
   removedModelNames: readonly string[] = [],
   allowEmpty = false,
+  options: AllowlistSyncOptions = {},
 ): Promise<AllowlistSyncResult> {
-  const skip = (reason: string): AllowlistSyncResult => ({ attempted: 0, updated: 0, skipped: [reason] });
+  const dryRun = options.apply === false;
+  const emptyReport = (): AllowlistDryRunReport => ({
+    wouldChange: 0,
+    unchanged: 0,
+    added: {},
+    removed: {},
+    changes: [],
+  });
+  const skip = (reason: string): AllowlistSyncResult => ({
+    attempted: 0,
+    updated: 0,
+    skipped: [reason],
+    ...(dryRun ? { dryRun: emptyReport() } : {}),
+  });
 
   const env = agentGatewayKeys.env ?? process.env;
   const settings = readGatewayKeySettings(env);
@@ -75,7 +239,8 @@ export async function updateAgentAllowlistsForCompany(
     return skip("gateway-key-management-not-configured");
   }
 
-  const companyModels = await listCompanyModels(db, companyId);
+  const companyModels: { name: string; enabled: boolean }[] =
+    options.includeRegistryModels === false ? [] : await listCompanyModels(db, companyId);
   const enabledNames = companyModels.filter((model) => model.enabled).map((model) => model.name);
   const models = [...new Set([
     ...enabledNames,
@@ -104,24 +269,32 @@ export async function updateAgentAllowlistsForCompany(
     return skip("admin-key-secret-unresolved");
   }
   const gateway = agentGatewayKeys.gateway({ baseUrl: settings.baseUrl, adminKey });
-  if (!gateway.setKeyAllowedModels) {
+  // A dry run only reads the keys, so it does not need the write method.
+  if (!gateway.setKeyAllowedModels && !dryRun) {
     return skip("gateway-port-without-allowlist-support");
   }
   const companyAgents = await db
-    .select({ id: agents.id, name: agents.name })
+    .select({ id: agents.id, name: agents.name, adapterConfig: agents.adapterConfig })
     .from(agents)
     .where(eq(agents.companyId, companyId));
 
   let attempted = 0;
   let updated = 0;
   const skipped: string[] = [];
+  const report = emptyReport();
   for (const agent of companyAgents) {
-    const alias = agentKeySecretName({ agentId: agent.id, agentSlug: agent.name });
-    // An agent without a managed key yet has no allowlist to update; creating
-    // keys is M2-B's job (the board), not this pass's.
-    const secretId = await agentGatewayKeys.findSecretId(companyId, alias);
-    if (!secretId) {
-      skipped.push(`agent-without-key:${agent.id}`);
+    let found: Awaited<ReturnType<typeof resolveAgentKeyRef>>;
+    try {
+      found = await resolveAgentKeyRef(agentGatewayKeys, companyId, agent, settings.agentKeyEnv);
+    } catch {
+      // A secret store hiccup on one agent never stops the pass; the value is
+      // never part of any error text.
+      skipped.push(`key-lookup-failed:${agent.id}`);
+      continue;
+    }
+    const { ref } = found;
+    if (!ref) {
+      skipped.push(found.bindingUnresolved ? `key-binding-unresolved:${agent.id}` : `agent-without-key:${agent.id}`);
       continue;
     }
     attempted += 1;
@@ -130,7 +303,7 @@ export async function updateAgentAllowlistsForCompany(
         skipped.push(`gateway-port-without-key-info:${agent.id}`);
         continue;
       }
-      const keyInfo = await gateway.getKeyInfo({ alias });
+      const keyInfo = await gateway.getKeyInfo(keyAddress(ref));
       if (!keyInfo) {
         skipped.push(`alias-unknown-to-gateway:${agent.id}`);
         continue;
@@ -157,7 +330,22 @@ export async function updateAgentAllowlistsForCompany(
         : survivors.length > 0
           ? survivors
           : [DISABLED_MODEL_SENTINEL];
-      const applied = await gateway.setKeyAllowedModels({ alias, models: next });
+      if (dryRun) {
+        const nextSet = new Set(next);
+        const currentSet = new Set(current);
+        const add = [...nextSet].filter((name) => !currentSet.has(name));
+        const remove = [...currentSet].filter((name) => !nextSet.has(name));
+        if (add.length === 0 && remove.length === 0) {
+          report.unchanged += 1;
+        } else {
+          report.wouldChange += 1;
+          report.changes.push({ agentId: agent.id, add, remove });
+          for (const name of add) report.added[name] = (report.added[name] ?? 0) + 1;
+          for (const name of remove) report.removed[name] = (report.removed[name] ?? 0) + 1;
+        }
+        continue;
+      }
+      const applied = await gateway.setKeyAllowedModels!({ ...keyAddress(ref), models: next });
       if (applied) updated += 1;
       else skipped.push(`alias-unknown-to-gateway:${agent.id}`);
     } catch {
@@ -166,7 +354,7 @@ export async function updateAgentAllowlistsForCompany(
       skipped.push(`key-update-failed:${agent.id}`);
     }
   }
-  return { attempted, updated, skipped };
+  return { attempted, updated, skipped, ...(dryRun ? { dryRun: report } : {}) };
 }
 
 /**
@@ -184,7 +372,7 @@ export async function updateAgentGatewayKeyWithAllowlist(
   allowlist: { models: string[] },
 ): Promise<{ secretName: string; applied: boolean }> {
   const rows = await agentGatewayKeys.db
-    .select({ id: agents.id, name: agents.name })
+    .select({ id: agents.id, name: agents.name, adapterConfig: agents.adapterConfig })
     .from(agents)
     .where(and(eq(agents.id, input.agentId), eq(agents.companyId, input.companyId)))
     .limit(1);
@@ -214,8 +402,11 @@ export async function updateAgentGatewayKeyWithAllowlist(
     throw unprocessable("gateway port cannot update key allowlists", { code: "gateway_allowlist_unsupported" });
   }
 
+  // The card's key binding, when it has one, addresses the key by hash; else
+  // the derived alias, as before.
+  const { ref } = await resolveAgentKeyRef(agentGatewayKeys, input.companyId, agent, settings.agentKeyEnv);
   const applied = await gateway.setKeyAllowedModels({
-    alias,
+    ...(ref ? keyAddress(ref) : { alias }),
     // Same live-verified hazard as the company pass: models: [] REMOVES the
     // gateway's restrictions instead of denying everything (LiteLLM v1.103.2),
     // so an empty request is translated into the unregistered sentinel.

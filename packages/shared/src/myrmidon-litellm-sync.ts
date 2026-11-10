@@ -120,6 +120,20 @@ export function readGatewayKeySettings(env: Record<string, string | undefined>):
   };
 }
 
+/**
+ * The environment variables that keep gateway management off, by name, in the
+ * order a deployment sets them. Empty when management can run. A screen or an
+ * API answer names these instead of a bare "not enabled".
+ */
+export function missingGatewayEnv(
+  settings: Pick<GatewayKeySettings, "baseUrl" | "adminKeySecret">,
+): string[] {
+  const missing: string[] = [];
+  if (!settings.baseUrl) missing.push(GATEWAY_BASE_URL_ENV);
+  if (!settings.adminKeySecret) missing.push(GATEWAY_ADMIN_KEY_SECRET_ENV);
+  return missing;
+}
+
 // ---------------------------------------------------------------------------
 // Fallback chains
 // ---------------------------------------------------------------------------
@@ -224,7 +238,7 @@ export function findFallbackTopologyCycles(chains: readonly FallbackChain[]): Fa
       const current = stack.pop()!;
       for (const next of edges.get(current.model) ?? []) {
         if (next === start) {
-          const key = [...current.path].sort().join("\u0000");
+          const key = [...current.path].sort().join("^@");
           if (!cycles.has(key)) cycles.set(key, { path: [...current.path] });
           continue;
         }
@@ -372,7 +386,7 @@ export function getModelCost(modelName: string, catalog?: Map<string, KnownModel
 export function validateFallbackDiversity(
   chain: FallbackChain,
   catalog?: Map<string, KnownModelInfo>,
-): { valid: boolean; error?: string; providers: string[] } {
+): { valid: boolean; error?: string; providers: string[]; reason?: string } {
   if (chain.targets.length === 0) {
     return { valid: true, providers: [] };
   }
@@ -390,6 +404,7 @@ export function validateFallbackDiversity(
     const single = [...effectiveProviders][0] || primaryProvider;
     return {
       valid: false,
+      reason: "single_provider",
       error: `Fallback chain for '${chain.model}' relies on a single provider (${single}). At least one fallback target must use a different provider for redundancy.`,
       providers: [...allProviders],
     };
@@ -399,15 +414,48 @@ export function validateFallbackDiversity(
 }
 
 /**
- * Validates ordering: free channels first, then cheaper channels ("сначала бесплатные каналы, затем дешёвые").
+ * One finding of the chain checks, with the weight the board gives it.
+ *
+ * `error` findings break the owner's ordering policy (free channels first,
+ * then cheaper ones) and refuse a save. `warning` findings are about providers:
+ * a fallback inside the same provider is a legitimate choice (a bigger and a
+ * smaller model of one vendor), so the board names it and still saves.
  */
-export function validateFallbackOrder(
+export type FallbackIssueKind =
+  | "free_after_paid"
+  | "cheaper_after_expensive"
+  | "same_provider_as_primary"
+  | "same_provider_as_earlier_paid"
+  | "single_provider"
+  | "unknown_provider";
+
+/** Backward-compatibility alias for fallback order issue kinds (OPE-12361). */
+export type FallbackOrderIssue = FallbackIssueKind;
+
+export interface FallbackIssue {
+  kind: FallbackIssueKind;
+  severity: "error" | "warning";
+  message: string;
+}
+
+interface FallbackOrderFinding extends FallbackIssue {
+  /** The long form, worded as a rule that was broken. */
+  error: string;
+  /** The short form, worded as an observation. */
+  warning: string;
+}
+
+/**
+ * Every ordering finding of a chain, in the order the targets are walked.
+ * Both `validateFallbackOrder` (first finding) and `evaluateFallbackChain`
+ * (all findings, split by severity) read this one walk.
+ */
+function collectFallbackOrderFindings(
   chain: FallbackChain,
   catalog?: Map<string, KnownModelInfo>,
-): { valid: boolean; error?: string; warning?: string } {
-  if (chain.targets.length === 0) {
-    return { valid: true };
-  }
+): FallbackOrderFinding[] {
+  const findings: FallbackOrderFinding[] = [];
+  if (chain.targets.length === 0) return findings;
 
   const primaryProvider = extractModelProvider(chain.model, catalog?.get(chain.model)?.provider);
   let seenPaidCost: number | null = null;
@@ -419,54 +467,128 @@ export function validateFallbackOrder(
 
     if (free) {
       if (seenPaidCost !== null) {
-        return {
-          valid: false,
-          error: `Free channels must precede paid channels: free channel '${target}' appears after paid channels in chain for '${chain.model}'.`,
+        const error = `Free channels must precede paid channels: free channel '${target}' appears after paid channels in chain for '${chain.model}'.`;
+        findings.push({
+          kind: "free_after_paid",
+          severity: "error",
+          message: error,
+          error,
           warning: `Free channel '${target}' appears after paid channels in chain for '${chain.model}'. Free channels should come first.`,
-        };
+        });
       }
-    } else {
-      // 1. Paid fallbacks must be on a different provider than the primary model
-      if (
-        primaryProvider !== "unknown" &&
-        targetProvider !== "unknown" &&
-        targetProvider === primaryProvider
-      ) {
-        return {
-          valid: false,
-          error: `Paid fallback channel '${target}' uses the same provider (${targetProvider}) as primary model '${chain.model}'. Paid fallbacks must be on a different provider.`,
-          warning: `Paid fallback channel '${target}' uses the same provider (${targetProvider}) as primary model '${chain.model}'.`,
-        };
-      }
-
-      // 2. Subsequent paid fallbacks must use a different provider
-      if (targetProvider !== "unknown" && seenPaidProviders.has(targetProvider)) {
-        return {
-          valid: false,
-          error: `Subsequent paid fallback channel '${target}' uses the same provider (${targetProvider}) as an earlier paid fallback in chain for '${chain.model}'. Subsequent paid fallbacks must use a different provider.`,
-          warning: `Subsequent paid fallback channel '${target}' uses the same provider (${targetProvider}) as an earlier paid fallback.`,
-        };
-      }
-      if (targetProvider !== "unknown") {
-        seenPaidProviders.add(targetProvider);
-      }
-
-      // 3. Cheaper channels first among paid targets
-      const cost = getModelCost(target, catalog);
-      if (seenPaidCost !== null && Number.isFinite(seenPaidCost) && Number.isFinite(cost)) {
-        if (cost < seenPaidCost) {
-          return {
-            valid: false,
-            error: `Cheaper channel '${target}' appears after more expensive channel in chain for '${chain.model}'. Cheaper channels must come first.`,
-            warning: `Cheaper channel '${target}' appears after more expensive channel in chain for '${chain.model}'.`,
-          };
-        }
-      }
-      seenPaidCost = cost;
+      continue;
     }
+
+    // 1. A paid fallback on the primary model's provider
+    if (primaryProvider !== "unknown" && targetProvider !== "unknown" && targetProvider === primaryProvider) {
+      const warning = `Paid fallback channel '${target}' uses the same provider (${targetProvider}) as primary model '${chain.model}'.`;
+      findings.push({
+        kind: "same_provider_as_primary",
+        severity: "warning",
+        message: warning,
+        error: `Paid fallback channel '${target}' uses the same provider (${targetProvider}) as primary model '${chain.model}'. Paid fallbacks must be on a different provider.`,
+        warning,
+      });
+    }
+
+    // 2. A later paid fallback on the provider of an earlier paid fallback
+    if (targetProvider !== "unknown" && seenPaidProviders.has(targetProvider)) {
+      const warning = `Subsequent paid fallback channel '${target}' uses the same provider (${targetProvider}) as an earlier paid fallback.`;
+      findings.push({
+        kind: "same_provider_as_earlier_paid",
+        severity: "warning",
+        message: warning,
+        error: `Subsequent paid fallback channel '${target}' uses the same provider (${targetProvider}) as an earlier paid fallback in chain for '${chain.model}'. Subsequent paid fallbacks must use a different provider.`,
+        warning,
+      });
+    }
+    if (targetProvider !== "unknown") {
+      seenPaidProviders.add(targetProvider);
+    }
+
+    // 3. Cheaper channels first among paid targets
+    const cost = getModelCost(target, catalog);
+    if (seenPaidCost !== null && Number.isFinite(seenPaidCost) && Number.isFinite(cost) && cost < seenPaidCost) {
+      const error = `Cheaper channel '${target}' appears after more expensive channel in chain for '${chain.model}'. Cheaper channels must come first.`;
+      findings.push({
+        kind: "cheaper_after_expensive",
+        severity: "error",
+        message: error,
+        error,
+        warning: `Cheaper channel '${target}' appears after more expensive channel in chain for '${chain.model}'.`,
+      });
+    }
+    seenPaidCost = cost;
   }
 
-  return { valid: true };
+  return findings;
+}
+
+/**
+ * Validates ordering: free channels first, then cheaper channels ("сначала бесплатные каналы, затем дешёвые").
+ *
+ * Reports the first finding, same-provider findings included, so a screen can
+ * show the observation. A save decision belongs to `evaluateFallbackChain`,
+ * which tells the findings that refuse a save from the ones that only warn.
+ */
+export function validateFallbackOrder(
+  chain: FallbackChain,
+  catalog?: Map<string, KnownModelInfo>,
+): { valid: boolean; error?: string; warning?: string; reason?: string } {
+  const first = collectFallbackOrderFindings(chain, catalog)[0];
+  if (!first) return { valid: true };
+  const reason =
+    first.kind === "same_provider_as_primary"
+      ? "paid_same_provider"
+      : first.kind === "same_provider_as_earlier_paid"
+        ? "paid_same_provider_repeat"
+        : first.kind;
+  return { valid: false, error: first.error, warning: first.warning, reason };
+}
+
+/**
+ * What a save of this chain should do, finding by finding.
+ *
+ * - `errors` refuse the save: the order breaks the owner's policy (a free
+ *   channel after a paid one, a cheaper channel after a dearer one).
+ * - `warnings` never refuse it: a fallback inside one provider (for example a
+ *   large and a small model of the same vendor) is the owner's call. The same
+ *   goes for a model whose provider the catalog does not know — a missing
+ *   provider is not evidence either way, so the provider checks skip it.
+ *
+ * Unknown model groups are a separate, stricter check (`findUnknownModelGroups`).
+ */
+export function evaluateFallbackChain(
+  chain: FallbackChain,
+  catalog?: Map<string, KnownModelInfo>,
+): { errors: FallbackIssue[]; warnings: FallbackIssue[] } {
+  const errors: FallbackIssue[] = [];
+  const warnings: FallbackIssue[] = [];
+  if (chain.targets.length === 0) return { errors, warnings };
+
+  for (const finding of collectFallbackOrderFindings(chain, catalog)) {
+    const issue: FallbackIssue = { kind: finding.kind, severity: finding.severity, message: finding.message };
+    (finding.severity === "error" ? errors : warnings).push(issue);
+  }
+
+  const withoutProvider = [chain.model, ...chain.targets].filter((name) => !catalog?.get(name)?.provider?.trim());
+  if (withoutProvider.length > 0) {
+    warnings.push({
+      kind: "unknown_provider",
+      severity: "warning",
+      message: `Fallback chain for '${chain.model}': the provider is not known for ${[...new Set(withoutProvider)].join(", ")}, so the provider checks skip it.`,
+    });
+  } else if (!validateFallbackDiversity(chain, catalog).valid) {
+    // Only when every provider is known: a label is not a provider.
+    const provider = extractModelProvider(chain.model, catalog?.get(chain.model)?.provider);
+    warnings.push({
+      kind: "single_provider",
+      severity: "warning",
+      message: `Fallback chain for '${chain.model}' stays inside one provider (${provider}). A target on another provider would survive an outage of this one.`,
+    });
+  }
+
+  return { errors, warnings };
 }
 
 /**

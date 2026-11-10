@@ -29,6 +29,8 @@ import {
   projects,
   projectWorkspaces,
   secretAccessEvents,
+  toolMcpGatewayTokens,
+  toolMcpGateways,
 } from "@myrmidon/db";
 import { deriveProjectUrlKey, botDiskQuotaWhyNow } from "@myrmidon/shared";
 import type {
@@ -249,6 +251,8 @@ const ATTENTION_SOURCE_KINDS: AttentionSourceKind[] = [
   // myrmidon(1.6.6 OPE-7198): banned or exhausted Codex / ChatGPT subscription accounts.
   "codex_pool_alert",
   "provider_usage_warning",
+  // myrmidon(OPE-12517): one card per expiring/expired MCP gateway token.
+  "mcp_gateway_token_expiring",
 ];
 
 const SEVERITY_RANK: Record<AttentionSeverity, number> = {
@@ -327,6 +331,10 @@ const SOURCE_RANK: Record<AttentionSourceKind, number> = {
   codex_pool_alert: 4,
   // myrmidon(OPE-7932): overdue monitors need operator visibility, below blockers.
   issue_monitor_overdue: 12,
+  // myrmidon(OPE-12517): an expiring/expired MCP gateway token is ops advice —
+  // the gateway keeps serving until expiry, and the card's job is a rotation
+  // heads-up, ranked with the other advisory notices.
+  mcp_gateway_token_expiring: 18,
 };
 
 const PENDING_INTERACTION_STATUSES = ["pending"] as const;
@@ -4145,6 +4153,118 @@ async function buildAttentionFeedSnapshot(
         }
       }
 
+      // myrmidon(OPE-12517): MCP gateway token expiry cards.
+      // Surfaces unrevoked tokens whose expiresAt <= now + 14 days (including already expired).
+      // Differentiates used vs expired-unused via lastUsedAt:
+      // - If token was used (lastUsedAt is not null), or expires in future: prompt rotation.
+      // - If token is already expired AND unused (lastUsedAt is null): prompt revoke (separate revoke recommendation, not auto-revoke).
+      // Deduplicated by token id; disappears once rotated/revoked/expiry extended.
+      // Never exposes tokenHash or secrets in whyNow / metadata / detail.
+      {
+        const fourteenDaysAhead = new Date(now + 14 * 24 * 60 * 60 * 1000);
+        const candidateTokens = await db
+          .select({
+            tokenId: toolMcpGatewayTokens.id,
+            tokenName: toolMcpGatewayTokens.name,
+            expiresAt: toolMcpGatewayTokens.expiresAt,
+            lastUsedAt: toolMcpGatewayTokens.lastUsedAt,
+            createdAt: toolMcpGatewayTokens.createdAt,
+            updatedAt: toolMcpGatewayTokens.updatedAt,
+            gatewayId: toolMcpGateways.id,
+            gatewayName: toolMcpGateways.name,
+            gatewaySlug: toolMcpGateways.slug,
+          })
+          .from(toolMcpGatewayTokens)
+          .innerJoin(toolMcpGateways, eq(toolMcpGatewayTokens.gatewayId, toolMcpGateways.id))
+          .where(and(
+            eq(toolMcpGatewayTokens.companyId, companyId),
+            isNull(toolMcpGatewayTokens.revokedAt),
+            isNotNull(toolMcpGatewayTokens.expiresAt),
+            lte(toolMcpGatewayTokens.expiresAt, fourteenDaysAhead),
+          ));
+
+        for (const token of candidateTokens) {
+          if (!token.expiresAt) continue;
+          const isExpired = token.expiresAt.getTime() <= now;
+          const isUnused = token.lastUsedAt === null;
+          const isExpiredUnused = isExpired && isUnused;
+
+          const expiryIso = token.expiresAt.toISOString();
+          const href = `/${prefix}/settings/gateways/${token.gatewayId}`;
+
+          let whyNow: string;
+          let verbs: ReturnType<typeof decisionVerbs>;
+          let summaryExcerpt: string;
+
+          if (isExpiredUnused) {
+            whyNow = `MCP gateway token "${token.tokenName}" on gateway "${token.gatewayName}" expired on ${expiryIso} and was never used; recommend revoking it.`;
+            verbs = decisionVerbs(
+              { id: "revoke", label: "Revoke", description: "Open the gateway settings to revoke this expired unused token." },
+              { id: "rotate", label: "Rotate", description: "Rotate the token to issue a new credential." },
+              { id: "dismiss", label: "Dismiss", description: "Dismiss this token expiry notice." },
+            );
+            summaryExcerpt = `MCP gateway token "${token.tokenName}" expired on ${expiryIso} without ever being used. Review and revoke it from gateway "${token.gatewayName}".`;
+          } else if (isExpired) {
+            whyNow = `MCP gateway token "${token.tokenName}" on gateway "${token.gatewayName}" expired on ${expiryIso}; rotate the token to restore client access.`;
+            verbs = decisionVerbs(
+              { id: "rotate", label: "Rotate", description: "Open the gateway settings to rotate this expired token." },
+              { id: "revoke", label: "Revoke", description: "Revoke this expired token if no longer needed." },
+              { id: "dismiss", label: "Dismiss", description: "Dismiss this token expiry notice." },
+            );
+            summaryExcerpt = `Active MCP gateway token "${token.tokenName}" expired on ${expiryIso}. Rotate it on gateway "${token.gatewayName}" to maintain access.`;
+          } else {
+            whyNow = `MCP gateway token "${token.tokenName}" on gateway "${token.gatewayName}" expires on ${expiryIso}; rotate before expiry.`;
+            verbs = decisionVerbs(
+              { id: "rotate", label: "Rotate", description: "Open the gateway settings to rotate this token before it expires." },
+              { id: "dismiss", label: "Dismiss", description: "Dismiss this token expiry warning." },
+            );
+            summaryExcerpt = `MCP gateway token "${token.tokenName}" on gateway "${token.gatewayName}" expires on ${expiryIso}. Plan rotation to avoid disruption.`;
+          }
+
+          add(createItem({
+            companyId,
+            sourceKind: "mcp_gateway_token_expiring",
+            subject: {
+              kind: "company",
+              id: token.tokenId,
+              companyId,
+              title: `MCP gateway token expiry: ${token.tokenName}`,
+              identifier: null,
+              status: isExpired ? "expired" : "expiring",
+              href,
+              metadata: {
+                tokenId: token.tokenId,
+                tokenName: token.tokenName,
+                gatewayId: token.gatewayId,
+                gatewayName: token.gatewayName,
+                gatewaySlug: token.gatewaySlug,
+                expiresAt: expiryIso,
+                lastUsedAt: token.lastUsedAt ? token.lastUsedAt.toISOString() : null,
+                isExpired,
+                isUnused,
+                recommendedAction: isExpiredUnused ? "revoke" : "rotate",
+              },
+            },
+            whyNow,
+            decisionVerbs: verbs,
+            inlineResolvable: true,
+            entryRule: "an unrevoked MCP gateway token has expiresAt <= now + 14 days.",
+            exitRule: "the token is rotated, revoked, has its expiry extended, or the notice is dismissed.",
+            dedupKey: `mcp-gateway-token-expiring:${token.tokenId}`,
+            severity: isExpired ? "high" : "medium",
+            activityAt: toIso(token.updatedAt ?? token.createdAt ?? new Date(now)),
+            createdAt: toIso(token.createdAt ?? new Date(now)),
+            updatedAt: toIso(token.updatedAt ?? new Date(now)),
+            relatedIssue: null,
+            detail: {
+              kind: "generic",
+              summaryExcerpt,
+              images: [],
+            },
+          }));
+        }
+      }
+
       // myrmidon(FEATURES): a feature that is enabled and has been
       // misconfigured or failing for over 30 minutes raises ONE card on the
       // operator desk (the Features page holds the detail). The signals come
@@ -4188,15 +4308,26 @@ async function buildAttentionFeedSnapshot(
 
       // myrmidon(DEVFLOW): deterministic persisted-source alerts, refreshed by
       // the existing attention runtime. Recovery removes the card automatically.
+      // myrmidon(PROVIDER-GARBAGE / OPE-12286): provider garbage bursts carry
+      // the stub outcome text, model group and severity from the signal itself.
       for (const signal of await collectDevflowHealth(db, companyId, new Date(now))) {
-        const whyNow = `${signal.metric}: ${Math.floor(signal.durationMs / 60_000)} minutes; configured threshold exceeded.`;
+        const isProviderGarbage = signal.metric === "providerGarbageP1";
+        const whyNow = isProviderGarbage
+          ? `Provider garbage burst: ${signal.detail?.runCount ?? "?"} run(s) received the stub outcome "${signal.detail?.outcomeText ?? ""}"${signal.detail?.modelGroup ? ` on model group ${signal.detail.modelGroup}` : ""}.`
+          : `${signal.metric}: ${Math.floor(signal.durationMs / 60_000)} minutes; configured threshold exceeded.`;
         add(createItem({
           companyId,
           sourceKind: "agent_error_alert",
           subject: { kind: signal.subjectKind, id: signal.subjectId, companyId,
             title: signal.title, identifier: null, status: "warning",
             href: `/${prefix}/${signal.subjectKind === "agent" ? "agents" : "issues"}/${signal.subjectId}`,
-            metadata: { devflowMetric: signal.metric, durationMs: signal.durationMs } },
+            metadata: { devflowMetric: signal.metric, durationMs: signal.durationMs,
+              ...(isProviderGarbage ? {
+                providerGarbage: true,
+                outcomeText: signal.detail?.outcomeText,
+                modelGroup: signal.detail?.modelGroup,
+                runCount: signal.detail?.runCount,
+              } : {}) } },
           whyNow,
           decisionVerbs: decisionVerbs(
             { id: "inspect", label: "Inspect", description: "Inspect the affected engineer or issue." },
@@ -4205,7 +4336,7 @@ async function buildAttentionFeedSnapshot(
           inlineResolvable: true,
           entryRule: "a persisted DEVFLOW duration reaches its configured threshold.",
           exitRule: "the engineer resumes, review ends, CI recovers, or the row is dismissed.",
-          dedupKey: signal.dedupKey, severity: "medium",
+          dedupKey: signal.dedupKey, severity: signal.severity ?? "medium",
           activityAt: signal.since, createdAt: signal.since, updatedAt: signal.since,
           relatedIssue: null,
           detail: { kind: "generic", summaryExcerpt: whyNow, images: [] },

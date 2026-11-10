@@ -296,6 +296,11 @@ function build(
           return scoped;
         },
         ready: () => clientManager.ensureFresh(),
+        // myrmidon(1.6.7 FLEET-SITE-ENROLL): a host that could not be asked in a routed list is
+        // logged, and the list of the other hosts is still returned.
+        onHostError: ({ host, botKeys, error }) => {
+          ports.log.warn?.({ host, bots: botKeys.length, err: error }, "fleet routing: a host could not be listed");
+        },
       },
       async (botKey: string) => {
         // A failed agent read must surface as a reconcile error: swallowing it

@@ -33,6 +33,7 @@ import {
   sortModels,
   type AddModelProviderInput,
   type LitellmChannelsResponse,
+  type ModelProviderChannelsView,
   type ModelProviderType,
   type ModelProvidersView,
   type ModelProviderView,
@@ -56,6 +57,43 @@ function readable(error: unknown): string {
   if (error instanceof ApiError) return error.message || `Request failed: ${error.status}`;
   if (error instanceof Error) return error.message;
   return "Unexpected error";
+}
+
+const POOL_PROVIDER_TYPES = ["chatgpt-pool", "antigravity-pool", "google-ai-pool"];
+
+function isPoolProvider(type?: string): boolean {
+  return POOL_PROVIDER_TYPES.includes(type ?? "");
+}
+
+type Translate = (key: string, options?: Record<string, unknown>) => string;
+
+function actorLabel(t: Translate, type?: string): string {
+  // myrmidon(OPE-12361 review): actor role names come from the locale catalog
+  // (en/ru parity) — hard-coded RU literals rendered Russian copy in the
+  // English UI ("доска · user-123" under the default locale).
+  if (type === "agent") return t("modelProviders.changeLog.actorAgent");
+  if (type === "board") return t("modelProviders.changeLog.actorBoard");
+  if (type === "system") return t("modelProviders.changeLog.actorSystem");
+  return t("modelProviders.changeLog.actorUser");
+}
+
+/** Null-safe epoch seconds for the pool reset date display (OPE-12361). */
+function summaryNextResetEpoch(summary: NonNullable<ModelProviderChannelsView["summary"]>): number | null {
+  return typeof summary.nextResetAt === "number" ? summary.nextResetAt : null;
+}
+
+/** Localized display name of a pool account row (OPE-12361 review). */
+function channelDisplayName(
+  t: Translate,
+  channel: { n: number; label: string },
+): string {
+  const sentinel = /^Account #(\d+)$/.exec(channel.label.trim());
+  if (sentinel) return t("modelProviders.channels.accountFallback", { n: sentinel[1] });
+  // A connector may answer an empty label string; fall back to the localized
+  // «Учётка №N» instead of rendering a blank name (task item 3).
+  return channel.label.trim().length > 0
+    ? channel.label
+    : t("modelProviders.channels.accountFallback", { n: String(channel.n) });
 }
 
 function formatTime(value: string): string {
@@ -187,7 +225,11 @@ export function ModelProvidersScreenView({
   };
 
   const providerFreeLabel = (provider: ModelProviderView) =>
-    provider.free ? t("modelProviders.free") : t("modelProviders.paid");
+    isPoolProvider(provider.type)
+      ? t("modelProviders.channels.subscription")
+      : provider.free
+        ? t("modelProviders.free")
+        : t("modelProviders.paid");
 
   const availableTypes: ModelProviderType[] = (
     view.availableTypes
@@ -493,7 +535,7 @@ export function ModelProvidersScreenView({
                   <span>{formatTime(entry.at)}</span>
                   <span>·</span>
                   <span>
-                    {t("modelProviders.changeLog.actor")}: {entry.actor?.type ?? "user"}:{entry.actor?.id ?? "board"}
+                    {t("modelProviders.changeLog.actor")}: {entry.actor?.name || actorLabel(t, entry.actor?.type)}{!entry.actor?.name && entry.actor?.id ? ` · ${entry.actor.id}` : ""}
                   </span>
                   <span>·</span>
                   <span>{entry.summary}</span>
@@ -505,7 +547,9 @@ export function ModelProvidersScreenView({
                       className="text-[11px] text-muted-foreground underline hover:text-foreground"
                       onClick={() => setExpandedDiffId((curr) => (curr === entry.id ? null : entry.id))}
                     >
-                      {expandedDiffId === entry.id ? "Hide diff" : "Show diff"}
+                      {expandedDiffId === entry.id
+                        ? t("modelProviders.changeLog.hideDiff")
+                        : t("modelProviders.changeLog.showDiff")}
                     </button>
                     {expandedDiffId === entry.id && (
                       <div className="mt-1 grid grid-cols-2 gap-2 rounded bg-muted/40 p-2 text-xs font-mono">
@@ -582,7 +626,9 @@ function ProviderCard({
     models: Array<{ modelName: string; litellmModelName: string; enabled: boolean; free: boolean }>,
   ) => void;
   savingModels: boolean;
-  t: (key: string) => string;
+  // myrmidon(OPE-12361): the fork catalog resolves interpolation params, so the
+  // prop must accept i18next options instead of a key-only translate.
+  t: (key: string, options?: Record<string, unknown>) => string;
 }) {
   const modelsQueryResult = useQuery({
     queryKey: modelsQuery(provider.id),
@@ -769,16 +815,28 @@ function ProviderCard({
                 <span>{t("modelProviders.channels.signalsTitle") || "Role Attention Signals"}</span>
               </div>
               <div className="space-y-1">
-                {channelsQueryResult.data.signals.map((sig) => (
-                  <div
-                    key={sig.dedupKey}
-                    className="text-xs text-destructive/90"
-                    data-testid={`myrmidon-pool-signal-${sig.accountNumber}`}
-                  >
-                    <span className="font-semibold">{sig.title}: </span>
-                    <span>{sig.whyNow}</span>
-                  </div>
-                ))}
+                {channelsQueryResult.data.signals.map((sig) => {
+                  // myrmidon(OPE-12361): server signals carry English copy; render
+                  // them through locale keys keyed by signal kind instead.
+                  const title = t(`modelProviders.signals.${sig.kind}Title`, {
+                    n: sig.accountNumber,
+                    label: sig.label,
+                  });
+                  const why = t(`modelProviders.signals.${sig.kind}Why`, {
+                    n: sig.accountNumber,
+                    label: sig.label,
+                  });
+                  return (
+                    <div
+                      key={sig.dedupKey}
+                      className="text-xs text-destructive/90"
+                      data-testid={`myrmidon-pool-signal-${sig.accountNumber}`}
+                    >
+                      <span className="font-semibold">{title}: </span>
+                      <span>{why}</span>
+                    </div>
+                  );
+                })}
               </div>
             </div>
           )}
@@ -790,28 +848,36 @@ function ProviderCard({
                 {t("modelProviders.channels.title") || "Pool Accounts & Limit Windows"}
               </span>
               <div className="flex items-center gap-2">
-                <Button
-                  variant="outline"
-                  size="sm"
-                  data-testid={`myrmidon-pool-oauth-begin-btn-${provider.id}`}
-                  onClick={handleOAuthBegin}
-                  disabled={oauthStarting}
-                  className="text-xs h-7 px-2"
-                >
-                  {oauthStarting ? "Starting OAuth..." : "Codex OAuth Login"}
-                </Button>
-                <button
-                  type="button"
-                  onClick={() => {
-                    setIsAddAccountOpen(true);
-                    setOauthState(null);
-                    setOauthError(null);
-                  }}
-                  className="rounded border border-primary/40 bg-primary/10 px-2 py-0.5 text-xs font-medium text-primary hover:bg-primary/20"
-                  data-testid={`myrmidon-pool-add-account-btn-${provider.id}`}
-                >
-                  + {t("modelProviders.channels.addAccount") || "Подключить аккаунт Codex (OAuth)"}
-                </button>
+                {/* myrmidon(OPE-12361): Codex OAuth device login only exists on the
+                    ChatGPT pool connector; other pools have no OAuth flow. */}
+                {provider.type === "chatgpt-pool" && (
+                  <>
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      data-testid={`myrmidon-pool-oauth-begin-btn-${provider.id}`}
+                      onClick={handleOAuthBegin}
+                      disabled={oauthStarting}
+                      className="text-xs h-7 px-2"
+                    >
+                      {oauthStarting
+                        ? t("modelProviders.channels.oauthStarting")
+                        : t("modelProviders.channels.oauthLogin")}
+                    </Button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setIsAddAccountOpen(true);
+                        setOauthState(null);
+                        setOauthError(null);
+                      }}
+                      className="rounded border border-primary/40 bg-primary/10 px-2 py-0.5 text-xs font-medium text-primary hover:bg-primary/20"
+                      data-testid={`myrmidon-pool-add-account-btn-${provider.id}`}
+                    >
+                      + {t("modelProviders.channels.addAccount") || "Подключить аккаунт Codex (OAuth)"}
+                    </button>
+                  </>
+                )}
                 {channelsQueryResult.isFetching && (
                   <span className="text-xs text-muted-foreground">
                     {t("modelProviders.channels.refreshing") || "Updating..."}
@@ -826,7 +892,7 @@ function ProviderCard({
                 data-testid={`myrmidon-pool-oauth-card-${provider.id}`}
               >
                 <div className="flex items-center justify-between text-xs font-semibold text-sky-600 dark:text-sky-400">
-                  <span>Codex OAuth Authorization (Account #{oauthSession.accountNumber})</span>
+                  <span>{t("modelProviders.channels.oauthCardTitle", { accountNumber: oauthSession.accountNumber })}</span>
                   <button
                     type="button"
                     className="text-muted-foreground hover:text-foreground"
@@ -837,7 +903,7 @@ function ProviderCard({
                 </div>
                 <div className="flex flex-col sm:flex-row sm:items-center gap-3 text-xs">
                   <div>
-                    <span className="text-muted-foreground mr-1">Code:</span>
+                    <span className="text-muted-foreground mr-1">{t("modelProviders.channels.oauthCode")}:</span>
                     <span
                       className="font-mono font-bold px-2 py-0.5 rounded bg-muted border border-border text-foreground"
                       data-testid={`myrmidon-pool-oauth-code-${provider.id}`}
@@ -846,7 +912,7 @@ function ProviderCard({
                     </span>
                   </div>
                   <div>
-                    <span className="text-muted-foreground mr-1">URL:</span>
+                    <span className="text-muted-foreground mr-1">{t("modelProviders.channels.oauthUrl")}:</span>
                     <a
                       href={oauthSession.verificationUri}
                       target="_blank"
@@ -866,7 +932,7 @@ function ProviderCard({
                     disabled={oauthCompleting}
                     className="text-xs h-7 px-2"
                   >
-                    {oauthCompleting ? "Completing..." : "Complete Authorization"}
+                    {oauthCompleting ? t("modelProviders.channels.oauthCompleting") : t("modelProviders.channels.oauthComplete")}
                   </Button>
                 </div>
               </div>
@@ -912,7 +978,7 @@ function ProviderCard({
 
                   <div>
                     <label className="text-[11px] font-medium text-muted-foreground">
-                      {t("modelProviders.channels.accountLabel") || "Метка (Label)"}
+                      {t("modelProviders.channels.accountLabel") || "Метка"}
                     </label>
                     <Input
                       value={accountLabel}
@@ -1020,19 +1086,29 @@ function ProviderCard({
                 {channelsQueryResult.data.summary && (
                   <div className="flex flex-wrap gap-2 text-xs" data-testid="myrmidon-pool-summary">
                     <span className="rounded border border-border px-2 py-1">
-                      {channelsQueryResult.data.summary.live} live / {channelsQueryResult.data.summary.total} total
+                      {t("modelProviders.channels.summaryLive", { live: channelsQueryResult.data.summary.live, total: channelsQueryResult.data.summary.total })}
                     </span>
                     <span className="rounded border border-border px-2 py-1">
-                      {channelsQueryResult.data.summary.exhausted} exhausted
+                      {t("modelProviders.channels.summaryExhausted", { count: channelsQueryResult.data.summary.exhausted })}
                     </span>
-                    {channelsQueryResult.data.summary.disabled !== undefined && channelsQueryResult.data.summary.disabled > 0 && (
-                      <span className="rounded border border-border px-2 py-1 text-muted-foreground" data-testid="myrmidon-pool-summary-disabled">
-                        {channelsQueryResult.data.summary.disabled} disabled
+                    {channelsQueryResult.data.summary.error > 0 && (
+                      <span className="rounded border border-destructive/40 bg-destructive/10 px-2 py-1 text-destructive" data-testid="myrmidon-pool-summary-error">
+                        {t("modelProviders.channels.summaryError", { count: channelsQueryResult.data.summary.error })}
                       </span>
                     )}
-                    {channelsQueryResult.data.summary.nextResetAt && (
-                      <span className="rounded border border-border px-2 py-1 text-muted-foreground">
-                        next reset {new Date(channelsQueryResult.data.summary.nextResetAt * 1000).toLocaleString()}
+                    {channelsQueryResult.data.summary.disabled !== undefined && channelsQueryResult.data.summary.disabled > 0 && (
+                      <span className="rounded border border-border px-2 py-1 text-muted-foreground" data-testid="myrmidon-pool-summary-disabled">
+                        {t("modelProviders.channels.summaryDisabled", { count: channelsQueryResult.data.summary.disabled })}
+                      </span>
+                    )}
+                    {(summaryNextResetEpoch(channelsQueryResult.data.summary) !== null ||
+                      channelsQueryResult.data.summary.nextResetText) && (
+                      <span className="rounded border border-border px-2 py-1 text-muted-foreground" data-testid="myrmidon-pool-summary-reset">
+                        {channelsQueryResult.data.summary.nextResetText
+                          ? t("modelProviders.channels.summaryNextReset", { at: channelsQueryResult.data.summary.nextResetText })
+                          : t("modelProviders.channels.summaryNextReset", {
+                              at: new Date((summaryNextResetEpoch(channelsQueryResult.data.summary) as number) * 1000).toLocaleString(),
+                            })}
                       </span>
                     )}
                   </div>
@@ -1076,7 +1152,9 @@ function ProviderCard({
                         >
                           <td className="p-2 font-mono font-medium">{ch.n}</td>
                           <td className="p-2">
-                            <div className="font-medium">{ch.label}</div>
+                            <div className="font-medium">
+                              {channelDisplayName(t, ch)}
+                            </div>
                             {ch.email && (
                               <div className="text-xs text-muted-foreground">{ch.email}</div>
                             )}
@@ -1200,7 +1278,7 @@ function ProviderCard({
                                 disabled={oauthRefreshingN === ch.n || isDisabled}
                                 className="text-xs h-6 px-1.5"
                               >
-                                {oauthRefreshingN === ch.n ? "..." : "Refresh"}
+                                {oauthRefreshingN === ch.n ? "..." : t("modelProviders.channels.oauthRefresh")}
                               </Button>
                               <button
                                 type="button"
@@ -1253,7 +1331,11 @@ function ProviderCard({
                   className="rounded-md border border-border px-1.5 py-0.5 text-xs text-muted-foreground"
                   data-testid={`myrmidon-model-tier-${provider.id}-${model.modelName}`}
                 >
-                  {model.free ? t("modelProviders.free") : t("modelProviders.paid")}
+                  {isPoolProvider(provider.type)
+                    ? t("modelProviders.channels.subscription")
+                    : model.free
+                      ? t("modelProviders.free")
+                      : t("modelProviders.paid")}
                 </span>
               </li>
             ))}

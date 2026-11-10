@@ -11,6 +11,7 @@ import {
   companies,
   companyMemberships,
   instanceSettings,
+  instanceUserRoles,
   userBlocks,
 } from "@myrmidon/db";
 
@@ -39,6 +40,8 @@ describe("users block API and audit routes", () => {
   let mockDeletedSessions: any[] = [];
   let mockRevokedKeys: any[] = [];
   let mockUpdatedMemberships: any[] = [];
+  let mockAuthUsers: Array<{ id: string; name: string; email: string; createdAt: Date }> = [];
+  let mockInstanceUserRoles: Array<{ userId: string; role: string }> = [];
   const mockAuditEntries = testState.auditEntries;
 
   /**
@@ -116,15 +119,11 @@ describe("users block API and audit routes", () => {
             // getMembership maps rows[0] ?? null: no membership by default.
             rows = [];
           } else if (query.__table === authUsers) {
-            // getUser targets one user id; the mock resolves the target row.
-            rows = [
-              {
-                id: "user-123",
-                name: "User",
-                email: "user@example.com",
-                createdAt: new Date(),
-              },
-            ];
+            rows = mockAuthUsers;
+          } else if (query.__table === instanceUserRoles) {
+            rows = mockInstanceUserRoles;
+          } else if (query.__table === userBlocks) {
+            rows = mockInsertedBlocks;
           } else {
             // auditUserBlock: the company rows to fan audit entries over.
             rows = [{ id: "company-1", general: {} }];
@@ -180,6 +179,15 @@ describe("users block API and audit routes", () => {
     mockDeletedSessions = [];
     mockRevokedKeys = [];
     mockUpdatedMemberships = [];
+    mockAuthUsers = [
+      {
+        id: "user-123",
+        name: "User",
+        email: "user@example.com",
+        createdAt: new Date("2026-01-01T00:00:00Z"),
+      },
+    ];
+    mockInstanceUserRoles = [];
     testState.auditEntries.length = 0;
     vi.clearAllMocks();
   });
@@ -493,5 +501,85 @@ describe("users block API and audit routes", () => {
         action: "user.blocked",
       });
     });
+  describe("GET /api/users (OPE-12089)", () => {
+    it("rejects unauthenticated requests with 401 Unauthorized", async () => {
+      const app = createApp(null);
+      const res = await request(app).get("/api/users");
+      expect(res.status).toBe(401);
+    });
+
+    it("rejects non-admin actor with 403 Forbidden", async () => {
+      const app = createApp(nonAdminActor);
+      const res = await request(app).get("/api/users");
+      expect(res.status).toBe(403);
+    });
+
+    it("rejects invalid limit exceeding 100 with 400 Bad Request", async () => {
+      const app = createApp(adminActor);
+      const res = await request(app).get("/api/users?limit=101");
+      expect(res.status).toBe(400);
+      expect(res.body.code).toBe("VALIDATION_ERROR");
+    });
+
+    it("supports pagination with default page 1 and limit 20, returning items and total", async () => {
+      mockAuthUsers = [
+        { id: "u-1", name: "User 1", email: "user1@example.com", createdAt: new Date() },
+        { id: "u-2", name: "User 2", email: "user2@example.com", createdAt: new Date() },
+      ];
+      const app = createApp(adminActor);
+      const res = await request(app).get("/api/users");
+      expect(res.status).toBe(200);
+      expect(res.body.total).toBe(2);
+      expect(res.body.page).toBe(1);
+      expect(res.body.limit).toBe(20);
+      expect(Array.isArray(res.body.items)).toBe(true);
+      expect(res.body.items).toHaveLength(2);
+      expect(res.body.users).toHaveLength(2);
+    });
+
+    it("supports second page with custom page and limit", async () => {
+      mockAuthUsers = [
+        { id: "u-1", name: "Alpha", email: "alpha@example.com", createdAt: new Date() },
+        { id: "u-2", name: "Beta", email: "beta@example.com", createdAt: new Date() },
+        { id: "u-3", name: "Gamma", email: "gamma@example.com", createdAt: new Date() },
+      ];
+      const app = createApp(adminActor);
+      const res = await request(app).get("/api/users?page=2&limit=2");
+      expect(res.status).toBe(200);
+      expect(res.body.total).toBe(3);
+      expect(res.body.page).toBe(2);
+      expect(res.body.limit).toBe(2);
+      expect(res.body.items).toHaveLength(1);
+      expect(res.body.items[0].email).toBe("gamma@example.com");
+    });
+
+    it("returns empty list when page exceeds available records", async () => {
+      mockAuthUsers = [
+        { id: "u-1", name: "Alpha", email: "alpha@example.com", createdAt: new Date() },
+      ];
+      const app = createApp(adminActor);
+      const res = await request(app).get("/api/users?page=10&limit=5");
+      expect(res.status).toBe(200);
+      expect(res.body.total).toBe(1);
+      expect(res.body.items).toHaveLength(0);
+      expect(res.body.users).toHaveLength(0);
+    });
+
+    it("filters users by role=admin", async () => {
+      mockAuthUsers = [
+        { id: "u-admin", name: "Admin", email: "admin@example.com", createdAt: new Date() },
+        { id: "u-member", name: "Member", email: "member@example.com", createdAt: new Date() },
+      ];
+      mockInstanceUserRoles = [{ userId: "u-admin", role: "instance_admin" }];
+      const app = createApp(adminActor);
+      const res = await request(app).get("/api/users?role=admin");
+      expect(res.status).toBe(200);
+      expect(res.body.total).toBe(1);
+      expect(res.body.items).toHaveLength(1);
+      expect(res.body.items[0].id).toBe("u-admin");
+      expect(res.body.items[0].role).toBe("instance_admin");
+    });
+  });
+
   });
 });

@@ -233,7 +233,8 @@ describe("LitellmSyncService", () => {
           modelId: d.modelId,
           litellmModelName: d.name,
           providerType: "openai",
-          baseUrl: null,
+          // the endpoint of OPENAI_PROVIDER: these are the board's own deployments
+          baseUrl: "https://api.openai.com/v1",
           credentialSecretName: d.secret,
         }));
       },
@@ -352,11 +353,12 @@ describe("LitellmSyncService", () => {
       model_name: "kimi-for-coding",
       litellm_params: {
         model: "openai/kimi-for-coding",
-        provider: "openai",
         api_base: "https://api.example.invalid/v1",
         api_key: "resolved-secret-value",
       },
     });
+    // `provider` is not a LiteLLM parameter: the prefix of `model` carries it.
+    expect((requests[0]!.body.litellm_params as Record<string, unknown>).provider).toBeUndefined();
   });
 
   it("client sends /model/update with a resolved credential value and model info id", async () => {
@@ -502,7 +504,7 @@ describe("LitellmSyncClient", () => {
         litellmModelName: "chatgpt-pool/gpt-4o",
         providerType: "openai",
         baseUrl: "https://api.openai.com/v1",
-        credentialValue: "secrets/pool-key",
+        credentialValue: "resolved-pool-key",
         additionalConfig: { model: "openai/gpt-4o" },
       });
 
@@ -512,9 +514,8 @@ describe("LitellmSyncClient", () => {
           model_name: "chatgpt-pool/gpt-4o",
           litellm_params: {
             model: "openai/gpt-4o",
-            provider: "openai",
             api_base: "https://api.openai.com/v1",
-            api_key: "secrets/pool-key",
+            api_key: "resolved-pool-key",
           },
           model_info: {},
         }),

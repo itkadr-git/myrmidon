@@ -32,7 +32,10 @@ on:
 
 permissions:
   contents: read
-  pull-requests: read
+  checks: write
+  issues: write
+  pull-requests: write
+  statuses: write
 
 concurrency:
   # Main and tags never cancel each other; each push to main completes its run.
@@ -98,6 +101,7 @@ jobs:
           EVENT: ${{ github.event_name }}
           REPO: ${{ github.repository }}
           PR: ${{ github.event.pull_request.number }}
+          ACTION: ${{ github.event.action }}
           SHA: ${{ github.event_name == 'merge_group' && github.event.merge_group.head_sha || github.event.pull_request.head.sha }}
           GH_TOKEN: ${{ github.token }}
         run: |

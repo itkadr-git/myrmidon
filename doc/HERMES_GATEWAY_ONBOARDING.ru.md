@@ -9,7 +9,7 @@ Paperclip поставляется с двумя встроенными адап
 - `hermes_local` запускает локальный CLI `hermes` как дочерний процесс на хосте Paperclip.
 - `hermes_gateway` обращается к уже запущенному серверу API Hermes по протоколу HTTP/SSE.
 
-Для нормального использования установка Adapter manager не требуется. Adapter manager нужен только тогда, когда вы намеренно устанавливаете внешний пакет `@paperclipai/hermes-paperclip-adapter`, чтобы переопределить или подменить встроенный адаптер при разработке пакета Hermes. Если внешнее переопределение приостановлено или удалено, Paperclip восстанавливает встроенный адаптер `hermes_local` / `hermes_gateway`.
+Для нормального использования установка Adapter manager не требуется. Adapter manager нужен только тогда, когда вы намеренно устанавливаете внешний пакет `@myrmidon/hermes-paperclip-adapter`, чтобы переопределить или подменить встроенный адаптер при разработке пакета Hermes. Если внешнее переопределение приостановлено или удалено, Paperclip восстанавливает встроенный адаптер `hermes_local` / `hermes_gateway`.
 
 ## Требуемые учетные данные
 
@@ -170,4 +170,4 @@ pnpm smoke:hermes-gateway-join
 - API приглашений: `GET /api/invites/:token/onboarding.txt` для инструкций по настройке в стиле llm.txt.
 - CLI-поток приглашений: `npx paperclipai invite create`, `invite show`, `invite onboarding:text`, `join approve` и `join claim-key`.
 - Smoke-помощники: `pnpm smoke:hermes-gateway-e2e` для проверки свежего состояния в Docker и `pnpm smoke:hermes-gateway-join` для уже запущенного шлюза.
-- Внешнее переопределение для разработки адаптера: Adapter manager может установить `@paperclipai/hermes-paperclip-adapter` в качестве внешнего переопределения, однако обычным операторам следует использовать встроенные адаптеры `hermes_local` и `hermes_gateway`.
+- Внешнее переопределение для разработки адаптера: Adapter manager может установить `@myrmidon/hermes-paperclip-adapter` в качестве внешнего переопределения, однако обычным операторам следует использовать встроенные адаптеры `hermes_local` и `hermes_gateway`.

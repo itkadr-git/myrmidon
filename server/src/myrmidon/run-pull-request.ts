@@ -56,24 +56,19 @@ export function selectRunPullRequest(
 }
 
 /**
- * Reads the task's PR for a run. Best effort: the live lookup of the head branch gets a few
- * seconds, then the stored work product is used; any failure leaves the field unset (the
- * adapter then falls back to the project).
+ * Reads the task's PR for a run. myrmidon(OPE-12397): this no longer refreshes
+ * PR metadata from GitHub — `headRef` and `repo` already live in the work
+ * product's stored metadata (written when the PR is registered), and a GitHub
+ * GET on every run start was one of the drains on the App's rate budget.
+ * Pure stored-data read; any failure leaves the field unset (the adapter then
+ * falls back to the project).
  */
-export async function loadRunPullRequest(db: Db, issueId: string, timeoutMs = 5000): Promise<RunPullRequest | null> {
-  const service = workProductService(db);
+export async function loadRunPullRequest(db: Db, issueId: string): Promise<RunPullRequest | null> {
   let products: IssueWorkProduct[];
   try {
-    products = await Promise.race([
-      service.listForIssue(issueId, { refreshPullRequests: true }),
-      new Promise<never>((_, reject) => setTimeout(() => reject(new Error("pull request lookup timed out")), timeoutMs).unref()),
-    ]);
+    products = await workProductService(db).listForIssue(issueId);
   } catch {
-    try {
-      products = await service.listForIssue(issueId);
-    } catch {
-      return null;
-    }
+    return null;
   }
   return selectRunPullRequest(products);
 }

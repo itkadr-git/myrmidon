@@ -4,7 +4,7 @@
 // shape; this file holds only the small pieces that are specific to
 // building the release half's promoted-run snapshot.
 
-import { extractWakeCommentIds, WAKE_COMMENT_IDS_KEY } from "../../run-dispatch/index.js";
+import { extractWakeCommentIds, isValidWakeCommentId, WAKE_COMMENT_IDS_KEY } from "../../run-dispatch/index.js";
 import { readNonEmptyString } from "./values.js";
 
 const PAPERCLIP_WAKE_PAYLOAD_KEY = "paperclipWake";
@@ -41,7 +41,9 @@ function mergeWakeCommentIds(...values: Array<unknown>): string[] {
   const merged: string[] = [];
   const append = (value: unknown) => {
     const normalized = readNonEmptyString(value);
-    if (!normalized || merged.includes(normalized)) return;
+    // OPE-12209: this list feeds the `issue_comments.id` uuid column on the
+    // next promotion/dispatch, so a malformed id must not survive the merge.
+    if (!normalized || !isValidWakeCommentId(normalized) || merged.includes(normalized)) return;
     merged.push(normalized);
   };
   for (const value of values) {
@@ -118,7 +120,11 @@ export function enrichPromotedWakeContext(
   if (!readNonEmptyString(contextSnapshot["taskKey"]) && taskKey) {
     contextSnapshot.taskKey = taskKey;
   }
-  if (!readNonEmptyString(contextSnapshot["commentId"]) && commentIdFromPayload) {
+  if (
+    !readNonEmptyString(contextSnapshot["commentId"]) &&
+    commentIdFromPayload &&
+    isValidWakeCommentId(commentIdFromPayload)
+  ) {
     contextSnapshot.commentId = commentIdFromPayload;
   }
   // The wake payload, resolved comment, and task-markdown snapshots below are

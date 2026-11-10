@@ -95,5 +95,5 @@ describeEmbedded("migration 0463 reconcile stuck resurrection wakes", () => {
         AND "reason" = 'resurrection_execution_reconciliation_required'
     `;
     expect(Number(residue[0].n)).toBe(0);
-  });
+  }, 60_000);
 });

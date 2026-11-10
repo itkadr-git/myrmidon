@@ -1,4 +1,6 @@
 export const DEVFLOW_HEALTH_SETTINGS_KEY = "devflowHealth" as const;
+/** How far back the devflow collector looks for provider-garbage burst events. */
+export const PROVIDER_GARBAGE_SIGNAL_WINDOW_MS = 10 * 60_000;
 export const DEFAULT_DEVFLOW_THRESHOLDS_MS = {
   engineerIdleMs: 60 * 60_000,
   reviewQueueAgeMs: 24 * 60 * 60_000,
@@ -9,6 +11,8 @@ export const DEFAULT_DEVFLOW_THRESHOLDS_MS = {
   stalledRouterMs: 60 * 60_000,
   approvedNotMergedMs: 2 * 60 * 60_000,
   noMergesMs: 6 * 60 * 60_000,
+  // Provider-garbage signals are event-driven; zero means any persisted burst is actionable.
+  providerGarbageP1: 0,
 } as const;
 
 export type DevflowMetric = keyof typeof DEFAULT_DEVFLOW_THRESHOLDS_MS;
@@ -29,6 +33,7 @@ export interface DevflowHealthSettings {
   reviewRouterMs?: number;
   approvedNotMergedMs?: number;
   noMergesMs?: number;
+  providerGarbageP1?: number;
 }
 
 export function readDevflowThresholds(settings: unknown): DevflowThresholdsMs {
@@ -55,6 +60,10 @@ export function readDevflowThresholds(settings: unknown): DevflowThresholdsMs {
     noMergesMs: validThreshold(
       value.noMergesMs ?? envNoMerges,
       DEFAULT_DEVFLOW_THRESHOLDS_MS.noMergesMs,
+    ),
+    providerGarbageP1: validThreshold(
+      value.providerGarbageP1,
+      DEFAULT_DEVFLOW_THRESHOLDS_MS.providerGarbageP1,
     ),
   };
 }

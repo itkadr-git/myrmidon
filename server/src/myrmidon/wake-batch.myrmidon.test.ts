@@ -26,8 +26,8 @@ function commentWakeContext(overrides: Record<string, unknown> = {}) {
     issueId: "issue-1",
     wakeReason: "issue_commented",
     source: "issue-comment",
-    commentId: "comment-1",
-    [WAKE_COMMENT_IDS_KEY]: ["comment-1"],
+    commentId: "0f9d5a1e-2f0d-4a6b-8c6d-1e2f3a4b5c6d",
+    [WAKE_COMMENT_IDS_KEY]: ["0f9d5a1e-2f0d-4a6b-8c6d-1e2f3a4b5c6d"],
     ...overrides,
   };
 }
@@ -82,7 +82,7 @@ describe("wake batch window configuration", () => {
 
 describe("wake batch eligibility", () => {
   it("accepts a comment wake and keeps its ids in the order they arrived", () => {
-    const ids = ["comment-3", "comment-1", "comment-2"];
+    const ids = ["3bb03c29-17c7-4d42-b3b6-c8e89052829f", "0f9d5a1e-2f0d-4a6b-8c6d-1e2f3a4b5c6d", "2aa92f18-06b6-4231-a2a5-bf7d7f41718e"];
     const eligibility = classifyWakeBatchEligibility(
       commentWakeContext({ [WAKE_COMMENT_IDS_KEY]: ids }),
     );
@@ -102,7 +102,7 @@ describe("wake batch eligibility", () => {
       classifyWakeBatchEligibility({
         issueId: "issue-1",
         wakeReason: "issue_commented",
-        commentId: "comment-1",
+        commentId: "0f9d5a1e-2f0d-4a6b-8c6d-1e2f3a4b5c6d",
       }),
     ).toEqual({ eligible: true, commentIds: [] });
   });
@@ -171,7 +171,7 @@ describe("wake batch hold", () => {
       batch: {
         runId: "run-1",
         issueId: "issue-1",
-        commentIds: ["comment-1"],
+        commentIds: ["0f9d5a1e-2f0d-4a6b-8c6d-1e2f3a4b5c6d"],
         deadline: new Date(now.getTime() + 6_000),
         remainingMs: 6_000,
       },

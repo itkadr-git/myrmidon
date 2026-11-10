@@ -993,6 +993,48 @@ describeEmbeddedPostgres("wake-queue postgres adapter", () => {
   // owns it. These tests drive the admission writer directly against a
   // transaction they open themselves, the same way `heartbeat.ts` will.
   describe("wake admission", () => {
+    // OPE-12209 (vendor #13912): one malformed queued commentId used to throw
+    // inside the uuid-column query and stall the whole wake queue behind it.
+    // The adapter must drop the malformed id at the uuid-column boundary and
+    // keep draining: the live comment is processed and the other wakes are
+    // not blocked. Red on main, where the query is built from raw ids.
+    it("drains a queued batch past a malformed comment id without throwing", async () => {
+      const companyId = await seedCompany();
+      const agentId = await seedAgent({ companyId });
+      const issueId = await seedIssue({ companyId, assigneeAgentId: agentId });
+      const finishingRunId = await seedRun({ companyId, agentId, status: "succeeded", contextSnapshot: { issueId } });
+      await db.update(issues).set({ executionRunId: finishingRunId }).where(eq(issues.id, issueId));
+      const [liveComment] = await db.insert(issueComments).values({
+        companyId, issueId, authorUserId: "responsible-user", body: "live comment",
+      }).returning();
+      const malformedId = "abc12345";
+      const validButMissingId = randomUUID();
+      const queuedBatch = [liveComment.id, malformedId, validButMissingId];
+
+      const adapter = createPostgresWakeQueueAdapter(db, stubDeps);
+      let liveness: { liveNonSelfCommentIds: string[]; containedSelfAuthoredComment: boolean } | null = null;
+      await adapter.withIssueExecutionLock({ companyId, runId: finishingRunId, now: new Date() }, async (_locked, ports) => {
+        liveness = await ports.transaction.getQueuedCommentLiveness({
+          companyId,
+          issueId,
+          wakeAgentId: agentId,
+          finishingRunId,
+          finishingRunAgentId: agentId,
+          queuedCommentIds: queuedBatch,
+        });
+        return { outcome: { kind: "released" as const }, postCommitEffects: [] };
+      });
+
+      expect(liveness).not.toBeNull();
+      // The malformed id is dropped at the uuid-column boundary; the live
+      // comment survives, the valid-but-missing uuid resolves to nothing.
+      expect(liveness!.liveNonSelfCommentIds).toEqual([liveComment.id]);
+      expect(liveness!.containedSelfAuthoredComment).toBe(false);
+      // The queue rows themselves are untouched by the liveness probe.
+      const runs = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.companyId, companyId));
+      expect(runs).toHaveLength(1);
+    });
+
     it("rolls back a deferred merge when its own durable receipt insert fails", async () => {
       const companyId = await seedCompany();
       const agentId = await seedAgent({ companyId });

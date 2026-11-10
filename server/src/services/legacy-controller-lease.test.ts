@@ -117,4 +117,23 @@ const support = await getEmbeddedPostgresTestSupport();
   it("leaves native controller ownership to the native coordinator", () => {
     expect(legacyControllerClaim("native")).toEqual({});
   });
+
+  // myrmidon(OPE-12484): the abort reason must identify the lease as the
+  // cancellation source, so the terminal writer can attribute the run and the
+  // activity entry instead of recording a board_cancelled placeholder.
+  it("aborts with a ControllerLeaseLost reason the terminal writer can attribute", async () => {
+    const run = await seed();
+    const controller = new AbortController();
+    const watch = watchLegacyControllerLease(db, { ...run, controllerLeaseExpiresAt: new Date(Date.now() + 100) }, controller);
+    vi.useFakeTimers();
+    try {
+      const checked = expect(watch.assertOwned("dispatching")).rejects.toThrow("lease lost");
+      await vi.advanceTimersByTimeAsync(101);
+      await checked;
+      expect(controller.signal.aborted).toBe(true);
+      expect(controller.signal.reason).toBeInstanceOf(Error);
+      expect((controller.signal.reason as Error).name).toBe("ControllerLeaseLost");
+      expect((controller.signal.reason as Error).message).toMatch(/lease lost/i);
+    } finally { watch.stop(); vi.useRealTimers(); }
+  });
 });

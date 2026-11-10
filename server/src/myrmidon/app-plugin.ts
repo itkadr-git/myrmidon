@@ -123,6 +123,7 @@ export { createCorpusShadowSearch } from "./corpus/shadow-search.js";
 export { myrmidonArchitectDataMcpRoutes, myrmidonArchitectDataRoutes } from "./architect-data/index.js";
 export { myrmidonSttRoutes } from "./stt/index.js"; // myrmidon(1.6.1 VOICE-STT A1)
 export { myrmidonGitHubSharedIdentityRoutes } from "./github-shared-identity/index.js"; // myrmidon(GITHUB-SHARED-IDENTITY)
+export { myrmidonGitHubAppWebhookRoutes } from "./github-app-webhook/index.js"; // myrmidon(GITHUB-APP-WEBHOOK)
 export { createTelegramVoiceSttWiring } from "./channel-connectors/bridge/voice-stt.js"; // myrmidon(1.6.5 VOICE-STT A) myrmidon(1.6.6 CH-CONNECTOR-D)
 export { myrmidonVoiceMeetingProtocolRoutes } from "./voice-meeting-protocol/index.js"; // myrmidon(1.6.5 VOICE-STT B)
 export { myrmidonEvalsRoutes } from "./evals/index.js"; // myrmidon(1.6-EVALS)
@@ -144,3 +145,4 @@ export { myrmidonGuardrailsRoutes } from "./guardrails/index.js"; // myrmidon(1.
 export { goalJudgeRoutes, myrmidonGoalJudgeRoutes } from "./goal-judge/routes.js"; // myrmidon(1.7-GOAL-JUDGE)
 export { goalJudgeSettingsService } from "./goal-judge/settings.js"; // myrmidon(1.7-GOAL-JUDGE)
 export { createGoalJudgeModelPort, evaluateGoalJudge } from "./goal-judge/wiring.js"; // myrmidon(1.7-GOAL-JUDGE)
+export { apiPathAliasMiddleware } from "./api-path-aliases.js"; // myrmidon(1.7-RB-PATH / OPE-12082)

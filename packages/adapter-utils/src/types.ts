@@ -573,6 +573,12 @@ export interface ServerAdapterModule {
    * or a Paperclip code update.
    */
   refreshModels?: () => Promise<AdapterModel[]>;
+  /**
+   * Whether an empty dynamic result is authoritative instead of a signal to
+   * fall back to declared/static models. This is used by remote catalogs where
+   * an empty successful response means every model was removed.
+   */
+  modelsAreAuthoritativeWhenEmpty?: boolean;
   agentConfigurationDoc?: string;
   /**
    * Optional lifecycle hook when an agent is approved/hired (join-request or hire_agent approval).

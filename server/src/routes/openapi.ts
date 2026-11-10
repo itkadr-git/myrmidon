@@ -3974,6 +3974,22 @@ registry.registerPath({
   responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden, 404: r.notFound },
 });
 
+// myrmidon 1.7 USERS-ADMIN-PAGINATION (OPE-12089): instance user listing with pagination and role filter
+registry.registerPath({
+  method: "get",
+  path: "/api/users",
+  tags: ["users"],
+  summary: "List users with pagination and role filter",
+  request: {
+    query: z.object({
+      page: z.coerce.number().int().min(1).optional().default(1),
+      limit: z.coerce.number().int().min(1).max(100).optional().default(20),
+      role: z.enum(["admin", "instance_admin", "member"]).optional(),
+    }),
+  },
+  responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden },
+});
+
 // myrmidon(OPE-10215): user-block operators. The mandatory reason is validated
 // by blockUserSchema; an empty reason is rejected with 400.
 registry.registerPath({

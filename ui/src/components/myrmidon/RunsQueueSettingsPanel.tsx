@@ -1,66 +1,61 @@
 // myrmidon(1.7, OPE-4096, SETTINGS-TO-UI B): the Runs & Queue settings tab of
 // the instance settings. It shows the behavior keys of the section
-// "runs-queue" from the part A registry (idle pickup, run stall, auto resume,
-// pause/wake, stranded policy, outbox sweeps, task-pr-sync, swarm supervisor,
-// backup catch-up, workspace hygiene) and writes through the behavior-settings
+// "runs-queue" from the part A registry and writes through the behavior-settings
 // API; a set env var is a forced override and the field is shown read-only
 // with a hint.
 
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Settings2 } from "lucide-react";
-import { api } from "@/api/client";
+import { behaviorSettingsApi, behaviorSettingsQueryKey, sourceLabel, type BehaviorSettingValue } from "./behaviorSettingsApi";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { ToggleSwitch } from "@/components/ui/toggle-switch";
 
-interface BehaviorSettingValue {
-  key: string;
-  envName: string;
-  value: unknown;
-  source: "ui" | "env" | "default";
-  default: unknown;
-  scope: string;
-  section: string;
-  valueType: "boolean" | "string" | "number" | "json";
-}
+const BOOLEAN_KEYS = [
+  "runsQueue.idlePickup.enabled",
+  "runsQueue.runStall.enabled",
+  "runsQueue.autoResume.enabled",
+  "runsQueue.pauseDrains.enabled",
+  "runsQueue.skipIdleHeartbeats.enabled",
+  "runsQueue.strandedAutopolicy.enabled",
+  "runsQueue.settledHolds.blockExplicitWakes",
+  "runsQueue.writeLock.requiresLiveRun",
+  "runsQueue.taskPrSync.enabled",
+] as const;
 
-const RUNS_QUEUE_KEYS = [
+const NUMBER_KEYS = [
   "runsQueue.idlePickup.wakeBudgetPerMin",
   "runsQueue.idlePickup.wakeBatch",
-  "runsQueue.idlePickup.enabled",
   "runsQueue.idlePickup.intervalSec",
   "runsQueue.idlePickup.recentSuccessWindowMs",
-  "runsQueue.runStall.enabled",
   "runsQueue.runStall.thresholdSec",
-  "runsQueue.autoResume.enabled",
   "runsQueue.autoResume.maxAttempts",
   "runsQueue.autoResume.intervalSec",
   "runsQueue.autoResume.windowMs",
-  "runsQueue.autoResume.backoffMs",
-  "runsQueue.pauseDrains.enabled",
   "runsQueue.pauseResumeWake.batch",
   "runsQueue.pauseResumeWake.batchPauseMs",
-  "runsQueue.skipIdleHeartbeats.enabled",
   "runsQueue.pendingInteractionWake.graceMs",
   "runsQueue.pendingInteractionWake.reAdmissions",
   "runsQueue.outboxSweep.ageMs",
-  "runsQueue.strandedAutopolicy.enabled",
   "runsQueue.strandedAutopolicy.autoRetriesPerDay",
-  "runsQueue.settledHolds.blockExplicitWakes",
-  "runsQueue.infraInterrupt.codes",
-  "runsQueue.writeLock.requiresLiveRun",
   "runsQueue.crossIssueInfluence.limit",
   "runsQueue.continuationHistory.limit",
   "runsQueue.staleLease.graceMs",
-  "runsQueue.taskPrSync.enabled",
   "runsQueue.swarm.supervisorTaskMax",
-  "runsQueue.swarm.pilotBaselineDoc",
   "runsQueue.dbBackup.catchupWindow",
   "runsQueue.workspaceHygiene.mergedCooldownMs",
   "runsQueue.workspaceHygiene.stuckSignalAfterMs",
 ] as const;
+
+const STRING_KEYS = [
+  "runsQueue.autoResume.backoffMs",
+  "runsQueue.infraInterrupt.codes",
+  "runsQueue.swarm.pilotBaselineDoc",
+] as const;
+
+const RUNS_QUEUE_KEYS = [...BOOLEAN_KEYS, ...NUMBER_KEYS, ...STRING_KEYS] as const;
 
 const LABELS: Record<(typeof RUNS_QUEUE_KEYS)[number], string> = {
   "runsQueue.idlePickup.wakeBudgetPerMin": "Idle pickup wake budget per minute",
@@ -98,64 +93,74 @@ const LABELS: Record<(typeof RUNS_QUEUE_KEYS)[number], string> = {
   "runsQueue.workspaceHygiene.stuckSignalAfterMs": "Workspace stuck signal after, ms",
 };
 
-function behaviorSettingsQueryKey() {
-  return ["myrmidon", "behavior-settings", "runs-queue"] as const;
-}
-
 export function RunsQueueSettingsPanel() {
   const queryClient = useQueryClient();
   const [localValues, setLocalValues] = useState<Record<string, unknown>>({});
   const [savingKey, setSavingKey] = useState<string | null>(null);
 
-  const behaviorQuery = useQuery({
-    queryKey: behaviorSettingsQueryKey(),
-    queryFn: () => api.get<{ values: BehaviorSettingValue[] }>("/myrmidon/behavior-settings"),
+  const query = useQuery({
+    queryKey: behaviorSettingsQueryKey,
+    queryFn: behaviorSettingsApi.get,
   });
 
   const updateMutation = useMutation({
-    mutationFn: (patch: Record<string, unknown>) =>
-      api.patch<{ ok: boolean }>("/myrmidon/behavior-settings", patch),
+    mutationFn: (patch: Record<string, BehaviorSettingValue>) =>
+      behaviorSettingsApi.update(patch),
     onSuccess: async () => {
-      await queryClient.invalidateQueries({ queryKey: behaviorSettingsQueryKey() });
+      await queryClient.invalidateQueries({ queryKey: behaviorSettingsQueryKey });
     },
   });
 
-  useEffect(() => {
-    if (behaviorQuery.data) {
-      const map: Record<string, unknown> = {};
-      for (const item of behaviorQuery.data.values) {
-        if ((RUNS_QUEUE_KEYS as readonly string[]).includes(item.key)) {
-          map[item.key] = item.value;
-        }
-      }
-      setLocalValues(map);
-    }
-  }, [behaviorQuery.data]);
+  if (query.isLoading) {
+    return (
+      <section className="space-y-4">
+        <h2 className="text-sm font-semibold">Runs &amp; Queue</h2>
+        <p className="text-sm text-muted-foreground">Loading settings...</p>
+      </section>
+    );
+  }
 
-  const runsQueueValues = (behaviorQuery.data?.values ?? []).filter((v) =>
-    (RUNS_QUEUE_KEYS as readonly string[]).includes(v.key),
-  );
+  if (query.error || !query.data) {
+    return (
+      <section className="space-y-4">
+        <h2 className="text-sm font-semibold">Runs &amp; Queue</h2>
+        <p role="alert" className="text-sm text-destructive">Failed to load settings.</p>
+      </section>
+    );
+  }
 
-  const renderField = (item: BehaviorSettingValue) => {
-    const label = LABELS[item.key as (typeof RUNS_QUEUE_KEYS)[number]] ?? item.key;
-    const isEnv = item.source === "env";
-    const value = localValues[item.key] ?? item.value;
+  const { settings, sources } = query.data;
 
-    if (item.valueType === "boolean") {
+  const renderField = (key: (typeof RUNS_QUEUE_KEYS)[number]) => {
+    const label = LABELS[key] ?? key;
+    const source = sources[key];
+    const isEnv = source === "env";
+    const rawVal = localValues[key] !== undefined ? localValues[key] : settings[key];
+
+    const sourceDesc = sourceLabel(source, {
+      env: "env override",
+      ui: "saved",
+      default: "default",
+    });
+
+    if ((BOOLEAN_KEYS as readonly string[]).includes(key)) {
+      const checked = Boolean(rawVal);
       return (
-        <div key={item.key} className="flex items-center justify-between gap-4 py-2">
-          <Label htmlFor={item.key} className="text-sm font-normal">
-            {label}
-            {isEnv ? <span className="ml-2 text-xs text-muted-foreground">(env override)</span> : null}
-          </Label>
+        <div key={key} className="flex items-center justify-between gap-4 py-2">
+          <div>
+            <Label htmlFor={key} className="text-sm font-normal">
+              {label}
+            </Label>
+            <p className="text-xs text-muted-foreground">{sourceDesc}</p>
+          </div>
           <ToggleSwitch
-            id={item.key}
-            checked={value === true}
-            disabled={isEnv || savingKey === item.key}
-            onCheckedChange={(checked) => {
-              setLocalValues((prev) => ({ ...prev, [item.key]: checked }));
-              setSavingKey(item.key);
-              updateMutation.mutate({ [item.key]: checked }, {
+            id={key}
+            checked={checked}
+            disabled={isEnv || savingKey === key}
+            onCheckedChange={(checkedVal) => {
+              setLocalValues((prev) => ({ ...prev, [key]: checkedVal }));
+              setSavingKey(key);
+              updateMutation.mutate({ [key]: checkedVal }, {
                 onSettled: () => setSavingKey(null),
               });
             }}
@@ -164,27 +169,31 @@ export function RunsQueueSettingsPanel() {
       );
     }
 
-    if (item.valueType === "number") {
+    if ((NUMBER_KEYS as readonly string[]).includes(key)) {
+      const numVal = typeof rawVal === "number" ? rawVal : Number(rawVal) || 0;
       return (
-        <div key={item.key} className="flex items-center justify-between gap-4 py-2">
-          <Label htmlFor={item.key} className="text-sm font-normal">
-            {label}
-            {isEnv ? <span className="ml-2 text-xs text-muted-foreground">(env override)</span> : null}
-          </Label>
+        <div key={key} className="flex items-center justify-between gap-4 py-2">
+          <div>
+            <Label htmlFor={key} className="text-sm font-normal">
+              {label}
+            </Label>
+            <p className="text-xs text-muted-foreground">{sourceDesc}</p>
+          </div>
           <Input
-            id={item.key}
+            id={key}
             type="number"
             className="w-28 text-right"
-            value={typeof value === "number" ? value : Number(value) || 0}
-            disabled={isEnv || savingKey === item.key}
+            value={numVal}
+            disabled={isEnv || savingKey === key}
             onChange={(e) => {
               const next = Number(e.target.value);
-              setLocalValues((prev) => ({ ...prev, [item.key]: next }));
+              setLocalValues((prev) => ({ ...prev, [key]: next }));
             }}
-            onBlur={() => {
-              if (value !== item.value) {
-                setSavingKey(item.key);
-                updateMutation.mutate({ [item.key]: value }, {
+            onBlur={(e) => {
+              const val = Number(e.currentTarget.value);
+              if (val !== settings[key]) {
+                setSavingKey(key);
+                updateMutation.mutate({ [key]: val }, {
                   onSettled: () => setSavingKey(null),
                 });
               }
@@ -194,30 +203,39 @@ export function RunsQueueSettingsPanel() {
       );
     }
 
-    // json / string
-    const displayValue = Array.isArray(value) ? value.join(", ") : String(value ?? "");
+    // string / json list
+    const displayValue = Array.isArray(rawVal) ? rawVal.join(", ") : String(rawVal ?? "");
     return (
-      <div key={item.key} className="flex items-center justify-between gap-4 py-2">
-        <Label htmlFor={item.key} className="text-sm font-normal">
-          {label}
-          {isEnv ? <span className="ml-2 text-xs text-muted-foreground">(env override)</span> : null}
-        </Label>
+      <div key={key} className="flex items-center justify-between gap-4 py-2">
+        <div>
+          <Label htmlFor={key} className="text-sm font-normal">
+            {label}
+          </Label>
+          <p className="text-xs text-muted-foreground">{sourceDesc}</p>
+        </div>
         <Input
-          id={item.key}
+          id={key}
           className="w-56 text-right"
           value={displayValue}
-          disabled={isEnv || savingKey === item.key}
+          disabled={isEnv || savingKey === key}
           onChange={(e) => {
-            setLocalValues((prev) => ({ ...prev, [item.key]: e.target.value }));
+            setLocalValues((prev) => ({ ...prev, [key]: e.target.value }));
           }}
-          onBlur={() => {
-            if (value !== item.value) {
-              const next = item.key === "runsQueue.infraInterrupt.codes" ||
-                           item.key === "runsQueue.autoResume.backoffMs"
-                ? String(value).split(",").map((s) => s.trim()).filter(Boolean)
-                : value;
-              setSavingKey(item.key);
-              updateMutation.mutate({ [item.key]: next }, {
+          onBlur={(e) => {
+            const currentStr = e.currentTarget.value;
+            const isArrayKey =
+              key === "runsQueue.infraInterrupt.codes" ||
+              key === "runsQueue.autoResume.backoffMs";
+            const next: BehaviorSettingValue = isArrayKey
+              ? currentStr.split(",").map((s) => s.trim()).filter(Boolean)
+              : currentStr;
+            const orig = settings[key];
+            const changed = Array.isArray(orig) && Array.isArray(next)
+              ? JSON.stringify(orig) !== JSON.stringify(next)
+              : String(orig ?? "") !== currentStr;
+            if (changed) {
+              setSavingKey(key);
+              updateMutation.mutate({ [key]: next }, {
                 onSettled: () => setSavingKey(null),
               });
             }
@@ -227,18 +245,18 @@ export function RunsQueueSettingsPanel() {
     );
   };
 
-  const coreKeys = runsQueueValues.filter((v) =>
-    v.key.startsWith("runsQueue.idlePickup.") ||
-    v.key.startsWith("runsQueue.runStall.") ||
-    v.key.startsWith("runsQueue.autoResume.") ||
-    v.key.startsWith("runsQueue.pauseDrains.") ||
-    v.key.startsWith("runsQueue.pauseResumeWake.") ||
-    v.key.startsWith("runsQueue.taskPrSync.") ||
-    v.key.startsWith("runsQueue.strandedAutopolicy.") ||
-    v.key.startsWith("runsQueue.settledHolds."),
+  const coreKeys = RUNS_QUEUE_KEYS.filter((k) =>
+    k.startsWith("runsQueue.idlePickup.") ||
+    k.startsWith("runsQueue.runStall.") ||
+    k.startsWith("runsQueue.autoResume.") ||
+    k.startsWith("runsQueue.pauseDrains.") ||
+    k.startsWith("runsQueue.pauseResumeWake.") ||
+    k.startsWith("runsQueue.taskPrSync.") ||
+    k.startsWith("runsQueue.strandedAutopolicy.") ||
+    k.startsWith("runsQueue.settledHolds."),
   );
-  const tuningKeys = runsQueueValues.filter((v) =>
-    !coreKeys.some((c) => c.key === v.key),
+  const tuningKeys = RUNS_QUEUE_KEYS.filter((k) =>
+    !coreKeys.includes(k as never),
   );
 
   return (

@@ -413,7 +413,8 @@ async function sourceIssueId(
     }
     // myrmidon(1.6.5-F-23): advisory signals only — no backing issue.
     case "secret_off_run_reads":
-    case "secret_off_run_grant_expiring": {
+    case "secret_off_run_grant_expiring":
+    case "mcp_gateway_token_expiring": {
       return { exists: true, issueId: null };
     }
     case "provider_usage_warning": {

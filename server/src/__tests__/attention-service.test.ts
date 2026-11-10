@@ -34,6 +34,9 @@ import {
   joinRequests,
   projects,
   projectWorkspaces,
+  toolMcpGateways,
+  toolMcpGatewayTokens,
+  toolProfiles,
 } from "@myrmidon/db";
 import {
   getEmbeddedPostgresTestSupport,
@@ -99,6 +102,9 @@ describeEmbeddedPostgres("attention service", () => {
     await db.delete(projectWorkspaces);
     await db.delete(projects);
     await db.delete(agents);
+    await db.delete(toolMcpGatewayTokens);
+    await db.delete(toolMcpGateways);
+    await db.delete(toolProfiles);
     await db.delete(companies);
     resetCloneHygieneStateForTests();
   });
@@ -2329,5 +2335,246 @@ describeEmbeddedPostgres("attention service", () => {
       expect(byKey.get(key)).toMatchObject({ shelf: true, retentionDays: 30, archivedAt: null });
     }
     expect(byKey.get(`approval:${queueApprovalId}`)).toMatchObject({ shelf: true, retentionDays: 10 });
+  });
+
+  // myrmidon(OPE-12517): MCP gateway token expiry cards. Seed helper writes the
+  // full tool_profiles → tool_mcp_gateways → tool_mcp_gateway_tokens chain the
+  // feed query joins, plus a second company for isolation checks.
+  async function seedGatewayToken(input: {
+    companyId: string;
+    name: string;
+    expiresAt: Date | null;
+    lastUsedAt?: Date | null;
+    revokedAt?: Date | null;
+    tokenHash?: string;
+    tokenPrefix?: string;
+  }) {
+    const [profile] = await db.insert(toolProfiles).values({
+      companyId: input.companyId,
+      profileKey: `atn-gw-${randomUUID().slice(0, 8)}`,
+      name: `ATN gateway profile ${randomUUID().slice(0, 6)}`,
+      defaultAction: "deny",
+    }).returning();
+    const [gateway] = await db.insert(toolMcpGateways).values({
+      companyId: input.companyId,
+      name: `Gateway ${randomUUID().slice(0, 8)}`,
+      slug: `gw-${randomUUID().slice(0, 8)}`,
+      profileId: profile!.id,
+      status: "active",
+    }).returning();
+    const [token] = await db.insert(toolMcpGatewayTokens).values({
+      companyId: input.companyId,
+      gatewayId: gateway!.id,
+      name: input.name,
+      tokenPrefix: input.tokenPrefix ?? `pfx_${randomUUID().slice(0, 6)}`,
+      tokenHash: input.tokenHash ?? randomUUID().replace(/-/g, "").padEnd(64, "0"),
+      expiresAt: input.expiresAt,
+      lastUsedAt: input.lastUsedAt ?? null,
+      revokedAt: input.revokedAt ?? null,
+    }).returning();
+    return { profile, gateway, token };
+  }
+
+  describe("mcp gateway token expiry", () => {
+    it("emits rotation cards for tokens expiring at exactly the 14-day boundary", async () => {
+      const { companyId, prefix } = await seedCompany("GTB");
+      const now = Date.now();
+      const { token, gateway } = await seedGatewayToken({
+        companyId,
+        name: "boundary-token",
+        expiresAt: new Date(now + 14 * 24 * 60 * 60 * 1000),
+        lastUsedAt: new Date(now - 60_000),
+      });
+
+      const feed = await attentionService(db, { now: () => now, feedCacheTtlMs: 0 }).list(companyId, { limit: 100 });
+      const card = feed.items.find((item) => item.sourceKind === "mcp_gateway_token_expiring");
+      expect(card).toBeTruthy();
+      expect(card!.subject.id).toBe(token!.id);
+      expect(card!.subject.title).toContain("boundary-token");
+      expect(card!.subject.metadata).toMatchObject({
+        tokenId: token!.id,
+        gatewayId: gateway!.id,
+        gatewayName: gateway!.name,
+        isExpired: false,
+        isUnused: false,
+        recommendedAction: "rotate",
+      });
+      expect(card!.whyNow).toContain("expires on");
+      expect(card!.decisionVerbs.map((verb) => verb.id)).toContain("rotate");
+    });
+
+    it("excludes a token expiring at 14 days + 1 ms", async () => {
+      const { companyId } = await seedCompany("GTC");
+      const now = Date.now();
+      await seedGatewayToken({
+        companyId,
+        name: "just-outside",
+        expiresAt: new Date(now + 14 * 24 * 60 * 60 * 1000 + 1),
+        lastUsedAt: new Date(now - 60_000),
+      });
+
+      const feed = await attentionService(db, { now: () => now, feedCacheTtlMs: 0 }).list(companyId, { limit: 100 });
+      expect(feed.items.filter((item) => item.sourceKind === "mcp_gateway_token_expiring")).toEqual([]);
+    });
+
+    it("marks an expired used token as expired with a rotate action", async () => {
+      const { companyId, prefix } = await seedCompany("GTD");
+      const now = Date.now();
+      const { token } = await seedGatewayToken({
+        companyId,
+        name: "expired-used",
+        expiresAt: new Date(now - 3_600_000),
+        lastUsedAt: new Date(now - 7_200_000),
+      });
+
+      const feed = await attentionService(db, { now: () => now, feedCacheTtlMs: 0 }).list(companyId, { limit: 100 });
+      const card = feed.items.find((item) => item.sourceKind === "mcp_gateway_token_expiring");
+      expect(card).toBeTruthy();
+      expect(card!.subject.id).toBe(token!.id);
+      expect(card!.subject.metadata).toMatchObject({ isExpired: true, isUnused: false, recommendedAction: "rotate" });
+      expect(card!.subject.status).toBe("expired");
+      expect(card!.whyNow).toContain("expired on");
+      expect(card!.whyNow.toLowerCase()).not.toContain("never used");
+    });
+
+    it("recommends revoke (never auto) for an expired never-used token", async () => {
+      const { companyId, prefix } = await seedCompany("GTE");
+      const now = Date.now();
+      const { token } = await seedGatewayToken({
+        companyId,
+        name: "expired-unused",
+        expiresAt: new Date(now - 3_600_000),
+        lastUsedAt: null,
+      });
+
+      const feed = await attentionService(db, { now: () => now, feedCacheTtlMs: 0 }).list(companyId, { limit: 100 });
+      const card = feed.items.find((item) => item.sourceKind === "mcp_gateway_token_expiring");
+      expect(card).toBeTruthy();
+      expect(card!.subject.id).toBe(token!.id);
+      expect(card!.subject.metadata).toMatchObject({ isExpired: true, isUnused: true, recommendedAction: "revoke" });
+      expect(card!.whyNow).toContain("never used");
+      expect(card!.decisionVerbs.map((verb) => verb.id)).toContain("revoke");
+    });
+
+    it("excludes revoked tokens and null-expiresAt tokens", async () => {
+      const { companyId } = await seedCompany("GTF");
+      const now = Date.now();
+      await seedGatewayToken({
+        companyId,
+        name: "revoked-expiring",
+        expiresAt: new Date(now + 1_000),
+        revokedAt: new Date(now - 1_000),
+      });
+      await seedGatewayToken({
+        companyId,
+        name: "never-expires",
+        expiresAt: null,
+        lastUsedAt: new Date(now - 60_000),
+      });
+
+      const feed = await attentionService(db, { now: () => now, feedCacheTtlMs: 0 }).list(companyId, { limit: 100 });
+      const cards = feed.items.filter((item) => item.sourceKind === "mcp_gateway_token_expiring");
+      expect(cards).toEqual([]);
+    });
+
+    it("deduplicates repeated feed reads by token id", async () => {
+      const { companyId } = await seedCompany("GTG");
+      const now = Date.now();
+      await seedGatewayToken({
+        companyId,
+        name: "dup-check",
+        expiresAt: new Date(now + 86_400_000),
+        lastUsedAt: new Date(now - 60_000),
+      });
+
+      const first = await attentionService(db, { now: () => now, feedCacheTtlMs: 0 }).list(companyId, { limit: 100 });
+      const second = await attentionService(db, { now: () => now, feedCacheTtlMs: 0 }).list(companyId, { limit: 100 });
+      const firstCards = first.items.filter((item) => item.sourceKind === "mcp_gateway_token_expiring");
+      const secondCards = second.items.filter((item) => item.sourceKind === "mcp_gateway_token_expiring");
+      expect(firstCards).toHaveLength(1);
+      expect(secondCards).toHaveLength(1);
+      expect(secondCards[0]!.dedupKey).toBe(firstCards[0]!.dedupKey);
+      const ids = new Set(second.items.filter((i) => i.sourceKind === "mcp_gateway_token_expiring").map((i) => i.dedupKey));
+      expect(ids.size).toBe(1);
+    });
+
+    it("keeps cards company-isolated", async () => {
+      const now = Date.now();
+      const alpha = await seedCompany("GTA");
+      const beta = await seedCompany("GTZ");
+      await seedGatewayToken({
+        companyId: alpha.companyId,
+        name: "alpha-token",
+        expiresAt: new Date(now + 86_400_000),
+        lastUsedAt: new Date(now - 60_000),
+      });
+      await seedGatewayToken({
+        companyId: beta.companyId,
+        name: "beta-token",
+        expiresAt: new Date(now + 2 * 86_400_000),
+        lastUsedAt: new Date(now - 60_000),
+      });
+
+      const alphaFeed = await attentionService(db, { now: () => now, feedCacheTtlMs: 0 }).list(alpha.companyId, { limit: 100 });
+      const alphaNames = alphaFeed.items
+        .filter((item) => item.sourceKind === "mcp_gateway_token_expiring")
+        .map((item) => item.subject.metadata?.tokenName);
+      expect(alphaNames).toEqual(["alpha-token"]);
+
+      const betaFeed = await attentionService(db, { now: () => now, feedCacheTtlMs: 0 }).list(beta.companyId, { limit: 100 });
+      const betaNames = betaFeed.items
+        .filter((item) => item.sourceKind === "mcp_gateway_token_expiring")
+        .map((item) => item.subject.metadata?.tokenName);
+      expect(betaNames).toEqual(["beta-token"]);
+    });
+
+    it("never leaks tokenHash or tokenPrefix in card payloads", async () => {
+      const { companyId } = await seedCompany("GTH");
+      const now = Date.now();
+      const tokenHash = `secret-hash-${randomUUID().replace(/-/g, "")}`;
+      const tokenPrefix = `secret-pfx-${randomUUID().slice(0, 8)}`;
+      const { gateway, token } = await seedGatewayToken({
+        companyId,
+        name: "leak-check",
+        expiresAt: new Date(now + 86_400_000),
+        lastUsedAt: new Date(now - 60_000),
+        tokenHash,
+        tokenPrefix,
+      });
+      expect(token!.tokenPrefix).toBe(tokenPrefix);
+
+      const feed = await attentionService(db, { now: () => now, feedCacheTtlMs: 0 }).list(companyId, { limit: 100 });
+      const card = feed.items.find((item) => item.sourceKind === "mcp_gateway_token_expiring");
+      expect(card).toBeTruthy();
+      const serialized = JSON.stringify(feed.items);
+      expect(serialized).not.toContain(tokenHash);
+      expect(serialized).not.toContain(tokenPrefix);
+      expect(serialized).not.toContain(token!.tokenHash);
+      expect(card!.subject.metadata && Object.keys(card!.subject.metadata)).toEqual(
+        expect.not.arrayContaining(["tokenHash", "tokenPrefix"]),
+      );
+    });
+
+    it("drops the card once the token is revoked", async () => {
+      const { companyId } = await seedCompany("GTI");
+      const now = Date.now();
+      const seeded = await seedGatewayToken({
+        companyId,
+        name: "rotate-then-revoke",
+        expiresAt: new Date(now + 86_400_000),
+        lastUsedAt: new Date(now - 60_000),
+      });
+
+      const before = await attentionService(db, { now: () => now, feedCacheTtlMs: 0 }).list(companyId, { limit: 100 });
+      expect(before.items.filter((item) => item.sourceKind === "mcp_gateway_token_expiring")).toHaveLength(1);
+
+      await db
+        .update(toolMcpGatewayTokens)
+        .set({ revokedAt: new Date(now + 60_000) })
+        .where(eq(toolMcpGatewayTokens.id, seeded.token!.id));
+
+      const after = await attentionService(db, { now: () => now, feedCacheTtlMs: 0 }).list(companyId, { limit: 100 });
+      expect(after.items.filter((item) => item.sourceKind === "mcp_gateway_token_expiring")).toEqual([]);
+    });
   });
 });

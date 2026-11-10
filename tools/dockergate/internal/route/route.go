@@ -48,6 +48,8 @@ const (
 	A19 = "A19"
 	// A20 updates one enrolled bot's resource ceilings in dockergate config.
 	A20 = "A20"
+	// A21 returns one enrolled bot's resource limits and ceilings in dockergate config.
+	A21 = "A21"
 )
 
 // A15 is the disk route PUT /myrmidon/disk/<botKey>/quota (contract C5). It is
@@ -303,14 +305,24 @@ func Parse(method, target string, images Images) (*Route, *deny.Error) {
 	}
 	if rest, ok := strings.CutPrefix(target, "/myrmidon/bots/"); ok {
 		key, hasLimitsSuffix := strings.CutSuffix(rest, "/limits")
-		if hasLimitsSuffix && IsBotKey(key) && method == "PUT" {
-			return &Route{ID: A20, Method: method, ConfigBotKey: key}, nil
+		if hasLimitsSuffix && IsBotKey(key) {
+			if method == "PUT" {
+				return &Route{ID: A20, Method: method, ConfigBotKey: key}, nil
+			}
+			if method == "GET" {
+				return &Route{ID: A21, Method: method, ConfigBotKey: key}, nil
+			}
 		}
 		return nil, notAllowed()
 	}
 	if rest, ok := strings.CutPrefix(target, "/myrmidon/config/bots/"); ok {
-		if IsBotKey(rest) && method == "PUT" {
-			return &Route{ID: A20, Method: method, ConfigBotKey: rest}, nil
+		if IsBotKey(rest) {
+			if method == "PUT" {
+				return &Route{ID: A20, Method: method, ConfigBotKey: rest}, nil
+			}
+			if method == "GET" {
+				return &Route{ID: A21, Method: method, ConfigBotKey: rest}, nil
+			}
 		}
 		return nil, notAllowed()
 	}
@@ -433,10 +445,20 @@ func Parse(method, target string, images Images) (*Route, *deny.Error) {
 		}
 		r.ID = A18
 	case "/config/update":
-		if method != "PUT" || suffix != SuffixMain {
+		if method == "PUT" && suffix == SuffixMain {
+			r.ID = A20
+			r.ConfigBotKey = key
+		} else if method == "GET" && suffix == SuffixMain {
+			r.ID = A21
+			r.ConfigBotKey = key
+		} else {
 			return nil, notAllowed()
 		}
-		r.ID = A20
+	case "/config/limits":
+		if method != "GET" || suffix != SuffixMain {
+			return nil, notAllowed()
+		}
+		r.ID = A21
 		r.ConfigBotKey = key
 	default:
 		if q, ok := strings.CutPrefix(tail, "/archive?path="); ok {

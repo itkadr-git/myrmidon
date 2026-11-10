@@ -43,7 +43,7 @@ import {
 import { readReviewRoutingSettings } from "../myrmidon/review-routing/settings.js";
 import { createPgReviewRoutingStore } from "../myrmidon/review-routing/store.js";
 // myrmidon(OPE-10460): gate REQUEST CHANGES on final CI status for the live PR head.
-import { createReviewHeadFailedChecksResolver, createReviewPullRequestCiResolver } from "../myrmidon/review-stage-recovery/github-ci.js";
+import { createReviewHeadFailedChecksResolver, createReviewPullRequestCiResolver, readReviewPullRequestHeadSha } from "../myrmidon/review-stage-recovery/github-ci.js";
 import type { ReviewHeadFailedChecksResolver, ReviewPullRequestCiResolver } from "../myrmidon/review-stage-recovery/github-ci.js";
 // myrmidon(OPE-11970): a review return on the same PR head, or only on infrastructure checks, does not wake the executor.
 import { decideReviewReturnWake, recordSuppressedReviewReturn } from "../myrmidon/review-return-guard/guard.js";
@@ -65,6 +65,7 @@ import {
   REVIEW_CI_WAIT_INTERVAL_MS,
   REVIEW_CI_WAIT_MONITOR_SERVICE_NAME,
   decideReviewAdmission,
+  reviewAdmissionDedupKey,
 } from "../myrmidon/review-stage-recovery/policy.js";
 import {
   buildReviewApprovalPendingMergeNotice,
@@ -104,6 +105,7 @@ import { withDefaultEscalationChain } from "../services/review-escalation-chain.
 import type { ChatChannelService } from "../services/chat-channels.js";
 import type { WakeupOptions } from "../services/heartbeat.js";
 import { createPullRequestCiResolver, withCiResolveDeadline } from "../services/github-pull-request-ci.js";
+import { createPullRequestMergeDetailsResolver } from "../services/github-pull-request-merge.js";
 import {
   companies,
   activityLog,
@@ -473,6 +475,7 @@ import {
   queuedCommentIdsFromWakePayload,
   withQueuedCommentIdsInWakePayload,
 } from "../services/issue-queued-comment-queue.js";
+import { isValidWakeCommentId } from "../modules/run-dispatch/index.js";
 // myrmidon(HANDOFF-CAS): guarded agent-to-agent task handoff mechanics for the
 // PATCH /api/issues/{id} path, ported from vendor paperclipai/paperclip#13686.
 import * as handoffCas from "../myrmidon/handoff-cas.js";
@@ -3080,6 +3083,12 @@ function buildExecutionStageWakeup(input: {
    * participant is woken so it can decide without a new submission.
    */
   reenteringReview?: boolean;
+  /**
+   * myrmidon(OPE-12177): the exact PR head the admission decision was made on.
+   * The review-admission dedup key is keyed on it; null falls back to the
+   * legacy agent-keyed format.
+   */
+  headSha?: string | null;
 }) {
   const { issueId, previousState, nextState, interruptedRunId } = input;
   if (!nextState) return null;
@@ -3139,7 +3148,7 @@ function buildExecutionStageWakeup(input: {
         requestedByActorId: input.requestedByActorId,
         idempotencyKey:
           nextState.currentStageType === "review"
-            ? `issue-review-admission:${issueId}:${agentId}`
+            ? reviewAdmissionDedupKey({ issueId, headSha: input.headSha, agentId })
             : undefined,
         contextSnapshot: {
           issueId,
@@ -3753,6 +3762,7 @@ export function issueRoutes(
     }) => Promise<unknown>;
     resolveReviewPullRequestCi?: ReviewPullRequestCiResolver;
     resolveReviewHeadFailedChecks?: ReviewHeadFailedChecksResolver;
+    resolveReviewAdmissionHeadSha?: typeof readReviewPullRequestHeadSha;
     insertReviewAdmissionWakeup?: (
       agentId: string,
       options: WakeupOptions,
@@ -3845,7 +3855,13 @@ export function issueRoutes(
   const issueApprovalsSvc = issueApprovalService(db);
   const recoveryActionsSvc = issueRecoveryActionService(db);
   const executionWorkspacesSvc = executionWorkspaceServiceDirect(db);
-  const workProductsSvc = workProductService(db);
+  const workProductsSvc = workProductService(db, {
+    // myrmidon(OPE-12397): UI reads that refresh PR metadata (the
+    // `refreshPullRequests=true` routes) count into the `ui-refresh` bucket —
+    // the default provider label would attribute them to `task-pr-sync` and
+    // hide the real spend in the rate-limit log.
+    resolvePullRequestDetails: createPullRequestMergeDetailsResolver(db, { source: "ui-refresh" }),
+  });
   const documentsSvc = documentService(db);
   const artifactReviewDocumentsSvc = artifactReviewDocumentService(db, storage);
   const companySkillsSvc = companySkillService(db);
@@ -5260,7 +5276,7 @@ export function issueRoutes(
       nextAssigneeAgentId !== input.actorAgentId &&
       (executionReviewParticipants.some(
         (participant) => participant.type === "agent" && participant.agentId === nextAssigneeAgentId,
-      ) || (await agentsSvc.getById(String(nextAssigneeAgentId)))?.role === "reviewer")
+      ) || ["reviewer", "lead"].includes((await agentsSvc.getById(String(nextAssigneeAgentId)))?.role ?? ""))
     ) return null;
 
     throw unprocessable(INVALID_AGENT_IN_REVIEW_DISPOSITION_MESSAGE, {
@@ -7627,15 +7643,18 @@ export function issueRoutes(
       return response ? [response.comment] : [];
     }
     const ids = queuedCommentIdsFromWakePayload(wake?.payload);
-    if (ids.length === 0) return [];
+    // uuid-column boundary (OPE-12209): never build an `inArray` over
+    // `issue_comments.id` from a payload with malformed ids.
+    const validIds = ids.filter(isValidWakeCommentId);
+    if (validIds.length === 0) return [];
     const rows = await executor
       .select()
       .from(issueComments)
       .where(
-        and(eq(issueComments.issueId, issueId), inArray(issueComments.id, ids)),
+        and(eq(issueComments.issueId, issueId), inArray(issueComments.id, validIds)),
       );
     const byId = new Map(rows.map((row) => [row.id, row]));
-    return ids.flatMap((id) => {
+    return validIds.flatMap((id) => {
       const row = byId.get(id);
       // myrmidon(UPSTREAM-13539): normalize authorType so the queue renderer never sees null.
       return row && !row.deletedAt ? [{ ...row, authorType: row.authorType ?? (row.authorAgentId ? "agent" as const : "user" as const) }] : [];
@@ -9499,7 +9518,7 @@ export function issueRoutes(
       pullRequestsCi: [] as unknown[],
     };
     try {
-      const ciResolver = createPullRequestCiResolver(db);
+      const ciResolver = createPullRequestCiResolver(db, { source: "ui-refresh" });
       const prs = await withCiResolveDeadline(
         ciResolver.resolveForIssue(issue.companyId, issue.id),
         [],
@@ -9526,7 +9545,7 @@ export function issueRoutes(
     if (!(await assertIssueReadAllowed(req, res, issue))) return;
 
     try {
-      const ciResolver = createPullRequestCiResolver(db);
+      const ciResolver = createPullRequestCiResolver(db, { source: "ui-refresh" });
       const pullRequests = await withCiResolveDeadline(
         ciResolver.resolveForIssue(issue.companyId, issue.id),
         [],
@@ -14090,19 +14109,23 @@ export function issueRoutes(
       const stageState = existing.executionState as Record<string, unknown> | null;
       const stageParticipant = stageState?.currentParticipant as Record<string, unknown> | null | undefined;
       const stageReturnAssignee = stageState?.returnAssignee as Record<string, unknown> | null | undefined;
-      const stageHandBackAssigneeId =
+      const stageHandsBack =
         stageState?.status === "pending" &&
         (stageState?.currentStageType === "review" || stageState?.currentStageType === "approval") &&
         normalizedAssigneeAgentId === undefined &&
         targetStatus === "in_progress" &&
         stageParticipant?.type === "agent" &&
         typeof stageParticipant?.agentId === "string" &&
-        stageParticipant.agentId === existing.assigneeAgentId &&
+        stageParticipant.agentId === existing.assigneeAgentId;
+      const stageHandBackAssigneeId =
+        stageHandsBack &&
         stageReturnAssignee?.type === "agent" &&
         typeof stageReturnAssignee?.agentId === "string"
           ? stageReturnAssignee.agentId
           : null;
-      const targetAssigneeAgentId = stageHandBackAssigneeId ?? requestedAssigneeAgentId;
+      const targetAssigneeAgentId = stageHandsBack
+        ? stageHandBackAssigneeId
+        : requestedAssigneeAgentId;
       const isAssigneeChange =
         normalizedAssigneeAgentId !== undefined &&
         normalizedAssigneeAgentId !== existing.assigneeAgentId;
@@ -14560,7 +14583,6 @@ export function issueRoutes(
       transitionIssue.executionReviewParticipantAgentIds = reviewParticipantAgentIds;
       // Role is only needed when the issue enters or leaves review (return-assignee choice); skip the lookup otherwise.
       if (
-        nextExecutionPolicy === null &&
         existing.assigneeAgentId &&
         (existing.status === "in_review" || updateFields.status === "in_review")
       ) {
@@ -14579,6 +14601,15 @@ export function issueRoutes(
             ? undefined
             : (updateFields.assigneeUserId as string | null),
       };
+      let candidateLoads: Map<string, number> | undefined;
+      if (
+        (updateFields.status === "in_review" || existing.status === "in_review") &&
+        nextExecutionPolicy &&
+        summarizeExecutionParticipants(nextExecutionPolicy, "review").length > 1
+      ) {
+        const routingStore = createPgReviewRoutingStore(db);
+        candidateLoads = await routingStore.loadByAgent(existing.companyId);
+      }
       const transition = applyIssueExecutionPolicyTransition({
         // myrmidon(OPE-9031): senior escalation chain for the round limit.
         issue: transitionIssue,
@@ -14598,6 +14629,7 @@ export function issueRoutes(
         reviewRequest: reviewRequest === undefined ? undefined : reviewRequest,
         monitorExplicitlyUpdated:
           req.body.executionPolicy !== undefined && monitorChanged,
+        candidateLoads,
       });
       // myrmidon(MON-RESTORE): capture and strip transient notice before persistence.
       const monitorClearNotice = transition.patch.monitorClearNotice as
@@ -15959,6 +15991,12 @@ export function issueRoutes(
               updated.status === "in_review" &&
               (enteringReviewRequested || assigneeWillChange)
             ) {
+              // myrmidon(OPE-12177): the dedup key tail is the exact PR head.
+              // Read it from the stored work-product metadata (webhook-kept
+              // fresh, no GitHub call); a fallback resolver may refine it.
+              const reviewAdmissionHeadSha = await (
+                opts.resolveReviewAdmissionHeadSha ?? readReviewPullRequestHeadSha
+              )({ db, companyId: updated.companyId, issueId: updated.id });
               const stageWake = buildExecutionStageWakeup({
                 issueId: updated.id,
                 previousState: parseIssueExecutionState(existing.executionState),
@@ -15968,6 +16006,7 @@ export function issueRoutes(
                 requestedByActorId: actor.actorId,
                 // myrmidon(OPE-10045): wake the kept participant when the task returns to review.
                 reenteringReview: existing.status !== "in_review",
+                headSha: reviewAdmissionHeadSha,
               });
               const ciAdmissionCandidate =
                 stageWake?.wakeup.reason === "execution_review_requested" ||
@@ -16141,7 +16180,11 @@ export function issueRoutes(
                   triggerDetail: "system",
                   reason: enteringReviewRequested ? "issue_entered_review" : "issue_review_reassigned",
                   payload: { issueId: updated.id, mutation: "review_admission" },
-                  idempotencyKey: `issue-review-admission:${updated.id}:${updated.assigneeAgentId}`,
+                  idempotencyKey: reviewAdmissionDedupKey({
+                    issueId: updated.id,
+                    headSha: reviewAdmissionHeadSha,
+                    agentId: updated.assigneeAgentId,
+                  }),
                   requestedByActorType: actor.actorType,
                   requestedByActorId: actor.actorId,
                   contextSnapshot: { issueId: updated.id, taskId: updated.id },
@@ -17083,11 +17126,24 @@ export function issueRoutes(
         issue.status === "in_review" &&
         (executionStageWakeup?.wakeup.reason === "execution_review_requested" ||
           executionStageWakeup?.wakeup.reason === "execution_review_participant_recovery");
+      // myrmidon(OPE-12177): the dedup key tail is the exact PR head; read it
+      // from the stored work-product metadata (no GitHub call). For the CI-gated
+      // admission path the read verdict refines it further below.
+      let reviewAdmissionHeadSha = isReviewCiWakeCandidate
+        ? await (opts.resolveReviewAdmissionHeadSha ?? readReviewPullRequestHeadSha)({
+          db,
+          companyId: issue.companyId,
+          issueId: issue.id,
+        })
+        : null;
       if (isReviewCiWakeCandidate) {
         const reviewCi = await (opts.resolveReviewPullRequestCi ?? createReviewPullRequestCiResolver({ db }))({
           companyId: issue.companyId,
           issueId: issue.id,
         });
+        if (typeof reviewCi.headSha === "string" && reviewCi.headSha.trim() !== "") {
+          reviewAdmissionHeadSha = reviewCi.headSha;
+        }
         // myrmidon(OPE-12176): the same green-head rule as the transition path —
         // a red or unfinished head of a non-critical issue does not wake a reviewer.
         const critical = issue.priority === "critical";
@@ -17410,7 +17466,11 @@ export function issueRoutes(
                 }
               : issue.status === "in_review"
                 ? {
-                    idempotencyKey: `issue-review-admission:${issue.id}:${issue.assigneeAgentId}`,
+                    idempotencyKey: reviewAdmissionDedupKey({
+                      issueId: issue.id,
+                      headSha: reviewAdmissionHeadSha,
+                      agentId: issue.assigneeAgentId,
+                    }),
                   }
                 : {}),
             payload: {
@@ -20858,6 +20918,11 @@ export function issueRoutes(
           interruptedRunId,
           requestedByActorType: actor.actorType,
           requestedByActorId: actor.actorId,
+          headSha: await (opts.resolveReviewAdmissionHeadSha ?? readReviewPullRequestHeadSha)({
+            db,
+            companyId: currentIssue.companyId,
+            issueId: currentIssue.id,
+          }),
         });
       } else {
         const commentOptions = {

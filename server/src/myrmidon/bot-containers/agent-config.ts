@@ -12,6 +12,7 @@ import { BOT_KEY_PATTERN, isImageAllowed, parseImageAllowlist } from "./template
 import type { SharedMountSettings } from "@myrmidon/shared";
 import { resolveBotSharedMount } from "./shared-mount.js";
 import { FLEET_HOST_NAME_PATTERN } from "./fleetd-hosts.js";
+import { type BotResourceCeilings, botResourceCeilingProblem } from "./resource-ceilings.js";
 
 const BOT_IMAGE_ALLOWLIST_ENV = "MYRMIDON_BOT_IMAGE_ALLOWLIST";
 export const BOT_CONTAINERS_ENV = "MYRMIDON_BOT_CONTAINERS";
@@ -52,6 +53,7 @@ export function botContainerCardSaveProblem(
   adapterType: string | null | undefined,
   adapterConfig: Record<string, unknown> | null | undefined,
   env: NodeJS.ProcessEnv = process.env,
+  ceilings?: BotResourceCeilings | null,
 ): string | null {
   if (adapterType !== HERMES_GATEWAY_ADAPTER_TYPE) return null;
   const raw = adapterConfig?.container;
@@ -69,6 +71,10 @@ export function botContainerCardSaveProblem(
   if (typeof pidsLimit !== "number" || !Number.isInteger(pidsLimit) || pidsLimit <= 0) missing.push("pidsLimit (a positive integer)");
   if (missing.length > 0) {
     return `adapterConfig.container is enabled but lacks ${missing.join(", ")}; defaults are memoryMb ${BOT_CONTAINER_DEFAULTS.memoryMb}, cpus ${BOT_CONTAINER_DEFAULTS.cpus}, pidsLimit ${BOT_CONTAINER_DEFAULTS.pidsLimit}`;
+  }
+  if (ceilings) {
+    const ceilingProblem = botResourceCeilingProblem(raw, ceilings);
+    if (ceilingProblem) return ceilingProblem;
   }
   if (raw.host !== undefined && raw.host !== null) {
     if (typeof raw.host !== "string" || !FLEET_HOST_NAME_PATTERN.test(raw.host.trim())) {

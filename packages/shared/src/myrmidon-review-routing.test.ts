@@ -6,6 +6,7 @@ import {
   DEFAULT_REVIEW_ROUTING_PR_MAX_NEW_ASSIGNMENTS_PER_PASS,
   DEFAULT_REVIEW_ROUTING_PR_MAX_OPEN_REVIEWS_PER_REVIEWER,
   DEFAULT_REVIEW_ROUTING_PR_POLL_INTERVAL_SEC,
+  DEFAULT_REVIEW_ROUTING_REBALANCE_AFTER_MINUTES,
   DEFAULT_REVIEW_ROUTING_REASSIGN_AFTER_HOURS,
   isReviewRoutingRepositoryEntry,
   normalizeReviewRoutingBoardMerge,
@@ -49,6 +50,7 @@ describe("myrmidon(REVIEW-ROUTING) settings contract", () => {
         maxLoadPerReviewer: DEFAULT_REVIEW_ROUTING_MAX_LOAD_PER_REVIEWER,
         queueThreshold: 8,
         reassignAfterHours: DEFAULT_REVIEW_ROUTING_REASSIGN_AFTER_HOURS,
+        rebalanceAfterMinutes: DEFAULT_REVIEW_ROUTING_REBALANCE_AFTER_MINUTES,
         prWatch: PR_WATCH_DEFAULTS,
         boardMerge: BOARD_MERGE_DEFAULTS,
       });
@@ -64,6 +66,7 @@ describe("myrmidon(REVIEW-ROUTING) settings contract", () => {
       maxLoadPerReviewer: DEFAULT_REVIEW_ROUTING_MAX_LOAD_PER_REVIEWER,
       queueThreshold: 8,
       reassignAfterHours: 0,
+      rebalanceAfterMinutes: DEFAULT_REVIEW_ROUTING_REBALANCE_AFTER_MINUTES,
       prWatch: PR_WATCH_DEFAULTS,
       boardMerge: BOARD_MERGE_DEFAULTS,
     });
@@ -73,6 +76,7 @@ describe("myrmidon(REVIEW-ROUTING) settings contract", () => {
     expect(reviewRoutingSettingsSchema.safeParse({ maxLoadPerReviewer: 0 }).success).toBe(false);
     expect(reviewRoutingSettingsSchema.safeParse({ maxLoadPerReviewer: 101 }).success).toBe(false);
     expect(reviewRoutingSettingsSchema.safeParse({ reassignAfterHours: -1 }).success).toBe(false);
+    expect(reviewRoutingSettingsSchema.safeParse({ rebalanceAfterMinutes: -1 }).success).toBe(false);
     expect(reviewRoutingSettingsSchema.safeParse({ reassignAfterMinutes: -1 }).success).toBe(false);
     expect(reviewRoutingSettingsSchema.safeParse({ reassignAfterMinutes: 30 }).success).toBe(true);
     expect(reviewRoutingSettingsSchema.safeParse({ reviewerRoles: [""] }).success).toBe(false);
@@ -107,6 +111,7 @@ describe("myrmidon(REVIEW-ROUTING) settings contract", () => {
         maxLoadPerReviewer: DEFAULT_REVIEW_ROUTING_MAX_LOAD_PER_REVIEWER,
         queueThreshold: 8,
         reassignAfterHours: DEFAULT_REVIEW_ROUTING_REASSIGN_AFTER_HOURS,
+        rebalanceAfterMinutes: DEFAULT_REVIEW_ROUTING_REBALANCE_AFTER_MINUTES,
         prWatch: PR_WATCH_DEFAULTS,
         boardMerge: BOARD_MERGE_DEFAULTS,
       });

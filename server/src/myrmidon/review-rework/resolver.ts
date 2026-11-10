@@ -7,7 +7,10 @@
 // untouched; the object identity shape is the provider's own.
 
 import type { Db } from "@myrmidon/db";
-import { createGitHubExternalObjectProvider } from "../../services/github-external-object-provider.js";
+import {
+  createGitHubExternalObjectProvider,
+  type GitHubExternalObjectProviderOptions,
+} from "../../services/github-external-object-provider.js";
 import type { ReviewReworkPrState } from "./domain.js";
 
 export interface ReviewReworkPrReference {
@@ -53,10 +56,13 @@ function readDecision(value: unknown): ReviewReworkPrSnapshot["reviewDecision"] 
  * identity) reads as `unknown`: the sweep never acts on an unresolved PR, so
  * a GitHub outage cannot invent a merge, a head move, or a verdict.
  */
-export function createPullRequestReviewFactsResolver(db: Db): ReviewReworkPrResolver {
+export function createPullRequestReviewFactsResolver(
+  db: Db,
+  opts: GitHubExternalObjectProviderOptions = {},
+): ReviewReworkPrResolver {
   let resolverPromise: Promise<ReturnType<typeof pickResolver>> | null = null;
   const pickResolver = () =>
-    createGitHubExternalObjectProvider(db).resolvers.find(
+    createGitHubExternalObjectProvider(db, { source: "review-rework", ...opts }).resolvers.find(
       (candidate) => candidate.objectType === "pull_request",
     ) ?? null;
 
