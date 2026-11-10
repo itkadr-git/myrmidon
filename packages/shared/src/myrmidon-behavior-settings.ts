@@ -126,6 +126,14 @@ const dSettings: Array<{
   { key: "evalsModel", envName: "MYRMIDON_EVALS_MODEL", default: "", section: "models", validate: nonEmptyString },
   { key: "evalsTimeoutSec", envName: "MYRMIDON_EVALS_TIMEOUT_SEC", default: 120, section: "models", validate: positiveInteger() },
   { key: "evalsLangfuseExport", envName: "MYRMIDON_EVALS_LANGFUSE", default: false, section: "models", validate: booleanSetting },
+  // myrmidon(1.7 SWEEP-2, OPE-12619): the access-hub surface switch and the
+  // ssh-operation timeout, movable from env to "Тонкие настройки" by the same
+  // OPE-12124 rule: an explicit env value stays the forced override, otherwise
+  // a saved UI value applies without a restart, otherwise the default. The
+  // section stays off by default; the ssh admin-key secret name and host
+  // addresses remain env/secret-store owned (never editable here).
+  { key: "accessHubEnabled", envName: "MYRMIDON_ACCESS_HUB_ENABLED", default: false, section: "system", validate: booleanSetting },
+  { key: "accessHubSshTimeoutMs", envName: "MYRMIDON_ACCESS_HUB_SSH_TIMEOUT_MS", default: 30_000, section: "system", validate: (value) => validateInteger(value, 1_000, 300_000) },
   { key: "ocrBackend", envName: "MYRMIDON_OCR_BACKEND", default: "ragflow", section: "models", validate: (value) => value === "ragflow" || value === "litellm" ? value : null },
   { key: "ocrModel", envName: "MYRMIDON_OCR_MODEL", default: "", section: "models", validate: nonEmptyString },
   { key: "ocrMaxBytes", envName: "MYRMIDON_OCR_MAX_BYTES", default: 32 * 1024 * 1024, section: "models", validate: positiveInteger() },
