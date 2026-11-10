@@ -443,8 +443,10 @@ const support = await getEmbeddedPostgresTestSupport();
     // A second operation reuses the cached token without another GitHub call
     // or a duplicate issuance activity row.
     github.calls = [];
+    vault.resolveSecretValue.mockClear();
     expect((await resolveGitHubOperationCredentials(db, { ...input, repository: "owner-a/repo-a" })).env.GH_TOKEN).toBe(token);
     expect(github.calls).toEqual([]);
+    expect(vault.resolveSecretValue).not.toHaveBeenCalled();
     const repeatedActivity = await db.select().from(activityLog).where(eq(activityLog.companyId, input.companyId));
     expect(repeatedActivity.filter((row) => row.action === "myrmidon.github_app.issued")).toHaveLength(1);
   });
