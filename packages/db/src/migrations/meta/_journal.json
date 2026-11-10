@@ -2753,6 +2753,13 @@
       "when": 1794248347751,
       "tag": "0474_gorgeous_garia",
       "breakpoints": true
+    },
+    {
+      "idx": 475,
+      "version": "7",
+      "when": 1794248347752,
+      "tag": "0475_compact_heartbeat_run_continuations",
+      "breakpoints": true
     }
   ]
 }
