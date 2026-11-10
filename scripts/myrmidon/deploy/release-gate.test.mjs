@@ -67,7 +67,12 @@ case "$1" in
     else
       cat "$file"
     fi ;;
-  ps) echo "cid-x"; exit 0 ;;
+  ps)
+    # DEPLOY-SMOKE-FALSE-2: a bot container the fleet removed (idle-stop) is
+    # gone from "docker ps -a" too - find_container must fall back to the
+    # canonical name and see "No such container" on inspect.
+    if [ -e "$SANDBOX/bot-missing-container" ]; then exit 0; fi
+    echo "cid-x"; exit 0 ;;
   inspect)
     # A bot stopped by IDLE-STOP is a real Docker Exited(143), not merely a
     # board-side stopped state. The smoke tests use this to exercise the
@@ -81,8 +86,32 @@ case "$1" in
         if [ -e "$SANDBOX/bot-oom" ]; then
           echo "exited|exited|1|true|2026-11-08T18:00:01.000000000Z"
           exit 0
+        fi
+        if [ -e "$SANDBOX/bot-oom-stale" ]; then
+          # DEPLOY-SMOKE-FALSE-2 (rc.19): OOMKilled stays true from an OLD OOM
+          # that finished BEFORE the deploy began — the deploy did not kill it.
+          echo "exited|exited|137|true|2026-11-08T17:59:59.000000000Z"
+          exit 0
+        fi
+        if [ -e "$SANDBOX/bot-oom-inwindow" ]; then
+          echo "exited|exited|137|true|2026-11-08T18:00:01.000000000Z"
+          exit 0
         fi ;;
       *myrmidon-bot-33333333-3333-4333-8333-333333333333*)
+        if [ -e "$SANDBOX/bot-missing-container" ]; then
+          # DEPLOY-SMOKE-FALSE-2 (rc.19): the agent's container is gone ("No
+          # such container") — the fleet stopped it by idle-stop and removed it;
+          # there is no runtime container to inspect.
+          echo "Error: No such container: myrmidon-bot-33333333-3333-4333-8333-333333333333" >&2
+          exit 1
+        fi
+        if [ -e "$SANDBOX/bot-unhealthy-recovered" ]; then
+          # DEPLOY-SMOKE-FALSE-2 (rc.17/rc.19): Docker's healthcheck still says
+          # unhealthy right after the board's maintenance window, but the bot
+          # itself is already up — its gateway answers /health.
+          echo "unhealthy|running|0|false|"
+          exit 0
+        fi
         if [ -e "$SANDBOX/bot-exited-143-inwindow" ]; then
           echo "exited|exited|143|false|2026-11-08T18:00:01.000000000Z"
           exit 0
@@ -102,6 +131,11 @@ case "$1" in
             echo "healthy" ;;
           *)
             if [ -e "$SANDBOX/bot-unhealthy" ]; then
+              echo "unhealthy"
+            elif [ -e "$SANDBOX/bot-unhealthy-recovered" ] && echo "$*" | grep -q "myrmidon-bot-"; then
+              # DEPLOY-SMOKE-FALSE-2: Docker's healthcheck lags across the
+              # maintenance window — the bot container reports unhealthy even
+              # though the gateway inside already answers.
               echo "unhealthy"
             else
               echo "healthy"
@@ -131,8 +165,11 @@ case "$1" in
       *predeploy*) exit 0 ;;
       *)
         if [ -e "$SANDBOX/bot-unhealthy" ]; then
+          # The 03.11 incident: the gateway is really down (run_startup crash).
           exit 1
         fi
+        # DEPLOY-SMOKE-FALSE-2: every other bot's gateway answers its own
+        # /health probe (the bot recovered when the window closed).
         exit 0 ;;
     esac ;;
   compose)
@@ -1003,6 +1040,109 @@ describe("bot-apply-smoke.sh", () => {
     assert.match(out, /SMOKE FAILED: DEPLOYED-DEGRADED: 2 bot containers had abnormal exits \/ crashed within 2s/);
     assert.match(out, /crashed:oom/);
     assert.match(out, /crashed:exit_1/);
+  });
+
+  // DEPLOY-SMOKE-FALSE-2 acceptance (the 10.11 rc.17/rc.19 incidents): a fleet
+  // that LOOKS broken through stale signals but is actually healthy must pass.
+  // The rc.19 fixture: 33/54 healthy is shrunk here to 1/1 active + the stale
+  // signals — same three defects per bot:
+  //   bot1: Docker healthcheck still "unhealthy" from the board's maintenance
+  //         window, but the gateway answers /health right now (recovered);
+  //   bot2: OOMKilled=true left over from an OLD OOM before the deploy began
+  //         (FinishedAt 17:59:59 < deploy-start 18:00:00);
+  //   bot3: no runtime container at all ("No such container") — the fleet
+  //         idle-stopped and removed it.
+  it("passes the smoke when unhealthy-recovered, stale-OOM and removed idle-stop containers are the only defects", () => {
+    const sb = sandbox({ smoke: "ok" });
+    const bot1 = "11111111-1111-4111-8111-111111111111";
+    const bot2 = "22222222-2222-4222-8222-222222222222";
+    const bot3 = "33333333-3333-4333-8333-333333333333";
+    fs.writeFileSync(
+      path.join(sb.dir, "agents.json"),
+      JSON.stringify([
+        { id: bot1, adapterType: "hermes_gateway", name: "bot-unhealthy-recovered", status: "running" },
+        { id: bot2, adapterType: "hermes_gateway", name: "bot-stale-oom", status: "running" },
+        { id: bot3, adapterType: "hermes_gateway", name: "bot-idle-removed", status: "idle" },
+      ]),
+    );
+    // Board-side: bot1's own board state is healthy again (the window closed);
+    // bot2/bot3 have no container state and no error.
+    fs.writeFileSync(
+      path.join(sb.dir, `status-${bot1}.json`),
+      JSON.stringify({
+        enabled: true,
+        container: { state: "running", image: CI_IMAGE },
+        containerError: null,
+      }),
+    );
+    fs.writeFileSync(
+      path.join(sb.dir, `status-${bot2}.json`),
+      JSON.stringify({ enabled: true, container: null, containerError: null }),
+    );
+    fs.writeFileSync(
+      path.join(sb.dir, `status-${bot3}.json`),
+      JSON.stringify({
+        enabled: true,
+        container: { state: "stopped", image: CI_IMAGE, idleStopped: true },
+        idleStopRuntime: { idleStopped: true },
+        containerError: null,
+      }),
+    );
+    fs.writeFileSync(path.join(sb.dir, "bot-unhealthy-recovered"), "");
+    fs.writeFileSync(path.join(sb.dir, "bot-oom-stale"), "");
+    fs.writeFileSync(path.join(sb.dir, "bot-missing-container"), "");
+    const { code, out } = runSmoke(sb, [
+      "--board-url", "http://127.0.0.1:3100/api",
+      "--company", COMPANY,
+      "--timeout", "2",
+      "--interval", "1",
+      "--deploy-started-at", "2026-11-08T18:00:00Z",
+    ]);
+    assert.equal(code, 0, out);
+    assert.match(out, /1\/1 active bot gateways healthy, 2 idle-stopped/);
+    assert.doesNotMatch(out, /crashed:/);
+    assert.doesNotMatch(out, /DEPLOYED-DEGRADED/);
+  });
+
+  // DEPLOY-SMOKE-FALSE-2 acceptance, the other side: a REAL in-window OOM
+  // (OOMKilled + exit 137, FinishedAt after the deploy start) must still fail
+  // the smoke — the windowing must not hide genuine deploy casualties.
+  it("fails with DEPLOYED-DEGRADED when a container is OOMKilled with exit 137 inside the deploy window", () => {
+    const sb = sandbox({ smoke: "ok" });
+    const bot1 = "11111111-1111-4111-8111-111111111111";
+    const bot2 = "22222222-2222-4222-8222-222222222222";
+    fs.writeFileSync(
+      path.join(sb.dir, "agents.json"),
+      JSON.stringify([
+        { id: bot1, adapterType: "hermes_gateway", name: "bot-running", status: "running" },
+        { id: bot2, adapterType: "hermes_gateway", name: "bot-oomed-137", status: "running" },
+      ]),
+    );
+    fs.writeFileSync(
+      path.join(sb.dir, `status-${bot1}.json`),
+      JSON.stringify({
+        enabled: true,
+        container: { state: "running", image: CI_IMAGE },
+        containerError: null,
+      }),
+    );
+    fs.writeFileSync(
+      path.join(sb.dir, `status-${bot2}.json`),
+      JSON.stringify({ enabled: true, container: null, containerError: null }),
+    );
+    // bot2: OOMKilled=true, exit 137, finished at 18:00:01 — AFTER the deploy
+    // started at 18:00:00 → a deploy casualty.
+    fs.writeFileSync(path.join(sb.dir, "bot-oom-inwindow"), "");
+    const { code, out } = runSmoke(sb, [
+      "--board-url", "http://127.0.0.1:3100/api",
+      "--company", COMPANY,
+      "--timeout", "2",
+      "--interval", "1",
+      "--deploy-started-at", "2026-11-08T18:00:00Z",
+    ]);
+    assert.notEqual(code, 0);
+    assert.match(out, /DEPLOYED-DEGRADED/);
+    assert.match(out, /crashed:oom/);
   });
 
   it("fails with DEPLOYED-DEGRADED when an abnormal exit / crash occurs", () => {

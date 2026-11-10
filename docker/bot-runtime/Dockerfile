@@ -387,6 +387,27 @@ RUN set -eu; \
     rm -rf /tmp/node.tar.xz /opt/node24/include /opt/node24/share /opt/node24/CHANGELOG.md /opt/node24/README.md; \
     /opt/node24/bin/node --version | grep -x "v${NODE24_VERSION}"
 
+# myrmidon(OPE-10494, 10.11): the GitHub CLI from its own pinned release, not Debian's
+# `gh` package (2.46.0, January 2025): that one fails `gh pr view` / `gh pr edit` with
+# "GraphQL: Projects (classic) is being deprecated", and bots looped on it.
+FROM python:3.13-slim AS gh_dist
+ARG GH_VERSION=2.103.3
+ARG GH_SHA256=4c806978ffce1cec70853302a56d70ac6da4f19bae7adca4e1a8ab00633dd91d
+
+RUN apt-get update \
+  && apt-get install -y --no-install-recommends \
+    ca-certificates \
+    curl \
+  && rm -rf /var/lib/apt/lists/*
+
+RUN set -eu; \
+    curl -fsSL -o /tmp/gh.tar.gz "https://github.com/cli/cli/releases/download/v${GH_VERSION}/gh_${GH_VERSION}_linux_amd64.tar.gz"; \
+    echo "${GH_SHA256}  /tmp/gh.tar.gz" | sha256sum -c -; \
+    tar -xzf /tmp/gh.tar.gz -C /tmp; \
+    install -m 0755 "/tmp/gh_${GH_VERSION}_linux_amd64/bin/gh" /usr/local/bin/gh; \
+    rm -rf /tmp/gh.tar.gz "/tmp/gh_${GH_VERSION}_linux_amd64"; \
+    /usr/local/bin/gh --version | grep -q "gh version ${GH_VERSION} "
+
 FROM python:3.13-slim AS runtime
 ARG HERMES_VERSION
 
@@ -420,13 +441,15 @@ RUN apt-get update \
   && apt-get install -y --no-install-recommends \
     ca-certificates \
     curl \
-    gh \
     git \
     jq \
     openssh-client \
     ripgrep \
     tini \
   && rm -rf /var/lib/apt/lists/*
+# gh: the pinned release from the gh_dist stage (see there), at the path the
+# github-launcher shim resolves.
+COPY --from=gh_dist /usr/local/bin/gh /usr/bin/gh
 
 # myrmidon(G1): --home-dir /data/hermes (not /home/bot) — the G3 driver runs this
 # image with ReadonlyRootfs: true (docker-driver.ts buildCreateContainerRequestBody),
@@ -807,7 +830,7 @@ USER root
 
 # Build tools the repository needs to install and build its workspaces:
 # gcc/g++/make/pkg-config for native addons and node-gyp, python3 (present in
-# the base) for node-gyp itself, gh for the pull-request cycle, zstd and unzip
+# the base) for node-gyp itself, zstd and unzip
 # for archives, xz-utils for the tarballs above. Same --no-install-recommends
 # discipline as the other stages.
 RUN apt-get update \
@@ -817,7 +840,6 @@ RUN apt-get update \
     curl \
     g++ \
     gcc \
-    gh \
     git \
     jq \
     libc6-dev \
