@@ -320,6 +320,9 @@ RUN PYTHONDONTWRITEBYTECODE=1 /opt/hermes-src/.venv/bin/python /tmp/patch-tests/
 # myrmidon(G1): behaviour regression for 32-compaction-summary-9-sections.patch:
 # summary template and fallback summary contain all 9 standardized sections.
 RUN PYTHONDONTWRITEBYTECODE=1 /opt/hermes-src/.venv/bin/python /tmp/patch-tests/compaction_summary_9_sections.py /opt/hermes-src
+# myrmidon(G1): behaviour regression for 33-compaction-tool-pairs-sampling.patch:
+# tool call and result pairs are preserved atomically during summary sampling.
+RUN PYTHONDONTWRITEBYTECODE=1 /opt/hermes-src/.venv/bin/python /tmp/patch-tests/compaction_tool_pairs_sampling.py /opt/hermes-src
 # myrmidon(G1): names imported inside functions of the patched modules resolve too
 # (the import smoke above runs only top-level imports; a missing lazily imported name
 # broke every run of the 1.6.0 dev image while the build passed).

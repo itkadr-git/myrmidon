@@ -580,6 +580,23 @@
         "path": "agent/context_compressor.py",
         "upstreamMarker": "TASK_TRACKING|VERSION_CONTROL_STATUS"
       }
+    },
+    {
+      "id": "33-compaction-tool-pairs-sampling",
+      "kind": "patch",
+      "patch": "docker/bot-runtime/patches/33-compaction-tool-pairs-sampling.patch",
+      "files": [
+        "agent/context_compressor.py"
+      ],
+      "reason": "When sampling session history for the summarizer, _serialize_records_for_summary emitted each message as an independent record and slice boundaries cut between assistant tool calls and their tool results, leaving orphaned results or unmatched calls in the summary prompt. Serialization now treats each assistant message with tool calls and all its corresponding tool results (paired via tool_call_id variants) as one atomic record. Orphaned results without a call are omitted from the summary transcript, and oversized atomic records bound intra-record while preserving both the tool calls section and tool results.",
+      "dropCondition": "Upstream treats tool calls and their results as atomic units during summary serialization and sampling.",
+      "offer": null,
+      "offerNote": "Not offered yet.",
+      "probe": {
+        "source": "hermes",
+        "path": "agent/context_compressor.py",
+        "upstreamMarker": "atomic record|tool_result_id_variants|consumed_results"
+      }
     }
   ]
 }
