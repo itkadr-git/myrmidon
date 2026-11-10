@@ -6,6 +6,8 @@ import {
   createWakeAdmissionReader,
   createWakeAdmissionWriter,
 } from "./adapters/postgres.js";
+// myrmidon(OPE-12557): the host ports take the release transaction (`tx`), typed in the adapter.
+import type { WakeQueuePostgresAdapterDeps } from "./adapters/postgres.js";
 import { createQueuedCommentIssueLockWriter } from "./adapters/queued-comment-postgres.js";
 import type { QueuedCommentQueuePostgresAdapterDeps } from "./adapters/queued-comment-postgres.js";
 // myrmidon(1.7-GRD-MODES): per-agent injection mode for the queue payload
