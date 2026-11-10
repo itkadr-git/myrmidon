@@ -151,7 +151,7 @@ async function loadWindowStats(
   const [issueStats] = await db
     .select({
       touchedIssues: sql<number>`count(distinct case when ${involvement} ${fromIso ? sql`and ${issues.updatedAt} >= ${fromIso}` : sql``} then ${issues.id} end)::int`,
-      createdIssues: sql<number>`count(distinct case when ${issues.createdByUserId} = ${userId} ${fromIso ? sql`and ${issues.createdAt} >= ${fromIso}` : sql``} then ${issues.id} end)::int`,
+      createdIssues: sql<number>`count(distinct case when ${issues.createdByUserId} = ${userId} ${options.excludePrivate ? sql`and ${issues.isPrivate} = false` : sql``} ${fromIso ? sql`and ${issues.createdAt} >= ${fromIso}` : sql``} then ${issues.id} end)::int`,
       completedIssues: sql<number>`count(distinct case when ${involvement} and ${issues.status} = 'done' ${fromIso ? sql`and ${issues.completedAt} >= ${fromIso}` : sql``} then ${issues.id} end)::int`,
       assignedOpenIssues: sql<number>`count(distinct case when ${issues.assigneeUserId} = ${userId} and ${issues.status} in (${sql.join(openStatuses.map((status) => sql`${status}`), sql`, `)}) ${options.excludePrivate ? sql`and ${issues.isPrivate} = false` : sql``} then ${issues.id} end)::int`,
     })
@@ -202,7 +202,7 @@ async function loadWindowStats(
 
   const costConditions = [
     eq(costEvents.companyId, companyId),
-    userIssueInvolvementSql(companyId, userId),
+    userIssueInvolvementSql(companyId, userId, options),
   ];
   if (from) costConditions.push(gte(costEvents.occurredAt, from));
   const [costStats] = await db
