@@ -15,6 +15,7 @@ import {
   agents,
   companies,
   createDb,
+  environmentLeases,
   heartbeatRuns,
   issues,
 } from "@myrmidon/db";
@@ -254,6 +255,34 @@ describeEmbeddedPostgres("a final run guard stop wakes the manager", () => {
           "Нужна новая вводная: уточнить задачу или разбить её; автоповтора не будет.",
       },
     });
+    const issue = await issueRow(issueId);
+    expect(issue.status).toBe("blocked");
+    expect(issue.assigneeAgentId).toBe(agentId);
+  });
+
+  // myrmidon(OPE-12577): the stopped run's environment lease is released a moment
+  // after the stop; until then it is an execution hold. The manager's wake sent
+  // right after the block was parked behind it as an execution wait
+  // (execution_reconciliation_required) and never ran.
+  it("wakes the manager while the stopped run still holds its environment lease", async () => {
+    const { companyId, issueId, agentId, managerId, runId } = await seed({ withManager: true, withAdm: true });
+    await db
+      .update(heartbeatRuns)
+      .set({ runnerProfileJson: { adapterDispatch: { adapterType: "hermes_gateway" } } })
+      .where(eq(heartbeatRuns.id, runId));
+    await db.insert(environmentLeases).values({ companyId, issueId, heartbeatRunId: runId, status: "active" });
+
+    await heartbeat.applyRunGuardStop(runId);
+
+    const wakes = await wakesFor(companyId);
+    expect(wakes).toHaveLength(1);
+    expect(wakes[0]).toMatchObject({ agentId: managerId, reason: RUN_GUARD_STOP_NEEDS_INPUT_WAKE_REASON });
+    expect(wakes[0]?.status).not.toMatch(/^(skipped|deferred_issue_execution)$/);
+    const parked = await db
+      .select()
+      .from(agentWakeupRequests)
+      .where(and(eq(agentWakeupRequests.companyId, companyId), eq(agentWakeupRequests.reason, "execution_reconciliation_required")));
+    expect(parked).toHaveLength(0);
     const issue = await issueRow(issueId);
     expect(issue.status).toBe("blocked");
     expect(issue.assigneeAgentId).toBe(agentId);
