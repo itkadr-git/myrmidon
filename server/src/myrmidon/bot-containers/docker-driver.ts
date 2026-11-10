@@ -385,6 +385,7 @@ export interface DockerCreateContainerBody {
     NetworkMode: string;
     Binds: string[];
     Privileged: boolean;
+    Ulimits: Array<{ Name: string; Soft: number; Hard: number }>;
   };
 }
 
@@ -492,6 +493,7 @@ export function buildCreateContainerRequestBody(
         sharedMount: resolveSpecSharedMount(spec, config.volumeRoot),
       }),
       Privileged: false,
+      Ulimits: [{ Name: "core", Soft: 0, Hard: 0 }],
     },
   };
 }
@@ -516,6 +518,7 @@ export interface DockerHelperContainerBody {
     NetworkMode: string;
     Binds: string[];
     Privileged: boolean;
+    Ulimits: Array<{ Name: string; Soft: number; Hard: number }>;
   };
 }
 
@@ -564,6 +567,7 @@ export function buildHelperContainerRequestBody(params: {
       NetworkMode: "none",
       Binds: buildHelperBinds(params.volumeRoot, params.botKey, params.scope, asRoot, params.packageCachePath),
       Privileged: false,
+      Ulimits: [{ Name: "core", Soft: 0, Hard: 0 }],
     },
   };
 }

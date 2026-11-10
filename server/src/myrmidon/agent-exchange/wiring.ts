@@ -48,11 +48,25 @@ function readChatText(content: unknown): string {
   return "";
 }
 
+/**
+ * The abort signal of one model call: the response timeout, plus the room's
+ * stop valve when one is attached (OPE-12623). Without a stop signal this is
+ * exactly the old timeout-only signal; with one, the first of the two to fire
+ * wins and its reason (the stop error, or a `TimeoutError`) reaches the
+ * caller — so a stopped room rejects its calls immediately instead of letting
+ * the in-flight provider request live out the full 90 s timeout.
+ */
+export function modelCallSignal(timeoutMs: number, signal?: AbortSignal): AbortSignal {
+  if (!signal) return AbortSignal.timeout(timeoutMs);
+  return AbortSignal.any([AbortSignal.timeout(timeoutMs), signal]);
+}
+
 /** The model port backed by the company model providers and secret store. */
 export function createAgentExchangeModelPort(db: Db, companyId: string): AgentExchangeModelPort {
   const secrets = secretService(db);
   return {
     async call(input: AgentExchangeModelCallInput): Promise<AgentExchangeModelCallResult> {
+      input.signal?.throwIfAborted();
       const provider = await db
         .select({
           id: modelProviders.id,
@@ -74,11 +88,12 @@ export function createAgentExchangeModelPort(db: Db, companyId: string): AgentEx
       const apiKey = secretRow ? await secrets.resolveSecretValue(companyId, secretRow.id, "latest") : null;
       if (!apiKey) throw new Error(`provider_key_unreadable:${provider.id}`);
 
+      input.signal?.throwIfAborted();
       const response = await fetch(chatCompletionsUrl(baseUrl), {
         method: "POST",
         headers: { authorization: `Bearer ${apiKey}`, "content-type": "application/json" },
         body: JSON.stringify({ model: input.model, temperature: 0, messages: input.messages }),
-        signal: AbortSignal.timeout(input.timeoutMs),
+        signal: modelCallSignal(input.timeoutMs, input.signal),
       });
       if (!response.ok) throw new Error(`provider_http_${response.status}`);
       const payload = (await response.json()) as {
