@@ -66,4 +66,12 @@ export {
   readCtoChatSettings,
   type CtoChatSettings,
 } from "./settings.js";
+export {
+  deliverCommanderReport,
+  resolveCommanderReportTarget,
+  type CommanderReportDeliveryInput,
+  type CommanderReportDeliveryResult,
+  type CommanderReportDeliveryDeps,
+  type CommanderReportTargetChannel,
+} from "./report-delivery.js";
 export { myrmidonCtoChatRoutes } from "./routes.js";
