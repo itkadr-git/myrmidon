@@ -43,7 +43,8 @@
 | A6 | `POST .../myrmidon-bot-<K>[.helper]/start` | запуск |
 | A7 | `POST .../myrmidon-bot-<K>.helper/wait?condition=not-running` | ожидание помощника |
 | A8 | `GET .../myrmidon-bot-<K>.helper/logs?stdout=true&stderr=true&tail=20` | журнал помощника |
-| A9 | `DELETE .../myrmidon-bot-<K>[.next\|.helper]?force=true&v=true` | удаление |
+| A9 | `DELETE .../myrmidon-bot-<K>[.next\|.helper]?force=true&v=true` | удаление (основной контейнер — только остановленный и при созданном `.next`: шаг recreate) |
+| A22 | `DELETE .../myrmidon-bot-<K>?force=true&v=true&myrmidon-decommission=true` | вывод бота из эксплуатации (OPE-12654): агент бота ушёл из среды ботов (другой адаптер или увольнение). Только основной контейнер, остановленный (`created`, `exited`, `dead`; иначе `state_precondition` `main_running`); запущенный `.next` или helper запрещает вызов (`next_running`, `helper_running`). Сначала удаляются остановленные остатки (`.next`, helper), затем основной контейнер без замены; после подтверждённого демоном удаления — каталог данных бота `<volumeRoot>/<K>` и его проект квоты (см. [Вывод из эксплуатации](#вывод-из-эксплуатации-a22)). Ограничение частоты — как у удаления основного контейнера через A9 (`stopPerWindow`) |
 | A10 | `POST .../myrmidon-bot-<K>/stop?t=30` | остановка (только внутри recreate) |
 | A11 | `POST .../myrmidon-bot-<K>/restart?t=30` | перезапуск (с пределом частоты) |
 | A18 | `POST .../myrmidon-bot-<K>/update` | обновление памяти, memory-swap и pids без перезапуска; тело строго `Memory`, `MemorySwap`, `PidsLimit` в пределах записанных лимитов бота |
@@ -82,7 +83,7 @@
 
 ## Журнал и счётчики
 
-Журнал (JSON, одна строка на решение) содержит маршрут, `botKey`, решение, код причины, и для отказа по полю тела: путь поля, длину значения и первые 12 символов sha256. Тел запросов и ответов, имён из tar, значений окружения, заголовков клиента и секретов в нём нет по построению. События без решения: `caller_decoy`, `reject_flood`, `caller_resolve_failed`, `caller_not_board_main`, `config_reload_failed`.
+Журнал (JSON, одна строка на решение) содержит маршрут, `botKey`, решение, код причины, и для отказа по полю тела: путь поля, длину значения и первые 12 символов sha256. Тел запросов и ответов, имён из tar, значений окружения, заголовков клиента и секретов в нём нет по построению. События без решения: `caller_decoy`, `reject_flood`, `caller_resolve_failed`, `caller_not_board_main`, `config_reload_failed`, а после вывода из эксплуатации (A22) — `bot_data_removed` (`detail: absent`, если каталога не было), `bot_data_remove_failed` (уровень error; `detail` — одно из `read_only`, `permission`, `not_a_directory`, `volume_root`, `bad_key`, `remove`), `disk_project_removed`, `disk_project_remove_failed`.
 
 Коды причин: `caller_resolve_failed`, `caller_not_board_main`, `caller_pin_stale`, `target_form`, `method_not_allowed`, `api_version`, `route_not_allowed`, `header_forbidden`, `content_type`, `body_not_allowed`, `body_too_large`, `json_syntax`, `json_duplicate_key`, `json_unknown_key`, `json_type`, `json_value`, `json_not_canonical`, `bot_not_enrolled`, `image_not_allowed`, `image_contract`, `image_user`, `helper_image_mismatch`, `name_label_mismatch`, `binds_mismatch`, `mount_source_not_allowed`, `network_mismatch`, `limit_exceeds_enrollment`, `script_mismatch`, `nonce_invalid`, `tar_syntax`, `tar_type`, `tar_owner`, `tar_mode`, `tar_path`, `tar_nonce`, `tar_order`, `tar_content`, `tar_too_large`, `tar_not_canonical`, `foreign_container`, `state_precondition`, `volume_root_invariant`, `rate_limited`, `concurrency_limited`, `upstream_error`, `upstream_timeout`, `upstream_upgrade`, `response_too_large`, `marker_too_large`.
 
@@ -100,6 +101,28 @@
 3. Если боту нужны дополнительные read-only тома, добавить их источники в `mountSources` (тоже структурной правкой); источник, не названный здесь, до демона не дойдёт. Если экземпляр использует общий кэш пакетов, задать `packageCacheRoot` тем же каталогом, что в настройке доски (тоже структурной правкой).
 4. Проверить: `dockergate check-config --config <файл>`.
 5. Отправить `SIGHUP` процессу dockergate.
+
+## Вывод из эксплуатации (A22)
+
+Агента, ушедшего из среды ботов — карточка перешла с `hermes_gateway` на другой адаптер, агент
+уволен или удалён, — доска выводит из эксплуатации (OPE-12654): проход сверки находит его раз в
+10 минут (`server/src/myrmidon/bot-containers/bot-decommission.ts`), путь увольнения/удаления
+вызывает вывод сразу. Работающий контейнер доска сначала останавливает маршрутом idle-stop (A17),
+затем вызывает A22. Проход не выводит бота, в отчёте гигиены клонов которого есть неотправленная
+работа (и работающего бота без пригодного отчёта); журнал доски сообщает об этом один раз на
+причину (`bot_decommission_held`).
+
+Каталог данных удаляет dockergate — единственный, у кого смонтирован корень томов:
+`<volumeRoot>/<K>`, где `K` — UUID в нижнем регистре (повторно проверяется, что это прямой
+потомок разрешённого корня), никогда не через ссылку. **Для этого корень томов должен быть
+смонтирован в контейнер dockergate на запись, а процесс шлюза должен иметь право удалять в нём.**
+В нынешней поставке (`/srv/myrmidon-bots` только для чтения, uid 65532, все capabilities сброшены,
+корень `root:root 0711`, деревья ботов принадлежат uid 10001 с режимом 0700) не выполнено ни то,
+ни другое: удаление контейнера проходит, каталог остаётся, в журнале — `bot_data_remove_failed` с
+`detail: read_only` (или `permission` при монтировании на запись). Тогда оператор удаляет
+`<volumeRoot>/<K>` вручную. Участник общей области изоляции сохраняет свой подкаталог под
+`scopeRoot`: A22 удаляет только `<volumeRoot>/<K>`. Проект квоты удаляется последним и только
+когда каталога уже нет (иначе `disk_project_remove_failed`).
 
 ## Участники общей области изоляции (BOT-DISK-F)
 
@@ -167,7 +190,7 @@ A3 и A13 принимают и литеральные запросы архив
 
 1. Образ берётся из `ghcr.io/itkadr-git/myrmidon-dockergate` строго по дайджесту; метка OCI `org.opencontainers.image.revision` сверяется с коммитом `main` или тега `myr-v*`.
 2. Каталог сокета `/run/myrmidon-dockergate/` создаётся при загрузке (tmpfiles) и монтируется в контейнер доски; сырой сокет демона в него не монтируется.
-3. dockergate запускается отдельным контейнером без привилегий: пользователь 65532, файловая система только для чтения, все capabilities сброшены, лимиты памяти и CPU заданы; доступ к сокету демона получает только он.
+3. dockergate запускается отдельным контейнером без привилегий: пользователь 65532, файловая система только для чтения, все capabilities сброшены, лимиты памяти и CPU заданы; доступ к сокету демона получает только он. Корень томов монтируется по своему пути только для чтения (для проверок томов в A4); удалению каталогов данных в A22 нужны монтирование на запись и право удалять там (см. [Вывод из эксплуатации](#вывод-из-эксплуатации-a22)) — без обоих каталог после вывода остаётся оператору.
 4. В окружении доски `MYRMIDON_BOT_DOCKER_SOCKET=/run/myrmidon-dockergate/engine.sock`, перезапуск доски (окно без пересборки ботов).
 5. Приёмка: `check-config`, полный цикл драйвера (status, create, writeProfile, start, restart, recreate) на одном боте, в журнале нет отказов кроме ожидаемых.
 6. Откат: вернуть прежнее значение `MYRMIDON_BOT_DOCKER_SOCKET`, перезапустить доску; dockergate остановить. Состояние контейнеров ботов при этом не меняется.

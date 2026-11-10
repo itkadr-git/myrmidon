@@ -53,7 +53,8 @@ func TestAllow(t *testing.T) {
 		{"A9 main", "DELETE", v + "containers/" + nameA + "?force=true&v=true", Route{ID: A9, BotKey: keyA, Name: nameA}},
 		{"A9 next", "DELETE", v + "containers/" + nameANext + "?force=true&v=true", Route{ID: A9, BotKey: keyA, Suffix: SuffixNext, Name: nameANext}},
 		{"A9 helper", "DELETE", v + "containers/" + nameAHelp + "?force=true&v=true", Route{ID: A9, BotKey: keyA, Suffix: SuffixHelper, Name: nameAHelp}},
-		{"A10", "POST", v + "containers/" + nameA + "/stop?t=30", Route{ID: A10, BotKey: keyA, Name: nameA}},
+		{"A22", "DELETE", v + "containers/" + nameA + "?force=true&v=true&myrmidon-decommission=true", Route{ID: A22, BotKey: keyA, Name: nameA}},
+		{"A10","POST", v + "containers/" + nameA + "/stop?t=30", Route{ID: A10, BotKey: keyA, Name: nameA}},
 		{"A11", "POST", v + "containers/" + nameA + "/restart?t=30", Route{ID: A11, BotKey: keyA, Name: nameA}},
 		{"A13", "GET", v + "containers/" + nameA + "/archive?path=%2Fbot%2Fhermes%2F.myrmidon%2Fclone-hygiene.json", Route{ID: A13, BotKey: keyA, Name: nameA}},
 		{"A16", "GET", v + "containers/" + nameA + "/archive?path=%2Fbot%2Fhermes%2Fskills", Route{ID: A16, BotKey: keyA, Name: nameA}},
@@ -222,6 +223,21 @@ func TestDenyTable(t *testing.T) {
 		{"A9 POST", "POST", c + nameA + "?force=true&v=true", deny.RouteNotAllowed},
 		{"A9 foreign name", "DELETE", c + "other?force=true&v=true", deny.RouteNotAllowed},
 		{"A9 trailing slash", "DELETE", c + nameA + "/?force=true&v=true", deny.RouteNotAllowed},
+
+		// A22 (OPE-12654): the main container only, the exact query, DELETE only.
+		{"A22 next", "DELETE", c + nameANext + "?force=true&v=true&myrmidon-decommission=true", deny.RouteNotAllowed},
+		{"A22 helper", "DELETE", c + nameAHelp + "?force=true&v=true&myrmidon-decommission=true", deny.RouteNotAllowed},
+		{"A22 POST", "POST", c + nameA + "?force=true&v=true&myrmidon-decommission=true", deny.RouteNotAllowed},
+		{"A22 GET", "GET", c + nameA + "?force=true&v=true&myrmidon-decommission=true", deny.RouteNotAllowed},
+		{"A22 flag false", "DELETE", c + nameA + "?force=true&v=true&myrmidon-decommission=false", deny.RouteNotAllowed},
+		{"A22 flag first", "DELETE", c + nameA + "?myrmidon-decommission=true&force=true&v=true", deny.RouteNotAllowed},
+		{"A22 without force", "DELETE", c + nameA + "?v=true&myrmidon-decommission=true", deny.RouteNotAllowed},
+		{"A22 extra parameter", "DELETE", c + nameA + "?force=true&v=true&myrmidon-decommission=true&link=true", deny.RouteNotAllowed},
+		{"A22 encoded ampersand", "DELETE", c + nameA + "?force=true&v=true%26myrmidon-decommission=true", deny.RouteNotAllowed},
+		{"A22 traversal in name", "DELETE", c + NamePrefix + "../" + keyA + "?force=true&v=true&myrmidon-decommission=true", deny.RouteNotAllowed},
+		{"A22 dot dot key", "DELETE", c + NamePrefix + "..?force=true&v=true&myrmidon-decommission=true", deny.RouteNotAllowed},
+		{"A22 encoded slash in key", "DELETE", c + NamePrefix + "..%2F" + keyA + "?force=true&v=true&myrmidon-decommission=true", deny.RouteNotAllowed},
+		{"A22 other bot", "DELETE", c + nameB + "x?force=true&v=true&myrmidon-decommission=true", deny.RouteNotAllowed},
 
 		// A10 and A11
 		{"A10 helper", "POST", c + nameAHelp + "/stop?t=30", deny.RouteNotAllowed},

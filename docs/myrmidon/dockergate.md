@@ -82,7 +82,8 @@ Extra read-only bot mounts (shared directories) are described in
 | A6 | `POST .../myrmidon-bot-<K>[.helper]/start` | start |
 | A7 | `POST .../myrmidon-bot-<K>.helper/wait?condition=not-running` | wait for the helper |
 | A8 | `GET .../myrmidon-bot-<K>.helper/logs?stdout=true&stderr=true&tail=20` | helper log |
-| A9 | `DELETE .../myrmidon-bot-<K>[.next\|.helper]?force=true&v=true` | delete |
+| A9 | `DELETE .../myrmidon-bot-<K>[.next\|.helper]?force=true&v=true` | delete (the main container only stopped and with a created `.next`: a recreate step) |
+| A22 | `DELETE .../myrmidon-bot-<K>?force=true&v=true&myrmidon-decommission=true` | decommission (OPE-12654): the bot's agent left the bot runtime (another adapter, or terminated). Main container only, stopped (`created`, `exited`, `dead`; otherwise `state_precondition` `main_running`); a running `.next` or helper refuses it (`next_running`, `helper_running`). Stopped leftovers (`.next`, helper) are deleted first, then the main container without a replacement; after the daemon confirmed that delete, the bot's data directory `<volumeRoot>/<K>` and its quota project are removed (see [Decommission](#decommission-a22)). Rate-limited like the A9 delete of the main container (`stopPerWindow`) |
 | A10 | `POST .../myrmidon-bot-<K>/stop?t=30` | stop (only inside a recreate) |
 | A11 | `POST .../myrmidon-bot-<K>/restart?t=30` | restart (rate-limited) |
 | A18 | `POST .../myrmidon-bot-<K>/update` | update memory, memory-swap and pids without restart; the body is exactly `Memory`, `MemorySwap`, `PidsLimit` (integers, any other key is `json_unknown_key`), `MemorySwap` is from `Memory` to twice `Memory`, and the daemon gets a body that the gate rewrote from the checked numbers |
@@ -141,7 +142,10 @@ code and, for a body-field refusal, the field path, the value length and the fir
 characters of its sha256. Request and response bodies, names from tar files, environment
 values, client headers and secrets are absent by construction. Events without a decision:
 `caller_decoy`, `reject_flood`, `caller_resolve_failed`, `caller_not_board_main`,
-`config_reload_failed`.
+`config_reload_failed`, and after an A22 decommission `bot_data_removed` (`detail: absent`
+when there was no directory), `bot_data_remove_failed` (error level; `detail` is one of
+`read_only`, `permission`, `not_a_directory`, `volume_root`, `bad_key`, `remove`),
+`disk_project_removed`, `disk_project_remove_failed`.
 
 Reason codes: `caller_resolve_failed`, `caller_not_board_main`, `caller_pin_stale`,
 `target_form`, `method_not_allowed`, `api_version`, `route_not_allowed`, `header_forbidden`,
@@ -179,6 +183,28 @@ signals: `denyPeer` or `resolveDecoys` growing, denials beyond the expected ones
    directory as the board's setting (also a structural edit).
 4. Check: `dockergate check-config --config <file>`.
 5. Send `SIGHUP` to the dockergate process.
+
+## Decommission (A22)
+
+An agent that leaves the bot runtime — its card moves from `hermes_gateway` to another
+adapter, or it is terminated or deleted — is decommissioned by the board (OPE-12654): the
+reconcile sweep finds it every 10 minutes (`server/src/myrmidon/bot-containers/bot-decommission.ts`),
+the terminate/delete path calls it at once. The board stops a running container with the
+idle-stop route (A17) and then calls A22. The sweep holds a bot whose clone-hygiene report shows
+unpushed work (and a running bot without a usable report); the board log says so once per
+reason (`bot_decommission_held`).
+
+The data directory is removed by dockergate, the only party with a mount of the volume root:
+`<volumeRoot>/<K>` with `K` a lowercase UUID (checked again to be a direct child of the
+resolved root), never through a link. **This needs the volume root mounted read-write into
+the dockergate container, and the gate process allowed to delete there.** As deployed today
+(`/srv/myrmidon-bots` read-only, uid 65532, every capability dropped, the root `root:root
+0711`, the bot trees owned by uid 10001 with mode 0700) neither holds: the container delete
+still succeeds, the directory stays, and the log says `bot_data_remove_failed` with
+`detail: read_only` (or `permission` on a read-write mount). The operator then removes
+`<volumeRoot>/<K>` by hand. A member of a shared scope instance keeps its subdirectory under
+`scopeRoot`: A22 removes only `<volumeRoot>/<K>`. The quota project is removed last, and only
+when the directory is gone (`disk_project_remove_failed` otherwise).
 
 ## Members of a shared isolation scope (BOT-DISK-F)
 
@@ -253,7 +279,10 @@ container — and nothing else under that path.
    into the board container; the raw daemon socket is not mounted into it.
 3. dockergate runs as a separate unprivileged container: user 65532, a read-only file system,
    all capabilities dropped, memory and CPU limits set; only it gets access to the daemon
-   socket.
+   socket. The volume root is mounted at its own path, read-only for the volume checks of
+   A4; the bot data removal of A22 needs it read-write and the right to delete there (see
+   [Decommission](#decommission-a22)) — without both, a decommission leaves the directory for
+   the operator.
 4. In the board's environment `MYRMIDON_BOT_DOCKER_SOCKET=/run/myrmidon-dockergate/engine.sock`,
    restart the board (a window without rebuilding the bots).
 5. Acceptance: `check-config`, a full driver cycle (status, create, writeProfile, start,
