@@ -173,6 +173,10 @@ async function loadWindowStats(
     ));
   }
   if (from) commentConditions.push(gte(issueComments.createdAt, from));
+  const [commentStats] = await db
+    .select({ count: sql<number>`count(*)::int` })
+    .from(issueComments)
+    .where(and(...commentConditions));
 
   const activityConditions = [
     eq(activityLog.companyId, companyId),
