@@ -134,19 +134,42 @@ function shorten(line: string, max: number): string {
  */
 export function extractReleaseNotes(
   releases: readonly StackReleaseRecord[],
-  options: { limit?: number; lineMax?: number } = {},
+  options: { limit?: number; lineMax?: number; localVersion?: string | null } = {},
 ): StackReleaseNotes | null {
   const limit = options.limit ?? STACK_NOTE_LINE_LIMIT;
   const lineMax = options.lineMax ?? STACK_NOTE_LINE_MAX;
   const lines: string[] = [];
   let truncated = false;
   let hasSecurity = false;
+
+  // Security notes should only flag security when the note is in upstream.latest
+  // or in releases newer than the running local version.
+  const ours = normaliseVersion(options.localVersion ?? null);
+  const relevantForSecurity = new Set<string>();
+  if (releases.length > 0) {
+    const oursIndex = ours ? releases.findIndex((r) => normaliseVersion(r.tag) === ours) : -1;
+    if (oursIndex > 0) {
+      // Local version is known and behind; include upstream.latest and all releases newer than local
+      for (let i = 0; i < oursIndex; i++) {
+        relevantForSecurity.add(releases[i].tag);
+      }
+    } else if (oursIndex === 0) {
+      // Already running upstream.latest; upstream.latest itself is checked if it carries security note
+      relevantForSecurity.add(releases[0].tag);
+    } else {
+      // Local version is unknown (or not in feed); only check upstream.latest
+      relevantForSecurity.add(releases[0].tag);
+    }
+  }
+
   for (const release of releases) {
     if (!release.body) continue;
     for (const rawLine of release.body.split(/\r?\n/)) {
       if (rawLine.includes("|")) continue; // markdown table rows carry the whole row
       if (!NOTABLE_LINE.test(rawLine)) continue;
-      if (SECURITY_LINE.test(rawLine)) hasSecurity = true;
+      if (SECURITY_LINE.test(rawLine) && relevantForSecurity.has(release.tag)) {
+        hasSecurity = true;
+      }
       if (lines.length >= limit) {
         truncated = true;
         continue;

@@ -371,6 +371,12 @@ export function patchEntryFromDelta(delta: StackDeltaSeed): StackPatchEntry {
 }
 
 /**
+ * Pinned Paperclip vendor release supported by the migration schema
+ * (schema-paperclip-v2026.1106.0.sql).
+ */
+export const PAPERCLIP_MIGRATION_SUPPORTED_VERSION = "v2026.1106.0";
+
+/**
  * The seed: every stack component the update panel tracks. Neutral public
  * names and upstream repos only — no hosts, no internal identifiers.
  */
@@ -380,7 +386,7 @@ export const STACK_SEED: readonly StackSeedComponent[] = [
     releaseSource: "github-releases",
     upstream: { kind: "github", repo: "paperclipai/paperclip" },
     localProbe: "manual",
-    note: "Vendor upstream of the board fork; local version tracked via the board component.",
+    note: "Vendor upstream of the board fork; local version tracked via supported migration schema.",
   },
   {
     name: "myrmidon",

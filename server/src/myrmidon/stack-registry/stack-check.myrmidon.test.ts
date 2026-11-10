@@ -148,6 +148,39 @@ describe("stack release check helpers", () => {
     expect(notes?.lines[0]).toContain("3.2.0");
   });
 
+  it("does not flag security when security notes exist only in older releases than current version", () => {
+    const releases = [
+      {
+        tag_name: "3.2.0",
+        published_at: "2026-10-01T00:00:00Z",
+        body: "### Changes\n* Routine refactoring and perf improvements",
+      },
+      {
+        tag_name: "3.1.0",
+        published_at: "2026-09-01T00:00:00Z",
+        body: "### Security\n* Fix CVE-2026-9999 remote code execution",
+      },
+      {
+        tag_name: "3.0.0",
+        published_at: "2026-08-01T00:00:00Z",
+        body: "Initial 3.0 release",
+      },
+    ];
+    const records = readReleaseList("github-releases", releases);
+
+    // If local version is already 3.1.0, the CVE in 3.1.0 was addressed locally; only 3.2.0 is newer.
+    const notesForCurrent = extractReleaseNotes(records, { localVersion: "3.1.0" });
+    expect(notesForCurrent?.hasSecurity).toBe(false);
+
+    // If local version is 3.0.0, 3.1.0 is in the range between local and latest.
+    const notesForOlder = extractReleaseNotes(records, { localVersion: "3.0.0" });
+    expect(notesForOlder?.hasSecurity).toBe(true);
+
+    // If local version is unknown, only the latest release is scanned for security to avoid perpetual flags.
+    const notesForUnknown = extractReleaseNotes(records);
+    expect(notesForUnknown?.hasSecurity).toBe(false);
+  });
+
   it("detects a known fix commit inside the compare range", () => {
     const json = { commits: [{ sha: "24758cf4b8123456789012345678901234567890" }] };
     expect(compareContainsFix(json, ["24758cf4b8"])).toBe(true);
@@ -674,6 +707,18 @@ describeEmbeddedPostgres("stack release check", () => {
     }
   });
 
+  it("binds paperclip component to supported migration schema version", async () => {
+    const doc = await collectStackLocal({
+      now: NOW,
+      serverInfo: { processStartedAt: "", git: { available: false, unavailableReason: "git_unavailable" } },
+      images: fakeImages({}),
+    });
+    const paperclip = doc.components.find((c) => c.name === "paperclip")!;
+    expect(paperclip.local.version).toBe("v2026.1106.0");
+    expect(paperclip.local.runningOn).toBe("supported migration schema");
+    expect(paperclip.local.unknownReason).toBeNull();
+  });
+
   it("does not count pre-release or nightly tags as the latest release", () => {
     const releases = readReleaseList("github-releases", [
       { tag_name: "nightly", published_at: "2026-11-01T00:00:00Z", body: null },
@@ -840,6 +885,43 @@ describeEmbeddedPostgres("stack release check", () => {
 
     expect(drafts.length).toBeGreaterThan(0);
     expect(drafts.some((d) => d.draft.component === "langfuse")).toBe(true);
+  });
+
+  it("does not create a duplicate draft task when a task for the same release already exists (even if done/closed)", async () => {
+    const drafts: Array<{ companyId: string; draft: StackBacklogDraft }> = [];
+    const port = fakePort({
+      "repos/langfuse/langfuse/releases": { status: 200, json: langfuseReleases() },
+    });
+    const baseDoc = documentWithLocal({ langfuse: { version: "langfuse/langfuse:3.0.0" } });
+    await writeStackDocument(db, baseDoc);
+
+    const companyId = randomUUID();
+    const { companies, issues } = await import("@myrmidon/db");
+    await db.insert(companies).values({ id: companyId, name: "Test Co 2", issuePrefix: "TC2" }).onConflictDoNothing();
+
+    // Simulate existing closed task for langfuse 3.2.0
+    await db.insert(issues).values({
+      id: randomUUID(),
+      companyId,
+      title: "langfuse 3.2.0",
+      description: "Previous update task",
+      status: "done",
+      priority: "medium",
+      originKind: "stack_update",
+      originId: "langfuse",
+    });
+
+    await checkStackReleases(db, {
+      fetchJson: port,
+      now: NOW,
+      collect: false,
+      createDraft: async (cid, draft) => {
+        drafts.push({ companyId: cid, draft });
+      },
+    });
+
+    // langfuse 3.2.0 is already closed/done, so no new draft should be created for it
+    expect(drafts.some((d) => d.draft.component === "langfuse")).toBe(false);
   });
 });
 
