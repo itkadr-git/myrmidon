@@ -435,13 +435,13 @@ describeEmbeddedPostgres("issue privacy flag routes (1.7 PRIVATE-TASKS)", () => 
     const agentCheckoutRes = await request(app)
       .post(`/api/issues/${privateIssueId}/checkout`)
       .set("Authorization", `Bearer ${fixture.agentToken}`)
-      .send({ agentId: fixture.actorAgent.id, expectedStatuses: ["in_progress"] });
+      .send({ agentId: fixture.actorAgent.id, expectedStatuses: ["todo"] });
     expect(agentCheckoutRes.status).toBe(404);
 
     const boardCheckoutRes = await request(app)
       .post(`/api/issues/${privateIssueId}/checkout`)
       .set("Authorization", `Bearer ${fixture.boardToken}`)
-      .send({ agentId: fixture.actorAgent.id, expectedStatuses: ["in_progress"] });
+      .send({ agentId: fixture.actorAgent.id, expectedStatuses: ["todo"] });
     expect(boardCheckoutRes.status).toBe(200);
     expect(boardCheckoutRes.body.id).toBe(privateIssueId);
   });

@@ -52,7 +52,7 @@ describeEmbeddedPostgres("heartbeat private-task suppression (1.7 PRIVATE-TASKS 
   beforeAll(async () => {
     tempDb = await startEmbeddedPostgresTestDatabase("paperclip-private-tasks-heartbeat-");
     db = createDb(tempDb.connectionString);
-    heartbeat = heartbeatService(db, { runtimeEnv: { ...process.env, PAPERCLIP_IN_WORKTREE: "false" } });
+    heartbeat = heartbeatService(db, { runtimeEnv: { ...process.env, MYRMIDON_IN_WORKTREE: "false" } });
   }, 30_000);
 
   afterEach(async () => {
@@ -62,8 +62,8 @@ describeEmbeddedPostgres("heartbeat private-task suppression (1.7 PRIVATE-TASKS 
       await new Promise((resolve) => setTimeout(resolve, 50));
     }
     await db.delete(activityLog);
-    await db.delete(agentWakeupRequests);
     await db.delete(heartbeatRuns);
+    await db.delete(agentWakeupRequests);
     await db.delete(issueThreadInteractions);
     await db.delete(issues);
     await db.delete(agents);
