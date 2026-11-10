@@ -12,6 +12,7 @@
 import { describe, it, beforeEach, vi, expect } from "vitest";
 import request from "supertest";
 import express, { type Request, type Response, type NextFunction } from "express";
+import { ZodError } from "zod";
 import type { Db } from "@myrmidon/db";
 import { HttpError } from "../errors.js";
 import { agentRoutes } from "./agents.js";
@@ -122,6 +123,13 @@ vi.mock("../services/index.js", () => ({
   publishActivity: vi.fn(),
   syncInstructionsBundleConfigFromFilePath: vi.fn(async (x: unknown) => x),
   workspaceOperationService: vi.fn(() => ({})),
+  // enrichWithPoolModels builds a default provider service that resolves
+  // secretService from this module; provide a stub so the lookup never throws.
+  secretService: vi.fn(() => ({
+    getByName: vi.fn(async () => null),
+    resolveSecretValue: vi.fn(async () => null),
+    create: vi.fn(),
+  })),
 }));
 
 vi.mock("../myrmidon/agent-instructions-revisions/service.js", () => ({
@@ -142,6 +150,12 @@ vi.mock("../myrmidon/autonomy/gate.js", () => ({
 function errorHandler(err: unknown, _req: Request, res: Response, _next: NextFunction) {
   if (err instanceof HttpError) {
     res.status(err.status).json({ error: err.message, ...((err.details as Record<string, unknown>) ?? {}) });
+    return;
+  }
+  // Mirror the production middleware (server/src/middleware/error-handler.ts):
+  // Zod validation failures are client errors (400), not 500s.
+  if (err instanceof ZodError) {
+    res.status(400).json({ error: "Validation error", details: err.issues });
     return;
   }
   res.status(500).json({ error: err instanceof Error ? err.message : "test error" });
@@ -272,15 +286,18 @@ describe("POST /companies/:companyId/agents/bulk-update-model", () => {
     expect(res.body.failed[0].reason).toBeTruthy();
     expect(res.body.failed[0].reason).toContain("Unknown model");
 
-    // Activity log written only for the two successful mutations.
+    // Activity log written only for the two successful mutations. The route
+    // passes its postCommitPublications array as a third argument.
     expect(logActivityMock).toHaveBeenCalledTimes(2);
     expect(logActivityMock).toHaveBeenCalledWith(
       expect.anything(),
       expect.objectContaining({ action: "agent.updated", entityId: AGENT_1 }),
+      expect.anything(),
     );
     expect(logActivityMock).toHaveBeenCalledWith(
       expect.anything(),
       expect.objectContaining({ action: "agent.updated", entityId: AGENT_2 }),
+      expect.anything(),
     );
   });
 
@@ -312,7 +329,8 @@ describe("POST /companies/:companyId/agents/bulk-update-model", () => {
     expect(res.body.updated).toContain(AGENT_2);
     expect(res.body.failed).toHaveLength(0);
 
-    // Activity log written for each successful mutation (inside the tx).
+    // Activity log written for each successful mutation (inside the tx). The
+    // route passes its postCommitPublications array as a third argument.
     expect(logActivityMock).toHaveBeenCalledTimes(2);
     expect(logActivityMock).toHaveBeenCalledWith(
       expect.anything(),
@@ -320,6 +338,7 @@ describe("POST /companies/:companyId/agents/bulk-update-model", () => {
         action: "agent.updated",
         entityId: AGENT_1,
       }),
+      expect.anything(),
     );
     expect(logActivityMock).toHaveBeenCalledWith(
       expect.anything(),
@@ -327,6 +346,7 @@ describe("POST /companies/:companyId/agents/bulk-update-model", () => {
         action: "agent.updated",
         entityId: AGENT_2,
       }),
+      expect.anything(),
     );
   });
 
@@ -448,7 +468,8 @@ describe("POST /companies/:companyId/agents/bulk-update-model", () => {
     // Stateful in-memory store so we can verify the mutation was rolled back:
     // svc.update writes into the store, but logActivity throws inside the
     // transaction, so after the request the store must still hold the
-    // original model.
+    // original model. The transaction mock below models the real drizzle
+    // behavior: snapshot before the callback, restore on throw.
     const store = new Map<string, Record<string, unknown>>();
     store.set(AGENT_1, makeAgent(AGENT_1) as unknown as Record<string, unknown>);
 
@@ -471,7 +492,23 @@ describe("POST /companies/:companyId/agents/bulk-update-model", () => {
     // as a successful compliant mutation.
     logActivityMock.mockRejectedValueOnce(new Error("activity log unavailable"));
 
-    const res = await request(boardApp())
+    // Transaction mock with real rollback semantics: the store snapshot is
+    // restored when the callback rejects, mirroring a real DB transaction.
+    const rollbackDb = {
+      select: (_fields: unknown) => ({ from: (_table: unknown) => ({ where: (_cond: unknown) => ({ limit: (_n: number) => Promise.resolve([]) }) }) }),
+      transaction: async (cb: (tx: unknown) => Promise<unknown>) => {
+        const snapshot = new Map(store);
+        try {
+          return await cb({});
+        } catch (err) {
+          store.clear();
+          for (const [k, v] of snapshot) store.set(k, v);
+          throw err;
+        }
+      },
+    } as unknown as Db;
+
+    const res = await request(boardApp(rollbackDb))
       .post(`/api/companies/${COMPANY_ID}/agents/bulk-update-model`)
       .send({
         agentIds: [AGENT_1],
