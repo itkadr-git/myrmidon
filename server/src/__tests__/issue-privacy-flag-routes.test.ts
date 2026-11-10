@@ -70,9 +70,9 @@ describeEmbeddedPostgres("issue privacy flag routes (1.7 PRIVATE-TASKS)", () => 
 
   afterEach(async () => {
     await db.delete(activityLog);
+    await db.delete(heartbeatRuns);
     await db.delete(agentWakeupRequests);
     await db.delete(issues);
-    await db.delete(heartbeatRuns);
     await db.delete(agentApiKeys);
     await db.delete(boardApiKeys);
     await db.delete(companyMemberships);
@@ -288,6 +288,7 @@ describeEmbeddedPostgres("issue privacy flag routes (1.7 PRIVATE-TASKS)", () => 
     const res = await request(app)
       .post(`/api/issues/${fixture.issue.id}/accepted-plan-decompositions`)
       .set("Authorization", `Bearer ${fixture.agentToken}`)
+      .set("X-Paperclip-Run-Id", fixture.run.id)
       .send({
         acceptedPlanRevisionId: randomUUID(),
         children: [

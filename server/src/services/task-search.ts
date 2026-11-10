@@ -1,4 +1,5 @@
-import { sql, type SQL } from "drizzle-orm";
+import { eq, sql, type SQL } from "drizzle-orm";
+import { issues } from "@myrmidon/db";
 import { COMPANY_SEARCH_MAX_QUERY_LENGTH, COMPANY_SEARCH_MAX_TOKENS } from "@myrmidon/shared";
 import { visibleIssueCondition } from "./issue-visibility.js";
 
@@ -81,8 +82,17 @@ export function taskSearchScore(search: TaskSearch): SQL<number> {
  * Uses existing pg_trgm indexes and current rows: no derived corpus or worker.
  * The tagged comment/document sets are evaluated once, not once per task.
  */
-export function taskSearchCtes(companyId: string, search: TaskSearch, includeContext = true, fallbackFilters?: SQL): SQL {
+export function taskSearchCtes(
+  companyId: string,
+  search: TaskSearch,
+  includeContext = true,
+  fallbackFilters?: SQL,
+  options?: { excludePrivate?: boolean },
+): SQL {
   const n = search.tokens.length;
+  const visibility = options?.excludePrivate
+    ? sql`${visibleIssueCondition()} AND ${eq(issues.isPrivate, false)}`
+    : visibleIssueCondition();
   const comments = n === 0 || !includeContext ? sql`SELECT NULL::uuid AS issue_id, 0 AS ord WHERE false`
     : sql.join(search.patterns.map((_, index) => sql`
       SELECT c.issue_id, ${index}::int AS ord FROM issue_comments c
@@ -161,7 +171,7 @@ export function taskSearchCtes(companyId: string, search: TaskSearch, includeCon
     document_matches AS MATERIALIZED (${documents}),
     literal_candidates AS MATERIALIZED (
       SELECT issues.id FROM issues
-      WHERE issues.company_id = ${companyId} AND ${visibleIssueCondition()}
+      WHERE issues.company_id = ${companyId} AND ${visibility}
         AND ${n === 0 ? sql`${search.normalizedQuery.length === 0}` : sql`(
           ${taskSearchAny(sql`issues.title`, search)}
           OR ${taskSearchAny(sql`issues.identifier`, search)}
@@ -172,8 +182,7 @@ export function taskSearchCtes(companyId: string, search: TaskSearch, includeCon
       UNION SELECT issue_id FROM document_matches
     ), search_flags AS MATERIALIZED (
       ${flags(sql`false`)}
-      WHERE issues.company_id = ${companyId} AND ${visibleIssueCondition()}
-        ${fallbackFilters ? sql`AND ${fallbackFilters}` : sql``}
+      WHERE issues.company_id = ${companyId} AND ${visibility}
         AND issues.id IN (SELECT id FROM literal_candidates)
     ), literal_matches AS MATERIALIZED (
       SELECT * FROM search_flags
@@ -185,8 +194,7 @@ export function taskSearchCtes(companyId: string, search: TaskSearch, includeCon
         JOIN issues ON issues.id = literal.id
         ${fallbackFilters ? sql`WHERE ${fallbackFilters}` : sql``}
       )
-        AND issues.company_id = ${companyId} AND ${visibleIssueCondition()}
-        ${fallbackFilters ? sql`AND ${fallbackFilters}` : sql``}
+        AND issues.company_id = ${companyId} AND ${visibility}
         AND ${fuzzy}
     ), matched AS MATERIALIZED (
       SELECT * FROM literal_matches
