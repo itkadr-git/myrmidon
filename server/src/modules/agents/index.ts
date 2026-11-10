@@ -38,7 +38,8 @@ export interface AgentsModuleDeps {
 
 export function createAgentQuotaMiddleware(assertQuota: (companyId: string) => Promise<unknown>) {
   return async (req: Request, _res: Response, next: NextFunction) => {
-    const companyId = req.params.companyId;
+    const rawCompanyId = req.params.companyId;
+    const companyId = Array.isArray(rawCompanyId) ? rawCompanyId[0] : rawCompanyId;
     if (!companyId) {
       next();
       return;

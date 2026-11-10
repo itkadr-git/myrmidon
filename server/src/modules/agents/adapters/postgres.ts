@@ -22,10 +22,12 @@ export function createPostgresCompanyTierReader(db: Db): CompanyTierReader {
       } catch (err: unknown) {
         // When table company_tiers does not yet exist in PostgreSQL
         // (e.g. before migration has run in a test DB), treat tier as absent.
-        const pgErr = err as { code?: string; message?: string };
+        const pgErr = err as { code?: string; message?: string; cause?: { code?: string; message?: string } };
         if (
           pgErr?.code === "42P01" ||
-          (typeof pgErr?.message === "string" && pgErr.message.includes("does not exist"))
+          pgErr?.cause?.code === "42P01" ||
+          (typeof pgErr?.message === "string" && pgErr.message.includes("does not exist")) ||
+          (typeof pgErr?.cause?.message === "string" && pgErr.cause.message.includes("does not exist"))
         ) {
           return null;
         }
@@ -34,12 +36,25 @@ export function createPostgresCompanyTierReader(db: Db): CompanyTierReader {
     },
 
     async countActiveAgents(companyId: string): Promise<number> {
-      const rows = await db
-        .select({ value: count() })
-        .from(agents)
-        .where(and(eq(agents.companyId, companyId), ne(agents.status, "terminated")));
+      try {
+        const rows = await db
+          .select({ value: count() })
+          .from(agents)
+          .where(and(eq(agents.companyId, companyId), ne(agents.status, "terminated")));
 
-      return Number(rows[0]?.value ?? 0);
+        return Number(rows[0]?.value ?? 0);
+      } catch (err: unknown) {
+        const pgErr = err as { code?: string; message?: string; cause?: { code?: string; message?: string } };
+        if (
+          pgErr?.code === "42P01" ||
+          pgErr?.cause?.code === "42P01" ||
+          (typeof pgErr?.message === "string" && pgErr.message.includes("does not exist")) ||
+          (typeof pgErr?.cause?.message === "string" && pgErr.cause.message.includes("does not exist"))
+        ) {
+          return 0;
+        }
+        throw err;
+      }
     },
   };
 }
