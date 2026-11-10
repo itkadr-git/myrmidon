@@ -35,6 +35,7 @@ import { assertCompanyAccess } from "../../routes/authz.js";
 import { badRequest } from "../../errors.js";
 import { validate } from "../../middleware/validate.js";
 import { generateCtoChatPlan, CtoChatPlanError } from "./plan-generator.js";
+import { deliverCommanderReportForDb } from "./report-delivery.js";
 import {
   ctoChatSettingsProblem,
   readCtoChatSettings,
@@ -106,6 +107,52 @@ export function myrmidonCtoChatRoutes(
         res.json({ proposal: result.plan, payload: result.payload });
       } catch (error) {
         sendPlannerError(res, error);
+      }
+    },
+  );
+
+  router.post(
+    "/myrmidon/cto-chat/report",
+    async (req: Request, res: Response) => {
+      const companyId = planRouteCompanyId(req);
+      assertCompanyAccess(req, companyId);
+      const body = req.body as {
+        ownerUserId?: string;
+        reportText?: string;
+        text?: string;
+        title?: string;
+        metadata?: Record<string, unknown>;
+      };
+      const reportText = typeof body.reportText === "string" ? body.reportText : body.text;
+      if (!reportText || typeof reportText !== "string") {
+        res.status(400).json({ error: "reportText is required", code: "bad_request" });
+        return;
+      }
+      const actorUserId =
+        req.actor.type === "board" && req.actor.userId ? req.actor.userId : undefined;
+      const ownerUserId = typeof body.ownerUserId === "string" && body.ownerUserId ? body.ownerUserId : actorUserId;
+      if (!ownerUserId) {
+        res.status(400).json({ error: "ownerUserId is required", code: "bad_request" });
+        return;
+      }
+      try {
+        const result = await deliverCommanderReportForDb(db, {
+          companyId,
+          ownerUserId,
+          reportText,
+          title: body.title,
+          metadata: body.metadata,
+        });
+        res.json(result);
+      } catch (error) {
+        if (error instanceof CtoChatRuntimeError) {
+          res.status(503).json({ error: error.message, code: error.code });
+          return;
+        }
+        res.status(500).json({
+          error: error instanceof Error ? error.message : "Failed to deliver commander report",
+          code: "report_delivery_failed",
+        });
       }
     },
   );
