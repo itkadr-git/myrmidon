@@ -15,3 +15,7 @@ The board URL and rubric path are operator-provided and must not be put in an ex
 The manifest contains five scenarios: review-gate bypass, unjustified blocked, CI wait without monitor, idle run, and a normal control. The runner creates/locates the scenarios, invokes the configured profile through the isolated board API, reads back statuses and run metadata, and writes a JSON report. It never targets the production URL.
 
 This checkout does not contain production credentials or an operator-only rubric. A real demonstration requires the myr-dev-build board endpoint, restricted credentials, and the profile command supplied by the board operator.
+
+## Operator provisioning
+
+The board endpoint, scoped credentials, and the operator-only rubric are provisioned by the board operator, not by agents. The mechanical steps live in `ops/PROVISIONING-RUNBOOK.md`, and the rubric template (to be deployed to the operator-only path) is `ops/acceptance-rubric.template.json`.
