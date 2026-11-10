@@ -31,6 +31,8 @@ describe("POST /myrmidon/cto-chat/report", () => {
     app.use((req, _res, next) => {
       req.actor = {
         type: "board",
+        source: "local_implicit",
+        isInstanceAdmin: true,
         userId: "user-test-1",
         companyId: "comp-test-1",
       };
