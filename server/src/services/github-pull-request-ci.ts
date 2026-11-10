@@ -43,7 +43,6 @@ export interface PullRequestFailedJob {
   conclusion: string;
   url: string;
   completedAt: string | null;
-  required?: boolean;
 }
 
 export type PullRequestCiStatus =
@@ -229,7 +228,6 @@ export function summarizeCheckRuns(
         conclusion: conclusion ?? (conclusion === null ? "unknown" : "failure"),
         url: run.url,
         completedAt: run.completedAt,
-        required,
       };
       if (required) {
         failedJobs.push(failedJob);
