@@ -1,55 +1,135 @@
-// The status-strip endpoint is the single source for UI-2.0 header chips.
+// myrmidon(UI-2.0 Wave A part 2, ia-v2 §3): live data hooks for the UI-2.0
+// top bar chips. The dedicated GET /companies/:id/status-strip endpoint is
+// still ahead (ia-v2 §6 G1) — until it lands the shell composes the same
+// numbers from the aggregate endpoints already shipped, exactly as §3 pins:
+//   colony  ← dashboard.agents (running / active+running+paused+error)
+//   runs    ← live-runs.length + dashboard.runActivity[today].failed
+//   spend   ← costs/summary (spendCents; budgetCents=0 → no "of $0")
+//   waiting ← sidebar-badges.approvals + decisions(open) + interactions(pending)
+// When STATUS-STRIP lands, only these hooks change; the chip model
+// (ui2TopBarChips.ts) keeps its shape.
+//
+// Refetch policy (owner decision 03.10): chips refresh by interval and on
+// refocus — no manual reload. 30 s matches the ia-v2 recommendation; the
+// global refetchOnWindowFocus stays on (main.tsx default).
 import { useQuery } from "@tanstack/react-query";
 import { useCompany } from "@/context/CompanyContext";
 import { queryKeys } from "@/lib/queryKeys";
-import { statusStripApi } from "@/api/statusStrip";
+import { dashboardApi } from "@/api/dashboard";
+import { sidebarBadgesApi } from "@/api/sidebarBadges";
+import { costsApi } from "@/api/costs";
+import { decisionsApi } from "@/api/decisions";
+import { heartbeatsApi } from "@/api/heartbeats";
+import { attentionApi } from "@/api/attention";
+import {
+  ui2ColonyChip,
+  ui2RunsChip,
+  ui2SpendChip,
+  ui2WaitingBadge,
+  ui2ApprovalsPendingFromBadges,
+  ui2InteractionsPendingFromAttention,
+  type Ui2ColonyChip,
+  type Ui2RunsChip,
+  type Ui2SpendChip,
+  type Ui2WaitingBadge,
+} from "./ui2TopBarChips";
+
+export type { Ui2ColonyChip, Ui2RunsChip, Ui2SpendChip, Ui2WaitingBadge };
+
+/** Chip polling cadence: one round-trip per 30 s (ia-v2 §3 recommendation). */
+const UI2_CHIP_REFETCH_INTERVAL_MS = 30_000;
 
 export interface Ui2StatusStrip {
-  /** Colony: agents working vs total. */
-  colonyActive: number;
-  colonyTotal: number;
-  /** Fleet attention flag: error agents or failed runs need a look. */
-  fleetAttention: boolean;
-  /** Month spend cents + budget cents (forecast chip). */
-  monthSpendCents: number;
-  monthBudgetCents: number;
-  /** Decisions waiting for the owner. */
-  attentionCount: number;
+  /** Colony: agents working vs total (dashboard.agents). */
+  colony?: Ui2ColonyChip | null;
+  /** Runs: live runs + today's failed (live-runs + runActivity). */
+  runs?: Ui2RunsChip | null;
+  /** Spend (costs/summary; budget part suppressed when 0). */
+  spend?: Ui2SpendChip | null;
+  /** "Waiting for me" badge union; null when the badges source failed. */
+  waiting?: Ui2WaitingBadge | null;
+  colonyActive?: number;
+  colonyTotal?: number;
+  fleetAttention?: boolean;
+  monthSpendCents?: number;
+  monthBudgetCents?: number;
+  attentionCount?: number;
 }
 
+/**
+ * The live chip strip. Each chip degrades independently: a failed source
+ * renders that chip's empty state, never a partial number (ia-v2 §3).
+ */
 export function useUi2StatusStrip(companyId: string | null | undefined): Ui2StatusStrip | null {
-  const statusStrip = useQuery({
-    queryKey: queryKeys.statusStrip(companyId ?? ""),
-    queryFn: () => statusStripApi.get(companyId!),
+  const dashboard = useQuery({
+    queryKey: queryKeys.dashboard(companyId ?? ""),
+    queryFn: () => dashboardApi.summary(companyId!),
     enabled: companyId != null,
+    refetchInterval: UI2_CHIP_REFETCH_INTERVAL_MS,
+    refetchOnWindowFocus: true,
+  });
+  const badges = useQuery({
+    queryKey: queryKeys.sidebarBadges(companyId ?? ""),
+    queryFn: () => sidebarBadgesApi.get(companyId!),
+    enabled: companyId != null,
+    refetchInterval: UI2_CHIP_REFETCH_INTERVAL_MS,
+    refetchOnWindowFocus: true,
+  });
+  const liveRuns = useQuery({
+    queryKey: ["ui2", "chip", "live-runs", companyId ?? ""] as const,
+    queryFn: () => heartbeatsApi.liveRunsForCompany(companyId!),
+    enabled: companyId != null,
+    refetchInterval: UI2_CHIP_REFETCH_INTERVAL_MS,
+    refetchOnWindowFocus: true,
+  });
+  const costs = useQuery({
+    queryKey: ["ui2", "chip", "costs-summary", companyId ?? ""] as const,
+    queryFn: () => costsApi.summary(companyId!),
+    enabled: companyId != null,
+    refetchInterval: UI2_CHIP_REFETCH_INTERVAL_MS,
+    refetchOnWindowFocus: true,
+  });
+  const openDecisions = useQuery({
+    queryKey: queryKeys.decisions.list(companyId ?? "", "open"),
+    queryFn: () => decisionsApi.list(companyId!, { status: "open" }),
+    enabled: companyId != null,
+    refetchInterval: UI2_CHIP_REFETCH_INTERVAL_MS,
+    refetchOnWindowFocus: true,
+  });
+  const attention = useQuery({
+    queryKey: queryKeys.attention(companyId ?? ""),
+    queryFn: () => attentionApi.list(companyId!, { limit: 1 }),
+    enabled: companyId != null,
+    refetchInterval: UI2_CHIP_REFETCH_INTERVAL_MS,
+    refetchOnWindowFocus: true,
   });
 
-  if (companyId == null || !statusStrip.data) return null;
-
-  const strip = statusStrip.data;
-  if (!strip?.waiting) return null;
-  const colonyActive = strip.colony.running;
-  // Legacy denominator is idle+paused+error (dashboard "active" counts
-  // idle only); running agents are the numerator, not the total.
-  const colonyTotal = strip.colony.idle + strip.colony.paused + strip.colony.error;
+  if (companyId == null) return null;
 
   return {
-    colonyActive,
-    colonyTotal,
-    fleetAttention: strip.colony.error > 0 || strip.runs.failedToday > 0,
-    monthSpendCents: strip.costs.monthSpendCents,
-    monthBudgetCents: strip.costs.budgetCents,
-    attentionCount: strip.waiting.approvals,
+    colony: ui2ColonyChip(dashboard.isError ? undefined : dashboard.data?.agents),
+    runs: ui2RunsChip(
+      liveRuns.isError ? null : liveRuns.data?.length,
+      dashboard.isError ? undefined : dashboard.data?.runActivity,
+    ),
+    spend: ui2SpendChip(costs.isError ? undefined : costs.data),
+    waiting: ui2WaitingBadge(
+      ui2ApprovalsPendingFromBadges(badges.isError ? undefined : badges.data),
+      openDecisions.isError ? null : openDecisions.data,
+      ui2InteractionsPendingFromAttention(attention.isError ? undefined : attention.data),
+    ),
   };
 }
 
 /** Just the decisions count, for the rail badge and phone tab badge. */
 export function useUi2AttentionCount(): number | null {
   const { selectedCompanyId } = useCompany();
-  const statusStrip = useQuery({
-    queryKey: queryKeys.statusStrip(selectedCompanyId ?? ""),
-    queryFn: () => statusStripApi.get(selectedCompanyId!),
+  const badges = useQuery({
+    queryKey: queryKeys.sidebarBadges(selectedCompanyId ?? ""),
+    queryFn: () => sidebarBadgesApi.get(selectedCompanyId!),
     enabled: selectedCompanyId != null,
+    refetchInterval: UI2_CHIP_REFETCH_INTERVAL_MS,
+    refetchOnWindowFocus: true,
   });
-  return statusStrip.data?.waiting ? statusStrip.data.waiting.approvals : null;
+  return ui2ApprovalsPendingFromBadges(badges.isError ? undefined : badges.data);
 }
