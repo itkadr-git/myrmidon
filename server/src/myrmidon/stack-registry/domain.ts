@@ -373,7 +373,7 @@ export function patchEntryFromDelta(delta: StackDeltaSeed): StackPatchEntry {
 //
 // Pinned Paperclip vendor release supported by the migration schema
 // (schema-paperclip-v2026.1106.0.sql).
-export const PAPERCLIP_MIGRATION_SUPPORTED_VERSION = "v2026.1106.0";
+export const MYRMIDON_MIGRATION_SUPPORTED_VERSION = "v2026.1106.0";
 
 /**
  * The seed: every stack component the update panel tracks. Neutral public
