@@ -91,17 +91,24 @@ async function resolveCompanyUser(db: Db, companyId: string, rawSlug: string): P
   return rows.find((row) => userSlugCandidates(row).includes(slug)) ?? null;
 }
 
-function userIssueInvolvementSql(companyId: string, userId: string) {
+function userIssueInvolvementSql(
+  companyId: string,
+  userId: string,
+  options: { excludePrivate?: boolean } = {},
+) {
   return sql<boolean>`
     (
-      ${issues.createdByUserId} = ${userId}
-      OR ${issues.assigneeUserId} = ${userId}
-      OR EXISTS (
-        SELECT 1
-        FROM ${issueComments}
-        WHERE ${issueComments.companyId} = ${companyId}
-          AND ${issueComments.issueId} = ${issues.id}
-          AND ${issueComments.authorUserId} = ${userId}
+      ${options.excludePrivate ? sql`(${issues.isPrivate} = false) AND` : sql``}
+      (
+        ${issues.createdByUserId} = ${userId}
+        OR ${issues.assigneeUserId} = ${userId}
+        OR EXISTS (
+          SELECT 1
+          FROM ${issueComments}
+          WHERE ${issueComments.companyId} = ${companyId}
+            AND ${issueComments.issueId} = ${issues.id}
+            AND ${issueComments.authorUserId} = ${userId}
+        )
       )
     )
   `;
@@ -135,17 +142,18 @@ async function loadWindowStats(
   key: UserProfileWindowStats["key"],
   label: string,
   from: Date | null,
+  excludePrivate: boolean,
 ): Promise<UserProfileWindowStats> {
-  const involvement = userIssueInvolvementSql(companyId, userId);
+  const involvement = userIssueInvolvementSql(companyId, userId, { excludePrivate });
   const openStatuses = ["backlog", "todo", "in_progress", "in_review", "blocked"];
   const fromIso = from?.toISOString();
 
   const [issueStats] = await db
     .select({
       touchedIssues: sql<number>`count(distinct case when ${involvement} ${fromIso ? sql`and ${issues.updatedAt} >= ${fromIso}` : sql``} then ${issues.id} end)::int`,
-      createdIssues: sql<number>`count(distinct case when ${issues.createdByUserId} = ${userId} ${fromIso ? sql`and ${issues.createdAt} >= ${fromIso}` : sql``} then ${issues.id} end)::int`,
+      createdIssues: sql<number>`count(distinct case when ${issues.createdByUserId} = ${userId} ${fromIso ? sql`and ${issues.createdAt} >= ${fromIso}` : sql``} ${excludePrivate ? sql`and ${issues.isPrivate} = false` : sql``} then ${issues.id} end)::int`,
       completedIssues: sql<number>`count(distinct case when ${involvement} and ${issues.status} = 'done' ${fromIso ? sql`and ${issues.completedAt} >= ${fromIso}` : sql``} then ${issues.id} end)::int`,
-      assignedOpenIssues: sql<number>`count(distinct case when ${issues.assigneeUserId} = ${userId} and ${issues.status} in (${sql.join(openStatuses.map((status) => sql`${status}`), sql`, `)}) then ${issues.id} end)::int`,
+      assignedOpenIssues: sql<number>`count(distinct case when ${issues.assigneeUserId} = ${userId} and ${issues.status} in (${sql.join(openStatuses.map((status) => sql`${status}`), sql`, `)}) ${excludePrivate ? sql`and ${issues.isPrivate} = false` : sql``} then ${issues.id} end)::int`,
     })
     .from(issues)
     .where(and(eq(issues.companyId, companyId), visibleIssueCondition()));
@@ -173,7 +181,7 @@ async function loadWindowStats(
 
   const costConditions = [
     eq(costEvents.companyId, companyId),
-    userIssueInvolvementSql(companyId, userId),
+    userIssueInvolvementSql(companyId, userId, { excludePrivate }),
   ];
   if (from) costConditions.push(gte(costEvents.occurredAt, from));
   const [costStats] = await db
@@ -205,7 +213,7 @@ async function loadWindowStats(
   };
 }
 
-async function loadDailyStats(db: Db, companyId: string, userId: string): Promise<UserProfileDailyPoint[]> {
+async function loadDailyStats(db: Db, companyId: string, userId: string, excludePrivate: boolean): Promise<UserProfileDailyPoint[]> {
   const firstDay = startOfUtcDay(new Date(Date.now() - 13 * 24 * 60 * 60 * 1000));
   const points = new Map<string, UserProfileDailyPoint>();
   for (let index = 0; index < 14; index += 1) {
@@ -256,7 +264,7 @@ async function loadDailyStats(db: Db, companyId: string, userId: string): Promis
         visibleIssueCondition(),
         eq(issues.status, "done"),
         gte(issues.completedAt, firstDay),
-        userIssueInvolvementSql(companyId, userId),
+        userIssueInvolvementSql(companyId, userId, { excludePrivate }),
       ),
     )
     .groupBy(completedDay);
@@ -281,7 +289,7 @@ async function loadDailyStats(db: Db, companyId: string, userId: string): Promis
       and(
         eq(costEvents.companyId, companyId),
         gte(costEvents.occurredAt, firstDay),
-        userIssueInvolvementSql(companyId, userId),
+        userIssueInvolvementSql(companyId, userId, { excludePrivate }),
       ),
     )
     .groupBy(costDay);
@@ -305,19 +313,23 @@ export function userProfileRoutes(db: Db) {
     const companyId = req.params.companyId as string;
     const userSlug = req.params.userSlug as string;
     assertCompanyAccess(req, companyId);
-
     const row = await resolveCompanyUser(db, companyId, userSlug);
     if (!row) throw notFound("User not found");
     const canonicalSlug = userSlugCandidates(row)[0] ?? row.principalId;
     const userId = row.userId ?? row.principalId;
+    // 1.7 (PRIVATE-TASKS F2): an agent reading a user profile must not see
+    // the user's private issues — not their titles in `recentIssues`, not
+    // their activity rows in `recentActivity`, and not their contribution to
+    // stats, daily charts, or spend tops. Board actors keep the full profile.
+    const excludePrivate = req.actor.type === "agent";
 
     const [stats, daily, recentIssues, recentActivity, topAgents, topProviders] = await Promise.all([
       Promise.all(
         PROFILE_WINDOWS.map((entry) =>
-          loadWindowStats(db, companyId, userId, entry.key, entry.label, windowStart(entry.days)),
+          loadWindowStats(db, companyId, userId, entry.key, entry.label, windowStart(entry.days), excludePrivate),
         ),
       ),
-      loadDailyStats(db, companyId, userId),
+      loadDailyStats(db, companyId, userId, excludePrivate),
       db
         .select({
           id: issues.id,
@@ -335,7 +347,7 @@ export function userProfileRoutes(db: Db) {
           and(
             eq(issues.companyId, companyId),
             visibleIssueCondition(),
-            userIssueInvolvementSql(companyId, userId),
+            userIssueInvolvementSql(companyId, userId, { excludePrivate }),
           ),
         )
         .orderBy(desc(issues.updatedAt))
@@ -355,6 +367,20 @@ export function userProfileRoutes(db: Db) {
             eq(activityLog.companyId, companyId),
             eq(activityLog.actorType, "user"),
             eq(activityLog.actorId, userId),
+            // Issue-bound activity rows (including comments and documents,
+            // which always log against the parent issue entity) resolve to a
+            // private issue for an agent: drop the whole row.
+            excludePrivate
+              ? sql`(
+                  ${activityLog.entityType} not in ('issue', 'issue_comment', 'issue_document')
+                  or not exists (
+                    select 1 from ${issues}
+                    where ${issues.id} = ${activityLog.entityId}::uuid
+                      and ${issues.companyId} = ${activityLog.companyId}
+                      and ${issues.isPrivate} = true
+                  )
+                )`
+              : undefined,
           ),
         )
         .orderBy(desc(activityLog.createdAt))
@@ -371,7 +397,7 @@ export function userProfileRoutes(db: Db) {
         .from(costEvents)
         .innerJoin(issues, and(eq(issues.id, costEvents.issueId), eq(issues.companyId, costEvents.companyId)))
         .leftJoin(agents, eq(agents.id, costEvents.agentId))
-        .where(and(eq(costEvents.companyId, companyId), userIssueInvolvementSql(companyId, userId)))
+        .where(and(eq(costEvents.companyId, companyId), userIssueInvolvementSql(companyId, userId, { excludePrivate })))
         .groupBy(costEvents.agentId, agents.name)
         .orderBy(desc(sumNumber(costEvents.costCents)))
         .limit(5),
@@ -387,7 +413,7 @@ export function userProfileRoutes(db: Db) {
         })
         .from(costEvents)
         .innerJoin(issues, and(eq(issues.id, costEvents.issueId), eq(issues.companyId, costEvents.companyId)))
-        .where(and(eq(costEvents.companyId, companyId), userIssueInvolvementSql(companyId, userId)))
+        .where(and(eq(costEvents.companyId, companyId), userIssueInvolvementSql(companyId, userId, { excludePrivate })))
         .groupBy(costEvents.provider, costEvents.biller, costEvents.model)
         .orderBy(desc(sumNumber(costEvents.costCents)))
         .limit(5),
