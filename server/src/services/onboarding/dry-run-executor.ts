@@ -1,6 +1,8 @@
 // myrmidon(SERVER-ONBOARD): real executor for the onboarding dry-run probes.
 // All probes are read-only and all failures are normalized before they leave this module.
 
+// @ts-ignore
+import { Client as DefaultSshClient } from "ssh2";
 import { lookup } from "node:dns/promises";
 import type { ProbeOutcome, OnboardingDryRunExecutor } from "./dry-run.js";
 
@@ -20,13 +22,24 @@ type SshStream = {
   end?(): void;
 };
 
-type SshClientConstructor = new () => SshClient;
+export type SshClientConstructor = new () => SshClient;
 
-function sshClientConstructor(): SshClientConstructor {
-  // ssh2 is already a server dependency. Loading it lazily keeps DNS-only
-  // failures cheap and makes the executor straightforward to mock in tests.
-  // eslint-disable-next-line @typescript-eslint/no-require-imports
-  return (require("ssh2") as { Client: SshClientConstructor }).Client;
+export type RealOnboardingDryRunExecutorDeps = {
+  sshClientConstructor?: SshClientConstructor;
+};
+
+function resolveSshClientConstructor(custom?: SshClientConstructor): SshClientConstructor {
+  if (custom) return custom;
+  if (typeof DefaultSshClient === "function") {
+    return DefaultSshClient as unknown as SshClientConstructor;
+  }
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const req = require("ssh2");
+    return (req?.Client ?? req?.default?.Client ?? req) as SshClientConstructor;
+  } catch {
+    throw new Error("Unable to load ssh2 Client constructor");
+  }
 }
 
 function errorCode(error: unknown): string | undefined {
@@ -86,9 +99,11 @@ function connectConfig(input: {
 function execReadOnly(
   input: { host: string; port: number; username: string; auth: { password?: string; privateKey?: string }; timeoutMs: number },
   command: string,
+  customClientConstructor?: SshClientConstructor,
 ): Promise<{ stdout: string; stderr: string }> {
   return new Promise((resolve, reject) => {
-    const client = new (sshClientConstructor())();
+    const SshClient = resolveSshClientConstructor(customClientConstructor);
+    const client = new SshClient();
     let settled = false;
     const finish = (fn: () => void) => {
       if (settled) return;
@@ -125,7 +140,9 @@ function execReadOnly(
   });
 }
 
-export function createRealOnboardingDryRunExecutor(): OnboardingDryRunExecutor {
+export function createRealOnboardingDryRunExecutor(
+  deps: RealOnboardingDryRunExecutorDeps = {},
+): OnboardingDryRunExecutor {
   return {
     async resolveDns(host) {
       try {
@@ -141,6 +158,7 @@ export function createRealOnboardingDryRunExecutor(): OnboardingDryRunExecutor {
         await execReadOnly(
           { host, port, username, auth, timeoutMs },
           "true",
+          deps.sshClientConstructor,
         );
         return { status: "ok", code: "ssh_ok", message: "SSH authentication succeeded" };
       } catch (error) {
@@ -153,6 +171,7 @@ export function createRealOnboardingDryRunExecutor(): OnboardingDryRunExecutor {
         const result = await execReadOnly(
           { host, port, username, auth, timeoutMs },
           "sudo -n true && printf SUDO_OK",
+          deps.sshClientConstructor,
         );
         if (result.stdout.includes("SUDO_OK")) {
           return { status: "ok", code: "permissions_ok", message: "passwordless sudo available" };

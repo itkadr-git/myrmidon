@@ -16,7 +16,7 @@
 //   * no private-key material ever leaves the process (checked via the
 //     captured ssh2 connect config)
 //
-// We intercept `require("ssh2")` and `dns lookup` with vi.mock so no real
+// We intercept `ssh2` and `dns lookup` with vi.mock so no real
 // connection is attempted.
 
 import { describe, expect, it, vi, beforeEach } from "vitest";
@@ -31,14 +31,12 @@ vi.mock("node:dns/promises", () => ({
 
 // ---- Mock ssh2 before any module under test loads ----
 
-type FakeClientEvents = Record<string, (...args: unknown[]) => void>;
-
 class FakeSshClient {
   static instances: FakeSshClient[] = [];
   static onConnect: ((client: FakeSshClient) => void) | undefined;
   static onExec: ((client: FakeSshClient, command: string, cb: (error: Error | undefined, stream?: FakeStream) => void) => void) | undefined;
   static onEnd: ((client: FakeSshClient) => void) | undefined;
-  private listeners: FakeClientEvents = {};
+  private listeners: Record<string, Array<(...args: unknown[]) => void>> = {};
   private execCommands: Array<{
     command: string;
     cb: (error: Error | undefined, stream?: FakeStream) => void;
@@ -51,11 +49,11 @@ class FakeSshClient {
   readonly connectConfigs: Record<string, unknown>[] = [];
 
   on(event: string, listener: (...args: unknown[]) => void) {
-    this.listeners[event] = listener;
+    (this.listeners[event] ??= []).push(listener);
   }
 
   once(event: string, listener: (...args: unknown[]) => void) {
-    this.listeners[event] = listener;
+    (this.listeners[event] ??= []).push(listener);
   }
 
   connect(config: Record<string, unknown>) {
@@ -76,7 +74,8 @@ class FakeSshClient {
   }
 
   emit(event: string, ...args: unknown[]) {
-    this.listeners[event]?.(...args);
+    const list = this.listeners[event] ? [...this.listeners[event]] : [];
+    for (const l of list) l(...args);
   }
 
   get lastCommand(): string | undefined {
@@ -116,7 +115,10 @@ const hooks: {
   onEnd?: (client: FakeSshClient) => void;
 } = {};
 
-vi.mock("ssh2", () => ({ Client: FakeSshClient }));
+vi.mock("ssh2", () => ({
+  Client: FakeSshClient,
+  default: { Client: FakeSshClient },
+}));
 
 // Import after the mocks are registered.
 import { createRealOnboardingDryRunExecutor } from "./dry-run-executor.js";
