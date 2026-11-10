@@ -28,6 +28,45 @@ const INVALID_MODEL = "claude-3-opus";
 const CONNECTION_ID = "55555555-2222-4333-8444-555555555555";
 const GRANT_ID = "66666666-2222-4333-8444-555555555555";
 
+// ---------------------------------------------------------------------------
+// Mocks are created inside vi.hoisted so they are safe to reference from
+// vi.mock factories (which are hoisted to the top of the file by vitest).
+// ---------------------------------------------------------------------------
+const {
+  agentSvcMock,
+  instructionsSvcMock,
+  logActivityMock,
+} = vi.hoisted(() => ({
+  agentSvcMock: {
+    getById: vi.fn(),
+    update: vi.fn(),
+    create: vi.fn(),
+    list: vi.fn(),
+    orgForCompany: vi.fn(),
+    resolveByReference: vi.fn(),
+    pause: vi.fn(),
+    resume: vi.fn(),
+    clearError: vi.fn(),
+    activatePendingApproval: vi.fn(),
+    terminate: vi.fn(),
+    remove: vi.fn(),
+    updatePermissions: vi.fn(),
+    listConfigRevisions: vi.fn(),
+    getConfigRevision: vi.fn(),
+    rollbackConfigRevision: vi.fn(),
+  },
+  instructionsSvcMock: {
+    getBundle: vi.fn(),
+    updateBundle: vi.fn(),
+    readFile: vi.fn(),
+    writeFile: vi.fn(),
+    deleteFile: vi.fn(),
+    exportFiles: vi.fn(),
+    materializeManagedBundle: vi.fn(),
+  },
+  logActivityMock: vi.fn(),
+}));
+
 function makeAgent(id: string, overrides: Record<string, unknown> = {}) {
   return {
     id,
@@ -40,37 +79,6 @@ function makeAgent(id: string, overrides: Record<string, unknown> = {}) {
     ...overrides,
   };
 }
-
-const agentSvcMock = {
-  getById: vi.fn(),
-  update: vi.fn(),
-  create: vi.fn(),
-  list: vi.fn(),
-  orgForCompany: vi.fn(),
-  resolveByReference: vi.fn(),
-  pause: vi.fn(),
-  resume: vi.fn(),
-  clearError: vi.fn(),
-  activatePendingApproval: vi.fn(),
-  terminate: vi.fn(),
-  remove: vi.fn(),
-  updatePermissions: vi.fn(),
-  listConfigRevisions: vi.fn(),
-  getConfigRevision: vi.fn(),
-  rollbackConfigRevision: vi.fn(),
-};
-
-const instructionsSvcMock = {
-  getBundle: vi.fn(),
-  updateBundle: vi.fn(),
-  readFile: vi.fn(),
-  writeFile: vi.fn(),
-  deleteFile: vi.fn(),
-  exportFiles: vi.fn(),
-  materializeManagedBundle: vi.fn(),
-};
-
-const logActivityMock = vi.fn();
 
 vi.mock("../services/index.js", () => ({
   agentService: vi.fn(() => agentSvcMock),
