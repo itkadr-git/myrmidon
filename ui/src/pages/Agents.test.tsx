@@ -120,7 +120,15 @@ vi.mock("../api/resourceMemberships", () => ({
 }));
 
 vi.mock("../adapters/adapter-display-registry", () => ({
+  getAdapterDisplay: (type: string) => ({
+    type,
+    label: type,
+    description: "",
+    icon: () => null,
+  }),
   getAdapterLabel: (type: string) => type,
+  getAdapterLabels: () => ({}) as Record<string, string>,
+  isKnownAdapterType: () => true,
 }));
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
