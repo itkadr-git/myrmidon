@@ -125,6 +125,7 @@ describeEmbeddedPostgres("myrmidon(HERMES-RUN-REATTACH) gateway run reattach swe
     await db.delete(companySecretVersions);
     await db.delete(companySecrets);
     await db.delete(companySecretProviderConfigs);
+    await db.delete(activityLog);
     await db.delete(agents);
     await db.delete(companies);
   });

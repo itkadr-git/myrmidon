@@ -69,6 +69,23 @@ and per role, and compares the window against the company's pinned baseline
 snapshot with per-row deltas — so a regression in delivery speed or rework
 rate is visible as a number, not a feeling.
 
+## Knowledge module settings (Settings → Knowledge)
+
+The company knowledge module has its own settings screen under Company
+Settings → Knowledge. It edits the module limits, the auto-accept threshold,
+the sweep schedule and the section reviewers, one set per company, stored in
+the `knowledge_settings` table.
+
+Every field resolves UI → env → default, and the screen badges which layer
+produced the effective value: `ui` (saved from the screen), `env`
+(`MYRMIDON_KNOWLEDGE_*`) or `default`. A value saved from the screen wins
+over the environment; clearing it in the UI falls back to env, then to the
+default. Reads are company-access; writes additionally require an instance
+admin, and every successful write is journaled as `knowledge.settings_updated`.
+
+- API: `GET`/`PATCH /api/myrmidon/companies/:companyId/knowledge/settings`
+- Env variables and bounds: [SETTINGS.md](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/SETTINGS.md), section «1.7 — KNOWLEDGE-2.0 L-11»
+
 ## ADM archive migration
 
 The opt-in ADM migration command produces a deterministic dry-run before any import. It requires explicit policy summaries and fails closed on scanner errors. Import creates drafts and submits rules for review; it never publishes them. The REST hook delivers bounded summaries with session dedup and byte metrics. It is not installed in production by the migration command. See the [EN/RU operator guide](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/guides/adm-knowledge-migration.md) for environment variables, apply and rollback.

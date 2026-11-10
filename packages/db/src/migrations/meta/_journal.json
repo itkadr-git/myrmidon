@@ -2755,6 +2755,13 @@
       "breakpoints": true
     },
     {
+      "idx": 475,
+      "version": "7",
+      "when": 1794249000000,
+      "tag": "0475_knowledge_settings",
+      "breakpoints": true
+    },
+    {
       "idx": 479,
       "version": "7",
       "when": 1794293268840,

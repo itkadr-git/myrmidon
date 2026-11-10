@@ -57,6 +57,10 @@ export function isOnboardJobActive(status: OnboardJobStatus): boolean {
   return status === "pending" || status === "claimed" || status === "running";
 }
 
+export function canRetryOnboardJob(status: OnboardJobStatus): boolean {
+  return status === "failed" || status === "expired";
+}
+
 export function newOnboardJob(input: {
   companyId: string;
   serverId: string;

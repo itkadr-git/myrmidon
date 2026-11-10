@@ -29,6 +29,11 @@ is published under a `myrmidon*` name; the old `paperclip*` names keep
 working as deprecated aliases for one release so installed systems do not
 break.
 
+Gateway access tokens issued to external callers are proactively monitored:
+the operator attention feed surfaces warning cards 14 days before a token
+expires, recommending rotation for active tokens and revocation for unused
+expired tokens without leaking credential hashes.
+
 ## Cloud storage and Microsoft 365
 
 The cloud connector makes cloud storage a first-class board module: the

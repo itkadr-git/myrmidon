@@ -24,6 +24,8 @@ import { logger } from "../../middleware/logger.js";
 import { logActivity } from "../../services/activity-log.js";
 import { secretService } from "../../services/secrets.js";
 import {
+  canRetryOnboardJob,
+  isOnboardJobActive,
   type OnboardJob,
   type OnboardStepLogEntry,
 } from "./domain.js";
@@ -227,6 +229,14 @@ export function onboardService(db: Db, deps: OnboardServiceDeps) {
       requireEnabled();
       const server = await deps.getServer(input.companyId, input.serverId);
       if (!server) throw new OnboardServiceError(404, "Server not found");
+      const existing = await deps.store.listJobs(input.companyId, input.serverId);
+      const active = existing.find((j) => isOnboardJobActive(j.status));
+      if (active) {
+        throw new OnboardServiceError(
+          409,
+          `An onboarding job for server ${input.serverId} is already in progress (status ${active.status})`,
+        );
+      }
       await deps.store.updateServerOnboard(input.companyId, input.serverId, { onboardState: "onboarding" });
       const job = await deps.store.createJob({
         companyId: input.companyId,
@@ -236,6 +246,55 @@ export function onboardService(db: Db, deps: OnboardServiceDeps) {
       });
       await writeAudit(input.companyId, "job_started", input.serverId, { jobId: job.id, kind: input.kind });
       return job;
+    },
+
+    /** Retry an onboarding job for a server that failed or needs attention. */
+    async retry(input: { companyId: string; serverId: string; createdBy?: string | null }): Promise<OnboardJob> {
+      requireEnabled();
+      const server = await deps.store.getServerById(input.companyId, input.serverId);
+      if (!server) throw new OnboardServiceError(404, "Server not found");
+      const existing = await deps.store.listJobs(input.companyId, input.serverId);
+      const active = existing.find((j) => isOnboardJobActive(j.status));
+      if (active) {
+        throw new OnboardServiceError(
+          409,
+          `An onboarding job for server ${input.serverId} is already in progress (status ${active.status})`,
+        );
+      }
+      const lastJob = existing[0];
+      if (lastJob && !canRetryOnboardJob(lastJob.status) && server.onboardState !== "needs_attention") {
+        throw new OnboardServiceError(
+          409,
+          `Server ${input.serverId} is not in a retriable state (state: ${server.onboardState}, last job status: ${lastJob.status})`,
+        );
+      }
+      await deps.store.updateServerOnboard(input.companyId, input.serverId, { onboardState: "onboarding" });
+      const job = await deps.store.createJob({
+        companyId: input.companyId,
+        serverId: input.serverId,
+        kind: lastJob?.kind ?? "onboard",
+        createdBy: input.createdBy ?? null,
+      });
+      await writeAudit(input.companyId, "job_retried", input.serverId, {
+        jobId: job.id,
+        kind: job.kind,
+        previousJobId: lastJob?.id ?? null,
+      });
+      return job;
+    },
+
+    /** Resume an onboarding job: returns the existing active job if running, or retries if failed/needs_attention. */
+    async resume(input: { companyId: string; serverId: string; createdBy?: string | null }): Promise<OnboardJob> {
+      requireEnabled();
+      const server = await deps.getServer(input.companyId, input.serverId);
+      if (!server) throw new OnboardServiceError(404, "Server not found");
+      const existing = await deps.store.listJobs(input.companyId, input.serverId);
+      const active = existing.find((j) => isOnboardJobActive(j.status));
+      if (active) {
+        await writeAudit(input.companyId, "job_resumed", input.serverId, { jobId: active.id, kind: active.kind });
+        return active;
+      }
+      return this.retry(input);
     },
 
     /** Executor entry: claim the next pending job and get its one-time secrets. */
@@ -279,13 +338,14 @@ export function onboardService(db: Db, deps: OnboardServiceDeps) {
       if (!updated) return null;
 
       // Server state follows the job.
+      const isFailed = input.status === "failed" || input.entry?.result === "failed";
       if (input.status === "succeeded") {
         await deps.store.updateServerOnboard(job.companyId, job.serverId, {
           onboardState: "ready",
           lastCheckOk: true,
           ...(input.hostKeyFingerprint ? { hostKeyFingerprint: input.hostKeyFingerprint } : {}),
         });
-      } else if (input.status === "failed") {
+      } else if (isFailed) {
         await deps.store.updateServerOnboard(job.companyId, job.serverId, { onboardState: "needs_attention" });
       } else if (input.entry?.step === "access" && input.entry.result === "ok") {
         await deps.store.updateServerOnboard(job.companyId, job.serverId, { onboardState: "onboarding" });
@@ -295,7 +355,8 @@ export function onboardService(db: Db, deps: OnboardServiceDeps) {
           await deps.secrets.deleteSecret(job.companyId, server.passwordSecretKey);
         }
       }
-      await writeAudit(job.companyId, input.status ? `job_${input.status}` : "step_reported", job.serverId, {
+      const actionName = input.status ? `job_${input.status}` : isFailed ? "job_failed" : "step_reported";
+      await writeAudit(job.companyId, actionName, job.serverId, {
         jobId: job.id,
         step: input.entry?.step ?? input.step ?? null,
         result: input.entry?.result ?? null,
