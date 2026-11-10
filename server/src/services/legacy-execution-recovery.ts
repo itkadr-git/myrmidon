@@ -40,23 +40,13 @@ export function legacyExecutionNeedsReconciliation(
   // bounded retry scheduler's ordinary attempt budget is exhausted.
   if (run.errorCode === MAINTENANCE_INTERRUPT_ERROR_CODE) return false;
   if (run.errorCode === RUN_STALL_ERROR_CODE) return false; // myrmidon(RUN-STALL): stall interruption, the sweep re-opens the task itself
+  // myrmidon(PROVIDER-GARBAGE / OPE-12286): a provider stub reply returned with
+  // HTTP 200 never reached the model — the stub text is the whole outcome, so
+  // no provider work happened by construction. The bounded retry scheduler
+  // (paused provider_garbage retries) owns the attempt budget for these runs,
+  // the same treatment as model-unavailable below; never hold for reconciliation.
+  if (run.errorCode === "provider_garbage") return false;
   if (shouldSkipReconciliationForInfraInterrupt(run)) return false; // myrmidon(L1): infrastructure interruption, retried or released, not held
-  // myrmidon(PROVIDER-OUTAGE-RECOVERY): a classified provider outage (429/402/503
-  // "no deployments available" / "insufficient_quota") is an external channel
-  // failure with its own durable quota monitor. Do not turn it into a
-  // reconciliation hold after the retry budget is exhausted: the monitor wake
-  // must be allowed to issue the bounded retry once the provider recovers.
-  // Runs without persisted outage evidence keep the conservative hold.
-  const resultJson = run.resultJson as Record<string, unknown> | null | undefined;
-  const errorFamily = typeof resultJson?.errorFamily === "string" ? resultJson.errorFamily : null;
-  const providerErrorText = [
-    run.errorCode ?? "",
-    JSON.stringify(resultJson ?? {}),
-  ].join("\n");
-  if (
-    errorFamily === "provider_quota" ||
-    /(?:insufficient[_ ]quota|no deployments available|all deployments[^\n]{0,120}cooldown|provider quota|usage limit|quota (?:limit )?exceeded)/i.test(providerErrorText)
-  ) return false;
   if (
     run.errorCode === "hermes_gateway_connect_failed" ||
     run.scheduledRetryReason === "connect_failed_transient_retry"
