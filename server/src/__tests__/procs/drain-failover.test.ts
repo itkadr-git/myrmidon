@@ -865,66 +865,6 @@ describeProcs("drain and failover e2e: supervisor in-process, two api children (
     const health = await requestApi(BOARD_URL, "/api/health");
     expect(health.status).toBe(200);
   }, 420_000);
-
-  // OPE-12692 TEMPORARY EVIDENCE TEST — reverts before merge.
-  // The acceptance criteria ask for 10 consecutive kill -9 scenario runs on a
-  // CI runner in the PR. This probe repeats the kill -9 shape (same rps, same
-  // load duration, same connection: close) ten times in ONE CI run and logs
-  // each loss offset relative to the kill for the window measurement.
-  it("OPE-12692 TEMP evidence: ten consecutive kill -9 probes against the SIGKILL window", async () => {
-    expect(survivorPid, "survivor pid from scenario 1 is known").toBeGreaterThan(0);
-    const measurements: string[] = [];
-    for (let round = 1; round <= 10; round++) {
-      // Exactly two ready slots: the constant survivor plus the current
-      // other child (scenario 2's restarted child from the previous round or
-      // the initial second slot on round 1).
-      await waitFor(
-        () => {
-          const slots = supervisor!.children();
-          const ready = slots.filter((slot) => typeof slot.pid === "number" && slot.pid > 0 && slot.ready);
-          return ready.length === 2 && ready.every((slot) => slot.pid !== 0)
-            ? true
-            : `${slots.length} slots, ${ready.length} ready`;
-        },
-        { timeoutMs: SPLIT_READY_TIMEOUT_MS, label: `round ${round}: two ready slots` },
-      );
-      const slotsNow = supervisor!.children();
-      const victimPidRound = slotsNow.find((slot) => slot.pid !== survivorPid)!.pid!;
-      expect(victimPidRound, `round ${round}: victim differs from survivor`).not.toBe(survivorPid);
-      for (let i = 0; i < 3; i++) {
-        const res = await heartbeat();
-        if (!res.ok) throw new Error(`round ${round}: warmup heartbeat ${i} failed: ${res.error}`);
-      }
-      // Count from before the kill: the restart fork (backoff ~1-2 s) lands
-      // inside the 5 s load window, so a post-load count would miss it.
-      const forkedBeforeRound = forkedPids.length;
-      const loadStartedAtRound = Date.now();
-      const loadPromiseRound = runHeartbeatLoad({ rps: 10, durationMs: 5_000 });
-      await new Promise((resolve) => setTimeout(resolve, 500));
-      const killedAtRound = Date.now() - loadStartedAtRound;
-      process.kill(victimPidRound, "SIGKILL");
-      const loadRound = await loadPromiseRound;
-      assertKillWindowLosses(loadRound, killedAtRound);
-      const offsetsRel = loadRound.failureOffsetsMs
-        .map((offset) => offset - killedAtRound)
-        .sort((a, b) => a - b);
-      measurements.push(`round ${round}: killed at t+${killedAtRound}ms, losses [${offsetsRel.join(", ")}] of ${loadRound.total}`);
-      process.stderr.write(`[OPE-12692] round ${round}/10: killed at t+${killedAtRound}ms, losses [${offsetsRel.join(", ")}] of ${loadRound.total} requests\n`);
-      // Wait for the restart so the next round has two ready slots again.
-      await waitFor(
-        () => {
-          const slots = supervisor!.children();
-          const restarted = slots.find(
-            (slot) => slot.restartAttempts >= 1 && slot.pid !== victimPidRound && slot.pid !== survivorPid && slot.ready,
-          );
-          return restarted ? true : "no restarted child ready yet";
-        },
-        { timeoutMs: SPLIT_READY_TIMEOUT_MS, label: `round ${round}: restarted child ready` },
-      );
-      expect(forkedPids.length, `round ${round}: fresh child forked`).toBe(forkedBeforeRound + 1);
-    }
-    process.stderr.write(`[OPE-12692] ten-round summary:\n${measurements.map((m) => `  ${m}`).join("\n")}\n`);
-  }, 900_000);
 });
 
 describe("classifyKillWindowFailures (kill -9 loss window, OPE-12692)", () => {
