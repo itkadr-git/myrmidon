@@ -35,13 +35,14 @@ export type SelfCheckGateResolver = (input: {
 export function evaluateSelfCheckEvidence(
   evidence: SelfCheckEvidence,
 ): SelfCheckGateDecision {
+  // No PR means this gate does not apply: review entries for plans and
+  // confirmations are not delivery artifacts. A PR with a known-empty diff
+  // still reaches the hard EMPTY_DIFF rejection below.
   if (evidence.status === SELF_CHECK_EVIDENCE_STATES.NO_PULL_REQUEST) {
-    // myrmidon(OPE-12146): no open pull-request work product is a legitimate
-    // state for agent review entry: plan/confirmation handoffs, chat project
-    // tools and conformance continuation vectors all enter `in_review` without
-    // a PR. The stop-gate only binds deliveries that carry a PR; a PR whose
-    // diff is empty is still EMPTY_DIFF below (checked in the merge details).
     return admitSelfCheckGate();
+  }
+  if (evidence.diff && isMyrmidonDiffEmpty(evidence.diff)) {
+    return rejectSelfCheckGate(SELF_CHECK_REJECT_CODES.EMPTY_DIFF);
   }
   if (evidence.status === SELF_CHECK_EVIDENCE_STATES.PENDING) {
     return rejectSelfCheckGate(
@@ -67,9 +68,6 @@ export function evaluateSelfCheckEvidence(
 
   const gateInput = selfCheckEvidenceToGateInput(evidence);
   if (!gateInput) {
-    if (!evidence.diff || isMyrmidonDiffEmpty(evidence.diff)) {
-      return rejectSelfCheckGate(SELF_CHECK_REJECT_CODES.EMPTY_DIFF);
-    }
     return rejectSelfCheckGate(SELF_CHECK_REJECT_CODES.TEST_FAILED);
   }
 

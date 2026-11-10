@@ -123,13 +123,23 @@ async function seedAgentIssueFixture(overrides?: {
     executionPolicy: policy,
     executionState: overrides?.executionState ?? null,
   });
+  const runId = randomUUID();
+  await ctx.db.insert(heartbeatRuns).values({
+    id: runId,
+    companyId,
+    agentId: engineerAgentId,
+    status: "running",
+    // Real heartbeat runs carry their source issue; the cross-issue influence
+    // cap requires it to attribute the write (matches readRunSourceIssueId).
+    contextSnapshot: { issueId },
+  });
 
   const agentActor = {
     type: "agent" as const,
     source: "agent_jwt" as const,
     agentId: engineerAgentId,
     companyId,
-    runId: null,
+    runId,
     isInstanceAdmin: false,
   };
 
@@ -149,6 +159,7 @@ function makeEvidenceDeps(overrides: {
   deletions?: number;
   testState?: "success" | "failure";
   lintState?: "success" | "failure";
+  testLane?: Pick<PullRequestHeadLaneEvidence, "state" | "status" | "conclusion" | "finishedAt" | "headSha">;
 }): SelfCheckEvidenceDeps {
   const nowIso = new Date().toISOString();
   const makeLane = (
@@ -176,10 +187,12 @@ function makeEvidenceDeps(overrides: {
       additions: overrides.additions ?? 50,
       deletions: overrides.deletions ?? 10,
     }),
-    resolveHeadLaneEvidence: async () => [
-      makeLane("test", overrides.testState ?? "success"),
-      makeLane("lint", overrides.lintState ?? "success"),
-    ],
+    resolveHeadLaneEvidence: async () => {
+      const test = overrides.testLane
+        ? { lane: "test" as const, name: "test", ...overrides.testLane }
+        : makeLane("test", overrides.testState ?? "success");
+      return [test, makeLane("lint", overrides.lintState ?? "success")];
+    },
   };
 }
 
@@ -211,7 +224,7 @@ describeEmbeddedPostgres("myrmidon self-check gate routes", () => {
       .patch(`/api/issues/${issueId}`)
       .send({ status: "in_review" });
 
-    expect(response.status).toBe(422);
+    expect(response.status, JSON.stringify(response.body)).toBe(422);
     expect(response.body.code).toBe(SELF_CHECK_REJECT_CODES.EMPTY_DIFF);
     expect(insertReviewAdmissionWakeup).not.toHaveBeenCalled();
 
@@ -424,5 +437,186 @@ describeEmbeddedPostgres("myrmidon self-check gate routes", () => {
       .where(eq(issues.id, issueId));
     expect(updatedIssue?.status).toBe("in_review");
   });
+  it("пустой дифф с PENDING-дорожкой -> 422 EMPTY_DIFF, а не технический отказ с обходом", async () => {
+    const { issueId, agentActor } = await seedAgentIssueFixture({
+      executionState: { selfCheckGateRejections: 5 },
+    });
+    const insertReviewAdmissionWakeup = vi.fn(async () => ({ created: true }));
+
+    const routes = (db: RouteDb, storage: RouteStorage) =>
+      issueRoutes(db, storage, {
+        selfCheckEvidenceDeps: makeEvidenceDeps({
+          changedFiles: 0,
+          additions: 0,
+          deletions: 0,
+          testLane: {
+            state: "pending",
+            status: "in_progress",
+            conclusion: null,
+            finishedAt: null,
+            headSha: HEAD_SHA,
+          },
+        }),
+        resolveReviewPullRequestCi: async () => ({
+          state: "complete",
+          pullRequestUrl: "https://github.com/acme/app/pull/42",
+          headSha: HEAD_SHA,
+        }),
+        resolveReviewHeadFailedChecks: async () => ({
+          state: "unknown",
+          reason: "not_under_test",
+        }),
+        insertReviewAdmissionWakeup,
+      });
+
+    const response = await request(routeApp(ctx.db, agentActor as never, routes as never))
+      .patch(`/api/issues/${issueId}`)
+      .send({ status: "in_review" });
+
+    expect(response.status).toBe(422);
+    expect(response.body.code).toBe(SELF_CHECK_REJECT_CODES.EMPTY_DIFF);
+    expect(insertReviewAdmissionWakeup).not.toHaveBeenCalled();
+
+    const [updatedIssue] = await ctx.db
+      .select()
+      .from(issues)
+      .where(eq(issues.id, issueId));
+    expect(updatedIssue?.status).toBe("in_progress");
+    const executionState = updatedIssue?.executionState as Record<string, unknown> | null;
+    expect(executionState?.selfCheckGateRejections).toBe(6);
+    expect(executionState?.selfCheckGateBypassed).toBeUndefined();
+  });
+  it("пустой дифф после превышенного лимита -> жёсткий EMPTY_DIFF, не обход по счётчику", async () => {
+    const { issueId, agentActor } = await seedAgentIssueFixture({
+      executionState: { selfCheckGateRejections: 5 },
+    });
+    const routes = (db: RouteDb, storage: RouteStorage) =>
+      issueRoutes(db, storage, {
+        selfCheckEvidenceDeps: makeEvidenceDeps({
+          changedFiles: 0,
+          additions: 0,
+          deletions: 0,
+        }),
+        resolveReviewPullRequestCi: async () => ({
+          state: "complete",
+          pullRequestUrl: "https://github.com/acme/app/pull/42",
+          headSha: HEAD_SHA,
+        }),
+        resolveReviewHeadFailedChecks: async () => ({
+          state: "unknown",
+          reason: "not_under_test",
+        }),
+        insertReviewAdmissionWakeup: vi.fn(async () => ({ created: true })),
+      });
+
+    const response = await request(routeApp(ctx.db, agentActor as never, routes as never))
+      .patch(`/api/issues/${issueId}`)
+      .send({ status: "in_review" });
+
+    expect(response.status).toBe(422);
+    expect(response.body.code).toBe(SELF_CHECK_REJECT_CODES.EMPTY_DIFF);
+
+    const [updatedIssue] = await ctx.db
+      .select()
+      .from(issues)
+      .where(eq(issues.id, issueId));
+    expect(updatedIssue?.status).toBe("in_progress");
+    const executionState = updatedIssue?.executionState as Record<string, unknown> | null;
+    expect(executionState?.selfCheckGateRejections).toBe(6);
+    expect(executionState?.selfCheckGateBypassed).toBeUndefined();
+  });
+
+  it("пустой дифф с нечитаемыми CI-дорожками -> 422 EMPTY_DIFF, а не UNKNOWN-обход", async () => {
+    const { issueId, agentActor } = await seedAgentIssueFixture({
+      executionState: { selfCheckGateRejections: 5 },
+    });
+    const insertReviewAdmissionWakeup = vi.fn(async () => ({ created: true }));
+
+    const routes = (db: RouteDb, storage: RouteStorage) =>
+      issueRoutes(db, storage, {
+        selfCheckEvidenceDeps: {
+          resolvePullRequestTarget: async () => ({
+            kind: "ok",
+            pullRequestUrl: "https://github.com/acme/app/pull/42",
+            reference: { host: "github.com", owner: "acme", repo: "app", number: 42 },
+          }),
+          resolvePullRequestDetails: async () => ({
+            headSha: HEAD_SHA,
+            changedFiles: 0,
+            additions: 0,
+            deletions: 0,
+          }),
+          resolveHeadLaneEvidence: async () => {
+            throw new Error("ci lanes unavailable");
+          },
+        },
+        resolveReviewPullRequestCi: async () => ({
+          state: "complete",
+          pullRequestUrl: "https://github.com/acme/app/pull/42",
+          headSha: HEAD_SHA,
+        }),
+        resolveReviewHeadFailedChecks: async () => ({
+          state: "unknown",
+          reason: "not_under_test",
+        }),
+        insertReviewAdmissionWakeup,
+      });
+
+    const response = await request(routeApp(ctx.db, agentActor as never, routes as never))
+      .patch(`/api/issues/${issueId}`)
+      .send({ status: "in_review" });
+
+    expect(response.status).toBe(422);
+    expect(response.body.code).toBe(SELF_CHECK_REJECT_CODES.EMPTY_DIFF);
+    expect(insertReviewAdmissionWakeup).not.toHaveBeenCalled();
+
+    const [updatedIssue] = await ctx.db
+      .select()
+      .from(issues)
+      .where(eq(issues.id, issueId));
+    expect(updatedIssue?.status).toBe("in_progress");
+    const executionState = updatedIssue?.executionState as Record<string, unknown> | null;
+    expect(executionState?.selfCheckGateRejections).toBe(6);
+    expect(executionState?.selfCheckGateBypassed).toBeUndefined();
+  });
+
+  it("упавший резолвер гейта -> 422 TEST_FAILED со счётчиком, а не 500 и не допуск", async () => {
+    const { issueId, agentActor } = await seedAgentIssueFixture();
+    const insertReviewAdmissionWakeup = vi.fn(async () => ({ created: true }));
+
+    const routes = (db: RouteDb, storage: RouteStorage) =>
+      issueRoutes(db, storage, {
+        resolveSelfCheckGate: async () => {
+          throw new Error("evidence storage degraded");
+        },
+        resolveReviewPullRequestCi: async () => ({
+          state: "complete",
+          pullRequestUrl: "https://github.com/acme/app/pull/42",
+          headSha: HEAD_SHA,
+        }),
+        resolveReviewHeadFailedChecks: async () => ({
+          state: "unknown",
+          reason: "not_under_test",
+        }),
+        insertReviewAdmissionWakeup,
+      });
+
+    const response = await request(routeApp(ctx.db, agentActor as never, routes as never))
+      .patch(`/api/issues/${issueId}`)
+      .send({ status: "in_review" });
+
+    expect(response.status).toBe(422);
+    expect(response.body.code).toBe(SELF_CHECK_REJECT_CODES.TEST_FAILED);
+    expect(insertReviewAdmissionWakeup).not.toHaveBeenCalled();
+
+    const [updatedIssue] = await ctx.db
+      .select()
+      .from(issues)
+      .where(eq(issues.id, issueId));
+    expect(updatedIssue?.status).toBe("in_progress");
+    const executionState = updatedIssue?.executionState as Record<string, unknown> | null;
+    expect(executionState?.selfCheckGateRejections).toBe(1);
+  });
+
 });
 

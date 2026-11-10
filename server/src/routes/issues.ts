@@ -87,9 +87,9 @@ import {
 import {
   type SelfCheckEvidenceDeps,
   type SelfCheckGateResolver,
-  admitSelfCheckGate,
   createSelfCheckGateResolver,
   DEFAULT_MAX_TECHNICAL_REJECTIONS,
+  rejectSelfCheckGate,
   SELF_CHECK_REJECT_CODES,
   type SelfCheckGateDecision,
 } from "../myrmidon/self-check-gate/index.js";
@@ -15101,14 +15101,19 @@ export function issueRoutes(
         } catch (error) {
           // myrmidon(OPE-12146): the stop-gate must not turn review entry into
           // a 500 when its evidence read fails (issue row visible, storage
-          // degraded, test mocks without plain selects). Fail open here; the
-          // downstream reviewer-admission CI gate still applies its own
-          // evidence checks before a reviewer is woken.
+          // degraded, test mocks without plain selects). But it must not fail
+          // open either: an unreadable gate is UNKNOWN evidence, which counts
+          // as a technical rejection and hits the 3-limit bypass like any
+          // other failed check. EMPTY_DIFF is still hard-only: it can only be
+          // produced by the resolver with a real diff in hand.
           logger.warn(
             { err: error, issueId: existing.id },
             "self_check_gate_evidence_read_failed",
           );
-          gateDecision = admitSelfCheckGate();
+          gateDecision = rejectSelfCheckGate(
+            SELF_CHECK_REJECT_CODES.TEST_FAILED,
+            "[TEST_FAILED] Не удалось получить статус проверок (evidence read failed).",
+          );
         }
 
         const executionState =

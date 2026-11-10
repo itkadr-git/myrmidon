@@ -453,9 +453,11 @@ export async function loadIssuePullRequestTarget(
       );
   } catch {
     // myrmidon(OPE-12146): a work-product read that fails (storage degraded,
-    // test double without plain-select support) must read as "no PR", not
-    // crash the caller; the evidence reader maps unknown sources separately.
-    return { kind: "none" };
+    // network loss) is NOT proof that no PR exists. Report it as `unreadable`
+    // so the self-check gate treats it as unknown evidence (a counted
+    // technical rejection), while recovery callers keep their bounded wait.
+    // Only a genuinely empty product list below answers `none`.
+    return { kind: "unreadable", pullRequestUrl: null };
   }
   const product = selectOpenPullRequestWorkProduct(products);
   if (!product) return { kind: "none" };
