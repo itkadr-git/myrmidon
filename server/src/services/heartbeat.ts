@@ -34454,7 +34454,8 @@ export function heartbeatService(
             queuedCommentInterruptId: opts.queuedCommentInterruptId,
             queuedCommentRequestId: opts.queuedCommentRequestId,
           });
-          if (!explicitContinuation && executionBlocker) return deferBlockedExecution(executionBlocker);
+          // myrmidon(OPE-12577): the manager's run guard wake passes this second hold check too.
+          if (!explicitContinuation && executionBlocker && !runGuardManagerWake) return deferBlockedExecution(executionBlocker);
           if (explicitContinuation) {
             enrichedContextSnapshot.forceFreshSession = true;
             enrichedContextSnapshot.previousRunId = explicitContinuation.previousRunId;
