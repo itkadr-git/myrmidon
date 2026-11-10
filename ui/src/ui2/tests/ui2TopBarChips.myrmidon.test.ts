@@ -132,6 +132,7 @@ describe("myrmidon(UI2) runs chip mapping", () => {
   it("renders empty (null) while live-runs has not resolved", () => {
     expect(ui2RunsChip(null, dashboardFixture().runActivity, NOW)).toBeNull();
     expect(ui2RunsChip(21, undefined, NOW)).toBeNull();
+    expect(ui2RunsChip(-1, dashboardFixture().runActivity, NOW)).toBeNull();
   });
 
   it("attention tone only when failed today > 0", () => {
@@ -160,9 +161,10 @@ describe("myrmidon(UI2) spend chip mapping", () => {
     expect(chip?.budget).toBe("$2,200");
   });
 
-  it("renders empty (null) while costs/summary has not resolved or spendCents is non-finite", () => {
+  it("renders empty (null) while costs/summary has not resolved or spendCents is non-finite or negative", () => {
     expect(ui2SpendChip(undefined)).toBeNull();
     expect(ui2SpendChip(costSummaryFixture({ spendCents: NaN }))).toBeNull();
+    expect(ui2SpendChip(costSummaryFixture({ spendCents: -1 }))).toBeNull();
   });
 
   it("handles negative budgetCents by suppressing budget (null)", () => {
@@ -195,6 +197,15 @@ describe("myrmidon(UI2) waiting badge union", () => {
     expect(badge?.count).toBe(0);
   });
 
+  it.each([
+    [-3, [decisionFixture("open")], 2],
+    [1, [decisionFixture("open")], -2],
+    [Number.NaN, [decisionFixture("open")], 2],
+    [1, [decisionFixture("open")], Number.POSITIVE_INFINITY],
+  ])("keeps the union unknown on invalid inputs (%d approvals, %i interactions)", (approvals, decisions, interactions) => {
+    expect(ui2WaitingBadge(approvals, decisions, interactions)).toBeNull();
+  });
+
   it.each([null, undefined])("keeps an incomplete union unknown (%s)", (missing) => {
     expect(ui2WaitingBadge(3, missing, 2)).toBeNull();
     expect(ui2WaitingBadge(3, [], missing)).toBeNull();
@@ -215,6 +226,9 @@ describe("myrmidon(UI2) waiting badge union", () => {
     expect(ui2InteractionsPendingFromAttention([] as never)).toBeNull();
     expect(ui2InteractionsPendingFromAttention({} as never)).toBeNull();
     expect(ui2InteractionsPendingFromAttention({ countsBySourceKind: {} } as never)).toBe(0);
+    // Invalid counter values must not enter the waiting union as garbage.
+    expect(ui2InteractionsPendingFromAttention({ countsBySourceKind: { issue_thread_interaction: -1 } } as never)).toBeNull();
+    expect(ui2InteractionsPendingFromAttention({ countsBySourceKind: { issue_thread_interaction: Number.NaN } } as never)).toBeNull();
   });
 
   it("reads approvals from sidebar badges", () => {
@@ -224,6 +238,9 @@ describe("myrmidon(UI2) waiting badge union", () => {
     expect(ui2ApprovalsPendingFromBadges(null)).toBeNull();
     expect(ui2ApprovalsPendingFromBadges([] as never)).toBeNull();
     expect(ui2ApprovalsPendingFromBadges({} as never)).toBeNull();
+    // Invalid counter values must not enter the waiting union as garbage.
+    expect(ui2ApprovalsPendingFromBadges({ inbox: 0, approvals: -2, failedRuns: 0, joinRequests: 0 })).toBeNull();
+    expect(ui2ApprovalsPendingFromBadges({ inbox: 0, approvals: Number.NaN, failedRuns: 0, joinRequests: 0 })).toBeNull();
   });
 });
 

@@ -41,7 +41,7 @@ export interface Ui2ColonyChip {
 export function ui2ColonyChip(agents: DashboardSummary["agents"] | undefined): Ui2ColonyChip | null {
   if (!agents) return null;
   const values = [agents.active, agents.running, agents.paused, agents.error];
-  if (values.some((v) => typeof v !== "number" || !Number.isFinite(v))) return null;
+  if (values.some((v) => typeof v !== "number" || !Number.isFinite(v) || v < 0)) return null;
   return {
     running: agents.running,
     total: agents.active + agents.running + agents.paused + agents.error,
@@ -73,6 +73,7 @@ export function ui2RunsChip(
     liveRunCount == null ||
     typeof liveRunCount !== "number" ||
     !Number.isFinite(liveRunCount) ||
+    liveRunCount < 0 ||
     !runActivity ||
     !Array.isArray(runActivity)
   ) {
@@ -81,8 +82,13 @@ export function ui2RunsChip(
   const todayKey = ui2TodayUtcKey(now);
   // Exact today match only: a stale feed without today's key must not show
   // yesterday's failures as "failed today".
-  const today = runActivity.find((day: DashboardSummary["runActivity"][number]) => day.date === todayKey);
-  const failedToday = today && typeof today.failed === "number" && Number.isFinite(today.failed) ? today.failed : 0;
+  const today = runActivity.find(
+    (day: DashboardSummary["runActivity"][number]) => day && day.date === todayKey,
+  );
+  const failedToday =
+    today && typeof today.failed === "number" && Number.isFinite(today.failed) && today.failed > 0
+      ? today.failed
+      : 0;
   return {
     running: liveRunCount,
     failedToday,
@@ -109,7 +115,14 @@ export function ui2FormatMoneyCents(cents: number): string {
 export function ui2SpendChip(
   summary: Pick<CostSummary, "spendCents" | "budgetCents"> | CostSummary | undefined,
 ): Ui2SpendChip | null {
-  if (!summary || typeof summary.spendCents !== "number" || !Number.isFinite(summary.spendCents)) return null;
+  if (
+    !summary ||
+    typeof summary.spendCents !== "number" ||
+    !Number.isFinite(summary.spendCents) ||
+    summary.spendCents < 0
+  ) {
+    return null;
+  }
   const budgetCents =
     typeof summary.budgetCents === "number" && Number.isFinite(summary.budgetCents) && summary.budgetCents > 0
       ? summary.budgetCents
@@ -138,10 +151,13 @@ export function ui2WaitingBadge(
 ): Ui2WaitingBadge | null {
   // A partial sum must not look like the complete waiting inbox.
   if (
-    approvalsPending == null ||
-    openDecisions == null ||
+    typeof approvalsPending !== "number" ||
+    !Number.isFinite(approvalsPending) ||
+    approvalsPending < 0 ||
     !Array.isArray(openDecisions) ||
-    interactionsPending == null
+    typeof interactionsPending !== "number" ||
+    !Number.isFinite(interactionsPending) ||
+    interactionsPending < 0
   ) {
     return null;
   }
@@ -161,11 +177,15 @@ export function ui2InteractionsPendingFromAttention(feed: AttentionFeed | undefi
   const rawCounts = (feed as { countsBySourceKind?: unknown }).countsBySourceKind;
   if (!rawCounts || typeof rawCounts !== "object" || Array.isArray(rawCounts)) return null;
   const counts = rawCounts as Record<string, unknown>;
-  return typeof counts.issue_thread_interaction === "number" ? counts.issue_thread_interaction : 0;
+  const raw = counts.issue_thread_interaction;
+  if (raw === undefined) return 0;
+  return typeof raw === "number" && Number.isFinite(raw) && raw >= 0 ? raw : null;
 }
 
 /** Pending approvals from sidebar badges (the shipped owner-facing counter). */
 export function ui2ApprovalsPendingFromBadges(badges: SidebarBadges | undefined | null): number | null {
   if (!badges || typeof badges !== "object" || Array.isArray(badges)) return null;
-  return typeof badges.approvals === "number" ? badges.approvals : null;
+  return typeof badges.approvals === "number" && Number.isFinite(badges.approvals) && badges.approvals >= 0
+    ? badges.approvals
+    : null;
 }
