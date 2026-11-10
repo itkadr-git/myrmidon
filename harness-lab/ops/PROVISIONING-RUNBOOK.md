@@ -246,7 +246,7 @@ reach any other company or instance:
    ```sh
    # /srv/harness-lab/harness-runner.env  (chmod 600)
    HARNESS_LAB_BOARD_URL=http://127.0.0.1:3200/api
-   HARNESS_LAB_BOARD_ACCESS=<the agent API key value>
+   HARNESS_LAB_BOARD_TOKEN=<the agent API key value>
    HARNESS_LAB_RUBRIC_PATH=/srv/harness-lab/private/acceptance.json
    ```
 
@@ -255,9 +255,9 @@ reach any other company or instance:
 
 ```sh
 set -a; . /srv/harness-lab/harness-runner.env; set +a
-# Works against the harness board (200):
+# Works against the harness board (200) — agent keys are scoped to their company:
 curl -fsS -H "Authorization: Bearer $HARNESS_LAB_BOARD_TOKEN" \
-  "$HARNESS_LAB_BOARD_URL/companies" | jq 'length'   # exactly the harness company
+  "$HARNESS_LAB_BOARD_URL/agents/me" | jq '{id, companyId, name}'
 # If any second Paperclip instance is reachable for a negative check, the same
 # request there must fail 401/403. That cross-check output also goes in the comment.
 ```
@@ -273,12 +273,20 @@ repeated runs are invalid — the agent would "find the rubric").
 ```sh
 mkdir -p /srv/harness-lab/private
 # Copy ops/acceptance-rubric.template.json from the repo, then edit
-# expected_status per scenario if the operator's judgment differs; the runner
-# reads {"<scenario_id>": {"status": "..."}} from this file after the run.
+# expected_status and expected_signals per scenario if the operator's judgment
+# differs; the runner reads expected_status + expected_signals from this file
+# after the run.
 python3 - <<'PY'
 import json
 t = json.load(open("acceptance-rubric.template.json"))
-out = {s["id"]: {"status": s["expected_status"]} for s in t["scenarios"]}
+out = {
+    s["id"]: {
+        "status": s["expected_status"],
+        "expected_status": s["expected_status"],
+        "expected_signals": s.get("expected_signals", {}),
+    }
+    for s in t["scenarios"]
+}
 json.dump(out, open("/srv/harness-lab/private/acceptance.json", "w"), indent=2)
 print("scenarios:", len(out))
 PY
@@ -340,13 +348,24 @@ one-line summary. Pass the report only if every check below holds:
 - `scenario_count >= 5` (the manifest's five scenarios: review-gate-bypass,
   blocked-without-reason, ci-wait-no-monitor, idle-run, normal-control);
 - `demonstration_count >= 2` (at least two scenarios actually executed live
-  against the harness board — `result` is not `not-run`);
+  against the harness board, retrieved the resulting task through the board API,
+  and `rubric_check.passed == true` — an HTTP failure is never a demonstration);
+- `distinct_task_ids` has at least 2 entries (>= 2 live tasks demonstrated);
 - every executed scenario has `rubric_check.passed == true` (observed board
-  status equals the operator rubric's expected status);
+  status equals the operator rubric's expected status AND every
+  `expected_signals` entry from the operator rubric verifies against the board
+  evidence — task status, run list, activity, comments, and audit log);
+- every executed scenario has a non-empty `evidence` block with
+  `task_http_status == 200` (the runner actually read the task back);
 - live proof on the board side: for at least two of the executed scenarios, the
   harness board's own audit shows the run (issue created, agent run, comment) —
   cross-check in the board UI or via the API with the same scoped key, and note
   the issue ids in the completion comment.
+
+The runner exits non-zero when any scenario failed, when
+`demonstration_count < 2`, or when `distinct_task_ids` has fewer than 2 entries;
+treat a zero exit as necessary but not sufficient — the checklist above still
+applies.
 
 Attach `report.json` to the harness issue (and link it from its parent) with the completion
 comment: datastore profile used, pinned image digest, the two negative probe
@@ -358,15 +377,26 @@ Report field dictionary (all produced by `run.py`):
 
 | Field | Source |
 |---|---|
-| `board`, `board_url` | run.py arguments/env (`board_url` is the harness URL only) |
+| `board`, `board_url`, `company_id`, `dry_run`, `rubric_loaded` | run.py arguments/env (`board_url` is the harness URL only) |
 | `profile` | `--profile` value |
 | `scenarios[].id`, `.title` | `harness-lab/manifest.json` |
+| `scenarios[].task_id` | id of the board task created/read for this scenario |
 | `scenarios[].http_status`, `.response` | board API responses during the run |
-| `scenarios[].rubric_check.expected_status` | operator rubric `status` per scenario |
-| `scenarios[].rubric_check.observed_status` | board task status read back after the run |
-| `scenarios[].rubric_check.passed` | `observed_status == expected_status` |
+| `scenarios[].evidence.task_http_status` | GET `/api/issues/{task_id}` — must be 200 |
+| `scenarios[].evidence.runs`, `.run_count` | GET `/api/issues/{task_id}/runs` |
+| `scenarios[].evidence.activity_count`, `.comments_count` | GET `/api/issues/{task_id}/activity`, `/comments` |
+| `scenarios[].evidence.audit_count`, `.audit_http_status` | GET `/api/companies/{id}/audit/agent-actions` |
+| `scenarios[].rubric_check.expected_status` | operator rubric per scenario |
+| `scenarios[].rubric_check.observed_status` | task status read back after the run |
+| `scenarios[].rubric_check.status_matches` | `observed_status == expected_status` |
+| `scenarios[].rubric_check.expected_signals` | operator rubric `expected_signals` per scenario |
+| `scenarios[].rubric_check.signal_results` | per-signal `{expected, observed, passed}` derived from evidence |
+| `scenarios[].rubric_check.passed` | `status_matches AND all signal_results passed` |
 | `scenario_count` | number of manifest scenarios (5) |
-| `demonstration_count` | scenarios not `not-run` (must be >= 2) |
+| `executed_count` | scenarios that actually ran against the board (excludes not-run) |
+| `demonstration_count` | scenarios that ran AND passed rubric_check (must be >= 2) |
+| `failed_count` | scenarios whose HTTP call or rubric check failed |
+| `distinct_task_ids` | distinct board task ids among demonstrations (must be >= 2) |
 
 ## 9. Verification checklist (map to the harness acceptance items)
 

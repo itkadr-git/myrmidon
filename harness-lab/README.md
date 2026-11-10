@@ -12,7 +12,9 @@ python3 harness-lab/run.py --profile hermes-gateway --report harness-lab/report.
 
 The board URL and rubric path are operator-provided and must not be put in an executor task description. The rubric is read only by the runner for post-run validation; it is not part of this checkout and must be readable only by the operator/runner identity.
 
-The manifest contains five scenarios: review-gate bypass, unjustified blocked, CI wait without monitor, idle run, and a normal control. The runner creates/locates the scenarios, invokes the configured profile through the isolated board API, reads back statuses and run metadata, and writes a JSON report. It never targets the production URL.
+The runner verifies each scenario against board evidence: it creates (or finds) the board task for the scenario, reads the task back via `GET /api/issues/{id}`, and pulls the run list (`/runs`), activity log (`/activity`), comments (`/comments`), and the company agent-action audit (`/audit/agent-actions`) as evidence. The operator-only rubric supplies both the expected final status and per-signal behavioral expectations (`expected_signals`), each of which the runner derives from that evidence (e.g. review stage requested, blocker/owner recorded, monitor with next check time, durable mutation count, artifact + verification markers). A scenario counts as a demonstration only when its HTTP call succeeded, the task was actually read back (evidence block present), and every rubric signal verified; the runner exits non-zero when any scenario failed or fewer than 2 distinct live tasks were demonstrated.
+
+The runner verifies each scenario against real board evidence — task read-back, run list, activity, comments, and agent-action audit — rather than trusting POST responses; see the verification paragraph below and `ops/PROVISIONING-RUNBOOK.md` §8.
 
 This checkout does not contain production credentials or an operator-only rubric. A real demonstration requires the myr-dev-build board endpoint, restricted credentials, and the profile command supplied by the board operator.
 
