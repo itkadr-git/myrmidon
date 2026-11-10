@@ -9322,7 +9322,6 @@ export function issueRoutes(
       req,
       res,
       getIssueById(req, id),
-      "Issue not found",
     );
     if (!issue) return;
     if (!(await assertIssueReadAllowed(req, res, issue))) return;
@@ -9351,7 +9350,6 @@ export function issueRoutes(
         req,
         res,
         getIssueById(req, id),
-        "Issue not found",
       );
       if (!issue) return;
       if (
@@ -9405,7 +9403,6 @@ export function issueRoutes(
       req,
       res,
       getIssueById(req, id),
-      "Issue not found",
     );
     if (!issue) return;
     if (!(await assertIssueReadAllowed(req, res, issue))) return;
@@ -9596,7 +9593,6 @@ export function issueRoutes(
       req,
       res,
       getIssueById(req, id),
-      "Issue not found",
     );
     if (!issue) return;
     if (!(await assertIssueReadAllowed(req, res, issue))) return;
@@ -9625,7 +9621,6 @@ export function issueRoutes(
       req,
       res,
       getIssueById(req, id),
-      "Issue not found",
     );
     if (!issue) return;
     if (!(await assertIssueReadAllowed(req, res, issue))) return;
@@ -9665,7 +9660,6 @@ export function issueRoutes(
       req,
       res,
       getIssueById(req, id),
-      "Issue not found",
     );
     if (!issue) return;
     if (!(await assertIssueReadAllowed(req, res, issue))) return;
@@ -9719,7 +9713,6 @@ export function issueRoutes(
       req,
       res,
       getIssueById(req, id),
-      "Issue not found",
     );
     if (!issue) return;
     if (!(await assertIssueReadAllowed(req, res, issue))) return;
@@ -9775,7 +9768,6 @@ export function issueRoutes(
       req,
       res,
       getIssueById(req, id),
-      "Issue not found",
     );
     if (!issue) return;
     if (!(await assertIssueReadAllowed(req, res, issue))) return;
@@ -9882,7 +9874,6 @@ export function issueRoutes(
       req,
       res,
       getIssueById(req, id),
-      "Issue not found",
     );
     if (!issue) return;
     if (!(await assertIssueReadAllowed(req, res, issue))) return;
@@ -9900,7 +9891,6 @@ export function issueRoutes(
         req,
         res,
         getIssueById(req, id),
-        "Issue not found",
       );
       if (!issue) return;
       if (!(await assertIssueReadAllowed(req, res, issue))) return;
@@ -9959,7 +9949,6 @@ export function issueRoutes(
       req,
       res,
       getIssueById(req, id),
-      "Issue not found",
     );
     if (!issue) return;
     if (!(await assertIssueReadAllowed(req, res, issue))) return;
@@ -10009,7 +9998,6 @@ export function issueRoutes(
       req,
       res,
       getIssueById(req, id),
-      "Issue not found",
     );
     if (!issue) return;
     if (!(await assertIssueReadAllowed(req, res, issue))) return;
@@ -10033,7 +10021,6 @@ export function issueRoutes(
         req,
         res,
         svc.getById(id),
-        "Issue not found",
       );
       if (!existing) return;
       if (!(await assertIssueReadAllowed(req, res, existing))) return;
@@ -10634,7 +10621,6 @@ export function issueRoutes(
         req,
         res,
         svc.getById(id),
-        "Issue not found",
       );
       if (!existing) return;
       if (!(await assertIssueReadAllowed(req, res, existing))) return;
@@ -10798,7 +10784,6 @@ export function issueRoutes(
       req,
       res,
       getIssueById(req, id),
-      "Issue not found",
     );
     if (!issue) return;
     if (!(await assertIssueReadAllowed(req, res, issue))) return;
@@ -10814,7 +10799,6 @@ export function issueRoutes(
       req,
       res,
       getIssueById(req, id),
-      "Issue not found",
     );
     if (!issue) return;
     if (!(await assertIssueReadAllowed(req, res, issue))) return;
@@ -10828,7 +10812,6 @@ export function issueRoutes(
       req,
       res,
       getIssueById(req, id),
-      "Issue not found",
     );
     if (!issue) return;
     if (!(await assertIssueReadAllowed(req, res, issue))) return;
@@ -10884,7 +10867,6 @@ export function issueRoutes(
         req,
         res,
         svc.getById(id),
-        "Issue not found",
       );
       if (!issue) return;
       if (!(await assertAgentIssueMutationAllowed(req, res, issue))) return;
@@ -10919,7 +10901,6 @@ export function issueRoutes(
       req,
       res,
       getIssueById(req, id),
-      "Issue not found",
     );
     if (!issue) return;
     if (!(await assertIssueReadAllowed(req, res, issue))) return;
@@ -10935,7 +10916,6 @@ export function issueRoutes(
       req,
       res,
       getIssueById(req, id),
-      "Issue not found",
     );
     if (!issue) return;
     if (!(await assertIssueReadAllowed(req, res, issue))) return;
@@ -10981,7 +10961,6 @@ export function issueRoutes(
       req,
       res,
       getIssueById(req, id),
-      "Issue not found",
     );
     if (!issue) return;
     if (!(await assertIssueReadAllowed(req, res, issue))) return;
@@ -11021,7 +11000,6 @@ export function issueRoutes(
         req,
         res,
         svc.getById(id),
-        "Issue not found",
       );
       if (!issue) return;
       if (
@@ -11106,7 +11084,6 @@ export function issueRoutes(
         req,
         res,
         getIssueById(req, id),
-        "Issue not found",
       );
       if (!issue) return;
       if (!(await assertIssueReadAllowed(req, res, issue))) return;
@@ -11144,7 +11121,6 @@ export function issueRoutes(
         req,
         res,
         svc.getById(id),
-        "Issue not found",
       );
       if (!issue) return;
       if (!(await assertAgentIssueMutationAllowed(req, res, issue))) return;
@@ -11222,7 +11198,6 @@ export function issueRoutes(
         req,
         res,
         svc.getById(id),
-        "Issue not found",
       );
       if (!issue) return;
       if (!(await assertAgentIssueMutationAllowed(req, res, issue))) return;
@@ -11280,7 +11255,6 @@ export function issueRoutes(
         req,
         res,
         svc.getById(id),
-        "Issue not found",
       );
       if (!issue) return;
       if (!(await assertAgentIssueMutationAllowed(req, res, issue))) return;
@@ -11447,7 +11421,6 @@ export function issueRoutes(
       req,
       res,
       svc.getById(id),
-      "Issue not found",
     );
     if (!issue) return;
     if (req.actor.type !== "board") {
@@ -11504,7 +11477,6 @@ export function issueRoutes(
       req,
       res,
       svc.getById(id),
-      "Issue not found",
     );
     if (!issue) return;
     if (req.actor.type !== "board") {
@@ -11558,7 +11530,6 @@ export function issueRoutes(
       req,
       res,
       getIssueById(req, id),
-      "Issue not found",
     );
     if (!issue) return;
     if (!(await assertIssueReadAllowed(req, res, issue))) return;
@@ -11591,7 +11562,6 @@ export function issueRoutes(
         req,
         res,
         svc.getById(id),
-        "Issue not found",
       );
       if (!issue) return;
       if (!(await assertAgentIssueMutationAllowed(req, res, issue))) return;
@@ -11740,7 +11710,6 @@ export function issueRoutes(
       req,
       res,
       svc.getById(id),
-      "Issue not found",
     );
     if (!issue) return;
     if (req.actor.type !== "board") {
@@ -11850,7 +11819,6 @@ export function issueRoutes(
         req,
         res,
         svc.getById(id),
-        "Issue not found",
       );
       if (!issue) return;
       if (!(await assertAgentIssueMutationAllowed(req, res, issue))) return;
@@ -12066,7 +12034,6 @@ export function issueRoutes(
         req,
         res,
         svc.getById(id),
-        "Issue not found",
       );
       if (!issue) return;
       if (!(await assertAgentIssueMutationAllowed(req, res, issue))) return;
@@ -12102,7 +12069,6 @@ export function issueRoutes(
         req,
         res,
         svc.getById(id),
-        "Issue not found",
       );
       if (!issue) return;
       if (!(await assertIssueReadAllowed(req, res, issue))) return;
@@ -12416,7 +12382,6 @@ export function issueRoutes(
       req,
       res,
       svc.getById(id),
-      "Issue not found",
     );
     if (!issue) return;
     if (req.actor.type !== "board") {
@@ -12455,7 +12420,6 @@ export function issueRoutes(
       req,
       res,
       svc.getById(id),
-      "Issue not found",
     );
     if (!issue) return;
     if (req.actor.type !== "board") {
@@ -12560,7 +12524,6 @@ export function issueRoutes(
         req,
         res,
         svc.getById(id),
-        "Issue not found",
       );
       if (!issue) return;
       const target = await resolveInboxArchiveTarget(req, issue);
@@ -12606,7 +12569,6 @@ export function issueRoutes(
         req,
         res,
         svc.getById(id),
-        "Issue not found",
       );
       if (!issue) return;
       const target = await resolveInboxArchiveTarget(req, issue);
@@ -12642,7 +12604,6 @@ export function issueRoutes(
       req,
       res,
       getIssueById(req, id),
-      "Issue not found",
     );
     if (!issue) return;
     if (
@@ -12663,7 +12624,6 @@ export function issueRoutes(
         req,
         res,
         svc.getById(id),
-        "Issue not found",
       );
       if (!issue) return;
       if (!(await assertAgentIssueMutationAllowed(req, res, issue))) return;
@@ -12703,7 +12663,6 @@ export function issueRoutes(
       req,
       res,
       svc.getById(id),
-      "Issue not found",
     );
     if (!issue) return;
     if (!(await assertAgentIssueMutationAllowed(req, res, issue))) return;
@@ -13587,7 +13546,6 @@ export function issueRoutes(
       req,
       res,
       getIssueById(req, sourceIssueId),
-      "Issue not found",
     );
     if (!sourceIssue) return;
     if (!(await assertIssueReadAllowed(req, res, sourceIssue))) return;
@@ -13606,7 +13564,6 @@ export function issueRoutes(
         req,
         res,
         svc.getById(sourceIssueId),
-        "Issue not found",
       );
       if (!sourceIssue) return;
       if (!(await assertAgentIssueMutationAllowed(req, res, sourceIssue)))
@@ -13888,7 +13845,6 @@ export function issueRoutes(
       req,
       res,
       svc.getById(id),
-      "Issue not found",
     );
     if (!issue) return;
     await assertCanManageIssueMonitor(
@@ -13917,7 +13873,6 @@ export function issueRoutes(
       req,
       res,
       svc.getById(id),
-      "Issue not found",
     );
     if (!issue) return;
 
@@ -13958,7 +13913,6 @@ export function issueRoutes(
         req,
         res,
         svc.getById(id),
-        "Issue not found",
       );
       if (!issue) return;
       if (req.actor.type === "agent") {
@@ -14144,7 +14098,6 @@ export function issueRoutes(
         req,
         res,
         svc.getById(id),
-        "Issue not found",
       );
       if (!existing) return;
       // 1.7 (PRIVATE-TASKS): only board actors may change the privacy flag.
@@ -18236,7 +18189,6 @@ export function issueRoutes(
       req,
       res,
       svc.getById(id),
-      "Issue not found",
     );
     if (!existing) return;
     if (!(await assertAgentIssueMutationAllowed(req, res, existing))) return;
@@ -18286,7 +18238,6 @@ export function issueRoutes(
         req,
         res,
         svc.getById(id),
-        "Issue not found",
       );
       if (!issue) return;
 
@@ -18447,7 +18398,6 @@ export function issueRoutes(
       req,
       res,
       svc.getById(id),
-      "Issue not found",
     );
     if (!existing) return;
     if (!(await assertAgentIssueMutationAllowed(req, res, existing))) return;
@@ -18494,7 +18444,6 @@ export function issueRoutes(
       req,
       res,
       svc.getById(id),
-      "Issue not found",
     );
     if (!existing) return;
 
@@ -18534,7 +18483,6 @@ export function issueRoutes(
       req,
       res,
       getIssueById(req, id),
-      "Issue not found",
     );
     if (!issue) return;
     if (!(await assertIssueReadAllowed(req, res, issue))) return;
@@ -18609,7 +18557,6 @@ export function issueRoutes(
       req,
       res,
       getIssueById(req, id),
-      "Issue not found",
     );
     if (!issue) return;
     if (!(await assertIssueReadAllowed(req, res, issue))) return;
@@ -18636,7 +18583,6 @@ export function issueRoutes(
         req,
         res,
         svc.getById(id),
-        "Issue not found",
       );
       if (!issue) return;
       const actor = getActorInfo(req);
@@ -18667,7 +18613,6 @@ export function issueRoutes(
         req,
         res,
         svc.getById(id),
-        "Issue not found",
       );
       if (!issue) return;
       const actor = getActorInfo(req);
@@ -18769,7 +18714,6 @@ export function issueRoutes(
         req,
         res,
         svc.getById(id),
-        "Issue not found",
       );
       if (!issue) return;
       if (issue.conversationAgentId) throw conflict("Conversation messages are processed in order at turn boundaries");
@@ -19046,7 +18990,6 @@ export function issueRoutes(
         req,
         res,
         svc.getById(id),
-        "Issue not found",
       );
       if (!issue) return;
       const actor = getActorInfo(req);
@@ -19077,7 +19020,6 @@ export function issueRoutes(
       req,
       res,
       getIssueById(req, id),
-      "Issue not found",
     );
     if (!issue) return;
     if (!(await assertIssueReadAllowed(req, res, issue))) return;
@@ -19095,7 +19037,6 @@ export function issueRoutes(
         req,
         res,
         svc.getById(id),
-        "Issue not found",
       );
       if (!issue) return;
       if (req.actor.type === "agent") {
@@ -19295,7 +19236,6 @@ export function issueRoutes(
         req,
         res,
         svc.getById(id),
-        "Issue not found",
       );
       if (!issue) return;
       const authorizedResolution =
@@ -19636,7 +19576,6 @@ export function issueRoutes(
         req,
         res,
         svc.getById(id),
-        "Issue not found",
       );
       if (!issue) return;
       const authorizedResolution =
@@ -19746,7 +19685,6 @@ export function issueRoutes(
         req,
         res,
         svc.getById(id),
-        "Issue not found",
       );
       if (!issue) return;
       const authorizedResolution =
@@ -19831,7 +19769,6 @@ export function issueRoutes(
         req,
         res,
         svc.getById(id),
-        "Issue not found",
       );
       if (!issue) return;
       const authorizedResolution =
@@ -19925,7 +19862,6 @@ export function issueRoutes(
         req,
         res,
         svc.getById(id),
-        "Issue not found",
       );
       if (!issue) return;
 
@@ -20032,7 +19968,6 @@ export function issueRoutes(
         req,
         res,
         svc.getById(id),
-        "Issue not found",
       );
       if (!issue) return;
       if (req.actor.type === "agent") {
@@ -20090,7 +20025,6 @@ export function issueRoutes(
         req,
         res,
         svc.getById(id),
-        "Issue not found",
       );
       if (!issue) return;
       if (req.actor.type === "agent") {
@@ -20191,7 +20125,6 @@ export function issueRoutes(
       req,
       res,
       getIssueById(req, id),
-      "Issue not found",
     );
     if (!issue) return;
     if (!(await assertIssueReadAllowed(req, res, issue))) return;
@@ -20212,7 +20145,6 @@ export function issueRoutes(
       req,
       res,
       svc.getById(id),
-      "Issue not found",
     );
     if (!issue) return;
     if (!(await assertAgentIssueMutationAllowed(req, res, issue))) return;
@@ -20435,7 +20367,6 @@ export function issueRoutes(
       req,
       res,
       getIssueById(req, id),
-      "Issue not found",
     );
     if (!issue) return;
     if (req.actor.type !== "board") {
@@ -20458,7 +20389,6 @@ export function issueRoutes(
       req,
       res,
       getIssueById(req, id),
-      "Issue not found",
     );
     if (!issue) return;
     if (req.actor.type !== "board") {
@@ -20568,7 +20498,6 @@ export function issueRoutes(
         req,
         res,
         svc.getById(id),
-        "Issue not found",
       );
       if (!issue) return;
       if (issue.conversationAgentId && req.actor.type === "board") {
@@ -21792,7 +21721,6 @@ export function issueRoutes(
         req,
         res,
         svc.getById(id),
-        "Issue not found",
       );
       if (!issue) return;
       if (req.actor.type !== "board") {
@@ -21901,7 +21829,6 @@ export function issueRoutes(
       req,
       res,
       getIssueById(req, issueId),
-      "Issue not found",
     );
     if (!issue) return;
     if (!(await assertIssueReadAllowed(req, res, issue))) return;
