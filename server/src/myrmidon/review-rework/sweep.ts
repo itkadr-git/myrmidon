@@ -473,6 +473,15 @@ export function createReviewReworkSweep(deps: ReviewReworkSweepDeps): ReviewRewo
         headSha: prs.map((pr) => pr.headSha).filter((sha): sha is string => Boolean(sha)).join(",") || null,
         returnAssigneeAgentId: task.returnAssigneeAgentId,
         executionPolicy: task.executionPolicy as import("@myrmidon/shared").IssueExecutionPolicy | null,
+        // myrmidon(1.7-GOAL-JUDGE, OPE-12149): seed the controller with the round
+        // state persisted by the previous sweeps (issues.executionState ->
+        // goalJudgeRound), so the <=maxReviewRounds budget spans real review
+        // cycles even when the controller instance was recreated per company.
+        roundState:
+          ((task.executionState as Record<string, unknown> | null | undefined)?.goalJudgeRound as
+            | import("../goal-judge/controller.js").GoalJudgeRoundState
+            | null
+            | undefined) ?? null,
       });
       if (judgeDecision.kind !== "noop" && judgeDecision.kind !== "pass") {
         const applied = await deps.store.applyGoalJudgeDecision({

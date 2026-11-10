@@ -14,6 +14,8 @@
 // OpenHands SDK (jigsaw-labs/Devin, MIT) contributed the *idea* of an
 // LLM-as-judge loop with bounded rounds; the code here is original.
 
+import { and, eq, sql } from "drizzle-orm";
+import { issues, type Db } from "@myrmidon/db";
 import type { IssueExecutionPolicy, IssueExecutionStagePrincipal } from "@myrmidon/shared";
 import { MAX_ROUNDS, type GoalJudgeInput, type GoalJudgeVerdict } from "./domain.js";
 import {
@@ -138,6 +140,49 @@ export function createInMemoryGoalJudgeLedger(): GoalJudgeRoundLedger {
     },
     async clear(companyId, issueId) {
       map.delete(key(companyId, issueId));
+    },
+  };
+}
+
+/**
+ * PostgreSQL-backed round ledger (myrmidon 1.7-GOAL-JUDGE, OPE-12149).
+ *
+ * Persists each task's round state in `issues.execution_state -> 'goalJudgeRound'`
+ * (jsonb_set): no schema change, survives sweep restarts, per-company controller
+ * recreation and multi-worker deployments. `save`/`clear` rewrite only the
+ * `goalJudgeRound` key, so concurrent executionState writers (review requests,
+ * escalation bookkeeping) are not clobbered.
+ */
+export function createPgGoalJudgeLedger(db: Db): GoalJudgeRoundLedger {
+  return {
+    async load(companyId, issueId) {
+      const rows = await db
+        .select({ executionState: issues.executionState })
+        .from(issues)
+        .where(and(eq(issues.companyId, companyId), eq(issues.id, issueId)))
+        .limit(1);
+      const executionState = rows[0]?.executionState as Record<string, unknown> | null | undefined;
+      const roundState = executionState?.goalJudgeRound as GoalJudgeRoundState | null | undefined;
+      if (!roundState || typeof roundState?.rounds !== "number") return null;
+      return roundState;
+    },
+    async save(companyId, issueId, state) {
+      await db
+        .update(issues)
+        .set({
+          executionState: sql`jsonb_set(coalesce(${issues.executionState}, '{}'::jsonb), '{goalJudgeRound}', ${JSON.stringify(state)}::jsonb)`,
+          updatedAt: new Date(),
+        })
+        .where(and(eq(issues.companyId, companyId), eq(issues.id, issueId)));
+    },
+    async clear(companyId, issueId) {
+      await db
+        .update(issues)
+        .set({
+          executionState: sql`coalesce(${issues.executionState}, '{}'::jsonb) - 'goalJudgeRound'`,
+          updatedAt: new Date(),
+        })
+        .where(and(eq(issues.companyId, companyId), eq(issues.id, issueId)));
     },
   };
 }

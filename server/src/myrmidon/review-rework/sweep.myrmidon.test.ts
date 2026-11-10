@@ -27,6 +27,11 @@ import {
 import type { CreateReworkTaskInput, ReworkCandidateRow, ReviewReworkStore } from "./store.js";
 import type { ReviewReworkChildFacts, ReviewReworkTaskFacts } from "./domain.js";
 import type { ReviewReworkPrResolver, ReviewReworkPrSnapshot } from "./resolver.js";
+import {
+  createGoalJudgeRoundController,
+  type GoalJudgeRoundLedger,
+  type GoalJudgeRoundState,
+} from "../goal-judge/controller.js";
 
 const VERDICT_AT = "2026-10-04T16:57:32.000Z";
 const PR_URL = "https://github.com/acme/repo/pull/484";
@@ -118,6 +123,19 @@ class FakeStore implements ReviewReworkStore {
       patch: input.patch,
       comment: input.comment,
     });
+    // Mirror the PG store: the guarded patch mutates the persisted row (status,
+    // assignee) so subsequent sweep passes read the updated facts.
+    const row = this.rows.find((candidate) => candidate.task.id === input.issueId);
+    if (row) {
+      const patch = input.patch as {
+        status?: string;
+        assigneeAgentId?: string | null;
+        assigneeUserId?: string | null;
+      };
+      if (typeof patch.status === "string") row.task.status = patch.status;
+      if (patch.assigneeAgentId !== undefined) row.task.assigneeAgentId = patch.assigneeAgentId;
+      if (patch.assigneeUserId !== undefined) row.task.assigneeUserId = patch.assigneeUserId;
+    }
     return this.applyGoalJudgeDecisionResult;
   }
   reopenedAfterLoopCloseResult = false;
@@ -166,6 +184,7 @@ function build(input: {
   isLeader?: () => boolean;
   resolvePr?: ReviewReworkPrResolver;
   goalJudge?: ReviewReworkSweepDeps["goalJudge"];
+  goalJudgeFactory?: ReviewReworkSweepDeps["goalJudgeFactory"];
   resolveDiff?: ReviewReworkSweepDeps["resolveDiff"];
   resolveCiOutput?: ReviewReworkSweepDeps["resolveCiOutput"];
 }) {
@@ -199,6 +218,7 @@ function build(input: {
     ...(input.env === undefined ? {} : { env: input.env }),
     ...(input.isLeader === undefined ? {} : { isLeader: input.isLeader }),
     ...(input.goalJudge === undefined ? {} : { goalJudge: input.goalJudge }),
+    ...(input.goalJudgeFactory === undefined ? {} : { goalJudgeFactory: input.goalJudgeFactory }),
     ...(input.resolveDiff === undefined ? {} : { resolveDiff: input.resolveDiff }),
     ...(input.resolveCiOutput === undefined ? {} : { resolveCiOutput: input.resolveCiOutput }),
   };
@@ -828,6 +848,135 @@ describe("review rework sweep", () => {
     expect(judgedFacts).not.toBeNull();
     expect(judgedFacts.diff).toContain("--- a/file.ts");
     expect(judgedFacts.testOutput).toBe("Test check runs: all 4 passed.");
+  });
+
+  it("production wiring: shared/persisted round ledger preserves rounds across sweep cycles up to escalation", async () => {
+    const store = new FakeStore();
+    const task = reviewTask();
+    task.status = "in_review";
+    task.description = "Acceptance Criteria:\n1. Alpha feature works\n2. Beta feature works\n3. Tests pass";
+    task.returnAssigneeAgentId = "author-agent";
+    task.executionPolicy = {
+      mode: "normal",
+      reviewEscalationPolicy: {
+        maxReviewRounds: 3,
+        escalationAgentIds: ["adm-dev-lead"],
+      },
+    } as any;
+
+    // Simulate PG-backed ledger: writes update the row's executionState.goalJudgeRound
+    const row = candidateRow(task);
+    store.rows = [row];
+
+    const pgSimulatedLedger: GoalJudgeRoundLedger = {
+      async load(_companyId, issueId) {
+        const found = store.rows.find((r) => r.task.id === issueId);
+        return (found?.task.executionState?.goalJudgeRound as GoalJudgeRoundState) ?? null;
+      },
+      async save(_companyId, issueId, state) {
+        const found = store.rows.find((r) => r.task.id === issueId);
+        if (found) {
+          found.task.executionState = {
+            ...(found.task.executionState ?? {}),
+            goalJudgeRound: state,
+          };
+        }
+      },
+      async clear(_companyId, issueId) {
+        const found = store.rows.find((r) => r.task.id === issueId);
+        if (found?.task.executionState) {
+          delete (found.task.executionState as any).goalJudgeRound;
+        }
+      },
+    };
+
+    let modelCalls = 0;
+    const fakeModelPort = {
+      async call() {
+        modelCalls += 1;
+        // All rounds report missing criteria to exercise the <= 3 bound
+        return {
+          content: JSON.stringify({
+            score: 0.5,
+            complete: false,
+            missing: ["Beta feature works"],
+            summary: "Beta not implemented",
+          }),
+          promptTokens: 10,
+          completionTokens: 10,
+        };
+      },
+    };
+
+    // The factory mirrors review-rework/index.ts: creates a controller with the shared ledger
+    const goalJudgeFactory = (_companyId: string) =>
+      createGoalJudgeRoundController({
+        settings: {
+          read: async () => ({
+            enabled: true,
+            providerId: "prov-1",
+            model: "test-model",
+            maxRounds: 3,
+            strictCriteria: true,
+            autoEscalate: true,
+          }),
+        } as any,
+        models: fakeModelPort,
+        ledger: pgSimulatedLedger,
+      });
+
+    let currentHead = "head-sha-1";
+    const { sweep } = build({
+      store,
+      snapshot: { state: "open", headSha: currentHead, reviewDecision: null, updatedAt: null },
+      goalJudgeFactory,
+      resolvePr: async () => ({ state: "open", headSha: currentHead, reviewDecision: null, updatedAt: null }),
+    });
+
+    // --- Cycle 1 (round 1) ---
+    // Task is in_review. Judge runs round 1 -> returns to executor with in_progress.
+    await sweep.sweep(new Date("2026-10-04T17:00:00Z"));
+    expect(store.appliedGoalJudgeDecisions).toHaveLength(1);
+    expect(store.appliedGoalJudgeDecisions[0]!.patch.status).toBe("in_progress");
+    expect(store.appliedGoalJudgeDecisions[0]!.comment).toContain("[GOAL-JUDGE] Complete: false");
+    expect(store.appliedGoalJudgeDecisions[0]!.comment).toContain("round 1/3");
+    expect(row.task.status).toBe("in_progress");
+    expect(row.task.executionState?.goalJudgeRound).toMatchObject({ rounds: 1, lastHeadSha: "head-sha-1" });
+    expect(modelCalls).toBe(1);
+
+    // --- Cycle 2 (round 2) ---
+    // Executor pushes new code, moves task back to in_review
+    currentHead = "head-sha-2";
+    row.task.status = "in_review";
+    await sweep.sweep(new Date("2026-10-04T17:01:00Z"));
+    expect(store.appliedGoalJudgeDecisions).toHaveLength(2);
+    expect(store.appliedGoalJudgeDecisions[1]!.patch.status).toBe("in_progress");
+    expect(store.appliedGoalJudgeDecisions[1]!.comment).toContain("round 2/3");
+    expect(row.task.status).toBe("in_progress");
+    expect(row.task.executionState?.goalJudgeRound).toMatchObject({ rounds: 2, lastHeadSha: "head-sha-2" });
+    expect(modelCalls).toBe(2);
+
+    // --- Cycle 3 (round 3) ---
+    // Executor pushes again, moves task back to in_review.
+    // 3rd missing round hits maxReviewRounds limit -> escalates to reviewer with report!
+    currentHead = "head-sha-3";
+    row.task.status = "in_review";
+    await sweep.sweep(new Date("2026-10-04T17:02:00Z"));
+    expect(store.appliedGoalJudgeDecisions).toHaveLength(3);
+    const escDecision = store.appliedGoalJudgeDecisions[2]!;
+    expect(escDecision.patch.status).toBe("in_review");
+    expect(escDecision.patch.assigneeAgentId).toBe("adm-dev-lead");
+    expect(escDecision.comment).toContain("[GOAL-JUDGE ESCALATION] Лимит раундов судьи исчерпан (3/3)");
+    expect(escDecision.comment).toContain("Beta feature works");
+    expect(row.task.status).toBe("in_review");
+    expect(row.task.executionState?.goalJudgeRound).toMatchObject({ rounds: 3, lastHeadSha: "head-sha-3" });
+    expect(modelCalls).toBe(3);
+
+    // --- Cycle 4 (enforce <= 3 limit across subsequent passes) ---
+    currentHead = "head-sha-4";
+    await sweep.sweep(new Date("2026-10-04T17:03:00Z"));
+    // No new model call made; modelCalls stays 3!
+    expect(modelCalls).toBe(3);
   });
 });
 

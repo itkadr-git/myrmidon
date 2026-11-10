@@ -13,7 +13,10 @@ import {
 } from "./resolver.js";
 import { createPgReviewReworkStore } from "./store.js";
 import { createGoalJudgeModelPort } from "../goal-judge/wiring.js";
-import { createGoalJudgeRoundController } from "../goal-judge/controller.js";
+import {
+  createGoalJudgeRoundController,
+  createPgGoalJudgeLedger,
+} from "../goal-judge/controller.js";
 import { goalJudgeSettingsService } from "../goal-judge/settings.js";
 import {
   createPullRequestCiResolver,
@@ -55,6 +58,11 @@ export function createReviewReworkScheduler(input: {
     settings: instanceSettingsService(input.db),
   });
   const goalJudges = new Map<string, ReturnType<typeof createGoalJudgeRoundController>>();
+  // myrmidon(1.7-GOAL-JUDGE, OPE-12149): the round ledger is shared across all
+  // per-company controllers and persisted in Postgres (issues.execution_state
+  // -> goalJudgeRound), so the <=maxReviewRounds budget survives controller
+  // recreation, sweep restarts and multi-worker deployments.
+  const sharedRoundLedger = createPgGoalJudgeLedger(input.db);
   const diffResolver = createPullRequestDiffResolver(input.db, { source: "review-rework" });
   const ciResolver = createPullRequestCiResolver(input.db, { source: "review-rework" });
   const sweep = createReviewReworkSweep({
@@ -80,6 +88,7 @@ export function createReviewReworkScheduler(input: {
             settings: instanceSettingsService(input.db),
           }),
           models: createGoalJudgeModelPort(input.db, companyId),
+          ledger: sharedRoundLedger,
         });
         goalJudges.set(companyId, controller);
       }

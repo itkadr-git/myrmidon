@@ -704,6 +704,11 @@ function buildStateWithCompletedStages(input: {
     ...(input.previous?.lastChangesRequestedHeadSha
       ? { lastChangesRequestedHeadSha: input.previous.lastChangesRequestedHeadSha }
       : {}),
+    // myrmidon(1.7-GOAL-JUDGE, OPE-12149): the judge round budget must survive
+    // stage-completion bookkeeping, otherwise every new cycle restarts at round 1.
+    ...(input.previous?.goalJudgeRound !== undefined
+      ? { goalJudgeRound: input.previous.goalJudgeRound }
+      : {}),
   };
 }
 
@@ -758,6 +763,11 @@ function buildPendingState(input: {
     // return compares its PR head with the head of the previous return.
     ...(input.previous?.lastChangesRequestedHeadSha
       ? { lastChangesRequestedHeadSha: input.previous.lastChangesRequestedHeadSha }
+      : {}),
+    // myrmidon(1.7-GOAL-JUDGE, OPE-12149): the judge round budget must survive a
+    // re-entry into the review stage, otherwise every cycle restarts at round 1.
+    ...(input.previous?.goalJudgeRound !== undefined
+      ? { goalJudgeRound: input.previous.goalJudgeRound }
       : {}),
     ...(input.reviewCycleId ? { reviewCycleId: input.reviewCycleId } : {}),
     ...(input.escalationPolicyRevision || input.previous?.escalationPolicyRevision

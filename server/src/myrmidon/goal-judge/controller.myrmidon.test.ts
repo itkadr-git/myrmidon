@@ -360,4 +360,85 @@ describe("GoalJudge Round Controller (OPE-12149)", () => {
     expect(escComment).toContain("3/3");
     expect(escComment).toContain("residual item");
   });
+
+  it("shared/persisted ledger preserves rounds across separate controller instances", async () => {
+    const sharedLedger = createInMemoryGoalJudgeLedger();
+    const models = fakeModelPort([
+      { score: 0.3, missing: ["Crit A"], complete: false },
+      { score: 0.6, missing: ["Crit B"], complete: false },
+      { score: 0.8, missing: ["Crit C"], complete: false },
+    ]);
+
+    // Controller 1 (e.g. first sweep worker / pass)
+    const ctrl1 = createGoalJudgeRoundController({
+      settings: fakeSettings(true, 3),
+      models,
+      ledger: sharedLedger,
+    });
+    const d1 = await ctrl1.judge({
+      issueId: "issue-shared-1",
+      companyId: "comp-1",
+      status: "in_review",
+      criteria: ["Crit A", "Crit B", "Crit C"],
+      headSha: "sha-1",
+    });
+    expect(d1.kind).toBe("return_to_executor");
+    if (d1.kind === "return_to_executor") {
+      expect(d1.roundsUsed).toBe(1);
+    }
+
+    // Controller 2 (fresh instance created by goalJudgeFactory on next review pass)
+    const ctrl2 = createGoalJudgeRoundController({
+      settings: fakeSettings(true, 3),
+      models,
+      ledger: sharedLedger,
+    });
+    const d2 = await ctrl2.judge({
+      issueId: "issue-shared-1",
+      companyId: "comp-1",
+      status: "in_review",
+      criteria: ["Crit A", "Crit B", "Crit C"],
+      headSha: "sha-2",
+    });
+    expect(d2.kind).toBe("return_to_executor");
+    if (d2.kind === "return_to_executor") {
+      expect(d2.roundsUsed).toBe(2);
+    }
+
+    // Controller 3 (third separate instance) reaches round 3 and escalates
+    const ctrl3 = createGoalJudgeRoundController({
+      settings: fakeSettings(true, 3),
+      models,
+      ledger: sharedLedger,
+    });
+    const d3 = await ctrl3.judge({
+      issueId: "issue-shared-1",
+      companyId: "comp-1",
+      status: "in_review",
+      criteria: ["Crit A", "Crit B", "Crit C"],
+      headSha: "sha-3",
+    });
+    expect(d3.kind).toBe("escalate_to_reviewer");
+    if (d3.kind === "escalate_to_reviewer") {
+      expect(d3.roundsUsed).toBe(3);
+      expect(d3.commentBody).toContain("Лимит раундов судьи исчерпан (3/3)");
+      expect(d3.commentBody).toContain("Crit C");
+    }
+
+    // Controller 4 (subsequent pass) strictly respects <= 3 limit and does not call model
+    const ctrl4 = createGoalJudgeRoundController({
+      settings: fakeSettings(true, 3),
+      models,
+      ledger: sharedLedger,
+    });
+    const d4 = await ctrl4.judge({
+      issueId: "issue-shared-1",
+      companyId: "comp-1",
+      status: "in_review",
+      criteria: ["Crit A", "Crit B", "Crit C"],
+      headSha: "sha-4",
+    });
+    expect(d4.kind).toBe("escalate_to_reviewer");
+    expect(models.calls).toBe(3);
+  });
 });
