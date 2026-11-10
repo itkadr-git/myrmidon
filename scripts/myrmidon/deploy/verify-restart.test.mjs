@@ -77,7 +77,7 @@ function sandbox({ health, code } = {}) {
 function run(sb, args) {
   const bash = process.env.PATH.split(":").map((d) => path.join(d, "bash")).find((f) => fs.existsSync(f));
   const result = spawnSync(bash, [SCRIPT, "--config", sb.config, ...args], {
-    env: { ...process.env, PATH: `${sb.bin}:${process.env.PATH}`, SANDBOX: sb.dir },
+    env: { ...process.env, BASH_ENV: "", ENV: "", PATH: `${sb.bin}:${process.env.PATH}`, SANDBOX: sb.dir },
     encoding: "utf8",
   });
   return { code: result.status, out: `${result.stdout}${result.stderr}` };
@@ -165,7 +165,7 @@ cat "$SANDBOX/health.json"
     const sb = sandbox();
     const bash = process.env.PATH.split(":").map((d) => path.join(d, "bash")).find((f) => fs.existsSync(f));
     const proc = spawnSync(bash, [SCRIPT, "--url", "http://127.0.0.1:3100/api/health", "--retries", "2"], {
-      env: { ...process.env, PATH: `${sb.bin}:${process.env.PATH}`, SANDBOX: sb.dir },
+      env: { ...process.env, BASH_ENV: "", ENV: "", PATH: `${sb.bin}:${process.env.PATH}`, SANDBOX: sb.dir },
       encoding: "utf8",
     });
     assert.equal(proc.status, 0, `${proc.stdout}${proc.stderr}`);
