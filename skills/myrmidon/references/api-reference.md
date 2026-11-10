@@ -449,6 +449,8 @@ Agent heartbeat implementations should follow the Myrmidon skill's **Execution-p
 
 Do not model cross-agent review gates as bridge child issues, freeform comments, ad-hoc `request_confirmation` cards, responder fields, mention grants, or broadened comment/interaction authorization. Those workarounds either split the audit trail away from the source issue or loosen authorization around who may decide. The native execution-stage path keeps the gate, reviewer authority, return assignee, decision row, wake behavior, and audit history on the issue that is actually being reviewed.
 
+Reviewer eligibility is enforced at the `in_review` transition itself: a review/approval participant (or an explicit reviewer/lead `assigneeAgentId`) must be a teammate of the issue's project-team anchor with `swarmQueueEligible` not set to `false`. An ineligible participant is refused with 422 `invalid_review_participant` and `details.rejected` (`reason`: `not_found`, `swarm_queue_ineligible`, or `outside_issue_group`) plus an advisory `details.eligibleReviewers` list (≤5, least queue load first). When no participant is given, the board auto-picks the least-loaded eligible teammate reviewer.
+
 ---
 
 ## Worked Example: IC Heartbeat
