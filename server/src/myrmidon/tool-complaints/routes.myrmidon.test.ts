@@ -201,7 +201,7 @@ describeEmbeddedPostgres("myrmidon(1.7 TOOL-COMPLAINTS-API) tool complaints", ()
         deploymentMode: "authenticated",
         resolveSession: async () => ({
           user: { id: "user-a" },
-          session: { id: "session-a" },
+          session: { id: "session-a", userId: "user-a" },
         }),
       }),
     );
@@ -253,7 +253,7 @@ describeEmbeddedPostgres("myrmidon(1.7 TOOL-COMPLAINTS-API) tool complaints", ()
         deploymentMode: "authenticated",
         resolveSession: async () => ({
           user: { id: "user-board-b" },
-          session: { id: "session-b" },
+          session: { id: "session-b", userId: "user-board-b" },
         }),
       }),
     );
