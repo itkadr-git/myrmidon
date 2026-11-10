@@ -449,6 +449,13 @@ const support = await getEmbeddedPostgresTestSupport();
     expect(vault.resolveSecretValue).not.toHaveBeenCalled();
     const repeatedActivity = await db.select().from(activityLog).where(eq(activityLog.companyId, input.companyId));
     expect(repeatedActivity.filter((row) => row.action === "myrmidon.github_app.issued")).toHaveLength(1);
+
+    // OPE-12537: 100 git operations in a run reuse the cached token, yielding <= 1 total secret read.
+    vault.resolveSecretValue.mockClear();
+    for (let i = 0; i < 100; i++) {
+      await resolveGitHubOperationCredentials(db, { ...input, repository: "owner-a/repo-a" });
+    }
+    expect(vault.resolveSecretValue).not.toHaveBeenCalled();
   });
 
   it("separates products: product A under App A, product B under App B, neither absent, both an error", async () => {
