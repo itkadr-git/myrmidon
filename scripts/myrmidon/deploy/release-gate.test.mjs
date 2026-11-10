@@ -96,6 +96,13 @@ case "$1" in
         if [ -e "$SANDBOX/bot-oom-inwindow" ]; then
           echo "exited|exited|137|true|2026-11-08T18:00:01.000000000Z"
           exit 0
+        fi
+        if [ -e "$SANDBOX/bot-exited-stale-unhealthy" ]; then
+          # rc.20 (10.11): Docker keeps the last Health.Status after the container
+          # stops — an idle-stopped bot (Exited 143 before the deploy) still reads
+          # "unhealthy".
+          echo "unhealthy|exited|143|false|2026-11-08T16:00:00.000000000Z"
+          exit 0
         fi ;;
       *myrmidon-bot-33333333-3333-4333-8333-333333333333*)
         if [ -e "$SANDBOX/bot-missing-container" ]; then
@@ -1143,6 +1150,49 @@ describe("bot-apply-smoke.sh", () => {
     assert.notEqual(code, 0);
     assert.match(out, /DEPLOYED-DEGRADED/);
     assert.match(out, /crashed:oom/);
+  });
+
+  // rc.20 (10.11): seven bots idle-stopped hours before the deploy were reported
+  // as crashed:docker_unhealthy from the stale health of their exited containers.
+  it("treats the stale unhealthy health of an exited, idle-stopped container as idle, not a crash", () => {
+    const sb = sandbox({ smoke: "ok" });
+    const bot1 = "11111111-1111-4111-8111-111111111111";
+    const bot2 = "22222222-2222-4222-8222-222222222222";
+    fs.writeFileSync(
+      path.join(sb.dir, "agents.json"),
+      JSON.stringify([
+        { id: bot1, adapterType: "hermes_gateway", name: "bot-running", status: "running" },
+        { id: bot2, adapterType: "hermes_gateway", name: "bot-idle-stale-unhealthy", status: "idle" },
+      ]),
+    );
+    fs.writeFileSync(
+      path.join(sb.dir, `status-${bot1}.json`),
+      JSON.stringify({
+        enabled: true,
+        container: { state: "running", image: CI_IMAGE },
+        containerError: null,
+      }),
+    );
+    fs.writeFileSync(
+      path.join(sb.dir, `status-${bot2}.json`),
+      JSON.stringify({
+        enabled: true,
+        container: { state: "stopped", image: CI_IMAGE, idleStopped: true },
+        idleStopRuntime: { idleStopped: true },
+        containerError: null,
+      }),
+    );
+    fs.writeFileSync(path.join(sb.dir, "bot-exited-stale-unhealthy"), "");
+    const { code, out } = runSmoke(sb, [
+      "--board-url", "http://127.0.0.1:3100/api",
+      "--company", COMPANY,
+      "--timeout", "2",
+      "--interval", "1",
+      "--deploy-started-at", "2026-11-08T18:00:00Z",
+    ]);
+    assert.equal(code, 0, out);
+    assert.doesNotMatch(out, /crashed:/);
+    assert.doesNotMatch(out, /DEPLOYED-DEGRADED/);
   });
 
   it("fails with DEPLOYED-DEGRADED when an abnormal exit / crash occurs", () => {
