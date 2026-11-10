@@ -346,14 +346,14 @@ describeEmbeddedPostgres("issue privacy flag routes (1.7 PRIVATE-TASKS)", () => 
       .get(`/api/companies/${fixture.company.id}/search?q=Secret`);
     expect(boardCompanySearchRes.status).toBe(200);
     expect(
-      boardCompanySearchRes.body.issues?.some((i: any) => i.id === privateIssueId),
+      boardCompanySearchRes.body.results?.some((r: any) => r.id === privateIssueId),
     ).toBe(true);
 
     const agentCompanySearchRes = await request(agentApp)
       .get(`/api/companies/${fixture.company.id}/search?q=Secret`);
     expect(agentCompanySearchRes.status).toBe(200);
     expect(
-      agentCompanySearchRes.body.issues?.some((i: any) => i.id === privateIssueId),
+      agentCompanySearchRes.body.results?.some((r: any) => r.id === privateIssueId),
     ).toBe(false);
 
     // 8. Also hidden after re-assigning to agent (direct GET / heartbeat-context / comments)
