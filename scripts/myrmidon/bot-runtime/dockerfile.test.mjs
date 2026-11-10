@@ -83,6 +83,19 @@ describe("docker/bot-runtime/Dockerfile", () => {
     }
   });
 
+  // myrmidon(OPE-10494, 10.11): Debian's gh 2.46.0 fails `gh pr view` / `gh pr edit`
+  // ("Projects (classic) is being deprecated"); every variant ships the pinned release.
+  it("ships gh from its pinned, checksummed release and never from apt", () => {
+    const ghStage = dockerfile.match(/^FROM [^\n]+ AS gh_dist\n([\s\S]*?)\nFROM /m)?.[1] ?? "";
+    assert.match(ghStage, /^ARG GH_VERSION=\d+\.\d+\.\d+$/m);
+    assert.match(ghStage, /^ARG GH_SHA256=[0-9a-f]{64}$/m);
+    assert.match(ghStage, /sha256sum -c -/);
+    assert.match(dockerfile, /^COPY --from=gh_dist \/usr\/local\/bin\/gh \/usr\/bin\/gh$/m);
+    for (const block of dockerfile.matchAll(/apt-get install -y --no-install-recommends([\s\S]*?)&& rm -rf/g)) {
+      assert.doesNotMatch(block[1], /(^|\s)gh(\s|$)/, "gh must not come from apt");
+    }
+  });
+
   it("pins the hermes version and a matching git tag through build args with exact defaults", () => {
     // hermes-agent's git tags (vYYYY.M.D, calendar-based) and its
     // pyproject.toml `version` field (0.x.y, bumped independently) do not
@@ -561,7 +574,6 @@ describe("docker/bot-runtime/Dockerfile (development variant)", () => {
       "curl",
       "g++",
       "gcc",
-      "gh",
       "git",
       "jq",
       "libc6-dev",
@@ -588,9 +600,10 @@ describe("docker/bot-runtime/Dockerfile (development variant)", () => {
     assert.match(devVariant, /^ARG GO_SHA256=[0-9a-f]{64}$/m);
     assert.match(devVariant, /^ARG RUSTUP_SHA256_AMD64=[0-9a-f]{64}$/m);
     assert.match(devVariant, /^ARG DOCKER_CLI_SHA256=[0-9a-f]{64}$/m);
-    // Four downloads in the variant: Node.js 24, Go, the Docker CLI tarball and
-    // rustup — each with its own digest check.
-    assert.equal(devVariant.match(/sha256sum -c -/g)?.length, 4);
+    assert.match(devVariant, /^ARG GH_SHA256=[0-9a-f]{64}$/m);
+    // Five downloads in the variant: Node.js 24, the GitHub CLI, Go, the Docker
+    // CLI tarball and rustup — each with its own digest check.
+    assert.equal(devVariant.match(/sha256sum -c -/g)?.length, 5);
     // The pnpm version is verified in the image it was installed into.
     assert.match(devStage, /pnpm --version \| grep -x "\$\{PNPM_VERSION\}"/);
   });
