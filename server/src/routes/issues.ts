@@ -87,9 +87,11 @@ import {
 import {
   type SelfCheckEvidenceDeps,
   type SelfCheckGateResolver,
+  admitSelfCheckGate,
   createSelfCheckGateResolver,
   DEFAULT_MAX_TECHNICAL_REJECTIONS,
   SELF_CHECK_REJECT_CODES,
+  type SelfCheckGateDecision,
 } from "../myrmidon/self-check-gate/index.js";
 import { createHash, randomUUID } from "node:crypto";
 import { Router, type Request, type Response } from "express";
@@ -15090,10 +15092,24 @@ export function issueRoutes(
             db,
             evidenceDeps: opts.selfCheckEvidenceDeps,
           });
-        const gateDecision = await resolveGate({
-          companyId: existing.companyId,
-          issueId: existing.id,
-        });
+        let gateDecision: SelfCheckGateDecision;
+        try {
+          gateDecision = await resolveGate({
+            companyId: existing.companyId,
+            issueId: existing.id,
+          });
+        } catch (error) {
+          // myrmidon(OPE-12146): the stop-gate must not turn review entry into
+          // a 500 when its evidence read fails (issue row visible, storage
+          // degraded, test mocks without plain selects). Fail open here; the
+          // downstream reviewer-admission CI gate still applies its own
+          // evidence checks before a reviewer is woken.
+          logger.warn(
+            { err: error, issueId: existing.id },
+            "self_check_gate_evidence_read_failed",
+          );
+          gateDecision = admitSelfCheckGate();
+        }
 
         const executionState =
           (existing.executionState as Record<string, unknown> | null) ?? {};

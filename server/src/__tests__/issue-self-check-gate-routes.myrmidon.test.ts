@@ -382,4 +382,47 @@ describeEmbeddedPostgres("myrmidon self-check gate routes", () => {
       .where(eq(issues.id, issueId));
     expect(updatedIssue?.status).toBe("in_progress");
   });
+
+  it("нет PR-ворк-продукта -> 200 admission: гейт связывает только поставки с PR", async () => {
+    const { issueId, agentActor } = await seedAgentIssueFixture();
+    const insertReviewAdmissionWakeup = vi.fn(async () => ({ created: true }));
+
+    const routes = (db: RouteDb, storage: RouteStorage) =>
+      issueRoutes(db, storage, {
+        selfCheckEvidenceDeps: {
+          resolvePullRequestTarget: async () => ({ kind: "none" }),
+          resolvePullRequestDetails: async () => {
+            throw new Error("not_under_test");
+          },
+          resolveHeadLaneEvidence: async () => {
+            throw new Error("not_under_test");
+          },
+        },
+        resolveReviewPullRequestCi: async () => ({
+          state: "complete",
+          pullRequestUrl: null,
+          headSha: null,
+        }),
+        resolveReviewHeadFailedChecks: async () => ({
+          state: "unknown",
+          reason: "not_under_test",
+        }),
+        insertReviewAdmissionWakeup,
+      });
+
+    const response = await request(routeApp(ctx.db, agentActor as never, routes as never))
+      .patch(`/api/issues/${issueId}`)
+      .send({ status: "in_review" });
+
+    expect(response.status).toBe(200);
+    expect(response.body.status).toBe("in_review");
+    expect(insertReviewAdmissionWakeup).toHaveBeenCalledTimes(1);
+
+    const [updatedIssue] = await ctx.db
+      .select()
+      .from(issues)
+      .where(eq(issues.id, issueId));
+    expect(updatedIssue?.status).toBe("in_review");
+  });
 });
+

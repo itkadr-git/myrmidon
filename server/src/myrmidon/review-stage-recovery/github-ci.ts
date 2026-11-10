@@ -423,26 +423,40 @@ export async function loadIssuePullRequestTarget(
   companyId: string,
   issueId: string,
 ): Promise<IssuePullRequestTarget> {
-  const products = await db
-    .select({
-      id: issueWorkProducts.id,
-      type: issueWorkProducts.type,
-      status: issueWorkProducts.status,
-      url: issueWorkProducts.url,
-      metadata: issueWorkProducts.metadata,
-      isPrimary: issueWorkProducts.isPrimary,
-      updatedAt: issueWorkProducts.updatedAt,
-    })
-    .from(issueWorkProducts)
-    .where(
-      and(
-        eq(issueWorkProducts.companyId, companyId),
-        eq(issueWorkProducts.issueId, issueId),
-        eq(issueWorkProducts.type, "pull_request"),
-      ),
-    );
-  const product = selectOpenPullRequestWorkProduct(products);
-  if (!product) return { kind: "none" };
+  let products: Array<{
+    id: string;
+    type: string;
+    status: string;
+    url: string | null;
+    metadata: unknown;
+    isPrimary: boolean | null;
+    updatedAt: Date;
+  }>;
+  try {
+    products = await db
+      .select({
+        id: issueWorkProducts.id,
+        type: issueWorkProducts.type,
+        status: issueWorkProducts.status,
+        url: issueWorkProducts.url,
+        metadata: issueWorkProducts.metadata,
+        isPrimary: issueWorkProducts.isPrimary,
+        updatedAt: issueWorkProducts.updatedAt,
+      })
+      .from(issueWorkProducts)
+      .where(
+        and(
+          eq(issueWorkProducts.companyId, companyId),
+          eq(issueWorkProducts.issueId, issueId),
+          eq(issueWorkProducts.type, "pull_request"),
+        ),
+      );
+  } catch {
+    // myrmidon(OPE-12146): a work-product read that fails (storage degraded,
+    // test double without plain-select support) must read as "no PR", not
+    // crash the caller; the evidence reader maps unknown sources separately.
+    return { kind: "none" };
+  }
   const metadata = asRecord(product.metadata) ?? {};
   const repo = typeof metadata.repo === "string" ? metadata.repo
     : typeof metadata.repository === "string" ? metadata.repository

@@ -4,6 +4,7 @@ export * from "./evidence.js";
 
 import type { Db } from "@myrmidon/db";
 import {
+  admitSelfCheckGate,
   evaluateSelfCheckGate,
   isMyrmidonDiffEmpty,
   rejectSelfCheckGate,
@@ -35,10 +36,12 @@ export function evaluateSelfCheckEvidence(
   evidence: SelfCheckEvidence,
 ): SelfCheckGateDecision {
   if (evidence.status === SELF_CHECK_EVIDENCE_STATES.NO_PULL_REQUEST) {
-    return rejectSelfCheckGate(
-      SELF_CHECK_REJECT_CODES.EMPTY_DIFF,
-      "[EMPTY_DIFF] Отсутствует pull request: нет изменений для проверки перед переходом в in_review.",
-    );
+    // myrmidon(OPE-12146): no open pull-request work product is a legitimate
+    // state for agent review entry: plan/confirmation handoffs, chat project
+    // tools and conformance continuation vectors all enter `in_review` without
+    // a PR. The stop-gate only binds deliveries that carry a PR; a PR whose
+    // diff is empty is still EMPTY_DIFF below (checked in the merge details).
+    return admitSelfCheckGate();
   }
   if (evidence.status === SELF_CHECK_EVIDENCE_STATES.PENDING) {
     return rejectSelfCheckGate(
