@@ -132,6 +132,11 @@ const dSettings: Array<{
   { key: "ocrMaxPages", envName: "MYRMIDON_OCR_MAX_PAGES", default: 500, section: "models", validate: positiveInteger() },
   { key: "ocrMaxChars", envName: "MYRMIDON_OCR_MAX_CHARS", default: 2_000_000, section: "models", validate: positiveInteger() },
   { key: "ocrTimeoutSec", envName: "MYRMIDON_OCR_TIMEOUT_SEC", default: 120, section: "models", validate: positiveInteger() },
+  // myrmidon(OPE-12628): lesson-distill sweep settings in "Тонкие настройки"
+  { key: "lessonDistillEnabled", envName: "MYRMIDON_LESSON_DISTILL_ENABLED", default: false, section: "system", validate: booleanSetting },
+  { key: "lessonDistillWindowHours", envName: "MYRMIDON_LESSON_DISTILL_WINDOW_HOURS", default: 24, section: "system", validate: positiveInteger() },
+  { key: "lessonDistillRepeatThreshold", envName: "MYRMIDON_LESSON_DISTILL_REPEAT_THRESHOLD", default: 2, section: "system", validate: positiveInteger() },
+  { key: "lessonDistillPeriodMinutes", envName: "MYRMIDON_LESSON_DISTILL_PERIOD_MINUTES", default: 60, section: "system", validate: positiveInteger() },
 ];
 for (const setting of dSettings) {
   behaviorSettingRegistry.register({
