@@ -116,7 +116,7 @@ export function webhookIntakeRoutes(deps: WebhookIntakeRoutesDeps) {
       throw badRequest(err instanceof Error ? err.message : "invalid webhook intake source");
     }
 
-    const delivery = extractDelivery(source, parsed, req.headers as Record<string, string | string[] | undefined>);
+    const delivery = extractDelivery(source, parsed, req.headers as Record<string, string | string[] | undefined>, body);
     const result = await store.insertDraft(company, delivery, {
       raw: parsed,
       signatureScheme: WEBHOOK_INTAKE_SIGNATURE_SCHEME,

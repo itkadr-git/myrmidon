@@ -10,7 +10,7 @@
 // returned. The raw body is stored verbatim as a draft candidate — content is
 // NOT interpreted or routed here (routing is the next slice).
 
-import { createHmac, timingSafeEqual } from "node:crypto";
+import { createHash, createHmac, timingSafeEqual } from "node:crypto";
 
 export const WEBHOOK_INTAKE_SIGNATURE_SCHEME = "hmac_sha256" as const;
 export const WEBHOOK_INTAKE_SIGNATURE_HEADER = "x-myrmidon-signature-256";
@@ -69,6 +69,7 @@ export function extractDelivery(
   source: string,
   body: unknown,
   headers: Record<string, string | string[] | undefined>,
+  rawBody?: Buffer | string,
 ): IntakeDelivery {
   const explicit = typeof body === "object" && body !== null ? (body as Record<string, unknown>) : null;
   const rawId =
@@ -79,7 +80,13 @@ export function extractDelivery(
     pickHeader(headers, "x-github-delivery") ||
     pickHeader(headers, "x-delivery-id") ||
     null;
-  const externalEventId = rawId ?? sha256Hex(typeof body === "string" ? body : JSON.stringify(body ?? null));
+  const fallbackContent =
+    rawBody !== undefined
+      ? rawBody
+      : typeof body === "string" || Buffer.isBuffer(body)
+        ? body
+        : JSON.stringify(body ?? null);
+  const externalEventId = rawId ?? sha256Hex(fallbackContent);
   const eventType =
     (typeof explicit?.eventType === "string" && explicit.eventType) ||
     pickHeader(headers, "x-myrmidon-event") ||
@@ -103,8 +110,8 @@ export function normalizeSource(source: string): string {
   return trimmed;
 }
 
-export function sha256Hex(text: string): string {
-  return createHmac("sha256", "webhook-intake-content-id").update(text).digest("hex");
+export function sha256Hex(content: string | Buffer): string {
+  return createHash("sha256").update(content).digest("hex");
 }
 
 /** Pure dedup decision: what the store result means for the route. */

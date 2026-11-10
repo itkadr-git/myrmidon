@@ -188,12 +188,14 @@ describe("myrmidon webhook intake", () => {
   it("content without a stored event id still dedupes by body hash", async () => {
     const app = buildApp(store, baseEnv);
     const body = JSON.stringify({ hello: "world" });
+    const expectedHash = "93a23971a914e5eacbf0a8d25154cda309c3c1c72fbb9914d47c60f3cb681588";
     const first = await request(app)
       .post("/myrmidon/monitoring/intake/webhook?source=custom")
       .set("X-Myrmidon-Signature-256", sign(body))
       .set("Content-Type", "application/json")
       .send(body);
     expect(first.status).toBe(201);
+    expect(first.body).toMatchObject({ status: "stored", eventId: expectedHash });
     const second = await request(app)
       .post("/myrmidon/monitoring/intake/webhook?source=custom")
       .set("X-Myrmidon-Signature-256", sign(body))
@@ -201,7 +203,21 @@ describe("myrmidon webhook intake", () => {
       .send(body);
     expect(second.status).toBe(200);
     expect(second.body.status).toBe("duplicate");
+    expect(second.body.eventId).toBe(expectedHash);
     expect(store.rows.size).toBe(1);
+  });
+
+  it("uses the unkeyed sha256 of the exact raw body bytes as fallback event id", async () => {
+    const app = buildApp(store, baseEnv);
+    const body = '{\n  "hello": "world"\n}';
+    const expectedHash = "33edb3d69fb5d4e9419dc4b1b8d43fd4563e1ede06620ab9e960e5992d3b0548";
+    const res = await request(app)
+      .post("/myrmidon/monitoring/intake/webhook?source=custom")
+      .set("X-Myrmidon-Signature-256", sign(body))
+      .set("Content-Type", "application/json")
+      .send(body);
+    expect(res.status).toBe(201);
+    expect(res.body).toMatchObject({ status: "stored", eventId: expectedHash });
   });
 
   it("rejects a malformed source (400)", async () => {

@@ -2,7 +2,7 @@
 // event-identity extraction, source normalization. No database, no network.
 import { createHmac } from "node:crypto";
 import { describe, expect, it } from "vitest";
-import { extractDelivery, normalizeSource, verifyHmacSha256 } from "./domain.js";
+import { extractDelivery, normalizeSource, sha256Hex, verifyHmacSha256 } from "./domain.js";
 
 const secret = "unit-secret";
 
@@ -42,8 +42,14 @@ describe("myrmidon(1.7 WEBHOOK-INTAKE) delivery identity", () => {
     const headerOnly = extractDelivery("s", { a: 1 }, { "x-github-delivery": "d-9" });
     expect(headerOnly.externalEventId).toBe("d-9");
     const none = extractDelivery("s", { a: 1 }, {});
-    expect(none.externalEventId).not.toContain(" ");
-    expect(none.externalEventId).toHaveLength(64);
+    const expectedHash = "015abd7f5cc57a2dd94b7590f04ad8084273905ee33ec5cebeae62276a97f862";
+    expect(none.externalEventId).toBe(expectedHash);
+    expect(sha256Hex('{"a":1}')).toBe(expectedHash);
+    expect(sha256Hex(Buffer.from('{"a":1}', "utf8"))).toBe(expectedHash);
+
+    const exactRaw = Buffer.from('{ "a": 1 }\n', "utf8");
+    const withRaw = extractDelivery("s", { a: 1 }, {}, exactRaw);
+    expect(withRaw.externalEventId).toBe("13bcacc8d47bd26aff811a06be81b73c1f20e30576e437509e8690adefad6241");
   });
 
   it("normalizes the source and rejects bad ones", () => {

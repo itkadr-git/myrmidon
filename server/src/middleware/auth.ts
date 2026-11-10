@@ -269,7 +269,7 @@ export function actorMiddleware(db: Db, opts: ActorMiddlewareOptions): RequestHa
       (publicMcpGatewayProtocolPath.test(req.path) ||
         monitoringAlertsWebhookPath.test(req.originalUrl) ||
         (req.method === "POST" && intakeWebhookPath.test(req.originalUrl)) ||
-        webhookIntakePath.test(req.originalUrl))
+        (req.method === "POST" && webhookIntakePath.test(req.originalUrl)))
     ) {
       if (runIdHeader) req.actor.runId = runIdHeader;
       if (req.actor.type === "none" && !req.actorNoneReason) {
