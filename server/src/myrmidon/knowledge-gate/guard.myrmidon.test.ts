@@ -1,4 +1,5 @@
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { behaviorSettingRegistry } from "@myrmidon/shared";
 import {
   issueLabels as issueLabelsTable,
   labels as labelsTable,
@@ -17,6 +18,10 @@ import {
   parseWikiCommentLine,
   validateKnowledgeNoteRevisions,
 } from "./guard.js";
+import {
+  applyLiveBehaviorSettings,
+  liveBehaviorSettingsView,
+} from "../behavior-settings/live.js";
 import { HttpError } from "../../errors.js";
 
 const issueId = "11111111-1111-1111-1111-111111111111";
@@ -65,27 +70,169 @@ function fakeDb(tables: {
 }
 
 describe("getKnowledgeGateMode", () => {
+  const previousLive = liveBehaviorSettingsView();
+  const prevMode = process.env.MYRMIDON_KNOWLEDGE_GATE_MODE;
+  const prevStartDate = process.env.MYRMIDON_KNOWLEDGE_GATE_START_DATE;
+
+  afterEach(() => {
+    applyLiveBehaviorSettings(previousLive);
+    if (prevMode === undefined) delete process.env.MYRMIDON_KNOWLEDGE_GATE_MODE;
+    else process.env.MYRMIDON_KNOWLEDGE_GATE_MODE = prevMode;
+    if (prevStartDate === undefined) delete process.env.MYRMIDON_KNOWLEDGE_GATE_START_DATE;
+    else process.env.MYRMIDON_KNOWLEDGE_GATE_START_DATE = prevStartDate;
+  });
+
+  it("registers knowledgeGateMode and knowledgeGateStartDate in behaviorSettingRegistry", () => {
+    const modeDef = behaviorSettingRegistry.get("knowledgeGateMode");
+    expect(modeDef).toMatchObject({
+      key: "knowledgeGateMode",
+      envName: "MYRMIDON_KNOWLEDGE_GATE_MODE",
+      default: "auto",
+      section: "system",
+      scope: "instance",
+      valueType: "string",
+    });
+    expect(modeDef?.validate("auto")).toBe("auto");
+    expect(modeDef?.validate("warning")).toBe("warning");
+    expect(modeDef?.validate("enforce")).toBe("enforce");
+    expect(modeDef?.validate("invalid")).toBeNull();
+
+    const dateDef = behaviorSettingRegistry.get("knowledgeGateStartDate");
+    expect(dateDef).toMatchObject({
+      key: "knowledgeGateStartDate",
+      envName: "MYRMIDON_KNOWLEDGE_GATE_START_DATE",
+      default: "2026-10-31T00:00:00.000Z",
+      section: "system",
+      scope: "instance",
+      valueType: "string",
+    });
+    expect(dateDef?.validate("2026-12-01T00:00:00.000Z")).toBe("2026-12-01T00:00:00.000Z");
+    expect(dateDef?.validate("not-a-date")).toBeNull();
+  });
+
   it("returns warning during the first 3 days", () => {
+    delete process.env.MYRMIDON_KNOWLEDGE_GATE_MODE;
+    delete process.env.MYRMIDON_KNOWLEDGE_GATE_START_DATE;
+    applyLiveBehaviorSettings({ settings: {}, sources: {} });
     expect(getKnowledgeGateMode(new Date("2026-11-01T00:00:00Z"))).toBe("warning");
     expect(getKnowledgeGateMode(new Date("2026-11-02T23:59:59Z"))).toBe("warning");
   });
 
   it("returns enforce after 3 days", () => {
+    delete process.env.MYRMIDON_KNOWLEDGE_GATE_MODE;
+    delete process.env.MYRMIDON_KNOWLEDGE_GATE_START_DATE;
+    applyLiveBehaviorSettings({ settings: {}, sources: {} });
     expect(getKnowledgeGateMode(new Date("2026-11-04T00:00:01Z"))).toBe("enforce");
     expect(getKnowledgeGateMode(new Date("2027-01-01T00:00:00Z"))).toBe("enforce");
   });
 
   it("respects env overrides", () => {
-    const prev = process.env.MYRMIDON_KNOWLEDGE_GATE_MODE;
-    try {
-      process.env.MYRMIDON_KNOWLEDGE_GATE_MODE = "warning";
-      expect(getKnowledgeGateMode(new Date("2027-01-01T00:00:00Z"))).toBe("warning");
-      process.env.MYRMIDON_KNOWLEDGE_GATE_MODE = "enforce";
-      expect(getKnowledgeGateMode(new Date("2026-11-01T00:00:00Z"))).toBe("enforce");
-    } finally {
-      if (prev === undefined) delete process.env.MYRMIDON_KNOWLEDGE_GATE_MODE;
-      else process.env.MYRMIDON_KNOWLEDGE_GATE_MODE = prev;
-    }
+    process.env.MYRMIDON_KNOWLEDGE_GATE_MODE = "warning";
+    expect(getKnowledgeGateMode(new Date("2027-01-01T00:00:00Z"))).toBe("warning");
+    process.env.MYRMIDON_KNOWLEDGE_GATE_MODE = "enforce";
+    expect(getKnowledgeGateMode(new Date("2026-11-01T00:00:00Z"))).toBe("enforce");
+  });
+
+  it("applies saved UI mode without restart and enforces env precedence over saved", () => {
+    const insideGrace = new Date("2026-11-01T00:00:00Z");
+    const afterGrace = new Date("2027-01-01T00:00:00Z");
+
+    delete process.env.MYRMIDON_KNOWLEDGE_GATE_MODE;
+    delete process.env.MYRMIDON_KNOWLEDGE_GATE_START_DATE;
+
+    // Saved UI `enforce` enables strict mode before grace period ends
+    applyLiveBehaviorSettings({
+      settings: { knowledgeGateMode: "enforce" },
+      sources: { knowledgeGateMode: "ui" },
+    });
+    expect(getKnowledgeGateMode(insideGrace)).toBe("enforce");
+    expect(getKnowledgeGateMode(afterGrace)).toBe("enforce");
+
+    // Live switch to saved UI `warning` applies immediately without restart
+    applyLiveBehaviorSettings({
+      settings: { knowledgeGateMode: "warning" },
+      sources: { knowledgeGateMode: "ui" },
+    });
+    expect(getKnowledgeGateMode(insideGrace)).toBe("warning");
+    expect(getKnowledgeGateMode(afterGrace)).toBe("warning");
+
+    // Explicit env `enforce` overrides saved `warning`
+    process.env.MYRMIDON_KNOWLEDGE_GATE_MODE = "enforce";
+    expect(getKnowledgeGateMode(insideGrace)).toBe("enforce");
+    expect(getKnowledgeGateMode(afterGrace)).toBe("enforce");
+
+    // Explicit env `warning` overrides saved `enforce`
+    applyLiveBehaviorSettings({
+      settings: { knowledgeGateMode: "enforce" },
+      sources: { knowledgeGateMode: "ui" },
+    });
+    process.env.MYRMIDON_KNOWLEDGE_GATE_MODE = "warning";
+    expect(getKnowledgeGateMode(afterGrace)).toBe("warning");
+
+    // Saved `auto` follows the date-based rollout when env is unset
+    delete process.env.MYRMIDON_KNOWLEDGE_GATE_MODE;
+    applyLiveBehaviorSettings({
+      settings: { knowledgeGateMode: "auto" },
+      sources: { knowledgeGateMode: "ui" },
+    });
+    expect(getKnowledgeGateMode(insideGrace)).toBe("warning");
+    expect(getKnowledgeGateMode(afterGrace)).toBe("enforce");
+  });
+
+  it("applies saved start date without restart and prioritizes env start date", () => {
+    delete process.env.MYRMIDON_KNOWLEDGE_GATE_MODE;
+    delete process.env.MYRMIDON_KNOWLEDGE_GATE_START_DATE;
+
+    // Saved start date shifts rollout window without restart
+    applyLiveBehaviorSettings({
+      settings: { knowledgeGateMode: "auto", knowledgeGateStartDate: "2027-02-01T00:00:00.000Z" },
+      sources: { knowledgeGateMode: "ui", knowledgeGateStartDate: "ui" },
+    });
+    expect(getKnowledgeGateMode(new Date("2027-02-02T00:00:00Z"))).toBe("warning");
+    expect(getKnowledgeGateMode(new Date("2027-02-05T00:00:00Z"))).toBe("enforce");
+
+    // Explicit env start date overrides saved start date
+    process.env.MYRMIDON_KNOWLEDGE_GATE_START_DATE = "2027-03-10T00:00:00.000Z";
+    expect(getKnowledgeGateMode(new Date("2027-03-11T00:00:00Z"))).toBe("warning");
+    expect(getKnowledgeGateMode(new Date("2027-02-02T00:00:00Z"))).toBe("warning");
+    expect(getKnowledgeGateMode(new Date("2027-03-14T00:00:00Z"))).toBe("enforce");
+  });
+
+  it("falls back to constant when env or saved start date is unreadable", () => {
+    delete process.env.MYRMIDON_KNOWLEDGE_GATE_MODE;
+    const insideDefaultGrace = new Date("2026-11-01T00:00:00Z");
+    const afterDefaultGrace = new Date("2026-11-05T00:00:00Z");
+
+    // Garbage saved start date -> falls back to KNOWLEDGE_GATE_START_DATE
+    delete process.env.MYRMIDON_KNOWLEDGE_GATE_START_DATE;
+    applyLiveBehaviorSettings({
+      settings: { knowledgeGateStartDate: "not-a-valid-date" },
+      sources: { knowledgeGateStartDate: "ui" },
+    });
+    expect(getKnowledgeGateMode(insideDefaultGrace)).toBe("warning");
+    expect(getKnowledgeGateMode(afterDefaultGrace)).toBe("enforce");
+
+    // Garbage env start date -> falls back to saved if valid, else constant
+    process.env.MYRMIDON_KNOWLEDGE_GATE_START_DATE = "garbage-date";
+    applyLiveBehaviorSettings({ settings: {}, sources: {} });
+    expect(getKnowledgeGateMode(insideDefaultGrace)).toBe("warning");
+    expect(getKnowledgeGateMode(afterDefaultGrace)).toBe("enforce");
+
+    // Garbage env start date + valid saved start date -> uses saved start date
+    applyLiveBehaviorSettings({
+      settings: { knowledgeGateStartDate: "2027-05-01T00:00:00.000Z" },
+      sources: { knowledgeGateStartDate: "ui" },
+    });
+    expect(getKnowledgeGateMode(new Date("2027-05-02T00:00:00Z"))).toBe("warning");
+    expect(getKnowledgeGateMode(new Date("2027-05-05T00:00:00Z"))).toBe("enforce");
+
+    // Both garbage -> falls back to constant
+    applyLiveBehaviorSettings({
+      settings: { knowledgeGateStartDate: "also-garbage" },
+      sources: { knowledgeGateStartDate: "ui" },
+    });
+    expect(getKnowledgeGateMode(insideDefaultGrace)).toBe("warning");
+    expect(getKnowledgeGateMode(afterDefaultGrace)).toBe("enforce");
   });
 });
 

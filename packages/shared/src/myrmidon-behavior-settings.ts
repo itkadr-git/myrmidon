@@ -145,6 +145,14 @@ const dSettings: Array<{
   { key: "lessonDistillWindowHours", envName: "MYRMIDON_LESSON_DISTILL_WINDOW_HOURS", default: 24, section: "system", validate: positiveInteger() },
   { key: "lessonDistillRepeatThreshold", envName: "MYRMIDON_LESSON_DISTILL_REPEAT_THRESHOLD", default: 2, section: "system", validate: positiveInteger() },
   { key: "lessonDistillPeriodMinutes", envName: "MYRMIDON_LESSON_DISTILL_PERIOD_MINUTES", default: 60, section: "system", validate: positiveInteger() },
+  // myrmidon(OPE-12627, SWEEP-2 KNOWLEDGE-GATE): the knowledge-gate mode and
+  // its rollout start date moved to "Тонкие настройки". The default `auto`
+  // keeps the built-in date-based rollout byte-for-byte as before; a saved UI
+  // value pins the mode (`warning`/`enforce`) or shifts the start date without
+  // a restart, and the env variables stay the forced override (the precedence
+  // for this contour is decided in the gate itself: env → saved → date).
+  { key: "knowledgeGateMode", envName: "MYRMIDON_KNOWLEDGE_GATE_MODE", default: "auto", section: "system", validate: (value) => value === "auto" || value === "warning" || value === "enforce" ? value : null },
+  { key: "knowledgeGateStartDate", envName: "MYRMIDON_KNOWLEDGE_GATE_START_DATE", default: "2026-10-31T00:00:00.000Z", section: "system", validate: (value) => typeof value === "string" && Number.isFinite(Date.parse(value)) ? value : null },
 ];
 for (const setting of dSettings) {
   behaviorSettingRegistry.register({
