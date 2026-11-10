@@ -251,7 +251,7 @@ export function onboardService(db: Db, deps: OnboardServiceDeps) {
     /** Retry an onboarding job for a server that failed or needs attention. */
     async retry(input: { companyId: string; serverId: string; createdBy?: string | null }): Promise<OnboardJob> {
       requireEnabled();
-      const server = await deps.getServer(input.companyId, input.serverId);
+      const server = await deps.store.getServerById(input.companyId, input.serverId);
       if (!server) throw new OnboardServiceError(404, "Server not found");
       const existing = await deps.store.listJobs(input.companyId, input.serverId);
       const active = existing.find((j) => isOnboardJobActive(j.status));

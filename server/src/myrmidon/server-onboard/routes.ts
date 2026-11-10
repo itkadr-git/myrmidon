@@ -105,8 +105,8 @@ export function onboardRoutes(deps: { service: OnboardService }) {
     }
   });
 
-  router.post("/myrmidon/fleet/servers/:id/onboard-jobs", validate(startJobSchema), async (req, res) => {
-    const body = req.body as z.infer<typeof startJobSchema>;
+  router.post("/myrmidon/fleet/servers/:id/onboard-jobs", validate(onboardStartSchema), async (req, res) => {
+    const body = req.body as z.infer<typeof onboardStartSchema>;
     assertFleetOnboardOwner(req, body.companyId);
     const serverIdParam = req.params.id;
     const serverId = Array.isArray(serverIdParam) ? serverIdParam[0] : serverIdParam;

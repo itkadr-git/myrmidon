@@ -129,7 +129,10 @@ function createMocks() {
       return server as any;
     },
     async listJobs(companyId, serverId) {
-      return store.jobs.filter((j: any) => j.companyId === companyId && (!serverId || j.serverId === serverId));
+      return store.jobs
+        .filter((j: any) => j.companyId === companyId && (!serverId || j.serverId === serverId))
+        .slice()
+        .reverse();
     },
     async expireStale() {
       return 0;
@@ -374,7 +377,7 @@ describe("SERVER-ONBOARD logic", () => {
       secrets: mockSecrets,
       getServer: mockGetServer,
     });
-    const { server, job } = await service.addServer({
+    const { serverId, job } = await service.addServer({
       companyId: "company-1",
       slug: "srv-concurrent",
       name: "Concurrent Test",
@@ -391,15 +394,15 @@ describe("SERVER-ONBOARD logic", () => {
 
     // Second startJob on same server should throw 409
     await expect(
-      service.startJob({ companyId: "company-1", serverId: server.id, kind: "recheck", createdBy: null }),
+      service.startJob({ companyId: "company-1", serverId, kind: "recheck", createdBy: null }),
     ).rejects.toThrow("already in progress");
 
     // Claim the job and report succeeded
-    await service.claim("company-1", "test-token");
-    await service.report("test-token", { companyId: "company-1", jobId: job.id, status: "succeeded" });
+    await service.claim("company-1", "valid-executor-token");
+    await service.report("valid-executor-token", { companyId: "company-1", jobId: job.id, status: "succeeded" });
 
     // Now startJob should succeed
-    const job2 = await service.startJob({ companyId: "company-1", serverId: server.id, kind: "recheck", createdBy: null });
+    const job2 = await service.startJob({ companyId: "company-1", serverId, kind: "recheck", createdBy: null });
     expect(job2.status).toBe("pending");
   });
 
@@ -411,7 +414,7 @@ describe("SERVER-ONBOARD logic", () => {
       secrets: mockSecrets,
       getServer: mockGetServer,
     });
-    const { server, job } = await service.addServer({
+    const { serverId, job } = await service.addServer({
       companyId: "company-1",
       slug: "srv-retry",
       name: "Retry Test",
@@ -425,20 +428,19 @@ describe("SERVER-ONBOARD logic", () => {
     });
 
     // While job is active, resume returns the same active job
-    const resumedActive = await service.resume({ companyId: "company-1", serverId: server.id });
+    const resumedActive = await service.resume({ companyId: "company-1", serverId });
     expect(resumedActive.id).toBe(job.id);
     expect(resumedActive.status).toBe("pending");
 
     // Fail the job
-    await service.claim("company-1", "test-token");
-    await service.report("test-token", { companyId: "company-1", jobId: job.id, status: "failed", error: "network unreachable" });
+    await service.claim("company-1", "valid-executor-token");
+    await service.report("valid-executor-token", { companyId: "company-1", jobId: job.id, status: "failed", error: "network unreachable" });
 
-    const serverAfterFail = await mockGetServer("company-1", server.id);
-    const storeServer = store.servers.find((s: any) => s.id === server.id);
+    const storeServer = store.servers.find((s: any) => s.id === serverId);
     expect(storeServer?.onboardState).toBe("needs_attention");
 
     // Resume now triggers a retry
-    const retriedJob = await service.resume({ companyId: "company-1", serverId: server.id });
+    const retriedJob = await service.resume({ companyId: "company-1", serverId });
     expect(retriedJob.id).not.toBe(job.id);
     expect(retriedJob.status).toBe("pending");
     expect(retriedJob.kind).toBe("onboard");
@@ -464,7 +466,7 @@ describe("SERVER-ONBOARD logic", () => {
       secrets: mockSecrets,
       getServer: mockGetServer,
     });
-    const { server, job } = await service.addServer({
+    const { serverId, job } = await service.addServer({
       companyId: "company-1",
       slug: "srv-stale",
       name: "Stale Test",
@@ -477,7 +479,7 @@ describe("SERVER-ONBOARD logic", () => {
       createdBy: null,
     });
 
-    await service.claim("company-1", "test-token");
+    await service.claim("company-1", "valid-executor-token");
 
     const { expired } = await service.tick();
     expect(expired).toBe(1);
@@ -485,7 +487,7 @@ describe("SERVER-ONBOARD logic", () => {
     const expiredJob = await service.getJob("company-1", job.id);
     expect(expiredJob?.status).toBe("expired");
 
-    const storeServer = store.servers.find((s: any) => s.id === server.id);
+    const storeServer = store.servers.find((s: any) => s.id === serverId);
     expect(storeServer?.onboardState).toBe("needs_attention");
   });
 });
