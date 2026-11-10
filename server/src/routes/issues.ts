@@ -13283,12 +13283,7 @@ export function issueRoutes(
     validateIssueMutationBody(createChildIssueSchema),
     async (req, res) => {
       const parentId = req.params.id as string;
-      const parent = await getAccessibleIssue(
-        req,
-        res,
-        svc.getById(parentId),
-        "Parent issue not found",
-      );
+      const parent = await getAccessibleIssue(req, res, svc.getById(parentId));
       if (!parent) return;
       if (
         !isTaskBridgeKeyActor(req) &&
