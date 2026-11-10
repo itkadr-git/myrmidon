@@ -50,6 +50,12 @@ function ghHeaders(token) {
   };
 }
 
+/** Sanitize token occurrences from arbitrary error text. */
+export function sanitize(text, token) {
+  if (!token || typeof text !== "string") return text;
+  return text.replaceAll(token, "<redacted>");
+}
+
 /** Map a failed response to a ProbeError; the token never enters the text. */
 export async function toProbeError(response) {
   const status = response.status;
@@ -73,7 +79,8 @@ export async function fetchRefHead(repo, ref, token, fetchImpl = fetch) {
       headers: ghHeaders(token),
     });
   } catch (err) {
-    throw new ProbeError("network", `GitHub недоступен: ${err instanceof Error ? err.message : "network failure"}`);
+    const raw = err instanceof Error ? err.message : "network failure";
+    throw new ProbeError("network", `GitHub недоступен: ${sanitize(raw, token)}`);
   }
   if (!response.ok) throw await toProbeError(response);
   const data = await response.json();
@@ -109,7 +116,8 @@ export async function createProbeCheckRun(repo, headSha, token, fetchImpl = fetc
       }),
     });
   } catch (err) {
-    throw new ProbeError("network", `GitHub недоступен: ${err instanceof Error ? err.message : "network failure"}`);
+    const raw = err instanceof Error ? err.message : "network failure";
+    throw new ProbeError("network", `GitHub недоступен: ${sanitize(raw, token)}`);
   }
   if (!response.ok) throw await toProbeError(response);
   const data = await response.json();
@@ -179,8 +187,10 @@ export async function main(argv, io = {}) {
     else out(`ok: check run "${result.checkName}" id=${result.checkRunId} on head ${result.headSha}`);
     return 0;
   } catch (e) {
+    const token = resolveToken(io.env ?? process.env);
     const kind = e instanceof ProbeError ? e.kind : "http";
-    const message = e instanceof Error ? e.message : String(e);
+    const rawMessage = e instanceof Error ? e.message : String(e);
+    const message = sanitize(rawMessage, token);
     // Usage problems answer with the message; GitHub refusals answer with the
     // mapped Russian text. Either way the token never appears in the output.
     err(message);

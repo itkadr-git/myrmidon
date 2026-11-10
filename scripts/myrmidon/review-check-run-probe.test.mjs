@@ -8,6 +8,7 @@ import {
   main,
   parseArgs,
   runProbe,
+  sanitize,
   toProbeError,
 } from "./review-check-run-probe.mjs";
 
@@ -97,6 +98,18 @@ describe("fetchRefHead", () => {
       return true;
     });
   });
+  it("sanitizes the token from arbitrary network error messages", async () => {
+    const leakyFetch = async () => {
+      throw new Error(`connect ECONNREFUSED with ${TOKEN}`);
+    };
+    await assert.rejects(() => fetchRefHead(REPO, "feature/x", TOKEN, leakyFetch), (err) => {
+      assert.ok(err instanceof ProbeError);
+      assert.equal(err.kind, "network");
+      assertNoToken([err.message]);
+      assert.match(err.message, /<redacted>/);
+      return true;
+    });
+  });
 });
 
 describe("createProbeCheckRun", () => {
@@ -119,6 +132,17 @@ describe("createProbeCheckRun", () => {
     await assert.rejects(() => createProbeCheckRun(REPO, HEAD, TOKEN, impl), (err) => {
       assert.equal(err.kind, "forbidden");
       assertNoToken([err.message]);
+      return true;
+    });
+  });
+  it("sanitizes the token from arbitrary creation network errors", async () => {
+    const leakyFetch = async () => {
+      throw new Error(`socket hang up auth=${TOKEN}`);
+    };
+    await assert.rejects(() => createProbeCheckRun(REPO, HEAD, TOKEN, leakyFetch), (err) => {
+      assert.equal(err.kind, "network");
+      assertNoToken([err.message]);
+      assert.match(err.message, /<redacted>/);
       return true;
     });
   });
@@ -206,5 +230,24 @@ describe("main", () => {
     const code = await main(["--repo", "bad", "--ref", "x"], { ...quiet, fetchImpl: impl, env: { GH_TOKEN: TOKEN } });
     assert.equal(code, 2);
     assert.equal(impl.calls.length, 0);
+  });
+  it("sanitizes the token from arbitrary error messages in main", async () => {
+    outputs = [];
+    const leakyFetch = async () => {
+      throw new Error(`fetch exploded with token=${TOKEN}`);
+    };
+    const code = await main(["--repo", REPO, "--ref", "x"], { ...quiet, fetchImpl: leakyFetch, env: { GH_TOKEN: TOKEN } });
+    assert.equal(code, 1);
+    assertNoToken(outputs);
+    assert.match(outputs.join("\n"), /<redacted>/);
+  });
+});
+
+describe("sanitize", () => {
+  it("replaces token occurrences with <redacted>", () => {
+    assert.equal(sanitize("Bearer secret123", "secret123"), "Bearer <redacted>");
+    assert.equal(sanitize("clean message", "secret123"), "clean message");
+    assert.equal(sanitize("clean message", null), "clean message");
+    assert.equal(sanitize(123, "secret123"), 123);
   });
 });
