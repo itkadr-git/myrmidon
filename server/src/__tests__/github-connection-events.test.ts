@@ -1017,9 +1017,11 @@ describeEmbeddedPostgres.sequential("1.7 SWEEP-2 (OPE-12629): sweepWatchdog thre
     const t0 = new Date("2026-11-03T00:00:00.000Z");
     await seedCompanyWithSilentPr(0, t0, "THD");
     result = await makeService(new Date(t0.getTime() + 20 * 60_000)).sweepWatchdog(new Date(t0.getTime() + 20 * 60_000));
-    // Both the previously seeded THC company (60-minute general silence at
-    // the new reference point) and the fresh THD one (20-minute silence)
-    // breach the 15-minute default.
-    expect(result.alarmsCreated).toBe(2);
+    // Only the fresh THD company breaches the 15-minute default: its webhook
+    // and CI event are 20 minutes old. The THC company seeded in the first
+    // sub-case has its webhook and CI event anchored at its own `now`
+    // (01:00), which is in the future relative to this 00:20 sweep, so it is
+    // not silent at this reference point.
+    expect(result.alarmsCreated).toBe(1);
   });
 });
