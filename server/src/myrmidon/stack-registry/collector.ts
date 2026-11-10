@@ -7,7 +7,7 @@
 import { getServerInfoSnapshot, type ServerInfoSnapshot } from "../../server-info.js";
 import { request as httpRequest } from "node:http";
 import {
-  MYRMIDON_MIGRATION_SUPPORTED_VERSION,
+  VENDOR_MIGRATION_SUPPORTED_VERSION,
   STACK_DOCUMENT_VERSION,
   STACK_SEED,
   emptyStackDocument,
@@ -364,7 +364,7 @@ export async function collectStackLocal(options: CollectStackLocalOptions = {}):
       }
       case "manual": {
         if (seed.name === "paperclip") {
-          snapshot.local.version = MYRMIDON_MIGRATION_SUPPORTED_VERSION;
+          snapshot.local.version = VENDOR_MIGRATION_SUPPORTED_VERSION;
           snapshot.local.runningOn = "supported migration schema";
           snapshot.local.unknownReason = null;
         } else {
