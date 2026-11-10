@@ -10,9 +10,20 @@
 //       - active = null       -> default fallback behavior.
 //
 // Designed with injectable dependencies so unit tests can execute with a
-// mocked active-channel status store and delivery sinks without needing a database.
+// mocked active-channel status store and delivery sinks without needing a database,
+// while provide createCommanderReportDeliveryDeps / deliverCommanderReportForDb
+// for production routing backed by real board services.
 
 import type { OwnerChannel } from "@myrmidon/shared";
+import type { Db } from "@myrmidon/db";
+import { chatEndpoints, chatPublications } from "@myrmidon/db";
+import { and, eq } from "drizzle-orm";
+import { instanceSettingsService } from "../../services/instance-settings.js";
+import { publishLiveEvent } from "../../services/live-events.js";
+import { projectSafeChatPublication } from "../../services/chat-publication-projection.js";
+import { resolveOwnerActiveChannel } from "../owner-active-channel/store.js";
+import { readOwnerActiveChannelSettings } from "../owner-active-channel/settings.js";
+import { findOwnerDmBindings } from "../owner-delivery/telegram-owner-bindings.js";
 
 export type CommanderReportTargetChannel = "telegram" | "web" | "default";
 
@@ -82,4 +93,114 @@ export async function deliverCommanderReport(
     destination,
     channelResolved: channel,
   };
+}
+
+/**
+ * Creates production delivery dependencies connected to the active channel store,
+ * Telegram X8 bridge publications, and board web notifications.
+ */
+export function createCommanderReportDeliveryDeps(db: Db): CommanderReportDeliveryDeps {
+  return {
+    async resolveActiveChannel(ownerUserId: string) {
+      const resolved = await readOwnerActiveChannelSettings({
+        getGeneral: () => instanceSettingsService(db).getGeneral(),
+      });
+      return resolveOwnerActiveChannel(db, ownerUserId, {
+        thresholdMin: resolved.thresholdMin,
+      });
+    },
+
+    async deliverToWeb(input: CommanderReportDeliveryInput) {
+      publishLiveEvent({
+        companyId: input.companyId,
+        type: "activity.logged",
+        payload: {
+          action: "commander_report.web_notification",
+          ownerUserId: input.ownerUserId,
+          title: input.title ?? "Commander Report",
+          text: input.reportText,
+          metadata: input.metadata ?? {},
+        },
+      });
+      return { destination: `web:notification:${input.companyId}` };
+    },
+
+    async deliverToTelegram(input: CommanderReportDeliveryInput) {
+      let agentId =
+        (input.metadata?.agentId as string | undefined) ??
+        (input.metadata?.createdByAgentId as string | undefined);
+
+      if (!agentId) {
+        // No explicit agent: fall back to the company's standing Telegram
+        // endpoint assignee so the report still reaches the bridge.
+        const [endpoint] = await db
+          .select({ assignedAgentId: chatEndpoints.assignedAgentId })
+          .from(chatEndpoints)
+          .where(
+            and(
+              eq(chatEndpoints.companyId, input.companyId),
+              eq(chatEndpoints.provider, "telegram"),
+            ),
+          )
+          .limit(1);
+        agentId = endpoint?.assignedAgentId ?? "";
+      }
+
+      if (agentId) {
+        const bindings = await findOwnerDmBindings(db, {
+          companyId: input.companyId,
+          ownerUserId: input.ownerUserId,
+          agentId,
+        });
+
+        if (bindings.length > 0) {
+          const binding = bindings[0];
+          const now = new Date();
+          const publicationPayload = projectSafeChatPublication({
+            classification: "external",
+            source: "agent_comment",
+            text: input.reportText,
+          });
+
+          const [publication] = await db
+            .insert(chatPublications)
+            .values({
+              companyId: input.companyId,
+              endpointId: binding.endpoint.id,
+              conversationId: binding.conversation.id,
+              issueId: binding.conversation.issueId,
+              idempotencyKey: `commander-report:${Date.now()}:${binding.endpoint.id}`,
+              payload: publicationPayload,
+              state: "pending",
+              createdAt: now,
+              updatedAt: now,
+            })
+            .returning({ id: chatPublications.id });
+
+          return { destination: `telegram:publication:${publication?.id ?? binding.endpoint.id}` };
+        }
+      }
+
+      return { destination: `telegram:bridge:${input.companyId}` };
+    },
+
+    async deliverDefault(input: CommanderReportDeliveryInput) {
+      return { destination: `default:board:${input.companyId}` };
+    },
+  };
+}
+
+/**
+ * Route and deliver Commander report using production services backed by the database.
+ */
+export async function deliverCommanderReportForDb(
+  db: Db,
+  input: CommanderReportDeliveryInput,
+  overrides?: Partial<CommanderReportDeliveryDeps>,
+): Promise<CommanderReportDeliveryResult> {
+  const deps = {
+    ...createCommanderReportDeliveryDeps(db),
+    ...overrides,
+  };
+  return deliverCommanderReport(input, deps);
 }

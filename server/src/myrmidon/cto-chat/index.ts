@@ -67,7 +67,9 @@ export {
   type CtoChatSettings,
 } from "./settings.js";
 export {
+  createCommanderReportDeliveryDeps,
   deliverCommanderReport,
+  deliverCommanderReportForDb,
   resolveCommanderReportTarget,
   type CommanderReportDeliveryInput,
   type CommanderReportDeliveryResult,
