@@ -860,6 +860,13 @@ describe("review rework sweep", () => {
       mode: "normal",
       reviewEscalationPolicy: {
         maxReviewRounds: 3,
+        participantRoles: ["lead"],
+        fallbackQueue: "review-recovery",
+        timeoutAt: null,
+        policyRevision: "rev-1",
+        participants: {
+          lead: { type: "agent", agentId: "adm-dev-lead" },
+        },
         escalationAgentIds: ["adm-dev-lead"],
       },
     } as any;

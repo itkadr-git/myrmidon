@@ -541,7 +541,11 @@ export function resolveReviewEscalationParticipant(
   const configured = policy?.reviewEscalationPolicy ?? issue.reviewEscalationPolicy;
   const reviewOwnerIds = new Set([issue.responsibleUserId, issue.createdByUserId].filter((id): id is string => Boolean(id)));
   if (
-    configured && configured.policyRevision.trim().length > 0 && configured.participantRoles.length > 0
+    configured &&
+    typeof configured.policyRevision === "string" &&
+    configured.policyRevision.trim().length > 0 &&
+    Array.isArray(configured.participantRoles) &&
+    configured.participantRoles.length > 0
   ) {
     const lookup = (role: (typeof configured.participantRoles)[number]) =>
       issue.reviewEscalationParticipants?.[role] ?? configured.participants?.[role];
@@ -563,10 +567,12 @@ export function resolveReviewEscalationParticipant(
   }
   // Configured policies are strict: they never fall back to the issue owner or
   // another stage participant.
-  if (configured) return null;
+  if (configured && Array.isArray(configured.participantRoles) && configured.participantRoles.length > 0) return null;
   // myrmidon(OPE-9031): without a policy the stage goes to the next agent of
   // the senior chain, never to a human.
-  const chain = issue.defaultEscalationAgentIds;
+  const chain =
+    issue.defaultEscalationAgentIds ??
+    (Array.isArray((configured as any)?.escalationAgentIds) ? (configured as any).escalationAgentIds : null);
   if (!chain) return null;
   const holderIndex = escalatedHolder?.type === "agent" && escalatedHolder.agentId
     ? chain.indexOf(escalatedHolder.agentId)

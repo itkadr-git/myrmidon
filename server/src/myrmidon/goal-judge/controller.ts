@@ -413,17 +413,31 @@ function escalateFromVerdict(
   maxRounds: number,
   fromLedger: boolean,
 ): GoalJudgeDecision {
-  const escalationParticipant = input.executionPolicy
-    ? resolveReviewEscalationParticipant(
+  const policyReviewEscalation = input.executionPolicy?.reviewEscalationPolicy as any;
+  const defaultEscalationAgentIds =
+    input.defaultEscalationAgentIds ??
+    (Array.isArray(policyReviewEscalation?.escalationAgentIds)
+      ? policyReviewEscalation.escalationAgentIds
+      : null);
+  let escalationParticipant: IssueExecutionStagePrincipal | null = null;
+  if (input.executionPolicy) {
+    try {
+      escalationParticipant = resolveReviewEscalationParticipant(
         {
           id: input.issueId,
           companyId: input.companyId,
           status: input.status,
-          defaultEscalationAgentIds: input.defaultEscalationAgentIds ?? null,
+          defaultEscalationAgentIds,
         } as unknown as Parameters<typeof resolveReviewEscalationParticipant>[0],
         input.executionPolicy,
-      )
-    : null;
+      );
+    } catch {
+      escalationParticipant = null;
+    }
+  }
+  if (!escalationParticipant && defaultEscalationAgentIds && defaultEscalationAgentIds.length > 0) {
+    escalationParticipant = { type: "agent", agentId: defaultEscalationAgentIds[0], userId: null };
+  }
 
   return {
     kind: "escalate_to_reviewer",
