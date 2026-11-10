@@ -136,7 +136,7 @@ async function loadIssueByIdOrIdentifier(db: CaseRouteDb, idOrIdentifier: string
     ? and(identityWhere, inArray(issues.companyId, companyIds))
     : identityWhere;
   return db
-    .select({ id: issues.id, companyId: issues.companyId })
+    .select({ id: issues.id, companyId: issues.companyId, isPrivate: issues.isPrivate })
     .from(issues)
     .where(where)
     .limit(1)
