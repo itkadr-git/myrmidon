@@ -645,5 +645,188 @@ class EnforceTest(unittest.TestCase):
         self.assertIn(b"502", head.split(b"\r\n", 1)[0])
 
 
+class TunnelCapTest(unittest.TestCase):
+    """myrmidon(OPE-10718): per-client concurrent CONNECT tunnel cap.
+
+    A browser inside a bot container can open enough idle HTTPS tunnels to
+    starve the proxy's thread budget. The cap turns that into a clear 429
+    error instead of a stuck flow. Reserved destinations (e.g.
+    api.telegram.org:443) always get a tunnel so the bot's sendChatAction
+    keeps working even when the browser holds every proxy slot.
+    """
+
+    def setUp(self) -> None:
+        self.journal_text = io.StringIO()
+        self.target = ThreadingHTTPServer(("127.0.0.1", 0), _TargetHandler)
+        threading.Thread(target=self.target.serve_forever, daemon=True).start()
+        self.addCleanup(self.target.shutdown)
+
+    @staticmethod
+    def _basic(user: str) -> str:
+        return "Basic " + base64.b64encode(f"{user}:egress".encode("utf-8")).decode("ascii")
+
+    def _make_proxy(self, max_tunnels: int, reserve: tuple[str, ...] = ()) -> EgressProxyServer:
+        proxy = EgressProxyServer(
+            Config(
+                mode="log",
+                bind="127.0.0.1",
+                port=0,
+                connect_timeout_sec=2,
+                max_tunnels_per_client=max_tunnels,
+                tunnel_reserve_destinations=reserve,
+            ),
+            DestinationJournal(self.journal_text, {}),
+        )
+        threading.Thread(target=proxy.serve_forever, daemon=True).start()
+        self.addCleanup(proxy.shutdown)
+        return proxy
+
+    def _open_tunnel(self, proxy: EgressProxyServer, user: str, host: str, port: int) -> socket.socket:
+        sock = socket.create_connection(("127.0.0.1", proxy.port), timeout=5)
+        sock.sendall(
+            (
+                f"CONNECT {host}:{port} HTTP/1.0\r\n"
+                f"Proxy-Authorization: {self._basic(user)}\r\n"
+                "\r\n"
+            ).encode("ascii")
+        )
+        head = b""
+        while b"\r\n\r\n" not in head:
+            part = sock.recv(4096)
+            self.assertTrue(part, "the proxy closed before answering CONNECT")
+            head += part
+        return sock
+
+    def _lines(self) -> list[dict]:
+        return [json.loads(line) for line in self.journal_text.getvalue().splitlines() if line.strip()]
+
+    def test_a_client_under_the_cap_opens_tunnels_normally(self) -> None:
+        proxy = self._make_proxy(max_tunnels=2)
+        sock = self._open_tunnel(proxy, "agent-a", "127.0.0.1", self.target.server_port)
+        try:
+            self.assertEqual(self._lines()[0]["result"], "ok")
+        finally:
+            sock.close()
+
+    def test_a_client_at_the_cap_gets_429_and_the_journal_records_the_cap(self) -> None:
+        proxy = self._make_proxy(max_tunnels=1)
+        sock1 = self._open_tunnel(proxy, "agent-a", "127.0.0.1", self.target.server_port)
+        try:
+            # The second tunnel from the same client must be refused with 429.
+            sock2 = socket.create_connection(("127.0.0.1", proxy.port), timeout=5)
+            sock2.sendall(
+                (
+                    f"CONNECT 127.0.0.1:{self.target.server_port} HTTP/1.0\r\n"
+                    f"Proxy-Authorization: {self._basic('agent-a')}\r\n"
+                    "\r\n"
+                ).encode("ascii")
+            )
+            head = b""
+            while b"\r\n\r\n" not in head:
+                part = sock2.recv(4096)
+                self.assertTrue(part, "the proxy closed before answering CONNECT")
+                head += part
+            sock2.close()
+            self.assertIn(b"429", head.split(b"\r\n", 1)[0])
+
+            lines = self._lines()
+            self.assertEqual(len(lines), 2)
+            self.assertEqual(lines[0]["result"], "ok")
+            self.assertEqual(lines[1]["result"], "error:tunnel_cap")
+        finally:
+            sock1.close()
+
+    def test_a_different_client_is_not_affected_by_another_client_s_cap(self) -> None:
+        proxy = self._make_proxy(max_tunnels=1)
+        sock1 = self._open_tunnel(proxy, "agent-a", "127.0.0.1", self.target.server_port)
+        try:
+            sock2 = self._open_tunnel(proxy, "agent-b", "127.0.0.1", self.target.server_port)
+            sock2.close()
+            lines = self._lines()
+            self.assertEqual(len(lines), 2)
+            self.assertEqual(lines[0]["result"], "ok")
+            self.assertEqual(lines[1]["result"], "ok")
+        finally:
+            sock1.close()
+
+    def test_a_reserved_destination_opens_a_tunnel_even_at_the_cap(self) -> None:
+        # Use a reserved destination that maps to the local target, so the
+        # tunnel opens successfully and we can prove the cap was bypassed.
+        reserve_host = "127.0.0.1"
+        reserve_port = self.target.server_port
+        proxy = self._make_proxy(max_tunnels=1, reserve=(f"{reserve_host}:{reserve_port}",))
+        sock1 = self._open_tunnel(proxy, "agent-a", "127.0.0.1", self.target.server_port)
+        try:
+            # The reserved destination is the local target; the cap must let
+            # the CONNECT through and the tunnel must work.
+            sock2 = self._open_tunnel(proxy, "agent-a", reserve_host, reserve_port)
+            try:
+                # Speak HTTP through the tunnel to prove it is live.
+                sock2.sendall(b"GET /hello HTTP/1.0\r\nHost: 127.0.0.1\r\n\r\n")
+                sock2.settimeout(5)
+                payload = b""
+                while b"target says hello" not in payload:
+                    chunk = sock2.recv(65536)
+                    if not chunk:
+                        break
+                    payload += chunk
+                self.assertIn(b"target says hello", payload)
+            finally:
+                sock2.close()
+            lines = self._lines()
+            self.assertEqual(len(lines), 2)
+            self.assertEqual(lines[0]["result"], "ok")
+            self.assertEqual(lines[1]["result"], "ok")
+        finally:
+            sock1.close()
+
+    def test_releasing_a_tunnel_frees_the_slot(self) -> None:
+        proxy = self._make_proxy(max_tunnels=1)
+        sock1 = self._open_tunnel(proxy, "agent-a", "127.0.0.1", self.target.server_port)
+        sock1.close()
+        # Give the proxy a moment to notice the close and release the slot.
+        time.sleep(0.2)
+        sock2 = self._open_tunnel(proxy, "agent-a", "127.0.0.1", self.target.server_port)
+        try:
+            lines = self._lines()
+            self.assertEqual(len(lines), 2)
+            self.assertEqual(lines[0]["result"], "ok")
+            self.assertEqual(lines[1]["result"], "ok")
+        finally:
+            sock2.close()
+
+    def test_zero_cap_means_unlimited(self) -> None:
+        proxy = self._make_proxy(max_tunnels=0)
+        socks = []
+        try:
+            for _ in range(5):
+                socks.append(self._open_tunnel(proxy, "agent-a", "127.0.0.1", self.target.server_port))
+            lines = self._lines()
+            self.assertEqual(len(lines), 5)
+            for line in lines:
+                self.assertEqual(line["result"], "ok")
+        finally:
+            for sock in socks:
+                sock.close()
+
+    def test_the_health_endpoint_reports_the_cap_and_open_tunnels(self) -> None:
+        proxy = self._make_proxy(max_tunnels=2)
+        sock = self._open_tunnel(proxy, "agent-a", "127.0.0.1", self.target.server_port)
+        try:
+            with socket.create_connection(("127.0.0.1", proxy.port), timeout=5) as sock2:
+                sock2.sendall(b"GET /healthz HTTP/1.0\r\n\r\n")
+                response = b""
+                while True:
+                    part = sock2.recv(4096)
+                    if not part:
+                        break
+                    response += part
+            body = json.loads(response.split(b"\r\n\r\n", 1)[1])
+            self.assertEqual(body["max_tunnels_per_client"], 2)
+            self.assertEqual(body["open_tunnels"], {"agent-a": 1})
+        finally:
+            sock.close()
+
+
 if __name__ == "__main__":
     unittest.main()

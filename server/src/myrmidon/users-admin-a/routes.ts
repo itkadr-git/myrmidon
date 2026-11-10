@@ -52,6 +52,12 @@ const patchUserSchema = z
     message: "Provide `blocked`, `resetPassword` or `role`",
   });
 
+const usersQuerySchema = z.object({
+  page: z.coerce.number().int().min(1).optional().default(1),
+  limit: z.coerce.number().int().min(1).max(100).optional().default(20),
+  role: z.enum(["admin", "instance_admin", "member"]).optional(),
+});
+
 const auditQuerySchema = z.object({
   userId: z.string().optional(),
   actorId: z.string().optional(),
@@ -112,7 +118,19 @@ export function usersAdminRoutes(db: Db, opts: UsersAdminRoutesOptions = {}) {
 
   router.get("/myrmidon/users-admin-a/users", async (req, res) => {
     assertInstanceAdmin(req);
-    res.json({ users: await listUsers(db) });
+    const parsed = usersQuerySchema.safeParse(req.query);
+    if (!parsed.success) {
+      res.status(400).json({ error: "Validation error", message: "Validation error", code: "VALIDATION_ERROR" });
+      return;
+    }
+    const result = await listUsers(db, parsed.data);
+    res.json({
+      items: result.users,
+      users: result.users,
+      total: result.total,
+      page: parsed.data.page,
+      limit: parsed.data.limit,
+    });
   });
 
   router.post("/myrmidon/users-admin-a/users", validate(createUserSchema), async (req, res) => {

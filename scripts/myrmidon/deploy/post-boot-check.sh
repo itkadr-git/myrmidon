@@ -178,6 +178,21 @@ host_disk_measured_ok() {
   return 0
 }
 
+# --- 6b. board liveness (OPE-12211): a no-database probe -----------------------
+# /api/liveness answers 200 while the process is alive, independent of
+# PostgreSQL; /api/health (readiness) answers 503 when the database is down.
+# A boot where the process is up but not serving is caught here even when the
+# readiness check is failing on the database and not on the board.
+board_liveness_ok() {
+  [[ -n "$LIVENESS_URL" ]] || { log "post-boot: board liveness: LIVENESS_URL not derived (HEALTH_URL does not end in /health) and LIVENESS_URL is not set, check off"; return 0; }
+  local body status
+  body="$(http_get "$LIVENESS_URL" 2>/dev/null || true)"
+  [[ -n "$body" ]] || { log "post-boot: board liveness: no answer from $LIVENESS_URL"; return 1; }
+  status="$(jq -r '.status // empty' <<<"$body" 2>/dev/null || true)"
+  [[ "$status" == "ok" ]] || { log "post-boot: board liveness: $LIVENESS_URL answered without status ok"; return 1; }
+  return 0
+}
+
 # --- systemd-failed check (part of the acceptance: systemctl --failed empty) --
 systemd_failed_ok() {
   command -v systemctl >/dev/null 2>&1 || return 0
@@ -200,6 +215,7 @@ check "hindsight up" hindsight_ok
 dns_check_label="dns names resolve (${DNS_CHECK_NAMES:-mysql es01 paperclip-server-1})"
 check "${DNS_CHECK_LABEL:-$dns_check_label}" dns_names_ok
 check "host disk sweep measures a real path" host_disk_measured_ok
+check "board liveness (no-database probe)" board_liveness_ok
 check "systemctl --failed is empty" systemd_failed_ok
 
 json_out="${json_out:-$STATE_DIR/post-boot-check.json}"

@@ -1715,7 +1715,9 @@ function applyDocumentFixups(document: any): any {
       if (
         key === "GET /api/admin-assistant/cluster-health" ||
         key === "GET /api/admin-assistant/health" ||
-        key === "GET /api/companies/{companyId}/admin-assistant/cluster-health"
+        key === "GET /api/companies/{companyId}/admin-assistant/cluster-health" ||
+        key === "GET /api/admin-assistant/stuck-runs" ||
+        key === "GET /api/companies/{companyId}/admin-assistant/stuck-runs"
       ) {
         operation["x-paperclip-authorization"] = {
           actor: "board_or_agent",
@@ -3430,6 +3432,24 @@ registry.registerPath({
 
 registry.registerPath({
   method: "get",
+  path: "/api/agents/{id}/stats",
+  tags: ["agents"],
+  summary: "Get agent stats",
+  request: { params: z.object({ id: z.string() }) },
+  responses: {
+    200: r.ok(
+      z.object({
+        exchanges_started: z.number().int().nonnegative(),
+        exchanges_completed: z.number().int().nonnegative(),
+      }),
+    ),
+    401: r.unauthorized,
+    404: r.notFound,
+  },
+});
+
+registry.registerPath({
+  method: "get",
   path: "/api/agents/{id}/skills",
   tags: ["agents"],
   summary: "List agent skills",
@@ -3970,6 +3990,22 @@ registry.registerPath({
   summary: "Update a company user (suspension revokes the user's sessions)",
   request: { params: z.object({ companyId: z.string(), userId: z.string() }) },
   responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden, 404: r.notFound },
+});
+
+// myrmidon 1.7 USERS-ADMIN-PAGINATION (OPE-12089): instance user listing with pagination and role filter
+registry.registerPath({
+  method: "get",
+  path: "/api/users",
+  tags: ["users"],
+  summary: "List users with pagination and role filter",
+  request: {
+    query: z.object({
+      page: z.coerce.number().int().min(1).optional().default(1),
+      limit: z.coerce.number().int().min(1).max(100).optional().default(20),
+      role: z.enum(["admin", "instance_admin", "member"]).optional(),
+    }),
+  },
+  responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden },
 });
 
 // myrmidon(OPE-10215): user-block operators. The mandatory reason is validated
@@ -5644,6 +5680,42 @@ registry.registerPath({
     "hiding the error. The payload is marked with dry_run=true and credential-shaped values are redacted.",
   request: {
     query: z.object({}).optional(),
+  },
+  responses: { 200: r.ok(), 401: r.unauthorized, 403: r.forbidden },
+});
+
+registry.registerPath({
+  method: "get",
+  path: "/api/companies/{companyId}/admin-assistant/stuck-runs",
+  tags: ["admin-assistant"],
+  summary: "Get stuck runs diagnostics for a company",
+  description:
+    "Detects in_progress tasks and heartbeat runs whose silence exceeds the configured timeout, " +
+    "and returns actionable recovery recommendations.",
+  request: {
+    params: z.object({ companyId: z.string() }),
+    query: z.object({
+      timeoutMs: z.string().optional(),
+      timeoutSeconds: z.string().optional(),
+    }),
+  },
+  responses: { 200: r.ok(), 401: r.unauthorized, 403: r.forbidden },
+});
+
+registry.registerPath({
+  method: "get",
+  path: "/api/admin-assistant/stuck-runs",
+  tags: ["admin-assistant"],
+  summary: "Get stuck runs diagnostics",
+  description:
+    "Detects in_progress tasks and heartbeat runs whose silence exceeds the configured timeout, " +
+    "and returns actionable recovery recommendations. When companyId query is omitted, requires instance admin.",
+  request: {
+    query: z.object({
+      companyId: z.string().optional(),
+      timeoutMs: z.string().optional(),
+      timeoutSeconds: z.string().optional(),
+    }),
   },
   responses: { 200: r.ok(), 401: r.unauthorized, 403: r.forbidden },
 });
@@ -7920,6 +7992,27 @@ registry.registerPath({
   description: "Validates SSH parameters (host, port, username, private key) by opening a real SSH connection. Does not create a server record and does not persist credentials. Password auth is not supported.",
   request: { params: z.object({ companyId: z.string() }) },
   responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden },
+});
+
+registry.registerPath({
+  method: "post",
+  path: "/api/companies/{companyId}/servers/onboarding/dry-run",
+  tags: ["servers"],
+  description: "Runs read-only DNS, SSH authentication, and passwordless-sudo probes. Returns stable per-check status/code values; credentials are never returned or persisted.",
+  request: {
+    params: z.object({ companyId: z.string() }),
+    body: jsonBody(z.object({
+      host: z.string(),
+      port: z.number().int().min(1).max(65535).optional(),
+      username: z.string(),
+      auth: z.object({
+        password: z.string().optional(),
+        privateKey: z.string().optional(),
+      }),
+      timeoutMs: z.number().int().min(1000).max(60000).optional(),
+    })),
+  },
+  responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden, 404: r.notFound },
 });
 
 registry.registerPath({
@@ -12017,5 +12110,63 @@ registerCurrentRoute({
     401: r.unauthorized,
     403: r.forbidden,
     429: r.tooManyRequests,
+  },
+});
+
+// myrmidon(1.7-ZABBIX-SINK / OPE-12126): the Zabbix alarm sink webhook. Mounted
+// from server/src/myrmidon/monitoring/zabbix-sink/ (app.ts), outside the
+// routes/ directory the coverage scanner reads, so the entry is contract-first
+// (see specOnlyContractFirstRoutes in __tests__/openapi-routes.test.ts). Auth
+// is the sink's own Bearer token (MYRMIDON_ZABBIX_SINK_TOKEN_REF), not the
+// board/agent schemes the fixups assign by default.
+registry.registerPath({
+  method: "post",
+  path: "/api/monitoring/zabbix-webhook",
+  tags: ["monitoring"],
+  summary:
+    "Zabbix alarm sink: turn one Zabbix media-type event into a role-task draft (deduped by eventid)",
+  description:
+    "Accepts a single Zabbix media-type webhook event and creates an unassigned " +
+    "role-task draft: the issue title comes from the trigger name, the priority " +
+    "from the Zabbix severity (5/4 -> critical, 3 -> high, 2 -> medium, else low), " +
+    "and the Zabbix event URL lands in the issue body as the source link. A " +
+    "redelivery of the same eventid returns the existing draft (action: dedup) " +
+    "instead of creating a second task. An invalid payload answers 400. " +
+    "Authorization is the dedicated webhook Bearer token (MYRMIDON_ZABBIX_SINK_TOKEN_REF, " +
+    "env:/file: reference), not board/agent auth: a wrong or missing token answers 401, " +
+    "an unset token reference or target company answers 503. Since 1.7 the token is a " +
+    "stub pending the signed intake.",
+  request: {
+    body: jsonBody(
+      z
+        .object({
+          eventid: z.string().min(1).describe("Zabbix event id; the dedup identity"),
+          triggerid: z.string().min(1).optional().describe("Zabbix trigger id, kept in the description"),
+          name: z.string().min(1).describe("Trigger name; becomes the issue title"),
+          severity: z
+            .union([z.string(), z.number()])
+            .optional()
+            .describe('Zabbix severity "0".."5" (or 0..5); maps to the issue priority'),
+          status: z.string().optional().describe('Zabbix event status, e.g. "PROBLEM"; resolved/closed events are rejected'),
+          hosts: z.string().optional().describe("Comma-separated host names, kept in the issue description"),
+          url: z.string().optional().describe("Zabbix event URL; the source link in the issue body"),
+        })
+        .strip(),
+    ),
+  },
+  responses: {
+    200: r.ok(
+      z
+        .object({
+          eventid: z.string(),
+          action: z.enum(["create", "dedup"]),
+          issue_id: z.string(),
+          issue_identifier: z.string().nullable(),
+        })
+        .strip(),
+    ),
+    400: r.badRequest,
+    401: r.unauthorized,
+    503: { description: "Sink not configured: the token reference or the target company is unset" },
   },
 });

@@ -16,6 +16,7 @@ import {
   loadVendorChain,
   loadVendorOnlyIndex,
   loadVendorReleases,
+  MAPPED_VENDOR_TABLES,
   type TargetSchemaLookup,
   type VendorOnlyIndex,
 } from "./myrmidon-migrate-vendor-chain.js";
@@ -46,6 +47,7 @@ import {
   selectJsonbCandidates,
   tableDigest,
   textColumns,
+  type ColumnInfo,
   type Q,
   type TableDigest,
   type TableInfo,
@@ -499,6 +501,28 @@ export type CompatResult = {
   skippedSourceData: SkippedSourceDatum[];
 };
 
+export function mapLifecycleEventAction(resourceType: string, action: string): string {
+  if (action.includes(".")) return action;
+  if (action === "create") return `${resourceType}.created`;
+  if (action === "update") return `${resourceType}.updated`;
+  if (action === "delete") return `${resourceType}.deleted`;
+  if (action === "pause") return `${resourceType}.paused`;
+  if (action === "resume") return `${resourceType}.resumed`;
+  if (action === "terminate") return `${resourceType}.terminated`;
+  return `${resourceType}.${action}`;
+}
+
+export function deterministicUuid(seed: string): string {
+  const hash = createHash("sha256").update(seed).digest("hex");
+  return [
+    hash.slice(0, 8),
+    hash.slice(8, 12),
+    `4${hash.slice(13, 16)}`,
+    `a${hash.slice(17, 20)}`,
+    hash.slice(20, 32),
+  ].join("-");
+}
+
 /**
  * Compares the source schema with the target. A table or column that only a
  * later Paperclip release has, and the target lacks, is not an error: it is
@@ -521,6 +545,12 @@ export function checkCompatibility(
     const rows = analysis.digests.get(name)?.rows ?? 0;
     const tgt = target.get(name);
     if (!tgt) {
+      if (name === "resource_lifecycle_events") {
+        if (!target.has("activity_log")) {
+          problems.push("table-missing-in-target:activity_log");
+        }
+        continue;
+      }
       if (rows > 0) {
         if (index.droppedTables?.has(name)) {
           exclusions.push({ kind: "table", name, reason: "dropped in migration chain; not needed in target" });
@@ -586,15 +616,28 @@ export function checkCompatibility(
   return { problems, exclusions, vendorOnly, skippedSourceData };
 }
 
-const INT_RANK: Record<string, number> = { smallint: 1, integer: 2, bigint: 3 };
+const INT_RANK: Record<string, number> = { smallint: 1, integer: 2, bigint: 3, numeric: 4 };
 const INT_RANGE: Record<string, [bigint, bigint]> = {
   smallint: [-32768n, 32767n],
   integer: [-2147483648n, 2147483647n],
+  bigint: [-9223372036854775808n, 9223372036854775807n],
 };
+
+export function parseRangeBound(val: string, bound: "lo" | "hi"): bigint {
+  const dot = val.indexOf(".");
+  if (dot < 0) return BigInt(val);
+  const intPart = BigInt(val.slice(0, dot));
+  const hasFraction = val.slice(dot + 1).replace(/0+$/, "").length > 0;
+  if (!hasFraction) return intPart;
+  if (bound === "hi" && !val.startsWith("-")) return intPart + 1n;
+  if (bound === "lo" && val.startsWith("-")) return intPart - 1n;
+  return intPart;
+}
 
 /**
  * Columns that are wider in the source than in the target (bigint into
- * integer): a value that does not fit is reported before any row is written.
+ * integer, or numeric into integer types): non-integral or out-of-range
+ * values are reported before any row is written.
  */
 export async function checkNarrowing(
   src: Q,
@@ -614,13 +657,26 @@ export async function checkNarrowing(
       const to = INT_RANK[tcol.dataType];
       const range = INT_RANGE[tcol.dataType];
       if (from === undefined || to === undefined || range === undefined || from <= to) continue;
+      if (col.dataType === "numeric") {
+        const nonIntRows = await all<{ cnt: string }>(
+          src,
+          sql.raw(
+            `select count(*)::text as cnt from ${qi("public")}.${qi(name)} ` +
+              `where ${qi(col.name)} is not null and ${qi(col.name)} <> trunc(${qi(col.name)})`,
+          ),
+        );
+        const cnt = Number(nonIntRows[0]?.cnt ?? "0");
+        if (cnt > 0) {
+          problems.push(`value-not-integer-in-target:${name}.${col.name}`);
+        }
+      }
       const rows = await all<{ lo: string | null; hi: string | null }>(
         src,
         sql.raw(`select min(${qi(col.name)})::text as lo, max(${qi(col.name)})::text as hi from ${qi("public")}.${qi(name)}`),
       );
       const lo = rows[0]?.lo;
       const hi = rows[0]?.hi;
-      if ((lo != null && BigInt(lo) < range[0]) || (hi != null && BigInt(hi) > range[1])) {
+      if ((lo != null && parseRangeBound(lo, "lo") < range[0]) || (hi != null && parseRangeBound(hi, "hi") > range[1])) {
         problems.push(`value-out-of-range-in-target:${name}.${col.name}(source ${col.dataType} ${lo}..${hi}, target ${tcol.dataType})`);
       }
     }
@@ -634,6 +690,7 @@ export async function withoutVendorOnly(
   analysis: SourceAnalysis,
   found: VendorOnlyFinding[],
   exclusions: Exclusion[] = [],
+  targetInfo?: Map<string, TableInfo>,
 ): Promise<SourceAnalysis> {
   const dropTables = new Set(found.filter((f) => f.kind === "table").map((f) => f.table));
   for (const e of exclusions) {
@@ -653,19 +710,44 @@ export async function withoutVendorOnly(
       }
     }
   }
-  if (dropTables.size === 0 && dropCols.size === 0) return analysis;
+  const typeChangedColsByTable = new Map<string, Set<string>>();
+  if (targetInfo) {
+    for (const [name, info] of analysis.tables) {
+      const tgt = targetInfo.get(name);
+      if (!tgt) continue;
+      const tgtCols = new Map(tgt.columns.map((c) => [c.name, c]));
+      for (const col of info.columns) {
+        const tcol = tgtCols.get(col.name);
+        if (
+          tcol &&
+          col.dataType === "numeric" &&
+          (tcol.dataType === "integer" || tcol.dataType === "bigint" || tcol.dataType === "smallint")
+        ) {
+          const s = typeChangedColsByTable.get(name) ?? new Set<string>();
+          s.add(col.name);
+          typeChangedColsByTable.set(name, s);
+        }
+      }
+    }
+  }
+  if (dropTables.size === 0 && dropCols.size === 0 && typeChangedColsByTable.size === 0) return analysis;
   const tables = new Map<string, TableInfo>();
   const digests = new Map<string, TableDigest>();
   for (const [name, info] of analysis.tables) {
     if (dropTables.has(name)) continue;
     const cols = dropCols.get(name);
-    if (!cols) {
+    const typeChanged = typeChangedColsByTable.get(name);
+    const excludeFromDigest = new Set([
+      ...(analysis.carrierColumns.get(name) ?? []),
+      ...(cols ?? []),
+    ]);
+    if (!cols && !typeChanged) {
       tables.set(name, info);
       digests.set(name, analysis.digests.get(name)!);
       continue;
     }
-    tables.set(name, { ...info, columns: info.columns.filter((c) => !cols.has(c.name)) });
-    digests.set(name, await tableDigest(src, name, info, new Set([...(analysis.carrierColumns.get(name) ?? []), ...cols])));
+    tables.set(name, cols ? { ...info, columns: info.columns.filter((c) => !cols.has(c.name)) } : info);
+    digests.set(name, await tableDigest(src, name, info, excludeFromDigest, typeChanged));
   }
   const carrierColumns = new Map<string, string[]>();
   for (const [table, cols] of analysis.carrierColumns) {
@@ -766,6 +848,62 @@ async function restoreDumpToScratch(ctx: Context, dumpPath: string, scratchUrl: 
   }
 }
 
+async function copyMappedResourceLifecycleEvents(
+  src: Q,
+  tx: Q,
+  targetColumns: ColumnInfo[],
+): Promise<number> {
+  let after: string | null = null;
+  let total = 0;
+  for (;;) {
+    const page = await readPage(src, "resource_lifecycle_events", [], after, PAGE_ROWS);
+    if (page.rows.length === 0) break;
+    const jsonRows: string[] = [];
+    for (const r of page.rows) {
+      const row = JSON.parse(r.rest) as {
+        id: number | string;
+        company_id: string;
+        resource_type: string;
+        resource_id: string;
+        action: string;
+        created_at: string;
+      };
+      const companyId = String(row.company_id);
+      const resourceType = String(row.resource_type);
+      const resourceId = String(row.resource_id);
+      const action = String(row.action);
+      const mappedAction = mapLifecycleEventAction(resourceType, action);
+      const id = deterministicUuid(`resource_lifecycle_events:${companyId}:${row.id}`);
+
+      jsonRows.push(
+        JSON.stringify({
+          id,
+          company_id: companyId,
+          actor_type: "system",
+          actor_id: "system",
+          action: mappedAction,
+          entity_type: resourceType,
+          entity_id: resourceId,
+          agent_id: resourceType === "agent" ? resourceId : null,
+          run_id: null,
+          responsible_user_id: null,
+          details: {
+            source: "resource_lifecycle_events",
+            originalAction: action,
+            originalId: Number(row.id),
+          },
+          created_at: row.created_at,
+        }),
+      );
+    }
+    await insertPage(tx, "activity_log", targetColumns, jsonRows);
+    total += jsonRows.length;
+    after = page.lastRid;
+    if (page.rows.length < PAGE_ROWS) break;
+  }
+  return total;
+}
+
 async function copyTables(
   src: Q,
   tx: Q,
@@ -777,7 +915,8 @@ async function copyTables(
 ): Promise<{ replicaRole: boolean; sequences: number; replacedSeedTables: string[] }> {
   const fks = await listForeignKeys(tx);
   const names = [...analysis.digests.entries()].filter(([, d]) => d.rows > 0).map(([n]) => n);
-  const { order, cyclic, selfReferencing } = orderTables(names, fks);
+  const directNames = names.filter((n) => n !== "resource_lifecycle_events");
+  const { order, cyclic, selfReferencing } = orderTables(directNames, fks);
   const replica = await canUseReplicaRole(tx);
   if (!replica && cyclic.length > 0) {
     throw new Error(
@@ -794,13 +933,26 @@ async function copyTables(
   for (const name of order) {
     const srcInfo = analysis.tables.get(name)!;
     const tgtInfo = targetInfo.get(name)!;
-    const srcCols = new Set(srcInfo.columns.map((c) => c.name));
+    const srcCols = new Map(srcInfo.columns.map((c) => [c.name, c]));
     const insertColumns = tgtInfo.columns.filter((c) => srcCols.has(c.name) && !c.generated);
+    const narrowedCols = Array.from(
+      new Set(
+        insertColumns
+          .filter((c) => {
+            const sc = srcCols.get(c.name);
+            return (
+              sc?.dataType === "numeric" &&
+              (c.dataType === "integer" || c.dataType === "bigint" || c.dataType === "smallint")
+            );
+          })
+          .map((c) => c.name),
+      ),
+    );
     const carrierCols = analysis.carrierColumns.get(name) ?? [];
     const limit = !replica && selfReferencing.has(name) ? null : PAGE_ROWS;
     let after: string | null = null;
     for (;;) {
-      const page = await readPage(src, name, carrierCols, after, limit);
+      const page = await readPage(src, name, carrierCols, after, limit, narrowedCols);
       if (page.rows.length === 0) break;
       const jsonRows: string[] = [];
       for (const row of page.rows) {
@@ -808,7 +960,7 @@ async function copyTables(
         for (const [column, value] of Object.entries(row.carriers)) {
           carriers[column] = await mapCarriers(value, (envelope) => rekeyEnvelope(keys.source, keys.target, envelope));
         }
-        jsonRows.push(rowJson(row.rest, carriers));
+        jsonRows.push(rowJson(row.rest, carriers, row.narrowed));
       }
       await insertPage(tx, name, insertColumns, jsonRows);
       after = page.lastRid;
@@ -818,6 +970,13 @@ async function copyTables(
     if (injection === "mid-data" && copiedTables === 1) {
       throw new Error("Injected failure in the middle of the data load.");
     }
+  }
+  if (analysis.tables.has("resource_lifecycle_events") && (analysis.digests.get("resource_lifecycle_events")?.rows ?? 0) > 0) {
+    const actTgt = targetInfo.get("activity_log");
+    if (!actTgt) {
+      throw new Error("Target table activity_log is missing for mapped resource_lifecycle_events.");
+    }
+    await copyMappedResourceLifecycleEvents(src, tx, actTgt.columns);
   }
   const sequences = await resetSequences(tx);
   const orphans = await countFkOrphans(tx, fks);
@@ -831,27 +990,43 @@ async function copyTables(
 
 type TableParity = { name: string; sourceRows: number; targetRows: number; match: boolean };
 
-async function compareTables(
+export async function compareTables(
   q: Q,
   analysis: SourceAnalysis,
   targetInfo: Map<string, TableInfo>,
 ): Promise<{ tables: TableParity[]; allMatch: boolean; unexpectedTables: string[] }> {
   const tables: TableParity[] = [];
+  const hasMappedLifecycle =
+    analysis.tables.has("resource_lifecycle_events") &&
+    (analysis.digests.get("resource_lifecycle_events")?.rows ?? 0) > 0;
+
   for (const [name, d] of [...analysis.digests.entries()].sort(([a], [b]) => (a < b ? -1 : 1))) {
+    if (name === "resource_lifecycle_events") {
+      const mappedRows = await countRows(q, "activity_log", "details->>'source' = 'resource_lifecycle_events'");
+      tables.push({ name, sourceRows: d.rows, targetRows: mappedRows, match: mappedRows === d.rows });
+      continue;
+    }
     const tgt = targetInfo.get(name);
     if (!tgt) {
       tables.push({ name, sourceRows: d.rows, targetRows: 0, match: d.rows === 0 });
       continue;
     }
-    const srcCols = new Set(analysis.tables.get(name)!.columns.map((c) => c.name));
+    const srcTable = analysis.tables.get(name)!;
+    const srcCols = new Map(srcTable.columns.map((c) => [c.name, c]));
     const exclude = new Set<string>(analysis.carrierColumns.get(name) ?? []);
     for (const col of tgt.columns) if (!srcCols.has(col.name)) exclude.add(col.name);
-    const td = await tableDigest(q, name, tgt, exclude);
+
+    const where =
+      name === "activity_log" && hasMappedLifecycle
+        ? "details->>'source' is distinct from 'resource_lifecycle_events'"
+        : undefined;
+
+    const td = await tableDigest(q, name, tgt, exclude, undefined, where);
     tables.push({ name, sourceRows: d.rows, targetRows: td.rows, match: td.rows === d.rows && td.digest === d.digest });
   }
   const unexpectedTables: string[] = [];
   for (const [name] of targetInfo) {
-    if (analysis.tables.has(name)) continue;
+    if (analysis.tables.has(name) || (name === "activity_log" && hasMappedLifecycle)) continue;
     if ((await countRows(q, name)) > 0) unexpectedTables.push(name);
   }
   return { tables, allMatch: tables.every((t) => t.match) && unexpectedTables.length === 0, unexpectedTables };
@@ -1120,7 +1295,7 @@ async function realRun(ctx: Context, input: RealRunInput): Promise<MigrationResu
       throw new Error(`Target schema cannot take the source data: ${problems.slice(0, 8).join(", ")}${problems.length > 8 ? ", ..." : ""}. Roll back (--rollback) the schema and report this.`);
     }
     // What the target cannot take stays out of the copy and out of the checks below.
-    const eff = await withoutVendorOnly(src, analysis, compat.vendorOnly, compat.exclusions);
+    const eff = await withoutVendorOnly(src, analysis, compat.vendorOnly, compat.exclusions, targetInfo);
 
     if (plan.mode !== "complete") {
       // 2. data: one transaction; either all rows land or none.

@@ -76,6 +76,10 @@ export interface CorpusDocumentRecord {
   /** SHA-256 (hex) of the stored bytes; null for an upload. */
   contentHash?: string | null;
   lastFetchedAt?: string | null;
+  /** When a fetch was last attempted (whether it succeeded or failed). */
+  lastAttemptedAt?: string | null;
+  /** Number of consecutive fetch failures; reset to 0 on success. */
+  sourceFailCount?: number | null;
   /** Why the last fetch failed, or null. */
   sourceError?: string | null;
   /**
@@ -101,8 +105,20 @@ export interface CorpusJobRecord {
 /** Whole-company counters; the store computes them, the route only formats them. */
 export type CorpusStoreCounters = CorpusStats;
 
+/** A dataset as a search needs it: the id and the name, without the document and chunk counters. */
+export interface CorpusDatasetName {
+  id: string;
+  name: string;
+}
+
 export interface CorpusStorePort {
+  /** Every dataset of the company with its document and chunk counters (a costly read on a large corpus). */
   listDatasets(companyId: string): Promise<CorpusDatasetRecord[]>;
+  /**
+   * The ids and names of the company's datasets, in the order of `listDatasets`. One cheap read with
+   * no counters: the hot path of a search resolves dataset names with it, never with `listDatasets`.
+   */
+  listDatasetNames(companyId: string): Promise<CorpusDatasetName[]>;
   getDataset(companyId: string, datasetId: string): Promise<CorpusDatasetRecord | null>;
   /** Existence check for search: avoids loading dataset stats and every document. */
   hasDataset(companyId: string, datasetId: string): Promise<boolean>;
@@ -152,6 +168,8 @@ export interface CorpusStorePort {
         | "mimeType"
         | "contentHash"
         | "lastFetchedAt"
+        | "lastAttemptedAt"
+        | "sourceFailCount"
         | "sourceError"
         | "previousBlobRef"
       >

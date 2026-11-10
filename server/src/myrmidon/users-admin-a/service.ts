@@ -84,7 +84,18 @@ function toManagedUser(
   };
 }
 
-export async function listUsers(db: Db): Promise<ManagedUser[]> {
+export type ListUsersResult = ManagedUser[] & {
+  users: ManagedUser[];
+  total: number;
+};
+
+export async function listUsers(
+  db: Db,
+  options: { page?: number; limit?: number; role?: "admin" | "instance_admin" | "member" | string } = {},
+): Promise<ListUsersResult> {
+  const isPaged = options.page !== undefined || options.limit !== undefined;
+  const page = options.page ?? 1;
+  const limit = options.limit ?? 20;
   const rows = await db
     .select({ id: authUsers.id, name: authUsers.name, email: authUsers.email, createdAt: authUsers.createdAt })
     .from(authUsers);
@@ -93,9 +104,18 @@ export async function listUsers(db: Db): Promise<ManagedUser[]> {
       .map((r) => r.userId),
   );
   const blocked = new Set((await db.select({ userId: userBlocks.userId }).from(userBlocks)).map((r) => r.userId));
-  return rows
+  let managed = rows
     .map((row) => toManagedUser(row, admins, blocked))
     .sort((a, b) => a.email.localeCompare(b.email));
+
+  const targetRole = options.role === "admin" ? "instance_admin" : options.role;
+  if (targetRole) {
+    managed = managed.filter((u) => u.role === targetRole);
+  }
+  const total = managed.length;
+  const start = (page - 1) * limit;
+  const users = isPaged ? managed.slice(start, start + limit) : managed;
+  return Object.assign(users, { users, total });
 }
 
 export async function getUser(db: Db, userId: string) {

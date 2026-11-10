@@ -38,7 +38,7 @@ import {
   sweepAbandonedImportTransferSpools,
 } from "./services/company-import-transfers.js";
 import { companyTransferRunService } from "./services/company-transfer-runs.js";
-import { healthRoutes } from "./routes/health.js";
+import { healthRoutes, livenessRoutes } from "./routes/health.js";
 import { haRoutes } from "./routes/ha.js";
 import { cloudRuntimeIdentityMiddleware } from "./middleware/cloud-runtime-identity.js";
 import { cloudControlMiddleware } from "./middleware/cloud-control.js";
@@ -138,6 +138,7 @@ import {
   bindModelProviderPluginLifecycle,
   myrmidonAgentExchangeRoutes,
   myrmidonAgentExchangeFeedRoutes,
+  myrmidonBillingWebhookRoutes,
   myrmidonBaselineRoutes,
   myrmidonBotEgressRoutes,
   myrmidonBotCanaryRoutes,
@@ -165,6 +166,8 @@ import {
   boardLoadLaneTagMiddleware,
   boardLoadRequestMiddleware,
   myrmidonMonitoringAlertsRoutes,
+  myrmidonZabbixSinkRoutes,
+  myrmidonWebhookIntakeRoutes,
   swarmClaimApp,
   createCasteDirectoryReader,
   myrmidonEmergencyStopRoutes,
@@ -219,6 +222,7 @@ import {
   myrmidonArchitectDataRoutes,
   myrmidonSttRoutes,
   myrmidonGitHubSharedIdentityRoutes,
+  myrmidonGitHubAppWebhookRoutes,
   createTelegramVoiceSttWiring,
   myrmidonVoiceMeetingProtocolRoutes,
   myrmidonEvalsRoutes,
@@ -243,10 +247,13 @@ import {
   startDenyListPuller,
   createPluginProviderModelSync,
   localeUploadRoutes,
+  localeModuleRoutes,
   myrmidonHindsightModelsRoutes,
   configureCorpusAdapters,
   createCorpusShadowSearch,
   buildTokensTraceRoutes,
+  myrmidonOnboardRoutes,
+  apiPathAliasMiddleware,
 } from "./myrmidon/app-plugin.js";
 import { decisionTrainingRoutes } from "./routes/decision-training.js";
 import { decisionRoutes } from "./routes/decisions.js";
@@ -999,6 +1006,11 @@ export async function createApp(
   const emailChannels = emailChannelService(db, { heartbeat: connectionIntentHeartbeat, storage: opts.storageService, publicBaseUrl: opts.chatWebhookPublicBaseUrl ?? opts.authPublicBaseUrl });
   app.use(emailWebhookRoutes(emailChannels));
   app.use(chatWebhookRoutes(chatChannels));
+  // myrmidon(GITHUB-APP-WEBHOOK): our own GitHub App's CI / pull-request events.
+  // Public like the provider ingress above: GitHub's HMAC signature is the
+  // credential. The event service is created after the app (it carries the
+  // wakeups), so the route reaches it through `app.locals`, set at startup.
+  app.use(myrmidonGitHubAppWebhookRoutes(db, { ingest: () => app.locals.githubConnectionEvents ?? null }));
   // myrmidon(1.7 WEBHOOK-INTAKE): Public webhook intake route (/api/intake/:source)
   app.use(intakeRoutes());
   // myrmidon(EXTCASE-B): the extension's one board-less endpoint (the pairing code
@@ -1036,6 +1048,11 @@ export async function createApp(
 
   // Mount API routes
   const api = Router();
+  // myrmidon(1.7-RB-PATH): the pre-rebrand surface /api/paperclip/* keeps
+  // working for one release as a transparent alias of /api/myrmidon/* —
+  // same handlers, same contract, no redirect. First, so guards below see
+  // the canonical path.
+  api.use(apiPathAliasMiddleware());
   api.use(createPluginReadinessRouter(pluginReadiness));
   // myrmidon(1.6.6 PROCS-0.3A): tags every /api request with the http_route
   // lane and journals it on finish. First on purpose — a request rejected by a
@@ -1043,6 +1060,11 @@ export async function createApp(
   api.use(boardLoadRequestMiddleware());
   api.use(boardMutationGuard());
   api.use("/ha", haRoutes());
+  // BOARD-LIVENESS (OPE-12211): the no-database probe lives at /api/liveness,
+  // a sibling of /api/health (readiness). Mounted before any auth-bearing
+  // /api subtree — it reads no credentials and must answer even while the
+  // database (and therefore most of the API) is down.
+  api.use("/liveness", livenessRoutes());
   api.use(
     "/health",
     healthRoutes(db, {
@@ -1254,6 +1276,7 @@ export async function createApp(
   api.use(myrmidonLitellmAuditRoutes(db)); // myrmidon(OPE-9857): LiteLLM settings audit log and safe rollback
   api.use(myrmidonAgentExchangeRoutes(db)); // myrmidon(1.7-AGENT-EXCHANGE-A): discussion rooms on issue cards
   api.use(myrmidonAgentExchangeFeedRoutes(db)); // myrmidon(1.7-AGENT-EXCHANGE-B): owner feed + «to skill» candidate
+  api.use(myrmidonBillingWebhookRoutes(db)); // myrmidon(1.7 PAYWALL-WEBHOOK-SKELETON, OPE-12093): payment webhook event log
   api.use(myrmidonBaselineRoutes(db)); // myrmidon(1.6-BASELINE): cycle/review/return/blocked/run/cost metrics
   api.use(myrmidonBotEgressRoutes(db)); // myrmidon(EGRESS-B)
   api.use(myrmidonBotCanaryRoutes(db)); // myrmidon(R5-B)
@@ -1289,6 +1312,10 @@ export async function createApp(
   api.use(myrmidonAgentMemorySettingsRoutes(db)); // myrmidon(MEMORY-UI): Memory tab settings (instance admin)
   api.use("/myrmidon/hindsight/model-groups", myrmidonHindsightModelsRoutes(db)); // myrmidon(OPE-9858): Hindsight model groups adapter
   api.use("/myrmidon/agent-memory/model-groups", myrmidonHindsightModelsRoutes(db)); // myrmidon(OPE-9858): alias
+  api.use(
+    "/myrmidon/companies/:companyId/hindsight/model-groups",
+    myrmidonHindsightModelsRoutes(db),
+  ); // myrmidon(OPE-12361): company-scoped alias — the UI calls this path; the catalog is instance-level
   api.use(myrmidonToolPolicyCacheRoutes(db)); // myrmidon(DB-PERF-C-P4): TTL of the tool gateway policy cache (instance admin)
   api.use(myrmidonSkillLifecycleRoutes(db)); // myrmidon(1.6-SKILL-LIFE): skill lifecycle API
   api.use(myrmidonStackRegistryRoutes(db)); // myrmidon(SUA)
@@ -1306,6 +1333,7 @@ export async function createApp(
   api.use(myrmidonLitellmChannelsRoutes(db)); // myrmidon(1.6.7 OPE-9854): LiteLLM channels /model/new|update|delete
   api.use(agentInstructionsRevisionsRoutes(db)); // myrmidon(H2)
   api.use(myrmidonFleetConsoleRoutes(db)); // myrmidon(SC1)
+  api.use(myrmidonOnboardRoutes(db)); // myrmidon(SC1)
   api.use(myrmidonFleetMoveRoutes(db, opts.fleetClientManager)); // myrmidon(1.6.6 REMOTE-SITES-T5)
   api.use(myrmidonFleetSiteRoutes(db)); // myrmidon(1.6.6 OPE-8999): enroll / list / delete execution sites
   api.use(siteHealthRoutes(db)); // myrmidon(1.6.6 REMOTE-SITES-T4): site health badges
@@ -1336,6 +1364,7 @@ export async function createApp(
   api.use(myrmidonTelegramNotifyRoutes(db)); // myrmidon(TG-NOTIFY-A): telegramNotify settings core (GET/PATCH + changelog)
   api.use(ui2LanguageRoutes(db)); // myrmidon(UI2-I18N): per-user UI language preference
   api.use(localeUploadRoutes(db)); // myrmidon(1.7 LOCALE-UPLOAD, OPE-10187): localization catalog structure validator
+  api.use(localeModuleRoutes(db)); // myrmidon(1.7 LOCALE-UPLOAD, OPE-12117): /api/locale upload+current
   // myrmidon(1.6.5-TG-LOCALE-C): instance-wide default language of the bridged
   // Telegram DM — read by board members, changed by instance admins.
   api.use(myrmidonBridgeLanguageRoutes(db));
@@ -1343,6 +1372,8 @@ export async function createApp(
   api.use(myrmidonInstalledLocalesRoutes(db));
   api.use(myrmidonForagingRoutes(db)); // myrmidon(1.6-FORAGE): source registry, findings and the manual sweep
   api.use(myrmidonMonitoringAlertsRoutes(db)); // myrmidon(1.6.6-ALERTS): monitoring alerts webhook (Zabbix/Alertmanager) and its settings
+  api.use(myrmidonZabbixSinkRoutes(db)); // myrmidon(1.7-ZABBIX-SINK / OPE-12126): Zabbix alarm sink -> role-task draft
+  api.use(myrmidonWebhookIntakeRoutes(db)); // myrmidon(1.7 WEBHOOK-INTAKE, OPE-12041): signed inbound webhook drafts (signature + dedup + raw payload)
   api.use(myrmidonMonitoringDashboardRoutes(db)); // myrmidon(1.6.6 MONITORING C): fleet dashboard from VictoriaMetrics + Zabbix, connection settings, selfcheck
   api.use(myrmidonForagingIdleGateRoutes(db)); // myrmidon(1.6.3-FORAGING-IDLE-GATE): the idle-gate toggle
   api.use(myrmidonForagingPassRoutes(db)); // myrmidon(1.6.3-FORAGING-IDLE-GATE, UI half): the pass history

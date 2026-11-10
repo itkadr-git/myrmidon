@@ -546,6 +546,57 @@
         "path": "hermes_state_maintenance.py",
         "upstreamMarker": "disk_usage|SQLITE_TMPDIR|vacuum_defer"
       }
+    },
+    {
+      "id": "31-terminal-foreground-execution-test",
+      "kind": "patch",
+      "patch": "docker/bot-runtime/patches/31-terminal-foreground-execution-test.patch",
+      "files": [
+        "tests/tools/test_process_heartbeat.py"
+      ],
+      "reason": "The foreground default regression must execute a harmless local shell command through the Hermes terminal handler and assert stdout and exit status; notification=true must still return the clear foreground-only error.",
+      "dropCondition": "Upstream heartbeat tests execute the foreground heartbeat=60, notify=false command and assert its output and exit status, and assert notification=true remains rejected.",
+      "offer": null,
+      "offerNote": "Not offered yet.",
+      "probe": {
+        "source": "hermes",
+        "path": "tests/tools/test_process_heartbeat.py",
+        "upstreamMarker": "heartbeat-regression"
+      }
+    },
+    {
+      "id": "32-compaction-summary-9-sections",
+      "kind": "patch",
+      "patch": "docker/bot-runtime/patches/32-compaction-summary-9-sections.patch",
+      "files": [
+        "agent/context_compressor.py"
+      ],
+      "reason": "Unifies context compaction summary structure across fresh, iterative-update, and deterministic fallback summaries into 9 standardized sections: USER_CONTEXT, TASK_TRACKING, COMPLETED, PENDING, CURRENT_STATE, CODE_STATE, TESTS, CHANGES, VERSION_CONTROL_STATUS, with verbatim task/ticket IDs and PR numbers, while preserving legacy task snapshot heading parsers.",
+      "dropCondition": "Upstream adopts a 9-section structured compaction summary with verbatim task and ticket ID tracking.",
+      "offer": null,
+      "offerNote": "Not offered yet.",
+      "probe": {
+        "source": "hermes",
+        "path": "agent/context_compressor.py",
+        "upstreamMarker": "TASK_TRACKING|VERSION_CONTROL_STATUS"
+      }
+    },
+    {
+      "id": "33-compaction-tool-pairs-sampling",
+      "kind": "patch",
+      "patch": "docker/bot-runtime/patches/33-compaction-tool-pairs-sampling.patch",
+      "files": [
+        "agent/context_compressor.py"
+      ],
+      "reason": "When sampling session history for the summarizer, _serialize_records_for_summary emitted each message as an independent record and slice boundaries cut between assistant tool calls and their tool results, leaving orphaned results or unmatched calls in the summary prompt. Serialization now treats each assistant message with tool calls and all its corresponding tool results (paired via tool_call_id variants) as one atomic record. Orphaned results without a call are omitted from the summary transcript, and oversized atomic records bound intra-record while preserving both the tool calls section and tool results.",
+      "dropCondition": "Upstream treats tool calls and their results as atomic units during summary serialization and sampling.",
+      "offer": null,
+      "offerNote": "Not offered yet.",
+      "probe": {
+        "source": "hermes",
+        "path": "agent/context_compressor.py",
+        "upstreamMarker": "atomic record|tool_result_id_variants|consumed_results"
+      }
     }
   ]
 }

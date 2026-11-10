@@ -50,6 +50,7 @@ describe("buildDigestSections + renderDigestBody", () => {
         { sourceKind: "budget_alert", title: "company budget warning", issueId: null },
         { sourceKind: "litellm_budget", title: "LiteLLM key near cap: bot-1", issueId: null },
         { sourceKind: "stack_update", title: "New upstream release", issueId: null },
+        { sourceKind: "no_such_kind", title: "no-such-kind row", issueId: null },
       ]),
       completedIssues: [{ identifier: "ABC-1", title: "Fix the flaky test" }],
       budgetLines: [],
@@ -57,11 +58,17 @@ describe("buildDigestSections + renderDigestBody", () => {
     });
     const bySection = Object.fromEntries(views.map((view) => [view.section, view.lines]));
     expect(bySection.done).toEqual(["- ABC-1 Fix the flaky test"]);
-    expect(bySection.blocked).toHaveLength(2);
+    // STACK-WATCH-LIVE: stack_update (lagging or stale stack component) lands
+    // in blocked alongside the blocker attention and the failed run.
+    expect(bySection.blocked).toEqual([
+      "- Waiting on a review",
+      "- agent-a run failed",
+      "- New upstream release",
+    ]);
     expect(bySection.needs_decision).toHaveLength(4); // decision + interaction + budget alert + litellm budget
     expect(bySection.spend).toEqual(["- company budget warning", "- LiteLLM key near cap: bot-1"]);
     // Unknown source kinds contribute nothing.
-    expect(views.flatMap((view) => view.lines)).not.toContain("- New upstream release");
+    expect(views.flatMap((view) => view.lines)).not.toContain("- no-such-kind row");
   });
 
   it("renders sections in the fixed order and keeps empty sections as None", () => {

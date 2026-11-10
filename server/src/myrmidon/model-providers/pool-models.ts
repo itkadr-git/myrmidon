@@ -13,6 +13,9 @@ import {
 } from "@myrmidon/shared";
 import { createDefaultModelProviderService } from "./wiring.js";
 import type { AdapterModel } from "@myrmidon/adapter-utils";
+import { isAccountEligibleForRotation, selectActivePoolAccount } from "./pool-rotation.js";
+
+export { isAccountEligibleForRotation, selectActivePoolAccount };
 
 export interface PoolAccountChannelProvider {
   listChannels(
@@ -65,18 +68,7 @@ export async function enrichWithPoolModels(
           // reset window. Do not advertise their models as pool-backed; otherwise
           // model selection can route a fresh request back to a known-exhausted
           // account before the provider refreshes its channel state.
-          const limitedWindows = [ch.windows.primary, ch.windows.secondary].some(
-            (window) =>
-              window?.limitReached === true &&
-              (window.resetsAt === null || window.resetsAt > Date.now() / 1000),
-          );
-          if (
-            ch.isBanned ||
-            ch.state === "banned" ||
-            ch.isExhausted ||
-            (ch.limitedUntil !== null && ch.limitedUntil > Date.now() / 1000) ||
-            limitedWindows
-          ) {
+          if (!isAccountEligibleForRotation(ch)) {
             continue;
           }
 

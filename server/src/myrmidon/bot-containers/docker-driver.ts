@@ -56,7 +56,7 @@
 
 import { CLONE_HYGIENE_REPORT_PATH } from "./clone-hygiene.js"; // myrmidon(1.6.2-BOT-DISK-C)
 import { randomBytes } from "node:crypto";
-import { mkdir, readFile, rename, unlink, writeFile } from "node:fs/promises";
+import { mkdir, readFile, rename, rm, unlink, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { liveSavedSetting } from "../behavior-settings/live.js";
 import http from "node:http";
@@ -337,9 +337,9 @@ export interface DockerDriverOptions {
   /**
    * myrmidon(1.6.5-BOT-DISK-H11): the host directory the instance shares the bot
    * runtime from (`general.botDisk.sharedBotRuntimePath`), read with the cache
-   * path on every create, recreate and drift check. Set adds three READ-ONLY
-   * binds (`<root>/bin`, `<root>/lazy-packages`, `<root>/lsp`) over the bot's
-   * own runtime paths, so the instance keeps one copy instead of one per bot.
+   * path on every create, recreate and drift check. Set adds a READ-ONLY
+   * bind (`<root>/bin`) over the bot's own runtime path, so the instance
+   * keeps one copy instead of one per bot (re-scoped in OPE-12493).
    * Absent: every bot keeps its own.
    */
   readSharedBotRuntimePath?: (botKey: string) => Promise<string | undefined>;
@@ -1716,6 +1716,11 @@ export function dockerBotContainerDriver(
     if (!info) return { botKey, state: "missing" };
     const marker = await readAppliedMarker(botKey, info);
     const idleStopped = await readIdleStopped(botKey);
+    const memoryBytes = info.HostConfig?.Memory;
+    const memoryMb = typeof memoryBytes === "number" && memoryBytes > 0 ? Math.round(memoryBytes / (1024 * 1024)) : undefined;
+    const nanoCpus = info.HostConfig?.NanoCpus;
+    const cpus = typeof nanoCpus === "number" && nanoCpus > 0 ? nanoCpus / 1e9 : undefined;
+    const pidsLimit = typeof info.HostConfig?.PidsLimit === "number" && info.HostConfig.PidsLimit > 0 ? info.HostConfig.PidsLimit : undefined;
     return {
       botKey,
       state: botStateFromInspect(info),
@@ -1723,6 +1728,9 @@ export function dockerBotContainerDriver(
       restartHash: marker?.restartHash,
       filesHash: marker?.filesHash,
       maxConcurrentRuns: marker?.maxConcurrentRuns,
+      memoryMb,
+      cpus,
+      pidsLimit,
       // myrmidon(OPE-4789): the raw inspect rides along, so a caller that
       // already asked for the status (the reconciler, once per bot per pass)
       // can hand it to templateDrift instead of paying a second inspect.
@@ -2000,6 +2008,19 @@ export function dockerBotContainerDriver(
     await writeIdleStopped(botKey, false).catch(() => undefined);
   }
 
+  async function cleanup(botKey: string): Promise<void> {
+    const name = containerNameFor(botKey);
+    // 1. Remove the container (and anonymous volumes). If 404, removeByName ignores it.
+    await removeByName(name);
+    // 2. Remove the bot volume data directory on host if it exists.
+    const botDir = path.join(config.volumeRoot, botKey);
+    try {
+      await rm(botDir, { recursive: true, force: true });
+    } catch {
+      // Ignore filesystem errors or non-existing path
+    }
+  }
+
   async function stopIdle(botKey: string): Promise<void> {
     const name = containerNameFor(botKey);
     const res = await requestWithRateLimitRetry({ method: "POST", path: `/containers/${nameSegment(name)}/stop?t=${BOT_STOP_TIMEOUT_SEC}&myrmidon-idle=true` });
@@ -2018,5 +2039,5 @@ export function dockerBotContainerDriver(
     return client.getOomEvents(sinceNano);
   }
 
-  return { status, list, listRunning, templateDrift, statusWithDrift, updateResources, create, recreate, writeProfile, start, restart, stop, stopIdle, readCloneReport, readBotSkills, getOomEvents };
+  return { status, list, listRunning, templateDrift, statusWithDrift, updateResources, create, recreate, writeProfile, start, restart, stop, cleanup, stopIdle, readCloneReport, readBotSkills, getOomEvents };
 }

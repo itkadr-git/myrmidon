@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import {
   activityLog,
+  companies,
   connectionEventDeliveries,
   connectionGrants,
   externalObjects,
@@ -29,6 +30,13 @@ import type { IssueAssignmentWakeupDeps } from "./issue-assignment-wakeup.js";
 import { logger } from "../middleware/logger.js";
 import { parseIssueExecutionState } from "./issue-execution-policy.js";
 import { notifyBoardMergeTrigger } from "../myrmidon/review-routing/merge-trigger.js";
+import { isRepositoryAllowed } from "../myrmidon/github-shared-identity/settings.js";
+import { listGitHubAppEntriesByAppId } from "../myrmidon/github-shared-identity/store.js";
+import {
+  extractPullRequestIssueIdentifier,
+  pullRequestWorkProductData,
+} from "../myrmidon/task-pr-sync/linking.js";
+import { workProductService } from "./work-products.js";
 
 type LeasedEvent = SealedConnectorEvents["events"][number];
 type GitHubBinding = {
@@ -54,6 +62,14 @@ export type GitHubEventsWatchdogResult = {
   activePrCount: number;
   alarmsCreated: number;
   alarmsResolved: number;
+};
+
+/** myrmidon(GITHUB-APP-WEBHOOK): what one App webhook delivery did, per matched company. */
+export type GitHubAppWebhookIngestResult = {
+  companies: number;
+  processed: number;
+  duplicate: number;
+  ignored: number;
 };
 
 function record(value: unknown): Record<string, unknown> {
@@ -135,6 +151,7 @@ function normalizeLeasedPayload(event: LeasedEvent): Record<string, unknown> {
       merged: payload.merged === true,
       mergedAt: isoDate(payload.mergedAt),
       updatedAt: isoDate(payload.updatedAt),
+      title: boundedString(payload.title, 1_000),
       headRef: boundedString(payload.headRef, 300),
       headSha: commitSha(payload.headSha),
       baseRef: boundedString(payload.baseRef, 300),
@@ -207,6 +224,79 @@ function normalizeLeasedPayload(event: LeasedEvent): Record<string, unknown> {
   return compact(base);
 }
 
+function githubIdString(value: unknown): string | null {
+  return typeof value === "number" && Number.isSafeInteger(value) && value > 0 ? String(value) : identifier(value);
+}
+
+/**
+ * myrmidon(GITHUB-APP-WEBHOOK): a raw GitHub webhook body -> the flat record
+ * the Cloud connector leases (`normalizeLeasedPayload` is written for that
+ * shape: string ids, `repository` as `owner/repo`, camelCase pull-request and
+ * head fields). A raw body would be dropped by it, so the translation is done
+ * once here and everything downstream is the unchanged connector path.
+ */
+export function connectorPayloadFromGitHubWebhook(
+  eventName: string,
+  raw: Record<string, unknown>,
+): Record<string, unknown> {
+  const repository = record(raw.repository);
+  const sender = record(raw.sender);
+  const base = {
+    event: eventName,
+    action: stringValue(raw.action),
+    installationId: githubIdString(record(raw.installation).id),
+    repositoryId: githubIdString(repository.id),
+    repository: stringValue(repository.full_name),
+    senderId: githubIdString(sender.id),
+    senderLogin: stringValue(sender.login),
+  };
+  if (eventName === "pull_request") {
+    const pullRequest = record(raw.pull_request);
+    const head = record(pullRequest.head);
+    const baseBranch = record(pullRequest.base);
+    return compact({
+      ...base,
+      number: positiveInteger(raw.number) ?? positiveInteger(pullRequest.number),
+      url: stringValue(pullRequest.html_url),
+      state: stringValue(pullRequest.state),
+      // GitHub computes `mergeable` lazily: null means "not known yet".
+      mergeable: pullRequest.mergeable === false || pullRequest.mergeable_state === "dirty"
+        ? "CONFLICTING"
+        : pullRequest.mergeable === true
+          ? "MERGEABLE"
+          : null,
+      merged: pullRequest.merged === true,
+      mergedAt: stringValue(pullRequest.merged_at),
+      updatedAt: stringValue(pullRequest.updated_at),
+      title: stringValue(pullRequest.title),
+      headRef: stringValue(head.ref),
+      headSha: stringValue(head.sha),
+      baseRef: stringValue(baseBranch.ref),
+      baseSha: stringValue(baseBranch.sha),
+    });
+  }
+  if (eventName === "check_run" || eventName === "check_suite" || eventName === "workflow_run") {
+    const object = record(raw[eventName]);
+    const pullRequests = Array.isArray(object.pull_requests) ? object.pull_requests : [];
+    const pullRequestNumber = positiveInteger(record(pullRequests[0]).number);
+    return compact({
+      ...base,
+      number: pullRequestNumber,
+      pullRequestNumber,
+      headSha: stringValue(object.head_sha),
+      status: stringValue(object.status),
+      conclusion: stringValue(object.conclusion),
+      // A suite is identified by its own id; a run and a check carry theirs.
+      runId: eventName === "check_suite" ? null : githubIdString(object.id),
+      checkSuiteId: eventName === "check_suite"
+        ? githubIdString(object.id)
+        : githubIdString(object.check_suite_id ?? record(object.check_suite).id),
+      htmlUrl: stringValue(object.html_url),
+    });
+  }
+  return compact(base);
+}
+
 function bindingRows(rows: Array<{
   grant: typeof connectionGrants.$inferSelect;
   connection: typeof toolConnections.$inferSelect;
@@ -274,6 +364,7 @@ function githubSnapshotUpdate(payload: Record<string, unknown>) {
       ...(stringValue(payload.mergeable) ? { mergeable: stringValue(payload.mergeable) } : {}),
       ...(stringValue(payload.url) ? { url: stringValue(payload.url) } : {}),
       ...(stringValue(payload.mergedAt) ? { mergedAt: stringValue(payload.mergedAt) } : {}),
+      ...(stringValue(payload.title) ? { title: stringValue(payload.title) } : {}),
       ...(stringValue(payload.headRef) ? { headRef: stringValue(payload.headRef) } : {}),
       ...(stringValue(payload.headSha) ? { headSha: stringValue(payload.headSha) } : {}),
       ...(stringValue(payload.baseRef) ? { baseRef: stringValue(payload.baseRef) } : {}),
@@ -281,6 +372,60 @@ function githubSnapshotUpdate(payload: Record<string, unknown>) {
     },
     remoteVersion: stringValue(payload.updatedAt),
   } as const;
+}
+
+/**
+ * myrmidon(OPE-12483): the bot opens PRs through the GitHub API with a branch
+ * `bot/<KEY>` (see docker/bot-runtime/botd/lib/archive.js) and records no
+ * work-product row on the board, so the done gate sees an unlinked task as
+ * "no code" and closes it while the PR is still open. Extract the task key from
+ * the PR's branch or title and persist the pull_request work product as part of
+ * webhook application, so `task-pr-sync`, the done gate, and the review-routing
+ * merge path all observe the delivery through the normal linked surface.
+ */
+export async function linkPullRequestToIssue(
+  database: Db,
+  companyId: string,
+  snapshot: ReturnType<typeof githubSnapshotUpdate>,
+): Promise<{ linked: boolean; issueId: string | null; workProductId: string | null }> {
+  if (!snapshot) return { linked: false, issueId: null, workProductId: null };
+  const existing = await database
+    .select({ id: issueWorkProducts.id })
+    .from(issueWorkProducts)
+    .where(and(
+      eq(issueWorkProducts.companyId, companyId),
+      eq(issueWorkProducts.type, "pull_request"),
+      eq(issueWorkProducts.provider, "github"),
+      sql`lower(${issueWorkProducts.externalId}) = lower(${snapshot.externalId})`,
+    ))
+    .limit(1);
+  if (existing.length > 0) return { linked: true, issueId: null, workProductId: existing[0]!.id };
+
+  const key = extractPullRequestIssueIdentifier({
+    headRef: snapshot.data.headRef,
+    title: snapshot.data.title ?? null,
+  });
+  if (!key) return { linked: false, issueId: null, workProductId: null };
+
+  const [issueRow] = await database
+    .select({ id: issues.id, identifier: issues.identifier })
+    .from(issues)
+    .where(and(eq(issues.companyId, companyId), eq(issues.identifier, key)))
+    .limit(1);
+  if (!issueRow) return { linked: false, issueId: null, workProductId: null };
+
+  const created = await workProductService(database).createForIssue(issueRow.id, companyId, pullRequestWorkProductData({
+    repository: snapshot.repository,
+    number: snapshot.number,
+    url: snapshot.data.url ?? null,
+    title: snapshot.data.title ?? null,
+    headRef: snapshot.data.headRef ?? null,
+    headSha: snapshot.data.headSha ?? null,
+    state: snapshot.state,
+    merged: snapshot.merged,
+  }));
+  if (!created) return { linked: false, issueId: issueRow.id, workProductId: null };
+  return { linked: true, issueId: issueRow.id, workProductId: created.id };
 }
 
 export function githubConnectionEventService(
@@ -496,6 +641,14 @@ export function githubConnectionEventService(
   async function applyPullRequestEvent(database: Db, companyId: string, event: LeasedEvent) {
     const snapshot = githubSnapshotUpdate(event.payload);
     if (!snapshot) return;
+    // myrmidon(OPE-12483): bind bot-opened PRs (branch `bot/<KEY>` or the task
+    // key in the title) to their task before any consumer reads work products;
+    // an existing product short-circuits, so this is one cheap select per event.
+    try {
+      await linkPullRequestToIssue(database, companyId, snapshot);
+    } catch (err) {
+      logger.warn({ errorKind: "task_pr_link_failed", errorName: err instanceof Error ? err.name : typeof err, deliveryId: event.id }, "could not link a pull request to its task");
+    }
     const appliedAt = now();
     await database.update(externalObjects).set({
       statusKey: snapshot.statusKey,
@@ -737,7 +890,10 @@ export function githubConnectionEventService(
     }).where(and(eq(toolConnections.id, binding.connectionId), eq(toolConnections.companyId, binding.companyId)));
   }
 
-  async function processForCompany(companyId: string, bindings: GitHubBinding[], event: LeasedEvent) {
+  // myrmidon(GITHUB-APP-WEBHOOK): `appId` is set only for deliveries that arrive
+  // through our own GitHub App's webhook: such a delivery has no connector
+  // binding to name as the activity entity.
+  async function processForCompany(companyId: string, bindings: GitHubBinding[], event: LeasedEvent, appId?: string) {
     const receiptAt = now();
     const normalizedEvent = { ...event, payload: normalizeLeasedPayload(event) };
     const [receipt] = await db.insert(connectionEventDeliveries).values({
@@ -813,7 +969,7 @@ export function githubConnectionEventService(
           actorId: "system:github-webhook",
           action: "tool_connection.webhook_processed",
           entityType: "tool_connection",
-          entityId: bindings[0]!.connectionId,
+          entityId: bindings[0]?.connectionId ?? `github-app:${appId ?? "unknown"}`,
           details: {
             provider: "github",
             event: event.event,
@@ -821,6 +977,7 @@ export function githubConnectionEventService(
             deliveryId: event.id,
             installationId: event.installationId,
             repositoryId: event.repositoryId,
+            ...(appId ? { appId } : {}),
           },
         }, postCommitPublications);
       };
@@ -859,6 +1016,65 @@ export function githubConnectionEventService(
   }
 
   return {
+    /**
+     * myrmidon(GITHUB-APP-WEBHOOK): one delivery of our own GitHub App's
+     * webhook (signature already verified by the route). The companies are the
+     * ones whose App entry carries this App id and allows the delivery's
+     * repository; each goes through the same `processForCompany` the connector
+     * poll uses, with no bindings. A delivery that names no repository, or
+     * that no company serves, is ignored and nothing is recorded.
+     */
+    async ingestAppWebhook(input: {
+      appId: string;
+      deliveryId: string;
+      eventName: string;
+      payload: Record<string, unknown>;
+    }): Promise<GitHubAppWebhookIngestResult> {
+      const result: GitHubAppWebhookIngestResult = { companies: 0, processed: 0, duplicate: 0, ignored: 0 };
+      const repository = stringValue(record(input.payload.repository).full_name);
+      const candidateIds = repository
+        ? [...new Set(
+            (await listGitHubAppEntriesByAppId(db, input.appId))
+              .filter(({ entry }) => isRepositoryAllowed(entry.allowedRepos, repository))
+              .map(({ companyId }) => companyId),
+          )]
+        : [];
+      // The rules of a deleted company can outlive it; a receipt for it would
+      // fail on the company key and fail the delivery for everybody else.
+      const companyIds = candidateIds.length === 0
+        ? []
+        : (await db.select({ id: companies.id }).from(companies).where(inArray(companies.id, candidateIds))).map((row) => row.id);
+      if (companyIds.length === 0) {
+        result.ignored = 1;
+        return result;
+      }
+      result.companies = companyIds.length;
+      const event: LeasedEvent = {
+        id: input.deliveryId,
+        provider: "github",
+        event: input.eventName,
+        action: stringValue(input.payload.action),
+        installationId: githubIdString(record(input.payload.installation).id),
+        repositoryId: githubIdString(record(input.payload.repository).id),
+        createdAt: now().toISOString(),
+        payload: connectorPayloadFromGitHubWebhook(input.eventName, input.payload),
+        bindingIds: [],
+      };
+      // One company failing must not keep the others from their delivery; the
+      // failure is raised after all were tried, and a GitHub redelivery then
+      // replays only what did not finish (processed receipts answer duplicate).
+      let failure: unknown;
+      for (const companyId of companyIds) {
+        try {
+          result[await processForCompany(companyId, [], event, input.appId)] += 1;
+        } catch (error) {
+          failure ??= error;
+        }
+      }
+      if (failure !== undefined) throw failure;
+      return result;
+    },
+
     async pollOnce(): Promise<GitHubConnectionEventPollResult> {
       if (now().getTime() < nextPollAt) {
         return { leased: 0, processed: 0, duplicate: 0, ignored: 0, failed: 0 };

@@ -8353,6 +8353,68 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     });
   });
 
+  it("records heartbeat_run.cancelled in activity_log when a legacy run loses its controller lease", async () => {
+    const { runId } = await seedRunFixture({
+      runtimeMode: "legacy",
+      agentStatus: "idle",
+      runStatus: "queued",
+    });
+    mockAdapterExecute.mockImplementationOnce(async (input: any) => {
+      await input?.onCancellationReady?.();
+      const leaseError = new Error("Legacy controller lease lost");
+      leaseError.name = "ControllerLeaseLost";
+      const control = adapterExecutionControls.get(runId);
+      control?.controller.abort(leaseError);
+      return {
+        exitCode: 1,
+        signal: "SIGTERM",
+        timedOut: false,
+        errorMessage: "aborted",
+        summary: null,
+        provider: "test",
+        model: "test-model",
+      };
+    });
+    const heartbeat = heartbeatService(db);
+    await heartbeat.resumeQueuedRuns();
+    await heartbeat.drainActiveRunExecutions().catch(() => undefined);
+    await waitForRunToSettle(heartbeat, runId, 5_000);
+
+    const run = await heartbeat.getRun(runId);
+    expect(run?.status).toBe("cancelled");
+    expect(run?.resultJson).toMatchObject({
+      executionCancellation: {
+        source: { code: "controller_lease_lost", actor: "system" },
+        reason: "Legacy controller lease lost",
+      },
+    });
+
+    const activities = await db
+      .select()
+      .from(activityLog)
+      .where(
+        and(
+          eq(activityLog.entityId, runId),
+          eq(activityLog.action, "heartbeat_run.cancelled"),
+        ),
+      );
+    expect(activities).toHaveLength(1);
+    expect(activities[0]).toMatchObject({
+      action: "heartbeat_run.cancelled",
+      actorType: "system",
+      actorId: "system",
+      entityType: "heartbeat_run",
+      entityId: runId,
+      details: expect.objectContaining({
+        reason: "Legacy controller lease lost",
+        source: {
+          code: "controller_lease_lost",
+          actor: "system",
+        },
+      }),
+    });
+  });
+
   it("records operator interrupt cancellation metadata without changing terminal status", async () => {
     const { runId, issueId } = await seedRunFixture({
       agentStatus: "running",
@@ -8692,6 +8754,89 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     expect(runs).toHaveLength(0);
   });
 
+  it("queued wake with no fresh event does not create duplicate work and preserves issue state (OPE-10805)", async () => {
+    // No-op branch: queued wake already exists and no fresh event arrives:
+    // must not create duplicate work and must preserve issue state
+    const { companyId, agentId, issueId } =
+      await seedAssignedTodoNoRunFixture();
+    await db.insert(agentWakeupRequests).values({
+      companyId,
+      agentId,
+      source: "assignment",
+      triggerDetail: "system",
+      reason: "issue_assigned",
+      payload: { issueId, mutation: "assigned_todo_liveness_dispatch" },
+      status: "queued",
+    });
+    const heartbeat = heartbeatService(db);
+
+    const noopResult = await heartbeat.reconcileStrandedAssignedIssues();
+    expect(noopResult.assignmentDispatched).toBe(0);
+    expect(noopResult.dispatchRequeued).toBe(0);
+    expect(noopResult.continuationRequeued).toBe(0);
+    expect(noopResult.escalated).toBe(0);
+    expect(noopResult.skipped).toBe(1);
+    expect(noopResult.issueIds).toEqual([]);
+
+    const noopIssue = await db
+      .select()
+      .from(issues)
+      .where(eq(issues.id, issueId))
+      .then((rows) => rows[0] ?? null);
+    expect(noopIssue?.status).toBe("todo");
+    expect(noopIssue?.executionRunId).toBeNull();
+    expect(noopIssue?.checkoutRunId).toBeNull();
+
+    const noopWakeups = await db
+      .select()
+      .from(agentWakeupRequests)
+      .where(eq(agentWakeupRequests.agentId, agentId));
+    expect(noopWakeups).toHaveLength(1);
+    expect(noopWakeups[0]?.status).toBe("queued");
+
+    const noopRuns = await db
+      .select()
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.agentId, agentId));
+    expect(noopRuns).toHaveLength(0);
+  });
+
+  it("assigned todo issue without queued wake dispatches fresh work (OPE-10805)", async () => {
+    // Fresh-event branch: assigned todo issue with no queued wake dispatches work
+    const { companyId, agentId, issueId } =
+      await seedAssignedTodoNoRunFixture();
+    const heartbeat = heartbeatService(db);
+
+    const freshResult = await heartbeat.reconcileStrandedAssignedIssues();
+    expect(freshResult.assignmentDispatched).toBe(1);
+    expect(freshResult.skipped).toBe(0);
+    expect(freshResult.issueIds).toEqual([issueId]);
+
+    const freshIssue = await db
+      .select()
+      .from(issues)
+      .where(eq(issues.id, issueId))
+      .then((rows) => rows[0] ?? null);
+    expect(freshIssue?.status).toBe("todo");
+
+    const freshWakeups = await db
+      .select()
+      .from(agentWakeupRequests)
+      .where(eq(agentWakeupRequests.agentId, agentId));
+    expect(freshWakeups).toHaveLength(1);
+    expect(freshWakeups[0]?.status).toBe("claimed");
+
+    const freshRuns = await db
+      .select()
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.agentId, agentId));
+    expect(freshRuns).toHaveLength(1);
+
+    if (freshRuns[0]?.id) {
+      await waitForRunToSettle(heartbeat, freshRuns[0].id);
+    }
+  });
+
   it.each(["preparing", "issued", "processing", "failed"])(
     "does not bypass a %s durable inbound-chat wake intent with generic assignment recovery",
     async (status) => {
@@ -8771,7 +8916,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       expect(
         await db.select().from(chatActions).where(eq(chatActions.id, actionId)),
       ).toEqual([originalAction]);
-      expect(mockAdapterExecute).not.toHaveBeenCalled();
+      expect(mockAdapterExecute).toHaveBeenCalledTimes(status === "preparing" ? 1 : 0);
     },
   );
 

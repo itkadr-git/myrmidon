@@ -60,13 +60,40 @@ function listBases(env = process.env) {
   } catch {
     return out;
   }
+  const seen = new Set();
   for (const o of owners) {
     if (!o.isDirectory()) continue;
     for (const r of fs.readdirSync(path.join(root, o.name), { withFileTypes: true })) {
-      if (r.isDirectory() && r.name.endsWith(".git")) out.push(`${o.name}/${r.name.slice(0, -4)}`);
+      if (!r.isDirectory() || !r.name.endsWith(".git")) continue;
+      const slug = `${o.name}/${r.name.slice(0, -4)}`.toLowerCase();
+      if (!seen.has(slug)) {
+        seen.add(slug);
+        out.push(slug);
+      }
     }
   }
   return out;
+}
+
+// A pre-upgrade base can live under mixed-case directories. Prefer the canonical
+// location, but do not create a second base before botd has migrated the old one.
+function existingBasePath(parsed, env = process.env) {
+  const canonical = L.basePath(parsed, env);
+  if (fs.existsSync(path.join(canonical, "HEAD"))) return canonical;
+  const root = L.gitBaseRoot(env);
+  try {
+    for (const owner of fs.readdirSync(root, { withFileTypes: true })) {
+      if (!owner.isDirectory() || owner.name.toLowerCase() !== parsed.owner) continue;
+      for (const repo of fs.readdirSync(path.join(root, owner.name), { withFileTypes: true })) {
+        if (!repo.isDirectory() || repo.name.toLowerCase() !== `${parsed.repo}.git`) continue;
+        const candidate = path.join(root, owner.name, repo.name);
+        if (fs.existsSync(path.join(candidate, "HEAD"))) return candidate;
+      }
+    }
+  } catch (err) {
+    if (err.code !== "ENOENT") throw err;
+  }
+  return canonical;
 }
 
 function originUrl(parsed, env) {
@@ -271,7 +298,7 @@ function ensureBase(repoInput, opts = {}) {
   const now = opts.now ? opts.now() : Date.now();
   const parsed = L.parseRepo(repoInput);
   if (!parsed) throw new MyrWsError(EXIT.usage, `invalid repository "${String(repoInput)}": expected owner/repo`);
-  const dir = L.basePath(parsed, env);
+  const dir = existingBasePath(parsed, env);
   // Defence in depth: the resolved path must stay inside the base root.
   const root = path.resolve(L.gitBaseRoot(env));
   if (!path.resolve(dir).startsWith(root + path.sep)) {

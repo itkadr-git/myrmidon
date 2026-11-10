@@ -79,6 +79,11 @@ esac
 const FAKE_CURL = `#!/usr/bin/env bash
 echo "curl $*" >> "$SANDBOX/calls.log"
 case "$*" in
+  # BOARD-LIVENESS (OPE-12211): the predeploy liveness probe on the copy reads
+  # -w %{http_code} (a plain curl prints the body); answer 200 / ok body.
+  *api/liveness*)
+    if [[ " $* " == *" -w "* ]]; then printf '200'; else printf '{"status":"ok"}'; fi
+    exit 0 ;;
   *myrmidon/deploy-jobs*) cat "$SANDBOX/board-jobs.json" ;;
   *myrmidon/maintenance*) cat "$SANDBOX/board-maintenance.json" ;;
   # PREDEPLOY-DB-CHECK: the throwaway copy answers from its own file.
@@ -268,6 +273,9 @@ echo "curl $*" >> "$SANDBOX/calls.log"
 case "$*" in
   *myrmidon/deploy-jobs*) cat "$SANDBOX/board-jobs.json" ;;
   *myrmidon/maintenance*) cat "$SANDBOX/board-maintenance.json" ;;
+  *api/liveness*)
+    if [[ " $* " == *" -w "* ]]; then printf '200'; else printf '{"status":"ok"}'; fi
+    exit 0 ;;
   *api/health*)
     if grep -q "${NEW}" "$SANDBOX/compose/docker-compose.myrmidon-image.yml" 2>/dev/null; then
       printf '{"status":"ok","version":"0.0.0","commit":"${COMMIT}"}'
@@ -314,6 +322,9 @@ esac
     const flip = `#!/usr/bin/env bash
 echo "curl $*" >> "$SANDBOX/calls.log"
 case "$*" in
+  *api/liveness*)
+    if [[ " $* " == *" -w "* ]]; then printf '200'; else printf '{"status":"ok"}'; fi
+    exit 0 ;;
   *myrmidon/deploy-jobs*) cat "$SANDBOX/board-jobs.json" ;;
   *myrmidon/maintenance*)
     if [ ! -e "$SANDBOX/seen-entering" ]; then

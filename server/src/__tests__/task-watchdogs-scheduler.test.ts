@@ -23,7 +23,7 @@ import {
   startEmbeddedPostgresTestDatabase,
 } from "./helpers/embedded-postgres.js";
 import { conflict } from "../errors.js";
-import { taskWatchdogService } from "../services/task-watchdogs.ts";
+import { TASK_WATCHDOG_REWAKE_COOLDOWN_MS, taskWatchdogService } from "../services/task-watchdogs.ts";
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
@@ -281,6 +281,11 @@ describeEmbeddedPostgres("task watchdog scheduler", () => {
 
     const [firstWatchdog] = await db.select().from(issueWatchdogs).where(eq(issueWatchdogs.issueId, sourceId));
     const watchdogIssueId = firstWatchdog!.watchdogIssueId!;
+    // Advance past the re-wake cooldown window so the stale review can be re-woken.
+    await db
+      .update(issueWatchdogs)
+      .set({ lastTriggeredAt: new Date(Date.now() - TASK_WATCHDOG_REWAKE_COOLDOWN_MS - 60_000) })
+      .where(eq(issueWatchdogs.id, firstWatchdog!.id));
     await db
       .update(issues)
       .set({
@@ -296,19 +301,71 @@ describeEmbeddedPostgres("task watchdog scheduler", () => {
 
     expect(second).toMatchObject({ checked: 1, triggered: 1 });
     expect(wakes).toHaveLength(2);
+    expect(wakes[1]?.agentId).toBe(agentId);
+    expect(wakes[1]?.opts?.reason).toBe("task_watchdog_stopped_subtree");
     const [watchdogIssue] = await db.select().from(issues).where(eq(issues.id, watchdogIssueId));
     expect(watchdogIssue).toMatchObject({
       status: "todo",
       assigneeAgentId: agentId,
-      originFingerprint: firstWatchdog?.lastObservedFingerprint,
     });
     const comments = await db
       .select()
       .from(issueComments)
       .where(eq(issueComments.issueId, watchdogIssueId));
     expect(comments).toHaveLength(2);
+    expect(comments[1]?.body).toContain("Task watchdog resumed for stopped subtree.");
     const [watchdog] = await db.select().from(issueWatchdogs).where(eq(issueWatchdogs.issueId, sourceId));
     expect(watchdog?.triggerCount).toBe(2);
+  });
+
+  it("suppresses redundant same-fingerprint review wakes within the rewake cooldown window", async () => {
+    const companyId = await seedCompany();
+    const sourceId = await seedIssue(companyId, { identifier: "WDOG-COOLDOWN", status: "done" });
+    const agentId = await seedAgent(companyId);
+    await seedWatchdog(companyId, sourceId, agentId);
+    const { service, wakes } = createService();
+
+    const first = await service.reconcileTaskWatchdogs({ companyId });
+    expect(first).toMatchObject({ checked: 1, triggered: 1 });
+    expect(wakes).toHaveLength(1);
+
+    const [firstWatchdog] = await db.select().from(issueWatchdogs).where(eq(issueWatchdogs.issueId, sourceId));
+    const watchdogIssueId = firstWatchdog!.watchdogIssueId!;
+    // Put the review in stale in_review inside the cooldown window
+    await db
+      .update(issues)
+      .set({
+        status: "in_review",
+        assigneeAgentId: null,
+        assigneeUserId: null,
+        executionState: null,
+        monitorNextCheckAt: null,
+      })
+      .where(eq(issues.id, watchdogIssueId));
+
+    const second = await service.reconcileTaskWatchdogs({ companyId });
+    expect(second).toMatchObject({ checked: 1, triggered: 0, skipped: 1 });
+    expect(wakes).toHaveLength(1);
+
+    const [watchdogIssue] = await db.select().from(issues).where(eq(issues.id, watchdogIssueId));
+    expect(watchdogIssue).toMatchObject({
+      status: "in_review",
+    });
+    const comments = await db
+      .select()
+      .from(issueComments)
+      .where(eq(issueComments.issueId, watchdogIssueId));
+    expect(comments).toHaveLength(1);
+
+    // After cooldown window elapses, the same condition re-wakes
+    await db
+      .update(issueWatchdogs)
+      .set({ lastTriggeredAt: new Date(Date.now() - TASK_WATCHDOG_REWAKE_COOLDOWN_MS - 1000) })
+      .where(eq(issueWatchdogs.id, firstWatchdog!.id));
+
+    const third = await service.reconcileTaskWatchdogs({ companyId });
+    expect(third).toMatchObject({ checked: 1, triggered: 1 });
+    expect(wakes).toHaveLength(2);
   });
 
   it("skips a watchdog whose agent is paused (409) without throwing and still processes the others", async () => {
@@ -770,7 +827,7 @@ describeEmbeddedPostgres("task watchdog scheduler", () => {
     // with no live run or queued wake.
     const sourceId = await seedIssue(companyId, {
       identifier: "WDOG-IDLE",
-      status: "todo",
+      status: "in_progress",
       assigneeAgentId: agentId,
     });
     await seedWatchdog(companyId, sourceId, agentId);
@@ -780,6 +837,23 @@ describeEmbeddedPostgres("task watchdog scheduler", () => {
 
     expect(result).toMatchObject({ checked: 1, triggered: 1 });
     expect(wakes).toHaveLength(1);
+  });
+
+  it("does not trigger a genuinely idle assigned issue in todo status (legitimate idle disposition)", async () => {
+    const companyId = await seedCompany();
+    const agentId = await seedAgent(companyId);
+    const sourceId = await seedIssue(companyId, {
+      identifier: "WDOG-LEGIT-IDLE",
+      status: "todo",
+      assigneeAgentId: agentId,
+    });
+    await seedWatchdog(companyId, sourceId, agentId);
+    const { service, wakes } = createService();
+
+    const result = await service.reconcileTaskWatchdogs({ companyId });
+
+    expect(result).toMatchObject({ checked: 1, triggered: 0, live: 1 });
+    expect(wakes).toHaveLength(0);
   });
 
   it("does not defer once the freshly-created issue has a terminal run on record", async () => {

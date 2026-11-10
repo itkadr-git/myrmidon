@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { eq } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import {
+  activityLog,
   agents,
   companies,
   createDb,
@@ -101,6 +102,7 @@ describeEmbeddedPostgres("environment leases on cancel, pause and sweep (P1)", (
   afterEach(async () => {
     if (previousGrace === undefined) delete process.env.MYRMIDON_STALE_LEASE_GRACE_MS;
     else process.env.MYRMIDON_STALE_LEASE_GRACE_MS = previousGrace;
+    await db.delete(activityLog);
     await db.delete(environmentLeases);
     await db.delete(environments);
     await db.update(issues).set({ executionRunId: null, checkoutRunId: null });

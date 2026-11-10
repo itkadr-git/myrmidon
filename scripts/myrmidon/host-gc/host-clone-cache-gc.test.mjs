@@ -7,7 +7,20 @@ import path from "node:path";
 import { describe, it, beforeEach, afterEach } from "node:test";
 
 const ROOT = path.resolve(new URL("../../..", import.meta.url).pathname);
-const { parseArgs, acquireLock, journalRecord, safeJoin, atomicDrop, fetchIssueStatus, filterClosedTaskClones } = await import(
+const {
+  parseArgs,
+  acquireLock,
+  journalRecord,
+  safeJoin,
+  atomicDrop,
+  fetchIssueStatus,
+  filterClosedTaskClones,
+  scanScratchDirectory,
+  discoverBotScratchDirs,
+  inspectPathTree,
+  isTreeOpen,
+  loadEnvConfig,
+} = await import(
   path.join(ROOT, "scripts/myrmidon/host-gc/host-clone-cache-gc.mjs")
 );
 
@@ -55,6 +68,33 @@ describe("board status guard", () => {
     });
     assert.equal(result.candidates.length, 0);
     assert.equal(result.skipped[0].reason, "board-unavailable");
+  });
+
+  it("normalizes baseUrl with /api without duplication", async () => {
+    await fetchIssueStatus("OPE-1", {
+      baseUrl: "http://board/api",
+      fetchImpl: async (url) => {
+        assert.equal(url, "http://board/api/issues/OPE-1");
+        return response(200, { status: "done" });
+      },
+    });
+  });
+
+  it("falls back to PAPERCLIP_API_URL or default when baseUrl is unset", async () => {
+    const oldPaperclip = process.env.PAPERCLIP_API_URL;
+    process.env.PAPERCLIP_API_URL = "http://paperclip-env";
+    try {
+      await fetchIssueStatus("OPE-1", {
+        baseUrl: undefined,
+        fetchImpl: async (url) => {
+          assert.equal(url, "http://paperclip-env/api/issues/OPE-1");
+          return response(200, { status: "done" });
+        },
+      });
+    } finally {
+      if (oldPaperclip !== undefined) process.env.PAPERCLIP_API_URL = oldPaperclip;
+      else delete process.env.PAPERCLIP_API_URL;
+    }
   });
 });
 describe("parseArgs", () => {
@@ -166,5 +206,117 @@ describe("atomicDrop", () => {
     fs.writeFileSync(target, "x");
     fs.symlinkSync(target, link);
     assert.throws(() => atomicDrop(link, tmpDir), /symlink/);
+  });
+});
+
+describe("scratch-gc (BOT-DISK-SCRATCH)", () => {
+  it("loadEnvConfig parses env file and overrides process.env", () => {
+    const envFile = path.join(tmpDir, "host-gc.env");
+    fs.writeFileSync(envFile, "SCRATCH_TTL_HOURS=18\n# comment\nOTHER_VAR='hello'\n");
+    const cfg = loadEnvConfig(envFile);
+    assert.equal(cfg.SCRATCH_TTL_HOURS, "18");
+    assert.equal(cfg.OTHER_VAR, "hello");
+  });
+
+  it("parseArgs reads --scratch-ttl and --scratch-root", () => {
+    const args = parseArgs([
+      "node", "script.mjs",
+      "--scratch-ttl", "18",
+      "--scratch-root", "/tmp/bot1/scratch",
+      "--scratch-root", "/tmp/bot2/scratch",
+    ]);
+    assert.equal(args.scratchTtlHours, 18);
+    assert.deepEqual(args.scratchRoots, ["/tmp/bot1/scratch", "/tmp/bot2/scratch"]);
+  });
+
+  it("discoverBotScratchDirs finds <bot>/hermes/cache/scratch", () => {
+    const botsRoot = path.join(tmpDir, "bots");
+    fs.mkdirSync(path.join(botsRoot, "bot-1/hermes/cache/scratch"), { recursive: true });
+    fs.mkdirSync(path.join(botsRoot, "bot-2/hermes/cache/scratch"), { recursive: true });
+    fs.mkdirSync(path.join(botsRoot, "bot-3/no-scratch"), { recursive: true });
+    fs.mkdirSync(path.join(botsRoot, ".hidden/hermes/cache/scratch"), { recursive: true });
+
+    const discovered = discoverBotScratchDirs(botsRoot);
+    assert.equal(discovered.length, 2);
+    assert.ok(discovered.includes(path.join(botsRoot, "bot-1/hermes/cache/scratch")));
+    assert.ok(discovered.includes(path.join(botsRoot, "bot-2/hermes/cache/scratch")));
+  });
+
+  it("inspectPathTree returns latest mtime inside recursive directory tree", () => {
+    const dir = path.join(tmpDir, "test-tree");
+    fs.mkdirSync(path.join(dir, "sub"), { recursive: true });
+    const f1 = path.join(dir, "a.txt");
+    const f2 = path.join(dir, "sub/b.txt");
+    fs.writeFileSync(f1, "123");
+    fs.writeFileSync(f2, "45678");
+
+    const tOld = new Date(Date.now() - 20 * 3600 * 1000);
+    const tNew = new Date(Date.now() - 5 * 3600 * 1000);
+    fs.utimesSync(f1, tOld, tOld);
+    fs.utimesSync(f2, tNew, tNew);
+    fs.utimesSync(path.join(dir, "sub"), tOld, tOld);
+    fs.utimesSync(dir, tOld, tOld);
+
+    const info = inspectPathTree(dir);
+    assert.equal(info.maxMtimeMs, tNew.getTime());
+    assert.ok(info.totalSizeBytes >= 8); // at least 8 bytes for file contents
+  });
+
+  it("scanScratchDirectory handles fresh, stale, gh-cli-cache, and open processes", () => {
+    const scratch = path.join(tmpDir, "scratch");
+    fs.mkdirSync(scratch);
+
+    const now = Date.now();
+    const staleTime = new Date(now - 14 * 3600 * 1000);
+    const freshTime = new Date(now - 2 * 3600 * 1000);
+
+    // 1. Stale directory (> 12h)
+    const staleDir = path.join(scratch, "myrmidon-migrate-123");
+    fs.mkdirSync(path.join(staleDir, "sub"), { recursive: true });
+    fs.writeFileSync(path.join(staleDir, "sub/file.txt"), "data");
+    fs.utimesSync(path.join(staleDir, "sub/file.txt"), staleTime, staleTime);
+    fs.utimesSync(path.join(staleDir, "sub"), staleTime, staleTime);
+    fs.utimesSync(staleDir, staleTime, staleTime);
+
+    // 2. Fresh directory (has 1 fresh file)
+    const freshDir = path.join(scratch, "fresh-run-456");
+    fs.mkdirSync(freshDir);
+    fs.writeFileSync(path.join(freshDir, "new.txt"), "recent");
+    fs.utimesSync(path.join(freshDir, "new.txt"), freshTime, freshTime);
+    fs.utimesSync(freshDir, staleTime, staleTime);
+
+    // 3. gh-cli-cache (protected)
+    const ghCache = path.join(scratch, "gh-cli-cache");
+    fs.mkdirSync(ghCache);
+    fs.writeFileSync(path.join(ghCache, "token"), "tok");
+    fs.utimesSync(path.join(ghCache, "token"), staleTime, staleTime);
+    fs.utimesSync(ghCache, staleTime, staleTime);
+
+    // 4. Stale directory open by process
+    const openDir = path.join(scratch, "open-task-789");
+    fs.mkdirSync(openDir);
+    fs.writeFileSync(path.join(openDir, "active.log"), "busy");
+    fs.utimesSync(path.join(openDir, "active.log"), staleTime, staleTime);
+    fs.utimesSync(openDir, staleTime, staleTime);
+
+    const openInfo = {
+      openPaths: new Set([path.join(openDir, "active.log")]),
+      openInodes: new Set(),
+    };
+
+    const results = scanScratchDirectory(scratch, now, 12, openInfo);
+
+    const staleResult = results.find((r) => r.name === "myrmidon-migrate-123");
+    assert.equal(staleResult.reason, "ttl");
+    assert.ok(staleResult.sizeBytes > 0);
+
+    const freshResult = results.find((r) => r.name === "fresh-run-456");
+    assert.equal(freshResult.reason, "fresh");
+
+    const ghResult = results.find((r) => r.name === "gh-cli-cache");
+    assert.equal(ghResult.reason, "protected-gh-cli-cache");
+
+    const openResult = results.find((r) => r.name === "open-task-789");
+    assert.equal(openResult.reason, "open-by-process");
   });
 });

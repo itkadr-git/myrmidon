@@ -707,6 +707,16 @@ export function resolveBotDiskSettings(options: {
       ...(stored.sharedPackageCachePath ? { sharedPackageCachePath: stored.sharedPackageCachePath } : {}),
       ...(stored.defaultRepo ? { defaultRepo: stored.defaultRepo } : {}),
       ...optionalLayoutKeys(stored),
+      // myrmidon(1.6.7-SETTINGS-BOTDISK-MERGE): the C7 mechanics keys the lifecycle
+      // keys above do not cover (botdIntervalSec, legacyPressureIdleDays,
+      // hermesPruneEnabled, hermesPruneDays, gitMigrationEnabled) must be part of
+      // the effective settings too. The service patches `base = resolve(...).settings`
+      // and then replaces the whole stored object (instance settings replace nested
+      // objects), so a stored key missing here was erased by the next PATCH of any
+      // other key — on the board gitMigrationEnabled=true vanished and the bot
+      // container lost MYRMIDON_GIT_MIGRATION_ENABLED. The keys that overlap with
+      // the lifecycle group above carry the same values, so spreading both is idempotent.
+      ...optionalMechanicsKeys(stored),
     },
     sources: { enabled: enabled[1], idleTtlMs: idleTtlMs[1] },
   };
@@ -892,10 +902,10 @@ export const BOT_DISK_WORKSPACE_LIFECYCLE_KEYS = [
 export interface BotDiskLayout {
   sharedPackageCachePath?: string;
   /**
-   * myrmidon(1.6.5-BOT-DISK-H11): the host directory whose `bin`,
-   * `lazy-packages` and `lsp` subdirectories every bot mounts READ-ONLY over
-   * its own (absent: every bot keeps its own, the 1.6.4 behaviour). Populated
-   * by the operator once; see docs/myrmidon/bot-shared-runtime.md.
+   * myrmidon(1.6.5-BOT-DISK-H11): the host directory whose `bin` subdirectory
+   * every bot mounts READ-ONLY over its own (absent: every bot keeps its own,
+   * the 1.6.4 behaviour; re-scoped to bin-only in OPE-12493). Populated
+   * by the operator once; see docs/myrmidon/bot-extra-mounts.md.
    */
   sharedBotRuntimePath?: string;
   gitMirrorRepos: string[];
@@ -969,7 +979,7 @@ export function resolveSharedPackageCachePath(stored: unknown): string | undefin
 /**
  * myrmidon(1.6.5-BOT-DISK-H11): the shared bot runtime root in force, from the
  * stored `general.botDisk` (undefined: no shared runtime — every bot keeps its
- * own `bin`, `lazy-packages` and `lsp`). Not role-gated, unlike the package
+ * own `bin`). Not role-gated, unlike the package
  * cache: the runtime is the same for every bot of the instance, so one setting
  * applies to all of them (BOT-DISK-H11 in the epic design).
  */

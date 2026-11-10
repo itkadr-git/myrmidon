@@ -309,6 +309,7 @@ type LatestIssueRun =
       // myrmidon(L1): claimedAdapterType's input, so the L1 branch below can
       // gate hold suppression on the run's own adapter
       | "runnerProfileJson"
+      | "activeIdentityContextId"
     > & {
       resultJson?: unknown;
     })
@@ -586,7 +587,7 @@ const INTERACTION_CONTINUATION_REQUEUE_MAX_ATTEMPTS = 3;
 export const PROVIDER_QUOTA_RECOVERY_DEFAULT_BACKOFF_MS = 60 * 60 * 1000;
 
 const PROVIDER_QUOTA_ERROR_RE =
-  /(?:you(?:'|’)ve hit your (?:\w+ )?limit|usage limit(?: reached| exceeded)?|provider quota|quota (?:limit )?exceeded|model (?:is )?at capacity)/i;
+  /(?:you(?:'|’)ve hit your (?:\w+ )?limit|usage limit(?: reached| exceeded)?|provider quota|quota (?:limit )?exceeded|insufficient[_ ]quota|no deployments available|all deployments[^\n]{0,120}cooldown|model (?:is )?at capacity)/i;
 const CONFIGURATION_INCOMPLETE_ERROR_RE =
   /(?:model_not_found|model [^\n]{0,120} not found|missing (?:api )?(?:key|credentials?)|credentials? (?:are |is )?missing|no (?:api )?(?:key|credentials?) (?:was |were )?(?:found|configured|provided)|api key (?:is )?(?:not set|unavailable))/i;
 
@@ -705,6 +706,7 @@ export function classifyAdapterFailureForRecovery(
   }
   if (
     latestRun.errorCode !== "adapter_failed" &&
+    latestRun.errorCode !== "hermes_gateway_run_failed" &&
     latestRun.errorCode !== "provider_quota" &&
     latestRun.errorCode !== "configuration_incomplete"
   ) {
@@ -1230,6 +1232,7 @@ export function recoveryService(
         createdAt: heartbeatRuns.createdAt,
         // myrmidon(L1): claimedAdapterType's input, see LatestIssueRun
         runnerProfileJson: heartbeatRuns.runnerProfileJson,
+        activeIdentityContextId: heartbeatRuns.activeIdentityContextId,
       })
       .from(heartbeatRuns)
       .where(
@@ -1262,6 +1265,7 @@ export function recoveryService(
         createdAt: heartbeatRuns.createdAt,
         // myrmidon(L1): claimedAdapterType's input, see LatestIssueRun
         runnerProfileJson: heartbeatRuns.runnerProfileJson,
+        activeIdentityContextId: heartbeatRuns.activeIdentityContextId,
       })
       .from(heartbeatRuns)
       .where(
@@ -2125,6 +2129,7 @@ export function recoveryService(
         createdAt: heartbeatRuns.createdAt,
         // myrmidon(L1): claimedAdapterType's input, see LatestIssueRun
         runnerProfileJson: heartbeatRuns.runnerProfileJson,
+        activeIdentityContextId: heartbeatRuns.activeIdentityContextId,
       })
       .from(heartbeatRuns)
       .where(
@@ -6224,6 +6229,67 @@ export function recoveryService(
             .where(eq(heartbeatRuns.id, latestRun.id))
             .then((rows) => rows[0] ?? null)
         : null;
+      const participantLatestRunForRecovery =
+        issue.status === "in_review" && participantAgentId
+          ? await getLatestIssueRunForAgent(
+              issue.companyId,
+              issue.id,
+              participantAgentId,
+            )
+          : null;
+      const executionRecoverySource =
+        issue.status === "in_review"
+          ? participantLatestRunForRecovery
+          : latestRun;
+      // Provider outages are external availability failures, not evidence that
+      // a paused assignee should be escalated. Park them before the invokability
+      // gate so a 429/402/503 outage keeps a durable monitor.
+      const recoveryNow = new Date();
+      const providerQuotaMonitorRun =
+        issue.status === "in_review"
+          ? participantLatestRunForRecovery
+          : latestRun;
+      const preBudgetProviderQuotaClassification =
+        providerQuotaMonitorRun &&
+        !isStrandedIssueRecoveryIssue(issue) &&
+        (pendingReviewStage || issue.status !== "in_review") &&
+        isUnsuccessfulTerminalIssueRun(providerQuotaMonitorRun) &&
+        getAdapterFailureRecoveryTargetAgentId(issue) ===
+          providerQuotaMonitorRun.agentId
+          ? classifyAdapterFailureForRecovery(providerQuotaMonitorRun, recoveryNow)
+          : null;
+      if (
+        providerQuotaMonitorRun &&
+        preBudgetProviderQuotaClassification?.kind === "provider_quota"
+      ) {
+        if (
+          hasPendingProviderQuotaRecoveryMonitor(
+            issue,
+            providerQuotaMonitorRun,
+            recoveryNow,
+          )
+        ) {
+          result.skipped += 1;
+          continue;
+        }
+        const monitored = await scheduleProviderQuotaRecoveryMonitor({
+          issue,
+          latestRun: providerQuotaMonitorRun,
+          classification: preBudgetProviderQuotaClassification,
+        });
+        if (monitored) {
+          latestRun = await persistAdapterFailureRecoveryClassification(
+            providerQuotaMonitorRun,
+            preBudgetProviderQuotaClassification,
+          );
+          result.providerQuotaMonitored += 1;
+          result.issueIds.push(issue.id);
+        } else {
+          result.skipped += 1;
+        }
+        continue;
+      }
+
       // myrmidon(L1): the agent is non-invokable only because it is paused
       // (infrastructure), and the terminal run itself ended on an
       // infrastructure interrupt code within its retry budget, on a run
@@ -6369,18 +6435,6 @@ export function recoveryService(
         continue;
       }
 
-      const participantLatestRunForRecovery =
-        issue.status === "in_review" && participantAgentId
-          ? await getLatestIssueRunForAgent(
-              issue.companyId,
-              issue.id,
-              participantAgentId,
-            )
-          : null;
-      const executionRecoverySource =
-        issue.status === "in_review"
-          ? participantLatestRunForRecovery
-          : latestRun;
       if (
         executionRecoverySource?.agentId === agentId &&
         executionRecoverySource.contextSnapshot &&
@@ -6513,11 +6567,6 @@ export function recoveryService(
         result.skipped += 1;
         continue;
       }
-      const recoveryNow = new Date();
-      const providerQuotaMonitorRun =
-        issue.status === "in_review"
-          ? participantLatestRunForRecovery
-          : latestRun;
       if (
         hasPendingProviderQuotaRecoveryMonitor(
           issue,

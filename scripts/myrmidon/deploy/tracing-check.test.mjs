@@ -401,7 +401,13 @@ const FAKE_CURL = `#!/usr/bin/env bash
 echo "curl $*" >> "$SANDBOX/calls.log"
 case "$*" in
   *api/public/health*) if [ -e "$SANDBOX/probe-fails" ]; then exit 7; fi; cat "$SANDBOX/langfuse-health.json" ;;
-  *) cat "$SANDBOX/health.json" ;;
+  *)
+    # Model curl's -o /dev/null -w '%{http_code}' used by the predeploy
+    # liveness and API probes; ordinary GETs still return the health body.
+    case " $* " in
+      *" -w %{http_code} "*) printf '200' ;;
+      *) cat "$SANDBOX/health.json" ;;
+    esac ;;
 esac
 `;
 

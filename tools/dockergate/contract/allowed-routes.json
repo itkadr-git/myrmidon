@@ -129,6 +129,14 @@
    ]
   },
   {
+   "id": "A21",
+   "method": "GET",
+   "template": "containers/{name}/config/limits",
+   "suffixes": [
+    ""
+   ]
+  },
+  {
    "id": "A12",
    "method": "POST",
    "template": "containers/{name}/rename?name={mainName}",

@@ -16,6 +16,7 @@ function upstream(overrides: Partial<StackUpstreamState> = {}): StackUpstreamSta
     behindBy: 2,
     notes: null,
     error: null,
+    staleSince: null,
     ...overrides,
   };
 }

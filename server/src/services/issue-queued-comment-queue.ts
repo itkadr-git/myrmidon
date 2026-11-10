@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import type { IssueComment, IssueQueuedCommentQueue } from "@myrmidon/shared";
+import { isValidWakeCommentId } from "../modules/run-dispatch/domain/wake-context.js";
 
 const QUEUE_CONTEXT_KEY = "_paperclipWakeContext";
 const QUEUE_IDS_KEY = "wakeCommentIds";
@@ -14,7 +15,7 @@ function uniqueIds(value: unknown): string[] {
   if (!Array.isArray(value)) return [];
   const seen = new Set<string>();
   return value.flatMap((candidate) => {
-    if (typeof candidate !== "string" || !candidate || seen.has(candidate)) return [];
+    if (!isValidWakeCommentId(candidate) || seen.has(candidate)) return [];
     seen.add(candidate);
     return [candidate];
   });
@@ -36,9 +37,10 @@ export function withQueuedCommentIdsInWakePayload(
 ): Record<string, unknown> {
   const payload = { ...record(payloadValue) };
   const context = { ...record(payload[QUEUE_CONTEXT_KEY]) };
-  if (ids.length > 0) {
-    const latestId = ids[ids.length - 1]!;
-    context[QUEUE_IDS_KEY] = ids;
+  const validIds = uniqueIds(ids);
+  if (validIds.length > 0) {
+    const latestId = validIds[validIds.length - 1]!;
+    context[QUEUE_IDS_KEY] = validIds;
     context.wakeCommentId = latestId;
     context.commentId = latestId;
     payload.commentId = latestId;
@@ -78,9 +80,10 @@ export function withQueuedCommentIdsInRunContext(
   ids: string[],
 ): Record<string, unknown> {
   const context = { ...record(contextValue) };
-  if (ids.length > 0) {
-    const latestId = ids[ids.length - 1]!;
-    context[QUEUE_IDS_KEY] = ids;
+  const validIds = uniqueIds(ids);
+  if (validIds.length > 0) {
+    const latestId = validIds[validIds.length - 1]!;
+    context[QUEUE_IDS_KEY] = validIds;
     context.wakeCommentId = latestId;
     context.commentId = latestId;
   } else {

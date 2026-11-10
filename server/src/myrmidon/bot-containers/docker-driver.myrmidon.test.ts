@@ -1238,6 +1238,9 @@ describe("dockerBotContainerDriver against a fake Docker daemon", () => {
       image: "myrmidon-hermes:1.1.0",
       restartHash: "restart-1",
       filesHash: "files-1",
+      memoryMb: 1536,
+      cpus: 1,
+      pidsLimit: 256,
       // myrmidon(OPE-4789): the raw inspect rides along for the drift check.
       inspect: undefined,
     });

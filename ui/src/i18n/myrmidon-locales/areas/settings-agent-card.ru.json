@@ -34,6 +34,7 @@
         "concurrencyGatewayNotReported": "Шлюз: значение ещё не получено",
         "concurrencyGateway": "Шлюз: {{value}}",
         "concurrencyGatewayUnmanaged": "Шлюз: не управляется доской",
+        "concurrencyEffective": "Действующий: {{value}} (ограничено: {{source}})",
         "title": "Контейнер",
         "enabledLabel": "Включён",
         "enabledHint": "Запускать шлюз этого агента в отдельном контейнере с указанными ниже лимитами. Если выключено, агент остаётся как есть.",
@@ -59,14 +60,22 @@
         "statusRequestFailed": "Не удалось запросить статус.",
         "applyNoAnswer": "сервер не вернул ни идентификатор применения, ни результат.",
         "idleStopMode": "Остановка при простое",
-        "idleStopHint": "Контейнеры в режиме «Всегда включён» не останавливаются при простое. По умолчанию — «По запросу».",
+        "idleStopHint": "Контейнеры в режимах «Всегда включён» и «Выключена» не останавливаются при простое. По умолчанию — «По запросу».",
         "idleStopOnDemand": "По запросу",
         "idleStopAlwaysOn": "Всегда включён",
+        "idleStopOff": "Выключена (idle-stop не действует)",
         "idleStopContainer": "Контейнер: {{state}}",
         "idleStopStoppedOnIdle": "остановлен при простое",
         "idleStopUnknown": "неизвестно",
         "idleStopLastStopped": "; последняя остановка {{at}}",
-        "idleStopLastStarted": "; последний запуск {{at}}"
+        "idleStopLastStarted": "; последний запуск {{at}}",
+        "concurrencyLimitSource": {
+          "board": "лимит карточки",
+          "gateway": "лимит шлюза",
+          "memory": "память контейнера"
+        },
+        "limitsDivergedTitle": "Лимиты ресурсов контейнера расходятся с карточкой",
+        "limitsDivergedDetail": "Запрошено в карточке: {{requestedMem}} МБ / {{requestedCpus}} CPU / {{requestedPids}} PID, фактически в контейнере: {{actualMem}} МБ / {{actualCpus}} CPU / {{actualPids}} PID"
       },
       "agent-card-egress-fields": {
         "title": "Исходящие соединения",

@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -141,6 +141,7 @@ case "$1" in
   merge-base) exit "$(cat "$SANDBOX/git-ancestor-exit")" ;;
   diff) [ -f "$SANDBOX/migration-files" ] && cat "$SANDBOX/migration-files"; exit 0 ;;
   ls-remote) cat "$SANDBOX/git-tags" ;;
+  commit) if [ -e "$SANDBOX/git-commit-fails" ]; then echo "fatal: unable to commit" >&2; exit 1; fi ;;
 esac
 `;
 
@@ -153,6 +154,7 @@ case "$*" in
     if [ -e "$SANDBOX/curl-post-fails" ]; then echo "curl: (7) Failed to connect" >&2; exit 7; fi ;;
 esac
 case "$*" in
+  *":13110/api/liveness"*) printf '200' ;;
   # PREDEPLOY-DB-CHECK: the throwaway copy of the production database answers
   # from its own health file (port 13110, never the board's HEALTH_URL port).
   *":13110"*)
@@ -368,7 +370,7 @@ const sbCanonical = (render) => render(UNIT_TEMPLATE);
 function pathWithoutGit(sb) {
   const tools = path.join(sb.dir, "tools");
   fs.mkdirSync(tools, { recursive: true });
-  for (const name of ["bash", "env", "dirname", "mktemp", "tail", "rm", "jq", "timeout", "cat", "grep", "sed", "head", "cut", "tr", "awk", "mkdir"]) {
+  for (const name of ["bash", "env", "dirname", "mktemp", "tail", "rm", "jq", "timeout", "cat", "grep", "sed", "head", "cut", "tr", "awk", "mkdir", "flock"]) {
     const found = process.env.PATH.split(":")
       .map((d) => path.join(d, name))
       .find((f) => fs.existsSync(f));
@@ -817,7 +819,8 @@ describe("deploy.sh: only CI images from the registry", () => {
     assert.doesNotMatch(calls(sb), /docker (pull|compose)/);
     assert.equal(maintenance(sb), "");
     assert.ok(!fs.existsSync(path.join(sb.dir, "dumps")));
-    assert.ok(!fs.existsSync(path.join(sb.dir, "state")));
+    // the lock attempt may create the state dir + deploy.lock, but must remove them again on exit
+    assert.ok(!fs.existsSync(path.join(sb.dir, "state", "deploy.lock")));
   }
 
   function assertRefused(sb, args, pattern) {
@@ -1605,7 +1608,8 @@ describe("deploy.sh: one boot path (BOOT-PATH)", () => {
     assert.doesNotMatch(calls(sb), /docker (pull|compose)/);
     assert.equal(maintenance(sb), "");
     assert.ok(!fs.existsSync(path.join(sb.dir, "dumps")));
-    assert.ok(!fs.existsSync(path.join(sb.dir, "state")));
+    // the lock attempt may create the state dir + deploy.lock, but must remove them again on exit
+    assert.ok(!fs.existsSync(path.join(sb.dir, "state", "deploy.lock")));
   }
 
   it("refuses when the boot unit does not exist", () => {
@@ -1958,5 +1962,381 @@ exit 0
       assert.match(apply, new RegExp(`ALTER TABLE ${table} `));
       assert.match(fs.readFileSync(path.join(schemaDir, `${table}.ts`), "utf8"), new RegExp(`pgTable\\(\\s*\\n?\\s*"${table}"`));
     }
+  });
+
+  describe("compose-set anchor sync (COMPOSE-SET-ANCHOR, OPE-7010)", () => {
+    const anchorFile = (sb, fragments, extra = "") =>
+      fs.writeFileSync(path.join(sb.dir, "checklist.md"), [
+        "# image update checklist",
+        "",
+        "<!-- board-mount-set:begin -->",
+        ...fragments,
+        "<!-- board-mount-set:end -->",
+        "",
+        extra,
+      ].join("\n") + "\n");
+
+    const labelSource = (label) =>
+      `printf '%s' '${label}'`;
+
+    const enable = (sb, extra = {}) => {
+      // the anchor's git repository (the step commits only into a real .git dir)
+      fs.mkdirSync(path.join(extra.git ?? sb.dir, ".git"), { recursive: true });
+      fs.appendFileSync(sb.config, [
+        `MYRMIDON_COMPOSE_SET_ANCHOR_FILE=${extra.file ?? path.join(sb.dir, "checklist.md")}`,
+        `MYRMIDON_COMPOSE_SET_ANCHOR_GIT=${extra.git ?? sb.dir}`,
+        extra.label ? `MYRMIDON_COMPOSE_SET_LABEL_SOURCE='${extra.label}'` : "",
+      ].filter(Boolean).join("\n") + "\n");
+    };
+
+    it("is skipped with a log line when the anchor file setting is empty", () => {
+      const sb = sandbox();
+      anchorFile(sb, ["docker-compose.yml", "docker-compose.myrmidon-image.yml"]);
+      const { code, out } = run(sb, "deploy.sh", ["--digest", NEW]);
+      assert.equal(code, 0, out);
+      assert.match(out, /COMPOSE-SET-ANCHOR: skipped \(MYRMIDON_COMPOSE_SET_ANCHOR_FILE is empty/);
+      // and the checklist is untouched
+      assert.match(read(path.join(sb.dir, "checklist.md")), /docker-compose\.yml/);
+    });
+
+    it("logs a match and rewrites nothing when the anchor equals the live set", () => {
+      const sb = sandbox();
+      anchorFile(sb, ["docker-compose.yml", "docker-compose.myrmidon-image.yml"]);
+      enable(sb, { label: labelSource("docker-compose.yml,docker-compose.myrmidon-image.yml") });
+      const { code, out } = run(sb, "deploy.sh", ["--digest", NEW]);
+      assert.equal(code, 0, out);
+      assert.match(out, /COMPOSE-SET-ANCHOR: the anchor matches the live set \(2 fragments\)/);
+      assert.doesNotMatch(out, /COMPOSE-SET-ANCHOR: the block was rewritten/);
+    });
+
+    it("runs the anchor sync even when only a release component changed (board image already runs, board_changed=0)", () => {
+      // The board already runs the release image (current = NEW): the window
+      // opens only for a changed component. The component rollout still writes
+      // that component's override file into the board's compose set, so the
+      // live -f label can change without a board switch — exactly the gap the
+      // review verdict flagged (the sync used to run only under
+      // `if ((board_changed))`). A diverged anchor must be rewritten here too.
+      const sb = sandbox({ current: NEW });
+      anchorFile(sb, ["docker-compose.yml", "docker-compose.myrmidon-image.yml"]);
+      const label = [
+        path.join(sb.dir, "compose", "docker-compose.yml"),
+        path.join(sb.dir, "compose", "docker-compose.myrmidon-image.yml"),
+        path.join(sb.dir, "docker-compose.myrmidon-dockergate.yml"),
+      ].join(",");
+      enable(sb, { label: labelSource(label) });
+      const { code, out } = run(sb, "deploy.sh", ["--digest", NEW, "--dry-run"]);
+      assert.equal(code, 0, out);
+      // the board is not restarted (no window step 6), yet the plan proves the
+      // anchor sync runs on this path too
+      assert.match(out, /board: unchanged/);
+      assert.match(out, /dockergate: <none> -> ghcr\.io\/itkadr-git\/myrmidon-dockergate@sha256:c{64}/);
+      assert.match(out, /0\.8 compose-set anchor \(OPE-7010\): the declared compose set is synced to the live -f label after the deploy/);
+    });
+
+    it("rewrites the block from the live label and commits when the set diverged (the 07.10 drift)", () => {
+      const sb = sandbox();
+      // the anchor still lists the pre-dockergate set of two fragments
+      anchorFile(sb, ["docker-compose.yml", "docker-compose.myrmidon-image.yml"]);
+      const label = [path.join(sb.dir, "compose", "docker-compose.yml"), path.join(sb.dir, "compose", "docker-compose.myrmidon-image.yml"), path.join(sb.dir, "docker-compose.myrmidon-dockergate.yml")].join(",");
+      enable(sb, { label: labelSource(label) });
+      const { code, out } = run(sb, "deploy.sh", ["--digest", NEW]);
+      // a drifted anchor never fails the deploy
+      assert.equal(code, 0, out);
+      assert.match(out, /COMPOSE-SET-ANCHOR: the live set differs from the anchor; the block was rewritten/);
+      assert.match(out, /anchor had: docker-compose\.yml docker-compose\.myrmidon-image\.yml $/m);
+      assert.match(out, /live label: docker-compose\.yml docker-compose\.myrmidon-image\.yml docker-compose\.myrmidon-dockergate\.yml/);
+      // the rewritten block: the live fragments, relative to the anchor file's
+      // own directory, one per line, between the untouched markers
+      const rewritten = read(path.join(sb.dir, "checklist.md"));
+      assert.match(rewritten, new RegExp(`board-mount-set:begin -->\\n\\s*compose/docker-compose\\.yml\\n\\s*compose/docker-compose\\.myrmidon-image\\.yml\\n\\s*docker-compose\\.myrmidon-dockergate\\.yml\\n\\s*<!-- board-mount-set:end`));
+      assert.match(rewritten, /# image update checklist/);
+      // one commit, naming the deploy reference
+      assert.match(calls(sb), /git -C \S+ add -- checklist\.md/);
+      assert.match(calls(sb), /git -C \S+ commit -m chore\(deploy\): sync board-mount-set anchor to the live compose set/);
+      // the digest of this deploy is in the commit message
+      assert.match(calls(sb), new RegExp(`deploy \\S*sha256:b{63}b`));
+    });
+
+    it("warns and rewrites nothing when the anchor file has no readable block", () => {
+      const sb = sandbox();
+      fs.writeFileSync(path.join(sb.dir, "checklist.md"), "# checklist without a block\n");
+      enable(sb, { label: labelSource("docker-compose.yml") });
+      const { code, out } = run(sb, "deploy.sh", ["--digest", NEW]);
+      assert.equal(code, 0, out);
+      assert.match(out, /COMPOSE-SET-ANCHOR: no readable board-mount-set block/);
+      assert.equal(read(path.join(sb.dir, "checklist.md")), "# checklist without a block\n");
+    });
+
+    it("warns, keeps the rewritten file and does not fail the deploy when git commit fails", () => {
+      const sb = sandbox();
+      anchorFile(sb, ["docker-compose.yml"]);
+      fs.writeFileSync(path.join(sb.dir, "git-commit-fails"), "");
+      enable(sb, { label: labelSource("docker-compose.yml,docker-compose.myrmidon-dockergate.yml") });
+      const { code, out } = run(sb, "deploy.sh", ["--digest", NEW]);
+      assert.equal(code, 0, out);
+      assert.match(out, /WARNING: COMPOSE-SET-ANCHOR: the git commit of checklist\.md failed/);
+      assert.match(read(path.join(sb.dir, "checklist.md")), /board-mount-set:begin -->\n\s*docker-compose\.yml\n\s*docker-compose\.myrmidon-dockergate\.yml\n\s*<!-- board-mount-set:end/);
+    });
+
+    it("warns and rewrites nothing when the block has a begin marker but no end marker", () => {
+      const sb = sandbox();
+      const body = "# checklist\n<!-- board-mount-set:begin -->\ndocker-compose.yml\n\ntail text\n";
+      fs.writeFileSync(path.join(sb.dir, "checklist.md"), body);
+      enable(sb, { label: labelSource("docker-compose.yml,docker-compose.myrmidon-dockergate.yml") });
+      const { code, out } = run(sb, "deploy.sh", ["--digest", NEW]);
+      assert.equal(code, 0, out);
+      assert.match(out, /COMPOSE-SET-ANCHOR: the board-mount-set block .* has no end marker/);
+      assert.equal(read(path.join(sb.dir, "checklist.md")), body);
+    });
+
+    it("warns and keeps going when the anchor file does not exist", () => {
+      const sb = sandbox();
+      enable(sb, { label: labelSource("docker-compose.yml") });
+      const { code, out } = run(sb, "deploy.sh", ["--digest", NEW]);
+      assert.equal(code, 0, out);
+      assert.match(out, /WARNING: COMPOSE-SET-ANCHOR: the anchor file does not exist/);
+    });
+
+    it("handles production checklist format with indented block and prose §1 without corrupting either", () => {
+      const sb = sandbox();
+      const prodChecklist = `# Чек-лист обновления образов Paperclip
+
+## §0. Подготовка
+
+## §1. Набор docker-compose файлов
+
+Правило: любое осознанное изменение набора правится в якоре одним коммитом.
+В боевом наборе используются фрагменты:
+- \`docker-compose.yml\`
+- \`docker-compose.prod.yml\`
+
+   \`\`\`
+   <!-- board-mount-set:begin -->
+   docker-compose.yml
+   docker-compose.prod.yml
+   <!-- board-mount-set:end -->
+   \`\`\`
+
+Дальнейшие шаги регламента...
+`;
+      fs.writeFileSync(path.join(sb.dir, "checklist.md"), prodChecklist);
+      enable(sb, { label: labelSource("docker-compose.yml,docker-compose.prod.yml,docker-compose.myrmidon-dockergate.yml") });
+      const { code, out } = run(sb, "deploy.sh", ["--digest", NEW]);
+      assert.equal(code, 0, out);
+      assert.match(out, /COMPOSE-SET-ANCHOR: the live set differs from the anchor; the block was rewritten/);
+      assert.match(out, /anchor had: docker-compose\.yml docker-compose\.prod\.yml $/m);
+      assert.match(out, /live label: docker-compose\.yml docker-compose\.prod\.yml docker-compose\.myrmidon-dockergate\.yml/);
+      // the §1 prose snapshot follows the same live set (the review criterion:
+      // the human-readable list must not stay stale while the block moves)
+      assert.match(out, /§1 prose snapshot: the fragment list follows the same live set/);
+      const updated = read(path.join(sb.dir, "checklist.md"));
+      assert.match(updated, /## §1\. Набор docker-compose файлов/);
+      assert.match(updated, /В боевом наборе используются фрагменты/);
+      // the prose list now carries all three live fragments, in label order
+      assert.match(updated, /В боевом наборе используются фрагменты:\n- `docker-compose\.yml`\n- `docker-compose\.prod\.yml`\n- `docker-compose\.myrmidon-dockergate\.yml`\n/);
+      assert.doesNotMatch(updated, /- `docker-compose\.myrmidon-dockergate\.yml`\n- `docker-compose\.yml`/);
+      assert.match(updated, /   <!-- board-mount-set:begin -->\n   docker-compose\.yml\n   docker-compose\.prod\.yml\n   docker-compose\.myrmidon-dockergate\.yml\n   <!-- board-mount-set:end -->/);
+      assert.match(updated, /Дальнейшие шаги регламента\.\.\./);
+    });
+
+    it("rewrites only the marker block and prose list; unrelated fragment lists elsewhere stay untouched", () => {
+      const sb = sandbox();
+      const body = `# checklist
+Не наш список (не трогаем):
+- \`docker-compose.yml\`
+- \`docker-compose.old-fragment.yml\`
+
+<!-- board-mount-set:begin -->
+docker-compose.yml
+<!-- board-mount-set:end -->
+
+Правило §1 (без заголовка): фрагменты остаются как были:
+- \`docker-compose.yml\`
+- \`docker-compose.prod.yml\`
+`;
+      fs.writeFileSync(path.join(sb.dir, "checklist.md"), body);
+      enable(sb, { label: labelSource("docker-compose.yml,docker-compose.myrmidon-dockergate.yml") });
+      const { code, out } = run(sb, "deploy.sh", ["--digest", NEW]);
+      assert.equal(code, 0, out);
+      assert.match(out, /COMPOSE-SET-ANCHOR: the live set differs from the anchor; the block was rewritten/);
+      assert.doesNotMatch(out, /§1 prose snapshot/);
+      const updated = read(path.join(sb.dir, "checklist.md"));
+      // the marker block itself moved to the live set
+      assert.match(updated, /board-mount-set:begin -->\ndocker-compose\.yml\ndocker-compose\.myrmidon-dockergate\.yml\n<!-- board-mount-set:end/);
+      // every list outside the recognized §1 snapshot shape is byte-for-byte
+      assert.match(updated, /Не наш список \(не трогаем\):\n- `docker-compose\.yml`\n- `docker-compose\.old-fragment\.yml`/);
+      assert.match(updated, /Правило §1 \(без заголовка\): фрагменты остаются как были:\n- `docker-compose\.yml`\n- `docker-compose\.prod\.yml`\n$/);
+    });
+  });
+});
+
+describe("deploy.sh: deploy lock against parallel runs (OPE-12335)", () => {
+  it("two parallel deploy runs: second exits immediately with code 42 and reports first holder PID and version", async () => {
+    const sb = sandbox();
+    const lockFile = path.join(sb.dir, "state", "deploy.lock");
+    fs.mkdirSync(path.join(sb.dir, "state"), { recursive: true });
+
+    const holder = spawn("bash", ["-c", `
+      exec 200<>"$1"
+      flock -n 200
+      printf '54321 2026-11-08T12:00:00Z 1.6.3\\n' > "$1"
+      echo READY
+      read line
+    `, "_", lockFile], { stdio: ["pipe", "pipe", "inherit"] });
+
+    await new Promise((resolve) => {
+      holder.stdout.on("data", (d) => {
+        if (d.toString().includes("READY")) resolve();
+      });
+    });
+
+    try {
+      const { code, out } = run(sb, "deploy.sh", ["--digest", NEW]);
+      assert.equal(code, 42, out);
+      assert.match(out, /another deploy is already running/);
+      assert.match(out, /54321/);
+      assert.match(out, /1\.6\.3/);
+    } finally {
+      holder.stdin.write("\n");
+      await new Promise((resolve) => holder.on("exit", resolve));
+    }
+  });
+
+  it("--dry-run does not acquire the lock but warns when another deploy holds it", async () => {
+    const sb = sandbox();
+    const lockFile = path.join(sb.dir, "state", "deploy.lock");
+    fs.mkdirSync(path.join(sb.dir, "state"), { recursive: true });
+
+    const holder = spawn("bash", ["-c", `
+      exec 200<>"$1"
+      flock -n 200
+      printf '65432 2026-11-08T12:00:00Z 1.6.3\\n' > "$1"
+      echo READY
+      read line
+    `, "_", lockFile], { stdio: ["pipe", "pipe", "inherit"] });
+
+    await new Promise((resolve) => {
+      holder.stdout.on("data", (d) => {
+        if (d.toString().includes("READY")) resolve();
+      });
+    });
+
+    try {
+      const { code, out } = run(sb, "deploy.sh", ["--digest", NEW, "--dry-run"]);
+      assert.equal(code, 0, out);
+      assert.match(out, /WARNING: another deploy is currently running/);
+      assert.match(out, /65432/);
+      assert.match(out, /1\.6\.3/);
+    } finally {
+      holder.stdin.write("\n");
+      await new Promise((resolve) => holder.on("exit", resolve));
+    }
+  });
+
+  it("with MYRMIDON_DEPLOY_LOCK_WAIT_SEC, the second deploy waits and proceeds once the lock is released", async () => {
+    const sb = sandbox();
+    const lockFile = path.join(sb.dir, "state", "deploy.lock");
+    fs.mkdirSync(path.join(sb.dir, "state"), { recursive: true });
+
+    const holder = spawn("bash", ["-c", `
+      exec 200<>"$1"
+      flock -n 200
+      printf '76543 2026-11-08T12:00:00Z 1.6.3\\n' > "$1"
+      echo READY
+      sleep 0.5
+    `, "_", lockFile], { stdio: ["pipe", "pipe", "inherit"] });
+
+    await new Promise((resolve) => {
+      holder.stdout.on("data", (d) => {
+        if (d.toString().includes("READY")) resolve();
+      });
+    });
+
+    const { code, out } = run(sb, "deploy.sh", ["--digest", NEW], null, {
+      MYRMIDON_DEPLOY_LOCK_WAIT_SEC: "5",
+    });
+    assert.equal(code, 0, out);
+    await new Promise((resolve) => holder.on("exit", resolve));
+    assert.match(out, /image check passed|Plan:|deploy scripts at/);
+  });
+
+  it("with MYRMIDON_DEPLOY_LOCK_WAIT_SEC, fails with 42 if lock remains held after timeout", async () => {
+    const sb = sandbox();
+    const lockFile = path.join(sb.dir, "state", "deploy.lock");
+    fs.mkdirSync(path.join(sb.dir, "state"), { recursive: true });
+
+    const holder = spawn("bash", ["-c", `
+      exec 200<>"$1"
+      flock -n 200
+      printf '98765 2026-11-08T12:00:00Z 1.6.3\\n' > "$1"
+      echo READY
+      sleep 5
+    `, "_", lockFile], { stdio: ["pipe", "pipe", "inherit"] });
+
+    await new Promise((resolve) => {
+      holder.stdout.on("data", (d) => {
+        if (d.toString().includes("READY")) resolve();
+      });
+    });
+
+    try {
+      const { code, out } = run(sb, "deploy.sh", ["--digest", NEW], null, {
+        MYRMIDON_DEPLOY_LOCK_WAIT_SEC: "1",
+      });
+      assert.equal(code, 42, out);
+      assert.match(out, /after waiting 1s/);
+      assert.match(out, /98765/);
+    } finally {
+      holder.kill("SIGTERM");
+      await new Promise((resolve) => holder.on("exit", resolve));
+    }
+  });
+
+  it("releases the lock on SIGTERM so subsequent runs succeed", async () => {
+    const sb = sandbox();
+    const lockFile = path.join(sb.dir, "state", "deploy.lock");
+
+    // Spawn a process that acquires the deploy lock via lib.sh and waits (interruptible by signals)
+    const proc = spawn("bash", ["-c", `
+    source "$1"
+    acquire_deploy_lock "$2" 0 0 ""
+    echo LOCKED
+    sleep 10 & wait $!
+    `, "_", path.join(HERE, "lib.sh"), lockFile], { stdio: ["pipe", "pipe", "pipe"] });
+
+    await new Promise((resolve) => {
+      proc.stdout.on("data", (d) => {
+        if (d.toString().includes("LOCKED")) resolve();
+      });
+    });
+
+    assert.ok(fs.existsSync(lockFile), "deploy lock must exist while running");
+
+    // Send SIGTERM to simulate killed deploy process
+    proc.kill("SIGTERM");
+    await new Promise((resolve) => proc.on("exit", resolve));
+
+    // Lock must be released and removed by the TERM trap
+    assert.ok(!fs.existsSync(lockFile), "deploy lock must be cleaned up on SIGTERM");
+
+    // A subsequent deploy run can immediately acquire the lock
+    const { code, out } = run(sb, "deploy.sh", ["--digest", NEW, "--dry-run"]);
+    assert.equal(code, 0, out);
+    assert.doesNotMatch(out, /another deploy is currently running/);
+  });
+
+  it("releases the lock on error so subsequent runs succeed", () => {
+    const sb = sandbox({ composeConfigFails: true });
+    const lockFile = path.join(sb.dir, "state", "deploy.lock");
+
+    // First run fails during preflight
+    const first = run(sb, "deploy.sh", ["--digest", NEW]);
+    assert.notEqual(first.code, 0);
+    assert.ok(!fs.existsSync(lockFile), "lock file must be cleaned up on failure");
+
+    // Second run is not blocked by a lingering lock (fails with same compose config error, not lock error 42)
+    const second = run(sb, "deploy.sh", ["--digest", NEW]);
+    assert.notEqual(second.code, 42);
+    assert.doesNotMatch(second.out, /another deploy is already running/);
   });
 });

@@ -725,6 +725,33 @@ describe("agent routes adapter validation", () => {
     }
   });
 
+  it("rejects a PATCH above the enrolled bot memory ceiling without changing the card (OPE-12337)", async () => {
+    const { registerServerAdapter, unregisterServerAdapter, getServerAdapter } = await import("../adapters/index.js");
+    const { setBotResourceCeilingsReaderForTest } = await import("../myrmidon/bot-containers/resource-ceilings.js");
+    const previous = getServerAdapter("hermes_gateway");
+    unregisterServerAdapter("hermes_gateway");
+    registerServerAdapter({ ...externalAdapter, type: "hermes_gateway" });
+    setBotResourceCeilingsReaderForTest(async () => ({ memoryMb: 2048, cpus: 2, pidsLimit: 512 }));
+    try {
+      const pinned = `example/hermes@sha256:${"b".repeat(64)}`;
+      const container = { enabled: true, image: pinned, memoryMb: 2048, cpus: 1, pidsLimit: 512 };
+      const existing = await mockAgentService.getById();
+      mockAgentService.getById.mockResolvedValue({ ...existing, adapterType: "hermes_gateway", adapterConfig: { container } });
+      const app = await createApp();
+      const result = await requestApp(app, (baseUrl) => request(baseUrl)
+        .patch("/api/agents/11111111-1111-4111-8111-111111111111")
+        .send({ adapterConfig: { container: { ...container, memoryMb: 3072 } }, replaceAdapterConfig: true }));
+      expect(result.status, JSON.stringify(result.body)).toBe(422);
+      expect(String(result.body.error ?? result.body.message ?? "")).toContain("exceeds dockergate ceiling 2048 МБ");
+      expect(String(result.body.error ?? result.body.message ?? "")).toContain("bots[].maxMemoryMb");
+      expect(mockAgentService.update).not.toHaveBeenCalled();
+    } finally {
+      setBotResourceCeilingsReaderForTest(null);
+      unregisterServerAdapter("hermes_gateway");
+      if (previous) registerServerAdapter(previous);
+    }
+  });
+
   it("keeps the pinned container image on edit of an existing hermes_gateway agent and refuses a tag-only image (OPE-8916)", async () => {
     const { registerServerAdapter, unregisterServerAdapter, getServerAdapter } = await import("../adapters/index.js");
     const previous = getServerAdapter("hermes_gateway");

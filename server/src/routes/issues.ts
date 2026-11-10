@@ -43,13 +43,14 @@ import {
 import { readReviewRoutingSettings } from "../myrmidon/review-routing/settings.js";
 import { createPgReviewRoutingStore } from "../myrmidon/review-routing/store.js";
 // myrmidon(OPE-10460): gate REQUEST CHANGES on final CI status for the live PR head.
-import { createReviewHeadFailedChecksResolver, createReviewPullRequestCiResolver } from "../myrmidon/review-stage-recovery/github-ci.js";
+import { createReviewHeadFailedChecksResolver, createReviewPullRequestCiResolver, readReviewPullRequestHeadSha } from "../myrmidon/review-stage-recovery/github-ci.js";
 import type { ReviewHeadFailedChecksResolver, ReviewPullRequestCiResolver } from "../myrmidon/review-stage-recovery/github-ci.js";
 // myrmidon(OPE-11970): a review return on the same PR head, or only on infrastructure checks, does not wake the executor.
 import { decideReviewReturnWake, recordSuppressedReviewReturn } from "../myrmidon/review-return-guard/guard.js";
 import {
   readReviewInfraCheckNames,
   readReviewReturnGuardEnabled,
+  reviewCommentReferencesCode,
   withChangesRequestedHeadSha,
 } from "../myrmidon/review-return-guard/policy.js";
 // myrmidon(OPE-12181, REVIEW-CHECKS-NATIVE): the review verdict is recorded as
@@ -60,8 +61,11 @@ import {
   withReviewVerdictRecord,
 } from "../myrmidon/review-verdict/record.js";
 import {
+  REVIEW_CI_FINAL_CHECK_NAME,
   REVIEW_CI_WAIT_INTERVAL_MS,
   REVIEW_CI_WAIT_MONITOR_SERVICE_NAME,
+  decideReviewAdmission,
+  reviewAdmissionDedupKey,
 } from "../myrmidon/review-stage-recovery/policy.js";
 import {
   buildReviewApprovalPendingMergeNotice,
@@ -101,6 +105,7 @@ import { withDefaultEscalationChain } from "../services/review-escalation-chain.
 import type { ChatChannelService } from "../services/chat-channels.js";
 import type { WakeupOptions } from "../services/heartbeat.js";
 import { createPullRequestCiResolver, withCiResolveDeadline } from "../services/github-pull-request-ci.js";
+import { createPullRequestMergeDetailsResolver } from "../services/github-pull-request-merge.js";
 import {
   companies,
   activityLog,
@@ -133,6 +138,7 @@ import {
 } from "@myrmidon/db";
 import { dbAutonomyGate } from "../myrmidon/autonomy/gate.js";
 import { normalizeLabels, requiresEngineer } from "../myrmidon/swarm-claim/requires-engineer.js";
+import { assertTaskCardReady } from "../myrmidon/task-card-readiness/guard.js";
 import { buildRequiresEngineerMessage } from "../myrmidon/guard-return/domain.js";
 import {
   addIssueCommentSchema,
@@ -469,6 +475,7 @@ import {
   queuedCommentIdsFromWakePayload,
   withQueuedCommentIdsInWakePayload,
 } from "../services/issue-queued-comment-queue.js";
+import { isValidWakeCommentId } from "../modules/run-dispatch/index.js";
 // myrmidon(HANDOFF-CAS): guarded agent-to-agent task handoff mechanics for the
 // PATCH /api/issues/{id} path, ported from vendor paperclipai/paperclip#13686.
 import * as handoffCas from "../myrmidon/handoff-cas.js";
@@ -3076,6 +3083,12 @@ function buildExecutionStageWakeup(input: {
    * participant is woken so it can decide without a new submission.
    */
   reenteringReview?: boolean;
+  /**
+   * myrmidon(OPE-12177): the exact PR head the admission decision was made on.
+   * The review-admission dedup key is keyed on it; null falls back to the
+   * legacy agent-keyed format.
+   */
+  headSha?: string | null;
 }) {
   const { issueId, previousState, nextState, interruptedRunId } = input;
   if (!nextState) return null;
@@ -3135,7 +3148,7 @@ function buildExecutionStageWakeup(input: {
         requestedByActorId: input.requestedByActorId,
         idempotencyKey:
           nextState.currentStageType === "review"
-            ? `issue-review-admission:${issueId}:${agentId}`
+            ? reviewAdmissionDedupKey({ issueId, headSha: input.headSha, agentId })
             : undefined,
         contextSnapshot: {
           issueId,
@@ -3749,6 +3762,7 @@ export function issueRoutes(
     }) => Promise<unknown>;
     resolveReviewPullRequestCi?: ReviewPullRequestCiResolver;
     resolveReviewHeadFailedChecks?: ReviewHeadFailedChecksResolver;
+    resolveReviewAdmissionHeadSha?: typeof readReviewPullRequestHeadSha;
     insertReviewAdmissionWakeup?: (
       agentId: string,
       options: WakeupOptions,
@@ -3841,7 +3855,13 @@ export function issueRoutes(
   const issueApprovalsSvc = issueApprovalService(db);
   const recoveryActionsSvc = issueRecoveryActionService(db);
   const executionWorkspacesSvc = executionWorkspaceServiceDirect(db);
-  const workProductsSvc = workProductService(db);
+  const workProductsSvc = workProductService(db, {
+    // myrmidon(OPE-12397): UI reads that refresh PR metadata (the
+    // `refreshPullRequests=true` routes) count into the `ui-refresh` bucket —
+    // the default provider label would attribute them to `task-pr-sync` and
+    // hide the real spend in the rate-limit log.
+    resolvePullRequestDetails: createPullRequestMergeDetailsResolver(db, { source: "ui-refresh" }),
+  });
   const documentsSvc = documentService(db);
   const artifactReviewDocumentsSvc = artifactReviewDocumentService(db, storage);
   const companySkillsSvc = companySkillService(db);
@@ -5256,7 +5276,7 @@ export function issueRoutes(
       nextAssigneeAgentId !== input.actorAgentId &&
       (executionReviewParticipants.some(
         (participant) => participant.type === "agent" && participant.agentId === nextAssigneeAgentId,
-      ) || (await agentsSvc.getById(String(nextAssigneeAgentId)))?.role === "reviewer")
+      ) || ["reviewer", "lead"].includes((await agentsSvc.getById(String(nextAssigneeAgentId)))?.role ?? ""))
     ) return null;
 
     throw unprocessable(INVALID_AGENT_IN_REVIEW_DISPOSITION_MESSAGE, {
@@ -7623,15 +7643,18 @@ export function issueRoutes(
       return response ? [response.comment] : [];
     }
     const ids = queuedCommentIdsFromWakePayload(wake?.payload);
-    if (ids.length === 0) return [];
+    // uuid-column boundary (OPE-12209): never build an `inArray` over
+    // `issue_comments.id` from a payload with malformed ids.
+    const validIds = ids.filter(isValidWakeCommentId);
+    if (validIds.length === 0) return [];
     const rows = await executor
       .select()
       .from(issueComments)
       .where(
-        and(eq(issueComments.issueId, issueId), inArray(issueComments.id, ids)),
+        and(eq(issueComments.issueId, issueId), inArray(issueComments.id, validIds)),
       );
     const byId = new Map(rows.map((row) => [row.id, row]));
-    return ids.flatMap((id) => {
+    return validIds.flatMap((id) => {
       const row = byId.get(id);
       // myrmidon(UPSTREAM-13539): normalize authorType so the queue renderer never sees null.
       return row && !row.deletedAt ? [{ ...row, authorType: row.authorType ?? (row.authorAgentId ? "agent" as const : "user" as const) }] : [];
@@ -9495,7 +9518,7 @@ export function issueRoutes(
       pullRequestsCi: [] as unknown[],
     };
     try {
-      const ciResolver = createPullRequestCiResolver(db);
+      const ciResolver = createPullRequestCiResolver(db, { source: "ui-refresh" });
       const prs = await withCiResolveDeadline(
         ciResolver.resolveForIssue(issue.companyId, issue.id),
         [],
@@ -9522,7 +9545,7 @@ export function issueRoutes(
     if (!(await assertIssueReadAllowed(req, res, issue))) return;
 
     try {
-      const ciResolver = createPullRequestCiResolver(db);
+      const ciResolver = createPullRequestCiResolver(db, { source: "ui-refresh" });
       const pullRequests = await withCiResolveDeadline(
         ciResolver.resolveForIssue(issue.companyId, issue.id),
         [],
@@ -12792,10 +12815,11 @@ export function issueRoutes(
           rawCreateBody.assigneeAgentId as string | null | undefined,
           { actorType: req.actor.type },
         );
+      const initialStatus = typeof rawCreateBody.status === "string" ? rawCreateBody.status : "todo";
       await assertEngineerForCodeIssue({
         companyId,
         issue: null,
-        status: typeof rawCreateBody.status === "string" ? rawCreateBody.status : "todo",
+        status: initialStatus,
         assigneeAgentId: normalizedAssigneeAgentId,
         projectId: effectiveProjectId,
         labelIds: Array.isArray(rawCreateBody.labelIds) ? (rawCreateBody.labelIds as string[]) : undefined,
@@ -12806,6 +12830,40 @@ export function issueRoutes(
             ? rawCreateBody.executionWorkspacePreference
             : null,
       });
+      // TASK-CARD-READINESS-3: when creating a task born in todo for an
+      // engineer, assert readiness at the route boundary before insertion.
+      // Only explicit engineer signals on the create body itself gate the
+      // create (casteKey: "engineer" pinned by the caller or a
+      // needs-engineer label): the project default and the workspace
+      // preference are inferrable signals, and gating on them would reject
+      // ordinary non-engineer creates whose project happens to default to
+      // the engineer caste. The richer requiresEngineer set stays on
+      // assertEngineerForCodeIssue and the swarm queue; this gate only needs
+      // the card-completeness subset.
+      if (initialStatus === "todo") {
+        let createLabelNames: string[] = [];
+        if (Array.isArray(rawCreateBody.labelIds) && rawCreateBody.labelIds.length > 0) {
+          createLabelNames = await db
+            .select({ name: labels.name })
+            .from(labels)
+            .where(and(eq(labels.companyId, companyId), inArray(labels.id, rawCreateBody.labelIds as string[])))
+            .then((rows) => rows.map((r) => r.name));
+        }
+        const createCasteKey =
+          typeof rawCreateBody.casteKey === "string" && rawCreateBody.casteKey.trim().length > 0
+            ? rawCreateBody.casteKey
+            : null;
+        const createGateInputs: Parameters<typeof requiresEngineer>[0] = {
+          casteKey: createCasteKey,
+          labels: createLabelNames,
+        };
+        if (requiresEngineer(createGateInputs)) {
+          assertTaskCardReady({
+            title: typeof rawCreateBody.title === "string" ? rawCreateBody.title : null,
+            description: typeof rawCreateBody.description === "string" ? rawCreateBody.description : null,
+          });
+        }
+      }
       await assertNoAgentDelegationCycle({
         actorType: req.actor.type,
         parentIssueId:
@@ -14051,19 +14109,23 @@ export function issueRoutes(
       const stageState = existing.executionState as Record<string, unknown> | null;
       const stageParticipant = stageState?.currentParticipant as Record<string, unknown> | null | undefined;
       const stageReturnAssignee = stageState?.returnAssignee as Record<string, unknown> | null | undefined;
-      const stageHandBackAssigneeId =
+      const stageHandsBack =
         stageState?.status === "pending" &&
         (stageState?.currentStageType === "review" || stageState?.currentStageType === "approval") &&
         normalizedAssigneeAgentId === undefined &&
         targetStatus === "in_progress" &&
         stageParticipant?.type === "agent" &&
         typeof stageParticipant?.agentId === "string" &&
-        stageParticipant.agentId === existing.assigneeAgentId &&
+        stageParticipant.agentId === existing.assigneeAgentId;
+      const stageHandBackAssigneeId =
+        stageHandsBack &&
         stageReturnAssignee?.type === "agent" &&
         typeof stageReturnAssignee?.agentId === "string"
           ? stageReturnAssignee.agentId
           : null;
-      const targetAssigneeAgentId = stageHandBackAssigneeId ?? requestedAssigneeAgentId;
+      const targetAssigneeAgentId = stageHandsBack
+        ? stageHandBackAssigneeId
+        : requestedAssigneeAgentId;
       const isAssigneeChange =
         normalizedAssigneeAgentId !== undefined &&
         normalizedAssigneeAgentId !== existing.assigneeAgentId;
@@ -14451,6 +14513,11 @@ export function issueRoutes(
           });
       }
       if (req.body.executionPolicy !== undefined) {
+        if (req.body.status !== undefined && req.body.status === "done") {
+          throw unprocessable(
+            `Cannot update executionPolicy and transition status to '${req.body.status}' in the same request`,
+          );
+        }
         updateFields.executionPolicy = applyActorMonitorScheduledBy(
           normalizeIssueExecutionPolicy(req.body.executionPolicy),
           actor.actorType,
@@ -14516,7 +14583,6 @@ export function issueRoutes(
       transitionIssue.executionReviewParticipantAgentIds = reviewParticipantAgentIds;
       // Role is only needed when the issue enters or leaves review (return-assignee choice); skip the lookup otherwise.
       if (
-        nextExecutionPolicy === null &&
         existing.assigneeAgentId &&
         (existing.status === "in_review" || updateFields.status === "in_review")
       ) {
@@ -14535,6 +14601,15 @@ export function issueRoutes(
             ? undefined
             : (updateFields.assigneeUserId as string | null),
       };
+      let candidateLoads: Map<string, number> | undefined;
+      if (
+        (updateFields.status === "in_review" || existing.status === "in_review") &&
+        nextExecutionPolicy &&
+        summarizeExecutionParticipants(nextExecutionPolicy, "review").length > 1
+      ) {
+        const routingStore = createPgReviewRoutingStore(db);
+        candidateLoads = await routingStore.loadByAgent(existing.companyId);
+      }
       const transition = applyIssueExecutionPolicyTransition({
         // myrmidon(OPE-9031): senior escalation chain for the round limit.
         issue: transitionIssue,
@@ -14554,6 +14629,7 @@ export function issueRoutes(
         reviewRequest: reviewRequest === undefined ? undefined : reviewRequest,
         monitorExplicitlyUpdated:
           req.body.executionPolicy !== undefined && monitorChanged,
+        candidateLoads,
       });
       // myrmidon(MON-RESTORE): capture and strip transient notice before persistence.
       const monitorClearNotice = transition.patch.monitorClearNotice as
@@ -14611,7 +14687,7 @@ export function issueRoutes(
           companyId: existing.companyId,
           issueId: existing.id,
         });
-        if (ci.state === "pending" || ci.state === "unknown") {
+        if ((ci.state === "pending" || ci.state === "unknown") && !reviewCommentReferencesCode(transition.decision?.body)) {
           throw unprocessable(
             ci.state === "pending"
               ? "REQUEST CHANGES rejected: CI result for the current pull request head is not complete. Wait for CI and submit the review verdict again."
@@ -15428,6 +15504,23 @@ export function issueRoutes(
         commentBody,
         actorAgentId: actor.agentId ?? null,
         actorUserId: actor.actorType === "user" ? actor.actorId : null,
+        // myrmidon(TASK-CARD-READINESS-3): the flag is only set (true) for an
+        // explicit client request that hands the task to an engineer (PATCH
+        // status: "todo"). It reads req.body.status, not the route-rebuilt
+        // updateFields: internal policy/monitor rebuilds write status into
+        // updateFields (review admission, monitor rescheduling) and those are
+        // not client handoffs. When not applicable the key is undefined — the
+        // service treats undefined like false, and the flag never surfaces as
+        // a `taskCardGate: false` column-like field in update receipts or
+        // response bodies (a change-receipt diff would otherwise report a
+        // field no client can set). Internal auto-transitions (auto-unblock
+        // by resolved blocker, review returns, recovery updates) never carry
+        // status in the request body this way and call the same service
+        // without the flag.
+        taskCardGate:
+          req.body.status === "todo" && existing.status !== "todo"
+            ? true
+            : undefined,
       };
       const shouldCollectCompletionPublication =
         actor.actorType === "user" &&
@@ -15692,7 +15785,7 @@ export function issueRoutes(
                 companyId: lockedExisting.companyId,
                 issueId: lockedExisting.id,
               });
-              if (ci.state === "pending" || ci.state === "unknown") {
+              if ((ci.state === "pending" || ci.state === "unknown") && !reviewCommentReferencesCode(lockedTransition.decision?.body)) {
                 throw unprocessable(
                   ci.state === "pending"
                     ? "REQUEST CHANGES rejected: CI result for the current pull request head is not complete. Wait for CI and submit the review verdict again."
@@ -15898,6 +15991,12 @@ export function issueRoutes(
               updated.status === "in_review" &&
               (enteringReviewRequested || assigneeWillChange)
             ) {
+              // myrmidon(OPE-12177): the dedup key tail is the exact PR head.
+              // Read it from the stored work-product metadata (webhook-kept
+              // fresh, no GitHub call); a fallback resolver may refine it.
+              const reviewAdmissionHeadSha = await (
+                opts.resolveReviewAdmissionHeadSha ?? readReviewPullRequestHeadSha
+              )({ db, companyId: updated.companyId, issueId: updated.id });
               const stageWake = buildExecutionStageWakeup({
                 issueId: updated.id,
                 previousState: parseIssueExecutionState(existing.executionState),
@@ -15907,6 +16006,7 @@ export function issueRoutes(
                 requestedByActorId: actor.actorId,
                 // myrmidon(OPE-10045): wake the kept participant when the task returns to review.
                 reenteringReview: existing.status !== "in_review",
+                headSha: reviewAdmissionHeadSha,
               });
               const ciAdmissionCandidate =
                 stageWake?.wakeup.reason === "execution_review_requested" ||
@@ -15919,7 +16019,36 @@ export function issueRoutes(
                     companyId: updated.companyId,
                     issueId: updated.id,
                   });
-                  if (ci.state === "pending" || ci.state === "unknown") {
+                  // myrmidon(OPE-12176): the failed checks of the exact head decide
+                  // green (admit) vs red (wait for the fix). Read them only when the
+                  // head CI finished and the issue is not critical, so a critical
+                  // issue is not charged an extra GitHub read.
+                  let headFailedChecks: readonly string[] = [];
+                  let headFailedReadOk = false;
+                  if (ci.state === "complete" && updated.priority !== "critical") {
+                    const headFailed = await (opts.resolveReviewHeadFailedChecks ??
+                      createReviewHeadFailedChecksResolver({ db }))({
+                      companyId: updated.companyId,
+                      issueId: updated.id,
+                      headSha: ci.headSha ?? "",
+                    });
+                    if (headFailed.state === "ok" && headFailed.headSha === ci.headSha) {
+                      headFailedReadOk = true;
+                      headFailedChecks = headFailed.failed;
+                    }
+                  }
+                  const admissionDecision = decideReviewAdmission({
+                    ci: ci.state,
+                    headFinalCheck:
+                      ci.state !== "complete" ? "unknown" :
+                      ci.finalCheckConclusion === "failure" ? "red" :
+                      ci.finalCheckConclusion === "success" ? "green" :
+                      headFailedReadOk && headFailedChecks.length > 0 ? "red" :
+                      headFailedReadOk && headFailedChecks.length === 0 ? "green" :
+                      "green",
+                    critical: updated.priority === "critical",
+                  });
+                  if (admissionDecision !== "admit") {
                     admitReviewer = false;
                     reviewerAdmissionDeferred = true;
                     if (ci.state === "unknown") {
@@ -15958,7 +16087,10 @@ export function issueRoutes(
                     );
                     const monitor = {
                       nextCheckAt: new Date(Date.now() + REVIEW_CI_WAIT_INTERVAL_MS).toISOString(),
-                      notes: `Review waits for CI on the head of ${ci.pullRequestUrl ?? "the pull request"}${ci.headSha ? ` (${ci.headSha.slice(0, 12)})` : ""}; CI state=${ci.state}${ci.reason ? ` (${ci.reason})` : ""}.`,
+                      notes:
+                        admissionDecision === "wait_red"
+                          ? `Review waits for a CI fix on the head of ${ci.pullRequestUrl ?? "the pull request"}${ci.headSha ? ` (${ci.headSha.slice(0, 12)})` : ""}; failed checks: ${headFailedChecks.join(", ") || REVIEW_CI_FINAL_CHECK_NAME}.`
+                          : `Review waits for CI on the head of ${ci.pullRequestUrl ?? "the pull request"}${ci.headSha ? ` (${ci.headSha.slice(0, 12)})` : ""}; CI state=${ci.state}${ci.reason ? ` (${ci.reason})` : ""}.`,
                       scheduledBy: "assignee" as const,
                       kind: "external_service" as const,
                       serviceName: REVIEW_CI_WAIT_MONITOR_SERVICE_NAME,
@@ -16048,7 +16180,11 @@ export function issueRoutes(
                   triggerDetail: "system",
                   reason: enteringReviewRequested ? "issue_entered_review" : "issue_review_reassigned",
                   payload: { issueId: updated.id, mutation: "review_admission" },
-                  idempotencyKey: `issue-review-admission:${updated.id}:${updated.assigneeAgentId}`,
+                  idempotencyKey: reviewAdmissionDedupKey({
+                    issueId: updated.id,
+                    headSha: reviewAdmissionHeadSha,
+                    agentId: updated.assigneeAgentId,
+                  }),
                   requestedByActorType: actor.actorType,
                   requestedByActorId: actor.actorId,
                   contextSnapshot: { issueId: updated.id, taskId: updated.id },
@@ -16990,12 +17126,53 @@ export function issueRoutes(
         issue.status === "in_review" &&
         (executionStageWakeup?.wakeup.reason === "execution_review_requested" ||
           executionStageWakeup?.wakeup.reason === "execution_review_participant_recovery");
+      // myrmidon(OPE-12177): the dedup key tail is the exact PR head; read it
+      // from the stored work-product metadata (no GitHub call). For the CI-gated
+      // admission path the read verdict refines it further below.
+      let reviewAdmissionHeadSha = isReviewCiWakeCandidate
+        ? await (opts.resolveReviewAdmissionHeadSha ?? readReviewPullRequestHeadSha)({
+          db,
+          companyId: issue.companyId,
+          issueId: issue.id,
+        })
+        : null;
       if (isReviewCiWakeCandidate) {
         const reviewCi = await (opts.resolveReviewPullRequestCi ?? createReviewPullRequestCiResolver({ db }))({
           companyId: issue.companyId,
           issueId: issue.id,
         });
-        deferExecutionReviewWakeForCi = reviewCi.state === "pending" || reviewCi.state === "unknown";
+        if (typeof reviewCi.headSha === "string" && reviewCi.headSha.trim() !== "") {
+          reviewAdmissionHeadSha = reviewCi.headSha;
+        }
+        // myrmidon(OPE-12176): the same green-head rule as the transition path —
+        // a red or unfinished head of a non-critical issue does not wake a reviewer.
+        const critical = issue.priority === "critical";
+        let headFailedChecks: readonly string[] = [];
+        let headFailedReadOk = false;
+        if (reviewCi.state === "complete" && !critical) {
+          const headFailed = await (opts.resolveReviewHeadFailedChecks ??
+            createReviewHeadFailedChecksResolver({ db }))({
+            companyId: issue.companyId,
+            issueId: issue.id,
+            headSha: reviewCi.headSha ?? "",
+          });
+          if (headFailed.state === "ok" && headFailed.headSha === reviewCi.headSha) {
+            headFailedReadOk = true;
+            headFailedChecks = headFailed.failed;
+          }
+        }
+        deferExecutionReviewWakeForCi =
+          decideReviewAdmission({
+            ci: reviewCi.state,
+            headFinalCheck:
+              reviewCi.state !== "complete" ? "unknown" :
+              reviewCi.finalCheckConclusion === "failure" ? "red" :
+              reviewCi.finalCheckConclusion === "success" ? "green" :
+              headFailedReadOk && headFailedChecks.length > 0 ? "red" :
+              headFailedReadOk && headFailedChecks.length === 0 ? "green" :
+              "green",
+            critical,
+          }) !== "admit";
       }
 
       if (closesRecoveryIssue) {
@@ -17289,7 +17466,11 @@ export function issueRoutes(
                 }
               : issue.status === "in_review"
                 ? {
-                    idempotencyKey: `issue-review-admission:${issue.id}:${issue.assigneeAgentId}`,
+                    idempotencyKey: reviewAdmissionDedupKey({
+                      issueId: issue.id,
+                      headSha: reviewAdmissionHeadSha,
+                      agentId: issue.assigneeAgentId,
+                    }),
                   }
                 : {}),
             payload: {
@@ -20737,6 +20918,11 @@ export function issueRoutes(
           interruptedRunId,
           requestedByActorType: actor.actorType,
           requestedByActorId: actor.actorId,
+          headSha: await (opts.resolveReviewAdmissionHeadSha ?? readReviewPullRequestHeadSha)({
+            db,
+            companyId: currentIssue.companyId,
+            issueId: currentIssue.id,
+          }),
         });
       } else {
         const commentOptions = {

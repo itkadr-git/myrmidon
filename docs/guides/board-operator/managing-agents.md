@@ -35,7 +35,7 @@ Common adapter choices:
 Use `hermes_local` when Myrmidon should start the local Hermes CLI. Use
 `hermes_gateway` when Hermes is already running as an API server and Myrmidon
 should call that server. Both are built-in adapter types from the unified
-`@paperclipai/hermes-paperclip-adapter` package.
+`@myrmidon/hermes-paperclip-adapter` package.
 
 For `opencode_local`, configure an explicit `adapterConfig.model` (`provider/model`).
 Myrmidon validates the selected model against live `opencode models` output.
@@ -99,3 +99,12 @@ POST /api/agents/{agentId}/terminate
 ```
 
 Only terminate agents you're certain you no longer need. Consider pausing first.
+
+## Deleting vs Terminating Agents
+
+- **Terminating an agent** (`POST /api/agents/{agentId}/terminate`) permanently deactivates the agent and stops future heartbeats, while preserving the agent record, run history, and financial records.
+- **Deleting an agent** (`DELETE /api/agents/{agentId}`) removes the agent record and cleans up unlinked sessions, local runs, decisions, and runtime state.
+
+To protect financial audit history, agents with recorded cost events (`cost_events`) cannot be deleted:
+- `DELETE /api/agents/{agentId}` rejects deletion with `HTTP 409 Conflict` (`code: "agent_has_cost_events"`), instructing callers to terminate the agent instead.
+- If any other database records still reference the agent, deletion rejects with `HTTP 409 Conflict` (`code: "agent_referenced"`).

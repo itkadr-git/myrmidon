@@ -10,6 +10,10 @@ import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { GitPullRequestClosed } from "lucide-react";
 import type { ReviewReworkSettingsPatch } from "@myrmidon/shared";
+import {
+  MAX_REVIEW_REWORK_SWEEP_INTERVAL_SEC,
+  MIN_REVIEW_REWORK_SWEEP_INTERVAL_SEC,
+} from "@myrmidon/shared";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -26,11 +30,14 @@ const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{
 /**
  * Parse the draft fields. The fallback field is optional: empty or the word
  * "none" means "no fallback assignee" (null = the role queue claims the task).
- * Anything else must be an agent UUID.
+ * Anything else must be an agent UUID. The interval must be an integer inside
+ * [60, 3600] seconds (OPE-12397): the stored setting beats the default, an env
+ * override beats both.
  */
 export function parseReviewReworkDraft(draft: {
   enabled: boolean;
   fallback: string;
+  sweepIntervalSec: string;
 }): { patch: ReviewReworkSettingsPatch; errors: Partial<Record<string, string>> } {
   const trimmed = draft.fallback.trim();
   if (trimmed && trimmed.toLowerCase() !== "none" && !UUID_PATTERN.test(trimmed)) {
@@ -40,8 +47,25 @@ export function parseReviewReworkDraft(draft: {
     };
   }
   const fallbackAssigneeAgentId = trimmed && trimmed.toLowerCase() !== "none" ? trimmed : null;
+  const intervalRaw = draft.sweepIntervalSec.trim();
+  const interval = intervalRaw === "" ? NaN : Number(intervalRaw);
+  if (
+    !Number.isInteger(interval) ||
+    interval < MIN_REVIEW_REWORK_SWEEP_INTERVAL_SEC ||
+    interval > MAX_REVIEW_REWORK_SWEEP_INTERVAL_SEC
+  ) {
+    return {
+      patch: { enabled: draft.enabled, fallbackAssigneeAgentId },
+      errors: {
+        sweepIntervalSec: i18n.t("area.settings-models-runtime-2.review-rework-settings-panel.intervalError", {
+          min: MIN_REVIEW_REWORK_SWEEP_INTERVAL_SEC,
+          max: MAX_REVIEW_REWORK_SWEEP_INTERVAL_SEC,
+        }),
+      },
+    };
+  }
   return {
-    patch: { enabled: draft.enabled, fallbackAssigneeAgentId },
+    patch: { enabled: draft.enabled, fallbackAssigneeAgentId, sweepIntervalSec: interval },
     errors: {},
   };
 }
@@ -60,13 +84,16 @@ export function ReviewReworkSettingsPanelView({
   const { t } = useTranslation();
   const [draftEnabled, setDraftEnabled] = useState<boolean | null>(null);
   const [draftFallback, setDraftFallback] = useState<string | null>(null);
+  const [draftInterval, setDraftInterval] = useState<string | null>(null);
 
   const enabled = draftEnabled ?? (view ? view.settings.enabled : true);
   const fallback =
     draftFallback ??
     (view?.settings.fallbackAssigneeAgentId ? view.settings.fallbackAssigneeAgentId : "");
+  const interval = draftInterval ?? (view ? String(view.settings.sweepIntervalSec) : "");
+  const envForced = view?.sweepIntervalSource === "env";
 
-  const { patch, errors } = parseReviewReworkDraft({ enabled, fallback });
+  const { patch, errors } = parseReviewReworkDraft({ enabled, fallback, sweepIntervalSec: interval });
   const canSave = view !== null && view !== undefined && Object.keys(errors).length === 0;
 
   return (
@@ -121,6 +148,34 @@ export function ReviewReworkSettingsPanelView({
             ) : null}
             <p className="text-xs text-muted-foreground">
               {t("area.settings-models-runtime-2.review-rework-settings-panel.fallbackHint")}
+            </p>
+          </div>
+
+          <div className="space-y-1">
+            <Label htmlFor="review-rework-interval">{t("area.settings-models-runtime-2.review-rework-settings-panel.intervalLabel")}</Label>
+            <Input
+              id="review-rework-interval"
+              type="number"
+              min={MIN_REVIEW_REWORK_SWEEP_INTERVAL_SEC}
+              max={MAX_REVIEW_REWORK_SWEEP_INTERVAL_SEC}
+              step={1}
+              value={interval}
+              disabled={envForced}
+              onChange={(event) => setDraftInterval(event.target.value)}
+              data-testid="review-rework-interval"
+            />
+            {errors.sweepIntervalSec ? (
+              <div className="text-xs text-destructive" data-testid="review-rework-error-interval">
+                {errors.sweepIntervalSec}
+              </div>
+            ) : null}
+            <p className="text-xs text-muted-foreground">
+              {envForced
+                ? t("area.settings-models-runtime-2.review-rework-settings-panel.intervalEnvOverride", {
+                    name: view?.sweepIntervalEnvName ?? "",
+                    value: view?.settings.sweepIntervalSec ?? "",
+                  })
+                : t("area.settings-models-runtime-2.review-rework-settings-panel.intervalHint")}
             </p>
           </div>
 

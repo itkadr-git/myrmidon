@@ -4,7 +4,7 @@ import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { agents, companies, createDb, heartbeatRuns } from "@myrmidon/db";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "../__tests__/helpers/embedded-postgres.js";
 import { heartbeatService } from "./heartbeat.js";
-import { hasLiveLegacyController, legacyControllerBootId, legacyControllerClaim,
+import { hasLiveLegacyController, LEGACY_CONTROLLER_DEADLINE_CONFIRM_MS, legacyControllerBootId, legacyControllerClaim,
   renewLegacyControllerLease, revokeExpiredLegacyController, watchLegacyControllerLease } from "./legacy-controller-lease.js";
 
 const support = await getEmbeddedPostgresTestSupport();
@@ -59,9 +59,17 @@ const support = await getEmbeddedPostgresTestSupport();
     expect(saved.executionStage).toBe("dispatching");
     expect(await revokeExpiredLegacyController(db, run)).toBe(false);
   });
-  it("an expired controller cannot renew or dispatch even before a reaper claims it", async () => {
+  // myrmidon(OPE-12578): expiry alone is not a takeover; revocation replaces the boot id.
+  it("an expired controller that nobody revoked renews (own event-loop stall)", async () => {
     const run = await seed();
     await expire(run.id);
+    expect(await renewLegacyControllerLease(db, run, "dispatching")).toBe(true);
+    expect(await hasLiveLegacyController(db, run)).toBe(true);
+  });
+  it("a revoked controller cannot renew or dispatch", async () => {
+    const run = await seed();
+    await expire(run.id);
+    expect(await revokeExpiredLegacyController(db, run)).toBe(true);
     expect(await renewLegacyControllerLease(db, run, "dispatching")).toBe(false);
     const controller = new AbortController();
     const watch = watchLegacyControllerLease(db, run, controller);
@@ -69,6 +77,31 @@ const support = await getEmbeddedPostgresTestSupport();
       await expect(watch.assertOwned("dispatching")).rejects.toThrow("lease lost");
       expect(controller.signal.aborted).toBe(true);
     } finally { watch.stop(); }
+  });
+  it("a deadline that fires late after a stall asks the database and keeps the run", async () => {
+    const run = await seed();
+    await expire(run.id);
+    const controller = new AbortController();
+    // The local deadline is already behind, as after a long event-loop stall.
+    const watch = watchLegacyControllerLease(db, { ...run, controllerLeaseExpiresAt: new Date(Date.now() - 1_000) }, controller);
+    try {
+      await new Promise((resolve) => setTimeout(resolve, 300));
+      expect(controller.signal.aborted).toBe(false);
+      const [saved] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, run.id));
+      expect(saved.controllerBootId).toBe(legacyControllerBootId);
+      expect(saved.controllerLeaseExpiresAt!.getTime()).toBeGreaterThan(Date.now());
+    } finally { watch.stop(); }
+  });
+  it("a failed background renewal is retried instead of aborting the run", async () => {
+    const run = await seed();
+    const failingDb = { update: () => ({ set: () => ({ where: () => ({ returning: () => Promise.reject(new Error("pool timeout")) }) }) }) } as unknown as typeof db;
+    vi.useFakeTimers();
+    const controller = new AbortController();
+    const watch = watchLegacyControllerLease(failingDb, { ...run, controllerLeaseExpiresAt: new Date(Date.now() + 60_000) }, controller);
+    try {
+      await vi.advanceTimersByTimeAsync(10_001);
+      expect(controller.signal.aborted).toBe(false);
+    } finally { watch.stop(); vi.useRealTimers(); }
   });
   it("only one competing recovery revokes the observed expired owner", async () => {
     const run = await seed();
@@ -108,7 +141,7 @@ const support = await getEmbeddedPostgresTestSupport();
     const watch = watchLegacyControllerLease(hungDb, { ...run, controllerLeaseExpiresAt: new Date(Date.now() + 100) }, controller);
     try {
       const checked = expect(watch.assertOwned("dispatching")).rejects.toThrow("lease lost");
-      await vi.advanceTimersByTimeAsync(101);
+      await vi.advanceTimersByTimeAsync(101 + LEGACY_CONTROLLER_DEADLINE_CONFIRM_MS);
       await checked;
       expect(controller.signal.aborted).toBe(true);
     } finally { watch.stop(); vi.useRealTimers(); }
@@ -116,5 +149,23 @@ const support = await getEmbeddedPostgresTestSupport();
 
   it("leaves native controller ownership to the native coordinator", () => {
     expect(legacyControllerClaim("native")).toEqual({});
+  });
+
+  // myrmidon(OPE-12484): the abort reason must identify the lease as the
+  // cancellation source, so the terminal writer can attribute the run and the
+  // activity entry instead of recording a board_cancelled placeholder.
+  it("aborts with a ControllerLeaseLost reason the terminal writer can attribute", async () => {
+    const run = await seed();
+    await expire(run.id);
+    expect(await revokeExpiredLegacyController(db, run)).toBe(true);
+    const controller = new AbortController();
+    const watch = watchLegacyControllerLease(db, run, controller);
+    try {
+      await expect(watch.assertOwned("dispatching")).rejects.toThrow("lease lost");
+      expect(controller.signal.aborted).toBe(true);
+      expect(controller.signal.reason).toBeInstanceOf(Error);
+      expect((controller.signal.reason as Error).name).toBe("ControllerLeaseLost");
+      expect((controller.signal.reason as Error).message).toMatch(/lease lost/i);
+    } finally { watch.stop(); }
   });
 });

@@ -1,6 +1,6 @@
 # Миграция с Paperclip на Myrmidon
 
-> English version: [migration-from-paperclip.md](migration-from-paperclip.md)
+> English version: [Migration-from-Paperclip](Migration-from-Paperclip)
 
 Команда `myrmidon:migrate` копирует один экземпляр Paperclip (базу, файлы и секреты) в чистую
 установку Myrmidon. Она никогда не меняет источник: пишет только в пустую цель, которую создаёт
@@ -33,7 +33,14 @@
 Релизы Paperclip после `v2026.916.1` добавили таблицы и столбцы, которых в Myrmidon нет (например,
 запуски browser-use, клиенты MCP OAuth, chat-endpoints). Согласованные колонки, такие как
 `agents.appearance` и `issues.title_needs_generation`, сохранены в схеме Myrmidon и переносятся
-в целевую базу. Данные остальных функций `Paperclip`, отсутствующих в Myrmidon, **не** копируются
+в целевую базу.
+
+События из журнала вендора `resource_lifecycle_events` переносятся в `activity_log` как события
+жизненного цикла проектов (`action: project.created/updated/deleted`, `entity_type` и `entity_id`,
+`details.source: "resource_lifecycle_events"`). Новая таблица в Myrmidon не создаётся, и флаг
+`--accept-vendor-only-data` для переноса этих событий не требуется.
+
+Данные остальных функций `Paperclip`, отсутствующих в Myrmidon, **не** копируются
 в целевую базу, а попадают в отчёт. Отчёт — это JSON, который печатает команда; настоящий запуск
 ещё сохраняет его как `report.json` в `--state-dir`. Читайте раздел `vendorOnlyData` (поля
 `skippedSourceData` нет). В нём: таблица или столбец, число строк с данными (для столбца: не null

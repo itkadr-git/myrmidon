@@ -32,6 +32,9 @@ func testClientTLS() *tls.ConnectionState {
 	return &tls.ConnectionState{PeerCertificates: []*x509.Certificate{{}}}
 }
 
+// testBoardExtraHost is the board address the test site is configured with.
+const testBoardExtraHost = "board.example.test:192.0.2.1"
+
 func testConfig() *config {
 	cfg := &config{
 		SiteId:        "myr-vm1",
@@ -45,6 +48,8 @@ func testConfig() *config {
 			{BotKey: "bot-example-one", MaxMemoryMb: 1536, MaxCpus: 1, MaxPids: 256},
 		},
 	}
+	// The board address of the site: fleetd takes it from here, not from a spec.
+	cfg.BoardExtraHost = testBoardExtraHost
 	return cfg
 }
 
@@ -137,7 +142,14 @@ func newServerWithDocker(t *testing.T) (*server, *httptest.Server, *fakeDocker) 
 	fake := &fakeDocker{containers: map[string]map[string]any{}}
 	cfg := testConfig()
 	cfg.VolumeRoot = t.TempDir()
-	socket := filepath.Join(t.TempDir(), "docker.sock")
+	// A unix socket path is limited to about 107 bytes. t.TempDir() carries the
+	// name of the test, which is too long for a subtest with a long name.
+	sockDir, err := os.MkdirTemp("", "fd-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(sockDir) })
+	socket := filepath.Join(sockDir, "docker.sock")
 	listener, err := net.Listen("unix", socket)
 	if err != nil {
 		t.Fatal(err)
@@ -1120,6 +1132,53 @@ func TestQuarantine(t *testing.T) {
 	}
 	if !found {
 		t.Fatal("quarantined directory not found in volume root")
+	}
+}
+
+func TestCleanup(t *testing.T) {
+	tempRoot := t.TempDir()
+	s, _, fake := newServerWithDocker(t)
+	s.cfg.VolumeRoot = tempRoot
+	key := s.cfg.Bots[0].BotKey
+
+	botDir := filepath.Join(tempRoot, key)
+	if err := os.MkdirAll(botDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(botDir, "test.txt"), []byte("data"), 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	fake.mu.Lock()
+	fake.containers["fleet-"+key] = map[string]any{"Image": "test-image"}
+	fake.mu.Unlock()
+
+	rec := routeRequest(s, http.MethodPost, "/v1/bots/"+key+"/cleanup", s.cfg.Token, "")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("cleanup failed: %d %s", rec.Code, rec.Body.String())
+	}
+
+	if _, err := os.Stat(botDir); !os.IsNotExist(err) {
+		t.Fatalf("bot directory still exists at original path: %v", err)
+	}
+
+	fake.mu.Lock()
+	_, containerExists := fake.containers["fleet-"+key]
+	fake.mu.Unlock()
+	if containerExists {
+		t.Fatalf("docker container still exists after cleanup")
+	}
+
+	// Idempotency: second cleanup when container and datadir are already gone succeeds
+	rec2 := routeRequest(s, http.MethodDelete, "/v1/bots/"+key+"/cleanup", s.cfg.Token, "")
+	if rec2.Code != http.StatusOK {
+		t.Fatalf("idempotent cleanup failed: %d %s", rec2.Code, rec2.Body.String())
+	}
+
+	// DELETE /v1/bots/:botKey bare endpoint also triggers cleanup
+	rec3 := routeRequest(s, http.MethodDelete, "/v1/bots/"+key, s.cfg.Token, "")
+	if rec3.Code != http.StatusOK {
+		t.Fatalf("direct delete cleanup failed: %d %s", rec3.Code, rec3.Body.String())
 	}
 }
 

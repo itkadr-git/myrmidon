@@ -167,6 +167,11 @@ function corpusHarness(
       async listDatasets(companyId) {
         return [...state.datasets.values()].filter((row) => row.companyId === companyId);
       },
+      async listDatasetNames(companyId) {
+        return [...state.datasets.values()]
+          .filter((row) => row.companyId === companyId)
+          .map((row) => ({ id: row.id, name: row.name }));
+      },
       async getDataset(companyId, datasetId) {
         return datasetOf(companyId, datasetId);
       },
@@ -246,6 +251,8 @@ function corpusHarness(
           refreshIntervalHours: input.source?.refreshIntervalHours ?? null,
           contentHash: input.source?.contentHash ?? null,
           lastFetchedAt: input.source?.fetchedAt ?? null,
+          lastAttemptedAt: input.source?.fetchedAt ?? null,
+          sourceFailCount: input.source ? 0 : null,
           sourceError: null,
           previousBlobRef: null,
         };
@@ -255,7 +262,16 @@ function corpusHarness(
       async updateDocument(companyId, documentId, patch) {
         const row = documentOf(companyId, documentId);
         if (!row) return null;
-        const next = { ...row, ...patch, updatedAt: AT };
+        const currentFailCount = row.sourceFailCount ?? 0;
+        const nextFailCount =
+          patch.sourceFailCount !== undefined
+            ? patch.sourceFailCount
+            : patch.sourceError !== undefined
+              ? patch.sourceError !== null
+                ? currentFailCount + 1
+                : 0
+              : row.sourceFailCount;
+        const next = { ...row, sourceFailCount: nextFailCount, ...patch, updatedAt: AT };
         state.documents.set(row.id, next);
         return next;
       },
@@ -271,16 +287,19 @@ function corpusHarness(
         return true;
       },
       async listSourceDocuments({ companyId, datasetId, dueAt, limit }) {
+        const dueTime = (row: CorpusDocumentRecord): number => {
+          const attemptedAt = new Date(row.lastAttemptedAt ?? row.lastFetchedAt ?? row.createdAt).getTime();
+          const period = row.refreshIntervalHours ?? 168;
+          const failures = row.sourceFailCount ?? 0;
+          const backoff = failures > 0 ? Math.min(2 ** Math.min(failures, 20), period) : period;
+          return attemptedAt + backoff * 3_600_000;
+        };
         return [...state.documents.values()]
           .filter((row) => row.sourceUrl !== null)
           .filter((row) => !companyId || row.companyId === companyId)
           .filter((row) => !datasetId || row.datasetId === datasetId)
-          .filter(
-            (row) =>
-              !dueAt ||
-              new Date(row.lastFetchedAt ?? row.createdAt).getTime() + (row.refreshIntervalHours ?? 168) * 3_600_000 <=
-                dueAt.getTime(),
-          )
+          .filter((row) => !dueAt || dueTime(row) <= dueAt.getTime())
+          .sort((a, b) => dueTime(a) - dueTime(b))
           .slice(0, limit);
       },
       async countDocuments(companyId, datasetId) {
@@ -1060,6 +1079,37 @@ describe("corpus API: upload, parse and search", () => {
     // The counters the screen reads follow the same rows.
     const stats = (await request(app).get(`${companyPath()}/stats`)).body.stats;
     expect(stats).toMatchObject({ datasets: 1, documents: 1, ready: 1, pending: 0, failed: 0, chunks: 1, bytes: 12 });
+  });
+
+  // OPE-12272: a REST search checks the dataset by id (`hasDataset`) and reads the names of its hits in one
+  // query. It must not run `listDatasets`, which counts the documents and chunks of every dataset.
+  it("searches without listing the datasets with their counters, and its answer does not change", async () => {
+    const h = enabled();
+    h.seedDataset();
+    const app = h.app();
+    const uploaded = await upload(app);
+    await h.worker.sweep();
+    const listDatasets = h.ports.store.listDatasets;
+    let listed = 0;
+    h.ports.store.listDatasets = async (companyId) => {
+      listed += 1;
+      return listDatasets(companyId);
+    };
+
+    const found = await request(app)
+      .post(`${companyPath()}/datasets/${DATASET_ID}/search`)
+      .send({ query: "corpus" });
+
+    expect(found.status).toBe(200);
+    expect(listed).toBe(0);
+    expect(found.body).toMatchObject({ datasetId: DATASET_ID, query: "corpus", mode: "hybrid", limit: 5 });
+    expect(found.body.hits).toHaveLength(1);
+    expect(found.body.hits[0]).toMatchObject({ text: "hello corpus", score: 0.9, documentName: "notes.txt", documentId: uploaded.body.document.id });
+
+    // The listing that does count is still there for the screen.
+    const datasets = await request(app).get(`${companyPath()}/datasets`);
+    expect(datasets.status).toBe(200);
+    expect(listed).toBe(1);
   });
 
   it("retries a failed parse and gives up on the last attempt", async () => {
@@ -2126,6 +2176,57 @@ describe("corpus API: documents by address, refreshed on a schedule", () => {
 
       expect(result.checked).toBe(0);
       expect(web.fetches()).toBe(0);
+    });
+
+    // myrmidon(1.6.7 OPE-12071): starvation prevention & exponential backoff on fetch failures.
+    it("51 documents with 404 do not crowd healthy documents out of limit=50, and fail count resets on success", async () => {
+      const pages: Record<string, Page> = {
+        "https://docs.example.com/healthy": { body: "healthy" },
+      };
+      for (let i = 0; i < 51; i++) {
+        pages[`https://docs.example.com/fail/${i}`] = { body: `initial ${i}` };
+      }
+      const { h, web, fetchUrl, app } = withSite(pages);
+
+      for (let i = 0; i < 51; i++) {
+        await addByUrl(app, { url: `https://docs.example.com/fail/${i}`, refreshIntervalHours: 24 });
+      }
+      await addByUrl(app, { url: "https://docs.example.com/healthy", refreshIntervalHours: 24 });
+
+      // Finish initial ingestion before turning the failing URLs into 404s. The worker's
+      // in-memory fake uses the production concurrency setting, so one sweep is sufficient;
+      // the loop also keeps this fixture correct if the setting is reduced later.
+      while ((await h.worker.sweep()).claimed > 0) { /* drain */ }
+
+      // After initial ingestion, 51 pages now start returning 404. The healthy page stays
+      // byte-identical: it must come back as `unchanged` in the sweeps below.
+      for (let i = 0; i < 51; i++) {
+        web.pages[`https://docs.example.com/fail/${i}`] = { status: 404 };
+      }
+
+      // At T0 + 25 hours, all 52 documents are due for their 24h refresh.
+      // Batch limit is 50: 50 failing docs fail and back off to T0 + 25h + 2h = T0 + 27h.
+      const sweep1 = await sweeper(h, fetchUrl, hours(25)).sweep();
+      expect(sweep1.failed).toBe(50);
+      expect(sweep1.checked).toBe(50);
+
+      // At T0 + 26 hours, the 50 failed docs are not due yet, so the remaining 2 documents
+      // (1 failing, 1 healthy) are not crowded out and get swept.
+      const sweep2 = await sweeper(h, fetchUrl, hours(26)).sweep();
+      expect(sweep2.failed).toBe(1);
+      expect(sweep2.unchanged).toBe(1);
+
+      const healthyDoc = [...h.state.documents.values()].find((d) => d.sourceUrl === "https://docs.example.com/healthy");
+      expect(healthyDoc?.sourceFailCount).toBe(0);
+      expect(healthyDoc?.sourceError).toBeNull();
+
+      // At T0 + 27 hours, backoff expires; one URL recovers and resets its fail counter on success.
+      web.pages["https://docs.example.com/fail/0"] = { body: "recovered page" };
+      await sweeper(h, fetchUrl, hours(27)).sweep();
+
+      const restoredDoc = [...h.state.documents.values()].find((d) => d.sourceUrl === "https://docs.example.com/fail/0");
+      expect(restoredDoc?.sourceFailCount).toBe(0);
+      expect(restoredDoc?.sourceError).toBeNull();
     });
   });
 });

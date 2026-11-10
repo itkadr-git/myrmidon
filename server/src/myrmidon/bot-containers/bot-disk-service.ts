@@ -194,8 +194,8 @@ export async function readSharedPackageCachePath(db: Db): Promise<string | undef
 
 /**
  * myrmidon(1.6.5-BOT-DISK-H11): the shared bot runtime root stored right now
- * (undefined: every bot keeps its own `bin`, `lazy-packages` and `lsp`). The
- * local bot driver (the read-only binds) reads it on every create, recreate and
+ * (undefined: every bot keeps its own `bin`). The
+ * local bot driver (the read-only bind) reads it on every create, recreate and
  * drift check, so a PATCH applies on the next pass without a restart; the
  * operator's own rollout (populate the host directory, then remove the per-bot
  * copies) is described in docs/myrmidon/bot-shared-runtime.md.
@@ -397,6 +397,10 @@ export const CLONE_REPORT_COLLECT_INTERVAL_MS = 60_000;
  * myrmidon(1.6.4-BOT-CONTAINER-CARD): the bots the board manages a container for,
  * from the agent cards (an enabled, complete hermes_gateway container block).
  * The container runtime is never listed: dockergate has no such call.
+ *
+ * myrmidon(1.6.7 FLEET-SITE-ENROLL): only the bots that run on the board host. A bot whose card
+ * names a host (`container.host`) runs on a remote site; the local dockergate does not know it
+ * and refuses every call about it with `bot_not_enrolled`.
  */
 export async function readContainerBotKeys(db: Db): Promise<string[]> {
   const rows = await db
@@ -405,7 +409,8 @@ export async function readContainerBotKeys(db: Db): Promise<string[]> {
     .where(eq(agents.adapterType, "hermes_gateway"));
   const keys: string[] = [];
   for (const row of rows) {
-    if (!readBotContainerAgentConfig(row.adapterType, row.adapterConfig ?? {}).ok) continue;
+    const parsed = readBotContainerAgentConfig(row.adapterType, row.adapterConfig ?? {});
+    if (!parsed.ok || parsed.config.host !== undefined) continue;
     const key = botKeyForAgent(row.id);
     if (key) keys.push(key);
   }

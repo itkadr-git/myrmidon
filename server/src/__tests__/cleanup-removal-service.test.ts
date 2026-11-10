@@ -6,9 +6,11 @@ import {
   agents,
   companies,
   companySkills,
+  completionContracts,
   createDb,
   documents,
   documentRevisions,
+  costEvents,
   heartbeatRunEvents,
   heartbeatRuns,
   issueComments,
@@ -16,7 +18,12 @@ import {
   issueExecutionDecisions,
   issueReadStates,
   issues,
+  nativeRunFinalizations,
+  nativeRunResults,
   routines,
+  statusDecisionEffects,
+  statusDecisions,
+  workAssessments,
 } from "@myrmidon/db";
 import {
   getEmbeddedPostgresTestSupport,
@@ -44,6 +51,14 @@ describeEmbeddedPostgres("cleanup removal services", () => {
   }, 20_000);
 
   afterEach(async () => {
+    await db.update(issues).set({ lastStatusDecisionId: null });
+    await db.delete(statusDecisionEffects);
+    await db.delete(nativeRunFinalizations);
+    await db.delete(statusDecisions);
+    await db.delete(workAssessments);
+    await db.delete(nativeRunResults);
+    await db.update(heartbeatRuns).set({ completionContractId: null });
+    await db.delete(completionContracts);
     await db.delete(heartbeatRunEvents);
     await db.delete(activityLog);
     await db.delete(issueReadStates);
@@ -52,6 +67,7 @@ describeEmbeddedPostgres("cleanup removal services", () => {
     await db.delete(documentRevisions);
     await db.delete(documents);
     await db.delete(companySkills);
+    await db.delete(costEvents);
     await db.delete(heartbeatRuns);
     await db.delete(issues);
     await db.delete(routines);
@@ -153,6 +169,166 @@ describeEmbeddedPostgres("cleanup removal services", () => {
     await expect(db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId))).resolves.toHaveLength(0);
     await expect(db.select().from(issueComments).where(eq(issueComments.issueId, issueId))).resolves.toHaveLength(0);
     await expect(db.select().from(activityLog).where(eq(activityLog.companyId, companyId))).resolves.toHaveLength(0);
+  });
+
+  it("removes native run dependencies before deleting the agent", async () => {
+    const { agentId, companyId, issueId, runId } = await seedFixture();
+    const contractId = randomUUID();
+    const resultId = randomUUID();
+    const assessmentId = randomUUID();
+    const decisionId = randomUUID();
+
+    await db.insert(completionContracts).values({
+      id: contractId,
+      companyId,
+      issueId,
+      revision: 1,
+      schemaVersion: "1.0.0",
+      policyVersion: "1.0.0",
+      risk: "low",
+      completionAuthority: "agent",
+      incompleteCriteriaPolicy: "reject",
+      contractJson: {},
+      canonicalSha256: "sha-contract",
+      createdByActorType: "agent",
+      createdByActorId: agentId,
+    });
+
+    await db
+      .update(heartbeatRuns)
+      .set({
+        nativeIssueId: issueId,
+        completionContractId: contractId,
+      })
+      .where(eq(heartbeatRuns.id, runId));
+
+    await db.insert(nativeRunResults).values({
+      id: resultId,
+      companyId,
+      issueId,
+      runId,
+      completionContractId: contractId,
+      serverFingerprint: "fingerprint",
+      schemaStatus: "valid",
+      resultJson: {},
+      canonicalSha256: "sha-result",
+    });
+
+    await db.insert(workAssessments).values({
+      id: assessmentId,
+      companyId,
+      issueId,
+      runId,
+      contractId,
+      resultId,
+      triggerKind: "terminal_run",
+      triggerActorCompanyId: companyId,
+      priorIssueStatus: "todo",
+      priorStatusVersion: 0,
+      policyVersion: "1.0.0",
+      assessmentJson: {},
+      inputDigest: "digest",
+    });
+
+    await db.insert(statusDecisions).values({
+      id: decisionId,
+      companyId,
+      issueId,
+      runId,
+      assessmentId,
+      decisionVersion: 1,
+      policyVersion: "1.0.0",
+      fromStatus: "todo",
+      toStatus: "in_progress",
+      reasonCode: "test",
+      decisionJson: {},
+      decisionDigest: "decision-digest",
+      applicationState: "applied",
+    });
+
+    await db.insert(statusDecisionEffects).values({
+      id: randomUUID(),
+      companyId,
+      issueId,
+      decisionId,
+      ordinal: 1,
+      effectKind: "enqueue_continuation",
+      targetType: "agent_wakeup_request",
+      targetId: randomUUID(),
+      idempotencyKey: `decision:${decisionId}:1`,
+      payload: {},
+      deliveryState: "delivered",
+      deliveredAt: new Date(),
+    });
+
+    await db.insert(nativeRunFinalizations).values({
+      runId,
+      companyId,
+      issueId,
+      phase: "succeeded",
+      attempt: 1,
+      recoveryState: "none",
+      resultId,
+      assessmentId,
+      decisionId,
+    });
+
+    await db
+      .update(issues)
+      .set({ lastStatusDecisionId: decisionId })
+      .where(eq(issues.id, issueId));
+
+    const removed = await agentService(db).remove(agentId);
+
+    expect(removed?.id).toBe(agentId);
+    await expect(db.select().from(agents).where(eq(agents.id, agentId))).resolves.toHaveLength(0);
+    await expect(db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId))).resolves.toHaveLength(0);
+    await expect(
+      db.select().from(statusDecisionEffects).where(eq(statusDecisionEffects.decisionId, decisionId)),
+    ).resolves.toHaveLength(0);
+    await expect(
+      db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, runId)),
+    ).resolves.toHaveLength(0);
+    await expect(
+      db.select().from(statusDecisions).where(eq(statusDecisions.id, decisionId)),
+    ).resolves.toHaveLength(0);
+    await expect(
+      db.select().from(workAssessments).where(eq(workAssessments.id, assessmentId)),
+    ).resolves.toHaveLength(0);
+    await expect(
+      db.select().from(nativeRunResults).where(eq(nativeRunResults.id, resultId)),
+    ).resolves.toHaveLength(0);
+
+    const [updatedIssue] = await db.select().from(issues).where(eq(issues.id, issueId));
+    expect(updatedIssue?.lastStatusDecisionId).toBeNull();
+  });
+
+  it("rejects deleting an agent with recorded cost_events and preserves financial records", async () => {
+    const { agentId, companyId, runId } = await seedFixture();
+
+    await db.insert(costEvents).values({
+      id: randomUUID(),
+      companyId,
+      agentId,
+      heartbeatRunId: runId,
+      provider: "anthropic",
+      model: "claude-3-5-sonnet",
+      costCents: 150,
+      occurredAt: new Date(),
+    });
+
+    await expect(agentService(db).remove(agentId)).rejects.toMatchObject({
+      status: 409,
+      message: expect.stringMatching(/terminated/i),
+      details: {
+        code: "agent_has_cost_events",
+      },
+    });
+
+    // Verify financial records, heartbeat runs, and agent remain intact
+    await expect(db.select().from(agents).where(eq(agents.id, agentId))).resolves.toHaveLength(1);
+    await expect(db.select().from(costEvents).where(eq(costEvents.agentId, agentId))).resolves.toHaveLength(1);
+    await expect(db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId))).resolves.toHaveLength(1);
   });
 
   it("removes issue read states and activity rows before deleting the company", async () => {
