@@ -232,7 +232,11 @@ describe("review stage selection never picks the executor (OPE-12231)", () => {
     expect(otherActorSubmission.patch.executionState).toMatchObject({
       status: "pending",
       currentParticipant: { type: "agent", agentId: reviewerAgentId },
-      returnAssignee: { type: "agent", agentId: engineerAgentId },
+      // Main semantic (issue-execution-policy.test.ts "does not record the
+      // assigned reviewer as the return assignee"): with a reviewer-role
+      // assignee and no persisted return target, no return assignee is
+      // recorded — the reviewer stays selectable, the return stays unassigned.
+      returnAssignee: null,
     });
 
     const selfSubmission = () =>
