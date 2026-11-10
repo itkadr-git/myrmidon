@@ -103,9 +103,7 @@ describe("hot-files-check", () => {
     assert.match(res.stdout, /PR трогает ключевые файлы ядра/);
     assert.match(res.calls, /field: state=pending/);
     assert.match(res.calls, /waiting for review-approved/);
-    assert.match(res.calls, /check-runs call/);
-    assert.match(res.calls, /field: name=hot files review/);
-    assert.match(res.calls, /field: status=in_progress/);
+    assert.doesNotMatch(res.calls, /check-runs call/);
   });
 
   it("passes when hot file is touched and review-approved label is present", () => {
@@ -129,9 +127,7 @@ describe("hot-files-check", () => {
     assert.match(res.stdout, /Новый push после ревью/);
     assert.match(res.calls, /gh api -X DELETE.*labels\/review-approved/);
     assert.match(res.calls, /field: state=pending/);
-    assert.match(res.calls, /check-runs call/);
-    assert.match(res.calls, /field: name=hot files review/);
-    assert.match(res.calls, /field: status=in_progress/);
+    assert.doesNotMatch(res.calls, /check-runs call/);
   });
 
   it("removes review-approved on synchronize event and passes when no hot files touched", () => {

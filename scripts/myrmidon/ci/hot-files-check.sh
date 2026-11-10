@@ -26,31 +26,30 @@ report_status() {
   gh api -X POST "repos/$REPO/statuses/$SHA" -f state="$state" -f context='hot files review' -f description="$desc" >/dev/null 2>&1 || true
 
   # Check runs (branch protection context: "hot files review", ruleset context: "hot-files-review")
-  local check_status="in_progress"
-  local conclusion_arg=()
-  if [[ "$state" == "success" ]]; then
-    check_status="completed"
-    conclusion_arg=(-f conclusion="success")
-  elif [[ "$state" == "failure" || "$state" == "error" ]]; then
-    check_status="completed"
-    conclusion_arg=(-f conclusion="failure")
+  # Only post check-runs on terminal state (success/failure/error).
+  # Pending state is communicated via commit status so we don't leave an in-progress check-run
+  # that prevents CI snapshot from completing before review.
+  if [[ "$state" == "success" || "$state" == "failure" || "$state" == "error" ]]; then
+    local check_conclusion="success"
+    if [[ "$state" != "success" ]]; then
+      check_conclusion="failure"
+    fi
+    gh api -X POST "repos/$REPO/check-runs" \
+      -f name='hot files review' \
+      -f head_sha="$SHA" \
+      -f status="completed" \
+      -f conclusion="$check_conclusion" \
+      -f 'output[title]=Hot files review' \
+      -f "output[summary]=$desc" >/dev/null 2>&1 || true
+
+    gh api -X POST "repos/$REPO/check-runs" \
+      -f name='hot-files-review' \
+      -f head_sha="$SHA" \
+      -f status="completed" \
+      -f conclusion="$check_conclusion" \
+      -f 'output[title]=Hot files review' \
+      -f "output[summary]=$desc" >/dev/null 2>&1 || true
   fi
-
-  gh api -X POST "repos/$REPO/check-runs" \
-    -f name='hot files review' \
-    -f head_sha="$SHA" \
-    -f status="$check_status" \
-    "${conclusion_arg[@]}" \
-    -f 'output[title]=Hot files review' \
-    -f "output[summary]=$desc" >/dev/null 2>&1 || true
-
-  gh api -X POST "repos/$REPO/check-runs" \
-    -f name='hot-files-review' \
-    -f head_sha="$SHA" \
-    -f status="$check_status" \
-    "${conclusion_arg[@]}" \
-    -f 'output[title]=Hot files review' \
-    -f "output[summary]=$desc" >/dev/null 2>&1 || true
 }
 
 if [[ "$EVENT" == "merge_group" ]]; then
