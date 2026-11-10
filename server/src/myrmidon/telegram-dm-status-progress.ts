@@ -4,13 +4,22 @@ import { heartbeatRunEvents } from "@myrmidon/db";
 import { redactSensitiveText } from "../redaction.js";
 // myrmidon(DM-PROGRESS): legacy adapters (hermes_gateway, hermes_local) write
 // no native step events; their steps come from the in-memory runtime history.
+import { labelForStepFacts } from "./telegram-dm-progress/labels.js";
 import type { DmProgressRuntimeStep } from "./telegram-dm-progress/runtime-steps.js";
+import { dmProgressTexts, type DmProgressTextLocale } from "./telegram-dm-progress/texts.js";
 
 // myrmidon(OPE-3650): live progress text for the editable Telegram DM status
 // row (MYRMIDON_TELEGRAM_DM_STATUS). The owner asked to see WHAT the bot is
 // doing right now — the current step in plain words, elapsed time, and the
 // last few completed steps — updated in place in the single durable status
 // message, never as new provider messages.
+//
+// myrmidon(1.7-TG-LOCALE): every word of the status text comes from the
+// telegram-dm-progress texts.ts catalog in the instance locale (`ru` keeps
+// the pre-catalog wording byte-for-byte; `en` renders "<1 min", "N min",
+// "H h M min"). The locale is passed in by the publisher (no user in a
+// publication row, so the instance menu locale is the language) and defaults
+// to "ru" — the fork's historical wording.
 //
 // Source of truth: the run-log rows the board already records
 // (`heartbeat_run_events`; a run-log path, no extra review per AGENTS.md §7).
@@ -50,24 +59,29 @@ function normalizeStepText(value: string, maxChars: number): string | null {
   return redactSensitiveText(normalized) || null;
 }
 
-function stepLabelForEventType(eventType: string, message: string | null): string | null {
+function stepLabelForEventType(
+  eventType: string,
+  message: string | null,
+  locale: DmProgressTextLocale | null,
+): string | null {
+  const texts = dmProgressTexts(locale);
   switch (eventType) {
     case "tool.execution.started":
-      return message ? `инструмент: ${message}` : "запускаю инструмент…";
+      return message ? texts.events.toolStarted(message) : texts.events.toolStartedFallback;
     case "tool.execution.completed":
-      return message ? `готово: ${message}` : null;
+      return message ? texts.events.toolCompleted(message) : null;
     case "research.started":
-      return "ищу информацию…";
+      return texts.events.researchStarted;
     case "research.completed":
-      return "поиск завершён";
+      return texts.events.researchCompleted;
     case "delegation.started":
-      return message ? `помощник: ${message}` : "запускаю помощника…";
+      return message ? texts.events.delegationStarted(message) : texts.events.delegationStartedFallback;
     case "delegation.completed":
-      return "помощник завершил работу";
+      return texts.events.delegationCompleted;
     case "plan.updated":
-      return message ? `план: ${message}` : "обновляю план…";
+      return message ? texts.events.planUpdated(message) : texts.events.planUpdatedFallback;
     case "item.completed":
-      return message ? `шаг готов: ${message}` : null;
+      return message ? texts.events.itemCompleted(message) : null;
     default:
       return message;
   }
@@ -79,50 +93,92 @@ export type DmStatusStep = {
   createdAt: Date;
 };
 
-export function formatDmStatusElapsed(startedAt: Date | null, now: Date): string {
+/**
+ * The elapsed-time line: "<1 мин" / "<1 min" under a minute, "N мин" /
+ * "N min" under an hour, "H ч M мин" / "H h M min" above. Coarse buckets: the
+ * elapsed string participates in the payload-changed comparison that gates
+ * provider edits, so a per-second clock would edit the Telegram message on
+ * every 1s sweep. 30s buckets keep edits well inside Telegram's per-message
+ * edit rate limit while the elapsed line still advances a few times per
+ * minute.
+ */
+export function formatDmStatusElapsed(
+  startedAt: Date | null,
+  now: Date,
+  locale: DmProgressTextLocale | null = "ru",
+): string {
   if (!startedAt) return "";
   const seconds = Math.max(0, Math.floor((now.getTime() - startedAt.getTime()) / 1000));
-  // Coarse buckets: the elapsed string participates in the payload-changed
-  // comparison that gates provider edits, so a per-second clock would edit
-  // the Telegram message on every 1s sweep. 30s buckets keep edits well
-  // inside Telegram's per-message edit rate limit while the elapsed line
-  // still advances a few times per minute.
   const bucketed = Math.floor(seconds / 30) * 30;
-  if (bucketed < 60) return "<1 мин";
+  const texts = dmProgressTexts(locale).elapsed;
+  if (bucketed < 60) return texts.underMinute;
   const minutes = Math.floor(bucketed / 60);
-  if (minutes < 60) return `${minutes} мин`;
-  return `${Math.floor(minutes / 60)} ч ${minutes % 60} мин`;
+  if (minutes < 60) return `${minutes} ${texts.minuteUnit}`;
+  return `${Math.floor(minutes / 60)} ${texts.hourUnit} ${minutes % 60} ${texts.minuteUnit}`;
+}
+
+/**
+ * One runtime-history step as the composer accepts it: the full recorded
+ * facts (kind, tool name, structured target) or a legacy bare `{ label }`
+ * string a caller composed itself. Full facts render per locale; a bare
+ * label passes through verbatim (the caller owns its wording).
+ */
+export type DmStatusRuntimeStep =
+  | Pick<DmProgressRuntimeStep, "kind" | "toolName" | "label">
+  | { label: string };
+
+function stepLabelForRuntimeStep(step: DmStatusRuntimeStep, locale: DmProgressTextLocale | null): string {
+  if ("kind" in step) {
+    const withTarget = step as Pick<DmProgressRuntimeStep, "kind" | "toolName" | "label"> & {
+      target?: DmProgressRuntimeStep["target"];
+    };
+    return labelForStepFacts(
+      {
+        kind: withTarget.kind,
+        toolName: withTarget.toolName,
+        target: withTarget.target ?? null,
+      },
+      locale,
+    );
+  }
+  return step.label;
 }
 
 /**
  * Compose the live-progress status text for the bridged Telegram DM status
  * row: the agent's current step in plain words, the elapsed time, and the
- * last few completed steps as a short list. Falls back to "работаю" with the
- * elapsed time when the run has no steps yet.
+ * last few completed steps as a short list. Falls back to "работаю" /
+ * "working" with the elapsed time when the run has no steps yet.
  *
  * myrmidon(DM-PROGRESS): steps come from the native run-log events when the
  * run has any; otherwise from the runtime step history of legacy adapters
- * (`runtimeSteps`, already owner-language labels). `showSteps: false` keeps
- * the message to the milestone and the elapsed time. The queued and working
- * fallback texts are in the owner's language like the step labels.
+ * (`runtimeSteps`, recorded language-neutrally and rendered here in the
+ * chosen locale; a bare `{ label }` passes through as the caller wrote it).
+ * `showSteps: false` keeps the message to the milestone and the elapsed time.
+ *
+ * myrmidon(1.7-TG-LOCALE): `locale` (default "ru", the fork's historical
+ * wording) renders every service word and every recorded step's label.
  */
 export function composeDmStatusText(input: {
   agentName: string;
   milestone: "queued" | "working";
   startedAt: Date | null;
   steps: DmStatusStep[];
-  runtimeSteps?: readonly Pick<DmProgressRuntimeStep, "label">[];
+  runtimeSteps?: readonly DmStatusRuntimeStep[];
   showSteps?: boolean;
+  locale?: DmProgressTextLocale | null;
   now: Date;
 }): string {
-  if (input.milestone === "queued") return `${input.agentName}: в очереди`;
+  const locale = input.locale ?? "ru";
+  const texts = dmProgressTexts(locale);
+  if (input.milestone === "queued") return `${input.agentName}: ${texts.queued}`;
 
   const showSteps = input.showSteps ?? true;
   const nativeLabels = showSteps
     ? input.steps
         .map((step) => {
           const message = step.message ? normalizeStepText(step.message, MAX_CURRENT_STEP_CHARS) : null;
-          return stepLabelForEventType(step.eventType, message);
+          return stepLabelForEventType(step.eventType, message, locale);
         })
         .filter((label): label is string => label !== null)
     : [];
@@ -130,14 +186,14 @@ export function composeDmStatusText(input: {
     nativeLabels.length > 0 || !showSteps
       ? nativeLabels
       : (input.runtimeSteps ?? [])
-          .map((step) => normalizeStepText(step.label, MAX_CURRENT_STEP_CHARS))
+          .map((step) => normalizeStepText(stepLabelForRuntimeStep(step, locale), MAX_CURRENT_STEP_CHARS))
           .filter((label): label is string => label !== null);
 
-  const elapsed = formatDmStatusElapsed(input.startedAt, input.now);
+  const elapsed = formatDmStatusElapsed(input.startedAt, input.now, locale);
   if (labels.length === 0) {
     return elapsed
-      ? `${input.agentName}: работаю · ${elapsed}`
-      : `${input.agentName}: работаю`;
+      ? `${input.agentName}: ${texts.working} ${texts.elapsed.separator} ${elapsed}`
+      : `${input.agentName}: ${texts.working}`;
   }
 
   const current = labels[labels.length - 1]!;
@@ -146,9 +202,9 @@ export function composeDmStatusText(input: {
     .map((label) => normalizeStepText(label, MAX_COMPLETED_STEP_CHARS))
     .filter((label): label is string => label !== null);
 
-  const lines = [`${input.agentName}: ${current}${elapsed ? ` · ${elapsed}` : ""}`];
+  const lines = [`${input.agentName}: ${current}${elapsed ? ` ${texts.elapsed.separator} ${elapsed}` : ""}`];
   if (completed.length > 0) {
-    lines.push("", "Сделано:");
+    lines.push("", texts.doneHeader);
     for (const label of completed) lines.push(`• ${label}`);
   }
   return lines.join("\n");

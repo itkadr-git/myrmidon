@@ -52,6 +52,9 @@ import {
 import { readDmProgressRuntimeSteps } from "../myrmidon/channel-connectors/bridge/dm-progress.js";
 import { readTelegramDmProgressForSweep } from "../myrmidon/channel-connectors/bridge/dm-progress-sweep.js";
 import { decideDmStatusPublish } from "../myrmidon/channel-connectors/bridge/dm-progress-throttle.js";
+// myrmidon(1.7-TG-LOCALE): the owner language of the DM status text — the
+// instance menu locale, via the bridge seam like the other theme calls.
+import { telegramDmMenuLocale } from "../myrmidon/channel-connectors/bridge/locales.js";
 import type { ResolvedTelegramDmProgress } from "@myrmidon/shared";
 import {
   SAFE_NATIVE_CHAT_PROGRESS_EVENT_TYPES,
@@ -1039,6 +1042,9 @@ export async function enqueueChatRunMilestones(
           ? readDmProgressRuntimeSteps(row.runId)
           : [];
         const dmStatusNow = new Date();
+        // myrmidon(1.7-TG-LOCALE): the owner language of the status text.
+        // A publication row has no user; the instance menu locale decides.
+        const dmStatusLocale = await telegramDmMenuLocale(db);
         const dmStatusText = composeDmStatusText({
           agentName: row.agentName,
           milestone: dmPhase,
@@ -1046,6 +1052,7 @@ export async function enqueueChatRunMilestones(
           steps,
           runtimeSteps,
           showSteps,
+          locale: dmStatusLocale,
           now: dmStatusNow,
         });
         const dmStatusPayload = projectSafeChatPublication({
