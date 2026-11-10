@@ -84,6 +84,13 @@ import {
   acceptSteeredIdentity,
   rejectSteeredIdentity,
 } from "../services/run-identity.js";
+import {
+  type SelfCheckEvidenceDeps,
+  type SelfCheckGateResolver,
+  createSelfCheckGateResolver,
+  DEFAULT_MAX_TECHNICAL_REJECTIONS,
+  SELF_CHECK_REJECT_CODES,
+} from "../myrmidon/self-check-gate/index.js";
 import { createHash, randomUUID } from "node:crypto";
 import { Router, type Request, type Response } from "express";
 import multer from "multer";
@@ -3769,6 +3776,9 @@ export function issueRoutes(
       tx: Db,
       companyId?: string,
     ) => Promise<{ created: boolean; skippedMissingAgent?: boolean; deduplicated?: boolean }>;
+    resolveSelfCheckGate?: SelfCheckGateResolver;
+    selfCheckEvidenceDeps?: Partial<SelfCheckEvidenceDeps>;
+    selfCheckGateMaxTechnicalFailures?: number;
   } = {},
 ) {
   const router = Router();
@@ -15069,6 +15079,115 @@ export function issueRoutes(
         existing.status !== "in_review" && updateFields.status === "in_review";
       const persistReviewActivityTransactionally =
         enteringReviewRequested || Boolean(reviewInteractionId);
+      let selfCheckGateBypassPatch: Record<string, unknown> | null = null;
+      if (
+        enteringReviewRequested &&
+        (req.actor.type === "agent" || actor.actorType === "agent")
+      ) {
+        const resolveGate =
+          opts.resolveSelfCheckGate ??
+          createSelfCheckGateResolver({
+            db,
+            evidenceDeps: opts.selfCheckEvidenceDeps,
+          });
+        const gateDecision = await resolveGate({
+          companyId: existing.companyId,
+          issueId: existing.id,
+        });
+
+        const executionState =
+          (existing.executionState as Record<string, unknown> | null) ?? {};
+        const currentRejections =
+          typeof executionState.selfCheckGateRejections === "number"
+            ? executionState.selfCheckGateRejections
+            : 0;
+
+        const maxTechnicalRejections =
+          opts.selfCheckGateMaxTechnicalFailures ??
+          DEFAULT_MAX_TECHNICAL_REJECTIONS;
+
+        const isEmptyDiff =
+          gateDecision.kind === "reject" &&
+          gateDecision.code === SELF_CHECK_REJECT_CODES.EMPTY_DIFF;
+
+        const isTechnicalFailure =
+          gateDecision.kind === "reject" && !isEmptyDiff;
+
+        const bypassAllowed =
+          isTechnicalFailure && currentRejections >= maxTechnicalRejections;
+
+        if (gateDecision.kind === "reject" && !bypassAllowed) {
+          const nextRejections = currentRejections + 1;
+          await db
+            .update(issueRows)
+            .set({
+              executionState: {
+                ...executionState,
+                selfCheckGateRejections: nextRejections,
+                selfCheckGateLastRejectCode: gateDecision.code,
+                selfCheckGateLastRejectReason: gateDecision.message,
+              },
+            })
+            .where(eq(issueRows.id, existing.id));
+
+          await logActivity(db, {
+            companyId: existing.companyId,
+            actorType: actor.actorType,
+            actorId: actor.actorId,
+            agentId: actor.agentId ?? null,
+            runId: actor.runId ?? null,
+            action: "self_check_gate_rejected",
+            entityType: "issue",
+            entityId: existing.id,
+            details: {
+              code: gateDecision.code,
+              reason: gateDecision.message,
+              rejectionCount: nextRejections,
+            },
+          });
+
+          await svc.addComment(
+            existing.id,
+            gateDecision.message,
+            {},
+            { authorType: "system" },
+          );
+
+          res.status(422).json({
+            error: gateDecision.message,
+            code: gateDecision.code,
+          });
+          return;
+        }
+
+        if (bypassAllowed) {
+          const note = "гейт не пройден, см. причины";
+          selfCheckGateBypassPatch = {
+            selfCheckGateNote: note,
+            selfCheckGateBypassed: true,
+            selfCheckGateRejections: currentRejections,
+          };
+          const existingExecutionState =
+            parseIssueExecutionState(existing.executionState) ??
+            (existing.executionState as Record<string, unknown> | null) ??
+            {};
+          updateFields.executionState = {
+            ...existingExecutionState,
+            ...(typeof updateFields.executionState === "object" &&
+            updateFields.executionState !== null
+              ? updateFields.executionState
+              : {}),
+            ...selfCheckGateBypassPatch,
+          };
+
+          await svc.addComment(
+            existing.id,
+            `[SELF_CHECK_GATE] Допуск к ревьюеру с пометкой: ${note} (${gateDecision.message})`,
+            {},
+            { authorType: "system" },
+          );
+        }
+      }
 
       const requestedAssigneeUserId =
         updateFields.assigneeUserId === undefined
@@ -15780,6 +15899,17 @@ export function issueRoutes(
             }
             Object.assign(updateFields, lockedTransition.patch);
             Object.assign(issueUpdateData, lockedTransition.patch);
+            if (selfCheckGateBypassPatch) {
+              const currentMergedState = {
+                ...(typeof issueUpdateData.executionState === "object" &&
+                issueUpdateData.executionState !== null
+                  ? (issueUpdateData.executionState as Record<string, unknown>)
+                  : {}),
+                ...selfCheckGateBypassPatch,
+              };
+              updateFields.executionState = currentMergedState;
+              issueUpdateData.executionState = currentMergedState;
+            }
             if (lockedTransition.decision?.outcome === "changes_requested") {
               const ci = await (opts.resolveReviewPullRequestCi ?? createReviewPullRequestCiResolver({ db }))({
                 companyId: lockedExisting.companyId,

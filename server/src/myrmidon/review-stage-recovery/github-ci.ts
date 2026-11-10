@@ -413,12 +413,12 @@ export async function resolvePullRequestHeadCi(input: {
 }
 
 /** The pull request work product of an issue and its GitHub reference, as far as the board can read them. */
-type IssuePullRequestTarget =
+export type IssuePullRequestTarget =
   | { kind: "none" }
   | { kind: "unreadable"; pullRequestUrl: string | null }
   | { kind: "ok"; pullRequestUrl: string | null; reference: GitHubPullRequestReference };
 
-async function loadIssuePullRequestTarget(
+export async function loadIssuePullRequestTarget(
   db: Db,
   companyId: string,
   issueId: string,
