@@ -537,9 +537,6 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     }
     cleanupPids.clear();
     await cancelActiveRunsForCleanup(db, 5_000);
-    const heartbeat = heartbeatService(db);
-    await heartbeat.drainActiveRunExecutions();
-    resetSharedRunAdmissionForTests();
     let idlePolls = 0;
     for (let attempt = 0; attempt < 100; attempt += 1) {
       const runs = await db
@@ -2657,8 +2654,6 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     try {
       return await fn(home);
     } finally {
-      await heartbeatService(db).drainActiveRunExecutions();
-      resetSharedRunAdmissionForTests();
       if (previousHome === undefined) delete process.env.PAPERCLIP_HOME;
       else process.env.PAPERCLIP_HOME = previousHome;
       // Native dispatch materializes read-only runtime bundles in this owned
