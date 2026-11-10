@@ -15176,7 +15176,12 @@ export function issueRoutes(
           return;
         }
 
-        if (bypassAllowed) {
+        // bypassAllowed is only true for a rejection, but the declared union
+        // is not narrowed here; including the kind check narrows gateDecision
+        // so reject-only fields (message) are read type-safely. A non-reject
+        // bypass is impossible by construction.
+        if (bypassAllowed && gateDecision.kind === "reject") {
+          const reject = gateDecision;
           const note = "гейт не пройден, см. причины";
           selfCheckGateBypassPatch = {
             selfCheckGateNote: note,
@@ -15198,7 +15203,7 @@ export function issueRoutes(
 
           await svc.addComment(
             existing.id,
-            `[SELF_CHECK_GATE] Допуск к ревьюеру с пометкой: ${note} (${gateDecision.message})`,
+            `[SELF_CHECK_GATE] Допуск к ревьюеру с пометкой: ${note} (${reject.message})`,
             {},
             { authorType: "system" },
           );

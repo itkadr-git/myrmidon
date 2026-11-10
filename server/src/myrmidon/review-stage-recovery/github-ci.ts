@@ -457,6 +457,8 @@ export async function loadIssuePullRequestTarget(
     // crash the caller; the evidence reader maps unknown sources separately.
     return { kind: "none" };
   }
+  const product = selectOpenPullRequestWorkProduct(products);
+  if (!product) return { kind: "none" };
   const metadata = asRecord(product.metadata) ?? {};
   const repo = typeof metadata.repo === "string" ? metadata.repo
     : typeof metadata.repository === "string" ? metadata.repository
