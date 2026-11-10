@@ -924,6 +924,7 @@ export function createBehaviorSettingsPatchSchema(scope?: SettingScope) {
       .refine((val) => def.validate(val) !== null, {
         message: `Invalid value for setting '${def.key}'`,
       })
+      .nullable()
       .optional();
   }
   
@@ -942,6 +943,12 @@ export function mergeBehaviorSettings(base: Record<string, unknown>, patch: Beha
   const result = { ...base };
   
   for (const [key, value] of Object.entries(patch)) {
+    if (value === null) {
+      // myrmidon(1.7): a null resets the key — the saved value is removed so
+      // the read falls back to env or default (resolveSetting precedence).
+      delete result[key];
+      continue;
+    }
     if (value !== undefined) {
       result[key] = value;
     }
