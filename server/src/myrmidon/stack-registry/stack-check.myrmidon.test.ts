@@ -942,8 +942,13 @@ describeEmbeddedPostgres("stack release check", () => {
       },
     });
 
-    // langfuse 3.2.0 is already closed/done, so no new draft should be created for it
-    expect(drafts.some((d) => d.draft.component === "langfuse")).toBe(false);
+    // langfuse 3.2.0 is already closed/done, so no new draft should be created
+    // for it. Deduplication is company-scoped, and the embedded database is
+    // shared with earlier tests in this file (their companies stay), so only
+    // this test's own company is asserted here.
+    expect(
+      drafts.some((d) => d.companyId === companyId && d.draft.component === "langfuse"),
+    ).toBe(false);
   });
 });
 
