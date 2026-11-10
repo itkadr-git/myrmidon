@@ -200,13 +200,12 @@ export function Ui2I18nProvider({
       }
       setCustomCatalogs((current) => ({ ...current, [normalized]: { ...(current[normalized] ?? {}), ...flat } }));
 
-      // 2. Register the vendor bundle with the FLAT custom overlay. The built-in
-      //    bundle is registered as a deep tree, but the provider's `t` keys are
-      //    flat dotted strings (`ui2.chip.colony`) — registering the nested
-      //    upload as-is would leave flat lookups missing in i18next. The flat
-      //    shape matches the provider's own ui2Messages (OPE-3986 CI: provider
-      //    test expected the flat key inside the vendor bundle).
-      registerUi2Catalogs({ [normalized]: flat });
+      // Register the vendor bundle with the upload's own shape. For a built-in
+      // locale registerUi2Catalogs merges the overlay into the base catalog
+      // (additive, so flat uploaded-only keys survive); for a custom locale the
+      // raw tree IS the bundle — the flat overlay would replace it with dotted
+      // keys i18next never looks up under this namespace (OPE-3986 CI).
+      registerUi2Catalogs({ [normalized]: catalog });
 
       // 3. Switch the shell to the uploaded locale when asked (the upload
       //    screen's "apply" is a language switch, matching OPE-9646).

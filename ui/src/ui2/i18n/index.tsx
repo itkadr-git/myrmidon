@@ -260,7 +260,12 @@ export function Ui2LanguageProvider({ children }: { children: ReactNode }) {
       }
       setCustomCatalogs((current) => ({ ...current, [normalized]: { ...(current[normalized] ?? {}), ...flat } }));
 
-      registerUi2Catalogs({ [normalized]: flat });
+      // Register the vendor bundle with the upload's own shape. For a built-in
+      // locale registerUi2Catalogs merges the overlay into the base catalog
+      // (additive, so flat uploaded-only keys survive); for a custom locale the
+      // raw tree IS the bundle — the flat overlay would replace it with dotted
+      // keys i18next never looks up under this namespace (OPE-3986 CI).
+      registerUi2Catalogs({ [normalized]: catalog });
 
       if (shouldSwitch) {
         userSwitched.current = true;
