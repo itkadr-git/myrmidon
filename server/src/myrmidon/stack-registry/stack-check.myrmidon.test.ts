@@ -638,6 +638,28 @@ describeEmbeddedPostgres("stack release check", () => {
     }
   });
 
+  it("http-version probe accepts api_version field in response (e.g. Hindsight FastAPI)", async () => {
+    const realFetch = globalThis.fetch;
+    const seen: string[] = [];
+    globalThis.fetch = (async (url: RequestInfo | URL) => {
+      seen.push(String(url));
+      return new Response(JSON.stringify({ api_version: "1.2.0" }), { status: 200 });
+    }) as typeof globalThis.fetch;
+    const saved = process.env.MYRMIDON_STACK_HTTP_HINDSIGHT;
+    process.env.MYRMIDON_STACK_HTTP_HINDSIGHT = "http://hindsight.local:8080/version";
+    try {
+      const doc = await collectStackLocal({ now: NOW, serverInfo: { processStartedAt: "", git: { available: false, unavailableReason: "git_unavailable" } }, images: fakeImages({}) });
+      const hindsight = doc.components.find((c) => c.name === "hindsight")!;
+      expect(hindsight.local.version).toBe("1.2.0");
+      expect(hindsight.local.runningOn).toBe("http://hindsight.local:8080");
+      expect(hindsight.local.unknownReason).toBeNull();
+    } finally {
+      globalThis.fetch = realFetch;
+      if (saved === undefined) delete process.env.MYRMIDON_STACK_HTTP_HINDSIGHT;
+      else process.env.MYRMIDON_STACK_HTTP_HINDSIGHT = saved;
+    }
+  });
+
   it("http-version probe appends the documented endpoint to a bare base URL (Langfuse health path)", async () => {
     const realFetch = globalThis.fetch;
     const seen: string[] = [];
