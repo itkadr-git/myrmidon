@@ -638,6 +638,9 @@ if [[ "$DRY_RUN" == "1" ]]; then
   fi
   plan "0.6 release components (${component_resolution:-none}, from the $component_source): board, ${MYR_RELEASE_COMPONENTS//,/, }, bot images; one maintenance window, all-or-nothing"
   plan "0.7 disk precheck passed (read-only): ${MYRMIDON_DEPLOY_MIN_FREE_GB:-15} GiB free on the filesystem of /var/lib/docker required before the first pull (MYRMIDON_DEPLOY_MIN_FREE_GB)"
+  if [[ -n "$MYRMIDON_COMPOSE_SET_ANCHOR_FILE" ]]; then
+    plan "0.8 compose-set anchor (OPE-7010): the declared compose set is synced to the live -f label after the deploy (anchor: $MYRMIDON_COMPOSE_SET_ANCHOR_FILE)"
+  fi
   if ((board_changed)); then
     plan "board: ${previous_image:-<none>} -> $ref"
   else
@@ -1032,6 +1035,13 @@ if ((need_window)); then
     log "deployed $ref (previous: ${previous:-<none>}, dump: ${LAST_DUMP_FILE:-<none>})"
   fi
 fi
+
+# COMPOSE-SET-ANCHOR (OPE-7010): synchronize after every deploy path, including
+# a component-only window and a no-op board path. Component rollout writes the
+# local override before this point; the live container label is therefore the
+# authoritative set to compare. The helper is best-effort and never fails a
+# healthy deploy.
+sync_compose_set_anchor
 
 # ONE-DEPLOY: the bot cards. With the window above the config phase already ran
 # inside it; without a window the whole rollout runs here. A failure is
