@@ -42,8 +42,56 @@ docker run --rm --user 1000:1000 \
   ghcr.io/itkadr-git/agent-runtime-omp:<verified-tag-or-digest> --help
 ```
 
+## Исполнитель omp по SSH
+
+`docker/agent-runtime/Dockerfile.omp-ssh` (цель bake `omp-ssh`, образ
+`agent-runtime-omp-ssh`) — среда выполнения для агентов `omp_local`. Агент
+привязан к **SSH-окружению** доски, которое указывает на контейнер из этого
+образа. CLI omp, его вызовы инструментов и запущенные ими сборки работают в этом
+контейнере, со своими лимитами памяти, CPU и числа процессов. Контейнер доски
+только синхронизирует по SSH рабочую копию и ресурсы прогона и передаёт вывод.
+
+Поверх `agent-runtime-base` образ добавляет:
+- Bun и omp, закреплённые так же, как в образе доски;
+- pnpm из `packageManager` репозитория;
+- GitHub CLI и набор сборки C;
+- `openssh-server`.
+
+sshd слушает порт 2222 и пускает только по ключу, только пользователя
+`paperclip`. Открытый ключ доски монтируется только для чтения в
+`/etc/ssh/omp-runner/authorized_keys`. Ключ хоста создаётся при первом запуске в
+том `hostkeys` и сохраняется при пересоздании.
+
+Один исполнитель на агента:
+
+1. Создать пару ключей для исполнителя. Закрытый ключ не должен попасть в журналы
+   и историю оболочки.
+2. Запустить контейнер по `docker/agent-runtime/omp-ssh/compose.yml`. В файле
+   переменных задать:
+   - `OMP_RUNNER_NAME`;
+   - `OMP_RUNNER_IMAGE` — дайджест из успешного подписанного прогона;
+   - `OMP_RUNNER_AUTHORIZED_KEYS` — файл открытого ключа;
+   - `OMP_RUNNER_NETWORK` — сеть контейнера доски.
+
+   Лимиты по умолчанию: 8 ГБ, 4 CPU, 4096 процессов. Команда:
+   `docker compose -p <имя> --env-file <файл> -f docker/agent-runtime/omp-ssh/compose.yml up -d`.
+3. Взять ключ хоста из строки журнала контейнера `omp-runner: generated host key`
+   или командой `ssh-keyscan -p 2222 <имя>` из сети доски.
+4. На доске создать окружение с драйвером `ssh`:
+   - хост `<имя>`, порт `2222`, пользователь `paperclip`;
+   - удалённый путь рабочей копии `/workspace`;
+   - закрытый ключ (доска хранит его как секрет компании);
+   - known hosts `[<имя>]:2222 <ключ хоста>`, строгая проверка ключа хоста включена.
+
+   Выполнить проверку окружения.
+5. Назначить это окружение агенту окружением по умолчанию.
+
+Проверка после первого прогона:
+- во время прогона `docker top <контейнер доски>` не показывает процесс `omp`, а `docker top <имя>` показывает;
+- журнал прогона называет SSH-окружение в строке `Syncing workspace and OMP runtime assets to`.
+
 ## Публикация и подпись
 
-Workflow `.github/workflows/agent-runtime-images.yml` запускается при push в `main` и релизных тегах `myr-v*` с затрагивающими его путями изменениями либо вручную через `workflow_dispatch`. При ручном запуске задаётся версия; иначе тег строится как `git-<commit-sha>`. В bake-публикацию явно входят `base`, `opencode`, `pi`, `codex`, `gemini`, `claude` и `omp` (`linux/amd64`; `hermes` не включён в scope). Workflow получает дайджесты опубликованных образов и подписывает их через cosign keyless OIDC с GitHub Actions identity.
+Workflow `.github/workflows/agent-runtime-images.yml` запускается при push в `main` и релизных тегах `myr-v*` с затрагивающими его путями изменениями либо вручную через `workflow_dispatch`. При ручном запуске задаётся версия; иначе тег строится как `git-<commit-sha>`. В bake-публикацию явно входят `base`, `opencode`, `pi`, `codex`, `gemini`, `claude`, `omp` и `omp-ssh` (`linux/amd64`; `hermes` не включён в scope). Workflow получает дайджесты опубликованных образов и подписывает их через cosign keyless OIDC с GitHub Actions identity.
 
 Для этого изменения пока не проверены успешный запуск workflow и опубликованные OMP-тег/digest. Перед использованием образа проверьте успешный запуск workflow, фактический digest в GHCR и подпись.
