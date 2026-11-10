@@ -94,6 +94,98 @@ Extra read-only bot mounts (shared directories) are described in
 `images/create`, `volumes`, `networks`, `info`, `events`, `system`, `swarm`) gets 403
 `route_not_allowed`.
 
+## What a bot container is created with
+
+The allowed-call table pins the calls; this section pins the container template: the
+flags the board sets when it creates a bot container or a helper, and what a `fleetd`
+site sets on its own. Every value below is checked against the code named in the last
+column; a create body that disagrees with it is denied before the daemon sees it.
+
+Bot container `myrmidon-bot-<K>`. The values are built by
+`buildCreateContainerRequestBody` from the bot's `bots[]` entry, and the gate rebuilds
+and pins them the same way (`tools/dockergate/internal/policy/create.go`, `parseBot`,
+lines 687–807): a `HostConfig` key outside this table is `json_unknown_key`, a limit
+above the enrollment is `limit_exceeds_enrollment`.
+
+| Flag | Value | Set by | Code |
+|---|---|---|---|
+| `Memory` | `memoryMb × 1 MiB` | driver; gate re-checks against `bots[]` | `docker-driver.ts:472`, `create.go:741` |
+| `NanoCpus` | `cpus × 1e9` | driver; gate re-checks against `bots[]` | `docker-driver.ts:473`, `create.go:745` |
+| `PidsLimit` | `pidsLimit` | driver; gate re-checks against `bots[]` | `docker-driver.ts:474`, `create.go:749` |
+| `CapDrop` | `["ALL"]` | driver; gate pins the exact list | `docker-driver.ts:475`, `create.go:834` |
+| `SecurityOpt` | `["no-new-privileges"]` | driver; gate pins | `docker-driver.ts:476`, `create.go:837` |
+| `ReadonlyRootfs` | `true` | driver; gate pins | `docker-driver.ts:477`, `create.go:840` |
+| `Tmpfs` | `/tmp`; for a shared-scope member also `/data` with `uid=10001,gid=10001,mode=0755,size=1m` | driver; gate pins both forms | `docker-driver.ts:479` (`template.ts:239`), `create.go:756–771` |
+| `Init` | `true` | driver; gate pins | `docker-driver.ts:480`, `create.go:773` |
+| `RestartPolicy` | `on-failure` | driver; gate pins | `docker-driver.ts:481`, `create.go:753` |
+| `NetworkMode` | the bot's enrolled network | driver; gate compares | `docker-driver.ts:482`, `create.go:776` |
+| `Privileged` | `false` | driver; gate pins | `docker-driver.ts:495`, `create.go:851` |
+| `Ulimits` | `[{Name: "core", Soft: 0, Hard: 0}]` | driver; gate pins, see below | `docker-driver.ts:496`, `create.go:846–849` |
+
+The bot's uid is not a create flag: it comes from the image contract (`10001:10001`,
+`tools/dockergate/internal/policy/image.go:22,57`). `Binds`, `Labels` and `Env` follow
+their own allowlists (see [How it is enforced](#how-it-is-enforced), item 4).
+
+Helper container `myrmidon-bot-<K>.helper`. Nothing in it is per-bot: the gate pins
+every constant (`parseHelper`, `create.go:916–1035`).
+
+| Flag | Value | Code |
+|---|---|---|
+| `User` (top level) | `0:0` for `prepare-volumes`, `10001:10001` for `apply-profile` | `docker-driver.ts:554`, `create.go:921–933` |
+| `NetworkDisabled` (top level) | `true` | `docker-driver.ts:558`, `create.go:988` |
+| `Memory` | `134217728` (128 MiB) | `docker-driver.ts:560`, `create.go:857,998` |
+| `PidsLimit` | `64` | `docker-driver.ts:561`, `create.go:858,1001` |
+| `CapDrop` | `["ALL"]` | `docker-driver.ts:562`, `create.go:834` |
+| `CapAdd` | `["CHOWN", "FOWNER"]` only for the root `prepare-volumes` helper; `[]` for `apply-profile` | `docker-driver.ts:563`, `create.go:1004–1009` |
+| `SecurityOpt` | `["no-new-privileges"]` | `docker-driver.ts:564`, `create.go:837` |
+| `ReadonlyRootfs` | `true` | `docker-driver.ts:565`, `create.go:840` |
+| `RestartPolicy` | `no` | `docker-driver.ts:566`, `create.go:1011` |
+| `NetworkMode` | `none` | `docker-driver.ts:567`, `create.go:1014` |
+| `Privileged` | `false` | `docker-driver.ts:569`, `create.go:851` |
+| `Ulimits` | `[{Name: "core", Soft: 0, Hard: 0}]` | `docker-driver.ts:570`, `create.go:1033–1035` |
+
+### `Ulimits`: `RLIMIT_CORE` pinned to zero
+
+The BOT-HARDENING changes pin `RLIMIT_CORE` to 0/0 on bot and helper containers: the
+board driver and helper (#2872), the gate (#2660) and `fleetd` (#2866). A crashing
+process cannot write a core dump onto the bot's bind volume (`create.go:638–640`);
+the audit behind the flag cites dumps of 1–2 GB landing on that volume.
+
+dockergate accepts the key optionally (`create.go:735,846`): when the body carries
+`Ulimits`, it must be exactly one `{Name: "core", Soft: 0, Hard: 0}` entry
+(`wantCoreUlimits`, `create.go:641–655`; anything else is denied), and the gate
+re-emits the canonical `coreUlimitsJSON` in the rebuilt body (`create.go:636,805–807`).
+When the key is absent — a pre-1.6.7 driver body — the gate rebuilds the body without
+it, so both the old and the hardened bodies pass (`create.go:630–635`).
+
+The flag takes effect on containers created after the release. A rollout does not
+recreate existing bots: `Ulimits` is not part of the template-drift comparison (the
+board compares six inspect fields, `docker-driver.ts:939–955`), so an existing
+container gets `core=0` at its next recreate. Inside the container the change is
+visible as `ulimit -c` printing `0`.
+
+### `fleetd` sites
+
+On a remote site the bot container is created by `fleetd` itself — it talks to the
+site's Docker socket directly (`main.go:283–284`), not through dockergate, and it has
+no helper containers. The template is deliberately the same fixed one the board driver
+sends (`docker.go:78–86`): the bot table above applies, with these differences
+(`tools/fleetd/cmd/fleetd/docker.go:104–129`):
+
+- `SecurityOpt` is spelled the daemon-side way, `"no-new-privileges:true"` (line 107).
+- `MemorySwap` equals `Memory`, so the memory limit is also the limit with swap (line 104).
+- `ShmSize` is pinned to 64 MiB (line 112).
+- `PortBindings`: the only published port is `8642/tcp`, bound to `gatewayBindIp` at
+  the bot's `gatewayPort`, and only when `gatewayPort > 0` (lines 116–121).
+- `ExtraHosts` carries the board address from the site configuration (lines 122–124).
+- the bot key goes into the `paperclip.botKey` label (line 97).
+
+`fleetd`'s own drift check `driftFields` (`main.go:1114–1140`) compares image, user,
+network, readonlyRootfs, memoryMb, cpus, pidsLimit and shmSize — `Ulimits` is not among
+the compared fields, and `TestDriftFieldsIgnoresMissingUlimits` (`main_test.go:398–422`)
+pins that: a container created before the hardening is not drift and is not recreated
+by the rollout.
+
 ## The applied-profile marker
 
 Each profile upload ends with the applied-profile marker `applied.json`. It is an object

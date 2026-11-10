@@ -53,6 +53,67 @@
 
 `K` — строчный UUID. Любой другой путь (в том числе `exec`, `attach`, `commit`, `build`, `images/create`, `volumes`, `networks`, `info`, `events`, `system`, `swarm`) получает 403 `route_not_allowed`.
 
+## С чем создаётся контейнер бота
+
+Таблица разрешённых вызовов закрепляет вызовы; этот раздел закрепляет шаблон контейнера: флаги, с которыми доска создаёт контейнер бота или помощника, и что площадка `fleetd` задаёт сама. Каждое значение ниже сверено с кодом из последней графы; тело создания, расходящееся с ним, отклоняется до того, как его увидит демон.
+
+Контейнер бота `myrmidon-bot-<K>`. Значения строит `buildCreateContainerRequestBody` из записи бота в `bots[]`, и шлюз так же пересобирает и закрепляет их (`tools/dockergate/internal/policy/create.go`, `parseBot`, строки 687–807): ключ `HostConfig` вне этой таблицы — `json_unknown_key`, лимит выше записи — `limit_exceeds_enrollment`.
+
+| Флаг | Значение | Кто задаёт | Код |
+|---|---|---|---|
+| `Memory` | `memoryMb × 1 МиБ` | драйвер; шлюз перепроверяет по `bots[]` | `docker-driver.ts:472`, `create.go:741` |
+| `NanoCpus` | `cpus × 1e9` | драйвер; шлюз перепроверяет по `bots[]` | `docker-driver.ts:473`, `create.go:745` |
+| `PidsLimit` | `pidsLimit` | драйвер; шлюз перепроверяет по `bots[]` | `docker-driver.ts:474`, `create.go:749` |
+| `CapDrop` | `["ALL"]` | драйвер; шлюз закрепляет список | `docker-driver.ts:475`, `create.go:834` |
+| `SecurityOpt` | `["no-new-privileges"]` | драйвер; шлюз закрепляет | `docker-driver.ts:476`, `create.go:837` |
+| `ReadonlyRootfs` | `true` | драйвер; шлюз закрепляет | `docker-driver.ts:477`, `create.go:840` |
+| `Tmpfs` | `/tmp`; у участника общего scope ещё и `/data` с `uid=10001,gid=10001,mode=0755,size=1m` | драйвер; шлюз закрепляет обе формы | `docker-driver.ts:479` (`template.ts:239`), `create.go:756–771` |
+| `Init` | `true` | драйвер; шлюз закрепляет | `docker-driver.ts:480`, `create.go:773` |
+| `RestartPolicy` | `on-failure` | драйвер; шлюз закрепляет | `docker-driver.ts:481`, `create.go:753` |
+| `NetworkMode` | сеть бота из записи | драйвер; шлюз сверяет | `docker-driver.ts:482`, `create.go:776` |
+| `Privileged` | `false` | драйвер; шлюз закрепляет | `docker-driver.ts:495`, `create.go:851` |
+| `Ulimits` | `[{Name: "core", Soft: 0, Hard: 0}]` | драйвер; шлюз закрепляет, см. ниже | `docker-driver.ts:496`, `create.go:846–849` |
+
+uid бота — не флаг создания: он приходит из контракта образа (`10001:10001`, `tools/dockergate/internal/policy/image.go:22,57`). `Binds`, `Labels` и `Env` идут по своим спискам разрешённого (см. [Как решается](#как-решается), пункт 4).
+
+Контейнер помощника `myrmidon-bot-<K>.helper`. Ничего персонального в нём нет: шлюз закрепляет каждую константу (`parseHelper`, `create.go:916–1035`).
+
+| Флаг | Значение | Код |
+|---|---|---|
+| `User` (верхний уровень) | `0:0` у `prepare-volumes`, `10001:10001` у `apply-profile` | `docker-driver.ts:554`, `create.go:921–933` |
+| `NetworkDisabled` (верхний уровень) | `true` | `docker-driver.ts:558`, `create.go:988` |
+| `Memory` | `134217728` (128 МиБ) | `docker-driver.ts:560`, `create.go:857,998` |
+| `PidsLimit` | `64` | `docker-driver.ts:561`, `create.go:858,1001` |
+| `CapDrop` | `["ALL"]` | `docker-driver.ts:562`, `create.go:834` |
+| `CapAdd` | `["CHOWN", "FOWNER"]` только у root-помощника `prepare-volumes`; `[]` у `apply-profile` | `docker-driver.ts:563`, `create.go:1004–1009` |
+| `SecurityOpt` | `["no-new-privileges"]` | `docker-driver.ts:564`, `create.go:837` |
+| `ReadonlyRootfs` | `true` | `docker-driver.ts:565`, `create.go:840` |
+| `RestartPolicy` | `no` | `docker-driver.ts:566`, `create.go:1011` |
+| `NetworkMode` | `none` | `docker-driver.ts:567`, `create.go:1014` |
+| `Privileged` | `false` | `docker-driver.ts:569`, `create.go:851` |
+| `Ulimits` | `[{Name: "core", Soft: 0, Hard: 0}]` | `docker-driver.ts:570`, `create.go:1033–1035` |
+
+### `Ulimits`: `RLIMIT_CORE` закреплён на нуле
+
+Изменения BOT-HARDENING закрепляют `RLIMIT_CORE` на 0/0 у контейнеров бота и помощника: драйвер и помощник доски (#2872), шлюз (#2660) и `fleetd` (#2866). Падающий процесс не может записать дамп ядра на bind-том бота (`create.go:638–640`); аудит, из которого вырос флаг, называл дампы по 1–2 ГиБ на этом томе.
+
+Шлюз принимает ключ необязательно (`create.go:735,846`): если тело несёт `Ulimits`, там обязана быть ровно одна запись `{Name: "core", Soft: 0, Hard: 0}` (`wantCoreUlimits`, `create.go:641–655`; любое другое — отказ), и шлюз вписывает канонический `coreUlimitsJSON` в пересобранное тело (`create.go:636,805–807`). Если ключа нет — тело драйвера до 1.6.7 — шлюз пересобирает тело без него, так что старое и укреплённое тела проходят оба (`create.go:630–635`).
+
+Флаг действует на контейнеры, созданные после выката. Выкат не пересоздаёт существующих ботов: `Ulimits` не входит в сверку дрейфа шаблона (доска сравнивает шесть полей inspect, `docker-driver.ts:939–955`), поэтому существующий контейнер получит `core=0` при следующем пересоздании. Внутри контейнера изменение видно как `ulimit -c`, печатающий `0`.
+
+### Площадки `fleetd`
+
+На удалённой площадке контейнер бота создаёт сам `fleetd` — он говорит с сокетом Docker площадки напрямую (`main.go:283–284`), не через dockergate, и контейнеров-помощников у него нет. Шаблон намеренно тот же фиксированный, что посылает драйвер доски (`docker.go:78–86`): таблица бота выше действует, с этими отличиями (`tools/fleetd/cmd/fleetd/docker.go:104–129`):
+
+- `SecurityOpt` записан в записи демона, `"no-new-privileges:true"` (строка 107).
+- `MemorySwap` равен `Memory`, так что лимит памяти — он же лимит со свопом (строка 104).
+- `ShmSize` закреплён на 64 МиБ (строка 112).
+- `PortBindings`: единственный публикуемый порт — `8642/tcp`, на `gatewayBindIp` и порту `gatewayPort` бота, и только при `gatewayPort > 0` (строки 116–121).
+- `ExtraHosts` несёт адрес доски из конфигурации площадки (строки 122–124).
+- ключ бота идёт в метку `paperclip.botKey` (строка 97).
+
+Собственная сверка дрейфа `fleetd`, `driftFields` (`main.go:1114–1140`), сравнивает image, user, network, readonlyRootfs, memoryMb, cpus, pidsLimit и shmSize — `Ulimits` среди сравниваемых полей нет, и `TestDriftFieldsIgnoresMissingUlimits` (`main_test.go:398–422`) это закрепляет: контейнер, созданный до укрепления, дрейфом не считается и выкатом не пересоздаётся.
+
 ## Маркер применённого профиля
 
 Каждая загрузка профиля завершается маркером применённого профиля `applied.json`. Это объект ровно со строковыми ключами `restartHash` и `filesHash` и массивом строк `files`, плюс необязательное целое `maxConcurrentRuns` (1..50), которое доска записывает со времён CONCURRENCY-SYNC. Любой другой ключ, `maxConcurrentRuns` другого типа или вне этого диапазона и файл сверх потолка размера отклоняются с `tar_content` (в детали журнала — `applied_json` / `applied_keys` / `applied_size`). Доска старше CONCURRENCY-SYNC пишет маркер из трёх ключей; dockergate принимает обе формы, и маркер, записанный старой доской, применение профиля не блокирует.
