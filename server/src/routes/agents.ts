@@ -4,7 +4,7 @@ import { notModifiedOrSetEtag } from "../middleware/version-key-etag.js";
 // myrmidon(B1c): product name in user-facing runner errors; see product.ts.
 import { PRODUCT_NAME } from "../myrmidon/product.js";
 import { prepareManagedAiRuntime, assertManagedAiProjectAuth, stripAiAuthBindings } from "../services/ai-connection-runtime.js";
-import { ADAPTER_AUTH_MISSING_CHECK_CODE, AI_CONNECTION_CAPABILITIES, aiConnectionBindingSchema, aiConnectionMetadataSchema, isAiConnectionCompatible, type AiConnectionBinding } from "@myrmidon/shared";
+import { ADAPTER_AUTH_MISSING_CHECK_CODE, AI_CONNECTION_CAPABILITIES, aiConnectionBindingSchema, aiConnectionMetadataSchema, isAiConnectionCompatible, type AiConnectionBinding, type AiConnectionMetadata } from "@myrmidon/shared";
 import { aiConnectionService } from "../services/ai-connections.js";
 import { defaultAiConnectionForHire } from "../services/agent-ai-connection-default.js";
 import { assertAiConnectionCreateAccess, canInstallSharedAiConnectionForNewAgent, responsibleUserForAiRequest, validateAiApiKey } from "./ai-connections.js";
@@ -21,7 +21,7 @@ import { readFile, rm } from "node:fs/promises";
 import path from "node:path";
 import type { Db } from "@myrmidon/db";
 import type { ChatChannelService } from "../services/chat-channels.js";
-import { activityLog, agentWakeupRequests, agents as agentsTable, chatConversations, companies, heartbeatRuns, issues as issuesTable, projects as projectsTable } from "@myrmidon/db";
+import { activityLog, agentWakeupRequests, agents as agentsTable, chatConversations, companies, connectionGrants, heartbeatRuns, issues as issuesTable, projects as projectsTable } from "@myrmidon/db";
 import { and, desc, eq, inArray, not, sql } from "drizzle-orm";
 import { toolConnections } from "@myrmidon/db";
 import { sha256Digest } from "../services/feedback-redaction.js";
@@ -6011,6 +6011,11 @@ function getActorIdentityPart(req: Request): string {
   // Partial success: every valid agent is mutated, every failure is reported
   // with a reason. Idempotent by nature — re-running with the same body
   // succeeds because the target state is already reached.
+  //
+  // Validation mirrors the single-agent PATCH /agents/:id: models must come
+  // from the adapter's known list (assertMyrmidonAgentConfigChange), and a
+  // connectionId must resolve to a company-scoped, active, healthy AI
+  // connection compatible with the agent's adapter.
   router.post(
     "/companies/:companyId/agents/bulk-update-model",
     validate(bulkUpdateAgentsModelSchema),
@@ -6025,6 +6030,66 @@ function getActorIdentityPart(req: Request): string {
 
       const actor = getActorInfo(req);
 
+      // Pre-resolve the AI connection once when connectionId is provided:
+      // company-scoped lookup, metadata parse, and health checks are the same
+      // for every agent; only per-adapter compatibility varies.
+      let sharedConnection: {
+        binding: AiConnectionBinding;
+        metadata: AiConnectionMetadata;
+      } | null = null;
+      if (connectionId !== undefined) {
+        const [row] = await db
+          .select({ connection: toolConnections, grant: connectionGrants })
+          .from(toolConnections)
+          .innerJoin(
+            connectionGrants,
+            and(
+              eq(connectionGrants.companyId, toolConnections.companyId),
+              eq(connectionGrants.connectionId, toolConnections.id),
+            ),
+          )
+          .where(
+            and(
+              eq(toolConnections.id, connectionId),
+              eq(toolConnections.companyId, companyId),
+              eq(toolConnections.connectionPurpose, "ai"),
+            ),
+          )
+          .limit(1);
+        if (!row) {
+          res.status(422).json({ error: "AI connection not found for this company" });
+          return;
+        }
+        const { connection, grant } = row;
+        const metadata = aiConnectionMetadataSchema.safeParse(connection.config.ai);
+        if (
+          !metadata.success ||
+          grant.status !== "active" ||
+          !connection.enabled ||
+          connection.status !== "active" ||
+          connection.healthStatus !== "ok"
+        ) {
+          res.status(422).json({ error: "AI connection is unavailable or incompatible" });
+          return;
+        }
+        // Bulk API binds the shared company connection; per-user defaults stay
+        // on the single-agent PATCH path.
+        if (grant.kind !== "organization") {
+          res.status(422).json({ error: "Bulk update requires a company-shared AI connection" });
+          return;
+        }
+        sharedConnection = {
+          binding: {
+            mode: "shared",
+            connectionId: connection.id,
+            grantId: grant.id,
+            provider: metadata.data.provider,
+            method: metadata.data.method,
+          },
+          metadata: metadata.data,
+        };
+      }
+
       for (const agentId of agentIds) {
         try {
           const existing = await svc.getById(agentId);
@@ -6037,15 +6102,23 @@ function getActorIdentityPart(req: Request): string {
 
           const patchData: Record<string, unknown> = {};
           if (model !== undefined) {
-            patchData.adapterConfig = {
+            const nextAdapterConfig = {
               ...(existing.adapterConfig as Record<string, unknown> ?? {}),
               model,
             };
+            // Same model validation the single-agent PATCH applies: known
+            // models, fallback-chain cycles, inheritProcessEnv guard.
+            await assertMyrmidonAgentConfigChange(req, existing, existing.adapterType, nextAdapterConfig, { db });
+            patchData.adapterConfig = nextAdapterConfig;
           }
-          if (connectionId !== undefined) {
+          if (sharedConnection) {
+            const nextModel = model ?? (existing.adapterConfig as Record<string, unknown> | null)?.model;
+            if (!isAiConnectionCompatible(sharedConnection.metadata, existing.adapterType, nextModel)) {
+              throw unprocessable("Select an AI connection compatible with this harness and model");
+            }
             patchData.runtimeConfig = {
               ...(existing.runtimeConfig as Record<string, unknown> ?? {}),
-              aiConnection: connectionId,
+              aiConnection: sharedConnection.binding,
             };
           }
 

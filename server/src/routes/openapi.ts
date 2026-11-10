@@ -3036,7 +3036,7 @@ registry.registerPath({
     params: z.object({ companyId: z.string() }),
     body: jsonBody(bulkUpdateAgentsModelSchema),
   },
-  responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized },
+  responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized, 422: r.unprocessable },
 });
 
 registry.registerPath({
