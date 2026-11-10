@@ -124,19 +124,16 @@ export function formatDmStatusElapsed(
  * label passes through verbatim (the caller owns its wording).
  */
 export type DmStatusRuntimeStep =
-  | Pick<DmProgressRuntimeStep, "kind" | "toolName" | "label">
+  | Pick<DmProgressRuntimeStep, "kind" | "toolName" | "label" | "target">
   | { label: string };
 
 function stepLabelForRuntimeStep(step: DmStatusRuntimeStep, locale: DmProgressTextLocale | null): string {
   if ("kind" in step) {
-    const withTarget = step as Pick<DmProgressRuntimeStep, "kind" | "toolName" | "label"> & {
-      target?: DmProgressRuntimeStep["target"];
-    };
     return labelForStepFacts(
       {
-        kind: withTarget.kind,
-        toolName: withTarget.toolName,
-        target: withTarget.target ?? null,
+        kind: step.kind,
+        toolName: step.toolName,
+        target: step.target ?? null,
       },
       locale,
     );

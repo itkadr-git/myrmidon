@@ -32,6 +32,7 @@ import {
   extractDmProgressTarget,
   normalizeDmProgressToolName,
   type DmProgressStepKind,
+  type DmProgressTarget,
 } from "./labels.js";
 
 export interface DmProgressRuntimeStep {
@@ -51,12 +52,7 @@ export interface DmProgressRuntimeStep {
    * The provider-safe structured target of the call (slides / document
    * noun+basename / file basename), present on read/edit steps with detail.
    */
-  target?: {
-    type: "slides" | "document" | "file";
-    text?: string;
-    noun?: string;
-    basename?: string;
-  } | null;
+  target?: DmProgressTarget | null;
   at: Date;
 }
 

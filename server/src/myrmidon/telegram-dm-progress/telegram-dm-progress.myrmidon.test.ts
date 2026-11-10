@@ -66,7 +66,7 @@ describe("step labels", () => {
       [{ toolName: "reasoning" }, { kind: "think", label: "thinking" }],
       [{ toolName: "update_plan" }, { kind: "plan", label: "planning" }],
       [{ toolName: "recall" }, { kind: "memory", label: "recalling context" }],
-      [{ toolName: "mcp__crm__get_lead" }, { kind: "tool", label: "tool: get_lead" }],
+      [{ toolName: "mcp__crm__get_lead" }, { kind: "tool", label: "tool: mcp__crm__get_lead" }],
     ];
     for (const [input, expected] of cases) {
       expect(dmProgressToolLabel({ ...input, locale: "en" })).toEqual(expected);

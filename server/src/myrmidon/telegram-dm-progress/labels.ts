@@ -26,7 +26,12 @@ import {
   type DmProgressTextLocale,
 } from "./texts.js";
 
-export type { DmProgressStepKind, DmProgressStepLabel, DmProgressTextLocale };
+export type {
+  DmProgressStepKind,
+  DmProgressStepLabel,
+  DmProgressTarget,
+  DmProgressTextLocale,
+};
 export { dmProgressTexts } from "./texts.js";
 
 const MAX_TOOL_NAME_CHARS = 40;

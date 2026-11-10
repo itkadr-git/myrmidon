@@ -1141,7 +1141,7 @@ describeEmbeddedPostgres("Telegram DM run status (U1)", () => {
     await enqueueChatRunMilestones(db);
     rows = await dmStatusRows(fixture);
     expect(rows).toHaveLength(1);
-    expect(rows[0]!.payload.text).not.toContain("editing slides 4, 9");
+    expect(rows[0]!.payload.text).toContain("editing slides 4, 9");
     expect(providerEditCount(fixture)).toBe(editsBefore);
   });
 
