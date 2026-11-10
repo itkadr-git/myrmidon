@@ -179,10 +179,14 @@ export function Ui2LanguageProvider({ children }: { children: ReactNode }) {
   const [saveError, setSaveError] = useState(false);
   const mounted = useRef(true);
   const userSwitched = useRef(false);
+  // Mirror of customCatalogs readable inside mount effects/callbacks without
+  // re-running them (upload remounts must keep the custom bundle registered).
+  const customCatalogsRef = useRef(customCatalogs);
+  customCatalogsRef.current = customCatalogs;
 
   useEffect(() => {
     mounted.current = true;
-    registerUi2Catalogs();
+    registerUi2Catalogs(customCatalogsRef.current);
     return () => {
       mounted.current = false;
     };
@@ -245,6 +249,7 @@ export function Ui2LanguageProvider({ children }: { children: ReactNode }) {
       for (const [key, entryValue] of entries) {
         flat[key] = entryValue;
       }
+      if (!flat || Object.keys(flat).length === 0) return;
       if (!ui2Messages[normalized]) {
         (ui2Messages as unknown as Record<string, Record<string, string>>)[normalized] = {
           ...ui2Messages["en"],
@@ -255,7 +260,7 @@ export function Ui2LanguageProvider({ children }: { children: ReactNode }) {
       }
       setCustomCatalogs((current) => ({ ...current, [normalized]: { ...(current[normalized] ?? {}), ...flat } }));
 
-      registerUi2Catalogs({ [normalized]: catalog });
+      registerUi2Catalogs({ [normalized]: flat });
 
       if (shouldSwitch) {
         userSwitched.current = true;

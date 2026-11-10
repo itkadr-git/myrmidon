@@ -58,8 +58,11 @@ function persistLocale(locale: Ui2Locale): void {
   }
 }
 
-function applyLocaleToShell(locale: Ui2Locale): void {
-  registerUi2Catalogs();
+function applyLocaleToShell(
+  locale: Ui2Locale,
+  customCatalogs?: Partial<Record<string, Record<string, unknown>>>,
+): void {
+  registerUi2Catalogs(customCatalogs);
   const root =
     (typeof document !== "undefined" &&
       (document.querySelector<HTMLElement>(".myr-ui2") ?? document.documentElement)) ||
@@ -121,9 +124,13 @@ export function Ui2I18nProvider({
   const [saving] = useState(false);
   const [saveError] = useState(false);
   const userSwitched = useRef(false);
+  // Mirror of customCatalogs readable inside mount effects/callbacks without
+  // re-running them (upload remounts must keep the custom bundle registered).
+  const customCatalogsRef = useRef(customCatalogs);
+  customCatalogsRef.current = customCatalogs;
 
   useEffect(() => {
-    applyLocaleToShell(locale);
+    applyLocaleToShell(locale, customCatalogsRef.current);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -193,10 +200,13 @@ export function Ui2I18nProvider({
       }
       setCustomCatalogs((current) => ({ ...current, [normalized]: { ...(current[normalized] ?? {}), ...flat } }));
 
-      // 2. Register the vendor bundle. registerUi2Catalogs skips locales whose
-      //    bundle already exists, so the custom registration passes the merged
-      //    catalog explicitly (which also forces registration for that locale).
-      registerUi2Catalogs({ [normalized]: catalog });
+      // 2. Register the vendor bundle with the FLAT custom overlay. The built-in
+      //    bundle is registered as a deep tree, but the provider's `t` keys are
+      //    flat dotted strings (`ui2.chip.colony`) — registering the nested
+      //    upload as-is would leave flat lookups missing in i18next. The flat
+      //    shape matches the provider's own ui2Messages (OPE-3986 CI: provider
+      //    test expected the flat key inside the vendor bundle).
+      registerUi2Catalogs({ [normalized]: flat });
 
       // 3. Switch the shell to the uploaded locale when asked (the upload
       //    screen's "apply" is a language switch, matching OPE-9646).
