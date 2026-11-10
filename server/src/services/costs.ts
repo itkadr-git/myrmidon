@@ -619,12 +619,18 @@ export function costService(db: Db, budgetHooks: BudgetServiceHooks = {}) {
       return result;
     },
 
-    byIssue: async (companyId: string, range?: CostDateRange, limit: number = 20) => {
+    byIssue: async (companyId: string, range?: CostDateRange, limit: number = 20, options?: { excludePrivate?: boolean }) => {
       const conditions: SQL[] = [
         eq(costEvents.companyId, companyId),
         eq(issues.companyId, companyId),
         isNotNull(costEvents.issueId),
       ];
+      // myrmidon(1.7 PRIVATE-TASKS F3): agent-readable "top issues by cost"
+      // must not name private issues. Filtering here (not post-limit) keeps
+      // the page full with the next-costliest visible issues.
+      if (options?.excludePrivate) {
+        conditions.push(eq(issues.isPrivate, false));
+      }
       if (range?.from) conditions.push(gte(costEvents.occurredAt, range.from));
       if (range?.to) conditions.push(lte(costEvents.occurredAt, range.to));
 
