@@ -244,7 +244,9 @@ describe("lesson distill sweep: live enabled toggle (OPE-12628)", () => {
 
       const fakeDb = {
         select: vi.fn().mockReturnValue({
-          from: vi.fn().mockResolvedValue([{ id: "company-1" }]),
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockResolvedValue([{ id: "company-1" }]),
+          }),
         }),
       } as any;
 
