@@ -22,6 +22,7 @@ import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
 } from "./helpers/embedded-postgres.js";
+import { applyLiveBehaviorSettings } from "../myrmidon/behavior-settings/live.js";
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
@@ -834,5 +835,172 @@ describeEmbeddedPostgres.sequential("GitHub connection event delivery", () => {
       eq(issues.originId, companyId),
     ));
     expect(resolvedAlarm?.status).toBe("done");
+  });
+});
+
+describeEmbeddedPostgres.sequential("1.7 SWEEP-2 (OPE-12629): sweepWatchdog threshold resolution", () => {
+  let db!: ReturnType<typeof createDb>;
+  let tempDb: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | null = null;
+
+  const ENV_KEYS = [
+    "MYRMIDON_GITHUB_EVENTS_MAX_SILENCE_MIN",
+    "PAPERCLIP_GITHUB_EVENTS_MAX_SILENCE_MIN",
+  ] as const;
+  const savedEnv: Record<string, string | undefined> = {};
+
+  beforeAll(async () => {
+    tempDb = await startEmbeddedPostgresTestDatabase("paperclip-github-events-thresholds-");
+    db = createDb(tempDb.connectionString);
+    for (const key of ENV_KEYS) savedEnv[key] = process.env[key];
+  }, 20_000);
+
+  afterEach(async () => {
+    await db.delete(activityLog);
+    await db.delete(connectionEventDeliveries);
+    await db.delete(issueWorkProducts);
+    await db.delete(issues);
+    await db.delete(agents);
+    await db.delete(externalObjects);
+    await db.delete(connectionGrants);
+    await db.delete(toolConnections);
+    await db.delete(toolApplications);
+    await db.delete(companies);
+    for (const key of ENV_KEYS) {
+      if (savedEnv[key] === undefined) delete process.env[key];
+      else process.env[key] = savedEnv[key];
+    }
+    applyLiveBehaviorSettings({ settings: {}, sources: {} });
+  });
+
+  afterAll(async () => {
+    await tempDb?.cleanup();
+  });
+
+  /** Seed one company with an active PR whose last webhook event was `silenceMin` ago. */
+  async function seedCompanyWithSilentPr(silenceMin: number, now: Date) {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const issueId = randomUUID();
+    const connectionId = randomUUID();
+    const grantId = randomUUID();
+    const applicationId = randomUUID();
+    await db.insert(companies).values({ id: companyId, name: "Threshold Corp", issuePrefix: "THC" });
+    await db.insert(agents).values({ id: agentId, companyId, name: "worker", role: "engineer" });
+    await db.insert(issues).values({ id: issueId, companyId, title: "Active PR Task", status: "in_progress", assigneeAgentId: agentId });
+    await db.insert(issueWorkProducts).values({
+      companyId, issueId, type: "pull_request", provider: "github",
+      externalId: "corp/repo#pull/43", title: "PR #43", status: "open", metadata: { repository: "corp/repo", number: 43 },
+    });
+    await db.insert(toolApplications).values({ id: applicationId, companyId, applicationKey: `github-${randomUUID()}`, name: "GitHub", type: "mcp_server", status: "active" });
+    await db.insert(toolConnections).values({
+      id: connectionId, companyId, applicationId, name: "GitHub", uid: `github-${randomUUID()}`,
+      transport: "mcp_remote", authKind: "oauth", credentialPolicy: "per_user", status: "active", enabled: true,
+      config: { sourceTemplateKey: "github", oauth: { connectorProfile: "github.code" } }, transportConfig: {},
+    });
+    const lastWebhookAt = new Date(now.getTime() - silenceMin * 60_000);
+    await db.insert(connectionGrants).values({
+      id: grantId, companyId, connectionId, kind: "user", subjectUserId: `user-${randomUUID()}`, status: "active", isDefault: false,
+      providerTenant: { oauth: { strategy: "paperclip_cloud_connector", accessTokenExpiresAt: null }, github: { userId: "43", login: "octocat", installationCount: 1, repositoryCount: 1, repositorySelection: "selected", installationIds: ["201"], installationOwnerLogins: ["corp"], repositories: [], webhookHealth: "pending", lastWebhookAt: lastWebhookAt.toISOString() } },
+    });
+    return companyId;
+  }
+
+  function makeService(now: Date) {
+    const connector = {
+      getCapabilities: vi.fn(async () => ["github.code"] as const),
+      leaseEvents: vi.fn(async () => null),
+      acknowledgeEvents: vi.fn(),
+    } as unknown as PaperclipCloudConnector;
+    return githubConnectionEventService(db, { connector, now: () => now });
+  }
+
+  it("defaults to a 15-minute silence threshold without env or saved value", async () => {
+    delete process.env.MYRMIDON_GITHUB_EVENTS_MAX_SILENCE_MIN;
+    delete process.env.PAPERCLIP_GITHUB_EVENTS_MAX_SILENCE_MIN;
+    // Seed a company whose last webhook event is the reference point t0.
+    const t0 = new Date("2026-11-03T00:00:00.000Z");
+    await seedCompanyWithSilentPr(0, t0);
+    // 10 minutes after the last event: below the default 15-minute threshold -> no alarm
+    const quiet = await makeService(new Date(t0.getTime() + 10 * 60_000)).sweepWatchdog(new Date(t0.getTime() + 10 * 60_000));
+    expect(quiet.activePrCount).toBe(1);
+    expect(quiet.alarmsCreated).toBe(0);
+    // 20 minutes after the last event: above the default threshold -> alarm
+    const alarming = await makeService(new Date(t0.getTime() + 20 * 60_000)).sweepWatchdog(new Date(t0.getTime() + 20 * 60_000));
+    expect(alarming.alarmsCreated).toBe(1);
+  });
+
+  it("applies a value saved from the UI on the next sweep pass without a restart", async () => {
+    delete process.env.MYRMIDON_GITHUB_EVENTS_MAX_SILENCE_MIN;
+    delete process.env.PAPERCLIP_GITHUB_EVENTS_MAX_SILENCE_MIN;
+    applyLiveBehaviorSettings({
+      settings: { githubEventsMaxSilenceMin: 120 },
+      sources: { githubEventsMaxSilenceMin: "ui" },
+    });
+    const t0 = new Date("2026-11-03T00:00:00.000Z");
+    await seedCompanyWithSilentPr(0, t0);
+    // 60 minutes of silence: below the saved 120-minute threshold -> no alarm
+    const quiet = await makeService(new Date(t0.getTime() + 60 * 60_000)).sweepWatchdog(new Date(t0.getTime() + 60 * 60_000));
+    expect(quiet.activePrCount).toBe(1);
+    expect(quiet.alarmsCreated).toBe(0);
+    // 130 minutes of silence: above the saved threshold -> alarm
+    const alarming = await makeService(new Date(t0.getTime() + 130 * 60_000)).sweepWatchdog(new Date(t0.getTime() + 130 * 60_000));
+    expect(alarming.alarmsCreated).toBe(1);
+  });
+
+  it("lets an explicit MYRMIDON_ env override the saved UI value", async () => {
+    process.env.MYRMIDON_GITHUB_EVENTS_MAX_SILENCE_MIN = "5";
+    applyLiveBehaviorSettings({
+      settings: { githubEventsMaxSilenceMin: 120 },
+      sources: { githubEventsMaxSilenceMin: "ui" },
+    });
+    // 10 minutes of silence: above the 5-minute env threshold despite the saved 120 -> alarm
+    const now = new Date("2026-11-03T01:00:00.000Z");
+    await seedCompanyWithSilentPr(10, now);
+    const result = await makeService(now).sweepWatchdog(now);
+    expect(result.alarmsCreated).toBe(1);
+  });
+
+  it("honors the legacy PAPERCLIP_ alias when MYRMIDON_ is unset", async () => {
+    delete process.env.MYRMIDON_GITHUB_EVENTS_MAX_SILENCE_MIN;
+    process.env.PAPERCLIP_GITHUB_EVENTS_MAX_SILENCE_MIN = "30";
+    const t0 = new Date("2026-11-03T00:00:00.000Z");
+    await seedCompanyWithSilentPr(0, t0);
+    // 20 minutes of silence: below the alias 30-minute threshold -> no alarm
+    const quiet = await makeService(new Date(t0.getTime() + 20 * 60_000)).sweepWatchdog(new Date(t0.getTime() + 20 * 60_000));
+    expect(quiet.alarmsCreated).toBe(0);
+    // 40 minutes of silence: above the alias threshold -> alarm
+    const alarming = await makeService(new Date(t0.getTime() + 40 * 60_000)).sweepWatchdog(new Date(t0.getTime() + 40 * 60_000));
+    expect(alarming.alarmsCreated).toBe(1);
+  });
+
+  it("prefers MYRMIDON_ over the PAPERCLIP_ alias when both are set", async () => {
+    process.env.MYRMIDON_GITHUB_EVENTS_MAX_SILENCE_MIN = "5";
+    process.env.PAPERCLIP_GITHUB_EVENTS_MAX_SILENCE_MIN = "120";
+    // 10 minutes of silence: above the MYRMIDON_ 5-minute threshold despite the 120 alias -> alarm
+    const now = new Date("2026-11-03T01:00:00.000Z");
+    await seedCompanyWithSilentPr(10, now);
+    const result = await makeService(now).sweepWatchdog(now);
+    expect(result.alarmsCreated).toBe(1);
+  });
+
+  it("rejects zero, negative, and non-numeric env values and falls back", async () => {
+    // Garbage env falls back to the saved UI value.
+    process.env.MYRMIDON_GITHUB_EVENTS_MAX_SILENCE_MIN = "-5";
+    applyLiveBehaviorSettings({
+      settings: { githubEventsMaxSilenceMin: 120 },
+      sources: { githubEventsMaxSilenceMin: "ui" },
+    });
+    const now = new Date("2026-11-03T01:00:00.000Z");
+    await seedCompanyWithSilentPr(60, now);
+    let result = await makeService(now).sweepWatchdog(now);
+    expect(result.alarmsCreated).toBe(0);
+
+    // And to the 15-minute default when nothing is saved.
+    process.env.MYRMIDON_GITHUB_EVENTS_MAX_SILENCE_MIN = "abc";
+    applyLiveBehaviorSettings({ settings: {}, sources: {} });
+    const t0 = new Date("2026-11-03T00:00:00.000Z");
+    await seedCompanyWithSilentPr(0, t0);
+    result = await makeService(new Date(t0.getTime() + 20 * 60_000)).sweepWatchdog(new Date(t0.getTime() + 20 * 60_000));
+    expect(result.alarmsCreated).toBe(1);
   });
 });

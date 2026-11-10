@@ -1,7 +1,8 @@
 // server/src/myrmidon/guard-return/guard-return.test.ts
 // 1.6.6 GUARD-RETURN (OPE-9962): Comprehensive tests for sweep, guard, alert, and domain.
 
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, it, vi, afterEach } from "vitest";
+import { applyLiveBehaviorSettings } from "../behavior-settings/live.js";
 import {
   isNoncodingRole,
   isDevProjectCodeIssue,
@@ -664,5 +665,115 @@ describe("1.6.7 CASTE-422-HINT (OPE-12142): requires-engineer message", () => {
     });
     expect(message).toContain('Task caste is "qa".');
     expect(message).toContain("Suggested assignee: eng-1 (agent-eng-1).");
+  });
+});
+
+describe("1.7 SWEEP-2 (OPE-12629): guard-return sweep interval resolution", () => {
+  const SAVED_ENV_KEYS = ["MYRMIDON_GUARD_RETURN_INTERVAL_SEC"] as const;
+
+  const emptyDb: any = {
+    select: vi.fn().mockReturnValue({
+      from: vi.fn().mockReturnValue({
+        innerJoin: vi.fn().mockReturnValue({
+          leftJoin: vi.fn().mockReturnValue({
+            where: vi.fn().mockResolvedValue([]),
+          }),
+          where: vi.fn().mockResolvedValue([]),
+        }),
+      }),
+    }),
+  };
+  const wakeup = vi.fn().mockResolvedValue(undefined);
+
+  const savedEnv: Record<string, string | undefined> = {};
+  afterEach(() => {
+    for (const key of SAVED_ENV_KEYS) {
+      if (savedEnv[key] === undefined) delete process.env[key];
+      else process.env[key] = savedEnv[key];
+    }
+    applyLiveBehaviorSettings({ settings: {}, sources: {} });
+  });
+  for (const key of SAVED_ENV_KEYS) savedEnv[key] = process.env[key];
+
+  it("uses the default 5-minute interval without env, saved value, or deps.intervalSec", async () => {
+    delete process.env.MYRMIDON_GUARD_RETURN_INTERVAL_SEC;
+    const sweeper = createGuardReturnSweep({ db: emptyDb, wakeup });
+
+    const t0 = new Date(1700000000000);
+    expect((await sweeper.sweep(t0)).skipped).toBe(false);
+    // 4 minutes later: still inside the 5-minute default interval -> skipped
+    expect((await sweeper.sweep(new Date(t0.getTime() + 240_000))).skipped).toBe(true);
+    // 5+ minutes later: executed
+    expect((await sweeper.sweep(new Date(t0.getTime() + 301_000))).skipped).toBe(false);
+  });
+
+  it("applies a value saved from the UI on the next sweep pass without a restart", async () => {
+    delete process.env.MYRMIDON_GUARD_RETURN_INTERVAL_SEC;
+    const sweeper = createGuardReturnSweep({ db: emptyDb, wakeup });
+
+    const t0 = new Date(1700000000000);
+    expect((await sweeper.sweep(t0)).skipped).toBe(false);
+
+    // Operator saves 60 seconds in "Тонкие настройки" — applies on the next pass.
+    applyLiveBehaviorSettings({
+      settings: { guardReturnIntervalSec: 60 },
+      sources: { guardReturnIntervalSec: "ui" },
+    });
+    expect((await sweeper.sweep(new Date(t0.getTime() + 61_000))).skipped).toBe(false);
+  });
+
+  it("lets an explicit env override the saved UI value", async () => {
+    process.env.MYRMIDON_GUARD_RETURN_INTERVAL_SEC = "600";
+    applyLiveBehaviorSettings({
+      settings: { guardReturnIntervalSec: 60 },
+      sources: { guardReturnIntervalSec: "ui" },
+    });
+    const sweeper = createGuardReturnSweep({ db: emptyDb, wakeup });
+
+    const t0 = new Date(1700000000000);
+    expect((await sweeper.sweep(t0)).skipped).toBe(false);
+    // 2 minutes later: still inside the 10-minute env interval -> skipped
+    expect((await sweeper.sweep(new Date(t0.getTime() + 120_000))).skipped).toBe(true);
+    expect((await sweeper.sweep(new Date(t0.getTime() + 601_000))).skipped).toBe(false);
+  });
+
+  it("keeps deps.intervalSec as the fallback below the built-in default", async () => {
+    delete process.env.MYRMIDON_GUARD_RETURN_INTERVAL_SEC;
+    const sweeper = createGuardReturnSweep({ db: emptyDb, wakeup, intervalSec: 30 });
+
+    const t0 = new Date(1700000000000);
+    expect((await sweeper.sweep(t0)).skipped).toBe(false);
+    expect((await sweeper.sweep(new Date(t0.getTime() + 15_000))).skipped).toBe(true);
+    expect((await sweeper.sweep(new Date(t0.getTime() + 31_000))).skipped).toBe(false);
+  });
+
+  it("rejects zero, negative, and non-numeric env values and falls through", async () => {
+    // Garbage env values are not honored: the sweep falls through to the
+    // saved UI value, then deps.intervalSec, then the default.
+    process.env.MYRMIDON_GUARD_RETURN_INTERVAL_SEC = "-5";
+    let sweeper = createGuardReturnSweep({ db: emptyDb, wakeup, intervalSec: 42 });
+    let t0 = new Date(1700000000000);
+    expect((await sweeper.sweep(t0)).skipped).toBe(false);
+    expect((await sweeper.sweep(new Date(t0.getTime() + 43_000))).skipped).toBe(false);
+
+    process.env.MYRMIDON_GUARD_RETURN_INTERVAL_SEC = "abc";
+    sweeper = createGuardReturnSweep({ db: emptyDb, wakeup, intervalSec: 42 });
+    t0 = new Date(1700000100000);
+    expect((await sweeper.sweep(t0)).skipped).toBe(false);
+    expect((await sweeper.sweep(new Date(t0.getTime() + 43_000))).skipped).toBe(false);
+
+    // A garbage saved value never carries source "ui" in production — the
+    // registry validator (positiveInteger) drops it before resolveSetting
+    // marks the source, so liveSavedSetting returns undefined and the sweep
+    // falls through to deps/default here as well.
+    process.env.MYRMIDON_GUARD_RETURN_INTERVAL_SEC = "0";
+    applyLiveBehaviorSettings({
+      settings: { guardReturnIntervalSec: 15 },
+      sources: { guardReturnIntervalSec: "default" },
+    });
+    sweeper = createGuardReturnSweep({ db: emptyDb, wakeup, intervalSec: 42 });
+    t0 = new Date(1700000200000);
+    expect((await sweeper.sweep(t0)).skipped).toBe(false);
+    expect((await sweeper.sweep(new Date(t0.getTime() + 43_000))).skipped).toBe(false);
   });
 });

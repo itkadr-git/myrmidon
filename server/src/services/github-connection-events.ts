@@ -36,6 +36,7 @@ import {
   extractPullRequestIssueIdentifier,
   pullRequestWorkProductData,
 } from "../myrmidon/task-pr-sync/linking.js";
+import { liveSavedSetting } from "../myrmidon/behavior-settings/live.js";
 import { workProductService } from "./work-products.js";
 
 type LeasedEvent = SealedConnectorEvents["events"][number];
@@ -1181,8 +1182,18 @@ export function githubConnectionEventService(
     async sweepWatchdog(currentTime: Date = now()): Promise<GitHubEventsWatchdogResult> {
       const bindings = await activeBindings();
       const companyIds = Array.from(new Set(bindings.map((b) => b.companyId)));
-      const rawThreshold = Number(process.env.MYRMIDON_GITHUB_EVENTS_MAX_SILENCE_MIN ?? process.env.PAPERCLIP_GITHUB_EVENTS_MAX_SILENCE_MIN);
-      const thresholdMin = Number.isFinite(rawThreshold) && rawThreshold > 0 ? rawThreshold : 15;
+      // myrmidon(1.7 SWEEP-2, OPE-12629): an explicit env stays the forced
+      // override (the legacy PAPERCLIP_… alias is honored too), then the value
+      // saved from the UI ("Тонкие настройки"), then the built-in 15 minutes.
+      // Re-read on every sweep pass, so a saved value applies without restart.
+      const envRaw = process.env.MYRMIDON_GITHUB_EVENTS_MAX_SILENCE_MIN ?? process.env.PAPERCLIP_GITHUB_EVENTS_MAX_SILENCE_MIN;
+      let thresholdMin: number;
+      if (envRaw !== undefined && envRaw !== "") {
+        const envParsed = Number(envRaw);
+        thresholdMin = Number.isFinite(envParsed) && envParsed > 0 ? envParsed : 15;
+      } else {
+        thresholdMin = liveSavedSetting<number>("githubEventsMaxSilenceMin") ?? 15;
+      }
       const staleThresholdMs = thresholdMin * 60 * 1000;
       const ciStaleThresholdMs = Math.max(staleThresholdMs, 30 * 60 * 1000);
 
