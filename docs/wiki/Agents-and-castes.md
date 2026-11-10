@@ -34,6 +34,19 @@ These filters combine with AND after access filtering; unsupported query
 parameters still return HTTP 400. See the
 [fleet guide](Ui2-agents-fleet).
 
+## Company agent quota
+
+Creating an agent is limited by the company's subscription tier: when the
+company already has as many active agents (every agent that is not
+`terminated`) as its tier's quota allows, the create call is rejected with
+`HTTP 403 Forbidden` and error code `quota_exceeded`. Within the quota,
+creation works as before. A company without a tier row defaults to the
+`free` tier with a quota of 5 agents; terminated agents do not occupy
+quota slots, so terminating an agent frees a slot. Until the
+`company_tiers` table is deployed (the 1.7 TIER-SCHEMA migration), the
+check stays dormant and creation is unlimited. Details and troubleshooting:
+[company agent quota guide](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/guides/company-agent-quota.md).
+
 ## Agents Fleet screen
 
 UI-2 provides a company-wide Agents Fleet at `/{company}/agents`. It groups

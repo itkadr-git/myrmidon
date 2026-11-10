@@ -145,8 +145,7 @@ export function summarizeCheckRuns(
     };
   }
 
-  const totalRuns = runs.length;
-  if (totalRuns === 0) {
+  if (runs.length === 0) {
     return {
       status: meta?.status ?? "pending",
       conclusion: meta?.conclusion ?? "no_checks",
@@ -160,6 +159,34 @@ export function summarizeCheckRuns(
       optionalFailedJobs: [],
     };
   }
+
+  // myrmidon(OPE-12624): a re-run of one check outside its workflow run leaves
+  // the older `cancelled` run next to the newer one; drop a `cancelled` run when
+  // the same check (name compared case-insensitively, trimmed) has a later run
+  // (by `startedAt`, ties/empty resolved by the larger `id`). Only `cancelled`
+  // collapses — older failures stay visible next to a newer success.
+  const runStartKey = (run: PullRequestCiJob): { at: number; id: number } => ({
+    at: run.startedAt ? new Date(run.startedAt).getTime() : Number.NaN,
+    id: run.id,
+  });
+  const isOutdatedCancelledRun = (run: PullRequestCiJob): boolean => {
+    if (run.conclusion !== "cancelled") return false;
+    const start = runStartKey(run);
+    const normalizedName = run.name.trim().toLowerCase();
+    return runs.some((other) => {
+      if (other === run) return false;
+      if (other.name.trim().toLowerCase() !== normalizedName) return false;
+      const otherStart = runStartKey(other);
+      if (Number.isNaN(otherStart.at) || Number.isNaN(start.at)) {
+        return otherStart.id > start.id;
+      }
+      if (otherStart.at !== start.at) return otherStart.at > start.at;
+      return otherStart.id > start.id;
+    });
+  };
+
+  const effectiveRuns = runs.filter((r) => !isOutdatedCancelledRun(r));
+  const totalRuns = effectiveRuns.length;
 
   const configuredRequired =
     options?.requiredChecks ??
@@ -176,7 +203,7 @@ export function summarizeCheckRuns(
     return lower === "main-green" || lower.startsWith("main-green");
   };
 
-  const hasConfiguredRequiredInRuns = runs.some((r) =>
+  const hasConfiguredRequiredInRuns = effectiveRuns.some((r) =>
     requiredNamesSet.has(r.name.trim().toLowerCase()),
   );
 
@@ -198,7 +225,7 @@ export function summarizeCheckRuns(
   let inProgressRequiredCount = 0;
   let latestCompletedAt: string | null = null;
 
-  for (const run of runs) {
+  for (const run of effectiveRuns) {
     if (run.completedAt) {
       if (!latestCompletedAt || new Date(run.completedAt).getTime() > new Date(latestCompletedAt).getTime()) {
         latestCompletedAt = run.completedAt;

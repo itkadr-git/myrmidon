@@ -6,6 +6,7 @@
 export {
   STACK_GENERAL_KEY,
   STACK_DOCUMENT_VERSION,
+  PAPERCLIP_MIGRATION_SUPPORTED_VERSION,
   STACK_RELEASE_SOURCES,
   STACK_CHECKABLE_RELEASE_SOURCES,
   STACK_LOCAL_PROBES,
@@ -82,6 +83,7 @@ export {
 export {
   decideStackBacklogDrafts,
   STACK_BACKLOG_LAG_DEFAULT,
+  type ExistingStackTask,
   type StackBacklogDraft,
   type StackBacklogDraftOptions,
 } from "./backlog-draft.js";

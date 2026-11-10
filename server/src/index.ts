@@ -2549,7 +2549,10 @@ async function startServerWithDatabaseTeardown(
     startDistillSweep(db as any); // myrmidon(1.6.6-K5): knowledge distiller v2 pass; a no-op unless the distill setting (or MYRMIDON_DISTILL_ENABLED=1) is on
     startRedactionSubstitutionCleanup(db as any); // myrmidon(1.7-REDACT): expire reversible substitutions
     startKnowledgeExport(db as any); // myrmidon(1.7 KNOWLEDGE-2.0 L-8): no-op unless MYRMIDON_KNOWLEDGE_EXPORT_REPO is set
-    startLessonDistillSweep({ db: db as any }); // myrmidon(1.7 KNOWLEDGE-2.0 L-4): hindsight lessons -> knowledge suggestions; a no-op unless MYRMIDON_LESSON_DISTILL_ENABLED=1
+    startLessonDistillSweep({
+      db: db as any,
+      readGeneral: async () => ((await instanceSettingsService(db as any).getGeneral()) as any)?.agentMemory,
+    }); // myrmidon(1.7 KNOWLEDGE-2.0 L-4, OPE-12628): hindsight lessons -> knowledge suggestions
     // myrmidon(1.7 KNOWLEDGE-2.0 L-13): pull the verified-skill record at boot;
     // delivery stays fail-closed on a missing or changed git snapshot.
     void configuredGitSkillRecord()?.refresh().catch((error) =>

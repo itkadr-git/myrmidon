@@ -390,9 +390,9 @@ const en = {
   "ui2.settings.system.keys.created": "Created",
   "ui2.settings.system.keys.lastUsed": "Last used",
   "ui2.settings.system.keys.never": "Never",
-  // myrmidon(OPE-12046): SWEEP-2 read-only fine settings block on the System screen.
-  "ui2.settings.system.fine.title": "Fine settings (read-only)",
-  "ui2.settings.system.fine.footer": "Read-only: values come from the behavior settings API; editing arrives with the next slice.",
+  // myrmidon(OPE-12611): SWEEP-2 write — instance admins edit the value inline.
+  "ui2.settings.system.fine.title": "Fine settings",
+  "ui2.settings.system.fine.footer": "Values come from the behavior settings API; instance admins can edit them in place.",
   "ui2.settings.system.fine.name": "Setting",
   "ui2.settings.system.fine.value": "Value",
   "ui2.settings.system.fine.source": "Source",
@@ -403,6 +403,10 @@ const en = {
   "ui2.settings.system.fine.empty": "No behavior settings resolved by the server",
   "ui2.settings.system.fine.denied": "Access denied",
   "ui2.settings.system.fine.deniedHint": "You do not have permission to view these settings.",
+  "ui2.settings.system.fine.action": "Actions",
+  "ui2.settings.system.fine.save": "Save",
+  "ui2.settings.system.fine.saving": "Saving…",
+  "ui2.settings.system.fine.readOnlyType": "Read-only",
   "ui2.settings.secrets": "Secrets",
   "ui2.screens.secrets": "Secrets",
   "ui2.settings.secrets.title": "Secret references",
@@ -1111,9 +1115,10 @@ const ru: Record<Ui2MessageKey, string> = {
   "ui2.settings.system.keys.created": "Создан",
   "ui2.settings.system.keys.lastUsed": "Последнее использование",
   "ui2.settings.system.keys.never": "Никогда",
-  // myrmidon(OPE-12046): SWEEP-2 — read-only блок «Тонкие настройки» на экране Система.
-  "ui2.settings.system.fine.title": "Тонкие настройки (только чтение)",
-  "ui2.settings.system.fine.footer": "Только чтение: значения приходят из API переменных поведения; запись — в следующем срезе.",
+  // myrmidon(OPE-12611): SWEEP-2 — read-only блок «Тонкие настройки» на экране Система.
+  // myrmidon(OPE-12611): SWEEP-2 запись — instance-admin правит значение в строке.
+  "ui2.settings.system.fine.title": "Тонкие настройки",
+  "ui2.settings.system.fine.footer": "Значения приходят из API переменных поведения; instance-admin может править их прямо в таблице.",
   "ui2.settings.system.fine.name": "Переменная",
   "ui2.settings.system.fine.value": "Значение",
   "ui2.settings.system.fine.source": "Источник",
@@ -1124,6 +1129,10 @@ const ru: Record<Ui2MessageKey, string> = {
   "ui2.settings.system.fine.empty": "Сервер не вернул ни одной переменной поведения",
   "ui2.settings.system.fine.denied": "Доступ запрещён",
   "ui2.settings.system.fine.deniedHint": "У вас нет прав на просмотр этих настроек.",
+  "ui2.settings.system.fine.action": "Действия",
+  "ui2.settings.system.fine.save": "Сохранить",
+  "ui2.settings.system.fine.saving": "Сохранение…",
+  "ui2.settings.system.fine.readOnlyType": "Только чтение",
   "ui2.settings.secrets": "Секреты",
   "ui2.screens.secrets": "Секреты",
   "ui2.settings.secrets.title": "Ссылки на секреты",

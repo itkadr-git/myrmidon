@@ -30,6 +30,13 @@ describe("custom locale catalog upload", () => {
     expect((en.language as Record<string, unknown>).label).not.toBe("My language");
   });
 
+  it("preserves custom and flat keys during catalog merge", () => {
+    const custom = { "ui2.chip.colony": "Custom Colony", extraGroup: { key: "Value" } };
+    const merged = mergeCatalog(en, custom);
+    expect((merged as Record<string, unknown>)["ui2.chip.colony"]).toBe("Custom Colony");
+    expect((merged as Record<string, Record<string, string>>).extraGroup?.key).toBe("Value");
+  });
+
   it("rejects dangerous object keys", () => {
     const source = '{"__proto__":{},"constructor":{}}';
     expect(validateCatalogJson(source).valid).toBe(false);
