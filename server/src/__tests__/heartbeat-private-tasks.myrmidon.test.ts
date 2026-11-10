@@ -1,12 +1,14 @@
 import { randomUUID } from "node:crypto";
 import { eq } from "drizzle-orm";
-import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   activityLog,
+  agentRuntimeState,
   agentWakeupRequests,
   agents,
   companies,
   createDb,
+  heartbeatRunEvents,
   heartbeatRuns,
   issueThreadInteractions,
   issues,
@@ -55,16 +57,23 @@ describeEmbeddedPostgres("heartbeat private-task suppression (1.7 PRIVATE-TASKS 
     heartbeat = heartbeatService(db, { runtimeEnv: { ...process.env, MYRMIDON_IN_WORKTREE: "false" } });
   }, 30_000);
 
+  beforeEach(() => {
+    mockAdapterExecute.mockClear();
+  });
+
   afterEach(async () => {
+    await heartbeat.drainActiveRunExecutions();
     for (let attempt = 0; attempt < 100; attempt += 1) {
       const runs = await db.select({ status: heartbeatRuns.status }).from(heartbeatRuns);
       if (!runs.some((run) => run.status === "queued" || run.status === "running")) break;
       await new Promise((resolve) => setTimeout(resolve, 50));
     }
+    await db.delete(issueThreadInteractions);
     await db.delete(activityLog);
+    await db.delete(heartbeatRunEvents);
     await db.delete(heartbeatRuns);
     await db.delete(agentWakeupRequests);
-    await db.delete(issueThreadInteractions);
+    await db.delete(agentRuntimeState);
     await db.delete(issues);
     await db.delete(agents);
     await db.delete(companies);
