@@ -30,6 +30,9 @@ import {
   telegramOwnerBoardOnlyText,
   telegramOwnerInteractionText,
 } from "../myrmidon/owner-delivery/telegram-text.js";
+// myrmidon(1.7-TG-LOCALE, OPE-12616): the owner-card texts follow the instance
+// locale; the channel-connector theme answers like the bridge module does.
+import { telegramDmMenuLocale } from "../myrmidon/channel-connectors/bridge/locales.js";
 import { logger } from "../middleware/logger.js";
 import { projectSafeChatPublication } from "./chat-publication-projection.js";
 import { safeChatTaskUrl } from "./chat-task-url.js";
@@ -391,15 +394,25 @@ export async function enqueueIssueInteractionChatPublications(
         : null;
     let ownerTelegramText: string | null = null;
     if (isOwnerTelegramBinding) {
+      // myrmidon(1.7-TG-LOCALE, OPE-12616): a publication carries no board
+      // user id, so the card texts follow the instance locale (env force,
+      // then the instance-wide setting, then English) — the same resolution
+      // the Telegram command menu uses.
+      const ownerLocale = await telegramDmMenuLocale(db);
       try {
         ownerTelegramText = telegramOwnerInteractionText(
+          ownerLocale,
           interaction,
           taskUrl,
           true,
         );
         // Nothing renderable (tool/secret/connection confirmation and other
         // kinds): the owner still learns that a decision waits on the board.
-        ownerTelegramText ??= telegramOwnerBoardOnlyText(taskUrl, "board_only");
+        ownerTelegramText ??= telegramOwnerBoardOnlyText(
+          ownerLocale,
+          taskUrl,
+          "board_only",
+        );
       } catch (error) {
         if (!(error instanceof TelegramOwnerTextTooLongError)) throw error;
         // A valid interaction must not roll back, and the owner must not
@@ -415,7 +428,11 @@ export async function enqueueIssueInteractionChatPublications(
           },
           "Owner Telegram interaction text exceeds the message limit; sent a board-only notice",
         );
-        ownerTelegramText = telegramOwnerBoardOnlyText(taskUrl, "too_long");
+        ownerTelegramText = telegramOwnerBoardOnlyText(
+          ownerLocale,
+          taskUrl,
+          "too_long",
+        );
       }
     }
     const isTextOnlyOwnerTelegram =

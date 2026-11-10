@@ -196,6 +196,20 @@ export const bridgeTextEn = {
   "bridge.thisAgent": "this agent",
   "bridge.refusalUnlinked":
     "This bot is available to workspace members only. Ask an administrator to link your Telegram account.",
+
+  // myrmidon(1.7-TG-LOCALE / OPE-12616): owner-delivery card texts. The ru
+  // catalog mirrors these byte-for-byte with the pre-localization Russian
+  // literals, so a ru instance renders exactly the same owner messages as
+  // before. The publication path has no per-user identity, so the caller
+  // resolves the instance locale (env force → instance setting → en).
+  "owner.needsYourDecision": "We need your decision.",
+  "owner.tooLongForTelegram": "The question is too long for Telegram.",
+  "owner.boardOnlyReply": "Please answer on the board.",
+  "owner.defaultQuestionTitle": "An answer is needed",
+  "owner.recommendedOptionSuffix": " (recommended)",
+  "owner.questionReplyGuidance":
+    "Reply with a message: the option number or your own words.",
+  "owner.confirmationSubject": "Subject of the approval: {target}",
 } as const;
 
 export type BridgeTextKey = keyof typeof bridgeTextEn;
