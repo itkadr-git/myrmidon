@@ -182,4 +182,22 @@ describe("myrmidon(UI2 Wave A part 2) top bar chips", () => {
     expect(text).toContain("$120");
     expect(text).toContain("5");
   });
+
+  it("does not fall back to legacy scalar fields when chip models are explicitly null", async () => {
+    const text = await renderWith({
+      colony: null,
+      runs: null,
+      spend: null,
+      waiting: null,
+      colonyActive: 3,
+      colonyTotal: 12,
+      monthSpendCents: 4_200,
+      monthBudgetCents: 12_000,
+      attentionCount: 5,
+    });
+    expect(text.match(/—/g)?.length).toBe(4);
+    expect(text).not.toContain("3 of 12");
+    expect(text).not.toContain("$42");
+    expect(container.querySelector('[aria-label="Waiting count unavailable"]')?.textContent).toBe("—");
+  });
 });

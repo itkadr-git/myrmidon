@@ -19,6 +19,7 @@ import { useState } from "react";
 import { CircleAlert, ChevronDown, MessagesSquare, Server, Users, Wallet } from "lucide-react";
 import { useTranslation } from "@/i18n";
 import { useCompany } from "@/context/CompanyContext";
+import { ui2SpendChip } from "../ui2TopBarChips";
 import { useUi2StatusStrip } from "../useUi2Status";
 import { Ui2CommanderPalette } from "./Ui2CommanderPalette";
 
@@ -70,10 +71,25 @@ export function Ui2TopBar() {
   const strip = useUi2StatusStrip(selectedCompanyId);
   const [paletteOpen, setPaletteOpen] = useState(false);
 
-  const colony = strip?.colony ?? (strip?.colonyActive != null ? { running: strip.colonyActive, total: strip.colonyTotal ?? 0, attention: !!strip.fleetAttention } : null);
+  const colony =
+    strip?.colony !== undefined
+      ? strip.colony
+      : strip?.colonyActive != null
+        ? { running: strip.colonyActive, total: strip.colonyTotal ?? 0, attention: !!strip.fleetAttention }
+        : null;
   const runs = strip?.runs ?? null;
-  const spend = strip?.spend ?? (strip?.monthSpendCents != null ? { spend: `$${Math.round(strip.monthSpendCents / 100).toLocaleString("en-US")}`, spendCents: strip.monthSpendCents, budgetCents: strip.monthBudgetCents ?? 0, budget: strip.monthBudgetCents ? `$${Math.round(strip.monthBudgetCents / 100).toLocaleString("en-US")}` : null } : null);
-  const waiting = strip?.waiting ?? (strip?.attentionCount != null ? { count: strip.attentionCount, approvals: strip.attentionCount, decisions: 0, interactions: 0 } : null);
+  const spend =
+    strip?.spend !== undefined
+      ? strip.spend
+      : strip?.monthSpendCents != null
+        ? ui2SpendChip({ spendCents: strip.monthSpendCents, budgetCents: strip.monthBudgetCents ?? 0 })
+        : null;
+  const waiting =
+    strip?.waiting !== undefined
+      ? strip.waiting
+      : strip?.attentionCount != null
+        ? { count: strip.attentionCount, approvals: strip.attentionCount, decisions: 0, interactions: 0 }
+        : null;
 
   return (
     <header
