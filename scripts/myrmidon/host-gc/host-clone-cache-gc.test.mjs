@@ -29,6 +29,7 @@ const {
   scanSshRunCopies,
   pruneSshRunCopies,
   UsageError,
+  runGitBasePackGcChild,
 } = await import(
   path.join(ROOT, "scripts/myrmidon/host-gc/host-clone-cache-gc.mjs")
 );
@@ -218,6 +219,86 @@ describe("atomicDrop", () => {
   });
 });
 
+describe("runGitBasePackGcChild", () => {
+  it("spawns the pack-gc script with matching mode and shared journal", () => {
+    const calls = [];
+    const fakeSpawn = (cmd, childArgs, opts) => {
+      calls.push({ cmd, childArgs, opts });
+      return { status: 0, stdout: "{}", stderr: "" };
+    };
+
+    const result = runGitBasePackGcChild({
+      dryRun: true,
+      root: "/tmp/bots",
+      journal: "/tmp/j.jsonl",
+      lock: "/tmp/l.lock",
+    }, { spawnImpl: fakeSpawn });
+
+    assert.equal(result.ok, true);
+    assert.equal(calls.length, 1);
+    assert.equal(calls[0].cmd, "node");
+    const args = calls[0].childArgs;
+    assert.ok(args[0].endsWith("host-git-base-pack-gc.mjs"));
+    assert.ok(args.includes("--dry-run"));
+    assert.ok(!args.includes("--apply"));
+    assert.ok(args.includes("--bots-root"));
+    assert.ok(args.includes("/tmp/bots"));
+    assert.ok(args.includes("--journal"));
+    assert.ok(args.includes("/tmp/j.jsonl"));
+    // parent lock must NOT be passed to the child — parent already holds it
+    assert.ok(!args.includes("--lock"));
+    assert.ok(!args.includes("/tmp/l.lock"));
+  });
+
+  it("passes --apply when parent is in apply mode", () => {
+    const calls = [];
+    const fakeSpawn = (cmd, childArgs, opts) => {
+      calls.push({ cmd, childArgs, opts });
+      return { status: 0, stdout: "{}", stderr: "" };
+    };
+
+    runGitBasePackGcChild({
+      dryRun: false,
+      root: "/tmp/bots",
+      journal: "/tmp/j.jsonl",
+      lock: "/tmp/l.lock",
+    }, { spawnImpl: fakeSpawn });
+
+    assert.ok(calls[0].childArgs.includes("--apply"));
+    assert.ok(!calls[0].childArgs.includes("--dry-run"));
+  });
+
+  it("returns ok=false when child exits non-zero", () => {
+    const fakeSpawn = () => ({ status: 1, stdout: "", stderr: "boom" });
+    const result = runGitBasePackGcChild({
+      dryRun: true,
+      root: "/tmp/bots",
+      journal: "/tmp/j.jsonl",
+      lock: "/tmp/l.lock",
+    }, { spawnImpl: fakeSpawn });
+    assert.equal(result.ok, false);
+    assert.equal(result.status, 1);
+    assert.equal(result.stderr, "boom");
+  });
+
+  it("defaults bots-root to /srv/myrmidon-bots when args.root is unset", () => {
+    const calls = [];
+    const fakeSpawn = (cmd, childArgs) => {
+      calls.push({ cmd, childArgs });
+      return { status: 0, stdout: "", stderr: "" };
+    };
+
+    runGitBasePackGcChild({
+      dryRun: true,
+      journal: "/tmp/j.jsonl",
+      lock: "/tmp/l.lock",
+    }, { spawnImpl: fakeSpawn });
+
+    const idx = calls[0].childArgs.indexOf("--bots-root");
+    assert.equal(calls[0].childArgs[idx + 1], "/srv/myrmidon-bots");
+  });
+});
+
 describe("scratch-gc (BOT-DISK-SCRATCH)", () => {
   it("loadEnvConfig parses env file and overrides process.env", () => {
     const envFile = path.join(tmpDir, "host-gc.env");
@@ -236,6 +317,15 @@ describe("scratch-gc (BOT-DISK-SCRATCH)", () => {
     ]);
     assert.equal(args.scratchTtlHours, 18);
     assert.deepEqual(args.scratchRoots, ["/tmp/bot1/scratch", "/tmp/bot2/scratch"]);
+  });
+
+  it("parseArgs defaults gitBasePackGc to true and honours --no-git-base-pack-gc", () => {
+    const on = parseArgs(["node", "script.mjs"]);
+    assert.equal(on.gitBasePackGc, true);
+    const off = parseArgs(["node", "script.mjs", "--no-git-base-pack-gc"]);
+    assert.equal(off.gitBasePackGc, false);
+    const explicit = parseArgs(["node", "script.mjs", "--git-base-pack-gc"]);
+    assert.equal(explicit.gitBasePackGc, true);
   });
 
   it("discoverBotScratchDirs finds <bot>/hermes/cache/scratch", () => {

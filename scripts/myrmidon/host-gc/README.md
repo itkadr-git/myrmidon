@@ -204,6 +204,31 @@ disk while originals exist; rollback = copy back). Journal events are
 `git-base-dry-run` / `git-base-packs-removed` / `git-base-skipped` /
 `git-base-backup-failed` / `git-base-remove-failed` in the same JSONL journal.
 
+### Production invocation
+
+The scheduler (`host-clone-cache-gc.mjs`) spawns the pack-gc script
+automatically after every pass (both dry-run and apply) when
+`--git-base-pack-gc` is enabled (default). Use `--no-git-base-pack-gc` to
+skip it. The child inherits `--bots-root` and `--journal` from the parent,
+so both scripts write to the same JSONL journal. The parent's lock is not
+passed to the child (it already runs inside the parent's critical section);
+the child uses its own lock to guard against concurrent manual runs. The
+systemd timer/service needs no extra unit — the pack-gc runs as part of the
+standard `myrmidon-host-gc.service` invocation.
+
+```bash
+# Plan only (includes pack-gc dry-run)
+node scripts/myrmidon/host-gc/host-clone-cache-gc.mjs --dry-run
+
+# Execute (includes pack-gc apply)
+node scripts/myrmidon/host-gc/host-clone-cache-gc.mjs --apply
+
+# Skip pack-gc
+node scripts/myrmidon/host-gc/host-clone-cache-gc.mjs --apply --no-git-base-pack-gc
+```
+
+Manual standalone usage (for emergency or debugging):
+
 ```bash
 # Plan only
 node scripts/myrmidon/host-gc/host-git-base-pack-gc.mjs --dry-run

@@ -26,9 +26,12 @@
 //   --lock <path>         Override lockfile path (for testing)
 //   --clone-ttl <hours>   Override clone TTL (default 24)
 //   --cache-ttl <hours>   Override cache TTL (default 72)
+
 //   --runner-root <path>  SSH runner root to prune run copies under (repeatable; also
 //                         HOST_GC_RUNNER_ROOTS, colon-separated). No root, no pass.
 //   --run-copy-ttl <hours> Override the run-copy TTL (default 4; finite, at least 3 = longest run timeout)
+//   --git-base-pack-gc    Run git-base pack GC after the main pass (default true)
+//   --no-git-base-pack-gc Skip git-base pack GC
 
 import fs from "node:fs";
 import path from "node:path";
@@ -150,8 +153,10 @@ export function parseArgs(argv) {
     cacheTtlHours: CACHE_TTL_HOURS,
     scratchTtlHours: defaultScratchTtl,
     procDir: process.env.PROC_DIR || "/proc",
+
     runnerRoots: (process.env.HOST_GC_RUNNER_ROOTS || "").split(":").map((r) => r.trim()).filter(Boolean),
     runCopyTtlHours: RUN_COPY_TTL_HOURS,
+    gitBasePackGc: true,
   };
   for (let i = 2; i < argv.length; i++) {
     const a = argv[i];
@@ -165,11 +170,14 @@ export function parseArgs(argv) {
     else if (a === "--cache-ttl") args.cacheTtlHours = Number(argv[++i]);
     else if (a === "--scratch-ttl") args.scratchTtlHours = Number(argv[++i]);
     else if (a === "--proc-dir") args.procDir = argv[++i];
+
     else if (a === "--runner-root") args.runnerRoots.push(argv[++i]);
     else if (a === "--run-copy-ttl") args.runCopyTtlHours = Number(argv[++i]);
+    else if (a === "--git-base-pack-gc") args.gitBasePackGc = true;
+    else if (a === "--no-git-base-pack-gc") args.gitBasePackGc = false;
     else if (a === "--env") i++;
     else if (a === "--help") {
-      console.log("Usage: host-clone-cache-gc.mjs [--apply|--dry-run] [--root path] [--scratch-root path] [--journal path] [--lock path] [--clone-ttl h] [--cache-ttl h] [--scratch-ttl h] [--proc-dir path] [--runner-root path] [--run-copy-ttl h (>= 3)] [--env path]");
+      console.log("Usage: host-clone-cache-gc.mjs [--apply|--dry-run] [--root path] [--scratch-root path] [--journal path] [--lock path] [--clone-ttl h] [--cache-ttl h] [--scratch-ttl h] [--proc-dir path] [--runner-root path] [--run-copy-ttl h (>= 3)] [--git-base-pack-gc|--no-git-base-pack-gc] [--env path]");
       process.exit(0);
     }
   }
@@ -993,6 +1001,41 @@ function archiveClone(clonePath, archiveRoot) {
   return archivePath;
 }
 
+// --- git-base pack GC (OPE-12489) -------------------------------------------
+
+/**
+ * Spawn host-git-base-pack-gc.mjs as a child process.
+ *
+ * The pack-gc script shares the same journal as the main scheduler. We pass
+ * the parent's dry-run/apply mode, bots-root and journal so both scripts
+ * write to the same JSONL journal. We intentionally do NOT pass the parent's
+ * lock path: the parent already holds that lock for the whole critical
+ * section, and the child runs synchronously inside it, so a second lock
+ * acquisition would deadlock. The child falls back to its own default lock
+ * (myrmidon-git-base-pack-gc.lock) which only guards against concurrent
+ * manual runs.
+ */
+export function runGitBasePackGcChild(args, { spawnImpl = spawnSync } = {}) {
+  const scriptDir = path.dirname(new URL(import.meta.url).pathname);
+  const childScript = path.join(scriptDir, "host-git-base-pack-gc.mjs");
+  const childArgs = [
+    childScript,
+    args.dryRun ? "--dry-run" : "--apply",
+    "--bots-root", args.root || "/srv/myrmidon-bots",
+    "--journal", args.journal,
+  ];
+  const result = spawnImpl("node", childArgs, {
+    encoding: "utf8",
+    timeout: 30 * 60 * 1000, // 30 min — pack GC on a large fleet can take a while
+  });
+  return {
+    ok: result.status === 0,
+    status: result.status,
+    stdout: result.stdout || "",
+    stderr: result.stderr || "",
+  };
+}
+
 // --- Main -------------------------------------------------------------------
 
 async function main() {
@@ -1202,6 +1245,24 @@ async function main() {
         runCopiesRemoved: runCopiesGone.length,
         kept: plan.kept.length,
       }, null, 2));
+    }
+
+    // 5. git-base pack GC (OPE-12489) — runs in both dry-run and apply modes
+    if (args.gitBasePackGc) {
+      const child = runGitBasePackGcChild(args);
+      if (child.ok) {
+        journalRecord(args.journal, {
+          event: "git-base-pack-gc-complete",
+          dryRun: args.dryRun,
+        });
+      } else {
+        journalRecord(args.journal, {
+          event: "git-base-pack-gc-failed",
+          dryRun: args.dryRun,
+          status: child.status,
+          stderr: child.stderr.slice(0, 500),
+        });
+      }
     }
   } finally {
     lock.release();
