@@ -9142,6 +9142,7 @@ export function buildPaperclipTaskMarkdown(input: {
     pullRequestsCi?: PullRequestCiResult[] | null;
     [key: string]: unknown;
   } | null;
+  pullRequestsCi?: PullRequestCiResult[] | null;
   // false builds the compact variant used for resume deltas, where the session
   // already received the description with the assignment.
   includeDescription?: boolean;
@@ -9343,11 +9344,13 @@ export function buildPaperclipTaskMarkdown(input: {
     }
     const wakePayload = input.wakePayload;
     const prsCi = (
-      Array.isArray(wakePayload?.pullRequestsCi) && wakePayload.pullRequestsCi.length > 0
-        ? wakePayload.pullRequestsCi
-        : wakePayload?.ciResult
-          ? [wakePayload.ciResult]
-          : []
+      Array.isArray(input.pullRequestsCi) && input.pullRequestsCi.length > 0
+        ? input.pullRequestsCi
+        : Array.isArray(wakePayload?.pullRequestsCi) && wakePayload.pullRequestsCi.length > 0
+          ? wakePayload.pullRequestsCi
+          : wakePayload?.ciResult
+            ? [wakePayload.ciResult]
+            : []
     ) as PullRequestCiResult[];
 
     if (prsCi.length > 0) {
@@ -9367,6 +9370,12 @@ export function buildPaperclipTaskMarkdown(input: {
         if (ci.failedJobs && ci.failedJobs.length > 0) {
           lines.push("  - Failed jobs:");
           for (const job of ci.failedJobs) {
+            lines.push(`    - ${job.name}: ${job.conclusion} (${job.url})`);
+          }
+        }
+        if (ci.optionalFailedJobs && ci.optionalFailedJobs.length > 0) {
+          lines.push("  - Optional failed jobs (не влияет на вердикт):");
+          for (const job of ci.optionalFailedJobs) {
             lines.push(`    - ${job.name}: ${job.conclusion} (${job.url})`);
           }
         }
@@ -25150,6 +25159,19 @@ export function heartbeatService(
           true,
         isolateReviewerWake: isolatedReviewerRun,
       });
+      let reviewerLiveCi: PullRequestCiResult[] | null = null;
+      if (isolatedReviewerRun && issueRef) {
+        try {
+          const ciResolver = createPullRequestCiResolver(db, { source: "run-context" });
+          reviewerLiveCi = await withCiResolveDeadline(
+            ciResolver.resolveForIssue(agent.companyId, issueRef.id),
+            [],
+          );
+        } catch {
+          reviewerLiveCi = null;
+        }
+      }
+
       // Database reads only; the reviewer fetches the diff itself.
       const reviewerInput =
         isolatedReviewerRun && issueRef
@@ -25162,7 +25184,7 @@ export function heartbeatService(
                 title: issueRef.title,
                 description: issueContext?.description ?? null,
               },
-              pullRequestsCi: paperclipWakePayload?.pullRequestsCi ?? [],
+              pullRequestsCi: reviewerLiveCi ?? paperclipWakePayload?.pullRequestsCi ?? [],
             }).catch(() => null)
           : null;
       if (paperclipWakePayload) {
@@ -25231,6 +25253,7 @@ export function heartbeatService(
         externalChatProvider: paperclipWakePayload?.externalChatProvider,
         nativeRunner: agent.adapterType === "paperclip_runner",
         wakePayload: paperclipWakePayload,
+        pullRequestsCi: reviewerLiveCi ?? paperclipWakePayload?.pullRequestsCi ?? null,
         reviewerInput,
         interaction: {
           kind: readNonEmptyString(context.interactionKind),
