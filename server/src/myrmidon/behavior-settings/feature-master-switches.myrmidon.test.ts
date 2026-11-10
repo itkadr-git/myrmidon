@@ -2,7 +2,7 @@ import { describe, expect, it, afterEach } from "vitest";
 import { behaviorSettingRegistry } from "@myrmidon/shared";
 import { applyLiveBehaviorSettings, liveBehaviorSettingsView } from "./live.js";
 import { foragingMasterEnabled, resolveForagingEffectiveSettings } from "../foraging/settings.js";
-import { readBaselineSettings } from "../baseline/startup.js";
+import { baselineMasterEnabled, readBaselineSettings } from "../baseline/startup.js";
 import { ctoChatSettingsProblem, readCtoChatSettings } from "../cto-chat/settings.js";
 import { evalsSettingsProblem, readEvalsSettings } from "../evals/judge.js";
 
@@ -63,16 +63,44 @@ describe("myrmidon(OPE-12124) feature master switches", () => {
     expect(foragingMasterEnabled({ MYRMIDON_FORAGING_ENABLED: "true" })).toBe(true);
   });
 
-  it("lets the environment override a UI-off baseline switch", () => {
+  it("lets the environment override a UI-off baseline switch (env=true + UI=false => enabled=true)", () => {
     applyLiveBehaviorSettings({ settings: { baselineEnabled: false }, sources: { baselineEnabled: "ui" } as never });
+    expect(baselineMasterEnabled({})).toBe(false);
+    expect(readBaselineSettings({
+      MYRMIDON_BASELINE_INTERVAL_SEC: "3600",
+    }).enabled).toBe(false);
+
+    expect(baselineMasterEnabled({ MYRMIDON_BASELINE_ENABLED: "true" })).toBe(true);
     expect(readBaselineSettings({
       MYRMIDON_BASELINE_ENABLED: "true",
       MYRMIDON_BASELINE_INTERVAL_SEC: "3600",
     })).toMatchObject({ enabled: true, intervalSec: 3600 });
+
+    expect(baselineMasterEnabled({ MYRMIDON_BASELINE_ENABLED: "false" })).toBe(false);
     expect(readBaselineSettings({
       MYRMIDON_BASELINE_ENABLED: "false",
       MYRMIDON_BASELINE_INTERVAL_SEC: "3600",
     }).enabled).toBe(false);
+  });
+
+  it("lets the environment override a UI-on baseline switch (env=false + UI=true => enabled=false)", () => {
+    applyLiveBehaviorSettings({ settings: { baselineEnabled: true }, sources: { baselineEnabled: "ui" } as never });
+    expect(baselineMasterEnabled({})).toBe(true);
+    expect(readBaselineSettings({
+      MYRMIDON_BASELINE_INTERVAL_SEC: "3600",
+    })).toMatchObject({ enabled: true, intervalSec: 3600 });
+
+    expect(baselineMasterEnabled({ MYRMIDON_BASELINE_ENABLED: "false" })).toBe(false);
+    expect(readBaselineSettings({
+      MYRMIDON_BASELINE_ENABLED: "false",
+      MYRMIDON_BASELINE_INTERVAL_SEC: "3600",
+    }).enabled).toBe(false);
+
+    expect(baselineMasterEnabled({ MYRMIDON_BASELINE_ENABLED: "true" })).toBe(true);
+    expect(readBaselineSettings({
+      MYRMIDON_BASELINE_ENABLED: "true",
+      MYRMIDON_BASELINE_INTERVAL_SEC: "3600",
+    })).toMatchObject({ enabled: true, intervalSec: 3600 });
   });
 
   it("turns off configured CTO chat and evals without a restart", () => {
