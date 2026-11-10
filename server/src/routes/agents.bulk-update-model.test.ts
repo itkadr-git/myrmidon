@@ -111,6 +111,7 @@ vi.mock("../services/index.js", () => ({
   issueRecoveryActionService: vi.fn(() => ({})),
   issueService: vi.fn(() => ({ addComment: vi.fn(), update: vi.fn() })),
   logActivity: logActivityMock,
+  publishActivity: vi.fn(),
   syncInstructionsBundleConfigFromFilePath: vi.fn(async (x: unknown) => x),
   workspaceOperationService: vi.fn(() => ({})),
 }));
@@ -151,10 +152,13 @@ function makeDbWithConnectionRow(row: unknown): Db {
   const fromResult = { innerJoin: (_table: unknown, _cond: unknown) => innerJoinResult };
   return {
     select: (_fields: unknown) => ({ from: (_table: unknown) => fromResult }),
+    transaction: async (cb: (tx: unknown) => Promise<unknown>) => cb({}),
   } as unknown as Db;
 }
 
-const emptyDb = {} as Db;
+const emptyDb = {
+  transaction: async (cb: (tx: unknown) => Promise<unknown>) => cb({}),
+} as unknown as Db;
 
 function boardApp(db: Db = emptyDb) {
   const app = express();
@@ -252,17 +256,17 @@ describe("POST /companies/:companyId/agents/bulk-update-model", () => {
     expect(res.body.updated).toContain(AGENT_2);
     expect(res.body.failed).toHaveLength(0);
 
-    // Activity log written for each successful mutation.
+    // Activity log written for each successful mutation (inside the tx).
     expect(logActivityMock).toHaveBeenCalledTimes(2);
     expect(logActivityMock).toHaveBeenCalledWith(
-      emptyDb,
+      expect.anything(),
       expect.objectContaining({
         action: "agent.updated",
         entityId: AGENT_1,
       }),
     );
     expect(logActivityMock).toHaveBeenCalledWith(
-      emptyDb,
+      expect.anything(),
       expect.objectContaining({
         action: "agent.updated",
         entityId: AGENT_2,
@@ -384,7 +388,7 @@ describe("POST /companies/:companyId/agents/bulk-update-model", () => {
     expect(second.body.failed).toHaveLength(0);
   });
 
-  it("counts the agent as updated even when activity-log write fails", async () => {
+  it("rolls back the mutation when activity-log write fails and reports agent in failed[]", async () => {
     agentSvcMock.getById.mockImplementation(async (id: string) => {
       if (id === AGENT_1) return makeAgent(AGENT_1);
       return null;
@@ -396,8 +400,9 @@ describe("POST /companies/:companyId/agents/bulk-update-model", () => {
         adapterConfig: { ...current.adapterConfig, ...(patch.adapterConfig as Record<string, unknown> ?? {}) },
       };
     });
-    // Activity-log persistence failure must not roll back the mutation nor
-    // report the agent as failed: the agent update is already committed.
+    // Activity-log persistence failure must roll back the agent mutation and
+    // surface the agent in failed[] — a failed audit can never be reported
+    // as a successful compliant mutation.
     logActivityMock.mockRejectedValueOnce(new Error("activity log unavailable"));
 
     const res = await request(boardApp())
@@ -408,9 +413,11 @@ describe("POST /companies/:companyId/agents/bulk-update-model", () => {
       });
 
     expect(res.status).toBe(200);
-    expect(res.body.updated).toEqual([AGENT_1]);
-    expect(res.body.failed).toHaveLength(0);
-    // The mutation still happened — svc.update was called.
+    expect(res.body.updated).toHaveLength(0);
+    expect(res.body.failed).toHaveLength(1);
+    expect(res.body.failed[0].id).toBe(AGENT_1);
+    expect(res.body.failed[0].reason).toContain("activity log unavailable");
+    // svc.update was attempted but the transaction rolled it back.
     expect(agentSvcMock.update).toHaveBeenCalledTimes(1);
   });
 

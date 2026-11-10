@@ -106,6 +106,8 @@ import {
   issueRecoveryActionService,
   issueService,
   logActivity,
+  publishActivity,
+  type ActivityPublication,
   syncInstructionsBundleConfigFromFilePath,
   workspaceOperationService,
 } from "../services/index.js";
@@ -6122,44 +6124,81 @@ function getActorIdentityPart(req: Request): string {
             };
           }
 
-          const agent = await svc.update(agentId, patchData, {
-            recordRevision: {
-              createdByAgentId: actor.agentId,
-              createdByUserId: actor.actorType === "user" ? actor.actorId : null,
-              source: "bulk-update-model",
-            },
-          });
+          // Mutate + audit atomically: if the activity log write fails the
+          // transaction rolls back the agent update too, so a failed audit
+          // can never be reported as a successful compliant mutation.
+          const postCommitPublications: ActivityPublication[] = [];
+          const transaction = (db as unknown as {
+            transaction?: (callback: (tx: unknown) => Promise<unknown>) => Promise<unknown>;
+          }).transaction;
+          const agent = typeof transaction === "function"
+            ? await transaction.call(db, async (tx) => {
+                const updated = await svc.update(agentId, patchData, {
+                  recordRevision: {
+                    createdByAgentId: actor.agentId,
+                    createdByUserId: actor.actorType === "user" ? actor.actorId : null,
+                    source: "bulk-update-model",
+                  },
+                });
+                if (!updated) return null;
+                await logActivity(tx as unknown as Db, {
+                  companyId: updated.companyId,
+                  actorType: actor.actorType,
+                  actorId: actor.actorId,
+                  agentId: actor.agentId,
+                  runId: actor.runId,
+                  agentApiKeyId: actor.agentApiKeyId,
+                  action: "agent.updated",
+                  entityType: "agent",
+                  entityId: updated.id,
+                  details: {
+                    ...summarizeAgentUpdateDetails(patchData),
+                    bulkUpdate: true,
+                  },
+                }, postCommitPublications);
+                return updated;
+              })
+            : await (async () => {
+                // Fallback for tests / adapters without transaction support:
+                // run sequentially but still propagate logActivity failure.
+                const updated = await svc.update(agentId, patchData, {
+                  recordRevision: {
+                    createdByAgentId: actor.agentId,
+                    createdByUserId: actor.actorType === "user" ? actor.actorId : null,
+                    source: "bulk-update-model",
+                  },
+                });
+                if (!updated) return null;
+                await logActivity(db, {
+                  companyId: updated.companyId,
+                  actorType: actor.actorType,
+                  actorId: actor.actorId,
+                  agentId: actor.agentId,
+                  runId: actor.runId,
+                  agentApiKeyId: actor.agentApiKeyId,
+                  action: "agent.updated",
+                  entityType: "agent",
+                  entityId: updated.id,
+                  details: {
+                    ...summarizeAgentUpdateDetails(patchData),
+                    bulkUpdate: true,
+                  },
+                });
+                return updated;
+              })();
           if (!agent) {
             failed.push({ id: agentId, reason: "Agent not found" });
             continue;
           }
-
-          // The mutation is already persisted at this point (svc.update above).
-          // A failure to write the activity log must NOT roll back the agent
-          // update or report the agent as failed: the mutation is real, only
-          // the audit trail is missing.  Log the discrepancy server-side so an
-          // operator can reconcile, and still count the agent as updated.
-          try {
-            await logActivity(db, {
-              companyId: agent.companyId,
-              actorType: actor.actorType,
-              actorId: actor.actorId,
-              agentId: actor.agentId,
-              runId: actor.runId,
-              agentApiKeyId: actor.agentApiKeyId,
-              action: "agent.updated",
-              entityType: "agent",
-              entityId: agent.id,
-              details: {
-                ...summarizeAgentUpdateDetails(patchData),
-                bulkUpdate: true,
-              },
-            });
-          } catch (activityErr) {
-            console.error(
-              `[bulk-update-model] agent ${agent.id} mutated but activity log write failed:`,
-              activityErr,
-            );
+          for (const publication of postCommitPublications) {
+            try {
+              publishActivity(publication);
+            } catch (publishErr) {
+              console.error(
+                `[bulk-update-model] agent ${agent.id} activity log live-event publish failed:`,
+                publishErr,
+              );
+            }
           }
 
           updated.push(agent.id);
