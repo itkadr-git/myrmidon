@@ -15122,6 +15122,10 @@ export function issueRoutes(
           typeof executionState.selfCheckGateRejections === "number"
             ? executionState.selfCheckGateRejections
             : 0;
+        const currentTechnicalRejections =
+          typeof executionState.selfCheckGateTechnicalRejections === "number"
+            ? executionState.selfCheckGateTechnicalRejections
+            : currentRejections;
 
         const maxTechnicalRejections =
           opts.selfCheckGateMaxTechnicalFailures ??
@@ -15135,16 +15139,20 @@ export function issueRoutes(
           gateDecision.kind === "reject" && !isEmptyDiff;
 
         const bypassAllowed =
-          isTechnicalFailure && currentRejections >= maxTechnicalRejections;
+          isTechnicalFailure && currentTechnicalRejections >= maxTechnicalRejections;
 
         if (gateDecision.kind === "reject" && !bypassAllowed) {
           const nextRejections = currentRejections + 1;
+          const nextTechnicalRejections = isTechnicalFailure
+            ? currentTechnicalRejections + 1
+            : currentTechnicalRejections;
           await db
             .update(issueRows)
             .set({
               executionState: {
                 ...executionState,
                 selfCheckGateRejections: nextRejections,
+                selfCheckGateTechnicalRejections: nextTechnicalRejections,
                 selfCheckGateLastRejectCode: gateDecision.code,
                 selfCheckGateLastRejectReason: gateDecision.message,
               },
@@ -15164,6 +15172,7 @@ export function issueRoutes(
               code: gateDecision.code,
               reason: gateDecision.message,
               rejectionCount: nextRejections,
+              technicalRejectionCount: nextTechnicalRejections,
             },
           });
 
@@ -15192,6 +15201,7 @@ export function issueRoutes(
             selfCheckGateNote: note,
             selfCheckGateBypassed: true,
             selfCheckGateRejections: currentRejections,
+            selfCheckGateTechnicalRejections: currentTechnicalRejections,
           };
           const existingExecutionState =
             parseIssueExecutionState(existing.executionState) ??

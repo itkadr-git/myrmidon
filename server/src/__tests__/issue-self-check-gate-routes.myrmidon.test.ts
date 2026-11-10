@@ -658,5 +658,101 @@ describeEmbeddedPostgres("myrmidon self-check gate routes", () => {
     expect(updatedIssue?.status).toBe("in_progress");
   });
 
+  it("пустой дифф не расходует счётчик технических отказов: после EMPTY_DIFF всё ещё нужны 3 технических отказа до обхода", async () => {
+    const { issueId, agentActor } = await seedAgentIssueFixture();
+    const insertReviewAdmissionWakeup = vi.fn(async () => ({ created: true }));
+    let diffStats: { changedFiles: number; additions: number; deletions: number } = {
+      changedFiles: 0,
+      additions: 0,
+      deletions: 0,
+    };
+
+    const routes = (db: RouteDb, storage: RouteStorage) =>
+      issueRoutes(db, storage, {
+        selfCheckEvidenceDeps: {
+          resolvePullRequestTarget: async () => ({
+            kind: "ok",
+            pullRequestUrl: "https://github.com/acme/app/pull/42",
+            reference: { host: "github.com", owner: "acme", repo: "app", number: 42 },
+          }),
+          resolvePullRequestDetails: async () => ({
+            headSha: HEAD_SHA,
+            ...diffStats,
+          }),
+          resolveHeadLaneEvidence: async () => {
+            const nowIso = new Date().toISOString();
+            return [
+              {
+                lane: "test",
+                name: "test",
+                headSha: HEAD_SHA,
+                state: "failure",
+                status: "completed",
+                conclusion: "failure",
+                finishedAt: nowIso,
+              },
+              {
+                lane: "lint",
+                name: "lint",
+                headSha: HEAD_SHA,
+                state: "success",
+                status: "completed",
+                conclusion: "success",
+                finishedAt: nowIso,
+              },
+            ];
+          },
+        },
+        resolveReviewPullRequestCi: async () => ({
+          state: "complete",
+          pullRequestUrl: "https://github.com/acme/app/pull/42",
+          headSha: HEAD_SHA,
+        }),
+        resolveReviewHeadFailedChecks: async () => ({
+          state: "unknown",
+          reason: "not_under_test",
+        }),
+        insertReviewAdmissionWakeup,
+      });
+
+    const app = routeApp(ctx.db, agentActor as never, routes as never);
+
+    // 3 EMPTY_DIFF rejections should NOT consume the technical failure budget
+    for (let i = 1; i <= 3; i += 1) {
+      const res = await request(app)
+        .patch(`/api/issues/${issueId}`)
+        .send({ status: "in_review" });
+      expect(res.status).toBe(422);
+      expect(res.body.code).toBe(SELF_CHECK_REJECT_CODES.EMPTY_DIFF);
+      expect(insertReviewAdmissionWakeup).not.toHaveBeenCalled();
+    }
+
+    // Now provide a non-empty diff, but failing tests -> still needs 3 technical failures
+    diffStats = { changedFiles: 2, additions: 10, deletions: 2 };
+    for (let attempt = 1; attempt <= 3; attempt += 1) {
+      const res = await request(app)
+        .patch(`/api/issues/${issueId}`)
+        .send({ status: "in_review" });
+      expect(res.status).toBe(422);
+      expect(res.body.code).toBe(SELF_CHECK_REJECT_CODES.TEST_FAILED);
+      expect(insertReviewAdmissionWakeup).not.toHaveBeenCalled();
+
+      const [issueAfterReject] = await ctx.db
+        .select()
+        .from(issues)
+        .where(eq(issues.id, issueId));
+      const executionState = issueAfterReject?.executionState as Record<string, unknown> | null;
+      expect(executionState?.selfCheckGateTechnicalRejections).toBe(attempt);
+    }
+
+    // 4th technical failure -> now bypasses with note
+    const admittedRes = await request(app)
+      .patch(`/api/issues/${issueId}`)
+      .send({ status: "in_review" });
+    expect(admittedRes.status).toBe(200);
+    expect(admittedRes.body.status).toBe("in_review");
+    expect(insertReviewAdmissionWakeup).toHaveBeenCalledTimes(1);
+  });
+
 });
 
