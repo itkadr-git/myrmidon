@@ -8,8 +8,8 @@
 #   OMP_RUNNER_IMAGE            ghcr.io/itkadr-git/agent-runtime-omp-ssh@sha256:<digest>
 #   OMP_RUNNER_AUTHORIZED_KEYS  host path of the board's public key (read-only mount)
 #   OMP_RUNNER_NETWORK          docker network shared with the board container
-# Optional limits (defaults below): OMP_RUNNER_MEMORY, OMP_RUNNER_CPUS,
-# OMP_RUNNER_PIDS.
+# Optional limits: OMP_RUNNER_MEMORY, OMP_RUNNER_CPUS, OMP_RUNNER_PIDS. The
+# defaults (4g, 1 CPU, 1024 processes) are those of an engineer bot container.
 #
 # No port is published: the board reaches the runner by container name on the
 # shared network. No host path other than the public key is mounted, so a host
@@ -20,10 +20,10 @@ services:
     container_name: ${OMP_RUNNER_NAME:?set OMP_RUNNER_NAME}
     restart: unless-stopped
     networks: [board]
-    mem_limit: ${OMP_RUNNER_MEMORY:-8g}
-    memswap_limit: ${OMP_RUNNER_MEMORY:-8g}
-    cpus: ${OMP_RUNNER_CPUS:-4}
-    pids_limit: ${OMP_RUNNER_PIDS:-4096}
+    mem_limit: ${OMP_RUNNER_MEMORY:-4g}
+    memswap_limit: ${OMP_RUNNER_MEMORY:-4g}
+    cpus: ${OMP_RUNNER_CPUS:-1}
+    pids_limit: ${OMP_RUNNER_PIDS:-1024}
     cap_drop: [ALL]
     cap_add: [CHOWN, DAC_OVERRIDE, FOWNER, SETUID, SETGID, SYS_CHROOT, KILL, AUDIT_WRITE]
     security_opt: ["no-new-privileges:true"]

@@ -117,7 +117,8 @@ One runner per agent:
    env file with `OMP_RUNNER_NAME`, `OMP_RUNNER_IMAGE` (a digest from a
    successful signed workflow run), `OMP_RUNNER_AUTHORIZED_KEYS` (the public
    key file) and `OMP_RUNNER_NETWORK` (the board container's network). The
-   limits default to 8 GB, 4 CPUs and 4096 processes. Run
+   limits default to 4 GB, 1 CPU and 1024 processes, as for an engineer bot
+   container. Run
    `docker compose -p <runner-name> --env-file <file> -f docker/agent-runtime/omp-ssh/compose.yml up -d`.
 3. Read the host key from the container log line `omp-runner: generated host key`,
    or with `ssh-keyscan -p 2222 <runner-name>` from the board network.

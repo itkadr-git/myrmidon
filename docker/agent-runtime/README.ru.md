@@ -73,7 +73,7 @@ sshd слушает порт 2222 и пускает только по ключу
    - `OMP_RUNNER_AUTHORIZED_KEYS` — файл открытого ключа;
    - `OMP_RUNNER_NETWORK` — сеть контейнера доски.
 
-   Лимиты по умолчанию: 8 ГБ, 4 CPU, 4096 процессов. Команда:
+   Лимиты по умолчанию — как у контейнера бота-инженера: 4 ГБ, 1 CPU, 1024 процесса. Команда:
    `docker compose -p <имя> --env-file <файл> -f docker/agent-runtime/omp-ssh/compose.yml up -d`.
 3. Взять ключ хоста из строки журнала контейнера `omp-runner: generated host key`
    или командой `ssh-keyscan -p 2222 <имя>` из сети доски.
