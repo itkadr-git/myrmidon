@@ -145,6 +145,24 @@ run 37277281522), а релиз публиковать руками.
 «не требовались», но только если `plan` прошёл. У отменённого прогона (новый push) `CI result`
 не запускается вовсе — ложного зелёного нет.
 
+### Проверка ключевых файлов (hot files review / hot-files-review)
+
+PR, который трогает ключевые файлы ядра (`server/src/services/heartbeat.ts`, `server/src/services/execution-continuation.ts`, `packages/db/**`, `packages/adapters/hermes/**`, скрипты выката, Dockerfile, workflows — полный список в `scripts/myrmidon/ci/hot-files-check.sh`), требует обязательного ревью перед слиянием.
+
+**Контракт проверки и контексты:**
+- Защита ветки `main` (branch protection) требует обязательный check-run **`hot files review`**, а ruleset — статус **`hot-files-review`**.
+- Скрипт `scripts/myrmidon/ci/hot-files-check.sh` обеспечивает совместимость с обоими механизмами:
+  - Выставляет commit status (через GitHub Statuses API) для обоих контекстов: `hot files review` и `hot-files-review`.
+  - В терминальных состояниях (`success`, `failure`, `error`) выставляет check-run (через Check-Runs API) с именами `hot files review` и `hot-files-review` со статусом `completed` и соответствующим `conclusion`.
+- **Поведение при ожидании ревью (`pending`):**
+  - Если ключевые файлы затронуты и метки `review-approved` нет, скрипт выставляет `pending` («waiting for review-approved») **только** через commit status.
+  - Check-run со статусом `in_progress` в состоянии pending намеренно не создаётся: незавершённый check-run воспринимается сборщиком снимка CI доски как активное задание и зависает, блокируя вынесение вердикта ревьюера.
+- **Снятие метки при `synchronize` (новый push):**
+  - При событии `synchronize` (любой новый коммит в ветку PR) метка `review-approved` удаляется до проверки списка затронутых файлов (`DELETE repos/:repo/issues/:pr/labels/review-approved`), кроме случаев, когда головной коммит — слияние ветки `main` (update-branch от бота).
+  - Это предотвращает слияние устаревшего одобрения при досыле правок и обеспечивает немедленное выставление терминального `success` check-run для PR без hot-файлов без ручного вмешательства оператора.
+- **Права workflow:**
+  - В `.github/workflows/myrmidon-ci.yml` и `.github/workflows/myrmidon-hot-files-review.yml` для работы гейта заданы права `checks: write` (создание check-run), `issues: write` (снятие и чтение меток) и `statuses: write` (выставление статусов коммита).
+
 ### Тесты, которые `pnpm test:run` не запускает
 
 `scripts/run-vitest-stable.mjs` вендора запускает `server` и явный список пакетов. Тесты ещё
