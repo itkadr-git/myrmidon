@@ -154,9 +154,9 @@ async function seedAgentIssueFixture(overrides?: {
 }
 
 function makeEvidenceDeps(overrides: {
-  changedFiles?: number;
-  additions?: number;
-  deletions?: number;
+  changedFiles?: number | null;
+  additions?: number | null;
+  deletions?: number | null;
   testState?: "success" | "failure";
   lintState?: "success" | "failure";
   testLane?: Pick<PullRequestHeadLaneEvidence, "state" | "status" | "conclusion" | "finishedAt" | "headSha">;
@@ -183,9 +183,9 @@ function makeEvidenceDeps(overrides: {
     }),
     resolvePullRequestDetails: async () => ({
       headSha: HEAD_SHA,
-      changedFiles: overrides.changedFiles ?? 3,
-      additions: overrides.additions ?? 50,
-      deletions: overrides.deletions ?? 10,
+      changedFiles: overrides.changedFiles === undefined ? 3 : overrides.changedFiles,
+      additions: overrides.additions === undefined ? 50 : overrides.additions,
+      deletions: overrides.deletions === undefined ? 10 : overrides.deletions,
     }),
     resolveHeadLaneEvidence: async () => {
       const test = overrides.testLane
@@ -616,6 +616,46 @@ describeEmbeddedPostgres("myrmidon self-check gate routes", () => {
     expect(updatedIssue?.status).toBe("in_progress");
     const executionState = updatedIssue?.executionState as Record<string, unknown> | null;
     expect(executionState?.selfCheckGateRejections).toBe(1);
+  });
+
+  it("нечисловой/отсутствующий дифф при зелёных проверках -> 422 EMPTY_DIFF, не байпасится", async () => {
+    const { issueId, agentActor } = await seedAgentIssueFixture();
+    const insertReviewAdmissionWakeup = vi.fn(async () => ({ created: true }));
+
+    const routes = (db: RouteDb, storage: RouteStorage) =>
+      issueRoutes(db, storage, {
+        selfCheckEvidenceDeps: makeEvidenceDeps({
+          changedFiles: null,
+          additions: null,
+          deletions: null,
+          testState: "success",
+          lintState: "success",
+        }),
+        resolveReviewPullRequestCi: async () => ({
+          state: "complete",
+          pullRequestUrl: "https://github.com/acme/app/pull/42",
+          headSha: HEAD_SHA,
+        }),
+        resolveReviewHeadFailedChecks: async () => ({
+          state: "unknown",
+          reason: "not_under_test",
+        }),
+        insertReviewAdmissionWakeup,
+      });
+
+    const response = await request(routeApp(ctx.db, agentActor as never, routes as never))
+      .patch(`/api/issues/${issueId}`)
+      .send({ status: "in_review" });
+
+    expect(response.status).toBe(422);
+    expect(response.body.code).toBe(SELF_CHECK_REJECT_CODES.EMPTY_DIFF);
+    expect(insertReviewAdmissionWakeup).not.toHaveBeenCalled();
+
+    const [updatedIssue] = await ctx.db
+      .select()
+      .from(issues)
+      .where(eq(issues.id, issueId));
+    expect(updatedIssue?.status).toBe("in_progress");
   });
 
 });

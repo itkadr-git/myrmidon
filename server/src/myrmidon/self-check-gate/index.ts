@@ -68,6 +68,9 @@ export function evaluateSelfCheckEvidence(
 
   const gateInput = selfCheckEvidenceToGateInput(evidence);
   if (!gateInput) {
+    if (!evidence.diff || isMyrmidonDiffEmpty(evidence.diff)) {
+      return rejectSelfCheckGate(SELF_CHECK_REJECT_CODES.EMPTY_DIFF);
+    }
     return rejectSelfCheckGate(SELF_CHECK_REJECT_CODES.TEST_FAILED);
   }
 
