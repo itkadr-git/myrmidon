@@ -165,6 +165,7 @@ function makeDbWithConnectionRow(row: unknown): Db {
 }
 
 const emptyDb = {
+  select: (_fields: unknown) => ({ from: (_table: unknown) => ({ where: (_cond: unknown) => ({ limit: (_n: number) => Promise.resolve([]) }) }) }),
   transaction: async (cb: (tx: unknown) => Promise<unknown>) => cb({}),
 } as unknown as Db;
 
