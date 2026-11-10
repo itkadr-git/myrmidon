@@ -617,6 +617,7 @@ type CompanySearchService = {
   extract(
     companyId: string,
     query: CompanySearchExtractQuery,
+    options?: { excludePrivate?: boolean },
   ): Promise<CompanySearchExtractResponse>;
   search(
     companyId: string,
