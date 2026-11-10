@@ -155,6 +155,31 @@ describe("ConnectClientDialog", () => {
     container.remove();
   });
 
+  /** The Copy button of the active client-snippet panel. */
+  function findSnippetCopyButton(): HTMLButtonElement {
+    const copyButton = [...container.querySelectorAll("button")].find((button) => button.textContent?.trim() === "Copy");
+    if (!copyButton) throw new Error("snippet copy button missing");
+    return copyButton;
+  }
+
+  /**
+   * Waits on the condition, not on a fixed number of turns. The token selection
+   * lands in a `useEffect` after the first paint, and `copyText` resolves
+   * asynchronously, so a single macro-task turns the click into a no-op on a
+   * loaded runner: the disabled button swallows it and the spy sees zero calls.
+   * `vi.waitFor` retries against a time budget and re-queries the DOM on every
+   * attempt, because a re-render can replace the button element; the same
+   * pattern is used in App.test.tsx and api/auth.test.ts.
+   */
+  async function waitForEnabledSnippetCopyButton(): Promise<HTMLButtonElement> {
+    let button: HTMLButtonElement | null = null;
+    await vi.waitFor(() => {
+      button = findSnippetCopyButton();
+      expect(button.disabled).toBe(false);
+    });
+    return button as HTMLButtonElement;
+  }
+
   it("copies a complete client snippet with the selected token and explains the gateway boundary", async () => {
     const persisted = storedToken();
     const created = { ...persisted, token: "pcgw_FULL_SECRET" } satisfies ToolMcpGatewayTokenCreated;
@@ -176,15 +201,40 @@ describe("ConnectClientDialog", () => {
     await new Promise((resolve) => window.setTimeout(resolve, 0));
 
     expect(container.textContent).toContain("does not give it access to Myrmidon or skills");
-    const copyButton = [...container.querySelectorAll("button")].find((button) => button.textContent?.trim() === "Copy");
-    if (!copyButton) throw new Error("snippet copy button missing");
+    const copyButton = await waitForEnabledSnippetCopyButton();
     copyButton.click();
-    await new Promise((resolve) => window.setTimeout(resolve, 0));
-
-    expect(copyTextMock).toHaveBeenCalledWith(expect.stringContaining('"Authorization": "Bearer pcgw_FULL_SECRET"'));
+    await vi.waitFor(() => expect(copyTextMock).toHaveBeenCalledWith(expect.stringContaining('"Authorization": "Bearer pcgw_FULL_SECRET"')));
     expect(copyTextMock).toHaveBeenCalledWith(expect.stringContaining(
       `${window.location.origin}/api/tool-gateway/gateways/public-1/mcp`,
     ));
     expect(container.textContent).not.toContain("pcgw_FULL_SECRET");
+  });
+
+  it("keeps the snippet copy button disabled and never copies while no created token exists", async () => {
+    const persisted = storedToken();
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+
+    flushSync(() => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <ConnectClientDialog
+            gateway={gateway(persisted)}
+            open
+            onOpenChange={vi.fn()}
+            createdTokens={[]}
+            onTokenCreated={vi.fn()}
+          />
+        </QueryClientProvider>,
+      );
+    });
+    await new Promise((resolve) => window.setTimeout(resolve, 0));
+
+    expect(container.textContent).toContain("does not give it access to Myrmidon or skills");
+    const copyButton = findSnippetCopyButton();
+    expect(copyButton.disabled).toBe(true);
+    copyButton.click();
+    await new Promise((resolve) => window.setTimeout(resolve, 0));
+    expect(copyTextMock).not.toHaveBeenCalled();
+    expect(pushToastMock).not.toHaveBeenCalled();
   });
 });
