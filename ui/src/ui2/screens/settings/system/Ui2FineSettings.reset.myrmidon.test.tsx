@@ -190,10 +190,17 @@ describe("myrmidon(UI2) Ui2FineSettings reset (OPE-12695)", () => {
     expect(mockUpdate).toHaveBeenCalledTimes(1);
     expect(mockUpdate).toHaveBeenCalledWith({ bot_egress_mode: null });
 
-    // The row renders the value and source of the server answer.
-    expect(row("bot_egress_mode")?.querySelector(".ui2-fine-val")?.textContent).toContain("direct");
+    // The row renders the value and source of the server answer. The row is
+    // editable (string valueType), so the answered value is shown in the
+    // input, not as cell text.
+    const shownInput = row("bot_egress_mode")?.querySelector(
+      ".ui2-fine-val input",
+    ) as HTMLInputElement | null;
+    expect(shownInput).not.toBeNull();
+    expect(shownInput!.value).toBe("direct");
     expect(row("bot_egress_mode")?.querySelector(".ui2-fine-src")?.textContent).toContain("Default");
-    // The confirm step is gone after success.
+    // The confirm step is gone after success, and the row no longer offers a
+    // reset (the source fell back from "ui" to "default").
     expect(
       row("bot_egress_mode")?.querySelector('[data-testid="ui2-fine-reset-confirm-bot_egress_mode"]'),
     ).toBeNull();
