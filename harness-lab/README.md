@@ -20,4 +20,4 @@ This checkout does not contain production credentials or an operator-only rubric
 
 ## Operator provisioning
 
-The board endpoint, scoped credentials, and the operator-only rubric are provisioned by the board operator, not by agents. The mechanical steps live in `ops/PROVISIONING-RUNBOOK.md`, and the rubric template (to be deployed to the operator-only path) is `ops/acceptance-rubric.template.json`.
+The board endpoint, scoped credentials, and the operator-only rubric are provisioned by the board operator, not by agents. The mechanical steps live in `ops/PROVISIONING-RUNBOOK.md`; the rubric template `ops/acceptance-rubric.template.json` is operator-only content — transfer it out-of-band to `/srv/harness-lab/private/acceptance.json`, never into an executor-readable checkout or task description.

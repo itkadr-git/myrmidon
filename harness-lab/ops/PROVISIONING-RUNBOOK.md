@@ -248,7 +248,8 @@ reach any other company or instance:
    ```sh
    # /srv/harness-lab/harness-runner.env  (chmod 600)
    HARNESS_LAB_BOARD_URL=http://127.0.0.1:3200/api
-   # read HARNESS_LAB_BOARD_TOKEN from the runner agent API key (never inline it)
+   # Set HARNESS_LAB_BOARD_TOKEN in this 0600 file to the runner agent API key
+   # from step 2 (never inline or commit the value anywhere)
    HARNESS_LAB_RUBRIC_PATH=/srv/harness-lab/private/acceptance.json
    ```
 
@@ -274,10 +275,14 @@ repeated runs are invalid — the agent would "find the rubric").
 
 ```sh
 mkdir -p /srv/harness-lab/private
-# Copy ops/acceptance-rubric.template.json from the repo, then edit
+# Copy the template content from the PR review page (or pass it between
+# operators out-of-band) — do not clone the repo as the executor account and do
+# not leave the template in any executor-readable path. Then edit
 # expected_status and expected_signals per scenario if the operator's judgment
-# differs; the runner reads expected_status + expected_signals from this file
-# after the run.
+# differs. Both keys are REQUIRED: run.py validates the observed board status
+# against expected_status AND verifies every expected_signals entry against the
+# board evidence (status, runs, activity, comments, audit) — a rubric without
+# the signals cannot demonstrate the behavioral acceptance criteria.
 python3 - <<'PY'
 import json
 t = json.load(open("acceptance-rubric.template.json"))

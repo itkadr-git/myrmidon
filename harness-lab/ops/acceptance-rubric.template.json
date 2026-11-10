@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "comment": "TEMPLATE ONLY. The operator copies this file to the operator-only path /srv/harness-lab/private/acceptance.json on the myr-dev-build host, fills expected_status for every scenario, and chmod 640 with group harness-runner. This template itself must never be deployed readable to executors: keep it out of executor task descriptions and out of any executor-readable checkout.",
+  "comment": "TEMPLATE ONLY, OPERATOR-ONLY CONTENT. The operator transfers this file to the operator-only path /srv/harness-lab/private/acceptance.json on the myr-dev-build host out-of-band (PR review page or another operator channel) \u2014 never via an executor-readable clone or checkout, never inside an executor task description. Fill expected_status and keep expected_signals for every scenario: run.py validates the observed board status against expected_status and verifies each expected_signals entry against the board evidence. Deploy as chmod 640, group harness-runner (runner-readable, executor-deny).",
   "schema": 1,
   "scenarios": [
     {
