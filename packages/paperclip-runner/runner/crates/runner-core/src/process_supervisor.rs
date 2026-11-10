@@ -1,8 +1,8 @@
 use std::cell::Cell;
 use std::collections::VecDeque;
-use std::fs::File;
 #[cfg(any(target_os = "macos", test))]
 use std::fs;
+use std::fs::File;
 #[cfg(target_os = "macos")]
 use std::fs::OpenOptions;
 use std::io::{self, BufRead, BufReader, Read, Seek, SeekFrom, Write};
