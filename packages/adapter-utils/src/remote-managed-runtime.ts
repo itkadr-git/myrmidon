@@ -81,6 +81,40 @@ async function readRemoteFile(spec: SshRemoteExecutionSpec, remotePath: string):
   return Buffer.from(result.stdout.replace(/\s+/g, ""), "base64");
 }
 
+// myrmidon(OPE-12633 SSH-RUN-CLEANUP): an SSH environment is a long-lived
+// host, unlike a sandbox lease that is destroyed after the run. Each synced run
+// gets its own copy of the workspace under
+// <remoteWorkspacePath>/.paperclip-runtime/runs/<runId>/workspace (on the
+// Myrmidon monorepo about 0.8 GB), and nothing removed it, so the remote disk
+// filled up run after run. After a successful restore the workspace files of
+// the run are removed; the small runtime directory (.paperclip-runtime: skills,
+// agent config, bridge files) stays, because the API bridge stops in parallel
+// with the restore. Whole run directories older than two days are pruned when
+// the next run starts; no run lives that long (the longest run timeout is
+// hours), so a concurrent run on a shared environment is never touched.
+export const REMOTE_RUN_DIR_RETENTION_MTIME_DAYS = 1;
+
+function remoteRunsDir(baseWorkspaceRemoteDir: string): string {
+  return path.posix.join(baseWorkspaceRemoteDir, ".paperclip-runtime", "runs");
+}
+
+export function buildRemoteRunWorkspaceCleanupCommand(workspaceRemoteDir: string): string {
+  return `find ${shellQuote(workspaceRemoteDir)} -mindepth 1 -maxdepth 1 ! -name .paperclip-runtime -exec rm -rf {} +`;
+}
+
+export function buildStaleRemoteRunsPruneCommand(baseWorkspaceRemoteDir: string): string {
+  const runsDir = remoteRunsDir(baseWorkspaceRemoteDir);
+  return `if [ -d ${shellQuote(runsDir)} ]; then find ${shellQuote(runsDir)} -mindepth 1 -maxdepth 1 -type d -mtime +${REMOTE_RUN_DIR_RETENTION_MTIME_DAYS} -exec rm -rf {} +; fi`;
+}
+
+async function runBestEffortSshCleanup(spec: SshRemoteExecutionSpec, command: string, what: string): Promise<void> {
+  try {
+    await runSshCommand(spec, command, { timeoutMs: 120_000, maxBuffer: 64 * 1024 });
+  } catch (error) {
+    console.warn(`[myrmidon] Could not ${what} on the SSH environment; continuing. ${String(error)}`);
+  }
+}
+
 export function buildRemoteExecutionSessionIdentity(spec: SshRemoteExecutionSpec | null) {
   if (!spec) return null;
   return {
@@ -132,6 +166,10 @@ export async function prepareRemoteManagedRuntime(input: {
       )
     : baseWorkspaceRemoteDir;
   const runtimeRootDir = path.posix.join(workspaceRemoteDir, ".paperclip-runtime", input.adapterKey);
+
+  if (syncWorkspace) {
+    await runBestEffortSshCleanup(input.spec, buildStaleRemoteRunsPruneCommand(baseWorkspaceRemoteDir), "prune stale run directories");
+  }
 
   const preparedWorkspace = syncWorkspace
     ? await prepareWorkspaceForSshExecution({
@@ -248,6 +286,9 @@ export async function prepareRemoteManagedRuntime(input: {
           assetDir: path.posix.join(runtimeRootDir, asset.key),
           readFile: (remotePath) => readRemoteFile(input.spec, remotePath),
         });
+      }
+      if (preparedWorkspace && baselineSnapshot) {
+        await runBestEffortSshCleanup(input.spec, buildRemoteRunWorkspaceCleanupCommand(workspaceRemoteDir), "remove the run workspace copy");
       }
     },
   };
