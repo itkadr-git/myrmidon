@@ -11,6 +11,12 @@
 // row, records it in the activity log, then applies it to the process-wide
 // settings.
 //
+// A PATCH with `null` for a known key of the matching scope removes the saved
+// value (a reset): the key leaves storage, so the read falls back to env or
+// default with source `env` / `default`. `changedKeys` is the difference of
+// the resolved values before and after the write, so a reset is audited
+// exactly like an ordinary write (the null itself is never stored).
+//
 // Two overlapping requests can commit their rows in one order and reach the
 // in-memory apply in the other; the audit log would then disagree with the
 // settings actually in force. Every request's read-write-audit-apply sequence
@@ -155,7 +161,8 @@ export function behaviorSettingsService(
           next: mergeBehaviorSettings(current ?? {}, patch),
         }));
 
-        const changedKeys = changedSettingKeys(previous.settings, next, patch);
+        const resolved = resolveBehaviorSettings({ stored: next, env });
+        const changedKeys = changedSettingKeys(previous.settings, resolved.settings, patch);
 
         const companyIds = await deps.listCompanyIds();
         await Promise.all(
@@ -183,7 +190,7 @@ export function behaviorSettingsService(
           { settings: next, changedKeys, actorType: actor.actorType },
           "behavior settings updated without a restart",
         );
-        return resolveBehaviorSettings({ stored: next, env });
+        return resolved;
       }),
 
     updateCompany: async (companyId, patch, actor) =>
@@ -196,7 +203,8 @@ export function behaviorSettingsService(
           next: mergeBehaviorSettings(current ?? {}, patch),
         }));
 
-        const changedKeys = changedSettingKeys(previous.settings, next, patch);
+        const resolved = resolveBehaviorSettings({ stored: next, env });
+        const changedKeys = changedSettingKeys(previous.settings, resolved.settings, patch);
 
         await deps.logActivity({
           companyId,
@@ -219,7 +227,7 @@ export function behaviorSettingsService(
           { settings: next, changedKeys, actorType: actor.actorType, companyId },
           "company behavior settings updated without a restart",
         );
-        return resolveBehaviorSettings({ stored: next, env });
+        return resolved;
       }),
   };
 }
@@ -235,7 +243,7 @@ function validatePatchValues(patch: BehaviorSettingsPatch, expectedScope: Settin
         `Setting '${key}' has scope '${def.scope}', expected '${expectedScope}'`,
       );
     }
-    if (value !== undefined && def.validate(value) === null) {
+    if (value !== undefined && value !== null && def.validate(value) === null) {
       throw badRequest(`Invalid value for setting '${key}'`);
     }
   }
@@ -248,7 +256,18 @@ function changedSettingKeys(
 ): string[] {
   const changedKeys: string[] = [];
   for (const key of Object.keys(patch)) {
-    if (previous[key] !== next[key]) {
+    const before = previous[key];
+    const after = next[key];
+    // Both sides are resolved views; json values are re-parsed objects, so
+    // equal contents arrive as different references — compare by value.
+    const unchanged =
+      before === after ||
+      (typeof before === "object" &&
+        before !== null &&
+        typeof after === "object" &&
+        after !== null &&
+        JSON.stringify(before) === JSON.stringify(after));
+    if (!unchanged) {
       changedKeys.push(key);
     }
   }
