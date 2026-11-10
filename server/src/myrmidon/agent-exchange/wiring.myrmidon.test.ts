@@ -19,9 +19,8 @@
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Db } from "@myrmidon/db";
-import { AgentExchangeError } from "@myrmidon/shared";
 import { createAgentExchangeModelPort, modelCallSignal } from "./wiring.js";
-import type { AgentExchangeModelCallInput } from "./engine.js";
+import { AgentExchangeError, type AgentExchangeModelCallInput } from "./engine.js";
 
 const { secretServiceMock } = vi.hoisted(() => ({
   secretServiceMock: {
@@ -38,6 +37,7 @@ vi.mock("../../services/index.js", () => ({
 describe("modelCallSignal (OPE-12623)", () => {
   afterEach(() => {
     vi.restoreAllMocks();
+    vi.clearAllTimers();
     vi.useRealTimers();
   });
 
@@ -177,8 +177,17 @@ describe("createAgentExchangeModelPort().call (OPE-12623)", () => {
   beforeEach(() => {
     vi.restoreAllMocks();
     vi.unstubAllGlobals();
+    vi.clearAllTimers();
+    vi.useRealTimers();
     secretServiceMock.getByName.mockResolvedValue({ id: "sec-1", name: "test-secret-key" });
-    secretServiceMock.resolveSecretValue.mockResolvedValue("sk-valid-token");
+    secretServiceMock.resolveSecretValue.mockResolvedValue("test-api-key");
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+    vi.unstubAllGlobals();
+    vi.clearAllTimers();
+    vi.useRealTimers();
   });
 
   it("aborts in-flight fetch when input.signal is aborted", async () => {
@@ -189,6 +198,10 @@ describe("createAgentExchangeModelPort().call (OPE-12623)", () => {
         capturedSignal = init?.signal;
         return new Promise<Response>((_resolve, reject) => {
           if (!init?.signal) return;
+          if (init.signal.aborted) {
+            reject(init.signal.reason ?? new DOMException("aborted", "AbortError"));
+            return;
+          }
           init.signal.addEventListener(
             "abort",
             () => reject(init.signal?.reason ?? new DOMException("aborted", "AbortError")),
@@ -207,6 +220,7 @@ describe("createAgentExchangeModelPort().call (OPE-12623)", () => {
       ...sampleInput,
       signal: controller.signal,
     });
+    const errorPromise = callPromise.catch((e: unknown) => e);
 
     // Wait until fetch receives the request
     await vi.waitFor(() => expect(capturedSignal).toBeDefined());
@@ -215,7 +229,8 @@ describe("createAgentExchangeModelPort().call (OPE-12623)", () => {
     // Stop valve triggers mid-flight
     controller.abort(stopReason);
 
-    await expect(callPromise).rejects.toBe(stopReason);
+    const err = await errorPromise;
+    expect(err).toBe(stopReason);
     expect(capturedSignal?.aborted).toBe(true);
     expect(capturedSignal?.reason).toBe(stopReason);
   });
@@ -251,7 +266,7 @@ describe("createAgentExchangeModelPort().call (OPE-12623)", () => {
     secretServiceMock.resolveSecretValue.mockImplementation(async () => {
       // Stop valve pulls while secret is being looked up
       controller.abort(stopReason);
-      return "sk-valid-token";
+      return "test-api-key";
     });
 
     const db = createMockDb();
@@ -275,6 +290,10 @@ describe("createAgentExchangeModelPort().call (OPE-12623)", () => {
         capturedSignal = init?.signal;
         return new Promise<Response>((_resolve, reject) => {
           if (!init?.signal) return;
+          if (init.signal.aborted) {
+            reject(init.signal.reason ?? new DOMException("The operation timed out.", "TimeoutError"));
+            return;
+          }
           init.signal.addEventListener(
             "abort",
             () => reject(init.signal?.reason ?? new DOMException("The operation timed out.", "TimeoutError")),
@@ -292,11 +311,12 @@ describe("createAgentExchangeModelPort().call (OPE-12623)", () => {
       timeoutMs: 25,
       signal: undefined,
     });
+    const errorPromise = callPromise.catch((e: unknown) => e);
 
-    await vi.waitFor(() => expect(capturedSignal).toBeDefined());
-    const err = await callPromise.catch((e: unknown) => e);
+    const err = await errorPromise;
     expect(err).toBeInstanceOf(Error);
     expect((err as Error).name).toBe("TimeoutError");
+    expect(capturedSignal).toBeDefined();
     expect(capturedSignal?.aborted).toBe(true);
     expect((capturedSignal?.reason as Error)?.name).toBe("TimeoutError");
   });
