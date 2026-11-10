@@ -351,7 +351,7 @@ The automated rehearsal procedure (docker mode: **everything happens inside the 
 ### Optional: keep the drill and start the drill board (`--keep-drill`)
 ```bash
 export BETTER_AUTH_SECRET="$(openssl rand -hex 32)"          # drill-only secret, not the production one
-export PAPERCLIP_DB_PASSWORD="<url-encoded paperclip password>"  # same role password as in the restored database
+export MYRMIDON_DB_PASSWORD="<url-encoded paperclip password>"  # same role password as in the restored database
 export COMPOSE_BOARD_IMAGE="ghcr.io/itkadr-git/myrmidon@sha256:<release component digest>"
 scripts/myrmidon/standby/standby-ctl.sh rehearse --target board --keep-drill
 curl -s http://127.0.0.1:3101/healthz

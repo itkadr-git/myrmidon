@@ -2,7 +2,7 @@
 //
 // myrmidon(PROCS-1.2, design OPE-5394 §7.1): the child-process supervisor of
 // the board. The worker (tini's first child) forks N api processes out of the
-// same entrypoint with `PAPERCLIP_PROCESS_ROLE=api`, watches their IPC
+// same entrypoint with `MYRMIDON_PROCESS_ROLE=api`, watches their IPC
 // readiness, restarts them with a backoff, and opens/closes its own :3100
 // listener as the operator flips `general.processes.mode` between `single`
 // and `split`.
@@ -42,7 +42,7 @@ import {
 import type { ProcessesSettings } from "@myrmidon/shared";
 
 /** Env var the child reads to correlate its boot with the worker's. */
-export const PARENT_BOOT_ID_ENV = "PAPERCLIP_PARENT_BOOT_ID";
+export const PARENT_BOOT_ID_ENV = "MYRMIDON_PARENT_BOOT_ID";
 
 /** IPC messages the api child sends to the worker. */
 export const SUPERVISOR_IPC_READY = "myrmidon:supervisor:ready";
