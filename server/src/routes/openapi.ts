@@ -19,6 +19,7 @@ import {
   createAgentSchema,
   createAgentHireSchema,
   updateAgentSchema,
+  bulkUpdateAgentsModelSchema,
   updateAgentPermissionsSchema,
   updateAgentInstructionsPathSchema,
   updateAgentInstructionsBundleSchema,
@@ -3022,6 +3023,18 @@ registry.registerPath({
   request: {
     params: z.object({ companyId: z.string() }),
     body: jsonBody(createAgentSchema),
+  },
+  responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized },
+});
+
+registry.registerPath({
+  method: "post",
+  path: "/api/companies/{companyId}/agents/bulk-update-model",
+  tags: ["agents"],
+  summary: "Bulk-update model/connection for agents",
+  request: {
+    params: z.object({ companyId: z.string() }),
+    body: jsonBody(bulkUpdateAgentsModelSchema),
   },
   responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized },
 });

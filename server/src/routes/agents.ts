@@ -65,6 +65,8 @@ import {
   type AgentAdapterType,
   // myrmidon(PERF-DIET-G): the slim list row returned by GET /companies/:id/agents
   type AgentListItem,
+  bulkUpdateAgentsModelSchema,
+  type BulkUpdateAgentsModel,
 } from "@myrmidon/shared";
 import { dbAutonomyGate } from "../myrmidon/autonomy/gate.js";
 import {
@@ -6003,6 +6005,90 @@ function getActorIdentityPart(req: Request): string {
 
     res.json(redactAgentRowForResponse(agent));
   });
+
+  // myrmidon(1.7 FLEET-OPS-BULK-API, OPE-12224): bulk model/connection update.
+  // Applies a model and/or AI-connection switch to many agents in one call.
+  // Partial success: every valid agent is mutated, every failure is reported
+  // with a reason. Idempotent by nature — re-running with the same body
+  // succeeds because the target state is already reached.
+  router.post(
+    "/companies/:companyId/agents/bulk-update-model",
+    validate(bulkUpdateAgentsModelSchema),
+    async (req, res) => {
+      const companyId = req.params.companyId as string;
+      assertCompanyAccess(req, companyId);
+
+      const { agentIds, model, connectionId } = req.body as BulkUpdateAgentsModel;
+
+      const updated: string[] = [];
+      const failed: Array<{ id: string; reason: string }> = [];
+
+      const actor = getActorInfo(req);
+
+      for (const agentId of agentIds) {
+        try {
+          const existing = await svc.getById(agentId);
+          if (!existing || existing.companyId !== companyId) {
+            failed.push({ id: agentId, reason: "Agent not found" });
+            continue;
+          }
+
+          await assertCanUpdateAgent(req, existing);
+
+          const patchData: Record<string, unknown> = {};
+          if (model !== undefined) {
+            patchData.adapterConfig = {
+              ...(existing.adapterConfig as Record<string, unknown> ?? {}),
+              model,
+            };
+          }
+          if (connectionId !== undefined) {
+            patchData.runtimeConfig = {
+              ...(existing.runtimeConfig as Record<string, unknown> ?? {}),
+              aiConnection: connectionId,
+            };
+          }
+
+          const agent = await svc.update(agentId, patchData, {
+            recordRevision: {
+              createdByAgentId: actor.agentId,
+              createdByUserId: actor.actorType === "user" ? actor.actorId : null,
+              source: "bulk-update-model",
+            },
+          });
+          if (!agent) {
+            failed.push({ id: agentId, reason: "Agent not found" });
+            continue;
+          }
+
+          await logActivity(db, {
+            companyId: agent.companyId,
+            actorType: actor.actorType,
+            actorId: actor.actorId,
+            agentId: actor.agentId,
+            runId: actor.runId,
+            agentApiKeyId: actor.agentApiKeyId,
+            action: "agent.updated",
+            entityType: "agent",
+            entityId: agent.id,
+            details: {
+              ...summarizeAgentUpdateDetails(patchData),
+              bulkUpdate: true,
+            },
+          });
+
+          updated.push(agent.id);
+        } catch (err) {
+          failed.push({
+            id: agentId,
+            reason: err instanceof Error ? err.message : String(err),
+          });
+        }
+      }
+
+      res.json({ updated, failed });
+    },
+  );
 
   router.post("/agents/:id/pause", async (req, res) => {
     const id = req.params.id as string;
