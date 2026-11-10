@@ -60,7 +60,7 @@ import {
   type ReviewReworkExecutorCandidate,
   type ReviewReworkPrFact,
 } from "./domain.js";
-import type { ReviewReworkPrResolver, ReviewReworkPrSnapshot } from "./resolver.js";
+import type { ReviewReworkPrResolver, ReviewReworkPrSnapshot, ReviewReworkPrReference } from "./resolver.js";
 import type { ReworkCandidateRow, ReviewReworkStore } from "./store.js";
 
 export { DEFAULT_REVIEW_REWORK_SWEEP_INTERVAL_SEC } from "@myrmidon/shared";
@@ -137,6 +137,17 @@ export interface ReviewReworkSweepDeps {
   env?: NodeJS.ProcessEnv;
   now?: () => Date;
   log?: Pick<Logger, "info" | "warn">;
+  /** Optional resolver for PR unified diffs. */
+  resolveDiff?: (
+    companyId: string,
+    reference: ReviewReworkPrReference & { headSha?: string | null },
+  ) => Promise<string | null>;
+  /** Optional resolver for authoritative CI / test output. */
+  resolveCiOutput?: (
+    companyId: string,
+    issueId: string,
+    prs: readonly ReviewReworkPrFact[],
+  ) => Promise<string | null>;
   /** Optional goal judge review-cycle round controller. */
   goalJudge?: {
     judge(input: import("../goal-judge/controller.js").GoalJudgeReviewTaskFacts): Promise<import("../goal-judge/controller.js").GoalJudgeDecision>;
@@ -413,17 +424,51 @@ export function createReviewReworkSweep(deps: ReviewReworkSweepDeps): ReviewRewo
     }
     // Goal judge is a fail-open optional gate: disabled/unconfigured means noop,
     // while a concrete return/escalation is applied under the same status guard
-    // as every other review-loop move. The facts deliberately use only stored
-    // issue evidence; the resolver supplies the linked PR head as the diff key.
+    // as every other review-loop move.
     const goalJudge = deps.goalJudgeFactory?.(task.companyId) ?? deps.goalJudge;
     if (goalJudge && task.status === "in_review") {
+      let resolvedDiff: string | null = null;
+      if (deps.resolveDiff) {
+        const diffs: string[] = [];
+        for (const pr of prs) {
+          const [owner, repo] = pr.repo.split("/");
+          if (owner && repo) {
+            try {
+              const d = await deps.resolveDiff(task.companyId, {
+                owner,
+                repo,
+                number: pr.number,
+                headSha: pr.headSha,
+              });
+              if (d) diffs.push(d);
+            } catch {
+              // ignore diff fetch failures
+            }
+          }
+        }
+        if (diffs.length > 0) {
+          resolvedDiff = diffs.join("\n\n");
+        }
+      }
+      const fallbackDiff = prs.map((pr) => `${pr.prKey} @ ${pr.headSha ?? "unknown"}`).join("\n");
+
+      let resolvedCiOutput: string | null = null;
+      if (deps.resolveCiOutput) {
+        try {
+          resolvedCiOutput = await deps.resolveCiOutput(task.companyId, task.id, prs);
+        } catch {
+          // ignore CI output fetch failure
+        }
+      }
+      const fallbackCiOutput = comments.map((comment) => comment.body).join("\n");
+
       const judgeDecision = await goalJudge.judge({
         issueId: task.id,
         companyId: task.companyId,
         status: task.status,
         criteria: task.description ?? task.title,
-        diff: prs.map((pr) => `${pr.prKey} @ ${pr.headSha ?? "unknown"}`).join("\n"),
-        testOutput: comments.map((comment) => comment.body).join("\n"),
+        diff: resolvedDiff ?? fallbackDiff,
+        testOutput: resolvedCiOutput ?? fallbackCiOutput,
         claims: comments.at(-1)?.body ?? null,
         headSha: prs.map((pr) => pr.headSha).filter((sha): sha is string => Boolean(sha)).join(",") || null,
         returnAssigneeAgentId: task.returnAssigneeAgentId,

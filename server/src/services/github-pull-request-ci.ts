@@ -1237,3 +1237,39 @@ export function summarizeHeadLaneEvidence(
 
   return [summarizeLane("test", testRuns), summarizeLane("lint", lintRuns)];
 }
+
+/**
+ * myrmidon(1.7-GOAL-JUDGE): formats authoritative pull request CI test / check runs
+ * into structured text suitable for goal-judge evaluation and review verification.
+ */
+export function formatAuthoritativeCiOutput(
+  ciResults: readonly PullRequestCiResult[],
+): string | null {
+  if (!ciResults || ciResults.length === 0) return null;
+  const sections: string[] = [];
+  for (const ci of ciResults) {
+    const lines: string[] = [];
+    lines.push(`PR #${ci.pullNumber} (${ci.repository}):`);
+    if (ci.headSha) lines.push(`Head SHA: ${ci.headSha}`);
+    lines.push(
+      `CI Status: ${ci.status}, Conclusion: ${ci.conclusion} (Authoritative: ${ci.authoritative ? "true" : "false"})`,
+    );
+    lines.push(`Summary: ${ci.summary}`);
+    if (ci.failedJobs.length > 0) {
+      lines.push("Failed checks:");
+      for (const job of ci.failedJobs) {
+        lines.push(`  - ${job.name}: ${job.conclusion}${job.url ? ` (${job.url})` : ""}`);
+      }
+    }
+    if (ci.runs.length > 0) {
+      lines.push("Check runs:");
+      for (const run of ci.runs) {
+        lines.push(
+          `  - ${run.name}: ${run.status}/${run.conclusion ?? "pending"}${run.url ? ` (${run.url})` : ""}`,
+        );
+      }
+    }
+    sections.push(lines.join("\n"));
+  }
+  return sections.join("\n\n");
+}

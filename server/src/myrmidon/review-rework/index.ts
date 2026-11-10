@@ -7,11 +7,18 @@ import { instanceSettingsService } from "../../services/instance-settings.js";
 import { isInstanceUnderMaintenance } from "../maintenance/gate.js";
 import { reviewReworkSettingsService } from "./settings.js";
 import { createReviewReworkSweep } from "./sweep.js";
-import { createPullRequestReviewFactsResolver } from "./resolver.js";
+import {
+  createPullRequestReviewFactsResolver,
+  createPullRequestDiffResolver,
+} from "./resolver.js";
 import { createPgReviewReworkStore } from "./store.js";
 import { createGoalJudgeModelPort } from "../goal-judge/wiring.js";
 import { createGoalJudgeRoundController } from "../goal-judge/controller.js";
 import { goalJudgeSettingsService } from "../goal-judge/settings.js";
+import {
+  createPullRequestCiResolver,
+  formatAuthoritativeCiOutput,
+} from "../../services/github-pull-request-ci.js";
 
 export * from "./domain.js";
 export * from "./settings.js";
@@ -24,7 +31,9 @@ export {
 export { createPgReviewReworkStore, type ReviewReworkStore } from "./store.js";
 export {
   createPullRequestReviewFactsResolver,
+  createPullRequestDiffResolver,
   type ReviewReworkPrResolver,
+  type ReviewReworkDiffResolver,
 } from "./resolver.js";
 
 type WakeFn = (agentId: string, options: Record<string, unknown>) => Promise<unknown>;
@@ -46,9 +55,16 @@ export function createReviewReworkScheduler(input: {
     settings: instanceSettingsService(input.db),
   });
   const goalJudges = new Map<string, ReturnType<typeof createGoalJudgeRoundController>>();
+  const diffResolver = createPullRequestDiffResolver(input.db, { source: "review-rework" });
+  const ciResolver = createPullRequestCiResolver(input.db, { source: "review-rework" });
   const sweep = createReviewReworkSweep({
     store: createPgReviewReworkStore(input.db),
     resolvePr: createPullRequestReviewFactsResolver(input.db, { source: "review-rework" }),
+    resolveDiff: diffResolver,
+    resolveCiOutput: async (companyId, issueId) => {
+      const ciResults = await ciResolver.resolveForIssue(companyId, issueId);
+      return formatAuthoritativeCiOutput(ciResults);
+    },
     readSettings: () => settings.read(),
     isUnderMaintenance: () => isInstanceUnderMaintenance(input.db),
     isLeader: input.isLeader,

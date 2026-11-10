@@ -165,6 +165,9 @@ function build(input: {
   env?: NodeJS.ProcessEnv;
   isLeader?: () => boolean;
   resolvePr?: ReviewReworkPrResolver;
+  goalJudge?: ReviewReworkSweepDeps["goalJudge"];
+  resolveDiff?: ReviewReworkSweepDeps["resolveDiff"];
+  resolveCiOutput?: ReviewReworkSweepDeps["resolveCiOutput"];
 }) {
   const wakes: WakeCall[] = [];
   const activities: Array<{ action: string; details: Record<string, unknown> }> = [];
@@ -195,6 +198,9 @@ function build(input: {
     ...(input.intervalMs === undefined ? {} : { intervalMs: input.intervalMs }),
     ...(input.env === undefined ? {} : { env: input.env }),
     ...(input.isLeader === undefined ? {} : { isLeader: input.isLeader }),
+    ...(input.goalJudge === undefined ? {} : { goalJudge: input.goalJudge }),
+    ...(input.resolveDiff === undefined ? {} : { resolveDiff: input.resolveDiff }),
+    ...(input.resolveCiOutput === undefined ? {} : { resolveCiOutput: input.resolveCiOutput }),
   };
   return { sweep: createReviewReworkSweep(deps), wakes, activities, getResolveCalls: () => resolveCalls };
 }
@@ -788,6 +794,36 @@ describe("review rework sweep", () => {
     const second = await sweep2.sweep(new Date("2026-10-04T17:00:10Z"));
     expect(second.skippedPass).toBe(false);
     expect(getCalls2()).toBe(1);
+  });
+
+  it("passes resolved diff and CI output to goalJudge when configured", async () => {
+    const store = new FakeStore();
+    const task = reviewTask();
+    task.status = "in_review";
+    store.rows = [candidateRow(task)];
+    store.comments = [{ id: "c1", body: "Initial comment", createdAt: "2026-10-04T12:00:00Z" }];
+
+    let judgedFacts: any = null;
+    const fakeJudge = {
+      judge: async (facts: any) => {
+        judgedFacts = facts;
+        return { kind: "pass" as const, roundsUsed: 1 };
+      },
+    };
+
+    const { sweep } = build({
+      store,
+      snapshot: { state: "open", headSha: HEAD_NEW, reviewDecision: null, updatedAt: null },
+      goalJudge: fakeJudge,
+      resolveDiff: async (_companyId, ref) => `--- a/file.ts\n+++ b/file.ts\n@@ -1 +1 @@\n-// ${ref.repo}#${ref.number}`,
+      resolveCiOutput: async (_companyId, _issueId, _prs) => "Test check runs: all 4 passed.",
+    });
+
+    await sweep.sweep(new Date("2026-10-04T17:00:00Z"));
+
+    expect(judgedFacts).not.toBeNull();
+    expect(judgedFacts.diff).toContain("--- a/file.ts");
+    expect(judgedFacts.testOutput).toBe("Test check runs: all 4 passed.");
   });
 });
 
