@@ -160,8 +160,15 @@ describe("myrmidon(UI2) spend chip mapping", () => {
     expect(chip?.budget).toBe("$2,200");
   });
 
-  it("renders empty (null) while costs/summary has not resolved", () => {
+  it("renders empty (null) while costs/summary has not resolved or spendCents is non-finite", () => {
     expect(ui2SpendChip(undefined)).toBeNull();
+    expect(ui2SpendChip(costSummaryFixture({ spendCents: NaN }))).toBeNull();
+  });
+
+  it("handles negative budgetCents by suppressing budget (null)", () => {
+    const chip = ui2SpendChip(costSummaryFixture({ budgetCents: -500 }));
+    expect(chip?.budget).toBeNull();
+    expect(chip?.budgetCents).toBe(0);
   });
 
   it("rounds and groups cents into dollars (mono chip contract)", () => {

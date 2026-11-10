@@ -40,6 +40,8 @@ export interface Ui2ColonyChip {
 
 export function ui2ColonyChip(agents: DashboardSummary["agents"] | undefined): Ui2ColonyChip | null {
   if (!agents) return null;
+  const values = [agents.active, agents.running, agents.paused, agents.error];
+  if (values.some((v) => typeof v !== "number" || !Number.isFinite(v))) return null;
   return {
     running: agents.running,
     total: agents.active + agents.running + agents.paused + agents.error,
@@ -67,12 +69,20 @@ export function ui2RunsChip(
   runActivity: DashboardSummary["runActivity"] | undefined,
   now: Date = new Date(),
 ): Ui2RunsChip | null {
-  if (liveRunCount == null || !runActivity) return null;
+  if (
+    liveRunCount == null ||
+    typeof liveRunCount !== "number" ||
+    !Number.isFinite(liveRunCount) ||
+    !runActivity ||
+    !Array.isArray(runActivity)
+  ) {
+    return null;
+  }
   const todayKey = ui2TodayUtcKey(now);
   // Exact today match only: a stale feed without today's key must not show
   // yesterday's failures as "failed today".
   const today = runActivity.find((day: DashboardSummary["runActivity"][number]) => day.date === todayKey);
-  const failedToday = today?.failed ?? 0;
+  const failedToday = today && typeof today.failed === "number" && Number.isFinite(today.failed) ? today.failed : 0;
   return {
     running: liveRunCount,
     failedToday,
@@ -99,12 +109,16 @@ export function ui2FormatMoneyCents(cents: number): string {
 export function ui2SpendChip(
   summary: Pick<CostSummary, "spendCents" | "budgetCents"> | CostSummary | undefined,
 ): Ui2SpendChip | null {
-  if (!summary) return null;
-  const budget = summary.budgetCents > 0 ? ui2FormatMoneyCents(summary.budgetCents) : null;
+  if (!summary || typeof summary.spendCents !== "number" || !Number.isFinite(summary.spendCents)) return null;
+  const budgetCents =
+    typeof summary.budgetCents === "number" && Number.isFinite(summary.budgetCents) && summary.budgetCents > 0
+      ? summary.budgetCents
+      : 0;
+  const budget = budgetCents > 0 ? ui2FormatMoneyCents(budgetCents) : null;
   return {
     spend: ui2FormatMoneyCents(summary.spendCents),
     spendCents: summary.spendCents,
-    budgetCents: summary.budgetCents,
+    budgetCents,
     budget,
   };
 }
