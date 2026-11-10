@@ -4,6 +4,7 @@
 // display-font switch on ([lang="ru"] swaps --myr-font-display to Exo 2),
 // defaulted to the active i18next language.
 import type { ReactNode } from "react";
+import { i18n } from "@/i18n";
 import { Ui2Shell } from "./shell/Ui2Shell";
 import { Ui2I18nProvider } from "./i18n/Ui2I18n";
 
