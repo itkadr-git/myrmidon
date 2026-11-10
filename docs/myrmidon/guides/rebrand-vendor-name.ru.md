@@ -97,7 +97,7 @@ node scripts/myrmidon/vendor-name/check-vendor-name.mjs --target bundle
 эндпоинты, — поэтому снимок это настоящее тело, а не его копия:
 
 ```sh
-pnpm --filter @paperclipai/server exec tsx \
+pnpm --filter @myrmidon/server exec tsx \
   ../scripts/myrmidon/vendor-name/capture-snapshots.ts
 ```
 

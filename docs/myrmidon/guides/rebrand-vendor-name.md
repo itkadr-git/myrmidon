@@ -99,7 +99,7 @@ same ones that serve the endpoints — so the snapshot is the real body and not 
 copy of it:
 
 ```sh
-pnpm --filter @paperclipai/server exec tsx \
+pnpm --filter @myrmidon/server exec tsx \
   ../scripts/myrmidon/vendor-name/capture-snapshots.ts
 ```
 

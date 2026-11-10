@@ -1,6 +1,6 @@
 # Teams Catalog Migration Notes
 
-This document records the migration state of the initial bundled and optional teams shipped in `@paperclipai/teams-catalog`. It exists so future contributors know what was intentionally deferred, what is safe to delete from legacy sources, and which compatibility tests must land before the legacy onboarding assets can be removed.
+This document records the migration state of the initial bundled and optional teams shipped in `@myrmidon/teams-catalog`. It exists so future contributors know what was intentionally deferred, what is safe to delete from legacy sources, and which compatibility tests must land before the legacy onboarding assets can be removed.
 
 The approved plan for this package lives at [PAP-10206 plan document](/PAP/issues/PAP-10206#document-plan).
 
