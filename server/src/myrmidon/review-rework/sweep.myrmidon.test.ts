@@ -931,6 +931,9 @@ describe("review rework sweep", () => {
       snapshot: { state: "open", headSha: currentHead, reviewDecision: null, updatedAt: null },
       goalJudgeFactory,
       resolvePr: async () => ({ state: "open", headSha: currentHead, reviewDecision: null, updatedAt: null }),
+      // Production paces passes via sweepIntervalSec (300 s default); the
+      // ledger test ticks every minute and must not be gated by the default.
+      intervalMs: 60_000,
     });
 
     // --- Cycle 1 (round 1) ---
