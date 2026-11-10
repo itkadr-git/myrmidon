@@ -212,6 +212,14 @@ func (d *dockerClient) status(ctx context.Context, bot string) (botStatus, error
 		return botStatus{}, err
 	}
 	state := x.State.Status
+	// OPE-12663: the board's state model has no docker-specific values — any
+	// non-running container (created, exited, dead) is "stopped", the same
+	// mapping the local docker driver does (botStateFromInspect). Without it
+	// the reconciler would not recognize an idle-stopped (exited) container
+	// as stopped and would treat the idle-stop mark as lost.
+	if state != "running" {
+		state = "stopped"
+	}
 	return botStatus{BotKey: bot, State: state, Image: x.Config.Image}, nil
 }
 func (d *dockerClient) logs(ctx context.Context, bot string) (string, error) {
