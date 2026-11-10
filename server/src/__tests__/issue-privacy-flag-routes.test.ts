@@ -6,6 +6,7 @@ import { eq } from "drizzle-orm";
 import {
   activityLog,
   agentApiKeys,
+  agentRuntimeState,
   agents,
   agentWakeupRequests,
   authUsers,
@@ -13,7 +14,9 @@ import {
   companies,
   companyMemberships,
   createDb,
+  heartbeatRunEvents,
   heartbeatRuns,
+  issueComments,
   issues,
 } from "@myrmidon/db";
 import { actorMiddleware } from "../middleware/auth.js";
@@ -33,6 +36,17 @@ vi.hoisted(() => {
 vi.mock("../services/issue-assignment-wakeup.js", () => ({
   queueIssueAssignmentWakeup: vi.fn(),
 }));
+
+vi.mock("../services/heartbeat.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../services/heartbeat.js")>();
+  return {
+    ...actual,
+    heartbeatService: (...args: Parameters<typeof actual.heartbeatService>) => ({
+      ...actual.heartbeatService(...args),
+      wakeup: async () => null,
+    }),
+  };
+});
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
@@ -70,12 +84,15 @@ describeEmbeddedPostgres("issue privacy flag routes (1.7 PRIVATE-TASKS)", () => 
 
   afterEach(async () => {
     await db.delete(activityLog);
+    await db.delete(heartbeatRunEvents);
     await db.delete(heartbeatRuns);
     await db.delete(agentWakeupRequests);
+    await db.delete(issueComments);
     await db.delete(issues);
     await db.delete(agentApiKeys);
     await db.delete(boardApiKeys);
     await db.delete(companyMemberships);
+    await db.delete(agentRuntimeState);
     await db.delete(agents);
     await db.delete(companies);
     await db.delete(authUsers);
