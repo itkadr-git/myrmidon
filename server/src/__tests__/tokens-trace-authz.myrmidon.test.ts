@@ -1,3 +1,8 @@
+// Guard order is board-first, matching the bot-containers sample:
+// assertBoard first, assertCompanyAccess second. Consequence: a credential-less
+// caller ({type:"none"}) hits assertBoard and gets 403 "Board access required",
+// not 401 — accepted explicitly during review of OPE-12675; store reads stay
+// behind both guards in every deny case.
 // myrmidon(1.6.8 TOKENS-TRACE authz / OPE-12675): the trace-export routes must
 // reject every caller that is not a board actor with access to the company in
 // the path — before any query parsing and before the store reads the database.
@@ -86,9 +91,12 @@ beforeEach(() => {
 
 describe("tokens-trace authz (OPE-12675)", () => {
   describe("GET /agents", () => {
-    it("answers 401 to an anonymous caller without reading the store", async () => {
+    // Board-first: a credential-less actor is rejected by assertBoard with 403
+    // ("Board access required"), not 401 — see the file-header note.
+    it("answers 403 to a credential-less caller without reading the store", async () => {
       const res = await request(appFor(anonymous)).get(AGENTS_URL);
-      expect(res.status).toBe(401);
+      expect(res.status).toBe(403);
+      expect(res.body).toMatchObject({ error: "Board access required" });
       expectNoStoreReads();
     });
 
@@ -129,12 +137,13 @@ describe("tokens-trace authz (OPE-12675)", () => {
   });
 
   describe("GET /reconcile", () => {
-    it("answers 401 to an anonymous caller without reading the store", async () => {
+    // Board-first: see the matching /agents case above.
+    it("answers 403 to a credential-less caller without reading the store", async () => {
       const res = await request(appFor(anonymous)).get(RECONCILE_URL);
-      expect(res.status).toBe(401);
+      expect(res.status).toBe(403);
+      expect(res.body).toMatchObject({ error: "Board access required" });
       expectNoStoreReads();
     });
-
     it("answers 403 to an agent key without reading the store", async () => {
       const res = await request(appFor(agentOfCompanyA)).get(RECONCILE_URL);
       expect(res.status).toBe(403);
