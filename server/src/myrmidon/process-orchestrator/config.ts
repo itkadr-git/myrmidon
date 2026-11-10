@@ -14,7 +14,7 @@
 // single-process board behaves byte-for-byte as before.
 //
 // Env contract (SETTINGS.md section "1.6.6 — PROCS-T1.5"):
-// - `PAPERCLIP_PROCESS_MODE`      — `single` (default) | `split`. The
+// - `MYRMIDON_PROCESS_MODE`       — `single` (default) | `split`. The
 //   emergency escape of design §7.2; the name is reserved by PROCS-1.1
 //   (packages/shared `myrmidon-processes.ts`), this module is its pure
 //   reader for the launcher.
@@ -44,16 +44,16 @@
 //   error, not a deployment.
 // - `MYRMIDON_WORKER_HOST`        — bind of the worker listeners (default
 //   `127.0.0.1`; api processes keep the ambient `HOST`).
-// - `PAPERCLIP_PROCESS_ROLE`      — this process's role (`all` | `worker` |
+// - `MYRMIDON_PROCESS_ROLE`       — this process's role (`all` | `worker` |
 //   `api`); the launcher WRITES it into every child, the child's startup
 //   gates read it (PROCS-1.1).
 // - `MYRMIDON_WORKER_QUEUES`      — the execution-control queues THIS
 //   worker sweeps, comma-separated. The launcher WRITES the per-worker
 //   slice (round-robin over the seven-queue list below) into each worker
 //   child so the split is a property of the launch map, not of code; a
-//   standalone `PAPERCLIP_PROCESS_ROLE=worker` process may set it by hand.
+//   standalone `MYRMIDON_PROCESS_ROLE=worker` process may set it by hand.
 //   Unset on a worker means "all queues" — the single-worker shape.
-// - `PAPERCLIP_PARENT_BOOT_ID`    — bootId of the launching parent, carried
+// - `MYRMIDON_PARENT_BOOT_ID`     — bootId of the launching parent, carried
 //   into every child so its registry row can name its supervisor
 //   (PROCS-1.2 `PARENT_BOOT_ID_ENV`).
 // - `DATABASE_URL`                — inherited unchanged. Without it every
@@ -64,16 +64,21 @@
 //   initialising the same data directory in parallel is the corruption this
 //   ticket must not ship.
 
-/** Env var naming the launch mode (vendor name, reserved by PROCS-1.1). */
-export const PROCESSES_MODE_ENV = "PAPERCLIP_PROCESS_MODE";
+// myrmidon(REBRAND-C): the MYRMIDON_* names are canonical; a PAPERCLIP_* spelling
+// set by an operator is still read (readProductEnvFrom), the launcher writes
+// only the MYRMIDON_* ones.
+import { readProductEnvFrom } from "@myrmidon/shared/env-alias";
+
+/** Env var naming the launch mode (reserved by PROCS-1.1). */
+export const PROCESSES_MODE_ENV = "MYRMIDON_PROCESS_MODE";
 
 /** Env var naming the role of THIS process; the launcher writes it into
  * every child env. */
-export const PROCESS_ROLE_ENV = "PAPERCLIP_PROCESS_ROLE";
+export const PROCESS_ROLE_ENV = "MYRMIDON_PROCESS_ROLE";
 
 /** Env var carrying the bootId of the launching parent into a forked child,
  * so the child's registry row can name its parent (PROCS-1.2). */
-export const PARENT_BOOT_ID_ENV = "PAPERCLIP_PARENT_BOOT_ID";
+export const PARENT_BOOT_ID_ENV = "MYRMIDON_PARENT_BOOT_ID";
 
 /** Env var: number of api processes (N). */
 export const API_COUNT_ENV = "MYRMIDON_API_PROCESSES";
@@ -250,13 +255,13 @@ function trimmedOrEmpty(raw: string | undefined): string {
 }
 
 /**
- * `PAPERCLIP_PROCESS_MODE`: `split` only on the exact value (case- and
+ * `MYRMIDON_PROCESS_MODE`: `split` only on the exact value (case- and
  * space-tolerant); everything else — unset, junk, `triple` — resolves to
  * `single`, the byte-for-byte vendor behaviour. A typo must not half-split
  * a dev stack.
  */
 export function resolveProcessMode(
-  raw: string | undefined = process.env[PROCESSES_MODE_ENV],
+  raw: string | undefined = readProductEnvFrom(process.env, "PROCESS_MODE"),
 ): BoardProcessMode {
   const value = trimmedOrEmpty(raw).toLowerCase();
   return value === "split" ? "split" : "single";
@@ -322,13 +327,13 @@ export function workerBlockPorts(workerBasePort: number, workerCount: number): n
  *   env). Api-i binds `PORT + i*MYRMIDON_API_PORT_STRIDE`, owns no queue,
  *   and dials the worker block's base (`MYRMIDON_WORKER_HOST:base`) for
  *   the single-route proxy of design §7.1. Every child carries
- *   `PAPERCLIP_PROCESS_ROLE` so its startup gates behave exactly like
+ *   `MYRMIDON_PROCESS_ROLE` so its startup gates behave exactly like
  *   PROCS-1.1 specifies. A port collision between the two blocks — or two
  *   api children on one port while stride is not the shared `0` handled by
  *   the future supervisor — is a hard config error before anything spawns.
  */
 export function buildProcessMap(env: NodeJS.ProcessEnv = process.env): ProcessMap {
-  const mode = resolveProcessMode(env[PROCESSES_MODE_ENV]);
+  const mode = resolveProcessMode(readProductEnvFrom(env, "PROCESS_MODE"));
   const apiPort = resolvePort(BOARD_PORT_ENV, env[BOARD_PORT_ENV], DEFAULT_API_PORT);
   const workerHost = trimmedOrEmpty(env[WORKER_HOST_ENV]) || DEFAULT_WORKER_HOST;
   const workerBasePort = resolvePort(

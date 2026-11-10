@@ -41,11 +41,11 @@ import {
   type PaperclipWakeHistoryMode,
 } from "./wake-history.js";
 export {
-  PAPERCLIP_WAKE_PAYLOAD_JSON_MAX_CHARS,
-  PAPERCLIP_WAKE_RECENT_MAX_MESSAGES,
-  PAPERCLIP_WAKE_RECENT_MESSAGE_MAX_CHARS,
-  PAPERCLIP_WAKE_RECENT_TOTAL_MAX_CHARS,
-  PAPERCLIP_WAKE_SUMMARY_MAX_CHARS,
+  MYRMIDON_WAKE_PAYLOAD_JSON_MAX_CHARS,
+  MYRMIDON_WAKE_RECENT_MAX_MESSAGES,
+  MYRMIDON_WAKE_RECENT_MESSAGE_MAX_CHARS,
+  MYRMIDON_WAKE_RECENT_TOTAL_MAX_CHARS,
+  MYRMIDON_WAKE_SUMMARY_MAX_CHARS,
   resolvePaperclipWakeHistoryMode,
   type PaperclipWakeHistoryMode,
 } from "./wake-history.js";
@@ -2063,7 +2063,7 @@ export function normalizePaperclipWakePayload(
 // continuation evidence), so the JSON copy keeps the envelope's shape and
 // cursors but not its bulky parts (myrmidon(WAKE-HISTORY): the history reached the
 // model three times), and the whole block is capped at
-// PAPERCLIP_WAKE_PAYLOAD_JSON_MAX_CHARS with the emptied keys named in
+// MYRMIDON_WAKE_PAYLOAD_JSON_MAX_CHARS with the emptied keys named in
 // `jsonTruncation`.
 export function stringifyPaperclipWakePayload(
   value: unknown,

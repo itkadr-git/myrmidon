@@ -475,7 +475,7 @@ async function startServerWithDatabaseTeardown(
       if (Date.now() >= deadline) {
         throw new Error(
           `PostgreSQL migrations are still not applied after ${Math.round(MIGRATION_WAIT_TIMEOUT_MS / 1000)}s. ` +
-            `PAPERCLIP_PROCESS_ROLE=api waits for the migration-owning process (worker/all); ` +
+            `MYRMIDON_PROCESS_ROLE=api waits for the migration-owning process (worker/all); ` +
             `start it, or run pnpm db:migrate.`,
         );
       }
@@ -1185,7 +1185,7 @@ async function startServerWithDatabaseTeardown(
   // myrmidon(PROCS-1.1/1.2): the stored process settings are read once the
   // schema is in place. The worker resolves its supervisor first so this read
   // — and every later PATCH — drives it: a stored `split` forks the api
-  // children right away. The emergency escape PAPERCLIP_PROCESS_MODE=single
+  // children right away. The emergency escape MYRMIDON_PROCESS_MODE=single
   // wins over the stored row inside resolveProcessesSettings (§7.2).
   const processSupervisor = processRoleProfile.role === "worker"
     ? createProcessSupervisor({
