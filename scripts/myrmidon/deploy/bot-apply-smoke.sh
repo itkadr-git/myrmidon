@@ -187,7 +187,11 @@ classify_bot() {
   # than treating a transient maintenance-window healthcheck failure as sticky.
   # (In real Docker an unhealthy mark never occurs while State.Status is not
   # running, so the probe only succeeds on a live recovered container.)
-  if [[ "$bstate" == "unhealthy" || "$hstatus" == "unhealthy" ]]; then
+  # Docker keeps the last Health.Status of a container after it stops: an exited
+  # idle-stopped bot still reads "unhealthy". Only a running container's health
+  # counts here; a stopped one is judged by its exit below (rc.20, 10.11: seven
+  # bots idle-stopped hours before the deploy were reported as crashed).
+  if [[ ( "$bstate" == "unhealthy" || "$hstatus" == "unhealthy" ) && "$dstatus" != "exited" && "$dstatus" != "dead" && "$dstatus" != "created" ]]; then
     if gateway_responds "$cname"; then
       echo "healthy"
       return 0
