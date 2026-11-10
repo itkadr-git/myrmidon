@@ -23,7 +23,7 @@ Prior to 1.6.6 (OPE-9997), every git command or credentials request generated a 
 
 To avoid network round-trips to the broker on every local `git` or `gh` invocation, the bot runtime provides a disk cache:
 
-- **Cache Directory**: Enabled by the environment variable `PAPERCLIP_GITHUB_CREDENTIALS_CACHE_DIR`. When configured by the launcher, this points to the run-scoped scratch directory (`$PAPERCLIP_RUN_SCRATCH_DIR` / run scratch dir). When unset, the client-side cache is off (allowing test suites to assert exact broker request counts).
+- **Cache Directory**: Enabled by the environment variable `MYRMIDON_GITHUB_CREDENTIALS_CACHE_DIR` (legacy alias: `PAPERCLIP_GITHUB_CREDENTIALS_CACHE_DIR`). When configured by the launcher, this points to the run-scoped scratch directory (`$PAPERCLIP_RUN_SCRATCH_DIR` / run scratch dir). When unset, the client-side cache is off (allowing test suites to assert exact broker request counts).
 - **Storage and Security**: Cache files are stored in `<cacheDir>/.paperclip-broker-cache/<hash>.json` with strict `0600` file permissions (accessible only to the running user). The file name is `sha256(brokerToken|repository)[0..32].json`.
 - **Client Cache TTL**: 45 minutes (`45 * 60 * 1000` ms), capped by the token's declared expiry with an additional 1-minute safety margin (`CACHE_EXPIRY_MARGIN_MS = 60 * 1000`).
 - **Validation**: On each lookup, the client helper validates the token, finite timestamps, and validity bounds. Any stale, expired, foreign, or corrupted entry is removed immediately (`fs.rmSync(file, { force: true })`) and a fresh token is requested.
@@ -63,10 +63,10 @@ When an operator observes `429 Too Many Requests` or errors referencing the cred
 1. **Identify the Culprit**:
    Check the issue or run logs for the failing agent. A 429 indicates that the agent run made >60 credentials requests within 60 seconds. Common causes include:
    - Git operations invoked in tight loops (e.g. `git status`, `git fetch`, `git diff` inside un-batched bash scripts or custom wrappers) without using a credential helper.
-   - `PAPERCLIP_GITHUB_CREDENTIALS_CACHE_DIR` not being passed or unwritable in a custom adapter environment.
+   - `MYRMIDON_GITHUB_CREDENTIALS_CACHE_DIR` not being passed or unwritable in a custom adapter environment.
    - Subprocesses spawning multiple parallel `git`/`gh` processes without sharing environment credentials.
 2. **Client Remediation**:
-   - Ensure the runner environment provides `PAPERCLIP_GITHUB_CREDENTIALS_CACHE_DIR` pointing to a valid run scratch directory so the built-in credential helper caches tokens.
+   - Ensure the runner environment provides `MYRMIDON_GITHUB_CREDENTIALS_CACHE_DIR` pointing to a valid run scratch directory so the built-in credential helper caches tokens.
    - Reuse the issued `GH_TOKEN` or `GITHUB_TOKEN` across commands in sub-scripts instead of re-authenticating on every line.
 3. **Operator Tuning**:
    If a legitimate workflow (such as an extensive repository migration or multi-submodule fetch) legitimately requires higher burst throughput, increase the server setting:
