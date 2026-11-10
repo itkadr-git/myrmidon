@@ -337,4 +337,59 @@ describe("Codex turn diff parser", () => {
       }),
     ]);
   });
+
+  it("classifies a deleted file snapshot as a delete with counted removals", () => {
+    // The parser classifies `delete` only when the new side is `/dev/null`
+    // (`newPath === null`), the exact mirror of the create contract. The
+    // removal must still be counted (contract from OPE-12601: an aggregate
+    // snapshot carries its real totals, and an empty-looking file entry must
+    // not swallow them).
+    const patch = [
+      "diff --git a/src/gone.ts b/src/gone.ts",
+      "deleted file mode 100644",
+      "--- a/src/gone.ts",
+      "+++ /dev/null",
+      "@@ -1 +0,0 @@",
+      "-removed",
+    ].join("\n");
+    expect(parseCodexTurnDiff(patch)).toEqual([
+      expect.objectContaining({
+        path: "src/gone.ts",
+        operation: "delete",
+        previousPath: null,
+        additions: 0,
+        deletions: 1,
+        binary: false,
+      }),
+    ]);
+  });
+
+  it("classifies a content-free mode-only snapshot as mode_change with zero totals", () => {
+    // A mode-only snapshot has no hunk content: both sides name the same real
+    // path and the totals are all-zero, fully-known counts — never unknown
+    // (null) — so the summary stays an exact shape (contract from OPE-12601).
+    const patch = [
+      "diff --git a/src/script.sh b/src/script.sh",
+      "old mode 100644",
+      "new mode 100755",
+      "--- a/src/script.sh",
+      "+++ b/src/script.sh",
+      "@@ -0,0 +0,0 @@",
+    ].join("\n");
+    expect(parseCodexTurnDiff(patch)).toEqual([
+      expect.objectContaining({
+        path: "src/script.sh",
+        operation: "mode_change",
+        previousPath: null,
+        additions: 0,
+        deletions: 0,
+        binary: false,
+      }),
+    ]);
+    expect(summarizeCodexTurnDiff(parseCodexTurnDiff(patch))).toEqual({
+      files: 1,
+      additions: 0,
+      deletions: 0,
+    });
+  });
 });
