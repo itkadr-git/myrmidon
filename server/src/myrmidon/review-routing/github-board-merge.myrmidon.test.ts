@@ -85,6 +85,23 @@ describe("pull request facts", () => {
     });
     expect(boardMergeFactsFromPullPayload({})).toMatchObject({ open: false, headSha: null, baseRef: null, labels: [] });
   });
+
+  it("reads pull request changed files across pages", async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(
+        json([
+          { filename: "server/src/index.ts" },
+          { filename: "docs/readme.md" },
+        ]),
+      );
+    const result = await client(fetchMock).readPullFiles!({ companyId: "c", repository: REPO, number: 7 });
+    expect(result).toEqual({
+      ok: true,
+      files: ["server/src/index.ts", "docs/readme.md"],
+    });
+    expect(fetchMock.mock.calls[0]![0]).toContain("pulls/7/files?per_page=100&page=1");
+  });
 });
 
 describe("the verdict of a required check: the latest run per name", () => {

@@ -37,6 +37,7 @@ import type { BoardMergeFacts, RequiredCheckVerdict } from "./pr-policy.js";
 type FetchLike = (url: string, init?: RequestInit) => Promise<Response>;
 
 export type BoardMergePullResult = { ok: true; facts: BoardMergeFacts } | { ok: false; reason: string };
+export type BoardMergeFilesResult = { ok: true; files: readonly string[] } | { ok: false; reason: string };
 export type BoardMergeChecksResult =
   | { ok: true; checks: Record<string, RequiredCheckVerdict> }
   | { ok: false; reason: string };
@@ -53,6 +54,7 @@ export type BoardMergeOutcome =
 
 export interface BoardMergeClient {
   readPull(input: { companyId: string; repository: string; number: number }): Promise<BoardMergePullResult>;
+  readPullFiles?(input: { companyId: string; repository: string; number: number }): Promise<BoardMergeFilesResult>;
   readChecks(input: {
     companyId: string;
     repository: string;
@@ -302,6 +304,30 @@ export function createGitHubBoardMergeClient(input: {
       const pr = asRecord(read.json);
       if (!pr) return { ok: false, reason: "unreadable_payload" };
       return { ok: true, facts: boardMergeFactsFromPullPayload(pr) };
+    },
+
+    async readPullFiles({ companyId, repository, number }) {
+      if (isGitHubRateLimited()) return { ok: false, reason: "rate_limited" };
+      const accessToken = await token(companyId, repository);
+      if (!accessToken) return { ok: false, reason: "no_token" };
+      const allFiles: string[] = [];
+      let page = 1;
+      while (page <= 3) {
+        const read = await getJson(
+          `${apiBase}/repos/${repository}/pulls/${number}/files?per_page=100&page=${page}`,
+          accessToken,
+          () => forgetToken(companyId, repository),
+        );
+        if (!read.ok) return read;
+        if (!Array.isArray(read.json)) return { ok: false, reason: "unreadable_payload" };
+        const files = (read.json as Array<Record<string, unknown>>)
+          .map((f) => (typeof f?.filename === "string" ? f.filename : null))
+          .filter((f): f is string => Boolean(f));
+        allFiles.push(...files);
+        if (read.json.length < 100) break;
+        page += 1;
+      }
+      return { ok: true, files: allFiles };
     },
 
     async readChecks({ companyId, repository, headSha, names }) {

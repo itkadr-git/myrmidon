@@ -5,8 +5,11 @@ import { describe, expect, it } from "vitest";
 import {
   declaredReviewedHead,
   decideBoardMerge,
+  pullRequiresFullCi,
+  requiredChecksForPull,
   reviewedHeadMatches,
   verdictCoversHead,
+  BOARD_MERGE_FULL_CI_LABEL,
   type BoardMergeFacts,
   type RequiredCheckVerdict,
 } from "./pr-policy.js";
@@ -154,5 +157,89 @@ describe("the decision for one approved pull request", () => {
     expect(decide({ mergeableState: "blocked", labels: ["review-approved"] })).toEqual({ kind: "wait", reason: "blocked" });
     // A state the board does not know is not merged.
     expect(decide({ mergeableState: "mystery" })).toEqual({ kind: "wait", reason: "blocked" });
+  });
+
+  describe("full-ci requirements (OPE-12551)", () => {
+    it("identifies paths requiring full CI", () => {
+      expect(pullRequiresFullCi(["server/src/index.ts"])).toBe(true);
+      expect(pullRequiresFullCi(["packages/paperclip-runner/src/driver.ts"])).toBe(true);
+      expect(pullRequiresFullCi(["docs/readme.md", "packages/shared/src/index.ts"])).toBe(false);
+    });
+
+    it("expands required checks when server/src or runner files are touched", () => {
+      expect(
+        requiredChecksForPull({
+          defaultChecks: ["CI result"],
+          files: ["docs/readme.md"],
+        }),
+      ).toEqual(["CI result"]);
+
+      expect(
+        requiredChecksForPull({
+          defaultChecks: ["CI result"],
+          files: ["server/src/routes.ts"],
+        }),
+      ).toEqual(["CI result", "tests (server 1/6)"]);
+
+      expect(
+        requiredChecksForPull({
+          defaultChecks: ["CI result"],
+          files: ["packages/paperclip-runner/src/index.ts"],
+        }),
+      ).toEqual(["CI result", "tests (other + runner)"]);
+
+      expect(
+        requiredChecksForPull({
+          defaultChecks: ["CI result"],
+          files: ["server/src/index.ts", "packages/paperclip-runner/src/index.ts"],
+        }),
+      ).toEqual(["CI result", "tests (server 1/6)", "tests (other + runner)"]);
+
+      expect(
+        requiredChecksForPull({
+          defaultChecks: ["CI result"],
+          labels: [BOARD_MERGE_FULL_CI_LABEL],
+        }),
+      ).toEqual(["CI result", "tests (server 1/6)", "tests (other + runner)"]);
+    });
+
+    it("demands full-ci label when server/src or runner files are touched without label", () => {
+      expect(
+        decideBoardMerge({
+          facts: facts(),
+          baseBranches: ["main"],
+          verdict: VERDICT,
+          checks: { "CI result": "success" },
+          requiredChecks: ["CI result"],
+          files: ["server/src/index.ts"],
+        }),
+      ).toEqual({ kind: "label", label: BOARD_MERGE_FULL_CI_LABEL });
+    });
+
+    it("waits for full-ci checks when full-ci label is set but checks are pending", () => {
+      expect(
+        decideBoardMerge({
+          facts: facts({ labels: [BOARD_MERGE_FULL_CI_LABEL] }),
+          baseBranches: ["main"],
+          verdict: VERDICT,
+          checks: { "CI result": "success", "tests (server 1/6)": "pending" },
+          requiredChecks: ["CI result", "tests (server 1/6)"],
+          files: ["server/src/index.ts"],
+        }),
+      ).toEqual({ kind: "wait", reason: "ci_pending" });
+    });
+
+    it("merges when full-ci label is set and all full checks succeeded", () => {
+      expect(
+        decideBoardMerge({
+          facts: facts({ labels: [BOARD_MERGE_FULL_CI_LABEL] }),
+          baseBranches: ["main"],
+          verdict: VERDICT,
+          checks: { "CI result": "success", "tests (server 1/6)": "success" },
+          requiredChecks: ["CI result", "tests (server 1/6)"],
+          files: ["server/src/index.ts"],
+        }),
+      ).toEqual({ kind: "merge" });
+    });
   });
 });
