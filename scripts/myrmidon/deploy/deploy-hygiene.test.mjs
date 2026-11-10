@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -209,6 +209,8 @@ const calls = (sb) => read(path.join(sb.dir, "calls.log"));
 describe("log_script_version (myrmidon(F-05)): the deploy journal opens with the script version", () => {
   // The journal line of a deploy run is the fake-git answer below; the real
   // value is `git describe --tags --always` of the clone holding the scripts.
+  // OPE-12335: the stamp precedes the deploy lock, so a run refused at the
+  // lock (or --help) still stamps its journal with the exact script version.
   const FAKE_GIT = `#!/usr/bin/env bash
 for a in "$@"; do
   case "$a" in
@@ -251,15 +253,21 @@ exit 0
   // Keep the fake invocation environment isolated from a host BASH_ENV. A host
   // startup file can otherwise override the fake git and hide the fixture's
   // fallback/error branches.
-  function runJournal(sb, exactPath = false) {
-    return spawnSync("bash", [path.join(HERE, "deploy.sh")], {
-      env: { ...process.env, BASH_ENV: "", PATH: exactPath ? sb.bin : `${sb.bin}:${process.env.PATH}`, SANDBOX: sb.dir },
+  function runJournal(sb, exactPath = false, args = [], extraEnv = {}) {
+    return spawnSync("bash", [path.join(HERE, "deploy.sh"), ...args], {
+      env: { ...process.env, BASH_ENV: "", PATH: exactPath ? sb.bin : `${sb.bin}:${process.env.PATH}`, SANDBOX: sb.dir, ...extraEnv },
       encoding: "utf8",
     });
   }
-  function journalHead(sb, exactPath = false) {
-    const r = runJournal(sb, exactPath);
-    return r.stderr.split("\n")[0];
+  function journalHead(sb, exactPath = false, r = null) {
+    const result = r ?? runJournal(sb, exactPath);
+    const journal = fs.readdirSync(sb.dir, { recursive: true })
+      .map((name) => path.join(sb.dir, name))
+      .filter((name) => fs.statSync(name).isFile())
+      .map((name) => ({ name, text: fs.readFileSync(name, "utf8") })
+      )
+      .find(({ text }) => text.includes("deploy scripts at"));
+    return (journal?.text ?? result.stderr).split("\n")[0];
   }
   function assertNoStdoutStamp(r) {
     assert.ok(
@@ -270,30 +278,74 @@ exit 0
 
   it("the journal's first line names the script version (git describe)", () => {
     const sb = versionSandbox(FAKE_GIT);
-    const r = runJournal(sb);
-    assert.equal(journalHead(sb), "deploy scripts at myr-v1.6.5-rc.7-3-gdeadbee");
+    const envFile = path.join(sb.dir, "deploy.env");
+    fs.writeFileSync(envFile, "COMPOSE_DIR=.\nCOMPOSE_SERVICE=server\nHEALTH_URL=http://127.0.0.1:1/api/health\n");
+    const r = runJournal(sb, false, ["--config", envFile, "--digest", "sha256:" + "a".repeat(64), "--dry-run"]);
+    assert.equal(journalHead(sb, false, r), "deploy scripts at myr-v1.6.5-rc.7-3-gdeadbee");
     assertNoStdoutStamp(r);
   });
 
   it("falls back to unknown when git cannot answer", () => {
     const sb = versionSandbox(BROKEN_GIT);
-    const r = runJournal(sb);
-    assert.equal(journalHead(sb), "deploy scripts at unknown");
+    const envFile = path.join(sb.dir, "deploy.env");
+    fs.writeFileSync(envFile, "COMPOSE_DIR=.\nCOMPOSE_SERVICE=server\nHEALTH_URL=http://127.0.0.1:1/api/health\n");
+    const r = runJournal(sb, false, ["--config", envFile, "--digest", "sha256:" + "a".repeat(64), "--dry-run"]);
+    assert.equal(journalHead(sb, false, r), "deploy scripts at unknown");
     assertNoStdoutStamp(r);
   });
 
   it("falls back to unknown when git itself is not installed", () => {
     const sb = versionSandbox(null);
-    const r = runJournal(sb, true);
-    assert.equal(journalHead(sb, true), "deploy scripts at unknown");
+    const envFile = path.join(sb.dir, "deploy.env");
+    fs.writeFileSync(envFile, "COMPOSE_DIR=.\nCOMPOSE_SERVICE=server\nHEALTH_URL=http://127.0.0.1:1/api/health\n");
+    const r = runJournal(sb, true, ["--config", envFile, "--digest", "sha256:" + "a".repeat(64), "--dry-run"]);
+    assert.equal(journalHead(sb, true, r), "deploy scripts at unknown");
     assertNoStdoutStamp(r);
   });
 
   it("describes the scripts' directory when it is not inside a git clone", () => {
     const sb = versionSandbox(NO_CLONE_GIT);
-    const r = runJournal(sb);
-    assert.equal(journalHead(sb), "deploy scripts at fallback-sha1");
+    const envFile = path.join(sb.dir, "deploy.env");
+    fs.writeFileSync(envFile, "COMPOSE_DIR=.\nCOMPOSE_SERVICE=server\nHEALTH_URL=http://127.0.0.1:1/api/health\n");
+    const r = runJournal(sb, false, ["--config", envFile, "--digest", "sha256:" + "a".repeat(64), "--dry-run"]);
+    assert.equal(journalHead(sb, false, r), "deploy scripts at fallback-sha1");
     assertNoStdoutStamp(r);
+  });
+
+  it("stamps the journal even when the run is refused at the deploy lock (OPE-12335)", async () => {
+    // A run that never gets past the lock must still carry the version stamp:
+    // the journal of the REFUSED run is the one an operator reads to learn
+    // which script version tried to deploy. A holder process keeps the flock
+    // on the lock file, so deploy.sh exits 42 right after the stamp.
+    const sb = versionSandbox(FAKE_GIT);
+    const envFile = path.join(sb.dir, "deploy.env");
+    fs.writeFileSync(envFile, `COMPOSE_DIR=${sb.dir}\nCOMPOSE_SERVICE=server\nHEALTH_URL=http://127.0.0.1:1/api/health\n`);
+    const stateDir = path.join(sb.dir, "state");
+    fs.mkdirSync(stateDir, { recursive: true });
+    const lockFile = path.join(stateDir, "deploy.lock");
+    const holder = spawn("bash", ["-c", `
+      exec 9<>"$1"
+      flock -n 9
+      printf '60001 2026-11-08T12:00:00Z 1.6.5\\n' > "$1"
+      echo READY
+      read line
+    `, "_", lockFile], { stdio: ["pipe", "pipe", "inherit"] });
+    await new Promise((resolve) => {
+      holder.stdout.on("data", (d) => {
+        if (d.toString().includes("READY")) resolve();
+      });
+    });
+    try {
+      const r = runJournal(sb, false, ["--config", envFile, "--digest", "sha256:" + "a".repeat(64)], { MYRMIDON_DEPLOY_LOCK_FILE: lockFile, PATH: `${sb.bin}:${process.env.PATH}` });
+      assert.equal(r.status, 42, `${r.stdout || ""}${r.stderr || ""}`);
+      assert.equal(journalHead(sb, false, r), "deploy scripts at myr-v1.6.5-rc.7-3-gdeadbee");
+      assertNoStdoutStamp(r);
+      assert.match(`${r.stdout || ""}${r.stderr || ""}`, /another deploy is already running/);
+      assert.match(`${r.stdout || ""}${r.stderr || ""}`, /60001/);
+    } finally {
+      holder.stdin.write("\n");
+      await new Promise((resolve) => holder.on("exit", resolve));
+    }
   });
 });
 

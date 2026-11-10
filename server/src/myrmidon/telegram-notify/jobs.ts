@@ -113,6 +113,8 @@ export interface AttentionSnapshotItem {
   title: string | null;
   issueId: string | null;
   queues: string[];
+  /** The card's why-now sentence (stack lag details for the digest line). */
+  whyNow?: string | null;
 }
 
 /** The mapped digest section: a heading and its entry lines. */
@@ -141,6 +143,7 @@ function sectionsForSourceKind(sourceKind: string): DigestSection[] {
     case "review":
     case "failed_run":
     case "agent_error_alert":
+    case "stack_update":
       return ["blocked"];
     case "budget_alert":
     case "litellm_budget":
@@ -167,7 +170,10 @@ export function buildDigestSections(input: {
   for (const item of input.snapshot.items) {
     const target = sectionsForSourceKind(item.sourceKind);
     const label = item.title ?? item.issueId ?? item.sourceKind;
-    const line = `- ${label}`;
+    // STACK-WATCH-LIVE: stack_update lines carry the lag detail (whyNow) so
+    // the owner sees the version delta, not just the component name.
+    const detail = item.sourceKind === "stack_update" && item.whyNow ? ` — ${item.whyNow}` : "";
+    const line = `- ${label}${detail}`;
     if (target.includes("needs_decision") && selected.includes("needs_decision")) {
       needsDecision.push(line);
     }
@@ -465,6 +471,7 @@ export function telegramNotifyJobPorts(db: Db): TelegramNotifyJobPorts {
           title: item.subject.title,
           issueId: item.relatedIssue?.id ?? item.subject.id,
           queues: item.queues.map((queue) => queue.key),
+          whyNow: item.whyNow ?? null,
         })),
       };
     },

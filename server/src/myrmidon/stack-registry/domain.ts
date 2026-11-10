@@ -29,6 +29,7 @@ export const STACK_LOCAL_PROBES = [
   "health-commit", // the board server itself: the /api/health commit source
   "docker-image", // image digest/labels via the Docker API over the unix socket
   "container-labels", // version reported by container labels
+  "http-version", // GET an HTTP endpoint of the component; JSON {version}
   "env", // an explicit MYRMIDON_* version override
   "manual", // filled by the operator; no probe exists
   "none", // no local probe: reported as unknown with a reason
@@ -59,6 +60,16 @@ export interface StackSeedComponent {
   localProbe: StackLocalProbe;
   /** For docker-image probes: image reference(s) to inspect, without a tag. */
   imageRefs?: readonly string[];
+  /**
+   * For http-version probes: the HTTP endpoint to GET. Read from the
+   * environment / bound secret at probe time (the address never ships in the
+   * seed, only the env var name / secret ref name). The endpoint answers a
+   * JSON body with a `version` or `api_version` field (hindsight /version, LiteLLM /version,
+   * Langfuse /api/public/health among them).
+   */
+  httpEndpointEnv?: string;
+  /** Restrict github-tags release checks to tags with this prefix (e.g. "myr-v"). */
+  tagPrefix?: string;
   /** One-line note shown next to the component in the panel. */
   note?: string;
   /** Package coordinates for advisory / CVE lookups (part B advisory check). */
@@ -153,6 +164,8 @@ export interface StackUpstreamState {
   notes: StackReleaseNotes | null;
   /** Probe failure reason for this component, if any. */
   error: string | null;
+  /** When the last successful upstream fetch happened (null if never). */
+  staleSince: string | null;
   /** Known vulnerabilities from the advisory check; absent when clean or when the source degraded. */
   vulnerabilities?: readonly StackVulnerability[];
 }
@@ -240,6 +253,7 @@ export function parseUpstreamState(raw: unknown): StackUpstreamState | null {
     behindBy: intOrNull(raw.behindBy),
     notes,
     error: str(raw.error),
+    staleSince: str(raw.staleSince),
   };
 }
 
@@ -373,7 +387,8 @@ export const STACK_SEED: readonly StackSeedComponent[] = [
     releaseSource: "github-tags",
     upstream: { kind: "github", repo: "itkadr-git/myrmidon" },
     localProbe: "health-commit",
-    note: "The board itself; version/commit come from the /api/health source.",
+    tagPrefix: "myr-v",
+    note: "The board itself; version/commit come from the /api/health source. Release checks only count board release tags (myr-v*), not the vendored snapshot tags.",
   },
   {
     name: "hermes-agent",
@@ -396,30 +411,26 @@ export const STACK_SEED: readonly StackSeedComponent[] = [
     name: "litellm",
     releaseSource: "github-releases",
     upstream: { kind: "github", repo: "BerriAI/litellm" },
-    localProbe: "docker-image",
-    imageRefs: ["ghcr.io/berriai/litellm"],
+    localProbe: "http-version",
+    httpEndpointEnv: "MYRMIDON_STACK_HTTP_LITELLM",
+    note: "Local version is read from the component's /version endpoint.",
     advisoryPackage: { name: "litellm", ecosystem: "PyPI" },
-  },
-  {
-    name: "ragflow",
-    releaseSource: "github-releases",
-    upstream: { kind: "github", repo: "infiniflow/ragflow" },
-    localProbe: "docker-image",
-    imageRefs: ["infiniflow/ragflow"],
-    advisoryPackage: { name: "ragflow", ecosystem: "PyPI" },
   },
   {
     name: "hindsight",
     releaseSource: "github-releases",
     upstream: { kind: "github", repo: "vectorize-io/hindsight" },
-    localProbe: "manual",
+    localProbe: "http-version",
+    httpEndpointEnv: "MYRMIDON_STACK_HTTP_HINDSIGHT",
+    note: "Local version is read from the component's own /version HTTP endpoint.",
   },
   {
     name: "langfuse",
     releaseSource: "github-releases",
     upstream: { kind: "github", repo: "langfuse/langfuse" },
-    localProbe: "docker-image",
-    imageRefs: ["langfuse/langfuse"],
+    localProbe: "http-version",
+    httpEndpointEnv: "MYRMIDON_STACK_HTTP_LANGFUSE",
+    note: "Local version is read from the component's /api/public/health endpoint.",
     advisoryPackage: { name: "langfuse", ecosystem: "npm" },
   },
   {

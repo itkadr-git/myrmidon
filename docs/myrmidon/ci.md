@@ -38,7 +38,7 @@ Workflow [`myrmidon-ci.yml`](../../.github/workflows/myrmidon-ci.yml) — на �
    пакета) или изменённый модуль (относительный путь).
 
 Пример: правка `packages/adapters/grok-local` — все тесты адаптера плюс тесты `server`/`ui`,
-которые импортируют `@paperclipai/adapter-grok-local`. Правка
+которые импортируют `@myrmidon/adapter-grok-local`. Правка
 `server/src/services/heartbeat.ts` — тесты, импортирующие `heartbeat`; если их больше 60,
 PR получает полный уровень.
 
@@ -114,7 +114,7 @@ run 37277281522), а релиз публиковать руками.
 | `typecheck + build` | fast, full | Один job (общие checkout и install). Сначала `pnpm -r typecheck`; на fast без `typecheck:rust` раннера. Затем (даже если typecheck упал) `pnpm build` (`NODE_OPTIONS=--max-old-space-size=4096`); на fast раннер собирается только как TypeScript, без релизной сборки Rust |
 | `tests (affected)` | fast | Отобранные тесты |
 | `tests (server 1/6)` … `(6/6)`, `tests (serialized 1/2)`, `(2/2)`, `tests (workspaces-a)`, `tests (workspaces-b)` | full | Весь `pnpm test:run`. Шарды server делятся по замеренной стоимости наборов (`scripts/general-server-shard-durations.json`, алгоритм LPT в `scripts/general-server-shard.mjs`); манифест обновляется `scripts/myrmidon/ci/shard-durations-from-logs.mjs` по логам последних зелёных прогонов main, а `general-server-shards.test.mjs` в `checks` проверяет, что шарды вместе покрывают каждый набор ровно один раз. Число шардов ограничено лимитом GitHub — 40 одновременных jobs на аккаунт, а каждый job заново делает checkout и install |
-| `tests (other + runner)` | full | Один job: пакеты, которые `pnpm test:run` не запускает (ниже), затем `pnpm --filter @paperclipai/paperclip-runner check:all` (проверка раннера у вендора) |
+| `tests (other + runner)` | full | Один job: пакеты, которые `pnpm test:run` не запускает (ниже), затем `pnpm --filter @myrmidon/paperclip-runner check:all` (проверка раннера у вендора) |
 | `go tools (dockergate + fleetd)` | все | gofmt, go vet, go test для `tools/dockergate` (+ контракт с драйвером) и `tools/fleetd` |
 | `checks` | все | Шаги: `shellcheck` скриптов выката; в `myrmidon-ci-tag.yml` (тег `myr-vX.Y.Z`) — гейт журнала релиза (RELEASE-CUT-CHANGELOG: `collect-fragments.mjs --version X.Y.Z --check`, непустой раздел версии и пустой «без выпуска» в обоих CHANGELOG, без него тег красный — инцидент 1.6.3); `node --test` по `scripts/myrmidon/**/*.test.mjs` (сюда входят сторож CHANGE-FRAGMENTS — ниже — и сторож полос тестов `test-lane-coverage.test.mjs`: каждый серверный тест ровно в одной полосе, OPE-4472); секреты (gitleaks); внутренние адреса (частные сети и запрещённые шаблоны); лицензии зависимостей; совместимость плагинов. Каждый шаг выполняется, даже если предыдущий упал: в журнале видно все сбои сразу |
 | **`CI result`** | все | Сводная: зелёная, если `plan` прошёл и каждая проверка прошла или не требовалась уровнем |
@@ -144,6 +144,24 @@ run 37277281522), а релиз публиковать руками.
 прогоне на PR любого уровня, включая `docs`: пропущенные уровнем проверки она принимает как
 «не требовались», но только если `plan` прошёл. У отменённого прогона (новый push) `CI result`
 не запускается вовсе — ложного зелёного нет.
+
+### Проверка ключевых файлов (hot files review / hot-files-review)
+
+PR, который трогает ключевые файлы ядра (`server/src/services/heartbeat.ts`, `server/src/services/execution-continuation.ts`, `packages/db/**`, `packages/adapters/hermes/**`, скрипты выката, Dockerfile, workflows — полный список в `scripts/myrmidon/ci/hot-files-check.sh`), требует обязательного ревью перед слиянием.
+
+**Контракт проверки и контексты:**
+- Защита ветки `main` (branch protection) требует обязательный check-run **`hot files review`**, а ruleset — статус **`hot-files-review`**.
+- Скрипт `scripts/myrmidon/ci/hot-files-check.sh` обеспечивает совместимость с обоими механизмами:
+  - Выставляет commit status (через GitHub Statuses API) для обоих контекстов: `hot files review` и `hot-files-review`.
+  - В терминальных состояниях (`success`, `failure`, `error`) выставляет check-run (через Check-Runs API) с именами `hot files review` и `hot-files-review` со статусом `completed` и соответствующим `conclusion`.
+- **Поведение при ожидании ревью (`pending`):**
+  - Если ключевые файлы затронуты и метки `review-approved` нет, скрипт выставляет `pending` («waiting for review-approved») **только** через commit status.
+  - Check-run со статусом `in_progress` в состоянии pending намеренно не создаётся: незавершённый check-run воспринимается сборщиком снимка CI доски как активное задание и зависает, блокируя вынесение вердикта ревьюера.
+- **Снятие метки при `synchronize` (новый push):**
+  - При событии `synchronize` (любой новый коммит в ветку PR) метка `review-approved` удаляется до проверки списка затронутых файлов (`DELETE repos/:repo/issues/:pr/labels/review-approved`), кроме случаев, когда головной коммит — слияние ветки `main` (update-branch от бота).
+  - Это предотвращает слияние устаревшего одобрения при досыле правок и обеспечивает немедленное выставление терминального `success` check-run для PR без hot-файлов без ручного вмешательства оператора.
+- **Права workflow:**
+  - В `.github/workflows/myrmidon-ci.yml` и `.github/workflows/myrmidon-hot-files-review.yml` для работы гейта заданы права `checks: write` (создание check-run), `issues: write` (снятие и чтение меток) и `statuses: write` (выставление статусов коммита).
 
 ### Тесты, которые `pnpm test:run` не запускает
 
@@ -269,8 +287,8 @@ variables → Actions) — наши домены, имена хостов, по�
    плагинов, согласованность возможностей (`pluginCapabilityValidator`), минимальная версия
    хоста. Это те же проверки, что делает `plugin-loader` при установке.
 2. **Установка как на сервере:** `install.mjs` ставит каждый плагин в свой чистый каталог
-   (`npm install --ignore-scripts`), затем заменяет все копии `@paperclipai/plugin-sdk` и
-   `@paperclipai/shared` пакетами, собранными из репозитория (`pnpm pack` — ровно то, что было
+   (`npm install --ignore-scripts`), затем заменяет все копии `@myrmidon/plugin-sdk` и
+   `@myrmidon/shared` пакетами, собранными из репозитория (`pnpm pack` — ровно то, что было
    бы опубликовано). Так плагин работает с нашим SDK, а не с версией из npm.
 3. **Проверка установленного пакета** (`check.ts`): модуль манифеста загружается, проходит
    те же проверки, файл воркера на месте. Затем воркер запускается через
@@ -285,9 +303,9 @@ variables → Actions) — наши домены, имена хостов, по�
 Локально:
 
 ```sh
-pnpm --filter @paperclipai/plugin-sdk ensure-build-deps
+pnpm --filter @myrmidon/plugin-sdk ensure-build-deps
 node scripts/myrmidon/plugin-compat/install.mjs --work /tmp/plugin-compat
-pnpm --filter @paperclipai/server exec tsx ../scripts/myrmidon/plugin-compat/check.ts --work /tmp/plugin-compat
+pnpm --filter @myrmidon/server exec tsx ../scripts/myrmidon/plugin-compat/check.ts --work /tmp/plugin-compat
 ```
 
 Новая версия плагина на установке: поменять версию в `plugins.json` и обновить снимок
@@ -311,7 +329,7 @@ pnpm --filter @paperclipai/server exec tsx ../scripts/myrmidon/plugin-compat/che
 
 ```sh
 pnpm --filter @myrmidon/hindsight-paperclip build
-pnpm --filter @paperclipai/server exec tsx ../scripts/myrmidon/plugin-compat/check-fork-manifest.ts
+pnpm --filter @myrmidon/server exec tsx ../scripts/myrmidon/plugin-compat/check-fork-manifest.ts
 ```
 
 Установка на инстансе — как у любого локального плагина: `POST /api/plugins/install`

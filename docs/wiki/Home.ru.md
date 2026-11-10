@@ -49,6 +49,9 @@ English versions of the pages carry no suffix, e.g. [Home](Home).
 
 ## Обслуживание сервера
 
+- [Dry-run онбординга сервера](Server-onboarding-dry-run.ru) — read-only
+  проверки DNS, SSH и прав доступа со стабильными кодами результата; старый
+  SSH dry-run маршрут сохранён для совместимости.
 - [Обновление и откат](Upgrading-and-rollback.ru) — обновление повторным
   запуском установщика; кандидаты и финальные выпуски; ручной поток
   `deploy.sh --release`.

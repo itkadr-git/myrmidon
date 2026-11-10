@@ -2739,6 +2739,20 @@
       "when": 1794185558199,
       "tag": "0467_loose_thundra",
       "breakpoints": true
+    },
+    {
+      "idx": 471,
+      "version": "7",
+      "when": 1794193863198,
+      "tag": "0471_clear_stale_block_metadata",
+      "breakpoints": true
+    },
+    {
+      "idx": 474,
+      "version": "7",
+      "when": 1794248347751,
+      "tag": "0474_gorgeous_garia",
+      "breakpoints": true
     }
   ]
 }

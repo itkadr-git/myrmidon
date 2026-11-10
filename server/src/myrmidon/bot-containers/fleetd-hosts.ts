@@ -5,14 +5,20 @@
 // is the local docker driver. Each named host is a fleetd service entry:
 //
 //   MYRMIDON_FLEET_HOSTS='[
-//     {"name":"vmexec","url":"http://fleetd.internal:9100","tokenSecret":"fleetd-vmexec-token",
-//      "hindsightUrl":"http://hindsight.internal:8890","llmBaseUrl":"http://llm.internal:4000",
+//     {"name":"vmexec","url":"http://<private-ip>:9100","tokenSecret":"fleetd-vmexec-token",
+//      "hindsightUrl":"http://<private-ip>:8890","llmBaseUrl":"http://<private-ip>:4000",
 //      "boardExtraHost":"paperclip-server-1","volumeRoot":"/srv/myrmidon-bots",
 //      "network":"myrmidon-bots","imageAllowlist":["ghcr.io/example/bot@sha256:*"]}
 //   ]'
 //
 // The token is a company secret NAME, never a value: the board resolves it at
 // startup (readCompanySecret), same as MYRMIDON_BOT_LLM_API_KEY_SECRET.
+//
+// Deprecated (fleet-site audit): this variable is the pre-registry way to name a host. It speaks
+// plain http with a bearer token only, so an http:// address is accepted here only when its host
+// is a private IP literal (private-address.ts): RFC 1918, RFC 6598 (100.64/10) or loopback. A DNS name or a
+// public address is refused. Sites are registered with POST /companies/:companyId/fleet/sites
+// (mTLS); bootstrapFleetSitesFromEnv logs a warning while the variable is set.
 //
 // The remaining fields exist because the instance-wide settings
 // (MYRMIDON_BOT_HINDSIGHT_API_URL, MYRMIDON_BOT_LLM_BASE_URL, the bind address
@@ -26,6 +32,8 @@
 // startup wiring, and the tests cover the shapes directly. Unknown keys are
 // rejected, names are trimmed, duplicates are an error (a bot card naming a
 // host must resolve to exactly one fleetd entry).
+
+import { hostnameOfUrl, isPrivateAddressHostname } from "./private-address.js";
 
 export const FLEET_HOSTS_ENV = "MYRMIDON_FLEET_HOSTS";
 
@@ -96,6 +104,17 @@ function optionalString(entry: Record<string, unknown>, key: string, host: strin
   return value;
 }
 
+/** Plain http is for the private network only: the host of an http:// address must be a private IP literal. */
+function requirePrivateHost(value: string, what: string): void {
+  const hostname = hostnameOfUrl(value);
+  if (hostname === null) throw new Error(`${what} is not a valid URL`);
+  if (!isPrivateAddressHostname(hostname)) {
+    throw new Error(
+      `${what} must use a private IP address (RFC 1918, RFC 6598 shared address space or loopback): plain http is not allowed to any other host`,
+    );
+  }
+}
+
 function optionalHttpUrl(entry: Record<string, unknown>, key: string, host: string): string | undefined {
   const value = optionalString(entry, key, host);
   if (value === undefined) return undefined;
@@ -104,6 +123,7 @@ function optionalHttpUrl(entry: Record<string, unknown>, key: string, host: stri
       `${FLEET_HOSTS_ENV}: host "${host}" field "${key}" must be http:// (it is reachable from the internal network only)`,
     );
   }
+  requirePrivateHost(value, `${FLEET_HOSTS_ENV}: host "${host}" field "${key}"`);
   return value.replace(/\/+$/, "");
 }
 
@@ -134,6 +154,7 @@ export function parseFleetHosts(raw: string | undefined): Map<string, FleetHostC
     if (!/^http:\/\//.test(url)) {
       throw new Error(`${FLEET_HOSTS_ENV}: host "${name}" url must be http:// (the fleetd listener lives on the internal network)`);
     }
+    requirePrivateHost(url, `${FLEET_HOSTS_ENV}: host "${name}" url`);
     const tokenSecret = typeof entry.tokenSecret === "string" ? entry.tokenSecret.trim() : "";
     if (!tokenSecret) throw new Error(`${FLEET_HOSTS_ENV}: host "${name}" is missing tokenSecret (a company secret name)`);
     if (hosts.has(name)) throw new Error(`${FLEET_HOSTS_ENV}: duplicate host name "${name}"`);

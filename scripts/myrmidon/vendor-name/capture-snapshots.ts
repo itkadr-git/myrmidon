@@ -20,7 +20,7 @@
 // the write (exit 1) instead of committing the value.
 //
 // Usage (from the repository root, with the workspace installed):
-//   pnpm --filter @paperclipai/server exec tsx \
+//   pnpm --filter @myrmidon/server exec tsx \
 //     ../scripts/myrmidon/vendor-name/capture-snapshots.ts [--out <dir>] [--ui-dist <dir>]
 //
 // Exit code: 0 written, 1 refused (a body carried a secret or an internal
@@ -140,7 +140,7 @@ export function capture(uiDist: string): CapturedSnapshot[] {
   const manifest = path.join(uiDist, "site.webmanifest");
   for (const file of [indexHtml, manifest]) {
     if (!fs.existsSync(file)) {
-      throw new Error(`the built UI is not there: ${file} (build it with pnpm --filter @paperclipai/ui build)`);
+      throw new Error(`the built UI is not there: ${file} (build it with pnpm --filter @myrmidon/ui build)`);
     }
   }
   const apiDocument = buildOpenApiSpec();

@@ -3432,6 +3432,24 @@ registry.registerPath({
 
 registry.registerPath({
   method: "get",
+  path: "/api/agents/{id}/stats",
+  tags: ["agents"],
+  summary: "Get agent stats",
+  request: { params: z.object({ id: z.string() }) },
+  responses: {
+    200: r.ok(
+      z.object({
+        exchanges_started: z.number().int().nonnegative(),
+        exchanges_completed: z.number().int().nonnegative(),
+      }),
+    ),
+    401: r.unauthorized,
+    404: r.notFound,
+  },
+});
+
+registry.registerPath({
+  method: "get",
   path: "/api/agents/{id}/skills",
   tags: ["agents"],
   summary: "List agent skills",
@@ -3972,6 +3990,22 @@ registry.registerPath({
   summary: "Update a company user (suspension revokes the user's sessions)",
   request: { params: z.object({ companyId: z.string(), userId: z.string() }) },
   responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden, 404: r.notFound },
+});
+
+// myrmidon 1.7 USERS-ADMIN-PAGINATION (OPE-12089): instance user listing with pagination and role filter
+registry.registerPath({
+  method: "get",
+  path: "/api/users",
+  tags: ["users"],
+  summary: "List users with pagination and role filter",
+  request: {
+    query: z.object({
+      page: z.coerce.number().int().min(1).optional().default(1),
+      limit: z.coerce.number().int().min(1).max(100).optional().default(20),
+      role: z.enum(["admin", "instance_admin", "member"]).optional(),
+    }),
+  },
+  responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden },
 });
 
 // myrmidon(OPE-10215): user-block operators. The mandatory reason is validated
@@ -7958,6 +7992,27 @@ registry.registerPath({
   description: "Validates SSH parameters (host, port, username, private key) by opening a real SSH connection. Does not create a server record and does not persist credentials. Password auth is not supported.",
   request: { params: z.object({ companyId: z.string() }) },
   responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden },
+});
+
+registry.registerPath({
+  method: "post",
+  path: "/api/companies/{companyId}/servers/onboarding/dry-run",
+  tags: ["servers"],
+  description: "Runs read-only DNS, SSH authentication, and passwordless-sudo probes. Returns stable per-check status/code values; credentials are never returned or persisted.",
+  request: {
+    params: z.object({ companyId: z.string() }),
+    body: jsonBody(z.object({
+      host: z.string(),
+      port: z.number().int().min(1).max(65535).optional(),
+      username: z.string(),
+      auth: z.object({
+        password: z.string().optional(),
+        privateKey: z.string().optional(),
+      }),
+      timeoutMs: z.number().int().min(1000).max(60000).optional(),
+    })),
+  },
+  responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden, 404: r.notFound },
 });
 
 registry.registerPath({

@@ -108,9 +108,13 @@ import {
   workspaceOperationService,
 } from "../services/index.js";
 import type { AgentCasteDirectoryPort } from "../services/agents.js";
+import { botKeyForAgent } from "../myrmidon/bot-containers/agent-config.js";
+import { CLEANUP_UNSUPPORTED_MESSAGE } from "../myrmidon/bot-containers/driver.js";
+import { getBotContainerRuntime } from "../myrmidon/bot-containers/routes-wiring.js";
 import { badRequest, conflict, forbidden, HttpError, notFound, unprocessable } from "../errors.js";
 import { CHAT_INBOUND_WAKE_KEY_PREFIX } from "../myrmidon/chat-holds/chat-backed.js"; // myrmidon(1.6.5 OWNER-CHAT-ADMISSION)
 import { PAPERCLIP_CORE_SKILL_KEYS } from "../services/company-skills.js";
+import { agentExchangeStore } from "../myrmidon/agent-exchange/store.js"; // myrmidon(1.7 AGENT-EXCHANGE-METRICS, OPE-12097)
 import { createRunSecretRedactionRegistry } from "../services/run-secret-redaction.js";
 import { assertAuthenticated, assertBoard, assertCompanyAccess, assertInstanceAdmin, buildActorSecretContext, getAccessibleResource, getActorInfo, hasCompanyAccess } from "./authz.js";
 import { runAdapterLoginStartSpine } from "./adapter-login-route-spine.js";
@@ -301,6 +305,11 @@ import {
 import { managedAgentProfileService } from "../services/managed-agent-profiles.js";
 // myrmidon(1.6.4-BOT-CONTAINER-CARD): a container block without enabled/limits is refused on save
 import { botContainerCardSaveProblem } from "../myrmidon/bot-containers/agent-config.js";
+import {
+  botResourceCeilingProblem,
+  readBotResourceCeilings,
+  type BotResourceCeilings,
+} from "../myrmidon/bot-containers/resource-ceilings.js";
 import { remoteAgentProfileService } from "../services/remote-agent-profiles.js";
 
 const AGENT_SKILL_ASSIGNMENT_MODES = ["add", "remove", "replace"] as const;
@@ -590,7 +599,24 @@ export function agentRoutes(
   const KNOWN_INSTRUCTIONS_BUNDLE_KEY_SET: ReadonlySet<string> = new Set(KNOWN_INSTRUCTIONS_BUNDLE_KEYS);
 
   const router = Router();
-  const svc = agentService(db, { castes: options.casteDirectory });
+  const svc = agentService(db, {
+    castes: options.casteDirectory,
+    // myrmidon(OPE-12477): before terminate/delete removes or hides the agent's
+    // row, the bot's container and host data are cleaned up through the active
+    // container runtime (local docker or fleetd behind the routing driver).
+    // Fail-closed: only an enabled container card is cleaned; no runtime or a
+    // fleetd error surfaces to the caller instead of silently succeeding.
+    cleanupBotContainer: async (agent) => {
+      const runtime = getBotContainerRuntime();
+      const botKey = botKeyForAgent(agent.id);
+      if (!botKey) return;
+      // An enabled card without a registered runtime is not safe to delete:
+      // the container may still exist on a site while startup is unavailable.
+      if (!runtime) throw new Error("bot container runtime is not configured; refusing lifecycle cleanup");
+      if (!runtime.driver.cleanup) throw new Error(CLEANUP_UNSUPPORTED_MESSAGE);
+      await runtime.driver.cleanup(botKey);
+    },
+  });
   const access = accessService(db);
   const approvalsSvc = approvalService(db);
   const budgets = budgetService(db);
@@ -2525,6 +2551,7 @@ export function agentRoutes(
     adapterType: string | null | undefined;
     adapterConfig: Record<string, unknown>;
     constraintAdapterConfig?: Record<string, unknown>;
+    agentId?: string;
   }): Promise<Record<string, unknown>> {
     const normalizedAdapterConfig = await secretsSvc.normalizeAdapterConfigForPersistence(
       input.companyId,
@@ -2540,6 +2567,7 @@ export function agentRoutes(
       input.constraintAdapterConfig
         ? { ...input.constraintAdapterConfig, ...normalizedAdapterConfig }
         : normalizedAdapterConfig,
+      input.agentId,
     );
     return normalizePaperclipRunnerAdapterConfig(
       input.adapterType ?? "",
@@ -2755,9 +2783,24 @@ export function agentRoutes(
     companyId: string,
     adapterType: string | null | undefined,
     adapterConfig: Record<string, unknown>,
+    agentId?: string,
   ) {
-    // myrmidon(1.6.4-BOT-CONTAINER-CARD): refuse a container block the reconciler could never apply.
-    const containerProblem = botContainerCardSaveProblem(adapterType, adapterConfig);
+    // myrmidon(OPE-12337): refuse limits exceeding enrolled dockergate ceilings.
+    let ceilings: BotResourceCeilings | null = null;
+    if (
+      adapterType === "hermes_gateway" &&
+      agentId &&
+      typeof adapterConfig?.container === "object" &&
+      adapterConfig.container !== null &&
+      (adapterConfig.container as Record<string, unknown>).enabled === true
+    ) {
+      const botKey = botKeyForAgent(agentId);
+      if (botKey) {
+        ceilings = await readBotResourceCeilings(botKey);
+      }
+    }
+    // myrmidon(1.6.4-BOT-CONTAINER-CARD, OPE-12337): refuse a container block the reconciler could never apply or exceeding ceilings.
+    const containerProblem = botContainerCardSaveProblem(adapterType, adapterConfig, process.env, ceilings);
     if (containerProblem) throw unprocessable(`Invalid hermes_gateway adapterConfig: ${containerProblem}`);
     const localProblem = localAdapterConfigProblem(adapterType, adapterConfig);
     if (localProblem) throw unprocessable(`Invalid ${adapterType} adapterConfig: ${localProblem}`);
@@ -4633,6 +4676,24 @@ function getActorIdentityPart(req: Request): string {
     );
   });
 
+  // myrmidon(1.7 AGENT-EXCHANGE-METRICS, OPE-12097): the experience-exchange
+  // session counters of an agent. `exchanges_started` counts every room whose
+  // frozen roster names the agent; `exchanges_completed` counts only the rooms
+  // that finished with the summary (status `completed`). The counters are
+  // derived on read from `agent_exchange_rooms` — no second state to keep in
+  // sync: a session starts when the room is opened, completes when the room
+  // closes with a summary, and a stopped room stays started-but-not-completed.
+  router.get("/agents/:id/stats", async (req, res) => {
+    assertBoard(req);
+    const id = req.params.id as string;
+    const agent = await getAccessibleResource(req, res, svc.getById(id), "Agent not found");
+    if (!agent) return;
+    await assertBoardCanManageAgentsForCompany(req, agent.companyId);
+
+    const counts = (await agentExchangeStore(db).countAgentSessions?.(id)) ?? { started: 0, completed: 0 };
+    res.json({ exchanges_started: counts.started, exchanges_completed: counts.completed });
+  });
+
   router.post("/agents/:id/runtime-state/reset-session", validate(resetAgentSessionSchema), async (req, res) => {
     assertBoard(req);
     const id = req.params.id as string;
@@ -5845,6 +5906,7 @@ function getActorIdentityPart(req: Request): string {
         companyId: existing.companyId,
         adapterType: requestedAdapterType,
         adapterConfig: effectiveAdapterConfig,
+        agentId: existing.id,
       });
       assertLocalAdapterSecurityChangeAllowed(
         req,

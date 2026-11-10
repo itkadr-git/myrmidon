@@ -73,14 +73,14 @@
 
 ```sh
 # обе цели, локально (интерфейс должен быть собран)
-pnpm --filter @paperclipai/ui build
+pnpm --filter @myrmidon/ui build
 node scripts/myrmidon/vendor-name/check-vendor-name.mjs
 
 # одна цель, с машиночитаемым отчётом
 node scripts/myrmidon/vendor-name/check-vendor-name.mjs --target bundle --json /tmp/vendor-name.json
 
 # так это делает сборочная полоса CI, со свежими снимками:
-pnpm --filter @paperclipai/server exec tsx \
+pnpm --filter @myrmidon/server exec tsx \
   ../scripts/myrmidon/vendor-name/capture-snapshots.ts --out "$RUNNER_TEMP/vendor-name-snapshots"
 node scripts/myrmidon/vendor-name/check-vendor-name.mjs --target snapshots \
   --snapshots "$RUNNER_TEMP/vendor-name-snapshots"
@@ -97,7 +97,7 @@ node scripts/myrmidon/vendor-name/check-vendor-name.mjs --target bundle
 эндпоинты, — поэтому снимок это настоящее тело, а не его копия:
 
 ```sh
-pnpm --filter @paperclipai/server exec tsx \
+pnpm --filter @myrmidon/server exec tsx \
   ../scripts/myrmidon/vendor-name/capture-snapshots.ts
 ```
 
@@ -159,9 +159,9 @@ CI; в опубликованном образе репозитория рядо
 ```sh
 node --test scripts/myrmidon/vendor-name/check-vendor-name.test.mjs
 node --test scripts/myrmidon/ci/select.test.mjs
-pnpm --filter @paperclipai/shared exec vitest run src/myrmidon-vendor-name.test.ts
-pnpm --filter @paperclipai/server exec vitest run src/myrmidon/vendor-name
-pnpm --filter @paperclipai/ui exec vitest run src/components/myrmidon/VendorNameCheckSettingsPanel.myrmidon.test.tsx
+pnpm --filter @myrmidon/shared exec vitest run src/myrmidon-vendor-name.test.ts
+pnpm --filter @myrmidon/server exec vitest run src/myrmidon/vendor-name
+pnpm --filter @myrmidon/ui exec vitest run src/components/myrmidon/VendorNameCheckSettingsPanel.myrmidon.test.tsx
 ```
 
 Первый набор несёт критерий приёмки сторожа: одна добавленная строка с именем

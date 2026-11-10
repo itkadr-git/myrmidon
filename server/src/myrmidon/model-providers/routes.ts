@@ -95,7 +95,10 @@ export function modelProviderRoutes(deps: ModelProviderRoutesDeps): Router {
 
   const actorFor = (req: Request) => {
     const info = getActorInfo(req);
-    return { type: info.actorType, id: info.actorId };
+    // myrmidon(OPE-12361): the change log shows the author; carry the real
+    // user name/email so the UI renders a name instead of `user:<id>`.
+    const name = req.actor.userName ?? req.actor.userEmail ?? null;
+    return { type: info.actorType, id: info.actorId, name };
   };
 
   const parse = <T>(schema: ZodType<T>, body: unknown): T => {
@@ -233,8 +236,11 @@ export function modelProviderRoutes(deps: ModelProviderRoutesDeps): Router {
     res.json({ channels: [], enabled: false, message: "LiteLLM gateway sync is not configured" });
   };
 
+  // Model groups as the provider screen shows them. The company-level
+  // `/litellm/channels` path is NOT served here: it belongs to the gateway
+  // deployments (litellm-channels), which app.ts mounts after this router, so
+  // a handler here would shadow it.
   router.get("/myrmidon/companies/:companyId/model-providers/litellm/channels", handleLitellmChannels);
-  router.get("/myrmidon/companies/:companyId/litellm/channels", handleLitellmChannels);
 
   router.get("/myrmidon/companies/:companyId/model-providers/:id/channels", async (req, res) => {
     const companyId = req.params.companyId as string;

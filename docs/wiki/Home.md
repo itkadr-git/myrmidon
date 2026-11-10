@@ -46,6 +46,9 @@ guides in the repository.
 
 ## Run the server
 
+- [Server onboarding dry-run](Server-onboarding-dry-run) — read-only DNS, SSH,
+  and permissions probes with stable result codes; the legacy SSH dry-run alias
+  remains available for compatibility.
 - [Upgrading and rollback](Upgrading-and-rollback) — re-run the installer to
   update; RC and final releases; the manual `deploy.sh --release` flow.
 - [Manual deployment](Manual-deployment) — the hands-on `deploy.sh` flow

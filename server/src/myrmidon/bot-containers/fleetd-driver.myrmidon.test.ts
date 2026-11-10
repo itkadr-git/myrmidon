@@ -178,6 +178,42 @@ describe("myrmidon(FLEETD-VMEXEC) fleetd driver — the HTTP contract", () => {
       server.close();
     }
   });
+
+  // myrmidon(OPE-12477): cleanup removes the container and the bot's host data
+  // through fleetd; the driver must surface failures, never swallow them. The
+  // 404-means-absent idempotency lives in the fleetd daemon (Go test), so the
+  // driver only sees its final 2xx answer here.
+  it("cleanup POSTs to the encoded bot key's cleanup route", async () => {
+    const { server, config, calls } = await fakeServer((_call, res) => {
+      res.setHeader("Content-Type", "application/json");
+      res.end(JSON.stringify({ status: "cleaned", botKey: "bot-a" }));
+    });
+    try {
+      const driver = fleetdBotContainerDriver(config);
+      await driver.cleanup!("bot-a");
+      await driver.cleanup!("bot/a");
+      expect(calls.map((c) => `${c.method} ${c.path}`)).toEqual([
+        "POST /v1/bots/bot-a/cleanup",
+        "POST /v1/bots/bot%2Fa/cleanup",
+      ]);
+    } finally {
+      server.close();
+    }
+  });
+
+  it("cleanup fails loudly on a fleetd 500 (no silent success)", async () => {
+    const { server, config } = await fakeServer((_call, res) => {
+      res.statusCode = 500;
+      res.end("failed to remove container: docker down");
+    });
+    try {
+      const driver = fleetdBotContainerDriver(config);
+      await expect(driver.cleanup!("bot-a")).rejects.toBeInstanceOf(FleetdDriverError);
+      await expect(driver.cleanup!("bot-a")).rejects.toThrow(/failed to remove container/);
+    } finally {
+      server.close();
+    }
+  });
 });
 
 describe("myrmidon(FLEETD-VMEXEC) fleetd driver — auth and errors", () => {

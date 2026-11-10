@@ -16,7 +16,10 @@
 
 import { Router, type Request, type Response } from "express";
 import type { Db } from "@myrmidon/db";
-import { readGatewayKeySettings } from "@myrmidon/shared";
+import { missingGatewayEnv, readGatewayKeySettings, type GatewayKeySettings } from "@myrmidon/shared";
+import { badRequest } from "../../errors.js";
+import { modelProviderModels, modelProviders } from "@myrmidon/db";
+import { eq } from "drizzle-orm";
 import { assertBoard, assertCompanyAccess, assertCompanyAdmin, getActorInfo } from "../../routes/authz.js";
 import {
   assertAgentMayReadOwnGatewayKey,
@@ -30,7 +33,8 @@ import {
   type AgentGatewayKeyDeps,
 } from "./agent-keys.js";
 import { readGatewayFallbackTopology, updateGatewayFallbackTopology } from "./fallback-cycles.js";
-import { listLitellmModels } from "../litellm-costs/litellm-costs.js";
+import { listLitellmModels, type LitellmModelView } from "../litellm-costs/litellm-costs.js";
+import { GATEWAY_NOT_CONFIGURED_CODE } from "../litellm-sync/config-client.js";
 import type { FallbackChain, KnownModelInfo } from "@myrmidon/shared";
 import { readCompanyKeyBudgets } from "./key-budget-adapter.js";
 import { createLiteLlmAuditService } from "../litellm-audit/service.js";
@@ -40,6 +44,105 @@ import { withCompanySyncGuard } from "../litellm-sync/lock.js";
 export interface LitellmKeysRoutesDeps {
   deps: AgentGatewayKeyDeps;
   env?: NodeJS.ProcessEnv;
+  /**
+   * The model catalog the fallback checks read. Absent: the latest rows of the
+   * cost sweep's catalog.
+   */
+  listModels?: () => Promise<LitellmModelView[]>;
+}
+
+/**
+ * The fallback topology of a request body: a list of `{model, targets}`.
+ * Anything else is a 400 — an absent list must never read as "clear every
+ * chain", because the write replaces the gateway's whole list.
+ */
+function readChainsBody(body: unknown): FallbackChain[] {
+  const raw = (body as { chains?: unknown } | null | undefined)?.chains;
+  if (!Array.isArray(raw)) throw badRequest("chains must be a list of {model, targets} entries");
+  return raw.map((entry, index) => {
+    const model = (entry as { model?: unknown } | null)?.model;
+    const targets = (entry as { targets?: unknown } | null)?.targets;
+    if (
+      typeof model !== "string" ||
+      !Array.isArray(targets) ||
+      targets.some((target) => typeof target !== "string")
+    ) {
+      throw badRequest(`chains[${index}] must have a model name and a list of target names`);
+    }
+    return { model, targets: targets as string[] };
+  });
+}
+
+/** The provider kinds that are subscription pools, not per-token paid APIs. */
+const POOL_PROVIDER_TYPES = ["chatgpt-pool", "antigravity-pool", "google-ai-pool"] as const;
+
+/**
+ * LiteLLM carries every pool deployment under the generic "openai" provider
+ * prefix, so provider-based heuristics (single-provider diversity, paid
+ * fallback ordering) misfire on pool model groups. The real provider is the
+ * board channel registry's pool type — join model_provider_models with
+ * model_providers and map litellm model names to it (OPE-12361).
+ */
+export async function readPoolGroupProviders(
+  db: Db,
+): Promise<Map<string, string>> {
+  const map = new Map<string, string>();
+  try {
+    const rows = await db
+      .select({
+        litellmModelName: modelProviderModels.litellmModelName,
+        providerType: modelProviders.type,
+      })
+      .from(modelProviderModels)
+      .innerJoin(modelProviders, eq(modelProviderModels.providerId, modelProviders.id));
+    for (const row of rows) {
+      if ((POOL_PROVIDER_TYPES as readonly string[]).includes(row.providerType)) {
+        map.set(row.litellmModelName, row.providerType);
+      }
+    }
+  } catch {
+    // Registry tables not ready — treat every group as a regular LiteLLM model.
+  }
+  return map;
+}
+
+/** Applies pool provider types to the catalog copy used by the UI heuristics. */
+export function withPoolProviders<T extends { modelName: string; provider: string | null }>(
+  models: T[],
+  poolGroups: Map<string, string>,
+): T[] {
+  return models.map((m) => {
+    const poolType = poolGroups.get(m.modelName);
+    return poolType ? { ...m, provider: poolType } : m;
+  });
+}
+
+/**
+ * Catalog copy for one known model — the shape the fallback editor uses to
+ * judge provider diversity and free/paid ordering (OPE-12361). A missing cost
+ * (null) is NOT a free model: only explicit zero pricing marks a group free,
+ * so paid gateways that do not report costs (kie-gpt-6-luna) never show
+ * «Бесплатно».
+ */
+export function fallbackCatalogEntry(m: {
+  modelName: string;
+  provider: string | null;
+  inputCostPerToken: number | null;
+  outputCostPerToken: number | null;
+}) {
+  return {
+    modelName: m.modelName,
+    provider: m.provider,
+    inputCostPerToken: m.inputCostPerToken,
+    outputCostPerToken: m.outputCostPerToken,
+    isFree: m.inputCostPerToken === 0 && m.outputCostPerToken === 0,
+  };
+}
+
+/** Audit actor carrying the display name when the request has one (OPE-12361). */
+function auditActor(actor: ReturnType<typeof getActorInfo>, req: Request) {
+  const name = req.actor.userName ?? req.actor.userEmail ?? null;
+  return { type: actor.actorType, id: actor.actorId, name };
 }
 
 export function litellmKeysRoutes(db: Db, input: LitellmKeysRoutesDeps) {
@@ -50,6 +153,20 @@ export function litellmKeysRoutes(db: Db, input: LitellmKeysRoutesDeps) {
   const disabled = (res: Response) => {
     res.status(503).json({ error: "LLM gateway key management is not enabled", enabled: false });
   };
+  /**
+   * The fallback endpoints answer the same 503 with a code and the names of
+   * the missing settings, so the screen can say what to set.
+   */
+  const gatewayNotConfigured = (res: Response, current: GatewayKeySettings) => {
+    const missing = missingGatewayEnv(current);
+    res.status(503).json({
+      error: `LLM gateway fallback management is not enabled: set ${missing.join(" and ")}`,
+      code: GATEWAY_NOT_CONFIGURED_CODE,
+      enabled: false,
+      missing,
+    });
+  };
+  const listCatalog = input.listModels ?? (() => listLitellmModels(db));
 
   router.get("/myrmidon/companies/:companyId/litellm/keys", async (req, res) => {
     const companyId = req.params.companyId as string;
@@ -147,7 +264,7 @@ export function litellmKeysRoutes(db: Db, input: LitellmKeysRoutesDeps) {
     const actor = getActorInfo(req);
     await auditService.record({
       companyId, category: "keys", action: "litellm_key_created", entityId: agentId,
-      actor: { type: actor.actorType, id: actor.actorId }, before: null,
+      actor: auditActor(actor, req), before: null,
       after: { agentId, allowedModels: created.view.models },
       summary: `Created gateway key for agent ${agentId}`, canRollback: false,
     });
@@ -171,7 +288,7 @@ export function litellmKeysRoutes(db: Db, input: LitellmKeysRoutesDeps) {
       category: "keys",
       action: "litellm_key_rotated",
       entityId: agentId,
-      actor: { type: actor.actorType, id: actor.actorId },
+      actor: auditActor(actor, req),
       before: { rotated: false },
       after: { rotated: true, allowedModels: rotated.models },
       summary: `Rotated gateway key for agent ${agentId}`,
@@ -223,19 +340,14 @@ export function litellmKeysRoutes(db: Db, input: LitellmKeysRoutesDeps) {
     assertCompanyAccess(req, companyId);
     const current = settings();
     if (!current.canManageKeys || !current.baseUrl) {
-      disabled(res);
+      gatewayNotConfigured(res, current);
       return;
     }
-    const report = await readGatewayFallbackTopology({ ...input.deps, db }, { companyId, settings: current });
+    const report = await readGatewayFallbackTopology(input.deps, { companyId, settings: current });
     try {
-      const known = await listLitellmModels(db);
-      report.models = known.map((m) => ({
-        modelName: m.modelName,
-        provider: m.provider,
-        inputCostPerToken: m.inputCostPerToken,
-        outputCostPerToken: m.outputCostPerToken,
-        isFree: (m.inputCostPerToken === 0 && m.outputCostPerToken === 0) || !m.inputCostPerToken,
-      }));
+      const poolGroups = await readPoolGroupProviders(db);
+      const known = await listCatalog();
+      report.models = withPoolProviders(known, poolGroups).map(fallbackCatalogEntry);
     } catch {
       // models are optional if litellmModels table is unpopulated
     }
@@ -243,8 +355,10 @@ export function litellmKeysRoutes(db: Db, input: LitellmKeysRoutesDeps) {
   });
 
   /**
-   * Updates the gateway's fallback topology via LiteLLM /config/update.
-   * Enforces that fallbacks are acyclic and do not rely on a single provider.
+   * Replaces the gateway's fallback topology through LiteLLM /config/update,
+   * with the whole list. Refuses loops, empty chains, unknown model groups and
+   * an order that breaks the free-first, cheaper-first policy. A fallback
+   * inside one provider is allowed and comes back as a warning.
    */
   router.put("/myrmidon/companies/:companyId/litellm/fallbacks", async (req, res) => {
     const companyId = req.params.companyId as string;
@@ -252,31 +366,23 @@ export function litellmKeysRoutes(db: Db, input: LitellmKeysRoutesDeps) {
     assertBoard(req);
     const current = settings();
     if (!current.canManageKeys || !current.baseUrl) {
-      disabled(res);
+      gatewayNotConfigured(res, current);
       return;
     }
 
-    const chains = (req.body?.chains ?? []) as FallbackChain[];
+    const chains = readChainsBody(req.body);
     let catalog: Map<string, KnownModelInfo> | undefined;
     try {
-      const known = await listLitellmModels(db);
+      const poolGroups = await readPoolGroupProviders(db);
+      const known = await listCatalog();
       catalog = new Map(
-        known.map((m) => [
-          m.modelName,
-          {
-            modelName: m.modelName,
-            provider: m.provider,
-            inputCostPerToken: m.inputCostPerToken,
-            outputCostPerToken: m.outputCostPerToken,
-            isFree: (m.inputCostPerToken === 0 && m.outputCostPerToken === 0) || !m.inputCostPerToken,
-          },
-        ]),
+        withPoolProviders(known, poolGroups).map((m) => [m.modelName, fallbackCatalogEntry(m)]),
       );
     } catch {
       catalog = new Map();
     }
 
-    const updated = await updateGatewayFallbackTopology({ ...input.deps, db }, {
+    const updated = await updateGatewayFallbackTopology(input.deps, {
       companyId,
       settings: current,
       chains,

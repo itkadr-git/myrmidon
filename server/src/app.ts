@@ -167,6 +167,7 @@ import {
   boardLoadRequestMiddleware,
   myrmidonMonitoringAlertsRoutes,
   myrmidonZabbixSinkRoutes,
+  myrmidonWebhookIntakeRoutes,
   swarmClaimApp,
   createCasteDirectoryReader,
   myrmidonEmergencyStopRoutes,
@@ -221,6 +222,7 @@ import {
   myrmidonArchitectDataRoutes,
   myrmidonSttRoutes,
   myrmidonGitHubSharedIdentityRoutes,
+  myrmidonGitHubAppWebhookRoutes,
   createTelegramVoiceSttWiring,
   myrmidonVoiceMeetingProtocolRoutes,
   myrmidonEvalsRoutes,
@@ -252,6 +254,8 @@ import {
   buildTokensTraceRoutes,
   myrmidonOnboardRoutes,
   apiPathAliasMiddleware,
+  configuredGitSkillRecord,
+  skillGitRecordRoutes,
 } from "./myrmidon/app-plugin.js";
 import { decisionTrainingRoutes } from "./routes/decision-training.js";
 import { decisionRoutes } from "./routes/decisions.js";
@@ -920,6 +924,12 @@ export async function createApp(
     }),
   );
   app.use("/api", apiCompression());
+  // myrmidon(1.7 KNOWLEDGE-2.0 L-13): provider-authenticated git pushes must
+  // reach the signed ingress before normal board actor authentication.
+  app.use("/api", skillGitRecordRoutes({
+    gitRecord: configuredGitSkillRecord(),
+    secret: process.env.MYRMIDON_SKILL_GIT_WEBHOOK_SECRET,
+  }));
   app.use(httpLogger);
   // myrmidon(PROCS-1.1): one flag decides whether this app process performs its
   // own periodic work. The `api` role passes false; anything that omits the
@@ -968,6 +978,11 @@ export async function createApp(
     // which the split wiring fills in while booting.
     myrmidonProcessReadinessRoutes(db, { processSupervisor: opts.processSupervisor ?? null }),
   );
+  // myrmidon(OPE-9408): the signed git-record ingress is mounted ONCE, early,
+  // right after the JSON parser with verify:captureRawBody (see the mount
+  // above httpLogger) — the HMAC must see the exact request bytes and the
+  // webhook must not pass board actor auth. A second mount here would both
+  // re-run capture and put a provider-authenticated route behind actorMiddleware.
   app.use("/api/auth", authRoutes(db));
   if (opts.betterAuthHandler) {
     app.all("/api/auth/{*authPath}", opts.betterAuthHandler);
@@ -1004,6 +1019,11 @@ export async function createApp(
   const emailChannels = emailChannelService(db, { heartbeat: connectionIntentHeartbeat, storage: opts.storageService, publicBaseUrl: opts.chatWebhookPublicBaseUrl ?? opts.authPublicBaseUrl });
   app.use(emailWebhookRoutes(emailChannels));
   app.use(chatWebhookRoutes(chatChannels));
+  // myrmidon(GITHUB-APP-WEBHOOK): our own GitHub App's CI / pull-request events.
+  // Public like the provider ingress above: GitHub's HMAC signature is the
+  // credential. The event service is created after the app (it carries the
+  // wakeups), so the route reaches it through `app.locals`, set at startup.
+  app.use(myrmidonGitHubAppWebhookRoutes(db, { ingest: () => app.locals.githubConnectionEvents ?? null }));
   // myrmidon(1.7 WEBHOOK-INTAKE): Public webhook intake route (/api/intake/:source)
   app.use(intakeRoutes());
   // myrmidon(EXTCASE-B): the extension's one board-less endpoint (the pairing code
@@ -1305,6 +1325,10 @@ export async function createApp(
   api.use(myrmidonAgentMemorySettingsRoutes(db)); // myrmidon(MEMORY-UI): Memory tab settings (instance admin)
   api.use("/myrmidon/hindsight/model-groups", myrmidonHindsightModelsRoutes(db)); // myrmidon(OPE-9858): Hindsight model groups adapter
   api.use("/myrmidon/agent-memory/model-groups", myrmidonHindsightModelsRoutes(db)); // myrmidon(OPE-9858): alias
+  api.use(
+    "/myrmidon/companies/:companyId/hindsight/model-groups",
+    myrmidonHindsightModelsRoutes(db),
+  ); // myrmidon(OPE-12361): company-scoped alias — the UI calls this path; the catalog is instance-level
   api.use(myrmidonToolPolicyCacheRoutes(db)); // myrmidon(DB-PERF-C-P4): TTL of the tool gateway policy cache (instance admin)
   api.use(myrmidonSkillLifecycleRoutes(db)); // myrmidon(1.6-SKILL-LIFE): skill lifecycle API
   api.use(myrmidonStackRegistryRoutes(db)); // myrmidon(SUA)
@@ -1362,6 +1386,7 @@ export async function createApp(
   api.use(myrmidonForagingRoutes(db)); // myrmidon(1.6-FORAGE): source registry, findings and the manual sweep
   api.use(myrmidonMonitoringAlertsRoutes(db)); // myrmidon(1.6.6-ALERTS): monitoring alerts webhook (Zabbix/Alertmanager) and its settings
   api.use(myrmidonZabbixSinkRoutes(db)); // myrmidon(1.7-ZABBIX-SINK / OPE-12126): Zabbix alarm sink -> role-task draft
+  api.use(myrmidonWebhookIntakeRoutes(db)); // myrmidon(1.7 WEBHOOK-INTAKE, OPE-12041): signed inbound webhook drafts (signature + dedup + raw payload)
   api.use(myrmidonMonitoringDashboardRoutes(db)); // myrmidon(1.6.6 MONITORING C): fleet dashboard from VictoriaMetrics + Zabbix, connection settings, selfcheck
   api.use(myrmidonForagingIdleGateRoutes(db)); // myrmidon(1.6.3-FORAGING-IDLE-GATE): the idle-gate toggle
   api.use(myrmidonForagingPassRoutes(db)); // myrmidon(1.6.3-FORAGING-IDLE-GATE, UI half): the pass history

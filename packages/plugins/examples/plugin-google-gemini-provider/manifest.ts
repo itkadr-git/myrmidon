@@ -1,4 +1,4 @@
-import type { PaperclipPluginManifestV1 } from "@paperclipai/plugin-sdk";
+import type { PaperclipPluginManifestV1 } from "@myrmidon/plugin-sdk";
 
 /** Reference manifest for a company-scoped Google AI/Gemini plugin provider. */
 const manifest: PaperclipPluginManifestV1 = {

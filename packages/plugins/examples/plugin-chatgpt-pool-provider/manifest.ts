@@ -1,4 +1,4 @@
-import type { PaperclipPluginManifestV1 } from "@paperclipai/plugin-sdk";
+import type { PaperclipPluginManifestV1 } from "@myrmidon/plugin-sdk";
 
 /** Reference provider manifest used by plugin integration tests and authors. */
 const manifest: PaperclipPluginManifestV1 = {

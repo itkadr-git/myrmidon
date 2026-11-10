@@ -106,8 +106,10 @@ export function deriveTerminalCloseProvenance(
     id: string;
     status: string;
     errorCode?: string | null;
-    /** resultJson.executionCancellation.correlationId, when the board stamped one. */
+    /** resultJson.executionCancellation fields, when the board stamped one. */
     cancellationCorrelationId?: string | null;
+    cancellationSource?: { code: string; endpoint?: string; actor?: string } | null;
+    cancellationReason?: string | null;
   },
   newCorrelationId: () => string,
 ): GatewayRemoteCloseProvenance {
@@ -116,12 +118,12 @@ export function deriveTerminalCloseProvenance(
   let code = "terminal_completion";
   if (run.status === "timed_out" || /timeout|deadline/i.test(errorCode)) code = "board_timeout";
   else if (/stall|stale|lost/i.test(errorCode)) code = "board_stale";
-  else if (run.status === "cancelled") code = "board_cancelled";
+  else if (run.status === "cancelled") code = run.cancellationSource?.code ?? "board_cancelled";
   const cause = errorCode ? ` (${errorCode})` : "";
   return {
     correlationId: recorded ?? newCorrelationId(),
-    source: { code, actor: "board" },
-    reason: boundedText(`Heartbeat run ${run.id} ended ${run.status}${cause} on the board`),
+    source: run.cancellationSource ?? { code, actor: "board" },
+    reason: boundedText(run.cancellationReason ?? `Heartbeat run ${run.id} ended ${run.status}${cause} on the board`),
   };
 }
 

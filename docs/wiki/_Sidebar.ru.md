@@ -21,6 +21,7 @@
 
 **Обслуживание сервера**
 
+- [Dry-run онбординга сервера](Server-onboarding-dry-run.ru)
 - [Настройки в интерфейсе](Settings-in-the-interface.ru)
 - [Обновление и откат](Upgrading-and-rollback.ru)
 - [Ручной выкат](Manual-deployment.ru)
@@ -50,6 +51,7 @@
 - [Knowledge and learning](Knowledge-and-learning)
 - [Autonomy and guardrails](Safety-and-guardrails)
 - [Connectors and tools](Connectors-and-tools)
+- [Server onboarding dry-run](Server-onboarding-dry-run)
 - [Settings in the interface](Settings-in-the-interface)
 - [Upgrading and rollback](Upgrading-and-rollback)
 - [Manual deployment](Manual-deployment)

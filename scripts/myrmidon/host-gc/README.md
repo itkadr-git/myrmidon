@@ -7,6 +7,7 @@ Host-side garbage collector for bot task clones and build caches on `vm-core` an
 | Host | Root | What |
 |------|------|------|
 | vm-core | `/srv/myrmidon-bots/*` | Bot workspaces (git clones) |
+| vm-core | `/srv/myrmidon-bots/*/hermes/cache/scratch/*` | Bot scratch directories (temp dirs) |
 | myr-dev-build | `/srv/devbuild/*` | Build copies per agent/task |
 | myr-dev-build | `/srv/devcache/*` | Build caches (git-wt, pnpm, etc.) |
 
@@ -18,6 +19,7 @@ Host-side garbage collector for bot task clones and build caches on `vm-core` an
 | Task clone (unsafe) | > 24 h | Archive to `.gc-archive/` first, then remove |
 | Active checkout/worktree | — | Never touched |
 | Build cache | > 72 h | LRU eviction by mtime |
+| Bot scratch item | > 12 h (env configurable) | All tree mtimes > threshold; ignore `gh-cli-cache`; skip if open by running process |
 | `state.db`, `session`, `auth`, `credential`, `.git` | — | Never deleted |
 
 ## Atomic Guards
@@ -35,6 +37,15 @@ Every action is appended as JSONL to `/var/log/myrmidon-host-gc.jsonl`:
 {"at":"2026-11-01T23:00:00.000Z","event":"clone-removed","path":"/srv/myrmidon-bots/OPE-12345","reason":"clean-pushed"}
 {"at":"2026-11-01T23:00:00.000Z","event":"clone-archived","path":"/srv/myrmidon-bots/OPE-12346","archive":"/srv/myrmidon-bots/.gc-archive/OPE-12346-20261101-230000.tar.zst"}
 {"at":"2026-11-01T23:00:00.000Z","event":"cache-removed","path":"/srv/devcache/git-wt/abc123","reason":"ttl","sizeBytes":12345678}
+{"at":"2026-11-01T23:00:00.000Z","event":"scratch-pruned","path":"/srv/myrmidon-bots/eng-16/hermes/cache/scratch/myrmidon-migrate-123","sizeBytes":1048576}
+```
+
+## Environment Configuration
+
+Configuration variables can be provided in `/etc/myrmidon-host-gc.env`:
+```bash
+# Scratch TTL in hours (default: 12)
+SCRATCH_TTL_HOURS=12
 ```
 
 ## Usage

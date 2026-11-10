@@ -42,6 +42,7 @@ vi.mock("../services/plugin-registry.js", () => ({
 vi.mock("../services/plugin-loader.js", () => ({
   pluginLoader: vi.fn(),
 }));
+vi.mock("@myrmidon/plugin-sdk", () => ({ PLUGIN_RPC_ERROR_CODES: {} }));
 vi.mock("@paperclipai/plugin-sdk", () => ({ PLUGIN_RPC_ERROR_CODES: {} }));
 
 import { pluginLifecycleManager } from "../services/plugin-lifecycle.js";
