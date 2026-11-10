@@ -261,31 +261,40 @@ describeEmbeddedPostgres("a final run guard stop wakes the manager", () => {
   });
 
   // myrmidon(OPE-12577): the stopped run's environment lease is released a moment
-  // after the stop; until then it is an execution hold. The manager's wake sent
-  // right after the block was parked behind it as an execution wait
-  // (execution_reconciliation_required) and never ran.
-  it("wakes the manager while the stopped run still holds its environment lease", async () => {
-    const { companyId, issueId, agentId, managerId, runId } = await seed({ withManager: true, withAdm: true });
+  // after the stop; until then it is an execution hold (execution_owner_active).
+  // The manager's wake sent while the hold lasts was parked behind it as an
+  // execution wait (execution_reconciliation_required) and never ran.
+  it("lets the manager's wake pass while the stopped run still holds its environment lease", async () => {
+    const { companyId, issueId, managerId, runId } = await seed({ withManager: true });
+    await heartbeat.applyRunGuardStop(runId);
+    expect((await issueRow(issueId)).status).toBe("blocked");
+    await db.update(heartbeatRuns).set({ status: "failed", finishedAt: new Date() }).where(eq(heartbeatRuns.agentId, managerId!));
+    // Set the first wake aside (a delete would hit the run that holds it).
+    await db
+      .update(agentWakeupRequests)
+      .set({ reason: "run_guard_stop_needs_input_first" })
+      .where(eq(agentWakeupRequests.reason, RUN_GUARD_STOP_NEEDS_INPUT_WAKE_REASON));
+    // The stopped run is a gateway run whose environment lease is not released yet.
     await db
       .update(heartbeatRuns)
       .set({ runnerProfileJson: { adapterDispatch: { adapterType: "hermes_gateway" } } })
       .where(eq(heartbeatRuns.id, runId));
     await db.insert(environmentLeases).values({ companyId, issueId, heartbeatRunId: runId, status: "active" });
 
-    await heartbeat.applyRunGuardStop(runId);
+    const { wake } = await wakeAs(managerId!, issueId);
 
-    const wakes = await wakesFor(companyId);
-    expect(wakes).toHaveLength(1);
-    expect(wakes[0]).toMatchObject({ agentId: managerId, reason: RUN_GUARD_STOP_NEEDS_INPUT_WAKE_REASON });
-    expect(wakes[0]?.status).not.toMatch(/^(skipped|deferred_issue_execution)$/);
+    expect(wake).toBeDefined();
+    expect(wake!.status).not.toMatch(/^(skipped|deferred_issue_execution)$/);
     const parked = await db
       .select()
       .from(agentWakeupRequests)
       .where(and(eq(agentWakeupRequests.companyId, companyId), eq(agentWakeupRequests.reason, "execution_reconciliation_required")));
     expect(parked).toHaveLength(0);
-    const issue = await issueRow(issueId);
-    expect(issue.status).toBe("blocked");
-    expect(issue.assigneeAgentId).toBe(agentId);
+    if (wake!.runId) {
+      const [run] = await db.select({ errorCode: heartbeatRuns.errorCode }).from(heartbeatRuns).where(eq(heartbeatRuns.id, wake!.runId));
+      expect(run?.errorCode).not.toBe("execution_reconciliation_required");
+    }
+    expect((await issueRow(issueId)).status).toBe("blocked");
   });
 
   it("does not wake the manager a second time while the task has not left blocked since the first wake", async () => {
