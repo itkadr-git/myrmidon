@@ -1,6 +1,10 @@
 use std::cell::Cell;
 use std::collections::VecDeque;
-use std::fs::{self, File, OpenOptions};
+use std::fs::File;
+#[cfg(any(target_os = "macos", test))]
+use std::fs;
+#[cfg(target_os = "macos")]
+use std::fs::OpenOptions;
 use std::io::{self, BufRead, BufReader, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, Command, ExitStatus, Stdio};
@@ -706,7 +710,9 @@ impl SupervisedProcess {
     ) -> Result<Self, LocalRunnerError> {
         #[cfg(any(target_os = "linux", target_os = "macos"))]
         {
+            #[cfg_attr(not(target_os = "macos"), allow(unused_mut))]
             let mut inherited = launch.inherited_command()?;
+            #[cfg_attr(not(target_os = "macos"), allow(unused_mut))]
             let mut result = Self::spawn_command(
                 &inherited.program,
                 &inherited.args,
