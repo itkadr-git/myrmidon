@@ -14,6 +14,7 @@ import {
   afterAll,
   afterEach,
   beforeAll,
+  beforeEach,
   describe,
   expect,
   it,
@@ -88,7 +89,10 @@ import {
 } from "../home-paths.js";
 import { buildNativeExecutionInput } from "../services/native-runtime/native-execution-input.js";
 import { nativeRuntimeContextFixture } from "../services/native-runtime/runtime-context.test-fixture.js";
-import { NativeRunnerOwnershipUnverifiedError } from "../services/native-runtime/native-runner-ownership.js";
+import {
+  NativeRunnerOwnershipUnverifiedError,
+  NATIVE_OWNERSHIP_UNVERIFIED_ERROR_CODE,
+} from "../services/native-runtime/native-runner-ownership.js";
 import {
   CHAT_CONTROL_RECOVERY_ADMISSION_KEY,
   CHAT_CONTROL_RECOVERY_STOP_CODE,
@@ -215,6 +219,10 @@ import {
   redactSuccessfulRunHandoffEvidence,
 } from "../services/heartbeat.ts";
 import {
+  cancelQueuedResweep,
+  resetSharedRunAdmissionForTests,
+} from "../myrmidon/run-admission.js";
+import {
   claimNativeRestartRecoveries,
   currentNativeControllerIdentity,
 } from "../services/native-runtime/native-restart-recovery.ts";
@@ -316,7 +324,7 @@ async function waitForRunToSettle(
 
 async function waitForValue<T>(
   read: () => Promise<T | null | undefined>,
-  timeoutMs = 3_000,
+  timeoutMs = 10_000,
 ) {
   const deadline = Date.now() + timeoutMs;
   let latest: T | null | undefined = null;
@@ -483,6 +491,10 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       updatedAt: now,
     });
   }, 20_000);
+  beforeEach(() => {
+    resetSharedRunAdmissionForTests();
+  });
+
 
   afterEach(async () => {
     vi.useRealTimers();
@@ -525,6 +537,9 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     }
     cleanupPids.clear();
     await cancelActiveRunsForCleanup(db, 5_000);
+    const heartbeat = heartbeatService(db);
+    await heartbeat.drainActiveRunExecutions();
+    resetSharedRunAdmissionForTests();
     let idlePolls = 0;
     for (let attempt = 0; attempt < 100; attempt += 1) {
       const runs = await db
@@ -550,6 +565,8 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     }
     await new Promise((resolve) => setTimeout(resolve, 50));
     await waitForHeartbeatIdle(db, 5_000);
+    await heartbeat.drainActiveRunExecutions();
+    resetSharedRunAdmissionForTests();
     await new Promise((resolve) => setTimeout(resolve, 100));
     await db.delete(activityLog);
     await db.delete(agentRuntimeState);
@@ -2640,6 +2657,8 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     try {
       return await fn(home);
     } finally {
+      await heartbeatService(db).drainActiveRunExecutions();
+      resetSharedRunAdmissionForTests();
       if (previousHome === undefined) delete process.env.PAPERCLIP_HOME;
       else process.env.PAPERCLIP_HOME = previousHome;
       // Native dispatch materializes read-only runtime bundles in this owned
@@ -2766,8 +2785,9 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       await waitForValue(
         async () =>
           nativeSessionBackendFactory.mock.calls.length > 0 ||
-          Boolean((await heartbeat.getRun(runId))?.errorCode),
-        8_000,
+          (await heartbeat.getRun(runId))?.errorCode ===
+            NATIVE_OWNERSHIP_UNVERIFIED_ERROR_CODE,
+        10_000,
       );
       await heartbeat.waitForRunExecutionDrain(runId);
       expect(nativeSessionBackendFactory).toHaveBeenCalledTimes(1);

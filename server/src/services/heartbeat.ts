@@ -939,6 +939,7 @@ import {
   evaluateAgentStartShare,
   orderAgentIdsByOldestQueuedRun,
   scheduleQueuedResweep,
+  cancelQueuedResweep,
   sharedRunAdmission,
   type RunAdmissionDenialReason,
 } from "../myrmidon/run-admission.js";
@@ -24112,6 +24113,7 @@ export function heartbeatService(
     // with the rest of the background work, so a drained service has no pass
     // left scheduled behind it.
     stopQueuedResweep?.();
+    cancelQueuedResweep();
     // myrmidon(1.6.6 RUN-DISPATCH-NOTIFY, OPE-6977): drop the bus subscription
     // and the reconnect dogon with the rest of the shutdown.
     runQueuedBusListener?.stop();
@@ -24120,8 +24122,9 @@ export function heartbeatService(
       activeRunExecutionPromises.size > 0
     ) {
       await Promise.allSettled([...activeWakeupPromises]);
-      await Promise.all([...activeRunExecutionPromises]);
+      await Promise.allSettled([...activeRunExecutionPromises]);
     }
+    cancelQueuedResweep();
   }
 
   function scheduleNativeSessionResumeDispatch(
