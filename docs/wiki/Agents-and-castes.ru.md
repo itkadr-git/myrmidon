@@ -32,7 +32,7 @@ Myrmidon выполняет работу как команда агентов. �
 `reportsTo` (ID руководителя или `none` для корневых агентов). Фильтры
 объединяются через AND и применяются после проверки доступа; неизвестные
 параметры запроса по-прежнему дают HTTP 400. Подробности — в
-[руководстве по флоту](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/guides/ui2-agents-fleet.md).
+[руководстве по флоту](Ui2-agents-fleet.ru).
 
 ## Экран «Флот агентов»
 
@@ -42,7 +42,7 @@ Myrmidon выполняет работу как команда агентов. �
 страницу карточки/чата агента. Данные агентов обновляются каждые 30 секунд,
 прогонов — каждые 15 секунд; статус приостановленного агента остаётся
 отдельным. Подробности — в
-[руководстве по флоту](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/guides/ui2-agents-fleet.md).
+[руководстве по флоту](Ui2-agents-fleet.ru).
 
 ## Контейнерная среда
 
@@ -191,13 +191,13 @@ smoke-check: точные версии Bun и OMP, наличие `omp` в `PATH
 публикацию и подпись digest через cosign keyless OIDC. Перед использованием
 тега проверьте запуск workflow и digest в registry: конфигурация не
 подтверждает успешную публикацию. Инструкции сборки/запуска и scope CI — в
-[семействе образов среды агента](../../docker/agent-runtime/README.ru.md).
+[семействе образов среды агента](https://github.com/itkadr-git/myrmidon/blob/main/docker/agent-runtime/README.ru.md).
 
 
-- [Контейнер бота: раздел Container](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/guides/bot-container-card.md)
-- [Память агента в карточке](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/guides/agent-memory-card.md)
-- [Инструкции агента: история ревизий и восстановление](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/guides/agent-instructions-revisions.md)
-- [Автоматическое возобновление из error](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/guides/auto-resume.md)
-- [Обнаружение залипших запусков](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/guides/run-stall.md)
-- [Переключатель «администратор доски»](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/guides/agent-board-admin.md)
-- [Параллельные помощники](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/guides/parallel-helpers.md)
+- [Контейнер бота: раздел Container](Bot-container-card.ru)
+- [Память агента в карточке](Agent-memory-card.ru)
+- [Инструкции агента: история ревизий и восстановление](Agent-instructions-revisions.ru)
+- [Автоматическое возобновление из error](Auto-resume.ru)
+- [Обнаружение залипших запусков](Run-stall.ru)
+- [Переключатель «администратор доски»](Agent-board-admin.ru)
+- [Параллельные помощники](Parallel-helpers.ru)
