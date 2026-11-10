@@ -219,7 +219,9 @@ classify_bot() {
   # A missing runtime container is expected for agents stopped by idle-stop or
   # not yet applied. Without a live container (or a board-side error), it is not
   # evidence of a deploy crash.
-  if [[ "$dstatus" == "missing" && "$hstatus" == "missing" && -z "$berr" ]]; then
+  # (A container the board still reports running or healthy is not idle: its
+  # absence is a casualty the smoke must report, so it falls through.)
+  if [[ "$dstatus" == "missing" && "$hstatus" == "missing" && -z "$berr" && "$bstate" != "running" && "$bstate" != "healthy" ]]; then
     echo "idle_stopped"
     return 0
   fi
