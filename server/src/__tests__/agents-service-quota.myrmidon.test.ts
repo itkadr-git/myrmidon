@@ -9,7 +9,7 @@
 
 import { randomUUID } from "node:crypto";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
-import { agents, companies, companyTiers, createDb } from "@myrmidon/db";
+import { agents, companies, createDb } from "@myrmidon/db";
 import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
@@ -31,11 +31,8 @@ describeEmbeddedPostgres("agent creation quota check (1.7 TIER-QUOTA-CHECK)", ()
   }, 60_000);
 
   afterEach(async () => {
-    try {
-      await db.delete(companyTiers);
-    } catch {
-      // company_tiers might not exist if migration was not run
-    }
+    // company_tiers ships with 1.7 TIER-SCHEMA (OPE-12091) and is not part of
+    // this task's schema; these fixtures use the reader's default-tier path.
     await db.delete(agents);
     await db.delete(companies);
   });

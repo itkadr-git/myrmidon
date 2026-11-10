@@ -8,8 +8,10 @@ import {
 function createFakeReader(params: {
   tierInfo?: CompanyTierInfo | null;
   activeCount?: number;
+  schemaDeployed?: boolean;
 }): CompanyTierReader {
   return {
+    isSchemaDeployed: vi.fn(async () => params.schemaDeployed ?? true),
     getCompanyTier: vi.fn(async () => params.tierInfo ?? null),
     countActiveAgents: vi.fn(async () => params.activeCount ?? 0),
   };
@@ -104,5 +106,31 @@ describe("createAssertCompanyAgentQuota", () => {
       expect(quotaErr.quota).toBe(5);
       expect(quotaErr.tier).toBe("free");
     }
+  });
+
+  it("stays dormant when the company-tier schema is not deployed yet (legacy instance)", async () => {
+    const reader = createFakeReader({
+      tierInfo: null,
+      activeCount: 50,
+      schemaDeployed: false,
+    });
+    const assertQuota = createAssertCompanyAgentQuota({ reader });
+
+    const decision = await assertQuota("company-123");
+
+    expect(decision.allowed).toBe(true);
+    expect(reader.getCompanyTier).not.toHaveBeenCalled();
+  });
+
+  it("still enforces the default quota when the schema is deployed and the reader omits isSchemaDeployed", async () => {
+    // Reader built before isSchemaDeployed existed: absence of the optional
+    // probe means the caller assumes the schema is deployed.
+    const reader: CompanyTierReader = {
+      getCompanyTier: async () => null,
+      countActiveAgents: async () => 5,
+    };
+    const assertQuota = createAssertCompanyAgentQuota({ reader });
+
+    await expect(assertQuota("company-123")).rejects.toThrow(AgentQuotaExceededError);
   });
 });
