@@ -2767,6 +2767,13 @@
       "when": 1794249000001,
       "tag": "0477_drop_unused_indexes",
       "breakpoints": true
+    },
+    {
+      "idx": 478,
+      "version": "7",
+      "when": 1794293268840,
+      "tag": "0478_issues_is_private",
+      "breakpoints": true
     }
   ]
 }
