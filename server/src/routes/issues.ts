@@ -14584,7 +14584,9 @@ export function issueRoutes(
       // Role is only needed when the issue enters or leaves review (return-assignee choice); skip the lookup otherwise.
       if (
         existing.assigneeAgentId &&
-        (existing.status === "in_review" || updateFields.status === "in_review")
+        (existing.status === "in_review" ||
+          updateFields.status === "in_review" ||
+          updateFields.status === "done")
       ) {
         transitionIssue.assigneeAgentRole =
           (await agentsSvc.getById(existing.assigneeAgentId))?.role ?? null;
@@ -15744,9 +15746,13 @@ export function issueRoutes(
               executionReviewParticipantAgentIds: lockedReviewParticipants,
             };
             if (
-              nextExecutionPolicy === null &&
+              // myrmidon(OPE-12231): the role gate (reviewer/lead assignee is a
+              // reviewer, not an executor) must hold with a policy present too,
+              // matching the non-transactional path above.
               lockedExisting.assigneeAgentId &&
-              (lockedExisting.status === "in_review" || updateFields.status === "in_review")
+              (lockedExisting.status === "in_review" ||
+                updateFields.status === "in_review" ||
+                updateFields.status === "done")
             ) {
               lockedTransitionIssue.assigneeAgentRole =
                 (await agentsSvc.getById(lockedExisting.assigneeAgentId))?.role ?? null;

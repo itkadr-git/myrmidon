@@ -209,4 +209,47 @@ describe("review stage selection never picks the executor (OPE-12231)", () => {
       returnAssignee: { type: "agent", agentId: engineerAgentId },
     });
   });
+
+  it("keeps a reviewer/lead-role assignee eligible when a different actor submits, but still blocks self-review if they submit themselves", () => {
+    const policy = reviewPolicy([reviewerAgentId]);
+
+    const otherActorSubmission = applyIssueExecutionPolicyTransition({
+      issue: baseIssue({
+        status: "todo",
+        assigneeAgentId: reviewerAgentId,
+        assigneeAgentRole: "reviewer",
+        executionPolicy: policy,
+      }),
+      policy,
+      requestedStatus: "in_review",
+      requestedAssigneePatch: {},
+      actor: { agentId: engineerAgentId },
+      commentBody: "Submitting for review",
+    });
+
+    expect(otherActorSubmission.patch.status).toBe("in_review");
+    expect(otherActorSubmission.patch.assigneeAgentId).toBe(reviewerAgentId);
+    expect(otherActorSubmission.patch.executionState).toMatchObject({
+      status: "pending",
+      currentParticipant: { type: "agent", agentId: reviewerAgentId },
+      returnAssignee: { type: "agent", agentId: engineerAgentId },
+    });
+
+    const selfSubmission = () =>
+      applyIssueExecutionPolicyTransition({
+        issue: baseIssue({
+          status: "in_progress",
+          assigneeAgentId: reviewerAgentId,
+          assigneeAgentRole: "lead",
+          executionPolicy: policy,
+        }),
+        policy,
+        requestedStatus: "done",
+        requestedAssigneePatch: {},
+        actor: { agentId: reviewerAgentId },
+        commentBody: "Done by lead",
+      });
+
+    expect(selfSubmission).toThrow(/No eligible review participant/);
+  });
 });
