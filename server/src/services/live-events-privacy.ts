@@ -22,6 +22,9 @@ interface PrivacyCacheEntry {
 /** Shared across sockets: repeated events for one issue hit the cache, not the DB. */
 const privacyCache = new Map<string, PrivacyCacheEntry>();
 
+/** In-flight lookups per key: concurrent events for one issue share one query. */
+const privacyLookupsInFlight = new Map<string, Promise<boolean>>();
+
 /**
  * Resolves the issue an event belongs to, or null when the event has no
  * issue relation (e.g. agent.status, heartbeat.run.* without issueId).
@@ -53,20 +56,25 @@ export async function isIssuePrivateForCompany(db: Db, companyId: string, issueI
     return cached.isPrivate;
   }
 
-  const rows = await db
+  const inFlight = privacyLookupsInFlight.get(key);
+  if (inFlight) return inFlight;
+
+  const lookup = db
     .select({ isPrivate: issues.isPrivate })
     .from(issues)
     .where(and(eq(issues.id, issueId), eq(issues.companyId, companyId)))
-    .limit(1);
+    .limit(1)
+    .then((rows) => {
+      const isPrivate = rows[0]?.isPrivate ?? true;
+      privacyCache.set(key, { isPrivate, expiresAt: Date.now() + PRIVACY_CACHE_TTL_MS });
+      return isPrivate;
+    })
+    .finally(() => {
+      privacyLookupsInFlight.delete(key);
+    });
 
-  const isPrivate = rows[0]?.isPrivate ?? true;
-
-  privacyCache.set(key, { isPrivate, expiresAt: now + PRIVACY_CACHE_TTL_MS });
-  if (privacyCache.size > PRIVACY_CACHE_MAX_ENTRIES) {
-    evictPrivacyCache(now);
-  }
-
-  return isPrivate;
+  privacyLookupsInFlight.set(key, lookup);
+  return lookup;
 }
 
 function evictPrivacyCache(now: number) {
@@ -76,4 +84,16 @@ function evictPrivacyCache(now: number) {
   if (privacyCache.size > PRIVACY_CACHE_MAX_ENTRIES) {
     privacyCache.clear();
   }
+}
+
+/**
+ * Whether an agent socket may receive this event. Events without an issue
+ * reference (agent.status, heartbeat.run.* without issueId) are always
+ * visible; events tied to a private issue are dropped. A failed privacy
+ * lookup rejects — the caller must treat rejection as "not visible".
+ */
+export async function isLiveEventVisibleToAgent(db: Db, companyId: string, event: LiveEvent): Promise<boolean> {
+  const issueId = extractIssueReference(event);
+  if (!issueId) return true;
+  return !(await isIssuePrivateForCompany(db, companyId, issueId));
 }

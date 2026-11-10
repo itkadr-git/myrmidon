@@ -113,6 +113,7 @@ function activityPayload(entityId: string, details: Record<string, unknown>) {
 async function collectMessages(
   url: string,
   publish: () => void,
+  expectedCount = 1,
   timeoutMs = 3000,
 ): Promise<Array<Record<string, unknown>>> {
   const socket = new WebSocket(url);
@@ -127,8 +128,17 @@ async function collectMessages(
     await opened.promise;
     publish();
     const deadline = Date.now() + timeoutMs;
+    let quietFor = 0;
     while (Date.now() < deadline) {
-      if (received.length > 0) break;
+      if (received.length > expectedCount) break;
+      if (received.length === expectedCount) {
+        // Keep waiting briefly: late events of a multi-event publish must
+        // not be cut off by the first delivery.
+        quietFor += 20;
+        if (quietFor >= 250) break;
+      } else {
+        quietFor = 0;
+      }
       await new Promise<void>((resolve) => setTimeout(resolve, 20));
     }
   } finally {
@@ -235,6 +245,9 @@ describeEmbeddedPostgres("live events agent privacy (PRIVATE-TASKS E3)", () => {
     setupLiveEventsWebSocketServer(harness.server, harness.db, { deploymentMode: "local_trusted" });
     const publicIssueId = randomUUID();
     await harness.insertIssue(publicIssueId, false);
+    // The insert itself logs an issues/is_private INSERT; only lookups
+    // after this point count toward the cache assertion.
+    harness.observedQueries.length = 0;
 
     // First delivery pays the lookup; the two follow-ups must be served from
     // the shared cache, so only one issues-related query is observed.
@@ -249,6 +262,7 @@ describeEmbeddedPostgres("live events agent privacy (PRIVATE-TASKS E3)", () => {
           });
         }
       },
+      3,
     );
     expect(received).toHaveLength(3);
     const privacyQueries = harness.observedQueries.filter(
@@ -258,16 +272,28 @@ describeEmbeddedPostgres("live events agent privacy (PRIVATE-TASKS E3)", () => {
   });
 
   it("fails closed: when the privacy lookup rejects the agent socket gets nothing", async () => {
-    const failingDb = {
-      select: () => {
-        throw new Error("privacy lookup unavailable");
-      },
-    };
-    setupLiveEventsWebSocketServer(harness.server, failingDb as unknown as Db, {
-      deploymentMode: "local_trusted",
-    });
     const publicIssueId = randomUUID();
     await harness.insertIssue(publicIssueId, false);
+    // Fail only the privacy SELECT over the issues table: agentApiKeys
+    // authorization goes through the same select() but a different table,
+    // so the ws upgrade path keeps working.
+    const privacyDb = new Proxy(harness.db, {
+      get(target, prop) {
+        if (prop !== "select") return Reflect.get(target, prop);
+        return (...selectArgs: unknown[]) => {
+          const builder = Reflect.get(target, "select").apply(target, selectArgs);
+          const realFrom = builder.from.bind(builder);
+          builder.from = (table: unknown) => {
+            if (table === issues) throw new Error("privacy lookup unavailable");
+            return realFrom(table);
+          };
+          return builder;
+        };
+      },
+    }) as unknown as Db;
+    setupLiveEventsWebSocketServer(harness.server, privacyDb, {
+      deploymentMode: "local_trusted",
+    });
     vi.mocked(logger.warn).mockClear();
 
     const agentReceived = await collectMessages(

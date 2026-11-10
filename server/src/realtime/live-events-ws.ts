@@ -8,6 +8,7 @@ import { agentApiKeys, companyMemberships, instanceUserRoles } from "@myrmidon/d
 import type { DeploymentMode } from "@myrmidon/shared";
 import type { BetterAuthSessionResult } from "../auth/better-auth.js";
 import { logger } from "../middleware/logger.js";
+import { subscribeCompanyLiveEvents } from "../services/live-events.js";
 import { isLiveEventVisibleToAgent } from "../services/live-events-privacy.js";
 
 interface WsSocket {
