@@ -1190,7 +1190,13 @@ export function githubConnectionEventService(
       let thresholdMin: number;
       if (envRaw !== undefined && envRaw !== "") {
         const envParsed = Number(envRaw);
-        thresholdMin = Number.isFinite(envParsed) && envParsed > 0 ? envParsed : 15;
+        if (Number.isFinite(envParsed) && envParsed > 0) {
+          thresholdMin = envParsed;
+        } else {
+          // Garbage env is not honored: fall through to the saved UI value,
+          // then the built-in default.
+          thresholdMin = liveSavedSetting<number>("githubEventsMaxSilenceMin") ?? 15;
+        }
       } else {
         thresholdMin = liveSavedSetting<number>("githubEventsMaxSilenceMin") ?? 15;
       }

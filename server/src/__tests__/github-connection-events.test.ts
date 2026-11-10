@@ -877,14 +877,14 @@ describeEmbeddedPostgres.sequential("1.7 SWEEP-2 (OPE-12629): sweepWatchdog thre
   });
 
   /** Seed one company with an active PR whose last webhook event was `silenceMin` ago. */
-  async function seedCompanyWithSilentPr(silenceMin: number, now: Date) {
+  async function seedCompanyWithSilentPr(silenceMin: number, now: Date, prefix = "THC") {
     const companyId = randomUUID();
     const agentId = randomUUID();
     const issueId = randomUUID();
     const connectionId = randomUUID();
     const grantId = randomUUID();
     const applicationId = randomUUID();
-    await db.insert(companies).values({ id: companyId, name: "Threshold Corp", issuePrefix: "THC" });
+    await db.insert(companies).values({ id: companyId, name: "Threshold Corp", issuePrefix: prefix });
     await db.insert(agents).values({ id: agentId, companyId, name: "worker", role: "engineer" });
     await db.insert(issues).values({ id: issueId, companyId, title: "Active PR Task", status: "in_progress", assigneeAgentId: agentId });
     await db.insert(issueWorkProducts).values({
@@ -901,6 +901,18 @@ describeEmbeddedPostgres.sequential("1.7 SWEEP-2 (OPE-12629): sweepWatchdog thre
     await db.insert(connectionGrants).values({
       id: grantId, companyId, connectionId, kind: "user", subjectUserId: `user-${randomUUID()}`, status: "active", isDefault: false,
       providerTenant: { oauth: { strategy: "paperclip_cloud_connector", accessTokenExpiresAt: null }, github: { userId: "43", login: "octocat", installationCount: 1, repositoryCount: 1, repositorySelection: "selected", installationIds: ["201"], installationOwnerLogins: ["corp"], repositories: [], webhookHealth: "pending", lastWebhookAt: lastWebhookAt.toISOString() } },
+    });
+    // The watchdog also requires a fresh CI delivery; without one the
+    // "no CI events at all" branch fires independently of the general
+    // threshold. Seed a fresh CI event at `now` so only the general
+    // silence threshold decides.
+    await db.insert(connectionEventDeliveries).values({
+      companyId,
+      provider: "github",
+      providerDeliveryId: `delivery-${randomUUID()}`,
+      event: "check_run",
+      status: "processed",
+      createdAt: now,
     });
     return companyId;
   }
@@ -984,7 +996,9 @@ describeEmbeddedPostgres.sequential("1.7 SWEEP-2 (OPE-12629): sweepWatchdog thre
   });
 
   it("rejects zero, negative, and non-numeric env values and falls back", async () => {
-    // Garbage env falls back to the saved UI value.
+    // Garbage env falls back to the saved UI value. The seeded CI event is
+    // 60 minutes old; with the saved 120-minute threshold both branches are
+    // below threshold, so no alarm fires.
     process.env.MYRMIDON_GITHUB_EVENTS_MAX_SILENCE_MIN = "-5";
     applyLiveBehaviorSettings({
       settings: { githubEventsMaxSilenceMin: 120 },
@@ -995,12 +1009,17 @@ describeEmbeddedPostgres.sequential("1.7 SWEEP-2 (OPE-12629): sweepWatchdog thre
     let result = await makeService(now).sweepWatchdog(now);
     expect(result.alarmsCreated).toBe(0);
 
-    // And to the 15-minute default when nothing is saved.
+    // And to the 15-minute default when nothing is saved. The fresh CI event
+    // stays at `now` while the general silence is 20 minutes -> only the
+    // general branch can fire.
     process.env.MYRMIDON_GITHUB_EVENTS_MAX_SILENCE_MIN = "abc";
     applyLiveBehaviorSettings({ settings: {}, sources: {} });
     const t0 = new Date("2026-11-03T00:00:00.000Z");
-    await seedCompanyWithSilentPr(0, t0);
+    await seedCompanyWithSilentPr(0, t0, "THD");
     result = await makeService(new Date(t0.getTime() + 20 * 60_000)).sweepWatchdog(new Date(t0.getTime() + 20 * 60_000));
-    expect(result.alarmsCreated).toBe(1);
+    // Both the previously seeded THC company (60-minute general silence at
+    // the new reference point) and the fresh THD one (20-minute silence)
+    // breach the 15-minute default.
+    expect(result.alarmsCreated).toBe(2);
   });
 });
