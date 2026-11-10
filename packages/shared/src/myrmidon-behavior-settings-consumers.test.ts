@@ -13,6 +13,9 @@
 // the camelCase variant of a snake_case key. Files that cannot be consumers
 // are excluded: tests, the registration modules themselves, locale/i18n files,
 // the Fine settings screen, and `baseline-exports.txt`.
+// OPE-12677 review fix: the scan roots are no longer a hard-coded package
+// list — the walker enumerates `packages/` and scans every `src` tree found
+// at any depth, so readers in any package (current or future) are seen.
 //
 // Ratchet rules (it can only tighten):
 // - a key that gained a reader must be REMOVED from UNWIRED_SETTINGS —
@@ -82,21 +85,54 @@ const UNWIRED_SETTINGS: readonly string[] = [
 /** Repository root (packages/shared/src → repo root). */
 const REPO_ROOT = join(dirname(fileURLToPath(import.meta.url)), "..", "..", "..");
 
-/** Source trees scanned for consumers. */
-const SCAN_ROOTS = [
-  "server/src",
-  "packages/adapters/src",
-  "packages/adapter-utils/src",
-  "packages/db/src",
-  "packages/shared/src",
-  "packages/skills-catalog/src",
-  "packages/teams-catalog/src",
-  "packages/corpus/src",
-  "packages/plugins",
-  "cli/src",
-  "ui/src",
-  "extension/src",
-] as const;
+/**
+ * Source trees scanned for consumers. `packages/**\/src` is NOT hard-coded:
+ * the walker enumerates `packages/` and includes every `src` tree found at
+ * any depth (packages/db/src, packages/adapters/claude-local/src,
+ * packages/plugins/sdk/src, packages/paperclip-runner/devtools src trees), so a
+ * new package cannot be silently skipped (OPE-12677 review: the previous
+ * fixed list omitted packages and could misclassify their readers).
+ */
+const FIXED_SCAN_ROOTS = ["server/src", "cli/src", "ui/src", "extension/src"] as const;
+
+const SKIPPED_TREE_NAMES = new Set(["node_modules", "dist", ".git"]);
+
+function collectPackageSrcRoots(packagesDir: string): string[] {
+  let entries: string[];
+  try {
+    entries = readdirSync(packagesDir);
+  } catch {
+    return []; // no packages/ tree — nothing to enumerate
+  }
+  const roots: string[] = [];
+  for (const entry of entries.sort()) {
+    if (entry.startsWith(".") || SKIPPED_TREE_NAMES.has(entry)) continue;
+    const full = join(packagesDir, entry);
+    let stats;
+    try {
+      stats = statSync(full);
+    } catch {
+      continue;
+    }
+    if (!stats.isDirectory()) continue;
+    // A package's own `src` tree is scanned; nested packages (adapters/*,
+    // plugins/*, runner devtools/examples) are still enumerated below it.
+    let srcStats;
+    try {
+      srcStats = statSync(join(full, "src"));
+    } catch {
+      continue; // no own `src` — keep descending for nested packages
+    }
+    if (srcStats.isDirectory()) roots.push(join("packages", entry, "src"));
+    roots.push(...collectPackageSrcRoots(full));
+  }
+  return roots;
+}
+
+const SCAN_ROOTS: string[] = [
+  ...FIXED_SCAN_ROOTS,
+  ...collectPackageSrcRoots(join(REPO_ROOT, "packages")),
+];
 
 /** Files that by construction are not consumers. */
 function isExcludedFile(path: string, base: string): boolean {
