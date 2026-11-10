@@ -105,8 +105,8 @@ export function onboardRoutes(deps: { service: OnboardService }) {
     }
   });
 
-  router.post("/myrmidon/fleet/servers/:id/onboard", validate(onboardStartSchema), async (req, res) => {
-    const body = req.body as z.infer<typeof onboardStartSchema>;
+  router.post("/myrmidon/fleet/servers/:id/onboard-jobs", validate(startJobSchema), async (req, res) => {
+    const body = req.body as z.infer<typeof startJobSchema>;
     assertFleetOnboardOwner(req, body.companyId);
     const serverIdParam = req.params.id;
     const serverId = Array.isArray(serverIdParam) ? serverIdParam[0] : serverIdParam;
@@ -116,6 +116,42 @@ export function onboardRoutes(deps: { service: OnboardService }) {
         companyId: body.companyId,
         serverId,
         kind: body.kind ?? "onboard",
+        createdBy: (req.actor.type === "board" ? req.actor.userId : req.actor.agentId) ?? null,
+      }));
+    } catch (err) {
+      throw toHttpError(err);
+    }
+  });
+
+  router.post("/myrmidon/fleet/servers/:id/onboard-jobs/retry", async (req, res) => {
+    const companyId = typeof req.query.companyId === "string" ? req.query.companyId : (req.body as any)?.companyId ?? "";
+    if (!companyId) throw new HttpError(400, "companyId is required");
+    assertFleetOnboardOwner(req, companyId);
+    const serverIdParam = req.params.id;
+    const serverId = Array.isArray(serverIdParam) ? serverIdParam[0] : serverIdParam;
+    if (!UUID.safeParse(serverId).success) throw new HttpError(400, "server id must be a uuid");
+    try {
+      res.status(201).json(await deps.service.retry({
+        companyId,
+        serverId,
+        createdBy: (req.actor.type === "board" ? req.actor.userId : req.actor.agentId) ?? null,
+      }));
+    } catch (err) {
+      throw toHttpError(err);
+    }
+  });
+
+  router.post("/myrmidon/fleet/servers/:id/onboard-jobs/resume", async (req, res) => {
+    const companyId = typeof req.query.companyId === "string" ? req.query.companyId : (req.body as any)?.companyId ?? "";
+    if (!companyId) throw new HttpError(400, "companyId is required");
+    assertFleetOnboardOwner(req, companyId);
+    const serverIdParam = req.params.id;
+    const serverId = Array.isArray(serverIdParam) ? serverIdParam[0] : serverIdParam;
+    if (!UUID.safeParse(serverId).success) throw new HttpError(400, "server id must be a uuid");
+    try {
+      res.status(200).json(await deps.service.resume({
+        companyId,
+        serverId,
         createdBy: (req.actor.type === "board" ? req.actor.userId : req.actor.agentId) ?? null,
       }));
     } catch (err) {
