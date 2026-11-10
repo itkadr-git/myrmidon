@@ -49,7 +49,10 @@ vi.mock("@/api/client", () => {
       this.status = status;
     }
   }
-  return { ApiError };
+  // myrmidon(#792): the provider reads the language preference on mount
+  // (ui2LanguageApi.get -> api.get); a partial mock without `api` throws from
+  // the mount effect and blanks every row (red main 4baad46a7).
+  return { ApiError, api: { get: () => Promise.resolve(null), put: () => Promise.resolve(null) } };
 });
 
 vi.mock("@/components/myrmidon/licensingApi", async (importOriginal) => {
