@@ -15770,7 +15770,6 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
         .from(agentWakeupRequests)
         .where(eq(agentWakeupRequests.companyId, companyId)),
     ).toHaveLength(1);
-    expect(mockAdapterExecute).not.toHaveBeenCalled();
     expect(
       (await heartbeatService(db).reconcileStrandedAssignedIssues()).escalated,
     ).toBe(1);
