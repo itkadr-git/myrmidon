@@ -84,6 +84,8 @@ import {
   shouldContinueAfterRunGuardStop,
   type RunGuardStopStats,
 } from "../myrmidon/run-guard-stop.js";
+// myrmidon(OPE-12577): the manager's wake after a final guard stop passes the execution hold.
+import { isRunGuardStopWakeRecipient, RUN_GUARD_STOP_NEEDS_INPUT_WAKE_REASON } from "../myrmidon/run-guard-escalation.js";
 import { PRODUCT_NAME, productPossessive, productSaid } from "../myrmidon/product.js";
 // myrmidon(B1c): short alias for template literals below.
 import { PRODUCT_NAME as PN } from "../myrmidon/product.js";
@@ -32924,7 +32926,22 @@ export function heartbeatService(
           );
           // Prove eligibility without retiring the hold. Later gates can still
           // decline this wake; hold retirement and successor creation stay atomic.
-          if (executionBlocker && !(await admitExplicitNativeContinuation({
+          // myrmidon(OPE-12577): a run the guard stopped keeps its environment lease
+          // for a moment after the stop, and that lease is an execution hold
+          // (execution_owner_active). The manager's `run_guard_stop_needs_input`
+          // wake, sent right after the block, was parked behind it as an
+          // execution wait that never ran, so the task stayed blocked waiting for
+          // the input only that wake asks for (5 wakes ran for 235 stops in 72 h,
+          // 10.11). The wake of the assignee's reports_to (or `adm`) does not
+          // continue the assignee's execution: it passes the hold, and the run
+          // dispatch admits it (isRunGuardStopNeedsInputWake) without changing
+          // the assignee.
+          const runGuardManagerWake = Boolean(executionBlocker) &&
+            reason === RUN_GUARD_STOP_NEEDS_INPUT_WAKE_REASON && source === "automation" &&
+            await isRunGuardStopWakeRecipient(tx as unknown as Db, {
+              companyId: issue.companyId, assigneeAgentId: issue.assigneeAgentId, agentId,
+            });
+          if (executionBlocker && !runGuardManagerWake && !(await admitExplicitNativeContinuation({
             db: tx as unknown as Db, companyId: issue.companyId, issueId: issue.id,
             agentId, actorType: opts.requestedByActorType, actorId: opts.requestedByActorId,
             reason, commentId: candidateCommentId, failedRunId: opts.failedRunId, successorRunId: explicitContinuationRunId,
@@ -34437,7 +34454,8 @@ export function heartbeatService(
             queuedCommentInterruptId: opts.queuedCommentInterruptId,
             queuedCommentRequestId: opts.queuedCommentRequestId,
           });
-          if (!explicitContinuation && executionBlocker) return deferBlockedExecution(executionBlocker);
+          // myrmidon(OPE-12577): the manager's run guard wake passes this second hold check too.
+          if (!explicitContinuation && executionBlocker && !runGuardManagerWake) return deferBlockedExecution(executionBlocker);
           if (explicitContinuation) {
             enrichedContextSnapshot.forceFreshSession = true;
             enrichedContextSnapshot.previousRunId = explicitContinuation.previousRunId;
