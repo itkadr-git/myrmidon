@@ -8,7 +8,7 @@ import { agentApiKeys, companyMemberships, instanceUserRoles } from "@myrmidon/d
 import type { DeploymentMode } from "@myrmidon/shared";
 import type { BetterAuthSessionResult } from "../auth/better-auth.js";
 import { logger } from "../middleware/logger.js";
-import { subscribeCompanyLiveEvents } from "../services/live-events.js";
+import { isLiveEventVisibleToAgent } from "../services/live-events-privacy.js";
 
 interface WsSocket {
   readyState: number;
@@ -266,7 +266,18 @@ export function setupLiveEventsWebSocketServer(
 
     const unsubscribe = subscribeCompanyLiveEvents(context.companyId, (event) => {
       if (socket.readyState !== WebSocket.OPEN) return;
-      socket.send(JSON.stringify(event));
+      if (context.actorType !== "agent") {
+        socket.send(JSON.stringify(event));
+        return;
+      }
+      isLiveEventVisibleToAgent(db, context.companyId, event)
+        .then((visible) => {
+          if (!visible || socket.readyState !== WebSocket.OPEN) return;
+          socket.send(JSON.stringify(event));
+        })
+        .catch((err) => {
+          logger.warn({ err, companyId: context.companyId, eventId: event.id }, "agent live-events privacy lookup failed; dropping event");
+        });
     });
 
     cleanupByClient.set(socket, unsubscribe);
