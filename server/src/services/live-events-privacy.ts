@@ -66,7 +66,11 @@ export async function isIssuePrivateForCompany(db: Db, companyId: string, issueI
     .limit(1)
     .then((rows) => {
       const isPrivate = rows[0]?.isPrivate ?? true;
-      privacyCache.set(key, { isPrivate, expiresAt: Date.now() + PRIVACY_CACHE_TTL_MS });
+      const settledAt = Date.now();
+      privacyCache.set(key, { isPrivate, expiresAt: settledAt + PRIVACY_CACHE_TTL_MS });
+      if (privacyCache.size > PRIVACY_CACHE_MAX_ENTRIES) {
+        evictPrivacyCache(settledAt);
+      }
       return isPrivate;
     })
     .finally(() => {
