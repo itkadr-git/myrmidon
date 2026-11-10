@@ -254,6 +254,8 @@ import {
   buildTokensTraceRoutes,
   myrmidonOnboardRoutes,
   apiPathAliasMiddleware,
+  configuredGitSkillRecord,
+  skillGitRecordRoutes,
 } from "./myrmidon/app-plugin.js";
 import { decisionTrainingRoutes } from "./routes/decision-training.js";
 import { decisionRoutes } from "./routes/decisions.js";
@@ -922,6 +924,12 @@ export async function createApp(
     }),
   );
   app.use("/api", apiCompression());
+  // myrmidon(1.7 KNOWLEDGE-2.0 L-13): provider-authenticated git pushes must
+  // reach the signed ingress before normal board actor authentication.
+  app.use("/api", skillGitRecordRoutes({
+    gitRecord: configuredGitSkillRecord(),
+    secret: process.env.MYRMIDON_SKILL_GIT_WEBHOOK_SECRET,
+  }));
   app.use(httpLogger);
   // myrmidon(PROCS-1.1): one flag decides whether this app process performs its
   // own periodic work. The `api` role passes false; anything that omits the
@@ -970,6 +978,11 @@ export async function createApp(
     // which the split wiring fills in while booting.
     myrmidonProcessReadinessRoutes(db, { processSupervisor: opts.processSupervisor ?? null }),
   );
+  // myrmidon(OPE-9408): the signed git-record ingress is mounted ONCE, early,
+  // right after the JSON parser with verify:captureRawBody (see the mount
+  // above httpLogger) — the HMAC must see the exact request bytes and the
+  // webhook must not pass board actor auth. A second mount here would both
+  // re-run capture and put a provider-authenticated route behind actorMiddleware.
   app.use("/api/auth", authRoutes(db));
   if (opts.betterAuthHandler) {
     app.all("/api/auth/{*authPath}", opts.betterAuthHandler);
