@@ -63,11 +63,20 @@ export interface StackSeedComponent {
   /**
    * For http-version probes: the HTTP endpoint to GET. Read from the
    * environment / bound secret at probe time (the address never ships in the
-   * seed, only the env var name / secret ref name). The endpoint answers a
-   * JSON body with a `version` or `api_version` field (hindsight /version, LiteLLM /version,
-   * Langfuse /api/public/health among them).
+   * seed, only the env var name / secret ref name). The probe appends the
+   * component's documented endpoint to a bare base URL (hindsight /version,
+   * LiteLLM /public/model_hub/info, Langfuse /api/public/health) and reads
+   * the version from the JSON body — see httpVersionField below for the
+   * component-specific field name.
    */
   httpEndpointEnv?: string;
+  /**
+   * For http-version probes: the JSON field the component reports its version
+   * in, when it is neither `version` nor `api_version` (LiteLLM publishes
+   * `litellm_version` on /public/model_hub/info). Checked first; the generic
+   * fields stay accepted as fallbacks.
+   */
+  httpVersionField?: string;
   /** Restrict github-tags release checks to tags with this prefix (e.g. "myr-v"). */
   tagPrefix?: string;
   /** One-line note shown next to the component in the panel. */
@@ -418,7 +427,8 @@ export const STACK_SEED: readonly StackSeedComponent[] = [
     upstream: { kind: "github", repo: "BerriAI/litellm" },
     localProbe: "http-version",
     httpEndpointEnv: "MYRMIDON_STACK_HTTP_LITELLM",
-    note: "Local version is read from the component's /version endpoint.",
+    httpVersionField: "litellm_version",
+    note: "Local version is read from the component's /public/model_hub/info endpoint (litellm_version field).",
     advisoryPackage: { name: "litellm", ecosystem: "PyPI" },
   },
   {
