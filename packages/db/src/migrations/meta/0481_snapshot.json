@@ -1,5 +1,5 @@
 {
-  "id": "ca073ce4-2c80-4dac-bedb-10ea387f5a93",
+  "id": "40a1c5b8-003a-48a7-b9f2-0a0caa1b9016",
   "prevId": "b92a7040-a86d-4c9b-8d5d-d16e011e3f67",
   "version": "7",
   "dialect": "postgresql",
@@ -42562,6 +42562,76 @@
           ]
         }
       },
+      "policies": {},
+      "checkConstraints": {},
+      "isRLSEnabled": false
+    },
+    "public.nest_redact_settings": {
+      "name": "nest_redact_settings",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true,
+          "default": "gen_random_uuid()"
+        },
+        "nest_id": {
+          "name": "nest_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "config": {
+          "name": "config",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'{}'::jsonb"
+        },
+        "updated_at": {
+          "name": "updated_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {
+        "nest_redact_settings_nest_idx": {
+          "name": "nest_redact_settings_nest_idx",
+          "columns": [
+            {
+              "expression": "nest_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "nest_redact_settings_nest_id_companies_id_fk": {
+          "name": "nest_redact_settings_nest_id_companies_id_fk",
+          "tableFrom": "nest_redact_settings",
+          "tableTo": "companies",
+          "columnsFrom": [
+            "nest_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
       "policies": {},
       "checkConstraints": {},
       "isRLSEnabled": false
