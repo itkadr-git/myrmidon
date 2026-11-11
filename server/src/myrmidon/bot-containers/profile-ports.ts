@@ -82,7 +82,8 @@ import {
   loadRegulationWorkspaceFiles,
 } from "../wiki-cortex/delivery.js";
 import { createKnowledgeModule } from "../knowledge/index.js";
-import { resolvedRules } from "../knowledge/rules.js"; // myrmidon(1.7 L-3): the caste filter of the delivered rulesimport { readAppliedScopeLayout } from "./scope-wiring.js"; // myrmidon(BOT-DISK-F)
+import { resolvedRules } from "../knowledge/rules.js"; // myrmidon(1.7 L-3): the caste filter of the delivered rules
+import { readAppliedScopeLayout } from "./scope-wiring.js"; // myrmidon(BOT-DISK-F)
 import { readBotDiskLayout, readBotDiskMechanics, readCloneIdleTtlSecForRole, readSharedPackageCachePathForRole } from "./bot-disk-service.js"; // myrmidon(1.6.1-BOT-DISK-B, 1.6.2-BOT-DISK-C, 1.6.5-BOT-DISK-H5c)
 
 export { BOT_AGENT_API_KEY_NAME };
