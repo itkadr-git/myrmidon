@@ -75,6 +75,7 @@ async function createIssue(
     title?: string;
     projectId?: string | null;
     parentId?: string | null;
+    assigneeAgentId?: string | null;
     originKind?: string | null;
     originId?: string | null;
     isPrivate?: boolean;
