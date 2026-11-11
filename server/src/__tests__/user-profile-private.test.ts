@@ -70,6 +70,9 @@ describeEmbeddedPostgres("GET /companies/:companyId/users/:userSlug/profile (pri
     db = createDb(tempDb.connectionString);
   }, 20_000);
 
+  // re-importing the route module graph costs more than the 30s global
+  // hookTimeout on a loaded host; give the seed hook the same headroom as
+  // beforeAll above.
   beforeEach(async () => {
     vi.resetModules();
     vi.doUnmock("../routes/user-profiles.js");
@@ -118,7 +121,7 @@ describeEmbeddedPostgres("GET /companies/:companyId/users/:userSlug/profile (pri
       adapterType: "process",
       adapterConfig: {},
     });
-  });
+  }, 60_000);
 
   afterEach(async () => {
     await db.delete(costEvents);
