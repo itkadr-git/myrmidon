@@ -5,6 +5,10 @@
 // boolean -> checkbox, number -> numeric input, string -> text input.
 // JSON values stay read-only. Save sends a PATCH with only the changed key.
 // Non-admins see the table in read-only mode without inputs or buttons.
+// myrmidon(OPE-12695): a row whose source is "ui" also offers "Reset to
+// env/default" (two-step inline confirm, no window.confirm). The confirmed
+// reset sends one PATCH with `null` — the server drops the saved value and
+// the read falls back to env or default (mergeBehaviorSettings, #2854).
 
 import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
@@ -96,6 +100,7 @@ export function Ui2FineSettings() {
   const [draft, setDraft] = useState<Record<string, BehaviorSettingValue>>({});
   const [errors, setErrors] = useState<Record<string, string>>({});
   const [savingKey, setSavingKey] = useState<string | null>(null);
+  const [resetArmKey, setResetArmKey] = useState<string | null>(null);
 
   const viewQuery = useQuery({
     queryKey: behaviorSettingsQueryKey,
@@ -123,6 +128,7 @@ export function Ui2FineSettings() {
         delete next[key];
         return next;
       });
+      setResetArmKey((current) => (current === key ? null : current));
       setSavingKey(null);
     },
     onError: (error, { key }) => {
@@ -131,6 +137,7 @@ export function Ui2FineSettings() {
         delete next[key];
         return next;
       });
+      setResetArmKey((current) => (current === key ? null : current));
       setErrors((current) => ({ ...current, [key]: errorText(error) }));
       setSavingKey(null);
     },
@@ -276,6 +283,44 @@ export function Ui2FineSettings() {
                             ? t("ui2.settings.system.fine.saving")
                             : t("ui2.settings.system.fine.save")}
                         </button>
+                      )}
+                      {editable && row.source === "ui" && resetArmKey !== row.key && (
+                        <button
+                          type="button"
+                          data-testid={`ui2-fine-reset-${row.key}`}
+                          disabled={savingKey === row.key}
+                          onClick={() => setResetArmKey(row.key)}
+                        >
+                          {t("ui2.settings.system.fine.reset")}
+                        </button>
+                      )}
+                      {editable && row.source === "ui" && resetArmKey === row.key && (
+                        <>
+                          <button
+                            type="button"
+                            data-testid={`ui2-fine-reset-confirm-${row.key}`}
+                            disabled={savingKey === row.key}
+                            onClick={() => {
+                              // myrmidon(OPE-12695): the reset sends `null`,
+                              // not the default — mergeBehaviorSettings then
+                              // deletes the saved value and the read falls
+                              // back to env or default.
+                              updateMutation.mutate({ key: row.key, value: null });
+                            }}
+                          >
+                            {savingKey === row.key
+                              ? t("ui2.settings.system.fine.resetting")
+                              : t("ui2.settings.system.fine.resetConfirm")}
+                          </button>
+                          <button
+                            type="button"
+                            data-testid={`ui2-fine-reset-cancel-${row.key}`}
+                            disabled={savingKey === row.key}
+                            onClick={() => setResetArmKey(null)}
+                          >
+                            {t("ui2.settings.system.fine.cancelReset")}
+                          </button>
+                        </>
                       )}
                       {errors[row.key] && (
                         <div role="alert" className="ui2-fine-error text-xs text-destructive">
