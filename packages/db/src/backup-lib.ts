@@ -91,7 +91,21 @@ const STATEMENT_BREAKPOINT = "-- paperclip statement breakpoint 69f6f3f1-42fd-46
 // BACKUP_BREAKPOINT_DETECT_BYTES — the check streams the file and holds only
 // this many bytes of its tail.
 const BACKUP_VERIFY_TAIL_BYTES = 64 * 1024;
-const BACKUP_MIN_FREE_BYTES = 6 * 1024 * 1024 * 1024;
+// myrmidon(OPE-12551): CI runner images sit right at the 6 GiB floor — the
+// workspaces-b lane ran with ~6.02 GB free and the embedded cluster's own
+// 1M-row probe table pushed it under mid-job, failing backups before any
+// statement timeout was exercised. Tests (and stands with unusual disks)
+// lower the floor through PAPERCLIP_BACKUP_MIN_FREE_BYTES (bytes); the
+// production default stays 6 GiB when the variable is unset or invalid.
+// Exported with the default for deterministic parser tests (backup-lib.test.ts).
+export const DEFAULT_BACKUP_MIN_FREE_BYTES = 6 * 1024 * 1024 * 1024;
+
+export function parseBackupMinFreeBytes(rawValue: string | undefined): number {
+  const trimmed = rawValue?.trim();
+  const parsed = trimmed === undefined || trimmed === "" ? Number.NaN : Number(trimmed);
+  if (Number.isFinite(parsed) && parsed >= 0) return Math.trunc(parsed);
+  return DEFAULT_BACKUP_MIN_FREE_BYTES;
+}
 
 // myrmidon(BACKUP-KEEP-LAST / OPE-4832): each dump engine closes its output
 // with its own completion marker. The JavaScript logical dump ends its
@@ -863,9 +877,10 @@ export async function runDatabaseBackup(opts: RunDatabaseBackupOptions): Promise
     throw error;
   }
   const freeBytes = fsStats.bavail * fsStats.bsize;
-  if (freeBytes < BACKUP_MIN_FREE_BYTES) {
+  const minFreeBytes = parseBackupMinFreeBytes(process.env.PAPERCLIP_BACKUP_MIN_FREE_BYTES);
+  if (freeBytes < minFreeBytes) {
     await closeSql();
-    throw new Error(`Skipping database backup: ${freeBytes} bytes free; ${BACKUP_MIN_FREE_BYTES} required`);
+    throw new Error(`Skipping database backup: ${freeBytes} bytes free; ${minFreeBytes} required`);
   }
   let writer = createBufferedTextFileWriter(backupFile, DEFAULT_BACKUP_WRITE_BUFFER_BYTES, true);
 
