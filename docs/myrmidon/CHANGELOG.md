@@ -10,6 +10,21 @@ version file to edit. Base Paperclip version is in the image label
 
 ## Unreleased
 
+### Bot runtime image: hermes 0.21.5 -> 0.23.1, delta rebase (OPE-12710)
+
+- The bot runtime image pins hermes-agent `v0.23.1` (`3b42157858`), up from `v2026.9.24`
+  (`0.21.5`); aiohttp follows the hermes extra to 3.14.5. From v0.22.0 upstream ships the
+  release version in the annotated tag object instead of `pyproject.toml`, so the build's
+  version check parses the tag body.
+- Seven delta patches are dropped as upstream parity: 04 (locked-read retry),
+  18/31 (terminal foreground heartbeat guard + its regression), 21 (session storage diet),
+  23 (integrity-check lease file), 26 (compaction summary wire cap — upstream explicitly
+  does not send a `max_tokens` cap on the summary call), 33 (summary sampling tool-pair
+  grouping — upstream folds the pairing into its own `_sanitize_tool_pairs`; the oversized-record
+  group bounding stays in the carried patch 32).
+  24 patches remain; the plugin-catalog entry in v0.23.1 also raises the plugin download
+  cap from 2 MiB to 16 MiB.
+
 ## 1.6.7
 
 ### Corpus: the full-text ranking starts after the embedding again (1.6.7 CORPUS-LATENCY, OPE-12272)

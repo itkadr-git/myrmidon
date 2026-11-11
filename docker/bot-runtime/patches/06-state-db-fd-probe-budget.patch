@@ -1,8 +1,8 @@
 diff --git a/hermes_state.py b/hermes_state.py
-index 8ecc3b5..9d64020 100644
+index fe0249d680..22b94254aa 100644
 --- a/hermes_state.py
 +++ b/hermes_state.py
-@@ -497,6 +497,11 @@ class SessionDB(
+@@ -511,6 +511,11 @@ class SessionDB(
      _IMPORT_MAX_SESSION_BYTES, _IMPORT_MAX_TOTAL_BYTES = 5 * 1024 * 1024, 25 * 1024 * 1024
      # Accounting workers retire when idle so a bound-method target can't keep an abandoned SessionDB alive.
      _TOKEN_WRITER_IDLE_SECONDS = 30.0
@@ -14,9 +14,21 @@ index 8ecc3b5..9d64020 100644
  
      @staticmethod
      def _store_system_prompt(conn, system_prompt: Optional[str]) -> Optional[str]:
-@@ -589,6 +594,9 @@ class SessionDB(
+@@ -581,8 +586,10 @@ class SessionDB(
+         except Exception as exc:
+             logger.warning("%s close failed for %s: %s", label, self.db_path, exc)
+ 
+-    def __init__(self, db_path: Path | None = None, read_only: bool = False):
++    def __init__(self, db_path: Path = None, read_only: bool = False, *, defer_open: bool = False):
+         self.db_path = db_path or _default_db_path()
++        if defer_open and threading.current_thread() is threading.main_thread() and not read_only:
++            raise RuntimeError("deferred SessionDB construction must run in a worker")
+         _ensure_test_isolation(self.db_path)  # before any connection/pragma/mkdir
+         self.read_only = read_only
+         # Keep only the opening call site, never a frame (which pins caller locals).
+@@ -626,6 +633,9 @@ class SessionDB(
          self._db_file_application_id: int = 0
-         self._db_sidecar_identity: Dict[str, tuple] = {}
+         self._db_sidecar_identity: dict[str, tuple] = {}
          self._db_replaced = self._db_wal_generation_lost = False
 +        # myrmidon(G1): last /proc/self/fd probe verdict (see _wal_generation_was_lost).
 +        self._wal_probe_at: float = 0.0
@@ -24,7 +36,56 @@ index 8ecc3b5..9d64020 100644
          # Durable capture of a lost WAL generation (see _capture_retired_generation): once per handle.
          self._retired_generation_capture: Optional[Path] = None
          self._retired_capture_lock = threading.Lock()
-@@ -1202,7 +1210,10 @@ class SessionDB(
+@@ -637,6 +647,7 @@ class SessionDB(
+         self._fts_enabled = self._fts_stale = self._trigram_available = False
+         self._fts_unavailable_warned = False
+         self._conn = None
++        self._deferred_open = bool(defer_open and not read_only)
+         # Async token accounting; distinct from self._lock so enqueue/flush never contends with writes.
+         self._token_queue: deque = deque()
+         self._token_queue_cond = threading.Condition(threading.Lock())
+@@ -649,6 +660,9 @@ class SessionDB(
+         self._shared_registry_owned = False
+         initialization_complete = False
+         try:
++            if defer_open:
++                initialization_complete = True
++                return
+             if read_only:
+                 self._open_read_only()
+             else:
+@@ -676,11 +690,21 @@ class SessionDB(
+                 # for the suite-level leak sweep in tests/conftest.py.
+                 _register_test_instance(self)
+ 
++    def initialize_writer(self) -> None:
++        """Complete a deferred writer open; call only from the async acquire worker."""
++        if not self._deferred_open:
++            return
++        self._open_writer()
++        self._record_db_file_identity()
++        self._deferred_open = False
++
+     def _open_writer(self) -> None:
+         """Writable open: preflight, zero-byte quarantine, connect + schema (one in-place repair of a
+         malformed sqlite_master), generation stamp."""
+         # Never materialize a deleted/archived named profile's home: a multiplexer or Desktop backend
+         # still holding the profile's route would otherwise re-scaffold it on the next turn (#94590).
++        if self._conn is not None:
++            return
+         mkdir_under_hermes_home(self.db_path.parent)
+         try:
+             # Serialize zero-byte check, quarantine, connect and schema commit so concurrent
+@@ -820,6 +844,8 @@ class SessionDB(
+         return conn
+ 
+     def _connect_and_init(self) -> None:
++        # myrmidon(G1): scanner, refusal gate, file preparation and connect share one off-loop
++        # worker transaction; every retry re-enters here and performs a fresh complete scan.
+         # Refuse before sqlite3.connect (under the startup lock) so we cannot mint
+         # a replacement WAL while a live writer still holds a deleted sidecar inode.
+         refuse_deleted_wal_generation(self.db_path)
+@@ -1254,7 +1280,10 @@ class SessionDB(
          """True when the WAL/SHM generation this handle opened is gone. Recorded
          generation: pure stat (no /proc walk on healthy writes). Empty identity
          (WAL appeared after open, or cleared by a clean close()): probe
@@ -36,7 +97,7 @@ index 8ecc3b5..9d64020 100644
          recorded = self._db_sidecar_identity or {}
          base = os.fspath(self.db_path)
          if recorded:
-@@ -1212,15 +1223,30 @@ class SessionDB(
+@@ -1264,15 +1293,30 @@ class SessionDB(
          if not self._wal_active:  # no sidecar generation to lose; keep /proc off the hot path
              return False
          if sys.platform.startswith("linux"):

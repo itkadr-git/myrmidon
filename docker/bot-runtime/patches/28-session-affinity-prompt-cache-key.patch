@@ -1,5 +1,5 @@
 diff --git a/agent/opencode_affinity.py b/agent/opencode_affinity.py
-index d61ff46..328a345 100644
+index d61ff46c5d..328a345d56 100644
 --- a/agent/opencode_affinity.py
 +++ b/agent/opencode_affinity.py
 @@ -128,6 +128,20 @@ def custom_provider_session_affinity_headers(
@@ -24,28 +24,32 @@ index d61ff46..328a345 100644
      kwargs: dict[str, Any],
      provider: Optional[str],
 diff --git a/agent/transports/chat_completions.py b/agent/transports/chat_completions.py
-index 76782c8..4d26d04 100644
+index 36993f8ebf..2f280807a6 100644
 --- a/agent/transports/chat_completions.py
 +++ b/agent/transports/chat_completions.py
-@@ -71,7 +71,7 @@ def _static_prompt_instructions(messages: list[dict[str, Any]]) -> str:
+@@ -1,4 +1,5 @@
+ """OpenAI Chat Completions transport (default api_mode for OpenAI-compatible providers).
++
+ Messages/tools are already OpenAI-shaped, so convert_* are near-identity; the
+ provider-specific work lives in build_kwargs (max_tokens, reasoning, extra_body).
+ """
+@@ -76,6 +77,7 @@ def _static_prompt_instructions(messages: list[dict[str, Any]]) -> str:
  def _add_prompt_cache_key(
      api_kwargs: dict[str, Any], *, messages: list[dict[str, Any]],
      tools: list[dict[str, Any]] | None, supports_prompt_cache_key: bool,
--    session_id: str | None = None, cache_scope_id: str | None = None,
 +    session_id: str | None = None, cache_scope_id: str | None = None, base_url: str | None = None,
  ) -> None:
      """Add a content-addressed ``prompt_cache_key`` only for a capable endpoint.
  
-@@ -93,7 +93,7 @@ def _add_prompt_cache_key(
-     # key in extra_body (not top-level) and GitHub/Copilot Responses opts out of cache-key routing entirely
-     # — for those hosts, skip it here.
+@@ -97,6 +99,7 @@ def _add_prompt_cache_key(
+     # key in extra_body (not top-level) and endpoints declaring ``responses_prompt_cache_key=False`` opt out
+     # of cache-key routing entirely — for those hosts, skip it here.
      from agent.transports.codex import (
--        _bound_prompt_cache_key_field, _cache_scope_from_session_id, _content_cache_key
 +        _bound_prompt_cache_key_field, _bounded_prompt_cache_key, _cache_scope_from_session_id, _content_cache_key
      )
  
      containers = [c for c in (api_kwargs, api_kwargs.get("extra_body")) if isinstance(c, dict) and "prompt_cache_key" in c]
-@@ -101,6 +101,18 @@ def _add_prompt_cache_key(
+@@ -104,6 +107,18 @@ def _add_prompt_cache_key(
          for c in containers:
              _bound_prompt_cache_key_field(c)
          return
@@ -64,7 +68,15 @@ index 76782c8..4d26d04 100644
      if not supports_prompt_cache_key:
          return
      cache_key = _content_cache_key(
-@@ -368,6 +380,7 @@ def _finish_kwargs(api_kwargs: dict[str, Any], sanitized: list, params: dict, *,
+@@ -376,6 +391,7 @@ def _apply_max_tokens(api_kwargs: dict, model: str, reasoning_config: Any, param
+     for candidate in (params.get("ephemeral_max_output_tokens"), params.get("max_tokens")):
+         if candidate is not None and max_tokens_fn:
+             api_kwargs.update(max_tokens_fn(_raise_gemini_thinking_max_tokens(model, reasoning_config, candidate)))
++            return
+     if profile_max and max_tokens_fn:
+         api_kwargs.update(max_tokens_fn(_raise_gemini_thinking_max_tokens(model, reasoning_config, profile_max)))
+ 
+@@ -409,6 +425,7 @@ def _finish_kwargs(api_kwargs: dict[str, Any], sanitized: list, params: dict, *,
      _add_prompt_cache_key(
          api_kwargs, messages=sanitized, tools=api_kwargs.get("tools"), supports_prompt_cache_key=supports_prompt_cache_key,
          session_id=params.get("session_id"), cache_scope_id=params.get("cache_scope_id"),

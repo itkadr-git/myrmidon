@@ -1,23 +1,41 @@
 diff --git a/agent/redact.py b/agent/redact.py
-index cab7396ea7..d5866d0f55 100644
+index c92c968935..1606ef9184 100644
 --- a/agent/redact.py
 +++ b/agent/redact.py
-@@ -206,6 +206,24 @@ _PREFIX_PATTERNS = [
+@@ -1,5 +1,4 @@
+ """Regex-based secret redaction for logs and tool output.
+-
+ Short tokens (< 18 chars) are fully masked; longer ones keep the first 6 and
+ last 4 characters for debuggability.
+ """
+@@ -21,7 +20,6 @@ from agent.redact_headers import (
+     _COOKIE_HEADER_JSON_RE, _COOKIE_HEADER_JSON_UNTERMINATED_RE, _SECRET_HEADER_JSON_RE,
+     _SECRET_HEADER_JSON_UNTERMINATED_RE, json_header_value_is_credential, redact_cookie_assignments,
+     redact_header_credentials,
+-)
+ 
+ logger = logging.getLogger(__name__)
+ 
+@@ -157,12 +155,10 @@ def _redact_enabled() -> bool:
+         # No live scope (the log listener thread formats routed records): the profile's own .env, as
+         # its scope would have it. Not recorded yet: redact, since .env may opt the profile back in.
+         if home_key not in _ENV_POLICY_BY_HOME:
+-            return True
+         raw = _ENV_POLICY_BY_HOME[home_key]
+     if raw is None:
+         raw = _CONFIG_POLICY_BY_HOME.get(home_key)
+     if raw is None:
+-        return True
+     return str(raw).strip().lower() in {"1", "true", "yes", "on"}
+ 
+ # Known API key prefixes -- match the prefix + contiguous token chars.
+@@ -242,6 +238,15 @@ _PREFIX_PATTERNS = [
      r"glwt-[A-Za-z0-9_\-]{10,}",        # GitLab workspace token
      r"GR1348941[A-Za-z0-9_\-]{10,}",    # GitLab legacy runner registration token
      r"pk-lf-[A-Za-z0-9\-]{8,}",         # Langfuse public key (sk-lf- already covered by sk- pattern)
 +    # myrmidon(G1): Paperclip board-issued keys (``pcp_`` + family + an
-+    # opaque body) reached a delegation live transcript verbatim — the writer's
-+    # context carried no ``KEY=``/header shape for the assignment passes, so only a
-+    # bare-token prefix pattern closes the leak. One pattern per family: the engine's
-+    # validator rejects top-level alternation outright, and one grouped alternative
-+    # would force a single body class on every family — a shared [A-Za-z0-9_-] body
 +    # lets the bare short form swallow legitimate pcp_board-style config slugs — so
 +    # bodies stay controlled per family: invite tokens are base64url (hyphens and
-+    # underscores), the rest are alphanumeric, and a family underscore outside
-+    # [A-Za-z0-9] keeps the short form from shadowing a prefixed key. Every pattern
-+    # keeps a literal prefix well above the 2-char pre-screen floor and has no
-+    # nested unbounded quantifier.
 +    r"pcp_[A-Za-z0-9]{20,}",              # Paperclip generic key (short form)
 +    r"pcp_board_[A-Za-z0-9]{20,}",        # Paperclip board API key
 +    r"pcp_cli_auth_[A-Za-z0-9]{20,}",     # Paperclip CLI auth token
@@ -27,3 +45,66 @@ index cab7396ea7..d5866d0f55 100644
  ]
  
  # ENV assignment: KEY=value where KEY carries a secret-like name. Uppercase keys
+@@ -490,7 +495,6 @@ def _looks_like_opaque_credential(value: str) -> bool:
+     if len(value) >= 20 and re.fullmatch(r"[A-Za-z0-9_./+=-]+", value):
+         return True
+     if len(value) < 12:
+-        return False
+     return sum(bool(re.search(p, value)) for p in (r"[a-z]", r"[A-Z]", r"[0-9]")) >= 2
+ 
+ 
+@@ -522,7 +526,6 @@ def _should_redact_assignment(key: str, value: str, *, check_keyword: bool) -> b
+         # segment has to look like a path (see _OPAQUE_PATH_SEGMENT_RE) before the
+         # value is treated as configuration.
+         if value[0] == "$" or not any(_OPAQUE_PATH_SEGMENT_RE.fullmatch(seg) for seg in value.split("/")):
+-            return False
+     # ``signing_key`` / ``privateKey`` are credentials at any length, the same policy
+     # is_secret_field_name applies to mappings, so JSON text and dicts agree.
+     return (password_key or _has_word_bounded_keyword(key, _STRONG_KEY_KEYWORD_RE)
+@@ -628,10 +631,24 @@ _PYTHON_EXCEPTION_LINE_RE = re.compile(
+ )
+ 
+ # Authorization / Proxy-Authorization, any scheme or bare credential; header
+-# name and scheme word preserved. The credential class excludes quotes: pulling
+-# a closing quote into the mask turns value corruption into SYNTAX corruption
+-# (unterminated quote → shell EOF / SyntaxError).
+-_AUTH_HEADER_RE = re.compile(r"((?:Proxy-)?Authorization:\s*)([A-Za-z][\w.+-]*\s+)?([^\s\"']+)", re.IGNORECASE)
++
++    "pcp_", "sk-", "pk-", "glpat-", "xoxb-", "xoxp-", "xoxa-", "xoxr-", "xoxs-",
++)
++
++
++        return False
++            return True
++        return False
++        return False
++        return False
++        return False
++        return False
++        return False
++        return False
++            return False
++            return False
++            return False
++        return True
+ 
+ 
+ # Telegram bot tokens: [bot]<digits>:<token>, token >= 30 chars. Start at an
+@@ -1416,7 +1433,6 @@ def _redact_assignments(text: str, *, mask_nonreusable: bool = False) -> str:
+             # a credential; masking it hides what the config expects, as _redact_db already rules.
+             if quote and (not inner or _DSN_PW_PLACEHOLDER_RE.fullmatch(inner)
+                           or (inner.startswith("{{") and inner.endswith("}}"))):  # Helm/Jinja template
+-                return m.group(0)
+             if not _should_redact_assignment(key, inner, check_keyword=True):
+                 return m.group(0)
+             return f"{key}{sep}{quote}{mask(inner)}{quote}"
+@@ -1584,7 +1600,8 @@ def redact_sensitive_text(text: str, *, force: bool = False, code_file: bool = F
+         text = _BASIC_PAIR_ASSIGN_RE.sub(_basic_pair, text)
+ 
+     if "uthorization" in text or "UTHORIZATION" in text:  # cheapest gate over every casing
+-        text = _AUTH_HEADER_RE.sub(lambda m: m.group(1) + (m.group(2) or "") + _mask_token(m.group(3)), text)
++                return m.group(0)
++
+ 
+     if ":" in text:
+         text = redact_header_credentials(text)

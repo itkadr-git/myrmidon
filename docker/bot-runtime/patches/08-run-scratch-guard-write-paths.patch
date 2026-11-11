@@ -1,8 +1,8 @@
 diff --git a/tools/file_operations.py b/tools/file_operations.py
-index a3154e8..3aa5b6b 100644
+index 23d7cd0e44..e8e36f0d7e 100644
 --- a/tools/file_operations.py
 +++ b/tools/file_operations.py
-@@ -23,7 +23,7 @@ from typing import Optional, Dict
+@@ -24,7 +24,7 @@ from typing import Optional, Dict
  from pathlib import Path
  
  from tools.binary_extensions import has_binary_extension
@@ -11,10 +11,10 @@ index a3154e8..3aa5b6b 100644
  from tools.file_operations_common import (
      ExecuteResult, PatchResult, ReadResult, SearchResult, WriteResult,
      _UTF8_BOM, _detect_line_ending, _has_bom, _normalize_line_endings, _strip_bom,
-@@ -393,6 +393,13 @@ class ShellFileOperations(LintMixin, SearchMixin, FileOperations):
-         arithmetic (zsh parses leading-zero constants as decimal), quoted so zsh
-         doesn't =word-expand. ``trap ... EXIT`` removes the temp on every failure.
-         """
+@@ -583,6 +583,13 @@ class ShellFileOperations(LintMixin, SearchMixin, FileOperations):
+         if self._native_read_enabled():
+             error = _native_io.atomic_write(self._native_path(path), content.encode("utf-8", "surrogateescape"))
+             return ExecuteResult(stdout=error or "", exit_code=1 if error else 0)
 +        # myrmidon(G1): The folded mkdir -p must not resurrect a removed
 +        # Paperclip run-scratch dir (unmarked 755 residue in the shared /tmp).
 +        # Guarding this chokepoint covers write_file, both patch paths and V4A
@@ -25,7 +25,7 @@ index a3154e8..3aa5b6b 100644
          q_path = self._escape_shell_arg(path)
          q_parent = self._escape_shell_arg(os.path.dirname(path) or ".")
          tmpl = self._escape_shell_arg(".hermes-tmp.XXXXXX")
-@@ -1265,6 +1272,12 @@ class ShellFileOperations(LintMixin, SearchMixin, FileOperations):
+@@ -1530,6 +1537,12 @@ class ShellFileOperations(LintMixin, SearchMixin, FileOperations):
          denied = get_write_denied_error(path)
          if denied:
              return WriteResult(error=denied)
@@ -38,7 +38,7 @@ index a3154e8..3aa5b6b 100644
          refused = self._reject_unencodable(path, content)
          if refused is not None:
              return refused
-@@ -1362,6 +1375,11 @@ class ShellFileOperations(LintMixin, SearchMixin, FileOperations):
+@@ -1630,6 +1643,11 @@ class ShellFileOperations(LintMixin, SearchMixin, FileOperations):
          denied = get_write_denied_error(path)
          if denied:
              return PatchResult(error=denied)
@@ -47,6 +47,6 @@ index a3154e8..3aa5b6b 100644
 +        resurrected = get_run_scratch_resurrection_error(path, verb="Patch")
 +        if resurrected is not None:
 +            return PatchResult(error=resurrected)
-         read_result = self._cat(path)
-         if read_result.exit_code != 0:
-             return PatchResult(error=read_result.cwd_error or f"Failed to read file: {path}")
+         data, failed = self._read_exact_bytes(path)
+         if data is None:
+             return PatchResult(error=failed.cwd_error or f"Failed to read file: {path}")

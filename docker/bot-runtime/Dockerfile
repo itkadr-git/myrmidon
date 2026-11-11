@@ -19,17 +19,15 @@
 # hermes relative to the installed module's __file__, not from wheel
 # package-data.
 
-# HERMES_VERSION is the `version =` field in hermes' pyproject.toml (the
-# number it reports itself); HERMES_GIT_REF is the git tag that ships that
-# version. The two do NOT share a numbering scheme: hermes-agent tags
-# releases by date (vYYYY.M.D) while pyproject.toml's version field is a
-# separate, independently-bumped 0.x.y counter. v2026.9.24 is the tag we
-# confirmed (via the GitHub API and `git ls-remote --tags`, against every
-# recent release tag) carries `version = "0.21.5"` — do not assume a future
-# HERMES_VERSION bump maps to `v<that number>`; look the date tag up the same
-# way and update both.
-ARG HERMES_VERSION=0.21.5
-ARG HERMES_GIT_REF=v2026.9.24
+# HERMES_VERSION is the version embedded in the release tag's annotated tag
+# object (JSON body, "version" field) — the number the release itself claims;
+# HERMES_GIT_REF is that tag. Since v0.22.0 the two share the numbering
+# scheme (v0.23.1 <-> "version": "0.23.1"), but pyproject.toml's `version =`
+# is pinned to the placeholder 0.0.0 in release trees, so the version check
+# below reads the tag object, not pyproject.toml. Update both together when
+# HERMES_VERSION moves.
+ARG HERMES_VERSION=0.23.1
+ARG HERMES_GIT_REF=v0.23.1
 # The exact commit `HERMES_GIT_REF` must resolve to (confirmed via the GitHub API
 # against both the fork and upstream, and by `git ls-remote --tags` on the fork).
 # A git tag is a mutable ref — upstream (or an MITM on the clone) moving it would otherwise
@@ -37,7 +35,7 @@ ARG HERMES_GIT_REF=v2026.9.24
 # fails loudly on a mismatch, before the shallow clone's `.git` is ever removed, so this
 # check is only meaningful pinned here, not as a comment. Update both together when
 # HERMES_GIT_REF moves to a new tag.
-ARG HERMES_GIT_SHA=f97608f178d1ffeca59860195ab7da295f7c8e5f
+ARG HERMES_GIT_SHA=3b421578588243f920886e6fe79a6faa87ea026e
 # myrmidon(HERMES-UPSTREAM): clone the pinned tag from the author's repository.
 # Our hermes changes live in this repository (docker/bot-runtime/patches/*.patch)
 # and HERMES_GIT_SHA below pins the exact tree, so a moved or tampered upstream
@@ -52,7 +50,7 @@ ARG HERMES_REPO=https://github.com/NousResearch/hermes-agent.git
 # builder stage below) gets aiohttp through the same hash-verified lockfile path as
 # every other dependency in this image, instead of a separate unlocked `uv pip
 # install`. See docker/bot-runtime/README.md.
-ARG HERMES_AIOHTTP_VERSION=3.14.3
+ARG HERMES_AIOHTTP_VERSION=3.14.5
 
 # Same uv build + digest hermes-agent's own upstream Dockerfile pins (its
 # `uv_source` stage) — reusing a version we found already vetted against
@@ -101,9 +99,13 @@ RUN set -eu; \
 # (wrong build-arg, moved tag, upstream renumbering) instead of silently
 # shipping a different hermes than the labels claim.
 RUN set -eu; \
-    pinned="$(sed -n 's/^version = "\(.*\)"$/\1/p' pyproject.toml)"; \
-    if [ "$pinned" != "${HERMES_VERSION}" ]; then \
-      echo "HERMES_GIT_REF=${HERMES_GIT_REF} has pyproject version '$pinned' != HERMES_VERSION=${HERMES_VERSION}" >&2; \
+    # The release tag is annotated; its JSON body carries the real "version"
+    # (pyproject.toml ships 0.0.0 in release trees since v0.22.0, so it cannot
+    # be checked). Split the tag object on its first blank line and parse the body.
+    tag_body="$(git cat-file tag "${HERMES_GIT_REF}" | sed '1,/^$/d')"; \
+    tagged_version="$(printf '%s' "$tag_body" | python3 -c 'import json,sys; print(json.loads(sys.stdin.read())["version"])')"; \
+    if [ "$tagged_version" != "${HERMES_VERSION}" ]; then \
+      echo "tag ${HERMES_GIT_REF} claims version '$tagged_version' != HERMES_VERSION=${HERMES_VERSION}" >&2; \
       exit 1; \
     fi
 
@@ -210,14 +212,14 @@ raise SystemExit(0 if o.status in ('installed', 'none') else 1)"
 RUN /opt/hermes-src/.venv/bin/python -c 'import aiohttp, mcp, hindsight_client'
 
 # myrmidon(G1): import smoke for every module a patch in patches/ changes
-# (hermes_state: 04, 06; tools.environments.base and base_session_env: 02; gateway.run: 05;
-# gateway.platforms.api_server_runs, tools.environments.local and tools.github_broker_context: 09;
-# tools.run_workspace (also api_server_runs/local): 10; tools.github_launcher_context: 11;
-# tools.run_skills (also api_server_runs/local): 14; agent.session_persistence (also
-# api_server_runs): 15; agent.redact: 12; tools.delegation_live_log: 13;
-# hermes_state_registry, gateway.session_db_recovery/session(_persistence/_recovery/_lifecycle/_transcript),
-# run/run_startup/run_shutdown: 18; agent.opencode_affinity and agent.transports.chat_completions: 28;
-# hermes_state_maintenance: 30)
+# (hermes_state: 06; tools.environments.base and base_session_env: 02; gateway.run and
+# gateway.run_bootstrap: 05; gateway.platforms.api_server_runs, tools.environments.local and
+# tools.github_broker_context: 09; tools.run_workspace (also api_server_runs/local): 10;
+# tools.github_launcher_context: 11; tools.run_skills (also api_server_runs/local): 14;
+# agent.session_persistence (also api_server_runs): 15; agent.redact: 12;
+# tools.delegation_live_log: 13; hermes_state_registry, gateway.session_db_recovery/
+# session(_persistence/_recovery), run/run_startup/run_shutdown: 22;
+# agent.opencode_affinity and agent.transports.chat_completions: 28; hermes_state_maintenance: 30)
 # plus the vendored memory provider (a relative-import package, so a broken plugin tree
 # fails the build here, not at the first bot start). `git apply` only proves the hunks
 # land; a patch that applies cleanly but breaks a module's imports or top-level code
@@ -279,10 +281,10 @@ RUN PYTHONDONTWRITEBYTECODE=1 /opt/hermes-src/.venv/bin/python /tmp/patch-tests/
 # spill file and the omitted range; read_file stays pinned, skill_view is exempt, the settings come from
 # config.yaml.
 RUN PYTHONDONTWRITEBYTECODE=1 /opt/hermes-src/.venv/bin/python /tmp/patch-tests/tool_result_head_tail.py /opt/hermes-src
-# myrmidon(G1): behaviour regression for 26-compaction-summary-cap.patch and 27-compaction-keep-prefix.patch:
-# the summary is asked for and held to 8000 characters, a summary that stopped on the output limit is
-# kept instead of failing the compression, wake packages are not quoted into it, and a compaction
-# keeps the system prompt and tool schemas (the cached prefix) as they are.
+# myrmidon(G1): behaviour regression for 32-compaction-summary-9-sections.patch and
+# 27-compaction-keep-prefix.patch: a summary that stopped on the output limit is kept instead of
+# failing the compression, wake packages are not quoted into it, and a compaction keeps the system
+# prompt and tool schemas (the cached prefix) as they are.
 RUN PYTHONDONTWRITEBYTECODE=1 /opt/hermes-src/.venv/bin/python /tmp/patch-tests/compaction_summary_cap.py /opt/hermes-src
 # myrmidon(G1): behaviour regression for 17-disabled-tools-by-name.patch (input-token measure D):
 # agent.disabled_tools removes single tools from the model's schema, and leaves it alone when unset.
@@ -307,6 +309,7 @@ RUN PYTHONDONTWRITEBYTECODE=1 /opt/hermes-src/.venv/bin/python /tmp/patch-tests/
 # prompt_cache_key (the header's own value, bounded to 64 characters), a pinned key and every endpoint
 # without the option are untouched, and api.openai.com keeps its content-addressed key.
 RUN PYTHONDONTWRITEBYTECODE=1 /opt/hermes-src/.venv/bin/python /tmp/patch-tests/session_affinity_prompt_cache_key.py /opt/hermes-src
+
 # myrmidon(G1): behaviour regression for 29-gateway-outage-keeps-primary.patch: a lost connection to
 # the model gateway is retried against the primary for the outage budget instead of moving the run to a
 # fallback, model/provider errors still move it at once, and a run on a fallback tries the primary again
@@ -320,7 +323,7 @@ RUN PYTHONDONTWRITEBYTECODE=1 /opt/hermes-src/.venv/bin/python /tmp/patch-tests/
 # myrmidon(G1): behaviour regression for 32-compaction-summary-9-sections.patch:
 # summary template and fallback summary contain all 9 standardized sections.
 RUN PYTHONDONTWRITEBYTECODE=1 /opt/hermes-src/.venv/bin/python /tmp/patch-tests/compaction_summary_9_sections.py /opt/hermes-src
-# myrmidon(G1): behaviour regression for 33-compaction-tool-pairs-sampling.patch:
+# myrmidon(G1): behaviour regression for 32-compaction-summary-9-sections.patch (sampling part):
 # tool call and result pairs are preserved atomically during summary sampling.
 RUN PYTHONDONTWRITEBYTECODE=1 /opt/hermes-src/.venv/bin/python /tmp/patch-tests/compaction_tool_pairs_sampling.py /opt/hermes-src
 # myrmidon(G1): names imported inside functions of the patched modules resolve too

@@ -19,6 +19,14 @@ const LS_REMOTE = [
   "6666666666666666666666666666666666666666\trefs/tags/v2026.9.24",
   "7777777777777777777777777777777777777777\trefs/tags/v2026.9.24^{}",
   "8888888888888888888888888888888888888888\trefs/tags/nightly/whatever",
+  // v0.22.0+ switched the release tag scheme to semver (annotated tags carrying the
+  // version in the tag object's JSON body); date tags stopped at v2026.9.24.
+  "9999999999999999999999999999999999999999\trefs/tags/v0.22.0",
+  "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\trefs/tags/v0.22.0^{}",
+  "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\trefs/tags/v0.23.0",
+  "cccccccccccccccccccccccccccccccccccccccc\trefs/tags/v0.23.0^{}",
+  "dddddddddddddddddddddddddddddddddddddddd\trefs/tags/v0.23.1",
+  "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee\trefs/tags/v0.23.1^{}",
 ].join("\n");
 
 const registry = JSON.parse(fs.readFileSync(REGISTRY, "utf8"));
@@ -28,13 +36,15 @@ it("registers the async writer-acquire delta with fail-closed markers", () => {
   const delta = registry.deltas.find((item) => item.id === "22-async-state-db-writer-acquire");
   assert.ok(delta, "delta 22 must be registered without renumbering older deltas");
   assert.equal(delta.patch, "docker/bot-runtime/patches/22-async-writer-acquire.patch");
+  // v0.23.1: the hermes_state.py defer machinery (defer_open/initialize_writer) lives in patch 06,
+  // and upstream adopted the OPE-7854 session_lifecycle/session_transcript split, so 22 no longer
+  // carries those files; its shutdown contract test is now test_session_db_handle_shutdown.py.
   assert.deepEqual(delta.files, [
-    "hermes_state_dbfile.py", "hermes_state_errors.py", "hermes_state.py", "hermes_state_registry.py",
+    "hermes_state_dbfile.py", "hermes_state_errors.py", "hermes_state_registry.py",
     "gateway/session_db_recovery.py", "gateway/session.py", "gateway/session_persistence.py",
-    "gateway/session_recovery.py", "gateway/session_lifecycle.py", "gateway/session_transcript.py",
-    "gateway/run.py", "gateway/run_startup.py", "gateway/run_shutdown.py",
+    "gateway/session_recovery.py", "gateway/run.py", "gateway/run_startup.py", "gateway/run_shutdown.py",
     "tests/hermes_state/test_deleted_wal_generation_guard.py",
-    "tests/gateway/test_async_writer_acquire_contract.py",
+    "tests/gateway/test_session_db_handle_shutdown.py",
   ]);
   assert.match(delta.reason, /worker-owned async writer acquire/);
   assert.match(delta.probe.upstreamMarker, /SidecarScanIncompleteError/);
@@ -49,7 +59,6 @@ it("registers the async writer-acquire delta with fail-closed markers", () => {
   assert.match(patch, /raise SidecarScanIncompleteError/);
   assert.match(patch, /pytest.raises\(SidecarScanIncompleteError\)/);
   assert.match(patch, /async def acquire_async/);
-  assert.match(patch, /initialize_writer/);
   assert.match(patch, /close_all_db_handles_async/);
 });
 
@@ -108,11 +117,14 @@ describe("check-hermes-upstream", () => {
   it("takes only stable tags and orders them by date, not lexically", () => {
     const tags = stableTags(LS_REMOTE, "^v[0-9]{4}\\.[0-9]{1,2}\\.[0-9]{1,2}$");
     assert.deepEqual(tags, ["v2026.9.7", "v2026.9.11", "v2026.9.24"]);
+    // v0.22.0+ semver release tags; canary/nightly refs stay excluded.
+    const semver = stableTags(LS_REMOTE, "^v0\\.[0-9]+\\.[0-9]+$");
+    assert.deepEqual(semver, ["v0.22.0", "v0.23.0", "v0.23.1"]);
   });
 
   it("reads the pin out of the image Dockerfile", () => {
     const pin = pinFromDockerfile(dockerfile);
-    assert.match(pin.ref, /^v\d{4}\.\d{1,2}\.\d{1,2}$/);
+    assert.match(pin.ref, /^v0\.\d+\.\d+$/);
     assert.match(pin.version, /^\d+\.\d+\.\d+$/);
     assert.match(pin.sha, /^[0-9a-f]{40}$/);
     // The registry is the machine-readable half of the delta list; it must not drift from
@@ -155,7 +167,7 @@ describe("check-hermes-upstream", () => {
     const report = await fakeRun({
       "raw.githubusercontent.com/NousResearch/hermes-agent": "# nothing interesting here\n",
     });
-    assert.equal(report.newest, "v2026.9.24");
+    assert.equal(report.newest, "v0.23.1");
     assert.deepEqual(report.behind, []);
     for (const result of report.results) {
       assert.ok(["still-needed", "droppable", "unknown"].includes(result.status));
@@ -174,8 +186,8 @@ describe("check-hermes-upstream", () => {
   it("reports the pin as behind when a newer stable tag exists", async () => {
     const older = fs
       .readFileSync(DOCKERFILE, "utf8")
-      .replace("ARG HERMES_GIT_REF=v2026.9.24", "ARG HERMES_GIT_REF=v2026.9.11")
-      .replace("ARG HERMES_VERSION=0.21.5", "ARG HERMES_VERSION=0.21.2");
+      .replace("ARG HERMES_GIT_REF=v0.23.1", "ARG HERMES_GIT_REF=v0.22.0")
+      .replace("ARG HERMES_VERSION=0.23.1", "ARG HERMES_VERSION=0.22.0");
     const tmp = path.join(fs.mkdtempSync(path.join(process.env.TMPDIR || "/tmp", "hermes-upstream-")), "Dockerfile");
     fs.writeFileSync(tmp, older.replace(/^ARG HERMES_GIT_SHA=.*$/m, `ARG HERMES_GIT_SHA=${"a".repeat(40)}`), "utf8");
     const report = await run({
@@ -184,7 +196,7 @@ describe("check-hermes-upstream", () => {
       exec: () => LS_REMOTE,
       fetchText: async () => "",
     }).catch(() => null);
-    // The registry pins 0.21.5/v2026.9.24, so an older Dockerfile is a hard mismatch, not a
+    // The registry pins 0.23.1/v0.23.1, so an older Dockerfile is a hard mismatch, not a
     // "behind" report: the registry and the image must move together.
     assert.equal(report, null);
     fs.rmSync(path.dirname(tmp), { recursive: true, force: true });

@@ -1,19 +1,12 @@
 diff --git a/agent/file_safety.py b/agent/file_safety.py
-index 1ee9236..68730ca 100644
+index 7778432aa1..987b494698 100644
 --- a/agent/file_safety.py
 +++ b/agent/file_safety.py
-@@ -8,6 +8,7 @@
- from __future__ import annotations
- 
- import os
-+import re
- from pathlib import Path
- from contextlib import suppress
- from typing import Optional
-@@ -106,6 +107,130 @@
+@@ -220,6 +220,132 @@ def build_write_denied_prefixes(home: str) -> list[str]:
      return [os.path.realpath(p) + os.sep for p in paths]
  
  
++#
 +# myrmidon(G1): --- Paperclip run-scratch resurrection guard -----------------------------------
 +#
 +# The harness gives each run a scratch dir under /tmp named
@@ -138,10 +131,11 @@ index 1ee9236..68730ca 100644
 +        return None
 +
 +
++
  def get_safe_write_roots() -> set[str]:
      """Resolved HERMES_WRITE_SAFE_ROOT paths (``os.pathsep``-separated list)."""
      roots: set[str] = set()
-@@ -262,7 +387,7 @@
+@@ -424,7 +550,7 @@ def get_read_block_error(path: str) -> Optional[str]:
  def raise_if_read_blocked(path: str) -> None:
      """Raise ``ValueError`` if ``path`` is a denied Hermes read (see ``get_read_block_error``).
  
@@ -150,25 +144,3 @@ index 1ee9236..68730ca 100644
      paths). Best-effort: unexpected internal errors no-op rather than break
      local-file loading; a real block still propagates.
      """
-@@ -375,8 +500,8 @@
-     """Classify a write target as cross-profile if it lands in another
-     profile's scoped area (skills/plugins/cron/memories).
- 
--    Returns ``None`` when the target is outside Hermes scope, or is inside
--    the ACTIVE profile, or doesn't hit a profile-scoped area. Otherwise
-+    Returns ``None`` when the target is outside Hermes scope, or is inside the
-+    ACTIVE profile, or doesn't hit a profile-scoped area. Otherwise
-     returns a dict with:
- 
-       * ``active_profile``: name of the profile the agent is running as
-@@ -384,8 +509,8 @@
-       * ``area``: which scoped area (``"skills"``, ``"plugins"``, etc.)
-       * ``target_path``: the resolved path string
- 
--    The caller decides what to do with the result — surface a warning to
--    the model, prompt the user, or (with explicit consent /
-+    The caller decides what to do with the result — surface a warning to the
-+    model, prompt the user, or (with explicit consent /
-     ``cross_profile=True``) proceed anyway.
-     """
-     try:

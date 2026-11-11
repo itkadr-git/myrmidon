@@ -348,7 +348,8 @@ describe("docker/bot-runtime/patches/", () => {
     const patchesDir = path.join(IMAGE_DIR, "patches");
     const files = fs.readdirSync(patchesDir).filter((f) => f.endsWith(".patch"));
     assert.ok(files.some((f) => f.includes("secret")), "expected a session-snapshot secret-redaction patch");
-    assert.ok(files.some((f) => f.includes("state-read")), "expected a state-read retry patch");
+    // state-read retry (04) dropped at v0.23.1: upstream carries `_read_retrying_ioerr`.
+    assert.ok(!files.some((f) => f.includes("state-read")), "no state-read patch may remain: upstream carries it");
     assert.ok(files.some((f) => f.includes("gateway-executor")), "expected a gateway executor pool patch");
     assert.ok(files.some((f) => f.includes("fd-probe")), "expected a state-db descriptor-probe patch");
     // The two hindsight patches are gone on purpose: v2026.9.24 removed the in-tree provider
@@ -412,39 +413,20 @@ describe("docker/bot-runtime/patches/", () => {
     }
   });
 
-  it("retries a state-database read that finds the database locked, with fixed bounds", () => {
-    // Two concurrent runs of one agent (a writer and a session-history reader) made the
-    // reader fail with "database is locked": the read path replayed only "disk I/O error".
-    const patch = fs.readFileSync(
-      path.join(IMAGE_DIR, "patches/04-state-read-retry-when-locked.patch"),
-      "utf8",
-    );
-    assert.match(patch, /^\+\+\+ b\/hermes_state\.py$/m);
-    assert.match(patch, /^\+_READ_LOCKED_MARKERS = \("database is locked", "database is busy"\)$/m);
-    assert.match(patch, /^\+_READ_LOCKED_RETRY_ATTEMPTS = 15$/m);
-    assert.match(patch, /^\+_READ_LOCKED_RETRY_CAP_S = 1\.0$/m);
-    // The wait is jittered and bounded, the disk-I/O-error budget is untouched, and any
-    // other OperationalError is still raised at once.
-    assert.match(patch, /^\+.*\(0\.5 \+ random\.random\(\)\)/m);
-    assert.match(patch, /^\+.*_DISK_IO_ERROR_MARKER not in err/m);
-    assert.match(patch, /^\+.*raise$/m);
-    // No new environment knobs: every such variable would need its own documented setting.
-    assert.doesNotMatch(patch, /^\+.*os\.environ/m);
-  });
-
   it("sizes the gateway's default executor pool, overridable by one documented variable", () => {
     // With the stock asyncio pool every live run holds one worker for its whole life, so
-    // create calls on the board's hermes_gateway adapter timed out behind them.
+    // create calls on the board's hermes_gateway adapter timed out behind them. At v0.23.1
+    // the sizing lives in _start_gateway_runtime (gateway/run_bootstrap.py), right after
+    // HERMES_EXEC_ASK is defaulted — still before anything queues onto the stock pool.
     const patch = fs.readFileSync(
       path.join(IMAGE_DIR, "patches/05-gateway-executor-pool.patch"),
       "utf8",
     );
-    assert.match(patch, /^\+\+\+ b\/gateway\/run\.py$/m);
+    assert.match(patch, /^\+\+\+ b\/gateway\/run_bootstrap\.py$/m);
+    assert.match(patch, /HERMES_EXEC_ASK/, "sizing must sit beside the exec-ask default in run_bootstrap");
     assert.match(patch, /^\+.*set_default_executor\(/m);
     assert.match(patch, /^\+.*max_workers=int\(os\.environ\.get\("HERMES_GATEWAY_EXECUTOR_WORKERS", "64"\)\)/m);
-    // It must be the first thing start_gateway does — anything before it could already have
-    // queued work onto the stock pool.
-    assert.match(patch, /^@@ -\d+,\d+ \+5796,\d+ @@/m);
+    assert.match(patch, /myrmidon\(G1\)/);
   });
 
   it("documents every patch in patches/README.md and closes the reference-checkout gap", () => {

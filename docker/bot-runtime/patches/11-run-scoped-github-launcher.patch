@@ -1,89 +1,84 @@
 diff --git a/gateway/platforms/api_server_runs.py b/gateway/platforms/api_server_runs.py
-index 0e71549..d67a16a 100644
+index 5d6d6f438b..2504bf15bb 100644
 --- a/gateway/platforms/api_server_runs.py
 +++ b/gateway/platforms/api_server_runs.py
-@@ -459,6 +459,14 @@ class _RunLaunch:
-     # (see set_github_broker_vars) for the whole turn so tool subprocesses of
-     # THIS run — and only this run — can resolve managed GitHub credentials.
-     github_broker: Optional[Dict[str, str]] = None
-+    # myrmidon(G1): run-scoped GitHub operation launcher (NONCONTAINER-GITHUB-LAUNCHER).
-+    # ``{"version": int, "files": {name: body}}`` or None: the bodies of the managed
-+    # git/gh wrappers plus the credential helper, which a gateway run has no execution
-+    # target on the board's side to have staged for it — the gateway stages them under
-+    # this run's own directory and binds the resulting env per context (see
-+    # set_github_launcher_vars). The token they resolve still comes from this run's
-+    # broker capability, so the field is set only alongside one.
-+    github_launcher: Optional[Dict[str, Any]] = None
+@@ -609,11 +609,14 @@ class _RunLaunch:
      # myrmidon(BOT-DISK-H5b): optional ``workspace`` body field (bot-disk contract C6):
      # ``{"key", "repo", "baseRef?"}`` — validated in _handle_runs; _run_agent_sync opens
      # the task copy via ``myr-ws open`` before the model starts.
-@@ -607,6 +615,13 @@ async def _handle_runs(self, request: "web.Request", *, _api_server) -> "web.Res
-     } if isinstance(github_broker, dict) else None
-     if github_broker and not (github_broker["broker_url"] and github_broker["capability"]):
-         github_broker = None
-+    # myrmidon(G1): the same request may carry the launcher bodies to stage
++    # myrmidon(G1): run-scoped GitHub operation launcher (NONCONTAINER-GITHUB-LAUNCHER).
+     # ``{"version": int, "files": {name: body}}`` or None: the bodies of the managed
+     # git/gh wrappers plus the credential helper, which a gateway run has no execution
+     # target on the board's side to have staged for it — the gateway stages them under
+     # this run's own directory and binds the resulting env per context (see
++    # set_github_launcher_vars). The token they resolve still comes from this run's
+     # broker capability, so the field is set only alongside one.
++    github_launcher: Optional[Dict[str, Any]] = None
+     workspace: Optional[Dict[str, str]] = None
+ 
+     @property
+@@ -841,9 +844,12 @@ async def _handle_runs(self, request: web.Request, *, _api_server) -> web.Respon
+             _openai_error, "X-Paperclip-Run-Id must be a UUID when present",
+ 
+     # myrmidon(G1): the same request may carry the launcher bodies to stage
 +    # (NONCONTAINER-GITHUB-LAUNCHER). Carried as sent: tools/github_launcher_context.py
-+    # validates the version, the allowed file names and the sizes before anything is
-+    # written, and a payload it refuses (unknown name, oversize body) stages nothing
-+    # at all — the run then behaves exactly as a run without the field.
+     # validates the version, the allowed file names and the sizes before anything is
+     # written, and a payload it refuses (unknown name, oversize body) stages nothing
+     # at all — the run then behaves exactly as a run without the field.
 +    github_launcher = body.get("github_launcher") if isinstance(body, dict) else None
 +    github_launcher = dict(github_launcher) if isinstance(github_launcher, dict) else None
      # myrmidon(BOT-DISK-H5b): optional ``workspace`` body field (bot-disk contract C6).
      # Validated here so the idempotency fingerprint covers exactly what the run will do;
      # the open itself happens in _run_agent_sync, just before the model starts. A
-@@ -727,6 +742,7 @@ async def _handle_runs(self, request: "web.Request", *, _api_server) -> "web.Res
-         turn_author=turn_author,
+@@ -954,6 +960,7 @@ async def _handle_runs(self, request: web.Request, *, _api_server) -> web.Respon
+         turn_author=turn_author, walked_from=walked_from if session_id == stored_session_id else None,
          # myrmidon(G1): run-scoped GitHub broker capability (CONTAINER-GITHUB-WRITE).
          github_broker=github_broker,
 +        github_launcher=github_launcher,
-         # myrmidon(BOT-DISK-H5b): task workspace to open via myr-ws before the model starts.
-         workspace=workspace_field)
-     self._activate_admitted_request()
-@@ -783,6 +799,9 @@ def _run_agent_sync(self, run: _RunLaunch, agent, approval_notify, *, _api_serve
-     from tools.approval_context import reset_current_session_key, set_current_session_key
+         # materialize into the run profile before the model starts.
+         # myrmidon(G1): the board's run id for this run — bound as
+         # internal id is not a board UUID).
+@@ -1032,6 +1039,8 @@ def _run_agent_sync(self, run: _RunLaunch, agent, approval_notify, *, _api_serve
      # myrmidon(G1): run-scoped GitHub broker capability (CONTAINER-GITHUB-WRITE).
      from tools.github_broker_context import set_github_broker_vars
-+    # myrmidon(G1): staging and binding the run's launcher goes through the same
+     # myrmidon(G1): staging and binding the run's launcher goes through the same
 +    # per-run context (NONCONTAINER-GITHUB-LAUNCHER).
 +    from tools.github_launcher_context import set_github_launcher_vars
-     session_id = run.session_id
-     effective_task_id = session_id or run.run_id
-     # (token, reset) pairs unwound in the finally block; bound only once each step succeeds.
-@@ -797,6 +816,12 @@ def _run_agent_sync(self, run: _RunLaunch, agent, approval_notify, *, _api_serve
-             # tools/environments/local.py then strips them for this run's spawns.
-             if run.github_broker:
+     # myrmidon(G1): bind THIS run's id for the whole turn so tool
+     # os.environ copy belongs to whichever run started the container and is
+     # stale for every later run (409 run-ownership on board mutations).
+@@ -1051,7 +1060,10 @@ def _run_agent_sync(self, run: _RunLaunch, agent, approval_notify, *, _api_serve
                  resets.append(set_github_broker_vars(run.github_broker))
-+            # myrmidon(G1): stage this run's launcher bodies in the gateway's own
-+            # temp root and bind PATH/ZDOTDIR/BASH_ENV/GH_CONFIG_DIR for its children
+             # myrmidon(G1): stage this run's launcher bodies in the gateway's own
+             # temp root and bind PATH/ZDOTDIR/BASH_ENV/GH_CONFIG_DIR for its children
 +            # (NONCONTAINER-GITHUB-LAUNCHER). A refused payload, an unwritable temp
-+            # root, or a run without a broker capability leaves the run untouched.
+             # root, or a run without a broker capability leaves the run untouched.
 +            if run.github_launcher:
 +                resets.append(set_github_launcher_vars(run.github_launcher, run.run_id))
-             # myrmidon(BOT-DISK-H5b): the request named a task workspace — open (or reuse)
-             # the copy BEFORE the model starts (bot-disk contract C6). On success the
-             # run's cwd is the copy (bound as the session cwd, so the prompt builder,
+             # myrmidon(G1): every run carries its own id — bind it
+             # unconditionally (contextvars, reset in the finally block) so the
+             # child-env bridge in tools/environments/local.py overrides the
 diff --git a/tools/environments/local.py b/tools/environments/local.py
-index 9f32846..1875be3 100644
+index 3d2610d851..50e928ce72 100644
 --- a/tools/environments/local.py
 +++ b/tools/environments/local.py
-@@ -261,6 +261,22 @@ def _inject_session_context_env(env: dict) -> None:
-     else:
+@@ -307,15 +307,21 @@ def _inject_session_context_env(env: dict) -> None:
          env.pop("PAPERCLIP_GITHUB_BROKER_URL", None)
          env.pop("PAPERCLIP_GITHUB_BROKER_TOKEN", None)
-+    # myrmidon(G1): bridge this run's GitHub operation launcher
+     # myrmidon(G1): bridge this run's GitHub operation launcher
 +    # (NONCONTAINER-GITHUB-LAUNCHER) — the directory holding this run's git/gh
-+    # wrappers and credential helper, first on PATH, with the login-shell profiles
-+    # and GH_CONFIG_DIR that keep it in place. A run WITHOUT a launcher gets our
-+    # directory stripped from PATH and the marker name dropped — the staged programs
-+    # call the broker, and only a run that carries a capability is staged at all.
-+    try:
+     # wrappers and credential helper, first on PATH, with the login-shell profiles
+     # and GH_CONFIG_DIR that keep it in place. A run WITHOUT a launcher gets our
+     # directory stripped from PATH and the marker name dropped — the staged programs
+     # call the broker, and only a run that carries a capability is staged at all.
+     try:
 +        from tools.github_launcher_context import github_launcher_env, strip_github_launcher_env
 +        launcher_env = github_launcher_env()
-+    except Exception:
-+        launcher_env = None
+     except Exception:
+         launcher_env = None
 +        strip_github_launcher_env = None
-+    if launcher_env:
-+        env.update(launcher_env)
+     if launcher_env:
+         env.update(launcher_env)
 +    elif strip_github_launcher_env is not None:
 +        strip_github_launcher_env(env)
      # myrmidon(BOT-DISK-H5b): bridge the run's task workspace (bound by
@@ -91,7 +86,7 @@ index 9f32846..1875be3 100644
      # contract C6) into this run's child processes as MYRMIDON_TASK_WORKSPACE.
 diff --git a/tools/github_launcher_context.py b/tools/github_launcher_context.py
 new file mode 100644
-index 0000000..0fec488
+index 0000000000..da35636378
 --- /dev/null
 +++ b/tools/github_launcher_context.py
 @@ -0,0 +1,231 @@
@@ -326,4 +321,3 @@ index 0000000..0fec488
 +        with open(path, "w", encoding="utf-8") as handle:
 +            handle.write(body)
 +        os.chmod(path, 0o700)
-\ No newline at end of file

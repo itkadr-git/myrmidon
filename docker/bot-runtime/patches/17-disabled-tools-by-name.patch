@@ -1,8 +1,8 @@
 diff --git a/model_tools.py b/model_tools.py
-index 9a068d5..e20ee16 100644
+index 22b293f050..c7f014dd76 100644
 --- a/model_tools.py
 +++ b/model_tools.py
-@@ -337,9 +337,27 @@ def _select_tool_names(enabled_toolsets: Optional[List[str]], disabled_toolsets:
+@@ -352,9 +352,27 @@ def _select_tool_names(enabled_toolsets: Optional[list[str]], disabled_toolsets:
      # disabled toolset are strictly stripped out. See issue #17309.
      if disabled_toolsets:
          _apply_toolset_selection(tools, disabled_toolsets, quiet_mode, disable=True)

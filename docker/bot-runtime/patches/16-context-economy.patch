@@ -1,6 +1,6 @@
 diff --git a/agent/context_economy.py b/agent/context_economy.py
 new file mode 100644
-index 0000000..0e508d4
+index 0000000000..0e508d4c8d
 --- /dev/null
 +++ b/agent/context_economy.py
 @@ -0,0 +1,778 @@
@@ -783,10 +783,10 @@ index 0000000..0e508d4
 +            stats["saved_chars"],
 +        )
 diff --git a/agent/tool_result_classification.py b/agent/tool_result_classification.py
-index 1e11b47..25ee8ae 100644
+index f1c9161cdf..a9431dd3be 100644
 --- a/agent/tool_result_classification.py
 +++ b/agent/tool_result_classification.py
-@@ -15,7 +15,7 @@ FILE_MUTATING_TOOL_NAMES = frozenset({"write_file", "patch"})
+@@ -16,7 +16,7 @@ FILE_MUTATING_TOOL_NAMES = frozenset({"write_file", "patch"})
  NO_EFFECT_TOOL_NAMES = frozenset({
      "read_file", "search_files", "session_search", "skill_view", "skills_list",
      "web_extract", "web_search", "vision_analyze", "browser_snapshot",
@@ -796,12 +796,12 @@ index 1e11b47..25ee8ae 100644
  
  
 diff --git a/agent/turn_request_assembly.py b/agent/turn_request_assembly.py
-index 79a56c6..4695309 100644
+index cc75648461..5435a193a1 100644
 --- a/agent/turn_request_assembly.py
 +++ b/agent/turn_request_assembly.py
-@@ -154,6 +154,12 @@ def assemble_api_request(
+@@ -164,6 +164,12 @@ def assemble_api_request(
  
-     evict_stale_outbound_tool_images(api_messages)
+     evict_stale_outbound_tool_images(api_messages, outbound_retired_image_ids(agent))
  
 +    # myrmidon(G1): superseded wake messages and stale heavy tool results become short
 +    # notes in this request copy only (agent/context_economy.py); the transcript is untouched.
@@ -814,7 +814,7 @@ index 79a56c6..4695309 100644
      try:
 diff --git a/tools/stale_result_tool.py b/tools/stale_result_tool.py
 new file mode 100644
-index 0000000..3c3750b
+index 0000000000..3c3750b30c
 --- /dev/null
 +++ b/tools/stale_result_tool.py
 @@ -0,0 +1,84 @@
@@ -903,14 +903,14 @@ index 0000000..3c3750b
 +    emoji="📎",
 +)
 diff --git a/toolsets.py b/toolsets.py
-index 8938633..13114b3 100644
+index 588cb0f117..95897d7c27 100644
 --- a/toolsets.py
 +++ b/toolsets.py
-@@ -13,6 +13,7 @@ _HERMES_CORE_TOOLS = [
+@@ -12,6 +12,7 @@ _HERMES_CORE_TOOLS = [
      "web_search", "web_extract",
      "terminal", "process_manage",
      "read_file", "write_file", "patch", "search_files",
 +    "read_stale_tool_result",  # myrmidon(G1): core, so tool_search never defers it
      "vision_analyze", "image_generate",
      "skills_list", "skill_view", "skill_manage",
-     "browser_navigate", "browser_snapshot", "browser_click",
+     "browser_exec",  # THE browser: Python over CDP (browser-harness)
