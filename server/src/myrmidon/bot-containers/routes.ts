@@ -443,6 +443,9 @@ export async function buildBotContainerItemStatus(
           reason: null,
         }
       : null,
+    // myrmidon(1.7 KNOWLEDGE-2.0 L-3): filled below from the delivery ledger
+    // (hermes_gateway only); null for other adapters and non-gateway cards.
+    knowledgeDelivery: null,
   };
 
   const botKey = botKeyForAgent(agent.id);
