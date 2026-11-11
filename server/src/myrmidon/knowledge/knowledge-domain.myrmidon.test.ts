@@ -9,7 +9,10 @@
 // whole tree is assembled; the store's export reuses the same pure builder.
 
 import { describe, expect, it } from "vitest";
+import { KNOWLEDGE_SOURCE_KINDS as DB_KNOWLEDGE_SOURCE_KINDS } from "@myrmidon/db";
+import { knowledgeSourceInputSchema } from "@myrmidon/shared";
 import {
+  KNOWLEDGE_SOURCE_KINDS,
   KnowledgeDomainError,
   assertApprovable,
   assertItemTransition,
@@ -45,6 +48,30 @@ const page = (over: Partial<KnowledgeTreePage> = {}): KnowledgeTreePage => ({
   approverKind: null,
   content: "Body text.\n",
   ...over,
+});
+
+describe("knowledge domain — source-kind parity across server, @myrmidon/db and @myrmidon/shared (1.7 L-12)", () => {
+  it("KNOWLEDGE_SOURCE_KINDS matches the @myrmidon/db export exactly", () => {
+    // The db schema re-exports the same constant: when one list drifts, name
+    // both so the failing test says which copy diverged.
+    expect([...KNOWLEDGE_SOURCE_KINDS]).toEqual([...DB_KNOWLEDGE_SOURCE_KINDS]);
+    expect([...DB_KNOWLEDGE_SOURCE_KINDS]).toEqual([...KNOWLEDGE_SOURCE_KINDS]);
+  });
+
+  it("knowledgeSourceInputSchema.kind options match KNOWLEDGE_SOURCE_KINDS exactly", () => {
+    // The shared z.enum is the only gate REST propose and MCP knowledge_propose/
+    // rule_propose pass through: a kind missing here is rejected before the store.
+    const inputOptions = knowledgeSourceInputSchema.shape.kind.options;
+    expect([...inputOptions]).toEqual([...KNOWLEDGE_SOURCE_KINDS]);
+    expect([...KNOWLEDGE_SOURCE_KINDS]).toEqual([...inputOptions]);
+  });
+
+  it("accepts kind \"debate\" (1.7 L-12) and still refuses an unknown kind", () => {
+    const debate = knowledgeSourceInputSchema.safeParse({ kind: "debate", ref: "11111111-2222-4333-8444-555555555555" });
+    expect(debate.success).toBe(true);
+    const unknown = knowledgeSourceInputSchema.safeParse({ kind: "foo", ref: "whatever" });
+    expect(unknown.success).toBe(false);
+  });
 });
 
 describe("knowledge domain — slugs and single-line metadata", () => {

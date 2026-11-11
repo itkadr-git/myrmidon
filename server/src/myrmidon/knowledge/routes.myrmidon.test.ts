@@ -197,6 +197,31 @@ describe("myrmidon(1.6.6 K-2) knowledge REST gates", () => {
     expect(deps.module.suggest).not.toHaveBeenCalled();
   });
 
+  it("1.7 L-12: propose accepts a debate source and passes sourceKind/sourceRef through", async () => {
+    const deps = makeDeps({ grants: true });
+    const debateId = "33333333-3333-4333-8333-333333333333";
+    const res = await request(app(deps, agentActor)).post(`${base}/propose`).send({
+      body: "The debate concluded: always redact tokens in logs.",
+      sources: [{ kind: "debate", ref: debateId }],
+    });
+    expect(res.status).toBe(201);
+    expect(deps.module.suggest).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ sourceKind: "debate", sourceRef: debateId }),
+    );
+  });
+
+  it("propose still refuses an unknown source kind (422, knowledge_propose_invalid)", async () => {
+    const deps = makeDeps({ grants: true });
+    const res = await request(app(deps, agentActor)).post(`${base}/propose`).send({
+      body: "Unknown kind",
+      sources: [{ kind: "foo", ref: "whatever" }],
+    });
+    expect(res.status).toBe(422);
+    expect(res.body.code).toBe("knowledge_propose_invalid");
+    expect(deps.module.suggest).not.toHaveBeenCalled();
+  });
+
   it("П2: publish outside the auto sections parks an approval card (409)", async () => {
     const deps = makeDeps({
       grants: true,
