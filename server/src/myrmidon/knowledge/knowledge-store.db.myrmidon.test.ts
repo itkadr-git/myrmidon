@@ -41,6 +41,7 @@ import { knowledgeRoutes } from "./routes.js";
 import { errorHandler } from "../../middleware/index.js";
 import { createDbRegulationStore } from "../wiki-cortex/store.js";
 import { createKnowledgeAutonomyRegulationsBackend } from "../autonomy/knowledge-regulations.js";
+import { writeNestRedactConfig } from "../redact/store.js";
 import { resolvedRules } from "./rules.js";
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
@@ -1083,8 +1084,43 @@ describeEmbeddedPostgres("myrmidon(1.6.6 KNOWLEDGE-2.0 K-1) knowledge store over
       expect(newRev.summary).toBe("Updated summary");
     });
   });
-});
 
+  describe("myrmidon(1.7-REDACT) per-nest redaction on create/draft (OPE-8660)", () => {
+    it("a nest rule and dictionary redact the content before it is stored; another nest keeps plain text", async () => {
+      companyId = await makeCompany();
+      const nestWithRules = companyId;
+      const nestPlain = await makeCompany();
+      const mod = createKnowledgeModule(db, companyId);
+      await writeNestRedactConfig(db, nestWithRules, {
+        rules: { contracts: false, invoices: false, signers: false },
+        counterparties: { "Acme LLC": "[COUNTERPARTY]" },
+      });
+      const created = await mod.create(
+        { slug: "redacted", title: "Redacted page", content: "Acme LLC supplies invoice 42", summary: "check" },
+        AGENT,
+      );
+      expect(created.content).toBe("[COUNTERPARTY] supplies invoice 42");
+
+      // The nest without a stored row keeps the safe default behaviour and the
+      // disabled rules leave contract numbers untouched.
+      const plain = createKnowledgeModule(db, nestPlain);
+      const untouched = await plain.create(
+        { slug: "plain", title: "Plain page", content: "Acme LLC supplies invoice 42", summary: "check" },
+        AGENT,
+      );
+      expect(untouched.content).toBe("Acme LLC supplies invoice 42");
+
+      // The draft path applies the same rules.
+      await mod.draft("redacted", { content: "Acme LLC ships contract №7 too" }, AGENT);
+      const stored = await db
+        .select()
+        .from(knowledgeRevisions)
+        .where(eq(knowledgeRevisions.companyId, nestWithRules))
+        .then((rows) => rows);
+      expect(stored.some((r) => r.content === "[COUNTERPARTY] ships contract №7 too")).toBe(true);
+    });
+  });
+});
 // ----------------------------------------------------------------- hygiene
 // Acceptance criterion: "в коде модуля 0 триггеров и 0 `sql\`` с диалектными
 // операторами" — the module must reach the database only through Drizzle
