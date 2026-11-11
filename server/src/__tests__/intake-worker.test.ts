@@ -234,9 +234,21 @@ describe("Integration Acceptance Test: Webhook -> Draft -> Created Task & Unproc
       }),
     };
 
+    // myrmidon(1.6.8 INTAKE-AUTH): intake is closed by default on main — the
+    // test app must explicitly configure the sources under test (github,
+    // generic), exactly like the route tests in intake-route.test.ts.
+    const intakeConfig = {
+      enabled: true,
+      sources: {
+        github: {},
+        generic: {},
+      },
+      defaultRateLimit: { maxRequests: 60, windowMs: 60000 },
+    };
+
     app = express();
     app.use(express.json());
-    app.use(intakeRoutes({ queue }));
+    app.use(intakeRoutes({ queue, config: intakeConfig }));
 
     worker = createIntakeWorker({
       queue,
