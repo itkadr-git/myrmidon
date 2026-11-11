@@ -14,14 +14,29 @@
 //     room is the one the store found for its derived key;
 //  4. the totals add up over the rooms the feed actually answered with, and
 //     `truncated` says when the company has more.
+//  5. myrmidon(1.7 PRIVATE-TASKS G2): `excludePrivate` reaches the store, and
+//     the database-backed store really hides the rooms of private tasks —
+//     from the page *and* from `total` — so an agent-facing read can neither
+//     read the private tasks' labels nor count the hidden rooms.
 
-import { describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import {
+  agentExchangeRooms,
+  companies,
+  createDb,
+  issues,
+} from "@myrmidon/db";
 import {
   isAgentExchangeCostKnown,
   readAgentExchangeFeed,
   summarizeAgentExchangeFeedRooms,
   type AgentExchangeFeedStore,
 } from "./feed.js";
+import { agentExchangeFeedStore } from "./feed-wiring.js";
+import {
+  getEmbeddedPostgresTestSupport,
+  startEmbeddedPostgresTestDatabase,
+} from "../../__tests__/helpers/embedded-postgres.js";
 
 function fakeStore(overrides: Partial<AgentExchangeFeedStore> = {}): AgentExchangeFeedStore {
   return {
@@ -31,6 +46,8 @@ function fakeStore(overrides: Partial<AgentExchangeFeedStore> = {}): AgentExchan
     ...overrides,
   };
 }
+
+type ListRoomsCall = { companyId: string; limit: number; opts?: { excludePrivate?: boolean } };
 
 const ROOM_A = {
   id: "11111111-1111-4111-8111-111111111111",
@@ -78,12 +95,12 @@ describe("isAgentExchangeCostKnown", () => {
 
 describe("readAgentExchangeFeed", () => {
   it("returns the rooms with the task label, the cap and the source of truth", async () => {
-    const asked: Array<{ companyId: string; limit: number }> = [];
+    const asked: Array<ListRoomsCall> = [];
     const feed = await readAgentExchangeFeed(
       {
         store: fakeStore({
-          listRooms: async (companyId, limit) => {
-            asked.push({ companyId, limit });
+          listRooms: async (companyId, limit, opts) => {
+            asked.push({ companyId, limit, opts });
             return { rows: [ROOM_A, ROOM_B], total: 7 };
           },
           getIssueRefs: async (issueIds) =>
@@ -98,7 +115,7 @@ describe("readAgentExchangeFeed", () => {
       { companyId: "co-1", limit: 25, skillCandidateEnabled: true },
     );
 
-    expect(asked).toEqual([{ companyId: "co-1", limit: 25 }]);
+    expect(asked).toEqual([{ companyId: "co-1", limit: 25, opts: { excludePrivate: false } }]);
     expect(feed.limit).toBe(25);
     expect(feed.truncated).toBe(true);
     expect(feed.skillCandidateEnabled).toBe(true);
@@ -194,6 +211,59 @@ describe("readAgentExchangeFeed", () => {
     );
     expect(asked).toEqual([["aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"]]);
   });
+
+  // myrmidon(1.7 PRIVATE-TASKS G2): the feed prints the task number and title
+  // of every room, so an agent actor must not see the rooms of private tasks.
+  describe("excludePrivate", () => {
+    it("forwards the flag to the store when set", async () => {
+      const asked: Array<ListRoomsCall> = [];
+      const feed = await readAgentExchangeFeed(
+        {
+          store: fakeStore({
+            listRooms: async (companyId, limit, opts) => {
+              asked.push({ companyId, limit, opts });
+              return { rows: [ROOM_A], total: 1 };
+            },
+          }),
+        },
+        { companyId: "co-1", limit: 50, skillCandidateEnabled: true, excludePrivate: true },
+      );
+      expect(asked).toEqual([{ companyId: "co-1", limit: 50, opts: { excludePrivate: true } }]);
+      expect(feed.rooms).toHaveLength(1);
+      expect(feed.truncated).toBe(false);
+    });
+
+    it("never forwards the flag when the caller omits it", async () => {
+      const asked: Array<ListRoomsCall> = [];
+      await readAgentExchangeFeed(
+        {
+          store: fakeStore({
+            listRooms: async (companyId, limit, opts) => {
+              asked.push({ companyId, limit, opts });
+              return { rows: [ROOM_A], total: 1 };
+            },
+          }),
+        },
+        { companyId: "co-1", limit: 50, skillCandidateEnabled: true },
+      );
+      expect(asked).toEqual([{ companyId: "co-1", limit: 50, opts: { excludePrivate: false } }]);
+    });
+
+    it("counts the totals over the private-free page, so `truncated` hides the hidden rooms", async () => {
+      const feed = await readAgentExchangeFeed(
+        {
+          store: fakeStore({
+            // The store answered one visible room; the second room of the
+            // company is hidden and must not surface anywhere.
+            listRooms: async () => ({ rows: [ROOM_A], total: 1 }),
+          }),
+        },
+        { companyId: "co-1", limit: 50, skillCandidateEnabled: true, excludePrivate: true },
+      );
+      expect(feed.totals.rooms).toBe(1);
+      expect(feed.truncated).toBe(false);
+    });
+  });
 });
 
 describe("summarizeAgentExchangeFeedRooms", () => {
@@ -222,5 +292,110 @@ describe("summarizeAgentExchangeFeedRooms", () => {
     expect(totals.candidateRooms).toBe(1);
     expect(totals.summarizedRooms).toBe(1);
     expect(totals.costUnknownRooms).toBe(0);
+  });
+});
+
+// myrmidon(1.7 PRIVATE-TASKS G2): the SQL side of the private-room filter,
+// against a real database (embedded Postgres, skipped when unavailable). Two
+// tasks — one private, one regular — each with a room: `excludePrivate` must
+// return only the regular room with `total = 1`, while the owner-facing read
+// (no opts) still sees both, and a `limit` of 1 must not let the hidden room
+// eat the agent's page.
+const pgSupport = await getEmbeddedPostgresTestSupport();
+const describeDatabase = pgSupport.supported ? describe : describe.skip;
+
+describeDatabase("agent-exchange feed store excludePrivate (embedded Postgres)", () => {
+  let db: ReturnType<typeof createDb>;
+  let tempDb: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | null = null;
+  const companyId = "7f7f7f7f-0000-4000-8000-000000000001";
+  const privateIssueId = "7f7f7f7f-0000-4000-8000-000000000002";
+  const regularIssueId = "7f7f7f7f-0000-4000-8000-000000000003";
+  const privateRoomId = "7f7f7f7f-0000-4000-8000-000000000004";
+  const regularRoomId = "7f7f7f7f-0000-4000-8000-000000000005";
+
+  beforeAll(async () => {
+    tempDb = await startEmbeddedPostgresTestDatabase("paperclip-agent-exchange-feed-");
+    db = createDb(tempDb.connectionString);
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Feed privacy",
+      issuePrefix: "FEEDPRIV",
+    });
+    await db.insert(issues).values([
+      {
+        id: privateIssueId,
+        companyId,
+        title: "Private task",
+        identifier: "FEEDPRIV-1",
+        status: "todo",
+        priority: "medium",
+        isPrivate: true,
+      },
+      {
+        id: regularIssueId,
+        companyId,
+        title: "Regular task",
+        identifier: "FEEDPRIV-2",
+        status: "todo",
+        priority: "medium",
+        isPrivate: false,
+      },
+    ]);
+    await db.insert(agentExchangeRooms).values([
+      {
+        id: privateRoomId,
+        companyId,
+        issueId: privateIssueId,
+        openerType: "user",
+        openerId: "owner-1",
+        stopperType: "user",
+        stopperId: "owner-1",
+        participants: [{ label: "eng-1", model: "gpt-5" }],
+        maxRounds: 3,
+        tokenBudget: 10_000,
+        createdAt: new Date("2026-11-10T10:00:00.000Z"),
+      },
+      {
+        id: regularRoomId,
+        companyId,
+        issueId: regularIssueId,
+        openerType: "user",
+        openerId: "owner-1",
+        stopperType: "user",
+        stopperId: "owner-1",
+        participants: [{ label: "eng-1", model: "gpt-5" }],
+        maxRounds: 3,
+        tokenBudget: 10_000,
+        createdAt: new Date("2026-11-10T11:00:00.000Z"),
+      },
+    ]);
+  }, 60_000);
+
+  afterAll(async () => {
+    await tempDb?.cleanup();
+  }, 60_000);
+
+  it("hides the rooms of private tasks from the page and the total", async () => {
+    const store = agentExchangeFeedStore(db);
+    const agentView = await store.listRooms(companyId, 50, { excludePrivate: true });
+    expect(agentView.rows.map((row) => row.id)).toEqual([regularRoomId]);
+    expect(agentView.total).toBe(1);
+    expect(agentView.rows[0]!.issueId).toBe(regularIssueId);
+
+    // The owner-facing read keeps both rooms, exactly as before.
+    const boardView = await store.listRooms(companyId, 50);
+    expect(boardView.rows.map((row) => row.id).sort()).toEqual([privateRoomId, regularRoomId].sort());
+    expect(boardView.total).toBe(2);
+
+    // `truncated` must not leak the hidden room: the visible total of 1 fills
+    // the page of 1 exactly.
+    const feed = await readAgentExchangeFeed(
+      { store },
+      { companyId, limit: 1, skillCandidateEnabled: true, excludePrivate: true },
+    );
+    expect(feed.rooms.map((room) => room.roomId)).toEqual([regularRoomId]);
+    expect(feed.rooms[0]!.issueIdentifier).toBe("FEEDPRIV-2");
+    expect(feed.totals.rooms).toBe(1);
+    expect(feed.truncated).toBe(false);
   });
 });

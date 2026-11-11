@@ -84,19 +84,28 @@ async function issueRefsById(db: Db, issueIds: string[]): Promise<Map<string, Ag
 
 export function agentExchangeFeedStore(db: Db): AgentExchangeFeedStore {
   return {
-    async listRooms(companyId, limit) {
+    // myrmidon(1.7 PRIVATE-TASKS G2): with `excludePrivate` the join to
+    // `issues` drops the rooms of private tasks both from the page and from
+    // the total — the same condition counts both, so `truncated` cannot leak
+    // the number of hidden rooms. The filter runs before `limit`, so hidden
+    // rooms never eat the agent's page.
+    async listRooms(companyId, limit, opts) {
+      const visible = opts?.excludePrivate === true ? eq(issues.isPrivate, false) : undefined;
+      const scope = and(eq(agentExchangeRooms.companyId, companyId), visible);
       const rows = await db
         .select()
         .from(agentExchangeRooms)
-        .where(eq(agentExchangeRooms.companyId, companyId))
+        .innerJoin(issues, eq(agentExchangeRooms.issueId, issues.id))
+        .where(scope)
         .orderBy(desc(agentExchangeRooms.createdAt))
         .limit(limit);
       const total = await db
         .select({ count: sql<number>`count(*)::int` })
         .from(agentExchangeRooms)
-        .where(eq(agentExchangeRooms.companyId, companyId))
+        .innerJoin(issues, eq(agentExchangeRooms.issueId, issues.id))
+        .where(scope)
         .then((counted) => counted[0]?.count ?? 0);
-      return { rows: rows.map(toFeedRoomRow), total };
+      return { rows: rows.map((row) => toFeedRoomRow(row.agent_exchange_rooms)), total };
     },
 
     getIssueRefs: (issueIds) => issueRefsById(db, issueIds),
