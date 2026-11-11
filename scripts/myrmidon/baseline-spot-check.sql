@@ -104,11 +104,12 @@ costs as (
     and ce.occurred_at between w.from_ts and w.to_ts
 ),
 runs as (
-  select (r.context_snapshot ->> 'issueId')::uuid as issue_id, r.started_at as at
+  select (coalesce(r.native_issue_id::text, r.context_snapshot ->> 'issueId'))::uuid as issue_id, r.started_at as at
   from heartbeat_runs r, w
   where r.company_id = :'company_id'
     and r.started_at between w.from_ts and w.to_ts
-    and (r.context_snapshot ->> 'issueId') is not null
+    and r.status in ('succeeded', 'failed')
+    and coalesce(r.native_issue_id::text, r.context_snapshot ->> 'issueId') is not null
 ),
 blockers as (
   select ir.related_issue_id as issue_id, ir.issue_id as blocker_id
@@ -199,10 +200,11 @@ costs as (
   where (select source from cost_source) = 'cost_events' and ce.company_id = :'company_id' and ce.occurred_at between w.from_ts and w.to_ts
 ),
 runs as (
-  select (r.context_snapshot ->> 'issueId')::uuid as issue_id
+  select (coalesce(r.native_issue_id::text, r.context_snapshot ->> 'issueId'))::uuid as issue_id
   from heartbeat_runs r, w
   where r.company_id = :'company_id' and r.started_at between w.from_ts and w.to_ts
-    and (r.context_snapshot ->> 'issueId') is not null
+    and r.status in ('succeeded', 'failed')
+    and coalesce(r.native_issue_id::text, r.context_snapshot ->> 'issueId') is not null
 ),
 per_task as (
   select t.id, coalesce(t.project_id::text, 'no-project') as key,
