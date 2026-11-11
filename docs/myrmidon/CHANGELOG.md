@@ -10,22 +10,6 @@ version file to edit. Base Paperclip version is in the image label
 
 ## Unreleased
 
-## 1.6.8
-
-### The pnpm store is per bot inside its /bot mount again (OPE-12720)
-
-- The shared per-partition store of 1.6.5-1.6.7 (`/cache/pnpm-store`) is retired; the default is
-  `/bot/.pnpm-store` again. A store inside the bot's own single mount works for every bot (with
-  the shared cache or without), hard links and reflinks included, and counts in the bot's own
-  quota. See `changes/ope-12720-pnpm-store-in-bot-mount.md`.
-- `general.botDisk.pnpmStoreDir` accepts any path inside the bot's own tree (`/workspace`,
-  `/data`, `/scratch`, `/bot`) and refuses everything else; a stored retired default
-  (`/workspace/.pnpm-store`, `/cache/pnpm-store`) migrates to `/bot/.pnpm-store` with a log note.
-- No operator step: the `pnpm-store` subdirectory of the shared package cache, its dockergate
-  mount pair and prepare lines are gone; `/cache/pnpm` stays the download cache.
-- The omp SSH runner pins its pnpm store inside its own `/workspace` volume
-  (`npm_config_store_dir` in `omp-ssh/compose.yml`).
-
 ## 1.6.7
 
 ### Corpus: the full-text ranking starts after the embedding again (1.6.7 CORPUS-LATENCY, OPE-12272)
