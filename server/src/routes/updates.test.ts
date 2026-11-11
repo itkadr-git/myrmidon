@@ -28,6 +28,15 @@ function createApp() {
   });
 }
 
+// OPE-12700: an app mounted without the actor middleware at all must get a
+// controlled refusal (401), not a TypeError from reading req.actor.type.
+function createAppWithoutActorMiddleware() {
+  const app = express();
+  app.use(express.json());
+  app.use("/api", updatesRoutes());
+  app.use(errorHandler);
+  return app;
+}
 describe("updates routes (OPE-10268)", () => {
   it("GET /api/updates/settings returns default settings with UTC timezone", async () => {
     const app = createApp();
@@ -367,13 +376,22 @@ describe("updates routes (OPE-10268)", () => {
 });
 
 describe("updates routes actor enforcement (OPE-12700)", () => {
-  it("rejects a request without an actor", async () => {
-    // assertInstanceAdmin rejects every non-board actor (including
-    // type: "none") with 403; the intent is refusal, not a skip.
+  it("rejects type none actor with 403 (refusal, not skip)", async () => {
     const app = createAppWithActor({ type: "none" });
     const res = await request(app).get("/api/updates");
     expect(res.status).toBe(403);
     expect(res.body.error).toBe("Board access required");
+  });
+
+  it("rejects requests when the app has no actor middleware at all", async () => {
+    const app = createAppWithoutActorMiddleware();
+    const get = await request(app).get("/api/updates");
+    expect(get.status).toBe(401);
+    expect(get.body.error).toBe("Unauthorized");
+
+    const put = await request(app).put("/api/updates/settings").send({ mode: "auto" });
+    expect(put.status).toBe(401);
+    expect(put.body.error).toBe("Unauthorized");
   });
 
   it("rejects an agent key on GET /updates and PUT /updates/settings", async () => {

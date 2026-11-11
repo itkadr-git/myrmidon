@@ -55,8 +55,11 @@ export function assertAuthenticated(req: Request) {
 }
 
 export function assertBoard(req: Request) {
-  if (req.actor.type !== "board") {
-    throw forbidden("Board access required");
+  // OPE-12700: req.actor is typed non-optional, but a route mounted without
+  // the actor middleware leaves it undefined — refuse before reading .type
+  // instead of crashing with a TypeError (500).
+  if (req.actor?.type !== "board") {
+    throw req.actor === undefined ? unauthorized() : forbidden("Board access required");
   }
 }
 
