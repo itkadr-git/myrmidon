@@ -424,7 +424,7 @@ export const knowledgeSettings = pgTable(
 );
 
 export type KnowledgeSettings = typeof knowledgeSettings.$inferSelect;
-export type NewKnowledgeSettings = typeof knowledgeSettings.$
+export type NewKnowledgeSettings = typeof knowledgeSettings.$inferInsert;
 
 /**
  * myrmidon(1.7 KNOWLEDGE-2.0 L-3, §3.7): what an agent's package actually

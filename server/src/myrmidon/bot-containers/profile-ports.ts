@@ -187,6 +187,20 @@ function toAgentRecord(row: {
  * MYRMIDON_BOT_MCP_SERVERS, and compile resolves their tokens through
  * `readCompanySecret`.
  */
+/**
+ * myrmidon(1.7 KNOWLEDGE-2.0 L-3, review note): the revision ids the delivery
+ * ledger records — exactly the caste-resolved rules (the same filter
+ * REGULATIONS.md applies), ids taken from the published list by slug. A rule
+ * of another caste never enters the ledger through this mapping.
+ */
+export function deliveredRulesRevisionIds(
+  resolved: ReadonlyArray<{ slug: string; pageId: string }>,
+  published: ReadonlyArray<{ slug: string; revisionId: string | null; itemId: string }>,
+): string[] {
+  const revisionIdBySlug = new Map(published.map((rule) => [rule.slug, rule.revisionId ?? rule.itemId]));
+  return resolved.map((rule) => revisionIdBySlug.get(rule.slug) ?? rule.pageId);
+}
+
 export function createDbBotProfilePorts(db: Db): BotProfilePorts {
   const agents = agentService(db);
   const secrets = secretService(db);
@@ -207,7 +221,8 @@ export function createDbBotProfilePorts(db: Db): BotProfilePorts {
     const created = createKnowledgeModule(db, companyId);
     knowledgeModules.set(companyId, created);
     return created;
-  };  const resolveCardEnv = createCardEnvResolver(
+  };
+  const resolveCardEnv = createCardEnvResolver(
     {
       resolveEnvBindings: (companyId, bindings, context) => secrets.resolveEnvBindings(companyId, bindings, context),
       async readSecretStamp(companyId, secretId) {
@@ -595,11 +610,10 @@ export function createDbBotProfilePorts(db: Db): BotProfilePorts {
         module.listPublishedRules(),
         resolvedRules(module, input.caste ?? DEFAULT_AGENT_ROLE),
       ]);
-      const revisionIdBySlug = new Map(rules.map((rule) => [rule.slug, rule.revisionId ?? rule.itemId]));
       await module.recordKnowledgeDelivery({
         agentId: input.agentId,
         bundleHash: `${input.file ?? "none"}|${input.caste ?? "-"}|${input.indexSlugs.join(",")}|${input.rulesCount}`,
-        rulesRevisionIds: resolved.map((rule) => revisionIdBySlug.get(rule.slug) ?? rule.pageId),
+        rulesRevisionIds: deliveredRulesRevisionIds(resolved, rules),
         indexItemIds: input.indexSlugs,
       });
     },

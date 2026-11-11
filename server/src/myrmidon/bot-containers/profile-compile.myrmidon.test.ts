@@ -29,6 +29,7 @@ import { BOT_EGRESS_MODE_ENV, BOT_EGRESS_PROXY_ENV } from "./egress.js";
 import { readMediaMcpSignals, resetMediaMcpSignals } from "./media-mcp.js";
 import { WS_BOTD_BOARD_KEY_ENV_VALUE, WS_BOT_DISK_SETTING_DEFAULTS, WS_PROFILE_ENV } from "@myrmidon/shared";
 import { classifyProfileChange, type CompiledProfile } from "./types.js";
+import { deliveredRulesRevisionIds } from "./profile-ports.js";
 
 // Placeholder data only: fake ids, example.com URLs, obviously-fake secrets.
 
@@ -1581,5 +1582,27 @@ describe("myrmidon(PERF-DIET-G) createBotProfileCompile — one read per pass", 
 
     expect(board.count("instanceDefaults")).toBe(1);
     expect(board.count("pnpmSettings")).toBe(1);
+  });
+
+  it("deliveredRulesRevisionIds excludes foreign caste rules and resolves matching revision ids", () => {
+    // myrmidon(1.7 KNOWLEDGE-2.0 L-3, review note OPE-8120): the delivery ledger
+    // must record only rules resolved for the agent's caste.
+    const published = [
+      { slug: "general-rule", revisionId: "rev-gen", itemId: "item-gen" },
+      { slug: "dev-rule", revisionId: "rev-dev", itemId: "item-dev" },
+      { slug: "smm-rule", revisionId: "rev-smm", itemId: "item-smm" },
+    ];
+    const resolvedDev = [
+      { slug: "general-rule", pageId: "item-gen" },
+      { slug: "dev-rule", pageId: "item-dev" },
+    ];
+    const resolvedSmm = [
+      { slug: "general-rule", pageId: "item-gen" },
+      { slug: "smm-rule", pageId: "item-smm" },
+    ];
+
+    expect(deliveredRulesRevisionIds(resolvedDev, published)).toEqual(["rev-gen", "rev-dev"]);
+    expect(deliveredRulesRevisionIds(resolvedSmm, published)).toEqual(["rev-gen", "rev-smm"]);
+    expect(deliveredRulesRevisionIds(resolvedDev, published)).not.toContain("rev-smm");
   });
 });

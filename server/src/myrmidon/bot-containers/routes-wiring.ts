@@ -123,6 +123,8 @@ export function myrmidonBotContainerRoutes(db: Db) {
       const status = await maintenance.status({ type: "agent", id: agentId });
       const open = status.windows.find((w) => w.state === "entering" || w.state === "on" || w.state === "leaving");
       return open ? open.startedAt : null;
+    },
+    /**
      * myrmidon(1.7 KNOWLEDGE-2.0 L-3): the agent's knowledge delivery ledger row
      * (knowledge_deliveries), written by the profile compiler on each compile.
      * The ledger carries no caste/file/rules columns — they are folded into the

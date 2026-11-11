@@ -67,33 +67,10 @@ describeEmbeddedPostgres("myrmidon(1.6.6 KNOWLEDGE-2.0 K-1) knowledge store over
 
   afterEach(async () => {
     await db.delete(activityLog);
-  it("the module dir holds exactly the known module files (K-1 core + K-2 surfaces + K-8 seed + L-3 index)", () => {
-    // K-1: domain/index/service/store. K-8 (OPE-5961, #1207) added the seed of
-    // decisions and product knowledge: seed.ts (runner), seed-data.ts and
-    // seed-product.ts (data). L-7 (#1349) added lint.ts. K-2 part B added the
-    // REST (routes.ts) and MCP (mcp.ts) surfaces. L-3 (KNOWLEDGE_INDEX.md in
-    // the agent package) added delivery-index.ts, rules.ts carries the rules
-    // resolver. New files must be listed here deliberately.
-    expect(sources).toEqual([
-      "delivery-index.ts",
-      "deviations.ts",
-      "domain.ts",
-      "git-export-git.ts",
-      "git-export-job.ts",
-      "git-export.ts",
-      "index.ts",
-      "lint.ts",
-      "mcp.ts",
-      "routes.ts",
-      "rules.ts",
-      "seed-data.ts",
-      "seed-product.ts",
-      "seed.ts",
-      "service.ts",
-      "settings-routes.ts",
-      "settings.ts",
-      "store.ts",
-    ]);    await db.delete(knowledgeItems);
+    await db.delete(knowledgeDeliveries);
+    await db.delete(knowledgeSources);
+    await db.delete(knowledgeRevisions);
+    await db.delete(knowledgeItems);
     await db.delete(myrmidonWikiRegulations);
     await db.delete(agentCastes);
     await db.delete(agents);
@@ -1191,7 +1168,7 @@ describeEmbeddedPostgres("myrmidon(1.6.6 KNOWLEDGE-2.0 K-1) knowledge store over
     companyId = await makeCompany();
     const store = makeStore();
     await store.create(
-      { companyId, nestId: companyId, slug: "rule-1", title: "R1", kind: "rule", approverKind: "owner", content: "be kind" },
+      { companyId, nestId: companyId, slug: "rule-1", title: "R1", kind: "rule", roles: ["dev"], content: "be kind" },
       AGENT,
     );
     await store.create({ companyId, nestId: companyId, slug: "page-1", title: "P1", content: "words" }, AGENT);
@@ -1203,6 +1180,52 @@ describeEmbeddedPostgres("myrmidon(1.6.6 KNOWLEDGE-2.0 K-1) knowledge store over
     expect(rules).toHaveLength(1);
     expect(rules[0]).toMatchObject({ slug: "rule-1", revisionNumber: 1 });
     expect(rules[0]!.revisionId).not.toBeNull();
+  });
+  });
+
+  it("the delivery ledger mirrors the caste-resolved rules, never the rules of a foreign caste", async () => {
+    // myrmidon(1.7 KNOWLEDGE-2.0 L-3, review note on profile-ports): the
+    // knowledge_deliveries row must list exactly the rules the agent's caste
+    // resolves — the same filter REGULATIONS.md applies — not every published
+    // rule of the company.
+    companyId = await makeCompany();
+    const store = makeStore();
+    for (const [slug, roles] of [
+      ["dev-only", ["dev"]],
+      ["smm-only", ["smm"]],
+      ["all-castes", ["*"]],
+    ] as const) {
+      await store.create({ companyId, nestId: companyId, slug, title: slug, content: `${slug} text`, kind: "rule", roles: [...roles] }, AGENT);
+      await store.submit(companyId, slug, AGENT);
+      await store.approve(companyId, slug, OWNER, { publish: true });
+    }
+
+    // What profile-ports.ts writes on compile: the caste-resolved rules, ids
+    // taken from the published list by slug. The module (not the raw store) is
+    // the RulesReadPort the resolver takes — the same object profile-ports.ts
+    // passes, so the filter under test is the production filter.
+    const published = await store.listPublishedRules(companyId);
+    const mod = createKnowledgeModule(db, companyId);
+    const resolved = await resolvedRules(mod, "dev");
+    const revisionIdBySlug = new Map(published.map((rule) => [rule.slug, rule.revisionId ?? rule.itemId]));
+    await store.recordKnowledgeDelivery({
+      companyId,
+      nestId: companyId,
+      agentId: BOT.actorId as string,
+      bundleHash: `KNOWLEDGE_INDEX.md|dev|${resolved.map((rule) => rule.slug).join(",")}|${resolved.length}`,
+      rulesRevisionIds: resolved.map((rule) => revisionIdBySlug.get(rule.slug) ?? rule.pageId),
+      indexItemIds: [],
+    });
+
+    const delivery = await store.getKnowledgeDelivery(BOT.actorId as string);
+    const revisionIds = delivery!.rulesRevisionIds;
+    const slugs = published
+      .filter((rule) => revisionIds.includes(rule.revisionId ?? rule.itemId))
+      .map((rule) => rule.slug)
+      .sort();
+    expect(resolved.map((rule) => rule.slug)).toEqual(["dev-only", "all-castes"]);
+    expect(slugs).toEqual(["all-castes", "dev-only"]);
+    expect(slugs).not.toContain("smm-only");
   });
 
   describe("myrmidon(1.7-REDACT) per-nest redaction on create/draft (OPE-8660)", () => {
