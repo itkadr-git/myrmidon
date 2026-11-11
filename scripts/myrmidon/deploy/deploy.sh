@@ -693,6 +693,7 @@ if [[ "$DRY_RUN" == "1" ]]; then
     plan "10. post-deploy smoke: wait for bot gateways to be healthy (bot-apply-smoke.sh, >=${MYR_SMOKE_MIN_HEALTHY_PERCENT}% healthy, timeout ${MYR_SMOKE_TIMEOUT_SEC}s); on failure the deploy reports DEGRADED and prints the rollback commands"
   fi
   plan "11. DEPLOY-HYGIENE: remove the component images older than ${MYRMIDON_DEPLOY_IMAGE_KEEP:-1} previous release(s) per repository (MYRMIDON_DEPLOY_IMAGE_KEEP; images used by a container are always kept)"
+  plan "11b. IMAGE-GC (OPE-12696): remove the myrmidon*/agent-runtime* images NO container uses (docker ps -a is authoritative) and prune the build cache (MYRMIDON_DEPLOY_IMAGE_GC=0 switches it off)"
   exit 0
 fi
 
@@ -1106,4 +1107,10 @@ if deploy_image_retention; then :; else
   log "WARNING: the old image cleanup failed; the deploy itself is complete and healthy (remove old images by hand: docker image ls)"
 fi
 
+# IMAGE-GC (OPE-12696): same success gate as DEPLOY-HYGIENE above — every
+# myrmidon*/agent-runtime* image that NO container uses is swept and the
+# build cache pruned. A failure of the sweep never fails the finished deploy.
+if deploy_image_gc; then :; else
+  log "WARNING: the unused image sweep failed; the deploy itself is complete and healthy (remove unused images by hand: docker image ls)"
+fi
 log "release gate passed: board and ${MYR_RELEASE_COMPONENTS:-no components} rolled out together, bots re-apply"
