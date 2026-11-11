@@ -384,7 +384,7 @@ describe("remote managed runtime: run directory cleanup (OPE-12633)", () => {
       "find '/workspace/.paperclip-runtime/runs/r1/workspace' -mindepth 1 -maxdepth 1 ! -name .paperclip-runtime -exec rm -rf {} +",
     );
     expect(buildStaleRemoteRunsPruneCommand("/work space")).toBe(
-      "if [ -d '/work space/.paperclip-runtime/runs' ]; then find '/work space/.paperclip-runtime/runs' -mindepth 1 -maxdepth 1 -type d -mtime +1 -exec rm -rf {} +; fi",
+      "if [ -d '/work space/.paperclip-runtime/runs' ]; then find '/work space/.paperclip-runtime/runs' -mindepth 1 -maxdepth 1 -type d -mmin +240 -exec rm -rf {} +; fi",
     );
   });
 
