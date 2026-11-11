@@ -5,14 +5,20 @@
 // is the local docker driver. Each named host is a fleetd service entry:
 //
 //   MYRMIDON_FLEET_HOSTS='[
-//     {"name":"vmexec","url":"http://fleetd.internal:9100","tokenSecret":"fleetd-vmexec-token",
-//      "hindsightUrl":"http://hindsight.internal:8890","llmBaseUrl":"http://llm.internal:4000",
+//     {"name":"vmexec","url":"http://<private-ip>:9100","tokenSecret":"fleetd-vmexec-token",
+//      "hindsightUrl":"http://<private-ip>:8890","llmBaseUrl":"http://<private-ip>:4000",
 //      "boardExtraHost":"paperclip-server-1","volumeRoot":"/srv/myrmidon-bots",
 //      "network":"myrmidon-bots","imageAllowlist":["ghcr.io/example/bot@sha256:*"]}
 //   ]'
 //
 // The token is a company secret NAME, never a value: the board resolves it at
 // startup (readCompanySecret), same as MYRMIDON_BOT_LLM_API_KEY_SECRET.
+//
+// Deprecated (fleet-site audit): this variable is the pre-registry way to name a host. It speaks
+// plain http with a bearer token only, so an http:// address is accepted here only when its host
+// is a private IP literal (private-address.ts): RFC 1918, RFC 6598 (100.64/10) or loopback. A DNS name or a
+// public address is refused. Sites are registered with POST /companies/:companyId/fleet/sites
+// (mTLS); bootstrapFleetSitesFromEnv logs a warning while the variable is set.
 //
 // The remaining fields exist because the instance-wide settings
 // (MYRMIDON_BOT_HINDSIGHT_API_URL, MYRMIDON_BOT_LLM_BASE_URL, the bind address
@@ -27,6 +33,8 @@
 // rejected, names are trimmed, duplicates are an error (a bot card naming a
 // host must resolve to exactly one fleetd entry).
 
+import { hostnameOfUrl, isPrivateAddressHostname } from "./private-address.js";
+
 export const FLEET_HOSTS_ENV = "MYRMIDON_FLEET_HOSTS";
 
 export interface FleetHostConfig {
@@ -38,6 +46,8 @@ export interface FleetHostConfig {
   /** LLM gateway base URL as seen from this host (`http://…`); instance-wide value when omitted. */
   llmBaseUrl?: string;
   mcpEndpoints?: readonly string[];
+  /** Board address the site-agent uses for its health probe, as host:port. */
+  boardAddress?: string;
   /** Name the bot container on this host resolves the board by (docker `--add-host`
    *  target). The instance-wide board URL name by default; the board's own
    *  hostname allowlist is never widened by this field. */
@@ -50,9 +60,20 @@ export interface FleetHostConfig {
   imageAllowlist?: readonly string[];
 }
 
-const NAME_PATTERN = /^[a-z0-9](?:[a-z0-9-]{0,30}[a-z0-9])?$/;
+export const FLEET_HOST_NAME_PATTERN = /^[a-z0-9](?:[a-z0-9-]{0,30}[a-z0-9])?$/;
+const NAME_PATTERN = FLEET_HOST_NAME_PATTERN;
 /** A DNS name a container may resolve: labels of the same shape, dot-separated. */
 const HOSTNAME_PATTERN = /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)*$/;
+
+export function parseBoardAddress(value: string, context = "boardAddress"): string {
+  const trimmed = value.trim();
+  const match = /^([a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?(?:\.[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?)*):(\d{1,5})$/.exec(trimmed);
+  const port = match ? Number(match[2]) : 0;
+  if (!match || port < 1 || port > 65535) {
+    throw new Error(`${context} must be a hostname or IP address with a port (host:port)`);
+  }
+  return trimmed;
+}
 
 const ALLOWED_KEYS = new Set([
   "name",
@@ -61,6 +82,7 @@ const ALLOWED_KEYS = new Set([
   "hindsightUrl",
   "llmBaseUrl",
   "mcpEndpoints",
+  "boardAddress",
   "boardExtraHost",
   "volumeRoot",
   "network",
@@ -82,6 +104,17 @@ function optionalString(entry: Record<string, unknown>, key: string, host: strin
   return value;
 }
 
+/** Plain http is for the private network only: the host of an http:// address must be a private IP literal. */
+function requirePrivateHost(value: string, what: string): void {
+  const hostname = hostnameOfUrl(value);
+  if (hostname === null) throw new Error(`${what} is not a valid URL`);
+  if (!isPrivateAddressHostname(hostname)) {
+    throw new Error(
+      `${what} must use a private IP address (RFC 1918, RFC 6598 shared address space or loopback): plain http is not allowed to any other host`,
+    );
+  }
+}
+
 function optionalHttpUrl(entry: Record<string, unknown>, key: string, host: string): string | undefined {
   const value = optionalString(entry, key, host);
   if (value === undefined) return undefined;
@@ -90,6 +123,7 @@ function optionalHttpUrl(entry: Record<string, unknown>, key: string, host: stri
       `${FLEET_HOSTS_ENV}: host "${host}" field "${key}" must be http:// (it is reachable from the internal network only)`,
     );
   }
+  requirePrivateHost(value, `${FLEET_HOSTS_ENV}: host "${host}" field "${key}"`);
   return value.replace(/\/+$/, "");
 }
 
@@ -120,10 +154,20 @@ export function parseFleetHosts(raw: string | undefined): Map<string, FleetHostC
     if (!/^http:\/\//.test(url)) {
       throw new Error(`${FLEET_HOSTS_ENV}: host "${name}" url must be http:// (the fleetd listener lives on the internal network)`);
     }
+    requirePrivateHost(url, `${FLEET_HOSTS_ENV}: host "${name}" url`);
     const tokenSecret = typeof entry.tokenSecret === "string" ? entry.tokenSecret.trim() : "";
     if (!tokenSecret) throw new Error(`${FLEET_HOSTS_ENV}: host "${name}" is missing tokenSecret (a company secret name)`);
     if (hosts.has(name)) throw new Error(`${FLEET_HOSTS_ENV}: duplicate host name "${name}"`);
 
+    const boardAddressRaw = optionalString(entry, "boardAddress", name);
+    let boardAddress: string | undefined;
+    if (boardAddressRaw !== undefined) {
+      try {
+        boardAddress = parseBoardAddress(boardAddressRaw, `${FLEET_HOSTS_ENV}: host "${name}" field "boardAddress"`);
+      } catch (e) {
+        throw new Error(`${FLEET_HOSTS_ENV}: host "${name}" field "boardAddress" must be host:port`);
+      }
+    }
     const boardExtraHost = optionalString(entry, "boardExtraHost", name);
     if (boardExtraHost !== undefined && !HOSTNAME_PATTERN.test(boardExtraHost)) {
       throw new Error(`${FLEET_HOSTS_ENV}: host "${name}" field "boardExtraHost" must be a hostname (got "${boardExtraHost}")`);
@@ -151,6 +195,7 @@ export function parseFleetHosts(raw: string | undefined): Map<string, FleetHostC
       throw new Error(`${FLEET_HOSTS_ENV}: host "${name}" field "mcpEndpoints" must be an array of non-empty strings`);
     }
     if (entry.mcpEndpoints !== undefined) host.mcpEndpoints = (entry.mcpEndpoints as string[]).map((value) => value.trim());
+    if (boardAddress !== undefined) host.boardAddress = boardAddress;
     if (boardExtraHost !== undefined) host.boardExtraHost = boardExtraHost;
     if (volumeRoot !== undefined) host.volumeRoot = volumeRoot;
     if (network !== undefined) host.network = network;
@@ -171,4 +216,24 @@ export function cardFleetHost(card: { container?: unknown }): string | null {
   const trimmed = host.trim();
   if (trimmed === "local") throw new Error('container.host "local" is not a host: omit container.host for the local driver');
   return trimmed;
+}
+
+/** Whether a bot's placement is pinned to its host (no automatic rebalance/move). */
+export function cardFleetHostPinned(card: { container?: unknown }): boolean {
+  const container = isRecord(card.container) ? card.container : {};
+  const pinned = container.hostPinned;
+  if (pinned === undefined || pinned === null) return false;
+  if (typeof pinned !== "boolean") {
+    throw new Error(`container.hostPinned must be a boolean (got ${JSON.stringify(pinned)})`);
+  }
+  return pinned;
+}
+/**
+ * Tenant-scoped key of a fleet site in the client map: a site name is unique
+ * only within a company, so two companies may both own "myr-vm1" with
+ * different URLs/tokens. Routing and the client manager must use this key,
+ * never the bare name, once the agent's company is known.
+ */
+export function fleetSiteKey(companyId: string, name: string): string {
+  return `${companyId}/${name}`;
 }

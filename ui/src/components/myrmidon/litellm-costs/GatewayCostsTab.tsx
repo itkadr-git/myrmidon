@@ -11,6 +11,7 @@
 import { useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { Boxes } from "lucide-react";
+import { i18n, useTranslation } from "@/i18n";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { EmptyState } from "@/components/EmptyState";
 import { formatCents, formatTokens } from "@/lib/utils";
@@ -20,9 +21,11 @@ import {
   formatPerMillion,
   isNotEnabledError,
   litellmCostsKey,
+  litellmKeyUsageKey,
   litellmModelsKey,
   litellmCostsApi,
   type LitellmCostRow,
+  type LitellmKeyUsageRow,
   type LitellmModelView,
 } from "./litellmCostsApi";
 
@@ -79,7 +82,121 @@ export function groupByAgent(rows: LitellmCostRow[], agentNames: Map<string, str
   return groups.sort((a, b) => b.costCents - a.costCents);
 }
 
+/** Key budget rows, the keys closest to (or over) their cap first, then by 24 h spend. */
+export function sortKeyUsageRows(rows: LitellmKeyUsageRow[]): LitellmKeyUsageRow[] {
+  return [...rows].sort(
+    (a, b) =>
+      (b.utilizationPercent ?? -1) - (a.utilizationPercent ?? -1) ||
+      (b.dailyCents ?? 0) - (a.dailyCents ?? 0) ||
+      (a.agentName ?? a.agentId).localeCompare(b.agentName ?? b.agentId),
+  );
+}
+
+/** Text colour of the gateway-spend cell: red over the cap, amber from 80%. */
+export function keyUsageStatusClass(status: LitellmKeyUsageRow["status"]): string {
+  if (status === "exhausted") return "font-medium text-destructive";
+  if (status === "near_cap") return "font-medium text-amber-600";
+  return "";
+}
+
+function GatewayKeyUsageCard({ companyId }: { companyId: string }) {
+  const { t } = useTranslation();
+  const locale = i18n.language === "ru" ? "ru-RU" : "en-US";
+  const { data, isLoading, error } = useQuery({
+    queryKey: litellmKeyUsageKey(companyId),
+    queryFn: () => litellmCostsApi.keyUsage(companyId),
+    staleTime: 60_000,
+  });
+  const rows = useMemo(() => sortKeyUsageRows(data?.rows ?? []), [data]);
+  const dash = "—";
+
+  return (
+    <Card>
+      <CardHeader className="px-5 pt-5 pb-2">
+        <CardTitle className="text-base">{t("area.costs-budgets-2.gateway-costs-tab.keyUsageCard.title")}</CardTitle>
+        <CardDescription>{t("area.costs-budgets-2.gateway-costs-tab.keyUsageCard.description")}</CardDescription>
+      </CardHeader>
+      <CardContent className="space-y-2 px-5 pb-5 pt-2">
+        {error ? (
+          <p className="text-sm text-destructive">
+            {isNotEnabledError(error) ? t("area.costs-budgets-2.gateway-costs-tab.notEnabled") : (error as Error).message}
+          </p>
+        ) : isLoading ? (
+          <p className="text-sm text-muted-foreground">{t("area.costs-budgets-2.gateway-costs-tab.keyUsageCard.loading")}</p>
+        ) : rows.length === 0 ? (
+          <p className="text-sm text-muted-foreground">{t("area.costs-budgets-2.gateway-costs-tab.keyUsageCard.empty")}</p>
+        ) : (
+          <>
+            {data && !data.gatewayAvailable ? (
+              <p className="text-sm text-amber-600" data-testid="key-usage-gateway-unavailable">
+                {t("area.costs-budgets-2.gateway-costs-tab.keyUsageCard.gatewayUnavailable")}
+              </p>
+            ) : null}
+            {data && !data.ledgerAvailable ? (
+              <p className="text-sm text-amber-600" data-testid="key-usage-ledger-unavailable">
+                {t("area.costs-budgets-2.gateway-costs-tab.keyUsageCard.ledgerUnavailable")}
+              </p>
+            ) : null}
+            <div className="overflow-x-auto">
+              <table className="w-full text-sm">
+                <thead>
+                  <tr className="border-b border-border text-left text-xs text-muted-foreground">
+                    <th className="py-2 pr-4 font-medium">{t("area.costs-budgets-2.gateway-costs-tab.keyUsageCard.columns.agent")}</th>
+                    <th className="py-2 pr-4 text-right font-medium">{t("area.costs-budgets-2.gateway-costs-tab.keyUsageCard.columns.cap")}</th>
+                    <th className="py-2 pr-4 text-right font-medium">{t("area.costs-budgets-2.gateway-costs-tab.keyUsageCard.columns.spent")}</th>
+                    <th className="py-2 pr-4 text-right font-medium">{t("area.costs-budgets-2.gateway-costs-tab.keyUsageCard.columns.day")}</th>
+                    <th className="py-2 pr-4 text-right font-medium">{t("area.costs-budgets-2.gateway-costs-tab.keyUsageCard.columns.week")}</th>
+                    <th className="py-2 text-right font-medium">
+                      <span title={t("area.costs-budgets-2.gateway-costs-tab.keyUsageCard.noPriceHint")}>
+                        {t("area.costs-budgets-2.gateway-costs-tab.keyUsageCard.columns.noPrice")}
+                      </span>
+                    </th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {rows.map((row) => (
+                    <tr
+                      key={row.agentId}
+                      data-testid={`key-usage-${row.agentId}`}
+                      className="border-b border-border last:border-b-0"
+                    >
+                      <td className="py-2 pr-4">{row.agentName ?? row.agentId.slice(0, 8)}</td>
+                      <td className="py-2 pr-4 text-right tabular-nums">
+                        {row.capUsd != null
+                          ? formatCents(row.capUsd * 100, locale)
+                          : row.gatewaySpendUsd != null
+                            ? t("area.costs-budgets-2.gateway-costs-tab.keyUsageCard.noCap")
+                            : dash}
+                      </td>
+                      <td className={`py-2 pr-4 text-right tabular-nums ${keyUsageStatusClass(row.status)}`}>
+                        {row.gatewaySpendUsd != null ? formatCents(row.gatewaySpendUsd * 100, locale) : dash}
+                        {row.utilizationPercent != null
+                          ? ` · ${t("area.costs-budgets-2.gateway-costs-tab.keyUsageCard.percentOfCap", { percent: row.utilizationPercent.toFixed(1) })}`
+                          : ""}
+                      </td>
+                      <td className="py-2 pr-4 text-right tabular-nums">
+                        {row.dailyCents != null ? formatCents(row.dailyCents, locale) : dash}
+                      </td>
+                      <td className="py-2 pr-4 text-right tabular-nums">
+                        {row.weeklyCents != null ? formatCents(row.weeklyCents, locale) : dash}
+                      </td>
+                      <td className={`py-2 text-right tabular-nums ${row.zeroCostEvents ? "text-amber-600" : ""}`}>
+                        {row.zeroCostEvents ? row.zeroCostEvents : dash}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </>
+        )}
+      </CardContent>
+    </Card>
+  );
+}
+
 function GatewayAgentsCard({ companyId, from, to }: { companyId: string; from?: string; to?: string }) {
+  const { t } = useTranslation();
   const { data: agentsData } = useQuery({
     queryKey: queryKeys.agents.list(companyId),
     queryFn: () => agentsApi.list(companyId),
@@ -101,23 +218,23 @@ function GatewayAgentsCard({ companyId, from, to }: { companyId: string; from?: 
   return (
     <Card>
       <CardHeader className="px-5 pt-5 pb-2">
-        <CardTitle className="text-base">By agent (gateway)</CardTitle>
+        <CardTitle className="text-base">{t("area.costs-budgets-2.gateway-costs-tab.agentsCard.title")}</CardTitle>
         <CardDescription>
-          Spend the LLM gateway attributed to each bot key, per run and issue. Collected by the periodic sweep.
+          {t("area.costs-budgets-2.gateway-costs-tab.agentsCard.description")}
         </CardDescription>
       </CardHeader>
       <CardContent className="space-y-2 px-5 pb-5 pt-2">
         {error ? (
           <p className="text-sm text-destructive">
-            {isNotEnabledError(error) ? "LLM gateway cost collection is not enabled on this instance." : (error as Error).message}
+            {isNotEnabledError(error) ? t("area.costs-budgets-2.gateway-costs-tab.notEnabled") : (error as Error).message}
           </p>
         ) : isLoading ? (
-          <p className="text-sm text-muted-foreground">Loading gateway spend…</p>
+          <p className="text-sm text-muted-foreground">{t("area.costs-budgets-2.gateway-costs-tab.agentsCard.loading")}</p>
         ) : groups.length === 0 ? (
-          <p className="text-sm text-muted-foreground">No gateway-collected spend in this period yet.</p>
+          <p className="text-sm text-muted-foreground">{t("area.costs-budgets-2.gateway-costs-tab.agentsCard.empty")}</p>
         ) : (
           <>
-            <div className="text-sm text-muted-foreground">Total {formatCents(totalCents)}</div>
+            <div className="text-sm text-muted-foreground">{t("area.costs-budgets-2.gateway-costs-tab.agentsCard.total", { amount: formatCents(totalCents) })}</div>
             {groups.map((group) => (
               <GatewayAgentRow key={group.agentId} group={group} />
             ))}
@@ -129,6 +246,7 @@ function GatewayAgentsCard({ companyId, from, to }: { companyId: string; from?: 
 }
 
 function GatewayAgentRow({ group }: { group: GatewayAgentGroup }) {
+  const { t } = useTranslation();
   const [open, setOpen] = useState(false);
   return (
     <div className="border border-border px-4 py-3">
@@ -140,7 +258,7 @@ function GatewayAgentRow({ group }: { group: GatewayAgentGroup }) {
         <span className="text-sm font-medium">{group.agentName ?? group.agentId.slice(0, 8)}</span>
         <span className="ml-auto text-sm tabular-nums">{formatCents(group.costCents)}</span>
         <span className="text-xs text-muted-foreground tabular-nums">
-          {formatTokens(group.inputTokens)} in / {formatTokens(group.outputTokens)} out
+          {t("area.costs-budgets-2.gateway-costs-tab.agentRow.tokens", { input: formatTokens(group.inputTokens), output: formatTokens(group.outputTokens) })}
         </span>
       </button>
       {open ? (
@@ -153,7 +271,7 @@ function GatewayAgentRow({ group }: { group: GatewayAgentGroup }) {
             </div>
           ))}
           {group.runs.length > 10 ? (
-            <div className="text-xs text-muted-foreground">+{group.runs.length - 10} more rows</div>
+            <div className="text-xs text-muted-foreground">{t("area.costs-budgets-2.gateway-costs-tab.agentRow.moreRows", { count: group.runs.length - 10 })}</div>
           ) : null}
         </div>
       ) : null}
@@ -162,6 +280,7 @@ function GatewayAgentRow({ group }: { group: GatewayAgentGroup }) {
 }
 
 function GatewayModelsCard({ companyId }: { companyId: string }) {
+  const { t } = useTranslation();
   const { data, isLoading, error } = useQuery({
     queryKey: litellmModelsKey(companyId),
     queryFn: () => litellmCostsApi.models(companyId),
@@ -171,30 +290,30 @@ function GatewayModelsCard({ companyId }: { companyId: string }) {
   return (
     <Card>
       <CardHeader className="px-5 pt-5 pb-2">
-        <CardTitle className="text-base">Models (gateway)</CardTitle>
+        <CardTitle className="text-base">{t("area.costs-budgets-2.gateway-costs-tab.modelsCard.title")}</CardTitle>
         <CardDescription>
-          The model list with the prices the gateway itself charges — the gateway is the source of truth, this is its last answer.
+          {t("area.costs-budgets-2.gateway-costs-tab.modelsCard.description")}
         </CardDescription>
       </CardHeader>
       <CardContent className="px-5 pb-5 pt-2">
         {error ? (
           <p className="text-sm text-destructive">
-            {isNotEnabledError(error) ? "LLM gateway cost collection is not enabled on this instance." : (error as Error).message}
+            {isNotEnabledError(error) ? t("area.costs-budgets-2.gateway-costs-tab.notEnabled") : (error as Error).message}
           </p>
         ) : isLoading ? (
-          <p className="text-sm text-muted-foreground">Loading models…</p>
+          <p className="text-sm text-muted-foreground">{t("area.costs-budgets-2.gateway-costs-tab.modelsCard.loading")}</p>
         ) : (data ?? []).length === 0 ? (
-          <p className="text-sm text-muted-foreground">No models collected yet.</p>
+          <p className="text-sm text-muted-foreground">{t("area.costs-budgets-2.gateway-costs-tab.modelsCard.empty")}</p>
         ) : (
           <div className="overflow-x-auto">
             <table className="w-full text-sm">
               <thead>
                 <tr className="border-b border-border text-left text-xs text-muted-foreground">
-                  <th className="py-2 pr-4 font-medium">Model</th>
-                  <th className="py-2 pr-4 font-medium">Provider</th>
-                  <th className="py-2 pr-4 text-right font-medium">In / 1M tok</th>
-                  <th className="py-2 pr-4 text-right font-medium">Out / 1M tok</th>
-                  <th className="py-2 text-right font-medium">Max in</th>
+                  <th className="py-2 pr-4 font-medium">{t("area.costs-budgets-2.gateway-costs-tab.modelsCard.columns.model")}</th>
+                  <th className="py-2 pr-4 font-medium">{t("area.costs-budgets-2.gateway-costs-tab.modelsCard.columns.provider")}</th>
+                  <th className="py-2 pr-4 text-right font-medium">{t("area.costs-budgets-2.gateway-costs-tab.modelsCard.columns.inPerMillion")}</th>
+                  <th className="py-2 pr-4 text-right font-medium">{t("area.costs-budgets-2.gateway-costs-tab.modelsCard.columns.outPerMillion")}</th>
+                  <th className="py-2 text-right font-medium">{t("area.costs-budgets-2.gateway-costs-tab.modelsCard.columns.maxIn")}</th>
                 </tr>
               </thead>
               <tbody>
@@ -227,14 +346,17 @@ function GatewayModelRow({ model }: { model: LitellmModelView }) {
 /** The whole "Gateway" tab. */
 export function GatewayCostsTab({ companyId, from, to }: { companyId: string; from?: string; to?: string }) {
   return (
-    <div className="grid gap-4 xl:grid-cols-(--gtc-31)">
-      <GatewayAgentsCard companyId={companyId} from={from} to={to} />
-      <GatewayModelsCard companyId={companyId} />
+    <div className="space-y-4">
+      <GatewayKeyUsageCard companyId={companyId} />
+      <div className="grid gap-4 xl:grid-cols-(--gtc-31)">
+        <GatewayAgentsCard companyId={companyId} from={from} to={to} />
+        <GatewayModelsCard companyId={companyId} />
+      </div>
     </div>
   );
 }
 
 /** Standalone empty state for a page opened with no company selected. */
 export function GatewayCostsNoCompany() {
-  return <EmptyState icon={Boxes} message="Select an organization to view gateway costs." />;
+  return <EmptyState icon={Boxes} message={i18n.t("area.costs-budgets-2.gateway-costs-tab.noCompany")} />;
 }

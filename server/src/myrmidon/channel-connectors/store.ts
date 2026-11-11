@@ -8,7 +8,7 @@
 // reader and the port stays cheap.
 
 import { eq } from "drizzle-orm";
-import { chatEndpoints, type Db } from "@paperclipai/db";
+import { chatEndpoints, type Db } from "@myrmidon/db";
 import {
   isChatProviderName,
   type ChannelConnectorStore,

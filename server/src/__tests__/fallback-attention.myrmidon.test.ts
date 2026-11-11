@@ -6,7 +6,7 @@
 
 import { randomUUID } from "node:crypto";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
-import { activityLog, agents, companies, createDb } from "@paperclipai/db";
+import { activityLog, agents, companies, createDb } from "@myrmidon/db";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
 
 vi.mock("../middleware/logger.js", () => ({
@@ -30,6 +30,8 @@ import {
   fallbackSignalForShare,
   readFallbackSignalSettings,
   recordModelFallbackSignals,
+  recordModelFallbackDeadendSignals,
+  FALLBACK_DEADEND_DEDUP_PREFIX,
   resetModelFallbackSignals,
 } from "../myrmidon/litellm-fallback-signal/attention.js";
 
@@ -98,6 +100,27 @@ describeEmbeddedPostgres("model fallback attention feed card (BOT-RUNTIME-TUNING
     expect(card.whyNow).toContain("30% of this bot's 50 gateway calls");
     expect(card.relatedIssue).toBeNull();
     expect(feed.countsBySourceKind.model_fallback_alert).toBe(1);
+  });
+
+  it("shows a high-severity card for a live fallback dead end", async () => {
+    await seedCompany();
+    const activityAt = new Date().toISOString();
+    recordModelFallbackDeadendSignals(companyId, [{
+      agentId, requestId: "req-failed", model: "model-backup",
+      title: "LLM fallback exhausted: model-backup",
+      whyNow: "A live request exhausted fallback routing.",
+      summaryExcerpt: "Request req-failed failed.",
+      dedupKey: `${FALLBACK_DEADEND_DEDUP_PREFIX}${agentId}`,
+      severity: "high", activityAt,
+    }]);
+    const feed = await attentionService(db, { feedCacheTtlMs: 0 }).list(companyId);
+    expect(feed.items).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        dedupKey: `${FALLBACK_DEADEND_DEDUP_PREFIX}${agentId}`,
+        sourceKind: "model_fallback_alert", severity: "high",
+        subject: expect.objectContaining({ id: agentId }),
+      }),
+    ]));
   });
 
   it("an empty sweep raises no card", async () => {

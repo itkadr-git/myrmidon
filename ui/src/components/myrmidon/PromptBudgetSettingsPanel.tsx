@@ -5,10 +5,13 @@
 import { useEffect, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Gauge } from "lucide-react";
+import { useTranslation } from "@/i18n";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { useOptionalCompany } from "@/context/CompanyContext";
+import { agentsApi } from "@/api/agents";
+import { useIsInstanceAdmin } from "./licensingApi";
 import {
   promptBudgetApi,
   promptBudgetSettingsQueryKey,
@@ -20,11 +23,23 @@ import {
   parsePromptPct,
 } from "./prompt-budget/promptBudgetConfig";
 
+export function isValidOptimizerAgent(agentId: string, allowedAgents: Array<{ id: string }>): boolean {
+  if (!agentId) return true;
+  return allowedAgents.some((agent) => agent.id === agentId);
+}
+
 export function PromptBudgetSettingsPanel() {
+  const { t } = useTranslation();
   // Non-throwing: the page's vendor test suite renders without a
   // CompanyProvider; outside a company context the panel has nothing to edit.
   const company = useOptionalCompany();
   const companyId = company?.selectedCompanyId ?? "";
+  const admin = useIsInstanceAdmin();
+  const { data: agents = [] } = useQuery({
+    queryKey: ["agents", companyId, "prompt-budget-optimizer"],
+    queryFn: () => agentsApi.list(companyId),
+    enabled: companyId.length > 0 && admin === true,
+  });
   const queryClient = useQueryClient();
   const { data: stored } = useQuery({
     queryKey: promptBudgetSettingsQueryKey(companyId),
@@ -35,6 +50,7 @@ export function PromptBudgetSettingsPanel() {
   const [critDraft, setCritDraft] = useState<string>("");
   const [fallbackDraft, setFallbackDraft] = useState<string>("");
   const [enabled, setEnabled] = useState<boolean>(true);
+  const [optimizerAgentId, setOptimizerAgentId] = useState<string>("");
   const [loaded, setLoaded] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -44,6 +60,7 @@ export function PromptBudgetSettingsPanel() {
       setCritDraft(numberToText(stored.critPct));
       setFallbackDraft(numberToText(stored.fallbackWindowTokens));
       setEnabled(stored.enabled);
+      setOptimizerAgentId(stored.optimizerAgentId ?? "");
       setLoaded(true);
     }
   }, [stored, loaded]);
@@ -54,28 +71,32 @@ export function PromptBudgetSettingsPanel() {
       setError(null);
       queryClient.invalidateQueries({ queryKey: promptBudgetSettingsQueryKey(companyId) });
     },
-    onError: () => setError("Could not save the thresholds. Try again."),
+    onError: () => setError(t("area.costs-budgets-2.prompt-budget-settings-panel.saveFailed")),
   });
 
   const submit = () => {
-    if (!stored) return;
+    if (!stored || !admin) return;
+    if (!isValidOptimizerAgent(optimizerAgentId, agents)) {
+      setError("Select an agent from this company for deep analysis.");
+      return;
+    }
     const warn = parsePromptPct(warnDraft);
     if (!warn.ok) {
-      setError(`Warn threshold: ${warn.message}`);
+      setError(t("area.costs-budgets-2.prompt-budget-settings-panel.warnInvalid", { message: warn.message }));
       return;
     }
     const crit = parsePromptPct(critDraft);
     if (!crit.ok) {
-      setError(`Crit threshold: ${crit.message}`);
+      setError(t("area.costs-budgets-2.prompt-budget-settings-panel.critInvalid", { message: crit.message }));
       return;
     }
     if (crit.value <= warn.value) {
-      setError("The crit threshold must be greater than the warn threshold.");
+      setError(t("area.costs-budgets-2.prompt-budget-settings-panel.critNotGreater"));
       return;
     }
     const fallback = parseFallbackWindow(fallbackDraft);
     if (!fallback.ok) {
-      setError(`Fallback window: ${fallback.message}`);
+      setError(t("area.costs-budgets-2.prompt-budget-settings-panel.fallbackInvalid", { message: fallback.message }));
       return;
     }
     save.mutate({
@@ -83,7 +104,7 @@ export function PromptBudgetSettingsPanel() {
       critPct: crit.value,
       enabled,
       fallbackWindowTokens: fallback.value,
-      optimizerAgentId: stored.optimizerAgentId,
+      optimizerAgentId: optimizerAgentId || null,
     });
   };
 
@@ -91,13 +112,13 @@ export function PromptBudgetSettingsPanel() {
     <section className="space-y-4 rounded-lg border p-4" data-testid="prompt-budget-panel">
       <div className="flex items-center gap-2">
         <Gauge className="size-4 text-muted-foreground" />
-        <h3 className="text-sm font-medium">Prompt budget</h3>
+        <h3 className="text-sm font-medium">{t("area.costs-budgets-2.prompt-budget-settings-panel.title")}</h3>
         {stored && !stored.enabled && (
           <span
             className="rounded bg-muted px-2 py-0.5 text-xs font-medium text-muted-foreground"
             data-testid="prompt-budget-disabled"
           >
-            Off
+            {t("area.costs-budgets-2.prompt-budget-settings-panel.off")}
           </span>
         )}
       </div>
@@ -110,11 +131,11 @@ export function PromptBudgetSettingsPanel() {
           onChange={(event) => setEnabled(event.target.checked)}
           data-testid="prompt-budget-enabled-input"
         />
-        <Label htmlFor="prompt-budget-enabled">Signal when a run's prompt crosses a threshold</Label>
+        <Label htmlFor="prompt-budget-enabled">{t("area.costs-budgets-2.prompt-budget-settings-panel.enabledLabel")}</Label>
       </div>
 
       <div className="space-y-2">
-        <Label htmlFor="prompt-budget-warn">Warn at, % of the model window</Label>
+        <Label htmlFor="prompt-budget-warn">{t("area.costs-budgets-2.prompt-budget-settings-panel.warnLabel")}</Label>
         <Input
           id="prompt-budget-warn"
           inputMode="numeric"
@@ -129,7 +150,7 @@ export function PromptBudgetSettingsPanel() {
       </div>
 
       <div className="space-y-2">
-        <Label htmlFor="prompt-budget-crit">Crit at, % of the model window</Label>
+        <Label htmlFor="prompt-budget-crit">{t("area.costs-budgets-2.prompt-budget-settings-panel.critLabel")}</Label>
         <Input
           id="prompt-budget-crit"
           inputMode="numeric"
@@ -145,7 +166,7 @@ export function PromptBudgetSettingsPanel() {
 
       <div className="space-y-2">
         <Label htmlFor="prompt-budget-fallback">
-          Fallback window, tokens (used when the model's window is unknown)
+          {t("area.costs-budgets-2.prompt-budget-settings-panel.fallbackLabel")}
         </Label>
         <Input
           id="prompt-budget-fallback"
@@ -160,21 +181,34 @@ export function PromptBudgetSettingsPanel() {
         />
       </div>
 
+      <div className="space-y-2">
+        <Label htmlFor="prompt-budget-optimizer">{t("area.costs-budgets-2.prompt-budget-settings-panel.optimizerLabel")}</Label>
+        <select
+          id="prompt-budget-optimizer"
+          className="w-full rounded-md border bg-background px-3 py-2 text-sm"
+          value={optimizerAgentId}
+          disabled={!admin}
+          onChange={(event) => setOptimizerAgentId(event.target.value)}
+          data-testid="prompt-budget-optimizer-input"
+        >
+          <option value="">{t("area.costs-budgets-2.prompt-budget-settings-panel.optimizerNone")}</option>
+          {optimizerAgentId && !agents.some((agent) => agent.id === optimizerAgentId) && <option value={optimizerAgentId} disabled>{t("area.costs-budgets-2.prompt-budget-settings-panel.optimizerUnavailable")}</option>}
+          {agents.map((agent) => <option key={agent.id} value={agent.id}>{agent.name}</option>)}
+        </select>
+      </div>
       <div className="flex items-center gap-2">
         <Button
           size="sm"
           onClick={submit}
-          disabled={save.isPending || !stored}
+          disabled={save.isPending || !stored || !admin}
           data-testid="prompt-budget-save"
         >
-          {save.isPending ? "Saving…" : "Save"}
+          {save.isPending ? t("area.costs-budgets-2.prompt-budget-settings-panel.saving") : t("common.save")}
         </Button>
-        {save.isSuccess && !error && <p className="text-xs text-green-600">Saved</p>}
+        {save.isSuccess && !error && <p className="text-xs text-green-600">{t("area.costs-budgets-2.prompt-budget-settings-panel.saved")}</p>}
       </div>
       <p className="text-xs text-muted-foreground">
-        The signal appears in the attention queue and on the agent card when the last
-        run's prompt crosses a level. Applies immediately; the sweep re-reads the
-        thresholds on every pass.
+        {t("area.costs-budgets-2.prompt-budget-settings-panel.hint")}
       </p>
       {error && <p className="text-xs text-red-600">{error}</p>}
     </section>

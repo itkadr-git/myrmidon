@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import type { CreateConfigValues } from "@paperclipai/adapter-utils";
+import type { CreateConfigValues } from "@myrmidon/adapter-utils";
 import { buildClaudeLocalConfig } from "./build-config.js";
 
 function makeValues(overrides: Partial<CreateConfigValues> = {}): CreateConfigValues {
@@ -76,5 +76,56 @@ describe("buildClaudeLocalConfig", () => {
       API_KEY: { type: "secret_ref", secretId: "11111111-1111-1111-1111-111111111111", version: "latest" },
       FLAG: { type: "plain", value: "on" },
     });
+  });
+
+  it("persists the sandbox and timeout fields the settings form writes", () => {
+    const config = buildClaudeLocalConfig(
+      makeValues({
+        adapterSchemaValues: {
+          filesystemScope: "workspace",
+          filesystemExtraPaths: ["/tmp/extra", { path: "/tmp/data", access: "rw" }],
+          networkScope: "allowlist",
+          networkAllowlist: ["api.anthropic.com"],
+          helloProbeTimeoutSec: 90,
+          terminalResultCleanupGraceMs: 8000,
+        },
+      }),
+    );
+    expect(config).toMatchObject({
+      filesystemScope: "workspace",
+      filesystemExtraPaths: ["/tmp/extra", { path: "/tmp/data", access: "rw" }],
+      networkScope: "allowlist",
+      networkAllowlist: ["api.anthropic.com"],
+      helloProbeTimeoutSec: 90,
+      terminalResultCleanupGraceMs: 8000,
+    });
+  });
+
+  it("leaves unset sandbox fields out and ignores keys no adapter reads", () => {
+    const config = buildClaudeLocalConfig(
+      makeValues({
+        adapterSchemaValues: {
+          filesystemExtraPaths: [],
+          networkAllowlist: [],
+          helloProbeTimeoutSec: 0,
+          probe: true,
+          approvalMode: "bypass",
+          timeoutSec: 99,
+        },
+      }),
+    );
+    for (const key of [
+      "filesystemScope",
+      "filesystemExtraPaths",
+      "networkScope",
+      "networkAllowlist",
+      "helloProbeTimeoutSec",
+      "probe",
+      "approvalMode",
+    ]) {
+      expect(config).not.toHaveProperty(key);
+    }
+    expect(config.timeoutSec).toBe(0);
+    expect(config.graceSec).toBe(15);
   });
 });

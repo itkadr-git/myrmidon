@@ -40,6 +40,11 @@ services:
     # this container hits its own ceiling and dies visibly rather than starving
     # the whole host of pids.
     pids_limit: 2048
+    # Codex local runner sandboxing requires user namespaces (clone/unshare/mount).
+    # Enable the custom seccomp profile and unconfined AppArmor for the board container:
+    # security_opt:
+    #   - seccomp:./board/myrmidon-board-userns.json
+    #   - apparmor:unconfined
     ports:
       - "3100:3100"
     environment:
@@ -50,8 +55,12 @@ services:
       PAPERCLIP_DEPLOYMENT_EXPOSURE: "private"
       PAPERCLIP_PUBLIC_URL: "${PAPERCLIP_PUBLIC_URL:-http://localhost:3100}"
       BETTER_AUTH_SECRET: "${BETTER_AUTH_SECRET:?BETTER_AUTH_SECRET must be set}"
+      GITHUB_TOKEN: "${GITHUB_TOKEN:-}"
+      MYRMIDON_MEDIA_BOTS_FILE: /config/bots.json
     volumes:
       - paperclip-data:/paperclip
+      - media-acl-config:/config
+      - ${MYRMIDON_SHARED_PACKAGE_CACHE_PATH:-/srv/myrmidon-cache}:${MYRMIDON_SHARED_PACKAGE_CACHE_PATH:-/srv/myrmidon-cache}
     depends_on:
       db:
         condition: service_healthy
@@ -59,3 +68,4 @@ services:
 volumes:
   pgdata:
   paperclip-data:
+  media-acl-config:

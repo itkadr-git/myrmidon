@@ -30,6 +30,7 @@ const basePreDrainFacts: PreDrainFacts = {
   assigneeAgentMatchesRunAgent: true,
   legacyExecutionNeedsReconciliation: false,
   executionCancellationAcknowledged: false,
+  executionCancellationUnstartedOperatorStop: false,
 };
 
 describe("decidePreDrain", () => {
@@ -91,6 +92,11 @@ describe("decidePreDrain", () => {
     {
       name: "released: an acknowledged execution cancellation",
       facts: { ...basePreDrainFacts, executionCancellationAcknowledged: true },
+      expected: { kind: "released" },
+    },
+    {
+      name: "released: an operator stop of a run that never started",
+      facts: { ...basePreDrainFacts, executionCancellationUnstartedOperatorStop: true },
       expected: { kind: "released" },
     },
     {
@@ -394,6 +400,18 @@ describe("decideReleaseRecovery", () => {
         },
       },
       expected: { kind: "blocked", notice: "configuration_incomplete" },
+    },
+    {
+      name: "blocked: immediate recovery applies but issue is todo (OPE-4519)",
+      facts: {
+        ...baseReleaseRecoveryFacts,
+        immediate: {
+          ...baseReleaseRecoveryFacts.immediate,
+          applies: true,
+          isTodoIssue: true,
+        },
+      },
+      expected: { kind: "blocked", notice: "immediate_execution_path" },
     },
     {
       name: "queue_recovery: immediate recovery applies and no suppression or block condition fires",

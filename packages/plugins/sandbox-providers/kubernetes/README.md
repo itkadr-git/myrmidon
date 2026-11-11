@@ -1,4 +1,4 @@
-# @paperclipai/plugin-kubernetes (alpha)
+# @myrmidon/plugin-kubernetes (alpha)
 
 First-party Paperclip sandbox-provider plugin for Kubernetes.
 
@@ -20,7 +20,7 @@ First-party Paperclip sandbox-provider plugin for Kubernetes.
 ## Installation
 
 ```bash
-paperclipai plugin install @paperclipai/plugin-kubernetes
+paperclipai plugin install @myrmidon/plugin-kubernetes
 ```
 
 Or, for local development:

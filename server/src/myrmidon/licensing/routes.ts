@@ -3,6 +3,7 @@
 //   GET  /api/licensing/install-id    { installId, source }
 //   GET  /api/licensing/status        install id + request blob + license state per closed module
 //   POST /api/licensing/license       { value } save a license where the modules read it
+//   POST /api/licensing/deny-list     { value } save a signed deny-list where the modules read it
 //
 // The same router is also mounted under /api/myrmidon/licensing (the fork
 // rule for new API paths). Every route is instance-admin only. The board only
@@ -16,7 +17,7 @@ import { validate } from "../../middleware/validate.js";
 import { assertInstanceAdmin } from "../../routes/authz.js";
 import { logger } from "../../middleware/logger.js";
 import { readAboutBuildInfo } from "../about/build-info.js";
-import { resolveInstallId } from "./install-id.js";
+import type { InstallIdProvider } from "./install-id.js";
 import {
   KNOWN_MODULES,
   buildLicenseRequest,
@@ -28,6 +29,7 @@ import {
   LICENSE_ENV,
   MAX_LICENSE_CHARS,
   hostShare,
+  instanceMismatchMessage,
   licenseFilePath,
   moduleStatuses,
   needsAttention,
@@ -35,18 +37,26 @@ import {
   writeLicenseFile,
   type HostShareOptions,
 } from "./client-license.js";
+import {
+  createDenyListReader,
+  denyListPath,
+  highestAcceptedDenySerial,
+  parseDenyList,
+  writeDenyListFile,
+  type DenyList,
+} from "./denylist.js";
 import { TRUSTED_ISSUER_KEYS } from "./trusted-keys.js";
 
 // `value`, not `license`: the request logger redacts `value` in 4xx lines, so
 // a refused license never reaches a log.
 const saveLicenseBody = z.object({ value: z.string().min(1).max(MAX_LICENSE_CHARS) }).strict();
+const saveDenyListBody = z.object({ value: z.string().min(1).max(1_000_000) }).strict();
 
 const SAVE_REFUSALS: Partial<Record<VerifyReason, string>> = {
   bad_format: "This is not a license: expected one line starting with MYR1.",
   bad_payload: "The license content is damaged.",
   bad_signature: "The license signature is invalid: the text was changed or it was not issued by the vendor.",
   unsupported_rev: "This license format is not supported by this board version.",
-  instance_mismatch: "This license was issued for another installation (the installation id does not match).",
   expired: "This license has already expired.",
   feature_not_granted: "This license does not allow any module to start.",
 };
@@ -60,22 +70,31 @@ function instanceAdminOnly(req: Request, _res: Response, next: NextFunction) {
 
 export interface LicensingRoutesOptions {
   env?: NodeJS.ProcessEnv;
-  machineIdPaths?: readonly string[];
+  /** The board's installation id (database); the only source the routes use. */
+  installId: InstallIdProvider;
   now?: () => Date;
   /** Closed modules installed into this board (see installed-modules.ts). */
   installedModules?: () => Promise<string[]>;
   /** Test seam: trust anchors; production always uses TRUSTED_ISSUER_KEYS. */
   trustedKeys?: readonly TrustedIssuerKey[];
+  /** Records named licensing counters for monitoring and tests. */
+  incrementCounter?: (name: string) => void;
   /** Test seam for the "is the license file shared with the host" probe. */
   hostShare?: HostShareOptions;
 }
 
-export function licensingRoutes(options: LicensingRoutesOptions = {}): Router {
+export function licensingRoutes(options: LicensingRoutesOptions): Router {
   const router = Router();
   const env = () => options.env ?? process.env;
   const now = () => (options.now ? options.now() : new Date());
-  const install = () => resolveInstallId({ env: env(), machineIdPaths: options.machineIdPaths });
+  const install = () => options.installId();
   const trustedKeys = options.trustedKeys ?? TRUSTED_ISSUER_KEYS;
+  const denyList = createDenyListReader({
+    env: () => env(),
+    trustedKeys,
+    incrementCounter: options.incrementCounter,
+    warn: (message) => logger.warn(message),
+  });
   const installed = async () => {
     if (!options.installedModules) return [] as string[];
     try {
@@ -87,7 +106,7 @@ export function licensingRoutes(options: LicensingRoutesOptions = {}): Router {
   };
 
   async function clientState(requested: string[] | null) {
-    const id = install();
+    const id = await install();
     const board = readAboutBuildInfo(env()).version;
     const installedModules = await installed();
     const requestModules =
@@ -104,6 +123,7 @@ export function licensingRoutes(options: LicensingRoutesOptions = {}): Router {
       nowSeconds,
       trustedKeys,
       installed: installedModules,
+      denyList,
     });
     const file = licenseFilePath(env());
     return {
@@ -124,8 +144,12 @@ export function licensingRoutes(options: LicensingRoutesOptions = {}): Router {
   }
 
   for (const prefix of ["/licensing", "/myrmidon/licensing"]) {
-    router.get(`${prefix}/install-id`, instanceAdminOnly, (_req, res) => {
-      res.json(install());
+    router.get(`${prefix}/install-id`, instanceAdminOnly, async (_req, res, next) => {
+      try {
+        res.json(await install());
+      } catch (err) {
+        next(err);
+      }
     });
 
     router.get(`${prefix}/status`, instanceAdminOnly, async (req, res, next) => {
@@ -148,10 +172,17 @@ export function licensingRoutes(options: LicensingRoutesOptions = {}): Router {
             code: "license_env_override",
           });
         }
-        const id = install();
+        const id = await install();
         const nowSeconds = Math.floor(now().getTime() / 1000);
         const result = verifyLicense(text, id.installId, nowSeconds, trustedKeys);
         if (!result.valid) {
+          if (result.reason === "instance_mismatch" && result.licenseInstanceId) {
+            throw unprocessable(instanceMismatchMessage(result.licenseInstanceId, id.installId), {
+              code: "license_instance_mismatch",
+              licenseInstanceId: result.licenseInstanceId,
+              boardInstanceId: id.installId,
+            });
+          }
           const message = SAVE_REFUSALS[result.reason] ?? "The license is not valid.";
           throw unprocessable(message, { code: `license_${result.reason}` });
         }
@@ -178,6 +209,41 @@ export function licensingRoutes(options: LicensingRoutesOptions = {}): Router {
           },
           "module license saved",
         );
+        res.json(await clientState(null));
+      } catch (err) {
+        next(err);
+      }
+    });
+
+    router.post(`${prefix}/deny-list`, instanceAdminOnly, validate(saveDenyListBody), async (req, res, next) => {
+      try {
+        const text = (req.body as z.infer<typeof saveDenyListBody>).value.trim();
+        let parsed: DenyList;
+        try {
+          parsed = parseDenyList(text, trustedKeys);
+        } catch (err) {
+          throw unprocessable((err as Error).message, { code: "deny_list_invalid" });
+        }
+        const highest = highestAcceptedDenySerial(env(), trustedKeys);
+        if (highest !== null && parsed.serial < highest) {
+          throw conflict(
+            `Deny-list serial ${parsed.serial} is lower than highest accepted serial ${highest}`,
+            { code: "deny_list_rollback" },
+          );
+        }
+        const file = denyListPath(env());
+        try {
+          writeDenyListFile(file, text);
+        } catch (err) {
+          const code = (err as NodeJS.ErrnoException).code ?? "unknown";
+          logger.warn({ path: file, code }, "licensing: cannot write the deny-list file");
+          throw conflict(`Cannot write the deny-list file ${file} (${code})`, {
+            code: "deny_list_path_unwritable",
+            path: file,
+            errno: code,
+          });
+        }
+        logger.info({ path: file }, "module license deny-list saved");
         res.json(await clientState(null));
       } catch (err) {
         next(err);

@@ -28,7 +28,7 @@ import { createHash } from "node:crypto";
 import fs from "node:fs/promises";
 import path from "node:path";
 
-import { agents, type Db } from "@paperclipai/db";
+import { agents, type Db } from "@myrmidon/db";
 import { and, eq, ne, sql } from "drizzle-orm";
 import type { HermesProfileEnvEntry } from "./profile-compiler.js";
 import type { BotProfileAgentRecord } from "./profile-compile.js";
@@ -211,7 +211,6 @@ export async function collectMediaAclEntries(
  *  in. The facade must never observe a half-written registry, and the file
  *  carries secret hashes, so it never gets a group/other-readable mode. */
 export async function writeBotsFileAtomic(filePath: string, content: string): Promise<void> {
-  await fs.mkdir(path.dirname(filePath), { recursive: true });
   const tmpPath = `${filePath}.tmp-${process.pid}`;
   await fs.writeFile(tmpPath, content, { mode: 0o600 });
   await fs.chmod(tmpPath, 0o600);
@@ -233,6 +232,8 @@ export interface MediaAclExportResult {
   bots: number;
   /** Cards whose env failed to resolve this pass. */
   failedResolves: number;
+  /** True when the registry directory is not available for this process. */
+  skipped: boolean;
   /** False when the file already carried exactly this text and mode (no mtime churn). */
   changed: boolean;
 }
@@ -248,6 +249,8 @@ export interface MediaAclExportDeps {
   tools?: readonly string[];
   /** Test hook for the process flag; production passes none (process.env). */
   containersEnabled?: (env: NodeJS.ProcessEnv) => boolean;
+  /** Test hook for detecting the bind-mounted registry directory. */
+  registryAvailable?: (filePath: string) => Promise<boolean>;
 }
 
 /** Registry path resolution: explicit first, then MEDIA_BOTS_FILE_ENV
@@ -271,6 +274,24 @@ export async function runMediaAclExport(deps: MediaAclExportDeps): Promise<Media
   const env = deps.env ?? process.env;
   if (!(deps.containersEnabled ?? isBotContainersEnabled)(env)) return null;
   const resolved = resolveMediaBotsFilePath(env, deps.path);
+  const registryAvailable = deps.registryAvailable ?? (async (filePath: string) => {
+    try {
+      await fs.access(filePath);
+      return true;
+    } catch {
+      // The registry file may not exist yet; its parent must be the mounted
+      // directory. Do not create it here: an absent bind mount is a safe skip.
+      try {
+        await fs.access(path.dirname(filePath));
+        return true;
+      } catch {
+        return false;
+      }
+    }
+  });
+  if (!(await registryAvailable(resolved))) {
+    return { path: resolved, bots: 0, failedResolves: 0, skipped: true, changed: false };
+  }
   const fleet = await deps.listAgents();
   const { entries, failedResolves } = await collectMediaAclEntries(
     fleet,
@@ -284,10 +305,33 @@ export async function runMediaAclExport(deps: MediaAclExportDeps): Promise<Media
   } catch {
     current = null;
   }
-  const mode = await fileModeOrNull(resolved);
-  if (current === text && mode === 0o600) {
-    return { path: resolved, bots: entries.length, failedResolves, changed: false };
+  // An empty token-bearing fleet is not authoritative: it can mean the card
+  // resolver is temporarily unavailable. Preserve the last registry rather
+  // than deleting access, including hand-maintained peer_host-only entries.
+  if (entries.length === 0 && current !== null) {
+    return { path: resolved, bots: 0, failedResolves, skipped: false, changed: false };
   }
-  await writeBotsFileAtomic(resolved, text);
-  return { path: resolved, bots: entries.length, failedResolves, changed: true };
+  let mergedText = text;
+  if (current !== null) {
+    try {
+      const previous = JSON.parse(current) as { bots?: Record<string, unknown> };
+      const previousBots = Object.fromEntries(
+        Object.entries(previous.bots ?? {}).filter(([, value]) => {
+          const bot = value as { token_sha256?: unknown };
+          return typeof bot !== "object" || bot === null || !bot.token_sha256;
+        }),
+      );
+      const generatedBots = JSON.parse(text).bots as Record<string, unknown>;
+      const mergedBots = { ...previousBots, ...generatedBots };
+      mergedText = `${JSON.stringify({ bots: mergedBots }, null, 2)}\n`;
+    } catch {
+      // A malformed old file is replaced only when we have a non-empty export.
+    }
+  }
+  const mode = await fileModeOrNull(resolved);
+  if (current === mergedText && mode === 0o600) {
+    return { path: resolved, bots: entries.length, failedResolves, skipped: false, changed: false };
+  }
+  await writeBotsFileAtomic(resolved, mergedText);
+  return { path: resolved, bots: entries.length, failedResolves, skipped: false, changed: true };
 }

@@ -24,6 +24,27 @@ describe("run retry policy: failure classification", () => {
         reason: "transient_error_code",
       })),
     );
+    expect(isTransientFailure({ errorCode: "hermes_transient_upstream" })).toBe(true);
+    expect(classifyRunFailureForRetry({ errorCode: "hermes_transient_upstream" })).toEqual({
+      classification: "transient",
+      errorCode: "hermes_transient_upstream",
+      errorFamily: null,
+      reason: "transient_error_code",
+    });
+  });
+
+  // myrmidon(1.6.7 RUN-LIMITS): a busy Hermes gateway HTTP 429 is a resource
+  // wait, not a provider failure — the run must requeue through the bounded
+  // transient retry path instead of failing the wake (OPE-10338).
+  it("classifies a busy gateway 429 as transient so the run requeues", () => {
+    expect(
+      TRANSIENT_RUN_FAILURE_ERROR_CODES.has("hermes_gateway_rate_limited"),
+    ).toBe(true);
+    const verdict = classifyRunFailureForRetry({
+      errorCode: "hermes_gateway_rate_limited",
+    });
+    expect(verdict.classification).toBe("transient");
+    expect(isRetryableRunFailure(verdict)).toBe(true);
   });
 
   it("calls a known permanent failure terminal", () => {
@@ -169,6 +190,24 @@ describe("run retry policy: failure classification", () => {
       classification: "transient",
       reason: "transient_error_message",
     });
+    for (const errorMessage of [
+      "No deployments available",
+      "all deployments in cooldown",
+      "all deployments are in cooldown",
+      "All deployments for selected model are in cooldown",
+      "All deployments (openai/chatgpt) are in cooldown",
+      "deployments in cooldown",
+      "HTTP 429 too many requests",
+      "429 Too Many Requests",
+      "rate_limit_error",
+    ]) {
+      expect(
+        classifyRunFailureForRetry({ errorCode: "adapter_failed", errorMessage }),
+      ).toMatchObject({
+        classification: "transient",
+        reason: "transient_error_message",
+      });
+    }
   });
 
   it("evaluates isTransientFailure and isPermanentAgentFailure accurately", () => {

@@ -1,5 +1,6 @@
 import fs from "node:fs/promises";
 import path from "node:path";
+import { writeProductEnv } from "@myrmidon/shared/env-alias"; // myrmidon(REBRAND-C)
 import {
   Agent,
   type AgentOptions,
@@ -9,7 +10,7 @@ import {
   type SDKAgent,
   type SDKMessage,
 } from "@cursor/sdk";
-import type { AdapterExecutionContext, AdapterExecutionResult, AdapterInvocationMeta } from "@paperclipai/adapter-utils";
+import type { AdapterExecutionContext, AdapterExecutionResult, AdapterInvocationMeta } from "@myrmidon/adapter-utils";
 import {
   DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE,
   DEFAULT_PAPERCLIP_CONVERSATION_PROMPT_TEMPLATE,
@@ -24,9 +25,9 @@ import {
   selectPaperclipTaskMarkdown,
   isPaperclipRecoveryWakePayload,
   renderTemplate,
-} from "@paperclipai/adapter-utils/server-utils";
+} from "@myrmidon/adapter-utils/server-utils";
 // myrmidon(B1c): product name in the runtime notes; see shared myrmidon-product.
-import { PRODUCT_NAME } from "@paperclipai/adapter-utils";
+import { PRODUCT_NAME } from "@myrmidon/adapter-utils";
 
 type CursorCloudSession = {
   cursorAgentId: string;
@@ -129,15 +130,15 @@ function buildWakeEnv(ctx: AdapterExecutionContext, configEnv: Record<string, st
     : [];
   const issueWorkMode = readPaperclipIssueWorkModeFromContext(context);
 
-  if (wakeTaskId) env.PAPERCLIP_TASK_ID = wakeTaskId;
-  if (wakeReason) env.PAPERCLIP_WAKE_REASON = wakeReason;
-  if (wakeCommentId) env.PAPERCLIP_WAKE_COMMENT_ID = wakeCommentId;
-  if (approvalId) env.PAPERCLIP_APPROVAL_ID = approvalId;
-  if (approvalStatus) env.PAPERCLIP_APPROVAL_STATUS = approvalStatus;
-  if (linkedIssueIds.length > 0) env.PAPERCLIP_LINKED_ISSUE_IDS = linkedIssueIds.join(",");
-  if (issueWorkMode) env.PAPERCLIP_ISSUE_WORK_MODE = issueWorkMode;
+  if (wakeTaskId) writeProductEnv(env, "TASK_ID", wakeTaskId); // myrmidon(REBRAND-C)
+  if (wakeReason) writeProductEnv(env, "WAKE_REASON", wakeReason); // myrmidon(REBRAND-C)
+  if (wakeCommentId) writeProductEnv(env, "WAKE_COMMENT_ID", wakeCommentId); // myrmidon(REBRAND-C)
+  if (approvalId) writeProductEnv(env, "APPROVAL_ID", approvalId); // myrmidon(REBRAND-C)
+  if (approvalStatus) writeProductEnv(env, "APPROVAL_STATUS", approvalStatus); // myrmidon(REBRAND-C)
+  if (linkedIssueIds.length > 0) writeProductEnv(env, "LINKED_ISSUE_IDS", linkedIssueIds.join(",")); // myrmidon(REBRAND-C)
+  if (issueWorkMode) writeProductEnv(env, "ISSUE_WORK_MODE", issueWorkMode); // myrmidon(REBRAND-C)
   if (authToken) {
-    env.PAPERCLIP_API_KEY = authToken;
+    writeProductEnv(env, "API_KEY", authToken); // myrmidon(REBRAND-C)
   }
 
   // cursor_cloud runs remotely in Cursor's cloud and is intentionally not

@@ -1,7 +1,9 @@
+import type { Db } from "@myrmidon/db";
 import { listAdapterModels } from "../adapters/registry.js";
 import { unprocessable } from "../errors.js";
 import { logger } from "../middleware/logger.js";
 import { effortForModel } from "./effort-policy/effort-policy.js";
+import { enrichWithPoolModels } from "./model-providers/pool-models.js";
 
 /**
  * myrmidon(S4/M1): a model that is not in the adapter's model list is
@@ -105,11 +107,52 @@ export function collectChangedModelNames(
   return changed;
 }
 
+/**
+ * myrmidon(OPE-12633 OMP-MODEL-IDS): omp addresses a model as
+ * `<provider>/<model>`, where the provider is a key of the agent's custom
+ * provider config (MYRMIDON_OMP_PROVIDERS, deprecated alias
+ * PAPERCLIP_OMP_PROVIDERS). The board's list holds the gateway names
+ * (`antigravity/gemini-3.8-flash-medium`), so the only working omp id
+ * (`litellm/antigravity/gemini-3.8-flash-medium`) was refused on save and the
+ * card could only be repaired in the database. A name is accepted when it is
+ * one of these provider keys followed by a known gateway model.
+ */
+const OMP_PROVIDER_ENV_NAMES = ["MYRMIDON_OMP_PROVIDERS", "PAPERCLIP_OMP_PROVIDERS"] as const;
+
+export function ompCustomProviderKeys(adapterConfig: Record<string, unknown> | null | undefined): string[] {
+  const env = adapterConfig?.env;
+  if (!env || typeof env !== "object" || Array.isArray(env)) return [];
+  for (const name of OMP_PROVIDER_ENV_NAMES) {
+    const entry = (env as Record<string, unknown>)[name];
+    const raw = typeof entry === "string"
+      ? entry
+      : entry && typeof entry === "object" && (entry as { type?: unknown }).type === "plain"
+        ? (entry as { value?: unknown }).value
+        : undefined;
+    if (typeof raw !== "string" || raw.trim().length === 0) continue;
+    try {
+      const parsed: unknown = JSON.parse(raw);
+      if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return [];
+      return Object.keys(parsed).filter((key) => key.length > 0 && !key.includes("/"));
+    } catch {
+      return [];
+    }
+  }
+  return [];
+}
+
+function isKnownModelName(model: string, knownIds: Set<string>, providerPrefixes: string[]): boolean {
+  if (knownIds.has(model)) return true;
+  return providerPrefixes.some((key) => model.startsWith(`${key}/`) && knownIds.has(model.slice(key.length + 1)));
+}
+
 export async function assertAgentModelsKnown(input: {
   adapterType: string;
   previousAdapterConfig: Record<string, unknown> | null | undefined;
   nextAdapterConfig: Record<string, unknown> | null | undefined;
   listModels?: (adapterType: string) => Promise<Array<{ id: string }>>;
+  companyId?: string;
+  db?: Db;
 }): Promise<void> {
   assertAgentEffortAccepted(input.adapterType, input.nextAdapterConfig);
   if (ADAPTERS_WITHOUT_STATIC_MODEL_LIST.includes(input.adapterType)) return;
@@ -119,7 +162,10 @@ export async function assertAgentModelsKnown(input: {
 
   let known: Array<{ id: string }>;
   try {
-    known = await (input.listModels ?? listAdapterModels)(input.adapterType);
+    const baseKnown = await (input.listModels ?? listAdapterModels)(input.adapterType);
+    known = input.companyId && input.db
+      ? await enrichWithPoolModels(input.db, input.companyId, baseKnown as any)
+      : baseKnown;
   } catch (err) {
     // Model discovery failing must not make every agent uneditable.
     logger.warn({ err, adapterType: input.adapterType }, "model list unavailable; skipping model validation");
@@ -127,7 +173,8 @@ export async function assertAgentModelsKnown(input: {
   }
   if (known.length === 0) return;
   const knownIds = new Set(known.map((model) => model.id));
-  const unknown = changed.filter((entry) => !knownIds.has(entry.model));
+  const providerPrefixes = input.adapterType === "omp_local" ? ompCustomProviderKeys(input.nextAdapterConfig) : [];
+  const unknown = changed.filter((entry) => !isKnownModelName(entry.model, knownIds, providerPrefixes));
   if (unknown.length === 0) return;
   throw unprocessable(
     `Unknown model for adapter ${input.adapterType}: ${unknown

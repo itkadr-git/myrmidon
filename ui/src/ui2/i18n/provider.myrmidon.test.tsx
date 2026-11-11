@@ -18,6 +18,7 @@ const i18nMock = vi.hoisted(() => ({
   language: "en",
   addResourceBundle: vi.fn(),
   hasResourceBundle: vi.fn().mockReturnValue(false),
+  removeResourceBundle: vi.fn(),
 }));
 
 vi.mock("@/i18n", () => ({ i18n: i18nMock }));
@@ -41,11 +42,15 @@ let shellRoot: HTMLDivElement;
 let root: Root | null;
 let probe: { language: string; saving: boolean; saveError: boolean };
 let setLanguageFn: ((language: "en" | "ru") => void) | null = null;
+let applyCustomCatalogFn: ((targetLocale: string, catalog: Record<string, unknown>, andSwitch?: boolean) => void) | null = null;
+let probeValue: ReturnType<typeof useUi2Language> | null = null;
 
 function Probe() {
   const value = useUi2Language();
   probe = { language: value.language, saving: value.saving, saveError: value.saveError };
   setLanguageFn = value.setLanguage;
+  applyCustomCatalogFn = value.applyCustomCatalog;
+  probeValue = value;
   return null;
 }
 
@@ -76,6 +81,8 @@ beforeEach(() => {
   i18nMock.language = "en";
   shellRoot.removeAttribute("lang");
   document.documentElement.lang = "en";
+  applyCustomCatalogFn = null;
+  probeValue = null;
   probe = { language: "en", saving: false, saveError: false };
   setLanguageFn = null;
 });
@@ -159,5 +166,57 @@ describe("Ui2LanguageProvider", () => {
     renderTree();
     await vi.waitFor(() => expect(probe.language).toBe("ru"));
     expect(document.documentElement.getAttribute("lang")).toBe("ru");
+  });
+
+  it("applies custom catalog live, merges translations, switches shell and dispatches locale-applied", async () => {
+    renderTree();
+    await act(() => undefined);
+    const appliedEvents: CustomEvent[] = [];
+    const onApplied = (event: Event) => appliedEvents.push(event as CustomEvent);
+    window.addEventListener("myrmidon:locale-applied", onApplied);
+
+    try {
+      await act(() => {
+        applyCustomCatalogFn!("ru", { "ui2.chip.colony": "Custom Colony RU" } as unknown as Record<string, unknown>, true);
+      });
+
+      expect(probe.language).toBe("ru");
+      expect(probeValue?.t("ui2.chip.colony")).toBe("Custom Colony RU");
+      expect(shellRoot.getAttribute("lang")).toBe("ru");
+      expect(window.localStorage.getItem("myrmidon:ui2:language")).toBe("ru");
+      expect(i18nMock.changeLanguage).toHaveBeenCalledWith("ru");
+      expect(i18nMock.addResourceBundle).toHaveBeenCalledWith(
+        "ru",
+        "ui2",
+        expect.objectContaining({ "ui2.chip.colony": "Custom Colony RU" }),
+        true,
+        true,
+      );
+      expect(appliedEvents).toHaveLength(1);
+      expect(appliedEvents[0]?.detail).toEqual({ locale: "ru", andSwitch: true });
+    } finally {
+      window.removeEventListener("myrmidon:locale-applied", onApplied);
+    }
+  });
+
+  it("registers custom catalog without switching shell when andSwitch is false", async () => {
+    renderTree();
+    await act(() => undefined);
+    i18nMock.changeLanguage.mockClear();
+
+    await act(() => {
+      applyCustomCatalogFn!("de", { topbar: { colony: "Kolonie" } }, false);
+    });
+
+    expect(probe.language).toBe("en");
+    expect(probeValue?.availableLocales).toContain("de");
+    expect(i18nMock.changeLanguage).not.toHaveBeenCalled();
+    expect(i18nMock.addResourceBundle).toHaveBeenCalledWith(
+      "de",
+      "ui2",
+      { topbar: { colony: "Kolonie" } },
+      true,
+      true,
+    );
   });
 });

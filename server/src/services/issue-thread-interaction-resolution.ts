@@ -1,8 +1,8 @@
 import type {
   IssueThreadInteractionCanonicalResolverPolicy,
   IssueThreadInteractionResolverPolicy,
-} from "@paperclipai/shared";
-import { normalizeIssueThreadInteractionResolverPolicy } from "@paperclipai/shared";
+} from "@myrmidon/shared";
+import { normalizeIssueThreadInteractionResolverPolicy } from "@myrmidon/shared";
 import { HttpError } from "../errors.js";
 
 export const ISSUE_THREAD_INTERACTION_RESOLUTION_DENIAL_CODES = [
@@ -182,7 +182,8 @@ export function evaluateIssueThreadInteractionResolverAudience(
 
   if (input.actor.type === "user") {
     if (
-      input.interaction.addresseeUserId
+      !input.governedAction
+      && input.interaction.addresseeUserId
       && input.interaction.addresseeUserId !== input.actor.userId
     ) {
       return {
@@ -245,7 +246,18 @@ export function evaluateIssueThreadInteractionResolverAudience(
     };
   }
 
-  if (effectiveResolverPolicy === "human_only") {
+  if (
+    effectiveResolverPolicy === "human_only"
+    && !(
+      // OPE-11751: a card the route explicitly addressed to this agent (for
+      // example a manager up the reportsTo chain) may be answered by it even
+      // though the card itself is human_only. A human_only restriction imposed
+      // by a binding flow, or a governed action, still applies.
+      persistedPolicy === "human_only"
+      && additionalRestriction?.policy !== "human_only"
+      && input.interaction.addresseeAgentId === input.actor.agentId
+    )
+  ) {
     return {
       allowed: false,
       effectiveResolverPolicy,

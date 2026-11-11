@@ -1,0 +1,2 @@
+ALTER TABLE "corpus_datasets" ALTER COLUMN "embedding_model" SET DEFAULT 'corpus-embed-pplx-0.6b';--> statement-breakpoint
+ALTER TABLE "corpus_settings" ALTER COLUMN "default_embedding_model" SET DEFAULT 'corpus-embed-pplx-0.6b';

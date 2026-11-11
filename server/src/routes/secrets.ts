@@ -1,5 +1,5 @@
 import { Router, type Response } from "express";
-import type { Db } from "@paperclipai/db";
+import type { Db } from "@myrmidon/db";
 import {
   createSecretProviderConfigSchema,
   createSecretSchema,
@@ -14,7 +14,7 @@ import {
   updateSecretSchema,
   updateUserSecretDefinitionSchema,
   updateUserSecretValueSchema,
-} from "@paperclipai/shared";
+} from "@myrmidon/shared";
 import { validate } from "../middleware/validate.js";
 import { assertBoard, assertBoardOrAgent, assertCompanyAccess, getAccessibleResource } from "./authz.js";
 import { logActivity, secretService } from "../services/index.js";
@@ -29,6 +29,8 @@ import { issueService } from "../services/issues.js";
 import type { IssueAssignmentWakeupDeps } from "../services/issue-assignment-wakeup.js";
 import { createRunSecretRedactionRegistry } from "../services/run-secret-redaction.js";
 import { notifySecretProposalResolution } from "../services/secret-proposal-notifications.js";
+import { readGitHubPatExpiration } from "../services/github-pat-expiration.js";
+import { syncSecretToGitHubActions } from "../services/github-actions-secrets.js";
 import { assertCanResolveProposal } from "../services/secret-proposal-authorization.js";
 
 type SecretRoutesDeps = {
@@ -243,6 +245,7 @@ export function secretRoutes(db: Db, deps: SecretRoutesDeps = {}) {
           description: body.description,
           value: body.value,
           justification: body.justification,
+          rotateSecretId: body.rotateSecretId,
         })
       : body.kind === "binding"
         ? await proposals.createBinding({ companyId: context.companyId, heartbeatRunId: context.heartbeatRunId }, {
@@ -315,7 +318,17 @@ export function secretRoutes(db: Db, deps: SecretRoutesDeps = {}) {
         assertSecretDefinitionAdmin: () => assertSecretDefinitionAdmin(req, companyId),
       }),
     });
-    await notifySecretProposalResolution({ proposal, status: "approved", userId: resolvedByUserId, issues, heartbeat });
+    // Rotation proposals land as a new version of the target secret; tell the
+    // origin issue which version is now live so the proposer can verify its
+    // env fingerprint instead of guessing.
+    let resolutionNote: string | null = null;
+    if (approved.kind === "secret" && approved.rotationTargetSecretId && approved.createdSecretId) {
+      const rotatedSecret = await svc.getById(approved.createdSecretId);
+      if (rotatedSecret) {
+        resolutionNote = `Rotated existing secret \`${rotatedSecret.name}\` to version ${rotatedSecret.latestVersion}`;
+      }
+    }
+    await notifySecretProposalResolution({ proposal, status: "approved", userId: resolvedByUserId, resolutionNote, issues, heartbeat, db });
     res.json(await boardProposalView(req, await proposals.view(approved)));
   });
 
@@ -345,6 +358,7 @@ export function secretRoutes(db: Db, deps: SecretRoutesDeps = {}) {
       reason,
       issues,
       heartbeat,
+      db,
     });
     res.json(await boardProposalView(req, await proposals.view(proposal)));
   });
@@ -967,6 +981,14 @@ export function secretRoutes(db: Db, deps: SecretRoutesDeps = {}) {
       },
       { userId: req.actor.userId ?? "board", agentId: null },
     );
+    if (typeof req.body.value === "string" && req.body.value.startsWith("github_pat_")) {
+      const expiresAt = await readGitHubPatExpiration(req.body.value).catch(() => null);
+      if (expiresAt) {
+        await svc.update(created.id, {
+          providerMetadata: { ...(created.providerMetadata ?? {}), githubPatExpiresAt: expiresAt },
+        });
+      }
+    }
 
     await logActivity(db, {
       companyId,
@@ -1078,6 +1100,26 @@ export function secretRoutes(db: Db, deps: SecretRoutesDeps = {}) {
       },
       { userId: req.actor.userId ?? "board", agentId: null },
     );
+    if (typeof req.body.value === "string") {
+      if (req.body.value.startsWith("github_pat_")) {
+        const expiresAt = await readGitHubPatExpiration(req.body.value).catch(() => null);
+        if (expiresAt) {
+          await svc.update(id, {
+            providerMetadata: { ...(rotated.providerMetadata ?? {}), githubPatExpiresAt: expiresAt },
+          });
+        }
+      }
+
+      const bindings = await svc.listBindings(rotated.companyId, rotated.id);
+      const ghBindings = bindings.filter((b) => b.targetType === "github_actions");
+      for (const b of ghBindings) {
+        await syncSecretToGitHubActions({
+          repo: b.targetId,
+          secretName: b.configPath,
+          secretValue: req.body.value,
+        }).catch(() => null);
+      }
+    }
 
     await logActivity(db, {
       companyId: rotated.companyId,

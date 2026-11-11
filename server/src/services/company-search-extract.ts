@@ -1,14 +1,14 @@
 import { and, asc, desc, eq, gte, inArray, isNull, or, sql } from "drizzle-orm";
 import type { SQL, SQLWrapper } from "drizzle-orm";
-import type { Db } from "@paperclipai/db";
-import { documents, issueComments, issueDocuments, issues } from "@paperclipai/db";
+import type { Db } from "@myrmidon/db";
+import { documents, issueComments, issueDocuments, issues } from "@myrmidon/db";
 import {
   type CompanySearchExtractIssueResult,
   type CompanySearchExtractMatch,
   type CompanySearchExtractQuery,
   type CompanySearchExtractResponse,
   type CompanySearchExtractSourceRef,
-} from "@paperclipai/shared";
+} from "@myrmidon/shared";
 import { visibleIssueCondition } from "./issue-visibility.js";
 
 const EXCERPT_MAX_CHARS = 180;
@@ -151,7 +151,11 @@ function extractMatches(sources: ExtractSource[], query: CompanySearchExtractQue
 
 export function companySearchExtractService(db: Db) {
   return {
-    extract: async (companyId: string, query: CompanySearchExtractQuery): Promise<CompanySearchExtractResponse> => {
+    extract: async (
+      companyId: string,
+      query: CompanySearchExtractQuery,
+      options?: { excludePrivate?: boolean },
+    ): Promise<CompanySearchExtractResponse> => {
       const containsPattern = `%${escapeLikePattern(query.contains)}%`;
       const urlPattern = urlContainsPattern(query.contains);
       const scopeConditions: SQL[] = [];
@@ -198,6 +202,9 @@ export function companySearchExtractService(db: Db) {
         visibleIssueCondition(),
         or(...scopeConditions)!,
       ];
+      if (options?.excludePrivate) {
+        conditions.push(eq(issues.isPrivate, false));
+      }
       if (query.status.length > 0) conditions.push(inArray(issues.status, query.status));
       const updatedWithin = updatedWithinStart(query.updatedWithin);
       if (updatedWithin) conditions.push(gte(issues.updatedAt, updatedWithin));

@@ -1,4 +1,6 @@
 import { formatAttachmentSize, MAX_ATTACHMENT_BYTES } from "../attachment-types.js";
+import { readProductEnv } from "@myrmidon/shared/env-alias";
+import { liveBehaviorSetting, liveBehaviorSettingsView } from "./behavior-settings/live.js";
 
 // myrmidon(P7): tell a Telegram sender which attachments were dropped at import
 // instead of acknowledging the turn as if every file arrived.
@@ -57,6 +59,13 @@ const TELEGRAM_ADAPTER_DEFAULT_LIMIT_BYTES = 25 * 1024 * 1024;
 // The cloud Bot API refuses getFile for anything larger than 20 MB.
 const TELEGRAM_CLOUD_API_LIMIT_BYTES = 20 * 1024 * 1024;
 
+/** The saved Telegram file ceiling; undefined while nothing was saved (the adapter default then applies). */
+function savedTelegramFileLimit(): number | undefined {
+  return liveBehaviorSettingsView().sources["telegramFileLimitBytes"] === "ui"
+    ? liveBehaviorSetting<number>("telegramFileLimitBytes")
+    : undefined;
+}
+
 /**
  * The largest Telegram file that can actually reach the board: the smallest of
  * the board attachment limit, the adapter download ceiling, and — without a
@@ -64,17 +73,22 @@ const TELEGRAM_CLOUD_API_LIMIT_BYTES = 20 * 1024 * 1024;
  */
 export function effectiveTelegramAttachmentLimitBytes(
   env: NodeJS.ProcessEnv = process.env,
-  boardLimitBytes: number = MAX_ATTACHMENT_BYTES,
+  boardLimitBytes: number | null = null,
 ): number {
   const configured = Math.max(
     0,
-    Math.trunc(Number(env.MYRMIDON_TELEGRAM_FILE_LIMIT_BYTES)),
+    Math.trunc(Number(env.MYRMIDON_TELEGRAM_FILE_LIMIT_BYTES ?? savedTelegramFileLimit())),
   );
+  // The deployment env ceiling (ATTACHMENT_MAX_BYTES) stays the override; the
+  // saved setting applies only when the env does not pin the limit.
+  const boardLimit =
+    boardLimitBytes ??
+    (Number(readProductEnv("ATTACHMENT_MAX_BYTES")) ? MAX_ATTACHMENT_BYTES : liveBehaviorSetting<number>("paperclipAttachmentMaxBytes"));
   const adapterLimit = configured || TELEGRAM_ADAPTER_DEFAULT_LIMIT_BYTES;
   const apiLimit = env.TELEGRAM_API_BASE_URL?.trim()
     ? Number.POSITIVE_INFINITY
     : TELEGRAM_CLOUD_API_LIMIT_BYTES;
-  return Math.min(boardLimitBytes, adapterLimit, apiLimit);
+  return Math.min(boardLimit, adapterLimit, apiLimit);
 }
 
 /**

@@ -15,9 +15,22 @@ name: Release freeze gate
 # checks of main; without that it is advisory only (red, but mergeable by
 # admins).
 
+# OPE-10063: the gate is computed once per pull_request event, so a PR checked
+# while the CI of a release tag ran stayed red after the freeze lifted (30.10:
+# `freeze` was red on every open PR while the CI of rc.19 ran). When "Myrmidon
+# CI (tag)" completes, the second job re-runs the failed gate runs of the open
+# PRs if the gate is open again (scripts/myrmidon/release/release-freeze-rerun.sh).
+# workflow_run workflows are taken from the default branch.
+
 on:
   pull_request:
     branches: [main]
+  workflow_run:
+    workflows: ["Myrmidon CI (tag)"]
+    types: [completed]
+  schedule:
+    - cron: "*/15 * * * *"
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -26,10 +39,30 @@ permissions:
 jobs:
   freeze:
     name: freeze
-    if: ${{ github.repository == 'itkadr-git/myrmidon' }}
-    runs-on: ubuntu-latest
+    if: ${{ github.repository == 'itkadr-git/myrmidon' && github.event_name == 'pull_request' }}
+    # Light gate: own pool (vars.CI_RUNNER_LIGHT, same as `plan`), the GitHub-hosted queue is hours long.
+    runs-on: ${{ fromJSON(vars.CI_RUNNER_LIGHT || vars.MYR_RUNNER_LIGHT || '"vps-ci"') }}
     timeout-minutes: 10
     steps:
+      - name: Ensure gh and jq (self-hosted runners may lack them)
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          bin="$RUNNER_TEMP/tools-bin"; mkdir -p "$bin"
+          if ! command -v jq >/dev/null; then
+            # Release assets via the authenticated API: anonymous github.com downloads fail with 504 when GitHub throttles anonymous traffic.
+            curl -fsSL --retry 5 --retry-all-errors -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/octet-stream" -o "$bin/jq" https://api.github.com/repos/jqlang/jq/releases/assets/140520984
+            chmod +x "$bin/jq"
+          fi
+          if ! command -v gh >/dev/null; then
+            curl -fsSL --retry 5 --retry-all-errors -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/octet-stream" -o "$RUNNER_TEMP/gh.tar.gz" https://api.github.com/repos/cli/cli/releases/assets/206502108
+            tar -xzf "$RUNNER_TEMP/gh.tar.gz" -C "$RUNNER_TEMP"
+            cp "$RUNNER_TEMP/gh_2.62.0_linux_amd64/bin/gh" "$bin/gh"
+          fi
+          echo "$bin" >> "$GITHUB_PATH"
+
       - name: Checkout repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
@@ -42,3 +75,27 @@ jobs:
         run: |
           set -euo pipefail
           ./scripts/myrmidon/release/release-freeze.sh --check
+
+  rerun-failed-freeze:
+    name: re-run failed freeze gates
+    if: ${{ github.repository == 'itkadr-git/myrmidon' && (github.event_name == 'workflow_run' || github.event_name == 'workflow_dispatch' || github.event_name == 'schedule') }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      actions: write
+      contents: read
+      issues: read
+      pull-requests: read
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
+      - name: Re-run the failed gate runs of open pull requests once the freeze is lifted
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          ./scripts/myrmidon/release/release-freeze-rerun.sh

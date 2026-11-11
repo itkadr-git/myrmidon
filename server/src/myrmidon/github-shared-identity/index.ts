@@ -11,6 +11,10 @@
 //       board with `tools:manage_connections` — replaces the rules. Every key
 //       secret must be an active company-scope secret of this company and
 //       every agent id an agent of this company.
+//   POST /api/myrmidon/companies/:companyId/github-shared-identity/apps/:entryId/webhook-sync
+//       board with `tools:manage_connections`, body `{ webhookUrl }` —
+//       myrmidon(GITHUB-APP-WEBHOOK): sets the App's webhook to the board's
+//       receiver (webhook-sync.ts); answers `{ url, contentType }` from GitHub.
 //
 // The broker reads the rules on every credential request, so a saved change
 // applies to the next git/gh operation without a restart. Every save is
@@ -20,7 +24,7 @@
 import { Router } from "express";
 import { z } from "zod";
 import { and, eq, inArray, isNull } from "drizzle-orm";
-import { agents, companySecrets, type Db } from "@paperclipai/db";
+import { agents, companySecrets, type Db } from "@myrmidon/db";
 import { logActivity } from "../../services/activity-log.js";
 import { assertActorCompanyPermission, assertBoard, assertCompanyAccess, getActorInfo } from "../../routes/authz.js";
 import { validate } from "../../middleware/validate.js";
@@ -32,6 +36,8 @@ import {
 } from "./settings.js";
 import { readGitHubSharedIdentitySettings, writeGitHubSharedIdentitySettings } from "./store.js";
 import { vendorGitHubConnectorEnabled } from "./vendor-connector.js";
+// myrmidon(GITHUB-APP-WEBHOOK): point an App's webhook at this board
+import { syncGitHubAppWebhook } from "./webhook-sync.js";
 // myrmidon(GITHUB-APP-MANIFEST): one-click GitHub App registration (manifest flow)
 import {
   AppManifestError,
@@ -60,6 +66,13 @@ const githubAppManifestBeginSchema = z
     }
   });
 
+// myrmidon(GITHUB-APP-WEBHOOK): input of POST .../apps/:entryId/webhook-sync.
+// The URL checks mirror the GitHub helper (https, no credentials / query /
+// fragment); the board's own receiver path is documented in the guide.
+const githubAppWebhookSyncSchema = z
+  .object({ webhookUrl: z.string().trim().url().max(2048) })
+  .strict();
+
 export {
   GITHUB_SHARED_IDENTITY_GENERAL_KEY,
   DEFAULT_COMMIT_EMAIL_DOMAIN,
@@ -84,12 +97,17 @@ export {
   type GitHubAppPermissionLevel,
   type GitHubAppPermissions,
   mintGitHubAppInstallationToken,
+  onResetGitHubAppTokenCache,
 } from "./app-token.js";
 export { normalizeGitHubAppPermissions } from "./settings.js";
 export { vendorGitHubConnectorEnabled, GITHUB_VENDOR_CONNECTOR_ENV } from "./vendor-connector.js";
 
 async function assertReferencesBelongToCompany(db: Db, companyId: string, settings: GitHubSharedIdentitySettings) {
-  const secretIds = [...new Set([...settings.apps.map((app) => app.privateKeySecretId), ...settings.pats.map((pat) => pat.tokenSecretId)])];
+  const secretIds = [...new Set([
+    ...settings.apps.map((app) => app.privateKeySecretId),
+    ...settings.apps.flatMap((app) => (app.webhookSecretId ? [app.webhookSecretId] : [])),
+    ...settings.pats.map((pat) => pat.tokenSecretId),
+  ])];
   if (secretIds.length > 0) {
     const rows = await db
       .select({ id: companySecrets.id })
@@ -220,13 +238,49 @@ export function myrmidonGitHubSharedIdentityRoutes(db: Db) {
     res.json({ installUrl });
   });
 
+  // myrmidon(GITHUB-APP-WEBHOOK): set the App's webhook to `webhookUrl` (the
+  // board's receiver, POST /api/myrmidon/github-app/webhook on its public
+  // address). Creates the entry's webhook secret on the first call and reuses
+  // it afterwards; answers what GitHub reports back — never the secret.
+  router.post(
+    `${base}/apps/:entryId/webhook-sync`,
+    validate(githubAppWebhookSyncSchema),
+    async (req, res) => {
+      const companyId = req.params.companyId as string;
+      assertBoard(req);
+      await assertActorCompanyPermission(req, db, companyId, "tools:manage_connections");
+      res.json(
+        await syncGitHubAppWebhook(db, {
+          companyId,
+          entryId: req.params.entryId as string,
+          webhookUrl: (req.body as z.output<typeof githubAppWebhookSyncSchema>).webhookUrl,
+          actor: getActorInfo(req),
+        }),
+      );
+    },
+  );
+
   router.put(base, validate(githubSharedIdentitySettingsInputSchema), async (req, res) => {
     const companyId = req.params.companyId as string;
     assertBoard(req);
     await assertActorCompanyPermission(req, db, companyId, "tools:manage_connections");
     // `validate` already replaced the body with the schema's parsed output.
+    const input = req.body as z.output<typeof githubSharedIdentitySettingsInputSchema>;
+    // myrmidon(GITHUB-APP-WEBHOOK): the webhook secret id is server-owned (made
+    // by webhook-sync); a body that omits it keeps the stored one, only an
+    // explicit null clears it. Without this every board save would unhook it.
+    const stored = new Map(
+      (await readGitHubSharedIdentitySettings(db, companyId)).apps.map((app) => [app.id, app.webhookSecretId] as const),
+    );
+    // Re-parsed so the carried key lands in schema order: the save compares
+    // the document with the stored one, and a reordered key reads as a change.
     const next = toStoredGitHubSharedIdentitySettings(
-      req.body as z.output<typeof githubSharedIdentitySettingsInputSchema>,
+      githubSharedIdentitySettingsInputSchema.parse({
+        ...input,
+        apps: input.apps.map((app) =>
+          app.webhookSecretId === undefined && stored.get(app.id) ? { ...app, webhookSecretId: stored.get(app.id) } : app,
+        ),
+      }),
     );
     await assertReferencesBelongToCompany(db, companyId, next);
     const { previous, changed } = await writeGitHubSharedIdentitySettings(db, companyId, next);

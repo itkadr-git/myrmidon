@@ -12,6 +12,7 @@ import {
   companySecretVersions,
   companyMemberships,
   companies,
+  authUsers,
   connectionGrantMembers,
   connectionGrantDelegations,
   connectionGrants,
@@ -42,7 +43,7 @@ import {
   secretAccessEvents,
   userSecretDeclarations,
   userSecretDefinitions,
-} from "@paperclipai/db";
+} from "@myrmidon/db";
 import type { PluginToolDispatcher } from "../services/plugin-tool-dispatcher.js";
 import { mcpGatewayProtocolRoutes, toolGatewayRoutes } from "../routes/tool-gateway.js";
 import { toolAccessService } from "../services/tool-access.js";
@@ -73,7 +74,7 @@ type Db = ReturnType<typeof createDb>;
 type ToolGatewayServiceOptions = NonNullable<Parameters<typeof createToolGatewayService>[1]>;
 
 async function createCompany(db: Db) {
-  return db
+  const company = await db
     .insert(companies)
     .values({
       name: `Gateway ${randomUUID()}`,
@@ -81,6 +82,25 @@ async function createCompany(db: Db) {
     })
     .returning()
     .then((rows) => rows[0]!);
+  const now = new Date();
+  await db
+    .insert(authUsers)
+    .values({
+      id: "board-user",
+      name: "Board User",
+      email: "board-user@example.com",
+      createdAt: now,
+      updatedAt: now,
+    })
+    .onConflictDoNothing();
+  await db.insert(companyMemberships).values({
+    companyId: company.id,
+    principalType: "user",
+    principalId: "board-user",
+    membershipRole: "owner",
+    status: "active",
+  });
+  return company;
 }
 
 async function createAgent(db: Db, companyId: string, permissions: Record<string, unknown> = {}) {
@@ -602,6 +622,7 @@ describeEmbeddedPostgres("tool gateway: a failing tool does not take its connect
     await db.delete(projects);
     await db.delete(principalPermissionGrants);
     await db.delete(companyMemberships);
+    await db.delete(authUsers);
     await db.delete(agents);
     await db.delete(companies);
   });
@@ -830,14 +851,16 @@ describeEmbeddedPostgres("tool gateway: a failing tool does not take its connect
         connectionId: remote.connection.id,
         toolName: "kv_get",
       });
-      const call = (attempt: number) =>
+      // 10 ms forces the timeouts; calls to the recovered server get a real budget,
+      // or a loaded CI runner times them out too (main ec7139a, 31.10).
+      const call = (attempt: number, timeoutMs = 10) =>
         gateway.executeTool({
           sessionToken: session.token,
           tool: slowTool,
           // Unique parameters per attempt: identical arguments of a side-effecting
           // tool are replayed from the recorded invocation instead of executed.
           parameters: { key: "a", value: `attempt-${attempt}` },
-          timeoutMs: 10,
+          timeoutMs,
         });
       const connectionHealth = async () =>
         db
@@ -923,9 +946,9 @@ describeEmbeddedPostgres("tool gateway: a failing tool does not take its connect
       // recorded, so the same arguments really run (no idempotent replay).
       clock += 61_000;
       slowToolRecovered = true;
-      await expect(call(4)).resolves.toMatchObject({ status: "completed" });
+      await expect(call(4, 5_000)).resolves.toMatchObject({ status: "completed" });
       expect(slowCallsReceived).toBe(4);
-      await expect(call(5)).resolves.toMatchObject({ status: "completed" });
+      await expect(call(5, 5_000)).resolves.toMatchObject({ status: "completed" });
     } finally {
       await fake.close();
     }
@@ -1095,6 +1118,14 @@ describeEmbeddedPostgres("tool gateway: a failing tool does not take its connect
     const company = await createCompany(db);
     const agent = await createAgent(db, company.id);
     const { run } = await createIssueAndRun(db, company.id, agent.id);
+    const ownerUserId = `user-${randomUUID()}`;
+    await db.insert(companyMemberships).values({
+      companyId: company.id,
+      principalType: "user",
+      principalId: ownerUserId,
+      status: "active",
+      membershipRole: "owner",
+    });
     let slow = true;
     let hits = 0;
     const fake = await startFakeRemoteMcpServer((fakeRequest) => {

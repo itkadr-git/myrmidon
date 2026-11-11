@@ -10,8 +10,8 @@
 //     call count after `stopRoom` equals the count before.
 
 import { describe, expect, it, beforeEach } from "vitest";
-import { DEFAULT_AGENT_EXCHANGE_SETTINGS, type AgentExchangeParticipantSpec } from "@paperclipai/shared";
-import type { AgentExchangeMessage, AgentExchangeRoom } from "@paperclipai/shared";
+import { DEFAULT_AGENT_EXCHANGE_SETTINGS, type AgentExchangeParticipantSpec } from "@myrmidon/shared";
+import type { AgentExchangeMessage, AgentExchangeRoom } from "@myrmidon/shared";
 import {
   finalizeRoom,
   openRoom,
@@ -143,6 +143,34 @@ function fakeSummaries() {
   };
 }
 
+/**
+ * A model port whose calls hang until the room's stop signal aborts them —
+ * the stand-in for an in-flight provider call interrupted by the stop valve.
+ */
+class HangingModels implements AgentExchangeModelPort {
+  calls: AgentExchangeModelCallInput[] = [];
+  landed = 0;
+  async call(input: AgentExchangeModelCallInput): Promise<AgentExchangeModelCallResult> {
+    this.calls.push(input);
+    await new Promise<void>((resolve, reject) => {
+      const timer = setTimeout(resolve, 120_000);
+      input.signal?.addEventListener(
+        "abort",
+        () => {
+          clearTimeout(timer);
+          reject(input.signal?.reason instanceof Error ? input.signal.reason : new Error("aborted"));
+        },
+        { once: true },
+      );
+    });
+    this.landed += 1;
+    return { content: "late", promptTokens: 1, completionTokens: 1 };
+  }
+  async prices() {
+    return { promptPriceUsdPerMillion: null, completionPriceUsdPerMillion: null };
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
@@ -196,13 +224,54 @@ describe("agent-exchange engine (myrmidon 1.7 AGENT-EXCHANGE-A)", () => {
     expect(messages).toHaveLength(3);
     expect(new Set(messages.map((m) => m.content)).size).toBe(3);
 
-    // The finisher adds the summary document with the cost line.
+    // The finisher adds the summary document with the cost line and writes a
+    // finisher message into the room transcript.
     const closed = await finalizeRoom(deps, room.id);
     expect(closed.status).toBe("completed");
     expect(models.calls).toHaveLength(4); // 3 participants + finisher
     expect(summaries.written).toHaveLength(1);
     expect(summaries.written[0].body).toMatch(/Room cost: \d+ tokens/);
     expect(closed.summaryDocumentKey).toBe(`exchange:${room.id}`);
+
+    // Finisher message is in the room transcript with [finisher] tag
+    const transcriptMessages = await deps.store.listMessages(room.id);
+    const finisherMsg = transcriptMessages.find((m) => m.content?.startsWith("[finisher]"));
+    expect(finisherMsg).toBeDefined();
+    expect(finisherMsg?.status).toBe("done");
+    expect(finisherMsg?.round).toBe(room.currentRound + 1);
+    expect(finisherMsg?.participantIndex).toBe(PARTICIPANTS.length);
+    expect(finisherMsg?.content).toContain("Room cost:");
+  });
+
+  it("acceptance: 2 participants → one finisher message in room transcript", async () => {
+    const twoParticipants = PARTICIPANTS.slice(0, 2);
+    const room = await openRoom(deps, {
+      companyId: "company-1",
+      issueId: "issue-2",
+      openerType: "user",
+      openerId: "owner-1",
+      participants: twoParticipants,
+      prompt: "Two participant room prompt",
+      issueTitle: "OPE-12121",
+    });
+
+    // 2 participants yielded independent first answers
+    expect(models.calls).toHaveLength(2);
+    const round1Messages = await deps.store.listMessages(room.id);
+    expect(round1Messages.filter((m) => m.status === "done")).toHaveLength(2);
+
+    // Finalize: finisher runs synthesis
+    await finalizeRoom(deps, room.id);
+
+    // After finisher: 2 participant answers + 1 finisher message = 3 total messages
+    const allMessages = await deps.store.listMessages(room.id);
+    expect(allMessages).toHaveLength(3);
+
+    const finisherMessages = allMessages.filter((m) => m.content?.startsWith("[finisher]"));
+    expect(finisherMessages).toHaveLength(1);
+    expect(finisherMessages[0].status).toBe("done");
+    expect(finisherMessages[0].participantIndex).toBe(2);
+    expect(finisherMessages[0].content).toContain("Room cost:");
   });
 
   it("the stop valve stops the room without new model calls", async () => {
@@ -245,6 +314,96 @@ describe("agent-exchange engine (myrmidon 1.7 AGENT-EXCHANGE-A)", () => {
     await expect(
       stopRoom(deps, { roomId: room.id, actorType: "user", actorId: "someone-else" }),
     ).rejects.toMatchObject({ code: "not_room_stopper" });
+  });
+
+  it("a named participant may stop the room (participant_stop)", async () => {
+    const participants: AgentExchangeParticipantSpec[] = [
+      { agentId: "11111111-1111-4111-8111-111111111111", label: "agent-a", providerId: "prov-1", model: "model-a" },
+      { agentId: null, label: "agent-b", providerId: "prov-1", model: "model-b" },
+    ];
+    const room = await openRoom(deps, {
+      companyId: "company-1",
+      issueId: "issue-1",
+      openerType: "user",
+      openerId: "owner-1",
+      participants,
+      prompt: "p",
+      issueTitle: "t",
+    });
+    const stopped = await stopRoom(deps, {
+      roomId: room.id,
+      actorType: "agent",
+      actorId: "11111111-1111-4111-8111-111111111111",
+    });
+    expect(stopped.status).toBe("stopped");
+    expect(stopped.stopReason).toBe("participant_stop");
+
+    // A stopped room accepts no further rounds and no finalize either.
+    await expect(runNextRound(deps, room.id, "Task: t")).rejects.toMatchObject({ code: "room_closed" });
+    await expect(finalizeRoom(deps, room.id)).rejects.toMatchObject({ code: "room_closed" });
+  });
+
+  it("a participant who is not in the roster may not stop the room", async () => {
+    const room = await openRoom(deps, {
+      companyId: "company-1",
+      issueId: "issue-1",
+      openerType: "user",
+      openerId: "owner-1",
+      participants: PARTICIPANTS,
+      prompt: "p",
+      issueTitle: "t",
+    });
+    await expect(
+      stopRoom(deps, { roomId: room.id, actorType: "agent", actorId: "22222222-2222-4222-8222-222222222222" }),
+    ).rejects.toMatchObject({ code: "not_room_stopper" });
+  });
+
+  it("the stop valve interrupts an in-flight round: calls aborted, no totals, next round 409s", async () => {
+    const hanging = new HangingModels();
+    const hangDeps: AgentExchangeEngineDeps = { ...deps, models: hanging };
+    const participantAgents: AgentExchangeParticipantSpec[] = [
+      { agentId: "11111111-1111-4111-8111-111111111111", label: "agent-a", providerId: "prov-1", model: "model-a" },
+      { agentId: null, label: "agent-b", providerId: "prov-1", model: "model-b" },
+    ];
+    const room = await openRoom(deps, {
+      companyId: "company-1",
+      issueId: "issue-1",
+      openerType: "user",
+      openerId: "owner-1",
+      participants: participantAgents,
+      prompt: "p",
+      issueTitle: "t",
+    });
+    const callsBeforeRound2 = hanging.calls.length;
+
+    const running = runNextRound(hangDeps, room.id, "Task: t\\np");
+    // Give the round a tick to dispatch its calls, then stop the room.
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    const stopped = await stopRoom(hangDeps, {
+      roomId: room.id,
+      actorType: "agent",
+      actorId: "11111111-1111-4111-8111-111111111111",
+    });
+    const after = await running;
+
+    expect(stopped.status).toBe("stopped");
+    expect(stopped.stopReason).toBe("participant_stop");
+    // The round was interrupted: no totals were added, the round count stayed.
+    expect(after.tokensUsed).toBe(room.tokensUsed);
+    expect(after.costCents).toBe(room.costCents);
+    expect(after.currentRound).toBe(1);
+    // The in-flight cells landed as room_stopped errors.
+    const roundTwoCells = store.messages.filter((m) => m.round === 2);
+    expect(roundTwoCells).toHaveLength(2);
+    for (const cell of roundTwoCells) {
+      expect(cell.status).toBe("error");
+      expect(cell.error).toBe("room_stopped:interrupted_by_stop");
+    }
+    // No call landed after the stop.
+    expect(hanging.landed).toBe(callsBeforeRound2);
+
+    // Further rounds are refused: room_closed maps to HTTP 409.
+    await expect(runNextRound(hangDeps, room.id, "Task: t\\np")).rejects.toMatchObject({ code: "room_closed" });
   });
 
   it("a disabled feature refuses to open a room before any model call", async () => {

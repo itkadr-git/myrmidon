@@ -7,8 +7,8 @@
 // instance-admin only, the same rule the rest of the instance settings follow.
 
 import { Router } from "express";
-import type { Db } from "@paperclipai/db";
-import { patchTelegramDmProgressSchema, type TelegramDmProgressPatch } from "@paperclipai/shared";
+import type { Db } from "@myrmidon/db";
+import { patchTelegramDmProgressSchema, type TelegramDmProgressPatch } from "@myrmidon/shared";
 import { validate } from "../../middleware/validate.js";
 import { assertBoardOrgAccess, assertInstanceAdmin, getActorInfo } from "../../routes/authz.js";
 import type { TelegramDmProgressService } from "./service.js";

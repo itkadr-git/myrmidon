@@ -1,15 +1,19 @@
-// myrmidon(1.6.1 MODEL-PROVIDERS C): API client for the "Model providers"
-// settings screen. Speaks the Part A contract (branch
-// myr/1.6.1-model-providers-store) against
+// myrmidon(1.6.1 MODEL-PROVIDERS C, 1.6.7 OPE-12345): API client for the
+// "Model providers" settings screen. It speaks the server contract
+// (server/src/myrmidon/model-providers/routes-with-sync.ts) under
 // /api/myrmidon/companies/:id/model-providers:
-//   POST   /providers            (add; key write-only, never returned)
-//   GET    /providers            (list without the key, hasKey flag)
-//   PATCH  /providers/:pid       (rotate key)
-//   DELETE /providers/:pid
-//   GET    /providers/:pid/models (cached model list from validation)
-//   POST   /providers/:pid/models (enable/disable models)
-// The screen is written against this contract while Part A merges; the
-// response types carry only key-free fields.
+//   POST   /                     (add; key write-only, never returned)
+//   GET    /                     (list without the key, hasKey flag)
+//   PATCH  /:pid                 (rotate key)
+//   DELETE /:pid
+//   GET    /:pid/models          (cached model list from validation)
+//   POST   /:pid/models          (enable/disable models)
+//   GET    /:pid/channels        (pool accounts and signals)
+//   GET    /litellm/channels     (model groups and routed channels)
+//   POST|GET /:pid/oauth/...     (pool account sign-in)
+// The 1.6.1 client was written against a draft that put an extra `/providers`
+// segment into every path; the server never had it and every call answered 404.
+// The response types carry only key-free fields.
 import { api } from "@/api/client";
 
 export const BUILTIN_MODEL_PROVIDER_TYPES = [
@@ -22,6 +26,8 @@ export const BUILTIN_MODEL_PROVIDER_TYPES = [
 export const MODEL_PROVIDER_TYPES = [
   ...BUILTIN_MODEL_PROVIDER_TYPES,
   "chatgpt-pool",
+  "antigravity-pool",
+  "google-ai-pool",
 ] as const;
 
 export type BuiltinModelProviderType = (typeof BUILTIN_MODEL_PROVIDER_TYPES)[number];
@@ -54,9 +60,14 @@ export interface ModelProviderModelsView {
 export interface ModelProviderChangeLogEntry {
   id: string;
   at: string;
-  actor: { type: "board" | "agent" | "system"; id: string };
-  action: "provider_added" | "provider_rotated" | "provider_removed" | "models_updated";
+  // myrmidon(OPE-12361): the server carries the author display name when known.
+  actor: { type: "board" | "agent" | "system" | string; id: string; name?: string | null };
+  action: "provider_added" | "provider_rotated" | "provider_removed" | "models_updated" | string;
   summary: string;
+  category?: "models" | "fallbacks" | "keys" | string;
+  before?: Record<string, unknown> | null;
+  after?: Record<string, unknown> | null;
+  canRollback?: boolean;
 }
 
 export type PoolAccountState =
@@ -94,8 +105,10 @@ export interface PoolAccountChannelView {
   state: PoolAccountState | string;
   stateRu?: string;
   plan?: string | null;
+  models?: string[];
   limitedUntil: number | null;
   lastOk: number | null;
+  error?: string | null;
   windows: {
     primary: PoolAccountLimitWindow | null;
     secondary: PoolAccountLimitWindow | null;
@@ -103,7 +116,10 @@ export interface PoolAccountChannelView {
   usage?: PoolAccountUsage;
   isBanned: boolean;
   isExhausted: boolean;
-  error?: string | null;
+  isDisabled?: boolean;
+  isExcluded?: boolean;
+  oauthState?: string;
+  oauthExpiresAt?: number | null;
 }
 
 export interface PoolAccountRoleSignal {
@@ -125,6 +141,34 @@ export interface ModelProviderChannelsView {
   providerType: ModelProviderType;
   channels: PoolAccountChannelView[];
   signals: PoolAccountRoleSignal[];
+  // myrmidon(OPE-12361): keep in sync with ModelProviderChannelsView in
+  // @myrmidon/shared (error-account counter and pool reset passthrough).
+  summary?: {
+    total: number;
+    live: number;
+    exhausted: number;
+    banned: number;
+    error: number;
+    disabled?: number;
+    nextResetAt: number | null;
+    nextResetText: string | null;
+  };
+}
+
+export interface LitellmChannelView {
+  id: string | null;
+  group: string;
+  provider: string;
+  providerModel: string;
+  order: number | null;
+  weight: number | null;
+}
+
+export interface LitellmChannelsResponse {
+  channels: LitellmChannelView[];
+  enabled?: boolean;
+  error?: string | null;
+  message?: string | null;
 }
 
 export interface ModelProvidersView {
@@ -151,6 +195,36 @@ export interface UpdateModelsInput {
   models: Array<{ modelName: string; litellmModelName: string; enabled: boolean; free: boolean }>;
 }
 
+export interface PoolAccountOAuthBeginInput {
+  accountNumber?: number;
+  label?: string;
+  plan?: string;
+}
+
+export interface PoolAccountOAuthBeginResult {
+  accountNumber: number;
+  userCode: string;
+  verificationUri: string;
+  expiresInSec: number;
+  intervalSec: number;
+}
+
+export interface PoolAccountOAuthStatusResult {
+  accountNumber: number;
+  status: "pending" | "success" | "expired" | "failed";
+  error?: string | null;
+}
+
+export interface PoolAccountOAuthCompleteInput {
+  accountNumber: number;
+  code?: string;
+  token?: string;
+}
+
+export interface PoolAccountOAuthRefreshInput {
+  accountNumber: number;
+}
+
 const base = (companyId: string) =>
   `/myrmidon/companies/${encodeURIComponent(companyId)}/model-providers`;
 
@@ -163,46 +237,168 @@ export const modelProviderModelsQueryKey = (companyId: string, providerId: strin
 export const modelProviderChannelsQueryKey = (companyId: string, providerId: string) =>
   ["myrmidon", "model-providers", companyId, "channels", providerId] as const;
 
-export const modelProvidersApi = {
-  /** GET /providers → { providers, changeLog } (no key values ever). */
-  view: (companyId: string) => api.get<ModelProvidersView>(`${base(companyId)}/providers`),
+export const litellmChannelsQueryKey = (companyId: string) =>
+  ["myrmidon", "model-providers", companyId, "litellm-channels"] as const;
 
-  /** POST /providers — validates the key and returns the provider with its
+/**
+ * Two server modules answer GET …/litellm/channels with different spellings of
+ * the same row: the provider-sync view (`group`, `provider`) and the channel
+ * manager view (`modelName`, `providerType`). The table reads the first, so
+ * the second is mapped onto it and no column renders empty.
+ */
+export function normalizeLitellmChannel(
+  raw: Partial<LitellmChannelView> & { modelName?: string; providerType?: string },
+): LitellmChannelView {
+  return {
+    id: raw.id ?? null,
+    group: raw.group ?? raw.modelName ?? "",
+    provider: raw.provider ?? raw.providerType ?? "",
+    providerModel: raw.providerModel ?? "",
+    order: raw.order ?? null,
+    weight: raw.weight ?? null,
+  };
+}
+
+export const modelProvidersApi = {
+  /** GET / → { providers, availableTypes, changeLog } (no key values ever). */
+  view: (companyId: string) => api.get<ModelProvidersView>(base(companyId)),
+
+  /** POST / — validates the key and returns the provider with its
    * discovered models; the key itself is not part of any response. */
   add: (companyId: string, input: AddModelProviderInput) =>
     api.post<{ provider: ModelProviderView; models: ModelProviderModelView[] }>(
-      `${base(companyId)}/providers`,
+      base(companyId),
       input,
     ),
 
-  /** PATCH /providers/:pid — rotate the stored key. */
+  /** PATCH /:pid — rotate the stored key. */
   rotate: (companyId: string, providerId: string, input: RotateModelProviderInput) =>
     api.patch<{ provider: ModelProviderView; models: ModelProviderModelView[] }>(
-      `${base(companyId)}/providers/${encodeURIComponent(providerId)}`,
+      `${base(companyId)}/${encodeURIComponent(providerId)}`,
       input,
     ),
 
-  /** DELETE /providers/:pid — remove the provider and its models. */
+  /** DELETE /:pid — remove the provider and its models. */
   remove: (companyId: string, providerId: string) =>
-    api.delete<{ ok: true }>(`${base(companyId)}/providers/${encodeURIComponent(providerId)}`),
+    api.delete<{ ok: true }>(`${base(companyId)}/${encodeURIComponent(providerId)}`),
 
-  /** GET /providers/:pid/models — the cached model list. */
+  /** GET /:pid/models — the cached model list. */
   models: (companyId: string, providerId: string) =>
     api.get<ModelProviderModelsView>(
-      `${base(companyId)}/providers/${encodeURIComponent(providerId)}/models`,
+      `${base(companyId)}/${encodeURIComponent(providerId)}/models`,
     ),
 
-  /** POST /providers/:pid/models — enable/disable models. */
+  /** POST /:pid/models — enable/disable models. */
   updateModels: (companyId: string, providerId: string, input: UpdateModelsInput) =>
     api.post<{ models: ModelProviderModelView[] }>(
-      `${base(companyId)}/providers/${encodeURIComponent(providerId)}/models`,
+      `${base(companyId)}/${encodeURIComponent(providerId)}/models`,
       input,
     ),
 
-  /** GET /providers/:pid/channels — accounts and signals for a chatgpt-pool provider. */
+  /** GET /:pid/channels — accounts and signals for a pool provider. */
   channels: (companyId: string, providerId: string) =>
     api.get<ModelProviderChannelsView>(
-      `${base(companyId)}/providers/${encodeURIComponent(providerId)}/channels`,
+      `${base(companyId)}/${encodeURIComponent(providerId)}/channels`,
+    ),
+
+  /** POST /:pid/channels — add a Codex/ChatGPT account to the pool. */
+  addAccount: (
+    companyId: string,
+    providerId: string,
+    input: { label: string; plan?: string; email?: string | null },
+  ) =>
+    api.post<{ ok: true; account: PoolAccountChannelView }>(
+      `${base(companyId)}/${encodeURIComponent(providerId)}/channels`,
+      input,
+    ),
+
+  /** DELETE /:pid/channels/:accountNumber — remove an account from the pool. */
+  deleteAccount: (companyId: string, providerId: string, accountNumber: number) =>
+    api.delete<{ ok: true }>(
+      `${base(companyId)}/${encodeURIComponent(providerId)}/channels/${encodeURIComponent(accountNumber)}`,
+    ),
+
+  /** POST /:pid/oauth/start — initiate OAuth authorization flow for Codex account. */
+  startOAuth: (
+    companyId: string,
+    providerId: string,
+    input?: { plan?: string; label?: string },
+  ) =>
+    api.post<{
+      authUrl: string;
+      userCode?: string;
+      verificationUri?: string;
+      state: string;
+      expiresIn: number;
+    }>(
+      `${base(companyId)}/${encodeURIComponent(providerId)}/oauth/start`,
+      input ?? {},
+    ),
+
+  /** POST /:pid/oauth/complete — complete OAuth authorization flow. */
+  completeOAuth: (
+    companyId: string,
+    providerId: string,
+    input: {
+      state?: string;
+      code?: string;
+      plan?: string;
+      label?: string;
+      email?: string;
+    },
+  ) =>
+    api.post<{ ok: true; account: PoolAccountChannelView }>(
+      `${base(companyId)}/${encodeURIComponent(providerId)}/oauth/complete`,
+      input,
+    ),
+
+  /** GET /litellm/channels — model groups and routed channels from LiteLLM. */
+  litellmChannels: async (companyId: string): Promise<LitellmChannelsResponse> => {
+    const response = await api.get<LitellmChannelsResponse>(`${base(companyId)}/litellm/channels`);
+    return { ...response, channels: (response.channels ?? []).map(normalizeLitellmChannel) };
+  },
+
+  /** POST /:pid/oauth/begin — starts OAuth device authorization (OPE-10810). */
+  oauthBegin: (companyId: string, providerId: string, input?: PoolAccountOAuthBeginInput) =>
+    api.post<PoolAccountOAuthBeginResult>(
+      `${base(companyId)}/${encodeURIComponent(providerId)}/oauth/begin`,
+      input || {},
+    ),
+
+  /** GET /:pid/oauth/status — checks OAuth device authorization status. */
+  oauthStatus: (companyId: string, providerId: string, accountNumber: number) =>
+    api.get<PoolAccountOAuthStatusResult>(
+      `${base(companyId)}/${encodeURIComponent(providerId)}/oauth/status?accountNumber=${accountNumber}`,
+    ),
+
+  /** POST /:pid/oauth/complete — completes authorization, storing tokens strictly in secret store. */
+  oauthComplete: (companyId: string, providerId: string, input: PoolAccountOAuthCompleteInput) =>
+    api.post<{ ok: true; accountNumber: number }>(
+      `${base(companyId)}/${encodeURIComponent(providerId)}/oauth/complete`,
+      input,
+    ),
+
+  /** POST /:pid/oauth/refresh — refreshes pool account OAuth token via secret store. */
+  oauthRefresh: (companyId: string, providerId: string, input: PoolAccountOAuthRefreshInput) =>
+    api.post<{ ok: true; accountNumber: number }>(
+      `${base(companyId)}/${encodeURIComponent(providerId)}/oauth/refresh`,
+      input,
+    ),
+};
+
+// The client prefixes every path with /api itself; a path that starts with
+// /api again reached /api/api/... and answered 404.
+export const litellmAuditApi = {
+  list: (companyId: string, category?: string) => {
+    const q = category ? `?category=${encodeURIComponent(category)}` : "";
+    return api.get<{ entries: ModelProviderChangeLogEntry[] }>(
+      `/myrmidon/companies/${encodeURIComponent(companyId)}/litellm/audit${q}`,
+    );
+  },
+  rollback: (companyId: string, auditId: string) =>
+    api.post<{ success: boolean; result: unknown }>(
+      `/myrmidon/companies/${encodeURIComponent(companyId)}/litellm/audit/${encodeURIComponent(auditId)}/rollback`,
+      {},
     ),
 };
 

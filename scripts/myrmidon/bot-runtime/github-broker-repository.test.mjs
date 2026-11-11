@@ -156,6 +156,65 @@ describe("docker/bot-runtime/github-broker/git-credential-paperclip", () => {
     assert.equal(result.stdout, "");
     assert.equal(requests.length, 0);
   });
+
+  // myrmidon(OPE-12446): acceptance — 100 credential requests of ONE run
+  // against ONE repository mint at most one token: the first call walks the
+  // broker and stores the answer in the run-scoped cache; the other 99 are
+  // answered from the cache without contacting the broker at all.
+  it("serves 100 gets of one run from a single mint (run-scoped cache)", async () => {
+    const cacheDir = fs.mkdtempSync(path.join(os.tmpdir(), "ope12446-helper-cache-"));
+    try {
+      reply = { status: 200, body: available };
+      const input = "protocol=https\nhost=github.com\npath=owner-a/repo-a.git\n\n";
+      const runEnv = { PAPERCLIP_GITHUB_CREDENTIALS_CACHE_DIR: cacheDir };
+      for (let i = 0; i < 100; i++) {
+        const result = await run(HELPER, ["get"], { input, env: runEnv });
+        assert.equal(result.code, 0);
+        assert.equal(result.stdout, `username=x-access-token\npassword=${TEST_TOKEN}\n`);
+        assert.doesNotMatch(result.stderr, new RegExp(TEST_TOKEN));
+      }
+      assert.ok(requests.length <= 1, `expected at most 1 mint, got ${requests.length}`);
+    } finally {
+      fs.rmSync(cacheDir, { recursive: true, force: true });
+    }
+  });
+
+  it("does not cache across runs (different capability or cache dir = new mint)", async () => {
+    const cacheDirA = fs.mkdtempSync(path.join(os.tmpdir(), "ope12446-run-a-"));
+    const cacheDirB = fs.mkdtempSync(path.join(os.tmpdir(), "ope12446-run-b-"));
+    try {
+      reply = { status: 200, body: available };
+      const input = "protocol=https\nhost=github.com\npath=owner-a/repo-a.git\n\n";
+      await run(HELPER, ["get"], { input, env: { PAPERCLIP_GITHUB_CREDENTIALS_CACHE_DIR: cacheDirA } });
+      await run(HELPER, ["get"], { input, env: { PAPERCLIP_GITHUB_CREDENTIALS_CACHE_DIR: cacheDirB } });
+      assert.equal(requests.length, 2, "a second run must mint its own token");
+    } finally {
+      fs.rmSync(cacheDirA, { recursive: true, force: true });
+      fs.rmSync(cacheDirB, { recursive: true, force: true });
+    }
+  });
+
+  it("expired cache entries are re-minted, never served", async () => {
+    const cacheDir = fs.mkdtempSync(path.join(os.tmpdir(), "ope12446-expiry-"));
+    try {
+      const input = "protocol=https\nhost=github.com\npath=owner-a/repo-a.git\n\n";
+      reply = { status: 200, body: available };
+      await run(HELPER, ["get"], { input, env: { PAPERCLIP_GITHUB_CREDENTIALS_CACHE_DIR: cacheDir } });
+      // Age the stored entry past its validity window (issuedAt far in the past,
+      // expiresAt already behind the 60s reuse margin).
+      const entryPath = path.join(cacheDir, ".paperclip-broker-cache");
+      const file = fs.readdirSync(entryPath).find((name) => name.endsWith(".json"));
+      const entry = JSON.parse(fs.readFileSync(path.join(entryPath, file), "utf8"));
+      entry.expiresAt = Date.now() - 120_000;
+      fs.writeFileSync(path.join(entryPath, file), JSON.stringify(entry));
+      requests = [];
+      const result = await run(HELPER, ["get"], { input, env: { PAPERCLIP_GITHUB_CREDENTIALS_CACHE_DIR: cacheDir } });
+      assert.equal(result.stdout, `username=x-access-token\npassword=${TEST_TOKEN}\n`);
+      assert.equal(requests.length, 1, "an expired entry must go back to the broker");
+    } finally {
+      fs.rmSync(cacheDir, { recursive: true, force: true });
+    }
+  });
 });
 
 describe("docker/bot-runtime/github-broker/gh", () => {
@@ -201,5 +260,107 @@ describe("docker/bot-runtime/github-broker/gh", () => {
     assert.deepEqual(JSON.parse(requests[0].body), { repository: "owner-b/repo-b" });
     assert.match(result.stdout, /^token= args=/);
     assert.match(result.stderr, /GitHub access unavailable: not allowed/);
+  });
+
+  const required = {
+    status: "absent",
+    source: "app",
+    reasonCode: "repository_required",
+    reason: "GitHub access is configured, but no repository was named",
+    availableRepositories: ["owner-a/repo-a", "owner-a/tools-*"],
+    env: {},
+  };
+
+  it("takes the repository from the endpoint of gh api", async () => {
+    reply = { status: 200, body: available };
+    for (const endpoint of ["repos/owner-a/repo-a/pulls", "/repos/owner-a/repo-a"]) {
+      requests = [];
+      const result = await run(GH_WRAPPER, ["api", "--method", "GET", endpoint], {
+        env: { PATH: `${fakeBin}${path.delimiter}${process.env.PATH}` },
+        cwd: fakeBin,
+      });
+      assert.equal(result.code, 0, result.stderr);
+      assert.deepEqual(JSON.parse(requests[0].body), { repository: "owner-a/repo-a" });
+      assert.match(result.stdout, new RegExp(`^token=${TEST_TOKEN} args=`));
+    }
+  });
+
+  it("explains repository_required instead of leaving gh to say unauthenticated", async () => {
+    reply = { status: 200, body: required };
+    const result = await run(GH_WRAPPER, ["api", "user"], {
+      env: { PATH: `${fakeBin}${path.delimiter}${process.env.PATH}` },
+      cwd: fakeBin,
+    });
+    assert.deepEqual(JSON.parse(requests[0].body), {});
+    assert.match(result.stderr, /GitHub access is available through the Paperclip broker, but no repository is set/);
+    assert.match(result.stderr, /-R owner\/repo/);
+    assert.match(result.stderr, /allowed: owner-a\/repo-a, owner-a\/tools-\*/);
+    assert.match(result.stdout, /^token= args=api user/);
+  });
+
+  it("reports the broker's state for gh auth status when no repository is known", async () => {
+    reply = { status: 200, body: required };
+    const result = await run(GH_WRAPPER, ["auth", "status"], {
+      env: { PATH: `${fakeBin}${path.delimiter}${process.env.PATH}` },
+      cwd: fakeBin,
+    });
+    assert.equal(result.code, 0, result.stderr);
+    assert.match(result.stdout, /GitHub access is available through the Paperclip broker/);
+    assert.match(result.stdout, /Allowed repositories: owner-a\/repo-a, owner-a\/tools-\*/);
+    assert.match(result.stdout, /-R owner\/repo/);
+    assert.doesNotMatch(result.stdout, /unauthenticated|not logged in/i);
+    assert.doesNotMatch(result.stdout, /^token=/);
+  });
+
+  it("reports the issued identity for gh auth status without printing the token", async () => {
+    reply = { status: 200, body: available };
+    const result = await run(GH_WRAPPER, ["auth", "status", "-R", "owner-a/repo-a"], {
+      env: { PATH: `${fakeBin}${path.delimiter}${process.env.PATH}` },
+      cwd: fakeBin,
+    });
+    assert.equal(result.code, 0, result.stderr);
+    assert.match(result.stdout, /Logged in through the Paperclip broker as bot-a \(GitHub App identity\)/);
+    assert.match(result.stdout, /Repository: owner-a\/repo-a/);
+    assert.doesNotMatch(result.stdout + result.stderr, new RegExp(TEST_TOKEN));
+  });
+
+  it("rewrites base branch from bot/* to main when running gh pr create", async () => {
+    reply = { status: 200, body: available };
+    const cases = [
+      {
+        args: ["-R", "owner-a/repo-a", "pr", "create", "-B", "bot/OPE-9334", "--title", "test"],
+        expectedArgs: "-R owner-a/repo-a pr create -B main --title test",
+      },
+      {
+        args: ["-R", "owner-a/repo-a", "pr", "create", "--base", "bot/foo", "--title", "test"],
+        expectedArgs: "-R owner-a/repo-a pr create --base main --title test",
+      },
+      {
+        args: ["-R", "owner-a/repo-a", "pr", "create", "--base=bot/bar", "--title", "test"],
+        expectedArgs: "-R owner-a/repo-a pr create --base=main --title test",
+      },
+      {
+        args: ["-R", "owner-a/repo-a", "pr", "create", "-B", "rel/1.6.7", "--title", "test"],
+        expectedArgs: "-R owner-a/repo-a pr create -B rel/1.6.7 --title test",
+      },
+    ];
+    for (const { args, expectedArgs } of cases) {
+      const result = await run(GH_WRAPPER, args, {
+        env: { PATH: `${fakeBin}${path.delimiter}${process.env.PATH}` },
+        cwd: fakeBin,
+      });
+      assert.equal(result.code, 0, result.stderr);
+      assert.ok(result.stdout.includes(`args=${expectedArgs}`));
+    }
+  });
+
+  it("says why when the broker has no identity for the run", async () => {
+    reply = { status: 200, body: { status: "absent", reason: "No GitHub identity connected", env: {} } };
+    const result = await run(GH_WRAPPER, ["pr", "list"], {
+      env: { PATH: `${fakeBin}${path.delimiter}${process.env.PATH}` },
+      cwd: fakeBin,
+    });
+    assert.match(result.stderr, /no managed GitHub identity for this run \(No GitHub identity connected\)/);
+    assert.match(result.stdout, /^token= args=/);
   });
 });

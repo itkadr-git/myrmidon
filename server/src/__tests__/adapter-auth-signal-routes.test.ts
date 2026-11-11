@@ -1,6 +1,6 @@
 import express from "express";
 import request from "supertest";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 
 // The cheap host-local authentication-signal route. It reads no sandbox and
 // runs no shell command or model process, so every test drives it through a
@@ -104,8 +104,8 @@ vi.mock("../services/instance-settings.js", () => ({
   instanceSettingsService: () => mockInstanceSettingsService,
 }));
 
-vi.mock("@paperclipai/adapter-codex-local/server", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("@paperclipai/adapter-codex-local/server")>();
+vi.mock("@myrmidon/adapter-codex-local/server", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@myrmidon/adapter-codex-local/server")>();
   return {
     ...actual,
     evaluateCodexCredentialReadiness: mockEvaluateCodexCredentialReadiness,
@@ -124,11 +124,10 @@ function boardActor(userId: string, companyIds: string[] = [COMPANY_1, OTHER_COM
   };
 }
 
+let agentRoutes: typeof import("../routes/agents.js").agentRoutes;
+let errorHandler: typeof import("../middleware/index.js").errorHandler;
+
 async function createApp() {
-  const [{ agentRoutes }, { errorHandler }] = await Promise.all([
-    vi.importActual<typeof import("../routes/agents.js")>("../routes/agents.js"),
-    vi.importActual<typeof import("../middleware/index.js")>("../middleware/index.js"),
-  ]);
   const app = express();
   app.use(express.json());
   app.use((req, _res, next) => {
@@ -144,8 +143,21 @@ const authSignalPath = (companyId: string, type: string, environmentId?: string)
   `/api/companies/${companyId}/adapters/${type}/auth-signal${environmentId ? `?environmentId=${environmentId}` : ""}`;
 
 describe("adapter auth-signal route", () => {
+  // The route module graph (routes/agents.ts and everything it pulls in) is huge,
+  // and loading it cold costs ~12 s on a GitHub runner and ~26 s on a slow
+  // one. It used to be re-imported after vi.resetModules() inside every test,
+  // so the first test paid the whole transform inside its 15 s budget and every
+  // later one paid ~1 s of re-evaluation. Every mock here is a hoisted,
+  // module-level object, so nothing needs a module reset: load once.
+  // 60 s is about 2x the slowest measured cold load.
+  beforeAll(async () => {
+    [{ agentRoutes }, { errorHandler }] = await Promise.all([
+      vi.importActual<typeof import("../routes/agents.js")>("../routes/agents.js"),
+      vi.importActual<typeof import("../middleware/index.js")>("../middleware/index.js"),
+    ]);
+  }, 60_000);
+
   beforeEach(() => {
-    vi.resetModules();
     vi.clearAllMocks();
     currentActor = boardActor(OWNER_A);
     mockAccessService.decide.mockResolvedValue({

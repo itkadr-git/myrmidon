@@ -20,9 +20,10 @@
 // false and the wake keeps the safe not-explicit default.
 
 import { and, eq } from "drizzle-orm";
-import { issueComments } from "@paperclipai/db";
-import { extractAgentMentionIds } from "@paperclipai/shared";
-import type { Db } from "@paperclipai/db";
+import { issueComments } from "@myrmidon/db";
+import { extractAgentMentionIds } from "@myrmidon/shared";
+import { isValidWakeCommentId } from "../../modules/run-dispatch/domain/wake-context.js";
+import type { Db } from "@myrmidon/db";
 
 export async function userCommentMentionsWokenAgent(
   db: Db,
@@ -37,6 +38,7 @@ export async function userCommentMentionsWokenAgent(
 ): Promise<boolean> {
   if (input.requestedByActorType !== "user") return false;
   if (!input.requestedByActorId) return false;
+  if (!input.commentId || !isValidWakeCommentId(input.commentId)) return false;
   const [comment] = await db
     .select({
       id: issueComments.id,

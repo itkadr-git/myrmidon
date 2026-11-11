@@ -1,6 +1,6 @@
 import { and, eq } from "drizzle-orm";
-import { ALERT_RECOVERY_ORIGIN_KIND, isAgentStatusInvokable } from "@paperclipai/shared";
-import { issues, type Db } from "@paperclipai/db";
+import { ALERT_RECOVERY_ORIGIN_KIND, isAgentStatusInvokable } from "@myrmidon/shared";
+import { issues, type Db } from "@myrmidon/db";
 import { logger } from "../../../middleware/logger.js";
 import { listAgentsOfRole } from "../../swarm-claim/queue.js";
 import type { AlertRecoveryIssuePort, AlertRecoveryIssueWriteResult } from "./service.js";
@@ -33,6 +33,7 @@ async function ownerAgentId(db: Db, companyId: string, ownerRole: string): Promi
 }
 
 export function createDbAlertRecoveryIssuePort(db: Db): AlertRecoveryIssuePort {
+  const holdMinutes = Number(process.env.MYRMIDON_ALERT_RECOVERY_HOLD_MINUTES) || 15;
   async function guardedWrite(input: {
     issueId: string;
     companyId: string;
@@ -73,8 +74,9 @@ export function createDbAlertRecoveryIssuePort(db: Db): AlertRecoveryIssuePort {
       if (!assigneeAgentId) {
         logger.warn(
           { companyId: input.companyId, ownerRole: input.ownerRole },
-          "alert recovery task has no agent of the owner role yet; leaving it unassigned",
+          "alert recovery task has no agent of the owner role; refusing unassigned task",
         );
+        return null;
       }
       try {
         const created = await issueService(db).create(input.companyId, {
@@ -96,6 +98,29 @@ export function createDbAlertRecoveryIssuePort(db: Db): AlertRecoveryIssuePort {
         logger.warn({ err: error, originId: input.originId }, "alert recovery task refused");
         return null;
       }
+    },
+
+    async getIssueStatus(issueId, companyId) {
+      const [current] = await db.select({ status: issues.status }).from(issues)
+        .where(and(eq(issues.id, issueId), eq(issues.companyId, companyId))).limit(1);
+      return current?.status ?? null;
+    },
+    async isSystemRecoveryClosed(issueId, companyId) {
+      const [current] = await db.select({ status: issues.status, originKind: issues.originKind }).from(issues)
+        .where(and(eq(issues.id, issueId), eq(issues.companyId, companyId))).limit(1);
+      return current?.originKind === ALERT_RECOVERY_ORIGIN_KIND && current.status === "done";
+    },
+    async delayIssueWake(_issueId, _companyId, _delayMinutes) {
+      // Keep the owner assigned throughout the hold; clearing assignment makes
+      // the task eligible for the swarm claim queue on every alert event.
+    },
+
+    async dispatchAlertWake(issueId, companyId) {
+      const [task] = await db.select().from(issues)
+        .where(and(eq(issues.id, issueId), eq(issues.companyId, companyId))).limit(1);
+      if (!task || task.originKind !== ALERT_RECOVERY_ORIGIN_KIND || task.status !== "todo") return;
+      // The task is assigned at creation and stays assigned through the hold.
+      // Dispatching must never clear or replace that role owner.
     },
 
     async addComment(issueId, body) {

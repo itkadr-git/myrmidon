@@ -4,7 +4,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import request from "supertest";
 import { describe, expect, it } from "vitest";
-import { COMPANY_IMPORT_TRANSFERS_ROUTE_PATH } from "@paperclipai/shared/company-import-transfer";
+import { COMPANY_IMPORT_TRANSFERS_ROUTE_PATH } from "@myrmidon/shared/company-import-transfer";
 import { errorHandler } from "../middleware/index.js";
 import { buildOpenApiSpec, openApiRoutes } from "../routes/openapi.js";
 
@@ -15,6 +15,8 @@ const apiPrefixes: Record<string, string> = {
   "pipelines.ts": "/api",
   "cases.ts": "/api",
   "smoke-lab.ts": "/api",
+  "admin-assistant.ts": "/api",
+  "guardrails.ts": "/api",
   "access.ts": "/api",
   "activity.ts": "/api",
   "adapters.ts": "/api",
@@ -25,6 +27,7 @@ const apiPrefixes: Record<string, string> = {
   "approvals.ts": "/api",
   "assets.ts": "/api",
   "auth.ts": "/api/auth",
+  "blocker-graph.ts": "/api",
   "board-chat.ts": "/api",
   "built-in-agents.ts": "/api",
   "chat-channels.ts": "/api",
@@ -46,6 +49,7 @@ const apiPrefixes: Record<string, string> = {
   "file-resources.ts": "/api",
   "folders.ts": "/api",
   "goals.ts": "/api",
+  "ha.ts": "/api/ha",
   "health.ts": "/api/health",
   "inbox-agent-policy.ts": "/api",
   "inbox-dismissals.ts": "/api",
@@ -56,6 +60,7 @@ const apiPrefixes: Record<string, string> = {
   "llms.ts": "/api",
   "managed-agent-profiles.ts": "/api",
   "onboarding-seed.ts": "/api",
+  "servers.ts": "/api",
   "openapi.ts": "/api",
   "plugin-ui-static.ts": "/api",
   "plugins.ts": "/api",
@@ -66,13 +71,19 @@ const apiPrefixes: Record<string, string> = {
   "routines.ts": "/api",
   "secrets.ts": "/api",
   "sidebar-badges.ts": "/api",
+  "status-strip.ts": "/api",
   "sidebar-preferences.ts": "/api",
   "summary-slots.ts": "/api",
   "status-cards.ts": "/api",
+  // myrmidon(1.7 AUTO-UPDATE-SETTINGS, OPE-10186): system update checks mount under /api.
+  "system-updates.ts": "/api",
+  "intake.ts": "/api",
   "teams-catalog.ts": "/api",
   "tool-access.ts": "/api",
   "tool-gateway.ts": "/api",
+  "updates.ts": "/api",
   "user-profiles.ts": "/api",
+  "users.ts": "/api",
 };
 
 const ROUTE_LITERAL_PATTERN =
@@ -88,12 +99,17 @@ const HTTP_METHODS = new Set([
   "patch",
   "trace",
 ]);
-const explicitOpenApiCoverageExclusions = new Set<string>();
-
+const explicitOpenApiCoverageExclusions = new Set<string>([
+  "audit.ts",
+  // Mounted directly by app.ts; its routes are documented in openapi.ts.
+  "admin-assistant.ts",
+  // myrmidon(1.7 AUTO-UPDATE-SETTINGS, OPE-10218): project-scoped system maintenance window API.
+  "system.ts",
+]);
 const explicitOpenApiOperationCoverageExclusions = new Set([
-  // This endpoint is authenticated by the provider signature rather than by a
-  // Paperclip board/agent credential. It intentionally stays out of the public
-  // board API document, while this exact exclusion keeps route coverage honest.
+  // These webhook handlers are mounted outside the scanner's route-file map.
+  // Their provider signatures intentionally keep them out of the public board
+  // API document, so retain exact exclusions for both sides of the comparison.
   "POST /api/chat-webhooks/agentmail/{publicId}",
   "POST /api/chat-webhooks/{publicId}/{provider}",
 ]);
@@ -102,7 +118,62 @@ const explicitOpenApiOperationCoverageExclusions = new Set([
 // request handler. The company-and-environment Claude setup-token login routes
 // now have request handlers, so the set is empty. A new contract-first route
 // belongs here only until its handler lands.
-const specOnlyContractFirstRoutes = new Set<string>([]);
+//
+// myrmidon(1.6.6 KNOWLEDGE-2.0 K-2): the knowledge service REST + MCP routes
+// are mounted from server/src/myrmidon/knowledge/ (see app.ts), outside the
+// ROUTES_DIR this scanner reads, so they can never appear in loadActualRoutes.
+// They are documented contract-first in openapi.ts — the deliverable of
+// OPE-5955 — and the handlers exist; only the scanner's directory scope keeps
+// them off the "actual" side.
+// routes/updates.ts is mounted through the app-plugin registry, while its
+// OpenAPI entries are contract-first and are not discovered by this scanner.
+const specOnlyContractFirstRoutes = new Set<string>([
+  "GET /api/myrmidon/updates/settings",
+  "PUT /api/myrmidon/updates/settings",
+  "GET /api/updates",
+  "PUT /api/updates",
+  "PATCH /api/updates",
+  "GET /api/updates/settings",
+  "PUT /api/updates/settings",
+  "PATCH /api/updates/settings",
+  "POST /api/updates/validate",
+  "POST /api/monitoring/zabbix-webhook",
+  "GET /api/myrmidon/companies/{companyId}/knowledge/search",
+  "GET /api/myrmidon/companies/{companyId}/knowledge/items",
+  "GET /api/myrmidon/companies/{companyId}/knowledge/items/{idOrSlug}",
+  "GET /api/myrmidon/companies/{companyId}/knowledge/items/{idOrSlug}/revisions",
+  "GET /api/myrmidon/companies/{companyId}/knowledge/items/{idOrSlug}/revisions/{revisionId}",
+  "GET /api/myrmidon/companies/{companyId}/knowledge/items/{idOrSlug}/backlinks",
+  "GET /api/myrmidon/companies/{companyId}/knowledge/suggestions",
+  "GET /api/myrmidon/companies/{companyId}/knowledge/export",
+  "POST /api/myrmidon/companies/{companyId}/knowledge/items",
+  "POST /api/myrmidon/companies/{companyId}/knowledge/items/{idOrSlug}/revisions",
+  "POST /api/myrmidon/companies/{companyId}/knowledge/items/{idOrSlug}/draft",
+  "POST /api/myrmidon/companies/{companyId}/knowledge/items/{idOrSlug}/submit",
+  "POST /api/myrmidon/companies/{companyId}/knowledge/items/{idOrSlug}/publish",
+  "POST /api/myrmidon/companies/{companyId}/knowledge/items/{idOrSlug}/approve",
+  "POST /api/myrmidon/companies/{companyId}/knowledge/items/{idOrSlug}/rollback",
+  "POST /api/myrmidon/companies/{companyId}/knowledge/items/{idOrSlug}/archive",
+  "POST /api/myrmidon/companies/{companyId}/knowledge/items/{idOrSlug}/supersede",
+  "POST /api/myrmidon/companies/{companyId}/knowledge/propose",
+  "POST /api/myrmidon/companies/{companyId}/knowledge/suggestions/{suggestionId}/accept",
+  "POST /api/myrmidon/companies/{companyId}/knowledge/suggestions/{suggestionId}/decline",
+  "POST /api/myrmidon/companies/{companyId}/knowledge/import",
+  "POST /api/myrmidon/companies/{companyId}/knowledge/mcp",
+  // myrmidon(1.7 KNOWLEDGE-2.0 L-11): the Settings → Knowledge routes are
+  // mounted from server/src/myrmidon/knowledge/ (see app.ts), outside the
+  // scanner's directory scope, and documented contract-first in openapi.ts.
+  "GET /api/myrmidon/companies/{companyId}/knowledge/settings",
+  "PATCH /api/myrmidon/companies/{companyId}/knowledge/settings",
+  // admin-assistant routes are mounted directly by app.ts, outside the
+  // scanner's route-file scope; their OpenAPI entries are contract-first here.
+  "GET /api/admin-assistant/cluster-health",
+  "GET /api/admin-assistant/health",
+  "GET /api/admin-assistant/dry-run",
+  "GET /api/companies/{companyId}/admin-assistant/cluster-health",
+  "GET /api/admin-assistant/stuck-runs",
+  "GET /api/companies/{companyId}/admin-assistant/stuck-runs",
+]);
 
 function createApp() {
   const app = express();
@@ -135,6 +206,9 @@ function resolveMountedPath(file: string, prefix: string, routePath: string) {
     (file === "chat-channels.ts" || file === "email.ts") &&
     routePath.startsWith("/api/chat-webhooks/")
   ) {
+    return routePath;
+  }
+  if (file === "intake.ts" && routePath.startsWith("/api/intake/")) {
     return routePath;
   }
   if (file === "tool-gateway.ts" && routePath.startsWith("/mcp/gateways/")) {
@@ -246,6 +320,16 @@ describe("openapi routes", () => {
     expect(dismiss.description).toContain("viewers may dismiss their own");
   });
 
+  it("documents stalled-review decisions as board-only", () => {
+    const { spec } = loadSpecRoutes();
+    const stalledDecision = spec.paths["/api/issues/{id}/stalled-review-decision"].post;
+    expect(stalledDecision["x-paperclip-authorization"]).toEqual({ actor: "board" });
+    expect(stalledDecision.security).toEqual([
+      { BoardSessionAuth: [] },
+      { BoardApiKeyAuth: [] },
+    ]);
+  });
+
   it("documents exact failed-run selection and durable accepted retry responses", async () => {
     const res = await request(createApp()).get("/api/openapi.json");
     const wake = res.body.paths["/api/agents/{id}/wakeup"].post;
@@ -257,6 +341,33 @@ describe("openapi routes", () => {
     expect(wake.responses["409"]).toBeDefined();
     expect(wake.description).toContain("durable queued/deferred receipt");
   });
+  it("keeps the legacy OAuth route alias while exposing Myrmidon wording", async () => {
+    const res = await request(createApp()).get("/api/openapi.json");
+
+    expect(res.status).toBe(200);
+    const legacyCallback =
+      res.body.paths["/api/tools/oauth/paperclip-id/callback"].get;
+    expect(legacyCallback.summary).toBe(
+      "Handle a legacy brokered Myrmidon ID OAuth callback",
+    );
+    expect(res.body.paths["/api/tools/oauth/cloud-connector/callback"].get.summary).toBe(
+      "Handle a brokered Myrmidon Cloud OAuth callback",
+    );
+  });
+
+  it("keeps validation errors documented for the aliased enrollment route", async () => {
+    const res = await request(createApp()).get("/api/openapi.json");
+
+    expect(res.status).toBe(200);
+    const enrollment =
+      res.body.paths["/api/tools/oauth/cloud-connector/enrollment"].post;
+    expect(enrollment.requestBody.content["application/json"].schema).toMatchObject({
+      required: ["companyId"],
+      additionalProperties: false,
+    });
+    expect(enrollment.responses["422"]).toBeDefined();
+  });
+
   it("serves the generated OpenAPI document", async () => {
     const res = await request(createApp()).get("/api/openapi.json");
 
@@ -740,6 +851,26 @@ describe("openapi routes", () => {
     }
     expect(replacement.requestBody.content["application/json"].schema.required).toContain("repositoryIds");
     expect(replacement.responses["422"]).toBeDefined();
+  });
+
+  it("documents admin-assistant health authorization and error responses", () => {
+    const { spec } = loadSpecRoutes();
+    for (const path of [
+      "/api/companies/{companyId}/admin-assistant/cluster-health",
+      "/api/admin-assistant/cluster-health",
+      "/api/admin-assistant/health",
+      "/api/companies/{companyId}/admin-assistant/stuck-runs",
+      "/api/admin-assistant/stuck-runs",
+    ]) {
+      const operation = spec.paths[path].get;
+      expect(operation.responses["401"]).toBeDefined();
+      expect(operation.responses["403"]).toBeDefined();
+      expect(operation["x-paperclip-authorization"]).toMatchObject({
+        actor: "board_or_agent",
+        companyScopedQuery: true,
+        unscoped: { actor: "board", instanceAdmin: true },
+      });
+    }
   });
 
   it("documents auth and reviewed response-code invariants", () => {

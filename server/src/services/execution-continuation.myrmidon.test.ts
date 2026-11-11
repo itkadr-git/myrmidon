@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
-import { agents, companies, createDb, issueComments, issues } from "@paperclipai/db";
-import { renderPaperclipWakePrompt } from "@paperclipai/adapter-utils/server-utils";
+import { agents, companies, createDb, issueComments, issues } from "@myrmidon/db";
+import { renderPaperclipWakePrompt } from "@myrmidon/adapter-utils/server-utils";
 import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
@@ -24,6 +24,7 @@ const support = await getEmbeddedPostgresTestSupport();
   const previousChars = process.env.MYRMIDON_CONTINUATION_HISTORY_CHARS;
   const previousMessageMax = process.env.MYRMIDON_CONTINUATION_MESSAGE_MAX_CHARS;
   const previousMessageChars = process.env.MYRMIDON_CONTINUATION_MESSAGE_CHARS;
+  const previousEnvelopeBytes = process.env.MYRMIDON_CONTINUATION_ENVELOPE_BYTES;
 
   beforeAll(async () => {
     database = await startEmbeddedPostgresTestDatabase("paperclip-continuation-limit-");
@@ -82,6 +83,8 @@ const support = await getEmbeddedPostgresTestSupport();
     else process.env.MYRMIDON_CONTINUATION_MESSAGE_MAX_CHARS = previousMessageMax;
     if (previousMessageChars === undefined) delete process.env.MYRMIDON_CONTINUATION_MESSAGE_CHARS;
     else process.env.MYRMIDON_CONTINUATION_MESSAGE_CHARS = previousMessageChars;
+    if (previousEnvelopeBytes === undefined) delete process.env.MYRMIDON_CONTINUATION_ENVELOPE_BYTES;
+    else process.env.MYRMIDON_CONTINUATION_ENVELOPE_BYTES = previousEnvelopeBytes;
   });
 
   const build = () =>
@@ -136,9 +139,26 @@ const support = await getEmbeddedPostgresTestSupport();
     // LONG-TASK-CONTEXT adds two more bounds on by default; "all off" means all.
     process.env.MYRMIDON_CONTINUATION_MESSAGE_MAX_CHARS = "0";
     process.env.MYRMIDON_CONTINUATION_MESSAGE_CHARS = "0";
+    // OPE-2321: the byte ceiling is a bound too — turn it off with the rest.
+    process.env.MYRMIDON_CONTINUATION_ENVELOPE_BYTES = "0";
     const envelope = await build();
     expect(envelope.messages).toHaveLength(COMMENT_COUNT);
     expect("truncationNotice" in envelope).toBe(false);
+  });
+
+  it("keeps the serialized envelope under the OPE-2321 byte ceiling by default", async () => {
+    process.env.MYRMIDON_CONTINUATION_HISTORY_LIMIT = "0";
+    process.env.MYRMIDON_CONTINUATION_HISTORY_CHARS = "0";
+    process.env.MYRMIDON_CONTINUATION_MESSAGE_MAX_CHARS = "0";
+    process.env.MYRMIDON_CONTINUATION_MESSAGE_CHARS = "0";
+    const envelope = await build();
+    const limited = envelope as typeof envelope & { messagesTruncated?: { afterBytes: number } };
+    expect(Buffer.byteLength(JSON.stringify(envelope), "utf8")).toBeLessThanOrEqual(96 * 1024);
+    expect(limited.messagesTruncated).toBeDefined();
+    expect(limited.messagesTruncated!.afterBytes).toBeLessThanOrEqual(96 * 1024);
+    const bodies = envelope.messages.map((message) => message.body);
+    expect(bodies).toContain(originalRequest);
+    expect(bodies).toContain(latestRequest);
   });
 
   it("bounds the volume of the history even when the count limit is off", async () => {

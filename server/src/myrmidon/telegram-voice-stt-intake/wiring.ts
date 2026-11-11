@@ -29,7 +29,7 @@
 // Nothing here logs or returns a key value: the core is the only place that
 // touches the secret, and its errors carry codes, not values.
 
-import type { Db } from "@paperclipai/db";
+import type { Db } from "@myrmidon/db";
 import { createSttRuntime, type SttRuntime } from "../stt/index.js";
 import type { TelegramVoiceTranscriber } from "./index.js";
 import { readTelegramVoiceSttSwitch } from "./settings.js";

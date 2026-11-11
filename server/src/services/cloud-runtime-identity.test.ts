@@ -92,6 +92,15 @@ describe("verifyCloudRuntimeIdentityAssertion", () => {
     });
   });
 
+  it("accepts only public verification keys in the JWKS (MYRMIDON_CLOUD_RUNTIME_IDENTITY_JWKS is non-secret)", () => {
+    const withPrivate = JSON.stringify({
+      keys: [{ ...publicJwk, ...pair.privateKey.export({ format: "jwk" }) }],
+    });
+    expect(() => verifyAssertion(assertion(), { PAPERCLIP_CLOUD_RUNTIME_IDENTITY_JWKS: withPrivate })).toThrow(
+      "signing key is invalid",
+    );
+  });
+
   it("rejects forged signatures and unknown signing keys", () => {
     const attacker = generateKeyPairSync("ed25519");
     expect(() => verifyAssertion(assertion({ signingKey: attacker.privateKey }))).toThrow("signature is invalid");

@@ -5,7 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import { describe, it } from "node:test";
 import { fileURLToPath } from "node:url";
-import { check, judge } from "./change-fragments-gate.mjs";
+import { check, judge, mergeBase } from "./change-fragments-gate.mjs";
 
 // CHANGE-FRAGMENTS: self-test of the CI gate. The gate's own unit cases run
 // against judge() directly; the end-to-end cases build a sandbox git
@@ -133,6 +133,54 @@ describe("check against a git sandbox", () => {
     const result = check({ root: repo.dir, eventFile });
     assert.equal(result.eventName, "pull_request");
     assert.equal(result.ok, true);
+  });
+
+  // OPE-11991: base.sha in a pull_request event is the tip of the base branch,
+  // not the merge point. A docs-only PR must not fail because commits that
+  // merged to main after it branched touched the shared registry documents.
+  it("event base.sha at the tip of main, ahead of the merge point, still judges only the PR diff", () => {
+    const repo = gitSandbox();
+    // The PR's own commit: fragment-only, clean.
+    const fork = repo.apply({ "docs/myrmidon/changes/feat-a.md": "## changelog-en\n\n### A\n" });
+    // Meanwhile main moves on with a hand edit of a shared document.
+    git(repo.dir, ["checkout", "-q", "main"]);
+    git(repo.dir, ["reset", "-q", "--hard", repo.base]);
+    const mainTip = repo.apply({ "docs/myrmidon/CHANGELOG.md": "# changelog\n\n- merged to main\n" });
+    // The event reports base.sha = tip of main; the PR head is `fork`.
+    const eventFile = path.join(repo.dir, "event.json");
+    fs.writeFileSync(
+      eventFile,
+      JSON.stringify({ pull_request: { base: { sha: mainTip }, head: { sha: fork } } }),
+    );
+    const result = check({ root: repo.dir, eventFile });
+    assert.equal(result.eventName, "pull_request");
+    // The judged range is merge-base(mainTip, fork)..fork, not mainTip..fork.
+    assert.equal(result.range.base, repo.base);
+    assert.equal(result.range.head, fork);
+    assert.equal(result.ok, true, JSON.stringify(result.violations));
+  });
+
+  it("a hand edit inside the PR's own diff still fails even with a moving base", () => {
+    const repo = gitSandbox();
+    const fork = repo.apply({ "docs/myrmidon/CHANGELOG.md": "# changelog\n\n- hand edit\n" });
+    git(repo.dir, ["checkout", "-q", "main"]);
+    git(repo.dir, ["reset", "-q", "--hard", repo.base]);
+    const mainTip = repo.apply({ "server/index.ts": "// code v2\n" });
+    const eventFile = path.join(repo.dir, "event.json");
+    fs.writeFileSync(
+      eventFile,
+      JSON.stringify({ pull_request: { base: { sha: mainTip }, head: { sha: fork } } }),
+    );
+    const result = check({ root: repo.dir, eventFile });
+    assert.equal(result.ok, false);
+    assert.deepEqual(result.violations.map((x) => x.file), ["docs/myrmidon/CHANGELOG.md"]);
+  });
+
+  it("mergeBase returns the fork point; null for unknown revs", () => {
+    const repo = gitSandbox();
+    const fork = repo.apply({ "server/index.ts": "// code v2\n" });
+    assert.equal(mergeBase(repo.dir, repo.base, fork), repo.base);
+    assert.equal(mergeBase(repo.dir, "definitely-not-a-sha", fork), null);
   });
 
   it("a non-PR event file without explicit range is skipped", () => {

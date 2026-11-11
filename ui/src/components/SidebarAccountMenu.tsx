@@ -1,3 +1,4 @@
+import { DOCS_URL, FEEDBACK_URL } from "@/lib/myrmidon-links";
 import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import {
@@ -9,7 +10,7 @@ import {
   UserRound,
   UserRoundPen,
 } from "lucide-react";
-import type { DeploymentMode } from "@paperclipai/shared";
+import type { DeploymentMode } from "@myrmidon/shared";
 import { Link } from "@/lib/router";
 import { authApi } from "@/api/auth";
 import { healthApi } from "@/api/health";
@@ -26,10 +27,10 @@ import { ThemeToggle } from "./ThemeToggle";
 import { SidebarServerInfo } from "./SidebarServerInfo";
 // myrmidon(UI-RU): fork language switcher in the account menu.
 import { LanguageToggle } from "./myrmidon/LanguageToggle";
+// myrmidon(OPE-9382): interface version switcher in the account menu.
+import { UiInterfaceToggle } from "./myrmidon/UiInterfaceToggle";
 
 const PROFILE_SETTINGS_PATH = "/company/settings/instance/profile";
-const DOCS_URL = "https://docs.paperclip.ing/";
-const FEEDBACK_URL = "https://paperclip.ing/feedback";
 const ABOUT_SETTINGS_PATH = "/company/settings";
 
 interface SidebarAccountMenuProps {
@@ -228,6 +229,8 @@ export function SidebarAccountMenu({
               <ThemeToggle variant="compact-menu-action" onAfterToggle={() => setOpen(false)} />
               {/* myrmidon(UI-RU): language selection lives beside the theme toggle. */}
               <LanguageToggle onAfterChange={() => setOpen(false)} />
+              {/* myrmidon(OPE-9382): interface version toggle */}
+              <UiInterfaceToggle onAfterChange={() => setOpen(false)} />
               {deploymentMode === "authenticated" ? (
                 <button
                   type="button"
@@ -263,7 +266,7 @@ export function SidebarAccountMenu({
                 <Flag className="h-4 w-4" aria-hidden="true" />
               </a>
             </TooltipTrigger>
-            <TooltipContent side="top">Share feedback</TooltipContent>
+            <TooltipContent side="top">{t("area.shell-sidebar-layout-1.sidebar-account-menu.shareFeedback")}</TooltipContent>
           </Tooltip>
         ) : null}
       </div>

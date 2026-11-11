@@ -33,3 +33,4 @@ export function t(key: string, options: TOptions = {}) {
 
 export const useTranslation = useReactI18nextTranslation;
 export { i18n };
+export default i18n;

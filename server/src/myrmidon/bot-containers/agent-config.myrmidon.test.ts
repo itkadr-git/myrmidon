@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { applyLiveBehaviorSettings, liveBehaviorSettingsView } from "../behavior-settings/live.js";
 import {
   BOT_CONTAINERS_ENV,
   CONTAINER_GROUP_UNSUPPORTED_REASON,
@@ -10,8 +11,22 @@ import {
   isBotContainersEnabled,
   readBotContainerAgentConfig,
 } from "./agent-config.js";
+import { botResourceCeilingProblem } from "./resource-ceilings.js";
 
 describe("isBotContainersEnabled", () => {
+  it("uses a switch saved from the UI only for the production environment", () => {
+    const previous = liveBehaviorSettingsView();
+    applyLiveBehaviorSettings({ settings: { bot_containers: true }, sources: { bot_containers: "ui" } });
+    try {
+      expect(isBotContainersEnabled(process.env)).toBe(true);
+      expect(isBotContainersEnabled({})).toBe(false);
+      expect(isBotContainersEnabled({ [BOT_CONTAINERS_ENV]: "false" })).toBe(false);
+      expect(isBotContainersEnabled({ [BOT_CONTAINERS_ENV]: "true" })).toBe(true);
+    } finally {
+      applyLiveBehaviorSettings(previous);
+    }
+  });
+
   it("is off unless explicitly enabled", () => {
     expect(isBotContainersEnabled({})).toBe(false);
     expect(isBotContainersEnabled({ [BOT_CONTAINERS_ENV]: "false" })).toBe(false);
@@ -50,6 +65,45 @@ describe("readBotContainerAgentConfig", () => {
       ok: true,
       config: { image: "myrmidon-hermes:1.1.0", memoryMb: 1536, cpus: 1, pidsLimit: 256, extraMounts: [] },
     });
+  });
+
+  it("parses valid host and hostPinned for a hermes_gateway agent", () => {
+    const result = readBotContainerAgentConfig("hermes_gateway", {
+      container: { ...VALID_CONTAINER_CONFIG, host: "myr-vm1", hostPinned: true },
+    });
+    expect(result).toEqual({
+      ok: true,
+      config: {
+        image: "myrmidon-hermes:1.1.0",
+        memoryMb: 1536,
+        cpus: 1,
+        pidsLimit: 256,
+        extraMounts: [],
+        host: "myr-vm1",
+        hostPinned: true,
+      },
+    });
+  });
+
+  it("refuses malformed host or reserved local host name", () => {
+    expect(
+      readBotContainerAgentConfig("hermes_gateway", {
+        container: { ...VALID_CONTAINER_CONFIG, host: "INVALID HOST!" },
+      }).ok,
+    ).toBe(false);
+    expect(
+      readBotContainerAgentConfig("hermes_gateway", {
+        container: { ...VALID_CONTAINER_CONFIG, host: "local" },
+      }).ok,
+    ).toBe(false);
+  });
+
+  it("refuses non-boolean hostPinned", () => {
+    expect(
+      readBotContainerAgentConfig("hermes_gateway", {
+        container: { ...VALID_CONTAINER_CONFIG, hostPinned: "true" },
+      }).ok,
+    ).toBe(false);
   });
 
   it.each(["team-b", "Not-Lowercase", "", 42])(
@@ -178,6 +232,34 @@ describe("readBotContainerAgentConfig: container.extraMounts", () => {
   });
 });
 
+const PINNED_IMAGE = `ghcr.io/itkadr-git/myrmidon-hermes@sha256:${"a".repeat(64)}`;
+
+describe("botContainerCardSaveProblem image (1.6.6 OPE-8916)", () => {
+  const card = (image: unknown) => ({ container: { ...VALID_CONTAINER_CONFIG, image } });
+
+  it("refuses an enabled card with a tag-only, empty or missing image", () => {
+    for (const image of ["ghcr.io/itkadr-git/myrmidon-hermes:latest", "myrmidon-hermes:latest", `x@sha256:${"a".repeat(63)}`, "", undefined]) {
+      const problem = botContainerCardSaveProblem("hermes_gateway", card(image), {});
+      expect(problem, String(image)).toContain("adapterConfig.container.image");
+    }
+  });
+
+  it("accepts a digest-pinned image when no allowlist is set", () => {
+    expect(botContainerCardSaveProblem("hermes_gateway", card(PINNED_IMAGE), {})).toBeNull();
+  });
+
+  it("checks the allowlist when MYRMIDON_BOT_IMAGE_ALLOWLIST is set", () => {
+    const env = { MYRMIDON_BOT_IMAGE_ALLOWLIST: "ghcr.io/itkadr-git/myrmidon-hermes*@sha256:*" };
+    expect(botContainerCardSaveProblem("hermes_gateway", card(PINNED_IMAGE), env)).toBeNull();
+    const other = `evil.example/bot@sha256:${"b".repeat(64)}`;
+    expect(botContainerCardSaveProblem("hermes_gateway", card(other), env)).toContain("is not in MYRMIDON_BOT_IMAGE_ALLOWLIST");
+  });
+
+  it("does not judge the image of a disabled card", () => {
+    expect(botContainerCardSaveProblem("hermes_gateway", { container: { enabled: false, image: "x:latest" } }, {})).toBeNull();
+  });
+});
+
 describe("botContainerCardSaveProblem (1.6.4-BOT-CONTAINER-CARD)", () => {
   it("has the defaults the form and the migration use", () => {
     expect(BOT_CONTAINER_DEFAULTS).toEqual({ memoryMb: 1024, cpus: 1, pidsLimit: 512 });
@@ -190,8 +272,21 @@ describe("botContainerCardSaveProblem (1.6.4-BOT-CONTAINER-CARD)", () => {
   });
 
   it("accepts a complete enabled block and any explicitly disabled one", () => {
-    expect(botContainerCardSaveProblem("hermes_gateway", { container: VALID_CONTAINER_CONFIG })).toBeNull();
+    expect(
+      botContainerCardSaveProblem("hermes_gateway", { container: { ...VALID_CONTAINER_CONFIG, image: PINNED_IMAGE } }, {}),
+    ).toBeNull();
     expect(botContainerCardSaveProblem("hermes_gateway", { container: { enabled: false, image: "x" } })).toBeNull();
+  });
+
+  it("accepts idleStopMode off as well as always_on and on_demand (OPE-12291)", () => {
+    for (const mode of ["on_demand", "always_on", "off"] as const) {
+      expect(
+        botContainerCardSaveProblem("hermes_gateway", { container: { ...VALID_CONTAINER_CONFIG, image: PINNED_IMAGE, idleStopMode: mode } }, {}),
+      ).toBeNull();
+    }
+    expect(
+      botContainerCardSaveProblem("hermes_gateway", { container: { ...VALID_CONTAINER_CONFIG, image: PINNED_IMAGE, idleStopMode: "sometimes" } }, {}),
+    ).toContain("idleStopMode must be always_on, on_demand or off");
   });
 
   it("refuses a block without `enabled`, naming the field", () => {
@@ -213,6 +308,60 @@ describe("botContainerCardSaveProblem (1.6.4-BOT-CONTAINER-CARD)", () => {
     expect(
       botContainerCardSaveProblem("hermes_gateway", { container: { ...VALID_CONTAINER_CONFIG, pidsLimit: 1.5 } }),
     ).toContain("pidsLimit");
+  });
+
+  it("validates host and hostPinned when provided", () => {
+    expect(
+      botContainerCardSaveProblem("hermes_gateway", {
+        container: { ...VALID_CONTAINER_CONFIG, image: PINNED_IMAGE, host: "myr-vm1", hostPinned: true },
+      }, {}),
+    ).toBeNull();
+
+    expect(
+      botContainerCardSaveProblem("hermes_gateway", {
+        container: { ...VALID_CONTAINER_CONFIG, host: "Bad Host Name" },
+      }),
+    ).toContain("host must be a host name");
+
+    expect(
+      botContainerCardSaveProblem("hermes_gateway", {
+        container: { ...VALID_CONTAINER_CONFIG, host: "local" },
+      }),
+    ).toContain('"local" is not a host');
+
+    expect(
+      botContainerCardSaveProblem("hermes_gateway", {
+        container: { ...VALID_CONTAINER_CONFIG, hostPinned: "yes" as unknown as boolean },
+      }),
+    ).toContain("hostPinned must be a boolean");
+  });
+});
+
+describe("botResourceCeilingProblem (OPE-12337)", () => {
+  const limits = { memoryMb: 2048, cpus: 2, pidsLimit: 512 };
+  it("names dockergate enrollment field and ceiling for each exceeded resource", () => {
+    for (const [field, value, expected] of [
+      ["memoryMb", 3072, "bots[].maxMemoryMb"],
+      ["cpus", 3, "bots[].maxCpus"],
+      ["pidsLimit", 513, "bots[].maxPids"],
+    ] as const) {
+      const problem = botResourceCeilingProblem({ ...limits, [field]: value }, limits);
+      expect(problem).toContain(expected);
+      expect(problem).toContain(String(limits[field]));
+    }
+  });
+  it("accepts requests at the ceiling", () => {
+    expect(botResourceCeilingProblem(limits, limits)).toBeNull();
+  });
+  it("is invoked by botContainerCardSaveProblem when ceilings are provided", () => {
+    const problem = botContainerCardSaveProblem(
+      "hermes_gateway",
+      { container: { ...VALID_CONTAINER_CONFIG, memoryMb: 3072 } },
+      {},
+      limits,
+    );
+    expect(problem).toContain("bots[].maxMemoryMb");
+    expect(problem).toContain("2048");
   });
 });
 

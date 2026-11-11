@@ -26,6 +26,8 @@ import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
+import { readProductEnvFrom } from "@myrmidon/shared/env-alias";
+import { liveBehaviorSetting, liveSavedSetting } from "../behavior-settings/live.js";
 import type { DeployPort } from "./ssh-deploy.js";
 
 const execFileAsync = promisify(execFile);
@@ -63,19 +65,43 @@ export interface AdminKeySource {
   adminKey(): Promise<string | null>;
 }
 
+function parseTimeoutMs(value: unknown): number | null {
+  const num =
+    typeof value === "number"
+      ? value
+      : typeof value === "string" && value.trim() !== ""
+        ? Number(value.trim())
+        : NaN;
+  if (Number.isInteger(num) && num >= 1000 && num <= 300_000) {
+    return num;
+  }
+  return null;
+}
+
 /** Read MYRMIDON_ACCESS_HUB_SSH_* settings (docs/myrmidon/SETTINGS.md). */
 export function readSshOpsSettings(env: NodeJS.ProcessEnv = process.env): SshOpsSettings {
-  const raw = Number(env["MYRMIDON_ACCESS_HUB_SSH_TIMEOUT_MS"]);
-  const commandTimeoutMs =
-    Number.isFinite(raw) && raw >= 1000 ? Math.min(raw, 300_000) : DEFAULT_SSH_COMMAND_TIMEOUT_MS;
-  return { commandTimeoutMs };
+  const envVal = parseTimeoutMs(env["MYRMIDON_ACCESS_HUB_SSH_TIMEOUT_MS"]);
+  if (envVal !== null) {
+    return { commandTimeoutMs: envVal };
+  }
+  const saved = liveSavedSetting<number>("accessHubSshTimeoutMs");
+  const savedVal = parseTimeoutMs(saved);
+  if (savedVal !== null) {
+    return { commandTimeoutMs: savedVal };
+  }
+  const live = liveBehaviorSetting<number>("accessHubSshTimeoutMs");
+  const liveVal = parseTimeoutMs(live);
+  if (liveVal !== null) {
+    return { commandTimeoutMs: liveVal };
+  }
+  return { commandTimeoutMs: DEFAULT_SSH_COMMAND_TIMEOUT_MS };
 }
 
 /** Which scratch directory the key file goes to. The Paperclip runtime sets
- * TMPDIR/PAPERCLIP_RUN_SCRATCH_DIR to the run directory; the fallback is the
+ * TMPDIR/MYRMIDON_RUN_SCRATCH_DIR to the run directory; the fallback is the
  * OS tmpdir. */
 function defaultScratchDir(env: NodeJS.ProcessEnv): string {
-  return env["PAPERCLIP_RUN_SCRATCH_DIR"] || env["TMPDIR"] || env["PAPERCLIP_SCRATCH_DIR"] || tmpdir();
+  return readProductEnvFrom(env, "RUN_SCRATCH_DIR") || env["TMPDIR"] || readProductEnvFrom(env, "SCRATCH_DIR") || tmpdir();
 }
 
 interface RunSshInput {

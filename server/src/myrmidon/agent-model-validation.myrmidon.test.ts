@@ -11,14 +11,14 @@ import {
   companyMemberships,
   createDb,
   principalPermissionGrants,
-} from "@paperclipai/db";
+} from "@myrmidon/db";
 import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
 } from "../__tests__/helpers/embedded-postgres.js";
 import { errorHandler } from "../middleware/index.js";
 import { agentRoutes } from "../routes/agents.js";
-import { assertAgentEffortAccepted } from "./agent-model-validation.js";
+import { assertAgentEffortAccepted, assertAgentModelsKnown, ompCustomProviderKeys } from "./agent-model-validation.js";
 import { effortForModel } from "./effort-policy/effort-policy.js";
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
@@ -160,5 +160,54 @@ describeEmbeddedPostgres("myrmidon(BOT-TUNING-C) card save rejects a wrong effor
       .patch(`/api/agents/${agent.id}`)
       .send({ adapterConfig: { model: "glm-5.3", effort: "" } });
     expect(empty.status).toBe(200);
+  });
+});
+
+describe("myrmidon(OPE-12633) omp provider-qualified model ids", () => {
+  const listModels = async () => [{ id: "antigravity/gemini-3.8-flash-medium" }, { id: "gpt-6-sol" }];
+  const providers = JSON.stringify({ litellm: { baseUrl: "http://gw/v1", models: [] } });
+  const card = (model: string, envValue: unknown = { type: "plain", value: providers }, envName = "MYRMIDON_OMP_PROVIDERS") => ({
+    model,
+    env: { [envName]: envValue },
+  });
+
+  it("accepts a custom provider key followed by a known gateway model", async () => {
+    await expect(assertAgentModelsKnown({
+      adapterType: "omp_local",
+      previousAdapterConfig: {},
+      nextAdapterConfig: card("litellm/antigravity/gemini-3.8-flash-medium"),
+      listModels,
+    })).resolves.toBeUndefined();
+  });
+
+  it("reads the deprecated PAPERCLIP_OMP_PROVIDERS name and a plain string value", async () => {
+    await expect(assertAgentModelsKnown({
+      adapterType: "omp_local",
+      previousAdapterConfig: {},
+      nextAdapterConfig: card("litellm/gpt-6-sol", providers, "PAPERCLIP_OMP_PROVIDERS"),
+      listModels,
+    })).resolves.toBeUndefined();
+  });
+
+  it("still refuses an unknown model behind a known provider, an unknown provider, and other adapters", async () => {
+    for (const [adapterType, model] of [
+      ["omp_local", "litellm/not-a-model"],
+      ["omp_local", "other/antigravity/gemini-3.8-flash-medium"],
+      ["hermes_local", "litellm/antigravity/gemini-3.8-flash-medium"],
+    ] as const) {
+      await expect(assertAgentModelsKnown({
+        adapterType,
+        previousAdapterConfig: {},
+        nextAdapterConfig: card(model),
+        listModels,
+      })).rejects.toThrow(/Unknown model/);
+    }
+  });
+
+  it("finds no provider keys in a missing, secret or broken config", () => {
+    expect(ompCustomProviderKeys({})).toEqual([]);
+    expect(ompCustomProviderKeys({ env: { MYRMIDON_OMP_PROVIDERS: { type: "secret_ref", secretId: "x" } } })).toEqual([]);
+    expect(ompCustomProviderKeys({ env: { MYRMIDON_OMP_PROVIDERS: "{not json" } })).toEqual([]);
+    expect(ompCustomProviderKeys({ env: { MYRMIDON_OMP_PROVIDERS: providers } })).toEqual(["litellm"]);
   });
 });

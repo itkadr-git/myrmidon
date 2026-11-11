@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { definePlugin, runWorker, type PluginApiRequestInput } from "@paperclipai/plugin-sdk";
+import { definePlugin, runWorker, type PluginApiRequestInput } from "@myrmidon/plugin-sdk";
 
 type SmokeInput = {
   companyId: string;
@@ -90,7 +90,6 @@ const plugin = definePlugin({
         originId: `${input.issueId}:blocker`,
         actor,
       });
-
       const child = await ctx.issues.create({
         companyId: input.companyId,
         parentId: input.issueId,
@@ -104,6 +103,14 @@ const plugin = definePlugin({
         originKind: `plugin:${ctx.manifest.id}:child`,
         originId: `${input.issueId}:child`,
         blockedByIssueIds: [blocker.id],
+        actor,
+      });
+      await ctx.issues.uploadAttachment({
+        issueId: child.id,
+        companyId: input.companyId,
+        filename: "smoke-proof.txt",
+        contentType: "text/plain",
+        contentBase64: "d29ya2VyIGF0dGFjaG1lbnQgdXBsb2FkIHZlcmlmaWVk",
         actor,
       });
 

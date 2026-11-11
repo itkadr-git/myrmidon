@@ -3,7 +3,7 @@ import { formatDatabaseBackupResult, runDatabaseBackup } from "./backup-lib.js";
 import {
   resolveDatabaseBackupDir,
   resolvePaperclipConfigPathForInstance,
-} from "@paperclipai/shared/home-paths";
+} from "@myrmidon/shared/home-paths";
 
 type PartialConfig = {
   database?: {

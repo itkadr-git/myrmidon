@@ -12,6 +12,12 @@
 // and the result cross the extension <-> host boundary; secrets such as PINs
 // or private keys must never appear in either direction.
 
+/**
+ * Registered name of the native messaging host. Chrome allows only lowercase
+ * letters, digits, underscores and dots in a host name: no hyphens.
+ */
+export const SIGN_HOST_NAME = "com.myrmidon.sign_helper";
+
 /** Allowed sign operations. Closed enum: unknown values are rejected. */
 export const SIGN_ACTION_TYPES = ["sign", "sign_and_submit", "sign_attachment"] as const;
 
@@ -43,6 +49,11 @@ export interface SignSuccess {
   ok: true;
   /** Hex digest of the signed document (what the action journal records). */
   hash: string;
+  /**
+   * Detached CAdES signature of the document, base64. It stays on the client
+   * PC: the extension keeps it for the page and never reports it to the gateway.
+   */
+  signatureBase64?: string;
 }
 
 export interface SignFailure {
@@ -97,4 +108,22 @@ export function isSignRequestMessage(value: unknown): value is SignRequestMessag
     v.documentRef.length > 0 &&
     isDocumentPayload(v.document)
   );
+}
+
+/** Validates a helper answer; anything else is treated as a failed helper. */
+export function isSignResponseMessage(value: unknown, id: number): value is SignResponseMessage {
+  if (typeof value !== "object" || value === null) return false;
+  const v = value as Record<string, unknown>;
+  if (v.type !== "sign_result" || v.id !== id) return false;
+  const r = v.result;
+  if (typeof r !== "object" || r === null) return false;
+  const result = r as Record<string, unknown>;
+  if (result.ok === true) {
+    return (
+      typeof result.hash === "string" &&
+      /^[0-9a-f]{64}$/.test(result.hash) &&
+      (result.signatureBase64 === undefined || typeof result.signatureBase64 === "string")
+    );
+  }
+  return result.ok === false && typeof result.error === "string" && (SIGN_ERROR_CODES as readonly string[]).includes(result.error);
 }

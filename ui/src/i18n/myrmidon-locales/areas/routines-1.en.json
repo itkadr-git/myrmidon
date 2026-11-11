@@ -1,0 +1,291 @@
+{
+  "area": {
+    "routines-1": {
+      "routine-contextual-sidebar": {
+        "nav": {
+          "overview": "Overview",
+          "schedule": "Schedule",
+          "variables": "Variables",
+          "delivery": "Delivery",
+          "secrets": "Secrets",
+          "runs": "Runs",
+          "activity": "Activity"
+        },
+        "fallbackTitle": "Routine",
+        "navAriaLabel": "Routine navigation",
+        "auditHeading": "Audit"
+      },
+      "routine-sub-sidebar": {
+        "groups": {
+          "routine": "Routine",
+          "operate": "Operate"
+        },
+        "items": {
+          "overview": "Overview",
+          "triggers": "Triggers",
+          "variables": "Variables",
+          "secrets": "Secrets",
+          "delivery": "Delivery",
+          "runs": "Runs",
+          "activity": "Activity",
+          "history": "History"
+        },
+        "navAriaLabel": "Routine sections",
+        "unsavedChanges": "Unsaved changes",
+        "sectionPickerAriaLabel": "Routine section"
+      },
+      "routine-save-bar": {
+        "conflictMessage": "Routine changed elsewhere. Reload to merge.",
+        "unsavedCount_one": "{{count}} unsaved change",
+        "unsavedCount_other": "{{count}} unsaved changes",
+        "pendingChanges": "Pending changes",
+        "reloadLatest": "Reload latest",
+        "overwriteAnyway": "Overwrite anyway",
+        "overwriteHint": "Replaces the newer revision with your local edits.",
+        "discard": "Discard",
+        "saveChanges": "Save changes",
+        "discardTitle": "Discard changes?",
+        "discardDescription_one": "This will revert {{count}} unsaved change in this section.",
+        "discardDescription_other": "This will revert {{count}} unsaved changes in this section.",
+        "keepEditing": "Keep editing",
+        "discardConfirm": "Discard changes",
+        "readOnly": "Read-only — you don't own this routine."
+      },
+      "routine-trigger-card": {
+        "formAriaLabel": "Trigger: {{name}}",
+        "nextRun": "Next: {{time}}",
+        "kindWebhook": "Webhook",
+        "kindApi": "API",
+        "label": "Label",
+        "schedule": "Schedule",
+        "signingMode": "Signing mode",
+        "replayWindow": "Replay window (seconds)",
+        "delete": "Delete",
+        "rotateSecret": "Rotate secret",
+        "saveTrigger": "Save trigger"
+      },
+      "routine-overview": {
+        "noActiveSchedule": "No active schedule",
+        "manualOnly": "Manual runs only",
+        "activeSchedules_one": "{{count}} active schedule",
+        "activeSchedules_other": "{{count}} active schedules",
+        "scheduledTrigger": "Scheduled trigger",
+        "state": "State",
+        "runActive": "A run is active now",
+        "noActiveRun": "No active run",
+        "schedule": "Schedule",
+        "nextRun": "Next run",
+        "notScheduled": "Not scheduled",
+        "scheduled": "Scheduled",
+        "addSchedule": "Add or enable a schedule",
+        "lastRun": "Last run",
+        "noRunsYet": "No runs yet",
+        "runManuallyOrWait": "Run manually or wait for the schedule",
+        "defaultAgent": "Default agent",
+        "noDefaultAgent": "No default agent. Automatic triggers remain paused.",
+        "description": "Description",
+        "noDescription": "No description yet.",
+        "recentRuns": "Recent runs",
+        "viewAllRuns": "View all runs",
+        "noRunsEmpty": "No runs yet. Run the routine now or wait for its schedule.",
+        "routineRun": "Routine run",
+        "viewActivity": "View routine activity"
+      },
+      "routine-variables-editor": {
+        "title": "Variables",
+        "detectedFrom": "Detected from `{{placeholder}}` placeholders in the title and instructions.",
+        "promptBeforeRun": "Prompt the user for this value before each manual run.",
+        "label": "Label",
+        "type": "Type",
+        "defaultValue": "Default value",
+        "required": "Required",
+        "noDefault": "No default",
+        "true": "True",
+        "false": "False",
+        "options": "Options",
+        "optionsPlaceholder": "high, medium, low",
+        "defaultOption": "Default option",
+        "builtin": {
+          "dateDescription": "Current date in YYYY-MM-DD format (UTC) at the time the routine runs.",
+          "timestampDescription": "Human-readable date and time (UTC) at the time the routine runs."
+        },
+        "hint": "Use `{{placeholder}}` placeholders in the title or instructions to prompt for inputs when the routine runs.",
+        "helpAriaLabel": "Show variable help",
+        "dialogTitle": "Routine variables",
+        "dialogDescription": "How to prompt for inputs and which variables Myrmidon fills in automatically.",
+        "customHeading": "Custom variables",
+        "customIntro": "Type <0>{{placeholder}}</0> anywhere in the title or instructions. Myrmidon detects each placeholder, lists it under <1>Variables</1>, and prompts for a value before each run.",
+        "rules": {
+          "names": "Names must start with a letter and may use letters, numbers, and underscores.",
+          "typeAndDefault": "Pick a type (text, textarea, number, boolean, select, date), default value, and whether it is required.",
+          "dateSuffix": "Variable names ending in capital Date, such as startDate, are created as date variables by default.",
+          "sameName": "The same name reused across the title and instructions is treated as one variable."
+        },
+        "builtinHeading": "Built-in variables",
+        "builtinIntro": "These are filled in automatically — no setup needed and they will not appear in the Variables list.",
+        "columns": {
+          "placeholder": "Placeholder",
+          "example": "Example",
+          "description": "Description"
+        }
+      },
+      "routine-run-variables-dialog": {
+        "title": "Run routine",
+        "description": "Choose the agent and optional project for this one run. Routine defaults are prefilled and won't be changed.",
+        "agentLabel": "Agent *",
+        "agentPlaceholder": "Agent",
+        "selectAgent": "Select an agent",
+        "searchAgents": "Search agents...",
+        "noAgentsFound": "No agents found.",
+        "projectLabel": "Project",
+        "projectPlaceholder": "Project",
+        "noProject": "No project",
+        "searchProjects": "Search projects...",
+        "noProjectsFound": "No projects found.",
+        "noValue": "No value",
+        "true": "True",
+        "false": "False",
+        "chooseValue": "Choose a value",
+        "defaultAgentRequired": "Default agent required for this run.",
+        "missing": "Missing: {{names}}",
+        "chooseWorkspace": "Choose an existing workspace before running.",
+        "running": "Running..."
+      },
+      "routine-history-tab": {
+        "toast": {
+          "restoredTitle": "Restored revision {{from}} as revision {{to}}",
+          "restoredWithSecrets": "Trigger enabled state was restored from the snapshot. New webhook secrets are available in the banner above.",
+          "restored": "Trigger enabled state was restored from the snapshot.",
+          "restoreFailed": "Failed to restore revision",
+          "restoreFailedBody": "Myrmidon could not restore the revision."
+        },
+        "loadError": {
+          "title": "Could not load revisions",
+          "unknown": "Unknown error loading revisions."
+        },
+        "empty": {
+          "title": "No edits yet",
+          "description": "Revision 1 is the only history this routine has. Saving an edit creates the first additional revision."
+        },
+        "banner": {
+          "viewing": "Viewing revision {{number}} (read-only)",
+          "restoreHint": "Restoring this revision creates a new revision {{next}} with the same content. History stays append-only.",
+          "returnToCurrent": "Return to current",
+          "restoreAsNew": "Restore as new revision"
+        },
+        "conflict": {
+          "theRoutine": "the routine",
+          "title": "Unsaved routine edits",
+          "description": "You changed {{fields}} but haven't saved yet. Save or discard before previewing or restoring an older revision.",
+          "discard": "Discard changes",
+          "saveAndContinue": "Save and continue"
+        },
+        "list": {
+          "title": "Revisions",
+          "total": "{{total}} total",
+          "rev": "rev {{number}}",
+          "current": "Current",
+          "restored": "Restored",
+          "meta": "{{time}} • {{actor}}",
+          "metaWithSummary": "{{time}} • {{actor}} • {{summary}}",
+          "showOlder": "Show {{n}} older…"
+        },
+        "preview": {
+          "restore": "Restore this revision",
+          "saved": "Saved {{time}} by {{actor}}",
+          "savedWithSummary": "Saved {{time}} by {{actor}} · {{summary}}",
+          "compare": "Compare with current",
+          "structuredFields": "Structured fields",
+          "differs": "differs from current",
+          "description": "Description",
+          "noDescription": "No description",
+          "triggers": "Triggers ({{n}})",
+          "noTriggers": "No triggers in this revision.",
+          "webhookNote": "Webhook secrets are not stored in revisions. If a restored webhook trigger needs re-creation, Myrmidon mints fresh secret material at restore time.",
+          "variables": "Variables ({{n}})",
+          "variableDefault": "default: {{value}}"
+        },
+        "fields": {
+          "title": "Title",
+          "priority": "Priority",
+          "status": "Status",
+          "defaultAgent": "Default agent",
+          "project": "Project",
+          "concurrency": "Concurrency",
+          "catchUp": "Catch-up",
+          "env": "Env",
+          "variables": "Variables"
+        },
+        "state": {
+          "enabled": "enabled",
+          "disabled": "disabled"
+        },
+        "restore": {
+          "title": "Restore revision {{number}}?",
+          "description": "This creates a new revision {{next}} with the same content as revision {{number}}. Revisions {{from}}–{{to}} stay in history and are not modified.",
+          "revertFields": "Routine field values, variables, and schedule cron will revert.",
+          "revertSecrets": "Routine secrets will revert: {{changes}}.",
+          "historyKept": "Previous run history is preserved.",
+          "webhookRecreated": "The webhook trigger {{label}} will be recreated with a new URL and secret. Myrmidon will show the secret once after restore — copy it before closing.",
+          "changeSummary": "Change summary (optional)",
+          "changeSummaryPlaceholder": "Why are you restoring? Visible in history.",
+          "restoring": "Restoring…",
+          "confirm": "Restore as revision {{number}}"
+        },
+        "diff": {
+          "title": "Compare routine revisions",
+          "old": "Old",
+          "new": "New",
+          "content": "Content",
+          "fieldChanges": "Field changes",
+          "noFieldChanges": "No structural field changes.",
+          "columnField": "Field",
+          "columnOld": "Old value",
+          "columnNew": "New value",
+          "descriptionDiff": "Description diff",
+          "restoreAsNew": "Restore rev {{number}} as new revision",
+          "option": "rev {{number}} — {{time}}",
+          "optionWithSummary": "rev {{number}} — {{time}} • {{summary}}",
+          "noDescriptions": "No description on either revision.",
+          "identical": "Descriptions are identical."
+        },
+        "actor": {
+          "board": "board",
+          "agent": "agent",
+          "system": "system"
+        },
+        "unassigned": "Unassigned",
+        "noProject": "No project",
+        "replay": "replay {{seconds}}s",
+        "versionLatest": "latest",
+        "env": {
+          "plainSet": "plain (set)",
+          "plainChanged": "plain (changed)",
+          "keys_one": "{{count}} key",
+          "keys_other": "{{count}} keys",
+          "keysWithSecrets_one": "{{keys}} ({{count}} secret ref)",
+          "keysWithSecrets_other": "{{keys}} ({{count}} secret refs)",
+          "keysAdded_one": "{{count}} key added",
+          "keysAdded_other": "{{count}} keys added",
+          "keysRemoved_one": "{{count}} key removed",
+          "keysRemoved_other": "{{count}} keys removed",
+          "keysChanged_one": "{{count}} key changed",
+          "keysChanged_other": "{{count}} keys changed",
+          "added": "Env added ({{key}})",
+          "removed": "Env removed ({{key}})",
+          "bindingKind": "Env {{key}} binding kind",
+          "secret": "Env {{key}} secret",
+          "version": "Env {{key}} version",
+          "value": "Env {{key}} value"
+        },
+        "variablesNone": "(none)",
+        "trigger": {
+          "removed": "Trigger removed ({{label}})",
+          "added": "Trigger added ({{label}})",
+          "changed": "Trigger {{label}}",
+          "summaryWithState": "{{summary}} ({{state}})"
+        }
+      }
+    }
+  }
+}

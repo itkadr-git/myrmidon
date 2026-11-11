@@ -1,8 +1,8 @@
 import type { Request, Response, NextFunction } from "express";
-import type { Db } from "@paperclipai/db";
+import type { Db } from "@myrmidon/db";
 import { ZodError } from "zod";
 import { HttpError } from "../errors.js";
-import { trackErrorHandlerCrash } from "@paperclipai/shared/telemetry";
+import { trackErrorHandlerCrash } from "@myrmidon/shared/telemetry";
 import { getTelemetryClient } from "../telemetry.js";
 import { captureException } from "../sentry.js";
 import { COMPANY_IMPORT_API_PATH } from "../routes/company-import-paths.js";
@@ -13,6 +13,7 @@ import {
   redactSensitiveValueOccurrences,
 } from "./redact-sensitive.js";
 import { recordResponsibleUserDenialOnActiveRun } from "../services/responsible-user-denial-run-outcomes.js";
+import { recordAuth401 } from "../myrmidon/auth-401-burst/index.js";
 
 export interface ErrorContext {
   error: {
@@ -161,6 +162,12 @@ export function errorHandler(
         ? (responseDetailsValue as Record<string, unknown>)
         : null;
     recordResponsibleUserDenialFromHttpError(req, details);
+    // myrmidon(OPE-11890): count every auth 401 toward the in-process burst
+    // detector. Only the closed-set req.actorNoneReason is passed — the
+    // Authorization header / token never reaches the counter or any log line.
+    if (err.status === 401) {
+      recordAuth401(req.actorNoneReason);
+    }
     if (err.status >= 500) {
       const reportableError = sanitizeSecretSensitiveError(req, err);
       attachErrorContext(
@@ -216,6 +223,13 @@ export function errorHandler(
             ...(structuredConnectionError &&
             typeof responseDetails?.grantId === "string"
               ? { grantId: responseDetails.grantId }
+              : {}),
+            // myrmidon(TASK-CARD-READINESS-3): a structured violations list is
+            // the renderable "what to fix" of a validation denial (the task-card
+            // gate 422). Surface it at the top level, mirroring the OPE-12142
+            // caste-hint fields above; clients and tests read body.violations.
+            ...(Array.isArray(responseDetails?.violations)
+              ? { violations: responseDetails.violations }
               : {}),
             ...(!redactedSkillPolicyDenial &&
             !workspaceRepairPreconditionFailure &&

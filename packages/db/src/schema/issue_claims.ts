@@ -43,6 +43,8 @@ export const issueClaims = pgTable(
       .references(() => agents.id, { onDelete: "cascade" }),
     /** The run the claim was taken for, when the claim came from a checkout. */
     runId: uuid("run_id").references(() => heartbeatRuns.id, { onDelete: "set null" }),
+    /** Creation provenance; null on legacy rows is intentionally unknown. */
+    origin: text("origin"),
     /** The role queue the task was taken from (`agents.role` at claim time). */
     role: text("role"),
     claimedAt: timestamp("claimed_at", { withTimezone: true }).notNull().defaultNow(),

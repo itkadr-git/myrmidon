@@ -8,7 +8,7 @@
 // index.ts, so the same mistake turns it red again.
 
 import { describe, expect, it, vi } from "vitest";
-import { type HostDiskSettings } from "@paperclipai/shared";
+import { type HostDiskSettings } from "@myrmidon/shared";
 import type { LogActivityInput } from "../../services/activity-log.js";
 import {
   hostDiskConsumerPaths,

@@ -4,8 +4,14 @@ import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { groupByAgent, GatewayCostsTab, type GatewayAgentGroup } from "./GatewayCostsTab";
-import { formatPerMillion, type LitellmCostRow } from "./litellmCostsApi";
+import {
+  groupByAgent,
+  GatewayCostsTab,
+  keyUsageStatusClass,
+  sortKeyUsageRows,
+  type GatewayAgentGroup,
+} from "./GatewayCostsTab";
+import { formatPerMillion, type LitellmCostRow, type LitellmKeyUsageRow } from "./litellmCostsApi";
 
 function row(overrides: Partial<LitellmCostRow> = {}): LitellmCostRow {
   return {
@@ -47,6 +53,42 @@ describe("myrmidon(M2-A) groupByAgent", () => {
     expect(agentA.runs[0].runId).toBeNull();
     // An agent without a known name falls back to the id.
     expect(groups[0].agentName).toBe("Agent B");
+  });
+});
+
+describe("myrmidon(OPE-11776) key usage rows", () => {
+  function usage(overrides: Partial<LitellmKeyUsageRow>): LitellmKeyUsageRow {
+    return {
+      agentId: "agent-a",
+      agentName: "Alpha",
+      capUsd: null,
+      gatewaySpendUsd: null,
+      utilizationPercent: null,
+      status: "unknown",
+      dailyCents: 0,
+      weeklyCents: 0,
+      zeroCostEvents: 0,
+      ...overrides,
+    };
+  }
+
+  it("puts the keys closest to (or over) their cap first, then by 24 h spend, then by name", () => {
+    const rows = [
+      usage({ agentId: "agent-d", agentName: "Delta", dailyCents: 500 }),
+      usage({ agentId: "agent-a", agentName: "Alpha", capUsd: 10, gatewaySpendUsd: 8.5, utilizationPercent: 85, status: "near_cap", dailyCents: 10 }),
+      usage({ agentId: "agent-c", agentName: "Charlie", dailyCents: 500 }),
+      usage({ agentId: "agent-b", agentName: "Bravo", capUsd: 5, gatewaySpendUsd: 5.2, utilizationPercent: 104, status: "exhausted" }),
+    ];
+    expect(sortKeyUsageRows(rows).map((row) => row.agentId)).toEqual(["agent-b", "agent-a", "agent-c", "agent-d"]);
+    // The input is not reordered in place.
+    expect(rows[0]?.agentId).toBe("agent-d");
+  });
+
+  it("colours an exhausted cap red and a near-cap amber, and leaves the rest plain", () => {
+    expect(keyUsageStatusClass("exhausted")).toContain("text-destructive");
+    expect(keyUsageStatusClass("near_cap")).toContain("text-amber-600");
+    expect(keyUsageStatusClass("ok")).toBe("");
+    expect(keyUsageStatusClass("unknown")).toBe("");
   });
 });
 

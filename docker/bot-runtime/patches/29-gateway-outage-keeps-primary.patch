@@ -1,0 +1,319 @@
+diff --git a/agent/conversation_loop.py b/agent/conversation_loop.py
+index fb79d62..48ceb3f 100644
+--- a/agent/conversation_loop.py
++++ b/agent/conversation_loop.py
+@@ -17,6 +17,7 @@ from typing import Any, Dict, List, Optional
+ 
+ from agent.codex_responses_adapter import _summarize_user_message_for_log
+ from agent.fast_mode import begin_turn as begin_fast_mode_turn
++from agent.gateway_outage import probe_primary_runtime
+ from agent.message_metadata import append_message
+ from agent.message_sanitization import _repair_tool_call_arguments, _sanitize_surrogates
+ from agent.model_metadata import MINIMUM_CONTEXT_LENGTH, _estimate_tools_tokens_rough
+@@ -1546,6 +1547,10 @@ def _run_conversation_turn(
+     while (s.api_call_count < agent.max_iterations and agent.iteration_budget.remaining > 0) or agent._budget_grace_call:
+         if _run_phase(begin_iteration, agent, s).action == "break":
+             break
++        # myrmidon(G1): on a fallback, go back to the primary every few model calls; a probe that
++        # fails walks the fallback chain again through the ordinary error path.
++        if probe_primary_runtime(agent):
++            s.active_system_prompt = _sync_failover_system_message(agent, None, s.active_system_prompt)
+         _run_phase(prepare_iteration, agent, s)
+         _run_phase(assemble_api_request, agent, s)
+         _pg = _run_phase(run_preflight_gate, agent, s)
+diff --git a/agent/gateway_outage.py b/agent/gateway_outage.py
+new file mode 100644
+index 0000000..9f95240
+--- /dev/null
++++ b/agent/gateway_outage.py
+@@ -0,0 +1,193 @@
++"""myrmidon(G1): losing the connection to the model gateway is not a reason to leave the primary model.
++
++A bot container reaches every model through one gateway. When the gateway restarts, the primary model
++and every fallback entry fail the same way, because the hop in front of all of them is down: the
++fallback walk has nothing to offer, and when the gateway is back the run stays on a fallback (often a
++paid one) until its end. Upstream treats a connect failure like any transport error: one more attempt,
++then the fallback chain after the second failure.
++
++This module keeps the primary in that case, and brings a run back to it:
++
++1. ``hold_for_gateway_outage``: an error that says "the gateway is not answering" (no HTTP answer at
++   all - connection refused or reset, connect timeout, ``APIConnectionError`` - or a 502/503/504 whose
++   text names no model and no provider) is retried against the primary with the usual growing pause for
++   up to ``HERMES_GATEWAY_OUTAGE_BUDGET_S`` seconds (default 180) before the fallback chain is tried.
++   Errors that come from a model or a provider (429 and quota, "model not found", "no healthy
++   deployments", an overloaded provider, a read timeout of a slow model) are not held: they go to the
++   fallback exactly as before.
++2. ``probe_primary_runtime``: a run that is on a fallback tries the primary again every
++   ``HERMES_FALLBACK_PROBE_EVERY`` model calls (default 10) and stays on it when the call succeeds. A
++   probe that fails walks the fallback chain again through the ordinary error path, and the primary's
++   own rate-limit cooldown (``restore_primary_runtime``) still gates the probe.
++
++Both knobs are environment variables; ``0`` switches the part off and gives the upstream behaviour back.
++"""
++
++from __future__ import annotations
++
++import logging
++import os
++import re
++import time
++from typing import Any, Optional
++
++logger = logging.getLogger(__name__)
++
++ENV_OUTAGE_BUDGET = "HERMES_GATEWAY_OUTAGE_BUDGET_S"
++ENV_PROBE_EVERY = "HERMES_FALLBACK_PROBE_EVERY"
++DEFAULT_OUTAGE_BUDGET_S = 180.0
++DEFAULT_PROBE_EVERY = 10
++
++# Replaced by tests; monotonic so a wall-clock jump cannot end or stretch the budget.
++_now = time.monotonic
++
++# Failure reasons of the classifier that can describe an unreachable gateway; every other reason
++# (rate limit, billing, model not found, overflow, format ...) comes from a model or a provider.
++_OUTAGE_REASON_NAMES = frozenset({"timeout", "overloaded", "server_error"})
++
++# No HTTP answer came back: the connection to the endpoint was refused, reset or never opened.
++# ``APITimeoutError`` and ``ReadTimeout`` are NOT here: a model that is slow to answer is a model
++# problem; only the cause chain of an ``APITimeoutError`` can make it a connect timeout.
++_CONNECT_ERROR_TYPES = frozenset({
++    "APIConnectionError", "ConnectError", "ConnectTimeout", "ConnectionError", "ConnectionRefusedError",
++    "ConnectionResetError", "ConnectionAbortedError", "BrokenPipeError", "RemoteProtocolError",
++    "ServerDisconnectedError", "ClientConnectorError", "ReadError", "WriteError",
++})
++_CONNECT_TEXT = (
++    "connection refused", "econnrefused", "connection error", "all connection attempts failed",
++    "connection reset", "connection aborted", "upstream connect error", "no route to host",
++    "network is unreachable", "name or service not known", "temporary failure in name resolution",
++)
++
++# A gateway or reverse proxy that is not serving answers with one of these statuses and no model text.
++_GATEWAY_STATUSES = frozenset({502, 503, 504})
++# Words that only an answer about a model or a provider carries (LiteLLM wraps every provider failure
++# with ``litellm.<Error>`` and the provider's name; its router speaks of deployments).
++_MODEL_TEXT = (
++    "deployment", "model", "litellm", "provider", "rate limit", "rate_limit", "quota", "overload",
++    "capacity", "cooldown", "credit", "billing", "router",
++)
++_PROVIDER_NAME = re.compile(r"\b(anthropic|openai|vertex|bedrock|azure|gemini|kie|chatgpt)\b")
++
++
++def _env_number(name: str, default: float) -> float:
++    raw = os.environ.get(name)
++    if raw is None or not str(raw).strip():
++        return default
++    try:
++        value = float(str(raw).strip())
++    except ValueError:
++        logger.warning("%s=%r is not a number; using %s", name, raw, default)
++        return default
++    return max(value, 0.0)
++
++
++def outage_budget_s() -> float:
++    """Seconds a gateway outage is ridden out on the primary before any fallback (0 = off)."""
++    return _env_number(ENV_OUTAGE_BUDGET, DEFAULT_OUTAGE_BUDGET_S)
++
++
++def probe_every() -> int:
++    """Model calls on a fallback between two probes of the primary (0 = never probe)."""
++    return int(_env_number(ENV_PROBE_EVERY, DEFAULT_PROBE_EVERY))
++
++
++def _cause_chain(error: BaseException, depth: int = 4):
++    seen = 0
++    current: Optional[BaseException] = error
++    while current is not None and seen < depth:
++        yield current
++        current = current.__cause__ or current.__context__
++        seen += 1
++
++
++def is_gateway_outage(api_error: Any, classified: Any) -> bool:
++    """True when ``api_error`` says the endpoint is not answering, not that a model refused."""
++    reason = getattr(getattr(classified, "reason", None), "value", None)
++    if reason not in _OUTAGE_REASON_NAMES:
++        return False
++    status = getattr(classified, "status_code", None)
++    text = f"{api_error} {getattr(classified, 'message', '') or ''}".lower()
++    if status is None:
++        if any(type(link).__name__ in _CONNECT_ERROR_TYPES for link in _cause_chain(api_error)):
++            return True
++        # A hermes wrapper may have flattened the exception into text; the wording is the same.
++        return type(api_error).__name__ != "APITimeoutError" and any(p in text for p in _CONNECT_TEXT)
++    if status in _GATEWAY_STATUSES:
++        return not (any(word in text for word in _MODEL_TEXT) or _PROVIDER_NAME.search(text))
++    return False
++
++
++def _fallback_pending(agent: Any) -> bool:
++    chain = getattr(agent, "_fallback_chain", None) or ()
++    return int(getattr(agent, "_fallback_index", 0) or 0) < len(chain)
++
++
++def hold_for_gateway_outage(agent: Any, api_error: Any, classified: Any, retry_state: Any) -> bool:
++    """True while the fallback walk is held back for a gateway outage; arms the budget clock.
++
++    Records the verdict on ``retry_state`` (``gateway_outage_hold``) so the backoff can be capped at
++    the budget that is left. Nothing is held when there is no fallback to hold back (the ordinary
++    recovery ladder already waits then), when the budget is off, or once it is spent."""
++    retry_state.gateway_outage_hold = False
++    budget = outage_budget_s()
++    if budget <= 0 or not _fallback_pending(agent) or not is_gateway_outage(api_error, classified):
++        return False
++    now = _now()
++    if retry_state.gateway_outage_started is None:
++        retry_state.gateway_outage_started = now
++    spent = now - retry_state.gateway_outage_started
++    if spent >= budget:
++        logger.warning(
++            "Gateway still unreachable after %.0fs (%s): giving the fallback chain its turn",
++            spent, type(api_error).__name__,
++        )
++        return False
++    retry_state.gateway_outage_hold = True
++    if not retry_state.gateway_outage_announced:
++        retry_state.gateway_outage_announced = True
++        logger.warning(
++            "Gateway unreachable (%s): retrying the primary model for up to %.0fs before any fallback",
++            type(api_error).__name__, budget,
++        )
++        try:
++            agent._buffer_diagnostic_status(
++                f"⏳ Model gateway unreachable ({type(api_error).__name__}) — retrying the primary model "
++                f"for up to {budget:.0f}s before any fallback..."
++            )
++        except Exception:
++            logger.debug("gateway outage notice failed", exc_info=True)
++    return True
++
++
++def outage_wait_cap(retry_state: Any) -> Optional[float]:
++    """Longest pause that still ends inside the outage budget (None when no outage is being held)."""
++    if not getattr(retry_state, "gateway_outage_hold", False) or retry_state.gateway_outage_started is None:
++        return None
++    left = outage_budget_s() - (_now() - retry_state.gateway_outage_started)
++    return max(left, 1.0)
++
++
++def probe_primary_runtime(agent: Any) -> bool:
++    """Called before each model call of a turn: on a fallback, every ``probe_every()`` calls go back
++    to the primary. Returns True when the primary runtime was restored (the caller then refreshes the
++    system prompt it holds)."""
++    if not getattr(agent, "_fallback_activated", False):
++        agent._fallback_calls_since_switch = 0
++        return False
++    every = probe_every()
++    if every <= 0:
++        return False
++    calls = int(getattr(agent, "_fallback_calls_since_switch", 0) or 0) + 1
++    if calls < every:
++        agent._fallback_calls_since_switch = calls
++        return False
++    agent._fallback_calls_since_switch = 0
++    try:
++        restored = bool(agent._restore_primary_runtime())
++    except Exception:
++        logger.warning("Probe of the primary model failed to restore it", exc_info=True)
++        return False
++    if restored:
++        logger.info("Fallback active for %d calls: trying the primary model again", calls)
++    return restored
+diff --git a/agent/turn_api_error.py b/agent/turn_api_error.py
+index 376098d..22b66aa 100644
+--- a/agent/turn_api_error.py
++++ b/agent/turn_api_error.py
+@@ -16,6 +16,7 @@ import time
+ from typing import Any, Dict, Optional
+ 
+ from agent.error_classifier import RETRYABLE_CLIENT_REASONS, FailoverReason, classify_api_error
++from agent.gateway_outage import outage_wait_cap
+ from agent.turn_overflow import recover_from_overflow
+ from agent.turn_recovery import (
+     _NONRETRYABLE_LABELS, abort_turn_on_interrupt, compute_error_backoff, interruptible_backoff_sleep,
+@@ -391,7 +392,7 @@ def settle_unrecovered_error(
+     wait_time = compute_error_backoff(
+         agent, api_error, retry_count=retry_count, max_retries=max_retries,
+         is_rate_limited=is_rate_limited, is_zai_coding_overload=_is_zai_coding_overload,
+-        base_url=_base, model=_model,
++        base_url=_base, model=_model, wait_cap=outage_wait_cap(_retry),
+     )
+     # Same preserve-redirect rule as the invalid-response wait: a steering correction
+     # must survive backoff, not die as "Operation interrupted".
+diff --git a/agent/turn_recovery.py b/agent/turn_recovery.py
+index d757a74..4ca8dce 100644
+--- a/agent/turn_recovery.py
++++ b/agent/turn_recovery.py
+@@ -19,6 +19,7 @@ from typing import Any, Dict, List, Optional, Tuple
+ 
+ from agent.conversation_compression import COMPRESSION_RETRY_CONTEXT_REDUCED_STATUS_TEMPLATE
+ from agent.fast_mode import fast_mode_unprovisioned, mark_fast_mode_unavailable
++from agent.gateway_outage import hold_for_gateway_outage
+ from agent.model_metadata import is_output_cap_error, parse_available_output_tokens_from_error
+ from agent.retry_utils import is_zai_coding_overload_error, zai_coding_overload_retry_ceiling
+ from agent.error_classifier import FailoverReason, classify_api_error
+@@ -1331,7 +1332,7 @@ def reset_hint(api_error: Exception) -> str:
+ 
+ def compute_error_backoff(
+     agent: Any, api_error: Exception, *, retry_count: int, max_retries: int, is_rate_limited: bool,
+-    is_zai_coding_overload: bool, base_url: Any, model: Any,
++    is_zai_coding_overload: bool, base_url: Any, model: Any, wait_cap: Optional[float] = None,
+ ) -> float:
+     """Pick the wait before the next API retry and announce it. Retry-After wins for
+     rate limits and any other retryable error (capped at 600s: Anthropic Tier 1 buckets
+@@ -1374,6 +1375,9 @@ def compute_error_backoff(
+         wait_time, _backoff_policy = adaptive_rate_limit_backoff(
+             retry_count, base_url=str(base_url), model=model, error=api_error, default_wait=wait_time,
+         )
++    # myrmidon(G1): a held gateway outage never waits past its budget.
++    if wait_cap is not None:
++        wait_time = min(wait_time, wait_cap)
+     _reset = reset_hint(api_error) if _adaptive else ""
+     _wait_reason = "Provider overloaded" if is_zai_coding_overload and not is_rate_limited else "Rate limited"
+     if _adaptive:
+@@ -1823,10 +1827,17 @@ def route_classified_error(
+     _is_zai_coding_overload = is_zai_coding_overload_error(base_url=str(base_url), model=model, error=api_error)
+     if _is_zai_coding_overload:
+         max_retries = max(max_retries, zai_coding_overload_retry_ceiling())
++    # myrmidon(G1): a connection that cannot be made to the model gateway fails the primary and every
++    # fallback alike. Ride it out on the primary for a bounded time (growing pauses, the retry budget
++    # lifted for as long as the outage budget lasts) instead of moving to a fallback that stays active
++    # after the gateway is back. Errors that come from a model or a provider are not held.
++    _gateway_outage = hold_for_gateway_outage(agent, api_error, classified, _retry)
++    if _gateway_outage:
++        max_retries = max(max_retries, retry_count + 1)
+     _should_fallback = (
+         (is_rate_limited and _wrapped_output_cap_budget is None)
+         or (_is_transport_failure and retry_count >= 2)
+-    )
++    ) and not _gateway_outage
+     if _should_fallback and agent._fallback_index < len(agent._fallback_chain):
+         # No eager fallback while credential pool rotation may recover. Exception: an
+         # upstream-aggregator 429 — the pool can't help, always fall back.
+diff --git a/agent/turn_retry_state.py b/agent/turn_retry_state.py
+index f5f2925..6d2418a 100644
+--- a/agent/turn_retry_state.py
++++ b/agent/turn_retry_state.py
+@@ -4,6 +4,7 @@ Dependency-free so it imports without a cycle."""
+ from __future__ import annotations
+ 
+ from dataclasses import dataclass
++from typing import Optional
+ 
+ 
+ @dataclass
+@@ -46,6 +47,13 @@ class TurnRetryState:
+     auth_failover_attempted: bool = False
+     # Post-exhaustion auto-recovery cycles spent on this API call (agent.auto_recovery_cycles caps it).
+     auto_recovery_cycles_used: int = 0
++    # myrmidon(G1): a lost gateway connection is ridden out on the primary for a bounded time before
++    # the fallback walk (agent/gateway_outage.py). ``started`` is the monotonic time of the first such
++    # failure of this API call, ``hold`` says the latest failure is being held, ``announced`` keeps the
++    # notice to one.
++    gateway_outage_started: Optional[float] = None
++    gateway_outage_hold: bool = False
++    gateway_outage_announced: bool = False
+ 
+     # Restart signals (read by the outer loop after the attempt)
+     restart_with_compressed_messages: bool = False

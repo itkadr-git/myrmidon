@@ -12,7 +12,7 @@ import type {
   AdapterExecutionContext,
   AdapterExecutionResult,
   UsageSummary,
-} from "@paperclipai/adapter-utils";
+} from "@myrmidon/adapter-utils";
 import {
   adapterExecutionTargetSessionIdentity,
   describeAdapterExecutionTarget,
@@ -35,7 +35,7 @@ import {
   type PreparedAdapterExecutionTargetRuntime,
   type ReferencedSourceIgnoreResolution,
   type SandboxAdditionalSource,
-} from "@paperclipai/adapter-utils/execution-target";
+} from "@myrmidon/adapter-utils/execution-target";
 import { captureLocalProcess, capturedProcessExited, killCapturedLocalProcess } from "./local-process-control.js";
 import type { DuplexLossReason } from "../duplex-observability.js";
 import { DUPLEX_CHANNEL_LOST_ERROR_CODE } from "../bridge-transport-contract.js";
@@ -73,8 +73,8 @@ import {
   rewriteWorkspaceCwdEnvVarsForExecution,
   shapePaperclipWorkspaceEnvForExecution,
   type PaperclipSkillEntry,
-} from "@paperclipai/adapter-utils/server-utils";
-import { shellQuote } from "@paperclipai/adapter-utils/ssh";
+} from "@myrmidon/adapter-utils/server-utils";
+import { shellQuote } from "@myrmidon/adapter-utils/ssh";
 import {
   createAcpRuntime,
   createAgentRegistry,
@@ -104,7 +104,7 @@ import {
   DEFAULT_ACP_ENGINE_WARM_HANDLE_IDLE_MS,
 } from "./constants.js";
 // myrmidon(B1c): product name in user-facing texts; see shared myrmidon-product.
-import { PRODUCT_NAME } from "@paperclipai/shared";
+import { PRODUCT_NAME } from "@myrmidon/shared";
 import type {
   AcpRunContext,
   AcquiredRunResources,
@@ -156,7 +156,7 @@ import {
   type StartupStepMeasureOptions,
   type StartupTraceContext,
 } from "./startup-timing.js";
-import { readProductEnv, readProductEnvFrom, writeProductEnv } from "@paperclipai/shared/env-alias"; // myrmidon(REBRAND-C)
+import { readProductEnv, readProductEnvFrom, writeProductEnv } from "@myrmidon/shared/env-alias"; // myrmidon(REBRAND-C)
 
 const defaultModuleDir = path.dirname(fileURLToPath(import.meta.url));
 const PAPERCLIP_MANAGED_CODEX_SKILLS_MANIFEST = ".paperclip-managed-skills.json";
@@ -264,7 +264,7 @@ export interface AcpxEngineBillingIdentity {
  * credential/home helpers (`copyBackCodexAuth`, `stageCodexHomeForSync`,
  * `prepareClaudeConfigSeed`, the Gemini skills stager, …) live in the adapter
  * packages, and the shared engine — which lives *inside*
- * `@paperclipai/adapter-utils`, a dependency of those packages — cannot import
+ * `@myrmidon/adapter-utils`, a dependency of those packages — cannot import
  * them without a circular dependency. So the engine exposes this seam and each
  * adapter supplies it, reusing the exact same vetted helpers (no duplication of
  * the security-critical copy-back path).
@@ -1899,7 +1899,9 @@ async function buildRuntime(input: {
   await fs.mkdir(stateDir, { recursive: true });
 
   const envConfig = parseObject(config.env);
-  const env: Record<string, string> = { ...buildPaperclipEnv(agent), PAPERCLIP_RUN_ID: runId };
+  const runtimeRunIdEnv: Record<string, string> = {};
+  writeProductEnv(runtimeRunIdEnv, "RUN_ID", runId); // myrmidon(REBRAND-C)
+  const env: Record<string, string> = { ...buildPaperclipEnv(agent), ...runtimeRunIdEnv };
   const wakeTaskId =
     (typeof context.taskId === "string" && context.taskId.trim()) ||
     (typeof context.issueId === "string" && context.issueId.trim()) ||
@@ -1950,7 +1952,8 @@ async function buildRuntime(input: {
   const resolvedAdapterEnv: Record<string, string> = {};
   const scratch = parseObject(context.paperclipScratch);
   const scratchKeys = scratch.type === "heartbeat_run" && typeof scratch.dir === "string"
-    ? new Set(["PAPERCLIP_RUN_SCRATCH_DIR", "PAPERCLIP_TASK_SCRATCH_DIR", "PAPERCLIP_SCRATCH_DIR", "PAPERCLIP_TMPDIR",
+    ? new Set(["PAPERCLIP_RUN_SCRATCH_DIR", "PAPERCLIP_TASK_SCRATCH_DIR", "PAPERCLIP_SCRATCH_DIR", "PAPERCLIP_RUN_DIR", "PAPERCLIP_TMPDIR",
+      "MYRMIDON_RUN_SCRATCH_DIR", "MYRMIDON_TASK_SCRATCH_DIR", "MYRMIDON_SCRATCH_DIR", "MYRMIDON_RUN_DIR", "MYRMIDON_TMPDIR",
       ...(Array.isArray(scratch.tempKeysApplied) ? scratch.tempKeysApplied.filter((key): key is string =>
         typeof key === "string" && ["TMPDIR", "TEMP", "TMP"].includes(key)) : [])])
     : new Set<string>();
@@ -1967,7 +1970,7 @@ async function buildRuntime(input: {
     // The server rotates run-owned scratch paths on every wake. Still forward
     // them, but only hash actual adapter settings. User-supplied temp overrides
     // are absent from tempKeysApplied and keep their compatibility protection.
-    if (!scratchKeys.has(key) || value !== scratch.dir) resolvedAdapterEnv[key] = value;
+    if (!scratchKeys.has(key) || (value !== scratch.dir && value !== scratch.runDir)) resolvedAdapterEnv[key] = value;
   }
   if (authToken) writeProductEnv(env, "API_KEY", authToken); // myrmidon(REBRAND-C)
   // For the claude agent, set model via ANTHROPIC_MODEL at startup rather than
@@ -3060,6 +3063,67 @@ async function emitRuntimeEvent(
   toolTitles?: Map<string, string>,
   coalescePlaceholderToolUpdates?: boolean,
 ) {
+  if (ctx.runGuard) {
+    const ctxExt = ctx as unknown as Record<string, unknown>;
+    const activeCalls = ((ctxExt.__acpxActiveToolCallIds ??= new Set<string>()) as Set<string>);
+    const failedCalls = ((ctxExt.__acpxFailedToolCallIds ??= new Set<string>()) as Set<string>);
+
+    if (event.type === "text_delta") {
+      if (activeCalls.size === 0 && ctxExt.__acpxTurnModelStepPending) {
+        ctxExt.__acpxTurnModelStepPending = false;
+        const stepDecision = ctx.runGuard.modelCall();
+        ctx.onModelCall?.();
+        if (stepDecision.stop) void ctx.onRunGuardStop?.(stepDecision.reason!);
+      }
+    } else if (event.type === "tool_call") {
+      const callId = event.toolCallId ?? (event as Record<string, unknown>).callId as string | undefined;
+
+      if (activeCalls.size === 0 && ctxExt.__acpxTurnModelStepPending) {
+        ctxExt.__acpxTurnModelStepPending = false;
+        const stepDecision = ctx.runGuard.modelCall();
+        ctx.onModelCall?.();
+        if (stepDecision.stop) void ctx.onRunGuardStop?.(stepDecision.reason!);
+      }
+
+      if (event.status === "in_progress") {
+        if (callId && !activeCalls.has(callId)) {
+          activeCalls.add(callId);
+          if (activeCalls.size === 1) ctx.runGuard.pauseIdle();
+        }
+      }
+
+      let decision;
+      if (event.status === "failed") {
+        if (callId) {
+          activeCalls.delete(callId);
+          if (activeCalls.size === 0) {
+            ctx.runGuard.resumeIdle();
+            ctxExt.__acpxTurnModelStepPending = true;
+          }
+        }
+        if (callId && failedCalls.has(callId)) {
+          decision = ctx.runGuard.event();
+        } else {
+          if (callId) failedCalls.add(callId);
+          decision = ctx.runGuard.toolFailure(event.title ?? "acp_tool", (event as Record<string, unknown>).input);
+        }
+      } else if (event.status === "completed") {
+        if (callId) {
+          failedCalls.delete(callId);
+          activeCalls.delete(callId);
+          if (activeCalls.size === 0) {
+            ctx.runGuard.resumeIdle();
+            ctxExt.__acpxTurnModelStepPending = true;
+          }
+        }
+        decision = ctx.runGuard.toolSuccess();
+      } else {
+        decision = ctx.runGuard.event();
+      }
+
+      if (decision.stop) void ctx.onRunGuardStop?.(decision.reason!);
+    }
+  }
   if (event.type === "text_delta") {
     await emitAcpxLog(ctx, {
       type: "acpx.text_delta",
@@ -4733,6 +4797,13 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
       };
       const stepTurnStart = (signal: AbortSignal, startTimeoutMs: number | undefined): StartedTurn => {
         ctx.signal?.throwIfAborted();
+        (ctx as unknown as Record<string, unknown>).__acpxTurnModelStepPending = false;
+        const callDecision = ctx.runGuard?.modelCall();
+        if (callDecision?.stop) {
+          void ctx.onRunGuardStop?.(callDecision.reason!);
+          throw new Error(callDecision.reason);
+        }
+        ctx.onModelCall?.();
         const turn = runtime.startTurn({
           handle: sessionHandle,
           text: runPrompt,
@@ -5420,3 +5491,9 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
 
 
 export const execute = createAcpxEngineExecutor();
+export const emitRuntimeEventForTest = emitRuntimeEvent as (
+  ctx: AdapterExecutionContext,
+  event: any,
+  toolTitles?: Map<string, string>,
+  coalescePlaceholderToolUpdates?: boolean,
+) => Promise<void>;

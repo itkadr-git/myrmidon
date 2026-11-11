@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 
-import { PRODUCT_NAME } from "@paperclipai/shared";
+import { PRODUCT_NAME } from "@myrmidon/shared";
 import { i18n } from "@/i18n";
 import { act } from "react";
 import { createRoot } from "react-dom/client";
@@ -122,5 +122,49 @@ describe("BreadcrumbContext", () => {
     expect(buildDocumentTitle([], null)).toBe(PRODUCT_NAME);
     expect(i18n.getFixedT("en")("about.title")).toContain(PRODUCT_NAME);
     expect(i18n.getFixedT("ru")("about.title")).toContain(PRODUCT_NAME);
+  });
+
+  it("syncs document.title and open-graph/twitter title meta tags when breadcrumbs change", () => {
+    const ogMeta = document.createElement("meta");
+    ogMeta.setAttribute("property", "og:title");
+    ogMeta.setAttribute("content", "Initial");
+    document.head.appendChild(ogMeta);
+
+    const twitterMeta = document.createElement("meta");
+    twitterMeta.setAttribute("name", "twitter:title");
+    twitterMeta.setAttribute("content", "Initial");
+    document.head.appendChild(twitterMeta);
+
+    let updateBreadcrumbs: ((crumbs: Array<{ label: string; href?: string }>) => void) | null = null;
+    function TestConsumer() {
+      const { setBreadcrumbs } = useBreadcrumbs();
+      updateBreadcrumbs = setBreadcrumbs;
+      return null;
+    }
+
+    act(() => {
+      root.render(
+        <BreadcrumbProvider companyName="Acme Corp">
+          <TestConsumer />
+        </BreadcrumbProvider>,
+      );
+    });
+
+    const expectedInitial = `Acme Corp • ${PRODUCT_NAME}`;
+    expect(document.title).toBe(expectedInitial);
+    expect(ogMeta.getAttribute("content")).toBe(expectedInitial);
+    expect(twitterMeta.getAttribute("content")).toBe(expectedInitial);
+
+    act(() => {
+      updateBreadcrumbs?.([{ label: "Tasks" }]);
+    });
+
+    const expectedUpdated = `Tasks • Acme Corp • ${PRODUCT_NAME}`;
+    expect(document.title).toBe(expectedUpdated);
+    expect(ogMeta.getAttribute("content")).toBe(expectedUpdated);
+    expect(twitterMeta.getAttribute("content")).toBe(expectedUpdated);
+
+    ogMeta.remove();
+    twitterMeta.remove();
   });
 });

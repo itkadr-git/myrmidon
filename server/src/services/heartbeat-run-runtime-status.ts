@@ -1,4 +1,4 @@
-import type { HeartbeatRunStatusPhase } from "@paperclipai/shared";
+import type { HeartbeatRunStatusPhase } from "@myrmidon/shared";
 import { redactSensitiveText } from "../redaction.js";
 // myrmidon(DM-PROGRESS): every runtime status write also feeds the bounded
 // per-run step history the bridged Telegram DM status message reads; the
@@ -7,7 +7,7 @@ import {
   clearAllDmProgressRuntimeSteps,
   clearDmProgressRuntimeSteps,
   recordDmProgressRuntimeStatus,
-} from "../myrmidon/telegram-dm-progress/runtime-steps.js";
+} from "../myrmidon/channel-connectors/bridge/dm-progress.js";
 
 export const HEARTBEAT_RUN_RUNTIME_STATUS_TTL_MS = 90_000;
 export const MAX_HEARTBEAT_RUN_RUNTIME_STATUS_MESSAGE_CHARS = 180;

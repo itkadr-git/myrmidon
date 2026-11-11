@@ -2,12 +2,13 @@ import { randomUUID } from "node:crypto";
 import { logger } from "../middleware/logger.js";
 import { and, eq, isNotNull, lte, sql } from "drizzle-orm";
 import {
+  agentWakeupRequests,
   agents,
   heartbeatRuns,
   issues,
   nativeRunFinalizations,
   type Db,
-} from "@paperclipai/db";
+} from "@myrmidon/db";
 import { parseIssueExecutionState } from "./issue-execution-policy.js";
 import { issueRecoveryActionService } from "./issue-recovery-actions.js";
 import { reportRunFailure } from "./run-failure-report.js";
@@ -16,6 +17,11 @@ import { reportRunFailure } from "./run-failure-report.js";
 export async function reconcileAbandonedExecutionControl(
   db: Db,
   now = new Date(),
+  // myrmidon(HERMES-GATEWAY-CLOSE, OPE-11889): called after commit for every run
+  // this pass moved to a terminal status on the board's deadline, so the caller
+  // can close the remote gateway run the board no longer supervises. Never
+  // awaited and never allowed to fail the reconciliation.
+  options: { onTerminalRun?: (run: typeof heartbeatRuns.$inferSelect) => void } = {},
 ) {
   const nativeDue = await db
     .select({
@@ -191,6 +197,20 @@ export async function reconcileAbandonedExecutionControl(
           if (updatedRun && updatedRun.status !== run.status) {
             terminalRunToReport = updatedRun;
           }
+          // myrmidon(1.6.6 OPE-8998): the wake request this run carried ends
+          // with it. Leaving it `claimed` made it an orphan that idle pickup
+          // read as work in flight (prod: 221 claimed requests behind runs this
+          // path had failed).
+          if (run.wakeupRequestId)
+            await tx
+              .update(agentWakeupRequests)
+              .set({ status: "failed", finishedAt: now, error: cause, updatedAt: now })
+              .where(
+                and(
+                  eq(agentWakeupRequests.id, run.wakeupRequestId),
+                  sql`${agentWakeupRequests.status} in ('queued', 'claimed')`,
+                ),
+              );
           await tx
             .update(agents)
             .set({ status: "idle", updatedAt: now })
@@ -242,7 +262,14 @@ export async function reconcileAbandonedExecutionControl(
           return true;
         });
         if (repaired) surfaced += 1;
-        if (terminalRunToReport) void reportRunFailure(db, terminalRunToReport);
+        if (terminalRunToReport) {
+          void reportRunFailure(db, terminalRunToReport);
+          try {
+            options.onTerminalRun?.(terminalRunToReport);
+          } catch (err) {
+            logger.warn({ err, runId: candidate.runId }, "terminal run hook of the execution-control reconciliation failed");
+          }
+        }
       } catch {
         logger.warn(
           { runId: candidate.runId },

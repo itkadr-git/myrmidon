@@ -12,7 +12,7 @@
 // (the manual wake answered "no ready task"), while the hold could only be
 // lifted by hand. See docs/myrmidon/DIVERGENCE.md "HOLD-READY".
 import { and, eq, notExists, sql, type SQL } from "drizzle-orm";
-import { agentWakeupRequests, issueRecoveryActions, issues, type Db } from "@paperclipai/db";
+import { agentWakeupRequests, issueRecoveryActions, issues, type Db } from "@myrmidon/db";
 import { executionBlockerPredicate } from "../../services/execution-blocker.js";
 
 /**

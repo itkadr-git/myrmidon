@@ -3,14 +3,14 @@ import express, { Router, type NextFunction, type Request, type Response } from 
 import multer from "multer";
 import { and, count as countFn, eq } from "drizzle-orm";
 import { z } from "zod";
-import type { Db } from "@paperclipai/db";
-import { agents as agentsTable } from "@paperclipai/db";
-import type { CompanyPortabilityImportResult } from "@paperclipai/shared";
+import type { Db } from "@myrmidon/db";
+import { agents as agentsTable } from "@myrmidon/db";
+import type { CompanyPortabilityImportResult } from "@myrmidon/shared";
 import {
   MAX_ZIP_ENTRY_DECOMPRESSED_BYTES,
   MAX_ZIP_TOTAL_DECOMPRESSED_BYTES,
   readZipArchive,
-} from "@paperclipai/shared/portability-zip";
+} from "@myrmidon/shared/portability-zip";
 import {
   DEFAULT_FEEDBACK_DATA_SHARING_TERMS_VERSION,
   SETTINGS_OPERATOR_MANAGED_ERROR_CODE,
@@ -25,7 +25,7 @@ import {
   hidesCompanyPage,
   updateCompanyBrandingSchema,
   updateCompanySchema,
-} from "@paperclipai/shared";
+} from "@myrmidon/shared";
 import {
   COMPANY_IMPORT_TRANSFERS_ROUTE_PATH,
   companyImportTransferDeclarationSchema,
@@ -33,8 +33,9 @@ import {
   type CompanyImportTransferDeclaration,
   type CompanyImportTransferPartUploadResult,
   type CompanyImportTransferStatus,
-} from "@paperclipai/shared/company-import-transfer";
+} from "@myrmidon/shared/company-import-transfer";
 import { badRequest, conflict, forbidden, notFound, unprocessable } from "../errors.js";
+import { PRODUCT_NAME } from "../myrmidon/product.js";
 import { PORTABLE_ZIP_UPLOAD_LIMIT_BYTES } from "../http/body-limits.js";
 import { logger } from "../middleware/logger.js";
 import { validate } from "../middleware/validate.js";
@@ -99,7 +100,7 @@ const zipPackageUpload = multer({
 const IMPORT_TRANSFER_PART_SIZE_LIMIT_BYTES = 64 * 1024 * 1024;
 
 // The declaration body and response shapes are the shared wire contract in
-// @paperclipai/shared/company-import-transfer — the browser and CLI clients
+// @myrmidon/shared/company-import-transfer — the browser and CLI clients
 // type against the same schemas and path builders.
 const importTransferManifestSchema = companyImportTransferDeclarationSchema;
 
@@ -1193,7 +1194,8 @@ export function companyRoutes(db: Db, storage?: StorageService, options?: Compan
   router.post("/", (req, _res, next) => {
     assertBoard(req);
     if (isCloudManagedInstance()) {
-      throw forbidden("Company creation is managed by Paperclip Cloud", {
+      // myrmidon(B1e): user-facing API error names our product; the machine-readable code is unchanged.
+      throw forbidden(`${PRODUCT_NAME} Cloud manages company creation on this instance`, {
         code: "cloud_managed",
       });
     }

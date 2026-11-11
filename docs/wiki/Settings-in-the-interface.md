@@ -2,7 +2,18 @@
 
 > Русская версия: [Settings-in-the-interface.ru](Settings-in-the-interface.ru)
 
-Where day-to-day setup happens in the board UI. Sources: the
+Where day-to-day setup happens in the board UI. The UI 2.0 company-settings sidebar
+currently lists General, Members, Access, Secrets, Budgets, Autonomy, and
+Agent castes, alongside the sections implemented in the UI 2.0 route table.
+
+## Injection guardrail settings
+
+Company Settings → Guardrails stores `guardrailModes.injectionConfig` (`enabled`,
+`scoreThreshold`) and shows effective values with provenance. Environment
+overrides take precedence over the UI setting, then defaults (threshold default
+`0.6`, range 0–1); explicit environment `false` is honored. See the
+[injection guardrail change note](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/changes/ope-8319-injection-config.md).
+
 [README](https://github.com/itkadr-git/myrmidon/blob/main/README.md)
 configuration section and the operator guides under
 [`docs/myrmidon/guides/`](https://github.com/itkadr-git/myrmidon/tree/main/docs/myrmidon/guides).
@@ -16,11 +27,21 @@ the 2.0 "Language and formats" screen. Feature switches that are still
 environment variables (`MYRMIDON_*`, all off by default) are listed in
 [SETTINGS.md](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/SETTINGS.md).
 
+## Custom locale catalog in UI 2.0
+
+On **Language and formats**, enter a locale code and select a JSON file or paste
+its catalog. Review the English-catalog coverage and the matched, missing, and
+extra keys in the searchable diff before pressing **Apply**. The chosen language
+changes without a restart. A failed server upload still applies the catalog in
+the current browser session, so the success message does not guarantee server
+persistence. See the [locale upload guide](Locale-upload)
+for the complete preview and persistence workflow.
+
 ## Run limits (the instance)
 
 **Instance → General → "Run limits"** — changeable at runtime, without
 restarting the server and without interrupting runs in flight
-([run-limits](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/guides/run-limits.md)):
+([run-limits](Run-limits)):
 
 | Setting | What it bounds | Default |
 |---|---|---|
@@ -48,6 +69,20 @@ settings, the server environment or defaults. Changes apply on the next
 admission pass without a server restart. The panel reports when the server
 endpoint is not available instead of implying that a save succeeded.
 
+## Access hub
+
+The access hub is under **Company Settings → Access hub**. Its list endpoints
+return access and host arrays when the module is enabled. When the module is
+disabled, they return HTTP 200 with `enabled: false` and empty arrays. The UI
+shows a "not available yet" notice instead of the access list. This is an
+off-feature state, not an API failure. Check `GET
+/api/myrmidon/access-hub/status` and `MYRMIDON_ACCESS_HUB_ENABLED` to confirm
+whether the module is off. If status says enabled but a list request fails or
+returns malformed data, investigate the API/service fault.
+
+See the full [Access hub operator guide](Access-hub) for
+routes and behavior.
+
 ## Per-agent parallelism
 
 ### `hermes_local` isolation
@@ -68,11 +103,11 @@ agent may be active at once; the board normalizes the value into the 1–50
 range and writes it to the bot's gateway config. The card compares what the
 board asks with what the bot's gateway actually applied and flags a
 divergence
-([bot-container-card](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/guides/bot-container-card.md)).
+([bot-container-card](Bot-container-card)).
 
 Related: the **WIP limit** caps how many tasks one agent holds in flight —
 **Company Settings → WIP limit**, with the live load on every agent row
-([wip-limit](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/guides/wip-limit.md)).
+([wip-limit](Wip-limit)).
 Swarm self-organization parameters (starting pheromone strength per
 priority, waiting bonus, penalty for a failed run without a task change,
 lease TTL, per-agent active-task ceiling, P0 preemption) are
@@ -82,29 +117,9 @@ the task cooldown after a run that moved nothing (base 30 min, cap 24 h) is
 set by the wake guard (`general.swarm.cooldownBaseMin` /
 `cooldownCeilingHours`); how to
 switch the swarm on and verify it in three steps —
-[swarm-self-organization](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/guides/swarm-self-organization.md).
+[swarm-self-organization](Swarm-self-organization).
 Lower-level queue details —
-[swarm-claim-settings](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/guides/swarm-claim-settings.md).
-
-## Agent castes (the company role directory)
-
-**Company Settings → Agent castes** — the company's own directory of agent
-roles. It starts from the twelve built-in castes and the owner can create,
-edit, and delete castes; the role on the agent card is a key from this
-directory, and changes are visible to the swarm at once, without a restart
-([custom-castes](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/guides/custom-castes.md)).
-
-## Parallel helpers
-
-Agents can split a task across parallel helper subagents
-(`delegate_task`). On the card of a `hermes_gateway` agent, the **Parallel
-helpers** section turns this on and sets the per-agent limit, the helper
-model and an optional per-helper turn budget; **Instance → General →
-"Parallel helpers"** sets the company ceiling (default `10`, hard cap `50`)
-and the per-agent default (`2`), and shows a capacity hint summing the
-resolved limits against the host's build slots. Saving applies on every bot's
-next reconcile tick, without a restart. Details:
-[parallel-helpers](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/guides/parallel-helpers.md).
+[swarm-claim-settings](Swarm-claim-settings).
 
 ## Parallel helpers
 
@@ -119,7 +134,7 @@ capacity hint summing the resolved limits against the host's build slots.
 Clearing either capacity field and saving sends `null` in the PATCH and removes
 the stored hint. Saving applies on every bot's
 next reconcile tick, without a restart. Details:
-[parallel-helpers](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/guides/parallel-helpers.md).
+[parallel-helpers](Parallel-helpers).
 
 ## Agent castes (the company role directory)
 
@@ -127,7 +142,29 @@ next reconcile tick, without a restart. Details:
 roles. It starts from the twelve built-in castes and the owner can create,
 edit, and delete castes; the role on the agent card is a key from this
 directory, and changes are visible to the swarm at once, without a restart
-([custom-castes](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/guides/custom-castes.md)).
+([custom-castes](Custom-castes)).
+
+## Budgets (per-level spend limits)
+
+**Company Settings → Budgets** (`/company/settings/budgets`) is where the
+owner sets spend limits per level of the agent hierarchy: the whole company
+or one project (nest), a caste, the foraging pass, or a single task. Each
+limit says how much the scope may spend per period (a calendar UTC month or
+a lifetime) and what happens at the limit — hard refusal, or a soft pause
+with a card to the owner. The row shows the spend against the limit (for
+example `$600.00 / $500.00 (120% used)`, marked **Over the limit**) and is
+edited in place: Save, Create and Remove go straight to the running API,
+without a restart or a page reload. The switch at the top is the global
+"signal only" mode — while it is on, crossing a limit only signals and
+blocks nothing; the screen shows where the value comes from (the default,
+the owner's saved choice, or the `MYRMIDON_BUDGET_LIMITS_SIGNAL_ONLY`
+environment variable, which locks the switch). The bottom table is the
+append-only change journal — who, when and what changed, newest first; a
+removed limit keeps its rows. Reads need company access, every mutation
+needs a board actor. Details:
+[budget limits](Budget-limits)
+(the API and storage) and
+[the owner's screen](Budget-limits-ui).
 
 ## Backups
 
@@ -158,7 +195,7 @@ feed, editable live, applied on the feed's next build without a restart:
 | Setting | What it bounds | Default |
 |---|---|---|
 | Failed-run horizon | How far back the feed looks for an unresolved failed or timed-out run | `7` days |
-| Feed cache TTL | How long the feed reuses the snapshot it built per company | `45` s |
+| Feed cache TTL | How long the feed reuses the snapshot it built per company | `60` s |
 
 The horizon accepts whole days from `1` to `365`; the TTL accepts whole
 seconds from `0` to `300`, where `0` turns the cache off (the feed is rebuilt
@@ -174,6 +211,35 @@ environment variable, so the stored row (then the built-in default) is the
 only source; a hand-edited value that is not a whole number within the bounds
 reads as the default — the same fallback the feed itself applies.
 
+- **Run stall detection** — the "Run stall detection" section on Instance →
+  General (since 1.6.5) edits the stalled-run sweep live, without a restart:
+  the sweep interval (`checkIntervalSec`, 15 s – 24 h) and the scan page
+  size (`pageSize`, 1–200). The master switch and the silence threshold are
+  shown read-only with a link to the Team liveness section, which owns them
+  (`runStallEnabled`, `runStallThresholdSec` at
+  `/api/myrmidon/team-liveness`). Each value shows where it came from — the
+  saved settings row (`instance_settings.general.runStall`), the deployment
+  environment (`MYRMIDON_RUN_STALL_*`) or the built-in default. Written by
+  an instance administrator via `GET`/`PATCH` on `/api/myrmidon/run-stall`.
+- **Board process composition** (since 1.6.6) — how many HTTP processes
+  (`api`) and how many scheduler processes (`worker`) the deployment runs,
+  read once at startup from the instance settings key `general.processes`.
+  An absent key means `{ api: 1, worker: 0 }` — the single process, as
+  before; a malformed row refuses startup with the fix in the log. With
+  several processes, the per-process readiness endpoint
+  `GET /internal/ready` and the aggregate `GET /healthz` (200 only when all
+  api processes are ready) report the state to the load balancer.
+- **Long task context** — a task whose history no longer fits the model
+  window is reset automatically instead of failing the run on context
+  compression: a session already past `resetPct` (default 70 %) of the
+  model window is dropped before the next run resumes it, and the launch
+  payload's history is bounded by volume as well as by count. Tuned by
+  `MYRMIDON_LONG_TASK_CONTEXT_*` and `MYRMIDON_CONTINUATION_*` (since 1.6.6)
+  — details in the
+  [long-task-context](Long-task-context)
+  guide and in
+  [SETTINGS.md](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/SETTINGS.md).
+
 ## Also in the interface
 
 - **Host disk threshold** — Instance → General, "Host disk" (default 85 %);
@@ -183,7 +249,7 @@ reads as the default — the same fallback the feed itself applies.
   instance settings page, with overrides on the agent card.
 - **Budget enforcement** — signal only, pause with a card to the owner, or
   hard refusal of new runs; set live for the instance
-  ([budget-enforcement](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/guides/budget-enforcement.md)).
+  ([budget-enforcement](Budget-enforcement)).
 - **Attention feed windows** — the "Attention feed" panel on Instance →
   General (since 1.6.6) edits how far back the attention feed looks for an
   unresolved failed or timed-out run (1–365 days, default 7) and how long
@@ -205,3 +271,68 @@ model the gateway returns in its response, then the LiteLLM `model_group`
 the request was routed to, then the model configured on the launch. Empty
 strings and the sentinel `unknown` are dropped at each step, so the field is
 either a real model name or absent.
+## Runtime behavior settings (behavior-settings API)
+
+Starting with Myrmidon 1.7 (SETTINGS-TO-UI), runtime behavior settings can be read and modified dynamically without restarting the server:
+- `GET /api/myrmidon/behavior-settings/definitions` — list all setting definitions, scopes, types, and defaults.
+- `GET /api/myrmidon/behavior-settings` (and `?key=:key` or `/key/:key`) — read effective instance settings and sources (`ui`, `env`, `default`).
+- `PATCH /api/myrmidon/behavior-settings` (and `PUT` alias) — update instance-level settings (instance admin only).
+- `GET|PATCH /api/myrmidon/behavior-settings/company/:companyId` — read and update company-scoped settings (company access required).
+
+Scope isolation is strictly enforced: instance endpoints reject company-scoped keys, and company endpoints reject instance-scoped keys with HTTP 400. Full API specification and setting catalog: [SETTINGS.md](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/SETTINGS.md#17--behavior-settings-api-runtime-settings-settings-to-ui).
+
+### System settings panel (Instance → General)
+
+The **System** panel (`SystemSettingsPanel.tsx`) edits the system and
+monitoring behavior settings (SETTINGS-TO-UI E) live, without a restart:
+- **Deploy** (`system.deploy.enabled`, `autoRollback`, `autoUpdate`,
+  `verifyTimeoutSec`, `tickSec`, `stepTimeoutSec`, `healthPollSec`,
+  `healthTimeoutSec`) — the board self-deploy switches and smoke parameters
+  (the `MYRMIDON_DEPLOY_*` variables).
+- **Tracing** (`system.tracing.windowSec`, `healthTtlSec`,
+  `signalIntervalSec`) — the LLM tracing health window, report cache TTL and
+  the operator-signal sweep period (the `MYRMIDON_TRACING_*` variables).
+- **Monitoring (Zabbix)** (`system.zabbix.hostGroups`, `maxWindowSec`) — the
+  host groups put into maintenance with the instance window and the window
+  length (the `MYRMIDON_ZABBIX_*` variables).
+- **Deployment (read-only)** — `GET /api/myrmidon/system/deployment` reports
+  which infrastructure integrations are configured (LLM gateway, hindsight,
+  Zabbix, tracing ClickHouse, OCR, Docker socket, fleetd, Langfuse, egress
+  proxy): presence for secret references, the host for URLs, never the values.
+
+A set environment variable stays the forced override; otherwise the saved
+value applies, otherwise the default — each field shows which source is in
+force. The hindsight settings stay on the agent memory card, not in this
+panel.
+
+### Guardrails panel (Instance → General)
+
+The **Guardrails** panel on the general instance settings page (`InstanceGeneralSettings.tsx`) allows administrators to configure execution safety parameters and limits live without restarting the server:
+- **Bot egress mode** (`bot_egress_mode` / `MYRMIDON_BOT_EGRESS_MODE`): `"off"` (direct access) or `"log"` (outbound requests routed through the egress logging proxy).
+- **Tool circuit breaker** (`tool_breaker_failures`, `tool_breaker_cooldown_ms`, `tool_breaker_window_ms`): controls consecutive failures before pausing execution, cooldown time, and sliding window.
+- **Tool execution timeouts** (`tool_timeout_max_ms`, `tool_timeout_slow_ms`): hard cutoff timeout and slow-execution warning threshold for tool invocations.
+- **Allowed environment variables** (`run_env_allow` / `MYRMIDON_RUN_ENV_ALLOW`): comma-separated list of additional host environment variable names permitted to pass into agent execution runs.
+
+Every field displays its origin indicator (`Source: saved setting`, `Source: server environment`, or `Source: default`). Saving applies immediately to subsequent tool calls and runs.
+
+### Fleet guardrails and container lists (Company Settings)
+
+The **Fleet guardrails** panel on the Company Settings page (`CompanySettings.tsx`) provides centralized management of bot container execution, isolation boundaries, and auxiliary fleets:
+- **Bot container reconciliation** (`bot_containers` / `MYRMIDON_BOT_CONTAINERS`): toggles container runner mode and reconciliation loops.
+- **Reconciliation interval** (`bot_reconcile_interval_sec` / `MYRMIDON_BOT_RECONCILE_INTERVAL_SEC`): background reconciliation check frequency in seconds.
+- **Container image allowlist** (`bot_image_allowlist` / `MYRMIDON_BOT_IMAGE_ALLOWLIST`): list of permitted Docker container image patterns.
+- **Mount sources allowlist** (`bot_mount_sources` / `MYRMIDON_BOT_MOUNT_SOURCES`): list of permitted host filesystem directories that can be mounted into containers.
+- **Container GitHub environment allowlist** (`bot_container_github_env_allowlist`): permitted GitHub-related environment variables for bot containers.
+- **YOLO mode** (`bot_yolo` / `MYRMIDON_BOT_YOLO`): toggles autonomous execution without interactive confirmation prompts (`HERMES_YOLO_MODE`).
+- **Hindsight memory banks** (`bot_hindsight_allowed_banks`): allowed long-term memory banks for bot profiles.
+- **MCP servers** (`bot_mcp_servers`): JSON definitions of shared Model Context Protocol servers.
+- **Browser fleet registry** (`browser_fleet`, `browser_idle_timeout_min`, `browser_max_duration_min`): fleet node definitions, idle cleanup timeout, and maximum session duration for managed browser instances.
+- **Stack check interval** (`stack_check_interval_sec`): periodic infrastructure health check interval.
+
+#### Precedence and Security Confirmation
+- **Precedence**: `ui` (saved in UI / API) > `env` (server environment variable) > `default` (built-in fallback).
+- **Modal Confirmation for Allowlist & YOLO Changes**: Because container image allowlists, mount paths, and YOLO mode define critical security boundaries, any modification to allowlists or enabling YOLO mode requires explicit confirmation via a confirmation dialog before saving.
+
+# Agents page live-run refresh
+
+The Agents page refreshes live-run data every 60 seconds. Use the page's manual refresh when an immediate update is needed.

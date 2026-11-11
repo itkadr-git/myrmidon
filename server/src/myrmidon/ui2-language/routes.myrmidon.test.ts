@@ -7,8 +7,8 @@
 import express from "express";
 import request from "supertest";
 import { describe, expect, it } from "vitest";
-import type { Db } from "@paperclipai/db";
-import type { Ui2Language } from "@paperclipai/shared";
+import type { Db } from "@myrmidon/db";
+import { ui2EnReference, type Ui2CustomCatalogs, type Ui2Language } from "@myrmidon/shared";
 import { errorHandler } from "../../middleware/index.js";
 import { ui2LanguageRoutes } from "./routes.js";
 import { UI2_LANGUAGE_ACTION, type Ui2LanguageServiceDeps } from "./service.js";
@@ -44,6 +44,7 @@ const agentActor = {
 
 interface HarnessOptions {
   stored?: Ui2Language | null;
+  catalogs?: Record<string, unknown>;
   companyIds?: string[];
   /** myrmidon(1.6.5-TG-LOCALE-C): the stored instance-wide bridge language. */
   instanceLanguage?: Ui2Language | null;
@@ -54,8 +55,11 @@ function harness(options: HarnessOptions = {}) {
   const current = { language: options.stored ?? null };
   const upserts: Array<{ userId: string; language: string }> = [];
 
+  const catalogs: Ui2CustomCatalogs = options.catalogs ?? {};
   const deps: Ui2LanguageServiceDeps = {
     getLanguage: async () => current.language,
+    getCatalogs: async () => catalogs,
+    upsertCatalog: async (_userId, language, catalog) => { catalogs[language] = catalog; },
     upsertLanguage: async (userId, language) => {
       upserts.push({ userId, language });
       current.language = language;
@@ -84,7 +88,7 @@ function harness(options: HarnessOptions = {}) {
 
   const withActor = (actor: unknown) => {
     const scoped = express();
-    scoped.use(express.json());
+    scoped.use(express.json({ limit: "10mb" }));
     scoped.use((req, _res, next) => {
       (req as unknown as { actor: unknown }).actor = actor;
       next();
@@ -97,6 +101,7 @@ function harness(options: HarnessOptions = {}) {
 }
 
 const URL = "/api/myrmidon/ui2/language/me";
+const CATALOG_URL = "/api/myrmidon/ui2/language/me/catalog";
 
 describe("myrmidon(UI2-I18N) ui2 language: reading the preference", () => {
   it("answers en for a user who never saved a preference", async () => {
@@ -108,6 +113,7 @@ describe("myrmidon(UI2-I18N) ui2 language: reading the preference", () => {
     // setting the English fallback decides, and the report says so.
     expect(res.body).toEqual({
       language: "en",
+      catalogs: {},
       updatedAt: null,
       telegramBridge: { source: "default", language: "en" },
     });
@@ -222,10 +228,26 @@ describe("myrmidon(UI2-I18N) ui2 language: writing the preference", () => {
     expect(h.audits).toEqual([]);
   });
 
-  it("is idempotent on the read side after a write", async () => {
+  it("persists and returns a validated user-owned custom catalog", async () => {
     const h = harness();
-    await request(h.app).put(URL).send({ language: "ru" }).expect(200);
-    const res = await request(h.app).get(URL).expect(200);
-    expect(res.body.language).toBe("ru");
+    const catalog = { ...ui2EnReference };
+    const put = await request(h.app).put(CATALOG_URL).send({ language: "ru", catalog }).expect(200);
+    expect(put.body.catalogs.ru).toEqual(catalog);
+    const get = await request(h.app).get(URL).expect(200);
+    expect(get.body.catalogs.ru).toEqual(catalog);
+  });
+
+  it("rejects incomplete custom catalog, unknown keys, placeholder mismatch, and excessive payload", async () => {
+    const h = harness();
+    await request(h.app).put(CATALOG_URL).send({ language: "fr", catalog: ui2EnReference }).expect(400);
+    await request(h.app).put(CATALOG_URL).send({ language: "ru", catalog: { language: { label: "Custom" } } }).expect(400);
+    await request(h.app).put(CATALOG_URL).send({ language: "ru", catalog: { ...ui2EnReference, unexpectedKey: "test" } }).expect(400);
+
+    const badPlaceholder = JSON.parse(JSON.stringify(ui2EnReference)) as Record<string, Record<string, unknown>>;
+    badPlaceholder.tasks = badPlaceholder.tasks || {};
+    badPlaceholder.tasks.assignedTo = "Assigned to {{wrong_param}}";
+    await request(h.app).put(CATALOG_URL).send({ language: "ru", catalog: badPlaceholder }).expect(400);
+
+    await request(h.app).put(CATALOG_URL).send({ language: "ru", catalog: { a: "x".repeat(270000) } }).expect(400);
   });
 });

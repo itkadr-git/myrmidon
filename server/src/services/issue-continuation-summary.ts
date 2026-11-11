@@ -1,7 +1,7 @@
 import { and, eq } from "drizzle-orm";
-import type { Db } from "@paperclipai/db";
-import { documents, issueDocuments, issues } from "@paperclipai/db";
-import { ISSUE_CONTINUATION_SUMMARY_DOCUMENT_KEY, type SourceTrustMetadata } from "@paperclipai/shared";
+import type { Db } from "@myrmidon/db";
+import { documents, issueDocuments, issues } from "@myrmidon/db";
+import { ISSUE_CONTINUATION_SUMMARY_DOCUMENT_KEY, type SourceTrustMetadata } from "@myrmidon/shared";
 import { documentService } from "./documents.js";
 
 export { ISSUE_CONTINUATION_SUMMARY_DOCUMENT_KEY };
@@ -130,7 +130,8 @@ export function extractContinuationSummaryNextAction(body: string | null | undef
 export function continuationSummaryParksExecutor(body: string | null | undefined) {
   const nextAction = extractContinuationSummaryNextAction(body);
   if (!nextAction) return false;
-  return WAITING_FOR_REVIEW_OR_APPROVAL_RE.test(nextAction);
+  return WAITING_FOR_REVIEW_OR_APPROVAL_RE.test(nextAction) &&
+    !/\bcontinue implementation\b/i.test(nextAction);
 }
 
 export function buildContinuationSummaryMarkdown(input: {
@@ -153,7 +154,11 @@ export function buildContinuationSummaryMarkdown(input: {
   const objective = extractMarkdownSection(issue.description, "Objective") ?? issue.description?.trim() ?? "No objective captured.";
   const acceptanceCriteria = extractMarkdownSection(issue.description, "Acceptance Criteria") ?? "No explicit acceptance criteria captured.";
   const mode = inferMode(issue, run);
-  const nextAction = inferNextAction(issue, run, extractPreviousNextAction(input.previousSummaryBody));
+  const nextAction = issue.status === "in_progress"
+    ? run.status === "failed" || run.status === "timed_out"
+      ? inferNextAction(issue, run, extractPreviousNextAction(input.previousSummaryBody))
+      : "Continue implementation from the latest concrete actions and acceptance criteria; do not wait for reviewer feedback."
+    : inferNextAction(issue, run, extractPreviousNextAction(input.previousSummaryBody));
 
   const body = [
     "# Continuation Summary",

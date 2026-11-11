@@ -104,12 +104,15 @@ export function resolveBudgetLimitsSignalOnly(
   return { signalOnly: normalized.signalOnly, source: "default" };
 }
 
+/** Maximum amount a single limit row (or agent monthly budget) may be configured for ($10,000,000). */
+export const MAX_BUDGET_LIMIT_CENTS = 1_000_000_000;
+
 // --- limit rows ----------------------------------------------------------------
 
 /** Body of `PUT …/budget-limits/limits/:level/:ref` — the full limit row. */
 export const budgetLimitUpsertSchema = z
   .object({
-    amountCents: z.number().int().min(0).max(1_000_000_000),
+    amountCents: z.number().int().min(0).max(MAX_BUDGET_LIMIT_CENTS),
     period: z.enum(BUDGET_LIMIT_PERIODS).default("calendar_month_utc"),
     mode: z.enum(BUDGET_LIMIT_MODES).default("hard"),
     isActive: z.boolean().default(true),
@@ -132,6 +135,15 @@ export interface BudgetLimitView {
 }
 
 /** One journal entry as the API returns it: who, when, what. */
+export interface EffectiveBudgetLimitView {
+  amountCents: number | null;
+  period: BudgetLimitPeriod | null;
+  mode: BudgetLimitMode | null;
+  sourceLevel: BudgetLimitLevel | null;
+  sourceRef: string | null;
+  sourceLimitId: string | null;
+}
+
 export interface BudgetLimitChangeView {
   id: string;
   companyId: string;
@@ -178,3 +190,132 @@ export function isBudgetLimitOver(
 ): boolean {
   return limit.isActive && limit.amountCents >= 0 && spentCents > limit.amountCents;
 }
+
+// --- report export -------------------------------------------------------------
+
+export const BUDGET_LIMIT_EXPORT_FORMATS = ["csv", "json"] as const;
+export type BudgetLimitExportFormat = (typeof BUDGET_LIMIT_EXPORT_FORMATS)[number];
+
+export const budgetLimitsExportQuerySchema = z
+  .object({
+    format: z.enum(BUDGET_LIMIT_EXPORT_FORMATS).default("json"),
+    level: z.enum(BUDGET_LIMIT_LEVELS).optional(),
+  })
+  .strict();
+export type BudgetLimitsExportQuery = z.infer<typeof budgetLimitsExportQuerySchema>;
+
+export interface BudgetLimitReportRow {
+  id?: string;
+  companyId?: string;
+  level: BudgetLimitLevel;
+  ref: string;
+  amountCents: number;
+  spentCents: number;
+  period: BudgetLimitPeriod;
+  mode: BudgetLimitMode;
+  events: number;
+  overLimit: boolean;
+  isActive: boolean;
+  createdAt?: string;
+  updatedAt?: string;
+}
+
+export function escapeCsvCell(value: unknown): string {
+  if (value === null || value === undefined) return "";
+  const s = String(value);
+  if (s.includes(",") || s.includes('"') || s.includes("\n") || s.includes("\r")) {
+    return `"${s.replaceAll('"', '""')}"`;
+  }
+  return s;
+}
+
+export function budgetLimitsReportToCsv(rows: BudgetLimitReportRow[]): string {
+  const headers = [
+    "level",
+    "ref",
+    "period",
+    "mode",
+    "amount_cents",
+    "spent_cents",
+    "events",
+    "over_limit",
+    "is_active",
+    "created_at",
+    "updated_at",
+  ];
+  const lines: string[] = [headers.join(",")];
+  for (const row of rows) {
+    const line = [
+      escapeCsvCell(row.level),
+      escapeCsvCell(row.ref),
+      escapeCsvCell(row.period),
+      escapeCsvCell(row.mode),
+      escapeCsvCell(row.amountCents),
+      escapeCsvCell(row.spentCents),
+      escapeCsvCell(row.events),
+      escapeCsvCell(row.overLimit),
+      escapeCsvCell(row.isActive),
+      escapeCsvCell(row.createdAt ?? ""),
+      escapeCsvCell(row.updatedAt ?? ""),
+    ].join(",");
+    lines.push(line);
+  }
+  return lines.join("\n");
+}
+
+// --- warning thresholds (80% and 95%) -----------------------------------------
+
+export const BUDGET_LIMIT_WARNING_THRESHOLDS = [80, 95] as const;
+export type BudgetLimitWarningThreshold = (typeof BUDGET_LIMIT_WARNING_THRESHOLDS)[number];
+
+export const budgetLimitWarningThresholdSchema = z.union([
+  z.literal(80),
+  z.literal(95),
+  z.literal("80").transform(() => 80 as const),
+  z.literal("95").transform(() => 95 as const),
+]);
+
+export interface BudgetLimitUsageView extends BudgetLimitView {
+  spentCents: number;
+  events: number;
+  overLimit: boolean;
+  warningThreshold: BudgetLimitWarningThreshold | null;
+}
+
+/**
+ * Evaluates whether spend has reached or crossed a warning threshold (80% or 95%)
+ * of an active budget limit.
+ * Returns:
+ * - 95 when spentCents is at least 95% of amountCents (near exhaustion / critical)
+ * - 80 when spentCents is at least 80% (and less than 95%) of amountCents
+ * - null when under 80%, limit is inactive, amountCents is non-positive, or spentCents is non-positive
+ */
+export function getBudgetLimitWarningThreshold(
+  limit: { amountCents: number; isActive: boolean } | null | undefined,
+  spentCents: number | null | undefined,
+): BudgetLimitWarningThreshold | null {
+  if (!limit || !limit.isActive || typeof limit.amountCents !== "number" || limit.amountCents <= 0) {
+    return null;
+  }
+  if (typeof spentCents !== "number" || spentCents <= 0) {
+    return null;
+  }
+  const percent = (spentCents / limit.amountCents) * 100;
+  if (percent >= 95) return 95;
+  if (percent >= 80) return 80;
+  return null;
+}
+
+/**
+ * Predicate checking whether spend has reached or crossed the given warning threshold.
+ */
+export function isBudgetLimitApproaching(
+  limit: { amountCents: number; isActive: boolean } | null | undefined,
+  spentCents: number | null | undefined,
+  threshold: BudgetLimitWarningThreshold = 80,
+): boolean {
+  const reached = getBudgetLimitWarningThreshold(limit, spentCents);
+  if (reached === null) return false;
+  return reached >= threshold;
+}
+

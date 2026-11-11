@@ -1,0 +1,12 @@
+# myrmidon(OPE-8950): area shell-sidebar-layout-2
+components/SidebarAgents.production.tsx
+components/SidebarAgents.tsx
+components/SidebarCompanyMenu.production.tsx
+components/SidebarCompanyMenu.tsx
+components/SidebarProjects.tsx
+components/SidebarRecentTasks.tsx
+components/SidebarServerInfo.tsx
+components/SidebarShell.production.tsx
+components/SidebarShell.tsx
+components/SidebarStarredProjects.production.tsx
+components/SidebarStarredProjects.tsx

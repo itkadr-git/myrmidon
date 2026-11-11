@@ -87,11 +87,22 @@
 - [Дисковая квота на бота](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/bot-disk-quota.md)
 - [Общий кэш пакетов и git-объектов](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/bot-disk-cache.md)
 - [Сигнал заполнения диска хоста](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/host-disk.md)
-- [Очистка рабочих областей после слияния](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/guides/workspace-cleanup.md)
-- [Реестр стека](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/guides/stack-registry.md)
-- [Данные дашборда флота: подключения VictoriaMetrics + Zabbix, API снимка, самопроверка](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/guides/fleet-dashboard-monitoring.md)
-- [Баннер обслуживания](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/guides/maintenance-banner.md)
-- [Консоль сервера](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/guides/server-console.md)
-- [Автоматический откат по здоровью](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/guides/deploy-auto-rollback.md)
-- [Стенд-сценарий: убить шлюз посреди запуска](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/guides/team-liveness-stand-scenario.md)
+- [Очистка рабочих областей после слияния](Workspace-cleanup.ru)
+- [Реестр стека](Stack-registry.ru)
+- [Данные дашборда флота: подключения VictoriaMetrics + Zabbix, API снимка, самопроверка](Fleet-dashboard-monitoring.ru)
+- [Баннер обслуживания](Maintenance-banner.ru)
+- [Консоль сервера](Server-console.ru)
+- [Автоматический откат по здоровью](Deploy-auto-rollback.ru)
+- [Стенд-сценарий: убить шлюз посреди запуска](Team-liveness-stand-scenario.ru)
 - `/metrics`: [SETTINGS.md](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/SETTINGS.md), раздел «METRICS»
+
+### Очистка временных каталогов запусков
+
+Доска периодически удаляет из временного каталога осиротевшие каталоги
+запусков heartbeat с именем `paperclip-run-*`. Удаляются только каталоги с
+маркером запуска, возраст которых превышает заданный срок хранения;
+каталоги без маркера не затрагиваются. Первый проход выполняется при старте;
+интервал по умолчанию — 15 минут, срок хранения — 36 часов. Оба значения
+читаются при старте. Число и объём удалений, а также оставшийся объём
+доступны на `/metrics`. Подробнее — в
+[журнале изменений](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/CHANGELOG.ru.md).

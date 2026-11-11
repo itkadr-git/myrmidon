@@ -5,7 +5,7 @@ import { createServer as createNetServer } from "node:net";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { and, desc, eq, inArray } from "drizzle-orm";
-import type { Db } from "@paperclipai/db";
+import type { Db } from "@myrmidon/db";
 import {
   connectionGrants,
   smokeRuns,
@@ -17,7 +17,7 @@ import {
   toolProfileEntries,
   toolProfiles,
   toolStdioCommandTemplates,
-} from "@paperclipai/db";
+} from "@myrmidon/db";
 import type {
   CreateSmokeRun,
   DeploymentExposure,
@@ -27,7 +27,7 @@ import type {
   SmokeRun,
   SmokeRunStep,
   UpdateSmokeRun,
-} from "@paperclipai/shared";
+} from "@myrmidon/shared";
 import { badRequest, conflict, forbidden, notFound, unprocessable } from "../errors.js";
 import { instanceSettingsService } from "./instance-settings.js";
 // myrmidon(B1c): product name in user-facing texts; see product.ts.
@@ -528,11 +528,11 @@ export function smokeLabService(db: Db, options: {
     }).map(([key, value]) => `<input type="hidden" name="${escapeHtml(key)}" value="${escapeHtml(value)}" />`).join("\n");
     return `<!doctype html>
 <html>
-<head><meta charset="utf-8" /><title>Paperclip Smoke OAuth</title></head>
+<head><meta charset="utf-8" /><title>${PN} Smoke OAuth</title></head>
 <body>
   <div role="banner" style="padding:12px;background:#7a3b00;color:white;font-weight:bold">${SMOKE_LAB_BANNER}</div>
   <main>
-    <h1>Paperclip Smoke OAuth login + consent</h1>
+    <h1>${PN} Smoke OAuth login + consent</h1>
     <p>This deterministic provider accepts <code>${SMOKE_LAB_DEMO_EMAIL}</code> / <code>${SMOKE_LAB_DEMO_PASSWORD}</code>.</p>
     <form method="post" action="/api/companies/${escapeHtml(input.companyId)}/smoke-lab/oauth/authorize">
       ${hidden}

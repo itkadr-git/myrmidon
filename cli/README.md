@@ -281,18 +281,18 @@ Paperclip is a full control plane, not a wrapper. Before you build any of this y
 Open source. Self-hosted. No Paperclip account required.
 
 ```bash
-npx paperclipai onboard --yes
+npx myrmidon onboard --yes
 ```
 
 That quickstart path now defaults to trusted local loopback mode for the fastest first run. To start in authenticated/private mode instead, choose a bind preset explicitly:
 
 ```bash
-npx paperclipai onboard --yes --bind lan
+npx myrmidon onboard --yes --bind lan
 # or:
-npx paperclipai onboard --yes --bind tailnet
+npx myrmidon onboard --yes --bind tailnet
 ```
 
-If you already have Paperclip configured, rerunning `onboard` keeps the existing config in place. Use `paperclipai configure` to edit settings.
+If you already have Paperclip configured, rerunning `onboard` keeps the existing config in place. Use `myrmidon configure` to edit settings.
 
 Or manually:
 
@@ -337,9 +337,9 @@ By default, agents run on scheduled heartbeats and event-based triggers (task as
 Export a company to a portable package and import it into any other instance — local or cloud — from a local path or GitHub:
 
 ```bash
-paperclipai company export <company-id> --out ./my-export
-paperclipai company import ./my-export --dry-run
-paperclipai company import org/repo --target new
+myrmidon company export <company-id> --out ./my-export
+myrmidon company import ./my-export --dry-run
+myrmidon company import org/repo --target new
 ```
 
 The board UI has matching Export and Import pages in company settings: the Export page shows a fidelity panel listing what the bundle will not carry, and the Import page starts imported agents and routines paused by default, with a post-import activation step. See the [Importing & Exporting guide](https://github.com/paperclipai/paperclip/blob/master/docs/guides/board-operator/importing-and-exporting.md) for details.

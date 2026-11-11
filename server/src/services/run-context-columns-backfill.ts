@@ -17,7 +17,7 @@
  * the table again, skipping rows that are already filled.
  */
 import { sql } from "drizzle-orm";
-import type { Db } from "@paperclipai/db";
+import type { Db } from "@myrmidon/db";
 
 export const RUN_CONTEXT_BACKFILL_BATCH_SIZE = 500;
 export const RUN_CONTEXT_BACKFILL_PAUSE_MS = 250;

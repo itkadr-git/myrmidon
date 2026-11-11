@@ -8,12 +8,13 @@ const packageRoot = fileURLToPath(new URL(".", import.meta.url));
 export default defineConfig({
   resolve: {
     alias: [
-      { find: "@paperclipai/paperclip-runner/react", replacement: resolve(packageRoot, "src/react/index.ts") },
+      { find: "@myrmidon/paperclip-runner/react", replacement: resolve(packageRoot, "src/react/index.ts") },
       { find: "@paperclip-runner-local/capability", replacement: resolve(packageRoot, "src/scenarios/index.ts") },
     ],
   },
   test: {
     environment: "node",
+    setupFiles: ["./vitest.setup.ts"],
     include: [
       "src/**/*.test.ts",
       "src/**/*.test.tsx",

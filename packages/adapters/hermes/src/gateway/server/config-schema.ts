@@ -1,4 +1,4 @@
-import type { AdapterConfigSchema } from "@paperclipai/adapter-utils";
+import type { AdapterConfigSchema } from "@myrmidon/adapter-utils";
 import { DEFAULT_EVENT_RECONNECT_MS, DEFAULT_TIMEOUT_SEC } from "../shared/constants.js";
 
 export function getConfigSchema(): AdapterConfigSchema {
@@ -40,6 +40,20 @@ export function getConfigSchema(): AdapterConfigSchema {
         hint: "Controls X-Hermes-Session-Key. Issue scoped prevents cross-task memory bleed by default.",
       },
       {
+        // myrmidon(WAKE-HISTORY): how much earlier task history one wake carries.
+        key: "wakeHistory",
+        label: "Wake history",
+        type: "select",
+        default: "auto",
+        options: [
+          { value: "auto", label: "Auto (summary for run/none sessions, recent otherwise)" },
+          { value: "summary", label: "Summary only" },
+          { value: "recent", label: "Recent messages" },
+          { value: "full", label: "Full (bounded by the server history limit)" },
+        ],
+        hint: "Summary: the wake carries the previous run, its status and the completed-work summary, no earlier messages. Recent: the newest 8 messages once, each cut to 1000 characters. Auto picks summary when the session key strategy is run or none.",
+      },
+      {
         key: "timeoutSec",
         label: "Timeout seconds",
         type: "number",
@@ -60,6 +74,13 @@ export function getConfigSchema(): AdapterConfigSchema {
         label: "Run create timeout seconds",
         type: "number",
         hint: "How long POST /v1/runs may take to be accepted (5-300). Empty uses the instance default.",
+      },
+      {
+        // myrmidon(OPE-11677): readiness retry timeout for waking idle-stopped containers
+        key: "gatewayReadyTimeoutMs",
+        label: "Gateway readiness timeout ms",
+        type: "number",
+        hint: "How long to wait and retry pre-send connection errors (EAI_AGAIN, ECONNREFUSED) when waking a container. Default 15000ms.",
       },
       {
         key: "eventReconnectMs",

@@ -23,9 +23,31 @@ export type BotImageTracking =
   | { category: "pinned"; image: string | null; reason: string }
   | { category: "not_applicable"; image: null; reason: string };
 
+export interface BotContainerLimits {
+  memoryMb: number;
+  cpus: number;
+  pidsLimit: number;
+}
+
+export interface BotContainerLimitsStatus {
+  requested: BotContainerLimits;
+  actual: BotContainerLimits | null;
+  diverged: boolean;
+  reason: string | null;
+}
+
 export interface BotContainerStatus {
   /** The instance switch for bot containers is on. */
   enabled: boolean;
+  /** Per-agent idle-stop policy; absent on older servers. */
+  idleStopMode?: "on_demand" | "always_on" | "off";
+  /** Durable idle-stop runtime state; absent on older servers. */
+  idleStopRuntime?: {
+    /** Stopped by IDLE-STOP and waiting for the next run. */
+    idleStopped: boolean;
+    lastStoppedAt: string | null;
+    lastStartedAt: string | null;
+  } | null;
   /** The instance has a container runtime wired. */
   runtimeConfigured: boolean;
   /** The SAVED card is an enabled, complete container config. */
@@ -47,12 +69,23 @@ export interface BotContainerStatus {
   imageRollout?: { onReleaseImage: boolean; targetImage: string | null; reason: string | null };
   /** runtimeConfig.heartbeat.maxConcurrentRuns, normalized by the server. */
   boardMaxConcurrentRuns: number;
+  /** myrmidon(1.6.7 RUN-LIMITS): the ceiling the scheduler admits against —
+   *  min(board, gateway, memory). Absent on an older server. */
+  effectiveMaxConcurrentRuns?: number;
+  /** Which ceiling binds the effective value. Absent on an older server. */
+  effectiveMaxConcurrentRunsSource?: "board" | "gateway" | "memory";
   /** Board value against the applied one; null when there is nothing to compare. */
   gatewayConcurrency: GatewayConcurrencyStatus | null;
   /** Why gatewayConcurrency is null, or a caveat about its value. */
   gatewayConcurrencyNote: string | null;
   /** The gateway limits runs below the board's limit (unmanaged gateway, recently 429). */
   gatewayConcurrencyWarning: string | null;
+  /** myrmidon(L6-PROFILE-UPDATE-STARVATION): when a card change is waiting for
+   *  the agent's busy runs to drain (open maintenance window), the ISO time the
+   *  window opened; null when nothing is pending. */
+  profileUpdatePendingSince: string | null;
+  /** myrmidon(OPE-12337): requested card limits against actual container limits and denial reason. */
+  limits?: BotContainerLimitsStatus | null;
 }
 
 export type BotContainerApplyOutcome =

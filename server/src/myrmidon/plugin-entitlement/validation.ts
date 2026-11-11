@@ -18,8 +18,8 @@ import { z } from "zod";
 import {
   parsePluginEntitlementToken,
   type PluginEntitlementKey,
-} from "@paperclipai/shared";
-import { findActivePluginEntitlementKey } from "@paperclipai/shared";
+} from "@myrmidon/shared";
+import { findActivePluginEntitlementKey } from "@myrmidon/shared";
 
 /** Input of POST /api/myrmidon/plugin-entitlement/keys. */
 export const acceptKeyRequestSchema = z

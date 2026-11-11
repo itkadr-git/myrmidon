@@ -54,7 +54,9 @@ PUT    .../budget-limits/limits/:level/:ref       create or replace (board)
 DELETE .../budget-limits/limits/:level/:ref       remove (board)
 GET    .../budget-limits/journal          change journal, newest first
 GET    .../budget-limits/usage            per-limit spent + overLimit
+GET    .../budget-limits/export           export spend report in CSV or JSON (?format=csv|json, ?level=)
 GET    .../budget-limits/signal-only      effective flag + source
+GET    .../budget-limits/effective/:issueId  effective limit for an issue
 PATCH  .../budget-limits/signal-only      turn enforcement on/off (board)
 ```
 
@@ -94,3 +96,27 @@ Migration `0312` adds two tables, both additive (no vendor table is touched):
 The signal-only flag does not need a table: it lives in
 `instance_settings.general.budgetLimits` (the same JSON-column pattern the
 WIP limit and STT runtime settings use).
+
+## Effective issue limit
+
+`GET .../budget-limits/effective/:issueId` resolves the active limit for the
+issue on every request. It returns `amountCents`, `period`, `mode`,
+`sourceLevel`, `sourceRef`, and `sourceLimitId`; the source is selected by
+issue, foraging, caste, project nest, then company nest precedence. The route
+returns 404 when the issue is not in the requested company.
+
+PUT rejects project and issue references that do not belong to the requested
+company, so a syntactically valid UUID cannot create a cross-company limit.
+
+## What happens on run admission
+
+When the signal-only mode is **off**, the limits act in the queue: every run
+admission (`getInvocationBlock` — the same gate the vendor budget policies
+and the project token quota use) resolves the effective limit for the issue
+fresh from the database and counts the spend of that limit's own level, ref
+and period. Only a **hard** limit whose period spend is strictly over its
+amount refuses the run, with a reason naming the level, the spend and the
+limit; soft limits never refuse on admission (the pause machinery owns
+soft). Raising the limit through the screen or the API frees the very next
+admission — there is no cache and no restart:
+[changes/1-7-budget-limits-admission.md](changes/1-7-budget-limits-admission.md).

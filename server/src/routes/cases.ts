@@ -20,7 +20,7 @@ import { Router, type Request, type Response } from "express";
 import multer from "multer";
 import { z } from "zod";
 import { and, asc, desc, eq, ilike, inArray, isNull, or, sql } from "drizzle-orm";
-import type { Db } from "@paperclipai/db";
+import type { Db } from "@myrmidon/db";
 import {
   agents,
   assets,
@@ -36,13 +36,13 @@ import {
   issues,
   labels,
   projects,
-} from "@paperclipai/db";
+} from "@myrmidon/db";
 import {
   createDocumentAnnotationCommentSchema,
   createDocumentAnnotationThreadSchema,
   updateDocumentAnnotationThreadSchema,
   isUuidLike,
-} from "@paperclipai/shared";
+} from "@myrmidon/shared";
 import { formatAttachmentSize, MAX_ATTACHMENT_BYTES, normalizeContentType } from "../attachment-types.js";
 import { badRequest, conflict, forbidden, notFound, unprocessable } from "../errors.js";
 import { validate } from "../middleware/validate.js";
@@ -136,7 +136,7 @@ async function loadIssueByIdOrIdentifier(db: CaseRouteDb, idOrIdentifier: string
     ? and(identityWhere, inArray(issues.companyId, companyIds))
     : identityWhere;
   return db
-    .select({ id: issues.id, companyId: issues.companyId })
+    .select({ id: issues.id, companyId: issues.companyId, isPrivate: issues.isPrivate })
     .from(issues)
     .where(where)
     .limit(1)
@@ -1371,6 +1371,7 @@ export function caseRoutes(db: Db, storage: StorageService) {
     const issueIdOrIdentifier = (req.params.issueId as string).trim();
     const issue = await loadIssueByIdOrIdentifier(db, issueIdOrIdentifier, caseLookupCompanyIds(req));
     if (!issue || !hasCompanyAccess(req, issue.companyId)) throw notFound("Issue not found");
+    if (issue.isPrivate && req.actor.type === "agent") throw notFound("Issue not found");
     assertCompanyAccess(req, issue.companyId);
     const rows = await db
       .select({ link: caseIssueLinks, caseRow: cases })

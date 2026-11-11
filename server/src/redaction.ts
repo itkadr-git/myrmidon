@@ -1,8 +1,15 @@
-import { redactCommandText } from "@paperclipai/adapter-utils";
+import { redactCommandText } from "@myrmidon/adapter-utils";
 // myrmidon(S5): value-based secret masking
 import { maskSecretsInText } from "./myrmidon/secret-masking.js";
 
-const SECRET_FIELD_NAME_PATTERN = String.raw`[A-Za-z0-9_-]*(?:api[-_]?key|access[-_]?token|auth(?:_?token)?|token|authorization|bearer|secret|passwd|password|credential|jwt|private[-_]?key|cookie|connectionstring|browser[-_]?code|login[-_]?url)[A-Za-z0-9_-]*`;
+const SECRET_FIELD_NAME_KEYWORDS = String.raw`(?:api[-_]?key|access[-_]?token|auth(?:_?token)?|token|authorization|bearer|secret|passwd|password|credential|jwt|private[-_]?key|cookie|connectionstring|browser[-_]?code|login[-_]?url)`;
+const SECRET_FIELD_NAME_PATTERN = String.raw`[A-Za-z0-9_-]*${SECRET_FIELD_NAME_KEYWORDS}[A-Za-z0-9_-]*`;
+// myrmidon(OPE-12579): the same field name for scans over free text (whole run-log
+// chunks). It starts only where a word run starts and its name parts are bounded,
+// so the scan stays linear. The unbounded form above backtracks quadratically on a
+// long run of name characters: on 10.11 a 183 878-character blob in one run's
+// stdout held the board's event loop for minutes and its runs lost their leases.
+const SECRET_FIELD_NAME_TEXT_PATTERN = String.raw`(?<![A-Za-z0-9_-])[A-Za-z0-9_-]{0,128}${SECRET_FIELD_NAME_KEYWORDS}[A-Za-z0-9_-]{0,128}`;
 
 const SECRET_PAYLOAD_KEY_RE = new RegExp(SECRET_FIELD_NAME_PATTERN, "i");
 // Authorization reasons are policy decision codes, not credentials. They must
@@ -341,13 +348,13 @@ const CLI_SECRET_FLAG_RE = new RegExp(
   "i",
 );
 const JSON_SECRET_FIELD_TEXT_RE = new RegExp(
-  String.raw`((?:"|')?${SECRET_FIELD_NAME_PATTERN}(?:"|')?\s*:\s*(?:"|'))[^"'` +
+  String.raw`((?:"|')?${SECRET_FIELD_NAME_TEXT_PATTERN}(?:"|')?\s*:\s*(?:"|'))[^"'` +
     "`" +
     String.raw`\r\n]+((?:"|'))`,
   "gi",
 );
 const ESCAPED_JSON_SECRET_FIELD_TEXT_RE = new RegExp(
-  String.raw`((?:\\")?${SECRET_FIELD_NAME_PATTERN}(?:\\")?\s*:\s*(?:\\"))[^\\\r\n]+((?:\\"))`,
+  String.raw`((?:\\")?${SECRET_FIELD_NAME_TEXT_PATTERN}(?:\\")?\s*:\s*(?:\\"))[^\\\r\n]+((?:\\"))`,
   "gi",
 );
 const SECRET_TEXT_HINTS = [

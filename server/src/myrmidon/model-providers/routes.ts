@@ -1,40 +1,49 @@
 // server/src/myrmidon/model-providers/routes.ts
 //
-// myrmidon(1.6.1 MODEL-PROVIDERS A): the settings API of the company model
+// myrmidon(1.6.1 MODEL-PROVIDERS A, 1.6.7 OPE-9852): the settings API of the company model
 // provider registry.
 //
-//   POST   /api/myrmidon/companies/:companyId/model-providers            (board only)
-//   GET    /api/myrmidon/companies/:companyId/model-providers            (company access)
-//   PATCH  /api/myrmidon/companies/:companyId/model-providers/:id        (board only)
-//   DELETE /api/myrmidon/companies/:companyId/model-providers/:id        (board only)
-//   GET    /api/myrmidon/companies/:companyId/model-providers/:id/models (company access)
-//   POST   /api/myrmidon/companies/:companyId/model-providers/:id/models (board only)
+//   POST   /api/myrmidon/companies/:companyId/model-providers            (owner/admin only)
+//   GET    /api/myrmidon/companies/:companyId/model-providers            (owner/admin only)
+//   PATCH  /api/myrmidon/companies/:companyId/model-providers/:id        (owner/admin only)
+//   DELETE /api/myrmidon/companies/:companyId/model-providers/:id        (owner/admin only)
+//   GET    /api/myrmidon/companies/:companyId/model-providers/:id/models (owner/admin only)
+//   POST   /api/myrmidon/companies/:companyId/model-providers/:id/models (owner/admin only)
+//   GET    /api/myrmidon/companies/:companyId/model-providers/:id/channels (owner/admin only)
+//   POST   /api/myrmidon/companies/:companyId/model-providers/:id/account-status (owner/admin only)
+//   POST   /api/myrmidon/companies/:companyId/model-providers/:id/tool-call-probe (owner/admin only)
 //
 // Reads answer the provider state and its cached model list. The credential
 // key is accepted on POST (creation) and PATCH (rotation), validated against
 // the live provider, stored in the secret store — and NEVER answered. No
 // response body of this router contains the key value; the suite asserts it.
 //
-// Mutations are board-only: they mint and rotate credentials. Reads are open
-// to any actor with company access (the settings screen shows which providers
-// exist and which models are enabled).
+// Reads and mutations require company admin access (owner or admin, or instance admin).
+// Plain members, operators, viewers and agents are denied (403).
 //
 // No database or service imports here: everything arrives through
 // ModelProviderRoutesDeps, so the suite runs the real routes with fakes (the
 // real wiring is wiring.ts).
 
-import { Router, type Request } from "express";
+import { Router, type Request, type Response } from "express";
 import {
   createModelProviderSchema,
   listAvailableModelProviderTypes,
   patchModelProviderSchema,
+  poolAccountOAuthBeginSchema,
+  poolAccountOAuthCompleteSchema,
+  poolAccountOAuthRefreshSchema,
   setModelProviderModelsSchema,
-} from "@paperclipai/shared";
+  addPoolAccountSchema,
+  startCodexOAuthSchema,
+  completeCodexOAuthSchema,
+} from "@myrmidon/shared";
 import { z, type ZodType } from "zod";
 import { badRequest } from "../../errors.js";
-import { assertBoard, assertCompanyAccess } from "../../routes/authz.js";
+import { assertBoard, assertCompanyAccess, assertCompanyAdmin, getActorInfo } from "../../routes/authz.js";
 import type { ModelProviderActivityEntry, ModelProviderService } from "./service.js";
 import { reportPoolAccountStatus } from "./signals.js";
+import { sanitizeErrorMessage } from "../litellm-sync/client.js";
 
 const reportAccountStatusSchema = z.object({
   accountNumber: z.number().int().positive(),
@@ -70,6 +79,8 @@ export interface ModelProviderRoutesDeps {
   service: ModelProviderService;
   /** Writes the mutation into the company activity log. Optional: tests pass none. */
   recordActivity?: (entry: ModelProviderActivityEntry) => Promise<void>;
+  /** Optional change-log listing function. */
+  listChangeLog?: (companyId: string) => Promise<unknown[]>;
 }
 
 function bodyOf(req: Request): Record<string, unknown> {
@@ -81,6 +92,14 @@ export function modelProviderRoutes(deps: ModelProviderRoutesDeps): Router {
   const router = Router();
   const activity = (entry: ModelProviderActivityEntry) =>
     deps.recordActivity ? deps.recordActivity(entry) : Promise.resolve();
+
+  const actorFor = (req: Request) => {
+    const info = getActorInfo(req);
+    // myrmidon(OPE-12361): the change log shows the author; carry the real
+    // user name/email so the UI renders a name instead of `user:<id>`.
+    const name = req.actor.userName ?? req.actor.userEmail ?? null;
+    return { type: info.actorType, id: info.actorId, name };
+  };
 
   const parse = <T>(schema: ZodType<T>, body: unknown): T => {
     const result = schema.safeParse(body);
@@ -95,38 +114,49 @@ export function modelProviderRoutes(deps: ModelProviderRoutesDeps): Router {
 
   router.post("/myrmidon/companies/:companyId/model-providers", async (req, res) => {
     const companyId = req.params.companyId as string;
-    assertCompanyAccess(req, companyId);
-    assertBoard(req);
+    assertCompanyAdmin(req, companyId);
     const body = parse(createModelProviderSchema, bodyOf(req));
     const provider = await deps.service.createProvider({
       companyId,
       body,
-      activity: (entry) => activity(entry),
+      autoProbeToolCall: true,
+      activity: (entry) => activity({ ...entry, actor: actorFor(req) }),
     });
     res.status(201).json(provider);
   });
 
+  router.get("/myrmidon/companies/:companyId/model-providers/package-warnings", async (req, res) => {
+    const companyId = req.params.companyId as string;
+    assertCompanyAdmin(req, companyId);
+    const warnings = deps.service.checkPackageExpirations
+      ? await deps.service.checkPackageExpirations(companyId)
+      : [];
+    res.json({ warnings });
+  });
+
   router.get("/myrmidon/companies/:companyId/model-providers", async (req, res) => {
     const companyId = req.params.companyId as string;
-    assertCompanyAccess(req, companyId);
+    assertCompanyAdmin(req, companyId);
+    const changeLog = deps.listChangeLog ? await deps.listChangeLog(companyId) : [];
     res.json({
       providers: await deps.service.listProviders(companyId),
       availableTypes: deps.service.listAvailableTypes ? deps.service.listAvailableTypes() : listAvailableModelProviderTypes(),
+      changeLog,
     });
   });
 
   router.patch("/myrmidon/companies/:companyId/model-providers/:id", async (req, res) => {
     const companyId = req.params.companyId as string;
     const providerId = req.params.id as string;
-    assertCompanyAccess(req, companyId);
-    assertBoard(req);
+    assertCompanyAdmin(req, companyId);
     const body = parse(patchModelProviderSchema, bodyOf(req));
     if (body.key !== undefined) {
       const view = await deps.service.rotateProviderKey({
         companyId,
         providerId,
         key: body.key,
-        activity: (entry) => activity(entry),
+        autoProbeToolCall: true,
+        activity: (entry) => activity({ ...entry, actor: actorFor(req) }),
       });
       res.json(view);
       return;
@@ -135,7 +165,7 @@ export function modelProviderRoutes(deps: ModelProviderRoutesDeps): Router {
       companyId,
       providerId,
       body,
-      activity: (entry) => activity(entry),
+      activity: (entry) => activity({ ...entry, actor: actorFor(req) }),
     });
     res.json(view);
   });
@@ -143,12 +173,11 @@ export function modelProviderRoutes(deps: ModelProviderRoutesDeps): Router {
   router.delete("/myrmidon/companies/:companyId/model-providers/:id", async (req, res) => {
     const companyId = req.params.companyId as string;
     const providerId = req.params.id as string;
-    assertCompanyAccess(req, companyId);
-    assertBoard(req);
+    assertCompanyAdmin(req, companyId);
     await deps.service.removeProvider({
       companyId,
       providerId,
-      activity: (entry) => activity(entry),
+      activity: (entry) => activity({ ...entry, actor: actorFor(req) }),
     });
     res.status(204).send();
   });
@@ -156,15 +185,27 @@ export function modelProviderRoutes(deps: ModelProviderRoutesDeps): Router {
   router.get("/myrmidon/companies/:companyId/model-providers/:id/models", async (req, res) => {
     const companyId = req.params.companyId as string;
     const providerId = req.params.id as string;
-    assertCompanyAccess(req, companyId);
+    assertCompanyAdmin(req, companyId);
     res.json({ models: await deps.service.listModels(companyId, providerId) });
   });
+
+  router.post(
+    "/myrmidon/companies/:companyId/model-providers/:id/tool-call-probe",
+    async (req: Request, res: Response) => {
+      const companyId = req.params.companyId as string;
+      const providerId = req.params.id as string;
+      assertCompanyAdmin(req, companyId);
+      // The probe is deliberately detached from request latency. Its persisted state
+      // is read by the next provider list request.
+      void deps.service.checkToolCallCompatibility({ companyId, providerId }).catch(() => undefined);
+      res.status(202).json({ ok: true, queued: true });
+    },
+  );
 
   router.post("/myrmidon/companies/:companyId/model-providers/:id/models", async (req, res) => {
     const companyId = req.params.companyId as string;
     const providerId = req.params.id as string;
-    assertCompanyAccess(req, companyId);
-    assertBoard(req);
+    assertCompanyAdmin(req, companyId);
     const body = parse(setModelProviderModelsSchema, bodyOf(req));
     const models = await deps.service.setModels({
       companyId,
@@ -174,19 +215,75 @@ export function modelProviderRoutes(deps: ModelProviderRoutesDeps): Router {
     res.json({ models });
   });
 
+  const handleLitellmChannels = async (req: Request, res: Response) => {
+    const companyId = req.params.companyId as string;
+    assertCompanyAdmin(req, companyId);
+    if (typeof (deps.service as any).listLitellmChannels === "function") {
+      try {
+        const channels = await (deps.service as any).listLitellmChannels(companyId);
+        res.json({ channels, enabled: true });
+        return;
+      } catch (err) {
+        const raw = err instanceof Error ? err.message : String(err);
+        res.status(502).json({
+          channels: [],
+          enabled: true,
+          error: sanitizeErrorMessage(raw),
+        });
+        return;
+      }
+    }
+    res.json({ channels: [], enabled: false, message: "LiteLLM gateway sync is not configured" });
+  };
+
+  // Model groups as the provider screen shows them. The company-level
+  // `/litellm/channels` path is NOT served here: it belongs to the gateway
+  // deployments (litellm-channels), which app.ts mounts after this router, so
+  // a handler here would shadow it.
+  router.get("/myrmidon/companies/:companyId/model-providers/litellm/channels", handleLitellmChannels);
+
   router.get("/myrmidon/companies/:companyId/model-providers/:id/channels", async (req, res) => {
     const companyId = req.params.companyId as string;
     const providerId = req.params.id as string;
-    assertCompanyAccess(req, companyId);
+    assertCompanyAdmin(req, companyId);
     const result = await deps.service.listChannels(companyId, providerId);
     res.json(result);
+  });
+
+  router.post("/myrmidon/companies/:companyId/model-providers/:id/channels", async (req, res) => {
+    const companyId = req.params.companyId as string;
+    const providerId = req.params.id as string;
+    assertCompanyAdmin(req, companyId);
+    const body = parse(addPoolAccountSchema, bodyOf(req));
+    const account = await deps.service.addAccount(companyId, providerId, body);
+    res.status(201).json({ ok: true, account });
+  });
+
+  router.delete("/myrmidon/companies/:companyId/model-providers/:id/channels/:accountNumber", async (req, res) => {
+    const companyId = req.params.companyId as string;
+    const providerId = req.params.id as string;
+    const accountNumber = parseInt(req.params.accountNumber as string, 10);
+    assertCompanyAdmin(req, companyId);
+    if (isNaN(accountNumber)) {
+      throw badRequest("accountNumber must be a valid integer");
+    }
+    await deps.service.deleteAccount(companyId, providerId, accountNumber);
+    res.status(200).json({ ok: true });
+  });
+
+  router.post("/myrmidon/companies/:companyId/model-providers/:id/oauth/start", async (req, res) => {
+    const companyId = req.params.companyId as string;
+    const providerId = req.params.id as string;
+    assertCompanyAdmin(req, companyId);
+    const body = parse(startCodexOAuthSchema, bodyOf(req));
+    const result = await deps.service.startOAuth(companyId, providerId, body);
+    res.status(200).json(result);
   });
 
   router.post("/myrmidon/companies/:companyId/model-providers/:id/account-status", async (req, res) => {
     const companyId = req.params.companyId as string;
     const providerId = req.params.id as string;
-    assertCompanyAccess(req, companyId);
-    assertBoard(req);
+    assertCompanyAdmin(req, companyId);
     const body = parse(reportAccountStatusSchema, bodyOf(req));
     const signal = reportPoolAccountStatus({
       companyId,
@@ -228,6 +325,60 @@ export function modelProviderRoutes(deps: ModelProviderRoutesDeps): Router {
     });
     res.json({ ok: true, signal });
   });
+
+  const oauthBeginHandler = async (req: Request, res: Response) => {
+    const companyId = req.params.companyId as string;
+    const id = req.params.id as string;
+    assertCompanyAdmin(req, companyId);
+    const body = parse(poolAccountOAuthBeginSchema, bodyOf(req));
+    const result = await deps.service.oauthBegin(companyId, id, body);
+    res.status(200).json(result);
+  };
+  router.post("/myrmidon/companies/:companyId/model-providers/:id/oauth/begin", oauthBeginHandler);
+  router.post("/myrmidon/companies/:companyId/model-providers/providers/:id/oauth/begin", oauthBeginHandler);
+
+  const oauthStatusHandler = async (req: Request, res: Response) => {
+    const companyId = req.params.companyId as string;
+    const id = req.params.id as string;
+    assertCompanyAdmin(req, companyId);
+    const accountNumber = Number(req.query.accountNumber);
+    if (!Number.isInteger(accountNumber) || accountNumber <= 0) {
+      throw badRequest("accountNumber query parameter must be a positive integer");
+    }
+    const result = await deps.service.oauthStatus(companyId, id, accountNumber);
+    res.status(200).json(result);
+  };
+  router.get("/myrmidon/companies/:companyId/model-providers/:id/oauth/status", oauthStatusHandler);
+  router.get("/myrmidon/companies/:companyId/model-providers/providers/:id/oauth/status", oauthStatusHandler);
+
+  const oauthCompleteHandler = async (req: Request, res: Response) => {
+    const companyId = req.params.companyId as string;
+    const id = req.params.id as string;
+    assertCompanyAdmin(req, companyId);
+    const raw = bodyOf(req);
+    if (raw && typeof raw === "object" && "accountNumber" in raw) {
+      const body = parse(poolAccountOAuthCompleteSchema, raw);
+      const result = await deps.service.oauthComplete(companyId, id, body);
+      res.status(200).json(result);
+      return;
+    }
+    const body = parse(completeCodexOAuthSchema, raw);
+    const account = await deps.service.completeOAuth(companyId, id, body);
+    res.status(201).json({ ok: true, account });
+  };
+  router.post("/myrmidon/companies/:companyId/model-providers/:id/oauth/complete", oauthCompleteHandler);
+  router.post("/myrmidon/companies/:companyId/model-providers/providers/:id/oauth/complete", oauthCompleteHandler);
+
+  const oauthRefreshHandler = async (req: Request, res: Response) => {
+    const companyId = req.params.companyId as string;
+    const id = req.params.id as string;
+    assertCompanyAdmin(req, companyId);
+    const body = parse(poolAccountOAuthRefreshSchema, bodyOf(req));
+    const result = await deps.service.oauthRefresh(companyId, id, body);
+    res.status(200).json(result);
+  };
+  router.post("/myrmidon/companies/:companyId/model-providers/:id/oauth/refresh", oauthRefreshHandler);
+  router.post("/myrmidon/companies/:companyId/model-providers/providers/:id/oauth/refresh", oauthRefreshHandler);
 
   return router;
 }

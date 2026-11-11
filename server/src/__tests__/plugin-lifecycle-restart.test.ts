@@ -10,7 +10,7 @@
  * via the plugin loader, which re-reads the manifest from disk and runs
  * `applyMigrations` (idempotently) before starting the new worker.
  */
-import { describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const pluginRecord = {
   id: "plugin-1",
@@ -20,6 +20,7 @@ const pluginRecord = {
   packageName: "@example/plugin",
   version: "1.0.0",
   packagePath: "/tmp/example-plugin",
+  companyId: "company-1",
 };
 
 const mockRegistry = vi.hoisted(() => ({
@@ -29,6 +30,7 @@ const mockRegistry = vi.hoisted(() => ({
   updateStatus: vi.fn(),
   upsertConfig: vi.fn(),
   getConfig: vi.fn(),
+  listConfigs: vi.fn(),
   list: vi.fn(),
   delete: vi.fn(),
 }));
@@ -37,7 +39,14 @@ vi.mock("../services/plugin-registry.js", () => ({
   pluginRegistryService: () => mockRegistry,
 }));
 
+vi.mock("../services/plugin-loader.js", () => ({
+  pluginLoader: vi.fn(),
+}));
+vi.mock("@myrmidon/plugin-sdk", () => ({ PLUGIN_RPC_ERROR_CODES: {} }));
+vi.mock("@paperclipai/plugin-sdk", () => ({ PLUGIN_RPC_ERROR_CODES: {} }));
+
 import { pluginLifecycleManager } from "../services/plugin-lifecycle.js";
+import { getPluginProviderModels, listPluginProviderModels } from "../myrmidon/plugin-provider-models.js";
 import type { PluginLoader } from "../services/plugin-loader.js";
 import type { PluginWorkerManager } from "../services/plugin-worker-manager.js";
 
@@ -59,6 +68,338 @@ function makeWorkerManagerStub() {
 }
 
 describe("pluginLifecycleManager.restartWorker", () => {
+  beforeEach(() => {
+    mockRegistry.listConfigs.mockResolvedValue([{ companyId: "company-1" }]);
+  });
+  it("exposes declared models only while plugin records are ready", async () => {
+    const ready = {
+      ...pluginRecord,
+      manifestJson: {
+        id: "example.plugin", capabilities: [],
+        providerModels: { provider: "example", baseUrl: "https://api.example.com/v1", credentialSecretName: "example-key", models: [{ id: "one" }, { id: "two", label: "Two" }] },
+      },
+    } as never;
+    expect(listPluginProviderModels([ready]).map((model) => model.modelId)).toEqual(["example/one", "example/two"]);
+    expect(listPluginProviderModels([{ ...ready, status: "disabled" } as never])).toEqual([]);
+    expect(getPluginProviderModels(ready.companyId)).toEqual([]);
+    const lifecycle = pluginLifecycleManager({} as never, { loader: {} as PluginLoader });
+    const activationFailureLoader = {
+      hasRuntimeServices: vi.fn().mockReturnValue(true),
+      loadSingle: vi.fn().mockResolvedValue({
+        success: false,
+        error: "activation failed",
+        plugin: ready,
+      }),
+    } as unknown as PluginLoader;
+    const failingLifecycle = pluginLifecycleManager({} as never, { loader: activationFailureLoader });
+    mockRegistry.getById.mockResolvedValue({ ...ready, status: "disabled" });
+    mockRegistry.updateStatus.mockImplementation(async (_id: string, value: { status: string }) => ({ ...ready, ...value }));
+    await expect(failingLifecycle.enable("plugin-1")).rejects.toThrow("activation failed");
+    expect(getPluginProviderModels(ready.companyId)).toEqual([]);
+
+    mockRegistry.getById.mockResolvedValue(ready);
+    mockRegistry.updateStatus.mockImplementation(async (_id: string, value: { status: string }) => ({ ...ready, ...value }));
+    await lifecycle.disable("plugin-1");
+    expect(getPluginProviderModels(ready.companyId)).toEqual([]);
+    mockRegistry.getById.mockResolvedValue({ ...ready, status: "disabled" });
+    await lifecycle.enable("plugin-1");
+    expect(getPluginProviderModels(ready.companyId).map((model) => model.modelId)).toEqual(["example/one", "example/two"]);
+    mockRegistry.getById.mockResolvedValue(ready);
+    await lifecycle.disable("plugin-1");
+    expect(getPluginProviderModels(ready.companyId)).toEqual([]);
+  });
+
+  it("marks a newly loaded plugin as errored when runtime activation fails", async () => {
+    const installed = {
+      ...pluginRecord,
+      status: "installed",
+      manifestJson: {
+        id: "example.plugin", capabilities: [],
+        providerModels: { provider: "example", baseUrl: "https://api.example.com/v1", credentialSecretName: "example-key", models: [{ id: "one" }] },
+      },
+    } as never;
+    const activationFailureLoader = {
+      hasRuntimeServices: vi.fn().mockReturnValue(true),
+      loadSingle: vi.fn().mockResolvedValue({
+        success: false,
+        error: "activation failed",
+        plugin: installed,
+      }),
+    } as unknown as PluginLoader;
+    const lifecycle = pluginLifecycleManager({} as never, { loader: activationFailureLoader });
+    mockRegistry.getById.mockResolvedValue(installed);
+    mockRegistry.updateStatus.mockImplementation(async (_id: string, value: { status: string; lastError?: string | null }) => ({
+      ...installed,
+      ...value,
+    }));
+
+    await expect(lifecycle.load("plugin-1")).rejects.toThrow("activation failed");
+    expect(mockRegistry.updateStatus).toHaveBeenLastCalledWith("plugin-1", {
+      status: "error",
+      lastError: "activation failed",
+    });
+    expect(getPluginProviderModels(installed.companyId)).toEqual([]);
+  });
+
+  it("re-registers dynamic models idempotently when plugin is enabled", async () => {
+    const ready = {
+      ...pluginRecord,
+      manifestJson: {
+        id: "example.plugin", capabilities: [],
+        providerModels: { provider: "example", baseUrl: "https://api.example.com/v1", credentialSecretName: "example-key", models: [{ id: "one" }] },
+      },
+    } as never;
+    const lifecycle = pluginLifecycleManager({} as never, { loader: {} as PluginLoader });
+    mockRegistry.getById.mockResolvedValue({ ...ready, status: "disabled" });
+    mockRegistry.updateStatus.mockImplementation(async (_id: string, value: { status: string }) => ({ ...ready, ...value }));
+    await lifecycle.enable("plugin-1");
+    mockRegistry.getById.mockResolvedValue(ready);
+    await lifecycle.disable("plugin-1");
+    mockRegistry.getById.mockResolvedValue({ ...ready, status: "disabled" });
+    await lifecycle.enable("plugin-1");
+    expect(getPluginProviderModels(ready.companyId)).toHaveLength(1);
+    mockRegistry.getById.mockResolvedValue(ready);
+    await lifecycle.disable("plugin-1");
+  });
+
+  it("syncs provider models on runtime enable and removes them on disable", async () => {
+    const ready = {
+      ...pluginRecord,
+      status: "disabled",
+      manifestJson: {
+        id: "example.plugin", capabilities: [],
+        providerModels: {
+          provider: "example",
+          baseUrl: "https://api.example.com/v1",
+          credentialSecretName: "example-key",
+          models: [{ id: "one" }],
+        },
+      },
+    } as never;
+    const sync = vi.fn().mockResolvedValue(undefined);
+    const remove = vi.fn().mockResolvedValue(undefined);
+    const loader = {
+      hasRuntimeServices: vi.fn().mockReturnValue(true),
+      loadSingle: vi.fn().mockResolvedValue({ success: true, plugin: { ...ready, status: "ready" } }),
+      unloadSingle: vi.fn().mockResolvedValue(undefined),
+    } as unknown as PluginLoader;
+    const lifecycle = pluginLifecycleManager({} as never, {
+      loader,
+      providerModelSync: { sync, remove },
+    });
+    mockRegistry.getById.mockResolvedValue(ready);
+    mockRegistry.updateStatus.mockImplementation(async (_id: string, value: { status: string }) => ({
+      ...ready,
+      ...value,
+    }));
+
+    await lifecycle.enable("plugin-1");
+    expect(sync).toHaveBeenCalledWith("company-1", expect.objectContaining({ id: "plugin-1" }));
+
+    mockRegistry.getById.mockResolvedValue({ ...ready, status: "ready" });
+    await lifecycle.disable("plugin-1");
+    expect(remove).toHaveBeenCalledWith("company-1", expect.objectContaining({ id: "plugin-1" }));
+    expect(getPluginProviderModels("company-1")).toEqual([]);
+  });
+
+  it("runs the runtime enable bridge after activation and before enable resolves", async () => {
+    const order: string[] = [];
+    const ready = {
+      ...pluginRecord,
+      status: "disabled",
+      manifestJson: {
+        id: "example.plugin", capabilities: [],
+        providerModels: {
+          provider: "example",
+          baseUrl: "https://api.example.com/v1",
+          credentialSecretName: "example-key",
+          models: [{ id: "one" }],
+        },
+      },
+    } as never;
+    const loader = {
+      hasRuntimeServices: vi.fn().mockReturnValue(true),
+      loadSingle: vi.fn().mockImplementation(async () => {
+        order.push("runtime-enabled");
+        return { success: true, plugin: { ...ready, status: "ready" } };
+      }),
+      unloadSingle: vi.fn().mockResolvedValue(undefined),
+    } as unknown as PluginLoader;
+    const sync = vi.fn().mockImplementation(async (companyId: string, plugin: { id: string; status: string }) => {
+      order.push(`gateway-sync:${companyId}:${plugin.id}:${plugin.status}`);
+    });
+    const lifecycle = pluginLifecycleManager({} as never, {
+      loader,
+      providerModelSync: { sync, remove: vi.fn().mockResolvedValue(undefined) },
+    });
+    mockRegistry.getById.mockResolvedValue(ready);
+    mockRegistry.updateStatus.mockImplementation(async (_id: string, value: { status: string }) => ({
+      ...ready,
+      ...value,
+    }));
+    mockRegistry.listConfigs.mockResolvedValue([{ companyId: "company-1" }]);
+
+    await lifecycle.enable("plugin-1");
+
+    expect(order).toEqual(["runtime-enabled", "gateway-sync:company-1:plugin-1:ready"]);
+    expect(sync).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not publish provider models when gateway sync fails", async () => {
+    const ready = {
+      ...pluginRecord,
+      status: "disabled",
+      manifestJson: {
+        id: "example.plugin", capabilities: [],
+        providerModels: {
+          provider: "example",
+          baseUrl: "https://api.example.com/v1",
+          credentialSecretName: "example-key",
+          models: [{ id: "one" }],
+        },
+      },
+    } as never;
+    const loader = {
+      hasRuntimeServices: vi.fn().mockReturnValue(true),
+      loadSingle: vi.fn().mockResolvedValue({ success: true, plugin: { ...ready, status: "ready" } }),
+      unloadSingle: vi.fn().mockResolvedValue(undefined),
+    } as unknown as PluginLoader;
+    const sync = vi.fn().mockRejectedValue(new Error("company credential missing"));
+    const lifecycle = pluginLifecycleManager({} as never, {
+      loader,
+      providerModelSync: { sync, remove: vi.fn().mockResolvedValue(undefined) },
+    });
+    mockRegistry.getById.mockResolvedValue(ready);
+    mockRegistry.listConfigs.mockResolvedValue([{ companyId: "company-1" }]);
+    mockRegistry.updateStatus.mockImplementation(async (_id: string, value: { status: string }) => ({
+      ...ready,
+      ...value,
+    }));
+
+    await expect(lifecycle.enable("plugin-1")).rejects.toThrow("company credential missing");
+
+    expect(sync).toHaveBeenCalledTimes(1);
+    expect(getPluginProviderModels("company-1")).toEqual([]);
+    expect(mockRegistry.updateStatus).toHaveBeenLastCalledWith("plugin-1", expect.objectContaining({ status: "error" }));
+  });
+
+  it("removes only the disabled owner's gateway models when names are shared", async () => {
+    const owners = new Set(["plugin-1", "plugin-2"]);
+    const removed: string[] = [];
+    const remove = vi.fn().mockImplementation(async (_companyId: string, plugin: { id: string }) => {
+      owners.delete(plugin.id);
+      if (owners.size === 0) removed.push("example/one");
+    });
+    const ready = {
+      ...pluginRecord,
+      status: "ready",
+      manifestJson: { id: "example.plugin", capabilities: [], providerModels: {
+        provider: "example", baseUrl: "https://api.example.com/v1", credentialSecretName: "example-key", models: [{ id: "one" }],
+      } },
+    } as never;
+    const lifecycle = pluginLifecycleManager({} as never, {
+      loader: {} as PluginLoader,
+      providerModelSync: { sync: vi.fn().mockResolvedValue(undefined), remove },
+    });
+    mockRegistry.getById.mockResolvedValue(ready);
+    mockRegistry.listConfigs.mockResolvedValue([{ companyId: "company-1" }]);
+    mockRegistry.updateStatus.mockImplementation(async (_id: string, value: { status: string }) => ({ ...ready, ...value }));
+
+    await lifecycle.disable("plugin-1");
+
+    expect(remove).toHaveBeenCalledTimes(1);
+    expect(removed).toEqual([]);
+    expect(owners).toEqual(new Set(["plugin-2"]));
+  });
+
+  describe("provider model gateway lifecycle", () => {
+    const withModels = {
+      ...pluginRecord,
+      status: "ready",
+      manifestJson: {
+        id: "example.plugin", capabilities: [],
+        providerModels: {
+          provider: "example",
+          baseUrl: "https://api.example.com/v1",
+          credentialSecretName: "example-key",
+          models: [{ id: "one" }],
+        },
+      },
+    } as never;
+
+    function setup(remove: ReturnType<typeof vi.fn>, sync = vi.fn().mockResolvedValue(undefined)) {
+      const loader = {
+        hasRuntimeServices: vi.fn().mockReturnValue(true),
+        loadSingle: vi.fn().mockResolvedValue({ success: true, plugin: withModels }),
+        unloadSingle: vi.fn().mockResolvedValue(undefined),
+        cleanupInstallArtifacts: vi.fn().mockResolvedValue(undefined),
+      } as unknown as PluginLoader;
+      mockRegistry.getById.mockResolvedValue(withModels);
+      mockRegistry.listConfigs.mockResolvedValue([{ companyId: "company-1" }]);
+      mockRegistry.updateStatus.mockImplementation(async (_id: string, value: { status: string }) => ({
+        ...(withModels as object),
+        ...value,
+      }));
+      const lifecycle = pluginLifecycleManager({} as never, {
+        loader,
+        workerManager: makeWorkerManagerStub().workerManager,
+        providerModelSync: { sync, remove },
+      });
+      return { lifecycle, sync };
+    }
+
+    it("removes gateway models exactly once on disable", async () => {
+      const remove = vi.fn().mockResolvedValue(undefined);
+      const { lifecycle } = setup(remove);
+      await lifecycle.disable("plugin-1");
+      expect(remove).toHaveBeenCalledTimes(1);
+      expect(remove).toHaveBeenCalledWith("company-1", expect.objectContaining({ id: "plugin-1" }));
+    });
+
+    it("still disables the plugin when the gateway cleanup fails", async () => {
+      const remove = vi.fn().mockRejectedValue(new Error("litellm down"));
+      const { lifecycle } = setup(remove);
+      const result = await lifecycle.disable("plugin-1");
+      expect(result.status).toBe("disabled");
+      expect(mockRegistry.updateStatus).toHaveBeenCalledWith("plugin-1", expect.objectContaining({ status: "disabled" }));
+    });
+
+    it("fails closed and removes provider models when the gateway sync fails", async () => {
+      const remove = vi.fn().mockResolvedValue(undefined);
+      const sync = vi.fn().mockRejectedValue(new Error("litellm down"));
+      const { lifecycle } = setup(remove, sync);
+      mockRegistry.getById.mockResolvedValue({ ...(withModels as object), status: "disabled" });
+      mockRegistry.updateStatus.mockImplementation(async (_id: string, value: { status: string }) => ({
+        ...(withModels as object),
+        ...value,
+      }));
+      await expect(lifecycle.enable("plugin-1")).rejects.toThrow("litellm down");
+      expect(sync).toHaveBeenCalled();
+      expect(remove).toHaveBeenCalledWith("company-1", expect.objectContaining({ id: "plugin-1" }));
+      expect(mockRegistry.updateStatus).toHaveBeenLastCalledWith("plugin-1", expect.objectContaining({ status: "error" }));
+    });
+
+    it("keeps gateway models during reload and upgrade_pending, but cleans them on error", async () => {
+      const remove = vi.fn().mockResolvedValue(undefined);
+      const { lifecycle, sync } = setup(remove);
+      await lifecycle.restartWorker("plugin-1");
+      expect(sync).toHaveBeenCalled();
+      await lifecycle.markUpgradePending("plugin-1");
+      expect(remove).not.toHaveBeenCalled();
+      mockRegistry.getById.mockResolvedValue(withModels);
+      await lifecycle.markError("plugin-1", "worker crashed");
+      expect(remove).toHaveBeenCalledWith("company-1", expect.objectContaining({ id: "plugin-1" }));
+    });
+
+    it("removes gateway models on uninstall", async () => {
+      const remove = vi.fn().mockResolvedValue(undefined);
+      const { lifecycle } = setup(remove);
+      (mockRegistry as Record<string, unknown>).uninstall = vi.fn().mockResolvedValue(withModels);
+      await lifecycle.unload("plugin-1");
+      expect(remove).toHaveBeenCalledTimes(1);
+    });
+  });
+
   it("does a full deactivate+reactivate cycle when the loader has runtime services", async () => {
     mockRegistry.getById.mockResolvedValue(pluginRecord);
     mockRegistry.updateStatus.mockResolvedValue(pluginRecord);
@@ -125,5 +466,170 @@ describe("pluginLifecycleManager.restartWorker", () => {
     expect(stopped).toHaveBeenCalledWith({ pluginId: "plugin-1", pluginKey: "example.plugin" });
     expect(started).toHaveBeenCalledTimes(1);
     expect(started).toHaveBeenCalledWith({ pluginId: "plugin-1", pluginKey: "example.plugin" });
+  });
+
+  it.each(["upgrade", "watcher"] as const)("serializes %s first across route and watcher managers", async (first) => {
+    const db = {};
+    const plugin = { ...pluginRecord, manifestJson: { ...pluginRecord.manifestJson } };
+    mockRegistry.getById.mockImplementation(async () => plugin);
+    mockRegistry.updateStatus.mockImplementation(async (_id, patch) => Object.assign(plugin, patch));
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    let entered!: () => void;
+    const started = new Promise<void>((resolve) => { entered = resolve; });
+    let activeWorkers = 1;
+    let maximumWorkers = 1;
+    let stopped = 0;
+    const unloadSingle = vi.fn(async () => {
+      stopped += 1;
+      if (stopped === 1) {
+        entered();
+        await gate;
+      }
+      activeWorkers -= 1;
+    });
+    const loadSingle = vi.fn(async () => {
+      activeWorkers += 1;
+      maximumWorkers = Math.max(maximumWorkers, activeWorkers);
+      if (activeWorkers > 1) throw new Error("Worker already registered");
+      return { success: true, plugin };
+    });
+    const loader = {
+      hasRuntimeServices: () => true,
+      unloadSingle,
+      loadSingle,
+      clearCache: vi.fn(),
+      upgradePlugin: vi.fn().mockResolvedValue({
+        oldManifest: plugin.manifestJson,
+        newManifest: { ...plugin.manifestJson, version: "1.1.0" },
+        discovered: { version: "1.1.0" },
+      }),
+    } as unknown as PluginLoader;
+    const { workerManager } = makeWorkerManagerStub();
+    const route = pluginLifecycleManager(db as never, { loader, workerManager });
+    const watcher = pluginLifecycleManager(db as never, { loader, workerManager });
+    const upgrade = () => route.upgrade("plugin-1", "1.1.0");
+    const restart = () => watcher.restartWorker("plugin-1");
+    const pendingFirst = first === "upgrade" ? upgrade() : restart();
+    await started;
+    const pendingSecond = first === "upgrade" ? restart() : upgrade();
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(unloadSingle).toHaveBeenCalledTimes(1);
+    release();
+    await Promise.all([pendingFirst, pendingSecond]);
+    expect(activeWorkers).toBe(1);
+    expect(maximumWorkers).toBe(1);
+    expect(loadSingle).toHaveBeenCalledTimes(2);
+    expect(plugin.status).toBe("ready");
+  });
+});
+
+describe("pluginLifecycleManager.upgrade recovery", () => {
+  it("recovers running plugin and preserves single worker when package upgrade rejects", async () => {
+    const db = {};
+    const plugin = { ...pluginRecord, manifestJson: { ...pluginRecord.manifestJson } };
+    mockRegistry.getById.mockImplementation(async () => plugin);
+    mockRegistry.updateStatus.mockImplementation(async (_id, patch) => Object.assign(plugin, patch));
+    mockRegistry.update.mockImplementation(async (_id, patch) => Object.assign(plugin, patch));
+
+    const { handle, workerManager } = makeWorkerManagerStub();
+
+    let activeWorkers = 1;
+    let maximumWorkers = 1;
+    const unloadSingle = vi.fn(async () => {
+      activeWorkers -= 1;
+    });
+    const loadSingle = vi.fn(async () => {
+      activeWorkers += 1;
+      maximumWorkers = Math.max(maximumWorkers, activeWorkers);
+      return { success: true, plugin };
+    });
+    const loader = {
+      hasRuntimeServices: () => true,
+      unloadSingle,
+      loadSingle,
+      clearCache: vi.fn(),
+      upgradePlugin: vi.fn().mockRejectedValue(new Error("Package download failed")),
+    } as unknown as PluginLoader;
+
+    const lifecycle = pluginLifecycleManager(db as never, { loader, workerManager });
+
+    await expect(lifecycle.upgrade("plugin-1", "1.1.0")).rejects.toThrow("Package download failed");
+
+    // Plugin must not be left stopped or in status error
+    expect(plugin.status).toBe("ready");
+    expect(activeWorkers).toBe(1);
+    expect(maximumWorkers).toBe(1);
+    expect(unloadSingle).toHaveBeenCalledTimes(1);
+    expect(loadSingle).toHaveBeenCalledTimes(1);
+    expect(workerManager.getWorker("plugin-1")).toBe(handle);
+  });
+
+  it("recovers running plugin, rolls back metadata, and preserves single worker when activation of upgraded version rejects", async () => {
+    const db = {};
+    const originalManifest = { ...pluginRecord.manifestJson };
+    const plugin = { ...pluginRecord, manifestJson: originalManifest, version: "1.0.0" };
+    mockRegistry.getById.mockImplementation(async () => plugin);
+    mockRegistry.updateStatus.mockImplementation(async (_id, patch) => Object.assign(plugin, patch));
+    mockRegistry.update.mockImplementation(async (_id, patch) => Object.assign(plugin, patch));
+
+    const { handle, workerManager } = makeWorkerManagerStub();
+
+    let activeWorkers = 1;
+    let maximumWorkers = 1;
+    let activationAttempts = 0;
+    const unloadSingle = vi.fn(async () => {
+      activeWorkers -= 1;
+    });
+    const loadSingle = vi.fn(async () => {
+      activationAttempts += 1;
+      if (activationAttempts === 1) {
+        // First activation attempt is for upgraded version 1.1.0 — it rejects
+        return { success: false, error: "Activation failed: worker crash on startup", plugin };
+      }
+      // Second activation attempt is recovery for original version 1.0.0 — it succeeds
+      activeWorkers += 1;
+      maximumWorkers = Math.max(maximumWorkers, activeWorkers);
+      return { success: true, plugin };
+    });
+    const clearCache = vi.fn();
+    const loader = {
+      hasRuntimeServices: () => true,
+      unloadSingle,
+      loadSingle,
+      clearCache,
+      upgradePlugin: vi.fn().mockImplementation(async () => {
+        plugin.version = "1.1.0";
+        plugin.manifestJson = { ...originalManifest, version: "1.1.0" };
+        return {
+          oldManifest: originalManifest,
+          newManifest: plugin.manifestJson,
+          discovered: { version: "1.1.0" },
+        };
+      }),
+    } as unknown as PluginLoader;
+
+    const lifecycle = pluginLifecycleManager(db as never, { loader, workerManager });
+
+    await expect(lifecycle.upgrade("plugin-1", "1.1.0")).rejects.toThrow(
+      "Activation failed: worker crash on startup",
+    );
+
+    // Rollback to original version must occur
+    expect(mockRegistry.update).toHaveBeenCalledWith("plugin-1", {
+      packageName: "@example/plugin",
+      version: "1.0.0",
+      manifest: originalManifest,
+    });
+    expect(clearCache).toHaveBeenCalled();
+
+    // Plugin must not be left stopped or in status error
+    expect(plugin.status).toBe("ready");
+    expect(plugin.version).toBe("1.0.0");
+    expect(activeWorkers).toBe(1);
+    expect(maximumWorkers).toBe(1);
+    expect(activationAttempts).toBe(2);
+    expect(workerManager.getWorker("plugin-1")).toBe(handle);
   });
 });

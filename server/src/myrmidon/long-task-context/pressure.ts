@@ -15,12 +15,12 @@
 // one that grows without an end.
 
 import { and, desc, eq, sql } from "drizzle-orm";
-import type { Db } from "@paperclipai/db";
-import { heartbeatRuns } from "@paperclipai/db";
+import type { Db } from "@myrmidon/db";
+import { heartbeatRuns } from "@myrmidon/db";
 import {
   LONG_TASK_CONTEXT_SETTINGS_KEY,
   type LongTaskContextSettings,
-} from "@paperclipai/shared";
+} from "@myrmidon/shared";
 import { parsePromptBreakdown } from "../prompt-budget-advice/source.js";
 import { loadModelWindows, PROMPT_BUDGET_SCAN_LIMIT } from "../prompt-budget/status.js";
 import { planLongTaskContextReset, type LongTaskContextPlan } from "./domain.js";

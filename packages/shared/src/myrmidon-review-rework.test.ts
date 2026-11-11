@@ -7,12 +7,13 @@
 import { describe, expect, it } from "vitest";
 import {
   DEFAULT_REVIEW_REWORK_ENABLED,
+  DEFAULT_REVIEW_REWORK_SWEEP_INTERVAL_SEC,
   REVIEW_REWORK_JOURNAL_LIMIT,
   mergeReviewReworkSettings,
   normalizeReviewReworkSettings,
   parseReviewReworkVerdictMarkers,
   patchReviewReworkSettingsSchema,
-} from "@paperclipai/shared";
+} from "@myrmidon/shared";
 
 function comment(body: string, id = "comment-1", createdAt = "2026-10-04T16:57:00.000Z") {
   return { id, body, createdAt };
@@ -88,16 +89,29 @@ describe("review rework settings contract", () => {
     );
   });
 
-  it("merges a patch per key and keeps the untouched one", () => {
-    const base = { enabled: true, fallbackAssigneeAgentId: null };
+  it("merges a patch per key and keeps the untouched ones", () => {
+    const base = {
+      enabled: true,
+      sweepIntervalSec: DEFAULT_REVIEW_REWORK_SWEEP_INTERVAL_SEC,
+      fallbackAssigneeAgentId: null,
+    };
     expect(mergeReviewReworkSettings(base, { enabled: false })).toEqual({
       enabled: false,
+      sweepIntervalSec: DEFAULT_REVIEW_REWORK_SWEEP_INTERVAL_SEC,
+      fallbackAssigneeAgentId: null,
+    });
+    expect(
+      mergeReviewReworkSettings(base, { sweepIntervalSec: 120 }),
+    ).toEqual({
+      enabled: true,
+      sweepIntervalSec: 120,
       fallbackAssigneeAgentId: null,
     });
     expect(
       mergeReviewReworkSettings(base, { fallbackAssigneeAgentId: "887ed69b-5982-4572-a151-f8c809543f29" }),
     ).toEqual({
       enabled: true,
+      sweepIntervalSec: DEFAULT_REVIEW_REWORK_SWEEP_INTERVAL_SEC,
       fallbackAssigneeAgentId: "887ed69b-5982-4572-a151-f8c809543f29",
     });
   });

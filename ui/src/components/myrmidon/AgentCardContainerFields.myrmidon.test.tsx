@@ -57,6 +57,7 @@ const STATUS: BotContainerStatus = {
   gatewayConcurrency: { board: 3, applied: 3, diverged: false, checkedAt: "2026-01-01T00:00:00.000Z" },
   gatewayConcurrencyNote: null,
   gatewayConcurrencyWarning: null,
+  profileUpdatePendingSince: null,
 };
 
 let container: HTMLDivElement;
@@ -354,6 +355,19 @@ describe("myrmidon(W2b) container card section", () => {
   });
 });
 
+describe("myrmidon(L6-PROFILE-UPDATE-STARVATION) pending profile update note", () => {
+  it("shows the note while a change waits for the agent's runs to drain", () => {
+    renderView({ status: { ...STATUS, profileUpdatePendingSince: "2026-10-02T15:04:05.000Z" } });
+    expect(text("profile-pending")).toContain("Profile update pending since");
+    expect(text("profile-pending")).toContain("2026");
+  });
+
+  it("shows nothing when no update is pending", () => {
+    renderView();
+    expect(byId("profile-pending")).toBeNull();
+  });
+});
+
 describe("myrmidon(CONCURRENCY-SYNC) limit block", () => {
   const diverged = {
     ...STATUS,
@@ -415,12 +429,34 @@ describe("myrmidon(CONCURRENCY-SYNC) limit block", () => {
     expect(concurrencyView(STATUS)).toEqual({
       board: "Board: 3",
       gateway: "Gateway: 3",
+      effective: null,
       diverged: false,
       note: null,
       warning: null,
     });
     expect(concurrencyView(diverged)?.diverged).toBe(true);
     expect(concurrencyView(unmanaged)?.gateway).toBe("Gateway: not managed by the board");
+  });
+
+  it("shows the effective ceiling the scheduler admits against (1.6.7 RUN-LIMITS)", () => {
+    renderView({
+      status: {
+        ...STATUS,
+        effectiveMaxConcurrentRuns: 1,
+        effectiveMaxConcurrentRunsSource: "memory",
+      },
+    });
+    expect(text("concurrency-effective")).toBe("Effective: 1 (limited by the container memory)");
+
+    const byGateway = concurrencyView({
+      ...STATUS,
+      effectiveMaxConcurrentRuns: 2,
+      effectiveMaxConcurrentRunsSource: "gateway",
+    });
+    expect(byGateway?.effective).toBe("Effective: 2 (limited by the gateway limit)");
+
+    const byBoard = concurrencyView({ ...STATUS, effectiveMaxConcurrentRuns: 3 });
+    expect(byBoard?.effective).toBe("Effective: 3 (limited by the board limit)");
   });
 });
 

@@ -1,6 +1,6 @@
 import { setTimeout as delay } from "node:timers/promises";
 import pc from "picocolors";
-import type { Agent, HeartbeatRun, HeartbeatRunEvent, HeartbeatRunStatus } from "@paperclipai/shared";
+import type { Agent, HeartbeatRun, HeartbeatRunEvent, HeartbeatRunStatus } from "@myrmidon/shared";
 import { getCLIAdapter } from "../adapters/index.js";
 import { resolveCommandContext } from "./client/common.js";
 
@@ -224,7 +224,7 @@ export async function heartbeatRun(opts: HeartbeatRunOptions): Promise<void> {
     }
 
       const runList = (await api.get<(HeartbeatRun | null)[]>(
-        `/api/companies/${agent.companyId}/heartbeat-runs?agentId=${agent.id}`,
+        `/api/companies/${agent.companyId}/heartbeat-runs?agentId=${agent.id}&limit=50`,
       )) || [];
       const currentRun = runList.find((r) => r && r.id === activeRunId) ?? null;
 

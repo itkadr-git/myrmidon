@@ -27,6 +27,7 @@ import http.client
 import json
 import socket
 import threading
+import time
 from collections import deque
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any, cast
@@ -64,22 +65,84 @@ REFUSAL_FEED_LIMIT = 200
 #: project page key on it.
 BLOCKED_RESULT = "blocked"
 
+#: The `result` a CONNECT that hit the per-client tunnel cap is recorded with.
+TUNNEL_CAP_RESULT = "error:tunnel_cap"
+
+#: The HTTP status a capped CONNECT is answered with: the client should back off
+#: and retry, not treat the destination as unreachable.
+TUNNEL_CAP_STATUS = 429
+
 
 class _Tunnel:
-    """Copies bytes both ways between the client socket and the upstream one."""
+    """Copies bytes both ways between the client socket and the upstream one.
 
-    def __init__(self, client: socket.socket, upstream: socket.socket) -> None:
+    With `idle_sec`, a tunnel that carried no byte in either direction for that
+    long is closed, which frees its two threads. One clock serves both
+    directions: a long download, where the client sends nothing, is not idle. A
+    blocked pump looks at the clock a few times per `idle_sec`, so the close
+    comes a little after `idle_sec`, never before. Without `idle_sec` a tunnel
+    stays open until one side closes it.
+    """
+
+    #: How often a blocked pump looks at the clock, per `idle_sec`.
+    _CHECKS_PER_IDLE = 4
+
+    def __init__(self, client: socket.socket, upstream: socket.socket, idle_sec: float | None = None) -> None:
+        if idle_sec is not None and idle_sec <= 0:
+            raise ValueError(f"idle_sec must be positive or None, got {idle_sec!r}")
         self.client = client
         self.upstream = upstream
+        self.idle_sec = idle_sec
+        # time.monotonic() of the last byte moved in either direction. Both pump
+        # threads write it; assigning a float is atomic, so no lock.
+        self._last_byte = time.monotonic()
+        if idle_sec is not None:
+            for sock in (client, upstream):
+                sock.settimeout(idle_sec / self._CHECKS_PER_IDLE)
 
-    @staticmethod
-    def _pump(source: socket.socket, sink: socket.socket) -> None:
+    def _idle_expired(self) -> bool:
+        return self.idle_sec is not None and time.monotonic() - self._last_byte >= self.idle_sec
+
+    def _send(self, sink: socket.socket, chunk: bytes) -> bool:
+        """Send all of `chunk`; False if the tunnel went idle before that.
+
+        Sent in pieces so that a slow reader that takes some bytes now and then
+        counts as traffic instead of timing the whole chunk out.
+        """
+        view = memoryview(chunk)
+        while view:
+            try:
+                sent = sink.send(view)
+            except socket.timeout:
+                if self._idle_expired():
+                    return False
+                continue
+            view = view[sent:]
+            self._last_byte = time.monotonic()
+        return True
+
+    def _abort(self) -> None:
+        """End both directions, so the pump still blocked in `recv` wakes up now."""
+        for sock in (self.client, self.upstream):
+            try:
+                sock.shutdown(socket.SHUT_RDWR)
+            except OSError:
+                pass
+
+    def _pump(self, source: socket.socket, sink: socket.socket) -> None:
         try:
             while True:
-                chunk = source.recv(65536)
+                try:
+                    chunk = source.recv(65536)
+                except socket.timeout:
+                    if self._idle_expired():
+                        break
+                    continue
                 if not chunk:
                     break
-                sink.sendall(chunk)
+                self._last_byte = time.monotonic()
+                if not self._send(sink, chunk):
+                    break
         except OSError:
             pass
         finally:
@@ -87,6 +150,8 @@ class _Tunnel:
                 sink.shutdown(socket.SHUT_WR)
             except OSError:
                 pass
+            if self._idle_expired():
+                self._abort()
 
     def run(self) -> None:
         upstream_to_client = threading.Thread(target=self._pump, args=(self.upstream, self.client), daemon=True)
@@ -98,6 +163,56 @@ class _Tunnel:
                 sock.close()
             except OSError:
                 pass
+
+
+class _TunnelCap:
+    """Per-proxy-user count of open CONNECT tunnels.
+
+    `acquire` returns True when the client is under the cap (or the cap is 0,
+    meaning unlimited) and the count was incremented; False when the cap is
+    reached. `release` decrements. Reserved destinations bypass the check but
+    still count toward it, so a reserved slot is always available even when
+    the client is at the cap.
+    """
+
+    def __init__(self, max_per_client: int, reserve_destinations: tuple[str, ...] = ()) -> None:
+        self._max = max_per_client
+        self._reserve = frozenset(reserve_destinations)
+        self._counts: dict[str, int] = {}
+        self._lock = threading.Lock()
+
+    def _is_reserved(self, host: str, port: int) -> bool:
+        return f"{host.lower()}:{port}" in self._reserve
+
+    def acquire(self, client: str, host: str, port: int) -> bool:
+        """Try to open one tunnel for `client` to `host:port`.
+
+        Reserved destinations always acquire (but still count). Non-reserved
+        destinations acquire only when the client is under the cap. A client
+        with no entry starts at 0.
+        """
+        if self._max <= 0 and not self._reserve:
+            return True
+        reserved = self._is_reserved(host, port)
+        with self._lock:
+            count = self._counts.get(client, 0)
+            if not reserved and self._max > 0 and count >= self._max:
+                return False
+            self._counts[client] = count + 1
+            return True
+
+    def release(self, client: str) -> None:
+        with self._lock:
+            count = self._counts.get(client, 0)
+            if count <= 1:
+                self._counts.pop(client, None)
+            else:
+                self._counts[client] = count - 1
+
+    def snapshot(self) -> dict[str, int]:
+        """A copy of the current counts, for the health endpoint."""
+        with self._lock:
+            return dict(self._counts)
 
 
 class EgressProxyHandler(BaseHTTPRequestHandler):
@@ -168,17 +283,32 @@ class EgressProxyHandler(BaseHTTPRequestHandler):
             self._journal(bot=bot, method="CONNECT", host=host, port=port, scheme="https", result=BLOCKED_RESULT)
             self.send_error(403, "destination is not on this project's egress list")
             return
+        if not self.proxy.tunnel_cap.acquire(bot, host, port):
+            # Per-client cap reached. 429 (not 502/503) tells the client the
+            # destination is fine but it must back off; the journal records
+            # the cap hit so the operator sees who is exhausting the proxy.
+            self._journal(bot=bot, method="CONNECT", host=host, port=port, scheme="https", result=TUNNEL_CAP_RESULT)
+            self.send_error(TUNNEL_CAP_STATUS, "per-client tunnel limit reached; retry later")
+            return
         try:
             upstream = socket.create_connection((host, port), self.proxy.config.connect_timeout_sec)
         except OSError as exc:
+            self.proxy.tunnel_cap.release(bot)
             self._journal(bot=bot, method="CONNECT", host=host, port=port, scheme="https", result=f"error:{exc.errno or 0}")
             self.send_error(502, "cannot reach the destination")
             return
         self._journal(bot=bot, method="CONNECT", host=host, port=port, scheme="https", result="ok")
-        self.send_response(200, "Connection Established")
-        self.end_headers()
-        self.close_connection = True
-        _Tunnel(self.connection, upstream).run()
+        try:
+            # The 200 answer goes inside the try: a client that disconnects
+            # between acquire and this reply must still release its cap slot
+            # (the finally below), or the slot leaks for the lifetime of the
+            # process once the client is at the cap.
+            self.send_response(200, "Connection Established")
+            self.end_headers()
+            self.close_connection = True
+            _Tunnel(self.connection, upstream, idle_sec=self.proxy.config.tunnel_idle_sec).run()
+        finally:
+            self.proxy.tunnel_cap.release(bot)
 
     # -- plain HTTP -------------------------------------------------------
 
@@ -264,6 +394,8 @@ class EgressProxyHandler(BaseHTTPRequestHandler):
                     "projects": len(self.proxy.policy.projects),
                     "policy_revision": self.proxy.policy_revision,
                     "policy_error": self.proxy.policy_error,
+                    "max_tunnels_per_client": self.proxy.config.max_tunnels_per_client,
+                    "open_tunnels": self.proxy.tunnel_cap.snapshot(),
                 },
                 separators=(",", ":"),
             ).encode("utf-8")
@@ -353,6 +485,7 @@ class EgressProxyServer(ThreadingHTTPServer):
         self.journal = journal if journal is not None else DestinationJournal(bots=config.bots)
         self.refresher = refresher
         self._policy = policy if policy is not None else EgressPolicy()
+        self.tunnel_cap = _TunnelCap(config.max_tunnels_per_client, config.tunnel_reserve_destinations)
         self._refusals: deque[dict[str, Any]] = deque(maxlen=REFUSAL_FEED_LIMIT)
         self._refusals_lock = threading.Lock()
 
@@ -425,7 +558,10 @@ def serve(config: Config) -> None:
     print(
         f"egress-proxy: mode={config.mode} listening on {config.bind}:{server.port} "
         f"bots_in_map={len(config.bots)} projects={len(policy.projects)} "
-        f"policy_url={config.policy_url or '-'} policy_file={config.policy_file or '-'}"
+        f"policy_url={config.policy_url or '-'} policy_file={config.policy_file or '-'} "
+        f"tunnel_idle_sec={'-' if config.tunnel_idle_sec is None else format(config.tunnel_idle_sec, 'g')} "
+        f"max_tunnels_per_client={config.max_tunnels_per_client or 'unlimited'} "
+        f"tunnel_reserve_destinations={len(config.tunnel_reserve_destinations)}"
         + (
             " (log-only: every destination is recorded, none is refused)"
             if config.mode == "log"

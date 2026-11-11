@@ -6,15 +6,15 @@
 // `setSkillCurrentVersion`, which moves the skill's `current_version_id` to the
 // revision a rollback restored (that pointer is what the delivery path reads).
 
-import { and, asc, desc, eq } from "drizzle-orm";
-import type { Db } from "@paperclipai/db";
+import { and, asc, desc, eq, sql } from "drizzle-orm";
+import type { Db } from "@myrmidon/db";
 import {
   approvals,
   companySkillLifecycle,
   companySkillLifecycleEvents,
   companySkillVersions,
   companySkills,
-} from "@paperclipai/db";
+} from "@myrmidon/db";
 import type {
   SkillLifecycleApprovalRef,
   SkillLifecycleEvent,
@@ -50,7 +50,11 @@ export interface SkillLifecycleStore {
   ): Promise<SkillLifecycleEvent>;
   listEvents(companyId: string, skillId: string): Promise<SkillLifecycleEvent[]>;
   getVersion(companyId: string, skillId: string, versionId: string): Promise<SkillLifecycleVersionRef | null>;
+  /** Historical snapshots let a git revert select the prior delivered revision. */
+  listVersions?(companyId: string, skillId: string): Promise<SkillLifecycleVersionRef[]>;
   getApproval(approvalId: string): Promise<SkillLifecycleApprovalRef | null>;
+  /** Atomically claims an approved promotion approval for this company and skill. */
+  consumeApproval(approvalId: string, companyId: string, skillId: string): Promise<SkillLifecycleApprovalRef | null>;
   setSkillCurrentVersion(companyId: string, skillId: string, versionId: string | null): Promise<void>;
 }
 
@@ -237,6 +241,31 @@ export function createDbSkillLifecycleStore(db: Db): SkillLifecycleStore {
       };
     },
 
+    async listVersions(companyId, skillId) {
+      const rows = await db
+        .select({
+          id: companySkillVersions.id,
+          revisionNumber: companySkillVersions.revisionNumber,
+          fileInventory: companySkillVersions.fileInventory,
+        })
+        .from(companySkillVersions)
+        .where(
+          and(
+            eq(companySkillVersions.companyId, companyId),
+            eq(companySkillVersions.companySkillId, skillId),
+          ),
+        );
+      return rows.map((row) => ({
+        id: row.id,
+        revisionNumber: row.revisionNumber,
+        fileInventory: (row.fileInventory ?? []).map((entry) => ({
+          path: entry.path,
+          kind: entry.kind,
+          content: entry.content,
+        })),
+      }));
+    },
+
     async getApproval(approvalId) {
       const row = await db
         .select()
@@ -251,6 +280,30 @@ export function createDbSkillLifecycleStore(db: Db): SkillLifecycleStore {
         payload: (row.payload ?? {}) as Record<string, unknown>,
         decidedByUserId: row.decidedByUserId ?? null,
         decidedAt: row.decidedAt ? row.decidedAt.toISOString() : null,
+      };
+    },
+
+    async consumeApproval(approvalId, companyId, skillId) {
+      const row = await db
+        .update(approvals)
+        .set({ status: "used", updatedAt: new Date() })
+        .where(and(
+          eq(approvals.id, approvalId),
+          eq(approvals.companyId, companyId),
+          eq(approvals.type, "skill_promotion"),
+          eq(approvals.status, "approved"),
+          sql`${approvals.payload}->>'skillId' = ${skillId}`,
+        ))
+        .returning()
+        .then((rows) => rows[0] ?? null);
+      if (!row) return null;
+      return {
+        id: row.id,
+        type: row.type,
+        status: "approved",
+        payload: (row.payload ?? {}) as Record<string, unknown>,
+        decidedByUserId: row.decidedByUserId ?? null,
+        decidedAt: row.decidedAt?.toISOString() ?? null,
       };
     },
 

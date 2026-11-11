@@ -1,4 +1,4 @@
-import type { ExecutionWorkspaceMode, ProjectExecutionWorkspaceDefaultMode } from "@paperclipai/shared";
+import type { ExecutionWorkspaceMode, ProjectExecutionWorkspaceDefaultMode } from "@myrmidon/shared";
 
 type ProjectWorkspaceDefaultSource = {
   workspaces?: Array<{ id: string; isPrimary: boolean }>;

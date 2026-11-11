@@ -5,10 +5,10 @@
 // app.ts mounts `swarmClaimRoutes` from here; the startup in index.ts drives
 // the sweeper on its scheduler tick (the same place leases-stale-sweep and
 // idle-pickup live). Everything the two parts of 1.6 share — the queue order,
-// the lease states, the settings — comes from `@paperclipai/shared`, so Part B
+// the lease states, the settings — comes from `@myrmidon/shared`, so Part B
 // (the supervisor view, OPE-3609) reads the same decisions Part A enforces.
 
-import { DEFAULT_SWARM_CLAIM_SWEEP_INTERVAL_SEC } from "@paperclipai/shared";
+import { DEFAULT_SWARM_CLAIM_SWEEP_INTERVAL_SEC } from "@myrmidon/shared";
 import { createSwarmClaimSweeper, type SwarmClaimSweeper } from "./sweep.js";
 import {
   claimNextTaskForAgent,

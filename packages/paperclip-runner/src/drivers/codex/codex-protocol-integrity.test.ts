@@ -537,7 +537,7 @@ describe("Codex protocol integrity propagation", () => {
         sourceCodexHome: null,
         environment: {},
         runnerReconnectGraceMs: 900_000,
-        closeGraceMs: scenario === "early-semantic" ? 1_000 : 50,
+        closeGraceMs: scenario === "early-semantic" ? 10_000 : 50,
         readRunnerState: async () => ({
           schema: "paperclip.runner.durable.state.v1",
           ...identity,

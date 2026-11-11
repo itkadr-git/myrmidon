@@ -46,6 +46,18 @@ describe("local process sandbox", () => {
     expect(() => parseLocalProcessSandboxExtraPaths(["relative"])).toThrow("must be an absolute path");
   });
 
+  it("accepts comma-separated text lists from schema-driven forms", () => {
+    expect(parseLocalProcessSandboxExtraPaths("/opt/cache, /var/lib/tool")).toEqual([
+      { path: "/opt/cache", access: "ro" },
+      { path: "/var/lib/tool", access: "ro" },
+    ]);
+    expect(parseLocalProcessSandboxExtraPaths("")).toEqual([]);
+    expect(() => parseLocalProcessSandboxExtraPaths("/opt/cache, relative")).toThrow("must be an absolute path");
+    expect(parseLocalProcessNetworkAllowlist("api.openai.com, gateway.test:8443"))
+      .toEqual(["api.openai.com", "gateway.test:8443"]);
+    expect(parseLocalProcessNetworkAllowlist(undefined)).toEqual([]);
+  });
+
   it("parses network scopes and exact-host allowlists", () => {
     expect(parseLocalProcessFilesystemScope("workspace")).toBe("workspace");
     expect(parseLocalProcessFilesystemScope(undefined)).toBeNull();
@@ -294,6 +306,27 @@ describe("local process sandbox", () => {
         },
       }),
     ).rejects.toThrow("requires Bubblewrap");
+  });
+
+  it("reports unavailable Linux user namespaces before attempting a process launch", async () => {
+    const workspace = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-fs-sandbox-userns-"));
+    cleanup.push(workspace);
+    const bwrap = path.join(workspace, "bwrap");
+    await fs.writeFile(bwrap, "#!/bin/sh\necho 'bwrap: creating new namespace: Operation not permitted' >&2\nexit 1\n", { mode: 0o700 });
+    await expect(
+      runChildProcess("filesystem-sandbox-userns", process.execPath, ["-e", "process.exit(0)"], {
+        cwd: workspace,
+        env: {},
+        timeoutSec: 10,
+        graceSec: 1,
+        onLog: async () => {},
+        localProcessSandbox: {
+          workspaceDir: workspace,
+          filesystemScope: "workspace",
+          command: bwrap,
+        },
+      }),
+    ).rejects.toThrow(/requires Linux user namespaces.*Operation not permitted.*not started without confinement/);
   });
 
   it.runIf(Boolean(process.env.PAPERCLIP_TEST_BWRAP))(

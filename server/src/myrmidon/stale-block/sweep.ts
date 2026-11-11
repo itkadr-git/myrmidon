@@ -15,12 +15,12 @@
 // hand-rolled UPDATE, and the lead/operator signal is the existing
 // `blocker_attention` attention-feed source computed on the fly.
 
-import { and, asc, eq, inArray } from "drizzle-orm";
+import { and, asc, eq, inArray, notExists, sql } from "drizzle-orm";
 import {
   issueRelations,
   issues,
   type Db,
-} from "@paperclipai/db";
+} from "@myrmidon/db";
 import { logger } from "../../middleware/logger.js";
 import { publishActivity, type ActivityPublication } from "../../services/activity-log.js";
 import type { IssuePostCommitAction } from "../../services/issues.js";
@@ -38,17 +38,37 @@ import { recordStaleBlockSignal, type StaleBlockSignal } from "./attention.js";
 export const STALE_BLOCK_SWEEP_PAGE_SIZE = 50;
 export const STALE_BLOCK_ACTIVITY_ACTOR = "stale_block_sweep";
 export const STALE_BLOCK_ACTIVITY_ACTION = "myrmidon.stale_block.unblocked";
+export const STALE_BLOCK_UNSWEPT_ALERT_THRESHOLD_MS = 60 * 60 * 1000; // 1 hour
+
+let currentOldestUnsweptAgeMs: number | null = null;
+
+export function recordStaleBlockOldestUnsweptAge(ageMs: number): void {
+  currentOldestUnsweptAgeMs = ageMs;
+}
+
+export function getStaleBlockOldestUnsweptSeconds(): number | null {
+  return currentOldestUnsweptAgeMs === null ? null : Math.round(currentOldestUnsweptAgeMs / 1000);
+}
+
+export type KeysetCursor = {
+  updatedAt: Date;
+  id: string;
+};
 
 /** The one system comment a sweep-written unblock leaves. Neutral, no internal identifiers. */
 export function buildStaleBlockComment(input: {
   identifier: string | null;
   reasons: Array<{ label: string | null; why: StaleBlockReasonDeadWhy }>;
   at: Date;
+  targetStatus?: "in_progress" | "todo";
 }): string {
+  if (input.targetStatus === "todo" || input.reasons.length === 0) {
+    return `Blocked status without reason removed; task returned to todo without assignee by the periodic stale-block sweep at ${input.at.toISOString()}.`;
+  }
   const described = input.reasons
     .map((reason) => `${reason.label ?? "the reason"}: ${describeStaleBlockReason(reason.why)}`)
     .join("; ");
-  return `Stale block removed (${described}); task returned to in_progress by the periodic stale-block sweep at ${input.at.toISOString()}.`;
+  return `Stale block removed (${described}); task returned to ${input.targetStatus ?? "in_progress"} by the periodic stale-block sweep at ${input.at.toISOString()}.`;
 }
 
 /**
@@ -71,10 +91,13 @@ function loadStaleBlockServices() {
   return staleBlockServices;
 }
 
+/** Transactions of the sweep that stay open longer than this are logged with the path name. */
+const STALE_BLOCK_TX_WARN_MS = 2_000;
+
 export interface StaleBlockSweepDeps {
   db: Db;
   /** Reads whether an event/gate key is still set for the company; injected so tests never touch gates. */
-  isEventStillSet: (companyId: string, eventKey: string) => Promise<boolean>;
+  isEventStillSet: (companyId: string, eventKey: string, dbOrTx?: Db) => Promise<boolean>;
   /** Maintenance gate; defaults to the instance-wide check when provided by the wiring. */
   isUnderMaintenance?: (db: Db) => Promise<boolean>;
   logActivity?: (input: {
@@ -86,7 +109,7 @@ export interface StaleBlockSweepDeps {
     entityId: string;
     issueId: string;
     details: Record<string, unknown>;
-  }) => Promise<void>;
+  }, dbOrTx?: Db, postCommitPublications?: ActivityPublication[]) => Promise<void>;
   env?: NodeJS.ProcessEnv;
   now?: () => Date;
 }
@@ -104,6 +127,10 @@ export interface StaleBlockSweepResult {
   failed: number;
   /** True when the pass was skipped before scanning (disabled or interval). */
   skippedPass: boolean;
+  /** Age in ms of the blocked task that has gone the longest without being swept. */
+  oldestUnsweptAgeMs: number;
+  /** True when the oldest unswept blocked task exceeded the 1-hour starvation threshold. */
+  starvationAlert: boolean;
 }
 
 const EMPTY_RESULT: StaleBlockSweepResult = {
@@ -113,6 +140,8 @@ const EMPTY_RESULT: StaleBlockSweepResult = {
   skippedUnknown: 0,
   failed: 0,
   skippedPass: false,
+  oldestUnsweptAgeMs: 0,
+  starvationAlert: false,
 };
 
 type BlockedRow = {
@@ -121,21 +150,155 @@ type BlockedRow = {
   identifier: string | null;
   title: string;
   unblockDescriptor: unknown;
+  updatedAt: Date;
 };
 
-async function blockedCandidates(db: Db, pageSize: number): Promise<BlockedRow[]> {
-  return db
+export interface BlockedCandidatesResult {
+  rows: BlockedRow[];
+  nextCursor: KeysetCursor | null;
+  wrapped: boolean;
+}
+
+async function blockedCandidates(
+  db: Db,
+  pageSize: number,
+  cursor: KeysetCursor | null,
+): Promise<BlockedCandidatesResult> {
+  const columns = {
+    id: issues.id,
+    companyId: issues.companyId,
+    identifier: issues.identifier,
+    title: issues.title,
+    unblockDescriptor: issues.unblockDescriptor,
+    updatedAt: issues.updatedAt,
+  };
+  const baseWhere = eq(issues.status, "blocked");
+  let wrapped = false;
+  let candidateRows: BlockedRow[] = [];
+
+  if (cursor) {
+    candidateRows = await db
+      .select(columns)
+      .from(issues)
+      .where(
+        and(
+          baseWhere,
+          sql`(${issues.updatedAt}, ${issues.id}) > (${cursor.updatedAt.toISOString()}::timestamptz, ${cursor.id}::uuid)`,
+        ),
+      )
+      .orderBy(asc(issues.updatedAt), asc(issues.id))
+      .limit(pageSize);
+  }
+
+  // If no cursor was given or the keyset cursor reached the end of the table,
+  // wrap around to the beginning ("и по кругу") so the sweep continuously inspects all blocked tasks.
+  if (candidateRows.length === 0) {
+    if (cursor !== null) {
+      wrapped = true;
+    }
+    candidateRows = await db
+      .select(columns)
+      .from(issues)
+      .where(baseWhere)
+      .orderBy(asc(issues.updatedAt), asc(issues.id))
+      .limit(pageSize);
+  }
+
+  const nextCursor: KeysetCursor | null =
+    candidateRows.length < pageSize
+      ? null
+      : {
+          updatedAt: candidateRows[candidateRows.length - 1].updatedAt,
+          id: candidateRows[candidateRows.length - 1].id,
+        };
+
+  // myrmidon(STALE-BLOCK): the page is sized for live-reason tasks, but a
+  // bare block (no reasonRef, no edges) must not starve behind a full page
+  // of old live blocks: reserve one slot for the oldest bare block so the
+  // E3 backfill (reasons.length === 0 → todo) advances every pass. Blocked-by
+  // edges are the fallback reason source (collectStaleBlockReasons), so the
+  // reservation query excludes them with NOT EXISTS; tasks whose descriptor
+  // merely lacks a reasonRef but still carry edges are not bare.
+  const [oldestBare] = await db
+    .select(columns)
+    .from(issues)
+    .where(
+      and(
+        baseWhere,
+        sql`(${issues.unblockDescriptor} is null or (${issues.unblockDescriptor} -> 'reasonRef') is null)`,
+        notExists(
+          db
+            .select({ one: sql`1` })
+            .from(issueRelations)
+            .where(
+              and(
+                eq(issueRelations.companyId, issues.companyId),
+                eq(issueRelations.relatedIssueId, issues.id),
+                eq(issueRelations.type, "blocks"),
+              ),
+            ),
+        ),
+      ),
+    )
+    .orderBy(asc(issues.updatedAt), asc(issues.id))
+    .limit(1);
+
+  let rows = candidateRows;
+  if (oldestBare && !rows.some((row) => row.id === oldestBare.id)) {
+    if (rows.length < pageSize) {
+      rows = [...rows, oldestBare];
+    } else {
+      rows = [...rows.slice(0, pageSize - 1), oldestBare];
+    }
+  }
+
+  return { rows, nextCursor, wrapped };
+}
+
+export async function computeOldestUnsweptBlockedTaskAgeMs(
+  db: Db,
+  now: Date,
+  lastSweptAtByIssueId: Map<string, number>,
+): Promise<{ maxAgeMs: number; oldestIssueId: string | null; oldestIdentifier: string | null }> {
+  const blocked = await db
     .select({
       id: issues.id,
-      companyId: issues.companyId,
       identifier: issues.identifier,
-      title: issues.title,
-      unblockDescriptor: issues.unblockDescriptor,
+      blockedTransitionAt: issues.blockedTransitionAt,
+      updatedAt: issues.updatedAt,
+      createdAt: issues.createdAt,
     })
     .from(issues)
-    .where(eq(issues.status, "blocked"))
-    .orderBy(asc(issues.updatedAt), asc(issues.id))
-    .limit(pageSize);
+    .where(eq(issues.status, "blocked"));
+
+  const liveBlockedIds = new Set(blocked.map((b) => b.id));
+  for (const id of lastSweptAtByIssueId.keys()) {
+    if (!liveBlockedIds.has(id)) {
+      lastSweptAtByIssueId.delete(id);
+    }
+  }
+
+  let maxAgeMs = 0;
+  let oldestIssueId: string | null = null;
+  let oldestIdentifier: string | null = null;
+
+  for (const issue of blocked) {
+    const lastSweptMs = lastSweptAtByIssueId.get(issue.id);
+    const baselineMs =
+      lastSweptMs ??
+      issue.blockedTransitionAt?.getTime() ??
+      issue.updatedAt?.getTime() ??
+      issue.createdAt?.getTime() ??
+      now.getTime();
+    const ageMs = Math.max(0, now.getTime() - baselineMs);
+    if (ageMs > maxAgeMs) {
+      maxAgeMs = ageMs;
+      oldestIssueId = issue.id;
+      oldestIdentifier = issue.identifier;
+    }
+  }
+
+  return { maxAgeMs, oldestIssueId, oldestIdentifier };
 }
 
 async function blockedByEdgesFor(db: Db, companyId: string, issueId: string): Promise<string[]> {
@@ -203,7 +366,7 @@ async function judgeReasons(input: {
         ? (statuses.has(reason.issueId) ? statuses.get(reason.issueId)! : null)
         : null,
       eventStillSet: reason.kind === "event" && reason.eventKey !== null
-        ? await deps.isEventStillSet(row.companyId, reason.eventKey)
+        ? await deps.isEventStillSet(row.companyId, reason.eventKey, db)
         : false,
       now,
     };
@@ -230,19 +393,29 @@ export function createStaleBlockSweep(deps: StaleBlockSweepDeps) {
   const now = deps.now ?? (() => new Date());
   let lastSweepAtMs = 0;
   let inFlight: Promise<StaleBlockSweepResult> | null = null;
+  let cursor: KeysetCursor | null = null;
+  const lastSweptAtByIssueId = new Map<string, number>();
+  let lastOldestUnsweptAgeMs = 0;
 
-  async function unblock(row: BlockedRow, dead: DeadReason[], at: Date): Promise<boolean> {
+  async function unblock(
+    row: BlockedRow,
+    dead: DeadReason[],
+    at: Date,
+    isBareBlock: boolean = false,
+  ): Promise<boolean> {
     const services = await loadStaleBlockServices();
     const publications: ActivityPublication[] = [];
     const actions: IssuePostCommitAction[] = [];
     const svc = services.issueService(deps.db);
-    const body = buildStaleBlockComment({
-      identifier: row.identifier,
-      reasons: dead.map((reason) => ({ label: reason.label, why: reason.why })),
-      at,
-    });
+    let effectiveTargetStatus: "in_progress" | "todo" = isBareBlock ? "todo" : "in_progress";
 
+    const txStartedAtMs = Date.now();
     const done = await deps.db.transaction(async (tx) => {
+      // myrmidon(1.6.6 OPE-9074): the issue row is locked FOR UPDATE below, so
+      // every write in here must go through `tx`. A write through the root
+      // handle queues behind our own lock and the transaction sits idle in
+      // transaction until the database kills it. Bound the damage.
+      await tx.execute(sql`set local idle_in_transaction_session_timeout = '15s'`);
       const locked = await tx
         .select({
           id: issues.id,
@@ -251,6 +424,7 @@ export function createStaleBlockSweep(deps: StaleBlockSweepDeps) {
           title: issues.title,
           status: issues.status,
           unblockDescriptor: issues.unblockDescriptor,
+          updatedAt: issues.updatedAt,
         })
         .from(issues)
         .where(and(eq(issues.id, row.id), eq(issues.companyId, row.companyId)))
@@ -263,7 +437,11 @@ export function createStaleBlockSweep(deps: StaleBlockSweepDeps) {
       // Re-judge under the lock on fresh reads, so a blocker that closed and
       // re-opened, or a due date that got moved, is respected.
       const rejudged = await judgeReasons({ db: tx as unknown as Db, deps, row: locked, now: at });
-      if (rejudged.liveCount > 0 || rejudged.dead.length === 0) return false;
+      if (rejudged.liveCount > 0) return false;
+      const lockedIsBareBlock = rejudged.reasons.length === 0;
+      if (!lockedIsBareBlock && rejudged.dead.length === 0) return false;
+
+      effectiveTargetStatus = lockedIsBareBlock ? "todo" : "in_progress";
 
       const txSvc = services.issueService(tx as unknown as Db);
       const remaining = await blockedByEdgesFor(tx as unknown as Db, locked.companyId, locked.id);
@@ -276,18 +454,54 @@ export function createStaleBlockSweep(deps: StaleBlockSweepDeps) {
       // re-judging) keeps the task blocked and this pass steps away.
       const kept = remaining.filter((blockerIssueId) => !deadIds.has(blockerIssueId));
       if (kept.length > 0 && rejudged.liveCount > 0) return false;
+
+      const body = buildStaleBlockComment({
+        identifier: locked.identifier,
+        reasons: rejudged.dead.map((reason) => ({ label: reason.label, why: reason.why })),
+        at,
+        targetStatus: effectiveTargetStatus,
+      });
       const comment = await txSvc.addComment(locked.id, body, { runId: null }, { authorType: "system" }, tx);
+      const updatePayload: Partial<typeof issues.$inferInsert> & { blockedByIssueIds?: string[] } = {
+        status: effectiveTargetStatus,
+        blockedByIssueIds: kept,
+      };
+      if (lockedIsBareBlock) {
+        updatePayload.assigneeAgentId = null;
+        updatePayload.assigneeUserId = null;
+      }
       const updated = await txSvc.update(
         locked.id,
-        {
-          status: "in_progress",
-          blockedByIssueIds: kept,
-        },
+        updatePayload,
         tx,
         publications,
         actions,
       );
       if (!updated) return false;
+      // myrmidon(STALE-BLOCK): the sweep's own marker row (above) is not an
+      // `issue.updated` status move, so BLOCKED-LOOP's history reader would
+      // never see this exit from `blocked`. Record the same transition in the
+      // route's `changes.status` shape ({ from, to }) that
+      // `toBlockedLoopEvent` reads, so the limiter sees the sweep-written
+      // unblock exactly like a board-driven one. Actor stays `system`: the
+      // limiter counts only agent `entered_blocked` events toward a streak, so
+      // this row is visible as a `left_blocked` step without framing anyone.
+      await deps.logActivity?.({
+        companyId: locked.companyId,
+        actorType: "system",
+        actorId: STALE_BLOCK_ACTIVITY_ACTOR,
+        action: "issue.updated",
+        entityType: "issue",
+        entityId: locked.id,
+        issueId: locked.id,
+        details: {
+          identifier: locked.identifier ?? null,
+          source: "stale_block_sweep",
+          changes: {
+            status: { from: "blocked", to: effectiveTargetStatus },
+          },
+        },
+      }, tx as unknown as Db, publications);
       await deps.logActivity?.({
         companyId: locked.companyId,
         actorType: "system",
@@ -299,6 +513,7 @@ export function createStaleBlockSweep(deps: StaleBlockSweepDeps) {
         details: {
           identifier: locked.identifier ?? null,
           previousStatus: "blocked",
+          targetStatus: effectiveTargetStatus,
           deadReasons: rejudged.dead.map((reason) => ({
             kind: reason.reason.kind,
             ref: reason.reason.issueId ?? reason.reason.eventKey ?? reason.reason.dueAt ?? null,
@@ -306,10 +521,17 @@ export function createStaleBlockSweep(deps: StaleBlockSweepDeps) {
           })),
           commentId: comment.id,
         },
-      });
+      }, tx as unknown as Db, publications);
       void svc;
       return true;
     });
+    const txElapsedMs = Date.now() - txStartedAtMs;
+    if (txElapsedMs > STALE_BLOCK_TX_WARN_MS) {
+      logger.warn(
+        { path: "stale_block_sweep.unblock", issueId: row.id, elapsedMs: txElapsedMs },
+        "stale block sweep transaction held longer than expected",
+      );
+    }
     if (!done) return false;
     for (const publication of publications) publishActivity(publication);
     await services.executeIssuePostCommitActions(deps.db, actions);
@@ -320,50 +542,94 @@ export function createStaleBlockSweep(deps: StaleBlockSweepDeps) {
       companyId: row.companyId,
       identifier: row.identifier,
       title: row.title,
-      reasonTexts: dead.map((reason) => describeStaleBlockReason(reason.why)),
+      reasonTexts: effectiveTargetStatus === "todo"
+        ? ["blocked without a reason"]
+        : dead.map((reason) => describeStaleBlockReason(reason.why)),
       liftedAt: at.toISOString(),
+      targetStatus: effectiveTargetStatus,
     };
     recordStaleBlockSignal(signal, at);
     return true;
   }
 
   async function runPass(settings: StaleBlockSettings, at: Date): Promise<StaleBlockSweepResult> {
-    const rows = await blockedCandidates(deps.db, settings.pageSize);
-    const result: StaleBlockSweepResult = { ...EMPTY_RESULT, scanned: rows.length };
+    const { maxAgeMs, oldestIssueId, oldestIdentifier } = await computeOldestUnsweptBlockedTaskAgeMs(
+      deps.db,
+      at,
+      lastSweptAtByIssueId,
+    );
+    lastOldestUnsweptAgeMs = maxAgeMs;
+    recordStaleBlockOldestUnsweptAge(maxAgeMs);
+
+    const starvationAlert = maxAgeMs > STALE_BLOCK_UNSWEPT_ALERT_THRESHOLD_MS;
+    if (starvationAlert) {
+      logger.warn(
+        {
+          path: "stale_block_sweep.starvation_alert",
+          oldestUnsweptAgeMs: maxAgeMs,
+          thresholdMs: STALE_BLOCK_UNSWEPT_ALERT_THRESHOLD_MS,
+          issueId: oldestIssueId,
+          identifier: oldestIdentifier,
+        },
+        "stale block sweep starvation alert: oldest unswept blocked task exceeded 1 hour threshold",
+      );
+    }
+
+    const { rows, nextCursor } = await blockedCandidates(deps.db, settings.pageSize, cursor);
+    cursor = nextCursor;
+
+    const result: StaleBlockSweepResult = {
+      ...EMPTY_RESULT,
+      scanned: rows.length,
+      oldestUnsweptAgeMs: maxAgeMs,
+      starvationAlert,
+    };
     if (rows.length === 0) return result;
 
     for (const row of rows) {
       try {
         if (deps.isUnderMaintenance && await deps.isUnderMaintenance(deps.db)) {
           result.skippedUnknown += 1;
+          lastSweptAtByIssueId.set(row.id, at.getTime());
           continue;
         }
         const judged = await judgeReasons({ db: deps.db, deps, row, now: at });
-        if (judged.reasons.length === 0) {
-          // No recognizable reason at all: part A will make one mandatory;
-          // until then this sweep does not guess.
-          result.skippedUnknown += 1;
-          continue;
-        }
         if (judged.liveCount > 0) {
           result.skippedLive += 1;
+          lastSweptAtByIssueId.set(row.id, at.getTime());
           continue;
         }
-        const done = await unblock(row, judged.dead, at);
+        const isBareBlock = judged.reasons.length === 0;
+        if (!isBareBlock && judged.dead.length === 0) {
+          result.skippedUnknown += 1;
+          lastSweptAtByIssueId.set(row.id, at.getTime());
+          continue;
+        }
+        const done = await unblock(row, judged.dead, at, isBareBlock);
         if (done) {
           result.unblocked += 1;
-          logger.warn(
-            { issueId: row.id, identifier: row.identifier, dead: judged.dead.length },
-            "stale block sweep removed a dead block and returned the task to in_progress",
-          );
+          lastSweptAtByIssueId.delete(row.id);
+          if (isBareBlock) {
+            logger.warn(
+              { issueId: row.id, identifier: row.identifier },
+              "stale block sweep removed a bare block without reason and returned the task to todo without assignee",
+            );
+          } else {
+            logger.warn(
+              { issueId: row.id, identifier: row.identifier, dead: judged.dead.length },
+              "stale block sweep removed a dead block and returned the task to in_progress",
+            );
+          }
         } else {
           result.skippedLive += 1;
+          lastSweptAtByIssueId.set(row.id, at.getTime());
         }
       } catch {
         // Log a constant errorKind only: the exception can carry a credential
         // in its message, code, cause or stack. The task stays blocked for a
         // later tick.
         result.failed += 1;
+        lastSweptAtByIssueId.set(row.id, at.getTime());
         logger.warn(
           { errorKind: "sweep_failed", issueId: row.id },
           "stale block sweep failed for one task",
@@ -380,14 +646,36 @@ export function createStaleBlockSweep(deps: StaleBlockSweepDeps) {
     resetForTest(): void {
       lastSweepAtMs = 0;
       inFlight = null;
+      cursor = null;
+      lastSweptAtByIssueId.clear();
+      lastOldestUnsweptAgeMs = 0;
+      recordStaleBlockOldestUnsweptAge(0);
+    },
+    cursor(): KeysetCursor | null {
+      return cursor;
+    },
+    oldestUnsweptAgeMs(): number {
+      return lastOldestUnsweptAgeMs;
     },
     async sweep(options?: { force?: boolean; at?: Date }): Promise<StaleBlockSweepResult> {
       const settings = this.settings();
-      if (!settings.enabled) return { ...EMPTY_RESULT, skippedPass: true };
+      if (!settings.enabled) {
+        return {
+          ...EMPTY_RESULT,
+          skippedPass: true,
+          oldestUnsweptAgeMs: lastOldestUnsweptAgeMs,
+          starvationAlert: lastOldestUnsweptAgeMs > STALE_BLOCK_UNSWEPT_ALERT_THRESHOLD_MS,
+        };
+      }
       const at = options?.at ?? now();
       if (inFlight) return inFlight;
       if (!options?.force && at.getTime() - lastSweepAtMs < settings.intervalMs) {
-        return { ...EMPTY_RESULT, skippedPass: true };
+        return {
+          ...EMPTY_RESULT,
+          skippedPass: true,
+          oldestUnsweptAgeMs: lastOldestUnsweptAgeMs,
+          starvationAlert: lastOldestUnsweptAgeMs > STALE_BLOCK_UNSWEPT_ALERT_THRESHOLD_MS,
+        };
       }
       lastSweepAtMs = at.getTime();
       inFlight = runPass(settings, at).finally(() => {

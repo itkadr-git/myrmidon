@@ -228,10 +228,10 @@ describe("OPE-8137: board/fleetd path operates without /host or docker.sock", ()
       server.close();
     }
 
-    // Protocol validation: rejects unix sockets, https, file URLs
-    expect(() => parseFleetdEndpoint("unix:///var/run/docker.sock")).toThrow(/must be http:\/\//);
-    expect(() => parseFleetdEndpoint("file:///host/dev")).toThrow(/must be http:\/\//);
-    expect(() => parseFleetdEndpoint("https://fleetd.example.com")).toThrow(/must be http:\/\//);
+    // Protocol validation: rejects unix sockets and file URLs; https (site-agent over TLS) is accepted
+    expect(() => parseFleetdEndpoint("unix:///var/run/docker.sock")).toThrow(/must be http:\/\/ or https:\/\//);
+    expect(() => parseFleetdEndpoint("file:///host/dev")).toThrow(/must be http:\/\/ or https:\/\//);
+    expect(parseFleetdEndpoint("https://fleetd.example.com").protocol).toBe("https:");
     expect(() => parseFleetdEndpoint("http://fleetd.example.com:0")).toThrow(/port is invalid/);
     expect(() => parseFleetdEndpoint("http://fleetd.example.com:99999")).toThrow();
   });
@@ -370,7 +370,7 @@ describe("OPE-8137: fleet routing completely isolates fleet-placed bots from loc
     const routed = fleetRoutingDriver(deps, () => routedAgent);
 
     await expect(routed.status("bot-a")).rejects.toThrow(
-      'container.host "non-existent-host" names no configured fleet host (check MYRMIDON_FLEET_HOSTS)',
+      'container.host "non-existent-host" names no configured fleet host (check MYRMIDON_FLEET_HOSTS or fleet sites registry)',
     );
     expect(localDriver.status).not.toHaveBeenCalled();
   });
@@ -393,6 +393,9 @@ describe("OPE-8137: fleet placement and host parsing boundaries", () => {
     expect(() => fleetGatewayApiBaseUrl("https://fleetd.internal:9100", 8080)).toThrow(
       /fleetd url must be http:\/\//,
     );
+    expect(
+      fleetGatewayApiBaseUrl("https://fleetd.internal:9100", 8080, { source: "registry" }),
+    ).toBe("http://fleetd.internal:8080");
   });
 
   it("parseFleetHosts safely parses entries and rejects non-http URLs", () => {
@@ -404,14 +407,14 @@ describe("OPE-8137: fleet placement and host parsing boundaries", () => {
       JSON.stringify([
         {
           name: "site-worker",
-          url: "http://site-worker.internal:9100",
+          url: "http://10.0.0.30:9100",
           tokenSecret: "site-token",
         },
       ]),
     );
     expect(parsed.get("site-worker")).toEqual({
       name: "site-worker",
-      url: "http://site-worker.internal:9100",
+      url: "http://10.0.0.30:9100",
       tokenSecret: "site-token",
     });
 

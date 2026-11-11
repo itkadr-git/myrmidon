@@ -5,7 +5,7 @@
 // to Drizzle. Every query is scoped by company.
 
 import { and, asc, eq } from "drizzle-orm";
-import { myrmidonFleetServers, type Db } from "@paperclipai/db";
+import { myrmidonFleetServers, type Db } from "@myrmidon/db";
 import type { FleetConsoleProtocol, FleetServerInput, FleetServerView } from "./domain.js";
 
 export interface FleetServerStore {
@@ -30,6 +30,11 @@ function toView(row: FleetServerRow): FleetServerView {
     passwordSecretKey: row.passwordSecretKey,
     description: row.description,
     enabled: row.enabled,
+    role: row.role,
+    onboardState: row.onboardState,
+    hostKeyFingerprint: row.hostKeyFingerprint,
+    lastCheckAt: row.lastCheckAt ? row.lastCheckAt.toISOString() : null,
+    lastCheckOk: row.lastCheckOk,
     createdAt: row.createdAt.toISOString(),
     updatedAt: row.updatedAt.toISOString(),
   };

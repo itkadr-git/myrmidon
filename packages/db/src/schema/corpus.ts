@@ -18,7 +18,7 @@ import {
 import { companies } from "./companies.js";
 
 // Dialect-only column types. They appear ONLY here and in the store layer of
-// @paperclipai/corpus; domain and ports never see them.
+// @myrmidon/corpus; domain and ports never see them.
 const tsvector = customType<{ data: string; driverData: string }>({
   dataType() {
     return "tsvector";
@@ -48,7 +48,7 @@ export const corpusDatasets = pgTable(
       .references(() => companies.id, { onDelete: "cascade" }),
     name: text("name").notNull(),
     description: text("description"),
-    embeddingModel: text("embedding_model").notNull().default("dashscope-text-embedding-v4"),
+    embeddingModel: text("embedding_model").notNull().default("corpus-embed-pplx-0.6b"),
     embeddingDimensions: integer("embedding_dimensions").notNull().default(1024),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
@@ -157,7 +157,7 @@ export const corpusSettings = pgTable(
     defaultEmbedderBaseUrl: text("default_embedder_base_url"),
     defaultEmbeddingModel: text("default_embedding_model")
       .notNull()
-      .default("dashscope-text-embedding-v4"),
+      .default("corpus-embed-pplx-0.6b"),
     defaultParserUrl: text("default_parser_url"),
     defaultParserVersion: text("default_parser_version").notNull().default("v1"),
     blobStoreRoot: text("blob_store_root"),

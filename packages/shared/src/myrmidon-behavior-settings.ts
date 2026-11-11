@@ -1,4 +1,10 @@
 import { z } from "zod";
+import {
+  behaviorSettingRegistry,
+  BehaviorSettingRegistry,
+} from "./myrmidon-behavior-settings-registry.js";
+
+export { behaviorSettingRegistry, BehaviorSettingRegistry };
 
 /**
  * Generic behavior settings registry (myrmidon 1.7, SETTINGS-TO-UI A).
@@ -50,36 +56,256 @@ export interface BehaviorSettingDef<T = unknown> {
   valueType: SettingValueType;
   /** Validation function for the value */
   validate: SettingValidator<T>;
+  /** Human-readable description of the setting */
+  description?: string;
 }
 
-/** Registry of all behavior settings */
-export class BehaviorSettingRegistry {
-  private settings: Map<string, BehaviorSettingDef> = new Map();
 
-  register<T>(definition: BehaviorSettingDef<T>): void {
-    if (this.settings.has(definition.key)) {
-      throw new Error(`Setting with key '${definition.key}' is already registered`);
-    }
-    this.settings.set(definition.key, definition);
-  }
 
-  get(key: string): BehaviorSettingDef | undefined {
-    return this.settings.get(key);
-  }
 
-  getAll(): BehaviorSettingDef[] {
-    return Array.from(this.settings.values());
-  }
+// Runs-queue definitions are registered by the shared barrel after the registry
+// module has initialized, avoiding a circular-import temporal dead zone.
 
-  getKeys(): string[] {
-    return Array.from(this.settings.keys());
+const positiveInteger = (allowZero = false) => (value: unknown): number | null => {
+  const num = typeof value === "number" ? value : Number(value);
+  return Number.isSafeInteger(num) && (allowZero ? num >= 0 : num > 0) ? num : null;
+};
+const nonEmptyString = (value: unknown): string | null =>
+  typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
+const optionalString = (value: unknown): string | null =>
+  typeof value === "string" ? value.trim() : null;
+const booleanSetting = (value: unknown): boolean | null => {
+  if (typeof value === "boolean") return value;
+  if (typeof value === "string") {
+    const raw = value.trim().toLowerCase();
+    if (["true", "1", "yes", "on"].includes(raw)) return true;
+    if (["false", "0", "no", "off"].includes(raw)) return false;
   }
+  return null;
+};
+
+// SETTINGS-TO-UI D: behavior settings that are safe to edit at instance scope.
+// Service addresses and secret names remain deployment/secret-store owned.
+// Live channel/model definitions required by current runtime consumers.
+const dSettings: Array<{
+  key: string;
+  envName: string;
+  default: unknown;
+  section: "channels" | "models" | "foraging" | "system";
+  validate: (value: unknown) => unknown | null;
+}> = [
+  { key: "telegramDmConversations", envName: "MYRMIDON_TELEGRAM_DM_CONVERSATIONS", default: "", section: "channels", validate: (value) => typeof value === "string" ? value : null },
+  { key: "telegramDmStatus", envName: "MYRMIDON_TELEGRAM_DM_STATUS", default: false, section: "channels", validate: booleanSetting },
+  { key: "telegramSplitMaxParts", envName: "MYRMIDON_TELEGRAM_SPLIT_MAX_PARTS", default: 0, section: "channels", validate: positiveInteger(true) },
+  { key: "telegramFileLimitBytes", envName: "MYRMIDON_TELEGRAM_FILE_LIMIT_BYTES", default: 10 * 1024 * 1024, section: "channels", validate: positiveInteger() },
+  { key: "paperclipAttachmentMaxBytes", envName: "PAPERCLIP_ATTACHMENT_MAX_BYTES", default: 10 * 1024 * 1024, section: "channels", validate: positiveInteger() },
+  { key: "chatCrossChannelMessages", envName: "MYRMIDON_CHAT_CROSS_CHANNEL_MESSAGES", default: 12, section: "channels", validate: positiveInteger(true) },
+  { key: "chatCrossChannelMessageChars", envName: "MYRMIDON_CHAT_CROSS_CHANNEL_MESSAGE_CHARS", default: 600, section: "channels", validate: positiveInteger(true) },
+  { key: "chatCrossChannelTotalChars", envName: "MYRMIDON_CHAT_CROSS_CHANNEL_TOTAL_CHARS", default: 4000, section: "channels", validate: positiveInteger(true) },
+  { key: "chatCrossChannelLookbackHours", envName: "MYRMIDON_CHAT_CROSS_CHANNEL_LOOKBACK_HOURS", default: 168, section: "channels", validate: positiveInteger(true) },
+  { key: "chatReconcileIntervalMs", envName: "MYRMIDON_CHAT_RECONCILE_INTERVAL_MS", default: null, section: "channels", validate: (value) => value === null ? null : positiveInteger()(value) },
+  { key: "litellmCostIntervalSec", envName: "MYRMIDON_LITELLM_COST_INTERVAL_SEC", default: 300, section: "models", validate: positiveInteger() },
+  { key: "botCompressionThresholdTokens", envName: "MYRMIDON_BOT_COMPRESSION_THRESHOLD_TOKENS", default: 100000, section: "models", validate: positiveInteger(true) },
+  { key: "botModelContextLengths", envName: "MYRMIDON_BOT_MODEL_CONTEXT_LENGTH", default: {}, section: "models", validate: (value) => typeof value === "object" && value !== null ? value : null },
+  { key: "botAuxTitleModel", envName: "MYRMIDON_BOT_AUX_TITLE_MODEL", default: null, section: "models", validate: optionalString },
+  { key: "botAuxCompressionModel", envName: "MYRMIDON_BOT_AUX_COMPRESSION_MODEL", default: null, section: "models", validate: optionalString },
+  { key: "botHelperModel", envName: "MYRMIDON_BOT_HELPER_MODEL", default: "", section: "models", validate: nonEmptyString },
+  { key: "ctoChatModel", envName: "MYRMIDON_CTO_CHAT_MODEL", default: "dashscope-qwen-flash", section: "models", validate: nonEmptyString },
+  { key: "ctoChatTimeoutSec", envName: "MYRMIDON_CTO_CHAT_TIMEOUT_SEC", default: 90, section: "models", validate: positiveInteger() },
+  { key: "ctoChatMaxTasks", envName: "MYRMIDON_CTO_CHAT_MAX_TASKS", default: 8, section: "models", validate: positiveInteger() },
+  // myrmidon(OPE-12124): master switches of the 1.6 features, movable from
+  // env to "Тонкие настройки". Kill-switch semantics: the default is ON so an
+  // instance that never declares anything keeps its current behaviour (the
+  // feature's own contour settings decide), while a saved UI value turns the
+  // feature off without a restart and the env variable stays the forced
+  // override (the contract of resolveSetting: ui → env → default).
+  { key: "foragingEnabled", envName: "MYRMIDON_FORAGING_ENABLED", default: true, section: "foraging", validate: booleanSetting },
+  { key: "baselineEnabled", envName: "MYRMIDON_BASELINE_ENABLED", default: true, section: "system", validate: booleanSetting },
+  { key: "ctoChatEnabled", envName: "MYRMIDON_CTO_CHAT_ENABLED", default: true, section: "models", validate: booleanSetting },
+  { key: "evalsEnabled", envName: "MYRMIDON_EVALS_ENABLED", default: true, section: "models", validate: booleanSetting },
+  { key: "evalsModel", envName: "MYRMIDON_EVALS_MODEL", default: "", section: "models", validate: nonEmptyString },
+  { key: "evalsTimeoutSec", envName: "MYRMIDON_EVALS_TIMEOUT_SEC", default: 120, section: "models", validate: positiveInteger() },
+  { key: "evalsLangfuseExport", envName: "MYRMIDON_EVALS_LANGFUSE", default: false, section: "models", validate: booleanSetting },
+  // myrmidon(1.7 SWEEP-2, OPE-12619): the access-hub surface switch and the
+  // ssh-operation timeout, movable from env to "Тонкие настройки" by the same
+  // OPE-12124 rule: an explicit env value stays the forced override, otherwise
+  // a saved UI value applies without a restart, otherwise the default. The
+  // section stays off by default; the ssh admin-key secret name and host
+  // addresses remain env/secret-store owned (never editable here).
+  { key: "accessHubEnabled", envName: "MYRMIDON_ACCESS_HUB_ENABLED", default: false, section: "system", validate: booleanSetting },
+  { key: "accessHubSshTimeoutMs", envName: "MYRMIDON_ACCESS_HUB_SSH_TIMEOUT_MS", default: 30_000, section: "system", validate: (value) => validateInteger(value, 1_000, 300_000) },
+  { key: "ocrBackend", envName: "MYRMIDON_OCR_BACKEND", default: "ragflow", section: "models", validate: (value) => value === "ragflow" || value === "litellm" ? value : null },
+  { key: "ocrModel", envName: "MYRMIDON_OCR_MODEL", default: "", section: "models", validate: nonEmptyString },
+  { key: "ocrMaxBytes", envName: "MYRMIDON_OCR_MAX_BYTES", default: 32 * 1024 * 1024, section: "models", validate: positiveInteger() },
+  { key: "ocrMaxPages", envName: "MYRMIDON_OCR_MAX_PAGES", default: 500, section: "models", validate: positiveInteger() },
+  { key: "ocrMaxChars", envName: "MYRMIDON_OCR_MAX_CHARS", default: 2_000_000, section: "models", validate: positiveInteger() },
+  { key: "ocrTimeoutSec", envName: "MYRMIDON_OCR_TIMEOUT_SEC", default: 120, section: "models", validate: positiveInteger() },
+  // myrmidon(OPE-12628): lesson-distill sweep settings in "Тонкие настройки"
+  { key: "lessonDistillEnabled", envName: "MYRMIDON_LESSON_DISTILL_ENABLED", default: false, section: "system", validate: booleanSetting },
+  { key: "lessonDistillWindowHours", envName: "MYRMIDON_LESSON_DISTILL_WINDOW_HOURS", default: 24, section: "system", validate: positiveInteger() },
+  { key: "lessonDistillRepeatThreshold", envName: "MYRMIDON_LESSON_DISTILL_REPEAT_THRESHOLD", default: 2, section: "system", validate: positiveInteger() },
+  { key: "lessonDistillPeriodMinutes", envName: "MYRMIDON_LESSON_DISTILL_PERIOD_MINUTES", default: 60, section: "system", validate: positiveInteger() },
+];
+for (const setting of dSettings) {
+  behaviorSettingRegistry.register({
+    key: setting.key,
+    envName: setting.envName,
+    default: setting.default,
+    scope: "instance",
+    section: setting.section,
+    valueType:
+      typeof setting.default === "boolean"
+        ? "boolean"
+        : typeof setting.default === "number"
+          ? "number"
+          : setting.default !== null && typeof setting.default === "object"
+            ? "json"
+            : "string",
+    validate: setting.validate,
+  });
 }
 
-/** Global registry instance */
-export const behaviorSettingRegistry = new BehaviorSettingRegistry();
+export function validateBoolean(value: unknown): boolean | null {
+  if (typeof value === "boolean") return value;
+  if (typeof value === "string") {
+    const lower = value.trim().toLowerCase();
+    if (["true", "1", "yes", "on"].includes(lower)) return true;
+    if (["false", "0", "no", "off"].includes(lower)) return false;
+  }
+  return null;
+}
 
-// Example settings for self-validation - these will be removed in production
+export function validateInteger(value: unknown, min?: number, max?: number): number | null {
+  const num = typeof value === "number" ? value : Number(value);
+  if (!Number.isInteger(num)) return null;
+  if (min !== undefined && num < min) return null;
+  if (max !== undefined && num > max) return null;
+  return num;
+}
+
+export function validateNumber(value: unknown, min?: number, max?: number): number | null {
+  const num = typeof value === "number" ? value : Number(value);
+  if (typeof num !== "number" || Number.isNaN(num)) return null;
+  if (min !== undefined && num < min) return null;
+  if (max !== undefined && num > max) return null;
+  return num;
+}
+
+export function validateString(value: unknown, allowed?: readonly string[]): string | null {
+  if (typeof value !== "string") return null;
+  const trimmed = value.trim();
+  if (allowed && !allowed.includes(trimmed)) return null;
+  return trimmed;
+}
+
+// Development & Runtime Base Settings
+behaviorSettingRegistry.register({
+  key: "bot_egress_mode",
+  envName: "MYRMIDON_BOT_EGRESS_MODE",
+  default: "off",
+  scope: "instance",
+  section: "guardrails",
+  valueType: "string",
+  validate: (value: unknown): "off" | "log" | null =>
+    typeof value === "string" && ["off", "log"].includes(value.trim().toLowerCase())
+      ? (value.trim().toLowerCase() as "off" | "log")
+      : null,
+});
+
+const nonNegativeInteger = (value: unknown): number | null => {
+  const parsed = typeof value === "number" ? value : Number(value);
+  return Number.isSafeInteger(parsed) && parsed >= 0 ? parsed : null;
+};
+const positiveIntegerValue = (value: unknown): number | null => {
+  const parsed = typeof value === "number" ? value : Number(value);
+  return Number.isSafeInteger(parsed) && parsed > 0 ? parsed : null;
+};
+const textList = (value: unknown): string[] | null => {
+  const items = Array.isArray(value) ? value : typeof value === "string" ? value.split(",") : null;
+  if (!items || !items.every((item) => typeof item === "string" && item.trim().length > 0)) return null;
+  return [...new Set(items.map((item) => item.trim()))];
+};
+const environmentNameList = (value: unknown): string[] | null => {
+  const names = textList(value);
+  return names && names.every((name) => /^[A-Za-z_][A-Za-z0-9_]*$/.test(name)) ? names : null;
+};
+const booleanValue = (value: unknown): boolean | null => {
+  if (typeof value === "boolean") return value;
+  if (typeof value !== "string") return null;
+  const normalized = value.toLowerCase();
+  if (["true", "1", "yes", "on"].includes(normalized)) return true;
+  if (["false", "0", "no", "off"].includes(normalized)) return false;
+  return null;
+};
+const objectArray = (value: unknown): Record<string, unknown>[] | null => {
+  let parsed = value;
+  if (typeof value === "string") {
+    try { parsed = JSON.parse(value); } catch { return null; }
+  }
+  return Array.isArray(parsed) && parsed.every((item) => item !== null && typeof item === "object" && !Array.isArray(item))
+    ? parsed as Record<string, unknown>[] : null;
+};
+
+for (const [key, envName, fallback, validate] of [
+  ["tool_breaker_failures", "MYRMIDON_TOOL_BREAKER_FAILURES", 3, nonNegativeInteger],
+  ["tool_breaker_cooldown_ms", "MYRMIDON_TOOL_BREAKER_COOLDOWN_MS", 60_000, positiveIntegerValue],
+  ["tool_breaker_window_ms", "MYRMIDON_TOOL_BREAKER_WINDOW_MS", 600_000, positiveIntegerValue],
+  ["tool_timeout_max_ms", "MYRMIDON_TOOL_TIMEOUT_MAX_MS", 180_000, positiveIntegerValue],
+  ["tool_timeout_slow_ms", "MYRMIDON_TOOL_TIMEOUT_SLOW_MS", 45_000, positiveIntegerValue],
+] as const) {
+  behaviorSettingRegistry.register({
+    key,
+    envName,
+    default: fallback,
+    scope: "instance",
+    section: "guardrails",
+    valueType: "number",
+    validate,
+  });
+}
+
+for (const [key, envName, fallback, validate] of [
+  ["run_env_allow", "MYRMIDON_RUN_ENV_ALLOW", [] as string[], environmentNameList],
+  ["bot_image_allowlist", "MYRMIDON_BOT_IMAGE_ALLOWLIST", [] as string[], textList],
+  ["bot_mount_sources", "MYRMIDON_BOT_MOUNT_SOURCES", [] as string[], textList],
+  ["bot_container_github_env_allowlist", "MYRMIDON_BOT_CONTAINER_GITHUB_ENV_ALLOWLIST", [] as string[], environmentNameList],
+  ["bot_hindsight_allowed_banks", "MYRMIDON_BOT_HINDSIGHT_ALLOWED_BANKS", [] as string[], textList],
+] as const) {
+  behaviorSettingRegistry.register({ key, envName, default: fallback, scope: "instance", section: key === "run_env_allow" ? "guardrails" : "fleet", valueType: "json", validate });
+}
+for (const [key, envName, fallback, validate] of [
+  ["bot_reconcile_interval_sec", "MYRMIDON_BOT_RECONCILE_INTERVAL_SEC", 60, positiveIntegerValue],
+  ["browser_idle_timeout_min", "MYRMIDON_BROWSER_IDLE_TIMEOUT_MIN", 30, positiveIntegerValue],
+  ["browser_max_duration_min", "MYRMIDON_BROWSER_MAX_DURATION_MIN", 120, positiveIntegerValue],
+  ["stack_check_interval_sec", "MYRMIDON_STACK_CHECK_INTERVAL_SEC", 0, nonNegativeInteger],
+  ["baseline_interval_sec", "MYRMIDON_BASELINE_INTERVAL_SEC", 0, (value: unknown) => value === 0 || value === "0" ? 0 : typeof value === "number" && Number.isSafeInteger(value) && value >= 60 && value <= 604800 ? value : typeof value === "string" && /^(?:[1-9][0-9]*)$/.test(value.trim()) && Number(value.trim()) >= 60 && Number(value.trim()) <= 604800 ? Number(value.trim()) : null],
+  ["input_limit_chars_per_token", "MYRMIDON_INPUT_LIMIT_CHARS_PER_TOKEN", 3, (value: unknown) => {
+    const num = typeof value === "number" ? value : typeof value === "string" && value.trim().length > 0 ? Number(value.trim()) : null;
+    return typeof num === "number" && Number.isFinite(num) && num >= 1 && num <= 10 ? num : null;
+  }],
+  ["input_limit_safety", "MYRMIDON_INPUT_LIMIT_SAFETY", 0.9, (value: unknown) => {
+    const num = typeof value === "number" ? value : typeof value === "string" && value.trim().length > 0 ? Number(value.trim()) : null;
+    return typeof num === "number" && Number.isFinite(num) && num > 0 && num <= 1 ? num : null;
+  }],
+] as const) {
+  behaviorSettingRegistry.register({ key, envName, default: fallback, scope: "instance", section: "fleet", valueType: "number", validate });
+}
+for (const [key, envName] of [
+  ["bot_mcp_servers", "MYRMIDON_BOT_MCP_SERVERS"],
+  ["browser_fleet", "MYRMIDON_BROWSER_FLEET"],
+] as const) {
+  behaviorSettingRegistry.register({
+    key, envName, default: [] as Record<string, unknown>[],
+    scope: "instance", section: "fleet", valueType: "json", validate: objectArray,
+  });
+}
+for (const [key, envName] of [
+  ["bot_containers", "MYRMIDON_BOT_CONTAINERS"],
+  ["bot_yolo", "MYRMIDON_BOT_YOLO"],
+] as const) {
+  behaviorSettingRegistry.register({ key, envName, default: false, scope: "instance", section: "fleet", valueType: "boolean", validate: booleanValue });
+}
+behaviorSettingRegistry.register({ key: "input_limit_precheck", envName: "MYRMIDON_INPUT_LIMIT_PRECHECK", default: true, scope: "instance", section: "fleet", valueType: "boolean", validate: booleanValue });
 behaviorSettingRegistry.register({
   key: "debug_mode",
   envName: "MYRMIDON_DEBUG_MODE",
@@ -87,15 +313,8 @@ behaviorSettingRegistry.register({
   scope: "instance",
   section: "development",
   valueType: "boolean",
-  validate: (value: unknown): boolean | null => {
-    if (typeof value === "boolean") return value;
-    if (typeof value === "string") {
-      const lower = value.toLowerCase();
-      if (["true", "1", "yes", "on"].includes(lower)) return true;
-      if (["false", "0", "no", "off"].includes(lower)) return false;
-    }
-    return null;
-  },
+  description: "Debug mode for verbose diagnostics and internal logs",
+  validate: validateBoolean,
 });
 
 behaviorSettingRegistry.register({
@@ -105,11 +324,8 @@ behaviorSettingRegistry.register({
   scope: "instance",
   section: "performance",
   valueType: "number",
-  validate: (value: unknown): number | null => {
-    const num = typeof value === "number" ? value : Number(value);
-    if (Number.isInteger(num) && num > 0) return num;
-    return null;
-  },
+  description: "Maximum number of concurrent agents executing tasks",
+  validate: (v) => validateInteger(v, 1),
 });
 
 behaviorSettingRegistry.register({
@@ -119,9 +335,475 @@ behaviorSettingRegistry.register({
   scope: "instance",
   section: "runtime",
   valueType: "number",
-  validate: (value: unknown): number | null => {
-    const num = typeof value === "number" ? value : Number(value);
-    if (Number.isInteger(num) && num > 0) return num;
+  description: "Default timeout in seconds for agent tool executions",
+  validate: (v) => validateInteger(v, 1),
+});
+
+// OPE-8146 Registry: Kill-switches & Safety Guards (S-size portable)
+behaviorSettingRegistry.register({
+  key: "autonomy_level",
+  envName: "MYRMIDON_AUTONOMY_LEVEL",
+  default: "full",
+  scope: "instance",
+  section: "kill_switches",
+  valueType: "string",
+  description: "Global autonomy level: none, lead_only, full",
+  validate: (v) => validateString(v, ["none", "lead_only", "full"]),
+});
+
+behaviorSettingRegistry.register({
+  key: "run_stop_signal_mode",
+  envName: "MYRMIDON_RUN_STOP_SIGNAL_MODE",
+  default: "graceful",
+  scope: "instance",
+  section: "kill_switches",
+  valueType: "string",
+  description: "Run termination signal mode: disabled, graceful, immediate",
+  validate: (v) => validateString(v, ["disabled", "graceful", "immediate"]),
+});
+
+behaviorSettingRegistry.register({
+  key: "pause_drain_enabled",
+  envName: "MYRMIDON_PAUSE_DRAIN_ENABLED",
+  default: true,
+  scope: "instance",
+  section: "kill_switches",
+  valueType: "boolean",
+  description: "Graceful drain of active runs when pause is requested",
+  validate: validateBoolean,
+});
+
+behaviorSettingRegistry.register({
+  key: "pause_drain_grace_sec",
+  envName: "MYRMIDON_PAUSE_DRAIN_GRACE_SEC",
+  default: 120,
+  scope: "instance",
+  section: "kill_switches",
+  valueType: "number",
+  description: "Grace period in seconds before active runs are terminated on drain",
+  validate: (v) => validateInteger(v, 0),
+});
+
+behaviorSettingRegistry.register({
+  key: "pause_resume_wake_batch_size",
+  envName: "MYRMIDON_PAUSE_RESUME_WAKE_BATCH_SIZE",
+  default: 5,
+  scope: "instance",
+  section: "kill_switches",
+  valueType: "number",
+  description: "Batch size for staggered wakes when resuming from pause",
+  validate: (v) => validateInteger(v, 1),
+});
+
+behaviorSettingRegistry.register({
+  key: "pause_resume_wake_batch_pause_ms",
+  envName: "MYRMIDON_PAUSE_RESUME_WAKE_BATCH_PAUSE_MS",
+  default: 1000,
+  scope: "instance",
+  section: "kill_switches",
+  valueType: "number",
+  description: "Pause in milliseconds between wake batches when resuming",
+  validate: (v) => validateInteger(v, 0),
+});
+
+behaviorSettingRegistry.register({
+  key: "stranded_autopolicy_enabled",
+  envName: "MYRMIDON_STRANDED_AUTOPOLICY_ENABLED",
+  default: true,
+  scope: "instance",
+  section: "escalation",
+  valueType: "boolean",
+  description: "Automated retry policy for stranded tasks before escalating to lead",
+  validate: validateBoolean,
+});
+
+behaviorSettingRegistry.register({
+  key: "stranded_autopolicy_retries_per_day",
+  envName: "MYRMIDON_STRANDED_AUTOPOLICY_RETRIES_PER_DAY",
+  default: 3,
+  scope: "instance",
+  section: "escalation",
+  valueType: "number",
+  description: "Maximum retries per day per stranded task before lead escalation",
+  validate: (v) => validateInteger(v, 1, 10),
+});
+
+behaviorSettingRegistry.register({
+  key: "write_lock_requires_live_run",
+  envName: "MYRMIDON_WRITE_LOCK_REQUIRES_LIVE_RUN",
+  default: true,
+  scope: "instance",
+  section: "concurrency",
+  valueType: "boolean",
+  description: "Require confirmed live run for issue write locks (409 on stale)",
+  validate: validateBoolean,
+});
+
+behaviorSettingRegistry.register({
+  key: "pause_guard_enabled",
+  envName: "MYRMIDON_PAUSE_GUARD_ENABLED",
+  default: true,
+  scope: "instance",
+  section: "pause_guard",
+  valueType: "boolean",
+  description: "Alert operator when an agent has remained paused for too long",
+  validate: validateBoolean,
+});
+
+behaviorSettingRegistry.register({
+  key: "pause_guard_threshold_days",
+  envName: "MYRMIDON_PAUSE_GUARD_THRESHOLD_DAYS",
+  default: 7,
+  scope: "instance",
+  section: "pause_guard",
+  valueType: "number",
+  description: "Days on pause before triggering pause guard alert",
+  validate: (v) => validateInteger(v, 1),
+});
+
+behaviorSettingRegistry.register({
+  key: "guardrail_injection_enabled",
+  envName: "MYRMIDON_GUARDRAIL_INJECTION_ENABLED",
+  default: true,
+  scope: "instance",
+  section: "guardrails",
+  valueType: "boolean",
+  description: "Analyze incoming queue prompts for prompt injection signals",
+  validate: validateBoolean,
+});
+
+behaviorSettingRegistry.register({
+  key: "guardrail_injection_action",
+  envName: "MYRMIDON_GUARDRAIL_INJECTION_ACTION",
+  default: "tag",
+  scope: "instance",
+  section: "guardrails",
+  valueType: "string",
+  description: "Action on detected prompt injection: tag or block",
+  validate: (v) => validateString(v, ["tag", "block"]),
+});
+
+behaviorSettingRegistry.register({
+  key: "blocked_loop_max_returns",
+  envName: "MYRMIDON_BLOCKED_LOOP_MAX_RETURNS",
+  default: 3,
+  scope: "instance",
+  section: "escalation",
+  valueType: "number",
+  description: "Maximum times an issue can return to blocked before alerting lead",
+  validate: (v) => validateInteger(v, 1, 10),
+});
+
+behaviorSettingRegistry.register({
+  key: "stale_block_enabled",
+  envName: "MYRMIDON_STALE_BLOCK_ENABLED",
+  default: true,
+  scope: "instance",
+  section: "escalation",
+  valueType: "boolean",
+  description: "Monitor issues that have remained blocked without updates",
+  validate: validateBoolean,
+});
+
+behaviorSettingRegistry.register({
+  key: "task_pr_sync_wake_guard",
+  envName: "MYRMIDON_TASK_PR_SYNC_WAKE_GUARD",
+  default: true,
+  scope: "instance",
+  section: "task_pr_sync",
+  valueType: "boolean",
+  description: "Prevent starting runs when all PRs for the task are already merged",
+  validate: validateBoolean,
+});
+
+// OPE-8146 Registry: Swarm, Caste & Scent (S-size portable)
+behaviorSettingRegistry.register({
+  key: "swarm_claim_enabled",
+  envName: "MYRMIDON_SWARM_CLAIM_ENABLED",
+  default: false,
+  scope: "instance",
+  section: "swarm",
+  valueType: "boolean",
+  description: "Autonomous task pickup and claim by swarm agents",
+  validate: validateBoolean,
+});
+
+behaviorSettingRegistry.register({
+  key: "swarm_lease_ttl_sec",
+  envName: "MYRMIDON_SWARM_LEASE_TTL_SEC",
+  default: 120,
+  scope: "instance",
+  section: "swarm",
+  valueType: "number",
+  description: "TTL in seconds for temporary task leases claimed by swarm",
+  validate: (v) => validateInteger(v, 1),
+});
+
+behaviorSettingRegistry.register({
+  key: "swarm_max_active_tasks",
+  envName: "MYRMIDON_SWARM_MAX_ACTIVE_TASKS",
+  default: 1,
+  scope: "instance",
+  section: "swarm",
+  valueType: "number",
+  description: "Maximum active concurrent claimed tasks per agent in swarm mode",
+  validate: (v) => validateInteger(v, 1, 5),
+});
+
+behaviorSettingRegistry.register({
+  key: "swarm_taskless_gate",
+  envName: "MYRMIDON_SWARM_TASKLESS_GATE",
+  default: true,
+  scope: "instance",
+  section: "swarm",
+  valueType: "boolean",
+  description: "Gate preventing swarm agent wakes when no unassigned tasks exist",
+  validate: validateBoolean,
+});
+
+behaviorSettingRegistry.register({
+  key: "swarm_cooling_base_sec",
+  envName: "MYRMIDON_SWARM_COOLING_BASE_SEC",
+  default: 30,
+  scope: "instance",
+  section: "swarm",
+  valueType: "number",
+  description: "Base cooling period in seconds for exponential backoff on unassigned tasks",
+  validate: (v) => validateInteger(v, 1),
+});
+
+behaviorSettingRegistry.register({
+  key: "swarm_scent_enabled",
+  envName: "MYRMIDON_SWARM_SCENT_ENABLED",
+  default: false,
+  scope: "instance",
+  section: "swarm_scent",
+  valueType: "boolean",
+  description: "Enable scent-based similarity matching for swarm task pickup",
+  validate: validateBoolean,
+});
+
+behaviorSettingRegistry.register({
+  key: "swarm_scent_model",
+  envName: "MYRMIDON_SWARM_SCENT_MODEL",
+  default: "gpt-4o-mini",
+  scope: "instance",
+  section: "swarm_scent",
+  valueType: "string",
+  description: "LLM model name for task scent classification",
+  validate: (v) => validateString(v),
+});
+
+behaviorSettingRegistry.register({
+  key: "swarm_scent_weight_recency",
+  envName: "MYRMIDON_SWARM_SCENT_WEIGHT_RECENCY",
+  default: 0.3,
+  scope: "instance",
+  section: "swarm_scent",
+  valueType: "number",
+  description: "Weight for recency factor in scent calculation (0.0 to 1.0)",
+  validate: (v) => validateNumber(v, 0.0, 1.0),
+});
+
+behaviorSettingRegistry.register({
+  key: "swarm_scent_weight_similarity",
+  envName: "MYRMIDON_SWARM_SCENT_WEIGHT_SIMILARITY",
+  default: 0.5,
+  scope: "instance",
+  section: "swarm_scent",
+  valueType: "number",
+  description: "Weight for semantic similarity factor in scent calculation (0.0 to 1.0)",
+  validate: (v) => validateNumber(v, 0.0, 1.0),
+});
+
+behaviorSettingRegistry.register({
+  key: "swarm_scent_weight_success",
+  envName: "MYRMIDON_SWARM_SCENT_WEIGHT_SUCCESS",
+  default: 0.2,
+  scope: "instance",
+  section: "swarm_scent",
+  valueType: "number",
+  description: "Weight for past success factor in scent calculation (0.0 to 1.0)",
+  validate: (v) => validateNumber(v, 0.0, 1.0),
+});
+
+// OPE-8146 Registry: Agent Context & Continuation Limits (S-size portable)
+behaviorSettingRegistry.register({
+  key: "continuation_history_limit",
+  envName: "MYRMIDON_CONTINUATION_HISTORY_LIMIT",
+  default: 30,
+  scope: "instance",
+  section: "agent_context",
+  valueType: "number",
+  description: "Number of history steps included in continuation context",
+  validate: (v) => validateInteger(v, 1, 100),
+});
+
+behaviorSettingRegistry.register({
+  key: "continuation_history_chars",
+  envName: "MYRMIDON_CONTINUATION_HISTORY_CHARS",
+  default: 24000,
+  scope: "instance",
+  section: "agent_context",
+  valueType: "number",
+  description: "Character budget for entire continuation history",
+  validate: (v) => validateInteger(v, 1000),
+});
+
+behaviorSettingRegistry.register({
+  key: "continuation_message_max_chars",
+  envName: "MYRMIDON_CONTINUATION_MESSAGE_MAX_CHARS",
+  default: 12000,
+  scope: "instance",
+  section: "agent_context",
+  valueType: "number",
+  description: "Maximum characters allowed per single continuation message",
+  validate: (v) => validateInteger(v, 500),
+});
+
+behaviorSettingRegistry.register({
+  key: "long_task_context_enabled",
+  envName: "MYRMIDON_LONG_TASK_CONTEXT_ENABLED",
+  default: true,
+  scope: "instance",
+  section: "agent_context",
+  valueType: "boolean",
+  description: "Automatic context compaction/reset for long-running tasks",
+  validate: validateBoolean,
+});
+
+behaviorSettingRegistry.register({
+  key: "long_task_context_reset_pct",
+  envName: "MYRMIDON_LONG_TASK_CONTEXT_RESET_PCT",
+  default: 70,
+  scope: "instance",
+  section: "agent_context",
+  valueType: "number",
+  description: "Context window utilization percentage triggering compaction",
+  validate: (v) => validateInteger(v, 10, 95),
+});
+
+behaviorSettingRegistry.register({
+  key: "parallel_helpers_max_count",
+  envName: "MYRMIDON_PARALLEL_HELPERS_MAX_COUNT",
+  default: 5,
+  scope: "instance",
+  section: "parallel_helpers",
+  valueType: "number",
+  description: "Maximum subagents/parallel helpers allowed per run",
+  validate: (v) => validateInteger(v, 1, 20),
+});
+
+behaviorSettingRegistry.register({
+  key: "parallel_helpers_default",
+  envName: "MYRMIDON_PARALLEL_HELPERS_DEFAULT",
+  default: 2,
+  scope: "instance",
+  section: "parallel_helpers",
+  valueType: "number",
+  description: "Default helper capacity for new agents",
+  validate: (v) => validateInteger(v, 0, 10),
+});
+
+behaviorSettingRegistry.register({
+  key: "team_liveness_silence_threshold_sec",
+  envName: "MYRMIDON_TEAM_LIVENESS_SILENCE_THRESHOLD_SEC",
+  default: 600,
+  scope: "instance",
+  section: "team_liveness",
+  valueType: "number",
+  description: "Silence duration in seconds before triggering team liveness attention",
+  validate: (v) => validateInteger(v, 10),
+});
+
+// OPE-8146 Registry: Platform, Reviews & Recovery (S-size portable)
+behaviorSettingRegistry.register({
+  key: "skip_idle_heartbeats",
+  envName: "MYRMIDON_SKIP_IDLE_HEARTBEATS",
+  default: false,
+  scope: "instance",
+  section: "scheduler",
+  valueType: "boolean",
+  description: "Skip idle timer heartbeat wakes when agent has no active tasks",
+  validate: validateBoolean,
+});
+
+behaviorSettingRegistry.register({
+  key: "auto_resume_from_error",
+  envName: "MYRMIDON_AUTO_RESUME_FROM_ERROR",
+  default: true,
+  scope: "instance",
+  section: "recovery",
+  valueType: "boolean",
+  description: "Automatically resume tasks from error status when environment is repaired",
+  validate: validateBoolean,
+});
+
+behaviorSettingRegistry.register({
+  key: "review_routing_enabled",
+  envName: "MYRMIDON_REVIEW_ROUTING_ENABLED",
+  default: true,
+  scope: "company",
+  section: "reviews",
+  valueType: "boolean",
+  description: "Automated PR reviewer routing (adm-dev-review-8 / adm-dev-review-9)",
+  validate: validateBoolean,
+});
+
+behaviorSettingRegistry.register({
+  key: "review_rework_enabled",
+  envName: "MYRMIDON_REVIEW_REWORK_ENABLED",
+  default: true,
+  scope: "instance",
+  section: "reviews",
+  valueType: "boolean",
+  description: "Rework return cycle on negative review verdict",
+  validate: validateBoolean,
+});
+
+behaviorSettingRegistry.register({
+  key: "budget_limits_signal_only",
+  envName: "MYRMIDON_BUDGET_LIMITS_SIGNAL_ONLY",
+  default: true,
+  scope: "instance",
+  section: "budget",
+  valueType: "boolean",
+  description: "When enabled, budget limits emit warnings without pausing runs",
+  validate: validateBoolean,
+});
+
+behaviorSettingRegistry.register({
+  key: "model_fallback_signal_enabled",
+  envName: "MYRMIDON_MODEL_FALLBACK_SIGNAL_ENABLED",
+  default: true,
+  scope: "instance",
+  section: "models",
+  valueType: "boolean",
+  description: "Emit operator signal when LLM fallback rate exceeds threshold",
+  validate: validateBoolean,
+});
+
+// myrmidon(1.6.6-CORPUS-SHADOW A): the shadow-mode switch for the corpus
+// module. Off by default: with the flag off the bot runtime makes
+// no corpus call and writes no shadow rows — byte-for-byte the old behavior.
+// With it on, every search call that goes to an MCP knowledge tool is also
+// fired (fire-and-forget) at the corpus port, and both answers land in
+// `corpus_shadow_log` for the part-B comparison. The value in force is read
+// without a restart, like every registered key.
+behaviorSettingRegistry.register({
+  key: "corpus.shadow",
+  envName: "MYRMIDON_CORPUS_SHADOW",
+  default: false,
+  scope: "instance",
+  section: "corpus",
+  valueType: "boolean",
+  validate: (value: unknown): boolean | null => {
+    if (typeof value === "boolean") return value;
+    if (typeof value === "string") {
+      const lower = value.toLowerCase();
+      if (["true", "1", "yes", "on"].includes(lower)) return true;
+      if (["false", "0", "no", "off"].includes(lower)) return false;
+    }
     return null;
   },
 });
@@ -229,24 +911,34 @@ export function resolveBehaviorSettings(options: {
 /**
  * Schema for validating a behavior settings patch
  */
-export function createBehaviorSettingsPatchSchema() {
+export function createBehaviorSettingsPatchSchema(scope?: SettingScope) {
   const shape: Record<string, z.ZodTypeAny> = {};
+  const defs = scope
+    ? behaviorSettingRegistry.getAll().filter((def) => def.scope === scope)
+    : behaviorSettingRegistry.getAll();
   
-  for (const def of behaviorSettingRegistry.getAll()) {
+  for (const def of defs) {
+    let schema: z.ZodTypeAny;
     switch (def.valueType) {
       case "boolean":
-        shape[def.key] = z.boolean().optional();
+        schema = z.boolean();
         break;
       case "string":
-        shape[def.key] = z.string().optional();
+        schema = z.string();
         break;
       case "number":
-        shape[def.key] = z.number().optional();
+        schema = z.number();
         break;
       case "json":
-        shape[def.key] = z.unknown().optional();
+        schema = z.unknown();
         break;
     }
+    shape[def.key] = schema
+      .refine((val) => def.validate(val) !== null, {
+        message: `Invalid value for setting '${def.key}'`,
+      })
+      .nullable()
+      .optional();
   }
   
   return z.object(shape).strict();
@@ -264,6 +956,12 @@ export function mergeBehaviorSettings(base: Record<string, unknown>, patch: Beha
   const result = { ...base };
   
   for (const [key, value] of Object.entries(patch)) {
+    if (value === null) {
+      // myrmidon(1.7): a null resets the key — the saved value is removed so
+      // the read falls back to env or default (resolveSetting precedence).
+      delete result[key];
+      continue;
+    }
     if (value !== undefined) {
       result[key] = value;
     }

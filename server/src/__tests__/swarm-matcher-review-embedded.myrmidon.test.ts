@@ -27,9 +27,11 @@ import {
   heartbeatRuns,
   issueClaims,
   issues,
-} from "@paperclipai/db";
+  projectMemberships,
+  projects,
+} from "@myrmidon/db";
 import { and, eq, isNull } from "drizzle-orm";
-import { SWARM_MATCHED_WAKE_REASON, resolveSwarmClaimSettings } from "@paperclipai/shared";
+import { SWARM_MATCHED_WAKE_REASON, resolveSwarmClaimSettings } from "@myrmidon/shared";
 import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
@@ -37,6 +39,7 @@ import {
 import { createCasteDirectoryReader } from "../myrmidon/castes/directory.js";
 import { matchFreedAgent } from "../myrmidon/swarm-claim/index.js";
 import { matchAgent, matchCompany, type SwarmMatcherDeps } from "../myrmidon/swarm-claim/matcher.js";
+import { tryDevReviewContinuationOnRelease } from "../myrmidon/review-continuation.js";
 import { createSwarmClaimSweeper, type SwarmClaimSweeperDeps } from "../myrmidon/swarm-claim/sweep.js";
 import type { HostCpuGate, HostMemoryGate } from "../myrmidon/run-admission.js";
 
@@ -92,6 +95,8 @@ describeEmbeddedPostgres("matcher guards of the second review", () => {
     await db.delete(agentWakeupRequests);
     await db.delete(issueClaims);
     await db.delete(issues);
+    await db.delete(projectMemberships);
+    await db.delete(projects);
     await db.delete(agents);
     await db.delete(agentCastes);
     await db.delete(companies);
@@ -99,6 +104,165 @@ describeEmbeddedPostgres("matcher guards of the second review", () => {
 
   afterAll(async () => {
     await tempDb?.cleanup();
+  });
+
+  it("dev handoff scopes both own and unassigned queues before the SQL limit", async () => {
+    const companyId = await seedCompany();
+    const agentId = await seedAgent(companyId);
+    const projectId = randomUUID();
+    await db.insert(projects).values({ id: projectId, companyId, name: "dev-a", leadAgentId: agentId });
+    const outside = await seedTask(companyId, "OUTSIDE", agentId);
+    const inside = await seedTask(companyId, "INSIDE", agentId);
+    await db.update(issues).set({ projectId }).where(eq(issues.id, inside));
+    const result = await matchFreedAgent(freedPorts(), agentId, { projectId });
+    expect(result.pair?.issueId).toBe(inside);
+    expect(await assigneeOf(outside)).toBe(agentId);
+  });
+
+  it("dev handoff never claims projectless work when its project queue is empty", async () => {
+    const companyId = await seedCompany();
+    const agentId = await seedAgent(companyId);
+    const outside = await seedTask(companyId);
+    const result = await matchFreedAgent(freedPorts(), agentId, { projectId: randomUUID() });
+    expect(result.pair).toBeNull();
+    expect(await assigneeOf(outside)).toBeNull();
+  });
+
+  it("dev handoff claims unassigned work only from its project", async () => {
+    const companyId = await seedCompany();
+    const agentId = await seedAgent(companyId);
+    const projectId = randomUUID();
+    await db.insert(projects).values({ id: projectId, companyId, name: "dev-a", leadAgentId: agentId });
+    const outside = await seedTask(companyId, "OUTSIDE");
+    const inside = await seedTask(companyId, "INSIDE");
+    await db.update(issues).set({ projectId }).where(eq(issues.id, inside));
+    const result = await matchFreedAgent(freedPorts(), agentId, { projectId });
+    expect(result.pair?.issueId).toBe(inside);
+    expect(await assigneeOf(inside)).toBe(agentId);
+    expect(await assigneeOf(outside)).toBeNull();
+  });
+
+  it("dev review release continuation picks up next ready task from same dev project when engineer releases task in review", async () => {
+    const companyId = await seedCompany();
+    const engineerId = await seedAgent(companyId, "eng");
+    const reviewerId = await seedAgent(companyId, "rev");
+    const leadId = await seedAgent(companyId, "lead");
+    const projectId = randomUUID();
+    await db.insert(projects).values({ id: projectId, companyId, name: "dev", leadAgentId: leadId });
+    await db.insert(projectMemberships).values({
+      companyId,
+      projectId,
+      userId: engineerId,
+      state: "joined",
+    });
+
+    const submittedId = randomUUID();
+    await db.insert(issues).values({
+      id: submittedId,
+      companyId,
+      identifier: "DEV-SUBMITTED",
+      title: "submitted task",
+      status: "in_review",
+      priority: "medium",
+      assigneeAgentId: reviewerId,
+      projectId,
+      executionState: {
+        status: "pending",
+        currentStageType: "review",
+        returnAssignee: { type: "agent", agentId: engineerId, userId: null },
+      },
+    });
+
+    const nextTaskId = randomUUID();
+    await db.insert(issues).values({
+      id: nextTaskId,
+      companyId,
+      identifier: "DEV-NEXT",
+      title: "next task",
+      status: "todo",
+      priority: "medium",
+      projectId,
+    });
+
+    const wakeups: Array<{ agentId: string; options: any }> = [];
+    const handled = await tryDevReviewContinuationOnRelease({
+      db,
+      releasedRun: {
+        id: randomUUID(),
+        agentId: engineerId,
+        companyId,
+        contextSnapshot: { issueId: submittedId },
+      },
+      currentRunId: randomUUID(),
+      match: (agentId, scope) => matchFreedAgent(freedPorts(), agentId, scope),
+      enqueueWakeup: async (agentId, options) => {
+        wakeups.push({ agentId, options });
+      },
+      enabledProjects: new Set([projectId]),
+    });
+
+    expect(handled).toBe(true);
+    expect(await assigneeOf(nextTaskId)).toBe(engineerId);
+    expect(wakeups).toHaveLength(0);
+  });
+
+  it("dev review release continuation signals project lead when no eligible task remains in dev project", async () => {
+    const companyId = await seedCompany();
+    const engineerId = await seedAgent(companyId, "eng");
+    const reviewerId = await seedAgent(companyId, "rev");
+    const leadId = await seedAgent(companyId, "lead");
+    const projectId = randomUUID();
+    await db.insert(projects).values({ id: projectId, companyId, name: "dev", leadAgentId: leadId });
+    await db.insert(projectMemberships).values({
+      companyId,
+      projectId,
+      userId: engineerId,
+      state: "joined",
+    });
+
+    const submittedId = randomUUID();
+    await db.insert(issues).values({
+      id: submittedId,
+      companyId,
+      identifier: "DEV-SUBMITTED-EMPTY",
+      title: "submitted task without next",
+      status: "in_review",
+      priority: "medium",
+      assigneeAgentId: reviewerId,
+      projectId,
+      executionState: {
+        status: "pending",
+        currentStageType: "review",
+        returnAssignee: { type: "agent", agentId: engineerId, userId: null },
+      },
+    });
+
+    const wakeups: Array<{ agentId: string; options: any }> = [];
+    const handled = await tryDevReviewContinuationOnRelease({
+      db,
+      releasedRun: {
+        id: randomUUID(),
+        agentId: engineerId,
+        companyId,
+        contextSnapshot: { issueId: submittedId },
+      },
+      currentRunId: randomUUID(),
+      match: (agentId, scope) => matchFreedAgent(freedPorts(), agentId, scope),
+      enqueueWakeup: async (agentId, options) => {
+        wakeups.push({ agentId, options });
+      },
+      enabledProjects: new Set([projectId]),
+    });
+
+    expect(handled).toBe(true);
+    expect(wakeups).toHaveLength(1);
+    expect(wakeups[0].agentId).toBe(leadId);
+    expect(wakeups[0].options.reason).toBe("dev_project_queue_empty");
+    expect(wakeups[0].options.payload).toEqual({
+      issueId: submittedId,
+      projectId,
+      engineerId,
+    });
   });
 
   async function seedCompany() {
@@ -222,6 +386,50 @@ describeEmbeddedPostgres("matcher guards of the second review", () => {
   // Item 1: the loop on the release path.
   // -------------------------------------------------------------------------
   describe("the freed agent is not sent back to the task it just finished", () => {
+    // OPE-7707 S4 (T9): the E2→E5 bridge — a task the recovery freed (owner off)
+    // is picked up by a free engineer of its caste on the next tick, oldest
+    // first, through the same matchAgent path the freed-agent event drives.
+    it("hands the freed task to a free engineer of its caste on the next tick, oldest first", async () => {
+      const companyId = await seedCompany();
+      const freed = await seedAgent(companyId, "agent-freed");
+      const older = await seedTask(companyId, "TASK-OLDER");
+      const newer = await seedTask(companyId, "TASK-NEWER");
+      await db.update(issues).set({ createdAt: new Date(NOW.getTime() - 2 * 60 * 60 * 1000) }).where(eq(issues.id, older));
+      const wakes: Wake[] = [];
+
+      const pair = await matchAgent(matcherDeps(wakes), freed);
+
+      expect(pair?.issueId).toBe(older);
+      expect(pair?.agentId).toBe(freed);
+      expect(wakes).toEqual([{ agentId: freed, issueId: older }]);
+      expect(await assigneeOf(older)).toBe(freed);
+      expect(await assigneeOf(newer)).toBeNull();
+    });
+
+    // OPE-7707 S4 (T10): the pickup never takes somebody else's in_progress,
+    // and a cooling task waits its window out instead of being re-claimed.
+    it("leaves another agent's in_progress alone and lets a cooling task wait", async () => {
+      const companyId = await seedCompany();
+      const freed = await seedAgent(companyId, "agent-freed");
+      const busy = await seedAgent(companyId, "agent-busy");
+      const busyTask = await seedTask(companyId, "TASK-BUSY", busy);
+      await db.update(issues).set({ status: "in_progress" }).where(eq(issues.id, busyTask));
+      const cooled = await seedTask(companyId, "TASK-COOLED");
+      await seedRun(companyId, freed, cooled, {
+        status: "failed",
+        finishedAt: new Date(NOW.getTime() - 2 * MIN),
+        livenessState: "failed",
+      });
+      const wakes: Wake[] = [];
+
+      const pair = await matchAgent(matcherDeps(wakes), freed);
+
+      expect(pair).toBeNull();
+      expect(wakes).toEqual([]);
+      expect(await assigneeOf(busyTask)).toBe(busy);
+      expect(await assigneeOf(cooled)).toBeNull();
+    });
+
     it("does not wake the agent for the issue whose run has just ended", async () => {
       const companyId = await seedCompany();
       const agentId = await seedAgent(companyId);
@@ -420,7 +628,6 @@ describeEmbeddedPostgres("matcher guards of the second review", () => {
   // -------------------------------------------------------------------------
   // Item 6: the caste directory and the host gate on the live pass.
   // -------------------------------------------------------------------------
-  describe("the caste directory and the host gate reach the live pass", () => {
     function freedPorts(overrides: { hostGateOpen?: () => boolean } = {}) {
       return {
         db,
@@ -436,6 +643,8 @@ describeEmbeddedPostgres("matcher guards of the second review", () => {
         hostGateOpen: overrides.hostGateOpen ?? (() => true),
       } as unknown as Parameters<typeof matchFreedAgent>[0];
     }
+
+  describe("the caste directory and the host gate reach the live pass", () => {
 
     it("does not hand a task to an agent whose caste is switched off (swarmEligible: false)", async () => {
       const companyId = await seedCompany();
@@ -500,6 +709,7 @@ describeEmbeddedPostgres("matcher guards of the second review", () => {
         agentId,
         role: "engineer",
         runId: null,
+        origin: "auto_match",
         claimedAt: new Date(NOW.getTime() - 60 * MIN),
         heartbeatAt: new Date(NOW.getTime() - 60 * MIN),
         expiresAt: new Date(NOW.getTime() - MIN),
@@ -568,6 +778,7 @@ describeEmbeddedPostgres("matcher guards of the second review", () => {
         agentId,
         role: "engineer",
         runId: null,
+        origin: "auto_match",
         claimedAt: new Date(NOW.getTime() - 60 * MIN),
         heartbeatAt: new Date(NOW.getTime() - 60 * MIN),
         expiresAt: new Date(NOW.getTime() - MIN),

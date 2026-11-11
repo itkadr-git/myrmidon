@@ -1,5 +1,7 @@
 // myrmidon(1.6.5-BOT-DISK-H3c): botd class-F archive of unpushed work and its
 // retention (design §2.3 row F, contract C1 layout).
+// OPE-12101: retention cap is volume-aware: min(2 GiB, 5% of free volume bytes,
+// floor 64 MiB); env MYRMIDON_BOTD_ARCHIVE_CAP_BYTES overrides.
 //
 // Layout (read by `myr-ws restore`, lib/restore.js):
 //   <archiveRoot>/<KEY>-<ts>.bundle          branch of the copy (+ stash) not on origin
@@ -29,6 +31,7 @@
 // Plain Node (no dependencies), synchronous: one botd process, one copy at a time.
 
 import { spawnSync } from "node:child_process";
+import crypto from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -36,7 +39,16 @@ import path from "node:path";
 export const DEFAULT_ARCHIVE_ROOT = "/data/hermes/.myrmidon/archive";
 export const UNTRACKED_CAP_BYTES = 200 * 1024 * 1024;
 export const RETENTION_DAYS = 30;
+// Hard per-bot ceiling. The effective cap is the smaller of this and a fraction
+// of the FREE bytes on the archive volume (see resolveArchiveCapBytes): 2 GiB * 35
+// bots = 70 GiB = 30% of the 246 GB bot volume is not sustainable, so the cap must
+// shrink as the volume fills.
 export const RETENTION_CAP_BYTES = 2 * 1024 * 1024 * 1024;
+// Fraction of free volume bytes that one bot's archive may occupy (5%).
+export const RETENTION_CAP_FREE_FRACTION = 0.05;
+// Floor for the volume-derived cap: even on a nearly-full or unprobeable volume a
+// small archive still beats losing unmerged work.
+export const RETENTION_CAP_MIN_BYTES = 64 * 1024 * 1024;
 export const MANIFEST_NAME = "manifest.json";
 
 const ISSUE_KEY_RE = /^[A-Z][A-Z0-9]*-[0-9]+$/;
@@ -137,7 +149,7 @@ function countTarEntries(tar) {
   }
 }
 
-/** Free bytes on the filesystem that holds `dir` (Infinity when the kernel has no statfs). */
+/** Free bytes on the filesystem that holds `dir` (0 when the kernel has no statfs). */
 function freeBytesOf(dir) {
   // A failed probe (no statfs, an unreadable mount) is "unknown", and unknown free space
   // must not green-light a multi-GiB write: report 0, the caller then refuses the tar.
@@ -148,6 +160,17 @@ function freeBytesOf(dir) {
   } catch {
     return 0;
   }
+}
+
+export function resolveArchiveCapBytes(archiveRoot, opts = {}) {
+  const env = process.env.MYRMIDON_BOTD_ARCHIVE_CAP_BYTES;
+  if (env) {
+    const v = Number(env);
+    if (Number.isFinite(v) && v >= 0) return Math.floor(v);
+  }
+  const free = typeof opts.freeBytes === "number" ? opts.freeBytes : freeBytesOf(archiveRoot);
+  const fromFree = Math.floor(free * RETENTION_CAP_FREE_FRACTION);
+  return Math.min(RETENTION_CAP_BYTES, Math.max(RETENTION_CAP_MIN_BYTES, fromFree));
 }
 
 /**
@@ -209,7 +232,7 @@ function writeManifest(archiveRoot, manifest) {
 
 function entryFiles(entry) {
   // fullTar: the fallback archive of the whole directory (bundle could not be made)
-  return [entry.bundle, entry.patch, entry.untrackedTar, entry.dirTar, entry.fullTar].filter((f) => typeof f === "string" && f);
+  return [entry.bundle, entry.patch, entry.untrackedTar, entry.dirTar, entry.fullTar, entry.sessionExport].filter((f) => typeof f === "string" && f);
 }
 
 function sizeOf(file) {
@@ -507,17 +530,246 @@ export function verifyEntry(entry, opts = {}) {
  * @param {{now?:Date, maxAgeDays?:number, capBytes?:number, keepCreatedAt?:string[]}} [opts]
  * @returns {{ok:true, removed:object[], remainingBytes:number, remaining:number}|{ok:false, reason:string}}
  */
+function retentionFiles(archiveRoot, entry) {
+  const root = path.resolve(archiveRoot);
+  const rootStat = fs.lstatSync(root);
+  if (!rootStat.isDirectory() || rootStat.isSymbolicLink()) throw new Error("unsafe archive root");
+  const files = entryFiles(entry);
+  if (!files.length) throw new Error("archive has no files");
+  for (const file of files) {
+    // Do not normalise traversal or accept arbitrary manifest paths/protected data.
+    // Accept current writer names KEY-YYYYMMDDTHHMMSSZ.ext plus legacy
+    // KEY.ext / KEY-x.ext fixtures. Keep the stem anchored so arbitrary files
+    // (state.db, session/auth, media) can never enter retention via a manifest.
+    const archiveBasename = /^(?:[A-Za-z0-9][A-Za-z0-9._-]{0,80}-\d{8}T\d{6}Z|[A-Za-z0-9][A-Za-z0-9._-]{0,80}(?:-[A-Za-z0-9._-]+)?)\.(bundle|patch|untracked\.tar|dir\.tar|full\.tar\.zst)$/;
+    if (!path.isAbsolute(file) || file.split(path.sep).some((p) => p === "." || p === "..") ||
+        path.dirname(file) !== root ||
+        !archiveBasename.test(path.basename(file))) {
+      throw new Error("unsafe archive file path");
+    }
+    try {
+      const st = fs.lstatSync(file);
+      if (!st.isFile() || st.isSymbolicLink() || st.nlink !== 1) throw new Error("unsafe archive file type");
+    } catch (err) { if (err.code !== "ENOENT") throw err; }
+  }
+  return files;
+}
+
+function retentionAudit(archiveRoot, record) {
+  const root = path.resolve(archiveRoot);
+  if (fs.existsSync(root) && fs.lstatSync(root).isSymbolicLink()) {
+    throw new Error("unsafe archive root: root cannot be a symlink");
+  }
+  const journalPath = path.join(root, "retention-journal.jsonl");
+  if (fs.existsSync(journalPath) && fs.lstatSync(journalPath).isSymbolicLink()) {
+    throw new Error("unsafe retention journal: cannot be a symlink");
+  }
+  const fd = fs.openSync(journalPath,
+    fs.constants.O_WRONLY | fs.constants.O_APPEND | fs.constants.O_CREAT | fs.constants.O_NOFOLLOW, 0o600);
+  try {
+    const st = fs.fstatSync(fd);
+    if (!st.isFile() || st.nlink !== 1) throw new Error("unsafe retention journal");
+    fs.writeSync(fd, `${JSON.stringify(record)}\n`);
+    fs.fsyncSync(fd);
+  } finally { fs.closeSync(fd); }
+}
+
+/**
+ * Verify an independent backup receipt (e.g. from OneDrive) against a local archive file.
+ * Checks receipt validity, file size match, and SHA-256 match.
+ */
+export function verifyBackupReceipt(file, receipt) {
+  if (!receipt || typeof receipt !== "object") throw new Error("missing backup receipt");
+  if (!receipt.receiptId && !receipt.id) throw new Error("invalid backup receipt: missing receiptId");
+  const fileReceipt = receipt.files?.[file] || receipt.parts?.[file] || receipt.parts?.[path.basename(file)] || receipt;
+  const st = fs.statSync(file);
+  const expectedSize = fileReceipt.sizeBytes ?? fileReceipt.size;
+  if (typeof expectedSize === "number" && expectedSize !== st.size) {
+    throw new Error(`backup receipt size mismatch: expected ${st.size}, got ${expectedSize}`);
+  }
+  if (fileReceipt.sha256) {
+    const localSha256 = crypto.createHash("sha256").update(fs.readFileSync(file)).digest("hex");
+    if (fileReceipt.sha256.toLowerCase() !== localSha256.toLowerCase()) {
+      throw new Error(`backup receipt sha256 mismatch: expected ${localSha256}, got ${fileReceipt.sha256}`);
+    }
+  } else {
+    throw new Error("invalid backup receipt: missing sha256");
+  }
+  return true;
+}
+
+/**
+ * Atomic file deletion with full symlink, path traversal, parent-directory descriptor protocol,
+ * and TOCTOU race protection.
+ */
+export function atomicSafeDrop(file, expectedRoot, label = "file") {
+  const root = path.resolve(expectedRoot);
+  const resolved = path.resolve(file);
+  if (!resolved.startsWith(root + path.sep)) {
+    throw new Error(`unsafe ${label} file path: outside ${label} root`);
+  }
+  if (/(^|[/\\\\])(state\.db|session|auth|credential|\.git)/i.test(path.basename(file))) {
+    throw new Error("never delete protected file: " + file);
+  }
+
+  if (fs.existsSync(root) && fs.lstatSync(root).isSymbolicLink()) {
+    throw new Error(`unsafe ${label} root: root cannot be a symlink`);
+  }
+
+  // Check parent directory and any components inside root for symlinks
+  const parentDir = path.dirname(resolved);
+  if (fs.existsSync(parentDir)) {
+    if (fs.lstatSync(parentDir).isSymbolicLink()) {
+      throw new Error(`unsafe ${label} directory: is a symlink`);
+    }
+  }
+
+  // Canonical paths must remain inside canonical root
+  const canonicalRoot = fs.realpathSync(root);
+  const canonicalParent = fs.realpathSync(parentDir);
+  if (canonicalParent !== canonicalRoot && !canonicalParent.startsWith(canonicalRoot + path.sep)) {
+    throw new Error(`unsafe ${label} directory: escapes root`);
+  }
+
+  const lstat = fs.lstatSync(file);
+  if (lstat.isSymbolicLink() || !lstat.isFile() || lstat.nlink !== 1) {
+    throw new Error(`unsafe ${label} file type or symlink: ${file}`);
+  }
+
+  const canonicalFile = fs.realpathSync(file);
+  if (!canonicalFile.startsWith(canonicalRoot + path.sep)) {
+    throw new Error(`unsafe ${label} file: escapes root via symlink`);
+  }
+
+  const dirFd = fs.openSync(parentDir, fs.constants.O_RDONLY | fs.constants.O_DIRECTORY);
+  let fileFd = null;
+  let tempDelPath = null;
+  try {
+    try {
+      fileFd = fs.openSync(resolved, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW);
+    } catch (err) {
+      if (err.code === "ELOOP" || err.code === "EMLINK") {
+        throw new Error(`unsafe ${label} file type or symlink: ${file}`);
+      }
+      throw err;
+    }
+    const fstat = fs.fstatSync(fileFd);
+    if (!fstat.isFile() || fstat.nlink !== 1) {
+      throw new Error(`unsafe ${label} file type or symlink: ${file}`);
+    }
+
+    // Atomic parent-dir descriptor rename protocol:
+    // Move the file to a cryptographically unpredictable temporary name in the verified parent dir
+    tempDelPath = path.join(parentDir, `.tmp-del-${crypto.randomUUID()}`);
+    fs.renameSync(resolved, tempDelPath);
+
+    // Verify the moved file at tempDelPath still points to the same inode as fileFd
+    const tempLstat = fs.lstatSync(tempDelPath);
+    if (tempLstat.ino !== fstat.ino || tempLstat.dev !== fstat.dev || tempLstat.isSymbolicLink()) {
+      throw new Error("TOCTOU race detected: file swapped during atomic rename");
+    }
+
+    // Unlink the temporary path
+    fs.unlinkSync(tempDelPath);
+    tempDelPath = null;
+
+    // Verify post-unlink: the inode's link count must have dropped to 0
+    const postStat = fs.fstatSync(fileFd);
+    if (postStat.nlink !== 0) {
+      throw new Error("TOCTOU race detected: file link count did not drop to 0 after unlink");
+    }
+  } catch (err) {
+    if (tempDelPath && fs.existsSync(tempDelPath)) {
+      try { fs.renameSync(tempDelPath, resolved); } catch {}
+    }
+    throw err;
+  } finally {
+    if (fileFd !== null) {
+      try { fs.closeSync(fileFd); } catch {}
+    }
+    if (dirFd !== null) {
+      try { fs.closeSync(dirFd); } catch {}
+    }
+  }
+}
+
+/**
+ * Safe deletion of an archive file with full symlink, path traversal and TOCTOU protection.
+ */
+export function safeDropArchiveFile(file, archiveRoot) {
+  return atomicSafeDrop(file, archiveRoot, "archive");
+}
+
 export function retain(archiveRoot, opts = {}) {
   const now = opts.now || new Date();
   const maxAge = (opts.maxAgeDays ?? RETENTION_DAYS) * DAY_MS;
-  const capBytes = opts.capBytes ?? RETENTION_CAP_BYTES;
+  const capBytes = opts.capBytes ?? resolveArchiveCapBytes(archiveRoot);
   const keep = new Set(opts.keepCreatedAt || []);
   try {
-    const manifest = readManifest(archiveRoot, now);
+    const manifestFile = path.join(archiveRoot, MANIFEST_NAME);
+    if (fs.existsSync(manifestFile) && !fs.lstatSync(manifestFile).isFile()) throw new Error("unsafe archive manifest");
+    if (fs.existsSync(manifestFile) && fs.lstatSync(manifestFile).isSymbolicLink()) throw new Error("unsafe archive manifest");
+    const manifest = opts.dryRun
+      ? JSON.parse(fs.readFileSync(manifestFile, "utf8"))
+      : readManifest(archiveRoot, now);
+    // Validate the complete batch before deleting any entry.
+    for (const entry of manifest.archives) if (entry) retentionFiles(archiveRoot, entry);
     const removed = [];
     const drop = (entry, why) => {
-      for (const f of entryFiles(entry)) fs.rmSync(f, { force: true });
+      const files = retentionFiles(archiveRoot, entry);
+      let receipt = null;
+      if (!opts.dryRun) {
+        if (opts.backupGate) {
+          try {
+            if (typeof opts.backupGate.uploadAndVerifySync === "function") {
+              receipt = opts.backupGate.uploadAndVerifySync(files, entry);
+            } else if (typeof opts.backupGate.verifySync === "function") {
+              receipt = opts.backupGate.verifySync(files, entry);
+            } else if (typeof opts.backupGate.uploadAndVerify === "function") {
+              receipt = opts.backupGate.uploadAndVerify(files, entry);
+            }
+            if (!receipt) throw new Error("backup gate returned no receipt");
+            for (const f of files) verifyBackupReceipt(f, receipt);
+          } catch (err) {
+            const isMismatch = /mismatch|invalid backup receipt/i.test(err.message);
+            retentionAudit(archiveRoot, {
+              at: now.toISOString(),
+              action: isMismatch ? "receipt-mismatch" : "transfer-failed",
+              key: entry.key,
+              files,
+              reason: err.message
+            });
+            return false;
+          }
+        } else if (opts.backupReceipts && opts.backupReceipts[entry.key]) {
+          try {
+            receipt = opts.backupReceipts[entry.key];
+            for (const f of files) verifyBackupReceipt(f, receipt);
+          } catch (err) {
+            retentionAudit(archiveRoot, { at: now.toISOString(), action: "receipt-mismatch", key: entry.key, files, reason: err.message });
+            return false;
+          }
+        } else if (opts.requireVerifiedReceipt) {
+          const delivered = opts.isDelivered ? opts.isDelivered(entry) === true : false;
+          if (!delivered) {
+            retentionAudit(archiveRoot, { at: now.toISOString(), action: "backup-missing", key: entry.key, files, reason: "verified backup receipt required before deletion" });
+            return false;
+          }
+          receipt = { receiptId: `delivered:${entry.key}`, type: "merged-work" };
+        }
+
+        retentionAudit(archiveRoot, { at: now.toISOString(), action: "delete-intent", key: entry.key, files, reason: why, receiptId: receipt?.receiptId || receipt?.id || null });
+        for (const f of files) {
+          try {
+            safeDropArchiveFile(f, archiveRoot);
+          } catch (err) {
+            if (err.code !== "ENOENT") throw err;
+          }
+        }
+        retentionAudit(archiveRoot, { at: now.toISOString(), action: "deleted", key: entry.key, files, reason: why, receiptId: receipt?.receiptId || receipt?.id || null });
+      }
       removed.push({ key: entry.key, createdAt: entry.createdAt, sizeBytes: entry.sizeBytes, reason: why });
+      return true;
     };
     const withSize = (e) => ({ e, size: entryFiles(e).reduce((s, f) => s + sizeOf(f), 0) });
 
@@ -528,20 +780,26 @@ export function retain(archiveRoot, opts = {}) {
       // Quota maths covers every entry file, including the fallback `fullTar`.
       if (!entry || !entry.createdAt || entryFiles(entry).every((f) => !fs.existsSync(f))) continue; // nothing left on disk
       const age = now.getTime() - Date.parse(entry.createdAt);
-      if (age > maxAge && !keep.has(entry.createdAt)) drop(entry, "age");
-      else alive.push(withSize(entry));
+      if (age > maxAge && !keep.has(entry.createdAt)) {
+        if (!drop(entry, "age")) alive.push(withSize(entry));
+      } else {
+        alive.push(withSize(entry));
+      }
     }
     alive.sort((a, b) => Date.parse(a.e.createdAt) - Date.parse(b.e.createdAt));
     let total = alive.reduce((s, x) => s + x.size, 0);
     const rest = [];
     for (const x of alive) {
       if (total > capBytes && !keep.has(x.e.createdAt)) {
-        drop(x.e, "cap");
-        total -= x.size;
+        if (drop(x.e, "cap")) {
+          total -= x.size;
+        } else {
+          rest.push(x);
+        }
       } else rest.push(x);
     }
     alive = rest;
-    if (removed.length > 0 || alive.length !== manifest.archives.length) {
+    if (!opts.dryRun && (removed.length > 0 || alive.length !== manifest.archives.length)) {
       writeManifest(archiveRoot, { version: 1, archives: alive.map((x) => x.e) });
     }
     return { ok: true, removed, remainingBytes: total, remaining: alive.length };
@@ -553,6 +811,7 @@ export function retain(archiveRoot, opts = {}) {
 /**
  * One botd pass of retention: `retain` with everything archived since the pass began
  * protected from the quota (the only copy of someone's work must outlive the cap).
+ * The cap defaults to resolveArchiveCapBytes(archiveRoot) unless overridden.
  * @param {string} archiveRoot
  * @param {{startedAt: Date, now?:Date, maxAgeDays?:number, capBytes?:number}} opts
  */

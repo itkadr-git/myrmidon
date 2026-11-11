@@ -7,7 +7,7 @@
 // creates the tasks. This module is the half that runs on the server — the
 // planning step, the approval card and the Telegram entry point. The portal chat
 // screen is the other half (myrmidon 1.6-CTO-CHAT-A); the two meet only at the
-// shared proposal contract in `@paperclipai/shared` and at the board's own
+// shared proposal contract in `@myrmidon/shared` and at the board's own
 // interaction API, so neither half calls into the other.
 //
 // Deliberately absent:
@@ -66,4 +66,14 @@ export {
   readCtoChatSettings,
   type CtoChatSettings,
 } from "./settings.js";
+export {
+  createCommanderReportDeliveryDeps,
+  deliverCommanderReport,
+  deliverCommanderReportForDb,
+  resolveCommanderReportTarget,
+  type CommanderReportDeliveryInput,
+  type CommanderReportDeliveryResult,
+  type CommanderReportDeliveryDeps,
+  type CommanderReportTargetChannel,
+} from "./report-delivery.js";
 export { myrmidonCtoChatRoutes } from "./routes.js";

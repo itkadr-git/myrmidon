@@ -5,6 +5,7 @@ import {
   type AttentionDateRangeId,
 } from "../lib/attention";
 import { cn } from "../lib/utils";
+import { useTranslation } from "@/i18n";
 import { Button } from "./ui/button";
 import { Popover, PopoverContent, PopoverTrigger } from "./ui/popover";
 
@@ -26,13 +27,14 @@ interface DecisionDateChipsProps {
  * filter on the client. "Custom" opens a from/to range picker.
  */
 export function DecisionDateChips({ value, custom, onChange }: DecisionDateChipsProps) {
+  const { t } = useTranslation();
   const [open, setOpen] = useState(false);
 
   return (
     <div className="flex flex-wrap items-center gap-1.5" data-decision-date-chips>
       {ATTENTION_DATE_RANGE_OPTIONS.map(([id, label]) => (
         <ChipButton key={id} active={value === id} onClick={() => onChange(id, custom)}>
-          {label}
+          {t(`area.approvals-decisions-notices-1.decision-date-chips.range.${id}`, { defaultValue: label })}
         </ChipButton>
       ))}
       <Popover open={open} onOpenChange={setOpen}>
@@ -42,14 +44,14 @@ export function DecisionDateChips({ value, custom, onChange }: DecisionDateChips
               <CalendarRange className="h-3.5 w-3.5" />
               {value === "custom" && (custom.from || custom.to)
                 ? `${custom.from ?? "…"} → ${custom.to ?? "…"}`
-                : "Custom"}
+                : t("area.approvals-decisions-notices-1.decision-date-chips.custom")}
             </button>
           </ChipButton>
         </PopoverTrigger>
         <PopoverContent align="start" className="w-auto space-y-2 p-3">
           <div className="flex flex-col gap-1.5">
             <label className="text-(length:--text-nano) font-medium uppercase tracking-wide text-muted-foreground">
-              From
+              {t("area.approvals-decisions-notices-1.decision-date-chips.from")}
             </label>
             <input
               type="date"
@@ -61,7 +63,7 @@ export function DecisionDateChips({ value, custom, onChange }: DecisionDateChips
           </div>
           <div className="flex flex-col gap-1.5">
             <label className="text-(length:--text-nano) font-medium uppercase tracking-wide text-muted-foreground">
-              To
+              {t("area.approvals-decisions-notices-1.decision-date-chips.to")}
             </label>
             <input
               type="date"
@@ -81,7 +83,7 @@ export function DecisionDateChips({ value, custom, onChange }: DecisionDateChips
                 setOpen(false);
               }}
             >
-              Clear
+              {t("area.approvals-decisions-notices-1.decision-date-chips.clear")}
             </Button>
           </div>
         </PopoverContent>

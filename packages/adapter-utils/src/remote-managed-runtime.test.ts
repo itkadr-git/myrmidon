@@ -25,7 +25,11 @@ vi.mock("./ssh.js", () => ({
   syncDirectoryToSsh,
 }));
 
-import { prepareRemoteManagedRuntime } from "./remote-managed-runtime.js";
+import {
+  buildRemoteRunWorkspaceCleanupCommand,
+  buildStaleRemoteRunsPruneCommand,
+  prepareRemoteManagedRuntime,
+} from "./remote-managed-runtime.js";
 import { resolveReferencedSourceIgnore } from "./sandbox-managed-runtime.js";
 import { setExpensiveWorkspaceGitExecutor } from "./git-workspace-sync.js";
 
@@ -321,5 +325,97 @@ describe("remote managed runtime", () => {
     } finally {
       warnSpy.mockRestore();
     }
+  });
+});
+
+describe("remote managed runtime: run directory cleanup (OPE-12633)", () => {
+  const cleanupDirs: string[] = [];
+  const spec = {
+    host: "127.0.0.1",
+    port: 2222,
+    username: "fixture",
+    remoteWorkspacePath: "/workspace",
+    remoteCwd: "/workspace",
+    privateKey: "PRIVATE KEY",
+    knownHosts: "KNOWN HOSTS",
+    strictHostKeyChecking: true,
+  };
+
+  afterEach(async () => {
+    vi.clearAllMocks();
+    while (cleanupDirs.length > 0) {
+      const dir = cleanupDirs.pop();
+      if (dir) await rm(dir, { recursive: true, force: true }).catch(() => undefined);
+    }
+  });
+
+  async function prepareSynced(runId: string) {
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "myrmidon-remote-run-cleanup-"));
+    cleanupDirs.push(rootDir);
+    const workspaceDir = path.join(rootDir, "workspace");
+    await mkdir(workspaceDir, { recursive: true });
+    await writeFile(path.join(workspaceDir, "README.md"), "hello\n", "utf8");
+    return prepareRemoteManagedRuntime({
+      spec,
+      runId,
+      adapterKey: "omp",
+      workspaceLocalDir: workspaceDir,
+    });
+  }
+
+  const sshCommands = () => runSshCommand.mock.calls.map((call) => (call as unknown[])[1]);
+
+  it("prunes stale run directories before a synced run and removes the run's workspace copy after the restore", async () => {
+    const prepared = await prepareSynced("run-cleanup");
+    expect(prepared.workspaceRemoteDir).toBe("/workspace/.paperclip-runtime/runs/run-cleanup/workspace");
+    expect(sshCommands()).toEqual([buildStaleRemoteRunsPruneCommand("/workspace")]);
+
+    await prepared.restoreWorkspace();
+
+    expect(restoreWorkspaceFromSshExecution).toHaveBeenCalledTimes(1);
+    expect(sshCommands()).toEqual([
+      buildStaleRemoteRunsPruneCommand("/workspace"),
+      buildRemoteRunWorkspaceCleanupCommand("/workspace/.paperclip-runtime/runs/run-cleanup/workspace"),
+    ]);
+  });
+
+  it("keeps the runtime directory and quotes the paths", () => {
+    expect(buildRemoteRunWorkspaceCleanupCommand("/workspace/.paperclip-runtime/runs/r1/workspace")).toBe(
+      "find '/workspace/.paperclip-runtime/runs/r1/workspace' -mindepth 1 -maxdepth 1 ! -name .paperclip-runtime -exec rm -rf {} +",
+    );
+    expect(buildStaleRemoteRunsPruneCommand("/work space")).toBe(
+      "if [ -d '/work space/.paperclip-runtime/runs' ]; then find '/work space/.paperclip-runtime/runs' -mindepth 1 -maxdepth 1 -type d -mmin +240 -exec rm -rf {} +; fi",
+    );
+  });
+
+  it("leaves the remote copy in place when the restore fails, so the run's work is not lost", async () => {
+    const prepared = await prepareSynced("run-restore-fails");
+    restoreWorkspaceFromSshExecution.mockRejectedValueOnce(new Error("ssh export failed"));
+
+    await expect(prepared.restoreWorkspace()).rejects.toThrow("ssh export failed");
+    expect(sshCommands()).toEqual([buildStaleRemoteRunsPruneCommand("/workspace")]);
+  });
+
+  it("does not fail the run when a cleanup command fails", async () => {
+    runSshCommand.mockRejectedValueOnce(new Error("prune refused"));
+    const prepared = await prepareSynced("run-cleanup-fails");
+    runSshCommand.mockRejectedValueOnce(new Error("rm refused"));
+
+    await expect(prepared.restoreWorkspace()).resolves.toBeUndefined();
+    expect(sshCommands()).toHaveLength(2);
+  });
+
+  it("runs no cleanup for an in-place (unsynced) workspace", async () => {
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "myrmidon-remote-run-in-place-"));
+    cleanupDirs.push(rootDir);
+    const prepared = await prepareRemoteManagedRuntime({
+      spec,
+      runId: "run-in-place",
+      adapterKey: "omp",
+      workspaceLocalDir: rootDir,
+      syncWorkspace: false,
+    });
+    await prepared.restoreWorkspace();
+    expect(sshCommands()).toEqual([]);
   });
 });

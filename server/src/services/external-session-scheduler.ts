@@ -15,6 +15,9 @@ interface QueueEntry<T> {
   run: () => Promise<T>;
   resolve: (value: T) => void;
   reject: (reason: unknown) => void;
+  runId?: string;
+  signal?: AbortSignal;
+  onAbort?: () => void;
 }
 
 /** In-process FIFO scheduler. Callers must pass opaque credential IDs, never secrets. */
@@ -32,18 +35,53 @@ export class ExternalSessionScheduler {
     this.authorizeCredential = options.authorizeCredential ?? (() => true);
   }
 
-  async schedule<T>(credentialId: string, run: () => Promise<T>): Promise<T> {
+  async schedule<T>(
+    credentialId: string,
+    run: () => Promise<T>,
+    options: { runId?: string; signal?: AbortSignal } = {},
+  ): Promise<T> {
     if (!credentialId.trim()) throw new Error("credentialId is required");
+    if (options.signal?.aborted) throw options.signal.reason ?? new Error("Run cancelled");
     if (!(await this.authorizeCredential(credentialId))) {
       throw new Error("credentialId is not authorized");
     }
+    if (options.signal?.aborted) throw options.signal.reason ?? new Error("Run cancelled");
 
     return new Promise<T>((resolve, reject) => {
       const queue = this.queues.get(credentialId) ?? [];
-      queue.push({ credentialId, run, resolve, reject } as QueueEntry<unknown>);
+      const entry: QueueEntry<unknown> = {
+        credentialId, run, resolve, reject, runId: options.runId, signal: options.signal,
+      } as QueueEntry<unknown>;
+      if (options.signal) {
+        entry.onAbort = () => {
+          const pending = this.queues.get(credentialId);
+          if (!pending) return;
+          const index = pending.indexOf(entry);
+          if (index < 0) return;
+          pending.splice(index, 1);
+          options.signal?.removeEventListener("abort", entry.onAbort!);
+          if (!pending.length) this.queues.delete(credentialId);
+          reject(options.signal?.reason ?? new Error("Run cancelled"));
+        };
+        options.signal.addEventListener("abort", entry.onAbort, { once: true });
+      }
+      queue.push(entry);
       this.queues.set(credentialId, queue);
       this.drain(credentialId);
     });
+  }
+
+  cancel(runId: string, reason: unknown = new Error("Run cancelled")): boolean {
+    for (const [credentialId, queue] of this.queues) {
+      const entry = queue.find((candidate) => candidate.runId === runId);
+      if (!entry) continue;
+      queue.splice(queue.indexOf(entry), 1);
+      if (!queue.length) this.queues.delete(credentialId);
+      if (entry.signal && entry.onAbort) entry.signal.removeEventListener("abort", entry.onAbort);
+      entry.reject(reason);
+      return true;
+    }
+    return false;
   }
 
   snapshot(): ExternalSessionSchedulerSnapshot {
@@ -60,6 +98,7 @@ export class ExternalSessionScheduler {
     if (!queue?.length || (this.active.get(credentialId) ?? 0) >= this.concurrencyPerCredential) return;
 
     const entry = queue.shift()!;
+    if (entry.signal && entry.onAbort) entry.signal.removeEventListener("abort", entry.onAbort);
     if (!queue.length) this.queues.delete(credentialId);
     this.active.set(credentialId, (this.active.get(credentialId) ?? 0) + 1);
 
@@ -73,4 +112,29 @@ export class ExternalSessionScheduler {
         this.drain(credentialId);
       });
   }
+}
+
+/** Shared across heartbeatService instances in this server process. */
+export const externalSessionScheduler = new ExternalSessionScheduler({
+  concurrencyPerCredential: Math.max(
+    1,
+    Number.parseInt(process.env.EXTERNAL_SESSION_CONCURRENCY_PER_CREDENTIAL ?? "1", 10) || 1,
+  ),
+});
+
+/**
+ * Concurrency key for an external session: the connection (the account), not
+ * the grant. Different grants of one account share that account's limit.
+ */
+export function externalSessionCredentialKey(scope: { companyId: string; connectionId: string }): string {
+  return `${scope.companyId}:${scope.connectionId}`;
+}
+
+export function scheduleExternalSessionRun<T>(
+  scope: { companyId: string; connectionId: string },
+  run: () => Promise<T>,
+  options: { runId?: string; signal?: AbortSignal } = {},
+  scheduler: ExternalSessionScheduler = externalSessionScheduler,
+): Promise<T> {
+  return scheduler.schedule(externalSessionCredentialKey(scope), run, options);
 }

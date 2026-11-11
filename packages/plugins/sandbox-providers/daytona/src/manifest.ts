@@ -1,4 +1,4 @@
-import type { PaperclipPluginManifestV1 } from "@paperclipai/plugin-sdk";
+import type { PaperclipPluginManifestV1 } from "@myrmidon/plugin-sdk";
 
 const PLUGIN_ID = "paperclip.daytona-sandbox-provider";
 // The bundled-plugin boot reconcile refreshes the persisted manifest for an

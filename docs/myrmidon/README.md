@@ -44,14 +44,17 @@ Myrmidon — система управления компаниями из ИИ-
 | [ROADMAP.md](ROADMAP.md) | Состав V1.0 с критериями готовности, порядок V1.x, «Потом» |
 | [CONVENTIONS.md](CONVENTIONS.md) | Как мы работаем: ветки, PR, тесты, слияние, открытость, карта файлов по трекам |
 | [DIVERGENCE.md](DIVERGENCE.md) | Реестр наших отличий от вендора |
-| [SETTINGS.md](SETTINGS.md) | Наши настройки (переменные `MYRMIDON_*`) и их значения по умолчанию (русская версия: [SETTINGS.ru.md](SETTINGS.ru.md)) |
+| [SETTINGS.md](SETTINGS.md) | Our settings (`MYRMIDON_*` environment variables; Russian version: [SETTINGS.ru.md](SETTINGS.ru.md)) |
+| [bot-session-retention.md](bot-session-retention.md) | Operator guide to background Hermes session retention in bot containers (Russian version: [bot-session-retention.ru.md](bot-session-retention.ru.md)) |
 | [ci.md](ci.md) | CI: проверки, сканеры, сборка образа |
 | [merge-queue.md](merge-queue.md) | Очередь слияний GitHub: кандидат проверяется поверх свежего main, роли ревьюера и стюарда (русская версия: [merge-queue.ru.md](merge-queue.ru.md)) |
 | [deploy.md](deploy.md) | Выкат, обновление и откат по отпечатку образа (русская версия: [deploy.ru.md](deploy.ru.md)) |
 | [dockergate.md](dockergate.md) | Allowlist-прокси к Docker-демону для контейнеров агентов (русская версия: [dockergate.ru.md](dockergate.ru.md)) |
+| [fleetd-vmexec.md](fleetd-vmexec.md) | Демон fleetd для удалённых площадок исполнения ботов (русская версия: [fleetd-vmexec.ru.md](fleetd-vmexec.ru.md)) |
 | [egress.md](egress.md) | Правила исходящих обращений во внешние сервисы |
 | [media-tools.md](media-tools.md) | Общие медиа- и офисные инструменты для контейнерных ботов: сервис media-mcp, хранилище и квоты, инструменты (ffmpeg, офис, OCR, `dwg_convert`), развёртывание и границы изоляции (русская версия: [media-tools.ru.md](media-tools.ru.md)) |
 | [board-key-rotation.md](board-key-rotation.md) | Runbook оператора: ротация и отзыв ключей доски / PAT по ролям (ROLE-SCOPED-TOKENS) |
+| [external-nest-runbook.md](external-nest-runbook.md) | Runbook оператора: создание, изоляция и отзыв внешнего гнезда клиента (русская версия: [external-nest-runbook.ru.md](external-nest-runbook.ru.md)) |
 | [stack-updates.md](stack-updates.md) | Цикл обновлений стека: откуда «наше» и «у автора», отставание, вердикт «патч закрыт», плановая сверка и карточка `stack_update` (STACK-UPDATES часть D) |
 | [multi-instance.md](multi-instance.md) | Многопроцессный режим доски (1.6.6 BOARD-PROCESSES): роли worker/api, настройка, панель «Процессы», `/internal/ready` и `/healthz`, drain при выкате |
 | [tracks/](tracks/) | Задания шести треков V1.0 |
@@ -64,8 +67,11 @@ Myrmidon — система управления компаниями из ИИ-
 
 | Файл | О чём |
 |---|---|
-| [guides/run-limits.md](guides/run-limits.md) | Лимиты допуска прогонов: четыре лимита, источники значений, изменение из UI и API; причины ожидания queued-прогонов (`waitReason`) и отмена нестартуемых (F-09) |
-| [guides/queued-run-stall.md](guides/queued-run-stall.md) | Сигнал о застрявшем queued-прогоне (F-09): карточка внимания `queue_stall`, пороги, действия оператора |
+| [guides/ui2-servers.md](guides/ui2-servers.md) | Экран UI2 «Серверы» (/fleet): что показывает, ошибки мониторинга вместо пустого состояния, пункты меню |
+| [guides/features-page.md](guides/features-page.md) | Страница Instance → Features: реестр возможностей форка, их настройки и живое здоровье, сигнал во внимание, как добавить возможность |
+| [guides/run-limits.md](guides/run-limits.md) | Лимиты допуска прогонов: четыре лимита, источники значений, изменение из UI и API, вид нагрузки (очередь, загрузка хоста, снимок памяти); причины ожидания queued-прогонов (`waitReason`) и отмена нестартуемых (F-09) |
+| [guides/queued-run-stall.md](guides/queued-run-stall.md) | Сигнал о застрявшем queued-прогоне (F-09): карточка `queue_stall`, автоматическое истечение, настройка порога, метрика Prometheus и настройка тревоги |
+| [guides/backup-retention.md](guides/backup-retention.md) | Хранение резервных копий БД: тиры daily/weekly/monthly, режим «хранить только последнюю копию» (1.6.5) с проверкой дампа перед удалением старых, чистка сирот `.sql` |
 | [guides/run-stall.md](guides/run-stall.md) | Обнаружение зависших прогонов: что считается прогрессом, прерывание `run_stalled`, возврат задачи в `todo`, настройки |
 | [guides/stale-block.md](guides/stale-block.md) | Гард причины-ссылки при переходе в blocked (STALE-BLOCK A) и сторож мёртвых блоков (часть B): какие причины мертвы, снятие блока с системным комментарием, карточка `stale_block` в attention-фиде, настройки |
 | [guides/workspace-cleanup.md](guides/workspace-cleanup.md) | Очистка рабочих копий после слияния и сигнал о застрявшей копии |
@@ -80,6 +86,7 @@ Myrmidon — система управления компаниями из ИИ-
 | [guides/server-console.md](guides/server-console.md) | Раздел «Server console» в настройках компании: реестр серверов флота, одноразовый 5-минутный токен Guacamole, журнал, права владельца |
 | [guides/stack-registry.md](guides/stack-registry.md) | Реестр компонентов стека и экран «Стек» (Company → Stack): колонки, отстающие сверху, кнопки refresh/check (503 показан на месте), планирование обновления в backlog-задачу, сверка релизов и вердикт «патч закрыт» |
 | [guides/fleet-dashboard-monitoring.md](guides/fleet-dashboard-monitoring.md) | API данных дашборда флота (1.6.6 MONITORING C): настройки подключений VM/Zabbix (`env:`/`file:`-ссылки на токены), снимок флота `GET /api/myrmidon/monitoring/dashboard`, самопроверка источников |
+| [guides/remote-execution-sites.md](guides/remote-execution-sites.md) | Контракт site-agent и руководство оператора удалённых площадок исполнения ботов (русская версия: [guides/remote-execution-sites.ru.md](guides/remote-execution-sites.ru.md)) |
 | [guides/cloud-connector.md](guides/cloud-connector.md) | Облака через коннектор (1.4): аккаунт владельца, корни-папки, раздача доступа агентам, инструменты, журнал |
 | [guides/tracing-health.md](guides/tracing-health.md) | Здоровье LLM-трейсинга: карточка «LLM tracing» в настройках компании, состояния, сигнал оператору, журнал переходов |
 | [guides/tracing.md](guides/tracing.md) | LLM-трейсинг целиком: конвейер LiteLLM → OTLP → Langfuse v4 → ClickHouse `events_core`, проверка здоровья, deploy-гард 7b, пин пары образов, живой контракт-тест |
@@ -87,13 +94,16 @@ Myrmidon — система управления компаниями из ИИ-
 | [guides/bridge-extension.md](guides/bridge-extension.md) | Браузерный мост, расширение (части C и D): действия open/read/click/fill/download/screenshot, шаг подтверждения человеком, сопряжение кодом, сборка и load-unpacked |
 | [guides/browser-bridge-gateway.md](guides/browser-bridge-gateway.md) | Браузерный мост, шлюз (EXTCASE-B): исходящее WSS-соединение расширения, сопряжение кодом, allowlist, политика подписи, журнал |
 | [guides/connector-panel.md](guides/connector-panel.md) | Панель коннекторов (Company settings → Connectors): устройства, выдача кодов, allowlist, политика подписи, журнал |
+| [guides/chat-endpoint-setup.md](guides/chat-endpoint-setup.md) | Настройка чат-эндпоинта: прямое завершение `verifying` после тестового диалога и нейтральный сигнал `verifyingStale` |
 | [guides/ocr.md](guides/ocr.md) | Путь OCR: PDF в текст в workspace бота — инструмент `ocr.pdf`, бэкенды, лимиты, журнал |
-| [guides/owner-telegram-cards.md](guides/owner-telegram-cards.md) | Как решения владельца доходят до его Telegram-лички с агентом-автором: режим `via_bot` по умолчанию (сообщение бота, ответ текстом) или карточки с кнопками (U2) |
+| [guides/owner-telegram-cards.md](guides/owner-telegram-cards.md) | Доставка карточек вопросов и согласований владельцу задачи в Telegram-личку с агентом-автором (U2) |
+| [guides/owner-active-channel.md](guides/owner-active-channel.md) | Активный канал владельца (1.7-ACTIVE-CHANNEL): отметки активности в портале и Telegram-личке, доставка докладов в активный канал, порог неактивности как живая настройка, статус в интерфейсе вместо литерала «Web · сейчас» |
 | [guides/cto-chat-planner.md](guides/cto-chat-planner.md) | Планировщик чата с доской (CTO-CHAT B): текст владельца — в предложенный эпик с задачами и критериями приёмки, карточка согласования, вход из Telegram DM, коды ошибок |
 | [guides/external-mcp-connectors.md](guides/external-mcp-connectors.md) | Внешние MCP-коннекторы: подключение любого HTTP MCP-сервера без кода форка — вердикт разведки, две точки входа, гранты агентам, регламент и проверка здоровья |
 | [guides/mcp-tool-names.md](guides/mcp-tool-names.md) | Имена MCP-инструментов доски: `myrmidon*` вместо `paperclip*`, алиасы старых имён на один релиз, план снятия в 1.8 |
 | [guides/agent-instructions-revisions.md](guides/agent-instructions-revisions.md) | История ревизий инструкций агента: снимки, откат, журнал |
 | [guides/auto-resume.md](guides/auto-resume.md) | Автовозобновление агента из `error`: бэкофф 1/5/15, карточка оператору после потолка попыток, настройки |
+| [guides/deployment-cooldown-retries.md](guides/deployment-cooldown-retries.md) | Повторы при deployment cooldown и HTTP 429 (1.6.6 WAKE-5): распознавание cooldown/429, приоритет `Retry-After`, ограниченный бэкофф/джиттер/потолок, подавление немедленных пробуждений (русская версия: [guides/deployment-cooldown-retries.ru.md](guides/deployment-cooldown-retries.ru.md)) |
 | [guides/ui2-shell.md](guides/ui2-shell.md) | Оболочка Myrmidon 2.0 за флагом `enableMyrmidonUi2`: включение на инстанс и лично через `?ui=`, рамка (рейка/верхняя панель/телефонный каркас), экраны 2.0, токены и шрифты |
 | [guides/ui2-agents-fleet.md](guides/ui2-agents-fleet.md) | Экран «Флот агентов» UI-2: дерево, live-статусы, прокрутка, пустое состояние и навигация |
 | [guides/task-pr-sync.md](guides/task-pr-sync.md) | Закрытие задачи по слитым PR: проход по рабочим продуктам `pull_request`, возврат исполнителю без слияния, гейты после выката, сторож побудок |
@@ -106,6 +116,7 @@ Myrmidon — система управления компаниями из ИИ-
 | [guides/actor-grant-routes.md](guides/actor-grant-routes.md) | Грантовые проверки актора (1.6.1 ADMIN-AGENT часть B): какие маршруты окружений и tool-подключений пускают агента с грантом, ключи прав по маршрутам, выдача грантов, атрибуция агента в журнале активности |
 | [guides/foraging.md](guides/foraging.md) | Фуражировка (1.6 FORAGING): реестр источников по ролям, проход сравнения снимков, находки и кандидаты в навыки, бюджет прохода, экран «Foraging», API |
 | [guides/telegram-multi-agent.md](guides/telegram-multi-agent.md) | Адресация любого агента компании из одной Telegram-лички (TG-MULTI-AGENT): `@`-упоминания и команды `/agents`, `/to`, `/who`, алиасы `telegramAliases`, защита |
+| [guides/agent-telegram-card.md](guides/agent-telegram-card.md) | Раздел «Telegram» на карточке агента (1.6.5 F-07 ч.D): псевдонимы `telegramAliases` списком с добавлением/удалением, алиас по умолчанию из имени при пустом списке, группа `telegramGroup` с подсказками групп компании, сохранение через `PATCH /api/agents/:id {metadata}` с мерджем |
 | [guides/telegram-topic-inbound.md](guides/telegram-topic-inbound.md) | Топики Telegram-группы как входящие задач (TG-NOTIFY, часть D): гейт `telegramNotify.inbound.{enabled,requireMention}` (умолчания выключены), топик → связанная беседа или новая задача со ссылкой на ветку |
 | [guides/budget-enforcement.md](guides/budget-enforcement.md) | Режимы исполнения лимитов расхода (1.7 BUDGET-CONFIG B): `signal_only` по умолчанию (инцидент и сигнал без паузы), `soft` (пауза и карточка владельцу), `hard` (отказ новым прогонам); экран Instance → General, API и прецедентность настройка → env → дефолт |
 | [guides/prompt-budget-advice.md](guides/prompt-budget-advice.md) | Рекомендации по бюджету промпта (1.6.3 PROMPT-BUDGET C): панель на карточке агента с разбивкой последнего прогона по частям, правила и пороги советника, кнопка «Deep analysis» с задачей агенту-оптимизатору, поле `promptBudget.optimizerAgentId`, API |
@@ -115,10 +126,17 @@ Myrmidon — система управления компаниями из ИИ-
 | [guides/github-shared-identity.md](guides/github-shared-identity.md) | Авторизоваться в GitHub один раз на весь сервер (GITHUB-SHARED-IDENTITY): свои GitHub App вместо облачного коннектора вендора, токены установки на один репозиторий выпускает доска, выбор приложения по целевому репозиторию, авторство агента, аудит, выключатель коннектора вендора |
 | [guides/autonomy-matrix-tool-gateway.md](guides/autonomy-matrix-tool-gateway.md) | Матрица автономии в шлюзе инструментов (1.6.3 AUTONOMY-GW): точка проверки до вызова провайдера, вердикт agent > role > default, сопоставление инструмента с классом действия (merge/deploy/external_message), pre-access 403 autonomy_forbidden и холдинг approval_required, настройка через instance_settings |
 | [guides/debate-asym.md](guides/debate-asym.md) | Движок асимметричных дебатов (1.7 DEBATE-ASYM A): генератор/критик/судья из разных семейств моделей, независимые первые ответы, ≤3 круга, потолок токенов, остановка по `[AGREE]`; документ `debate-result` на задаче со стоимостью, cost-события на уровне задачи, живые настройки и запуск по API через матрицу автономии |
+| [guides/debate-asym-castes.md](guides/debate-asym-castes.md) | Дебаты на касту (1.7 DEBATE-ASYM B): вкл/выкл, модели ролей, инструкция на роль, круги и потолок токенов на каждую касту поверх конфигурации инстанса; кнопка «Обсудить» в очереди роли на «Надзор за роем» с показом вердикта, остановки, расхода и документа результата; пилот — каста маркетинга |
+| [guides/guardrails-ci-corpus.md](guides/guardrails-ci-corpus.md) | GUARDRAILS (1.7-GRD-CI): eval ложных срабатываний по эталонному корпусу как шаг CI — скоринг precision/recall по правилу, ложный блок на чистой фикстуре красит проверку, закоммиченный артефакт `report.json`/`report.md` со сторожем расхождения, pending-режим детекторов части A до их мержа |
+| [guides/rebrand-vendor-name.md](guides/rebrand-vendor-name.md) | Имя вендора в сборке (1.7 REBRAND F): сторож по собранному бандлу интерфейса и снимкам ответов основных эндпоинтов, два класса токенов (видимое имя — гейт, написания-идентификаторы — отчёт), режимы `ratchet`/`strict`, список исключений, съёмка снимков, шаги CI и настройка на Instance → General |
 | [media-tools.md](media-tools.md) | Общие медиа- и офисные инструменты для контейнерных ботов: сервис media-mcp, хранилище и квоты, инструменты (ffmpeg, офис, OCR, `dwg_convert`), развёртывание и границы изоляции |
 | [guides/parallel-helpers.md](guides/parallel-helpers.md) | Параллельные помощники (1.6 PARALLEL-HELPERS): секция «Parallel helpers» в карточке агента (вкл/выкл, лимит, модель, бюджет ходов), потолок и умолчание компании с подсказкой о ёмкости в настройках инстанса, секция `delegation` в профиле бота, встроенный навык |
 | [guides/custom-castes.md](guides/custom-castes.md) | Свои касты (CUSTOM-CASTES): справочник ролей компании в базе, двенадцать встроенных каст при первом чтении, поля касты, REST API с переводом агентов при удалении, живое чтение без перезапуска |
 | [guides/issue-list-agent-defaults.md](guides/issue-list-agent-defaults.md) | Умолчания списка задач для агентов (1.6.5 F-16 A): compact без `view`, limit 200 по умолчанию / максимум 500 с 400-подсказкой про пагинацию, без `description` в compact, полный вид только `view=full&limit<=100`, настройка `issuesListAgentDefaults`, доска без изменений |
+| [guides/instance-execution-policy-and-attention.md](guides/instance-execution-policy-and-attention.md) | Политика выполнения и настройки ленты внимания (1.6.6 SETTINGS-UI S): бейдж `general.executionMode` только для чтения, панель настроек окон ленты внимания `attentionFailedRunHorizonDays` и `attentionFeedCacheTtlSeconds` на Instance → General |
+| [guides/instance-users.md](guides/instance-users.md) | Instance users: поиск пользователей по всему инстансу, доступ только администраторам инстанса, состояния загрузки/пустого результата/ошибки и отказ 403 (русская версия: [guides/instance-users.ru.md](guides/instance-users.ru.md)) |
+| [guides/users-admin-ui.md](guides/users-admin-ui.md) | Экран «Пользователи» компании (1.7 USERS-ADMIN-UI B): управление пользователями в настройках компании (`/company/settings/users`), список и создание (пароль или одноразовая ссылка), блокировка, сброс пароля, роли (`instance_admin` / `member`), отключённая саморегистрация |
+| [guides/users-admin-a.md](guides/users-admin-a.md) | Управление пользователями и журнал аудита (1.7 USERS-ADMIN-A): REST API администрирования пользователей, одноразовые токены установки пароля, аудит-лог действий с дедупликацией и фильтрами |
 | [guides/redact-litellm-guardrail.md](guides/redact-litellm-guardrail.md) | Адаптер REDACT для LiteLLM: хуки `pre_call`/`post_call`, score-порог и режимы `flag`/`mask`/`block` (русская версия: [redact-litellm-guardrail.ru.md](guides/redact-litellm-guardrail.ru.md)) |
 
 ## Сборка и запуск

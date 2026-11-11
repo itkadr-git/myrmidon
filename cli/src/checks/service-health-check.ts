@@ -11,7 +11,8 @@ import {
 } from "../services/service-manager.js";
 import { buildLocalHealthUrl } from "../utils/health-url.js";
 import type { CheckResult } from "./index.js";
-import { readProductEnv } from "@paperclipai/shared/env-alias"; // myrmidon(REBRAND-C)
+import { PRODUCT_NAME } from "../myrmidon-product.js";
+import { readProductEnv } from "@myrmidon/shared/env-alias"; // myrmidon(REBRAND-C)
 
 type HealthResult = { ok: boolean; version: string | null; error?: string };
 type ServiceCheckDependencies = {
@@ -111,7 +112,7 @@ export async function serviceHealthChecks(
           ? {
               name: "Service runtime",
               status: "fail",
-              message: `${status.serviceName} is inactive but the configured port is serving another Paperclip process`,
+              message: `${status.serviceName} is inactive but the configured port is serving another ${PRODUCT_NAME} process`,
               repairHint: "Run `paperclipai service start`, or stop the conflicting foreground process first",
             }
           : {

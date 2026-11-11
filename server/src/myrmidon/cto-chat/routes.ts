@@ -26,15 +26,16 @@
 // anywhere and nothing about it is stored.
 
 import { Router } from "express";
-import type { Db } from "@paperclipai/db";
+import type { Db } from "@myrmidon/db";
 import type { Request, Response } from "express";
 
-import { ctoChatPlanRequestSchema } from "@paperclipai/shared";
+import { ctoChatPlanRequestSchema } from "@myrmidon/shared";
 
 import { assertCompanyAccess } from "../../routes/authz.js";
 import { badRequest } from "../../errors.js";
 import { validate } from "../../middleware/validate.js";
 import { generateCtoChatPlan, CtoChatPlanError } from "./plan-generator.js";
+import { deliverCommanderReportForDb } from "./report-delivery.js";
 import {
   ctoChatSettingsProblem,
   readCtoChatSettings,
@@ -65,17 +66,22 @@ function sendPlannerError(res: Response, error: unknown) {
 
 export function myrmidonCtoChatRoutes(
   db: Db,
-  settings: CtoChatSettings = readCtoChatSettings(),
+  settings?: CtoChatSettings,
   deps: CtoChatRouteDeps = {},
 ) {
   const router = Router();
+  // myrmidon(OPE-12124): the settings are re-read on every request unless a
+  // static object is injected (tests), so a master switch saved in "Тонкие
+  // настройки" applies without a restart (the same live-read contract the
+  // foraging sweep follows).
+  const readSettings = (): CtoChatSettings => settings ?? readCtoChatSettings();
   // Built lazily so a planner that is not configured never touches the secrets
   // service at route-construction time (the module is mounted for every start).
   let runtime: CtoChatRuntime | null = deps.runtime ?? null;
   const resolveRuntime = async (): Promise<CtoChatRuntime> => {
     if (runtime) return runtime;
     const { createCtoChatRuntimeForDb } = await import("./runtime.js");
-    runtime = createCtoChatRuntimeForDb(db, settings);
+    runtime = createCtoChatRuntimeForDb(db, readSettings());
     return runtime;
   };
 
@@ -85,7 +91,7 @@ export function myrmidonCtoChatRoutes(
     async (req: Request, res: Response) => {
       const companyId = planRouteCompanyId(req);
       assertCompanyAccess(req, companyId);
-      const problem = ctoChatSettingsProblem(settings);
+      const problem = ctoChatSettingsProblem(readSettings());
       if (problem) {
         res.status(503).json({ error: problem, code: "planner_disabled" });
         return;
@@ -101,6 +107,52 @@ export function myrmidonCtoChatRoutes(
         res.json({ proposal: result.plan, payload: result.payload });
       } catch (error) {
         sendPlannerError(res, error);
+      }
+    },
+  );
+
+  router.post(
+    "/myrmidon/cto-chat/report",
+    async (req: Request, res: Response) => {
+      const companyId = planRouteCompanyId(req);
+      assertCompanyAccess(req, companyId);
+      const body = req.body as {
+        ownerUserId?: string;
+        reportText?: string;
+        text?: string;
+        title?: string;
+        metadata?: Record<string, unknown>;
+      };
+      const reportText = typeof body.reportText === "string" ? body.reportText : body.text;
+      if (!reportText || typeof reportText !== "string") {
+        res.status(400).json({ error: "reportText is required", code: "bad_request" });
+        return;
+      }
+      const actorUserId =
+        req.actor.type === "board" && req.actor.userId ? req.actor.userId : undefined;
+      const ownerUserId = typeof body.ownerUserId === "string" && body.ownerUserId ? body.ownerUserId : actorUserId;
+      if (!ownerUserId) {
+        res.status(400).json({ error: "ownerUserId is required", code: "bad_request" });
+        return;
+      }
+      try {
+        const result = await deliverCommanderReportForDb(db, {
+          companyId,
+          ownerUserId,
+          reportText,
+          title: body.title,
+          metadata: body.metadata,
+        });
+        res.json(result);
+      } catch (error) {
+        if (error instanceof CtoChatRuntimeError) {
+          res.status(503).json({ error: error.message, code: error.code });
+          return;
+        }
+        res.status(500).json({
+          error: error instanceof Error ? error.message : "Failed to deliver commander report",
+          code: "report_delivery_failed",
+        });
       }
     },
   );

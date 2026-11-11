@@ -57,7 +57,20 @@ describe("tool content guards", () => {
     ).toThrow(ToolActionSigningSecretMissingError);
     expect(() =>
       resolveToolActionSigningSecret({}),
-    ).toThrow("PAPERCLIP_TOOL_ACTION_SIGNING_SECRET");
+    ).toThrow("MYRMIDON_TOOL_ACTION_SIGNING_SECRET");
+  });
+
+  it("resolves the dedicated signing secret with canonical-first compatibility", () => {
+    expect(resolveToolActionSigningSecret({ MYRMIDON_TOOL_ACTION_SIGNING_SECRET: "new-secret" })).toBe("new-secret");
+    expect(resolveToolActionSigningSecret({ PAPERCLIP_TOOL_ACTION_SIGNING_SECRET: "old-secret" })).toBe("old-secret");
+    expect(resolveToolActionSigningSecret({
+      MYRMIDON_TOOL_ACTION_SIGNING_SECRET: "new-secret",
+      PAPERCLIP_TOOL_ACTION_SIGNING_SECRET: "old-secret",
+    })).toBe("new-secret");
+    expect(() => resolveToolActionSigningSecret({
+      MYRMIDON_TOOL_ACTION_SIGNING_SECRET: "",
+      PAPERCLIP_TOOL_ACTION_SIGNING_SECRET: "old-secret",
+    })).toThrow("MYRMIDON_TOOL_ACTION_SIGNING_SECRET");
   });
 
   it("redacts sensitive argument values before summarizing them", () => {

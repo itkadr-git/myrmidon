@@ -23,13 +23,14 @@ function requireVerb(name) {
 const ADAPTERS = {
   open: (mod) => ({ positionals, flags, env }) =>
     mod.open(
-      mod.resolveOpenRequest({ positional: positionals, base: flags.base ?? null, scratch: flags.scratch === true, scratchName: null, json: false }),
+      mod.resolveOpenRequest({ positional: positionals, base: flags.base ?? null, branch: flags.branch ?? null, repository: flags.repository ?? null, scratch: flags.scratch === true, scratchName: null, json: false }),
       { env },
     ),
   list: (mod) => mod.list,
   close: (mod) => mod.close,
   restore: (mod) => ({ positionals, env }) => mod.restore(mod.resolveRestoreRequest({ positional: positionals }), { env }),
   migrate: (mod) => mod.command,
+  repair: (mod) => ({ positionals, env }) => mod.repair({ positionals, env }),
 };
 
 function loadVerb(name) {
@@ -43,6 +44,7 @@ const COMMANDS = {
   close: loadVerb("close"),
   restore: loadVerb("restore"),
   migrate: loadVerb("migrate"),
+  repair: loadVerb("repair"),
 };
 
 function notImplemented(name) {
@@ -52,9 +54,9 @@ function notImplemented(name) {
 }
 
 const USAGE =
-  "usage: myr-ws <open <KEY> [owner/repo] [--base <ref>] [--scratch] | list | close <KEY> [--force] | restore <KEY>> [--json]";
+  "usage: myr-ws <open <KEY> [owner/repo] [--repository owner/repo] [--base <ref>] [--branch <name>] [--scratch] | list | close <KEY> [owner/repo] [--force] | restore <KEY> [owner/repo] | repair [KEY]> [--json]";
 
-/** Splits argv into { command, positionals, flags } (flags: --json, --scratch, --force, --base <ref>). */
+/** Splits argv into { command, positionals, flags } (flags: --json, --scratch, --force, --base <ref>, --branch <name>, --repository owner/repo). */
 function parseArgs(argv) {
   const positionals = [];
   const flags = { json: false };
@@ -67,6 +69,10 @@ function parseArgs(argv) {
       const v = argv[++i];
       if (v === undefined || v.startsWith("--")) throw new MyrWsError(EXIT.usage, "--base needs a ref");
       flags.base = v;
+    } else if (a === "--branch" || a === "--repository") {
+      const v = argv[++i];
+      if (v === undefined || v.startsWith("--")) throw new MyrWsError(EXIT.usage, `${a} needs a value`);
+      flags[a.slice(2)] = v;
     } else if (a.startsWith("--")) throw new MyrWsError(EXIT.usage, `unknown argument ${a}`);
     else positionals.push(a);
   }
@@ -92,7 +98,10 @@ async function run(argv, ctx = {}) {
     const result = await commands[command]({ positionals, flags, env: ctx.env || process.env });
     const { human, ...rest } = result || {};
     const body = { ok: true, ...rest };
-    return { exitCode: EXIT.ok, stdout: json ? `${JSON.stringify(body)}\n` : humanLine(body, human), stderr: "" };
+    const notice = Array.isArray(body.recovered) && body.key
+      ? `myr-ws: ${require("./recover.js").recoveredSummary(body.key, body.recovered, body.recoveryRef)}\n`
+      : "";
+    return { exitCode: EXIT.ok, stdout: json ? `${JSON.stringify(body)}\n` : humanLine(body, human), stderr: notice };
   } catch (e) {
     const exitCode = e && Number.isInteger(e.exitCode) ? e.exitCode : 1;
     const error = (e && e.message) || String(e);

@@ -12,7 +12,7 @@ import {
   ensurePostgresDatabase,
   loadMigrationTargetSchema,
   runDatabaseBackup,
-} from "@paperclipai/db";
+} from "@myrmidon/db";
 import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
@@ -27,7 +27,7 @@ import {
   type VendorOnlyIndex,
   type VendorRelease,
 } from "../commands/myrmidon-migrate-vendor-chain.js";
-import type { ColumnInfo, TableInfo } from "../commands/myrmidon-migrate-db.js";
+import { introspectTables, tableDigest, type ColumnInfo, type TableInfo } from "../commands/myrmidon-migrate-db.js";
 import {
   copyManifest,
   inventoryDirectory,
@@ -45,6 +45,10 @@ import {
 } from "../commands/myrmidon-migrate-secrets.js";
 import {
   checkCompatibility,
+  checkNarrowing,
+  deterministicUuid,
+  mapLifecycleEventAction,
+  parseRangeBound,
   runMigration,
   type MigrationOptions,
 } from "../commands/myrmidon-migrate.js";
@@ -55,6 +59,88 @@ const SOURCE_KEY = randomBytes(32).toString("base64");
 const TARGET_KEY = randomBytes(32).toString("base64");
 const WRONG_KEY = randomBytes(32).toString("base64");
 const SECRET_VALUE = "fixture-secret-value";
+
+function splitSqlStatements(sqlText: string): string[] {
+  const statements: string[] = [];
+  let buffer = "";
+  let inString = false;
+  for (let i = 0; i < sqlText.length; i += 1) {
+    const ch = sqlText[i]!;
+    if (inString) {
+      if (ch === "'" && sqlText[i + 1] === "'") {
+        buffer += "''";
+        i += 1;
+      } else {
+        buffer += ch;
+        if (ch === "'") inString = false;
+      }
+    } else if (ch === "'") {
+      inString = true;
+      buffer += ch;
+    } else if (ch === ";") {
+      statements.push(buffer);
+      buffer = "";
+    } else {
+      buffer += ch;
+    }
+  }
+  if (buffer.trim()) statements.push(buffer);
+  return statements;
+}
+
+function stripSqlLineComments(sqlText: string): string {
+  return sqlText.replace(/(^|\n)\s*--[^\n]*/g, "$1");
+}
+
+function fixtureSeedClaims(seedSql: string): { rows: Map<string, number>; columns: Map<string, Set<string>> } {
+  const rows = new Map<string, number>();
+  const columns = new Map<string, Set<string>>();
+  for (const statement of splitSqlStatements(stripSqlLineComments(seedSql))) {
+    const match = statement.match(/INSERT\s+INTO\s+"([A-Za-z0-9_]+)"\s*\(([^)]*)\)/i);
+    if (!match) continue;
+    const table = match[1]!;
+    columns.set(table, new Set(match[2]!.split(",").map((column) => column.trim().replace(/^"|"$/g, ""))));
+    const values = statement.match(/\bVALUES\b([\s\S]*)/i)?.[1] ?? "";
+    const valuesWithoutConflict = values.split(/\bON\s+CONFLICT\b/i, 1)[0]!;
+    let depth = 0;
+    let tupleCount = 0;
+    let inString = false;
+    for (let i = 0; i < valuesWithoutConflict.length; i += 1) {
+      const ch = valuesWithoutConflict[i]!;
+      if (inString) {
+        if (ch === "'" && valuesWithoutConflict[i + 1] === "'") i += 1;
+        else if (ch === "'") inString = false;
+      } else if (ch === "'") inString = true;
+      else if (ch === "(") {
+        if (depth === 0) tupleCount += 1;
+        depth += 1;
+      } else if (ch === ")") depth -= 1;
+    }
+    rows.set(table, (rows.get(table) ?? 0) + tupleCount);
+  }
+  return { rows, columns };
+}
+
+function fixtureDdlClaims(schemaSql: string): Map<string, Set<string>> {
+  const tables = new Map<string, Set<string>>();
+  for (const statement of splitSqlStatements(stripSqlLineComments(schemaSql))) {
+    const create = statement.match(/CREATE\s+TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?(?:"?(?:public|drizzle)"?\.)?"?([A-Za-z0-9_]+)"?\s*\(/i);
+    if (create && create[1] !== "__drizzle_migrations") {
+      const body = statement.slice(create.index! + create[0].length);
+      const columns = new Set<string>();
+      for (const column of body.matchAll(/^\s*"([A-Za-z0-9_]+)"\s+[A-Za-z]/gm)) columns.add(column[1]!);
+      const existing = tables.get(create[1]!) ?? new Set<string>();
+      for (const column of columns) existing.add(column);
+      tables.set(create[1]!, existing);
+    }
+    for (const alter of statement.matchAll(/ALTER\s+TABLE\s+(?:ONLY\s+)?"?([A-Za-z0-9_]+)"?\s+ADD\s+COLUMN\s+(?:IF\s+NOT\s+EXISTS\s+)?"?([A-Za-z0-9_]+)"?/gi)) {
+      const existing = tables.get(alter[1]!) ?? new Set<string>();
+      existing.add(alter[2]!);
+      tables.set(alter[1]!, existing);
+    }
+  }
+  return tables;
+}
 
 describe("myrmidon:migrate pure guards", () => {
   it("derives the vendor hash chain from the migration files on disk", async () => {
@@ -80,6 +166,8 @@ describe("myrmidon:migrate pure guards", () => {
     ["v2026.1001.0", 282, "0283_jittery_psynapse"],
     ["v2026.1005.0", 292, "0293_broad_rattler"],
     ["v2026.1012.0", 304, "0305_chubby_vin_gonzales"],
+    ["v2026.1023.0", 332, "0333_normal_wild_pack"],
+    ["v2026.1106.0", 373, "0374_rare_wolfpack"],
   ];
 
   it("lists the supported Paperclip releases with their pinned chains", () => {
@@ -92,6 +180,8 @@ describe("myrmidon:migrate pure guards", () => {
     // an older release is a prefix of a newer one
     expect(release("v2026.1005.0").chain.slice(0, 282)).toEqual(release("v2026.1001.0").chain);
     expect(release("v2026.1012.0").chain.slice(0, 292)).toEqual(release("v2026.1005.0").chain);
+    expect(release("v2026.1023.0").chain.slice(0, 304)).toEqual(release("v2026.1012.0").chain);
+    expect(release("v2026.1106.0").chain.slice(0, 332)).toEqual(release("v2026.1023.0").chain);
   });
 
   it.each(SUPPORTED)("accepts exactly the chain of %s and reports its canonical release", (name, length) => {
@@ -110,10 +200,10 @@ describe("myrmidon:migrate pure guards", () => {
 
   it("rejects a truncated, extended or foreign chain with the right reason", () => {
     const base = rowsOf(release("v2026.916.1"));
-    const latest = rowsOf(release("v2026.1012.0"));
+    const latest = rowsOf(release("v2026.1106.0"));
     // truncated: one short of each release
     expect(checkVendorChain(base.slice(0, -1), releases).reason).toBe("older-than-supported-release");
-    for (const name of ["v2026.1001.0", "v2026.1005.0", "v2026.1012.0"]) {
+    for (const name of ["v2026.1001.0", "v2026.1005.0", "v2026.1012.0", "v2026.1023.0", "v2026.1106.0"]) {
       const check = checkVendorChain(rowsOf(release(name)).slice(0, -1), releases);
       expect(check.reason).toBe("older-than-supported-release");
       expect(check.vendorRelease).toBe(name);
@@ -123,7 +213,7 @@ describe("myrmidon:migrate pure guards", () => {
     // extended past the newest supported release
     const newer = checkVendorChain([...latest, { hash: "x" }], releases);
     expect(newer.reason).toBe("newer-than-supported-release");
-    expect(newer.detail).toContain("v2026.1012.0");
+    expect(newer.detail).toContain("v2026.1106.0");
     expect(checkVendorChain([...base, { hash: "x" }], releases).reason).toBe("newer-than-supported-release");
     // a foreign hash anywhere, including the last row of every release
     for (const r of releases) {
@@ -154,8 +244,12 @@ describe("myrmidon:migrate pure guards", () => {
   it("pins the features that only later releases have", () => {
     const index = buildVendorOnlyIndex();
     expect(index.tables.get("mcp_oauth_clients")).toBe("v2026.1012.0");
+    expect(index.tables.get("workflows")).toBe("v2026.1106.0");
+    expect(index.tables.get("muse_agent_bindings")).toBe("v2026.1106.0");
+    expect(index.columns.get("cases.workflow_id")).toBe("v2026.1106.0");
     expect(index.tables.size).toBeGreaterThan(20);
-    expect(index.columns.get("agents.appearance")).toBeDefined();
+    expect(index.columns.has("agents.appearance")).toBe(false);
+    expect(index.columns.has("issues.title_needs_generation")).toBe(false);
     expect(index.columns.get("routine_triggers.archived")).toBeDefined();
     // nothing of the base release is listed as vendor-only
     expect(index.tables.has("agents")).toBe(false);
@@ -165,12 +259,13 @@ describe("myrmidon:migrate pure guards", () => {
   it("excludes features that exist in the target schema from the vendor-only index", () => {
     const targetSchema = {
       tables: new Set(["mcp_oauth_clients", "routine_webhook_test_receipts"]),
-      columns: new Set(["agents.appearance"]),
+      columns: new Set(["agents.appearance", "issues.title_needs_generation"]),
     };
     const index = buildVendorOnlyIndex(undefined, targetSchema);
     expect(index.tables.has("mcp_oauth_clients")).toBe(false);
     expect(index.tables.has("routine_webhook_test_receipts")).toBe(false);
     expect(index.columns.has("agents.appearance")).toBe(false);
+    expect(index.columns.has("issues.title_needs_generation")).toBe(false);
     // Features absent from targetSchema and not dropped remain vendor-only:
     expect(index.tables.get("chat_github_configurations")).toBe("v2026.1001.0");
     expect(index.columns.get("routine_triggers.archived")).toBe("v2026.1001.0");
@@ -183,7 +278,7 @@ describe("myrmidon:migrate pure guards", () => {
     expect(index.droppedColumns?.has("user.keyboard_shortcuts")).toBe(true);
     // Features that were not dropped and are not in target remain vendor-only:
     expect(index.tables.get("chat_github_configurations")).toBe("v2026.1001.0");
-    expect(index.columns.get("agents.appearance")).toBe("v2026.1001.0");
+    expect(index.columns.has("agents.appearance")).toBe(false);
   });
 
   it("loads target schema from our migration tree snapshot", async () => {
@@ -194,7 +289,8 @@ describe("myrmidon:migrate pure guards", () => {
     expect(targetSchema.columns.has("issues.id")).toBe(true);
     // Later vendor-only features are not in current Myrmidon schema:
     expect(targetSchema.tables.has("mcp_oauth_clients")).toBe(false);
-    expect(targetSchema.columns.has("agents.appearance")).toBe(false);
+    expect(targetSchema.columns.has("agents.appearance")).toBe(true);
+    expect(targetSchema.columns.has("issues.title_needs_generation")).toBe(true);
   });
 
   describe("checkCompatibility with features Myrmidon lacks", () => {
@@ -217,21 +313,30 @@ describe("myrmidon:migrate pure guards", () => {
     });
     const index = {
       tables: new Map([["browser_use_runs", "v2026.1012.0"]]),
-      columns: new Map([["agents.appearance", "v2026.1012.0"], ["user.keyboard_shortcuts", "v2026.1001.0"]]),
+      columns: new Map([["agents.appearance", "v2026.1012.0"], ["issues.title_needs_generation", "v2026.1012.0"], ["user.keyboard_shortcuts", "v2026.1001.0"]]),
     };
 
-    it("reports a missing vendor-only table and column as findings, not problems", () => {
+    it("fails closed for approved data columns missing from the target, even when the vendor flag is set", () => {
       const analysis = analysisOf(
-        [table("browser_use_runs", [col("id")]), table("agents", [col("id"), col("appearance")]), table("user", [col("id"), col("keyboard_shortcuts")])],
-        { browser_use_runs: 3, agents: 5, user: 2 },
-        [{ kind: "column", table: "agents", column: "appearance", rows: 4, introducedIn: "v2026.1012.0" }],
+        [table("browser_use_runs", [col("id")]), table("agents", [col("id"), col("appearance")]), table("issues", [col("id"), col("title_needs_generation")]), table("user", [col("id"), col("keyboard_shortcuts")])],
+        { browser_use_runs: 3, agents: 5, issues: 4, user: 2 },
+        [
+          { kind: "column", table: "agents", column: "appearance", rows: 4, introducedIn: "v2026.1012.0" },
+          { kind: "column", table: "issues", column: "title_needs_generation", rows: 3, introducedIn: "v2026.1012.0" },
+        ],
       );
-      const target = new Map([["agents", table("agents", [col("id")])], ["user", table("user", [col("id")])]]);
-      const result = checkCompatibility(analysis, target, index);
-      expect(result.problems).toEqual([]);
+      const target = new Map([
+        ["agents", table("agents", [col("id")])],
+        ["issues", table("issues", [col("id")])],
+        ["user", table("user", [col("id")])],
+      ]);
+      const result = checkCompatibility(analysis, target, index, { acceptVendorOnlyData: true });
+      expect(result.problems).toContain("approved-column-not-preserved:agents.appearance");
+      expect(result.problems).toContain("approved-column-not-preserved:issues.title_needs_generation");
       expect(result.vendorOnly).toEqual([
         { kind: "table", table: "browser_use_runs", rows: 3, introducedIn: "v2026.1012.0" },
         { kind: "column", table: "agents", column: "appearance", rows: 4, introducedIn: "v2026.1012.0" },
+        { kind: "column", table: "issues", column: "title_needs_generation", rows: 3, introducedIn: "v2026.1012.0" },
         { kind: "column", table: "user", column: "keyboard_shortcuts", rows: 2, introducedIn: "v2026.1001.0" },
       ]);
     });
@@ -255,8 +360,25 @@ describe("myrmidon:migrate pure guards", () => {
       expect(ok.problems).toEqual([]);
       expect(ok.vendorOnly).toEqual([]);
       expect(ok.exclusions).toEqual([{ kind: "table", name: "browser_use_runs", reason: "absent in target and empty in source" }]);
+      expect(ok.skippedSourceData).toEqual([
+        { table: "browser_use_runs", rows: 0, vendorRelease: "v2026.1012.0", decision: "excluded-empty" },
+      ]);
       const required = new Map([["user", table("user", [col("id"), col("keyboard_shortcuts", { nullable: false })])]]);
       expect(checkCompatibility(analysis, required, index).problems).toEqual(["target-column-requires-value:user.keyboard_shortcuts"]);
+    });
+
+    it("reports a vendor-only column of an empty table as excluded-empty, as the dry-run does", () => {
+      const analysis = analysisOf(
+        [table("agents", [col("id"), col("appearance")]), table("user", [col("id"), col("surprise")])],
+        { agents: 0, user: 0 },
+      );
+      const target = new Map([["agents", table("agents", [col("id")])], ["user", table("user", [col("id")])]]);
+      const result = checkCompatibility(analysis, target, index);
+      // an unknown column of an empty table is still no problem; a known vendor-only one is reported
+      expect(result.problems).toEqual([]);
+      expect(result.skippedSourceData).toEqual([
+        { table: "agents", column: "appearance", rows: 0, vendorRelease: "v2026.1012.0", decision: "excluded-empty" },
+      ]);
     });
 
     it("treats columns dropped in migration chain as exclusions, not missing errors", () => {
@@ -273,6 +395,116 @@ describe("myrmidon:migrate pure guards", () => {
       expect(result.exclusions).toEqual([
         { kind: "column", name: "user.keyboard_shortcuts", reason: "dropped in migration chain; not needed in target" },
       ]);
+    });
+
+    it("accepts unknown tables when acceptUnknownSourceObjects is enabled", () => {
+      const analysis = analysisOf([table("custom_extension", [col("id")])], { custom_extension: 2 });
+      const target = new Map();
+      const rejected = checkCompatibility(analysis, target, index);
+      expect(rejected.problems).toEqual(["table-missing-in-target:custom_extension"]);
+
+      const vendorFlagOnly = checkCompatibility(analysis, target, index, { acceptVendorOnlyData: true });
+      expect(vendorFlagOnly.problems).toEqual(["table-missing-in-target:custom_extension"]);
+
+      const accepted = checkCompatibility(analysis, target, index, { acceptUnknownSourceObjects: true });
+      expect(accepted.problems).toEqual([]);
+      expect(accepted.exclusions).toEqual([{ kind: "table", name: "custom_extension", reason: "unknown source table accepted by flag" }]);
+    });
+
+    it("allows resource_lifecycle_events without --accept-vendor-only-data when target has activity_log", () => {
+      // Empty input
+      const emptyAnalysis = analysisOf([table("resource_lifecycle_events", [col("id")])], { resource_lifecycle_events: 0 });
+      const target = new Map([["activity_log", table("activity_log", [col("id")])]]);
+      const emptyResult = checkCompatibility(emptyAnalysis, target, index);
+      expect(emptyResult.problems).toEqual([]);
+      expect(emptyResult.vendorOnly).toEqual([]);
+
+      // Populated input (10 sample rows)
+      const populatedAnalysis = analysisOf([table("resource_lifecycle_events", [col("id")])], { resource_lifecycle_events: 10 });
+      const populatedResult = checkCompatibility(populatedAnalysis, target, index);
+      expect(populatedResult.problems).toEqual([]);
+      expect(populatedResult.vendorOnly).toEqual([]);
+
+      // Target lacks activity_log
+      const missingTarget = new Map();
+      const missingResult = checkCompatibility(populatedAnalysis, missingTarget, index);
+      expect(missingResult.problems).toEqual(["table-missing-in-target:activity_log"]);
+    });
+
+    it("reports v2026.1106.0 vendor-only tables and columns with descriptions and requires flag when they hold data", () => {
+      const v1106Index = buildVendorOnlyIndex();
+      const v1106Tables = [
+        "case_access_sources", "case_handoffs", "chat_slack_manager_grants", "company_observability",
+        "company_prompt_injection_prevention", "company_skill_import_budgets", "company_skill_repository_snapshots",
+        "execution_workspace_repositories", "execution_workspace_repository_access", "execution_workspace_repository_roots",
+        "execution_workspace_restore_points", "external_agent_holds", "grok_bot_dispatches", "grok_bot_routines",
+        "muse_agent_bindings", "muse_credentials", "muse_idle_receipts", "muse_input_deliveries",
+        "muse_mailbox_items", "muse_receiver_contact_buckets", "muse_runner_assignments", "muse_runner_operations",
+        "project_skill_sources", "prompt_injection_invocations", "workflows",
+      ];
+      for (const t of v1106Tables) {
+        expect(v1106Index.tables.get(t)).toBe("v2026.1106.0");
+      }
+      expect(v1106Index.columns.get("cases.workflow_id")).toBe("v2026.1106.0");
+
+      const sampleTables = [
+        table("workflows", [col("id")]),
+        table("muse_agent_bindings", [col("id")]),
+        table("cases", [col("id"), col("workflow_id")]),
+      ];
+      const analysis = analysisOf(
+        sampleTables,
+        { workflows: 5, muse_agent_bindings: 2, cases: 10 },
+        [
+          { kind: "table", table: "workflows", rows: 5, introducedIn: "v2026.1106.0" },
+          { kind: "table", table: "muse_agent_bindings", rows: 2, introducedIn: "v2026.1106.0" },
+          { kind: "column", table: "cases", column: "workflow_id", rows: 10, introducedIn: "v2026.1106.0" },
+        ],
+      );
+      const target = new Map([["cases", table("cases", [col("id")])]]);
+
+      const unaccepted = checkCompatibility(analysis, target, v1106Index);
+      expect(unaccepted.problems).toEqual([]);
+      expect(unaccepted.vendorOnly).toEqual([
+        { kind: "table", table: "workflows", rows: 5, introducedIn: "v2026.1106.0" },
+        { kind: "table", table: "muse_agent_bindings", rows: 2, introducedIn: "v2026.1106.0" },
+        { kind: "column", table: "cases", column: "workflow_id", rows: 10, introducedIn: "v2026.1106.0" },
+      ]);
+      expect(unaccepted.skippedSourceData).toEqual([
+        { table: "workflows", rows: 5, vendorRelease: "v2026.1106.0", decision: "requires-flag" },
+        { table: "muse_agent_bindings", rows: 2, vendorRelease: "v2026.1106.0", decision: "requires-flag" },
+        { table: "cases", column: "workflow_id", rows: 10, vendorRelease: "v2026.1106.0", decision: "requires-flag" },
+      ]);
+
+      const accepted = checkCompatibility(analysis, target, v1106Index, { acceptVendorOnlyData: true });
+      expect(accepted.problems).toEqual([]);
+      expect(accepted.skippedSourceData).toEqual([
+        { table: "workflows", rows: 5, vendorRelease: "v2026.1106.0", decision: "accepted" },
+        { table: "muse_agent_bindings", rows: 2, vendorRelease: "v2026.1106.0", decision: "accepted" },
+        { table: "cases", column: "workflow_id", rows: 10, vendorRelease: "v2026.1106.0", decision: "accepted" },
+      ]);
+    });
+  });
+
+  describe("resource_lifecycle_events helpers", () => {
+    it("maps actions to activity_log convention", () => {
+      expect(mapLifecycleEventAction("project", "create")).toBe("project.created");
+      expect(mapLifecycleEventAction("project", "update")).toBe("project.updated");
+      expect(mapLifecycleEventAction("project", "delete")).toBe("project.deleted");
+      expect(mapLifecycleEventAction("agent", "pause")).toBe("agent.paused");
+      expect(mapLifecycleEventAction("agent", "resume")).toBe("agent.resumed");
+      expect(mapLifecycleEventAction("agent", "terminate")).toBe("agent.terminated");
+      expect(mapLifecycleEventAction("project", "custom.action")).toBe("custom.action");
+      expect(mapLifecycleEventAction("project", "archive")).toBe("project.archive");
+    });
+
+    it("produces deterministic uuid v4 formatted identifiers", () => {
+      const u1 = deterministicUuid("seed-1");
+      const u2 = deterministicUuid("seed-1");
+      const u3 = deterministicUuid("seed-2");
+      expect(u1).toBe(u2);
+      expect(u1).not.toBe(u3);
+      expect(u1).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i);
     });
   });
 
@@ -308,6 +540,96 @@ describe("myrmidon:migrate pure guards", () => {
     }
   });
 
+  it("asserts v2026.1106.0 fixture rows and columns without allowing empty vendor claims", () => {
+    const fixtureRoot = path.join(path.dirname(MIGRATIONS_DIR), "../../../tests/fixtures/paperclip-migration/releases/v2026.1106.0");
+    const manifest = JSON.parse(readFileSync(path.join(fixtureRoot, "manifest.json"), "utf8")) as {
+      vendorRelease: { tag: string; sha: string; lastMigration: string; migrationCount: number };
+      entityCounts: Record<string, number>;
+      vendorGapCounts: Record<string, number>;
+    };
+    const vendorRelease = JSON.parse(readFileSync(path.join(fixtureRoot, "../..", "vendor-release.json"), "utf8")) as {
+      tag: string;
+      sha: string;
+      lastMigration: string;
+      migrationCount: number;
+      extraTables: string[];
+      extraColumns: string[];
+    };
+    expect(manifest.vendorRelease).toEqual({
+      tag: "v2026.1106.0",
+      sha: "d69631b01b9c658f80bf8bed389863dce82643e1",
+      lastMigration: "0374_rare_wolfpack",
+      migrationCount: 373,
+    });
+    expect(vendorRelease).toMatchObject(manifest.vendorRelease);
+
+    const fixtureDir = path.join(path.dirname(fixtureRoot), "..");
+    const registry = JSON.parse(readFileSync(path.join(fixtureDir, "vendor-releases.json"), "utf8")) as {
+      supportedReleases: Array<{
+        tag: string;
+        sha: string;
+        lastMigration: string;
+        migrationCount: number;
+        extraTables: string[];
+        extraColumns: string[];
+      }>;
+    };
+    const registryRelease = registry.supportedReleases.find((entry) => entry.tag === manifest.vendorRelease.tag);
+    expect(registryRelease, "v2026.1106.0 is registered in the fixture registry").toBeDefined();
+    expect(registryRelease).toEqual(expect.objectContaining(manifest.vendorRelease));
+    expect(registryRelease!.extraTables.length).toBeGreaterThan(0);
+    expect(registryRelease!.extraColumns.length).toBeGreaterThan(0);
+
+    const rootManifest = JSON.parse(readFileSync(path.join(fixtureDir, "manifest.json"), "utf8"));
+    expect(rootManifest).toEqual(manifest);
+    expect(readFileSync(path.join(fixtureRoot, "schema.sql"), "utf8")).toBe(
+      readFileSync(path.join(fixtureDir, "schema-paperclip-v2026.1106.0.sql"), "utf8"),
+    );
+    expect(readFileSync(path.join(fixtureRoot, "seed.sql"), "utf8")).toBe(
+      readFileSync(path.join(fixtureDir, "seed-paperclip-v2026.1106.0.sql"), "utf8"),
+    );
+    expect(readFileSync(path.join(fixtureRoot, "manifest.json"), "utf8")).toBe(
+      readFileSync(path.join(fixtureDir, "manifest-v2026.1106.0.json"), "utf8"),
+    );
+
+    const { rows, columns } = fixtureSeedClaims(readFileSync(path.join(fixtureRoot, "seed.sql"), "utf8"));
+    const ddl = fixtureDdlClaims(readFileSync(path.join(fixtureRoot, "schema.sql"), "utf8"));
+    expect(rows.size, "fixture contains seeded vendor/entity data").toBeGreaterThan(0);
+    for (const [table, actual] of rows) {
+      expect(actual, `${table} must not be an empty vendor/entity claim`).toBeGreaterThan(0);
+    }
+    for (const [table, expected] of Object.entries(manifest.entityCounts)) {
+      expect(rows.get(table), `${table} entity rows`).toBe(expected);
+    }
+    for (const [table, expected] of Object.entries(manifest.vendorGapCounts)) {
+      expect(rows.get(table), `${table} vendor-gap rows`).toBe(expected);
+      expect(expected, `${table} must not be an empty vendor claim`).toBeGreaterThan(0);
+    }
+    for (const [table, seededColumns] of columns) {
+      expect(ddl.has(table), `${table} is present in the DDL`).toBe(true);
+      for (const column of seededColumns) expect(ddl.get(table)!.has(column), `${table}.${column} is present in the DDL`).toBe(true);
+    }
+    for (const table of vendorRelease.extraTables) expect(ddl.has(table), `${table} vendor table is present in the DDL`).toBe(true);
+    for (const qualifiedColumn of vendorRelease.extraColumns) {
+      const [table, column] = qualifiedColumn.split(".", 2);
+      expect(ddl.get(table!), `${qualifiedColumn} table is present in the DDL`).toBeDefined();
+      expect(ddl.get(table!)!.has(column!), `${qualifiedColumn} is present in the DDL`).toBe(true);
+    }
+    // Every DDL table that the fixture actually seeds must be pinned in the manifest
+    // (entityCounts or vendorGapCounts). A table seeded but not counted would let the
+    // manifest drift from the seed while the counts keep passing.
+    const countedTables = new Set([...Object.keys(manifest.entityCounts), ...Object.keys(manifest.vendorGapCounts)]);
+    const seeded = [...rows.keys()].sort();
+    const counted = [...countedTables].sort();
+    expect(seeded, "every seeded table is pinned in the manifest (no silent extra seeds)").toEqual(counted);
+    // The pinned vendor data is exactly the registry's DDL coverage for this release,
+    // and each pinned table is non-empty: a vendor claim with zero rows is a silent loss.
+    for (const table of counted) {
+      expect(ddl.has(table), `${table} is present in the DDL`).toBe(true);
+      expect(rows.get(table), `${table} must not be an empty vendor claim`).toBeGreaterThan(0);
+    }
+  });
+
   it("finds envelopes anywhere in JSON and redacts secrets from text", async () => {
     const envelope = await encryptWithKey(SOURCE_KEY, SECRET_VALUE);
     expect(isEnvelope(envelope)).toBe(true);
@@ -317,6 +639,18 @@ describe("myrmidon:migrate pure guards", () => {
     expect(await plaintextHash(SOURCE_KEY, collectEnvelopes(nested)[0]!)).toBe(sha256Hex(SECRET_VALUE));
     await expect(plaintextHash(WRONG_KEY, collectEnvelopes(nested)[0]!)).rejects.toThrow();
     expect(redact("postgres://u:hunter2@h/db failed", ["postgres://u:hunter2@h/db", "hunter2"])).toBe("[redacted] failed");
+  });
+  it("parses range bounds exactly with directional rounding for bounds checking", () => {
+    expect(parseRangeBound("0.0000000", "lo")).toBe(0n);
+    expect(parseRangeBound("0.0000000", "hi")).toBe(0n);
+    expect(parseRangeBound("100", "lo")).toBe(100n);
+    expect(parseRangeBound("100", "hi")).toBe(100n);
+    expect(parseRangeBound("0.5", "hi")).toBe(1n);
+    expect(parseRangeBound("0.5", "lo")).toBe(0n);
+    expect(parseRangeBound("-0.5", "lo")).toBe(-1n);
+    expect(parseRangeBound("-0.5", "hi")).toBe(0n);
+    expect(parseRangeBound("2147483647.1", "hi")).toBe(2147483648n);
+    expect(parseRangeBound("-2147483648.1", "lo")).toBe(-2147483649n);
   });
 });
 
@@ -377,16 +711,29 @@ describeEmbeddedPostgres("myrmidon:migrate against a real Postgres", () => {
     templateUrl = urlFor("vendor_template");
     const db = createDb(templateUrl);
     await migrate(db as never, { migrationsFolder: folder });
+    // Model a newer Paperclip source: it carries the two columns Myrmidon now preserves.
+    await db.execute(sql.raw('alter table "agents" add column if not exists "appearance" jsonb'));
+    await db.execute(sql.raw('alter table "issues" add column if not exists "title_needs_generation" boolean not null default false'));
+    await db.execute(sql.raw(`
+      create table if not exists "resource_lifecycle_events" (
+        "id" bigserial primary key,
+        "company_id" uuid not null,
+        "resource_type" text not null,
+        "resource_id" uuid not null,
+        "action" text not null,
+        "created_at" timestamp with time zone not null default now()
+      )
+    `));
 
     const envelope = await encryptWithKey(SOURCE_KEY, SECRET_VALUE);
     const seed = async (query: string) => db.execute(sql.raw(query));
     const lit = (v: unknown) => `'${String(v).replaceAll("'", "''")}'`;
     await seed(`insert into companies (id, name, issue_prefix) values (${lit(COMPANY_A)}, 'Alpha', 'ALP'), (${lit(COMPANY_B)}, 'Beta', 'BET')`);
     await seed(
-      `insert into agents (id, company_id, name, adapter_config) values (${lit(AGENT_A)}, ${lit(COMPANY_A)}, 'Agent One', ${lit(JSON.stringify({ token: envelope, keep: 1 }))}::jsonb)`,
+      `insert into agents (id, company_id, name, adapter_config, appearance) values (${lit(AGENT_A)}, ${lit(COMPANY_A)}, 'Agent One', ${lit(JSON.stringify({ token: envelope, keep: 1 }))}::jsonb, '{"theme":{"palette":["ink","amber"]}}'::jsonb)`,
     );
     await seed(`insert into projects (company_id, name) values (${lit(COMPANY_A)}, 'Project One')`);
-    await seed(`insert into issues (id, company_id, title) values (${lit(ISSUE_A)}, ${lit(COMPANY_A)}, 'Issue One')`);
+    await seed(`insert into issues (id, company_id, title, title_needs_generation) values (${lit(ISSUE_A)}, ${lit(COMPANY_A)}, 'Issue One', true)`);
     await seed(`insert into issue_comments (company_id, issue_id, body) values (${lit(COMPANY_A)}, ${lit(ISSUE_A)}, 'Comment One')`);
     await seed(`insert into documents (id, company_id, latest_body) values (${lit(DOC_A)}, ${lit(COMPANY_A)}, 'Doc body')`);
     await seed(`insert into issue_documents (company_id, issue_id, document_id, key) values (${lit(COMPANY_A)}, ${lit(ISSUE_A)}, ${lit(DOC_A)}, 'plan')`);
@@ -513,30 +860,27 @@ describeEmbeddedPostgres("myrmidon:migrate against a real Postgres", () => {
     expect(runResult.status).toBe("ok");
     expect(runResult.phases).toContain("data");
 
-    // 2. Now test with a fresh fixture containing data in a feature that is TRULY absent from the target schema (e.g. agents.appearance)
+    // 2. Now test with a fresh fixture containing data in a feature that is TRULY absent from the target schema (e.g. an unknown vendor-only column)
     const f2 = await fixture();
     await scalar(f2.sourceUrl, 'alter table "user" add column if not exists "keyboard_shortcuts" jsonb');
     await scalar(
       f2.sourceUrl,
       "insert into \"user\" (id, name, email, created_at, updated_at, keyboard_shortcuts) values ('88888888-8888-4888-8888-888888888888', 'Shortcuts User', 'sc@test.local', now(), now(), '{\"ctrl_k\": true}')",
     );
-    await scalar(f2.sourceUrl, 'alter table "agents" add column if not exists "appearance" jsonb');
-    await scalar(f2.sourceUrl, "update \"agents\" set \"appearance\" = '{\"theme\": \"dark\"}'::jsonb");
 
-    // Production precheck dry run detects the truly vendor-only feature and requires the flag
+    // Dropped vendor column: its data is not needed, so no flag is required
     const dry2 = (await runMigration({ ...f2.options, dryRun: true })) as Record<string, any>;
     expect(dry2.status).toBe("ok");
-    expect(dry2.vendorOnlyData.requiresFlag).toBe(true);
-    expect(dry2.vendorOnlyData.withData).toMatchObject([{ table: "agents", column: "appearance" }]);
-    expect(dry2.vendorOnlyData.withData.some((c: any) => c.column === "keyboard_shortcuts")).toBe(false);
+    expect(dry2.vendorOnlyData.requiresFlag).toBe(false);
+    expect((await runMigration(f2.options) as Record<string, any>).status).toBe("ok");
 
-    // Real run without --accept-vendor-only-data refuses before any target write
-    await expect(runMigration(f2.options)).rejects.toThrow(/accept-vendor-only-data/);
-    await expectZeroWrites(f2);
-
-    // Real run with --accept-vendor-only-data succeeds
-    const runWithFlag = (await runMigration({ ...f2.options, acceptVendorOnlyData: true })) as Record<string, any>;
-    expect(runWithFlag.status).toBe("ok");
+    // A column unknown to the vendor index that holds data is refused before any target write
+    const f3 = await fixture();
+    await scalar(f3.sourceUrl, 'alter table "agents" add column if not exists "legacy_appearance" jsonb');
+    await scalar(f3.sourceUrl, "update \"agents\" set \"legacy_appearance\" = '{\"theme\": \"dark\"}'::jsonb");
+    await expect(runMigration(f3.options)).rejects.toThrow(/column-missing-in-target:agents\.legacy_appearance/);
+    // The schema is applied before the compatibility check; no data may be copied.
+    expect(await scalar(f3.targetUrl, "select count(*) from companies")).toBe("0");
   }, T * 2);
 
   it("rejects unsupported source histories before any target write", async () => {
@@ -576,6 +920,8 @@ describeEmbeddedPostgres("myrmidon:migrate against a real Postgres", () => {
     // facts read straight from the target
     expect(await scalar(f.targetUrl, "select count(*) from companies")).toBe("2");
     expect(await scalar(f.targetUrl, `select title from issues where id = '${ISSUE_A}'`)).toBe("Issue One");
+    expect(await scalar(f.targetUrl, `select appearance::text from agents where id = '${AGENT_A}'`)).toBe('{"theme": {"palette": ["ink", "amber"]}}');
+    expect(await scalar(f.targetUrl, `select title_needs_generation from issues where id = '${ISSUE_A}'`)).toBe("true");
     expect(await scalar(f.targetUrl, `select count(*) from issue_documents where issue_id = '${ISSUE_A}'`)).toBe("1");
     const material = JSON.parse(await scalar(f.targetUrl, "select material::text from company_secret_versions"));
     expect(await plaintextHash(TARGET_KEY, material)).toBe(sha256Hex(SECRET_VALUE));
@@ -701,5 +1047,111 @@ describeEmbeddedPostgres("myrmidon:migrate against a real Postgres", () => {
     const text = String((error as Error).message);
     expect(text).not.toContain(WRONG_KEY);
     expect(text).not.toContain(secretUrl);
+  }, T);
+  it("migrates integral numeric values (0.0000000 -> 0) into integer target and preserves bigints", async () => {
+    const f = await fixture();
+    await scalar(f.sourceUrl, 'alter table "companies" alter column "spent_monthly_cents" type numeric(24,7)');
+    await scalar(f.sourceUrl, `update "companies" set "spent_monthly_cents" = '0.0000000'::numeric where id = '${COMPANY_A}'`);
+    await scalar(f.sourceUrl, `update "companies" set "spent_monthly_cents" = '12345.0000000'::numeric where id = '${COMPANY_B}'`);
+
+    const result = (await runMigration(f.options)) as Record<string, any>;
+    expect(result.status).toBe("ok");
+    expect(result.verification.countsAndContentMatch).toBe(true);
+
+    const valA = await scalar(f.targetUrl, `select spent_monthly_cents::text from companies where id = '${COMPANY_A}'`);
+    const valB = await scalar(f.targetUrl, `select spent_monthly_cents::text from companies where id = '${COMPANY_B}'`);
+    expect(valA).toBe("0");
+    expect(valB).toBe("12345");
+  }, T * 2);
+
+  it("fails closed when numeric source column going to integer target contains non-integer value (0.5)", async () => {
+    const f = await fixture();
+    await scalar(f.sourceUrl, 'alter table "companies" alter column "spent_monthly_cents" type numeric(24,7)');
+    await scalar(f.sourceUrl, `update "companies" set "spent_monthly_cents" = '0.5'::numeric where id = '${COMPANY_A}'`);
+
+    await expect(runMigration(f.options)).rejects.toThrow(/value-not-integer-in-target:companies\.spent_monthly_cents/);
+    // The schema is applied before the narrowing check; no data may be copied.
+    expect(await scalar(f.targetUrl, "select count(*) from companies")).toBe("0");
+    expect(existsSync(f.targetDir)).toBe(false);
+  }, T * 2);
+
+  it("catches differing values in digest comparison for narrowed columns", async () => {
+    const f = await fixture();
+    await scalar(f.sourceUrl, 'alter table "companies" alter column "spent_monthly_cents" type numeric(24,7)');
+    await scalar(f.sourceUrl, `update "companies" set "spent_monthly_cents" = '0.0000000'::numeric where id = '${COMPANY_A}'`);
+
+    const result = (await runMigration(f.options)) as Record<string, any>;
+    expect(result.status).toBe("ok");
+    expect(result.verification.countsAndContentMatch).toBe(true);
+
+    const srcDb = createDb(f.sourceUrl);
+    const tgtDb = createDb(f.targetUrl);
+    try {
+      const srcTables = await introspectTables(srcDb);
+      const tgtTables = await introspectTables(tgtDb);
+      const compSrc = srcTables.get("companies")!;
+      const compTgt = tgtTables.get("companies")!;
+
+      const srcDigest = await tableDigest(srcDb, "companies", compSrc, new Set(), new Set(["spent_monthly_cents"]));
+      const tgtDigest = await tableDigest(tgtDb, "companies", compTgt, new Set());
+      expect(srcDigest.digest).toBe(tgtDigest.digest);
+
+      // Tamper with the integer value in the target table
+      await tgtDb.execute(sql.raw(`update "companies" set "spent_monthly_cents" = 999 where id = '${COMPANY_A}'`));
+      const tamperedDigest = await tableDigest(tgtDb, "companies", compTgt, new Set());
+      expect(srcDigest.digest).not.toBe(tamperedDigest.digest);
+    } finally {
+      await closeRegisteredClients(f.sourceUrl);
+      await closeRegisteredClients(f.targetUrl);
+    }
+  }, T * 2);
+
+  it("migrates empty resource_lifecycle_events without --accept-vendor-only-data", async () => {
+    const f = await fixture();
+    const result = (await runMigration(f.options)) as Record<string, any>;
+    expect(result.status).toBe("ok");
+    const count = await scalar(f.targetUrl, "select count(*) from activity_log where details->>'source' = 'resource_lifecycle_events'");
+    expect(count).toBe("0");
+  }, T);
+
+  it("migrates 10 sample resource_lifecycle_events into activity_log preserving project associations and counts", async () => {
+    const f = await fixture();
+    const projectId = await scalar(f.sourceUrl, "select id::text from projects limit 1");
+    expect(projectId).toBeTruthy();
+
+    const seedSql = `
+      insert into resource_lifecycle_events (company_id, resource_type, resource_id, action, created_at)
+      values
+        ('${COMPANY_A}', 'project', '${projectId}', 'create', '2026-10-12 10:00:00+00'),
+        ('${COMPANY_A}', 'project', '${projectId}', 'update', '2026-10-12 10:05:00+00'),
+        ('${COMPANY_A}', 'project', '${projectId}', 'update', '2026-10-12 10:10:00+00'),
+        ('${COMPANY_A}', 'project', '${projectId}', 'update', '2026-10-12 10:15:00+00'),
+        ('${COMPANY_A}', 'project', '${projectId}', 'update', '2026-10-12 10:20:00+00'),
+        ('${COMPANY_A}', 'project', '${projectId}', 'update', '2026-10-12 10:25:00+00'),
+        ('${COMPANY_A}', 'project', '${projectId}', 'update', '2026-10-12 10:30:00+00'),
+        ('${COMPANY_A}', 'project', '${projectId}', 'update', '2026-10-12 10:35:00+00'),
+        ('${COMPANY_A}', 'project', '${projectId}', 'update', '2026-10-12 10:40:00+00'),
+        ('${COMPANY_A}', 'project', '${projectId}', 'delete', '2026-10-12 10:45:00+00')
+    `;
+    await scalar(f.sourceUrl, seedSql);
+
+    const result = (await runMigration(f.options)) as Record<string, any>;
+    expect(result.status).toBe("ok");
+
+    const totalMapped = await scalar(f.targetUrl, "select count(*) from activity_log where details->>'source' = 'resource_lifecycle_events'");
+    expect(totalMapped).toBe("10");
+
+    const projectAssociated = await scalar(
+      f.targetUrl,
+      `select count(*) from activity_log where entity_type = 'project' and entity_id = '${projectId}' and company_id = '${COMPANY_A}' and details->>'source' = 'resource_lifecycle_events'`,
+    );
+    expect(projectAssociated).toBe("10");
+
+    const createdCount = await scalar(f.targetUrl, "select count(*) from activity_log where action = 'project.created' and details->>'source' = 'resource_lifecycle_events'");
+    expect(createdCount).toBe("1");
+    const updatedCount = await scalar(f.targetUrl, "select count(*) from activity_log where action = 'project.updated' and details->>'source' = 'resource_lifecycle_events'");
+    expect(updatedCount).toBe("8");
+    const deletedCount = await scalar(f.targetUrl, "select count(*) from activity_log where action = 'project.deleted' and details->>'source' = 'resource_lifecycle_events'");
+    expect(deletedCount).toBe("1");
   }, T);
 });

@@ -25,7 +25,7 @@ All environment variables that Myrmidon uses for server configuration.
 | `PAPERCLIP_RUNNER_REMOTE_BINARY_PATH` | (host build) | Host-local path to a `paperclip-runnerd` artifact built for the remote target OS and architecture. Required when Myrmidon and the remote sandbox do not share a compatible platform; build metadata and the required transport mode are verified before launch. |
 | `PAPERCLIP_RUNNER_REMOTE_CODEX_PATH` | (unset) | Optional host-local path to a Codex executable built for the remote target OS and architecture. For remote Codex-backed runners, Myrmidon stages and verifies this executable beside `paperclip-runnerd`. |
 | `PAPERCLIP_RUNNER_REMOTE_CODEX_NPM_SPEC` | (unset) | Optional pinned npm package spec (for example, `@openai/codex@0.153.4`) installed inside each fresh remote lease when its Codex harness is not baked into the sandbox image. Mutually exclusive with `PAPERCLIP_RUNNER_REMOTE_CODEX_PATH`; Myrmidon verifies the installed executable before starting `runnerd`. |
-| `PAPERCLIP_RUNNER_REMOTE_PROVIDER_PACK_PATH` | (unset) | Host-local path to the immutable provider pack built by `pnpm --filter @paperclipai/paperclip-runner build:provider-pack`. The pack includes its target-built Node 24.11 runtime, locked production dependencies, OpenCode proxy/executable, and ACPX sidecar. Remote OpenCode and ACPX fail closed without it. A preinstalled pack is accepted only when its complete digested manifest matches this build-owned pack; otherwise Myrmidon stages this pack into the sandbox. |
+| `PAPERCLIP_RUNNER_REMOTE_PROVIDER_PACK_PATH` | (unset) | Host-local path to the immutable provider pack built by `pnpm --filter @myrmidon/paperclip-runner build:provider-pack`. The pack includes its target-built Node 24.11 runtime, locked production dependencies, OpenCode proxy/executable, and ACPX sidecar. Remote OpenCode and ACPX fail closed without it. A preinstalled pack is accepted only when its complete digested manifest matches this build-owned pack; otherwise Myrmidon stages this pack into the sandbox. |
 | `PAPERCLIP_HIDDEN_SETTINGS` | (unset) | Comma-separated settings surfaces to hide from the UI and floor at the API, for operators hosting Myrmidon for others (managed cloud, internal shared server). See [Hiding settings surfaces](#hiding-settings-surfaces). |
 | `PAPERCLIP_SETTING_DEFAULTS` | (unset) | JSON object replacing the schema default of selected instance settings, for hosting operators. See [Operator setting defaults](#operator-setting-defaults). |
 
@@ -141,9 +141,11 @@ configuration fails closed.
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `PAPERCLIP_SECRETS_MASTER_KEY` | (from file) | 32-byte encryption key (base64/hex/raw) |
-| `PAPERCLIP_SECRETS_MASTER_KEY_FILE` | `~/.paperclip/.../secrets/master.key` | Path to key file |
-| `PAPERCLIP_SECRETS_STRICT_MODE` | `false` | Require secret refs for sensitive env vars |
+| `MYRMIDON_SECRETS_MASTER_KEY` (alias: `PAPERCLIP_SECRETS_MASTER_KEY`) | (from file) | 32-byte encryption key (base64/hex/raw) |
+| `MYRMIDON_SECRETS_MASTER_KEY_FILE` (alias: `PAPERCLIP_SECRETS_MASTER_KEY_FILE`) | `~/.paperclip/.../secrets/master.key` | Path to key file |
+| `MYRMIDON_SECRETS_STRICT_MODE` (alias: `PAPERCLIP_SECRETS_STRICT_MODE`) | `false` | Require secret refs for sensitive env vars |
+
+> Note: All secrets configuration variables support both `MYRMIDON_*` (canonical) and legacy `PAPERCLIP_*` variable names. When both are set, `MYRMIDON_*` takes precedence.
 
 ## Agent Runtime (Injected into agent processes)
 

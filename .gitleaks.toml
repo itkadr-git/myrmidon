@@ -38,6 +38,7 @@ paths = [
   '''^ui/src/pages/apps/gateways/ConnectClientDialog\.test\.tsx$''',
   '''^ui/src/pages/apps/gateways/gateway-helpers\.test\.ts$''',
   '''^ui/src/pages/apps/gateways/panels/TokensPanel\.test\.tsx$''',
+  '''^server/src/myrmidon/litellm-audit/audit\.myrmidon\.test\.ts$''',
 ]
 
 [[allowlists]]
@@ -51,3 +52,10 @@ paths = [
   '''^packages/plugins/sandbox-providers/exe-dev/src/plugin\.ts$''',
   '''^scripts/smoke/hermes-gateway-e2e\.sh$''',
 ]
+
+[[allowlists]]
+description = "Upstream hermes comment quoted as patch context (\"# NO max_tokens: Anthropic/NIM wires forward it ...\"): words, not a value. Line-exact, patches only."
+condition = "AND"
+paths = ['''^docker/bot-runtime/patches/[^/]+\.patch$''']
+regexTarget = "line"
+regexes = ['''# NO max_tokens: Anthropic/NIM wires forward it''']

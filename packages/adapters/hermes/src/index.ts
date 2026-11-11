@@ -13,7 +13,7 @@ import type {
   AdapterRuntimeCommandSpec,
   AdapterSessionManagement,
   ServerAdapterModule,
-} from "@paperclipai/adapter-utils";
+} from "@myrmidon/adapter-utils";
 
 import { ADAPTER_TYPE, ADAPTER_LABEL } from "./shared/constants.js";
 import {
@@ -35,6 +35,26 @@ export {
   label as hermesGatewayLabel,
   models as hermesGatewayModels,
   type as hermesGatewayType,
+  INSECURE_REMOTE_HTTP_ESCAPE_HATCH,
+  BOT_CONTAINER_HOSTNAME_PREFIX,
+  parseBooleanLike,
+  isLoopbackHostname,
+  isBotContainerHostname,
+  isRemotePlainHttp,
+  isFleetHostPlacement,
+  getFleetHostPlacement,
+  isSitePrivateNetwork,
+  isFleetSitePlainHttpAllowed,
+  resolveFleetSiteTarget,
+  setFleetSiteSecurityResolver,
+  setActiveFleetSites,
+  resetFleetSiteSecurityForTests,
+  allowsInsecureRemoteHttp,
+  remotePlainHttpDeniedMessage,
+  type FleetSiteSecurityProfile,
+  type FleetSiteSecurityTarget,
+  type FleetSiteSecurityResolver,
+  type FleetSiteSecurityOptions,
 } from "./gateway/index.js";
 
 /**

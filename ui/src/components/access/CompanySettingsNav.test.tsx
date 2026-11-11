@@ -52,6 +52,8 @@ async function act(callback: () => void | Promise<void>) {
 
 describe("CompanySettingsNav", () => {
   let container: HTMLDivElement;
+  let activeQueryClient: QueryClient | null = null;
+  let currentRoot: ReturnType<typeof createRoot> | null = null;
 
   beforeEach(() => {
     container = document.createElement("div");
@@ -60,6 +62,12 @@ describe("CompanySettingsNav", () => {
   });
 
   afterEach(() => {
+    if (currentRoot) {
+      flushSync(() => currentRoot?.unmount());
+      currentRoot = null;
+    }
+    activeQueryClient?.clear();
+    activeQueryClient = null;
     container.remove();
     document.body.innerHTML = "";
     vi.clearAllMocks();
@@ -85,6 +93,7 @@ describe("CompanySettingsNav", () => {
     expect(getCompanySettingsTab("/company/settings/instance/access")).toBe("instance-access");
     expect(getCompanySettingsTab("/PAP/company/settings/instance/access")).toBe("instance-access");
     expect(getCompanySettingsTab("/company/settings/instance/experimental")).toBe("instance-experimental");
+    expect(getCompanySettingsTab("/company/settings/instance/features")).toBe("instance-features"); // myrmidon(FEATURES)
     expect(getCompanySettingsTab("/PAP/company/settings/instance/plugins/example")).toBe("instance-plugins");
     expect(getCompanySettingsTab("/company/settings/instance/adapters")).toBe("instance-adapters");
     // myrmidon(1.6.5 F-26 T3 CASTES-AND-NESTS): IA v2 — the pre-IA-v2
@@ -93,9 +102,18 @@ describe("CompanySettingsNav", () => {
     expect(getCompanySettingsTab("/company/settings/caste-directory")).toBe("castes");
     expect(getCompanySettingsTab("/PAP/company/settings/caste-directory")).toBe("castes");
     expect(getCompanySettingsTab("/company/settings/castes")).toBe("castes");
+    // myrmidon(1.7 BUDGET-CONFIG D): the Budgets section.
+    expect(getCompanySettingsTab("/company/settings/budgets")).toBe("budgets");
+    expect(getCompanySettingsTab("/PAP/company/settings/budgets")).toBe("budgets");
     // myrmidon(1.6.6 CORPUS E): the knowledge corpus tab.
     expect(getCompanySettingsTab("/company/settings/corpus")).toBe("corpus");
     expect(getCompanySettingsTab("/PAP/company/settings/corpus")).toBe("corpus");
+    // myrmidon(1.7 GRD-MODES): the Guardrails tab
+    expect(getCompanySettingsTab("/company/settings/guardrails")).toBe("guardrails");
+    expect(getCompanySettingsTab("/PAP/company/settings/guardrails")).toBe("guardrails");
+    // myrmidon(1.7 KNOWLEDGE-2.0 L-11): the knowledge settings tab.
+    expect(getCompanySettingsTab("/company/settings/knowledge")).toBe("knowledge");
+    expect(getCompanySettingsTab("/PAP/company/settings/knowledge")).toBe("knowledge");
     expect(getCompanySettingsTab("/company/settings/models")).toBe("models");
   });
 
@@ -103,13 +121,24 @@ describe("CompanySettingsNav", () => {
     root: ReturnType<typeof createRoot>,
     hiddenSettings?: string[],
     cloud?: { managed: boolean },
+    boardAccess?: unknown,
   ) {
-    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false, gcTime: 0 } } });
+    activeQueryClient = queryClient;
     queryClient.setQueryData(queryKeys.health, {
       status: "ok",
       ...(hiddenSettings ? { hiddenSettings } : {}),
       ...(cloud ? { cloud } : {}),
     });
+    queryClient.setQueryData(
+      queryKeys.access.currentBoardAccess,
+      boardAccess ?? {
+        userId: "user-1",
+        isInstanceAdmin: true,
+        source: "session",
+        companyIds: ["company-1"],
+      },
+    );
     root.render(
       <QueryClientProvider client={queryClient}>
         <CompanySettingsNav />
@@ -120,6 +149,7 @@ describe("CompanySettingsNav", () => {
   it("renders the active tab and navigates when a different tab is selected", async () => {
     currentPathname = "/PAP/company/settings/members";
     const root = createRoot(container);
+    currentRoot = root;
 
     await act(async () => {
       renderNav(root);
@@ -141,18 +171,22 @@ describe("CompanySettingsNav", () => {
           { value: "instance-access", label: "Access" },
           { value: "instance-board-api-keys", label: "Board API keys" },
           { value: "instance-experimental", label: "Experimental" },
+          { value: "instance-features", label: "Features" }, // myrmidon(FEATURES)
           { value: "instance-plugins", label: "Plugins" },
           { value: "instance-adapters", label: "Adapters" },
           { value: "browsers", label: "Browsers" }, // myrmidon(BROWSER-CONSOLE)
           { value: "clouds", label: "Clouds" }, // myrmidon(CLOUD-CONNECTOR)
           { value: "autonomy", label: "Autonomy" }, // myrmidon(1.6 AUTONOMY-MATRIX B)
           { value: "wip-limit", label: "WIP limit" }, // myrmidon(1.6.1 WIP-LIMIT B)
+          { value: "guardrails", label: "Guardrails" }, // myrmidon(1.7 GRD-MODES)
           { value: "review-routing", label: "Review routing" }, // myrmidon(REVIEW-ROUTING)
+          { value: "budgets", label: "Budgets" }, // myrmidon(1.7 BUDGET-CONFIG D)
 
           { value: "castes", label: "Agent castes" }, // myrmidon(1.6.5 F-26 T3)
           { value: "models", label: "Models & providers" }, // myrmidon(1.6.5 F-26 T3)
           { value: "owner-delivery", label: "Owner Telegram delivery" }, // myrmidon(1.6.5-OWNER-DM-FILTER)
           { value: "corpus", label: "Knowledge corpus" }, // myrmidon(1.6.6 CORPUS E)
+          { value: "knowledge", label: "Knowledge" }, // myrmidon(1.7 KNOWLEDGE-2.0 L-11)
           { value: "voice-stt", label: "Speech" }, // myrmidon(1.6.1 VOICE-STT C)
           { value: "agent-exchange", label: "Agent exchanges" }, // myrmidon(1.7-AGENT-EXCHANGE-B)
         ],
@@ -176,6 +210,7 @@ describe("CompanySettingsNav", () => {
   it("filters operator-hidden tabs out of the tab bar", async () => {
     currentPathname = "/PAP/company/settings/members";
     const root = createRoot(container);
+    currentRoot = root;
 
     await act(async () => {
       renderNav(root, ["instance.plugins"]);
@@ -196,17 +231,21 @@ describe("CompanySettingsNav", () => {
       "instance-access",
       "instance-board-api-keys",
       "instance-experimental",
+      "instance-features", // myrmidon(FEATURES)
       "instance-adapters",
       "browsers", // myrmidon(BROWSER-CONSOLE)
       "clouds", // myrmidon(CLOUD-CONNECTOR)
       "autonomy", // myrmidon(1.6 AUTONOMY-MATRIX B)
       "wip-limit", // myrmidon(1.6.1 WIP-LIMIT B)
+      "guardrails", // myrmidon(1.7 GRD-MODES)
       "review-routing", // myrmidon(REVIEW-ROUTING)
+      "budgets", // myrmidon(1.7 BUDGET-CONFIG D)
 
       "castes", // myrmidon(1.6.5 F-26 T3)
       "models", // myrmidon(1.6.5 F-26 T3)
       "owner-delivery", // myrmidon(1.6.5-OWNER-DM-FILTER)
       "corpus", // myrmidon(1.6.6 CORPUS E)
+      "knowledge", // myrmidon(1.7 KNOWLEDGE-2.0 L-11)
       "voice-stt", // myrmidon(1.6.1 VOICE-STT C)
       "agent-exchange", // myrmidon(1.7-AGENT-EXCHANGE-B)
     ]);
@@ -219,6 +258,7 @@ describe("CompanySettingsNav", () => {
   it("filters operator-hidden company tabs out of the tab bar", async () => {
     currentPathname = "/PAP/company/settings/members";
     const root = createRoot(container);
+    currentRoot = root;
 
     await act(async () => {
       renderNav(root, ["company.import", "company.secrets"]);
@@ -240,6 +280,7 @@ describe("CompanySettingsNav", () => {
   it("suppresses the Import tab on a Cloud-managed instance", async () => {
     currentPathname = "/PAP/company/settings/members";
     const root = createRoot(container);
+    currentRoot = root;
 
     await act(async () => {
       renderNav(root, undefined, { managed: true });
@@ -250,6 +291,54 @@ describe("CompanySettingsNav", () => {
     );
     expect(renderedValues).not.toContain("import");
     expect(renderedValues).toContain("export");
+
+    await act(async () => {
+      root.unmount();
+    });
+  });
+
+  it("suppresses the Models & providers tab for non-admin company members", async () => {
+    currentPathname = "/PAP/company/settings/members";
+    const root = createRoot(container);
+
+    await act(async () => {
+      renderNav(root, undefined, undefined, {
+        userId: "user-plain",
+        isInstanceAdmin: false,
+        source: "session",
+        companyIds: ["company-1"],
+        memberships: [{ companyId: "company-1", membershipRole: "member", status: "active" }],
+      });
+    });
+
+    const renderedValues = pageTabBarMock.mock.calls.at(-1)?.[0]?.items?.map(
+      (item: { value: string }) => item.value,
+    );
+    expect(renderedValues).not.toContain("models");
+
+    await act(async () => {
+      root.unmount();
+    });
+  });
+
+  it("shows the Models & providers tab for company owner or admin", async () => {
+    currentPathname = "/PAP/company/settings/members";
+    const root = createRoot(container);
+
+    await act(async () => {
+      renderNav(root, undefined, undefined, {
+        userId: "user-owner",
+        isInstanceAdmin: false,
+        source: "session",
+        companyIds: ["company-1"],
+        memberships: [{ companyId: "company-1", membershipRole: "owner", status: "active" }],
+      });
+    });
+
+    const renderedValues = pageTabBarMock.mock.calls.at(-1)?.[0]?.items?.map(
+      (item: { value: string }) => item.value,
+    );
+    expect(renderedValues).toContain("models");
 
     await act(async () => {
       root.unmount();

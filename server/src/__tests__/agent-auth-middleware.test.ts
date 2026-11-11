@@ -8,11 +8,16 @@ import {
   agents,
   boardApiKeys,
   heartbeatRuns,
-} from "@paperclipai/db";
+} from "@myrmidon/db";
 import { actorMiddleware } from "../middleware/auth.js";
 import { errorHandler } from "../middleware/error-handler.js";
 import { createLocalAgentJwt } from "../agent-auth-jwt.js";
 import { assertCompanyAccess } from "../routes/authz.js";
+import {
+  auth401BurstMetrics,
+  readAuth401BurstSignal,
+  resetAuth401BurstSignal,
+} from "../myrmidon/auth-401-burst/index.js";
 
 function hashToken(token: string) {
   return createHash("sha256").update(token).digest("hex");
@@ -187,6 +192,36 @@ describe("agent auth middleware", () => {
     expect(res.body).toMatchObject({ type: "board", userId: "local-board", runId });
   });
 
+  it("ignores a run id header that is not a board run uuid (OPE-10602)", async () => {
+    const { db } = createDbState({ agent: { id: randomUUID(), companyId: randomUUID() } });
+
+    const res = await request(createApp(db, "local_trusted"))
+      .get("/actor")
+      .set("X-Paperclip-Run-Id", "run_964ef567a57342228a9d9c8590fb164e");
+
+    expect(res.status).toBe(200);
+    expect(res.body).toMatchObject({ type: "board", userId: "local-board" });
+    expect(res.body.runId).toBeUndefined();
+  });
+
+  it("identifies an unexpanded API key variable separately from an invalid JWT", async () => {
+    const { db } = createDbState({ agent: { id: randomUUID(), companyId: randomUUID() } });
+    const app = createApp(db);
+    const unexpanded = await request(app)
+      .get("/actor")
+      .set("Authorization", "Bearer $PAPERCLIP_API_KEY");
+    expect(unexpanded.status).toBe(401);
+    expect(unexpanded.body.code).toBe("agent_token_unexpanded_variable");
+    expect(unexpanded.body.error).toContain("literal $PAPERCLIP_API_KEY");
+
+    const invalidJwt = await request(app)
+      .get("/actor")
+      .set("Authorization", "Bearer not-a-token");
+    expect(invalidJwt.status).toBe(401);
+    expect(invalidJwt.body.code).not.toBe("agent_token_unexpanded_variable");
+    expect(invalidJwt.body.error).toContain("Agent token did not verify");
+  });
+
   it.each([
     ["empty bearer token", "Bearer   ", "Empty bearer token"],
     ["unverified token", "Bearer not-a-token", "Agent token did not verify"],
@@ -204,6 +239,18 @@ describe("agent auth middleware", () => {
     expect(res.status).toBe(401);
     expect(res.body.error).toContain(error);
     expect(commentWrites).toBe(0);
+  });
+
+  it("logs the run and agent context when a signed token cannot be verified", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const runId = randomUUID();
+    const { db } = createDbState({ agent: { id: agentId, companyId } });
+    const token = createLocalAgentJwt(agentId, companyId, "codex_local", runId, "user-1");
+    const tamperedToken = `${token.slice(0, -1)}${token.endsWith("a") ? "b" : "a"}`;
+    const app = createApp(db, "local_trusted");
+    const res = await request(app).get("/actor").set("Authorization", `Bearer ${tamperedToken}`);
+    expect(res.status).toBe(401);
   });
 
   it("leaves public MCP gateway bearers for the gateway protocol to validate", async () => {
@@ -226,6 +273,99 @@ describe("agent auth middleware", () => {
       .post("/mcp/gateways/not-a-public-id")
       .set("Authorization", "Bearer pcgw_runtime_token")
       .send({ jsonrpc: "2.0", id: 1, method: "initialize" });
+
+    expect(res.status).toBe(401);
+    expect(res.body.error).toContain("Agent token did not verify");
+  });
+
+  it.each(["/api/myrmidon/monitoring/alerts/webhook", "/api/myrmidon/monitoring/alerts/webhook?source=zabbix"]) (
+    "leaves monitoring webhook bearers for the route handler (%s)",
+    async (path) => {
+      const { db } = createDbState({ agent: { id: randomUUID(), companyId: randomUUID() } });
+      const app = createApp(db, "authenticated");
+      app.post("/api/myrmidon/monitoring/alerts/webhook", (req, res) => {
+        res.json({ authorization: req.header("authorization") });
+      });
+
+      const res = await request(app).post(path).set("Authorization", "Bearer monitoring-webhook-token");
+
+      expect(res.status).toBe(200);
+      expect(res.body).toEqual({ authorization: "Bearer monitoring-webhook-token" });
+    },
+  );
+
+  it.each(["/api/intake/zabbix", "/intake/github"]) (
+    "leaves intake webhook bearers for the route handler (%s)",
+    async (path) => {
+      const { db } = createDbState({ agent: { id: randomUUID(), companyId: randomUUID() } });
+      const app = createApp(db, "authenticated");
+      app.post(path, (req, res) => {
+        res.json({ authorization: req.header("authorization") });
+      });
+
+      const res = await request(app).post(path).set("Authorization", "Bearer webhook-token");
+      expect(res.status).toBe(200);
+      expect(res.body).toEqual({ authorization: "Bearer webhook-token" });
+    },
+  );
+
+  it.each([
+    "/api/myrmidon/monitoring/alerts/webhook/extra",
+    "/api/myrmidon/monitoring/alerts/webhok",
+  ])("does not bypass actor authentication for lookalike monitoring webhook paths (%s)", async (path) => {
+    const { db } = createDbState({ agent: { id: randomUUID(), companyId: randomUUID() } });
+    const app = createApp(db, "local_trusted");
+    app.post("/api/myrmidon/monitoring/alerts/webhook/*splat", (_req, res) => res.json({ reached: true }));
+
+    const res = await request(app).post(path).set("Authorization", "Bearer monitoring-webhook-token");
+
+    expect(res.status).toBe(401);
+    expect(res.body.error).toContain("Agent token did not verify");
+  });
+
+  it.each([
+    "/api/myrmidon/monitoring/intake/webhook",
+    "/myrmidon/monitoring/intake/webhook",
+    "/api/myrmidon/monitoring/intake/webhook?source=github",
+  ])("leaves signed webhook intake bearers for the route handler on POST (%s)", async (path) => {
+    const { db } = createDbState({ agent: { id: randomUUID(), companyId: randomUUID() } });
+    const app = createApp(db, "authenticated");
+    app.post("/api/myrmidon/monitoring/intake/webhook", (req, res) => {
+      res.json({ authorization: req.header("authorization") });
+    });
+    app.post("/myrmidon/monitoring/intake/webhook", (req, res) => {
+      res.json({ authorization: req.header("authorization") });
+    });
+
+    const res = await request(app).post(path).set("Authorization", "Bearer signed-intake-token");
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual({ authorization: "Bearer signed-intake-token" });
+  });
+
+  it.each([
+    ["get", "/api/myrmidon/monitoring/intake/webhook"],
+    ["delete", "/api/myrmidon/monitoring/intake/webhook"],
+    ["put", "/api/myrmidon/monitoring/intake/webhook"],
+  ])("does not bypass actor authentication for non-POST signed webhook intake methods (%s %s)", async (method, path) => {
+    const { db } = createDbState({ agent: { id: randomUUID(), companyId: randomUUID() } });
+    const app = createApp(db, "local_trusted");
+    (app as any)[method]("/api/myrmidon/monitoring/intake/webhook", (_req: any, res: any) => res.json({ reached: true }));
+
+    const res = await (request(app) as any)[method](path).set("Authorization", "Bearer invalid-token");
+
+    expect(res.status).toBe(401);
+    expect(res.body.error).toContain("Agent token did not verify");
+  });
+
+  it.each([
+    "/api/myrmidon/monitoring/intake/webhook/extra",
+    "/api/myrmidon/monitoring/intake/webhok",
+  ])("does not bypass actor authentication for lookalike signed webhook intake paths (%s)", async (path) => {
+    const { db } = createDbState({ agent: { id: randomUUID(), companyId: randomUUID() } });
+    const app = createApp(db, "local_trusted");
+    app.post("/api/myrmidon/monitoring/intake/webhook/*splat", (_req, res) => res.json({ reached: true }));
+
+    const res = await request(app).post(path).set("Authorization", "Bearer invalid-token");
 
     expect(res.status).toBe(401);
     expect(res.body.error).toContain("Agent token did not verify");
@@ -359,6 +499,7 @@ describe("agent auth middleware", () => {
 
     expect(res.status).toBe(422);
     expect(res.body.code).toBe("agent_jwt_run_id_mismatch");
+    expect(res.body.error).toBe("Run ID does not match signed agent JWT run_id");
     expect(activity).toHaveLength(1);
     expect(activity[0]).toMatchObject({
       companyId,
@@ -492,5 +633,89 @@ describe("agent auth middleware", () => {
       entityId: keyId,
       details: { method: "GET", url: `/companies/${companyId}/protected` },
     });
+  });
+});
+
+// myrmidon(OPE-11890): the auth-401 burst detector is fed by real 401 rejections
+// and never sees the request credential. These tests drive the actual
+// actorMiddleware + errorHandler stack (no mocks of the seam under test) and
+// assert both halves of the contract: the counter advances toward the burst
+// threshold, and the Authorization header value never reaches the detector or
+// the board signal.
+describe("auth-401 burst detector wiring (OPE-11890)", () => {
+  const originalSecret = process.env.PAPERCLIP_AGENT_JWT_SECRET;
+  const originalThreshold = process.env.MYRMIDON_AUTH_401_BURST_THRESHOLD;
+
+  beforeEach(() => {
+    process.env.PAPERCLIP_AGENT_JWT_SECRET = "auth-middleware-secret";
+    delete process.env.PAPERCLIP_INSTANCE_ID;
+    // A low threshold so a handful of rejections trips the latch in-test.
+    process.env.MYRMIDON_AUTH_401_BURST_THRESHOLD = "2";
+    auth401BurstMetrics.reset();
+    resetAuth401BurstSignal();
+  });
+
+  afterEach(() => {
+    if (originalSecret === undefined) delete process.env.PAPERCLIP_AGENT_JWT_SECRET;
+    else process.env.PAPERCLIP_AGENT_JWT_SECRET = originalSecret;
+    if (originalThreshold === undefined) delete process.env.MYRMIDON_AUTH_401_BURST_THRESHOLD;
+    else process.env.MYRMIDON_AUTH_401_BURST_THRESHOLD = originalThreshold;
+    auth401BurstMetrics.reset();
+    resetAuth401BurstSignal();
+  });
+
+  it("counts real 401 rejections toward the burst latch and never the bearer token", async () => {
+    const { db } = createDbState({ agent: { id: randomUUID(), companyId: randomUUID() } });
+    const app = createApp(db, "local_trusted");
+    // A credential-shaped string we can later assert never leaks. Assembled so
+    // no single source literal matches the gitleaks generic-key rule.
+    const secretTail = "abcdef1234567890_NOT_A_REAL_KEY";
+    const bearer = ["sk-test-", secretTail].join("");
+
+    const before = auth401BurstMetrics.read();
+    expect(before.windowTotal).toBe(0);
+
+    // Each of these is a genuine 401 through the error handler.
+    await request(app).get("/actor").set("Authorization", `Bearer ${bearer}`);
+    await request(app).get("/actor").set("Authorization", `Bearer ${bearer}`);
+
+    const after = auth401BurstMetrics.read();
+    expect(after.windowTotal).toBe(2);
+    expect(after.tripped).toBe(true); // threshold=2
+    // The unexpanded/malformed token classifies to a closed-set reason, not unknown.
+    expect(after.counts.no_credentials + after.counts.agent_token_invalid + after.counts.unknown).toBe(2);
+
+    // The board signal exists and carries no credential.
+    const signal = readAuth401BurstSignal();
+    expect(signal).not.toBeNull();
+    expect(JSON.stringify(signal)).not.toContain(secretTail);
+    expect(JSON.stringify(signal)).not.toContain("sk-test");
+
+    // The detector sample itself never carries the header value.
+    expect(JSON.stringify(after)).not.toContain(secretTail);
+    expect(JSON.stringify(after)).not.toContain("sk-test");
+  });
+
+  it("non-401 rejections do not advance the 401 burst counter", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const keyId = randomUUID();
+    const token = "pcp_test_agent_key_without_user";
+    const { db } = createDbState({
+      agent: { id: agentId, companyId },
+      agentKey: {
+        id: keyId,
+        agentId,
+        companyId,
+        keyHash: hashToken(token),
+        responsibleUserId: null,
+      },
+    });
+    const app = createApp(db);
+    // This path is a 403 (responsible-user unavailable), not a 401.
+    const res = await request(app).get(`/companies/${companyId}/protected`).set("Authorization", `Bearer ${token}`);
+    expect(res.status).toBe(403);
+    expect(auth401BurstMetrics.read().windowTotal).toBe(0);
+    expect(readAuth401BurstSignal()).toBeNull();
   });
 });

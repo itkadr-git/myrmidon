@@ -48,14 +48,15 @@ import type {
   ExternalObjectMentionConfidence,
   ExternalObjectMentionSourceKind,
   EnvSecretRefBinding,
-} from "@paperclipai/shared";
-export type { PluginLauncherRenderContextSnapshot } from "@paperclipai/shared";
+} from "@myrmidon/shared";
+export type { PluginLauncherRenderContextSnapshot } from "@myrmidon/shared";
 
 import type {
   PluginEvent,
   PluginIssueCheckoutOwnership,
   PluginIssueOrchestrationSummary,
   PluginIssueRelationSummary,
+  PluginIssueMutationActor,
   PluginIssueSubtree,
   PluginIssueAttachmentContent,
   PluginIssueWakeupBatchResult,
@@ -2042,6 +2043,10 @@ export interface WorkerToHostMethods {
   "issues.getAttachmentContent": [
     params: { attachmentId: string; companyId: string; maxBytes?: number | null },
     result: PluginIssueAttachmentContent | null,
+  ];
+  "issues.uploadAttachment": [
+    params: { issueId: string; companyId: string; filename: string; contentType: string; contentBase64: string; actor?: PluginIssueMutationActor },
+    result: IssueAttachment,
   ];
 
   // Issue Documents

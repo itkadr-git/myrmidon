@@ -1,6 +1,6 @@
 # Agent Runtime Image Family
 
-Container images for running coding-agent harnesses in sandboxed environments (for example the kubernetes sandbox provider, stage 1 of the k8s contribution). Images are named `agent-runtime-{harness}:{version}` and published to `ghcr.io/paperclipai/` by the `agent-runtime-images` workflow. The registry is overridable: every reference flows through the `REGISTRY` bake variable.
+Container images for running coding-agent harnesses in sandboxed environments (for example the kubernetes sandbox provider, stage 1 of the k8s contribution). Images are named `agent-runtime-{harness}:{version}` and published to `ghcr.io/itkadr-git/` by the `agent-runtime-images` workflow. The registry is overridable: every reference flows through the `REGISTRY` bake variable.
 
 ## Image Lineup
 
@@ -28,7 +28,8 @@ login profile, and the runtime never writes a profile or an rc file. Some
 sandbox providers instead wrap each command in a login shell. That shell sources
 `/etc/profile` and the user profile files to read an owner-supplied `PATH`. No
 exec path sources `nvm`. For the full exec-path contract, see
-`packages/plugins/sandbox-providers/SANDBOX-REQUIREMENTS.md`.
+`packages/plugins/sandbox-providers/SANDBOX-REQUIREMENTS.md` and the
+[SANDBOX-REQUIREMENTS Compliance](#sandbox-requirements-compliance) section below.
 
 **Paperclip Binaries:**
 - `/usr/local/bin/paperclip-agent-shim`: Go binary compiled from `tools/agent-shim/`. Reads `/run/paperclip/runtime-command.json` and `syscall.Exec`s the harness CLI.
@@ -65,13 +66,28 @@ docker run --rm ghcr.io/paperclipai/agent-runtime-claude:dev claude-code --versi
 
 ## OMP Image
 
-`docker/agent-runtime/Dockerfile.omp` uses `oven/bun:1.4.3-alpine` directly. It does not inherit the Node/shim image and starts OMP as its container command (`CMD ["omp"]`). The image creates the `paperclip` user at uid/gid `1000:1000`; `HOME`, XDG directories, and the OMP session directory are under `/home/paperclip`. `/workspace` is the working directory and workspace mount point. Ensure host-mounted writable directories are accessible to uid/gid 1000.
+`docker/agent-runtime/Dockerfile.omp` uses `oven/bun:1.4.3-slim` directly (alpine is not suitable because `pi-natives` ships glibc binaries only and fails on musl with `Cannot find module pi_natives.linux-x64*.node`, OPE-7762). It does not inherit the Node/shim image and starts OMP as its container command (`CMD ["omp"]`). The process runs with uid/gid `1000:1000` (`USER 1000:1000`); `HOME=/home/paperclip` is set via `ENV`; `/home/paperclip` and `/workspace` are owned by `1000:1000`. `HOME`, XDG directories, and the OMP session directory are under `/home/paperclip`. `/workspace` is the working directory and workspace mount point. Ensure host-mounted writable directories are accessible to uid/gid 1000.
 
 The Dockerfile runs smoke checks at build time without invoking a model or provider: exact Bun (`1.4.3`) and OMP (`18.9.2`) versions, `omp` on `PATH`, `omp --help`, and `omp models ls`.
 
+## SANDBOX-REQUIREMENTS Compliance
+
+Comparison of `agent-runtime-*` images against `packages/plugins/sandbox-providers/SANDBOX-REQUIREMENTS.md` based on Dockerfile instructions:
+
+| Requirement | `base` | `claude` | `codex` | `gemini` | `opencode` | `pi` | `omp` |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| `node` on PATH | Ensured by Dockerfile (`RUN curl -fsSL https://deb.nodesource.com/setup_${NODE_VERSION}.x \| bash - && apt-get install -y --no-install-recommends nodejs`) | Inherited from base image `paperclipai/agent-runtime-base` — unverified by build (`docker run --rm --entrypoint sh ghcr.io/itkadr-git/agent-runtime-claude:<tag> -c 'command -v node sh tar'`) | Inherited from base image `paperclipai/agent-runtime-base` — unverified by build (`docker run --rm --entrypoint sh ghcr.io/itkadr-git/agent-runtime-codex:<tag> -c 'command -v node sh tar'`) | Inherited from base image `paperclipai/agent-runtime-base` — unverified by build (`docker run --rm --entrypoint sh ghcr.io/itkadr-git/agent-runtime-gemini:<tag> -c 'command -v node sh tar'`) | Inherited from base image `paperclipai/agent-runtime-base` — unverified by build (`docker run --rm --entrypoint sh ghcr.io/itkadr-git/agent-runtime-opencode:<tag> -c 'command -v node sh tar'`) | Inherited from base image `paperclipai/agent-runtime-base` — unverified by build (`docker run --rm --entrypoint sh ghcr.io/itkadr-git/agent-runtime-pi:<tag> -c 'command -v node sh tar'`) | Inherited from base image `oven/bun:1.4.3-slim` — unverified by build (`node` is not installed by `Dockerfile.omp`; `docker run --rm --entrypoint sh ghcr.io/itkadr-git/agent-runtime-omp:<tag> -c 'command -v node sh tar'`) |
+| Required CLI on PATH (name) | Not ensured (image only contains `/usr/local/bin/paperclip-agent-shim` via `COPY --from=shim-build /out/paperclip-agent-shim /usr/local/bin/paperclip-agent-shim`, no agent CLI installed) | Ensured by Dockerfile (`RUN npm install -g @anthropic-ai/claude-code@latest ...`, `RUN CLAUDE_BIN="$(command -v claude)" && ln -s "$CLAUDE_BIN" /usr/bin/claude-code`, `RUN command -v claude-code >/dev/null 2>&1 \|\| ...`; name: `claude-code`) | Ensured by Dockerfile (`RUN npm install -g @openai/codex@latest ...`, `RUN command -v codex >/dev/null 2>&1 \|\| ...`; name: `codex`) | Ensured by Dockerfile (`RUN npm install -g @google/gemini-cli@latest ...`, `RUN command -v gemini >/dev/null 2>&1 \|\| ...`; name: `gemini`) | Ensured by Dockerfile (`RUN npm install -g opencode-ai@latest ...`, `RUN command -v opencode >/dev/null 2>&1 \|\| ...`; name: `opencode`) | Ensured by Dockerfile (`RUN npm install -g @mariozechner/pi-coding-agent@latest ...`, `RUN command -v pi >/dev/null 2>&1 \|\| ...`; name: `pi`) | Ensured by Dockerfile (`RUN ... bun add --global "@oh-my-pi/pi-coding-agent@${OMP_VERSION}" ... && ln -sf "$BUN_GLOBAL_BIN/omp" /usr/local/bin/omp ...`, `RUN ... command -v omp ...`; name: `omp`) |
+| `sh` | Inherited from base image `ubuntu:22.04` — unverified by build (`docker run --rm --entrypoint sh ghcr.io/itkadr-git/agent-runtime-base:<tag> -c 'command -v node sh tar'`) | Inherited from base image `paperclipai/agent-runtime-base` — unverified by build (`docker run --rm --entrypoint sh ghcr.io/itkadr-git/agent-runtime-claude:<tag> -c 'command -v node sh tar'`) | Inherited from base image `paperclipai/agent-runtime-base` — unverified by build (`docker run --rm --entrypoint sh ghcr.io/itkadr-git/agent-runtime-codex:<tag> -c 'command -v node sh tar'`) | Inherited from base image `paperclipai/agent-runtime-base` — unverified by build (`docker run --rm --entrypoint sh ghcr.io/itkadr-git/agent-runtime-gemini:<tag> -c 'command -v node sh tar'`) | Inherited from base image `paperclipai/agent-runtime-base` — unverified by build (`docker run --rm --entrypoint sh ghcr.io/itkadr-git/agent-runtime-opencode:<tag> -c 'command -v node sh tar'`) | Inherited from base image `paperclipai/agent-runtime-base` — unverified by build (`docker run --rm --entrypoint sh ghcr.io/itkadr-git/agent-runtime-pi:<tag> -c 'command -v node sh tar'`) | Inherited from base image `oven/bun:1.4.3-slim` — unverified by build (`docker run --rm --entrypoint sh ghcr.io/itkadr-git/agent-runtime-omp:<tag> -c 'command -v node sh tar'`) |
+| `tar` | Inherited from base image `ubuntu:22.04` — unverified by build (`docker run --rm --entrypoint sh ghcr.io/itkadr-git/agent-runtime-base:<tag> -c 'command -v node sh tar'`) | Inherited from base image `paperclipai/agent-runtime-base` — unverified by build (`docker run --rm --entrypoint sh ghcr.io/itkadr-git/agent-runtime-claude:<tag> -c 'command -v node sh tar'`) | Inherited from base image `paperclipai/agent-runtime-base` — unverified by build (`docker run --rm --entrypoint sh ghcr.io/itkadr-git/agent-runtime-codex:<tag> -c 'command -v node sh tar'`) | Inherited from base image `paperclipai/agent-runtime-base` — unverified by build (`docker run --rm --entrypoint sh ghcr.io/itkadr-git/agent-runtime-gemini:<tag> -c 'command -v node sh tar'`) | Inherited from base image `paperclipai/agent-runtime-base` — unverified by build (`docker run --rm --entrypoint sh ghcr.io/itkadr-git/agent-runtime-opencode:<tag> -c 'command -v node sh tar'`) | Inherited from base image `paperclipai/agent-runtime-base` — unverified by build (`docker run --rm --entrypoint sh ghcr.io/itkadr-git/agent-runtime-pi:<tag> -c 'command -v node sh tar'`) | Inherited from base image `oven/bun:1.4.3-slim` — unverified by build (`docker run --rm --entrypoint sh ghcr.io/itkadr-git/agent-runtime-omp:<tag> -c 'command -v node sh tar'`) |
+| Writable workspace, HOME, cache directory, tmp directory | Ensured by Dockerfile for `HOME` and `~/.cache` (`RUN ... groupadd -g 1000 paperclip && useradd -u 1000 -g 1000 -d /home/paperclip -m -s /bin/bash paperclip`, `USER 1000:1000`); `WORKDIR /workspace` (no `chown`) and `/tmp` inherited from base image `ubuntu:22.04` — unverified by build (`docker run --rm --entrypoint sh ghcr.io/itkadr-git/agent-runtime-base:<tag> -c 'test -w /workspace && test -w "$HOME" && mkdir -p "$HOME/.cache" && test -w "$HOME/.cache" && test -w /tmp'`) | Inherited from base image `paperclipai/agent-runtime-base` — unverified by build (`USER 1000:1000`; `docker run --rm --entrypoint sh ghcr.io/itkadr-git/agent-runtime-claude:<tag> -c 'test -w /workspace && test -w "$HOME" && mkdir -p "$HOME/.cache" && test -w "$HOME/.cache" && test -w /tmp'`) | Inherited from base image `paperclipai/agent-runtime-base` — unverified by build (`USER 1000:1000`; `docker run --rm --entrypoint sh ghcr.io/itkadr-git/agent-runtime-codex:<tag> -c 'test -w /workspace && test -w "$HOME" && mkdir -p "$HOME/.cache" && test -w "$HOME/.cache" && test -w /tmp'`) | Inherited from base image `paperclipai/agent-runtime-base` — unverified by build (`USER 1000:1000`, additionally `RUN mkdir -p /home/paperclip/.gemini`; `docker run --rm --entrypoint sh ghcr.io/itkadr-git/agent-runtime-gemini:<tag> -c 'test -w /workspace && test -w "$HOME" && mkdir -p "$HOME/.cache" && test -w "$HOME/.cache" && test -w /tmp'`) | Inherited from base image `paperclipai/agent-runtime-base` — unverified by build (`USER 1000:1000`; `docker run --rm --entrypoint sh ghcr.io/itkadr-git/agent-runtime-opencode:<tag> -c 'test -w /workspace && test -w "$HOME" && mkdir -p "$HOME/.cache" && test -w "$HOME/.cache" && test -w /tmp'`) | Inherited from base image `paperclipai/agent-runtime-base` — unverified by build (`USER 1000:1000`; `docker run --rm --entrypoint sh ghcr.io/itkadr-git/agent-runtime-pi:<tag> -c 'test -w /workspace && test -w "$HOME" && mkdir -p "$HOME/.cache" && test -w "$HOME/.cache" && test -w /tmp'`) | Ensured by Dockerfile for workspace, HOME, and cache (`ENV HOME=/home/paperclip`, `ENV XDG_CACHE_HOME=/home/paperclip/.cache`, `RUN mkdir -p "$XDG_CONFIG_HOME" "$XDG_DATA_HOME" "$XDG_CACHE_HOME" "$OMP_SESSION_DIR" /workspace && chown -R 1000:1000 /home/paperclip /workspace`, `WORKDIR /workspace`, `USER 1000:1000`); `/tmp` inherited from base image `oven/bun:1.4.3-slim` — unverified by build (`docker run --rm --entrypoint sh ghcr.io/itkadr-git/agent-runtime-omp:<tag> -c 'test -w /tmp'`) |
+| Login profiles unmodified | Ensured by Dockerfile (instructions modifying `/etc/profile` or rc files are absent in `Dockerfile.base`; `ENTRYPOINT ["/usr/bin/tini", "--"]`, `CMD ["/usr/local/bin/paperclip-agent-shim"]`) | Inherited from base image `paperclipai/agent-runtime-base` — unverified by build (no profile-modifying instructions in `Dockerfile.claude`; `docker run --rm --entrypoint sh ghcr.io/itkadr-git/agent-runtime-claude:<tag> -c 'ls -la /etc/profile "$HOME"/.profile "$HOME"/.bashrc 2>/dev/null \|\| true'`) | Inherited from base image `paperclipai/agent-runtime-base` — unverified by build (no profile-modifying instructions in `Dockerfile.codex`; `docker run --rm --entrypoint sh ghcr.io/itkadr-git/agent-runtime-codex:<tag> -c 'ls -la /etc/profile "$HOME"/.profile "$HOME"/.bashrc 2>/dev/null \|\| true'`) | Inherited from base image `paperclipai/agent-runtime-base` — unverified by build (no profile-modifying instructions in `Dockerfile.gemini`; `docker run --rm --entrypoint sh ghcr.io/itkadr-git/agent-runtime-gemini:<tag> -c 'ls -la /etc/profile "$HOME"/.profile "$HOME"/.bashrc 2>/dev/null \|\| true'`) | Inherited from base image `paperclipai/agent-runtime-base` — unverified by build (no profile-modifying instructions in `Dockerfile.opencode`; `docker run --rm --entrypoint sh ghcr.io/itkadr-git/agent-runtime-opencode:<tag> -c 'ls -la /etc/profile "$HOME"/.profile "$HOME"/.bashrc 2>/dev/null \|\| true'`) | Inherited from base image `paperclipai/agent-runtime-base` — unverified by build (no profile-modifying instructions in `Dockerfile.pi`; `docker run --rm --entrypoint sh ghcr.io/itkadr-git/agent-runtime-pi:<tag> -c 'ls -la /etc/profile "$HOME"/.profile "$HOME"/.bashrc 2>/dev/null \|\| true'`) | Ensured by Dockerfile (instructions modifying `/etc/profile` or rc files are absent in `Dockerfile.omp`; `CMD ["omp"]`) |
+
+Each "Inherited from base image `<name>` — unverified by build" cell includes its per-image verification command (`<tag>` is `dev` for a local bake build or a verified CI tag/digest).
+
 ## Build and Test
 
-The `omp` target is defined in `docker/agent-runtime/buildx-bake.hcl` for `linux/amd64`. Bake defaults are `REGISTRY=ghcr.io/paperclipai` and `VERSION=dev`.
+The `omp` target is defined in `docker/agent-runtime/buildx-bake.hcl` for `linux/amd64`. Bake defaults are `REGISTRY=ghcr.io/itkadr-git` and `VERSION=dev`.
 
 Build locally for validation (this does not publish):
 
@@ -80,7 +96,7 @@ docker buildx bake -f docker/agent-runtime/buildx-bake.hcl omp --load
 docker run --rm --user 1000:1000 \
   --mount type=bind,src=<session-dir>,dst=/home/paperclip/.local/share/omp/sessions \
   --mount type=bind,src=<workspace-dir>,dst=/workspace \
-  ghcr.io/paperclipai/agent-runtime-omp:dev --help
+  ghcr.io/itkadr-git/agent-runtime-omp:dev --help
 ```
 
 Replace `<session-dir>` and `<workspace-dir>` with real host directories; the container needs write access. To test an image published by CI, use a tag or digest verified in the successful workflow run rather than assuming `dev` exists:
@@ -89,12 +105,56 @@ Replace `<session-dir>` and `<workspace-dir>` with real host directories; the co
 docker run --rm --user 1000:1000 \
   --mount type=bind,src=<session-dir>,dst=/home/paperclip/.local/share/omp/sessions \
   --mount type=bind,src=<workspace-dir>,dst=/workspace \
-  ghcr.io/paperclipai/agent-runtime-omp:<verified-tag-or-digest> --help
+  ghcr.io/itkadr-git/agent-runtime-omp:<verified-tag-or-digest> --help
 ```
+
+## OMP SSH Runner
+
+`docker/agent-runtime/Dockerfile.omp-ssh` (bake target `omp-ssh`, image
+`agent-runtime-omp-ssh`) is the execution target for `omp_local` agents. The
+agent is attached to a board **SSH environment** that points at a container from
+this image. The omp CLI, its tool calls and the builds they start run in that
+container, under its own memory, CPU and process limits. The board container
+only syncs the workspace and the runtime assets over SSH and streams the output.
+
+The image adds Bun and omp (pinned exactly like the board image), pnpm (the
+repository's `packageManager`), the GitHub CLI, a C toolchain and
+`openssh-server` to `agent-runtime-base`. sshd listens on port 2222. It accepts
+only key authentication, for the user `paperclip`. The board's public key is
+mounted read-only at `/etc/ssh/omp-runner/authorized_keys`. The host key is
+generated on the first start into the `hostkeys` volume and survives a
+recreate.
+
+One runner per agent:
+
+1. Make a key pair for the runner. Keep the private key out of the logs and the
+   shell history.
+2. Start the container from `docker/agent-runtime/omp-ssh/compose.yml`. Use an
+   env file with `OMP_RUNNER_NAME`, `OMP_RUNNER_IMAGE` (a digest from a
+   successful signed workflow run), `OMP_RUNNER_AUTHORIZED_KEYS` (the public
+   key file) and `OMP_RUNNER_NETWORK` (the board container's network) and `OMP_RUNNER_DATA_DIR`: a directory on the bot data disk, not the root disk, with subdirectories `workspace/` (owned by 1000:1000), `home/` and `hostkeys/`. Agents clone and build repositories there, gigabytes per agent. The
+   limits default to 4 GB, 1 CPU and 1024 processes, as for an engineer bot
+   container. Run
+   `docker compose -p <runner-name> --env-file <file> -f docker/agent-runtime/omp-ssh/compose.yml up -d`.
+3. Read the host key from the container log line `omp-runner: generated host key`,
+   or with `ssh-keyscan -p 2222 <runner-name>` from the board network.
+4. On the board, create an environment with driver `ssh`:
+   - host `<runner-name>`, port `2222`, user `paperclip`;
+   - remote workspace path `/workspace`;
+   - the private key (the board stores it as a company secret);
+   - known hosts `[<runner-name>]:2222 <host key>`, strict host key checking on.
+
+   Run the environment probe.
+5. Set the agent's default environment to that environment.
+
+Check after the first run: `docker top <board container>` shows no `omp`
+process during the run, and `docker top <runner-name>` shows it. The run log
+names the SSH environment in its `Syncing workspace and OMP runtime assets to`
+line.
 
 ## Publishing and Signing
 
-`.github/workflows/agent-runtime-images.yml` runs for pushes to `master` that touch configured paths, or manually through `workflow_dispatch`. A manual run accepts a version; otherwise the tag is `git-<commit-sha>`. The bake publish scope explicitly includes `base`, `opencode`, `pi`, `codex`, `gemini`, `claude`, and `omp` (`linux/amd64`; `hermes` is not included). The workflow retrieves each pushed image digest and signs it with cosign keyless OIDC using its GitHub Actions identity.
+`.github/workflows/agent-runtime-images.yml` runs for pushes to `main` and release tags `myr-v*` that touch configured paths, or manually through `workflow_dispatch`. A manual run accepts a version; otherwise the tag is `git-<commit-sha>`. The bake publish scope explicitly includes `base`, `opencode`, `pi`, `codex`, `gemini`, `claude`, `omp`, and `omp-ssh` (`linux/amd64`; `hermes` is not included). The workflow retrieves each pushed image digest and signs it with cosign keyless OIDC using its GitHub Actions identity.
 
 No successful workflow run or published OMP tag/digest has been verified for this change. Before using a published image, verify the successful workflow run, its GHCR digest, and the signature.
 

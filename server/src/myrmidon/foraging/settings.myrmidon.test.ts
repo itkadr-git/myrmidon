@@ -4,7 +4,7 @@
 // routes mount. No database, no network: the settings port is a stub.
 // Neutral data only.
 import { describe, expect, it } from "vitest";
-import { FORAGING_SETTINGS_KEY } from "@paperclipai/shared";
+import { FORAGING_SETTINGS_KEY } from "@myrmidon/shared";
 import {
   FORAGING_SETTINGS_UPDATED_ACTION,
   foragingSettingsService,

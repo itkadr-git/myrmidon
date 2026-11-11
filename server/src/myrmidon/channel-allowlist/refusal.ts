@@ -12,9 +12,9 @@
 // costs the writer one line per day, and the card is idempotent on
 // `channel-access:<provider>:<id>:<day>` inside `issuesSvc.create`.
 
-import type { Db } from "@paperclipai/db";
-import { CHANNEL_ALLOWLIST_REFUSAL_TEXT } from "@paperclipai/shared";
-import type { ChatProvider } from "@paperclipai/shared";
+import type { Db } from "@myrmidon/db";
+import { CHANNEL_ALLOWLIST_REFUSAL_TEXT } from "@myrmidon/shared";
+import type { ChatProvider } from "@myrmidon/shared";
 import { logger } from "../../middleware/logger.js";
 import { redactSensitiveText } from "../../redaction.js";
 import type { TelegramDmBridgeDeps } from "../agent-chat-bridge/bridge.js";

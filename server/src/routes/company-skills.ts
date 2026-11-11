@@ -1,5 +1,5 @@
 import { Router, type Request } from "express";
-import type { Db } from "@paperclipai/db";
+import type { Db } from "@myrmidon/db";
 import {
   catalogSkillListQuerySchema,
   companySkillCommentCreateSchema,
@@ -25,8 +25,8 @@ import {
   companySkillTestRunListQuerySchema,
   companySkillUpdateSchema,
   companySkillVersionCreateSchema,
-} from "@paperclipai/shared";
-import { trackSkillImported } from "@paperclipai/shared/telemetry";
+} from "@myrmidon/shared";
+import { trackSkillImported } from "@myrmidon/shared/telemetry";
 import { validate } from "../middleware/validate.js";
 import {
   accessService,
@@ -55,7 +55,7 @@ import {
   type SkillPolicyAction,
   type SkillPolicyDecision,
   type SkillPolicyEvaluationResource,
-} from "@paperclipai/shared";
+} from "@myrmidon/shared";
 
 type SkillTelemetryInput = {
   key: string;

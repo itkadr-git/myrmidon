@@ -9,10 +9,11 @@
 import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Database } from "lucide-react";
-import type { PatchToolPolicyCacheSettings } from "@paperclipai/shared";
+import type { PatchToolPolicyCacheSettings } from "@myrmidon/shared";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { i18n, useTranslation } from "@/i18n";
 import { toolPolicyCacheApi, toolPolicyCacheQueryKey, type ToolPolicyCacheView } from "./toolPolicyCacheApi";
 
 export interface ToolPolicyCacheDraftParse {
@@ -26,7 +27,7 @@ export function parseToolPolicyCacheDraft(raw: string, maxTtlMs: number): ToolPo
   const seconds = trimmed === "" ? Number.NaN : Number(trimmed);
   const maxSeconds = Math.floor(maxTtlMs / 1000);
   if (!Number.isInteger(seconds) || seconds < 0 || seconds > maxSeconds) {
-    return { patch: null, error: `Enter a whole number of seconds from 0 to ${maxSeconds}` };
+    return { patch: null, error: i18n.t("area.settings-models-runtime-2.tool-policy-cache-settings-panel.wholeSecondsError", { max: maxSeconds }) };
   }
   return { patch: { ttlMs: seconds * 1000 }, error: null };
 }
@@ -42,6 +43,7 @@ export function ToolPolicyCacheSettingsPanelView({
   pending: boolean;
   error: string | null;
 }) {
+  const { t } = useTranslation();
   const [draft, setDraft] = useState<string | null>(null);
   const effective = view?.effective;
   const shown = draft ?? (effective ? String(effective.ttlMs / 1000) : "");
@@ -53,13 +55,10 @@ export function ToolPolicyCacheSettingsPanelView({
       <div className="space-y-1">
         <div className="flex items-center gap-2">
           <Database className="h-4 w-4 text-muted-foreground" />
-          <h2 className="text-sm font-semibold">Tool gateway policy cache</h2>
+          <h2 className="text-sm font-semibold">{t("area.settings-models-runtime-2.tool-policy-cache-settings-panel.title")}</h2>
         </div>
         <p className="max-w-2xl text-sm text-muted-foreground">
-          The tool gateway keeps one snapshot of a company&apos;s tool policies, profiles, bindings and profile entries
-          in memory instead of reading four tables on every call. A change made through the board shows up on the very
-          next decision; this window only bounds changes written to the database by other means. Saving applies to the
-          next gateway call without a restart. 0 switches the cache off.
+          {t("area.settings-models-runtime-2.tool-policy-cache-settings-panel.description")}
         </p>
       </div>
 
@@ -72,7 +71,7 @@ export function ToolPolicyCacheSettingsPanelView({
       {effective ? (
         <div className="space-y-3">
           <div className="max-w-xs space-y-1">
-            <Label htmlFor="tool-policy-cache-ttl">Snapshot lifetime, seconds</Label>
+            <Label htmlFor="tool-policy-cache-ttl">{t("area.settings-models-runtime-2.tool-policy-cache-settings-panel.ttlLabel")}</Label>
             <Input
               id="tool-policy-cache-ttl"
               inputMode="numeric"
@@ -81,9 +80,11 @@ export function ToolPolicyCacheSettingsPanelView({
             />
             <div className="text-xs text-muted-foreground">
               <span data-testid="tool-policy-cache-current">
-                now {effective.cacheEnabled ? `${effective.ttlMs / 1000} s` : "off"}
+                {t("area.settings-models-runtime-2.tool-policy-cache-settings-panel.now", {
+                  value: effective.cacheEnabled ? t("area.settings-models-runtime-2.tool-policy-cache-settings-panel.seconds", { value: effective.ttlMs / 1000 }) : t("area.settings-models-runtime-2.tool-policy-cache-settings-panel.off"),
+                })}
               </span>
-              <span className="ml-2">default {effective.defaultTtlMs / 1000} s</span>
+              <span className="ml-2">{t("area.settings-models-runtime-2.tool-policy-cache-settings-panel.default", { value: t("area.settings-models-runtime-2.tool-policy-cache-settings-panel.seconds", { value: effective.defaultTtlMs / 1000 }) })}</span>
               {dirty && parsed?.error ? (
                 <span data-testid="tool-policy-cache-error" className="ml-2 text-destructive">
                   {parsed.error}
@@ -91,8 +92,11 @@ export function ToolPolicyCacheSettingsPanelView({
               ) : null}
             </div>
             <p className="text-xs text-muted-foreground" data-testid="tool-policy-cache-counters">
-              This process: {effective.cachedCompanies} compan{effective.cachedCompanies === 1 ? "y" : "ies"} cached,{" "}
-              {effective.hits} hits, {effective.misses} misses.
+              {t("area.settings-models-runtime-2.tool-policy-cache-settings-panel.counters", {
+                count: effective.cachedCompanies,
+                hits: effective.hits,
+                misses: effective.misses,
+              })}
             </p>
           </div>
           <div className="flex gap-2">
@@ -105,7 +109,7 @@ export function ToolPolicyCacheSettingsPanelView({
                 if (parsed?.patch) onSave(parsed.patch);
               }}
             >
-              {pending ? "Saving..." : "Save cache lifetime"}
+              {pending ? t("area.settings-models-runtime-2.tool-policy-cache-settings-panel.saving") : t("area.settings-models-runtime-2.tool-policy-cache-settings-panel.save")}
             </Button>
             <Button
               type="button"
@@ -115,18 +119,19 @@ export function ToolPolicyCacheSettingsPanelView({
               disabled={pending || view?.settings.ttlMs === undefined}
               onClick={() => onSave({ ttlMs: null })}
             >
-              Use the default
+              {t("area.settings-models-runtime-2.tool-policy-cache-settings-panel.useDefault")}
             </Button>
           </div>
         </div>
       ) : (
-        <p className="text-sm text-muted-foreground">Loading tool policy cache settings...</p>
+        <p className="text-sm text-muted-foreground">{t("area.settings-models-runtime-2.tool-policy-cache-settings-panel.loading")}</p>
       )}
     </section>
   );
 }
 
 export function ToolPolicyCacheSettingsPanel() {
+  const { t } = useTranslation();
   const queryClient = useQueryClient();
   const [error, setError] = useState<string | null>(null);
   const query = useQuery({
@@ -138,7 +143,7 @@ export function ToolPolicyCacheSettingsPanel() {
     mutationFn: toolPolicyCacheApi.update,
     onMutate: () => setError(null),
     onError: (err) =>
-      setError(err instanceof Error ? err.message : "Saving the tool policy cache settings failed."),
+      setError(err instanceof Error ? err.message : i18n.t("area.settings-models-runtime-2.tool-policy-cache-settings-panel.saveFailed")),
     onSuccess: async () => {
       setError(null);
       await queryClient.invalidateQueries({ queryKey: toolPolicyCacheQueryKey });
@@ -150,7 +155,7 @@ export function ToolPolicyCacheSettingsPanel() {
       <div className="text-sm text-destructive">
         {query.error instanceof Error
           ? query.error.message
-          : "Failed to load the tool policy cache settings."}
+          : t("area.settings-models-runtime-2.tool-policy-cache-settings-panel.loadFailed")}
       </div>
     );
   }

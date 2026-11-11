@@ -5,10 +5,11 @@
 // with plain fakes and this file is the only one that knows about `Db`.
 
 import { Router } from "express";
-import type { Db } from "@paperclipai/db";
+import type { Db } from "@myrmidon/db";
 import { logActivity } from "../../services/index.js";
 import { wikiRegulationRoutes, type WikiRegulationActivityEntry } from "./routes.js";
 import { createWikiRegulationService } from "./service.js";
+import { resolveCasteSensitivity } from "../caste-sensitivity.js";
 import { createDbRegulationStore } from "./store.js";
 
 /** The activity row of one wiki mutation. */
@@ -32,6 +33,7 @@ export function myrmidonWikiCortexRoutes(db: Db): Router {
   const service = createWikiRegulationService(createDbRegulationStore(db));
   return wikiRegulationRoutes({
     service,
+    casteSensitivity: (companyId) => resolveCasteSensitivity(db, companyId),
     recordActivity: (entry) => recordWikiRegulationActivity(db, entry),
   });
 }

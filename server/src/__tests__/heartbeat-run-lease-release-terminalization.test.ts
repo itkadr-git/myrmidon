@@ -8,7 +8,7 @@ import {
   heartbeatRunEvents,
   heartbeatRuns,
   issues,
-} from "@paperclipai/db";
+} from "@myrmidon/db";
 import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
@@ -51,7 +51,11 @@ describeEmbeddedPostgres("heartbeat terminalizeRunOnLeaseRelease", () => {
     await tempDb?.cleanup();
   });
 
-  async function seed(input: { issueStatus: string; runStatus: string }) {
+  async function seed(input: {
+    issueStatus: string;
+    runStatus: string;
+    scheduledRetryAt?: Date | null;
+  }) {
     const companyId = randomUUID();
     const agentId = randomUUID();
     const issueId = randomUUID();
@@ -90,6 +94,9 @@ describeEmbeddedPostgres("heartbeat terminalizeRunOnLeaseRelease", () => {
       invocationSource: "manual",
       startedAt: new Date(),
       contextSnapshot: { issueId },
+      ...(input.scheduledRetryAt !== undefined
+        ? { scheduledRetryAt: input.scheduledRetryAt }
+        : {}),
     });
 
     const run = await db
@@ -183,6 +190,73 @@ describeEmbeddedPostgres("heartbeat terminalizeRunOnLeaseRelease", () => {
       .then((rows) => rows[0]);
     expect(row?.status).toBe("interrupted");
     expect(row?.errorCode).toBe("lease_released_before_terminal");
+  });
+
+  it("keeps a queued run with a future scheduled retry queued instead of interrupting the retry", async () => {
+    // A scheduled retry waits in scheduled_retry / queued while holding a
+    // heartbeat lease. When the teardown releases that lease, terminalizing the
+    // row to interrupted / lease_released_before_terminal burns the scheduled
+    // retry: it never becomes due and the wake-up is lost.
+    const scheduledRetryAt = new Date(Date.now() + 5 * 60_000);
+    const { runId, run } = await seed({
+      issueStatus: "in_progress",
+      runStatus: "queued",
+      scheduledRetryAt,
+    });
+
+    const heartbeat = heartbeatService(db);
+    const terminal = await heartbeat.terminalizeRunOnLeaseRelease(run);
+
+    expect(terminal.status).toBe("queued");
+    expect(terminal.errorCode ?? null).toBeNull();
+
+    const row = await db
+      .select({
+        status: heartbeatRuns.status,
+        errorCode: heartbeatRuns.errorCode,
+        error: heartbeatRuns.error,
+        scheduledRetryAt: heartbeatRuns.scheduledRetryAt,
+      })
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.id, runId))
+      .then((rows) => rows[0]);
+
+    expect(row?.status).toBe("queued");
+    expect(row?.errorCode ?? null).toBeNull();
+    expect(row?.error ?? null).toBeNull();
+    expect(new Date(row?.scheduledRetryAt ?? 0).getTime()).toBe(scheduledRetryAt.getTime());
+
+    const eventCount = await db
+      .select({ id: heartbeatRunEvents.id })
+      .from(heartbeatRunEvents)
+      .where(eq(heartbeatRunEvents.runId, runId))
+      .then((rows) => rows.length);
+    expect(eventCount).toBe(0);
+  });
+
+  it("keeps a promoted retry that is already due queued when the lease releases", async () => {
+    // promoteDueRetryInTx moves scheduled_retry to queued and leaves
+    // scheduled_retry_at populated until a worker claims the run. A lease
+    // release in that window must not interrupt the promoted retry.
+    const scheduledRetryAt = new Date(Date.now() - 30_000);
+    const { runId, run } = await seed({
+      issueStatus: "in_progress",
+      runStatus: "queued",
+      scheduledRetryAt,
+    });
+
+    const heartbeat = heartbeatService(db);
+    const terminal = await heartbeat.terminalizeRunOnLeaseRelease(run);
+
+    expect(terminal.status).toBe("queued");
+
+    const row = await db
+      .select({ status: heartbeatRuns.status, errorCode: heartbeatRuns.errorCode })
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.id, runId))
+      .then((rows) => rows[0]);
+    expect(row?.status).toBe("queued");
+    expect(row?.errorCode ?? null).toBeNull();
   });
 
   it("forces a still-queued run to succeeded when the issue already reached done", async () => {

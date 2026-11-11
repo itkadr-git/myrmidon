@@ -6,7 +6,7 @@ import {
   resolvePaperclipRunnerIdleTimeoutMs,
   resolvePaperclipRunnerPermissionMode,
   type CreateConfigValues,
-} from "@paperclipai/adapter-utils";
+} from "@myrmidon/adapter-utils";
 import { DEFAULT_CODEX_LOCAL_BYPASS_APPROVALS_AND_SANDBOX } from "../index.js";
 
 function parseCommaArgs(value: string): string[] {
@@ -64,8 +64,24 @@ export function buildCodexLocalConfig(v: CreateConfigValues): Record<string, unk
   if (runtimeServices && Array.isArray(runtimeServices.services)) {
     ac.workspaceRuntime = runtimeServices;
   }
+  if (v.filesystemScope) ac.filesystemScope = v.filesystemScope;
+  if (v.networkScope) ac.networkScope = v.networkScope;
+  if (v.networkScope === "allowlist") ac.networkAllowlist = (v.networkAllowlist ?? "").split(/[\n,]/).map((item) => item.trim()).filter(Boolean);
   if (v.command) ac.command = v.command;
   if (v.extraArgs) ac.extraArgs = parseCommaArgs(v.extraArgs);
+  // myrmidon(1.6.6 OPE-11239): sandbox and timeout settings from the Agent Settings form.
+  const form = v.adapterSchemaValues ?? {};
+  if (form.filesystemScope === "workspace") ac.filesystemScope = "workspace";
+  if (Array.isArray(form.filesystemExtraPaths) && form.filesystemExtraPaths.length > 0) {
+    ac.filesystemExtraPaths = form.filesystemExtraPaths;
+  }
+  if (form.networkScope === "deny" || form.networkScope === "allowlist") ac.networkScope = form.networkScope;
+  if (Array.isArray(form.networkAllowlist) && form.networkAllowlist.length > 0) {
+    ac.networkAllowlist = form.networkAllowlist;
+  }
+  if (typeof form.outputInactivityTimeoutMs === "number" && form.outputInactivityTimeoutMs > 0) {
+    ac.outputInactivityTimeoutMs = form.outputInactivityTimeoutMs;
+  }
   return ac;
 }
 
@@ -87,6 +103,11 @@ export function buildPaperclipRunnerConfig(v: CreateConfigValues): Record<string
     "fastMode",
     "command",
     "extraArgs",
+    "filesystemScope",
+    "filesystemExtraPaths",
+    "networkScope",
+    "networkAllowlist",
+    "outputInactivityTimeoutMs",
   ]) {
     delete config[unsupportedKey];
     delete schemaValues[unsupportedKey];

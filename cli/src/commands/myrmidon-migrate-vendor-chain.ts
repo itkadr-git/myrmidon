@@ -1,4 +1,4 @@
-import { listMigrationChain, loadMigrationTargetSchema, type MigrationTargetSchema } from "@paperclipai/db";
+import { listMigrationChain, loadMigrationTargetSchema, type MigrationTargetSchema } from "@myrmidon/db";
 import { VENDOR_EXTRA_RELEASES } from "./myrmidon-migrate-vendor-releases.js";
 
 // The vendor Paperclip releases this tool migrates from, and the shape of their
@@ -87,6 +87,12 @@ export async function loadVendorReleases(): Promise<VendorRelease[]> {
  * Tables and columns that exist only in later releases and are absent from
  * the target schema, taking into account net migration chain state (additions and drops).
  */
+/**
+ * Vendor tables mapped into existing Myrmidon target tables rather than kept as separate tables.
+ * Data from these tables is transformed and imported, so they are not treated as uncarried vendor-only data.
+ */
+export const MAPPED_VENDOR_TABLES = new Set(["resource_lifecycle_events"]);
+
 export function buildVendorOnlyIndex(
   extras: ReadonlyArray<VendorReleaseExtra> = VENDOR_EXTRA_RELEASES,
   targetSchema?: TargetSchemaLookup,
@@ -99,12 +105,14 @@ export function buildVendorOnlyIndex(
   for (const r of extras) {
     for (const e of r.extra) {
       for (const t of e.tables) {
-        if (!tables.has(t) && (!targetSchema || !targetSchema.tables.has(t))) {
+        if (!tables.has(t) && (!targetSchema || !targetSchema.tables.has(t)) && !MAPPED_VENDOR_TABLES.has(t)) {
           tables.set(t, r.release);
         }
       }
       for (const c of e.columns) {
-        if (!columns.has(c) && (!targetSchema || !targetSchema.columns.has(c))) {
+        const dot = c.indexOf(".");
+        const table = dot === -1 ? "" : c.slice(0, dot);
+        if (!columns.has(c) && (!targetSchema || !targetSchema.columns.has(c)) && !MAPPED_VENDOR_TABLES.has(table)) {
           columns.set(c, r.release);
         }
       }

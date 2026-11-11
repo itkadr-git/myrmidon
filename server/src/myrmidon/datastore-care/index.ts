@@ -7,7 +7,7 @@
 
 import { Router } from "express";
 import { sql } from "drizzle-orm";
-import type { Db } from "@paperclipai/db";
+import type { Db } from "@myrmidon/db";
 
 import { BOARD_CONNECTION_REF, implicitDatastoreTargets, type DatastoreTarget } from "./domain.js";
 import { readDatastoreCareSettings, type DatastoreCareSettings } from "./settings.js";
@@ -100,6 +100,7 @@ function collectSnapshotWith(
       now,
       topQueries: settings.topQueries,
       backupDir: settings.backupDir,
+      backupExternal: settings.externalBackupLabel,
       optionalMetrics: settings.optionalMetrics,
     },
     { connection: drizzleQueryPort(db, target.connectionRef || BOARD_CONNECTION_REF) },

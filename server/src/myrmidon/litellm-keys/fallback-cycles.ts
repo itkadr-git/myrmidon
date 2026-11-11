@@ -4,8 +4,10 @@ import {
   findFallbackTopologyCycles,
   parseFallbackTopology,
   type FallbackChain,
-} from "@paperclipai/shared";
+  type KnownModelInfo,
+} from "@myrmidon/shared";
 import { unprocessable } from "../../errors.js";
+import { createLitellmConfigClient } from "../litellm-sync/config-client.js";
 
 /**
  * myrmidon(M2-B): fallback chains are checked for loops before they are saved.
@@ -100,19 +102,31 @@ export function checkCardFallbackChains(adapterConfig: Record<string, unknown> |
   assertCardFallbacksAcyclic(adapterConfig as CardFallbackSource);
 }
 
+export interface GatewayFallbackModelInfo {
+  modelName: string;
+  provider: string | null;
+  inputCostPerToken: number | null;
+  outputCostPerToken: number | null;
+  isFree?: boolean;
+}
+
 /** What the board learned from the gateway about its fallback topology. */
 export interface GatewayFallbackReport {
   /** The topology as the gateway stores it, group by group. */
   chains: FallbackChain[];
   /** Every loop found in it, each named as `a -> b -> a`. */
   cycles: Array<{ path: string[]; described: string }>;
+  /** Known models and their provider/rates. */
+  models?: GatewayFallbackModelInfo[];
+  /** Findings of a save that did not refuse it (for example a fallback inside one provider). */
+  warnings?: string[];
   /** Set instead of the fields above when the gateway could not be read. */
   error?: string;
 }
 
 /**
- * Reads the gateway's fallback topology through the admin key and reports its
- * loops.
+ * Reads the gateway's live fallback topology through the admin key and reports
+ * its loops. The gateway is the only source; the board keeps no copy.
  *
  * Read-only on purpose. The board does not push a topology over a working
  * gateway by itself: a write is an operator's decision, and the loops in the
@@ -132,34 +146,61 @@ export async function readGatewayFallbackTopology(
 ): Promise<GatewayFallbackReport> {
   const baseUrl = input.settings.baseUrl;
   const adminKeySecret = input.settings.adminKeySecret;
-  if (!baseUrl || !adminKeySecret) {
-    return { chains: [], cycles: [], error: "the gateway address or admin key is not configured" };
+  let adminKey: string | null = null;
+  if (adminKeySecret) {
+    adminKey = await deps.readSecretValue(input.companyId, adminKeySecret);
   }
-  const adminKey = await deps.readSecretValue(input.companyId, adminKeySecret);
-  if (!adminKey) {
-    return { chains: [], cycles: [], error: "the gateway admin key is not available to the board" };
-  }
-  let payload: unknown;
+
+  const client = createLitellmConfigClient({
+    litellmBaseUrl: baseUrl,
+    litellmAdminKey: adminKey,
+  });
+
   try {
-    const response = await fetch(`${baseUrl.replace(/\/$/, "")}/router/settings`, {
-      headers: { Authorization: `Bearer ${adminKey}` },
-    });
-    if (!response.ok) {
-      return { chains: [], cycles: [], error: `the gateway answered ${response.status}` };
-    }
-    const body = (await response.json()) as { fields?: Array<{ field_name?: string; field_value?: unknown }> };
-    const field = (body.fields ?? []).find((entry) => entry.field_name === "fallbacks");
-    payload = field?.field_value;
+    const chains = await client.readFallbackTopology();
+    const cycles = findFallbackTopologyCycles(chains).map((cycle) => ({
+      path: cycle.path,
+      described: describeFallbackCycle(cycle),
+    }));
+    return { chains, cycles };
   } catch (err) {
-    return { chains: [], cycles: [], error: err instanceof Error ? err.message : "the gateway could not be read" };
+    return {
+      chains: [],
+      cycles: [],
+      error: err instanceof Error ? err.message : "the fallback topology could not be read",
+    };
   }
-  const chains = parseFallbackTopology(payload);
-  if (!chains) {
-    return { chains: [], cycles: [], error: "the gateway's fallback topology is in an unexpected shape" };
+}
+
+/**
+ * Writes the whole fallback topology to the gateway (`/config/update`), then
+ * answers what the gateway now reports, with the findings that did not refuse
+ * the save.
+ */
+export async function updateGatewayFallbackTopology(
+  deps: {
+    readSecretValue(companyId: string, secretName: string): Promise<string | null>;
+  },
+  input: {
+    companyId: string;
+    settings: { baseUrl: string | null; adminKeySecret: string | null };
+    chains: FallbackChain[];
+    catalog?: Map<string, KnownModelInfo>;
+  },
+): Promise<GatewayFallbackReport> {
+  const baseUrl = input.settings.baseUrl;
+  const adminKeySecret = input.settings.adminKeySecret;
+  let adminKey: string | null = null;
+  if (adminKeySecret) {
+    adminKey = await deps.readSecretValue(input.companyId, adminKeySecret);
   }
-  const cycles = findFallbackTopologyCycles(chains).map((cycle) => ({
-    path: cycle.path,
-    described: describeFallbackCycle(cycle),
-  }));
-  return { chains, cycles };
+
+  const client = createLitellmConfigClient({
+    litellmBaseUrl: baseUrl,
+    litellmAdminKey: adminKey,
+  });
+
+  const { warnings } = await client.updateFallbackTopology(input.chains, input.catalog);
+  const report = await readGatewayFallbackTopology(deps, input);
+  return warnings.length > 0 ? { ...report, warnings } : report;
 }

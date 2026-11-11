@@ -87,6 +87,21 @@ survives the fresh read. See [design/bot-canary.md](../design/bot-canary.md)
 **Apply now** always runs a real pass: it bypasses the 30-second freshness
 window that lets the periodic sweep and the canary wave share one recent pass.
 
+### Live resource limit updates (memory, CPUs, PIDs)
+
+When container resources (`Memory`, `CPUs`, `PidsLimit`) change on the card,
+applying the container (via **Apply now** or periodic reconcile) does not
+restart or recreate the running container. Instead, the driver performs a
+single coordinated operation:
+1. It updates dockergate's `bots[]` configuration and runtime ceilings via
+   dockergate route A20 (`PUT /containers/myrmidon-bot-<key>/config/update`),
+   validating the values against platform ceilings with atomic reload.
+2. It updates the live container's cgroups via Docker update (route A18).
+
+If the requested limits exceed the instance platform ceiling, dockergate
+rejects the update with a readable error (`requested resource limits exceed platform ceiling`)
+instead of a low-level error, keeping the running container on its current limits.
+
 ### The vendor's config backups are wiped on every apply
 
 The vendored Hermes CLI snapshots `config.yaml` into `hermes/backups/config/`
@@ -132,3 +147,12 @@ When the container runtime does not answer, the section shows
 **Container status unavailable: …** and the **Concurrent runs limit** block
 disappears entirely — no comparison is possible without an applied state to
 read.
+
+## Cleanup on termination and deletion
+
+When an agent is terminated (`POST /api/agents/:id/terminate`) or deleted
+(`DELETE /api/agents/:id`), Myrmidon automatically tears down the associated
+bot container and removes its data directory on the hosting runtime (local or
+remote execution site via fleetd). This lifecycle operation is fail-closed: if
+the runtime or remote site is unreachable or cleanup fails, the terminate or
+delete operation aborts to prevent leaving orphaned containers.

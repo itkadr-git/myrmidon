@@ -8,7 +8,7 @@ import type {
   ToolMcpGatewayToken,
   ToolMcpGatewayTokenCreated,
   ToolMcpGatewayWithTokens,
-} from "@paperclipai/shared";
+} from "@myrmidon/shared";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ConnectClientDialog } from "./ConnectClientDialog";
 

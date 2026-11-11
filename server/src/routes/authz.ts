@@ -1,6 +1,6 @@
 import type { Request, Response } from "express";
-import type { Db } from "@paperclipai/db";
-import type { PermissionKey, SecretBindingTargetType } from "@paperclipai/shared";
+import type { Db } from "@myrmidon/db";
+import type { PermissionKey, SecretBindingTargetType } from "@myrmidon/shared";
 import { forbidden, HttpError, unauthorized } from "../errors.js";
 import { logger } from "../middleware/logger.js";
 import { responsibleUserAuthzShadowMode } from "../services/authorization.js";
@@ -188,6 +188,19 @@ export function assertCompanyAccess(req: Request, companyId: string) {
 }
 
 /**
+ * myrmidon(1.6.6 OPE-8999): board actors only, and only a company owner/admin (active membership)
+ * or an instance admin. Viewers, plain members and agents get 403.
+ */
+export function assertCompanyAdmin(req: Request, companyId: string) {
+  assertBoard(req);
+  if (req.actor.source === "local_implicit" || req.actor.isInstanceAdmin) return;
+  assertCompanyAccess(req, companyId);
+  const membership = req.actor.memberships?.find((m) => m.companyId === companyId && m.status === "active");
+  if (membership?.membershipRole === "owner" || membership?.membershipRole === "admin") return;
+  throw forbidden("Company admin access required");
+}
+
+/**
  * Company permission check for BOTH actor types, following the
  * `assertCompanyPermission` precedent in `routes/access.ts`:
  *
@@ -267,7 +280,21 @@ export async function assertActorCompanyPermission(
  * get blanket access to companies they are not a member of.
  */
 export function hasCompanyAccess(req: Request, companyId: string): boolean {
-  if (req.actor.type === "none") return false;
+  if (req.actor.type === "none") {
+    // OPE-10599: the caller will most likely turn this `false` into a 404
+    // (existence-oracle guard). Log the underlying reason so the journal
+    // shows why an unauthenticated request reached a company resource; the
+    // canonical `getAccessibleResource` path answers 401 instead.
+    logger.warn(
+      {
+        actorNoneReason: req.actorNoneReason ?? "unknown",
+        method: req.method,
+        url: req.originalUrl,
+      },
+      "Anonymous actor denied company access",
+    );
+    return false;
+  }
   // myrmidon(1.6.6 MONITORING E): a link key sees only the company it was
   // issued for, whatever its owner user's membership list says.
   const linkConfines = monitoringLinkCompanyConfines(req, companyId);
@@ -282,6 +309,12 @@ export function hasCompanyAccess(req: Request, companyId: string): boolean {
  * handler. Wraps the two-step pattern described on `hasCompanyAccess` so
  * new routes cannot accidentally reintroduce the existence oracle:
  *
+ *   - anonymous actor (OPE-10599) → 401 `{ error: "Authentication required" }`,
+ *     returns null, and the server journal records why the actor ended up
+ *     anonymous. The existence-oracle guard below is only meaningful against
+ *     a caller that *could* authenticate as some tenant; an unauthenticated
+ *     caller must be told to authenticate, not that the resource is missing —
+ *     otherwise agents spin on a phantom "deleted" task.
  *   - missing resource          → 404 `{ error: notFoundMessage }`, returns null
  *   - exists but cross-tenant   → identical 404, returns null
  *   - accessible                → runs `assertCompanyAccess` (write-path
@@ -301,6 +334,18 @@ export async function getAccessibleResource<T extends { companyId: string }>(
   resource: T | null | undefined | Promise<T | null | undefined>,
   notFoundMessage: string,
 ): Promise<T | null> {
+  if (req.actor.type === "none") {
+    logger.warn(
+      {
+        actorNoneReason: req.actorNoneReason ?? "unknown",
+        method: req.method,
+        url: req.originalUrl,
+      },
+      "Anonymous request to company resource; sending 401",
+    );
+    res.status(401).json({ error: "Authentication required" });
+    return null;
+  }
   const resolved = await resource;
   if (!resolved || !hasCompanyAccess(req, resolved.companyId)) {
     res.status(404).json({ error: notFoundMessage });

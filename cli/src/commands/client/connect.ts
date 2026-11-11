@@ -1,8 +1,8 @@
 import { Command } from "commander";
 import * as p from "@clack/prompts";
 import pc from "picocolors";
-import type { Agent, Company } from "@paperclipai/shared";
-import { createAgentKeySchema, createBoardApiKeySchema } from "@paperclipai/shared";
+import type { Agent, Company } from "@myrmidon/shared";
+import { createAgentKeySchema, createBoardApiKeySchema } from "@myrmidon/shared";
 import { loginBoardCli } from "../../client/board-auth.js";
 import { PaperclipApiClient } from "../../client/http.js";
 import { resolveProfile, readContext, setCurrentProfile, upsertProfile } from "../../client/context.js";
@@ -55,16 +55,16 @@ export function registerConnectCommand(program: Command): void {
 
 async function connectWizard(opts: ConnectOptions) {
   if (!process.stdin.isTTY || !process.stdout.isTTY) {
-    throw new Error("`paperclipai connect` is interactive. For scripts, pass --api-base/--api-key or use context set/token commands.");
+    throw new Error("`myrmidon connect` is interactive. For scripts, pass --api-base/--api-key or use context set/token commands.");
   }
 
-  p.intro(pc.bgCyan(pc.black(" paperclipai connect ")));
+  p.intro(pc.bgCyan(pc.black(" myrmidon connect ")));
 
   const context = readContext(opts.context);
   const resolvedProfile = resolveProfile(context, opts.profile);
   const initialApiBase = resolveApiBase(opts, resolvedProfile.profile);
   const apiBaseInput = await p.text({
-    message: "Paperclip API base",
+    message: "Myrmidon API base",
     initialValue: initialApiBase,
     placeholder: "http://localhost:3100",
   });
@@ -77,7 +77,7 @@ async function connectWizard(opts: ConnectOptions) {
     apiBase,
     requestedAccess: "board",
     requestedCompanyId: opts.companyId ?? resolvedProfile.profile.companyId ?? null,
-    command: "paperclipai connect",
+    command: "myrmidon connect",
   });
   const boardApi = new PaperclipApiClient({ apiBase, apiKey: boardLogin.token });
   const companies = (await boardApi.get<Company[]>("/api/companies")) ?? [];

@@ -6,4 +6,4 @@ export {
   resolveSessionKey,
   sessionCodec,
   testEnvironment,
-} from "@paperclipai/hermes-paperclip-adapter/gateway/server";
+} from "@myrmidon/hermes-paperclip-adapter/gateway/server";

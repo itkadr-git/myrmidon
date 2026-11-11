@@ -1,4 +1,4 @@
-import type { AdapterConfigSchema } from "@paperclipai/adapter-utils";
+import type { AdapterConfigSchema } from "@myrmidon/adapter-utils";
 
 import {
   DEFAULT_GRACE_SEC,
@@ -17,7 +17,7 @@ function providerLabel(provider: string): string {
     .join(" ");
 }
 // myrmidon(B1c): product name in user-facing texts; see shared myrmidon-product.
-import { PRODUCT_NAME } from "@paperclipai/adapter-utils";
+import { PRODUCT_NAME } from "@myrmidon/adapter-utils";
 
 export function getConfigSchema(): AdapterConfigSchema {
   return {
@@ -114,6 +114,13 @@ export function getConfigSchema(): AdapterConfigSchema {
         label: "Network allowlist",
         type: "text",
         hint: "Optional comma-separated hostnames, host:port entries, or origin URLs.",
+      },
+      {
+        key: "includeConfiguredMcpServers",
+        label: "Include configured MCP servers",
+        type: "toggle",
+        default: true,
+        hint: "Copy the existing Hermes MCP server names into the run-scoped MCP configuration. Turn off to expose only runtime-provided servers.",
       },
       {
         key: "quiet",

@@ -15,7 +15,7 @@
 // file that knows about `Db`).
 
 import { Router, type Request } from "express";
-import { agentNestsBodySchema } from "@paperclipai/shared";
+import { agentNestsBodySchema } from "@myrmidon/shared";
 import { badRequest } from "../../errors.js";
 import { assertBoard, assertCompanyAccess } from "../../routes/authz.js";
 import type { AgentNestService } from "./nests-service.js";

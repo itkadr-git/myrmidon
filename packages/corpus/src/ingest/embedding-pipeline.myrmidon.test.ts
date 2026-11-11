@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { CORPUS_DEFAULT_EMBEDDING_MODEL } from "../domain.js";
 
 import { chunkDocumentText } from "../chunking/chunker.js";
 import type { Embedder, ReplaceCorpusChunksInput } from "../ports.js";
@@ -60,6 +61,10 @@ function fakeEmbedder(dimensions = 4): { embedder: Embedder; calls: string[][] }
 }
 
 describe("document ingestion pipeline", () => {
+  it("uses the default model for corpus ingestion", () => {
+    expect(CORPUS_DEFAULT_EMBEDDING_MODEL).toBe("corpus-embed-pplx-0.6b");
+  });
+
   it("chunks, embeds in batches and replaces the document chunks with normalized vectors", async () => {
     const text = documentText();
     const { embedder, calls } = fakeEmbedder();

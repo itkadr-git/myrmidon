@@ -2,6 +2,8 @@ const BOARD_ROUTE_ROOTS = new Set([
   "dashboard",
   "companies",
   "company",
+  "commander",
+  "fleet",
   "skills",
   "org",
   "agents",
@@ -23,6 +25,8 @@ const BOARD_ROUTE_ROOTS = new Set([
   "decisions",
   "inbox",
   "board-chat",
+  "commander-chat",
+  "knowledge",
   "artifacts",
   "u",
   "design-guide",
@@ -33,9 +37,12 @@ const BOARD_ROUTE_ROOTS = new Set([
   "foraging",
   "quality",
   "status",
+  "system",
   "cases",
   "pipelines",
   "stack",
+  "wiki", // myrmidon(OPE-9222): the Knowledge screen
+  "more", // myrmidon(OPE-10135): the Phone More screen
 ]);
 
 const GLOBAL_ROUTE_ROOTS = new Set(["auth", "invite", "board-claim", "cli-auth", "docs", "instance"]);

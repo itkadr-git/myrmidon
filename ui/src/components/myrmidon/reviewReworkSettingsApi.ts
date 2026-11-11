@@ -6,7 +6,7 @@
 // re-reads the stored row on every pass, so saving applies without a restart.
 // A null fallback means "no fallback assignee": the rework task is created
 // unassigned in todo — the role-queue shape the swarm claims.
-import type { ReviewReworkSettings, ReviewReworkSettingsPatch } from "@paperclipai/shared";
+import type { ReviewReworkSettings, ReviewReworkSettingsPatch } from "@myrmidon/shared";
 import { api } from "@/api/client";
 
 /** One journal entry: who changed what, and when. */
@@ -21,6 +21,14 @@ export interface ReviewReworkSettingsView {
   settings: ReviewReworkSettings;
   /** The change journal, newest first. */
   journal: ReviewReworkJournalEntry[];
+  /**
+   * Where the sweep interval is in force from (OPE-12397): "settings" — the
+   * stored value the panel edits; "env" — MYRMIDON_REVIEW_REWORK_SWEEP_
+   * INTERVAL_SEC forces it and the input stays read-only.
+   */
+  sweepIntervalSource: "settings" | "env";
+  /** The forcing env name when `sweepIntervalSource` is "env", else "". */
+  sweepIntervalEnvName: string;
 }
 
 export const reviewReworkSettingsQueryKey = ["myrmidon", "review-rework", "settings"] as const;

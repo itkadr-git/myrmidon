@@ -15,7 +15,7 @@ import {
   issues,
   type Db,
   runContextPersistenceFields,
-} from "@paperclipai/db";
+} from "@myrmidon/db";
 
 import { sanitizeQuarantinedCommentForHigherTrust } from "./source-trust.js";
 
@@ -455,6 +455,34 @@ export async function resumeConversationForReset(db: Db, comment: typeof issueCo
   for (const publication of publications) publishActivity(publication);
 }
 
+// myrmidon(OPE-12557): a delivery holds its pool connection and the issue's
+// advisory lock while `resumeConversationForReset` and `enqueue` take further
+// connections of the same pool. With many chats delivering at once every holder
+// waited for a connection another holder kept: on 10.11 eight transactions sat
+// `idle in transaction` after `pg_advisory_xact_lock` and the board stopped. At
+// most this many locked deliveries run at once per process, so they can always
+// get the connections they need; the others wait here without a connection.
+export const MAX_CONCURRENT_LOCKED_CONVERSATION_DELIVERIES = 2;
+let lockedConversationDeliveries = 0;
+const conversationDeliveryWaiters: Array<() => void> = [];
+
+/** Runs `work` in one of the locked-delivery slots (FIFO when all are taken). */
+export async function withConversationDeliverySlot<T>(work: () => Promise<T>): Promise<T> {
+  if (lockedConversationDeliveries < MAX_CONCURRENT_LOCKED_CONVERSATION_DELIVERIES) {
+    lockedConversationDeliveries += 1;
+  } else {
+    // The releasing caller hands its slot over, so the count stays as it is.
+    await new Promise<void>((resolve) => conversationDeliveryWaiters.push(resolve));
+  }
+  try {
+    return await work();
+  } finally {
+    const next = conversationDeliveryWaiters.shift();
+    if (next) next();
+    else lockedConversationDeliveries -= 1;
+  }
+}
+
 /** Serialize durable outbox delivery across API servers; the normal wake queue owns execution. */
 export async function deliverConversationComments(
   db: Db,
@@ -475,7 +503,7 @@ export async function deliverConversationComments(
 ) {
   if (!issue.conversationAgentId) return;
   for (;;) {
-    const delivered = await db.transaction(async (tx) => {
+    const delivered = await withConversationDeliverySlot(() => db.transaction(async (tx) => {
       // Contenders release their connection while waiting so concurrent sends
       // cannot exhaust the pool needed by normal wake admission.
       const locks = await tx.execute(
@@ -507,7 +535,7 @@ export async function deliverConversationComments(
         });
       }
       return true;
-    });
+    }));
     if (delivered) return;
     await new Promise((resolve) => setTimeout(resolve, 10));
   }

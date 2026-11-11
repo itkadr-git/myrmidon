@@ -20,7 +20,7 @@
 // reads; the sweep (sweep.ts) keeps the registry fresh on a timer, the same
 // split tracing-health uses. No new table: the feed recomputes on every list.
 
-import type { AttentionSeverity } from "@paperclipai/shared";
+import type { AttentionSeverity } from "@myrmidon/shared";
 // myrmidon(BOT-RUNTIME-TUNING D2): the settings contract of the signal (stored
 // instance settings over environment over defaults).
 import {
@@ -33,10 +33,35 @@ import {
   fallbackSignalWindowMs,
   readFallbackSignalSettingsFromEnv,
   type FallbackSignalSettings as StoredFallbackSignalSettings,
-} from "@paperclipai/shared";
+} from "@myrmidon/shared";
 
 export const FALLBACK_ATTENTION_DEDUP_PREFIX = "model_fallback:";
+export const FALLBACK_DEADEND_DEDUP_PREFIX = "model_fallback_deadend:";
 export const FALLBACK_ATTENTION_ACTION_TRANSITION = "myrmidon.model_fallback.signal";
+
+export interface ModelFallbackDeadendSignal {
+  agentId: string;
+  requestId: string;
+  model: string;
+  title: string;
+  whyNow: string;
+  summaryExcerpt: string;
+  dedupKey: string;
+  severity: AttentionSeverity;
+  activityAt: string;
+}
+
+const deadendsByCompany = new Map<string, ModelFallbackDeadendSignal[]>();
+
+export function readModelFallbackDeadendSignals(companyId: string): ModelFallbackDeadendSignal[] {
+  return deadendsByCompany.get(companyId) ?? [];
+}
+
+export function recordModelFallbackDeadendSignals(companyId: string, signals: ModelFallbackDeadendSignal[]): void {
+  if (signals.length) deadendsByCompany.set(companyId, signals);
+  else deadendsByCompany.delete(companyId);
+}
+
 
 /** Stable per-agent dedup key: one card per agent regardless of window churn. */
 export function fallbackDedupKey(agentId: string): string {
@@ -49,7 +74,7 @@ export function fallbackDedupKey(agentId: string): string {
 //
 // myrmidon(BOT-RUNTIME-TUNING D2): the values now come from the shared contract
 // — the stored instance settings, then a set environment variable, then the
-// built-in default (see `@paperclipai/shared`, myrmidon-fallback-signal). This
+// built-in default (see `@myrmidon/shared`, myrmidon-fallback-signal). This
 // module keeps the millisecond shape the sweep works in, and the names the
 // deployment already uses keep their meaning.
 
@@ -279,4 +304,5 @@ export function readModelFallbackSignals(companyId: string): ModelFallbackAttent
 /** Forget every recorded signal: the sweep's switch went off, and tests. */
 export function resetModelFallbackSignals(): void {
   signalByCompany.clear();
+  deadendsByCompany.clear();
 }

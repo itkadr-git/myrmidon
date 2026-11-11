@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { describe, expect, it } from "vitest";
-import { pluginManifestV1Schema, type Issue } from "@paperclipai/shared";
-import { createTestHarness } from "@paperclipai/plugin-sdk/testing";
+import { pluginManifestV1Schema, type Issue } from "@myrmidon/shared";
+import { createTestHarness } from "@myrmidon/plugin-sdk/testing";
 import manifest from "../src/manifest.js";
 import plugin from "../src/worker.js";
 

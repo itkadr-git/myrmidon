@@ -4,8 +4,8 @@ import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import express from "express";
 import request from "supertest";
-import type { Db } from "@paperclipai/db";
-import { healthRoutes } from "../routes/health.js";
+import type { Db } from "@myrmidon/db";
+import { healthRoutes, livenessRoutes } from "../routes/health.js";
 import * as devServerStatus from "../dev-server-status.js";
 import { serverVersion } from "../version.js";
 
@@ -47,6 +47,10 @@ function createApp(
   runtimeEnv?: Parameters<typeof healthRoutes>[1]["runtimeEnv"],
 ) {
   const app = express();
+  // Mirror the production wiring of app.ts: liveness is mounted as a sibling
+  // of readiness at /api/liveness (here: /liveness on the test app), not as a
+  // child route of /api/health.
+  app.use("/liveness", livenessRoutes({ serverInfo }));
   app.use(
     "/health",
     healthRoutes(db, {
@@ -72,6 +76,46 @@ describe("GET /health", () => {
     vi.restoreAllMocks();
     vi.unstubAllEnvs();
   });
+
+  it("answers /liveness with 200 and never touches the database", async () => {
+    const db = {
+      execute: vi.fn().mockRejectedValue(new Error("connect ECONNREFUSED")),
+    } as unknown as Db;
+    const app = createApp(db);
+
+    const res = await request(app).get("/liveness");
+
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual({
+      status: "ok",
+      uptimeSec: expect.any(Number),
+      commit: testServerInfo.git.fullSha,
+    });
+    expect(res.body.uptimeSec).toBeGreaterThanOrEqual(0);
+    expect(db.execute).not.toHaveBeenCalled();
+  });
+
+  it("keeps answering /liveness when there is no database at all", async () => {
+    const app = createApp(undefined);
+
+    const res = await request(app).get("/liveness");
+
+    expect(res.status).toBe(200);
+    expect(res.body.status).toBe("ok");
+  });
+
+  it("reports commit=null on /liveness when git metadata is unavailable", async () => {
+    const app = createApp(undefined, {
+      processStartedAt: "2026-06-26T00:00:00.000Z",
+      git: { available: false, unavailableReason: "git_unavailable" },
+    } as unknown as typeof testServerInfo);
+
+    const res = await request(app).get("/liveness");
+
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual({ status: "ok", uptimeSec: expect.any(Number), commit: null });
+  });
+
   it("returns 200 with status ok", async () => {
     const app = createApp();
     const res = await request(app).get("/health");

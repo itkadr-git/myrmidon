@@ -24,6 +24,7 @@ import {
   type DownloadedFile,
 } from "./actions";
 import { createConfirmationPort, createConfirmationRegistry, type ConfirmationUi } from "./confirmation";
+import { createNativeSignHelper, createSignatureStash } from "./sign";
 import { BridgeConnection, NodeTimerPort, type WebSocketFactory, type WebSocketLike } from "./gateway-client";
 import { BROWSER_BRIDGE_WS_PATH, BRIDGE_ACTION_TIMEOUT_MS, EXTENSION_CAPABILITIES } from "./protocol";
 import { FetchPairingGateway } from "./pairing";
@@ -147,6 +148,11 @@ const confirmationUi: ConfirmationUi = {
 
 const confirmPort = createConfirmationPort(confirmations, confirmationUi);
 
+// Signing: the helper is a native messaging host on this PC; the signature
+// waits in this memory-only stash and never goes to the gateway.
+const signHelper = createNativeSignHelper((host, message) => chrome.runtime.sendNativeMessage(host, message as object));
+const signatureStash = createSignatureStash();
+
 interface BridgeStatus {
   phase: "unpaired" | "idle" | "connecting" | "awaiting-ready" | "ready" | "closed";
   lastHandshakeFailure: string | null;
@@ -183,7 +189,7 @@ async function dispatchAction(method: string, params: unknown, requestId: string
     method as never,
     params as ActionParams,
     { capabilities, allowlist },
-    { tabs: tabsPort, content: contentPort, confirm: confirmPort },
+    { tabs: tabsPort, content: contentPort, confirm: confirmPort, sign: { helper: signHelper, stash: signatureStash } },
     { requestId },
   );
 }

@@ -26,13 +26,13 @@ test("isPrereleaseVersion matches canary and nightly versions", () => {
 test("collectInternalDependencyProblems flags missing internal versions", () => {
   const manifest = {
     dependencies: {
-      "@paperclipai/plugin-sdk": "2026.425.0-canary.5",
+      "@myrmidon/plugin-sdk": "2026.425.0-canary.5",
       e2b: "^2.19.0",
     },
   };
   const packageDocsByName = new Map([
     [
-      "@paperclipai/plugin-sdk",
+      "@myrmidon/plugin-sdk",
       {
         versions: {
           "2026.427.0-canary.3": {},
@@ -43,19 +43,19 @@ test("collectInternalDependencyProblems flags missing internal versions", () => 
 
   assert.deepEqual(
     collectInternalDependencyProblems(manifest, packageDocsByName),
-    ["dependencies requires @paperclipai/plugin-sdk@2026.425.0-canary.5, but npm does not expose that version"],
+    ["dependencies requires @myrmidon/plugin-sdk@2026.425.0-canary.5, but npm does not expose that version"],
   );
 });
 
 test("collectInternalDependencyProblems accepts version-specific manifests when the root document is stale", () => {
   const manifest = {
     dependencies: {
-      "@paperclipai/plugin-sdk": "2026.425.0-canary.5",
+      "@myrmidon/plugin-sdk": "2026.425.0-canary.5",
     },
   };
   const packageDocsByName = new Map([
     [
-      "@paperclipai/plugin-sdk",
+      "@myrmidon/plugin-sdk",
       {
         versions: {},
       },
@@ -63,8 +63,8 @@ test("collectInternalDependencyProblems accepts version-specific manifests when 
   ]);
   const packageManifestsByKey = new Map([
     [
-      createManifestLookupKey("@paperclipai/plugin-sdk", "2026.425.0-canary.5"),
-      { name: "@paperclipai/plugin-sdk", version: "2026.425.0-canary.5" },
+      createManifestLookupKey("@myrmidon/plugin-sdk", "2026.425.0-canary.5"),
+      { name: "@myrmidon/plugin-sdk", version: "2026.425.0-canary.5" },
     ],
   ]);
 
@@ -77,7 +77,7 @@ test("collectInternalDependencyProblems accepts version-specific manifests when 
 test("collectInternalDependencyProblems ignores peer dependency range specifiers", () => {
   const manifest = {
     peerDependencies: {
-      "@paperclipai/server": "^2026.430.0-canary.0",
+      "@myrmidon/server": "^2026.430.0-canary.0",
     },
   };
 
@@ -90,14 +90,14 @@ test("collectInternalDependencyProblems ignores peer dependency range specifiers
 test("collectInternalDependencyProblems reports unfetched transitive dependency metadata neutrally", () => {
   const manifest = {
     optionalDependencies: {
-      "@paperclipai/browser": "2026.430.0-canary.0",
+      "@myrmidon/browser": "2026.430.0-canary.0",
     },
   };
 
   assert.deepEqual(
     collectInternalDependencyProblems(manifest, new Map()),
     [
-      "optionalDependencies requires @paperclipai/browser@2026.430.0-canary.0, but npm publication metadata was not fetched for that dependency",
+      "optionalDependencies requires @myrmidon/browser@2026.430.0-canary.0, but npm publication metadata was not fetched for that dependency",
     ],
   );
 });
@@ -105,7 +105,7 @@ test("collectInternalDependencyProblems reports unfetched transitive dependency 
 test("verifyPackageRegistryState tolerates a stale root versions map when dist-tags and direct manifests are correct", () => {
   const packageDocsByName = new Map([
     [
-      "@paperclipai/ui",
+      "@myrmidon/ui",
       {
         "dist-tags": {
           canary: "2026.430.0-canary.0",
@@ -115,7 +115,7 @@ test("verifyPackageRegistryState tolerates a stale root versions map when dist-t
       },
     ],
     [
-      "@paperclipai/shared",
+      "@myrmidon/shared",
       {
         versions: {},
       },
@@ -123,19 +123,19 @@ test("verifyPackageRegistryState tolerates a stale root versions map when dist-t
   ]);
   const packageManifestsByKey = new Map([
     [
-      createManifestLookupKey("@paperclipai/ui", "2026.430.0-canary.0"),
+      createManifestLookupKey("@myrmidon/ui", "2026.430.0-canary.0"),
       {
-        name: "@paperclipai/ui",
+        name: "@myrmidon/ui",
         version: "2026.430.0-canary.0",
         dependencies: {
-          "@paperclipai/shared": "2026.430.0-canary.0",
+          "@myrmidon/shared": "2026.430.0-canary.0",
         },
       },
     ],
     [
-      createManifestLookupKey("@paperclipai/shared", "2026.430.0-canary.0"),
+      createManifestLookupKey("@myrmidon/shared", "2026.430.0-canary.0"),
       {
-        name: "@paperclipai/shared",
+        name: "@myrmidon/shared",
         version: "2026.430.0-canary.0",
       },
     ],
@@ -143,8 +143,8 @@ test("verifyPackageRegistryState tolerates a stale root versions map when dist-t
 
   assert.deepEqual(
     verifyPackageRegistryState({
-      packageName: "@paperclipai/ui",
-      packageDoc: packageDocsByName.get("@paperclipai/ui"),
+      packageName: "@myrmidon/ui",
+      packageDoc: packageDocsByName.get("@myrmidon/ui"),
       packageDocsByName,
       packageManifestsByKey,
       channel: "canary",
@@ -159,7 +159,7 @@ test("verifyPackageRegistryState tolerates a stale root versions map when dist-t
 test("verifyPackageRegistryState fails when canary latest is left in place by default", () => {
   const packageDocsByName = new Map([
     [
-      "@paperclipai/plugin-e2b",
+      "@myrmidon/plugin-e2b",
       {
         "dist-tags": {
           latest: "2026.425.0-canary.5",
@@ -168,19 +168,19 @@ test("verifyPackageRegistryState fails when canary latest is left in place by de
         versions: {
           "2026.425.0-canary.5": {
             dependencies: {
-              "@paperclipai/plugin-sdk": "2026.425.0-canary.5",
+              "@myrmidon/plugin-sdk": "2026.425.0-canary.5",
             },
           },
           "2026.427.0-canary.3": {
             dependencies: {
-              "@paperclipai/plugin-sdk": "2026.427.0-canary.3",
+              "@myrmidon/plugin-sdk": "2026.427.0-canary.3",
             },
           },
         },
       },
     ],
     [
-      "@paperclipai/plugin-sdk",
+      "@myrmidon/plugin-sdk",
       {
         versions: {
           "2026.427.0-canary.3": {},
@@ -191,8 +191,8 @@ test("verifyPackageRegistryState fails when canary latest is left in place by de
 
   assert.deepEqual(
     verifyPackageRegistryState({
-      packageName: "@paperclipai/plugin-e2b",
-      packageDoc: packageDocsByName.get("@paperclipai/plugin-e2b"),
+      packageName: "@myrmidon/plugin-e2b",
+      packageDoc: packageDocsByName.get("@myrmidon/plugin-e2b"),
       packageDocsByName,
       channel: "canary",
       distTag: "canary",
@@ -200,8 +200,8 @@ test("verifyPackageRegistryState fails when canary latest is left in place by de
       allowCanaryLatest: false,
     }),
     [
-      "@paperclipai/plugin-e2b: latest dist-tag still resolves to prerelease 2026.425.0-canary.5; if that state is intentional, rerun the verification script directly with --allow-canary-latest",
-      "@paperclipai/plugin-e2b@2026.425.0-canary.5 via latest: dependencies requires @paperclipai/plugin-sdk@2026.425.0-canary.5, but npm does not expose that version",
+      "@myrmidon/plugin-e2b: latest dist-tag still resolves to prerelease 2026.425.0-canary.5; if that state is intentional, rerun the verification script directly with --allow-canary-latest",
+      "@myrmidon/plugin-e2b@2026.425.0-canary.5 via latest: dependencies requires @myrmidon/plugin-sdk@2026.425.0-canary.5, but npm does not expose that version",
     ],
   );
 });
@@ -209,7 +209,7 @@ test("verifyPackageRegistryState fails when canary latest is left in place by de
 test("verifyPackageRegistryProblems marks canary latest drift as non-retriable", () => {
   const packageDocsByName = new Map([
     [
-      "@paperclipai/plugin-e2b",
+      "@myrmidon/plugin-e2b",
       {
         "dist-tags": {
           latest: "2026.425.0-canary.5",
@@ -223,8 +223,8 @@ test("verifyPackageRegistryProblems marks canary latest drift as non-retriable",
   ]);
 
   const problems = verifyPackageRegistryProblems({
-    packageName: "@paperclipai/plugin-e2b",
-    packageDoc: packageDocsByName.get("@paperclipai/plugin-e2b"),
+    packageName: "@myrmidon/plugin-e2b",
+    packageDoc: packageDocsByName.get("@myrmidon/plugin-e2b"),
     packageDocsByName,
     channel: "canary",
     distTag: "canary",
@@ -239,7 +239,7 @@ test("verifyPackageRegistryProblems marks canary latest drift as non-retriable",
 test("verifyPackageRegistryProblems accepts the nightly channel and flags nightly latest drift", () => {
   const packageDocsByName = new Map([
     [
-      "@paperclipai/plugin-e2b",
+      "@myrmidon/plugin-e2b",
       {
         "dist-tags": {
           latest: "2026.425.0-nightly.1",
@@ -253,8 +253,8 @@ test("verifyPackageRegistryProblems accepts the nightly channel and flags nightl
   ]);
 
   const problems = verifyPackageRegistryProblems({
-    packageName: "@paperclipai/plugin-e2b",
-    packageDoc: packageDocsByName.get("@paperclipai/plugin-e2b"),
+    packageName: "@myrmidon/plugin-e2b",
+    packageDoc: packageDocsByName.get("@myrmidon/plugin-e2b"),
     packageDocsByName,
     channel: "nightly",
     distTag: "nightly",
@@ -278,14 +278,14 @@ test("verifyPackageRegistryState allows intentional canary latest but still chec
         versions: {
           "2026.427.0-canary.3": {
             dependencies: {
-              "@paperclipai/server": "2026.427.0-canary.3",
+              "@myrmidon/server": "2026.427.0-canary.3",
             },
           },
         },
       },
     ],
     [
-      "@paperclipai/server",
+      "@myrmidon/server",
       {
         versions: {
           "2026.427.0-canary.3": {},
@@ -311,7 +311,7 @@ test("verifyPackageRegistryState allows intentional canary latest but still chec
 test("verifyPackageRegistryState still fails when the dist-tag is stale", () => {
   const packageDocsByName = new Map([
     [
-      "@paperclipai/ui",
+      "@myrmidon/ui",
       {
         "dist-tags": {
           canary: "2026.429.0-canary.2",
@@ -322,9 +322,9 @@ test("verifyPackageRegistryState still fails when the dist-tag is stale", () => 
   ]);
   const packageManifestsByKey = new Map([
     [
-      createManifestLookupKey("@paperclipai/ui", "2026.430.0-canary.0"),
+      createManifestLookupKey("@myrmidon/ui", "2026.430.0-canary.0"),
       {
-        name: "@paperclipai/ui",
+        name: "@myrmidon/ui",
         version: "2026.430.0-canary.0",
       },
     ],
@@ -332,8 +332,8 @@ test("verifyPackageRegistryState still fails when the dist-tag is stale", () => 
 
   assert.deepEqual(
     verifyPackageRegistryState({
-      packageName: "@paperclipai/ui",
-      packageDoc: packageDocsByName.get("@paperclipai/ui"),
+      packageName: "@myrmidon/ui",
+      packageDoc: packageDocsByName.get("@myrmidon/ui"),
       packageDocsByName,
       packageManifestsByKey,
       channel: "canary",
@@ -341,14 +341,14 @@ test("verifyPackageRegistryState still fails when the dist-tag is stale", () => 
       targetVersion: "2026.430.0-canary.0",
       allowCanaryLatest: false,
     }),
-    ["@paperclipai/ui: dist-tag canary resolves to 2026.429.0-canary.2, expected 2026.430.0-canary.0"],
+    ["@myrmidon/ui: dist-tag canary resolves to 2026.429.0-canary.2, expected 2026.430.0-canary.0"],
   );
 });
 
 test("verifyPackageRegistryState ignores internal peer dependency ranges", () => {
   const packageDocsByName = new Map([
     [
-      "@paperclipai/plugin-sdk",
+      "@myrmidon/plugin-sdk",
       {
         "dist-tags": {
           canary: "2026.430.0-canary.0",
@@ -356,7 +356,7 @@ test("verifyPackageRegistryState ignores internal peer dependency ranges", () =>
         versions: {
           "2026.430.0-canary.0": {
             peerDependencies: {
-              "@paperclipai/server": "^2026.430.0-canary.0",
+              "@myrmidon/server": "^2026.430.0-canary.0",
             },
           },
         },
@@ -366,8 +366,8 @@ test("verifyPackageRegistryState ignores internal peer dependency ranges", () =>
 
   assert.deepEqual(
     verifyPackageRegistryState({
-      packageName: "@paperclipai/plugin-sdk",
-      packageDoc: packageDocsByName.get("@paperclipai/plugin-sdk"),
+      packageName: "@myrmidon/plugin-sdk",
+      packageDoc: packageDocsByName.get("@myrmidon/plugin-sdk"),
       packageDocsByName,
       channel: "canary",
       distTag: "canary",

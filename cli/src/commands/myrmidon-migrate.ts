@@ -9,13 +9,14 @@ import {
   inspectMigrations,
   loadMigrationTargetSchema,
   runDatabaseRestore,
-} from "@paperclipai/db";
+} from "@myrmidon/db";
 import { checkVendorChain, chainStartsWithVendor, type ChainCheck } from "./myrmidon-migrate-chain.js";
 import {
   buildVendorOnlyIndex,
   loadVendorChain,
   loadVendorOnlyIndex,
   loadVendorReleases,
+  MAPPED_VENDOR_TABLES,
   type TargetSchemaLookup,
   type VendorOnlyIndex,
 } from "./myrmidon-migrate-vendor-chain.js";
@@ -46,6 +47,7 @@ import {
   selectJsonbCandidates,
   tableDigest,
   textColumns,
+  type ColumnInfo,
   type Q,
   type TableDigest,
   type TableInfo,
@@ -109,6 +111,8 @@ export type MigrationOptions = {
   allowMissingFiles?: boolean;
   /** Go on when the source holds data of Paperclip features that Myrmidon does not have (it is not transferred). */
   acceptVendorOnlyData?: boolean;
+  /** Continue when the source holds tables absent from the target that are NOT known Paperclip features (not transferred). Does not imply acceptVendorOnlyData. */
+  acceptUnknownSourceObjects?: boolean;
   json?: boolean;
   /** Test seams; not exposed as CLI flags. */
   failureInjection?: FailureInjection;
@@ -328,7 +332,8 @@ async function analyzeSource(
     const tableIntroduced = vendorIndex.tables.get(info.name);
     if (tableIntroduced !== undefined) {
       vendorOnlyCandidates.push({ kind: "table", table: info.name, rows: digest.rows, introducedIn: tableIntroduced });
-    } else if (digest.rows > 0) {
+    } else {
+      // Empty tables count too: their vendor-only columns are reported as excluded-empty, in dry-run and in the real run alike.
       for (const col of info.columns) {
         const introduced = vendorIndex.columns.get(`${info.name}.${col.name}`);
         if (introduced === undefined) continue;
@@ -481,18 +486,54 @@ function buildInventory(analysis: SourceAnalysis) {
   };
 }
 
-export type CompatResult = { problems: string[]; exclusions: Exclusion[]; vendorOnly: VendorOnlyFinding[] };
+export type SkippedSourceDatum = {
+  table: string;
+  column?: string;
+  rows: number;
+  vendorRelease: string;
+  decision: string;
+};
+
+export type CompatResult = {
+  problems: string[];
+  exclusions: Exclusion[];
+  vendorOnly: VendorOnlyFinding[];
+  skippedSourceData: SkippedSourceDatum[];
+};
+
+export function mapLifecycleEventAction(resourceType: string, action: string): string {
+  if (action.includes(".")) return action;
+  if (action === "create") return `${resourceType}.created`;
+  if (action === "update") return `${resourceType}.updated`;
+  if (action === "delete") return `${resourceType}.deleted`;
+  if (action === "pause") return `${resourceType}.paused`;
+  if (action === "resume") return `${resourceType}.resumed`;
+  if (action === "terminate") return `${resourceType}.terminated`;
+  return `${resourceType}.${action}`;
+}
+
+export function deterministicUuid(seed: string): string {
+  const hash = createHash("sha256").update(seed).digest("hex");
+  return [
+    hash.slice(0, 8),
+    hash.slice(8, 12),
+    `4${hash.slice(13, 16)}`,
+    `a${hash.slice(17, 20)}`,
+    hash.slice(20, 32),
+  ].join("-");
+}
 
 /**
  * Compares the source schema with the target. A table or column that only a
  * later Paperclip release has, and the target lacks, is not an error: it is
  * returned in `vendorOnly` (its data is not transferred). Every other mismatch
- * stays a problem.
+ * stays a problem unless accepted by explicit option.
  */
 export function checkCompatibility(
   analysis: Pick<SourceAnalysis, "tables" | "digests" | "vendorOnlyCandidates">,
   target: Map<string, TableInfo>,
   index: VendorOnlyIndex = buildVendorOnlyIndex(),
+  options?: Pick<MigrationOptions, "acceptVendorOnlyData" | "acceptUnknownSourceObjects">,
 ): CompatResult {
   const problems: string[] = [];
   const exclusions: Exclusion[] = [];
@@ -504,29 +545,42 @@ export function checkCompatibility(
     const rows = analysis.digests.get(name)?.rows ?? 0;
     const tgt = target.get(name);
     if (!tgt) {
+      if (name === "resource_lifecycle_events") {
+        if (!target.has("activity_log")) {
+          problems.push("table-missing-in-target:activity_log");
+        }
+        continue;
+      }
       if (rows > 0) {
         if (index.droppedTables?.has(name)) {
           exclusions.push({ kind: "table", name, reason: "dropped in migration chain; not needed in target" });
           continue;
         }
         const introducedIn = index.tables.get(name);
-        if (introducedIn !== undefined) vendorOnly.push({ kind: "table", table: name, rows, introducedIn });
-        else problems.push(`table-missing-in-target:${name}`);
-      } else exclusions.push({ kind: "table", name, reason: "absent in target and empty in source" });
+        if (introducedIn !== undefined) {
+          vendorOnly.push({ kind: "table", table: name, rows, introducedIn });
+        } else if (options?.acceptUnknownSourceObjects) {
+          exclusions.push({ kind: "table", name, reason: "unknown source table accepted by flag" });
+        } else {
+          problems.push(`table-missing-in-target:${name}`);
+        }
+      } else {
+        exclusions.push({ kind: "table", name, reason: "absent in target and empty in source" });
+      }
       continue;
     }
     const tgtCols = new Map(tgt.columns.map((c) => [c.name, c]));
     for (const col of info.columns) {
-      if (tgtCols.has(col.name) || rows === 0) continue;
+      if (tgtCols.has(col.name)) continue;
       const key = `${name}.${col.name}`;
       if (index.droppedColumns?.has(key)) {
-        exclusions.push({ kind: "column", name: key, reason: "dropped in migration chain; not needed in target" });
+        if (rows > 0) exclusions.push({ kind: "column", name: key, reason: "dropped in migration chain; not needed in target" });
         continue;
       }
       const introducedIn = index.columns.get(key);
       if (introducedIn !== undefined) {
         vendorOnly.push({ kind: "column", table: name, column: col.name, rows: candidateRows.get(key) ?? rows, introducedIn });
-      } else problems.push(`column-missing-in-target:${key}`);
+      } else if (rows > 0) problems.push(`column-missing-in-target:${key}`);
     }
     if (rows > 0) {
       const srcCols = new Set(info.columns.map((c) => c.name));
@@ -537,18 +591,53 @@ export function checkCompatibility(
       }
     }
   }
-  return { problems, exclusions, vendorOnly };
+  const accepted = Boolean(options?.acceptVendorOnlyData);
+  const protectedLosses = vendorOnly.filter((f) => f.rows > 0 &&
+    ((f.table === "agents" && f.column === "appearance") ||
+     (f.table === "issues" && f.column === "title_needs_generation")));
+  if (protectedLosses.length > 0) {
+    problems.push(...protectedLosses.map((f) => `approved-column-not-preserved:${f.table}.${f.column}`));
+  }
+  const skippedSourceData: SkippedSourceDatum[] = [
+    ...vendorOnly.map((f) => ({
+      table: f.table,
+      ...(f.column ? { column: f.column } : {}),
+      rows: f.rows,
+      vendorRelease: f.introducedIn,
+      decision: f.rows > 0 ? (accepted ? "accepted" : "requires-flag") : "excluded-empty",
+    })),
+    ...exclusions.filter((e) => e.kind === "table" && e.reason.includes("empty")).map((e) => ({
+      table: e.name,
+      rows: 0,
+      vendorRelease: index.tables.get(e.name) ?? "unknown",
+      decision: "excluded-empty",
+    })),
+  ];
+  return { problems, exclusions, vendorOnly, skippedSourceData };
 }
 
-const INT_RANK: Record<string, number> = { smallint: 1, integer: 2, bigint: 3 };
+const INT_RANK: Record<string, number> = { smallint: 1, integer: 2, bigint: 3, numeric: 4 };
 const INT_RANGE: Record<string, [bigint, bigint]> = {
   smallint: [-32768n, 32767n],
   integer: [-2147483648n, 2147483647n],
+  bigint: [-9223372036854775808n, 9223372036854775807n],
 };
+
+export function parseRangeBound(val: string, bound: "lo" | "hi"): bigint {
+  const dot = val.indexOf(".");
+  if (dot < 0) return BigInt(val);
+  const intPart = BigInt(val.slice(0, dot));
+  const hasFraction = val.slice(dot + 1).replace(/0+$/, "").length > 0;
+  if (!hasFraction) return intPart;
+  if (bound === "hi" && !val.startsWith("-")) return intPart + 1n;
+  if (bound === "lo" && val.startsWith("-")) return intPart - 1n;
+  return intPart;
+}
 
 /**
  * Columns that are wider in the source than in the target (bigint into
- * integer): a value that does not fit is reported before any row is written.
+ * integer, or numeric into integer types): non-integral or out-of-range
+ * values are reported before any row is written.
  */
 export async function checkNarrowing(
   src: Q,
@@ -568,13 +657,26 @@ export async function checkNarrowing(
       const to = INT_RANK[tcol.dataType];
       const range = INT_RANGE[tcol.dataType];
       if (from === undefined || to === undefined || range === undefined || from <= to) continue;
+      if (col.dataType === "numeric") {
+        const nonIntRows = await all<{ cnt: string }>(
+          src,
+          sql.raw(
+            `select count(*)::text as cnt from ${qi("public")}.${qi(name)} ` +
+              `where ${qi(col.name)} is not null and ${qi(col.name)} <> trunc(${qi(col.name)})`,
+          ),
+        );
+        const cnt = Number(nonIntRows[0]?.cnt ?? "0");
+        if (cnt > 0) {
+          problems.push(`value-not-integer-in-target:${name}.${col.name}`);
+        }
+      }
       const rows = await all<{ lo: string | null; hi: string | null }>(
         src,
         sql.raw(`select min(${qi(col.name)})::text as lo, max(${qi(col.name)})::text as hi from ${qi("public")}.${qi(name)}`),
       );
       const lo = rows[0]?.lo;
       const hi = rows[0]?.hi;
-      if ((lo != null && BigInt(lo) < range[0]) || (hi != null && BigInt(hi) > range[1])) {
+      if ((lo != null && parseRangeBound(lo, "lo") < range[0]) || (hi != null && parseRangeBound(hi, "hi") > range[1])) {
         problems.push(`value-out-of-range-in-target:${name}.${col.name}(source ${col.dataType} ${lo}..${hi}, target ${tcol.dataType})`);
       }
     }
@@ -588,6 +690,7 @@ export async function withoutVendorOnly(
   analysis: SourceAnalysis,
   found: VendorOnlyFinding[],
   exclusions: Exclusion[] = [],
+  targetInfo?: Map<string, TableInfo>,
 ): Promise<SourceAnalysis> {
   const dropTables = new Set(found.filter((f) => f.kind === "table").map((f) => f.table));
   for (const e of exclusions) {
@@ -607,19 +710,44 @@ export async function withoutVendorOnly(
       }
     }
   }
-  if (dropTables.size === 0 && dropCols.size === 0) return analysis;
+  const typeChangedColsByTable = new Map<string, Set<string>>();
+  if (targetInfo) {
+    for (const [name, info] of analysis.tables) {
+      const tgt = targetInfo.get(name);
+      if (!tgt) continue;
+      const tgtCols = new Map(tgt.columns.map((c) => [c.name, c]));
+      for (const col of info.columns) {
+        const tcol = tgtCols.get(col.name);
+        if (
+          tcol &&
+          col.dataType === "numeric" &&
+          (tcol.dataType === "integer" || tcol.dataType === "bigint" || tcol.dataType === "smallint")
+        ) {
+          const s = typeChangedColsByTable.get(name) ?? new Set<string>();
+          s.add(col.name);
+          typeChangedColsByTable.set(name, s);
+        }
+      }
+    }
+  }
+  if (dropTables.size === 0 && dropCols.size === 0 && typeChangedColsByTable.size === 0) return analysis;
   const tables = new Map<string, TableInfo>();
   const digests = new Map<string, TableDigest>();
   for (const [name, info] of analysis.tables) {
     if (dropTables.has(name)) continue;
     const cols = dropCols.get(name);
-    if (!cols) {
+    const typeChanged = typeChangedColsByTable.get(name);
+    const excludeFromDigest = new Set([
+      ...(analysis.carrierColumns.get(name) ?? []),
+      ...(cols ?? []),
+    ]);
+    if (!cols && !typeChanged) {
       tables.set(name, info);
       digests.set(name, analysis.digests.get(name)!);
       continue;
     }
-    tables.set(name, { ...info, columns: info.columns.filter((c) => !cols.has(c.name)) });
-    digests.set(name, await tableDigest(src, name, info, new Set([...(analysis.carrierColumns.get(name) ?? []), ...cols])));
+    tables.set(name, cols ? { ...info, columns: info.columns.filter((c) => !cols.has(c.name)) } : info);
+    digests.set(name, await tableDigest(src, name, info, excludeFromDigest, typeChanged));
   }
   const carrierColumns = new Map<string, string[]>();
   for (const [table, cols] of analysis.carrierColumns) {
@@ -720,6 +848,62 @@ async function restoreDumpToScratch(ctx: Context, dumpPath: string, scratchUrl: 
   }
 }
 
+async function copyMappedResourceLifecycleEvents(
+  src: Q,
+  tx: Q,
+  targetColumns: ColumnInfo[],
+): Promise<number> {
+  let after: string | null = null;
+  let total = 0;
+  for (;;) {
+    const page = await readPage(src, "resource_lifecycle_events", [], after, PAGE_ROWS);
+    if (page.rows.length === 0) break;
+    const jsonRows: string[] = [];
+    for (const r of page.rows) {
+      const row = JSON.parse(r.rest) as {
+        id: number | string;
+        company_id: string;
+        resource_type: string;
+        resource_id: string;
+        action: string;
+        created_at: string;
+      };
+      const companyId = String(row.company_id);
+      const resourceType = String(row.resource_type);
+      const resourceId = String(row.resource_id);
+      const action = String(row.action);
+      const mappedAction = mapLifecycleEventAction(resourceType, action);
+      const id = deterministicUuid(`resource_lifecycle_events:${companyId}:${row.id}`);
+
+      jsonRows.push(
+        JSON.stringify({
+          id,
+          company_id: companyId,
+          actor_type: "system",
+          actor_id: "system",
+          action: mappedAction,
+          entity_type: resourceType,
+          entity_id: resourceId,
+          agent_id: resourceType === "agent" ? resourceId : null,
+          run_id: null,
+          responsible_user_id: null,
+          details: {
+            source: "resource_lifecycle_events",
+            originalAction: action,
+            originalId: Number(row.id),
+          },
+          created_at: row.created_at,
+        }),
+      );
+    }
+    await insertPage(tx, "activity_log", targetColumns, jsonRows);
+    total += jsonRows.length;
+    after = page.lastRid;
+    if (page.rows.length < PAGE_ROWS) break;
+  }
+  return total;
+}
+
 async function copyTables(
   src: Q,
   tx: Q,
@@ -731,7 +915,8 @@ async function copyTables(
 ): Promise<{ replicaRole: boolean; sequences: number; replacedSeedTables: string[] }> {
   const fks = await listForeignKeys(tx);
   const names = [...analysis.digests.entries()].filter(([, d]) => d.rows > 0).map(([n]) => n);
-  const { order, cyclic, selfReferencing } = orderTables(names, fks);
+  const directNames = names.filter((n) => n !== "resource_lifecycle_events");
+  const { order, cyclic, selfReferencing } = orderTables(directNames, fks);
   const replica = await canUseReplicaRole(tx);
   if (!replica && cyclic.length > 0) {
     throw new Error(
@@ -748,13 +933,26 @@ async function copyTables(
   for (const name of order) {
     const srcInfo = analysis.tables.get(name)!;
     const tgtInfo = targetInfo.get(name)!;
-    const srcCols = new Set(srcInfo.columns.map((c) => c.name));
+    const srcCols = new Map(srcInfo.columns.map((c) => [c.name, c]));
     const insertColumns = tgtInfo.columns.filter((c) => srcCols.has(c.name) && !c.generated);
+    const narrowedCols = Array.from(
+      new Set(
+        insertColumns
+          .filter((c) => {
+            const sc = srcCols.get(c.name);
+            return (
+              sc?.dataType === "numeric" &&
+              (c.dataType === "integer" || c.dataType === "bigint" || c.dataType === "smallint")
+            );
+          })
+          .map((c) => c.name),
+      ),
+    );
     const carrierCols = analysis.carrierColumns.get(name) ?? [];
     const limit = !replica && selfReferencing.has(name) ? null : PAGE_ROWS;
     let after: string | null = null;
     for (;;) {
-      const page = await readPage(src, name, carrierCols, after, limit);
+      const page = await readPage(src, name, carrierCols, after, limit, narrowedCols);
       if (page.rows.length === 0) break;
       const jsonRows: string[] = [];
       for (const row of page.rows) {
@@ -762,7 +960,7 @@ async function copyTables(
         for (const [column, value] of Object.entries(row.carriers)) {
           carriers[column] = await mapCarriers(value, (envelope) => rekeyEnvelope(keys.source, keys.target, envelope));
         }
-        jsonRows.push(rowJson(row.rest, carriers));
+        jsonRows.push(rowJson(row.rest, carriers, row.narrowed));
       }
       await insertPage(tx, name, insertColumns, jsonRows);
       after = page.lastRid;
@@ -772,6 +970,13 @@ async function copyTables(
     if (injection === "mid-data" && copiedTables === 1) {
       throw new Error("Injected failure in the middle of the data load.");
     }
+  }
+  if (analysis.tables.has("resource_lifecycle_events") && (analysis.digests.get("resource_lifecycle_events")?.rows ?? 0) > 0) {
+    const actTgt = targetInfo.get("activity_log");
+    if (!actTgt) {
+      throw new Error("Target table activity_log is missing for mapped resource_lifecycle_events.");
+    }
+    await copyMappedResourceLifecycleEvents(src, tx, actTgt.columns);
   }
   const sequences = await resetSequences(tx);
   const orphans = await countFkOrphans(tx, fks);
@@ -785,27 +990,43 @@ async function copyTables(
 
 type TableParity = { name: string; sourceRows: number; targetRows: number; match: boolean };
 
-async function compareTables(
+export async function compareTables(
   q: Q,
   analysis: SourceAnalysis,
   targetInfo: Map<string, TableInfo>,
 ): Promise<{ tables: TableParity[]; allMatch: boolean; unexpectedTables: string[] }> {
   const tables: TableParity[] = [];
+  const hasMappedLifecycle =
+    analysis.tables.has("resource_lifecycle_events") &&
+    (analysis.digests.get("resource_lifecycle_events")?.rows ?? 0) > 0;
+
   for (const [name, d] of [...analysis.digests.entries()].sort(([a], [b]) => (a < b ? -1 : 1))) {
+    if (name === "resource_lifecycle_events") {
+      const mappedRows = await countRows(q, "activity_log", "details->>'source' = 'resource_lifecycle_events'");
+      tables.push({ name, sourceRows: d.rows, targetRows: mappedRows, match: mappedRows === d.rows });
+      continue;
+    }
     const tgt = targetInfo.get(name);
     if (!tgt) {
       tables.push({ name, sourceRows: d.rows, targetRows: 0, match: d.rows === 0 });
       continue;
     }
-    const srcCols = new Set(analysis.tables.get(name)!.columns.map((c) => c.name));
+    const srcTable = analysis.tables.get(name)!;
+    const srcCols = new Map(srcTable.columns.map((c) => [c.name, c]));
     const exclude = new Set<string>(analysis.carrierColumns.get(name) ?? []);
     for (const col of tgt.columns) if (!srcCols.has(col.name)) exclude.add(col.name);
-    const td = await tableDigest(q, name, tgt, exclude);
+
+    const where =
+      name === "activity_log" && hasMappedLifecycle
+        ? "details->>'source' is distinct from 'resource_lifecycle_events'"
+        : undefined;
+
+    const td = await tableDigest(q, name, tgt, exclude, undefined, where);
     tables.push({ name, sourceRows: d.rows, targetRows: td.rows, match: td.rows === d.rows && td.digest === d.digest });
   }
   const unexpectedTables: string[] = [];
   for (const [name] of targetInfo) {
-    if (analysis.tables.has(name)) continue;
+    if (analysis.tables.has(name) || (name === "activity_log" && hasMappedLifecycle)) continue;
     if ((await countRows(q, name)) > 0) unexpectedTables.push(name);
   }
   return { tables, allMatch: tables.every((t) => t.match) && unexpectedTables.length === 0, unexpectedTables };
@@ -948,6 +1169,23 @@ async function execute(
 
       if (options.dryRun) {
         const candidates = vendorOnlyReport(analysis.vendorOnlyCandidates);
+        const accepted = Boolean(options.acceptVendorOnlyData);
+        const skippedSourceData: SkippedSourceDatum[] = [
+          ...candidates.withData.map((f) => ({
+            table: f.table,
+            ...(f.column ? { column: f.column } : {}),
+            rows: f.rows,
+            vendorRelease: f.introducedIn,
+            decision: accepted ? "accepted" : "requires-flag",
+          })),
+          ...candidates.empty.map((f) => ({
+            table: f.table,
+            ...(f.column ? { column: f.column } : {}),
+            rows: 0,
+            vendorRelease: f.introducedIn,
+            decision: "excluded-empty",
+          })),
+        ];
         return {
           ...base,
           vendorOnlyData: {
@@ -956,6 +1194,7 @@ async function execute(
             flag: "--accept-vendor-only-data",
             ...candidates,
           },
+          skippedSourceData,
           mode: "dry-run",
           status: "ok",
           writesPerformed: false,
@@ -1049,14 +1288,14 @@ async function realRun(ctx: Context, input: RealRunInput): Promise<MigrationResu
 
     const targetInfo = await introspectTables(tq);
     const vendorIndex = await loadVendorOnlyIndex();
-    const compat = checkCompatibility(analysis, targetInfo, vendorIndex);
+    const compat = checkCompatibility(analysis, targetInfo, vendorIndex, ctx.options);
     const narrowing = compat.problems.length === 0 ? await checkNarrowing(src, analysis, targetInfo) : [];
     const problems = [...compat.problems, ...narrowing];
     if (problems.length > 0) {
       throw new Error(`Target schema cannot take the source data: ${problems.slice(0, 8).join(", ")}${problems.length > 8 ? ", ..." : ""}. Roll back (--rollback) the schema and report this.`);
     }
     // What the target cannot take stays out of the copy and out of the checks below.
-    const eff = await withoutVendorOnly(src, analysis, compat.vendorOnly, compat.exclusions);
+    const eff = await withoutVendorOnly(src, analysis, compat.vendorOnly, compat.exclusions, targetInfo);
 
     if (plan.mode !== "complete") {
       // 2. data: one transaction; either all rows land or none.
@@ -1171,6 +1410,7 @@ async function realRun(ctx: Context, input: RealRunInput): Promise<MigrationResu
       load: copyInfo,
       verification: report,
       vendorOnlyData: { acceptedByFlag: Boolean(ctx.options.acceptVendorOnlyData), transferred: false, ...vendorOnlyReport(compat.vendorOnly) },
+      skippedSourceData: compat.skippedSourceData,
       stateDir,
     };
     await writeFile(path.join(stateDir, "report.json"), `${JSON.stringify(result, null, 2)}\n`, { mode: 0o600 });
@@ -1288,6 +1528,10 @@ export function registerMyrmidonMigrateCommand(program: { command: (name: string
     .option(
       "--accept-vendor-only-data",
       "Continue when the source holds data of Paperclip features Myrmidon does not have (it is listed and not transferred)",
+    )
+    .option(
+      "--accept-unknown-source-objects",
+      "Continue when the source holds tables absent from the target that are not known Paperclip features (not transferred); does not imply --accept-vendor-only-data",
     )
     .option("--allow-missing-files", "Continue when asset files are missing or differ (they are reported)")
     .option("--json", "Accepted for compatibility; output is always JSON")

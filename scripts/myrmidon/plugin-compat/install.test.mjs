@@ -20,13 +20,13 @@ describe("plugin-compat install helpers", () => {
       fs.mkdirSync(dir, { recursive: true });
       fs.writeFileSync(path.join(dir, "package.json"), "{}");
     };
-    write(path.join(root, "node_modules/@paperclipai/plugin-sdk"));
-    write(path.join(root, "node_modules/plugin-a/node_modules/@paperclipai/plugin-sdk"));
-    write(path.join(root, "node_modules/@paperclipai/shared"));
-    const copies = findPackageCopies(root, "@paperclipai/plugin-sdk").map((p) => path.relative(root, p)).sort();
+    write(path.join(root, "node_modules/@myrmidon/plugin-sdk"));
+    write(path.join(root, "node_modules/plugin-a/node_modules/@myrmidon/plugin-sdk"));
+    write(path.join(root, "node_modules/@myrmidon/shared"));
+    const copies = findPackageCopies(root, "@myrmidon/plugin-sdk").map((p) => path.relative(root, p)).sort();
     assert.deepEqual(copies, [
-      "node_modules/@paperclipai/plugin-sdk",
-      "node_modules/plugin-a/node_modules/@paperclipai/plugin-sdk",
+      "node_modules/@myrmidon/plugin-sdk",
+      "node_modules/plugin-a/node_modules/@myrmidon/plugin-sdk",
     ]);
   });
 });

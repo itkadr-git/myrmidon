@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { eq } from "drizzle-orm";
 import {
+  activityLog,
   agents,
   agentRuntimeState,
   agentWakeupRequests,
@@ -9,7 +10,7 @@ import {
   createDb,
   heartbeatRunEvents,
   heartbeatRuns,
-} from "@paperclipai/db";
+} from "@myrmidon/db";
 import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
@@ -51,6 +52,7 @@ describeEmbeddedPostgres("heartbeat runtime state deduplication", () => {
 
   afterEach(async () => {
     clearAllHeartbeatRunRuntimeStatuses();
+    await db.delete(activityLog);
     await db.delete(heartbeatRunEvents);
     await db.delete(heartbeatRuns);
     await db.delete(agentWakeupRequests);
@@ -276,5 +278,33 @@ describeEmbeddedPostgres("heartbeat runtime state deduplication", () => {
     } finally {
       unsubscribe();
     }
+  });
+
+  it("decorates queued runs with queuedReason from contextSnapshot.waitReason", () => {
+    const heartbeat = heartbeatService(db);
+    const testCompanyId = randomUUID();
+    const testAgentId = randomUUID();
+    const testIssueId = randomUUID();
+    const queuedRun = {
+      id: "run-queued-1",
+      companyId: testCompanyId,
+      agentId: testAgentId,
+      issueId: testIssueId,
+      status: "queued" as const,
+      contextSnapshot: { waitReason: "global_cap" },
+    };
+    const decorated = heartbeat.decorateActiveRunStatus(queuedRun);
+    expect(decorated.queuedReason).toBe("global_cap");
+
+    const unqueuedRun = {
+      id: "run-running-1",
+      companyId: testCompanyId,
+      agentId: testAgentId,
+      issueId: testIssueId,
+      status: "running" as const,
+      contextSnapshot: {},
+    };
+    const decoratedRunning = heartbeat.decorateActiveRunStatus(unqueuedRun);
+    expect(decoratedRunning.queuedReason).toBeNull();
   });
 });

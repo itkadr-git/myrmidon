@@ -1,5 +1,5 @@
 // myrmidon(DEBRAND-c): persist browser state under the Myrmidon namespace.
-import type { ToolOAuthStartResult } from "@paperclipai/shared";
+import type { ToolOAuthStartResult } from "@myrmidon/shared";
 import { resolveAuthorizationTarget } from "./authorizationUrl";
 
 // myrmidon(DB1): DEBRAND 1.6.6-a — the user-facing OAuthHandoffError messages below

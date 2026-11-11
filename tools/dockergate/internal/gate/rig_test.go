@@ -181,12 +181,14 @@ func (f *fakeProc) CgroupLeaf(pid int) (string, error) {
 // --- the rig ---------------------------------------------------------------------
 
 type rigOptions struct {
-	cfg       []func(*config.Config)
-	container bool
-	noServe   bool
-	log       io.Writer
-	disk      gate.DiskQuota
-	diskHost  disk.Deps
+	cfg           []func(*config.Config)
+	container     bool
+	noServe       bool
+	log           io.Writer
+	disk          gate.DiskQuota
+	diskHost      disk.Deps
+	oom           *gate.OomStore
+	enableOomLoop bool
 }
 
 type rigOpt func(*rigOptions)
@@ -205,6 +207,12 @@ func withDisk(d gate.DiskQuota) rigOpt { return func(o *rigOptions) { o.disk = d
 // withDiskHost replaces the host side of GET /myrmidon/disk (statfs, xfs_quota, the
 // project table).
 func withDiskHost(d disk.Deps) rigOpt { return func(o *rigOptions) { o.diskHost = d } }
+
+// withOom replaces the OomStore of the gate (A19).
+func withOom(s *gate.OomStore) rigOpt { return func(o *rigOptions) { o.oom = s } }
+
+// withOomLoop enables the background oomLoop in the test rig.
+func withOomLoop() rigOpt { return func(o *rigOptions) { o.enableOomLoop = true } }
 
 // withoutServe builds the gate and the daemon but does not listen.
 func withoutServe() rigOpt { return func(o *rigOptions) { o.noServe = true } }
@@ -240,6 +248,15 @@ func (r *rig) setCred(pid int, uid, gid uint32) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.cred = peer.Cred{PID: pid, UID: uid, GID: gid}
+}
+
+func (r *rig) addSiblingProcess(pid int) {
+	r.t.Helper()
+	if r.proc == nil {
+		r.t.Fatal("sibling process requires container-caller mode")
+	}
+	leaf := "docker-" + boardID + ".scope"
+	r.proc.add(pid, fproc{comm: "node", ppid: tiniPID, start: 1020, uid: 1000, gid: 1000, argv: []string{"node", "server.js"}, leaf: leaf})
 }
 
 func (r *rig) lstat(p string) (policy.FileInfo, error) {
@@ -300,6 +317,7 @@ func newRig(t *testing.T, opts ...rigOpt) *rig {
 		Bots:             []config.Bot{{BotKey: m.BotKey, MaxMemoryMB: 2048, MaxCPUs: 4, MaxPids: 2048}},
 		Limits:           lim,
 		StatsFile:        filepath.Join(dir, "stats.json"),
+		PlatformLimits:   &config.PlatformLimits{},
 	}
 	r := &rig{
 		t: t, dir: dir, d: d, m: m, cfg: cfg, log: &syncBuf{}, sock: cfg.Listen,
@@ -333,11 +351,20 @@ func newRig(t *testing.T, opts ...rigOpt) *rig {
 	})
 
 	gopt := gate.Options{
-		Cfg: cfg, ConfigHash: "test", Version: "test", Log: r.log,
-		Cred: r.credFn, Lstat: r.lstat, Disk: o.disk, DiskHost: o.diskHost,
+		ConfigPath: filepath.Join(dir, "config.json"),
+		Cfg:        cfg, ConfigHash: "test", Version: "test", Log: r.log,
+		Cred: r.credFn, Lstat: r.lstat, Disk: o.disk, DiskHost: o.diskHost, Oom: o.oom,
+		DisableOomLoop: !o.enableOomLoop,
 	}
 	if r.proc != nil {
 		gopt.Proc = r.proc
+	}
+	data, err := json.Marshal(cfg)
+	if err != nil {
+		t.Fatalf("marshal config: %v", err)
+	}
+	if err := os.WriteFile(gopt.ConfigPath, data, 0600); err != nil {
+		t.Fatalf("write config file: %v", err)
 	}
 	g, err := gate.New(gopt)
 	if err != nil {

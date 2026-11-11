@@ -10,14 +10,19 @@
 // failure of one company is logged and does not stop the others; a tick whose
 // previous run is still going is skipped instead of stacking.
 
-import type { Db } from "@paperclipai/db";
-import { baselineMetricSnapshots, companies } from "@paperclipai/db";
+import type { Db } from "@myrmidon/db";
+import { baselineMetricSnapshots, companies } from "@myrmidon/db";
 import { isNotNull } from "drizzle-orm";
 import { logger } from "../../middleware/logger.js";
 import { computeBaselineMetrics, type BaselineMetricsResponse } from "./service.js";
 import type { BaselineWindow } from "./metrics.js";
+import { backgroundInterval } from "../monitoring/board-load/lanes.js"; // myrmidon(1.6.6 OPE-9058)
+import { liveBehaviorSetting, liveSavedSetting } from "../behavior-settings/live.js";
 
 export const BASELINE_INTERVAL_ENV = "MYRMIDON_BASELINE_INTERVAL_SEC";
+// myrmidon(OPE-12124): the master switch in "Тонкие настройки"; unset keeps
+// the documented off-by-default interval behaviour (see readBaselineSettings).
+export const BASELINE_ENABLED_ENV = "MYRMIDON_BASELINE_ENABLED";
 export const BASELINE_WINDOW_DAYS = 14;
 
 const DEFAULT_INTERVAL_SEC = 86_400;
@@ -34,10 +39,30 @@ export interface BaselineSettings {
  * The setting is the switch: unset (or empty) is off. A set-but-unreadable or
  * out-of-range value keeps the job on with the daily default — a typo should
  * not silently turn a deliberate opt-in back off.
+ *
+ * myrmidon(OPE-12124): the master switch of baseline snapshotting, movable
+ * from env to "Тонкие настройки" without a restart. Precedence: any valid
+ * `MYRMIDON_BASELINE_ENABLED` env value wins over the UI-saved value, then
+ * the saved UI value (`baselineEnabled`), then the default (`true`, keeping
+ * the interval-declared behaviour).
  */
+export function baselineMasterEnabled(env: NodeJS.ProcessEnv): boolean {
+  const raw = env[BASELINE_ENABLED_ENV]?.trim().toLowerCase();
+  if (raw === "false" || raw === "0" || raw === "no" || raw === "off") return false;
+  if (raw === "true" || raw === "1" || raw === "yes" || raw === "on") return true;
+  const saved = liveSavedSetting<boolean>("baselineEnabled");
+  if (saved !== undefined) return saved;
+  const live = liveBehaviorSetting<boolean>("baselineEnabled");
+  return live !== undefined ? live : true;
+}
+
 export function readBaselineSettings(env: NodeJS.ProcessEnv): BaselineSettings {
-  const raw = env[BASELINE_INTERVAL_ENV];
-  if (raw === undefined || raw.trim() === "") {
+  if (!baselineMasterEnabled(env)) {
+    return { enabled: false, intervalSec: DEFAULT_INTERVAL_SEC, intervalMs: DEFAULT_INTERVAL_SEC * 1000 };
+  }
+  const saved = env === process.env ? liveSavedSetting<number>("baseline_interval_sec") : undefined;
+  const raw = saved !== undefined ? String(saved) : env[BASELINE_INTERVAL_ENV];
+  if (raw === undefined || raw.trim() === "" || raw.trim() === "0") {
     return { enabled: false, intervalSec: DEFAULT_INTERVAL_SEC, intervalMs: DEFAULT_INTERVAL_SEC * 1000 };
   }
   const parsed = Number(raw);
@@ -153,7 +178,7 @@ export function startBaselineSnapshots(
     }
   };
 
-  const timer = setInterval(() => {
+  const timer = backgroundInterval(() => {
     void tick();
   }, settings.intervalMs);
   if (typeof timer.unref === "function") timer.unref();

@@ -139,6 +139,11 @@ export const githubAppEntrySchema = z
     // flow; manually registered Apps may leave it null) — backs the
     // one-click "Install" URL. Additive; no migration (instance_settings JSON).
     slug: z.string().trim().min(1).max(100).nullable().default(null),
+    // myrmidon(GITHUB-APP-WEBHOOK): company secret holding the App's webhook
+    // secret (the HMAC key of `X-Hub-Signature-256`). Server-owned: created by
+    // `POST .../apps/:entryId/webhook-sync` and carried over a board PUT that
+    // omits it. Absent — the App's webhook is not received by this board.
+    webhookSecretId: z.string().uuid().nullable().optional(),
     ...agentScopeFields,
     allowedRepos: z.array(repoPatternSchema).max(MAX_ALLOWED_REPOS).default([]),
     /** The permission list the broker requests verbatim on every token for this App. */

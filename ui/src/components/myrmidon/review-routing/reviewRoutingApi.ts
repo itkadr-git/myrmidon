@@ -7,7 +7,7 @@
 // mirror of the shape part A (server) adds to
 // `packages/shared/src/myrmidon-review-routing.ts`. The PUT is full-object, so
 // the client must know the block to preserve it. Once part A merges, replace
-// this interface with an import from `@paperclipai/shared`.
+// this interface with an import from `@myrmidon/shared`.
 import { api } from "@/api/client";
 
 /**
@@ -47,6 +47,8 @@ export interface ReviewRoutingSettings {
   maxLoadPerReviewer: number;
   /** Hours without a verdict before the review is reassigned; 0 — never. */
   reassignAfterHours: number;
+  /** Minutes a pending review waits before being rebalanced to an idle pool member; 0 — never. */
+  rebalanceAfterMinutes?: number;
   /**
    * Pull-request lane. Optional in the wire shape until part A (PR 705) merges:
    * an older server omits it, and because the PUT schema is `.strict()` the

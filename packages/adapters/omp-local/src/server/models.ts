@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
-import type { AdapterModel } from "@paperclipai/adapter-utils";
-import { asString, runChildProcess } from "@paperclipai/adapter-utils/server-utils";
+import type { AdapterModel } from "@myrmidon/adapter-utils";
+import { asString, runChildProcess } from "@myrmidon/adapter-utils/server-utils";
+import { readProductEnv } from "@myrmidon/shared/env-alias";
 
 const MODELS_CACHE_TTL_MS = 60_000;
 
@@ -144,16 +145,14 @@ function sortModels(models: AdapterModel[]): AdapterModel[] {
 }
 
 function resolveOmpCommand(input: unknown): string {
-  const envOverride =
-    typeof process.env.PAPERCLIP_OMP_COMMAND === "string" &&
-    process.env.PAPERCLIP_OMP_COMMAND.trim().length > 0
-      ? process.env.PAPERCLIP_OMP_COMMAND.trim()
-      : "omp";
+  // myrmidon(REBRAND-C): MYRMIDON_OMP_COMMAND; PAPERCLIP_OMP_COMMAND is the deprecated alias.
+  const override = readProductEnv("OMP_COMMAND")?.trim();
+  const envOverride = override && override.length > 0 ? override : "omp";
   return asString(input, envOverride);
 }
 
 const discoveryCache = new Map<string, { expiresAt: number; models: AdapterModel[] }>();
-const VOLATILE_ENV_KEY_PREFIXES = ["PAPERCLIP_", "npm_", "NPM_"] as const;
+const VOLATILE_ENV_KEY_PREFIXES = ["MYRMIDON_", "PAPERCLIP_", "npm_", "NPM_"] as const;
 const VOLATILE_ENV_KEY_EXACT = new Set(["PWD", "OLDPWD", "SHLVL", "_", "TERM_SESSION_ID"]);
 
 function isVolatileEnvKey(key: string): boolean {

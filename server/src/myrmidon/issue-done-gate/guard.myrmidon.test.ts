@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import type { PullRequestMergeDetailsResolver } from "../../services/github-pull-request-merge.js";
 import {
   assertIssueDonePullRequestsSettled,
+  assertStoredIssueDonePullRequestsSettled,
   inspectIssueDonePullRequests,
   ISSUE_DONE_PULL_REQUEST_GATE,
 } from "./guard.js";
@@ -9,7 +10,13 @@ import {
 const issueId = "issue-1";
 const companyId = "company-1";
 
-function product(input: { id: string; number: number; status?: string; replacement?: string }) {
+function product(input: {
+  id: string;
+  number: number;
+  status?: string;
+  replacement?: string;
+  metadata?: Record<string, unknown>;
+}) {
   return {
     id: input.id,
     companyId,
@@ -21,6 +28,7 @@ function product(input: { id: string; number: number; status?: string; replaceme
       repo: "acme/project",
       number: input.number,
       ...(input.replacement ? { replacementPullRequestUrl: input.replacement } : {}),
+      ...(input.metadata ?? {}),
     },
   };
 }
@@ -32,19 +40,86 @@ function fakeDb(products: ReturnType<typeof product>[]) {
   return { select } as never;
 }
 
-function resolver(states: Record<number, "open" | "draft" | "merged" | "closed" | "unknown">): PullRequestMergeDetailsResolver {
+function resolver(
+  states: Record<number, "open" | "draft" | "merged" | "closed" | "unknown" | {
+    state: "open" | "draft" | "merged" | "closed" | "unknown";
+    baseRef?: string | null;
+    defaultBranch?: string | null;
+    mergeCommitSha?: string | null;
+    mergeCommitReachable?: boolean;
+  }>,
+): PullRequestMergeDetailsResolver {
   return vi.fn<PullRequestMergeDetailsResolver>(async (_companyId, reference) => {
-    const state = states[reference.number] ?? "unknown";
+    const raw = states[reference.number] ?? "unknown";
+    const conf = typeof raw === "string" ? { state: raw } : raw;
+    const state = conf.state;
     return {
       state: state === "merged" ? "merged" : state === "unknown" ? "unknown" : "open",
       workProductState: state === "unknown" ? undefined : state,
       headRef: null,
       headSha: null,
+      baseRef: conf.baseRef ?? null,
+      defaultBranch: conf.defaultBranch ?? "main",
+      mergeCommitSha: conf.mergeCommitSha ?? null,
+      mergeCommitReachable: conf.mergeCommitReachable,
     };
   });
 }
 
 describe("issue done pull-request gate", () => {
+  it("allows PATCH done to use live merged facts when the stored work product is stale", async () => {
+    const db = fakeDb([product({ id: "wp-live", number: 91, status: "open" })]);
+    const resolve = resolver({ 91: "merged" });
+    const snapshot = await inspectIssueDonePullRequests(db, companyId, issueId, resolve);
+
+    expect(resolve).toHaveBeenCalledTimes(1);
+    expect(() => assertIssueDonePullRequestsSettled(snapshot)).not.toThrow();
+    expect(() => assertStoredIssueDonePullRequestsSettled([product({ id: "wp-live", number: 91, status: "open" })])).toThrowError(/Cannot mark this task done until/);
+  });
+
+  it("does not accept a mixed stored set until every non-closed PR is settled", () => {
+    const merged = product({ id: "wp-merged", number: 92, status: "merged" });
+    const closed = product({ id: "wp-closed", number: 93, status: "closed" });
+    const open = product({ id: "wp-open", number: 94, status: "open" });
+    expect(() => assertStoredIssueDonePullRequestsSettled([merged, closed])).not.toThrow();
+    expect(() => assertStoredIssueDonePullRequestsSettled([merged, closed, open])).toThrowError(/Cannot mark this task done until/);
+    expect(() => assertStoredIssueDonePullRequestsSettled([closed])).toThrowError(/Cannot mark this task done until/);
+  });
+
+  it("does not treat non-PR work products as blocking a done issue", () => {
+    expect(() => assertStoredIssueDonePullRequestsSettled([
+      { ...product({ id: "wp-doc", number: 94, status: "open" }), type: "document" },
+    ])).not.toThrow();
+  });
+
+  it("uses live merged facts through transaction validation when stored status is stale", async () => {
+    const { assertIssueDoneSnapshotUnchanged } = await import("./guard.js");
+    const staleProduct = product({ id: "wp-merged-now", number: 95, status: "open" });
+    const snapshot = await inspectIssueDonePullRequests(fakeDb([staleProduct]), companyId, issueId, resolver({ 95: "open" }));
+    const liveSnapshot = await inspectIssueDonePullRequests(fakeDb([staleProduct]), companyId, issueId, resolver({
+      95: { state: "merged", baseRef: "main", defaultBranch: "main", mergeCommitSha: "abc123", mergeCommitReachable: true },
+    }));
+    const tx = {
+      execute: vi.fn(async () => undefined),
+      select: vi.fn()
+        .mockReturnValueOnce({ from: vi.fn(() => ({ where: vi.fn(async () => [{ companyId }]) })) })
+        .mockReturnValueOnce({ from: vi.fn(() => ({ where: vi.fn(async () => [{
+          ...product({ id: "wp-merged-now", number: 95, status: "merged" }),
+          metadata: {
+            repo: "acme/project",
+            number: 95,
+            state: "merged",
+            draft: false,
+            baseRef: "main",
+            defaultBranch: "main",
+            mergeCommitSha: "abc123",
+            mergeCommitReachable: true,
+          },
+        }]) })) }),
+    } as never;
+    await expect(assertIssueDoneSnapshotUnchanged(tx, companyId, issueId, snapshot, liveSnapshot)).resolves.toBeUndefined();
+  });
+
   it.each(["open", "draft", "unknown"] as const)("blocks a %s PR with a stable retryable error", async (state) => {
     const snapshot = await inspectIssueDonePullRequests(
       fakeDb([product({ id: "wp-1", number: 12 })]),
@@ -65,6 +140,47 @@ describe("issue done pull-request gate", () => {
         },
       });
     }
+  });
+
+  it("says the board has no repository access when the PR cannot be read for lack of rights", async () => {
+    const denied = vi.fn<PullRequestMergeDetailsResolver>(async () => ({
+      state: "unknown",
+      access: "denied",
+      headRef: null,
+      headSha: null,
+    }));
+    const snapshot = await inspectIssueDonePullRequests(
+      fakeDb([product({ id: "wp-1", number: 12 })]),
+      companyId,
+      issueId,
+      denied,
+    );
+    try {
+      assertIssueDonePullRequestsSettled(snapshot);
+      throw new Error("Expected the completion gate to block");
+    } catch (error) {
+      expect(error).toMatchObject({
+        status: 409,
+        message: "Не удаётся прочитать PR https://github.com/acme/project/pull/12: у доски нет доступа к репозиторию acme/project (настройте GitHub App/PAT)",
+        details: {
+          code: ISSUE_DONE_PULL_REQUEST_GATE,
+          reason: "repository_access_unavailable",
+          repository: "acme/project",
+          pullRequestUrl: "https://github.com/acme/project/pull/12",
+          retryable: true,
+        },
+      });
+    }
+  });
+
+  it("keeps the generic message for an unknown PR state without an access problem", async () => {
+    const snapshot = await inspectIssueDonePullRequests(
+      fakeDb([product({ id: "wp-1", number: 12 })]),
+      companyId,
+      issueId,
+      resolver({ 12: "unknown" }),
+    );
+    expect(() => assertIssueDonePullRequestsSettled(snapshot)).toThrow(/Cannot mark this task done until/);
   });
 
   it("returns a retryable gate conflict if the issue company changed during validation", async () => {
@@ -125,5 +241,103 @@ describe("issue done pull-request gate", () => {
       resolver({ 12: "merged", 14: "open" }),
     );
     expect(() => assertIssueDonePullRequestsSettled(snapshot)).toThrow("/pull/14");
+  });
+
+  it("allows done when a mixed set contains a closed PR and another linked PR is merged", async () => {
+    const snapshot = await inspectIssueDonePullRequests(
+      fakeDb([
+        product({ id: "wp-1", number: 12 }),
+        product({ id: "wp-2", number: 14 }),
+      ]),
+      companyId,
+      issueId,
+      resolver({ 12: "merged", 14: "closed" }),
+    );
+    expect(() => assertIssueDonePullRequestsSettled(snapshot)).not.toThrow();
+  });
+
+  it("blocks done when all linked PRs in a set are closed without any merged PR", async () => {
+    const snapshot = await inspectIssueDonePullRequests(
+      fakeDb([
+        product({ id: "wp-1", number: 12 }),
+        product({ id: "wp-2", number: 14 }),
+      ]),
+      companyId,
+      issueId,
+      resolver({ 12: "closed", 14: "closed" }),
+    );
+    expect(() => assertIssueDonePullRequestsSettled(snapshot)).toThrow("/pull/12");
+  });
+
+  // OPE-10815: PR merged into dead base branch where merge commit is not reachable from main or rel/*
+  it("blocks done when a PR is merged into a dead base branch and merge commit is unreachable (OPE-10815)", async () => {
+    const snapshot = await inspectIssueDonePullRequests(
+      fakeDb([product({ id: "wp-stacked", number: 1962 })]),
+      companyId,
+      issueId,
+      resolver({
+        1962: {
+          state: "merged",
+          baseRef: "bot/OPE-9262",
+          defaultBranch: "main",
+          mergeCommitSha: "28d9fbb69424c2ca4adbe3122bca5e16cc81209e",
+          mergeCommitReachable: false,
+        },
+      }),
+    );
+    expect(() => assertIssueDonePullRequestsSettled(snapshot)).toThrowError(
+      /Cannot mark this task done: PR .* was merged into bot\/OPE-9262, but its merge commit is not reachable from main or rel\/\*/,
+    );
+  });
+
+  it("allows done when a PR is merged into a non-main base but its merge commit is reachable from main (OPE-10815)", async () => {
+    const snapshot = await inspectIssueDonePullRequests(
+      fakeDb([product({ id: "wp-stacked-ok", number: 1963 })]),
+      companyId,
+      issueId,
+      resolver({
+        1963: {
+          state: "merged",
+          baseRef: "bot/OPE-9262",
+          defaultBranch: "main",
+          mergeCommitSha: "571c9a7941",
+          mergeCommitReachable: true,
+        },
+      }),
+    );
+    expect(() => assertIssueDonePullRequestsSettled(snapshot)).not.toThrow();
+  });
+
+  it("allows done when a PR is merged into a rel/* branch (OPE-10815)", async () => {
+    const snapshot = await inspectIssueDonePullRequests(
+      fakeDb([product({ id: "wp-rel", number: 1964 })]),
+      companyId,
+      issueId,
+      resolver({
+        1964: {
+          state: "merged",
+          baseRef: "rel/1.6.6",
+          defaultBranch: "main",
+          mergeCommitSha: "abc1234",
+        },
+      }),
+    );
+    expect(() => assertIssueDonePullRequestsSettled(snapshot)).not.toThrow();
+  });
+
+  it("blocks done in assertStoredIssueDonePullRequestsSettled when stored metadata indicates mergeCommitReachable is false (OPE-10815)", () => {
+    const unreachablePr = product({
+      id: "wp-stored-unreachable",
+      number: 1962,
+      status: "merged",
+      metadata: {
+        baseRef: "bot/OPE-9262",
+        defaultBranch: "main",
+        mergeCommitReachable: false,
+      },
+    });
+    expect(() => assertStoredIssueDonePullRequestsSettled([unreachablePr])).toThrowError(
+      /Cannot mark this task done: PR .* was merged into bot\/OPE-9262, but its merge commit is not reachable from main or rel\/\*/,
+    );
   });
 });

@@ -12,7 +12,7 @@ import {
   issueComments,
   issueRelations,
   issues,
-} from "@paperclipai/db";
+} from "@myrmidon/db";
 import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
@@ -219,7 +219,7 @@ describeEmbeddedPostgres("stale issue execution lock routes", () => {
         .then((rows) => rows[0]);
       expect(row).toEqual({
         status,
-        assigneeAgentId: null,
+        assigneeAgentId: agentId,
         checkoutRunId: null,
         executionRunId: null,
         executionLockedAt: null,
@@ -262,7 +262,7 @@ describeEmbeddedPostgres("stale issue execution lock routes", () => {
       .then((rows) => rows[0]);
     expect(row).toEqual({
       status: "todo",
-      assigneeAgentId: null,
+      assigneeAgentId: agentId,
       checkoutRunId: null,
       executionRunId: null,
       executionLockedAt: null,

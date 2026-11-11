@@ -1,4 +1,4 @@
-import type { Agent } from "@paperclipai/shared";
+import type { Agent } from "@myrmidon/shared";
 
 export interface AgentProjectScope {
   id: string;

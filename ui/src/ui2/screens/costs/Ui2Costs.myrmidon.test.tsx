@@ -78,6 +78,9 @@ describe("myrmidon(UI2) Ui2Costs screen parity", () => {
       spendCents: 157_400,
       budgetCents: 220_000,
       utilizationPercent: 71.5,
+      unpricedEvents: 3,
+      unpricedTokens: 1200,
+      forecastCents: 275_000,
     });
     mockCostsApi.byAgent.mockResolvedValue([
       {
@@ -207,8 +210,53 @@ describe("myrmidon(UI2) Ui2Costs screen parity", () => {
     expect(tileValues.some((value) => value?.includes("1,574"))).toBe(true);
     // Utilization 71.5% rounds to 72%.
     expect(tileValues.some((value) => value?.includes("72%"))).toBe(true);
+    expect(container.textContent).toContain("Unpriced");
+    expect(container.textContent).toContain("3 events without a price");
+    expect(container.textContent).toContain("Forecast through month-end: $2,750.00");
     // The incident tile counts 1 active incident from the overview.
     expect(tileValues.some((value) => value === "1")).toBe(true);
+  });
+
+  it("renders accessible spend breakdown rows for agents", async () => {
+    await renderScreen();
+
+    const chart = container.querySelector(".ui2-costs-chart");
+    expect(chart).not.toBeNull();
+    expect(chart?.hasAttribute("role")).toBe(false);
+    expect(chart?.textContent).toContain("agent-a");
+    expect(chart?.textContent).toContain("$623.10");
+    expect(chart?.textContent).toContain("agent-b");
+    expect(chart?.textContent).toContain("$120.00");
+  });
+
+  it("shows the no-spend empty state when there are no agent rows", async () => {
+    mockCostsApi.byAgent.mockResolvedValue([]);
+    await renderScreen();
+
+    expect(container.querySelector(".ui2-costs-chart")).toBeNull();
+    expect(container.textContent).toContain("No spend in this period");
+  });
+
+  it("keeps the zero budget amount without a redundant budget hint", async () => {
+    mockCostsApi.summary.mockResolvedValue({
+      companyId: COMPANY_ID,
+      spendCents: 0,
+      budgetCents: 0,
+      utilizationPercent: 0,
+      unpricedEvents: 0,
+      unpricedTokens: 0,
+      forecastCents: null,
+    });
+    mockCostsApi.byAgent.mockResolvedValue([]);
+    await renderScreen();
+
+    const budgetTile = [...container.querySelectorAll(".ui2-tile")].find((tile) =>
+      tile.querySelector(".ui2-tile-label")?.textContent?.includes("Budget"),
+    );
+    expect(budgetTile?.querySelector(".ui2-tile-value")?.textContent).toContain("$0.00");
+    expect(budgetTile?.querySelector(".ui2-tile-hint")).toBeNull();
+    expect(container.textContent).not.toContain("Unpriced");
+    expect(container.textContent).not.toContain("Forecast through month-end");
   });
 
   it("renders the per-agent table from the mocked by-agent data", async () => {

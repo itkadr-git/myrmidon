@@ -1,4 +1,5 @@
-import type { Db } from "@paperclipai/db";
+import type { Db } from "@myrmidon/db";
+import { isBlockerOpen } from "../myrmidon/blocker-resolved.js";
 import {
   activityLog,
   agentTaskSessions as agentTaskSessionsTable,
@@ -12,7 +13,7 @@ import {
   pluginLogs,
   principalPermissionGrants,
   projects as projectsTable,
-} from "@paperclipai/db";
+} from "@myrmidon/db";
 import { eq, and, like, desc, inArray, sql, isNull, isNotNull, gt, lte } from "drizzle-orm";
 import type {
   HostServices,
@@ -26,9 +27,11 @@ import type {
   PluginIssueAssigneeSummary,
   PluginIssueOrchestrationSummary,
   PluginExecutionWorkspaceMetadata,
-} from "@paperclipai/plugin-sdk";
-import type { CreateIssueThreadInteraction, InviteJoinType, IssueDocumentSummary, PermissionKey, PrincipalType } from "@paperclipai/shared";
-import { pluginOperationIssueOriginKind } from "@paperclipai/shared";
+} from "@myrmidon/plugin-sdk";
+import type { CreateIssueThreadInteraction, InviteJoinType, IssueDocumentSummary, PermissionKey, PrincipalType } from "@myrmidon/shared";
+import { pluginOperationIssueOriginKind } from "@myrmidon/shared";
+import { isAllowedContentType, MAX_ATTACHMENT_BYTES, normalizeUploadAttachmentContentType } from "../attachment-types.js";
+import { getStorageService } from "../storage/index.js";
 import { companyService } from "./companies.js";
 import { agentService } from "./agents.js";
 import { projectService } from "./projects.js";
@@ -41,7 +44,6 @@ import { heartbeatService } from "./heartbeat.js";
 import { budgetService } from "./budgets.js";
 import { issueApprovalService } from "./issue-approvals.js";
 import { approvalService } from "./approvals.js";
-import { getStorageService } from "../storage/index.js";
 import { subscribeCompanyLiveEvents } from "./live-events.js";
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import path from "node:path";
@@ -78,11 +80,11 @@ import { getTelemetryClient } from "../telemetry.js";
 import { accessService } from "./access.js";
 import { authorizationService, type AuthorizationActor } from "./authorization.js";
 import { redactEventPayload, sanitizeRecord } from "../redaction.js";
-import type { WorkerHostCallContext } from "@paperclipai/plugin-sdk";
+import type { WorkerHostCallContext } from "@myrmidon/plugin-sdk";
 import {
   normalizeProviderFamily,
   SANDBOX_STARTUP_SPAN_ATTRS,
-} from "@paperclipai/adapter-utils/acpx-engine/startup-timing";
+} from "@myrmidon/adapter-utils/acpx-engine/startup-timing";
 import { recordProviderPluginSpan, type ParsedTraceparent } from "../instrumentation.js";
 
 // ---------------------------------------------------------------------------
@@ -701,7 +703,7 @@ export function buildHostServices(
   notifyWorker?: (method: string, params: unknown) => void,
   options: {
     pluginWorkerManager?: PluginWorkerManager;
-    manifest?: import("@paperclipai/shared").PaperclipPluginManifestV1;
+    manifest?: import("@myrmidon/shared").PaperclipPluginManifestV1;
     heartbeatRuntimeEnv?: Record<string, string | undefined>;
   } = {},
 ): HostServices & { dispose(): void } {
@@ -1564,7 +1566,7 @@ export function buildHostServices(
         await scopedBus.emit(params.name, params.companyId, params.payload);
       },
       async subscribe(params: { eventPattern: string; filter?: Record<string, unknown> | null }) {
-        const handler = async (event: import("@paperclipai/plugin-sdk").PluginEvent) => {
+        const handler = async (event: import("@myrmidon/plugin-sdk").PluginEvent) => {
           if (notifyWorker) {
             notifyWorker("onEvent", { event });
           }
@@ -2172,7 +2174,7 @@ export function buildHostServices(
           throw new Error(`Issue is not wakeable in status: ${issue.status}`);
         }
         const relations = await issues.getRelationSummaries(issue.id);
-        const unresolvedBlockers = relations.blockedBy.filter((blocker) => blocker.status !== "done");
+        const unresolvedBlockers = relations.blockedBy.filter((blocker) => isBlockerOpen(blocker.status));
         if (unresolvedBlockers.length > 0) {
           throw new Error("Issue is blocked by unresolved blockers");
         }
@@ -2240,7 +2242,7 @@ export function buildHostServices(
             throw new Error(`Issue is not wakeable in status: ${issue.status}`);
           }
           const relations = await issues.getRelationSummaries(issue.id);
-          const unresolvedBlockers = relations.blockedBy.filter((blocker) => blocker.status !== "done");
+          const unresolvedBlockers = relations.blockedBy.filter((blocker) => isBlockerOpen(blocker.status));
           if (unresolvedBlockers.length > 0) {
             throw new Error("Issue is blocked by unresolved blockers");
           }
@@ -2584,6 +2586,22 @@ export function buildHostServices(
         if (!inCompany(await issues.getById(params.issueId), companyId)) return [];
         return (await issues.listAttachments(params.issueId)) as any;
       },
+      async uploadAttachment(params) {
+        const companyId = ensureCompanyId(params.companyId);
+        await ensurePluginAvailableForCompany(companyId);
+        const issue = await issues.getById(params.issueId);
+        if (!inCompany(issue, companyId)) throw new Error("Issue not found in company scope");
+        const bytes = Buffer.from(params.contentBase64, "base64");
+        if (!bytes.length || bytes.length > MAX_ATTACHMENT_BYTES || bytes.toString("base64") !== params.contentBase64) throw new Error("Attachment data must be valid base64 and within the size limit");
+        const contentType = normalizeUploadAttachmentContentType({ contentType: params.contentType, originalFilename: params.filename });
+        if (!isAllowedContentType(contentType)) throw new Error("Unsupported attachment content type");
+        const stored = await getStorageService().putFile({ companyId, namespace: "issue-attachments", originalFilename: params.filename, contentType, body: bytes });
+        const { actorAgentId, actorUserId, actorRunId } = params.actor ?? {};
+        const row = await issues.createAttachment({ issueId: issue.id, provider: stored.provider, objectKey: stored.objectKey, contentType: stored.contentType, byteSize: stored.byteSize, sha256: stored.sha256, originalFilename: stored.originalFilename, createdByAgentId: actorAgentId ?? null, createdByUserId: actorUserId ?? null, createdByRunId: actorRunId ?? null });
+        await logPluginActivity({ companyId, action: "issue.attachment.uploaded", entityType: "issue", entityId: issue.id, details: { attachmentId: row.id, byteSize: row.byteSize, contentType: row.contentType }, actor: { actorAgentId, actorUserId, actorRunId } });
+        return row as any;
+      },
+
       async getAttachmentContent(params) {
         const companyId = ensureCompanyId(params.companyId);
         await ensurePluginAvailableForCompany(companyId);
@@ -2636,6 +2654,7 @@ export function buildHostServices(
           contentBase64: bytes.toString("base64"),
         };
       },
+
     },
 
     approvals: {

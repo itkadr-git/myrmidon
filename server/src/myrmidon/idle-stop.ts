@@ -1,7 +1,10 @@
-import { BotContainerDriver, BotContainerStatus } from './bot-containers/driver.js';
-import { Db, heartbeatRuns, agents, botApplyJobs } from '@paperclipai/db';
+import { BotContainerDriver, BotContainerStatus, IDLE_STOP_UNSUPPORTED_MESSAGE } from './bot-containers/driver.js';
+import { Db, heartbeatRuns, agents, botApplyJobs } from '@myrmidon/db';
 import { and, eq, inArray, desc, sql } from 'drizzle-orm';
 import { readMaintenanceDocument } from './maintenance/store.js';
+import { idleStopRuntimeFromStatus, type IdleStopRuntime } from './idle-stop-runtime.js';
+import { instanceSettingsService } from '../services/instance-settings.js';
+import { backgroundInterval } from "./monitoring/board-load/lanes.js"; // myrmidon(1.6.6 OPE-9058)
 
 // Logger type - matches pino Logger interface
 export interface IdleStopLogger {
@@ -16,6 +19,8 @@ export interface IdleStopConfig {
   afterSec: number;
   healthTimeoutMs: number;
   sweepIntervalMs: number;
+  /** OPE-12291: roles whose containers are never idle-stopped (default ["lead"]). */
+  alwaysOnRoles?: string[];
 }
 
 const DEFAULT_SWEEP_INTERVAL_MS = 60_000;
@@ -38,6 +43,8 @@ export class IdleStopService {
   private readonly logger: IdleStopLogger;
   private sweepInterval?: NodeJS.Timeout;
   private startupTimes: Map<string, number> = new Map();
+  private inFlightStarts: Map<string, Promise<void>> = new Map();
+  private configCache?: { value: IdleStopConfig; expiresAt: number };
 
   constructor(driver: BotContainerDriver, db: Db, config: Partial<IdleStopConfig> = {}, loggerInstance?: IdleStopLogger) {
     this.driver = driver;
@@ -50,24 +57,25 @@ export class IdleStopService {
       debug: (msg: string, ...args: any[]) => console.debug(`[DEBUG] ${msg}`, ...args),
     };
     this.config = {
-      enabled: config.enabled ?? false,
+      enabled: config.enabled ?? true,
       afterSec: config.afterSec ?? 1800, // 30 minutes default
-      healthTimeoutMs: config.healthTimeoutMs ?? 30000,
+      healthTimeoutMs: config.healthTimeoutMs ?? 420000,
       sweepIntervalMs: config.sweepIntervalMs ?? DEFAULT_SWEEP_INTERVAL_MS,
     };
   }
 
   public start(): void {
+    // The sweeper always runs: the live `enabled` flag (board settings) is read on every
+    // sweep, so switching IDLE-STOP on from the board needs no restart.
     if (!this.config.enabled) {
-      this.logger.info('IDLE-STOP service disabled, not starting');
-      return;
+      this.logger.info('IDLE-STOP is disabled at startup; the sweeper stays idle until it is enabled in settings');
     }
 
     this.logger.info(
       `Starting IDLE-STOP service: afterSec=${this.config.afterSec}, healthTimeoutMs=${this.config.healthTimeoutMs}`,
     );
 
-    this.sweepInterval = setInterval(() => {
+    this.sweepInterval = backgroundInterval(() => {
       void this.performSweep();
     }, this.config.sweepIntervalMs);
 
@@ -90,14 +98,15 @@ export class IdleStopService {
    * and the last run finished longer than `afterSec` ago.
    */
   public async performSweep(): Promise<void> {
-    if (!this.config.enabled) {
+    const config = await this.currentConfig();
+    if (!config.enabled) {
       return;
     }
 
     try {
       this.logger.debug('Starting idle container sweep');
 
-      const botKeys = await this.listBotKeys();
+      const { botKeys, alwaysOn } = await this.listBots();
       if (botKeys.length === 0) {
         this.logger.debug('No bot container agents found, skipping sweep');
         return;
@@ -107,7 +116,7 @@ export class IdleStopService {
       this.logger.debug(`Found ${containers.length} bot containers`);
 
       for (const container of containers) {
-        await this.checkContainer(container);
+        await this.checkContainer(container, config.afterSec, alwaysOn.has(container.botKey));
       }
     } catch (error) {
       this.logger.error('Error during idle container sweep:', error);
@@ -143,10 +152,10 @@ export class IdleStopService {
     }
   }
 
-  private async listBotKeys(): Promise<string[]> {
+  private async listBots(): Promise<{ botKeys: string[]; alwaysOn: Set<string> }> {
     try {
       const rows = await this.db
-        .select({ agentId: agents.id })
+        .select({ agentId: agents.id, agentRole: agents.role, adapterConfig: agents.adapterConfig })
         .from(agents)
         .where(
           and(
@@ -155,15 +164,32 @@ export class IdleStopService {
             sql`${agents.adapterConfig} #> '{container,enabled}' = 'true'::jsonb`,
           ),
         );
-      return rows.map((row) => row.agentId);
+      const config = await this.currentConfig();
+      const alwaysOnRoles = new Set(config.alwaysOnRoles ?? []);
+      const alwaysOn = new Set<string>();
+      for (const row of rows) {
+        const container = (row.adapterConfig as { container?: { idleStopMode?: unknown } } | null | undefined)?.container;
+        // OPE-12291: per-card "off"/"always_on" and role-based exemption (the
+        // operator bot keeps a warm container; its queue spikes are not eaten
+        // by a cold start against queuedRunStaleAfterSec).
+        if (container?.idleStopMode === 'always_on' || container?.idleStopMode === 'off') alwaysOn.add(row.agentId);
+        else if (row.agentRole && alwaysOnRoles.has(row.agentRole)) alwaysOn.add(row.agentId);
+      }
+      return { botKeys: rows.map((row) => row.agentId), alwaysOn };
     } catch (error) {
       this.logger.error('Error listing bot container agents:', error);
-      return [];
+      return { botKeys: [], alwaysOn: new Set() };
     }
   }
 
-  private async checkContainer(container: BotContainerStatus): Promise<void> {
+  private async checkContainer(container: BotContainerStatus, afterSec: number, alwaysOn: boolean): Promise<void> {
     const botKey = container.botKey;
+
+    // Per-bot mode "always on": never stopped, whatever the idle time.
+    if (alwaysOn) {
+      this.logger.debug(`Bot ${botKey} is configured always-on, skipping stop`);
+      return;
+    }
 
     // Only stop running containers
     if (container.state !== 'running') {
@@ -171,7 +197,7 @@ export class IdleStopService {
       return;
     }
 
-    if (await this.isApplyOrMaintenanceActive(botKey, container)) {
+    if (await this.isApplyOrMaintenanceActive(botKey, container, afterSec)) {
       this.logger.debug(`Bot ${botKey} is undergoing apply/recreate or maintenance, skipping`);
       return;
     }
@@ -183,23 +209,64 @@ export class IdleStopService {
     }
 
     const idleDurationSec = await this.getIdleDurationSec(botKey, container);
-    if (idleDurationSec < this.config.afterSec) {
+    if (idleDurationSec < afterSec) {
       this.logger.debug(
-        `Bot ${botKey} is idle but not long enough (${idleDurationSec}s/${this.config.afterSec}s)`,
+        `Bot ${botKey} is idle but not long enough (${idleDurationSec}s/${afterSec}s)`,
       );
       return;
     }
 
     this.logger.info(`Stopping idle container for bot ${botKey} (idle for ${idleDurationSec}s)`);
     try {
-      if (!this.driver.stopIdle) throw new Error('idle-stop route is not supported by this driver');
+      if (!this.driver.stopIdle) throw new Error(IDLE_STOP_UNSUPPORTED_MESSAGE);
       await this.driver.stopIdle(botKey);
     } catch (error) {
       this.logger.error(`Failed to stop container for bot ${botKey} [${error instanceof Error ? error.message : String(error)}]`);
     }
   }
 
-  private async isApplyOrMaintenanceActive(botKey: string, container: BotContainerStatus): Promise<boolean> {
+  public invalidateConfigCache(): void {
+    this.configCache = undefined;
+  }
+
+  /**
+   * Container state with the last stop/start times (from the container's docker inspect, so
+   * they survive a board restart).
+   */
+  public async readRuntimeState(botKey: string): Promise<{ state: string } & IdleStopRuntime> {
+    const status = await this.driver.status(botKey);
+    return { state: status.state, ...idleStopRuntimeFromStatus(status) };
+  }
+
+  /** Effective settings: stored board settings over startup (env) values; re-read every 2 s at most. */
+  private async currentConfig(): Promise<IdleStopConfig> {
+    try {
+      if (this.configCache && this.configCache.expiresAt > Date.now()) return this.configCache.value;
+      const settings = instanceSettingsService(this.db) as unknown as { getGeneral(): Promise<{ idleStop?: unknown }> };
+      const raw = (await settings.getGeneral()).idleStop;
+      if (raw && typeof raw === 'object') {
+        const value = raw as Record<string, unknown>;
+        const resolved: IdleStopConfig = {
+          ...this.config,
+          enabled: typeof value.enabled === 'boolean' ? value.enabled : this.config.enabled,
+          afterSec: typeof value.afterSec === 'number' && Number.isFinite(value.afterSec) ? value.afterSec : this.config.afterSec,
+          healthTimeoutMs: typeof value.healthTimeoutMs === 'number' && Number.isFinite(value.healthTimeoutMs) ? value.healthTimeoutMs : this.config.healthTimeoutMs,
+          // OPE-12291: an explicit stored list wins, even when empty; a missing
+          // key keeps the default (["lead"]).
+          alwaysOnRoles: Array.isArray(value.alwaysOnRoles)
+            ? (value.alwaysOnRoles as unknown[]).filter((r): r is string => typeof r === 'string' && r.length > 0 && r.length <= 60)
+            : (this.config.alwaysOnRoles ?? ['lead']),
+        };
+        this.configCache = { value: resolved, expiresAt: Date.now() + 2_000 };
+        return resolved;
+      }
+    } catch (error) {
+      this.logger.error(`Could not read live IDLE-STOP settings; keeping startup config [${error instanceof Error ? error.message : String(error)}]`);
+    }
+    return this.config.alwaysOnRoles !== undefined ? this.config : { ...this.config, alwaysOnRoles: ['lead'] };
+  }
+
+  private async isApplyOrMaintenanceActive(botKey: string, container: BotContainerStatus, afterSec: number): Promise<boolean> {
     const inspect = container.inspect as
       | { State?: { Health?: { Status?: string }; StartedAt?: string } }
       | undefined;
@@ -208,7 +275,7 @@ export class IdleStopService {
     }
     if (inspect?.State?.StartedAt) {
       const startedAtMs = new Date(inspect.State.StartedAt).getTime();
-      if (Number.isFinite(startedAtMs) && (Date.now() - startedAtMs) < this.config.afterSec * 1000) {
+      if (Number.isFinite(startedAtMs) && (Date.now() - startedAtMs) < afterSec * 1000) {
         return true;
       }
     }
@@ -364,10 +431,7 @@ export class IdleStopService {
    * When IDLE-STOP is disabled, returns true immediately without calling the driver.
    */
   public async wake(botKey: string): Promise<boolean> {
-    if (!this.config.enabled) {
-      // IDLE-STOP disabled: no-op passthrough, never touch the driver
-      return true;
-    }
+    const config = await this.currentConfig();
 
     try {
       const status = await this.driver.status(botKey);
@@ -417,17 +481,29 @@ export class IdleStopService {
    * within the configured timeout.
    */
   public async ensureStartedAndHealthy(botKey: string): Promise<void> {
-    if (!this.config.enabled) {
-      return;
+    const existingStart = this.inFlightStarts.get(botKey);
+    if (existingStart) {
+      return await existingStart;
     }
 
+    const startPromise = this.ensureStartedAndHealthyInternal(botKey);
+    this.inFlightStarts.set(botKey, startPromise);
+    try {
+      await startPromise;
+    } finally {
+      this.inFlightStarts.delete(botKey);
+    }
+  }
+
+  private async ensureStartedAndHealthyInternal(botKey: string): Promise<void> {
+    const config = await this.currentConfig();
     const startTime = Date.now();
-    const timeoutMs = this.config.healthTimeoutMs;
+    const timeoutMs = config.healthTimeoutMs;
 
     try {
       const status = await this.driver.status(botKey);
 
-      if (status.state === 'running') {
+      if (status.state === 'running' && !status.idleStopped) {
         return;
       }
 

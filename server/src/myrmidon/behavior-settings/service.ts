@@ -11,19 +11,28 @@
 // row, records it in the activity log, then applies it to the process-wide
 // settings.
 //
+// A PATCH with `null` for a known key of the matching scope removes the saved
+// value (a reset): the key leaves storage, so the read falls back to env or
+// default with source `env` / `default`. `changedKeys` is the difference of
+// the resolved values before and after the write, so a reset is audited
+// exactly like an ordinary write (the null itself is never stored).
+//
 // Two overlapping requests can commit their rows in one order and reach the
 // in-memory apply in the other; the audit log would then disagree with the
 // settings actually in force. Every request's read-write-audit-apply sequence
 // runs through one queue (see `withBehaviorSettingsTransition`), exactly as the
 // runtime-limits transition does.
 
-import type { Db } from "@paperclipai/db";
+import type { Db } from "@myrmidon/db";
 import {
+  behaviorSettingRegistry,
   resolveBehaviorSettings,
   mergeBehaviorSettings,
   type BehaviorSettingsPatch,
   type ResolvedBehaviorSettings,
-} from "@paperclipai/shared";
+  type SettingScope,
+} from "@myrmidon/shared";
+import { badRequest } from "../../errors.js";
 import { logger } from "../../middleware/logger.js";
 import { instanceSettingsService, logActivity } from "../../services/index.js";
 import {
@@ -71,7 +80,7 @@ export interface BehaviorSettingsServiceDeps {
   /** Put the settings in force on the live system. */
   apply(settings: Record<string, unknown>): void;
   /** Ask for any necessary resweeps after settings change. */
-  scheduleResweep(): void;
+  scheduleResweep(changedKeys: readonly string[]): void;
   env?: Record<string, string | undefined>;
 }
 
@@ -144,6 +153,7 @@ export function behaviorSettingsService(
 
     updateInstance: async (patch, actor) =>
       withBehaviorSettingsTransition(async () => {
+        validatePatchValues(patch, "instance");
         const before = await deps.instanceSettings.readInstance();
         const previous = resolveBehaviorSettings({ stored: before, env });
 
@@ -151,7 +161,8 @@ export function behaviorSettingsService(
           next: mergeBehaviorSettings(current ?? {}, patch),
         }));
 
-        const changedKeys = changedSettingKeys(previous.settings, next, patch);
+        const resolved = resolveBehaviorSettings({ stored: next, env });
+        const changedKeys = changedSettingKeys(previous.settings, resolved.settings, patch);
 
         const companyIds = await deps.listCompanyIds();
         await Promise.all(
@@ -174,16 +185,17 @@ export function behaviorSettingsService(
         // Only after the row and the audit records are committed: the settings in
         // force must never run ahead of what the log says they are.
         deps.apply(next);
-        deps.scheduleResweep();
+        deps.scheduleResweep(changedKeys);
         logger.info(
           { settings: next, changedKeys, actorType: actor.actorType },
           "behavior settings updated without a restart",
         );
-        return resolveBehaviorSettings({ stored: next, env });
+        return resolved;
       }),
 
     updateCompany: async (companyId, patch, actor) =>
       withBehaviorSettingsTransition(async () => {
+        validatePatchValues(patch, "company");
         const before = await deps.instanceSettings.readCompany(companyId);
         const previous = resolveBehaviorSettings({ stored: before, env });
 
@@ -191,7 +203,8 @@ export function behaviorSettingsService(
           next: mergeBehaviorSettings(current ?? {}, patch),
         }));
 
-        const changedKeys = changedSettingKeys(previous.settings, next, patch);
+        const resolved = resolveBehaviorSettings({ stored: next, env });
+        const changedKeys = changedSettingKeys(previous.settings, resolved.settings, patch);
 
         await deps.logActivity({
           companyId,
@@ -209,14 +222,31 @@ export function behaviorSettingsService(
         // Only after the row and the audit records are committed: the settings in
         // force must never run ahead of what the log says they are.
         deps.apply(next);
-        deps.scheduleResweep();
+        deps.scheduleResweep(changedKeys);
         logger.info(
           { settings: next, changedKeys, actorType: actor.actorType, companyId },
           "company behavior settings updated without a restart",
         );
-        return resolveBehaviorSettings({ stored: next, env });
+        return resolved;
       }),
   };
+}
+
+function validatePatchValues(patch: BehaviorSettingsPatch, expectedScope: SettingScope): void {
+  for (const [key, value] of Object.entries(patch)) {
+    const def = behaviorSettingRegistry.get(key);
+    if (!def) {
+      throw badRequest(`Unknown setting key: '${key}'`);
+    }
+    if (def.scope !== expectedScope) {
+      throw badRequest(
+        `Setting '${key}' has scope '${def.scope}', expected '${expectedScope}'`,
+      );
+    }
+    if (value !== undefined && value !== null && def.validate(value) === null) {
+      throw badRequest(`Invalid value for setting '${key}'`);
+    }
+  }
 }
 
 function changedSettingKeys(
@@ -226,7 +256,18 @@ function changedSettingKeys(
 ): string[] {
   const changedKeys: string[] = [];
   for (const key of Object.keys(patch)) {
-    if (previous[key] !== next[key]) {
+    const before = previous[key];
+    const after = next[key];
+    // Both sides are resolved views; json values are re-parsed objects, so
+    // equal contents arrive as different references — compare by value.
+    const unchanged =
+      before === after ||
+      (typeof before === "object" &&
+        before !== null &&
+        typeof after === "object" &&
+        after !== null &&
+        JSON.stringify(before) === JSON.stringify(after));
+    if (!unchanged) {
       changedKeys.push(key);
     }
   }

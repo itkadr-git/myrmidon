@@ -18,6 +18,7 @@ const fs = require("node:fs");
 const path = require("node:path");
 const { spawnSync } = require("node:child_process");
 const { MyrWsError } = require("./errors.js");
+const recover = require("./recover.js");
 
 // --- contract constants (C1/C2); a drift here is caught by the unit test ---
 const EXIT = { ok: 0, usage: 2, quotaExceeded: 3, baseLimit: 4, network: 5, notFound: 6, unpushed: 7 };
@@ -45,7 +46,7 @@ function usage(message) {
 // --- arguments ---------------------------------------------------------
 
 function parseOpenArgs(argv) {
-  const out = { positional: [], base: null, scratch: false, scratchName: null, json: false };
+  const out = { positional: [], base: null, branch: null, repository: null, scratch: false, scratchName: null, json: false };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     if (a === "--json") out.json = true;
@@ -54,6 +55,16 @@ function parseOpenArgs(argv) {
       if (v === undefined) throw usage("--base needs a ref");
       out.base = v;
     } else if (a.startsWith("--base=")) out.base = a.slice("--base=".length);
+    else if (a === "--branch") {
+      const v = argv[++i];
+      if (v === undefined) throw usage("--branch needs a branch name");
+      out.branch = v;
+    } else if (a.startsWith("--branch=")) out.branch = a.slice("--branch=".length);
+    else if (a === "--repository") {
+      const v = argv[++i];
+      if (v === undefined) throw usage("--repository needs owner/repo");
+      out.repository = v;
+    } else if (a.startsWith("--repository=")) out.repository = a.slice("--repository=".length);
     else if (a === "--scratch") out.scratch = true;
     else if (a.startsWith("--scratch=")) {
       out.scratch = true;
@@ -74,6 +85,10 @@ function resolveOpenRequest(args) {
       repo = p;
     } else names.push(p);
   }
+  if (args.repository) {
+    if (repo !== null && repo !== args.repository) throw usage(`--repository ${args.repository} contradicts the positional ${repo}`);
+    repo = args.repository;
+  }
   if (repo !== null && (!REPO_RE.test(repo) || repo.split("/").some((s) => s === "." || s === ".."))) {
     throw usage(`repository must look like owner/name, got ${JSON.stringify(repo)}`);
   }
@@ -84,6 +99,18 @@ function resolveOpenRequest(args) {
     }
     args = { ...args, base: b };
   }
+  let branch = null;
+  if (args.branch !== null && args.branch !== undefined) {
+    if (args.scratch) throw usage("--branch cannot be used with --scratch");
+    branch = args.branch.replace(/^refs\/heads\//, "");
+    if (
+      !branch || branch.startsWith("-") || branch.startsWith("/") || branch.endsWith("/") || branch.endsWith(".lock") ||
+      branch.includes("..") || branch.includes("//") || branch.includes("@{") || branch === "HEAD" ||
+      branch.startsWith("myr-ws/") || !BASE_REF_RE.test(branch) || branch.length > 200
+    ) {
+      throw usage(`invalid --branch ${JSON.stringify(args.branch)}`);
+    }
+  }
   let key;
   if (args.scratch) {
     if (args.scratchName !== null) names.unshift(args.scratchName);
@@ -93,11 +120,11 @@ function resolveOpenRequest(args) {
       throw usage(`invalid scratch name ${JSON.stringify(key)} (letters, digits, . _ -; no '/' or '..')`);
     }
   } else {
-    if (names.length !== 1) throw usage("usage: myr-ws open <KEY> [owner/repo] [--base <ref>] [--scratch <name>] [--json]");
+    if (names.length !== 1) throw usage("usage: myr-ws open <KEY> [owner/repo] [--repository owner/repo] [--base <ref>] [--branch <name>] [--scratch <name>] [--json]");
     key = names[0];
     if (!ISSUE_KEY_RE.test(key)) throw usage(`invalid issue key ${JSON.stringify(key)} (expected PREFIX-123)`);
   }
-  return { key, repo, base: args.base, scratch: args.scratch };
+  return { key, repo, base: args.base, branch, scratch: args.scratch };
 }
 
 // --- registry (C1 ws-registry.json) --------------------------------------
@@ -219,11 +246,11 @@ function quotaRefusal(ctx, state, reg) {
 
 function makeGit(ctx) {
   const bin = ctx.env[ENV.gitReal] || DEFAULT_GIT_REAL;
-  return function git(cwd, args, { allowFail = false } = {}) {
+  return function git(cwd, args, { allowFail = false, env = null } = {}) {
     const r = spawnSync(bin, args, {
       cwd,
       encoding: "utf8",
-      env: { ...ctx.env, GIT_TERMINAL_PROMPT: "0" },
+      env: { ...ctx.env, ...(env || {}), GIT_TERMINAL_PROMPT: "0" },
       maxBuffer: 16 * 1024 * 1024,
     });
     if (r.error) throw new MyrWsError(EXIT.network, `cannot run git: ${r.error.message}`);
@@ -251,6 +278,15 @@ function resolveBaseRef(git, basePath, wanted) {
   throw usage("the repository has no branches to base a copy on");
 }
 
+function isGitCopy(dir) {
+  try {
+    const st = fs.lstatSync(path.join(dir, ".git"));
+    return st.isDirectory() || st.isFile();
+  } catch {
+    return false;
+  }
+}
+
 function isWorktreeOf(dir) {
   try {
     return fs.statSync(path.join(dir, ".git")).isFile();
@@ -259,7 +295,51 @@ function isWorktreeOf(dir) {
   }
 }
 
+function repoFromOrigin(git, dir) {
+  const raw = git(dir, ["remote", "get-url", "origin"], { allowFail: true }).stdout.trim();
+  let pathname;
+  try {
+    if (/^https?:\/\//i.test(raw) || /^ssh:\/\//i.test(raw)) {
+      const parsed = new URL(raw);
+      if (parsed.hostname.toLowerCase() !== "github.com") return null;
+      pathname = parsed.pathname;
+    } else {
+      const scp = raw.match(/^(?:[^@/:]+@)?([^:]+):(.+)$/);
+      if (!scp || scp[1].toLowerCase() !== "github.com") return null;
+      pathname = `/${scp[2]}`;
+    }
+  } catch {
+    return null;
+  }
+  const match = pathname.match(/^\/([A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+?)(?:\.git)?\/?$/);
+  return match ? match[1] : null;
+}
+
 // --- open ------------------------------------------------------------------
+
+/** Short directory suffix of a repository: `owner/name(.git)` -> `name`. */
+function repoShortName(repo) {
+  return repo.split("/")[1].replace(/\.git$/, "");
+}
+
+/**
+ * Where the copy of (key, repo) lives and the registry entry that already
+ * describes it. A scratch copy and a task's first copy sit at <root>/<key>; a
+ * task copy of another repository, while a copy of a different repository of the
+ * same key is present, goes to <root>/<key>.<name>.
+ */
+function resolveCopyDir(ctx, reg, { key, repo, scratch, klass }) {
+  const primary = path.join(scratch ? ctx.scratchRoot : ctx.workspaceRoot, key);
+  const sameKey = reg.entries.filter((e) => e.path === primary || (e.key === key && e.class === klass));
+  if (scratch || !repo) return { dir: primary, known: sameKey.find((e) => e.path === primary) || sameKey[0] };
+  const match =
+    sameKey.find((e) => e.repo === repo) || sameKey.find((e) => !e.repo && fs.existsSync(e.path));
+  if (match) return { dir: match.path, known: match };
+  const otherLive = sameKey.some((e) => e.repo && e.repo !== repo && fs.existsSync(e.path));
+  if (!otherLive) return { dir: primary, known: sameKey.find((e) => e.path === primary) };
+  const secondary = `${primary}.${repoShortName(repo)}`;
+  return { dir: secondary, known: reg.entries.find((e) => e.path === secondary) };
+}
 
 function makeCtx(deps = {}) {
   const env = deps.env || process.env;
@@ -286,44 +366,138 @@ async function loadBase(ctx, repo) {
 /** Create or reuse a copy. Returns the myrWsOpenResult object; throws MyrWsError. */
 async function open(request, deps = {}) {
   const ctx = makeCtx(deps);
-  const { key, repo, scratch } = request;
-  const dir = path.join(scratch ? ctx.scratchRoot : ctx.workspaceRoot, key);
+  const { key, scratch } = request;
+  let repo = request.repo;
   const klass = scratch ? "G" : "E";
-  const branch = scratch ? undefined : `${TASK_BRANCH_PREFIX}${key}`;
+  let branch = scratch ? undefined : request.branch || `${TASK_BRANCH_PREFIX}${key}`;
   const git = makeGit(ctx);
+  const baseTarget = request.base ? `refs/remotes/origin/${request.base}` : "refs/remotes/origin/HEAD";
+  let recovered = [];
+  let recoveryRef;
 
   // 1. Idempotence: a copy that is registered and present is returned as is.
+  //    One task may hold copies of several repositories (OPE-8946): the first sits at
+  //    /workspace/<KEY>, each further one next to it at /workspace/<KEY>.<name>.
   const reg = readRegistry(ctx);
-  const known = reg.entries.find((e) => e.path === dir || (e.key === key && e.class === klass));
+  const { dir, known } = resolveCopyDir(ctx, reg, { key, repo, scratch, klass });
   if (known && fs.existsSync(known.path)) {
     if (repo && known.repo && repo !== known.repo) {
-      throw usage(`${key} is already open for ${known.repo} at ${known.path}; close it before opening ${repo}`);
+      throw usage(`${dir} is already open for ${known.repo}; cannot open ${repo} there`);
     }
-    return stripUndefined({
-      ok: true,
-      key,
-      path: known.path,
-      class: known.class,
-      repo: known.repo,
-      branch: known.branch,
-      base: request.base ? `origin/${request.base}` : undefined,
-      reused: true,
-    });
+    let healed = null;
+    if (!scratch && known.class !== "G" && isGitCopy(known.path)) {
+      // A copy left half-way (merge/rebase/cherry-pick in progress, unresolved stages, detached
+      // head, another branch than the registry or the caller says) is repaired, not handed on.
+      healed = recover.recoverCopy(ctx, git, known.path, {
+        key,
+        expectedBranch: request.branch || known.branch || branch,
+        explicitBranch: Boolean(request.branch),
+        baseTarget,
+      });
+    }
+    if (!healed || healed.action !== "fallthrough") {
+      const nowBranch = healed && healed.branch ? healed.branch : known.branch;
+      if (healed && nowBranch !== known.branch) {
+        withRegistryLock(ctx, () => {
+          const r = readRegistry(ctx);
+          for (const e of r.entries) if (e.path === known.path) e.branch = nowBranch;
+          writeRegistry(ctx, r);
+        });
+      }
+      return stripUndefined({
+        ok: true,
+        key,
+        path: known.path,
+        class: known.class,
+        repo: known.repo,
+        branch: nowBranch,
+        base: request.base ? `origin/${request.base}` : undefined,
+        reused: true,
+        ...recoveryFields(healed),
+      });
+    }
+    // The git state of the copy was unreadable and the copy was moved aside: create a fresh one.
+    recovered = healed.recovered;
+    repo = repo || known.repo;
+    if (!request.branch && known.branch) branch = known.branch;
   }
 
-  // 2. A worktree that exists on disk but is missing from the registry (the
-  //    registry was lost or a previous open died before writing it) is adopted.
+  // 2a. A worktree that exists on disk but is missing from the registry (the
+  //     registry was lost or a previous open died before writing it) is adopted.
   if (!scratch && fs.existsSync(dir) && isWorktreeOf(dir)) {
-    const url = git(dir, ["remote", "get-url", "origin"], { allowFail: true }).stdout;
-    const adoptedRepo = repo || (url.match(/([A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+?)(?:\.git)?$/) || [])[1];
-    const entry = stripUndefined({ key, repo: adoptedRepo, path: dir, class: klass, branch, openedAt: isoNow(ctx) });
-    withRegistryLock(ctx, () => {
-      const r = readRegistry(ctx);
-      r.entries = r.entries.filter((e) => e.path !== dir);
-      r.entries.push(entry);
-      writeRegistry(ctx, r);
-    });
-    return stripUndefined({ ok: true, key, path: dir, class: klass, repo: adoptedRepo, branch, reused: true });
+    const adoptedRepo = repo || repoFromOrigin(git, dir) || undefined;
+    const healed = recover.recoverCopy(ctx, git, dir, { key, expectedBranch: request.branch || null, explicitBranch: Boolean(request.branch), baseTarget });
+    if (healed.action === "fallthrough") {
+      recovered = healed.recovered;
+      repo = repo || adoptedRepo;
+    } else {
+      const adoptedBranch = healed.branch || branch;
+      const entry = stripUndefined({ key, repo: adoptedRepo, path: dir, class: klass, branch: adoptedBranch, openedAt: isoNow(ctx) });
+      withRegistryLock(ctx, () => {
+        const r = readRegistry(ctx);
+        r.entries = r.entries.filter((e) => e.path !== dir);
+        r.entries.push(entry);
+        writeRegistry(ctx, r);
+      });
+      return stripUndefined({ ok: true, key, path: dir, class: klass, repo: adoptedRepo, branch: adoptedBranch, reused: true, ...recoveryFields(healed) });
+    }
+  }
+
+  // 2b. Full legacy clones are converted only after validating their identity.
+  if (!scratch && fs.existsSync(dir) && isGitCopy(dir)) {
+    const top = git(dir, ["rev-parse", "--show-toplevel"], { allowFail: true });
+    const gitDir = git(dir, ["rev-parse", "--absolute-git-dir"], { allowFail: true });
+    const realDir = fs.realpathSync(dir);
+    if (top.status !== 0 || path.resolve(top.stdout) !== realDir || gitDir.status !== 0 || path.resolve(gitDir.stdout) !== path.join(realDir, ".git")) {
+      throw usage(`${dir} is not a standalone git copy; refusing to adopt it`);
+    }
+    const detectedRepo = repoFromOrigin(git, dir);
+    if (!detectedRepo) throw usage(`${dir} has no recognizable GitHub origin; refusing to adopt it`);
+    if (repo && repo !== detectedRepo) throw usage(`${dir} belongs to ${detectedRepo}, not ${repo}; refusing to adopt it`);
+    repo = detectedRepo;
+    const status = git(dir, ["status", "--porcelain", "--untracked-files=all"]);
+    const head = git(dir, ["rev-parse", "--verify", "HEAD"], { allowFail: true });
+    if (status.stdout || head.status !== 0) {
+      const recoveryRef = `refs/myr-ws/recovery/${key}`;
+      if (head.status === 0 && git(dir, ["show-ref", "--verify", "--quiet", recoveryRef], { allowFail: true }).status !== 0) {
+        git(dir, ["update-ref", recoveryRef, head.stdout]);
+      }
+      const stash = git(dir, ["stash", "push", "--include-untracked", "--message", `myr-ws recovery ${key}`], { allowFail: true });
+      if (stash.status !== 0) throw new MyrWsError(1, `${key}: could not preserve legacy working tree; original copy left untouched`);
+      if (status.stdout && !git(dir, ["stash", "list", "--format=%gd %s"], { allowFail: true }).stdout.includes(`myr-ws recovery ${key}`)) {
+        throw new MyrWsError(1, `${key}: working tree recovery could not be verified; original copy left untouched`);
+      }
+    }
+    const oldDir = `${dir}.legacy-${key}`;
+    if (fs.existsSync(oldDir)) throw usage(`${oldDir} already exists; refusing to move legacy copy`);
+    const sourceHead = head.status === 0 ? head.stdout : null;
+    fs.renameSync(dir, oldDir);
+    let baseRef;
+    try {
+      const basePath = await loadBase(ctx, detectedRepo);
+      baseRef = resolveBaseRef(git, basePath, request.base);
+      const target = `refs/remotes/origin/${baseRef}`;
+      const existingBranch = git(basePath, ["rev-parse", "--verify", "--quiet", `refs/heads/${branch}`], { allowFail: true }).status === 0;
+      if (existingBranch) git(basePath, ["worktree", "add", dir, branch]);
+      else git(basePath, ["worktree", "add", "--no-track", "-b", branch, dir, target]);
+      if (sourceHead && sourceHead !== git(dir, ["rev-parse", "HEAD"])) {
+        const recoveryBranch = `myr-ws/recovery/${key}`;
+        const recoveryExists = git(basePath, ["rev-parse", "--verify", "--quiet", `refs/heads/${recoveryBranch}`], { allowFail: true }).status === 0;
+        if (!recoveryExists) git(basePath, ["fetch", "--no-tags", oldDir, `HEAD:refs/heads/${recoveryBranch}`]);
+      }
+      const entry = stripUndefined({ key, repo: detectedRepo, path: dir, class: klass, branch, openedAt: isoNow(ctx) });
+      withRegistryLock(ctx, () => {
+        const r = readRegistry(ctx);
+        r.entries = r.entries.filter((e) => e.path !== dir);
+        r.entries.push(entry);
+        writeRegistry(ctx, r);
+      });
+      return stripUndefined({ ok: true, key, path: dir, class: klass, repo: detectedRepo, branch, base: `origin/${baseRef}`, reused: false, recoveryPath: oldDir, recoveryRef: sourceHead ? `refs/heads/myr-ws/recovery/${key}` : undefined });
+    } catch (error) {
+      if (fs.existsSync(dir)) fs.rmSync(dir, { recursive: true, force: true });
+      fs.renameSync(oldDir, dir);
+      throw error;
+    }
   }
   if (fs.existsSync(dir)) {
     const empty = fs.statSync(dir).isDirectory() && fs.readdirSync(dir).length === 0;
@@ -351,7 +525,18 @@ async function open(request, deps = {}) {
       const haveBranch = git(basePath, ["rev-parse", "--verify", "--quiet", `refs/heads/${branch}`], { allowFail: true }).status === 0;
       // A branch left by an earlier copy of this task keeps its commits: reattach it, do not reset it.
       if (haveBranch) git(basePath, ["worktree", "add", dir, branch]);
-      else git(basePath, ["worktree", "add", "--no-track", "-b", branch, dir, target]);
+      else {
+        // An explicit --branch (the head branch of the task's pull request) starts from its
+        // remote state when the repository has it, otherwise from the base ref.
+        let from = target;
+        if (request.branch) {
+          const remote = `refs/remotes/origin/${branch}`;
+          const has = () => git(basePath, ["rev-parse", "--verify", "--quiet", `${remote}^{commit}`], { allowFail: true }).status === 0;
+          if (!has()) git(basePath, ["fetch", "--no-tags", "origin", `+refs/heads/${branch}:${remote}`], { allowFail: true });
+          if (has()) from = remote;
+        }
+        git(basePath, ["worktree", "add", "--no-track", "-b", branch, dir, from]);
+      }
     }
   } else {
     fs.mkdirSync(dir, { recursive: true });
@@ -373,7 +558,14 @@ async function open(request, deps = {}) {
     branch,
     base: baseRef ? `origin/${baseRef}` : undefined,
     reused: false,
+    ...recoveryFields({ recovered, recoveryRef }),
   });
+}
+
+/** The `recovered` part of an open result: what was found wrong and what was done about it. */
+function recoveryFields(healed) {
+  if (!healed || !healed.recovered || healed.recovered.length === 0) return {};
+  return { recovered: healed.recovered, ...(healed.recoveryRef ? { recoveryRef: healed.recoveryRef } : {}) };
 }
 
 function isoNow(ctx) {
@@ -395,7 +587,8 @@ async function runOpen(argv, deps = {}) {
     const args = parseOpenArgs(argv);
     json = args.json;
     const result = await open(resolveOpenRequest(args), deps);
-    return { exitCode: EXIT.ok, stdout: json ? `${JSON.stringify(result)}\n` : `${result.path}\n`, stderr: "" };
+    const notice = result.recovered ? `myr-ws: ${recover.recoveredSummary(result.key, result.recovered, result.recoveryRef)}\n` : "";
+    return { exitCode: EXIT.ok, stdout: json ? `${JSON.stringify(result)}\n` : `${result.path}\n`, stderr: notice };
   } catch (e) {
     if (!(e instanceof MyrWsError) && typeof e.exitCode !== "number") throw e;
     const exitCode = e.exitCode;
@@ -409,6 +602,10 @@ async function runOpen(argv, deps = {}) {
 
 module.exports = {
   EXIT,
+  resolveCopyDir,
+  makeCtx,
+  makeGit,
+  repoShortName,
   QUOTA_PREFIX,
   MyrWsError,
   parseOpenArgs,

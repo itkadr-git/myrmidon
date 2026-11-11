@@ -3,8 +3,9 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { EmptyState } from "@/components/EmptyState";
+import { useTranslation } from "@/i18n";
+import { accessKindLabel } from "./accessKindLabel";
 import {
-  ACCESS_KIND_LABEL,
   ACCESS_KIND_ORDER,
   ALL_GRANTEES,
   formatAccessMoment,
@@ -35,16 +36,18 @@ export interface AccessListViewProps {
 }
 
 function KindBadge({ kind }: { kind: AccessKind }) {
+  const { t } = useTranslation();
   return (
     <Badge variant="outline" data-testid="access-hub-kind-badge">
-      {ACCESS_KIND_LABEL[kind]}
+      {accessKindLabel(t, kind)}
     </Badge>
   );
 }
 
 function GranteesCell({ record }: { record: AccessRecord }) {
+  const { t } = useTranslation();
   const grantees = grantedAgents(record);
-  if (grantees.length === 0) return <span className="text-muted-foreground">Nobody</span>;
+  if (grantees.length === 0) return <span className="text-muted-foreground">{t("area.access-hub.access-list.nobody")}</span>;
   return (
     <span className="flex flex-wrap gap-1">
       {grantees.map((binding) => (
@@ -57,10 +60,11 @@ function GranteesCell({ record }: { record: AccessRecord }) {
 }
 
 function UsageCell({ record, hosts }: { record: AccessRecord; hosts: AccessHost[] }) {
+  const { t } = useTranslation();
   const usages = usedByBindings(record);
   const hostNames = hostNamesFor(record, hosts);
   if (usages.length === 0 && hostNames.length === 0) {
-    return <span className="text-muted-foreground">Unused</span>;
+    return <span className="text-muted-foreground">{t("area.access-hub.access-list.unused")}</span>;
   }
   return (
     <span className="flex flex-col gap-0.5">
@@ -71,7 +75,7 @@ function UsageCell({ record, hosts }: { record: AccessRecord; hosts: AccessHost[
         </span>
       ))}
       {hostNames.length > 0 ? (
-        <span className="min-w-0 truncate text-muted-foreground">Hosts: {hostNames.join(", ")}</span>
+        <span className="min-w-0 truncate text-muted-foreground">{t("area.access-hub.access-list.hosts", { names: hostNames.join(", ") })}</span>
       ) : null}
     </span>
   );
@@ -93,6 +97,7 @@ export function AccessListView({
   onSelect,
   onCreate,
 }: AccessListViewProps) {
+  const { t } = useTranslation();
   return (
     <div className="flex flex-col gap-3" data-testid="access-hub-list">
       <div className="flex flex-wrap items-center gap-2">
@@ -101,38 +106,38 @@ export function AccessListView({
           <Input
             value={filters.search}
             onChange={(event) => onFiltersChange({ ...filters, search: event.target.value })}
-            placeholder="Search accesses"
-            aria-label="Search accesses"
+            placeholder={t("area.access-hub.access-list.searchPlaceholder")}
+            aria-label={t("area.access-hub.access-list.searchLabel")}
             className="pl-7 text-xs sm:text-sm"
           />
         </div>
         <label className="flex items-center gap-1.5 text-sm text-muted-foreground">
-          Type
+          {t("area.access-hub.access-list.type")}
           <select
             value={filters.kind}
-            aria-label="Filter by type"
+            aria-label={t("area.access-hub.access-list.filterByType")}
             onChange={(event) =>
               onFiltersChange({ ...filters, kind: event.target.value as AccessKind | "all" })
             }
             className="h-8 rounded-md border border-border bg-background px-2 text-sm text-foreground"
           >
-            <option value="all">All types</option>
+            <option value="all">{t("area.access-hub.access-list.allTypes")}</option>
             {ACCESS_KIND_ORDER.map((kind) => (
               <option key={kind} value={kind}>
-                {ACCESS_KIND_LABEL[kind]}
+                {accessKindLabel(t, kind)}
               </option>
             ))}
           </select>
         </label>
         <label className="flex items-center gap-1.5 text-sm text-muted-foreground">
-          Agent
+          {t("area.access-hub.access-list.agent")}
           <select
             value={filters.agent}
-            aria-label="Filter by agent"
+            aria-label={t("area.access-hub.access-list.filterByAgent")}
             onChange={(event) => onFiltersChange({ ...filters, agent: event.target.value })}
             className="h-8 rounded-md border border-border bg-background px-2 text-sm text-foreground"
           >
-            <option value={ALL_GRANTEES}>All agents</option>
+            <option value={ALL_GRANTEES}>{t("area.access-hub.access-list.allAgents")}</option>
             {agents.map((agent) => (
               <option key={agent.id} value={agent.id}>
                 {agent.name}
@@ -141,7 +146,7 @@ export function AccessListView({
           </select>
         </label>
         <Button size="sm" className="ml-auto" onClick={onCreate}>
-          <Plus className="mr-1 h-3.5 w-3.5" /> New access
+          <Plus className="mr-1 h-3.5 w-3.5" /> {t("area.access-hub.access-list.newAccess")}
         </Button>
       </div>
 
@@ -154,8 +159,8 @@ export function AccessListView({
       {!loading && records.length === 0 ? (
         <EmptyState
           icon={KeyRound}
-          message="No accesses match this view. Create one to hand a credential to an agent or a host."
-          action="New access"
+          message={t("area.access-hub.access-list.emptyMessage")}
+          action={t("area.access-hub.access-list.newAccess")}
           onAction={onCreate}
         />
       ) : (
@@ -163,13 +168,13 @@ export function AccessListView({
           <table className="w-full min-w-0 border-collapse text-sm">
             <thead>
               <tr className="border-b border-border/60 text-left text-xs text-muted-foreground">
-                <th scope="col" className="py-2 pr-3 font-medium">Name</th>
-                <th scope="col" className="py-2 pr-3 font-medium">Type</th>
-                <th scope="col" className="py-2 pr-3 font-medium">Granted to</th>
-                <th scope="col" className="py-2 pr-3 font-medium">Used by</th>
-                <th scope="col" className="py-2 pr-3 font-medium">Created</th>
-                <th scope="col" className="py-2 pr-3 font-medium">Rotated</th>
-                <th scope="col" className="py-2 pr-3 font-medium">Version</th>
+                <th scope="col" className="py-2 pr-3 font-medium">{t("area.access-hub.access-list.columns.name")}</th>
+                <th scope="col" className="py-2 pr-3 font-medium">{t("area.access-hub.access-list.columns.type")}</th>
+                <th scope="col" className="py-2 pr-3 font-medium">{t("area.access-hub.access-list.columns.grantedTo")}</th>
+                <th scope="col" className="py-2 pr-3 font-medium">{t("area.access-hub.access-list.columns.usedBy")}</th>
+                <th scope="col" className="py-2 pr-3 font-medium">{t("area.access-hub.access-list.columns.created")}</th>
+                <th scope="col" className="py-2 pr-3 font-medium">{t("area.access-hub.access-list.columns.rotated")}</th>
+                <th scope="col" className="py-2 pr-3 font-medium">{t("area.access-hub.access-list.columns.version")}</th>
               </tr>
             </thead>
             <tbody>

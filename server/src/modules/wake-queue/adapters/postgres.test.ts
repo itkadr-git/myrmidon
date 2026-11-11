@@ -1,9 +1,10 @@
+import { buildContinuationKey } from "@myrmidon/shared";
 import { instanceSettingsService } from "../../../services/instance-settings.js";
 import { MAINTENANCE_INTERRUPT_ERROR_CODE } from "../../../myrmidon/maintenance/domain.js";
 import { randomUUID } from "node:crypto";
-import { eq } from "drizzle-orm";
+import { eq, sql } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
-import type { Db } from "@paperclipai/db";
+import type { Db } from "@myrmidon/db";
 import {
   activityLog,
   agentWakeupRequests,
@@ -12,9 +13,10 @@ import {
   createDb,
   heartbeatRuns,
   issueComments,
+  issueContinuationKeys,
   issueRecoveryActions,
   issues,
-} from "@paperclipai/db";
+} from "@myrmidon/db";
 import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
@@ -65,6 +67,7 @@ describeEmbeddedPostgres("wake-queue postgres adapter", () => {
     await db.delete(heartbeatRuns);
     await db.delete(agentWakeupRequests);
     await db.delete(issueRecoveryActions);
+    await db.delete(issueContinuationKeys);
     await db.delete(issues);
     await db.delete(agents);
     await db.delete(companies);
@@ -111,6 +114,7 @@ describeEmbeddedPostgres("wake-queue postgres adapter", () => {
     checkoutRunId?: string | null;
     parentId?: string | null;
     identifier?: string;
+    casteKey?: string | null;
   }): Promise<string> {
     const issueId = input.issueId ?? randomUUID();
     await db.insert(issues).values({
@@ -124,6 +128,7 @@ describeEmbeddedPostgres("wake-queue postgres adapter", () => {
       checkoutRunId: input.checkoutRunId ?? null,
       parentId: input.parentId ?? null,
       identifier: input.identifier,
+      casteKey: input.casteKey ?? null,
     });
     return issueId;
   }
@@ -242,6 +247,47 @@ describeEmbeddedPostgres("wake-queue postgres adapter", () => {
     expect(checked).toBe(true);
   });
 
+  it.each(["queued", "claimed"])("does not promote follow-up after operator stops an unstarted %s run", async (stage) => {
+    const companyId = await seedCompany();
+    const agentId = await seedAgent({ companyId });
+    const issueId = await seedIssue({ companyId, assigneeAgentId: agentId });
+    const wakeId = await seedDeferredWake({ companyId, agentId, issueId });
+    await db.update(agentWakeupRequests).set({ status: stage }).where(eq(agentWakeupRequests.id, wakeId));
+    const runId = await seedRun({ companyId, agentId, status: "cancelled", contextSnapshot: { issueId } });
+    await db.update(heartbeatRuns).set({
+      startedAt: null,
+      wakeupRequestId: wakeId,
+      resultJson: { executionCancellation: { source: { code: "board_operator" }, state: "requested" } },
+    }).where(eq(heartbeatRuns.id, runId));
+    await db.update(issues).set({ executionRunId: runId, checkoutRunId: runId }).where(eq(issues.id, issueId));
+    const followupId = await seedDeferredWake({ companyId, agentId, issueId });
+    // cancelRunInternal settles the originating wake before calling releaseIssueExecutionAndPromote.
+    // Model that boundary here rather than making the release adapter cancel an already stopped wake.
+    await db.update(agentWakeupRequests).set({ status: "cancelled", finishedAt: new Date() })
+      .where(eq(agentWakeupRequests.id, wakeId));
+    const release = createReleaseIssueExecution({
+      issueLock: createPostgresWakeQueueAdapter(db, stubDeps),
+      recovery: {
+        deferReviewParticipantReleaseForCi: async () => false,
+        escalateStrandedAssignedIssue: async () => { throw new Error("unexpected escalation"); },
+        escalateStrandedRecoveryIssueInPlace: async () => { throw new Error("unexpected escalation"); },
+      },
+    });
+
+    const result = await release({ companyId, runId, now: new Date() });
+    expect(result.outcome.kind).toBe("released");
+    expect((await db.select().from(issues).where(eq(issues.id, issueId)))[0]).toMatchObject({
+      executionRunId: null, checkoutRunId: null,
+    });
+    expect((await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, wakeId)))[0]).toMatchObject({
+      status: "cancelled",
+    });
+    expect((await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, followupId)))[0]).toMatchObject({
+      status: "deferred_issue_execution", runId: null,
+    });
+    expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.companyId, companyId))).toHaveLength(1);
+  });
+
   it.each([false, true])("rechecks disabled chat mode before interrupted queue promotion (conversation=%s)", async (conversation) => {
     const settings = instanceSettingsService(db);
     const original = (await settings.getExperimental()).enableAgentChat;
@@ -264,7 +310,11 @@ describeEmbeddedPostgres("wake-queue postgres adapter", () => {
     }).where(eq(issues.id, issueId));
     const release = createReleaseIssueExecution({
       issueLock: createPostgresWakeQueueAdapter(db, stubDeps),
-      recovery: { escalateStrandedAssignedIssue: async () => {}, escalateStrandedRecoveryIssueInPlace: async () => {} },
+      recovery: {
+        deferReviewParticipantReleaseForCi: async () => false,
+        escalateStrandedAssignedIssue: async () => {},
+        escalateStrandedRecoveryIssueInPlace: async () => {},
+      },
     });
     try {
       await settings.updateExperimental({ enableAgentChat: false });
@@ -301,6 +351,7 @@ describeEmbeddedPostgres("wake-queue postgres adapter", () => {
       const release = createReleaseIssueExecution({
         issueLock: createPostgresWakeQueueAdapter(db, stubDeps),
         recovery: {
+          deferReviewParticipantReleaseForCi: async () => false,
           escalateStrandedAssignedIssue: async () => { throw new Error("unexpected escalation"); },
           escalateStrandedRecoveryIssueInPlace: async () => { throw new Error("unexpected escalation"); },
         },
@@ -621,6 +672,30 @@ describeEmbeddedPostgres("wake-queue postgres adapter", () => {
     expect(issueRow.executionRunId).toBe(runId);
   });
 
+  // A duplicate key must not abort the drain transaction or roll back its lease release.
+  it("keeps the drain transaction usable after a duplicate continuation claim", async () => {
+    const companyId = await seedCompany();
+    const agentId = await seedAgent({ companyId });
+    const issueId = await seedIssue({ companyId, assigneeAgentId: agentId, status: "in_progress" });
+    const runId = await seedRun({ companyId, agentId, status: "succeeded", contextSnapshot: { issueId } });
+    await db.update(issues).set({ executionRunId: runId }).where(eq(issues.id, issueId));
+    const wakeId = await seedDeferredWake({ companyId, agentId, issueId });
+    const key = buildContinuationKey({ issueId, event: "issue_continuation_needed", head: runId });
+    await db.insert(issueContinuationKeys).values({ companyId, issueId, key, expiresAt: new Date(Date.now() + 60_000) });
+    const adapter = createPostgresWakeQueueAdapter(db, stubDeps);
+    let claim: string | null = null;
+    await adapter.withIssueExecutionLock({ companyId, runId, now: new Date() }, async (_locked, ports) => {
+      claim = await ports.transaction.claimContinuationKey({ companyId, issueId, key });
+      await ports.transaction.cancelDeferredWake({ companyId, wakeId, reason: "duplicate", now: new Date() });
+      await ports.transaction.releaseIssueExecutionLease({ companyId, issueId, runId });
+      return { outcome: { kind: "released" as const }, postCommitEffects: [] };
+    });
+    expect(claim).toBe("deduped");
+    expect((await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, wakeId)))[0]?.status).toBe("cancelled");
+    expect((await db.select().from(issues).where(eq(issues.id, issueId)))[0]?.executionRunId).toBeNull();
+    expect(await db.select().from(issueContinuationKeys).where(eq(issueContinuationKeys.key, key))).toHaveLength(1);
+  });
+
   // Review defect: the reopen path must carry the company into every read,
   // lock, and write. A check before the write is not a boundary, because
   // `issues.company_id` can change between that check and the write.
@@ -708,15 +783,18 @@ describeEmbeddedPostgres("wake-queue postgres adapter", () => {
   it("guards finalizePromotedWake's own writes against clobbering an already-set execution lock or runId", async () => {
     const companyId = await seedCompany();
     const agentId = await seedAgent({ companyId });
-    const issueId = await seedIssue({ companyId, assigneeAgentId: agentId });
+    const issueId = await seedIssue({ companyId, assigneeAgentId: agentId, casteKey: "engineer" });
     const wakeIdA = await seedDeferredWake({ companyId, agentId, issueId });
     const wakeIdB = await seedDeferredWake({ companyId, agentId, issueId });
     const runId = await seedRun({ companyId, agentId, contextSnapshot: { issueId }, status: "succeeded" });
-    const deferredAgent = { id: agentId, companyId, name: "CodexCoder", invokable: true };
-
     const finalizedRunIds: string[] = [];
     const adapter = createPostgresWakeQueueAdapter(db, stubDeps);
     await adapter.withIssueExecutionLock({ companyId, runId, now: new Date() }, async (locked, ports) => {
+      expect(locked.primaryIssue.issueRole).toBe("engineer");
+      expect(await ports.transaction.findIssue({ companyId, issueId })).toMatchObject({ issueRole: "engineer" });
+      const deferredAgent = await ports.transaction.findInvokableAgent({ companyId, agentId });
+      if (!deferredAgent) throw new Error("Expected seeded agent to be invokable");
+      expect(deferredAgent.role).toBe("engineer");
       const finalize = async (wakeId: string) => {
         const promoted = await ports.transaction.finalizePromotedWake({
           companyId,
@@ -770,24 +848,125 @@ describeEmbeddedPostgres("wake-queue postgres adapter", () => {
     await db.update(issues).set({ executionRunId: runA, checkoutRunId: runB }).where(eq(issues.id, issueA));
     await db.update(issues).set({ executionRunId: runB, checkoutRunId: runA }).where(eq(issues.id, issueB));
 
-    const adapterA = createPostgresWakeQueueAdapter(db, stubDeps);
-    const adapterB = createPostgresWakeQueueAdapter(db, stubDeps);
-    const releaseA = adapterA.withIssueExecutionLock({ companyId, runId: runA, now: new Date() }, async (_locked, _ports) => {
-      await new Promise((resolve) => setTimeout(resolve, 25));
+    // Separate pools model independent workers and ensure the contention is
+    // exercised across two PostgreSQL connections.
+    const dbA = createDb(tempDb!.connectionString);
+    const dbB = createDb(tempDb!.connectionString);
+    const adapterA = createPostgresWakeQueueAdapter(dbA, stubDeps);
+    const adapterB = createPostgresWakeQueueAdapter(dbB, stubDeps);
+    // The drain callback of each run must execute exactly once, and the two
+    // drains must never overlap: both runs reference both issues, so the row
+    // locks serialize them across the two connections.
+    const drainCalls: string[] = [];
+    let activeDrains = 0;
+    let maxActiveDrains = 0;
+    const drain = (runId: string) => async (locked: { run: { id: string } }, _ports: unknown) => {
+      drainCalls.push(runId);
+      expect(locked.run.id).toBe(runId);
+      activeDrains += 1;
+      maxActiveDrains = Math.max(maxActiveDrains, activeDrains);
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      activeDrains -= 1;
       return { outcome: { kind: "released" as const }, postCommitEffects: [] };
-    });
-    const releaseB = adapterB.withIssueExecutionLock({ companyId, runId: runB, now: new Date() }, async (_locked, _ports) => {
-      await new Promise((resolve) => setTimeout(resolve, 25));
-      return { outcome: { kind: "released" as const }, postCommitEffects: [] };
-    });
+    };
+    const releaseA = adapterA.withIssueExecutionLock({ companyId, runId: runA, now: new Date() }, drain(runA));
+    const releaseB = adapterB.withIssueExecutionLock({ companyId, runId: runB, now: new Date() }, drain(runB));
 
-    await expect(Promise.all([releaseA, releaseB])).resolves.toBeDefined();
+    const results = await Promise.all([releaseA, releaseB]);
+    expect(results.map((result) => result.run.id)).toEqual([runA, runB]);
+    expect(results.map((result) => result.outcome.kind)).toEqual(["released", "released"]);
+    expect([...drainCalls].sort()).toEqual([runA, runB].sort());
+    expect(maxActiveDrains).toBe(1);
 
     const rows = await db.select().from(issues).where(eq(issues.companyId, companyId));
     for (const row of rows) {
       expect(row.executionRunId).toBeNull();
       expect(row.checkoutRunId).toBeNull();
     }
+    await Promise.all([dbA.$client.end(), dbB.$client.end()]);
+  });
+
+  it("bounds N concurrent releases above a small pool without hanging", async () => {
+    const companyId = await seedCompany();
+    const agentId = await seedAgent({ companyId });
+    const issueId = await seedIssue({ companyId, assigneeAgentId: agentId });
+    const runIds = await Promise.all(
+      Array.from({ length: 5 }, () => seedRun({ companyId, agentId, contextSnapshot: { issueId } })),
+    );
+    await db.update(issues).set({ executionRunId: runIds[0] }).where(eq(issues.id, issueId));
+
+    // Five workers contend for one issue through pools of two connections;
+    // this is deliberately larger than every pool and reproduces the former
+    // pool-starvation shape rather than merely checking two-way serialization.
+    const workerDbs = runIds.map(() => createDb(tempDb!.connectionString, { maxConnections: 2 }));
+    const adapters = workerDbs.map((workerDb) => createPostgresWakeQueueAdapter(workerDb, stubDeps));
+    const settled = await Promise.race([
+      Promise.all(runIds.map((runId, index) => adapters[index].withIssueExecutionLock(
+        { companyId, runId, now: new Date() },
+        async () => ({ outcome: { kind: "released" as const }, postCommitEffects: [] }),
+      ))),
+      new Promise<never>((_, reject) => setTimeout(() => reject(new Error("concurrent release timed out")), 10_000)),
+    ]);
+    expect(settled).toHaveLength(runIds.length);
+    expect(settled.every((result) => result.outcome.kind === "released")).toBe(true);
+    await Promise.all(workerDbs.map((workerDb) => workerDb.$client.end()));
+  });
+
+  it("re-checks the interrupt queue under the lock: a queue dispatched by the lock holder while the release waits does not send it into the drain", async () => {
+    const companyId = await seedCompany();
+    const agentId = await seedAgent({ companyId });
+    const issueId = await seedIssue({ companyId, assigneeAgentId: agentId });
+    const runId = await seedRun({ companyId, agentId, status: "cancelled", contextSnapshot: { issueId } });
+    const queueId = await seedDeferredWake({ companyId, agentId, issueId });
+    await db.update(heartbeatRuns).set({
+      resultJson: { executionCancellation: { state: "acknowledged" }, queuedCommentInterruptQueueId: queueId },
+    }).where(eq(heartbeatRuns.id, runId));
+    await db.update(issues).set({ executionRunId: runId }).where(eq(issues.id, issueId));
+
+    const dbHolder = createDb(tempDb!.connectionString);
+    const dbRelease = createDb(tempDb!.connectionString);
+    let drainCalls = 0;
+    let releaseHolder!: () => void;
+    const holderMayCommit = new Promise<void>((resolve) => { releaseHolder = resolve; });
+    let holderLocked!: () => void;
+    const holderHasLock = new Promise<void>((resolve) => { holderLocked = resolve; });
+    // The lock holder owns the issue row, then dispatches the interrupt queue
+    // and commits only after the release is provably blocked on the row lock.
+    const holder = dbHolder.transaction(async (rawTx: unknown) => {
+      const tx = rawTx as unknown as Db;
+      await tx.execute(sql`select id from issues where id = ${issueId} for update`);
+      holderLocked();
+      await holderMayCommit;
+      await tx.update(agentWakeupRequests).set({ status: "completed" }).where(eq(agentWakeupRequests.id, queueId));
+    });
+    await holderHasLock;
+
+    const adapter = createPostgresWakeQueueAdapter(dbRelease, stubDeps);
+    const release = adapter.withIssueExecutionLock({ companyId, runId, now: new Date() }, async () => {
+      drainCalls += 1;
+      return { outcome: { kind: "released" as const }, postCommitEffects: [] };
+    });
+    // Barrier: wait until the release is really parked on the row lock (its
+    // pre-lock reads have therefore already seen the deferred queue).
+    for (let i = 0; i < 200; i += 1) {
+      const waiting = await db.execute(sql`
+        select 1 from pg_stat_activity
+        where wait_event_type = 'Lock' and query ilike '%for update%' and query ilike '%execution_run_id%'`);
+      if ((waiting as unknown as { length?: number; rows?: unknown[] }).length ||
+          (waiting as unknown as { rows?: unknown[] }).rows?.length) break;
+      await new Promise((resolve) => setTimeout(resolve, 25));
+    }
+    releaseHolder();
+    await holder;
+    const result = await release;
+
+    // The queue is gone by the time the release holds the lock: it must settle
+    // as released without draining, exactly once, and the lock must be cleared.
+    expect(result.outcome.kind).toBe("released");
+    expect(drainCalls).toBe(0);
+    const [row] = await db.select().from(issues).where(eq(issues.id, issueId));
+    expect(row?.executionRunId).toBeNull();
+    await Promise.all([dbHolder.$client.end(), dbRelease.$client.end()]);
   });
 
   it("clears both lock columns on every sibling and keeps a transferred executionRunId", async () => {
@@ -814,6 +993,48 @@ describeEmbeddedPostgres("wake-queue postgres adapter", () => {
   // owns it. These tests drive the admission writer directly against a
   // transaction they open themselves, the same way `heartbeat.ts` will.
   describe("wake admission", () => {
+    // OPE-12209 (vendor #13912): one malformed queued commentId used to throw
+    // inside the uuid-column query and stall the whole wake queue behind it.
+    // The adapter must drop the malformed id at the uuid-column boundary and
+    // keep draining: the live comment is processed and the other wakes are
+    // not blocked. Red on main, where the query is built from raw ids.
+    it("drains a queued batch past a malformed comment id without throwing", async () => {
+      const companyId = await seedCompany();
+      const agentId = await seedAgent({ companyId });
+      const issueId = await seedIssue({ companyId, assigneeAgentId: agentId });
+      const finishingRunId = await seedRun({ companyId, agentId, status: "succeeded", contextSnapshot: { issueId } });
+      await db.update(issues).set({ executionRunId: finishingRunId }).where(eq(issues.id, issueId));
+      const [liveComment] = await db.insert(issueComments).values({
+        companyId, issueId, authorUserId: "responsible-user", body: "live comment",
+      }).returning();
+      const malformedId = "abc12345";
+      const validButMissingId = randomUUID();
+      const queuedBatch = [liveComment.id, malformedId, validButMissingId];
+
+      const adapter = createPostgresWakeQueueAdapter(db, stubDeps);
+      let liveness: { liveNonSelfCommentIds: string[]; containedSelfAuthoredComment: boolean } | null = null;
+      await adapter.withIssueExecutionLock({ companyId, runId: finishingRunId, now: new Date() }, async (_locked, ports) => {
+        liveness = await ports.transaction.getQueuedCommentLiveness({
+          companyId,
+          issueId,
+          wakeAgentId: agentId,
+          finishingRunId,
+          finishingRunAgentId: agentId,
+          queuedCommentIds: queuedBatch,
+        });
+        return { outcome: { kind: "released" as const }, postCommitEffects: [] };
+      });
+
+      expect(liveness).not.toBeNull();
+      // The malformed id is dropped at the uuid-column boundary; the live
+      // comment survives, the valid-but-missing uuid resolves to nothing.
+      expect(liveness!.liveNonSelfCommentIds).toEqual([liveComment.id]);
+      expect(liveness!.containedSelfAuthoredComment).toBe(false);
+      // The queue rows themselves are untouched by the liveness probe.
+      const runs = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.companyId, companyId));
+      expect(runs).toHaveLength(1);
+    });
+
     it("rolls back a deferred merge when its own durable receipt insert fails", async () => {
       const companyId = await seedCompany();
       const agentId = await seedAgent({ companyId });

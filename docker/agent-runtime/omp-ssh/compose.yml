@@ -1,0 +1,58 @@
+# myrmidon(OPE-12633 OMP-SSH-RUNNER): operator template, one SSH runner per
+# omp_local agent. See the "OMP SSH runner" section of
+# docker/agent-runtime/README.md for the whole procedure (key pair, board SSH
+# environment, agent default environment).
+#
+# Required variables (an env file next to this compose file):
+#   OMP_RUNNER_NAME             container name, e.g. myrmidon-omp-runner-eng17
+#   OMP_RUNNER_IMAGE            ghcr.io/itkadr-git/agent-runtime-omp-ssh@sha256:<digest>
+#   OMP_RUNNER_AUTHORIZED_KEYS  host path of the board's public key (read-only mount)
+#   OMP_RUNNER_NETWORK          docker network shared with the board container
+#   OMP_RUNNER_DATA_DIR         host directory for the runner's workspace, home and host key, on
+#                               the bot data disk (XFS), not the root disk: agents clone and build
+#                               repositories there, gigabytes per agent. It must hold the
+#                               subdirectories workspace/ (owned by 1000:1000), home/ and hostkeys/.
+# Optional limits: OMP_RUNNER_MEMORY, OMP_RUNNER_CPUS, OMP_RUNNER_PIDS. The
+# defaults (4g, 1 CPU, 1024 processes) are those of an engineer bot container.
+#
+# No port is published: the board reaches the runner by container name on the
+# shared network. No host path other than the public key is mounted, so a host
+# path never sits inside the synchronized workspace (SANDBOX-REQUIREMENTS.md).
+services:
+  omp-runner:
+    image: ${OMP_RUNNER_IMAGE:?set OMP_RUNNER_IMAGE}
+    container_name: ${OMP_RUNNER_NAME:?set OMP_RUNNER_NAME}
+    restart: unless-stopped
+    networks: [board]
+    mem_limit: ${OMP_RUNNER_MEMORY:-4g}
+    memswap_limit: ${OMP_RUNNER_MEMORY:-4g}
+    cpus: ${OMP_RUNNER_CPUS:-1}
+    pids_limit: ${OMP_RUNNER_PIDS:-1024}
+    cap_drop: [ALL]
+    cap_add: [CHOWN, DAC_OVERRIDE, FOWNER, SETUID, SETGID, SYS_CHROOT, KILL, AUDIT_WRITE]
+    security_opt: ["no-new-privileges:true"]
+    logging:
+      driver: json-file
+      options: { max-size: "10m", max-file: "3" }
+    volumes:
+      - workspace:/workspace
+      - home:/home/paperclip
+      - hostkeys:/var/lib/omp-runner/hostkeys
+      - ${OMP_RUNNER_AUTHORIZED_KEYS:?set OMP_RUNNER_AUTHORIZED_KEYS}:/etc/ssh/omp-runner/authorized_keys:ro
+
+networks:
+  board:
+    external: true
+    name: ${OMP_RUNNER_NETWORK:?set OMP_RUNNER_NETWORK}
+
+# Bind volumes: the data lives under OMP_RUNNER_DATA_DIR, never in /var/lib/docker on the root disk.
+volumes:
+  workspace:
+    driver: local
+    driver_opts: { type: none, o: bind, device: "${OMP_RUNNER_DATA_DIR:?set OMP_RUNNER_DATA_DIR}/workspace" }
+  home:
+    driver: local
+    driver_opts: { type: none, o: bind, device: "${OMP_RUNNER_DATA_DIR:?set OMP_RUNNER_DATA_DIR}/home" }
+  hostkeys:
+    driver: local
+    driver_opts: { type: none, o: bind, device: "${OMP_RUNNER_DATA_DIR:?set OMP_RUNNER_DATA_DIR}/hostkeys" }

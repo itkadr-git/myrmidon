@@ -16,13 +16,16 @@ import io
 import json
 import socket
 import threading
+import time
+import traceback
 import unittest
 import warnings
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from unittest import mock
 
 from egress_proxy.config import BotEntry, Config
 from egress_proxy.journal import DestinationJournal
-from egress_proxy.server import EgressProxyServer
+from egress_proxy.server import EgressProxyServer, _Tunnel
 
 #: The harness closes sockets by letting them go out of scope; the proxy's own
 #: per-request connections are the runtime's business, not a leak to report here.
@@ -43,6 +46,9 @@ class _TargetHandler(BaseHTTPRequestHandler):
 
 
 class ProxyHarnessTestCase(unittest.TestCase):
+    #: `Config.tunnel_idle_sec` of the proxy under test.
+    tunnel_idle_sec: float | None = None
+
     def setUp(self) -> None:
         self.journal_text = io.StringIO()
         self.proxy = EgressProxyServer(
@@ -52,6 +58,7 @@ class ProxyHarnessTestCase(unittest.TestCase):
                 port=0,
                 connect_timeout_sec=2,
                 bots={"agent-a": BotEntry(bot_key="agent-a", project="life")},
+                tunnel_idle_sec=self.tunnel_idle_sec,
             ),
             DestinationJournal(self.journal_text, {"agent-a": BotEntry(bot_key="agent-a", project="life")}),
         )
@@ -170,6 +177,310 @@ class ConnectTest(ProxyHarnessTestCase):
         self.assertEqual(len(lines), 1)
         self.assertEqual(lines[0]["bot"], "unknown")
         self.assertTrue(lines[0]["result"].startswith("error:"), lines[0]["result"])
+
+
+class _RawTarget:
+    """A TCP server on localhost for what travels through a tunnel.
+
+    `serve(target, conn)` runs on its own thread for every connection.
+    `closed` is set when that connection ends: for a tunnel, the proxy let go of
+    its side. `received` counts the bytes `_hold` read.
+    """
+
+    def __init__(self, serve) -> None:
+        self._serve = serve
+        self.received = 0
+        self.closed = threading.Event()
+        self._listener = socket.create_server(("127.0.0.1", 0))
+        self.port = self._listener.getsockname()[1]
+        threading.Thread(target=self._accept, daemon=True).start()
+
+    def _accept(self) -> None:
+        while True:
+            try:
+                conn, _ = self._listener.accept()
+            except OSError:
+                return
+            threading.Thread(target=self._run, args=(conn,), daemon=True).start()
+
+    def _run(self, conn: socket.socket) -> None:
+        with conn:
+            try:
+                self._serve(self, conn)
+            except OSError:
+                pass
+            finally:
+                self.closed.set()
+
+    def stop(self) -> None:
+        try:
+            self._listener.shutdown(socket.SHUT_RDWR)
+        except OSError:
+            pass
+        self._listener.close()
+
+
+def _hold(target: _RawTarget, conn: socket.socket) -> None:
+    """Read and count until the peer closes; never answer."""
+    while True:
+        data = conn.recv(4096)
+        if not data:
+            return
+        target.received += len(data)
+
+
+def _echo(target: _RawTarget, conn: socket.socket) -> None:
+    while True:
+        data = conn.recv(4096)
+        if not data:
+            return
+        conn.sendall(data)
+
+
+def _stream_when_asked(chunks: int, interval: float):
+    """After the first bytes from the client, send `chunks` kilobytes, `interval` apart."""
+
+    def serve(target: _RawTarget, conn: socket.socket) -> None:
+        conn.recv(4096)
+        for _ in range(chunks):
+            conn.sendall(b"x" * 1024)
+            time.sleep(interval)
+        _hold(target, conn)
+
+    return serve
+
+
+class TunnelHarnessTestCase(ProxyHarnessTestCase):
+    """A CONNECT tunnel to a raw TCP target; what ends it, and how, is observed.
+
+    `tunnel_done` is set when the proxy has finished with a tunnel (both pump
+    threads joined, sockets closed); `errors` collects whatever a thread of the
+    proxy raised instead of ending quietly.
+    """
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.errors: list[str] = []
+        self.tunnel_done = threading.Event()
+
+        def record_handler_error(request, client_address) -> None:
+            self.errors.append("handler: " + traceback.format_exc())
+
+        self.proxy.handle_error = record_handler_error
+
+        previous_hook = threading.excepthook
+        threading.excepthook = lambda args: self.errors.append(
+            f"thread {getattr(args.thread, 'name', '?')}: {args.exc_type.__name__}: {args.exc_value}"
+        )
+        self.addCleanup(setattr, threading, "excepthook", previous_hook)
+
+        original_run = _Tunnel.run
+
+        def run_and_report(tunnel: _Tunnel) -> None:
+            try:
+                original_run(tunnel)
+            finally:
+                self.tunnel_done.set()
+
+        patcher = mock.patch.object(_Tunnel, "run", run_and_report)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def _target(self, serve) -> _RawTarget:
+        target = _RawTarget(serve)
+        self.addCleanup(target.stop)
+        return target
+
+    def _open_tunnel(self, target: _RawTarget) -> socket.socket:
+        sock = socket.create_connection(("127.0.0.1", self.proxy.port), timeout=5)
+        self.addCleanup(sock.close)
+        sock.sendall(
+            (
+                f"CONNECT 127.0.0.1:{target.port} HTTP/1.0\r\n"
+                f"Proxy-Authorization: {self._basic('agent-a')}\r\n"
+                "\r\n"
+            ).encode("ascii")
+        )
+        head = b""
+        while b"\r\n\r\n" not in head:
+            part = sock.recv(4096)
+            self.assertTrue(part, "the proxy closed before answering CONNECT")
+            head += part
+        self.assertIn(b"200", head.split(b"\r\n", 1)[0])
+        return sock
+
+    @staticmethod
+    def _wait_closed(sock: socket.socket, limit: float) -> float:
+        """Seconds until the proxy closes `sock` (reading it); fails if it does not within `limit`."""
+        started = time.monotonic()
+        while time.monotonic() - started < limit:
+            sock.settimeout(limit - (time.monotonic() - started))
+            try:
+                data = sock.recv(4096)
+            except socket.timeout:
+                break
+            except ConnectionResetError:
+                return time.monotonic() - started
+            if not data:
+                return time.monotonic() - started
+        raise AssertionError(f"the tunnel was still open after {limit} s")
+
+    def _assert_tunnel_released_cleanly(self) -> None:
+        self.assertTrue(self.tunnel_done.wait(3), "the proxy did not finish with the tunnel")
+        self.assertEqual(self.errors, [])
+
+
+class TunnelIdleTest(TunnelHarnessTestCase):
+    """`tunnel_idle_sec`: a tunnel with no byte in either direction is closed."""
+
+    tunnel_idle_sec = 1
+
+    def test_an_idle_tunnel_is_closed_after_the_timeout_and_frees_its_threads(self) -> None:
+        target = self._target(_hold)
+        sock = self._open_tunnel(target)
+
+        elapsed = self._wait_closed(sock, limit=4)
+
+        self.assertGreaterEqual(elapsed, 0.8, "closed before the idle timeout")
+        self.assertTrue(target.closed.wait(2), "the upstream side was left open")
+        self._assert_tunnel_released_cleanly()
+        # The journal still has the one CONNECT line and nothing about the close.
+        lines = self._lines()
+        self.assertEqual(len(lines), 1)
+        self.assertEqual((lines[0]["method"], lines[0]["result"]), ("CONNECT", "ok"))
+
+    def test_a_trickle_in_both_directions_keeps_the_tunnel_open_until_it_stops(self) -> None:
+        target = self._target(_echo)
+        sock = self._open_tunnel(target)
+        sock.settimeout(2)
+
+        # 2.4 s of traffic, well over the 1 s limit, never silent for 0.3 s.
+        for number in range(8):
+            sock.sendall(b"x")
+            self.assertEqual(sock.recv(16), b"x", f"closed during the trickle, at byte {number}")
+            time.sleep(0.3)
+        self.assertFalse(target.closed.is_set())
+
+        elapsed = self._wait_closed(sock, limit=4)
+        self.assertGreaterEqual(elapsed, 0.5, "the silence was not counted from the last byte")
+        self._assert_tunnel_released_cleanly()
+
+    def test_a_download_the_client_never_answers_is_not_idle(self) -> None:
+        target = self._target(_stream_when_asked(chunks=8, interval=0.3))
+        sock = self._open_tunnel(target)
+        sock.settimeout(2)
+        sock.sendall(b"go")
+
+        received = 0
+        while received < 8 * 1024:
+            data = sock.recv(65536)
+            self.assertTrue(data, f"closed during the download, after {received} bytes")
+            received += len(data)
+        self.assertFalse(target.closed.is_set())
+
+        self._wait_closed(sock, limit=4)
+        self._assert_tunnel_released_cleanly()
+
+    def test_an_upload_nothing_answers_is_not_idle(self) -> None:
+        target = self._target(_hold)
+        sock = self._open_tunnel(target)
+
+        for _ in range(8):
+            sock.sendall(b"x" * 1024)
+            time.sleep(0.3)
+        deadline = time.monotonic() + 2
+        while target.received < 8 * 1024 and time.monotonic() < deadline:
+            time.sleep(0.05)
+        self.assertEqual(target.received, 8 * 1024)
+        self.assertFalse(target.closed.is_set())
+
+        self.assertTrue(target.closed.wait(4), "the tunnel stayed open after the upload stopped")
+        self._assert_tunnel_released_cleanly()
+
+
+class TunnelWithoutIdleLimitTest(TunnelHarnessTestCase):
+    """The default: nothing but the two ends closes a tunnel."""
+
+    def test_no_limit_is_configured_by_default(self) -> None:
+        self.assertIsNone(self.proxy.config.tunnel_idle_sec)
+
+    def test_an_idle_tunnel_stays_open_far_past_the_limit_the_other_tests_use(self) -> None:
+        target = self._target(_echo)
+        sock = self._open_tunnel(target)
+        sock.settimeout(2)
+
+        time.sleep(2.5)  # the idle tests close a silent tunnel after 1 s
+
+        sock.sendall(b"still here")
+        self.assertEqual(sock.recv(64), b"still here")
+        self.assertFalse(target.closed.is_set())
+        self.assertFalse(self.tunnel_done.is_set())
+        sock.shutdown(socket.SHUT_WR)
+        self.assertEqual(sock.recv(64), b"")
+        self._assert_tunnel_released_cleanly()
+
+
+class TunnelSendTest(unittest.TestCase):
+    """The idle clock counts bytes moved, so a reader that takes a little now and then is not idle."""
+
+    def setUp(self) -> None:
+        self.sink, self.reader = socket.socketpair()
+        self.other, self.other_peer = socket.socketpair()
+        for sock in (self.sink, self.reader, self.other, self.other_peer):
+            self.addCleanup(sock.close)
+        # Tiny buffers, so that the chunk below cannot be absorbed in one go.
+        self.sink.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, 4096)
+        self.reader.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 4096)
+        self.tunnel = _Tunnel(self.sink, self.other, idle_sec=1)
+
+    def _send(self, chunk: bytes, limit: float = 8) -> tuple[bool, float]:
+        """`_Tunnel._send` on its own thread, so a send that never ends fails the test instead of hanging it."""
+        outcome: dict[str, float | bool] = {}
+
+        def work() -> None:
+            started = time.monotonic()
+            outcome["whole"] = self.tunnel._send(self.sink, chunk)
+            outcome["seconds"] = time.monotonic() - started
+
+        thread = threading.Thread(target=work, daemon=True)
+        thread.start()
+        thread.join(limit)
+        self.assertFalse(thread.is_alive(), "the send did not end")
+        return bool(outcome["whole"]), float(outcome["seconds"])
+
+    def test_a_slow_reader_that_keeps_taking_bytes_does_not_time_the_chunk_out(self) -> None:
+        stop = threading.Event()
+        self.reader.settimeout(0.3)
+
+        def read_slowly() -> None:
+            while not stop.is_set():
+                time.sleep(0.2)
+                try:
+                    self.reader.recv(2048)
+                except OSError:
+                    pass
+
+        thread = threading.Thread(target=read_slowly, daemon=True)
+        thread.start()
+        self.addCleanup(thread.join, 2)
+        self.addCleanup(stop.set)
+
+        whole, seconds = self._send(b"x" * 40000)
+
+        self.assertTrue(whole)
+        self.assertGreater(seconds, 2.0, "the chunk was absorbed at once; the test proves nothing")
+
+    def test_a_reader_that_takes_nothing_ends_the_send_once_idle(self) -> None:
+        whole, seconds = self._send(b"x" * 1_000_000)
+
+        self.assertFalse(whole)
+        self.assertGreaterEqual(seconds, 0.8)
+
+    def test_a_non_positive_limit_is_refused(self) -> None:
+        for bad in (0, -1, 0.0):
+            with self.subTest(bad=bad):
+                with self.assertRaises(ValueError):
+                    _Tunnel(self.sink, self.other, idle_sec=bad)
 
 
 class HealthTest(ProxyHarnessTestCase):
@@ -332,6 +643,189 @@ class EnforceTest(unittest.TestCase):
         # 502 (nothing there) is the upstream answer; a 403 would mean the policy
         # was enforced in a mode that must only record.
         self.assertIn(b"502", head.split(b"\r\n", 1)[0])
+
+
+class TunnelCapTest(unittest.TestCase):
+    """myrmidon(OPE-10718): per-client concurrent CONNECT tunnel cap.
+
+    A browser inside a bot container can open enough idle HTTPS tunnels to
+    starve the proxy's thread budget. The cap turns that into a clear 429
+    error instead of a stuck flow. Reserved destinations (e.g.
+    api.telegram.org:443) always get a tunnel so the bot's sendChatAction
+    keeps working even when the browser holds every proxy slot.
+    """
+
+    def setUp(self) -> None:
+        self.journal_text = io.StringIO()
+        self.target = ThreadingHTTPServer(("127.0.0.1", 0), _TargetHandler)
+        threading.Thread(target=self.target.serve_forever, daemon=True).start()
+        self.addCleanup(self.target.shutdown)
+
+    @staticmethod
+    def _basic(user: str) -> str:
+        return "Basic " + base64.b64encode(f"{user}:egress".encode("utf-8")).decode("ascii")
+
+    def _make_proxy(self, max_tunnels: int, reserve: tuple[str, ...] = ()) -> EgressProxyServer:
+        proxy = EgressProxyServer(
+            Config(
+                mode="log",
+                bind="127.0.0.1",
+                port=0,
+                connect_timeout_sec=2,
+                max_tunnels_per_client=max_tunnels,
+                tunnel_reserve_destinations=reserve,
+            ),
+            DestinationJournal(self.journal_text, {}),
+        )
+        threading.Thread(target=proxy.serve_forever, daemon=True).start()
+        self.addCleanup(proxy.shutdown)
+        return proxy
+
+    def _open_tunnel(self, proxy: EgressProxyServer, user: str, host: str, port: int) -> socket.socket:
+        sock = socket.create_connection(("127.0.0.1", proxy.port), timeout=5)
+        sock.sendall(
+            (
+                f"CONNECT {host}:{port} HTTP/1.0\r\n"
+                f"Proxy-Authorization: {self._basic(user)}\r\n"
+                "\r\n"
+            ).encode("ascii")
+        )
+        head = b""
+        while b"\r\n\r\n" not in head:
+            part = sock.recv(4096)
+            self.assertTrue(part, "the proxy closed before answering CONNECT")
+            head += part
+        return sock
+
+    def _lines(self) -> list[dict]:
+        return [json.loads(line) for line in self.journal_text.getvalue().splitlines() if line.strip()]
+
+    def test_a_client_under_the_cap_opens_tunnels_normally(self) -> None:
+        proxy = self._make_proxy(max_tunnels=2)
+        sock = self._open_tunnel(proxy, "agent-a", "127.0.0.1", self.target.server_port)
+        try:
+            self.assertEqual(self._lines()[0]["result"], "ok")
+        finally:
+            sock.close()
+
+    def test_a_client_at_the_cap_gets_429_and_the_journal_records_the_cap(self) -> None:
+        proxy = self._make_proxy(max_tunnels=1)
+        sock1 = self._open_tunnel(proxy, "agent-a", "127.0.0.1", self.target.server_port)
+        try:
+            # The second tunnel from the same client must be refused with 429.
+            sock2 = socket.create_connection(("127.0.0.1", proxy.port), timeout=5)
+            sock2.sendall(
+                (
+                    f"CONNECT 127.0.0.1:{self.target.server_port} HTTP/1.0\r\n"
+                    f"Proxy-Authorization: {self._basic('agent-a')}\r\n"
+                    "\r\n"
+                ).encode("ascii")
+            )
+            head = b""
+            while b"\r\n\r\n" not in head:
+                part = sock2.recv(4096)
+                self.assertTrue(part, "the proxy closed before answering CONNECT")
+                head += part
+            sock2.close()
+            self.assertIn(b"429", head.split(b"\r\n", 1)[0])
+
+            lines = self._lines()
+            self.assertEqual(len(lines), 2)
+            self.assertEqual(lines[0]["result"], "ok")
+            self.assertEqual(lines[1]["result"], "error:tunnel_cap")
+        finally:
+            sock1.close()
+
+    def test_a_different_client_is_not_affected_by_another_client_s_cap(self) -> None:
+        proxy = self._make_proxy(max_tunnels=1)
+        sock1 = self._open_tunnel(proxy, "agent-a", "127.0.0.1", self.target.server_port)
+        try:
+            sock2 = self._open_tunnel(proxy, "agent-b", "127.0.0.1", self.target.server_port)
+            sock2.close()
+            lines = self._lines()
+            self.assertEqual(len(lines), 2)
+            self.assertEqual(lines[0]["result"], "ok")
+            self.assertEqual(lines[1]["result"], "ok")
+        finally:
+            sock1.close()
+
+    def test_a_reserved_destination_opens_a_tunnel_even_at_the_cap(self) -> None:
+        # Use a reserved destination that maps to the local target, so the
+        # tunnel opens successfully and we can prove the cap was bypassed.
+        reserve_host = "127.0.0.1"
+        reserve_port = self.target.server_port
+        proxy = self._make_proxy(max_tunnels=1, reserve=(f"{reserve_host}:{reserve_port}",))
+        sock1 = self._open_tunnel(proxy, "agent-a", "127.0.0.1", self.target.server_port)
+        try:
+            # The reserved destination is the local target; the cap must let
+            # the CONNECT through and the tunnel must work.
+            sock2 = self._open_tunnel(proxy, "agent-a", reserve_host, reserve_port)
+            try:
+                # Speak HTTP through the tunnel to prove it is live.
+                sock2.sendall(b"GET /hello HTTP/1.0\r\nHost: 127.0.0.1\r\n\r\n")
+                sock2.settimeout(5)
+                payload = b""
+                while b"target says hello" not in payload:
+                    chunk = sock2.recv(65536)
+                    if not chunk:
+                        break
+                    payload += chunk
+                self.assertIn(b"target says hello", payload)
+            finally:
+                sock2.close()
+            lines = self._lines()
+            self.assertEqual(len(lines), 2)
+            self.assertEqual(lines[0]["result"], "ok")
+            self.assertEqual(lines[1]["result"], "ok")
+        finally:
+            sock1.close()
+
+    def test_releasing_a_tunnel_frees_the_slot(self) -> None:
+        proxy = self._make_proxy(max_tunnels=1)
+        sock1 = self._open_tunnel(proxy, "agent-a", "127.0.0.1", self.target.server_port)
+        sock1.close()
+        # Give the proxy a moment to notice the close and release the slot.
+        time.sleep(0.2)
+        sock2 = self._open_tunnel(proxy, "agent-a", "127.0.0.1", self.target.server_port)
+        try:
+            lines = self._lines()
+            self.assertEqual(len(lines), 2)
+            self.assertEqual(lines[0]["result"], "ok")
+            self.assertEqual(lines[1]["result"], "ok")
+        finally:
+            sock2.close()
+
+    def test_zero_cap_means_unlimited(self) -> None:
+        proxy = self._make_proxy(max_tunnels=0)
+        socks = []
+        try:
+            for _ in range(5):
+                socks.append(self._open_tunnel(proxy, "agent-a", "127.0.0.1", self.target.server_port))
+            lines = self._lines()
+            self.assertEqual(len(lines), 5)
+            for line in lines:
+                self.assertEqual(line["result"], "ok")
+        finally:
+            for sock in socks:
+                sock.close()
+
+    def test_the_health_endpoint_reports_the_cap_and_open_tunnels(self) -> None:
+        proxy = self._make_proxy(max_tunnels=2)
+        sock = self._open_tunnel(proxy, "agent-a", "127.0.0.1", self.target.server_port)
+        try:
+            with socket.create_connection(("127.0.0.1", proxy.port), timeout=5) as sock2:
+                sock2.sendall(b"GET /healthz HTTP/1.0\r\n\r\n")
+                response = b""
+                while True:
+                    part = sock2.recv(4096)
+                    if not part:
+                        break
+                    response += part
+            body = json.loads(response.split(b"\r\n\r\n", 1)[1])
+            self.assertEqual(body["max_tunnels_per_client"], 2)
+            self.assertEqual(body["open_tunnels"], {"agent-a": 1})
+        finally:
+            sock.close()
 
 
 if __name__ == "__main__":

@@ -1,5 +1,5 @@
 import { and, asc, desc, eq, inArray, isNull, lte, or, sql } from "drizzle-orm";
-import type { Db } from "@paperclipai/db";
+import type { Db } from "@myrmidon/db";
 import {
   agentWakeupRequests,
   agents,
@@ -10,11 +10,11 @@ import {
   issueQuestionResponseDeliveries,
   issues,
   issueThreadInteractions,
-} from "@paperclipai/db";
+} from "@myrmidon/db";
 import type {
   AskUserQuestionsInteraction,
   PaperclipQuestionSetPayload,
-} from "@paperclipai/shared";
+} from "@myrmidon/shared";
 import type { PaperclipQuestionResponse } from "../vendor/paperclip-runner/index.js";
 import { isUniqueViolation } from "../db-errors.js";
 import { getTelemetryClient } from "../telemetry.js";
@@ -254,6 +254,10 @@ function hydrateQuestionInteraction(
 ): AskUserQuestionsInteraction {
   return {
     ...row,
+    routeType: (row.routeType as AskUserQuestionsInteraction["routeType"]) ?? null,
+    escalationChain:
+      (row.escalationChain as AskUserQuestionsInteraction["escalationChain"]) ??
+      null,
     kind: "ask_user_questions",
     status: row.status as AskUserQuestionsInteraction["status"],
     continuationPolicy:

@@ -26,9 +26,9 @@
 
 import { Router, type Request } from "express";
 import { z } from "zod";
-import type { Db } from "@paperclipai/db";
+import type { Db } from "@myrmidon/db";
 import { and, eq } from "drizzle-orm";
-import { agents, companySecretBindings, companySecrets } from "@paperclipai/db";
+import { agents, companySecretBindings, companySecrets } from "@myrmidon/db";
 import { conflict, notFound, unprocessable } from "../../errors.js";
 import { validate } from "../../middleware/validate.js";
 import { assertBoard, assertCompanyAccess, getActorInfo } from "../../routes/authz.js";
@@ -47,14 +47,27 @@ import type { AccessHubHost } from "./types.js";
 import { createFakeDeployPort, type DeployPort, type DeployInput } from "./ssh-deploy.js";
 import { createSshDeployPort, type AdminKeySource } from "./ssh-ops.js";
 import { rotationRestartRuntime } from "./rotation-restart.js";
+import { liveBehaviorSetting, liveSavedSetting } from "../behavior-settings/live.js";
 
 export const ACCESS_HUB_ENABLED_ENV = "MYRMIDON_ACCESS_HUB_ENABLED";
 /** Name of the company secret holding the board's private admin ssh key. */
 export const ACCESS_HUB_SSH_ADMIN_KEY_SECRET_ENV = "MYRMIDON_ACCESS_HUB_SSH_ADMIN_KEY_SECRET";
 
+export function parseAccessHubEnabled(raw: string | undefined | null): boolean | null {
+  const value = raw?.trim().toLowerCase();
+  if (!value) return null;
+  if (value === "1" || value === "true" || value === "yes" || value === "on") return true;
+  if (value === "0" || value === "false" || value === "off" || value === "no") return false;
+  return null;
+}
+
 export function isAccessHubEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
-  const raw = env[ACCESS_HUB_ENABLED_ENV]?.trim().toLowerCase();
-  return raw === "1" || raw === "true" || raw === "yes" || raw === "on";
+  const parsed = parseAccessHubEnabled(env[ACCESS_HUB_ENABLED_ENV]);
+  if (parsed !== null) return parsed;
+  const saved = liveSavedSetting<boolean>("accessHubEnabled");
+  if (saved !== undefined) return Boolean(saved);
+  const live = liveBehaviorSetting<boolean>("accessHubEnabled");
+  return live !== undefined ? Boolean(live) : false;
 }
 
 const UUID = z.string().uuid();

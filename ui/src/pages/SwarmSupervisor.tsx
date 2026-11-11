@@ -24,6 +24,8 @@ import { PriorityIcon } from "@/components/PriorityIcon";
 import { useBreadcrumbs } from "@/context/BreadcrumbContext";
 // myrmidon(UI-RU): page strings through the fork i18n catalog.
 import { useTranslation } from "@/i18n";
+// myrmidon(1.7-DEBATE-ASYM-B): the «Discuss» button of a caste's task.
+import { DebateTaskButton } from "@/components/myrmidon/DebateTaskButton";
 import { useCompany } from "@/context/CompanyContext";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
@@ -95,7 +97,8 @@ export function queueItemLabel(item: SwarmSupervisorQueueItem): string {
 
 /** Totals strip: one compact cell per overview total. */
 function TotalsStrip({ overview }: { overview: SwarmSupervisorOverview }) {
-  const { t } = useTranslation();
+  const { t, i18n } = useTranslation();
+  const locale = i18n.language === "ru" ? "ru-RU" : "en-US";
   const cells: Array<{ label: string; value: number }> = [
     { label: t("swarm.totals.queuedTasks"), value: overview.totals.queued },
     { label: t("swarm.totals.activeLeases"), value: overview.totals.activeClaims },
@@ -116,7 +119,7 @@ function TotalsStrip({ overview }: { overview: SwarmSupervisorOverview }) {
       >
         {cells.map((cell) => (
           <div key={cell.label}>
-            <p className="text-2xl font-semibold tracking-tight tabular-nums">{formatNumber(cell.value)}</p>
+            <p className="text-2xl font-semibold tracking-tight tabular-nums">{formatNumber(cell.value, locale)}</p>
             <p className="mt-1 text-xs font-medium text-muted-foreground">{cell.label}</p>
           </div>
         ))}
@@ -154,8 +157,9 @@ function TableShell({ title, description, emptyMessage, rowCount, testId, childr
 
 const HEAD_CELL = "px-3 py-2 text-left font-medium text-muted-foreground";
 
-function QueueTable({ role }: { role: SwarmSupervisorRole }) {
-  const { t } = useTranslation();
+function QueueTable({ role, companyId }: { role: SwarmSupervisorRole; companyId: string }) {
+  const { t, i18n } = useTranslation();
+  const locale = i18n.language === "ru" ? "ru-RU" : "en-US";
   return (
     <TableShell
       title={t("swarm.queueTitle")}
@@ -173,6 +177,7 @@ function QueueTable({ role }: { role: SwarmSupervisorRole }) {
           <th scope="col" className={HEAD_CELL}>{t("swarm.columns.project")}</th>
           <th scope="col" className={HEAD_CELL}>{t("swarm.columns.queuedAt")}</th>
           <th scope="col" className={HEAD_CELL}>{t("swarm.columns.blockedSince")}</th>
+          <th scope="col" className={HEAD_CELL}>{t("swarm.columns.action")}</th>
         </tr>
       </thead>
       <tbody>
@@ -186,7 +191,7 @@ function QueueTable({ role }: { role: SwarmSupervisorRole }) {
               <PriorityIcon priority={item.priority} showLabel />
             </td>
             <td className="px-3 py-2 tabular-nums" data-testid={`swarm-queue-eff-${item.issueId}`}>
-              {formatNumber(item.eff)}
+              {formatNumber(item.eff, locale)}
             </td>
             <td
               className="px-3 py-2 font-mono text-muted-foreground"
@@ -195,9 +200,12 @@ function QueueTable({ role }: { role: SwarmSupervisorRole }) {
               {item.nestAgentId ?? "—"}
             </td>
             <td className="px-3 py-2 font-mono text-muted-foreground">{item.projectId ?? "—"}</td>
-            <td className="px-3 py-2 tabular-nums">{formatDateTime(item.createdAt)}</td>
+            <td className="px-3 py-2 tabular-nums">{formatDateTime(item.createdAt, { locale })}</td>
             <td className="px-3 py-2 tabular-nums">
-              {item.blockedTransitionAt ? formatDateTime(item.blockedTransitionAt) : "—"}
+              {item.blockedTransitionAt ? formatDateTime(item.blockedTransitionAt, { locale }) : "—"}
+            </td>
+            <td className="px-3 py-2">
+              <DebateTaskButton issueId={item.issueId} casteKey={role.role} companyId={companyId} />
             </td>
           </tr>
         ))}
@@ -213,7 +221,8 @@ interface ClaimsTableProps {
 }
 
 function ClaimsTable({ role, onRelease, releasingClaimId }: ClaimsTableProps) {
-  const { t } = useTranslation();
+  const { t, i18n } = useTranslation();
+  const locale = i18n.language === "ru" ? "ru-RU" : "en-US";
   return (
     <TableShell
       title={t("swarm.claimsTitle")}
@@ -249,11 +258,11 @@ function ClaimsTable({ role, onRelease, releasingClaimId }: ClaimsTableProps) {
                 {claimHolderLabel(claim)}
               </span>
             </td>
-            <td className="px-3 py-2 tabular-nums">{formatDateTime(claim.claimedAt)}</td>
+            <td className="px-3 py-2 tabular-nums">{formatDateTime(claim.claimedAt, { locale })}</td>
             <td className="px-3 py-2 tabular-nums">
-              {claim.heartbeatAt ? formatDateTime(claim.heartbeatAt) : "—"}
+              {claim.heartbeatAt ? formatDateTime(claim.heartbeatAt, { locale }) : "—"}
             </td>
-            <td className="px-3 py-2 tabular-nums">{formatDateTime(claim.expiresAt)}</td>
+            <td className="px-3 py-2 tabular-nums">{formatDateTime(claim.expiresAt, { locale })}</td>
             <td className="px-3 py-2 tabular-nums">
               {claim.expired ? (
                 <span className="text-destructive" data-testid={`swarm-claim-expired-${claim.claimId}`}>
@@ -289,7 +298,8 @@ interface IdleAgentsTableProps {
 }
 
 function IdleAgentsTable({ role, maxActiveTasksPerAgent }: IdleAgentsTableProps) {
-  const { t } = useTranslation();
+  const { t, i18n } = useTranslation();
+  const locale = i18n.language === "ru" ? "ru-RU" : "en-US";
   const cap = maxActiveTasksPerAgent;
   return (
     <TableShell
@@ -313,7 +323,7 @@ function IdleAgentsTable({ role, maxActiveTasksPerAgent }: IdleAgentsTableProps)
           <tr key={agent.agentId} className="border-b border-border last:border-b-0">
             <td className="px-3 py-2">{agent.name}</td>
             <td className="px-3 py-2 font-mono text-muted-foreground">{agent.agentId}</td>
-            <td className="px-3 py-2 tabular-nums">{formatNumber(agent.activeClaims)}</td>
+            <td className="px-3 py-2 tabular-nums">{formatNumber(agent.activeClaims, locale)}</td>
             <td className="px-3 py-2 tabular-nums">
               {cap === null ? "—" : `${agent.activeClaims} / ${cap}`}
             </td>
@@ -329,30 +339,33 @@ function IdleAgentsTable({ role, maxActiveTasksPerAgent }: IdleAgentsTableProps)
 
 function RoleSection({
   role,
+  companyId,
   maxActiveTasksPerAgent,
   onRelease,
   releasingClaimId,
 }: {
   role: SwarmSupervisorRole;
+  companyId: string;
   maxActiveTasksPerAgent: number | null;
   onRelease: (claimId: string) => void;
   releasingClaimId: string | null;
 }) {
-  const { t } = useTranslation();
+  const { t, i18n } = useTranslation();
+  const locale = i18n.language === "ru" ? "ru-RU" : "en-US";
   return (
     <Card data-testid={`swarm-role-${role.role}`}>
       <CardHeader className="px-5 pt-5 pb-2">
         <CardTitle className="text-base">{role.role}</CardTitle>
         <CardDescription>
           {t("swarm.roleSummary", {
-            queued: formatNumber(role.queue.length),
-            leases: formatNumber(role.claims.length),
-            idle: formatNumber(role.idleAgents.length),
+            queued: formatNumber(role.queue.length, locale),
+            leases: formatNumber(role.claims.length, locale),
+            idle: formatNumber(role.idleAgents.length, locale),
           })}
         </CardDescription>
       </CardHeader>
       <CardContent className="space-y-5 px-5 pb-5 pt-2">
-        <QueueTable role={role} />
+        <QueueTable role={role} companyId={companyId} />
         <ClaimsTable role={role} onRelease={onRelease} releasingClaimId={releasingClaimId} />
         <IdleAgentsTable role={role} maxActiveTasksPerAgent={maxActiveTasksPerAgent} />
       </CardContent>
@@ -410,7 +423,8 @@ function WarningList({ warnings }: { warnings: SwarmSupervisorWarning[] }) {
 
 /** myrmidon(1.6.5 SWARM-T4, design §5.3): recent matches table. */
 function MatchesTable({ matched }: { matched: SwarmSupervisorMatch[] }) {
-  const { t } = useTranslation();
+  const { t, i18n } = useTranslation();
+  const locale = i18n.language === "ru" ? "ru-RU" : "en-US";
   return (
     <Card data-testid="swarm-matched">
       <CardHeader className="px-5 pt-5 pb-2">
@@ -438,7 +452,7 @@ function MatchesTable({ matched }: { matched: SwarmSupervisorMatch[] }) {
                       <span>{row.title}</span>
                     </td>
                     <td className="px-3 py-2">{row.agentName}</td>
-                    <td className="px-3 py-2 tabular-nums">{formatDateTime(row.at)}</td>
+                    <td className="px-3 py-2 tabular-nums">{formatDateTime(row.at, { locale })}</td>
                   </tr>
                 ))}
               </tbody>
@@ -452,7 +466,8 @@ function MatchesTable({ matched }: { matched: SwarmSupervisorMatch[] }) {
 
 /** myrmidon(1.6.5 SWARM-T4, design §5.3): tasks cooling down after a failed match. */
 function CooldownTable({ cooldown }: { cooldown: SwarmSupervisorCooldown[] }) {
-  const { t } = useTranslation();
+  const { t, i18n } = useTranslation();
+  const locale = i18n.language === "ru" ? "ru-RU" : "en-US";
   return (
     <Card data-testid="swarm-cooldown">
       <CardHeader className="px-5 pt-5 pb-2">
@@ -483,9 +498,9 @@ function CooldownTable({ cooldown }: { cooldown: SwarmSupervisorCooldown[] }) {
                     <td className="px-3 py-2">
                       <PriorityIcon priority={row.priority} showLabel />
                     </td>
-                    <td className="px-3 py-2 tabular-nums">{formatDateTime(row.createdAt)}</td>
+                    <td className="px-3 py-2 tabular-nums">{formatDateTime(row.createdAt, { locale })}</td>
                     <td className="px-3 py-2 tabular-nums">
-                      {row.coolsDownAt ? formatDateTime(row.coolsDownAt) : "—"}
+                      {row.coolsDownAt ? formatDateTime(row.coolsDownAt, { locale }) : "—"}
                     </td>
                   </tr>
                 ))}
@@ -504,7 +519,8 @@ export interface SwarmSupervisorProps {
 }
 
 export function SwarmSupervisor({ embedded = false }: SwarmSupervisorProps = {}) {
-  const { t } = useTranslation();
+  const { t, i18n } = useTranslation();
+  const locale = i18n.language === "ru" ? "ru-RU" : "en-US";
   const { selectedCompanyId } = useCompany();
   const { setBreadcrumbs } = useBreadcrumbs();
   const queryClient = useQueryClient();
@@ -580,11 +596,11 @@ export function SwarmSupervisor({ embedded = false }: SwarmSupervisorProps = {})
           >
             <span className="flex items-center gap-1.5">
               <Clock className="h-4 w-4" />
-              {t("swarm.generated", { time: formatDateTime(data.generatedAt) })}
+              {t("swarm.generated", { time: formatDateTime(data.generatedAt, { locale }) })}
             </span>
             <span className="flex items-center gap-1.5">
               <RotateCw className="h-4 w-4" />
-              {data.leaseTtlSec === null ? "—" : t("swarm.leaseTtl", { seconds: `${formatNumber(data.leaseTtlSec)} s` })}
+              {data.leaseTtlSec === null ? "—" : t("swarm.leaseTtl", { seconds: `${formatNumber(data.leaseTtlSec, locale)} s` })}
               {/* myrmidon(1.6.1 SWARM-SETTINGS-UI): where the value came from */}
               <span
                 className="text-muted-foreground/80"
@@ -596,7 +612,7 @@ export function SwarmSupervisor({ embedded = false }: SwarmSupervisorProps = {})
             <span className="flex items-center gap-1.5">
               <ShieldCheck className="h-4 w-4" />
               {t("swarm.maxActive")}{" "}
-              {data.maxActiveTasksPerAgent === null ? "—" : formatNumber(data.maxActiveTasksPerAgent)}
+              {data.maxActiveTasksPerAgent === null ? "—" : formatNumber(data.maxActiveTasksPerAgent, locale)}
               <span
                 className="text-muted-foreground/80"
                 data-testid="swarm-supervisor-source-maxActiveTasks"
@@ -657,6 +673,7 @@ export function SwarmSupervisor({ embedded = false }: SwarmSupervisorProps = {})
                   <RoleSection
                     key={role.role}
                     role={role}
+                    companyId={companyId}
                     maxActiveTasksPerAgent={data.maxActiveTasksPerAgent}
                     onRelease={(claimId) => releaseMutation.mutate(claimId)}
                     releasingClaimId={releasingClaimId}
@@ -699,7 +716,7 @@ export function SwarmSupervisor({ embedded = false }: SwarmSupervisorProps = {})
                                 <PriorityIcon priority={item.priority} showLabel />
                               </td>
                               <td className="px-3 py-2 font-mono text-muted-foreground">{item.projectId ?? "—"}</td>
-                              <td className="px-3 py-2 tabular-nums">{formatDateTime(item.createdAt)}</td>
+                              <td className="px-3 py-2 tabular-nums">{formatDateTime(item.createdAt, { locale })}</td>
                             </tr>
                           ))}
                         </tbody>

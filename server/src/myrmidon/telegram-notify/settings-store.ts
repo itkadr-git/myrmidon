@@ -1,5 +1,14 @@
 // myrmidon(TG-NOTIFY-A): telegram-notify settings storage (part A).
 //
+// myrmidon(1.6.6 CH-CONNECTOR-D) batch 3 (OPE-6976, call map OPE-6629 point 69):
+// the direct path of the core is deprecated. `services/instance-settings.ts`
+// reaches `preserveTelegramNotifySettingsGeneralKey` through the bridge seam
+// `channel-connectors/bridge/notify-settings-store.js` only; with the bridge
+// flag on a registered channel connector serves the theme and this module stays
+// behind the seam as the legacy fallback. The store internals
+// (`dbTelegramNotifyStore`) stay in-family for the notify track. Do not add a
+// new core importer; removal is the follow-up step, not this PR.
+//
 // State lives under our own key of `instance_settings.general`, keyed by
 // companyId (the same rule as the autonomy and cloud-connector stores): the
 // vendor settings service strips unknown keys, so this module reads and
@@ -11,12 +20,12 @@
 // only the caller's company slice.
 
 import { eq, sql } from "drizzle-orm";
-import { instanceSettings, type Db } from "@paperclipai/db";
+import { instanceSettings, type Db } from "@myrmidon/db";
 import {
   parseTelegramNotifyDocument,
   emptyTelegramNotifyDocument,
   type TelegramNotifyDocument,
-} from "@paperclipai/shared";
+} from "@myrmidon/shared";
 
 // myrmidon(TG-NOTIFY-A): the owner settings live under their OWN key of
 // `instance_settings.general`. The key `myrmidonTelegramNotify` already holds the
@@ -64,7 +73,8 @@ export async function readTelegramNotifySettingsDocument(db: Runner, companyId: 
     .from(instanceSettings)
     .where(eq(instanceSettings.singletonKey, SINGLETON_KEY))
     .then((rows) => rows[0] ?? null);
-  return companyDocuments(row?.general?.[TELEGRAM_NOTIFY_GENERAL_KEY])[companyId] ?? emptyTelegramNotifyDocument();
+  const documents = companyDocuments(row?.general?.[TELEGRAM_NOTIFY_GENERAL_KEY]);
+  return documents[companyId] ?? emptyTelegramNotifyDocument();
 }
 
 /**

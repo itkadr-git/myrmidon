@@ -1,0 +1,89 @@
+diff --git a/agent/redact.py b/agent/redact.py
+index d5866d0..fc2cc39 100644
+--- a/agent/redact.py
++++ b/agent/redact.py
+@@ -507,10 +507,62 @@ _PYTHON_EXCEPTION_LINE_RE = re.compile(
+ )
+ 
+ # Authorization / Proxy-Authorization, any scheme or bare credential; header
+-# name and scheme word preserved. The credential class excludes quotes: pulling
+-# a closing quote into the mask turns value corruption into SYNTAX corruption
+-# (unterminated quote → shell EOF / SyntaxError).
+-_AUTH_HEADER_RE = re.compile(r"((?:Proxy-)?Authorization:\s*)([A-Za-z][\w.+-]*\s+)?([^\s\"']+)", re.IGNORECASE)
++# name, optional delimiter quotes and scheme word preserved. The credential
++# class excludes quotes and backticks: pulling a closing quote/backtick into
++# the mask turns value corruption into SYNTAX corruption (unterminated quote
++# -> shell EOF / SyntaxError).
++# myrmidon(G1): preserve quotes/backticks and do not match template syntax as credentials.
++_AUTH_HEADER_RE = re.compile(r"((?:Proxy-)?Authorization:\s*)([\"\'\x60]?)([A-Za-z][\w.+-]*\s+)?([^\s\"\'\x60]+)", re.IGNORECASE)
++
++# myrmidon(G1): distinguish actual high-entropy secrets from code templates
++# (${...}, <...>, {...}), variable identifiers (token, authToken, $token) and literals.
++_AUTH_KNOWN_SECRET_PREFIXES = (
++    "ghp_", "gho_", "ghu_", "ghs_", "ghr_", "github_pat_",
++    "pcp_", "sk-", "pk-", "glpat-", "xoxb-", "xoxp-", "xoxa-", "xoxr-", "xoxs-",
++)
++
++
++def _is_probable_auth_secret(token: str) -> bool:
++    if not token or len(token) < 16:
++        return False
++    for pfx in _AUTH_KNOWN_SECRET_PREFIXES:
++        if token.startswith(pfx) and len(token) >= 20:
++            return True
++    # Code templates: ${...}, <...>, {...}, {{...}}, $(...)
++    if token.startswith("${") or token.endswith("}"):
++        return False
++    if token.startswith("<") and token.endswith(">"):
++        return False
++    if token.startswith("{") and token.endswith("}"):
++        return False
++    if token.startswith("$") and len(token) > 1 and token[1:].replace("_", "").isalnum():
++        return False
++    if token.startswith("%"):
++        return False
++    if "(" in token or ")" in token or "[" in token or "]" in token:
++        return False
++    if token.lower() in ("null", "undefined", "none", "true", "false", "bearer", "basic"):
++        return False
++    if "." in token and not any(c.isdigit() for c in token):
++        parts = token.split(".")
++        if all(re.match(r"^[A-Za-z_]\w*$", p) for p in parts):
++            return False
++    if re.match(r"^[A-Za-z_][A-Za-z0-9_]*$", token):
++        if not any(c.isdigit() for c in token):
++            return False
++        if len(token) < 20:
++            return False
++    if token.startswith("eyJ") and "." in token and len(token) >= 30:
++        return True
++    if len(token) >= 20:
++        # Shannon entropy check for opaque credentials
++        import math
++        from collections import Counter
++        counts = Counter(token)
++        n = len(token)
++        ent = -sum((c / n) * math.log2(c / n) for c in counts.values())
++        return ent >= 3.0
++    return False
+ 
+ # API-key style headers (single opaque value, no scheme word): non-vendor-prefix
+ # values would otherwise leak when a curl command is echoed into tool output.
+@@ -957,7 +1009,16 @@ def redact_sensitive_text(text: str, *, force: bool = False, code_file: bool = F
+         text = _redact_assignments(text, mask_nonreusable=file_read)
+ 
+     if "uthorization" in text or "UTHORIZATION" in text:  # cheapest gate over every casing
+-        text = _AUTH_HEADER_RE.sub(lambda m: m.group(1) + (m.group(2) or "") + _mask_token(m.group(3)), text)
++        def _sub_auth_header(m: re.Match) -> str:
++            quote = m.group(2) or ""
++            scheme = m.group(3) or ""
++            tok = m.group(4)
++            if not _is_probable_auth_secret(tok):
++                return m.group(0)
++            sub = _mask_token_nonreusable if file_read else _mask_token
++            return m.group(1) + quote + scheme + sub(tok)
++
++        text = _AUTH_HEADER_RE.sub(_sub_auth_header, text)
+ 
+     if ":" in text:
+         text = _SECRET_HEADER_RE.sub(lambda m: m.group(1) + _mask_token(m.group(2)), text)

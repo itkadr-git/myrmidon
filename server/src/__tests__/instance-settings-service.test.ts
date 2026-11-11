@@ -1,12 +1,23 @@
 import { describe, expect, it, vi } from "vitest";
-import type { InstanceExperimentalSettings } from "@paperclipai/shared";
+import type { InstanceExperimentalSettings } from "@myrmidon/shared";
 import {
   applyExperimentalSettingsPatch,
   normalizeExperimentalSettings,
+  normalizeGeneralSettings,
   resolveWorktreeRunExecutionActivationState,
 } from "../services/instance-settings.js";
 
 describe("instance settings service", () => {
+  it("retains alert-recovery settings and journal through general normalization", () => {
+    const journal = [{ identity: "monitoring:runs-reconnecting", firedCount: 2 }];
+    const settings = { holdMinutes: 10, recurrenceWindowMinutes: 60, owners: {} };
+    const normalized = normalizeGeneralSettings({
+      alertRecovery: settings,
+      alertRecoveryJournal: journal,
+    });
+    expect(normalized.alertRecovery).toEqual(settings);
+    expect(normalized.alertRecoveryJournal).toEqual(journal);
+  });
   it("keeps chat connectors opt-in across legacy storage and patches without disabling Apps", () => {
     for (const stored of [undefined, {}, { enableApps: true }, { enableConferenceRoomChat: true }]) {
       expect(normalizeExperimentalSettings(stored).enableChatConnectors).toBe(false);
@@ -235,6 +246,31 @@ describe("instance settings service", () => {
     expect(normalizeExperimentalSettings(undefined).enableBetaSkills).toBe(false);
     expect(normalizeExperimentalSettings({}).enableBetaSkills).toBe(false);
     expect(normalizeExperimentalSettings({ enableBetaSkills: true }).enableBetaSkills).toBe(true);
+  });
+
+  it("accepts canonical worktree runtime env and prefers it over the legacy alias", () => {
+    const activatedAt = new Date("2026-07-10T12:00:00.000Z");
+    const activate = (runtimeEnv: Record<string, string | undefined>) =>
+      applyExperimentalSettingsPatch(
+        { enableWorktreeRunExecution: false },
+        { enableWorktreeRunExecution: true },
+        { now: () => activatedAt, runtimeEnv },
+      );
+
+    for (const runtimeEnv of [
+      { MYRMIDON_IN_WORKTREE: "true" },
+      { PAPERCLIP_IN_WORKTREE: "true" },
+      { MYRMIDON_IN_WORKTREE: "true", PAPERCLIP_IN_WORKTREE: "false" },
+    ]) {
+      expect(activate(runtimeEnv).worktreeRunExecutionActivatedAt).toBe(activatedAt.toISOString());
+    }
+    for (const runtimeEnv of [
+      {},
+      { MYRMIDON_IN_WORKTREE: "" , PAPERCLIP_IN_WORKTREE: "true" },
+      { MYRMIDON_IN_WORKTREE: "false", PAPERCLIP_IN_WORKTREE: "true" },
+    ]) {
+      expect(activate(runtimeEnv).worktreeRunExecutionActivatedAt).toBeNull();
+    }
   });
 
   it("sets worktree run execution activation fields on a false to true transition", () => {

@@ -39,8 +39,12 @@ function ipcSend(message: Record<string, unknown>): boolean {
   const send = (process as NodeJS.Process & { send?: (m: unknown) => boolean }).send;
   if (typeof send !== "function") return false;
   try {
-    return send(message);
-  } catch {
+    // myrmidon(OPE-10011): Node's `process.send` reads `this.connected` — an
+    // unbound call throws a TypeError, which the catch below swallowed, so an
+    // api child never reported ready and the worker hung in startingSplit.
+    return send.call(process, message);
+  } catch (err) {
+    logger.error({ err }, "myrmidon(PROCS-1.2): IPC send to the worker failed");
     return false;
   }
 }

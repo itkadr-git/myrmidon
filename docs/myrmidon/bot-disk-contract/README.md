@@ -5,7 +5,7 @@ H1–H10 пишут код только против этих схем и фик
 изменение контракта и идёт через тред эпика, никогда молча.
 
 - Типы и константы: `packages/shared/src/myrmidon-bot-workspace.ts`
-  (реэкспортированы из `@paperclipai/shared`).
+  (реэкспортированы из `@myrmidon/shared`).
 - Фикстуры: `docs/myrmidon/bot-disk-contract/*.json` — каждая проходит свою
   схему; тест `packages/shared/src/myrmidon-bot-workspace.test.ts` это
   гарантирует и используется всеми задачами как стабы.
@@ -24,7 +24,7 @@ H1–H10 пишут код только против этих схем и фик
 
 ## Как пользоваться
 
-- Серверные маршруты C3/C4 импортируют схемы из `@paperclipai/shared` и
+- Серверные маршруты C3/C4 импортируют схемы из `@myrmidon/shared` и
   сериализуют ровно их (лишние поля не добавляем — контракт зафиксирован).
 - `myr-ws` (H1/H2) выводит ровно `myrWs*ResultSchema` при `--json`; коды выхода —
   только из `MYR_WS_EXIT`.
@@ -46,6 +46,8 @@ H1–H10 пишут код только против этих схем и фик
 - `closedKeys[]`: issue keys of done/cancelled tasks the bot holds or held, with no lookback limit.
   botd removes a legacy directory named like a task only for a key listed here; a key in `protectKeys`
   or listed in `workspaces` but not closed is kept; without the field nothing under `/workspace` is removed.
+- `closedTasks[]` (1.6.6 DISK, OPE-9673): structured metadata for closed tasks (`key`, `closedAt`, `issueId`)
+  with authoritative closure timestamps for safe session retention without relying on `updatedAt`.
 - `grace.legacyPressureIdleDays` (1..90, default 7): idle days before a named directory without a closing
   task is archived under hard pressure.
 - The route answers 503 when `general.botDisk.enabled` is false; botd treats it as no desired state.

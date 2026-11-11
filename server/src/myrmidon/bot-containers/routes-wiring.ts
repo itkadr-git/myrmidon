@@ -12,13 +12,16 @@
 // of guessing.
 
 import { and, desc, eq, gte } from "drizzle-orm";
-import { agents, heartbeatRuns, type Db } from "@paperclipai/db";
+import { agents, heartbeatRuns, type Db } from "@myrmidon/db";
 import { forbidden } from "../../errors.js";
 import { accessService } from "../../services/index.js";
 import { authorizationDeniedDetails } from "../../services/authorization.js";
+import { heartbeatService } from "../../services/index.js";
+import { maintenanceHeartbeatPort, maintenanceService } from "../maintenance/index.js";
 import { applyBotContainerNow, type BotContainerAgent, type BotContainerRuntimeDeps } from "./index.js";
 import { drizzleBotApplyJobStore } from "./apply-jobs.js";
 import { GATEWAY_RATE_LIMITED_ERROR_CODE } from "./concurrency-sync.js";
+import { listCompanyBotContainerAgents } from "./agents-query.js";
 import { botContainerRoutes } from "./routes.js";
 
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -47,6 +50,7 @@ export function botContainerAgentReader(db: Db): (agentId: string) => Promise<Bo
     const row = await db
       .select({
         agentId: agents.id,
+        companyId: agents.companyId,
         adapterType: agents.adapterType,
         adapterConfig: agents.adapterConfig,
       })
@@ -61,6 +65,8 @@ export function botContainerAgentReader(db: Db): (agentId: string) => Promise<Bo
 export function myrmidonBotContainerRoutes(db: Db) {
   // Built on first use: app.ts is constructed in tests that stub parts of services/.
   let access: ReturnType<typeof accessService> | null = null;
+  // Built on first use for the same reason (maintenance pulls in heartbeatService).
+  let maintenance: ReturnType<typeof maintenanceService> | null = null;
   return botContainerRoutes({
     getAgent: async (id) => {
       // A malformed id is "no such agent", not a database error.
@@ -83,6 +89,7 @@ export function myrmidonBotContainerRoutes(db: Db) {
         .then((rows) => rows[0] ?? null);
       return row;
     },
+    listCompanyAgents: listCompanyBotContainerAgents(db),
     /**
      * myrmidon(CONCURRENCY-SYNC): the newest run of this agent the hermes gateway
      * refused with 429, inside the lookback window. Only asked for an agent whose
@@ -104,6 +111,18 @@ export function myrmidonBotContainerRoutes(db: Db) {
         .limit(1)
         .then((rows) => rows[0] ?? null);
       return row ? row.createdAt.toISOString() : null;
+    },
+    /**
+     * myrmidon(L6-PROFILE-UPDATE-STARVATION): the agent's open agent-scoped
+     * maintenance window's startedAt, or null — the card's "profile update
+     * pending since" note. Reads the same maintenanceService the runtime's
+     * port adapts; read-only, so no cache invalidation is needed.
+     */
+    profileUpdatePendingSince: async (agentId) => {
+      maintenance ??= maintenanceService(db, { heartbeat: maintenanceHeartbeatPort(heartbeatService(db)) });
+      const status = await maintenance.status({ type: "agent", id: agentId });
+      const open = status.windows.find((w) => w.state === "entering" || w.state === "on" || w.state === "leaving");
+      return open ? open.startedAt : null;
     },
     assertCanUpdateAgent: async (req, agent) => {
       access ??= accessService(db);

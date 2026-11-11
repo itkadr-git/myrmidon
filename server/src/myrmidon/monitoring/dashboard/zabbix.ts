@@ -33,12 +33,15 @@ export interface ZabbixReadClient {
   hostReadings(itemKeys: string[]): Promise<ZabbixHostReading[]>;
 }
 
+export function mapZabbixHostName(host: { host: string; name: string }, mapping: Record<string, string>): string {
+  return mapping[host.host] ?? mapping[host.name] ?? host.name;
+}
+
 interface JsonRpcBody {
   jsonrpc: string;
   method: string;
   params: unknown;
   id: number;
-  auth?: string;
 }
 
 export function zabbixReadClient(
@@ -56,13 +59,17 @@ export function zabbixReadClient(
   async function call<T>(method: string, params: unknown): Promise<T> {
     requestId += 1;
     const body: JsonRpcBody = { jsonrpc: "2.0", method, params, id: requestId };
-    const resolved = await token();
-    if (resolved) body.auth = resolved;
+    const resolved = method === "apiinfo.version" ? null : await token();
+    const headers: Record<string, string> = { "content-type": "application/json-rpc" };
+    if (resolved) {
+      // Zabbix 7.4 accepts API tokens via Authorization, not JSON-RPC auth.
+      headers.authorization = `Bearer ${resolved}`;
+    }
     let response: Response;
     try {
       response = await doFetch(settings.url, {
         method: "POST",
-        headers: { "content-type": "application/json-rpc" },
+        headers,
         body: JSON.stringify(body),
         signal: AbortSignal.timeout(settings.timeoutMs),
       });
@@ -135,7 +142,9 @@ export function zabbixReadClient(
 /** The Zabbix item keys the dashboard reads (standard Zabbix-agent keys). */
 export const DASHBOARD_ZABBIX_ITEM_KEYS = [
   "system.cpu.util",
+  "vm.memory.util",
   "vm.memory.utilization",
   "system.swap.size[,pfree]",
+  "vfs.fs.dependent.size[/,pused]",
   "vfs.fs.size[/,pused]",
 ] as const;

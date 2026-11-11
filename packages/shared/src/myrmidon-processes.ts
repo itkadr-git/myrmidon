@@ -12,17 +12,18 @@
 // stored `split` as stored-but-not-in-effect instead of pretending the board
 // already runs several processes.
 import { z } from "zod";
+import { readProductEnvFrom } from "./env-alias.js"; // myrmidon(REBRAND-C)
 
 /** The key inside the general instance settings: `general.processes`. */
 export const PROCESSES_SETTINGS_KEY = "processes" as const;
 
 /**
- * Design §7.2, the emergency escape: `PAPERCLIP_PROCESS_MODE=single` starts the
+ * Design §7.2, the emergency escape: `MYRMIDON_PROCESS_MODE=single` starts the
  * build "as before" even when the saved setting says otherwise. The process
  * reads it at startup, before the database, so a saved row that took the board
  * down cannot lock the operator out of the board that would fix it.
  */
-export const PROCESSES_MODE_ENV = "PAPERCLIP_PROCESS_MODE" as const;
+export const PROCESSES_MODE_ENV = "MYRMIDON_PROCESS_MODE" as const;
 
 export const PROCESSES_MODES = ["single", "split"] as const;
 export type ProcessesMode = (typeof PROCESSES_MODES)[number];
@@ -121,7 +122,7 @@ export interface ResolvedProcessesSettings {
 }
 
 /**
- * `PAPERCLIP_PROCESS_MODE` as a mode, or null when the variable is unset or
+ * `MYRMIDON_PROCESS_MODE` (or its PAPERCLIP_ alias) as a mode, or null when the variable is unset or
  * carries something that is not a mode (an empty variable, `all`, a typo): an
  * unreadable escape must not decide the mode of the board, so it is ignored
  * the same way an unset one is.
@@ -145,7 +146,7 @@ function ambientProcessEnv(): Record<string, string | undefined> {
 
 /**
  * The settings in force and how each one got there: a saved row beats the
- * built-in default, and `PAPERCLIP_PROCESS_MODE` beats both and is reported as
+ * built-in default, and `MYRMIDON_PROCESS_MODE` beats both and is reported as
  * `env`, so the settings page can show a mode the operator cannot change from
  * the board while the emergency escape is set.
  */
@@ -160,7 +161,8 @@ export function resolveProcessesSettings(
   for (const key of PROCESSES_SETTING_KEYS) {
     sources[key] = saved[key] === undefined ? "default" : "settings";
   }
-  const forced = parseProcessesModeEnv((env ?? ambientProcessEnv())[PROCESSES_MODE_ENV]);
+  const sourceEnv = (env ?? ambientProcessEnv()) as Record<string, string | undefined>;
+  const forced = parseProcessesModeEnv(readProductEnvFrom(sourceEnv, "PROCESS_MODE"));
   if (forced) {
     settings.mode = forced;
     sources.mode = "env";

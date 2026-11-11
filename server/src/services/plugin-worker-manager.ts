@@ -22,7 +22,7 @@ import { fork, type ChildProcess } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { EventEmitter } from "node:events";
 import { createInterface, type Interface as ReadlineInterface } from "node:readline";
-import type { PaperclipPluginManifestV1 } from "@paperclipai/shared";
+import type { PaperclipPluginManifestV1 } from "@myrmidon/shared";
 import {
   JSONRPC_VERSION,
   JSONRPC_ERROR_CODES,
@@ -43,7 +43,7 @@ import {
   DUPLEX_CHANNEL_EXIT_NOTIFICATION,
   encodeChannelBytes,
   decodeChannelBytes,
-} from "@paperclipai/plugin-sdk";
+} from "@myrmidon/plugin-sdk";
 import type {
   JsonRpcId,
   PluginInvocationContext,
@@ -57,8 +57,8 @@ import type {
   WorkerToHostMethodName,
   WorkerToHostMethods,
   InitializeParams,
-} from "@paperclipai/plugin-sdk";
-import { getActiveStepContext } from "@paperclipai/adapter-utils/acpx-engine/startup-timing";
+} from "@myrmidon/plugin-sdk";
+import { getActiveStepContext } from "@myrmidon/adapter-utils/acpx-engine/startup-timing";
 import {
   isLoginCommandKey,
   validateLoginSessionHome,
@@ -684,6 +684,9 @@ export interface PluginWorkerHandle {
 
   /** Current worker status. */
   readonly status: WorkerStatus;
+
+  /** Process ID of the active worker process, or null if not running. */
+  readonly pid: number | null;
 
   /** Start the worker process. Resolves when initialize completes. */
   start(): Promise<void>;
@@ -2936,11 +2939,12 @@ export function createPluginWorkerHandle(
 
     // Handle process exit
     child.on("exit", (code, signal) => {
-      handleProcessExit(code, signal);
+      if (childProcess === child) handleProcessExit(code, signal);
     });
 
     // Handle process errors (e.g. spawn failure)
     child.on("error", (err) => {
+      if (childProcess !== child) return;
       log.error({ err: err.message }, "worker process error");
       if (emitter.listenerCount("error") > 0) {
         emitter.emit("error", { pluginId, error: err });
@@ -3011,6 +3015,7 @@ export function createPluginWorkerHandle(
       // Graceful stop — status is already "stopping" or will be set to "stopped"
       setStatus("stopped");
       log.info({ code, signal }, "worker process stopped");
+      intentionalStop = false;
       return;
     }
 
@@ -3092,7 +3097,10 @@ export function createPluginWorkerHandle(
       backoffTimer = null;
       nextRestartAt = null;
       try {
-        await startInternal();
+        await serializeOperation(async () => {
+          if (!autoRestart || intentionalStop || childProcess) return;
+          await startInternal();
+        });
       } catch (err) {
         log.error(
           { err: err instanceof Error ? err.message : String(err) },
@@ -3114,8 +3122,16 @@ export function createPluginWorkerHandle(
   // Start / Stop
   // -----------------------------------------------------------------------
 
+  let operationTail: Promise<unknown> = Promise.resolve();
+
+  function serializeOperation(operation: () => Promise<void>): Promise<void> {
+    const next = operationTail.catch(() => undefined).then(operation);
+    operationTail = next;
+    return next;
+  }
+
   async function startInternal(): Promise<void> {
-    if (status === "running" || status === "starting") {
+    if (childProcess || status === "running" || status === "starting") {
       throw new Error(`Worker for plugin "${pluginId}" is already ${status}`);
     }
 
@@ -3166,60 +3182,78 @@ export function createPluginWorkerHandle(
   async function stopInternal(): Promise<void> {
     cancelPendingRestart();
 
-    if (status === "stopped" || status === "stopping") {
+    if (status === "stopped") {
+      intentionalStop = false;
       return;
+    }
+    if (status === "stopping") {
+      if (childProcess) {
+        await waitForExit(500);
+      }
+      if (!childProcess) {
+        intentionalStop = false;
+        setStatus("stopped");
+        return;
+      }
     }
 
     intentionalStop = true;
     setStatus("stopping");
 
-    if (!childProcess) {
-      setStatus("stopped");
-      return;
-    }
-
-    // Step 1: Send shutdown RPC and wait for the worker to exit gracefully.
-    // We race the shutdown call against a timeout. The worker should process
-    // the shutdown and exit on its own within the drain period.
     try {
-      await Promise.race([
-        callInternal("shutdown", {} as Record<string, never>, SHUTDOWN_DRAIN_MS),
-        waitForExit(SHUTDOWN_DRAIN_MS),
-      ]);
-    } catch {
-      // Shutdown call failed or timed out — proceed to kill
-      log.warn("shutdown RPC failed or timed out, escalating to SIGTERM");
-    }
+      if (!childProcess) {
+        setStatus("stopped");
+        return;
+      }
 
-    // Give the process a brief moment to exit after the shutdown response
-    if (childProcess) {
-      await waitForExit(500);
-    }
+      // Step 1: Send shutdown RPC and wait for the worker to exit gracefully.
+      // We race the shutdown call against a timeout. The worker should process
+      // the shutdown and exit on its own within the drain period.
+      try {
+        await Promise.race([
+          callInternal("shutdown", {} as Record<string, never>, SHUTDOWN_DRAIN_MS),
+          waitForExit(SHUTDOWN_DRAIN_MS),
+        ]);
+      } catch {
+        // Shutdown call failed or timed out — proceed to kill
+        log.warn("shutdown RPC failed or timed out, escalating to SIGTERM");
+      }
 
-    // Check if process already exited
-    if (!childProcess) {
+      // Give the process a brief moment to exit after the shutdown response
+      if (childProcess) {
+        await waitForExit(500);
+      }
+
+      // Check if process already exited
+      if (!childProcess) {
+        setStatus("stopped");
+        return;
+      }
+
+      // Step 2: Send SIGTERM and wait
+      log.info("worker did not exit after shutdown RPC, sending SIGTERM");
+      await killWithSignal("SIGTERM", SIGTERM_GRACE_MS);
+
+      if (!childProcess) {
+        setStatus("stopped");
+        return;
+      }
+
+      // Step 3: Forcefully kill with SIGKILL
+      log.warn("worker did not exit after SIGTERM, sending SIGKILL");
+      await killWithSignal("SIGKILL", 2_000);
+
+      if (childProcess) {
+        log.error("worker process still alive after SIGKILL — this should not happen");
+        throw new Error(`Worker for plugin "${pluginId}" did not stop`);
+      }
+
       setStatus("stopped");
-      return;
+    } finally {
+      if (!childProcess) {
+        intentionalStop = false;
+      }
     }
-
-    // Step 2: Send SIGTERM and wait
-    log.info("worker did not exit after shutdown RPC, sending SIGTERM");
-    await killWithSignal("SIGTERM", SIGTERM_GRACE_MS);
-
-    if (!childProcess) {
-      setStatus("stopped");
-      return;
-    }
-
-    // Step 3: Forcefully kill with SIGKILL
-    log.warn("worker did not exit after SIGTERM, sending SIGKILL");
-    await killWithSignal("SIGKILL", 2_000);
-
-    if (childProcess) {
-      log.error("worker process still alive after SIGKILL — this should not happen");
-    }
-
-    setStatus("stopped");
   }
 
   /**
@@ -3423,21 +3457,32 @@ export function createPluginWorkerHandle(
       return status;
     },
 
+    get pid() {
+      return childProcess?.pid ?? null;
+    },
+
     get supportedMethods() {
       return supportedMethods;
     },
 
     async start() {
-      await startInternal();
+      await serializeOperation(startInternal);
     },
 
     async stop() {
-      await stopInternal();
+      // Cancel recovery immediately, even if a queued operation has not drained.
+      intentionalStop = true;
+      cancelPendingRestart();
+      await serializeOperation(stopInternal);
     },
 
     async restart() {
-      await stopInternal();
-      await startInternal();
+      cancelPendingRestart();
+      await serializeOperation(async () => {
+        await stopInternal();
+        intentionalStop = false;
+        await startInternal();
+      });
     },
 
     call<M extends HostToWorkerMethodName>(
@@ -3650,6 +3695,7 @@ export function createPluginWorkerManager(
   const workers = new Map<string, PluginWorkerHandle>();
   /** Per-plugin startup locks to prevent concurrent spawn races. */
   const startupLocks = new Map<string, Promise<PluginWorkerHandle>>();
+  const stoppingLocks = new Map<string, Promise<void>>();
   // The one shared, process-scoped aggregate route-slot controller. The manager
   // injects it into every worker handle, so the duplex route ceiling counts every
   // concurrent route across the process, not one agent's setting.
@@ -3662,6 +3708,12 @@ export function createPluginWorkerManager(
       pluginId: string,
       options: WorkerStartOptions,
     ): Promise<PluginWorkerHandle> {
+      const stopping = stoppingLocks.get(pluginId);
+      if (stopping) {
+        await stopping;
+        return this.startWorker(pluginId, options);
+      }
+
       // Mutex: if a start is already in-flight for this plugin, wait for it
       const inFlight = startupLocks.get(pluginId);
       if (inFlight) {
@@ -3720,15 +3772,23 @@ export function createPluginWorkerManager(
     },
 
     async stopWorker(pluginId: string): Promise<void> {
-      const handle = workers.get(pluginId);
-      if (!handle) {
-        log.warn({ pluginId }, "no worker registered for plugin, nothing to stop");
-        return;
-      }
+      const stopping = stoppingLocks.get(pluginId);
+      if (stopping) return stopping;
 
-      log.info({ pluginId }, "stopping plugin worker");
-      await handle.stop();
-      workers.delete(pluginId);
+      const operation = (async () => {
+        await startupLocks.get(pluginId)?.catch(() => undefined);
+        const handle = workers.get(pluginId);
+        if (!handle) return;
+        log.info({ pluginId }, "stopping plugin worker");
+        await handle.stop();
+        if (workers.get(pluginId) === handle) workers.delete(pluginId);
+      })();
+      stoppingLocks.set(pluginId, operation);
+      try {
+        await operation;
+      } finally {
+        if (stoppingLocks.get(pluginId) === operation) stoppingLocks.delete(pluginId);
+      }
     },
 
     getWorker(pluginId: string): PluginWorkerHandle | undefined {

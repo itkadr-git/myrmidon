@@ -5,7 +5,7 @@
 // root and a path that has already been confined. Adding a cloud means
 // implementing this interface and registering it — no core changes.
 
-import type { CloudProviderId, CloudRoot } from "@paperclipai/shared/myrmidon-cloud-connector";
+import type { CloudProviderId, CloudRoot } from "@myrmidon/shared/myrmidon-cloud-connector";
 import type { CloudItem, CloudListing } from "../types.js";
 
 /** Where a path points: a root and the segments inside it. */

@@ -6,7 +6,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import type {
   DocumentAnnotationThreadWithComments,
   IssueDocument,
-} from "@paperclipai/shared";
+} from "@myrmidon/shared";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   DocumentAnnotationsCountChip,
@@ -868,8 +868,7 @@ describe("IssueDocumentAnnotations", () => {
         </QueryClientProvider>,
       );
     });
-    await flush();
-    await flush();
+    await waitFor(() => expect(container.querySelector('[data-thread-id="open-1"]')).not.toBeNull());
 
     const openThread = container.querySelector('[data-thread-id="open-1"]') as HTMLElement | null;
     await act(async () => openThread!.click());
@@ -904,8 +903,7 @@ describe("IssueDocumentAnnotations", () => {
         </QueryClientProvider>,
       );
     });
-    await flush();
-    await flush();
+    await waitFor(() => expect(container.querySelector('[data-thread-id="open-1"]')).not.toBeNull());
 
     const openThread = container.querySelector('[data-thread-id="open-1"]') as HTMLElement | null;
     expect(openThread).not.toBeNull();
@@ -953,8 +951,7 @@ describe("IssueDocumentAnnotations", () => {
         </QueryClientProvider>,
       );
     });
-    await flush();
-    await flush();
+    await waitFor(() => expect(container.querySelector('[data-thread-id="open-1"]')).not.toBeNull());
 
     const openThread = container.querySelector('[data-thread-id="open-1"]') as HTMLElement | null;
     expect(openThread).not.toBeNull();
@@ -970,6 +967,7 @@ describe("IssueDocumentAnnotations", () => {
     expect(mockAnnotationsApi.updateStatus).toHaveBeenCalledWith("issue-1", "plan", "open-1", "resolved");
 
     // Resolved threads stay in the same list (filter tabs were removed).
+    await waitFor(() => expect(container.querySelector('[data-thread-id="resolved-1"]')).not.toBeNull());
     const resolvedThread = container.querySelector('[data-thread-id="resolved-1"]') as HTMLElement | null;
     expect(resolvedThread).not.toBeNull();
     await act(async () => resolvedThread!.click());

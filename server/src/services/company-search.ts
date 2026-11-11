@@ -1,6 +1,6 @@
 import { and, desc, eq, gte, inArray, isNotNull, isNull, notInArray, or, sql } from "drizzle-orm";
 import type { SQL } from "drizzle-orm";
-import type { Db } from "@paperclipai/db";
+import type { Db } from "@myrmidon/db";
 import {
   agents,
   assets,
@@ -11,7 +11,7 @@ import {
   issueWorkProducts,
   issues,
   projects,
-} from "@paperclipai/db";
+} from "@myrmidon/db";
 import {
   COMPANY_SEARCH_MAX_LIMIT,
   COMPANY_SEARCH_MAX_OFFSET,
@@ -34,7 +34,7 @@ import {
   type CompanySearchSnippet,
   type CompanySearchSort,
   type CompanySearchUpdatedWithinOption,
-} from "@paperclipai/shared";
+} from "@myrmidon/shared";
 import { companyArtifactsService } from "./company-artifacts.js";
 import { companySearchExtractService } from "./company-search-extract.js";
 import { visibleIssueCondition } from "./issue-visibility.js";
@@ -268,8 +268,11 @@ function queryWithoutIssueFilters(query: CompanySearchQuery): CompanySearchQuery
   };
 }
 
-function issueFilterConditions(companyId: string, query: CompanySearchQuery, omit?: CompanySearchIssueFilterKey): SQL[] {
+function issueFilterConditions(companyId: string, query: CompanySearchQuery, omit?: CompanySearchIssueFilterKey, excludePrivate?: boolean): SQL[] {
   const conditions: SQL[] = [];
+  if (excludePrivate) {
+    conditions.push(eq(issues.isPrivate, false));
+  }
   if (omit !== "status" && query.status.length > 0) {
     conditions.push(query.status.length === 1 ? eq(issues.status, query.status[0]!) : inArray(issues.status, query.status));
   }
@@ -538,7 +541,11 @@ export function companySearchService(db: Db) {
   const extractService = companySearchExtractService(db);
   return {
     extract: extractService.extract,
-    search: async (companyId: string, query: CompanySearchQuery): Promise<CompanySearchResponse> => {
+    search: async (
+      companyId: string,
+      query: CompanySearchQuery,
+      options?: { excludePrivate?: boolean },
+    ): Promise<CompanySearchResponse> => {
       const taskSearch = parseTaskSearch(query.q);
       const normalizedQuery = taskSearch.normalizedQuery;
       const hasSearchText = normalizedQuery.length > 0;
@@ -568,7 +575,7 @@ export function companySearchService(db: Db) {
       const containsPattern = hasSearchText && tokens.length > 0 ? taskSearch.containsPattern : "__paperclip_no_match__";
       const tokenCount = tokens.length;
 
-      const issueFilters = issueFilterConditions(companyId, query);
+      const issueFilters = issueFilterConditions(companyId, query, undefined, options?.excludePrivate);
       const hasIssueOnlyFilters = issueOnlyFiltersActive(query);
 
       // Scope conditions over precomputed flag columns (alias-qualified).
@@ -717,7 +724,7 @@ export function companySearchService(db: Db) {
         }
 
         const resultRows = await db.execute(sql`
-          ${taskSearchCtes(companyId, taskSearch, scope !== "issues", and(...issueFilters))}
+          ${taskSearchCtes(companyId, taskSearch, scope !== "issues", and(...issueFilters), { excludePrivate: options?.excludePrivate })}
           ${sql.join(branches, sql` UNION ALL `)}
         `) as unknown as Array<SearchAggregateRow & Omit<IssueSearchRow, "commentSnippet" | "commentId" | "documentSnippet" | "documentTitle" | "documentKey">>;
 
@@ -903,7 +910,7 @@ export function companySearchService(db: Db) {
 
       async function countArtifacts(filters: CompanySearchQuery = query) {
         if (!hasSearchText) return 0;
-        const artifactIssueFilters = issueFilterConditions(companyId, filters);
+        const artifactIssueFilters = issueFilterConditions(companyId, filters, undefined, options?.excludePrivate);
         const artifactIssueConditions = [
           eq(issues.companyId, companyId),
           visibleIssueCondition(),

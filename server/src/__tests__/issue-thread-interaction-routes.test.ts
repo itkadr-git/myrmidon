@@ -147,7 +147,7 @@ const mockDb = vi.hoisted(() => ({
   transaction: mockDbTransaction,
 }));
 
-vi.mock("@paperclipai/shared/telemetry", () => ({
+vi.mock("@myrmidon/shared/telemetry", () => ({
   trackAgentTaskCompleted: vi.fn(),
   trackErrorHandlerCrash: vi.fn(),
 }));
@@ -631,6 +631,72 @@ describe.sequential("issue thread interaction routes", () => {
     );
   }, 10_000);
 
+  it("returns 422 when creating an interaction without addressee fails recipient resolution (OPE-9150)", async () => {
+    const { unprocessable } = await import("../errors.js");
+    mockInteractionService.create.mockRejectedValueOnce(
+      unprocessable(
+        "Cannot determine recipient for interaction: decision requires a typed human or matching project role",
+      ),
+    );
+
+    const app = await createApp();
+    const res = await request(app)
+      .post("/api/issues/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa/interactions")
+      .send({
+        kind: "request_confirmation",
+        payload: {
+          version: 1,
+          prompt: "Confirm?",
+        },
+      });
+
+    expect(res.status).toBe(422);
+    expect(res.body).toMatchObject({
+      error: expect.stringContaining(
+        "Cannot determine recipient for interaction",
+      ),
+    });
+  });
+
+  it("returns 201 with routeType and timeoutAt populated when interaction has addressee (OPE-9150)", async () => {
+    const timeoutIso = new Date(Date.now() + 30 * 60_000).toISOString();
+    mockInteractionService.create.mockResolvedValueOnce({
+      id: "interaction-routed-1",
+      companyId: "company-1",
+      issueId: ISSUE_ID,
+      kind: "request_confirmation",
+      status: "pending",
+      addresseeAgentId: ASSIGNEE_AGENT_ID,
+      addresseeUserId: null,
+      addresseeQueue: null,
+      routeType: "decision",
+      timeoutAt: timeoutIso,
+      payload: { version: 1, prompt: "Proceed?" },
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    });
+
+    const app = await createApp();
+    const res = await request(app)
+      .post("/api/issues/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa/interactions")
+      .send({
+        kind: "request_confirmation",
+        addresseeAgentId: ASSIGNEE_AGENT_ID,
+        payload: {
+          version: 1,
+          prompt: "Proceed?",
+        },
+      });
+
+    expect(res.status).toBe(201);
+    expect(res.body).toMatchObject({
+      id: "interaction-routed-1",
+      routeType: "decision",
+      timeoutAt: timeoutIso,
+      addresseeAgentId: ASSIGNEE_AGENT_ID,
+    });
+  });
+
   it("does not run historical-comment catch-up or queue recovery from the interaction read path", async () => {
     mockIssueService.getById.mockResolvedValue(createIssue({
       status: "in_review",
@@ -698,7 +764,7 @@ describe.sequential("issue thread interaction routes", () => {
     );
   });
 
-  it("does not route agent attention for a human-only interaction", async () => {
+  it("wakes the explicit agent addressee even for a human-only interaction", async () => {
     mockInteractionService.create.mockResolvedValueOnce({
       id: "interaction-human-attention",
       companyId: "company-1",
@@ -740,7 +806,10 @@ describe.sequential("issue thread interaction routes", () => {
       });
 
     expect(res.status).toBe(201);
-    expect(mockHeartbeatService.wakeup).not.toHaveBeenCalled();
+    expect(mockHeartbeatService.wakeup).toHaveBeenCalledWith(
+      ASSIGNEE_AGENT_ID,
+      expect.objectContaining({ reason: "interaction_pending" }),
+    );
   });
 
   it("returns 400 for agent-addressed tool-action confirmations", async () => {
@@ -773,6 +842,77 @@ describe.sequential("issue thread interaction routes", () => {
 
     expect(res.status).toBe(400);
     expect(res.body.error).toContain("cannot be addressed");
+    expect(mockInteractionService.create).not.toHaveBeenCalled();
+  });
+
+  it("creates an escalation interaction for an existing issue and returns JSON 404 for a missing issue", async () => {
+    mockInteractionService.create.mockResolvedValue({ id: "interaction-escalation" });
+    const app = await createApp();
+
+    const existingIssueRes = await request(app)
+      .post(`/api/issues/${ISSUE_ID}/interactions`)
+      .send({
+        kind: "ask_user_questions",
+        payload: {
+          version: 1,
+          questions: [
+            {
+              id: "next",
+              prompt: "How should this escalate?",
+              selectionMode: "single",
+              options: [{ id: "owner", label: "Ask owner" }],
+            },
+          ],
+        },
+      });
+    expect(existingIssueRes.status).toBe(201);
+    expect(mockInteractionService.create).toHaveBeenCalledWith(
+      expect.objectContaining({ id: ISSUE_ID }),
+      expect.objectContaining({ kind: "ask_user_questions" }),
+      expect.anything(),
+    );
+
+    mockIssueService.getById.mockResolvedValueOnce(null);
+    const missingIssueRes = await request(app)
+      .post(`/api/issues/${OTHER_ISSUE_ID}/interactions`)
+      .send({
+        kind: "ask_user_questions",
+        payload: {
+          version: 1,
+          questions: [
+            {
+              id: "next",
+              prompt: "How should this escalate?",
+              selectionMode: "single",
+              options: [{ id: "owner", label: "Ask owner" }],
+            },
+          ],
+        },
+      });
+    expect(missingIssueRes.status).toBe(404);
+    expect(missingIssueRes.headers["content-type"]).toMatch(/application\/json/);
+    expect(missingIssueRes.body).toMatchObject({ error: "Issue not found" });
+    expect(mockInteractionService.create).toHaveBeenCalledTimes(1);
+  });
+
+  it("validates escalation interaction payload parameters and returns 400 (not 404)", async () => {
+    const app = await createApp();
+
+    const emptyRes = await request(app)
+      .post(`/api/issues/${ISSUE_ID}/interactions`)
+      .send({});
+    expect(emptyRes.status).toBe(400);
+
+    const invalidKindRes = await request(app)
+      .post(`/api/issues/${ISSUE_ID}/interactions`)
+      .send({ kind: "invalid_escalation_kind", payload: {} });
+    expect(invalidKindRes.status).toBe(400);
+
+    const malformedPayloadRes = await request(app)
+      .post(`/api/issues/${ISSUE_ID}/interactions`)
+      .send({ kind: "ask_user_questions", payload: { version: 1, questions: "not-an-array" } });
+    expect(malformedPayloadRes.status).toBe(400);
+
     expect(mockInteractionService.create).not.toHaveBeenCalled();
   });
 

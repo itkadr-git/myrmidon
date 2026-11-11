@@ -11,7 +11,7 @@
 
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { Sparkles } from "lucide-react";
-import { AGENT_MODEL_TIERS, type AgentModelTier } from "@paperclipai/shared";
+import { AGENT_MODEL_TIERS, type AgentModelTier } from "@myrmidon/shared";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Label } from "@/components/ui/label";

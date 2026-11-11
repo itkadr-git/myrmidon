@@ -17,7 +17,7 @@
 // the other; the audit would then disagree with the stored value. Every write
 // runs through one queue, exactly as the runtime limits transition does.
 
-import type { Db } from "@paperclipai/db";
+import type { Db } from "@myrmidon/db";
 import {
   helperCapacityHint,
   helpersCeiling,
@@ -25,7 +25,7 @@ import {
   resolveParallelHelpers,
   type HelperCapacityHint,
   type ParallelHelpersSettings,
-} from "@paperclipai/shared";
+} from "@myrmidon/shared";
 import { logger } from "../../middleware/logger.js";
 import { instanceSettingsService, logActivity } from "../../services/index.js";
 

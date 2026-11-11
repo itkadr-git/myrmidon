@@ -339,15 +339,16 @@ describe("live limit changes", () => {
 });
 
 describe("drift and resweep", () => {
-  it("raises the count to the database but never lowers it", () => {
+  it("syncs the count to the database count when it drops", () => {
     const admission = createRunAdmission({ limits: { maxConcurrentRuns: 12, maxStartsPerMinute: null, ...NO_MEMORY } });
     expect(admission.reserve(2)).toBe(2);
     // An execution settled while its row still runs: the database says 12.
     admission.finish();
     admission.syncRunning(12);
     expect(admission.reserve(1)).toBe(0);
+    // Database count drops to 3 (finished/reaped runs): syncRunning frees up capacity.
     admission.syncRunning(3);
-    expect(admission.reserve(1)).toBe(0);
+    expect(admission.reserve(1)).toBe(1);
   });
 
   it("reports when a limit held runs back", () => {
@@ -906,6 +907,38 @@ describe("myrmidon(1.6.5 RUN-FAIRNESS)", () => {
       expect(share.byAgent.get(AGENT_A)).toBe(2);
       expect(share.byAgent.get(AGENT_B)).toBe(1);
       expect(share.byAgent.has("anonymous")).toBe(false);
+    });
+
+    it("myrmidon(1.6.6 OPE-8988): a released slot leaves the agent's share — an empty claim is no start", () => {
+      const admission = createRunAdmission({ limits: { ...OPEN } });
+      admission.reserve(2, { agentId: AGENT_A });
+      admission.reserve(1, { agentId: AGENT_B }); // lands while A awaits its claims
+      admission.release(2, { agentId: AGENT_A }); // neither of A's runs could be claimed
+      const share = admission.agentStartShare();
+      expect(share.total).toBe(1);
+      expect(share.byAgent.get(AGENT_A)).toBeUndefined();
+      expect(share.byAgent.get(AGENT_B)).toBe(1);
+    });
+
+    it("myrmidon(1.6.6 OPE-8988): an agent whose queued run never claims is not held by its own empty reservations", () => {
+      const admission = createRunAdmission({ limits: { ...OPEN } });
+      // other agents start for real
+      for (let i = 0; i < 20; i += 1) admission.reserve(1, { agentId: AGENT_B });
+      // AGENT_A's sweep reserves and its claim comes back empty, pass after pass
+      for (let pass = 0; pass < 50; pass += 1) {
+        const got = admission.reserve(1, { agentId: AGENT_A });
+        admission.release(got, { agentId: AGENT_A });
+      }
+      const share = admission.agentStartShare();
+      expect(share.byAgent.get(AGENT_A)).toBeUndefined();
+      expect(
+        evaluateAgentStartShare({
+          windowedStarts: share.total,
+          agentStarts: share.byAgent.get(AGENT_A) ?? 0,
+          sharePercent: 15,
+          otherAgentsWaiting: true,
+        }).allowed,
+      ).toBe(true);
     });
 
     it("drops starts older than the 10-minute window", () => {

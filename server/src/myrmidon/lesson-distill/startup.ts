@@ -8,11 +8,12 @@
 // the rest.
 
 import { logger } from "../../middleware/logger.js";
-import type { Db } from "@paperclipai/db";
+import type { Db } from "@myrmidon/db";
 import { createMemoryHindsightClient } from "../agent-memory/hindsight-client.js";
 import { runLessonDistillPass, type LessonDistillPassResult } from "./service.js";
 import { resolveLessonDistillSettings, type LessonDistillSettings } from "./settings.js";
 import { listCompanyIds } from "./raw.js";
+import { backgroundInterval } from "../monitoring/board-load/lanes.js"; // myrmidon(1.6.6 OPE-9058)
 
 export interface LessonDistillSweepDeps {
   db: Db;
@@ -32,7 +33,6 @@ const sweep: SweepState = { timer: null, running: false, settings: null };
 
 export function startLessonDistillSweep(deps: LessonDistillSweepDeps): void {
   const settings = resolveLessonDistillSettings(deps.env ?? process.env);
-  if (!settings.enabled) return; // off until MYRMIDON_LESSON_DISTILL_ENABLED=1 — the default stays silent.
   if (sweep.timer) return; // one sweep per process.
   sweep.settings = settings;
 
@@ -42,6 +42,7 @@ export function startLessonDistillSweep(deps: LessonDistillSweepDeps): void {
     try {
       const storedGeneral = deps.readGeneral ? await deps.readGeneral() : undefined;
       const current = resolveLessonDistillSettings(deps.env ?? process.env, storedGeneral);
+      if (!current.enabled) return;
       if (!current.memoryBaseUrl) {
         logger.warn("lesson-distill: enabled but no memory service address (env or stored settings); tick skipped");
         return;
@@ -74,7 +75,7 @@ export function startLessonDistillSweep(deps: LessonDistillSweepDeps): void {
 
   const periodMs = Math.max(5, settings.periodMinutes) * 60 * 1000;
   void tick();
-  sweep.timer = setInterval(() => void tick(), periodMs);
+  sweep.timer = backgroundInterval(() => void tick(), periodMs);
   sweep.timer.unref();
   logger.info({ periodMinutes: settings.periodMinutes }, "lesson-distill: sweep started");
 }

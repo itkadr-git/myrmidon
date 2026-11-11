@@ -1,0 +1,125 @@
+{
+  "version": 1,
+  "release": "1.6.7",
+  "feature": "TOKENS-TRACE",
+  "toolsRevision": {
+    "canonicalTools": [
+      {
+        "name": "bash",
+        "description": "Execute shell commands in the workspace environment.",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "command": { "type": "string" }
+          },
+          "required": ["command"]
+        }
+      },
+      {
+        "name": "read_file",
+        "description": "Read contents of a file.",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "path": { "type": "string" }
+          },
+          "required": ["path"]
+        }
+      },
+      {
+        "name": "write_file",
+        "description": "Write contents to a file.",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "path": { "type": "string" },
+            "content": { "type": "string" }
+          },
+          "required": ["path", "content"]
+        }
+      }
+    ],
+    "expectedSha256": "5353a9b1d7136b8913209b71805fb7f553c97a44563070fb30adfa1b99d5927f",
+    "toolCount": 3
+  },
+  "calls": [
+    {
+      "description": "Call 0: before compaction, covering system, tools, wake, history, and tool results",
+      "trace": {
+        "version": 1,
+        "callIndex": 0,
+        "langfuseTraceId": "trace-8f2a1b9c-44e2-411a-829d-9c3140ab501e",
+        "langfuseObservationId": "obs-01a2b3c4-d5e6-7f8a-9b0c-1d2e3f4a5b6c",
+        "litellmRequestId": "chatcmpl-litellm-req-001-a1b2c3d4",
+        "provider": "hermes_gateway",
+        "model": "gpt-6-sol",
+        "toolsRev": "5353a9b1d7136b8913209b71805fb7f553c97a44563070fb30adfa1b99d5927f",
+        "toolCount": 3,
+        "sections": {
+          "systemChars": 4200,
+          "systemTokens": 1050,
+          "toolsChars": 8500,
+          "toolsTokens": 2125,
+          "wakeChars": 1200,
+          "wakeTokens": 300,
+          "historyChars": 16000,
+          "historyTokens": 4000,
+          "toolResultsChars": 6400,
+          "toolResultsTokens": 1600,
+          "totalChars": 36300,
+          "totalTokens": 9075
+        },
+        "usage": {
+          "promptTokens": 9075,
+          "cachedPromptTokens": 3175,
+          "completionTokens": 420,
+          "costMicroUsd": 14200
+        },
+        "compacted": false,
+        "preCompactChars": null,
+        "postCompactChars": null
+      }
+    },
+    {
+      "description": "Call 1: after compaction, with compacted history/results and pre/post compact byte sizes recorded",
+      "trace": {
+        "version": 1,
+        "callIndex": 1,
+        "langfuseTraceId": "trace-8f2a1b9c-44e2-411a-829d-9c3140ab501e",
+        "langfuseObservationId": "obs-99z8y7x6-w5v4-3u2t-1s0r-9q8p7o6n5m4l",
+        "litellmRequestId": "chatcmpl-litellm-req-002-e5f6g7h8",
+        "provider": "hermes_gateway",
+        "model": "gpt-6-sol",
+        "toolsRev": "5353a9b1d7136b8913209b71805fb7f553c97a44563070fb30adfa1b99d5927f",
+        "toolCount": 3,
+        "sections": {
+          "systemChars": 4200,
+          "systemTokens": 1050,
+          "toolsChars": 8500,
+          "toolsTokens": 2125,
+          "wakeChars": 1200,
+          "wakeTokens": 300,
+          "historyChars": 3200,
+          "historyTokens": 800,
+          "toolResultsChars": 1600,
+          "toolResultsTokens": 400,
+          "totalChars": 18700,
+          "totalTokens": 4675
+        },
+        "usage": {
+          "promptTokens": 4675,
+          "cachedPromptTokens": 3175,
+          "completionTokens": 350,
+          "costMicroUsd": 8100
+        },
+        "compacted": true,
+        "preCompactChars": 36300,
+        "postCompactChars": 18700
+      }
+    }
+  ],
+  "secretLeakChecks": {
+    "forbiddenPatternNames": ["paperclip API key", "bearer token", "private key", "prompt text"],
+    "rawValuesStored": false
+  }
+}

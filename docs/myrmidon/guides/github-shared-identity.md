@@ -206,6 +206,70 @@ prompt switch and the commit identity are taken from the broker's answer, so a
 broker-supplied credential helper can never replace the staged one that names
 the repository.
 
+## Reading pull requests and issues (external-object resolver)
+
+The server-side resolver that reads GitHub pull-request and issue state (done
+gate, work-product sync, link cards) uses the same Apps to read private
+repositories. For each repository it takes, in order: a company secret named
+`GITHUB_TOKEN` / `GH_TOKEN` / `PAPERCLIP_GITHUB_TOKEN`; otherwise the single
+App whose `allowedRepos` matches the repository (agent scope is not
+consulted — the reader is the board itself), with a read-only installation
+token (`contents: read`, `pull_requests: read`, metadata) for that one
+repository; otherwise an anonymous request. Two Apps matching one repository
+is an error and no token is issued. The key is read as the system consumer
+`github-external-object-resolver`. When a PR still cannot be read, the done
+gate says that the board has no access to the repository and asks to configure
+a GitHub App or PAT, instead of saying the PR is not merged yet.
+
+## CI and pull-request events from the App (webhook)
+
+The review gate waits for CI on the events GitHub sends. The vendor cloud
+connector is off and never sent check events, so the App itself delivers
+them: GitHub calls the board, the board verifies the call and hands it to the
+same event service that handled connector events (CI state on the pull
+request's work product, the task back to its executor on a failed head, the
+merge-conflict return, the merged-PR close).
+
+- **Receiver.** `POST /api/myrmidon/github-app/webhook` — public, no board
+  credentials: the credential is GitHub's `X-Hub-Signature-256` (HMAC-SHA256
+  over the exact request body), checked in constant time against the webhook
+  secret of the App entry whose App id is in
+  `X-GitHub-Hook-Installation-Target-ID`. The secret is a company secret
+  referenced by the entry's `webhookSecretId`; it is never shown. Answers:
+  `204` — that App id has no webhook secret here (nothing recorded); `401` —
+  missing or wrong signature (nothing recorded); `400` — a verified delivery
+  without an event name, a delivery id or a JSON body; `503` — the server is
+  still starting (redeliver from GitHub); `202` — accepted, with
+  `{ companies, processed, duplicate, ignored }`. In a private deployment the
+  board's public hostname must be allowed (`npx myrmidon allowed-hostname
+  <host>`), as for chat webhooks.
+- **Which company.** Every company whose rules are enabled and whose entry
+  has this App id and an `allowedRepos` pattern matching the repository of the
+  delivery (case-insensitive, the broker's patterns). A delivery without a
+  repository (`ping`, `installation`), or one that no company serves, is
+  ignored and nothing is recorded. One delivery id is processed once per
+  company; a redelivery answers `duplicate`.
+- **Set it up.** (1) On the App's GitHub page, under **Permissions & events**,
+  grant the read permissions the events need (Checks, Actions, Pull requests,
+  Commit statuses) and subscribe to **Check run**, **Check suite**, **Workflow
+  run**, **Pull request** and **Status**. (2) Point the App at the board:
+  `POST /api/myrmidon/companies/:companyId/github-shared-identity/apps/:entryId/webhook-sync`
+  with `{ "webhookUrl": "https://<board>/api/myrmidon/github-app/webhook" }`
+  (board, `tools:manage_connections`). The first call creates the webhook
+  secret (32 random bytes, hex) and saves it on the entry, then sets the
+  App's webhook (URL, JSON, TLS verification on, the secret) with the App's
+  JWT and reads it back; the answer is `{ url, contentType }` as GitHub
+  reports them, never the secret. A repeat call reuses the secret. (3) On the
+  App's page tick **Active** under **Webhook** — GitHub offers no API for that
+  switch — and check **Advanced → Recent deliveries**: the `ping` answers
+  `202`.
+- **A board save keeps it.** A save of the shared-identity rules that omits
+  `webhookSecretId` (the board panel does) keeps the stored one; an explicit
+  `null` clears it.
+- **Limit.** A wake-up is sent by the process that receives the delivery. In a
+  split board the `api` process records the event but sends no wake-up; point
+  the webhook at the `all` or `worker` process.
+
 ## Limits
 
 - The App's own MCP tools are not wired: App tokens serve shell git/gh

@@ -12,7 +12,7 @@ import {
   resolveDefaultStorageDir,
   resolvePaperclipInstanceId,
 } from "../config/home.js";
-import { readProductEnv } from "@paperclipai/shared/env-alias"; // myrmidon(REBRAND-C)
+import { readProductEnv } from "@myrmidon/shared/env-alias"; // myrmidon(REBRAND-C)
 
 type EnvSource = "env" | "config" | "file" | "default" | "missing";
 
@@ -38,7 +38,7 @@ function defaultStorageBaseDir(): string {
 }
 
 export async function envCommand(opts: { config?: string }): Promise<void> {
-  p.intro(pc.bgCyan(pc.black(" paperclip env ")));
+  p.intro(pc.bgCyan(pc.black(" myrmidon env ")));
 
   const configPath = resolveConfigPath(opts.config);
   let config: PaperclipConfig | null = null;
@@ -76,8 +76,9 @@ export async function envCommand(opts: { config?: string }): Promise<void> {
         default: "default",
         missing: "missing",
       }[entry.source];
+      const displayValue = maskEnvValue(entry.key, entry.value);
       p.log.message(
-        `${pc.cyan(entry.key)} ${status.padEnd(7)} ${pc.dim(`[${sourceNote}] ${entry.note}`)}${entry.source === "missing" ? "" : ` ${pc.dim("=>")} ${pc.white(quoteShellValue(entry.value))}`}`,
+        `${pc.cyan(entry.key)} ${status.padEnd(7)} ${pc.dim(`[${sourceNote}] ${entry.note}`)}${entry.source === "missing" ? "" : ` ${pc.dim("=>")} ${pc.white(quoteShellValue(displayValue))}`}`,
       );
     }
   };
@@ -87,7 +88,12 @@ export async function envCommand(opts: { config?: string }): Promise<void> {
 
   const exportRows = rows.map((row) => (row.source === "missing" ? { ...row, value: "<set-this-value>" } : row));
   const uniqueRows = uniqueByKey(exportRows);
-  const exportBlock = uniqueRows.map((row) => `export ${row.key}=${quoteShellValue(row.value)}`).join("\n");
+  const exportBlock = uniqueRows
+    .map((row) => {
+      const val = maskEnvValue(row.key, row.value);
+      return `export ${row.key}=${quoteShellValue(val)}`;
+    })
+    .join("\n");
 
   if (configReadError) {
     p.log.error(`Could not load config cleanly: ${configReadError}`);
@@ -95,7 +101,7 @@ export async function envCommand(opts: { config?: string }): Promise<void> {
 
   p.note(
     exportBlock || "No values detected. Set required variables manually.",
-    "Deployment export block",
+    "Deployment export block (secrets masked)",
   );
 
   if (missingRequired.length > 0) {
@@ -409,4 +415,56 @@ function uniqueByKey(rows: EnvVarRow[]): EnvVarRow[] {
 function quoteShellValue(value: string): string {
   if (value === "") return "\"\"";
   return `'${value.replaceAll("'", "'\\''")}'`;
+}
+
+export function maskEnvValue(key: string, value: string): string {
+  if (!value || value === "<set-this-value>") return value;
+
+  const upper = key.toUpperCase();
+
+  // Handle URL with credentials (e.g. postgres://user:pass@host:5432/db)
+  if (value.includes("://") && value.includes("@")) {
+    try {
+      const url = new URL(value);
+      if (url.password) {
+        url.password = "***";
+        return url.toString();
+      }
+    } catch {
+      return value.replace(/:\/\/(.*?):(.*?)@/, "://$1:***@");
+    }
+  }
+
+  // Key/value connection string style credentials (e.g. password=secret; or Password=secret;)
+  if (/(?:DATABASE|PG|POSTGRES|DB|URL)/i.test(upper) && /password=/i.test(value)) {
+    return value.replace(/(password=)[^; ]+/gi, "$1***");
+  }
+
+  const isSecretKey =
+    upper.includes("SECRET") ||
+    upper.includes("PASSWORD") ||
+    upper.includes("PASSWD") ||
+    upper.includes("TOKEN") ||
+    upper.includes("PRIVATE_KEY") ||
+    upper.includes("API_KEY") ||
+    (upper.endsWith("_KEY") && !upper.endsWith("KEY_ID") && !upper.endsWith("KEY_FILE") && !upper.endsWith("KEY_PATH"));
+
+  const isNonSecretException =
+    upper.endsWith("_FILE") ||
+    upper.endsWith("_PATH") ||
+    upper.endsWith("_MODE") ||
+    upper.endsWith("_PROVIDER") ||
+    upper.endsWith("_TTL_SECONDS") ||
+    upper.endsWith("_INTERVAL_MS") ||
+    upper.endsWith("_ENABLED") ||
+    upper.endsWith("_ISSUER") ||
+    upper.endsWith("_AUDIENCE") ||
+    upper.endsWith("_ORIGINS") ||
+    upper === "AWS_ACCESS_KEY_ID";
+
+  if (isSecretKey && !isNonSecretException) {
+    return "***";
+  }
+
+  return value;
 }

@@ -25,7 +25,7 @@ import {
   resolveBotDiskLayout,
   resolveBotDiskSettings,
   resolveSharedPackageCachePath,
-} from "@paperclipai/shared";
+} from "@myrmidon/shared";
 import { FLEETD_PACKAGE_CACHE_NOTICE, fleetdBotContainerDriver } from "./fleetd-driver.js";
 import type { BotContainerSpec } from "./driver.js";
 import {
@@ -269,14 +269,15 @@ describe("myrmidon(1.6.2-BOT-DISK-C) git mirror and pnpm store settings", () => 
   it("fills the defaults, lower-cases and de-duplicates the repositories, and needs a cache path", () => {
     expect(resolveBotDiskLayout({ sharedPackageCachePath: cache })).toEqual({
       sharedPackageCachePath: cache,
-      gitMirrorRepos: [],
+      gitMirrorRepos: ["itkadr-git/myrmidon", "itkadr-git/myrmidon-deploy"],
       gitMirrorRefreshMs: 15 * 60 * 1000,
       pnpmStoreDir: "/cache/pnpm-store",
       pnpmImportMethod: "clone",
       // myrmidon(1.6.5-BOT-DISK-UV-A): the uv pair is part of the layout.
       uvCacheDir: "/cache/uv",
       uvLinkMode: "clone",
-      sharedCacheRoles: ["engineer", "reviewer", "devops", "release", "qa"],
+      // OPE-12384: `lead` is in the default scope with the coding roles.
+      sharedCacheRoles: ["engineer", "lead", "reviewer", "devops", "release", "qa"],
     });
     const layout = resolveBotDiskLayout({
       sharedPackageCachePath: cache,
@@ -338,9 +339,9 @@ describe("myrmidon(1.6.2-BOT-DISK-C) git mirror and pnpm store settings", () => 
 });
 
 describe("myrmidon(1.6.2-BOT-DISK-C) the roles that get the cache", () => {
-  it("defaults to the coding roles, case-insensitively, and excludes everything else", () => {
+  it("defaults to the coding roles plus lead, case-insensitively, and excludes everything else", () => {
     const { sharedCacheRoles } = resolveBotDiskLayout({ sharedPackageCachePath: cache });
-    for (const role of ["engineer", "Reviewer", "devops", "release", "qa"]) expect(botRoleGetsSharedCache(sharedCacheRoles, role), role).toBe(true);
+    for (const role of ["engineer", "lead", "Reviewer", "devops", "release", "qa"]) expect(botRoleGetsSharedCache(sharedCacheRoles, role), role).toBe(true);
     for (const role of ["marketing", "general", "", undefined, null]) expect(botRoleGetsSharedCache(sharedCacheRoles, role)).toBe(false);
   });
 
@@ -507,5 +508,26 @@ describe("myrmidon(1.6.5-BOT-DISK-H4b) general.botDisk.defaultRepo", () => {
     expect(mergeBotDiskSettings(set, { defaultRepo: "" })).toEqual(base);
     expect(resolveBotDiskSettings({ stored: set }).settings.defaultRepo).toBe("itkadr-git/myrmidon");
     expect(resolveBotDiskSettings({ stored: { defaultRepo: "bad value" } }).settings.defaultRepo).toBeUndefined();
+  });
+});
+
+describe("myrmidon(1.6.6-OPE-9673) botHasGitAlternates and retention/migration settings", () => {
+  it("validates hermesPruneEnabled, hermesPruneDays, and gitMigrationEnabled", () => {
+    expect(
+      patchBotDiskSettingsSchema.safeParse({
+        hermesPruneEnabled: true,
+        hermesPruneDays: 14,
+        gitMigrationEnabled: true,
+      }).success,
+    ).toBe(true);
+
+    const stored = normalizeStoredBotDiskSettings({
+      hermesPruneEnabled: true,
+      hermesPruneDays: 10,
+      gitMigrationEnabled: true,
+    });
+    expect(stored.hermesPruneEnabled).toBe(true);
+    expect(stored.hermesPruneDays).toBe(10);
+    expect(stored.gitMigrationEnabled).toBe(true);
   });
 });

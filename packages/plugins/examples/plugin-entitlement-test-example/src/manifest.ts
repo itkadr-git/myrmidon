@@ -2,7 +2,7 @@
 // opts into entitlement gating. With `requiresEntitlement: true` the loader
 // keeps this plugin unactivated (no worker, no UI slots, hidden from menus)
 // until the instance admin accepts an entitlement key for exactly this id.
-import type { PaperclipPluginManifestV1 } from "@paperclipai/shared";
+import type { PaperclipPluginManifestV1 } from "@myrmidon/shared";
 
 const manifest: PaperclipPluginManifestV1 = {
   id: "example.entitlement-gated",

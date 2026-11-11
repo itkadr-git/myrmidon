@@ -1,7 +1,7 @@
 // @vitest-environment node
 
 import { describe, expect, it } from "vitest";
-import type { ExternalObjectSummary, Issue } from "@paperclipai/shared";
+import type { ExternalObjectSummary, Issue } from "@myrmidon/shared";
 import {
   applyIssueFilters,
   countActiveIssueFilters,
@@ -251,5 +251,23 @@ describe("issue filters", () => {
     );
 
     expect(filtered).toEqual([]);
+  });
+
+  it("filters issues older than 30 days and increments active filter count", () => {
+    const now = Date.now();
+    const oldIssue = makeIssue({
+      id: "old-issue",
+      createdAt: new Date(now - 35 * 24 * 60 * 60 * 1000),
+    });
+    const freshIssue = makeIssue({
+      id: "fresh-issue",
+      createdAt: new Date(now - 5 * 24 * 60 * 60 * 1000),
+    });
+
+    const filterState = { ...defaultIssueFilterState, olderThan30Days: true };
+    const filtered = applyIssueFilters([oldIssue, freshIssue], filterState);
+
+    expect(filtered.map((i) => i.id)).toEqual(["old-issue"]);
+    expect(countActiveIssueFilters(filterState)).toBe(1);
   });
 });

@@ -13,7 +13,7 @@ import {
   agents, agentWakeupRequests, approvals, issueApprovals, issueThreadInteractions,
   environmentLeases, heartbeatRuns, issueComments, issueRecoveryActions,
   issues, nativeRunFinalizations, type Db,
-} from "@paperclipai/db";
+} from "@myrmidon/db";
 import { executionBlockerPredicate, getExecutionBlocker } from "./execution-blocker.js";
 import { buildExecutionContinuation } from "./execution-continuation.js";
 import { adapterExecutionControls } from "./adapter-execution-control.js";
@@ -21,6 +21,7 @@ import { persistActivity } from "./activity-log.js";
 
 import { historicalAdapterType, isConversationAdapter } from "./conversation-continuation.js";
 import { queuedCommentIdsFromWakePayload } from "./issue-queued-comment-queue.js";
+import { isValidWakeCommentId } from "../modules/run-dispatch/domain/wake-context.js";
 // myrmidon(B1c): product name in user-facing texts; see product.ts.
 import { PRODUCT_NAME as PN } from "../myrmidon/product.js";
 
@@ -39,9 +40,11 @@ export async function undeliveredLegacyUserCommentIds(
   db: Db, companyId: string, issueId: string, agentId: string, commentIds: string[],
 ): Promise<string[]> {
   if (!commentIds.length) return [];
+  const validIds = commentIds.filter(id => isValidWakeCommentId(id));
+  if (!validIds.length) return [];
   const comments = await db.select({ id: issueComments.id }).from(issueComments).where(and(
     eq(issueComments.companyId, companyId), eq(issueComments.issueId, issueId),
-    inArray(issueComments.id, commentIds), eq(issueComments.authorType, "user"),
+    inArray(issueComments.id, validIds), eq(issueComments.authorType, "user"),
     isNull(issueComments.createdByRunId), isNull(issueComments.deletedAt),
     sql`nullif(trim(${issueComments.body}), '') is not null`,
     sql`nullif(trim(${issueComments.authorUserId}), '') is not null`,
@@ -55,7 +58,7 @@ export async function undeliveredLegacyUserCommentIds(
     // native identity/process metadata is not proof that its prompt was sent.
     // Admission separately verifies process termination before a new turn.
     sql`not (${heartbeatRuns.status} = 'cancelled' and ${heartbeatRuns.startedAt} is null)`,
-    or(...commentIds.map(id => or(
+    or(...validIds.map(id => or(
       sql`${heartbeatRuns.contextSnapshot}->>'wakeCommentId' = ${id}`,
       sql`${heartbeatRuns.contextSnapshot}->'wakeCommentIds' @> ${JSON.stringify([id])}::jsonb`,
     ))),
@@ -66,7 +69,7 @@ export async function undeliveredLegacyUserCommentIds(
       for (const id of context.wakeCommentIds) if (typeof id === "string") valid.delete(id);
     }
   }
-  return commentIds.filter(id => valid.has(id));
+  return validIds.filter(id => valid.has(id));
 }
 
 /** Called under the issue lock, in the transaction that creates the new turn.

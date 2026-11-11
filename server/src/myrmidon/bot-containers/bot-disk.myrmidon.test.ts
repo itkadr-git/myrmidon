@@ -9,12 +9,12 @@
 import express from "express";
 import request from "supertest";
 import { describe, expect, it } from "vitest";
-import type { Db } from "@paperclipai/db";
+import type { Db } from "@myrmidon/db";
 import {
   BOT_DISK_DEFAULT_IDLE_TTL_MS,
   BOT_DISK_UPDATED_ACTION,
   instanceGeneralSettingsSchema,
-} from "@paperclipai/shared";
+} from "@myrmidon/shared";
 import { errorHandler } from "../../middleware/index.js";
 import { botDiskRoutes } from "./bot-disk-routes.js";
 import {
@@ -237,5 +237,76 @@ describe("myrmidon(BOT-DISK-A) the sweep reads the stored settings every tick", 
     await request(h.withActor(admin)).patch(URL).send({ enabled: false, idleTtlMs: HOUR }).expect(200);
     const after = await resolveBotDiskLifecycleConfig(h.store.port, {});
     expect(after).toEqual({ enabled: false, idleTtlMs: HOUR, defaultIdleTtlMs: BOT_DISK_DEFAULT_IDLE_TTL_MS });
+  });
+});
+
+describe("myrmidon(1.6.7-SETTINGS-BOTDISK-MERGE) a Save keeps the stored keys the view does not edit", () => {
+  const STORED = {
+    enabled: true,
+    idleTtlMs: 6 * HOUR,
+    graceClosingMinutes: 30,
+    scratchTtlHours: 6,
+    partitionThresholdPercent: 85,
+    partitionRefuseOpenPercent: 90,
+    partitionCriticalPercent: 95,
+    sharedPackageCachePath: "/srv/myrmidon/cache",
+    // the C7 mechanics keys: set by an admin through the API, not by the panel
+    botdIntervalSec: 300,
+    legacyPressureIdleDays: 7,
+    hermesPruneEnabled: true,
+    hermesPruneDays: 14,
+    gitMigrationEnabled: true,
+  };
+
+  it("the lifecycle panel's combined PATCH leaves gitMigrationEnabled (and the other mechanics keys) stored", async () => {
+    const h = harness({ initial: { keyboardShortcuts: true, botDisk: STORED } });
+    // the body the panel's Save sends (botDiskApi.setFields): no mechanics keys in it
+    await request(h.withActor(admin))
+      .patch(URL)
+      .send({ enabled: true, idleTtlMs: 2 * HOUR, graceClosingMinutes: 45, scratchTtlHours: 12, gitMirrorRefreshMs: 900_000 })
+      .expect(200);
+    expect(h.store.row.general.botDisk).toEqual({
+      ...STORED,
+      idleTtlMs: 2 * HOUR,
+      graceClosingMinutes: 45,
+      scratchTtlHours: 12,
+      gitMirrorRefreshMs: 900_000,
+    });
+    expect((h.store.row.general.botDisk as Record<string, unknown>).gitMigrationEnabled).toBe(true);
+    expect(h.store.row.general.keyboardShortcuts).toBe(true);
+  });
+
+  it("every single-field panel PATCH (cache path, runtime, mirrors, pnpm, uv, default repo) keeps them too", async () => {
+    const patches: Array<Record<string, unknown>> = [
+      { sharedPackageCachePath: "/srv/myrmidon/cache" },
+      { sharedBotRuntimePath: "/srv/myrmidon/runtime" },
+      { gitMirrorRepos: ["owner/repo"] },
+      { pnpmStoreDir: "/data/hermes/.store" },
+      { uvCacheDir: "/data/hermes/.uv" },
+      { defaultRepo: "owner/repo" },
+    ];
+    for (const patch of patches) {
+      const h = harness({ initial: { botDisk: STORED } });
+      await request(h.withActor(admin)).patch(URL).send(patch).expect(200);
+      const stored = h.store.row.general.botDisk as Record<string, unknown>;
+      expect(stored, JSON.stringify(patch)).toMatchObject({
+        botdIntervalSec: 300,
+        legacyPressureIdleDays: 7,
+        hermesPruneEnabled: true,
+        hermesPruneDays: 14,
+        gitMigrationEnabled: true,
+      });
+    }
+  });
+
+  it("GET shows the stored mechanics keys, and an explicit null clears one of them", async () => {
+    const h = harness({ initial: { botDisk: STORED } });
+    const res = await request(h.withActor(member)).get(URL).expect(200);
+    expect(res.body.settings).toMatchObject({ gitMigrationEnabled: true, hermesPruneDays: 14, botdIntervalSec: 300 });
+
+    await request(h.withActor(admin)).patch(URL).send({ gitMigrationEnabled: null }).expect(200);
+    const stored = h.store.row.general.botDisk as Record<string, unknown>;
+    expect("gitMigrationEnabled" in stored).toBe(false);
+    expect(stored.hermesPruneEnabled).toBe(true);
   });
 });

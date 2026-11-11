@@ -3,7 +3,7 @@
 // template ("The "string" argument must be of type string ... Received an
 // instance of Date") passed them and failed on every production tick.
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { createDb } from "@paperclipai/db";
+import { createDb } from "@myrmidon/db";
 import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
