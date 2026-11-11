@@ -4836,6 +4836,18 @@ export async function startAdapterExecutionTargetPaperclipBridge(input: {
       timeoutMs: bridgeTimeoutMs,
       shellCommand,
     });
+    // The bridge poll loop long-polls the queue (see
+    // DEFAULT_BRIDGE_QUEUE_POLL_IDLE_WAIT_MS in sandbox-callback-bridge.ts). An
+    // operator may shorten, lengthen, or disable (0) the remote block per
+    // install; an unset or invalid value takes the worker default.
+    const bridgeQueuePollIdleWaitMsRaw = readProductEnv("BRIDGE_QUEUE_POLL_IDLE_MS");
+    const bridgeQueuePollIdleWaitMsParsed = bridgeQueuePollIdleWaitMsRaw === undefined
+      ? Number.NaN
+      : Number(bridgeQueuePollIdleWaitMsRaw);
+    const bridgeQueuePollIdleWaitMs =
+      Number.isFinite(bridgeQueuePollIdleWaitMsParsed) && bridgeQueuePollIdleWaitMsParsed >= 0
+        ? bridgeQueuePollIdleWaitMsParsed
+        : undefined;
     // `startSandboxCallbackBridgeWorker` keeps its awaited queue-directory
     // setup on the active `bridge.paperclip` step, and runs each request under
     // the run parent context (see `runWithRuntimeParent` inside that function).
@@ -4844,6 +4856,7 @@ export async function startAdapterExecutionTargetPaperclipBridge(input: {
     worker = await startSandboxCallbackBridgeWorker({
       client,
       queueDir,
+      pollIdleWaitMs: bridgeQueuePollIdleWaitMs,
       maxBodyBytes,
       getRuntimeParentContext: input.getRuntimeParentContext,
       runtimeSpan: input.runtimeSpan,

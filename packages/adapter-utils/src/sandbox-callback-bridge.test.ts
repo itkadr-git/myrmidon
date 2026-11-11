@@ -1688,6 +1688,76 @@ describe("sandbox callback bridge", () => {
     expect(script).toContain("/workspace/c");
   });
 
+  it(
+    "idle-polls the queue with at most one blocking exec per wait budget",
+    async () => {
+    // Board CPU overload (OPE-12727): over SSH, every poll `listJsonFiles` exec
+    // spawns a fresh `ssh` process, so a 100 ms cadence burns ~10 spawns a
+    // second on the host. When the worker passes an idle wait budget, ONE exec
+    // must block in the remote shell until a request appears or the budget
+    // elapses: an idle window of twice the budget then costs at most two list
+    // execs, not dozens.
+    //
+    // This test deliberately waits on the real clock: the code under test runs
+    // a child `/bin/sh` whose `sleep` loop only advances with OS time, so fake
+    // timers cannot drive it.
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-bridge-idle-poll-"));
+    cleanupDirs.push(rootDir);
+    const queueDir = path.posix.join(rootDir, "queue");
+
+    const countingRunner = createExecRunner();
+    const { promise: execRecorded, resolve: recordExec } = Promise.withResolvers<void>();
+    let pendingExecs = 0;
+    const runner = {
+      execute: async (
+        input: {
+          command: string;
+          args?: string[];
+          cwd?: string;
+          env?: Record<string, string>;
+          stdin?: string;
+          timeoutMs?: number;
+        },
+      ): Promise<RunProcessResult> => {
+        pendingExecs += 1;
+        recordExec();
+        return countingRunner.execute(input);
+      },
+    };
+
+    const client = createCommandManagedSandboxCallbackBridgeQueueClient({
+      runner,
+      remoteCwd: rootDir,
+      timeoutMs: 30_000,
+    });
+    const idleWaitMs = 5_000;
+    const worker = await startSandboxCallbackBridgeWorker({
+      client,
+      queueDir,
+      pollIntervalMs: 1_000,
+      pollIdleWaitMs: idleWaitMs,
+      authorizeRequest: async () => null,
+      handleRequest: async () => ({ status: 200, body: "ok" }),
+    });
+
+    // The first poll exec starts inside the worker startup; wait until the
+    // counter is armed, then stay idle for one full wait budget plus the
+    // wake sleep, so a fresh long poll exec begins.
+    await execRecorded;
+    await new Promise((resolve) => setTimeout(resolve, idleWaitMs + 1_000));
+    const listCallsBeforeStop = pendingExecs;
+    await worker.stop();
+
+    // Nothing was ever queued, so every exec so far is a poll list exec. An
+    // idle window of (budget + one wake sleep) must fit two budgets: the
+    // first poll, then the re-poll after the first budget elapses.
+    console.log("PROBE_EXECS", listCallsBeforeStop); expect(listCallsBeforeStop).toBeLessThanOrEqual(2);
+    },
+    // Real-clock integration: the child `/bin/sh` sleep loop only advances
+    // with OS time, and the window covers two 5 s idle budgets.
+    30_000,
+  );
+
   // Capture the run-level error the worker surfaces through `runtimeSpan`. The
   // worker runs a throwing function under the `sandbox.callbackBridge.workerFailed`
   // span; this double records that error and re-throws, like the real runner.
