@@ -31,9 +31,72 @@ export interface OwnerTelegramNotifierDeps {
 export function createOwnerTelegramNotifier(
   db: Db,
   deps: OwnerTelegramNotifierDeps,
-): (input: BotPartitionNotifyInput) => Promise<void> {
+): (input: BotPartitionNotifyInput | import("./root.js").HostRootNotifyInput) => Promise<void> {
   const now = deps.now ?? (() => new Date());
-  return async ({ usage, settings }) => {
+  return async (input) => {
+    if ("rootThresholdPercent" in input.settings) {
+      // myrmidon(1.6.8 OPE-12697, DISK-ALERT): the host-root card.
+      const usage = input.usage;
+      const settings = input.settings as import("@myrmidon/shared").WsRootDiskSettings;
+      const critical = input.level === "critical";
+      const channel = defaultTelegramNotifySettings().escalations;
+      const companyIds = await deps.listCompanyIds();
+      for (const companyId of companyIds) {
+        const conversation = await resolveTargetConversation(db, {
+          companyId,
+          chatId: channel.chatId,
+          topicId: channel.topicId,
+        });
+        if (!conversation) {
+          logger.info({ companyId }, "host root threshold: no owner telegram channel, card only");
+          continue;
+        }
+        const text = critical
+          ? [
+              "🚨 Host root is critically full",
+              "",
+              `- Root ${usage.mount} is at ${usage.usedPercent.toFixed(1)}% (critical threshold ${settings.rootCriticalPercent}%).`,
+              `- Free: ${(usage.freeBytes / (1024 * 1024 * 1024)).toFixed(1)} GiB of ${(usage.totalBytes / (1024 * 1024 * 1024)).toFixed(1)} GiB.`,
+              "- Largest consumers to check: docker volumes, docker images, workspace copies.",
+              "- Free space on the host; nothing is deleted automatically.",
+            ].join("\n")
+          : [
+              "⚠️ Host root is filling up",
+              "",
+              `- Root ${usage.mount} is at ${usage.usedPercent.toFixed(1)}% (threshold ${settings.rootThresholdPercent}%).`,
+              `- Free: ${(usage.freeBytes / (1024 * 1024 * 1024)).toFixed(1)} GiB of ${(usage.totalBytes / (1024 * 1024 * 1024)).toFixed(1)} GiB.`,
+              "- Largest consumers to check: docker volumes, docker images, workspace copies.",
+              "- Nothing is deleted automatically.",
+            ].join("\n");
+        const at = now().toISOString().slice(0, 10);
+        try {
+          await db
+            .insert(chatPublications)
+            .values({
+              companyId,
+              endpointId: conversation.endpointId,
+              conversationId: conversation.conversationId,
+              issueId: conversation.issueId,
+              idempotencyKey: `host-disk:root-${input.level}:${companyId}:${at}`,
+              payload: projectSafeChatPublication({
+                classification: "external",
+                source: "safe_milestone",
+                text,
+              }),
+              state: "pending",
+            })
+            .onConflictDoNothing();
+          logger.info(
+            { companyId, usedPercent: usage.usedPercent, mount: usage.mount, level: input.level },
+            "host root threshold owner notification enqueued",
+          );
+        } catch (err) {
+          logger.error({ err, companyId }, "host root owner notification failed");
+        }
+      }
+      return;
+    }
+    const { usage, settings } = input as BotPartitionNotifyInput;
     const channel = defaultTelegramNotifySettings().escalations;
     const companyIds = await deps.listCompanyIds();
     for (const companyId of companyIds) {
