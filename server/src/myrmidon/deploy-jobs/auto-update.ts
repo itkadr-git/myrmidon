@@ -301,10 +301,14 @@ export interface CanaryPlan {
  * percentage of the fleet clamped by min/max, and the batch is never the whole
  * fleet unless the settings ask for it (share 100 or maxBots >= the fleet):
  * that case is honest but useless as a canary, and the screen says so.
+ *
+ * A sharePercent of 0 with enabled=true means the operator asked for 0 % of
+ * the fleet in the canary — semantically "no canary": the rollout happens in
+ * one batch, exactly the same as enabled=false.
  */
 export function canaryPlan(targets: readonly string[], canary: AutoUpdateCanary): CanaryPlan {
   const fleet = [...new Set(targets.map((key) => key.trim()).filter((key) => key.length > 0))];
-  if (!canary.enabled || fleet.length === 0) {
+  if (!canary.enabled || canary.sharePercent <= 0 || fleet.length === 0) {
     return {
       enabled: false,
       canary: [],
@@ -313,7 +317,9 @@ export function canaryPlan(targets: readonly string[], canary: AutoUpdateCanary)
       reason:
         fleet.length === 0
           ? "the fleet is empty: nothing to run a canary on"
-          : "the canary is off: the fleet moves in one batch",
+          : canary.enabled
+            ? "the canary share is 0%: the fleet moves in one batch"
+            : "the canary is off: the fleet moves in one batch",
     };
   }
   const share = Math.min(Math.max(canary.sharePercent, 1), 100);
@@ -562,10 +568,11 @@ export function resolveAutoUpdateSettings(stored: AutoUpdateSettings, env: NodeJ
   // OPE-12123: the flat settings are what the update service reads.  When no
   // env override forced the nested block, fold the flat values into it so the
   // rollout path (canaryPlan / the fleet_canary state) consumes exactly what
-  // the operator configured on the screen.
+  // the operator configured on the screen.  sharePercent=0 is preserved
+  // verbatim (no floor); canaryPlan treats 0 as "no canary" — see below.
   if (sources.canary !== "env") {
     settings.canary.enabled = settings.updateCanary;
-    settings.canary.sharePercent = Math.min(Math.max(settings.updateCanaryPercent, 1), 100);
+    settings.canary.sharePercent = Math.min(settings.updateCanaryPercent, 100);
     sources.canary = sources.updateCanary === "env" || sources.updateCanaryPercent === "env" ? "env" : sources.updateCanary;
   }
 

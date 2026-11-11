@@ -341,6 +341,15 @@ describe("auto-update: the fleet canary (B-2)", () => {
     expect(plan.rest).toEqual(["bot-a", "bot-b"]);
   });
 
+  it("treats a 0% share as no canary (the fleet moves in one batch)", () => {
+    const plan = canaryPlan(["bot-a", "bot-b"], { ...defaultAutoUpdateSettings().canary, enabled: true, sharePercent: 0 });
+    expect(plan.enabled).toBe(false);
+    expect(plan.canary).toEqual([]);
+    expect(plan.rest).toEqual(["bot-a", "bot-b"]);
+    expect(plan.sharePercent).toBe(0);
+    expect(plan.reason).toContain("0%");
+  });
+
   it("a failed canary batch never lets the rest through", () => {
     const verdict = canaryVerdict({ phase: "failed", canary: ["bot-a"], rest: ["bot-b", "bot-c"], detail: "bot-a is unhealthy" });
     expect(verdict.proceed).toBe(false);
@@ -498,11 +507,12 @@ describe("auto-update: flat canary settings (OPE-12123)", () => {
     expect(resolved.settings.canary.sharePercent).toBe(10);
   });
 
-  it("resolveAutoUpdateSettings maps updateCanaryPercent=0 to a single-bot canary share", () => {
+  it("resolveAutoUpdateSettings maps updateCanaryPercent=0 to sharePercent=0 (no floor)", () => {
     const stored = { ...defaultAutoUpdateSettings(), updateCanary: true, updateCanaryPercent: 0 };
     const resolved = resolveAutoUpdateSettings(stored, {});
     expect(resolved.settings.canary.enabled).toBe(true);
-    expect(resolved.settings.canary.sharePercent).toBe(1);
+    // 0 is preserved verbatim — canaryPlan treats it as "no canary"
+    expect(resolved.settings.canary.sharePercent).toBe(0);
   });
 
   it("resolveAutoUpdateSettings maps updateCanaryPercent=100 to the whole fleet", () => {
@@ -556,7 +566,7 @@ describe("auto-update: flat canary settings (OPE-12123)", () => {
     expect(fake.startCanary.mock.calls[0][0].canary).toEqual(["bot-a", "bot-b", "bot-c"]);
   });
 
-  it("uses updateCanaryPercent=0 as a single-bot canary", async () => {
+  it("uses updateCanaryPercent=0 to roll out the fleet in one batch (no canary)", async () => {
     const fake = fakePort("healthy");
     const h = harness({
       policy: policy({ window: OPEN_DAY, updateCanary: true, updateCanaryPercent: 0 }),
@@ -566,9 +576,9 @@ describe("auto-update: flat canary settings (OPE-12123)", () => {
     const created = await h.service.create({ reference: GOOD }, ACTOR);
     const job = await runJob(h, created.id);
 
-    expect(job?.status).toBe("fleet_canary");
-    expect(fake.startCanary).toHaveBeenCalledTimes(1);
-    expect(fake.startCanary.mock.calls[0][0].canary).toEqual(["bot-a"]);
+    expect(job?.status).toBe("succeeded");
+    expect(fake.startCanary).not.toHaveBeenCalled();
+    expect(fake.startRest).not.toHaveBeenCalled();
   });
 
   it("uses updateCanaryPercent to size the canary batch", async () => {
