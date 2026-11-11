@@ -104,7 +104,10 @@ export const UI2_NAV_GROUPS: Ui2NavGroup[] = [
   },
   {
     labelKey: "ui2.nav.group.manage",
-    items: [{ labelKey: "ui2.nav.settings", to: "/company/settings", icon: LayoutGrid }],
+    items: [
+      { labelKey: "ui2.nav.settings", to: "/company/settings", icon: LayoutGrid },
+      { labelKey: "ui2.nav.system", to: "/system", icon: Server },
+    ],
   },
   // myrmidon(1.6.5 SWARM-T4, design §5.4 / IA v2 §2.3 п.10, 12): the swarm
   // queue and the foraging page live in a dedicated "More" group at the rail

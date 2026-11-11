@@ -18990,6 +18990,9 @@ export function heartbeatService(
           isNull(issues.hiddenAt),
           inArray(issues.status, [...TIMER_ACTIONABLE_ISSUE_STATUSES]),
           isNull(issues.conversationAgentId),
+          // 1.7 PRIVATE-TASKS part C: a private task never makes its assignee
+          // a timer-heartbeat candidate.
+          eq(issues.isPrivate, false),
         ),
       )
       .limit(1)
@@ -20797,6 +20800,7 @@ export function heartbeatService(
         const [candidateExists] = await db.select({ id: issues.id }).from(issues).where(and(
           eq(issues.companyId, agent.companyId),
           eq(issues.status, "in_review"),
+          eq(issues.isPrivate, false),
           isNull(issues.executionRunId),
           sql`${issues.executionState} ->> 'status' in ('pending', 'waiting')`,
           sql`${issues.executionState} ->> 'currentStageType' = 'review'`,
@@ -20828,6 +20832,7 @@ export function heartbeatService(
       }).from(issues).where(and(
         eq(issues.companyId, agent.companyId),
         eq(issues.status, "in_review"),
+        eq(issues.isPrivate, false),
         isNull(issues.executionRunId),
         issueHasNoExecutionHold(db),
         sql`not exists (
@@ -32699,6 +32704,7 @@ export function heartbeatService(
               executionWorkspacePreference: issues.executionWorkspacePreference,
               executionWorkspaceSettings: issues.executionWorkspaceSettings,
               assigneeAgentId: issues.assigneeAgentId,
+              isPrivate: issues.isPrivate,
               createdByAgentId: issues.createdByAgentId,
               createdByUserId: issues.createdByUserId,
               responsibleUserId: issues.responsibleUserId,
@@ -33102,6 +33108,35 @@ export function heartbeatService(
                 heartbeatSkip: {
                   reason: "worktree_execution_cutoff",
                   cutoff: worktreeExecutionCutoff.toISOString(),
+                  issueId: issue.id,
+                },
+              },
+              status: "skipped",
+              requestedByActorType: opts.requestedByActorType ?? null,
+              requestedByActorId: opts.requestedByActorId ?? null,
+              idempotencyKey: opts.idempotencyKey ?? null,
+              finishedAt: new Date(),
+            });
+            return { kind: "skipped" as const };
+          }
+
+          // 1.7 PRIVATE-TASKS part C: a private task never becomes a heartbeat
+          // run. Whatever brought this wake here (timer sweep, idle pickup,
+          // priority pick, a stale queued run, even a direct agent request),
+          // the admission closes it here with a durable skipped record — the
+          // agent never observes the task at all. The board keeps full access.
+          if (issue.isPrivate && !opts.manualUserWake) {
+            await tx.insert(agentWakeupRequests).values({
+              ...durableReceiptFields,
+              companyId: agent.companyId,
+              agentId,
+              source,
+              triggerDetail,
+              reason: "heartbeat.private_issue_suppressed",
+              payload: {
+                ...(payload ?? {}),
+                heartbeatSkip: {
+                  reason: "private_issue_suppressed",
                   issueId: issue.id,
                 },
               },

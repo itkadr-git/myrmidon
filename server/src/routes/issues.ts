@@ -1582,6 +1582,7 @@ const ISSUE_WAKE_DIAGNOSTIC_KNOWN_REASONS = new Set([
   "queued_run_stale_timeout",
   "goal_control",
   "heartbeat.disabled",
+  "heartbeat.private_issue_suppressed",
   "heartbeat.scheduling_suppressed",
   "heartbeat.timer.cached_identical_prompt",
   "heartbeat.timer.no_actionable_work",
@@ -18265,6 +18266,14 @@ export function issueRoutes(
         "Issue not found",
       );
       if (!issue) return;
+      // 1.7 PRIVATE-TASKS part C: an agent key never checks out a private
+      // issue — the route answers 404 like every other agent read of it, so
+      // the checkout attempt cannot even confirm the task exists. Board
+      // actors keep the usual behavior.
+      if (issue.isPrivate && req.actor.type === "agent") {
+        res.status(404).json({ error: "Issue not found" });
+        return;
+      }
 
       if (issue.projectId) {
         const project = await projectsSvc.getById(issue.projectId);
@@ -18387,6 +18396,7 @@ export function issueRoutes(
       });
 
       if (
+        !issue.isPrivate &&
         shouldWakeAssigneeOnCheckout({
           actorType: req.actor.type,
           actorAgentId:

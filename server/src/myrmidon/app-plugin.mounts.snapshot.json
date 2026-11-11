@@ -73,6 +73,7 @@
   "api.use(myrmidonCorpusRoutes(db, { ports: resolveCorpusPorts }))",
   "api.use(myrmidonProcessesRouter(db as any, opts.processSupervisor ?? null, opts.processBus ?? null))",
   "api.use(myrmidonBudgetEnforcementRoutes(db))",
+  "api.use(nestRedactRoutes(db))",
   "api.use(myrmidonBehaviorSettingsRoutes(db))",
   "api.use(myrmidonTelegramDmProgressRoutes(db))",
   "api.use(myrmidonChannelSettingsRoutes(db))",
