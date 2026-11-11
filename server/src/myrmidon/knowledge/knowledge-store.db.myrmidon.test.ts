@@ -1104,6 +1104,7 @@ describeEmbeddedPostgres("myrmidon(1.6.6 KNOWLEDGE-2.0 K-1) knowledge store over
       expect(newRev.title).toBe("Updated Title");
       expect(newRev.summary).toBe("Updated summary");
     });
+  });
 
   // --------------------------------------------- myrmidon(1.7 KNOWLEDGE-2.0 L-3)
 
@@ -1180,7 +1181,6 @@ describeEmbeddedPostgres("myrmidon(1.6.6 KNOWLEDGE-2.0 K-1) knowledge store over
     expect(rules).toHaveLength(1);
     expect(rules[0]).toMatchObject({ slug: "rule-1", revisionNumber: 1 });
     expect(rules[0]!.revisionId).not.toBeNull();
-  });
   });
 
   it("the delivery ledger mirrors the caste-resolved rules, never the rules of a foreign caste", async () => {
