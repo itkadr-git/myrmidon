@@ -25,12 +25,14 @@ import {
 } from "../../../components/ui2StateViews";
 import { Ui2Section } from "../../../components/ui2Primitives";
 
-/** The first wave (SWEEP-2): the obvious env-driven behavior variables. */
+/** The first wave (SWEEP-2): the obvious env-driven behavior variables.
+ *  myrmidon(OPE-12677): only keys with a real code consumer stay here — the
+ *  ratchet test packages/shared/src/myrmidon-behavior-settings-consumers.test.ts
+ *  keeps the "every setting has a consumer" invariant. `debug_mode`,
+ *  `max_concurrent_agents`, `default_timeout_seconds` and `autonomy_level`
+ *  have no reader in the code (their registry entries do nothing), so they
+ *  must not be offered for editing until they are wired. */
 export const FINE_SETTINGS_KEYS = [
-  "debug_mode",
-  "max_concurrent_agents",
-  "default_timeout_seconds",
-  "autonomy_level",
   "bot_egress_mode",
   "tool_breaker_failures",
   "tool_breaker_cooldown_ms",
