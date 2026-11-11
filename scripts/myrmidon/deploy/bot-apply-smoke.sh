@@ -22,6 +22,23 @@
 # IDLE-STOP 143. Without the bot image rollout (--no-bot-rollout) no bot
 # re-applies by design: the smoke then verifies the already-running gateways.
 #
+# DEPLOY-SMOKE-REMOTE (rc.23, 11.11): bots pinned to another host
+# (adapterConfig.container.host != local, e.g. the myr-vm1 work bots) have no
+# container on the deploy host — local docker only knows "No such container"
+# for them. Such bots are judged by their own gateway: the apiBaseUrl /health
+# probe (the same check the board runs on the bot's host) and the board state.
+# Local docker is never called for them; the diagnosis names the bot's host
+# ("remote host myr-vm1: логи на хосте") instead of printing "No such
+# container".
+#
+# DEPLOY-SMOKE-OOM-WARN (rc.23, 11.11): a single OOMKilled container the
+# deploy did not touch (not in the rollout's switched list, started before the
+# deploy began) is that bot's own workload: a WARNING with the bot id and the
+# card's memory limit, not a deploy failure. The OOM of a container the deploy
+# re-created or re-started (in the switched list, or started inside the deploy
+# window) and two or more untouched OOMs (a fleet-wide OOM) remain deploy
+# casualties.
+#
 #   bot-apply-smoke.sh --board-url <http://host:3100/api> --token-file <file>
 #                      --company <companyId> [--timeout 300] [--interval 10]
 #                      [--agent <id>] [--summary <file>]
@@ -125,10 +142,47 @@ gateway_responds() {
   docker exec "$1" curl -fsS --max-time 3 "http://127.0.0.1:8642/health" >/dev/null 2>&1
 }
 
+# DEPLOY-SMOKE-REMOTE: probe a bot's gateway directly over its apiBaseUrl (the
+# network address the bot runs at, used when the bot is pinned to another host).
+remote_gateway_responds() {
+  local base="$1"
+  [[ -n "$base" ]] || return 1
+  # Normalize trailing slash
+  base="${base%/}"
+  curl -fsS --max-time 3 "$base/health" >/dev/null 2>&1
+}
+
+# Card facts of every hermes_gateway agent of the company: id, is_remote
+# ("true"/"false"), apiBaseUrl, host ("local" or remote host name), memoryMb.
+# Reads GET /companies/:id/agent-configurations (PERF-DIET-G: the narrow agents
+# list carries no adapterConfig). Answers one "|"-separated line per bot
+# (id|is_remote|apiBaseUrl|host|memoryMb) — the same separator classify_bot
+# parses. jq pipes the fields through .id etc.; a bot id never contains "|".
+fetch_configs_facts() {
+  local body
+  body="$(curl -fsS --max-time 10 "${auth_args[@]}" "$board_url/companies/$company/agent-configurations" 2>/dev/null || echo "[]")"
+  jq -r '.[]?
+    | select(.adapterType == "hermes_gateway")
+    | ((.adapterConfig.container.host // "local") as $h
+       | [ .id,
+           (if ($h != "local" and $h != "") then "true" else "false" end),
+           (.adapterConfig.apiBaseUrl // ""),
+           $h,
+           ((.adapterConfig.container.memoryMb // "unknown") | tostring) ]
+       | join("|"))' <<<"$body" 2>/dev/null
+}
+
 classify_bot() {
   local id="$1"
   local cname="$2"
   local agent_status="${3:-}"
+  # DEPLOY-SMOKE-REMOTE card facts: the full "|"-line "id|is_remote|apiBaseUrl|
+  # host|memoryMb" as fetch_configs_facts answers ("" id when the card lookup
+  # found nothing).
+  local facts="${4:-|false|||unknown}"
+  local is_remote api_base rhost mem_limit
+  # The leading id field of the facts line is not needed here; "_" discards it.
+  IFS='|' read -r _ is_remote api_base rhost mem_limit <<<"$facts"
 
   local bjson
   bjson="$(curl -fsS --max-time 10 "${auth_args[@]}" "$board_url/myrmidon/agents/$id/bot-container/status" 2>/dev/null || echo "{}")"
@@ -137,11 +191,43 @@ classify_bot() {
   bidle="$(jq -r '(.container.idleStopped // .idleStopRuntime.idleStopped // false)' <<<"$bjson" 2>/dev/null || echo "false")"
   berr="$(jq -r '.containerError // ""' <<<"$bjson" 2>/dev/null || echo "")"
 
-  local hstatus="missing" dstatus="missing" exitcode="0" oomkilled="false" finishedat="0"
+  # DEPLOY-SMOKE-REMOTE: a bot pinned to another host has no container on the
+  # deploy host — local docker would only answer "No such container". Judge it
+  # by its own gateway (apiBaseUrl /health) and the board state; never call
+  # local docker for it.
+  if [[ "$is_remote" == "true" ]]; then
+    if [[ -n "$berr" ]]; then
+      echo "crashed:error"
+      return 0
+    fi
+    if [[ -n "$api_base" ]] && remote_gateway_responds "$api_base"; then
+      echo "healthy"
+      return 0
+    fi
+    case "$bstate" in
+      running|healthy)
+        # The board says the gateway's container runs on its host; without an
+        # apiBaseUrl to probe there is nothing else to check — trust the board.
+        if [[ -n "$api_base" ]]; then
+          echo "remote:unreachable"
+        else
+          echo "healthy"
+        fi
+        return 0 ;;
+      missing|stopped)
+        echo "idle_stopped"
+        return 0 ;;
+      *)
+        echo "board:$bstate"
+        return 0 ;;
+    esac
+  fi
+
+  local hstatus="missing" dstatus="missing" exitcode="0" oomkilled="false" finishedat="0" startedat=""
   if command -v docker >/dev/null 2>&1; then
     local dinfo
-    dinfo="$(docker inspect --format '{{if .State.Health}}{{.State.Health.Status}}{{else}}{{.State.Status}}{{end}}|{{.State.Status}}|{{.State.ExitCode}}|{{.State.OOMKilled}}|{{if .State.FinishedAt}}{{.State.FinishedAt}}{{end}}' "$cname" 2>/dev/null || echo "missing|missing|0|false|")"
-    IFS='|' read -r hstatus dstatus exitcode oomkilled finishedat <<<"$dinfo"
+    dinfo="$(docker inspect --format '{{if .State.Health}}{{.State.Health.Status}}{{else}}{{.State.Status}}{{end}}|{{.State.Status}}|{{.State.ExitCode}}|{{.State.OOMKilled}}|{{if .State.FinishedAt}}{{.State.FinishedAt}}{{end}}|{{if .State.StartedAt}}{{.State.StartedAt}}{{end}}' "$cname" 2>/dev/null || echo "missing|missing|0|false||")"
+    IFS='|' read -r hstatus dstatus exitcode oomkilled finishedat startedat <<<"$dinfo"
     # An inspect failure ("No such container") or an empty field must read as
     # "missing", never as an empty string — an empty status printed
     # "docker:"/"board:" and blocked the pass decision in the rc.19 incident.
@@ -150,6 +236,7 @@ classify_bot() {
     [[ -z "$exitcode" ]] && exitcode="0"
     [[ -z "$oomkilled" ]] && oomkilled="false"
     [[ -z "$finishedat" ]] && finishedat="0"
+    [[ -z "$startedat" ]] && startedat=""
   fi
 
   # DEPLOY-SMOKE-FALSE (the 08.11 incidents): a container that stopped BEFORE
@@ -216,7 +303,30 @@ classify_bot() {
       (( oom_finished_epoch >= deploy_start_epoch )) || oom_in_window=0
     fi
     if (( oom_in_window == 1 )); then
-      echo "crashed:oom"
+      # DEPLOY-SMOKE-OOM-WARN (OPE-12716, rc.23): an in-window OOM is a deploy
+      # casualty only when the deploy touched the container — it was re-created
+      # or restarted by the rollout, which shows as the container starting
+      # inside the deploy window (StartedAt >= deploy start; an image/config
+      # switch always re-creates or restarts the container). A container that
+      # was already running before the deploy began OOMed under its own
+      # workload. Without a deploy start (or an unparseable start time) there
+      # is no proof of an untouched container: stay conservative and count it
+      # as a casualty. classify_bot answers "oom_untouched:<memory-limit>";
+      # the caller folds two or more untouched OOMs back into crashed (a
+      # fleet-wide OOM).
+      local oom_touched=1
+      if (( deploy_start_epoch > 0 )) \
+        && [[ "$startedat" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2} ]]; then
+        local oom_started_epoch=0
+        oom_started_epoch="$(date -u -d "${startedat%%.*}" +%s 2>/dev/null || echo 0)"
+        [[ "$oom_started_epoch" =~ ^[0-9]+$ ]] || oom_started_epoch=0
+        (( oom_started_epoch > 0 && oom_started_epoch < deploy_start_epoch )) && oom_touched=0
+      fi
+      if (( oom_touched == 1 )); then
+        echo "crashed:oom"
+        return 0
+      fi
+      echo "oom_untouched:${mem_limit:-unknown}"
       return 0
     fi
   fi
@@ -334,6 +444,10 @@ deadline=$((SECONDS + timeout_sec))
 
 while ((SECONDS < deadline)); do
   agents_json="$(curl -fsS --max-time 10 "${auth_args[@]}" "$board_url/companies/$company/agents" 2>/dev/null || echo "[]")"
+  # DEPLOY-SMOKE-REMOTE: card facts (container.host, apiBaseUrl, memory limit)
+  # of every bot; the deploy host's local docker knows nothing about bots
+  # pinned to another host.
+  configs_facts="$(fetch_configs_facts || true)"
 
   target_raw="$(get_target_bot_ids || true)"
   target_ids=()
@@ -347,18 +461,30 @@ while ((SECONDS < deadline)); do
   else
     healthy_count=0
     idle_count=0
+    oom_warned_count=0
     crashed_count=0
     unhealthy_count=0
     healthy_ids=()
     crashed_ids=()
     unhealthy_ids=()
+    oom_warned_ids=()
+    oom_warned_limits=()
     status_details=()
     last_healthy_id=""
 
     for id in "${target_ids[@]}"; do
-      cname="$(find_container "$id")"
+      facts="$(awk -F'|' -v id="$id" '$1 == id {print; exit}' <<<"${configs_facts:-}" 2>/dev/null || true)"
+      [[ -n "$facts" ]] || facts="|false|||unknown"
+      is_remote="${facts#*|}"; is_remote="${is_remote%%|*}"
+      if [[ "$is_remote" == "true" ]]; then
+        # DEPLOY-SMOKE-REMOTE: the bot has no container on the deploy host;
+        # keep the canonical name for the log and never call local docker.
+        cname="myrmidon-bot-$id"
+      else
+        cname="$(find_container "$id")"
+      fi
       agent_status="$(jq -r --arg id "$id" 'first(.[]? | select(.id == $id) | .status // "")' <<<"$agents_json" 2>/dev/null || true)"
-      bot_stat="$(classify_bot "$id" "$cname" "$agent_status")"
+      bot_stat="$(classify_bot "$id" "$cname" "$agent_status" "$facts")"
       case "$bot_stat" in
         healthy)
           healthy_count=$((healthy_count + 1))
@@ -369,6 +495,14 @@ while ((SECONDS < deadline)); do
         idle_stopped)
           idle_count=$((idle_count + 1))
           status_details+=("${id##*-}:idle_stopped")
+          ;;
+        oom_untouched:*)
+          # DEPLOY-SMOKE-OOM-WARN: held out of crashed until the fleet is
+          # classified; two or more untouched OOMs fold back into crashed.
+          oom_warned_count=$((oom_warned_count + 1))
+          oom_warned_ids+=("$id")
+          oom_warned_limits+=("${bot_stat#oom_untouched:}")
+          status_details+=("${id##*-}:oom_untouched")
           ;;
         crashed:*)
           crashed_count=$((crashed_count + 1))
@@ -384,7 +518,29 @@ while ((SECONDS < deadline)); do
       esac
     done
 
-    active_total=$(( total - idle_count ))
+    # DEPLOY-SMOKE-OOM-WARN: two or more untouched OOMs are a fleet-wide OOM,
+    # not single-bot noise — every one of them is a deploy casualty.
+    if (( ${#oom_warned_ids[@]} >= 2 )); then
+      log "multiple OOM-killed bots (${oom_warned_ids[*]}): treating all of them as deploy casualties"
+      for oid in "${oom_warned_ids[@]}"; do
+        crashed_ids+=("$oid")
+        unhealthy_ids+=("$oid")
+        crashed_count=$((crashed_count + 1))
+        unhealthy_count=$((unhealthy_count + 1))
+      done
+      oom_warned_ids=()
+      oom_warned_limits=()
+      oom_warned_count=0
+    fi
+
+    # DEPLOY-SMOKE-OOM-WARN: a single untouched OOM is that bot's own workload
+    # (its own heavy run), not a deploy failure — warn with the id and the
+    # card's memory limit and exclude it from the active denominator.
+    for wi in "${!oom_warned_ids[@]}"; do
+      log "WARNING: bot ${oom_warned_ids[$wi]} was OOMKilled in the deploy window, but the deploy did not touch it (not in the rollout's switched list, container started before the deploy began); not counted as a deploy casualty (memory limit: ${oom_warned_limits[$wi]:-unknown})"
+    done
+
+    active_total=$(( total - idle_count - oom_warned_count ))
     needed=$(( (active_total * min_healthy_percent + 99) / 100 ))
     if (( min_healthy_percent == 0 )); then
       needed=0
@@ -419,7 +575,7 @@ while ((SECONDS < deadline)); do
   sleep "$interval"
 done
 
-active_total=$(( total - idle_count ))
+active_total=$(( total - idle_count - ${oom_warned_count:-0} ))
 needed=$(( (active_total * min_healthy_percent + 99) / 100 ))
 if (( min_healthy_percent == 0 )); then
   needed=0
@@ -443,6 +599,22 @@ if (( ${#bad_ids[@]} == 0 )); then
 fi
 
 for id in "${bad_ids[@]}"; do
+  facts="$(awk -F'|' -v id="$id" '$1 == id {print; exit}' <<<"${configs_facts:-}" 2>/dev/null || true)"
+  [[ -n "$facts" ]] || facts="|false|||unknown"
+  is_remote="${facts#*|}"; is_remote="${is_remote%%|*}"
+  rhost="$(printf '%s' "$facts" | cut -d'|' -f4)"
+  c_err="$(container_error "$id" || true)"
+  if [[ "$is_remote" == "true" ]]; then
+    # DEPLOY-SMOKE-REMOTE: the container lives on the bot's own host — local
+    # docker has no logs for it ("No such container" is noise, not evidence).
+    cname="myrmidon-bot-$id"
+    log "--- Gateway diagnosis for remote bot $id ($cname on host ${rhost:-unknown}) ---"
+    log "  [$cname] remote host ${rhost:-unknown}: логи на хосте (как их читает доска); локальный docker этого контейнера не видит"
+    if [[ -n "$c_err" ]]; then
+      log "  [$cname containerError] $c_err"
+    fi
+    continue
+  fi
   cname="$(find_container "$id")"
   log "--- Last gateway log lines for bot $id ($cname) ---"
   if command -v docker >/dev/null 2>&1; then
@@ -450,7 +622,6 @@ for id in "${bad_ids[@]}"; do
       log "  [$cname] $line"
     done || true
   fi
-  c_err="$(container_error "$id" || true)"
   if [[ -n "$c_err" ]]; then
     log "  [$cname containerError] $c_err"
   fi
