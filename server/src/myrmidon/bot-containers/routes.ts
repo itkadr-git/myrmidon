@@ -126,6 +126,7 @@ export interface BotContainerRoutesDeps {
    * Optional: without it, company status returns an empty items list.
    */
   listCompanyAgents?(companyId: string): Promise<BotContainerRouteAgent[]>;
+  /**
    * myrmidon(1.7 KNOWLEDGE-2.0 L-3): the knowledge delivery ledger row of this
    * agent (knowledge_deliveries) — what the last compile put into the bot's
    * package. Optional: without it the card's «Знания в пакете» block stays
