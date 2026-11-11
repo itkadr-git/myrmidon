@@ -11,6 +11,7 @@ import { eq } from "drizzle-orm";
 import { createDb, companies, invites } from "@myrmidon/db";
 import { errorHandler } from "../middleware/error-handler.js";
 import { usersRoutes } from "../routes/users.js";
+import { accessRoutes } from "../routes/access.js";
 import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
@@ -25,7 +26,7 @@ type Actor = Express.Request["actor"];
 const admin: Actor = {
   type: "board",
   userId: "admin-user",
-  source: "session",
+  source: "local_implicit",
   isInstanceAdmin: true,
   companyIds: [],
 } as unknown as Actor;
@@ -55,6 +56,15 @@ function createApp(db: Db, actor: Actor) {
     next();
   });
   app.use("/api", usersRoutes(db));
+  app.use(
+    "/api",
+    accessRoutes(db as any, {
+      deploymentMode: "authenticated",
+      deploymentExposure: "private",
+      bindHost: "127.0.0.1",
+      allowedHostnames: [],
+    }),
+  );
   app.use(errorHandler);
   return app;
 }
@@ -164,5 +174,48 @@ describePostgres("POST /api/users/invite (OPE-12090)", () => {
       .where(eq(invites.inviteType, "user_invite"));
     // Only the three invites created by the admin tests above exist.
     expect(rows).toHaveLength(3);
+  });
+
+  it("created user_invite is consumable through the canonical invite summary path", async () => {
+    const app = createApp(db, admin);
+    const created = await request(app)
+      .post("/api/users/invite")
+      .send({ email: "consumable@example.com", role: "member" });
+    expect(created.status).toBe(201);
+
+    // Anonymous fetch via the shared access contract: the invite summary
+    // endpoint must recognize the canonical user_invite type and expose it
+    // without a company scope.
+    const anonApp = createApp(db, anonymous);
+    const summary = await request(anonApp).get(`/api/invites/${created.body.token}`);
+    expect(summary.status).toBe(200);
+    expect(summary.body.inviteType).toBe("user_invite");
+    expect(summary.body.invitePath).toBe(`/invite/${created.body.token}`);
+    expect(String(summary.body.inviteUrl)).toContain(`/invite/${created.body.token}`);
+  });
+
+  it("instance admin can revoke a user_invite without company scope", async () => {
+    const app = createApp(db, admin);
+    const created = await request(app)
+      .post("/api/users/invite")
+      .send({ email: "revocable@example.com", role: "member" });
+    expect(created.status).toBe(201);
+
+    const revoked = await request(app)
+      .post(`/api/invites/${created.body.inviteId}/revoke`)
+      .send({});
+    expect(revoked.status).toBe(200);
+    expect(revoked.body.revokedAt).toBeTruthy();
+
+    // A non-admin cannot revoke another user_invite.
+    const created2 = await request(app)
+      .post("/api/users/invite")
+      .send({ email: "revocable-2@example.com", role: "member" });
+    expect(created2.status).toBe(201);
+    const memberApp = createApp(db, member);
+    const denied = await request(memberApp)
+      .post(`/api/invites/${created2.body.inviteId}/revoke`)
+      .send({});
+    expect(denied.status).toBe(403);
   });
 });

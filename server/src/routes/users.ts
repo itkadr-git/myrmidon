@@ -2,7 +2,7 @@ import { Router } from "express";
 import { createHash, randomBytes } from "node:crypto";
 import { z } from "zod";
 import type { Db } from "@myrmidon/db";
-import { blockUserSchema, patchUserBlockSchema, updateCompanyMemberSchema } from "@myrmidon/shared";
+import { blockUserSchema, patchUserBlockSchema, updateCompanyMemberSchema, type InviteType } from "@myrmidon/shared";
 import { companies, invites } from "@myrmidon/db";
 import { accessService } from "../services/access.js";
 import { assertCompanyAccess } from "./authz.js";
@@ -80,6 +80,13 @@ const inviteUserSchema = z
     role: z.enum(["member", "instance_admin"]).default("member"),
   })
   .strict();
+
+/**
+ * Canonical invite type for POST /api/users/invite. Declared in
+ * packages/shared/src/constants.ts (INVITE_TYPES) so the DB value stays
+ * aligned with the shared contract.
+ */
+const USER_INVITE_TYPE: InviteType = "user_invite";
 
 const INVITE_TOKEN_PREFIX = "pcp_invite_";
 const INVITE_TOKEN_ENTROPY_BYTES = 32;
@@ -321,7 +328,7 @@ export function usersRoutes(db: Db): Router {
         .insert(invites)
         .values({
           companyId: null,
-          inviteType: "user_invite",
+          inviteType: USER_INVITE_TYPE,
           tokenHash: hashInviteToken(token),
           allowedJoinTypes: "human",
           defaultsPayload,

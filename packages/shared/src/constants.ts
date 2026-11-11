@@ -1012,7 +1012,15 @@ export const HUMAN_COMPANY_MEMBERSHIP_ROLE_LABELS: Record<HumanCompanyMembership
 export const INSTANCE_USER_ROLES = ["instance_admin"] as const;
 export type InstanceUserRole = (typeof INSTANCE_USER_ROLES)[number];
 
-export const INVITE_TYPES = ["company_join", "bootstrap_ceo"] as const;
+/**
+ * Canonical invite types.
+ * - `bootstrap_ceo`: one-shot instance bootstrap claim (no company scope).
+ * - `company_join`: company-scoped join invite.
+ * - `user_invite`: instance-admin user invitation (no company scope, no SMTP).
+ *   Created by POST /api/users/invite (myrmidon 1.7 USERS-ADMIN-INVITE, OPE-12090);
+ *   carries invitedEmail/invitedRole in defaultsPayload.
+ */
+export const INVITE_TYPES = ["bootstrap_ceo", "company_join", "user_invite"] as const;
 export type InviteType = (typeof INVITE_TYPES)[number];
 
 export const INVITE_JOIN_TYPES = ["human", "agent", "both"] as const;
