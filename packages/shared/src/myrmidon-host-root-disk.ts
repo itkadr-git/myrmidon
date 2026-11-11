@@ -137,25 +137,31 @@ export function resolveWsRootDiskSettings(args: {
     rootThresholdPercent: "default",
     rootCriticalPercent: "default",
   };
-  const apply = (key: WsRootDiskKey, value: number | null, source: WsRootDiskSource): void => {
-    if (value === null) return;
-    settings[key] = value;
-    sources[key] = source;
-  };
   if (fromStored) {
-    apply("rootThresholdPercent", fromStored.rootThresholdPercent, "settings");
-    apply("rootCriticalPercent", fromStored.rootCriticalPercent, "settings");
+    return {
+      settings: { ...fromStored },
+      sources: {
+        rootThresholdPercent: "settings",
+        rootCriticalPercent: "settings",
+      },
+    };
   }
-  apply(
-    "rootThresholdPercent",
-    parseWsRootDiskValue(env[WS_ROOT_DISK_ENV_KEYS.rootThresholdPercent]),
-    "env",
-  );
-  apply(
-    "rootCriticalPercent",
-    parseWsRootDiskValue(env[WS_ROOT_DISK_ENV_KEYS.rootCriticalPercent]),
-    "env",
-  );
+  const envWarn = parseWsRootDiskValue(env[WS_ROOT_DISK_ENV_KEYS.rootThresholdPercent]);
+  const envCrit = parseWsRootDiskValue(env[WS_ROOT_DISK_ENV_KEYS.rootCriticalPercent]);
+  if (envWarn !== null) {
+    const candidate = { ...settings, rootThresholdPercent: envWarn };
+    if (candidate.rootThresholdPercent < candidate.rootCriticalPercent) {
+      settings.rootThresholdPercent = envWarn;
+      sources.rootThresholdPercent = "env";
+    }
+  }
+  if (envCrit !== null) {
+    const candidate = { ...settings, rootCriticalPercent: envCrit };
+    if (candidate.rootThresholdPercent < candidate.rootCriticalPercent) {
+      settings.rootCriticalPercent = envCrit;
+      sources.rootCriticalPercent = "env";
+    }
+  }
   return { settings, sources };
 }
 
@@ -164,7 +170,7 @@ export function rootDiskAlertLevel(
   usedPercent: number,
   settings: WsRootDiskSettings,
 ): "none" | "warn" | "critical" {
-  if (usedPercent >= settings.rootCriticalPercent) return "critical";
+  if (usedPercent > settings.rootCriticalPercent) return "critical";
   if (usedPercent > settings.rootThresholdPercent) return "warn";
   return "none";
 }

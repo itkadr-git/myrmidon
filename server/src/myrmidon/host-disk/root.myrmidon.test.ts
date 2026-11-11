@@ -212,14 +212,14 @@ describe("root threshold runtime (the OPE-12697 service test)", () => {
     await rt.updateFromRoot(rootUsage(91, "2026-11-11T10:35:00Z"));
     expect(sent).toHaveLength(2);
 
-    // +55 min: 92 % — the critical level repeats only after an hour: silent.
-    clock += 55 * 60_000;
-    await rt.updateFromRoot(rootUsage(92, "2026-11-11T11:30:00Z"));
+    // +35 min: 92 % — 45 min past the critical signal, inside the hour: silent.
+    clock += 35 * 60_000;
+    await rt.updateFromRoot(rootUsage(92, "2026-11-11T11:10:00Z"));
     expect(sent).toHaveLength(2);
 
-    // +10 min more: past the hour at the same level — the repeat fires.
-    clock += 10 * 60_000;
-    await rt.updateFromRoot(rootUsage(92, "2026-11-11T11:40:00Z"));
+    // +20 min more: 65 min past the critical signal — the repeat fires.
+    clock += 20 * 60_000;
+    await rt.updateFromRoot(rootUsage(92, "2026-11-11T11:30:00Z"));
     expect(sent).toHaveLength(3);
     expect(sent[2].level).toBe("critical");
     expect(clock - Date.parse("2026-11-11T10:25:00Z")).toBeGreaterThanOrEqual(HOST_ROOT_REPEAT_INTERVAL_MS);
@@ -237,17 +237,24 @@ describe("root threshold runtime (the OPE-12697 service test)", () => {
     await rt.updateFromRoot(rootUsage(86, "2026-11-11T10:00:00Z"));
     expect(sent).toHaveLength(1);
     // Drop below the threshold: no signal, the latch clears on the next crossing.
+    clock += 10 * 60_000;
     await rt.updateFromRoot(rootUsage(80, "2026-11-11T10:10:00Z"));
     expect(rt.current().alertLevel).toBe("none");
     expect(sent).toHaveLength(1);
     // A fresh crossing fires again even within the hour of the old signal.
+    clock += 10 * 60_000;
     await rt.updateFromRoot(rootUsage(87, "2026-11-11T10:20:00Z"));
     expect(sent).toHaveLength(2);
   });
 
   it("a stale or inconsistent dockergate sample is not evidence", async () => {
     const sent: HostRootNotifyInput[] = [];
-    const rt = runtime({ notify: async (input) => void sent.push(input) });
+    // A fixed clock so the sample-age rule is deterministic (an hour-old
+    // sample is beyond the 5-minute freshness window at any wall clock).
+    const rt = runtime({
+      notify: async (input) => void sent.push(input),
+      now: () => new Date(Date.parse("2026-11-11T10:00:00Z")),
+    });
     // A sample dated an hour ago — the sweep could have stalled; not evidence.
     await rt.updateFromRoot(rootUsage(96, "2026-11-11T09:00:00Z"));
     expect(rt.current().alertLevel).toBeNull();
@@ -273,7 +280,10 @@ describe("root threshold runtime (the OPE-12697 service test)", () => {
       fetchImpl: fetchImpl as unknown as typeof fetch,
     });
     const sent: HostRootNotifyInput[] = [];
-    const rt = runtime({ notify: async (input) => void sent.push(input) });
+    const rt = runtime({
+      notify: async (input) => void sent.push(input),
+      now: () => new Date(Date.parse("2026-11-11T10:01:00Z")),
+    });
     const usage = await client.readRootUsage();
     expect(usage).not.toBeNull();
     await rt.updateFromRoot(usage!);

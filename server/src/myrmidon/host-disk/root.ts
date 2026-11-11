@@ -95,9 +95,11 @@ export function createHostRootThresholdRuntime(
   const repeatIntervalMs = deps.repeatIntervalMs ?? HOST_ROOT_REPEAT_INTERVAL_MS;
   const settingsService = db ? instanceSettingsService(db) : null;
   let state: HostRootThresholdState = { ...EMPTY_STATE };
-  // Per-level latch: the level and the wall clock of its last notification.
-  // `null` = never notified at this level (the first crossing fires at once).
-  let notified: { level: "warn" | "critical"; atMs: number } | null = null;
+  // Per-level latch: the wall clock of the last notification per level.
+  // A missing entry = never notified at this level (the first crossing
+  // fires at once). Cleared when usage drops back to the none level, so a
+  // renewed crossing re-fires without waiting out the repeat window.
+  let notified: Partial<Record<"warn" | "critical", number>> = {};
 
   async function resolveThresholds(): Promise<WsRootDiskSettings> {
     const botDisk = deps.getBotDiskSettings
@@ -128,21 +130,20 @@ export function createHostRootThresholdRuntime(
       alertLevel: alert,
       evaluatedAt: now().toISOString(),
     };
-    if ((alert === "warn" || alert === "critical") && deps.notify) {
+    if (alert === "none") {
+      // Back below the warn threshold: re-arm both levels at once.
+      notified = {};
+    } else if (deps.notify) {
       const atMs = now().getTime();
-      const last = notified;
-      // The latch re-arms only below the warn threshold, and a level fires
-      // at most once per repeat window (acceptance: no repeat within an hour).
-      const reArmed = usage.usedPercent <= settings.rootThresholdPercent;
-      const sameLevel = last?.level === alert;
-      const due = !sameLevel
-        || reArmed
-        || last === null
-        || atMs - last.atMs >= repeatIntervalMs;
+      const lastAt = notified[alert];
+      // A level fires at most once per repeat window (acceptance: no
+      // repeat within an hour); the other level stays independent so a
+      // warn→critical escalation still escalates immediately.
+      const due = lastAt === undefined || atMs - lastAt >= repeatIntervalMs;
       if (due) {
         try {
           await deps.notify({ usage, settings, level: alert });
-          notified = { level: alert, atMs };
+          notified[alert] = atMs;
         } catch (err) {
           logger.error({ err }, "host root notification failed");
         }

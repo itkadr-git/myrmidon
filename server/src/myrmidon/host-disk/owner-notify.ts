@@ -68,7 +68,10 @@ export function createOwnerTelegramNotifier(
               "- Largest consumers to check: docker volumes, docker images, workspace copies.",
               "- Nothing is deleted automatically.",
             ].join("\n");
-        const at = now().toISOString().slice(0, 10);
+        // Minute bucket: root.ts already throttles repeats to once per hour
+        // per level; a day bucket would swallow a legitimate hourly repeat
+        // inside `chat_publications` (acceptance: repeats ARE sent hourly).
+        const at = new Date(now().getTime() - (now().getTime() % 60_000)).toISOString();
         try {
           await db
             .insert(chatPublications)
@@ -77,7 +80,7 @@ export function createOwnerTelegramNotifier(
               endpointId: conversation.endpointId,
               conversationId: conversation.conversationId,
               issueId: conversation.issueId,
-              idempotencyKey: `host-disk:root-${input.level}:${companyId}:${at}`,
+              idempotencyKey: `host-disk:root-${input.level}:${companyId}:${usage.at}:${at}`,
               payload: projectSafeChatPublication({
                 classification: "external",
                 source: "safe_milestone",
