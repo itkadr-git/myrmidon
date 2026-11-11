@@ -1582,6 +1582,7 @@ const ISSUE_WAKE_DIAGNOSTIC_KNOWN_REASONS = new Set([
   "queued_run_stale_timeout",
   "goal_control",
   "heartbeat.disabled",
+  "heartbeat.private_issue_suppressed",
   "heartbeat.scheduling_suppressed",
   "heartbeat.timer.cached_identical_prompt",
   "heartbeat.timer.no_actionable_work",
