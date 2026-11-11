@@ -4,7 +4,7 @@
 // module. The store (./store.js) carries the operations; this file binds them
 // to one nest — today `nestId === companyId` (decision registry, 08.10: one
 // knowledge container per company until K-4 splits nests) — and attaches the
-// pg `SearchIndex` implementation from `@paperclipai/db`, keeping the module
+// pg `SearchIndex` implementation from `@myrmidon/db`, keeping the module
 // free of dialect SQL.
 //
 // K-2 (UI/API) and K-3 (delivery read path) call this module through the
