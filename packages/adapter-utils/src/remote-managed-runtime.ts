@@ -89,10 +89,13 @@ async function readRemoteFile(spec: SshRemoteExecutionSpec, remotePath: string):
 // filled up run after run. After a successful restore the workspace files of
 // the run are removed; the small runtime directory (.paperclip-runtime: skills,
 // agent config, bridge files) stays, because the API bridge stops in parallel
-// with the restore. Whole run directories older than two days are pruned when
-// the next run starts; no run lives that long (the longest run timeout is
-// hours), so a concurrent run on a shared environment is never touched.
-export const REMOTE_RUN_DIR_RETENTION_MTIME_DAYS = 1;
+// with the restore. A failed or cancelled run never reaches that restore (a
+// cancel kills the run before its finally), so whole run directories older
+// than four hours are pruned when the next run starts: the longest run timeout
+// is three hours, so a concurrent run on a shared environment is never touched.
+// 11.11: a two-day window let one omp runner pile up 24 copies of 1.5 GB in an
+// evening (OPE-12664).
+export const REMOTE_RUN_DIR_RETENTION_MINUTES = 240;
 
 function remoteRunsDir(baseWorkspaceRemoteDir: string): string {
   return path.posix.join(baseWorkspaceRemoteDir, ".paperclip-runtime", "runs");
@@ -104,7 +107,7 @@ export function buildRemoteRunWorkspaceCleanupCommand(workspaceRemoteDir: string
 
 export function buildStaleRemoteRunsPruneCommand(baseWorkspaceRemoteDir: string): string {
   const runsDir = remoteRunsDir(baseWorkspaceRemoteDir);
-  return `if [ -d ${shellQuote(runsDir)} ]; then find ${shellQuote(runsDir)} -mindepth 1 -maxdepth 1 -type d -mtime +${REMOTE_RUN_DIR_RETENTION_MTIME_DAYS} -exec rm -rf {} +; fi`;
+  return `if [ -d ${shellQuote(runsDir)} ]; then find ${shellQuote(runsDir)} -mindepth 1 -maxdepth 1 -type d -mmin +${REMOTE_RUN_DIR_RETENTION_MINUTES} -exec rm -rf {} +; fi`;
 }
 
 async function runBestEffortSshCleanup(spec: SshRemoteExecutionSpec, command: string, what: string): Promise<void> {
