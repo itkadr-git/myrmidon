@@ -125,6 +125,46 @@ mounted read-only at `/etc/ssh/omp-runner/authorized_keys`. The host key is
 generated on the first start into the `hostkeys` volume and survives a
 recreate.
 
+### Shared package cache (OPE-12722)
+
+The runner shares the board's package cache the way the bot containers do. Set
+`OMP_RUNNER_CACHE_DIR` in the env file: a directory on the bot data disk, e.g.
+`/srv/myrmidon-cache` — the board's `general.botDisk.sharedPackageCachePath`.
+The compose file binds two subdirectories into the container:
+
+- `<OMP_RUNNER_CACHE_DIR>/git` → `/cache/git` (read-only). The board's git
+  mirrors live there (`git/<owner>/<repo>.git`, kept fresh by the board). The
+  image installs a small wrapper at `/usr/local/bin/git`, which the PATH
+  resolves ahead of `/usr/bin/git`: a plain
+  `git clone https://github.com/<owner>/<repo>.git` runs as
+  `git clone --reference-if-able /cache/git/<owner>/<repo>.git …`, so the clone
+  borrows the existing objects instead of downloading a full pack again. The
+  wrapper is consume-only: no mirror is created or refreshed here, and any
+  clone without a mirror (another host, a storage-deciding option such as
+  `--dissociate` or `--filter`) runs unchanged. A clone never fails because of
+  the wrapper.
+- `<OMP_RUNNER_CACHE_DIR>/pnpm` → `/cache/pnpm` (read-write). The entrypoint
+  writes `/etc/profile.d/omp-runner-cache.sh` with
+  `npm_config_cache_dir=/cache/pnpm`; sshd does not pass container environment
+  variables to logins, and profile.d is what every board-spawned SSH command
+  and agent shell sources. npm and pnpm keep their registry download cache
+  there instead of one copy per runner. Create the directory before the first
+  start: `install -d -o 1000 -g 1000 <OMP_RUNNER_CACHE_DIR>/pnpm` (the
+  entrypoint also chowns it, but a mount point created by docker as root would
+  shadow it).
+
+The pnpm **store** is never under `/cache`: the entrypoint writes
+`/etc/profile.d/omp-runner-pnpm.sh` with
+`npm_config_store_dir=/workspace/.pnpm-store` and
+`npm_config_package_import_method=clone`, so pnpm imports `node_modules` by
+reflink from a store inside the workspace volume — one store per runner. A link
+cannot cross a filesystem boundary, which is why the store must not sit on the
+`/cache` bind (BOT-DISK-D in the bot-runtime image).
+
+Measure the acceptance after a second task copy on the same runner:
+`docker exec <runner-name> du -xs /workspace` should add well under 700 MB
+(new objects and packages only, not a second full clone + store).
+
 One runner per agent:
 
 1. Make a key pair for the runner. Keep the private key out of the logs and the

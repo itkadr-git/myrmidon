@@ -12,6 +12,15 @@
 #                               the bot data disk (XFS), not the root disk: agents clone and build
 #                               repositories there, gigabytes per agent. It must hold the
 #                               subdirectories workspace/ (owned by 1000:1000), home/ and hostkeys/.
+# myrmidon(OPE-12722 OMP-RUNNER-SHARED-CACHE): OMP_RUNNER_CACHE_DIR is the
+# runner's shared package cache directory on the bot data disk, e.g.
+# /srv/myrmidon-cache (the board's general.botDisk.sharedPackageCachePath).
+# It is bound at /cache: git/ holds the board's bare mirrors (the board keeps
+# them fresh; mounted read-only, the runner only reads them through the
+# wrapper at /usr/local/bin/git), pnpm/ is the runner's npm/pnpm download
+# cache. Create it owned by uid 1000 before the first start:
+#   install -d -o 1000 -g 1000 <OMP_RUNNER_CACHE_DIR>/pnpm
+# (git/ is created by the board on demand.)
 # Optional limits: OMP_RUNNER_MEMORY, OMP_RUNNER_CPUS, OMP_RUNNER_PIDS. The
 # defaults (4g, 1 CPU, 1024 processes) are those of an engineer bot container.
 #
@@ -37,6 +46,8 @@ services:
     volumes:
       - workspace:/workspace
       - home:/home/paperclip
+      - ${OMP_RUNNER_CACHE_DIR:?set OMP_RUNNER_CACHE_DIR}/git:/cache/git:ro
+      - ${OMP_RUNNER_CACHE_DIR:?set OMP_RUNNER_CACHE_DIR}/pnpm:/cache/pnpm
       - hostkeys:/var/lib/omp-runner/hostkeys
       - ${OMP_RUNNER_AUTHORIZED_KEYS:?set OMP_RUNNER_AUTHORIZED_KEYS}:/etc/ssh/omp-runner/authorized_keys:ro
 

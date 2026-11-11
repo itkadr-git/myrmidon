@@ -60,12 +60,28 @@ RUN set -eu \
 COPY docker/agent-runtime/omp-ssh/sshd_config /etc/ssh/omp-runner/sshd_config
 COPY docker/agent-runtime/omp-ssh/entrypoint.sh /usr/local/bin/omp-runner-entrypoint
 
+# myrmidon(OPE-12722 OMP-RUNNER-SHARED-CACHE): the git wrapper at
+# /usr/local/bin/git shadows /usr/bin/git on the default PATH (and in every
+# login profile the board's SSH transport sources), adding
+# --reference-if-able /cache/git/<owner>/<repo>.git to plain GitHub clones
+# when the board's mirror exists. Consume-only: it never creates or refreshes
+# the mirror, and a clone never fails because of it (docker/bot-runtime/
+# git-reference/git is the full bot-side contract). The source tree ships a
+# CommonJS marker beside it (the bot wrapper's 984781988) so the extension-less
+# file keeps CJS semantics under the repo root's "type": "module"; the image
+# copy does not include it — /usr/local/bin has no parent package.json, so
+# node defaults the file to CommonJS there.
+COPY docker/agent-runtime/omp-ssh/git-reference/git /usr/local/bin/git
+
 # The account must not be locked: with UsePAM off, sshd refuses every login of
 # a locked account ("!" in /etc/shadow), key authentication included. "*" is
 # "no usable password", not "locked".
 RUN set -eu \
-  && chmod 0755 /usr/local/bin/omp-runner-entrypoint \
+  && chmod 0755 /usr/local/bin/omp-runner-entrypoint /usr/local/bin/git \
   && chmod 0644 /etc/ssh/omp-runner/sshd_config \
+  && node --check /usr/local/bin/git \
+  && echo "git wrapper: $(env -i PATH=/usr/local/bin:/usr/bin:/bin sh -c 'command -v git')" \
+  && echo "real git: $(/usr/bin/git --version | head -1)" \
   && usermod -p '*' paperclip \
   && mkdir -p /run/sshd /var/lib/omp-runner/hostkeys /workspace /home/paperclip/.cache \
   && chown -R 1000:1000 /workspace /home/paperclip \
