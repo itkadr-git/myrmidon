@@ -21,7 +21,11 @@ import {
   type BoardMerger,
 } from "./board-merge.js";
 import type { BoardMergeClient, BoardMergeOutcome } from "./github-board-merge.js";
-import type { BoardMergeFacts, RequiredCheckVerdict } from "./pr-policy.js";
+import {
+  BOARD_MERGE_FULL_CI_SERVER_SHARD_CHECKS,
+  type BoardMergeFacts,
+  type RequiredCheckVerdict,
+} from "./pr-policy.js";
 import type { ApprovedPrIssueRow, ReturnedApprovedPr } from "./store.js";
 
 const COMPANY = "company-1";
@@ -485,11 +489,30 @@ describe("board merge: GitHub trouble never guesses", () => {
     expect(t.calls.label).toEqual([70]);
     expect(t.calls.merge).toEqual([]);
 
-    // Next pass after cooldown: label is present, checks are read with full server shard check.
+    // Next pass after cooldown: label is present, checks are read with the
+    // full six-shard set (OPE-12551: only shard 1 was required before, so a PR
+    // failing shard 2-6 merged on a green shard 1).
     const second = await t.merger.sweepCompany(COMPANY, t.settings, at(10 * 60_000));
     expect(second).toMatchObject({ merged: 1 });
     expect(t.calls.readChecks).toEqual([
-      { number: 70, names: ["CI result", "tests (server 1/6)"] },
+      { number: 70, names: ["CI result", ...BOARD_MERGE_FULL_CI_SERVER_SHARD_CHECKS] },
+    ]);
+  });
+
+  it("waits when one of the six server shards fails instead of merging", async () => {
+    const t = setup([approved(71)], {
+      71: {
+        facts: { ...facts(), labels: ["full-ci"] },
+        checks: "failed",
+        files: ["server/src/myrmidon/review-routing/board-merge.ts"],
+      },
+    });
+    const result = await t.merger.sweepCompany(COMPANY, t.settings, at(0));
+    expect(result).toMatchObject({ merged: 0, waiting: 1 });
+    expect(t.calls.label).toEqual([]);
+    expect(t.calls.merge).toEqual([]);
+    expect(t.calls.readChecks).toEqual([
+      { number: 71, names: ["CI result", ...BOARD_MERGE_FULL_CI_SERVER_SHARD_CHECKS] },
     ]);
   });
 });

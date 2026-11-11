@@ -269,6 +269,27 @@ export const BOARD_MERGE_FULL_CI_PATH_PREFIXES: readonly string[] = [
   "packages/paperclip-runner/",
 ];
 
+/**
+ * myrmidon(OPE-12551): the full tier of myrmidon-ci.yml runs these six server
+ * shards; the merge gate must demand exactly these names. Checking only
+ * `tests (server 1/6)` lets a PR whose failure hides in shard 2–6 merge on a
+ * green first shard — the defect this issue fixes.
+ */
+export const BOARD_MERGE_FULL_CI_SERVER_SHARD_CHECKS: readonly string[] = [
+  "tests (server 1/6)",
+  "tests (server 2/6)",
+  "tests (server 3/6)",
+  "tests (server 4/6)",
+  "tests (server 5/6)",
+  "tests (server 6/6)",
+];
+
+/** Everything the full tier adds on top of the default checks for a full-ci pull. */
+export const BOARD_MERGE_FULL_CI_CHECKS: readonly string[] = [
+  ...BOARD_MERGE_FULL_CI_SERVER_SHARD_CHECKS,
+  "tests (other + runner)",
+];
+
 export function pullRequiresFullCi(files: readonly string[]): boolean {
   return files.some((file) =>
     BOARD_MERGE_FULL_CI_PATH_PREFIXES.some((prefix) => file.startsWith(prefix)),
@@ -285,8 +306,10 @@ export function requiredChecksForPull(input: {
     (input.files && pullRequiresFullCi(input.files)) ||
     (input.labels && input.labels.includes(BOARD_MERGE_FULL_CI_LABEL));
   if (requiresFull) {
+    // myrmidon(OPE-12551): the full tier runs every server shard — a PR whose
+    // failure hides in shard 2–6 must not merge on a green shard 1.
     if (!input.files || input.files.some((f) => f.startsWith("server/src/"))) {
-      checks.add("tests (server 1/6)");
+      for (const name of BOARD_MERGE_FULL_CI_SERVER_SHARD_CHECKS) checks.add(name);
     }
     if (!input.files || input.files.some((f) => f.startsWith("packages/paperclip-runner/"))) {
       checks.add("tests (other + runner)");
