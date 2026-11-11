@@ -169,8 +169,10 @@ describe("buildCreateContainerRequestBody", () => {
           "/srv/myrmidon/bots/agent-a:/bot",
         ],
         Privileged: false,
+        Ulimits: [{ Name: "core", Soft: 0, Hard: 0 }],
       },
     });
+    expect(Object.keys(body.HostConfig).at(-1)).toBe("Ulimits");
   });
 
   it("has exactly ONE bind for the bot's data: hard links cannot cross mounts (BOT-DISK-D)", () => {
@@ -457,6 +459,8 @@ describe("buildHelperContainerRequestBody", () => {
     expect(body.NetworkDisabled).toBe(true);
     expect(body.HostConfig.ReadonlyRootfs).toBe(true);
     expect(body.HostConfig.Privileged).toBe(false);
+    expect(body.HostConfig.Ulimits).toEqual([{ Name: "core", Soft: 0, Hard: 0 }]);
+    expect(Object.keys(body.HostConfig).at(-1)).toBe("Ulimits");
     // A helper only writes files, so it keeps the three narrow binds of the same host directories.
     expect(body.HostConfig.Binds).toEqual([
       "/srv/myrmidon/bots/agent-a/hermes:/data/hermes",
@@ -480,6 +484,8 @@ describe("buildHelperContainerRequestBody", () => {
     expect(body.HostConfig.CapDrop).toEqual(["ALL"]);
     expect(body.HostConfig.CapAdd).toEqual(["CHOWN", "FOWNER"]);
     expect(body.HostConfig.NetworkMode).toBe("none");
+    expect(body.HostConfig.Ulimits).toEqual([{ Name: "core", Soft: 0, Hard: 0 }]);
+    expect(Object.keys(body.HostConfig).at(-1)).toBe("Ulimits");
     // myrmidon(BOT-ROOT-TRAVERSE): besides the three narrow binds the prepare helper
     // also carries the bot's own root as the SAME bind the bot container gets at /bot,
     // so its script can fix the traversal bit of the one mount point the narrow binds
@@ -490,6 +496,26 @@ describe("buildHelperContainerRequestBody", () => {
       "/srv/myrmidon/bots/agent-a/scratch:/scratch",
       "/srv/myrmidon/bots/agent-a:/bot",
     ]);
+  });
+
+  it("apply-profile and prepare-volumes with scope also pin RLIMIT_CORE=0 as the last HostConfig key", () => {
+    const scope = { scopeRoot: "/srv/myrmidon/bots/.scopes", dirName: "caste-eng" };
+    const botBody = buildCreateContainerRequestBody(spec(), CONFIG, undefined, false, scope);
+    expect(botBody.HostConfig.Ulimits).toEqual([{ Name: "core", Soft: 0, Hard: 0 }]);
+    expect(Object.keys(botBody.HostConfig).at(-1)).toBe("Ulimits");
+
+    for (const role of ["prepare-volumes", "apply-profile"] as const) {
+      const helperBody = buildHelperContainerRequestBody({
+        botKey: "agent-a",
+        image: "myrmidon-hermes:1.1.0",
+        role,
+        script: role === "prepare-volumes" ? buildPrepareVolumesScript({ scope: true }) : "true",
+        volumeRoot: CONFIG.volumeRoot,
+        scope,
+      });
+      expect(helperBody.HostConfig.Ulimits).toEqual([{ Name: "core", Soft: 0, Hard: 0 }]);
+      expect(Object.keys(helperBody.HostConfig).at(-1)).toBe("Ulimits");
+    }
   });
 });
 

@@ -7,12 +7,16 @@
 
 import express from "express";
 import request from "supertest";
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, it, vi, afterEach } from "vitest";
 import { errorHandler } from "../../middleware/index.js";
 import { accessHubRoutes, isAccessHubEnabled, ACCESS_HUB_ENABLED_ENV } from "./routes.js";
+import { applyLiveBehaviorSettings, liveBehaviorSettingsView } from "../behavior-settings/live.js";
 import type { AccessHubSecretView, AccessHubHost } from "./types.js";
 import type { accessHubService } from "./service.js";
 import { createFakeDeployPort } from "./ssh-deploy.js";
+
+const previousLive = liveBehaviorSettingsView();
+afterEach(() => applyLiveBehaviorSettings(previousLive));
 
 const COMPANY_ID = "22222222-2222-4222-8222-222222222222";
 const AGENT_ID = "11111111-1111-4111-8111-111111111111";
@@ -108,6 +112,7 @@ function fakeHosts() {
 
 function app(actor: unknown, opts: {
   enabled?: boolean;
+  env?: NodeJS.ProcessEnv;
   svc?: ReturnType<typeof fakeService>["svc"];
   hosts?: ReturnType<typeof fakeHosts>;
   deploy?: ReturnType<typeof createFakeDeployPort>;
@@ -125,7 +130,7 @@ function app(actor: unknown, opts: {
   server.use(
     "/api",
     accessHubRoutes({} as never, {
-      env: { [ACCESS_HUB_ENABLED_ENV]: enabled ? "1" : "0" },
+      env: opts.env ?? { [ACCESS_HUB_ENABLED_ENV]: enabled ? "1" : "0" },
       service: (opts.svc ?? svc) as unknown as ReturnType<typeof accessHubService>,
       readHosts: (opts.hosts ?? hosts).readHosts,
       writeHosts: (opts.hosts ?? hosts).writeHosts as never,
@@ -151,6 +156,33 @@ describe("myrmidon(SEC1) access-hub routes: flag and status", () => {
     expect(isAccessHubEnabled({ [ACCESS_HUB_ENABLED_ENV]: "" })).toBe(false);
   });
 
+  it("is off by default even with a saved false switch", () => {
+    applyLiveBehaviorSettings({
+      settings: { accessHubEnabled: false },
+      sources: { accessHubEnabled: "ui" } as never,
+    });
+    expect(isAccessHubEnabled({})).toBe(false);
+  });
+
+  it("a saved true switch opens the section without env (OPE-12619)", () => {
+    applyLiveBehaviorSettings({
+      settings: { accessHubEnabled: true },
+      sources: { accessHubEnabled: "ui" } as never,
+    });
+    expect(isAccessHubEnabled({})).toBe(true);
+    expect(isAccessHubEnabled({ [ACCESS_HUB_ENABLED_ENV]: "" })).toBe(true);
+  });
+
+  it("an explicit env 0/false overrides a saved true switch (OPE-12124 precedence)", () => {
+    applyLiveBehaviorSettings({
+      settings: { accessHubEnabled: true },
+      sources: { accessHubEnabled: "ui" } as never,
+    });
+    expect(isAccessHubEnabled({ [ACCESS_HUB_ENABLED_ENV]: "0" })).toBe(false);
+    expect(isAccessHubEnabled({ [ACCESS_HUB_ENABLED_ENV]: "false" })).toBe(false);
+    expect(isAccessHubEnabled({ [ACCESS_HUB_ENABLED_ENV]: "1" })).toBe(true);
+  });
+
   it("status answers for a board member, with the disabled state readable", async () => {
     await request(app(member, { enabled: false })).get(`${BASE}/status`).expect(200).expect({ enabled: false });
     await request(app(member, { enabled: true })).get(`${BASE}/status`).expect(200).expect({ enabled: true });
@@ -167,6 +199,26 @@ describe("myrmidon(SEC1) access-hub routes: flag and status", () => {
       .expect(200);
     expect(listing.body).toEqual({ enabled: false, accesses: [], hosts: [] });
     await request(app(member, { enabled: false })).get(`${BASE}/hosts`).expect(200).expect({ enabled: false, hosts: [] });
+  });
+
+  it("applies saved accessHubEnabled without restart and honors env 0 override over saved true", async () => {
+    const server = app(member, { env: {} });
+    // Without saved value and without env: off by default (409 on mutations).
+    await request(server).get(`${BASE}/status`).expect(200).expect({ enabled: false });
+    await request(server).post(`${BASE}/secrets/generate-ssh-key`).send({ name: "agent-a-ssh" }).expect(409);
+
+    // Saved true opens the section on the very next request without recreating routes.
+    applyLiveBehaviorSettings({
+      settings: { accessHubEnabled: true },
+      sources: { accessHubEnabled: "ui" } as never,
+    });
+    await request(server).get(`${BASE}/status`).expect(200).expect({ enabled: true });
+    await request(server).post(`${BASE}/secrets/generate-ssh-key`).send({ name: "agent-a-ssh" }).expect(201);
+
+    // Explicit env=0 overrides saved true.
+    const forcedOff = app(member, { env: { [ACCESS_HUB_ENABLED_ENV]: "0" } });
+    await request(forcedOff).get(`${BASE}/status`).expect(200).expect({ enabled: false });
+    await request(forcedOff).post(`${BASE}/secrets/generate-ssh-key`).send({ name: "agent-a-ssh" }).expect(409);
   });
 });
 

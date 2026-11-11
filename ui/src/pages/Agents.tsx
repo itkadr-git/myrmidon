@@ -1,5 +1,5 @@
 import { useAgentChatEnabled } from "../hooks/useAgentChatEnabled";
-import { useState, useEffect, useMemo, lazy, Suspense } from "react";
+import { useState, useEffect, useMemo } from "react";
 import { Link, useNavigate, useLocation } from "@/lib/router";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import {
@@ -28,6 +28,7 @@ import { StarToggle } from "../components/StarToggle";
 import { EntityRow } from "../components/EntityRow";
 import { BuiltInLifecycleChip } from "../components/BuiltInAgentBadges";
 import { EmptyState } from "../components/EmptyState";
+import { ConfigureBuiltInAgentModal } from "../components/ConfigureBuiltInAgentModal";
 import { PageSkeleton } from "../components/PageSkeleton";
 import { OrgChart } from "./OrgChart";
 import { AgentTree } from "../components/AgentTree";
@@ -63,14 +64,6 @@ const roleLabels = AGENT_ROLE_LABELS as Record<string, string>;
 // myrmidon(UI-RU): agents page copy runs through the fork i18n catalog.
 import { useTranslation } from "@/i18n";
 import { localizedAgentRoleLabel } from "../lib/agent-role-labels";
-
-// Lazy-loaded so the roster page doesn't statically pull in the full
-// AgentConfigForm module graph (the modal reuses its adapter/model pickers).
-const ConfigureBuiltInAgentModal = lazy(() =>
-  import("../components/ConfigureBuiltInAgentModal").then((m) => ({
-    default: m.ConfigureBuiltInAgentModal,
-  })),
-);
 
 export const AGENT_FILTER_TABS = ["all", "active", "paused", "error", "builtin"] as const;
 type FilterTab = (typeof AGENT_FILTER_TABS)[number];
@@ -923,16 +916,14 @@ export function Agents({ initialView = "tree" }: { initialView?: AgentsView } = 
         </p>
       )}
       {configureState && selectedCompanyId && (
-        <Suspense fallback={null}>
-          <ConfigureBuiltInAgentModal
-            companyId={selectedCompanyId}
-            state={configureState}
-            open={configureState !== null}
-            onOpenChange={(open) => {
-              if (!open) setConfigureState(null);
-            }}
-          />
-        </Suspense>
+        <ConfigureBuiltInAgentModal
+          companyId={selectedCompanyId}
+          state={configureState}
+          open={configureState !== null}
+          onOpenChange={(open) => {
+            if (!open) setConfigureState(null);
+          }}
+        />
       )}
     </div>
   );

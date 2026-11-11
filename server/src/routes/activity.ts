@@ -204,7 +204,12 @@ export function activityRoutes(db: Db) {
     assigneeAgentId: string | null;
     assigneeUserId: string | null;
     status: string;
+    isPrivate?: boolean | null;
   }) {
+    if (issue.isPrivate && req.actor.type === "agent") {
+      res.status(404).json({ error: "Issue not found" });
+      return false;
+    }
     const decision = await access.decide({
       actor: req.actor,
       action: "issue:read",
@@ -440,7 +445,9 @@ export function activityRoutes(db: Db) {
     }
     assertCompanyAccess(req, run.companyId);
     if (!(await assertCompanyScopeReadAllowed(req, res, run.companyId))) return;
-    const result = await svc.issuesForRun(runId);
+    const result = await svc.issuesForRun(runId, {
+      excludePrivate: req.actor.type === "agent",
+    });
     res.json(result);
   });
 

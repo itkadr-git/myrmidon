@@ -64,7 +64,7 @@ export interface StackSeedComponent {
    * For http-version probes: the HTTP endpoint to GET. Read from the
    * environment / bound secret at probe time (the address never ships in the
    * seed, only the env var name / secret ref name). The endpoint answers a
-   * JSON body with a `version` field (hindsight /version, LiteLLM /version,
+   * JSON body with a `version` or `api_version` field (hindsight /version, LiteLLM /version,
    * Langfuse /api/public/health among them).
    */
   httpEndpointEnv?: string;
@@ -370,6 +370,11 @@ export function patchEntryFromDelta(delta: StackDeltaSeed): StackPatchEntry {
   };
 }
 
+//
+// Pinned Paperclip vendor release supported by the migration schema
+// (schema-paperclip-v2026.1106.0.sql).
+export const VENDOR_MIGRATION_SUPPORTED_VERSION = "v2026.1106.0";
+
 /**
  * The seed: every stack component the update panel tracks. Neutral public
  * names and upstream repos only — no hosts, no internal identifiers.
@@ -380,7 +385,7 @@ export const STACK_SEED: readonly StackSeedComponent[] = [
     releaseSource: "github-releases",
     upstream: { kind: "github", repo: "paperclipai/paperclip" },
     localProbe: "manual",
-    note: "Vendor upstream of the board fork; local version tracked via the board component.",
+    note: "Vendor upstream of the board fork; local version tracked via supported migration schema.",
   },
   {
     name: "myrmidon",

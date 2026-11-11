@@ -117,6 +117,14 @@ find_container() {
   echo "myrmidon-bot-$id"
 }
 
+# DEPLOY-SMOKE-FALSE-2 (rc.17/rc.19, 10.11): the deciding signal for an
+# unhealthy mark is THIS poll, not any poll — a bot whose gateway answers its
+# own /health probe right now has already recovered (the Docker healthcheck and
+# the board-side state both lag across a maintenance window).
+gateway_responds() {
+  docker exec "$1" curl -fsS --max-time 3 "http://127.0.0.1:8642/health" >/dev/null 2>&1
+}
+
 classify_bot() {
   local id="$1"
   local cname="$2"
@@ -134,6 +142,10 @@ classify_bot() {
     local dinfo
     dinfo="$(docker inspect --format '{{if .State.Health}}{{.State.Health.Status}}{{else}}{{.State.Status}}{{end}}|{{.State.Status}}|{{.State.ExitCode}}|{{.State.OOMKilled}}|{{if .State.FinishedAt}}{{.State.FinishedAt}}{{end}}' "$cname" 2>/dev/null || echo "missing|missing|0|false|")"
     IFS='|' read -r hstatus dstatus exitcode oomkilled finishedat <<<"$dinfo"
+    # An inspect failure ("No such container") or an empty field must read as
+    # "missing", never as an empty string — an empty status printed
+    # "docker:"/"board:" and blocked the pass decision in the rc.19 incident.
+    [[ -z "$hstatus" ]] && hstatus="missing"
     [[ -z "$dstatus" ]] && dstatus="$hstatus"
     [[ -z "$exitcode" ]] && exitcode="0"
     [[ -z "$oomkilled" ]] && oomkilled="false"
@@ -170,19 +182,59 @@ classify_bot() {
     echo "crashed:error"
     return 0
   fi
-  if [[ "$bstate" == "unhealthy" ]]; then
-    echo "crashed:board_unhealthy"
+  # A prior Docker/board unhealthy mark is only a crash when the gateway's
+  # current health probe also fails. This evaluates the current poll rather
+  # than treating a transient maintenance-window healthcheck failure as sticky.
+  # (In real Docker an unhealthy mark never occurs while State.Status is not
+  # running, so the probe only succeeds on a live recovered container.)
+  # Docker keeps the last Health.Status of a container after it stops: an exited
+  # idle-stopped bot still reads "unhealthy". Only a running container's health
+  # counts here; a stopped one is judged by its exit below (rc.20, 10.11: seven
+  # bots idle-stopped hours before the deploy were reported as crashed).
+  if [[ ( "$bstate" == "unhealthy" || "$hstatus" == "unhealthy" ) && "$dstatus" != "exited" && "$dstatus" != "dead" && "$dstatus" != "created" ]]; then
+    if gateway_responds "$cname"; then
+      echo "healthy"
+      return 0
+    fi
+    if [[ "$hstatus" == "unhealthy" ]]; then
+      echo "crashed:docker_unhealthy"
+    else
+      echo "crashed:board_unhealthy"
+    fi
     return 0
   fi
   if [[ "$oomkilled" == "true" ]]; then
-    echo "crashed:oom"
+    # Docker preserves OOMKilled on an exited container until it is replaced.
+    # Treat it as a deploy casualty only when its finish time is in-window.
+    local oom_in_window=1
+    if (( deploy_start_epoch > 0 )); then
+      local oom_finished_epoch=0
+      if [[ "$finishedat" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2} ]]; then
+        oom_finished_epoch="$(date -u -d "${finishedat%%.*}" +%s 2>/dev/null || echo 0)"
+        [[ "$oom_finished_epoch" =~ ^[0-9]+$ ]] || oom_finished_epoch=0
+      fi
+      (( oom_finished_epoch >= deploy_start_epoch )) || oom_in_window=0
+    fi
+    if (( oom_in_window == 1 )); then
+      echo "crashed:oom"
+      return 0
+    fi
+  fi
+  # A missing runtime container is expected for agents stopped by idle-stop or
+  # not yet applied. Without a live container (or a board-side error), it is not
+  # evidence of a deploy crash.
+  # (A container the board still reports running or healthy is not idle: its
+  # absence is a casualty the smoke must report, so it falls through.)
+  if [[ "$dstatus" == "missing" && "$hstatus" == "missing" && -z "$berr" && "$bstate" != "running" && "$bstate" != "healthy" ]]; then
+    echo "idle_stopped"
     return 0
   fi
   if [[ "$dstatus" == "exited" || "$hstatus" == "exited" ]]; then
     if (( stopped_before_deploy == 1 )); then
-      # Pre-deploy stop: not a deploy casualty. It is still not a running
-      # gateway, so fall through to the idle-stop/healthy classification below.
-      :
+      # Pre-deploy stop: not a deploy casualty, and not an active gateway
+      # to wait for. Exclude from the smoke denominator as idle_stopped.
+      echo "idle_stopped"
+      return 0
     elif (( idle_stop_143 == 1 )); then
       echo "idle_stopped"
       return 0
@@ -190,10 +242,6 @@ classify_bot() {
       echo "crashed:exit_${exitcode}"
       return 0
     fi
-  fi
-  if [[ "$hstatus" == "unhealthy" ]]; then
-    echo "crashed:docker_unhealthy"
-    return 0
   fi
 
   # 2. Idle-stopped checks (штатно остановлен за простой)
@@ -249,8 +297,13 @@ classify_bot() {
   # 4. Other states (not healthy, not idle_stopped, not crashed)
   if [[ "$dstatus" != "missing" && "$dstatus" != "running" && "$dstatus" != "healthy" ]]; then
     echo "docker:$dstatus"
-  else
+  elif [[ "$bstate" != "missing" ]]; then
     echo "board:$bstate"
+  else
+    # No container and no board state: the agent has nothing running (removed
+    # after idle-stop). It cannot crash a deploy, and it is not an active
+    # gateway to wait for.
+    echo "idle_stopped"
   fi
   return 0
 }

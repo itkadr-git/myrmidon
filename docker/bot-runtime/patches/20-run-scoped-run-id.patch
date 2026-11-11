@@ -151,7 +151,7 @@ index 0000000..637ee3c
 +from typing import Any, Callable, Optional
 +
 +# The board run id the board minted for THIS run, or None outside a run context.
-+_RUN_ID: ContextVar[Optional[str]] = ContextVar("PAPERCLIP_RUN_ID_CONTEXT", default=None)
++_RUN_ID: ContextVar[Optional[str]] = ContextVar("MYRMIDON_RUN_ID_CONTEXT", default=None)
 +
 +# myrmidon(G1): a board run id is a UUID and nothing else. The
 +# rc.29 regression shipped the gateway's internal ``run_<hex>`` id through

@@ -26,7 +26,8 @@ d("heartbeat context_snapshot expression index migration", () => {
     const names = idx.map((r) => r.indexname as string);
     expect(names).toContain("heartbeat_runs_company_ctx_issue_created_idx");
     expect(names).toContain("heartbeat_runs_company_ctx_task_created_idx");
-    expect(names).toContain("heartbeat_runs_company_ctx_taskkey_created_idx");
+    // OPE-12580: heartbeat_runs_company_ctx_taskkey_created_idx dropped in 0477 (idx_scan=0 since 22.10)
+    expect(names).not.toContain("heartbeat_runs_company_ctx_taskkey_created_idx");
     expect(names).toContain("agent_wakeup_requests_company_payload_issue_idx");
 
     await sql.unsafe("SET enable_seqscan = off");
@@ -41,16 +42,6 @@ d("heartbeat context_snapshot expression index migration", () => {
     );
     const taskText = taskPlan.map((r) => Object.values(r)[0]).join("\n");
     expect(taskText).toContain("heartbeat_runs_company_ctx_task_created_idx");
-
-    // The productivity-review run scope ORs issueId/taskId/taskKey; all three
-    // expression indexes must exist so the planner can BitmapOr at real row
-    // counts instead of detoasting every run snapshot for the agent. An empty
-    // table plans a single index scan, so assert the taskKey index directly.
-    const taskKeyPlan = await sql.unsafe(
-      "EXPLAIN SELECT id FROM heartbeat_runs WHERE company_id = '00000000-0000-0000-0000-000000000001' AND context_snapshot ->> 'taskKey' = 'x' ORDER BY created_at DESC, id DESC LIMIT 1",
-    );
-    const taskKeyText = taskKeyPlan.map((r) => Object.values(r)[0]).join("\n");
-    expect(taskKeyText).toContain("heartbeat_runs_company_ctx_taskkey_created_idx");
 
     const wakePlan = await sql.unsafe(
       "EXPLAIN SELECT id FROM agent_wakeup_requests WHERE company_id = '00000000-0000-0000-0000-000000000001' AND status = 'deferred_issue_execution' AND payload ->> 'issueId' = 'x' LIMIT 1",

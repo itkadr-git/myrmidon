@@ -7,6 +7,7 @@
 import { getServerInfoSnapshot, type ServerInfoSnapshot } from "../../server-info.js";
 import { request as httpRequest } from "node:http";
 import {
+  VENDOR_MIGRATION_SUPPORTED_VERSION,
   STACK_DOCUMENT_VERSION,
   STACK_SEED,
   emptyStackDocument,
@@ -195,6 +196,11 @@ async function httpJsonRequest(url: URL): Promise<HttpJsonResponse> {
   }
 }
 
+/**
+ * Parse an HTTP version response body: JSON with a `version` or `api_version`
+ * field (non-empty string). Any other shape answers null (an honest unknown
+ * instead of crashing).
+ */
 function extractVersionField(body: string): string | null {
   let parsed: unknown;
   try {
@@ -203,8 +209,13 @@ function extractVersionField(body: string): string | null {
     return null;
   }
   if (!parsed || typeof parsed !== "object") return null;
-  const version = (parsed as { version?: unknown }).version;
-  return typeof version === "string" && version.trim().length > 0 ? version.trim() : null;
+  const obj = parsed as Record<string, unknown>;
+  for (const raw of [obj.version, obj.api_version]) {
+    if (typeof raw === "string" && raw.trim().length > 0) {
+      return raw.trim();
+    }
+  }
+  return null;
 }
 
 /**
@@ -352,7 +363,13 @@ export async function collectStackLocal(options: CollectStackLocalOptions = {}):
         break;
       }
       case "manual": {
-        snapshot.local.unknownReason = "managed by the operator; no automatic probe";
+        if (seed.name === "paperclip") {
+          snapshot.local.version = VENDOR_MIGRATION_SUPPORTED_VERSION;
+          snapshot.local.runningOn = "supported migration schema";
+          snapshot.local.unknownReason = null;
+        } else {
+          snapshot.local.unknownReason = "managed by the operator; no automatic probe";
+        }
         break;
       }
       case "none": {

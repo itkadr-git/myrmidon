@@ -108,6 +108,7 @@ export { createPoolChatHttpTransport } from "./pool-chat/transports.js";
 export type { PoolChatTransportResolver } from "./pool-chat/service.js";
 export { myrmidonAutonomyRoutes } from "./autonomy/index.js"; // myrmidon(1.6-AUTONOMY)
 export { myrmidonKnowledgeRoutes, myrmidonKnowledgeMcpRoutes } from "./knowledge/index.js"; // myrmidon(1.6.6 KNOWLEDGE-2.0 K-2)
+export { myrmidonKnowledgeSettingsRoutes } from "./knowledge/index.js"; // myrmidon(1.7 KNOWLEDGE-2.0 L-11): Settings → Knowledge
 export { sweepTelegramNotifyProactivity } from "./channel-connectors/bridge/notify-sweep.js";
 export { accessHubRoutes } from "./access-hub/routes.js"; // myrmidon(SEC1)
 export { ui2LanguageRoutes } from "./ui2-language/routes.js"; // myrmidon(UI2-I18N)
@@ -147,3 +148,4 @@ export { goalJudgeRoutes, myrmidonGoalJudgeRoutes } from "./goal-judge/routes.js
 export { goalJudgeSettingsService } from "./goal-judge/settings.js"; // myrmidon(1.7-GOAL-JUDGE)
 export { createGoalJudgeModelPort, evaluateGoalJudge } from "./goal-judge/wiring.js"; // myrmidon(1.7-GOAL-JUDGE)
 export { apiPathAliasMiddleware } from "./api-path-aliases.js"; // myrmidon(1.7-RB-PATH / OPE-12082)
+export { configuredGitSkillRecord, skillGitRecordRoutes } from "./skill-git-record/index.js";

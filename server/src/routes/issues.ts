@@ -84,6 +84,15 @@ import {
   acceptSteeredIdentity,
   rejectSteeredIdentity,
 } from "../services/run-identity.js";
+import {
+  type SelfCheckEvidenceDeps,
+  type SelfCheckGateResolver,
+  createSelfCheckGateResolver,
+  DEFAULT_MAX_TECHNICAL_REJECTIONS,
+  rejectSelfCheckGate,
+  SELF_CHECK_REJECT_CODES,
+  type SelfCheckGateDecision,
+} from "../myrmidon/self-check-gate/index.js";
 import { createHash, randomUUID } from "node:crypto";
 import { Router, type Request, type Response } from "express";
 import multer from "multer";
@@ -617,10 +626,12 @@ type CompanySearchService = {
   extract(
     companyId: string,
     query: CompanySearchExtractQuery,
+    options?: { excludePrivate?: boolean },
   ): Promise<CompanySearchExtractResponse>;
   search(
     companyId: string,
     query: CompanySearchQuery,
+    options?: { excludePrivate?: boolean },
   ): Promise<CompanySearchResponse>;
 };
 type ActivityIssueRelationSummary = {
@@ -3769,6 +3780,9 @@ export function issueRoutes(
       tx: Db,
       companyId?: string,
     ) => Promise<{ created: boolean; skippedMissingAgent?: boolean; deduplicated?: boolean }>;
+    resolveSelfCheckGate?: SelfCheckGateResolver;
+    selfCheckEvidenceDeps?: Partial<SelfCheckEvidenceDeps>;
+    selfCheckGateMaxTechnicalFailures?: number;
   } = {},
 ) {
   const router = Router();
@@ -5662,8 +5676,12 @@ export function issueRoutes(
   async function assertIssueReadAllowed(
     req: Request,
     res: Response,
-    issue: Parameters<typeof decideIssueAccess>[1],
+    issue: Parameters<typeof decideIssueAccess>[1] & { isPrivate?: boolean | null },
   ) {
+    if (issue.isPrivate && req.actor.type === "agent") {
+      res.status(404).json({ error: "Issue not found" });
+      return false;
+    }
     const key = `${issue.id}:${issue.companyId}:${issue.projectId ?? ""}:${issue.parentId ?? ""}:${issue.assigneeAgentId ?? ""}:${issue.assigneeUserId ?? ""}:${issue.status}`;
     const value = memoizeIssueReadDecision(req, key, () =>
       decideIssueAccess(req, issue, "issue:read"),
@@ -5778,12 +5796,16 @@ export function issueRoutes(
   }
 
   async function filterIssuesForActor<
-    T extends Parameters<typeof decideIssueAccess>[1],
+    T extends Parameters<typeof decideIssueAccess>[1] & { isPrivate?: boolean | null },
   >(req: Request, rows: T[]) {
+    const visibleRows =
+      req.actor.type === "agent"
+        ? rows.filter((issue) => !issue.isPrivate)
+        : rows;
     const decisions = await Promise.all(
-      rows.map((issue) => decideIssueAccess(req, issue, "issue:read")),
+      visibleRows.map((issue) => decideIssueAccess(req, issue, "issue:read")),
     );
-    return rows.filter((_, index) => decisions[index]?.allowed);
+    return visibleRows.filter((_, index) => decisions[index]?.allowed);
   }
 
   async function actorCanReadCompanyScope(req: Request, companyId: string) {
@@ -8494,10 +8516,13 @@ export function issueRoutes(
       });
       return;
     }
-    const result = await getSearchService().extract(
-      companyId,
-      parsedQuery.data,
-    );
+    const searchService = getSearchService();
+    const result =
+      req.actor.type === "agent"
+        ? await searchService.extract(companyId, parsedQuery.data, {
+            excludePrivate: true,
+          })
+        : await searchService.extract(companyId, parsedQuery.data);
     res.json(result);
   });
 
@@ -8545,7 +8570,13 @@ export function issueRoutes(
       });
       return;
     }
-    const result = await getSearchService().search(companyId, query);
+    const searchService = getSearchService();
+    const result =
+      req.actor.type === "agent"
+        ? await searchService.search(companyId, query, {
+            excludePrivate: true,
+          })
+        : await searchService.search(companyId, query);
     res.json(result);
   });
 
@@ -8830,6 +8861,7 @@ export function issueRoutes(
       sortField: sortField === "updated" || sortField === "id" ? sortField : undefined,
       afterId: req.query.afterId as string | undefined,
       sortDir: sortDir === "asc" || sortDir === "desc" ? sortDir : undefined,
+      excludePrivate: req.actor.type === "agent",
       updatedSince: rawUpdatedSince,
     };
     const requestKey = issueListRequestKey({
@@ -9062,6 +9094,7 @@ export function issueRoutes(
       includeBlockedInboxAttention: true,
       hasPlanDocument,
       q: req.query.q as string | undefined,
+      excludePrivate: req.actor.type === "agent",
     } as const;
 
     if (!(await actorCanReadCompanyScope(req, companyId))) {
@@ -10797,6 +10830,7 @@ export function issueRoutes(
                 assigneeAgentId: issueRows.assigneeAgentId,
                 assigneeUserId: issueRows.assigneeUserId,
                 status: issueRows.status,
+                isPrivate: issueRows.isPrivate,
               })
               .from(issueRows)
               .where(
@@ -12700,6 +12734,14 @@ export function issueRoutes(
       }
       if (await assertLowTrustControlPlaneDenied(req, res, companyId, null))
         return;
+      // 1.7 (PRIVATE-TASKS): only board actors may create a private issue.
+      if (req.body.isPrivate === true && req.actor.type !== "board") {
+        res.status(403).json({
+          error: "Only board actors can set isPrivate on issue creation",
+          details: { field: "isPrivate", securityPrinciples: ["Least Privilege", "Fail Securely"] },
+        });
+        return;
+      }
       assertNoAgentHostWorkspaceCommandMutation(
         req,
         collectIssueWorkspaceCommandPaths(req.body),
@@ -13288,6 +13330,20 @@ export function issueRoutes(
         )
       )
         return;
+      // 1.7 (PRIVATE-TASKS): only board actors may create a private issue.
+      // createChildIssueSchema inherits isPrivate from createIssueBaseSchema,
+      // so guard it here as well — agents must never create private issues
+      // through any creation surface.
+      if (req.body.isPrivate === true && req.actor.type !== "board") {
+        res.status(403).json({
+          error: "Only board actors can set isPrivate on issue creation",
+          details: {
+            field: "isPrivate",
+            securityPrinciples: ["Least Privilege", "Fail Securely"],
+          },
+        });
+        return;
+      }
       assertNoAgentHostWorkspaceCommandMutation(
         req,
         collectIssueWorkspaceCommandPaths(req.body),
@@ -13510,6 +13566,7 @@ export function issueRoutes(
       "Issue not found",
     );
     if (!sourceIssue) return;
+    if (!(await assertIssueReadAllowed(req, res, sourceIssue))) return;
     const decompositions = await svc.listAcceptedPlanDecompositions(
       sourceIssue.id,
     );
@@ -13530,6 +13587,24 @@ export function issueRoutes(
       if (!sourceIssue) return;
       if (!(await assertAgentIssueMutationAllowed(req, res, sourceIssue)))
         return;
+      // 1.7 (PRIVATE-TASKS): only board actors may create private issues.
+      // Each child inherits isPrivate from createIssueBaseSchema; guard the
+      // whole batch here so no child slips a privacy flag past board-only.
+      if (
+        req.actor.type !== "board" &&
+        (req.body.children as Array<Record<string, unknown>>).some(
+          (child) => child.isPrivate === true,
+        )
+      ) {
+        res.status(403).json({
+          error: "Only board actors can set isPrivate on issue creation",
+          details: {
+            field: "isPrivate",
+            securityPrinciples: ["Least Privilege", "Fail Securely"],
+          },
+        });
+        return;
+      }
 
       const requestedChildren = [];
       for (const child of req.body.children as Array<
@@ -14048,6 +14123,20 @@ export function issueRoutes(
         "Issue not found",
       );
       if (!existing) return;
+      // 1.7 (PRIVATE-TASKS): only board actors may change the privacy flag.
+      if (
+        req.body.isPrivate !== undefined &&
+        req.body.isPrivate !== existing.isPrivate &&
+        req.actor.type !== "board"
+      ) {
+        await denyIssueWrite(
+          req,
+          res,
+          existing,
+          "issue_write_private_flag_rejected",
+        );
+        return;
+      }
       assertNoAgentHostWorkspaceCommandMutation(
         req,
         collectIssueWorkspaceCommandPaths(req.body),
@@ -15069,6 +15158,149 @@ export function issueRoutes(
         existing.status !== "in_review" && updateFields.status === "in_review";
       const persistReviewActivityTransactionally =
         enteringReviewRequested || Boolean(reviewInteractionId);
+      let selfCheckGateBypassPatch: Record<string, unknown> | null = null;
+      if (
+        enteringReviewRequested &&
+        (req.actor.type === "agent" || actor.actorType === "agent")
+      ) {
+        const resolveGate =
+          opts.resolveSelfCheckGate ??
+          createSelfCheckGateResolver({
+            db,
+            evidenceDeps: opts.selfCheckEvidenceDeps,
+          });
+        let gateDecision: SelfCheckGateDecision;
+        try {
+          gateDecision = await resolveGate({
+            companyId: existing.companyId,
+            issueId: existing.id,
+          });
+        } catch (error) {
+          // myrmidon(OPE-12146): the stop-gate must not turn review entry into
+          // a 500 when its evidence read fails (issue row visible, storage
+          // degraded, test mocks without plain selects). But it must not fail
+          // open either: an unreadable gate is UNKNOWN evidence, which counts
+          // as a technical rejection and hits the 3-limit bypass like any
+          // other failed check. EMPTY_DIFF is still hard-only: it can only be
+          // produced by the resolver with a real diff in hand.
+          logger.warn(
+            { err: error, issueId: existing.id },
+            "self_check_gate_evidence_read_failed",
+          );
+          gateDecision = rejectSelfCheckGate(
+            SELF_CHECK_REJECT_CODES.TEST_FAILED,
+            "[TEST_FAILED] Не удалось получить статус проверок (evidence read failed).",
+          );
+        }
+
+        const executionState =
+          (existing.executionState as Record<string, unknown> | null) ?? {};
+        const currentRejections =
+          typeof executionState.selfCheckGateRejections === "number"
+            ? executionState.selfCheckGateRejections
+            : 0;
+        const currentTechnicalRejections =
+          typeof executionState.selfCheckGateTechnicalRejections === "number"
+            ? executionState.selfCheckGateTechnicalRejections
+            : currentRejections;
+
+        const maxTechnicalRejections =
+          opts.selfCheckGateMaxTechnicalFailures ??
+          DEFAULT_MAX_TECHNICAL_REJECTIONS;
+
+        const isEmptyDiff =
+          gateDecision.kind === "reject" &&
+          gateDecision.code === SELF_CHECK_REJECT_CODES.EMPTY_DIFF;
+
+        const isTechnicalFailure =
+          gateDecision.kind === "reject" && !isEmptyDiff;
+
+        const bypassAllowed =
+          isTechnicalFailure && currentTechnicalRejections >= maxTechnicalRejections;
+
+        if (gateDecision.kind === "reject" && !bypassAllowed) {
+          const nextRejections = currentRejections + 1;
+          const nextTechnicalRejections = isTechnicalFailure
+            ? currentTechnicalRejections + 1
+            : currentTechnicalRejections;
+          await db
+            .update(issueRows)
+            .set({
+              executionState: {
+                ...executionState,
+                selfCheckGateRejections: nextRejections,
+                selfCheckGateTechnicalRejections: nextTechnicalRejections,
+                selfCheckGateLastRejectCode: gateDecision.code,
+                selfCheckGateLastRejectReason: gateDecision.message,
+              },
+            })
+            .where(eq(issueRows.id, existing.id));
+
+          await logActivity(db, {
+            companyId: existing.companyId,
+            actorType: actor.actorType,
+            actorId: actor.actorId,
+            agentId: actor.agentId ?? null,
+            runId: actor.runId ?? null,
+            action: "self_check_gate_rejected",
+            entityType: "issue",
+            entityId: existing.id,
+            details: {
+              code: gateDecision.code,
+              reason: gateDecision.message,
+              rejectionCount: nextRejections,
+              technicalRejectionCount: nextTechnicalRejections,
+            },
+          });
+
+          await svc.addComment(
+            existing.id,
+            gateDecision.message,
+            {},
+            { authorType: "system" },
+          );
+
+          res.status(422).json({
+            error: gateDecision.message,
+            code: gateDecision.code,
+          });
+          return;
+        }
+
+        // bypassAllowed is only true for a rejection, but the declared union
+        // is not narrowed here; including the kind check narrows gateDecision
+        // so reject-only fields (message) are read type-safely. A non-reject
+        // bypass is impossible by construction.
+        if (bypassAllowed && gateDecision.kind === "reject") {
+          const reject = gateDecision;
+          const note = "гейт не пройден, см. причины";
+          selfCheckGateBypassPatch = {
+            selfCheckGateNote: note,
+            selfCheckGateBypassed: true,
+            selfCheckGateRejections: currentRejections,
+            selfCheckGateTechnicalRejections: currentTechnicalRejections,
+          };
+          const existingExecutionState =
+            parseIssueExecutionState(existing.executionState) ??
+            (existing.executionState as Record<string, unknown> | null) ??
+            {};
+          updateFields.executionState = {
+            ...existingExecutionState,
+            ...(typeof updateFields.executionState === "object" &&
+            updateFields.executionState !== null
+              ? updateFields.executionState
+              : {}),
+            ...selfCheckGateBypassPatch,
+          };
+
+          await svc.addComment(
+            existing.id,
+            `[SELF_CHECK_GATE] Допуск к ревьюеру с пометкой: ${note} (${reject.message})`,
+            {},
+            { authorType: "system" },
+          );
+        }
+      }
 
       const requestedAssigneeUserId =
         updateFields.assigneeUserId === undefined
@@ -15780,6 +16012,17 @@ export function issueRoutes(
             }
             Object.assign(updateFields, lockedTransition.patch);
             Object.assign(issueUpdateData, lockedTransition.patch);
+            if (selfCheckGateBypassPatch) {
+              const currentMergedState = {
+                ...(typeof issueUpdateData.executionState === "object" &&
+                issueUpdateData.executionState !== null
+                  ? (issueUpdateData.executionState as Record<string, unknown>)
+                  : {}),
+                ...selfCheckGateBypassPatch,
+              };
+              updateFields.executionState = currentMergedState;
+              issueUpdateData.executionState = currentMergedState;
+            }
             if (lockedTransition.decision?.outcome === "changes_requested") {
               const ci = await (opts.resolveReviewPullRequestCi ?? createReviewPullRequestCiResolver({ db }))({
                 companyId: lockedExisting.companyId,

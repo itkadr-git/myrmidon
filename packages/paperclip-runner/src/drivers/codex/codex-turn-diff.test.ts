@@ -293,4 +293,48 @@ describe("Codex turn diff parser", () => {
       }),
     ]);
   });
+
+  it("treats empty and whitespace-only snapshots as authoritative empty diffs", () => {
+    // An empty patch is the provider's authoritative "no files changed"
+    // aggregate: the parser returns zero files rather than failing.
+    expect(parseCodexTurnDiff("")).toEqual([]);
+    expect(parseCodexTurnDiff("   \n\t  ")).toEqual([]);
+    expect(parseCodexTurnDiff("\n\n")).toEqual([]);
+
+    // Non-string input is normalized to the same authoritative empty result.
+    expect(parseCodexTurnDiff(null)).toEqual([]);
+    expect(parseCodexTurnDiff(undefined)).toEqual([]);
+    expect(parseCodexTurnDiff(42)).toEqual([]);
+
+    // The empty result summarizes to an all-zero, fully-known totals shape,
+    // never to unknown (null) counts.
+    expect(summarizeCodexTurnDiff(parseCodexTurnDiff(""))).toEqual({
+      files: 0,
+      additions: 0,
+      deletions: 0,
+    });
+  });
+
+  it("keeps a valid file that follows an empty snapshot", () => {
+    // A leading blank line (or any other empty segment) is treated as part of
+    // the snapshot preamble, not as the whole snapshot: the parser must keep
+    // parsing the real file entries that follow it (contract from OPE-12601).
+    const patch = [
+      "",
+      "diff --git a/src/after-empty.ts b/src/after-empty.ts",
+      "new file mode 100644",
+      "--- /dev/null",
+      "+++ b/src/after-empty.ts",
+      "@@ -0,0 +1 @@",
+      "+added",
+    ].join("\n");
+    expect(parseCodexTurnDiff(patch)).toEqual([
+      expect.objectContaining({
+        path: "src/after-empty.ts",
+        operation: "create",
+        additions: 1,
+        deletions: 0,
+      }),
+    ]);
+  });
 });

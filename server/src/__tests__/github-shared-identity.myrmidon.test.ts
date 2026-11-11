@@ -443,10 +443,28 @@ const support = await getEmbeddedPostgresTestSupport();
     // A second operation reuses the cached token without another GitHub call
     // or a duplicate issuance activity row.
     github.calls = [];
+    vault.resolveSecretValue.mockClear();
     expect((await resolveGitHubOperationCredentials(db, { ...input, repository: "owner-a/repo-a" })).env.GH_TOKEN).toBe(token);
     expect(github.calls).toEqual([]);
+    expect(vault.resolveSecretValue).not.toHaveBeenCalled();
     const repeatedActivity = await db.select().from(activityLog).where(eq(activityLog.companyId, input.companyId));
     expect(repeatedActivity.filter((row) => row.action === "myrmidon.github_app.issued")).toHaveLength(1);
+
+    // OPE-12537: 100 git operations in a run reuse the cached token, yielding <= 1 total secret read.
+    // The per-run credentials fuse (OPE-12446) counts every broker request before the cache
+    // short-circuit, so the 100-request probe raises the fuse limit — exactly as the fuse
+    // tests themselves do — and asserts the secret store, not the fuse, here.
+    vi.stubEnv("MYRMIDON_GITHUB_CREDENTIALS_FUSE_PER_MINUTE", "1000");
+    try {
+      vault.resolveSecretValue.mockClear();
+      for (let i = 0; i < 100; i++) {
+        await resolveGitHubOperationCredentials(db, { ...input, repository: "owner-a/repo-a" });
+      }
+      expect(vault.resolveSecretValue).not.toHaveBeenCalled();
+    } finally {
+      // Empty value → the fuse falls back to its default limit for the remaining tests.
+      vi.stubEnv("MYRMIDON_GITHUB_CREDENTIALS_FUSE_PER_MINUTE", "");
+    }
   });
 
   it("separates products: product A under App A, product B under App B, neither absent, both an error", async () => {

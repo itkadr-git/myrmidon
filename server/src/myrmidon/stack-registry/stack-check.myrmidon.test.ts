@@ -29,8 +29,10 @@ import {
 } from "./escalation.js";
 import {
   compareContainsFix,
+  compareVersionTags,
   countBehind,
   extractReleaseNotes,
+  findMaxTagIndex,
   githubJsonPort,
   normaliseVersion,
   readReleaseList,
@@ -146,6 +148,84 @@ describe("stack release check helpers", () => {
     expect(notes?.truncated).toBe(true);
     expect(notes?.lines[0]).toContain("security fix");
     expect(notes?.lines[0]).toContain("3.2.0");
+  });
+
+  it("does not flag security when security notes exist only in older releases than current version", () => {
+    const releases = [
+      {
+        tag_name: "3.2.0",
+        published_at: "2026-10-01T00:00:00Z",
+        body: "### Changes\n* Routine refactoring and perf improvements",
+      },
+      {
+        tag_name: "3.1.0",
+        published_at: "2026-09-01T00:00:00Z",
+        body: "### Security\n* Fix CVE-2026-9999 remote code execution",
+      },
+      {
+        tag_name: "3.0.0",
+        published_at: "2026-08-01T00:00:00Z",
+        body: "Initial 3.0 release",
+      },
+    ];
+    const records = readReleaseList("github-releases", releases);
+
+    // If local version is already 3.1.0, the CVE in 3.1.0 was addressed locally; only 3.2.0 is newer.
+    const notesForCurrent = extractReleaseNotes(records, { localVersion: "3.1.0" });
+    expect(notesForCurrent?.hasSecurity).toBe(false);
+
+    // If local version is 3.0.0, 3.1.0 is in the range between local and latest.
+    const notesForOlder = extractReleaseNotes(records, { localVersion: "3.0.0" });
+    expect(notesForOlder?.hasSecurity).toBe(true);
+
+    // If local version is unknown, only the latest release is scanned for security to avoid perpetual flags.
+    const notesForUnknown = extractReleaseNotes(records);
+    expect(notesForUnknown?.hasSecurity).toBe(false);
+  });
+
+  it("detects security releases when local version is older than the fetched release window", () => {
+    // Reviewer-reproduced defect: the release window is bounded (e.g. per_page=30,
+    // or limit-capped in tests). When local version is 1.0.0 and older than every
+    // entry in the fetched feed window [4.0.0, 3.0.0, 2.0.0], the local version is
+    // still behind, so security releases between 1.0.0 and upstream.latest (3.0.0)
+    // MUST still flag hasSecurity.
+    const releases = [
+      {
+        tag_name: "4.0.0",
+        published_at: "2026-10-01T00:00:00Z",
+        body: "### Changes\n* Routine improvements",
+      },
+      {
+        tag_name: "3.0.0",
+        published_at: "2026-09-01T00:00:00Z",
+        body: "### Security\n* Fix CVE-2026-54321 arbitrary code execution",
+      },
+      {
+        tag_name: "2.0.0",
+        published_at: "2026-08-01T00:00:00Z",
+        body: "### Changes\n* Refactoring",
+      },
+    ];
+    const records = readReleaseList("github-releases", releases);
+
+    // Local 1.0.0 is not in the list, but it is strictly older than all entries.
+    // The security note in 3.0.0 must be detected.
+    const notes = extractReleaseNotes(records, { limit: 1, localVersion: "1.0.0" });
+    expect(notes?.hasSecurity).toBe(true);
+
+    // If local version is already 3.0.0 (addressed), only 4.0.0 is in range -> false.
+    const notesForCurrent = extractReleaseNotes(records, { limit: 1, localVersion: "3.0.0" });
+    expect(notesForCurrent?.hasSecurity).toBe(false);
+  });
+
+  it("compares version tags numerically and handles suffixes", () => {
+    expect(compareVersionTags("2.10.0", "2.9.0")).toBe(1);
+    expect(compareVersionTags("2.9.0", "2.10.0")).toBe(-1);
+    expect(compareVersionTags("1.0.0", "1.0.0")).toBe(0);
+    expect(compareVersionTags("3.2.0-beta", "3.2.0")).toBe(-1);
+    expect(compareVersionTags("3.2.0", "3.2.0-beta")).toBe(1);
+    expect(compareVersionTags("v2026.1106.0", "v2026.1001.0")).toBe(1);
+    expect(compareVersionTags("main", "1.0.0")).toBeNull();
   });
 
   it("detects a known fix commit inside the compare range", () => {
@@ -638,6 +718,28 @@ describeEmbeddedPostgres("stack release check", () => {
     }
   });
 
+  it("http-version probe accepts api_version field in response (e.g. Hindsight FastAPI)", async () => {
+    const realFetch = globalThis.fetch;
+    const seen: string[] = [];
+    globalThis.fetch = (async (url: RequestInfo | URL) => {
+      seen.push(String(url));
+      return new Response(JSON.stringify({ api_version: "1.2.0" }), { status: 200 });
+    }) as typeof globalThis.fetch;
+    const saved = process.env.MYRMIDON_STACK_HTTP_HINDSIGHT;
+    process.env.MYRMIDON_STACK_HTTP_HINDSIGHT = "http://hindsight.local:8080/version";
+    try {
+      const doc = await collectStackLocal({ now: NOW, serverInfo: { processStartedAt: "", git: { available: false, unavailableReason: "git_unavailable" } }, images: fakeImages({}) });
+      const hindsight = doc.components.find((c) => c.name === "hindsight")!;
+      expect(hindsight.local.version).toBe("1.2.0");
+      expect(hindsight.local.runningOn).toBe("http://hindsight.local:8080");
+      expect(hindsight.local.unknownReason).toBeNull();
+    } finally {
+      globalThis.fetch = realFetch;
+      if (saved === undefined) delete process.env.MYRMIDON_STACK_HTTP_HINDSIGHT;
+      else process.env.MYRMIDON_STACK_HTTP_HINDSIGHT = saved;
+    }
+  });
+
   it("http-version probe appends the documented endpoint to a bare base URL (Langfuse health path)", async () => {
     const realFetch = globalThis.fetch;
     const seen: string[] = [];
@@ -672,6 +774,18 @@ describeEmbeddedPostgres("stack release check", () => {
     } finally {
       if (saved !== undefined) process.env.MYRMIDON_STACK_HTTP_LANGFUSE = saved;
     }
+  });
+
+  it("binds paperclip component to supported migration schema version", async () => {
+    const doc = await collectStackLocal({
+      now: NOW,
+      serverInfo: { processStartedAt: "", git: { available: false, unavailableReason: "git_unavailable" } },
+      images: fakeImages({}),
+    });
+    const paperclip = doc.components.find((c) => c.name === "paperclip")!;
+    expect(paperclip.local.version).toBe("v2026.1106.0");
+    expect(paperclip.local.runningOn).toBe("supported migration schema");
+    expect(paperclip.local.unknownReason).toBeNull();
   });
 
   it("does not count pre-release or nightly tags as the latest release", () => {
@@ -840,6 +954,48 @@ describeEmbeddedPostgres("stack release check", () => {
 
     expect(drafts.length).toBeGreaterThan(0);
     expect(drafts.some((d) => d.draft.component === "langfuse")).toBe(true);
+  });
+
+  it("does not create a duplicate draft task when a task for the same release already exists (even if done/closed)", async () => {
+    const drafts: Array<{ companyId: string; draft: StackBacklogDraft }> = [];
+    const port = fakePort({
+      "repos/langfuse/langfuse/releases": { status: 200, json: langfuseReleases() },
+    });
+    const baseDoc = documentWithLocal({ langfuse: { version: "langfuse/langfuse:3.0.0" } });
+    await writeStackDocument(db, baseDoc);
+
+    const companyId = randomUUID();
+    const { companies, issues } = await import("@myrmidon/db");
+    await db.insert(companies).values({ id: companyId, name: "Test Co 2", issuePrefix: "TC2" }).onConflictDoNothing();
+
+    // Simulate existing closed task for langfuse 3.2.0
+    await db.insert(issues).values({
+      id: randomUUID(),
+      companyId,
+      title: "langfuse 3.2.0",
+      description: "Previous update task",
+      status: "done",
+      priority: "medium",
+      originKind: "stack_update",
+      originId: "langfuse",
+    });
+
+    await checkStackReleases(db, {
+      fetchJson: port,
+      now: NOW,
+      collect: false,
+      createDraft: async (cid, draft) => {
+        drafts.push({ companyId: cid, draft });
+      },
+    });
+
+    // langfuse 3.2.0 is already closed/done, so no new draft should be created
+    // for it. Deduplication is company-scoped, and the embedded database is
+    // shared with earlier tests in this file (their companies stay), so only
+    // this test's own company is asserted here.
+    expect(
+      drafts.some((d) => d.companyId === companyId && d.draft.component === "langfuse"),
+    ).toBe(false);
   });
 });
 

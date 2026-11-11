@@ -413,34 +413,52 @@ export async function resolvePullRequestHeadCi(input: {
 }
 
 /** The pull request work product of an issue and its GitHub reference, as far as the board can read them. */
-type IssuePullRequestTarget =
+export type IssuePullRequestTarget =
   | { kind: "none" }
   | { kind: "unreadable"; pullRequestUrl: string | null }
   | { kind: "ok"; pullRequestUrl: string | null; reference: GitHubPullRequestReference };
 
-async function loadIssuePullRequestTarget(
+export async function loadIssuePullRequestTarget(
   db: Db,
   companyId: string,
   issueId: string,
 ): Promise<IssuePullRequestTarget> {
-  const products = await db
-    .select({
-      id: issueWorkProducts.id,
-      type: issueWorkProducts.type,
-      status: issueWorkProducts.status,
-      url: issueWorkProducts.url,
-      metadata: issueWorkProducts.metadata,
-      isPrimary: issueWorkProducts.isPrimary,
-      updatedAt: issueWorkProducts.updatedAt,
-    })
-    .from(issueWorkProducts)
-    .where(
-      and(
-        eq(issueWorkProducts.companyId, companyId),
-        eq(issueWorkProducts.issueId, issueId),
-        eq(issueWorkProducts.type, "pull_request"),
-      ),
-    );
+  let products: Array<{
+    id: string;
+    type: string;
+    status: string;
+    url: string | null;
+    metadata: unknown;
+    isPrimary: boolean | null;
+    updatedAt: Date;
+  }>;
+  try {
+    products = await db
+      .select({
+        id: issueWorkProducts.id,
+        type: issueWorkProducts.type,
+        status: issueWorkProducts.status,
+        url: issueWorkProducts.url,
+        metadata: issueWorkProducts.metadata,
+        isPrimary: issueWorkProducts.isPrimary,
+        updatedAt: issueWorkProducts.updatedAt,
+      })
+      .from(issueWorkProducts)
+      .where(
+        and(
+          eq(issueWorkProducts.companyId, companyId),
+          eq(issueWorkProducts.issueId, issueId),
+          eq(issueWorkProducts.type, "pull_request"),
+        ),
+      );
+  } catch {
+    // myrmidon(OPE-12146): a work-product read that fails (storage degraded,
+    // network loss) is NOT proof that no PR exists. Report it as `unreadable`
+    // so the self-check gate treats it as unknown evidence (a counted
+    // technical rejection), while recovery callers keep their bounded wait.
+    // Only a genuinely empty product list below answers `none`.
+    return { kind: "unreadable", pullRequestUrl: null };
+  }
   const product = selectOpenPullRequestWorkProduct(products);
   if (!product) return { kind: "none" };
   const metadata = asRecord(product.metadata) ?? {};

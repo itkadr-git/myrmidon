@@ -32,13 +32,13 @@
 сменится без перезапуска. При ошибке отправки на сервер каталог всё равно
 применится в текущем сеансе браузера: сообщение об успехе не подтверждает
 сохранение на сервере. Подробности предпросмотра и сохранения — в
-[руководстве по загрузке локали](../myrmidon/guides/locale-upload.ru.md).
+[руководстве по загрузке локали](Locale-upload.ru).
 
 ## Лимиты запусков (инстанс)
 
 **Instance → General → секция «Run limits»** — меняются вживую, без
 перезапуска сервера и без прерывания идущих прогонов
-([run-limits](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/guides/run-limits.ru.md)):
+([run-limits](Run-limits.ru)):
 
 | Настройка | Что ограничивает | По умолчанию |
 |---|---|---|
@@ -78,7 +78,7 @@
 запрос списка завершается ошибкой или возвращает некорректные данные,
 исследуйте проблему API/сервиса.
 
-Подробности: [руководство оператора хаба доступов](../myrmidon/guides/access-hub.ru.md).
+Подробности: [руководство оператора хаба доступов](Access-hub.ru).
 
 ## Параллельные ходы агента
 
@@ -99,12 +99,12 @@
 диапазон 1–50 и записывает его в конфиг шлюза бота. Карточка сравнивает то,
 что просит доска, с тем, что реально применил шлюз бота, и помечает
 расхождение
-([bot-container-card](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/guides/bot-container-card.ru.md)).
+([bot-container-card](Bot-container-card.ru)).
 
 Рядом: **WIP-лимит** ограничивает, сколько задач агент держит в работе —
 **Настройки компании → WIP limit**, живое значение видно в строке каждого
 агента
-([wip-limit](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/guides/wip-limit.ru.md)).
+([wip-limit](Wip-limit.ru)).
 Параметры самоорганизации роя (стартовая сила феромона по приоритетам,
 надбавка за ожидание, штраф за неудачный прогон без изменений задачи,
 срок аренды, потолок активных задач на агента, вытеснение P0)
@@ -114,9 +114,9 @@
 охранник побудок (`general.swarm.cooldownBaseMin` / `cooldownCeilingHours`);
 как включить рой и
 проверить его работу за три действия —
-[swarm-self-organization](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/guides/swarm-self-organization.ru.md).
+[swarm-self-organization](Swarm-self-organization.ru).
 Низкоуровневые детали очередей —
-[swarm-claim-settings](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/guides/swarm-claim-settings.ru.md).
+[swarm-claim-settings](Swarm-claim-settings.ru).
 
 ## Параллельные помощники
 
@@ -132,7 +132,7 @@
 сервера. Очистка любого поля ёмкости с сохранением отправляет `null` в PATCH
 и удаляет сохранённую подсказку. Изменение применяется на следующем тике
 сверки каждого бота, без перезапуска. Подробности:
-[parallel-helpers](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/guides/parallel-helpers.ru.md).
+[parallel-helpers](Parallel-helpers.ru).
 
 ## Касты агентов (справочник ролей компании)
 
@@ -140,7 +140,7 @@
 компании. Он начинается с двенадцати встроенных каст, а дальше владелец может
 создавать, править и удалять касты; роль в карточке агента — это ключ из
 этого справочника, и изменения видны рою сразу, без перезапуска
-([custom-castes](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/guides/custom-castes.ru.md)).
+([custom-castes](Custom-castes.ru)).
 
 ## Бюджеты (лимиты расхода по уровням)
 
@@ -160,9 +160,9 @@ API — без перезапуска и без перезагрузки стр�
 Нижняя таблица — дополняемый журнал изменений: кто, когда и что менял, новые
 записи сверху; удалённый лимит сохраняет свои строки. Чтение — участникам
 компании, каждая мутация — только актору доски. Подробности:
-[лимиты расхода](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/guides/budget-limits.ru.md)
+[лимиты расхода](Budget-limits.ru)
 (API и хранение) и
-[экран владельца](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/guides/budget-limits-ui.ru.md).
+[экран владельца](Budget-limits-ui.ru).
 
 ## Бэкапы
 
@@ -236,7 +236,7 @@ general). Сохранение — частичная запись: пишетс
   payload побудки ограничена не только по числу записей, но и по объёму.
   Настраивается переменными `MYRMIDON_LONG_TASK_CONTEXT_*` и
   `MYRMIDON_CONTINUATION_*` (с 1.6.6) — подробности в руководстве
-  [long-task-context](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/guides/long-task-context.md)
+  [long-task-context](Long-task-context.ru)
   и в
   [SETTINGS.ru.md](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/SETTINGS.ru.md).
 
@@ -249,7 +249,7 @@ general). Сохранение — частичная запись: пишетс
   настроек инстанса, с переопределениями в карточке агента.
 - **Режим бюджетов** — только сигнал, пауза с карточкой владельцу или
   жёсткий отказ новых прогонов; ставится вживую на инстанс
-  ([budget-enforcement](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/guides/budget-enforcement.ru.md)).
+  ([budget-enforcement](Budget-enforcement.ru)).
 - **Окна ленты внимания** — панель «Лента внимания» в настройках инстанса
   (Instance → General, с 1.6.6) задаёт, на сколько дней назад лента внимания
   ищет неразрешённый упавший или превысивший таймаут прогон (1–365 дней,
@@ -280,6 +280,16 @@ general). Сохранение — частичная запись: пишетс
 - `GET|PATCH /api/myrmidon/behavior-settings/company/:companyId` — чтение и обновление настроек уровня компании (требуются права доступа к компании).
 
 Строго соблюдается изоляция scope: маршруты инстанса отклоняют ключи компании, а маршруты компании отклоняют ключи инстанса с ошибкой HTTP 400. Полная спецификация API и каталог настроек: [SETTINGS.ru.md](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/SETTINGS.ru.md#17--api-runtime-настроек-behavior-settings-settings-to-ui).
+
+### Панель «Система» (Instance → General)
+
+Панель **Система** (`SystemSettingsPanel.tsx`) изменяет системные настройки и настройки мониторинга (SETTINGS-TO-UI E) на лету, без перезапуска:
+- **Deploy** (`system.deploy.enabled`, `autoRollback`, `autoUpdate`, `verifyTimeoutSec`, `tickSec`, `stepTimeoutSec`, `healthPollSec`, `healthTimeoutSec`) — переключатели самообновления доски и параметры deploy-smoke (переменные `MYRMIDON_DEPLOY_*`).
+- **Tracing** (`system.tracing.windowSec`, `healthTtlSec`, `signalIntervalSec`) — окно проверки здоровья LLM-трейсинга, TTL кеша отчёта и период прохода сигнала оператору (переменные `MYRMIDON_TRACING_*`).
+- **Monitoring (Zabbix)** (`system.zabbix.hostGroups`, `maxWindowSec`) — группы хостов, переводимые в обслуживание вместе с окном инстанса, и длина окна (переменные `MYRMIDON_ZABBIX_*`).
+- **Deployment (только чтение)** — `GET /api/myrmidon/system/deployment` сообщает, какие инфраструктурные интеграции настроены (LLM-шлюз, hindsight, Zabbix, tracing ClickHouse, OCR, Docker-сокет, fleetd, Langfuse, egress-прокси): для ссылок на секреты сам факт, для URL хост, никогда сами значения.
+
+Заданная переменная окружения остаётся принудительным переопределением; иначе действует сохранённое значение, иначе умолчание — каждое поле показывает действующий источник. Настройки hindsight остаются в карточке памяти агента, а не в этой панели.
 
 ### Панель «Ограждения» (Instance → General)
 

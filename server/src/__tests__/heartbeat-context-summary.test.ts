@@ -625,6 +625,8 @@ describe("summarizeHeartbeatRunListResultJson", () => {
         totalCostUsd: "1.25",
         costUsd: "0.75",
         costUsdCamel: "0.5",
+        outcome: null,
+        stopKind: null,
       }),
     ).toEqual({
       summary: "Completed the task",
@@ -632,6 +634,30 @@ describe("summarizeHeartbeatRunListResultJson", () => {
       total_cost_usd: 1.25,
       cost_usd: 0.75,
       costUsd: 0.5,
+    });
+  });
+
+  it("myrmidon(OPE-12316): keeps outcome/stopKind codes in the summarized resultJson", () => {
+    expect(
+      summarizeHeartbeatRunListResultJson({
+        summary: "Execution stopped",
+        outcome: "blocked",
+        stopKind: "budget_limit",
+      }),
+    ).toEqual({
+      summary: "Execution stopped",
+      outcome: "blocked",
+      stopKind: "budget_limit",
+    });
+    // myrmidon(OPE-12316): codes alone (no legacy summary) still summarize.
+    expect(
+      summarizeHeartbeatRunListResultJson({
+        outcome: "failed",
+        stopKind: "iteration_limit",
+      }),
+    ).toEqual({
+      outcome: "failed",
+      stopKind: "iteration_limit",
     });
   });
 
@@ -643,6 +669,8 @@ describe("summarizeHeartbeatRunListResultJson", () => {
         message: undefined,
         error: "   ",
         totalCostUsd: "abc",
+        outcome: null,
+        stopKind: null,
       }),
     ).toBeNull();
   });

@@ -30,6 +30,11 @@
 именем `myrmidon*`; старые имена `paperclip*` продолжают работать как
 устаревшие псевдонимы один выпуск, чтобы установленные системы не ломались.
 
+Выданные внешним клиентам токены доступа к шлюзу находятся под постоянным
+мониторингом: лента внимания заблаговременно (за 14 дней) выставляет карточки
+оператору, рекомендуя ротацию для активных токенов и отзыв для истекших
+неиспользованных токенов без раскрытия секретных хешей.
+
 ## Облачные хранилища и Microsoft 365
 
 Облачный коннектор делает облачное хранилище полноценным модулем доски:
@@ -59,7 +64,7 @@
 памяти брокера, объединяются параллельными запросами (single-flight), сохраняются
 на диске во временном каталоге прогона (`PAPERCLIP_GITHUB_CREDENTIALS_CACHE_DIR`)
 и защищаются предохранителем частоты запросов (`MYRMIDON_GITHUB_CREDENTIALS_FUSE_PER_MINUTE`, по умолчанию 60/мин).
-См. [Руководство по кэшированию учетных данных GitHub](../myrmidon/guides/github-credentials-cache.ru.md).
+См. [Руководство по кэшированию учетных данных GitHub](Github-credentials-cache.ru).
 
 ## Плагины и права доступа
 
@@ -70,20 +75,19 @@
 
 Оболочка UI2 также показывает слоты боковой панели и launcher-элементы
 установленных плагинов в рейке и мобильной навигации. UI-вклад страницы плагина
-загружается при прямом открытии URL. См. [руководство по оболочке UI2](../myrmidon/guides/ui2-shell.ru.md)
-и [описание изменений 1.6.6](../myrmidon/changes/1-6-6-ui2-plugin-nav.md).
+загружается при прямом открытии URL. См. [руководство по оболочке UI2](Ui2-shell.ru).
 
 ## Подробнее
 
-- [Мост браузера: шлюз и сопряжение](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/guides/browser-bridge-gateway.md)
-- [Расширение моста браузера](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/guides/bridge-extension.md)
-- [Панель коннекторов](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/guides/connector-panel.md)
-- [Браузеры: живой экран](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/guides/browsers.md)
-- [Внешние коннекторы MCP](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/guides/external-mcp-connectors.md)
-- [Имена инструментов MCP доски](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/guides/mcp-tool-names.md)
-- [Коннектор облачных хранилищ](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/guides/cloud-connector.md)
-- [Файлы и почта Microsoft 365 для ботов](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/guides/cloud-files-connector.md)
+- [Мост браузера: шлюз и сопряжение](Browser-bridge-gateway.ru)
+- [Расширение моста браузера](Bridge-extension.ru)
+- [Панель коннекторов](Connector-panel.ru)
+- [Браузеры: живой экран](Browsers.ru)
+- [Внешние коннекторы MCP](External-mcp-connectors.ru)
+- [Имена инструментов MCP доски](Mcp-tool-names.ru)
+- [Коннектор облачных хранилищ](Cloud-connector.ru)
+- [Файлы и почта Microsoft 365 для ботов](Cloud-files-connector.ru)
 - [Общие медиа- и офисные инструменты](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/media-tools.md)
-- [Путь OCR: PDF в текст](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/guides/ocr.md)
-- [Общая учётная запись GitHub](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/guides/github-shared-identity.md)
-- [Возможности плагинов](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/guides/plugin-capabilities.ru.md)
+- [Путь OCR: PDF в текст](Ocr.ru)
+- [Общая учётная запись GitHub](Github-shared-identity.ru)
+- [Возможности плагинов](Plugin-capabilities.ru)

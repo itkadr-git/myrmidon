@@ -350,7 +350,8 @@
     "reviewRouting": "Review routing",
     "corpus": "Knowledge corpus",
     "agentExchange": "Agent exchanges",
-    "budgets": "Budgets"
+    "budgets": "Budgets",
+    "knowledge": "Knowledge"
   },
   "corpus": {
     "title": "Knowledge corpus",
@@ -753,6 +754,9 @@
       "deprecated": "deprecated"
     },
     "revision": "revision {{count}}",
+    "gitDrift": "Git record drift: {{reason}}",
+    "gitDriftMissing": "missing from git",
+    "gitDriftContentMismatch": "content differs from git",
     "approver": {
       "unmanaged": "no approval needed (unmanaged)",
       "notApproved": "not approved",
@@ -1836,6 +1840,41 @@
     }
   },
   "ui2.nav.group.plugins": "Plugins",
+  "knowledgeSettings": {
+    "title": "Knowledge settings",
+    "intro": "Limits, auto-accept and the maintenance schedule for company knowledge items.",
+    "maxItems": "Maximum items",
+    "maxRevisionBytes": "Maximum revision size (bytes)",
+    "bounds": "From {{min}} to {{max}}. Default: {{fallback}}.",
+    "invalidNumber": "Enter a whole number within the allowed range.",
+    "autoAccept": "Auto-accept",
+    "autoAcceptHint": "Accept incoming revisions automatically when confidence meets the threshold.",
+    "minConfidence": "Minimum confidence",
+    "minConfidenceHint": "Only accept revisions with confidence equal to or higher than this tier. Default: {{fallback}}.",
+    "invalidConfidence": "Enter a fraction between 0 and 1 (up to four decimals).",
+    "schedule": "Maintenance schedule",
+    "scheduleHint": "Standard 5-part cron syntax (e.g. 0 3 * * * for 03:00 daily). Leave empty to disable. Default: {{fallback}}.",
+    "invalidSchedule": "Enter a valid 5-field cron expression, or leave empty.",
+    "reviewers": "Section reviewers",
+    "reviewersHint": "Default reviewers routed by section path.",
+    "section": "Section",
+    "reviewerKind": "Kind",
+    "kindUser": "User",
+    "kindAgent": "Agent",
+    "reviewerId": "ID",
+    "addReviewer": "Add reviewer",
+    "removeReviewer": "Remove",
+    "invalidReviewers": "Each reviewer needs a section and a non-empty ID.",
+    "save": "Save changes",
+    "saved": "Settings saved",
+    "saveError": "Failed to save settings",
+    "noCompany": "Select a company to edit knowledge settings.",
+    "loadError": "Failed to load knowledge settings",
+    "loading": "Loading…",
+    "source.ui": "UI override",
+    "source.env": "Environment",
+    "source.default": "Default"
+  },
   "modelProviders": {
     "channels": {
       "plan": "Plan",

@@ -483,6 +483,55 @@ describeEmbeddedPostgres("heartbeat list", () => {
     await db.update(heartbeatRuns).set({ updatedAt: new Date("2026-06-01T00:00:00.000Z") }).where(eq(heartbeatRuns.id, page2[0]!.id));
     expect(await service.listVersionKey(companyId)).toBe(key1);
   });
+
+  it("myrmidon(OPE-12316): projects resultOutcome and resultStopKind on list runs and in summarized resultJson", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const runId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "OutcomeTest",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "OutcomeAgent",
+      role: "engineer",
+      status: "running",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+
+    await db.insert(heartbeatRuns).values({
+      id: runId,
+      companyId,
+      agentId,
+      status: "cancelled",
+      resultJson: {
+        schema: "paperclip.run_outcome.v1",
+        outcome: "blocked",
+        stopKind: "budget_limit",
+        summary: "Execution stopped: budget reached",
+      },
+    });
+
+    const runs = await heartbeatService(db).list(companyId, agentId, 1);
+    expect(runs).toHaveLength(1);
+    expect(runs[0]?.id).toBe(runId);
+    expect(runs[0]?.resultOutcome).toBe("blocked");
+    expect(runs[0]?.resultStopKind).toBe("budget_limit");
+    expect(runs[0]?.resultJson).toMatchObject({
+      outcome: "blocked",
+      stopKind: "budget_limit",
+      summary: "Execution stopped: budget reached",
+    });
+  });
 });
 
 describe("heartbeat run event payload bounding", () => {
