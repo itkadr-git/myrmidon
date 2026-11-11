@@ -54,7 +54,7 @@ func TestAllow(t *testing.T) {
 		{"A9 next", "DELETE", v + "containers/" + nameANext + "?force=true&v=true", Route{ID: A9, BotKey: keyA, Suffix: SuffixNext, Name: nameANext}},
 		{"A9 helper", "DELETE", v + "containers/" + nameAHelp + "?force=true&v=true", Route{ID: A9, BotKey: keyA, Suffix: SuffixHelper, Name: nameAHelp}},
 		{"A22", "DELETE", v + "containers/" + nameA + "?force=true&v=true&myrmidon-decommission=true", Route{ID: A22, BotKey: keyA, Name: nameA}},
-		{"A10","POST", v + "containers/" + nameA + "/stop?t=30", Route{ID: A10, BotKey: keyA, Name: nameA}},
+		{"A10", "POST", v + "containers/" + nameA + "/stop?t=30", Route{ID: A10, BotKey: keyA, Name: nameA}},
 		{"A11", "POST", v + "containers/" + nameA + "/restart?t=30", Route{ID: A11, BotKey: keyA, Name: nameA}},
 		{"A13", "GET", v + "containers/" + nameA + "/archive?path=%2Fbot%2Fhermes%2F.myrmidon%2Fclone-hygiene.json", Route{ID: A13, BotKey: keyA, Name: nameA}},
 		{"A16", "GET", v + "containers/" + nameA + "/archive?path=%2Fbot%2Fhermes%2Fskills", Route{ID: A16, BotKey: keyA, Name: nameA}},

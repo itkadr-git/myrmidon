@@ -11,23 +11,29 @@ import (
 
 	"github.com/itkadr-git/myrmidon/tools/dockergate/internal/config"
 	"github.com/itkadr-git/myrmidon/tools/dockergate/internal/deny"
+	"github.com/itkadr-git/myrmidon/tools/dockergate/internal/disk"
 	"github.com/itkadr-git/myrmidon/tools/dockergate/internal/fakedocker"
 	"github.com/itkadr-git/myrmidon/tools/dockergate/internal/gate"
 )
 
-// A22 (OPE-12654): the decommission delete of a bot's main container, its
-// leftovers, its data directory and its quota project. A variant of A9 for the
-// main container the way A17 is a variant of A10.
+// A22 (OPE-12654): the decommission delete of a bot's main container and its
+// leftovers. The data directory and the quota project are NOT removed here:
+// the gate is uid 65532 on a read-only volume root (the ADM hand-off of
+// 11.11), so the host GC owns the directory — and the quota entries, which
+// Quota.Remove refuses to clear while the directory still exists. A variant of
+// A9 for the main container the way A17 is a variant of A10.
 
 const a22Tail = "?force=true&v=true&myrmidon-decommission=true"
 
 // a22Rig is a rig whose volume root is a temporary directory that holds the
-// bot's data directory, with a quota stub that keeps what it was asked: the
-// tests never reach the host's /etc/projid or xfs_quota.
+// bot's data directory, with a quota stub that keeps what it was asked and
+// refuses like the real Quota.Remove does while the directory still exists
+// (disk.ErrQuotaUnavailable stands in for its `bot directory still exists`):
+// the tests never reach the host's /etc/projid or xfs_quota.
 func a22Rig(t *testing.T) (*rig, *putStub, string) {
 	t.Helper()
 	volumeRoot := t.TempDir()
-	st := &putStub{}
+	st := &putStub{err: disk.ErrQuotaUnavailable}
 	r := newRig(t, withDisk(st), withConfig(func(c *config.Config) { c.VolumeRoot = volumeRoot }))
 	data := filepath.Join(volumeRoot, r.key())
 	for _, f := range []string{"hermes/sessions/s1.json", "workspace/repo/.git/HEAD", "scratch/tmp.txt"} {
@@ -94,10 +100,44 @@ func a22WantUntouched(t *testing.T, r *rig, st *putStub, data string, mainSeeded
 	if got := quotaRemoved(st); len(got) != 0 {
 		t.Errorf("quota projects removed: %v", got)
 	}
-	for _, event := range []string{"bot_data_removed", "bot_data_remove_failed", "disk_project_removed", "disk_project_remove_failed"} {
+	for _, event := range []string{
+		"bot_data_removed", "bot_data_remove_failed",
+		"bot_data_left_for_host_gc", "quota_left_for_host_gc",
+		"disk_project_removed", "disk_project_remove_failed", "disk_project_still_has_directory",
+	} {
 		if l := a22Event(t, r, event); l != nil {
 			t.Errorf("logged %s: %+v", event, *l)
 		}
+	}
+}
+
+// a22WantHandedToHostGC: the decommission delete went through, the data
+// directory stays and is handed to the host GC by name, and the quota stub was
+// asked and refused (the stub stands in for Quota.Remove, which refuses while
+// the directory exists).
+func a22WantHandedToHostGC(t *testing.T, r *rig, st *putStub, data string) {
+	t.Helper()
+	if !pathExists(t, data) {
+		t.Fatal("the bot data directory was removed by the gate")
+	}
+	if got := quotaRemoved(st); !reflect.DeepEqual(got, []string{r.key()}) {
+		t.Errorf("quota projects asked: %v, want [%s]", got, r.key())
+	}
+	ev := a22Event(t, r, "bot_data_left_for_host_gc")
+	if ev == nil || ev.BotKey != r.key() || ev.Detail != "" {
+		t.Errorf("bot_data_left_for_host_gc line: %+v", ev)
+	}
+	if ev := a22Event(t, r, "disk_project_removed"); ev != nil {
+		t.Errorf("disk_project_removed logged: %+v", *ev)
+	}
+	if ev := a22Event(t, r, "disk_project_remove_failed"); ev != nil {
+		t.Errorf("disk_project_remove_failed logged: %+v", *ev)
+	}
+	if ev := a22Event(t, r, "disk_project_still_has_directory"); ev == nil || ev.Level != gate.LevelInfo {
+		t.Errorf("disk_project_still_has_directory line: %+v", ev)
+	}
+	if ev := a22Event(t, r, "quota_left_for_host_gc"); ev == nil || ev.BotKey != r.key() {
+		t.Errorf("quota_left_for_host_gc line: %+v", ev)
 	}
 }
 
@@ -120,20 +160,9 @@ func TestAllow_A22_DecommissionOfAStoppedMain(t *testing.T) {
 			r.wantURIs("GET "+r.target("", "/json"), "GET "+r.target(".next", "/json"), "GET "+r.target(".helper", "/json"),
 				"DELETE /v1.45/containers/"+id+"?force=true&v=true")
 			r.wantDaemonHeaders()
-			if pathExists(t, data) {
-				t.Error("the bot data directory is still there")
-			}
+			a22WantHandedToHostGC(t, r, st, data)
 			if !pathExists(t, filepath.Dir(data)) {
 				t.Error("the volume root itself was removed")
-			}
-			if got := quotaRemoved(st); !reflect.DeepEqual(got, []string{r.key()}) {
-				t.Errorf("quota projects removed %v", got)
-			}
-			if ev := a22Event(t, r, "bot_data_removed"); ev == nil || ev.BotKey != r.key() || ev.Detail != "" {
-				t.Errorf("bot_data_removed line: %+v", ev)
-			}
-			if ev := a22Event(t, r, "bot_data_remove_failed"); ev != nil {
-				t.Errorf("bot_data_remove_failed logged: %+v", *ev)
 			}
 		})
 	}
@@ -193,12 +222,7 @@ func TestAllow_A22_RemovesTheLeftoversOfAnInterruptedRecreateOrApply(t *testing.
 		"DELETE /v1.45/containers/"+nextID+"?force=true&v=true",
 		"DELETE /v1.45/containers/"+helperID+"?force=true&v=true",
 		"DELETE /v1.45/containers/"+mainID+"?force=true&v=true")
-	if pathExists(t, data) {
-		t.Error("the bot data directory is still there")
-	}
-	if got := quotaRemoved(st); !reflect.DeepEqual(got, []string{r.key()}) {
-		t.Errorf("quota projects removed %v", got)
-	}
+	a22WantHandedToHostGC(t, r, st, data)
 }
 
 // The route exists for the main container only, and no target can name a key
@@ -241,8 +265,8 @@ func TestDeny_A22_ForeignMainIsNotTouched(t *testing.T) {
 	a22WantUntouched(t, r, st, data, true)
 }
 
-// A main container that is gone already: the daemon's 404, and the data stays
-// (the gate only removes it after it deleted the container it verified as ours).
+// A main container that is gone already: the daemon's 404, and nothing else
+// happens — the data directory is the host GC's from the start.
 func TestAllow_A22_MissingMainIs404AndKeepsTheData(t *testing.T) {
 	r, st, data := a22Rig(t)
 	res := r.send("DELETE", r.target("", a22Tail), nil, nil)
@@ -253,45 +277,10 @@ func TestAllow_A22_MissingMainIs404AndKeepsTheData(t *testing.T) {
 	a22WantUntouched(t, r, st, data, false)
 }
 
-// The data removal fails soft: the container delete is answered as the daemon
-// answered it, and bot_data_remove_failed names the reason in the fixed
-// vocabulary. Here a link stands in place of the bot directory; it is never
-// followed. (In production the reason is read_only while the volume root is
-// mounted read-only into the gate.)
-func TestAllow_A22_DataRemovalFailureIsSoft(t *testing.T) {
-	volumeRoot := t.TempDir()
-	target := t.TempDir()
-	keep := filepath.Join(target, "keep")
-	if err := os.WriteFile(keep, []byte("x"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	st := &putStub{}
-	r := newRig(t, withDisk(st), withConfig(func(c *config.Config) { c.VolumeRoot = volumeRoot }))
-	if err := os.Symlink(target, filepath.Join(volumeRoot, r.key())); err != nil {
-		t.Fatal(err)
-	}
-	r.seedMain("exited")
-	wantStatus(t, r.send("DELETE", r.target("", a22Tail), nil, nil), 204)
-	r.lastDecision()
-	if _, ok := r.d.Get(r.name("")); ok {
-		t.Error("the main container is still there")
-	}
-	if !pathExists(t, keep) || !pathExists(t, filepath.Join(volumeRoot, r.key())) {
-		t.Error("the link or what it points at was touched")
-	}
-	ev := a22Event(t, r, "bot_data_remove_failed")
-	if ev == nil || ev.Level != gate.LevelError || ev.BotKey != r.key() || ev.Detail != "not_a_directory" {
-		t.Errorf("bot_data_remove_failed line: %+v", ev)
-	}
-	if ev := a22Event(t, r, "bot_data_removed"); ev != nil {
-		t.Errorf("bot_data_removed logged: %+v", *ev)
-	}
-	// The quota project is still asked to go; the real quota code refuses while
-	// the directory exists (disk.Quota.Remove), which is the right answer here.
-	if got := quotaRemoved(st); !reflect.DeepEqual(got, []string{r.key()}) {
-		t.Errorf("quota projects removed %v", got)
-	}
-}
+// (Removed with the gate-side data removal, 11.11: the gate is uid 65532 on a
+// read-only volume root, so the soft-failure path TestAllow_A22_
+// DataRemovalFailureIsSoft had no production path left. The host GC
+// (host-clone-cache-gc.mjs) carries the removal failure cases now.)
 
 // A9 keeps its meaning: without a .next replacement the plain delete of the
 // main container is still refused, decommission or not.

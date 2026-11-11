@@ -5,7 +5,6 @@ import (
 	"net/http"
 
 	"github.com/itkadr-git/myrmidon/tools/dockergate/internal/deny"
-	"github.com/itkadr-git/myrmidon/tools/dockergate/internal/disk"
 	"github.com/itkadr-git/myrmidon/tools/dockergate/internal/route"
 	"github.com/itkadr-git/myrmidon/tools/dockergate/internal/upstream"
 )
@@ -13,8 +12,7 @@ import (
 // a22: the decommission delete of a bot's main container (OPE-12654). The
 // agent left the bot runtime (its card moved to another adapter, or it was
 // terminated or deleted), so the main container goes without the `.next`
-// replacement that A9 requires, and the bot's quota project and data directory
-// go with it.
+// replacement that A9 requires, and the bot's quota project goes with it.
 //
 // The main container must be ours and stopped (created, exited, dead): the
 // board stops it first with the idle-stop route (A17), which refuses a stop in
@@ -23,13 +21,18 @@ import (
 // of an interrupted recreate or apply: it is deleted first, so no container of
 // the bot outlives the decommission (the board never asks for them again).
 //
-// The data directory <volumeRoot>/<botKey> is removed after the main container,
-// and only when the daemon confirmed that delete. Its removal fails soft: the
-// delete is already answered, a failure is logged as bot_data_remove_failed
-// with a fixed reason (read_only when the volume root is mounted read-only,
-// permission when the gate may not delete there), and the directory stays for
-// the operator. The quota project is removed last: Quota.Remove refuses while
-// the directory still exists.
+// The data directory <volumeRoot>/<botKey> is not removed here: the gate runs
+// as uid 65532 and holds the volume root read-only, so it cannot remove it
+// (the ADM hand-off of 11.11). The host GC (scripts/myrmidon/host-gc/) owns the
+// removal instead: it deletes the directory of a bot with no main container
+// after the retention delay, and only when the bot's clones hold no unpushed
+// work. The gate answers the delete without touching the directory and logs
+// `bot_data_left_for_host_gc`.
+//
+// The quota project waits too: Quota.Remove refuses while the directory still
+// exists, so the attempt here fails with `disk_project_still_has_directory`
+// and logs `quota_left_for_host_gc` — a flow event, not an error: the same
+// pass that removes the directory clears the entries after it.
 func (rs *reqState) a22(ctx context.Context, st *runtime, rt *route.Route, bs *botState) *deny.Error {
 	def, _, _ := rs.timeouts()
 	unlock, derr := rs.g.lockBot(ctx, bs)
@@ -95,21 +98,19 @@ func (rs *reqState) a22(ctx context.Context, st *runtime, rt *route.Route, bs *b
 		return nil
 	}
 
-	removed, err := disk.RemoveBotData(st.cfg.VolumeRoot, rt.BotKey)
-	switch {
-	case err != nil:
-		rs.g.log.Write(Line{Level: LevelError, Event: "bot_data_remove_failed", BotKey: rt.BotKey, Reason: "decommission", Detail: disk.BotDataFailure(err)})
-	case removed:
-		rs.g.log.Write(Line{Event: "bot_data_removed", BotKey: rt.BotKey, Reason: "decommission"})
-	default:
-		rs.g.log.Write(Line{Event: "bot_data_removed", BotKey: rt.BotKey, Reason: "decommission", Detail: "absent"})
-	}
+	// The data directory stays (see the comment above): the host GC owns it.
+	// Say so once, with a fixed name, so the operator knows the directory is
+	// not lost — it is owned by the host pass.
+	rs.g.log.Write(Line{Event: "bot_data_left_for_host_gc", BotKey: rt.BotKey, Reason: "decommission"})
 
+	// The quota project waits for the same host pass (see the comment above):
+	// Quota.Remove refuses while the directory exists.
 	cleanupCtx, cancel := context.WithTimeout(ctx, def)
-	err = rs.g.opt.Disk.Remove(cleanupCtx, rt.BotKey)
+	err := rs.g.opt.Disk.Remove(cleanupCtx, rt.BotKey)
 	cancel()
 	if err != nil {
-		rs.g.log.Write(Line{Level: LevelError, Event: "disk_project_remove_failed", BotKey: rt.BotKey, Reason: "decommission"})
+		rs.g.log.Write(Line{Level: LevelInfo, Event: "disk_project_still_has_directory", BotKey: rt.BotKey, Reason: "decommission"})
+		rs.g.log.Write(Line{Event: "quota_left_for_host_gc", BotKey: rt.BotKey})
 	} else {
 		rs.g.log.Write(Line{Event: "disk_project_removed", BotKey: rt.BotKey})
 	}
