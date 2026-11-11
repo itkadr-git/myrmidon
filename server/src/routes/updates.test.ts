@@ -1,25 +1,31 @@
-import express from "express";
+import express, { type Request } from "express";
 import request from "supertest";
 import { describe, expect, it } from "vitest";
 import { errorHandler } from "../middleware/index.js";
 import { updatesRoutes } from "./updates.js";
 
-function createApp() {
+type Actor = Request["actor"];
+
+function createAppWithActor(actor: Actor) {
   const app = express();
   app.use(express.json());
   app.use((req, _res, next) => {
-    (req as any).actor = {
-      type: "board",
-      userId: "instance-admin-1",
-      source: "local_implicit",
-      companyIds: ["company-1"],
-      isInstanceAdmin: true,
-    };
+    req.actor = actor;
     next();
   });
   app.use("/api", updatesRoutes());
   app.use(errorHandler);
   return app;
+}
+
+function createApp() {
+  return createAppWithActor({
+    type: "board",
+    userId: "instance-admin-1",
+    source: "local_implicit",
+    companyIds: ["company-1"],
+    isInstanceAdmin: true,
+  });
 }
 
 describe("updates routes (OPE-10268)", () => {
@@ -357,5 +363,60 @@ describe("updates routes (OPE-10268)", () => {
 
       expect(invalidRes.status).toBe(400);
     });
+  });
+});
+
+describe("updates routes actor enforcement (OPE-12700)", () => {
+  it("rejects a request without an actor", async () => {
+    const app = createAppWithActor({ type: "none" });
+    const res = await request(app).get("/api/updates");
+    expect(res.status).toBe(401);
+  });
+
+  it("rejects an agent key on GET /updates and PUT /updates/settings", async () => {
+    const app = createAppWithActor({
+      type: "agent",
+      agentId: "agent-1",
+      companyId: "company-1",
+      source: "agent_key",
+    });
+    const get = await request(app).get("/api/updates");
+    expect(get.status).toBe(403);
+
+    const put = await request(app).put("/api/updates/settings").send({ mode: "auto" });
+    expect(put.status).toBe(403);
+    expect(put.body.error).toBe("Board access required");
+  });
+
+  it("allows board local_implicit and instance admin as before", async () => {
+    const localImplicit = createAppWithActor({
+      type: "board",
+      source: "local_implicit",
+      userId: "user-1",
+    });
+    const localRes = await request(localImplicit).get("/api/updates");
+    expect(localRes.status).toBe(200);
+
+    const admin = createAppWithActor({
+      type: "board",
+      source: "board_key",
+      userId: "admin-1",
+      isInstanceAdmin: true,
+      companyIds: ["company-1"],
+    });
+    const adminRes = await request(admin).get("/api/updates");
+    expect(adminRes.status).toBe(200);
+  });
+
+  it("rejects a board actor that is neither local_implicit nor instance admin", async () => {
+    const app = createAppWithActor({
+      type: "board",
+      source: "board_key",
+      userId: "user-2",
+      companyIds: ["company-1"],
+    });
+    const res = await request(app).get("/api/updates");
+    expect(res.status).toBe(403);
+    expect(res.body.error).toBe("Instance admin access required");
   });
 });
