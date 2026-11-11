@@ -39,7 +39,7 @@ const PROBE_ROWS = 1_000_000;
 // runner under it mid-suite and backups abort before any statement timeout is
 // exercised (~6.02 GB free on the failing run). Dumps here are ~100 MB, so
 // lowering the floor for this suite does not mask real exhaustion.
-process.env.PAPERCLIP_BACKUP_MIN_FREE_BYTES = String(64 * 1024 * 1024);
+process.env.MYRMIDON_BACKUP_MIN_FREE_BYTES = String(64 * 1024 * 1024);
 // The database-level limit this suite fights with. The live stand ran 120 s;
 // 1 s reproduces the same 57014 class here with a 1M-row table.
 const DB_STATEMENT_TIMEOUT = "1s";

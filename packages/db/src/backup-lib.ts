@@ -95,7 +95,7 @@ const BACKUP_VERIFY_TAIL_BYTES = 64 * 1024;
 // workspaces-b lane ran with ~6.02 GB free and the embedded cluster's own
 // 1M-row probe table pushed it under mid-job, failing backups before any
 // statement timeout was exercised. Tests (and stands with unusual disks)
-// lower the floor through PAPERCLIP_BACKUP_MIN_FREE_BYTES (bytes); the
+// lower the floor through MYRMIDON_BACKUP_MIN_FREE_BYTES (bytes); the
 // production default stays 6 GiB when the variable is unset or invalid.
 // Exported with the default for deterministic parser tests (backup-lib.test.ts).
 export const DEFAULT_BACKUP_MIN_FREE_BYTES = 6 * 1024 * 1024 * 1024;
@@ -877,7 +877,7 @@ export async function runDatabaseBackup(opts: RunDatabaseBackupOptions): Promise
     throw error;
   }
   const freeBytes = fsStats.bavail * fsStats.bsize;
-  const minFreeBytes = parseBackupMinFreeBytes(process.env.PAPERCLIP_BACKUP_MIN_FREE_BYTES);
+  const minFreeBytes = parseBackupMinFreeBytes(readProductEnv("BACKUP_MIN_FREE_BYTES"));
   if (freeBytes < minFreeBytes) {
     await closeSql();
     throw new Error(`Skipping database backup: ${freeBytes} bytes free; ${minFreeBytes} required`);
