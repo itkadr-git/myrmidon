@@ -1099,16 +1099,19 @@ describeEmbeddedPostgres("myrmidon(1.6.6 KNOWLEDGE-2.0 K-1) knowledge store over
         { slug: "redacted", title: "Redacted page", content: "Acme LLC supplies invoice 42", summary: "check" },
         AGENT,
       );
-      expect(created.content).toBe("[COUNTERPARTY] supplies invoice 42");
+      expect("content" in created && created.content).toBeUndefined(); // the item DTO carries no content
+      const rev1 = (await mod.listRevisions("redacted"))[0]!;
+      expect(rev1.content).toBe("[COUNTERPARTY] supplies invoice 42");
 
       // The nest without a stored row keeps the safe default behaviour and the
       // disabled rules leave contract numbers untouched.
       const plain = createKnowledgeModule(db, nestPlain);
-      const untouched = await plain.create(
+      await plain.create(
         { slug: "plain", title: "Plain page", content: "Acme LLC supplies invoice 42", summary: "check" },
         AGENT,
       );
-      expect(untouched.content).toBe("Acme LLC supplies invoice 42");
+      const plainRev = (await plain.listRevisions("plain"))[0]!;
+      expect(plainRev.content).toBe("Acme LLC supplies invoice 42");
 
       // The draft path applies the same rules.
       await mod.draft("redacted", { content: "Acme LLC ships contract №7 too" }, AGENT);
