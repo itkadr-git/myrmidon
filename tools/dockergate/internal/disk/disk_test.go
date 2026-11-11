@@ -223,13 +223,21 @@ func TestCollectWithQuota(t *testing.T) {
 	if err := json.Unmarshal(b, &m); err != nil {
 		t.Fatal(err)
 	}
-	for _, k := range []string{"partition", "projects", "other", "quotaEnabled", "at"} {
+	for _, k := range []string{"partition", "root", "projects", "other", "quotaEnabled", "at"} {
 		if _, ok := m[k]; !ok {
 			t.Errorf("no key %s in %s", k, b)
 		}
 	}
-	if len(m) != 5 {
+	if len(m) != 6 {
 		t.Errorf("extra keys: %s", b)
+	}
+	// OPE-12697: root is the host root statfs. The same stubbed statfs serves
+	// both paths, so the numbers match the partition figure at "/".
+	if r.Root == nil {
+		t.Errorf("no root in %s", b)
+	} else if r.Root.Mount != "/" || r.Root.TotalBytes != r.Partition.TotalBytes ||
+		r.Root.UsedPercent != r.Partition.UsedPercent {
+		t.Errorf("root %+v vs partition %+v", r.Root, r.Partition)
 	}
 	var pr map[string]json.RawMessage
 	var arr []map[string]json.RawMessage

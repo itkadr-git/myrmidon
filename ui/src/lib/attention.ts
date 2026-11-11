@@ -304,7 +304,11 @@ export function attentionDetailLine(item: AttentionItem): string | null {
         parts.push(gbPerHour >= 1 ? `+${gbPerHour.toFixed(1)} GB/hour` : `+${Math.round(gbPerHour * 1024)} MB/hour`);
       }
       if (detail.consumers.length > 0) {
-        parts.push(`biggest: ${detail.consumers.map((c) => `${c.path} (${c.sizeGb} GB)`).join(", ")}`);
+        parts.push(
+          `biggest: ${detail.consumers
+            .map((c) => (c.sizeGb !== null ? `${c.path} (${c.sizeGb} GB)` : c.path))
+            .join(", ")}`,
+        );
       }
       return parts.join(" — ");
     }
