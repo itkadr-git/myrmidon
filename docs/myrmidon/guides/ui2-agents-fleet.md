@@ -5,9 +5,3 @@ The UI-2 Agents Fleet screen is available at `/{company}/agents` and uses the co
 The screen polls agents every 30 seconds and live runs every 15 seconds. Run data is requested with a bounded `minCount=50&limit=100` query rather than the full heartbeat history.
 
 When an agent reports `paused`, the UI preserves that API state as a distinct status rather than relabeling it as idle.
-
-## Флот агентов в UI-2
-
-Экран «Флот агентов» UI-2 доступен по адресу `/{company}/agents` и использует API агентов с областью компании. Для каждого агента отображаются имя, роль, состояние (ожидание, выполняется или ошибка) и последний активный прогон, если он есть. Агенты сгруппированы по `reportsTo`; контейнер прокрутки упрощает работу с длинным списком на компьютере и телефоне. Выбор агента открывает страницу его карточки/чата. Переход присутствует по одному разу в навигации компьютера и телефона под названием «Агенты» (пункт «Серверы» открывает отдельный экран узлов и служб `/fleet`). Если агентов нет, показывается локализованное пустое состояние.
-
-Экран обновляет данные агентов каждые 30 секунд, а активные прогоны — каждые 15 секунд. Запрос прогонов ограничен параметрами `minCount=50&limit=100`, вместо загрузки всей истории heartbeat. Статус «приостановлен» из API отображается отдельно, а не как «ожидание».
