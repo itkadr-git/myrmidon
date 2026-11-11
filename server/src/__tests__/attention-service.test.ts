@@ -2608,6 +2608,7 @@ describeEmbeddedPostgres("attention service", () => {
       status: "succeeded" | "failed" | "timed_out";
       error?: string | null;
       providerModelGroup?: string;
+      resultJson?: Record<string, unknown>;
       finishedMinutesAgo: number;
     }) {
       await db.insert(heartbeatRuns).values({
@@ -2616,7 +2617,10 @@ describeEmbeddedPostgres("attention service", () => {
         invocationSource: "automation",
         status: input.status,
         error: input.error ?? null,
-        resultJson: input.providerModelGroup ? { providerModelGroup: input.providerModelGroup } : null,
+        resultJson: {
+          ...(input.providerModelGroup ? { providerModelGroup: input.providerModelGroup } : {}),
+          ...(input.resultJson ?? {}),
+        },
         createdAt: finishedAt(input.finishedMinutesAgo),
         updatedAt: finishedAt(input.finishedMinutesAgo),
         finishedAt: finishedAt(input.finishedMinutesAgo),
@@ -2761,6 +2765,63 @@ describeEmbeddedPostgres("attention service", () => {
       const noCredits = (await feed(companyId)).items.filter((item) => item.sourceKind === "provider_no_credits");
       expect(noCredits).toHaveLength(1);
       expect(noCredits[0]!.dedupKey).toBe("provider_no_credits:kie-gpt-6.1-terra");
+    });
+
+    it("does not raise role_model_down when the role's failures are ordinary adapter errors", async () => {
+      const { companyId } = await seedCompany("RMG");
+      // 6 finished, 0 succeeded, but every failure is an ordinary
+      // adapter/process error with no provider-refusal marker: the operator
+      // critical card must stay silent.
+      await seedFailingRole({
+        companyId,
+        role: "engineer",
+        name: "Eng ordinary",
+        runs: 6,
+        error: "adapter failed: exit code 1",
+        providerModelGroup: "chatgpt-pool/gpt-6-luna",
+      });
+
+      const items = (await feed(companyId)).items.filter((item) => item.sourceKind === "role_model_down");
+      expect(items).toEqual([]);
+    });
+
+    it("raises role_model_down from the adapter resultJson marker alone", async () => {
+      const { companyId } = await seedCompany("RMH");
+      const agentId = await seedRoleAgent({ companyId, name: "Reviewer json", role: "reviewer" });
+      // The adapter marks a provider error returned as successful content;
+      // the error column carries no provider marker at all.
+      for (let i = 0; i < 5; i += 1) {
+        await seedRun({
+          companyId,
+          agentId,
+          status: "failed",
+          error: "Provider returned an overload or quota error as successful response content",
+          providerModelGroup: "chatgpt-pool/gpt-6-luna",
+          resultJson: { provider_error_as_content: true },
+          finishedMinutesAgo: 6 + i,
+        });
+      }
+
+      const items = (await feed(companyId)).items.filter((item) => item.sourceKind === "role_model_down");
+      expect(items).toHaveLength(1);
+      expect(items[0]!.dedupKey).toBe("role_model_down:reviewer");
+      expect(items[0]!.subject.metadata).toMatchObject({ role: "reviewer", finishedRuns: 5, refusedRuns: 5, succeededRuns: 0 });
+      expect(items[0]!.whyNow).toContain("chatgpt-pool/gpt-6-luna");
+    });
+
+    it("stays silent when refusals are below the floor even with enough finished runs", async () => {
+      const { companyId } = await seedCompany("RMI");
+      const agentId = await seedRoleAgent({ companyId, name: "Lead mixed", role: "lead" });
+      // 6 finished, 0 succeeded, but only 2 are model refusals: below the
+      // refusal floor -> no operator-critical card.
+      await seedRun({ companyId, agentId, status: "failed", error: "model_unavailable: overload", providerModelGroup: "chatgpt-pool/gpt-6-luna", finishedMinutesAgo: 10 });
+      await seedRun({ companyId, agentId, status: "failed", error: "model_unavailable: overload", providerModelGroup: "chatgpt-pool/gpt-6-luna", finishedMinutesAgo: 9 });
+      for (let i = 0; i < 4; i += 1) {
+        await seedRun({ companyId, agentId, status: "failed", error: "adapter failed: exit code 1", providerModelGroup: "chatgpt-pool/gpt-6-luna", finishedMinutesAgo: 8 - i });
+      }
+
+      const items = (await feed(companyId)).items.filter((item) => item.sourceKind === "role_model_down");
+      expect(items).toEqual([]);
     });
   });
 });

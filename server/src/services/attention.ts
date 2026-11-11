@@ -355,7 +355,8 @@ const HUMAN_RECOVERY_OWNER_TYPES = ["user", "board"] as const;
 const DETAIL_EXCERPT_LENGTH = 160;
 // myrmidon(1.6.8 OPE-12709): ROLE-MODEL-DOWN detection window and floor. A
 // role whose agents finished at least ROLE_MODEL_DOWN_MIN_RUNS runs in the
-// last 30 min with zero successes raises the "model channels down" card.
+// last 30 min with zero successes AND at least that many finishes classified
+// as model refusals raises the "model channels down" card.
 const ROLE_MODEL_DOWN_WINDOW_MS = 30 * 60 * 1000;
 const ROLE_MODEL_DOWN_MIN_RUNS = 5;
 const DETAIL_IMAGE_LIMIT = 3;
@@ -1624,8 +1625,15 @@ async function buildAttentionFeedSnapshot(
       // table answers both signals:
       //  - a role where >=5 runs finished (succeeded/failed/timed_out;
       //    cancelled never counts — it is a deliberate stop, not a model
-      //    failure) and 0 succeeded is a role whose model channels are down:
-      //    ONE card per role with the model group and the last provider error;
+      //    failure) and 0 succeeded is a role whose model channels are down —
+      //    but ONLY when every finished run failed as a MODEL REFUSAL: the
+      //    adapter marked the provider failure in resultJson
+      //    (model_unavailable / provider_error_as_content) or the error text
+      //    carries a provider quota/limit marker (model_unavailable, overload,
+      //    insufficient_quota, credits insufficient, 402, 429). Ordinary
+      //    adapter or process failures never raise this operator-critical
+      //    signal. ONE card per role with the model group and the last
+      //    provider error;
       //  - a run whose error text carries a no-credits marker (HTTP 402 /
       //    insufficient_quota / Credits insufficient) means the provider
       //    channel has no money: ONE card per channel — a top-up question for
@@ -1637,6 +1645,21 @@ async function buildAttentionFeedSnapshot(
       {
         const windowStart = new Date(now - ROLE_MODEL_DOWN_WINDOW_MS);
         const channelExpr = sql<string>`coalesce(${heartbeatRuns.resultJson} ->> 'providerModelGroup', 'unknown')`;
+        // A finished run counts as a model refusal when the adapter marked the
+        // provider failure in resultJson (model_unavailable /
+        // provider_error_as_content) or the error text carries a provider
+        // quota/limit marker (model_unavailable / overload /
+        // insufficient_quota / credits insufficient / 402 / 429).
+        const modelRefusalExpr = sql`(
+          ${heartbeatRuns.resultJson} ->> 'model_unavailable' = 'true'
+          or ${heartbeatRuns.resultJson} ->> 'provider_error_as_content' = 'true'
+          or ${heartbeatRuns.error} ilike '%model_unavailable%'
+          or ${heartbeatRuns.error} ilike '%overload%'
+          or ${heartbeatRuns.error} ilike '%insufficient_quota%'
+          or ${heartbeatRuns.error} ilike '%credits insufficient%'
+          or ${heartbeatRuns.error} ilike '%402%'
+          or ${heartbeatRuns.error} ilike '%429%'
+        )`;
         const noCreditsErrorExpr = sql`(${heartbeatRuns.error} is not null and (${heartbeatRuns.error} ilike '%402%' or ${heartbeatRuns.error} ilike '%insufficient_quota%' or ${heartbeatRuns.error} ilike '%credits insufficient%'))`;
         const roleRows = await db
           .select({
@@ -1644,8 +1667,11 @@ async function buildAttentionFeedSnapshot(
             channel: channelExpr,
             finishedCount: sql<number>`count(*)::int`,
             succeededCount: sql<number>`count(*) filter (where ${heartbeatRuns.status} = 'succeeded')::int`,
+            refusalCount: sql<number>`count(*) filter (where ${modelRefusalExpr})::int`,
             lastError: sql<string | null>`(array_agg(${heartbeatRuns.error} order by ${heartbeatRuns.finishedAt} desc nulls last))[1]`,
             lastFinishedAt: sql<string | null>`max(${heartbeatRuns.finishedAt})::text`,
+            lastRefusalError: sql<string | null>`(array_agg(${heartbeatRuns.error} order by ${heartbeatRuns.finishedAt} desc nulls last) filter (where ${modelRefusalExpr}))[1]`,
+            lastRefusalAt: sql<string | null>`max(${heartbeatRuns.finishedAt}) filter (where ${modelRefusalExpr})::text`,
             noCreditsRunError: sql<string | null>`(array_agg(${heartbeatRuns.error} order by ${heartbeatRuns.finishedAt} desc nulls last) filter (where ${noCreditsErrorExpr}))[1]`,
             noCreditsAt: sql<string | null>`max(${heartbeatRuns.finishedAt}) filter (where ${noCreditsErrorExpr})::text`,
           })
@@ -1660,14 +1686,21 @@ async function buildAttentionFeedSnapshot(
           ))
           .groupBy(agents.role, channelExpr);
 
-        // Role cards: the >=5-finished / 0-succeeded threshold is per ROLE —
+        // Role cards: the >=5-refused / 0-succeeded threshold is per ROLE —
         // runs across all channels of the role count together, so an outage
-        // spread over a primary and a fallback channel still trips it.
+        // spread over a primary and a fallback channel still trips it. Only
+        // runs classified as model refusals (adapter marker or provider
+        // quota/limit markers in the error text) count toward the floor:
+        // ordinary adapter/process failures must not raise this
+        // operator-critical signal.
         const byRole = new Map<string, {
           finishedCount: number;
           succeededCount: number;
+          refusalCount: number;
           lastError: string | null;
           lastFinishedAt: string | null;
+          lastRefusalError: string | null;
+          lastRefusalAt: string | null;
           primaryChannel: string;
           primaryRuns: number;
         }>();
@@ -1675,17 +1708,26 @@ async function buildAttentionFeedSnapshot(
           const agg = byRole.get(row.role) ?? {
             finishedCount: 0,
             succeededCount: 0,
+            refusalCount: 0,
             lastError: null,
             lastFinishedAt: null,
+            lastRefusalError: null,
+            lastRefusalAt: null,
             primaryChannel: row.channel,
             primaryRuns: 0,
           };
           agg.finishedCount += row.finishedCount;
           agg.succeededCount += row.succeededCount;
+          agg.refusalCount += row.refusalCount;
           if (row.lastFinishedAt != null
             && (agg.lastFinishedAt == null || row.lastFinishedAt > agg.lastFinishedAt)) {
             agg.lastFinishedAt = row.lastFinishedAt;
             agg.lastError = row.lastError;
+          }
+          if (row.lastRefusalAt != null
+            && (agg.lastRefusalAt == null || row.lastRefusalAt > agg.lastRefusalAt)) {
+            agg.lastRefusalAt = row.lastRefusalAt;
+            agg.lastRefusalError = row.lastRefusalError;
           }
           if (row.finishedCount > agg.primaryRuns) {
             agg.primaryRuns = row.finishedCount;
@@ -1695,12 +1737,16 @@ async function buildAttentionFeedSnapshot(
         }
         // The dedupKey is per ROLE (not per channel): ONE card per role even
         // when several channels failed. The card disappears on the role's
-        // first successful run — the 0-succeeded condition drops out.
+        // first successful run — the 0-succeeded condition drops out. The
+        // floor counts MODEL-REFUSAL finishes only; a role whose runs fail
+        // for ordinary (non-provider) reasons stays silent.
         const downRoles = [...byRole.entries()]
-          .filter(([, agg]) => agg.finishedCount >= ROLE_MODEL_DOWN_MIN_RUNS && agg.succeededCount === 0);
+          .filter(([, agg]) => agg.finishedCount >= ROLE_MODEL_DOWN_MIN_RUNS
+            && agg.succeededCount === 0
+            && agg.refusalCount >= ROLE_MODEL_DOWN_MIN_RUNS);
 
         for (const [role, agg] of downRoles) {
-          const observedAt = toIso(agg.lastFinishedAt);
+          const observedAt = toIso(agg.lastRefusalAt ?? agg.lastFinishedAt);
           add(createItem({
             companyId,
             sourceKind: "role_model_down",
@@ -1712,15 +1758,15 @@ async function buildAttentionFeedSnapshot(
               identifier: role,
               status: "down",
               href: `/${prefix}/agents`,
-              metadata: { role, modelGroup: agg.primaryChannel, finishedRuns: agg.finishedCount, succeededRuns: 0 },
+              metadata: { role, modelGroup: agg.primaryChannel, finishedRuns: agg.finishedCount, refusedRuns: agg.refusalCount, succeededRuns: 0 },
             },
-            whyNow: `All model channels for role "${role}" are down: ${agg.finishedCount} run(s) finished in the last 30 min, 0 succeeded (model ${agg.primaryChannel}). Last provider error: ${agg.lastError ?? "unknown"}.`,
+            whyNow: `All model channels for role "${role}" are down: ${agg.finishedCount} run(s) finished in the last 30 min, ${agg.refusalCount} failed as model refusals, 0 succeeded (model ${agg.primaryChannel}). Last provider error: ${agg.lastRefusalError ?? agg.lastError ?? "unknown"}.`,
             decisionVerbs: decisionVerbs(
               { id: "inspect", label: "Inspect", description: "Open the agents list and the provider routing." },
               { id: "dismiss", label: "Dismiss", description: "Dismiss this alert for one hour (it re-raises while the role keeps failing)." },
             ),
             inlineResolvable: false,
-            entryRule: `${ROLE_MODEL_DOWN_MIN_RUNS}+ runs of the role finished in the last 30 min and none succeeded`,
+            entryRule: `${ROLE_MODEL_DOWN_MIN_RUNS}+ runs of the role finished in the last 30 min and every finish is a model refusal (provider marked unavailable/quota-limited), 0 succeeded`,
             exitRule: "the role's next run succeeds, or the row is dismissed.",
             dedupKey: `role_model_down:${role}`,
             severity: "critical",
