@@ -234,6 +234,69 @@ describe("myrmidon(1.7-DEBATE-ASYM-A): the debate service", () => {
     ).rejects.toMatchObject({ code: "debate_issue_not_found" });
   });
 
+  it("PRIVATE-TASKS (G3): an agent cannot debate a private task — the same not-found answer, nothing spent", async () => {
+    // The private task looks exactly like a missing one to an agent caller:
+    // the same DebateConfigError code AND the same message (no way to tell a
+    // private task from a nonexistent one by the error text).
+    const notFoundMessage = `issue ${ISSUE} does not exist in this company`;
+    const h = harness({
+      loadIssue: async (issueId) =>
+        issueId === ISSUE
+          ? {
+              id: ISSUE,
+              companyId: COMPANY,
+              identifier: "OPE-1",
+              title: "Secret private task title",
+              isPrivate: true,
+            }
+          : null,
+    });
+    const service = debateService(h.deps);
+    await expect(
+      service.run({ companyId: COMPANY, issueId: ISSUE }, { agentId: AGENT, userId: null, runId: null }),
+    ).rejects.toMatchObject({ code: "debate_issue_not_found", message: notFoundMessage });
+    // Refused before any spend: no model calls, no documents on the task.
+    expect(h.calls).toHaveLength(0);
+    expect(h.documents).toHaveLength(0);
+    expect(h.activities).toHaveLength(0);
+    expect(h.costs).toHaveLength(0);
+
+    // The same private task is debatable by a board (non-agent) caller.
+    const board = harness({
+      loadIssue: h.deps.loadIssue,
+      writeDocument: h.deps.writeDocument,
+      recordCost: h.deps.recordCost,
+      logActivity: h.deps.logActivity,
+    });
+    const boardService = debateService(board.deps);
+    const result = await boardService.run(
+      { companyId: COMPANY, issueId: ISSUE },
+      { agentId: null, userId: "user-a", runId: null },
+    );
+    expect(result.issueId).toBe(ISSUE);
+    expect(result.outcome.question).toBe("Secret private task title");
+    expect(board.documents.length).toBeGreaterThan(0);
+  });
+
+  it("PRIVATE-TASKS (G3): an agent keeps running debates on a public task", async () => {
+    // The flag defaults to false on real rows; an undefined flag in the ref
+    // must not refuse an agent run (pre-privacy behaviour unchanged).
+    const h = harness({
+      loadIssue: async (issueId) =>
+        issueId === ISSUE
+          ? { id: ISSUE, companyId: COMPANY, identifier: "OPE-1", title: "Which bbq channel to prioritize?" }
+          : null,
+    });
+    const service = debateService(h.deps);
+    const result = await service.run(
+      { companyId: COMPANY, issueId: ISSUE },
+      { agentId: AGENT, userId: null, runId: null },
+    );
+    expect(result.issueId).toBe(ISSUE);
+    expect(h.calls.length).toBeGreaterThan(0);
+    expect(h.documents.length).toBeGreaterThan(0);
+  });
+
   it("2 rounds → the protocol document holds both exchange replicas in order (OPE-12096 acceptance)", async () => {
     const h = harness({
       readSettings: async (): Promise<DebateSettingsResolution> => ({
