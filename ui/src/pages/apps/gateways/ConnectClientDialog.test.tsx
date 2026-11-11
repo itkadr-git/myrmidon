@@ -202,11 +202,13 @@ describe("ConnectClientDialog", () => {
     expect(container.textContent).toContain("does not give it access to Myrmidon or skills");
     const copyButton = await waitForEnabledSnippetCopyButton();
     copyButton.click();
-    await vi.waitFor(() => expect(copyTextMock).toHaveBeenCalledWith(expect.stringContaining('"Authorization": "Bearer pcgw_FULL_SECRET"')));
-    expect(copyTextMock).toHaveBeenCalledWith(expect.stringContaining(
-      `${window.location.origin}/api/tool-gateway/gateways/public-1/mcp`,
-    ));
-    expect(container.textContent).not.toContain("pcgw_FULL_SECRET");
+    await vi.waitFor(() => {
+      expect(copyTextMock).toHaveBeenCalledWith(expect.stringContaining('"Authorization": "Bearer pcgw_FULL_SECRET"'));
+      expect(copyTextMock).toHaveBeenCalledWith(expect.stringContaining(
+        `${window.location.origin}/api/tool-gateway/gateways/public-1/mcp`,
+      ));
+      expect(container.textContent).not.toContain("pcgw_FULL_SECRET");
+    });
   });
 
   it("keeps the snippet copy button disabled and never copies while no created token exists", async () => {
