@@ -368,9 +368,12 @@ describe("updates routes (OPE-10268)", () => {
 
 describe("updates routes actor enforcement (OPE-12700)", () => {
   it("rejects a request without an actor", async () => {
+    // assertInstanceAdmin rejects every non-board actor (including
+    // type: "none") with 403; the intent is refusal, not a skip.
     const app = createAppWithActor({ type: "none" });
     const res = await request(app).get("/api/updates");
-    expect(res.status).toBe(401);
+    expect(res.status).toBe(403);
+    expect(res.body.error).toBe("Board access required");
   });
 
   it("rejects an agent key on GET /updates and PUT /updates/settings", async () => {
