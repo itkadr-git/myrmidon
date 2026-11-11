@@ -7,7 +7,7 @@ index b1e60f5..73243cd 100644
                      and not _is_package_owned_markdown(found_md, search_dir)):
                  _record(None, found_md)
 +    if not candidates:
-+        # myrmidon(OPE-12719): board-managed skills materialize as
++        # myrmidon(G1): board-managed skills materialize as
 +        # <skills>/paperclip-managed/<slug>--<hash>/SKILL.md while the skills index
 +        # exposes them as "paperclip-managed:<slug>" (category = first path segment,
 +        # name = frontmatter `name:`). The exact-name passes above match neither the
