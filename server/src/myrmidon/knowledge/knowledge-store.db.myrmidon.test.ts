@@ -1099,7 +1099,7 @@ describeEmbeddedPostgres("myrmidon(1.6.6 KNOWLEDGE-2.0 K-1) knowledge store over
         { slug: "redacted", title: "Redacted page", content: "Acme LLC supplies invoice 42", summary: "check" },
         AGENT,
       );
-      expect("content" in created && created.content).toBeUndefined(); // the item DTO carries no content
+      expect(created).not.toHaveProperty("content"); // the item DTO carries no content
       const rev1 = (await mod.listRevisions("redacted"))[0]!;
       expect(rev1.content).toBe("[COUNTERPARTY] supplies invoice 42");
 
