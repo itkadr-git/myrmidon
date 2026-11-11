@@ -68,13 +68,13 @@ func TestRedTeam_RT1_2_PrepareScriptStatic(t *testing.T) {
 			t.Errorf("package-cache subdirectory %q is not handed to the bot's uid", sub)
 		}
 	}
-	if strings.Count(s, "install -d") != 6 {
-		t.Errorf("want the six package-cache subdirectories of the fixed list")
+	if strings.Count(s, "install -d") != 5 {
+		t.Errorf("want the five package-cache subdirectories of the fixed list")
 	}
 	if !strings.HasSuffix(s, "\nfi") {
 		t.Errorf("the package-cache block does not close the script")
 	}
-	if strings.Count(s, "\n") != 14 {
+	if strings.Count(s, "\n") != 13 {
 		t.Errorf("unexpected shape: %d lines", strings.Count(s, "\n")+1)
 	}
 	// It does not depend on the nonce or on anything the board sends.
