@@ -251,6 +251,12 @@ const ATTENTION_SOURCE_KINDS: AttentionSourceKind[] = [
   // myrmidon(1.6.6 OPE-7198): banned or exhausted Codex / ChatGPT subscription accounts.
   "codex_pool_alert",
   "provider_usage_warning",
+  // myrmidon(1.6.8 OPE-12709): a whole role's model channels are down (>=5
+  // finished runs in 30 min, 0 succeeded).
+  "role_model_down",
+  // myrmidon(1.6.8 OPE-12709): a provider channel has no credits (402 /
+  // insufficient_quota) — a top-up question for the owner, not a retry.
+  "provider_no_credits",
   // myrmidon(OPE-12517): one card per expiring/expired MCP gateway token.
   "mcp_gateway_token_expiring",
 ];
@@ -322,6 +328,12 @@ const SOURCE_RANK: Record<AttentionSourceKind, number> = {
   // with the other capacity signals.
   queue_stall: 14,
   provider_usage_warning: 19,
+  // myrmidon(1.6.8 OPE-12709): a whole role cannot run — an active stop for the
+  // affected role, ranked with the other auth/ops alerts.
+  role_model_down: 0,
+  // myrmidon(1.6.8 OPE-12709): "no credits" blocks the provider channel until
+  // the owner tops up — an active stop like the budget alerts.
+  provider_no_credits: 0,
   // myrmidon(1.6.5-F-23): off-run secret reads are a deliberate surface
   // extension — visible as advice, never a stop; ranked with the other
   // advisory notices.
@@ -341,6 +353,11 @@ const PENDING_INTERACTION_STATUSES = ["pending"] as const;
 const OPEN_RECOVERY_STATUSES = ["active", "escalated"] as const;
 const HUMAN_RECOVERY_OWNER_TYPES = ["user", "board"] as const;
 const DETAIL_EXCERPT_LENGTH = 160;
+// myrmidon(1.6.8 OPE-12709): ROLE-MODEL-DOWN detection window and floor. A
+// role whose agents finished at least ROLE_MODEL_DOWN_MIN_RUNS runs in the
+// last 30 min with zero successes raises the "model channels down" card.
+const ROLE_MODEL_DOWN_WINDOW_MS = 30 * 60 * 1000;
+const ROLE_MODEL_DOWN_MIN_RUNS = 5;
 const DETAIL_IMAGE_LIMIT = 3;
 const OPEN_DECISION_DEFAULT_LIMIT = 500;
 const OPEN_DECISION_MAX_LIMIT = 1_000;
@@ -1600,6 +1617,170 @@ async function buildAttentionFeedSnapshot(
           relatedIssue: null,
           detail: { kind: "provider_usage", provider: warning.provider, windowKind: warning.window === "package" ? "package" : warning.window === "rolling_5h" ? "5h" : "week", usedPercent: warning.limit > 0 ? warning.used / warning.limit * 100 : 0, thresholdPercent: warning.thresholdPercent, resetsAt: warning.resetsAt, credentialRef: warning.credentialRef, images: [] },
         }));
+      }
+
+      // myrmidon(1.6.8 OPE-12709): ROLE-MODEL-DOWN + provider "no credits".
+      // One query over the last 30 min of finished runs joined to the agents
+      // table answers both signals:
+      //  - a role where >=5 runs finished (succeeded/failed/timed_out;
+      //    cancelled never counts — it is a deliberate stop, not a model
+      //    failure) and 0 succeeded is a role whose model channels are down:
+      //    ONE card per role with the model group and the last provider error;
+      //  - a run whose error text carries a no-credits marker (HTTP 402 /
+      //    insufficient_quota / Credits insufficient) means the provider
+      //    channel has no money: ONE card per channel — a top-up question for
+      //    the owner, never silenced by the role cooldown.
+      // The feed rebuild is stateless (dedupKey + dismissal do the "once per
+      // hour per role" pacing via the dismissal window), so the collector
+      // itself keeps no latch: the card disappears on the role's first
+      // successful run because the 0-succeeded condition drops out.
+      {
+        const windowStart = new Date(now - ROLE_MODEL_DOWN_WINDOW_MS);
+        const channelExpr = sql<string>`coalesce(${heartbeatRuns.resultJson} ->> 'providerModelGroup', 'unknown')`;
+        const noCreditsErrorExpr = sql`(${heartbeatRuns.error} is not null and (${heartbeatRuns.error} ilike '%402%' or ${heartbeatRuns.error} ilike '%insufficient_quota%' or ${heartbeatRuns.error} ilike '%credits insufficient%'))`;
+        const roleRows = await db
+          .select({
+            role: agents.role,
+            channel: channelExpr,
+            finishedCount: sql<number>`count(*)::int`,
+            succeededCount: sql<number>`count(*) filter (where ${heartbeatRuns.status} = 'succeeded')::int`,
+            lastError: sql<string | null>`(array_agg(${heartbeatRuns.error} order by ${heartbeatRuns.finishedAt} desc nulls last))[1]`,
+            lastFinishedAt: sql<string | null>`max(${heartbeatRuns.finishedAt})::text`,
+            noCreditsRunError: sql<string | null>`(array_agg(${heartbeatRuns.error} order by ${heartbeatRuns.finishedAt} desc nulls last) filter (where ${noCreditsErrorExpr}))[1]`,
+            noCreditsAt: sql<string | null>`max(${heartbeatRuns.finishedAt}) filter (where ${noCreditsErrorExpr})::text`,
+          })
+          .from(heartbeatRuns)
+          .innerJoin(agents, eq(agents.id, heartbeatRuns.agentId))
+          .where(and(
+            eq(heartbeatRuns.companyId, companyId),
+            eq(agents.companyId, companyId),
+            inArray(heartbeatRuns.status, ["succeeded", "failed", "timed_out"]),
+            isNotNull(heartbeatRuns.finishedAt),
+            gte(heartbeatRuns.finishedAt, windowStart),
+          ))
+          .groupBy(agents.role, channelExpr);
+
+        // Role cards: the >=5-finished / 0-succeeded threshold is per ROLE —
+        // runs across all channels of the role count together, so an outage
+        // spread over a primary and a fallback channel still trips it.
+        const byRole = new Map<string, {
+          finishedCount: number;
+          succeededCount: number;
+          lastError: string | null;
+          lastFinishedAt: string | null;
+          primaryChannel: string;
+          primaryRuns: number;
+        }>();
+        for (const row of roleRows) {
+          const agg = byRole.get(row.role) ?? {
+            finishedCount: 0,
+            succeededCount: 0,
+            lastError: null,
+            lastFinishedAt: null,
+            primaryChannel: row.channel,
+            primaryRuns: 0,
+          };
+          agg.finishedCount += row.finishedCount;
+          agg.succeededCount += row.succeededCount;
+          if (row.lastFinishedAt != null
+            && (agg.lastFinishedAt == null || row.lastFinishedAt > agg.lastFinishedAt)) {
+            agg.lastFinishedAt = row.lastFinishedAt;
+            agg.lastError = row.lastError;
+          }
+          if (row.finishedCount > agg.primaryRuns) {
+            agg.primaryRuns = row.finishedCount;
+            agg.primaryChannel = row.channel;
+          }
+          byRole.set(row.role, agg);
+        }
+        // The dedupKey is per ROLE (not per channel): ONE card per role even
+        // when several channels failed. The card disappears on the role's
+        // first successful run — the 0-succeeded condition drops out.
+        const downRoles = [...byRole.entries()]
+          .filter(([, agg]) => agg.finishedCount >= ROLE_MODEL_DOWN_MIN_RUNS && agg.succeededCount === 0);
+
+        for (const [role, agg] of downRoles) {
+          const observedAt = toIso(agg.lastFinishedAt);
+          add(createItem({
+            companyId,
+            sourceKind: "role_model_down",
+            subject: {
+              kind: "company",
+              id: `role_model_down:${companyId}:${role}`,
+              companyId,
+              title: `Role ${role}: model channels down`,
+              identifier: role,
+              status: "down",
+              href: `/${prefix}/agents`,
+              metadata: { role, modelGroup: agg.primaryChannel, finishedRuns: agg.finishedCount, succeededRuns: 0 },
+            },
+            whyNow: `All model channels for role "${role}" are down: ${agg.finishedCount} run(s) finished in the last 30 min, 0 succeeded (model ${agg.primaryChannel}). Last provider error: ${agg.lastError ?? "unknown"}.`,
+            decisionVerbs: decisionVerbs(
+              { id: "inspect", label: "Inspect", description: "Open the agents list and the provider routing." },
+              { id: "dismiss", label: "Dismiss", description: "Dismiss this alert for one hour (it re-raises while the role keeps failing)." },
+            ),
+            inlineResolvable: false,
+            entryRule: `${ROLE_MODEL_DOWN_MIN_RUNS}+ runs of the role finished in the last 30 min and none succeeded`,
+            exitRule: "the role's next run succeeds, or the row is dismissed.",
+            dedupKey: `role_model_down:${role}`,
+            severity: "critical",
+            activityAt: observedAt,
+            createdAt: observedAt,
+            updatedAt: observedAt,
+            relatedIssue: null,
+            detail: {
+              kind: "generic",
+              summaryExcerpt: excerpt(agg.lastError ?? "model_unavailable"),
+              images: [],
+            },
+          }));
+        }
+
+        // No-credits cards: an INDEPENDENT operator signal per channel ("a
+        // top-up question for the owner, not a repeat/cool-down" — task item
+        // 2). Raised even when its role is also down; the role card and this
+        // card answer different questions (why is the role dead vs. who pays).
+        const noCreditRows = roleRows.filter((row) => row.noCreditsRunError !== null);
+        const noCreditsSeen = new Set<string>();
+        for (const row of noCreditRows) {
+          if (noCreditsSeen.has(row.channel)) continue;
+          noCreditsSeen.add(row.channel);
+          const observedAt = toIso(row.noCreditsAt);
+          const channel = row.channel;
+          add(createItem({
+            companyId,
+            sourceKind: "provider_no_credits",
+            subject: {
+              kind: "company",
+              id: `provider_no_credits:${companyId}:${channel}`,
+              companyId,
+              title: `Provider channel ${channel}: no credits`,
+              identifier: channel,
+              status: "no_credits",
+              href: `/${prefix}/company/settings/models`,
+              metadata: { channel, role: row.role },
+            },
+            whyNow: `Provider channel "${channel}" answered "no credits" (402/insufficient_quota). The channel refuses work until the account is topped up.`,
+            decisionVerbs: decisionVerbs(
+              { id: "inspect", label: "Inspect", description: "Open the model settings and the provider billing." },
+              { id: "dismiss", label: "Dismiss", description: "Dismiss this alert (it re-raises while the channel keeps refusing)." },
+            ),
+            inlineResolvable: false,
+            entryRule: "a run's error text carries a no-credits marker (402 / insufficient_quota / Credits insufficient)",
+            exitRule: "the channel answers a run without a no-credits error, or the row is dismissed.",
+            dedupKey: `provider_no_credits:${channel}`,
+            severity: "critical",
+            activityAt: observedAt,
+            createdAt: observedAt,
+            updatedAt: observedAt,
+            relatedIssue: null,
+            detail: {
+              kind: "generic",
+              summaryExcerpt: excerpt(row.noCreditsRunError),
+              images: [],
+            },
+          }));
+        }
       }
 
       const pendingApprovals = await db

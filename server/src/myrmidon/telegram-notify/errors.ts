@@ -54,6 +54,10 @@ export const ERROR_CHANNEL_SOURCE_KINDS = [
   "agent_error_alert",
   "budget_alert",
   "litellm_budget",
+  // myrmidon(1.6.8 OPE-12709): a whole role's model channels are down, or a
+  // provider channel has no credits — operator-level stops, same channel.
+  "role_model_down",
+  "provider_no_credits",
 ] as const;
 
 export type ErrorChannelSourceKind = (typeof ERROR_CHANNEL_SOURCE_KINDS)[number];
@@ -118,6 +122,22 @@ export function errorChannelCardText(
   item: Pick<AttentionItem, "sourceKind" | "severity" | "subject" | "whyNow">,
 ): string {
   const title = item.subject.title ?? item.subject.id;
+  // myrmidon(1.6.8 OPE-12709): the ROLE-MODEL-DOWN card names the role, the
+  // model group and the finished/failed counts in the subject metadata — a
+  // Telegram line that reads like a fact, not like a code pointer.
+  if (item.sourceKind === "role_model_down" || item.sourceKind === "provider_no_credits") {
+    const meta = item.subject.metadata ?? {};
+    const parts: string[] = [];
+    if (typeof meta.role === "string") parts.push(`role=${meta.role}`);
+    if (typeof meta.modelGroup === "string") parts.push(`model=${meta.modelGroup}`);
+    if (typeof meta.channel === "string") parts.push(`channel=${meta.channel}`);
+    if (typeof meta.finishedRuns === "number") parts.push(`finished=${meta.finishedRuns}`);
+    const detail = parts.length > 0 ? ` (${parts.join(", ")})` : "";
+    const line = `[${item.severity}] ${title}${detail}: ${item.whyNow}`;
+    return line.length > ERROR_CHANNEL_TEXT_MAX
+      ? `${line.slice(0, ERROR_CHANNEL_TEXT_MAX - 1)}…`
+      : line;
+  }
   const line = `[${item.severity}] ${title}: ${item.whyNow}`;
   return line.length > ERROR_CHANNEL_TEXT_MAX
     ? `${line.slice(0, ERROR_CHANNEL_TEXT_MAX - 1)}…`

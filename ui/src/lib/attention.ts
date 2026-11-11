@@ -109,6 +109,10 @@ const SOURCE_META: Record<AttentionSourceKind, SourceMeta> = {
   // myrmidon(OPE-7932): label for an overdue issue monitor.
   issue_monitor_overdue: { label: "Overdue issue monitor" },
   provider_usage_warning: { label: "Provider usage" },
+  // myrmidon(1.6.8 OPE-12709): labels for the role-model-down and provider
+  // no-credits operator signals.
+  role_model_down: { label: "Role model down" },
+  provider_no_credits: { label: "Provider no credits" },
   litellm_budget: { label: "LLM key budget" },
 };
 

@@ -2577,4 +2577,190 @@ describeEmbeddedPostgres("attention service", () => {
       expect(after.items.filter((item) => item.sourceKind === "mcp_gateway_token_expiring")).toEqual([]);
     });
   });
+
+  // myrmidon(1.6.8 OPE-12709): ROLE-MODEL-DOWN + provider "no credits".
+  describe("role model down and provider no credits", () => {
+    const NOW = Date.parse("2026-11-11T12:00:00.000Z");
+
+    function finishedAt(minutesAgo: number) {
+      return new Date(NOW - minutesAgo * 60_000);
+    }
+
+    async function seedRoleAgent(input: { companyId: string; name: string; role: string }) {
+      const agentId = randomUUID();
+      await db.insert(agents).values({
+        id: agentId,
+        companyId: input.companyId,
+        name: input.name,
+        role: input.role,
+        status: "idle",
+        adapterType: "codex_local",
+        adapterConfig: {},
+        runtimeConfig: {},
+        permissions: {},
+      });
+      return agentId;
+    }
+
+    async function seedRun(input: {
+      companyId: string;
+      agentId: string;
+      status: "succeeded" | "failed" | "timed_out";
+      error?: string | null;
+      providerModelGroup?: string;
+      finishedMinutesAgo: number;
+    }) {
+      await db.insert(heartbeatRuns).values({
+        companyId: input.companyId,
+        agentId: input.agentId,
+        invocationSource: "automation",
+        status: input.status,
+        error: input.error ?? null,
+        resultJson: input.providerModelGroup ? { providerModelGroup: input.providerModelGroup } : null,
+        createdAt: finishedAt(input.finishedMinutesAgo),
+        updatedAt: finishedAt(input.finishedMinutesAgo),
+        finishedAt: finishedAt(input.finishedMinutesAgo),
+      });
+    }
+
+    async function seedFailingRole(input: {
+      companyId: string;
+      role: string;
+      name: string;
+      runs: number;
+      error?: string | null;
+      providerModelGroup?: string;
+    }) {
+      const agentId = await seedRoleAgent({ companyId: input.companyId, name: input.name, role: input.role });
+      for (let i = 0; i < input.runs; i += 1) {
+        await seedRun({
+          companyId: input.companyId,
+          agentId,
+          status: "failed",
+          error: input.error ?? "model_unavailable: provider overload",
+          providerModelGroup: input.providerModelGroup,
+          finishedMinutesAgo: 5 + i,
+        });
+      }
+      return agentId;
+    }
+
+    async function feed(companyId: string) {
+      return attentionService(db, { now: () => NOW, feedCacheTtlMs: 0 }).list(companyId, { limit: 100 });
+    }
+
+    it("raises one role_model_down card after 5 failed role runs within 30 min", async () => {
+      const { companyId } = await seedCompany("RMA");
+      await seedFailingRole({ companyId, role: "reviewer", name: "Reviewer A", runs: 5, providerModelGroup: "chatgpt-pool/gpt-6-luna" });
+
+      const items = (await feed(companyId)).items.filter((item) => item.sourceKind === "role_model_down");
+      expect(items).toHaveLength(1);
+      expect(items[0]!.dedupKey).toBe("role_model_down:reviewer");
+      expect(items[0]!.severity).toBe("critical");
+      expect(items[0]!.subject.metadata).toMatchObject({ role: "reviewer", finishedRuns: 5, succeededRuns: 0 });
+      expect(items[0]!.whyNow).toContain("chatgpt-pool/gpt-6-luna");
+      expect(items[0]!.whyNow).toContain("model_unavailable");
+    });
+
+    it("does not duplicate the card on a 6th failed run and clears it after a success", async () => {
+      const { companyId } = await seedCompany("RMB");
+      const agentId = await seedFailingRole({ companyId, role: "lead", name: "Lead A", runs: 6, providerModelGroup: "chatgpt-pool/gpt-6-luna" });
+
+      const during = (await feed(companyId)).items.filter((item) => item.sourceKind === "role_model_down");
+      expect(during).toHaveLength(1);
+      expect(during[0]!.dedupKey).toBe("role_model_down:lead");
+
+      await seedRun({ companyId, agentId, status: "succeeded", finishedMinutesAgo: 1 });
+      const after = (await feed(companyId)).items.filter((item) => item.sourceKind === "role_model_down");
+      expect(after).toEqual([]);
+    });
+
+    it("does not raise the card below 5 finished runs, outside the window, or when a run succeeded", async () => {
+      const { companyId } = await seedCompany("RMC");
+
+      // 4 failed runs — below the floor.
+      await seedFailingRole({ companyId, role: "engineer", name: "Eng A", runs: 4 });
+      // 5 failures older than the 30 min window.
+      const staleAgent = await seedRoleAgent({ companyId, name: "QA old", role: "qa" });
+      for (let i = 0; i < 5; i += 1) {
+        await seedRun({
+          companyId,
+          agentId: staleAgent,
+          status: "failed",
+          error: "model_unavailable",
+          finishedMinutesAgo: 45 + i,
+        });
+      }
+      // 5 finished but one succeeded — not a total outage.
+      const mixedAgent = await seedRoleAgent({ companyId, name: "QA mixed", role: "lead" });
+      for (let i = 0; i < 4; i += 1) {
+        await seedRun({ companyId, agentId: mixedAgent, status: "failed", error: "model_unavailable", finishedMinutesAgo: 6 + i });
+      }
+      await seedRun({ companyId, agentId: mixedAgent, status: "succeeded", finishedMinutesAgo: 5 });
+
+      // cancelled runs never count toward the floor.
+      const cancelledAgent = await seedRoleAgent({ companyId, name: "QA cancelled", role: "reviewer" });
+      for (let i = 0; i < 5; i += 1) {
+        await db.insert(heartbeatRuns).values({
+          companyId,
+          agentId: cancelledAgent,
+          invocationSource: "automation",
+          status: "cancelled",
+          createdAt: finishedAt(6 + i),
+          updatedAt: finishedAt(6 + i),
+          finishedAt: finishedAt(6 + i),
+        });
+      }
+
+      const items = (await feed(companyId)).items.filter((item) => item.sourceKind === "role_model_down");
+      expect(items).toEqual([]);
+    });
+
+    it("counts runs across channels of one role together toward the threshold", async () => {
+      const { companyId } = await seedCompany("RMD");
+      const agentId = await seedRoleAgent({ companyId, name: "Reviewer multi", role: "reviewer" });
+      for (let i = 0; i < 3; i += 1) {
+        await seedRun({ companyId, agentId, status: "failed", error: "model_unavailable", providerModelGroup: "chatgpt-pool/gpt-6-luna", finishedMinutesAgo: 6 + i });
+      }
+      for (let i = 0; i < 2; i += 1) {
+        await seedRun({ companyId, agentId, status: "failed", error: "402 Credits insufficient", providerModelGroup: "kie-gpt-6-luna", finishedMinutesAgo: 3 + i });
+      }
+
+      const items = (await feed(companyId)).items;
+      const down = items.filter((item) => item.sourceKind === "role_model_down");
+      expect(down).toHaveLength(1);
+      expect(down[0]!.subject.metadata).toMatchObject({ role: "reviewer", finishedRuns: 5, modelGroup: "chatgpt-pool/gpt-6-luna" });
+    });
+
+    it("raises an independent provider_no_credits card per channel, alongside a down role", async () => {
+      const { companyId } = await seedCompany("RME");
+      // 5 failed runs on channel A (role down) + one 402 on channel B: both cards.
+      await seedFailingRole({ companyId, role: "reviewer", name: "Reviewer nc", runs: 5, error: "Provider returned an overload or quota error as successful response content", providerModelGroup: "chatgpt-pool/gpt-6-luna" });
+      const fallbackAgent = await seedRoleAgent({ companyId, name: "Reviewer fb", role: "reviewer" });
+      await seedRun({ companyId, agentId: fallbackAgent, status: "failed", error: "LiteLLM: 402 Credits insufficient for kie-gpt-6.1-terra", providerModelGroup: "kie-gpt-6-luna", finishedMinutesAgo: 4 });
+
+      const items = (await feed(companyId)).items;
+      const down = items.filter((item) => item.sourceKind === "role_model_down");
+      const noCredits = items.filter((item) => item.sourceKind === "provider_no_credits");
+      expect(down).toHaveLength(1);
+      expect(noCredits).toHaveLength(1);
+      expect(noCredits[0]!.dedupKey).toBe("provider_no_credits:kie-gpt-6-luna");
+      expect(noCredits[0]!.subject.title).toContain("kie-gpt-6-luna");
+      expect(noCredits[0]!.whyNow).toContain("no credits");
+    });
+
+    it("emits a single provider_no_credits card per channel across roles and repeats", async () => {
+      const { companyId } = await seedCompany("RMF");
+      const agentA = await seedRoleAgent({ companyId, name: "Eng credits", role: "engineer" });
+      const agentB = await seedRoleAgent({ companyId, name: "QA credits", role: "qa" });
+      await seedRun({ companyId, agentId: agentA, status: "failed", error: "402 insufficient_quota", providerModelGroup: "kie-gpt-6.1-terra", finishedMinutesAgo: 8 });
+      await seedRun({ companyId, agentId: agentB, status: "timed_out", error: "LiteLLM: Credits insufficient (402)", providerModelGroup: "kie-gpt-6.1-terra", finishedMinutesAgo: 2 });
+      // A healthy channel with a non-credits failure must not raise the card.
+      await seedRun({ companyId, agentId: agentA, status: "failed", error: "adapter failed", providerModelGroup: "chatgpt-pool/gpt-6-luna", finishedMinutesAgo: 3 });
+
+      const noCredits = (await feed(companyId)).items.filter((item) => item.sourceKind === "provider_no_credits");
+      expect(noCredits).toHaveLength(1);
+      expect(noCredits[0]!.dedupKey).toBe("provider_no_credits:kie-gpt-6.1-terra");
+    });
+  });
 });
