@@ -8,7 +8,7 @@ import subprocess from "node:child_process";
 import { describe, it, beforeEach, afterEach } from "node:test";
 
 const ROOT = path.resolve(new URL("../../..", import.meta.url).pathname);
-const { parseArgs, acquireLock, journalRecord, safeJoin, atomicDrop, fetchIssueStatus, filterClosedTaskClones, scanSshRunCopies, pruneSshRunCopies, scanRunnerTaskFolders, issueIdentifierFromRunnerFolderName, UsageError } = await import(
+const { parseArgs, acquireLock, journalRecord, safeJoin, atomicDrop, fetchIssueStatus, filterClosedTaskClones, scanSshRunCopies, pruneSshRunCopies, scanRunnerTaskFolders, issueIdentifierFromRunnerFolderName, UsageError, listBotContainers, fetchAgentDecommissionState, scanBotDataForUnpushedWork, clearBotDiskProject, planBotDataGc } = await import(
   path.join(ROOT, "scripts/myrmidon/host-gc/host-clone-cache-gc.mjs")
 );
 
@@ -685,5 +685,256 @@ describe("runner task folders", () => {
     } finally {
       fake.close();
     }
+  });
+});
+
+
+// --- Bot data GC of decommissioned bots (OPE-12654) ---
+
+describe("agent decommission guard", () => {
+  const response = (status, body) => ({ ok: status >= 200 && status < 300, status, json: async () => body });
+  const KEY = "e0d04e36-1111-4222-8333-444455556666";
+
+  it("hermes_gateway card holds the directory", async () => {
+    const result = await fetchAgentDecommissionState(KEY, {
+      baseUrl: "http://board",
+      fetchImpl: async (url) => {
+        assert.equal(url, `http://board/api/agents/${KEY}`);
+        return response(200, { adapterType: "hermes_gateway", status: "idle" });
+      },
+    });
+    assert.deepEqual(result, { ok: true, state: "hermes_gateway" });
+  });
+
+  it("a card moved to another adapter reads left_hermes_gateway", async () => {
+    const result = await fetchAgentDecommissionState(KEY, {
+      baseUrl: "http://board",
+      fetchImpl: async () => response(200, { adapterType: "omp_local", status: "idle" }),
+    });
+    assert.deepEqual(result, { ok: true, state: "left_hermes_gateway" });
+  });
+
+  it("terminated and hard-deleted agents read terminated/deleted", async () => {
+    const terminated = await fetchAgentDecommissionState(KEY, {
+      baseUrl: "http://board",
+      fetchImpl: async () => response(200, { adapterType: "hermes_gateway", status: "terminated" }),
+    });
+    assert.deepEqual(terminated, { ok: true, state: "terminated" });
+
+    const deleted = await fetchAgentDecommissionState(KEY, {
+      baseUrl: "http://board",
+      fetchImpl: async () => response(404, {}),
+    });
+    assert.deepEqual(deleted, { ok: true, state: "deleted" });
+  });
+
+  it("a running heartbeat run holds the directory", async () => {
+    const result = await fetchAgentDecommissionState(KEY, {
+      baseUrl: "http://board",
+      fetchImpl: async () => response(200, { adapterType: "omp_local", status: "running" }),
+    });
+    assert.deepEqual(result, { ok: true, state: "running" });
+  });
+
+  it("fails closed on board errors", async () => {
+    const unavailable = await fetchAgentDecommissionState(KEY, {
+      baseUrl: "http://board",
+      fetchImpl: async () => { throw new Error("offline"); },
+    });
+    assert.equal(unavailable.ok, false);
+    assert.equal(unavailable.reason, "board-unavailable");
+
+    const forbidden = await fetchAgentDecommissionState(KEY, {
+      baseUrl: "http://board",
+      fetchImpl: async () => response(403, {}),
+    });
+    assert.equal(forbidden.ok, false);
+    assert.equal(forbidden.reason, "board-forbidden");
+  });
+
+  it("rejects a non-UUID agent id without a call", async () => {
+    const result = await fetchAgentDecommissionState("../etc", {
+      baseUrl: "http://board",
+      fetchImpl: async () => { throw new Error("must not be called"); },
+    });
+    assert.equal(result.ok, false);
+    assert.equal(result.reason, "bad-agent-id");
+  });
+});
+
+describe("unpushed-work scan", () => {
+  const KEY = "0123abcd-1111-4222-8333-444455556666";
+
+  const makeRepo = (dir, { dirty = false, ahead = false, stash = false } = {}) => {
+    fs.mkdirSync(dir, { recursive: true });
+    const git = (args, cwd2 = dir) => {
+      const r = subprocess.spawnSync("git", args, { cwd: cwd2, encoding: "utf8", env: { ...process.env, GIT_AUTHOR_NAME: "t", GIT_AUTHOR_EMAIL: "t@t", GIT_COMMITTER_NAME: "t", GIT_COMMITTER_EMAIL: "t@t" } });
+      if (r.status !== 0) throw new Error(`git ${args.join(" ")}: ${r.stderr}`);
+      return r;
+    };
+    // A bare upstream + a push of the base commit, so "clean" means really pushed.
+    const upstream = `${dir}.upstream.git`;
+    git(["init", "-q", "--bare", upstream]);
+    git(["init", "-q"]);
+    git(["remote", "add", "origin", upstream]);
+    fs.writeFileSync(path.join(dir, "f.txt"), "one\n");
+    git(["add", "."]);
+    git(["commit", "-q", "-m", "one"]);
+    git(["push", "-q", "-u", "origin", "HEAD:main"]);
+    if (ahead) {
+      fs.writeFileSync(path.join(dir, "f.txt"), "one\ntwo\n");
+      git(["commit", "-qam", "two"]);
+    }
+    if (dirty) fs.writeFileSync(path.join(dir, "dirty.txt"), "wip\n");
+    if (stash) {
+      // Stash only its own file so a dirty tree stays dirty.
+      fs.writeFileSync(path.join(dir, "stash.txt"), "s\n");
+      git(["add", "stash.txt"]);
+      git(["stash", "-q", "--", "stash.txt"]);
+    }
+    return dir;
+  };
+
+  let gitWs;
+  beforeEach(() => {
+    gitWs = path.join(tmpDir, "bot", "workspace", "OPE-12654");
+    fs.mkdirSync(gitWs, { recursive: true });
+  });
+
+  it("a repo with a commit ahead of upstream is held with a reason", () => {
+    makeRepo(path.join(gitWs, "repo"), { ahead: true });
+    const result = scanBotDataForUnpushedWork(path.join(tmpDir, "bot"));
+    assert.equal(result.unpushed, true);
+    assert.ok(result.reasons.some((r) => r.includes("commits ahead of upstream")));
+  });
+
+  it("dirty tree and stash are unpushed work", () => {
+    makeRepo(path.join(gitWs, "repo"), { dirty: true, stash: true });
+    const result = scanBotDataForUnpushedWork(path.join(tmpDir, "bot"));
+    assert.equal(result.unpushed, true);
+    assert.ok(result.reasons.some((r) => r.includes("uncommitted changes")));
+    assert.ok(result.reasons.some((r) => r.includes("stash entries")));
+  });
+
+  it("a clean pushed repo is removable", () => {
+    makeRepo(path.join(gitWs, "repo"));
+    const result = scanBotDataForUnpushedWork(path.join(tmpDir, "bot"));
+    assert.deepEqual(result, { unpushed: false, reasons: [] });
+  });
+
+  it(".next and .helper are not scanned", () => {
+    for (const name of [".next", ".helper"]) {
+      const d = path.join(tmpDir, "bot", name, "OPE-12654");
+      makeRepo(d, { ahead: true });
+    }
+    const result = scanBotDataForUnpushedWork(path.join(tmpDir, "bot"));
+    assert.deepEqual(result, { unpushed: false, reasons: [] });
+  });
+});
+
+describe("bot-data gc plan (decommission sweep)", () => {
+  const OLD_KEY = "aaaaaaaa-1111-4222-8333-444455556666";
+  const NEW_KEY = "bbbbbbbb-1111-4222-8333-444455556666";
+  const NOW = Date.parse("2026-11-11T12:00:00Z");
+
+  const makeBotDir = (key, ageHours) => {
+    const dir = path.join(tmpDir, key);
+    fs.mkdirSync(dir, { recursive: true });
+    const stale = new Date(NOW - (ageHours + 1) * 3600 * 1000);
+    fs.utimesSync(dir, stale, stale);
+    return dir;
+  };
+  const containers = (keys) => ({ ok: true, keys: new Set(keys) });
+  const stateOf = (map) => async (agentId) => map[agentId] ?? { ok: false, reason: "board-unavailable" };
+
+  it("old dir of an agent moved off hermes_gateway is removed after retention", async () => {
+    makeBotDir(OLD_KEY, 25);
+    const plan = await planBotDataGc(tmpDir, {
+      now: NOW,
+      containers: containers([]),
+      agentState: stateOf({ [OLD_KEY]: { ok: true, state: "left_hermes_gateway" } }),
+      scan: () => ({ unpushed: false, reasons: [] }),
+    });
+    assert.deepEqual(plan, { ok: true, plan: [{ name: OLD_KEY, path: path.join(tmpDir, OLD_KEY), ageMs: 26 * 3600 * 1000, action: "remove", reason: "decommissioned-clean" }] });
+  });
+
+  it("hermes_gateway agent and fresh dirs are kept", async () => {
+    makeBotDir(OLD_KEY, 25);
+    makeBotDir(NEW_KEY, 1);
+    const plan = await planBotDataGc(tmpDir, {
+      now: NOW,
+      containers: containers([]),
+      agentState: stateOf({ [OLD_KEY]: { ok: true, state: "hermes_gateway" } }),
+      scan: () => { throw new Error("must not scan a hermes bot"); },
+    });
+    assert.equal(plan.ok, true);
+    const byKey = Object.fromEntries(plan.plan.map((p) => [p.name, p]));
+    assert.equal(byKey[OLD_KEY].action, "keep");
+    assert.equal(byKey[OLD_KEY].reason, "agent-on-hermes-gateway");
+    assert.equal(byKey[NEW_KEY].action, "keep");
+    assert.equal(byKey[NEW_KEY].reason, "retention");
+  });
+
+  it("a directory with a commit ahead of upstream is kept and reported", async () => {
+    makeBotDir(OLD_KEY, 25);
+    const plan = await planBotDataGc(tmpDir, {
+      now: NOW,
+      containers: containers([]),
+      agentState: stateOf({ [OLD_KEY]: { ok: true, state: "left_hermes_gateway" } }),
+      scan: () => ({ unpushed: true, reasons: ["OPE-12654/repo: commits ahead of upstream"] }),
+    });
+    const item = plan.plan[0];
+    assert.equal(item.action, "keep");
+    assert.equal(item.reason, "unpushed-work");
+    assert.deepEqual(item.details, ["OPE-12654/repo: commits ahead of upstream"]);
+  });
+
+  it("an existing container of any state holds the directory", async () => {
+    makeBotDir(OLD_KEY, 25);
+    const plan = await planBotDataGc(tmpDir, {
+      now: NOW,
+      containers: containers([OLD_KEY]),
+      agentState: stateOf({}),
+      scan: () => { throw new Error("must not be called"); },
+    });
+    const item = plan.plan[0];
+    assert.equal(item.action, "keep");
+    assert.equal(item.reason, "container-exists");
+  });
+
+  it("a running run and a terminated agent decide differently", async () => {
+    makeBotDir(OLD_KEY, 25);
+    const held = await planBotDataGc(tmpDir, {
+      now: NOW,
+      containers: containers([]),
+      agentState: stateOf({ [OLD_KEY]: { ok: true, state: "running" } }),
+      scan: () => { throw new Error("must not be called"); },
+    });
+    assert.equal(held.plan[0].reason, "agent-has-running-run");
+
+    const gone = await planBotDataGc(tmpDir, {
+      now: NOW,
+      containers: containers([]),
+      agentState: stateOf({ [OLD_KEY]: { ok: true, state: "terminated" } }),
+      scan: () => ({ unpushed: false, reasons: [] }),
+    });
+    assert.equal(gone.plan[0].action, "remove");
+    assert.equal(gone.plan[0].reason, "agent-terminated-clean");
+  });
+
+  it("an unavailable board and unavailable docker fail closed", async () => {
+    makeBotDir(OLD_KEY, 25);
+    const boardDown = await planBotDataGc(tmpDir, {
+      now: NOW,
+      containers: containers([]),
+      agentState: stateOf({}),
+      scan: () => { throw new Error("must not be called"); },
+    });
+    assert.equal(boardDown.plan[0].action, "keep");
+    assert.equal(boardDown.plan[0].reason, "board-unavailable");
+
+    const dockerDown = await planBotDataGc(tmpDir, { now: NOW, containers: { ok: false, reason: "docker-unavailable" } });
+    assert.equal(dockerDown.ok, false);
+    assert.equal(dockerDown.reason, "docker-unavailable");
   });
 });
