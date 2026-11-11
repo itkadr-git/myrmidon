@@ -258,6 +258,66 @@ describe("omp local execution", () => {
     expect(args).toContain(sessionFilePath);
   });
 
+  it("resumes with --session when omp 18.9.2 writes title line before the session header", async () => {
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-omp-resume-title-"));
+    cleanupDirs.push(rootDir);
+    const workspaceDir = path.join(rootDir, "workspace");
+    const sessionDir = path.join(rootDir, "sessions");
+    await mkdir(workspaceDir, { recursive: true });
+    await mkdir(sessionDir, { recursive: true });
+
+    const sessionFilePath = path.join(sessionDir, "session-title-first.jsonl");
+    // omp 18.9.2 writes {"type":"title",…} as the first line and the
+    // {"type":"session",…,"cwd":…} header on the second line.
+    await writeFile(
+      sessionFilePath,
+      [
+        JSON.stringify({ type: "title", title: "omp session" }),
+        JSON.stringify({ type: "session", cwd: workspaceDir }),
+      ].join("\n") + "\n",
+      "utf8",
+    );
+
+    await execute({
+      runId: "run-title-first",
+      agent: {
+        id: "agent-1",
+        companyId: "company-1",
+        name: "OMP Builder",
+        adapterType: "omp_local",
+        adapterConfig: {},
+      },
+      runtime: {
+        sessionId: sessionFilePath,
+        sessionParams: {
+          sessionId: sessionFilePath,
+          cwd: workspaceDir,
+        },
+        sessionDisplayId: "session-title-first",
+        taskKey: null,
+      },
+      config: {
+        command: "omp",
+        model: "openai/gpt-4o",
+      },
+      context: {
+        paperclipWorkspace: {
+          cwd: workspaceDir,
+          source: "project_primary",
+        },
+      },
+      onLog: async () => {},
+    });
+
+    const call = runAdapterExecutionTargetProcess.mock.calls[0] as unknown as
+      | [string, unknown, string, string[]]
+      | undefined;
+    expect(call).toBeDefined();
+    const args = call![3];
+    expect(args).toContain("--session");
+    expect(args).toContain(sessionFilePath);
+  });
+
   it("starts a fresh session without --session when session header cwd differs", async () => {
     const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-omp-stale-"));
     cleanupDirs.push(rootDir);
@@ -754,5 +814,161 @@ describe("omp local execution", () => {
     const entries = pathValue.split(path.delimiter);
     expect(entries[0]).toBe(skillWithBinBinDir);
     expect(entries).not.toContain(path.join(skillWithoutBinDir, "bin"));
+  });
+
+  // myrmidon(1.6.7 OPE-12266): the default tool list must match omp 18.9.2
+  // built-ins — `ls` is a hard error and `find` requires the fd binary.
+  it("passes the omp 18.9.2 verified default tool list and honors config.tools", async () => {
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-omp-tools-"));
+    cleanupDirs.push(rootDir);
+    const workspaceDir = path.join(rootDir, "workspace");
+    await mkdir(workspaceDir, { recursive: true });
+
+    const runExecute = async (config: Record<string, unknown>) => {
+      await execute({
+        runId: "run-tools",
+        agent: {
+          id: "agent-1",
+          companyId: "company-1",
+          name: "OMP Builder",
+          adapterType: "omp_local",
+          adapterConfig: {},
+        },
+        runtime: {
+          sessionId: null,
+          sessionParams: null,
+          sessionDisplayId: null,
+          taskKey: null,
+        },
+        config: { command: "omp", model: "openai/gpt-4o", ...config },
+        context: {
+          paperclipWorkspace: {
+            cwd: workspaceDir,
+            source: "project_primary",
+          },
+        },
+        onLog: async () => {},
+      });
+    };
+
+    await runExecute({});
+    let call = runAdapterExecutionTargetProcess.mock.calls[0] as unknown as
+      | [string, unknown, string, string[]]
+      | undefined;
+    expect(call).toBeDefined();
+    expect(call![3]).toEqual(expect.arrayContaining(["--tools", "read,bash,edit,write,grep"]));
+
+    runAdapterExecutionTargetProcess.mockClear();
+    await runExecute({ tools: "read,bash,grep" });
+    call = runAdapterExecutionTargetProcess.mock.calls[0] as unknown as
+      | [string, unknown, string, string[]]
+      | undefined;
+    expect(call).toBeDefined();
+    expect(call![3]).toEqual(expect.arrayContaining(["--tools", "read,bash,grep"]));
+  });
+
+  // myrmidon(1.6.7 OPE-12266): local process confinement mirrors codex_local —
+  // filesystemScope=workspace builds sandbox options with the omp session dir
+  // as a read/write managed path and logs the "Confining OMP" line.
+  it("builds local process sandbox options and logs the confining line for filesystemScope=workspace", async () => {
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-omp-sandbox-"));
+    cleanupDirs.push(rootDir);
+    const workspaceDir = path.join(rootDir, "workspace");
+    await mkdir(workspaceDir, { recursive: true });
+
+    const logs: Array<{ stream: string; text: string }> = [];
+    await execute({
+      runId: "run-sandbox",
+      agent: {
+        id: "agent-1",
+        companyId: "company-1",
+        name: "OMP Builder",
+        adapterType: "omp_local",
+        adapterConfig: {},
+      },
+      runtime: {
+        sessionId: null,
+        sessionParams: null,
+        sessionDisplayId: null,
+        taskKey: null,
+      },
+      config: {
+        command: "omp",
+        model: "openai/gpt-4o",
+        filesystemScope: "workspace",
+      },
+      context: {
+        paperclipWorkspace: {
+          cwd: workspaceDir,
+          source: "project_primary",
+        },
+      },
+      onLog: async (stream: string, text: string) => {
+        logs.push({ stream, text });
+      },
+    });
+
+    const allText = logs.map((entry) => entry.text).join("");
+    expect(allText).toContain("Confining OMP with workspace filesystem scope.");
+
+    const call = runAdapterExecutionTargetProcess.mock.calls[0] as unknown as
+      | [string, unknown, string, string[], { localProcessSandbox?: { workspaceDir: string; filesystemScope: string; command: string; managedPaths: Array<{ path: string; access: string }> } }]
+      | undefined;
+    expect(call).toBeDefined();
+    const sandbox = call![4]?.localProcessSandbox;
+    expect(sandbox).toBeDefined();
+    expect(sandbox!.workspaceDir).toBe(workspaceDir);
+    expect(sandbox!.filesystemScope).toBe("workspace");
+    expect(sandbox!.command).toBe("bwrap");
+    expect(sandbox!.managedPaths.some((managed) => managed.access === "rw")).toBe(true);
+  });
+
+  // myrmidon(1.6.7 OPE-12266): without sandbox config there is no confinement
+  // and no confining log — behavior of existing agents is preserved.
+  it("does not confine and does not log the confining line without sandbox config", async () => {
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-omp-nosandbox-"));
+    cleanupDirs.push(rootDir);
+    const workspaceDir = path.join(rootDir, "workspace");
+    await mkdir(workspaceDir, { recursive: true });
+
+    const logs: Array<{ stream: string; text: string }> = [];
+    await execute({
+      runId: "run-no-sandbox",
+      agent: {
+        id: "agent-1",
+        companyId: "company-1",
+        name: "OMP Builder",
+        adapterType: "omp_local",
+        adapterConfig: {},
+      },
+      runtime: {
+        sessionId: null,
+        sessionParams: null,
+        sessionDisplayId: null,
+        taskKey: null,
+      },
+      config: {
+        command: "omp",
+        model: "openai/gpt-4o",
+      },
+      context: {
+        paperclipWorkspace: {
+          cwd: workspaceDir,
+          source: "project_primary",
+        },
+      },
+      onLog: async (stream: string, text: string) => {
+        logs.push({ stream, text });
+      },
+    });
+
+    const allText = logs.map((entry) => entry.text).join("");
+    expect(allText).not.toContain("Confining OMP");
+
+    const call = runAdapterExecutionTargetProcess.mock.calls[0] as unknown as
+      | [string, unknown, string, string[], { localProcessSandbox?: unknown }]
+      | undefined;
+    expect(call).toBeDefined();
+    expect(call![4]?.localProcessSandbox).toBeFalsy();
   });
 });

@@ -16,7 +16,14 @@ import {
 import { decideReleaseRecovery, type ReleaseRecoveryFacts } from "../modules/wake-queue/domain/policy.js";
 import { MAINTENANCE_INTERRUPT_ERROR_CODE } from "../myrmidon/maintenance/domain.js";
 
-const runGuardReasons = ["model_call_limit", "idle_timeout", "tool_retry_loop"] as const;
+// myrmidon(RUN-GUARD-LOOPS): the two read-only-loop stop reasons are guard stops too.
+const runGuardReasons = [
+  "model_call_limit",
+  "idle_timeout",
+  "tool_retry_loop",
+  "no_progress_exploration",
+  "repeated_tool_call",
+] as const;
 
 it.each(runGuardReasons)("does not hold guard-stopped %s runs in reconciliation", (reason) => {
   for (const status of ["failed", "timed_out", "interrupted", "cancelled"]) {
@@ -296,13 +303,16 @@ it("persists stopReason in heartbeat metadata, bypasses reconciliation hold, and
   }
 });
 
-it("allows N model calls and rejects N+1 before it can dispatch", () => {
+it("allows N model calls, hints on N+1, and rejects the following call", () => {
   const guard = new RunGuard({ modelCallLimit: 3 });
   expect(guard.modelCall().stop).toBe(false); // N-2
   expect(guard.modelCall().stop).toBe(false); // N-1
   expect(guard.modelCall().stop).toBe(false); // N
-  expect(guard.modelCall()).toEqual({ stop: true, reason: "model_call_limit" }); // N+1
-  expect(guard.modelCall()).toEqual({ stop: true, reason: "model_call_limit" });
+  expect(guard.modelCall()).toEqual({
+    stop: false,
+    hint: { reason: "model_call_limit", modelCalls: 3 },
+  }); // N+1: one hint before stopping
+  expect(guard.modelCall()).toEqual({ stop: true, reason: "model_call_limit" }); // repeated N+2
   expect(guard.stats().modelCallCount).toBe(3);
 });
 
@@ -417,9 +427,11 @@ it("counts discrete provider requests across streaming token bursts and tool bou
     ["message.delta", { delta: "tokens" }],
     ["tool.started", { tool: "noop" }],
     ["tool.completed", { tool: "noop" }],
-    // Round 3 (provider request 3: exceeds modelCallLimit 2 -> triggers model_call_limit stop)
+    // Round 3 (provider request 3: first call beyond modelCallLimit 2 -> hint)
     ["model.request", { request_id: "req-3" }],
     ["message.delta", { delta: "third" }],
+    // Round 4 (provider request 4: repeated limit trip -> model_call_limit stop)
+    ["model.request", { request_id: "req-4" }],
     ["run.completed", { status: "completed", output: "done" }],
   ] as const;
   const newline = String.fromCharCode(10);
@@ -468,6 +480,55 @@ it("does not hold maintenance-interrupted runs scheduled for retry", () => {
     scheduledRetryAttempt: 50, scheduledRetryReason: "myrmidon_maintenance",
     contextSnapshot: { issueId: "issue-1", retryReason: "myrmidon_maintenance" }, resultJson: {},
   })).toBe(false);
+});
+
+// myrmidon(PROVIDER-GARBAGE / OPE-12286): a provider stub reply returned with
+// HTTP 200 is an upstream outage, not a provider execution outcome. The stub
+// text proves the provider never processed the prompt, so a legacy failed run
+// marked provider_garbage is retried by the bounded scheduler (paused retries)
+// instead of waiting for operator reconciliation — exactly the model-unavailable
+// exclusion below, with the same "no provider work happened" semantics.
+it("does not hold provider_garbage runs for reconciliation; ordinary failures stay held", () => {
+  const garbageRun = {
+    runtimeMode: "legacy", status: "failed", errorCode: "provider_garbage",
+    scheduledRetryAttempt: 0,
+    resultJson: { executionRecovery: { kind: "bootstrap", providerWorkStarted: false } },
+  };
+  expect(legacyExecutionNeedsReconciliation(garbageRun)).toBe(false);
+  expect(legacyExecutionNeedsReconciliation({
+    ...garbageRun, resultJson: {},
+  })).toBe(false);
+  // The same failure without the provider_garbage code stays a reconciliation
+  // hold: the exclusion is keyed on the errorCode, not on generic outcome text.
+  expect(legacyExecutionNeedsReconciliation({
+    ...garbageRun, errorCode: "unknown_upstream_failure", resultJson: {},
+  })).toBe(true);
+});
+
+// myrmidon(PROVIDER-OUTAGE-RECOVERY, OPE-12506): a provider outage that never
+// reached provider execution is retried by the quota monitor even after the
+// ordinary retry budget is exhausted; without both the outage classification
+// and the bootstrap evidence the outcome is unknown and stays held.
+it("does not hold a provider outage whose bootstrap evidence proves no provider work, even after the retry budget", () => {
+  const outage = {
+    runtimeMode: "legacy", status: "failed", errorCode: "hermes_gateway_run_failed",
+    scheduledRetryAttempt: 3,
+    resultJson: {
+      errorMessage: "HTTP 429: No deployments available. All deployments in cooldown.",
+      errorFamily: "provider_quota",
+      executionRecovery: { kind: "bootstrap", providerWorkStarted: false },
+    },
+  };
+  expect(legacyExecutionNeedsReconciliation(outage)).toBe(false);
+  expect(legacyExecutionNeedsReconciliation({
+    ...outage, resultJson: { errorMessage: outage.resultJson.errorMessage, errorFamily: "provider_quota" },
+  })).toBe(true);
+  expect(legacyExecutionNeedsReconciliation({
+    ...outage, resultJson: { executionRecovery: { kind: "bootstrap", providerWorkStarted: false } },
+  })).toBe(true);
+  expect(legacyExecutionNeedsReconciliation({
+    ...outage, resultJson: { ...outage.resultJson, executionRecovery: { kind: "bootstrap", providerWorkStarted: true } },
+  })).toBe(true);
 });
 
 // myrmidon(CONTINUATION-WAIT-HOLD): a queued review/response wait is cancelled

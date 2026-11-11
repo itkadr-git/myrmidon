@@ -5,6 +5,9 @@ import {
   WEEKLY_RETENTION_PRESETS,
   MONTHLY_RETENTION_PRESETS,
   DEFAULT_BACKUP_RETENTION,
+  DEFAULT_INSTANCE_TIME_ZONE,
+  DEFAULT_INSTANCE_NUMBER_FORMAT,
+  DEFAULT_INSTANCE_DATE_FORMAT,
 } from "../types/instance.js";
 import { feedbackDataSharingPreferenceSchema } from "./feedback.js";
 import { shapeWithoutDefaults } from "./partial.js";
@@ -65,9 +68,14 @@ import { issueListAgentDefaultsSchema } from "../myrmidon-issue-list-agent-defau
 import { reviewRoutingSettingsSchema } from "../myrmidon-review-routing.js";
 // myrmidon(REVIEW-REWORK): the review-return loop settings stored in the same row.
 import { reviewReworkSettingsSchema } from "../myrmidon-review-rework.js";
+// myrmidon(1.7-GOAL-JUDGE): the goal-achievement judge settings stored in the same row
+import { goalJudgeSettingsSchema } from "../myrmidon-goal-judge.js";
 // myrmidon(1.7-BUDGET-CONFIG-B): the budget enforcement mode stored in the
 // same general settings row.
 import { budgetEnforcementSettingsSchema } from "../myrmidon-budget-enforcement.js";
+// myrmidon(1.7 USERS-ADMIN-UI A): the self-registration switch stored in the
+// same general settings row.
+import { authSelfSignUpSettingsSchema } from "../myrmidon-auth-self-signup.js";
 // myrmidon(1.7-AGENT-EXCHANGE-A): the discussion-room settings of the same row.
 import { agentExchangeSettingsSchema } from "../myrmidon-agent-exchange.js";
 // myrmidon(1.7-AGENT-EXCHANGE-B): the feed of discussion rooms of the same row.
@@ -121,6 +129,9 @@ import { storedFallbackSignalSettingsSchema } from "../myrmidon-fallback-signal.
 // myrmidon(DB-PERF-C-P4): the TTL of the tool gateway policy cache, stored in
 // the same general settings row.
 import { toolPolicyCacheSettingsSchema } from "../myrmidon-tool-policy-cache.js";
+// myrmidon(1.6.7-TOKENS-TOOL-OUTPUT, OPE-10730): tool output limit for model-facing results
+import { toolOutputLimitSettingsSchema } from "../myrmidon-tool-output-limit.js";
+
 
 // myrmidon(PARALLEL-HELPERS): re-exported for the barrel so the settings page and the
 // /api/myrmidon/parallel-helpers route validate with the exact schema stored here.
@@ -160,9 +171,31 @@ export const boardProcessesSettingsSchema = z
     leaderLeaseTtlSec: z.number().int().min(5).max(300).default(30),
     liveEventsBus: z.enum(["local", "pg"]).default("local"),
     admissionStore: z.enum(["memory", "db"]).default("memory"),
-    singletonProxy: z.boolean().default(true),
-  })
-  .passthrough();
+  singletonProxy: z.boolean().default(true),
+})
+.passthrough();
+
+export function isValidIanaTimeZone(timeZone: string): boolean {
+  if (typeof timeZone !== "string" || !timeZone.trim()) {
+    return false;
+  }
+  try {
+    Intl.DateTimeFormat(undefined, { timeZone: timeZone.trim() });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+export const instanceTimeZoneSchema = z
+  .string()
+  .refine(isValidIanaTimeZone, {
+    message: "Invalid IANA time zone identifier",
+  });
+
+export const instanceNumberFormatSchema = z.enum(["en-US", "ru-RU"]);
+
+export const instanceDateFormatSchema = z.enum(["ymd", "dmy", "mdy"]);
 
 export const instanceGeneralSettingsSchema = z.object({
   censorUsernameInLogs: z.boolean().default(false),
@@ -171,6 +204,9 @@ export const instanceGeneralSettingsSchema = z.object({
     DEFAULT_FEEDBACK_DATA_SHARING_PREFERENCE,
   ),
   backupRetention: backupRetentionPolicySchema.default(DEFAULT_BACKUP_RETENTION),
+  timeZone: instanceTimeZoneSchema.default(DEFAULT_INSTANCE_TIME_ZONE),
+  numberFormat: instanceNumberFormatSchema.default(DEFAULT_INSTANCE_NUMBER_FORMAT),
+  dateFormat: instanceDateFormatSchema.default(DEFAULT_INSTANCE_DATE_FORMAT),
   // Execution policy. Absent/"any" = unrestricted; "kubernetes" forces the
   // Kubernetes sandbox provider and denies local/ssh execution (cloud_tenant).
   executionMode: z.enum(["kubernetes", "any"]).optional(),
@@ -225,8 +261,9 @@ export const instanceGeneralSettingsSchema = z.object({
   // variable, then the default". Lenient: a row without the key, with unknown
   // keys or with an invalid value still parses (see myrmidon-bot-disk.ts).
   botDisk: storedBotDiskSettingsSchema,
-  // myrmidon(OPE-7898): live idle-container stop policy.
-  idleStop: z.object({ enabled: z.boolean(), afterSec: z.number().int().min(60).max(31_536_000), healthTimeoutMs: z.number().int().min(1_000).max(600_000) }).strict().optional(),
+  // myrmidon(OPE-7898): live idle-container stop policy; OPE-12291 adds the
+  // role list whose containers are never idle-stopped (default ["lead"]).
+  idleStop: z.object({ enabled: z.boolean(), afterSec: z.number().int().min(60).max(31_536_000), healthTimeoutMs: z.number().int().min(1_000).max(600_000), alwaysOnRoles: z.array(z.string().min(1).max(60)).optional() }).strict().optional(),
   // myrmidon(1.6.1-BOT-DISK-C): the per-bot disk quota, changed from
   // /api/myrmidon/bot-disk-quota; absent means "no quota" (enforcement off).
   // Lenient: an invalid value reads as absent (see myrmidon-bot-disk-quota.ts).
@@ -292,6 +329,10 @@ export const instanceGeneralSettingsSchema = z.object({
   // task; review blocked until the PR head moves), changed from
   // /api/myrmidon/review-rework; absent means the defaults (the fix is on).
   reviewRework: reviewReworkSettingsSchema.optional(),
+  // myrmidon(1.7-GOAL-JUDGE): the goal-achievement judge model and master switch
+  goalJudge: goalJudgeSettingsSchema.optional(),
+  // myrmidon(1.7-GOAL-JUDGE): the change journal of the goal judge settings
+  goalJudgeJournal: z.array(z.unknown()).optional(),
   // myrmidon(F16): the issue-list agent defaults (compact view, limit 200/500,
   // description omitted in compact), read at the list route; absent means the
   // fix is ON — `{enabled: false}` restores the pre-feature agent behaviour
@@ -331,6 +372,17 @@ export const instanceGeneralSettingsSchema = z.object({
   // or refuse new runs with the budget reason (hard); changed from
   // /api/myrmidon/budget-enforcement; absent means the default (signal only).
   budgetEnforcement: budgetEnforcementSettingsSchema.optional(),
+  // myrmidon(1.7 USERS-ADMIN-UI A): the self-registration switch — absent means
+  // self-registration is OFF (the built-in default; see
+  // packages/shared/src/myrmidon-auth-self-signup.ts).
+  authSelfSignUp: authSelfSignUpSettingsSchema.optional(),
+  // myrmidon(1.7 USERS-ADMIN-UI A): the blocked-user list (map of user id to
+  // { blockedAt, blockedBy, reason }). Written only by the users-admin routes
+  // (a transactional jsonb_set, never a whole-general write), and carried over
+  // by normalizeGeneralSettings so a vendor general write cannot drop it.
+  // Stored passthrough; the authoritative parser is
+  // server/src/myrmidon/users-admin-a/store.ts.
+  myrmidonAuthBlockedUsers: z.record(z.string(), z.unknown()).optional(),
   // myrmidon(1.7-DEBATE-ASYM-A): the asymmetric-debates engine settings,
   // changed from /api/myrmidon/debate. Stored passthrough like the
   // swarm-claim journal: the debate service re-reads and validates the shape
@@ -427,6 +479,10 @@ export const instanceGeneralSettingsSchema = z.object({
   // GET/PATCH /api/myrmidon/tool-policy-cache; absent means the default (30 s)
   // and `0` switches the cache off (every read is a fresh query).
   toolPolicyCache: toolPolicyCacheSettingsSchema.optional(),
+  // myrmidon(1.6.7-TOKENS-TOOL-OUTPUT, OPE-10730): model-facing tool output limit
+  toolOutputLimit: toolOutputLimitSettingsSchema.optional(),
+  toolOutputChars: z.number().int().min(0).optional(),
+
   // myrmidon(1.6.3-FORAGING-IDLE-GATE): whether foraging runs only when the
   // role is idle (empty queue + a free agent), changed from
   // /api/myrmidon/foraging/idle-gate; absent means the environment variable,

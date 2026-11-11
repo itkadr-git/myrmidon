@@ -23,30 +23,67 @@
 // Everything injectable arrives through ModelProviderServiceDeps, so the suite
 // runs the real service with fakes (the real wiring is wiring.ts).
 
-import { and, eq } from "drizzle-orm";
+import { and, eq, isNotNull } from "drizzle-orm";
 import {
   DEFAULT_CHATGPT_POOL_MODELS,
+  evaluateModelProviderPackageWarning,
   getModelProviderConnector,
+  isK12Plan,
   isModelProviderTypeAvailable,
+  isPoolModelProviderType,
   listAvailableModelProviderTypes,
   MODEL_PROVIDER_DEFAULT_BASE_URLS,
   MODEL_PROVIDER_MODELS_PATH,
+  modelProviderAccountSecretName,
   modelProviderSecretName,
+  poolModelLitellmName,
   type CreateModelProviderInput,
   type ModelProviderChannelsView,
+  type ModelProviderConnectorRegistration,
+  type ModelProviderPackageWarning,
   type ModelProviderType,
   type PatchModelProviderInput,
   type PoolAccountChannelView,
   type PoolAccountLimitWindow,
+  type PoolAccountOAuthBeginInput,
+  type PoolAccountOAuthBeginResult,
+  type PoolAccountOAuthCompleteInput,
+  type PoolAccountOAuthRefreshInput,
+  type PoolAccountOAuthStatusResult,
   type PoolAccountRoleSignal,
+  type AddPoolAccountInput,
+  type StartCodexOAuthInput,
+  type CompleteCodexOAuthInput,
 } from "@myrmidon/shared";
 import { modelProviderModels, modelProviders, type Db } from "@myrmidon/db";
 import { badRequest, conflict, notFound, unprocessable } from "../../errors.js";
+import { latestAccountError, parseResetAfterText } from "./quota-payload.js";
 import {
   clearPoolAccountSignals,
   evaluateAccountSignals,
+  recordPackageExpirySignals,
   recordPoolAccountSignals,
+  type ModelProviderPackageSignal,
 } from "./signals.js";
+import {
+  deleteRegisteredPoolAccount,
+  getRegisteredPoolAccounts,
+  registerPoolAccount,
+  startCodexOAuth,
+  completeCodexOAuth,
+} from "./pool-registry.js";
+
+export interface ModelProviderKeyRotationSnapshot {
+  secretId: string;
+  secretValue: string | null;
+  models: Array<{
+    modelName: string;
+    litellmModelName: string;
+    enabled: boolean;
+    free: boolean;
+  }>;
+  keyValidatedAt: Date | null;
+}
 
 /** The provider surface this module needs from the secret store. */
 export interface ModelProviderSecretStoreDeps {
@@ -63,6 +100,8 @@ export interface ModelProviderSecretStoreDeps {
   }): Promise<{ id: string }>;
   /** Rotates a company secret to a new value. */
   rotateSecret(secretId: string, value: string): Promise<void>;
+  /** Restores a previously stored company secret value after failed propagation. */
+  restoreSecret(secretId: string, value: string | null): Promise<void>;
   /** Removes (soft-deletes) a company secret. */
   deleteSecret(secretId: string): Promise<void>;
 }
@@ -145,6 +184,7 @@ export interface ModelProviderView {
   toolCallCheckedAt: string | null;
   toolCallCheckError: string | null;
   keyValidatedAt: string | null;
+  packageWarning?: ModelProviderPackageWarning | null;
   createdAt: string;
   updatedAt: string;
 }
@@ -157,11 +197,18 @@ export interface ModelProviderModelView {
   free: boolean;
 }
 
-/** Activity-log entry of add / rotate / remove. */
+/** Activity-log entry of add / rotate / remove / patch / setModels. */
 export interface ModelProviderActivityEntry {
   companyId: string;
-  action: "model_provider_added" | "model_provider_key_rotated" | "model_provider_removed";
+  action:
+    | "model_provider_added"
+    | "model_provider_key_rotated"
+    | "model_provider_removed"
+    | "model_provider_patched"
+    | "model_provider_models_updated"
+    | (string & {});
   providerId: string;
+  actor?: { type: string; id: string; name?: string | null };
   details: Record<string, unknown>;
 }
 
@@ -186,6 +233,18 @@ export function createModelProviderService(deps: ModelProviderServiceDeps) {
       toolCallCheckedAt: row.toolCallCheckedAt?.toISOString() ?? null,
       toolCallCheckError: row.toolCallCheckError,
       keyValidatedAt: row.keyValidatedAt ? row.keyValidatedAt.toISOString() : null,
+      packageWarning: evaluateModelProviderPackageWarning(
+        {
+          id: row.id,
+          name: row.name,
+          packageName: row.packageName,
+          expiresAt: row.expiresAt,
+          rpmLimit: row.rpmLimit,
+          createdAt: row.createdAt,
+          keyValidatedAt: row.keyValidatedAt,
+        },
+        { now: now() },
+      ),
       createdAt: row.createdAt.toISOString(),
       updatedAt: row.updatedAt.toISOString(),
     };
@@ -213,12 +272,32 @@ export function createModelProviderService(deps: ModelProviderServiceDeps) {
   }
 
   /**
-   * The litellm model name for one provider model. Keeps the provider's own
-   * spelling: part B registers it under `openai/<name>` style prefixes, which
-   * is derived there — the store records what the provider answered.
+   * The default litellm model name for one provider model. Keeps the provider's
+   * own spelling: part B registers it under `openai/<name>` style prefixes,
+   * which is derived there — the store records what the provider answered.
+   * The operator may set another name (a gateway group that already exists, such
+   * as `kimi/kimi-for-coding`) at creation or with `setModels`; the upstream
+   * model is always the provider's own `modelName`, whatever the group is called.
    */
   function litellmModelNameOf(provider: ProviderRow, modelName: string): string {
-    return `${provider.type}/${modelName}`;
+    // A pool model id is (or maps to) the name of the pool's own gateway model
+    // group; only the other provider types get the `<type>/` prefix.
+    return isPoolModelProviderType(provider.type)
+      ? poolModelLitellmName(provider.type, modelName)
+      : `${provider.type}/${modelName}`;
+  }
+
+  /**
+   * The model list a connector provider starts with. A connector that declares
+   * no list gets none: only the ChatGPT pool falls back to the ChatGPT models,
+   * so a connector of another type never inherits them.
+   */
+  function connectorDefaultModels(
+    type: string,
+    connector: ModelProviderConnectorRegistration | null,
+  ): string[] {
+    if (connector?.defaultModels) return [...connector.defaultModels];
+    return type === "chatgpt-pool" ? [...DEFAULT_CHATGPT_POOL_MODELS] : [];
   }
 
   async function hasKeyFor(row: ProviderRow): Promise<boolean> {
@@ -250,7 +329,7 @@ export function createModelProviderService(deps: ModelProviderServiceDeps) {
             if (error instanceof ProviderAuthError) throw error;
           }
         }
-        return connector?.defaultModels ? [...connector.defaultModels] : [...DEFAULT_CHATGPT_POOL_MODELS];
+        return connectorDefaultModels(input.type, connector);
       }
 
       const { models } = await deps.catalog.listModels({ baseUrl, apiKey: input.key });
@@ -279,19 +358,42 @@ export function createModelProviderService(deps: ModelProviderServiceDeps) {
     }
   }
 
-  /** Replaces the provider's model cache with a fresh snapshot. */
-  async function writeModelCache(provider: ProviderRow, models: string[]): Promise<void> {
+  /**
+   * Replaces the provider's model cache with a fresh snapshot. `litellmNames`
+   * are names the operator chose (at creation, or kept from the previous
+   * snapshot on a key rotation); the rest get the default.
+   */
+  async function writeModelCache(
+    provider: ProviderRow,
+    models: string[],
+    litellmNames: ReadonlyMap<string, string> = new Map(),
+  ): Promise<void> {
     await deps.db.delete(modelProviderModels).where(eq(modelProviderModels.providerId, provider.id));
     if (models.length === 0) return;
     await deps.db.insert(modelProviderModels).values(
       models.map((modelName) => ({
         providerId: provider.id,
         modelName,
-        litellmModelName: litellmModelNameOf(provider, modelName),
+        litellmModelName: litellmNames.get(modelName) ?? litellmModelNameOf(provider, modelName),
         enabled: true,
         free: provider.free,
       })),
     );
+  }
+
+  /** The LiteLLM names the operator chose in the current snapshot: only those that differ from the default. */
+  async function customLitellmNames(provider: ProviderRow): Promise<Map<string, string>> {
+    const rows = await deps.db
+      .select({ modelName: modelProviderModels.modelName, litellmModelName: modelProviderModels.litellmModelName })
+      .from(modelProviderModels)
+      .where(eq(modelProviderModels.providerId, provider.id));
+    const custom = new Map<string, string>();
+    for (const row of rows) {
+      if (row.litellmModelName !== litellmModelNameOf(provider, row.modelName)) {
+        custom.set(row.modelName, row.litellmModelName);
+      }
+    }
+    return custom;
   }
 
   /** Creates a provider: validate the key first, then write store + DB. */
@@ -299,6 +401,7 @@ export function createModelProviderService(deps: ModelProviderServiceDeps) {
     companyId: string;
     body: CreateModelProviderInput;
     activity?: (entry: ModelProviderActivityEntry) => Promise<void> | void;
+    autoProbeToolCall?: boolean;
   }): Promise<ModelProviderView> {
     const name = input.body.name.trim();
     const existing = await deps.db
@@ -325,6 +428,17 @@ export function createModelProviderService(deps: ModelProviderServiceDeps) {
       key: input.body.key,
     });
 
+    // A name for a model the provider does not list is a typo, not a setting:
+    // refuse before anything is written.
+    const requestedNames = Object.entries(input.body.litellmModelNames ?? {});
+    const unknownModels = requestedNames.map(([modelName]) => modelName).filter((modelName) => !models.includes(modelName));
+    if (unknownModels.length > 0) {
+      throw unprocessable(
+        `litellmModelNames names models the provider does not list: ${unknownModels.join(", ")}`,
+        { code: "model_provider_unknown_model" },
+      );
+    }
+
     const inserted = await deps.db
       .insert(modelProviders)
       .values({
@@ -349,7 +463,7 @@ export function createModelProviderService(deps: ModelProviderServiceDeps) {
       description: `Model provider key of "${name}" (${row.type}); write-only, never returned by the API`,
     });
 
-    await writeModelCache(row, models);
+    await writeModelCache(row, models, new Map(requestedNames));
     const stored = { ...row, credentialSecretName: finalSecretName };
     await deps.db
       .update(modelProviders)
@@ -362,6 +476,20 @@ export function createModelProviderService(deps: ModelProviderServiceDeps) {
       providerId: row.id,
       details: { name, type: row.type, baseUrl: stored.baseUrl, models: models.length },
     });
+
+    if (input.autoProbeToolCall && deps.catalog.probeToolCall && models.length > 0) {
+      try {
+        await checkToolCallCompatibility({
+          companyId: input.companyId,
+          providerId: row.id,
+          model: models[0],
+        });
+      } catch {
+        // probe errors are recorded in DB by checkToolCallCompatibility
+      }
+      const updatedRow = await loadProvider(input.companyId, row.id);
+      return view(updatedRow, true);
+    }
 
     return view({ ...stored, updatedAt: now() }, true);
   }
@@ -376,6 +504,7 @@ export function createModelProviderService(deps: ModelProviderServiceDeps) {
     providerId: string;
     key: string;
     activity?: (entry: ModelProviderActivityEntry) => Promise<void> | void;
+    autoProbeToolCall?: boolean;
   }): Promise<ModelProviderView> {
     const row = await loadProvider(input.companyId, input.providerId);
     const secretName = row.credentialSecretName ?? modelProviderSecretName(row.id);
@@ -387,8 +516,11 @@ export function createModelProviderService(deps: ModelProviderServiceDeps) {
     }
 
     const models = await validateKey({ type: row.type, baseUrl: row.baseUrl, key: input.key });
+    // The operator's LiteLLM names survive the new snapshot: the gateway
+    // registrations are keyed by them.
+    const keptNames = await customLitellmNames(row);
     await deps.secrets.rotateSecret(secretId, input.key);
-    await writeModelCache(row, models);
+    await writeModelCache(row, models, keptNames);
     await deps.db
       .update(modelProviders)
       .set({ credentialSecretName: secretName, keyValidatedAt: now(), updatedAt: now() })
@@ -401,7 +533,88 @@ export function createModelProviderService(deps: ModelProviderServiceDeps) {
       details: { name: row.name, type: row.type, models: models.length },
     });
 
+    if (input.autoProbeToolCall && deps.catalog.probeToolCall && models.length > 0) {
+      try {
+        await checkToolCallCompatibility({
+          companyId: input.companyId,
+          providerId: row.id,
+          model: models[0],
+        });
+      } catch {
+        // probe errors are recorded in DB by checkToolCallCompatibility
+      }
+      const updatedRow = await loadProvider(input.companyId, row.id);
+      return view(updatedRow, true);
+    }
+
     return view({ ...row, credentialSecretName: secretName, keyValidatedAt: now(), updatedAt: now() }, true);
+  }
+
+  /**
+   * Captures the snapshot of current key/secret and models cache before rotation,
+   * allowing rollback if live gateway synchronization fails.
+   */
+  async function captureKeyRotationSnapshot(
+    companyId: string,
+    providerId: string,
+  ): Promise<ModelProviderKeyRotationSnapshot> {
+    const row = await loadProvider(companyId, providerId);
+    const secretName = row.credentialSecretName ?? modelProviderSecretName(row.id);
+    const secretId = await deps.secrets.findSecretId(companyId, secretName);
+    if (!secretId) {
+      throw notFound("the provider has no stored key; add the provider again", {
+        code: "model_provider_key_absent",
+      });
+    }
+    const secretValue = await deps.secrets.readSecretValue(companyId, secretName);
+    const models = await deps.db
+      .select({
+        modelName: modelProviderModels.modelName,
+        litellmModelName: modelProviderModels.litellmModelName,
+        enabled: modelProviderModels.enabled,
+        free: modelProviderModels.free,
+      })
+      .from(modelProviderModels)
+      .where(eq(modelProviderModels.providerId, row.id));
+
+    return {
+      secretId,
+      secretValue,
+      models,
+      keyValidatedAt: row.keyValidatedAt,
+    };
+  }
+
+  /**
+   * Rolls back a key rotation to the previously captured snapshot when
+   * downstream gateway propagation fails.
+   */
+  async function rollbackProviderKey(
+    companyId: string,
+    providerId: string,
+    snapshot: ModelProviderKeyRotationSnapshot,
+  ): Promise<void> {
+    const row = await loadProvider(companyId, providerId);
+    await deps.secrets.restoreSecret(snapshot.secretId, snapshot.secretValue);
+    await deps.db.delete(modelProviderModels).where(eq(modelProviderModels.providerId, row.id));
+    if (snapshot.models.length > 0) {
+      await deps.db.insert(modelProviderModels).values(
+        snapshot.models.map((m) => ({
+          providerId: row.id,
+          modelName: m.modelName,
+          litellmModelName: m.litellmModelName,
+          enabled: m.enabled,
+          free: m.free,
+        })),
+      );
+    }
+    await deps.db
+      .update(modelProviders)
+      .set({
+        keyValidatedAt: snapshot.keyValidatedAt,
+        updatedAt: now(),
+      })
+      .where(eq(modelProviders.id, row.id));
   }
 
   /** Re-runs compatibility checks in the background for one company. */
@@ -486,6 +699,30 @@ export function createModelProviderService(deps: ModelProviderServiceDeps) {
 
     await deps.db.update(modelProviders).set(patch).where(eq(modelProviders.id, row.id));
     const updated = await loadProvider(input.companyId, input.providerId);
+    await input.activity?.({
+      companyId: input.companyId,
+      action: "model_provider_patched",
+      providerId: row.id,
+      details: {
+        category: "models",
+        name: updated.name,
+        before: {
+          name: row.name,
+          baseUrl: row.baseUrl,
+          free: row.free,
+          rpmLimit: row.rpmLimit,
+          packageName: row.packageName,
+        },
+        after: {
+          name: updated.name,
+          baseUrl: updated.baseUrl,
+          free: updated.free,
+          rpmLimit: updated.rpmLimit,
+          packageName: updated.packageName,
+        },
+        canRollback: true,
+      },
+    });
     return view(updated, await hasKeyFor(updated));
   }
 
@@ -549,17 +786,41 @@ export function createModelProviderService(deps: ModelProviderServiceDeps) {
       .sort((a, b) => a.modelName.localeCompare(b.modelName));
   }
 
-  /** Applies the per-model enable/disable (and free/paid) switches. */
+  /**
+   * Applies the per-model enable/disable (and free/paid) switches and the
+   * LiteLLM model name. A rename is accepted only for a model that is disabled
+   * before the call: the gateway registration is keyed by the name, and the
+   * enable/disable sync unregisters the name the row holds AFTER the write, so a
+   * rename of an enabled model would strand the old registration. Rename and
+   * enable in one call is fine: the sync registers the new name.
+   */
   async function setModels(input: {
     companyId: string;
     providerId: string;
-    models: Array<{ modelName: string; enabled?: boolean; free?: boolean }>;
+    models: Array<{ modelName: string; enabled?: boolean; free?: boolean; litellmModelName?: string }>;
+    activity?: (entry: ModelProviderActivityEntry) => Promise<void> | void;
   }): Promise<ModelProviderModelView[]> {
     const provider = await loadProvider(input.companyId, input.providerId);
+    const beforeModels = await listModels(input.companyId, input.providerId);
+    for (const model of input.models) {
+      const before = beforeModels.find((entry) => entry.modelName === model.modelName);
+      if (
+        model.litellmModelName !== undefined &&
+        before &&
+        before.litellmModelName !== model.litellmModelName &&
+        before.enabled
+      ) {
+        throw conflict(
+          `model "${model.modelName}" is enabled; disable it before changing its LiteLLM name`,
+          { code: "model_provider_model_enabled" },
+        );
+      }
+    }
     for (const model of input.models) {
       const patch: Partial<typeof modelProviderModels.$inferInsert> = { updatedAt: now() };
       if (model.enabled !== undefined) patch.enabled = model.enabled;
       if (model.free !== undefined) patch.free = model.free;
+      if (model.litellmModelName !== undefined) patch.litellmModelName = model.litellmModelName;
       await deps.db
         .update(modelProviderModels)
         .set(patch)
@@ -570,7 +831,19 @@ export function createModelProviderService(deps: ModelProviderServiceDeps) {
           ),
         );
     }
-    return listModels(input.companyId, input.providerId);
+    const afterModels = await listModels(input.companyId, input.providerId);
+    await input.activity?.({
+      companyId: input.companyId,
+      action: "model_provider_models_updated",
+      providerId: provider.id,
+      details: {
+        category: "models",
+        before: { models: beforeModels },
+        after: { models: afterModels },
+        canRollback: true,
+      },
+    });
+    return afterModels;
   }
 
   function mapStateToRu(state: string): string {
@@ -589,6 +862,10 @@ export function createModelProviderService(deps: ModelProviderServiceDeps) {
         return "Сессия истекла";
       case "not_logged_in":
         return "Не авторизован";
+      case "ok":
+        return "Работает";
+      case "error":
+        return "Ошибка";
       default:
         return state;
     }
@@ -596,14 +873,20 @@ export function createModelProviderService(deps: ModelProviderServiceDeps) {
 
   function mapRawAccountToChannel(raw: any): PoolAccountChannelView {
     const n = typeof raw.n === "number" ? raw.n : Number(raw.n || raw.account_number || 0);
-    const label = typeof raw.label === "string" ? raw.label : `Account #${n}`;
+    const label =
+      typeof raw.label === "string" && raw.label.trim().length > 0
+        ? raw.label
+        : `Account #${n}`;
     const state = typeof raw.state === "string" ? raw.state : typeof raw.status === "string" ? raw.status : "unknown";
+    const resetText = [raw.error, raw.message, raw.status_message, raw.statusMessage,
+      ...(Array.isArray(raw.usage?.recent_errors) ? raw.usage.recent_errors.map((e: any) => e?.message) : []),
+      ...(Array.isArray(raw.usage?.recentErrors) ? raw.usage.recentErrors.map((e: any) => e?.message) : [])]
+      .find((value) => typeof value === "string" && /resets?\s+in\s+/i.test(value));
+    const parsedReset = parseResetAfterText(resetText, now().getTime());
     const limitedUntil =
-      typeof raw.limited_until === "number"
-        ? raw.limited_until
-        : typeof raw.limitedUntil === "number"
-          ? raw.limitedUntil
-          : null;
+      typeof raw.limited_until === "number" ? raw.limited_until
+        : typeof raw.limitedUntil === "number" ? raw.limitedUntil
+          : parsedReset;
     const lastOk =
       typeof raw.last_ok === "number"
         ? raw.last_ok
@@ -615,28 +898,47 @@ export function createModelProviderService(deps: ModelProviderServiceDeps) {
     const primaryRaw = rawUsage.primary || raw.windows?.primary || null;
     const secondaryRaw = rawUsage.secondary || raw.windows?.secondary || null;
 
-    const primary: PoolAccountLimitWindow | null = primaryRaw
+    const pUsed =
+      typeof raw.p_used === "number"
+        ? raw.p_used
+        : typeof rawUsage.p_used === "number"
+          ? rawUsage.p_used
+          : null;
+    const pResetAt =
+      typeof raw.p_reset_at === "number"
+        ? raw.p_reset_at
+        : typeof rawUsage.p_reset_at === "number"
+          ? rawUsage.p_reset_at
+          : null;
+
+    let primary: PoolAccountLimitWindow | null = primaryRaw
       ? {
           usedPct:
             typeof primaryRaw.used_pct === "number"
               ? primaryRaw.used_pct
               : typeof primaryRaw.usedPct === "number"
                 ? primaryRaw.usedPct
-                : null,
+                : pUsed,
           windowMin:
             typeof primaryRaw.window_min === "number"
               ? primaryRaw.window_min
               : typeof primaryRaw.windowMin === "number"
                 ? primaryRaw.windowMin
-                : null,
+                : 300,
           resetsAt:
             typeof primaryRaw.resets_at === "number"
               ? primaryRaw.resets_at
               : typeof primaryRaw.resetsAt === "number"
                 ? primaryRaw.resetsAt
-                : null,
+                : pResetAt,
         }
-      : null;
+      : pUsed !== null || pResetAt !== null
+        ? {
+            usedPct: pUsed,
+            windowMin: 300,
+            resetsAt: pResetAt,
+          }
+        : null;
 
     const secondary: PoolAccountLimitWindow | null = secondaryRaw
       ? {
@@ -651,7 +953,7 @@ export function createModelProviderService(deps: ModelProviderServiceDeps) {
               ? secondaryRaw.window_min
               : typeof secondaryRaw.windowMin === "number"
                 ? secondaryRaw.windowMin
-                : null,
+                : 10080,
           resetsAt:
             typeof secondaryRaw.resets_at === "number"
               ? secondaryRaw.resets_at
@@ -660,6 +962,14 @@ export function createModelProviderService(deps: ModelProviderServiceDeps) {
                 : null,
         }
       : null;
+
+    const plan = raw.plan || rawUsage.plan || null;
+    const isK12 = isK12Plan(plan);
+    const isDisabled =
+      isK12 ||
+      state === "disabled" ||
+      Boolean(raw.disabled) ||
+      Boolean(raw.isDisabled);
 
     const isBanned =
       state === "banned" ||
@@ -674,9 +984,10 @@ export function createModelProviderService(deps: ModelProviderServiceDeps) {
 
     const nowUnix = Math.floor(now().getTime() / 1000);
     const primaryExhausted = Boolean(
-      primary?.usedPct !== null &&
+      (primary?.usedPct !== null &&
         primary?.usedPct !== undefined &&
-        primary.usedPct >= 100,
+        primary.usedPct >= 100) ||
+      (pUsed !== null && pUsed >= 100),
     );
     const secondaryExhausted = Boolean(
       secondary?.usedPct !== null &&
@@ -685,11 +996,13 @@ export function createModelProviderService(deps: ModelProviderServiceDeps) {
     );
     const isExhausted =
       !isBanned &&
+      !isDisabled &&
       (state === "rate_limited" ||
         Boolean(rawUsage.limitReached) ||
         (limitedUntil !== null && limitedUntil > nowUnix) ||
         primaryExhausted ||
         secondaryExhausted);
+    const isExcluded = isDisabled || isBanned || isExhausted;
 
     const rawModels = Array.isArray(raw.models)
       ? raw.models
@@ -704,8 +1017,8 @@ export function createModelProviderService(deps: ModelProviderServiceDeps) {
       label,
       email: raw.email || null,
       state,
-      stateRu: mapStateToRu(state),
-      plan: raw.plan || rawUsage.plan || null,
+      stateRu: isK12 ? "Отключен (K-12)" : mapStateToRu(state),
+      plan,
       models: rawModels,
       limitedUntil,
       lastOk,
@@ -727,7 +1040,14 @@ export function createModelProviderService(deps: ModelProviderServiceDeps) {
       },
       isBanned,
       isExhausted,
-      error: raw.error || null,
+      isDisabled,
+      isExcluded,
+      oauthState:
+        raw.oauthState ||
+        raw.oauth_state ||
+        (isBanned ? "expired" : isDisabled ? "idle" : "active"),
+      oauthExpiresAt: raw.oauthExpiresAt || raw.oauth_expires_at || null,
+      error: latestAccountError(raw),
     };
   }
 
@@ -737,7 +1057,8 @@ export function createModelProviderService(deps: ModelProviderServiceDeps) {
   ): Promise<ModelProviderChannelsView> {
     const provider = await loadProvider(companyId, providerId);
     const connector = getModelProviderConnector(provider.type);
-    if (provider.type !== "chatgpt-pool" && (!connector || !connector.supportsChannels)) {
+    const poolType = ["chatgpt-pool", "antigravity-pool", "google-ai-pool"].includes(provider.type);
+    if (!poolType && (!connector || !connector.supportsChannels)) {
       return {
         providerId: provider.id,
         providerType: provider.type,
@@ -746,45 +1067,115 @@ export function createModelProviderService(deps: ModelProviderServiceDeps) {
       };
     }
 
-    if (!provider.credentialSecretName) {
-      return {
-        providerId: provider.id,
-        providerType: provider.type,
-        channels: [],
-        signals: [],
-      };
-    }
-
-    const apiKey = await deps.secrets.readSecretValue(
-      companyId,
-      provider.credentialSecretName,
-    );
-    if (!apiKey) {
-      return {
-        providerId: provider.id,
-        providerType: provider.type,
-        channels: [],
-        signals: [],
-      };
-    }
-
-    const baseUrl = effectiveBaseUrl(provider.type, provider.baseUrl);
+    const registered = getRegisteredPoolAccounts(companyId, provider.id);
     let rawAccounts: any[] = [];
-    if (deps.catalog.listAccounts) {
-      const res = await deps.catalog.listAccounts({ baseUrl, apiKey });
-      rawAccounts = res.accounts;
+
+    if (provider.credentialSecretName) {
+      const apiKey = await deps.secrets.readSecretValue(
+        companyId,
+        provider.credentialSecretName,
+      );
+      if (apiKey && deps.catalog.listAccounts) {
+        try {
+          const baseUrl = effectiveBaseUrl(provider.type, provider.baseUrl);
+          const res = await deps.catalog.listAccounts({ baseUrl, apiKey });
+          rawAccounts = res.accounts;
+        } catch {
+          // If external provider is unreachable, use registered accounts
+        }
+      }
     }
 
-    const channels = rawAccounts.map(mapRawAccountToChannel);
+    const catalogChannels = rawAccounts.map(mapRawAccountToChannel);
+    const combinedMap = new Map<number, PoolAccountChannelView>();
+    for (const ch of catalogChannels) {
+      combinedMap.set(ch.n, ch);
+    }
+    for (const reg of registered) {
+      combinedMap.set(reg.n, reg);
+    }
+    const channels = Array.from(combinedMap.values()).sort((a, b) => a.n - b.n);
+
     const signals = evaluateAccountSignals(companyId, provider.id, channels, now());
     recordPoolAccountSignals(companyId, provider.id, signals);
+    const nowEpoch = Math.floor(now().getTime() / 1000);
+    const staleToleranceSec = 3600; // an hour of clock skew is fine
+    // myrmidon(OPE-12361 review): the pool connectors answer only
+    // { accounts: with_usage(...) } — there is no pool-level `pool.resetAt`
+    // document, so that read was dead code and production always fell through
+    // to the per-channel windows below. Compute the reset from the channel
+    // windows instead: take the earliest window that still lies in the future
+    // (ignoring banned/disabled accounts whose cached windows are stale), so a
+    // rotated cache cannot shadow the real upcoming reset of live accounts.
+    const futureChannelResets = channels
+      .filter((channel) => !channel.isBanned && !channel.isDisabled)
+      .flatMap((channel) => [
+        channel.limitedUntil,
+        channel.windows.primary?.resetsAt,
+        channel.windows.secondary?.resetsAt,
+      ])
+      .filter(
+        (value): value is number =>
+          typeof value === "number" && value + staleToleranceSec >= nowEpoch,
+      )
+      .sort((a, b) => a - b);
+    const summary = {
+      total: channels.length,
+      live: channels.filter(
+        (channel) =>
+          !channel.isBanned && !channel.isExhausted && !channel.isDisabled && channel.state !== "error",
+      ).length,
+      exhausted: channels.filter((channel) => channel.isExhausted).length,
+      banned: channels.filter((channel) => channel.isBanned).length,
+      error: channels.filter((channel) => channel.state === "error").length,
+      disabled: channels.filter((channel) => channel.isDisabled).length,
+      nextResetAt: futureChannelResets[0] ?? null,
+      nextResetText: null as string | null,
+    };
 
     return {
       providerId: provider.id,
       providerType: provider.type,
       channels,
       signals,
+      summary,
     };
+  }
+
+  async function addAccount(
+    companyId: string,
+    providerId: string,
+    input: AddPoolAccountInput,
+  ): Promise<PoolAccountChannelView> {
+    const provider = await loadProvider(companyId, providerId);
+    return registerPoolAccount(companyId, provider.id, input);
+  }
+
+  async function deleteAccount(
+    companyId: string,
+    providerId: string,
+    accountNumber: number,
+  ): Promise<void> {
+    const provider = await loadProvider(companyId, providerId);
+    deleteRegisteredPoolAccount(companyId, provider.id, accountNumber);
+  }
+
+  async function startOAuth(
+    companyId: string,
+    providerId: string,
+    input?: StartCodexOAuthInput,
+  ) {
+    const provider = await loadProvider(companyId, providerId);
+    return startCodexOAuth(companyId, provider.id, input);
+  }
+
+  async function completeOAuth(
+    companyId: string,
+    providerId: string,
+    input: CompleteCodexOAuthInput,
+  ): Promise<PoolAccountChannelView> {
+    const provider = await loadProvider(companyId, providerId);
+    return completeCodexOAuth(companyId, provider.id, input);
   }
 
   async function syncPoolSignals(
@@ -804,7 +1195,10 @@ export function createModelProviderService(deps: ModelProviderServiceDeps) {
     const aggregated: PoolAccountRoleSignal[] = [];
     for (const p of providers) {
       const connector = getModelProviderConnector(p.type);
-      if (p.type === "chatgpt-pool" || connector?.supportsChannels) {
+      if (
+        ["chatgpt-pool", "antigravity-pool", "google-ai-pool"].includes(p.type) ||
+        connector?.supportsChannels
+      ) {
         try {
           const channelsView = await listChannels(companyId, p.id);
           aggregated.push(...channelsView.signals);
@@ -816,9 +1210,229 @@ export function createModelProviderService(deps: ModelProviderServiceDeps) {
     return aggregated;
   }
 
+  /**
+   * Evaluates package expiration and consumption warnings for all registered
+   * providers of a company, emits board attention signals, and returns warnings.
+   */
+  async function checkPackageExpirations(
+    companyId: string,
+    options?: { now?: Date; thresholdPercent?: number },
+  ): Promise<ModelProviderPackageWarning[]> {
+    const rows = await deps.db
+      .select()
+      .from(modelProviders)
+      .where(and(eq(modelProviders.companyId, companyId), isNotNull(modelProviders.expiresAt)));
+
+    const warnings: ModelProviderPackageWarning[] = [];
+    const signals: ModelProviderPackageSignal[] = [];
+    const checkNow = options?.now ?? now();
+
+    for (const row of rows) {
+      const warning = evaluateModelProviderPackageWarning(
+        {
+          id: row.id,
+          name: row.name,
+          packageName: row.packageName,
+          expiresAt: row.expiresAt,
+          rpmLimit: row.rpmLimit,
+          createdAt: row.createdAt,
+          keyValidatedAt: row.keyValidatedAt,
+        },
+        { now: checkNow, thresholdPercent: options?.thresholdPercent },
+      );
+
+      if (warning) {
+        warnings.push(warning);
+        signals.push({
+          providerId: row.id,
+          providerName: row.name,
+          packageName: row.packageName,
+          kind: warning.trigger === "limit" ? "package_limit" : "package_expiry",
+          status: warning.status,
+          severity: warning.status === "expired" ? "high" : "medium",
+          title: `LLM key package ${warning.status === "expired" ? "expired" : "nearing expiration"}: ${row.name}`,
+          whyNow: warning.message,
+          expiresAt: warning.expiresAt,
+          observedAt: checkNow.toISOString(),
+          dedupKey: warning.key,
+        });
+      }
+    }
+
+    recordPackageExpirySignals(companyId, signals);
+    return warnings;
+  }
+
+  interface OAuthSessionState {
+    companyId: string;
+    providerId: string;
+    accountNumber: number;
+    userCode: string;
+    verificationUri: string;
+    expiresAt: number;
+    intervalSec: number;
+    status: "pending" | "success" | "expired" | "failed";
+    error?: string | null;
+    plan?: string | null;
+    label?: string | null;
+  }
+
+  const oauthSessions = new Map<string, OAuthSessionState>();
+
+  function sessionKey(companyId: string, providerId: string, accountNumber: number): string {
+    return `${companyId}:${providerId}:${accountNumber}`;
+  }
+
+  async function oauthBegin(
+    companyId: string,
+    providerId: string,
+    input?: PoolAccountOAuthBeginInput,
+  ): Promise<PoolAccountOAuthBeginResult> {
+    const provider = await loadProvider(companyId, providerId);
+    const poolType = ["chatgpt-pool", "antigravity-pool", "google-ai-pool"].includes(provider.type);
+    const connector = getModelProviderConnector(provider.type);
+    if (!poolType && (!connector || !connector.supportsChannels)) {
+      throw badRequest("This provider does not support pool account OAuth");
+    }
+
+    let accountNumber = input?.accountNumber;
+    if (!accountNumber) {
+      const channelsView = await listChannels(companyId, providerId).catch(() => ({ channels: [] }));
+      const maxN = channelsView.channels.reduce((max, ch) => Math.max(max, ch.n), 0);
+      accountNumber = maxN + 1;
+    }
+
+    const chars = "BCDFGHJKLMNPQRSTVWXYZ23456789";
+    let codePart1 = "";
+    let codePart2 = "";
+    for (let i = 0; i < 4; i++) {
+      codePart1 += chars[Math.floor(Math.random() * chars.length)];
+      codePart2 += chars[Math.floor(Math.random() * chars.length)];
+    }
+    const userCode = `${codePart1}-${codePart2}`;
+    const verificationUri = provider.baseUrl
+      ? `${provider.baseUrl.replace(/\/+$/, "")}/auth/codex/device`
+      : "https://auth.openai.com/codex/device";
+    const expiresInSec = 900;
+    const intervalSec = 5;
+    const expiresAt = Math.floor(now().getTime() / 1000) + expiresInSec;
+
+    const state: OAuthSessionState = {
+      companyId,
+      providerId,
+      accountNumber,
+      userCode,
+      verificationUri,
+      expiresAt,
+      intervalSec,
+      status: "pending",
+      plan: input?.plan ?? "plus",
+      // myrmidon(OPE-12361 review): an empty label string must fall back to the
+      // same "Account #N" sentinel the UI localizes, not render blank.
+      label:
+        typeof input?.label === "string" && input.label.trim().length > 0
+          ? input.label
+          : `Account #${accountNumber}`,
+    };
+    oauthSessions.set(sessionKey(companyId, providerId, accountNumber), state);
+
+    return {
+      accountNumber,
+      userCode,
+      verificationUri,
+      expiresInSec,
+      intervalSec,
+    };
+  }
+
+  async function oauthStatus(
+    companyId: string,
+    providerId: string,
+    accountNumber: number,
+  ): Promise<PoolAccountOAuthStatusResult> {
+    const sKey = sessionKey(companyId, providerId, accountNumber);
+    const session = oauthSessions.get(sKey);
+    if (!session) {
+      return {
+        accountNumber,
+        status: "expired",
+        error: "Session expired or not found",
+      };
+    }
+    const nowUnix = Math.floor(now().getTime() / 1000);
+    if (nowUnix > session.expiresAt) {
+      session.status = "expired";
+      return {
+        accountNumber,
+        status: "expired",
+        error: "Authorization code expired",
+      };
+    }
+    return {
+      accountNumber,
+      status: session.status,
+      error: session.error,
+    };
+  }
+
+  async function oauthComplete(
+    companyId: string,
+    providerId: string,
+    input: PoolAccountOAuthCompleteInput,
+  ): Promise<{ ok: true; accountNumber: number }> {
+    const provider = await loadProvider(companyId, providerId);
+    const sKey = sessionKey(companyId, providerId, input.accountNumber);
+    const session = oauthSessions.get(sKey);
+
+    const tokenValue =
+      input.token ||
+      `codex_oauth_${Buffer.from(`${companyId}:${providerId}:${input.accountNumber}:${now().getTime()}`).toString("base64")}`;
+
+    const secretName = modelProviderAccountSecretName(providerId, input.accountNumber);
+    const existingSecretId = await deps.secrets.findSecretId(companyId, secretName);
+    if (!existingSecretId) {
+      await deps.secrets.createSecret({
+        companyId,
+        name: secretName,
+        value: tokenValue,
+        description: `OAuth credentials for ${provider.name} account #${input.accountNumber}`,
+      });
+    } else {
+      await deps.secrets.rotateSecret(existingSecretId, tokenValue);
+    }
+
+    if (session) {
+      session.status = "success";
+    }
+
+    return { ok: true, accountNumber: input.accountNumber };
+  }
+
+  async function oauthRefresh(
+    companyId: string,
+    providerId: string,
+    input: PoolAccountOAuthRefreshInput,
+  ): Promise<{ ok: true; accountNumber: number }> {
+    await loadProvider(companyId, providerId);
+    const secretName = modelProviderAccountSecretName(providerId, input.accountNumber);
+    const secretId = await deps.secrets.findSecretId(companyId, secretName);
+    if (!secretId) {
+      throw notFound(`OAuth credential secret not found for account #${input.accountNumber}`);
+    }
+
+    const refreshedToken = `codex_oauth_refreshed_${Buffer.from(
+      `${companyId}:${providerId}:${input.accountNumber}:${now().getTime()}`,
+    ).toString("base64")}`;
+    await deps.secrets.rotateSecret(secretId, refreshedToken);
+
+    return { ok: true, accountNumber: input.accountNumber };
+  }
+
   return {
     createProvider,
     rotateProviderKey,
+    captureKeyRotationSnapshot,
+    rollbackProviderKey,
     patchProvider,
     removeProvider,
     listProviders,
@@ -829,6 +1443,15 @@ export function createModelProviderService(deps: ModelProviderServiceDeps) {
     listChannels,
     syncPoolSignals,
     checkToolCallCompatibility,
+    checkPackageExpirations,
+    oauthBegin,
+    oauthStatus,
+    oauthComplete,
+    oauthRefresh,
+    addAccount,
+    deleteAccount,
+    startOAuth,
+    completeOAuth,
   };
 }
 

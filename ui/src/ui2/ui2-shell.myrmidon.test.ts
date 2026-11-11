@@ -80,6 +80,7 @@ describe("ui2 integration contracts (UI-0b / UI-0c)", () => {
     expect(UI2_ROUTE_TABLE.map((e) => e.key).sort()).toEqual([
       "agent-overview",
       "agents-fleet",
+      "commander",
       "commander-chat",
       "costs",
       "decisions",
@@ -88,6 +89,7 @@ describe("ui2 integration contracts (UI-0b / UI-0c)", () => {
       "knowledge-page",
       "more",
       "settings-autonomy-regulations",
+      "settings-channels",
       "settings-language",
       "settings-runs-queue",
       "settings-system",

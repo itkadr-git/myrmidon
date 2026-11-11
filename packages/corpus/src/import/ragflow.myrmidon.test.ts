@@ -1,7 +1,12 @@
 import { describe, expect, it, vi } from "vitest";
 import {
+  DEFAULT_RAGFLOW_PAGE_SIZE,
   createRagflowSource,
+  getRagflowImportExitCode,
   importRagflowCorpus,
+  RagflowDatasetReadError,
+  sanitizeNulJson,
+  sanitizeNulText,
   type CorpusImportChunk,
   type CorpusImportDataset,
   type CorpusImportDocument,
@@ -235,7 +240,7 @@ describe("RAGFlow corpus import", () => {
       embed: embedFixture,
     });
     expect(result.embedded).toBe(5);
-    expect(memory.datasets.values().next().value?.embeddingModel).toBe("hindsight-embed-bge-m3");
+    expect(memory.datasets.values().next().value?.embeddingModel).toBe("corpus-embed-pplx-0.6b");
   });
 
   it("refuses source document and chunk count mismatches before embeddings or writes", async () => {
@@ -293,5 +298,252 @@ describe("RAGFlow corpus import", () => {
       embeddingDimensions: 4,
       embed: async () => [[Number.NaN, 0, 0, 0]],
     })).rejects.toThrow("non-finite number");
+  });
+
+  it("permits zero-chunk documents with uncompleted run states during import", async () => {
+    const memory = memoryTarget();
+    const zeroChunkSource: RagflowSource = {
+      baseUrl: "https://ragflow.example/",
+      async listDatasets() {
+        return [{ id: "ds-empty", name: "Empty Dataset", document_count: 1, chunk_count: 0 }];
+      },
+      async *listDocuments() {
+        yield { id: "doc-empty", name: "empty.pdf", run: "PENDING", chunk_count: 0 };
+      },
+      async countChunks() { return 0; },
+      async *listChunks() {},
+    };
+
+    const summary = await importRagflowCorpus({
+      source: zeroChunkSource,
+      target: memory.target,
+      companyId: "aaaaaaaa-0000-0000-0000-000000000001",
+      embeddingDimensions: 4,
+      embed: embedFixture,
+    });
+
+    expect(summary.datasets).toBe(1);
+    expect(summary.documents).toBe(1);
+    expect(summary.chunks).toBe(0);
+    expect(summary.embedded).toBe(0);
+  });
+
+  it("safely resumes import by reusing existing matching embeddings without re-embedding", async () => {
+    const memory = memoryTarget();
+    let embedCallCount = 0;
+    const trackingEmbedder = async (texts: string[]) => {
+      embedCallCount += texts.length;
+      return texts.map(() => [0.5, 0.5, 0.5, 0.5]);
+    };
+
+    const dataset: RagflowDataset = { id: "kb-resume", name: "Resume KB" };
+    const documents: RagflowDocument[] = [{ id: "doc-resume", name: "resume.md", run: "DONE", chunk_count: 4 }];
+    const chunks: RagflowChunk[] = [1, 2, 3, 4].map((n) => ({ id: `resume-chunk-${n}`, content: `resume chunk ${n}` }));
+    const resumeSource: RagflowSource = {
+      baseUrl: "https://ragflow.example",
+      async listDatasets() { return [dataset]; },
+      listDocuments: async function* () { yield* documents; },
+      listChunks: async function* () { yield* chunks; },
+      async countChunks() { return chunks.length; },
+    };
+
+    const importOptions = {
+      source: resumeSource,
+      target: memory.target,
+      companyId: "aaaaaaaa-0000-0000-0000-000000000001",
+      embeddingDimensions: 4,
+      embed: trackingEmbedder,
+    };
+
+    // First run: embeds all chunks
+    const firstSummary = await importRagflowCorpus(importOptions);
+    expect(firstSummary.chunks).toBe(4);
+    expect(firstSummary.embedded).toBe(4);
+    expect(embedCallCount).toBe(4);
+
+    // Second run: resumes, reuses all valid matching embeddings, embeds 0 chunks
+    embedCallCount = 0;
+    const secondSummary = await importRagflowCorpus(importOptions);
+    expect(secondSummary.chunks).toBe(4);
+    expect(secondSummary.embedded).toBe(0);
+    expect(embedCallCount).toBe(0);
+  });
+
+  // myrmidon(OPE-10668): RAGFlow rejects page_size > 100 with error 101.
+  it("uses a RAGFlow-compatible default page size", () => {
+    expect(DEFAULT_RAGFLOW_PAGE_SIZE).toBeLessThanOrEqual(100);
+  });
+
+  // myrmidon(OPE-10668): a live RAGFlow document can declare 1020 chunks while
+  // the endpoint enumerates 1019 — a one-off drift must not abort the run.
+  it("tolerates per-document and dataset chunk count drift within the tolerance", async () => {
+    const memory = memoryTarget();
+    const dataset: RagflowDataset = { id: "kb-drift", name: "Drift KB", chunk_count: 1019, document_count: 1 };
+    const documents: RagflowDocument[] = [{ id: "doc-drift", name: "drift.pdf", run: "DONE", chunk_count: 1020 }];
+    const chunks: RagflowChunk[] = Array.from({ length: 1019 }, (_, i) => ({
+      id: `drift-chunk-${i}`,
+      content: `drift chunk ${i}`,
+    }));
+    const driftSource: RagflowSource = {
+      baseUrl: "https://ragflow.example",
+      async listDatasets() { return [dataset]; },
+      listDocuments: async function* () { yield* documents; },
+      listChunks: async function* () { yield* chunks; },
+      async countChunks() { return 1019; },
+    };
+
+    const summary = await importRagflowCorpus({
+      source: driftSource,
+      target: memory.target,
+      companyId: "aaaaaaaa-0000-0000-0000-000000000001",
+      embeddingDimensions: 4,
+      chunkCountTolerance: 0.01,
+      embed: embedFixture,
+    });
+
+    expect(summary.chunks).toBe(1019);
+    expect(summary.embedded).toBe(1019);
+    expect(memory.ready).toHaveLength(1);
+  });
+
+  // myrmidon(OPE-10668): RAGFlow metadata and chunk text can carry raw NUL
+  // characters that Postgres rejects; the importer must strip them before
+  // writing or hashing.
+  it("strips NUL characters from document metadata, chunk content, and chunk metadata", async () => {
+    expect(sanitizeNulText("a\u0000b")).toBe("ab");
+    expect(sanitizeNulText("clean")).toBe("clean");
+    expect(sanitizeNulJson({ nested: { list: ["x\u0000y", 1] } })).toEqual({ nested: { list: ["xy", 1] } });
+
+    const memory = memoryTarget();
+    const dataset: RagflowDataset = { id: "kb-nul", name: "NUL KB" };
+    const documents: RagflowDocument[] = [{
+      id: "doc-nul",
+      name: "zabbix7.pdf",
+      run: "DONE",
+      chunk_count: 2,
+      // raw RAGFlow payload with NULs in metadata fields
+      extraField: "value\u0000with\u0000nuls",
+    }];
+    const chunks: RagflowChunk[] = [
+      { id: "nul-chunk-1", content: "first\u0000 section", positions: [[0, 14]] },
+      { id: "nul-chunk-2", content: "tail without nul", positions: [[15, 31]] },
+    ];
+    const nulSource: RagflowSource = {
+      baseUrl: "https://ragflow.example",
+      async listDatasets() { return [dataset]; },
+      listDocuments: async function* () { yield* documents; },
+      listChunks: async function* () { yield* chunks; },
+      async countChunks() { return 2; },
+    };
+
+    const summary = await importRagflowCorpus({
+      source: nulSource,
+      target: memory.target,
+      companyId: "aaaaaaaa-0000-0000-0000-000000000001",
+      embeddingDimensions: 4,
+      embed: embedFixture,
+    });
+    expect(summary.chunks).toBe(2);
+
+    const storedDoc = [...memory.documents.values()][0]!;
+    const docMetadataJson = JSON.stringify(storedDoc.metadata);
+    expect(docMetadataJson).not.toContain("\u0000");
+    expect(docMetadataJson).toContain("valuewithnuls");
+
+    for (const chunk of memory.chunks.values()) {
+      expect(chunk.content).not.toContain("\u0000");
+      expect(JSON.stringify(chunk.metadata)).not.toContain("\u0000");
+    }
+    // Content that had NULs must keep them stripped, not replaced.
+    const firstChunk = [...memory.chunks.values()].find((c) => c.metadata.ragflowChunkId === "nul-chunk-1")!;
+    expect(firstChunk.content).toBe("first section");
+  });
+
+  it("imports partial chunks and reports unparsed documents", async () => {
+    const memory = memoryTarget();
+    const uploaded: string[] = [];
+    memory.target.uploadDocument = async (input) => {
+      uploaded.push(input.filename);
+    };
+    const documents = [
+      { id: "done", name: "done.pdf", run: "DONE", chunk_count: 1 },
+      { id: "partial", name: "partial.pdf", run: "FAIL", chunk_count: 1 },
+      { id: "cancel", name: "cancel.pdf", size: 42, run: "CANCEL", chunk_count: 0 },
+    ];
+    const chunks: Record<string, RagflowChunk[]> = { done: [{ id: "done-c", content: "done" }], partial: [{ id: "partial-c", content: "partial" }], cancel: [] };
+    const source: RagflowSource = {
+      baseUrl: "https://ragflow.example",
+      async listDatasets() { return [{ id: "ds", name: "KB", document_count: 3, chunk_count: 2 }]; },
+      listDocuments: async function* () { yield* documents; },
+      listChunks: async function* (_dataset, id) { yield* chunks[id]!; },
+      async countChunks(_dataset, id) { return chunks[id]!.length; },
+      async downloadDocument() { return { bytes: new Uint8Array([1]), filename: "cancel.pdf", mimeType: "application/pdf" }; },
+    };
+    const summary = await importRagflowCorpus({ source, target: memory.target, companyId: "company", embeddingDimensions: 4, embed: embedFixture, uploadUnparsed: true });
+    expect(summary.partial).toEqual(["partial"]);
+    expect(summary.notParsed).toEqual([{ id: "cancel", name: "cancel.pdf", run: "CANCEL", size: 42 }]);
+    expect(summary.chunks).toBe(2);
+    expect([...memory.documents.values()].map((doc) => doc.title)).not.toContain("cancel.pdf");
+    expect(uploaded).toEqual(["cancel.pdf"]);
+  });
+
+  it("reports partial progress and uses exit code 2 when dataset reading stops", async () => {
+    const memory = memoryTarget();
+    const progress: Array<{ partial?: boolean; documentId?: string }> = [];
+    const source: RagflowSource = {
+      baseUrl: "https://ragflow.example",
+      async listDatasets() { return [{ id: "ds", name: "KB", document_count: 1, chunk_count: 1 }]; },
+      async *listDocuments() { yield { id: "partial", name: "partial.pdf", run: "FAIL", chunk_count: 1 }; },
+      async *listChunks() { yield { id: "partial-c", content: "partial" }; throw new Error("connection reset"); },
+      async countChunks() { return 1; },
+    };
+    await expect(importRagflowCorpus({
+      source,
+      target: memory.target,
+      companyId: "company",
+      embeddingDimensions: 4,
+      embed: embedFixture,
+      onProgress(value) { progress.push(value); },
+    })).rejects.toBeInstanceOf(RagflowDatasetReadError);
+    expect(progress.some((value) => value.partial === true && value.documentId === "partial")).toBe(true);
+    expect(getRagflowImportExitCode(new RagflowDatasetReadError("incomplete"))).toBe(2);
+    expect(getRagflowImportExitCode(new Error("document failed"))).toBe(1);
+  });
+
+  it("imports only datasets whose names are allowlisted", async () => {
+    const memory = memoryTarget();
+    const datasets: RagflowDataset[] = [
+      { id: "ds-adm", name: "adm-craft" },
+      { id: "ds-other", name: "other-dataset" },
+    ];
+    const filteredSource: RagflowSource = {
+      baseUrl: "https://ragflow.example",
+      async listDatasets() { return datasets; },
+      listDocuments: async function* (datasetId) {
+        if (datasetId === "ds-adm") yield { id: "doc-adm", name: "adm.pdf", run: "DONE", chunk_count: 1 };
+        if (datasetId === "ds-other") yield { id: "doc-other", name: "other.pdf", run: "DONE", chunk_count: 1 };
+      },
+      listChunks: async function* (datasetId, documentId) {
+        if (datasetId === "ds-adm") yield { id: "adm-chunk", content: "adm content" };
+        if (datasetId === "ds-other") yield { id: "other-chunk", content: "other content" };
+      },
+      async countChunks(datasetId) {
+        return datasetId === "ds-adm" ? 1 : 1;
+      },
+    };
+
+    const summary = await importRagflowCorpus({
+      source: filteredSource,
+      target: memory.target,
+      companyId: "aaaaaaaa-0000-0000-0000-000000000001",
+      embeddingDimensions: 4,
+      datasetNames: ["adm-craft"],
+      embed: embedFixture,
+    });
+
+    expect(summary.datasets).toBe(1);
+    expect(summary.documents).toBe(1);
+    expect(summary.chunks).toBe(1);
+    expect([...memory.documents.values()][0]!.title).toBe("adm.pdf");
   });
 });

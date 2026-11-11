@@ -56,8 +56,9 @@
 
 import { CLONE_HYGIENE_REPORT_PATH } from "./clone-hygiene.js"; // myrmidon(1.6.2-BOT-DISK-C)
 import { randomBytes } from "node:crypto";
-import { mkdir, readFile, rename, unlink, writeFile } from "node:fs/promises";
+import { mkdir, readFile, rename, rm, unlink, writeFile } from "node:fs/promises";
 import path from "node:path";
+import { liveSavedSetting } from "../behavior-settings/live.js";
 import http from "node:http";
 import { resolvePaperclipInstanceRoot } from "../../home-paths.js";
 import {
@@ -68,6 +69,8 @@ import {
   type RateLimiter,
 } from "./dockergate-pacing.js"; // myrmidon(1.6.5-DOCKERGATE-A2A3-STORM)
 import type { BotContainerDriver, BotContainerSpec, BotContainerStatus, BotSkillDirectory, TemplateDriftField, TemplateDriftReport } from "./driver.js";
+import type { DriverOomEvent } from "./container-oom.js";
+import { createDockergateEventsClient } from "./dockergate-events-client.js";
 import { ISOLATED_LAYOUT, type ScopeLayout } from "@myrmidon/shared";
 import type { CompiledProfile } from "./types.js";
 import { logger } from "../../middleware/logger.js";
@@ -118,6 +121,7 @@ import { buildUstarArchive, parseUstarArchive, type UstarEntry, type UstarReadEn
 export const BOT_DOCKER_SOCKET_ENV = "MYRMIDON_BOT_DOCKER_SOCKET";
 export const DEFAULT_BOT_DOCKER_SOCKET = "/var/run/docker.sock";
 export const BOT_IMAGE_ALLOWLIST_ENV = "MYRMIDON_BOT_IMAGE_ALLOWLIST";
+export const BOT_YOLO_ENV = "MYRMIDON_BOT_YOLO";
 export const BOT_VOLUME_ROOT_ENV = "MYRMIDON_BOT_VOLUME_ROOT";
 export const BOT_NETWORK_ENV = "MYRMIDON_BOT_NETWORK";
 /** myrmidon(BOT-DISK-F): host directory of shared isolation-scope instances; default `<volumeRoot>/.scopes`. */
@@ -131,9 +135,13 @@ export const BOT_CONTAINER_UID = 10001;
 const DOCKER_API_VERSION = "v1.45";
 /** Seconds Docker waits after SIGTERM before SIGKILL on stop/restart. */
 export const BOT_STOP_TIMEOUT_SEC = 30;
-const DEFAULT_START_HEALTH_TIMEOUT_MS = 180_000;
-// Developer images run slow cache/devbuild diagnostics during container init.
-const DEFAULT_HEALTH_START_GRACE_MS = 90_000;
+// Not shorter than the bot image's HEALTHCHECK window (start-period 300 s + 3 x 30 s):
+// the entrypoint runs session maintenance before the gateway starts.
+const DEFAULT_START_HEALTH_TIMEOUT_MS = 420_000;
+// Grace for transient `unhealthy` applies to all bots and matches the image's
+// startup health window (300 s); total startup remains bounded by the same timeout.
+const DEFAULT_HEALTH_START_GRACE_MS = 300_000;
+export const DEFAULT_MAX_CONCURRENT_STARTS = 2;
 // myrmidon(1.6.5-DOCKERGATE-A2A3-STORM): 1 s polling of a container's health was
 // the rollout's second storm source — a 120 s wait meant up to 120 A2 inspects
 // per bot, and dockergate bills every one against the per-bot inspect bucket and
@@ -169,6 +177,8 @@ export interface DockerDriverConfig {
    *  devbuild wiring is off; no DEVBUILD_* env and no key mount is added to any
    *  container. Only a dev-variant image (isDevBuildImage) ever gets them. */
   devbuild: DevbuildSettings;
+  /** Whether to bypass dangerous-command approvals in unattended bots. */
+  yolo?: boolean;
   /** myrmidon(1.6.5-DOCKERGATE-A2A3-STORM): MYRMIDON_DOCKERGATE_MAX_RPS — the
    *  ceiling of board→gate requests per second across every loop (sweep, health
    *  wait, clone-report collection, "apply now"). The gate's own global bucket is
@@ -192,31 +202,86 @@ export const BOT_STATE_DIR_ENV = "MYRMIDON_BOT_STATE_DIR";
 export const DOCKERGATE_MAX_RPS_ENV = "MYRMIDON_DOCKERGATE_MAX_RPS";
 const DEFAULT_DOCKERGATE_MAX_RPS = 20;
 
-export function readDockerDriverConfig(env: NodeJS.ProcessEnv = process.env): DockerDriverConfig {
-  const volumeRoot = env[BOT_VOLUME_ROOT_ENV]?.trim();
+export function readDockerDriverConfig(env?: NodeJS.ProcessEnv): DockerDriverConfig {
+  const source = env ?? process.env;
+  const runtimeEnv = env === undefined || env === process.env;
+  const volumeRoot = source[BOT_VOLUME_ROOT_ENV]?.trim();
   if (!volumeRoot) {
     throw new BotContainerTemplateError(`${BOT_VOLUME_ROOT_ENV} must be set to use the bot container driver`);
   }
   let maxRps = DEFAULT_DOCKERGATE_MAX_RPS;
-  const rawRps = env[DOCKERGATE_MAX_RPS_ENV]?.trim();
+  const rawRps = source[DOCKERGATE_MAX_RPS_ENV]?.trim();
   if (rawRps) {
     const value = Number(rawRps);
     if (Number.isFinite(value) && value >= 0 && value <= 50) maxRps = value;
   }
   const stateDir =
-    env[BOT_STATE_DIR_ENV]?.trim() ||
+    source[BOT_STATE_DIR_ENV]?.trim() ||
     path.join(resolvePaperclipInstanceRoot(), "bot-containers", "idle-stopped");
+  // Values saved from the UI win over the environment; without one nothing changes.
+  const imageAllowlist = runtimeEnv ? liveSavedSetting<unknown>("bot_image_allowlist") : undefined;
+  const mountAllowlist = runtimeEnv ? liveSavedSetting<unknown>("bot_mount_sources") : undefined;
+  const savedYolo = runtimeEnv ? liveSavedSetting<boolean>("bot_yolo") : undefined;
+  const rawYolo = savedYolo ?? source[BOT_YOLO_ENV];
+  const yolo = rawYolo === undefined
+    ? undefined
+    : typeof rawYolo === "boolean"
+      ? rawYolo
+      : /^(1|true|yes|on)$/i.test(rawYolo.trim());
   return {
-    socketPath: env[BOT_DOCKER_SOCKET_ENV]?.trim() || DEFAULT_BOT_DOCKER_SOCKET,
+    socketPath: source[BOT_DOCKER_SOCKET_ENV]?.trim() || DEFAULT_BOT_DOCKER_SOCKET,
     volumeRoot,
     // "." can never begin a bot key, so the default cannot collide with a bot's directory.
-    scopeRoot: env[BOT_SCOPE_ROOT_ENV]?.trim() || `${volumeRoot}/.scopes`,
-    network: env[BOT_NETWORK_ENV]?.trim() || DEFAULT_BOT_NETWORK,
-    allowlist: parseImageAllowlist(env[BOT_IMAGE_ALLOWLIST_ENV]),
-    mountSources: parseMountSourceAllowlist(env[BOT_MOUNT_SOURCES_ENV]),
-    devbuild: parseDevbuildSettings(env),
+    scopeRoot: source[BOT_SCOPE_ROOT_ENV]?.trim() || `${volumeRoot}/.scopes`,
+    network: source[BOT_NETWORK_ENV]?.trim() || DEFAULT_BOT_NETWORK,
+    allowlist: parseImageAllowlist(
+      Array.isArray(imageAllowlist) ? imageAllowlist.join(",") : source[BOT_IMAGE_ALLOWLIST_ENV],
+    ),
+    mountSources: parseMountSourceAllowlist(
+      Array.isArray(mountAllowlist) ? mountAllowlist.join(",") : source[BOT_MOUNT_SOURCES_ENV],
+    ),
+    devbuild: parseDevbuildSettings(source),
+    ...(yolo === undefined ? {} : { yolo }),
     maxRps,
     stateDir,
+  };
+}
+
+export function createSemaphore(max: number) {
+  let count = 0;
+  const queue: Array<() => void> = [];
+  return {
+    async acquire(): Promise<() => void> {
+      if (count < max) {
+        count++;
+        let released = false;
+        return () => {
+          if (released) return;
+          released = true;
+          count--;
+          const next = queue.shift();
+          if (next) {
+            count++;
+            next();
+          }
+        };
+      }
+      return new Promise<() => void>((resolve) => {
+        queue.push(() => {
+          let released = false;
+          resolve(() => {
+            if (released) return;
+            released = true;
+            count--;
+            const next = queue.shift();
+            if (next) {
+              count++;
+              next();
+            }
+          });
+        });
+      });
+    },
   };
 }
 
@@ -226,6 +291,11 @@ export interface DockerDriverOptions {
   sleep?: (ms: number) => Promise<void>;
   startHealthTimeoutMs?: number;
   healthPollIntervalMs?: number;
+  /**
+   * Maximum concurrent starting/restarting containers on the host (OPE-10757).
+   * Limits disk I/O when multiple bots restart simultaneously. Default 2.
+   */
+  maxConcurrentStarts?: number;
   /**
    * myrmidon(OPE-4789): how long one freshly read template context (shared
    * package cache path, git-mirror flag, scope layout) stays valid for a bot.
@@ -267,9 +337,9 @@ export interface DockerDriverOptions {
   /**
    * myrmidon(1.6.5-BOT-DISK-H11): the host directory the instance shares the bot
    * runtime from (`general.botDisk.sharedBotRuntimePath`), read with the cache
-   * path on every create, recreate and drift check. Set adds three READ-ONLY
-   * binds (`<root>/bin`, `<root>/lazy-packages`, `<root>/lsp`) over the bot's
-   * own runtime paths, so the instance keeps one copy instead of one per bot.
+   * path on every create, recreate and drift check. Set adds a READ-ONLY
+   * bind (`<root>/bin`) over the bot's own runtime path, so the instance
+   * keeps one copy instead of one per bot (re-scoped in OPE-12493).
    * Absent: every bot keeps its own.
    */
   readSharedBotRuntimePath?: (botKey: string) => Promise<string | undefined>;
@@ -315,6 +385,7 @@ export interface DockerCreateContainerBody {
     NetworkMode: string;
     Binds: string[];
     Privileged: boolean;
+    Ulimits: Array<{ Name: string; Soft: number; Hard: number }>;
   };
 }
 
@@ -345,7 +416,7 @@ export interface DockerUpdateContainerBody {
  */
 export function buildCreateContainerRequestBody(
   spec: BotContainerSpec,
-  config: Pick<DockerDriverConfig, "volumeRoot" | "network" | "allowlist" | "mountSources" | "devbuild">,
+  config: Pick<DockerDriverConfig, "volumeRoot" | "network" | "allowlist" | "mountSources" | "devbuild" | "yolo">,
   sharedPackageCachePath?: string,
   gitMirror = false,
   /** myrmidon(BOT-DISK-F): the instance a shared member binds (isolated when absent). */
@@ -376,7 +447,9 @@ export function buildCreateContainerRequestBody(
   const devbuild: DevbuildSettings = isDevBuildImage(spec.image)
     ? config.devbuild
     : { host: null, user: "", base: "" };
-  const env = devbuildContainerEnv(devbuild, spec.botKey);
+  const env = devbuildContainerEnv(devbuild, spec.botKey) ?? {};
+  if (config.yolo !== undefined) env[BOT_YOLO_ENV] = config.yolo ? "1" : "0";
+  const envEntries = Object.entries(env);
   const keyMount = devbuildKeyMount(devbuild, config.mountSources);
   // A legacy image never runs as a shared member: the scope layout needs the
   // image's start-time links (BOT_RUNTIME_SCOPE_LABEL), which only single-
@@ -390,8 +463,8 @@ export function buildCreateContainerRequestBody(
   return {
     Image: spec.image,
     Labels: buildLabels(spec),
-    ...(env
-      ? { Env: Object.entries(env).map(([name, value]) => `${name}=${value}`) }
+    ...(envEntries.length > 0
+      ? { Env: envEntries.map(([name, value]) => `${name}=${value}`) }
       : scope
         ? { Env: [`${BOT_SCOPE_SUBDIR_ENV}=${spec.botKey}`] }
         : {}),
@@ -420,6 +493,7 @@ export function buildCreateContainerRequestBody(
         sharedMount: resolveSpecSharedMount(spec, config.volumeRoot),
       }),
       Privileged: false,
+      Ulimits: [{ Name: "core", Soft: 0, Hard: 0 }],
     },
   };
 }
@@ -444,6 +518,7 @@ export interface DockerHelperContainerBody {
     NetworkMode: string;
     Binds: string[];
     Privileged: boolean;
+    Ulimits: Array<{ Name: string; Soft: number; Hard: number }>;
   };
 }
 
@@ -492,6 +567,7 @@ export function buildHelperContainerRequestBody(params: {
       NetworkMode: "none",
       Binds: buildHelperBinds(params.volumeRoot, params.botKey, params.scope, asRoot, params.packageCachePath),
       Privileged: false,
+      Ulimits: [{ Name: "core", Soft: 0, Hard: 0 }],
     },
   };
 }
@@ -1093,6 +1169,8 @@ interface DockerHttpResponse {
   headers: Record<string, string>;
 }
 
+export type { DockerHttpResponse };
+
 function dockerRequest(
   socketPath: string,
   opts: { method: string; path: string; body?: Buffer; headers?: Record<string, string>; timeoutMs?: number },
@@ -1127,8 +1205,35 @@ function dockerRequest(
   });
 }
 
-function describeFailure(what: string, res: DockerHttpResponse): Error {
-  return new Error(`${what} failed: ${res.status} ${res.body.toString("utf8").slice(0, 300)}`);
+/** describeFailure turns a failed Docker API answer into the error the
+ *  driver's callers see (the board's log and the reconcile activity record).
+ *  Exported for the tests of the reason-code mapping (OPE-12383). */
+export function describeFailure(what: string, res: DockerHttpResponse): Error {
+  const raw = res.body.toString("utf8");
+  try {
+    const parsed = JSON.parse(raw);
+    if (parsed && typeof parsed === "object" && typeof parsed.message === "string") {
+      const match = parsed.message.match(/dockergate:\s*denied\s*\(([^)]+)\)/);
+      if (match) {
+        const code = match[1];
+        if (code === "limit_exceeds_ceiling") {
+          return new Error(`${what} failed: requested resource limits exceed platform ceiling (dockergate: denied limit_exceeds_ceiling)`);
+        }
+        // OPE-12383: the update is valid but dockergate cannot persist it — the
+        // config file (or the limits-override file) sits on a read-only mount.
+        // A clear operator-facing fault, not a 502 upstream error to retry.
+        if (code === "config_read_only") {
+          return new Error(
+            `${what} failed: resource ceilings cannot be changed — dockergate's configuration is on a read-only mount ` +
+              `(dockergate: denied config_read_only); give dockergate a writable limits-override file or remount its config directory read-write`,
+          );
+        }
+      }
+    }
+  } catch {
+    // ignore parse error, fallback to raw status/body
+  }
+  return new Error(`${what} failed: ${res.status} ${raw.slice(0, 300)}`);
 }
 
 function realSleep(ms: number): Promise<void> {
@@ -1151,6 +1256,9 @@ export function dockerBotContainerDriver(
   const sleep = options.sleep ?? realSleep;
   const startHealthTimeoutMs = options.startHealthTimeoutMs ?? DEFAULT_START_HEALTH_TIMEOUT_MS;
   const healthPollIntervalMs = options.healthPollIntervalMs ?? DEFAULT_HEALTH_POLL_INTERVAL_MS;
+  const maxConcurrentStarts = options.maxConcurrentStarts
+    ?? (process.env.MYRMIDON_MAX_CONCURRENT_STARTS ? Number(process.env.MYRMIDON_MAX_CONCURRENT_STARTS) : DEFAULT_MAX_CONCURRENT_STARTS);
+  const startSemaphore = createSemaphore(maxConcurrentStarts > 0 ? maxConcurrentStarts : DEFAULT_MAX_CONCURRENT_STARTS);
   const templateContextTtlMs = options.templateContextTtlMs ?? DEFAULT_TEMPLATE_CONTEXT_TTL_MS;
   const newNonce = options.nonce ?? (() => randomBytes(8).toString("hex"));
   // myrmidon(1.6.5-DOCKERGATE-A2A3-STORM): the clock and jitter source of the
@@ -1612,6 +1720,11 @@ export function dockerBotContainerDriver(
     if (!info) return { botKey, state: "missing" };
     const marker = await readAppliedMarker(botKey, info);
     const idleStopped = await readIdleStopped(botKey);
+    const memoryBytes = info.HostConfig?.Memory;
+    const memoryMb = typeof memoryBytes === "number" && memoryBytes > 0 ? Math.round(memoryBytes / (1024 * 1024)) : undefined;
+    const nanoCpus = info.HostConfig?.NanoCpus;
+    const cpus = typeof nanoCpus === "number" && nanoCpus > 0 ? nanoCpus / 1e9 : undefined;
+    const pidsLimit = typeof info.HostConfig?.PidsLimit === "number" && info.HostConfig.PidsLimit > 0 ? info.HostConfig.PidsLimit : undefined;
     return {
       botKey,
       state: botStateFromInspect(info),
@@ -1619,6 +1732,9 @@ export function dockerBotContainerDriver(
       restartHash: marker?.restartHash,
       filesHash: marker?.filesHash,
       maxConcurrentRuns: marker?.maxConcurrentRuns,
+      memoryMb,
+      cpus,
+      pidsLimit,
       // myrmidon(OPE-4789): the raw inspect rides along, so a caller that
       // already asked for the status (the reconciler, once per bot per pass)
       // can hand it to templateDrift instead of paying a second inspect.
@@ -1677,6 +1793,26 @@ export function dockerBotContainerDriver(
   }
 
   async function updateResources(spec: BotContainerSpec): Promise<void> {
+    // 1. Update dockergate bots[] configuration and reload in-memory runtime ceilings.
+    // If running against plain Docker without dockergate (404), skip dockergate update.
+    const configRes = await requestWithRateLimitRetry({
+      method: "PUT",
+      path: `/containers/${nameSegment(containerNameFor(spec.botKey))}/config/update`,
+      body: Buffer.from(
+        JSON.stringify({
+          botKey: spec.botKey,
+          memoryMb: spec.memoryMb,
+          cpus: spec.cpus,
+          pidsLimit: spec.pidsLimit,
+        }),
+      ),
+      headers: { "Content-Type": "application/json" },
+    });
+    if (configRes.status >= 400 && configRes.status !== 404) {
+      throw describeFailure(`update resource ceilings for ${spec.botKey}`, configRes);
+    }
+
+    // 2. Apply updated resources to the live container via Docker update API.
     const body: DockerUpdateContainerBody = {
       Memory: Math.round(spec.memoryMb * 1024 * 1024),
       MemorySwap: Math.round(spec.memoryMb * 2 * 1024 * 1024),
@@ -1775,10 +1911,35 @@ export function dockerBotContainerDriver(
     await runHelper(botKey, { image: info.Image, role: "apply-profile", script: buildApplyScript(nonce), archives, layout: layoutOfInspect(info) });
   }
 
+  async function readProgressLease(botKey: string): Promise<{ phase: string; renewedAt: number; expectedS: number } | null> {
+    const candidates = [
+      path.join(config.volumeRoot, botKey, "hermes", "state", "startup-progress-lease.json"),
+      path.join(config.volumeRoot, botKey, "hermes", "state", "startup-lease.json"),
+      path.join(config.volumeRoot, botKey, "state", "startup-progress-lease.json"),
+      path.join(config.volumeRoot, botKey, "state", "startup-lease.json"),
+    ];
+    for (const file of candidates) {
+      try {
+        const text = await readFile(file, "utf8");
+        const data = JSON.parse(text);
+        if (data && typeof data.phase === "string") {
+          const renewedAt = typeof data.renewed_at === "number"
+            ? data.renewed_at
+            : (typeof data.renewedAt === "number" ? data.renewedAt : clock() / 1000);
+          const expectedS = typeof data.expected_s === "number"
+            ? data.expected_s
+            : (typeof data.expectedS === "number" ? data.expectedS : 900);
+          return { phase: data.phase, renewedAt, expectedS };
+        }
+      } catch {}
+    }
+    return null;
+  }
+
   async function waitForHealthy(botKey: string): Promise<void> {
     const name = containerNameFor(botKey);
     const startedAt = monotonicClock();
-    const deadline = startedAt + startHealthTimeoutMs;
+    let deadline = startedAt + startHealthTimeoutMs;
     let unhealthySince: number | undefined;
     for (;;) {
       const info = await inspectByName(name);
@@ -1786,16 +1947,24 @@ export function dockerBotContainerDriver(
       const state = info.State?.Status ?? "unknown";
       const health = info.State?.Health?.Status;
       if (state === "running" && health === "healthy") return;
-      if (state === "running" && health === "unhealthy") {
-        const isDeveloperContainer = (info.Config?.Env ?? []).some((entry) => entry.startsWith("DEVBUILD_BOT_NAME="));
-        const healthGrace = isDeveloperContainer ? Math.min(startHealthTimeoutMs, DEFAULT_HEALTH_START_GRACE_MS) : 0;
-        if (healthGrace > 0) {
-          unhealthySince ??= monotonicClock();
-          if (monotonicClock() - unhealthySince >= healthGrace) throw new Error(`${name} reports unhealthy after start`);
-        } else {
-          throw new Error(`${name} reports unhealthy after start`);
+
+      const lease = await readProgressLease(botKey);
+      if (lease) {
+        // While the gateway holds an active progress lease (renewed recently),
+        // push the startup deadline forward and forgive unhealthy startup grace (OPE-10757).
+        const nowSec = clock() / 1000;
+        const maxStaleSec = Math.max(120, Math.min(lease.expectedS, 900));
+        if (nowSec - lease.renewedAt < maxStaleSec) {
+          deadline = monotonicClock() + startHealthTimeoutMs;
+          unhealthySince = undefined;
         }
-      } else {
+      }
+
+      if (state === "running" && health === "unhealthy") {
+        unhealthySince ??= monotonicClock();
+        const healthGrace = Math.min(startHealthTimeoutMs, DEFAULT_HEALTH_START_GRACE_MS);
+        if (monotonicClock() - unhealthySince >= healthGrace) throw new Error(`${name} reports unhealthy after start`);
+      } else if (!lease) {
         unhealthySince = undefined;
       }
       if (state === "exited" || state === "dead") {
@@ -1812,25 +1981,48 @@ export function dockerBotContainerDriver(
 
   async function start(botKey: string): Promise<void> {
     const name = containerNameFor(botKey);
-    await startByName(name); // 304 (already running) is not an error
-    await writeIdleStopped(botKey, false);
-    await waitForHealthy(botKey);
+    const release = await startSemaphore.acquire();
+    try {
+      await startByName(name); // 304 (already running) is not an error
+      await waitForHealthy(botKey);
+      await writeIdleStopped(botKey, false);
+    } finally {
+      release();
+    }
   }
 
   async function restart(botKey: string): Promise<void> {
     const name = containerNameFor(botKey);
-    const res = await requestWithRateLimitRetry({
-      method: "POST",
-      path: `/containers/${nameSegment(name)}/restart?t=${BOT_STOP_TIMEOUT_SEC}`,
-      timeoutMs: (BOT_STOP_TIMEOUT_SEC + 30) * 1000,
-    });
-    if (res.status >= 400) throw describeFailure(`docker restart ${name}`, res);
-    await waitForHealthy(botKey);
+    const release = await startSemaphore.acquire();
+    try {
+      const res = await requestWithRateLimitRetry({
+        method: "POST",
+        path: `/containers/${nameSegment(name)}/restart?t=${BOT_STOP_TIMEOUT_SEC}`,
+        timeoutMs: (BOT_STOP_TIMEOUT_SEC + 30) * 1000,
+      });
+      if (res.status >= 400) throw describeFailure(`docker restart ${name}`, res);
+      await waitForHealthy(botKey);
+    } finally {
+      release();
+    }
   }
 
   async function stop(botKey: string): Promise<void> {
     await stopByName(containerNameFor(botKey));
     await writeIdleStopped(botKey, false).catch(() => undefined);
+  }
+
+  async function cleanup(botKey: string): Promise<void> {
+    const name = containerNameFor(botKey);
+    // 1. Remove the container (and anonymous volumes). If 404, removeByName ignores it.
+    await removeByName(name);
+    // 2. Remove the bot volume data directory on host if it exists.
+    const botDir = path.join(config.volumeRoot, botKey);
+    try {
+      await rm(botDir, { recursive: true, force: true });
+    } catch {
+      // Ignore filesystem errors or non-existing path
+    }
   }
 
   async function stopIdle(botKey: string): Promise<void> {
@@ -1846,5 +2038,10 @@ export function dockerBotContainerDriver(
     }
   }
 
-  return { status, list, listRunning, templateDrift, statusWithDrift, updateResources, create, recreate, writeProfile, start, restart, stop, stopIdle, readCloneReport, readBotSkills };
+  async function getOomEvents(sinceNano?: number): Promise<DriverOomEvent[]> {
+    const client = createDockergateEventsClient({ socketPath });
+    return client.getOomEvents(sinceNano);
+  }
+
+  return { status, list, listRunning, templateDrift, statusWithDrift, updateResources, create, recreate, writeProfile, start, restart, stop, cleanup, stopIdle, readCloneReport, readBotSkills, getOomEvents };
 }

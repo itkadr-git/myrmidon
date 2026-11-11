@@ -55,8 +55,19 @@ export const ISSUE_REWAKE_FREEZE_THRESHOLD = 6;
  */
 export const THROTTLED_ISSUE_REWAKE_REASONS: ReadonlySet<string> = new Set([
   "issue_continuation_needed",
+  "issue_state_guard_mismatch",
+  "execution_reconciliation_required",
+  "transient_failure_retry",
+  "task_ticker",
+  "task-ticker",
   "issue_assignment_recovery",
   "issue_graph_liveness_backstop",
+  // myrmidon(OPE-10582 п.2): автоматические пробуждения, которые образуют
+  // холостые петли «агент будится по своей же задаче без прогресса».
+  "swarm_matched",
+  "idle_pickup",
+  "issue_disposition_repair",
+  "queued_run_stale_timeout",
 ]);
 
 /**
@@ -106,6 +117,69 @@ export const ISSUE_NEW_INPUT_ACTIVITY_ACTIONS: string[] = [
   "myrmidon.task_pr_sync.returned",
 ];
 
+/**
+ * One issue activity row, as the throttle's progress read sees it: the columns
+ * it needs and only the two JSON paths it looks at, not the whole `details`.
+ */
+export interface IssueActivitySample {
+  action: string;
+  /** `details -> 'changes'` of an `issue.updated` row: `{ field: { from, to } }`. */
+  changes?: unknown;
+  /** `details ->> 'source'`. */
+  source?: string | null;
+}
+
+const ASSIGNMENT_BOOKKEEPING_FIELDS: ReadonlySet<string> = new Set([
+  "assigneeAgentId",
+  "assigneeUserId",
+  "responsibleUserId",
+]);
+
+function readRecord(value: unknown): Record<string, unknown> | null {
+  // A driver may hand a json path back as text; the throttle reads either shape.
+  if (typeof value === "string") {
+    try {
+      value = JSON.parse(value);
+    } catch {
+      return null;
+    }
+  }
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : null;
+}
+
+/** `issue.updated` that only gave the task back to the agent that holds it (release, then assign to itself). */
+function isSelfReassignment(row: IssueActivitySample, agentId: string): boolean {
+  if (row.action !== "issue.updated") return false;
+  const changes = readRecord(row.changes);
+  if (!changes) return false;
+  const fields = Object.keys(changes);
+  if (fields.length === 0 || !fields.every((field) => ASSIGNMENT_BOOKKEEPING_FIELDS.has(field))) {
+    return false;
+  }
+  return readRecord(changes.assigneeAgentId)?.to === agentId;
+}
+
+/**
+ * Does this activity, attributed to a run of `agentId`, count as issue-visible
+ * progress of that run? The listed actions do, except the run's own bookkeeping:
+ * the echo of its final text (`run_presentation_resolver` comment), the release
+ * of the task and the assignment back to itself. The 07.11 adm loop was exactly
+ * that: every run released the task, assigned it to itself and got its answer
+ * echoed as a comment, so every run looked like progress and the streak never
+ * started.
+ */
+export function isIssueProgressActivity(row: IssueActivitySample, agentId: string): boolean {
+  if (!ISSUE_PROGRESS_ACTIVITY_ACTIONS.includes(row.action)) return false;
+  if (row.action === "issue.released") return false;
+  if (row.action === "issue.comment_added" && row.source === "run_presentation_resolver") {
+    return false;
+  }
+  if (isSelfReassignment(row, agentId)) return false;
+  return true;
+}
+
 export interface IssueRewakeCandidateInput {
   reason: string | null;
   wakeCommentId: string | null;
@@ -131,6 +205,7 @@ export function isThrottleCandidateIssueRewake(input: IssueRewakeCandidateInput)
 export interface RecentIssueRunSample {
   id: string;
   status: string;
+  errorCode?: string | null;
   finishedAt: Date | null;
 }
 
@@ -167,12 +242,27 @@ export function computeIssueRewakeCooldownMs(noProgressStreak: number): number {
 export function evaluateIssueRewakeThrottle(input: IssueRewakeThrottleInput): IssueRewakeThrottleDecision {
   const runs = input.recentTerminalRuns;
   if (runs.length === 0) return { blocked: false, noProgressStreak: 0 };
+
+  // Stale queued runs never reached the adapter. Repeated cancellation is not
+  // recovery progress: freeze after two consecutive timeouts, regardless of
+  // cooldown expiry or the instance's configurable no-progress threshold.
+  // Check before the generic new-input bypass: wake admission itself writes
+  // system issue activity, but only the sticky-freeze thaw path distinguishes
+  // that bookkeeping from genuine external input.
+  let staleTimeoutStreak = 0;
+  for (const run of runs) {
+    if (run.status !== "cancelled" || run.errorCode !== "queued_run_stale_timeout" || !run.finishedAt) break;
+    staleTimeoutStreak += 1;
+  }
+  if (staleTimeoutStreak >= 2) {
+    return { blocked: true, frozen: true, noProgressStreak: staleTimeoutStreak, frozenAt: runs[0]!.finishedAt! };
+  }
   if (input.hasNewIssueInputSinceLastRun) return { blocked: false, noProgressStreak: 0 };
 
   let noProgressStreak = 0;
   for (const run of runs) {
-    // A failed/cancelled/interrupted run breaks the streak: its follow-up is
-    // recovery, not a redundant re-poll, and must not be delayed.
+    // Ordinary failed/cancelled/interrupted runs break the no-op streak;
+    // a single stale timeout may retry once without cooldown.
     if (run.status !== "succeeded" || !run.finishedAt) break;
     if (input.runIdsWithIssueProgress.has(run.id)) break;
     noProgressStreak += 1;

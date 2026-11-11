@@ -9,7 +9,17 @@
 import { randomUUID } from "node:crypto";
 import { eq } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { agents, companies, createDb, heartbeatRuns, issueRecoveryActions, issueRelations, issues } from "@myrmidon/db";
+import {
+  agents,
+  agentWakeupRequests,
+  companies,
+  createDb,
+  heartbeatRuns,
+  issueRecoveryActions,
+  issueRelations,
+  issues,
+} from "@myrmidon/db";
+import { PROVIDER_QUOTA_MONITOR_SERVICE_NAME } from "@myrmidon/shared";
 import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
@@ -119,6 +129,18 @@ describeEmbeddedPostgres("reconcileStrandedAssignedIssues: infrastructure interr
     return db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.sourceIssueId, issueId));
   }
 
+  it("skips terminal issues in recovery reconcile", async () => {
+    const { companyId, issueId } = await seedStrandedIssue({ errorCode: "setup_failed" });
+    await db.update(issues).set({ status: "done" }).where(eq(issues.id, issueId));
+
+    const report = await heartbeatService(db).reconcileStrandedAssignedIssues();
+
+    expect(report.issueIds).not.toContain(issueId);
+    expect(await activeRecoveryActionsFor(issueId)).toHaveLength(0);
+    const [issue] = await db.select().from(issues).where(eq(issues.id, issueId));
+    expect(issue!.status).toBe("done");
+  }, 30_000);
+
   it("does not escalate while the agent is only paused and the retry budget is not exhausted", async () => {
     const { issueId } = await seedStrandedIssue({ errorCode: "agent_paused", scheduledRetryAttempt: 0 });
 
@@ -225,6 +247,152 @@ describeEmbeddedPostgres("reconcileStrandedAssignedIssues: infrastructure interr
     expect(actions[0]!.ownerType).toBe("board");
     const [issue] = await db.select().from(issues).where(eq(issues.id, issueId));
     expect(issue!.status).toBe("blocked");
+  }, 30_000);
+
+  it("schedules a provider quota monitor after three consecutive 429 cooldown failures instead of stopping recovery", async () => {
+    // myrmidon(PROVIDER-OUTAGE-RECOVERY): repeated gateway 429 "all deployments
+    // in cooldown" failures are an external channel outage. The stranded-work
+    // sweep must keep the issue workable (a durable provider-quota monitor),
+    // not escalate it as a reconciliation failure.
+    let runId = "";
+    let attempt = 0;
+    let issueId = "";
+    let companyId = "";
+    let agentId = "";
+    for (attempt = 1; attempt <= 3; attempt += 1) {
+      if (attempt === 1) {
+        ({ companyId, agentId, issueId } = await seedStrandedIssue({
+          errorCode: "hermes_gateway_run_failed",
+          resultJson: {
+            errorMessage: "HTTP 429: No deployments available. All deployments in cooldown.",
+            errorFamily: "provider_quota",
+            executionRecovery: { kind: "bootstrap", providerWorkStarted: false },
+          },
+        }));
+      } else {
+        runId = randomUUID();
+        await db.insert(heartbeatRuns).values({
+          id: runId,
+          companyId,
+          agentId,
+          status: "failed",
+          contextSnapshot: { issueId },
+          errorCode: "hermes_gateway_run_failed",
+          scheduledRetryAttempt: attempt - 1,
+          scheduledRetryReason: "transient_failure",
+          resultJson: {
+            errorMessage: "HTTP 429: No deployments available. All deployments in cooldown.",
+            errorFamily: "provider_quota",
+            executionRecovery: { kind: "bootstrap", providerWorkStarted: false },
+          },
+          finishedAt: new Date(),
+          updatedAt: new Date(),
+        });
+        await db.update(issues).set({ executionRunId: runId }).where(eq(issues.id, issueId));
+      }
+      await heartbeatService(db).reconcileStrandedAssignedIssues();
+    }
+
+    expect(await activeRecoveryActionsFor(issueId)).toHaveLength(0);
+    const [issue] = await db.select().from(issues).where(eq(issues.id, issueId));
+    expect(issue!.status).toBe("in_progress");
+    expect(issue!.monitorNextCheckAt).toBeInstanceOf(Date);
+    expect(issue!.executionPolicy).toMatchObject({
+      monitor: { serviceName: PROVIDER_QUOTA_MONITOR_SERVICE_NAME, kind: "external_service" },
+    });
+    const monitorSourceRunId = (
+      (issue!.executionPolicy as { monitor?: { externalRef?: string } }).monitor?.externalRef ?? ""
+    );
+    expect(monitorSourceRunId).not.toBe("");
+    const [classifiedRun] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, monitorSourceRunId));
+    expect(classifiedRun!.errorCode).toBe("provider_quota");
+    expect((classifiedRun!.resultJson as Record<string, unknown>).errorFamily).toBe("provider_quota");
+  }, 30_000);
+
+  it("wakes the issue via the quota monitor once the same model answers again", async () => {
+    // Continuation of the outage above: the channel recovered, the monitor is
+    // due, and the wake path issues the bounded retry for the same agent.
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const issueId = randomUUID();
+    const sourceRunId = randomUUID();
+    const now = new Date();
+    await db.insert(companies).values({
+      id: companyId,
+      name: "company-quota-wake",
+      issuePrefix: `W${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      defaultResponsibleUserId: "user-a",
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "agent-quota-wake",
+      role: "engineer",
+      status: "active",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "stalled behind a provider outage",
+      status: "in_progress",
+      priority: "medium",
+      assigneeAgentId: agentId,
+      responsibleUserId: "user-a",
+      monitorNextCheckAt: new Date(now.getTime() - 1000),
+      monitorAttemptCount: 0,
+      executionPolicy: {
+        monitor: {
+          nextCheckAt: new Date(now.getTime() - 1000).toISOString(),
+          notes: "Provider usage quota reached; retry the original assignee after the default recovery backoff.",
+          scheduledBy: "assignee" as const,
+          kind: "external_service" as const,
+          serviceName: PROVIDER_QUOTA_MONITOR_SERVICE_NAME,
+          externalRef: sourceRunId,
+          timeoutAt: null,
+          maxAttempts: null,
+          recoveryPolicy: "wake_owner" as const,
+        },
+      },
+      createdAt: now,
+      updatedAt: now,
+    });
+    await db.insert(heartbeatRuns).values({
+      id: sourceRunId,
+      companyId,
+      agentId,
+      status: "failed",
+      contextSnapshot: { issueId },
+      errorCode: "hermes_gateway_run_failed",
+      scheduledRetryAttempt: 3,
+      scheduledRetryReason: "transient_failure",
+      runnerProfileJson: { adapterDispatch: { adapterType: "hermes_gateway" } },
+      resultJson: {
+        errorMessage: "HTTP 429: No deployments available. All deployments in cooldown.",
+        errorFamily: "provider_quota",
+        providerQuotaRetryNotBefore: new Date(now.getTime() - 2000).toISOString(),
+        executionRecovery: { kind: "bootstrap", providerWorkStarted: false },
+      },
+      finishedAt: now,
+      updatedAt: now,
+    });
+
+    const heartbeat = heartbeatService(db);
+    const tick = await heartbeat.tickTimers(new Date(now.getTime() + 1000));
+
+    expect(tick.enqueued).toBe(1);
+    const wakeups = await db.select().from(agentWakeupRequests);
+    expect(wakeups).toHaveLength(1);
+    expect(wakeups[0]).toMatchObject({
+      agentId,
+      reason: "transient_failure_retry",
+    });
+    const [retry] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.retryOfRunId, sourceRunId));
+    expect(retry).toMatchObject({ status: "scheduled_retry", scheduledRetryAttempt: 1 });
   }, 30_000);
 
   it("still escalates a paused agent's stranded issue when the run failed for a non-infrastructure reason", async () => {

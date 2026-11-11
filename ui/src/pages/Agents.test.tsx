@@ -21,6 +21,13 @@ const mockRouterState = vi.hoisted(() => ({
 const mockAgentsApi = vi.hoisted(() => ({
   list: vi.fn(),
   org: vi.fn(),
+  bulkUpdateModel: vi.fn(),
+}));
+// myrmidon(OPE-12225, FLEET-OPS-BULK): the bulk bar fetches managed AI
+// connections when a selection exists; keep it on a mock so the bulk tests
+// never emit a real fetch.
+const mockAiConnectionsApi = vi.hoisted(() => ({
+  list: vi.fn(async () => ({ currentUserId: "user-1", connections: [] })),
 }));
 const mockProjectsApi = vi.hoisted(() => ({ list: vi.fn() }));
 
@@ -83,6 +90,9 @@ vi.mock("../context/SidebarContext", () => ({
 vi.mock("../api/agents", () => ({
   agentsApi: mockAgentsApi,
 }));
+vi.mock("../api/ai-connections", () => ({
+  aiConnectionsApi: mockAiConnectionsApi,
+}));
 vi.mock("../api/projects", () => ({ projectsApi: mockProjectsApi }));
 
 vi.mock("../api/builtInAgents", () => ({
@@ -110,7 +120,15 @@ vi.mock("../api/resourceMemberships", () => ({
 }));
 
 vi.mock("../adapters/adapter-display-registry", () => ({
+  getAdapterDisplay: (type: string) => ({
+    type,
+    label: type,
+    description: "",
+    icon: () => null,
+  }),
   getAdapterLabel: (type: string) => type,
+  getAdapterLabels: () => ({}) as Record<string, string>,
+  isKnownAdapterType: () => true,
 }));
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -379,6 +397,7 @@ describe("Agents", () => {
       state: "left",
       updatedAt: new Date("2026-01-02T00:00:00Z"),
     });
+    mockAgentsApi.bulkUpdateModel.mockReset();
     mockSidebarState.isMobile = false;
   });
 
@@ -1296,5 +1315,172 @@ describe("Agents tree view", () => {
 
     expect(container.querySelector('[data-testid="agent-tree-body"]')).toBeNull();
     expect(container.textContent).toContain("Bob Engineer");
+  });
+});
+
+// myrmidon(OPE-12225, FLEET-OPS-BULK): checkbox selection + bulk "change model
+// / connection" bar against the partial-success contract ({updated[], failed[
+// {id, reason}]}). A single failed id must render as a partial result, never
+// as a total failure.
+describe("Agents bulk update", () => {
+  let container: HTMLDivElement;
+  let root: ReturnType<typeof createRoot> | null;
+  let queryClient: QueryClient;
+
+  async function renderAgentsPage() {
+    root = createRoot(container);
+    await act(async () => {
+      root!.render(
+        <QueryClientProvider client={queryClient}>
+          <ToastProvider>
+            <Agents />
+          </ToastProvider>
+        </QueryClientProvider>,
+      );
+    });
+    await flushReact();
+    await flushReact();
+  }
+
+  async function selectAgents(names: string[]) {
+    // Switch to the flat list, then tick the two checkboxes. The Radix
+    // checkbox renders as a button carrying the per-agent aria-label.
+    const listToggle = container.querySelector<HTMLButtonElement>('button[aria-label="List view"]');
+    await act(async () => {
+      listToggle?.click();
+    });
+    await flushReact();
+    for (const name of names) {
+      const row = findAgentRow(container, name);
+      expect(row).not.toBeNull();
+      const checkbox = row?.querySelector<HTMLButtonElement>(`button[aria-label="Select ${name}"]`);
+      expect(checkbox).not.toBeNull();
+      await act(async () => {
+        checkbox!.click();
+      });
+      await flushReact();
+    }
+  }
+
+  beforeEach(() => {
+    mockRouterState.pathname = "/agents/all";
+    mockRouterState.navigate.mockClear();
+    container = document.createElement("div");
+    document.body.appendChild(container);
+    root = null;
+    queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    mockAgentsApi.list.mockResolvedValue([
+      makeAgent({ id: "agent-bulk-1", name: "Bulk Alpha", urlKey: "bulk-alpha" }),
+      makeAgent({ id: "agent-bulk-2", name: "Bulk Beta", urlKey: "bulk-beta" }),
+    ]);
+    mockAgentsApi.org.mockResolvedValue([
+      { id: "agent-bulk-1", name: "Bulk Alpha", role: "engineer", status: "active", reports: [] },
+      { id: "agent-bulk-2", name: "Bulk Beta", role: "engineer", status: "active", reports: [] },
+    ]);
+    mockProjectsApi.list.mockResolvedValue([]);
+    mockBuiltInAgentsApi.list.mockResolvedValue([]);
+    mockEnvironmentsApi.list.mockResolvedValue([]);
+    mockEnvironmentsApi.capabilities.mockResolvedValue(environmentCapabilities);
+    mockInstanceSettingsApi.get.mockResolvedValue(makeInstanceSettings());
+    mockAuthApi.getSession.mockResolvedValue({ user: { id: "user-1" }, session: { userId: "user-1" } });
+    mockHeartbeatsApi.liveRunsForCompany.mockResolvedValue([]);
+    mockResourceMembershipsApi.listMine.mockResolvedValue({
+      projectMemberships: {},
+      agentMemberships: {},
+      updatedAt: null,
+    });
+    mockSidebarState.isMobile = false;
+    localStorage.clear();
+  });
+
+  afterEach(async () => {
+    const currentRoot = root;
+    if (currentRoot) {
+      await act(async () => {
+        currentRoot.unmount();
+      });
+    }
+    queryClient.clear();
+    container.remove();
+    document.body.innerHTML = "";
+    vi.clearAllMocks();
+    localStorage.clear();
+  });
+
+  it("selecting two agents calls the bulk API with their ids", async () => {
+    mockAgentsApi.bulkUpdateModel.mockResolvedValue({ updated: ["agent-bulk-1", "agent-bulk-2"], failed: [] });
+
+    await renderAgentsPage();
+    await selectAgents(["Bulk Alpha", "Bulk Beta"]);
+
+    const bar = container.querySelector('[data-testid="bulk-action-bar"]');
+    expect(bar).not.toBeNull();
+    expect(bar?.textContent).toContain("2 selected");
+
+    const applyButton = Array.from(container.querySelectorAll("button")).find((button) =>
+      button.textContent?.includes("Apply to 2 agents"),
+    );
+    expect(applyButton).not.toBeNull();
+    await act(async () => {
+      applyButton?.click();
+    });
+    await flushReact();
+
+    expect(mockAgentsApi.bulkUpdateModel).toHaveBeenCalledTimes(1);
+    expect(mockAgentsApi.bulkUpdateModel).toHaveBeenCalledWith(
+      "company-1",
+      expect.objectContaining({ agentIds: expect.arrayContaining(["agent-bulk-1", "agent-bulk-2"]) }),
+    );
+  });
+
+  it("renders a one-failure response as a partial success, not a total failure", async () => {
+    mockAgentsApi.bulkUpdateModel.mockResolvedValue({
+      updated: ["agent-bulk-1"],
+      failed: [{ id: "agent-bulk-2", reason: "unknown model" }],
+    });
+
+    await renderAgentsPage();
+    await selectAgents(["Bulk Alpha", "Bulk Beta"]);
+
+    const applyButton = Array.from(container.querySelectorAll("button")).find((button) =>
+      button.textContent?.includes("Apply to 2 agents"),
+    );
+    await act(async () => {
+      applyButton?.click();
+    });
+    await flushReact();
+
+    const result = container.querySelector('[data-testid="bulk-result"]');
+    expect(result).not.toBeNull();
+    // Partial split is visible: 1 updated / 1 failed with the per-agent reason.
+    expect(result?.textContent).toContain("1 updated");
+    expect(result?.textContent).toContain("1 failed");
+    expect(result?.textContent).toContain("unknown model");
+    // The full-response failure line must NOT collapse into a total failure.
+    expect(result?.textContent).not.toContain("Update failed");
+  });
+
+  it("clears the selection after a successful bulk update", async () => {
+    mockAgentsApi.bulkUpdateModel.mockResolvedValue({ updated: ["agent-bulk-1"], failed: [] });
+
+    await renderAgentsPage();
+    await selectAgents(["Bulk Alpha"]);
+
+    const applyButton = Array.from(container.querySelectorAll("button")).find((button) =>
+      button.textContent?.includes("Apply to 1 agent"),
+    );
+    await act(async () => {
+      applyButton?.click();
+    });
+    await flushReact();
+
+    expect(mockAgentsApi.bulkUpdateModel).toHaveBeenCalledWith(
+      "company-1",
+      expect.objectContaining({ agentIds: ["agent-bulk-1"] }),
+    );
+    const bar = container.querySelector('[data-testid="bulk-action-bar"]');
+    // Only the result line remains; no selection-dependent controls.
+    expect(bar?.textContent).not.toContain("Apply to 1 agent");
+    expect(bar?.textContent).toContain("1 updated");
   });
 });

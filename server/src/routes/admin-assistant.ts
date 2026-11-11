@@ -3,7 +3,18 @@ import { Router, type Request, type Response } from "express";
 import { and, count, eq, inArray, isNull } from "drizzle-orm";
 import type { Db } from "@myrmidon/db";
 import { agents, heartbeatRuns, issues } from "@myrmidon/db";
-import { assertCompanyAccess } from "./authz.js";
+import type {
+  AdminAssistantDryRunDiagnostics,
+  AdminAssistantDryRunProbeResult,
+} from "@myrmidon/shared";
+import {
+  sanitizeDryRunDiagnostics,
+  toSafeDryRunDiagnosticsJson,
+} from "@myrmidon/shared";
+import { assertCompanyAccess, assertInstanceAdmin } from "./authz.js";
+import { detectStuckRuns } from "../services/heartbeat-recovery.js";
+import { badRequest } from "../errors.js";
+import { redactSensitive } from "../middleware/redact-sensitive.js";
 
 export type HealthStatus = "healthy" | "warning" | "critical";
 
@@ -53,12 +64,166 @@ export interface CollectClusterHealthOptions {
   now?: Date;
 }
 
+// ─── Dry-run diagnostics ─────────────────────────────────────────────────────
+
+export type DryRunProbeStatus = "ok" | "degraded";
+
+export type DryRunProbeResult = AdminAssistantDryRunProbeResult;
+export type { AdminAssistantDryRunDiagnostics };
+
+/** Default per-probe timeout. Each probe runs in isolation; a slow probe
+ * degrades its own result without hiding the error or blocking siblings. */
+export const DRY_RUN_PROBE_TIMEOUT_MS = 5_000;
+
+function isTimeoutError(err: unknown): boolean {
+  return (
+    (err instanceof Error && err.name === "AbortError") ||
+    (err instanceof Error && err.name === "TimeoutError") ||
+    (typeof err === "object" && err !== null && (err as { code?: unknown }).code === "ABORT_ERR")
+  );
+}
+
+function probeErrorMessage(err: unknown, timeoutMs: number): string {
+  if (isTimeoutError(err)) {
+    return err instanceof Error && err.message.includes("timed out")
+      ? err.message
+      : `timed out after ${timeoutMs}ms`;
+  }
+  if (err instanceof Error) return err.message;
+  return String(err);
+}
+
+/** Run a single probe with its own timeout. Never rejects. */
+async function runDryRunProbe(
+  name: string,
+  probe: () => Promise<Record<string, unknown>>,
+  timeoutMs: number = DRY_RUN_PROBE_TIMEOUT_MS,
+): Promise<DryRunProbeResult> {
+  const started = Date.now();
+  try {
+    const detail = await Promise.race([
+      probe(),
+      new Promise<never>((_resolve, reject) =>
+        setTimeout(() => {
+          const err = new Error(`timed out after ${timeoutMs}ms`);
+          err.name = "TimeoutError";
+          reject(err);
+        }, timeoutMs).unref?.(),
+      ),
+    ]);
+    return { name, status: "ok", durationMs: Date.now() - started, detail };
+  } catch (err) {
+    return {
+      name,
+      status: "degraded",
+      durationMs: Date.now() - started,
+      error: probeErrorMessage(err, timeoutMs),
+    };
+  }
+}
+
+/** Strict read-only probes: only `db.select` and `fs.statfs`. No INSERT/UPDATE/DELETE. */
+function buildDryRunProbes(db: Db): Array<{ name: string; run: () => Promise<Record<string, unknown>> }> {
+  return [
+    {
+      name: "agents_summary",
+      run: async () => {
+        const rows = await db
+          .select({ status: agents.status })
+          .from(agents);
+        const summary: Record<string, number> = {};
+        for (const row of rows) {
+          const key = typeof row.status === "string" ? row.status : "unknown";
+          summary[key] = (summary[key] ?? 0) + 1;
+        }
+        return { total: rows.length, byStatus: summary };
+      },
+    },
+    {
+      name: "open_tasks_summary",
+      run: async () => {
+        const rows = await db
+          .select({ status: issues.status })
+          .from(issues)
+          .where(isNull(issues.hiddenAt));
+        const summary: Record<string, number> = {};
+        for (const row of rows) {
+          const key = typeof row.status === "string" ? row.status : "unknown";
+          summary[key] = (summary[key] ?? 0) + 1;
+        }
+        return { total: rows.length, byStatus: summary };
+      },
+    },
+    {
+      name: "heartbeat_runs_summary",
+      run: async () => {
+        const rows = await db
+          .select({ status: heartbeatRuns.status })
+          .from(heartbeatRuns);
+        const summary: Record<string, number> = {};
+        for (const row of rows) {
+          const key = typeof row.status === "string" ? row.status : "unknown";
+          summary[key] = (summary[key] ?? 0) + 1;
+        }
+        return { total: rows.length, byStatus: summary };
+      },
+    },
+    {
+      name: "disk_usage",
+      run: async () => {
+        const disk = await measureDiskSpaceSafe();
+        return { ...disk };
+      },
+    },
+  ];
+}
+
+/**
+ * Collect admin-assistant dry-run diagnostics.
+ *
+ * Guarantees:
+ * - Every probe is strictly read-only (only SELECT queries and fs.statfs).
+ * - Each probe has an independent timeout; a timeout or error degrades that
+ *   probe's result but does not hide the error string and does not block
+ *   the other probes.
+ * - The returned payload carries an explicit `dry_run: true` marker.
+ * - The response is passed through `redactSensitive` before leaving the route
+ *   so any credential-shaped field that a probe might accidentally include is
+ *   masked with "[REDACTED]".
+ */
+export async function collectDryRunDiagnostics(
+  db: Db,
+  options?: { now?: Date; probeTimeoutMs?: number; probes?: Array<{ name: string; run: () => Promise<Record<string, unknown>> }> },
+): Promise<AdminAssistantDryRunDiagnostics> {
+  const now = options?.now ?? new Date();
+  const timeoutMs = options?.probeTimeoutMs ?? DRY_RUN_PROBE_TIMEOUT_MS;
+  const probes = options?.probes ?? buildDryRunProbes(db);
+  const results = await Promise.all(
+    probes.map((p) => runDryRunProbe(p.name, p.run, timeoutMs)),
+  );
+  const ok = results.filter((r) => r.status === "ok").length;
+  return {
+    dry_run: true,
+    timestamp: now.toISOString(),
+    probes: results,
+    summary: {
+      total: results.length,
+      ok,
+      degraded: results.length - ok,
+    },
+  };
+}
+
 /**
  * Safely measures filesystem usage for the given directory without executing any shell commands.
  * Uses Node.js fs.statfs POSIX syscall.
  */
 export async function measureDiskSpaceSafe(targetPath?: string): Promise<ClusterHealthDiskUsage> {
-  const dir = targetPath || process.env.MYRMIDON_DATA_DIR || process.cwd() || "/";
+  const dataDir = process.env.MYRMIDON_DATA_DIR || process.cwd() || "/";
+  const dir = targetPath || dataDir;
+  if (targetPath && targetPath !== dataDir) {
+    throw badRequest("diskPath must be the configured data directory");
+  }
   try {
     const stats = await fs.statfs(dir);
     const totalBytes = Number(stats.blocks) * Number(stats.bsize);
@@ -275,8 +440,12 @@ export function adminAssistantRoutes(db: Db): Router {
 
   async function handleClusterHealth(req: Request, res: Response) {
     const companyId = (req.params.companyId || req.query.companyId) as string | undefined;
-    if (companyId && req.params.companyId) {
+    if (req.params.companyId) {
+      assertCompanyAccess(req, companyId as string);
+    } else if (companyId) {
       assertCompanyAccess(req, companyId);
+    } else {
+      assertInstanceAdmin(req);
     }
 
     const diskPath = (req.query.path || req.query.diskPath) as string | undefined;
@@ -284,9 +453,48 @@ export function adminAssistantRoutes(db: Db): Router {
     res.json(health);
   }
 
+  async function handleDryRunDiagnostics(req: Request, res: Response) {
+    // The dry-run diagnostics endpoint is intentionally stricter than the
+    // cluster-health route: it always requires instance admin, even when a
+    // companyId query parameter is present, because it returns instance-wide
+    // probe results that may cross company boundaries.
+    assertInstanceAdmin(req);
+
+    const diagnostics = await collectDryRunDiagnostics(db);
+    // Layer 1: typed DTO sanitizer — removes secret-bearing fields from every
+    // probe detail before the payload reaches the serializer.  This is the
+    // authoritative redaction contract; Layer 2 is a defensive back-stop.
+    const sanitized = toSafeDryRunDiagnosticsJson(
+      sanitizeDryRunDiagnostics(diagnostics),
+    );
+    // Layer 2: run the already-sanitized payload through the same string-level
+    // redaction walker used for HTTP log lines so a credential-shaped value
+    // that slipped through Layer 1 is still masked.
+    res.json(redactSensitive(sanitized));
+  }
+
+  async function handleStuckRuns(req: Request, res: Response) {
+    const companyId = (req.params.companyId || req.query.companyId) as string | undefined;
+    if (req.params.companyId) {
+      assertCompanyAccess(req, companyId as string);
+    } else if (companyId) {
+      assertCompanyAccess(req, companyId);
+    } else {
+      assertInstanceAdmin(req);
+    }
+
+    const timeoutMs = req.query.timeoutMs ? Number(req.query.timeoutMs) : undefined;
+    const timeoutSeconds = req.query.timeoutSeconds ? Number(req.query.timeoutSeconds) : undefined;
+    const stuckRuns = await detectStuckRuns(db, { companyId, timeoutMs, timeoutSeconds });
+    res.json(stuckRuns);
+  }
+
   router.get("/companies/:companyId/admin-assistant/cluster-health", handleClusterHealth);
   router.get("/admin-assistant/cluster-health", handleClusterHealth);
   router.get("/admin-assistant/health", handleClusterHealth);
+  router.get("/admin-assistant/dry-run", handleDryRunDiagnostics);
+  router.get("/companies/:companyId/admin-assistant/stuck-runs", handleStuckRuns);
+  router.get("/admin-assistant/stuck-runs", handleStuckRuns);
 
   return router;
 }

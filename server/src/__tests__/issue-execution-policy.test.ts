@@ -2222,6 +2222,52 @@ describe("review round circuit breaker", () => {
     expect(result.patch.assigneeUserId).toBeNull();
   });
 
+  it("routes review return to a live replacement when the persisted return assignee was terminated", () => {
+    const issue = {
+      ...reviewPendingIssue(
+        { assigneeAgentId: qaAgentId },
+        { currentParticipant: { type: "agent", agentId: qaAgentId }, returnAssignee: { type: "agent", agentId: coderAgentId } },
+      ),
+      terminatedReturnAssigneeAgentId: coderAgentId,
+      fallbackReturnAssigneeAgentId: leadAgentId,
+    };
+    const result = applyIssueExecutionPolicyTransition({
+      issue,
+      policy,
+      requestedStatus: "in_progress",
+      requestedAssigneePatch: {},
+      actor: { agentId: qaAgentId },
+      commentBody: "Approved after executor termination",
+    });
+
+    expect(result.patch.status).toBe("in_progress");
+    expect(result.patch.assigneeAgentId).toBe(leadAgentId);
+    expect(result.patch.executionState).toMatchObject({
+      returnAssignee: { type: "agent", agentId: leadAgentId },
+    });
+  });
+
+  it("does not replace a live return assignee when no termination marker matches", () => {
+    const issue = {
+      ...reviewPendingIssue(
+        { assigneeAgentId: qaAgentId },
+        { currentParticipant: { type: "agent", agentId: qaAgentId }, returnAssignee: { type: "agent", agentId: coderAgentId } },
+      ),
+      terminatedReturnAssigneeAgentId: leadAgentId,
+      fallbackReturnAssigneeAgentId: leadAgentId,
+    };
+    const result = applyIssueExecutionPolicyTransition({
+      issue,
+      policy,
+      requestedStatus: "in_progress",
+      requestedAssigneePatch: {},
+      actor: { agentId: qaAgentId },
+      commentBody: "Approved",
+    });
+
+    expect(result.patch.assigneeAgentId).toBe(coderAgentId);
+  });
+
   it("raises a recovery card, not a human hand-off, when the senior chain is empty", () => {
     const result = applyIssueExecutionPolicyTransition({
       issue: { ...reviewPendingIssue({}, { changesRequestedCount: 2 }), id: "issue-empty-chain", defaultEscalationAgentIds: [] },

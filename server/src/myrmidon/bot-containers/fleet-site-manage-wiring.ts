@@ -10,11 +10,15 @@ import { agents, myrmidonFleetSites, type Db } from "@myrmidon/db";
 import { logger } from "../../middleware/logger.js";
 import { HERMES_GATEWAY_ADAPTER_TYPE } from "./agents-query.js";
 import { BOT_CONTAINER_DEFAULTS } from "./agent-config.js";
+import { fleetAuditDeps } from "./fleet-audit-wiring.js";
+import { withFleetAudit } from "./fleet-audit.js";
 import { createFleetMoveContext } from "./fleet-move-wiring.js";
 import { createSiteAgentClient } from "./site-agent-client.js";
 import { fleetSiteManageRoutes, type BotCardView, type SiteBotView, type SiteLoad } from "./fleet-site-manage-routes.js";
+import { FLEET_SITE_URL_ALLOWLIST_ENV, parseFleetSiteUrlAllowlist } from "./fleet-site-url-policy.js";
 import { getBotContainerRuntime } from "./routes-wiring.js";
 import { siteHealthStore } from "./site-health-store.js";
+import { fleetSiteKey } from "./fleetd-hosts.js";
 import { getFleetSite, listFleetSites, parseTlsCredentials, updateFleetSite, type FleetClientManager } from "./site-registry.js";
 import { X509Certificate } from "node:crypto";
 import { secretService } from "../../services/index.js";
@@ -47,7 +51,7 @@ function positive(value: unknown, fallback: number): number {
   return typeof value === "number" && Number.isFinite(value) && value > 0 ? value : fallback;
 }
 
-export function myrmidonFleetSiteManageRoutes(db: Db, clientManager?: FleetClientManager | (() => FleetClientManager | null)): Router {
+function createFleetSiteManageRouter(db: Db, clientManager?: FleetClientManager | (() => FleetClientManager | null)): Router {
   const moves = createFleetMoveContext(db, clientManager);
   const currentClientManager = () => typeof clientManager === "function" ? clientManager() ?? undefined : clientManager;
   const health = siteHealthStore(db);
@@ -57,7 +61,7 @@ export function myrmidonFleetSiteManageRoutes(db: Db, clientManager?: FleetClien
     const manager = currentClientManager();
     if (!manager) throw new Error(`site "${siteName}" has no active mTLS client transport`);
     await manager.ensureFresh();
-    const transport = manager.getTransports?.()?.get(`${companyId}:${siteName}`);
+    const transport = manager.getTransports?.()?.get(fleetSiteKey(companyId, siteName));
     if (!transport?.mtls || !transport.agent || !transport.caCert || !transport.clientCert || !transport.clientKey) {
       throw new Error(`site "${siteName}" has no valid mTLS client certificate, key, or CA`);
     }
@@ -101,6 +105,8 @@ export function myrmidonFleetSiteManageRoutes(db: Db, clientManager?: FleetClien
   }
 
   return fleetSiteManageRoutes({
+    // myrmidon(1.6.7 FLEET-SITE-ENROLL): read on every address change, so a change needs no restart.
+    fleetdHostAllowlist: () => parseFleetSiteUrlAllowlist(process.env[FLEET_SITE_URL_ALLOWLIST_ENV]),
     listSites: (companyId) => listFleetSites(db, companyId),
     getSite: (companyId, name) => getFleetSite(db, companyId, name),
     updateSite: (companyId, name, patch) => updateFleetSite(db, companyId, name, patch),
@@ -207,11 +213,11 @@ export function myrmidonFleetSiteManageRoutes(db: Db, clientManager?: FleetClien
       const manager = currentClientManager();
       if (!manager) throw new Error(`site "${siteName}" has no active mTLS client transport`);
       await manager.ensureFresh();
-      const transport = manager.getTransports?.()?.get(`${card[0].companyId}:${siteName}`);
+      const transport = manager.getTransports?.()?.get(fleetSiteKey(card[0].companyId, siteName));
       if (!transport?.mtls || !transport.agent || !transport.caCert || !transport.clientCert || !transport.clientKey) {
         throw new Error(`site "${siteName}" has no valid mTLS client certificate, key, or CA`);
       }
-      const driver = manager.getClients().get(`${card[0].companyId}:${siteName}`);
+      const driver = manager.getClients().get(fleetSiteKey(card[0].companyId, siteName));
       if (!driver) throw new Error(`site "${siteName}" has no active mTLS client transport`);
       if (action === "restart") await driver.restart(botKey);
       else await driver.stop(botKey);
@@ -224,4 +230,9 @@ export function myrmidonFleetSiteManageRoutes(db: Db, clientManager?: FleetClien
 
     log: logger,
   });
+}
+
+/** The fleet screen's routes; patch, drain, resume, restart, stop and logs leave a row in the company's activity log (fleet-audit.ts). */
+export function myrmidonFleetSiteManageRoutes(db: Db, clientManager?: FleetClientManager | (() => FleetClientManager | null)): Router {
+  return withFleetAudit(createFleetSiteManageRouter(db, clientManager), fleetAuditDeps(db));
 }

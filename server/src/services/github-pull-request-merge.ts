@@ -26,10 +26,13 @@ export type PullRequestMergeDetails = {
   workProductState?: "open" | "draft" | "merged" | "closed";
   draft?: boolean;
   baseRef?: string | null;
+  defaultBranch?: string | null;
   additions?: number | null;
   deletions?: number | null;
   changedFiles?: number | null;
   mergeable?: "CONFLICTING" | "MERGEABLE" | "UNKNOWN" | string | null;
+  mergeCommitSha?: string | null;
+  mergeCommitReachable?: boolean;
 };
 
 export type PullRequestMergeStateResolver = (
@@ -102,7 +105,13 @@ export function createPullRequestMergeDetailsResolver(
   db: Db,
   opts?: GitHubExternalObjectProviderOptions,
 ): PullRequestMergeDetailsResolver {
-  const resolver = createGitHubExternalObjectProvider(db, opts).resolvers
+  const resolver = createGitHubExternalObjectProvider(
+    db,
+    // myrmidon(OPE-12397): readers without their own bucket stay under the
+    // task-PR-sync label as before; the UI-triggered refresh passes ui-refresh
+    // (see the work-products route).
+    opts ?? { source: "task-pr-sync" },
+  ).resolvers
     .find((candidate) => candidate.objectType === "pull_request") ?? null;
 
   return async (companyId, reference) => {
@@ -130,6 +139,10 @@ export function createPullRequestMergeDetailsResolver(
       : rawMergeable === "MERGEABLE" || rawMergeable === true || rawMergeable === "clean"
         ? "MERGEABLE"
         : typeof rawMergeable === "string" ? rawMergeable : null;
+    const mergeCommitSha = typeof data?.mergeCommitSha === "string" ? data.mergeCommitSha : null;
+    const mergeCommitReachable = typeof data?.mergeCommitReachable === "boolean"
+      ? data.mergeCommitReachable
+      : undefined;
     return {
       state: statusKey === "merged" || data?.merged === true
         ? "merged"
@@ -141,10 +154,13 @@ export function createPullRequestMergeDetailsResolver(
       ...(workProductState ? { workProductState } : {}),
       draft: data?.draft === true,
       baseRef: typeof data?.baseRef === "string" ? data.baseRef : null,
+      defaultBranch: typeof data?.defaultBranch === "string" ? data.defaultBranch : (typeof data?.default_branch === "string" ? data.default_branch : "main"),
       additions: typeof data?.additions === "number" ? data.additions : null,
       deletions: typeof data?.deletions === "number" ? data.deletions : null,
       changedFiles: typeof data?.changedFiles === "number" ? data.changedFiles : null,
       mergeable,
+      ...(mergeCommitSha ? { mergeCommitSha } : {}),
+      ...(mergeCommitReachable !== undefined ? { mergeCommitReachable } : {}),
     };
   };
 }

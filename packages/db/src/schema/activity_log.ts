@@ -27,11 +27,6 @@ export const activityLog = pgTable(
       table.agentId,
       table.createdAt,
     ),
-    companyResponsibleUserCreatedIdx: index("activity_log_company_responsible_user_created_idx").on(
-      table.companyId,
-      table.responsibleUserId,
-      table.createdAt,
-    ),
     runIdIdx: index("activity_log_run_id_idx").on(table.runId),
     entityIdx: index("activity_log_entity_type_id_idx").on(table.entityType, table.entityId),
     // myrmidon(DB-CARE / 1.6.6 DEFECT): the feature health pass reads the
@@ -85,5 +80,10 @@ export const activityLog = pgTable(
       .where(
         sql`${table.entityType} = 'issue' and ${table.action} <> ALL (ARRAY['issue.read_marked', 'issue.read_unmarked', 'issue.inbox_archived', 'issue.inbox_unarchived'])`,
       ),
+    // myrmidon(1.6.6 OPE-10438): the activity anti-join previously had to scan
+    // rows because existing indexes began with unrelated company columns.
+    issueCreatedAtIdx: index("activity_log_issue_created_at_idx")
+      .on(table.companyId, table.entityType, table.entityId, table.createdAt)
+      .where(sql`${table.entityType} = 'issue' and ${table.actorType} <> 'system'`),
   }),
 );

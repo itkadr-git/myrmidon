@@ -6,7 +6,11 @@
 // decides exactly one transition per pass:
 //
 //   - `close_review`    — every linked PR reached a terminal state (merged or
-//     closed): the review is over, the task settles `done`;
+//     closed) AND nothing about the task says acceptance is still owed: the
+//     review is over, the task settles `done`. A merged PR alone is NOT enough
+//     (OPE-12260): a task the loop already closed once and a person reopened,
+//     or one whose acceptance criteria name a live / operator step, stays with
+//     its assignee — see `await_acceptance`;
 //   - `create_rework`   — a RETURN verdict has no rework task yet: the sweep
 //     opens one (executor down the ladder; unassigned = the role queue) and
 //     the review task goes to `blocked` pointing at it;
@@ -56,6 +60,8 @@ export interface ReviewReworkTaskFacts {
   companyId: string;
   identifier: string | null;
   title: string;
+  /** Description, including acceptance criteria, read by the sweep. */
+  description?: string | null;
   status: string;
   assigneeAgentId: string | null;
   assigneeUserId: string | null;
@@ -115,6 +121,8 @@ export interface ReviewReworkFacts {
   deliveringTaskAssigneeAgentId: string | null;
   /** `settings.fallbackAssigneeAgentId` as read on this pass. */
   fallbackAssigneeAgentId: string | null;
+  /** True when a person reopened a task after the review-return loop closed it. */
+  reopenedAfterLoopClose?: boolean;
 }
 
 export type ReviewReworkNoopReason =
@@ -125,6 +133,7 @@ export type ReviewReworkNoopReason =
   | "verdict_cleared_by_approve"
   | "waiting_for_rework"
   | "head_unchanged"
+  | "acceptance_already_waiting"
   | "no_authoritative_head";
 
 export type ReviewReworkDecision =
@@ -132,6 +141,12 @@ export type ReviewReworkDecision =
       kind: "close_review";
       prRefs: string[];
       outcome: "merged" | "closed";
+    }
+  | {
+      kind: "await_acceptance";
+      prRefs: string[];
+      outcome: "merged" | "closed";
+      assigneeAgentId: string | null;
     }
   | {
       kind: "create_rework";
@@ -220,6 +235,22 @@ export function collectVerdictMarkers(
   const markers: ReviewReworkVerdictMarker[] = [];
   for (const comment of comments) markers.push(...parseReviewReworkVerdictMarkers(comment));
   return markers;
+}
+
+/**
+ * Cheap pre-read for the sweep's candidate narrowing (OPE-12397): does the
+ * candidate look like it may carry a verdict? The full freshness logic
+ * (head-acks, verdict-vs-ack ordering) stays in `decideReviewRework`; this
+ * only answers "is this row worth a GitHub read at all", so a false positive
+ * costs one ordinary pass and a false negative is impossible (the store
+ * computes the flag with the same `verdict`-keyword EXISTS the candidate
+ * query filters on; `decideReviewRework` still runs the real parser over the
+ * real comments before any move).
+ */
+export function rowHasOutstandingVerdict(
+  row: { verdictPresent?: boolean },
+): boolean {
+  return row.verdictPresent ?? false;
 }
 
 /**
@@ -333,11 +364,27 @@ export function decideReviewRework(facts: ReviewReworkFacts): ReviewReworkDecisi
   const terminal = known.filter((pr) => pr.state === "merged" || pr.state === "closed");
   const openish = known.filter((pr) => pr.state === "open" || pr.state === "draft");
   if (terminal.length > 0 && openish.length === 0 && unknown.length === 0) {
-    return {
-      kind: "close_review",
-      prRefs: known.map((pr) => `${pr.repo}#${pr.number}`),
-      outcome: known.some((pr) => pr.state === "merged") ? "merged" : "closed",
-    };
+    const prRefs = known.map((pr) => `${pr.repo}#${pr.number}`);
+    const outcome = known.some((pr) => pr.state === "merged") ? "merged" : "closed";
+    // A previous automatic close followed by a reopen is an explicit veto.
+    // The acceptance description is another: do not equate merge with a live
+    // or operator step. A later pass must not repeat the handoff comment.
+    const awaiting = facts.comments.some((comment) =>
+      comment.body.includes("Code merged; acceptance pending by the review-return loop"),
+    );
+    if (awaiting) return noop("acceptance_already_waiting");
+    const description = task.description ?? "";
+    const manualAcceptance = outcome === "merged" && /(?:жив(?:ая|ой|ую|ого)\s+при[её]мк|при[её]мк[^\n]{0,100}(?:на\s+бою|оператор|вручную)|операторск(?:ий|ая|ое)\s+(?:шаг|провер|при[её]мк)|live\s+acceptance|manual\s+acceptance|operator\s+(?:step|acceptance))/i.test(description);
+    if (facts.reopenedAfterLoopClose || manualAcceptance) {
+      return {
+        kind: "await_acceptance", prRefs, outcome,
+        // A human assignee is never displaced by the handoff.
+        assigneeAgentId: task.assigneeUserId
+          ? null
+          : task.returnAssigneeAgentId ?? facts.deliveringTaskAssigneeAgentId ?? task.assigneeAgentId,
+      };
+    }
+    return { kind: "close_review", prRefs, outcome };
   }
 
   const markers = collectVerdictMarkers(facts.comments);

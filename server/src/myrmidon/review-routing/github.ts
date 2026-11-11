@@ -27,6 +27,7 @@
 import type { Db } from "@myrmidon/db";
 import { DEFAULT_GITHUB_TOKEN_SECRET_NAMES } from "../../services/git-credentials.js";
 import { ghFetch, gitHubApiBase } from "../../services/github-fetch.js";
+import { isGitHubRateLimited, recordGitHubRequest } from "../../services/github-rate-limit.js";
 import { secretService } from "../../services/secrets.js";
 import type { PullRequestHeadState, PullRequestReviewDecision } from "./pr-policy.js";
 
@@ -56,13 +57,14 @@ function failedHead(repository: string, number: number): PullRequestHeadState {
 
 /**
  * Combined status of a head: "success" and NO statuses at all are green (a
- * repo without CI); pending / failure / error are not green, and neither is
- * anything the resolver could not read.
+ * repo without CI); pending is distinct from failure/error, which are not green.
+ * Anything the resolver could not read is not green.
  */
-export function pullRequestCiStateFromStatusPayload(status: Record<string, unknown>): "green" | "not_green" {
+export function pullRequestCiStateFromStatusPayload(status: Record<string, unknown>): "green" | "pending" | "not_green" {
   const state = asString(status.state);
   if (state === "success") return "green";
-  if (state === "pending" || state === "failure" || state === "error") return "not_green";
+  if (state === "pending") return "pending";
+  if (state === "failure" || state === "error") return "not_green";
   const statuses = Array.isArray(status.statuses) ? status.statuses : null;
   if (statuses !== null && statuses.length === 0) return "green";
   return "not_green";
@@ -152,7 +154,7 @@ export function createGitHubPrHeadResolver(input: {
     });
 
   /** (company|repo|number|headSha) -> the status read for that exact head. */
-  const headCache = new Map<string, { ci: "green" | "not_green"; cachedAtMs: number }>();
+  const headCache = new Map<string, { ci: PullRequestHeadState["ci"]; cachedAtMs: number }>();
 
   function ghHeaders(token: string): Record<string, string> {
     return {
@@ -164,19 +166,28 @@ export function createGitHubPrHeadResolver(input: {
   }
 
   async function fetchRecord(url: string, token: string): Promise<Record<string, unknown> | null> {
+    // myrmidon(OPE-12397): routing reads count into their own bucket and do
+    // not spend requests while the window is exhausted (the caller treats null
+    // as "unknown", its safe no-act outcome).
+    if (isGitHubRateLimited()) return null;
     const response = await fetchImpl(url, { headers: ghHeaders(token) }).catch(() => null);
-    if (!response || !response.ok) return null;
+    if (!response) return null;
+    recordGitHubRequest("review-routing", response);
+    if (!response.ok) return null;
     return asRecord(await response.json().catch(() => null));
   }
 
   /** All reviews of one PR (paginated, chronological); null on any trouble. */
   async function fetchReviews(repository: string, number: number, token: string): Promise<unknown[] | null> {
+    if (isGitHubRateLimited()) return null;
     const all: unknown[] = [];
     for (let page = 1; page <= 10; page += 1) {
       const response = await fetchImpl(`${apiBase}/repos/${repository}/pulls/${number}/reviews?per_page=100&page=${page}`, {
         headers: ghHeaders(token),
       }).catch(() => null);
-      if (!response || !response.ok) return null;
+      if (!response) return null;
+      recordGitHubRequest("review-routing", response);
+      if (!response.ok) return null;
       const raw = await response.json().catch(() => null);
       if (!Array.isArray(raw)) return null;
       all.push(...raw);
@@ -227,6 +238,7 @@ export function createGitHubPrHeadResolver(input: {
         url: asString(pr.html_url),
         authorLogin: asString(asRecord(pr.user)?.login),
         baseRef: asString(asRecord(pr.base)?.ref),
+        mergeable: typeof pr.mergeable === "boolean" ? pr.mergeable : null,
         ...(labels.length > 0 ? { labels } : {}),
       };
 
@@ -266,10 +278,13 @@ export function createGitHubPrHeadResolver(input: {
       if (!token) return [];
       // The list endpoint answers with a bare array; anything but 2xx + array
       // reads as "no fresh data" — an outage never manufactures candidates.
+      if (isGitHubRateLimited()) return [];
       const response = await fetchImpl(`${apiBase}/repos/${repository}/pulls?state=open&per_page=100`, {
         headers: ghHeaders(token),
       }).catch(() => null);
-      if (!response || !response.ok) return [];
+      if (!response) return [];
+      recordGitHubRequest("review-routing", response);
+      if (!response.ok) return [];
       const raw = await response.json().catch(() => null);
       if (!Array.isArray(raw)) return [];
       const out: OpenPullRequestSummary[] = [];

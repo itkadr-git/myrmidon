@@ -16,7 +16,10 @@ import { ApiError } from "@/api/client";
 const apiMock = vi.hoisted(() => ({
   view: vi.fn(),
   update: vi.fn(),
+  listSecrets: vi.fn(),
 }));
+
+vi.mock("@/api/secrets", () => ({ secretsApi: { list: apiMock.listSecrets } }));
 
 vi.mock("./voiceSttApi", async (importOriginal) => ({
   ...(await importOriginal<typeof import("./voiceSttApi")>()),
@@ -41,6 +44,9 @@ function record(overrides: Partial<VoiceSttSettings> = {}): VoiceSttSettings {
     language: "auto",
     diarization: false,
     maxDurationSec: 600,
+    baseUrl: null,
+    keySecretConfigured: false,
+    deepgramKeySecretConfigured: false,
     ...overrides,
   };
 }
@@ -54,6 +60,7 @@ beforeEach(() => {
   document.body.appendChild(container);
   queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   apiMock.view.mockReset().mockResolvedValue(record());
+  apiMock.listSecrets.mockReset().mockResolvedValue([]);
   apiMock.update.mockReset();
 });
 

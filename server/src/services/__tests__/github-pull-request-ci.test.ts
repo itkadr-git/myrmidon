@@ -147,6 +147,77 @@ describe("summarizeCheckRuns", () => {
     expect(incSummary.conclusion).toBe("incomplete");
   });
 
+  it("distinguishes required checks from optional checks (such as main-green)", () => {
+    const runs: PullRequestCiJob[] = [
+      {
+        id: 1,
+        name: "CI result",
+        status: "completed",
+        conclusion: "success",
+        url: "https://github.com/itkadr-git/myrmidon/actions/runs/1/job/1",
+        startedAt: null,
+        completedAt: "2026-11-09T18:00:00Z",
+      },
+      {
+        id: 2,
+        name: "hot files review",
+        status: "completed",
+        conclusion: "success",
+        url: "https://github.com/itkadr-git/myrmidon/actions/runs/1/job/2",
+        startedAt: null,
+        completedAt: "2026-11-09T18:05:00Z",
+      },
+      {
+        id: 3,
+        name: "main-green",
+        status: "completed",
+        conclusion: "failure",
+        url: "https://github.com/itkadr-git/myrmidon/actions/runs/1/job/3",
+        startedAt: null,
+        completedAt: "2026-11-09T18:10:00Z",
+      },
+    ];
+
+    const summary = summarizeCheckRuns(runs);
+    expect(summary.status).toBe("completed");
+    expect(summary.conclusion).toBe("success");
+    expect(summary.failedRuns).toBe(0);
+    expect(summary.failedJobs).toEqual([]);
+    expect(summary.optionalFailedJobs).toHaveLength(1);
+    expect(summary.optionalFailedJobs?.[0].name).toBe("main-green");
+    expect(summary.summary).toContain("success");
+    expect(summary.summary).toContain("optional failed (не влияет)");
+  });
+
+  it("fails conclusion when a required check fails", () => {
+    const runs: PullRequestCiJob[] = [
+      {
+        id: 1,
+        name: "CI result",
+        status: "completed",
+        conclusion: "failure",
+        url: "https://github.com/itkadr-git/myrmidon/actions/runs/1/job/1",
+        startedAt: null,
+        completedAt: "2026-11-09T18:00:00Z",
+      },
+      {
+        id: 2,
+        name: "main-green",
+        status: "completed",
+        conclusion: "success",
+        url: "https://github.com/itkadr-git/myrmidon/actions/runs/1/job/2",
+        startedAt: null,
+        completedAt: "2026-11-09T18:05:00Z",
+      },
+    ];
+
+    const summary = summarizeCheckRuns(runs);
+    expect(summary.status).toBe("completed");
+    expect(summary.conclusion).toBe("failure");
+    expect(summary.failedRuns).toBe(1);
+    expect(summary.failedJobs[0].name).toBe("CI result");
+  });
+
   it("returns in_progress and pending when some checks are running without failures", () => {
     const runs: PullRequestCiJob[] = [
       {
@@ -205,6 +276,254 @@ describe("summarizeCheckRuns", () => {
     expect(summary.conclusion).toBe("failure");
     expect(summary.failedRuns).toBe(1);
   });
+
+  it("collapses an older cancelled run when the same check has a newer successful run (OPE-12624)", () => {
+    const runs: PullRequestCiJob[] = [
+      {
+        id: 401,
+        name: "CI result",
+        status: "completed",
+        conclusion: "cancelled",
+        url: "https://github.com/itkadr-git/myrmidon/actions/runs/40/job/1",
+        startedAt: "2026-11-09T18:00:00Z",
+        completedAt: "2026-11-09T18:01:00Z",
+      },
+      {
+        id: 402,
+        name: "CI result",
+        status: "completed",
+        conclusion: "success",
+        url: "https://github.com/itkadr-git/myrmidon/actions/runs/40/job/2",
+        startedAt: "2026-11-09T18:10:00Z",
+        completedAt: "2026-11-09T18:20:00Z",
+      },
+      {
+        id: 403,
+        name: "hot files review",
+        status: "completed",
+        conclusion: "success",
+        url: "https://github.com/itkadr-git/myrmidon/actions/runs/40/job/3",
+        startedAt: "2026-11-09T18:00:00Z",
+        completedAt: "2026-11-09T18:05:00Z",
+      },
+    ];
+
+    const summary = summarizeCheckRuns(runs);
+    expect(summary.status).toBe("completed");
+    expect(summary.conclusion).toBe("success");
+    expect(summary.failedRuns).toBe(0);
+    expect(summary.failedJobs).toEqual([]);
+    expect(summary.optionalFailedJobs).toEqual([]);
+    expect(summary.totalRuns).toBe(2);
+    expect(summary.successfulRuns).toBe(2);
+    // completedAt of the dropped cancelled run must not surface
+    expect(summary.completedAt).toBe("2026-11-09T18:20:00Z");
+  });
+
+  it("still counts a lone cancelled run as a failure (OPE-12624)", () => {
+    const runs: PullRequestCiJob[] = [
+      {
+        id: 411,
+        name: "CI result",
+        status: "completed",
+        conclusion: "cancelled",
+        url: "https://github.com/itkadr-git/myrmidon/actions/runs/41/job/1",
+        startedAt: "2026-11-09T18:00:00Z",
+        completedAt: "2026-11-09T18:01:00Z",
+      },
+      {
+        id: 412,
+        name: "hot files review",
+        status: "completed",
+        conclusion: "success",
+        url: "https://github.com/itkadr-git/myrmidon/actions/runs/41/job/2",
+        startedAt: "2026-11-09T18:00:00Z",
+        completedAt: "2026-11-09T18:05:00Z",
+      },
+    ];
+
+    const summary = summarizeCheckRuns(runs);
+    expect(summary.status).toBe("completed");
+    expect(summary.conclusion).toBe("failure");
+    expect(summary.failedRuns).toBe(1);
+    expect(summary.failedJobs).toEqual([
+      {
+        id: 411,
+        name: "CI result",
+        conclusion: "cancelled",
+        url: "https://github.com/itkadr-git/myrmidon/actions/runs/41/job/1",
+        completedAt: "2026-11-09T18:01:00Z",
+      },
+    ]);
+    expect(summary.totalRuns).toBe(2);
+  });
+
+  it("does not collapse an older failure when the same check has a newer success (OPE-12624)", () => {
+    const runs: PullRequestCiJob[] = [
+      {
+        id: 421,
+        name: "CI result",
+        status: "completed",
+        conclusion: "failure",
+        url: "https://github.com/itkadr-git/myrmidon/actions/runs/42/job/1",
+        startedAt: "2026-11-09T18:00:00Z",
+        completedAt: "2026-11-09T18:01:00Z",
+      },
+      {
+        id: 422,
+        name: "CI result",
+        status: "completed",
+        conclusion: "success",
+        url: "https://github.com/itkadr-git/myrmidon/actions/runs/42/job/2",
+        startedAt: "2026-11-09T18:10:00Z",
+        completedAt: "2026-11-09T18:20:00Z",
+      },
+    ];
+
+    const summary = summarizeCheckRuns(runs);
+    expect(summary.status).toBe("completed");
+    expect(summary.conclusion).toBe("failure");
+    expect(summary.failedRuns).toBe(1);
+    expect(summary.failedJobs[0]).toEqual({
+      id: 421,
+      name: "CI result",
+      conclusion: "failure",
+      url: "https://github.com/itkadr-git/myrmidon/actions/runs/42/job/1",
+      completedAt: "2026-11-09T18:01:00Z",
+    });
+  });
+
+  it("does not collapse a cancelled run when the newer run belongs to a different check (OPE-12624)", () => {
+    const runs: PullRequestCiJob[] = [
+      {
+        id: 431,
+        name: "CI result",
+        status: "completed",
+        conclusion: "cancelled",
+        url: "https://github.com/itkadr-git/myrmidon/actions/runs/43/job/1",
+        startedAt: "2026-11-09T18:00:00Z",
+        completedAt: "2026-11-09T18:01:00Z",
+      },
+      {
+        id: 432,
+        name: "hot files review",
+        status: "completed",
+        conclusion: "success",
+        url: "https://github.com/itkadr-git/myrmidon/actions/runs/43/job/2",
+        startedAt: "2026-11-09T18:10:00Z",
+        completedAt: "2026-11-09T18:20:00Z",
+      },
+    ];
+
+    const summary = summarizeCheckRuns(runs);
+    expect(summary.status).toBe("completed");
+    expect(summary.conclusion).toBe("failure");
+    expect(summary.failedRuns).toBe(1);
+    expect(summary.failedJobs[0].name).toBe("CI result");
+  });
+
+  it("collapses by id when same-named cancelled and success runs have equal startedAt (OPE-12624)", () => {
+    const runs: PullRequestCiJob[] = [
+      {
+        id: 441,
+        name: "CI result",
+        status: "completed",
+        conclusion: "cancelled",
+        url: "https://github.com/itkadr-git/myrmidon/actions/runs/44/job/1",
+        startedAt: "2026-11-09T18:00:00Z",
+        completedAt: "2026-11-09T18:01:00Z",
+      },
+      {
+        id: 442,
+        name: "CI result",
+        status: "completed",
+        conclusion: "success",
+        url: "https://github.com/itkadr-git/myrmidon/actions/runs/44/job/2",
+        startedAt: "2026-11-09T18:00:00Z",
+        completedAt: "2026-11-09T18:05:00Z",
+      },
+    ];
+
+    const summary = summarizeCheckRuns(runs);
+    expect(summary.status).toBe("completed");
+    expect(summary.conclusion).toBe("success");
+    expect(summary.failedRuns).toBe(0);
+    expect(summary.failedJobs).toEqual([]);
+    expect(summary.totalRuns).toBe(1);
+    expect(summary.successfulRuns).toBe(1);
+  });
+
+  it("matches same check names case-insensitively when collapsing cancelled runs (OPE-12624)", () => {
+    const runs: PullRequestCiJob[] = [
+      {
+        id: 451,
+        name: " ci result ",
+        status: "completed",
+        conclusion: "cancelled",
+        url: "https://github.com/itkadr-git/myrmidon/actions/runs/45/job/1",
+        startedAt: "2026-11-09T18:00:00Z",
+        completedAt: "2026-11-09T18:01:00Z",
+      },
+      {
+        id: 452,
+        name: "CI RESULT",
+        status: "completed",
+        conclusion: "success",
+        url: "https://github.com/itkadr-git/myrmidon/actions/runs/45/job/2",
+        startedAt: "2026-11-09T18:10:00Z",
+        completedAt: "2026-11-09T18:20:00Z",
+      },
+    ];
+
+    const summary = summarizeCheckRuns(runs);
+    expect(summary.status).toBe("completed");
+    expect(summary.conclusion).toBe("success");
+    expect(summary.failedRuns).toBe(0);
+    expect(summary.failedJobs).toEqual([]);
+    expect(summary.totalRuns).toBe(1);
+  });
+
+  it("drops an outdated cancelled optional check from optionalFailedJobs and totalRuns (OPE-12624)", () => {
+    const runs: PullRequestCiJob[] = [
+      {
+        id: 461,
+        name: "CI result",
+        status: "completed",
+        conclusion: "success",
+        url: "https://github.com/itkadr-git/myrmidon/actions/runs/46/job/1",
+        startedAt: "2026-11-09T18:00:00Z",
+        completedAt: "2026-11-09T18:05:00Z",
+      },
+      {
+        id: 462,
+        name: "main-green",
+        status: "completed",
+        conclusion: "cancelled",
+        url: "https://github.com/itkadr-git/myrmidon/actions/runs/46/job/2",
+        startedAt: null,
+        completedAt: "2026-11-09T18:01:00Z",
+      },
+      {
+        id: 463,
+        name: "main-green",
+        status: "completed",
+        conclusion: "success",
+        url: "https://github.com/itkadr-git/myrmidon/actions/runs/46/job/3",
+        startedAt: null,
+        completedAt: "2026-11-09T18:10:00Z",
+      },
+    ];
+
+    const summary = summarizeCheckRuns(runs);
+    expect(summary.status).toBe("completed");
+    expect(summary.conclusion).toBe("success");
+    expect(summary.failedRuns).toBe(0);
+    expect(summary.failedJobs).toEqual([]);
+    expect(summary.optionalFailedJobs).toEqual([]);
+    expect(summary.totalRuns).toBe(2);
+    expect(summary.successfulRuns).toBe(2);
+    expect(summary.summary).toBe("success (2/2 passed)");
+  });
 });
 
 describe("fetchCommitCheckRuns", () => {
@@ -224,6 +543,7 @@ describe("fetchCommitCheckRuns", () => {
     const mockFetch = vi.fn().mockResolvedValue({
       ok: true,
       status: 200,
+      headers: new Headers(),
       json: async () => ({
         total_count: 1,
         check_runs: mockCheckRuns,
@@ -289,6 +609,7 @@ describe("fetchCommitCheckRuns", () => {
         return {
           ok: true,
           status: 200,
+          headers: new Headers(),
           json: async () => ({
             total_count: 101,
             check_runs: page1Runs,
@@ -299,13 +620,14 @@ describe("fetchCommitCheckRuns", () => {
         return {
           ok: true,
           status: 200,
+          headers: new Headers(),
           json: async () => ({
             total_count: 101,
             check_runs: page2Runs,
           }),
         };
       }
-      return { ok: false, status: 404 };
+      return { ok: false, status: 404, headers: new Headers() };
     });
 
     const result = await fetchCommitCheckRuns(
@@ -325,6 +647,7 @@ describe("fetchCommitCheckRuns", () => {
     const mockFetch404 = vi.fn().mockResolvedValue({
       ok: false,
       status: 404,
+      headers: new Headers(),
     });
 
     const result404 = await fetchCommitCheckRuns(
@@ -342,6 +665,7 @@ describe("fetchCommitCheckRuns", () => {
     const mockFetch403 = vi.fn().mockResolvedValue({
       ok: false,
       status: 403,
+      headers: new Headers(),
     });
 
     const result403 = await fetchCommitCheckRuns(
@@ -354,6 +678,20 @@ describe("fetchCommitCheckRuns", () => {
 
     expect(result403.authoritative).toBe(false);
     expect(result403.conclusion).toBe("denied");
+
+    const mockFetch403Pat = vi.fn().mockResolvedValue({
+      ok: false,
+      status: 403,
+      json: async () => ({ message: "Resource not accessible by personal access token" }),
+    });
+    const result403WithToken = await fetchCommitCheckRuns(
+      "itkadr-git",
+      "myrmidon-deploy",
+      "denied-sha",
+      "pat-token",
+      mockFetch403Pat as never,
+    );
+    expect(result403WithToken.summary).toBe("checks unavailable (token lacks checks/actions read)");
   });
 });
 
@@ -371,6 +709,7 @@ describe("createPullRequestCiResolver", () => {
         return {
           ok: true,
           status: 200,
+          headers: new Headers(),
           json: async () => ({
             state: "open",
             head: { sha: "head-sha-deploy-124", ref: "bot/OPE-9525" },
@@ -383,6 +722,7 @@ describe("createPullRequestCiResolver", () => {
         return {
           ok: true,
           status: 200,
+          headers: new Headers(),
           json: async () => ({
             total_count: 2,
             check_runs: [
@@ -408,7 +748,7 @@ describe("createPullRequestCiResolver", () => {
           }),
         };
       }
-      return { ok: false, status: 404 };
+      return { ok: false, status: 404, headers: new Headers() };
     });
 
     const resolver = createPullRequestCiResolver(mockDb as never, {
@@ -536,6 +876,7 @@ describe("createPullRequestCiResolver", () => {
       fetch: vi.fn().mockResolvedValue({
         ok: true,
         status: 200,
+        headers: new Headers(),
         json: async () => ({
           total_count: 1,
           check_runs: [
@@ -635,6 +976,71 @@ describe("createPullRequestCiResolver", () => {
     );
   });
 
+  it("renders live pullRequestsCi over stale wakePayload when provided", () => {
+    const markdown = buildPaperclipTaskMarkdown({
+      issue: {
+        id: "issue-1",
+        identifier: "OPE-12534",
+        title: "Reviewer CI test",
+        status: "in_review",
+        workMode: "standard",
+      },
+      wakePayload: {
+        pullRequestsCi: [
+          {
+            repository: "itkadr-git/myrmidon",
+            pullNumber: 2800,
+            headSha: "head-sha-123",
+            headRef: "bot/OPE-12534",
+            status: "completed",
+            conclusion: "failure",
+            summary: "failure (1 failed, 1 passed)",
+            authoritative: true,
+            checkedAt: "2026-11-09T18:00:00Z",
+            completedAt: "2026-11-09T18:00:00Z",
+            totalRuns: 2,
+            successfulRuns: 1,
+            failedRuns: 1,
+            failedJobs: [
+              {
+                id: 3,
+                name: "main-green",
+                conclusion: "failure",
+                url: "https://example.com/job/3",
+                completedAt: "2026-11-09T18:00:00Z",
+              },
+            ],
+            runs: [],
+          },
+        ],
+      },
+      pullRequestsCi: [
+        {
+          repository: "itkadr-git/myrmidon",
+          pullNumber: 2800,
+          headSha: "head-sha-123",
+          headRef: "bot/OPE-12534",
+          status: "completed",
+          conclusion: "success",
+          summary: "success (2/2 passed)",
+          authoritative: true,
+          checkedAt: "2026-11-09T18:30:00Z",
+          completedAt: "2026-11-09T18:30:00Z",
+          totalRuns: 2,
+          successfulRuns: 2,
+          failedRuns: 0,
+          failedJobs: [],
+          optionalFailedJobs: [],
+          runs: [],
+        },
+      ],
+    });
+
+    expect(markdown).toContain("- CI Result: SUCCESS (success (2/2 passed))");
+    expect(markdown).toContain("Checked at: 2026-11-09T18:30:00Z");
+    expect(markdown).not.toContain("CI Result: FAILURE");
+  });
+
   it("handles fetch network failure or timeout as non-authoritative unavailable without throwing", async () => {
     const mockDb = { select: vi.fn() };
     const mockFetch = vi.fn().mockRejectedValue(new Error("fetch timeout / abort"));
@@ -690,5 +1096,402 @@ describe("createPullRequestCiResolver", () => {
 
     const result = await withCiResolveDeadline(slowPromise, ["fallback"], 10);
     expect(result).toEqual(["fallback"]);
+  });
+
+  it("acceptance: rate limit 403 gives rate_limited, not denied", async () => {
+    const mockDb = { select: vi.fn() };
+    const mockFetch = vi.fn().mockImplementation(async (url: string) => {
+      if (url.includes("/pulls/10")) {
+        return {
+          ok: true,
+          status: 200,
+          headers: new Headers(),
+          json: async () => ({
+            state: "open",
+            head: { sha: "head-sha-rate-limit", ref: "bot/rate-limit" },
+            base: { ref: "main" },
+            draft: false,
+          }),
+        };
+      }
+      if (url.includes("/commits/head-sha-rate-limit/check-runs")) {
+        return {
+          ok: false,
+          status: 403,
+          headers: new Headers({
+            "x-ratelimit-remaining": "0",
+            "x-ratelimit-reset": "1800000000",
+          }),
+          clone: () => ({ text: async () => "API rate limit exceeded" }),
+          text: async () => "API rate limit exceeded",
+        };
+      }
+      return { ok: false, status: 404, headers: new Headers() };
+    });
+
+    const resolver = createPullRequestCiResolver(mockDb as never, {
+      fetch: mockFetch as never,
+      tokenProvider: async () => "token-123",
+      prResolver: async () => ({ headSha: "head-sha-rate-limit", headRef: "bot/rate-limit" }),
+    });
+
+    const res = await resolver.resolveForPullRequest("company-1", {
+      owner: "itkadr-git",
+      repo: "myrmidon",
+      number: 10,
+    });
+
+    expect(res.status).toBe("unavailable");
+    expect(res.conclusion).toBe("rate_limited");
+    expect(res.authoritative).toBe(false);
+    expect(res.summary).toContain("checks unavailable (GitHub rate limit until");
+  });
+
+  it("acceptance: response 200 with remaining=935 and reset in future executes request and does not mark rate_limited", async () => {
+    const mockDb = { select: vi.fn() };
+    let callsCount = 0;
+    const futureReset = String(Math.floor(Date.now() / 1000) + 1800);
+    const mockFetch = vi.fn().mockImplementation(async (url: string) => {
+      callsCount++;
+      if (url.includes("/pulls/10")) {
+        return {
+          ok: true,
+          status: 200,
+          headers: new Headers({
+            "x-ratelimit-remaining": "936",
+            "x-ratelimit-limit": "5000",
+            "x-ratelimit-reset": futureReset,
+          }),
+          json: async () => ({
+            state: "open",
+            head: { sha: "head-sha-200-test", ref: "bot/test-200" },
+            base: { ref: "main" },
+            draft: false,
+          }),
+        };
+      }
+      if (url.includes("/commits/head-sha-200-test/check-runs")) {
+        return {
+          ok: true,
+          status: 200,
+          headers: new Headers({
+            "x-ratelimit-remaining": "935",
+            "x-ratelimit-limit": "5000",
+            "x-ratelimit-reset": futureReset,
+          }),
+          json: async () => ({
+            total_count: 1,
+            check_runs: [
+              {
+                id: 1,
+                name: "test",
+                status: "completed",
+                conclusion: "success",
+                html_url: "https://github.com/itkadr-git/myrmidon/actions/runs/1/job/1",
+                started_at: "2026-11-05T04:00:00Z",
+                completed_at: "2026-11-05T04:05:00Z",
+              },
+            ],
+          }),
+        };
+      }
+      return { ok: false, status: 404, headers: new Headers() };
+    });
+
+    const resolver = createPullRequestCiResolver(mockDb as never, {
+      fetch: mockFetch as never,
+      tokenProvider: async () => "token-123",
+      prResolver: async () => ({ headSha: "head-sha-200-test", headRef: "bot/test-200" }),
+    });
+
+    const res = await resolver.resolveForPullRequest("company-1", {
+      owner: "itkadr-git",
+      repo: "myrmidon",
+      number: 10,
+    });
+
+    expect(callsCount).toBeGreaterThan(0);
+    expect(res.status).toBe("completed");
+    expect(res.conclusion).toBe("success");
+    expect(res.authoritative).toBe(true);
+    expect(res.summary).toContain("success (1/1 passed)");
+  });
+
+  it("acceptance: repeated call before reset does not call GitHub", async () => {
+    const mockDb = { select: vi.fn() };
+    let callsCount = 0;
+    const mockFetch = vi.fn().mockImplementation(async (url: string) => {
+      callsCount++;
+      if (url.includes("/pulls/10")) {
+        return {
+          ok: true,
+          status: 200,
+          headers: new Headers(),
+          json: async () => ({
+            state: "open",
+            head: { sha: "head-sha-repeat-test", ref: "bot/repeat" },
+            base: { ref: "main" },
+          }),
+        };
+      }
+      if (url.includes("/commits/head-sha-repeat-test/check-runs")) {
+        return {
+          ok: false,
+          status: 403,
+          headers: new Headers({
+            "x-ratelimit-remaining": "0",
+            "x-ratelimit-reset": String(Math.floor(Date.now() / 1000) + 3600),
+          }),
+          clone: () => ({ text: async () => "API rate limit exceeded" }),
+          text: async () => "API rate limit exceeded",
+        };
+      }
+      return { ok: false, status: 404, headers: new Headers() };
+    });
+
+    const resolver = createPullRequestCiResolver(mockDb as never, {
+      fetch: mockFetch as never,
+      tokenProvider: async () => "token-123",
+      prResolver: async () => ({ headSha: "head-sha-repeat-test", headRef: "bot/repeat" }),
+    });
+
+    const first = await resolver.resolveForPullRequest("company-1", {
+      owner: "itkadr-git",
+      repo: "myrmidon",
+      number: 10,
+    });
+    expect(first.conclusion).toBe("rate_limited");
+    expect(first.summary).toContain("checks unavailable (GitHub rate limit until");
+    const countAfterFirst = callsCount;
+
+    const second = await resolver.resolveForPullRequest("company-1", {
+      owner: "itkadr-git",
+      repo: "myrmidon",
+      number: 10,
+    });
+    expect(callsCount).toBe(countAfterFirst);
+    expect(second.conclusion).toBe("rate_limited");
+    expect(second.summary).toContain("checks unavailable (GitHub rate limit until");
+  });
+
+  it("acceptance: repeated call after previous fetch returns stale cached results marked as устарел", async () => {
+    const mockDb = { select: vi.fn() };
+    let callsCount = 0;
+    let failCheckRuns = false;
+    const mockFetch = vi.fn().mockImplementation(async (url: string) => {
+      callsCount++;
+      if (url.includes("/pulls/12")) {
+        return {
+          ok: true,
+          status: 200,
+          headers: new Headers(),
+          json: async () => ({
+            state: "open",
+            head: { sha: "head-sha-stale-cached", ref: "bot/stale" },
+            base: { ref: "main" },
+          }),
+        };
+      }
+      if (url.includes("/commits/head-sha-stale-cached/check-runs")) {
+        if (!failCheckRuns) {
+          return {
+            ok: true,
+            status: 200,
+            headers: new Headers({ etag: '"etag-init"' }),
+            json: async () => ({
+              total_count: 1,
+              check_runs: [
+                {
+                  id: 201,
+                  name: "ci-check",
+                  status: "in_progress",
+                  conclusion: null,
+                  started_at: "2026-11-03T10:00:00Z",
+                  completed_at: null,
+                },
+              ],
+            }),
+          };
+        }
+        return {
+          ok: false,
+          status: 403,
+          headers: new Headers({
+            "x-ratelimit-remaining": "0",
+            "x-ratelimit-reset": String(Math.floor(Date.now() / 1000) + 3600),
+          }),
+          clone: () => ({ text: async () => "API rate limit exceeded" }),
+          text: async () => "API rate limit exceeded",
+        };
+      }
+      return { ok: false, status: 404, headers: new Headers() };
+    });
+
+    const resolver = createPullRequestCiResolver(mockDb as never, {
+      fetch: mockFetch as never,
+      tokenProvider: async () => "token-123",
+      prResolver: async () => ({ headSha: "head-sha-stale-cached", headRef: "bot/stale" }),
+    });
+
+    const initial = await resolver.resolveForPullRequest("company-1", {
+      owner: "itkadr-git",
+      repo: "myrmidon",
+      number: 12,
+    });
+    expect(initial.status).toBe("in_progress");
+
+    failCheckRuns = true;
+    const now = vi.spyOn(Date, "now").mockReturnValue(Date.now() + 61_000);
+    try {
+      const second = await resolver.resolveForPullRequest("company-1", {
+        owner: "itkadr-git",
+        repo: "myrmidon",
+        number: 12,
+      });
+      expect(second.conclusion).toBe("rate_limited");
+      expect(second.summary).toContain("устарел");
+      expect(second.summary).toContain("GitHub rate limit until");
+    } finally {
+      now.mockRestore();
+    }
+  });
+
+  it("acceptance: completed CI for same head is taken from cache", async () => {
+    const mockDb = { select: vi.fn() };
+    let callsCount = 0;
+    const mockFetch = vi.fn().mockImplementation(async (url: string) => {
+      callsCount++;
+      if (url.includes("/pulls/11")) {
+        return {
+          ok: true,
+          status: 200,
+          headers: new Headers(),
+          json: async () => ({
+            state: "open",
+            head: { sha: "head-sha-completed-cached", ref: "bot/cached" },
+            base: { ref: "main" },
+          }),
+        };
+      }
+      if (url.includes("/commits/head-sha-completed-cached/check-runs")) {
+        return {
+          ok: true,
+          status: 200,
+          headers: new Headers({ etag: '"etag-c1"' }),
+          json: async () => ({
+            total_count: 1,
+            check_runs: [
+              {
+                id: 101,
+                name: "unit-test",
+                status: "completed",
+                conclusion: "success",
+                started_at: "2026-11-03T10:00:00Z",
+                completed_at: "2026-11-03T10:05:00Z",
+              },
+            ],
+          }),
+        };
+      }
+      return { ok: false, status: 404, headers: new Headers() };
+    });
+
+    const resolver = createPullRequestCiResolver(mockDb as never, {
+      fetch: mockFetch as never,
+      tokenProvider: async () => "token-123",
+    });
+
+    const res1 = await resolver.resolveForPullRequest("company-1", {
+      owner: "itkadr-git",
+      repo: "myrmidon",
+      number: 11,
+    });
+    expect(res1.status).toBe("completed");
+    expect(res1.conclusion).toBe("success");
+    const countAfterFirst = callsCount;
+
+    const res2 = await resolver.resolveForPullRequest("company-1", {
+      owner: "itkadr-git",
+      repo: "myrmidon",
+      number: 11,
+    });
+    expect(callsCount).toBe(countAfterFirst);
+    expect(res2).toEqual(res1);
+  });
+
+  it("acceptance: 304 with ETag returns cached result", async () => {
+    const mockDb = { select: vi.fn() };
+    let fetchRunsCalls = 0;
+    const mockFetch = vi.fn().mockImplementation(async (url: string, init?: { headers?: Record<string, string> }) => {
+      if (url.includes("/pulls/12")) {
+        return {
+          ok: true,
+          status: 200,
+          headers: new Headers({ etag: '"pr-etag-1"' }),
+          json: async () => ({
+            state: "open",
+            head: { sha: "head-sha-etag-304", ref: "bot/etag" },
+            base: { ref: "main" },
+          }),
+        };
+      }
+      if (url.includes("/commits/head-sha-etag-304/check-runs")) {
+        fetchRunsCalls++;
+        if (
+          (init?.headers?.["If-None-Match"] === '"etag-checkruns-1"' ||
+            init?.headers?.["if-none-match"] === '"etag-checkruns-1"')
+        ) {
+          return {
+            ok: false,
+            status: 304,
+            headers: new Headers({ etag: '"etag-checkruns-1"' }),
+          };
+        }
+        return {
+          ok: true,
+          status: 200,
+          headers: new Headers({ etag: '"etag-checkruns-1"' }),
+          json: async () => ({
+            total_count: 1,
+            check_runs: [
+              {
+                id: 201,
+                name: "lint",
+                status: "completed",
+                conclusion: "success",
+                started_at: "2026-11-03T10:00:00Z",
+                completed_at: "2026-11-03T10:05:00Z",
+              },
+            ],
+          }),
+        };
+      }
+      return { ok: false, status: 404, headers: new Headers() };
+    });
+
+    const resolver = createPullRequestCiResolver(mockDb as never, {
+      fetch: mockFetch as never,
+      tokenProvider: async () => "token-123",
+    });
+
+    const res1 = await resolver.resolveForPullRequest("company-1", {
+      owner: "itkadr-git",
+      repo: "myrmidon",
+      number: 12,
+    });
+    expect(res1.status).toBe("completed");
+    expect(res1.conclusion).toBe("success");
+    expect(fetchRunsCalls).toBe(1);
+
+    const runs304 = await fetchCommitCheckRuns(
+      "itkadr-git",
+      "myrmidon",
+      "head-sha-etag-304",
+      "token-123",
+      mockFetch as never,
+      { etag: '"etag-checkruns-1"' },
+    );
+    expect(runs304.summary).toBe("checks unchanged (not modified)");
+    expect(fetchRunsCalls).toBe(2);
   });
 });

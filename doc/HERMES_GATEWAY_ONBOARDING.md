@@ -15,7 +15,7 @@ Paperclip ships both Hermes adapters as built-ins:
 
 No Adapter manager installation is required for normal use. Adapter manager is
 only needed when you intentionally install an external
-`@paperclipai/hermes-paperclip-adapter` package to override or shadow a built-in
+`@myrmidon/hermes-paperclip-adapter` package to override or shadow a built-in
 adapter while developing the Hermes package. If the external override is paused
 or removed, Paperclip restores the built-in `hermes_local` / `hermes_gateway`
 adapter.
@@ -111,6 +111,28 @@ Important URL roles:
 - `PAPERCLIP_API_URL` / `PAPERCLIP_API_KEY` are injected runtime values for
   Hermes-originated Paperclip API calls after the agent is approved.
 
+## Telegram `/model` and `/think` Commands
+
+For `hermes_gateway` agents interacting via Telegram chat bridge:
+
+- **`/model` Command**: Lists models from the LLM gateway catalog. When the gateway answers, it uses the agent key's own allowlist from `/v1/models`; otherwise it falls back to the board's collected catalog. The reply indicates the source, groups models by provider family (e.g., `dashscope-*`, `zai-*`, `nous-*`), keeps the card's model and fallbacks on top, and respects the 30-model limit.
+- **Profile Application on Override**: Writing an override for `/model` or `/think` immediately applies the agent profile via `applyBotContainerNow` (`force: true`) without restarting the container. If application fails, the previous value is restored and the reason is returned. If the bot-containers runtime is absent, the outcome is `not_applicable` (non-blocking).
+- **`/think` Effort Policy Validation**: Validates the chosen thinking effort level against `effortsForModel` (e.g., GLM models accept `low`, `high`, `max`). Unaccepted levels are rejected with a message listing allowed levels.
+- **Localized Refusals**: Refusals report the adapter type and reason in the user's language.
+
+### Examples
+
+- **Switching model via Telegram**:
+  ```text
+  /model
+  ```
+  The gateway replies with available models grouped by provider family, allowing you to inspect or switch models for the agent session.
+- **Configuring thinking effort**:
+  ```text
+  /think high
+  ```
+  Sets the reasoning/thinking effort level for supported models (such as GLM models that accept `low`, `high`, `max`), validating the level against model policy and applying profile overrides immediately.
+
 ## Approve And Claim
 
 After Hermes submits the join request:
@@ -188,6 +210,6 @@ Use these entry points depending on who is driving setup:
   verification and `pnpm smoke:hermes-gateway-join` for an already-running
   gateway.
 - Adapter development override: Adapter manager can install
-  `@paperclipai/hermes-paperclip-adapter` as an external override, but normal
+  `@myrmidon/hermes-paperclip-adapter` as an external override, but normal
   operators should use the built-in `hermes_local` and `hermes_gateway`
   adapters.

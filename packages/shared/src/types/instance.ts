@@ -47,9 +47,13 @@ import type { ReviewRoutingSettings } from "../myrmidon-review-routing.js";
 import type { OwnerDeliverySettings } from "../myrmidon-owner-delivery.js";
 import type { OwnerActiveChannelSettings } from "../myrmidon-owner-active-channel.js";
 import type { ReviewReworkSettings } from "../myrmidon-review-rework.js";
+// myrmidon(1.7-GOAL-JUDGE): the goal-achievement judge settings stored in the same general settings row
+import type { GoalJudgeSettings } from "../myrmidon-goal-judge.js";
 // myrmidon(F16): the issue-list agent defaults shape stored in the general row.
 import type { IssueListAgentDefaultsSettings } from "../myrmidon-issue-list-agent-defaults.js";
 import type { BudgetEnforcementSettings } from "../myrmidon-budget-enforcement.js";
+// myrmidon(1.7 USERS-ADMIN-UI A): the self-registration switch.
+import type { AuthSelfSignUpSettings } from "../myrmidon-auth-self-signup.js";
 // myrmidon(1.7-AGENT-EXCHANGE-A): the discussion-room settings stored in the
 // same general settings row.
 import type { AgentExchangeSettings } from "../myrmidon-agent-exchange.js";
@@ -71,6 +75,8 @@ import type { BudgetLimitsSettings } from "../myrmidon-budget-limits.js";
 // myrmidon(DB-PERF-C-P4): the TTL of the tool gateway policy cache lives in the
 // same general settings row.
 import type { ToolPolicyCacheSettings } from "../myrmidon-tool-policy-cache.js";
+// myrmidon(1.6.7-TOKENS-TOOL-OUTPUT, OPE-10730): tool output limit for model-facing results
+import type { ToolOutputLimitSettings } from "../myrmidon-tool-output-limit.js";
 import type { ForagingIdleGateSettings } from "../myrmidon-foraging-idle-gate.js";
 import type { IdleStopSettings } from "../myrmidon-idle-stop.js";
 // myrmidon(1.7-REBRAND-F): the stored shape of the vendor-name gate setting.
@@ -112,6 +118,13 @@ export const DEFAULT_BACKUP_RETENTION: BackupRetentionPolicy = {
  */
 export type InstanceExecutionMode = "kubernetes" | "any";
 
+export type InstanceNumberFormat = "en-US" | "ru-RU";
+export type InstanceDateFormat = "ymd" | "dmy" | "mdy";
+
+export const DEFAULT_INSTANCE_TIME_ZONE = "Asia/Irkutsk";
+export const DEFAULT_INSTANCE_NUMBER_FORMAT: InstanceNumberFormat = "en-US";
+export const DEFAULT_INSTANCE_DATE_FORMAT: InstanceDateFormat = "ymd";
+
 export interface InstanceGeneralSettings {
   censorUsernameInLogs: boolean;
   keyboardShortcuts: boolean;
@@ -119,6 +132,21 @@ export interface InstanceGeneralSettings {
   taskDrain?: { draining: boolean; startedAt: string | null; expiresAt: string | null };
   feedbackDataSharingPreference: FeedbackDataSharingPreference;
   backupRetention: BackupRetentionPolicy;
+  /**
+   * myrmidon(1.7 UI-2.0 ЯЗЫК, ia-v2 §2.3 item 11): IANA time zone identifier.
+   * Validated via Intl.DateTimeFormat; default is "Asia/Irkutsk".
+   */
+  timeZone?: string;
+  /**
+   * myrmidon(1.7 UI-2.0 ЯЗЫК, ia-v2 §2.3 item 11): Number formatting locale ("en-US" or "ru-RU").
+   * Default is "en-US".
+   */
+  numberFormat?: InstanceNumberFormat;
+  /**
+   * myrmidon(1.7 UI-2.0 ЯЗЫК, ia-v2 §2.3 item 11): Date formatting order ("ymd", "dmy", or "mdy").
+   * Default is "ymd".
+   */
+  dateFormat?: InstanceDateFormat;
   /**
    * Execution policy. Absent/`"any"` = unrestricted; `"kubernetes"` forces the
    * Kubernetes sandbox provider and denies local/ssh execution.
@@ -371,6 +399,14 @@ export interface InstanceGeneralSettings {
    */
   reviewReworkJournal?: unknown[];
   /**
+   * myrmidon(1.7-GOAL-JUDGE): the goal-achievement judge model and master switch.
+   */
+  goalJudge?: GoalJudgeSettings;
+  /**
+   * myrmidon(1.7-GOAL-JUDGE): the change journal of the goal judge settings, newest first.
+   */
+  goalJudgeJournal?: unknown[];
+  /**
    * myrmidon(1.6.6 MONITORING D): the alert-recovery knobs — `holdMinutes`
    * (how long an alert must stay resolved before its task closes by itself)
    * and `recurrenceWindowMinutes` (how long a repeat of the same alert still
@@ -417,6 +453,21 @@ export interface InstanceGeneralSettings {
    * (packages/shared/src/validators/instance.ts).
    */
   budgetEnforcement?: BudgetEnforcementSettings;
+  /**
+   * myrmidon(1.7 USERS-ADMIN-UI A): the self-registration switch, changed from
+   * `GET`/`PATCH /api/myrmidon/auth-self-sign-up`. Absent means
+   * self-registration is off. Kept in sync with the validator of the same
+   * field (packages/shared/src/validators/instance.ts).
+   */
+  authSelfSignUp?: AuthSelfSignUpSettings;
+  /**
+   * myrmidon(1.7 USERS-ADMIN-UI A): the user blocklist — `userId` → blocked
+   * record — carried over vendor writes of instance_settings.general (see the
+   * preserve line in server/src/services/instance-settings.ts). Kept in sync
+   * with the validator of the same field
+   * (packages/shared/src/validators/instance.ts).
+   */
+  myrmidonAuthBlockedUsers?: Record<string, unknown>;
   /**
    * myrmidon(1.7-DEBATE-ASYM-A): the asymmetric-debates engine settings —
    * generator/critic/judge roles (cross-family validated), rounds and the
@@ -499,6 +550,11 @@ export interface InstanceGeneralSettings {
    * same field (packages/shared/src/validators/instance.ts).
    */
   toolPolicyCache?: ToolPolicyCacheSettings;
+  /**
+   * myrmidon(1.6.7-TOKENS-TOOL-OUTPUT, OPE-10730): model-facing tool output limit
+   */
+  toolOutputLimit?: ToolOutputLimitSettings;
+  toolOutputChars?: number;
   // myrmidon(1.6.3-FORAGING-IDLE-GATE): the stored idle-gate toggle.
   foragingIdleGate?: ForagingIdleGateSettings;
   /**

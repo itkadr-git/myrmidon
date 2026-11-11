@@ -131,12 +131,14 @@
       "status": "Owner · Web"
     },
     "screens": {
+      "commander": "Command Center",
       "decisions": "Decisions",
       "costs": "Costs",
       "agentOverview": "Agent overview",
       "runsQueue": "Runs and queue",
       "system": "System",
       "language": "Language",
+      "channels": "Channels",
       "placeholderTitle": "Not in this wave yet",
       "placeholderBody": "This screen is part of the UI 2.0 rollout plan and lands with its wave. The current data lives on the existing screen; this placeholder exists so the 2.0 frame and routing are real from day one.",
       "placeholderLegacyLink": "Continue to the current screen",
@@ -156,7 +158,8 @@
       "guards": "Guardrails",
       "castes": "Castes and models",
       "system": "System",
-      "language": "Language"
+      "language": "Language",
+      "channels": "Channels"
     },
     "shell": {
       "activeChannel": {
@@ -277,7 +280,8 @@
       "container-labels": "Container labels",
       "env": "Environment override",
       "manual": "Operator set",
-      "none": "Not visible from the board"
+      "none": "Not visible from the board",
+      "http-version": "HTTP version endpoint"
     },
     "schedule": "Schedule update",
     "dialog": {
@@ -290,7 +294,8 @@
       "cancel": "Cancel",
       "created": "Draft task created: {{identifier}}",
       "failed": "The task could not be created: {{message}}"
-    }
+    },
+    "stale": "desatualizado {{hours}}h"
   },
   "autonomy": {
     "title": "Autonomy matrix",
@@ -419,7 +424,9 @@
       "state": "State",
       "window5h": "5h Limit Window",
       "window7d": "7d Limit Window",
-      "lastOk": "Last OK"
+      "lastOk": "Last OK",
+      "lastError": "Last error",
+      "resetIn": "Resets in"
     },
     "litellmChannels": {
       "title": "LiteLLM Model Groups & Channels",
@@ -576,7 +583,13 @@
     "maxDuration": "Max duration, seconds",
     "maxDurationHint": "Longer recordings are rejected with audio_too_long.",
     "save": "Save settings",
-    "saving": "Saving..."
+    "saving": "Saving...",
+    "baseUrl": "Operator STT endpoint URL",
+    "baseUrlHint": "Only an operator-managed HTTP(S) endpoint; leave blank to inherit the instance default.",
+    "keySecret": "DashScope key (company secret)",
+    "deepgramKeySecret": "Deepgram key (company secret)",
+    "keepSecret": "Keep current secret selection",
+    "noSecret": "No secret selected"
   },
   "nests": {
     "title": "Nests",

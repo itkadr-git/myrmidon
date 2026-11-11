@@ -28,8 +28,61 @@ const OTHER_COMPANY = "33333333-3333-4333-8333-333333333333";
 
 const KEY_VALUE = "sk-test-provider-key-value-1234";
 
-const member = { type: "board", source: "session", userId: "user-a", isInstanceAdmin: false, companyIds: [COMPANY_ID] };
-const outsider = { type: "board", source: "session", userId: "user-b", isInstanceAdmin: false, companyIds: [OTHER_COMPANY] };
+const member = {
+  type: "board",
+  source: "session",
+  userId: "user-a",
+  isInstanceAdmin: false,
+  companyIds: [COMPANY_ID],
+  memberships: [{ companyId: COMPANY_ID, membershipRole: "admin", status: "active" }],
+};
+const ownerActor = {
+  type: "board",
+  source: "session",
+  userId: "user-owner",
+  isInstanceAdmin: false,
+  companyIds: [COMPANY_ID],
+  memberships: [{ companyId: COMPANY_ID, membershipRole: "owner", status: "active" }],
+};
+const plainMember = {
+  type: "board",
+  source: "session",
+  userId: "user-plain",
+  isInstanceAdmin: false,
+  companyIds: [COMPANY_ID],
+  memberships: [{ companyId: COMPANY_ID, membershipRole: "member", status: "active" }],
+};
+const operatorMember = {
+  type: "board",
+  source: "session",
+  userId: "user-operator",
+  isInstanceAdmin: false,
+  companyIds: [COMPANY_ID],
+  memberships: [{ companyId: COMPANY_ID, membershipRole: "operator", status: "active" }],
+};
+const viewerMember = {
+  type: "board",
+  source: "session",
+  userId: "user-viewer",
+  isInstanceAdmin: false,
+  companyIds: [COMPANY_ID],
+  memberships: [{ companyId: COMPANY_ID, membershipRole: "viewer", status: "active" }],
+};
+const instanceAdminActor = {
+  type: "board",
+  source: "session",
+  userId: "user-ia",
+  isInstanceAdmin: true,
+  companyIds: [COMPANY_ID],
+};
+const outsider = {
+  type: "board",
+  source: "session",
+  userId: "user-b",
+  isInstanceAdmin: false,
+  companyIds: [OTHER_COMPANY],
+  memberships: [{ companyId: OTHER_COMPANY, membershipRole: "admin", status: "active" }],
+};
 const agentActor = { type: "agent", source: "agent_key", agentId: "agent-a", companyId: COMPANY_ID, keyId: "key-a" };
 
 const providerView = (id: string): ModelProviderView => ({
@@ -81,6 +134,15 @@ function fakeService() {
       });
       return providerView(input.providerId);
     },
+    async captureKeyRotationSnapshot() {
+      return {
+        secretId: "secret-1",
+        secretValue: KEY_VALUE,
+        models: [],
+        keyValidatedAt: null,
+      };
+    },
+    async rollbackProviderKey() {},
     async patchProvider(input) {
       calls.push({ op: "patch", companyId: input.companyId, providerId: input.providerId, body: input.body });
       return providerView(input.providerId);
@@ -119,6 +181,10 @@ function fakeService() {
       calls.push({ op: "checkToolCallCompatibility", companyId: input.companyId, providerId: input.providerId });
       return providerView(input.providerId);
     },
+    async checkPackageExpirations(companyId, options) {
+      calls.push({ op: "checkPackageExpirations", companyId, body: options });
+      return [];
+    },
     async listChannels(companyId, providerId) {
       calls.push({ op: "listChannels", companyId, providerId });
       return {
@@ -147,6 +213,77 @@ function fakeService() {
     },
     listAvailableTypes: () => listAvailableModelProviderTypes(),
     syncPoolSignals: async () => [],
+    oauthBegin: async () => ({
+      verificationUri: "http://localhost:8895/auth",
+      userCode: "TEST-CODE",
+      accountNumber: 1,
+      expiresInSec: 900,
+      intervalSec: 5,
+    }),
+    oauthStatus: async () => ({
+      status: "pending",
+      accountNumber: 1,
+    }),
+    oauthComplete: async () => ({
+      ok: true,
+      accountNumber: 1,
+    }),
+    oauthRefresh: async () => ({
+      ok: true,
+      accountNumber: 1,
+    }),
+    async addAccount(companyId, providerId, input) {
+      calls.push({ op: "addAccount", companyId, providerId, body: input });
+      return {
+        n: 1,
+        label: input.label,
+        email: input.email ?? null,
+        plan: input.plan ?? "plus",
+        state: "active",
+        stateRu: "Активен",
+        isBanned: false,
+        isExhausted: false,
+        limitedUntil: null,
+        lastOk: null,
+        windows: {
+          primary: { usedPct: 0, windowMin: 300, resetsAt: null, limitReached: false },
+          secondary: { usedPct: 0, windowMin: 10080, resetsAt: null, limitReached: false },
+        },
+      };
+    },
+    async deleteAccount(companyId, providerId, accountNumber) {
+      calls.push({ op: "deleteAccount", companyId, providerId, body: { accountNumber } });
+    },
+    async startOAuth(companyId, providerId, input) {
+      calls.push({ op: "startOAuth", companyId, providerId, body: input });
+      return {
+        authUrl: "https://auth0.openai.com/authorize?fake=1",
+        userCode: "TEST-1234",
+        verificationUri: "https://auth0.openai.com/activate",
+        state: "fake-state-123",
+        expiresIn: 900,
+      };
+    },
+    async completeOAuth(companyId, providerId, input) {
+      calls.push({ op: "completeOAuth", companyId, providerId, body: input });
+      return {
+        n: 2,
+        label: input.label ?? "oauth-acc",
+        email: input.email ?? null,
+        plan: (input.plan ?? "pro").toLowerCase() as any,
+        state: "active",
+        stateRu: "Активен",
+        isBanned: false,
+        isExhausted: false,
+        limitedUntil: null,
+        lastOk: null,
+        windows: {
+          primary: { usedPct: 0, windowMin: 300, resetsAt: null, limitReached: false },
+          secondary: { usedPct: 0, windowMin: 10080, resetsAt: null, limitReached: false },
+        },
+      };
+    },
+
   };
   return { service, calls };
 }
@@ -176,7 +313,7 @@ function app(actor: unknown, options: { service?: ModelProviderService } = {}) {
 
 const base = `/api/myrmidon/companies/${COMPANY_ID}/model-providers`;
 
-describe("myrmidon(1.6.1 MODEL-PROVIDERS) routes: access", () => {
+describe("myrmidon(1.6.1 MODEL-PROVIDERS, 1.6.7 OPE-9852) routes: access", () => {
   it("denies another company on every route (403, no service call)", async () => {
     const { server, calls } = app(outsider);
     await request(server).get(base).expect(403);
@@ -189,25 +326,41 @@ describe("myrmidon(1.6.1 MODEL-PROVIDERS) routes: access", () => {
     expect(calls).toHaveLength(0);
   });
 
-  it("lets an agent of the company read providers, models and channels but not mutate", async () => {
+  it("denies ordinary company members, operators and viewers on every route (403, no service call)", async () => {
+    for (const actor of [plainMember, operatorMember, viewerMember]) {
+      const { server, calls } = app(actor);
+      await request(server).get(base).expect(403);
+      await request(server).get(`${base}/provider-1/models`).expect(403);
+      await request(server).get(`${base}/provider-1/channels`).expect(403);
+      await request(server).post(base).send({ type: "openai", name: "p", key: KEY_VALUE }).expect(403);
+      await request(server).patch(`${base}/provider-1`).send({ key: KEY_VALUE }).expect(403);
+      await request(server).delete(`${base}/provider-1`).expect(403);
+      await request(server).post(`${base}/provider-1/models`).send({ models: [] }).expect(403);
+      expect(calls).toHaveLength(0);
+    }
+  });
+
+  it("denies an agent actor on every route (403, no service call)", async () => {
     const { server, calls } = app(agentActor);
-    await request(server).get(base).expect(200);
-    await request(server).get(`${base}/provider-1/models`).expect(200);
-    await request(server).get(`${base}/provider-1/channels`).expect(200);
+    await request(server).get(base).expect(403);
+    await request(server).get(`${base}/provider-1/models`).expect(403);
+    await request(server).get(`${base}/provider-1/channels`).expect(403);
     await request(server).post(base).send({ type: "openai", name: "p", key: KEY_VALUE }).expect(403);
     await request(server).patch(`${base}/provider-1`).send({ key: KEY_VALUE }).expect(403);
     await request(server).delete(`${base}/provider-1`).expect(403);
     await request(server).post(`${base}/provider-1/models`).send({ models: [] }).expect(403);
-    expect(calls.map((c) => c.op)).toEqual(["list", "listModels", "listChannels"]);
+    expect(calls).toHaveLength(0);
   });
 
-  it("lets a board member of the company do everything", async () => {
-    const { server } = app(member);
-    await request(server).post(base).send({ type: "openai", name: "p", key: KEY_VALUE }).expect(201);
-    await request(server).get(base).expect(200);
-    await request(server).patch(`${base}/provider-1`).send({ key: KEY_VALUE }).expect(200);
-    await request(server).delete(`${base}/provider-1`).expect(204);
-    await request(server).post(`${base}/provider-1/models`).send({ models: [] }).expect(200);
+  it("lets a company admin, owner, and instance admin do everything", async () => {
+    for (const actor of [member, ownerActor, instanceAdminActor]) {
+      const { server } = app(actor);
+      await request(server).post(base).send({ type: "openai", name: "p", key: KEY_VALUE }).expect(201);
+      await request(server).get(base).expect(200);
+      await request(server).patch(`${base}/provider-1`).send({ key: KEY_VALUE }).expect(200);
+      await request(server).delete(`${base}/provider-1`).expect(204);
+      await request(server).post(`${base}/provider-1/models`).send({ models: [] }).expect(200);
+    }
   });
 });
 
@@ -354,6 +507,8 @@ describe("myrmidon(1.6.1 MODEL-PROVIDERS) connector boundary & availableTypes", 
     const getRes = await request(server).get(base).expect(200);
     expect(getRes.body.availableTypes).toBeDefined();
     expect(getRes.body.availableTypes).not.toContain("chatgpt-pool");
+    expect(getRes.body.availableTypes).not.toContain("antigravity-pool");
+    expect(getRes.body.availableTypes).not.toContain("google-ai-pool");
     expect(getRes.body.availableTypes).toContain("openai");
     expect(getRes.body.availableTypes).toContain("dashscope");
 
@@ -397,4 +552,51 @@ describe("myrmidon(1.6.1 MODEL-PROVIDERS) connector boundary & availableTypes", 
     expect(getRes2.body.availableTypes).not.toContain("chatgpt-pool");
   });
 });
+
+describe("myrmidon(1.6.6 OPE-10775) routes: Codex pool accounts and OAuth", () => {
+  it("allows adding an account to the pool with Plus/Pro/K-12 plan", async () => {
+    const { server, calls } = app(member);
+    const res = await request(server)
+      .post(`${base}/provider-1/channels`)
+      .send({ label: "test-plus", plan: "Plus", email: "test@example.com" })
+      .expect(201);
+
+    expect(res.body.ok).toBe(true);
+    expect(res.body.account.label).toBe("test-plus");
+    expect(calls.filter((c) => c.op === "addAccount")).toHaveLength(1);
+  });
+
+  it("allows deleting an account from the pool by account number", async () => {
+    const { server, calls } = app(member);
+    const res = await request(server)
+      .delete(`${base}/provider-1/channels/1`)
+      .expect(200);
+
+    expect(res.body.ok).toBe(true);
+    expect(calls.filter((c) => c.op === "deleteAccount")).toHaveLength(1);
+  });
+
+  it("handles OAuth start and complete endpoints", async () => {
+    const { server, calls } = app(member);
+
+    const startRes = await request(server)
+      .post(`${base}/provider-1/oauth/start`)
+      .send({ plan: "Pro", label: "my-pro-acc" })
+      .expect(200);
+
+    expect(startRes.body.state).toBe("fake-state-123");
+    expect(startRes.body.userCode).toBe("TEST-1234");
+    expect(calls.filter((c) => c.op === "startOAuth")).toHaveLength(1);
+
+    const completeRes = await request(server)
+      .post(`${base}/provider-1/oauth/complete`)
+      .send({ state: "fake-state-123", plan: "Pro", label: "my-pro-acc" })
+      .expect(201);
+
+    expect(completeRes.body.ok).toBe(true);
+    expect(completeRes.body.account.plan).toBe("pro");
+    expect(calls.filter((c) => c.op === "completeOAuth")).toHaveLength(1);
+  });
+});
+
 

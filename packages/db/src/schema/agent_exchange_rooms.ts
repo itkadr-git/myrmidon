@@ -60,7 +60,7 @@ export const agentExchangeRooms = pgTable(
     tokensUsed: integer("tokens_used").notNull().default(0),
     costCents: integer("cost_cents").notNull().default(0),
     currentRound: integer("current_round").notNull().default(0),
-    /** `owner_stop` when the stop valve ended the room. */
+    /** `owner_stop` | `participant_stop` when the stop valve ended the room. */
     stopReason: text("stop_reason"),
     /** The issue-document key (`exchange:<roomId>`) once the summary is written. */
     summaryDocumentKey: text("summary_document_key"),

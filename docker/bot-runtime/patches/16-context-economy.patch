@@ -1,42 +1,73 @@
 diff --git a/agent/context_economy.py b/agent/context_economy.py
 new file mode 100644
-index 0000000..09aea12
+index 0000000..0e508d4
 --- /dev/null
 +++ b/agent/context_economy.py
-@@ -0,0 +1,403 @@
-+"""myrmidon(G1): request-only trimming of the replayed history.
+@@ -0,0 +1,778 @@
++"""myrmidon(G1): input-token economy that keeps the provider prompt cache intact.
 +
-+Every model call re-sends the whole session, so what a long run piled up early keeps being paid for
-+on each later call. Two kinds of rows dominate that bill and are rarely needed in full again:
++Quotas are consumed by FRESH (uncached) input and by output, not by cached input, and a provider cache
++only hits on a byte-identical PREFIX. So anything that rewrites a message that was already sent turns the
++whole rest of the context into fresh input. This module therefore bounds what is NEW and what is
++REBUILT, and by default rewrites nothing in the middle of a session:
 +
-+A. wake messages. The board opens every run with a task package (identity, execution contract,
-+   task markdown, "Structured wake payload JSON"). A session that lives for many runs carries one such
-+   package per run, though only the newest describes the task as it is now. Every wake message except
-+   the last one is replaced, in the request copy only, by a short deterministic note naming its run,
-+   issue and wake reason.
-+B. stale tool results. A heavy tool result (command output, file or skill text) that is older than
-+   a protected tail of the transcript is replaced, in the request copy only, by a note carrying the
-+   tool, its argument summary, the size, a short head and tail and a reference. The tool
-+   ``read_stale_tool_result`` (tools/stale_result_tool.py) returns the full text for that reference.
++C. huge new tool results. A single result longer than ``tool_result_max_chars`` is stored and sent as
++   its first ``tool_result_head_chars`` and last ``tool_result_tail_chars`` characters plus a marker that
++   names the file holding the whole text and how to read the middle (tools/tool_result_storage.py calls
++   ``build_head_tail_message`` while the result is produced, before any provider has seen it).
++D. the compaction. A compaction already breaks the cache, so everything that makes it cheaper is free:
++   the summarizer is asked for at most ``compaction_summary_max_chars`` characters, its call carries
++   ``compaction_summary_max_tokens`` as the output limit, the mechanical sections appended to the summary
++   are bounded, board wake packages are not quoted into it, a summary that stopped on the output limit is
++   kept (cut at a line end) instead of failing the compression, and the system prompt and tool schemas
++   are NOT rebuilt (``compaction_keep_prefix``), so the prefix after the compaction is the prefix before
++   it (see agent/context_compressor.py and agent/conversation_compression.py).
 +
-+Both rewrite ONLY the per-call API copy built by ``build_api_messages``: the persisted transcript,
-+``state.db`` and compaction input stay byte-for-byte what they were, so a switch back to the old
-+behaviour needs nothing but the environment variable.
++A and B below rewrite earlier rows of the request, so they are OFF by default; they stay available behind
++config keys:
 +
-+Prompt-cache note: a replaced row changes the request bytes from that row on. Wake notes are fixed
-+once written (they depend on the wake text only). Tool results are replaced in steps: the boundary
-+below which results count as stale only moves once per ``HERMES_STALE_TOOL_STEP`` messages, so the
-+prefix stays stable between two moves instead of changing on every call.
++A. wake messages (``stale_wakes``). The board opens every run with a task package (identity, execution
++   contract, task markdown, "Structured wake payload JSON"). Every wake message except the last one is
++   replaced, in the request copy only, by a one-line deterministic note naming its run, issue and reason.
++B. stale tool results (``stale_tool_results``). A tool result of at least ``stale_tool_min_chars`` that lies
++   below a boundary moving in steps is replaced, in the request copy only, by a note with a reference;
++   the tool ``read_stale_tool_result`` (tools/stale_result_tool.py) returns the full text. Results that
++   carry instructions are never replaced, whatever their size: ``skill_view``, and ``read_file`` or a
++   terminal command that targets a SKILL.md or anything under a skills directory (an agent whose
++   instructions were stubbed reloaded them again and again, which costs more than keeping them).
 +
-+Switches (environment of the gateway process, read on every call, so no rebuild is needed):
++A and B change the request bytes from the first replaced row on; a wake note is fixed once written, and
++tool results are replaced in steps (the boundary moves once per ``stale_tool_step_messages`` messages).
 +
-+* ``HERMES_KEEP_STALE_WAKES=1``         - keep every wake message in full (turns A off).
-+* ``HERMES_KEEP_STALE_TOOL_RESULTS=1``  - keep every tool result in full (turns B off; the
-+                                          ``read_stale_tool_result`` tool disappears from the schema).
-+* ``HERMES_STALE_TOOL_MIN_CHARS``       - smallest result that is replaced (default 8000, about 2000 tokens).
-+* ``HERMES_STALE_TOOL_KEEP_MESSAGES``   - messages at the end of the transcript that are never touched (default 8).
-+* ``HERMES_STALE_TOOL_STEP``            - boundary granularity in messages (default 8; 1 = move on every call).
-+* ``HERMES_STALE_TOOL_EXEMPT``          - comma separated tool names whose results are never replaced.
++Settings: the ``context_economy:`` block of the profile's config.yaml (read on every call through
++``hermes_cli.config.load_config_readonly``, so no rebuild is needed). The environment variable
++``HERMES_CONTEXT_ECONOMY_<KEY>`` (key in upper case) overrides the file. A size of 0 switches that part
++off where noted. Keys and defaults:
++
++* ``tool_result_max_chars: 16000``           - C threshold; 0 = off (upstream limits apply again).
++* ``tool_result_head_chars: 8000``, ``tool_result_tail_chars: 4000`` - what C keeps.
++* ``tool_result_exempt: skill_view``         - comma separated tool names that C never shapes.
++* ``compaction_summary_max_chars: 8000``     - D size of the model-written summary; 0 = the size caps
++                                               of D off (the rest of D stays).
++* ``compaction_summary_max_tokens: 6144``    - D output limit sent with the summarizer call.
++* ``compaction_user_messages_max_chars: 6000``, ``compaction_user_message_max_chars: 1500`` - budgets
++                                               of the verbatim user messages in the summary.
++* ``compaction_anchor_max_chars: 2000``      - budget of the anchor index in the summary.
++* ``compaction_stub_wakes: true``            - wake packages become one-line notes in the summarizer
++                                               input and in the summary's verbatim user messages.
++* ``compaction_accept_truncated: true``      - keep a summary that stopped on the output limit.
++* ``compaction_keep_prefix: true``           - keep the system prompt and tool schemas at a compaction.
++* ``stale_wakes: false``                     - A on/off. ``HERMES_KEEP_STALE_WAKES=1`` forces it off.
++* ``stale_tool_results: false``              - B on/off (``read_stale_tool_result`` is in the tool schema
++                                               only while on). ``HERMES_KEEP_STALE_TOOL_RESULTS=1`` forces it off.
++* ``stale_tool_min_chars: 8000``             - smallest result B replaces (min 200); legacy variable
++                                               ``HERMES_STALE_TOOL_MIN_CHARS``.
++* ``stale_tool_keep_messages: 8``            - messages at the end of the transcript B never touches;
++                                               legacy variable ``HERMES_STALE_TOOL_KEEP_MESSAGES``.
++* ``stale_tool_step_messages: 8``            - B boundary granularity in messages; legacy variable
++                                               ``HERMES_STALE_TOOL_STEP``.
++* ``stale_tool_exempt: ""``                  - more tool names B never replaces; legacy variable
++                                               ``HERMES_STALE_TOOL_EXEMPT``.
 +"""
 +
 +from __future__ import annotations
@@ -46,59 +77,135 @@ index 0000000..09aea12
 +import logging
 +import os
 +import re
++import shlex
 +import threading
 +from collections import OrderedDict
-+from typing import Any, Dict, List, Optional, Tuple
++from typing import Any, Dict, List, NamedTuple, Optional, Tuple
 +
 +logger = logging.getLogger(__name__)
 +
++CONFIG_BLOCK = "context_economy"
++ENV_PREFIX = "HERMES_CONTEXT_ECONOMY_"
 +ENV_KEEP_WAKES = "HERMES_KEEP_STALE_WAKES"
 +ENV_KEEP_TOOL_RESULTS = "HERMES_KEEP_STALE_TOOL_RESULTS"
-+ENV_TOOL_MIN_CHARS = "HERMES_STALE_TOOL_MIN_CHARS"
-+ENV_TOOL_KEEP_MESSAGES = "HERMES_STALE_TOOL_KEEP_MESSAGES"
-+ENV_TOOL_STEP = "HERMES_STALE_TOOL_STEP"
-+ENV_TOOL_EXEMPT = "HERMES_STALE_TOOL_EXEMPT"
-+
-+DEFAULT_TOOL_MIN_CHARS = 8000
-+DEFAULT_TOOL_KEEP_MESSAGES = 8
-+DEFAULT_TOOL_STEP = 8
 +READ_TOOL_NAME = "read_stale_tool_result"
++
++DEFAULTS: Dict[str, Any] = {
++    "stale_wakes": False,
++    "stale_tool_results": False,
++    "stale_tool_min_chars": 8000,
++    "stale_tool_keep_messages": 8,
++    "stale_tool_step_messages": 8,
++    "stale_tool_exempt": "",
++    "tool_result_max_chars": 16000,
++    "tool_result_head_chars": 8000,
++    "tool_result_tail_chars": 4000,
++    "tool_result_exempt": "skill_view",
++    "compaction_summary_max_chars": 8000,
++    "compaction_summary_max_tokens": 6144,
++    "compaction_user_messages_max_chars": 6000,
++    "compaction_user_message_max_chars": 1500,
++    "compaction_anchor_max_chars": 2000,
++    "compaction_stub_wakes": True,
++    "compaction_accept_truncated": True,
++    "compaction_keep_prefix": True,
++}
++
++# Variables that existed before the settings moved into config.yaml keep working.
++_LEGACY_ENV = {
++    "stale_tool_min_chars": "HERMES_STALE_TOOL_MIN_CHARS",
++    "stale_tool_keep_messages": "HERMES_STALE_TOOL_KEEP_MESSAGES",
++    "stale_tool_step_messages": "HERMES_STALE_TOOL_STEP",
++    "stale_tool_exempt": "HERMES_STALE_TOOL_EXEMPT",
++}
 +
 +# Characters of the original shown at each end of a tool-result note.
 +_EXCERPT_CHARS = 240
 +_ARGS_PREVIEW_CHARS = 160
-+# Never replace the result of the reader itself with a note that points back at the reader's own text.
++# Results B never replaces: the reader's own (a note pointing back at the reader's own text would loop)
++# and instruction loads.
 +_NEVER_STUB_TOOLS = frozenset({READ_TOOL_NAME})
++_INSTRUCTION_TOOLS = frozenset({"skill_view"})
++# Tools whose target (the path read, the command run) can point at a skill file.
++_TARGET_TOOLS = frozenset({"read_file", "terminal"})
 +_UNTRUSTED_PREFIX = "<untrusted_tool_result"
++_PERSISTED_TAG = "<persisted-output>"
++_PERSISTED_PATH_RE = re.compile(r"^Full output saved to: (.+)$", re.MULTILINE)
 +
 +_TRUTHY = frozenset({"1", "true", "yes", "on"})
++_FALSY = frozenset({"0", "false", "no", "off"})
++
++
++# ---------------------------------------------------------------------------
++# Settings
++# ---------------------------------------------------------------------------
++
++def _config_block() -> Dict[str, Any]:
++    """The ``context_economy:`` block of config.yaml ({} when absent or unreadable)."""
++    try:
++        from hermes_cli.config import load_config_readonly
++
++        data = load_config_readonly()
++        block = data.get(CONFIG_BLOCK) if isinstance(data, dict) else None
++        return block if isinstance(block, dict) else {}
++    except Exception:
++        return {}
++
++
++def _raw_setting(key: str, block: Dict[str, Any]) -> Any:
++    for name in (ENV_PREFIX + key.upper(), _LEGACY_ENV.get(key)):
++        if name:
++            value = (os.environ.get(name) or "").strip()
++            if value:
++                return value
++    return block.get(key)
++
++
++def setting_int(key: str, minimum: int = 0, block: Optional[Dict[str, Any]] = None) -> int:
++    default = int(DEFAULTS[key])
++    raw = _raw_setting(key, _config_block() if block is None else block)
++    if raw is None or isinstance(raw, bool):
++        return default
++    try:
++        value = int(raw) if isinstance(raw, (int, float)) else int(str(raw).strip())
++    except (ValueError, TypeError, OverflowError):
++        return default
++    return max(minimum, value)
++
++
++def setting_bool(key: str, block: Optional[Dict[str, Any]] = None) -> bool:
++    default = bool(DEFAULTS[key])
++    raw = _raw_setting(key, _config_block() if block is None else block)
++    if isinstance(raw, bool):
++        return raw
++    if raw is None:
++        return default
++    text = str(raw).strip().lower()
++    if text in _TRUTHY:
++        return True
++    if text in _FALSY:
++        return False
++    return default
++
++
++def setting_names(key: str, block: Optional[Dict[str, Any]] = None) -> frozenset:
++    raw = _raw_setting(key, _config_block() if block is None else block)
++    if raw is None:
++        raw = DEFAULTS[key]
++    parts = raw if isinstance(raw, (list, tuple)) else str(raw).split(",")
++    return frozenset(str(part).strip() for part in parts if str(part).strip())
 +
 +
 +def _env_on(name: str) -> bool:
 +    return (os.environ.get(name) or "").strip().lower() in _TRUTHY
 +
 +
-+def stale_wakes_enabled() -> bool:
-+    return not _env_on(ENV_KEEP_WAKES)
++def stale_wakes_enabled(block: Optional[Dict[str, Any]] = None) -> bool:
++    return not _env_on(ENV_KEEP_WAKES) and setting_bool("stale_wakes", block)
 +
 +
-+def stale_tool_results_enabled() -> bool:
-+    return not _env_on(ENV_KEEP_TOOL_RESULTS)
-+
-+
-+def _env_int(name: str, default: int, minimum: int) -> int:
-+    raw = (os.environ.get(name) or "").strip()
-+    if not raw:
-+        return default
-+    try:
-+        return max(minimum, int(raw))
-+    except ValueError:
-+        return default
-+
-+
-+def _exempt_tools() -> frozenset:
-+    raw = os.environ.get(ENV_TOOL_EXEMPT) or ""
-+    return frozenset(part.strip() for part in raw.split(",") if part.strip())
++def stale_tool_results_enabled(block: Optional[Dict[str, Any]] = None) -> bool:
++    return not _env_on(ENV_KEEP_TOOL_RESULTS) and setting_bool("stale_tool_results", block)
 +
 +
 +# ---------------------------------------------------------------------------
@@ -152,11 +259,26 @@ index 0000000..09aea12
 +
 +
 +# ---------------------------------------------------------------------------
-+# A: wake messages
++# Wake messages (A, and the compaction input)
 +# ---------------------------------------------------------------------------
 +
-+_WAKE_IDENTITY = "Paperclip runtime identity:"
-+_WAKE_MARKERS = ("Structured wake payload JSON:", "Execution contract:")
++# The adapter opens every wake message with the identity block. The head was "Paperclip runtime
++# identity:" until the product rename and is "Myrmidon runtime identity:" now; sessions that started
++# before the rename still carry the old head, so both are recognised. (Measure A recognised only the old
++# head and never fired after the rename: its test fixture was frozen at the old shape.)
++_WAKE_IDENTITIES = ("Myrmidon runtime identity:", "Paperclip runtime identity:")
++_WAKE_MARKERS = (
++    "- Run ID:",
++    "Execution contract:",
++    "Structured wake payload JSON:",
++    "## Myrmidon Wake Payload",
++    "## Myrmidon Resume Delta",
++    "## Paperclip Wake Payload",
++    "## Paperclip Resume Delta",
++    "## Current request and continuation context",
++)
++# The identity block sits at the very start of the message (after one greeting line).
++_WAKE_HEAD_CHARS = 1500
 +_WAKE_JSON_RE = re.compile(r"Structured wake payload JSON:\s*```json\s*(\{.*?\})\s*```", re.DOTALL)
 +_RUN_ID_RE = re.compile(r"^- Run ID:\s*(\S+)", re.MULTILINE)
 +
@@ -166,14 +288,20 @@ index 0000000..09aea12
 +    return content if isinstance(content, str) else None
 +
 +
-+def is_wake_message(msg: Any) -> bool:
-+    """A user row that is a board wake package (identity head plus a contract or payload section)."""
-+    if not isinstance(msg, dict) or msg.get("role") != "user":
++def is_wake_text(text: Any) -> bool:
++    """True for the text of a board wake package (identity head plus a contract, payload or run line)."""
++    if not isinstance(text, str) or not text:
 +        return False
-+    text = _message_text(msg)
-+    if not text or _WAKE_IDENTITY not in text:
++    if not any(identity in text[:_WAKE_HEAD_CHARS] for identity in _WAKE_IDENTITIES):
 +        return False
 +    return any(marker in text for marker in _WAKE_MARKERS)
++
++
++def is_wake_message(msg: Any) -> bool:
++    """A user row that is a board wake package."""
++    if not isinstance(msg, dict) or msg.get("role") != "user":
++        return False
++    return is_wake_text(_message_text(msg))
 +
 +
 +def _clip(value: Any, limit: int) -> str:
@@ -212,10 +340,9 @@ index 0000000..09aea12
 +    return facts
 +
 +
-+def build_wake_stub(text: str, ordinal: int) -> str:
-+    """Deterministic note for a superseded wake message (same input, same bytes, on every call)."""
++def build_wake_stub(text: str, ordinal: Optional[int], for_summary: bool = False) -> str:
++    """Deterministic one-line note for a superseded wake message (same input, same bytes, on every call)."""
 +    facts = _wake_facts(text)
-+    parts = [f"[Earlier wake message #{ordinal} of this session, superseded and left out to save context."]
 +    detail = []
 +    if "run" in facts:
 +        detail.append(f"run {facts['run']}")
@@ -226,13 +353,18 @@ index 0000000..09aea12
 +        detail.append(f"issue id {facts['issue_id']}")
 +    if "reason" in facts:
 +        detail.append(f"wake reason: {facts['reason']}")
-+    if detail:
-+        parts.append("It was " + "; ".join(detail) + ".")
-+    parts.append(
-+        "The newest wake message below carries the task context as it stands now; read the issue and "
-+        "its comments through the Paperclip API when you need the older history.]"
-+    )
-+    return " ".join(parts)
++    if for_summary:
++        head = "[Board wake message, left out of this summary: the newest wake message of the conversation carries the task context."
++        tail = " Read the issue and its comments through the Paperclip API when you need the history.]"
++    else:
++        number = f" #{ordinal}" if ordinal is not None else ""
++        head = f"[Earlier wake message{number} of this session, superseded and left out to save context."
++        tail = (
++            " The newest wake message below carries the task context as it stands now; read the issue and "
++            "its comments through the Paperclip API when you need the older history.]"
++        )
++    body = (" It was " + "; ".join(detail) + ".") if detail else ""
++    return head + body + tail
 +
 +
 +def _stub_stale_wakes(api_messages: List[Dict[str, Any]]) -> Tuple[int, int]:
@@ -258,11 +390,12 @@ index 0000000..09aea12
 +# ---------------------------------------------------------------------------
 +
 +_ARG_KEYS = ("command", "path", "file_path", "name", "query", "url", "pattern", "code", "action")
++_TARGET_KEYS = ("path", "file_path", "command")
 +
 +
-+def _call_index(api_messages: List[Dict[str, Any]]) -> Dict[str, Tuple[str, str]]:
-+    """tool_call_id -> (tool name, argument summary) from the assistant rows."""
-+    index: Dict[str, Tuple[str, str]] = {}
++def _call_index(api_messages: List[Dict[str, Any]]) -> Dict[str, Tuple[str, str, str]]:
++    """tool_call_id -> (tool name, argument summary, target) from the assistant rows."""
++    index: Dict[str, Tuple[str, str, str]] = {}
 +    for msg in api_messages:
 +        if not isinstance(msg, dict) or msg.get("role") != "assistant":
 +            continue
@@ -273,27 +406,48 @@ index 0000000..09aea12
 +            fn = call.get("function") if isinstance(call.get("function"), dict) else {}
 +            name = fn.get("name") or call.get("name") or ""
 +            if call_id:
-+                index[str(call_id)] = (str(name), _args_summary(fn.get("arguments")))
++                summary, path = _args_summary(fn.get("arguments"))
++                index[str(call_id)] = (str(name), summary, path)
 +    return index
 +
 +
-+def _args_summary(raw: Any) -> str:
++def _args_summary(raw: Any) -> Tuple[str, str]:
++    """``(summary, target)`` of a tool call's arguments; ``target`` is the path read or the command run
++    ("" when there is none)."""
 +    args = raw
 +    if isinstance(raw, str):
 +        try:
 +            args = json.loads(raw)
 +        except ValueError:
-+            return _clip(raw, _ARGS_PREVIEW_CHARS)
++            return _clip(raw, _ARGS_PREVIEW_CHARS), ""
 +    if not isinstance(args, dict):
-+        return ""
++        return "", ""
++    target = ""
++    for key in _TARGET_KEYS:
++        value = args.get(key)
++        if isinstance(value, str) and value.strip():
++            target = value.strip()
++            break
 +    for key in _ARG_KEYS:
 +        value = args.get(key)
 +        if isinstance(value, str) and value.strip():
-+            return f"{key}={_clip(value, _ARGS_PREVIEW_CHARS)}"
++            return f"{key}={_clip(value, _ARGS_PREVIEW_CHARS)}", target
 +    for key, value in args.items():
 +        if isinstance(value, str) and value.strip():
-+            return f"{key}={_clip(value, _ARGS_PREVIEW_CHARS)}"
-+    return ""
++            return f"{key}={_clip(value, _ARGS_PREVIEW_CHARS)}", target
++    return "", target
++
++
++def is_instruction_load(tool_name: str, target: str = "") -> bool:
++    """True for a result that carries instructions the agent works from: a ``skill_view`` result, or a
++    ``read_file`` (or a terminal command such as ``cat``) that targets a SKILL.md or anything under a
++    skills directory."""
++    if tool_name in _INSTRUCTION_TOOLS:
++        return True
++    if tool_name in _TARGET_TOOLS and target:
++        normal = target.replace("\\", "/")
++        return "skill.md" in normal.lower() or "/skills/" in normal or normal.startswith("skills/")
++    return False
 +
 +
 +def build_tool_stub(name: str, args: str, content: str, ref: str, reader_available: bool) -> str:
@@ -304,6 +458,14 @@ index 0000000..09aea12
 +        head += f" ({args})"
 +    head += f", {len(content)} chars, ref {ref}."
 +    lines = [head]
++    persisted = _PERSISTED_PATH_RE.search(content) if _PERSISTED_TAG in content else None
++    if persisted:
++        # The result was already spilled to a file; the note must keep the way to that file.
++        lines.append(
++            f"Full output file: {persisted.group(1).strip()} - read it with read_file (offset/limit), "
++            "or repeat the original call with a filter.]"
++        )
++        return "\n".join(lines)
 +    if not content.lstrip().startswith(_UNTRUSTED_PREFIX):
 +        # Untrusted external text is never quoted into a note that sits outside its trust boundary.
 +        lines.append("Start: " + _clip(content[:_EXCERPT_CHARS * 2], _EXCERPT_CHARS))
@@ -320,14 +482,14 @@ index 0000000..09aea12
 +
 +    ``total - keep`` rows qualify at most; rounding down to a multiple of ``step`` keeps the boundary,
 +    and with it the request prefix, unchanged between two moves."""
-+    return ((max(0, total - keep)) // step) * step
++    return ((max(0, total - keep)) // max(1, step)) * max(1, step)
 +
 +
-+def _stub_stale_tool_results(agent: Any, api_messages: List[Dict[str, Any]]) -> Tuple[int, int]:
-+    min_chars = _env_int(ENV_TOOL_MIN_CHARS, DEFAULT_TOOL_MIN_CHARS, 200)
-+    keep = _env_int(ENV_TOOL_KEEP_MESSAGES, DEFAULT_TOOL_KEEP_MESSAGES, 1)
-+    step = _env_int(ENV_TOOL_STEP, DEFAULT_TOOL_STEP, 1)
-+    exempt = _exempt_tools()
++def _stub_stale_tool_results(agent: Any, api_messages: List[Dict[str, Any]], block: Dict[str, Any]) -> Tuple[int, int]:
++    min_chars = setting_int("stale_tool_min_chars", 200, block)
++    keep = setting_int("stale_tool_keep_messages", 1, block)
++    step = setting_int("stale_tool_step_messages", 1, block)
++    exempt = setting_names("stale_tool_exempt", block)
 +    boundary = _stale_boundary(len(api_messages), keep, step)
 +    session_id = getattr(agent, "session_id", None)
 +    if boundary <= 0:
@@ -346,9 +508,9 @@ index 0000000..09aea12
 +        content = msg.get("content")
 +        if not isinstance(content, str) or len(content) < min_chars:
 +            continue
-+        call_name, call_args = calls.get(str(msg.get("tool_call_id") or ""), ("", ""))
++        call_name, call_args, call_target = calls.get(str(msg.get("tool_call_id") or ""), ("", "", ""))
 +        name = str(msg.get("tool_name") or msg.get("name") or call_name or "")
-+        if name in _NEVER_STUB_TOOLS or name in exempt:
++        if name in _NEVER_STUB_TOOLS or name in exempt or is_instruction_load(name, call_target):
 +            continue
 +        ref = result_ref(content)
 +        stub = build_tool_stub(name, call_args, content, ref, reader_available)
@@ -363,17 +525,230 @@ index 0000000..09aea12
 +
 +
 +# ---------------------------------------------------------------------------
-+# Entry point
++# C: huge new tool results (head + tail)
++# ---------------------------------------------------------------------------
++
++class ToolResultLimits(NamedTuple):
++    max_chars: int
++    head_chars: int
++    tail_chars: int
++
++
++def tool_result_limits(block: Optional[Dict[str, Any]] = None) -> Optional[ToolResultLimits]:
++    """Limits of C, or None when C is off (``tool_result_max_chars`` 0)."""
++    if block is None:
++        block = _config_block()
++    max_chars = setting_int("tool_result_max_chars", 0, block)
++    if max_chars <= 0:
++        return None
++    head = setting_int("tool_result_head_chars", 1, block)
++    tail = setting_int("tool_result_tail_chars", 0, block)
++    room = int(max_chars * 0.75)  # what is kept must stay clearly below what triggers the cut
++    if head + tail > room:
++        scale = room / float(head + tail)
++        head = max(1, int(head * scale))
++        tail = int(tail * scale)
++    return ToolResultLimits(max_chars, head, tail)
++
++
++def effective_tool_result_threshold(threshold: Any, tool_name: str) -> Tuple[Any, Optional[ToolResultLimits]]:
++    """``(threshold, limits)`` for ``maybe_persist_tool_result``.
++
++    A finite positive threshold is lowered to ``tool_result_max_chars``; an infinite one (a tool that must
++    never be persisted, e.g. read_file) and 0 (the per-turn budget pass forces persistence) are kept.
++    ``limits`` is None when C is off or the tool is exempt, which gives the upstream behaviour."""
++    block = _config_block()
++    limits = tool_result_limits(block)
++    if limits is None or tool_name in setting_names("tool_result_exempt", block):
++        return threshold, None
++    if threshold == float("inf") or threshold <= 0:
++        return threshold, limits
++    return min(threshold, limits.max_chars), limits
++
++
++def _human_size(chars: int) -> str:
++    kb = chars / 1024
++    return f"{kb / 1024:.1f} MB" if kb >= 1024 else f"{kb:.1f} KB"
++
++
++def _split_head_tail(content: str, head_chars: int, tail_chars: int) -> Tuple[int, int]:
++    """``(head_end, tail_start)``: cut at a line end when one is close to the nominal cut."""
++    total = len(content)
++    head_end = min(head_chars, total)
++    newline = content.rfind("\n", 0, head_end)
++    if newline >= int(head_end * 0.8):
++        head_end = newline + 1
++    tail_start = max(head_end, total - tail_chars)
++    newline = content.find("\n", tail_start, total)
++    if newline != -1 and newline - tail_start <= int(tail_chars * 0.2):
++        tail_start = newline + 1
++    return head_end, max(head_end, tail_start)
++
++
++def build_head_tail_message(content: str, file_path: Optional[str], limits: ToolResultLimits) -> str:
++    """The text that replaces a result longer than ``limits.max_chars``: head, marker, tail.
++
++    With ``file_path`` the marker is a <persisted-output> block (the same tag and "Full output saved to:"
++    line the upstream persistence uses, so the budget pass and the stub guard recognise it) and tells the
++    model how to read the middle; without it the marker only says what was left out."""
++    total = len(content)
++    head_end, tail_start = _split_head_tail(content, limits.head_chars, limits.tail_chars)
++    head, middle, tail = content[:head_end], content[head_end:tail_start], content[tail_start:]
++    first_line = content.count("\n", 0, head_end) + 1
++    last_line = content.count("\n", 0, max(head_end, tail_start - 1)) + 1
++    omitted = len(middle)
++    if not file_path:
++        return (
++            head
++            + f"\n\n[... {omitted:,} of {total:,} characters omitted (lines {first_line}-{last_line}); the full "
++            "output could not be saved. Run the original command again with a filter (grep, head, tail -n, "
++            "jq) to see the omitted part. ...]\n\n"
++            + tail
++        )
++    skip_bytes = len(head.encode("utf-8", "replace"))
++    middle_bytes = len(middle.encode("utf-8", "replace"))
++    quoted = shlex.quote(file_path)
++    return (
++        f"{_PERSISTED_TAG}\n"
++        f"This tool result was too large ({total:,} characters, {_human_size(total)}). Only its first "
++        f"{len(head):,} and last {len(tail):,} characters are shown here; {omitted:,} characters in the "
++        f"middle (lines {first_line}-{last_line}) are left out.\n"
++        f"Full output saved to: {file_path}\n"
++        f"To read the middle: read_file with path {file_path}, offset={first_line} (a 1-based line number) and "
++        f"limit=500, then continue with the next offset; or by bytes: tail -c +{skip_bytes + 1} {quoted} | "
++        f"head -c {middle_bytes}. search_files finds a string in the saved file. When only a part matters, "
++        "run the original command again with a filter (grep, head, tail -n, jq). Do NOT re-request the same "
++        "data from the remote API: the full result is already on disk.\n\n"
++        f"[first {len(head):,} characters]\n{head}\n"
++        f"[... {omitted:,} characters omitted: lines {first_line}-{last_line} of the saved file ...]\n"
++        f"{tail}\n[end of the last {len(tail):,} characters]\n"
++        f"</persisted-output>"
++    )
++
++
++# ---------------------------------------------------------------------------
++# D: compaction
++# ---------------------------------------------------------------------------
++
++_CUT_NOTE = "\n[summary cut at the size limit; recover details with session_search]"
++_LENGTH_CUT_NOTE = "\n[summary cut at the model's output limit; recover details with session_search]"
++
++
++def compaction_keeps_prefix() -> bool:
++    """True when a compaction must keep the system prompt and the tool schemas as they are."""
++    return setting_bool("compaction_keep_prefix")
++
++
++def summary_cap_active() -> bool:
++    return setting_int("compaction_summary_max_chars") > 0
++
++
++def capped_summary_tokens(budget: int) -> int:
++    """The summarizer's token target, held to the character cap (about four characters per token)."""
++    limit = setting_int("compaction_summary_max_chars")
++    if limit <= 0:
++        return budget
++    return min(budget, max(200, limit // 4))
++
++
++def summary_cap_instruction() -> str:
++    """Sentence appended to the summarizer's size target ("" when the cap is off)."""
++    limit = setting_int("compaction_summary_max_chars")
++    if limit <= 0:
++        return ""
++    return (
++        f" HARD LIMIT: the whole summary must stay under {limit} characters - a few precise lines per "
++        "section, no long quotes, no repeated detail."
++    )
++
++
++def summary_max_output_tokens() -> int:
++    """Output limit for the summarizer call (0 = send none, the upstream behaviour)."""
++    if not summary_cap_active():
++        return 0
++    return setting_int("compaction_summary_max_tokens")
++
++
++def accept_truncated_summary() -> bool:
++    return setting_bool("compaction_accept_truncated")
++
++
++def cap_summary_text(text: str, length_stop: bool = False) -> str:
++    """Hold the model-written summary to ``compaction_summary_max_chars`` and mark a length stop.
++
++    Cuts at a line end and appends a short note; text within the limit passes unchanged unless the
++    generation stopped on the output limit, where the unfinished last line is dropped and the note is added."""
++    limit = setting_int("compaction_summary_max_chars")
++    note = _LENGTH_CUT_NOTE if length_stop else _CUT_NOTE
++    if limit > 0 and len(text) > limit:
++        room = max(1, limit - len(note))
++        cut = text[:room]
++        newline = cut.rfind("\n")
++        if newline >= int(room * 0.6):
++            cut = cut[:newline]
++        return cut.rstrip() + note
++    if length_stop:
++        newline = text.rfind("\n")
++        if newline >= int(len(text) * 0.8):
++            text = text[:newline]
++        return text.rstrip() + note
++    return text
++
++
++def lean_user_message_limits(budget: int, per_message: int) -> Tuple[int, int]:
++    """``(total, per message)`` characters of the verbatim user messages in the summary."""
++    if not summary_cap_active():
++        return budget, per_message
++    return (
++        setting_int("compaction_user_messages_max_chars", 1),
++        setting_int("compaction_user_message_max_chars", 1),
++    )
++
++
++def lean_anchor_budget(budget: int) -> int:
++    if not summary_cap_active():
++        return budget
++    return setting_int("compaction_anchor_max_chars")
++
++
++def wake_note_for_summary(text: str) -> str:
++    """A board wake package quoted into the summary is replaced by a one-line note."""
++    if setting_bool("compaction_stub_wakes") and is_wake_text(text):
++        return build_wake_stub(text, None, for_summary=True)
++    return text
++
++
++def stub_superseded_wakes(turns: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
++    """The summarizer's input without the wake packages that a later wake in the same input supersedes.
++
++    New list; changed rows are copies, the transcript rows are never touched."""
++    if not turns or not setting_bool("compaction_stub_wakes"):
++        return turns
++    wake_idx = [i for i, m in enumerate(turns) if is_wake_message(m)]
++    if len(wake_idx) < 2:
++        return turns
++    out = list(turns)
++    for idx in wake_idx[:-1]:
++        text = turns[idx]["content"]
++        stub = build_wake_stub(text, None, for_summary=True)
++        if len(stub) < len(text):
++            out[idx] = {**turns[idx], "content": stub}
++    return out
++
++
++# ---------------------------------------------------------------------------
++# Entry point (A and B, both off unless switched on)
 +# ---------------------------------------------------------------------------
 +
 +def apply_context_economy(agent: Any, api_messages: List[Dict[str, Any]]) -> Dict[str, int]:
 +    """Rewrite the per-call API copy in place; returns what was replaced.
 +
-+    Fail-open: any error leaves the rows as they were. With both switches off nothing is read or
++    Fail-open: any error leaves the rows as they were. With both parts off (the default) nothing is
 +    touched, so the request is byte-identical to the one built without this module."""
 +    stats = {"wakes": 0, "tool_results": 0, "saved_chars": 0}
-+    wakes_on = stale_wakes_enabled()
-+    tools_on = stale_tool_results_enabled()
++    block = _config_block()
++    wakes_on = stale_wakes_enabled(block)
++    tools_on = stale_tool_results_enabled(block)
 +    if not (wakes_on or tools_on) or not api_messages:
 +        return stats
 +    try:
@@ -382,7 +757,7 @@ index 0000000..09aea12
 +            stats["wakes"] = count
 +            stats["saved_chars"] += saved
 +        if tools_on:
-+            count, saved = _stub_stale_tool_results(agent, api_messages)
++            count, saved = _stub_stale_tool_results(agent, api_messages, block)
 +            stats["tool_results"] = count
 +            stats["saved_chars"] += saved
 +    except Exception:

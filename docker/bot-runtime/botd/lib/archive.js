@@ -1,5 +1,7 @@
 // myrmidon(1.6.5-BOT-DISK-H3c): botd class-F archive of unpushed work and its
 // retention (design §2.3 row F, contract C1 layout).
+// OPE-12101: retention cap is volume-aware: min(2 GiB, 5% of free volume bytes,
+// floor 64 MiB); env MYRMIDON_BOTD_ARCHIVE_CAP_BYTES overrides.
 //
 // Layout (read by `myr-ws restore`, lib/restore.js):
 //   <archiveRoot>/<KEY>-<ts>.bundle          branch of the copy (+ stash) not on origin
@@ -37,7 +39,16 @@ import path from "node:path";
 export const DEFAULT_ARCHIVE_ROOT = "/data/hermes/.myrmidon/archive";
 export const UNTRACKED_CAP_BYTES = 200 * 1024 * 1024;
 export const RETENTION_DAYS = 30;
+// Hard per-bot ceiling. The effective cap is the smaller of this and a fraction
+// of the FREE bytes on the archive volume (see resolveArchiveCapBytes): 2 GiB * 35
+// bots = 70 GiB = 30% of the 246 GB bot volume is not sustainable, so the cap must
+// shrink as the volume fills.
 export const RETENTION_CAP_BYTES = 2 * 1024 * 1024 * 1024;
+// Fraction of free volume bytes that one bot's archive may occupy (5%).
+export const RETENTION_CAP_FREE_FRACTION = 0.05;
+// Floor for the volume-derived cap: even on a nearly-full or unprobeable volume a
+// small archive still beats losing unmerged work.
+export const RETENTION_CAP_MIN_BYTES = 64 * 1024 * 1024;
 export const MANIFEST_NAME = "manifest.json";
 
 const ISSUE_KEY_RE = /^[A-Z][A-Z0-9]*-[0-9]+$/;
@@ -138,7 +149,7 @@ function countTarEntries(tar) {
   }
 }
 
-/** Free bytes on the filesystem that holds `dir` (Infinity when the kernel has no statfs). */
+/** Free bytes on the filesystem that holds `dir` (0 when the kernel has no statfs). */
 function freeBytesOf(dir) {
   // A failed probe (no statfs, an unreadable mount) is "unknown", and unknown free space
   // must not green-light a multi-GiB write: report 0, the caller then refuses the tar.
@@ -149,6 +160,17 @@ function freeBytesOf(dir) {
   } catch {
     return 0;
   }
+}
+
+export function resolveArchiveCapBytes(archiveRoot, opts = {}) {
+  const env = process.env.MYRMIDON_BOTD_ARCHIVE_CAP_BYTES;
+  if (env) {
+    const v = Number(env);
+    if (Number.isFinite(v) && v >= 0) return Math.floor(v);
+  }
+  const free = typeof opts.freeBytes === "number" ? opts.freeBytes : freeBytesOf(archiveRoot);
+  const fromFree = Math.floor(free * RETENTION_CAP_FREE_FRACTION);
+  return Math.min(RETENTION_CAP_BYTES, Math.max(RETENTION_CAP_MIN_BYTES, fromFree));
 }
 
 /**
@@ -681,7 +703,7 @@ export function safeDropArchiveFile(file, archiveRoot) {
 export function retain(archiveRoot, opts = {}) {
   const now = opts.now || new Date();
   const maxAge = (opts.maxAgeDays ?? RETENTION_DAYS) * DAY_MS;
-  const capBytes = opts.capBytes ?? RETENTION_CAP_BYTES;
+  const capBytes = opts.capBytes ?? resolveArchiveCapBytes(archiveRoot);
   const keep = new Set(opts.keepCreatedAt || []);
   try {
     const manifestFile = path.join(archiveRoot, MANIFEST_NAME);
@@ -717,7 +739,7 @@ export function retain(archiveRoot, opts = {}) {
               files,
               reason: err.message
             });
-            return;
+            return false;
           }
         } else if (opts.backupReceipts && opts.backupReceipts[entry.key]) {
           try {
@@ -725,11 +747,15 @@ export function retain(archiveRoot, opts = {}) {
             for (const f of files) verifyBackupReceipt(f, receipt);
           } catch (err) {
             retentionAudit(archiveRoot, { at: now.toISOString(), action: "receipt-mismatch", key: entry.key, files, reason: err.message });
-            return;
+            return false;
           }
         } else if (opts.requireVerifiedReceipt) {
-          retentionAudit(archiveRoot, { at: now.toISOString(), action: "backup-missing", key: entry.key, files, reason: "verified backup receipt required before deletion" });
-          return;
+          const delivered = opts.isDelivered ? opts.isDelivered(entry) === true : false;
+          if (!delivered) {
+            retentionAudit(archiveRoot, { at: now.toISOString(), action: "backup-missing", key: entry.key, files, reason: "verified backup receipt required before deletion" });
+            return false;
+          }
+          receipt = { receiptId: `delivered:${entry.key}`, type: "merged-work" };
         }
 
         retentionAudit(archiveRoot, { at: now.toISOString(), action: "delete-intent", key: entry.key, files, reason: why, receiptId: receipt?.receiptId || receipt?.id || null });
@@ -743,6 +769,7 @@ export function retain(archiveRoot, opts = {}) {
         retentionAudit(archiveRoot, { at: now.toISOString(), action: "deleted", key: entry.key, files, reason: why, receiptId: receipt?.receiptId || receipt?.id || null });
       }
       removed.push({ key: entry.key, createdAt: entry.createdAt, sizeBytes: entry.sizeBytes, reason: why });
+      return true;
     };
     const withSize = (e) => ({ e, size: entryFiles(e).reduce((s, f) => s + sizeOf(f), 0) });
 
@@ -753,16 +780,22 @@ export function retain(archiveRoot, opts = {}) {
       // Quota maths covers every entry file, including the fallback `fullTar`.
       if (!entry || !entry.createdAt || entryFiles(entry).every((f) => !fs.existsSync(f))) continue; // nothing left on disk
       const age = now.getTime() - Date.parse(entry.createdAt);
-      if (age > maxAge && !keep.has(entry.createdAt)) drop(entry, "age");
-      else alive.push(withSize(entry));
+      if (age > maxAge && !keep.has(entry.createdAt)) {
+        if (!drop(entry, "age")) alive.push(withSize(entry));
+      } else {
+        alive.push(withSize(entry));
+      }
     }
     alive.sort((a, b) => Date.parse(a.e.createdAt) - Date.parse(b.e.createdAt));
     let total = alive.reduce((s, x) => s + x.size, 0);
     const rest = [];
     for (const x of alive) {
       if (total > capBytes && !keep.has(x.e.createdAt)) {
-        drop(x.e, "cap");
-        total -= x.size;
+        if (drop(x.e, "cap")) {
+          total -= x.size;
+        } else {
+          rest.push(x);
+        }
       } else rest.push(x);
     }
     alive = rest;
@@ -778,6 +811,7 @@ export function retain(archiveRoot, opts = {}) {
 /**
  * One botd pass of retention: `retain` with everything archived since the pass began
  * protected from the quota (the only copy of someone's work must outlive the cap).
+ * The cap defaults to resolveArchiveCapBytes(archiveRoot) unless overridden.
  * @param {string} archiveRoot
  * @param {{startedAt: Date, now?:Date, maxAgeDays?:number, capBytes?:number}} opts
  */

@@ -83,6 +83,40 @@ export type RunPresentationSource =
   | "adapter_final_response"
   | "none";
 
+// myrmidon(1.7 RUN-OUTCOME): run-final outcome contract. `outcome` classifies
+// the overall run result while `stopKind` records which execution bound ended
+// the run — iteration_limit and budget_limit are distinct stop kinds so a run
+// stopped by the iteration cap is never conflated with one stopped by the
+// budget cap. The contract is stored as the `outcome` field of the run result
+// (heartbeat_runs.result_json).
+export const RUN_OUTCOME_SCHEMA = "paperclip.run_outcome.v1" as const;
+
+export type RunOutcome =
+  | "success"
+  | "partial_success"
+  | "blocked"
+  | "failed"
+  | "unknown";
+
+export type RunStopKind = "iteration_limit" | "budget_limit";
+
+export const RUN_OUTCOME_STOP_KINDS: readonly RunStopKind[] = [
+  "iteration_limit",
+  "budget_limit",
+] as const;
+
+export interface RunOutcomeContract {
+  schema: typeof RUN_OUTCOME_SCHEMA;
+  outcome: RunOutcome;
+  /**
+   * Why the run stopped, when the stop was bound-driven. `null` for runs that
+   * finished for a reason other than hitting a cap (completed work, failure,
+   * cancellation, unknown).
+   */
+  stopKind: RunStopKind | null;
+  summary: string;
+}
+
 export interface RunPresentationDecision {
   schema: "paperclip.run_presentation_decision.v1";
   resolverVersion: string;
@@ -193,6 +227,13 @@ export interface HeartbeatRun {
   signal: string | null;
   usageJson: Record<string, unknown> | null;
   resultJson: Record<string, unknown> | null;
+  /**
+   * myrmidon(OPE-12316): Outcome and stopKind from the run's `result_json`,
+   * projected directly on heartbeat list items so consumers and UI badges do
+   * not need to detoast or unpack `resultJson`.
+   */
+  resultOutcome?: import("../myrmidon/run-outcome.js").RunOutcomeValue | string | null;
+  resultStopKind?: import("../myrmidon/run-outcome.js").RunStopKind | string | null;
   /** Bounded, prompt-free run correlation, usage, spend and outcome snapshot. */
   runTelemetry?: Record<string, unknown> | null;
   sessionIdBefore: string | null;

@@ -1,6 +1,6 @@
 import { describe, expect, it, vi, afterEach } from "vitest";
 import type { AdapterExecutionContext } from "@myrmidon/adapter-utils";
-import { execute, readReattachGatewayRunIdForTest, stopGatewayRunForBoard } from "./execute.js";
+import { errorResult, execute, probeGatewayRunForBoard, readReattachGatewayRunIdForTest, stopGatewayRunForBoard } from "./execute.js";
 
 // myrmidon(HERMES-RUN-REATTACH): after a board restart, the reattach sweep
 // re-dispatches the same heartbeat run with the gateway run id it persisted
@@ -234,6 +234,57 @@ describe("execute — gateway run reattach (HERMES-RUN-REATTACH)", () => {
     expect(result.errorFamily).toBe("transient_upstream");
     // Retry-After is surfaced as the retry hint the bounded retry follows.
     expect(result.retryNotBefore).not.toBeNull();
+    const retryDate = new Date(result.retryNotBefore!).getTime();
+    expect(Number.isNaN(retryDate)).toBe(false);
+    const diffSec = Math.round((retryDate - Date.now()) / 1000);
+    expect(diffSec).toBeGreaterThanOrEqual(5);
+    expect(diffSec).toBeLessThanOrEqual(10);
+  });
+
+  // myrmidon(WAKE-5 / OPE-9497): the gateway error path must recognize the
+  // deployment-pool cooldown wordings the board classifier already accepts —
+  // including "all deployments in cooldown" and "All deployments for selected
+  // model are in cooldown" — so the failure is filed as provider_quota with a
+  // Retry-After-based retryNotBefore instead of a plain upstream error, and
+  // the bounded retry waits out the window instead of re-waking immediately.
+  it("classifies deployment cooldown wordings as provider_quota with the Retry-After hint", () => {
+    const wordings = [
+      "No deployments available",
+      "all deployments in cooldown",
+      "all deployments are in cooldown",
+      "All deployments for selected model are in cooldown",
+      "All deployments (openai/chatgpt) are in cooldown",
+      "deployments are in cooldown",
+    ];
+    for (const message of wordings) {
+      // Use a non-429 response so provider_quota proves the deployment
+      // signature was matched, rather than inheriting the generic 429 rule.
+      const err = new Error(`Hermes gateway HTTP 500`) as import("./execute.js").HermesHttpErrorLike;
+      err.status = 500;
+      err.code = "hermes_gateway_upstream_error";
+      err.retryNotBefore = "90";
+      err.body = { error: { message, code: 429 } };
+      const result = errorResult(err);
+      expect(result.errorFamily).toBe("provider_quota");
+      expect(result.resultJson?.cooldown).toBe(true);
+      expect(result.retryNotBefore).not.toBeNull();
+      const retryDate = new Date(result.retryNotBefore!).getTime();
+      expect(Number.isNaN(retryDate)).toBe(false);
+      const diffSec = Math.round((retryDate - Date.now()) / 1000);
+      expect(diffSec).toBeGreaterThanOrEqual(85);
+      expect(diffSec).toBeLessThanOrEqual(95);
+    }
+  });
+
+  it("leaves a generic 429 without the cooldown signature in transient_upstream", () => {
+    const err = new Error(`Hermes gateway HTTP 429`) as import("./execute.js").HermesHttpErrorLike;
+    err.status = 429;
+    err.code = "hermes_gateway_rate_limited";
+    err.retryNotBefore = "7";
+    err.body = { error: { message: "gateway busy", code: 429 } };
+    const result = errorResult(err);
+    expect(result.errorFamily).toBe("transient_upstream");
+    expect(result.resultJson?.cooldown).toBeUndefined();
   });
 
   it("stopGatewayRunForBoard posts a bounded stop for an unsupervised run", async () => {
@@ -289,6 +340,39 @@ describe("execute — gateway run reattach (HERMES-RUN-REATTACH)", () => {
     });
   });
 
+  it("stopGatewayRunForBoard still reaches the gateway when the cancellation reason is not Latin-1", async () => {
+    // Regression (OPE-11889): a Russian operator reason made fetch throw while
+    // building the headers, so the best-effort stop never left the board.
+    const requests: Array<Record<string, string>> = [];
+    vi.stubGlobal("fetch", vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
+      // Throws exactly like fetch when a header value holds a character above U+00FF.
+      requests.push(Object.fromEntries(new Headers(init?.headers).entries()));
+      return new Response(JSON.stringify({ stopped: true }), { status: 200 });
+    }));
+
+    const stopped = await stopGatewayRunForBoard({
+      baseUrl: "http://127.0.0.1:8642",
+      apiKey: "board-key",
+      gatewayRunId: "gw-run-ru",
+      cancellation: {
+        correlationId: "corr-ru",
+        source: { code: "board_timeout", actor: "board" },
+        reason: "Отменено оператором:\nпрогон завис",
+      },
+    });
+
+    expect(stopped.stopped).toBe(true);
+    expect(requests).toHaveLength(1);
+    expect(requests[0]).toMatchObject({
+      "x-paperclip-correlation-id": "corr-ru",
+      "x-paperclip-cancellation-source": "board_timeout",
+    });
+    // Provenance survives: the reason is percent-encoded, single-line, bounded.
+    const reason = requests[0]!["x-paperclip-cancellation-reason"]!;
+    expect(reason).not.toMatch(/[^\x20-\x7e]/);
+    expect(decodeURIComponent(reason)).toBe("Отменено оператором: прогон завис");
+  });
+
   it("stopGatewayRunForBoard reports not-stopped without throwing when the gateway forgot the run", async () => {
     const fetchMock = vi.fn(async () => new Response("gone", { status: 404 }));
     vi.stubGlobal("fetch", fetchMock);
@@ -314,5 +398,49 @@ describe("execute — gateway run reattach (HERMES-RUN-REATTACH)", () => {
 
     expect(stopped.stopped).toBe(false);
     expect(fetchMock).not.toHaveBeenCalled();
+  });
+});
+
+describe("probeGatewayRunForBoard (HERMES-RUN-REATTACH, OPE-10023)", () => {
+  it("reports live when gateway returns a non-terminal status", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify({ status: "running" }), { status: 200 })));
+    const res = await probeGatewayRunForBoard({
+      baseUrl: "http://127.0.0.1:8642",
+      apiKey: "test-key",
+      gatewayRunId: "gw-1",
+    });
+    expect(res).toEqual({ state: "live", status: "running" });
+  });
+
+  it("reports terminal when gateway returns a terminal status", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify({ status: "completed" }), { status: 200 })));
+    const res = await probeGatewayRunForBoard({
+      baseUrl: "http://127.0.0.1:8642",
+      apiKey: "test-key",
+      gatewayRunId: "gw-1",
+    });
+    expect(res).toEqual({ state: "terminal", status: "completed" });
+  });
+
+  it("reports not_found when gateway returns 404", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => new Response("not found", { status: 404 })));
+    const res = await probeGatewayRunForBoard({
+      baseUrl: "http://127.0.0.1:8642",
+      apiKey: "test-key",
+      gatewayRunId: "gw-1",
+    });
+    expect(res).toEqual({ state: "not_found", status: null });
+  });
+
+  it("reports unreachable when gateway request fails", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => {
+      throw new Error("network error");
+    }));
+    const res = await probeGatewayRunForBoard({
+      baseUrl: "http://127.0.0.1:8642",
+      apiKey: "test-key",
+      gatewayRunId: "gw-1",
+    });
+    expect(res.state).toBe("unreachable");
   });
 });

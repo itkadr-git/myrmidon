@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strconv"
 	"strings"
 
 	"github.com/itkadr-git/myrmidon/tools/dockergate/internal/config"
@@ -435,10 +436,19 @@ func (rs *reqState) a9(ctx context.Context, st *runtime, rt *route.Route, bs *bo
 		return derr
 	}
 	rs.respond(ans)
+	if ans.status >= 200 && ans.status < 300 && rt.Suffix == route.SuffixMain {
+		cleanupCtx, cancel := context.WithTimeout(ctx, def)
+		err := rs.g.opt.Disk.Remove(cleanupCtx, rt.BotKey)
+		cancel()
+		if err != nil {
+			rs.g.log.Write(Line{Level: LevelError, Event: "disk_project_remove_failed", BotKey: rt.BotKey, Reason: "delete"})
+		} else {
+			rs.g.log.Write(Line{Event: "disk_project_removed", BotKey: rt.BotKey})
+		}
+	}
 	return nil
 }
 
-// requireNextCreated checks that the .next container of the bot is ours and
 // has not been started.
 func (rs *reqState) requireNextCreated(ctx context.Context, key string) *deny.Error {
 	next, derr := rs.inspectOurs(ctx, key, route.SuffixNext)
@@ -685,6 +695,31 @@ func (rs *reqState) a14(ctx context.Context, st *runtime) *deny.Error {
 	body, err := json.Marshal(resp)
 	if err != nil {
 		return deny.New(deny.UpstreamError).WithDetail("disk_json")
+	}
+	rs.respond(&answer{status: http.StatusOK, ctype: jsonType, body: body})
+	return nil
+}
+
+// a19 answers route A19 (GET /myrmidon/events/oom) with buffered OOM events.
+func (rs *reqState) a19(ctx context.Context, st *runtime) *deny.Error {
+	var sinceNano int64
+	if q := rs.r.URL.Query().Get("since"); q != "" {
+		if val, err := strconv.ParseInt(q, 10, 64); err == nil {
+			sinceNano = val
+		}
+	}
+	events := rs.g.oom.Since(sinceNano)
+	if events == nil {
+		events = []OomEvent{}
+	}
+	resp := struct {
+		Events []OomEvent `json:"events"`
+	}{
+		Events: events,
+	}
+	body, err := json.Marshal(resp)
+	if err != nil {
+		return deny.New(deny.UpstreamError).WithDetail("events_oom_json")
 	}
 	rs.respond(&answer{status: http.StatusOK, ctype: jsonType, body: body})
 	return nil

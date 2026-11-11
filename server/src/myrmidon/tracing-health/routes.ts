@@ -37,10 +37,11 @@ import {
   countEvents,
   countRejections,
   gatewayRequestCount,
+  resolveTracingHealthSettings,
   readTracingHealthSettings,
   withClickhousePassword,
   type TracingHealthSettings,
-} from "./probes.js";
+} from "./probes.js"; // myrmidon(1.7, OPE-4101): resolveTracingHealthSettings added
 
 export interface TracingHealthRoutesDeps {
   env?: NodeJS.ProcessEnv;
@@ -58,7 +59,7 @@ export interface TracingHealthRoutesDeps {
 
 export function tracingHealthRoutes(db: Db, deps: TracingHealthRoutesDeps) {
   const router = Router();
-  const settings = () => readTracingHealthSettings(deps.env ?? process.env);
+  const settings = () => resolveTracingHealthSettings(deps.env ?? process.env);
   let cached: TracingHealthReport | null = null;
 
   const emptyEvidence = (): TracingHealthEvidence => ({

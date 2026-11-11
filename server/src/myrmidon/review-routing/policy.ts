@@ -3,7 +3,7 @@
 // No database and no clock here; the sweep feeds these functions.
 
 import { randomUUID } from "node:crypto";
-import type { IssueExecutionPolicy } from "@myrmidon/shared";
+import { SWARM_QUEUE_ELIGIBILITY_METADATA_KEY, type IssueExecutionPolicy } from "@myrmidon/shared";
 import { applyIssueExecutionPolicyTransition } from "../../services/issue-execution-policy.js";
 
 export interface RoutingIssue {
@@ -32,12 +32,17 @@ export interface ReviewerCandidate {
   role: string;
   model?: string | null;
   metadata?: Record<string, unknown> | null;
+  /** Agent switched out of the automatic-work queue; it must not be a reviewer either. */
+  swarmQueueEligible?: boolean;
   /** Active runs in flight (queued + running). */
   load: number;
+  status?: string | null;
+  isIdle?: boolean;
+  activeRuns?: number;
   readonly invokable?: boolean;
 }
 
-function asRecord(value: unknown): Record<string, unknown> | null {
+export function asRecord(value: unknown): Record<string, unknown> | null {
   return value && typeof value === "object" && !Array.isArray(value) ? (value as Record<string, unknown>) : null;
 }
 
@@ -106,9 +111,26 @@ export function hoursSince(since: Date, now: Date): number {
   return Math.max(0, Math.floor((now.getTime() - since.getTime()) / 3_600_000));
 }
 
-/** True when the review has been waiting at least `afterHours` (0 disables). */
-export function isReviewOverdue(input: { since: Date; now: Date; afterHours: number }): boolean {
-  return input.afterHours > 0 && input.now.getTime() - input.since.getTime() >= input.afterHours * 3_600_000;
+/** Whole minutes elapsed since `since`, or 0 when it is in the future. */
+export function minutesSince(since: Date, now: Date): number {
+  return Math.max(0, Math.floor((now.getTime() - since.getTime()) / 60_000));
+}
+
+/**
+ * True when the review has been waiting at least `afterMinutes` or `afterHours` (0 disables).
+ * When `afterMinutes` is provided, it takes precedence over `afterHours`.
+ */
+export function isReviewOverdue(input: {
+  since: Date;
+  now: Date;
+  afterHours?: number;
+  afterMinutes?: number;
+}): boolean {
+  if (input.afterMinutes !== undefined) {
+    return input.afterMinutes > 0 && input.now.getTime() - input.since.getTime() >= input.afterMinutes * 60_000;
+  }
+  const afterHours = input.afterHours ?? 0;
+  return afterHours > 0 && input.now.getTime() - input.since.getTime() >= afterHours * 3_600_000;
 }
 
 /** True when a stage or execution state has changesRequestedCount >= 3 (escalated). */
@@ -176,7 +198,16 @@ export interface ReviewerAvailability {
 
 /** Shared reviewer eligibility/load decision used by both PATCH and sweep. */
 export function evaluateReviewerAvailability(input: {
-  reviewers: readonly { id: string; role: string; invokable?: boolean; model?: string | null }[];
+  reviewers: readonly {
+    id: string;
+    role: string;
+    metadata?: Record<string, unknown> | null;
+    status?: string | null;
+    isIdle?: boolean;
+    activeRuns?: number;
+    invokable?: boolean;
+    model?: string | null;
+  }[];
   loadByAgent: ReadonlyMap<string, number>;
   issue: RoutingIssue;
   maxLoad: number;
@@ -187,6 +218,10 @@ export function evaluateReviewerAvailability(input: {
       candidates: input.reviewers.map((reviewer) => ({
         id: reviewer.id,
         role: reviewer.role,
+        metadata: reviewer.metadata,
+        status: reviewer.status,
+        isIdle: reviewer.isIdle,
+        activeRuns: reviewer.activeRuns,
         invokable: reviewer.invokable,
         model: reviewer.model,
         load: input.loadByAgent.get(reviewer.id) ?? 0,
@@ -198,6 +233,14 @@ export function evaluateReviewerAvailability(input: {
   };
 }
 
+/** Rank 0 for idle, 1 for busy. Used to prefer idle candidates before least loaded. */
+export function candidateIdleRank(candidate: ReviewerCandidate): number {
+  if (candidate.status === "idle" || candidate.isIdle === true) return 0;
+  if (candidate.activeRuns !== undefined && candidate.activeRuns === 0 && candidate.load === 0) return 0;
+  if (candidate.load === 0) return 0;
+  return 1;
+}
+
 export function pickReviewer(input: {
   candidates: readonly ReviewerCandidate[];
   excluded: ReadonlySet<string>;
@@ -206,11 +249,16 @@ export function pickReviewer(input: {
 }): ReviewerCandidate | null {
   const eligible = input.candidates.filter((candidate) => {
     if (candidate.invokable === false) return false;
+    if (candidate.swarmQueueEligible === false || candidate.metadata?.[SWARM_QUEUE_ELIGIBILITY_METADATA_KEY] === false) return false;
     if (input.authorModel != null && candidate.model === input.authorModel) return false;
     return !input.excluded.has(candidate.id) && candidate.load < input.maxLoad;
   });
   if (eligible.length === 0) return null;
-  return [...eligible].sort((a, b) => a.load - b.load || a.id.localeCompare(b.id))[0] ?? null;
+  return [...eligible].sort((a, b) => {
+    const idleA = candidateIdleRank(a);
+    const idleB = candidateIdleRank(b);
+    return (idleA - idleB) || (a.load - b.load) || a.id.localeCompare(b.id);
+  })[0] ?? null;
 }
 
 /**

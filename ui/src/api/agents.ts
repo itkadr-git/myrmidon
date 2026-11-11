@@ -1,6 +1,7 @@
 import type {
   Agent,
   AgentListItem,
+  AgentListFilters,
   AgentConfigurationSummary,
   AgentDesiredSkillEntry,
   AgentSkillAssignmentMode,
@@ -33,6 +34,8 @@ import type {
 } from "@myrmidon/shared";
 import { isUuidLike, normalizeAgentUrlKey } from "@myrmidon/shared";
 import { ApiError, api } from "./client";
+
+export type { AgentListFilters };
 
 export interface AgentKey {
   id: string;
@@ -118,11 +121,33 @@ function agentPath(id: string, companyId?: string, suffix = "") {
   return withCompanyScope(`/agents/${encodeURIComponent(id)}${suffix}`, companyId);
 }
 
+export interface BulkUpdateModelRequest {
+  agentIds: string[];
+  model?: string;
+  connectionId?: string;
+}
+
+export interface BulkUpdateModelResponse {
+  updated: string[];
+  failed: Array<{ id: string; reason: string }>;
+}
+
 export const agentsApi = {
   // myrmidon(PERF-DIET-G): the company list is a slim projection — no
   // adapterConfig; the model comes precomputed as `adapterModel`. Full configs
   // come from getConfiguration / listConfigurations.
-  list: (companyId: string) => api.get<AgentListItem[]>(`/companies/${companyId}/agents`),
+  list: (companyId: string, filters?: AgentListFilters) => {
+    const params = new URLSearchParams();
+    if (filters?.q) params.set("q", filters.q);
+    if (filters?.status) {
+      const statusValue = Array.isArray(filters.status) ? filters.status.join(",") : filters.status;
+      params.set("status", statusValue);
+    }
+    if (filters?.role) params.set("role", filters.role);
+    if (filters?.reportsTo) params.set("reportsTo", filters.reportsTo);
+    const qs = params.toString();
+    return api.get<AgentListItem[]>(`/companies/${companyId}/agents${qs ? `?${qs}` : ""}`);
+  },
   org: (companyId: string) => api.get<OrgNode[]>(`/companies/${companyId}/org`),
   listConfigurations: (companyId: string) =>
     api.get<AgentConfigurationSummary[]>(`/companies/${companyId}/agent-configurations`),
@@ -166,6 +191,14 @@ export const agentsApi = {
     api.post<AgentHireResponse>(`/companies/${companyId}/agent-hires`, data),
   update: (id: string, data: Record<string, unknown>, companyId?: string) =>
     api.patch<Agent>(agentPath(id, companyId), data),
+  // myrmidon(OPE-12225, FLEET-OPS-BULK): mass model/connection change for the
+  // agents list checkbox selection. Partial success is the normal path: the
+  // server answers 200 with {updated[], failed[{id, reason}]}.
+  bulkUpdateModel: (companyId: string, data: BulkUpdateModelRequest) =>
+    api.post<BulkUpdateModelResponse>(
+      `/companies/${encodeURIComponent(companyId)}/agents/bulk-update-model`,
+      data,
+    ),
   updatePermissions: (id: string, data: AgentPermissionUpdate, companyId?: string) =>
     api.patch<AgentDetail>(agentPath(id, companyId, "/permissions"), data),
   instructionsBundle: (id: string, companyId?: string) =>

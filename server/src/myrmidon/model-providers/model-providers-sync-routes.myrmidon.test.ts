@@ -17,12 +17,29 @@ import { listAvailableModelProviderTypes } from "@myrmidon/shared";
 import { errorHandler } from "../../middleware/index.js";
 import { modelProviderRoutesWithSync } from "./routes-with-sync.js";
 import type { ModelProviderService, ModelProviderView } from "./service.js";
-import type { LitellmSyncService } from "../litellm-sync/service.js";
+import { createLitellmSyncService, type LitellmSyncService } from "../litellm-sync/service.js";
+import type { LitellmSyncPort } from "../litellm-sync/port.js";
+import type { Db } from "@myrmidon/db";
 
 const COMPANY_ID = "22222222-2222-4222-8222-222222222222";
 const KEY_VALUE = "sk-tes...1234";
 
-const member = { type: "board", source: "session", userId: "user-a", isInstanceAdmin: false, companyIds: [COMPANY_ID] };
+const member = {
+  type: "board",
+  source: "session",
+  userId: "user-a",
+  isInstanceAdmin: false,
+  companyIds: [COMPANY_ID],
+  memberships: [{ companyId: COMPANY_ID, membershipRole: "admin", status: "active" }],
+};
+const plainMember = {
+  type: "board",
+  source: "session",
+  userId: "user-plain",
+  isInstanceAdmin: false,
+  companyIds: [COMPANY_ID],
+  memberships: [{ companyId: COMPANY_ID, membershipRole: "member", status: "active" }],
+};
 
 const providerView = (id: string): ModelProviderView => ({
   id,
@@ -56,6 +73,15 @@ function fakeService() {
     async rotateProviderKey() {
       return providerView("provider-1");
     },
+    async captureKeyRotationSnapshot() {
+      return {
+        secretId: "sec-1",
+        secretValue: "old-key",
+        models: [],
+        keyValidatedAt: null,
+      };
+    },
+    rollbackProviderKey: vi.fn(async () => {}),
     async patchProvider() {
       return providerView("provider-1");
     },
@@ -78,6 +104,9 @@ function fakeService() {
     async checkToolCallCompatibility() {
       return providerView("provider-1");
     },
+    async checkPackageExpirations() {
+      return [];
+    },
     async listChannels(companyId, providerId) {
       return {
         providerId,
@@ -88,6 +117,38 @@ function fakeService() {
     },
     listAvailableTypes: () => listAvailableModelProviderTypes(),
     syncPoolSignals: async () => [],
+    oauthBegin: async () => ({
+      verificationUri: "http://localhost:8895/auth",
+      userCode: "TEST-CODE",
+      accountNumber: 1,
+      expiresInSec: 900,
+      intervalSec: 5,
+    }),
+    oauthStatus: async () => ({
+      status: "pending",
+      accountNumber: 1,
+    }),
+    oauthComplete: async () => ({
+      ok: true,
+      accountNumber: 1,
+    }),
+    oauthRefresh: async () => ({
+      ok: true,
+      accountNumber: 1,
+    }),
+    async addAccount() {
+      throw new Error("not implemented in fakeService");
+    },
+    async deleteAccount() {
+      throw new Error("not implemented in fakeService");
+    },
+    async startOAuth() {
+      throw new Error("not implemented in fakeService");
+    },
+    async completeOAuth() {
+      throw new Error("not implemented in fakeService");
+    },
+
   };
   return service;
 }
@@ -100,6 +161,7 @@ function fakeSync(): Mocked<LitellmSyncService> {
     reconcileWithLitellm: vi.fn(async () => {}),
     handleProviderCredentialRotation: vi.fn(async () => {}),
     unregisterModels: vi.fn(async () => {}),
+    unregisterProviderModels: vi.fn(async () => ({ removed: 0 })),
     listChannels: vi.fn(async () => []),
   } as unknown as Mocked<LitellmSyncService>;
 }
@@ -107,19 +169,23 @@ function fakeSync(): Mocked<LitellmSyncService> {
 function app(options: {
   sync?: LitellmSyncService | null;
   refreshAgentAllowlists?: (companyId: string) => Promise<unknown>;
+  actor?: unknown;
+  service?: ModelProviderService;
 } = {}) {
   const getLitellmSync = vi.fn(async () => (options.sync === undefined ? fakeSync() : options.sync));
   const refresh = options.refreshAgentAllowlists ?? vi.fn(async () => ({ attempted: 0, updated: 0, skipped: [] }));
+  const actor = options.actor ?? member;
+  const service = options.service ?? fakeService();
   const server = express();
   server.use(express.json());
   server.use((req, _res, next) => {
-    (req as unknown as { actor: unknown }).actor = member;
+    (req as unknown as { actor: unknown }).actor = actor;
     next();
   });
   server.use(
     "/api",
     modelProviderRoutesWithSync({
-      service: fakeService(),
+      service,
       getLitellmSync,
       refreshAgentAllowlists: refresh,
     }),
@@ -174,11 +240,17 @@ describe("MODEL-PROVIDERS B: enable/disable propagates to the gateway", () => {
     expect(sync.handleProviderCredentialRotation).not.toHaveBeenCalled();
   });
 
-  it("deleting a provider unregisters its enabled models", async () => {
+  it("deleting a provider unregisters its enabled models, scoped to the provider's own api_base", async () => {
     const { server } = app({ sync });
     await request(server).delete(`${base}/provider-1`).expect(204);
-    // Only the enabled model (model-a is enabled in the listModels fake).
-    expect(sync.unregisterModels).toHaveBeenCalledWith(["openai/model-a"]);
+    // Only the enabled model (model-a is enabled in the listModels fake), and
+    // only the deployments that carry this provider's base URL.
+    expect(sync.unregisterProviderModels).toHaveBeenCalledWith(
+      { type: "openai", baseUrl: "https://api.openai.com/v1" },
+      ["openai/model-a"],
+    );
+    // Never the group-wide delete that takes other providers' deployments along.
+    expect(sync.unregisterModels).not.toHaveBeenCalled();
   });
 });
 
@@ -211,14 +283,21 @@ describe("MODEL-PROVIDERS B: a gateway failure after the persisted mutation", ()
     expect(res.body.code).toBe("litellm_sync_failed");
   });
 
-  it("answers 422 when rotation propagation fails", async () => {
+  it("answers 422 and rolls back when rotation propagation fails", async () => {
     sync.handleProviderCredentialRotation.mockRejectedValue(new Error("gateway timeout"));
-    const { server } = app({ sync });
+    const service = fakeService();
+    const { server } = app({ sync, service });
     await request(server).patch(`${base}/provider-1`).send({ key: KEY_VALUE }).expect(422);
+    expect(service.rollbackProviderKey).toHaveBeenCalledTimes(1);
+    expect(service.rollbackProviderKey).toHaveBeenCalledWith(
+      COMPANY_ID,
+      "provider-1",
+      expect.objectContaining({ secretId: "sec-1", secretValue: "old-key" }),
+    );
   });
 
   it("answers 422 when the provider-removal cleanup fails", async () => {
-    sync.unregisterModels.mockRejectedValue(new Error("gateway refused"));
+    sync.unregisterProviderModels.mockRejectedValue(new Error("gateway refused"));
     const { server } = app({ sync });
     await request(server).delete(`${base}/provider-1`).expect(422);
   });
@@ -301,5 +380,123 @@ describe("MODEL-PROVIDERS B: a gateway failure after the persisted mutation", ()
       expect(res.body.error).not.toContain("pcp_top_secret");
       expect(res.body.error).toContain("<redacted>");
     });
+  });
+
+  it("denies plain company member on read and write (403)", async () => {
+    const { server } = app({ sync, actor: plainMember });
+    await request(server).get(base).expect(403);
+    await request(server)
+      .post(`${base}/provider-1/models`)
+      .send({ models: [{ modelName: "model-a", enabled: true }] })
+      .expect(403);
+  });
+});
+
+// myrmidon(1.6.7 OPE-12345): pool providers and provider removal against the
+// REAL sync service and a recording gateway port. The pool's gateway
+// deployments are its own: no action on a pool provider reaches a write method
+// of the port (/model/new, /model/delete, /model/update).
+
+function scriptedDb(results: unknown[][]): Db {
+  const queue = [...results];
+  return {
+    select: () => {
+      const rows = queue.shift() ?? [];
+      const chain: Record<string, unknown> = {};
+      for (const step of ["from", "where", "innerJoin", "limit"]) {
+        chain[step] = () => chain;
+      }
+      chain.then = (resolve: (value: unknown[]) => unknown, reject?: (reason: unknown) => unknown) =>
+        Promise.resolve(rows).then(resolve, reject);
+      return chain;
+    },
+  } as unknown as Db;
+}
+
+function recordingPort(registered: Awaited<ReturnType<LitellmSyncPort["listRegisteredModels"]>> = []) {
+  const port: Mocked<LitellmSyncPort> = {
+    registerModel: vi.fn().mockResolvedValue(undefined),
+    unregisterModel: vi.fn().mockResolvedValue(undefined),
+    updateDeployment: vi.fn().mockResolvedValue(undefined),
+    deleteDeployment: vi.fn().mockResolvedValue(undefined),
+    invalidateCache: vi.fn().mockResolvedValue(undefined),
+    listRegisteredModels: vi.fn().mockResolvedValue(registered),
+    listChannels: vi.fn().mockResolvedValue([]),
+  };
+  return port;
+}
+
+function expectNoGatewayWrite(port: Mocked<LitellmSyncPort>) {
+  expect(port.registerModel).not.toHaveBeenCalled();
+  expect(port.unregisterModel).not.toHaveBeenCalled();
+  expect(port.deleteDeployment).not.toHaveBeenCalled();
+  expect(port.updateDeployment).not.toHaveBeenCalled();
+  expect(port.invalidateCache).not.toHaveBeenCalled();
+}
+
+function poolService(type: "chatgpt-pool" | "antigravity-pool" | "google-ai-pool"): ModelProviderService {
+  const service = fakeService();
+  const poolView = { ...providerView("provider-1"), type, baseUrl: "http://pool.test:9000" };
+  service.readProvider = async () => poolView;
+  service.rotateProviderKey = async () => poolView;
+  return service;
+}
+
+describe("OPE-12345: pool providers never reach the gateway's write API", () => {
+  for (const type of ["chatgpt-pool", "antigravity-pool", "google-ai-pool"] as const) {
+    it(`${type}: registration, enable, disable, key rotation and removal write nothing`, async () => {
+      const port = recordingPort([
+        // the pool's own deployments, plus a same-named group of another provider
+        { modelId: "pool-1", litellmModelName: "openai/model-a", providerType: "openai", baseUrl: "http://pool.test:9000", credentialSecretName: "" },
+      ]);
+      const poolProvider = { id: "provider-1", companyId: COMPANY_ID, type, baseUrl: "http://pool.test:9000", credentialSecretName: "k" };
+      // enable + disable (two provider checks), then the rotation (one)
+      const sync = createLitellmSyncService({
+        db: scriptedDb([[poolProvider], [poolProvider], [poolProvider]]),
+        litellm: port,
+        resolveCredential: async () => "pool-token",
+      });
+      const { server } = app({ sync, service: poolService(type) });
+
+      await request(server)
+        .post(base)
+        .send({ type, name: "Pool", key: KEY_VALUE, baseUrl: "http://pool.test:9000" })
+        .expect(201);
+      await request(server)
+        .post(`${base}/provider-1/models`)
+        .send({ models: [{ modelName: "model-a", enabled: false }, { modelName: "model-b", enabled: true }] })
+        .expect(200);
+      await request(server).patch(`${base}/provider-1`).send({ key: KEY_VALUE }).expect(200);
+      await request(server).delete(`${base}/provider-1`).expect(204);
+
+      expectNoGatewayWrite(port);
+    });
+  }
+
+  it("removing a pool provider skips the gateway step and the allowlist check", async () => {
+    const sync = fakeSync();
+    const { server, refresh } = app({ sync, service: poolService("antigravity-pool") });
+
+    await request(server).delete(`${base}/provider-1`).expect(204);
+
+    expect(sync.unregisterProviderModels).not.toHaveBeenCalled();
+    expect(sync.unregisterModels).not.toHaveBeenCalled();
+    expect(refresh).not.toHaveBeenCalled();
+  });
+
+  it("removing a gateway-owned provider deletes only the deployments with its own api_base", async () => {
+    const port = recordingPort([
+      { modelId: "own", litellmModelName: "openai/model-a", providerType: "openai", baseUrl: "https://api.openai.com/v1", credentialSecretName: "" },
+      { modelId: "other-provider", litellmModelName: "openai/model-a", providerType: "openai", baseUrl: "https://other.example.invalid/v1", credentialSecretName: "" },
+      { modelId: "pool-router", litellmModelName: "openai/model-a", providerType: "openai", baseUrl: "http://pool-router:4000", credentialSecretName: "" },
+    ]);
+    const sync = createLitellmSyncService({ db: scriptedDb([]), litellm: port });
+    const { server, refresh } = app({ sync });
+
+    await request(server).delete(`${base}/provider-1`).expect(204);
+
+    expect(port.deleteDeployment.mock.calls.map((call) => call[0])).toEqual(["own"]);
+    expect(port.unregisterModel).not.toHaveBeenCalled();
+    expect(refresh).toHaveBeenCalledWith(COMPANY_ID);
   });
 });

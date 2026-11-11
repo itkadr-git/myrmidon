@@ -1,0 +1,685 @@
+#!/usr/bin/env node
+// myrmidon(1.6.7-BOT-DISK-HOST-GC): Host-side GC for task clones and build caches.
+// Replaces the temporary devbuild-v2-gc.sh with a unified, journaled scheduler.
+//
+// Targets:
+//   - vm-core:       /srv/myrmidon-bots/* (bot workspaces)
+//   - myr-dev-build: /srv/devbuild/* (build copies), /srv/devcache/* (build caches)
+//
+// Policy:
+//   - Task clones (done/cancelled >24h, clean+pushed): remove
+//   - Task clones (done/cancelled >24h, dirty/unpushed): archive first, then remove
+//   - Active checkouts/worktrees: never touch
+//   - Build caches >72h: LRU eviction by mtime
+//   - Atomic guards: lockfile, symlink checks, TOCTOU-safe deletion
+//   - JSONL journal at /var/log/myrmidon-host-gc.jsonl
+//
+// Modes:
+//   --dry-run  (default)  Plan only, no deletion
+//   --apply               Execute plan with journal
+//   --root <path>         Override root directory (for testing)
+//   --journal <path>      Override journal path (for testing)
+//   --lock <path>         Override lockfile path (for testing)
+//   --clone-ttl <hours>   Override clone TTL (default 24)
+//   --cache-ttl <hours>   Override cache TTL (default 72)
+
+import fs from "node:fs";
+import path from "node:path";
+import crypto from "node:crypto";
+import { spawnSync } from "node:child_process";
+
+const DAY_MS = 24 * 60 * 60 * 1000;
+const HOUR_MS = 60 * 60 * 1000;
+const CLONE_TTL_HOURS = 24;
+const CACHE_TTL_HOURS = 72;
+const SCRATCH_TTL_HOURS = 12;
+const DEFAULT_ENV_PATH = "/etc/myrmidon-host-gc.env";
+
+// --- Env Config -------------------------------------------------------------
+
+export function loadEnvConfig(envPath = DEFAULT_ENV_PATH) {
+  if (!envPath || !fs.existsSync(envPath)) return {};
+  try {
+    const content = fs.readFileSync(envPath, "utf8");
+    const result = {};
+    for (const line of content.split("\n")) {
+      const trimmed = line.trim();
+      if (!trimmed || trimmed.startsWith("#")) continue;
+      const idx = trimmed.indexOf("=");
+      if (idx === -1) continue;
+      const key = trimmed.slice(0, idx).trim();
+      let val = trimmed.slice(idx + 1).trim();
+      if ((val.startsWith('"') && val.endsWith('"')) || (val.startsWith("'") && val.endsWith("'"))) {
+        val = val.slice(1, -1);
+      }
+      result[key] = val;
+      if (process.env[key] === undefined) {
+        process.env[key] = val;
+      }
+    }
+    return result;
+  } catch {
+    return {};
+  }
+}
+
+// --- Args -------------------------------------------------------------------
+
+export function parseArgs(argv) {
+  let envPath = DEFAULT_ENV_PATH;
+  for (let i = 2; i < argv.length; i++) {
+    if (argv[i] === "--env" && argv[i + 1]) {
+      envPath = argv[++i];
+    }
+  }
+  loadEnvConfig(envPath);
+
+  const envTtl = process.env.SCRATCH_TTL_HOURS ||
+    process.env.SCRATCH_TTL ||
+    process.env.BOT_SCRATCH_TTL_HOURS ||
+    process.env.HOST_GC_SCRATCH_TTL_HOURS ||
+    process.env.MYRMIDON_HOST_GC_SCRATCH_TTL_HOURS;
+  const defaultScratchTtl = envTtl !== undefined && !isNaN(Number(envTtl))
+    ? Number(envTtl)
+    : SCRATCH_TTL_HOURS;
+
+  const args = {
+    dryRun: true,
+    root: null,
+    scratchRoots: [],
+    journal: "/var/log/myrmidon-host-gc.jsonl",
+    lock: "/var/run/myrmidon-host-gc.lock",
+    cloneTtlHours: CLONE_TTL_HOURS,
+    cacheTtlHours: CACHE_TTL_HOURS,
+    scratchTtlHours: defaultScratchTtl,
+    procDir: process.env.PROC_DIR || "/proc",
+  };
+  for (let i = 2; i < argv.length; i++) {
+    const a = argv[i];
+    if (a === "--apply") args.dryRun = false;
+    else if (a === "--dry-run") args.dryRun = true;
+    else if (a === "--root") args.root = argv[++i];
+    else if (a === "--scratch-root") args.scratchRoots.push(argv[++i]);
+    else if (a === "--journal") args.journal = argv[++i];
+    else if (a === "--lock") args.lock = argv[++i];
+    else if (a === "--clone-ttl") args.cloneTtlHours = Number(argv[++i]);
+    else if (a === "--cache-ttl") args.cacheTtlHours = Number(argv[++i]);
+    else if (a === "--scratch-ttl") args.scratchTtlHours = Number(argv[++i]);
+    else if (a === "--proc-dir") args.procDir = argv[++i];
+    else if (a === "--env") i++;
+    else if (a === "--help") {
+      console.log("Usage: host-clone-cache-gc.mjs [--apply|--dry-run] [--root path] [--scratch-root path] [--journal path] [--lock path] [--clone-ttl h] [--cache-ttl h] [--scratch-ttl h] [--proc-dir path] [--env path]");
+      process.exit(0);
+    }
+  }
+  return args;
+}
+
+// --- Lock -------------------------------------------------------------------
+
+export function acquireLock(lockPath) {
+  const resolved = path.resolve(lockPath);
+  const dir = path.dirname(resolved);
+  if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+  try {
+    const fd = fs.openSync(resolved, fs.constants.O_WRONLY | fs.constants.O_CREAT | fs.constants.O_EXCL);
+    fs.writeSync(fd, String(process.pid));
+    fs.closeSync(fd);
+    return { ok: true, release: () => { try { fs.unlinkSync(resolved); } catch {} } };
+  } catch (err) {
+    if (err.code === "EEXIST") return { ok: false, reason: "lock held" };
+    throw err;
+  }
+}
+
+// --- Journal ----------------------------------------------------------------
+
+export function journalRecord(journalPath, record) {
+  const dir = path.dirname(path.resolve(journalPath));
+  if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+  const line = JSON.stringify({ at: new Date().toISOString(), ...record }) + "\n";
+  const fd = fs.openSync(journalPath, fs.constants.O_WRONLY | fs.constants.O_APPEND | fs.constants.O_CREAT, 0o600);
+  try { fs.writeSync(fd, line); fs.fsyncSync(fd); } finally { fs.closeSync(fd); }
+}
+
+// --- Safe path helpers ------------------------------------------------------
+
+function isSymlink(p) {
+  try { return fs.lstatSync(p).isSymbolicLink(); } catch { return false; }
+}
+
+export function safeJoin(root, name) {
+  const r = path.resolve(root);
+  const p = path.resolve(r, name);
+  if (!p.startsWith(r + path.sep)) throw new Error(`unsafe path: ${name} escapes root`);
+  return p;
+}
+
+function assertNotSymlink(p, label) {
+  if (isSymlink(p)) throw new Error(`unsafe ${label}: symlink not allowed`);
+}
+
+// --- Git helpers ------------------------------------------------------------
+
+function git(args, cwd) {
+  return spawnSync("git", args, { cwd, encoding: "utf8", timeout: 30000 });
+}
+
+function isGitWorktree(dir) {
+  try {
+    const r = git(["rev-parse", "--is-inside-work-tree"], dir);
+    return r.status === 0 && r.stdout.trim() === "true";
+  } catch { return false; }
+}
+
+function isClean(dir) {
+  try {
+    const r = git(["status", "--porcelain"], dir);
+    return r.status === 0 && r.stdout.trim() === "";
+  } catch { return false; }
+}
+
+function isPushed(dir) {
+  try {
+    const r = git(["log", "@{u}..HEAD", "--oneline"], dir);
+    return r.status === 0 && r.stdout.trim() === "";
+  } catch { return false; }
+}
+
+function hasStash(dir) {
+  try {
+    const r = git(["stash", "list"], dir);
+    return r.status === 0 && r.stdout.trim() !== "";
+  } catch { return false; }
+}
+
+function hasAlternates(dir) {
+  try {
+    const gitDir = path.join(dir, ".git");
+    const altFile = path.join(gitDir, "objects", "info", "alternates");
+    return fs.existsSync(altFile);
+  } catch { return false; }
+}
+
+// --- Scanning ---------------------------------------------------------------
+
+function scanTaskClones(root, now, ttlHours) {
+  const results = [];
+  const ttlMs = ttlHours * HOUR_MS;
+  let entries;
+  try { entries = fs.readdirSync(root, { withFileTypes: true }); } catch { return results; }
+
+  for (const entry of entries) {
+    if (entry.isSymbolicLink()) continue;
+    if (!entry.isDirectory()) continue;
+    const name = entry.name;
+    const fullPath = safeJoin(root, name);
+    if (isSymlink(fullPath)) continue;
+
+    const st = fs.statSync(fullPath);
+    const ageMs = now - st.mtimeMs;
+    if (ageMs < ttlMs) continue; // too fresh
+
+    const isGit = isGitWorktree(fullPath);
+    if (!isGit) continue; // not a git clone, skip
+
+    const clean = isClean(fullPath);
+    const pushed = isPushed(fullPath);
+    const stash = hasStash(fullPath);
+    const alternates = hasAlternates(fullPath);
+
+    results.push({
+      name,
+      path: fullPath,
+      ageMs,
+      mtimeMs: st.mtimeMs,
+      isGit: true,
+      clean,
+      pushed,
+      stash,
+      alternates,
+      safeToRemove: clean && pushed && !stash && !alternates,
+      reason: clean && pushed && !stash && !alternates ? "clean-pushed" : "unsafe-archive",
+    });
+  }
+  return results;
+}
+
+function scanBuildCaches(root, now, ttlHours) {
+  const results = [];
+  const ttlMs = ttlHours * HOUR_MS;
+  if (!fs.existsSync(root)) return results;
+  if (isSymlink(root)) throw new Error(`unsafe cache root: symlink not allowed: ${root}`);
+
+  const entries = fs.readdirSync(root, { withFileTypes: true });
+  for (const entry of entries) {
+    if (entry.isSymbolicLink()) continue;
+    const fullPath = safeJoin(root, entry.name);
+    if (isSymlink(fullPath)) continue;
+
+    let st;
+    try { st = fs.statSync(fullPath); } catch { continue; }
+    const ageMs = now - st.mtimeMs;
+    const sizeBytes = st.size || 0;
+
+    if (ageMs >= ttlMs) {
+      results.push({ name: entry.name, path: fullPath, ageMs, mtimeMs: st.mtimeMs, sizeBytes, reason: "ttl" });
+    } else {
+      results.push({ name: entry.name, path: fullPath, ageMs, mtimeMs: st.mtimeMs, sizeBytes, reason: "fresh" });
+    }
+  }
+  return results;
+}
+
+// --- Scratch GC (BOT-DISK-SCRATCH) -------------------------------------------
+
+export function collectOpenProcInfo(procDir = "/proc") {
+  const openPaths = new Set();
+  const openInodes = new Set();
+  if (!fs.existsSync(procDir)) return { openPaths, openInodes };
+  let pids = [];
+  try {
+    pids = fs.readdirSync(procDir).filter((name) => /^\d+$/.test(name));
+  } catch {
+    return { openPaths, openInodes };
+  }
+  for (const pid of pids) {
+    const fdDir = path.join(procDir, pid, "fd");
+    let fds = [];
+    try {
+      fds = fs.readdirSync(fdDir);
+    } catch {
+      continue;
+    }
+    for (const fd of fds) {
+      const fdPath = path.join(fdDir, fd);
+      try {
+        const link = fs.readlinkSync(fdPath);
+        if (link.startsWith("/")) {
+          openPaths.add(link);
+          try { openPaths.add(fs.realpathSync(link)); } catch {}
+        }
+      } catch {}
+      try {
+        const st = fs.statSync(fdPath);
+        openInodes.add(`${st.dev}:${st.ino}`);
+      } catch {}
+    }
+    const cwdPath = path.join(procDir, pid, "cwd");
+    try {
+      const cwd = fs.readlinkSync(cwdPath);
+      if (cwd.startsWith("/")) {
+        openPaths.add(cwd);
+        try { openPaths.add(fs.realpathSync(cwd)); } catch {}
+      }
+    } catch {}
+    try {
+      const st = fs.statSync(cwdPath);
+      openInodes.add(`${st.dev}:${st.ino}`);
+    } catch {}
+  }
+  return { openPaths, openInodes };
+}
+
+export function inspectPathTree(targetPath) {
+  let maxMtimeMs = 0;
+  let totalSizeBytes = 0;
+  const inodes = new Set();
+
+  function walk(current) {
+    let st;
+    try {
+      st = fs.lstatSync(current);
+    } catch {
+      return;
+    }
+    if (st.mtimeMs > maxMtimeMs) maxMtimeMs = st.mtimeMs;
+    totalSizeBytes += st.size || 0;
+    inodes.add(`${st.dev}:${st.ino}`);
+
+    if (st.isDirectory() && !st.isSymbolicLink()) {
+      let entries = [];
+      try {
+        entries = fs.readdirSync(current);
+      } catch {
+        return;
+      }
+      for (const entry of entries) {
+        walk(path.join(current, entry));
+      }
+    }
+  }
+
+  walk(targetPath);
+  return { maxMtimeMs, totalSizeBytes, inodes };
+}
+
+export function isTreeOpen(targetPath, inodes, openPaths, openInodes) {
+  const normTarget = path.resolve(targetPath);
+  for (const ino of inodes) {
+    if (openInodes.has(ino)) return true;
+  }
+  for (const p of openPaths) {
+    if (p === normTarget || p.startsWith(normTarget + path.sep)) return true;
+  }
+  return false;
+}
+
+export function scanScratchDirectory(scratchDir, now, ttlHours, openInfo = { openPaths: new Set(), openInodes: new Set() }) {
+  const ttlMs = ttlHours * HOUR_MS;
+  const results = [];
+  if (!fs.existsSync(scratchDir)) return results;
+
+  let entries = [];
+  try {
+    entries = fs.readdirSync(scratchDir, { withFileTypes: true });
+  } catch {
+    return results;
+  }
+
+  for (const entry of entries) {
+    const fullPath = path.join(scratchDir, entry.name);
+    if (entry.name === "gh-cli-cache") {
+      results.push({ name: entry.name, path: fullPath, reason: "protected-gh-cli-cache", sizeBytes: 0, ageMs: 0 });
+      continue;
+    }
+    const { maxMtimeMs, totalSizeBytes, inodes } = inspectPathTree(fullPath);
+    const ageMs = now - maxMtimeMs;
+
+    if (isTreeOpen(fullPath, inodes, openInfo.openPaths, openInfo.openInodes)) {
+      results.push({ name: entry.name, path: fullPath, reason: "open-by-process", sizeBytes: totalSizeBytes, ageMs });
+      continue;
+    }
+
+    if (ageMs >= ttlMs) {
+      results.push({ name: entry.name, path: fullPath, reason: "ttl", sizeBytes: totalSizeBytes, ageMs, mtimeMs: maxMtimeMs });
+    } else {
+      results.push({ name: entry.name, path: fullPath, reason: "fresh", sizeBytes: totalSizeBytes, ageMs, mtimeMs: maxMtimeMs });
+    }
+  }
+
+  return results;
+}
+
+export function discoverBotScratchDirs(botsRoot) {
+  const dirs = [];
+  if (!fs.existsSync(botsRoot)) return dirs;
+  let entries = [];
+  try {
+    entries = fs.readdirSync(botsRoot, { withFileTypes: true });
+  } catch {
+    return dirs;
+  }
+  for (const entry of entries) {
+    if (!entry.isDirectory() || entry.name.startsWith(".")) continue;
+    const scratchDir = path.join(botsRoot, entry.name, "hermes/cache/scratch");
+    if (fs.existsSync(scratchDir)) {
+      dirs.push(scratchDir);
+    }
+  }
+  return dirs;
+}
+
+function issueIdentifierFromCloneName(name) {
+  return name.split("@")[0];
+}
+
+export async function fetchIssueStatus(identifier, {
+  baseUrl = process.env.BOARD_API_URL || process.env.PAPERCLIP_API_URL || process.env.MYRMIDON_API_URL || "http://127.0.0.1:3100",
+  apiKey = process.env.PAPERCLIP_API_KEY,
+  fetchImpl = globalThis.fetch,
+} = {}) {
+  let base = (baseUrl || "").replace(/\/$/, "");
+  if (!base) base = "http://127.0.0.1:3100";
+  if (!base.endsWith("/api")) base += "/api";
+  if (typeof fetchImpl !== "function") return { ok: false, reason: "board-unavailable" };
+  const url = `${base}/issues/${encodeURIComponent(identifier)}`;
+  const headers = { Accept: "application/json" };
+  if (apiKey) headers.Authorization = `Bearer ${apiKey}`;
+  try {
+    const response = await fetchImpl(url, { headers });
+    if (!response.ok) return { ok: false, reason: "board-unavailable", statusCode: response.status };
+    const issue = await response.json();
+    if (!issue || typeof issue.status !== "string") return { ok: false, reason: "issue-not-found" };
+    return { ok: true, status: issue.status };
+  } catch {
+    return { ok: false, reason: "board-unavailable" };
+  }
+}
+
+export async function filterClosedTaskClones(clones, options = {}) {
+  const candidates = [];
+  const skipped = [];
+  for (const clone of clones) {
+    const identifier = issueIdentifierFromCloneName(clone.name);
+    const result = await fetchIssueStatus(identifier, options);
+    if (!result.ok) {
+      skipped.push({ ...clone, identifier, reason: result.reason });
+    } else if (!["done", "cancelled"].includes(result.status)) {
+      skipped.push({ ...clone, identifier, status: result.status, reason: "issue-status" });
+    } else {
+      candidates.push({ ...clone, identifier, issueStatus: result.status });
+    }
+  }
+  return { candidates, skipped };
+}
+
+// --- Atomic deletion --------------------------------------------------------
+
+export function atomicDrop(filePath, expectedRoot) {
+  const root = path.resolve(expectedRoot);
+  const resolved = path.resolve(filePath);
+  if (!resolved.startsWith(root + path.sep)) throw new Error(`unsafe drop: ${filePath} escapes root`);
+
+  assertNotSymlink(root, "drop root");
+  const parentDir = path.dirname(resolved);
+  if (fs.existsSync(parentDir)) assertNotSymlink(parentDir, "drop parent");
+
+  const canonicalRoot = fs.realpathSync(root);
+  const canonicalParent = fs.realpathSync(parentDir);
+  if (canonicalParent !== canonicalRoot && !canonicalParent.startsWith(canonicalRoot + path.sep)) {
+    throw new Error(`unsafe drop: ${filePath} escapes root via symlink`);
+  }
+
+  const lstat = fs.lstatSync(resolved);
+  if (lstat.isSymbolicLink()) throw new Error(`unsafe drop: symlink not allowed: ${filePath}`);
+
+  if (lstat.isDirectory()) {
+    // For directories: rename to temp, then recursive rm
+    const tempPath = path.join(parentDir, `.tmp-del-${crypto.randomUUID()}`);
+    fs.renameSync(resolved, tempPath);
+    // Verify the moved dir still exists and is a directory
+    const tempLstat = fs.lstatSync(tempPath);
+    if (!tempLstat.isDirectory() || tempLstat.isSymbolicLink()) {
+      throw new Error("TOCTOU race detected: directory swapped during atomic rename");
+    }
+    fs.rmSync(tempPath, { recursive: true, force: true });
+    return;
+  }
+
+  // For files: rename to temp, then unlink
+  const tempPath = path.join(parentDir, `.tmp-del-${crypto.randomUUID()}`);
+  fs.renameSync(resolved, tempPath);
+  const tempLstat = fs.lstatSync(tempPath);
+  if (tempLstat.isSymbolicLink()) throw new Error("TOCTOU race detected: file swapped during atomic rename");
+  fs.unlinkSync(tempPath);
+}
+
+// --- Archive ----------------------------------------------------------------
+
+function archiveClone(clonePath, archiveRoot) {
+  if (!fs.existsSync(archiveRoot)) fs.mkdirSync(archiveRoot, { recursive: true });
+  const name = path.basename(clonePath);
+  const ts = new Date().toISOString().replace(/[-:]/g, "").replace(/\..+/, "").replace("T", "-").slice(0, 15);
+  const hasZstd = spawnSync("zstd", ["--version"], { stdio: "ignore" }).status === 0;
+  const extension = hasZstd ? "tar.zst" : "tar.gz";
+  const archivePath = path.join(archiveRoot, `${name}-${ts}.${extension}`);
+  let result;
+  let verify;
+  if (hasZstd) {
+    // Prefer zstd, but do not make archival depend on an optional host binary.
+    result = spawnSync("bash", ["-c", `tar -cf - -C "${path.dirname(clonePath)}" "${name}" | zstd -q -o "${archivePath}"`], { timeout: 120000 });
+    verify = ["bash", ["-c", `zstd -q -d -c "${archivePath}" | tar -tf - > /dev/null`]];
+  } else {
+    result = spawnSync("tar", ["-czf", archivePath, "-C", path.dirname(clonePath), name], { timeout: 120000 });
+    verify = ["tar", ["-tzf", archivePath]];
+  }
+  if (result.status !== 0) throw new Error(`archive failed for ${clonePath}: ${result.stderr}`);
+  const verification = spawnSync(verify[0], verify[1], { timeout: 60000, stdio: "ignore" });
+  if (verification.status !== 0) throw new Error(`archive verification failed for ${archivePath}`);
+  return archivePath;
+}
+
+// --- Main -------------------------------------------------------------------
+
+async function main() {
+  const args = parseArgs(process.argv);
+  const now = Date.now();
+
+  const lock = acquireLock(args.lock);
+  if (!lock.ok) {
+    console.error(JSON.stringify({ ok: false, reason: lock.reason }));
+    process.exit(1);
+  }
+
+  try {
+    const root = args.root || "/srv/myrmidon-bots";
+    const cloneTtlMs = args.cloneTtlHours * HOUR_MS;
+    const cacheTtlMs = args.cacheTtlHours * HOUR_MS;
+
+    const plan = { clones: [], caches: [], scratch: [], kept: [], removed: [], archived: [] };
+
+    // 1. Scan task clones
+    const clones = scanTaskClones(root, now, args.cloneTtlHours);
+    const cloneStatuses = await filterClosedTaskClones(clones);
+    for (const skipped of cloneStatuses.skipped) {
+      journalRecord(args.journal, {
+        event: "clone-skipped",
+        path: skipped.path,
+        identifier: skipped.identifier,
+        status: skipped.status,
+        reason: skipped.reason,
+      });
+    }
+    for (const c of cloneStatuses.candidates) {
+      if (c.safeToRemove) {
+        plan.clones.push({ ...c, action: "remove" });
+      } else {
+        plan.clones.push({ ...c, action: "archive-remove" });
+      }
+    }
+
+    // 2. Scan build caches (separate roots)
+    const cacheRoots = [
+      "/srv/devcache",
+      "/srv/devbuild-v2/repos",
+    ];
+    for (const cr of cacheRoots) {
+      if (!fs.existsSync(cr)) continue;
+      const caches = scanBuildCaches(cr, now, args.cacheTtlHours);
+      for (const c of caches) {
+        if (c.reason === "ttl") {
+          plan.caches.push({ ...c, action: "remove" });
+        } else {
+          plan.kept.push({ ...c, action: "keep", reason: "fresh" });
+        }
+      }
+    }
+
+    // 3. Scan bot scratch directories (BOT-DISK-SCRATCH)
+    const scratchDirs = [...args.scratchRoots];
+    if (scratchDirs.length === 0) {
+      scratchDirs.push(...discoverBotScratchDirs(root));
+    }
+    const openInfo = collectOpenProcInfo(args.procDir);
+    for (const sDir of scratchDirs) {
+      if (!fs.existsSync(sDir)) continue;
+      const scratchEntries = scanScratchDirectory(sDir, now, args.scratchTtlHours, openInfo);
+      for (const item of scratchEntries) {
+        if (item.reason === "ttl") {
+          plan.scratch.push({ ...item, action: "remove" });
+        } else {
+          plan.kept.push({ ...item, action: "keep", reason: item.reason });
+        }
+      }
+    }
+
+    // 4. Execute or report
+    if (args.dryRun) {
+      journalRecord(args.journal, {
+        event: "dry-run",
+        clones: plan.clones.length,
+        caches: plan.caches.length,
+        scratch: plan.scratch.length,
+        kept: plan.kept.length,
+      });
+      console.log(JSON.stringify({ ok: true, dryRun: true, plan }, null, 2));
+    } else {
+      // Apply: process archives first, then removals
+      const archiveRoot = path.join(root, ".gc-archive");
+      for (const c of plan.clones.filter((x) => x.action === "archive-remove")) {
+        try {
+          const archivePath = archiveClone(c.path, archiveRoot);
+          journalRecord(args.journal, { event: "clone-archived", path: c.path, archive: archivePath, sizeBytes: c.sizeBytes });
+          atomicDrop(c.path, root);
+          plan.archived.push({ path: c.path, archive: archivePath });
+          journalRecord(args.journal, { event: "clone-removed-after-archive", path: c.path, archive: archivePath });
+        } catch (err) {
+          journalRecord(args.journal, { event: "clone-archive-failed", path: c.path, error: err.message });
+        }
+      }
+      for (const c of plan.clones.filter((x) => x.action === "remove")) {
+        try {
+          atomicDrop(c.path, root);
+          plan.removed.push({ path: c.path });
+          journalRecord(args.journal, { event: "clone-removed", path: c.path, reason: c.reason });
+        } catch (err) {
+          journalRecord(args.journal, { event: "clone-remove-failed", path: c.path, error: err.message });
+        }
+      }
+      for (const c of plan.caches.filter((x) => x.action === "remove")) {
+        try {
+          atomicDrop(c.path, path.dirname(c.path));
+          plan.removed.push({ path: c.path });
+          journalRecord(args.journal, { event: "cache-removed", path: c.path, reason: c.reason, sizeBytes: c.sizeBytes });
+        } catch (err) {
+          journalRecord(args.journal, { event: "cache-remove-failed", path: c.path, error: err.message });
+        }
+      }
+      for (const s of plan.scratch.filter((x) => x.action === "remove")) {
+        try {
+          atomicDrop(s.path, path.dirname(s.path));
+          plan.removed.push({ path: s.path });
+          journalRecord(args.journal, { event: "scratch-pruned", path: s.path, sizeBytes: s.sizeBytes });
+        } catch (err) {
+          journalRecord(args.journal, { event: "scratch-prune-failed", path: s.path, error: err.message });
+        }
+      }
+      journalRecord(args.journal, {
+        event: "apply-complete",
+        removed: plan.removed.length,
+        archived: plan.archived.length,
+        scratchPruned: plan.scratch.length,
+        kept: plan.kept.length,
+      });
+      console.log(JSON.stringify({
+        ok: true,
+        dryRun: false,
+        removed: plan.removed.length,
+        archived: plan.archived.length,
+        scratchPruned: plan.scratch.length,
+        kept: plan.kept.length,
+      }, null, 2));
+    }
+  } finally {
+    lock.release();
+  }
+}
+
+// Only run main when executed directly (not when imported by tests)
+if (process.argv[1] && path.resolve(process.argv[1]) === path.resolve(new URL(import.meta.url).pathname)) {
+  main().catch((err) => {
+    console.error(err);
+    process.exitCode = 1;
+  });
+}

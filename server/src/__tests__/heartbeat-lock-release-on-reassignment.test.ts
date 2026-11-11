@@ -359,4 +359,78 @@ describeEmbeddedPostgres("heartbeat lock release on cross-agent reassignment", (
       );
     });
   });
+
+  // OPE-10582 п.1: прогон review-участника (currentParticipant этапа ревью)
+  // не должен отменяться охранником «assignee changed», даже когда assignee
+  // — другой агент. Иначе idle-pickup ставит прогон review-участнику, а
+  // охранник тут же его отменяет — бесконечный цикл холостых пробуждений.
+  it("does not cancel a queued review-participant run when assignee is a different agent (OPE-10582)", async () => {
+    const { companyId, reviewerAgentId, issueId } = await seedCrossAgentScenario({
+      holderStatus: "queued",
+    });
+
+    // Make the queued holder belong to the reviewer, and set the issue's
+    // executionState.currentParticipant to the reviewer — this is the
+    // review-stage participant scenario.
+    await db
+      .update(heartbeatRuns)
+      .set({ agentId: reviewerAgentId })
+      .where(eq(heartbeatRuns.id, (await db.select({ id: heartbeatRuns.id }).from(heartbeatRuns).limit(1))[0]!.id));
+
+    await db
+      .update(issues)
+      .set({
+        executionState: {
+          status: "pending",
+          currentStageType: "review",
+          currentParticipant: { type: "agent", agentId: reviewerAgentId },
+        },
+      })
+      .where(eq(issues.id, issueId));
+
+    // Occupy the reviewer's concurrency slot so the new wake stays queued.
+    await db
+      .update(agents)
+      .set({
+        runtimeConfig: { heartbeat: { wakeOnDemand: true, maxConcurrentRuns: 1 } },
+      })
+      .where(eq(agents.id, reviewerAgentId));
+    await db.insert(heartbeatRuns).values({
+      id: randomUUID(),
+      companyId,
+      agentId: reviewerAgentId,
+      invocationSource: "automation",
+      triggerDetail: "system",
+      status: "running",
+      contextSnapshot: { wakeReason: "test_busy_slot" },
+      startedAt: new Date(),
+    });
+
+    const heartbeat = heartbeatService(db);
+    const newRun = await heartbeat.wakeup(reviewerAgentId, {
+      source: "automation",
+      triggerDetail: "system",
+      reason: "idle_pickup",
+      payload: { issueId },
+      contextSnapshot: { issueId, taskId: issueId, wakeReason: "idle_pickup" },
+      requestedByActorType: "system",
+      requestedByActorId: "idle_pickup",
+    });
+
+    // The review-participant run should NOT be cancelled by the guard.
+    const holderRunId = (await db
+      .select({ id: heartbeatRuns.id })
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.agentId, reviewerAgentId))
+      .limit(1))[0]!.id;
+
+    const holder = await db
+      .select({ status: heartbeatRuns.status, errorCode: heartbeatRuns.errorCode })
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.id, holderRunId))
+      .then((rows) => rows[0] ?? null);
+
+    // The holder run must NOT be cancelled with lock_released_on_reassignment.
+    expect(holder?.errorCode).not.toBe("lock_released_on_reassignment");
+  });
 });

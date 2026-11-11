@@ -77,7 +77,7 @@ func checkConfig(args []string) int {
 	if !ok {
 		return 2
 	}
-	cfg, hash, err := config.Load(path)
+	cfg, hash, err := config.LoadForRuntime(path)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		return 1
@@ -91,7 +91,7 @@ func serve(args []string) int {
 	if !ok {
 		return 2
 	}
-	cfg, hash, err := config.Load(path)
+	cfg, hash, err := config.LoadForRuntime(path)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		return 1

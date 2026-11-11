@@ -139,6 +139,10 @@ export { heartbeatRunEvents } from "./heartbeat_run_events.js";
 export { heartbeatRunContinuations } from "./heartbeat_run_continuations.js";
 export { issueContinuationKeys } from "./issue_continuation_keys.js";
 export { providerTraceRecords } from "./provider_trace_records.js";
+export { providerUsageSnapshots, providerUsageEventReceipts } from "./provider_usage_snapshots.js";
+export { providerUsageWarningDeliveries } from "./provider_usage_warning_deliveries.js";
+// myrmidon(1.6.7 TOKENS-TRACE / OPE-10727): per-LLM-call token trace.
+export { llmCallTraces } from "./llm_call_traces.js";
 export { completionContracts } from "./completion_contracts.js";
 export { nativeRunResults } from "./native_run_results.js";
 export { nativeRunFinalizations } from "./native_run_finalizations.js";
@@ -159,6 +163,7 @@ export { managedAgentProfiles } from "./managed_agent_profiles.js";
 export { remoteAgentProfiles } from "./remote_agent_profiles.js";
 export { companySecretVersions } from "./company_secret_versions.js";
 export { companySecretBindings } from "./company_secret_bindings.js";
+export { companySecretGitHubAppInstallations } from "./company_secret_github_app_installations.js";
 export { companySecretProposals } from "./company_secret_proposals.js";
 export { userSecretDeclarations } from "./user_secret_declarations.js";
 export { secretAccessEvents } from "./secret_access_events.js";
@@ -238,7 +243,7 @@ export {
 } from "./myrmidon_bot_scope.js";
 // myrmidon(1.7-ACTIVE-CHANNEL): the owner's last activity per channel (portal / Telegram).
 export { myrmidonOwnerActivity } from "./myrmidon_owner_activity.js";
-export { myrmidonFleetServers } from "./myrmidon_fleet_servers.js"; // myrmidon(SC1): fleet-server registry for the browser console
+export { myrmidonFleetServers, myrmidonFleetOnboardJobs } from "./myrmidon_fleet_servers.js"; // myrmidon(SC1): fleet-server registry for the browser console
 export { myrmidonFleetSites, fleetSites, type FleetSiteCapacity, type FleetSiteHealth, type FleetSiteProfile } from "./myrmidon_fleet_sites.js";
 export { myrmidonFleetAffinity, fleetAffinity } from "./myrmidon_fleet_affinity.js";
 export { myrmidonFleetMoves, type FleetMovePhaseLogEntry } from "./myrmidon_fleet_moves.js";
@@ -298,6 +303,10 @@ export {
   knowledgeSources,
   knowledgeSuggestions,
   knowledgeEvents,
+  knowledgeDeviations,
+  type KnowledgeDeviation,
+  type NewKnowledgeDeviation,
+  knowledgeSettings,
   KNOWLEDGE_KINDS,
   KNOWLEDGE_ITEM_STATUSES,
   KNOWLEDGE_REVISION_LANGS,
@@ -338,3 +347,29 @@ export { corpusShadowLog } from "./corpus_shadow_log.js";
 export { myrmidonInstallIdentity } from "./myrmidon_install_identity.js";
 // myrmidon(OPE-8985): users-admin-a — password-set tokens and the block list.
 export { userPasswordSetTokens, userBlocks } from "./user_password_set_tokens.js";
+// myrmidon(OPE-9187): idempotency journal for legacy blocked imports.
+export { legacyBlockedImports } from "./legacy_blocked_imports.js";
+// myrmidon(1.7-REDACT): redaction substitutions with expiry TTL
+export { redactionSubstitutions } from "./redaction_substitutions.js";
+// myrmidon(1.7 POST-TASK-REFLECT, OPE-12095): outbox queue for post-task reflection jobs on issue completion.
+export {
+  reflectJobs,
+  REFLECT_JOB_STATUSES,
+  type ReflectJobStatus,
+  REFLECT_JOB_TYPES,
+  type ReflectJobType,
+  type ReflectJobRow,
+  type NewReflectJobRow,
+} from "./reflect_jobs.js";
+// myrmidon(1.7 PAYWALL-WEBHOOK-SKELETON, OPE-12093): append-only payment webhook event log.
+export {
+  billingEvents,
+  BILLING_EVENT_STATUSES,
+  type BillingEventStatus,
+  BILLING_EVENT_TYPES,
+  type BillingEventType,
+  type BillingEventRow,
+  type NewBillingEventRow,
+} from "./billing_events.js";
+// myrmidon(1.7 WEBHOOK-INTAKE, OPE-12041): raw inbound webhook drafts (signature + dedup).
+export { webhookIntakeDrafts } from "./webhook_intake_drafts.js";

@@ -7,6 +7,7 @@
 // outcome) stays exported for callers that want to watch a job themselves.
 
 import type {
+  DocumentParseOptions,
   DocumentParseRequest,
   DocumentParseResult,
   DocumentParser,
@@ -22,9 +23,12 @@ export type HttpDocumentParserOptions = DocumentParserClientOptions;
 export function createHttpDocumentParser(options: DocumentParserClientOptions): DocumentParser {
   const client = createDocumentParserClient(options);
   return {
-    async parse(request: DocumentParseRequest): Promise<DocumentParseResult> {
+    async parse(request: DocumentParseRequest, options: DocumentParseOptions = {}): Promise<DocumentParseResult> {
       assertRequest(request);
-      const outcome = await client.parseDocument(toSubmission(request));
+      const outcome = await client.parseDocument(
+        toSubmission(request),
+        options.signal ? { signal: options.signal } : {},
+      );
       if (!outcome.ok) throw outcome.error;
       return toPortResult(outcome.result, request);
     },

@@ -41,6 +41,24 @@ export interface ExecutionContinuationEnvelope {
     messages: ExecutionContinuationEnvelope["messages"];
   };
   recoveryOutcomes?: Array<{ recoveryActionId: string; decision: unknown }>;
+  /**
+   * The run this wake continues (the handoff/retry source, else the latest
+   * finished run of the agent on the task) and how it ended. A fresh-session
+   * agent reads this instead of the previous run's messages.
+   *
+   * myrmidon(OPE-12316): `outcome`/`stopKind`/`resultSummary` mirror the
+   * `paperclip.run_outcome.v1` contract the previous run stored in its
+   * `result_json`, so the next run sees "previous run: blocked
+   * (budget_limit)" without reading the run log. `resultSummary` is the
+   * outcome contract's masked (`maskSecretsInText`) summary.
+   */
+  previousRun?: {
+    runId: string;
+    status: string;
+    outcome?: import("../myrmidon/run-outcome.js").RunOutcomeValue | null;
+    stopKind?: import("../myrmidon/run-outcome.js").RunStopKind | null;
+    resultSummary?: string | null;
+  } | null;
   completedWork: string | null;
   /** Start a new turn from history; never replay prior tool calls automatically. */
   interruptedRunId?: string;
@@ -53,7 +71,11 @@ export interface ExecutionContinuationEnvelope {
   }>;
   unresolvedInteractionIds: string[];
   coverage: {
-    kind: "full_task_history" | "task_history_delta";
+    /**
+     * `summary_only` and `recent_messages` are set by the wake renderer when a
+     * card's `wakeHistory` mode shortens the message list.
+     */
+    kind: "full_task_history" | "task_history_delta" | "summary_only" | "recent_messages";
     baseRunId?: string;
     throughCommentId: string | null;
     summaryThroughCommentId: null;

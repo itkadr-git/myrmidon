@@ -1,0 +1,476 @@
+{
+  "uiSwitch": {
+    "label": "Interface",
+    "new": "New",
+    "legacy": "Previous",
+    "instanceDefault": "Follow instance setting",
+    "switchTo": "Switch interface version"
+  },
+  "nav": {
+    "newTask": "New Task",
+    "search": "Search",
+    "dashboard": "Dashboard",
+    "inbox": "Inbox",
+    "decisions": "Decisions",
+    "status": "Status",
+    "conferenceRoom": "Conference Room",
+    "work": "Work",
+    "tasks": "Tasks",
+    "projects": "Projects",
+    "routines": "Routines",
+    "artifacts": "Artifacts",
+    "cases": "Cases",
+    "pipelines": "Pipelines",
+    "goals": "Goals",
+    "workspaces": "Workspaces",
+    "org": "Org",
+    "agents": "Agents",
+    "skills": "Skills",
+    "connectors": "Connectors",
+    "audit": "Audit",
+    "organization": "Organization",
+    "timeline": "Timeline",
+    "costs": "Costs",
+    "activity": "Activity",
+    "settings": "Settings",
+    "home": "Home",
+    "unread": "unread",
+    "decisionsBadge": "decisions",
+    "shell": {
+      "observe": "Observe",
+      "commandCenter": "Command Center",
+      "fleet": "Fleet",
+      "swarm": "Swarm",
+      "quality": "Quality",
+      "decisionsAndComms": "Decisions & Communication",
+      "waitingForMe": "Waiting for me",
+      "commander": "Commander",
+      "more": "More"
+    }
+  },
+  "common": {
+    "cancel": "Cancel",
+    "save": "Save",
+    "close": "Close",
+    "retry": "Retry",
+    "retrying": "Retrying…",
+    "remove": "Remove",
+    "removing": "Removing…",
+    "update": "Update",
+    "loading": "Loading…",
+    "moreActions": "More actions",
+    "none": "None",
+    "me": "Me",
+    "board": "Board",
+    "apply": "Apply",
+    "undo": "Undo",
+    "on": "On",
+    "off": "Off",
+    "notSaved": "Not saved: {{count}}"
+  },
+  "language": {
+    "label": "Language",
+    "english": "English",
+    "russian": "Русский",
+    "switchTo": "Switch interface language",
+    "settingsTitle": "Language and formats",
+    "settingsDescription": "Interface language for the board. Agent-written text and identifiers are never translated; missing Russian keys fall back to English.",
+    "currentLanguage": "Current language",
+    "previewTitle": "Preview",
+    "previewNav": "Navigation",
+    "previewDecisionCard": "Decision card",
+    "previewNavItemDecisions": "Waiting for me",
+    "previewNavItemSwarm": "Swarm",
+    "previewNavItemCosts": "Costs",
+    "previewDecisionCardTitle": "Extend the budget by $1",
+    "previewDecisionCardBody": "The soft limit paused {{count}} task(s). Extending the budget resumes them automatically.",
+    "savedToast": "Language saved",
+    "saveFailed": "Could not save the language choice. It stays for this browser only.",
+    "serverHint": "The choice is saved to your user profile and follows you across devices.",
+    "telegramBridgeUser": "The Telegram bot answers you in this language too.",
+    "telegramBridgeEnv": "The Telegram bot ignores this choice right now: the server environment forces {{language}} for every chat.",
+    "telegramBridgeInstance": "The Telegram bot answers in {{language}} — the instance language, because you have not chosen one here.",
+    "telegramBridgeDefault": "The Telegram bot answers in {{language}} — the instance default, because you have not chosen one here.",
+    "instanceLanguageTitle": "Telegram bot language for the instance",
+    "instanceLanguageDescription": "Used for every board member who has not chosen a language above. Only an instance admin can change it; it applies from the next reply, without a restart.",
+    "instanceLanguageSave": "Save",
+    "instanceLanguageSaved": "Instance language for the Telegram bot: {{language}}.",
+    "instanceLanguageFailed": "Could not save the instance language.",
+    "instanceLanguageAdminOnly": "Only an instance admin can change the instance language.",
+    "uploadTitle": "Upload a custom translation",
+    "uploadDescription": "Choose a locale and upload a complete JSON catalog. Keys and placeholders must match English.",
+    "uploadLocale": "Locale",
+    "uploadFile": "Catalog JSON file",
+    "uploadPreview": "Preview",
+    "uploadApply": "Apply translation",
+    "uploadInvalid": "The catalog does not match the English keys or placeholders.",
+    "uploadSaved": "Custom translation saved.",
+    "uploadError": "Could not save the catalog. Please try again.",
+    "uploadSizeError": "Catalog must be 256 KiB or smaller.",
+    "uploadMissingCount": "{{count}} missing keys",
+    "uploadUnknownCount": "{{count}} unknown keys",
+    "uploadPlaceholderCount": "{{count}} placeholder mismatches"
+  },
+  "status": {
+    "open": "Open",
+    "inProgress": "In progress",
+    "inReview": "In review",
+    "blocked": "Blocked",
+    "done": "Done",
+    "cancelled": "Cancelled",
+    "todo": "To do",
+    "queued": "Queued",
+    "running": "Running",
+    "error": "Error",
+    "paused": "Paused",
+    "terminated": "Terminated",
+    "idle": "Idle",
+    "failed": "Failed",
+    "timedOut": "Timed out",
+    "scheduledRetry": "Scheduled retry"
+  },
+  "agentRoles": {
+    "ceo": "CEO",
+    "cfo": "CFO",
+    "cmo": "CMO",
+    "cto": "CTO",
+    "designer": "Designer",
+    "devops": "DevOps",
+    "engineer": "Engineer",
+    "general": "General",
+    "pm": "Project manager",
+    "qa": "QA",
+    "researcher": "Researcher",
+    "security": "Security"
+  },
+  "tasks": {
+    "newTask": "New Task",
+    "searchTasks": "Search tasks",
+    "assignee": "Assignee",
+    "priority": "Priority",
+    "status": "Status",
+    "filter": "Filter",
+    "all": "All",
+    "active": "Active",
+    "board": "Board",
+    "list": "List",
+    "noTasks": "No tasks",
+    "createdTask": "Task created",
+    "createdBy": "Created by {{author}}",
+    "updatedAt": "Updated {{time}}",
+    "commentsCount": "{{count}} comment(s)",
+    "runsCount": "{{count}} run(s)",
+    "blocks": "Blocks",
+    "blockedBy": "Blocked by",
+    "relatedTo": "Related to"
+  },
+  "time": {
+    "justNow": "just now",
+    "minutesAgo": "{{count}}m ago",
+    "hoursAgo": "{{count}}h ago",
+    "daysAgo": "{{count}}d ago",
+    "weeksAgo": "{{count}}w ago",
+    "monthsAgo": "{{count}}mo ago",
+    "updated": "Updated {{time}}"
+  },
+  "ui2": {
+    "agent": {
+      "overview": {
+        "budget": {
+          "none": "No budget",
+          "title": "Budget",
+          "utilization": "{{spent}} of {{budget}} used"
+        },
+        "lastRun": "Last run",
+        "missing": "Agent not found",
+        "noRuns": "No runs yet",
+        "runCost": "Cost",
+        "runResult": "Result",
+        "runTokens": "Tokens",
+        "runs": {
+          "empty": "No runs in this period",
+          "title": "Runs"
+        },
+        "spend": {
+          "month": "Spend this month"
+        },
+        "status": "Status",
+        "title": "Agent overview"
+      }
+    },
+    "common": {
+      "emptyDoneSr": "No completed items",
+      "emptyFilteredSr": "No items match the filters",
+      "error": "Something went wrong",
+      "retry": "Retry",
+      "unknown": "Unknown"
+    },
+    "costs": {
+      "agents": {
+        "agent": "Agent",
+        "cost": "Cost",
+        "empty": "No agent spend in this period",
+        "runs": "Runs",
+        "title": "Spend by agent",
+        "tokens": "Tokens",
+        "unnamed": "Unnamed agent"
+      },
+      "incidents": {
+        "keepPaused": "Keep paused",
+        "raiseAndResume": "Raise and resume",
+        "title": "Cost incidents"
+      },
+      "forecast": "Forecast through month-end: {{amount}}",
+      "unpriced": "Unpriced",
+      "unpricedEvents": "{{count}} events without a price",
+      "policies": {
+        "amount": "Amount",
+        "empty": "No cost policies",
+        "observed": "Observed: {{amount}}",
+        "scope": "Scope",
+        "scopeType": {
+          "agent": "Agent",
+          "company": "Company",
+          "project": "Project"
+        },
+        "title": "Cost policies",
+        "window": {
+          "calendar_month_utc": "Calendar month (UTC)",
+          "lifetime": "Lifetime"
+        }
+      },
+      "tile": {
+        "budget": "Budget",
+        "incidents": "Incidents",
+        "pausedAgents": "Paused agents",
+        "spent": "Spent",
+        "utilization": "Utilization"
+      },
+      "title": "Costs"
+    },
+    "decisions": {
+      "badge": "{{count}} decisions waiting",
+      "card": {
+        "age": "{{age}} ago",
+        "decide": "Decide",
+        "dismiss": "Dismiss",
+        "expired": "Expired",
+        "expires": "Expires {{time}}",
+        "optionExecutes": "Executes on accept: {{action}}",
+        "options": "Options",
+        "preparedBy": "Prepared by {{who}}",
+        "summary": "Summary"
+      },
+      "empty": {
+        "body": "Nothing waits for a decision right now.",
+        "filtered": {
+          "body": "No decisions match the current filters.",
+          "title": "No matches"
+        },
+        "title": "No decisions"
+      },
+      "filter": {
+        "all": "All",
+        "external": "External",
+        "money": "Money",
+        "policies": "Policies"
+      },
+      "subtitle": "Awaiting your choice",
+      "title": "Decisions"
+    },
+    "settings": {
+      "language": {
+        "note": "Agent output and identifiers are not translated.",
+        "preview": {
+          "decisionBody": "A decision card preview: options, expiry and the actor who prepared it.",
+          "decisionTitle": "Decision card",
+          "title": "Preview"
+        },
+        "subtitle": "Interface language",
+        "title": "Language and formats"
+      },
+      "runs": {
+        "drain": {
+          "action": {
+            "start": "Start drain",
+            "stop": "Stop drain"
+          },
+          "confirm": {
+            "cancel": "Cancel",
+            "confirm": "Confirm start",
+            "prompt": "Confirm starting queue drain for {{duration}}? New runs will not be dispatched."
+          },
+          "duration": {
+            "d15m": "15 min",
+            "d1h": "1 hour",
+            "d4h": "4 hours",
+            "d24h": "24 hours",
+            "label": "Drain duration"
+          },
+          "error": {
+            "actionFailed": "Action failed.",
+            "denied": "No permission to manage task drain.",
+            "generic": "Failed to load task drain status."
+          },
+          "status": {
+            "activeRuns": "Active runs: {{count}}",
+            "draining": "Queue drain is active",
+            "idle": "Queue drain is not active",
+            "noExpiry": "Until manually stopped",
+            "until": "Until {{time}}"
+          },
+          "subtitle": "Stop accepting new runs and wait for active runs to finish.",
+          "title": "Queue drain"
+        },
+        "off": "Runs are off",
+        "reset": "Reset",
+        "save": "Save",
+        "saveError": "Could not save. The value stays applied until reload.",
+        "source": {
+          "default": "Default",
+          "env": "Environment",
+          "settings": "Settings"
+        },
+        "subtitle": "How the dispatch of runs is configured",
+        "swarmClaim": {
+          "enable": "Enable self-organization",
+          "leaseTtlSec": "Task lease TTL (seconds)",
+          "loadError": "Could not load swarm-claim settings",
+          "maxActiveTasks": "Per-agent task limit",
+          "saveError": "Could not save swarm-claim settings",
+          "source": {
+            "default": "Default",
+            "env": "Set by environment",
+            "settings": "Saved"
+          },
+          "statusLine": "{{queued}} unassigned task(s) waiting · {{claimed}} claimed in the last hour · {{cancelled}} cancelled in the last hour",
+          "subtitle": "Automatic task matching and claim settings",
+          "title": "Self-organization (swarm-claim)"
+        },
+        "title": "Runs"
+      },
+      "system": {
+        "changelog": {
+          "actor": "Actor",
+          "empty": "No changes recorded",
+          "title": "Changelog"
+        },
+        "channels": {
+          "title": "Channels",
+          "web": "Web"
+        },
+        "denied": "Access denied",
+        "deniedHint": "You do not have permission to view this screen.",
+        "keys": {
+          "created": "Created",
+          "empty": "No keys",
+          "expires": "Expires",
+          "lastUsed": "Last used",
+          "never": "Never",
+          "revoked": "Revoked",
+          "title": "Keys"
+        },
+        "members": {
+          "empty": "No members",
+          "role": "Role",
+          "status": "Status",
+          "title": "Members"
+        },
+        "subtitle": "Instance-wide settings",
+        "title": "System"
+      },
+      "navLabel": "Settings sections"
+    },
+    "owner": "Owner",
+    "ownerChannel": "Web",
+    "shell": {
+      "activeChannel": {
+        "web": "Active · Web",
+        "telegram": "Active · Telegram",
+        "none": "Active · not seen recently"
+      }
+    },
+    "nests": {
+      "all": "All nests"
+    },
+    "phone": {
+      "status": "Owner · Web"
+    },
+    "chip": {
+      "colony": "{{active}} of {{total}}",
+      "fleet": "Fleet",
+      "fleetAttention": "Fleet: 1 attention",
+      "forecast": "{{spend}} of {{budget}}",
+      "forecastSpendOnly": "{{spend}} spent"
+    },
+    "commander": {
+      "aria": "Tell the Commander (Ctrl K)",
+      "placeholder": "Tell the Commander…",
+      "stubNote": "Stub: the message is not sent yet. It opens the existing chat; the Commander conversation arrives with the 1.6 chat update.",
+      "carryNote": "The draft opens in the Commander chat, where the board proposes an epic from your text.",
+      "openChat": "Open chat"
+    },
+    "nav": {
+      "railLabel": "Main navigation",
+      "badge": {
+        "attention": "{{count}} items need attention"
+      }
+    },
+    "screens": {
+      "placeholderTitle": "This screen arrives with 2.0",
+      "placeholderBody": "The 2.0 layout for this area is not wired yet; the working screen below keeps the flow.",
+      "placeholderLegacyLink": "Back to the current layout",
+      "fleet": {
+        "title": "Servers",
+        "subtitle": "Live infrastructure health from the configured monitoring sources.",
+        "monitoringError": "Monitoring is not configured or is unavailable.",
+        "monitoringUnavailable": "Monitoring data is unavailable.",
+        "hosts": "Hosts",
+        "services": "Services",
+        "oom": "OOM incidents (24h)",
+        "oomIncrease": "OOM incidents increased vs previous 24h",
+        "oomAgents": "By agent",
+        "oomRoles": "By role",
+        "empty": "No fleet data",
+        "emptyBody": "No hosts or services were returned for this company.",
+        "error": "Fleet data is unavailable.",
+        "metrics": "CPU {{cpu}}% · memory {{memory}}% · disk {{disk}}%",
+        "states": {
+          "running": "Running",
+          "stopped": "Stopped",
+          "unknown": "Unknown"
+        }
+      },
+      "more": {
+        "title": "More",
+        "subtitle": "Additional sections and preferences.",
+        "sections": {
+          "navigation": "Navigation",
+          "appearance": "Appearance"
+        },
+        "theme": "Theme",
+        "themeLight": "Light",
+        "themeDark": "Dark",
+        "themeSystem": "System",
+        "links": {
+          "swarm": "Swarm",
+          "costs": "Costs",
+          "quality": "Quality",
+          "settings": "Settings",
+          "agentCard": "Agent card"
+        }
+      }
+    }
+  },
+  "commanderChat": {
+    "title": "Commander chat",
+    "subtitle": "Describe what you want in plain text — the board proposes an epic with tasks for your approval.",
+    "loading": "Loading conversation…",
+    "noAgent": "No Commander agent found in this company yet.",
+    "placeholder": "Tell the Commander what to build…",
+    "send": "Build a plan",
+    "planAria": "Proposed plan",
+    "epicLabel": "Epic",
+    "resolving": "Applying your decision…"
+  }
+}

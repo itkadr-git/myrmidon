@@ -28,6 +28,20 @@ An agent can be woken up in four ways:
 
 If an agent is already running, new wakeups are merged (coalesced) instead of launching duplicate runs.
 
+A skipped manual wake returns the persisted admission reason rather than a generic
+`wakeup_skipped` when the wake request has a durable skip receipt. For example,
+`heartbeat.daily_run_limit` includes the observed run count and configured limit;
+`issue_dependencies_blocked` includes the blocking issue IDs. Rejected wakes are
+also recorded in the activity log with agent ID, issue ID, reason, and details.
+
+A manual wake initiated by a board user/operator bypasses the per-agent daily run
+limit. Automatic wakes remain subject to that limit: a capped agent is excluded
+from swarm matching, and stranded-issue recovery does not queue another
+`issue_continuation_needed` wake until the UTC daily count permits it. Other
+admission checks, including unresolved issue dependencies, still apply to manual
+wakes. If a manual wake is skipped, inspect its returned reason and the activity
+log before retrying.
+
 ## 3. What to configure per agent
 
 ## 3.1 Adapter choice

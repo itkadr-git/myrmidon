@@ -307,9 +307,11 @@
           "owner_pending_card": "Owner card",
           "secret_off_run_reads": "Off-run secret reads",
           "secret_off_run_grant_expiring": "Off-run secret grant expiring",
+          "mcp_gateway_token_expiring": "Gateway token expiring",
           "empty_model_catalog": "Model catalog",
           "queue_stall": "Queue stall",
           "codex_pool_alert": "Codex pool alert",
+          "litellm_budget": "LLM key budget",
           "issue_monitor_overdue": "Overdue issue monitor"
         }
       }

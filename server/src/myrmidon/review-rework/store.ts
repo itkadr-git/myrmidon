@@ -14,15 +14,20 @@
 // expensive per-task reads (comments, PR coordinates) happen only for
 // candidates the sweep actually processes.
 
-import { and, asc, desc, eq, inArray, isNull, or, sql } from "drizzle-orm";
+import { and, asc, desc, eq, getTableColumns, inArray, isNull, or, sql } from "drizzle-orm";
 import {
   companies,
   issueComments,
+  activityLog,
   issueWorkProducts,
   issues,
   type Db,
 } from "@myrmidon/db";
-import { REVIEW_REWORK_ORIGIN_KIND, isAgentStatusInvokable } from "@myrmidon/shared";
+import {
+  REVIEW_REWORK_CLOSED_ACTION,
+  REVIEW_REWORK_ORIGIN_KIND,
+  isAgentStatusInvokable,
+} from "@myrmidon/shared";
 import { decodeReworkFingerprint } from "./domain.js";
 import type { ReviewReworkChildFacts, ReviewReworkTaskFacts } from "./domain.js";
 
@@ -33,6 +38,20 @@ export interface ReworkCandidateRow {
   textParts: string[];
   /** The task's pull_request work products (non-archived). */
   products: Array<{ repo: string; number: number; url: string | null; status: string }>;
+  /**
+   * myrmidon(OPE-12397): the candidate query's `origin_kind = 'review_rework'`
+   * child EXISTS, hoisted onto the row so the sweep can skip a task with no
+   * child, no verdict and no live product before it reads comments or GitHub.
+   * `undefined` only from hand-built rows (tests): the guard then assumes
+   * present and proceeds as before.
+   */
+  childPresent?: boolean;
+  /**
+   * myrmidon(OPE-12397): the candidate query's verdict-keyword EXISTS on the
+   * task's comments, hoisted the same way; `undefined` only from hand-built
+   * rows (tests) — the guard then assumes present.
+   */
+  verdictPresent?: boolean;
 }
 
 export interface CreateReworkTaskInput {
@@ -93,7 +112,24 @@ export interface ReviewReworkStore {
     expectStatus: string;
     comment: string;
   }): Promise<boolean>;
+  /** True only when a human/ADM reactivated an issue the loop had closed. */
+  reopenedAfterLoopClose(companyId: string, issueId: string): Promise<boolean>;
+  awaitAcceptance(input: {
+    issueId: string;
+    companyId: string;
+    expectStatus: string;
+    assigneeAgentId: string | null;
+    comment: string;
+  }): Promise<boolean>;
 }
+
+/**
+ * myrmidon(OPE-12397): the candidate query itself computes the two cheap flags
+ * the sweep's skip-guard reads — the same child-EXISTS and verdict-keyword
+ * EXISTS it already filters on, hoisted onto the row as booleans. No extra
+ * round trips: one query, the flags ride along.
+ */
+const CANDIDATE_FLAG_PREFIX = "flag_";
 
 function taskFacts(row: typeof issues.$inferSelect): ReviewReworkTaskFacts {
   const executionState =
@@ -109,6 +145,7 @@ function taskFacts(row: typeof issues.$inferSelect): ReviewReworkTaskFacts {
     companyId: row.companyId,
     identifier: row.identifier,
     title: row.title,
+    description: row.description,
     status: row.status,
     assigneeAgentId: row.assigneeAgentId,
     assigneeUserId: row.assigneeUserId,
@@ -197,12 +234,15 @@ export function createPgReviewReworkStore(db: Db): ReviewReworkStore {
     },
 
     async listCandidateTasks(companyId, limit) {
-      const childExists = sql`exists (
+      // myrmidon(OPE-12397): the two EXISTS the filter ORs together are also
+      // selected as booleans — the sweep's skip-guard reads them off the row
+      // without a second round trip.
+      const childExists = sql<boolean>`exists (
         select 1 from ${issues} child
         where child.parent_id = ${issues.id}
           and child.origin_kind = ${REVIEW_REWORK_ORIGIN_KIND}
       )`;
-      const verdictExists = sql`exists (
+      const verdictExists = sql<boolean>`exists (
         select 1 from ${issueComments}
         where ${issueComments.issueId} = ${issues.id}
           and ${issueComments.deletedAt} is null
@@ -215,7 +255,11 @@ export function createPgReviewReworkStore(db: Db): ReviewReworkStore {
           and ${issueWorkProducts.status} <> 'archived'
       )`;
       const rows = await db
-        .select()
+        .select({
+          ...getTableColumns(issues),
+          childPresent: sql<boolean>`coalesce(${childExists}, false)`.as("flag_child_present"),
+          verdictPresent: sql<boolean>`coalesce(${verdictExists}, false)`.as("flag_verdict_present"),
+        })
         .from(issues)
         .where(
           and(
@@ -244,6 +288,8 @@ export function createPgReviewReworkStore(db: Db): ReviewReworkStore {
         out.push({
           task: taskFacts(row),
           textParts: [row.title, row.description ?? ""],
+          childPresent: row.childPresent === true,
+          verdictPresent: row.verdictPresent === true,
           products: products
             // Spreading `null` yields `{ status }` with no repo — the guard
             // below must drop entries whose coordinates could not be read,
@@ -435,6 +481,76 @@ export function createPgReviewReworkStore(db: Db): ReviewReworkStore {
         input.companyId,
         (current) => current.status === input.expectStatus,
         () => ({ status: "done", executionState: null, executionPolicy: null }),
+        input.comment,
+      );
+    },
+
+    // OPE-12260: the loop must never out-shout a person. The veto is a
+    // historical fact, not "the newest audit row looks like a reopen": any
+    // user/agent issue.updated row moving the issue OFF a terminal status
+    // (done/cancelled) after the loop's own close settles it. Later agent
+    // status moves (in_progress on the reopen wake, then in_review) or plain
+    // field edits cannot displace it — the newest-row probe lost the veto
+    // exactly that way, the OPE-7290 relapse the reviewer named.
+    async reopenedAfterLoopClose(companyId, issueId) {
+      const closeRows = await db
+        .select({ createdAt: activityLog.createdAt })
+        .from(activityLog)
+        .where(
+          and(
+            eq(activityLog.companyId, companyId),
+            eq(activityLog.entityType, "issue"),
+            eq(activityLog.entityId, issueId),
+            eq(activityLog.action, REVIEW_REWORK_CLOSED_ACTION),
+          ),
+        )
+        .orderBy(desc(activityLog.createdAt))
+        .limit(1);
+      const closeRow = closeRows[0];
+      // The loop never closed it: nothing to veto, an ordinary close applies.
+      if (!closeRow) return false;
+      const createdAtIso =
+        closeRow.createdAt instanceof Date
+          ? closeRow.createdAt.toISOString()
+          : String(closeRow.createdAt);
+      const offTerminalRows = await db
+        .select({ id: activityLog.id })
+        .from(activityLog)
+        .where(
+          and(
+            eq(activityLog.companyId, companyId),
+            eq(activityLog.entityType, "issue"),
+            eq(activityLog.entityId, issueId),
+            eq(activityLog.action, "issue.updated"),
+            or(eq(activityLog.actorType, "user"), eq(activityLog.actorType, "agent")),
+            sql`${activityLog.createdAt} > ${createdAtIso}`,
+            // The route writes `status` plus a `_previous` block (and
+            // `reopened`, `reopenedFrom`) on every status change; anything
+            // moving off a terminal status is a reopen by a person, ADM or
+            // agent — never by this sweep (its close only ever lands on done,
+            // never leaves it). `previousStatus` covers system-shaped audit
+            // rows whose `_previous` block is absent.
+            or(
+              sql`${activityLog.details} -> '_previous' ->> 'status' in ('done', 'cancelled')`,
+              sql`${activityLog.details} ->> 'reopenedFrom' in ('done', 'cancelled')`,
+              sql`${activityLog.details} ->> 'previousStatus' in ('done', 'cancelled')`,
+            ),
+          ),
+        )
+        .limit(1);
+      return offTerminalRows.length > 0;
+    },
+
+    async awaitAcceptance(input) {
+      return applyGuardedPatch(
+        input.issueId,
+        input.companyId,
+        (current) => current.status === input.expectStatus,
+        () => ({
+          status: "in_progress",
+          ...(input.assigneeAgentId ? { assigneeAgentId: input.assigneeAgentId } : {}),
+          executionPolicy: null,
+        }),
         input.comment,
       );
     },

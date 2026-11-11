@@ -1,6 +1,6 @@
 # Migrating from Paperclip to Myrmidon
 
-> Russian version: [migration-from-paperclip.ru.md](migration-from-paperclip.ru.md)
+> Russian version: [Migration-from-Paperclip.ru](Migration-from-Paperclip.ru)
 
 The `myrmidon:migrate` command copies one Paperclip instance (database, files and secrets) into a
 clean Myrmidon installation. It never changes the source: it writes only to the empty target that
@@ -35,11 +35,18 @@ is yours to carry over.
 Paperclip releases after `v2026.916.1` added tables and columns that Myrmidon does not have (for
 example browser-use runs, MCP OAuth clients, chat endpoints). Approved columns such as
 `agents.appearance` and `issues.title_needs_generation` are preserved in the Myrmidon schema and
-transferred to the target database. Other vendor-specific features are not copied into the target
-database: they go into the report instead. The report is the JSON that the command prints; a real
-run also saves it as `report.json` in `--state-dir`. Read it under `vendorOnlyData` (there is no
-`skippedSourceData` field). It lists the table or column, the number of rows that hold data (for a
-column: not null and not just the default value) and the release that introduced it.
+transferred to the target database.
+
+Vendor lifecycle events from `resource_lifecycle_events` are preserved and mapped directly into
+`activity_log` as project lifecycle events (`action: project.created/updated/deleted`, `entity_type`
+and `entity_id` corresponding to the resource, `details.source: "resource_lifecycle_events"`).
+No new table is created in Myrmidon, and `--accept-vendor-only-data` is not required for these events.
+
+Other vendor-specific features are not copied into the target database: they go into the report
+instead. The report is the JSON that the command prints; a real run also saves it as `report.json`
+in `--state-dir`. Read it under `vendorOnlyData` (there is no `skippedSourceData` field). It lists
+the table or column, the number of rows that hold data (for a column: not null and not just the
+default value) and the release that introduced it.
 
 - If any of it holds data, a real run stops **before the first write** and tells you so. Look at
   the list, decide that you can do without it (it stays in the source, which is never changed),

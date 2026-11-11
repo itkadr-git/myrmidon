@@ -25,7 +25,7 @@ import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
 } from "../../__tests__/helpers/embedded-postgres.js";
-import { computeBaselineMetrics, getLatestBaselineSnapshot } from "./service.js";
+import { computeBaselineMetrics, getLatestBaselineSnapshot, computeBaselineTrend } from "./service.js";
 import { runBaselineSnapshot } from "./startup.js";
 import type { BaselineMetricsResponse } from "./service.js";
 import type { BaselineWindow } from "./metrics.js";
@@ -376,6 +376,57 @@ describeEmbeddedPostgres("myrmidon(1.6-BASELINE) live metrics and the snapshot j
     expect(payload.byProject.find((group) => group.key === projectA)!.costPerTask.totalCents).toBe(300);
   }, 60_000);
 
+  it("computes weekly trend with matching metrics and null medians on empty weeks", async () => {
+    // 2026-09-23 is Wednesday. Last 3 complete weeks:
+    // week 0: 2026-08-31 to 2026-09-06 (has t1, t2)
+    // week 1: 2026-09-07 to 2026-09-13 (has t3)
+    // week 2: 2026-09-14 to 2026-09-20 (empty)
+    const trendNow = new Date("2026-09-23T12:00:00Z");
+    const trend = await computeBaselineTrend(db, companyId, 3, trendNow);
+
+    expect(trend).toHaveLength(3);
+
+    expect(trend[0]!.weekStart).toBe("2026-08-31");
+    expect(trend[0]!.weekEnd).toBe("2026-09-06");
+    expect(trend[0]!.tasksCompleted).toBe(2);
+
+    // Compare with computeBaselineMetrics for week 0 window
+    const week0Metrics = await computeBaselineMetrics(
+      db,
+      companyId,
+      { from: new Date("2026-08-31T00:00:00.000Z"), to: new Date("2026-09-06T23:59:59.999Z") },
+      trendNow,
+    );
+    expect(trend[0]!.cycleTimeMedianHours).toBe(week0Metrics.overall.cycleTimeHours.median);
+    expect(trend[0]!.reviewTimeMedianHours).toBe(week0Metrics.overall.timeInReviewHours.median);
+    expect(trend[0]!.returnRate).toBe(week0Metrics.overall.returnRate.rate);
+    expect(trend[0]!.runsPerTask).toBe(week0Metrics.overall.runsPerTask.mean);
+    expect(trend[0]!.costPerTask).toBe(week0Metrics.overall.costPerTask.meanCents);
+
+    // Week 1
+    expect(trend[1]!.weekStart).toBe("2026-09-07");
+    expect(trend[1]!.weekEnd).toBe("2026-09-13");
+    expect(trend[1]!.tasksCompleted).toBe(1);
+    const week1Metrics = await computeBaselineMetrics(
+      db,
+      companyId,
+      { from: new Date("2026-09-07T00:00:00.000Z"), to: new Date("2026-09-13T23:59:59.999Z") },
+      trendNow,
+    );
+    expect(trend[1]!.cycleTimeMedianHours).toBe(week1Metrics.overall.cycleTimeHours.median);
+    expect(trend[1]!.reviewTimeMedianHours).toBe(week1Metrics.overall.timeInReviewHours.median);
+
+    // Week 2: empty week
+    expect(trend[2]!.weekStart).toBe("2026-09-14");
+    expect(trend[2]!.weekEnd).toBe("2026-09-20");
+    expect(trend[2]!.tasksCompleted).toBe(0);
+    expect(trend[2]!.cycleTimeMedianHours).toBeNull();
+    expect(trend[2]!.reviewTimeMedianHours).toBeNull();
+    expect(trend[2]!.returnRate).toBe(0);
+    expect(trend[2]!.runsPerTask).toBe(0);
+    expect(trend[2]!.costPerTask).toBe(0);
+  }, 60_000);
+
   it("reads the latest snapshot per company and round-trips the payload (1.6.2-BASELINE-C)", async () => {
     const otherCompany = await db
       .insert(companies)
@@ -400,6 +451,16 @@ describeEmbeddedPostgres("myrmidon(1.6-BASELINE) live metrics and the snapshot j
           costPerTask: { totalCents: 1, meanCents: 1 },
         },
       ],
+      overall: {
+        key: "overall",
+        tasksCompleted: 1,
+        cycleTimeHours: { mean: 1, median: 1, p90: 1 },
+        timeInReviewHours: { mean: 1, median: 1 },
+        returnRate: { enteredReview: 1, returned: 0, rate: 0 },
+        blockedHours: { total: 0, mean: 0, topCauses: [] },
+        runsPerTask: { total: 1, mean: 1 },
+        costPerTask: { totalCents: 1, meanCents: 1 },
+      },
     });
 
     const snapshot = (cid: string, generatedAt: string, label: string) => ({

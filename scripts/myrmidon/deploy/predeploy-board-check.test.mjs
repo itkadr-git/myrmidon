@@ -181,6 +181,8 @@ function sandbox({
     ["DUMP_DIR", `DUMP_DIR=${path.join(dir, "dumps")}`],
     ["BOARD_COMPANY_ID", `BOARD_COMPANY_ID=${COMPANY}`],
     ["MYRMIDON_PREDEPLOY_POSTGRES_IMAGE", "MYRMIDON_PREDEPLOY_POSTGRES_IMAGE=postgres:16-alpine"],
+    ["MYRMIDON_PREDEPLOY_IO_DEVICE", "MYRMIDON_PREDEPLOY_IO_DEVICE=/dev/fake-docker-data"],
+    ["MYRMIDON_PREDEPLOY_IO_RATE", "MYRMIDON_PREDEPLOY_IO_RATE=30000000"],
     ["MYRMIDON_PREDEPLOY_BOARD_ENV_FILE", `MYRMIDON_PREDEPLOY_BOARD_ENV_FILE=${boardEnv}`],
     ["MYRMIDON_PREDEPLOY_BOARD_PORT", "MYRMIDON_PREDEPLOY_BOARD_PORT=13110"],
     ["MYRMIDON_PREDEPLOY_HEALTH_TIMEOUT_SEC", "MYRMIDON_PREDEPLOY_HEALTH_TIMEOUT_SEC=2"],
@@ -217,11 +219,12 @@ describe("predeploy-board-check.sh (PREDEPLOY-DB-CHECK: the 05.10 incident)", ()
     const log = calls(sb);
     // its own network: created, used by all three containers, removed at the end
     assert.match(log, /docker network create myr-predeploy-bbbbbbbb-\d+/);
-    assert.match(log, /docker run -d --name myr-predeploy-db-[^ ]+ --network myr-predeploy-/);
+    assert.match(log, /docker run -d --name myr-predeploy-db-[^ ]+ --network myr-predeploy-[^ ]+ --device-read-bps \/dev\/fake-docker-data:30000000 --device-write-bps \/dev\/fake-docker-data:30000000 -v /);
     assert.match(log, /docker run -d --name myr-predeploy-dockergate-[^ ]+ --network myr-predeploy-/);
     assert.match(log, /docker run -d --name myr-predeploy-board-[^ ]+ --network myr-predeploy-/);
     // the copy is a Postgres created with the configured database/user
     assert.match(log, /-e POSTGRES_DB=myrmidon/);
+    assert.match(log, /--device-read-bps \/dev\/fake-docker-data:30000000 --device-write-bps \/dev\/fake-docker-data:30000000/);
     assert.match(log, /postgres:16-alpine/);
     // the NEW dockergate of the release, from its digest, on the same network
     assert.match(log, new RegExp(`docker run -d --name myr-predeploy-dockergate-[^ ]+ --network myr-predeploy-[^ ]+ ${DOCKERGATE_REPO}@${DG}`));
@@ -237,7 +240,7 @@ describe("predeploy-board-check.sh (PREDEPLOY-DB-CHECK: the 05.10 incident)", ()
     // DEPLOY-HYGIENE (OPE-5107): the copy's data lives in a NAMED volume of
     // this run (an anonymous one survives `docker rm -f` and stays on the
     // disk), mounted into the throwaway Postgres and removed with the stack
-    assert.match(log, /docker run -d --name myr-predeploy-db-[^ ]+ --network myr-predeploy-[^ ]+ -v myr-predeploy-dbvol-bbbbbbbb-\d+:\/var\/lib\/postgresql\/data/);
+    assert.match(log, /docker run -d --name myr-predeploy-db-[^ ]+ --network myr-predeploy-[^ ]+ --device-read-bps \/dev\/fake-docker-data:30000000 --device-write-bps \/dev\/fake-docker-data:30000000 -v myr-predeploy-dbvol-bbbbbbbb-\d+:\/var\/lib\/postgresql\/data/);
     assert.match(log, /docker volume rm -f myr-predeploy-dbvol-bbbbbbbb-\d+/);
     // everything was removed again
     assert.match(log, /docker rm -f myr-predeploy-board-[^ ]+ myr-predeploy-dockergate-[^ ]+ myr-predeploy-db-/);
@@ -295,6 +298,33 @@ describe("predeploy-board-check.sh (PREDEPLOY-DB-CHECK: the 05.10 incident)", ()
     const { code, out } = full(sb);
     assert.notEqual(code, 0, out);
     assert.match(out, /did not answer .*dashboard \(curl exit 7\)/);
+  });
+
+  it("a dead /api/liveness on the copy stops the deploy before the maintenance window (OPE-12211)", () => {
+    const sb = sandbox();
+    fs.writeFileSync(path.join(sb.dir, "down-urls"), "http://127.0.0.1:13110/api/liveness\n");
+    const { code, out } = full(sb);
+    assert.notEqual(code, 0, out);
+    assert.match(out, /liveness probe \/api\/liveness on the copy did not answer 200/);
+    assert.match(out, /the deploy stops BEFORE the maintenance window/);
+    // The probe targets the throwaway copy on its own port, never production.
+    assert.match(calls(sb), /curl .*http:\/\/127\.0\.0\.1:13110\/api\/liveness/);
+  });
+
+  it("a non-200 /api/liveness on the copy stops the deploy too (OPE-12211)", () => {
+    const sb = sandbox();
+    fs.writeFileSync(path.join(sb.dir, "http-codes"), "/api/liveness 503\n");
+    const { code, out } = full(sb);
+    assert.notEqual(code, 0, out);
+    assert.match(out, /liveness probe \/api\/liveness on the copy did not answer 200 \(got 503\)/);
+  });
+
+  it("MYRMIDON_PREDEPLOY_LIVENESS=off skips the liveness probe without a failure (OPE-12211)", () => {
+    const sb = sandbox();
+    fs.writeFileSync(path.join(sb.dir, "down-urls"), "http://127.0.0.1:13110/api/liveness\n");
+    const { code, out } = run(sb, ["--digest", NEW, "--dump", sb.dump], { MYRMIDON_PREDEPLOY_LIVENESS: "off" });
+    assert.equal(code, 0, out);
+    assert.match(out, /liveness check off/);
   });
 
   it("a 401/403 is a warning without credentials and a failure with them", () => {

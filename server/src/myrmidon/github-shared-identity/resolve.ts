@@ -161,7 +161,7 @@ export async function resolveGitHubAppCredential(
     if (!secret) return { kind: "error", repository, entryId: entry.id, name: entry.name, reason: "The GitHub PAT secret is missing or inactive" };
     try {
       const token = await secrets.resolveSecretValue(input.companyId, secret.id, "latest", { accessContext: { consumerType: "system", consumerId: "workspace-git-credential", configPath: `github_pat:${repository}`, actorType: "agent", actorId: agent.id, issueId: input.issueId ?? null, heartbeatRunId: input.runId, responsibleUserId: input.responsibleUserId ?? null } });
-      return { kind: "issued", repository, entryId: entry.id, name: entry.name, installationId: "", expiresAt: "", credential: { token, source: "company_secret", secretName: secret.name, identitySource: "pat", commitIdentity: agentCommitIdentity(agent, settings) } };
+      return { kind: "issued", repository, entryId: entry.id, name: entry.name, installationId: "", expiresAt: "", credential: { token, source: "company_secret", secretName: secret.name, identitySource: "pat", expiresAt: undefined, commitIdentity: agentCommitIdentity(agent, settings) } };
     } catch {
       return { kind: "error", repository, entryId: entry.id, name: entry.name, reason: "The GitHub PAT secret could not be read" };
     }
@@ -203,29 +203,30 @@ export async function resolveGitHubAppCredential(
       ),
     );
   if (!secret) return fail("The GitHub App private key secret is missing or inactive");
-  let privateKeyPem: string;
-  try {
-    privateKeyPem = await secrets.resolveSecretValue(input.companyId, secret.id, "latest", {
-      accessContext: {
-        consumerType: "system",
-        consumerId: "workspace-git-credential",
-        configPath: `github_app:${repository}`,
-        actorType: "agent",
-        actorId: agent.id,
-        issueId: input.issueId ?? null,
-        heartbeatRunId: input.runId,
-        responsibleUserId: input.responsibleUserId ?? null,
-      },
-    });
-  } catch {
-    // Provider errors can carry response bodies; never pass them on.
-    return fail("The GitHub App private key could not be read");
-  }
+  const getPrivateKeyPem = async (): Promise<string> => {
+    try {
+      return await secrets.resolveSecretValue(input.companyId, secret.id, "latest", {
+        accessContext: {
+          consumerType: "system",
+          consumerId: "workspace-git-credential",
+          configPath: `github_app:${repository}`,
+          actorType: "agent",
+          actorId: agent.id,
+          issueId: input.issueId ?? null,
+          heartbeatRunId: input.runId,
+          responsibleUserId: input.responsibleUserId ?? null,
+        },
+      });
+    } catch {
+      // Provider errors can carry response bodies; never pass them on.
+      throw new GitHubAppTokenError("The GitHub App private key could not be read");
+    }
+  };
   let minted;
   try {
     minted = await mintGitHubAppInstallationToken({
       appId: entry.appId,
-      privateKeyPem,
+      privateKeyPem: getPrivateKeyPem,
       installationId: entry.installationId,
       repository,
       permissions: entry.permissions,

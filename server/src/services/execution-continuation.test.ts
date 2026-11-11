@@ -146,6 +146,8 @@ const support = await getEmbeddedPostgresTestSupport();
           context: { interruptedRunId: runId, wakeReason: "issue_assigned" }, summary: null, exposeLowTrustRaw: false });
         expect(envelope.trigger.sourceRunId).toBe(runId);
         expect(envelope.interruptedRunId).toBe(runId);
+        // myrmidon(WAKE-HISTORY): the run this wake continues and how it ended.
+        expect(envelope.previousRun).toEqual({ runId, status: "cancelled" });
         expect(envelope.completedWork).toBe("Created draft.md with three approved names.");
         expect(envelope.completedActions).toContainEqual({ runId, receiptId: "saved", operationId: "save_document", result: { documentId: "draft.md" } });
         expect(envelope.originCommentIds).toContain(gmailId);
@@ -153,6 +155,38 @@ const support = await getEmbeddedPostgresTestSupport();
         await db.update(issues).set({ assigneeAgentId: agentId }).where(eq(issues.id, issueId));
         await db.update(heartbeatRuns).set({ status: "failed", resultJson: null }).where(eq(heartbeatRuns.id, runId));
         await db.delete(agents).where(eq(agents.id, nextAgentId));
+      }
+    });
+
+    it("myrmidon(OPE-12316): carries outcome, stopKind and secret-masked summary in previousRun", async () => {
+      await db.update(heartbeatRuns).set({
+        status: "cancelled",
+        resultJson: {
+          schema: "paperclip.run_outcome.v1",
+          outcome: "blocked",
+          stopKind: "budget_limit",
+          summary: "Execution stopped: budget limit reached on token secret-value-12345678.",
+        },
+      }).where(eq(heartbeatRuns.id, runId));
+      try {
+        const envelope = await buildExecutionContinuation({
+          db,
+          companyId,
+          issueId,
+          agentId,
+          context: { retryOfRunId: runId, wakeReason: "retry_failed_run" },
+          summary: null,
+          exposeLowTrustRaw: false,
+        });
+        expect(envelope.previousRun).toEqual({
+          runId,
+          status: "cancelled",
+          outcome: "blocked",
+          stopKind: "budget_limit",
+          resultSummary: expect.stringContaining("Execution stopped: budget limit reached"),
+        });
+      } finally {
+        await db.update(heartbeatRuns).set({ status: "failed", resultJson: null }).where(eq(heartbeatRuns.id, runId));
       }
     });
 
@@ -201,6 +235,7 @@ const support = await getEmbeddedPostgresTestSupport();
       try {
         const envelope = await build();
         expect(envelope.interruptedRunId).toBe(runId);
+        expect(envelope.previousRun).toEqual({ runId, status: "interrupted" });
       } finally {
         await db.delete(heartbeatRuns).where(eq(heartbeatRuns.id, rejectedId));
         await db.update(heartbeatRuns).set({ status: "failed", errorCode: null }).where(eq(heartbeatRuns.id, runId));

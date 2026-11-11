@@ -36,7 +36,7 @@ Delivery is separate from verification: the periodic signed-list pull and atomic
 | MYRQ1 can be copied once and accepted by issuer form | `license.ts:191-229`; client-licensing tests | Implemented in core; real blob-to-issuer-form e2e requires RC evidence |
 | Revocation reaches an installed client | `denylist.ts:1-177`; `client-license.ts:134-151` | Verification implemented; delivery/RC acceptance depends on OPE-9084 |
 | Lost updates prevent continued access | Private delivery/update policy | Not implemented in this repository; track OPE-9084/L4 acceptance |
-| Alibaba-image and client-1 gates | `KNOWN_MODULES` currently covers google-ai, antigravity, chatgpt-pool | Not implemented here; track OPE-10277 and OPE-10279 |
+| Alibaba-image and client-1 gates | `KNOWN_MODULES` currently covers google-ai, antigravity, chatgpt-pool, client-1; client-1 registration is mapped in `client-license.ts` and scope is covered by the client licensing test | Client-1 core gate implemented; Alibaba-image remains tracked by OPE-10277 |
 
 ## Threats and limits
 

@@ -108,7 +108,7 @@ import { resolvePaperclipInstanceRoot } from "../home-paths.js";
 // myrmidon(B1c): product name in user-facing skill texts; see product.ts.
 import { PRODUCT_NAME as PN } from "../myrmidon/product.js";
 import { conflict, forbidden, notFound, payloadTooLarge, unprocessable } from "../errors.js";
-import { ghFetch, gitHubApiBase, resolveRawGitHubUrl } from "./github-fetch.js";
+import { ghFetch, gitHubApiBase, isPinnedCommitRef, resolveRawGitHubUrl } from "./github-fetch.js";
 import { agentService } from "./agents.js";
 import { issueDocumentSelect, mapIssueDocumentRow } from "./documents.js";
 import { toIssueWorkProduct } from "./work-products.js";
@@ -610,10 +610,6 @@ function getRequiredEnvFromSkill(skill: Pick<CompanySkill, "metadata">): string[
   const raw = getSkillMeta(skill).requiredEnv;
   if (!Array.isArray(raw)) return [];
   return raw.filter((entry): entry is string => typeof entry === "string" && entry.length > 0);
-}
-
-function isPinnedCommitRef(value: string | null | undefined) {
-  return Boolean(value && /^[0-9a-f]{40}$/i.test(value.trim()));
 }
 
 function assertImportedSkillSourceAllowed(skill: ImportedSkill) {
@@ -1134,7 +1130,7 @@ async function resolveGitHubCommitSha(owner: string, repo: string, ref: string, 
   return sha;
 }
 
-function parseGitHubSourceUrl(rawUrl: string) {
+export function parseGitHubSourceUrl(rawUrl: string) {
   const url = parseRemoteSkillImportUrl(rawUrl);
   if (url.protocol !== "https:") {
     throw unprocessable("GitHub source URL must use HTTPS");
@@ -1191,7 +1187,7 @@ function normalizeRemoteSkillImportSource(rawUrl: string) {
   return url.toString();
 }
 
-async function resolveGitHubPinnedRef(parsed: ReturnType<typeof parseGitHubSourceUrl>) {
+export async function resolveGitHubPinnedRef(parsed: ReturnType<typeof parseGitHubSourceUrl>) {
   const apiBase = gitHubApiBase(parsed.hostname);
   if (/^[0-9a-f]{40}$/i.test(parsed.ref.trim())) {
     return {
@@ -2315,7 +2311,7 @@ const BUILT_IN_SKILL_TEST_RUN_TEMPLATE_DATE = new Date("2026-01-01T00:00:00.000Z
 const BUILT_IN_SKILL_TEST_RUN_TEMPLATE_BODY = [
   "You are running a Skills Studio test for `{{skillName}}` (`{{skillKey}}`), skill version v{{skillVersion}}.",
   "",
-  "Invoke and use the selected skill under test: `{{skillInvocation}}`. Use the pinned skill revision supplied by Paperclip as the source of truth, regardless of any other runtime skills.",
+  `Invoke and use the selected skill under test: \`{{skillInvocation}}\`. Use the pinned skill revision supplied by ${PN} as the source of truth, regardless of any other runtime skills.`,
   "",
   "This is a test run. Do not make durable changes outside this test task. Do not mutate unrelated issues, push, publish, send external messages, or affect real work.",
   "",
@@ -2329,7 +2325,7 @@ function builtInSkillTestRunTemplate(companyId: string): CompanySkillTestRunTemp
     id: BUILT_IN_SKILL_TEST_RUN_TEMPLATE_ID,
     companyId,
     name: "Default test template",
-    description: "Paperclip's read-only default harness instructions for Skills Studio runs.",
+    description: `${PN}'s read-only default harness instructions for Skills Studio runs.`,
     body: BUILT_IN_SKILL_TEST_RUN_TEMPLATE_BODY,
     builtIn: true,
     createdByAgentId: null,
@@ -3107,7 +3103,7 @@ function deriveSkillSourceInfo(skill: SkillSourceInfoTarget): {
       return {
         editable: true,
         editableReason: null,
-        sourceLabel: "Paperclip workspace",
+        sourceLabel: `${PN} workspace`,
         sourceBadge: "paperclip",
         sourcePath: managedRoot,
       };
@@ -4454,7 +4450,7 @@ export function companySkillService(db: Db) {
 
     if (!isPaperclipManagedRenameTarget(skill)) {
       throw unprocessable(
-        "Only Paperclip-managed skills can be renamed. Catalog, external, project-scanned, and unmanaged local skills are read-only.",
+        `Only ${PN}-managed skills can be renamed. Catalog, external, project-scanned, and unmanaged local skills are read-only.`,
         { skillId: skill.id, sourceType: skill.sourceType, sourceKind: getSkillMeta(skill).sourceKind ?? null },
       );
     }

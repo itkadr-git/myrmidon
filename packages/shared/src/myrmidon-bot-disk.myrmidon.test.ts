@@ -1,7 +1,6 @@
-// myrmidon(1.6.6 SETTINGS-UI-B / OPE-6258): the 16 stored keys of
-// `general.botDisk` survive every PATCH. Before this part the five
-// workspace-lifecycle numbers (closing grace, scratch TTL, the three partition
-// percents) lived only under `wsBotDiskSettingsSchema` and were not part of the
+// myrmidon(1.6.6 SETTINGS-UI-B / OPE-6258): the 20 stored keys of
+// `general.botDisk` survive every PATCH. Before this part the workspace-lifecycle numbers
+// lived only under `wsBotDiskSettingsSchema` and were not part of the
 // patch schema, so a patch of any layout key rewrote the object without them.
 
 import { describe, expect, it } from "vitest";
@@ -20,6 +19,9 @@ const BASE = {
   idleTtlMs: 3_600_000,
   graceClosingMinutes: 45,
   scratchTtlHours: 12,
+  npmCacheTtlHours: 48,
+  uvCacheTtlHours: 168,
+  terminalOutputTtlHours: 24,
   sessionRetentionDays: 30,
   partitionThresholdPercent: 80,
   partitionRefuseOpenPercent: 88,
@@ -36,12 +38,12 @@ const BASE = {
 };
 
 describe("1.6.6-SETTINGS-UI-B bot disk stored shape", () => {
-  it("the three key groups are 17 distinct keys", () => {
+  it("the three key groups are 20 distinct keys", () => {
     const all = [...BOT_DISK_SETTING_KEYS, ...BOT_DISK_LAYOUT_KEYS, ...BOT_DISK_WORKSPACE_LIFECYCLE_KEYS];
-    expect(new Set(all).size).toBe(17);
+    expect(new Set(all).size).toBe(20);
   });
 
-  it("the canonical schema accepts all 17 keys", () => {
+  it("the canonical schema accepts all 20 keys", () => {
     expect(botDiskSettingsSchema.safeParse(BASE).success).toBe(true);
   });
 
@@ -60,7 +62,7 @@ describe("1.6.6-SETTINGS-UI-B bot disk stored shape", () => {
     expect(merged).toEqual({ ...BASE, pnpmStoreDir: "/scratch/.store" });
   });
 
-  it("a patch of one workspace-lifecycle key keeps the other five", () => {
+  it("a patch of one workspace-lifecycle key keeps the other eight", () => {
     const merged = mergeBotDiskSettings(BASE as never, { scratchTtlHours: 6 });
     expect(merged.scratchTtlHours).toBe(6);
     expect(merged.graceClosingMinutes).toBe(45);
@@ -100,5 +102,50 @@ describe("1.6.6-SETTINGS-UI-B resolve of the workspace-lifecycle keys", () => {
     const resolved = resolveBotDiskSettings({ stored: { graceClosingMinutes: "soon", scratchTtlHours: 1.5 } });
     expect("graceClosingMinutes" in resolved.settings).toBe(false);
     expect("scratchTtlHours" in resolved.settings).toBe(false);
+  });
+});
+
+// myrmidon(1.6.7-SETTINGS-BOTDISK-MERGE): QA of 1.6.7-rc.9 found `gitMigrationEnabled: true`
+// gone from the stored row after a Save of the lifecycle panel. The service patches
+// `resolveBotDiskSettings(...).settings` and stores the merge result as the whole
+// object, so every stored key must survive resolve -> merge, not only merge.
+const C7_MECHANICS = {
+  botdIntervalSec: 300,
+  legacyPressureIdleDays: 7,
+  hermesPruneEnabled: true,
+  hermesPruneDays: 14,
+  gitMigrationEnabled: true,
+};
+
+describe("1.6.7-SETTINGS-BOTDISK-MERGE resolve of the C7 mechanics keys", () => {
+  it("stored mechanics keys appear in the effective settings", () => {
+    const resolved = resolveBotDiskSettings({ stored: { ...BASE, ...C7_MECHANICS } });
+    for (const [key, value] of Object.entries(C7_MECHANICS)) {
+      expect(resolved.settings[key as keyof typeof resolved.settings]).toBe(value);
+    }
+    // They claim no source of their own, like the other stored-only keys.
+    expect(Object.keys(resolved.sources).sort()).toEqual(["enabled", "idleTtlMs"]);
+  });
+
+  it("absent mechanics keys stay absent", () => {
+    const resolved = resolveBotDiskSettings({ stored: { ...BASE } });
+    for (const key of Object.keys(C7_MECHANICS)) expect(key in resolved.settings).toBe(false);
+  });
+
+  it("resolve -> merge -> store keeps every stored key across a patch of one other key", () => {
+    const stored = { ...BASE, ...C7_MECHANICS };
+    const base = resolveBotDiskSettings({ stored }).settings;
+    const next = mergeBotDiskSettings(base, { scratchTtlHours: 6 });
+    expect(next).toEqual({ ...stored, scratchTtlHours: 6 });
+    expect(next.gitMigrationEnabled).toBe(true);
+    // the stored shape stays valid for the canonical schema
+    expect(botDiskSettingsSchema.safeParse(next).success).toBe(true);
+  });
+
+  it("an explicit null still clears a mechanics key", () => {
+    const base = resolveBotDiskSettings({ stored: { ...BASE, ...C7_MECHANICS } }).settings;
+    const next = mergeBotDiskSettings(base, { gitMigrationEnabled: null });
+    expect("gitMigrationEnabled" in next).toBe(false);
+    expect(next.hermesPruneEnabled).toBe(true);
   });
 });

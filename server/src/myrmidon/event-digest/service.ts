@@ -11,6 +11,82 @@ import {
   isImmediateWakePriority,
 } from "./policy.js";
 
+// myrmidon(OPE-9657 fix, 01.11): the buffer and the delivered digest are bounded. Without a cap a busy
+// agent accumulated 3 812 events (every coalesced P2 wake was rolled back into the buffer), the wake
+// prompt grew to 4-8 M characters and the bot's hermes process was OOM-killed at 2 GB.
+export const MAX_BUFFERED_EVENTS_PER_AGENT = 200;
+export const MAX_DIGEST_EVENTS = 30;
+export const MAX_DIGEST_PAYLOAD_CHARS = 2_000;
+
+// One entry per (type, issue, comment) — a comment wake that is re-dispatched or coalesced again is the same
+// event, not a new one. The newest occurrence is kept and takes its place in the order.
+function dedupeKey(entry: BufferedEvent): string {
+  const payload = (entry.payload ?? {}) as Record<string, unknown>;
+  const commentId = typeof payload.commentId === "string" ? payload.commentId : "";
+  return commentId ? `${entry.type}|${entry.issueId ?? ""}|${commentId}` : `id|${entry.id}`;
+}
+
+function keepNewest(events: BufferedEvent[]): BufferedEvent[] {
+  const byKey = new Map<string, BufferedEvent>();
+  for (const entry of events) {
+    const key = dedupeKey(entry);
+    byKey.delete(key);
+    byKey.set(key, entry);
+  }
+  const unique = [...byKey.values()];
+  return unique.length > MAX_BUFFERED_EVENTS_PER_AGENT
+    ? unique.slice(unique.length - MAX_BUFFERED_EVENTS_PER_AGENT)
+    : unique;
+}
+
+const MAX_DIGEST_STRING_CHARS = 300;
+
+function compactValue(value: unknown, depth: number): unknown {
+  if (typeof value === "string") {
+    return value.length > MAX_DIGEST_STRING_CHARS ? `${value.slice(0, MAX_DIGEST_STRING_CHARS)}…` : value;
+  }
+  if (value === null || typeof value !== "object") return value;
+  if (depth >= 3) return "[…]";
+  if (Array.isArray(value)) {
+    const head = value.slice(0, 20).map((item) => compactValue(item, depth + 1));
+    return value.length > 20 ? [...head, `…+${value.length - 20}`] : head;
+  }
+  const out: Record<string, unknown> = {};
+  for (const [key, inner] of Object.entries(value as Record<string, unknown>)) {
+    out[key] = compactValue(inner, depth + 1);
+  }
+  return out;
+}
+
+// Identifiers and short fields stay as they are; only long strings, deep nesting and long arrays are cut.
+function compactPayload(payload: BufferedEvent["payload"]): BufferedEvent["payload"] {
+  let text: string;
+  try {
+    text = JSON.stringify(payload ?? {});
+  } catch {
+    return { truncated: true } as BufferedEvent["payload"];
+  }
+  if (text.length <= MAX_DIGEST_PAYLOAD_CHARS) return payload;
+  const compacted = compactValue(payload ?? {}, 0) as BufferedEvent["payload"];
+  return { ...(compacted as Record<string, unknown>), truncated: true } as BufferedEvent["payload"];
+}
+
+/**
+ * Bounds any digest before it is stored in a run context or rendered into a wake prompt — also a
+ * digest copied from an older run snapshot (written before the buffer was capped).
+ */
+export function boundEventDigest<T>(digest: T): T {
+  if (!digest || typeof digest !== "object") return digest;
+  const raw = digest as unknown as { events?: unknown; eventCount?: unknown };
+  if (!Array.isArray(raw.events)) return digest;
+  const events = raw.events as BufferedEvent[];
+  const kept = events
+    .slice(Math.max(0, events.length - MAX_DIGEST_EVENTS))
+    .map((entry) => ({ ...entry, payload: compactPayload(entry?.payload) }));
+  const total = typeof raw.eventCount === "number" ? raw.eventCount : events.length;
+  return { ...(digest as object), events: kept, eventCount: total, omittedEventCount: total - kept.length } as T;
+}
+
 export class EventDigestService {
   private buffers = new Map<string, BufferedEvent[]>();
   private preparedDigests = new Map<string, BufferedEvent[]>();
@@ -34,7 +110,7 @@ export class EventDigestService {
     if (isDigestAccumulatedPriority(priority)) {
       const existing = this.buffers.get(event.agentId) ?? [];
       existing.push(buffered);
-      this.buffers.set(event.agentId, existing);
+      this.buffers.set(event.agentId, keepNewest(existing));
     }
 
     return buffered;
@@ -72,10 +148,11 @@ export class EventDigestService {
       return null;
     }
 
-    this.preparedDigests.set(agentId, combined);
+    const bounded = keepNewest(combined);
+    this.preparedDigests.set(agentId, bounded);
     this.buffers.delete(agentId);
 
-    return this.buildDigest(agentId, combined);
+    return this.buildDigest(agentId, bounded);
   }
 
   /**
@@ -95,8 +172,10 @@ export class EventDigestService {
       this.preparedDigests.delete(agentId);
       return;
     }
+    // Original semantics kept: everything staged goes back. Re-dispatched / coalesced wakes of the same
+    // comment collapse into one entry (dedupe) and the buffer stays bounded, so they no longer pile up.
     const current = this.buffers.get(agentId) ?? [];
-    this.buffers.set(agentId, [...prepared, ...current]);
+    this.buffers.set(agentId, keepNewest([...prepared, ...current]));
     this.preparedDigests.delete(agentId);
   }
 
@@ -195,11 +274,16 @@ export class EventDigestService {
     const oldestEventAt = sorted[0].timestamp;
     const newestEventAt = sorted[sorted.length - 1].timestamp;
 
+    const delivered = sorted
+      .slice(Math.max(0, sorted.length - MAX_DIGEST_EVENTS))
+      .map((entry) => ({ ...entry, payload: compactPayload(entry.payload) }));
+
     return {
       agentId,
       issueId: sorted[sorted.length - 1]?.issueId ?? null,
-      events: sorted,
+      events: delivered,
       eventCount: sorted.length,
+      omittedEventCount: sorted.length - delivered.length,
       oldestEventAt,
       newestEventAt,
     };

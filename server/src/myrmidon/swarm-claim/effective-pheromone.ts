@@ -207,31 +207,27 @@ interface FailedRunsCacheEntry {
 
 const failedRunsCache = new Map<string, FailedRunsCacheEntry>();
 const failedRunsInFlight = new Map<string, Promise<ReadonlyMap<string, number>>>();
+const failedRunsGeneration = new Map<string, number>();
+
+function generationOf(companyId: string): number {
+  return failedRunsGeneration.get(companyId) ?? 0;
+}
 
 export function clearFailedRunsCache(companyId?: string): void {
   if (companyId) {
+    failedRunsGeneration.set(companyId, generationOf(companyId) + 1);
     failedRunsCache.delete(companyId);
     failedRunsInFlight.delete(companyId);
   } else {
+    for (const key of new Set([...failedRunsCache.keys(), ...failedRunsInFlight.keys(), ...failedRunsGeneration.keys()])) {
+      failedRunsGeneration.set(key, generationOf(key) + 1);
+    }
     failedRunsCache.clear();
     failedRunsInFlight.clear();
   }
 }
 
 export const invalidateFailedRunsCache = clearFailedRunsCache;
-
-export const computeFailedRunsMap = queryFailedRunsMap;
-export const FAILED_RUNS_CACHE_TTL_MS = DEFAULT_FAILED_RUNS_CACHE_TTL_MS;
-export const failedRunsValuesTableSql = failedRunsValuesSql;
-
-export async function getCachedFailedRunsDerivedSql(
-  db: Db,
-  companyId: string,
-  now: Date = new Date(),
-): Promise<SQL> {
-  const map = await getCachedFailedRunsMap(db, companyId, now);
-  return failedRunsValuesSql(map);
-}
 
 /**
  * Retrieves the cached failed-runs map for a company, querying at most once per 60 seconds.
@@ -254,16 +250,22 @@ export async function getCachedFailedRunsMap(
     return existingInFlight;
   }
 
-  const promise = (async () => {
+  const generation = generationOf(companyId);
+  let promise!: Promise<ReadonlyMap<string, number>>;
+  promise = (async () => {
     try {
       const map = await queryFailedRunsMap(db, companyId, now);
-      failedRunsCache.set(companyId, {
-        expiresAt: nowMs + Math.min(ttlMs, DEFAULT_FAILED_RUNS_CACHE_TTL_MS),
-        map,
-      });
+      if (generationOf(companyId) === generation) {
+        failedRunsCache.set(companyId, {
+          expiresAt: nowMs + Math.min(ttlMs, DEFAULT_FAILED_RUNS_CACHE_TTL_MS),
+          map,
+        });
+      }
       return map;
     } finally {
-      failedRunsInFlight.delete(companyId);
+      if (failedRunsInFlight.get(companyId) === promise) {
+        failedRunsInFlight.delete(companyId);
+      }
     }
   })();
 

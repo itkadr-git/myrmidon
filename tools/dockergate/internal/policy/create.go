@@ -51,8 +51,8 @@ type Env struct {
 	PackageCacheRoot string
 	// BotRuntimeRoot is the host directory of the shared bot runtime
 	// (configuration key "botRuntimeRoot", myrmidon 1.6.5-BOT-DISK-H11). Its
-	// bin/lazy-packages/lsp subdirectories are mounted read-only over the bot's
-	// own runtime paths. Empty allows no such mount.
+	// bin subdirectory is mounted read-only over the bot's own runtime path.
+	// Empty allows no such mount.
 	BotRuntimeRoot string
 	// ScopeRoot is the host directory of shared isolation-scope instances
 	// (configuration key "scopeRoot", BOT-DISK-F), and ScopeInstances the
@@ -281,9 +281,7 @@ func isCachePair(pairs map[string]string, root, source, target string) bool {
 // server/src/myrmidon/bot-containers/template.ts. These pairs are accepted only
 // as "ro" and need no mountSources entry.
 var BotRuntimeMounts = map[string]string{
-	"bin":           "/data/hermes/bin",
-	"lazy-packages": "/data/hermes/lazy-packages",
-	"lsp":           "/data/hermes/lsp",
+	"bin": "/data/hermes/bin",
 }
 
 // OwnerDataContainerRoots are the subtrees of a bot's own hermes volume that
@@ -513,6 +511,33 @@ func object(v *jsonx.Value, path string, keys ...string) (map[string]*jsonx.Valu
 	return got, nil
 }
 
+// objectOptional is object with one member that may be absent: the key set is
+// keys plus optional, and only keys are required. The returned map has no entry
+// for optional when the body omits it.
+func objectOptional(v *jsonx.Value, path, optional string, keys ...string) (map[string]*jsonx.Value, *deny.Error) {
+	if v.Kind != jsonx.KindObject {
+		return nil, deny.FieldOnly(deny.JSONType, path)
+	}
+	want := make(map[string]struct{}, len(keys)+1)
+	for _, k := range keys {
+		want[k] = struct{}{}
+	}
+	want[optional] = struct{}{}
+	got := make(map[string]*jsonx.Value, len(v.Members))
+	for _, m := range v.Members {
+		if _, ok := want[m.Key]; !ok {
+			return nil, deny.Field(deny.JSONUnknownKey, path, []byte(m.Key))
+		}
+		got[m.Key] = m.Val
+	}
+	for _, k := range keys {
+		if _, ok := got[k]; !ok {
+			return nil, deny.FieldOnly(deny.JSONValue, join(path, k))
+		}
+	}
+	return got, nil
+}
+
 func str(v *jsonx.Value, path string) (string, *deny.Error) {
 	if v.Kind != jsonx.KindString {
 		return "", deny.FieldOnly(deny.JSONType, path)
@@ -604,6 +629,35 @@ func wantList(v *jsonx.Value, path string, want []string, code string) *deny.Err
 	return nil
 }
 
+// coreUlimitsJSON is the canonical HostConfig member of the pinned RLIMIT_CORE:
+// exactly one {Name:"core",Soft:0,Hard:0} entry. It is emitted only when the
+// incoming body carried Ulimits, so the gate accepts both the pre-1.6.7 driver
+// body (no key) and the hardened one, and both rebuild byte for byte.
+const coreUlimitsJSON = `"Ulimits":[{"Name":"core","Soft":0,"Hard":0}]`
+
+// wantCoreUlimits requires HostConfig.Ulimits to be exactly [{Name:"core",Soft:0,Hard:0}]
+// (myrmidon 1.6.7 BOT-HARDENING): RLIMIT_CORE pinned to 0/0 so a bot process
+// crash cannot write a core dump onto the bind volume (BOT-DISK).
+func wantCoreUlimits(v *jsonx.Value, path string) *deny.Error {
+	if v.Kind != jsonx.KindArray {
+		return deny.FieldOnly(deny.JSONType, path)
+	}
+	if len(v.Elems) != 1 {
+		return deny.FieldOnly(deny.JSONValue, path)
+	}
+	m, err := object(v.Elems[0], path+"[0]", "Name", "Soft", "Hard")
+	if err != nil {
+		return err
+	}
+	if err := wantStr(m["Name"], path+"[0].Name", "core", deny.JSONValue); err != nil {
+		return err
+	}
+	if err := wantInt(m["Soft"], path+"[0].Soft", 0); err != nil {
+		return err
+	}
+	return wantInt(m["Hard"], path+"[0].Hard", 0)
+}
+
 // wantSingle requires an object {key: value} with a string value.
 func wantSingle(v *jsonx.Value, path, key, value string) *deny.Error {
 	m, err := object(v, path, key)
@@ -678,7 +732,7 @@ func parseBot(root *jsonx.Value, r *route.Route, env *Env) (*Create, *deny.Error
 		shared = len(envList) == 1 && envList[0] == ScopeSubdirEnv+"="+r.BotKey
 	}
 
-	hc, err := object(top["HostConfig"], "HostConfig",
+	hc, err := objectOptional(top["HostConfig"], "HostConfig", "Ulimits",
 		"Memory", "NanoCpus", "PidsLimit", "CapDrop", "SecurityOpt", "ReadonlyRootfs", "Tmpfs",
 		"Init", "RestartPolicy", "NetworkMode", "Binds", "Privileged")
 	if err != nil {
@@ -747,7 +801,11 @@ func parseBot(root *jsonx.Value, r *route.Route, env *Env) (*Create, *deny.Error
 	} else {
 		w.raw(`,"Tmpfs":{"/tmp":""},"Init":true,"RestartPolicy":{"Name":"on-failure"}`)
 	}
-	w.raw(`,"NetworkMode":`).str(env.Network).raw(`,"Binds":`).strs(binds).raw(`,"Privileged":false}}`)
+	w.raw(`,"NetworkMode":`).str(env.Network).raw(`,"Binds":`).strs(binds).raw(`,"Privileged":false`)
+	if _, ok := hc["Ulimits"]; ok {
+		w.raw(`,` + coreUlimitsJSON)
+	}
+	w.raw(`}}`)
 	return &Create{Form: FormBot, BotKey: r.BotKey, Image: image, ScopeInstance: instance, Body: w.b}, nil
 }
 
@@ -784,6 +842,11 @@ func commonHostConfig(hc map[string]*jsonx.Value, restart string) *deny.Error {
 	}
 	if err := wantSingle(hc["RestartPolicy"], "HostConfig.RestartPolicy", "Name", restart); err != nil {
 		return err
+	}
+	if v, ok := hc["Ulimits"]; ok {
+		if err := wantCoreUlimits(v, "HostConfig.Ulimits"); err != nil {
+			return err
+		}
 	}
 	return wantBool(hc["Privileged"], "HostConfig.Privileged", false)
 }
@@ -926,7 +989,7 @@ func parseHelper(root *jsonx.Value, r *route.Route, env *Env) (*Create, *deny.Er
 		return nil, err
 	}
 
-	hc, err := object(top["HostConfig"], "HostConfig",
+	hc, err := objectOptional(top["HostConfig"], "HostConfig", "Ulimits",
 		"Memory", "PidsLimit", "CapDrop", "CapAdd", "SecurityOpt", "ReadonlyRootfs",
 		"RestartPolicy", "NetworkMode", "Binds", "Privileged")
 	if err != nil {
@@ -966,7 +1029,11 @@ func parseHelper(root *jsonx.Value, r *route.Route, env *Env) (*Create, *deny.Er
 	w.raw(`,"Labels":{"myrmidon.bot-helper":`).str(r.BotKey).raw(`},"NetworkDisabled":true`)
 	w.raw(`,"HostConfig":{"Memory":134217728,"PidsLimit":64,"CapDrop":["ALL"],"CapAdd":`).strs(capAdd)
 	w.raw(`,"SecurityOpt":["no-new-privileges"],"ReadonlyRootfs":true,"RestartPolicy":{"Name":"no"}`)
-	w.raw(`,"NetworkMode":"none","Binds":`).strs(binds).raw(`,"Privileged":false}}`)
+	w.raw(`,"NetworkMode":"none","Binds":`).strs(binds).raw(`,"Privileged":false`)
+	if _, ok := hc["Ulimits"]; ok {
+		w.raw(`,` + coreUlimitsJSON)
+	}
+	w.raw(`}}`)
 	return &Create{Form: form, BotKey: r.BotKey, Image: image, Nonce: nonce, ScopeInstance: instance, Body: w.b}, nil
 }
 

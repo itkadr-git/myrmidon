@@ -5679,6 +5679,7 @@ export function nativeSessionFailureDisposition(
 ) {
   const permanentFailure =
     sourceFailureCode === "native_provider_model_rejected" ||
+    sourceFailureCode === "codex_sandbox_unavailable" ||
     sourceFailureCode === "native_provider_approval_required" ||
     sourceFailureCode === "native_event_replay_conflict" ||
     sourceFailureCode === "runner_remote_provider_artifact_incompatible" ||
@@ -5750,6 +5751,7 @@ export function nativeSessionFailureSourceCode(
   | "planning_mode_unsupported"
   | "native_event_replay_conflict"
   | "native_provider_model_rejected"
+  | "codex_sandbox_unavailable"
   | "native_current_wake_comments_unread"
   | "native_current_wake_comments_changed_after_read"
   | "native_session_interrupted" {
@@ -5772,6 +5774,9 @@ export function nativeSessionFailureSourceCode(
   const message = error instanceof Error ? error.message : String(error);
   if (/native_provider_model_rejected/i.test(message))
     return "native_provider_model_rejected";
+  if (/codex_sandbox_unavailable/i.test(message)) {
+    return "codex_sandbox_unavailable";
+  }
   if (/native_adopted_runner_authentication_timeout/i.test(message)) {
     return "native_adopted_runner_authentication_timeout";
   }
@@ -5911,6 +5916,7 @@ export async function nativeProviderRecoveryEvidence(input: {
     "provider_request_timeout",
     "provider_request_protocol_error",
     "native_runner_process_exited",
+    "codex_sandbox_unavailable",
   ]).has(input.sourceFailureCode);
   if (!checkpointExists && !providerEventsExist && definitelyPreSession) {
     return {

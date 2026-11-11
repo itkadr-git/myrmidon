@@ -9,6 +9,7 @@ import {
 } from "./http-log-policy.js";
 import {
   maskPasswordSetToken,
+  maskPathTokens,
   redactSensitive,
   stripSecretBearingUrlParts,
 } from "./redact-sensitive.js";
@@ -100,9 +101,9 @@ export function createHttpLogger(baseLogger: Logger) {
             typeof req.url === "string"
               ? stripSecretBearingUrlParts(req.url)
               : req.url,
-          // myrmidon(OPE-8985): route params of /password-set/:token hold the token.
+          // myrmidon(OPE-8985, OPE-11891): route params of /password-set/:token or /invites/:token hold tokens.
           params:
-            typeof req.url === "string" && maskPasswordSetToken(req.url) !== req.url
+            typeof req.url === "string" && maskPathTokens(req.url) !== req.url
               ? undefined
               : req.params,
           // The URL policy intentionally drops all query parameters. The default

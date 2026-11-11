@@ -86,6 +86,19 @@ describe("BotDiskSettingsPanel lifecycle section", () => {
     expect(empty.querySelector('[data-testid="bot-disk-bots"] tbody')?.children.length).toBe(0);
   });
 
+  it("shows the translated instance-admin message when a non-admin gets the 403", async () => {
+    // myrmidon(1.6.7 SETTINGS-GENERAL-CRASH): the 403 used to leave the section on "no data".
+    const forbidden = Object.assign(new Error("Instance admin access required"), { status: 403 });
+    stub(forbidden, forbidden);
+    await i18n.changeLanguage("ru");
+    const panel = renderPanel(reportAt);
+    await settle();
+    expect(panel.querySelector('[data-testid="bot-disk-lifecycle-forbidden"]')?.textContent).toBe(
+      "Нужны права администратора экземпляра",
+    );
+    expect(panel.querySelector('[data-testid="bot-disk-lifecycle-empty"]')).toBeNull();
+  });
+
   it("shows partition, quota/used, E/G/X counts, archives, report age and image per bot", async () => {
     stub(dockergateDiskFixture, { reports: [diskReportFixture] });
     const container = renderPanel(reportAt + 5 * 60 * 1000, { "ABC-101": "in_progress" });
@@ -250,6 +263,66 @@ describe("BotDiskSettingsPanel lifecycle edit section", () => {
       findSave(section).click();
     });
     expect(patched({ mock: setFields.mock as never })).toEqual({ enabled: false, idleTtlMs: 120 * 60_000 });
+  });
+});
+
+describe("BotDiskSettingsPanel fallback repository", () => {
+  beforeEach(async () => {
+    vi.restoreAllMocks();
+    document.body.innerHTML = "";
+    await i18n.changeLanguage("en");
+    vi.spyOn(botDiskLifecycleApi, "getPhysical").mockResolvedValue({ projects: [], gateReached: false } as never);
+    vi.spyOn(botDiskLifecycleApi, "getReports").mockResolvedValue({ reports: [] } as never);
+  });
+
+  async function renderWithRepo(repo?: string) {
+    vi.spyOn(botDiskApi, "get").mockResolvedValue({
+      settings: { enabled: true, idleTtlMs: 3_600_000, ...(repo ? { defaultRepo: repo } : {}) },
+      sources: { enabled: "settings", idleTtlMs: "settings" },
+    } as never);
+    const container = renderPanel(reportAt);
+    await settle();
+    const input = container.querySelector("#bot-disk-default-repo") as HTMLInputElement;
+    const save = input.parentElement?.querySelector("button") as HTMLButtonElement;
+    return { container, input, save };
+  }
+
+  it("loads GET, PATCHes the owner/repo, and clears it with null", async () => {
+    const { input, save } = await renderWithRepo("old/repo");
+    const setFields = vi.spyOn(botDiskApi, "setFields").mockImplementation(async ({ defaultRepo }) => ({
+      settings: { enabled: true, idleTtlMs: 3_600_000, ...(defaultRepo ? { defaultRepo } : {}) },
+      sources: { enabled: "settings", idleTtlMs: "settings" },
+    } as never));
+    expect(input.value).toBe("old/repo");
+    expect(save.disabled).toBe(true);
+    await typeInto(input, "new/repo");
+    await act(async () => { save.click(); });
+    expect(setFields).toHaveBeenLastCalledWith({ defaultRepo: "new/repo" });
+    expect(input.value).toBe("new/repo");
+    await typeInto(input, "");
+    await act(async () => { save.click(); });
+    expect(setFields).toHaveBeenLastCalledWith({ defaultRepo: null });
+    expect(input.value).toBe("");
+  });
+
+  it("rejects malformed input and shows server validation errors", async () => {
+    const { container, input, save } = await renderWithRepo();
+    const setFields = vi.spyOn(botDiskApi, "setFields").mockRejectedValue(new Error("Server validation: invalid repository"));
+    await typeInto(input, "not/a/repo");
+    await act(async () => { save.click(); });
+    expect(setFields).not.toHaveBeenCalled();
+    expect(input.getAttribute("aria-invalid")).toBe("true");
+    await typeInto(input, "valid/repo");
+    await act(async () => { save.click(); });
+    await settle();
+    expect(setFields).toHaveBeenCalledWith({ defaultRepo: "valid/repo" });
+    expect(container.textContent).toContain("Server validation: invalid repository");
+  });
+
+  it("labels the field in Russian", async () => {
+    await i18n.changeLanguage("ru");
+    const { container } = await renderWithRepo();
+    expect(container.querySelector('label[for="bot-disk-default-repo"]')?.textContent).toBe("Запасной репозиторий");
   });
 });
 

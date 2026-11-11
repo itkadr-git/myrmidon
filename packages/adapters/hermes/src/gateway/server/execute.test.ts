@@ -4,11 +4,22 @@ import path from "node:path";
 
 import { describe, expect, it, vi, afterEach } from "vitest";
 import type { AdapterExecutionContext } from "@myrmidon/adapter-utils";
+import { RunGuard } from "@myrmidon/adapter-utils";
 import {
   GITHUB_LAUNCHER_PAYLOAD_VERSION,
   githubLauncherProgramFiles,
 } from "@myrmidon/adapter-utils/github-launcher";
-import { execute, errorResult, isProviderErrorAsContent, mapFinalResultForTest, parseSseFramesForTest, resolveSessionKey } from "./execute.js";
+import {
+  buildRunGuardHintMessage,
+  execute,
+  errorResult,
+  isHermesNoReplySentinel,
+  isProviderErrorAsContent,
+  mapFinalResultForTest,
+  parseSseFramesForTest,
+  resolveEffectiveSessionKeyStrategy,
+  resolveSessionKey,
+} from "./execute.js";
 import { testEnvironment } from "./test.js";
 import {
   CREATE_CANCEL_GRACE_MS,
@@ -141,6 +152,21 @@ afterEach(() => {
 });
 
 describe("resolveSessionKey", () => {
+  it("gives developers a fresh session per run and never upgrades a card's run or none", () => {
+    for (const configuredStrategy of ["issue", "agent", "run"] as const) {
+      expect(resolveEffectiveSessionKeyStrategy({ configuredStrategy, developerOnlyTaskSession: true })).toBe("run");
+    }
+    // "none" is kept: the card asked for no session key at all.
+    expect(resolveEffectiveSessionKeyStrategy({ configuredStrategy: "none", developerOnlyTaskSession: true })).toBe("none");
+  });
+
+  it("keeps every configured strategy for non-developers", () => {
+    for (const configuredStrategy of ["issue", "agent", "run", "none"] as const) {
+      expect(resolveEffectiveSessionKeyStrategy({ configuredStrategy })).toBe(configuredStrategy);
+      expect(resolveEffectiveSessionKeyStrategy({ configuredStrategy, developerOnlyTaskSession: false })).toBe(configuredStrategy);
+    }
+  });
+
   it("derives issue-scoped session keys by default", () => {
     expect(
       resolveSessionKey({
@@ -181,6 +207,73 @@ describe("parseSseFramesForTest", () => {
 });
 
 describe("execute", () => {
+  it("gives a developer a fresh session on every run while a non-developer keeps its configured session", async () => {
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, _init?: RequestInit) => new Response(JSON.stringify(
+      String(input).endsWith("/v1/runs")
+        ? { run_id: "run-hermes-1", status: "started" }
+        : { status: "completed", output: "done" },
+    ), { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const base = { apiBaseUrl: "http://127.0.0.1:8642", apiKey: "secret-key", timeoutSec: 5 };
+    const runWith = async (
+      config: Record<string, unknown>,
+      runId: string,
+      issueId: string,
+    ) => {
+      const ctx = makeCtx({ ...base, ...config });
+      ctx.runId = runId;
+      ctx.context = { ...ctx.context, issueId };
+      expect((await execute(ctx)).exitCode).toBe(0);
+    };
+    // Developer cards on "issue" and "agent" (not yet switched to "run"): the
+    // board flag still gives every run its own session, across runs of one task
+    // and across tasks.
+    await runWith({ sessionKeyStrategy: "issue", developerOnlyTaskSession: true }, "run-1", "task-A");
+    await runWith({ sessionKeyStrategy: "issue", developerOnlyTaskSession: true }, "run-2", "task-A");
+    await runWith({ sessionKeyStrategy: "agent", developerOnlyTaskSession: true }, "run-3", "task-B");
+    // A card already on "run" stays on "run".
+    await runWith({ sessionKeyStrategy: "run", developerOnlyTaskSession: true }, "run-4", "task-A");
+    // Non-developers keep their configured strategy.
+    await runWith({ sessionKeyStrategy: "issue" }, "run-5", "task-A");
+    await runWith({ sessionKeyStrategy: "agent" }, "run-6", "task-B");
+
+    const runCalls = (fetchMock.mock.calls as Array<[RequestInfo | URL, RequestInit?]>)
+      .filter(([input]) => String(input).endsWith("/v1/runs"));
+    const keys = runCalls.map(([, init]) => (init?.headers as Record<string, string>)["X-Hermes-Session-Key"]);
+    expect(keys).toEqual([
+      "paperclip:run:run-1",
+      "paperclip:run:run-2",
+      "paperclip:run:run-3",
+      "paperclip:run:run-4",
+      "paperclip:company:company-1:agent:agent-1:issue:task-A",
+      "paperclip:company:company-1:agent:agent-1",
+    ]);
+    // No developer key is shared with another run.
+    expect(new Set(keys.slice(0, 4)).size).toBe(4);
+    // Six full execute() calls in one test: the default 5 s is not enough.
+  }, 30_000);
+
+  it("never upgrades a developer card's none to a session key", async () => {
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, _init?: RequestInit) => new Response(JSON.stringify(
+      String(input).endsWith("/v1/runs")
+        ? { run_id: "run-hermes-1", status: "started" }
+        : { status: "completed", output: "done" },
+    ), { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
+    const ctx = makeCtx({
+      apiBaseUrl: "http://127.0.0.1:8642",
+      apiKey: "secret-key",
+      timeoutSec: 5,
+      sessionKeyStrategy: "none",
+      developerOnlyTaskSession: true,
+    });
+    expect((await execute(ctx)).exitCode).toBe(0);
+    const createCall = (fetchMock.mock.calls as Array<[RequestInfo | URL, RequestInit?]>)
+      .find(([input]) => String(input).endsWith("/v1/runs"));
+    expect((createCall?.[1]?.headers as Record<string, string>)["X-Hermes-Session-Key"]).toBeUndefined();
+  });
+
   it("rejects remote plain HTTP unless the unsafe dev escape hatch is enabled", async () => {
     const fetchMock = vi.fn(async () => new Response(JSON.stringify({ run_id: "unexpected" }), { status: 200 }));
     vi.stubGlobal("fetch", fetchMock);
@@ -471,7 +564,9 @@ describe("execute", () => {
     // Launcher bodies are public program text: no capability, no token.
     const launcherText = JSON.stringify(body.github_launcher);
     expect(launcherText).not.toContain("broker-capability-token");
-    expect(launcherText).not.toContain("paperclip-server-1");
+    // The non-container launcher must use the internal board candidate without
+    // embedding any capability or token in the staged program body.
+    expect(launcherText).toContain("paperclip-server-1");
   });
 
   it("omits the github_launcher field when no broker env is configured, and ignores payloadTemplate attempts to forge one", async () => {
@@ -614,6 +709,40 @@ describe("execute", () => {
     expect(result.resultJson?.result).toBe("");
     expect(result.resultJson?.output).toBe("");
     expect(result.resultJson?.provider_error_as_content).toBe(true);
+    // myrmidon(OPE-11947): an overload text means the model pool did not answer.
+    expect(result.resultJson?.model_unavailable).toBe(true);
+  });
+
+  // myrmidon(OPE-11947): the gateway's "No reply" give-up notice arrives as a
+  // completed turn; it must end as a failed, comment-free, model-unavailable run
+  // (after the configured fallback was tried).
+  it("ends a Hermes 'No reply' notice as a failed model-unavailable run after trying the fallback", async () => {
+    const notice =
+      "⚠️ No reply: chatgpt-pool/gpt-6-luna didn't produce a reply this time, even after retries. Send `continue` to try again, or switch models with /model.";
+    const ctx = makeCtx({ ...wsBaseConfig, model: "primary", provider: "openai", models: { fallbacks: ["backup-a"] } });
+    const bodies: Array<Record<string, unknown>> = [];
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.endsWith("/v1/runs")) {
+        const body = JSON.parse(String(init?.body));
+        bodies.push(body);
+        return new Response(JSON.stringify({ run_id: `run-${String(body.model)}`, status: "started" }), { status: 200 });
+      }
+      if (url.endsWith("/events")) {
+        return new Response(
+          sseStream(["event: run.completed", `data: ${JSON.stringify({ status: "completed", output: notice })}`, ""].join("\n")),
+          { status: 200, headers: { "content-type": "text/event-stream" } },
+        );
+      }
+      return new Response("{}", { status: 200 });
+    }));
+    const result = await execute(ctx);
+    expect(bodies.map((body) => body.model)).toEqual(["primary", "backup-a"]);
+    expect(result.exitCode).toBe(1);
+    expect(result.errorCode).toBe("hermes_gateway_run_failed");
+    expect(result.errorFamily).toBe("transient_upstream");
+    expect(result.summary).toBeUndefined();
+    expect(result.resultJson).toMatchObject({ result: "", output: "", provider_error_as_content: true, model_unavailable: true });
   });
 
   // myrmidon(F06-D): a chat's `/model` and `/think` choice is stored as an issue
@@ -879,6 +1008,125 @@ describe("execute", () => {
     expect(runBodies[1]!.input).not.toContain(description);
   });
 
+  it("sends a developer the full brief and no previous-run content even when the board still holds a stored session", async () => {
+    const description = "Task B must not inherit Task A context.";
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => new Response(JSON.stringify(
+      String(input).endsWith("/v1/runs")
+        ? { run_id: "run-hermes-1", status: "started" }
+        : { status: "completed", output: "done" },
+    ), { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const buildCtx = (config: Record<string, unknown>, storedSessionId: string) => {
+      const ctx = makeCtx({ apiBaseUrl: "http://127.0.0.1:8642", apiKey: "secret-key", timeoutSec: 5, ...config });
+      ctx.context = {
+        ...ctx.context,
+        issueId: "task-B",
+        paperclipTaskMarkdown: description,
+        paperclipTaskMarkdownCompact: "Task B (compact)",
+      };
+      // The board still stores the session of an earlier run of this task.
+      ctx.runtime = { ...ctx.runtime, sessionId: storedSessionId };
+      return ctx;
+    };
+
+    // Developer on a card that still says "issue": the stored session is not resumed.
+    expect((await execute(buildCtx(
+      { sessionKeyStrategy: "issue", developerOnlyTaskSession: true },
+      "paperclip:company:company-1:agent:agent-1:issue:task-B",
+    ))).exitCode).toBe(0);
+    // Developer on a card already switched to "run".
+    expect((await execute(buildCtx(
+      { sessionKeyStrategy: "run", developerOnlyTaskSession: true },
+      "paperclip:run:earlier-run",
+    ))).exitCode).toBe(0);
+    // Non-developer on "issue": its own stored session is resumed and the compact brief is used.
+    expect((await execute(buildCtx(
+      { sessionKeyStrategy: "issue" },
+      "paperclip:company:company-1:agent:agent-1:issue:task-B",
+    ))).exitCode).toBe(0);
+
+    const bodies = (fetchMock.mock.calls as Array<[RequestInfo | URL, RequestInit?]>)
+      .filter(([url]) => String(url).endsWith("/v1/runs"))
+      .map(([, init]) => JSON.parse(String(init?.body)) as { input: string; session_id: string });
+    expect(bodies).toHaveLength(3);
+    for (const body of bodies.slice(0, 2)) {
+      expect(body.input).toContain(description);
+      expect(body.input).not.toContain("Task B (compact)");
+      expect(body.session_id).toBe("paperclip:run:pc-run-1");
+    }
+    expect(bodies[2]!.input).toContain("Task B (compact)");
+    expect(bodies[2]!.input).not.toContain(description);
+    expect(bodies[2]!.session_id).toBe("paperclip:company:company-1:agent:agent-1:issue:task-B");
+  });
+
+  it("renders unchanged wake blocks as revision references and resets after compaction", async () => {
+    const description = "stable wake description";
+    const fullTaskMarkdown = `Paperclip task context:\n${description}`;
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      if (String(input).endsWith("/v1/runs")) {
+        return new Response(JSON.stringify({ run_id: `run-${fetchMock.mock.calls.length}`, status: "started" }), { status: 200 });
+      }
+      return new Response(JSON.stringify({ status: "completed", output: "done" }), { status: 200 });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const wake = { issue: { identifier: "PAP-DELTA", title: "Delta wake", description } };
+    const makeWakeCtx = (
+      sessionParams: Record<string, unknown> | null,
+      taskMarkdown: string,
+      handoff?: string,
+    ) => {
+      const ctx = makeCtx({ apiBaseUrl: "http://127.0.0.1:8642", apiKey: "secret-key", timeoutSec: 5, sessionKeyStrategy: "issue" });
+      ctx.context = {
+        issueId: "issue-delta",
+        wakeReason: "issue_monitor_due",
+        paperclipTaskMarkdown: taskMarkdown,
+        paperclipSessionHandoffMarkdown: handoff,
+        paperclipWake: wake,
+      };
+      ctx.runtime = { sessionId: sessionParams ? "session-delta" : null, sessionParams, sessionDisplayId: "session-delta", taskKey: "PAP-DELTA" };
+      return ctx;
+    };
+
+    // 1. Fresh run: sends full taskMarkdown and records digests in sessionParams
+    const res1 = await execute(makeWakeCtx(null, fullTaskMarkdown));
+    const digests1 = res1.sessionParams?.wakeBlockDigests as Record<string, string> | undefined;
+    expect(digests1?.taskMarkdown).toBeDefined();
+
+    // 2. Stable session resume: unchanged block sends compact revision string
+    const res2 = await execute(makeWakeCtx(res1.sessionParams ?? null, fullTaskMarkdown));
+
+    // 3. Changed block in resumed session: sends full changed content
+    const changedMarkdown = "Paperclip task context:\nchanged description v2";
+    const res3 = await execute(makeWakeCtx(res2.sessionParams ?? null, changedMarkdown));
+    const digests3 = res3.sessionParams?.wakeBlockDigests as Record<string, string> | undefined;
+    expect(digests3?.taskMarkdown).toBeDefined();
+    expect(digests3?.taskMarkdown).not.toBe(digests1?.taskMarkdown);
+
+    // 4. Compaction handoff: resets session state and sends full content
+    await execute(makeWakeCtx(res3.sessionParams ?? null, changedMarkdown, "compacted handoff"));
+
+    const bodies = (fetchMock.mock.calls as Array<[RequestInfo | URL, RequestInit?]>)
+      .filter(([input]) => String(input).endsWith("/v1/runs"))
+      .map(([, init]) => JSON.parse(String(init?.body)) as { input: string });
+    expect(bodies).toHaveLength(4);
+
+    // Turn 1: initial run gets full block
+    expect(bodies[0]!.input).toContain(description);
+
+    // Turn 2: unchanged block gets short revision string
+    expect(bodies[1]!.input).toContain(`без изменений (ревизия ${digests1!.taskMarkdown})`);
+    expect(bodies[1]!.input).not.toContain(description);
+
+    // Turn 3: changed block gets full content
+    expect(bodies[2]!.input).toContain("changed description v2");
+    expect(bodies[2]!.input).not.toContain("без изменений (ревизия");
+
+    // Turn 4: post-compaction gets full content
+    expect(bodies[3]!.input).toContain("changed description v2");
+    expect(bodies[3]!.input).not.toContain("без изменений (ревизия");
+  });
+
   it("routes a bare Hermes dashboard URL on port 9119 through the API prefix", async () => {
     const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
       const url = String(input);
@@ -1117,6 +1365,111 @@ describe("execute", () => {
     expect(result.errorCode).toBe("hermes_gateway_connect_failed");
     expect(result.errorMessage).toContain("ENOTFOUND");
     expect(result.errorMessage).toContain("host.docker.internal");
+  });
+
+  it("retries EAI_AGAIN or ECONNREFUSED until gateway becomes ready", async () => {
+    const eaiCause = Object.assign(new Error("getaddrinfo EAI_AGAIN myrmidon-bot-test"), { code: "EAI_AGAIN" });
+    let attempts = 0;
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
+      if (String(input).endsWith("/v1/runs")) {
+        attempts++;
+        if (attempts < 3) {
+          throw Object.assign(new Error("fetch failed"), { cause: eaiCause });
+        }
+        return new Response(JSON.stringify({ run_id: "run-ready-1", status: "started" }), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        });
+      }
+      return new Response(JSON.stringify({ status: "completed", output: "done" }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      });
+    }));
+
+    const result = await execute(makeCtx({
+      apiBaseUrl: "http://myrmidon-bot-test:8642",
+      apiKey: "secret-key",
+      dangerouslyAllowInsecureRemoteHttp: true,
+      gatewayReadyTimeoutMs: 5000,
+      timeoutSec: 5,
+    }));
+
+    expect(attempts).toBe(3);
+    expect(result.errorCode).toBeUndefined();
+    expect(result.exitCode).toBe(0);
+  });
+
+  it("handles mass waking N>=5 bots concurrently recovering from EAI_AGAIN DNS delay without failures", async () => {
+    const eaiCause = Object.assign(new Error("getaddrinfo EAI_AGAIN"), { code: "EAI_AGAIN" });
+    const botIds = ["bot-w1", "bot-w2", "bot-w3", "bot-w4", "bot-w5", "bot-w6"];
+    const attemptsPerBot = new Map<string, number>();
+
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
+      const urlStr = String(input);
+      const match = urlStr.match(/http:\/\/(bot-w\d):8642/);
+      const botId = match ? match[1] : "unknown";
+
+      if (urlStr.endsWith("/v1/runs")) {
+        const count = (attemptsPerBot.get(botId) ?? 0) + 1;
+        attemptsPerBot.set(botId, count);
+        // Each bot simulates DNS resolution / TCP readiness lag for 2 attempts
+        if (count < 3) {
+          throw Object.assign(new Error("fetch failed"), { cause: eaiCause });
+        }
+        return new Response(JSON.stringify({ run_id: `run-${botId}`, status: "started" }), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        });
+      }
+      return new Response(JSON.stringify({ status: "completed", output: `done-${botId}` }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      });
+    }));
+
+    // Trigger mass concurrent execution across N=6 waking bots
+    const results = await Promise.all(
+      botIds.map((b) =>
+        execute(
+          makeCtx({
+            apiBaseUrl: `http://${b}:8642`,
+            apiKey: "secret-key",
+            dangerouslyAllowInsecureRemoteHttp: true,
+            gatewayReadyTimeoutMs: 5000,
+            timeoutSec: 5,
+          }),
+        ),
+      ),
+    );
+
+    expect(results).toHaveLength(6);
+    for (const res of results) {
+      expect(res.errorCode).toBeUndefined();
+      expect(res.exitCode).toBe(0);
+    }
+    for (const b of botIds) {
+      expect(attemptsPerBot.get(b)).toBe(3);
+    }
+  });
+
+  it("handles EAI_AGAIN DNS failures as hermes_gateway_connect_failed after retry timeout expires", async () => {
+    const cause = Object.assign(new Error("getaddrinfo EAI_AGAIN myrmidon-bot-test"), { code: "EAI_AGAIN" });
+    vi.stubGlobal("fetch", vi.fn(async () => {
+      throw Object.assign(new Error("fetch failed"), { cause });
+    }));
+
+    const result = await execute(makeCtx({
+      apiBaseUrl: "http://myrmidon-bot-test:8642",
+      apiKey: "secret-key",
+      dangerouslyAllowInsecureRemoteHttp: true,
+      gatewayReadyTimeoutMs: 0,
+    }));
+
+    expect(result.exitCode).toBe(1);
+    expect(result.errorCode).toBe("hermes_gateway_connect_failed");
+    expect(result.errorMessage).toContain("EAI_AGAIN");
+    expect(result.errorMessage).toContain("myrmidon-bot-test");
   });
 
   it("redacts echoed auth material from HTTP error payloads", async () => {
@@ -1538,6 +1891,23 @@ describe("mapFinalResultForTest", () => {
     expect(resultJson.gatewayCallIdsTruncated).toBe(false);
   });
 
+  it("keeps a completed run with output free of an error message", () => {
+    const result = mapFinalResultForTest({
+      terminal: {
+        runId: "run-completed",
+        status: "completed",
+        payload: { status: "completed", output: "Задача сделана, PR открыт." },
+      },
+      outputChunks: ["Задача сделана, PR открыт."],
+      sessionKey: "session-key",
+      strategy: "issue",
+    });
+    expect(result.exitCode).toBe(0);
+    expect(result.errorCode).toBeUndefined();
+    expect(result.errorMessage).toBeUndefined();
+    expect(result.errorFamily).toBeUndefined();
+  });
+
   it("maps failed statuses into adapter errors", () => {
     const result = mapFinalResultForTest({
       terminal: {
@@ -1694,6 +2064,18 @@ describe("mapFinalResultForTest", () => {
     ).toBe(true);
   });
 
+  it("detects the OPE-10494 bilingual maintenance / resource-exhaustion reply", () => {
+    // The exact provider text observed 01.11 on adm-architect runs:
+    // Vietnamese half, English half, and the slash-joined form.
+    for (const text of [
+      "Tạm bảo trì vì hết tài nguyên…",
+      "Temporarily under maintenance due to resource exhaustion…",
+      "Tạm bảo trì vì hết tài nguyên… / Temporarily under maintenance due to resource exhaustion…",
+    ]) {
+      expect(isProviderErrorAsContent(text)).toBe(true);
+    }
+  });
+
   it("does not treat an overload-like tool result as a provider error", () => {
     const result = mapFinalResultForTest({
       terminal: {
@@ -1712,6 +2094,132 @@ describe("mapFinalResultForTest", () => {
     });
     expect(result.exitCode).toBe(0);
     expect(result.errorFamily).toBeUndefined();
+  });
+
+  // myrmidon(OPE-11947): Hermes ends a turn whose model never answered with its
+  // own "No reply" notice. It arrives as a *completed* turn; the board used to
+  // record a succeeded run, post the notice as the agent's comment and count
+  // the run as progress (1709 of 5998 runs in 24 h, re-woken every few minutes).
+  describe("Hermes 'No reply' give-up notice (OPE-11947)", () => {
+    const NO_REPLY =
+      "⚠️ No reply: chatgpt-pool/gpt-6-luna didn't produce a reply this time, even after retries. Send `continue` to try again, or switch models with /model.";
+
+    function mapCompleted(output: string, payloadExtra: Record<string, unknown> = {}) {
+      return mapFinalResultForTest({
+        terminal: {
+          runId: "run-no-reply",
+          status: "completed",
+          output,
+          payload: { status: "completed", output, usage: null, ...payloadExtra },
+        },
+        outputChunks: [],
+        sessionKey: null,
+        strategy: "issue",
+        configuredModel: "gpt-6-luna",
+      });
+    }
+
+    it("recognizes the notice for any model name and apostrophe, and nothing else", () => {
+      for (const text of [
+        NO_REPLY,
+        "⚠️ No reply: antigravity/gemini-3.8-flash-medium didn't produce a reply this time, even after retries. Send `continue` to try again, or switch models with /model.",
+        "⚠ No reply: m didn\u2019t produce a reply this time, even after retries.",
+        `  ${NO_REPLY}\n`,
+      ]) {
+        expect(isHermesNoReplySentinel(text)).toBe(true);
+        expect(isProviderErrorAsContent(text)).toBe(true);
+      }
+      for (const text of [
+        "No reply: m didn't produce a reply",
+        "⚠️ Warning: the build did not produce a reply",
+        `The agent printed this notice earlier: ${NO_REPLY}`,
+        `${NO_REPLY} ${"x".repeat(400)}`,
+        "Done. I replied to the thread and there was no reply from QA.",
+      ]) {
+        expect(isHermesNoReplySentinel(text)).toBe(false);
+      }
+    });
+
+    it("turns the completed notice into a failed, retryable, comment-free run", () => {
+      const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+      const result = mapCompleted(NO_REPLY);
+      warn.mockRestore();
+
+      expect(result.exitCode).toBe(1);
+      expect(result.errorCode).toBe("hermes_gateway_run_failed");
+      expect(result.errorFamily).toBe("transient_upstream");
+      // Nothing for the board to post as a comment or to read as progress.
+      expect(result.summary).toBeUndefined();
+      expect(result.resultJson).toMatchObject({
+        result: "",
+        output: "",
+        usage: null,
+        provider_error_as_content: true,
+        model_unavailable: true,
+      });
+      expect(JSON.stringify(result)).not.toContain("No reply");
+      // No reply and no tool call: the retry scheduler may replay the run.
+      expect(result.executionRecovery).toEqual({ kind: "bootstrap", providerWorkStarted: false });
+    });
+
+    it("still fails the run when the turn made tool calls, but offers no replay evidence", () => {
+      const result = mapCompleted(NO_REPLY, { tool_calls: [{ name: "lookup", result: "ok" }] });
+      expect(result.exitCode).toBe(1);
+      expect(result.errorFamily).toBe("transient_upstream");
+      expect(result.summary).toBeUndefined();
+      expect(result.resultJson).toMatchObject({ result: "", output: "", model_unavailable: true });
+      expect(result.executionRecovery).toBeUndefined();
+    });
+
+    // The pools ran out of quota (26-62 h) and the providers answer with a quota or
+    // overload text as the turn's content. The run must take the long
+    // model-unavailable path, not the 30 s transient pair, and the agent must not
+    // be auto-resumed (server/src/myrmidon/auto-resume.ts reads the marker).
+    it.each([
+      "The server is (sometimes) overloaded due to high user traffic. Please retry!",
+      "Quota exceeded, please try again.",
+      "Rate limit reached for this model. Please retry.",
+      "Tạm bảo trì vì hết tài nguyên… / Temporarily under maintenance due to resource exhaustion…",
+    ])("marks the provider quota/overload text %j as model-unavailable", (text) => {
+      const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+      const result = mapCompleted(text);
+      warn.mockRestore();
+
+      expect(result.exitCode).toBe(1);
+      expect(result.errorFamily).toBe("transient_upstream");
+      expect(result.summary).toBeUndefined();
+      expect(result.resultJson).toMatchObject({
+        result: "",
+        output: "",
+        provider_error_as_content: true,
+        model_unavailable: true,
+      });
+      // Replay safety stays with the recovery evidence: a quota text offers none
+      // (only the "No reply" notice does), so the marker alone changes no replay rule.
+      expect(result.executionRecovery).toBeUndefined();
+    });
+
+    it("does not mark a quota text after tool calls as model-unavailable (it may be the agent's own output)", () => {
+      const result = mapCompleted("Quota exceeded, please try again.", {
+        tool_calls: [{ name: "lookup", result: "ok" }],
+      });
+      expect(result.exitCode).toBe(0);
+      expect(result.resultJson).not.toHaveProperty("model_unavailable");
+      expect(result.resultJson).not.toHaveProperty("provider_error_as_content");
+    });
+
+    it("leaves ordinary output untouched", () => {
+      const answer = "Updated the config and opened PR #12. No reply from QA yet, will check again.";
+      const result = mapCompleted(answer);
+      expect(result.exitCode).toBe(0);
+      expect(result.errorCode).toBeUndefined();
+      expect(result.errorFamily).toBeUndefined();
+      expect(result.summary).toBe(answer);
+      expect(result.resultJson).toMatchObject({ result: answer, output: answer });
+      expect(result.resultJson).not.toHaveProperty("model_unavailable");
+      expect(result.resultJson).not.toHaveProperty("provider_error_as_content");
+      expect(result.executionRecovery).toBeUndefined();
+    });
   });
 
   it("keeps a failure without the key-permission signature a plain provider failure", () => {
@@ -1860,6 +2368,234 @@ describe("mapFinalResultForTest", () => {
 
     expect(fallback.model).toBe("card-model");
     expect(alone.model).toBeNull();
+  });
+
+  it("emits exactly one trace entry per run even with multiple litellm request ids", () => {
+    // myrmidon(1.6.7 TOKENS-TRACE / OPE-10727): the gateway reports aggregate
+    // usage per run. Emitting N copies (one per litellm_request_id) inflates
+    // SUM(promptTokens) by N× and breaks acceptance criterion 2. We must emit
+    // exactly one trace entry (callIndex=0) with the first litellmRequestId.
+    const result = mapFinalResultForTest({
+      terminal: {
+        runId: "run-multi-id",
+        status: "completed",
+        payload: {
+          status: "completed",
+          model: "test-model",
+          usage: {
+            input_tokens: 500,
+            cached_input_tokens: 100,
+            output_tokens: 200,
+            litellm_request_ids: ["req-a", "req-b", "req-c"],
+            gateway_call_ids: ["gw-a", "gw-b", "gw-c"],
+          },
+        },
+      },
+      outputChunks: [],
+      sessionKey: null,
+      strategy: "issue",
+    });
+
+    const traces = ((result.resultJson as Record<string, unknown> | null)?.llmCallTraces as
+      | {
+          calls: Array<{
+            callIndex: number;
+            litellmRequestId: string | null;
+            usage: { promptTokens: number; cachedPromptTokens: number; completionTokens: number };
+            sections: Record<string, number>;
+          }>;
+        }
+      | undefined)?.calls ?? [];
+    expect(traces).toHaveLength(1);
+    expect(traces[0].callIndex).toBe(0);
+    expect(traces[0].litellmRequestId).toBe("req-a");
+    expect(traces[0].usage.promptTokens).toBe(500);
+    expect(traces[0].usage.cachedPromptTokens).toBe(100);
+    expect(traces[0].usage.completionTokens).toBe(200);
+  });
+
+  it("passes through section chars and tool schema/result sizes to the trace", () => {
+    // myrmidon(1.6.7 TOKENS-TRACE / OPE-10727): verify that real measurements
+    // from buildRunBody (sectionChars), paperclipSkillsField (toolSchemaChars),
+    // and tool event accumulation (toolResultChars) reach the trace entry.
+    const sectionChars = {
+      instructionsBundle: 1500,
+      cardInstructions: 300,
+      identityContract: 200,
+      wakePrompt: 400,
+      wakePayloadJson: 600,
+      sessionHandoff: 100,
+      taskMarkdown: 250,
+    };
+    const toolSchemaChars = 5000;
+    const toolSchemaTokens = 1250;
+    const toolResultChars = 800;
+    const toolResultTokens = 200;
+
+    const result = mapFinalResultForTest({
+      terminal: {
+        runId: "run-sections",
+        status: "completed",
+        payload: {
+          status: "completed",
+          model: "test-model",
+          usage: {
+            input_tokens: 1000,
+            cached_input_tokens: 200,
+            output_tokens: 300,
+            litellm_request_ids: ["req-1"],
+          },
+        },
+      },
+      outputChunks: [],
+      sessionKey: null,
+      strategy: "issue",
+      sectionChars,
+      toolSchemaChars,
+      toolSchemaTokens,
+      toolResultChars,
+      toolResultTokens,
+    });
+
+    const traces = ((result.resultJson as Record<string, unknown> | null)?.llmCallTraces as
+      | {
+          calls: Array<{
+            callIndex: number;
+            litellmRequestId: string | null;
+            usage: { promptTokens: number; cachedPromptTokens: number; completionTokens: number };
+            sections: Record<string, number>;
+          }>;
+        }
+      | undefined)?.calls ?? [];
+    expect(traces).toHaveLength(1);
+    const sections = traces[0].sections;
+    // system = instructionsBundle + cardInstructions
+    expect(sections.systemChars).toBe(1800);
+    // wake = identityContract + wakePrompt + wakePayloadJson
+    expect(sections.wakeChars).toBe(1200);
+    // history = sessionHandoff + taskMarkdown
+    expect(sections.historyChars).toBe(350);
+    // tool schemas and results pass through
+    expect(sections.toolsChars).toBe(5000);
+    expect(sections.toolsTokens).toBe(1250);
+    expect(sections.toolResultsChars).toBe(800);
+    expect(sections.toolResultsTokens).toBe(200);
+  });
+
+  it("emits one trace per model call when gateway provides model_calls array", () => {
+    // myrmidon(1.6.7 TOKENS-TRACE / OPE-10727): when the gateway payload carries
+    // a model_calls array with per-call usage, the adapter must emit one trace
+    // per call — this is the "трейс каждого LLM-вызова" requirement.
+    const result = mapFinalResultForTest({
+      terminal: {
+        runId: "run-per-call",
+        status: "completed",
+        payload: {
+          status: "completed",
+          model: "test-model",
+          usage: {
+            input_tokens: 1500,
+            cached_input_tokens: 300,
+            output_tokens: 600,
+          },
+          model_calls: [
+            {
+              usage: { input_tokens: 500, cached_input_tokens: 100, output_tokens: 200 },
+              litellm_request_id: "req-call-1",
+              model: "test-model",
+              section_chars: { instructionsBundle: 400, cardInstructions: 100 },
+            },
+            {
+              usage: { input_tokens: 600, cached_input_tokens: 100, output_tokens: 200 },
+              litellm_request_id: "req-call-2",
+              model: "test-model",
+            },
+            {
+              usage: { input_tokens: 400, cached_input_tokens: 100, output_tokens: 200 },
+              litellm_request_id: "req-call-3",
+              model: "test-model",
+            },
+          ],
+        },
+      },
+      outputChunks: [],
+      sessionKey: null,
+      strategy: "issue",
+    });
+
+    const traces = ((result.resultJson as Record<string, unknown> | null)?.llmCallTraces as
+      | {
+          calls: Array<{
+            callIndex: number;
+            litellmRequestId: string | null;
+            usage: { promptTokens: number; cachedPromptTokens: number; completionTokens: number };
+            sections: Record<string, number>;
+          }>;
+        }
+      | undefined)?.calls ?? [];
+    expect(traces).toHaveLength(3);
+
+    // Each trace has its own callIndex and litellmRequestId
+    expect(traces[0].callIndex).toBe(0);
+    expect(traces[0].litellmRequestId).toBe("req-call-1");
+    expect(traces[0].usage.promptTokens).toBe(500);
+    expect(traces[0].usage.cachedPromptTokens).toBe(100);
+    expect(traces[0].usage.completionTokens).toBe(200);
+    // Gateway-provided section_chars override adapter-computed
+    expect(traces[0].sections.systemChars).toBe(500);
+
+    expect(traces[1].callIndex).toBe(1);
+    expect(traces[1].litellmRequestId).toBe("req-call-2");
+    expect(traces[1].usage.promptTokens).toBe(600);
+
+    expect(traces[2].callIndex).toBe(2);
+    expect(traces[2].litellmRequestId).toBe("req-call-3");
+    expect(traces[2].usage.promptTokens).toBe(400);
+
+    // Sum of per-call prompt tokens equals aggregate
+    const sumPrompt = traces.reduce((sum: number, t) => sum + t.usage.promptTokens, 0);
+    expect(sumPrompt).toBe(1500);
+  });
+
+  it("falls back to single trace per run when model_calls is absent", () => {
+    // myrmidon(1.6.7 TOKENS-TRACE / OPE-10727): when the gateway does not emit
+    // model_calls, we fall back to a single trace per run with aggregate usage.
+    const result = mapFinalResultForTest({
+      terminal: {
+        runId: "run-aggregate",
+        status: "completed",
+        payload: {
+          status: "completed",
+          model: "test-model",
+          usage: {
+            input_tokens: 800,
+            cached_input_tokens: 150,
+            output_tokens: 300,
+            litellm_request_ids: ["req-agg-1"],
+          },
+        },
+      },
+      outputChunks: [],
+      sessionKey: null,
+      strategy: "issue",
+    });
+
+    const traces = ((result.resultJson as Record<string, unknown> | null)?.llmCallTraces as
+      | {
+          calls: Array<{
+            callIndex: number;
+            litellmRequestId: string | null;
+            usage: { promptTokens: number; cachedPromptTokens: number; completionTokens: number };
+            sections: Record<string, number>;
+          }>;
+        }
+      | undefined)?.calls ?? [];
+    expect(traces).toHaveLength(1);
+    expect(traces[0].callIndex).toBe(0);
+    expect(traces[0].litellmRequestId).toBe("req-agg-1");
+    expect(traces[0].usage.promptTokens).toBe(800);
+    expect(traces[0].usage.cachedPromptTokens).toBe(150);
+    expect(traces[0].usage.completionTokens).toBe(300);
   });
 });
 
@@ -2359,6 +3095,14 @@ describe("execute — operator cancellation (G4)", () => {
         label: "ENOTFOUND",
         respond: async () => {
           throw connectError("ENOTFOUND");
+        },
+        unambiguous: true,
+        errorCode: "hermes_gateway_cancelled",
+      },
+      {
+        label: "EAI_AGAIN",
+        respond: async () => {
+          throw connectError("EAI_AGAIN");
         },
         unambiguous: true,
         errorCode: "hermes_gateway_cancelled",
@@ -3935,6 +4679,75 @@ describe("OPE-9476: cooldown, structured rate-limits, model response start lifec
     expect(result.resultJson?.failed_before_model).toBeUndefined();
   });
 
+  it("uses usage_limit_reached resets_in_seconds instead of a fixed cooldown", () => {
+    const before = Date.now();
+    const result = mapFinalResultForTest({
+      terminal: {
+        runId: "run-usage-limit",
+        status: "failed",
+        payload: {
+          error: {
+            type: "usage_limit_reached",
+            message: "Weekly usage limit reached",
+            resets_in_seconds: 3600,
+          },
+        },
+      },
+      outputChunks: [],
+      sessionKey: "session-usage-limit",
+      strategy: "issue",
+    });
+
+    expect(result.errorFamily).toBe("provider_quota");
+    expect(result.retryNotBefore).toBeTruthy();
+    const delay = new Date(result.retryNotBefore!).getTime() - before;
+    expect(delay).toBeGreaterThanOrEqual(3_599_000);
+    expect(delay).toBeLessThanOrEqual(3_601_000);
+  });
+
+  it("uses the earliest reset from a wham usage window", () => {
+    const result = mapFinalResultForTest({
+      terminal: {
+        runId: "run-wham-usage",
+        status: "failed",
+        payload: {
+          error: { type: "usage_limit_reached", message: "limit" },
+          usage: { windows: [{ resets_at: "2099-01-01T00:00:00Z" }, { resets_in_seconds: 90 }] },
+        },
+      },
+      outputChunks: [],
+      sessionKey: "session-wham-usage",
+      strategy: "issue",
+    });
+
+    expect(result.retryNotBefore).toBeTruthy();
+    expect(new Date(result.retryNotBefore!).getTime() - Date.now()).toBeGreaterThanOrEqual(89_000);
+  });
+  it("falls back immediately when run creation reports usage_limit_reached", async () => {
+    const ctx = makeCtx({ ...wsBaseConfig, model: "chatgpt-pool/gpt-6-sol", provider: "chatgpt-pool", models: { fallbacks: ["kie/gemini"] } });
+    const bodies: Array<Record<string, unknown>> = [];
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.endsWith("/v1/runs")) {
+        const body = JSON.parse(String(init?.body)) as Record<string, unknown>;
+        bodies.push(body);
+        if (bodies.length === 1) {
+          return new Response(JSON.stringify({ error: { type: "usage_limit_reached", resets_in_seconds: 3600 } }), { status: 429 });
+        }
+        return new Response(JSON.stringify({ run_id: "fallback-run", status: "started" }), { status: 200 });
+      }
+      if (url.endsWith("/events")) {
+        return new Response(sseStream(["event: run.completed", `data: ${JSON.stringify({ status: "completed", output: "reserve" })}`, ""].join("\n")), { status: 200, headers: { "content-type": "text/event-stream" } });
+      }
+      return new Response("{}", { status: 200 });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const result = await execute(ctx);
+    expect(bodies.map((body) => body.model)).toEqual(["chatgpt-pool/gpt-6-sol", "kie/gemini"]);
+    expect(result.exitCode).toBe(0);
+    expect(result.summary).toBe("reserve");
+  });
+
   it("does not serialize cooldown: true in resultJson for non-cooldown terminal failure", () => {
     const result = mapFinalResultForTest({
       terminal: {
@@ -3977,5 +4790,255 @@ describe("OPE-9476: cooldown, structured rate-limits, model response start lifec
     // mapFinalResultForTest preserves the adapter's null (no structured hint),
     // distinct from undefined: null says "cooldown confirmed, no retry hint".
     expect(result.retryNotBefore).toBeNull();
+  });
+});
+
+// myrmidon(RUN-GUARD-HINT / OPE-12191, part B): the adapter renders the guard's
+// hint-before-stop decision as exactly one correction message steered into the
+// running dialog (POST /v1/runs/{id}/steer) and records resultJson.runGuardHint
+// when the run still reaches its final stop afterwards. A hinted run that
+// recovers and completes carries no runGuardHint marker.
+describe("execute — run guard hint-before-stop (RUN-GUARD-HINT B)", () => {
+  const makeGuardCtx = (config: Record<string, unknown>): AdapterExecutionContext => {
+    const ctx = makeCtx(config);
+    ctx.runGuard = new RunGuard({ repeatedToolCallLimit: 3, modelCallLimit: 50 });
+    ctx.onRunGuardStop = vi.fn(async () => undefined);
+    ctx.onEvent = vi.fn(async () => undefined);
+    return ctx;
+  };
+
+  const toolStartedFrame = (tool: string, args: Record<string, unknown>): string =>
+    `event: tool.started\ndata: ${JSON.stringify({ tool, arguments: args })}\n\n`;
+  const toolCompletedFrame = (tool: string): string =>
+    `event: tool.completed\ndata: ${JSON.stringify({ tool })}\n\n`;
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it("buildRunGuardHintMessage renders the epic's phrasing for both reasons", () => {
+    expect(buildRunGuardHintMessage({ reason: "repeated_tool_call", tool: "read_file", repeatCount: 3 })).toBe(
+      "Защита: вызываешь read_file с теми же аргументами 3-й раз — смени подход: читай другое место или другим инструментом, переходи к правке по задаче",
+    );
+    expect(buildRunGuardHintMessage({ reason: "model_call_limit", modelCalls: 40 })).toBe(
+      "Защита: лимит вызовов модели, записей не было — переходи к правке по месту из задачи или опиши блокер в комментарии",
+    );
+  });
+
+  it("steers one correction on the third repeated tool call, keeps the run going, and omits runGuardHint when the run completes normally", async () => {
+    const steerBodies: Array<Record<string, unknown>> = [];
+    const repeatedArgs = { path: "/workspace/big/file.ts" };
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.endsWith("/v1/runs")) {
+        return new Response(JSON.stringify({ run_id: "run-hint-1", status: "started" }), { status: 200 });
+      }
+      if (url.endsWith("/steer")) {
+        steerBodies.push(JSON.parse(String(init?.body)) as Record<string, unknown>);
+        return new Response(JSON.stringify({ object: "hermes.run.steer", run_id: "run-hint-1", accepted: true }), {
+          status: 200,
+        });
+      }
+      if (url.endsWith("/events")) {
+        // Three identical read_file tool calls: the third trips the guard's
+        // repeat limit (3) and must produce a hint (no stop), then a terminal
+        // completed event ends the run before a fourth call could happen.
+        const frames = [
+          toolStartedFrame("read_file", repeatedArgs),
+          toolCompletedFrame("read_file"),
+          toolStartedFrame("read_file", repeatedArgs),
+          toolCompletedFrame("read_file"),
+          toolStartedFrame("read_file", repeatedArgs),
+          toolCompletedFrame("read_file"),
+          "event: run.completed",
+          'data: {"status":"completed","output":"done"}',
+          "",
+        ].join("\n");
+        return new Response(sseStream(frames), { status: 200, headers: { "content-type": "text/event-stream" } });
+      }
+      return new Response(JSON.stringify({ status: "completed", output: "done" }), { status: 200 });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const ctx = makeGuardCtx({ apiBaseUrl: "http://127.0.0.1:8642", apiKey: "sk-test", timeoutSec: 5 });
+    const result = await execute(ctx);
+
+    // The correction was steered exactly once, with the epic's phrasing.
+    expect(steerBodies).toEqual([
+      {
+        input:
+          "Защита: вызываешь read_file с теми же аргументами 3-й раз — смени подход: читай другое место или другим инструментом, переходи к правке по задаче",
+      },
+    ]);
+    // No stop was reported to the platform on the hint turn.
+    expect(ctx.onRunGuardStop).not.toHaveBeenCalled();
+    // The guard did not stop the run; it completed normally after the hint.
+    expect(ctx.runGuard?.stopped).toBe(false);
+    expect(result.exitCode).toBe(0);
+    expect(result.resultJson?.runGuardHint).toBeUndefined();
+    expect(
+      (ctx.onEvent as ReturnType<typeof vi.fn>).mock.calls.some(
+        (call) => (call[0] as { eventType: string }).eventType === "run_guard_hint_stop",
+      ),
+    ).toBe(false);
+  });
+
+  it("records resultJson.runGuardHint and a run_guard_hint_stop event when the run stops after the hint", async () => {
+    const steerBodies: Array<Record<string, unknown>> = [];
+    const repeatedArgs = { path: "/workspace/big/file.ts" };
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.endsWith("/v1/runs")) {
+        return new Response(JSON.stringify({ run_id: "run-hint-2", status: "started" }), { status: 200 });
+      }
+      if (url.endsWith("/steer")) {
+        steerBodies.push(JSON.parse(String(init?.body)) as Record<string, unknown>);
+        return new Response(JSON.stringify({ object: "hermes.run.steer", run_id: "run-hint-2", accepted: true }), {
+          status: 200,
+        });
+      }
+      if (url.endsWith("/events")) {
+        // Three repeats trigger the hint; the fourth repeat trips the stopped
+        // guard's stop, the run fails (as after onRunGuardStop), and the final
+        // result must carry the hint marker.
+        const frames = [
+          toolStartedFrame("read_file", repeatedArgs),
+          toolCompletedFrame("read_file"),
+          toolStartedFrame("read_file", repeatedArgs),
+          toolCompletedFrame("read_file"),
+          toolStartedFrame("read_file", repeatedArgs),
+          toolCompletedFrame("read_file"),
+          toolStartedFrame("read_file", repeatedArgs),
+          toolCompletedFrame("read_file"),
+          "event: run.failed",
+          'data: {"status":"failed","error":"run guard: repeated_tool_call"}',
+          "",
+        ].join("\n");
+        return new Response(sseStream(frames), { status: 200, headers: { "content-type": "text/event-stream" } });
+      }
+      return new Response(JSON.stringify({ status: "failed", error: "run guard: repeated_tool_call" }), { status: 200 });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const ctx = makeGuardCtx({ apiBaseUrl: "http://127.0.0.1:8642", apiKey: "sk-test", timeoutSec: 5 });
+    const result = await execute(ctx);
+
+    // Still exactly one correction even though the run later stopped.
+    expect(steerBodies).toHaveLength(1);
+    // The stop was reported once with the guard's reason.
+    expect(ctx.onRunGuardStop).toHaveBeenCalledTimes(1);
+    expect(ctx.onRunGuardStop).toHaveBeenCalledWith("repeated_tool_call");
+    // The final result carries the hint marker and the run-log event fired.
+    expect(result.resultJson?.runGuardHint).toEqual({ reason: "repeated_tool_call" });
+    const hintEvents = (ctx.onEvent as ReturnType<typeof vi.fn>).mock.calls.filter(
+      (call) => (call[0] as { eventType: string }).eventType === "run_guard_hint_stop",
+    );
+    expect(hintEvents).toHaveLength(1);
+    expect((hintEvents[0][0] as { payload: { runGuardStopReason: string } }).payload.runGuardStopReason).toBe(
+      "repeated_tool_call",
+    );
+  });
+
+  it("mirrors production guard stop: aborts ctx.signal via onRunGuardStop on the fourth repeat, records resultJson.runGuardHint, and emits run_guard_hint_stop", async () => {
+    const steerBodies: Array<Record<string, unknown>> = [];
+    const repeatedArgs = { path: "/workspace/big/file.ts" };
+    const controller = new AbortController();
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.endsWith("/v1/runs")) {
+        return new Response(JSON.stringify({ run_id: "run-hint-prod-stop", status: "started" }), { status: 200 });
+      }
+      if (url.endsWith("/steer")) {
+        steerBodies.push(JSON.parse(String(init?.body)) as Record<string, unknown>);
+        return new Response(JSON.stringify({ object: "hermes.run.steer", run_id: "run-hint-prod-stop", accepted: true }), {
+          status: 200,
+        });
+      }
+      if (url.endsWith("/stop")) {
+        return new Response(JSON.stringify({ status: "stopping" }), { status: 200 });
+      }
+      if (init?.method === "GET" && !url.endsWith("/events")) {
+        return new Response(JSON.stringify({ status: "cancelled", last_event: "run.cancelled" }), { status: 200 });
+      }
+      if (url.endsWith("/events")) {
+        // Three repeats trigger hint (steered into dialog); fourth repeat trips guard stop,
+        // invoking onRunGuardStop which calls controller.abort().
+        // No run.failed terminal event is emitted by the server.
+        const frames = [
+          toolStartedFrame("read_file", repeatedArgs),
+          toolCompletedFrame("read_file"),
+          toolStartedFrame("read_file", repeatedArgs),
+          toolCompletedFrame("read_file"),
+          toolStartedFrame("read_file", repeatedArgs),
+          toolCompletedFrame("read_file"),
+          toolStartedFrame("read_file", repeatedArgs),
+          toolCompletedFrame("read_file"),
+          "",
+        ].join("\n");
+        return new Response(sseStream(frames), { status: 200, headers: { "content-type": "text/event-stream" } });
+      }
+      return new Response(JSON.stringify({ status: "running" }), { status: 200 });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const ctx = makeGuardCtx({ apiBaseUrl: "http://127.0.0.1:8642", apiKey: "test-key", timeoutSec: 5 });
+    ctx.signal = controller.signal;
+    ctx.onRunGuardStop = vi.fn(async () => {
+      controller.abort();
+    });
+
+    const result = await execute(ctx);
+
+    expect(steerBodies).toHaveLength(1);
+    expect(ctx.onRunGuardStop).toHaveBeenCalledTimes(1);
+    expect(ctx.onRunGuardStop).toHaveBeenCalledWith("repeated_tool_call");
+    expect(result.exitCode).toBe(1);
+    expect(result.errorCode).toBe("hermes_gateway_cancelled");
+    expect(result.resultJson?.runGuardHint).toEqual({ reason: "repeated_tool_call" });
+    const hintEvents = (ctx.onEvent as ReturnType<typeof vi.fn>).mock.calls.filter(
+      (call) => (call[0] as { eventType: string }).eventType === "run_guard_hint_stop",
+    );
+    expect(hintEvents).toHaveLength(1);
+    expect((hintEvents[0][0] as { payload: { runGuardStopReason: string } }).payload.runGuardStopReason).toBe(
+      "repeated_tool_call",
+    );
+  });
+
+  it("never steers a second hint in the same run even when the guard hints again", async () => {
+    const steerBodies: Array<Record<string, unknown>> = [];
+    const repeatedArgs = { path: "/workspace/big/file.ts" };
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.endsWith("/v1/runs")) {
+        return new Response(JSON.stringify({ run_id: "run-hint-3", status: "started" }), { status: 200 });
+      }
+      if (url.endsWith("/steer")) {
+        steerBodies.push(JSON.parse(String(init?.body)) as Record<string, unknown>);
+        return new Response(JSON.stringify({ object: "hermes.run.steer", run_id: "run-hint-3", accepted: true }), {
+          status: 200,
+        });
+      }
+      if (url.endsWith("/events")) {
+        // Six repeats: hint on the third, the stopped guard answers stop on the
+        // fourth — the fifth and sixth must neither hint nor steer again.
+        const frames = [
+          ...Array.from({ length: 6 }, () => [
+            toolStartedFrame("read_file", repeatedArgs),
+            toolCompletedFrame("read_file"),
+          ]).flat(),
+          "event: run.failed",
+          'data: {"status":"failed","error":"run guard: repeated_tool_call"}',
+          "",
+        ].join("\n");
+        return new Response(sseStream(frames), { status: 200, headers: { "content-type": "text/event-stream" } });
+      }
+      return new Response(JSON.stringify({ status: "failed", error: "run guard: repeated_tool_call" }), { status: 200 });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const ctx = makeGuardCtx({ apiBaseUrl: "http://127.0.0.1:8642", apiKey: "sk-test", timeoutSec: 5 });
+    await execute(ctx);
+
+    expect(steerBodies).toHaveLength(1);
   });
 });

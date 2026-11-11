@@ -17,6 +17,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { ToggleSwitch } from "@/components/ui/toggle-switch";
+import { describeSettingsError } from "./settingsErrors";
 import {
   channelSettingsApi,
   channelSettingsQueryKey,
@@ -601,7 +602,7 @@ export function ChannelSettingsPanel() {
       setSaved(false);
     },
     onError: (err) =>
-      setError(err instanceof Error ? err.message : t("area.settings-integrations.channel-settings-panel.saveError")),
+      setError(describeSettingsError(err, t, "area.settings-integrations.channel-settings-panel.saveError")),
     onSuccess: async () => {
       setError(null);
       setSaved(true);
@@ -611,9 +612,15 @@ export function ChannelSettingsPanel() {
 
   if (query.error) {
     return (
-      <div className="text-sm text-destructive">
-        {query.error instanceof Error ? query.error.message : t("area.settings-integrations.channel-settings-panel.loadError")}
-      </div>
+      <section className="space-y-4">
+        <div className="flex items-center gap-2">
+          <MessagesSquare className="h-4 w-4 text-muted-foreground" />
+          <h2 className="text-sm font-semibold">{t("area.settings-integrations.channel-settings-panel.title")}</h2>
+        </div>
+        <p role="alert" className="text-sm text-destructive" data-testid="channel-settings-load-error">
+          {describeSettingsError(query.error, t, "area.settings-integrations.channel-settings-panel.loadError")}
+        </p>
+      </section>
     );
   }
 

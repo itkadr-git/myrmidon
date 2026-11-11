@@ -188,6 +188,9 @@ export interface ConcurrencyView {
   board: string;
   /** The value the gateway was given, or why there is none to show. */
   gateway: string;
+  /** myrmidon(1.6.7 RUN-LIMITS): what the scheduler actually admits against, or
+   *  null when an older server did not say. */
+  effective: string | null;
   diverged: boolean;
   note: string | null;
   warning: string | null;
@@ -212,6 +215,14 @@ export function concurrencyView(status: BotContainerStatus | null): ConcurrencyV
         ? i18n.t("area.settings-agent-card.agent-card-container-fields.concurrencyGatewayNotReported")
         : i18n.t("area.settings-agent-card.agent-card-container-fields.concurrencyGateway", { value: limit.applied })
       : i18n.t("area.settings-agent-card.agent-card-container-fields.concurrencyGatewayUnmanaged"),
+    effective: status.effectiveMaxConcurrentRuns == null
+      ? null
+      : i18n.t("area.settings-agent-card.agent-card-container-fields.concurrencyEffective", {
+          value: status.effectiveMaxConcurrentRuns,
+          source: i18n.t(
+            `area.settings-agent-card.agent-card-container-fields.concurrencyLimitSource.${status.effectiveMaxConcurrentRunsSource ?? "board"}`,
+          ),
+        }),
     diverged: limit?.diverged ?? false,
     note: status.gatewayConcurrencyNote,
     warning: status.gatewayConcurrencyWarning,
@@ -288,11 +299,12 @@ export function AgentCardContainerFieldsView({
                   className={inputClass}
                   aria-label={t("area.settings-agent-card.agent-card-container-fields.idleStopMode")}
                   data-testid="myrmidon-bot-idle-stop-mode"
-                  value={card.idleStopMode === "always_on" ? "always_on" : "on_demand"}
-                  onChange={(event) => onChange({ ...card, idleStopMode: event.target.value as "always_on" | "on_demand" })}
+                  value={card.idleStopMode === "always_on" || card.idleStopMode === "off" ? card.idleStopMode : "on_demand"}
+                  onChange={(event) => onChange({ ...card, idleStopMode: event.target.value as "always_on" | "on_demand" | "off" })}
                 >
                   <option value="on_demand">{t("area.settings-agent-card.agent-card-container-fields.idleStopOnDemand")}</option>
                   <option value="always_on">{t("area.settings-agent-card.agent-card-container-fields.idleStopAlwaysOn")}</option>
+                  <option value="off">{t("area.settings-agent-card.agent-card-container-fields.idleStopOff")}</option>
                 </select>
               </Field>
               <div className="text-xs text-muted-foreground" data-testid="myrmidon-bot-idle-stop-runtime">
@@ -418,6 +430,32 @@ export function AgentCardContainerFieldsView({
               })}
             </p>
           )}
+          {/* myrmidon(OPE-12337): display discrepancy when running container limits differ from card */}
+          {status?.limits?.diverged && (
+            <div
+              className="mt-1.5 rounded border border-amber-400/40 bg-amber-400/5 p-2 text-xs text-amber-400"
+              data-testid="myrmidon-bot-container-limits-diverged"
+            >
+              <div className="font-medium">
+                {t("area.settings-agent-card.agent-card-container-fields.limitsDivergedTitle")}
+              </div>
+              <div className="mt-0.5 text-muted-foreground">
+                {t("area.settings-agent-card.agent-card-container-fields.limitsDivergedDetail", {
+                  requestedMem: status.limits.requested.memoryMb,
+                  actualMem: status.limits.actual?.memoryMb ?? "-",
+                  requestedCpus: status.limits.requested.cpus,
+                  actualCpus: status.limits.actual?.cpus ?? "-",
+                  requestedPids: status.limits.requested.pidsLimit,
+                  actualPids: status.limits.actual?.pidsLimit ?? "-",
+                })}
+              </div>
+              {status.limits.reason && (
+                <div className="mt-0.5 text-amber-400/90" data-testid="myrmidon-bot-container-limits-reason">
+                  {status.limits.reason}
+                </div>
+              )}
+            </div>
+          )}
           {feedback && (
             <p
               role="status"
@@ -445,6 +483,11 @@ export function AgentCardContainerFieldsView({
               <span className="text-sm" data-testid="myrmidon-bot-container-concurrency-gateway">
                 {concurrency.gateway}
               </span>
+              {concurrency.effective && (
+                <span className="text-sm" data-testid="myrmidon-bot-container-concurrency-effective">
+                  {concurrency.effective}
+                </span>
+              )}
               {concurrency.diverged && (
                 <span
                   className="rounded-full border border-border px-2 py-0.5 text-xs text-amber-400"

@@ -13,6 +13,9 @@ import {
 } from "@myrmidon/shared";
 import { createDefaultModelProviderService } from "./wiring.js";
 import type { AdapterModel } from "@myrmidon/adapter-utils";
+import { isAccountEligibleForRotation, selectActivePoolAccount } from "./pool-rotation.js";
+
+export { isAccountEligibleForRotation, selectActivePoolAccount };
 
 export interface PoolAccountChannelProvider {
   listChannels(
@@ -61,8 +64,11 @@ export async function enrichWithPoolModels(
         let fallbackModels: string[] | null = null;
 
         for (const ch of channels) {
-          // Banned accounts do not provide available models
-          if (ch.isBanned || ch.state === "banned") {
+          // Banned or quota-exhausted accounts are out of rotation until their
+          // reset window. Do not advertise their models as pool-backed; otherwise
+          // model selection can route a fresh request back to a known-exhausted
+          // account before the provider refreshes its channel state.
+          if (!isAccountEligibleForRotation(ch)) {
             continue;
           }
 

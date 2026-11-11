@@ -45,6 +45,7 @@ import {
   writeHotRestartIntent,
 } from "../services/hot-restart.js";
 import { readProductEnv } from "@myrmidon/shared/env-alias"; // myrmidon(REBRAND-C)
+import { getGitHubRateLimitMetrics } from "../services/github-rate-limit.js";
 
 function shouldExposeFullHealthDetails(
   actorType: "none" | "board" | "agent" | null | undefined,
@@ -120,6 +121,30 @@ function getCloudHealthStatus(env: CloudInstanceEnv) {
       },
     } : {}),
   };
+}
+
+export function livenessRoutes(opts: { serverInfo?: ServerInfoSnapshot } = {}) {
+  const router = Router();
+
+  // BOARD-LIVENESS (OPE-12211): liveness is a cheap in-process probe — no
+  // database, no disk, no downstream calls. It answers 200 even when
+  // PostgreSQL is down, so orchestrators and the container runtime can tell
+  // "process dead" apart from "database unreachable" and stop restarting a
+  // live process just because the database went away. Readiness stays on
+  // GET /api/health, which does the SELECT 1 probe and answers 503 when the
+  // database is unreachable. Mounted next to /api/health in app.ts so the
+  // container HEALTHCHECK and deploy scripts can probe /api/liveness.
+  router.get("/", (_req, res) => {
+    const serverInfo = opts.serverInfo ?? getServerInfoSnapshot();
+    const commit = serverInfo.git.available ? serverInfo.git.fullSha : null;
+    res.json({
+      status: "ok",
+      uptimeSec: Math.round(process.uptime()),
+      commit,
+    });
+  });
+
+  return router;
 }
 
 export function healthRoutes(
@@ -518,6 +543,7 @@ export function healthRoutes(
       ...(workspaceReadiness ? { workspace: workspaceReadiness } : {}),
       ...(cloud ? { cloud } : {}),
       ...(hiddenSettings.length ? { hiddenSettings } : {}),
+      githubRateLimit: getGitHubRateLimitMetrics(),
     });
   });
 

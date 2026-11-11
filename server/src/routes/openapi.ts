@@ -116,6 +116,8 @@ import {
   updateBudgetSchema,
   upsertBudgetPolicySchema,
   resolveBudgetIncidentSchema,
+  createProviderUsageReportedEventSchema,
+  updateProviderUsageWarningThresholdSchema,
   // Sidebar
   upsertSidebarOrderPreferenceSchema,
   // Announcements
@@ -197,6 +199,10 @@ import {
   patchInstanceGeneralSettingsSchema,
   patchInstanceExperimentalSettingsSchema,
   patchInstanceSettingsSchema,
+  // Auto-update settings (OPE-10268)
+  putUpdateSettingsSchema,
+  patchUpdateSettingsSchema,
+  updateSettingsSchema,
   startTaskDrainRequestSchema,
   // Resource memberships
   updateDocumentResourceMembershipSchema,
@@ -287,6 +293,8 @@ import {
   replaceChatEndpointResourcesSchema,
   updateChatEndpointSchema,
   blockerGraphRootsResponseSchema,
+  validateMaintenanceWindowCronRequestSchema,
+  checkUpdatesRequestSchema,
 } from "@myrmidon/shared";
 import {
   COMPANY_IMPORT_TRANSFERS_API_PATH,
@@ -1296,6 +1304,9 @@ const PUBLIC_OPERATIONS = new Set([
   "POST /mcp/gateways/{gatewayPublicId}",
   "GET /api/tool-gateway/gateways/{gatewayId}/mcp",
   "POST /api/tool-gateway/gateways/{gatewayId}/mcp",
+  // myrmidon(1.7 WEBHOOK-INTAKE): public webhook intake; the route handler
+  // validates the optional per-source bearer/secret token itself.
+  "POST /api/intake/{source}",
 ]);
 
 const BOARD_ONLY_PREFIXES = [
@@ -1694,13 +1705,37 @@ function applyDocumentFixups(document: any): any {
             ? { actor: "board" }
             : authLevel === "agent_run"
               ? { actor: "agent", heartbeatBound: true, taskBound: true }
-            : authLevel === "runtime_tools"
-              ? { actor: "runtime_tools", heartbeatBound: true }
-              : authLevel === "authenticated"
-                ? { actor: "board_or_agent" }
-                : { actor: "public" };
+              : authLevel === "runtime_tools"
+                ? { actor: "runtime_tools", heartbeatBound: true }
+                : authLevel === "authenticated"
+                  ? { actor: "board_or_agent" }
+                  : { actor: "public" };
 
       const key = operationKey(method, path);
+      if (
+        key === "GET /api/admin-assistant/cluster-health" ||
+        key === "GET /api/admin-assistant/health" ||
+        key === "GET /api/companies/{companyId}/admin-assistant/cluster-health" ||
+        key === "GET /api/admin-assistant/stuck-runs" ||
+        key === "GET /api/companies/{companyId}/admin-assistant/stuck-runs"
+      ) {
+        operation["x-paperclip-authorization"] = {
+          actor: "board_or_agent",
+          companyScopedQuery: true,
+          unscoped: { actor: "board", instanceAdmin: true },
+        };
+      }
+      if (key === "GET /api/admin-assistant/dry-run") {
+        // The dry-run diagnostics endpoint is intentionally stricter than the
+        // cluster-health routes: instance admin is always required, even when
+        // a companyId query parameter is present, because probes may return
+        // instance-wide results that cross company boundaries.
+        operation["x-paperclip-authorization"] = {
+          actor: "board",
+          instanceAdmin: true,
+        };
+      }
+
       if (authLevel !== "public") {
         const responses = (operation.responses ??= {}) as Record<
           string,
@@ -1769,6 +1804,29 @@ const healthServerInfoSchema = z
     ]),
   })
   .strict();
+
+registry.registerPath({
+  method: "get",
+  path: "/api/ha/standby",
+  tags: ["health"],
+  summary: "Standby site status",
+  responses: {
+    200: r.ok(
+      z.object({
+        status: z.enum(["ready", "unhealthy", "not_configured"]),
+        checkedAt: z.string().datetime(),
+        checks: z.array(
+          z.object({
+            name: z.string().min(1),
+            status: z.enum(["ready", "unhealthy", "not_configured"]),
+            checkedAt: z.string().datetime(),
+          }).strict(),
+        ),
+      }).strict(),
+    ),
+    503: r.serverError,
+  },
+});
 
 registry.registerPath({
   method: "get",
@@ -3414,6 +3472,24 @@ registry.registerPath({
 
 registry.registerPath({
   method: "get",
+  path: "/api/agents/{id}/stats",
+  tags: ["agents"],
+  summary: "Get agent stats",
+  request: { params: z.object({ id: z.string() }) },
+  responses: {
+    200: r.ok(
+      z.object({
+        exchanges_started: z.number().int().nonnegative(),
+        exchanges_completed: z.number().int().nonnegative(),
+      }),
+    ),
+    401: r.unauthorized,
+    404: r.notFound,
+  },
+});
+
+registry.registerPath({
+  method: "get",
   path: "/api/agents/{id}/skills",
   tags: ["agents"],
   summary: "List agent skills",
@@ -3954,6 +4030,75 @@ registry.registerPath({
   summary: "Update a company user (suspension revokes the user's sessions)",
   request: { params: z.object({ companyId: z.string(), userId: z.string() }) },
   responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden, 404: r.notFound },
+});
+
+// myrmidon 1.7 USERS-ADMIN-PAGINATION (OPE-12089): instance user listing with pagination and role filter
+registry.registerPath({
+  method: "get",
+  path: "/api/users",
+  tags: ["users"],
+  summary: "List users with pagination and role filter",
+  request: {
+    query: z.object({
+      page: z.coerce.number().int().min(1).optional().default(1),
+      limit: z.coerce.number().int().min(1).max(100).optional().default(20),
+      role: z.enum(["admin", "instance_admin", "member"]).optional(),
+    }),
+  },
+  responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden },
+});
+
+// myrmidon(OPE-10215): user-block operators. The mandatory reason is validated
+// by blockUserSchema; an empty reason is rejected with 400.
+registry.registerPath({
+  method: "post",
+  path: "/api/users/{userId}/block",
+  tags: ["users"],
+  summary: "Block a user instance-wide with a mandatory audited reason",
+  request: {
+    params: z.object({ userId: z.string() }),
+    body: jsonBody(z.object({ reason: z.string().min(1).max(1000) })),
+  },
+  responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden, 404: r.notFound, 409: r.conflict },
+});
+
+// myrmidon(OPE-12116): user block/unblock operator and password reset
+registry.registerPath({
+  method: "patch",
+  path: "/api/users/{userId}/block",
+  tags: ["users"],
+  summary: "Block or unblock a user instance-wide with audit logging",
+  request: {
+    params: z.object({ userId: z.string() }),
+    body: jsonBody(z.object({
+      blocked: z.boolean().default(true),
+      reason: z.string().trim().max(1000).optional(),
+    })),
+  },
+  responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden, 404: r.notFound, 409: r.conflict },
+});
+
+registry.registerPath({
+  method: "post",
+  path: "/api/users/{userId}/reset-password",
+  tags: ["users"],
+  summary: "Issue a one-time password reset token for a user without SMTP",
+  request: {
+    params: z.object({ userId: z.string() }),
+  },
+  responses: { 200: r.ok(), 401: r.unauthorized, 403: r.forbidden, 404: r.notFound },
+});
+
+registry.registerPath({
+  method: "post",
+  path: "/api/companies/{companyId}/users/{userId}/block",
+  tags: ["users", "companies"],
+  summary: "Block a user inside a company with a mandatory audited reason",
+  request: {
+    params: z.object({ companyId: z.string(), userId: z.string() }),
+    body: jsonBody(z.object({ reason: z.string().min(1).max(1000) })),
+  },
+  responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden, 404: r.notFound, 409: r.conflict },
 });
 
 registry.registerPath({
@@ -5175,6 +5320,39 @@ registry.registerPath({
 
 // ─── Costs ───────────────────────────────────────────────────────────────────
 
+registry.registerPath({
+  method: "post",
+  path: "/api/companies/{companyId}/provider-usage-reports",
+  tags: ["costs"],
+  summary: "Record a provider usage report",
+  request: {
+    params: z.object({ companyId: z.string() }),
+    body: jsonBody(createProviderUsageReportedEventSchema),
+  },
+  responses: { 202: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden },
+});
+
+registry.registerPath({
+  method: "get",
+  path: "/api/companies/{companyId}/provider-usage",
+  tags: ["costs"],
+  summary: "List aggregated provider usage",
+  request: { params: z.object({ companyId: z.string() }) },
+  responses: { 200: r.ok(), 401: r.unauthorized, 403: r.forbidden },
+});
+
+registry.registerPath({
+  method: "patch",
+  path: "/api/companies/{companyId}/provider-usage-warning-threshold",
+  tags: ["costs"],
+  summary: "Update provider usage warning threshold",
+  request: {
+    params: z.object({ companyId: z.string() }),
+    body: jsonBody(updateProviderUsageWarningThresholdSchema),
+  },
+  responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden },
+});
+
 const costSummaryPaths = [
   "summary",
   "by-agent",
@@ -5182,6 +5360,7 @@ const costSummaryPaths = [
   "by-provider",
   "by-biller",
   "by-project",
+  "by-issue",
   "finance-summary",
   "finance-by-biller",
   "finance-by-kind",
@@ -5486,7 +5665,159 @@ registry.registerPath({
   responses: { 200: r.ok(), 401: r.unauthorized },
 });
 
+// ─── Admin assistant ─────────────────────────────────────────────────────────
+
+registry.registerPath({
+  method: "get",
+  path: "/api/companies/{companyId}/admin-assistant/cluster-health",
+  tags: ["admin-assistant"],
+  summary: "Get cluster health diagnostics for a company",
+  request: {
+    params: z.object({ companyId: z.string() }),
+    query: z.object({ path: z.string().optional(), diskPath: z.string().optional() }),
+  },
+  responses: { 200: r.ok(), 401: r.unauthorized, 403: r.forbidden },
+});
+
+registry.registerPath({
+  method: "get",
+  path: "/api/admin-assistant/cluster-health",
+  tags: ["admin-assistant"],
+  summary: "Get cluster health diagnostics",
+  request: {
+    query: z.object({
+      companyId: z.string().optional(),
+      path: z.string().optional(),
+      diskPath: z.string().optional(),
+    }),
+  },
+  responses: { 200: r.ok(), 401: r.unauthorized, 403: r.forbidden },
+});
+
+registry.registerPath({
+  method: "get",
+  path: "/api/admin-assistant/health",
+  tags: ["admin-assistant"],
+  summary: "Get cluster health diagnostics (alias)",
+  request: {
+    query: z.object({
+      companyId: z.string().optional(),
+      path: z.string().optional(),
+      diskPath: z.string().optional(),
+    }),
+  },
+  responses: { 200: r.ok(), 401: r.unauthorized, 403: r.forbidden },
+});
+
+registry.registerPath({
+  method: "get",
+  path: "/api/admin-assistant/dry-run",
+  tags: ["admin-assistant"],
+  summary: "Read-only dry-run diagnostics (instance admin only)",
+  description:
+    "Collects a health summary through strictly read-only probes (SELECT queries and fs.statfs only). " +
+    "Each probe has an independent timeout; a slow or failing probe degrades its own result without " +
+    "hiding the error. The payload is marked with dry_run=true and credential-shaped values are redacted.",
+  request: {
+    query: z.object({}).optional(),
+  },
+  responses: { 200: r.ok(), 401: r.unauthorized, 403: r.forbidden },
+});
+
+registry.registerPath({
+  method: "get",
+  path: "/api/companies/{companyId}/admin-assistant/stuck-runs",
+  tags: ["admin-assistant"],
+  summary: "Get stuck runs diagnostics for a company",
+  description:
+    "Detects in_progress tasks and heartbeat runs whose silence exceeds the configured timeout, " +
+    "and returns actionable recovery recommendations.",
+  request: {
+    params: z.object({ companyId: z.string() }),
+    query: z.object({
+      timeoutMs: z.string().optional(),
+      timeoutSeconds: z.string().optional(),
+    }),
+  },
+  responses: { 200: r.ok(), 401: r.unauthorized, 403: r.forbidden },
+});
+
+registry.registerPath({
+  method: "get",
+  path: "/api/admin-assistant/stuck-runs",
+  tags: ["admin-assistant"],
+  summary: "Get stuck runs diagnostics",
+  description:
+    "Detects in_progress tasks and heartbeat runs whose silence exceeds the configured timeout, " +
+    "and returns actionable recovery recommendations. When companyId query is omitted, requires instance admin.",
+  request: {
+    query: z.object({
+      companyId: z.string().optional(),
+      timeoutMs: z.string().optional(),
+      timeoutSeconds: z.string().optional(),
+    }),
+  },
+  responses: { 200: r.ok(), 401: r.unauthorized, 403: r.forbidden },
+});
+
+// ─── Guardrails ──────────────────────────────────────────────────────────────
+
+registry.registerPath({
+  method: "get",
+  path: "/api/companies/{companyId}/guardrails/rules",
+  tags: ["guardrails"],
+  summary: "List guardrail rules",
+  request: {
+    params: z.object({ companyId: z.string() }),
+    query: z.object({ cursor: z.string().optional(), limit: z.string().optional() }).passthrough(),
+  },
+  responses: { 200: r.ok(), 401: r.unauthorized },
+});
+
+registry.registerPath({
+  method: "get",
+  path: "/api/companies/{companyId}/guardrails",
+  tags: ["guardrails"],
+  summary: "List guardrail rules",
+  request: {
+    params: z.object({ companyId: z.string() }),
+    query: z.object({ cursor: z.string().optional(), limit: z.string().optional() }).passthrough(),
+  },
+  responses: { 200: r.ok(), 401: r.unauthorized },
+});
+
+registry.registerPath({
+  method: "get",
+  path: "/api/guardrails/rules",
+  tags: ["guardrails"],
+  summary: "List guardrail rules",
+  request: {
+    query: z.object({ cursor: z.string().optional(), limit: z.string().optional() }).passthrough(),
+  },
+  responses: { 200: r.ok(), 401: r.unauthorized },
+});
+
+registry.registerPath({
+  method: "get",
+  path: "/api/guardrails",
+  tags: ["guardrails"],
+  summary: "List guardrail rules",
+  request: {
+    query: z.object({ cursor: z.string().optional(), limit: z.string().optional() }).passthrough(),
+  },
+  responses: { 200: r.ok(), 401: r.unauthorized },
+});
+
 // ─── Sidebar ─────────────────────────────────────────────────────────────────
+
+registry.registerPath({
+  method: "get",
+  path: "/api/companies/{companyId}/status-strip",
+  tags: ["sidebar"],
+  summary: "Get the UI2 header status strip for a company",
+  request: { params: z.object({ companyId: z.string() }) },
+  responses: { 200: r.ok(), 401: r.unauthorized, 403: r.forbidden },
+});
 
 registry.registerPath({
   method: "get",
@@ -6220,6 +6551,25 @@ registry.registerPath({
 
 // ─── Instance settings ────────────────────────────────────────────────────────
 
+// myrmidon(1.7 AUTO-UPDATE-SETTINGS, OPE-10185): validate maintenance-window cron
+registry.registerPath({
+  method: "post",
+  path: "/api/instance/maintenance-window/validate-cron",
+  tags: ["instance"],
+  summary: "Validate an instance maintenance-window cron schedule",
+  request: { body: jsonBody(validateMaintenanceWindowCronRequestSchema) },
+  responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized },
+});
+
+registry.registerPath({
+  method: "post",
+  path: "/api/instance-settings/auto-update/validate-cron",
+  tags: ["instance"],
+  summary: "Validate an auto-update maintenance-window cron schedule",
+  request: { body: jsonBody(validateMaintenanceWindowCronRequestSchema) },
+  responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized },
+});
+
 registry.registerPath({
   method: "get",
   path: "/api/instance/settings",
@@ -6270,6 +6620,76 @@ registry.registerPath({
   request: { body: jsonBody(patchInstanceExperimentalSettingsSchema) },
   responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized },
 });
+
+// myrmidon(1.7 AUTO-UPDATE-SETTINGS, OPE-10268): routes/updates.ts serves one
+// settings document under /updates/settings, /updates and /myrmidon/updates/settings.
+for (const path of ["/api/updates/settings", "/api/updates", "/api/myrmidon/updates/settings"]) {
+  registry.registerPath({
+    method: "get",
+    path,
+    tags: ["instance"],
+    summary: "Get auto-update settings",
+    responses: { 200: r.ok(), 401: r.unauthorized, 403: r.forbidden },
+  });
+  registry.registerPath({
+    method: "put",
+    path,
+    tags: ["instance"],
+    summary: "Replace auto-update settings",
+    request: { body: jsonBody(putUpdateSettingsSchema) },
+    responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden },
+  });
+  registry.registerPath({
+    method: "post",
+    path,
+    tags: ["instance"],
+    summary: "Replace auto-update settings",
+    request: { body: jsonBody(putUpdateSettingsSchema) },
+    responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden },
+  });
+  if (path !== "/api/myrmidon/updates/settings") {
+    registry.registerPath({
+      method: "patch",
+      path,
+      tags: ["instance"],
+      summary: "Update auto-update settings",
+      request: { body: jsonBody(patchUpdateSettingsSchema) },
+      responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden },
+    });
+  }
+}
+
+registry.registerPath({
+  method: "post",
+  path: "/api/updates/validate",
+  tags: ["instance"],
+  summary: "Validate auto-update settings without saving them",
+  request: { body: jsonBody(updateSettingsSchema) },
+  responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized },
+});
+
+// myrmidon(1.7 AUTO-UPDATE-SETTINGS, OPE-10186): manual update availability check routes
+for (const path of [
+  "/api/system/check-updates",
+  "/api/myrmidon/system/check-updates",
+  "/api/instance-settings/check-updates",
+]) {
+  registry.registerPath({
+    method: "get",
+    path,
+    tags: ["instance"],
+    summary: "Check for available system updates",
+    responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden },
+  });
+  registry.registerPath({
+    method: "post",
+    path,
+    tags: ["instance"],
+    summary: "Check for available system updates",
+    request: { body: jsonBody(checkUpdatesRequestSchema) },
+    responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden },
+  });
+}
 
 registry.registerPath({
   method: "get",
@@ -6765,7 +7185,18 @@ registry.registerPath({
   path: "/api/companies/{companyId}/heartbeat-runs",
   tags: ["runs"],
   summary: "List heartbeat runs for a company",
-  request: { params: z.object({ companyId: z.string() }) },
+  request: {
+    params: z.object({ companyId: z.string() }),
+    query: z
+      .object({
+        agentId: z.string().optional(),
+        limit: z.string().optional(),
+        summary: z.string().optional(),
+        wakeReason: z.string().optional(),
+        hasResult: z.string().optional(),
+      })
+      .optional(),
+  },
   responses: { 200: r.ok(), 401: r.unauthorized },
 });
 
@@ -7588,9 +8019,40 @@ registry.registerPath({
   method: "post",
   path: "/api/companies/{companyId}/onboarding-seed",
   tags: ["companies"],
-  summary: "Apply the onboarding seed Paperclip Cloud collected at signup",
+  summary: "Apply the Myrmidon Cloud onboarding seed collected at signup",
   request: { params: z.object({ companyId: z.string() }) },
   responses: { 200: r.ok(), 401: r.unauthorized, 422: r.unprocessable },
+});
+
+registry.registerPath({
+  method: "post",
+  path: "/api/companies/{companyId}/servers/ssh-dry-run",
+  tags: ["companies"],
+  summary: "Dry-run SSH credential validation for server onboarding (no persistence)",
+  description: "Validates SSH parameters (host, port, username, private key) by opening a real SSH connection. Does not create a server record and does not persist credentials. Password auth is not supported.",
+  request: { params: z.object({ companyId: z.string() }) },
+  responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden },
+});
+
+registry.registerPath({
+  method: "post",
+  path: "/api/companies/{companyId}/servers/onboarding/dry-run",
+  tags: ["servers"],
+  description: "Runs read-only DNS, SSH authentication, and passwordless-sudo probes. Returns stable per-check status/code values; credentials are never returned or persisted.",
+  request: {
+    params: z.object({ companyId: z.string() }),
+    body: jsonBody(z.object({
+      host: z.string(),
+      port: z.number().int().min(1).max(65535).optional(),
+      username: z.string(),
+      auth: z.object({
+        password: z.string().optional(),
+        privateKey: z.string().optional(),
+      }),
+      timeoutMs: z.number().int().min(1000).max(60000).optional(),
+    })),
+  },
+  responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden, 404: r.notFound },
 });
 
 registry.registerPath({
@@ -10773,28 +11235,28 @@ registerCurrentRoute({
   method: "get",
   path: "/api/tools/oauth/cloud-connector/callback",
   tags: ["tool-access"],
-  summary: "Handle a brokered Paperclip Cloud OAuth callback",
+  summary: "Handle a brokered Myrmidon Cloud OAuth callback",
 });
 
 registerCurrentRoute({
   method: "get",
   path: "/api/tools/oauth/paperclip-id/callback",
   tags: ["tool-access"],
-  summary: "Handle a legacy brokered Paperclip ID OAuth callback",
+  summary: "Handle a legacy brokered Myrmidon ID OAuth callback",
 });
 
 registerCurrentRoute({
   method: "get",
   path: "/api/tools/oauth/cloud-connector/enrollment",
   tags: ["tool-access"],
-  summary: "Get Paperclip Cloud connector enrollment status",
+  summary: "Get Myrmidon Cloud connector enrollment status",
 });
 
 registerCurrentRoute({
   method: "post",
   path: "/api/tools/oauth/cloud-connector/enrollment",
   tags: ["tool-access"],
-  summary: "Start Paperclip Cloud connector enrollment",
+  summary: "Start Myrmidon Cloud connector enrollment",
   body: z
     .object({ companyId: z.string().min(1), label: z.string().optional() })
     .strict(),
@@ -10811,7 +11273,7 @@ registerCurrentRoute({
   method: "get",
   path: "/api/tools/oauth/cloud-connector/enrollment-callback",
   tags: ["tool-access"],
-  summary: "Complete Paperclip Cloud connector enrollment",
+  summary: "Complete Myrmidon Cloud connector enrollment",
   query: z
     .object({
       enrollment_id: z.string().min(1),
@@ -11664,4 +12126,107 @@ registerCurrentRoute({
     params: z.record(z.string(), z.unknown()).optional(),
   }),
   responses: { 200: r.ok(), 202: r.ok(), 401: r.unauthorized, 403: r.forbidden, 404: r.notFound, 409: r.conflict, 422: r.unprocessable },
+});
+
+// --- myrmidon(1.7 KNOWLEDGE-2.0 L-11): Settings → Knowledge ---------------
+
+registerCurrentRoute({
+  method: "get",
+  path: "/api/myrmidon/companies/{companyId}/knowledge/settings",
+  tags: ["knowledge"], summary: "Read the company knowledge settings (effective values with ui/env/default source badges)",
+  responses: { 200: r.ok(), 401: r.unauthorized, 403: r.forbidden },
+});
+registerCurrentRoute({
+  method: "patch",
+  path: "/api/myrmidon/companies/{companyId}/knowledge/settings",
+  tags: ["knowledge"], summary: "Patch the company knowledge settings (instance admin; journaled as knowledge.settings_updated)",
+  responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden },
+});
+
+// myrmidon(1.7 WEBHOOK-INTAKE): public webhook intake ingress. Accepts an
+// event, responds 202 with the intake id and enqueues the payload for parsing.
+// Per-source rate limits apply (429 with Retry-After); an optional per-source
+// token (configured via env refs) is verified by the route handler itself.
+// myrmidon(1.6.8 INTAKE-AUTH): source names are case-normalized; an unknown
+// source (absent from config.sources) answers 404, and a configured tokenRef
+// whose secret did not resolve answers 503 without enqueueing.
+registerCurrentRoute({
+  method: "post",
+  path: "/api/intake/{source}",
+  tags: ["webhooks"], summary: "Accept an inbound webhook and enqueue it for parsing",
+  body: z.record(z.string(), z.unknown()),
+  responses: {
+    202: r.ok(
+      z.object({
+        id: z.string(),
+        status: z.literal("accepted"),
+        source: z.string(),
+        enqueuedAt: z.string(),
+      }),
+    ),
+    400: r.badRequest,
+    401: r.unauthorized,
+    403: r.forbidden,
+    404: r.notFound,
+    429: r.tooManyRequests,
+    503: r.serverError,
+  },
+});
+
+// myrmidon(1.7-ZABBIX-SINK / OPE-12126): the Zabbix alarm sink webhook. Mounted
+// from server/src/myrmidon/monitoring/zabbix-sink/ (app.ts), outside the
+// routes/ directory the coverage scanner reads, so the entry is contract-first
+// (see specOnlyContractFirstRoutes in __tests__/openapi-routes.test.ts). Auth
+// is the sink's own Bearer token (MYRMIDON_ZABBIX_SINK_TOKEN_REF), not the
+// board/agent schemes the fixups assign by default.
+registry.registerPath({
+  method: "post",
+  path: "/api/monitoring/zabbix-webhook",
+  tags: ["monitoring"],
+  summary:
+    "Zabbix alarm sink: turn one Zabbix media-type event into a role-task draft (deduped by eventid)",
+  description:
+    "Accepts a single Zabbix media-type webhook event and creates an unassigned " +
+    "role-task draft: the issue title comes from the trigger name, the priority " +
+    "from the Zabbix severity (5/4 -> critical, 3 -> high, 2 -> medium, else low), " +
+    "and the Zabbix event URL lands in the issue body as the source link. A " +
+    "redelivery of the same eventid returns the existing draft (action: dedup) " +
+    "instead of creating a second task. An invalid payload answers 400. " +
+    "Authorization is the dedicated webhook Bearer token (MYRMIDON_ZABBIX_SINK_TOKEN_REF, " +
+    "env:/file: reference), not board/agent auth: a wrong or missing token answers 401, " +
+    "an unset token reference or target company answers 503. Since 1.7 the token is a " +
+    "stub pending the signed intake.",
+  request: {
+    body: jsonBody(
+      z
+        .object({
+          eventid: z.string().min(1).describe("Zabbix event id; the dedup identity"),
+          triggerid: z.string().min(1).optional().describe("Zabbix trigger id, kept in the description"),
+          name: z.string().min(1).describe("Trigger name; becomes the issue title"),
+          severity: z
+            .union([z.string(), z.number()])
+            .optional()
+            .describe('Zabbix severity "0".."5" (or 0..5); maps to the issue priority'),
+          status: z.string().optional().describe('Zabbix event status, e.g. "PROBLEM"; resolved/closed events are rejected'),
+          hosts: z.string().optional().describe("Comma-separated host names, kept in the issue description"),
+          url: z.string().optional().describe("Zabbix event URL; the source link in the issue body"),
+        })
+        .strip(),
+    ),
+  },
+  responses: {
+    200: r.ok(
+      z
+        .object({
+          eventid: z.string(),
+          action: z.enum(["create", "dedup"]),
+          issue_id: z.string(),
+          issue_identifier: z.string().nullable(),
+        })
+        .strip(),
+    ),
+    400: r.badRequest,
+    401: r.unauthorized,
+    503: { description: "Sink not configured: the token reference or the target company is unset" },
+  },
 });

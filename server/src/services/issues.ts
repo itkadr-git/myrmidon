@@ -110,7 +110,10 @@ import type { IssueScent } from "@myrmidon/shared";
 import { deriveScentAuto } from "../myrmidon/scent/create-hook.js";
 import { conflict, HttpError, notFound, unprocessable } from "../errors.js";
 import { assertBlockedHasReason, isAutoUnblockCandidate } from "../myrmidon/blocked-reason-guard.js";
+import { extractReleasePrefix } from "../myrmidon/board-janitor/policy.js";
 import { isForeignKeyViolation } from "../db-errors.js";
+import { assertTaskCardReady } from "../myrmidon/task-card-readiness/guard.js";
+import { requiresEngineer } from "../myrmidon/swarm-claim/requires-engineer.js";
 import { logger } from "../middleware/logger.js";
 import { parseObject } from "../adapters/utils.js";
 import {
@@ -1828,6 +1831,7 @@ export interface IssueFilters {
   sortDir?: "asc" | "desc";
   /** ISO 8601 timestamp — only return issues with updatedAt strictly after this value. */
   updatedSince?: string;
+  excludePrivate?: boolean;
 }
 
 type IssueRow = typeof issues.$inferSelect;
@@ -2745,10 +2749,16 @@ async function returnReasonlessDependentsToTodo(
   for (const row of eligible) {
     if (stillHeld.has(row.id)) continue;
     const now = new Date();
+    const metadata = (row.blockerMetadata as Record<string, unknown> | null) ?? null;
+    if (metadata?.blockReason || row.unblockDescriptor) {
+      continue;
+    }
+    const restoredStatus: "in_progress" | "todo" =
+      metadata?.previousStatus === "in_progress" ? "in_progress" : "todo";
     const [moved] = await tx
       .update(issues)
       .set({
-        status: "todo",
+        status: restoredStatus,
         blockerMetadata: null,
         unblockDescriptor: null,
         blockedTransitionAt: null,
@@ -2770,7 +2780,7 @@ async function returnReasonlessDependentsToTodo(
       entityId: row.id,
       details: {
         identifier: row.identifier ?? null,
-        status: "todo",
+        status: restoredStatus,
         previousStatus: "blocked",
         source: "blocked_reason_guard.last_blocker_closed",
         resolvedBlockerIssueId: doneBlocker.id,
@@ -2778,6 +2788,61 @@ async function returnReasonlessDependentsToTodo(
     });
   }
   return returned;
+}
+
+async function syncOpenBlockerStatus(
+  tx: any,
+  companyId: string,
+  issue: typeof issues.$inferSelect,
+): Promise<void> {
+  const readiness = (await listIssueDependencyReadinessMap(tx, companyId, [issue.id])).get(issue.id);
+  const metadata = (issue.blockerMetadata as Record<string, unknown> | null) ?? null;
+  if (readiness?.unresolvedBlockerIssueIds.length && (issue.status === "todo" || issue.status === "in_progress")) {
+    const previousStatus = issue.status;
+    const nextMetadata = {
+      ...metadata,
+      previousStatus,
+    };
+    await tx
+      .update(issues)
+      .set({
+        status: "blocked",
+        blockerMetadata: nextMetadata,
+        blockedTransitionAt: new Date(),
+        statusVersion: sql`${issues.statusVersion} + 1`,
+        updatedAt: new Date(),
+      })
+      .where(and(eq(issues.id, issue.id), eq(issues.companyId, companyId)));
+    issue.status = "blocked";
+    issue.blockerMetadata = nextMetadata as any;
+    issue.blockedTransitionAt = new Date();
+  } else if (
+    (metadata?.previousStatus === "todo" || metadata?.previousStatus === "in_progress") &&
+    readiness?.isDependencyReady !== false &&
+    !readiness?.unresolvedBlockerIssueIds.length &&
+    issue.status === "blocked" &&
+    !metadata?.blockReason &&
+    !issue.unblockDescriptor &&
+    isAutoUnblockCandidate(issue)
+  ) {
+    const restoredStatus: "in_progress" | "todo" =
+      metadata.previousStatus === "in_progress" ? "in_progress" : "todo";
+    await tx
+      .update(issues)
+      .set({
+        status: restoredStatus,
+        blockerMetadata: null,
+        unblockDescriptor: null,
+        blockedTransitionAt: null,
+        blockedOwnerNotifiedAt: null,
+        statusVersion: sql`${issues.statusVersion} + 1`,
+        updatedAt: new Date(),
+      })
+      .where(and(eq(issues.id, issue.id), eq(issues.companyId, companyId)));
+    issue.status = restoredStatus;
+    issue.blockerMetadata = null;
+    issue.blockedTransitionAt = null;
+  }
 }
 
 async function listUnresolvedBlockerIssueIds(
@@ -3385,6 +3450,7 @@ type IssueBlockerAttentionNode = {
   createdAt: Date;
   updatedAt?: Date | null;
   blockedTransitionAt: Date | null;
+  originKind?: string | null;
   executionRunId?: string | null;
   assigneeAgentId: string | null;
   assigneeUserId: string | null;
@@ -3403,7 +3469,7 @@ type IssueBlockerAttentionInputNode = Pick<
   | "blockedTransitionAt"
   | "assigneeAgentId"
   | "assigneeUserId"
-> & { executionRunId?: string | null };
+> & { originKind?: string | null; executionRunId?: string | null };
 
 type IssueBlockerAttentionEdge = {
   issueId: string;
@@ -3797,6 +3863,7 @@ async function listIssueBlockerAttentionMap(
           createdAt: issues.createdAt,
           updatedAt: issues.updatedAt,
           blockedTransitionAt: issues.blockedTransitionAt,
+          originKind: issues.originKind,
           executionRunId: issues.executionRunId,
           assigneeAgentId: issues.assigneeAgentId,
           assigneeUserId: issues.assigneeUserId,
@@ -3807,6 +3874,8 @@ async function listIssueBlockerAttentionMap(
           and(
             eq(issueRelations.companyId, companyId),
             eq(issueRelations.type, "blocks"),
+            // Recovery machinery must not count as source continuation.
+            sql`${issues.originKind} IS DISTINCT FROM 'task_watchdog'`,
             inArray(issueRelations.relatedIssueId, chunk),
             eq(issues.companyId, companyId),
           ),
@@ -3825,6 +3894,7 @@ async function listIssueBlockerAttentionMap(
           createdAt: issues.createdAt,
           updatedAt: issues.updatedAt,
           blockedTransitionAt: issues.blockedTransitionAt,
+          originKind: issues.originKind,
           executionRunId: issues.executionRunId,
           assigneeAgentId: issues.assigneeAgentId,
           assigneeUserId: issues.assigneeUserId,
@@ -3834,6 +3904,7 @@ async function listIssueBlockerAttentionMap(
           and(
             eq(issues.companyId, companyId),
             inArray(issues.parentId, chunk),
+            sql`${issues.originKind} IS DISTINCT FROM 'task_watchdog'`,
             notInArray(
               issues.status,
               BLOCKER_ATTENTION_CHILD_TERMINAL_STATUSES,
@@ -3884,6 +3955,7 @@ async function listIssueBlockerAttentionMap(
           createdAt: row.createdAt,
           updatedAt: row.updatedAt,
           blockedTransitionAt: row.blockedTransitionAt,
+          originKind: row.originKind,
           executionRunId: row.executionRunId,
           assigneeAgentId: row.assigneeAgentId,
           assigneeUserId: row.assigneeUserId,
@@ -6361,6 +6433,9 @@ async function blockedInboxIssueConditions(
     visibleIssueCondition(),
     notInArray(issues.status, [...BLOCKED_INBOX_TERMINAL_STATUSES]),
   ];
+  if (filters?.excludePrivate) {
+    conditions.push(eq(issues.isPrivate, false));
+  }
   const touchedByUserId = filters?.touchedByUserId?.trim() || undefined;
   const inboxArchivedByUserId =
     filters?.inboxArchivedByUserId?.trim() || undefined;
@@ -8049,6 +8124,9 @@ export function issueService(db: Db) {
         eq(issues.companyId, companyId),
         visibleIssueCondition(),
       ];
+      if (filters?.excludePrivate) {
+        conditions.push(eq(issues.isPrivate, false));
+      }
       if (!filters?.q?.trim()) conditions.push(isNull(issues.conversationAgentId));
       if (filters?.afterId) conditions.push(gt(issues.id, filters.afterId));
       const assigneeAgentFilter = parseIssueAssigneeAgentFilter(
@@ -8202,7 +8280,7 @@ export function issueService(db: Db) {
       const issueSource = db.select(issueListSelect).from(issues);
       const searchedSource = hasSearch
         ? issueSource.innerJoin(sql`(
-            ${taskSearchCtes(companyId, taskSearch, true, and(...conditions))}
+            ${taskSearchCtes(companyId, taskSearch, true, and(...conditions), { excludePrivate: filters?.excludePrivate })}
             SELECT m.id, ${taskSearchScore(taskSearch)} AS score FROM matched m
           ) task_search`, sql`task_search.id = ${issues.id}`)
         : issueSource;
@@ -8364,6 +8442,9 @@ export function issueService(db: Db) {
       }
 
       const conditions = [eq(issues.companyId, companyId), visibleIssueCondition()];
+      if (filters?.excludePrivate) {
+        conditions.push(eq(issues.isPrivate, false));
+      }
       if (!filters?.q?.trim()) conditions.push(isNull(issues.conversationAgentId));
       const statuses = parseStatusFilter(filters?.status);
       if (statuses.length === 1)
@@ -9443,6 +9524,7 @@ export function issueService(db: Db) {
           and(
             eq(issues.companyId, parent.companyId),
             eq(issues.parentId, parent.id),
+            notInArray(issues.status, ["done", "cancelled"]),
           ),
         );
       if (childCount >= MAX_CHILD_ISSUES_CREATED_BY_HELPER) {
@@ -9546,6 +9628,7 @@ export function issueService(db: Db) {
           ],
           { agentId: actorAgentId ?? null, userId: actorUserId ?? null },
         );
+        await syncOpenBlockerStatus(db, parent.companyId, parent);
         [child] = await withIssueRelationSummaries(
           parent.companyId,
           [child],
@@ -9923,7 +10006,7 @@ export function issueService(db: Db) {
     ) => {
       const {
         initialPlan,
-        labelIds: inputLabelIds,
+        labelIds: rawLabelIds,
         blockedByIssueIds,
         inheritExecutionWorkspaceFromIssueId,
         skipExecutionWorkspaceInheritance,
@@ -9938,6 +10021,7 @@ export function issueService(db: Db) {
         onDeduplicated,
         ...issueData
       } = data;
+      let inputLabelIds = rawLabelIds;
       if (
         issueData.parentId &&
         !parentAssigneeInheritanceResolved &&
@@ -10124,6 +10208,49 @@ export function issueService(db: Db) {
         let executionWorkspaceSettings =
           (issueData.executionWorkspaceSettings as
             Record<string, unknown> | null | undefined) ?? null;
+        if (issueData.projectId == null && issueData.parentId) {
+          const parentIssue = await getWorkspaceInheritanceIssue(
+            tx,
+            companyId,
+            issueData.parentId,
+          ).catch(() => null);
+          if (parentIssue?.projectId) {
+            issueData.projectId = parentIssue.projectId;
+          }
+        }
+        if (issueData.parentId) {
+          const existingLabels = inputLabelIds && inputLabelIds.length > 0
+            ? await tx
+                .select({ id: labels.id, name: labels.name })
+                .from(labels)
+                .where(and(eq(labels.companyId, companyId), inArray(labels.id, inputLabelIds)))
+            : [];
+          const hasExplicitReleaseLabel = existingLabels.some((l) => Boolean(extractReleasePrefix(l.name)));
+          if (!hasExplicitReleaseLabel) {
+            const parentLabelRows = await tx
+              .select({ id: labels.id, name: labels.name })
+              .from(issueLabels)
+              .innerJoin(labels, eq(issueLabels.labelId, labels.id))
+              .where(
+                and(
+                  eq(issueLabels.companyId, companyId),
+                  eq(issueLabels.issueId, issueData.parentId),
+                ),
+              );
+            const parentReleaseLabels = parentLabelRows.filter((l) => Boolean(extractReleasePrefix(l.name)));
+            if (parentReleaseLabels.length > 0) {
+              const inheritedReleaseLabelIds = parentReleaseLabels.map((l) => l.id);
+              inputLabelIds = [...new Set([...(inputLabelIds ?? []), ...inheritedReleaseLabelIds])];
+              if (
+                (!issueData.status || issueData.status === "backlog") &&
+                !issueData.assigneeAgentId &&
+                !issueData.assigneeUserId
+              ) {
+                issueData.status = "todo";
+              }
+            }
+          }
+        }
         const workspaceInheritanceIssueId = skipExecutionWorkspaceInheritance
           ? null
           : (inheritExecutionWorkspaceFromIssueId ??
@@ -10218,6 +10345,7 @@ export function issueService(db: Db) {
         let projectPolicyCached: ReturnType<
           typeof parseProjectExecutionWorkspacePolicy
         > | null = null;
+        let projectDevelopmentProcessCached: Record<string, unknown> | null = null;
         let projectPolicyLoaded = false;
         const loadProjectPolicyOnce = async () => {
           if (projectPolicyLoaded) return projectPolicyCached;
@@ -10226,6 +10354,7 @@ export function issueService(db: Db) {
           const projectRow = await tx
             .select({
               executionWorkspacePolicy: projects.executionWorkspacePolicy,
+              developmentProcess: projects.developmentProcess,
             })
             .from(projects)
             .where(
@@ -10238,9 +10367,25 @@ export function issueService(db: Db) {
           projectPolicyCached = parseProjectExecutionWorkspacePolicy(
             projectRow?.executionWorkspacePolicy,
           );
+          projectDevelopmentProcessCached = projectRow?.developmentProcess ?? null;
           return projectPolicyCached;
         };
 
+        await loadProjectPolicyOnce();
+        const developmentProcess = projectDevelopmentProcessCached as {
+          enabled?: boolean;
+          executionPolicy?: Parameters<typeof normalizeIssueExecutionPolicy>[0];
+        } | null;
+        if (
+          issueData.executionPolicy == null &&
+          developmentProcess &&
+          developmentProcess.enabled === true &&
+          developmentProcess.executionPolicy
+        ) {
+          issueData.executionPolicy = normalizeIssueExecutionPolicy(
+            developmentProcess.executionPolicy as Parameters<typeof normalizeIssueExecutionPolicy>[0],
+          ) as unknown as Record<string, unknown> | null;
+        }
         if (
           executionWorkspaceSettings == null &&
           executionWorkspaceId == null &&
@@ -10412,6 +10557,7 @@ export function issueService(db: Db) {
         }
         const values = {
           ...issueData,
+          status: issueData.status ?? "backlog",
           responsibleAgentId,
           ...(issueData.sourceTrust?.disposition === "quarantined"
             ? {
@@ -10547,6 +10693,7 @@ export function issueService(db: Db) {
             },
             tx,
           );
+          await syncOpenBlockerStatus(tx, companyId, issue);
         }
         if (initialPlan?.trim()) {
           await documentService(tx as unknown as Db).upsertIssueDocument({
@@ -10932,6 +11079,9 @@ export function issueService(db: Db) {
         actorAgentId?: string | null;
         actorUserId?: string | null;
         companyGuard?: string;
+        commentBody?: string;
+        /** Set only for an explicit client request to move the issue to todo. */
+        taskCardGate?: boolean;
       },
       dbOrTx: any = db,
       postCommitActivityPublications?: ActivityPublication[],
@@ -10959,6 +11109,46 @@ export function issueService(db: Db) {
         .where(idPredicate)
         .then((rows: Array<typeof issues.$inferSelect>) => rows[0] ?? null);
       if (!existing) return null;
+      // Only explicit API transitions opt in. Auto-unblock, imports and internal
+      // recovery updates use the same service but must remain unaffected.
+      if (data.taskCardGate && existing.status !== "todo" && data.status === "todo") {
+        const requestedLabels = data.labelIds === undefined
+          ? await dbOrTx
+              .select({ name: labels.name })
+              .from(issueLabels)
+              .innerJoin(labels, eq(labels.id, issueLabels.labelId))
+              .where(and(eq(issueLabels.companyId, existing.companyId), eq(issueLabels.issueId, id)))
+              .then((rows: Array<{ name: string }>) => rows.map((row) => row.name))
+          : data.labelIds.length === 0
+            ? []
+            : await dbOrTx
+                .select({ name: labels.name })
+                .from(labels)
+                .where(and(eq(labels.companyId, existing.companyId), inArray(labels.id, data.labelIds)))
+                .then((rows: Array<{ name: string }>) => rows.map((row) => row.name));
+        if (requiresEngineer({
+          casteKey: data.casteKey === undefined ? existing.casteKey : data.casteKey,
+          labels: requestedLabels,
+        })) {
+          assertTaskCardReady({
+            title: data.title === undefined ? existing.title : data.title,
+            description: data.description === undefined ? existing.description : data.description,
+          });
+        }
+      }
+      if (
+        existing.status !== "done" &&
+        data.status === "done" &&
+        dbOrTx === db
+      ) {
+        const { assertKnowledgeGateSettled } = await import("../myrmidon/knowledge-gate/guard.js");
+        await assertKnowledgeGateSettled(db, {
+          companyId: existing.companyId,
+          issueId: existing.id,
+          issue: { title: existing.title, description: existing.description },
+          comment: typeof data.commentBody === "string" ? data.commentBody : null,
+        });
+      }
       const donePullRequestSnapshot = existing.status !== "done" && data.status === "done"
         && dbOrTx === db
         ? await (async () => {
@@ -11001,6 +11191,8 @@ export function issueService(db: Db) {
         actorAgentId,
         actorUserId,
         companyGuard,
+        commentBody: _commentBody,
+        taskCardGate: _taskCardGate,
         ...issueData
       } = data;
       if (
@@ -11083,6 +11275,9 @@ export function issueService(db: Db) {
         issueData.status &&
         issueData.status !== "blocked"
       ) {
+        // Block metadata is valid only while the issue is blocked. Clear the
+        // descriptor and its reason atomically with every transition out.
+        patch.blockerMetadata = null;
         patch.unblockDescriptor = null;
         patch.blockedTransitionAt = null;
         patch.blockedOwnerNotifiedAt = null;
@@ -11557,6 +11752,12 @@ export function issueService(db: Db) {
           if (updated.status === "done" || updated.status === "cancelled") {
             await returnReasonlessDependentsToTodo(tx, updated);
           }
+          if (
+            (updated.status === "todo" || updated.status === "in_progress") &&
+            blockedByIssueIds === undefined
+          ) {
+            await syncOpenBlockerStatus(tx, existing.companyId, updated);
+          }
           // A status-card generation task that goes done/cancelled/blocked stops
           // making progress; release the card's generation claim so the board tile
           // stops spinning and offers "Run now" again (blocked = stuck on a human).
@@ -11587,6 +11788,8 @@ export function issueService(db: Db) {
             },
             tx,
           );
+          // myrmidon(OPEN-BLOCKER-STATUS): dependency blockers must remove work from wakeable statuses.
+          await syncOpenBlockerStatus(tx, existing.companyId, updated);
         }
         if (
           issueData.executionWorkspaceSettings !== undefined &&
@@ -11751,6 +11954,32 @@ export function issueService(db: Db) {
           { deferMs: dbOrTx === db ? 0 : 1_000 },
         );
       }
+      // myrmidon(1.7 POST-TASK-REFLECT, OPE-12095): outbox queue post-task-reflect job on transition to done
+      if (result && (result as { status?: string | null }).status === "done") {
+        const fromStatus = existing.status;
+        const toStatus = (result as { status?: string | null }).status ?? "done";
+        try {
+          const { handleIssueStatusChange, createPostgresReflectJobRepository } = await import("../modules/issues/index.js");
+          const repo = createPostgresReflectJobRepository(dbOrTx ?? db);
+          await handleIssueStatusChange(
+            {
+              companyId: existing.companyId,
+              issueId: id,
+              fromStatus,
+              toStatus,
+              assigneeAgentId: (result as { assigneeAgentId?: string | null }).assigneeAgentId ?? existing.assigneeAgentId ?? null,
+              role: null,
+            },
+            { repository: repo },
+          );
+        } catch (reflectErr) {
+          logger.warn(
+            { err: reflectErr, issueId: id, fromStatus, toStatus },
+            "post-task-reflect job enqueue on done transition failed; caught safely",
+          );
+        }
+      }
+
       return result;
     },
 
@@ -12351,7 +12580,6 @@ export function issueService(db: Db) {
           .update(issues)
           .set({
             status: releaseStatus,
-            assigneeAgentId: null,
             checkoutRunId: null,
             executionRunId: null,
             executionAgentNameKey: null,

@@ -161,13 +161,29 @@
         "nothingMeasured": "Nothing measured yet — the sweep fills these numbers on its tick.",
         "loading": "Loading workspace hygiene settings...",
         "saveFailed": "Saving the workspace hygiene quotas failed.",
-        "loadFailed": "Failed to load workspace hygiene settings."
+        "loadFailed": "Failed to load workspace hygiene settings.",
+        "sourceSettings": "Saved here",
+        "sourceEnv": "Environment override",
+        "sourceDefault": "Default",
+        "forbidden": "Instance admin rights are required."
       },
       "tracing-health-card": {
         "title": "LLM tracing",
         "loading": "Loading tracing health...",
         "noReason": "no reason given",
         "windowChecked": "window {{window}} · checked {{time}}"
+      },
+      "shared-mount-settings-panel": {
+        "title": "Shared bot mount",
+        "description": "Changes affect new or reconciled bot containers; already running containers retain their mount until recreated. An empty allowlist permits every bot.",
+        "enabled": "Enabled",
+        "hostPath": "Host directory (blank uses volume root/shared)",
+        "writable": "Writable by bots",
+        "allowedBots": "Allowed bot IDs (comma separated; blank allows all)",
+        "confirm": "I confirm this host path and access scope may expose files to bots.",
+        "save": "Save shared mount",
+        "saveFailed": "Save failed",
+        "invalidInput": "Enter a normalized absolute host path and comma-separated bot UUIDs."
       }
     }
   }

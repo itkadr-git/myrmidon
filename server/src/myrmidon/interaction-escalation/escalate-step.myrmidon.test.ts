@@ -81,4 +81,23 @@ const support = await getEmbeddedPostgresTestSupport();
     expect(await escalateInteractionStep(db, interactionId, 4)).toBe("unchanged");
     expect(await db.select().from(interactionEscalations)).toHaveLength(3);
   });
+
+  it("hands off a chain ending at a manager without requiring an operator queue", async () => {
+    const managerOnlyId = randomUUID();
+    await db.insert(issueThreadInteractions).values({
+      id: managerOnlyId, companyId, issueId, kind: "ask_user_questions", status: "pending",
+      title: "Manager question", summary: "Needs manager", payload,
+      routeType: "decision", addresseeAgentId: lead,
+      timeoutAt: new Date("2026-10-30T00:00:00Z"),
+      escalationChain: [
+        { recipient: { agentId: lead }, afterMinutes: 0 },
+        { recipient: { agentId: architect }, afterMinutes: 5 },
+      ],
+    });
+    expect(await escalateInteractionStep(db, managerOnlyId, 1)).toBe("escalated");
+    const [card] = await db.select().from(issueThreadInteractions)
+      .where(eq(issueThreadInteractions.id, managerOnlyId));
+    expect(card).toMatchObject({ addresseeAgentId: architect, escalationLevel: 1 });
+    expect(await escalateInteractionStep(db, managerOnlyId, 2)).toBe("unchanged");
+  });
 });

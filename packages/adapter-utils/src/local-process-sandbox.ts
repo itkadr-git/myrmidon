@@ -1,3 +1,4 @@
+import { spawnSync } from "node:child_process";
 import fs from "node:fs/promises";
 import http from "node:http";
 import net from "node:net";
@@ -141,9 +142,16 @@ function parseNetworkAllowlistEntry(entry: string, index: number): NetworkAllowl
   return { hostname, port };
 }
 
+// myrmidon(1.6.6 OPE-11239): lists arrive as arrays from JSON/API and as
+// comma-separated text from schema-driven forms (hermes_local); both are honoured.
+function toEntryList(value: unknown): unknown[] {
+  if (Array.isArray(value)) return value;
+  if (typeof value === "string") return value.split(",").map((item) => item.trim()).filter(Boolean);
+  return [];
+}
+
 export function parseLocalProcessNetworkAllowlist(value: unknown): string[] {
-  if (!Array.isArray(value)) return [];
-  return value.map((entry, index) => {
+  return toEntryList(value).map((entry, index) => {
     if (typeof entry !== "string") throw new Error(`networkAllowlist[${index}] must be a string.`);
     const rule = parseNetworkAllowlistEntry(entry, index);
     return rule.port ? `${rule.hostname}:${rule.port}` : rule.hostname;
@@ -340,6 +348,18 @@ server.listen(${SANDBOX_PROXY_PORT}, "127.0.0.1", () => {
   return source.trimStart();
 }
 
+export async function assertLocalProcessSandboxUserNamespaces(command: string): Promise<void> {
+  const probe = spawnSync(command, [
+    "--unshare-user", "--uid", "0", "--gid", "0", "--", "/bin/true",
+  ], { encoding: "utf8", timeout: 5_000, stdio: ["ignore", "ignore", "pipe"] });
+  if (probe.error || probe.status !== 0) {
+    const detail = (probe.stderr ?? "").trim().split(/\r?\n/).find(Boolean);
+    throw new Error(
+      `Local process sandbox requires Linux user namespaces, but Bubblewrap could not create one${detail ? `: ${detail}` : "."} Enable user namespaces for this container (seccomp/AppArmor) or disable the requested sandbox scopes. The process was not started without confinement.`,
+    );
+  }
+}
+
 export async function buildLocalProcessSandboxSpawnTarget(input: {
   executable: string;
   args: string[];
@@ -493,8 +513,7 @@ export async function buildLocalProcessSandboxSpawnTarget(input: {
 }
 
 export function parseLocalProcessSandboxExtraPaths(value: unknown): LocalProcessSandboxPath[] {
-  if (!Array.isArray(value)) return [];
-  return value.map((entry, index) => {
+  return toEntryList(value).map((entry, index) => {
     if (typeof entry === "string") {
       return { path: normalizeAbsolutePath(entry, `filesystemExtraPaths[${index}]`), access: "ro" };
     }

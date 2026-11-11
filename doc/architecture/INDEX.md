@@ -57,6 +57,9 @@
 | Документ | Статус синтаксиса |
 |---|---|
 | [`durable-continuation-scheduler.md`](./durable-continuation-scheduler.md) | 🟢 Синтаксис корректен |
+| [`knowledge-deliveries.ru.md`](./knowledge-deliveries.ru.md) | 🟢 Синтаксис корректен |
+| [`knowledge-deviations.md`](./knowledge-deviations.md) | 🟢 Синтаксис корректен |
+| [`knowledge-deviations.ru.md`](./knowledge-deviations.ru.md) | 🟢 Синтаксис корректен |
 | [`native-status-arbitration.md`](./native-status-arbitration.md) | 🟢 Синтаксис корректен |
 | [`paperclip-runner-compatibility.md`](./paperclip-runner-compatibility.md) | 🟢 Синтаксис корректен |
 | [`paperclip-runner-daytona-networking.md`](./paperclip-runner-daytona-networking.md) | 🟢 Синтаксис корректен |

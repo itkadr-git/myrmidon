@@ -173,3 +173,16 @@ describe("myrmidon(1.7-GRD-MODES): guardrail mode contract", () => {
     expect(GUARDRAIL_RULES).toEqual(["secret", "pii", "injection"]);
   });
 });
+
+describe("myrmidon(1.6.6 OPE-8319): injection detector configuration", () => {
+  it("resolves settings and keeps explicit env false as the override", async () => {
+    const { resolveInjectionConfig } = await import("./myrmidon-guardrail-modes.js");
+    expect(resolveInjectionConfig({ settings: { injectionConfig: { enabled: true, scoreThreshold: 0.75 } }, env: {} })).toMatchObject({ enabled: true, scoreThreshold: 0.75, enabledSource: "settings", scoreSource: "settings" });
+    expect(resolveInjectionConfig({ settings: { injectionConfig: { enabled: true, scoreThreshold: 0.75 } }, env: { MYRMIDON_GUARDRAILS_INJECTION_ENABLED: "false", MYRMIDON_GUARDRAILS_INJECTION_SCORE: "0.2" } })).toMatchObject({ enabled: false, scoreThreshold: 0.2, enabledSource: "env", scoreSource: "env" });
+  });
+
+  it("uses the shipped defaults and rejects invalid score overrides", async () => {
+    const { resolveInjectionConfig } = await import("./myrmidon-guardrail-modes.js");
+    expect(resolveInjectionConfig({ env: { MYRMIDON_GUARDRAILS_INJECTION_SCORE: "2" } })).toMatchObject({ enabled: false, scoreThreshold: 0.6, enabledSource: "default", scoreSource: "default" });
+  });
+});

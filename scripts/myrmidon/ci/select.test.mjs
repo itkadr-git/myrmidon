@@ -3,7 +3,9 @@ import { describe, it } from "node:test";
 import {
   applyReleaseFast,
   classifyChanges,
+  detectExportOrTypeChangesFromDiff,
   importSpecifiers,
+  isModuleUsedByTests,
   lightLogLines,
   resolveExport,
   selectDirectTests,
@@ -82,6 +84,7 @@ describe("classifyChanges", () => {
         [{ name: "@myrmidon/server", dir: "server", vitestProject: true }],
         [
           { file: "server/src/__tests__/app-private-hostname-gate.test.ts", source: "" },
+          { file: "server/src/myrmidon/app-plugin.myrmidon.test.ts", source: "" },
           { file: "server/src/myrmidon/monitoring/dashboard/guard.myrmidon.test.ts", source: "" },
         ],
       );
@@ -89,10 +92,70 @@ describe("classifyChanges", () => {
         package: "@myrmidon/server",
         files: [
           "server/src/__tests__/app-private-hostname-gate.test.ts",
+          "server/src/myrmidon/app-plugin.myrmidon.test.ts",
           "server/src/myrmidon/monitoring/dashboard/guard.myrmidon.test.ts",
         ],
       }]);
     }
+  });
+
+  it("selects app-plugin static guard when only server/src/app.ts changes (OPE-12295)", () => {
+    const pkgs = [{ name: "@myrmidon/server", dir: "server", vitestProject: true }];
+    const tests = [
+      { file: "server/src/myrmidon/app-plugin.myrmidon.test.ts", source: "" },
+      { file: "server/src/__tests__/unrelated.test.ts", source: 'import { y } from "../services/other.js";' },
+    ];
+    const result = selectTests(["server/src/app.ts"], pkgs, tests);
+    assert.deepEqual(result.files, [{
+      package: "@myrmidon/server",
+      files: ["server/src/myrmidon/app-plugin.myrmidon.test.ts"],
+    }]);
+  });
+
+  it("selects app-plugin static guard when app-plugin*.ts sources change (OPE-12295)", () => {
+    const pkgs = [{ name: "@myrmidon/server", dir: "server", vitestProject: true }];
+    const tests = [
+      { file: "server/src/myrmidon/app-plugin.myrmidon.test.ts", source: "" },
+      { file: "server/src/__tests__/unrelated.test.ts", source: 'import { y } from "../services/other.js";' },
+    ];
+    for (const changedFile of [
+      "server/src/myrmidon/app-plugin.ts",
+      "server/src/myrmidon/app-plugin-routes.ts",
+    ]) {
+      const result = selectTests([changedFile], pkgs, tests);
+      assert.deepEqual(
+        result.files,
+        [{
+          package: "@myrmidon/server",
+          files: ["server/src/myrmidon/app-plugin.myrmidon.test.ts"],
+        }],
+        `Expected app-plugin.myrmidon.test.ts to be selected for ${changedFile}`,
+      );
+    }
+  });
+
+  it("selects openapi-routes whenever a server route file changes (OPE-10350)", () => {
+    const pkgs = [{ name: "@myrmidon/server", dir: "server", vitestProject: true }];
+    const tests = [
+      { file: "server/src/__tests__/openapi-routes.test.ts", source: "" },
+      { file: "server/src/__tests__/unrelated.test.ts", source: 'import { y } from "../services/other.js";' },
+    ];
+    for (const changedFile of [
+      "server/src/routes/users.ts",
+      "server/src/routes/costs/by-day.ts",
+      "server/src/routes/openapi.ts",
+    ]) {
+      const result = selectTests([changedFile], pkgs, tests);
+      assert.deepEqual(result.files, [{
+        package: "@myrmidon/server",
+        files: ["server/src/__tests__/openapi-routes.test.ts"],
+      }], changedFile);
+    }
+  });
+
+  it("keeps the routes guard inside the fast tier", () => {
+    const result = classifyChanges(["server/src/routes/users.ts"]);
+    assert.equal(result.tier, "fast");
   });
 
   it("honours a forced full run", () => {
@@ -470,5 +533,133 @@ describe("selectDirectTests", () => {
     assert.equal(server.total, MAX_FAST_FILES_PER_PACKAGE + 10);
     assert.equal(server.files.length, MAX_FAST_FILES_PER_PACKAGE);
     assert.equal(server.dropped.length, 10);
+  });
+
+  it("prioritizes tests with vi.mock over generic importers", () => {
+    const importers = [
+      t("server/src/__tests__/plain-1.test.ts", 'import "../services/heartbeat.js";'),
+      t("server/src/__tests__/mocking.test.ts", 'vi.mock("../services/heartbeat.js");\nimport "../services/heartbeat.js";'),
+      t("server/src/__tests__/plain-2.test.ts", 'import "../services/heartbeat.js";'),
+    ];
+    const [server] = selectDirectTests(["server/src/services/heartbeat.ts"], pkgs, importers, { limit: 1 });
+    assert.deepEqual(server.files, ["server/src/__tests__/mocking.test.ts"]);
+  });
+
+  it("prioritizes tests with type imports over generic importers", () => {
+    const importers = [
+      t("server/src/__tests__/plain-1.test.ts", 'import "../services/heartbeat.js";'),
+      t("server/src/__tests__/typed.test.ts", 'import type { Heartbeat } from "../services/heartbeat.js";'),
+      t("server/src/__tests__/plain-2.test.ts", 'import "../services/heartbeat.js";'),
+    ];
+    const [server] = selectDirectTests(["server/src/services/heartbeat.ts"], pkgs, importers, { limit: 1 });
+    assert.deepEqual(server.files, ["server/src/__tests__/typed.test.ts"]);
+  });
+});
+
+describe("detectExportOrTypeChangesFromDiff", () => {
+  it("detects additions or modifications to exports, types, and interfaces", () => {
+    const diff = `
+diff --git a/server/src/services/data.ts b/server/src/services/data.ts
+--- a/server/src/services/data.ts
++++ b/server/src/services/data.ts
+@@ -10,2 +10,3 @@
++export function getStorageService() {
++  return {};
++}
+diff --git a/server/src/types/metrics.ts b/server/src/types/metrics.ts
+--- a/server/src/types/metrics.ts
++++ b/server/src/types/metrics.ts
+@@ -5,2 +5,3 @@ export interface MetricsSnapshotFields {
++  emptyRunsByAgent: Record<string, number>;
+ }
+diff --git a/server/src/services/internal.ts b/server/src/services/internal.ts
+--- a/server/src/services/internal.ts
++++ b/server/src/services/internal.ts
+@@ -20,2 +20,2 @@ function helper() {
+-  const x = 1;
++  const x = 2;
+ }
+`;
+    const result = detectExportOrTypeChangesFromDiff(diff);
+    assert.deepEqual(result, ["server/src/services/data.ts", "server/src/types/metrics.ts"]);
+  });
+
+  it("ignores test files and documentation", () => {
+    const diff = `
+diff --git a/server/src/__tests__/foo.test.ts b/server/src/__tests__/foo.test.ts
+--- a/server/src/__tests__/foo.test.ts
++++ b/server/src/__tests__/foo.test.ts
+@@ -1,2 +1,3 @@
++export const testFixture = 1;
+diff --git a/docs/README.md b/docs/README.md
+--- a/docs/README.md
++++ b/docs/README.md
+@@ -1,2 +1,3 @@
++export interface IgnoredInDocs {}
+`;
+    const result = detectExportOrTypeChangesFromDiff(diff);
+    assert.deepEqual(result, []);
+  });
+});
+
+describe("OPE-10709: regression protection for export/type changes (#2296 and #1949)", () => {
+  const pkgs = [{ name: "@myrmidon/server", dir: "server" }];
+  const t = (file, source = "") => ({ file, source });
+
+  it("escalates #2296 (data-retention/index.ts export change) to full tier and keeps it full", () => {
+    const diff = `
+diff --git a/server/src/myrmidon/data-retention/index.ts b/server/src/myrmidon/data-retention/index.ts
+--- a/server/src/myrmidon/data-retention/index.ts
++++ b/server/src/myrmidon/data-retention/index.ts
+@@ -10,2 +10,3 @@
++export { createClosedTaskGitBundleCleanup } from "./git-bundle-cleanup.js";
+`;
+    const changed = ["server/src/myrmidon/data-retention/index.ts"];
+    const rootModules = [
+      {
+        file: "server/src/index.ts",
+        source: 'import "./myrmidon/data-retention/index.js";\nexport function startServer() {}',
+      },
+    ];
+    const tests = [
+      t("server/src/__tests__/server-startup-feedback-export.test.ts", 'import { startServer } from "../index.js";\nvi.mock("../storage/index.js");'),
+    ];
+
+    const plan = classifyChanges(changed, { diffText: diff, packages: pkgs, testFiles: tests, rootModules });
+    assert.equal(plan.tier, "full");
+    assert.equal(plan.keepFull, true);
+    assert.match(plan.reasons[0], /PR changes exported interface, type, or signature/);
+
+    // Verify applyReleaseFast does NOT lower it even with prLight and releaseFast
+    const finalized = applyReleaseFast(plan, null, { releaseFast: true, prLight: true });
+    assert.equal(finalized.tier, "full");
+  });
+
+  it("escalates #1949 (metrics.ts interface change) to full tier and keeps it full", () => {
+    const diff = `
+diff --git a/server/src/myrmidon/monitoring/metrics/metrics.ts b/server/src/myrmidon/monitoring/metrics/metrics.ts
+--- a/server/src/myrmidon/monitoring/metrics/metrics.ts
++++ b/server/src/myrmidon/monitoring/metrics/metrics.ts
+@@ -20,2 +20,3 @@ export interface MetricsSnapshotFields {
++  emptyRunsByAgent: Record<string, number>;
+ }
+`;
+    const changed = ["server/src/myrmidon/monitoring/metrics/metrics.ts"];
+    const tests = [
+      t("server/src/__tests__/gateway-cooldown-failed-before-model.test.ts", 'import type { MetricsSnapshotFields } from "../myrmidon/monitoring/metrics/metrics.js";'),
+    ];
+
+    const plan = classifyChanges(changed, { diffText: diff, packages: pkgs, testFiles: tests });
+    assert.equal(plan.tier, "full");
+    assert.equal(plan.keepFull, true);
+    assert.match(plan.reasons[0], /PR changes exported interface, type, or signature/);
+
+    // Verify applyReleaseFast does NOT lower it
+    const finalized = applyReleaseFast(plan, null, { releaseFast: true, prLight: true });
+    assert.equal(finalized.tier, "full");
+  });
+
+  it("includes server-startup-feedback-export.test.ts in SHARED_GUARD_TESTS", () => {
+    assert.ok(SHARED_GUARD_TESTS.includes("server/src/__tests__/server-startup-feedback-export.test.ts"));
   });
 });

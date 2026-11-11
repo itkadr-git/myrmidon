@@ -41,7 +41,10 @@ const hostProfileInput: HermesProfileInput = {
 };
 describe("T3 regressions against production profile, placement, routing and drift helpers", () => {
   it("parses the synthetic T3 host fixture", () => {
-    expect(parseFleetHosts(JSON.stringify([T3_A_FIXTURE])).get("t3-a")).toMatchObject({ name: "t3-a", url: T3_A_FIXTURE.url, llmBaseUrl: T3_A_FIXTURE.llmBaseUrl, mcpEndpoints: T3_A_FIXTURE.mcpEndpoints });
+    // Plain http in MYRMIDON_FLEET_HOSTS is accepted for a private IP literal only, and the fixture's example.test names are DNS names.
+    const privateFixture = { ...T3_A_FIXTURE, url: "http://10.0.3.10:9100", hindsightUrl: "http://10.0.3.11:8890", llmBaseUrl: "http://10.0.3.12:4000" };
+    expect(parseFleetHosts(JSON.stringify([privateFixture])).get("t3-a")).toMatchObject({ name: "t3-a", url: privateFixture.url, llmBaseUrl: privateFixture.llmBaseUrl, mcpEndpoints: T3_A_FIXTURE.mcpEndpoints });
+    expect(() => parseFleetHosts(JSON.stringify([T3_A_FIXTURE]))).toThrow(/private IP address/);
   });
   it("preserves no-host local compatibility", () => {
     const local = { hindsightUrl: "http://local-hindsight", llmBaseUrl: "http://local-llm", volumeRoot: "/local", network: "local-net", imageAllowlist: [], boardHost: "board-local" };
@@ -59,7 +62,10 @@ describe("T3 regressions against production profile, placement, routing and drif
     const local = driver("local"), remote = driver("t3-a"), routed = fleetRoutingDriver({ local, fleet: new Map([["t3-a", remote]]) }, () => container("t3-a"));
     await routed.start("fixture-bot"); expect(remote.calls).toEqual(["t3-a:start:fixture-bot"]); expect(local.calls).toEqual([]);
   });
-  it("uses the site hostname with the allocated gateway port", () => expect(fleetGatewayApiBaseUrl(T3_A_FIXTURE.url, 18642)).toBe("http://t3-a.example.test:18642"));
+  it("uses the site hostname with the allocated gateway port", () => {
+    expect(fleetGatewayApiBaseUrl(T3_A_FIXTURE.url, 18642)).toBe("http://t3-a.example.test:18642");
+    expect(fleetGatewayApiBaseUrl("https://198.51.100.110:9100", 18701, { source: "registry" })).toBe("http://198.51.100.110:18701");
+  });
   it("rejects missing and invalid gateway ports", () => {
     expect(() => fleetGatewayApiBaseUrl(T3_A_FIXTURE.url, undefined)).toThrow(/did not report/);
     expect(() => fleetGatewayApiBaseUrl(T3_A_FIXTURE.url, 70000)).toThrow(/invalid gateway port/);

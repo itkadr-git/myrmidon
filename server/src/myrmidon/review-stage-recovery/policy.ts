@@ -57,6 +57,32 @@ export const REVIEW_CI_WAIT_RECOVERY_INSTRUCTION =
  */
 export const REVIEW_CI_FINAL_CHECK_NAME = "CI result";
 
+/**
+ * myrmidon(OPE-12177): the idempotency-key namespace of review-admission
+ * wakeups. The key deduplicates wakes per issue, so every writer must build it
+ * with `reviewAdmissionDedupKey` — never interpolate a custom tail.
+ */
+export const REVIEW_ADMISSION_KEY_PREFIX = "issue-review-admission:";
+
+/**
+ * myrmidon(OPE-12177): dedup key of a review-admission wake. The tail is the
+ * exact PR head the admission decision was made on, so the same head never
+ * wakes the reviewer twice (idempotency) while a pushed fix — a new head —
+ * produces a fresh key and a fresh wake. Without a head SHA (no PR work
+ * product, or a board that cannot read one) the legacy agent-keyed format is
+ * kept, so those boards dedup exactly as before.
+ */
+export function reviewAdmissionDedupKey(input: {
+  issueId: string;
+  headSha?: string | null;
+  agentId: string;
+}): string {
+  const headSha = typeof input.headSha === "string" ? input.headSha.trim() : "";
+  return headSha
+    ? `${REVIEW_ADMISSION_KEY_PREFIX}${input.issueId}:${headSha}`
+    : `${REVIEW_ADMISSION_KEY_PREFIX}${input.issueId}:${input.agentId}`;
+}
+
 /** CI on the head of the issue's open pull request, as far as the board can read it. */
 export type ReviewPullRequestCiState =
   /** The final `CI result` check of the head is missing or not completed yet. */
@@ -69,6 +95,8 @@ export type ReviewPullRequestCiState =
    * and the reason is logged.
    */
   | "unknown"
+  /** No hosted CI workflows are configured in this repository. */
+  | "not_configured"
   /** The issue has no open pull request work product. */
   | "no_pull_request";
 
@@ -76,6 +104,8 @@ export interface ReviewPullRequestCiFacts {
   state: ReviewPullRequestCiState;
   pullRequestUrl: string | null;
   headSha: string | null;
+  /** The authoritative final `CI result` check's conclusion, when complete. */
+  finalCheckConclusion?: string | null;
   /** Why the state is "unknown"; a short code, never a token or a header. */
   reason?: string | null;
   /**
@@ -121,6 +151,49 @@ export function decideStalledReviewRecovery(facts: StalledReviewRecoveryFacts): 
     kind: "escalate",
     reason: waiting ? "ci_wait_exhausted" : "decision_retries_exhausted",
   };
+}
+
+/**
+ * myrmidon(OPE-12176): may the reviewer of a task be woken now? A reviewer is
+ * admitted only when the `CI result` check of the exact head is green: while CI
+ * is still running (or unreadable) the review waits for CI, and a finished head
+ * with a red check waits for the fix instead of waking a reviewer onto a known
+ * red head. A critical issue keeps the old behaviour and reviews in parallel
+ * with CI.
+ */
+export type ReviewAdmissionDecision = "admit" | "wait_for_ci" | "wait_red";
+
+export interface ReviewAdmissionFacts {
+  /** CI of the exact head the review decision is made on. */
+  ci: ReviewPullRequestCiState;
+  /** Result of the exact-head `CI result` check, if CI has completed. */
+  headFinalCheck: "green" | "red" | "unknown";
+  /** A critical issue is reviewed in parallel with CI. */
+  critical: boolean;
+}
+
+export function decideReviewAdmission(facts: ReviewAdmissionFacts): ReviewAdmissionDecision {
+  if (facts.critical) return "admit";
+  if (isReviewCiWaiting(facts.ci)) return "wait_for_ci";
+  if (facts.ci === "complete" && facts.headFinalCheck === "unknown") return "wait_for_ci";
+  if (facts.ci === "complete" && facts.headFinalCheck === "red") return "wait_red";
+  return "admit";
+}
+
+/** Error code of a run the maintenance drain interrupted (myrmidon/maintenance/domain.ts). */
+const MAINTENANCE_INTERRUPTED_ERROR_CODE = "myrmidon_maintenance_interrupted";
+
+/**
+ * myrmidon(OPE-12201): the maintenance drain of a deploy interrupted this run
+ * (cancelled with the maintenance code). That is not a reviewer that failed to
+ * decide: the recovery re-wakes it without spending the decision budget, and
+ * the activity row carries kind "maintenance_retry", which the counter below
+ * does not count.
+ */
+export function isMaintenanceInterruptedRun(
+  run: { status: string; errorCode?: string | null } | null | undefined,
+): boolean {
+  return run?.status === "cancelled" && run.errorCode === MAINTENANCE_INTERRUPTED_ERROR_CODE;
 }
 
 /** Counts the earlier deferrals of one stage from the activity rows this module writes. */
@@ -188,20 +261,66 @@ const FINISHED_CHECK_RUN_STATUS = "completed";
 const NOT_A_VERDICT_CONCLUSIONS: ReadonlySet<string> = new Set(["cancelled", "skipped", "stale"]);
 
 /**
+ * CI state of one head commit from ALL of its check runs (the latest run of
+ * every check name). Repositories without the aggregate `CI result` check
+ * (anything that is not the Myrmidon workflow) still have a finished CI: it is
+ * the moment when no check of the head is queued, in progress or waiting
+ * anymore. Whatever the conclusions, a finished CI is a verdict the reviewer
+ * may act on; zero check runs means CI has not started yet.
+ * A missing check list means the read failed: "unknown".
+ */
+export function pullRequestHeadCiStateFromAllChecks(input: {
+  checkRuns: readonly unknown[] | null;
+}): "pending" | "complete" | "unknown" {
+  if (!input.checkRuns) return "unknown";
+  if (input.checkRuns.length === 0) return "pending";
+  const allFinished = input.checkRuns.every((entry) => {
+    if (!entry || typeof entry !== "object") return false;
+    const run = entry as Record<string, unknown>;
+    return run.status === FINISHED_CHECK_RUN_STATUS;
+  });
+  return allFinished ? "complete" : "pending";
+}
+
+/**
  * CI state of one head commit from its check runs. CI of the head is finished
- * only when the final `CI result` check exists and is completed: the other
- * checks are ignored, so a failed `checks` or `freeze` with `typecheck` and
+ * only when the final `CI result` check exists, belongs to exactly this head
+ * (`head_sha` of the record matches) and is completed: the other checks are
+ * ignored, so a failed `checks` or `freeze` with `typecheck` and
  * `tests` still queued is not a finished CI. A missing check list means the
  * read failed: "unknown".
+ *
+ * OPE-12175: the gate that starts a reviewer and the dedup key both work on
+ * the exact head SHA, so a completed `CI result` left over from a superseded
+ * head must never open the review. Records without `head_sha` (or with a
+ * different one) are treated as not belonging to this head.
  */
+export function pullRequestHeadFinalCheckConclusion(input: {
+  checkRuns: readonly unknown[] | null;
+  headSha?: string;
+}): string | null {
+  if (!input.checkRuns) return null;
+  for (const entry of input.checkRuns) {
+    if (!entry || typeof entry !== "object") continue;
+    const run = entry as Record<string, unknown>;
+    if (run.name !== REVIEW_CI_FINAL_CHECK_NAME || run.status !== FINISHED_CHECK_RUN_STATUS) continue;
+    if (input.headSha && run.head_sha !== input.headSha) continue;
+    if (typeof run.conclusion !== "string" || NOT_A_VERDICT_CONCLUSIONS.has(run.conclusion)) continue;
+    return run.conclusion;
+  }
+  return null;
+}
+
 export function pullRequestHeadCiStateFromChecks(input: {
   checkRuns: readonly unknown[] | null;
+  headSha: string;
 }): "pending" | "complete" | "unknown" {
   if (!input.checkRuns) return "unknown";
   const finished = input.checkRuns.some((entry) => {
     if (!entry || typeof entry !== "object") return false;
     const run = entry as Record<string, unknown>;
     if (run.name !== REVIEW_CI_FINAL_CHECK_NAME) return false;
+    if (run.head_sha !== input.headSha) return false;
     if (run.status !== FINISHED_CHECK_RUN_STATUS) return false;
     return !(typeof run.conclusion === "string" && NOT_A_VERDICT_CONCLUSIONS.has(run.conclusion));
   });

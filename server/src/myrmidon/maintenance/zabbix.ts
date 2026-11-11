@@ -3,6 +3,13 @@
 // deletes the period. Off unless MYRMIDON_ZABBIX_URL, MYRMIDON_ZABBIX_TOKEN_REF and
 // MYRMIDON_ZABBIX_HOST_GROUPS are all set. A Zabbix failure never blocks the mode:
 // the hook throws, and the maintenance service logs it and carries on.
+//
+// myrmidon(1.7, OPE-4101, SETTINGS-TO-UI E): the behavior keys (host groups,
+// max window length) resolve live through the part A registry — a UI change
+// applies without a restart, and a set env var stays a forced override. The
+// Zabbix URL and token reference stay env-only (infra/secret).
+
+import { liveZabbixSettings } from "../system-settings/live.js"; // myrmidon(1.7, OPE-4101)
 
 import { readFileSync } from "node:fs";
 import type { MaintenanceWindow } from "./domain.js";
@@ -31,6 +38,22 @@ export function readZabbixSettings(env: NodeJS.ProcessEnv = process.env): Zabbix
     hostGroups,
     maxWindowSec: Number.isInteger(maxWindow) && maxWindow > 0 ? maxWindow : 14_400,
     timeoutMs: 10_000,
+  };
+}
+
+/**
+ * Live view of the Zabbix settings: host groups and the max window resolve
+ * through the part A registry so a UI change applies without a restart; the
+ * URL and token reference stay env-only. myrmidon(1.7, OPE-4101).
+ */
+export function resolveZabbixSettings(env: NodeJS.ProcessEnv = process.env): ZabbixSettings | null {
+  const base = readZabbixSettings(env);
+  if (!base) return null;
+  const live = liveZabbixSettings(env);
+  return {
+    ...base,
+    hostGroups: live.hostGroups.length > 0 ? live.hostGroups : base.hostGroups,
+    maxWindowSec: live.maxWindowSec,
   };
 }
 
@@ -124,17 +147,20 @@ export function zabbixMaintenanceHooks(
   deps: { fetch?: Fetch; token?: () => string; now?: () => Date } = {},
 ): MaintenanceHooks {
   if (!settings) return {};
-  const client = zabbixClient(settings, deps);
+  // myrmidon(1.7, OPE-4101): the client is built per call from the live
+  // registry value so a UI change (host groups, max window) applies without a
+  // restart; the token resolver stays the deps injection.
+  const client = () => zabbixClient(resolveZabbixSettings() ?? settings, deps);
   const now = deps.now ?? (() => new Date());
   return {
     async onEntered(window) {
       // Only the instance window takes hosts out of monitoring.
       if (window.scope.type !== "instance") return;
-      return { maintenanceId: await client.createMaintenance(window, now()), lastError: null };
+      return { maintenanceId: await client().createMaintenance(window, now()), lastError: null };
     },
     async onExited(window) {
       if (window.scope.type !== "instance" || !window.zabbix?.maintenanceId) return;
-      await client.deleteMaintenance(window.zabbix.maintenanceId);
+      await client().deleteMaintenance(window.zabbix.maintenanceId);
     },
   };
 }

@@ -12,6 +12,7 @@
 // and only then `start` it. A gateway therefore never boots without its profile.
 
 import type { CompiledProfile } from "./types.js";
+import type { DriverOomEvent } from "./container-oom.js";
 
 /** One extra read-only mount a bot gets from the instance-level allowlist
  *  (`MYRMIDON_BOT_MOUNT_SOURCES`, template.ts). Read-only only: a shared
@@ -75,6 +76,12 @@ export interface BotContainerSpec {
  */
 export type BotContainerState = "running" | "stopped" | "missing" | "unhealthy";
 
+export interface BotContainerLimits {
+  memoryMb: number;
+  cpus: number;
+  pidsLimit: number;
+}
+
 export interface BotContainerStatus {
   botKey: string;
   state: BotContainerState;
@@ -109,6 +116,7 @@ export interface BotContainerStatus {
   memoryMb?: number;
   cpus?: number;
   pidsLimit?: number;
+  lastDenial?: string | null;
 }
 
 /** One template field whose live value (the container's inspect) no longer
@@ -134,6 +142,9 @@ export interface TemplateDriftReport {
   drifted: boolean;
   fields: TemplateDriftField[];
 }
+
+/** The error message of a lifecycle cleanup on a driver that has no `cleanup` (agent lifecycle, fleetd-routing.ts). */
+export const CLEANUP_UNSUPPORTED_MESSAGE = "container cleanup route is not supported by this driver";
 
 /** The error message of an IDLE-STOP stop on a driver that has no `stopIdle` (idle-stop.ts, fleetd-routing.ts). */
 export const IDLE_STOP_UNSUPPORTED_MESSAGE = "idle-stop route is not supported by this driver";
@@ -217,6 +228,12 @@ export interface BotContainerDriver {
   restart(botKey: string): Promise<void>;
   stop(botKey: string): Promise<void>;
   /**
+   * myrmidon(OPE-12477): cleans up and removes the bot container and its host data directory
+   * when an agent is terminated or deleted. Must be idempotent (succeeds if already missing).
+   * Optional for legacy/test drivers; the lifecycle cleanup port fails closed when absent.
+   */
+  cleanup?(botKey: string): Promise<void>;
+  /**
    * myrmidon(IDLE-STOP): stops an idle bot's container and records that the stop was
    * IDLE-STOP's (`BotContainerStatus.idleStopped`), so the wake path and the reconciler
    * can tell it from an operator's stop. Optional: a driver that cannot (fleetd) leaves
@@ -248,6 +265,10 @@ export interface BotContainerDriver {
    * leaves it out and its bots keep no back-import.
    */
   readBotSkills?(botKey: string): Promise<BotSkillDirectory[] | null>;
+  /**
+   * myrmidon(OPE-9934): transports OOM events (docker events oom / cgroup memory.events oom_kill).
+   */
+  getOomEvents?(sinceNano?: number): Promise<DriverOomEvent[]>;
 }
 
 /** One skill directory of a bot container: its directory name under

@@ -393,6 +393,9 @@ describe("OPE-8137: fleet placement and host parsing boundaries", () => {
     expect(() => fleetGatewayApiBaseUrl("https://fleetd.internal:9100", 8080)).toThrow(
       /fleetd url must be http:\/\//,
     );
+    expect(
+      fleetGatewayApiBaseUrl("https://fleetd.internal:9100", 8080, { source: "registry" }),
+    ).toBe("http://fleetd.internal:8080");
   });
 
   it("parseFleetHosts safely parses entries and rejects non-http URLs", () => {
@@ -404,14 +407,14 @@ describe("OPE-8137: fleet placement and host parsing boundaries", () => {
       JSON.stringify([
         {
           name: "site-worker",
-          url: "http://site-worker.internal:9100",
+          url: "http://10.0.0.30:9100",
           tokenSecret: "site-token",
         },
       ]),
     );
     expect(parsed.get("site-worker")).toEqual({
       name: "site-worker",
-      url: "http://site-worker.internal:9100",
+      url: "http://10.0.0.30:9100",
       tokenSecret: "site-token",
     });
 

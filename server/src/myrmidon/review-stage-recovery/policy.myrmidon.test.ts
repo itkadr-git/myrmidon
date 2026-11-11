@@ -1,11 +1,17 @@
 import { describe, expect, it } from "vitest";
 import {
+  REVIEW_ADMISSION_KEY_PREFIX,
   REVIEW_CI_WAIT_MAX_ATTEMPTS,
   REVIEW_DECISION_MAX_REWAKES,
   REVIEW_DECISION_RECOVERY_INSTRUCTION,
   countStalledReviewDeferrals,
+  isMaintenanceInterruptedRun,
   decideStalledReviewRecovery,
+  decideReviewAdmission,
+  pullRequestHeadCiStateFromAllChecks,
   pullRequestHeadCiStateFromChecks,
+  pullRequestHeadFinalCheckConclusion,
+  reviewAdmissionDedupKey,
   selectOpenPullRequestWorkProduct,
 } from "./policy.js";
 import {
@@ -107,7 +113,8 @@ describe("countStalledReviewDeferrals", () => {
 });
 
 describe("pullRequestHeadCiStateFromChecks", () => {
-  const done = (conclusion: string) => ({ name: "CI result", status: "completed", conclusion });
+  const HEAD = "abc123";
+  const done = (conclusion: string) => ({ name: "CI result", status: "completed", conclusion, head_sha: HEAD });
 
   it("is pending while the final CI result check is missing, however many other checks failed", () => {
     // OPE-8077: `checks` failed, typecheck and tests are still queued.
@@ -118,44 +125,126 @@ describe("pullRequestHeadCiStateFromChecks", () => {
           { name: "typecheck + build", status: "queued" },
           { name: "tests (server 1/3)", status: "queued" },
         ],
+        headSha: HEAD,
       }),
     ).toBe("pending");
     // The release freeze gate is red on every PR while the tag CI runs.
     expect(
       pullRequestHeadCiStateFromChecks({
         checkRuns: [{ name: "freeze", status: "completed", conclusion: "failure" }],
+        headSha: HEAD,
       }),
     ).toBe("pending");
-    expect(pullRequestHeadCiStateFromChecks({ checkRuns: [] })).toBe("pending");
+    expect(pullRequestHeadCiStateFromChecks({ checkRuns: [], headSha: HEAD })).toBe("pending");
   });
 
   it("is pending while the final check is queued or in progress", () => {
-    expect(pullRequestHeadCiStateFromChecks({ checkRuns: [{ name: "CI result", status: "queued" }] })).toBe("pending");
-    expect(pullRequestHeadCiStateFromChecks({ checkRuns: [{ name: "CI result", status: "in_progress" }] })).toBe(
-      "pending",
-    );
+    expect(
+      pullRequestHeadCiStateFromChecks({
+        checkRuns: [{ name: "CI result", status: "queued", head_sha: HEAD }],
+        headSha: HEAD,
+      }),
+    ).toBe("pending");
+    expect(
+      pullRequestHeadCiStateFromChecks({
+        checkRuns: [{ name: "CI result", status: "in_progress", head_sha: HEAD }],
+        headSha: HEAD,
+      }),
+    ).toBe("pending");
   });
 
   it("is complete when the final check is completed, whatever the other checks do", () => {
-    expect(pullRequestHeadCiStateFromChecks({ checkRuns: [done("success")] })).toBe("complete");
+    expect(pullRequestHeadCiStateFromChecks({ checkRuns: [done("success")], headSha: HEAD })).toBe("complete");
     expect(
       pullRequestHeadCiStateFromChecks({
         checkRuns: [done("failure"), { name: "tests (other + runner)", status: "queued" }],
+        headSha: HEAD,
       }),
     ).toBe("complete");
-    expect(pullRequestHeadCiStateFromChecks({ checkRuns: [{ name: "CI result", status: "completed" }] })).toBe(
+    expect(pullRequestHeadCiStateFromChecks({ checkRuns: [done("success")], headSha: HEAD })).toBe("complete");
+  });
+
+  it("does not take the leftovers of a superseded workflow run for a verdict", () => {
+    expect(pullRequestHeadCiStateFromChecks({ checkRuns: [done("cancelled")], headSha: HEAD })).toBe("pending");
+    expect(pullRequestHeadCiStateFromChecks({ checkRuns: [done("skipped")], headSha: HEAD })).toBe("pending");
+    expect(pullRequestHeadCiStateFromChecks({ checkRuns: [done("cancelled"), done("success")], headSha: HEAD })).toBe(
       "complete",
     );
   });
 
-  it("does not take the leftovers of a superseded workflow run for a verdict", () => {
-    expect(pullRequestHeadCiStateFromChecks({ checkRuns: [done("cancelled")] })).toBe("pending");
-    expect(pullRequestHeadCiStateFromChecks({ checkRuns: [done("skipped")] })).toBe("pending");
-    expect(pullRequestHeadCiStateFromChecks({ checkRuns: [done("cancelled"), done("success")] })).toBe("complete");
+  it("is unknown when the read failed", () => {
+    expect(pullRequestHeadCiStateFromChecks({ checkRuns: null, headSha: HEAD })).toBe("unknown");
+  });
+
+  // OPE-12175: the review gate and the dedup key both work on the exact head
+  // SHA, so a completed `CI result` of a different head must never open the
+  // review.
+  describe("head_sha filtering (OPE-12175)", () => {
+    it("is complete when head_sha matches and the check is completed", () => {
+      expect(pullRequestHeadCiStateFromChecks({ checkRuns: [done("success")], headSha: HEAD })).toBe("complete");
+    });
+
+    it("is pending when the record has a different head_sha", () => {
+      const stale = { name: "CI result", status: "completed", conclusion: "success", head_sha: "deadbeef" };
+      expect(pullRequestHeadCiStateFromChecks({ checkRuns: [stale], headSha: HEAD })).toBe("pending");
+    });
+
+    it("is pending when the record has no head_sha", () => {
+      const noSha = { name: "CI result", status: "completed", conclusion: "success" };
+      expect(pullRequestHeadCiStateFromChecks({ checkRuns: [noSha], headSha: HEAD })).toBe("pending");
+    });
+
+    it("in a mixed list only the matching record decides", () => {
+      const stale = { name: "CI result", status: "completed", conclusion: "success", head_sha: "deadbeef" };
+      const matching = { name: "CI result", status: "completed", conclusion: "success", head_sha: HEAD };
+      const noSha = { name: "CI result", status: "completed", conclusion: "success" };
+      expect(pullRequestHeadCiStateFromChecks({ checkRuns: [stale, noSha], headSha: HEAD })).toBe("pending");
+      expect(pullRequestHeadCiStateFromChecks({ checkRuns: [stale, matching], headSha: HEAD })).toBe("complete");
+      expect(pullRequestHeadCiStateFromChecks({ checkRuns: [noSha, matching], headSha: HEAD })).toBe("complete");
+    });
+  });
+});
+
+describe("pullRequestHeadCiStateFromAllChecks", () => {
+  const done = (name: string, conclusion: string) => ({ name, status: "completed", conclusion });
+
+  it("is complete when every check of the head has completed, whatever the conclusions", () => {
+    // OPE-12048: BastionPrime/wellboard PR #43 — six lanes, no aggregate `CI result` check.
+    expect(
+      pullRequestHeadCiStateFromAllChecks({
+        checkRuns: [
+          done("build (x86_64)", "success"),
+          done("lint-and-test", "success"),
+          done("build (mipsel_24kc)", "failure"),
+        ],
+      }),
+    ).toBe("complete");
+  });
+
+  it("is pending while any check is queued, in progress or waiting", () => {
+    expect(
+      pullRequestHeadCiStateFromAllChecks({
+        checkRuns: [done("build", "success"), { name: "lint-and-test", status: "in_progress", conclusion: null }],
+      }),
+    ).toBe("pending");
+    expect(
+      pullRequestHeadCiStateFromAllChecks({
+        checkRuns: [done("build", "success"), { name: "lint-and-test", status: "queued", conclusion: null }],
+      }),
+    ).toBe("pending");
+    expect(
+      pullRequestHeadCiStateFromAllChecks({
+        checkRuns: [done("build", "success"), { name: "lint-and-test", status: "waiting", conclusion: null }],
+      }),
+    ).toBe("pending");
+  });
+
+  it("is pending while CI has not started at all", () => {
+    expect(pullRequestHeadCiStateFromAllChecks({ checkRuns: [] })).toBe("pending");
   });
 
   it("is unknown when the read failed", () => {
-    expect(pullRequestHeadCiStateFromChecks({ checkRuns: null })).toBe("unknown");
+    expect(pullRequestHeadCiStateFromAllChecks({ checkRuns: null })).toBe("unknown");
   });
 });
 
@@ -197,5 +286,108 @@ describe("pre-merge approval", () => {
       pullRequestUrl: "https://github.com/acme/app/pull/7",
     });
     expect(notice.message).toContain("Одобрение записано, задача закроется после слияния");
+  });
+});
+
+describe("maintenance-interrupted reviewer run (OPE-12201)", () => {
+  it("recognises only a run cancelled by the maintenance drain", () => {
+    expect(isMaintenanceInterruptedRun({ status: "cancelled", errorCode: "myrmidon_maintenance_interrupted" })).toBe(true);
+    expect(isMaintenanceInterruptedRun({ status: "cancelled", errorCode: "cancelled" })).toBe(false);
+    expect(isMaintenanceInterruptedRun({ status: "failed", errorCode: "myrmidon_maintenance_interrupted" })).toBe(false);
+    expect(isMaintenanceInterruptedRun({ status: "succeeded", errorCode: null })).toBe(false);
+    expect(isMaintenanceInterruptedRun(null)).toBe(false);
+  });
+
+  it("does not spend the decision budget: maintenance_retry rows are not counted", () => {
+    const rows = [
+      { details: { stageId: "s1", kind: "maintenance_retry" } },
+      { details: { stageId: "s1", kind: "maintenance_retry" } },
+      { details: { stageId: "s1", kind: "decision_retry" } },
+    ];
+    expect(countStalledReviewDeferrals(rows, "s1")).toEqual({ ciWaits: 0, decisionRetries: 1 });
+  });
+});
+
+describe("pullRequestHeadFinalCheckConclusion", () => {
+  const done = (conclusion: string) => ({ name: "CI result", status: "completed", conclusion });
+
+  it("returns the conclusion of the completed final check", () => {
+    expect(pullRequestHeadFinalCheckConclusion({ checkRuns: [done("success")] })).toBe("success");
+    expect(pullRequestHeadFinalCheckConclusion({ checkRuns: [done("failure")] })).toBe("failure");
+    expect(pullRequestHeadFinalCheckConclusion({ checkRuns: [{ name: "checks", status: "completed", conclusion: "failure" }, done("success")] })).toBe("success");
+  });
+
+  it("ignores superseded runs and non-verdict conclusions", () => {
+    expect(pullRequestHeadFinalCheckConclusion({ checkRuns: [done("cancelled"), done("success")] })).toBe("success");
+    expect(pullRequestHeadFinalCheckConclusion({ checkRuns: [{ name: "CI result", status: "queued" }] })).toBeNull();
+    expect(pullRequestHeadFinalCheckConclusion({ checkRuns: [{ name: "CI result", status: "completed" }] })).toBeNull();
+    expect(pullRequestHeadFinalCheckConclusion({ checkRuns: [] })).toBeNull();
+    expect(pullRequestHeadFinalCheckConclusion({ checkRuns: null })).toBeNull();
+  });
+
+  it("filters by headSha when provided", () => {
+    const stale = { name: "CI result", status: "completed", conclusion: "failure", head_sha: "deadbeef" };
+    const matching = { name: "CI result", status: "completed", conclusion: "success", head_sha: "abc123" };
+    expect(pullRequestHeadFinalCheckConclusion({ checkRuns: [stale], headSha: "abc123" })).toBeNull();
+    expect(pullRequestHeadFinalCheckConclusion({ checkRuns: [stale, matching], headSha: "abc123" })).toBe("success");
+  });
+});
+
+describe("decideReviewAdmission (OPE-12176)", () => {
+  it("admits the reviewer when the exact head CI is green", () => {
+    expect(decideReviewAdmission({ ci: "complete", headFinalCheck: "green", critical: false })).toBe("admit");
+  });
+
+  it("waits for the fix (wait_red) when the exact head CI finished with a failed check", () => {
+    expect(decideReviewAdmission({ ci: "complete", headFinalCheck: "red", critical: false })).toBe(
+      "wait_red",
+    );
+  });
+
+  it("waits for CI (wait_for_ci) while the head CI is pending or unreadable", () => {
+    expect(decideReviewAdmission({ ci: "pending", headFinalCheck: "unknown", critical: false })).toBe("wait_for_ci");
+    expect(decideReviewAdmission({ ci: "unknown", headFinalCheck: "unknown", critical: false })).toBe("wait_for_ci");
+  });
+
+  it("waits for CI (wait_for_ci) when CI completed but check runs could not be read (unknown)", () => {
+    expect(decideReviewAdmission({ ci: "complete", headFinalCheck: "unknown", critical: false })).toBe("wait_for_ci");
+  });
+
+  it("admits a critical issue's reviewer even when the exact head CI is red", () => {
+    expect(decideReviewAdmission({ ci: "complete", headFinalCheck: "red", critical: true })).toBe("admit");
+  });
+});
+
+// myrmidon(OPE-12177): the dedup key of a review-admission wake is keyed on the
+// exact PR head; without a head it falls back to the legacy agent-keyed format.
+describe("reviewAdmissionDedupKey", () => {
+  it("keys on the exact PR head SHA", () => {
+    expect(reviewAdmissionDedupKey({ issueId: "issue-1", headSha: "abc123", agentId: "agent-1" })).toBe(
+      `${REVIEW_ADMISSION_KEY_PREFIX}issue-1:abc123`,
+    );
+  });
+
+  it("keeps the same key for the same issue + head regardless of the reviewer", () => {
+    const first = reviewAdmissionDedupKey({ issueId: "issue-1", headSha: "abc123", agentId: "agent-1" });
+    const second = reviewAdmissionDedupKey({ issueId: "issue-1", headSha: "abc123", agentId: "agent-2" });
+    expect(second).toBe(first);
+  });
+
+  it("produces a new key when the head moves", () => {
+    const before = reviewAdmissionDedupKey({ issueId: "issue-1", headSha: "abc123", agentId: "agent-1" });
+    const after = reviewAdmissionDedupKey({ issueId: "issue-1", headSha: "def456", agentId: "agent-1" });
+    expect(after).not.toBe(before);
+  });
+
+  it("falls back to the legacy agent-keyed format without a head", () => {
+    expect(reviewAdmissionDedupKey({ issueId: "issue-1", headSha: null, agentId: "agent-1" })).toBe(
+      `${REVIEW_ADMISSION_KEY_PREFIX}issue-1:agent-1`,
+    );
+    expect(reviewAdmissionDedupKey({ issueId: "issue-1", headSha: undefined, agentId: "agent-1" })).toBe(
+      `${REVIEW_ADMISSION_KEY_PREFIX}issue-1:agent-1`,
+    );
+    expect(reviewAdmissionDedupKey({ issueId: "issue-1", headSha: "   ", agentId: "agent-1" })).toBe(
+      `${REVIEW_ADMISSION_KEY_PREFIX}issue-1:agent-1`,
+    );
   });
 });

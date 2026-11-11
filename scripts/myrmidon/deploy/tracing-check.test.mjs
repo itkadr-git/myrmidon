@@ -401,7 +401,13 @@ const FAKE_CURL = `#!/usr/bin/env bash
 echo "curl $*" >> "$SANDBOX/calls.log"
 case "$*" in
   *api/public/health*) if [ -e "$SANDBOX/probe-fails" ]; then exit 7; fi; cat "$SANDBOX/langfuse-health.json" ;;
-  *) cat "$SANDBOX/health.json" ;;
+  *)
+    # Model curl's -o /dev/null -w '%{http_code}' used by the predeploy
+    # liveness and API probes; ordinary GETs still return the health body.
+    case " $* " in
+      *" -w %{http_code} "*) printf '200' ;;
+      *) cat "$SANDBOX/health.json" ;;
+    esac ;;
 esac
 `;
 
@@ -507,6 +513,8 @@ function deploySandbox({ langfuseHealth = { status: "OK", version: "4.2.1" }, tr
     // default and refuses without its inputs. No BOARD_COMPANY_ID here, so the
     // walked path list stays company-free.
     "MYRMIDON_PREDEPLOY_POSTGRES_IMAGE=postgres:16-alpine",
+    "MYRMIDON_PREDEPLOY_IO_DEVICE=/dev/fake-docker-data",
+    "MYRMIDON_PREDEPLOY_IO_RATE=30000000",
     `MYRMIDON_PREDEPLOY_BOARD_ENV_FILE=${predeployEnv}`,
     "MYRMIDON_PREDEPLOY_BOARD_PORT=13110",
     "MYRMIDON_PREDEPLOY_API_PATHS=/api/health,/api/companies",

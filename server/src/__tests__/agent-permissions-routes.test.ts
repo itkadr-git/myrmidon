@@ -707,9 +707,12 @@ describe.sequential("agent permission routes", () => {
     expect(mockHeartbeatService.listVersionKey).toHaveBeenCalledWith(
       companyId,
       undefined,
-      undefined,
+      200,
       false,
       '["board:board-user:user",["22222222-2222-4222-8222-222222222222"],null]',
+      undefined,
+      false,
+      undefined,
     );
 
     redactionEnabled = true;
@@ -726,9 +729,51 @@ describe.sequential("agent permission routes", () => {
     expect(mockHeartbeatService.listVersionKey).toHaveBeenLastCalledWith(
       companyId,
       undefined,
-      undefined,
+      200,
       false,
       '["board:board-user:user",["22222222-2222-4222-8222-222222222222"],null]',
+      undefined,
+      false,
+      undefined,
+    );
+  }, 20_000);
+
+  it("passes wakeReason and hasResult filters to heartbeat list and version key", async () => {
+    mockHeartbeatService.listVersionKey.mockResolvedValue('"vk-heartbeat-runs:filtered"');
+    mockHeartbeatService.list.mockResolvedValue([
+      { id: "run-filtered", contextWakeReason: "issue_commented", resultSummary: "done" },
+    ]);
+    mockRunRedactions.redactForRuns.mockImplementation(async (_companyId, runs) => runs);
+    const app = await createApp({
+      type: "board",
+      userId: "board-user",
+      source: "local_implicit",
+      companyIds: [companyId],
+    });
+    const res = await requestApp(app, (baseUrl) =>
+      request(baseUrl).get(
+        `/api/companies/${companyId}/heartbeat-runs?agentId=${agentId}&wakeReason=issue_commented&hasResult=true`,
+      ),
+    );
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual([
+      { id: "run-filtered", contextWakeReason: "issue_commented", resultSummary: "done" },
+    ]);
+    expect(mockHeartbeatService.listVersionKey).toHaveBeenCalledWith(
+      companyId,
+      agentId,
+      200,
+      false,
+      expect.any(String),
+      "issue_commented",
+      true,
+      undefined,
+    );
+    expect(mockHeartbeatService.list).toHaveBeenCalledWith(
+      companyId,
+      agentId,
+      200,
+      { summary: false, wakeReason: "issue_commented", hasResult: true, before: undefined },
     );
   }, 20_000);
 
@@ -748,17 +793,18 @@ describe.sequential("agent permission routes", () => {
     expect(mockHeartbeatService.listVersionKey).toHaveBeenCalledWith(
       companyId,
       "agent-1",
-      undefined,
+      200,
       false,
       '["board:board-user:user",["22222222-2222-4222-8222-222222222222"],null]',
       "issue_commented",
       true,
+      undefined,
     );
     expect(mockHeartbeatService.list).toHaveBeenCalledWith(
       companyId,
       "agent-1",
-      undefined,
-      { summary: false, wakeReason: "issue_commented", hasResult: true },
+      200,
+      { summary: false, wakeReason: "issue_commented", hasResult: true, before: undefined },
     );
   });
 
@@ -2134,6 +2180,7 @@ describe.sequential("agent permission routes", () => {
       inboxArchivedByUserId: "board-user",
       status: "backlog,todo,in_progress,in_review,blocked,done",
       limit: 500,
+      excludePrivate: true,
     });
   });
 
@@ -2541,6 +2588,63 @@ describe.sequential("agent permission routes", () => {
     // Read-only derivation: nothing was written.
     expect(mockAgentService.updatePermissions).not.toHaveBeenCalled();
     expect(mockAccessService.setPrincipalPermission).not.toHaveBeenCalled();
+  });
+
+  it("enforces authorizationPolicy mutation RBAC (rejects unauthorized agent and board actor)", async () => {
+    mockAgentService.getById.mockResolvedValue(baseAgent);
+    mockAccessService.canUser.mockResolvedValue(false);
+    mockAccessService.hasPermission.mockResolvedValue(false);
+    mockAgentService.updatePermissions.mockClear();
+
+    // Board actor without users:manage_permissions cannot update authorizationPolicy
+    const boardApp = createApp({
+      type: "board",
+      userId: "member-user",
+      source: "session",
+      isInstanceAdmin: false,
+      companyIds: [companyId],
+    });
+    const resBoard = await requestApp(boardApp, (baseUrl) => request(baseUrl)
+      .patch(`/api/agents/${agentId}/permissions`)
+      .send({
+        canCreateAgents: false,
+        canAssignTasks: false,
+        authorizationPolicy: { agentVisibility: { mode: "private" } },
+      }));
+    expect(resBoard.status).toBe(403);
+    expect(mockAgentService.updatePermissions).not.toHaveBeenCalled();
+
+    // Agent actor cannot update its own authorizationPolicy
+    const selfAgentApp = createApp({
+      type: "agent",
+      agentId,
+      companyId,
+    });
+    const resSelf = await requestApp(selfAgentApp, (baseUrl) => request(baseUrl)
+      .patch(`/api/agents/${agentId}/permissions`)
+      .send({
+        canCreateAgents: false,
+        canAssignTasks: false,
+        authorizationPolicy: { agentVisibility: { mode: "private" } },
+      }));
+    expect(resSelf.status).toBe(403);
+    expect(resSelf.body.error).toBe("An agent cannot modify its own authorization policy");
+
+    // Agent actor without users:manage_permissions cannot update another agent's authorizationPolicy
+    const otherAgentApp = createApp({
+      type: "agent",
+      agentId: "other-agent-id",
+      companyId,
+    });
+    const resOther = await requestApp(otherAgentApp, (baseUrl) => request(baseUrl)
+      .patch(`/api/agents/${agentId}/permissions`)
+      .send({
+        canCreateAgents: false,
+        canAssignTasks: false,
+        authorizationPolicy: { agentVisibility: { mode: "private" } },
+      }));
+    expect(resOther.status).toBe(403);
+    expect(resOther.body.error).toBe("Missing users:manage_permissions grant");
   });
 
   it("rejects heartbeat cancellation outside the caller company scope", async () => {

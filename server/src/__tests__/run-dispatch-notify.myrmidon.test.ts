@@ -98,17 +98,26 @@ describe("notify mode: the role gate of the dispatcher (part B)", () => {
     ]);
   });
 
-  it("an api process in inline mode starts locally — inline is a mode, not a role", async () => {
+  it("an api process in inline mode publishes run_queued instead of starting locally — inline is a mode, but api role gate prevents local execution", async () => {
+    const { bus, published } = fakeBus();
     const startNextQueuedRunForAgent = vi.fn(async () => [{ id: "run-1" }]);
     const dispatcher = createRunStartDispatcher({
       listQueuedAgents: async () => [],
       startNextQueuedRunForAgent,
       loadSettings: async () => ({ runStartDispatch: "inline", queuedResweepSec: 30 }),
       executesRuns: () => false,
+      requestRemoteStart: (agentId) =>
+        bus.publish(RUN_QUEUED_CHANNEL, buildRunQueuedPayload(agentId, "company-1")),
     });
 
-    expect(await dispatcher.dispatchRunStart("agent-1")).toEqual([{ id: "run-1" }]);
-    expect(startNextQueuedRunForAgent).toHaveBeenCalledTimes(1);
+    expect(await dispatcher.dispatchRunStart("agent-1")).toEqual([]);
+    expect(published).toEqual([
+      {
+        channel: RUN_QUEUED_CHANNEL,
+        payload: { agentId: "agent-1", companyId: "company-1", schemaVersion: 1 },
+      },
+    ]);
+    expect(startNextQueuedRunForAgent).not.toHaveBeenCalled();
   });
 
   it("notify without a bus on an api process logs and returns — the resweep carries it", async () => {

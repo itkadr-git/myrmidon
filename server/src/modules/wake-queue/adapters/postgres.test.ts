@@ -247,6 +247,47 @@ describeEmbeddedPostgres("wake-queue postgres adapter", () => {
     expect(checked).toBe(true);
   });
 
+  it.each(["queued", "claimed"])("does not promote follow-up after operator stops an unstarted %s run", async (stage) => {
+    const companyId = await seedCompany();
+    const agentId = await seedAgent({ companyId });
+    const issueId = await seedIssue({ companyId, assigneeAgentId: agentId });
+    const wakeId = await seedDeferredWake({ companyId, agentId, issueId });
+    await db.update(agentWakeupRequests).set({ status: stage }).where(eq(agentWakeupRequests.id, wakeId));
+    const runId = await seedRun({ companyId, agentId, status: "cancelled", contextSnapshot: { issueId } });
+    await db.update(heartbeatRuns).set({
+      startedAt: null,
+      wakeupRequestId: wakeId,
+      resultJson: { executionCancellation: { source: { code: "board_operator" }, state: "requested" } },
+    }).where(eq(heartbeatRuns.id, runId));
+    await db.update(issues).set({ executionRunId: runId, checkoutRunId: runId }).where(eq(issues.id, issueId));
+    const followupId = await seedDeferredWake({ companyId, agentId, issueId });
+    // cancelRunInternal settles the originating wake before calling releaseIssueExecutionAndPromote.
+    // Model that boundary here rather than making the release adapter cancel an already stopped wake.
+    await db.update(agentWakeupRequests).set({ status: "cancelled", finishedAt: new Date() })
+      .where(eq(agentWakeupRequests.id, wakeId));
+    const release = createReleaseIssueExecution({
+      issueLock: createPostgresWakeQueueAdapter(db, stubDeps),
+      recovery: {
+        deferReviewParticipantReleaseForCi: async () => false,
+        escalateStrandedAssignedIssue: async () => { throw new Error("unexpected escalation"); },
+        escalateStrandedRecoveryIssueInPlace: async () => { throw new Error("unexpected escalation"); },
+      },
+    });
+
+    const result = await release({ companyId, runId, now: new Date() });
+    expect(result.outcome.kind).toBe("released");
+    expect((await db.select().from(issues).where(eq(issues.id, issueId)))[0]).toMatchObject({
+      executionRunId: null, checkoutRunId: null,
+    });
+    expect((await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, wakeId)))[0]).toMatchObject({
+      status: "cancelled",
+    });
+    expect((await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, followupId)))[0]).toMatchObject({
+      status: "deferred_issue_execution", runId: null,
+    });
+    expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.companyId, companyId))).toHaveLength(1);
+  });
+
   it.each([false, true])("rechecks disabled chat mode before interrupted queue promotion (conversation=%s)", async (conversation) => {
     const settings = instanceSettingsService(db);
     const original = (await settings.getExperimental()).enableAgentChat;
@@ -269,7 +310,11 @@ describeEmbeddedPostgres("wake-queue postgres adapter", () => {
     }).where(eq(issues.id, issueId));
     const release = createReleaseIssueExecution({
       issueLock: createPostgresWakeQueueAdapter(db, stubDeps),
-      recovery: { escalateStrandedAssignedIssue: async () => {}, escalateStrandedRecoveryIssueInPlace: async () => {} },
+      recovery: {
+        deferReviewParticipantReleaseForCi: async () => false,
+        escalateStrandedAssignedIssue: async () => {},
+        escalateStrandedRecoveryIssueInPlace: async () => {},
+      },
     });
     try {
       await settings.updateExperimental({ enableAgentChat: false });
@@ -306,6 +351,7 @@ describeEmbeddedPostgres("wake-queue postgres adapter", () => {
       const release = createReleaseIssueExecution({
         issueLock: createPostgresWakeQueueAdapter(db, stubDeps),
         recovery: {
+          deferReviewParticipantReleaseForCi: async () => false,
           escalateStrandedAssignedIssue: async () => { throw new Error("unexpected escalation"); },
           escalateStrandedRecoveryIssueInPlace: async () => { throw new Error("unexpected escalation"); },
         },
@@ -840,6 +886,32 @@ describeEmbeddedPostgres("wake-queue postgres adapter", () => {
     await Promise.all([dbA.$client.end(), dbB.$client.end()]);
   });
 
+  it("bounds N concurrent releases above a small pool without hanging", async () => {
+    const companyId = await seedCompany();
+    const agentId = await seedAgent({ companyId });
+    const issueId = await seedIssue({ companyId, assigneeAgentId: agentId });
+    const runIds = await Promise.all(
+      Array.from({ length: 5 }, () => seedRun({ companyId, agentId, contextSnapshot: { issueId } })),
+    );
+    await db.update(issues).set({ executionRunId: runIds[0] }).where(eq(issues.id, issueId));
+
+    // Five workers contend for one issue through pools of two connections;
+    // this is deliberately larger than every pool and reproduces the former
+    // pool-starvation shape rather than merely checking two-way serialization.
+    const workerDbs = runIds.map(() => createDb(tempDb!.connectionString, { maxConnections: 2 }));
+    const adapters = workerDbs.map((workerDb) => createPostgresWakeQueueAdapter(workerDb, stubDeps));
+    const settled = await Promise.race([
+      Promise.all(runIds.map((runId, index) => adapters[index].withIssueExecutionLock(
+        { companyId, runId, now: new Date() },
+        async () => ({ outcome: { kind: "released" as const }, postCommitEffects: [] }),
+      ))),
+      new Promise<never>((_, reject) => setTimeout(() => reject(new Error("concurrent release timed out")), 10_000)),
+    ]);
+    expect(settled).toHaveLength(runIds.length);
+    expect(settled.every((result) => result.outcome.kind === "released")).toBe(true);
+    await Promise.all(workerDbs.map((workerDb) => workerDb.$client.end()));
+  });
+
   it("re-checks the interrupt queue under the lock: a queue dispatched by the lock holder while the release waits does not send it into the drain", async () => {
     const companyId = await seedCompany();
     const agentId = await seedAgent({ companyId });
@@ -921,6 +993,48 @@ describeEmbeddedPostgres("wake-queue postgres adapter", () => {
   // owns it. These tests drive the admission writer directly against a
   // transaction they open themselves, the same way `heartbeat.ts` will.
   describe("wake admission", () => {
+    // OPE-12209 (vendor #13912): one malformed queued commentId used to throw
+    // inside the uuid-column query and stall the whole wake queue behind it.
+    // The adapter must drop the malformed id at the uuid-column boundary and
+    // keep draining: the live comment is processed and the other wakes are
+    // not blocked. Red on main, where the query is built from raw ids.
+    it("drains a queued batch past a malformed comment id without throwing", async () => {
+      const companyId = await seedCompany();
+      const agentId = await seedAgent({ companyId });
+      const issueId = await seedIssue({ companyId, assigneeAgentId: agentId });
+      const finishingRunId = await seedRun({ companyId, agentId, status: "succeeded", contextSnapshot: { issueId } });
+      await db.update(issues).set({ executionRunId: finishingRunId }).where(eq(issues.id, issueId));
+      const [liveComment] = await db.insert(issueComments).values({
+        companyId, issueId, authorUserId: "responsible-user", body: "live comment",
+      }).returning();
+      const malformedId = "abc12345";
+      const validButMissingId = randomUUID();
+      const queuedBatch = [liveComment.id, malformedId, validButMissingId];
+
+      const adapter = createPostgresWakeQueueAdapter(db, stubDeps);
+      let liveness: { liveNonSelfCommentIds: string[]; containedSelfAuthoredComment: boolean } | null = null;
+      await adapter.withIssueExecutionLock({ companyId, runId: finishingRunId, now: new Date() }, async (_locked, ports) => {
+        liveness = await ports.transaction.getQueuedCommentLiveness({
+          companyId,
+          issueId,
+          wakeAgentId: agentId,
+          finishingRunId,
+          finishingRunAgentId: agentId,
+          queuedCommentIds: queuedBatch,
+        });
+        return { outcome: { kind: "released" as const }, postCommitEffects: [] };
+      });
+
+      expect(liveness).not.toBeNull();
+      // The malformed id is dropped at the uuid-column boundary; the live
+      // comment survives, the valid-but-missing uuid resolves to nothing.
+      expect(liveness!.liveNonSelfCommentIds).toEqual([liveComment.id]);
+      expect(liveness!.containedSelfAuthoredComment).toBe(false);
+      // The queue rows themselves are untouched by the liveness probe.
+      const runs = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.companyId, companyId));
+      expect(runs).toHaveLength(1);
+    });
+
     it("rolls back a deferred merge when its own durable receipt insert fails", async () => {
       const companyId = await seedCompany();
       const agentId = await seedAgent({ companyId });

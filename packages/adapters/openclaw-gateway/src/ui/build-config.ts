@@ -20,6 +20,9 @@ export function buildOpenClawGatewayConfig(v: CreateConfigValues): Record<string
   if (v.authToken) ac.authToken = v.authToken;
   if (v.password) ac.password = v.password;
   if (v.agentId) ac.agentId = v.agentId;
+  if (v.clientId) ac.clientId = v.clientId;
+  if (v.clientMode) ac.clientMode = v.clientMode;
+  if (v.clientVersion) ac.clientVersion = v.clientVersion;
 
   // Session routing fields
   if (v.sessionKeyStrategy) ac.sessionKeyStrategy = v.sessionKeyStrategy;
@@ -33,6 +36,16 @@ export function buildOpenClawGatewayConfig(v: CreateConfigValues): Record<string
   if (typeof v.disableDeviceAuth === "boolean") ac.disableDeviceAuth = v.disableDeviceAuth;
   if (typeof v.autoPairOnFirstConnect === "boolean") ac.autoPairOnFirstConnect = v.autoPairOnFirstConnect;
   if (v.devicePrivateKeyPem) ac.devicePrivateKeyPem = v.devicePrivateKeyPem;
+  const deviceToken = v.adapterSchemaValues?.deviceToken;
+  if (
+    deviceToken &&
+    typeof deviceToken === "object" &&
+    !Array.isArray(deviceToken) &&
+    (deviceToken as { type?: unknown }).type === "secret_ref" &&
+    typeof (deviceToken as { secretId?: unknown }).secretId === "string"
+  ) {
+    ac.deviceToken = deviceToken;
+  }
 
   // Gateway identity fields
   if (v.role) ac.role = v.role;

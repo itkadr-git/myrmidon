@@ -12,7 +12,9 @@ import {
   createDb,
   heartbeatRuns,
   issueClaims,
+  issueComments,
   issueRecoveryActions,
+  issueRelations,
   issues,
   litellmCostEvents,
 } from "@myrmidon/db";
@@ -20,13 +22,14 @@ import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
 } from "../../../__tests__/helpers/embedded-postgres.js";
-import { collectMetricsSnapshot, runMetricsSelfCheck, METRIC_FAMILIES, renderMetricsText } from "./metrics.js";
+import { collectMetricsSnapshot, renderMetricsText, runMetricsSelfCheck, METRIC_FAMILIES } from "./metrics.js";
 import { issueRecoveryActionService } from "../../../services/issue-recovery-actions.js";
 import { createRecoveryFactoryMetrics } from "@myrmidon/shared";
 import type { IssueRecoveryActionKind, RecoveryFactoryMetrics as RecoveryFactoryMetricsPort } from "@myrmidon/shared";
 import { recordSwarmClaimSignal, resetSwarmClaimSignals } from "./swarm-signals.js";
 import { resetStaleBlockSignals, recordStaleBlockSignal } from "../../stale-block/attention.js";
 import { resetTracingHealthSignals } from "../../tracing-health/attention.js";
+import { resetAgentSpendWindowsCache } from "../../litellm-keys/key-spend.js";
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
@@ -47,10 +50,14 @@ describeEmbeddedPostgres("metrics collector", () => {
     resetSwarmClaimSignals();
     resetStaleBlockSignals();
     resetTracingHealthSignals();
+    // The per-agent spend read is cached per database handle; every case seeds its own rows.
+    resetAgentSpendWindowsCache();
     await db.delete(litellmCostEvents);
     await db.delete(issueClaims);
     await db.delete(issueRecoveryActions);
+    await db.delete(issueRelations);
     await db.delete(heartbeatRuns);
+    await db.delete(issueComments);
     await db.delete(issues);
     await db.delete(agents);
     await db.delete(companies);
@@ -94,6 +101,8 @@ describeEmbeddedPostgres("metrics collector", () => {
       startedAt?: Date;
       finishedAt?: Date;
       createdAt?: Date;
+      livenessState?: string | null;
+      livenessReason?: string | null;
     },
   ) {
     const runId = randomUUID();
@@ -106,9 +115,23 @@ describeEmbeddedPostgres("metrics collector", () => {
       status: input.status,
       startedAt: input.startedAt ?? null,
       finishedAt: input.finishedAt ?? null,
+      livenessState: input.livenessState ?? null,
+      livenessReason: input.livenessReason ?? null,
       ...(input.createdAt ? { createdAt: input.createdAt } : {}),
     });
     return runId;
+  }
+
+  async function seedIssue(companyId: string) {
+    const issueId = randomUUID();
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Test issue",
+      status: "in_progress",
+      priority: "medium",
+    });
+    return issueId;
   }
 
   it("reads active recovery age and counts manually seeded addressless actions", async () => {
@@ -301,6 +324,33 @@ describeEmbeddedPostgres("metrics collector", () => {
     expect(snapshot.scrapeErrors).toBe(0);
   });
 
+  it("exports empty-response run counts by agent to the monitoring scrape", async () => {
+    const companyId = await seedCompany();
+    const agentId = await seedAgent(companyId, "engineer");
+    const runId = await seedRun(companyId, agentId, {
+      status: "succeeded",
+      finishedAt: NOW,
+    });
+    const issueId = await seedIssue(companyId);
+    await db.insert(issueComments).values({
+      companyId,
+      issueId,
+      authorAgentId: agentId,
+      body: "CI run still in progress",
+      createdByRunId: runId,
+      createdAt: NOW,
+      updatedAt: NOW,
+    });
+    const snapshot = await collectMetricsSnapshot({
+      db,
+      now: () => NOW,
+      errorWindowSec: 3600,
+      latencyWindowSec: 3600,
+    });
+    const exposition = renderMetricsText(snapshot);
+    expect(exposition).toContain(`myrmidon_empty_runs_total{role="all",agent_id="${agentId}"} 1`);
+  });
+
   it("counts failed runs only inside the error window", async () => {
     const companyId = await seedCompany();
     const agentId = await seedAgent(companyId, "engineer");
@@ -460,6 +510,18 @@ describeEmbeddedPostgres("metrics collector", () => {
       occurredAt: new Date(NOW.getTime() - 10 * 3600 * 1000),
       requestId: randomUUID(),
     });
+    await db.insert(litellmCostEvents).values({
+      id: randomUUID(),
+      companyId,
+      agentId,
+      provider: "provider-a",
+      model: "model-a",
+      inputTokens: 10,
+      outputTokens: 20,
+      costCents: 400,
+      occurredAt: new Date(NOW.getTime() - 48 * 3600 * 1000),
+      requestId: randomUUID(),
+    });
 
     const snapshot = await collectMetricsSnapshot({
       db,
@@ -468,6 +530,10 @@ describeEmbeddedPostgres("metrics collector", () => {
       latencyWindowSec: 3600,
     });
     expect(snapshot.llmCostCentsWindow).toBe(300);
+    expect(snapshot.llmKeySpend).toEqual([
+      { companyId, agentId, window: "24h", cents: 1299 },
+      { companyId, agentId, window: "7d", cents: 1699 },
+    ]);
   });
 
   it("counts agent error signals from the attention registries", async () => {
@@ -548,5 +614,73 @@ describeEmbeddedPostgres("metrics collector", () => {
     expect(result.families_ok).toBe(METRIC_FAMILIES.length);
     expect(result.scrape_ms).toBeGreaterThanOrEqual(0);
     expect(JSON.stringify(result)).not.toContain("company-a");
+  });
+
+  it("collects live engineers, idle engineers, and unblocked todo tasks", async () => {
+    const companyId = await seedCompany();
+    const activeEngId = await seedAgent(companyId, "engineer");
+    await seedRun(companyId, activeEngId, { status: "running", startedAt: new Date(NOW.getTime() - 10 * 60 * 1000) });
+
+    const idleEngId = await seedAgent(companyId, "engineer");
+    await seedRun(companyId, idleEngId, {
+      status: "completed",
+      createdAt: new Date(NOW.getTime() - 90 * 60 * 1000),
+      startedAt: new Date(NOW.getTime() - 90 * 60 * 1000),
+      finishedAt: new Date(NOW.getTime() - 90 * 60 * 1000),
+    });
+
+    const termEngId = randomUUID();
+    await db.insert(agents).values({
+      id: termEngId,
+      companyId,
+      name: "agent-term",
+      role: "engineer",
+      status: "terminated",
+      adapterType: "process",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+
+    const issue1Id = randomUUID();
+    await db.insert(issues).values({
+      id: issue1Id,
+      companyId,
+      title: "Task 1",
+      status: "todo",
+    });
+
+    const issue2Id = randomUUID();
+    await db.insert(issues).values({
+      id: issue2Id,
+      companyId,
+      title: "Task 2",
+      status: "todo",
+    });
+    const blockerId = randomUUID();
+    await db.insert(issues).values({
+      id: blockerId,
+      companyId,
+      title: "Blocker",
+      status: "in_progress",
+    });
+    await db.insert(issueRelations).values({
+      id: randomUUID(),
+      companyId,
+      issueId: blockerId,
+      relatedIssueId: issue2Id,
+      type: "blocks",
+    });
+
+    const snapshot = await collectMetricsSnapshot({
+      db,
+      now: () => NOW,
+      errorWindowSec: 3600,
+      latencyWindowSec: 3600,
+      engineerIdleWindowSec: 3600,
+    });
+    expect(snapshot.engineersLive).toBe(2);
+    expect(snapshot.engineersIdle).toBe(1);
+    expect(snapshot.todoUnblockedTasks).toBe(1);
   });
 });

@@ -9,3 +9,4 @@ components/issue/ExternalSessionsPanel.tsx
 components/transcript/RunTranscriptView.tsx
 pages/IssueDetail.tsx
 pages/MyIssues.tsx
+components/myrmidon/ReplayBlocked.tsx

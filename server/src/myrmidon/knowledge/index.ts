@@ -7,6 +7,7 @@
 // (decision registry, 08.10, 08.10).
 
 export * from "./domain.js";
+export * from "./deviations.js";
 export {
   createKnowledgeService,
   type KnowledgeActor,
@@ -44,6 +45,9 @@ export {
   KNOWLEDGE_MCP_TOOL_NAMES,
   type KnowledgeMcpDeps,
 } from "./mcp.js";
+// L-11: the Settings → Knowledge screen surface —
+// GET/PATCH /api/myrmidon/companies/:companyId/knowledge/settings.
+export { myrmidonKnowledgeSettingsRoutes } from "./settings-routes.js";
 
 export {
   buildKnowledgeGitTree,

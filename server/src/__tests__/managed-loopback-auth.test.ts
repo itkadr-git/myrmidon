@@ -53,6 +53,9 @@ describeEmbeddedPostgres("managed runtime loopback auth cookies", () => {
     vi.stubEnv("BETTER_AUTH_SECRET", "managed-loopback-auth-test-secret");
     vi.stubEnv("PAPERCLIP_MANAGED_RUNTIME_PUBLIC_URL", publicOrigin);
     vi.stubEnv("PAPERCLIP_PUBLIC_URL", "");
+    // myrmidon(1.7 USERS-ADMIN-UI A): self-registration is off by default;
+    // enable via env override for the credential sign-up step.
+    vi.stubEnv("MYRMIDON_AUTH_SELF_SIGN_UP", "1");
 
     const db = createDb(tempDb!.connectionString);
     const config = {
@@ -60,7 +63,7 @@ describeEmbeddedPostgres("managed runtime loopback auth cookies", () => {
       deploymentExposure: "private",
       authBaseUrlMode: "explicit",
       authPublicBaseUrl: publicOrigin,
-      authDisableSignUp: false,
+      authDisableSignUp: true,
     } as Config;
     const auth = createBetterAuthInstance(db, config, [publicOrigin, loopbackOrigin]);
     const credentials = {
@@ -69,12 +72,30 @@ describeEmbeddedPostgres("managed runtime loopback auth cookies", () => {
       password: "correct-horse-battery-staple",
     };
 
+    const bootstrapAuth = createBetterAuthInstance(db, { ...config, authDisableSignUp: false } as Config, [publicOrigin, loopbackOrigin]);
+    const bootstrapSignUp = await bootstrapAuth.handler(authRequest(publicOrigin, "/sign-up/email", {
+      method: "POST",
+      body: JSON.stringify(credentials),
+    }));
+    expect(bootstrapSignUp.status).toBe(200);
+    expect(sessionCookie(bootstrapSignUp)).toMatch(/;\s*Secure(?:;|$)/i);
+
+    // With sign-up disabled, the server rejects both a brand-new address and the
+    // already-registered bootstrap user with the same EMAIL_PASSWORD_SIGN_UP_DISABLED
+    // error (better-auth checks the flag before the duplicate-email lookup).
+    const strangerResponse = await auth.handler(authRequest(publicOrigin, "/sign-up/email", {
+      method: "POST",
+      body: JSON.stringify({ ...credentials, email: "stranger@example.test" }),
+    }));
+    expect(strangerResponse.status).toBe(400);
+    expect(await strangerResponse.json()).toMatchObject({ code: "EMAIL_PASSWORD_SIGN_UP_DISABLED" });
+
     const signUpResponse = await auth.handler(authRequest(publicOrigin, "/sign-up/email", {
       method: "POST",
       body: JSON.stringify(credentials),
     }));
-    expect(signUpResponse.status).toBe(200);
-    expect(sessionCookie(signUpResponse)).toMatch(/;\s*Secure(?:;|$)/i);
+    expect(signUpResponse.status).toBe(400);
+    expect(await signUpResponse.json()).toMatchObject({ code: "EMAIL_PASSWORD_SIGN_UP_DISABLED" });
 
     const signInResponse = await auth.handler(authRequest(loopbackOrigin, "/sign-in/email", {
       method: "POST",

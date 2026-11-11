@@ -120,8 +120,8 @@ interface IssueExecutionDecision {
    - Sets status to `in_progress`
    - Reassigns to the original executor (stored in `returnAssignee`)
    - Sets `executionState.status` to `changes_requested`
-3. **Executor makes changes** and transitions to `done` again.
-4. Runtime routes back to the **same review stage** (not the beginning), with the same reviewer.
+3. **Executor makes changes** and transitions to `done` or resubmits back to `in_review`.
+4. Runtime routes back to the **same review stage** (not the beginning), with the same reviewer. The reviewer continuation is derived from the issue's existing execution policy, so a resubmit PATCH does not need to re-supply the `executionPolicy` payload, and recovery action resolution (`POST /api/issues/:id/recovery-actions/resolve`) applies the policy transition before review-path validation so the typed reviewer continuation is recognized immediately without a `422 missing review_path` error.
 5. This loop continues until the reviewer approves.
 
 ### Policy Variants

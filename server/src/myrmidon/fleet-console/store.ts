@@ -30,6 +30,11 @@ function toView(row: FleetServerRow): FleetServerView {
     passwordSecretKey: row.passwordSecretKey,
     description: row.description,
     enabled: row.enabled,
+    role: row.role,
+    onboardState: row.onboardState,
+    hostKeyFingerprint: row.hostKeyFingerprint,
+    lastCheckAt: row.lastCheckAt ? row.lastCheckAt.toISOString() : null,
+    lastCheckOk: row.lastCheckOk,
     createdAt: row.createdAt.toISOString(),
     updatedAt: row.updatedAt.toISOString(),
   };

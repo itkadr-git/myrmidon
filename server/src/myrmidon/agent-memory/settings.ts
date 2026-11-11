@@ -11,6 +11,8 @@
 
 import type { AgentMemoryAccessMode, AgentMemorySettings } from "@myrmidon/shared";
 
+export const AGENT_MEMORY_SETTINGS_KEY = "agentMemory";
+
 export const MEMORY_HINDSIGHT_API_URL_ENV = "MYRMIDON_HINDSIGHT_API_URL";
 /** Same service as seen by the bot containers; the fallback address. */
 export const MEMORY_BOT_HINDSIGHT_API_URL_ENV = "MYRMIDON_BOT_HINDSIGHT_API_URL";

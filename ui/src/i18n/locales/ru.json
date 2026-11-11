@@ -131,12 +131,14 @@
       "status": "Владелец · Web"
     },
     "screens": {
+      "commander": "Командный центр",
       "decisions": "Решения",
       "costs": "Расходы",
       "agentOverview": "Обзор агента",
       "runsQueue": "Прогоны и очередь",
       "system": "Система",
       "language": "Язык",
+      "channels": "Каналы",
       "placeholderTitle": "Ещё не в этой волне",
       "placeholderBody": "Этот экран входит в план раскатки UI 2.0 и придёт со своей волной. Данные сейчас живут на существующем экране; заглушка нужна, чтобы рамка и маршрутизация 2.0 были настоящими с первого дня.",
       "placeholderLegacyLink": "Перейти на текущий экран",
@@ -155,6 +157,7 @@
       "autonomy": "Автономия",
       "guards": "Ограждения",
       "castes": "Касты и модели",
+      "channels": "Каналы",
       "system": "Система",
       "language": "Язык"
     },
@@ -277,7 +280,8 @@
       "container-labels": "Метки контейнера",
       "env": "Переменная окружения",
       "manual": "Задано оператором",
-      "none": "Не видно с доски"
+      "none": "Не видно с доски",
+      "http-version": "HTTP version endpoint"
     },
     "schedule": "Запланировать обновление",
     "dialog": {
@@ -290,7 +294,8 @@
       "cancel": "Отмена",
       "created": "Черновик задачи создан: {{identifier}}",
       "failed": "Не удалось создать задачу: {{message}}"
-    }
+    },
+    "stale": "устарело {{hours}}ч"
   },
   "autonomy": {
     "title": "Матрица автономности",
@@ -419,7 +424,9 @@
       "state": "Состояние",
       "window5h": "Окно 5ч",
       "window7d": "Окно 7д",
-      "lastOk": "Последний OK"
+      "lastOk": "Последний OK",
+      "lastError": "Последняя ошибка",
+      "resetIn": "Сброс через"
     },
     "litellmChannels": {
       "title": "Группы моделей и каналы LiteLLM",
@@ -575,6 +582,12 @@
     "diarization": "Разделение говорящих (diarization)",
     "maxDuration": "Лимит длительности, секунд",
     "maxDurationHint": "Более длинные записи отклоняются с audio_too_long.",
+    "baseUrl": "Адрес операторского STT endpoint",
+    "baseUrlHint": "Только операторский HTTP(S) endpoint; пустое поле наследует настройку экземпляра.",
+    "keySecret": "Ключ DashScope (секрет компании)",
+    "deepgramKeySecret": "Ключ Deepgram (секрет компании)",
+    "keepSecret": "Оставить текущий выбор секрета",
+    "noSecret": "Секрет не выбран",
     "save": "Сохранить настройки",
     "saving": "Сохранение..."
   },

@@ -10,6 +10,9 @@ import {
   type Db,
 } from "@myrmidon/db";
 import type { ExecutionContinuationEnvelope } from "@myrmidon/shared";
+import { safeParseRunOutcome } from "@myrmidon/shared";
+// myrmidon(S5): mask secret values in outcome summaries leaving the server.
+import { maskSecretsInText } from "../myrmidon/secret-masking.js";
 import { sanitizeQuarantinedCommentForHigherTrust } from "./source-trust.js";
 import { hasConversationContinuationPolicy } from "./conversation-continuation.js";
 import { queuedCommentIdsFromWakePayload } from "./issue-queued-comment-queue.js";
@@ -400,9 +403,69 @@ export async function buildExecutionContinuation(input: {
     (hasConversationContinuationPolicy(lastTerminal.result) ||
       lastTerminal.status === "interrupted" || lastTerminal.errorCode === "process_lost")
     ? lastTerminal.id : undefined);
+  // myrmidon(WAKE-HISTORY): the run this wake continues and how it ended — the
+  // handoff/retry source, else the agent's latest finished run on the task. A
+  // fresh-session agent gets this reference and the completed-work summary in
+  // place of the previous run's messages.
+  const previousRunRow =
+    (sourceRunId ? priorRuns.find((run) => run.id === sourceRunId) : undefined) ?? lastTerminal;
+
+  // myrmidon(OPE-12316): read the run outcome contract (paperclip.run_outcome.v1)
+  // from previousRunRow.result so the next wake sees "previous run: blocked
+  // (budget_limit)". Falls back to bare outcome/stopKind keys for rows that
+  // carry the codes without the contract envelope. The legacy result summary is
+  // NOT duplicated here — it already travels as completedWork.
+  const previousOutcomeData = (() => {
+    if (!previousRunRow?.result) return null;
+    const parsed = safeParseRunOutcome(previousRunRow.result);
+    if (parsed.success) {
+      return {
+        outcome: parsed.data.outcome,
+        stopKind: parsed.data.stopKind ?? null,
+        resultSummary: maskSecretsInText(parsed.data.summary),
+      };
+    }
+    const raw = object(previousRunRow.result);
+    if (typeof raw.outcome !== "string") return null;
+    const summaryCandidate =
+      typeof raw.summary === "string" && raw.summary.trim() ? raw.summary : "Outcome recorded";
+    const parsedRaw = safeParseRunOutcome({
+      schema: "paperclip.run_outcome.v1",
+      outcome: raw.outcome,
+      stopKind: raw.stopKind ?? null,
+      summary: summaryCandidate,
+    });
+    if (!parsedRaw.success) return null;
+    return {
+      outcome: parsedRaw.data.outcome,
+      stopKind: parsedRaw.data.stopKind ?? null,
+      resultSummary:
+        typeof raw.summary === "string" && raw.summary.trim()
+          ? maskSecretsInText(raw.summary)
+          : null,
+    };
+  })();
+
   // myrmidon(P3): bound the returned history; checks above ran on the full history
   return limitExecutionContinuationHistory({
     ...(interruptedRunId ? { interruptedRunId } : {}),
+    ...(previousRunRow
+      ? {
+          previousRun: {
+            runId: previousRunRow.id,
+            status: previousRunRow.status,
+            ...(previousOutcomeData?.outcome
+              ? { outcome: previousOutcomeData.outcome }
+              : {}),
+            ...(previousOutcomeData?.stopKind
+              ? { stopKind: previousOutcomeData.stopKind }
+              : {}),
+            ...(previousOutcomeData?.resultSummary
+              ? { resultSummary: previousOutcomeData.resultSummary }
+              : {}),
+          },
+        }
+      : {}),
     ...(resumeDelta ? { resumeDelta } : {}),
     recoveryOutcomes: reconciliations
       .filter((row) => row.evidence.executionReconciliation)

@@ -1,6 +1,10 @@
 import { hasLiveLegacyController } from "../legacy-controller-lease.js";
 // myrmidon(B1): product name in the notice bodies below; see product.ts.
 import { productSaid } from "../../myrmidon/product.js";
+// myrmidon(RUN-GUARD-LOOPS): runs stopped by the run guard are never retried.
+import { buildRunGuardStopComment, buildRunGuardStopNotice, readRunGuardStopReason } from "../../myrmidon/run-guard-stop.js";
+// myrmidon(RUN-GUARD-ESCALATE): a task blocked by a final guard stop wakes its manager.
+import { wakeManagerForRunGuardStop as wakeManagerForRunGuardStopImpl } from "../../myrmidon/run-guard-escalation.js";
 // myrmidon(1.6.6 RUN-RETRY-POLICY): transient/permanent classification, the
 // exponential backoff and the attempt ceiling of a failed run's retry.
 import {
@@ -20,6 +24,7 @@ import {
   gte,
   inArray,
   isNull,
+  lt,
   not,
   notInArray,
   or,
@@ -54,6 +59,7 @@ import {
   activityLog,
   chatConversations,
   companies,
+  externalObjects,
   heartbeatRunWatchdogDecisions,
   heartbeatRuns,
   issueAttachments,
@@ -99,6 +105,8 @@ import {
   legacyExecutionNeedsReconciliation,
   terminalizeLegacyExecution,
 } from "../legacy-execution-recovery.js";
+import { hasConversationContinuationPolicy } from "../conversation-continuation.js";
+import { executionFailureRetryCount } from "../execution-recovery-attempt.js";
 // myrmidon(L1): infrastructure interruptions do not create a stranded-issue
 // escalation while the original agent is only briefly non-invokable (paused)
 // -- gated to a conversation adapter or one with its own idempotency key,
@@ -157,6 +165,7 @@ import {
 } from "./origins.js";
 import { withRecoveryContext } from "./status-only-context.js";
 import { isAutomaticRecoverySuppressedByPauseHold } from "./pause-hold-guard.js";
+import { hasNewInputsSince } from "./new-inputs.js";
 import {
   collectDispositionRepairSourceState,
   dispositionRepairDelayMs,
@@ -186,12 +195,14 @@ import {
   countStrandedAutoPolicyAttemptsInWindow,
   decideStrandedAutoPolicy,
   findActiveManagerAgentId,
+  findStrandedDispositionOwnerAgentId,
   isStrandedAutoPolicyCause,
   isStrandedAutoPolicyManagerHandoffAlreadyApplied,
   issueHasExistingExecutionWorkflow,
   readStrandedAutoPolicyEnabled,
   readStrandedAutoRetriesPerDay,
   STRANDED_AUTO_POLICY_RETRY_SOURCE,
+  isPendingCiForOpenPr,
 } from "../../myrmidon/stranded-autopolicy.js";
 // myrmidon(L3b): an operator-paused agent's issues are not stranded
 import { operatorPauseExemptsStrandedIssue } from "../../myrmidon/paused-stranded.js";
@@ -204,9 +215,11 @@ import {
   REVIEW_STAGE_RECOVERY_DEFERRED_ACTION,
   REVIEW_STAGE_RECOVERY_WINDOW_MS,
   countStalledReviewDeferrals,
+  isMaintenanceInterruptedRun,
   decideStalledReviewRecovery,
   type ReviewPullRequestCiFacts,
 } from "../../myrmidon/review-stage-recovery/policy.js";
+import { orphanBlockerFitsCreator } from "../../myrmidon/recovery/orphan-blocker-caste.js";
 import type { ReviewPullRequestCiResolver } from "../../myrmidon/review-stage-recovery/github-ci.js";
 import {
   createGitHubPrHeadResolver,
@@ -296,6 +309,7 @@ type LatestIssueRun =
       // myrmidon(L1): claimedAdapterType's input, so the L1 branch below can
       // gate hold suppression on the run's own adapter
       | "runnerProfileJson"
+      | "activeIdentityContextId"
     > & {
       resultJson?: unknown;
     })
@@ -533,8 +547,16 @@ function didAutomaticRecoveryFail(
 
   const latestContext = parseObject(latestRun.contextSnapshot);
   const latestRetryReason = readNonEmptyString(latestContext.retryReason);
+  const latestWakeReason = readNonEmptyString(latestContext.wakeReason);
+  const matchesReason =
+    latestRetryReason === expectedRetryReason ||
+    (expectedRetryReason === "assignment_recovery" &&
+      (latestWakeReason === "issue_assignment_recovery" ||
+        latestContext.source === "issue.assignment_recovery" ||
+        (latestRetryReason === "transient_failure" &&
+          readNonEmptyString(latestContext.source) === "issue.assignment_recovery")));
   return (
-    latestRetryReason === expectedRetryReason &&
+    matchesReason &&
     UNSUCCESSFUL_HEARTBEAT_RUN_TERMINAL_STATUSES.includes(
       latestRun.status as (typeof UNSUCCESSFUL_HEARTBEAT_RUN_TERMINAL_STATUSES)[number],
     )
@@ -565,7 +587,7 @@ const INTERACTION_CONTINUATION_REQUEUE_MAX_ATTEMPTS = 3;
 export const PROVIDER_QUOTA_RECOVERY_DEFAULT_BACKOFF_MS = 60 * 60 * 1000;
 
 const PROVIDER_QUOTA_ERROR_RE =
-  /(?:you(?:'|’)ve hit your (?:\w+ )?limit|usage limit(?: reached| exceeded)?|provider quota|quota (?:limit )?exceeded|model (?:is )?at capacity)/i;
+  /(?:you(?:'|’)ve hit your (?:\w+ )?limit|usage limit(?: reached| exceeded)?|provider quota|quota (?:limit )?exceeded|insufficient[_ ]quota|no deployments available|all deployments[^\n]{0,120}cooldown|model (?:is )?at capacity)/i;
 const CONFIGURATION_INCOMPLETE_ERROR_RE =
   /(?:model_not_found|model [^\n]{0,120} not found|missing (?:api )?(?:key|credentials?)|credentials? (?:are |is )?missing|no (?:api )?(?:key|credentials?) (?:was |were )?(?:found|configured|provided)|api key (?:is )?(?:not set|unavailable))/i;
 
@@ -684,6 +706,7 @@ export function classifyAdapterFailureForRecovery(
   }
   if (
     latestRun.errorCode !== "adapter_failed" &&
+    latestRun.errorCode !== "hermes_gateway_run_failed" &&
     latestRun.errorCode !== "provider_quota" &&
     latestRun.errorCode !== "configuration_incomplete"
   ) {
@@ -1078,7 +1101,7 @@ async function resolvePrCiState(
   companyId: string,
   prProduct: typeof issueWorkProducts.$inferSelect,
   resolver?: PullRequestHeadResolver,
-): Promise<{ ci: "green" | "not_green"; headSha: string | null }> {
+): Promise<{ ci: "green" | "not_green" | "pending"; headSha: string | null }> {
   const metadata = parseObject(prProduct.metadata);
   if (metadata) {
     if (metadata.ci === "green" || metadata.ci === "not_green") {
@@ -1209,6 +1232,7 @@ export function recoveryService(
         createdAt: heartbeatRuns.createdAt,
         // myrmidon(L1): claimedAdapterType's input, see LatestIssueRun
         runnerProfileJson: heartbeatRuns.runnerProfileJson,
+        activeIdentityContextId: heartbeatRuns.activeIdentityContextId,
       })
       .from(heartbeatRuns)
       .where(
@@ -1241,6 +1265,7 @@ export function recoveryService(
         createdAt: heartbeatRuns.createdAt,
         // myrmidon(L1): claimedAdapterType's input, see LatestIssueRun
         runnerProfileJson: heartbeatRuns.runnerProfileJson,
+        activeIdentityContextId: heartbeatRuns.activeIdentityContextId,
       })
       .from(heartbeatRuns)
       .where(
@@ -2104,6 +2129,7 @@ export function recoveryService(
         createdAt: heartbeatRuns.createdAt,
         // myrmidon(L1): claimedAdapterType's input, see LatestIssueRun
         runnerProfileJson: heartbeatRuns.runnerProfileJson,
+        activeIdentityContextId: heartbeatRuns.activeIdentityContextId,
       })
       .from(heartbeatRuns)
       .where(
@@ -2206,7 +2232,23 @@ export function recoveryService(
         // Failure recovery shares the durable incident budget and delay. It
         // cannot fall through into the productive-work continuation queue.
         if (predecessor.runtimeMode === "native") return null;
-        if (legacyExecutionNeedsReconciliation(predecessor)) {
+        // myrmidon(RUN-GUARD-LOOPS): a run stopped by the run guard is never
+        // retried or continued automatically: the same task and context repeat
+        // the behaviour that tripped the guard. The issue is blocked for a new
+        // input when the run is stopped (heartbeat) or when the sweep reaches it.
+        if (readRunGuardStopReason(predecessor)) return null;
+        // myrmidon(WAKE-2): recovery through the stranded-issue sweep should not
+        // be blocked by the bounded transient retry scheduler. The scheduler is
+        // designed for failure retries (transient errors) and has many checks
+        // that return "not_scheduled" for generic continuation recovery. Only
+        // block recovery when the failure retry budget is actually exhausted.
+        const isContinuationRecoveryWithBudget =
+          input.reason === "issue_continuation_needed" &&
+          executionFailureRetryCount(predecessor) < 2;
+        if (
+          legacyExecutionNeedsReconciliation(predecessor) &&
+          !isContinuationRecoveryWithBudget
+        ) {
           await terminalizeLegacyExecution({
             db,
             run: predecessor,
@@ -2214,9 +2256,29 @@ export function recoveryService(
           });
           return null;
         }
-        if (deps.scheduleRecoveryRetry)
-          return deps.scheduleRecoveryRetry(predecessor.id);
-        return null;
+        // For conversation-continuation runs with remaining retry budget,
+        // fall through to direct enqueueWakeup below. The bounded retry
+        // scheduler is for transient failure retries, not continuation recovery.
+        // However, respect the retry budget: when the predecessor's retry
+        // budget is exhausted (executionFailureRetryCount >= 2), do NOT
+        // create a new run — the incident budget must not be reset.
+        const needsReconciliation = legacyExecutionNeedsReconciliation(predecessor);
+        if (
+          input.reason === "issue_continuation_needed" &&
+          (hasConversationContinuationPolicy(predecessor) ||
+            (needsReconciliation && isContinuationRecoveryWithBudget))
+        ) {
+          if (executionFailureRetryCount(predecessor) >= 2) {
+            return null;
+          }
+          // Fall through to direct enqueueWakeup below.
+        } else if (deps.scheduleRecoveryRetry) {
+          const scheduled = await deps.scheduleRecoveryRetry(predecessor.id);
+          return scheduled && typeof scheduled === "object" && "id" in scheduled
+            ? scheduled
+            : null;
+        }
+        // Fall through to direct enqueue for generic continuation recovery
       }
     }
     if (
@@ -2248,7 +2310,7 @@ export function recoveryService(
     if (input.reason === "issue_continuation_needed") {
       const key = buildContinuationKey({
         issueId: input.issueId,
-        event: "issue_continuation_needed",
+        event: `issue_continuation_needed:${input.agentId}`,
         head: input.continuationHead ?? "unversioned",
       });
       const claimed = await tryClaimContinuationKey(db, {
@@ -2317,6 +2379,7 @@ export function recoveryService(
           {
             issueId: input.issueId,
             ...(input.retryOfRunId ? { retryOfRunId: input.retryOfRunId } : {}),
+            ...(continuationClaimKey ? { continuationClaimKey } : {}),
             ...extraContext,
           },
           "normal_model",
@@ -2331,6 +2394,7 @@ export function recoveryService(
             retryReason: input.retryReason,
             source: input.source,
             ...(input.retryOfRunId ? { retryOfRunId: input.retryOfRunId } : {}),
+            ...(continuationClaimKey ? { continuationClaimKey } : {}),
             ...extraContext,
           },
           "normal_model",
@@ -2452,7 +2516,56 @@ export function recoveryService(
         projectId: issue.projectId,
       },
     );
-    return Boolean(budgetBlock);
+    if (budgetBlock) return true;
+
+    try {
+      const [agent] = await db
+        .select({ runtimeConfig: agents.runtimeConfig })
+        .from(agents)
+        .where(and(eq(agents.id, agentId), eq(agents.companyId, issue.companyId)))
+        .limit(1);
+      const runtimeConfig = agent?.runtimeConfig;
+      const heartbeat =
+        runtimeConfig && typeof runtimeConfig === "object" && !Array.isArray(runtimeConfig)
+          ? (runtimeConfig as Record<string, unknown>).heartbeat
+          : null;
+      const heartbeatConfig =
+        heartbeat && typeof heartbeat === "object" && !Array.isArray(heartbeat)
+          ? (heartbeat as Record<string, unknown>)
+          : null;
+      const configuredLimit =
+        heartbeatConfig?.maxDailyRuns ??
+        heartbeatConfig?.dailyRunLimit ??
+        heartbeatConfig?.dailyRunCap ??
+        heartbeatConfig?.maxRunsPerDay;
+      const dailyLimit =
+        configuredLimit === null || configuredLimit === undefined || configuredLimit === ""
+          ? null
+          : Math.floor(Number(configuredLimit));
+      if (dailyLimit !== null && Number.isFinite(dailyLimit) && dailyLimit >= 0) {
+        const now = new Date();
+        const start = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()));
+        const end = new Date(start.getTime() + 24 * 60 * 60 * 1000);
+        const [row] = await db
+          .select({ total: sql<number>`count(*)::integer` })
+          .from(heartbeatRuns)
+          .where(
+            and(
+              eq(heartbeatRuns.companyId, issue.companyId),
+              eq(heartbeatRuns.agentId, agentId),
+              gte(heartbeatRuns.startedAt, start),
+              lt(heartbeatRuns.startedAt, end),
+              notInArray(heartbeatRuns.status, ["queued", "scheduled_retry"]),
+              sql`coalesce((${heartbeatRuns.resultJson}->>'failedBeforeModel') = 'true' or (${heartbeatRuns.resultJson}->>'failed_before_model') = 'true', false) = false`,
+            ),
+          );
+        if (Number(row?.total ?? 0) >= dailyLimit) return true;
+      }
+    } catch {
+      // If daily cap inspection fails, defer to downstream heartbeat admission
+    }
+
+    return false;
   }
 
   async function reconcileUnassignedBlockingIssues() {
@@ -2463,6 +2576,7 @@ export function recoveryService(
         identifier: issues.identifier,
         status: issues.status,
         createdByAgentId: issues.createdByAgentId,
+        casteKey: issues.casteKey,
       })
       .from(issueRelations)
       .innerJoin(issues, eq(issueRelations.issueId, issues.id))
@@ -2503,6 +2617,12 @@ export function recoveryService(
         creatorAgent.companyId !== candidate.companyId ||
         !(await isAgentInvokable(creatorAgent))
       ) {
+        skipped += 1;
+        continue;
+      }
+      // myrmidon(OPE-12220): a caste-bound subtask is not handed back to a creator
+      // of another caste (the lead that sliced the epic); the caste matcher assigns it.
+      if (!orphanBlockerFitsCreator({ issueCasteKey: candidate.casteKey, creatorRole: creatorAgent.role })) {
         skipped += 1;
         continue;
       }
@@ -4298,6 +4418,38 @@ export function recoveryService(
     });
   }
 
+  async function deferReviewParticipantReleaseForCi(input: {
+    companyId: string;
+    runId: string;
+  }): Promise<boolean> {
+    const run = await db.query.heartbeatRuns.findFirst({
+      where: and(eq(heartbeatRuns.companyId, input.companyId), eq(heartbeatRuns.id, input.runId)),
+    });
+    const issueId = parseObject(run?.contextSnapshot).issueId;
+    if (!run || run.status !== "succeeded" || typeof issueId !== "string" || !issueId) return false;
+    const context = parseObject(run.contextSnapshot);
+    const wakeReason = context.wakeReason;
+    const retryReason = context.retryReason;
+    if (retryReason !== EXECUTION_REVIEW_PARTICIPANT_RECOVERY_REASON &&
+        wakeReason !== "execution_review_requested" &&
+        wakeReason !== "execution_approval_requested") return false;
+    const issue = await db.query.issues.findFirst({
+      where: and(eq(issues.companyId, input.companyId), eq(issues.id, issueId)),
+    });
+    if (!issue || issue.status !== "in_review" || issue.monitorNextCheckAt || issue.assigneeUserId) return false;
+    const state = parseIssueExecutionState(issue.executionState);
+    if (state?.status !== "pending" || state.currentStageType !== "review" ||
+        state.currentParticipant?.type !== "agent" || state.currentParticipant.agentId !== run.agentId) return false;
+    const ci = await resolveReviewPullRequestCi({ companyId: input.companyId, issueId });
+    if (ci.state !== "pending" && ci.state !== "unknown") return false;
+    const nextCheckAt = new Date(Math.max(
+      Date.now() + REVIEW_CI_WAIT_INTERVAL_MS,
+      (ci.rateLimit?.resetEpochSeconds ?? 0) * 1000,
+    ));
+    await scheduleReviewCiWaitMonitor({ issue, latestRun: run, ci, nextCheckAt });
+    return true;
+  }
+
   /**
    * myrmidon(OPE-10045): true when the escalation of a stalled execution
    * review is deferred (a CI wait was scheduled or the reviewer was woken
@@ -4313,7 +4465,11 @@ export function recoveryService(
     const latestRun = input.latestRun;
     // Only a reviewer run that ended normally without a decision. Failed or
     // cancelled runs keep their own retry budget and escalation.
-    if (!latestRun || latestRun.status !== "succeeded") return false;
+    // myrmidon(OPE-12201): except a run the maintenance drain interrupted (a
+    // deploy draining the board or the bot): the reviewer is woken again without
+    // spending the decision budget instead of the stage moving to `blocked`.
+    const interruptedByMaintenance = isMaintenanceInterruptedRun(latestRun);
+    if (!latestRun || (latestRun.status !== "succeeded" && !interruptedByMaintenance)) return false;
     const state = parseIssueExecutionState(input.issue.executionState);
     if (state?.status !== "pending") return false;
     const participant = state.currentParticipant;
@@ -4348,17 +4504,19 @@ export function recoveryService(
       companyId: input.issue.companyId,
       issueId: input.issue.id,
     });
-    const decision = decideStalledReviewRecovery({
-      ci: ci.state,
-      ciWaitsUsed: deferrals.ciWaits,
-      // The release tail's own review-participant retry was the first re-wake.
-      decisionRewakesUsed: 1 + deferrals.decisionRetries,
-    });
+    const decision: ReturnType<typeof decideStalledReviewRecovery> = interruptedByMaintenance
+      ? { kind: "retry_decision", attempt: 1 + deferrals.decisionRetries, maxAttempts: 1 + deferrals.decisionRetries }
+      : decideStalledReviewRecovery({
+          ci: ci.state,
+          ciWaitsUsed: deferrals.ciWaits,
+          // The release tail's own review-participant retry was the first re-wake.
+          decisionRewakesUsed: 1 + deferrals.decisionRetries,
+        });
     if (decision.kind === "escalate") return false;
 
     const activityDetails = {
       identifier: input.issue.identifier,
-      kind: decision.kind === "wait_for_ci" ? "ci_wait" : "decision_retry",
+      kind: decision.kind === "wait_for_ci" ? "ci_wait" : interruptedByMaintenance ? "maintenance_retry" : "decision_retry",
       attempt: decision.attempt,
       maxAttempts: decision.maxAttempts,
       stageId,
@@ -4479,6 +4637,7 @@ export function recoveryService(
     rerouteToSharedQueue?: boolean;
     scheduledRetryAttempt?: number | null;
     scheduledRetryReason?: string | null;
+    hasPendingCi?: boolean;
   }) {
     // myrmidon(OPE-10045): a pending review stage whose reviewer run ended
     // without a decision first waits for CI on the PR head, then gets one more
@@ -4502,8 +4661,14 @@ export function recoveryService(
     // OPE-9295: in stranded sweep, an issue with an open PR and status in_progress
     // transitions to in_review at the current assignee (review in parallel with CI),
     // instead of blocking.
+    const isProductiveContinuationRecovery =
+      input.latestRun?.contextSnapshot &&
+      typeof input.latestRun.contextSnapshot === "object" &&
+      (input.latestRun.contextSnapshot as Record<string, unknown>).retryReason ===
+        "issue_continuation_needed";
     if (
       openPrProduct &&
+      isProductiveContinuationRecovery &&
       (input.previousStatus === "in_progress" || input.issue.status === "in_progress")
     ) {
       const prCi = await resolvePrCiState(
@@ -4700,23 +4865,112 @@ export function recoveryService(
       const escalationTarget =
         !assigneePaused && !retriesLeft && escalationTargetId ? await getAgent(escalationTargetId) : null;
       const targetIsAdm = escalationTarget?.name.trim().toLowerCase() === "adm";
+      // myrmidon(OPE-12265): the `disposition_blocked` owner is the nearest
+      // lead/manager above the assignee, not the direct reviewer. `adm` (the
+      // chain fallback) stays the owner when no lead exists in the chain.
+      const dispositionOwnerAgentId =
+        !assigneePaused && !retriesLeft
+          ? await findStrandedDispositionOwnerAgentId(db, {
+              companyId: input.issue.companyId,
+              assigneeAgentId,
+            })
+          : null;
+
+      let hasPendingCi = input.hasPendingCi ?? false;
+      if (!hasPendingCi && openPrProduct) {
+        const lastComment = await db.query.issueComments.findFirst({
+          where: eq(issueComments.issueId, input.issue.id),
+          orderBy: desc(issueComments.createdAt),
+        });
+        const externalPrObject = openPrProduct.externalId
+          ? await db.query.externalObjects.findFirst({
+              where: and(
+                eq(externalObjects.companyId, input.issue.companyId),
+                eq(externalObjects.providerKey, "github"),
+                eq(externalObjects.objectType, "pull_request"),
+                eq(externalObjects.externalId, openPrProduct.externalId),
+              ),
+            })
+          : null;
+        hasPendingCi = isPendingCiForOpenPr({
+          openPr: openPrProduct,
+          lastComment,
+          contextSnapshot: latestRun?.contextSnapshot,
+          externalPrObject,
+        });
+      }
 
       const autoPolicyDecision = decideStrandedAutoPolicy({
         attemptsInWindow,
         maxAttemptsPerDay,
         managerAgentId,
         escalationAgentId,
+        dispositionOwnerAgentId,
         targetIsAdm,
         requireAgentDisposition: successfulRunDisposition,
         hasExecutionWorkflow: issueHasExistingExecutionWorkflow({
           ...input.issue,
           hasOpenPullRequest: Boolean(openPrProduct),
         }),
+        hasPendingCi,
         successfulRunHandoffExhausted: handoffExhausted,
         assigneePaused,
       });
 
-      if (autoPolicyDecision.kind === "retry") {
+      if (autoPolicyDecision.kind === "monitor_external_service") {
+        const nextCheckAt = autoPolicyDecision.nextCheckAt
+          ? new Date(autoPolicyDecision.nextCheckAt)
+          : new Date(Date.now() + 10 * 60 * 1000);
+        const previousPolicy = (input.issue.executionPolicy ?? null) as any;
+        const policy = {
+          ...(previousPolicy ?? {
+            mode: "normal" as const,
+            commentRequired: true,
+            stages: [],
+          }),
+          monitor: {
+            nextCheckAt: nextCheckAt.toISOString(),
+            notes: autoPolicyDecision.notes,
+            scheduledBy: "assignee" as const,
+            kind: "external_service" as const,
+            serviceName: autoPolicyDecision.serviceName,
+            externalRef: openPrProduct?.url ?? null,
+            timeoutAt: null,
+            maxAttempts: null,
+            recoveryPolicy: "wake_owner" as const,
+          },
+        };
+        const transition = applyIssueMonitorPolicyTransition({
+          issue: input.issue,
+          policy,
+          previousPolicy,
+          requestedStatus: input.issue.status,
+          requestedAssigneePatch: {},
+          actor: { agentId: null, userId: null },
+          monitorExplicitlyUpdated: true,
+        });
+        const updated = await issuesSvc.update(input.issue.id, {
+          ...transition.patch,
+          executionPolicy: policy,
+        });
+        await logActivity(db, {
+          companyId: input.issue.companyId,
+          actorType: "system",
+          actorId: "system",
+          agentId: null,
+          runId: latestRun.id,
+          action: "issue.stranded_autopolicy_monitor_external_service",
+          entityType: "issue",
+          entityId: input.issue.id,
+          details: {
+            identifier: input.issue.identifier,
+            recoveryCause,
+            serviceName: autoPolicyDecision.serviceName,
+            nextCheckAt: nextCheckAt.toISOString(),
+          },
+        });
+        return updated;
+      } else if (autoPolicyDecision.kind === "retry") {
         // myrmidon(L4): `enqueueWakeup` *throws* (not a falsy return) when the
         // assignee turns out not to be invokable or is over its invocation
         // budget (heartbeat.ts's `conflict(...)` on both checks) — exactly
@@ -5044,7 +5298,7 @@ export function recoveryService(
       } else if (autoPolicyDecision.kind === "disposition_blocked") {
         // myrmidon(OPE-9072): the issue has its own workflow (policy, monitor
         // or execution state): never take it over and never change the
-        // assignee. Block it with complete metadata owned by a senior agent
+        // assignee. Block it with complete metadata owned by the nearest lead
         // and wake that agent once. The wake key ties it to this successful
         // run, so a repeat pass stands down instead of waking again.
         const ownerAgentId = autoPolicyDecision.ownerAgentId;
@@ -5113,7 +5367,7 @@ export function recoveryService(
             {},
             {
               authorType: "system",
-              presentation: compactRecoveryPresentation("Escalated to a senior agent"),
+              presentation: compactRecoveryPresentation("Escalated to the nearest lead"),
               metadata: recoveryNoticeMetadata({
                 cause: recoveryCause,
                 latestRun,
@@ -5858,6 +6112,16 @@ export function recoveryService(
     }
 
     for (const issue of candidates) {
+      // The candidate list is a snapshot. A continuation may have been closed
+      // after it was read; never reconcile or escalate a terminal issue from
+      // that stale snapshot.
+      const [currentIssue] = await db.select({ status: issues.status }).from(issues)
+        .where(and(eq(issues.companyId, issue.companyId), eq(issues.id, issue.id)))
+        .limit(1);
+      if (!currentIssue || currentIssue.status === "done" || currentIssue.status === "cancelled") {
+        result.skipped += 1;
+        continue;
+      }
       if (issue.conversationAgentId) {
         const lastRun = await getLatestIssueRun(issue.companyId, issue.id);
         if (lastRun?.status === "succeeded") {
@@ -5883,6 +6147,18 @@ export function recoveryService(
         currentParticipant?.type === "agent"
           ? currentParticipant.agentId
           : null;
+      const pendingReviewStage =
+        issue.status === "in_review" && pendingExecutionState?.currentStageType === "review";
+      if (pendingReviewStage) {
+        const reviewCi = await resolveReviewPullRequestCi({
+          companyId: issue.companyId,
+          issueId: issue.id,
+        });
+        if (reviewCi.state === "pending" || reviewCi.state === "unknown") {
+          result.skipped += 1;
+          continue;
+        }
+      }
       const agentId =
         issue.status === "in_review" && participantAgentId
           ? participantAgentId
@@ -5953,6 +6229,67 @@ export function recoveryService(
             .where(eq(heartbeatRuns.id, latestRun.id))
             .then((rows) => rows[0] ?? null)
         : null;
+      const participantLatestRunForRecovery =
+        issue.status === "in_review" && participantAgentId
+          ? await getLatestIssueRunForAgent(
+              issue.companyId,
+              issue.id,
+              participantAgentId,
+            )
+          : null;
+      const executionRecoverySource =
+        issue.status === "in_review"
+          ? participantLatestRunForRecovery
+          : latestRun;
+      // Provider outages are external availability failures, not evidence that
+      // a paused assignee should be escalated. Park them before the invokability
+      // gate so a 429/402/503 outage keeps a durable monitor.
+      const recoveryNow = new Date();
+      const providerQuotaMonitorRun =
+        issue.status === "in_review"
+          ? participantLatestRunForRecovery
+          : latestRun;
+      const preBudgetProviderQuotaClassification =
+        providerQuotaMonitorRun &&
+        !isStrandedIssueRecoveryIssue(issue) &&
+        (pendingReviewStage || issue.status !== "in_review") &&
+        isUnsuccessfulTerminalIssueRun(providerQuotaMonitorRun) &&
+        getAdapterFailureRecoveryTargetAgentId(issue) ===
+          providerQuotaMonitorRun.agentId
+          ? classifyAdapterFailureForRecovery(providerQuotaMonitorRun, recoveryNow)
+          : null;
+      if (
+        providerQuotaMonitorRun &&
+        preBudgetProviderQuotaClassification?.kind === "provider_quota"
+      ) {
+        if (
+          hasPendingProviderQuotaRecoveryMonitor(
+            issue,
+            providerQuotaMonitorRun,
+            recoveryNow,
+          )
+        ) {
+          result.skipped += 1;
+          continue;
+        }
+        const monitored = await scheduleProviderQuotaRecoveryMonitor({
+          issue,
+          latestRun: providerQuotaMonitorRun,
+          classification: preBudgetProviderQuotaClassification,
+        });
+        if (monitored) {
+          latestRun = await persistAdapterFailureRecoveryClassification(
+            providerQuotaMonitorRun,
+            preBudgetProviderQuotaClassification,
+          );
+          result.providerQuotaMonitored += 1;
+          result.issueIds.push(issue.id);
+        } else {
+          result.skipped += 1;
+        }
+        continue;
+      }
+
       // myrmidon(L1): the agent is non-invokable only because it is paused
       // (infrastructure), and the terminal run itself ended on an
       // infrastructure interrupt code within its retry budget, on a run
@@ -6098,20 +6435,12 @@ export function recoveryService(
         continue;
       }
 
-      const participantLatestRunForRecovery =
-        issue.status === "in_review" && participantAgentId
-          ? await getLatestIssueRunForAgent(
-              issue.companyId,
-              issue.id,
-              participantAgentId,
-            )
-          : null;
-      const executionRecoverySource =
-        issue.status === "in_review"
-          ? participantLatestRunForRecovery
-          : latestRun;
       if (
         executionRecoverySource?.agentId === agentId &&
+        executionRecoverySource.contextSnapshot &&
+        typeof executionRecoverySource.contextSnapshot === "object" &&
+        "requestedByActorId" in executionRecoverySource.contextSnapshot &&
+        executionRecoverySource.contextSnapshot.requestedByActorId &&
         (
           await readChatControlRecoveryStop(db, {
             companyId: issue.companyId,
@@ -6144,7 +6473,24 @@ export function recoveryService(
               eq(heartbeatRuns.id, executionRecoverySource.id),
             ),
           );
-        if (source && legacyExecutionNeedsReconciliation(source)) {
+        // myrmidon(WAKE-2): for generic issue continuation recovery with
+        // remaining retry budget, do NOT terminalize — the recovery path
+        // below will create a new run via enqueueStrandedIssueRecovery.
+        // Only terminalize when the retry budget is exhausted.
+        // Recovery issues (stranded_issue_recovery) always use the
+        // terminalization path to avoid duplicate comments.
+        // Cancelled runs (system/operator cancellation) also use the
+        // terminalization path — they are not continuation recoveries.
+        const isContinuationRecovery =
+          issue.status !== "in_review" &&
+          issue.originKind !== "stranded_issue_recovery" &&
+          source?.status === "failed" &&
+          executionFailureRetryCount(source ?? {}) < 2;
+        if (
+          source &&
+          legacyExecutionNeedsReconciliation(source) &&
+          !isContinuationRecovery
+        ) {
           await terminalizeLegacyExecution({
             db,
             run: source,
@@ -6221,11 +6567,6 @@ export function recoveryService(
         result.skipped += 1;
         continue;
       }
-      const recoveryNow = new Date();
-      const providerQuotaMonitorRun =
-        issue.status === "in_review"
-          ? participantLatestRunForRecovery
-          : latestRun;
       if (
         hasPendingProviderQuotaRecoveryMonitor(
           issue,
@@ -6751,6 +7092,55 @@ export function recoveryService(
           continue;
         }
 
+        // myrmidon(OPE-4519): assignment_recovery must not wake the executor again
+        // when there are no new inputs (comments, blocker changes, status changes, PR)
+        // since the prior run. The cycle is interrupted and made visible to the operator.
+        const runBeganAt = latestRun.startedAt ?? latestRun.createdAt;
+        const hasNewInputs = await hasNewInputsSince(db, {
+          companyId: issue.companyId,
+          issueId: issue.id,
+          since: runBeganAt,
+          excludeRunId: latestRun.id,
+        });
+
+        const isAssignmentRecoveryCycle = didAutomaticRecoveryFail(
+          latestRun,
+          "assignment_recovery",
+        );
+        if (!hasNewInputs && isAssignmentRecoveryCycle) {
+          if (
+            latestRun.status === "succeeded" &&
+            !(await wasTodoHandedBackDuringOrAfterLatestRun(issue, latestRun))
+          ) {
+            result.skipped += 1;
+            continue;
+          }
+
+          const updated = await escalateStrandedAssignedIssue({
+            issue,
+            previousStatus: "todo",
+            latestRun,
+            notice: {
+              body:
+                productSaid("automatically retried dispatch for this assigned `todo` issue after a lost wake/run, ") +
+                "but it still has no live execution path. " +
+                "Returning it to the shared engineer queue for intervention.",
+              title: "No live execution path",
+              tone: "danger",
+            },
+            rerouteToSharedQueue: true,
+            scheduledRetryAttempt: scheduledRetryColumns?.scheduledRetryAttempt ?? null,
+            scheduledRetryReason: scheduledRetryColumns?.scheduledRetryReason ?? null,
+          });
+          if (updated) {
+            result.escalated += 1;
+            result.issueIds.push(issue.id);
+          } else {
+            result.skipped += 1;
+          }
+          continue;
+        }
+
         if (
           latestRun.status === "succeeded" &&
           !(await wasTodoHandedBackDuringOrAfterLatestRun(issue, latestRun))
@@ -6973,7 +7363,9 @@ export function recoveryService(
             issue,
             previousStatus: "in_progress",
             latestRun,
-            notice: {
+            // myrmidon(RUN-GUARD-LOOPS): a run stopped by the run guard says why
+            // and what is needed instead of the generic non-retryable wording.
+            notice: buildRunGuardStopNotice(latestRun) ?? {
               body:
                 productSaid("detected a non-retryable failure on this issue's continuation run ") +
                 `(\`${classification.errorCode}\`). Skipping automatic retries and moving it to \`blocked\` ` +
@@ -6983,6 +7375,15 @@ export function recoveryService(
             },
           });
           if (updated) {
+            // myrmidon(RUN-GUARD-ESCALATE): the sweep blocks a guard-stopped run's task too.
+            if (latestRun && readRunGuardStopReason(latestRun)) {
+              await wakeManagerForRunGuardStop({ issue, latestRun }).catch((error) => {
+                logger.warn(
+                  { error: error instanceof Error ? error.message : String(error), issueId: issue.id },
+                  "run guard stop: could not wake the manager",
+                );
+              });
+            }
             result.escalated += 1;
             result.issueIds.push(issue.id);
           } else {
@@ -7057,6 +7458,11 @@ export function recoveryService(
         retryReason: "issue_continuation_needed",
         source: "issue.continuation_recovery",
         retryOfRunId: latestRun?.id ?? issue.checkoutRunId ?? null,
+        extraContext: {
+          issueRecovery: true,
+          recoveryMode: "stranded_assigned_issue",
+          ...(latestRun?.id ? { continuationHead: latestRun.id } : {}),
+        },
       });
       if (queued) {
         result.continuationRequeued += 1;
@@ -7774,10 +8180,39 @@ export function recoveryService(
     return result;
   }
 
+  // myrmidon(RUN-GUARD-ESCALATE): after the escalation blocked a task whose run the
+  // run guard stopped, wake the assignee's manager (reports_to, else `adm`) with
+  // `run_guard_stop_needs_input`, once per issue per 30 minutes. Callers: the guard
+  // stop handling in heartbeat.ts and the stranded sweep below.
+  async function wakeManagerForRunGuardStop(input: {
+    issue: { id: string; companyId: string; assigneeAgentId: string | null };
+    latestRun: { id: string; errorCode?: string | null; resultJson?: unknown };
+    stopText?: string | null;
+  }) {
+    const stopReason = readRunGuardStopReason(input.latestRun);
+    if (!stopReason) return null;
+    // Only a task the escalation actually blocked is worth the manager's attention: a
+    // deferred review stage or a rerouted task keeps its status and its own path.
+    const current = await db
+      .select({ status: issues.status })
+      .from(issues)
+      .where(and(eq(issues.companyId, input.issue.companyId), eq(issues.id, input.issue.id)))
+      .then((rows) => rows[0] ?? null);
+    if (current?.status !== "blocked") return null;
+    return wakeManagerForRunGuardStopImpl(db, deps.enqueueWakeup, {
+      issue: input.issue,
+      latestRun: input.latestRun,
+      stopReason,
+      stopText: input.stopText ?? buildRunGuardStopComment(input.latestRun),
+    });
+  }
+
   return {
     buildRunOutputSilence,
+    deferReviewParticipantReleaseForCi,
     escalateStrandedRecoveryIssueInPlace,
     escalateStrandedAssignedIssue,
+    wakeManagerForRunGuardStop,
     recordWatchdogDecision,
     scanSilentActiveRuns,
     reconcileStrandedAssignedIssues,

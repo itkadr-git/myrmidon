@@ -3,6 +3,8 @@
 import { and, eq, sql } from "drizzle-orm";
 import { corpusParseJobs } from "@myrmidon/db";
 import {
+  PARSE_JOB_INTERRUPTED_ERROR,
+  PARSE_JOB_RELEASED_ERROR,
   parseJobRetryDelayMs,
   type CorpusParseJob,
   type CorpusParseJobStatus,
@@ -36,6 +38,9 @@ export class PostgresWorkQueue implements WorkQueue {
     // Idempotent on (document_id, parser_version): on conflict, return the
     // existing job unless it is terminally failed — then re-arm it to
     // `pending` so a re-enqueue rolls the failed job back into the queue.
+    // With `reset` the job is re-armed whatever its status is (a re-parse on
+    // request: attempts, error and backoff start over).
+    const rearm = input.reset ? sql`true` : sql`${corpusParseJobs.status} = 'failed'`;
     const rows = await this.db
       .insert(corpusParseJobs)
       .values({
@@ -47,12 +52,12 @@ export class PostgresWorkQueue implements WorkQueue {
       .onConflictDoUpdate({
         target: [corpusParseJobs.documentId, corpusParseJobs.parserVersion],
         set: {
-          status: sql`case when ${corpusParseJobs.status} = 'failed' then 'pending' else ${corpusParseJobs.status} end`,
-          attempts: sql`case when ${corpusParseJobs.status} = 'failed' then 0 else ${corpusParseJobs.attempts} end`,
-          lastError: sql`case when ${corpusParseJobs.status} = 'failed' then null else ${corpusParseJobs.lastError} end`,
-          nextAttemptAt: sql`case when ${corpusParseJobs.status} = 'failed' then now() else ${corpusParseJobs.nextAttemptAt} end`,
-          startedAt: sql`case when ${corpusParseJobs.status} = 'failed' then null else ${corpusParseJobs.startedAt} end`,
-          finishedAt: sql`case when ${corpusParseJobs.status} = 'failed' then null else ${corpusParseJobs.finishedAt} end`,
+          status: sql`case when ${rearm} then 'pending' else ${corpusParseJobs.status} end`,
+          attempts: sql`case when ${rearm} then 0 else ${corpusParseJobs.attempts} end`,
+          lastError: sql`case when ${rearm} then null else ${corpusParseJobs.lastError} end`,
+          nextAttemptAt: sql`case when ${rearm} then now() else ${corpusParseJobs.nextAttemptAt} end`,
+          startedAt: sql`case when ${rearm} then null else ${corpusParseJobs.startedAt} end`,
+          finishedAt: sql`case when ${rearm} then null else ${corpusParseJobs.finishedAt} end`,
           maxAttempts: sql`greatest(${corpusParseJobs.maxAttempts}, excluded.max_attempts)`,
         },
       })
@@ -130,5 +135,53 @@ export class PostgresWorkQueue implements WorkQueue {
       .where(and(eq(corpusParseJobs.id, jobId), eq(corpusParseJobs.companyId, companyId)))
       .returning();
     return toJob(rows[0]!);
+  }
+
+  async release(
+    companyId: string,
+    jobId: string,
+    reason: string = PARSE_JOB_RELEASED_ERROR,
+  ): Promise<CorpusParseJob | null> {
+    // The worker is stopping, the job is not at fault: pending again right away (the next worker
+    // takes it without a backoff) and the attempt the claim counted is given back.
+    const rows = await this.db
+      .update(corpusParseJobs)
+      .set({
+        status: "pending",
+        attempts: sql`greatest(${corpusParseJobs.attempts} - 1, 0)`,
+        lastError: reason,
+        nextAttemptAt: sql`now()`,
+        startedAt: null,
+      })
+      .where(
+        and(
+          eq(corpusParseJobs.id, jobId),
+          eq(corpusParseJobs.companyId, companyId),
+          eq(corpusParseJobs.status, "running"),
+        ),
+      )
+      .returning();
+    return rows[0] ? toJob(rows[0]) : null;
+  }
+
+  async releaseRunning(options: { companyId?: string } = {}): Promise<CorpusParseJob[]> {
+    // One statement, so a crash in the middle leaves no job half-settled. `attempts` is kept as
+    // the claim counted it: a job whose parse takes the process down must run out of attempts.
+    const exhausted = sql`${corpusParseJobs.attempts} >= ${corpusParseJobs.maxAttempts}`;
+    const scope = options.companyId
+      ? and(eq(corpusParseJobs.status, "running"), eq(corpusParseJobs.companyId, options.companyId))
+      : eq(corpusParseJobs.status, "running");
+    const rows = await this.db
+      .update(corpusParseJobs)
+      .set({
+        status: sql`case when ${exhausted} then 'failed' else 'pending' end`,
+        lastError: PARSE_JOB_INTERRUPTED_ERROR,
+        nextAttemptAt: sql`case when ${exhausted} then ${corpusParseJobs.nextAttemptAt} else now() end`,
+        startedAt: sql`case when ${exhausted} then ${corpusParseJobs.startedAt} else null end`,
+        finishedAt: sql`case when ${exhausted} then now() else ${corpusParseJobs.finishedAt} end`,
+      })
+      .where(scope)
+      .returning();
+    return rows.map(toJob);
   }
 }

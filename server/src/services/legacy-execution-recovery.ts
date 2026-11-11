@@ -1,3 +1,4 @@
+import { isRunGuardStopReason } from "@myrmidon/adapter-utils/run-guard";
 import { normalizeMaxTurnStopReason } from "./heartbeat-stop-metadata.js";
 import { hasConversationContinuationPolicy } from "./conversation-continuation.js";
 import { randomUUID } from "node:crypto";
@@ -31,15 +32,27 @@ export function legacyExecutionNeedsReconciliation(
     return false;
   // Guard stops are terminal for the current run, but must NOT enter
   // reconciliation hold (no manual hold); normal next wake without auto-replay of the same revision.
-  if (["model_call_limit", "idle_timeout", "tool_retry_loop"].includes(run.errorCode ?? "") ||
-      ["model_call_limit", "idle_timeout", "tool_retry_loop"].includes(String(run.resultJson?.runGuardStopReason ?? ""))) {
+  // myrmidon(RUN-GUARD-LOOPS): the list of guard stop reasons now lives in adapter-utils.
+  if (isRunGuardStopReason(run.errorCode) || isRunGuardStopReason(run.resultJson?.runGuardStopReason)) {
     return false;
   }
   // Maintenance interruption explicitly means retry, including after the
   // bounded retry scheduler's ordinary attempt budget is exhausted.
   if (run.errorCode === MAINTENANCE_INTERRUPT_ERROR_CODE) return false;
   if (run.errorCode === RUN_STALL_ERROR_CODE) return false; // myrmidon(RUN-STALL): stall interruption, the sweep re-opens the task itself
+  // myrmidon(PROVIDER-GARBAGE / OPE-12286): a provider stub reply returned with
+  // HTTP 200 never reached the model — the stub text is the whole outcome, so
+  // no provider work happened by construction. The bounded retry scheduler
+  // (paused provider_garbage retries) owns the attempt budget for these runs,
+  // the same treatment as model-unavailable below; never hold for reconciliation.
+  if (run.errorCode === "provider_garbage") return false;
   if (shouldSkipReconciliationForInfraInterrupt(run)) return false; // myrmidon(L1): infrastructure interruption, retried or released, not held
+  if (
+    run.errorCode === "hermes_gateway_connect_failed" ||
+    run.scheduledRetryReason === "connect_failed_transient_retry"
+  ) {
+    return false;
+  }
   // myrmidon(OPE-2587): a run woken for a pending interaction addressee killed by process_lost
   // is eligible for bounded retry, not operator reconciliation hold, while attempts remain.
   if (
@@ -82,6 +95,17 @@ export function legacyExecutionNeedsReconciliation(
   // that the bootstrap evidence proves never started. Keep unknown outcomes held.
   if ((run.errorCode === "workspace_git_scan_timeout" || run.errorCode === "workspace_git_scan_saturated") &&
       evidence?.kind === "bootstrap" && evidence.providerWorkStarted === false) return false;
+  // myrmidon(PROVIDER-OUTAGE-RECOVERY, OPE-12506): a classified provider outage
+  // (errorFamily provider_quota: 429/402/503, "no deployments available",
+  // "insufficient_quota") whose bootstrap evidence proves provider work never
+  // started is an external channel wait owned by the durable quota monitor. The
+  // exhausted retry budget must not turn it into a reconciliation hold, or the
+  // monitor wake can never issue the bounded retry once the channel recovers.
+  // Without both pieces of evidence the outcome stays unknown and is held.
+  if (
+    (run.resultJson as Record<string, unknown> | null | undefined)?.errorFamily === "provider_quota" &&
+    evidence?.kind === "bootstrap" && evidence.providerWorkStarted === false
+  ) return false;
   if (executionFailureRetryCount(run) >= 2) return true;
   return !(
     evidence?.kind === "bootstrap" && evidence.providerWorkStarted === false
@@ -151,6 +175,10 @@ export async function terminalizeLegacyExecution(input: {
       review.currentParticipant?.type === "agent" && review.currentParticipant.agentId === run.agentId;
     if (
       task &&
+      // A board-restored task may deliberately return to the unassigned ready
+      // queue. A later stranded-run sweep must not recreate a board-owned
+      // reconciliation hold for that task (OPE-10434/OPE-10219).
+      (task.assigneeAgentId !== null || isCurrentReviewer) &&
       !isSupersededConversationRun(task, updated) &&
       (task.assigneeAgentId === run.agentId || isCurrentReviewer) &&
       !["done", "cancelled"].includes(task.status)

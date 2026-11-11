@@ -882,6 +882,74 @@ describe("issue execution policy routes", () => {
     );
   });
 
+  it("allows an agent-authored in_review resubmission after changes_requested preserving returnAssignee", async () => {
+    const policy = normalizeIssueExecutionPolicy({
+      stages: [
+        {
+          id: "11111111-1111-4111-8111-111111111111",
+          type: "review",
+          participants: [{ type: "agent", agentId: "44444444-4444-4444-8444-444444444444" }],
+        },
+      ],
+    })!;
+    const issue = {
+      id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      companyId: "company-1",
+      status: "in_progress",
+      assigneeAgentId: "33333333-3333-4333-8333-333333333333",
+      assigneeUserId: null,
+      createdByUserId: "local-board",
+      identifier: "PAP-1005",
+      title: "Resubmit after changes requested",
+      executionPolicy: policy,
+      executionState: {
+        status: "changes_requested",
+        currentStageId: "11111111-1111-4111-8111-111111111111",
+        currentStageIndex: 0,
+        currentStageType: "review",
+        currentParticipant: { type: "agent", agentId: "44444444-4444-4444-8444-444444444444" },
+        returnAssignee: { type: "agent", agentId: "33333333-3333-4333-8333-333333333333" },
+        lastDecisionOutcome: "changes_requested",
+      },
+    };
+    mockIssueService.getById.mockResolvedValue(issue);
+    mockIssueService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) => ({
+      ...issue,
+      ...patch,
+      updatedAt: new Date(),
+    }));
+
+    const res = await request(await createApp({
+      type: "agent",
+      agentId: "33333333-3333-4333-8333-333333333333",
+      companyId: "company-1",
+      runId: "55555555-5555-4555-8555-555555555555",
+    }))
+      .patch("/api/issues/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa")
+      .send({ status: "in_review" });
+
+    expect(res.status).toBe(200);
+    expect(mockIssueService.update).toHaveBeenCalledWith(
+      "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      expect.objectContaining({
+        status: "in_review",
+        assigneeAgentId: "44444444-4444-4444-8444-444444444444",
+        executionState: expect.objectContaining({
+          status: "pending",
+          currentParticipant: expect.objectContaining({
+            type: "agent",
+            agentId: "44444444-4444-4444-8444-444444444444",
+          }),
+          returnAssignee: expect.objectContaining({
+            type: "agent",
+            agentId: "33333333-3333-4333-8333-333333333333",
+          }),
+        }),
+      }),
+      expect.anything(),
+    );
+  });
+
   it("allows an agent-authored in_review transition with a scheduled monitor", async () => {
     const issue = {
       id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
@@ -1518,6 +1586,35 @@ describe("issue execution policy routes", () => {
       expect(res.status).toBe(201);
       expect(mockIssueService.addComment.mock.calls[0][0]).toBe("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa");
       expect(mockIssueService.addComment.mock.calls[0][1]).toBe("Test comment");
+    });
+  });
+
+  describe("concurrent status and executionPolicy update validation (vendor #13178 / OPE-12207)", () => {
+    it("rejects updating executionPolicy and status to 'done' in the same PATCH request", async () => {
+      const issue = {
+        id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+        companyId: "company-1",
+        status: "in_progress",
+        executionPolicy: {
+          mode: "normal",
+          stages: [{ id: "stage-1", type: "review", participants: [] }],
+        },
+        executionState: null,
+      };
+      mockIssueService.getById.mockResolvedValue(issue);
+      mockIssueService.getByIdForUpdate.mockResolvedValue(issue);
+
+      const res = await request(await createApp())
+        .patch("/api/issues/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa")
+        .send({
+          status: "done",
+          executionPolicy: null,
+        });
+
+      expect(res.status).toBe(422);
+      expect(res.body.error).toContain(
+        "Cannot update executionPolicy and transition status to 'done' in the same request",
+      );
     });
   });
 });

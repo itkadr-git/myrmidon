@@ -39,6 +39,7 @@ import { queryKeys } from "../lib/queryKeys";
 import { attentionBadgeCount } from "../lib/attention";
 import { useInboxBadge } from "../hooks/useInboxBadge";
 import { usePublishSharedQueryData, useSharedPollingQuery } from "../hooks/useSharedPolling";
+import { pollInterval } from "../lib/auth-session-recovery";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { cn, SIDEBAR_RAIL_HIDDEN_LABEL } from "../lib/utils";
 import { PluginSlotOutlet } from "@/plugins/slots";
@@ -94,7 +95,7 @@ export function Sidebar() {
     queryKey: queryKeys.attention(selectedCompanyId!),
     queryFn: () => attentionApi.list(selectedCompanyId!),
     enabled: !!selectedCompanyId && showDecisions,
-    refetchInterval: 60_000,
+    refetchInterval: pollInterval(60_000),
   });
   const attentionCount = attentionBadgeCount(attentionFeed);
   const showCases = experimentalSettings?.enableCases === true;

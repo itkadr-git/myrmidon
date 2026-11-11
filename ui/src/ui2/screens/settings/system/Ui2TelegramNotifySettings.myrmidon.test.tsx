@@ -6,7 +6,7 @@
 // replaced and the tests assert the wire shape the core serves —
 // GET answers { settings, changelog } with every field of every section
 // always present, PATCH takes a partial per-section body and answers the
-// same shape. Defaults must render all five sections OFF.
+// Defaults must render all six sections OFF (including update notifications).
 
 // @vitest-environment jsdom
 
@@ -134,6 +134,34 @@ describe("myrmidon(UI2) Ui2TelegramNotifySettings panel", () => {
     expect(proactivityState?.getAttribute("data-tn-state")).toBe("off");
 
     expect(container.querySelector<HTMLInputElement>("#ui2-tn-digest-enabled")?.checked).toBe(false);
+    expect(container.querySelector<HTMLInputElement>("#ui2-tn-updates-enabled")?.checked).toBe(false);
+    expect(container.querySelector('[data-tn-section="updates"]')).not.toBeNull();
+  });
+
+  it("edits the update notification destination as a partial settings patch", async () => {
+    await renderPanel();
+
+    const enabled = container.querySelector<HTMLInputElement>("#ui2-tn-updates-enabled")!;
+    const inputs = container.querySelectorAll<HTMLInputElement>(".ui2-tn-text-input");
+    const updateChat = Array.from(inputs).find((input) => input.closest("label")?.textContent?.includes("Chat id"));
+    expect(updateChat).toBeDefined();
+
+    flushSync(() => {
+      enabled.click();
+      updateChat!.value = "-100123";
+      updateChat!.dispatchEvent(new Event("input", { bubbles: true }));
+      updateChat!.dispatchEvent(new Event("change", { bubbles: true }));
+    });
+    await flushReact();
+
+    const save = container.querySelector<HTMLButtonElement>(".ui2-tn-save")!;
+    expect(save.disabled).toBe(false);
+    mockUpdate.mockResolvedValue({ settings: defaultSettings(), changelog: [] });
+    save.click();
+    await flushReact();
+    expect(mockUpdate).toHaveBeenCalledWith(COMPANY_ID, expect.objectContaining({
+      updates: expect.objectContaining({ enabled: true }),
+    }));
   });
 
   it("bounds the rarely ceiling input to the single 1–50 contract range", async () => {

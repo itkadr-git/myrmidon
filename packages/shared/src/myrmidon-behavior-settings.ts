@@ -91,7 +91,7 @@ const dSettings: Array<{
   key: string;
   envName: string;
   default: unknown;
-  section: "channels" | "models";
+  section: "channels" | "models" | "foraging" | "system";
   validate: (value: unknown) => unknown | null;
 }> = [
   { key: "telegramDmConversations", envName: "MYRMIDON_TELEGRAM_DM_CONVERSATIONS", default: "", section: "channels", validate: (value) => typeof value === "string" ? value : null },
@@ -113,15 +113,38 @@ const dSettings: Array<{
   { key: "ctoChatModel", envName: "MYRMIDON_CTO_CHAT_MODEL", default: "dashscope-qwen-flash", section: "models", validate: nonEmptyString },
   { key: "ctoChatTimeoutSec", envName: "MYRMIDON_CTO_CHAT_TIMEOUT_SEC", default: 90, section: "models", validate: positiveInteger() },
   { key: "ctoChatMaxTasks", envName: "MYRMIDON_CTO_CHAT_MAX_TASKS", default: 8, section: "models", validate: positiveInteger() },
+  // myrmidon(OPE-12124): master switches of the 1.6 features, movable from
+  // env to "Тонкие настройки". Kill-switch semantics: the default is ON so an
+  // instance that never declares anything keeps its current behaviour (the
+  // feature's own contour settings decide), while a saved UI value turns the
+  // feature off without a restart and the env variable stays the forced
+  // override (the contract of resolveSetting: ui → env → default).
+  { key: "foragingEnabled", envName: "MYRMIDON_FORAGING_ENABLED", default: true, section: "foraging", validate: booleanSetting },
+  { key: "baselineEnabled", envName: "MYRMIDON_BASELINE_ENABLED", default: true, section: "system", validate: booleanSetting },
+  { key: "ctoChatEnabled", envName: "MYRMIDON_CTO_CHAT_ENABLED", default: true, section: "models", validate: booleanSetting },
+  { key: "evalsEnabled", envName: "MYRMIDON_EVALS_ENABLED", default: true, section: "models", validate: booleanSetting },
   { key: "evalsModel", envName: "MYRMIDON_EVALS_MODEL", default: "", section: "models", validate: nonEmptyString },
   { key: "evalsTimeoutSec", envName: "MYRMIDON_EVALS_TIMEOUT_SEC", default: 120, section: "models", validate: positiveInteger() },
   { key: "evalsLangfuseExport", envName: "MYRMIDON_EVALS_LANGFUSE", default: false, section: "models", validate: booleanSetting },
+  // myrmidon(1.7 SWEEP-2, OPE-12619): the access-hub surface switch and the
+  // ssh-operation timeout, movable from env to "Тонкие настройки" by the same
+  // OPE-12124 rule: an explicit env value stays the forced override, otherwise
+  // a saved UI value applies without a restart, otherwise the default. The
+  // section stays off by default; the ssh admin-key secret name and host
+  // addresses remain env/secret-store owned (never editable here).
+  { key: "accessHubEnabled", envName: "MYRMIDON_ACCESS_HUB_ENABLED", default: false, section: "system", validate: booleanSetting },
+  { key: "accessHubSshTimeoutMs", envName: "MYRMIDON_ACCESS_HUB_SSH_TIMEOUT_MS", default: 30_000, section: "system", validate: (value) => validateInteger(value, 1_000, 300_000) },
   { key: "ocrBackend", envName: "MYRMIDON_OCR_BACKEND", default: "ragflow", section: "models", validate: (value) => value === "ragflow" || value === "litellm" ? value : null },
   { key: "ocrModel", envName: "MYRMIDON_OCR_MODEL", default: "", section: "models", validate: nonEmptyString },
   { key: "ocrMaxBytes", envName: "MYRMIDON_OCR_MAX_BYTES", default: 32 * 1024 * 1024, section: "models", validate: positiveInteger() },
   { key: "ocrMaxPages", envName: "MYRMIDON_OCR_MAX_PAGES", default: 500, section: "models", validate: positiveInteger() },
   { key: "ocrMaxChars", envName: "MYRMIDON_OCR_MAX_CHARS", default: 2_000_000, section: "models", validate: positiveInteger() },
   { key: "ocrTimeoutSec", envName: "MYRMIDON_OCR_TIMEOUT_SEC", default: 120, section: "models", validate: positiveInteger() },
+  // myrmidon(OPE-12628): lesson-distill sweep settings in "Тонкие настройки"
+  { key: "lessonDistillEnabled", envName: "MYRMIDON_LESSON_DISTILL_ENABLED", default: false, section: "system", validate: booleanSetting },
+  { key: "lessonDistillWindowHours", envName: "MYRMIDON_LESSON_DISTILL_WINDOW_HOURS", default: 24, section: "system", validate: positiveInteger() },
+  { key: "lessonDistillRepeatThreshold", envName: "MYRMIDON_LESSON_DISTILL_REPEAT_THRESHOLD", default: 2, section: "system", validate: positiveInteger() },
+  { key: "lessonDistillPeriodMinutes", envName: "MYRMIDON_LESSON_DISTILL_PERIOD_MINUTES", default: 60, section: "system", validate: positiveInteger() },
 ];
 for (const setting of dSettings) {
   behaviorSettingRegistry.register({
@@ -176,6 +199,113 @@ export function validateString(value: unknown, allowed?: readonly string[]): str
 }
 
 // Development & Runtime Base Settings
+behaviorSettingRegistry.register({
+  key: "bot_egress_mode",
+  envName: "MYRMIDON_BOT_EGRESS_MODE",
+  default: "off",
+  scope: "instance",
+  section: "guardrails",
+  valueType: "string",
+  validate: (value: unknown): "off" | "log" | null =>
+    typeof value === "string" && ["off", "log"].includes(value.trim().toLowerCase())
+      ? (value.trim().toLowerCase() as "off" | "log")
+      : null,
+});
+
+const nonNegativeInteger = (value: unknown): number | null => {
+  const parsed = typeof value === "number" ? value : Number(value);
+  return Number.isSafeInteger(parsed) && parsed >= 0 ? parsed : null;
+};
+const positiveIntegerValue = (value: unknown): number | null => {
+  const parsed = typeof value === "number" ? value : Number(value);
+  return Number.isSafeInteger(parsed) && parsed > 0 ? parsed : null;
+};
+const textList = (value: unknown): string[] | null => {
+  const items = Array.isArray(value) ? value : typeof value === "string" ? value.split(",") : null;
+  if (!items || !items.every((item) => typeof item === "string" && item.trim().length > 0)) return null;
+  return [...new Set(items.map((item) => item.trim()))];
+};
+const environmentNameList = (value: unknown): string[] | null => {
+  const names = textList(value);
+  return names && names.every((name) => /^[A-Za-z_][A-Za-z0-9_]*$/.test(name)) ? names : null;
+};
+const booleanValue = (value: unknown): boolean | null => {
+  if (typeof value === "boolean") return value;
+  if (typeof value !== "string") return null;
+  const normalized = value.toLowerCase();
+  if (["true", "1", "yes", "on"].includes(normalized)) return true;
+  if (["false", "0", "no", "off"].includes(normalized)) return false;
+  return null;
+};
+const objectArray = (value: unknown): Record<string, unknown>[] | null => {
+  let parsed = value;
+  if (typeof value === "string") {
+    try { parsed = JSON.parse(value); } catch { return null; }
+  }
+  return Array.isArray(parsed) && parsed.every((item) => item !== null && typeof item === "object" && !Array.isArray(item))
+    ? parsed as Record<string, unknown>[] : null;
+};
+
+for (const [key, envName, fallback, validate] of [
+  ["tool_breaker_failures", "MYRMIDON_TOOL_BREAKER_FAILURES", 3, nonNegativeInteger],
+  ["tool_breaker_cooldown_ms", "MYRMIDON_TOOL_BREAKER_COOLDOWN_MS", 60_000, positiveIntegerValue],
+  ["tool_breaker_window_ms", "MYRMIDON_TOOL_BREAKER_WINDOW_MS", 600_000, positiveIntegerValue],
+  ["tool_timeout_max_ms", "MYRMIDON_TOOL_TIMEOUT_MAX_MS", 180_000, positiveIntegerValue],
+  ["tool_timeout_slow_ms", "MYRMIDON_TOOL_TIMEOUT_SLOW_MS", 45_000, positiveIntegerValue],
+] as const) {
+  behaviorSettingRegistry.register({
+    key,
+    envName,
+    default: fallback,
+    scope: "instance",
+    section: "guardrails",
+    valueType: "number",
+    validate,
+  });
+}
+
+for (const [key, envName, fallback, validate] of [
+  ["run_env_allow", "MYRMIDON_RUN_ENV_ALLOW", [] as string[], environmentNameList],
+  ["bot_image_allowlist", "MYRMIDON_BOT_IMAGE_ALLOWLIST", [] as string[], textList],
+  ["bot_mount_sources", "MYRMIDON_BOT_MOUNT_SOURCES", [] as string[], textList],
+  ["bot_container_github_env_allowlist", "MYRMIDON_BOT_CONTAINER_GITHUB_ENV_ALLOWLIST", [] as string[], environmentNameList],
+  ["bot_hindsight_allowed_banks", "MYRMIDON_BOT_HINDSIGHT_ALLOWED_BANKS", [] as string[], textList],
+] as const) {
+  behaviorSettingRegistry.register({ key, envName, default: fallback, scope: "instance", section: key === "run_env_allow" ? "guardrails" : "fleet", valueType: "json", validate });
+}
+for (const [key, envName, fallback, validate] of [
+  ["bot_reconcile_interval_sec", "MYRMIDON_BOT_RECONCILE_INTERVAL_SEC", 60, positiveIntegerValue],
+  ["browser_idle_timeout_min", "MYRMIDON_BROWSER_IDLE_TIMEOUT_MIN", 30, positiveIntegerValue],
+  ["browser_max_duration_min", "MYRMIDON_BROWSER_MAX_DURATION_MIN", 120, positiveIntegerValue],
+  ["stack_check_interval_sec", "MYRMIDON_STACK_CHECK_INTERVAL_SEC", 0, nonNegativeInteger],
+  ["baseline_interval_sec", "MYRMIDON_BASELINE_INTERVAL_SEC", 0, (value: unknown) => value === 0 || value === "0" ? 0 : typeof value === "number" && Number.isSafeInteger(value) && value >= 60 && value <= 604800 ? value : typeof value === "string" && /^(?:[1-9][0-9]*)$/.test(value.trim()) && Number(value.trim()) >= 60 && Number(value.trim()) <= 604800 ? Number(value.trim()) : null],
+  ["input_limit_chars_per_token", "MYRMIDON_INPUT_LIMIT_CHARS_PER_TOKEN", 3, (value: unknown) => {
+    const num = typeof value === "number" ? value : typeof value === "string" && value.trim().length > 0 ? Number(value.trim()) : null;
+    return typeof num === "number" && Number.isFinite(num) && num >= 1 && num <= 10 ? num : null;
+  }],
+  ["input_limit_safety", "MYRMIDON_INPUT_LIMIT_SAFETY", 0.9, (value: unknown) => {
+    const num = typeof value === "number" ? value : typeof value === "string" && value.trim().length > 0 ? Number(value.trim()) : null;
+    return typeof num === "number" && Number.isFinite(num) && num > 0 && num <= 1 ? num : null;
+  }],
+] as const) {
+  behaviorSettingRegistry.register({ key, envName, default: fallback, scope: "instance", section: "fleet", valueType: "number", validate });
+}
+for (const [key, envName] of [
+  ["bot_mcp_servers", "MYRMIDON_BOT_MCP_SERVERS"],
+  ["browser_fleet", "MYRMIDON_BROWSER_FLEET"],
+] as const) {
+  behaviorSettingRegistry.register({
+    key, envName, default: [] as Record<string, unknown>[],
+    scope: "instance", section: "fleet", valueType: "json", validate: objectArray,
+  });
+}
+for (const [key, envName] of [
+  ["bot_containers", "MYRMIDON_BOT_CONTAINERS"],
+  ["bot_yolo", "MYRMIDON_BOT_YOLO"],
+] as const) {
+  behaviorSettingRegistry.register({ key, envName, default: false, scope: "instance", section: "fleet", valueType: "boolean", validate: booleanValue });
+}
+behaviorSettingRegistry.register({ key: "input_limit_precheck", envName: "MYRMIDON_INPUT_LIMIT_PRECHECK", default: true, scope: "instance", section: "fleet", valueType: "boolean", validate: booleanValue });
 behaviorSettingRegistry.register({
   key: "debug_mode",
   envName: "MYRMIDON_DEBUG_MODE",
@@ -807,6 +937,7 @@ export function createBehaviorSettingsPatchSchema(scope?: SettingScope) {
       .refine((val) => def.validate(val) !== null, {
         message: `Invalid value for setting '${def.key}'`,
       })
+      .nullable()
       .optional();
   }
   
@@ -825,6 +956,12 @@ export function mergeBehaviorSettings(base: Record<string, unknown>, patch: Beha
   const result = { ...base };
   
   for (const [key, value] of Object.entries(patch)) {
+    if (value === null) {
+      // myrmidon(1.7): a null resets the key — the saved value is removed so
+      // the read falls back to env or default (resolveSetting precedence).
+      delete result[key];
+      continue;
+    }
     if (value !== undefined) {
       result[key] = value;
     }

@@ -319,9 +319,11 @@
           "owner_pending_card": "Карточка владельца",
           "secret_off_run_reads": "Чтение секретов вне прогона",
           "secret_off_run_grant_expiring": "Истекает доступ к секретам вне прогона",
+          "mcp_gateway_token_expiring": "Истекает токен шлюза",
           "empty_model_catalog": "Каталог моделей",
           "queue_stall": "Застой очереди",
           "codex_pool_alert": "Тревога пула Codex",
+          "litellm_budget": "Бюджет LLM-ключа",
           "issue_monitor_overdue": "Просрочен монитор задачи"
         }
       }

@@ -1,8 +1,11 @@
 import { randomUUID } from "node:crypto";
+import { and, eq } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import {
+  agentWakeupRequests,
   agents,
   companies,
+  companyMemberships,
   createDb,
   goals,
   heartbeatRuns,
@@ -19,12 +22,61 @@ import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
 } from "../__tests__/helpers/embedded-postgres.js";
+import { heartbeatService } from "./heartbeat.js";
 import { issueThreadInteractionService } from "./issue-thread-interactions.js";
 import {
   resolveAgentHeadId,
   resolveCompanyDomainHeadId,
   resolveResponsibleHeadAgentId,
 } from "./responsible-head.js";
+
+async function waitForQueuedRun(
+  db: Db,
+  agentId: string,
+  runId: string,
+  timeoutMs = 5_000,
+) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const runs = await db
+      .select()
+      .from(heartbeatRuns)
+      .where(
+        and(
+          eq(heartbeatRuns.agentId, agentId),
+          eq(heartbeatRuns.id, runId),
+        ),
+      );
+    const matchingRun = runs[0];
+    if (matchingRun) return matchingRun;
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  }
+  return null;
+}
+
+async function waitForDeferredWakeRequest(
+  db: Db,
+  agentId: string,
+  interactionId: string,
+  timeoutMs = 5_000,
+) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const requests = await db
+      .select()
+      .from(agentWakeupRequests)
+      .where(
+        and(
+          eq(agentWakeupRequests.agentId, agentId),
+          eq(agentWakeupRequests.idempotencyKey, `interaction-pending:${interactionId}`),
+        ),
+      );
+    const matchingRequest = requests[0];
+    if (matchingRequest) return matchingRequest;
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  }
+  return null;
+}
 
 const support = await getEmbeddedPostgresTestSupport();
 const d = support.supported ? describe : describe.skip;
@@ -38,6 +90,7 @@ d("RESPONSIBLE-HEAD acceptance criteria and behavioral tests", () => {
   let engAgentId: string;
   let pausedAgentId: string;
   let projectId: string;
+  let ownerUserId: string;
 
   beforeAll(async () => {
     tempDb = await startEmbeddedPostgresTestDatabase("resp-head-int-");
@@ -49,12 +102,22 @@ d("RESPONSIBLE-HEAD acceptance criteria and behavioral tests", () => {
     engAgentId = randomUUID();
     pausedAgentId = randomUUID();
     projectId = randomUUID();
+    ownerUserId = randomUUID();
 
     await db.insert(companies).values({
       id: companyId,
       name: "Resp Head Co",
       issuePrefix: "RHC",
       requireBoardApprovalForNewAgents: false,
+    });
+
+    await db.insert(companyMemberships).values({
+      id: randomUUID(),
+      companyId,
+      principalType: "user",
+      principalId: ownerUserId,
+      membershipRole: "owner",
+      status: "active",
     });
 
     await db.insert(agents).values([
@@ -177,7 +240,7 @@ d("RESPONSIBLE-HEAD acceptance criteria and behavioral tests", () => {
   });
 
   describe("3. Questions / Confirmation routing (behavioral issueThreadInteractionService)", () => {
-    it("auto-addresses interaction without addressee from subordinate agent to responsibleAgentId", async () => {
+    it("auto-addresses a question without addressee from a subordinate agent to its direct manager (reportsTo), not the issue head", async () => {
       const issueId = randomUUID();
       const goalId = randomUUID();
       const runId = randomUUID();
@@ -235,8 +298,15 @@ d("RESPONSIBLE-HEAD acceptance criteria and behavioral tests", () => {
         { agentId: engAgentId },
       );
 
-      expect(interaction.addresseeAgentId).toBe(admAgentId);
+      // eng-23 reports to lead-dev, lead-dev reports to adm: the question goes to the nearest manager.
+      expect(interaction.addresseeAgentId).toBe(leadAgentId);
       expect(interaction.addresseeUserId).toBeNull();
+      // The rest of the reportsTo chain is stored so the card climbs it on timeout,
+      // and it never ends at the owner.
+      expect(interaction.escalationChain).toEqual([
+        { recipient: { agentId: leadAgentId }, afterMinutes: 0 },
+        { recipient: { agentId: admAgentId }, afterMinutes: 30 },
+      ]);
 
       // Idempotency test: repeating the exact same create call returns the existing interaction without error
       const secondCall = await svc.create(
@@ -245,7 +315,7 @@ d("RESPONSIBLE-HEAD acceptance criteria and behavioral tests", () => {
         { agentId: engAgentId },
       );
       expect(secondCall.id).toBe(interaction.id);
-      expect(secondCall.addresseeAgentId).toBe(admAgentId);
+      expect(secondCall.addresseeAgentId).toBe(leadAgentId);
     });
 
     it("does not self-address when head agent creates an interaction without addressee", async () => {
@@ -310,7 +380,7 @@ d("RESPONSIBLE-HEAD acceptance criteria and behavioral tests", () => {
       expect(interaction.addresseeAgentId).toBeNull();
     });
 
-    it("does not auto-address to paused head agent", async () => {
+    it("routes a question to the direct manager and ignores a paused responsible agent", async () => {
       const issueId = randomUUID();
       const goalId = randomUUID();
       const runId = randomUUID();
@@ -368,8 +438,480 @@ d("RESPONSIBLE-HEAD acceptance criteria and behavioral tests", () => {
         { agentId: engAgentId },
       );
 
-      // Does not address paused agent; addresseeAgentId remains null
-      expect(interaction.addresseeAgentId).toBeNull();
+      // The paused responsible agent is never addressed; the nearest invokable manager is.
+      expect(interaction.addresseeAgentId).not.toBe(pausedAgentId);
+      expect(interaction.addresseeAgentId).toBe(leadAgentId);
+    });
+  });
+
+  describe("4. Wakeup and queued dispatch on unaddressed subordinate interaction", () => {
+    it("wakes the direct manager with interaction_pending when a subordinate creates an unaddressed question", async () => {
+      const issueId = randomUUID();
+      const goalId = randomUUID();
+      const runId = randomUUID();
+
+      await db.insert(goals).values({
+        id: goalId,
+        companyId,
+        title: "Goal for wakeup test",
+        level: "task",
+        status: "active",
+      });
+
+      await db.insert(issues).values({
+        id: issueId,
+        companyId,
+        goalId,
+        title: "Issue with unaddressed question needing head wakeup",
+        status: "in_progress",
+        priority: "medium",
+        responsibleAgentId: admAgentId,
+        assigneeAgentId: engAgentId,
+      });
+
+      await db.insert(heartbeatRuns).values({
+        id: runId,
+        companyId,
+        agentId: engAgentId,
+        invocationSource: "manual",
+        status: "running",
+        startedAt: new Date(),
+      });
+
+      const svc = issueThreadInteractionService(db);
+      const input = {
+        kind: "ask_user_questions" as const,
+        idempotencyKey: `test:wakeup:subordinate-to-head:${issueId}`,
+        sourceRunId: runId,
+        continuationPolicy: "wake_assignee" as const,
+        payload: {
+          version: 1 as const,
+          questions: [
+            {
+              id: "q_wake",
+              prompt: "Do we deploy now?",
+              selectionMode: "single" as const,
+              options: [{ id: "yes", label: "Yes" }],
+            },
+          ],
+        },
+      };
+
+      const interaction = await svc.create(
+        { id: issueId, companyId },
+        input,
+        { agentId: engAgentId },
+      );
+
+      // OPE-11751: an unaddressed agent question goes to the direct manager (lead-dev)
+      expect(interaction.addresseeAgentId).toBe(leadAgentId);
+      expect(interaction.addresseeUserId).toBeNull();
+
+      // Guardrail: prior to waking addressee, no queued run exists for the head agent
+      const preWakeRuns = await db
+        .select()
+        .from(heartbeatRuns)
+        .where(
+          and(
+            eq(heartbeatRuns.agentId, leadAgentId),
+            eq(heartbeatRuns.status, "queued"),
+          ),
+        );
+      expect(preWakeRuns).toHaveLength(0);
+
+      // Waking the resolved addressee agent on interaction creation
+      const heartbeat = heartbeatService(db);
+      const wakeResult = await heartbeat.wakeup(interaction.addresseeAgentId!, {
+        source: "automation",
+        triggerDetail: "system",
+        reason: "interaction_pending",
+        payload: {
+          issueId,
+          interactionId: interaction.id,
+          interactionKind: interaction.kind,
+          mutation: "interaction",
+        },
+        idempotencyKey: `interaction-pending:${interaction.id}`,
+        requestedByActorType: "agent",
+        requestedByActorId: engAgentId,
+        contextSnapshot: {
+          issueId,
+          taskId: issueId,
+          interactionId: interaction.id,
+          interactionKind: interaction.kind,
+          wakeReason: "interaction_pending",
+          source: "issue.interaction.created",
+        },
+      });
+
+      // Manager was idle: directly queued
+      expect(wakeResult).not.toBeNull();
+      expect(wakeResult?.status).toBe("queued");
+      expect(wakeResult?.agentId).toBe(leadAgentId);
+      expect(wakeResult?.responsibleUserId).toBe(ownerUserId);
+      expect((wakeResult?.contextSnapshot as any)?.interactionId).toBe(interaction.id);
+      expect((wakeResult?.contextSnapshot as any)?.issueId).toBe(issueId);
+      expect((wakeResult?.contextSnapshot as any)?.wakeReason).toBe("interaction_pending");
+
+      const targetRun = await waitForQueuedRun(db, leadAgentId, wakeResult!.id);
+      expect(targetRun).toBeDefined();
+      expect(targetRun?.wakeupRequestId).toBeDefined();
+
+      // Verify no queued runs for owner or engineer
+      const allQueuedRuns = await db
+        .select()
+        .from(heartbeatRuns)
+        .where(
+          and(
+            eq(heartbeatRuns.companyId, companyId),
+            eq(heartbeatRuns.status, "queued"),
+          ),
+        );
+      expect(allQueuedRuns.every((r) => r.agentId === leadAgentId)).toBe(true);
+    });
+
+    it("wakes direction head with interaction_pending for unaddressed request_confirmation", async () => {
+      const issueId = randomUUID();
+      const goalId = randomUUID();
+      const runId = randomUUID();
+
+      await db.insert(goals).values({
+        id: goalId,
+        companyId,
+        title: "Confirmation goal",
+        level: "task",
+        status: "active",
+      });
+
+      await db.insert(issues).values({
+        id: issueId,
+        companyId,
+        goalId,
+        title: "Issue with confirmation needing head wake",
+        status: "in_progress",
+        priority: "high",
+        responsibleAgentId: admAgentId,
+        assigneeAgentId: engAgentId,
+      });
+
+      await db.insert(heartbeatRuns).values({
+        id: runId,
+        companyId,
+        agentId: engAgentId,
+        invocationSource: "manual",
+        status: "running",
+        startedAt: new Date(),
+      });
+
+      const svc = issueThreadInteractionService(db);
+      const input = {
+        kind: "request_confirmation" as const,
+        idempotencyKey: `test:wakeup:confirmation:${issueId}`,
+        sourceRunId: runId,
+        continuationPolicy: "wake_assignee" as const,
+        payload: {
+          version: 1 as const,
+          prompt: "Approve migration plan?",
+          allowDeclineReason: true,
+        },
+      };
+
+      const interaction = await svc.create(
+        { id: issueId, companyId },
+        input,
+        { agentId: engAgentId },
+      );
+
+      expect(interaction.addresseeAgentId).toBe(admAgentId);
+
+      const heartbeat = heartbeatService(db);
+      const wakeResult = await heartbeat.wakeup(interaction.addresseeAgentId!, {
+        source: "automation",
+        triggerDetail: "system",
+        reason: "interaction_pending",
+        payload: {
+          issueId,
+          interactionId: interaction.id,
+          interactionKind: interaction.kind,
+          mutation: "interaction",
+        },
+        idempotencyKey: `interaction-pending:${interaction.id}`,
+        requestedByActorType: "agent",
+        requestedByActorId: engAgentId,
+        contextSnapshot: {
+          issueId,
+          taskId: issueId,
+          interactionId: interaction.id,
+          interactionKind: interaction.kind,
+          wakeReason: "interaction_pending",
+        },
+      });
+
+      expect(wakeResult).not.toBeNull();
+      expect(wakeResult?.status).toBe("queued");
+      expect(wakeResult?.agentId).toBe(admAgentId);
+      expect(wakeResult?.responsibleUserId).toBe(ownerUserId);
+      expect((wakeResult?.contextSnapshot as any)?.interactionId).toBe(interaction.id);
+      expect((wakeResult?.contextSnapshot as any)?.wakeReason).toBe("interaction_pending");
+      const targetRun = await waitForQueuedRun(db, admAgentId, wakeResult!.id);
+      expect(targetRun).toBeDefined();
+      expect(targetRun?.wakeupRequestId).toBeDefined();
+    });
+
+    it("queued dispatch: defers wake when the manager is busy and does not fail with 422 responsible_user_unresolved", async () => {
+      const issueId = randomUUID();
+      const goalId = randomUUID();
+      const runId = randomUUID();
+      const headActiveRunId = randomUUID();
+
+      await db.insert(goals).values({
+        id: goalId,
+        companyId,
+        title: "Deferred wake goal",
+        level: "task",
+        status: "active",
+      });
+
+      await db.insert(issues).values({
+        id: issueId,
+        companyId,
+        goalId,
+        title: "Task with busy manager agent",
+        status: "in_progress",
+        priority: "medium",
+        responsibleAgentId: admAgentId,
+        assigneeAgentId: engAgentId,
+      });
+
+      // Subordinate run
+      await db.insert(heartbeatRuns).values({
+        id: runId,
+        companyId,
+        agentId: engAgentId,
+        invocationSource: "manual",
+        status: "running",
+        startedAt: new Date(),
+      });
+
+      // Manager (lead-dev) is currently busy running on another task
+      await db.insert(heartbeatRuns).values({
+        id: headActiveRunId,
+        companyId,
+        agentId: leadAgentId,
+        invocationSource: "manual",
+        status: "running",
+        startedAt: new Date(),
+      });
+      const activeHeadIssueId = randomUUID();
+      await db.insert(issues).values({
+        id: activeHeadIssueId,
+        companyId,
+        title: "Active manager run task",
+        status: "in_progress",
+        priority: "medium",
+        responsibleAgentId: admAgentId,
+        assigneeAgentId: leadAgentId,
+        executionRunId: headActiveRunId,
+      });
+
+      const svc = issueThreadInteractionService(db);
+      const input = {
+        kind: "ask_user_questions" as const,
+        idempotencyKey: `test:wakeup:deferred-busy:${issueId}`,
+        sourceRunId: runId,
+        continuationPolicy: "wake_assignee" as const,
+        payload: {
+          version: 1 as const,
+          questions: [
+            {
+              id: "q_deferred",
+              prompt: "Queued question while head is busy",
+              selectionMode: "single" as const,
+              options: [{ id: "ok", label: "OK" }],
+            },
+          ],
+        },
+      };
+
+      const interaction = await svc.create(
+        { id: issueId, companyId },
+        input,
+        { agentId: engAgentId },
+      );
+      expect(interaction.addresseeAgentId).toBe(leadAgentId);
+
+      const heartbeat = heartbeatService(db);
+      // Waking the busy manager must not throw 422 responsible_user_unresolved
+      const wakeResult = await heartbeat.wakeup(interaction.addresseeAgentId!, {
+        source: "automation",
+        triggerDetail: "system",
+        reason: "interaction_pending",
+        payload: {
+          issueId,
+          interactionId: interaction.id,
+          interactionKind: interaction.kind,
+          mutation: "interaction",
+        },
+        idempotencyKey: `interaction-pending:${interaction.id}`,
+        requestedByActorType: "agent",
+        requestedByActorId: engAgentId,
+        contextSnapshot: {
+          issueId,
+          taskId: issueId,
+          interactionId: interaction.id,
+          interactionKind: interaction.kind,
+          wakeReason: "interaction_pending",
+          source: "issue.interaction.created",
+        },
+      });
+
+      // Wake remains queued while an active run exists; the request is retained for dispatch.
+      expect(wakeResult).not.toBeNull();
+      expect(wakeResult?.status).toBe("queued");
+
+      // Verify wakeup request was parked in agentWakeupRequests and not lost
+      const targetRequest = await waitForDeferredWakeRequest(db, leadAgentId, interaction.id);
+      expect(targetRequest).toBeDefined();
+      expect(["deferred_issue_execution", "queued", "claimed"]).toContain(targetRequest?.status);
+      expect((targetRequest?.payload as any)?.issueId).toBe(issueId);
+    });
+
+    it("resolves default responsible user from companies.defaultResponsibleUserId when configured", async () => {
+      const fallbackCompanyId = randomUUID();
+      const fallbackOwnerUserId = randomUUID();
+      const fallbackAdmId = randomUUID();
+      const fallbackEngId = randomUUID();
+      const fallbackIssueId = randomUUID();
+
+      await db.insert(companies).values({
+        id: fallbackCompanyId,
+        name: "Fallback Co",
+        issuePrefix: "FBC",
+        defaultResponsibleUserId: fallbackOwnerUserId,
+        requireBoardApprovalForNewAgents: false,
+      });
+
+      await db.insert(agents).values([
+        {
+          id: fallbackAdmId,
+          companyId: fallbackCompanyId,
+          name: "adm-fallback",
+          role: "lead",
+          status: "active",
+          adapterType: "process",
+          adapterConfig: {},
+          runtimeConfig: {},
+          permissions: {},
+        },
+        {
+          id: fallbackEngId,
+          companyId: fallbackCompanyId,
+          name: "eng-fallback",
+          role: "engineer",
+          status: "active",
+          reportsTo: fallbackAdmId,
+          adapterType: "process",
+          adapterConfig: {},
+          runtimeConfig: {},
+          permissions: {},
+        },
+      ]);
+
+      await db.insert(issues).values({
+        id: fallbackIssueId,
+        companyId: fallbackCompanyId,
+        title: "Task with default responsible user on company",
+        status: "in_progress",
+        priority: "medium",
+        responsibleAgentId: fallbackAdmId,
+        assigneeAgentId: fallbackEngId,
+      });
+
+      const svc = issueThreadInteractionService(db);
+      const interaction = await svc.create(
+        { id: fallbackIssueId, companyId: fallbackCompanyId },
+        {
+          kind: "ask_user_questions" as const,
+          idempotencyKey: `test:wakeup:fallback-company:${fallbackIssueId}`,
+          continuationPolicy: "wake_assignee" as const,
+          payload: {
+            version: 1 as const,
+            questions: [{ id: "q_fbc", prompt: "FBC?", selectionMode: "single" as const, options: [{ id: "ok", label: "OK" }] }],
+          },
+        },
+        { agentId: fallbackEngId },
+      );
+
+      expect(interaction.addresseeAgentId).toBe(fallbackAdmId);
+
+      const heartbeat = heartbeatService(db);
+      const wakeResult = await heartbeat.wakeup(interaction.addresseeAgentId!, {
+        source: "automation",
+        triggerDetail: "system",
+        reason: "interaction_pending",
+        payload: {
+          issueId: fallbackIssueId,
+          interactionId: interaction.id,
+          interactionKind: interaction.kind,
+          mutation: "interaction",
+        },
+        idempotencyKey: `interaction-pending:${interaction.id}`,
+        contextSnapshot: {
+          issueId: fallbackIssueId,
+          taskId: fallbackIssueId,
+          interactionId: interaction.id,
+          interactionKind: interaction.kind,
+          wakeReason: "interaction_pending",
+        },
+      });
+
+      expect(wakeResult).not.toBeNull();
+      expect(wakeResult?.status).toBe("queued");
+      const queuedRun = await waitForQueuedRun(db, fallbackAdmId, wakeResult!.id);
+
+      expect(queuedRun).toBeDefined();
+      expect(queuedRun?.id).toBe(wakeResult?.id);
+      expect(queuedRun?.wakeupRequestId).toBeDefined();
+      expect(queuedRun?.responsibleUserId).toBe(fallbackOwnerUserId);
+      expect((queuedRun?.contextSnapshot as any)?.wakeReason).toBe("interaction_pending");
+    });
+
+    it("never wakes a paused responsible agent; the question goes to the direct manager instead", async () => {
+      const issueId = randomUUID();
+      await db.insert(issues).values({
+        id: issueId,
+        companyId,
+        title: "Task with paused head no-wake",
+        status: "in_progress",
+        priority: "medium",
+        responsibleAgentId: pausedAgentId,
+        assigneeAgentId: engAgentId,
+      });
+
+      const svc = issueThreadInteractionService(db);
+      const interaction = await svc.create(
+        { id: issueId, companyId },
+        {
+          kind: "ask_user_questions" as const,
+          idempotencyKey: `test:wakeup:paused-no-wake:${issueId}`,
+          continuationPolicy: "wake_assignee" as const,
+          payload: {
+            version: 1 as const,
+            questions: [{ id: "q_paused", prompt: "Paused?", selectionMode: "single" as const, options: [{ id: "ok", label: "OK" }] }],
+          },
+        },
+        { agentId: engAgentId },
+      );
+
+      // The paused responsible agent is not addressed; the nearest invokable manager is.
+      expect(interaction.addresseeAgentId).toBe(leadAgentId);
+
+      // No wake dispatched: no run created for pausedAgentId
+      const pausedRuns = await db
+        .select()
+        .from(heartbeatRuns)
+        .where(eq(heartbeatRuns.agentId, pausedAgentId));
+      expect(pausedRuns).toHaveLength(0);
     });
   });
 });

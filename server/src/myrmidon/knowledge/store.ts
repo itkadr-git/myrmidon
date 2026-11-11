@@ -6,7 +6,7 @@
 // every mutation runs the state machine and the invariants first, then writes
 // rows in one transaction, then appends the `knowledge.*` event and mirrors it
 // into company activity (S9). Nothing here spells dialect SQL: the module
-// keeps the "0 triggers, 0 `sql\`` with dialect operators" guarantee — full
+// keeps the "0 triggers, 0 dialect operators" guarantee — full
 // text search is the `SearchIndex` PORT (domain.ts), implemented for pg in
 // `@myrmidon/db` (tsvector + pg_trgm + unaccent) and injected by wiring.
 //
@@ -34,6 +34,7 @@ import {
 } from "@myrmidon/db";
 import { logActivity } from "../../services/activity-log.js";
 import { resolveCasteSensitivity } from "../caste-sensitivity.js";
+import { isUniqueViolation } from "../../db-errors.js";
 import { ruleApproverKind } from "./rules.js";
 import {
   KnowledgeDomainError,
@@ -103,6 +104,8 @@ export interface KnowledgeRevisionDto {
   status: KnowledgeRevisionStatus;
   lang: KnowledgeRevisionLang;
   translationOf: string | null;
+  title: string | null;
+  summary: string | null;
   content: string;
   changeSummary: string | null;
   rolledBackFromRevisionId: string | null;
@@ -158,6 +161,8 @@ export interface DraftKnowledgeInput {
   lang?: KnowledgeRevisionLang;
   translationOf?: string | null;
   changeSummary?: string | null;
+  title?: string;
+  summary?: string | null;
   sources?: Array<{ kind: KnowledgeSourceKind; ref: string; note?: string | null }>;
   /** Submit straight to review instead of leaving the revision as draft. */
   submit?: boolean;
@@ -231,6 +236,8 @@ function toRevisionDto(
     status: row.status,
     lang: row.lang,
     translationOf: row.translationOf,
+    title: row.title ?? null,
+    summary: row.summary ?? null,
     content: row.content,
     changeSummary: row.changeSummary,
     rolledBackFromRevisionId: row.rolledBackFromRevisionId,
@@ -452,6 +459,8 @@ export function createKnowledgeService(db: Db, options: KnowledgeServiceOptions 
           status: "draft",
           lang,
           translationOf: null,
+          title: input.title,
+          summary: input.summary ?? null,
           content: input.content,
           changeSummary: "created",
           createdByAgentId: actor.actorType === "agent" ? (actor.actorId ?? null) : null,
@@ -506,6 +515,8 @@ export function createKnowledgeService(db: Db, options: KnowledgeServiceOptions 
     if (current.status === "superseded") {
       throw new KnowledgeDomainError("superseded_read_only", 409, "A superseded item takes no new revisions.");
     }
+    if (input.title != null) assertSingleLine(input.title, "Title");
+    if (input.summary != null) assertSingleLine(input.summary, "Summary");
     if (input.changeSummary != null) assertSingleLine(input.changeSummary, "Change summary");
     const lang = normalizeKnowledgeRevisionLang(input.lang);
     const timestamp = now();
@@ -560,6 +571,8 @@ export function createKnowledgeService(db: Db, options: KnowledgeServiceOptions 
           throw new KnowledgeDomainError("invalid_translation_target", 400, "A translation must reference a canonical revision of the same item.");
         }
       }
+      const revisionTitle = input.title !== undefined ? input.title : locked!.title;
+      const revisionSummary = input.summary !== undefined ? (input.summary ?? null) : locked!.summary;
       const [revision] = await tx
         .insert(knowledgeRevisions)
         .values({
@@ -570,6 +583,8 @@ export function createKnowledgeService(db: Db, options: KnowledgeServiceOptions 
           status: input.submit ? "submitted" : "draft",
           lang,
           translationOf,
+          title: revisionTitle,
+          summary: revisionSummary,
           content: input.content,
           changeSummary: input.changeSummary ?? null,
           createdByAgentId: actor.actorType === "agent" ? (actor.actorId ?? null) : null,
@@ -719,9 +734,14 @@ export function createKnowledgeService(db: Db, options: KnowledgeServiceOptions 
           .set({ status: "approved", approvedAt: now() })
           .where(eq(knowledgeRevisions.id, revision.id));
       }
+      const set: Partial<ItemRow> = { status: "published", deliveredRevisionId: revision.id, updatedAt: now() };
+      if (revision.title != null) {
+        set.title = revision.title;
+        set.summary = revision.summary;
+      }
       const [updated] = await tx
         .update(knowledgeItems)
-        .set({ status: "published", deliveredRevisionId: revision.id, updatedAt: now() })
+        .set(set)
         .where(and(eq(knowledgeItems.nestId, nestId), eq(knowledgeItems.id, current.id)))
         .returning();
       await appendEvent(tx, {
@@ -793,6 +813,10 @@ export function createKnowledgeService(db: Db, options: KnowledgeServiceOptions 
         assertItemTransition(current.status, "published");
         set.status = "published";
         set.deliveredRevisionId = revision.id;
+        if (revision.title != null) {
+          set.title = revision.title;
+          set.summary = revision.summary;
+        }
       } else if (current.status === "in_review") {
         set.status = "in_review";
       }
@@ -843,6 +867,8 @@ export function createKnowledgeService(db: Db, options: KnowledgeServiceOptions 
           itemId: current.id,
           revisionNumber: plan.newRevisionNumber,
           status: "approved",
+          title: target.title,
+          summary: target.summary,
           content: target.content,
           lang: target.lang,
           translationOf: target.translationOf,
@@ -872,14 +898,19 @@ export function createKnowledgeService(db: Db, options: KnowledgeServiceOptions 
       }
 
       const statusToDeliver = input.publish && current.status !== "published" ? "published" : current.status;
+      const set: Partial<ItemRow> = {
+        currentRevisionNumber: plan.newRevisionNumber,
+        deliveredRevisionId: copy!.id,
+        status: statusToDeliver,
+        updatedAt: now(),
+      };
+      if (target.title != null) {
+        set.title = target.title;
+        set.summary = target.summary;
+      }
       const [updated] = await tx
         .update(knowledgeItems)
-        .set({
-          currentRevisionNumber: plan.newRevisionNumber,
-          deliveredRevisionId: copy!.id,
-          status: statusToDeliver,
-          updatedAt: now(),
-        })
+        .set(set)
         .where(and(eq(knowledgeItems.nestId, nestId), eq(knowledgeItems.id, current.id)))
         .returning();
 
@@ -1150,6 +1181,7 @@ export function createKnowledgeService(db: Db, options: KnowledgeServiceOptions 
       sourceRef?: string | null;
       /** Provenance trust (1.7 L-5): set by the callers that propose foreign url content. */
       trust?: KnowledgeSuggestionTrust;
+      idempotencyKey?: string | null;
     },
   ): Promise<{ id: string; targetItemId: string | null; status: string; createdAt: string }> {
     assertSingleLine(input.body, "Suggestion body");
@@ -1158,32 +1190,72 @@ export function createKnowledgeService(db: Db, options: KnowledgeServiceOptions 
       const target = await loadItem(nestId, input.targetSlug);
       targetId = target.id;
     }
-    const [row] = await db
-      .insert(knowledgeSuggestions)
-      .values({
-        companyId: input.companyId,
-        nestId,
-        targetItemId: targetId,
-        body: input.body,
-        rationale: input.rationale ?? null,
-        sourceKind: input.sourceKind ?? null,
-        sourceRef: input.sourceRef ?? null,
-        trust: input.trust ?? null,
-        status: "pending",
-        createdByAgentId: actor.actorType === "agent" ? (actor.actorId ?? null) : null,
-        createdByUserId: actor.actorType === "user" ? (actor.actorId ?? null) : null,
-        createdAt: now(),
-      })
-      .returning();
-    await appendEvent(db, {
-      companyId: input.companyId,
-      nestId,
-      itemId: targetId,
-      event: "knowledge.suggested",
-      payload: { body: input.body },
-      actor,
-    });
-    return { id: row!.id, targetItemId: row!.targetItemId, status: row!.status, createdAt: row!.createdAt.toISOString() };
+    try {
+      return await db.transaction(async (tx) => {
+        if (input.idempotencyKey) {
+          // Fast path: read back an earlier suggestion with the same key.
+          // The partial unique index (migration 0425) is the real guard: if a
+          // concurrent writer commits between this read and the insert below,
+          // the insert throws 23505 and the outer catch reads the winner's
+          // committed row — no duplicate suggestion, no duplicate event.
+          const [existing] = await tx
+            .select()
+            .from(knowledgeSuggestions)
+            .where(and(eq(knowledgeSuggestions.nestId, nestId), eq(knowledgeSuggestions.idempotencyKey, input.idempotencyKey)))
+            .limit(1);
+          if (existing) {
+            return { id: existing.id, targetItemId: existing.targetItemId, status: existing.status, createdAt: existing.createdAt.toISOString() };
+          }
+        }
+        const [row] = await tx
+          .insert(knowledgeSuggestions)
+          .values({
+            companyId: input.companyId,
+            nestId,
+            targetItemId: targetId,
+            body: input.body,
+            rationale: input.rationale ?? null,
+            sourceKind: input.sourceKind ?? null,
+            sourceRef: input.sourceRef ?? null,
+            trust: input.trust ?? null,
+            idempotencyKey: input.idempotencyKey ?? null,
+            status: "pending",
+            createdByAgentId: actor.actorType === "agent" ? (actor.actorId ?? null) : null,
+            createdByUserId: actor.actorType === "user" ? (actor.actorId ?? null) : null,
+            createdAt: now(),
+          })
+          .returning();
+        await appendEvent(tx, {
+          companyId: input.companyId,
+          nestId,
+          itemId: targetId,
+          event: "knowledge.suggested",
+          payload: {
+            body: input.body,
+            suggestionId: row!.id,
+            ...(input.idempotencyKey ? { idempotencyKey: input.idempotencyKey } : {}),
+          },
+          actor,
+        });
+        return { id: row!.id, targetItemId: row!.targetItemId, status: row!.status, createdAt: row!.createdAt.toISOString() };
+      });
+    } catch (err) {
+      // 23505 unique_violation on the (nest_id, idempotency_key) partial
+      // unique index: a concurrent writer won the race and committed first.
+      // This transaction rolled back (no partial rows, no event); read the
+      // winner's committed row in a fresh query and return it.
+      if (isUniqueViolation(err, "knowledge_suggestions_idempotency_key_uq") && input.idempotencyKey) {
+        const [winner] = await db
+          .select()
+          .from(knowledgeSuggestions)
+          .where(and(eq(knowledgeSuggestions.nestId, nestId), eq(knowledgeSuggestions.idempotencyKey, input.idempotencyKey)))
+          .limit(1);
+        if (winner) {
+          return { id: winner.id, targetItemId: winner.targetItemId, status: winner.status, createdAt: winner.createdAt.toISOString() };
+        }
+      }
+      throw err;
+    }
   }
 
   async function decideSuggestion(
@@ -1385,6 +1457,8 @@ export function createKnowledgeService(db: Db, options: KnowledgeServiceOptions 
               itemId: item!.id,
               revisionNumber: 1,
               status: page.status === "published" && gate.mayPublish ? "approved" : "draft",
+              title: page.title,
+              summary: page.summary ?? null,
               content: page.content,
               changeSummary: "import",
               createdAt: timestamp,
@@ -1430,6 +1504,8 @@ export function createKnowledgeService(db: Db, options: KnowledgeServiceOptions 
                 itemId: existing.id,
                 revisionNumber: existing.currentRevisionNumber + 1,
                 status: "draft",
+                title: page.title,
+                summary: page.summary ?? null,
                 content: page.content,
                 changeSummary: "import",
                 createdAt: timestamp,

@@ -57,9 +57,24 @@ export const DEFAULT_REVIEW_REWORK_ENABLED = true;
  */
 export const DEFAULT_REVIEW_REWORK_FALLBACK_ASSIGNEE_AGENT_ID: string | null = null;
 
+// myrmidon(OPE-12397): the pass was 60 s hard-coded, and every pass re-read
+// every linked PR of up to 200 candidate tasks over GitHub — together with the
+// other readers it drained the App's 5000/hour budget before the hour was out.
+// The spacing is now a stored setting (60 s minimum: the release of a blocked
+// review on a new PR head should not lag a merge by more than a minute).
+export const DEFAULT_REVIEW_REWORK_SWEEP_INTERVAL_SEC = 300;
+export const MIN_REVIEW_REWORK_SWEEP_INTERVAL_SEC = 60;
+export const MAX_REVIEW_REWORK_SWEEP_INTERVAL_SEC = 3600;
+
 export const reviewReworkSettingsSchema = z
   .object({
     enabled: z.boolean().default(DEFAULT_REVIEW_REWORK_ENABLED),
+    sweepIntervalSec: z
+      .number()
+      .int()
+      .min(MIN_REVIEW_REWORK_SWEEP_INTERVAL_SEC)
+      .max(MAX_REVIEW_REWORK_SWEEP_INTERVAL_SEC)
+      .default(DEFAULT_REVIEW_REWORK_SWEEP_INTERVAL_SEC),
     fallbackAssigneeAgentId: z.string().uuid().nullable().optional(),
   })
   .strict();
@@ -72,6 +87,12 @@ export type ReviewReworkSettings = z.infer<typeof reviewReworkSettingsSchema>;
 export const patchReviewReworkSettingsSchema = z
   .object({
     enabled: z.boolean().optional(),
+    sweepIntervalSec: z
+      .number()
+      .int()
+      .min(MIN_REVIEW_REWORK_SWEEP_INTERVAL_SEC)
+      .max(MAX_REVIEW_REWORK_SWEEP_INTERVAL_SEC)
+      .optional(),
     fallbackAssigneeAgentId: z.string().uuid().nullable().optional(),
   })
   .strict()
@@ -87,6 +108,7 @@ export function normalizeReviewReworkSettings(raw: unknown): ReviewReworkSetting
   if (parsed.success) {
     return {
       enabled: parsed.data.enabled,
+      sweepIntervalSec: parsed.data.sweepIntervalSec,
       fallbackAssigneeAgentId: parsed.data.fallbackAssigneeAgentId ?? null,
     };
   }
@@ -94,6 +116,7 @@ export function normalizeReviewReworkSettings(raw: unknown): ReviewReworkSetting
   const fallback = reviewReworkSettingsSchema.parse({});
   return {
     enabled: fallback.enabled,
+    sweepIntervalSec: fallback.sweepIntervalSec,
     fallbackAssigneeAgentId: fallback.fallbackAssigneeAgentId ?? null,
   };
 }
@@ -106,6 +129,7 @@ export function mergeReviewReworkSettings(
   return normalizeReviewReworkSettings({
     ...current,
     ...(patch.enabled !== undefined ? { enabled: patch.enabled } : {}),
+    ...(patch.sweepIntervalSec !== undefined ? { sweepIntervalSec: patch.sweepIntervalSec } : {}),
     ...(patch.fallbackAssigneeAgentId !== undefined
       ? { fallbackAssigneeAgentId: patch.fallbackAssigneeAgentId }
       : {}),
@@ -121,6 +145,8 @@ export const REVIEW_REWORK_REOPENED_ACTION = "issue.review_rework.reopened";
 export const REVIEW_REWORK_BLOCKED_ACTION = "issue.review_rework.review_blocked";
 export const REVIEW_REWORK_UNBLOCKED_ACTION = "issue.review_rework.review_unblocked";
 export const REVIEW_REWORK_CLOSED_ACTION = "issue.review_rework.review_closed";
+/** The merged task handed back for a live/operator acceptance instead of done. */
+export const REVIEW_REWORK_ACCEPTANCE_ACTION = "issue.review_rework.acceptance_pending";
 /** The settings-change audit row (mirrors `instance.swarm_claim.updated`). */
 export const REVIEW_REWORK_SETTINGS_UPDATED_ACTION = "instance.review_rework.updated";
 

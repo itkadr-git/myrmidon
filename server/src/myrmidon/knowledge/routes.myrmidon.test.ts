@@ -172,6 +172,23 @@ describe("myrmidon(1.6.6 K-2) knowledge REST gates", () => {
     expect(deps.module.suggest).toHaveBeenCalledTimes(1);
   });
 
+  it("propose passes idempotencyKey to mod.suggest", async () => {
+    const deps = makeDeps({ grants: true });
+    const res = await request(app(deps, agentActor)).post(`${base}/propose`).send({
+      body: "Add a term",
+      sources: [{ kind: "task", ref: "OPE-1" }],
+      idempotencyKey: "test-idem-key-1",
+    });
+    expect(res.status).toBe(201);
+    expect(deps.module.suggest).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        body: "Add a term",
+        idempotencyKey: "test-idem-key-1",
+      }),
+    );
+  });
+
   it("П3: propose without sources is 422 before the store sees it", async () => {
     const deps = makeDeps({ grants: true });
     const res = await request(app(deps, agentActor)).post(`${base}/propose`).send({ body: "No sources here" });
@@ -644,6 +661,23 @@ describe("myrmidon(1.6.6 K-2) knowledge REST gates", () => {
         content: "__probe",
         force: true,
         reason: "intentional probe test",
+      }),
+      expect.anything(),
+    );
+  });
+
+  it("OPE-10241: draft write passes title and summary to the module", async () => {
+    const deps = makeDeps({ grants: true });
+    const res = await request(app(deps, agentActor))
+      .post(`${base}/items/glossary/term/draft`)
+      .send({ content: "valid content with length >= 20 chars", title: "New Title", summary: "New summary" });
+    expect(res.status).toBe(201);
+    expect(deps.module.draft).toHaveBeenCalledWith(
+      "glossary/term",
+      expect.objectContaining({
+        content: "valid content with length >= 20 chars",
+        title: "New Title",
+        summary: "New summary",
       }),
       expect.anything(),
     );

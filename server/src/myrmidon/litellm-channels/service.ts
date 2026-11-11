@@ -1,6 +1,12 @@
 // server/src/myrmidon/litellm-channels/service.ts
 //
 // myrmidon(1.6.7 OPE-9854): Server command layer for LiteLLM channel operations.
+//
+// The gateway has no secret manager: a channel's key travels as a VALUE. The
+// operator names a company secret (`credentialSecretName`) or passes the value
+// (`apiKey`); this layer resolves the name through the company secrets and hands
+// the port the value, never the name. A name with no value is an error here, not
+// an empty key at the gateway.
 
 import type { Db } from "@myrmidon/db";
 import { readGatewayKeySettings } from "@myrmidon/shared";
@@ -65,6 +71,28 @@ export function createLitellmChannelsService(deps: LitellmChannelsDeps): Litellm
     });
   }
 
+  /**
+   * The key value a channel write carries. An explicit `apiKey` wins; otherwise
+   * the named company secret is read. No key at all is allowed (a channel
+   * behind an internal router needs none); a named secret without a value is not.
+   */
+  async function resolveChannelKey(
+    companyId: string,
+    input: { apiKey?: string | null; credentialSecretName?: string | null },
+  ): Promise<string | undefined> {
+    const explicit = typeof input.apiKey === "string" ? input.apiKey : "";
+    if (explicit) return explicit;
+    const secretName = typeof input.credentialSecretName === "string" ? input.credentialSecretName.trim() : "";
+    if (!secretName) return undefined;
+    const value = await deps.readSecretValue(companyId, secretName);
+    if (!value) {
+      throw unprocessable(`the company secret "${secretName}" has no value; the channel key cannot be resolved`, {
+        code: "channel_credential_unresolved",
+      });
+    }
+    return value;
+  }
+
   return {
     async listChannels(companyId: string): Promise<LitellmChannelView[]> {
       const port = await getPort(companyId);
@@ -87,10 +115,12 @@ export function createLitellmChannelsService(deps: LitellmChannelsDeps): Litellm
       }
 
       const port = await getPort(companyId);
+      const apiKey = await resolveChannelKey(companyId, input);
       return port.addChannel({
         ...input,
         modelName: input.modelName.trim(),
         providerModel: providerModel.trim(),
+        apiKey: apiKey ?? null,
       });
     },
 
@@ -106,7 +136,8 @@ export function createLitellmChannelsService(deps: LitellmChannelsDeps): Litellm
       }
 
       const port = await getPort(companyId);
-      return port.updateChannel(input);
+      const apiKey = await resolveChannelKey(companyId, input);
+      return port.updateChannel({ ...input, apiKey: apiKey ?? null });
     },
 
     async disableChannel(companyId: string, channelId: string): Promise<LitellmChannelView> {

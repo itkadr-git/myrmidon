@@ -111,6 +111,35 @@ export interface AdapterExecutionResult {
    */
   promptBreakdown?: PromptBreakdown;
   /**
+   * myrmidon(1.6.7 TOKENS-TRACE / OPE-10727): actual char counts per prompt
+   * section, parallel to `promptBreakdown.parts` (which holds token estimates
+   * from the chars/4 heuristic). Keyed by the same section names. Lets the
+   * server store both tokens and chars per section in llm_call_traces.
+   */
+  sectionChars?: Record<string, number>;
+  /**
+   * myrmidon(1.6.7 TOKENS-TRACE / OPE-10727): estimated tool schema sizes
+   * derived from the paperclip_skills field sent to the gateway. The gateway
+   * builds actual JSON schemas from these skills; we estimate the size from
+   * the skill metadata to give the server a rough sense of tool schema bloat.
+   */
+  toolSchemaChars?: number | null;
+  toolSchemaTokens?: number | null;
+  /**
+   * myrmidon(1.6.7 TOKENS-TRACE / OPE-10727): accumulated tool result sizes
+   * observed from tool.started/tool.completed events during the run.
+   */
+  toolResultChars?: number | null;
+  toolResultTokens?: number | null;
+  /**
+   * myrmidon(1.6.7 TOKENS-TRACE / OPE-10727): session compaction info from
+   * the server-side session rotation evaluation. Set by the server when
+   * persisting the trace; the adapter leaves this false.
+   */
+  compacted?: boolean;
+  preCompactChars?: number | null;
+  postCompactChars?: number | null;
+  /**
    * How `usage` totals are scoped. "per_run" means the tokens cover only this
    * execution; "session_cumulative" means they are running totals for the
    * persisted session, and the server must delta consecutive runs. Absent
@@ -517,6 +546,21 @@ export interface ServerAdapterModule {
       reason: string;
     };
   }) => Promise<{ stopped: boolean }>;
+  /**
+   * myrmidon(HERMES-RUN-REATTACH, OPE-10023): probe whether a remote gateway run
+   * is still alive on the bot gateway, completed, missing (404), or unreachable.
+   */
+  probeGatewayRunForBoard?: (input: {
+    baseUrl: string;
+    apiKey?: string | null;
+    headers?: Record<string, string> | string | null;
+    gatewayRunId: string;
+    timeoutMs?: number;
+  }) => Promise<{
+    state: "live" | "terminal" | "not_found" | "unreachable";
+    status: string | null;
+    error?: string;
+  }>;
   supportsLocalAgentJwt?: boolean;
   /** How this adapter receives Paperclip's run-scoped control tools. */
   runtimeToolDelivery?: AdapterRuntimeToolDelivery;
@@ -529,6 +573,12 @@ export interface ServerAdapterModule {
    * or a Paperclip code update.
    */
   refreshModels?: () => Promise<AdapterModel[]>;
+  /**
+   * Whether an empty dynamic result is authoritative instead of a signal to
+   * fall back to declared/static models. This is used by remote catalogs where
+   * an empty successful response means every model was removed.
+   */
+  modelsAreAuthoritativeWhenEmpty?: boolean;
   agentConfigurationDoc?: string;
   /**
    * Optional lifecycle hook when an agent is approved/hired (join-request or hire_agent approval).
@@ -786,6 +836,9 @@ export interface CreateConfigValues {
   workspaceBranchTemplate?: string;
   worktreeParentDir?: string;
   runtimeServicesJson?: string;
+  filesystemScope?: "workspace";
+  networkScope?: "deny" | "allowlist";
+  networkAllowlist?: string;
   defaultEnvironmentId?: string;
   maxTurnsPerRun: number;
   heartbeatEnabled: boolean;
@@ -795,6 +848,9 @@ export interface CreateConfigValues {
   // openclaw_gateway adapter fields
   authToken?: string;
   agentId?: string;
+  clientId?: string;
+  clientMode?: string;
+  clientVersion?: string;
   sessionKeyStrategy?: string;
   sessionKey?: string;
   timeoutSec?: number;
