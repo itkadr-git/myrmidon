@@ -22,6 +22,7 @@ const mockHeartbeatService = vi.hoisted(() => ({
 const mockIssueApprovalService = vi.hoisted(() => ({
   listIssuesForApproval: vi.fn(),
   linkManyForApproval: vi.fn(),
+  assertNoPrivateIssues: vi.fn(),
 }));
 
 const mockSecretService = vi.hoisted(() => ({
@@ -125,6 +126,7 @@ describe("approval routes idempotent retries", () => {
     mockHeartbeatService.wakeup.mockReset();
     mockIssueApprovalService.listIssuesForApproval.mockReset();
     mockIssueApprovalService.linkManyForApproval.mockReset();
+    mockIssueApprovalService.assertNoPrivateIssues.mockReset();
     mockSecretService.normalizeHireApprovalPayloadForPersistence.mockReset();
     mockLogActivity.mockReset();
     mockAccessService.decide.mockReset();
