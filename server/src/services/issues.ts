@@ -9132,12 +9132,12 @@ export function issueService(db: Db) {
         ORDER BY depth ASC, created_at ASC, id ASC
         LIMIT ${maxNodes + 1}
       `);
-      const subtreeRows: IssueSubtreeDiagnosticsIssueRow[] = Array.from(
-        rawSubtreeRows,
-      ).map((row) => ({
-        ...row,
-        depth: Number(row.depth),
-      }));
+      const subtreeRows = Array.from(rawSubtreeRows).map(
+        (row): IssueSubtreeDiagnosticsIssueRow => ({
+          ...row,
+          depth: Number(row.depth),
+        }),
+      );
       const rowsWithinDepth = subtreeRows.filter(
         (row) => row.depth <= maxDepth,
       );
