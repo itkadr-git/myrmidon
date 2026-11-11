@@ -9419,7 +9419,9 @@ export function issueRoutes(
         maskPrivate: req.actor.type === "agent",
       }),
       svc
-        .listBlockerAttention(issue.companyId, [issue])
+        .listBlockerAttention(issue.companyId, [issue], db, {
+          maskPrivate: req.actor.type === "agent",
+        })
         .then((map) => map.get(issue.id) ?? null),
       svc
         .listReviewAttention(issue.companyId, [issue])
@@ -9793,7 +9795,9 @@ export function issueRoutes(
         maskPrivate: req.actor.type === "agent",
       }),
       svc
-        .listBlockerAttention(issue.companyId, [issue])
+        .listBlockerAttention(issue.companyId, [issue], db, {
+          maskPrivate: req.actor.type === "agent",
+        })
         .then((map) => map.get(issue.id) ?? null),
       svc
         .listReviewAttention(issue.companyId, [issue])

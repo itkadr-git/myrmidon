@@ -3461,6 +3461,8 @@ type IssueBlockerAttentionNode = {
   executionRunId?: string | null;
   assigneeAgentId: string | null;
   assigneeUserId: string | null;
+  /** Selected only when masking is requested (1.7 PRIVATE-TASKS F4). */
+  isPrivate?: boolean | null;
 };
 type IssueBlockerAttentionInputNode = Pick<
   IssueBlockerAttentionNode,
@@ -3808,6 +3810,7 @@ async function listIssueBlockerAttentionMap(
   dbOrTx: any,
   companyId: string,
   issueRows: IssueBlockerAttentionInputNode[],
+  opts?: { maskPrivate?: boolean },
 ): Promise<Map<string, IssueBlockerAttention>> {
   const roots = issueRows.filter(
     (row) => row.companyId === companyId && row.status === "blocked",
@@ -3882,6 +3885,7 @@ async function listIssueBlockerAttentionMap(
           executionRunId: issues.executionRunId,
           assigneeAgentId: issues.assigneeAgentId,
           assigneeUserId: issues.assigneeUserId,
+          isPrivate: issues.isPrivate,
         })
         .from(issueRelations)
         .innerJoin(issues, eq(issueRelations.issueId, issues.id))
@@ -3913,6 +3917,7 @@ async function listIssueBlockerAttentionMap(
           executionRunId: issues.executionRunId,
           assigneeAgentId: issues.assigneeAgentId,
           assigneeUserId: issues.assigneeUserId,
+          isPrivate: issues.isPrivate,
         })
         .from(issues)
         .where(
@@ -3959,21 +3964,26 @@ async function listIssueBlockerAttentionMap(
 
       for (const row of [...unresolvedExplicitBlockerRows, ...childRows]) {
         if (!row.issueId || nodesById.has(row.blockerIssueId)) continue;
+        // 1.7 PRIVATE-TASKS F4: stub private neighbours before any derived
+        // sample/terminalBlocker output can carry identifier/title onward.
+        const nodeRow = opts?.maskPrivate
+          ? maskPrivateNeighbour(row)
+          : row;
         nodesById.set(row.blockerIssueId, {
-          id: row.blockerIssueId,
-          companyId: row.companyId,
-          parentId: row.parentId,
-          identifier: row.identifier,
-          title: row.title,
-          status: row.status,
-          priority: row.priority,
-          createdAt: row.createdAt,
-          updatedAt: row.updatedAt,
-          blockedTransitionAt: row.blockedTransitionAt,
-          originKind: row.originKind,
-          executionRunId: row.executionRunId,
-          assigneeAgentId: row.assigneeAgentId,
-          assigneeUserId: row.assigneeUserId,
+          id: nodeRow.blockerIssueId,
+          companyId: nodeRow.companyId,
+          parentId: nodeRow.parentId,
+          identifier: nodeRow.identifier,
+          title: nodeRow.title,
+          status: nodeRow.status,
+          priority: nodeRow.priority,
+          createdAt: nodeRow.createdAt,
+          updatedAt: nodeRow.updatedAt,
+          blockedTransitionAt: nodeRow.blockedTransitionAt,
+          originKind: nodeRow.originKind,
+          executionRunId: nodeRow.executionRunId,
+          assigneeAgentId: nodeRow.assigneeAgentId,
+          assigneeUserId: nodeRow.assigneeUserId,
         });
         nextFrontier.add(row.blockerIssueId);
       }
@@ -5647,6 +5657,7 @@ async function listIssueBlockedInboxAttentionMap(
   dbOrTx: any,
   companyId: string,
   issueRows: BlockedInboxIssueRow[],
+  opts?: { maskPrivate?: boolean },
 ): Promise<Map<string, IssueBlockedInboxAttention>> {
   const rowIssueIds = [...new Set(issueRows.map((row) => row.id))];
   const result = new Map<string, IssueBlockedInboxAttention>();
@@ -6380,6 +6391,7 @@ async function listIssueBlockedInboxAttentionMap(
       dbOrTx,
       companyId,
       issueRows,
+      opts,
     );
     for (const issue of issueRows) {
       const issueBlockedAt = issue.blockedTransitionAt ?? issue.updatedAt ?? issue.createdAt;
@@ -6657,9 +6669,13 @@ async function listBlockedInboxIssues(
     blockedByMapForIssues(dbOrTx, companyId, issueIds, {
       maskPrivate: filters?.maskPrivate,
     }),
-    listIssueBlockerAttentionMap(dbOrTx, companyId, withRuns),
+    listIssueBlockerAttentionMap(dbOrTx, companyId, withRuns, {
+      maskPrivate: filters?.maskPrivate,
+    }),
     listIssueReviewAttentionMap(dbOrTx, companyId, withRuns),
-    listIssueBlockedInboxAttentionMap(dbOrTx, companyId, withRuns),
+    listIssueBlockedInboxAttentionMap(dbOrTx, companyId, withRuns, {
+      maskPrivate: filters?.maskPrivate,
+    }),
     includeLiveDescendantSummary
       ? liveDescendantCountMapForIssues(dbOrTx, companyId, issueIds)
       : Promise.resolve(new Map<string, number>()),
@@ -6773,7 +6789,9 @@ async function countBlockedInboxIssues(
   if (rows.length === 0) return 0;
 
   const blockedInboxAttentionByIssueId =
-    await listIssueBlockedInboxAttentionMap(dbOrTx, companyId, rows);
+    await listIssueBlockedInboxAttentionMap(dbOrTx, companyId, rows, {
+      maskPrivate: filters?.maskPrivate,
+    });
   const rawSearchInput = filters?.q?.trim() ?? "";
   const rawSearch = rawSearchInput.toLowerCase();
   const commentSearchMatchIssueIds = new Set<string>();
@@ -8404,10 +8422,14 @@ export function issueService(db: Db) {
         reviewAttentionByIssueId,
         blockedInboxAttentionByIssueId,
       ] = await Promise.all([
-        listIssueBlockerAttentionMap(db, companyId, withRuns),
+        listIssueBlockerAttentionMap(db, companyId, withRuns, {
+          maskPrivate: filters?.maskPrivate,
+        }),
         listIssueReviewAttentionMap(db, companyId, withRuns),
         includeBlockedInboxAttention
-          ? listIssueBlockedInboxAttentionMap(db, companyId, withRuns)
+          ? listIssueBlockedInboxAttentionMap(db, companyId, withRuns, {
+              maskPrivate: filters?.maskPrivate,
+            })
           : Promise.resolve(new Map<string, IssueBlockedInboxAttention>()),
       ]);
 
@@ -9080,8 +9102,8 @@ export function issueService(db: Db) {
             child.assignee_user_id,
             child.created_at,
             child.updated_at,
-            child.is_private,
             issue_tree.depth + 1,
+            child.is_private,
             issue_tree.path || child.id
           FROM issues child
           JOIN issue_tree ON child.parent_id = issue_tree.id
@@ -9110,7 +9132,9 @@ export function issueService(db: Db) {
         ORDER BY depth ASC, created_at ASC, id ASC
         LIMIT ${maxNodes + 1}
       `);
-      const subtreeRows = Array.from(rawSubtreeRows).map((row) => ({
+      const subtreeRows: IssueSubtreeDiagnosticsIssueRow[] = Array.from(
+        rawSubtreeRows,
+      ).map((row) => ({
         ...row,
         depth: Number(row.depth),
       }));
@@ -9359,8 +9383,9 @@ export function issueService(db: Db) {
       companyId: string,
       issueRows: IssueBlockerAttentionInputNode[],
       dbOrTx: any = db,
+      opts?: { maskPrivate?: boolean },
     ) => {
-      return listIssueBlockerAttentionMap(dbOrTx, companyId, issueRows);
+      return listIssueBlockerAttentionMap(dbOrTx, companyId, issueRows, opts);
     },
 
     listReviewAttention: async (

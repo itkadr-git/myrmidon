@@ -298,11 +298,15 @@ describeEmbeddedPostgres(
         .set("Authorization", `Bearer ${fixture.agentToken}`);
       expect(res.status, JSON.stringify(res.body)).toBe(200);
       expectNoSecrets(res.body);
-      const ancestors = (res.body.ancestors ?? []) as Array<Record<string, unknown>>;
+      const body = res.body as {
+        ancestors?: Array<Record<string, unknown>>;
+        issue?: { blockedBy?: Array<Record<string, unknown>> };
+      };
+      const ancestors = body.ancestors ?? [];
       const parentEntry = ancestors.find((row) => row.id === fixture.privateParent.id);
       expect(parentEntry, "private parent must stay in ancestors").toBeTruthy();
       expect(parentEntry?.title).toBe("Private task");
-      const blockerEntry = findBlocker(res.body.blockedBy, fixture.privateBlocker.id);
+      const blockerEntry = findBlocker(body.issue?.blockedBy, fixture.privateBlocker.id);
       expect(blockerEntry, "private blocker must stay listed").toBeTruthy();
       expect(blockerEntry?.title).toBe("Private task");
     }, 30_000);
@@ -358,18 +362,18 @@ describeEmbeddedPostgres(
         .set("Authorization", `Bearer ${fixture.agentToken}`);
       expect(res.status, JSON.stringify(res.body)).toBe(200);
       expectNoSecrets(res.body);
-      const nodes = (res.body.nodes ?? []) as Array<Record<string, unknown>>;
-      const parentNode = nodes.find((row) => row.id === fixture.privateParent.id);
+      const nodeRows = (res.body.nodes ?? []) as Array<{
+        issue: { id: string; title: string };
+        blockers?: Array<Record<string, unknown>>;
+      }>;
+      const parentNode = nodeRows.find(
+        (row) => row.issue.id === fixture.privateParent.id,
+      );
       if (parentNode) {
-        expect(parentNode.title).toBe("Private task");
-        expect("isPrivate" in parentNode).toBe(false);
+        expect(parentNode.issue.title).toBe("Private task");
+        expect("isPrivate" in parentNode.issue).toBe(false);
       }
-      const blockerRows = Object.values(
-        (res.body.blockersByIssueId ?? {}) as Record<
-          string,
-          Array<Record<string, unknown>>
-        >,
-      ).flat();
+      const blockerRows = nodeRows.flatMap((row) => row.blockers ?? []);
       const blockerEntry = blockerRows.find(
         (row) => row.id === fixture.privateBlocker.id,
       );
