@@ -6,10 +6,11 @@ import { after, before, describe, it } from "node:test";
 import {
   applyToText,
   buildPackageIndex,
-  collectWorkspaceClosure,
   globToRegExp,
+  collectWorkspaceClosure,
   main,
   parseWorkspaceGlobs,
+  selectSubstitutions,
   publishOverrides,
   workspacePackageDirs,
 } from "./prod-runtime-exports.mjs";
@@ -100,6 +101,40 @@ const MANIFEST_DEVONLY = JSON.stringify(
   null,
   2,
 ) + "\n";
+const MANIFEST_PC_MAIN_TYPES = JSON.stringify(
+  {
+    name: "@test/pc-main-types",
+    version: "1.0.0",
+    exports: { ".": "./src/index.ts" },
+    publishConfig: { main: "./dist/index.js", types: "./dist/index.d.ts" },
+  },
+  null,
+  2,
+) + "\n";
+
+const MANIFEST_SAME_EXPORTS = JSON.stringify(
+  {
+    name: "@test/same-exports",
+    version: "1.0.0",
+    exports: { ".": "./dist/index.js" },
+    publishConfig: { main: "./dist/index.js", exports: { ".": "./dist/index.js" } },
+  },
+  null,
+  2,
+) + "\n";
+
+const MANIFEST_FULLY_MATCHING = JSON.stringify(
+  {
+    name: "@test/fully-matching",
+    version: "1.0.0",
+    main: "./dist/index.js",
+    types: "./dist/index.d.ts",
+    exports: { ".": "./dist/index.js" },
+    publishConfig: { main: "./dist/index.js", types: "./dist/index.d.ts", exports: { ".": "./dist/index.js" } },
+  },
+  null,
+  2,
+) + "\n";
 
 const MANIFEST_ENTRY = JSON.stringify(
   {
@@ -111,6 +146,9 @@ const MANIFEST_ENTRY = JSON.stringify(
       "@test/direct": "workspace:*",
       "@test/no-publish-config": "workspace:*",
       "@test/off-closure": "^1.0.0",
+      "@test/pc-main-types": "workspace:*",
+      "@test/same-exports": "workspace:*",
+      "@test/fully-matching": "workspace:*",
     },
     devDependencies: { "@test/dev-only": "workspace:*" },
   },
@@ -134,6 +172,11 @@ before(() => {
   const direct = readPkg(path.join(workDir, "packages", "direct"));
   direct.dependencies = { "@test/transitive": "workspace:*" };
   fs.writeFileSync(path.join(workDir, "packages", "direct", "package.json"), JSON.stringify(direct, null, 2) + "\n");
+  // Selection edge cases: publishConfig.main/types without exports, exports
+  // already matching while main/types differ, and a fully matching package.
+  writePackage(path.join(workDir, "packages", "pc-main-types"), MANIFEST_PC_MAIN_TYPES, { dist: true });
+  writePackage(path.join(workDir, "packages", "same-exports"), MANIFEST_SAME_EXPORTS, { dist: true });
+  writePackage(path.join(workDir, "packages", "fully-matching"), MANIFEST_FULLY_MATCHING, { dist: true });
   // A package outside the closure that must never be touched.
   writePackage(path.join(workDir, "packages", "ignored"), MANIFEST_OFF_CLOSURE, { dist: true });
 });
@@ -169,9 +212,12 @@ describe("workspacePackageDirs", () => {
       "packages/dev-only",
       "packages/direct",
       "packages/entry",
+      "packages/fully-matching",
       "packages/nested/deep/pkg",
       "packages/no-pc",
       "packages/off-closure",
+      "packages/pc-main-types",
+      "packages/same-exports",
       "packages/transitive",
     ]);
     // packages/ignored must not be a workspace member.
@@ -192,7 +238,10 @@ describe("buildPackageIndex and collectWorkspaceClosure", () => {
     assert.deepEqual([...closure.keys()].sort(), [
       "@test/direct",
       "@test/entry",
+      "@test/fully-matching",
       "@test/no-publish-config",
+      "@test/pc-main-types",
+      "@test/same-exports",
       "@test/transitive",
     ]);
   });
@@ -234,9 +283,12 @@ describe("main apply/restore end to end", () => {
     const table = log.lines.join("\n");
     assert.match(table, /@test\/direct/);
     assert.match(table, /@test\/transitive/);
+    assert.match(table, /@test\/pc-main-types\s+main\+types\s+dist: yes/);
+    assert.match(table, /@test\/same-exports\s+main\+exports\s+dist: yes/);
     assert.match(table, /skipped \(no publishConfig main\/types\/exports\): @test\/no-publish-config/);
+    assert.match(table, /skipped \(already serving dist\): @test\/fully-matching/);
     assert.match(table, /skipped \(entry package\): @test\/entry/);
-    assert.match(table, /dry-run: 2 package\(s\) to substitute/);
+    assert.match(table, /dry-run: 4 package\(s\) to substitute/);
     // Nothing written: no backup, no rewritten manifests.
     assert.ok(!fs.existsSync(path.join(workDir, "node_modules", ".cache", "myrmidon-prod-exports")));
     const entry = readPkg(path.join(workDir, "packages", "entry"));
@@ -262,6 +314,17 @@ describe("main apply/restore end to end", () => {
     assert.ok(!("publishConfig" in transitive) === false); // publishConfig kept
     assert.ok(transitive.publishConfig && transitive.publishConfig.main === "./dist/index.js");
 
+    // publishConfig.main/types without publishConfig.exports are substituted too.
+    const pcMainTypes = readPkg(path.join(workDir, "packages", "pc-main-types"));
+    assert.equal(pcMainTypes.main, "./dist/index.js");
+    assert.equal(pcMainTypes.types, "./dist/index.d.ts");
+    assert.deepEqual(pcMainTypes.exports, { ".": "./src/index.ts" }); // no pc.exports: untouched
+
+    // exports already serving dist but main/types differing still substitutes main.
+    const sameExports = readPkg(path.join(workDir, "packages", "same-exports"));
+    assert.equal(sameExports.main, "./dist/index.js");
+    assert.deepEqual(sameExports.exports, { ".": "./dist/index.js" });
+
     // Off-closure and dev-only packages stay untouched, ignored package too.
     const offClosure = readPkg(path.join(workDir, "packages", "off-closure"));
     assert.equal(offClosure.exports["."], "./src/index.ts");
@@ -276,7 +339,12 @@ describe("main apply/restore end to end", () => {
     // Backup exists with original texts.
     const backupFile = path.join(workDir, "node_modules", ".cache", "myrmidon-prod-exports", "backup.json");
     const backup = JSON.parse(fs.readFileSync(backupFile, "utf8"));
-    assert.deepEqual(Object.keys(backup.packages).sort(), ["@test/direct", "@test/transitive"]);
+    assert.deepEqual(Object.keys(backup.packages).sort(), [
+      "@test/direct",
+      "@test/pc-main-types",
+      "@test/same-exports",
+      "@test/transitive",
+    ]);
     assert.equal(backup.packages["@test/transitive"].originalText, MANIFEST_TRANSITIVE);
   });
 
@@ -303,6 +371,8 @@ describe("main apply/restore end to end", () => {
         return JSON.stringify(pkg, null, 2) + "\n";
       })()],
       ["transitive", MANIFEST_TRANSITIVE],
+      ["pc-main-types", MANIFEST_PC_MAIN_TYPES],
+      ["same-exports", MANIFEST_SAME_EXPORTS],
     ]) {
       const actual = fs.readFileSync(path.join(workDir, "packages", dir, "package.json"), "utf8");
       assert.equal(actual, expected, `${dir}/package.json byte-identical`);
@@ -353,22 +423,14 @@ describe("main apply/restore end to end", () => {
 });
 
 describe("real tree dry-run", () => {
-  it("server closure substitutes the expected packages on the real tree", () => {
+  it("server closure selects the expected packages via selectSubstitutions", () => {
     const index = buildPackageIndex(REAL_ROOT);
     const closure = collectWorkspaceClosure("@myrmidon/server", index);
-    const substitute = [...closure]
-      .filter(([name, dir]) => {
-        if (name === "@myrmidon/server") return false;
-        const pkg = readPkg(dir);
-        const pcExports = pkg.publishConfig?.exports;
-        if (pcExports === undefined) return false;
-        return JSON.stringify(pkg.exports ?? null) !== JSON.stringify(pcExports);
-      })
-      .map(([name]) => name)
-      .sort();
-    // 17 = the server's workspace closure minus the entry itself and
-    // @myrmidon/plugin-sdk, whose top-level exports already point at dist.
-    assert.deepEqual(substitute, [
+    const { overridesByPackage, skipReasons } = selectSubstitutions("@myrmidon/server", closure, index);
+    // 18 = the server's workspace closure minus the entry itself: the 17
+    // src-pointing packages plus @myrmidon/plugin-sdk, whose top-level
+    // `exports` already matches publishConfig but `main`/`types` do not.
+    assert.deepEqual([...overridesByPackage.keys()].sort(), [
       "@myrmidon/adapter-claude-local",
       "@myrmidon/adapter-codex-local",
       "@myrmidon/adapter-cursor-cloud",
@@ -384,8 +446,15 @@ describe("real tree dry-run", () => {
       "@myrmidon/corpus",
       "@myrmidon/db",
       "@myrmidon/hermes-paperclip-adapter",
+      "@myrmidon/plugin-sdk",
       "@myrmidon/shared",
       "@myrmidon/skills-catalog",
     ]);
+    // Only the entry itself is skipped on the real tree.
+    assert.deepEqual([...skipReasons.keys()].sort(), ["@myrmidon/server"]);
+    assert.equal(skipReasons.get("@myrmidon/server"), "entry package");
+    // plugin-sdk is selected because main/types deviate; the override map
+    // carries all its publishConfig keys (identical exports is a no-op write).
+    assert.deepEqual(Object.keys(overridesByPackage.get("@myrmidon/plugin-sdk")).sort(), ["exports", "main", "types"]);
   });
 });

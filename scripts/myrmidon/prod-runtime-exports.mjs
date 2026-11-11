@@ -304,9 +304,15 @@ function pad(name, width) {
   return name.length >= width ? name : name + " ".repeat(width - name.length);
 }
 
-function commandApply(root, entry, dryRun, log) {
-  const index = buildPackageIndex(root);
-  const closure = collectWorkspaceClosure(entry, index);
+/**
+ * Decides which closure packages get publish substitution. Substitutes when
+ * at least one substitutable field deviates from the publish config: `exports`
+ * pointing at src while `publishConfig.exports` points at dist, or
+ * `main`/`types` missing while `publishConfig` has them (even when `exports`
+ * already matches). Packages whose top level fully matches their publish
+ * config are skipped as already serving dist.
+ */
+export function selectSubstitutions(entry, closure, index) {
   const overridesByPackage = new Map();
   const skipReasons = new Map();
   for (const [name, dir] of closure) {
@@ -317,26 +323,28 @@ function commandApply(root, entry, dryRun, log) {
       continue;
     }
     const pkg = readJson(join(dir, "package.json"));
-    const publishConfig = pkg.publishConfig ?? {};
-    if (publishConfig.exports === undefined) {
-      skipReasons.set(
-        name,
-        Object.keys(publishOverrides(pkg)).length > 0
-          ? "no publishConfig exports"
-          : "no publishConfig main/types/exports",
-      );
+    const overrides = publishOverrides(pkg);
+    if (Object.keys(overrides).length === 0) {
+      skipReasons.set(name, "no publishConfig main/types/exports");
       continue;
     }
-    // Gate: substitute only when the package actually deviates from its
-    // publish config — `exports` pointing at src vs `publishConfig.exports`
-    // pointing at dist. Packages that already serve dist (e.g.
-    // @myrmidon/plugin-sdk) are skipped even if main/types differ.
-    if (JSON.stringify(pkg.exports ?? null) === JSON.stringify(publishConfig.exports)) {
+    const differs = PUBLISH_KEYS.some(
+      (key) => overrides[key] !== undefined &&
+        JSON.stringify(pkg[key] ?? null) !== JSON.stringify(overrides[key]),
+    );
+    if (!differs) {
       skipReasons.set(name, "already serving dist");
       continue;
     }
-    overridesByPackage.set(name, publishOverrides(pkg));
+    overridesByPackage.set(name, overrides);
   }
+  return { overridesByPackage, skipReasons };
+}
+
+function commandApply(root, entry, dryRun, log) {
+  const index = buildPackageIndex(root);
+  const closure = collectWorkspaceClosure(entry, index);
+  const { overridesByPackage, skipReasons } = selectSubstitutions(entry, closure, index);
   const skipped = [...skipReasons.keys()].sort();
   const substitute = [...overridesByPackage.keys()].sort();
 
