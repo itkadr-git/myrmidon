@@ -34,7 +34,7 @@ const GATE_FIXTURE = JSON.parse(
     fileURLToPath(new URL("../../../../docs/myrmidon/bot-disk-contract/dockergate-disk.json", import.meta.url)),
     "utf8",
   ),
-) as unknown;
+) as Record<string, unknown>;
 
 function rootUsage(usedPercent: number, at: string): HostRootUsage {
   const totalBytes = 286 * 1024 * 1024 * 1024;
@@ -148,7 +148,7 @@ describe("createDockergateDiskClient readRootUsage", () => {
   });
 
   it("answers null when the gate predates the root field", async () => {
-    const legacy = { ...GATE_FIXTURE } as Record<string, unknown>;
+    const legacy = { ...GATE_FIXTURE };
     delete legacy.root;
     const fetchImpl = vi.fn().mockResolvedValue(
       new Response(JSON.stringify(legacy), { status: 200 }),
