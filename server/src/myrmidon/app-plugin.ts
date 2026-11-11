@@ -18,6 +18,7 @@ export { myrmidonProcessesRouter } from "./processes/index.js"; // myrmidon(PROC
 export { myrmidonPauseGuardRoutes } from "./pause-guard/index.js";
 export { myrmidonRunPriorityRoutes } from "./run-priority/index.js"; // myrmidon(1.6.5 RUN-PRIORITY A)
 export { myrmidonBudgetEnforcementRoutes } from "./budget-enforcement/index.js"; // myrmidon(1.7-BUDGET-CONFIG-B)
+export { nestRedactRoutes } from "./redact/index.js"; // myrmidon(1.7-REDACT): GET/PATCH per-nest redaction dictionaries and rules (OPE-8660)
 export { myrmidonBehaviorSettingsRoutes } from "./behavior-settings/index.js"; // myrmidon(SETTINGS-CORE)
 export { myrmidonTelegramDmProgressRoutes } from "./telegram-dm-progress/index.js"; // myrmidon(DM-PROGRESS)
 export { myrmidonBridgeLanguageRoutes } from "./bridge-language/index.js";

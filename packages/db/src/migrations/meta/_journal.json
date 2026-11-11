@@ -2774,6 +2774,13 @@
       "when": 1794293268840,
       "tag": "0478_issues_is_private",
       "breakpoints": true
+    },
+    {
+      "idx": 480,
+      "version": "7",
+      "when": 1794352538344,
+      "tag": "0480_equal_sharon_carter",
+      "breakpoints": true
     }
   ]
 }
