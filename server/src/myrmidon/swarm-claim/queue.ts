@@ -206,6 +206,9 @@ export function roleQueueRows(
         isNull(issues.assigneeUserId),
         isNull(issues.hiddenAt),
         isNull(issues.conversationAgentId),
+        // 1.7 PRIVATE-TASKS (OPE-12704): a private task is never a swarm
+        // candidate — not even when it sits unassigned in a queue status.
+        eq(issues.isPrivate, false),
         inArray(issues.status, [...SWARM_CLAIM_QUEUE_ISSUE_STATUSES]),
         // The task belongs to this agent/role: assigned to the agent (or, with
         // no agent given, to an agent of the role), or unassigned and routed
