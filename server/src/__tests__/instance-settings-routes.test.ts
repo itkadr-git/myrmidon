@@ -805,6 +805,85 @@ describe("instance settings routes", () => {
     expect(mockInstanceSettingsService.updateGeneral).not.toHaveBeenCalled();
   });
 
+  describe("myrmidon(1.7-AUTO-UPDATE-CANARY, OPE-12123) updateCanary / updateCanaryPercent through PATCH /instance/settings/general", () => {
+    const adminActor = {
+      type: "board",
+      userId: "admin-1",
+      source: "session",
+      isInstanceAdmin: true,
+      companyIds: ["company-1"],
+      memberships: [{ companyId: "company-1", role: "owner" }],
+    };
+
+    it("accepts valid canary settings (boundaries 0 and 100) and forwards them to the service", async () => {
+      const app = await createApp(adminActor);
+      mockInstanceSettingsService.getGeneral.mockResolvedValue({
+        censorUsernameInLogs: false,
+        keyboardShortcuts: false,
+        feedbackDataSharingPreference: "prompt",
+        updateCanary: true,
+        updateCanaryPercent: 25,
+      });
+
+      for (const percent of [0, 50, 100]) {
+        const res = await request(app)
+          .patch("/api/instance/settings/general")
+          .send({ updateCanary: percent !== 50, updateCanaryPercent: percent });
+        expect(res.status).toBe(200);
+      }
+      expect(mockInstanceSettingsService.updateGeneral).toHaveBeenCalledWith({
+        updateCanary: true,
+        updateCanaryPercent: 100,
+      });
+    });
+
+    it("round-trips the stored canary fields back through GET general", async () => {
+      const app = await createApp(adminActor);
+      mockInstanceSettingsService.getGeneral.mockResolvedValue({
+        censorUsernameInLogs: false,
+        keyboardShortcuts: false,
+        feedbackDataSharingPreference: "prompt",
+        updateCanary: false,
+        updateCanaryPercent: 0,
+      });
+
+      const getRes = await request(app).get("/api/instance/settings/general");
+      expect(getRes.status).toBe(200);
+      expect(getRes.body.updateCanary).toBe(false);
+      expect(getRes.body.updateCanaryPercent).toBe(0);
+    });
+
+    it.each([-1, 101, 25.5, "50", null])(
+      "rejects updateCanaryPercent=%j with HTTP 400 and leaves the service untouched",
+      async (percent) => {
+        const app = await createApp(adminActor);
+        const res = await request(app)
+          .patch("/api/instance/settings/general")
+          .send({ updateCanary: true, updateCanaryPercent: percent });
+        expect(res.status).toBe(400);
+        expect(mockInstanceSettingsService.updateGeneral).not.toHaveBeenCalled();
+      },
+    );
+
+    it("rejects a non-boolean updateCanary with HTTP 400 and leaves the service untouched", async () => {
+      const app = await createApp(adminActor);
+      const res = await request(app)
+        .patch("/api/instance/settings/general")
+        .send({ updateCanary: "yes", updateCanaryPercent: 25 });
+      expect(res.status).toBe(400);
+      expect(mockInstanceSettingsService.updateGeneral).not.toHaveBeenCalled();
+    });
+
+    it("accepts a patch that only flips the canary switch (percent absent, ignored when off)", async () => {
+      const app = await createApp(adminActor);
+      const res = await request(app)
+        .patch("/api/instance/settings/general")
+        .send({ updateCanary: false });
+      expect(res.status).toBe(200);
+      expect(mockInstanceSettingsService.updateGeneral).toHaveBeenCalledWith({ updateCanary: false });
+    });
+  });
+
   describe("executionMode floor on cloud-managed instances", () => {
     const adminActor = {
       type: "board",

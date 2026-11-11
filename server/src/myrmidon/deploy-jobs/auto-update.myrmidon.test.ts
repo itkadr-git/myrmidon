@@ -107,7 +107,9 @@ function harness(
   const claimApproval = vi.fn(async (_input: { tag: string; digest: string; jobId: string | null }) => true);
   let current: AutoUpdateSettings = options.policy ?? policy();
 
-  const readHostReport = vi.fn(async (_jobId: string) => null);
+  const readHostReport = vi.fn(
+    async (_jobId: string): Promise<import("./service.js").HostReport | null> => null,
+  );
   const deps: DeployJobServiceDeps = {
     maintenance: {
       enter: enter as unknown as DeployJobServiceDeps["maintenance"]["enter"],
