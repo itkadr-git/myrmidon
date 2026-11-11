@@ -1,0 +1,15 @@
+{
+  "_comment": "OPE-12680: the 10 canonical recall queries. Fill the queries with real prompts from the board's daily traffic (MCP tool calls, gateway memory calls) before the first baseline run; keep them stable across all before/after comparisons.",
+  "queries": [
+    { "name": "q01-architecture", "query": "<fill: архитектурное решение из задач прошлых недель>" },
+    { "name": "q02-incident", "query": "<fill: разбор недавнего инцидента>" },
+    { "name": "q03-deploy", "query": "<fill: как выкатывается доска>" },
+    { "name": "q04-db", "query": "<fill: настройки/схема базы>" },
+    { "name": "q05-agent-role", "query": "<fill: роль и права агента>" },
+    { "name": "q06-review", "query": "<fill: процесс ревью и слияния PR>" },
+    { "name": "q07-memory", "query": "<fill: как устроена память агентов>" },
+    { "name": "q08-task-flow", "query": "<fill: жизненный цикл задачи на доске>" },
+    { "name": "q09-external", "query": "<fill: правила внешних вызовов>" },
+    { "name": "q10-conventions", "query": "<fill: конвенции репозитория>" }
+  ]
+}
