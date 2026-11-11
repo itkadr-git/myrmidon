@@ -262,11 +262,10 @@ describe("myrmidon(1.7-DEBATE-ASYM-A): the debate service", () => {
     expect(h.costs).toHaveLength(0);
 
     // The same private task is debatable by a board (non-agent) caller.
+    // Only the private-task loader is shared; writes/costs/activity go to this
+    // harness's own default deps so the assertions below see them.
     const board = harness({
       loadIssue: h.deps.loadIssue,
-      writeDocument: h.deps.writeDocument,
-      recordCost: h.deps.recordCost,
-      logActivity: h.deps.logActivity,
     });
     const boardService = debateService(board.deps);
     const result = await boardService.run(
