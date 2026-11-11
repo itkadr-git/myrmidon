@@ -105,6 +105,7 @@ func (d *dockerClient) create(ctx context.Context, sp spec, binds []string) erro
 	host["ReadonlyRootfs"] = true
 	host["CapDrop"] = []string{"ALL"}
 	host["SecurityOpt"] = []string{"no-new-privileges:true"}
+	host["Ulimits"] = []map[string]any{{"Name": "core", "Soft": 0, "Hard": 0}}
 	host["Tmpfs"] = map[string]string{"/tmp": ""}
 	host["Init"] = true
 	host["RestartPolicy"] = map[string]string{"Name": "on-failure"}

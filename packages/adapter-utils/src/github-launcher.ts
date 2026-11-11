@@ -41,8 +41,10 @@ async function realGitExecutable() {
       // the bot. A candidate must answer the incident command on its own
       // (real git answers it; mocks that delegate pass; a re-executing wrapper
       // fails) before it is trusted for the real command.
-      if (process.env.PAPERCLIP_GIT_PROBE_ACTIVE === '1') return candidate;
-      const probeEnv = { ...process.env, PAPERCLIP_GIT_PROBE_ACTIVE: '1', PAPERCLIP_GITHUB_OPERATION_ACTIVE: '1' };
+      // myrmidon(REBRAND-C): MYRMIDON_GIT_PROBE_ACTIVE; the PAPERCLIP_ spelling is
+      // still set and read so a bot image and a board one release apart agree.
+      if (process.env.MYRMIDON_GIT_PROBE_ACTIVE === '1' || process.env.PAPERCLIP_GIT_PROBE_ACTIVE === '1') return candidate;
+      const probeEnv = { ...process.env, MYRMIDON_GIT_PROBE_ACTIVE: '1', PAPERCLIP_GIT_PROBE_ACTIVE: '1', PAPERCLIP_GITHUB_OPERATION_ACTIVE: '1' };
       const probe = spawn(candidate, ['config', '--get', 'remote.origin.url'], {
         cwd: process.cwd(), env: probeEnv, stdio: ['ignore', 'ignore', 'ignore'],
         // No spawn timeout here: it would signal only the direct child and

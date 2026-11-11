@@ -157,6 +157,7 @@
   "api.use(myrmidonPromptBudgetRoutes(db))",
   "api.use(myrmidonAutonomyRoutes(db))",
   "api.use(myrmidonKnowledgeRoutes(db))",
+  "api.use(myrmidonKnowledgeSettingsRoutes(db))",
   "api.use(myrmidonKnowledgeMcpRoutes(db))",
   "api.use(accessHubRoutes(db))",
   "api.use(myrmidonBrowserBridgeRoutes(db))",

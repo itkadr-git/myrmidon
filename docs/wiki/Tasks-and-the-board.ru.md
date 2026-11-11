@@ -104,11 +104,11 @@ pull-запросы вливаются, задача движется дальш
 
 ## Подробнее
 
-- [Настройки очередей ролей (SWARM-CLAIM)](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/guides/swarm-claim-settings.md)
-- [WIP-лимит](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/guides/wip-limit.md)
-- [Сторож протухших блокировок](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/guides/stale-block.md)
-- [Чат Commander](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/guides/commander-chat.md)
-- [Комнаты обсуждений](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/guides/agent-exchange.md)
+- [Настройки очередей ролей (SWARM-CLAIM)](Swarm-claim-settings.ru)
+- [WIP-лимит](Wip-limit.ru)
+- [Сторож протухших блокировок](Stale-block.ru)
+- [Чат Commander](Commander-chat.ru)
+- [Комнаты обсуждений](Agent-exchange.ru)
 - Маршрутизация ревью: [SETTINGS.md](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/SETTINGS.md), раздел «REVIEW-ROUTING»
 
 ## Гейт записи вики для системных изменений
@@ -123,7 +123,9 @@ pull-запросы вливаются, задача движется дальш
 оператор может явно выбрать `warning` или `enforce` через
 `MYRMIDON_KNOWLEDGE_GATE_MODE`, а дату начала rollout переопределить через
 `MYRMIDON_KNOWLEDGE_GATE_START_DATE`. Несистемные изменения гейт не затрагивает.
-См. [запись об изменении гейта](../myrmidon/changes/knowledge-gate-system-changes.md)
+Настройки гейта знаний `MYRMIDON_KNOWLEDGE_GATE_MODE` и
+`MYRMIDON_KNOWLEDGE_GATE_START_DATE` описаны в
+[`docs/myrmidon/SETTINGS.md`](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/SETTINGS.md)
 с описанием rollout и настроек.
 
 ## Удержание задачи после возврата в очередь

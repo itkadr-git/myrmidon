@@ -439,12 +439,13 @@ export async function defaultTokenProvider(
       ));
     if (!keySecret) return null;
     try {
-      const privateKeyPem = await secrets.resolveSecretValue(companyId, keySecret.id, "latest", {
-        accessContext: { ...accessContext, configPath: `github_app:${normalized}` },
-      });
+      const getPrivateKeyPem = () =>
+        secrets.resolveSecretValue(companyId, keySecret.id, "latest", {
+          accessContext: { ...accessContext, configPath: `github_app:${normalized}` },
+        });
       const minted = await mintGitHubAppInstallationToken({
         appId: app.appId,
-        privateKeyPem,
+        privateKeyPem: getPrivateKeyPem,
         installationId: app.installationId,
         repository: normalized,
         permissions: READ_ONLY_APP_PERMISSIONS,

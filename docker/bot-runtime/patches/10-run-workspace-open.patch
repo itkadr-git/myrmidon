@@ -100,7 +100,7 @@ index 48607c0..9f32846 100644
              ).strip().split("/") if part
          )
          if cache_root:
-             env["PAPERCLIP_GITHUB_CREDENTIALS_CACHE_DIR"] = "/" + cache_root
+             env["MYRMIDON_GITHUB_CREDENTIALS_CACHE_DIR"] = env["PAPERCLIP_GITHUB_CREDENTIALS_CACHE_DIR"] = "/" + cache_root
          # A broker capability is present, so managed GitHub credentials are in
 @@ -261,6 +261,20 @@ def _inject_session_context_env(env: dict) -> None:
      else:

@@ -22,7 +22,14 @@ describe("Webhook Intake Route (/api/intake/:source)", () => {
   }
 
   it("accepts a valid webhook with 202 and enqueues it", async () => {
-    const app = createTestApp();
+    const config = {
+      enabled: true,
+      sources: {
+        github: {},
+      },
+      defaultRateLimit: { maxRequests: 60, windowMs: 60000 },
+    };
+    const app = createTestApp({ config });
     const payload = { event: "push", ref: "refs/heads/main", repository: "repo1" };
 
     const res = await request(app)
@@ -47,7 +54,14 @@ describe("Webhook Intake Route (/api/intake/:source)", () => {
   });
 
   it("works with /intake/:source without /api prefix", async () => {
-    const app = createTestApp();
+    const config = {
+      enabled: true,
+      sources: {
+        zabbix: {},
+      },
+      defaultRateLimit: { maxRequests: 60, windowMs: 60000 },
+    };
+    const app = createTestApp({ config });
     const res = await request(app)
       .post("/intake/zabbix")
       .send({ problem: "Host is down" })
@@ -59,26 +73,28 @@ describe("Webhook Intake Route (/api/intake/:source)", () => {
 
   it("enforces rate limits per source and responds 429 when limit exceeded", async () => {
     let mockTime = 1000;
-    const rateLimiter = createIntakeRateLimiter({
-      config: {
-        enabled: true,
-        sources: {
-          limited_source: {
-            rateLimit: {
-              maxRequests: 2,
-              windowMs: 60_000,
-            },
+    const config = {
+      enabled: true,
+      sources: {
+        limited_source: {
+          rateLimit: {
+            maxRequests: 2,
+            windowMs: 60_000,
           },
         },
-        defaultRateLimit: {
-          maxRequests: 10,
-          windowMs: 60_000,
-        },
+        other_source: {},
       },
+      defaultRateLimit: {
+        maxRequests: 10,
+        windowMs: 60_000,
+      },
+    };
+    const rateLimiter = createIntakeRateLimiter({
+      config,
       now: () => mockTime,
     });
 
-    const app = createTestApp({ rateLimiter });
+    const app = createTestApp({ config, rateLimiter });
 
     // Request 1: OK
     await request(app)
@@ -117,7 +133,14 @@ describe("Webhook Intake Route (/api/intake/:source)", () => {
   });
 
   it("does not expose queue inspection endpoints on the public router", async () => {
-    const app = createTestApp();
+    const config = {
+      enabled: true,
+      sources: {
+        srv1: {},
+      },
+      defaultRateLimit: { maxRequests: 60, windowMs: 60000 },
+    };
+    const app = createTestApp({ config });
 
     await request(app)
       .post("/api/intake/srv1")
@@ -126,14 +149,16 @@ describe("Webhook Intake Route (/api/intake/:source)", () => {
 
     // Queue listing/inspection must not be reachable on the public intake
     // router: it exposes payload, headers and clientIp of accepted webhooks.
+    // Unknown source (not in config.sources) — GET falls through to a 404
+    // rendered by the central error handler; queue payloads stay unreachable.
     const listRes = await request(app).get("/api/intake/queue?source=srv1");
-    expect([401, 403, 404]).toContain(listRes.status);
+    expect(listRes.status).toBe(404);
     expect(listRes.body.items).toBeUndefined();
 
     const id = (await queue.size()) > 0 ? [...(await queue.list())][0]?.id : null;
     if (id) {
       const itemRes = await request(app).get(`/api/intake/queue/${id}`);
-      expect([401, 403, 404]).toContain(itemRes.status);
+      expect(itemRes.status).toBe(404);
       expect(itemRes.body.payload).toBeUndefined();
     }
   });
@@ -215,7 +240,14 @@ describe("Webhook Intake Route (/api/intake/:source)", () => {
   });
 
   it("enqueues and updates items in the queue", async () => {
-    const app = createTestApp();
+    const config = {
+      enabled: true,
+      sources: {
+        srv1: {},
+      },
+      defaultRateLimit: { maxRequests: 60, windowMs: 60000 },
+    };
+    const app = createTestApp({ config });
     const res = await request(app)
       .post("/api/intake/srv1")
       .send({ msg: "hello" })
@@ -231,5 +263,215 @@ describe("Webhook Intake Route (/api/intake/:source)", () => {
     await queue.updateStatus(id, "processed");
     const updated = await queue.get(id);
     expect(updated?.status).toBe("processed");
+  });
+});
+
+// myrmidon(1.6.8 INTAKE-AUTH): the public intake is closed by default.
+// Source names are case-normalized (env-derived configs are lowercase), an
+// unknown source answers 404, a configured tokenRef whose secret did not
+// resolve answers 503 without enqueueing, and the token comparison is
+// constant-time (SHA-256 digests through crypto.timingSafeEqual).
+describe("Webhook Intake Route auth hardening (1.6.8 INTAKE-AUTH)", () => {
+  let queue: ReturnType<typeof createInMemoryIntakeQueue>;
+
+  beforeEach(() => {
+    queue = createInMemoryIntakeQueue();
+  });
+
+  function createTestApp(options: Parameters<typeof intakeRoutes>[0] = {}) {
+    const app = express();
+    app.use(express.json());
+    app.use(intakeRoutes({ queue, ...options }));
+    return app;
+  }
+
+  it("accepts a configured open source in any name case (zabbix, Zabbix, ZABBIX)", async () => {
+    const config = {
+      enabled: true,
+      sources: {
+        zabbix: {},
+      },
+      defaultRateLimit: { maxRequests: 60, windowMs: 60000 },
+    };
+    const app = createTestApp({ config });
+
+    for (const name of ["zabbix", "Zabbix", "ZABBIX"]) {
+      const res = await request(app)
+        .post(`/api/intake/${name}`)
+        .send({ seq: name })
+        .expect(202);
+      expect(res.body.source).toBe("zabbix");
+    }
+
+    expect(await queue.size()).toBe(3);
+    for (const item of await queue.list()) {
+      expect(item.source).toBe("zabbix");
+    }
+  });
+
+  it("enforces token authentication for uppercase source names like for lowercase", async () => {
+    const customEnv: NodeJS.ProcessEnv = {
+      MYRMIDON_INTAKE_CASE_TOKEN: "case-secret",
+    };
+    const config = {
+      enabled: true,
+      sources: {
+        zabbix: {
+          tokenRef: "env:MYRMIDON_INTAKE_CASE_TOKEN",
+        },
+      },
+      defaultRateLimit: { maxRequests: 60, windowMs: 60000 },
+    };
+    const app = createTestApp({ config, env: customEnv });
+
+    // Missing token: uppercase behaves exactly like lowercase.
+    await request(app)
+      .post("/api/intake/zabbix")
+      .send({ data: 1 })
+      .expect(401);
+    await request(app)
+      .post("/api/intake/Zabbix")
+      .send({ data: 2 })
+      .expect(401);
+    await request(app)
+      .post("/api/intake/ZABBIX")
+      .send({ data: 3 })
+      .expect(401);
+
+    // Wrong token: same 401 for every case variant.
+    for (const name of ["zabbix", "ZABBIX"]) {
+      await request(app)
+        .post(`/api/intake/${name}`)
+        .set("Authorization", "Bearer wrong")
+        .send({ data: 4 })
+        .expect(401);
+    }
+
+    // Correct token accepted through every case variant.
+    await request(app)
+      .post("/api/intake/ZABBIX")
+      .set("Authorization", "Bearer case-secret")
+      .send({ data: 5 })
+      .expect(202);
+    await request(app)
+      .post("/api/intake/Zabbix")
+      .set("x-webhook-secret", "case-secret")
+      .send({ data: 6 })
+      .expect(202);
+
+    // Only the two authorized events reached the queue, both normalized.
+    expect(await queue.size()).toBe(2);
+    for (const item of await queue.list()) {
+      expect(item.source).toBe("zabbix");
+    }
+  });
+
+  it("answers 401 with identical responses for wrong tokens of different lengths (no early exit)", async () => {
+    const customEnv: NodeJS.ProcessEnv = {
+      MYRMIDON_INTAKE_CT_TOKEN: "constant-time-secret",
+    };
+    const config = {
+      enabled: true,
+      sources: {
+        ct_src: {
+          tokenRef: "env:MYRMIDON_INTAKE_CT_TOKEN",
+        },
+      },
+      defaultRateLimit: { maxRequests: 60, windowMs: 60000 },
+    };
+    const app = createTestApp({ config, env: customEnv });
+
+    const shortWrong = await request(app)
+      .post("/api/intake/ct_src")
+      .set("Authorization", "Bearer x")
+      .send({ data: 1 })
+      .expect(401);
+    const longWrong = await request(app)
+      .post("/api/intake/ct_src")
+      .set("Authorization", "Bearer x".repeat(64))
+      .send({ data: 2 })
+      .expect(401);
+    const prefixWrong = await request(app)
+      .post("/api/intake/ct_src")
+      .set("Authorization", "Bearer constant-time-secre")
+      .send({ data: 3 })
+      .expect(401);
+    const correct = await request(app)
+      .post("/api/intake/ct_src")
+      .set("Authorization", "Bearer constant-time-secret")
+      .send({ data: 4 })
+      .expect(202);
+
+    // Every rejected comparison produced the same observable outcome — the
+    // comparison itself runs over fixed-size SHA-256 digests in the route.
+    expect(shortWrong.body).toEqual(longWrong.body);
+    expect(shortWrong.body).toEqual(prefixWrong.body);
+    expect(await queue.size()).toBe(1);
+    expect((await queue.list())[0]?.source).toBe("ct_src");
+  });
+
+  it("answers 503 and does not enqueue when the tokenRef secret did not resolve", async () => {
+    const config = {
+      enabled: true,
+      sources: {
+        broken_src: {
+          tokenRef: "env:MYRMIDON_INTAKE_UNRESOLVED_SECRET",
+        },
+        empty_env_src: {
+          tokenRef: "env:MYRMIDON_INTAKE_EMPTY_SECRET",
+        },
+      },
+      defaultRateLimit: { maxRequests: 60, windowMs: 60000 },
+    };
+
+    // Variable not set at all.
+    const appUnset = createTestApp({ config, env: {} });
+    await request(appUnset)
+      .post("/api/intake/broken_src")
+      .send({ data: 1 })
+      .expect(503);
+    await request(appUnset)
+      .post("/api/intake/BROKEN_SRC")
+      .send({ data: 2 })
+      .expect(503);
+
+    // Variable set to an empty/blank string.
+    const appEmpty = createTestApp({ config, env: { MYRMIDON_INTAKE_EMPTY_SECRET: "   " } });
+    await request(appEmpty)
+      .post("/api/intake/empty_env_src")
+      .send({ data: 3 })
+      .expect(503);
+
+    // Nothing reached the queue on any failed-resolution path.
+    expect(await queue.size()).toBe(0);
+  });
+
+  it("answers 404 and does not enqueue for a source missing from config.sources", async () => {
+    const config = {
+      enabled: true,
+      sources: {
+        known_src: {},
+      },
+      defaultRateLimit: { maxRequests: 60, windowMs: 60000 },
+    };
+    const app = createTestApp({ config });
+
+    await request(app)
+      .post("/api/intake/unknown_src")
+      .send({ data: 1 })
+      .expect(404);
+    await request(app)
+      .post("/api/intake/UNKNOWN_SRC")
+      .send({ data: 2 })
+      .expect(404);
+
+    expect(await queue.size()).toBe(0);
+
+    // The configured source still accepts events (open by design).
+    await request(app)
+      .post("/api/intake/known_src")
+      .send({ data: 3 })
+      .expect(202);
+    expect(await queue.size()).toBe(1);
   });
 });

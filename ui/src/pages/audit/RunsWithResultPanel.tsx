@@ -5,6 +5,7 @@ import { Activity, CircleDotDashed } from "lucide-react";
 import { agentsApi } from "@/api/agents";
 import { heartbeatsApi } from "@/api/heartbeats";
 import { EmptyState } from "@/components/EmptyState";
+import { RunOutcomeBadge } from "@/components/myrmidon/OutcomeRunsPanel";
 import { StatusBadge } from "@/components/StatusBadge";
 import { Button } from "@/components/ui/button";
 import {
@@ -340,7 +341,13 @@ export function RunsWithResultPanel({ companyId }: RunsWithResultPanelProps) {
                       </span>
                     </td>
                     <td className="px-4 py-3">
-                      <StatusBadge status={run.status} />
+                      <div className="flex flex-wrap items-center gap-1.5">
+                        <StatusBadge status={run.status} />
+                        <RunOutcomeBadge
+                          outcome={run.resultOutcome ?? (run.resultJson as { outcome?: unknown } | null)?.outcome as string | undefined ?? undefined}
+                          stopKind={run.resultStopKind ?? (run.resultJson as { stopKind?: unknown } | null)?.stopKind as string | undefined ?? undefined}
+                        />
+                      </div>
                     </td>
                     <td className="max-w-md truncate px-4 py-3 text-xs text-foreground" title={result ?? ""}>
                       {result ?? "—"}

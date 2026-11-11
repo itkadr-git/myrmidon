@@ -158,6 +158,7 @@ describe("GitHub external object resolver: shared-identity App token", () => {
 
     expect(calls(fetch, "/app/installations/77/access_tokens")).toHaveLength(1);
     expect(calls(fetch, "/repos/itkadr-git/myrmidon-deploy/pulls/63")).toHaveLength(2);
+    expect(secretMocks.resolveSecretValue).toHaveBeenCalledTimes(1);
   });
 
   it("prefers the named company secret over the App", async () => {

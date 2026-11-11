@@ -205,6 +205,7 @@ import {
   myrmidonAutonomyRoutes,
   myrmidonKnowledgeRoutes,
   myrmidonKnowledgeMcpRoutes,
+  myrmidonKnowledgeSettingsRoutes,
   sweepTelegramNotifyProactivity,
   accessHubRoutes,
   ui2LanguageRoutes,
@@ -1359,6 +1360,7 @@ export async function createApp(
   api.use(myrmidonPromptBudgetRoutes(db)); // myrmidon(1.6.3 PROMPT-BUDGET B): prompt-budget threshold settings and status
   api.use(myrmidonAutonomyRoutes(db)); // myrmidon(1.6-AUTONOMY): role × action-class matrix and regulations
   api.use(myrmidonKnowledgeRoutes(db)); // myrmidon(1.6.6 KNOWLEDGE-2.0 K-2): one service, one set of rights (REST)
+  api.use(myrmidonKnowledgeSettingsRoutes(db)); // myrmidon(1.7 KNOWLEDGE-2.0 L-11): Settings → Knowledge limits/schedule/reviewers
   api.use(myrmidonKnowledgeMcpRoutes(db)); // myrmidon(1.6.6 KNOWLEDGE-2.0 K-2): company knowledge MCP endpoint (tools/list + tools/call)
   api.use(accessHubRoutes(db)); // myrmidon(SEC1): access-hub routes
   api.use(myrmidonBrowserBridgeRoutes(db)); // myrmidon(EXTCASE-B): bridge panel (codes, devices, allowlist)

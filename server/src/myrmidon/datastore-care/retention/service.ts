@@ -10,7 +10,7 @@
 //      pass does nothing (the rule the bot-disk sweep follows on the same
 //      tick); routine board work yields to the window.
 //   2. Settings — `general.datastoreCare.retention.heartbeatRunContextDays`
-//      (env PAPERCLIP_HEARTBEAT_RUN_CONTEXT_RETENTION_DAYS, then 7); 0
+//      (env MYRMIDON_HEARTBEAT_RUN_CONTEXT_RETENTION_DAYS, then 7); 0
 //      disables the compaction. Re-read per pass, so a PATCH applies
 //      without a restart.
 //   3. Backup precondition — the newest fresh `<prefix>-*.sql.gz` backup

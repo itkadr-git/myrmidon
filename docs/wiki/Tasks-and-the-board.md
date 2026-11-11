@@ -104,11 +104,11 @@ an optional finisher summarizes the outcome.
 
 ## In detail
 
-- [Role queues (SWARM-CLAIM) settings](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/guides/swarm-claim-settings.md)
-- [WIP limit](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/guides/wip-limit.md)
-- [Stale-block watchdog](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/guides/stale-block.md)
-- [Commander chat](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/guides/commander-chat.md)
-- [Discussion rooms](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/guides/agent-exchange.md)
+- [Role queues (SWARM-CLAIM) settings](Swarm-claim-settings)
+- [WIP limit](Wip-limit)
+- [Stale-block watchdog](Stale-block)
+- [Commander chat](Commander-chat)
+- [Discussion rooms](Agent-exchange)
 - Review routing: [SETTINGS.md](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/SETTINGS.md), section «REVIEW-ROUTING»
 
 ## Knowledge-note gate for system changes
@@ -122,7 +122,9 @@ service updates cannot bypass it. During the first three days after
 `2026-10-31`, the default is warning-only; operators can explicitly select
 `warning` or `enforce` with `MYRMIDON_KNOWLEDGE_GATE_MODE`, and can override the
 rollout anchor with `MYRMIDON_KNOWLEDGE_GATE_START_DATE`. Non-system changes
-are unaffected. See the [knowledge gate change record](../myrmidon/changes/knowledge-gate-system-changes.md)
+are unaffected. See the knowledge gate settings
+`MYRMIDON_KNOWLEDGE_GATE_MODE` and `MYRMIDON_KNOWLEDGE_GATE_START_DATE` in
+[`docs/myrmidon/SETTINGS.md`](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/SETTINGS.md)
 for the rollout and settings reference.
 
 ## Recovery and requeue holds
