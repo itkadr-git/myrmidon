@@ -11,6 +11,8 @@ import {
   costEvents,
   createDb,
   issueComments,
+  issueDocuments,
+  documents,
   issues,
 } from "@myrmidon/db";
 import {
@@ -120,6 +122,8 @@ describeEmbeddedPostgres("GET /companies/:companyId/users/:userSlug/profile (pri
 
   afterEach(async () => {
     await db.delete(costEvents);
+    await db.delete(issueDocuments);
+    await db.delete(documents);
     await db.delete(issueComments);
     await db.delete(activityLog);
     await db.delete(issues);
@@ -133,7 +137,14 @@ describeEmbeddedPostgres("GET /companies/:companyId/users/:userSlug/profile (pri
     await tempDb?.cleanup();
   });
 
-  /** Seed one normal issue plus optionally one private issue, each with a comment, activity rows, and cost events. */
+  /**
+   * Seed one normal issue plus optionally one private issue, each with a
+   * comment, activity rows, and cost events. When `withPrivate`, activity for
+   * the private issue additionally covers every shape that resolves back to a
+   * private issue: the production shape (entityType "issue", entityId = issue
+   * id) and the historical shapes (entityType "issue_comment" /
+   * "issue_document" with the comment/document id in entity_id).
+   */
   async function seedIssues(options: { withPrivate?: boolean } = {}) {
     const withPrivate = options.withPrivate ?? true;
     const now = new Date();
@@ -206,8 +217,13 @@ describeEmbeddedPostgres("GET /companies/:companyId/users/:userSlug/profile (pri
         occurredAt: now,
       },
     ];
+    let privateCommentId: string | null = null;
+    let privateDocumentId: string | null = null;
+    let issueDocumentId: string | null = null;
     if (privateId) {
+      privateCommentId = randomUUID();
       commentRows.push({
+        id: privateCommentId,
         companyId,
         issueId: privateId,
         authorUserId: userId,
@@ -251,6 +267,48 @@ describeEmbeddedPostgres("GET /companies/:companyId/users/:userSlug/profile (pri
       });
     }
     await db.insert(issueComments).values(commentRows);
+    if (privateId && privateCommentId) {
+      // The reviewer-blocking shapes: entity_id names the comment id (not the
+      // issue id). Both must resolve to the private issue and be dropped for
+      // agents.
+      activityRows.push({
+        companyId,
+        actorType: "user",
+        actorId: userId,
+        action: "issue.comment_added",
+        entityType: "issue_comment",
+        entityId: privateCommentId,
+        createdAt: now,
+      });
+      issueDocumentId = randomUUID();
+      privateDocumentId = randomUUID();
+      await db.insert(documents).values({
+        id: privateDocumentId,
+        companyId,
+        title: "Secret private document",
+        latestBody: "Confidential document body.",
+        createdAt: now,
+        updatedAt: now,
+      });
+      await db.insert(issueDocuments).values({
+        id: issueDocumentId,
+        companyId,
+        issueId: privateId,
+        documentId: privateDocumentId,
+        key: "private-plan",
+        createdAt: now,
+        updatedAt: now,
+      });
+      activityRows.push({
+        companyId,
+        actorType: "user",
+        actorId: userId,
+        action: "issue.document_created",
+        entityType: "issue_document",
+        entityId: issueDocumentId,
+        createdAt: now,
+      });
+    }
     await db.insert(activityLog).values(activityRows);
     await db.insert(costEvents).values(costRows);
     return { normalId, privateId };
@@ -268,6 +326,10 @@ describeEmbeddedPostgres("GET /companies/:companyId/users/:userSlug/profile (pri
     const serialized = JSON.stringify(response.body);
     expect(serialized).not.toContain(privateTitle);
     expect(serialized).not.toContain(privateId);
+    // The private issue's plan document and its comment must not surface via
+    // recentActivity either — including through the issue_document /
+    // issue_comment entity-id shapes.
+    expect(serialized).not.toContain("Secret private document");
 
     expect(response.body.recentIssues.map((issue: { id: string }) => issue.id)).not.toContain(privateId);
     expect(response.body.recentIssues.map((issue: { identifier: string }) => issue.identifier)).toEqual(["PRV-1"]);
@@ -279,6 +341,10 @@ describeEmbeddedPostgres("GET /companies/:companyId/users/:userSlug/profile (pri
       completedIssues: 1,
       assignedOpenIssues: 0,
       commentCount: 1,
+      // activityCount: 1 public "issue" row; the private "issue",
+      // "issue_comment" (comment-id entity) and "issue_document"
+      // (issue-document-id entity) rows are all resolved to the private issue
+      // and dropped.
       activityCount: 1,
       costCents: 42,
       inputTokens: 120,
@@ -289,6 +355,7 @@ describeEmbeddedPostgres("GET /companies/:companyId/users/:userSlug/profile (pri
 
     expect(response.body.recentActivity).toHaveLength(1);
     expect(response.body.recentActivity[0].entityId).not.toBe(privateId);
+    expect(response.body.recentActivity[0].entityType).toBe("issue");
 
     expect(response.body.topAgents[0]).toMatchObject({ agentId, costCents: 42 });
     expect(response.body.topProviders[0]).toMatchObject({ costCents: 42 });
@@ -322,7 +389,9 @@ describeEmbeddedPostgres("GET /companies/:companyId/users/:userSlug/profile (pri
       completedIssues: 1,
       assignedOpenIssues: 1,
       commentCount: 2,
-      activityCount: 3,
+      // 1 public "issue" row + private "issue", "issue_comment" (comment id),
+      // "issue_document" (issue-document id) rows.
+      activityCount: 5,
       costCents: 119,
       inputTokens: 620,
       cachedInputTokens: 80,
@@ -331,6 +400,12 @@ describeEmbeddedPostgres("GET /companies/:companyId/users/:userSlug/profile (pri
     });
 
     expect(response.body.recentActivity.some((row: { entityId: string }) => row.entityId === privateId)).toBe(true);
+    expect(
+      response.body.recentActivity.some((row: { entityType: string }) => row.entityType === "issue_comment"),
+    ).toBe(true);
+    expect(
+      response.body.recentActivity.some((row: { entityType: string }) => row.entityType === "issue_document"),
+    ).toBe(true);
 
     expect(response.body.topAgents[0]).toMatchObject({ agentId, costCents: 119 });
     expect(response.body.topProviders[0]).toMatchObject({ costCents: 119 });

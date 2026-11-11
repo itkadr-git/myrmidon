@@ -1,5 +1,5 @@
 import { Router } from "express";
-import { and, desc, eq, gte, inArray, isNull, notExists, sql } from "drizzle-orm";
+import { and, desc, eq, exists, gte, inArray, isNull, notExists, or, sql } from "drizzle-orm";
 import type { Db } from "@myrmidon/db";
 import {
   activityLog,
@@ -8,6 +8,7 @@ import {
   companyMemberships,
   costEvents,
   issueComments,
+  issueDocuments,
   issues,
 } from "@myrmidon/db";
 import type {
@@ -114,6 +115,65 @@ function userIssueInvolvementSql(
   `;
 }
 
+/**
+ * True when an activity_log row must be hidden from an agent because it
+ * resolves to a private issue. Production writers reduce comments and
+ * documents to their parent issue (entityType "issue", entityId = issue id),
+ * mirroring how agent-action-audit resolves them via joins rather than trusting
+ * entity_id. The entityType IN (...) terms also cover the historical
+ * issue_comment / issue_document shapes when a writer stores a comment or
+ * document id in entity_id: those ids are joined back to their parent issue.
+ */
+function privateIssueActivityRowGuard(db: Db) {
+  return notExists(
+    db
+      .select({ one: sql`1` })
+      .from(issues)
+      .where(
+        and(
+          eq(issues.companyId, sql`${activityLog.companyId}`),
+          eq(issues.isPrivate, true),
+          or(
+            // The dominant shape: the row already names the parent issue.
+            and(
+              inArray(activityLog.entityType, ["issue"]),
+              sql`${issues.id}::text = ${activityLog.entityId}`,
+            ),
+            // Historical/alternate shapes: entity_id names the comment or document id.
+            and(
+              inArray(activityLog.entityType, ["issue_comment"]),
+              exists(
+                db
+                  .select({ one: sql`1` })
+                  .from(issueComments)
+                  .where(
+                    and(
+                      sql`${issueComments.id}::text = ${activityLog.entityId}`,
+                      sql`${issueComments.issueId} = ${issues.id}`,
+                    ),
+                  ),
+              ),
+            ),
+            and(
+              inArray(activityLog.entityType, ["issue_document"]),
+              exists(
+                db
+                  .select({ one: sql`1` })
+                  .from(issueDocuments)
+                  .where(
+                    and(
+                      sql`${issueDocuments.id}::text = ${activityLog.entityId}`,
+                      sql`${issueDocuments.issueId} = ${issues.id}`,
+                    ),
+                  ),
+              ),
+            ),
+          ),
+        ),
+      ),
+  );
+}
+
 function windowStart(days: number | null) {
   if (!days) return null;
   return new Date(Date.now() - days * 24 * 60 * 60 * 1000);
@@ -184,15 +244,7 @@ async function loadWindowStats(
     eq(activityLog.actorId, userId),
   ];
   if (options.excludePrivate) {
-    // activity_log.entity_id is text and may hold non-UUID values, so compare as text instead of casting to uuid.
-    activityConditions.push(notExists(
-      db.select({ one: sql`1` }).from(issues).where(and(
-        sql`${issues.id}::text = ${activityLog.entityId}`,
-        eq(issues.companyId, activityLog.companyId),
-        eq(issues.isPrivate, true),
-        inArray(activityLog.entityType, ["issue", "issue_comment", "issue_document"]),
-      )),
-    ));
+    activityConditions.push(privateIssueActivityRowGuard(db));
   }
   if (from) activityConditions.push(gte(activityLog.createdAt, from));
   const [activityStats] = await db
@@ -262,14 +314,7 @@ async function loadDailyStats(
     gte(activityLog.createdAt, firstDay),
   ];
   if (options.excludePrivate) {
-    activityConditions.push(notExists(
-      db.select({ one: sql`1` }).from(issues).where(and(
-        sql`${issues.id}::text = ${activityLog.entityId}`,
-        eq(issues.companyId, activityLog.companyId),
-        eq(issues.isPrivate, true),
-        inArray(activityLog.entityType, ["issue", "issue_comment", "issue_document"]),
-      )),
-    ));
+    activityConditions.push(privateIssueActivityRowGuard(db));
   }
   const activityDay = dayKeyExpr(sql`${activityLog.createdAt}`);
   const activityRows = await db
@@ -401,18 +446,11 @@ export function userProfileRoutes(db: Db) {
             eq(activityLog.companyId, companyId),
             eq(activityLog.actorType, "user"),
             eq(activityLog.actorId, userId),
-            ...(excludePrivate ? [notExists(
-              db.select({ one: sql`1` }).from(issues).where(and(
-                sql`${issues.id}::text = ${activityLog.entityId}`,
-                eq(issues.companyId, activityLog.companyId),
-                eq(issues.isPrivate, true),
-                inArray(activityLog.entityType, ["issue", "issue_comment", "issue_document"]),
-              )),
-            )] : []),
+            ...(excludePrivate ? [privateIssueActivityRowGuard(db)] : []),
           ),
         )
         .orderBy(desc(activityLog.createdAt))
-        .limit(excludePrivate ? 48 : 12),
+        .limit(12),
       db
         .select({
           agentId: costEvents.agentId,
