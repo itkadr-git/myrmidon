@@ -44,7 +44,19 @@ export async function readAutoUpdateDocument(db: Runner): Promise<AutoUpdateSett
     .from(instanceSettings)
     .where(eq(instanceSettings.singletonKey, SINGLETON_KEY))
     .then((rows) => rows[0] ?? null);
-  return parseAutoUpdateSettings(row?.general?.[AUTO_UPDATE_GENERAL_KEY]);
+  const general = row?.general as Record<string, unknown> | undefined;
+  const doc = parseAutoUpdateSettings(general?.[AUTO_UPDATE_GENERAL_KEY]);
+  // OPE-12123: the flat instance-general canary fields are the operator-facing
+  // source.  When present they win over the nested document values (which may
+  // be absent on rows written before the flat keys existed).
+  if (general) {
+    if (typeof general.updateCanary === "boolean") doc.updateCanary = general.updateCanary;
+    if (typeof general.updateCanaryPercent === "number" && Number.isInteger(general.updateCanaryPercent)
+        && general.updateCanaryPercent >= 0 && general.updateCanaryPercent <= 100) {
+      doc.updateCanaryPercent = general.updateCanaryPercent;
+    }
+  }
+  return doc;
 }
 
 /**
@@ -85,5 +97,11 @@ export async function mutateAutoUpdateDocument<T>(
 export function preserveAutoUpdateGeneralKey(storedGeneral: unknown): Record<string, unknown> {
   if (typeof storedGeneral !== "object" || storedGeneral === null) return {};
   const value = (storedGeneral as Record<string, unknown>)[AUTO_UPDATE_GENERAL_KEY];
-  return value === undefined ? {} : { [AUTO_UPDATE_GENERAL_KEY]: value };
+  const preserved: Record<string, unknown> = value === undefined ? {} : { [AUTO_UPDATE_GENERAL_KEY]: value };
+  // OPE-12123: the flat canary fields live at the top level of general, not
+  // under the myrmidonAutoUpdate key, so they need their own preserve lines.
+  const raw = storedGeneral as Record<string, unknown>;
+  if (typeof raw.updateCanary === "boolean") preserved.updateCanary = raw.updateCanary;
+  if (typeof raw.updateCanaryPercent === "number") preserved.updateCanaryPercent = raw.updateCanaryPercent;
+  return preserved;
 }

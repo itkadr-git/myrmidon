@@ -15,6 +15,8 @@ import {
   canaryPlan,
   canaryVerdict,
   defaultAutoUpdateSettings,
+  parseAutoUpdateSettings,
+  resolveAutoUpdateSettings,
   windowState,
   type AutoUpdateResolution,
   type AutoUpdateApproval,
@@ -117,11 +119,7 @@ function harness(
     settings: { ...readDeployJobsSettings({}), enabled: true, tickMs: 60_000 },
     probes: probes(),
     logActivity: (async () => ({})) as unknown as DeployJobServiceDeps["logActivity"],
-    autoUpdatePolicy: async (): Promise<AutoUpdateResolution> => ({
-      settings: current,
-      sources: { mode: "ui", window: "ui", canary: "ui" },
-      overridden: [],
-    }),
+    autoUpdatePolicy: async (): Promise<AutoUpdateResolution> => resolveAutoUpdateSettings(current, {}),
   };
   if (options.port !== null) deps.fleetCanary = options.port ?? fakePort().port;
   deps.claimApproval = claimApproval as unknown as DeployJobServiceDeps["claimApproval"];
@@ -412,5 +410,148 @@ describe("auto-update: the fleet canary (B-2)", () => {
     expect(after?.steps[after.steps.length - 1]?.detail).toContain(
       "fleet canary is enabled but no fleet canary runtime is wired; refusing to report a healthy rollout",
     );
+  });
+});
+
+describe("auto-update: flat canary settings (OPE-12123)", () => {
+  it("parseAutoUpdateSettings reads the flat canary fields", () => {
+    const parsed = parseAutoUpdateSettings({ updateCanary: false, updateCanaryPercent: 0 });
+    expect(parsed.updateCanary).toBe(false);
+    expect(parsed.updateCanaryPercent).toBe(0);
+  });
+
+  it("parseAutoUpdateSettings falls back to defaults for out-of-range percent", () => {
+    const parsed = parseAutoUpdateSettings({ updateCanary: true, updateCanaryPercent: 150 });
+    expect(parsed.updateCanary).toBe(true);
+    expect(parsed.updateCanaryPercent).toBe(25); // the default
+  });
+
+  it("parseAutoUpdateSettings accepts the boundary values 0 and 100", () => {
+    const zero = parseAutoUpdateSettings({ updateCanary: true, updateCanaryPercent: 0 });
+    expect(zero.updateCanaryPercent).toBe(0);
+    const hundred = parseAutoUpdateSettings({ updateCanary: true, updateCanaryPercent: 100 });
+    expect(hundred.updateCanaryPercent).toBe(100);
+  });
+
+  it("resolveAutoUpdateSettings keeps the stored flat values when no env override", () => {
+    const stored = { ...defaultAutoUpdateSettings(), updateCanary: false, updateCanaryPercent: 10 };
+    const resolved = resolveAutoUpdateSettings(stored, {});
+    expect(resolved.settings.updateCanary).toBe(false);
+    expect(resolved.settings.updateCanaryPercent).toBe(10);
+    expect(resolved.sources.updateCanary).toBe("ui");
+    expect(resolved.sources.updateCanaryPercent).toBe("ui");
+  });
+
+  it("resolveAutoUpdateSettings marks the flat values as default when they equal the defaults", () => {
+    const stored = defaultAutoUpdateSettings();
+    const resolved = resolveAutoUpdateSettings(stored, {});
+    expect(resolved.sources.updateCanary).toBe("default");
+    expect(resolved.sources.updateCanaryPercent).toBe("default");
+  });
+
+  it("resolveAutoUpdateSettings lets the env override the flat values", () => {
+    const stored = { ...defaultAutoUpdateSettings(), updateCanary: false, updateCanaryPercent: 10 };
+    const resolved = resolveAutoUpdateSettings(stored, {
+      MYRMIDON_DEPLOY_UPDATE_CANARY_ENABLED: "true",
+      MYRMIDON_DEPLOY_UPDATE_CANARY_PERCENT: "50",
+    });
+    expect(resolved.settings.updateCanary).toBe(true);
+    expect(resolved.settings.updateCanaryPercent).toBe(50);
+    expect(resolved.sources.updateCanary).toBe("env");
+    expect(resolved.sources.updateCanaryPercent).toBe("env");
+    expect(resolved.overridden).toContain("MYRMIDON_DEPLOY_UPDATE_CANARY_ENABLED");
+    expect(resolved.overridden).toContain("MYRMIDON_DEPLOY_UPDATE_CANARY_PERCENT");
+  });
+
+  it("resolveAutoUpdateSettings folds the flat values into the nested canary block", () => {
+    const stored = { ...defaultAutoUpdateSettings(), updateCanary: false, updateCanaryPercent: 10 };
+    const resolved = resolveAutoUpdateSettings(stored, {});
+    // updateCanary=false disables the canary rollout
+    expect(resolved.settings.canary.enabled).toBe(false);
+    expect(resolved.settings.canary.sharePercent).toBe(10);
+  });
+
+  it("resolveAutoUpdateSettings maps updateCanaryPercent=0 to a single-bot canary share", () => {
+    const stored = { ...defaultAutoUpdateSettings(), updateCanary: true, updateCanaryPercent: 0 };
+    const resolved = resolveAutoUpdateSettings(stored, {});
+    expect(resolved.settings.canary.enabled).toBe(true);
+    expect(resolved.settings.canary.sharePercent).toBe(1);
+  });
+
+  it("resolveAutoUpdateSettings maps updateCanaryPercent=100 to the whole fleet", () => {
+    const stored = { ...defaultAutoUpdateSettings(), updateCanary: true, updateCanaryPercent: 100 };
+    const resolved = resolveAutoUpdateSettings(stored, {});
+    expect(resolved.settings.canary.enabled).toBe(true);
+    expect(resolved.settings.canary.sharePercent).toBe(100);
+  });
+
+  it("resolveAutoUpdateSettings env canary override wins over the flat values", () => {
+    const stored = { ...defaultAutoUpdateSettings(), updateCanary: true, updateCanaryPercent: 75 };
+    const resolved = resolveAutoUpdateSettings(stored, {
+      MYRMIDON_DEPLOY_UPDATE_CANARY: "false",
+      MYRMIDON_DEPLOY_UPDATE_CANARY_SHARE: "30",
+    });
+    // env override on the nested block wins
+    expect(resolved.settings.canary.enabled).toBe(false);
+    expect(resolved.settings.canary.sharePercent).toBe(30);
+    // flat values stay as stored
+    expect(resolved.settings.updateCanary).toBe(true);
+    expect(resolved.settings.updateCanaryPercent).toBe(75);
+  });
+
+  it("rolls out the fleet in one batch when updateCanary is false", async () => {
+    const fake = fakePort("healthy");
+    const h = harness({
+      policy: policy({ window: OPEN_DAY, updateCanary: false, updateCanaryPercent: 10 }),
+      port: fake.port,
+    });
+
+    const job = await h.service.create({ reference: GOOD }, ACTOR);
+
+    expect(job.status).toBe("succeeded");
+    expect(fake.startCanary).not.toHaveBeenCalled();
+    expect(fake.startRest).not.toHaveBeenCalled();
+  });
+
+  it("uses updateCanaryPercent=100 to roll out the whole fleet at once", async () => {
+    const fake = fakePort("healthy");
+    const h = harness({
+      policy: policy({ window: OPEN_DAY, updateCanary: true, updateCanaryPercent: 100 }),
+      port: fake.port,
+    });
+
+    const job = await h.service.create({ reference: GOOD }, ACTOR);
+
+    expect(job.status).toBe("fleet_canary");
+    expect(fake.startCanary).toHaveBeenCalledTimes(1);
+    expect(fake.startCanary.mock.calls[0][0].canary).toEqual(["bot-a", "bot-b", "bot-c"]);
+  });
+
+  it("uses updateCanaryPercent=0 as a single-bot canary", async () => {
+    const fake = fakePort("healthy");
+    const h = harness({
+      policy: policy({ window: OPEN_DAY, updateCanary: true, updateCanaryPercent: 0 }),
+      port: fake.port,
+    });
+
+    const job = await h.service.create({ reference: GOOD }, ACTOR);
+
+    expect(job.status).toBe("fleet_canary");
+    expect(fake.startCanary).toHaveBeenCalledTimes(1);
+    expect(fake.startCanary.mock.calls[0][0].canary).toEqual(["bot-a"]);
+  });
+
+  it("uses updateCanaryPercent to size the canary batch", async () => {
+    const fake = fakePort("healthy");
+    const h = harness({
+      policy: policy({ window: OPEN_DAY, updateCanary: true, updateCanaryPercent: 50 }),
+      port: fake.port,
+    });
+
+    const job = await h.service.create({ reference: GOOD }, ACTOR);
+
+    expect(job.status).toBe("fleet_canary");
+    expect(fake.startCanary).toHaveBeenCalledTimes(1);
+    expect(fake.startCanary.mock.calls[0][0].canary).toEqual(["bot-a", "bot-b"]);
   });
 });
