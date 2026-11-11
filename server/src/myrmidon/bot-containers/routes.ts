@@ -537,6 +537,28 @@ export async function buildBotContainerItemStatus(
     }
   }
 
+  // myrmidon(1.7 KNOWLEDGE-2.0 L-3): the «Знания в пакете» block data, from the
+  // delivery ledger the profile compiler writes. Best-effort: a ledger read
+  // failure leaves the block empty instead of failing the card status. Read here
+  // (not in the single route) so the company status list and the single card
+  // return the same item data.
+  if (agent.adapterType === "hermes_gateway") {
+    try {
+      const ledger = await deps.readKnowledgeDelivery?.(agent.id);
+      if (ledger) {
+        item.knowledgeDelivery = {
+          caste: ledger.caste,
+          file: ledger.file,
+          indexSlugs: ledger.indexSlugs,
+          rulesCount: ledger.rulesCount,
+          compiledAt: ledger.compiledAt,
+        };
+      }
+    } catch (err) {
+      logger.warn({ err, agentId: agent.id }, "knowledge delivery ledger read failed");
+    }
+  }
+
   return item;
 }
 
@@ -574,27 +596,7 @@ export function botContainerRoutes(deps: BotContainerRoutesDeps) {
       enabled,
       runtimeConfigured: runtime !== null,
       ...item,
-      // myrmidon(1.7 KNOWLEDGE-2.0 L-3): the «Знания в пакете» block data, from the
-      // delivery ledger the profile compiler writes. Best-effort: a ledger read
-      // failure leaves the block empty instead of failing the card status.
-      knowledgeDelivery: null,
     };
-    if (agent.adapterType === "hermes_gateway") {
-      try {
-        const ledger = await deps.readKnowledgeDelivery?.(agent.id);
-        if (ledger) {
-          body.knowledgeDelivery = {
-            caste: ledger.caste,
-            file: ledger.file,
-            indexSlugs: ledger.indexSlugs,
-            rulesCount: ledger.rulesCount,
-            compiledAt: ledger.compiledAt,
-          };
-        }
-      } catch (err) {
-        logger.warn({ err, agentId: agent.id }, "knowledge delivery ledger read failed");
-      }
-    }
 
     res.json(body);
   });
@@ -654,6 +656,7 @@ export function botContainerRoutes(deps: BotContainerRoutesDeps) {
             idleStopRuntime: null,
             profileUpdatePendingSince: null,
             limits: null,
+            knowledgeDelivery: null,
           };
         }
       },

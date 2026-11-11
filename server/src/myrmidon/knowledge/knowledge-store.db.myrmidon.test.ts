@@ -785,6 +785,7 @@ describeEmbeddedPostgres("myrmidon(1.6.6 KNOWLEDGE-2.0 K-1) knowledge store over
       folder: "rules/smm",
       tags: [],
       roles: ["smm"],
+      deliverToCastes: [], // myrmidon(1.7 KNOWLEDGE-2.0 L-3, §3.7)
       status: "published",
       approvalRequired: true,
       approverKind: "operator", // the file lies: the code derives the grade

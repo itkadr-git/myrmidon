@@ -35,6 +35,7 @@ const page = (over: Partial<KnowledgeTreePage> = {}): KnowledgeTreePage => ({
   folder: "ops",
   tags: ["oncall"],
   roles: [],
+  deliverToCastes: [], // myrmidon(1.7 KNOWLEDGE-2.0 L-3, §3.7)
   status: "published",
   approvalRequired: false,
   approverKind: null,
