@@ -900,18 +900,21 @@ describeEmbeddedPostgres("myrmidon(1.6.8 SCENT-AUTHZ OPE-12698): scent refresh b
     return app;
   }
 
+  function fakeGatewayResponse(content: unknown): typeof fetch {
+    const stub: typeof fetch = (_input, _init) =>
+      Promise.resolve(new Response(JSON.stringify({
+        choices: [{ message: { content: JSON.stringify(content) } }],
+        usage: { prompt_tokens: 10, completion_tokens: 5 },
+      }), { status: 200 }));
+    return stub;
+  }
+
   function portsWithFakeGateway() {
     return {
       getGeneral: async () => ({ swarm: { scent: { enabled: true } } }),
       resolveSecret: async () => null,
       listCastes: async () => CASTES.map((key) => ({ key })),
-      fetch: (async () => ({
-        ok: true,
-        json: async () => ({
-          choices: [{ message: { content: JSON.stringify(CSS_SCENT) } }],
-          usage: { prompt_tokens: 10, completion_tokens: 5 },
-        }),
-      })) as typeof fetch,
+      fetch: fakeGatewayResponse(CSS_SCENT),
     };
   }
 
@@ -974,15 +977,8 @@ describeEmbeddedPostgres("myrmidon(1.6.8 SCENT-AUTHZ OPE-12698): scent refresh b
     await seedCompanyData();
     const app = makeScentApp(db, {
       ...portsWithFakeGateway(),
-      fetch: (async () => ({
-        ok: true,
-        json: async () => ({
-          choices: [{ message: { content: JSON.stringify({ tags: ["triage"] }) } }],
-          usage: { prompt_tokens: 10, completion_tokens: 5 },
-        }),
-      })) as typeof fetch,
+      fetch: fakeGatewayResponse({ tags: ["triage"] }),
     }, boardActor());
-
     const res = await request(app)
       .post(`/api/myrmidon/companies/${COMPANY_ID}/agents/${AGENT_ID}/scent/refresh`);
 
