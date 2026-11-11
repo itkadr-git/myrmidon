@@ -107,13 +107,14 @@ function harness(
   const claimApproval = vi.fn(async (_input: { tag: string; digest: string; jobId: string | null }) => true);
   let current: AutoUpdateSettings = options.policy ?? policy();
 
+  const readHostReport = vi.fn(async (_jobId: string) => null);
   const deps: DeployJobServiceDeps = {
     maintenance: {
       enter: enter as unknown as DeployJobServiceDeps["maintenance"]["enter"],
       exit: exit as unknown as DeployJobServiceDeps["maintenance"]["exit"],
       status: status as unknown as DeployJobServiceDeps["maintenance"]["status"],
     },
-    readHostReport: async () => null,
+    readHostReport: readHostReport as unknown as DeployJobServiceDeps["readHostReport"],
     readHealth: async () => ({ version: VERSION, commit: COMMIT }),
     now: () => new Date(NOW),
     settings: { ...readDeployJobsSettings({}), enabled: true, tickMs: 60_000 },
@@ -129,11 +130,35 @@ function harness(
     service,
     store,
     claimApproval,
+    readHostReport,
     maintenance: { enter, exit, status },
     setPolicy(next: AutoUpdateSettings) {
       current = next;
     },
   };
+}
+
+/**
+ * Drive a freshly created job through the maintenance lifecycle to its rollout
+ * phase: create() stops at `maintenance_entering`; the tick advances it to
+ * `maintenance_on` (the harness window reports `on`), then to `running` once
+ * the host report appears, and to `succeeded` / `fleet_canary` on health-ok.
+ */
+async function runJob(h: ReturnType<typeof harness>, jobId: string) {
+  h.readHostReport.mockImplementation(async () => ({
+    jobId,
+    phase: "health-ok" as const,
+    version: VERSION,
+    commit: COMMIT,
+  }));
+  for (let i = 0; i < 5; i += 1) {
+    const job = (await h.service.current()).job;
+    if (!job || job.status === "succeeded" || job.status === "fleet_canary" || job.status === "canary_failed") {
+      return job;
+    }
+    await h.service.tick();
+  }
+  return (await h.service.current()).job;
 }
 
 function fakePort(verdict: "running" | "healthy" | "failed" = "running") {
@@ -506,9 +531,10 @@ describe("auto-update: flat canary settings (OPE-12123)", () => {
       port: fake.port,
     });
 
-    const job = await h.service.create({ reference: GOOD }, ACTOR);
+    const created = await h.service.create({ reference: GOOD }, ACTOR);
+    const job = await runJob(h, created.id);
 
-    expect(job.status).toBe("succeeded");
+    expect(job?.status).toBe("succeeded");
     expect(fake.startCanary).not.toHaveBeenCalled();
     expect(fake.startRest).not.toHaveBeenCalled();
   });
@@ -520,9 +546,10 @@ describe("auto-update: flat canary settings (OPE-12123)", () => {
       port: fake.port,
     });
 
-    const job = await h.service.create({ reference: GOOD }, ACTOR);
+    const created = await h.service.create({ reference: GOOD }, ACTOR);
+    const job = await runJob(h, created.id);
 
-    expect(job.status).toBe("fleet_canary");
+    expect(job?.status).toBe("fleet_canary");
     expect(fake.startCanary).toHaveBeenCalledTimes(1);
     expect(fake.startCanary.mock.calls[0][0].canary).toEqual(["bot-a", "bot-b", "bot-c"]);
   });
@@ -534,9 +561,10 @@ describe("auto-update: flat canary settings (OPE-12123)", () => {
       port: fake.port,
     });
 
-    const job = await h.service.create({ reference: GOOD }, ACTOR);
+    const created = await h.service.create({ reference: GOOD }, ACTOR);
+    const job = await runJob(h, created.id);
 
-    expect(job.status).toBe("fleet_canary");
+    expect(job?.status).toBe("fleet_canary");
     expect(fake.startCanary).toHaveBeenCalledTimes(1);
     expect(fake.startCanary.mock.calls[0][0].canary).toEqual(["bot-a"]);
   });
@@ -548,9 +576,10 @@ describe("auto-update: flat canary settings (OPE-12123)", () => {
       port: fake.port,
     });
 
-    const job = await h.service.create({ reference: GOOD }, ACTOR);
+    const created = await h.service.create({ reference: GOOD }, ACTOR);
+    const job = await runJob(h, created.id);
 
-    expect(job.status).toBe("fleet_canary");
+    expect(job?.status).toBe("fleet_canary");
     expect(fake.startCanary).toHaveBeenCalledTimes(1);
     expect(fake.startCanary.mock.calls[0][0].canary).toEqual(["bot-a", "bot-b"]);
   });
