@@ -6,7 +6,7 @@
   (source text → replacement), toggleable rules (`counterparties`, `signers`,
   `contracts`, `invoices`) and a default mode (`redact`/`disabled`) are stored
   one row per `nest_id` in the `nest_redact_settings` table (migration
-  `0479_equal_sharon_carter`).
+  `0480_equal_sharon_carter`).
 - The settings are managed with `GET`/`PATCH /api/myrmidon/nests/:nestId/redact`
   (`PATCH` is instance-admin only; `GET` also serves board-org actors scoped to
   their companies) and are read on every create/draft knowledge request — an
@@ -21,7 +21,7 @@
   контрагентов и подписантов (исходная строка → замена), включаемые правила
   (`counterparties`, `signers`, `contracts`, `invoices`) и режим по умолчанию
   (`redact`/`disabled`) хранятся по строке на `nest_id` в таблице
-  `nest_redact_settings` (миграция `0479_equal_sharon_carter`).
+  `nest_redact_settings` (миграция `0480_equal_sharon_carter`).
 - Настройки управляются маршрутами `GET`/`PATCH /api/myrmidon/nests/:nestId/redact`
   (`PATCH` — только администратор экземпляра; `GET` доступен и board-актёрам в
   пределах их компаний) и читаются на каждый запрос создания/черновика знания —
@@ -36,7 +36,7 @@
 
 | ID | Что изменено | Файлы | Зачем | Тесты | Когда снимать | Ссылка |
 |---|---|---|---|---|---|---|
-| 1.7-REDACT | Настройка редактирования (REDACT) по гнезду: словарь названий контрагентов/подписантов, включаемые правила (counterparties/signers/contracts/invoices) и режим по умолчанию на гнездо; хранение в БД (`nest_redact_settings`), управление `GET/PATCH /api/myrmidon/nests/:nestId/redact`, применение при create/draft знаний без перезапуска. | Вендор: `packages/shared/src/index.ts` (реэкспорт `myrmidon-redact`), `packages/db/src/schema/index.ts` (экспорт `nestRedactSettings`), `server/src/myrmidon/knowledge/service.ts` (редактирование на create/draft). Наши файлы: `+ packages/shared/src/myrmidon-redact.ts`, `+ packages/db/src/schema/nest_redact_settings.ts`, `+ server/src/myrmidon/redact/{index,routes,service,store}.ts`, `+ packages/db/src/migrations/0479_equal_sharon_carter.sql`. | Правила гнезда применяются к запросу с `nest_id`, словарь гнезда ловит контрагента (OPE-8660). | `packages/shared/src/myrmidon-redact.test.ts`, `server/src/__tests__/redaction.test.ts`, `server/src/myrmidon/knowledge/knowledge-store.db.myrmidon.test.ts` | Никогда, наше поведение. При переносе: удалить куски с меткой `myrmidon(1.7 REDACT)` и строки barrel-экспортов | OPE-8660 |
+| 1.7-REDACT | Настройка редактирования (REDACT) по гнезду: словарь названий контрагентов/подписантов, включаемые правила (counterparties/signers/contracts/invoices) и режим по умолчанию на гнездо; хранение в БД (`nest_redact_settings`), управление `GET/PATCH /api/myrmidon/nests/:nestId/redact`, применение при create/draft знаний без перезапуска. | Вендор: `packages/shared/src/index.ts` (реэкспорт `myrmidon-redact`), `packages/db/src/schema/index.ts` (экспорт `nestRedactSettings`), `server/src/myrmidon/knowledge/service.ts` (редактирование на create/draft). Наши файлы: `+ packages/shared/src/myrmidon-redact.ts`, `+ packages/db/src/schema/nest_redact_settings.ts`, `+ server/src/myrmidon/redact/{index,routes,service,store}.ts`, `+ packages/db/src/migrations/0480_equal_sharon_carter.sql`. | Правила гнезда применяются к запросу с `nest_id`, словарь гнезда ловит контрагента (OPE-8660). | `packages/shared/src/myrmidon-redact.test.ts`, `server/src/__tests__/redaction.test.ts`, `server/src/myrmidon/knowledge/knowledge-store.db.myrmidon.test.ts` | Никогда, наше поведение. При переносе: удалить куски с меткой `myrmidon(1.7 REDACT)` и строки barrel-экспортов | OPE-8660 |
 
 ## settings-en-new
 
