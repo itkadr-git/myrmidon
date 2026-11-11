@@ -63,7 +63,7 @@ func TestRedTeam_RT1_2_PrepareScriptStatic(t *testing.T) {
 	// package-cache subdirectory to the bot's uid, behind a test(1) guard (the
 	// red-team list forbids "[" in the constant script), so a bot without the
 	// cache bind skips it.
-	for _, sub := range []string{"pnpm", "pnpm-store", "uv", "go-mod", "go-build", "gradle"} {
+	for _, sub := range []string{"pnpm", "uv", "go-mod", "go-build", "gradle"} {
 		if !strings.Contains(s, "install -d -o 10001 -g 10001 \"package-cache/"+sub+"\"") {
 			t.Errorf("package-cache subdirectory %q is not handed to the bot's uid", sub)
 		}

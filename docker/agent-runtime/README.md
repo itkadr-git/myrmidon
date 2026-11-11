@@ -125,6 +125,12 @@ mounted read-only at `/etc/ssh/omp-runner/authorized_keys`. The host key is
 generated on the first start into the `hostkeys` volume and survives a
 recreate.
 
+The pnpm store is pinned inside the runner's own `/workspace` volume:
+`compose.yml` sets `npm_config_store_dir=/workspace/.pnpm-store` (and
+`npm_config_package_import_method=clone-or-copy`). A store on another mount
+than the clones cannot hard-link or reflink, so it must live inside the one
+`/workspace` volume the repositories are cloned into.
+
 One runner per agent:
 
 1. Make a key pair for the runner. Keep the private key out of the logs and the

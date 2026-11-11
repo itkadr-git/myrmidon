@@ -182,7 +182,7 @@ describe("myrmidon(1.6.5-BOT-DISK-H5c) profile env contract (C7)", () => {
         hermesPruneDays: 14,
         gitMigrationEnabled: true,
         // Neighbouring keys of the same settings row ride along untouched.
-        pnpmStoreDir: "/cache/pnpm-store",
+        pnpmStoreDir: "/bot/.pnpm-store",
       }),
     ).toEqual({
       graceClosingMinutes: 45,
@@ -202,8 +202,8 @@ describe("myrmidon(1.6.5-BOT-DISK-H5c) profile env contract (C7)", () => {
 
   it("the contract fixture parses under the storage schema too (same general.botDisk row)", () => {
     const stored = fixture("botdisk-settings.json") as Record<string, unknown>;
-    // The fixture's pnpmStoreDir is a HOST path (it lives on the shared cache mount);
-    // the storage schema constrains the bot-side path, so the check uses the C7 keys.
+    // The fixture's pnpmStoreDir is a bot-side path of its own (not one of the C7
+    // mechanics keys), so the check uses the C7 keys.
     const { pnpmStoreDir: _hostPath, pnpmImportMethod: _method, ...mechanics } = stored;
     const parsed = botDiskSettingsSchema.safeParse({ enabled: true, idleTtlMs: 3_600_000, ...mechanics });
     if (!parsed.success) throw new Error(parsed.error.message);

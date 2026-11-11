@@ -195,11 +195,12 @@ mismatch fails the build, the same rule the Node.js variant states above.
 **Where things write.** The root filesystem is read-only at run time and the bot's writable
 directories are exactly its single `/bot` mount (BOT-DISK-D), so:
 
-- the pnpm store defaults to `/workspace/.pnpm-store` via `npm_config_store_dir`, inside that
-  mount like every clone root, because pnpm hard-links `node_modules` into its store and a hard
-  link cannot cross a mount (a store on a separate bind made pnpm copy every package into every
-  clone). `npm_config_package_import_method=hardlink` is set too; pnpm 9 still copies silently
-  when the kernel refuses a link, so `pnpm-hardlink-check.sh` proves the link from `/data/hermes`,
+- the pnpm store defaults to `/bot/.pnpm-store` via `npm_config_store_dir` (OPE-12720; the
+  shared `/cache/pnpm-store` bind of 1.6.5-1.6.7 is retired), inside that mount like every clone
+  root, because pnpm imports `node_modules` from its store by links and a link cannot cross a
+  mount (a store on a separate bind made pnpm copy every package into every clone).
+  `npm_config_package_import_method=clone` is set too; pnpm still copies silently when the
+  kernel refuses a reflink, so `pnpm-hardlink-check.sh` proves the link from `/data/hermes`,
   `/workspace` and `/scratch` at build time and `entrypoint.sh` repeats the check at every start
   (`/data/hermes/.myrmidon/hardlink-check.json`, shown on the board). `/cache/pnpm` is a download
   cache only, never the store; the paths and the method are the `pnpmStoreDir` and

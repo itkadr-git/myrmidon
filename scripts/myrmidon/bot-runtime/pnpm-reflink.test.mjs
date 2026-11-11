@@ -142,10 +142,10 @@ describe("pnpm reflinks", () => {
   });
 
   it("the bot driver keeps the store inside the single mount and forces reflink", () => {
-    assert.match(TEMPLATE, /DEFAULT_PNPM_STORE_DIR = "\/cache\/pnpm-store"/);
+    assert.match(TEMPLATE, /DEFAULT_PNPM_STORE_DIR = "\/bot\/\.pnpm-store"/);
     assert.match(TEMPLATE, /DEFAULT_PNPM_IMPORT_METHOD = "clone"/);
     const dockerfile = fs.readFileSync(path.join(ROOT, "docker/bot-runtime/Dockerfile"), "utf8");
-    assert.match(dockerfile, /npm_config_store_dir=\/workspace\/\.pnpm-store/);
+    assert.match(dockerfile, /npm_config_store_dir=\/bot\/\.pnpm-store/);
     assert.match(dockerfile, /npm_config_package_import_method=clone/);
     assert.match(dockerfile, /ROOTS="\/data\/hermes \/workspace \/scratch"/);
     assert.match(dockerfile, /pnpm-reflink-check\.sh/);
