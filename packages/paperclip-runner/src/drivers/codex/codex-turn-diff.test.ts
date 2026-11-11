@@ -316,10 +316,14 @@ describe("Codex turn diff parser", () => {
   });
 
   it("keeps a valid file that follows an empty snapshot", () => {
+    // A leading blank line (or any other empty segment) is treated as part of
+    // the snapshot preamble, not as the whole snapshot: the parser must keep
+    // parsing the real file entries that follow it (contract from OPE-12601).
     const patch = [
       "",
       "diff --git a/src/after-empty.ts b/src/after-empty.ts",
-      "--- a/src/after-empty.ts",
+      "new file mode 100644",
+      "--- /dev/null",
       "+++ b/src/after-empty.ts",
       "@@ -0,0 +1 @@",
       "+added",

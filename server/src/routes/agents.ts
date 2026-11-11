@@ -4451,6 +4451,7 @@ function getActorIdentityPart(req: Request): string {
       status: "todo,in_progress,blocked",
       includeRoutineExecutions: true,
       limit: ISSUE_LIST_DEFAULT_LIMIT,
+      excludePrivate: true,
     });
     const worktreeActivation = await resolveWorktreeRunExecutionActivationState({
       getExperimental: () => instanceSettingsService(db).getExperimental(),
@@ -4505,6 +4506,7 @@ function getActorIdentityPart(req: Request): string {
       inboxArchivedByUserId: query.userId,
       status: query.status,
       limit: ISSUE_LIST_DEFAULT_LIMIT,
+      excludePrivate: true,
     });
 
     res.json(rows.map((row: any) => row.activeRun && req.actor?.type === "agent" && row.activeRun.execution ? {
@@ -8182,6 +8184,10 @@ function getActorIdentityPart(req: Request): string {
       "Issue not found",
     );
     if (!issue) return;
+    if (issue.isPrivate && req.actor.type === "agent") {
+      res.status(404).json({ error: "Issue not found" });
+      return;
+    }
 
     const liveRuns = await db
       .select({
@@ -8232,6 +8238,10 @@ function getActorIdentityPart(req: Request): string {
   router.get("/issues/:issueId/execution", async (req, res) => {
     const issue = await getAccessibleResource(req, res, issueService(db).getById(req.params.issueId as string), "Issue not found");
     if (!issue) return;
+    if (issue.isPrivate && req.actor.type === "agent") {
+      res.status(404).json({ error: "Issue not found" });
+      return;
+    }
     const [run] = await db.select({ id: heartbeatRuns.id, agentId: heartbeatRuns.agentId }).from(heartbeatRuns).where(and(
       eq(heartbeatRuns.companyId, issue.companyId),
       sql`${heartbeatRuns.contextSnapshot} ->> 'issueId' = ${issue.id}`,
@@ -8252,6 +8262,10 @@ function getActorIdentityPart(req: Request): string {
       "Issue not found",
     );
     if (!issue) return;
+    if (issue.isPrivate && req.actor.type === "agent") {
+      res.status(404).json({ error: "Issue not found" });
+      return;
+    }
 
     let run = issue.executionRunId ? await heartbeat.getRunIssueSummary(issue.executionRunId) : null;
     if (

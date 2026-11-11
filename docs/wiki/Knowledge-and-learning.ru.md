@@ -89,13 +89,13 @@
 
 ## Перенос архива ADM
 
-Опциональная команда миграции ADM выдаёт воспроизводимый dry-run до любого импорта. Для политик нужен явный summary; ошибка сканера останавливает запуск. Импорт создаёт черновики и отправляет правила на ревью, но не публикует их. REST hook доставляет ограниченные своды с дедупликацией по сессии и метриками байтов. Команда миграции не устанавливает его на бою. Переменные окружения, apply и откат описаны в [инструкции EN/RU](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/guides/adm-knowledge-migration.md).
+Опциональная команда миграции ADM выдаёт воспроизводимый dry-run до любого импорта. Для политик нужен явный summary; ошибка сканера останавливает запуск. Импорт создаёт черновики и отправляет правила на ревью, но не публикует их. REST hook доставляет ограниченные своды с дедупликацией по сессии и метриками байтов. Команда миграции не устанавливает его на бою. Переменные окружения, apply и откат описаны в [инструкции EN/RU](Adm-knowledge-migration.ru).
 
 ## Подробнее
 
 - [Корпус посева знаний: решения и справочник продукта](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/knowledge-seed.ru.md)
-- [Форажинг: сбор знаний из одобренных источников](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/guides/foraging.md)
-- [Эталонные задачи и LLM-судья](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/guides/reference-task-evals.md)
-- [Оценки: выбор судьи из другого семейства](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/guides/evals-judge-family-selection.md)
-- [Сравнение с базовой линией на экране Quality](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/guides/baseline-comparison.md)
+- [Форажинг: сбор знаний из одобренных источников](Foraging.ru)
+- [Эталонные задачи и LLM-судья](Reference-task-evals.ru)
+- [Оценки: выбор судьи из другого семейства](Evals-judge-family-selection.ru)
+- [Сравнение с базовой линией на экране Quality](Baseline-comparison.ru)
 - Хранилище регламентов: [SETTINGS.md](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/SETTINGS.md), раздел «AUTONOMY-MATRIX»

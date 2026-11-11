@@ -43,6 +43,8 @@ guides in the repository.
   matrix, injection flagging, emergency stop.
 - [Connectors and tools](Connectors-and-tools) — the browser bridge, MCP
   connectors, cloud storage and Microsoft 365, media and OCR, GitHub.
+- [Guides index](Guides) — all 130 deep-dive guides directly in this wiki,
+  grouped by product area.
 
 ## Run the server
 

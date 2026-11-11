@@ -626,10 +626,12 @@ type CompanySearchService = {
   extract(
     companyId: string,
     query: CompanySearchExtractQuery,
+    options?: { excludePrivate?: boolean },
   ): Promise<CompanySearchExtractResponse>;
   search(
     companyId: string,
     query: CompanySearchQuery,
+    options?: { excludePrivate?: boolean },
   ): Promise<CompanySearchResponse>;
 };
 type ActivityIssueRelationSummary = {
@@ -5674,8 +5676,12 @@ export function issueRoutes(
   async function assertIssueReadAllowed(
     req: Request,
     res: Response,
-    issue: Parameters<typeof decideIssueAccess>[1],
+    issue: Parameters<typeof decideIssueAccess>[1] & { isPrivate?: boolean | null },
   ) {
+    if (issue.isPrivate && req.actor.type === "agent") {
+      res.status(404).json({ error: "Issue not found" });
+      return false;
+    }
     const key = `${issue.id}:${issue.companyId}:${issue.projectId ?? ""}:${issue.parentId ?? ""}:${issue.assigneeAgentId ?? ""}:${issue.assigneeUserId ?? ""}:${issue.status}`;
     const value = memoizeIssueReadDecision(req, key, () =>
       decideIssueAccess(req, issue, "issue:read"),
@@ -5790,12 +5796,16 @@ export function issueRoutes(
   }
 
   async function filterIssuesForActor<
-    T extends Parameters<typeof decideIssueAccess>[1],
+    T extends Parameters<typeof decideIssueAccess>[1] & { isPrivate?: boolean | null },
   >(req: Request, rows: T[]) {
+    const visibleRows =
+      req.actor.type === "agent"
+        ? rows.filter((issue) => !issue.isPrivate)
+        : rows;
     const decisions = await Promise.all(
-      rows.map((issue) => decideIssueAccess(req, issue, "issue:read")),
+      visibleRows.map((issue) => decideIssueAccess(req, issue, "issue:read")),
     );
-    return rows.filter((_, index) => decisions[index]?.allowed);
+    return visibleRows.filter((_, index) => decisions[index]?.allowed);
   }
 
   async function actorCanReadCompanyScope(req: Request, companyId: string) {
@@ -8506,10 +8516,13 @@ export function issueRoutes(
       });
       return;
     }
-    const result = await getSearchService().extract(
-      companyId,
-      parsedQuery.data,
-    );
+    const searchService = getSearchService();
+    const result =
+      req.actor.type === "agent"
+        ? await searchService.extract(companyId, parsedQuery.data, {
+            excludePrivate: true,
+          })
+        : await searchService.extract(companyId, parsedQuery.data);
     res.json(result);
   });
 
@@ -8557,7 +8570,13 @@ export function issueRoutes(
       });
       return;
     }
-    const result = await getSearchService().search(companyId, query);
+    const searchService = getSearchService();
+    const result =
+      req.actor.type === "agent"
+        ? await searchService.search(companyId, query, {
+            excludePrivate: true,
+          })
+        : await searchService.search(companyId, query);
     res.json(result);
   });
 
@@ -8842,6 +8861,7 @@ export function issueRoutes(
       sortField: sortField === "updated" || sortField === "id" ? sortField : undefined,
       afterId: req.query.afterId as string | undefined,
       sortDir: sortDir === "asc" || sortDir === "desc" ? sortDir : undefined,
+      excludePrivate: req.actor.type === "agent",
       updatedSince: rawUpdatedSince,
     };
     const requestKey = issueListRequestKey({
@@ -9074,6 +9094,7 @@ export function issueRoutes(
       includeBlockedInboxAttention: true,
       hasPlanDocument,
       q: req.query.q as string | undefined,
+      excludePrivate: req.actor.type === "agent",
     } as const;
 
     if (!(await actorCanReadCompanyScope(req, companyId))) {
@@ -10809,6 +10830,7 @@ export function issueRoutes(
                 assigneeAgentId: issueRows.assigneeAgentId,
                 assigneeUserId: issueRows.assigneeUserId,
                 status: issueRows.status,
+                isPrivate: issueRows.isPrivate,
               })
               .from(issueRows)
               .where(
@@ -12712,6 +12734,14 @@ export function issueRoutes(
       }
       if (await assertLowTrustControlPlaneDenied(req, res, companyId, null))
         return;
+      // 1.7 (PRIVATE-TASKS): only board actors may create a private issue.
+      if (req.body.isPrivate === true && req.actor.type !== "board") {
+        res.status(403).json({
+          error: "Only board actors can set isPrivate on issue creation",
+          details: { field: "isPrivate", securityPrinciples: ["Least Privilege", "Fail Securely"] },
+        });
+        return;
+      }
       assertNoAgentHostWorkspaceCommandMutation(
         req,
         collectIssueWorkspaceCommandPaths(req.body),
@@ -13300,6 +13330,20 @@ export function issueRoutes(
         )
       )
         return;
+      // 1.7 (PRIVATE-TASKS): only board actors may create a private issue.
+      // createChildIssueSchema inherits isPrivate from createIssueBaseSchema,
+      // so guard it here as well — agents must never create private issues
+      // through any creation surface.
+      if (req.body.isPrivate === true && req.actor.type !== "board") {
+        res.status(403).json({
+          error: "Only board actors can set isPrivate on issue creation",
+          details: {
+            field: "isPrivate",
+            securityPrinciples: ["Least Privilege", "Fail Securely"],
+          },
+        });
+        return;
+      }
       assertNoAgentHostWorkspaceCommandMutation(
         req,
         collectIssueWorkspaceCommandPaths(req.body),
@@ -13522,6 +13566,7 @@ export function issueRoutes(
       "Issue not found",
     );
     if (!sourceIssue) return;
+    if (!(await assertIssueReadAllowed(req, res, sourceIssue))) return;
     const decompositions = await svc.listAcceptedPlanDecompositions(
       sourceIssue.id,
     );
@@ -13542,6 +13587,24 @@ export function issueRoutes(
       if (!sourceIssue) return;
       if (!(await assertAgentIssueMutationAllowed(req, res, sourceIssue)))
         return;
+      // 1.7 (PRIVATE-TASKS): only board actors may create private issues.
+      // Each child inherits isPrivate from createIssueBaseSchema; guard the
+      // whole batch here so no child slips a privacy flag past board-only.
+      if (
+        req.actor.type !== "board" &&
+        (req.body.children as Array<Record<string, unknown>>).some(
+          (child) => child.isPrivate === true,
+        )
+      ) {
+        res.status(403).json({
+          error: "Only board actors can set isPrivate on issue creation",
+          details: {
+            field: "isPrivate",
+            securityPrinciples: ["Least Privilege", "Fail Securely"],
+          },
+        });
+        return;
+      }
 
       const requestedChildren = [];
       for (const child of req.body.children as Array<
@@ -14060,6 +14123,20 @@ export function issueRoutes(
         "Issue not found",
       );
       if (!existing) return;
+      // 1.7 (PRIVATE-TASKS): only board actors may change the privacy flag.
+      if (
+        req.body.isPrivate !== undefined &&
+        req.body.isPrivate !== existing.isPrivate &&
+        req.actor.type !== "board"
+      ) {
+        await denyIssueWrite(
+          req,
+          res,
+          existing,
+          "issue_write_private_flag_rejected",
+        );
+        return;
+      }
       assertNoAgentHostWorkspaceCommandMutation(
         req,
         collectIssueWorkspaceCommandPaths(req.body),

@@ -32,7 +32,7 @@ match against agent name, role, or title), `status` (one or comma-separated
 statuses), exact `role`, and `reportsTo` (manager ID or `none` for root agents).
 These filters combine with AND after access filtering; unsupported query
 parameters still return HTTP 400. See the
-[fleet guide](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/guides/ui2-agents-fleet.md).
+[fleet guide](Ui2-agents-fleet).
 
 ## Company agent quota
 
@@ -54,7 +54,7 @@ agents by reporting relationship, shows each agent's status and latest live
 run, and links to the agent detail/chat page. The fleet refreshes agent data
 every 30 seconds and live runs every 15 seconds; paused agents retain their
 distinct paused status. See the
-[fleet guide](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/guides/ui2-agents-fleet.md)
+[fleet guide](Ui2-agents-fleet)
 for details.
 
 ## The container runtime
@@ -197,13 +197,13 @@ The `omp` bake target is `linux/amd64`; CI is configured to build, publish and
 cosign-sign the pushed digest using keyless OIDC. Check the workflow run and
 registry digest before treating a tag as available; configuration alone does
 not prove a successful publication. Build/run instructions and the CI scope
-are in the [Agent Runtime Image Family](../../docker/agent-runtime/README.md).
+are in the [Agent Runtime Image Family](https://github.com/itkadr-git/myrmidon/blob/main/docker/agent-runtime/README.md).
 
 
-- [Bot container: the Container section](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/guides/bot-container-card.md)
-- [Agent memory card](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/guides/agent-memory-card.md)
-- [Agent instructions: revision history and restore](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/guides/agent-instructions-revisions.md)
-- [Automatic resume from error](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/guides/auto-resume.md)
-- [Run stall detection](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/guides/run-stall.md)
-- [Board administrator toggle](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/guides/agent-board-admin.md)
-- [Parallel helper subagents](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/guides/parallel-helpers.md)
+- [Bot container: the Container section](Bot-container-card)
+- [Agent memory card](Agent-memory-card)
+- [Agent instructions: revision history and restore](Agent-instructions-revisions)
+- [Automatic resume from error](Auto-resume)
+- [Run stall detection](Run-stall)
+- [Board administrator toggle](Agent-board-admin)
+- [Parallel helper subagents](Parallel-helpers)
