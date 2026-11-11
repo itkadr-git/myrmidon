@@ -35,6 +35,30 @@ const CACHE_TTL_HOURS = 72;
 const SCRATCH_TTL_HOURS = 12;
 const DEFAULT_ENV_PATH = "/etc/myrmidon-host-gc.env";
 
+// myrmidon(1.6.8-BOT-CONTAINER-ORPHAN / OPE-12654): the data directory of a decommissioned
+// bot (the gate A22 removed its container, the board logs `bot_data_left_for_host_gc`) is
+// removed by this host pass, not by the gate: the gate is uid 65532 and holds the volume root
+// read-only, so its delete could never succeed (the ADM hand-off of 11.11). A directory goes
+// only when every guard says go:
+//   - the name is a lowercase UUID bot key (`botKeyPattern`),
+//   - the board lists no hermes_gateway card with this agent id (the adapter moved away, or
+//     the agent is gone),
+//   - the agent has no heartbeat run in "running",
+//   - the gate has no `myrmidon-bot-<key>` container (any state, including leftovers `.next`
+//     and `.helper`),
+//   - the directory is older than the retention delay (24 h, the clone TTL of the workspaces),
+//   - the git worktrees inside hold no unpushed work: no uncommitted edits, no stash, and no
+//     commits ahead of their upstream; a `.next` or `.helper` directory is not a worktree and
+//     is not touched.
+// A directory that fails any guard is kept and journalled with the reason — never archived,
+// never partially removed. Everything is best-effort: an unreachable board or gate keeps the
+// directories (fail-closed).
+const BOT_DATA_TTL_HOURS = 24;
+const BOT_KEY_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+const DOCKER_TIMEOUT_MS = 30_000;
+const GIT_TIMEOUT_MS = 30_000;
+const HERMES_GATEWAY_ADAPTER_TYPE = "hermes_gateway";
+
 // --- Env Config -------------------------------------------------------------
 
 export function loadEnvConfig(envPath = DEFAULT_ENV_PATH) {
@@ -420,6 +444,277 @@ export function discoverBotScratchDirs(botsRoot) {
   return dirs;
 }
 
+// --- Bot data GC (OPE-12654) -------------------------------------------------
+
+// Every container of the gate on this host, any state, with the bot label. The
+// plain `docker ps -a --filter label=myrmidon.bot` covers main, .next and
+// .helper: one key lists once, so a leftover keeps its data directory held as
+// well as a running main.
+export function listBotContainers({ docker = "docker", timeoutMs = DOCKER_TIMEOUT_MS } = {}) {
+  const res = spawnSync(docker, ["ps", "-a", "--format", "{{.Labels}}"], { encoding: "utf8", timeout: timeoutMs });
+  if (res.error || res.status !== 0) return { ok: false, reason: res.error?.code === "ENOENT" ? "docker-unavailable" : "docker-failed" };
+  const keys = new Set();
+  for (const line of (res.stdout || "").split("\n")) {
+    const m = /(?:^|,)myrmidon\.bot=([0-9a-f-]+)(?:,|$)/.exec(line.trim());
+    if (m) keys.add(m[1].toLowerCase());
+  }
+  return { ok: true, keys };
+}
+
+// One `GET /api/agents/{id}` against the board (real route, server/src/routes/agents.ts).
+// The lookup happens per candidate directory, only after the container and retention
+// guards passed, so a pass makes a handful of calls at most. The verdict decides the
+// guard of the plan below:
+//   - 404: the agent row is gone (hard delete) — the bot may go;
+//   - 200 + status "terminated" — the agent was fired, the bot may go;
+//   - 200 + adapter "hermes_gateway" (any other status) — a live hermes card: never touch
+//     its bot data (the contract keeps hermes containers and their directories);
+//   - 200 + status "running" — a heartbeat run is in flight: keep, the bot may still be
+//     written to;
+//   - 200 + any other adapter and status — the agent moved off hermes_gateway and is
+//     idle: the bot may go;
+//   - 401/403/5xx, a network error or a malformed body — the board could not answer:
+//     fail-closed, the directory stays.
+export async function fetchAgentDecommissionState(agentId, {
+  baseUrl = process.env.BOARD_API_URL || process.env.PAPERCLIP_API_URL || process.env.MYRMIDON_API_URL || "http://127.0.0.1:3100",
+  apiKey = process.env.PAPERCLIP_API_KEY,
+  fetchImpl = globalThis.fetch,
+} = {}) {
+  if (!BOT_KEY_PATTERN.test(agentId)) return { ok: false, reason: "bad-agent-id" };
+  let base = (baseUrl || "").replace(/\/$/, "");
+  if (!base) base = "http://127.0.0.1:3100";
+  if (!base.endsWith("/api")) base += "/api";
+  if (typeof fetchImpl !== "function") return { ok: false, reason: "board-unavailable" };
+  const headers = { Accept: "application/json" };
+  if (apiKey) headers.Authorization = `Bearer ${apiKey}`;
+  const url = `${base}/agents/${encodeURIComponent(agentId)}`;
+  let response;
+  try {
+    response = await fetchImpl(url, { headers });
+  } catch {
+    return { ok: false, reason: "board-unavailable" };
+  }
+  if (response.status === 404) return { ok: true, state: "deleted" };
+  if (response.status === 401 || response.status === 403) return { ok: false, reason: "board-forbidden", statusCode: response.status };
+  if (!response.ok) return { ok: false, reason: "board-unavailable", statusCode: response.status };
+  let body;
+  try {
+    body = await response.json();
+  } catch {
+    return { ok: false, reason: "board-unavailable" };
+  }
+  if (!body || typeof body !== "object" || typeof body.adapterType !== "string" || typeof body.status !== "string") {
+    return { ok: false, reason: "board-unavailable" };
+  }
+  if (body.status === "terminated") return { ok: true, state: "terminated" };
+  if (body.adapterType === HERMES_GATEWAY_ADAPTER_TYPE) return { ok: true, state: "hermes_gateway" };
+  if (body.status === "running") return { ok: true, state: "running" };
+  return { ok: true, state: "left_hermes_gateway" };
+}
+
+// The unpushed-work scan of one bot data directory (OPE-12654): every git worktree under
+// <dir>/workspace must be clean, without stash, without an operation in progress, and
+// without unpushed commits. The clone layout is <dir>/workspace/<ISSUE-KEY>/repo (one task,
+// one clone per the working-copy rule), so the walk goes deep enough to find the repos;
+// `.next` and `.helper` are not worktrees and are skipped, like `node_modules`. The verdict
+// matches the clone-hygiene report the board holds a decommission for. Any git command that
+// fails unexpectedly (and an unreadable workspace) is fail-closed: the directory is held
+// with a reason, not removed.
+const BOT_SCAN_SKIP_NAMES = new Set([".next", ".helper", "node_modules", ".gc-archive"]);
+const BOT_SCAN_MAX_DEPTH = 4;
+
+function botDataGitOpInProgress(gitDir) {
+  for (const marker of ["MERGE_HEAD", "CHERRY_PICK_HEAD", "REVERT_HEAD", "REBASE_HEAD", "rebase-merge", "rebase-apply"]) {
+    if (fs.existsSync(path.join(gitDir, marker))) return marker;
+  }
+  return null;
+}
+
+export function scanBotDataForUnpushedWork(dir, { gitBin = "git", timeoutMs = GIT_TIMEOUT_MS } = {}) {
+  const workspace = path.join(dir, "workspace");
+  const reasons = [];
+  let entries;
+  try {
+    entries = fs.readdirSync(workspace, { withFileTypes: true });
+  } catch (err) {
+    if (err?.code === "ENOENT") return { unpushed: false, reasons: [] }; // no workspace: nothing unpushed by definition
+    return { unpushed: true, reasons: [`workspace: unreadable (${err?.code || "error"})`] };
+  }
+
+  const walk = (base, rel, depth) => {
+    let list;
+    try {
+      list = fs.readdirSync(base, { withFileTypes: true });
+    } catch (err) {
+      reasons.push(`${rel || "."}: unreadable (${err?.code || "error"})`);
+      return;
+    }
+    for (const entry of list) {
+      if (entry.isSymbolicLink()) continue;
+      if (!entry.isDirectory()) continue;
+      if (BOT_SCAN_SKIP_NAMES.has(entry.name)) continue;
+      const repo = path.join(base, entry.name);
+      const relName = rel ? `${rel}/${entry.name}` : entry.name;
+      const run = (args) => spawnSync(gitBin, args, { cwd: repo, encoding: "utf8", timeout: timeoutMs });
+      const inside = run(["rev-parse", "--is-inside-work-tree"]);
+      if (inside.error || (inside.status !== 0 && inside.status !== 128)) {
+        reasons.push(`${relName}: git failed (${inside.status ?? "spawn"})`);
+        continue;
+      }
+      if (inside.status === 128 || inside.stdout?.trim() !== "true") {
+        // Not a worktree — keep walking below it (e.g. <ISSUE>/<repo>).
+        if (depth < BOT_SCAN_MAX_DEPTH) walk(repo, relName, depth + 1);
+        continue;
+      }
+      // A worktree: inspect it.
+      if (run(["status", "--porcelain"]).stdout?.trim() !== "") reasons.push(`${relName}: uncommitted changes`);
+      if (run(["stash", "list"]).stdout?.trim() !== "") reasons.push(`${relName}: stash entries`);
+      const gitDirOut = run(["rev-parse", "--absolute-git-dir"]);
+      const gitDir = gitDirOut.status === 0 ? gitDirOut.stdout?.trim() : path.join(repo, ".git");
+      const op = botDataGitOpInProgress(gitDir);
+      if (op) reasons.push(`${relName}: ${op} in progress`);
+      const ahead = run(["log", "@{u}..HEAD", "--oneline"]);
+      if (ahead.status === 0) {
+        if (ahead.stdout?.trim() !== "") reasons.push(`${relName}: commits ahead of upstream`);
+      } else {
+        // No upstream configured: count commits that exist on no remote — a local
+        // branch or a detached HEAD with work that was never pushed.
+        const unpushed = run(["log", "--oneline", "--branches", "--not", "--remotes"]);
+        const detached = run(["log", "--oneline", "-1", "HEAD", "--not", "--remotes"]);
+        if (unpushed.error || detached.error) {
+          reasons.push(`${relName}: git failed checking upstream`);
+        } else if (unpushed.stdout?.trim() !== "" || detached.stdout?.trim() !== "") {
+          reasons.push(`${relName}: commits on no remote`);
+        }
+      }
+    }
+  };
+  walk(workspace, "", 0);
+  return { unpushed: reasons.length > 0, reasons };
+}
+
+// The XFS project quota of a removed bot (host side of the gate's hand-off): the gate
+// keeps `botKey -> project id` in /etc/projid and /etc/projects and leaves the entries
+// in place while the data directory exists (Quota.Remove refuses then). After this pass
+// removes the directory it clears the entries the same way the gate does — drop the
+// /etc/projid line, the matching /etc/projects lines, and reset the limits of the
+// project id — and then `xfs_quota project -s` is not needed: the directory is gone.
+// Best-effort and only when the files are readable/writable (root on vm-core): a
+// failure is journaled, not thrown, and never blocks the directory removal itself.
+export function clearBotDiskProject(botKey, {
+  projidFile = "/etc/projid",
+  projectsFile = "/etc/projects",
+  xfsQuotaBin = "xfs_quota",
+  volumeRoot = "/srv/myrmidon-bots",
+} = {}) {
+  const result = { cleared: false, projectId: null, reasons: [] };
+  let projidLines;
+  try {
+    projidLines = fs.readFileSync(projidFile, "utf8").split("\n");
+  } catch (err) {
+    result.reasons.push(`read ${projidFile}: ${err?.code || "error"}`);
+    return result;
+  }
+  let projectId = 0;
+  const newProjid = [];
+  for (const line of projidLines) {
+    const key = line.slice(0, Math.max(line.indexOf(":"), 0));
+    if (key === botKey) {
+      projectId = Number.parseInt(line.slice(key.length + 1), 10) || 0;
+      continue;
+    }
+    newProjid.push(line);
+  }
+  result.projectId = projectId || null;
+  if (projectId === 0) return result; // nothing registered: nothing to clear
+  let projectsLines;
+  try {
+    projectsLines = fs.readFileSync(projectsFile, "utf8").split("\n");
+  } catch (err) {
+    result.reasons.push(`read ${projectsFile}: ${err?.code || "error"}`);
+    return result;
+  }
+  const idText = String(projectId);
+  const dir = path.join(volumeRoot, botKey);
+  const newProjects = projectsLines.filter((line) => {
+    const idx = line.indexOf(":");
+    if (idx === -1) return true;
+    const lineKey = line.slice(0, idx);
+    const lineValue = line.slice(idx + 1);
+    return lineKey !== idText && lineValue !== dir;
+  });
+  // Reset the limits first: with the entries gone from the files, an xfs_quota call is
+  // the only way to lift a hard limit left on the project id.
+  if (fs.existsSync(xfsQuotaBin) || spawnSync(xfsQuotaBin, ["-V"], { encoding: "utf8" }).status === 0) {
+    const clear = spawnSync(xfsQuotaBin, ["-x", "-c", `limit -p bhard=0 bsoft=0 ${idText}`, volumeRoot], { encoding: "utf8", timeout: 30000 });
+    if (clear.status !== 0) result.reasons.push(`xfs_quota limit: ${clear.status}`);
+  }
+  try {
+    fs.writeFileSync(projidFile, newProjid.join("\n"));
+  } catch (err) {
+    result.reasons.push(`write ${projidFile}: ${err?.code || "error"}`);
+  }
+  try {
+    fs.writeFileSync(projectsFile, newProjects.join("\n"));
+  } catch (err) {
+    result.reasons.push(`write ${projectsFile}: ${err?.code || "error"}`);
+  }
+  result.cleared = result.reasons.length === 0;
+  return result;
+}
+
+// The bot-data plan: candidates, guards, verdicts. `now` is injected for the tests. The
+// board is asked per candidate (`fetchAgentDecommissionState`) — never when docker or the
+// retention guard already held every directory.
+export async function planBotDataGc(
+  root,
+  { now = Date.now(), ttlHours = BOT_DATA_TTL_HOURS, containers, agentState = fetchAgentDecommissionState, scan = scanBotDataForUnpushedWork } = {},
+) {
+  const ttlMs = ttlHours * HOUR_MS;
+  const plan = [];
+  if (!containers?.ok) {
+    return { ok: false, reason: containers?.reason || "docker-unavailable" };
+  }
+  let entries;
+  try {
+    entries = fs.readdirSync(root, { withFileTypes: true });
+  } catch {
+    return { ok: true, plan };
+  }
+  for (const entry of entries) {
+    if (!entry.isDirectory() || entry.isSymbolicLink() || !BOT_KEY_PATTERN.test(entry.name)) continue;
+    const dir = safeJoin(root, entry.name);
+    const st = fs.statSync(dir);
+    const item = { name: entry.name, path: dir, ageMs: now - st.mtimeMs, action: "keep", reason: "" };
+    if (item.ageMs < ttlMs) {
+      item.reason = "retention";
+    } else if (containers.keys.has(entry.name)) {
+      item.reason = "container-exists";
+    } else {
+      const agent = await agentState(entry.name);
+      if (!agent?.ok) {
+        item.reason = "board-unavailable";
+        item.details = [agent?.reason || "board-unavailable"];
+      } else if (agent.state === "hermes_gateway") {
+        item.reason = "agent-on-hermes-gateway";
+      } else if (agent.state === "running") {
+        item.reason = "agent-has-running-run";
+      } else {
+        const { unpushed, reasons } = scan(dir);
+        if (unpushed) {
+          item.reason = "unpushed-work";
+          item.details = reasons;
+        } else {
+          item.action = "remove";
+          item.reason = agent.state === "terminated" ? "agent-terminated-clean" : agent.state === "deleted" ? "agent-deleted-clean" : "decommissioned-clean";
+        }
+      }
+    }
+    plan.push(item);
+  }
+  return { ok: true, plan };
+}
+
 function issueIdentifierFromCloneName(name) {
   return name.split("@")[0];
 }
@@ -547,7 +842,7 @@ async function main() {
     const cloneTtlMs = args.cloneTtlHours * HOUR_MS;
     const cacheTtlMs = args.cacheTtlHours * HOUR_MS;
 
-    const plan = { clones: [], caches: [], scratch: [], kept: [], removed: [], archived: [] };
+    const plan = { clones: [], caches: [], scratch: [], botData: [], kept: [], removed: [], archived: [] };
 
     // 1. Scan task clones
     const clones = scanTaskClones(root, now, args.cloneTtlHours);
@@ -604,6 +899,33 @@ async function main() {
       }
     }
 
+    // 3b. Bot data directories of decommissioned bots (OPE-12654). Every guard
+    // must say go; an unreachable docker daemon or board keeps the directories
+    // (fail-closed) and only the journal says why.
+    const containers = listBotContainers();
+    const botData = await planBotDataGc(root, { now, containers });
+    if (botData.ok) {
+      for (const item of botData.plan) {
+        if (item.action === "remove") {
+          plan.botData.push({ ...item, action: "remove" });
+        } else if (item.reason === "unpushed-work") {
+          // The signal the issue asks for: the board holds the bot because of
+          // unpushed work — log it loudly, keep the directory.
+          plan.kept.push({ path: item.path, action: "keep", reason: `bot-data:${item.reason}`, details: item.details });
+          journalRecord(args.journal, { event: "bot-data-held-unpushed", path: item.path, details: item.details });
+          console.error(JSON.stringify({ ok: true, held: item.path, reason: "bot-data-held-unpushed", details: item.details }));
+        } else if (item.reason === "board-unavailable") {
+          plan.kept.push({ path: item.path, action: "keep", reason: `bot-data:${item.reason}` });
+          journalRecord(args.journal, { event: "bot-data-board-unavailable", path: item.path, details: item.details });
+        } else {
+          plan.kept.push({ path: item.path, action: "keep", reason: `bot-data:${item.reason}` });
+        }
+      }
+    } else {
+      journalRecord(args.journal, { event: "bot-data-gc-unavailable", reason: botData.reason });
+      console.error(JSON.stringify({ ok: false, reason: `bot-data-gc-unavailable: ${botData.reason}` }));
+    }
+
     // 4. Execute or report
     if (args.dryRun) {
       journalRecord(args.journal, {
@@ -655,11 +977,34 @@ async function main() {
           journalRecord(args.journal, { event: "scratch-prune-failed", path: s.path, error: err.message });
         }
       }
+      for (const b of plan.botData.filter((x) => x.action === "remove")) {
+        try {
+          atomicDrop(b.path, root);
+          plan.removed.push({ path: b.path });
+          journalRecord(args.journal, { event: "bot-data-removed", path: b.path, reason: b.reason });
+          // The gate left the XFS project entries in place while the directory
+          // existed (uid 65532 cannot remove them); this pass is the one that
+          // clears them, best-effort (root on vm-core).
+          const quota = clearBotDiskProject(b.name, { volumeRoot: root });
+          if (quota.projectId !== null) {
+            journalRecord(args.journal, {
+              event: "bot-data-quota-cleared",
+              path: b.path,
+              projectId: quota.projectId,
+              cleared: quota.cleared,
+              reasons: quota.reasons,
+            });
+          }
+        } catch (err) {
+          journalRecord(args.journal, { event: "bot-data-remove-failed", path: b.path, error: err.message });
+        }
+      }
       journalRecord(args.journal, {
         event: "apply-complete",
         removed: plan.removed.length,
         archived: plan.archived.length,
         scratchPruned: plan.scratch.length,
+        botDataRemoved: plan.botData.length,
         kept: plan.kept.length,
       });
       console.log(JSON.stringify({
@@ -668,6 +1013,7 @@ async function main() {
         removed: plan.removed.length,
         archived: plan.archived.length,
         scratchPruned: plan.scratch.length,
+        botDataRemoved: plan.botData.length,
         kept: plan.kept.length,
       }, null, 2));
     }
