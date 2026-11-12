@@ -12,6 +12,647 @@ version file to edit. Base Paperclip version is in the image label
 
 ## 1.6.7
 
+### A bot's npx and cargo caches stay under a byte quota (OPE-12110)
+
+One bot grew `hermes/.npm/_npx` by 2.2 GB in 45 minutes (npx fetched a whole vendor package with all
+its binaries), and a Rust `target/` in a task working copy reached 2.4 GB. botd now bounds both:
+
+- `hermes/.npm/_npx`: entries older than 24 h are removed, and when the rest weighs more than the
+  quota (512 MiB per bot) the entries written longest ago go first, until it fits.
+- `hermes/.cache/cargo-target`, the per-bot `CARGO_TARGET_DIR` the bot image already sets (outside
+  every task working copy): quota 2 GiB per bot, whole profile dirs (`debug`, `release`, a target
+  triple) removed least recently written first. A bot that never builds Rust has no such directory
+  and nothing creates it.
+
+Both passes work on whole entries, never remove a path a process holds open, and never touch an entry
+written in the last 15 minutes (an install or a build may still be going), so a quota can stay
+exceeded for one pass. Each eviction is a line in the botd log. The quotas are set with
+`MYRMIDON_BOTD_NPM_NPX_QUOTA_BYTES` and `MYRMIDON_BOTD_CARGO_TARGET_QUOTA_BYTES` on the botd process.
+
+### CI-QUEUE: cancel-in-progress concurrency for workflows running on main (1.6.7)
+
+- Workflows triggering on push to `main` (image, bot image, cloud files, dockergate, extension, fleetd, media tools, redact, wiki-sync, pr-autoupdate, agent-runtime-images, extension-package) and workflow_run `main` trigger (main green gate) now configure `concurrency` with `cancel-in-progress: true` when running on `main`.
+- Release branches (`rel/*`) and release tags (`myr-v*`) remain protected from cancellation (`cancel-in-progress: false`).
+- Added `scripts/myrmidon/ci/check-workflow-concurrency.py` and unit test `scripts/myrmidon/ci/workflow-concurrency.test.mjs` verifying that all workflows triggering on `main` specify concurrency cancellation for `main`.
+
+### One informational docs reminder comment on PRs that change API/schema/capability
+
+A new GitHub Actions workflow (`.github/workflows/myrmidon-docs-reminder.yml`)
+posts exactly one non-blocking comment when a pull request changes the API,
+schema, or generated capability surface (`packages/paperclip-runner/generated/capability/`,
+`server/**` schema files, `.agents/schemas/`) but ships neither a change
+fragment (`docs/myrmidon/changes/`) nor a skill reference update
+(`skills/myrmidon/references/`). The reminder is guarded by the
+`<!-- docs-reminder -->` marker, so it is posted once per PR no matter how
+many pushes; it never fails CI (docs-only and fork paths exit 0 silently).
+Fragments stay mandatory only at the release cut
+(`scripts/myrmidon/release/collect-fragments.mjs`); the reminder is a hint,
+not a gate.
+
+### fleetd on a remote site: a safe marker read, the same container template, writable caches
+
+- A bot can no longer stall or exhaust fleetd through its applied marker. fleetd runs as root and
+  reads `hermes/.myrmidon/applied.json` from a directory the bot owns. It now opens the file without
+  following a symlink and without blocking, accepts only a regular file, and reads at most 64 KiB.
+  A symlink, a FIFO, a directory or a larger file counts as "no marker".
+- A container on a remote site now gets the template of the board host: `/tmp` as a tmpfs, an init
+  process, the `on-failure` restart policy, and `MemorySwap` equal to `Memory`. A container that
+  exists already gets the template at its next recreate.
+- fleetd refuses a spec with `cpus` below 0.01 (a tiny value used to round to "no CPU limit"), with
+  a `gatewayPort` outside 1024-65535, or with a `boardExtraHost` that differs from the site's own.
+  The answer is `spec_invalid`. The board address in a container always comes from the site
+  configuration.
+- New configuration key `writableMountRoots` (default: empty). An extra mount without `readOnly` is
+  accepted only when its source, with symlinks resolved, is inside one of these directories (and
+  inside `allowedMounts`). Work bots can use their shared package caches on a remote site. Roll out
+  the new binary before the configuration that uses the key.
+
+### GitHub credentials cache, single-flight resolution, and per-run request fuse (OPE-12446)
+
+- The GitHub operation credentials broker caches minted installation tokens in-memory for 50 minutes per company, agent, run, and repository, preventing duplicate token minting against the GitHub App hourly installation limit.
+- Concurrent requests for the same repository and context join a single-flight token resolution promise, minting exactly one token from GitHub.
+- Bot runtime launcher configures run-scoped credentials disk cache via `PAPERCLIP_GITHUB_CREDENTIALS_CACHE_DIR` with 45-minute TTL and 0600 file permissions, eliminating repeated HTTP credentials requests from git and gh CLI invocations.
+- Per-run request fuse rejects runaway credentials requests exceeding `MYRMIDON_GITHUB_CREDENTIALS_FUSE_PER_MINUTE` (default 60/min, rolling 60s window) with HTTP 429 Too Many Requests.
+
+### GitHub pull request reads are cached on the board, and nothing is asked while the rate limit is exhausted (OPE-12397)
+
+The board reads the same ~100 open pull requests from several places (review rework, merge
+details, the CI resolver, the work-product refresh), and none of those reads carried an ETag, so
+each was a full `GET` answered with 200: about 4-5 thousand requests an hour used up the GitHub
+App's budget of 5000, after which the CI gate of the review could not see the checks. The
+provider that reads pull requests and issues now keeps a read cache per process:
+
+- an open object is served from memory for `MYRMIDON_GITHUB_OBJECT_CACHE_TTL_SEC` (default 120
+  s; `0` turns the cache off); a merged, closed or not-found one for
+  `MYRMIDON_GITHUB_OBJECT_TERMINAL_TTL_SEC` (default 1800 s). A "not found" that an anonymous
+  read got, and a merged pull request whose merge commit the default branch does not reach yet,
+  are not final: they are re-read after the short TTL;
+- after the TTL the read is conditional (`If-None-Match`): a 304 costs no rate limit and renews
+  the entry;
+- reads of one object that run at the same time share one request;
+- while the shared rate-limit state says the budget is gone, nothing is sent to GitHub: the cached
+  read (even an expired one) is returned, or the same "rate limited" answer a 403 gives, with the
+  time to come back; the extra `/compare` request of a merged pull request is skipped too;
+- when the board merges a pull request itself, its cache entry is dropped.
+
+The cache keeps at most 5000 objects, the oldest leave first. A read that a caller makes with an
+ETag of its own is answered as before.
+
+### An exhausted anonymous GitHub budget no longer blinds the board's authenticated reads (OPE-12397)
+
+The board keeps one shared GitHub rate-limit state, and since 1.6.7-rc.12 the pull request and CI
+readers send nothing to GitHub while that state says the budget is gone. A response of a small
+bucket — the anonymous 60 requests an hour, the search 30 a minute — was recorded into the same
+state, so one exhausted anonymous bucket marked every authenticated read rate limited: on 09.11 the
+review's CI reads were blind for half an hour with 3740 of the installation's 5000 left. Responses
+whose `x-ratelimit-limit` is below 1000 are now only counted and no longer change the shared state.
+
+### OMP sandbox: omp_local supports local process confinement (1.6.7 OMP-HARDEN)
+
+- The `omp_local` adapter now supports the same local process sandbox as
+  `claude_local`/`codex_local`: `filesystemScope: "workspace"` (Bubblewrap
+  workspace-only filesystem), `networkScope: "deny" | "allowlist"` with
+  `networkAllowlist`, `filesystemExtraPaths`, and `filesystemSandboxCommand`
+  (default `bwrap`). With neither scope set, execution stays unsandboxed.
+- The omp session directory (`--session-dir`, `~/.omp/paperclips/<companyId>/<agentId>`)
+  and the managed agent-config directory (`models.yml`, skills) are mounted
+  read/write inside the sandbox; the configured control-plane API URL is
+  trusted for the adapter's runtime connection.
+- New `omp_local` agents default to `filesystemScope: "workspace"` in the
+  create form; the Agent Settings form now shows the shared sandbox and
+  network fields for `omp_local` (no timeout keys — the adapter reads none).
+- Sandbox keys of `omp_local` are validated on save and gated as a security
+  change: editing them requires an instance admin, same as `claude_local`/`codex_local`.
+- Bubblewrap that cannot create a Linux user namespace now fails the launch
+  with an explicit error before the agent process starts; the process is never
+  started without the requested confinement.
+- The default `--tools` list was corrected for omp 18.9.2 built-ins
+  (`read,bash,edit,write,grep`; `ls` is a hard error and `find` needs the `fd`
+  binary) and is configurable via adapter `tools`.
+
+### The review-stage CI reads are cached on the board, and nothing is asked while the rate limit is exhausted (OPE-12397)
+
+The stranded-issue sweep asks GitHub for the CI of the open pull request of every review stage on
+each heartbeat tick (30 s by default). Each ask was two to four `GET`s (the pull request, the
+workflow listing, the `CI result` check, and in a repository without that check the checks of the
+whole head), and none of them was remembered: about 2400 requests an hour were counted for the
+`review-recovery` source out of the GitHub App's budget of 5000, after which the other readers of
+GitHub (the CI gate of the review, the work-product refresh) went blind. The CI reads of the
+review-stage recovery now keep a read cache per process:
+
+- the head of a pull request is served from memory for `MYRMIDON_REVIEW_CI_PULL_CACHE_TTL_SEC`
+  (default 60 s). The CI verdict of a head commit and the list of its failed checks are kept for
+  the same time while the CI is pending (or the verdict is unknown without an error), and for
+  `MYRMIDON_REVIEW_CI_COMPLETE_CACHE_TTL_SEC` (default 600 s) once the CI of the head is complete.
+  `0` for both turns the cache off;
+- an error (network, GitHub status, unreadable payload) is never stored, so the next sweep asks
+  again;
+- reads of the same head that run at the same time share one request;
+- a result read with one token is never served to a caller with another;
+- while the shared rate-limit state says the budget is gone, nothing is sent to GitHub (the
+  workflow-listing probe included): the remembered result is returned, even an expired one, or
+  "unknown" with the reason `...:skipped_rate_limited` and the time of the reset, which the review
+  CI wait already uses to postpone the next check.
+
+The cache keeps at most 5000 reads, the oldest leave first.
+
+### The review-return loop pace is a setting, and its pass spends one read per pull request (OPE-12397)
+
+The review-return (rework) loop swept every minute and re-read the pull request of every
+candidate review task on every pass — up to 200 tasks, no deduplication between tasks that
+share one pull request, terminal pull requests included, and every process of the
+installation swept on its own. Together with the other GitHub readers this drained the
+App's budget of 5000 requests per hour. The loop now:
+
+- paces by the stored instance setting `sweepIntervalSec` (default 300 s, range 60–3600,
+  the Review Rework panel edits it, saving applies without a restart);
+- `MYRMIDON_REVIEW_REWORK_SWEEP_INTERVAL_SEC` overrides the stored value as the
+  deployment fallback (the panel shows the override read-only, the LiteLlm budget-sync
+  rule);
+- reads each pull request at most once per pass: two review tasks linked to the same
+  pull request cost one read, a task naming the same pull request twice costs one;
+- skips candidates that cannot produce a move before any GitHub read: no rework child,
+  no verdict keyword, and no live (non-terminal) pull-request work product;
+- runs only on the "scheduler" leader process — the same leadership gate TASK-PR-SYNC
+  uses — so secondary processes stop re-reading every candidate's pull requests.
+
+Run-start context no longer refreshes pull-request metadata from GitHub: `loadRunPullRequest`
+reads the stored work-product metadata (`headRef`, `repo` are already there), and the
+wake-payload CI resolver reads only live (non-terminal) pull-request products of the task,
+at most 10 references per build. GitHub reads are attributed per reader in the
+`[github-rate-limit]` log: `review-rework`, `review-routing`, `run-context`, `ui-refresh`
+join the existing buckets, and `review-routing` counts and honours the limit as the other
+readers do.
+
+### Instance → General: the "Workspace hygiene" panel is on the page (1.6.7 SETTINGS-UI, OPE-6249)
+
+- The two disk ceilings of the workspace quota sweep, `workspaceQuotaMb` (one execution workspace) and
+  `totalQuotaMb` (the sum of one company's measured workspaces), had a read/write route
+  (`GET`/`PATCH /api/myrmidon/workspace-hygiene`) and a finished panel component, but the component was
+  never placed on the page, so the production UI had no way to see or change them. The panel "Workspace
+  hygiene" now sits on Settings → General next to the bot disk panels. It shows both ceilings, the source
+  of each value (default, environment override, saved here), the biggest measured workspaces and the last
+  sweep, and saves through the existing `PATCH` route. An empty field means the cap is off.
+- A save applies at once: the sweep reads the stored ceilings at the top of every tick, no restart.
+- The source labels of the panel went through i18n (they were fixed English strings). A save or a read
+  refused with 403 now says "Instance admin rights are required." instead of the raw server text; the
+  `PATCH` route stays instance-admin only.
+- The merged-workspace cooldown and the stuck-workspace signal delay stay in the Runs & Queue panel; they
+  are not part of this one.
+
+### Stack watch live: self-refreshing local versions, GitHub 403 retry with stale marker, persistent update cards, owner escalation (1.6.7 STACK-WATCH-LIVE, OPE-12141)
+
+- The scheduled stack release check now refreshes the local side itself: the http-version probe reads
+  running versions from `MYRMIDON_STACK_HTTP_HINDSIGHT` (Hindsight `/version`), `MYRMIDON_STACK_HTTP_LITELLM`
+  (LiteLLM `/version`) and `MYRMIDON_STACK_HTTP_LANGFUSE` (Langfuse `/api/public/health`), so a component
+  no longer sits at «not refreshed yet» until a manual admin refresh.
+- GitHub 403 (anonymous rate limit) is retried once after a configurable delay and otherwise recorded as
+  stale: cards and the UI carry an explicit «сверка не удалась N ч, данные от ДАТЫ» marker instead of
+  silently keeping the previous cache.
+- A `stack_update` attention card now lives while the component is behind, not just one check, and lags or
+  security notes escalate into backlog tasks (deduped per component) plus a line in the daily Telegram digest.
+- The seeded registry reads only `myr-v*` release tags for the board component and no longer treats
+  pre-release or nightly tags as the latest release; RAGFlow is marked as retired from the stack.
+
+### TASK-CARD-READINESS-4: Task card edit target existence verification on main
+
+- Extends task card readiness verification (`assertTaskCardReadyWithEditTargets`, `verifyEditTargets`, `extractEditTargetPaths`) to verify repository file paths specified in «МЕСТО ПРАВКИ».
+- Probes paths against the default branch via GitHub raw content; absent files yield `EDIT_TARGET_NOT_FOUND` (422 in enforce mode).
+- Paths marked as new files («новый файл», «new file») are excluded from probing.
+- Network errors or missing GitHub connections fail open with `EDIT_TARGET_UNVERIFIED` warnings without blocking transitions.
+
+### TASK-CARD-READINESS-2: Task card readiness server gate
+
+- Server-side readiness check for task cards (`assertTaskCardReady`) based on the slice-1 evaluation engine.
+- Rejects incomplete cards with 422 `task_card_not_ready` in `enforce` mode; logs a warning during the 3-day grace period or when `MYRMIDON_TASK_CARD_GATE_MODE=warning`.
+
+### OMP git-checkout workspace sync (1.6.8 OMP-GIT-ONLY-SYNC)
+
+- `omp_local` SSH execution supports `workspaceSync: "git_checkout"` to transfer only the Git bundle and checkout for each run.
+- The shared local workspace is not snapshotted, copied back, merged, or locked; skills and agent configuration assets continue to be staged normally.
+- The default `workspaceSync: "full"` behavior is unchanged. Non-Git workspaces fall back to full synchronization.
+
+### SSH transfer streams no longer crash the board (1.6.8 SSH-STDIN-EPIPE)
+
+- SSH and tar transfer stdin streams now handle early-close/write errors and reject the current transfer instead of emitting an unhandled `EPIPE`.
+- Uploads stop the peer tar/ssh process when either side exits early.
+- SSH/tar stderr retained for transfer errors is limited to a 64 KiB tail, with an explicit truncation marker.
+
+### Auto-created backlog drafts for lagging or security-flagged stack components (1.7-STACK-UPDATES-B)
+
+- The daily stack release check now creates a backlog draft task (`todo`, `originKind stack_update`) per component that lags upstream by the configured number of releases or carries a critical security note — previously the check only produced attention cards and the draft had to be written by hand from the UI.
+- Deduplication: while an open task for the same component exists (`originKind stack_update`, `originId` = component name, status not done/cancelled), no duplicate draft is created.
+- The draft title and summary reuse the attention card wording, so the backlog draft and the "needs me" feed stay consistent; a security-only component (no lag, hence no attention card) gets a title/summary in the same shape.
+- The lag threshold is configured with `MYRMIDON_STACK_BACKLOG_LAG_RELEASES` (default 2); the draft-creation step is injectable (`createDraft`/`findOpenComponents` ports in `checkStackReleases`), failures are logged per company without failing the check.
+
+### Stack component CVE advisory integration via OSV.dev (1.7-STACK-UPDATES-B)
+
+- Stack registry release verification now queries known vulnerabilities from OSV.dev API (`/v1/querybatch`) for tracked components.
+- Components with matching advisories report advisory markers (`vulnerabilities` list with CVE id, primary id, and normalized severity) alongside release divergence.
+- When the advisory source is unreachable or times out, release checking degrades gracefully without failing.
+- Advisory endpoint base URL is configurable via `MYRMIDON_STACK_OSV_API_BASE`.
+
+### DEVFLOW: load-based review routing with lead pool and idle rebalancing (OPE-10084)
+
+- Company review pool now dynamically includes `lead` along with `reviewer` castes.
+- Participant selection at review stage start and reassignment prioritizes the least loaded agent (pending stages and active runs queue), excluding the author and escalated stages.
+- Automated rebalancing during review routing sweep shifts pending stages waiting longer than `rebalanceAfterMinutes` to an idle pool member with an immediate wake.
+
+### CI: main runs complete instead of cancelling each other
+
+- Every push to main cancelled the running Myrmidon CI run; with merges more frequent than a full run, main had no completed run for hours and `main-green-gate` never turned green. Pushes to main no longer cancel the running main run: the concurrency group keeps one running and one pending run, so runs do not pile up.
+
+### CI and pull-request events from our own GitHub App reach the board (GITHUB-APP-WEBHOOK)
+
+- New public receiver `POST /api/myrmidon/github-app/webhook`. The call is authenticated by GitHub's `X-Hub-Signature-256` (HMAC-SHA256 over the exact body, constant-time compare) against the webhook secret of the App entry named by `X-GitHub-Hook-Installation-Target-ID`; unknown App id answers `204`, a bad or missing signature `401`, an accepted delivery `202` with `{ companies, processed, duplicate, ignored }`.
+- The delivery goes through the same event service as the connector events (`processForCompany` with no bindings): check_run / check_suite / workflow_run update the CI state of the pull request and return the task to its executor on a failed head, pull_request keeps the merge and conflict returns. Companies are picked by App id and `allowedRepos`; a delivery id is processed once per company; deliveries without a repository are ignored.
+- New App-entry field `webhookSecretId` (company secret, server-owned) and `POST /api/myrmidon/companies/:companyId/github-shared-identity/apps/:entryId/webhook-sync` with `{ webhookUrl }`: creates the secret once, sets the App's webhook with the App JWT and answers the `{ url, contentType }` GitHub reports. A board save that omits `webhookSecretId` keeps the stored one.
+
+### OPE-10494: bots ship the GitHub CLI from its own release (2.103.3)
+
+- Bot images installed Debian's `gh` 2.46.0, which fails `gh pr view` and `gh pr edit` with "GraphQL: Projects (classic) is being deprecated"; bots retried the same command and runs stopped on repeated tool failures. Every bot image variant now carries `gh` 2.103.3 from the pinned, checksummed upstream release at `/usr/bin/gh`.
+
+### Codex / ChatGPT pool account OAuth management, account plans (Plus, Pro, K-12), and sliding window load distribution (OPE-10775)
+
+- Codex / ChatGPT account OAuth connection lifecycle directly from the board UI (`POST /providers/:id/oauth/start` and `POST /providers/:id/oauth/complete`).
+- Persistent pool registry supporting subscription account plans (`Plus`, `Pro`, `K-12`) and account deletion.
+- Sliding quota window tracking (5 hours and 7 days) with automated exhaustion detection.
+- Dynamic account rotation (`selectActivePoolAccount`) automatically removing banned and exhausted accounts from rotation and failing over to available accounts.
+- Automatic operator attention role signals for banned (high severity) and quota-exhausted (medium severity) pool accounts.
+
+### Release reconciliation service and tests (1.7 STACK-UPDATES-B, OPE-12044)
+
+- Added standalone release reconciliation module under `server/src/myrmidon/release-reconciliation/`
+  with config reader, mockable GitHub client, in-memory issue sink, and reconciliation service.
+- Normalises release and vendor tag versions (stripping `v`/`V`, `myr-v`, and image prefixes),
+  detects divergences, and generates structured draft tasks with change summaries.
+- Configurable via environment variables: `MYRMIDON_VENDOR_GITHUB_REPO`, `MYRMIDON_GITHUB_API_BASE`,
+  `MYRMIDON_VENDOR_TAG`, `MYRMIDON_RELEASE_RECONCILIATION_INTERVAL_SEC`, and `MYRMIDON_RELEASE_TASK_COMPANY_ID`.
+
+### Corpus: a failed document is parsed again with one button in the board UI (1.6.7 CORPUS-UI, OPE-12058)
+
+- The documents table of the knowledge corpus screen shows a «Reparse» button for every document whose
+  parse has failed (the RU text is «Разобрать заново»). It calls the reparse route the server half
+  shipped in OPE-12029 (`POST /api/myrmidon/companies/:companyId/corpus/documents/:documentId/reparse`,
+  `202 {document, job}`) — before this change the screen called the non-existent `…/retry` route and the
+  button answered 404. The row is replaced with the returned document at once (back to `queued`, error
+  cleared) and then confirmed by a refetch, so the list never keeps showing a stale `failed` row.
+- Refusals of the route surface with their response text: `409 document_not_failed` / `409
+  document_has_no_stored_bytes`, `422` when the embedder is not configured, `502 enqueue_failed` — the
+  screen shows the `message` field of the error body (the human text), not the machine token.
+
+### Wake diagnostics name the private-task suppression reason (OPE-12197)
+
+- A wake skipped because its issue is private to another agent is now shown with its own reason `heartbeat.private_issue_suppressed` instead of "other" in the issue wake diagnostics.
+
+### Server and client: add limit and before cursor for heartbeat-runs list (OPE-12210)
+
+- `GET /api/companies/:id/heartbeat-runs` now defaults `limit` to 200 (max 1000, validates non-numeric input as 400) and supports `before` (ISO createdAt cursor) for efficient pagination without heavy full-table aggregation or unconstrained SELECTs.
+- `heartbeat.list` and `listVersionKey` are scoped to the requested pagination window and return `X-Next-Cursor` when rows equal `limit`. The response remains a raw array of heartbeat runs for full backward compatibility.
+- Updated UI (`AgentDetail`, `AgentDetail.production`, API clients) and CLI (`client run`, `heartbeat-run`) to support limit and pagination.
+
+### Datastore-care audit: pg_settings unit factors, pgvector relkind filter, external backup coverage (1.6.6 DBC-4, OPE-12248)
+
+- The audit report multiplies each `pg_settings` memory parameter by the byte
+  factor of its `unit` column (B/kB/MB/GB/TB and the page units `8kB`/`16kB`),
+  so `work_mem` 32768 kB is reported as 32.0 MiB with a true «attention»
+  verdict against the 16 MiB threshold, and `shared_buffers` /
+  `effective_cache_size` given in 8kB pages are shown in GiB instead of KiB.
+- The pgvector column query filters `relkind = 'r'`, so an HNSW index record is
+  no longer listed as an unindexed vector column («1 из 2 ok» → «1 из 1 ok»).
+- New env `MYRMIDON_DATASTORE_CARE_BACKUP_EXTERNAL` (a coverage label such as
+  `vm-pbs`): when set, the `backup-freshness` criterion reports the external
+  coverage as healthy with the env as its source and does not scan the local
+  backup directory.
+
+### Heartbeat: non-hermes agents skip bot container idle-stop check during transient retry (1.6.7 RETRY-NONHERMES, OPE-12269)
+
+- In `heartbeatService.claimQueuedRun()`, the IDLE-STOP container health check (`idleStopService.ensureStartedAndHealthy()`) is now guarded to only run for `hermes_gateway` agents that have `adapterConfig.container.enabled === true`.
+- Previously, scheduled retries with cause `transient_failure_retry` for agents with non-hermes adapters (such as `omp_local` or `codex_local`) invoked the container check without verifying adapter type, causing immediate `hermes_gateway_connect_failed: dockergate: denied (bot_not_enrolled)` failures, infinite retry loops, and stranded task execution locks. Non-hermes agents now follow the standard adapter dispatch path during retry.
+
+### Provider garbage detection and bounded retry protection (OPE-12286)
+Upstream model provider stub replies (e.g. maintenance notices or overloaded messages returned with HTTP 200 in sub-second time) are now detected and classified as `provider_garbage`. The heartbeat persists a `run.provider_garbage.detected` event, and the devflow health collector turns recent events into one critical (P1) signal per outcome/model-group burst, including the outcome text and model group. Suspect runs do not enter recovery-block; instead, they receive bounded retries with a pause (`MYRMIDON_PROVIDER_GARBAGE_RETRY_MAX_ATTEMPTS`, default 3; delay `MYRMIDON_PROVIDER_GARBAGE_RETRY_DELAY_MS`, default 300s).
+
+### CI: affected tests now always run static guards that read app.ts via fs (OPE-12295)
+
+- The `tests (affected)` tier now always includes
+  `server/src/myrmidon/app-plugin.myrmidon.test.ts` when one of the shared
+  guard triggers changes (`server/src/app.ts`, `server/src/index.ts`,
+  `server/src/myrmidon/app-plugin*.ts`, `docs/myrmidon/FLAGS.md`,
+  `docs/myrmidon/SETTINGS.md`). The suite reads `app.ts` through
+  `readFileSync` (not an import), so the dependency graph could not discover
+  it; PR #876 merged with a green PR CI but red main because the mounts
+  snapshot was stale.
+
+### Fail-closed bot container cleanup on agent termination and deletion (OPE-12323, PR #2803)
+
+- Terminating (`POST /api/agents/:id/terminate`) or deleting (`DELETE /api/agents/:id`) an agent with an active bot container now performs a fail-closed cleanup against the execution runtime or remote fleetd site (`POST /v1/bots/:botKey/cleanup` or `DELETE /v1/bots/:botKey`).
+- The cleanup removes both the running Docker container and the host-side bot volume directory (`volumeRoot/:botKey`), preventing orphaned containers and residual disk usage.
+- The operation is fail-closed: if the remote site is unreachable or container cleanup fails, the terminate/delete endpoint returns an error and leaves the agent record in the database so the operation can be retried safely.
+- The fleetd route `/v1/bots/:botKey/cleanup` (also accepting `DELETE`) is idempotent and treats missing containers (Docker 404) or already-removed data directories as successful cleanups.
+
+### OPE-12335: deploy.sh exclusive deploy lock protection against parallel runs
+
+- Added exclusive deploy locking (`flock`) at the beginning of `scripts/myrmidon/deploy/deploy.sh` via `acquire_deploy_lock` in `lib.sh`.
+- Prevents concurrent deployments from overlapping and racing during maintenance and container recreation.
+- Supports `MYRMIDON_DEPLOY_LOCK_FILE` (defaults to `$STATE_DIR/deploy.lock` or `/var/lib/myrmidon/deploy/deploy.lock`) and `MYRMIDON_DEPLOY_LOCK_WAIT_SEC` (defaults to 0).
+- If the lock is held, exits immediately with code 42 and prints the holder's PID, start time, and version (or waits if `MYRMIDON_DEPLOY_LOCK_WAIT_SEC` > 0).
+- Dry-run mode warns if the lock is held without acquiring it.
+- Automatically releases and cleans up the lock file via a trap on EXIT, INT, and TERM.
+
+### Bot card: validate memoryMb, cpus and pidsLimit against dockergate platform ceilings (1.6.7 OPE-12337)
+
+- Saving or updating an agent card with `adapterConfig.container` now validates requested resources against enrolled dockergate limits (route A21 `GET /myrmidon/bots/{botKey}/limits` / platform ceilings).
+- An update exceeding enrolled ceilings is rejected at card save time with HTTP 422 ("exceeds dockergate ceiling ... for this bot; raise bots[].maxMemoryMb in dockergate config.json and reload dockergate (SIGHUP)") rather than silently saving and failing later during container reconciliation with 403 `dockergate: denied (limit_exceeds_enrollment)`.
+- The bot container status API (`GET /api/myrmidon/agents/:id/bot-container/status`) and agent card UI now report the running container's actual resource limits alongside requested card limits and display divergence warnings with the reconciliation denial reason when they differ.
+
+### Model Providers screen and fallback editor: full RU localization, correct pool counters and badges (OPE-12361)
+
+- Model Providers screen and the gateway fallbacks editor are fully translated for the RU locale: account table headers (plan, actions), pool attention signals, live/total/exhausted/disabled counters with the "next reset" line, `Codex OAuth Login` (now shown only on ChatGPT-pool cards), `Show diff`, ok/error statuses, and the whole fallbacks editor (Save Changes, Fallback Chain, cycle detection, warnings, add-target placeholder).
+- Pool channel summaries no longer count `error` accounts as live. The reset date now comes from the real channel data: the earliest still-future limit window across non-banned/non-disabled accounts, so a rotated stale cache (e.g. an outdated 21.10 reset) can no longer shadow the real upcoming reset; the connectors never carried a pool-level reset document, so that dead read path is gone.
+- Change log rows render the real author name/email; every audit writer (gateway keys, models, fallbacks rollback, provider mutations) now persists the display name from the authenticated actor instead of `user:<id>`. The fallback role labels (agent/board/system/user) come from the locale catalog, so the English UI no longer renders Russian words.
+- Pool models are no longer badged "Paid" (pools are subscriptions); the fallback editor stops flagging pool groups with false "single provider (openai)" / "Paid fallback channel" warnings by deriving the provider from the board channel registry (pool type) instead of the LiteLLM prefix, and `kie-gpt-6-luna` is no longer reported "Free" (strict paid-provider check).
+- Fixed 404 on page open: the hindsight model-groups route is now mounted under the company-scope alias.
+- RU/EN locale parity and the latin-scan guard updated accordingly.
+
+### Corpus: embedding gateway retry and hybrid vector search resilience for cold query p95 < 2s (OPE-12372)
+
+- Added 1 retry with exponential backoff on transient embedding gateway failures/timeouts in `corpus_search` / embedder adapters to eliminate embedding tail latency spikes on cold questions.
+
+### Financial history integrity: deleting agents with cost_events rejected with 409 Conflict (OPE-12475)
+
+- Deleting an agent (`DELETE /api/agents/:id`) that has recorded financial cost events (`cost_events`) is now rejected with `HTTP 409 Conflict` (`code: "agent_has_cost_events"`). Callers must terminate the agent (`POST /api/agents/:id/terminate`) instead of deleting it to preserve financial audit history.
+- Deletion failures caused by remaining foreign-key references are handled cleanly and return `HTTP 409 Conflict` (`code: "agent_referenced"`) instead of uncaught 500 errors.
+- Pre-deletion checks verify `cost_events` under row-level lock before native run dependency cleanups or record deletions.
+
+### Re-scope shared bot runtime RO-layer to bin only (1.6.5-BOT-DISK-H11, OPE-12493)
+
+- Exclude `lazy-packages` and `lsp` from `general.botDisk.sharedBotRuntimePath` read-only mounts. Only `bin` (~38 MB per bot, ~2.4 GB fleet-wide) is shared read-only across bots on the host. `lsp` is kept writable per bot and `lazy-packages` remains image-specific.
+- Dockergate policy `BotRuntimeMounts` updated to accept only `bin`.
+
+### Per-bot npm content cache quota (1.6.7 BOT-DISK)
+
+- botd now enforces a 512 MiB per-bot `hermes/.npm/_cacache` limit after age-based cache cleanup. It removes oldest complete content and index shards first, skips open paths and active runs, and logs each idle quota pass.
+
+### OPE-12557: advisory-lock transactions no longer exhaust the database pool
+
+- Wake-queue release runs its host callbacks on the release transaction's connection instead of taking a second pool connection while it holds the lock.
+- At most two locked conversation deliveries run at once per process; the others wait without holding a connection. On 10.11 all 12 pool connections were taken by transactions waiting for each other after `pg_advisory_xact_lock` and the board stopped.
+
+### OPE-12577: the manager is woken after a final run guard stop
+
+- A final run guard stop blocks the task and wakes the assignee's manager (`run_guard_stop_needs_input`). The stopped run still held its environment lease for a moment, an execution hold, so the manager's wake was parked as an execution wait and never ran: 5 such wakes ran for 235 stops in 72 h, and engineers sat idle on blocked tasks.
+- The wake of the assignee's `reports_to` (or `adm`) passes the execution hold at enqueue and is not made stale by it at claim; the assignee and the blocked status stay as the escalation set them.
+
+### OPE-12578: the board keeps its runs after its own event-loop stall
+
+- A run's controller lease was treated as lost as soon as its expiry passed, although no other process had taken it. After a stall of the board process every run it controlled was cancelled ("Legacy controller lease lost": 27 runs on 10.11 03:29Z, ~140 on 09.11).
+- Renewal is now decided by the boot id (revocation always replaces it); a passed local deadline first asks the database and aborts only when the renewal is refused, fails, or does not answer within 5 s; a failed background renewal is retried on the next tick.
+
+### OPE-12579: secret masking of run logs no longer stalls the board on long unbroken lines
+
+- The JSON secret-field patterns of `redactSensitiveText` (server/src/redaction.ts) used an unbounded field-name pattern and backtracked quadratically on a long run of name characters (a base64 blob in a run's stdout). On 10.11 a 183 878-character line held the board's event loop for minutes and runs across the fleet lost their controller leases.
+- Free-text scans now use a field name that starts only where a word run starts and has bounded name parts: 2 000 000 characters take ~15 ms. Masking results are unchanged; key checks keep the old pattern.
+
+### OPE-12609: fix false DEPLOYED-DEGRADED on idle-stopped, stale OOM and transient unhealthy bots
+
+- Corrected bot classification in `bot-apply-smoke.sh` during post-deploy verification to prevent false `DEPLOYED-DEGRADED` results (rc.17 and rc.19 incidents):
+  - Missing runtime container ("No such container", absent docker inspect output) for an agent without a board error is classified as `idle_stopped` rather than an active unhealthy gateway, excluding it from the active smoke denominator. Empty inspect fields now normalize to `missing` rather than printing `docker:`.
+  - `OOMKilled=true` is counted as a deployment casualty only if the container's `FinishedAt` timestamp is inside the deployment window (`>= --deploy-started-at`). Stale OOM killed containers from before the deployment window are excluded as pre-deploy `idle_stopped`.
+  - Docker or board `unhealthy` mark is evaluated on the current poll via an active `/health` probe response (`docker exec … curl /health`); bots whose gateways recovered by the end of the maintenance window pass as `healthy` instead of failing the deploy with a sticky `crashed:docker_unhealthy`.
+  - Genuine exits, in-window OOMs, and dead gateways continue to produce `DEPLOYED-DEGRADED`.
+
+### OPE-12609: the post-deploy bot smoke no longer reports idle-stopped bots as crashed
+
+- Docker keeps the last Health.Status of a container after it stops, so a bot idle-stopped hours before the deploy still read "unhealthy" and the smoke reported it as `crashed:docker_unhealthy` (rc.20, 10.11: seven bots, deploy exit code 1 on a healthy fleet). The health mark now counts only for a container that is not exited, dead or created; a stopped one is judged by its exit (before the deploy, or an idle-stop 143, is idle).
+
+### omp agents run in their own container: the omp SSH runner (OMP-SSH-RUNNER, OPE-12633)
+
+- New image `agent-runtime-omp-ssh`, built and signed by the agent-runtime image workflow. It adds Bun and omp (pinned like the board image), pnpm, the GitHub CLI, a C toolchain and a key-only sshd (port 2222, user `paperclip`) to the agent runtime base image.
+- An `omp_local` agent is attached to a board SSH environment that points at one runner container per agent (template: `docker/agent-runtime/omp-ssh/compose.yml`). The runner has its own limits; the defaults are those of an engineer bot container: 4 GB, 1 CPU, 1024 processes. omp, its tools and the builds it starts run there, not in the board container. The board syncs the workspace and streams the output.
+- The procedure is in the "OMP SSH runner" section of `docker/agent-runtime/README.md`.
+
+### SSH environments no longer fill the remote disk; omp model ids save on the card (OPE-12633)
+
+- A synced run in an SSH environment copies the workspace to `<remote workspace>/.paperclip-runtime/runs/<runId>/workspace`; on the Myrmidon monorepo that is about 0.8 GB per run, and nothing removed it. After a successful restore, the run's workspace copy is now removed. The small runtime directory stays: the API bridge stops in parallel. Run directories older than two days are pruned when the next run starts. A failed restore keeps the copy, so the run's work is not lost.
+- The agent card accepts an omp model id in the form omp runs it: one of the agent's custom provider keys (`MYRMIDON_OMP_PROVIDERS`) followed by a gateway model from the list, e.g. `litellm/antigravity/gemini-3.8-flash-medium`. Before, the board refused that id and the card could only be repaired in the database.
+
+### Variables introduced by Myrmidon are named MYRMIDON_* (REBRAND-OWN-ENV, OPE-12652)
+
+- The omp adapter reads `MYRMIDON_OMP_PROVIDERS` and `MYRMIDON_OMP_COMMAND`. The names it shipped with, `PAPERCLIP_OMP_PROVIDERS` and `PAPERCLIP_OMP_COMMAND`, still work for one release as deprecated aliases; a run that uses the old provider name says so in its first note.
+- Other variables we had introduced under the vendor prefix are renamed the same way, with the old name kept as an alias:
+  - `MYRMIDON_RUNNER_SANDBOX_COMMAND`;
+  - `MYRMIDON_GITHUB_CREDENTIALS_CACHE_DIR` (the bot runtime sets both names);
+  - `MYRMIDON_GIT_PROBE_ACTIVE`;
+  - `MYRMIDON_PARENT_BOOT_ID`;
+  - the dev launcher's `MYRMIDON_PROCESS_MODE` / `MYRMIDON_PROCESS_ROLE`;
+  - the standby drill's `MYRMIDON_DB_PASSWORD`;
+  - the scripts' `MYRMIDON_BASE_URL` and `MYRMIDON_UPSTREAM_REPO`.
+- The omp discovery cache now ignores per-run `MYRMIDON_*` variables, as it already ignored `PAPERCLIP_*` ones.
+- New CI guard `scripts/myrmidon/ci/paperclip-names-ratchet.mjs`, run by the checks job's script tests. It fails a change that adds a `PAPERCLIP_*` name absent from `scripts/myrmidon/ci/paperclip-names-baseline.txt`, which lists the vendor names and our deprecated aliases.
+
+### Deploys remove unused release images after success (OPE-12664)
+
+- A successful product deploy now removes unused `myrmidon*` and `agent-runtime*` images from the deploy host. Docker containers in any state keep their image. The sweep does not run when the deploy fails, and a cleanup failure is logged without changing the successful deploy result.
+- The deploy host disk signal measures both the root filesystem and `/srv/myrmidon-xfs`. It warns above 85% and raises a critical signal above 90% with the largest consumers. The root and bot-partition checks use the existing host-disk attention and owner-notification path.
+
+### omp SSH runner data on the bot data disk (OPE-12664)
+
+- The runner compose template keeps workspace, home and host key under `OMP_RUNNER_DATA_DIR` (bind volumes) instead of named volumes in `/var/lib/docker`: agents clone and build repositories in the runner, gigabytes per agent, and on vm-core that landed on the root disk.
+
+### The SSH run copy is removed at every end of the run, not only after a successful restore (OPE-12664)
+
+- A synced run in an SSH environment copies the workspace to `<remote workspace>/.paperclip-runtime/runs/<runId>/workspace`, up to 3 GB on the Myrmidon monorepo. The board removed the copy only after a successful restore, so a failed, timed-out or cancelled run left it until the next run on that runner pruned copies older than four hours. On 11.11 and 12.11 that filled the bots disk to 100% and crashed the bots.
+- Now the run's whole directory is removed after the restore attempt whatever the outcome of the run. It is also removed when the restore itself fails (the restore error is still reported) and when the workspace upload or the asset staging fails before the run starts. Only this run's directory is touched; an in-place workspace has no run directory, so nothing is removed. A failed removal is logged and does not fail the run. The removal first stops the API bridge server of the run, which stops in parallel with the restore.
+- A run whose restore failed no longer keeps its remote copy for recovery: it is removed together with the rest. The four-hour prune at the start of the next run stays as a safety net for runs that never reach their end, for example when the board restarts.
+
+### SSH run copies of failed and cancelled runs are pruned after four hours (OPE-12664)
+
+- A failed or cancelled run in an SSH environment never reaches the restore that removes its workspace copy. Run directories older than four hours are now pruned when the next run starts (before: two days). The longest run timeout is three hours. On 11.11 one omp runner held 24 copies of 1.5 GB.
+
+### A review goes only to a reviewer of the task's own group (OPE-12683)
+
+- The board accepted any agent as a reviewer. The automatic review rebalance gave development reviews to shop and business bots (`bbq*`, `work*`, `dispatch`). They approved and closed tasks whose pull requests were not merged.
+- A review or approval participant must now be an agent of the task's own group, with `swarmQueueEligible` not set to `false`. The board refuses any other agent with 422 `invalid_review_participant` and lists eligible teammates. The check runs when the task enters review and when the reviewer changes while the task is already in review.
+- The automatic review routing takes reviewers only from the task's own group: first assignment, reassignment of an overdue review, queue offload, rebalance, and the pull request lane. There is no fallback to the whole company pool. When the group has no eligible reviewer, nothing is moved and the `no_reviewer` card is raised.
+- While a review is pending, the task's group is the group of the engineer the review returns to, not the group of the reviewer who holds it.
+
+### Company behavior-settings writes need an explicit agent permission grant (1.6.8 BEHAVIOR-SETTINGS-AUTHZ, OPE-12699)
+
+- `PATCH /api/myrmidon/behavior-settings/company/:companyId` (and the legacy alias `PATCH /api/myrmidon/behavior-settings/:companyId`) no longer accepts every agent key with company access. Board users keep writing as before; an agent key is admitted only with an explicit `users:manage_permissions` grant for that company, and receives `403 Forbidden` without one (no stored change, no audit entry).
+- Grants are managed on `PATCH /api/companies/:companyId/members/:memberId/permissions` (the same key the tool-access routes use). The instance-level `PATCH`/`PUT /api/myrmidon/behavior-settings` stays instance-admin only, and company settings reads are unchanged.
+
+### The board now tells the operator when a whole role has no working model channel (OPE-12709)
+
+- New attention signal `role_model_down`: when the agents of one role (per company) finish at least 5 runs in the last 30 minutes (`succeeded` / `failed` / `timed_out`; `cancelled` never counts — it is a deliberate stop) and none of them succeeded, AND at least 5 of the counted finishes are classified as model refusals, the attention feed raises one critical card per role. A finish is a model refusal when the adapter marked the provider failure in `resultJson` (`model_unavailable` / `provider_error_as_content`) or the run's error text carries a provider quota/limit marker (`model_unavailable`, `overload`, `insufficient_quota`, `credits insufficient`, and 402 / 429 as whole numbers, never inside an id, port or duration); ordinary adapter or process failures never raise this signal. The card carries the role, the busiest model group of the failed runs, the finished-run count and the last provider refusal error. The threshold counts all channels of the role together, so an outage spread over a primary and a fallback channel still trips it. The card clears itself on the role's first successful run (the zero-success condition drops out). The card keeps the per-role dedupKey `role_model_down:<role>`; the Telegram delivery adds an hour bucket to its publication key, so a role that stays down is re-sent at most once per hour and a later outage is delivered again.
+- New attention signal `provider_no_credits`: when a run's error text carries a no-credits marker (HTTP 402 as a whole number, `insufficient_quota`, "Credits insufficient"), the feed raises a critical card naming the provider channel (`resultJson.providerModelGroup`). This is an independent operator signal — a top-up question for the owner, raised even when its role is also down, never folded into the role card. Dedup key: `provider_no_credits:<channel>`; the Telegram delivery is once per hour per channel, the same way.
+- Both kinds are delivered to the operator through the board errors Telegram channel: they were added to the closed `ERROR_CHANNEL_SOURCE_KINDS` list, and the card text renders the role/model/channel/finished counts from the subject metadata.
+- Collector data comes from one query over `heartbeat_runs` joined to `agents` for the 30-minute window (see `server/src/services/attention.ts`, next to the `provider_usage_warning` collector). The same state drives the agent mark "model unavailable since HH:MM": the agents API (`GET /companies/:id/agents` and `GET /agents/:id`) adds the optional `roleModelDownSince` (ISO time of the first model refusal in the window) to every agent of a role with an active signal, from the same shared query and one query per company, and the agents list and the agent card show it as a badge in the viewer's local time. The mark disappears on the role's first successful run and is absent for agents of other roles.
+- The ADM host-side watchdog checks (ROLE_MODEL_DOWN, KIE_NO_CREDITS in `~/ops/auto/supertick.py`, added 2026-11-11) can be retired once this ships and is verified in production.
+
+### 1.6.8 DEPLOY-SMOKE-REMOTE / DEPLOY-SMOKE-OOM-WARN: post-deploy bot smoke handles remote-host bots and single untouched OOM (OPE-12716)
+
+- `scripts/myrmidon/deploy/bot-apply-smoke.sh`: bots pinned to another host (`adapterConfig.container.host != local`, e.g. the `work-*` bots on a remote VM) are verified by their own gateway — `apiBaseUrl` `/health` probe, board status as fallback — instead of local `docker`, which only answered "No such container" for them. Gateway diagnosis names the bot's host ("remote host <host>: логи на хосте") instead of "No such container".
+- An in-window `OOMKilled` exit is a deploy casualty only when the rollout touched the container (it started inside the deploy window, i.e. re-created/restarted by the rollout) or two or more untouched containers OOMed (fleet-wide). A single OOM of a container untouched by the deploy is a `WARNING` (bot id + memory limit) and no longer fails the deploy (`rc.23` case).
+- End-to-end coverage in `scripts/myrmidon/deploy/release-gate.test.mjs`: remote healthy bots classify healthy without local docker calls; single untouched OOM warns with exit 0; rollout-recreated OOM still fails the deploy; two untouched OOMs are a fleet casualty.
+
+### Bot Runtime: `skill_view` resolves the qualified board-skill alias instead of failing every run skill load (OPE-12719)
+
+- Board-managed skills materialize inside the bot profile as `paperclip-managed/<slug>--<hash>/SKILL.md` (hashed directory names from the run-scoped skills materialization), but the agent-facing skills index renders each entry as `paperclip-managed:<slug>` (category = first path segment, name = frontmatter `name:`). The hermes `skill_view` resolver matched exact directory names and bare frontmatter names only, so every agent call with the index name returned "Skill '...' not found", failed three times, and the run guard stopped the run — the failure signature `skill_view failed 3 times consecutively` seen on live runs (OPE-12719).
+- `docker/bot-runtime/patches/35-skill-view-managed-name.patch` adds a zero-candidate fallback in `_collect_skill_candidates` (`tools/skills_tool.py`): when the exact-name passes found nothing, a qualified `namespace:bare` name resolves by matching a skill whose parent-of-parent directory equals the namespace and whose frontmatter `name:` equals the bare part. The fallback never runs when any candidate exists, so exact matches, project precedence, and the quarantine gate are untouched; two same-slug skills from different board keys still refuse as "Ambiguous skill name".
+- Build-time regression `docker/bot-runtime/tests/skill_view_managed_name.py` pins: the qualified alias resolves to the hashed directory, the direct hashed path resolves, bare names keep resolving, an unknown namespace still fails with not found, same-slug collisions refuse as ambiguous, and `skills_list` output shape is unchanged. Wired as a Dockerfile RUN step; the full patch stack 02–35 applies cleanly in sequence on a fresh upstream checkout.
+- Replaced dead references to the renamed operational skill across agent-facing instructions and docs (`paperclip` → `myrmidon`, `paperclip-create-agent` → `myrmidon-create-agent`, `paperclip-converting-plans-to-tasks` → `myrmidon-converting-plans-to-tasks`, `skills/paperclip/scripts/paperclip-upload-artifact.sh` → `skills/myrmidon/scripts/paperclip-upload-artifact.sh`) in `AGENTS.md`, onboarding bundles (`server/src/onboarding-assets/`), the accepted-plan heartbeat directive (`server/src/services/heartbeat.ts`), the agent-configuration LLMs endpoint (`server/src/routes/llms.ts`), `skills/myrmidon/references/`, developer skills under `.agents/skills/`, and `doc/AGENT-ARTIFACTS.md` / `doc/DEVELOPING.md`. The onboarding brand guard's allowed-token list shrinks to `X-Paperclip-Run-Id` plus the helper filename. Untouched: the `/api/skills/paperclip` invite route contract, `LEGACY_BUNDLED_SKILL_*` alias tables, the `PAPERCLIP_*`/`MYRMIDON_*` dual-write environment variables (`packages/shared/src/env-alias.ts`), and the artifact work-product wire value `provider: "paperclip"` — all are live contracts, not skill names.
+- Requires a bot-runtime image rebuild; running containers keep the old resolver until the next deploy. Post-deploy proof: zero runs with `skill_view failed` caused by "Skill 'paperclip-managed:...' not found" (operator acceptance after the release).
+
+### Host GC removes stale run copies of the omp SSH runners (OPE-12722)
+
+- An omp runner keeps a copy of the workspace for every run; a failed or cancelled run never removed its copy, and old copies were pruned only when the next run on that runner started. On 11.11 an idle fleet accumulated 47 GB of such copies, the bots disk filled up and nine bots went down. The host GC now also removes run copies older than 4 hours (`--run-copy-ttl`, at least 3) under the runners' root. The pass runs only when the runner root is configured: `--runner-root`, or `HOST_GC_RUNNER_ROOTS` (on vm-core, the line `HOST_GC_RUNNER_ROOTS=/srv/myrmidon-xfs/omp-runners` in `/etc/myrmidon-host-gc.env`). The repo systemd unit sets the variable; a host that runs the script through its own wrapper must configure the root itself, and a wrapper that calls the script once per bot root should pass `--runner-root` on one invocation only, otherwise the pass repeats per bot.
+
+### Added: shared package cache for the omp SSH runners (OPE-12722)
+
+- A second task copy on the same omp SSH runner no longer re-downloads a full
+  repository pack and a full package set. The compose template
+  (`docker/agent-runtime/omp-ssh/compose.yml`) gained the optional
+  `OMP_RUNNER_CACHE_DIR` — the shared cache directory on the bot data disk (the
+  board's `general.botDisk.sharedPackageCachePath`; default
+  `${OMP_RUNNER_DATA_DIR}/cache`, a cache private to the runner). It binds
+  `<dir>/git` → `/cache/git` (read-only, owned by the board's user, created
+  before the first start) and `<dir>/pnpm-omp` → `/cache/pnpm` (read-write,
+  owned by uid 1000). The runners get their own `pnpm-omp` directory: the
+  `<dir>/pnpm` directory is shared with the hermes bots (uid 10001), whose
+  prepare step re-owns it, so a runner must not chown it.
+- The omp-ssh image installs a consume-only git wrapper at `/usr/local/bin/git`
+  (port of the bot wrapper's reference logic, minus the bot-local store; the
+  interpreter is the absolute `/usr/bin/node`): a plain
+  `git clone https://github.com/<owner>/<repo>.git` becomes
+  `git clone --reference-if-able /cache/git/<owner>/<repo>.git …` when the
+  board's mirror exists, so the clone borrows the mirrored objects. Any other
+  clone — another host, `--dissociate`/`--filter`/`--shared`, a repository
+  without a mirror — runs unchanged, and a clone never fails because of the
+  wrapper. The image build now runs the wrapper (`git --version` through it,
+  and a probe that it, not `/usr/bin/git`, answers) and fails if it cannot.
+- The entrypoint writes the tool environment into `/etc/profile.d/` instead of
+  Dockerfile ENV: sshd does not pass container environment variables to SSH
+  sessions (`PermitUserEnvironment no`), so ENV never reached board-spawned
+  commands. `omp-runner-cache.sh` sets `npm_config_cache_dir=/cache/pnpm`
+  (pnpm's metadata cache) and `npm_config_cache=/cache/pnpm` (npm's tarball and
+  `_cacache` download cache; the two tools read different variables, and
+  exporting both puts npm's downloads on the shared mount instead of a
+  per-runner `~/.npm`; only when uid 1000 owns the mount, a root-owned mount
+  is fixed, any other owner is left alone with a warning);
+  `omp-runner-pnpm.sh` sets
+  `npm_config_store_dir=/workspace/.paperclip-runtime/pnpm-store` and
+  `npm_config_package_import_method=clone-or-copy`. The pnpm store stays in the
+  workspace volume, one per runner, because a reflink/hardlink cannot cross a
+  filesystem boundary, and inside `.paperclip-runtime`, the one directory the
+  board's workspace cleanups spare and its sync never copies. pnpm 9 copies
+  silently when a reflink is refused, so the store is checked by disk usage.
+- Contract: `scripts/myrmidon/omp-ssh-image.test.mjs` (plain `node --test`,
+  including a behavioural test of the wrapper's `rewriteArgs`); the image lane
+  `agent-runtime-images.yml` builds the image, with the new smoke, on push to
+  `main` (it does not run on pull requests). Operator setup,
+  the rollout for runners that already run, and the acceptance measure (a `df`
+  delta of the data disk, not `du`) are in the "OMP SSH runner" section of
+  `docker/agent-runtime/README.md` (EN/RU); production re-measurement
+  (< 700 MB per second copy) happens after deploy.
+
+### OPE-12725: scheduler sweeps issue monitors stuck in `triggered` state forever
+
+- After an issue monitor fires, `buildIssueMonitorTriggeredPatch` strips the policy monitor and nulls `monitorNextCheckAt`. If the woken run dies without settling the external wait, the issue kept `execution_state.monitor.status = "triggered"` forever: no timer existed, so nothing ever re-checked it, and comment-driven wakes kept deferring behind the dead monitor.
+- `tickDueIssueMonitors` now runs `sweepStuckTriggeredIssueMonitors` next to the existing inactive-monitor drop. The sweep selects active-company agent-assigned issues (`in_progress`/`in_review`/`blocked`) whose `monitorNextCheckAt` is null and whose execution-state monitor still says `triggered`, after a 10-minute grace since `monitorLastTriggeredAt`.
+- A monitor whose state `timeoutAt` (persisted at trigger time) is still ahead gets a bounded re-arm: `monitorNextCheckAt` = min(now + 30 s × 2^min(attempts, 4), timeoutAt), capped at 10 minutes, activity `issue.monitor_rearmed_after_trigger`.
+- An expired monitor is cleared with `clearReason: "timeout_exceeded"` through the same `buildIssueMonitorClearedPatch` path as normal monitor expiry (activity `issue.monitor_timeout_swept`) and wakes the assignee once per trigger with a new `issue_monitor_timeout` wake reason (idempotency key `issue-monitor-timeout:<issueId>:<lastTriggeredAt>`), so the agent learns the wait was abandoned instead of sitting silently. Orphaned monitors (post-trigger shape with no policy) are covered by the same predicate; once cleared, comment wakes no longer defer.
+- Rows missing either `timeoutAt` or `lastTriggeredAt` are skipped — the sweep never invents a timeout. Both new wake and sweep paths reuse existing guardrails (`withRecoveryContext` status-only payload, per-row try/catch, limit 50 per tick). No wake-queue change: the comment-wake deferral gate keys on `monitorNextCheckAt`, not the monitor status, so clearing the monitor is sufficient.
+
+### The bridge queue poller blocks remotely instead of spawning an ssh process per poll (OPE-12727)
+
+- In SSH environments the bridge worker polled the request queue every 100 ms, and each poll spawned a fresh `ssh` process; under load the board spent ~30% of a core in `spawn` alone. On the SSH transport one poll now blocks inside the remote shell until a request appears or five seconds elapse, so an idle bridge costs one exec per five seconds instead of ~10 per second. Other transports (sandbox) already run a persistent in-sandbox gateway and keep the legacy single-shot poll. `MYRMIDON_BRIDGE_QUEUE_POLL_IDLE_MS` (legacy `PAPERCLIP_BRIDGE_QUEUE_POLL_IDLE_MS`) tunes the SSH budget: an invalid or negative value falls back to 5000, a value above 5000 (half of the 10 s per-poll timeout) is capped to it, and `0` restores the old per-poll behavior. Stopping the bridge does not wait for an idle poll to finish.
+
+### The board no longer leaks SSH sync-back copies into its /tmp (OPE-12727)
+
+- Pulling a run's workspace back from an SSH runner stages it in `/tmp/paperclip-ssh-sync-back-*` on the board, and copies stayed there: on 12.11 they held 26 GB (0.7–4.1 GB each) and the root disk blocked a deploy. A restore now stops `ssh` when the local `tar` fails (before, the board process could crash on an unhandled `EPIPE` or wait on a full pipe, and the cleanup never ran), drops a dead connection after about three minutes of silence, makes read-only directories (a Go module cache) removable before deleting the copy, and logs a copy it cannot remove. Each restore also removes sync-back copies older than four hours, which covers a board restart in the middle of a restore.
+
+### A full disk no longer leaves a bot answering 500 until restart (OPE-12759)
+
+- When a write to the bot's run idempotency store failed on commit (for example, the bots disk was full), the store kept its database connection inside the failed transaction, and every later run request to that bot answered HTTP 500 until the bot container restarted. On 11.11 nine bots stayed down for 15 hours this way after the disk filled up. The store now rolls back a failed write, and rolls back a transaction left open before starting the next one, so the bot recovers by itself once space is back.
+
+### Bot images ship patched aiohttp, httpx2 and certifi (OPE-12760)
+
+- The pinned hermes (v2026.9.24, 0.21.5) locks aiohttp 3.14.3, httpx2 2.7.0 and certifi 2026.5.20, all with known advisories: aiohttp GHSA-2g87-pp6c-29x5 and GHSA-5wr8-gcqf-gqf3 (the gateway API server runs on it), httpx2 GHSA-8xx6-hgc6-gc2m, GHSA-f2fp-rgf2-35cp and others (used by HTTP MCP), certifi GHSA-6q48-6c7w-9gw2. The bot runtime image now installs aiohttp 3.14.5, httpx2 2.12.0 and certifi 2026.10.19 over them and fails the build when any of the three is lower. The override is dropped when the pinned hermes is 0.22.5 or newer.
+
+### OPE-12780: immediate no_reviewer signal restricts reviewer availability to the issue's own agent group
+
+- The immediate `no_reviewer` availability pre-check in `server/src/routes/issues.ts` now filters reviewers through `ownGroupReviewerPool` keyed on the issue anchor's group, so an empty own team signals instead of staying silent because another team's reviewer has capacity.
+- Added a route regression test proving that an out-of-group reviewer does not suppress the `no_reviewer` signal.
+
+### Workspace restore merge: no full target sha256 walk under the merge lock (OPE-12793)
+
+- `mergeDirectoryWithBaseline` no longer captures a full `captureDirectorySnapshot` of the
+  target directory while holding the directory-merge lock. Deletion safety is now checked
+  per deleted path with the existing point comparison `directoryEntryMatchesBaseline`
+  (one `lstat` + hash of the single file) — merge semantics are unchanged: a path absent
+  from the source is removed from the target only when the target entry still matches the
+  baseline snapshot. On the shared omp workspace (~27k files / 0.9 GB) this removes the
+  3–10 minute full-directory sha256 walk that ran under the lock.
+- The lock-wait timeout is split from the stale-lock threshold: `LOCK_STALE_MS` (30 s)
+  remains only the "lock directory without a readable `owner.json` outlived this" marker,
+  and a new `LOCK_WAIT_MS` (10 minutes) bounds how long an acquirer waits for a live
+  holder. Restores no longer fail with `ERR_WORKSPACE_RESTORE_LOCK_TIMEOUT` after 30 s
+  while another restore's merge is legitimately running; the error code and message are
+  unchanged.
+- The source snapshot (`captureDirectorySnapshot(input.sourceDir)`) stays outside the
+  lock, as before.
+
+### Fixed: the repeated tool failure limit no longer aborts working runs (OPE-12796)
+
+- The hermes_gateway guard "Repeated tool failure limit exceeded" stopped a run after any three failed calls of one tool in a row: the gateway reports `error` as a boolean, so every failure looked like "the same error". It now counts only the same call (same tool and arguments, and the same error text when the event carries one) failing again after the model has seen the previous failure. Parallel failures of one model turn and failures of different calls no longer add up; a successful call still resets the counter. The threshold (3) and the stop message are unchanged; the run log now also shows the arguments of the repeated call.
+- Code: `packages/adapters/hermes/src/gateway/server/myrmidon-tool-failure-repeat.ts`, wired in `execute.ts`. Tests: `myrmidon-tool-failure-repeat.myrmidon.test.ts`, `execute.test.ts`.
+
+### Stalled run keeps its credentials for a grace window (RUN-STALL, OPE-12808)
+
+- A run interrupted by the stall sweep (status `cancelled`, error code `run_stalled`) can still obtain its credentials for `MYRMIDON_RUN_STALL_GRACE_SEC` seconds (default 600), so an agent that was only quiet can push and report. After the window the board refuses with the named `run_stalled` reason instead of a bare 403.
+
+### Chat test flake: credential-lease isolation (OPE-6916)
+
+- The pending receipt-reaction sweep treats a busy credential-mutation lease
+  (409 `chat_endpoint_credentials_busy`) as a skip for this pass: the refusal
+  is transient by design and the action stays retryable, so a leaked lease
+  from a finished test case (or a slow concurrent holder) can no longer fail
+  an unrelated caller.
+- The chat-channels integration suite now deletes fixture-company
+  `chat_endpoint_leases` rows in `afterEach`, so a service that died while
+  holding a lease cannot make the next case wait out the 10s acquire window.
+
+### Release deploy records compose-set anchor changes (OPE-7010)
+
+- After the board health check, the release deploy compares the live `com.docker.compose.project.config_files` label with the `board-mount-set` block in the configured anchor file.
+- When the compose-file set differs, the deploy rewrites the block with one fragment per line and commits the anchor in the configured Git repository with the deploy reference and image digest. A matching set is a no-op.
+- `MYRMIDON_COMPOSE_SET_ANCHOR_FILE`, `MYRMIDON_COMPOSE_SET_ANCHOR_GIT`, and `MYRMIDON_COMPOSE_SET_LABEL_SOURCE` configure the optional sync. An empty anchor-file setting skips it; malformed or uncommittable anchors produce a warning and never fail an otherwise healthy deploy.
+
+### Hindsight plugin: configurable request timeout with 60s default (OPE-8150)
+
+- Hindsight client requests (`recall`, `retain`) now default to a 60-second timeout
+  (`DEFAULT_TIMEOUT_MS = 60_000`), increased from the legacy 15 seconds to prevent
+  aborted recall queries when the bank experiences high latency under CPU contention (OPE-3314).
+- The timeout is now configurable via the plugin instance configuration field `requestTimeoutMs`
+  (declared in manifest with default `60000` and validated on configuration submit).
+- Health checks continue to use a dedicated 5-second timeout.
+
+### Heartbeat & Adapters: delay retries on deployment cooldown and HTTP 429 instead of immediate wakeups (1.6.6 WAKE-5, OPE-9497)
+
+- Added recognition for LiteLLM deployment pool cooldown signatures (`No deployments available`, `all deployments in cooldown`, `all deployments are in cooldown`, `All deployments for selected model are in cooldown`, `deployments in cooldown`) and HTTP 429 / `too many requests` / `rate_limit_error` in both the board retry classifier (`server/src/myrmidon/run-retry-policy/classification.ts`) and the Hermes gateway adapter (`packages/adapters/hermes/src/gateway/server/execute.ts`).
+- `errorResult` maps deployment cooldown to `errorFamily: "provider_quota"` with `resultJson.cooldown: true` and extracts `retryNotBefore`, while generic HTTP 429 without a cooldown signature stays `transient_upstream` with `retryNotBefore`.
+- Bounded retry scheduling honors `Retry-After` / `retryNotBefore` precedence over default backoff, otherwise applies exponential backoff with jitter and ceiling, suppresses immediate wakeup, and schedules at most one `scheduled_retry` per window.
+- Added operator guides: `docs/myrmidon/guides/deployment-cooldown-retries.md` and `docs/myrmidon/guides/deployment-cooldown-retries.ru.md`.
+
+### Fixed: typed review resubmit after changes_requested no longer fails recovery-path validation (OPE-9733)
+
+- Resubmitting an issue to `in_review` after a `changes_requested` review stage no longer returns `422 missing review_path`. When a review/approval stage is configured, the executor resubmitting from the recovery-action route now lands back in `in_review` with the reviewer continuation preserved: the same review stage, `returnAssignee` stays with the original executor, and no recovery loop.
+- Two fixes in `server/src/routes/issues.ts` (PR #1966, merge `ddc27433`): the review-path validator now falls back to `input.existing.executionPolicy` when the resubmit PATCH carries no `executionPolicy` field, and in `POST /api/issues/:id/recovery-actions/resolve` the execution-policy transition is applied before `assertInReviewReviewPath` so the validator sees the typed reviewer continuation in the update fields.
+- Covered by regression tests: recovery route (`server/src/__tests__/issue-recovery-actions.test.ts`), issue PATCH route (`server/src/__tests__/issue-execution-policy-routes.test.ts`).
+
+## 1.6.7
+
 ### Corpus: the full-text ranking starts after the embedding again (1.6.7 CORPUS-LATENCY, OPE-12272)
 
 - The change "the full-text ranking starts together with the embedding" is taken back. The full-text
