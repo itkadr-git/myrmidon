@@ -108,6 +108,11 @@ const explicitOpenApiCoverageExclusions = new Set<string>([
   "admin-assistant.ts",
   // myrmidon(1.7 AUTO-UPDATE-SETTINGS, OPE-10218): project-scoped system maintenance window API.
   "system.ts",
+  // myrmidon(1.7 COMPANY-BOUNDARIES, OPE-12766): ADM access request gateway routes
+  // mounted directly by app.ts; not yet in the public OpenAPI document.
+  // OPE-12879: same main-drift exclusion as PR #3022 until OPE-12898 (#3020)
+  // documents the gateway in the OpenAPI spec.
+  "adm-access-requests.ts",
 ]);
 const explicitOpenApiOperationCoverageExclusions = new Set([
   // These webhook handlers are mounted outside the scanner's route-file map.

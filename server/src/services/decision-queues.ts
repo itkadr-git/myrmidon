@@ -354,7 +354,9 @@ async function sourceIssueId(
     case "issue_monitor_overdue":
     // myrmidon(1.6.5 BOT-DISK-H4c): the archive card sits on the task.
     case "bot_disk_archive":
-    // myrmidon(OPE-6011): the held-task card's subject is the held task.
+    // myrmidon(OPE-12879): the done-with-open-PR card sits on the task too.
+    case "done_pr_not_merged":
+    // myrmidon(1.6.5 F-09): the held-task card's subject is the held task.
     case "replay_blocked":
     case "execution_hold":
     case "stale_block": {
