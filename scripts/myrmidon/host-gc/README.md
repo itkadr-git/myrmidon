@@ -126,3 +126,14 @@ section (fail-closed). After a removal the pass clears the bot's XFS quota proje
 ```bash
 node --test scripts/myrmidon/host-gc/host-clone-cache-gc.test.mjs
 ```
+
+## SSH runner run copies (OPE-12722)
+
+An SSH runner (the container an `omp_local` agent runs in) keeps one copy of the workspace
+per run under `<runner>/workspace/.paperclip-runtime/runs/<runId>`. A failed or cancelled run
+never reaches the restore that removes its copy, and the adapter prunes old copies only when
+the next run on that runner starts — an idle runner keeps them. Pass the runners' root with
+`--runner-root <path>` (repeatable) or `HOST_GC_RUNNER_ROOTS` (colon-separated): copies older
+than `--run-copy-ttl` hours (default 4, above the 3-hour longest run) are removed and journaled
+as `run-copy-removed`. A path that goes through a symlink is skipped. Without a runner root the
+pass does nothing.

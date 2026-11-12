@@ -26,6 +26,7 @@ const {
   scanBotDataForUnpushedWork,
   clearBotDiskProject,
   planBotDataGc,
+  scanSshRunCopies,
 } = await import(
   path.join(ROOT, "scripts/myrmidon/host-gc/host-clone-cache-gc.mjs")
 );
@@ -575,5 +576,81 @@ describe("bot-data gc plan (decommission sweep)", () => {
     const dockerDown = await planBotDataGc(tmpDir, { now: NOW, containers: { ok: false, reason: "docker-unavailable" } });
     assert.equal(dockerDown.ok, false);
     assert.equal(dockerDown.reason, "docker-unavailable");
+  });
+});
+
+// myrmidon(1.6.8 OPE-12722): SSH runner run copies older than the run timeout are pruned.
+describe("SSH runner run copies", () => {
+  const HOUR = 60 * 60 * 1000;
+  function makeRun(runnersRoot, runner, runId, ageHours) {
+    const dir = path.join(runnersRoot, runner, "workspace", ".paperclip-runtime", "runs", runId);
+    fs.mkdirSync(path.join(dir, "workspace"), { recursive: true });
+    fs.writeFileSync(path.join(dir, "workspace", "file.txt"), "x");
+    const t = new Date(Date.now() - ageHours * HOUR);
+    fs.utimesSync(dir, t, t);
+    return dir;
+  }
+
+  it("marks copies older than the TTL and keeps fresh ones", () => {
+    const runners = path.join(tmpDir, "omp-runners");
+    const old = makeRun(runners, "eng17", "run-old", 6);
+    const fresh = makeRun(runners, "eng17", "run-fresh", 1);
+    fs.mkdirSync(path.join(runners, "eng22", "workspace"), { recursive: true }); // no runs dir yet
+    const items = scanSshRunCopies(runners, Date.now(), 4);
+    const byPath = Object.fromEntries(items.map((i) => [i.path, i.reason]));
+    assert.equal(byPath[old], "ttl");
+    assert.equal(byPath[fresh], "fresh");
+    assert.equal(items.length, 2);
+  });
+
+  it("skips a runner whose path goes through a symlink", () => {
+    const runners = path.join(tmpDir, "omp-runners");
+    const outside = path.join(tmpDir, "outside");
+    makeRun(outside, "victim", "run-old", 6);
+    fs.mkdirSync(runners, { recursive: true });
+    fs.symlinkSync(path.join(outside, "victim"), path.join(runners, "eng8"));
+    assert.deepEqual(scanSshRunCopies(runners, Date.now(), 4), []);
+  });
+
+  it("returns nothing for a missing root", () => {
+    assert.deepEqual(scanSshRunCopies(path.join(tmpDir, "nope"), Date.now(), 4), []);
+  });
+
+  it("parses --runner-root (repeatable), HOST_GC_RUNNER_ROOTS and --run-copy-ttl", () => {
+    const prev = process.env.HOST_GC_RUNNER_ROOTS;
+    process.env.HOST_GC_RUNNER_ROOTS = "/a:/b";
+    try {
+      const args = parseArgs(["node", "gc", "--env", "/nonexistent", "--runner-root", "/c", "--run-copy-ttl", "6"]);
+      assert.deepEqual(args.runnerRoots, ["/a", "/b", "/c"]);
+      assert.equal(args.runCopyTtlHours, 6);
+    } finally {
+      if (prev === undefined) delete process.env.HOST_GC_RUNNER_ROOTS;
+      else process.env.HOST_GC_RUNNER_ROOTS = prev;
+    }
+    const plain = parseArgs(["node", "gc", "--env", "/nonexistent"]);
+    assert.deepEqual(plain.runnerRoots, []);
+    assert.equal(plain.runCopyTtlHours, 4);
+  });
+
+  it("--apply removes old run copies, keeps fresh ones and journals each removal", () => {
+    const runners = path.join(tmpDir, "omp-runners");
+    const old = makeRun(runners, "eng17", "run-old", 6);
+    const fresh = makeRun(runners, "eng21", "run-fresh", 1);
+    const emptyRoot = path.join(tmpDir, "bots");
+    fs.mkdirSync(emptyRoot);
+    const journal = path.join(tmpDir, "gc.jsonl");
+    const env = { ...process.env, HOST_GC_RUNNER_ROOTS: "", PATH: process.env.PATH, PAPERCLIP_API_URL: "http://127.0.0.1:9" };
+    const res = subprocess.spawnSync(process.execPath, [
+      path.join(ROOT, "scripts/myrmidon/host-gc/host-clone-cache-gc.mjs"),
+      "--apply", "--env", "/nonexistent", "--root", emptyRoot, "--runner-root", runners,
+      "--journal", journal, "--lock", path.join(tmpDir, "gc.lock"), "--proc-dir", path.join(tmpDir, "proc"),
+    ], { encoding: "utf8", env, timeout: 60_000 });
+    assert.equal(res.status, 0, res.stderr);
+    assert.equal(fs.existsSync(old), false, "old run copy must be removed");
+    assert.equal(fs.existsSync(fresh), true, "fresh run copy must stay");
+    const events = fs.readFileSync(journal, "utf8").trim().split("\n").map((l) => JSON.parse(l));
+    assert.ok(events.some((e) => e.event === "run-copy-removed" && e.path === old && e.runner === "eng17"));
+    const done = events.find((e) => e.event === "apply-complete");
+    assert.equal(done.runCopiesRemoved, 1);
   });
 });

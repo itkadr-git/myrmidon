@@ -22,6 +22,9 @@
 //   --lock <path>         Override lockfile path (for testing)
 //   --clone-ttl <hours>   Override clone TTL (default 24)
 //   --cache-ttl <hours>   Override cache TTL (default 72)
+//   --runner-root <path>  SSH runner root to prune run copies under (repeatable; also
+//                         HOST_GC_RUNNER_ROOTS, colon-separated). No root, no pass.
+//   --run-copy-ttl <hours> Override the run-copy TTL (default 4)
 
 import fs from "node:fs";
 import path from "node:path";
@@ -33,6 +36,13 @@ const HOUR_MS = 60 * 60 * 1000;
 const CLONE_TTL_HOURS = 24;
 const CACHE_TTL_HOURS = 72;
 const SCRATCH_TTL_HOURS = 12;
+// myrmidon(1.6.8 OPE-12722 / OPE-12759): an SSH runner (the omp container) keeps one copy of
+// the workspace per run under `<runner>/workspace/.paperclip-runtime/runs/<runId>`. A run that
+// fails or is cancelled never reaches the restore that removes its copy, and the adapter prunes
+// old copies only when the next run on that runner starts. On 11.11 an idle fleet left 47 GB
+// of such copies; the bots disk filled up and nine bots stayed down for 15 hours. This pass
+// removes run copies older than the longest run timeout (3 h) plus a margin.
+const RUN_COPY_TTL_HOURS = 4;
 const DEFAULT_ENV_PATH = "/etc/myrmidon-host-gc.env";
 
 // myrmidon(1.6.8-BOT-CONTAINER-ORPHAN / OPE-12654): the data directory of a decommissioned
@@ -117,6 +127,8 @@ export function parseArgs(argv) {
     cacheTtlHours: CACHE_TTL_HOURS,
     scratchTtlHours: defaultScratchTtl,
     procDir: process.env.PROC_DIR || "/proc",
+    runnerRoots: (process.env.HOST_GC_RUNNER_ROOTS || "").split(":").map((r) => r.trim()).filter(Boolean),
+    runCopyTtlHours: RUN_COPY_TTL_HOURS,
   };
   for (let i = 2; i < argv.length; i++) {
     const a = argv[i];
@@ -130,9 +142,11 @@ export function parseArgs(argv) {
     else if (a === "--cache-ttl") args.cacheTtlHours = Number(argv[++i]);
     else if (a === "--scratch-ttl") args.scratchTtlHours = Number(argv[++i]);
     else if (a === "--proc-dir") args.procDir = argv[++i];
+    else if (a === "--runner-root") args.runnerRoots.push(argv[++i]);
+    else if (a === "--run-copy-ttl") args.runCopyTtlHours = Number(argv[++i]);
     else if (a === "--env") i++;
     else if (a === "--help") {
-      console.log("Usage: host-clone-cache-gc.mjs [--apply|--dry-run] [--root path] [--scratch-root path] [--journal path] [--lock path] [--clone-ttl h] [--cache-ttl h] [--scratch-ttl h] [--proc-dir path] [--env path]");
+      console.log("Usage: host-clone-cache-gc.mjs [--apply|--dry-run] [--root path] [--scratch-root path] [--journal path] [--lock path] [--clone-ttl h] [--cache-ttl h] [--scratch-ttl h] [--proc-dir path] [--runner-root path] [--run-copy-ttl h] [--env path]");
       process.exit(0);
     }
   }
@@ -296,6 +310,59 @@ function scanBuildCaches(root, now, ttlHours) {
 }
 
 // --- Scratch GC (BOT-DISK-SCRATCH) -------------------------------------------
+
+// --- SSH runner run copies (OPE-12722) -----------------------------------------
+
+function lstatOrNull(p) {
+  try {
+    return fs.lstatSync(p);
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Run copies under `<runnersRoot>/<runner>/workspace/.paperclip-runtime/runs/<runId>`.
+ * Every component of the path must be a real directory (a symlink anywhere skips the
+ * runner); a copy older than `ttlHours` (by mtime) is `ttl`, a newer one is `fresh`.
+ */
+export function scanSshRunCopies(runnersRoot, now, ttlHours) {
+  const results = [];
+  const ttlMs = ttlHours * HOUR_MS;
+  const rootStat = lstatOrNull(runnersRoot);
+  if (!rootStat || !rootStat.isDirectory()) return results;
+  for (const runner of fs.readdirSync(runnersRoot, { withFileTypes: true })) {
+    if (!runner.isDirectory()) continue;
+    let dir = path.join(runnersRoot, runner.name);
+    let ok = true;
+    for (const part of ["workspace", ".paperclip-runtime", "runs"]) {
+      dir = path.join(dir, part);
+      const st = lstatOrNull(dir);
+      if (!st || !st.isDirectory()) {
+        ok = false;
+        break;
+      }
+    }
+    if (!ok) continue;
+    for (const run of fs.readdirSync(dir, { withFileTypes: true })) {
+      if (!run.isDirectory()) continue;
+      const runPath = path.join(dir, run.name);
+      const st = lstatOrNull(runPath);
+      if (!st || !st.isDirectory()) continue;
+      const ageMs = now - st.mtimeMs;
+      results.push({
+        runner: runner.name,
+        name: run.name,
+        path: runPath,
+        runsDir: dir,
+        ageMs,
+        mtimeMs: st.mtimeMs,
+        reason: ageMs >= ttlMs ? "ttl" : "fresh",
+      });
+    }
+  }
+  return results;
+}
 
 export function collectOpenProcInfo(procDir = "/proc") {
   const openPaths = new Set();
@@ -842,7 +909,7 @@ async function main() {
     const cloneTtlMs = args.cloneTtlHours * HOUR_MS;
     const cacheTtlMs = args.cacheTtlHours * HOUR_MS;
 
-    const plan = { clones: [], caches: [], scratch: [], botData: [], kept: [], removed: [], archived: [] };
+    const plan = { clones: [], caches: [], scratch: [], botData: [], runCopies: [], kept: [], removed: [], archived: [] };
 
     // 1. Scan task clones
     const clones = scanTaskClones(root, now, args.cloneTtlHours);
@@ -926,6 +993,13 @@ async function main() {
       console.error(JSON.stringify({ ok: false, reason: `bot-data-gc-unavailable: ${botData.reason}` }));
     }
 
+    // 3c. SSH runner run copies (OPE-12722): only when a runner root is configured.
+    for (const runnersRoot of args.runnerRoots) {
+      for (const item of scanSshRunCopies(runnersRoot, now, args.runCopyTtlHours)) {
+        if (item.reason === "ttl") plan.runCopies.push({ ...item, action: "remove" });
+      }
+    }
+
     // 4. Execute or report
     if (args.dryRun) {
       journalRecord(args.journal, {
@@ -933,6 +1007,7 @@ async function main() {
         clones: plan.clones.length,
         caches: plan.caches.length,
         scratch: plan.scratch.length,
+        runCopies: plan.runCopies.length,
         kept: plan.kept.length,
       });
       console.log(JSON.stringify({ ok: true, dryRun: true, plan }, null, 2));
@@ -999,12 +1074,22 @@ async function main() {
           journalRecord(args.journal, { event: "bot-data-remove-failed", path: b.path, error: err.message });
         }
       }
+      for (const r of plan.runCopies.filter((x) => x.action === "remove")) {
+        try {
+          atomicDrop(r.path, r.runsDir);
+          plan.removed.push({ path: r.path });
+          journalRecord(args.journal, { event: "run-copy-removed", path: r.path, runner: r.runner, ageHours: Math.round(r.ageMs / HOUR_MS) });
+        } catch (err) {
+          journalRecord(args.journal, { event: "run-copy-remove-failed", path: r.path, error: err.message });
+        }
+      }
       journalRecord(args.journal, {
         event: "apply-complete",
         removed: plan.removed.length,
         archived: plan.archived.length,
         scratchPruned: plan.scratch.length,
         botDataRemoved: plan.botData.length,
+        runCopiesRemoved: plan.runCopies.length,
         kept: plan.kept.length,
       });
       console.log(JSON.stringify({
@@ -1014,6 +1099,7 @@ async function main() {
         archived: plan.archived.length,
         scratchPruned: plan.scratch.length,
         botDataRemoved: plan.botData.length,
+        runCopiesRemoved: plan.runCopies.length,
         kept: plan.kept.length,
       }, null, 2));
     }
