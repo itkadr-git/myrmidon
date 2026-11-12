@@ -1006,7 +1006,7 @@ describe("omp local execution", () => {
           companyId: "company-1",
           name: "OMP Builder",
           adapterType: "omp_local",
-          adapterConfig: workspaceSync ? { workspaceSync } : {},
+          adapterConfig: {},
         },
         runtime: {
           sessionId: null,
@@ -1017,6 +1017,8 @@ describe("omp local execution", () => {
         config: {
           command: "omp",
           model: "openai/gpt-4o",
+          // myrmidon(OPE-12795): the adapter reads workspaceSync from the resolved config.
+          ...(workspaceSync ? { workspaceSync } : {}),
         },
         context: {
           paperclipWorkspace: {

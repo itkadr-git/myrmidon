@@ -762,7 +762,7 @@ describe("remote managed runtime: git_checkout workspaceSyncMode (OPE-12795)", (
     );
     expect(prepareWorkspaceForSshExecution).toHaveBeenCalledTimes(2);
     expect(prepareWorkspaceForSshExecution.mock.calls.every((call) =>
-      Boolean((call[0] as { gitOnly?: boolean }).gitOnly),
+      Boolean((call as unknown as [{ gitOnly?: boolean }])[0]?.gitOnly),
     )).toBe(true);
   });
 
