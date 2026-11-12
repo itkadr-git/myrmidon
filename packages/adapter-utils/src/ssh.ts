@@ -1574,14 +1574,19 @@ export async function syncDirectoryToSsh(input: {
       resolve();
     };
 
+    const stopChildren = () => {
+      tar.kill("SIGTERM");
+      ssh.kill("SIGTERM");
+      if (!tarExited) tar.stdout?.destroy();
+    };
+
     const fail = (error: Error) => {
       if (settled) {
         return;
       }
       settled = true;
       abortWatch.detach();
-      tar.kill("SIGTERM");
-      ssh.kill("SIGTERM");
+      stopChildren();
       reject(error);
     };
 
@@ -1620,7 +1625,7 @@ export async function syncDirectoryToSsh(input: {
       sshExitCode = code;
       if (!tarExited) {
         tarStoppedAfterSshExit = true;
-        tar.kill("SIGTERM");
+        stopChildren();
       }
       maybeFinish();
     });
@@ -1736,12 +1741,22 @@ export async function syncDirectoryFromSsh(input: {
         resolve();
       };
 
+      // Stopping a live pair takes more than `kill`: when tar dies while ssh
+      // still feeds it, ssh.stdout stays piped into the dead tar.stdin and,
+      // paused on a buffered chunk, its EOF never surfaces, so ssh's `close`
+      // never fires and the restore hangs forever (OPE-12875). Destroying the
+      // piped end unblocks the pair so both `close` events arrive.
+      const stopChildren = () => {
+        ssh.kill("SIGTERM");
+        tar.kill("SIGTERM");
+        if (!sshExited) ssh.stdout?.destroy();
+      };
+
       const fail = (error: Error) => {
         if (settled) return;
         settled = true;
         abortWatch.detach();
-        ssh.kill("SIGTERM");
-        tar.kill("SIGTERM");
+        stopChildren();
         reject(error);
       };
 
@@ -1772,12 +1787,14 @@ export async function syncDirectoryFromSsh(input: {
         tarExited = true;
         tarExitCode = code;
         tarSignal = signal;
-        // Nothing reads ssh's output once tar is gone, so ssh would block on a
-        // full pipe and the restore would never settle. Stop it; maybeFinish
-        // runs when it closes.
+        // tar is gone; nothing reads its stdin anymore. Kill ssh AND destroy
+        // the piped stdout: SIGTERM alone leaves ssh.stdout paused on a full
+        // pipe to the dead tar.stdin, its EOF never surfaces, `close` never
+        // fires, and the restore hangs forever (OPE-12875). maybeFinish runs
+        // once both closes arrive.
         if (code !== 0 && !sshExited) {
           sshStoppedAfterTarFailure = true;
-          ssh.kill("SIGTERM");
+          stopChildren();
         }
         maybeFinish();
       });
