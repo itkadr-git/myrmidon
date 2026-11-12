@@ -150,10 +150,21 @@ RUN pnpm --filter @myrmidon/plugin-sdk build
 # end of its stage. Empty for local `docker build`, which then writes no stamp.
 ARG PAPERCLIP_BUILD_COMMIT=""
 ENV NODE_OPTIONS=--max-old-space-size=4096
+# Build the full workspace dependency closure of the server first, so every
+# @myrmidon/* package has a dist for the prod-runtime substitution below
+# (same closure as server/package.json "build:prod-runtime" and the CI lane
+# "Prod-runtime exports and dist resolution audit", OPE-12187 Ч1 / OPE-12670).
+RUN pnpm --filter "@myrmidon/server^..." --filter "!@myrmidon/paperclip-runner" build
 RUN pnpm --filter @myrmidon/server build
 RUN pnpm --filter myrmidon build
 RUN test -f server/dist/index.js || (echo "ERROR: server build output missing" && exit 1)
 RUN test -f cli/dist/index.js || (echo "ERROR: cli build output missing" && exit 1)
+# Point the workspace closure's package entry fields at the built dist output
+# (publishConfig substitution), then fail the build if the compiled server
+# tree still resolves any workspace import to a src/.ts target — without this
+# the production CMD (plain node, no tsx loader) cannot boot (Ч2 smoke test).
+RUN node scripts/myrmidon/prod-runtime-exports.mjs apply --entry @myrmidon/server
+RUN node scripts/myrmidon/check-prod-runtime-resolution.mjs --dist server/dist --skip-vendor-runner
 RUN rm -rf packages/paperclip-runner/runner/target
 
 FROM base AS production
