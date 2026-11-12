@@ -788,8 +788,8 @@ export function buildStrandedDispositionBlockedComment(input: {
   return [
     `${productPossessive("automatic policy")} could not get a final status from the assignee: ${input.attemptsInWindow} ` +
       `automatic continuation attempt(s) within 24 hours (cause \`${input.cause}\`, limit ${input.maxAttemptsPerDay} per day).`,
-    "The issue carries its own execution workflow, so it was not taken over and the assignee is unchanged. " +
-      "It is now `blocked` and owned by the nearest lead or, when no lead exists, the board operator.",
+    "The issue carries its own execution workflow, so it was escalated to the nearest lead (or, when no lead exists, the board operator). " +
+      "The previous assignment was released so the lead can take the issue over via checkout without conflict; it is now `blocked`.",
     "What the owner must do here: give the issue a fresh directive with the first step, split it into subtasks, " +
       "or close it — a plain review is not enough; a reviewer cannot resolve this block.",
   ].join("\n");
