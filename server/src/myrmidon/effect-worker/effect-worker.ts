@@ -82,9 +82,9 @@ export interface EffectWorker {
     kinds?: string[];
     limit?: number;
     staleClaimMs?: number;
-    /** Test seam: actor ids whose intents are claimable (defaults to the
-     * native effect-worker actor plus any actor that registered a handler
-     * whose key prefix matches). */
+    /** Test seam: actor ids whose intents are claimable. Defaults to any
+     * actor id — candidate selection is by declared effect kind, so a
+     * migrated outbox keeps its own actor id and stays routable. */
     actorIds?: string[];
   }): Promise<{ scanned: number; settled: number; released: number; skipped: number; failed: number }>;
   /** Read a single intent by idempotency key. */
@@ -187,11 +187,25 @@ export function createEffectWorker(db: Db): EffectWorker {
     const now = new Date();
     const staleClaimMs = Math.max(1_000, input.staleClaimMs ?? DEFAULT_STALE_CLAIM_MS);
     const kinds = input.kinds ?? [...handlers.keys()];
-    // By default claim intents of any actor id; handlers are looked up by
-    // kind (from payload.effectKind or the effect-worker key prefix), so a
-    // migrated outbox keeps its own actor id and stays routable.
+    // Candidate selection is by declared effect kind, not actor id: migrated
+    // outbox producers keep their own actor id (continuation intents use
+    // `interaction-continuation-outbox`), and the payload's `effectKind` is
+    // the single source of truth for routability. Intents without a declared
+    // kind fall back to the effect-worker key prefix / known prefixes.
     const actorFilter = input.actorIds
       ? inArray(agentWakeupRequests.requestedByActorId, input.actorIds)
+      : undefined;
+    const kindFilter = kinds.length
+      ? or(
+          // Primary: intents declaring their kind in the payload.
+          ...kinds.map((k) => sql`${agentWakeupRequests.payload}->>'effectKind' = ${k}`),
+          // Fallback: intents that encode the kind in the key prefix and have
+          // no declared payload kind.
+          ...kinds.map(
+            (k) => sql`(${agentWakeupRequests.payload}->>'effectKind' is null
+              and ${agentWakeupRequests.idempotencyKey} like ${"effect-worker:" + k + ":%"})`,
+          ),
+        )
       : undefined;
     const candidates = await db
       .select({
@@ -203,6 +217,7 @@ export function createEffectWorker(db: Db): EffectWorker {
         and(
           eq(agentWakeupRequests.requestedByActorType, EFFECT_WORKER_ACTOR_TYPE),
           actorFilter,
+          kindFilter,
           inArray(agentWakeupRequests.status, ["queued", "claimed"]),
           isNull(agentWakeupRequests.runId),
           or(

@@ -434,6 +434,16 @@ describe("INV-15: effect-worker tests do not sleep", () => {
     assert.deepEqual(checkEffectWorkerNoSleep(dir), []);
   });
 
+  it("RED: flags setTimeout in a nested effect-worker test file", () => {
+    const dir = sandbox({
+      "server/src/myrmidon/effect-worker/nested/deep.myrmidon.test.ts": `await new Promise((r) => setTimeout(r, 100));\n`,
+    });
+    const findings = checkEffectWorkerNoSleep(dir);
+    assert.ok(findings.length > 0);
+    assert.match(findings[0], /INV-15/);
+    assert.match(findings[0], /nested/);
+  });
+
   it("no findings when the effect-worker directory does not exist", () => {
     const dir = sandbox({});
     assert.deepEqual(checkEffectWorkerNoSleep(dir), []);

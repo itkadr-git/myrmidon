@@ -428,17 +428,25 @@ export function checkEffectWorkerNoSleep(root) {
   const findings = [];
   const dir = path.join(root, EFFECT_WORKER_TEST_DIR);
   if (!fs.statSync(dir, { throwIfNoEntry: false })?.isDirectory()) return findings;
-  const testFiles = fs
-    .readdirSync(dir)
-    .filter((f) => /\.(?:test|spec)\.tsx?$/.test(f));
-  for (const file of testFiles) {
-    const rel = `${EFFECT_WORKER_TEST_DIR}/${file}`;
+  const testFiles = [];
+  const walk = (current) => {
+    for (const entry of fs.readdirSync(current, { withFileTypes: true })) {
+      const absolute = path.join(current, entry.name);
+      if (entry.isDirectory()) {
+        walk(absolute);
+      } else if (/\.(?:test|spec)\.tsx?$/.test(entry.name)) {
+        testFiles.push(path.relative(root, absolute));
+      }
+    }
+  };
+  walk(dir);
+  for (const rel of testFiles.sort()) {
     const text = readIfExists(root, rel);
     if (!text) continue;
     const lines = text.split("\n");
     lines.forEach((line, i) => {
       // Allow the helpers module itself to use setImmediate for scheduler yields.
-      if (file === "test-helpers.ts") return;
+      if (rel.endsWith("test-helpers.ts")) return;
       for (const pattern of SLEEP_PATTERNS) {
         if (pattern.test(line)) {
           findings.push(`${rel}:${i + 1}: sleeping wait is forbidden in effect-worker tests (INV-15); use drainEffects / waitForEffectMilestone from test-helpers.ts`);

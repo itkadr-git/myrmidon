@@ -1121,6 +1121,41 @@ describeEmbeddedPostgres("interaction continuation outbox", () => {
   // OPE-12798: continuation-delivery through the effect-worker layer. The
   // intent row and idempotency key are unchanged; the drain runs the same
   // post-claim body via the registered effect handler.
+  it("production default drain claims continuation intents by actor id interaction-continuation-outbox", async () => {
+    const seeded = await seed();
+    const { interaction } = seeded;
+    await recordIntent(seeded);
+
+    // Assert the production shape, not a test-only seam: the intent row keeps
+    // actor type `system` and actor id `interaction-continuation-outbox`, and
+    // the default drain (no actorIds, no explicit kinds) must still select it.
+    const rows = await db
+      .select({
+        requestedByActorType: agentWakeupRequests.requestedByActorType,
+        requestedByActorId: agentWakeupRequests.requestedByActorId,
+      })
+      .from(agentWakeupRequests)
+      .where(eq(agentWakeupRequests.idempotencyKey, interactionContinuationOutboxKey(interaction.id, "accepted")));
+    expect(rows[0]?.requestedByActorType).toBe("system");
+    expect(rows[0]?.requestedByActorId).toBe("interaction-continuation-outbox");
+
+    const emulatedRunId = "66666666-7777-4888-9999-aaaaaaaaaaaa";
+    const heartbeat = healthyHeartbeat(seeded, emulatedRunId);
+    const worker = createEffectWorker(db);
+    registerContinuationDeliverEffect(worker, db, heartbeat);
+
+    const drainResult = await worker.drain();
+    expect(drainResult.settled).toBe(1);
+    expect(heartbeat.wakeup).toHaveBeenCalledTimes(1);
+
+    const milestone = await waitForEffectMilestone(
+      db,
+      interactionContinuationOutboxKey(interaction.id, "accepted"),
+      (effect) => effect.outcome === "settled",
+    );
+    expect(milestone.kind).toBe(CONTINUATION_DELIVER_EFFECT_KIND);
+  });
+
   it("delivers through the effect-worker layer with the same idempotency key and records a milestone", async () => {
     const seeded = await seed();
     const { interaction } = seeded;
