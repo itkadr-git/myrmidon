@@ -133,12 +133,16 @@ export function attributeOwnership(section, row) {
   const owner = ownerField ? ownerField.id : UNKNOWN_OWNER;
   const ownerRef = ownerField ? ownerField.id : null;
 
-  // Domain attribution: declared domain fields only. For the skills domain
-  // (OPE-12872) the declared field is the sharing scope: "public_link" marks
-  // an externally linkable skill, "company"/"private" stay company-scoped.
-  // Without a declared field the domain stays unknown — no inference from
-  // names, ids or company membership.
-  const domain = declaredDomain(cleanRow) ?? declaredSharingScopeDomain(cleanRow);
+  // Domain attribution: declared fields only. The skills domain
+  // (OPE-12872) reads its single declared boundary field — the sharing
+  // scope ("public_link" is externally linkable; "company"/"private" are
+  // company-scoped) — and ignores generic domain fields entirely. Other
+  // sections keep the generic declared-domain lookup. Without a declared
+  // field the domain stays unknown — no inference from names, ids or
+  // company membership.
+  const domain = section === "skills-policies"
+    ? declaredSharingScopeDomain(cleanRow)
+    : declaredDomain(cleanRow) ?? declaredSharingScopeDomain(cleanRow);
 
   return {
     section,

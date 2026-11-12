@@ -296,14 +296,30 @@ test("a skill with no declared scope keeps an unknown domain", () => {
   assert.equal(result.domainSource, null);
 });
 
-test("an explicit domain field still wins over sharingScope", () => {
-  const result = attributeOwnership("skills-policies", {
+test("a skills row ignores generic domain fields and reads only sharingScope", () => {
+  // The declared skills boundary field is sharingScope; a free-form
+  // `domain` value must not override it (review fix, OPE-12872).
+  const withDomain = attributeOwnership("skills-policies", {
     id: "skill-7",
     domain: "Tenders",
     sharingScope: "public_link",
   });
-  assert.equal(result.domain, "tenders");
-  assert.equal(result.domainSource, "domain");
+  assert.equal(withDomain.domain, "public_link");
+  assert.equal(withDomain.domainSource, "sharingScope");
+  const withMetadataDomain = attributeOwnership("skills-policies", {
+    id: "skill-7b",
+    metadata: { domain: "work" },
+    sharingScope: "company",
+  });
+  assert.equal(withMetadataDomain.domain, "company");
+  assert.equal(withMetadataDomain.domainSource, "sharingScope");
+  const invalidScope = attributeOwnership("skills-policies", {
+    id: "skill-7c",
+    domain: "Tenders",
+    sharingScope: "who-knows",
+  });
+  assert.equal(invalidScope.domain, "unknown");
+  assert.equal(invalidScope.domainSource, null);
 });
 
 test("skills attribution summary is deterministic and secret-free", () => {

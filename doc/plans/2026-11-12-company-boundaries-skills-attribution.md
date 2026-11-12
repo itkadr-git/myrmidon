@@ -37,6 +37,10 @@ the only skills boundary field used for domain attribution. `public_link` is
 reported separately because it is externally linkable; `company` and
 `private` are reported as the company domain.
 
+Generic `domain`/`metadata.domain` fields on a skills row are ignored for the
+skills section (a free-form domain value cannot mask the declared scope);
+other inventory sections keep the generic declared-domain lookup.
+
 Note: the skills list endpoint
 (`GET /api/companies/:companyId/skills`, `CompanySkillListItem`) does not
 return `metadata`; owner attribution for the skills section requires a
@@ -58,8 +62,9 @@ report only reads the declared fields above.
 
 `node --test scripts/myrmidon/company-boundaries-inventory.test.mjs` (37
 tests) covers: explicit agent/user owner fields, missing owner, ignored
-external provenance, all supported sharing scopes, missing scope,
-deterministic aggregation, secret-value exclusion, and — new in this change —
+external provenance, all supported sharing scopes, missing scope, ignored
+generic domain fields on skills rows (review fix), deterministic
+aggregation, secret-value exclusion, and — new in this change —
 the report-path behavior: skills rows attributed inside
 `collectInventory` output (per-section `ownership` + aggregate `attribution`),
 unmapped sections without an ownership block, denied/empty states never
