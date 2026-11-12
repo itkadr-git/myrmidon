@@ -195,12 +195,21 @@ Docker: dockergate намеренно отказывает в произволь
 **Куда что пишет.** Корневая файловая система в рантайме доступна только для чтения, а
 записываемые каталоги бота — ровно его три тома, поэтому:
 
-- склад pnpm по умолчанию — `/workspace/.pnpm-store` через `npm_config_store_dir`, то есть
-  на том же монтировании, что и клоны: pnpm ставит `node_modules` жёсткими ссылками, а
-  жёсткая ссылка не пересекает монтирование (склад на `/data` или `/cache` заставлял pnpm
-  копировать каждый пакет в каждый клон; 1.6.2 BOT-DISK-C). `pnpm-hardlink-check.sh`
-  проверяет это при сборке. Склад можно вынести в общий кэш пакетов экземпляра
-  (`pnpmStore: "shared"`), см. [docs/myrmidon/bot-disk-cache.ru.md](../../docs/myrmidon/bot-disk-cache.ru.md);
+- склад pnpm по умолчанию — `/cache/pnpm-store` (BOT-DISK-H8a), общий склад одного
+  раздела, смонтированный из `<sharedPackageCachePath>/pnpm-store` хоста для ботов в
+  `sharedCacheRoles`. pnpm ставит `node_modules` из своего склада с
+  `package-import-method=clone` (cp --reflink, FICLONE), а рефлинки работают между
+  точками монтирования одной файловой системы — общий склад и тома бота разделяют
+  раздел хоста. Когда общий склад не смонтирован, entrypoint откатывается на
+ `/workspace/.pnpm-store` внутри тома /bot (BOT-DISK-D), старый склад бота. pnpm 10
+ всё ещё молча копирует, когда ядро отказывает в clone, поэтому
+ `pnpm-reflink-check.sh` при сборке проверяет, что offline-установка из общего
+ склада проходит в каждом корне (`install-failed` = провал), а реальный reflink
+ доказывает сравнение физических extents через filefrag в
+ `entrypoint.sh` на каждом старте
+ (`/data/hermes/.myrmidon/reflink-check.json`, показывается на доске). Склад можно
+  вынести в общий кэш пакетов экземпляра (`pnpmStore: "shared"`), см.
+  [docs/myrmidon/bot-disk-cache.ru.md](../../docs/myrmidon/bot-disk-cache.ru.md);
 - `RUSTUP_HOME`/`CARGO_HOME` остаются запечатанными под `/opt`, а `CARGO_TARGET_DIR` направляет
   артефакты `cargo` в `/data/hermes/.cache/cargo-target` (OPE-12105), вне рабочего дерева задачи.
   botd держит этот каталог в пределах квоты на бота (`cargoTargetQuotaBytes`, 2 ГиБ) и

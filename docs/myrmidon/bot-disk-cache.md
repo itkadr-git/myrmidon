@@ -267,18 +267,22 @@ no supported contract is refused before anything is created.
 pnpm keeps one content-addressed store and links each project's `node_modules`
 to it with hard links. With the bot's tree one mount, the store sits inside it:
 
-- **Store**: `/workspace/.pnpm-store` by default (setting `pnpmStoreDir`; any
-  path under `/workspace`, `/data`, `/scratch` or `/bot`), set as
-  `npm_config_store_dir` in the image, in the entrypoint's self-check and in the
-  profile's `.env` (for bots with the shared cache) from the same setting. The
-  lifecycle sweep never treats the store as a draft. A store outside the single
-  mount is refused by the settings API.
-- **Import method**: `package-import-method=hardlink` (setting
-  `pnpmImportMethod`, default `hardlink`; `clone-or-copy` and `copy` are explicit
-  opt-outs). `hardlink` makes pnpm try only hard links. It does **not** make a
-  refused link an error: pnpm 9 (tested with 9.15) falls back to copying when the
-  kernel returns `EXDEV`, silently, whatever the method. The guards that see it are
-  the image build check and the start-time self-check below.
+- **Store**: `/cache/pnpm-store` by default (BOT-DISK-H8a), the shared store
+  mounted from `<sharedPackageCachePath>/pnpm-store` for bots in
+  `sharedCacheRoles`. The image ENV sets `npm_config_store_dir=/cache/pnpm-store`;
+  the entrypoint's `resolve_pnpm_store()` falls back to
+  `/workspace/.pnpm-store` inside the /bot mount (BOT-DISK-D) when the shared
+  mount is absent. The per-bot setting `pnpmStoreDir` still overrides via the
+  profile's `.env` (for bots with the shared cache) and the entrypoint
+  self-check. The lifecycle sweep never treats the store as a draft. A store
+  outside the single mount is refused by the settings API.
+- **Import method**: `package-import-method=clone` (BOT-DISK-H8a; setting
+  `pnpmImportMethod`, default `clone`; `hardlink`, `clone-or-copy` and `copy` are
+  explicit opt-outs). `clone` makes pnpm try `cp --reflink` (FICLONE) first. It
+  does **not** make a refused clone an error: pnpm 10 (tested with 10.x) falls
+  back to copying when the kernel returns `EXDEV` or `EOPNOTSUPP`, silently,
+  whatever the method. The guards that see it are the image build check and the
+  start-time self-check below.
 - **`/cache/pnpm` is a download source only**: it is the pnpm metadata cache
   (`npm_config_cache_dir`), never the store. The former `pnpmStore: "shared"`
   mode, which put the store there and copied on ext4, is gone; a stored
@@ -286,30 +290,32 @@ to it with hard links. With the bot's tree one mount, the store sits inside it:
 - The runtime writes no `.npmrc`; every pnpm run in the container reads the
   variables above (image `ENV`, the profile `.env`).
 
-One copy of each package per bot is hard-linked into every clone of that bot,
-whichever root the clone is in (`/data/hermes/cache/*`, `/workspace/*`,
-`/data/hermes/work/*`, `/scratch/*`). A hard link is the same file: a bot that
-edits an installed file in `node_modules` in place also edits the store copy and
-its other clones (pnpm's store integrity check, on by default, notices on a later
-install). The store is per bot, so this never crosses bots.
+One copy of each package per host is reflinked into every clone of every bot on
+that host, whichever root the clone is in (`/data/hermes/cache/*`, `/workspace/*`,
+`/data/hermes/work/*`, `/scratch/*`). A reflink is a copy-on-write sharing of
+physical extents: a bot that edits an installed file in `node_modules` in place
+breaks the sharing for that file only, without affecting the store copy or other
+bots' clones. The store is shared across bots on the host, so this crosses bots
+on the same host.
 
 **Start-time self-check.** At every container start the entrypoint creates a file
-in the pnpm store directory and tries to hard-link it into each clone root
+in the pnpm store directory and tries to reflink it into each clone root
 (`/data/hermes`, `/workspace`, `/scratch`). A failure is logged as
-`ERROR: hard-link self-check: ...` and written to
-`/data/hermes/.myrmidon/hardlink-check.json`; the clone-hygiene reporter copies it
-into its report (`hardlinkCheck`), and the board raises an attention card (source
+`ERROR: reflink self-check: ...` and written to
+`/data/hermes/.myrmidon/reflink-check.json`; the clone-hygiene reporter copies it
+into its report (`reflinkCheck`), and the board raises an attention card (source
 `bot_disk_lifecycle`, one per failing root) that goes away when the bot restarts
 and the check passes. The check never stops the gateway.
 
-`docker/bot-runtime/pnpm-hardlink-check.sh` proves the behaviour from every clone
+`docker/bot-runtime/pnpm-reflink-check.sh` proves the behaviour from every clone
 root: it installs a local tarball package offline into a project under each root
-and prints the installed file's link count, one line per root. The dev image's
+with the store at `/cache/pnpm-store` and prints whether the installed file
+shares physical extents with the store file, one line per root. The dev image's
 build runs it as uid 10001 against the image's own pnpm for `/data/hermes`,
 `/workspace` and `/scratch` and fails the build on a copy, and
-`scripts/myrmidon/bot-runtime/pnpm-hardlink.test.mjs` runs it in CI, including the
-negative case of a store on another mount, which shows up as a copy (link count 1)
-although the install succeeds.
+`scripts/myrmidon/bot-runtime/pnpm-reflink.test.mjs` runs it in CI, including the
+negative case of a store on another mount, which shows up as a full copy
+(`shared=no`) although the install succeeds.
 
 ### Shared uv cache
 
@@ -564,8 +570,8 @@ its default:
 | `sharedPackageCachePath` | unset | The shared cache directory (above) |
 | `gitMirrorRepos` | `[]` | `owner/repo` names to mirror; empty: no mirrors and no `/cache/git` mount. Needs `sharedPackageCachePath` |
 | `gitMirrorRefreshMs` | `900000` (15 min) | How often each mirror is fetched, 1 min to 24 h |
-| `pnpmStoreDir` | `/workspace/.pnpm-store` | The pnpm store, a path under `/workspace`, `/data`, `/scratch` or `/bot` (above) |
-| `pnpmImportMethod` | `hardlink` | `hardlink`, `clone-or-copy` or `copy` (above) |
+| `pnpmStoreDir` | `/cache/pnpm-store` | The pnpm store; the shared store mount for bots in `sharedCacheRoles`, `/workspace/.pnpm-store` as the per-bot fallback when the mount is absent |
+| `pnpmImportMethod` | `clone` | `clone` (reflink, BOT-DISK-H8a), `hardlink`, `clone-or-copy` or `copy` (above) |
 | `uvCacheDir` | `/cache/uv` | The shared uv cache; a path under `<sharedPackageCachePath>` by contract, a bot-tree path with a warning (Shared uv cache above) |
 | `uvLinkMode` | `clone` | `UV_LINK_MODE`: `clone`, `hardlink` or `copy`; `symlink` is refused (Shared uv cache above) |
 | `sharedCacheRoles` | `engineer`, `lead`, `reviewer`, `devops`, `release`, `qa` | Roles whose bots get the cache and mirror mounts; `lead` joined the coding roles (OPE-12384). Other bots get none and are not recreated when the cache is enabled |

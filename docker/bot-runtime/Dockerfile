@@ -955,13 +955,15 @@ RUN chmod 0755 /opt/paperclip/bin/pnpm /opt/paperclip/bin/tsc /opt/paperclip/bin
 # The root filesystem is read-only at run time and the bot's writable
 # directories are exactly its single /bot mount, so every path pnpm or the
 # toolchains write to must live under it:
-#   - the pnpm store defaults to /workspace/.pnpm-store, INSIDE the /bot mount like
-#     every clone root (/data/hermes, /workspace, /scratch), because pnpm imports
-#     node_modules from its store with package-import-method=clone (cp
-#     --reflink, FICLONE) and reflinks cannot cross a superblock (EXDEV) — a
-#     store on /cache would make pnpm copy every package into every clone
-#     (see README.md). pnpm 10 itself still COPIES when the kernel refuses the
-#     clone, so the guards are the build-time check below and the start-time
+#   - the pnpm store defaults to /cache/pnpm-store (BOT-DISK-H8a), the shared
+#     store one per partition mounted from <sharedPackageCachePath>/pnpm-store.
+#     pnpm imports node_modules from its store with package-import-method=clone
+#     (cp --reflink, FICLONE) and reflinks work between mount points of one
+#     filesystem — the shared store and the bot volumes share the host
+#     partition. When the shared store mount is absent the entrypoint falls
+#     back to /workspace/.pnpm-store inside the /bot mount (BOT-DISK-D), the
+#     legacy per-bot store. pnpm 10 itself still COPIES when the kernel refuses
+#     the clone, so the guards are the build-time check below and the start-time
 #     reflink self-check in entrypoint.sh (BOT-DISK-D, BOT-DISK-H8b);
 #   - Rust's RUSTUP_HOME/CARGO_HOME stay sealed under /opt; cargo writes its
 #     build output to CARGO_TARGET_DIR=/data/hermes/.cache/cargo-target — the
@@ -989,7 +991,7 @@ RUN chmod 0755 /opt/paperclip/bin/devbuild
 # build wrappers (pnpm/tsc/vitest/gradle/go) shadow the real binaries in
 # /opt/pnpm/bin, /opt/node24/bin and /opt/go/bin — see the COPY block above.
 ENV PATH=/opt/paperclip/bin:/opt/node24/bin:/opt/pnpm/bin:/opt/go/bin:/opt/cargo/bin:/opt/docker-cli/bin:/opt/hermes-src/.venv/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin \
-    npm_config_store_dir=/workspace/.pnpm-store \
+    npm_config_store_dir=/cache/pnpm-store \
     npm_config_package_import_method=clone \
     GOTOOLCHAIN=local \
     GOFLAGS=-mod=mod \
@@ -1073,12 +1075,15 @@ RUN set -eu; \
     esac; \
     echo "build-offload barrier verified: heavy tools refuse, light probes pass"
 
-# myrmidon(BOT-DISK-D): the image's pnpm really hard-links into the store from EVERY
-# clone root of the single /bot mount (same script the repository's bot-runtime test
-# runs), and the git wrapper is the git on PATH. A copy, or a failed link, would mean
-# every clone's node_modules duplicates the store, which is the problem this stage
-# exists to prevent; the real pnpm binary is called directly, the devbuild gate only
-# fronts the bare name.
+# myrmidon(BOT-DISK-D, H8a): the image's pnpm really imports into the store
+# from EVERY clone root of the single /bot mount (or the shared store mount),
+# and the git wrapper is the git on PATH. A copy, or a failed link, would mean
+# every clone's node_modules duplicates the store, which is the problem this
+# stage exists to prevent; the real pnpm binary is called directly, the
+# devbuild gate only fronts the bare name. The build-time check below uses
+# pnpm-reflink-check.sh against the shared store path (/cache/pnpm-store); the
+# runtime self-check in entrypoint.sh (reflink_self_check) runs on every start
+# against the real volume where reflinks actually work.
 COPY --chown=root:root --chmod=0755 pnpm-hardlink-check.sh /opt/paperclip/pnpm-hardlink-check.sh
 COPY --chown=root:root --chmod=0755 pnpm-reflink-check.sh /opt/paperclip/pnpm-reflink-check.sh
 # myrmidon(BOT-DISK-H8b): the image's pnpm really reflink-imports into the
@@ -1093,7 +1098,7 @@ COPY --chown=root:root --chmod=0755 pnpm-reflink-check.sh /opt/paperclip/pnpm-re
 # real bot volume; a build filesystem (overlayfs on the CI runner) has no reflinks,
 # so a build-time gate here could never pass.
 RUN set -eu; \
-    out="$(PNPM=/opt/pnpm/bin/pnpm ROOTS="/data/hermes /workspace /scratch" STORE_DIR=/workspace/.pnpm-store /opt/paperclip/pnpm-hardlink-check.sh)"; \
+    out="$(PNPM=/opt/pnpm/bin/pnpm ROOTS="/data/hermes /workspace /scratch" STORE_DIR=/cache/pnpm-store /opt/paperclip/pnpm-hardlink-check.sh)"; \
     echo "pnpm hardlink check: $out"; \
     [ "$(echo "$out" | wc -l)" -eq 3 ] || { echo "expected one result per clone root, got: $out" >&2; exit 1; }; \
     echo "$out" | while read -r line; do \
@@ -1105,6 +1110,14 @@ RUN set -eu; \
         *"nlink=1 "*) echo "pnpm copied instead of hard-linking: $line" >&2; exit 1 ;; \
       esac; \
     done; \
-    rm -rf /workspace/.pnpm-store; \
+    out="$(PNPM=/opt/pnpm/bin/pnpm ROOTS="/data/hermes /workspace /scratch" STORE_DIR=/cache/pnpm-store /opt/paperclip/pnpm-reflink-check.sh)" || { echo "pnpm reflink check failed to run: $out" >&2; exit 1; }; \
+    echo "pnpm reflink check: $out"; \
+    [ "$(echo "$out" | wc -l)" -eq 3 ] || { echo "expected one result per clone root, got: $out" >&2; exit 1; }; \
+    echo "$out" | while read -r line; do \
+      case "$line" in \
+        *"install-failed"*) echo "pnpm must install offline from the store into every clone root, got: $line" >&2; exit 1 ;; \
+      esac; \
+    done; \
+    rm -rf /cache/pnpm-store; \
     [ "$(command -v git)" = "/opt/paperclip/bin/git" ] || { echo "git on PATH must be the reference wrapper" >&2; exit 1; }; \
     git --version
