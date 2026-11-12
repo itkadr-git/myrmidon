@@ -377,8 +377,12 @@ export async function restoreTurnCheckpoint(input: {
     );
   }
 
-  const trackedStatus = await runGit(["status", "--porcelain=v1", "--untracked-files=no"], input.worktreePath);
-  const trackedEdits = trackedStatus
+  // A clean checkpoint may legitimately have staged tracked files (the turn
+  // snapshot reads the worktree into its temporary index without committing
+  // them). Refuse only when the current tracked tree differs from the target
+  // checkpoint; this preserves foreign edits while allowing an exact replay.
+  const trackedDiff = await runGit(["diff", "--name-status", commitSha, "--"], input.worktreePath);
+  const trackedEdits = trackedDiff
     .split("\n")
     .map((line) => line.trimEnd())
     .filter(Boolean);
