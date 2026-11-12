@@ -9,54 +9,70 @@
 #      Run it daily (cron) before and after the change; the growth criterion
 #      is < 200 MB/day across 3 consecutive days (OPE-12680 acceptance).
 #   2. RECALL GATE — replays the 10 canonical queries from
-#      hindsight-recall-queries.json against the paperclip bank before and
-#      after every change (autovacuum reloptions, relink, repack) and prints
-#      hit counts + set hashes so two runs can be compared mechanically.
+#      hindsight-recall-queries.json against ONE bank (--bank is required: the
+#      growth sits in the big banks, e.g. adm / bbq) before and after every
+#      change (autovacuum reloptions, relink, repack) and prints hit counts +
+#      set hashes so two runs can be compared mechanically (the sha16 can
+#      legitimately differ when the bank received new facts in between; hits
+#      dropping to 0 is the regression signal the exit code reports).
 #      A mismatch is a RECALL REGRESSION: stop, investigate, roll back.
 #
-# READ-ONLY: SELECT against myrmidon-pg, POST recall to the hindsight API,
-# nothing is written to the database or the API.
+# NO WRITES of its own: SELECT of pg_*_size() against myrmidon-pg and POST
+# recall to the hindsight API. (Recall itself bumps the access counters the
+# API maintains on the facts it returns; ten queries are noise next to the
+# traffic of the bank.)
 #
 # USAGE:
 #   hindsight-recall-gate.sh sizes --log /var/log/hindsight-sizes.jsonl \
 #       [--pg-container myrmidon-pg] [--pg-user paperclip] [--db myrmidon_hindsight]
-#   hindsight-recall-gate.sh recall --api http://127.0.0.1:9425 \
-#       [--queries hindsight-recall-queries.json] [--bank default] \
+#   hindsight-recall-gate.sh recall --api http://127.0.0.1:8890 --bank adm \
+#       [--queries hindsight-recall-queries.json] \
 #       [--key "$HINDSIGHT_API_KEY"] [--out gate-result.json]
+# The board role (paperclip) is enough for `sizes`: pg_total_relation_size()
+# needs no privilege on the table. On vm-core docker needs root:
+#   DOCKER="sudo docker" hindsight-recall-gate.sh sizes ...
 #
 # EXIT: 0 = ok / no regression; 1 = usage error, sizes failure, or recall
-# regression (error or empty result on any query).
+# regression (error or empty result on any query, or a query file that still
+# holds the <fill: ...> placeholders).
 
 set -euo pipefail
 
+DOCKER=${DOCKER:-docker}
 PG_CONTAINER=myrmidon-pg
 PG_USER=paperclip
 DB=myrmidon_hindsight
 API_URL=
 API_KEY=${HINDSIGHT_API_KEY:-}
-BANK=default
+BANK=
 QUERIES_FILE=$(dirname "$0")/hindsight-recall-queries.json
 LOG_FILE=
 OUT_FILE=
 
-die() { echo "ERROR: $*" >&2; exit "${2:-1}"; }
-
-json_escape() { python3 -c 'import json,sys; print(json.dumps(sys.argv[1]))' "$1"; }
+die() { echo "ERROR: $1" >&2; exit "${2:-1}"; }
 
 cmd_sizes() {
   [[ -n "$LOG_FILE" ]] || die "sizes: --log is required" 1
+  # The TOAST table of memory_units is pg_toast.pg_toast_<oid>, not a relation
+  # named after the table: it is reached through pg_class.reltoastrelid, by oid
+  # (pg_total_relation_size(oid) needs no access to the pg_toast schema).
   local sql="SELECT
     now()::text AS ts,
     pg_size_pretty(pg_total_relation_size('memory_units')) AS units_total,
     pg_total_relation_size('memory_units') AS units_bytes,
-    pg_total_relation_size('memory_units_toast') AS units_toast_bytes,
-    pg_size_pretty(pg_total_relation_size('memory_units_toast')) AS units_toast_total,
+    COALESCE(pg_total_relation_size(
+      (SELECT reltoastrelid FROM pg_class WHERE oid = 'memory_units'::regclass)), 0) AS units_toast_bytes,
+    pg_size_pretty(COALESCE(pg_total_relation_size(
+      (SELECT reltoastrelid FROM pg_class WHERE oid = 'memory_units'::regclass)), 0)) AS units_toast_total,
     pg_total_relation_size('memory_links') AS links_bytes,
     pg_size_pretty(pg_total_relation_size('memory_links')) AS links_total,
-    pg_size_pretty(pg_database_size('myrmidon_hindsight')) AS db_total,
-    pg_database_size('myrmidon_hindsight') AS db_bytes;"
+    pg_size_pretty(pg_database_size(current_database())) AS db_total,
+    pg_database_size(current_database()) AS db_bytes;"
   local row
-  row=$(docker exec "$PG_CONTAINER" psql -U "$PG_USER" -d "$DB" -At -F'|' -c "$sql") \
+  # PGOPTIONS: a hung query must not sit in the database shared with the board.
+  # shellcheck disable=SC2086 # DOCKER may be "sudo docker"
+  row=$($DOCKER exec -e PGOPTIONS='-c statement_timeout=30000' "$PG_CONTAINER" \
+    psql -U "$PG_USER" -d "$DB" -At -F'|' -c "$sql") \
     || die "sizes: psql failed" 2
   local IFS='|'
   read -r ts units_total units_bytes units_toast_bytes units_toast_total links_bytes links_total db_total db_bytes <<<"$row"
@@ -84,14 +100,24 @@ PY
 
 cmd_recall() {
   [[ -n "$API_URL" ]] || die "recall: --api is required" 1
+  [[ -n "$BANK" ]] || die "recall: --bank is required (the hindsight bank to replay against, e.g. adm)" 1
   [[ -f "$QUERIES_FILE" ]] || die "recall: queries file not found: $QUERIES_FILE" 1
-  python3 - "$API_URL" "$BANK" "$QUERIES_FILE" "$OUT_FILE" "$API_KEY" <<'PY'
-import hashlib, json, sys, urllib.request
+  # The key goes through the environment, not argv (visible in ps).
+  HINDSIGHT_GATE_KEY="$API_KEY" python3 - "$API_URL" "$BANK" "$QUERIES_FILE" "$OUT_FILE" <<'PY'
+import hashlib, json, os, sys, urllib.parse, urllib.request
 
-api_url, bank, queries_file, out_file, api_key = sys.argv[1:6]
+api_url, bank, queries_file, out_file = sys.argv[1:5]
+api_key = os.environ.get("HINDSIGHT_GATE_KEY", "")
 qs = json.load(open(queries_file))
 items = qs["queries"] if isinstance(qs, dict) else qs
-url = f"{api_url.rstrip('/')}/v1/default/banks/{bank}/memories/recall"
+# A baseline taken on the unfilled template compares nothing: refuse it.
+unfilled = [q.get("name", "?") if isinstance(q, dict) else str(q)
+            for q in items
+            if "<fill:" in (q.get("query", "") if isinstance(q, dict) else str(q))]
+if unfilled:
+    print("ERROR: " + queries_file + " still holds <fill: ...> placeholders: " + ", ".join(unfilled))
+    sys.exit(1)
+url = f"{api_url.rstrip('/')}/v1/default/banks/{urllib.parse.quote(bank, safe='')}/memories/recall"
 results, failures = [], 0
 for q in items:
     name, text = (q["name"], q["query"]) if isinstance(q, dict) else (q, q)
