@@ -103,6 +103,111 @@ describe("workspace restore merge", () => {
     ).resolves.toBe("ssh codex\n");
   });
 
+  it("touches only the changed and deleted target paths on a large target directory", async () => {
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-restore-merge-"));
+    cleanupDirs.push(rootDir);
+
+    const targetDir = path.join(rootDir, "target");
+    const sourceDir = path.join(rootDir, "source");
+    await mkdir(targetDir, { recursive: true });
+    await mkdir(sourceDir, { recursive: true });
+
+    // A large, mostly-unchanged target: 2000 files. The merge below changes
+    // 2 files and deletes 1, so the work done under the merge lock must stay
+    // proportional to those 3 paths — not to the 2000-file walk the old
+    // implementation performed under the lock.
+    const FILE_COUNT = 2000;
+    for (let index = 0; index < FILE_COUNT; index += 1) {
+      const name = `file-${String(index).padStart(4, "0")}.txt`;
+      await writeFile(path.join(targetDir, name), `content ${index}\n`, "utf8");
+    }
+    const baseline = await captureDirectorySnapshot(targetDir, { exclude: [] });
+
+    await writeFile(path.join(sourceDir, "file-0001.txt"), "changed one\n", "utf8");
+    await writeFile(path.join(sourceDir, "file-0002.txt"), "changed two\n", "utf8");
+    // file-0003.txt is deleted from the source → must be removed from target.
+
+    // Count the filesystem reads the merge performs on target paths. The
+    // point-check of a deleted path costs one `lstat` on that path; the
+    // 2000-file full-target snapshot the old code ran under the lock called
+    // `readdir` + `lstat` on the target root and every one of its files.
+    let targetStatCount = 0;
+    let targetCopyCount = 0;
+    const statTargets: string[] = [];
+    const normalizedTargetDir = path.normalize(targetDir);
+    const realLstat = fsPromises.lstat.bind(fsPromises);
+    const lstatSpy = vi.spyOn(fsPromises, "lstat").mockImplementation(async (target, options) => {
+      const normalized = path.normalize(String(target));
+      if (normalized.startsWith(normalizedTargetDir + path.sep)) {
+        targetStatCount += 1;
+        statTargets.push(normalized);
+      }
+      return realLstat(target, options as never);
+    });
+    const realCopyFile = fsPromises.copyFile.bind(fsPromises);
+    const copySpy = vi.spyOn(fsPromises, "copyFile").mockImplementation(async (source, destination, mode) => {
+      const normalized = path.normalize(String(destination));
+      if (normalized.startsWith(normalizedTargetDir + path.sep)) {
+        targetCopyCount += 1;
+      }
+      return realCopyFile(source, destination, mode as never);
+    });
+
+    try {
+      await mergeDirectoryWithBaseline({ baseline, sourceDir, targetDir });
+    } finally {
+      lstatSpy.mockRestore();
+      copySpy.mockRestore();
+    }
+
+    // The touched paths only: the deleted file's point-check lstat and the
+    // two changed files' copy destinations. Any full-target snapshot would
+    // add ~2000 more lstat calls — these assertions fail loudly if the walk
+    // ever comes back under the lock.
+    expect(targetStatCount).toBeLessThanOrEqual(10);
+    expect(targetCopyCount).toBeLessThanOrEqual(5);
+    const uniqueStatTargets = new Set(statTargets.map((entry) => path.basename(entry)));
+    expect(uniqueStatTargets.has("file-0003.txt")).toBe(true);
+    for (let index = 0; index < FILE_COUNT; index += 1) {
+      if (index === 3) continue;
+      expect(uniqueStatTargets.has(`file-${String(index).padStart(4, "0")}.txt`)).toBe(false);
+    }
+
+    await expect(readFile(path.join(targetDir, "file-0001.txt"), "utf8")).resolves.toBe("changed one\n");
+    await expect(readFile(path.join(targetDir, "file-0002.txt"), "utf8")).resolves.toBe("changed two\n");
+    await expect(stat(path.join(targetDir, "file-0003.txt"))).rejects.toThrow();
+    await expect(readFile(path.join(targetDir, "file-0004.txt"), "utf8")).resolves.toBe("content 4\n");
+  });
+
+  it("applies both concurrent merges into one target and keeps each source's files", async () => {
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-restore-merge-"));
+    cleanupDirs.push(rootDir);
+
+    const targetDir = path.join(rootDir, "target");
+    const sourceADir = path.join(rootDir, "source-a");
+    const sourceBDir = path.join(rootDir, "source-b");
+    await mkdir(targetDir, { recursive: true });
+    await mkdir(sourceADir, { recursive: true });
+    await mkdir(sourceBDir, { recursive: true });
+
+    // Seed the target so the two merges have disjoint real work and both must
+    // succeed while contending on the same merge lock.
+    await writeFile(path.join(targetDir, "shared.txt"), "baseline\n", "utf8");
+    const baseline = await captureDirectorySnapshot(targetDir, { exclude: [] });
+
+    await writeFile(path.join(sourceADir, "a-only.txt"), "from A\n", "utf8");
+    await writeFile(path.join(sourceBDir, "b-only.txt"), "from B\n", "utf8");
+
+    await Promise.all([
+      mergeDirectoryWithBaseline({ baseline, sourceDir: sourceADir, targetDir }),
+      mergeDirectoryWithBaseline({ baseline, sourceDir: sourceBDir, targetDir }),
+    ]);
+
+    await expect(readFile(path.join(targetDir, "a-only.txt"), "utf8")).resolves.toBe("from A\n");
+    await expect(readFile(path.join(targetDir, "b-only.txt"), "utf8")).resolves.toBe("from B\n");
+    await expect(readFile(path.join(targetDir, "shared.txt"), "utf8")).resolves.toBe("baseline\n");
+  });
+
   it("ignores non-file entries when capturing snapshots", async () => {
     if (process.platform === "win32") return;
 
@@ -381,10 +486,10 @@ describe("workspace restore merge", () => {
         "utf8",
       );
 
-      // Reach the real deadline without a real 30-second wait: the first
-      // `Date.now()` call computes the deadline (unchanged), and every call
-      // after reports a time far past it, so the retry loop's own deadline
-      // check — not a mocked message or a shortened constant — throws.
+      // Reach the real deadline without a real wait: the first `Date.now()`
+      // call computes the deadline (unchanged), and every call after reports
+      // a time far past it, so the retry loop's own deadline check — not a
+      // mocked message or a shortened constant — throws.
       const realNow = Date.now();
       const dateNowSpy = vi
         .spyOn(Date, "now")
@@ -406,6 +511,93 @@ describe("workspace restore merge", () => {
       // have produced this result.
       expect(caughtError?.message).not.toContain("restore_lock_timeout");
       expect(classifyWorkspaceRestoreFailure(caughtError)).toBe("restore_lock_timeout");
+    });
+
+    it("waits for a live holder past the 30 s stale threshold and only times out after the 10 min wait deadline", async () => {
+      const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-restore-merge-"));
+      cleanupDirs.push(rootDir);
+      const paperclipHome = path.join(rootDir, "paperclip-home");
+      useTempPaperclipHome(paperclipHome, "test-instance");
+
+      const targetDir = path.join(rootDir, "target");
+      await mkdir(targetDir, { recursive: true });
+
+      // A live holder: owner.json names this (alive) test process, so
+      // `isLockStale` always reports false and the acquirer can only leave
+      // through the wait deadline.
+      const canonicalTargetDir = await realpath(targetDir);
+      const lockKey = createHash("sha256").update(canonicalTargetDir).digest("hex");
+      const lockRootDir = path.join(paperclipHome, "instances", "test-instance", "locks", "directory-merge");
+      const heldLockDir = path.join(lockRootDir, `${lockKey}.lock`);
+      await mkdir(heldLockDir, { recursive: true });
+      await writeFile(
+        path.join(heldLockDir, "owner.json"),
+        `${JSON.stringify({ pid: process.pid, createdAt: new Date().toISOString() })}\n`,
+        "utf8",
+      );
+
+      // Fake the clock instead of the timers: the retry loop's real 50 ms
+      // setTimeout sleeps stay real (cheap), while `Date.now()` reports a
+      // caller-controlled elapsed time. The first call — the deadline
+      // computation — sees the real now; every later call sees realNow +
+      // `elapsedMs`, which the test bumps past 35 s and then past the 10
+      // minute wait deadline.
+      const realNow = Date.now();
+      let elapsedMs = 0;
+      const dateNowSpy = vi.spyOn(Date, "now").mockImplementation(() => realNow + elapsedMs);
+
+      try {
+        const attempt = withDirectoryMergeLock(targetDir, async () => "acquired");
+        // 35 s of waiting must NOT time out (the old LOCK_STALE_MS wait did).
+        elapsedMs = 35_000;
+        await new Promise((resolve) => setTimeout(resolve, 300));
+        let settled = false;
+        void attempt.then(
+          () => {
+            settled = true;
+          },
+          () => {
+            settled = true;
+          },
+        );
+        await new Promise((resolve) => setTimeout(resolve, 0));
+        expect(settled).toBe(false);
+
+        // Past the 10 minute wait deadline the acquirer must throw the stable
+        // lock-timeout code.
+        elapsedMs = 10 * 60 * 1000 + 1_000;
+        await new Promise((resolve) => setTimeout(resolve, 300));
+        await expect(attempt).rejects.toMatchObject({
+          code: WORKSPACE_RESTORE_LOCK_TIMEOUT_CODE,
+        });
+      } finally {
+        dateNowSpy.mockRestore();
+      }
+    });
+
+    it("removes a lock whose owner pid is dead instead of waiting out the stale threshold", async () => {
+      const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-restore-merge-"));
+      cleanupDirs.push(rootDir);
+      const paperclipHome = path.join(rootDir, "paperclip-home");
+      useTempPaperclipHome(paperclipHome, "test-instance");
+
+      const targetDir = path.join(rootDir, "target");
+      await mkdir(targetDir, { recursive: true });
+
+      // Owner pid that does not exist: kill(2) fails with ESRCH, so the lock
+      // is stale immediately, whatever its mtime.
+      const canonicalTargetDir = await realpath(targetDir);
+      const lockKey = createHash("sha256").update(canonicalTargetDir).digest("hex");
+      const lockRootDir = path.join(paperclipHome, "instances", "test-instance", "locks", "directory-merge");
+      const heldLockDir = path.join(lockRootDir, `${lockKey}.lock`);
+      await mkdir(heldLockDir, { recursive: true });
+      await writeFile(
+        path.join(heldLockDir, "owner.json"),
+        `${JSON.stringify({ pid: 2_147_483_647, createdAt: new Date().toISOString() })}\n`,
+        "utf8",
+      );
+
+      await expect(withDirectoryMergeLock(targetDir, async () => "acquired")).resolves.toBe("acquired");
     });
 
     it.skipIf(process.platform === "win32")(

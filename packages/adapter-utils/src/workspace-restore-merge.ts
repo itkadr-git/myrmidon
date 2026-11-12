@@ -191,6 +191,17 @@ function entriesMatch(left: SnapshotEntry | null | undefined, right: SnapshotEnt
 const LOCK_STALE_MS = 30_000;
 
 /**
+ * How long an acquirer waits for a *live* directory-merge lock before giving
+ * up with {@link WORKSPACE_RESTORE_LOCK_TIMEOUT_CODE}. Distinct from
+ * {@link LOCK_STALE_MS}, which is only the "lock directory without a readable
+ * owner record outlived this" threshold. The merge under the lock used to
+ * capture a full sha256 snapshot of the target directory (27k files / 0.9 GB
+ * on shared omp workspaces → 3–10 minutes), so the wait must comfortably
+ * cover another run's merge, not just its mkdir. (OPE-12793)
+ */
+const LOCK_WAIT_MS = 10 * 60 * 1000;
+
+/**
  * The stable `code` a lock-timeout error carries, so a caller can identify it
  * without matching on the error message text (the message embeds the lock
  * directory path).
@@ -280,7 +291,9 @@ async function isLockStale(lockDir: string): Promise<boolean> {
 }
 
 async function acquireDirectoryMergeLock(lockDir: string): Promise<() => Promise<void>> {
-  const deadline = Date.now() + LOCK_STALE_MS;
+  // Two distinct deadlines: stale-detection for owner-less lock directories is
+  // LOCK_STALE_MS; how long we wait for a live holder is LOCK_WAIT_MS (OPE-12793).
+  const deadline = Date.now() + LOCK_WAIT_MS;
   while (true) {
     try {
       await fs.mkdir(lockDir);
@@ -449,13 +462,16 @@ export async function mergeDirectoryWithBaseline(input: {
   const source = await captureDirectorySnapshot(input.sourceDir, { exclude: input.baseline.exclude });
   await withDirectoryMergeLock(input.targetDir, async (canonicalTargetDir) => {
     await input.beforeApply?.();
-    const current = await captureDirectorySnapshot(canonicalTargetDir, { exclude: input.baseline.exclude });
+    // Point-check only the baseline leaf entries the source no longer has,
+    // instead of capturing a full sha256 snapshot of the target under the
+    // lock: the merge no longer walks ~27k target files while other restores
+    // wait on the lock. (OPE-12793)
     const deletedLeafEntries = [...input.baseline.entries.entries()]
       .filter(([relative, entry]) => entry.kind !== "dir" && !source.entries.has(relative))
       .sort(([left], [right]) => right.length - left.length);
 
     for (const [relative, baselineEntry] of deletedLeafEntries) {
-      if (!entriesMatch(current.entries.get(relative), baselineEntry)) continue;
+      if (!(await directoryEntryMatchesBaseline(canonicalTargetDir, relative, baselineEntry))) continue;
       await fs.rm(path.join(canonicalTargetDir, relative), { recursive: true, force: true }).catch(() => undefined);
     }
 
