@@ -329,4 +329,103 @@ describeEmbeddedPostgres("pre-merge approval findApprovalPendingMergePullRequest
     expect(result).not.toBeNull();
     expect(result?.url).toBe("https://github.com/itkadr-git/myrmidon/pull/3344");
   });
+
+  it("falls back to the live GitHub lookup when stored facts never saw the PR (OPE-12879)", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const issueId = randomUUID();
+
+    await db.insert(companies).values({ id: companyId, name: "company-live", issuePrefix: "TEST" });
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "agent-live",
+      role: "engineer",
+      status: "idle",
+      adapterType: "process",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      identifier: "TEST-200",
+      title: "Task 200",
+      status: "in_review",
+      priority: "medium",
+    });
+    // A PR of another task of the same company teaches the repo list.
+    const otherIssueId = randomUUID();
+    await db.insert(issues).values({
+      id: otherIssueId,
+      companyId,
+      identifier: "TEST-202",
+      title: "Task 202",
+      status: "done",
+      priority: "medium",
+    });
+    await db.insert(issueWorkProducts).values({
+      id: randomUUID(),
+      companyId,
+      issueId: otherIssueId,
+      type: "pull_request",
+      provider: "github",
+      status: "merged",
+      url: "https://github.com/itkadr-git/myrmidon/pull/999",
+      title: "PR 999",
+      metadata: { repo: "itkadr-git/myrmidon", number: 999 },
+    });
+
+    const liveLookup = async (_companyId: string, repository: string) =>
+      repository === "itkadr-git/myrmidon"
+        ? [{
+            number: 4242,
+            headSha: "cafe1234",
+            draft: false,
+            title: "Task 200: add guard",
+            url: "https://github.com/itkadr-git/myrmidon/pull/4242",
+            authorLogin: "bot",
+            baseRef: "main",
+            headRef: "bot/TEST-200",
+          }]
+        : [];
+
+    const result = await findApprovalPendingMergePullRequest(db, companyId, issueId, liveLookup);
+    expect(result).not.toBeNull();
+    expect(result?.url).toBe("https://github.com/itkadr-git/myrmidon/pull/4242");
+  });
+
+  it("does not invent a blocker when the live GitHub lookup fails (OPE-12879)", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const issueId = randomUUID();
+
+    await db.insert(companies).values({ id: companyId, name: "company-live-err", issuePrefix: "TEST" });
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "agent-live-err",
+      role: "engineer",
+      status: "idle",
+      adapterType: "process",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      identifier: "TEST-201",
+      title: "Task 201",
+      status: "in_review",
+      priority: "medium",
+    });
+
+    const liveLookup = async () => {
+      throw new Error("github down");
+    };
+    const result = await findApprovalPendingMergePullRequest(db, companyId, issueId, liveLookup);
+    expect(result).toBeNull();
+  });
 });

@@ -14920,6 +14920,10 @@ export function issueRoutes(
           db,
           existing.companyId,
           existing.id,
+          async (companyId, repository) => {
+            const { createGitHubPrHeadResolver } = await import("../myrmidon/review-routing/github.js");
+            return createGitHubPrHeadResolver({ db }).listOpenPullRequests({ companyId, repository });
+          },
         );
         if (openPullRequest) {
           delete updateFields.status;
@@ -21313,6 +21317,10 @@ export function issueRoutes(
                 db,
                 currentIssue.companyId,
                 currentIssue.id,
+                async (companyId, repository) => {
+                  const { createGitHubPrHeadResolver } = await import("../myrmidon/review-routing/github.js");
+                  return createGitHubPrHeadResolver({ db }).listOpenPullRequests({ companyId, repository });
+                },
               )
             : null;
         const updatePatch = {
