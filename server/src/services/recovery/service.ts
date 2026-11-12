@@ -4624,9 +4624,11 @@ export function recoveryService(
     // the merge gate enforces `CI result` independently, so the reviewer must
     // not be woken again (nor a CI-wait monitor stacked) until a new head
     // appears. The deferral is silent: no wake, no monitor, no budget spend.
+    // Returning false lets escalateStrandedAssignedIssue know the issue is
+    // already settled; it returns null (no escalation) in that case.
     const recordedVerdict = readReviewVerdictRecord(input.issue.executionState);
     if (recordedVerdict && reviewVerdictCoversHead(recordedVerdict, ci.headSha)) {
-      return true;
+      return false;
     }
     const decision: ReturnType<typeof decideStalledReviewRecovery> = interruptedByMaintenance
       ? { kind: "retry_decision", attempt: 1 + deferrals.decisionRetries, maxAttempts: 1 + deferrals.decisionRetries }
@@ -4767,6 +4769,23 @@ export function recoveryService(
     // without a decision first waits for CI on the PR head, then gets one more
     // explicit decision request. Only after that is it escalated, and the
     // escalation keeps the stage (participant, return assignee) as it is.
+    // myrmidon(OPE-12859): when the review verdict already covers the current
+    // PR head, the review is done — only the merge-time `CI result` gate is
+    // still pending. There is nothing for recovery to do: no wake, no
+    // CI-wait monitor, no escalation. Return null so the sweep counts it as
+    // skipped rather than escalated.
+    {
+      const recordedVerdict = readReviewVerdictRecord(input.issue.executionState);
+      if (recordedVerdict) {
+        const ciFacts = await resolveReviewPullRequestCi({
+          companyId: input.issue.companyId,
+          issueId: input.issue.id,
+        });
+        if (reviewVerdictCoversHead(recordedVerdict, ciFacts.headSha)) {
+          return null;
+        }
+      }
+    }
     if (await deferStalledExecutionReview(input)) return input.issue;
 
     const openPrProduct = await db.query.issueWorkProducts.findFirst({
