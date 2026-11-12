@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it } from "vitest";
 import {
   GATEWAY_SLOT_PROBE_MEMORY_TTL_MS,
   GATEWAY_SLOT_RECONCILE_INTERVAL_MS,
@@ -68,6 +68,14 @@ function makePort(options: {
 const agent = { id: "agent-1", companyId: "company-1", adapterConfig: {} };
 
 describe("myrmidon(GATEWAY-SLOT-RECONCILE) gateway slot reconcile on run start", () => {
+  // The probe memory (and the throttle) are process-local module state: reset
+  // them before every test so ids reused across tests (gw-leaked, gw-stuck)
+  // start each test with a clean slate.
+  beforeEach(() => {
+    resetGatewaySlotProbeMemoryForTest();
+    resetGatewaySlotReconcileThrottleForTest();
+  });
+
   it("stops a gateway run that is still live for a board-terminal run (the leaked slot)", async () => {
     const { port, probes, stops } = makePort({ probe: () => "live" });
     const result = await reconcileGatewaySlotsFromRows(

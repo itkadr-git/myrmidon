@@ -249,27 +249,34 @@ export async function reconcileGatewaySlotsFromRows(
   const terminal = TERMINAL_BOARD_RUN_STATUSES as readonly string[];
   const nowMs = Date.now();
 
-  // OPE-12890: one secret resolution per pass. When the heartbeat service
-  // provides resolveCredentials, its result (an audit event per secret) is
-  // produced once and handed to every probe and stop below; the port calls
-  // keep their own resolution as the fallback path (older callers, tests).
+  // OPE-12890: one secret resolution per pass, lazy. When the heartbeat
+  // service provides resolveCredentials, its result (an audit event per
+  // secret) is produced once on the first probe/stop and handed to all
+  // subsequent calls. When all candidates are already remembered as
+  // confirmed off-gateway, no secrets are resolved at all.
   let resolvedCredentials = options.resolvedCredentials ?? null;
-  if (!resolvedCredentials && port.resolveCredentials) {
-    try {
-      resolvedCredentials = await port.resolveCredentials({
-        companyId: agent.companyId,
-        agentId: agent.id,
-        adapterConfig: agent.adapterConfig,
-      });
-    } catch (err) {
-      // Resolution failing once must not change the pass contract: the port
-      // calls fall back to their own (per-call) resolution.
-      logger.warn(
-        { err, agentId: agent.id },
-        "gateway slot reconcile: shared credential resolution failed; probes fall back to per-call resolution",
-      );
+  let attemptedResolve = false;
+  const getResolvedCredentials = async (): Promise<ResolvedGatewayCredentials | null> => {
+    if (resolvedCredentials || attemptedResolve) return resolvedCredentials;
+    attemptedResolve = true;
+    if (port.resolveCredentials) {
+      try {
+        resolvedCredentials = await port.resolveCredentials({
+          companyId: agent.companyId,
+          agentId: agent.id,
+          adapterConfig: agent.adapterConfig,
+        });
+      } catch (err) {
+        // Resolution failing once must not change the pass contract: the port
+        // calls fall back to their own (per-call) resolution.
+        logger.warn(
+          { err, agentId: agent.id },
+          "gateway slot reconcile: shared credential resolution failed; probes fall back to per-call resolution",
+        );
+      }
     }
-  }
+    return resolvedCredentials;
+  };
 
   for (const row of rows) {
     // A run the board still owns is never a stop candidate; it is also never
@@ -286,6 +293,7 @@ export async function reconcileGatewaySlotsFromRows(
       continue;
     }
 
+    const creds = await getResolvedCredentials();
     let probe: Awaited<ReturnType<GatewaySlotReconcilePort["probeGatewayRun"]>>;
     try {
       probe = await port.probeGatewayRun({
@@ -294,7 +302,7 @@ export async function reconcileGatewaySlotsFromRows(
         runId: row.id,
         adapterConfig: agent.adapterConfig,
         gatewayRunId,
-        resolvedCredentials,
+        resolvedCredentials: creds,
       });
     } catch (err) {
       result.failed += 1;
@@ -331,7 +339,7 @@ export async function reconcileGatewaySlotsFromRows(
         runId: row.id,
         adapterConfig: agent.adapterConfig,
         gatewayRunId,
-        resolvedCredentials,
+        resolvedCredentials: creds,
         cancellation: {
           correlationId: `slot-reconcile-${row.id}`,
           source: {
@@ -458,7 +466,7 @@ export async function sweepGatewaySlotsForAgent(
   const externalIds = rows
     .filter((row) => (TERMINAL_BOARD_RUN_STATUSES as readonly string[]).includes(row.status))
     .map((row) => row.externalRunId)
-    .filter((id): id is string => Boolean(id) && !isGatewayRunConfirmedClosed(input.agentId, id, nowMs));
+    .filter((id): id is string => id !== null && !isGatewayRunConfirmedClosed(input.agentId, id, nowMs));
   if (externalIds.length > 0) {
     const closedIds = await db
       .select({ externalRunId: heartbeatRuns.externalRunId })

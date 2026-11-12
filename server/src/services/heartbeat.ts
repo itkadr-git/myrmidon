@@ -24334,7 +24334,7 @@ export function heartbeatService(
               agentId,
               adapterType: "hermes_gateway",
               heartbeatRunId: null,
-              executionRunConfig: adapterConfig,
+              executionRunConfig: adapterConfig ?? {},
               projectEnv: null,
               secretsSvc,
             });
