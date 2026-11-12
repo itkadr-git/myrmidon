@@ -56,6 +56,7 @@ export * from "../myrmidon-foraging.js";
 export * from "../myrmidon-guardrail-modes.js";
 export * from "../myrmidon-guardrail-regex.js";
 export * from "../myrmidon-host-disk.js";
+export * from "../myrmidon-host-root-disk.js";
 export * from "../myrmidon-idle-stop.js";
 export * from "../myrmidon-isolation-scope.js";
 export * from "../myrmidon-issue-list-agent-defaults.js";

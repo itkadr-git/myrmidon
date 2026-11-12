@@ -79,8 +79,16 @@ func TestDisk_A14_Answer(t *testing.T) {
 	if got.Other.UsedBytes != 100*1024 {
 		t.Errorf("other %+v", got.Other)
 	}
+	// OPE-12697: the same Statfs spy answers "/" too, so the root partition is
+	// the same 1000-block figure mounted at "/".
+	if got.Root == nil {
+		t.Errorf("root missing: %+v", got)
+	} else if got.Root.Mount != "/" || got.Root.TotalBytes != 4096000 || got.Root.UsedPercent != 55 {
+		t.Errorf("root %+v", got.Root)
+	}
 	want := []string{
 		"statfs " + r.cfg.VolumeRoot,
+		"statfs /",
 		"run /usr/sbin/xfs_quota -x -c report -p -b -N " + r.cfg.VolumeRoot,
 	}
 	if calls := spy.list(); strings.Join(calls, "|") != strings.Join(want, "|") {
@@ -89,6 +97,46 @@ func TestDisk_A14_Answer(t *testing.T) {
 	r.wantNoCalls()
 	if l := r.lastDecision(); l.Route != "A14" || l.Decision != "allow" || l.Target != "/myrmidon/disk" {
 		t.Errorf("decision %+v", l)
+	}
+}
+
+// TestDisk_A14_RootStatfsFailure: the root statfs is best effort — a failure
+// leaves the answer quota/permission intact with root absent (the board
+// reads "root not measured"), the route still answers 200.
+func TestDisk_A14_RootStatfsFailure(t *testing.T) {
+	deps, spy := diskDeps(func(context.Context, string, ...string) ([]byte, error) {
+		return []byte(diskKey + "  6144  5120  6144  00 [--------]\\n"), nil
+	})
+	origStatfs := deps.Statfs
+	deps.Statfs = func(path string) (disk.Fs, error) {
+		if path == "/" {
+			spy.add("statfs /")
+			return disk.Fs{}, errors.New("permission denied")
+		}
+		return origStatfs(path)
+	}
+	r := newRig(t, withDiskHost(deps))
+	res := r.send("GET", "/myrmidon/disk", nil, nil)
+	if res.Status != http.StatusOK {
+		t.Fatalf("%d %s", res.Status, res.str())
+	}
+	var got disk.Response
+	if err := json.Unmarshal(res.Body, &got); err != nil {
+		t.Fatal(err)
+	}
+	if got.Root != nil {
+		t.Errorf("root %+v, want absent", got.Root)
+	}
+	if got.Partition.Mount == "" || !got.QuotaEnabled {
+		t.Errorf("bot partition answer degraded: %+v", got)
+	}
+	want := []string{
+		"statfs " + r.cfg.VolumeRoot,
+		"statfs /",
+		"run /usr/sbin/xfs_quota -x -c report -p -b -N " + r.cfg.VolumeRoot,
+	}
+	if calls := spy.list(); strings.Join(calls, "|") != strings.Join(want, "|") {
+		t.Errorf("host calls %q, want %q", calls, want)
 	}
 }
 
