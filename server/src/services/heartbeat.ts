@@ -1038,6 +1038,7 @@ import {
 // budget-enforcement/).
 import { readBudgetEnforcement } from "../myrmidon/budget-enforcement/settings.js";
 import { evaluateBudgetLimitAdmission } from "../myrmidon/budget-limits/admission.js"; // myrmidon(1.7-BUDGET-CONFIG)
+import { deferredWakeRevisitCutoff } from "../myrmidon/deferred-wake-revisit.js"; // myrmidon(OPE-12807)
 import { guardrailsOnRunOutput } from "../myrmidon/guardrails/run-output.js"; // myrmidon(1.6-GRD)
 import {
   deliverBudgetSignalOnly,
@@ -22933,7 +22934,7 @@ export function heartbeatService(
         sql`${agentWakeupRequests.payload}->'queuedCommentInterrupt' is null`,
         sql`${agentWakeupRequests.payload}->'executionWait' is null`,
         lte(agentWakeupRequests.requestedAt, settleBefore),
-        lte(agentWakeupRequests.updatedAt, new Date(now - 30_000)),
+        lte(agentWakeupRequests.updatedAt, deferredWakeRevisitCutoff(now)), // myrmidon(OPE-12807)
         not(exists(db.select({ id: issueRecoveryActions.id }).from(issueRecoveryActions).where(and(
           eq(issueRecoveryActions.companyId, issues.companyId), eq(issueRecoveryActions.sourceIssueId, issues.id),
           executionBlockerPredicate(),
@@ -22950,7 +22951,7 @@ export function heartbeatService(
       // the later ones in this bounded scan.
       const [claimed] = await db.update(agentWakeupRequests).set({ updatedAt: new Date() }).where(and(
         eq(agentWakeupRequests.id, wake.id), eq(agentWakeupRequests.status, "deferred_issue_execution"),
-        lte(agentWakeupRequests.updatedAt, new Date(now - 30_000)),
+        lte(agentWakeupRequests.updatedAt, deferredWakeRevisitCutoff(now)),
       )).returning({ id: agentWakeupRequests.id });
       if (!claimed) continue;
       // Runs can persist the task key as either issueId (canonical) or taskId
@@ -23046,9 +23047,16 @@ export function heartbeatService(
           sql`${agentWakeupRequests.payload} #> '{_paperclipWakeContext,wakeCommentIds}' <> '[]'::jsonb`,
         ), sql`${agentWakeupRequests.payload}->>'mutation' = 'interaction'`),
         sql`${agentWakeupRequests.payload}->'queuedCommentInterrupt' is null`,
+        // myrmidon(OPE-12807): a wake already looked at waits out the cool-down; no gate here
+        // made the same 50 wakes cost a run lookup and a cursor update on every pass.
+        lte(agentWakeupRequests.updatedAt, deferredWakeRevisitCutoff(Date.now())),
         cutoff ? gte(agentWakeupRequests.requestedAt, cutoff) : undefined))
       .orderBy(asc(agentWakeupRequests.updatedAt)).limit(50);
     for (const { wake } of strandedQueues) {
+      // myrmidon(OPE-12807): move the cursor first, so a wake skipped below leaves the head of the scan too.
+      await db.update(agentWakeupRequests).set({ updatedAt: new Date() }).where(and(
+        eq(agentWakeupRequests.id, wake.id), eq(agentWakeupRequests.status, "deferred_issue_execution"),
+      ));
       // myrmidon(UPSTREAM-13539): the stranded-queue scan also adopts interaction receipts.
       if (!queuedCommentIdsFromWakePayload(wake.payload).length &&
           !await readQueuedInteractionResponse(db, wake.companyId, String(wake.payload?.issueId), wake.payload)) continue;
@@ -23056,9 +23064,6 @@ export function heartbeatService(
         eq(heartbeatRuns.companyId, wake.companyId), eq(heartbeatRuns.agentId, wake.agentId),
         sql`${heartbeatRuns.contextSnapshot}->>'issueId' = ${String(wake.payload?.issueId)}`,
       )).orderBy(desc(heartbeatRuns.createdAt), desc(heartbeatRuns.id)).limit(1);
-      await db.update(agentWakeupRequests).set({ updatedAt: new Date() }).where(and(
-        eq(agentWakeupRequests.id, wake.id), eq(agentWakeupRequests.status, "deferred_issue_execution"),
-      ));
       if (!latest || latest.runtimeMode !== "legacy" || !isHeartbeatRunTerminalStatus(latest.status)) continue;
       const cancelledAdmission = latest.status === "cancelled" && !latest.startedAt &&
         latest.errorCode === "execution_reconciliation_required";
