@@ -971,4 +971,50 @@ describe("omp local execution", () => {
     expect(call).toBeDefined();
     expect(call![4]?.localProcessSandbox).toBeFalsy();
   });
+
+  it("passes workspaceSyncMode: \"full\" by default and \"git_checkout\" when configured", async () => {
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-omp-workspace-sync-"));
+    cleanupDirs.push(rootDir);
+    const workspaceDir = path.join(rootDir, "workspace");
+    await mkdir(workspaceDir, { recursive: true });
+
+    const runExecute = (adapterConfig: Record<string, unknown>) =>
+      execute({
+        runId: "run-workspace-sync",
+        agent: {
+          id: "agent-1",
+          companyId: "company-1",
+          name: "OMP Builder",
+          adapterType: "omp_local",
+          adapterConfig,
+        },
+        runtime: {
+          sessionId: null,
+          sessionParams: null,
+          sessionDisplayId: null,
+          taskKey: null,
+        },
+        config: {
+          command: "omp",
+          model: "openai/gpt-4o",
+        },
+        context: {
+          paperclipWorkspace: {
+            cwd: workspaceDir,
+            source: "project_primary",
+          },
+        },
+        onLog: async () => {},
+      });
+
+    await runExecute({});
+    expect(prepareAdapterExecutionTargetRuntime).toHaveBeenCalledWith(
+      expect.objectContaining({ workspaceSyncMode: "full" }),
+    );
+
+    await runExecute({ workspaceSync: "git_checkout" });
+    expect(prepareAdapterExecutionTargetRuntime).toHaveBeenLastCalledWith(
+      expect.objectContaining({ workspaceSyncMode: "git_checkout" }),
+    );
+  });
 });
