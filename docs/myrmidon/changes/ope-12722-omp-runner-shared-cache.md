@@ -37,8 +37,9 @@
   board's workspace cleanups spare and its sync never copies. pnpm 9 copies
   silently when a reflink is refused, so the store is checked by disk usage.
 - Contract: `scripts/myrmidon/omp-ssh-image.test.mjs` (plain `node --test`,
-  including a behavioural test of the wrapper's `rewriteArgs`), image lane
-  `agent-runtime-images.yml` builds the changed Dockerfile on PR. Operator setup,
+  including a behavioural test of the wrapper's `rewriteArgs`); the image lane
+  `agent-runtime-images.yml` builds the image, with the new smoke, on push to
+  `main` (it does not run on pull requests). Operator setup,
   the rollout for runners that already run, and the acceptance measure (a `df`
   delta of the data disk, not `du`) are in the "OMP SSH runner" section of
   `docker/agent-runtime/README.md` (EN/RU); production re-measurement
@@ -84,8 +85,9 @@
   синхронизируется. pnpm 9 молча копирует при отказе рефлинка, поэтому хранилище
   проверяется по занятому месту на диске.
 - Контракт: `scripts/myrmidon/omp-ssh-image.test.mjs` (обычный `node --test`,
-  включая поведенческий тест `rewriteArgs` враппера), образный конвейер
-  `agent-runtime-images.yml` собирает изменённый Dockerfile на PR. Настройка
+  включая поведенческий тест `rewriteArgs` враппера); образный конвейер
+  `agent-runtime-images.yml` собирает образ с новой проверкой при пуше в `main`
+  (на pull request он не запускается). Настройка
   оператора, выкат для уже работающих исполнителей и приёмочный замер (прирост
   `df` диска данных, а не `du`) — в разделе «Исполнитель omp по SSH»
   `docker/agent-runtime/README.md` (EN/RU); повторный замер на бою
