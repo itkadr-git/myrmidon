@@ -583,6 +583,71 @@ async function runSshScript(
   );
 }
 
+const SSH_SYNC_BACK_DIR_PREFIX = "paperclip-ssh-sync-back-";
+// The longest run lasts three hours and a restore is a fraction of that, so a
+// sync-back directory older than this was left by a restore whose process died
+// (a board restart or kill) before its `finally` could run.
+const SSH_SYNC_BACK_STALE_MS = 4 * 60 * 60 * 1000;
+
+// Gives the owner rwx on every directory under `rootDir`. A restored workspace
+// can hold read-only directories (a Go module cache is 0555); unlinking an
+// entry needs write permission on its parent, so `fs.rm` fails on such a tree.
+async function makeTreeOwnerWritable(rootDir: string): Promise<void> {
+  const pending = [rootDir];
+  while (pending.length > 0) {
+    const dir = pending.pop();
+    if (!dir) continue;
+    await fs.chmod(dir, 0o700).catch(() => undefined);
+    const entries = await fs.readdir(dir, { withFileTypes: true }).catch(() => []);
+    for (const entry of entries) {
+      if (entry.isDirectory()) pending.push(path.join(dir, entry.name));
+    }
+  }
+}
+
+// Removes a sync-back staging directory and never throws: a restore must not
+// fail on its cleanup, and a failed cleanup is logged instead of swallowed so
+// a leak shows up in the board log. Retries cover tar still writing into the
+// directory after it was signalled; the second attempt repairs read-only
+// directories first.
+async function removeSshSyncBackDir(dir: string): Promise<void> {
+  const rmOptions = { recursive: true, force: true, maxRetries: 5, retryDelay: 200 };
+  try {
+    await fs.rm(dir, rmOptions);
+    return;
+  } catch {
+    // Fall through to the permission repair below.
+  }
+  try {
+    await makeTreeOwnerWritable(dir);
+    await fs.rm(dir, rmOptions);
+  } catch (error) {
+    console.warn(
+      `[paperclip] Failed to remove SSH sync-back temp dir ${dir}: ${error instanceof Error ? error.message : String(error)}`,
+    );
+  }
+}
+
+// Removes sync-back directories that no `finally` will ever reach: the restore
+// that created them died with its process. Runs at the start of each restore.
+async function pruneStaleSshSyncBackDirs(nowMs: number = Date.now()): Promise<void> {
+  try {
+    const tmpRoot = os.tmpdir();
+    const entries = await fs.readdir(tmpRoot, { withFileTypes: true });
+    for (const entry of entries) {
+      if (!entry.isDirectory() || !entry.name.startsWith(SSH_SYNC_BACK_DIR_PREFIX)) continue;
+      const dir = path.join(tmpRoot, entry.name);
+      const info = await fs.stat(dir).catch(() => null);
+      if (!info || nowMs - info.mtimeMs < SSH_SYNC_BACK_STALE_MS) continue;
+      await removeSshSyncBackDir(dir);
+    }
+  } catch (error) {
+    console.warn(
+      `[paperclip] Failed to prune stale SSH sync-back temp dirs: ${error instanceof Error ? error.message : String(error)}`,
+    );
+  }
+}
+
 async function clearLocalDirectory(
   localDir: string,
   preserveEntries: string[] = [],
@@ -1446,14 +1511,20 @@ export async function syncDirectoryFromSsh(input: {
   onProgress?: RuntimeProgressSink;
   progressLabel?: string;
 }): Promise<void> {
+  await pruneStaleSshSyncBackDirs();
   const auth = await createSshAuthArgs(input.spec);
-  const stagingDir = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-ssh-sync-back-"));
   const remoteTarScript = [
     `cd ${shellQuote(input.remoteDir)}`,
     `tar ${[...tarExcludeArgs(input.exclude).map(shellQuote), "-cf", "-", "."].join(" ")}`,
   ].join(" && ");
   const sshArgs = [
     ...auth.args,
+    // A restore that never settles never reaches the `finally` that removes the
+    // staging directory; a dead connection would hold it (and the run) forever.
+    "-o",
+    "ServerAliveInterval=30",
+    "-o",
+    "ServerAliveCountMax=6",
     "-p",
     String(input.spec.port),
     `${input.spec.username}@${input.spec.host}`,
@@ -1474,6 +1545,15 @@ export async function syncDirectoryFromSsh(input: {
       estimated: true,
     })
     : null;
+
+  // Nothing may sit between creating the staging directory and the `try` whose
+  // `finally` removes it.
+  const stagingDir = await fs
+    .mkdtemp(path.join(os.tmpdir(), SSH_SYNC_BACK_DIR_PREFIX))
+    .catch(async (error: unknown) => {
+      await auth.cleanup();
+      throw error;
+    });
 
   try {
     await new Promise<void>((resolve, reject) => {
@@ -1528,6 +1608,9 @@ export async function syncDirectoryFromSsh(input: {
         tarStderr += String(chunk);
       });
 
+      // tar can exit before ssh does (disk full, a corrupt stream); the broken
+      // pipe is already reported through tar's exit code.
+      tar.stdin?.on("error", () => undefined);
       ssh.on("error", fail);
       tar.on("error", fail);
       ssh.on("close", (code) => {
@@ -1538,6 +1621,12 @@ export async function syncDirectoryFromSsh(input: {
       tar.on("close", (code) => {
         tarExited = true;
         tarExitCode = code;
+        // Nothing reads ssh's output once tar is gone, so ssh would block on a
+        // full pipe and the restore would never settle. Stop it; maybeFinish
+        // runs when it closes.
+        if ((code ?? 0) !== 0 && !sshExited) {
+          ssh.kill("SIGTERM");
+        }
         maybeFinish();
       });
     });
@@ -1549,7 +1638,7 @@ export async function syncDirectoryFromSsh(input: {
     await progress?.fail();
     throw error;
   } finally {
-    await fs.rm(stagingDir, { recursive: true, force: true }).catch(() => undefined);
+    await removeSshSyncBackDir(stagingDir);
     await auth.cleanup();
   }
 }
@@ -1613,7 +1702,7 @@ export async function restoreWorkspaceFromSshExecution(input: {
 }): Promise<void> {
   const remoteDir = input.remoteDir ?? input.spec.remoteCwd;
   if (input.baselineSnapshot) {
-    const stagingDir = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-ssh-sync-back-"));
+    const stagingDir = await fs.mkdtemp(path.join(os.tmpdir(), SSH_SYNC_BACK_DIR_PREFIX));
     const importedRef = input.restoreGitHistory
       ? `refs/paperclip/ssh-sync/imported/${randomUUID()}`
       : null;
@@ -1658,7 +1747,7 @@ export async function restoreWorkspaceFromSshExecution(input: {
           maxBuffer: 16 * 1024,
         }).catch(() => undefined);
       }
-      await fs.rm(stagingDir, { recursive: true, force: true }).catch(() => undefined);
+      await removeSshSyncBackDir(stagingDir);
     }
     return;
   }
