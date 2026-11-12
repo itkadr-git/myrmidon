@@ -7,6 +7,7 @@ import {
   createAdmCapabilityToken,
   redactedAdmRequestProjection,
   verifyAdmCapabilityToken,
+  admAccessActions,
   type AdmAccessAction,
   type AdmCapabilityClaims,
   type AdmRequestStatus,
@@ -195,6 +196,28 @@ export interface AdmActorContext {
   isInstanceAdmin?: boolean;
 }
 
+/**
+ * Controlled execution seam (ADR-0052 step 5): the capability executes the
+ * operation inside the ADM gateway, never inside this service. The executor
+ * receives the approved envelope and MUST perform the real bounded action —
+ * returning `executed: false` with a reason code is the honest outcome for a
+ * tool that is unavailable or refuses the operation. Without a wired
+ * executor the gateway denies `invoke_tool` instead of pretending success.
+ */
+export interface AdmCapabilityExecutor {
+  execute(input: {
+    requestId: string;
+    sourceCompanyId: string;
+    targetCompanyId: string;
+    resourceType: string;
+    resourceRef: string;
+    resourceKey: string;
+    action: AdmAccessAction;
+    scope: Record<string, unknown>;
+    actor: AdmActorContext;
+  }): Promise<{ executed: boolean; result: Record<string, unknown> }>;
+}
+
 export interface AdmRequestStoredPayload {
   sourceCompanyId: string;
   targetCompanyId: string;
@@ -214,7 +237,41 @@ export interface AdmRequestStoredPayload {
   metadataProjection?: Record<string, unknown> | null;
 }
 
-export function admAccessRequestService(db: Db) {
+export function admAccessRequestService(
+  db: Db,
+  executor?: AdmCapabilityExecutor,
+) {
+  /**
+   * Scope enforcement (ADR-0052 step 6): the approved capability is
+   * constrained to the requested scope. The resource key implied by the
+   * capability claims must equal the scope's `resourceKey` when one was
+   * requested; the executed operation kind must match the scope's
+   * `operationKind` when declared; and the live scope hash must equal the
+   * hash signed into the capability. A mismatch is a hard denial before any
+   * effect, audited as `scope_violation`.
+   */
+  function assertExecutionWithinScope(
+    claims: AdmCapabilityClaims,
+    payload: AdmRequestStoredPayload,
+  ): Record<string, unknown> {
+    const scope = payload.requestedScope ?? {};
+    if (admScopeHash(scope) !== claims.scopeHash) {
+      throw forbidden("Capability scope hash does not match the approved request scope");
+    }
+    const resourceKey = admResourceKeyFromRef(claims.resourceRef);
+    const scopeResourceKey = typeof scope.resourceKey === "string" ? scope.resourceKey.trim() : null;
+    if (scopeResourceKey !== null && scopeResourceKey.length > 0 && scopeResourceKey !== resourceKey) {
+      throw forbidden("Capability resource key is outside the approved scope");
+    }
+    const scopeOperationKind = typeof scope.operationKind === "string" ? scope.operationKind.trim().toLowerCase() : null;
+    if (scopeOperationKind !== null && scopeOperationKind.length > 0) {
+      const operationKindForAction = claims.action === "invoke_tool" ? "invoke" : claims.action;
+      if (scopeOperationKind !== operationKindForAction) {
+        throw forbidden("Capability operation kind is outside the approved scope");
+      }
+    }
+    return scope;
+  }
   function mapApprovalToRecord(
     row: typeof approvals.$inferSelect,
   ): RedactedAdmRequest & {
@@ -647,6 +704,19 @@ export function admAccessRequestService(db: Db) {
       if (payload.expiresAt && Date.now() > new Date(payload.expiresAt).getTime()) {
         throw forbidden("ADM capability has expired");
       }
+      const scope = assertExecutionWithinScope(claims, payload);
+      if (!(admAccessActions as readonly string[]).includes(claims.action)) {
+        throw forbidden("ADM capability action is not supported");
+      }
+      if (claims.resourceType === "tool" && claims.action !== "invoke_tool") {
+        throw forbidden("Tool capabilities may only invoke an approved tool");
+      }
+      if (claims.action === "invoke_tool" && !executor) {
+        throw forbidden("Controlled tool executor is not configured");
+      }
+      if (claims.action === "grant_capability" && claims.resourceType === "secret") {
+        throw forbidden("Secret capabilities cannot be granted through the ADM gateway");
+      }
 
       // 4. Scoped execution against the target company's data: every lookup is
       // double-keyed by (targetCompanyId, resourceRef-derived key) so the
@@ -654,6 +724,7 @@ export function admAccessRequestService(db: Db) {
       // projections and aggregates leave the ADM boundary — never raw secret
       // values, markdown bodies, connection credentials or issue content.
       let executionResult: Record<string, unknown>;
+      let executed = true;
       switch (claims.action) {
         case "read_metadata": {
           const resourceKey = admResourceKeyFromRef(claims.resourceRef);
@@ -685,32 +756,32 @@ export function admAccessRequestService(db: Db) {
         }
         case "invoke_tool": {
           const resourceKey = admResourceKeyFromRef(claims.resourceRef);
-          const tool = await db
-            .select({ id: toolConnections.id, name: toolConnections.name, status: toolConnections.status, enabled: toolConnections.enabled })
-            .from(toolConnections)
-            .where(and(eq(toolConnections.companyId, claims.targetCompanyId), eq(toolConnections.name, resourceKey)))
-            .limit(1)
-            .then((rows) => rows[0] ?? null);
-          if (!tool || !tool.enabled || tool.status !== "active") {
-            // Deny-by-default: a disabled/unknown tool never reports success.
-            executionResult = {
-              kind: "tool_execution_result",
-              resourceType: claims.resourceType,
-              resourceRef: claims.resourceRef,
-              status: "denied",
-              reason: "tool_not_available",
-            };
-          } else {
-            executionResult = {
-              kind: "tool_execution_result",
-              resourceType: claims.resourceType,
-              resourceRef: claims.resourceRef,
-              status: "succeeded",
-              connectionId: tool.id,
-              executedAt: new Date().toISOString(),
-              output: "Executed via ADM controlled gateway (metadata envelope only)",
-            };
-          }
+          const invocation = await executor!.execute({
+            requestId: claims.requestId,
+            sourceCompanyId: claims.sourceCompanyId,
+            targetCompanyId: claims.targetCompanyId,
+            resourceType: claims.resourceType,
+            resourceRef: claims.resourceRef,
+            resourceKey,
+            action: claims.action as AdmAccessAction,
+            scope,
+            actor,
+          });
+          executed = invocation.executed;
+          executionResult = invocation.result;
+          break;
+        }
+        case "bounds": {
+          const resourceKey = admResourceKeyFromRef(claims.resourceRef);
+          const found = await admLookupScopedResource(db, claims.targetCompanyId, claims.resourceType, resourceKey);
+          executionResult = {
+            kind: "resource_bounds",
+            resourceType: claims.resourceType,
+            resourceRef: claims.resourceRef,
+            available: found !== null,
+            bounds: found ? { status: found.projection.status, operationKind: scope.operationKind ?? null } : null,
+            version: "1.0",
+          };
           break;
         }
         case "grant_capability": {
@@ -727,8 +798,36 @@ export function admAccessRequestService(db: Db) {
           break;
         }
         default: {
-          executionResult = { status: "acknowledged" };
+          // Deny-by-default: any action without an implemented bounded
+          // behavior is rejected, never silently acknowledged as success.
+          throw forbidden("ADM capability action is not supported");
         }
+      }
+
+      if (!executed) {
+        // Honest outcome: the bounded operation did not take effect (tool
+        // unavailable, upstream refusal). Audit as denied, not success.
+        await logActivity(db, {
+          companyId: claims.targetCompanyId,
+          actorType: actor.actorType,
+          actorId: actor.actorId,
+          agentId: actor.agentId ?? null,
+          runId: actor.runId ?? null,
+          action: "adm_access_request.execution_denied",
+          entityType: "adm_access_request",
+          entityId: claims.requestId,
+          details: {
+            requestId: claims.requestId,
+            sourceCompanyId: claims.sourceCompanyId,
+            resourceType: claims.resourceType,
+            resourceRef: claims.resourceRef,
+            action: claims.action,
+            scopeHash: claims.scopeHash,
+            outcome: "denied",
+            reason: executionResult.reason ?? "execution_not_performed",
+          },
+        });
+        throw forbidden("ADM capability execution did not take effect");
       }
 
       // 5. Immutable audit log of the execution.

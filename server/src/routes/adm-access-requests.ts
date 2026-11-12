@@ -10,7 +10,7 @@ import {
 } from "@myrmidon/shared";
 import { validate } from "../middleware/validate.js";
 import { assertCompanyAccess, getActorInfo, hasCompanyAccess } from "./authz.js";
-import { admAccessRequestService, type AdmActorContext } from "../services/adm-access-request.js";
+import { admAccessRequestService, type AdmActorContext, type AdmCapabilityExecutor } from "../services/adm-access-request.js";
 import { forbidden } from "../errors.js";
 
 function admCompanyId(): string | null {
@@ -25,9 +25,14 @@ function admCompanyId(): string | null {
  * never speak for another company, and the ADM decision plane is reachable
  * only from the configured ADM company (or an instance admin on the board).
  */
-export function admAccessRequestRoutes(db: Db) {
+export function admAccessRequestRoutes(
+  db: Db,
+  options?: {
+    capabilityExecutor?: AdmCapabilityExecutor;
+  },
+) {
   const router = Router();
-  const svc = admAccessRequestService(db);
+  const svc = admAccessRequestService(db, options?.capabilityExecutor);
 
   function admActor(req: Request): AdmActorContext {
     const actor = getActorInfo(req);
