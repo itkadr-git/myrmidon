@@ -11,6 +11,7 @@ import type { Db } from "@myrmidon/db";
 import { behaviorSettingRegistry, resolveBehaviorSettings } from "@myrmidon/shared";
 import { errorHandler } from "../../middleware/index.js";
 import { behaviorSettingsRoutes } from "./routes.js";
+import type { AgentGrantPermissionChecker } from "../../routes/authz.js";
 import {
   BEHAVIOR_SETTINGS_INSTANCE_ACTION,
   BEHAVIOR_SETTINGS_COMPANY_ACTION,
@@ -44,6 +45,7 @@ interface HarnessOptions {
   env?: Record<string, string | undefined>;
   companyIds?: string[];
   settingsError?: Error;
+  hasPermission?: AgentGrantPermissionChecker;
 }
 
 function harness(options: HarnessOptions = {}) {
@@ -93,7 +95,7 @@ function harness(options: HarnessOptions = {}) {
       (req as unknown as { actor: unknown }).actor = actor;
       next();
     });
-    scoped.use("/api", behaviorSettingsRoutes({} as Db, behaviorSettingsService({} as Db, deps)));
+    scoped.use("/api", behaviorSettingsRoutes({} as Db, behaviorSettingsService({} as Db, deps), options.hasPermission ?? (async () => false)));
     scoped.use(errorHandler);
     return scoped;
   };
@@ -238,6 +240,36 @@ describe("myrmidon(1.7) behavior settings: access", () => {
     const h = harness();
     await request(h.withActor(outsider)).get(COMPANY_URL(COMPANY_ID)).expect(403);
     await request(h.withActor(outsider)).patch(COMPANY_URL(COMPANY_ID)).send({ debug_mode: true }).expect(403);
+  });
+
+  it("refuses an agent without the company permission grant on company writes (both paths)", async () => {
+    const h = harness();
+    await request(h.withActor(agentActor)).patch(`/api/myrmidon/behavior-settings/company/${COMPANY_ID}`).send({ review_routing_enabled: false }).expect(403);
+    await request(h.withActor(agentActor)).patch(COMPANY_URL(COMPANY_ID)).send({ review_routing_enabled: false }).expect(403);
+    expect(h.updated).toEqual([]);
+    expect(h.audits).toEqual([]);
+  });
+
+  it("admits an agent holding the users:manage_permissions company grant on company writes", async () => {
+    const granted: AgentGrantPermissionChecker = async (companyId, principalType, principalId, permissionKey) => {
+      expect(companyId).toBe(COMPANY_ID);
+      expect(principalType).toBe("agent");
+      expect(principalId).toBe("11111111-1111-4111-8111-111111111111");
+      expect(permissionKey).toBe("users:manage_permissions");
+      return true;
+    };
+    const h = harness({ hasPermission: granted });
+    await request(h.withActor(agentActor)).patch(`/api/myrmidon/behavior-settings/company/${COMPANY_ID}`).send({ review_routing_enabled: false }).expect(200);
+    await request(h.withActor(agentActor)).patch(COMPANY_URL(COMPANY_ID)).send({ review_routing_enabled: false }).expect(200);
+    expect(h.updated.length).toBeGreaterThan(0);
+  });
+
+  it("keeps board member company writes and agent company reads working", async () => {
+    const h = harness();
+    await request(h.withActor(member)).patch(`/api/myrmidon/behavior-settings/company/${COMPANY_ID}`).send({ review_routing_enabled: true }).expect(200);
+    expect(h.updated.length).toBeGreaterThan(0);
+    await request(h.withActor(agentActor)).get(`/api/myrmidon/behavior-settings/company/${COMPANY_ID}`).expect(200);
+    await request(h.withActor(agentActor)).get(COMPANY_URL(COMPANY_ID)).expect(200);
   });
 });
 
