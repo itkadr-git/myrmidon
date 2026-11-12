@@ -1490,14 +1490,21 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
   ) {
     const endpoint = await service.get(endpointId);
     let conversation: typeof chatConversations.$inferSelect | undefined;
-    await vi.waitFor(async () => {
-      conversation = await db
-        .select()
-        .from(chatConversations)
-        .where(eq(chatConversations.endpointId, endpointId))
-        .then((rows) => rows.at(-1));
-      expect(conversation).toBeDefined();
-    });
+    await vi.waitFor(
+      async () => {
+        conversation = await db
+          .select()
+          .from(chatConversations)
+          .where(eq(chatConversations.endpointId, endpointId))
+          .then((rows) => rows.at(-1));
+        expect(conversation).toBeDefined();
+      },
+      // CI shards run this file alongside several workers against one embedded
+      // Postgres; the default 1s waitFor budget is smaller than a single loaded
+      // drain round-trip. Wait on the durable row with an explicit budget
+      // instead of depending on machine timing.
+      { timeout: 20_000, interval: 100 },
+    );
     if (!conversation) throw new Error("Expected setup conversation");
     const fakeRuntime = service.runtime as unknown as FakeChatSdkRuntime;
     const callbacks = fakeRuntime.configurations.get(endpointId)?.callbacks;
@@ -1549,31 +1556,38 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
     // separate async steps. Wait for the exact final publication before the
     // setup test checks the round-trip proof, instead of relying on the
     // current drain timing.
-    await vi.waitFor(async () => {
-      // The scheduler may have handed the publication to its endpoint worker
-      // between the initial drain and this assertion. Join another drain on
-      // each retry so the setup proof observes the durable outbox state, not
-      // the scheduler's transient hand-off window.
-      await service.processPendingPublications();
-      const publication = await db
-        .select({
-          id: chatPublications.id,
-        })
-        .from(chatPublications)
-        .where(
-          and(
-            eq(chatPublications.endpointId, endpointId),
-            eq(chatPublications.conversationId, conversation.id),
-            eq(chatPublications.state, "published"),
-            isNotNull(chatPublications.commentId),
-            sql`${chatPublications.payload}->>'interactionId' is null`,
-            sql`${chatPublications.payload}->>'progressState' is null`,
-          ),
-        )
-        .limit(1)
-        .then((rows) => rows[0]);
-      expect(publication).toBeDefined();
-    });
+    await vi.waitFor(
+      async () => {
+        // The scheduler may have handed the publication to its endpoint worker
+        // between the initial drain and this assertion. Join another drain on
+        // each retry so the setup proof observes the durable outbox state, not
+        // the scheduler's transient hand-off window.
+        await service.processPendingPublications();
+        const publication = await db
+          .select({
+            id: chatPublications.id,
+          })
+          .from(chatPublications)
+          .where(
+            and(
+              eq(chatPublications.endpointId, endpointId),
+              eq(chatPublications.conversationId, conversation.id),
+              eq(chatPublications.state, "published"),
+              isNotNull(chatPublications.commentId),
+              sql`${chatPublications.payload}->>'interactionId' is null`,
+              sql`${chatPublications.payload}->>'progressState' is null`,
+            ),
+          )
+          .limit(1)
+          .then((rows) => rows[0]);
+        expect(publication).toBeDefined();
+      },
+      // Setup joins the async publication path of a fully loaded shard; the
+      // default 1s waitFor budget expires while a single drain is still in
+      // flight (observed 2.3s for one case under CI load). Give the durable
+      // row an explicit budget and rejoin the drain on each retry.
+      { timeout: 30_000, interval: 100 },
+    );
     const providerRuntime = fakeRuntime.endpoints.get(endpointId);
     if (providerRuntime) providerRuntime.posts.length = 0;
   }
