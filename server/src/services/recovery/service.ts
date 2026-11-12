@@ -6939,6 +6939,22 @@ export function recoveryService(
             openPr,
             deps.prHeadResolver ?? defaultPrHeadResolver,
           );
+          // myrmidon(OPE-12859): the review verdict on the current head is
+          // already recorded — only the merge-time `CI result` gate is still
+          // pending. Re-waking the reviewer burns empty runs (the reviewer
+          // answers "CI is not terminal, no verdict" and exits); the CI-wait
+          // monitor alone watches the head and the merge gate enforces CI
+          // independently.
+          {
+            const verdict = readReviewVerdictRecord(issue.executionState);
+            if (
+              verdict &&
+              reviewVerdictCoversHead(verdict, prCi.headSha)
+            ) {
+              result.skipped += 1;
+              continue;
+            }
+          }
           if (prCi.ci === "green") {
             let reviewerAgentId = getReviewerParticipantAgentId(issue);
             if (!reviewerAgentId) {
@@ -6979,22 +6995,6 @@ export function recoveryService(
           }
           result.skipped += 1;
           continue;
-        }
-
-        // myrmidon(OPE-12859): the review verdict on the current head is already
-        // recorded — only the merge-time `CI result` gate is still pending.
-        // Re-waking the reviewer burns empty runs (the reviewer answers "CI is
-        // not terminal, no verdict" and exits); the CI-wait monitor alone
-        // watches the head and the merge gate enforces CI independently.
-        {
-          const verdict = readReviewVerdictRecord(issue.executionState);
-          if (
-            verdict &&
-            reviewVerdictCoversHead(verdict, prCi.headSha)
-          ) {
-            result.skipped += 1;
-            continue;
-          }
         }
 
         if (!participantAgentId || !pendingExecutionState) {

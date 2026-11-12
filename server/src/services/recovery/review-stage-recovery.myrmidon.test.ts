@@ -457,7 +457,9 @@ describeEmbeddedPostgres("escalateStrandedAssignedIssue: stalled execution revie
     expect(wakes).toHaveLength(0);
     const issue = await readIssue(seeded.issueId);
     expect(issue.monitorNextCheckAt).toBeNull();
-    expect(issue.executionPolicy?.monitor?.serviceName).not.toBe(REVIEW_CI_WAIT_MONITOR_SERVICE_NAME);
+    expect(issue.executionPolicy).not.toMatchObject({
+      monitor: { serviceName: REVIEW_CI_WAIT_MONITOR_SERVICE_NAME },
+    });
   });
 
   it("still schedules the CI-wait when the verdict names a different head (OPE-12859)", async () => {
