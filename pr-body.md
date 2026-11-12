@@ -22,7 +22,7 @@ No public GitHub issue exists for this change. Problem statement: the inventory 
   - Added `formatInventorySourceLabels(sources)` — deterministic sorted batch form. Non-array input yields `[]`; non-object entries produce one no-label record (`endpoint`/`category` null, attribution `unknown`), never an invented label.
   - Added exported constants `SOURCE_LABEL_REASONS` (`unknown-endpoint`, `unknown-category`, `category-endpoint-mismatch`, `unknown-coverage`) and `SOURCE_LABEL_CREDENTIAL_REDACTED`.
   - `normalizeInventoryReport` now includes `sourceLabels` in the normalized form and hash only when the report provides it. Existing reports keep their shape and hash.
-- `scripts/myrmidon/company-boundaries-inventory.test.mjs`: five new fixture tests (12 total in the file). Fixtures carry `pcp_SENTINEL_*` credential values; assertions check safe labels are present and every sentinel value is absent from single-label JSON, the rendered report, and the hash input.
+- `scripts/myrmidon/company-boundaries-inventory.test.mjs`: five new fixture tests (12 total in the file). Fixtures carry sentinel credential values with a fake token prefix; assertions check safe labels are present and every sentinel value is absent from single-label JSON, the rendered report, and the hash input.
 
 ## Architecture Decisions
 
