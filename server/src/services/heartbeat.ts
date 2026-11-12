@@ -2941,6 +2941,25 @@ export async function preflightLowTrustWorkspaceIsolation(input: {
   return selectedEnvironmentDriver ?? null;
 }
 
+/**
+ * OPE-12881 (REVIEW-NO-CLONE): pick the effective execution workspace mode for
+ * a run. A developer reviewer run is forced to `agent_default` so no git
+ * worktree / clone is materialized on the bot volume — the reviewer verdict is
+ * produced from the PR diff (`gh pr diff`), not a full checkout. Engineers and
+ * all other agents keep the resolved mode.
+ */
+export function resolveRunExecutionWorkspaceMode(input: {
+  isReviewerRun: boolean;
+  trustPresetKind: string;
+  resolvedMode: string;
+}): string {
+  if (input.isReviewerRun) return "agent_default";
+  return input.trustPresetKind === "low_trust_review" &&
+    input.resolvedMode === "shared_workspace"
+    ? "isolated_workspace"
+    : input.resolvedMode;
+}
+
 export async function resolveWorkspaceAfterLowTrustPreflight<
   TWorkspace,
 >(input: {
@@ -25490,17 +25509,25 @@ export function heartbeatService(
             : null) ??
           readNonEmptyString(explicitResumeSessionParams?.sessionId),
       );
+      const isolatedReviewerRun =
+        isDeveloperRole(agent) &&
+        parseObject(context.executionStage).wakeRole === "reviewer";
       const resolvedExecutionWorkspaceMode = resolveExecutionWorkspaceMode({
         projectPolicy: projectExecutionWorkspacePolicy,
         issueSettings: issueExecutionWorkspaceSettings,
         legacyUseProjectWorkspace:
           issueAssigneeOverrides?.useProjectWorkspace ?? null,
       });
-      const requestedExecutionWorkspaceMode =
-        trustPreset.kind === "low_trust_review" &&
-        resolvedExecutionWorkspaceMode === "shared_workspace"
-          ? "isolated_workspace"
-          : resolvedExecutionWorkspaceMode;
+      // OPE-12881 (REVIEW-NO-CLONE): reviewer verdicts are produced from the PR
+      // diff (via `gh pr diff`) and never from a full repository checkout. A
+      // reviewer run must not materialize a git worktree / clone on the bot
+      // volume (0.5–0.7 GB each); force agent_default so the workspace
+      // realization below resolves to the agent fallback cwd instead.
+      const requestedExecutionWorkspaceMode = resolveRunExecutionWorkspaceMode({
+        isReviewerRun: isolatedReviewerRun,
+        trustPresetKind: trustPreset.kind,
+        resolvedMode: resolvedExecutionWorkspaceMode,
+      });
       const issueRef = issueContext
         ? {
             id: issueContext.id,
@@ -25522,9 +25549,6 @@ export function heartbeatService(
       // Owner 05.11: a developer reviewer gets an isolated input (task text and
       // a pull request reference); the engineer's continuation summary,
       // continuation messages and session messages are not delivered to it.
-      const isolatedReviewerRun =
-        isDeveloperRole(agent) &&
-        parseObject(context.executionStage).wakeRole === "reviewer";
       const continuationSummary = issueRef && !isConversation(issueContext) && !isolatedReviewerRun
         ? await getIssueContinuationSummaryDocument(db, issueRef.id)
         : null;
