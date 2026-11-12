@@ -23,6 +23,7 @@ import {
   companies,
   createDb,
   createPgKnowledgeSearchIndex,
+  knowledgeDeliveries,
   knowledgeItems,
   knowledgeLinks,
   knowledgeRevisions,
@@ -66,6 +67,7 @@ describeEmbeddedPostgres("myrmidon(1.6.6 KNOWLEDGE-2.0 K-1) knowledge store over
 
   afterEach(async () => {
     await db.delete(activityLog);
+    await db.delete(knowledgeDeliveries);
     await db.delete(knowledgeSources);
     await db.delete(knowledgeRevisions);
     await db.delete(knowledgeItems);
@@ -783,6 +785,7 @@ describeEmbeddedPostgres("myrmidon(1.6.6 KNOWLEDGE-2.0 K-1) knowledge store over
       folder: "rules/smm",
       tags: [],
       roles: ["smm"],
+      deliverToCastes: [], // myrmidon(1.7 KNOWLEDGE-2.0 L-3, §3.7)
       status: "published",
       approvalRequired: true,
       approverKind: "operator", // the file lies: the code derives the grade
@@ -1104,6 +1107,128 @@ describeEmbeddedPostgres("myrmidon(1.6.6 KNOWLEDGE-2.0 K-1) knowledge store over
     });
   });
 
+  // --------------------------------------------- myrmidon(1.7 KNOWLEDGE-2.0 L-3)
+
+  it("deliver_to_castes round-trips through create, exportTree and the row mapping", async () => {
+    companyId = await makeCompany();
+    const store = makeStore();
+    const marked = await store.create(
+      { companyId, nestId: companyId, slug: "marked", title: "Marked", content: "c", deliverToCastes: ["dev", "*"] },
+      AGENT,
+    );
+    expect(marked.deliverToCastes).toEqual(["dev", "*"]);
+    expect((await store.get(companyId, "marked"))!.deliverToCastes).toEqual(["dev", "*"]);
+
+    const unmarked = await store.create(
+      { companyId, nestId: companyId, slug: "plain", title: "Plain", content: "c" },
+      AGENT,
+    );
+    expect(unmarked.deliverToCastes).toEqual([]);
+
+    const tree = await store.exportTree(companyId);
+    expect(tree.toString("utf8")).toContain("deliver_to_castes: dev,*");
+    const imported = await store.importTree(companyId, companyId, tree, AGENT);
+    expect(imported.created + imported.updated).toBeGreaterThan(0);
+    expect((await store.get(companyId, "marked"))!.deliverToCastes).toEqual(["dev", "*"]);
+  });
+
+  it("recordKnowledgeDelivery writes one current-state row per agent; an unchanged hash rewrites nothing", async () => {
+    companyId = await makeCompany();
+    const store = makeStore();
+    const input = {
+      companyId,
+      nestId: companyId,
+      agentId: BOT.actorId as string,
+      bundleHash: "KNOWLEDGE_INDEX.md|dev|a,b|2",
+      rulesRevisionIds: ["rev-1", "rev-2"],
+      indexItemIds: ["a", "b"],
+    };
+    await store.recordKnowledgeDelivery(input);
+    const first = await store.getKnowledgeDelivery(BOT.actorId as string);
+    expect(first).toMatchObject({ bundleHash: input.bundleHash, indexItemIds: ["a", "b"], rulesRevisionIds: ["rev-1", "rev-2"] });
+    expect(new Date(first!.compiledAt).getTime()).toBeGreaterThan(0);
+
+    // The same hash is a no-op; a changed hash overwrites the row (current state, not a log).
+    const compiledAt = first!.compiledAt;
+    await store.recordKnowledgeDelivery(input);
+    expect((await store.getKnowledgeDelivery(BOT.actorId as string))!.compiledAt).toBe(compiledAt);
+
+    await store.recordKnowledgeDelivery({ ...input, bundleHash: "KNOWLEDGE_INDEX.md|dev|a|1", rulesRevisionIds: ["rev-1"], indexItemIds: ["a"] });
+    const updated = await store.getKnowledgeDelivery(BOT.actorId as string);
+    expect(updated!.bundleHash).toBe("KNOWLEDGE_INDEX.md|dev|a|1");
+    expect(updated!.indexItemIds).toEqual(["a"]);
+    expect(updated!.compiledAt).not.toBe(compiledAt);
+
+    const rows = await db
+      .select()
+      .from(knowledgeDeliveries)
+      .where(eq(knowledgeDeliveries.agentId, BOT.actorId as string));
+    expect(rows).toHaveLength(1);
+  });
+
+  it("listPublishedRules lists only published rule items with their revision numbers", async () => {
+    companyId = await makeCompany();
+    const store = makeStore();
+    await store.create(
+      { companyId, nestId: companyId, slug: "rule-1", title: "R1", kind: "rule", roles: ["dev"], content: "be kind" },
+      AGENT,
+    );
+    await store.create({ companyId, nestId: companyId, slug: "page-1", title: "P1", content: "words" }, AGENT);
+    await store.submit(companyId, "rule-1", AGENT);
+    await store.approve(companyId, "rule-1", OWNER, { publish: true });
+    await store.publish(companyId, "page-1", AGENT);
+
+    const rules = await store.listPublishedRules(companyId);
+    expect(rules).toHaveLength(1);
+    expect(rules[0]).toMatchObject({ slug: "rule-1", revisionNumber: 1 });
+    expect(rules[0]!.revisionId).not.toBeNull();
+  });
+
+  it("the delivery ledger mirrors the caste-resolved rules, never the rules of a foreign caste", async () => {
+    // myrmidon(1.7 KNOWLEDGE-2.0 L-3, review note on profile-ports): the
+    // knowledge_deliveries row must list exactly the rules the agent's caste
+    // resolves — the same filter REGULATIONS.md applies — not every published
+    // rule of the company.
+    companyId = await makeCompany();
+    const store = makeStore();
+    for (const [slug, roles] of [
+      ["dev-only", ["dev"]],
+      ["smm-only", ["smm"]],
+      ["all-castes", ["*"]],
+    ] as const) {
+      await store.create({ companyId, nestId: companyId, slug, title: slug, content: `${slug} text`, kind: "rule", roles: [...roles] }, AGENT);
+      await store.submit(companyId, slug, AGENT);
+      await store.approve(companyId, slug, OWNER, { publish: true });
+    }
+
+    // What profile-ports.ts writes on compile: the caste-resolved rules, ids
+    // taken from the published list by slug. The module (not the raw store) is
+    // the RulesReadPort the resolver takes — the same object profile-ports.ts
+    // passes, so the filter under test is the production filter.
+    const published = await store.listPublishedRules(companyId);
+    const mod = createKnowledgeModule(db, companyId);
+    const resolved = await resolvedRules(mod, "dev");
+    const revisionIdBySlug = new Map(published.map((rule) => [rule.slug, rule.revisionId ?? rule.itemId]));
+    await store.recordKnowledgeDelivery({
+      companyId,
+      nestId: companyId,
+      agentId: BOT.actorId as string,
+      bundleHash: `KNOWLEDGE_INDEX.md|dev|${resolved.map((rule) => rule.slug).join(",")}|${resolved.length}`,
+      rulesRevisionIds: resolved.map((rule) => revisionIdBySlug.get(rule.slug) ?? rule.pageId),
+      indexItemIds: [],
+    });
+
+    const delivery = await store.getKnowledgeDelivery(BOT.actorId as string);
+    const revisionIds = delivery!.rulesRevisionIds;
+    const slugs = published
+      .filter((rule) => revisionIds.includes(rule.revisionId ?? rule.itemId))
+      .map((rule) => rule.slug)
+      .sort();
+    expect(resolved.map((rule) => rule.slug)).toEqual(["dev-only", "all-castes"]);
+    expect(slugs).toEqual(["all-castes", "dev-only"]);
+    expect(slugs).not.toContain("smm-only");
+  });
+
   describe("myrmidon(1.7-REDACT) per-nest redaction on create/draft (OPE-8660)", () => {
     it("a nest rule and dictionary redact the content before it is stored; another nest keeps plain text", async () => {
       companyId = await makeCompany();
@@ -1154,13 +1279,15 @@ describe("myrmidon(1.6.6 KNOWLEDGE-2.0 K-1) module hygiene", () => {
     .filter((name) => name.endsWith(".ts") && !name.includes(".test."))
     .sort();
 
-  it("the module dir holds exactly the known module files (K-1 core + K-2 surfaces + K-8 seed)", () => {
+  it("the module dir holds exactly the known module files (K-1 core + K-2 surfaces + K-8 seed + L-3 index)", () => {
     // K-1: domain/index/service/store. K-8 (OPE-5961, #1207) added the seed of
     // decisions and product knowledge: seed.ts (runner), seed-data.ts and
     // seed-product.ts (data). L-7 (#1349) added lint.ts. K-2 part B added the
-    // REST (routes.ts) and MCP (mcp.ts) surfaces. New files must be listed
+    // REST (routes.ts) and MCP (mcp.ts) surfaces. L-3 added delivery-index.ts
+    // (KNOWLEDGE_INDEX.md rendering/filtering). New files must be listed
     // here deliberately.
     expect(sources).toEqual([
+      "delivery-index.ts",
       "deviations.ts",
       "domain.ts",
       "git-export-git.ts",

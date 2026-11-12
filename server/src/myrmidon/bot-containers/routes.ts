@@ -126,6 +126,19 @@ export interface BotContainerRoutesDeps {
    * Optional: without it, company status returns an empty items list.
    */
   listCompanyAgents?(companyId: string): Promise<BotContainerRouteAgent[]>;
+  /**
+   * myrmidon(1.7 KNOWLEDGE-2.0 L-3): the knowledge delivery ledger row of this
+   * agent (knowledge_deliveries) — what the last compile put into the bot's
+   * package. Optional: without it the card's «Знания в пакете» block stays
+   * empty (tests, unwired deployments).
+   */
+  readKnowledgeDelivery?(agentId: string): Promise<{
+    caste: string | null;
+    file: string | null;
+    indexSlugs: string[];
+    rulesCount: number;
+    compiledAt: string;
+  } | null>;
   /** Read per request; defaults to process.env. */
   env?: NodeJS.ProcessEnv;
 }
@@ -194,6 +207,17 @@ export interface BotContainerItemStatus {
    * and reconciliation denial reason when diverged.
    */
   limits: BotContainerLimitsStatus | null;
+  /** myrmidon(1.7 KNOWLEDGE-2.0 L-3): what the last compile delivered into the
+   *  bot's package (the knowledge_deliveries ledger) — the data of the card's
+   *  «Знания в пакете» block. Null when nothing was recorded yet (never
+   *  compiled, or compiled before this feature). */
+  knowledgeDelivery: {
+    caste: string | null;
+    file: string | null;
+    indexSlugs: string[];
+    rulesCount: number;
+    compiledAt: string;
+  } | null;
 }
 
 export interface BotContainerStatusResponse extends BotContainerItemStatus {
@@ -419,6 +443,9 @@ export async function buildBotContainerItemStatus(
           reason: null,
         }
       : null,
+    // myrmidon(1.7 KNOWLEDGE-2.0 L-3): filled below from the delivery ledger
+    // (hermes_gateway only); null for other adapters and non-gateway cards.
+    knowledgeDelivery: null,
   };
 
   const botKey = botKeyForAgent(agent.id);
@@ -510,6 +537,28 @@ export async function buildBotContainerItemStatus(
     } catch (err) {
       // Read-only visibility: a failed window lookup must not fail the status.
       logger.warn({ err, agentId: agent.id }, "bot container profile pending window lookup failed");
+    }
+  }
+
+  // myrmidon(1.7 KNOWLEDGE-2.0 L-3): the «Знания в пакете» block data, from the
+  // delivery ledger the profile compiler writes. Best-effort: a ledger read
+  // failure leaves the block empty instead of failing the card status. Read here
+  // (not in the single route) so the company status list and the single card
+  // return the same item data.
+  if (agent.adapterType === "hermes_gateway") {
+    try {
+      const ledger = await deps.readKnowledgeDelivery?.(agent.id);
+      if (ledger) {
+        item.knowledgeDelivery = {
+          caste: ledger.caste,
+          file: ledger.file,
+          indexSlugs: ledger.indexSlugs,
+          rulesCount: ledger.rulesCount,
+          compiledAt: ledger.compiledAt,
+        };
+      }
+    } catch (err) {
+      logger.warn({ err, agentId: agent.id }, "knowledge delivery ledger read failed");
     }
   }
 
@@ -610,6 +659,7 @@ export function botContainerRoutes(deps: BotContainerRoutesDeps) {
             idleStopRuntime: null,
             profileUpdatePendingSince: null,
             limits: null,
+            knowledgeDelivery: null,
           };
         }
       },

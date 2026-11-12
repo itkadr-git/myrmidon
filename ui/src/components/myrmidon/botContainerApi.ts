@@ -86,7 +86,16 @@ export interface BotContainerStatus {
   profileUpdatePendingSince: string | null;
   /** myrmidon(OPE-12337): requested card limits against actual container limits and denial reason. */
   limits?: BotContainerLimitsStatus | null;
-}
+  /** myrmidon(1.7 KNOWLEDGE-2.0 L-3): what the last compile delivered into the bot's
+   *  package (the knowledge_deliveries ledger) — the «Знания в пакете» block data.
+   *  Absent on an older server. */
+  knowledgeDelivery?: {
+    caste: string | null;
+    file: string | null;
+    indexSlugs: string[];
+    rulesCount: number;
+    compiledAt: string;
+  } | null;}
 
 export type BotContainerApplyOutcome =
   | { kind: "created" }

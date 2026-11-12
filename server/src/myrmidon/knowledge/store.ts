@@ -25,6 +25,7 @@
 import { and, asc, desc, eq, inArray, isNull, or } from "drizzle-orm";
 import type { Db } from "@myrmidon/db";
 import {
+  knowledgeDeliveries,
   knowledgeEvents,
   knowledgeItems,
   knowledgeLinks,
@@ -90,6 +91,11 @@ export interface KnowledgeItemDto {
   roles: string[];
   approvalRequired: boolean;
   approverKind: string | null;
+  /**
+   * myrmidon(1.7 KNOWLEDGE-2.0 L-3, §3.7): castes the page is delivered to in
+   * `KNOWLEDGE_INDEX.md` (`["*"]` = every caste; empty = not delivered).
+   */
+  deliverToCastes: string[];
   deliveredRevisionId: string | null;
   currentRevisionNumber: number;
   supersededByItemId: string | null;
@@ -151,6 +157,11 @@ export interface CreateKnowledgeInput {
   roles?: string[];
   approvalRequired?: boolean;
   approverKind?: string | null;
+  /**
+   * myrmidon(1.7 KNOWLEDGE-2.0 L-3, §3.7): castes the page is delivered to in
+   * `KNOWLEDGE_INDEX.md` (`["*"]` = every caste; empty/omitted = not delivered).
+   */
+  deliverToCastes?: string[];
   sources?: Array<{ kind: KnowledgeSourceKind; ref: string; note?: string | null }>;
   force?: boolean;
   reason?: string | null;
@@ -217,6 +228,7 @@ function toItemDto(row: ItemRow): KnowledgeItemDto {
     roles: row.roles ?? [],
     approvalRequired: row.approvalRequired,
     approverKind: row.approverKind,
+    deliverToCastes: row.deliverToCastes ?? [],
     deliveredRevisionId: row.deliveredRevisionId,
     currentRevisionNumber: row.currentRevisionNumber,
     supersededByItemId: row.supersededByItemId,
@@ -407,14 +419,13 @@ export function createKnowledgeService(db: Db, options: KnowledgeServiceOptions 
       throw new KnowledgeDomainError("invalid_metadata", 400, "Roles are only valid on rules (kind \"rule\").");
     }
     const approvalRequired = kind === "rule" ? true : (input.approvalRequired ?? false);
-
     let approverKind = input.approverKind ?? null;
     if (kind === "rule") {
       const sensitivity = await resolveCasteSensitivity(db, input.companyId);
       approverKind = ruleApproverKind(roles, sensitivity);
     }
     assertRuleFields(kind, approvalRequired, approverKind);
-
+    const deliverToCastes = input.deliverToCastes ?? [];
     const createdAt = now();
     const row = await db.transaction(async (tx) => {
       const existing = await tx
@@ -440,6 +451,7 @@ export function createKnowledgeService(db: Db, options: KnowledgeServiceOptions 
           roles,
           approvalRequired,
           approverKind,
+          deliverToCastes,
           deliveredRevisionId: null,
           currentRevisionNumber: 1,
           createdByAgentId: actor.actorType === "agent" ? (actor.actorId ?? null) : null,
@@ -1325,6 +1337,7 @@ export function createKnowledgeService(db: Db, options: KnowledgeServiceOptions 
       status: item.status,
       approvalRequired: item.approvalRequired,
       approverKind: item.approverKind,
+      deliverToCastes: item.deliverToCastes ?? [],
       content: item.deliveredRevisionId ? (contentById.get(item.deliveredRevisionId) ?? "") : "",
     }));
     return serializeKnowledgeTree({ nestId, pages });
@@ -1441,6 +1454,7 @@ export function createKnowledgeService(db: Db, options: KnowledgeServiceOptions 
               roles: page.roles,
               approvalRequired: page.approvalRequired,
               approverKind: gate.approverKind,
+              deliverToCastes: page.deliverToCastes ?? [],
               deliveredRevisionId: null,
               currentRevisionNumber: 1,
               createdByAgentId: actor.actorType === "agent" ? (actor.actorId ?? null) : null,
@@ -1492,6 +1506,7 @@ export function createKnowledgeService(db: Db, options: KnowledgeServiceOptions 
             roles: page.roles,
             approvalRequired: page.approvalRequired,
             approverKind: gate.approverKind,
+            deliverToCastes: page.deliverToCastes ?? [],
             kind: page.kind,
             updatedAt: timestamp,
           };
@@ -1581,6 +1596,88 @@ export function createKnowledgeService(db: Db, options: KnowledgeServiceOptions 
     });
   }
 
+  // ------------------------------------------------------------- deliveries
+  // myrmidon(1.7 KNOWLEDGE-2.0 L-3, §3.7): what an agent's package carried at
+  // its last compile. Idempotent: the same bundle hash writes nothing (the
+  // compile is deterministic — the same approved rules + index pages render
+  // byte-for-byte the same files, so a re-compile must not bump compiled_at
+  // and hide a real change).
+
+  async function recordKnowledgeDelivery(input: {
+    companyId: string;
+    nestId: string;
+    agentId: string;
+    bundleHash: string;
+    rulesRevisionIds: string[];
+    indexItemIds: string[];
+  }): Promise<void> {
+    const existing = await db
+      .select({ id: knowledgeDeliveries.id, bundleHash: knowledgeDeliveries.bundleHash })
+      .from(knowledgeDeliveries)
+      .where(eq(knowledgeDeliveries.agentId, input.agentId))
+      .limit(1);
+    if (existing[0]?.bundleHash === input.bundleHash) return;
+    await db
+      .insert(knowledgeDeliveries)
+      .values({
+        companyId: input.companyId,
+        nestId: input.nestId,
+        agentId: input.agentId,
+        bundleHash: input.bundleHash,
+        rulesRevisionIds: input.rulesRevisionIds,
+        indexItemIds: input.indexItemIds,
+        compiledAt: new Date(),
+      })
+      .onConflictDoUpdate({
+        target: knowledgeDeliveries.agentId,
+        set: {
+          companyId: input.companyId,
+          nestId: input.nestId,
+          bundleHash: input.bundleHash,
+          rulesRevisionIds: input.rulesRevisionIds,
+          indexItemIds: input.indexItemIds,
+          compiledAt: new Date(),
+        },
+      });
+  }
+
+  async function getKnowledgeDelivery(agentId: string): Promise<{
+    bundleHash: string;
+    rulesRevisionIds: string[];
+    indexItemIds: string[];
+    compiledAt: string;
+  } | null> {
+    const [row] = await db
+      .select()
+      .from(knowledgeDeliveries)
+      .where(eq(knowledgeDeliveries.agentId, agentId))
+      .limit(1);
+    if (!row) return null;
+    return {
+      bundleHash: row.bundleHash,
+      rulesRevisionIds: row.rulesRevisionIds ?? [],
+      indexItemIds: row.indexItemIds ?? [],
+      compiledAt: row.compiledAt.toISOString(),
+    };
+  }
+
+  /** The published rules today — the card's "approved now" side (L-3 §3.7). */
+  async function listPublishedRules(nestId: string): Promise<
+    Array<{ itemId: string; slug: string; title: string; revisionId: string | null; revisionNumber: number }>
+  > {
+    const items = await db
+      .select()
+      .from(knowledgeItems)
+      .where(and(eq(knowledgeItems.nestId, nestId), eq(knowledgeItems.kind, "rule"), eq(knowledgeItems.status, "published")));
+    return items.map((item: ItemRow) => ({
+      itemId: item.id,
+      slug: item.slug,
+      title: item.title,
+      revisionId: item.deliveredRevisionId,
+      revisionNumber: item.currentRevisionNumber,
+    }));
+  }
+
   return {
     create,
     draft,
@@ -1603,6 +1700,9 @@ export function createKnowledgeService(db: Db, options: KnowledgeServiceOptions 
     listSuggestions,
     exportTree,
     importTree,
+    recordKnowledgeDelivery,
+    getKnowledgeDelivery,
+    listPublishedRules,
   };
 }
 

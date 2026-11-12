@@ -375,6 +375,7 @@ export async function runImport(options: ImportOptions): Promise<ImportReport> {
                   folder: input.folderPath ?? "",
                   tags: input.tags ?? [],
                   roles: [],
+                  deliverToCastes: [], // myrmidon(1.7 KNOWLEDGE-2.0 L-3): plugin exports carry no caste routing
                   approvalRequired: input.approvalRequired ?? false,
                   approverKind: input.approverKind ?? null,
                   status: alreadyThere.status as "draft" | "in_review" | "published" | "archived" | "superseded",

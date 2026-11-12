@@ -34,6 +34,7 @@ function item(over: Partial<KnowledgeItemDto> & { slug: string }): KnowledgeItem
     folderPath: "",
     tags: [],
     roles: [],
+    deliverToCastes: [], // myrmidon(1.7 KNOWLEDGE-2.0 L-3, §3.7)
     approvalRequired: true,
     approverKind: "operator",
     deliveredRevisionId: null,
