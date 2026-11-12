@@ -58,6 +58,9 @@ case "$1" in
         echo "Error: No such image: \${ref:-<none>}" >&2; exit 1 ;;
       ls)
         case "$*" in
+          # IMAGE-GC (OPE-12696): the sweep lists every image as repo<TAB>id
+          # from the fixture; the retention path asks the older formats below.
+          *--format*{{.Repository}}*) cat "$SANDBOX/gc-images.txt" 2>/dev/null; exit 0 ;;
           *--format*{{.Tag}}*) cat "$SANDBOX/local-tags" 2>/dev/null ;;
           *--format*{{.ID}}*) cat "$SANDBOX/local-ids" 2>/dev/null ;;
         esac ;;
@@ -103,7 +106,22 @@ case "$1" in
         cat "$SANDBOX/imagetools.json" ;;
     esac ;;
   run) echo "1.4.0+0123456789ab" ;;
-  ps) echo "cid-x"; exit 0 ;;
+  ps)
+    # IMAGE-GC (OPE-12696): docker ps -a -q --filter ancestor=<id> — the
+    # containers of that one image, any state. The fixture names the ids that
+    # have a container; every other id answers empty. A plain ps (no filter)
+    # keeps the historical "cid-x" answer.
+    if [ "$3" = "-q" ] && [ "$4" = "--filter" ]; then
+      want=""
+      for a in "$@"; do case "$a" in ancestor=*) want="\${a#ancestor=}" ;; esac; done
+      if [ -n "$want" ]; then
+        while IFS=$'\\t' read -r iid cid; do
+          [ "$iid" = "$want" ] && echo "$cid"
+        done < "$SANDBOX/gc-ancestors.txt" 2>/dev/null
+        exit 0
+      fi
+    fi
+    echo "cid-x"; exit 0 ;;
   inspect)
     # a container exists for every service and runs; its image is not recorded
     # here (the previous image then falls back to the override file)
@@ -207,6 +225,12 @@ function sandbox({
   // renderer) written into systemd/paperclip.service; null = no unit.
   // Default: the canonical unit for this sandbox's compose dir.
   bootUnit = sbCanonical,
+
+  // IMAGE-GC (OPE-12696): the unused images the sweep sees (one "repo<TAB>id"
+  // per line) and which image ids have a container (any state). Empty by
+  // default: the daemon has nothing unused to sweep.
+  gcImages = [],
+  gcAncestors = [],
 } = {}) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "myrmidon-deploy-"));
   const bin = path.join(dir, "bin");
@@ -289,6 +313,10 @@ printf '/dev/fake 100000000 1000000 99000000 1%% /var/lib/docker\\n'
   );
   // PREDEPLOY-DB-CHECK: the copy of the production database answers from its
   // own file; green unless the test says otherwise.
+  // IMAGE-GC (OPE-12696): the sweep fixtures; empty by default — the daemon
+  // has nothing unused to sweep.
+  fs.writeFileSync(path.join(dir, "gc-images.txt"), gcImages.map((i) => [i.repo, i.id].join("\t")).join("\n") + (gcImages.length ? "\n" : ""));
+  fs.writeFileSync(path.join(dir, "gc-ancestors.txt"), gcAncestors.map((a) => [a.image, a.container].join("\t")).join("\n") + (gcAncestors.length ? "\n" : ""));
   fs.writeFileSync(
     path.join(dir, "predeploy-health.json"),
     JSON.stringify(predeployHealth ?? { status: "ok", version: labelVersion, commit: COMMIT }),
@@ -419,6 +447,56 @@ describe("deploy.sh", () => {
     assert.match(calls(sb), new RegExp(`docker pull --quiet ghcr.io/itkadr-git/myrmidon@${NEW}`));
     assert.match(calls(sb), /docker compose .* up -d --no-deps server/);
     assert.equal(maintenance(sb), "enter\nexit\n");
+  });
+
+  // IMAGE-GC (OPE-12696): a successful deploy sweeps the myrmidon*/agent-runtime*
+  // images no container uses and prunes the build cache; a failed deploy
+  // deletes nothing.
+  it("sweeps unused myrmidon/agent-runtime images after a healthy deploy", () => {
+    const used = `sha256:${"1".repeat(64)}`;
+    const unused = `sha256:${"2".repeat(64)}`;
+    const foreign = `sha256:${"3".repeat(64)}`;
+    const runtimeUnused = `sha256:${"4".repeat(64)}`;
+    const sb = sandbox({
+      gcImages: [
+        { repo: "ghcr.io/itkadr-git/myrmidon", id: used },
+        { repo: "ghcr.io/itkadr-git/myrmidon-hermes", id: unused },
+        { repo: "ghcr.io/itkadr-git/hindsight", id: foreign },
+        { repo: "ghcr.io/itkadr-git/agent-runtime", id: runtimeUnused },
+      ],
+      gcAncestors: [{ image: used, container: "cid-board" }],
+    });
+    const { code, out } = run(sb, "deploy.sh", ["--digest", NEW]);
+    assert.equal(code, 0, out);
+    const log = calls(sb);
+    assert.match(log, new RegExp(`docker image rm ${unused}`));
+    assert.match(log, new RegExp(`docker image rm ${runtimeUnused}`));
+    assert.doesNotMatch(log, new RegExp(`docker image rm ${used}`));
+    assert.doesNotMatch(log, new RegExp(`docker image rm ${foreign}`));
+    assert.match(log, /docker builder prune -af/);
+    assert.match(out, /image gc: 2 image\(s\) removed, 1 in use kept/);
+  });
+
+  it("a failed deploy removes nothing (version mismatch)", () => {
+    const unused = `sha256:${"2".repeat(64)}`;
+    const sb = sandbox({
+      health: { status: "ok", version: "2026.916.1-myr.0", commit: COMMIT },
+      gcImages: [{ repo: "ghcr.io/itkadr-git/myrmidon-hermes", id: unused }],
+    });
+    const { code } = run(sb, "deploy.sh", ["--digest", NEW]);
+    assert.notEqual(code, 0);
+    assert.doesNotMatch(calls(sb), /docker image rm|docker builder prune/);
+  });
+
+  it("a failed deploy removes nothing (empty dump)", () => {
+    const unused = `sha256:${"2".repeat(64)}`;
+    const sb = sandbox({
+      dumpBytes: 0,
+      gcImages: [{ repo: "ghcr.io/itkadr-git/myrmidon-hermes", id: unused }],
+    });
+    const { code } = run(sb, "deploy.sh", ["--digest", NEW]);
+    assert.notEqual(code, 0);
+    assert.doesNotMatch(calls(sb), /docker image rm|docker builder prune/);
   });
 
   // OPE-9318 (1.6.6 DEBRAND): the compose project must be pinnable to the new
