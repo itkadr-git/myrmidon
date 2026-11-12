@@ -233,6 +233,7 @@ export async function prepareRemoteManagedRuntime(input: {
   workspaceLocalDir: string;
   workspaceRemoteDir?: string;
   syncWorkspace?: boolean;
+  workspaceSyncMode?: "full" | "git_checkout";
   assets?: RemoteManagedRuntimeAsset[];
   /** Referenced (additional) projects to stage as plain, read-only trees. */
   additionalSources?: SandboxAdditionalSource[];
@@ -241,7 +242,8 @@ export async function prepareRemoteManagedRuntime(input: {
   onProgress?: RuntimeProgressSink;
 }): Promise<PreparedRemoteManagedRuntime> {
   const baseWorkspaceRemoteDir = input.workspaceRemoteDir ?? input.spec.remoteCwd;
-  const syncWorkspace = input.syncWorkspace !== false;
+  const gitCheckoutRequested = input.workspaceSyncMode === "git_checkout";
+  const syncWorkspace = input.syncWorkspace !== false || gitCheckoutRequested;
   const workspaceRemoteDir = syncWorkspace
     ? path.posix.join(
         baseWorkspaceRemoteDir,
@@ -277,9 +279,14 @@ export async function prepareRemoteManagedRuntime(input: {
           localDir: input.workspaceLocalDir,
           remoteDir: workspaceRemoteDir,
           onProgress: input.onProgress,
+          gitOnly: gitCheckoutRequested,
         })
       : null;
-    const baselineSnapshot = preparedWorkspace
+    const gitCheckout = gitCheckoutRequested && preparedWorkspace?.gitBacked === true;
+    if (gitCheckoutRequested && !gitCheckout) {
+      console.info("[paperclip] workspaceSyncMode=git_checkout requested for a non-git workspace; falling back to full sync.");
+    }
+    const baselineSnapshot = preparedWorkspace && !gitCheckout
       ? await captureDirectorySnapshot(input.workspaceLocalDir, {
           exclude: preparedWorkspace.gitBacked
             ? [...GIT_ARCHIVE_EXCLUDES, ".paperclip-runtime"]
@@ -371,7 +378,7 @@ export async function prepareRemoteManagedRuntime(input: {
       additionalSourceDirs,
       restoreWorkspace: async (onProgress?: RuntimeProgressSink) => {
         try {
-          if (preparedWorkspace && baselineSnapshot) {
+          if (preparedWorkspace && baselineSnapshot && !gitCheckout) {
             await restoreWorkspaceFromSshExecution({
               spec: input.spec,
               localDir: input.workspaceLocalDir,
