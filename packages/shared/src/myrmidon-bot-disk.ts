@@ -185,6 +185,11 @@ export const BOT_DISK_DEFAULT_PNPM_IMPORT_METHOD: BotDiskPnpmImportMethod = "clo
 export const BOT_DISK_LEGACY_PNPM_IMPORT_METHODS = ["hardlink", "clone-or-copy"] as const;
 /** The shared per-partition store of 1.6.5-1.6.7: retired with OPE-12720; a stored value equal to it is migrated to the default. */
 export const BOT_DISK_LEGACY_SHARED_PNPM_STORE_DIR = "/cache/pnpm-store";
+
+/** The retired shared store itself, or a path under it (an operator could have stored a subdirectory). */
+function isRetiredSharedPnpmStoreDir(value: string): boolean {
+  return value === BOT_DISK_LEGACY_SHARED_PNPM_STORE_DIR || value.startsWith(`${BOT_DISK_LEGACY_SHARED_PNPM_STORE_DIR}/`);
+}
 /** Container roots of the bot's own tree: a store there lives with this one bot. */
 export const BOT_DISK_PNPM_STORE_ROOTS = ["/workspace", "/data", "/scratch", "/bot"] as const;
 
@@ -257,7 +262,7 @@ export function migrateBotDiskPnpm(stored: { pnpmStoreDir?: string; pnpmImportMe
   const notes: string[] = [];
   const out: { pnpmStoreDir?: string; pnpmImportMethod?: BotDiskPnpmImportMethod; notes: string[] } = { notes };
   if (typeof stored.pnpmStoreDir === "string") {
-    if (stored.pnpmStoreDir === BOT_DISK_LEGACY_SHARED_PNPM_STORE_DIR) {
+    if (isRetiredSharedPnpmStoreDir(stored.pnpmStoreDir)) {
       out.pnpmStoreDir = BOT_DISK_DEFAULT_PNPM_STORE_DIR;
       notes.push(`pnpmStoreDir ${stored.pnpmStoreDir} (retired shared store) is read as ${BOT_DISK_DEFAULT_PNPM_STORE_DIR} (the per-bot store on the same mount as the clones)`);
     } else {
@@ -283,6 +288,15 @@ const pnpmStoreDirSchema = z
     const problem = botDiskPnpmStoreDirProblem(value);
     if (problem) ctx.addIssue({ code: "custom", message: `pnpmStoreDir ${problem}` });
   });
+
+/**
+ * myrmidon(OPE-12720): what an earlier release may have stored for the store
+ * directory: a valid path, or the retired shared store `/cache/pnpm-store` (or
+ * a path under it), which the strict schema above refuses now and
+ * {@link migrateBotDiskPnpm} reads as the default. Without this the stored
+ * value would be dropped silently, with no note in the log.
+ */
+const storedPnpmStoreDirSchema = z.union([pnpmStoreDirSchema, z.string().max(4096).refine(isRetiredSharedPnpmStoreDir)]);
 
 /**
  * myrmidon(1.6.5-BOT-DISK-UV-A): where uv keeps its package cache by default —
@@ -548,7 +562,7 @@ const storedBotDiskObjectSchema = z
     sharedBotRuntimePath: botRuntimePathSchema.optional().catch(undefined),
     gitMirrorRepos: gitMirrorReposSchema.optional().catch(undefined),
     gitMirrorRefreshMs: gitMirrorRefreshMsSchema.optional().catch(undefined),
-    pnpmStoreDir: pnpmStoreDirSchema.optional().catch(undefined),
+    pnpmStoreDir: storedPnpmStoreDirSchema.optional().catch(undefined),
     pnpmImportMethod: storedPnpmImportMethodSchema.optional().catch(undefined),
     // myrmidon(1.6.5-BOT-DISK-UV-A): uv — new keys; a stored value is validated, nothing migrated.
     uvCacheDir: uvCacheDirSchema.optional().catch(undefined),

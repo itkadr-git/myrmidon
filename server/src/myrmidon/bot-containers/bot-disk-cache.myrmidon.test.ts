@@ -438,6 +438,11 @@ describe("myrmidon(1.6.5-BOT-DISK-H8a) pnpm store and import method", () => {
       pnpmStoreDir: "/workspace/.pnpm-store",
       notes: [],
     });
+    // A subdirectory of the retired store reads as the default too; a sibling name does not.
+    expect(migrateBotDiskPnpm({ pnpmStoreDir: "/cache/pnpm-store/v10" }).pnpmStoreDir).toBe("/workspace/.pnpm-store");
+    expect(migrateBotDiskPnpm({ pnpmStoreDir: "/cache/pnpm-store2" }).pnpmStoreDir).toBe("/cache/pnpm-store2");
+    expect(normalizeStoredBotDiskSettings({ pnpmStoreDir: "/cache/pnpm-store/v10" })).toEqual({ pnpmStoreDir: "/workspace/.pnpm-store" });
+    expect(normalizeStoredBotDiskSettings({ pnpmStoreDir: "/cache/pnpm-store2" })).toEqual({});
     expect(migrateBotDiskPnpm({ pnpmImportMethod: "clone-or-copy" }).pnpmImportMethod).toBe("clone");
     // Read through the settings: layout, normalized values and the notes of the log.
     expect(resolveBotDiskLayout({ ...legacy, sharedPackageCachePath: cache })).toMatchObject({
