@@ -4,6 +4,7 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import subprocess from "node:child_process";
 import { describe, it, beforeEach, afterEach } from "node:test";
 
 const ROOT = path.resolve(new URL("../../..", import.meta.url).pathname);
@@ -20,6 +21,14 @@ const {
   inspectPathTree,
   isTreeOpen,
   loadEnvConfig,
+  listBotContainers,
+  fetchAgentDecommissionState,
+  scanBotDataForUnpushedWork,
+  clearBotDiskProject,
+  planBotDataGc,
+  scanSshRunCopies,
+  pruneSshRunCopies,
+  UsageError,
 } = await import(
   path.join(ROOT, "scripts/myrmidon/host-gc/host-clone-cache-gc.mjs")
 );
@@ -318,5 +327,459 @@ describe("scratch-gc (BOT-DISK-SCRATCH)", () => {
 
     const openResult = results.find((r) => r.name === "open-task-789");
     assert.equal(openResult.reason, "open-by-process");
+  });
+});
+
+
+// --- Bot data GC of decommissioned bots (OPE-12654) ---
+
+describe("agent decommission guard", () => {
+  const response = (status, body) => ({ ok: status >= 200 && status < 300, status, json: async () => body });
+  const KEY = "e0d04e36-1111-4222-8333-444455556666";
+
+  it("hermes_gateway card holds the directory", async () => {
+    const result = await fetchAgentDecommissionState(KEY, {
+      baseUrl: "http://board",
+      fetchImpl: async (url) => {
+        assert.equal(url, `http://board/api/agents/${KEY}`);
+        return response(200, { adapterType: "hermes_gateway", status: "idle" });
+      },
+    });
+    assert.deepEqual(result, { ok: true, state: "hermes_gateway" });
+  });
+
+  it("a card moved to another adapter reads left_hermes_gateway", async () => {
+    const result = await fetchAgentDecommissionState(KEY, {
+      baseUrl: "http://board",
+      fetchImpl: async () => response(200, { adapterType: "omp_local", status: "idle" }),
+    });
+    assert.deepEqual(result, { ok: true, state: "left_hermes_gateway" });
+  });
+
+  it("terminated and hard-deleted agents read terminated/deleted", async () => {
+    const terminated = await fetchAgentDecommissionState(KEY, {
+      baseUrl: "http://board",
+      fetchImpl: async () => response(200, { adapterType: "hermes_gateway", status: "terminated" }),
+    });
+    assert.deepEqual(terminated, { ok: true, state: "terminated" });
+
+    const deleted = await fetchAgentDecommissionState(KEY, {
+      baseUrl: "http://board",
+      fetchImpl: async () => response(404, {}),
+    });
+    assert.deepEqual(deleted, { ok: true, state: "deleted" });
+  });
+
+  it("a running heartbeat run holds the directory", async () => {
+    const result = await fetchAgentDecommissionState(KEY, {
+      baseUrl: "http://board",
+      fetchImpl: async () => response(200, { adapterType: "omp_local", status: "running" }),
+    });
+    assert.deepEqual(result, { ok: true, state: "running" });
+  });
+
+  it("fails closed on board errors", async () => {
+    const unavailable = await fetchAgentDecommissionState(KEY, {
+      baseUrl: "http://board",
+      fetchImpl: async () => { throw new Error("offline"); },
+    });
+    assert.equal(unavailable.ok, false);
+    assert.equal(unavailable.reason, "board-unavailable");
+
+    const forbidden = await fetchAgentDecommissionState(KEY, {
+      baseUrl: "http://board",
+      fetchImpl: async () => response(403, {}),
+    });
+    assert.equal(forbidden.ok, false);
+    assert.equal(forbidden.reason, "board-forbidden");
+  });
+
+  it("rejects a non-UUID agent id without a call", async () => {
+    const result = await fetchAgentDecommissionState("../etc", {
+      baseUrl: "http://board",
+      fetchImpl: async () => { throw new Error("must not be called"); },
+    });
+    assert.equal(result.ok, false);
+    assert.equal(result.reason, "bad-agent-id");
+  });
+});
+
+describe("unpushed-work scan", () => {
+  const KEY = "0123abcd-1111-4222-8333-444455556666";
+
+  const makeRepo = (dir, { dirty = false, ahead = false, stash = false } = {}) => {
+    fs.mkdirSync(dir, { recursive: true });
+    const git = (args, cwd2 = dir) => {
+      const r = subprocess.spawnSync("git", args, { cwd: cwd2, encoding: "utf8", env: { ...process.env, GIT_AUTHOR_NAME: "t", GIT_AUTHOR_EMAIL: "t@t", GIT_COMMITTER_NAME: "t", GIT_COMMITTER_EMAIL: "t@t" } });
+      if (r.status !== 0) throw new Error(`git ${args.join(" ")}: ${r.stderr}`);
+      return r;
+    };
+    // A bare upstream + a push of the base commit, so "clean" means really pushed.
+    const upstream = `${dir}.upstream.git`;
+    git(["init", "-q", "--bare", upstream]);
+    git(["init", "-q"]);
+    git(["remote", "add", "origin", upstream]);
+    fs.writeFileSync(path.join(dir, "f.txt"), "one\n");
+    git(["add", "."]);
+    git(["commit", "-q", "-m", "one"]);
+    git(["push", "-q", "-u", "origin", "HEAD:main"]);
+    if (ahead) {
+      fs.writeFileSync(path.join(dir, "f.txt"), "one\ntwo\n");
+      git(["commit", "-qam", "two"]);
+    }
+    if (dirty) fs.writeFileSync(path.join(dir, "dirty.txt"), "wip\n");
+    if (stash) {
+      // Stash only its own file so a dirty tree stays dirty.
+      fs.writeFileSync(path.join(dir, "stash.txt"), "s\n");
+      git(["add", "stash.txt"]);
+      git(["stash", "-q", "--", "stash.txt"]);
+    }
+    return dir;
+  };
+
+  let gitWs;
+  beforeEach(() => {
+    gitWs = path.join(tmpDir, "bot", "workspace", "OPE-12654");
+    fs.mkdirSync(gitWs, { recursive: true });
+  });
+
+  it("a repo with a commit ahead of upstream is held with a reason", () => {
+    makeRepo(path.join(gitWs, "repo"), { ahead: true });
+    const result = scanBotDataForUnpushedWork(path.join(tmpDir, "bot"));
+    assert.equal(result.unpushed, true);
+    assert.ok(result.reasons.some((r) => r.includes("commits ahead of upstream")));
+  });
+
+  it("dirty tree and stash are unpushed work", () => {
+    makeRepo(path.join(gitWs, "repo"), { dirty: true, stash: true });
+    const result = scanBotDataForUnpushedWork(path.join(tmpDir, "bot"));
+    assert.equal(result.unpushed, true);
+    assert.ok(result.reasons.some((r) => r.includes("uncommitted changes")));
+    assert.ok(result.reasons.some((r) => r.includes("stash entries")));
+  });
+
+  it("a clean pushed repo is removable", () => {
+    makeRepo(path.join(gitWs, "repo"));
+    const result = scanBotDataForUnpushedWork(path.join(tmpDir, "bot"));
+    assert.deepEqual(result, { unpushed: false, reasons: [] });
+  });
+
+  it(".next and .helper are not scanned", () => {
+    for (const name of [".next", ".helper"]) {
+      const d = path.join(tmpDir, "bot", name, "OPE-12654");
+      makeRepo(d, { ahead: true });
+    }
+    const result = scanBotDataForUnpushedWork(path.join(tmpDir, "bot"));
+    assert.deepEqual(result, { unpushed: false, reasons: [] });
+  });
+});
+
+describe("bot-data gc plan (decommission sweep)", () => {
+  const OLD_KEY = "aaaaaaaa-1111-4222-8333-444455556666";
+  const NEW_KEY = "bbbbbbbb-1111-4222-8333-444455556666";
+  const NOW = Date.parse("2026-11-11T12:00:00Z");
+
+  const makeBotDir = (key, ageHours) => {
+    const dir = path.join(tmpDir, key);
+    fs.mkdirSync(dir, { recursive: true });
+    const stale = new Date(NOW - (ageHours + 1) * 3600 * 1000);
+    fs.utimesSync(dir, stale, stale);
+    return dir;
+  };
+  const containers = (keys) => ({ ok: true, keys: new Set(keys) });
+  const stateOf = (map) => async (agentId) => map[agentId] ?? { ok: false, reason: "board-unavailable" };
+
+  it("old dir of an agent moved off hermes_gateway is removed after retention", async () => {
+    makeBotDir(OLD_KEY, 25);
+    const plan = await planBotDataGc(tmpDir, {
+      now: NOW,
+      containers: containers([]),
+      agentState: stateOf({ [OLD_KEY]: { ok: true, state: "left_hermes_gateway" } }),
+      scan: () => ({ unpushed: false, reasons: [] }),
+    });
+    assert.deepEqual(plan, { ok: true, plan: [{ name: OLD_KEY, path: path.join(tmpDir, OLD_KEY), ageMs: 26 * 3600 * 1000, action: "remove", reason: "decommissioned-clean" }] });
+  });
+
+  it("hermes_gateway agent and fresh dirs are kept", async () => {
+    makeBotDir(OLD_KEY, 25);
+    makeBotDir(NEW_KEY, 1);
+    const plan = await planBotDataGc(tmpDir, {
+      now: NOW,
+      containers: containers([]),
+      agentState: stateOf({ [OLD_KEY]: { ok: true, state: "hermes_gateway" } }),
+      scan: () => { throw new Error("must not scan a hermes bot"); },
+    });
+    assert.equal(plan.ok, true);
+    const byKey = Object.fromEntries(plan.plan.map((p) => [p.name, p]));
+    assert.equal(byKey[OLD_KEY].action, "keep");
+    assert.equal(byKey[OLD_KEY].reason, "agent-on-hermes-gateway");
+    assert.equal(byKey[NEW_KEY].action, "keep");
+    assert.equal(byKey[NEW_KEY].reason, "retention");
+  });
+
+  it("a directory with a commit ahead of upstream is kept and reported", async () => {
+    makeBotDir(OLD_KEY, 25);
+    const plan = await planBotDataGc(tmpDir, {
+      now: NOW,
+      containers: containers([]),
+      agentState: stateOf({ [OLD_KEY]: { ok: true, state: "left_hermes_gateway" } }),
+      scan: () => ({ unpushed: true, reasons: ["OPE-12654/repo: commits ahead of upstream"] }),
+    });
+    const item = plan.plan[0];
+    assert.equal(item.action, "keep");
+    assert.equal(item.reason, "unpushed-work");
+    assert.deepEqual(item.details, ["OPE-12654/repo: commits ahead of upstream"]);
+  });
+
+  it("an existing container of any state holds the directory", async () => {
+    makeBotDir(OLD_KEY, 25);
+    const plan = await planBotDataGc(tmpDir, {
+      now: NOW,
+      containers: containers([OLD_KEY]),
+      agentState: stateOf({}),
+      scan: () => { throw new Error("must not be called"); },
+    });
+    const item = plan.plan[0];
+    assert.equal(item.action, "keep");
+    assert.equal(item.reason, "container-exists");
+  });
+
+  it("a running run and a terminated agent decide differently", async () => {
+    makeBotDir(OLD_KEY, 25);
+    const held = await planBotDataGc(tmpDir, {
+      now: NOW,
+      containers: containers([]),
+      agentState: stateOf({ [OLD_KEY]: { ok: true, state: "running" } }),
+      scan: () => { throw new Error("must not be called"); },
+    });
+    assert.equal(held.plan[0].reason, "agent-has-running-run");
+
+    const gone = await planBotDataGc(tmpDir, {
+      now: NOW,
+      containers: containers([]),
+      agentState: stateOf({ [OLD_KEY]: { ok: true, state: "terminated" } }),
+      scan: () => ({ unpushed: false, reasons: [] }),
+    });
+    assert.equal(gone.plan[0].action, "remove");
+    assert.equal(gone.plan[0].reason, "agent-terminated-clean");
+  });
+
+  it("an unavailable board and unavailable docker fail closed", async () => {
+    makeBotDir(OLD_KEY, 25);
+    const boardDown = await planBotDataGc(tmpDir, {
+      now: NOW,
+      containers: containers([]),
+      agentState: stateOf({}),
+      scan: () => { throw new Error("must not be called"); },
+    });
+    assert.equal(boardDown.plan[0].action, "keep");
+    assert.equal(boardDown.plan[0].reason, "board-unavailable");
+
+    const dockerDown = await planBotDataGc(tmpDir, { now: NOW, containers: { ok: false, reason: "docker-unavailable" } });
+    assert.equal(dockerDown.ok, false);
+    assert.equal(dockerDown.reason, "docker-unavailable");
+  });
+});
+
+// myrmidon(1.6.8 OPE-12722): SSH runner run copies older than the run timeout are pruned.
+describe("SSH runner run copies", () => {
+  const HOUR = 60 * 60 * 1000;
+  function makeRun(runnersRoot, runner, runId, ageHours) {
+    const dir = path.join(runnersRoot, runner, "workspace", ".paperclip-runtime", "runs", runId);
+    fs.mkdirSync(path.join(dir, "workspace"), { recursive: true });
+    fs.writeFileSync(path.join(dir, "workspace", "file.txt"), "x");
+    const t = new Date(Date.now() - ageHours * HOUR);
+    fs.utimesSync(dir, t, t);
+    return dir;
+  }
+
+  it("marks copies older than the TTL and keeps fresh ones", () => {
+    const runners = path.join(tmpDir, "omp-runners");
+    const old = makeRun(runners, "eng17", "run-old", 6);
+    const fresh = makeRun(runners, "eng17", "run-fresh", 1);
+    fs.mkdirSync(path.join(runners, "eng22", "workspace"), { recursive: true }); // no runs dir yet
+    const items = scanSshRunCopies(runners, Date.now(), 4);
+    const byPath = Object.fromEntries(items.map((i) => [i.path, i.reason]));
+    assert.equal(byPath[old], "ttl");
+    assert.equal(byPath[fresh], "fresh");
+    assert.equal(items.length, 2);
+  });
+
+  it("skips a runner whose path goes through a symlink", () => {
+    const runners = path.join(tmpDir, "omp-runners");
+    const outside = path.join(tmpDir, "outside");
+    makeRun(outside, "victim", "run-old", 6);
+    fs.mkdirSync(runners, { recursive: true });
+    fs.symlinkSync(path.join(outside, "victim"), path.join(runners, "eng8"));
+    assert.deepEqual(scanSshRunCopies(runners, Date.now(), 4), []);
+  });
+
+  it("returns nothing for a missing root", () => {
+    assert.deepEqual(scanSshRunCopies(path.join(tmpDir, "nope"), Date.now(), 4), []);
+  });
+
+  it("parses --runner-root (repeatable), HOST_GC_RUNNER_ROOTS and --run-copy-ttl", () => {
+    const prev = process.env.HOST_GC_RUNNER_ROOTS;
+    process.env.HOST_GC_RUNNER_ROOTS = "/a:/b";
+    try {
+      const args = parseArgs(["node", "gc", "--env", "/nonexistent", "--runner-root", "/c", "--run-copy-ttl", "6"]);
+      assert.deepEqual(args.runnerRoots, ["/a", "/b", "/c"]);
+      assert.equal(args.runCopyTtlHours, 6);
+    } finally {
+      if (prev === undefined) delete process.env.HOST_GC_RUNNER_ROOTS;
+      else process.env.HOST_GC_RUNNER_ROOTS = prev;
+    }
+    const plain = parseArgs(["node", "gc", "--env", "/nonexistent"]);
+    assert.deepEqual(plain.runnerRoots, []);
+    assert.equal(plain.runCopyTtlHours, 4);
+  });
+
+  const GC_SCRIPT = path.join(ROOT, "scripts/myrmidon/host-gc/host-clone-cache-gc.mjs");
+
+  // Runs the CLI against an empty bots root; returns the process result and the parsed journal.
+  function runGc(flags) {
+    const botsRoot = path.join(tmpDir, "bots");
+    fs.mkdirSync(botsRoot, { recursive: true });
+    const journal = path.join(tmpDir, "gc.jsonl");
+    const env = { ...process.env, HOST_GC_RUNNER_ROOTS: "", PATH: process.env.PATH, PAPERCLIP_API_URL: "http://127.0.0.1:9" };
+    const res = subprocess.spawnSync(process.execPath, [
+      GC_SCRIPT, "--env", "/nonexistent", "--root", botsRoot,
+      "--journal", journal, "--lock", path.join(tmpDir, "gc.lock"), "--proc-dir", path.join(tmpDir, "proc"),
+      ...flags,
+    ], { encoding: "utf8", env, timeout: 60_000 });
+    const events = fs.existsSync(journal)
+      ? fs.readFileSync(journal, "utf8").trim().split("\n").map((l) => JSON.parse(l))
+      : [];
+    return { res, events };
+  }
+
+  it("--apply removes old run copies, keeps fresh ones and journals each removal", () => {
+    const runners = path.join(tmpDir, "omp-runners");
+    const old = makeRun(runners, "eng17", "run-old", 6);
+    const fresh = makeRun(runners, "eng21", "run-fresh", 1);
+    const { res, events } = runGc(["--apply", "--runner-root", runners]);
+    assert.equal(res.status, 0, res.stderr);
+    assert.equal(fs.existsSync(old), false, "old run copy must be removed");
+    assert.equal(fs.existsSync(fresh), true, "fresh run copy must stay");
+    const removed = events.find((e) => e.event === "run-copy-removed" && e.path === old && e.runner === "eng17");
+    assert.ok(removed, "removal journaled");
+    assert.equal(typeof removed.sizeBytes, "number", "size measured before the removal");
+    assert.ok(removed.sizeBytes > 0);
+    const done = events.find((e) => e.event === "apply-complete");
+    assert.equal(done.runCopiesRemoved, 1);
+    assert.equal(JSON.parse(res.stdout).runCopiesRemoved, 1);
+  });
+
+  it("dry-run removes nothing, journals no removal and lists fresh copies as kept", () => {
+    const runners = path.join(tmpDir, "omp-runners");
+    const old = makeRun(runners, "eng17", "run-old", 6);
+    const fresh = makeRun(runners, "eng21", "run-fresh", 1);
+    const { res, events } = runGc(["--dry-run", "--runner-root", runners]);
+    assert.equal(res.status, 0, res.stderr);
+    assert.equal(fs.existsSync(old), true, "dry-run must not remove");
+    assert.equal(fs.existsSync(fresh), true);
+    assert.equal(events.some((e) => e.event === "run-copy-removed" || e.event === "run-copy-remove-failed"), false);
+    assert.equal(events.find((e) => e.event === "dry-run").runCopies, 1);
+    const out = JSON.parse(res.stdout);
+    assert.deepEqual(out.plan.runCopies.map((r) => [r.path, r.action]), [[old, "remove"]]);
+    const keptFresh = out.plan.kept.filter((k) => k.path === fresh);
+    assert.equal(keptFresh.length, 1);
+    assert.equal(keptFresh[0].reason, "fresh");
+    assert.equal(keptFresh[0].action, "keep");
+  });
+
+  it("a runner whose workspace is swapped for a symlink after the scan is not deleted through", () => {
+    const runners = path.join(tmpDir, "omp-runners");
+    const old = makeRun(runners, "eng17", "run-old", 6);
+    const items = scanSshRunCopies(runners, Date.now(), 4).filter((i) => i.reason === "ttl");
+    assert.equal(items.length, 1);
+    assert.equal(items[0].runnersRoot, runners, "the item carries the root the drop is guarded against");
+
+    // A copy of the same layout outside the runner root, and the swap between scan and apply.
+    const outsideCopy = makeRun(path.join(tmpDir, "outside"), "victim", "run-old", 6);
+    fs.renameSync(path.join(runners, "eng17", "workspace"), path.join(tmpDir, "moved-workspace"));
+    fs.symlinkSync(path.join(tmpDir, "outside", "victim", "workspace"), path.join(runners, "eng17", "workspace"));
+
+    const journal = path.join(tmpDir, "gc.jsonl");
+    const gone = pruneSshRunCopies(items, journal);
+    assert.deepEqual(gone, [], "nothing counted as removed");
+    assert.equal(fs.existsSync(path.join(outsideCopy, "workspace", "file.txt")), true, "the outside copy must survive");
+    const events = fs.readFileSync(journal, "utf8").trim().split("\n").map((l) => JSON.parse(l));
+    const failed = events.filter((e) => e.event === "run-copy-remove-failed");
+    assert.equal(failed.length, 1);
+    assert.equal(failed[0].path, old);
+    assert.match(failed[0].error, /escapes root/);
+    assert.equal(events.some((e) => e.event === "run-copy-removed"), false);
+  });
+
+  it("reports a missing root and a root that is not a directory, and keeps scanning", () => {
+    const events = [];
+    const onEvent = (e) => events.push(e);
+    const missing = path.join(tmpDir, "nope");
+    assert.deepEqual(scanSshRunCopies(missing, Date.now(), 4, { onEvent }), []);
+    const notDir = path.join(tmpDir, "file-root");
+    fs.writeFileSync(notDir, "x");
+    assert.deepEqual(scanSshRunCopies(notDir, Date.now(), 4, { onEvent }), []);
+    assert.deepEqual(events[0], { event: "run-copy-root-missing", root: missing });
+    assert.equal(events[1].event, "run-copy-scan-failed");
+    assert.equal(events[1].root, notDir);
+    assert.match(events[1].error, /not a directory/);
+  });
+
+  const isRoot = typeof process.getuid === "function" && process.getuid() === 0;
+  it("an unreadable runs directory is journaled and does not abort --apply", { skip: isRoot && "root ignores chmod 000" }, () => {
+    const runners = path.join(tmpDir, "omp-runners");
+    const bad = makeRun(runners, "eng-bad", "run-old", 6);
+    const badRuns = path.dirname(bad);
+    const good = makeRun(runners, "eng-good", "run-old", 6);
+    const missingRoot = path.join(tmpDir, "no-such-runners");
+    fs.chmodSync(badRuns, 0o000);
+    try {
+      const events = [];
+      const items = scanSshRunCopies(runners, Date.now(), 4, { onEvent: (e) => events.push(e) });
+      assert.deepEqual(items.map((i) => i.runner), ["eng-good"], "scan keeps going past the unreadable runner");
+      assert.equal(events.length, 1);
+      assert.equal(events[0].event, "run-copy-scan-failed");
+      assert.equal(events[0].runner, "eng-bad");
+      assert.match(events[0].error, /EACCES/);
+
+      const { res, events: journal } = runGc(["--apply", "--runner-root", missingRoot, "--runner-root", runners]);
+      assert.equal(res.status, 0, res.stderr);
+      assert.equal(fs.existsSync(good), false, "the readable runner is still pruned");
+      const failed = journal.find((e) => e.event === "run-copy-scan-failed");
+      assert.equal(failed.runner, "eng-bad");
+      assert.equal(failed.root, runners);
+      assert.match(failed.error, /EACCES/);
+      assert.ok(journal.some((e) => e.event === "run-copy-root-missing" && e.root === missingRoot));
+      assert.ok(journal.some((e) => e.event === "run-copy-removed" && e.path === good));
+      assert.equal(journal.find((e) => e.event === "apply-complete").runCopiesRemoved, 1);
+    } finally {
+      fs.chmodSync(badRuns, 0o755);
+    }
+  });
+
+  it("rejects a --run-copy-ttl that is not a finite number or is below 3 hours", () => {
+    for (const bad of ["abc", "", "NaN", "Infinity", "-5", "0", "2.9"]) {
+      assert.throws(
+        () => parseArgs(["node", "gc", "--env", "/nonexistent", "--run-copy-ttl", bad]),
+        (err) => err instanceof UsageError && /--run-copy-ttl must be/.test(err.message),
+        `ttl ${JSON.stringify(bad)} must be refused`,
+      );
+    }
+    assert.throws(() => parseArgs(["node", "gc", "--env", "/nonexistent", "--run-copy-ttl"]), UsageError, "a missing value");
+    assert.equal(parseArgs(["node", "gc", "--env", "/nonexistent", "--run-copy-ttl", "3"]).runCopyTtlHours, 3);
+    assert.equal(parseArgs(["node", "gc", "--env", "/nonexistent", "--run-copy-ttl", "3.5"]).runCopyTtlHours, 3.5);
+  });
+
+  it("the CLI exits non-zero with a message on a bad --run-copy-ttl and removes nothing", () => {
+    const runners = path.join(tmpDir, "omp-runners");
+    const old = makeRun(runners, "eng17", "run-old", 6);
+    for (const bad of ["1", "abc"]) {
+      const { res, events } = runGc(["--apply", "--runner-root", runners, "--run-copy-ttl", bad]);
+      assert.notEqual(res.status, 0);
+      assert.match(res.stderr, /--run-copy-ttl must be/);
+      assert.equal(fs.existsSync(old), true);
+      assert.deepEqual(events, []);
+    }
   });
 });

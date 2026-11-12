@@ -38,6 +38,16 @@ export interface BotPartitionUsage {
   at: string;
 }
 
+/**
+ * Host root filesystem usage (myrmidon 1.6.8 OPE-12697, DISK-ALERT): the
+ * `root` field of the same A14 answer, read-only statfs of `/` on the host.
+ * On 10.11.2026 the root of vm-core reached 96 % (261 of 286 GB) with no
+ * signal anywhere: the docker daemon, its images and volumes, and the
+ * workspace checkouts live on the root, not on the bot partition this
+ * module measured before.
+ */
+export type HostRootUsage = BotPartitionUsage;
+
 export interface DockergateDiskClientOptions {
   /** Base URL of dockergate, e.g. `http://host.docker.internal:3399`. */
   baseUrl: string;
@@ -51,6 +61,11 @@ export interface DockergateDiskClientOptions {
 export interface DockergateDiskClient {
   /** Partition usage, or null when dockergate cannot be read. */
   readPartitionUsage(): Promise<BotPartitionUsage | null>;
+  /**
+   * myrmidon(1.6.8 OPE-12697): usage of the host root filesystem (`/`), or
+   * null when dockergate cannot be read or predates the `root` field.
+   */
+  readRootUsage(): Promise<HostRootUsage | null>;
 }
 
 export const DOCKERGATE_DISK_DEFAULT_TIMEOUT_MS = 5_000;
@@ -93,6 +108,42 @@ export function createDockergateDiskClient(
         at: data.at,
       };
     },
+
+    /**
+     * myrmidon(1.6.8 OPE-12697): the `root` field of the same answer. A gate
+     * without the field (pre-1.6.8) or a root it could not statfs answers
+     * without `root` — null, "not measured", never a guess.
+     */
+    async readRootUsage(): Promise<HostRootUsage | null> {
+      let response: Response;
+      try {
+        response = await fetchImpl(`${baseUrl}${DOCKERGATE_DISK_PATH}`, {
+          signal: AbortSignal.timeout(timeoutMs),
+          headers: { accept: "application/json" },
+        });
+      } catch {
+        return null;
+      }
+      if (!response.ok) return null;
+      let body: unknown;
+      try {
+        body = await response.json();
+      } catch {
+        return null;
+      }
+      const parsed = wsDiskApiResponseSchema.safeParse(body);
+      if (!parsed.success) return null;
+      const data: WsDiskApiResponse = parsed.data;
+      if (!data.root) return null;
+      return {
+        mount: data.root.mount,
+        usedBytes: data.root.usedBytes,
+        totalBytes: data.root.totalBytes,
+        freeBytes: data.root.freeBytes,
+        usedPercent: data.root.usedPercent,
+        at: data.at,
+      };
+    },
   };
 }
 
@@ -121,18 +172,42 @@ export function dockergateBaseUrl(
 export function partitionClientFromSocketClient(
   gate: Pick<DockergateSocketClient, "getDisk">,
 ): DockergateDiskClient {
+  const partitionOf = (data: WsDiskApiResponse) => ({
+    mount: data.partition.mount,
+    usedBytes: data.partition.usedBytes,
+    totalBytes: data.partition.totalBytes,
+    freeBytes: data.partition.freeBytes,
+    usedPercent: data.partition.usedPercent,
+    at: data.at,
+  });
+  const rootOf = (data: WsDiskApiResponse): HostRootUsage | null =>
+    data.root
+      ? {
+          mount: data.root.mount,
+          usedBytes: data.root.usedBytes,
+          totalBytes: data.root.totalBytes,
+          freeBytes: data.root.freeBytes,
+          usedPercent: data.root.usedPercent,
+          at: data.at,
+        }
+      : null;
   return {
     async readPartitionUsage(): Promise<BotPartitionUsage | null> {
       try {
-        const data = await gate.getDisk();
-        return {
-          mount: data.partition.mount,
-          usedBytes: data.partition.usedBytes,
-          totalBytes: data.partition.totalBytes,
-          freeBytes: data.partition.freeBytes,
-          usedPercent: data.partition.usedPercent,
-          at: data.at,
-        };
+        return partitionOf(await gate.getDisk());
+      } catch {
+        return null;
+      }
+    },
+
+    /**
+     * myrmidon(1.6.8 OPE-12697): the `root` field of the same cached answer.
+     * A gate that predates the field answers without `root` — null, the
+     * root signal stays "not measured" instead of guessing.
+     */
+    async readRootUsage(): Promise<HostRootUsage | null> {
+      try {
+        return rootOf(await gate.getDisk());
       } catch {
         return null;
       }

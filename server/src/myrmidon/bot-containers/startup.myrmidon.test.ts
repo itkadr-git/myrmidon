@@ -170,6 +170,9 @@ describe("startBotContainers with the flag on", () => {
         rolloutCompanyIdOf: expect.any(Function),
         backimportCompanyIdOf: expect.any(Function),
         readSharedMountSettings: expect.any(Function),
+        // myrmidon(OPE-12654): the decommission sweep's reads.
+        listDecommissionCandidates: expect.any(Function),
+        hasRunningRun: expect.any(Function),
         network: DRIVER_CONFIG.network,
       });
       // Verifying default (no host on card) routes to the local driver
@@ -390,6 +393,56 @@ describe("myrmidon(1.6.6 T1) fleet routing in startup", () => {
     } finally {
       stopBotContainers();
       expect(mockManager.close).toHaveBeenCalled();
+    }
+  });
+
+  // myrmidon(OPE-12654): an adapter switch rewrites the card without its container block, but
+  // the bot it leaves behind still lives on the host the last hermes_gateway card named.
+  it("routes the bot of a card that moved to another adapter to the host of its last hermes card", async () => {
+    const h = harness();
+    const remoteStatus = { botKey: "bot-switched", state: "running" as const };
+    const remoteClient = {
+      status: vi.fn(async () => remoteStatus),
+      list: vi.fn(async () => []),
+      templateDrift: vi.fn(async () => ({ drifted: false, fields: [] })),
+      create: vi.fn(async () => {}),
+      recreate: vi.fn(async () => {}),
+      writeProfile: vi.fn(async () => {}),
+      start: vi.fn(async () => {}),
+      restart: vi.fn(async () => {}),
+      stop: vi.fn(async () => {}),
+      cleanup: vi.fn(async () => {}),
+    } as unknown as BotContainerDriver;
+    const mockManager = {
+      getClients: vi.fn(() => new Map([["comp-1/myr-vm1", remoteClient]])),
+      refresh: vi.fn(async () => new Map([["comp-1/myr-vm1", remoteClient]])),
+      getVersion: vi.fn(() => 1),
+      ensureFresh: vi.fn(async () => {}),
+      close: vi.fn(),
+    };
+    h.ports.createFleetClientManager = () => mockManager;
+    h.ports.readAgent = () => async (botKey: string) =>
+      ({
+        agentId: botKey,
+        companyId: "comp-1",
+        adapterType: botKey === "bot-switched" ? "omp_local" : "claude_local",
+        adapterConfig: { model: "x" },
+      }) as BotContainerAgent;
+    const lastBlock = vi.fn(async (agentId: string) => (agentId === "bot-switched" ? { enabled: true, host: "myr-vm1" } : null));
+    h.ports.readLastContainerBlock = () => lastBlock;
+
+    startBotContainers(DB, { env: ENABLED, ports: h.ports });
+    try {
+      const [, runtime] = h.spies.startReconciliation.mock.calls[0];
+      await runtime.driver.decommission!("bot-switched");
+      expect(remoteClient.cleanup).toHaveBeenCalledWith("bot-switched");
+      expect(lastBlock).toHaveBeenCalledWith("bot-switched");
+
+      // No hermes history at all: the local driver, as for any card without a host.
+      expect(await runtime.driver.status("bot-never")).toMatchObject({ botKey: "bot-never", state: "running" });
+      expect(remoteClient.status).not.toHaveBeenCalled();
+    } finally {
+      stopBotContainers();
     }
   });
 

@@ -1,4 +1,4 @@
-# myrmidon(OPE-12719): build-time regression for 34-skill-view-managed-name.patch.
+# myrmidon(OPE-12719): build-time regression for 35-skill-view-managed-name.patch.
 # Board-managed skills materialize at <skills>/paperclip-managed/<slug>--<hash>/SKILL.md
 # (14-run-scoped-paperclip-skills.patch) while the skills index renders the entry as
 # "paperclip-managed:<slug>" (category = first path segment, name = frontmatter `name:`),
