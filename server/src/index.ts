@@ -195,7 +195,8 @@ import { startStackCheckSweep } from "./myrmidon/stack-registry/index.js"; // my
 import { startTelegramNotifyJobs } from "./myrmidon/channel-connectors/bridge/notify.js";
 import { startTgNotifySweep, dbErrorChannelSettingsSource } from "./myrmidon/channel-connectors/bridge/notify.js"; // myrmidon(1.6-TG-NOTIFY-C)
 import { startScentQueue } from "./myrmidon/scent/index.js"; // myrmidon(1.6.5 F-26 T10 SCENT)
-import { interactionContinuationOutboxService } from "./myrmidon/interaction-continuation-outbox.js"; // myrmidon(O1)
+import { interactionContinuationOutboxService, registerContinuationDeliverEffect } from "./myrmidon/interaction-continuation-outbox.js"; // myrmidon(O1)
+import { createEffectWorker } from "./myrmidon/effect-worker/index.js"; // myrmidon(OPE-12798)
 import { createWorkspaceHygieneScheduler } from "./myrmidon/workspace-hygiene/index.js"; // myrmidon(WORKSPACE-HYGIENE)
 import { createBotDiskQuotaScheduler } from "./myrmidon/bot-containers/bot-disk-quota-runtime.js"; // myrmidon(1.6.1-BOT-DISK-C)
 // myrmidon(BOT-DISK E): measures the host disk and signals when it crosses the threshold
@@ -1872,6 +1873,12 @@ async function startServerWithDatabaseTeardown(
   // myrmidon(O1): re-sends accept-continuation wakes whose post-commit dispatch was lost
   const interactionContinuationOutboxDeliveries =
     interactionContinuationOutboxService(db as any, backgroundHeartbeat);
+  // myrmidon(OPE-12798): effect-worker layer — the continuation-delivery
+  // runs as a registered effect; the worker drains intents post-commit and
+  // records the result as a run-event / intent milestone.
+  const effectWorker = createEffectWorker(db as any);
+  registerContinuationDeliverEffect(effectWorker, db as any, backgroundHeartbeat);
+  app.locals.effectWorker = effectWorker;
   // API role has no cleanup heartbeat: nothing to sweep, resolve an empty result.
   const sweepEnvironmentLeaseCleanup = (backoffMs: number) => {
     if (!environmentLeaseCleanupHeartbeat) return Promise.resolve({ swept: 0, destroyed: 0, capped: 0 });
@@ -2981,6 +2988,19 @@ async function startServerWithDatabaseTeardown(
             })
             .catch((err) => {
               logger.error({ err }, "periodic interaction continuation outbox sweep failed");
+            }));
+          // myrmidon(OPE-12798): drain the effect worker alongside the
+          // legacy sweep. The drain is a no-op when no intents are due; the
+          // continuation-delivery effect marks its own intents terminal, so
+          // double-draining with the sweep above is idempotent.
+          trackHeartbeatSchedulerWork(effectWorker.drain({ kinds: ["interaction-continuation-deliver"] })
+            .then((result) => {
+              if (result.scanned > 0) {
+                logger.info(result, "periodic effect worker drain completed");
+              }
+            })
+            .catch((err) => {
+              logger.error({ err }, "periodic effect worker drain failed");
             }));
           // Periodically reap orphaned runs (5-min staleness threshold) and make sure
           // persisted queued work is still being driven forward.

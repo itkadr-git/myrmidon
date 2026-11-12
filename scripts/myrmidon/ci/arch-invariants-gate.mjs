@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // ARCH-GUARD: fitness functions of the architecture invariants
-// INV-10..INV-14 from docs/architecture/README.md (invariant index, section 0 of the target architecture).
+// INV-10..INV-15 from docs/architecture/README.md (invariant index, section 0 of the target architecture).
 //
 // Violations of any invariant = red CI, before any human review:
 //   INV-10  no automatic agent wake without a task: every enqueueWakeup call
@@ -18,6 +18,10 @@
 //           duplicate incident), checked against both the SQL files and the
 //           drizzle journal. Historic gaps are grandfathered by the baseline
 //           file next to this gate; the gate fails on any NEW gap/duplicate.
+//   INV-15  effect-worker tests (server/src/myrmidon/effect-worker/) never
+//           sleep: no setTimeout / setInterval / sleep in test files. Tests
+//           drain the worker explicitly and wait for concrete persisted
+//           milestones via the helpers in test-helpers.ts (t3code G).
 //
 // Usage:
 //   node scripts/myrmidon/ci/arch-invariants-gate.mjs [--root <dir>]
@@ -38,6 +42,7 @@ export const INVARIANTS = {
   INV12: "no pilot fields/word in swarm settings and code",
   INV13: "migration numbers unique, ordered, gapless in files and journal",
   INV14: INV14_DECISION_LAYER,
+  INV15: "effect-worker tests drain the worker and wait for concrete persisted milestones — no sleep",
 };
 
 const SWARM_SERVER_DIR = "server/src/myrmidon/swarm-claim";
@@ -405,6 +410,46 @@ export function checkMigrations(root) {
   return findings;
 }
 
+/** INV-15: effect-worker tests must not sleep. Sleeping waits make CI flaky
+ * and hide race conditions; the discipline is "drain the worker / wait for a
+ * concrete persisted milestone". The helpers in test-helpers.ts are the only
+ * allowed waiting primitives in this directory. */
+const EFFECT_WORKER_TEST_DIR = "server/src/myrmidon/effect-worker";
+const SLEEP_PATTERNS = [
+  /\bsetTimeout\s*\(/,
+  /\bsetInterval\s*\(/,
+  /\bsetImmediate\s*\(/,
+  /\bnew\s+Promise\s*\(\s*\(?\s*\w*\s*\)?\s*=>\s*setTimeout/,
+  /\bsleep\s*\(/,
+  /\bSleep\s*\(/,
+];
+
+export function checkEffectWorkerNoSleep(root) {
+  const findings = [];
+  const dir = path.join(root, EFFECT_WORKER_TEST_DIR);
+  if (!fs.statSync(dir, { throwIfNoEntry: false })?.isDirectory()) return findings;
+  const testFiles = fs
+    .readdirSync(dir)
+    .filter((f) => /\.(?:test|spec)\.tsx?$/.test(f));
+  for (const file of testFiles) {
+    const rel = `${EFFECT_WORKER_TEST_DIR}/${file}`;
+    const text = readIfExists(root, rel);
+    if (!text) continue;
+    const lines = text.split("\n");
+    lines.forEach((line, i) => {
+      // Allow the helpers module itself to use setImmediate for scheduler yields.
+      if (file === "test-helpers.ts") return;
+      for (const pattern of SLEEP_PATTERNS) {
+        if (pattern.test(line)) {
+          findings.push(`${rel}:${i + 1}: sleeping wait is forbidden in effect-worker tests (INV-15); use drainEffects / waitForEffectMilestone from test-helpers.ts`);
+          break;
+        }
+      }
+    });
+  }
+  return findings;
+}
+
 /** Runs all checks; returns { findings: [{ invariant, message }] }. */
 export function check(root) {
   const root_ = root ?? path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../..");
@@ -417,6 +462,7 @@ export function check(root) {
   push("INV-12", checkNoPilot(root_));
   push("INV-13", checkMigrations(root_));
   push("INV-14", checkDecisionLayerPurity(root_));
+  push("INV-15", checkEffectWorkerNoSleep(root_));
   push("ADR-INVENTORY", checkArchitectureInventory(root_));
   return { findings };
 }
@@ -439,7 +485,7 @@ function main(argv) {
     console.error("Fix the violation or change the invariant via an ADR (docs/architecture/adr/).");
     process.exit(1);
   }
-  console.log("ARCH-GUARD: all invariants hold (INV-10..INV-14).");
+  console.log("ARCH-GUARD: all invariants hold (INV-10..INV-15).");
 }
 
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {

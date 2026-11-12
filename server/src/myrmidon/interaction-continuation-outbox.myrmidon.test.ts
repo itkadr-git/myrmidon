@@ -19,12 +19,16 @@ import {
 } from "../__tests__/helpers/embedded-postgres.js";
 import {
   continuationPolicyWakesOnResolution,
+  CONTINUATION_DELIVER_EFFECT_KIND,
   interactionContinuationOutboxKey,
   interactionContinuationOutboxMutationOptions,
   interactionContinuationOutboxService,
   readOutboxSweepAgeMs,
   recordInteractionContinuationOutbox,
+  registerContinuationDeliverEffect,
 } from "./interaction-continuation-outbox.js";
+import { createEffectWorker } from "./effect-worker/effect-worker.js";
+import { waitForEffectMilestone } from "./effect-worker/test-helpers.js";
 import { createSecretProposalsService } from "../services/secret-proposals.js";
 import type { RequestConfirmationPayload, RequestConfirmationSecretProposalPayload } from "@myrmidon/shared";
 import { notifySecretProposalResolution } from "../services/secret-proposal-notifications.js";
@@ -1113,4 +1117,114 @@ describeEmbeddedPostgres("interaction continuation outbox", () => {
     );
     await recordIntent(seeded);
   }
+
+  // OPE-12798: continuation-delivery through the effect-worker layer. The
+  // intent row and idempotency key are unchanged; the drain runs the same
+  // post-claim body via the registered effect handler.
+  it("delivers through the effect-worker layer with the same idempotency key and records a milestone", async () => {
+    const seeded = await seed();
+    const { interaction } = seeded;
+    await recordIntent(seeded);
+
+    const emulatedRunId = "33333333-4444-4555-8666-777777777777";
+    const heartbeat = healthyHeartbeat(seeded, emulatedRunId);
+    const worker = createEffectWorker(db);
+    registerContinuationDeliverEffect(worker, db, heartbeat);
+
+    // Drain the effect worker: claims the intent, runs the deliver body,
+    // records the result as a milestone + run-event.
+    const drainResult = await worker.drain({
+      kinds: [CONTINUATION_DELIVER_EFFECT_KIND],
+    });
+
+    expect(drainResult.settled).toBe(1);
+    expect(heartbeat.wakeup).toHaveBeenCalledTimes(1);
+
+    // Idempotency key is preserved.
+    const intent = await readIntent(seeded);
+    expect(intent?.idempotencyKey).toBe(
+      interactionContinuationOutboxKey(interaction.id, "accepted"),
+    );
+    expect(intent?.status).toBe("coalesced");
+    expect(intent?.runId).toBe(emulatedRunId);
+
+    // The milestone is persisted on the intent row (result-as-command).
+    const milestone = await waitForEffectMilestone(
+      db,
+      interactionContinuationOutboxKey(interaction.id, "accepted"),
+      (effect) => effect.outcome === "settled",
+    );
+    expect(milestone.kind).toBe(CONTINUATION_DELIVER_EFFECT_KIND);
+    expect(milestone.outcome).toBe("settled");
+    expect(milestone.result).toMatchObject({ interactionId: interaction.id });
+  });
+
+  it("effect-worker drain is idempotent with the legacy sweep", async () => {
+    const seeded = await seed();
+    await recordIntent(seeded);
+
+    const emulatedRunId = "44444444-5555-4666-9777-888888888888";
+    const heartbeat = healthyHeartbeat(seeded, emulatedRunId);
+    const worker = createEffectWorker(db);
+    registerContinuationDeliverEffect(worker, db, heartbeat);
+
+    // First drain settles the intent.
+    const first = await worker.drain({ kinds: [CONTINUATION_DELIVER_EFFECT_KIND] });
+    expect(first.settled).toBe(1);
+    expect(heartbeat.wakeup).toHaveBeenCalledTimes(1);
+
+    // Second drain finds nothing to do (the intent is terminal).
+    const second = await worker.drain({ kinds: [CONTINUATION_DELIVER_EFFECT_KIND] });
+    expect(second.settled).toBe(0);
+    expect(second.scanned).toBe(0);
+    expect(heartbeat.wakeup).toHaveBeenCalledTimes(1);
+
+    // Legacy sweep also finds nothing.
+    const outbox = interactionContinuationOutboxService(db, heartbeat);
+    const sweepResult = await outbox.sweepPending({ sweepAgeMs: 0 });
+    expect(sweepResult.scanned).toBe(0);
+    expect(heartbeat.wakeup).toHaveBeenCalledTimes(1);
+  });
+
+  it("effect-worker drain releases the claim when the wake is refused, sweep retries later", async () => {
+    const seeded = await seed();
+    const { interaction } = seeded;
+    await recordIntent(seeded);
+
+    const refusingHeartbeat = {
+      wakeup: vi.fn(async () => null),
+    };
+    const worker = createEffectWorker(db);
+    registerContinuationDeliverEffect(worker, db, refusingHeartbeat);
+
+    // Drain: the handler runs, wakeup returns null (refused), the intent is released.
+    const first = await worker.drain({ kinds: [CONTINUATION_DELIVER_EFFECT_KIND] });
+    expect(first.released).toBe(1);
+    expect(refusingHeartbeat.wakeup).toHaveBeenCalledTimes(1);
+
+    // Intent is still queued, claim released.
+    const afterRelease = await readIntent(seeded);
+    expect(afterRelease?.status).toBe("queued");
+    expect(afterRelease?.claimedAt).toBeNull();
+
+    // Now swap in a healthy heartbeat and drain again: the intent is picked up.
+    const healthy = healthyHeartbeat(seeded, "55555555-6666-4777-8888-999999999999");
+    const worker2 = createEffectWorker(db);
+    registerContinuationDeliverEffect(worker2, db, healthy);
+    const second = await worker2.drain({ kinds: [CONTINUATION_DELIVER_EFFECT_KIND] });
+    expect(second.settled).toBe(1);
+    expect(healthy.wakeup).toHaveBeenCalledTimes(1);
+
+    const settled = await readIntent(seeded);
+    expect(settled?.status).toBe("coalesced");
+    expect(settled?.runId).toBe("55555555-6666-4777-8888-999999999999");
+
+    // Milestone confirms the result.
+    const milestone = await waitForEffectMilestone(
+      db,
+      interactionContinuationOutboxKey(interaction.id, "accepted"),
+      (effect) => effect.outcome === "settled",
+    );
+    expect(milestone.outcome).toBe("settled");
+  });
 });

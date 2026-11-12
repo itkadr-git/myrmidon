@@ -7,7 +7,7 @@ import { execFileSync, spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 
 // ARCH-GUARD: self-test of the invariants gate. Each invariant
-// (INV-10..INV-14) has a RED side: a sandboxed repo snapshot in which the
+// (INV-10..INV-15) has a RED side: a sandboxed repo snapshot in which the
 // invariant is violated and the gate MUST fail. The green side is the real
 // checkout (checked once per suite run through the sandbox copy of a clean
 // main — here: a synthetic minimal-clean snapshot passes).
@@ -19,6 +19,7 @@ import {
   checkNoPilot,
   checkMigrations,
   checkDecisionLayerPurity,
+  checkEffectWorkerNoSleep,
   TEST_HOOKS,
 } from "./arch-invariants-gate.mjs";
 
@@ -399,6 +400,46 @@ describe("INV-13: migration numbering", () => {
   });
 });
 
+describe("INV-15: effect-worker tests do not sleep", () => {
+  it("passes a clean effect-worker test directory", () => {
+    const dir = sandbox({
+      "server/src/myrmidon/effect-worker/effect-worker.myrmidon.test.ts": `import { drainEffects } from "./test-helpers.js";\nawait drainEffects(worker);\n`,
+    });
+    assert.deepEqual(checkEffectWorkerNoSleep(dir), []);
+  });
+
+  it("RED: flags setTimeout in an effect-worker test", () => {
+    const dir = sandbox({
+      "server/src/myrmidon/effect-worker/effect-worker.myrmidon.test.ts": `await new Promise((r) => setTimeout(r, 100));\n`,
+    });
+    const findings = checkEffectWorkerNoSleep(dir);
+    assert.ok(findings.length > 0);
+    assert.match(findings[0], /INV-15/);
+  });
+
+  it("RED: flags sleep() in an effect-worker test", () => {
+    const dir = sandbox({
+      "server/src/myrmidon/effect-worker/effect-worker.myrmidon.test.ts": `await sleep(100);\n`,
+    });
+    const findings = checkEffectWorkerNoSleep(dir);
+    assert.ok(findings.length > 0);
+    assert.match(findings[0], /INV-15/);
+  });
+
+  it("ignores setImmediate inside test-helpers.ts", () => {
+    const dir = sandbox({
+      "server/src/myrmidon/effect-worker/test-helpers.ts": `await new Promise((r) => setImmediate(r));\n`,
+      "server/src/myrmidon/effect-worker/effect-worker.myrmidon.test.ts": `import { drainEffects } from "./test-helpers.js";\nawait drainEffects(worker);\n`,
+    });
+    assert.deepEqual(checkEffectWorkerNoSleep(dir), []);
+  });
+
+  it("no findings when the effect-worker directory does not exist", () => {
+    const dir = sandbox({});
+    assert.deepEqual(checkEffectWorkerNoSleep(dir), []);
+  });
+});
+
 describe("gate end-to-end", () => {
   it("RED: a violated repo exits 1 with the invariant named", () => {
     const dir = sandbox({
@@ -413,6 +454,19 @@ describe("gate end-to-end", () => {
     assert.equal(run.status, 1);
     assert.match(run.stderr, /INV-12/);
     assert.match(run.stderr, /INV-13/);
+  });
+
+  it("RED: a repo with sleeping effect-worker tests exits 1 with INV-15 named", () => {
+    const dir = sandbox({
+      "server/src/myrmidon/effect-worker/effect-worker.myrmidon.test.ts": `await new Promise((r) => setTimeout(r, 100));\n`,
+      "server/src/myrmidon/swarm-claim/settings.ts": `export const swarm = {} as const;\n`,
+      "packages/shared/src/myrmidon-swarm-claim.ts": "export function orderSwarmQueueCandidates(candidates) { return candidates; }\n",
+      "packages/db/src/migrations/0001_init.sql": "-- migration\n",
+      "packages/db/src/migrations/meta/_journal.json": JSON.stringify({ entries: [{ tag: "0001_init" }] }),
+    });
+    const run = spawnSync(process.execPath, [SCRIPT, "--root", dir], { encoding: "utf8" });
+    assert.equal(run.status, 1);
+    assert.match(run.stderr, /INV-15/);
   });
 
   it("usage error exits 2", () => {
