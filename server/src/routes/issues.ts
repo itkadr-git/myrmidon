@@ -397,6 +397,9 @@ import {
   type IssuePostCommitAction,
 } from "../services/issues.js";
 import { authorizationDeniedDetails } from "../services/authorization.js";
+import {
+  PRIVATE_NEIGHBOUR_STUB,
+} from "../services/issue-visibility.js";
 import { stalledReviewDecisionService } from "../services/stalled-review-decisions.js";
 import { environmentService } from "../services/environments.js";
 import { environmentRuntimeService } from "../services/environment-runtime.js";
@@ -5939,14 +5942,30 @@ export function issueRoutes(
   async function filterIssuesForActor<
     T extends Parameters<typeof decideIssueAccess>[1] & { isPrivate?: boolean | null },
   >(req: Request, rows: T[]) {
-    const visibleRows =
-      req.actor.type === "agent"
-        ? rows.filter((issue) => !issue.isPrivate)
-        : rows;
+    if (req.actor.type !== "agent") return rows;
+    const needsDecision: T[] = [];
+    for (const issue of rows) {
+      if (issue.isPrivate) continue;
+      // 1.7 PRIVATE-TASKS F4: a service-masked private neighbour arrives as
+      // the "Private task" stub with isPrivate stripped, and its visibility
+      // decision was already made by the masking service. Re-deciding would
+      // re-derive ground truth from the database by row id — the
+      // deny_private_issue gate then drops a stub the F4 contract mandates
+      // stays listed (main-red #3040: "private blocker must stay listed").
+      if (PRIVATE_NEIGHBOUR_STUB in issue) continue;
+      needsDecision.push(issue);
+    }
     const decisions = await Promise.all(
-      visibleRows.map((issue) => decideIssueAccess(req, issue, "issue:read")),
+      needsDecision.map((issue) => decideIssueAccess(req, issue, "issue:read")),
     );
-    return visibleRows.filter((_, index) => decisions[index]?.allowed);
+    const allowed = new Set(
+      needsDecision.filter((_, index) => decisions[index]?.allowed),
+    );
+    // Stubs stay without a decision; raw private rows and denied rows drop
+    // exactly like the pre-F4-gate filter did.
+    return rows.filter(
+      (issue) => PRIVATE_NEIGHBOUR_STUB in issue || allowed.has(issue),
+    );
   }
 
   async function actorCanReadCompanyScope(req: Request, companyId: string) {
