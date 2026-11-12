@@ -222,12 +222,16 @@ describe("review wake liveness", () => {
   }
 
   it("wakes one stale pending review per reviewer when no run or wake exists", async () => {
+    // myrmidon(OPE-12886): the default fixture age is fresh (< stale window),
+    // so the stale-first rows carry an explicit old updatedAt — as on the
+    // board, where the assigned queue sits untouched for hours.
+    const stale = { updatedAt: new Date(NOW.getTime() - 10 * 60_000) };
     const t = setup({}, { wakeStates: new Map([
       ["1", { activeRun: false, pendingWake: false, lastWakeAt: null, attempts: 0 }],
       ["2", { activeRun: false, pendingWake: false, lastWakeAt: null, attempts: 0 }],
     ]) });
-    t.fixture.rows.set("1", pending("1", REV_A));
-    t.fixture.rows.set("2", pending("2", REV_A));
+    t.fixture.rows.set("1", pending("1", REV_A, stale));
+    t.fixture.rows.set("2", pending("2", REV_A, stale));
     t.fixture.rows.set("3", pending("3", REV_B));
     t.fixture.wakeStates!.set("1", { activeRun: false, pendingWake: false, lastWakeAt: null, attempts: 0 });
     t.fixture.wakeStates!.set("2", { activeRun: false, pendingWake: false, lastWakeAt: null, attempts: 0 });
@@ -260,12 +264,16 @@ describe("review wake liveness", () => {
     expect(t.wakeReviewer).toHaveBeenCalledTimes(1);
   });
 
-  it("measures the 30-minute stale threshold from last update, not issue creation", async () => {
+  it("measures the stale threshold from last update, not issue creation (OPE-12886: woken within 5 minutes)", async () => {
     const t = setup({}, { wakeStates: new Map() });
-    t.fixture.rows.set("1", pending("1", REV_A, { updatedAt: new Date(NOW.getTime() - 10 * 60_000) }));
+    t.fixture.rows.set("1", pending("1", REV_A, { updatedAt: new Date(NOW.getTime() - 3 * 60_000) }));
     const result = await t.sweep.sweep(NOW, { force: true });
     expect(result.woken).toBe(0);
     expect(t.wakes).toHaveLength(0);
+    // OPE-12886 acceptance bound: the wake must be dispatched by minute five.
+    const resultAtFive = await t.sweep.sweep(new Date(NOW.getTime() - 5 * 60_000), { force: true });
+    expect(resultAtFive.woken).toBe(1);
+    expect(t.wakes).toHaveLength(1);
   });
 
   it("uses the persisted wake time instead of a later issue update", async () => {
@@ -302,14 +310,20 @@ describe("review wake liveness", () => {
   });
 
   it("recovers stale reviews regardless of assignment load, while respecting active runs and pending wakes", async () => {
+    // myrmidon(OPE-12886): assigned queue depth no longer blocks the
+    // liveness wake — an idle reviewer (0 active runs) behind ANY queue is
+    // woken on the oldest stale review. This rows update also emulates the
+    // incident: loads 1..queueThreshold previously skipped such reviewers
+    // entirely (all six were idle behind 4-7 assigned tasks).
     const t = setup({ maxLoadPerReviewer: 1 }, { wakeStates: new Map() });
-    t.fixture.load.set(REV_A, 12);
+    t.fixture.load.set(REV_A, 5); // idle behind 5 assigned in_review tasks (< queueThreshold 8)
     t.fixture.wakeStates!.set("1", { activeRun: false, pendingWake: false, lastWakeAt: null, attempts: 0 });
     t.fixture.wakeStates!.set("2", { activeRun: true, pendingWake: false, lastWakeAt: null, attempts: 0 });
     t.fixture.wakeStates!.set("3", { activeRun: false, pendingWake: true, lastWakeAt: null, attempts: 0 });
-    t.fixture.rows.set("1", pending("1", REV_A));
-    t.fixture.rows.set("2", pending("2", REV_A));
-    t.fixture.rows.set("3", pending("3", REV_A));
+    const stale = { updatedAt: new Date(NOW.getTime() - 10 * 60_000) };
+    t.fixture.rows.set("1", pending("1", REV_A, stale));
+    t.fixture.rows.set("2", pending("2", REV_A, stale));
+    t.fixture.rows.set("3", pending("3", REV_A, stale));
     const result = await t.sweep.sweep(NOW, { force: true });
     expect(result.woken).toBe(1);
     // Liveness wakes REV_A for "1"; REV_A is then overloaded (12 > queueThreshold 8),
