@@ -61,11 +61,6 @@ describeEmbeddedPostgres("stuck triggered issue monitor sweep", () => {
     // breaks the delete of companies (OPE-12856 CI failures).
     await drainHeartbeatRunsToQuiescence(db, heartbeatService(db));
     await db.delete(heartbeatRunEvents);
-    // Wake rows go before issues/heartbeat_runs: a late claim flips a wake from
-    // "queued" to "claimed" through a live agent, so its parent rows must still
-    // exist when the claim's UPDATE lands. Deleting the wake first makes a
-    // straggler INSERT loud here instead of an orphan row later.
-    await db.delete(agentWakeupRequests);
     await db.delete(issueRecoveryActions);
     await db.delete(issueComments);
     await db.delete(documentRevisions);
@@ -76,7 +71,12 @@ describeEmbeddedPostgres("stuck triggered issue monitor sweep", () => {
     await db.delete(environmentLeases);
     await db.delete(workspaceRuntimeServices);
     await db.delete(issues);
+    // heartbeat_runs rows carry wakeup_request_id -> agent_wakeup_requests, so
+    // the runs must go first: deleting wakes while a run still references one
+    // breaks heartbeat_runs_wakeup_request_id_agent_wakeup_requests_id_fk
+    // (OPE-12856 CI: 23503 on delete from agent_wakeup_requests).
     await db.delete(heartbeatRuns);
+    await db.delete(agentWakeupRequests);
     // Last backstop: if a wake claimed and registered its run between the two
     // drains above, the first drain could not have seen it. Re-drain before the
     // deletes that the run's epilogue writes touch (agents, company_skills).
