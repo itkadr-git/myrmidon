@@ -20,7 +20,7 @@
 //     on the next tick;
 //  8. the settings reader: defaults, stored override, env kill switch.
 
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterAll, afterEach, beforeEach, beforeAll, describe, expect, it, vi } from "vitest";
 import express from "express";
 import request from "supertest";
 import type { Db } from "@myrmidon/db";
@@ -793,5 +793,207 @@ describe("myrmidon(1.6.6 OPE-9996): Scent status and failure alarm", () => {
     expect(health.alarm).toBe(false);
     expect(scentMetrics.isAlarm()).toBe(false);
     expect(loggedEntries).toHaveLength(0);
+  });
+});
+
+// --- 10. myrmidon(1.6.8 SCENT-AUTHZ OPE-12698): board-only refresh routes ----
+//
+// The two refresh routes previously let ANY company agent key through and
+// returned the RAW DB row (adapter_config, title, description …). The fix:
+// board-only access (403 for agent keys BEFORE any db/gateway work — the fake
+// gateway must see zero calls) plus an explicit response field allowlist.
+// These tests need real rows to prove the leak is closed, so they run against
+// an embedded Postgres like the other route acceptance tests.
+
+import { createDb, activityLog, agents, companies, issues } from "@myrmidon/db";
+import {
+  getEmbeddedPostgresTestSupport,
+  startEmbeddedPostgresTestDatabase,
+  type EmbeddedPostgresTestDatabase,
+} from "../__tests__/helpers/embedded-postgres.js";
+
+const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
+const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
+
+if (!embeddedPostgresSupport.supported) {
+  console.warn(
+    `Skipping embedded Postgres scent-authz tests on this host: ${
+      embeddedPostgresSupport.reason ?? "unsupported environment"
+    }`,
+  );
+}
+
+describeEmbeddedPostgres("myrmidon(1.6.8 SCENT-AUTHZ OPE-12698): scent refresh board-only + allowlisted response", () => {
+  const AGENT_ID = "00000000-0000-4000-8000-000000000002";
+  const ISSUE_ID = "00000000-0000-4000-8000-000000000003";
+  const ADAPTER_CONFIG_MARKER = { env: { TOKEN: { type: "plain", value: "sk-secret-marker" } } };
+  let db!: Db;
+  let tempDb: EmbeddedPostgresTestDatabase | null = null;
+
+  beforeAll(async () => {
+    tempDb = await startEmbeddedPostgresTestDatabase("myrmidon-scent-authz-");
+    db = createDb(tempDb.connectionString);
+  }, 20_000);
+
+  afterEach(async () => {
+    await db.delete(activityLog);
+    await db.delete(issues);
+    await db.delete(agents);
+    await db.delete(companies);
+  });
+
+  afterAll(async () => {
+    await tempDb?.cleanup();
+  });
+
+  async function seedCompanyData() {
+    await db.insert(companies).values({ id: COMPANY_ID, name: "Scent Authz Co" });
+    await db.insert(agents).values({
+      id: AGENT_ID,
+      companyId: COMPANY_ID,
+      name: "scent-agent",
+      capabilities: "Triage of incoming bugs and routing",
+      adapterConfig: ADAPTER_CONFIG_MARKER,
+      runtimeConfig: { model: "gpt-x" },
+      metadata: { internalNote: "do-not-leak" },
+      scentTags: [],
+    });
+    await db.insert(issues).values({
+      id: ISSUE_ID,
+      companyId: COMPANY_ID,
+      title: "Fix the login button",
+      description: "The login button ignores clicks on Safari.",
+      status: "todo",
+      assigneeAgentId: AGENT_ID,
+    });
+  }
+
+  function boardActor() {
+    return {
+      type: "board",
+      source: "local_implicit",
+      userId: "user-a",
+      companyIds: [COMPANY_ID],
+      memberships: [{ companyId: COMPANY_ID, membershipRole: "owner", status: "active" }],
+      isInstanceAdmin: true,
+    } as Express.Request["actor"];
+  }
+
+  function agentActor() {
+    return {
+      type: "agent",
+      agentId: AGENT_ID,
+      companyId: COMPANY_ID,
+      source: "agent_key",
+    } as Express.Request["actor"];
+  }
+
+  function makeScentApp(db: Db, ports: ScentQueuePorts, actor: Express.Request["actor"]) {
+    const app = express();
+    app.use(express.json());
+    app.use((req, _res, next) => {
+      req.actor = actor;
+      next();
+    });
+    app.use("/api", myrmidonScentRoutes(db, ports));
+    app.use(errorHandler);
+    return app;
+  }
+
+  function fakeGatewayResponse(content: unknown): typeof fetch {
+    const stub: typeof fetch = (_input, _init) =>
+      Promise.resolve(new Response(JSON.stringify({
+        choices: [{ message: { content: JSON.stringify(content) } }],
+        usage: { prompt_tokens: 10, completion_tokens: 5 },
+      }), { status: 200 }));
+    return stub;
+  }
+
+  function portsWithFakeGateway() {
+    return {
+      getGeneral: async () => ({ swarm: { scent: { enabled: true } } }),
+      resolveSecret: async () => null,
+      listCastes: async () => CASTES.map((key) => ({ key })),
+      fetch: fakeGatewayResponse(CSS_SCENT),
+    };
+  }
+
+  it("rejects an agent key on the issue refresh with 403 BEFORE any db or gateway work", async () => {
+    await seedCompanyData();
+    const fetchSpy = vi.fn(portsWithFakeGateway().fetch);
+    const app = makeScentApp(db, { ...portsWithFakeGateway(), fetch: fetchSpy }, agentActor());
+
+    const res = await request(app)
+      .post(`/api/myrmidon/companies/${COMPANY_ID}/issues/${ISSUE_ID}/scent/refresh`);
+
+    expect(res.status).toBe(403);
+    expect(res.body.error).toBe("Board access required");
+    expect(fetchSpy).not.toHaveBeenCalled();
+    // No ledger entry either: the route never reached the classification path.
+    const ledger = await db.select().from(activityLog);
+    expect(ledger).toHaveLength(0);
+  });
+
+  it("rejects an agent key on the agent refresh with 403 BEFORE any db or gateway work", async () => {
+    await seedCompanyData();
+    const fetchSpy = vi.fn(portsWithFakeGateway().fetch);
+    const app = makeScentApp(db, { ...portsWithFakeGateway(), fetch: fetchSpy }, agentActor());
+
+    const res = await request(app)
+      .post(`/api/myrmidon/companies/${COMPANY_ID}/agents/${AGENT_ID}/scent/refresh`);
+
+    expect(res.status).toBe(403);
+    expect(res.body.error).toBe("Board access required");
+    expect(fetchSpy).not.toHaveBeenCalled();
+    const ledger = await db.select().from(activityLog);
+    expect(ledger).toHaveLength(0);
+  });
+
+  it("board issue refresh returns 200 with exactly the allowlisted issue fields", async () => {
+    await seedCompanyData();
+    const app = makeScentApp(db, portsWithFakeGateway(), boardActor());
+
+    const res = await request(app)
+      .post(`/api/myrmidon/companies/${COMPANY_ID}/issues/${ISSUE_ID}/scent/refresh`);
+
+    expect(res.status).toBe(200);
+    expect(Object.keys(res.body).sort()).toEqual(["issue"]);
+    expect(Object.keys(res.body.issue).sort()).toEqual([
+      "casteKey",
+      "casteSource",
+      "id",
+      "pheromoneStrength",
+      "scent",
+    ]);
+    // The classification actually ran and its scent is what comes back —
+    // not a raw row echo: no title/description/assigneeAgentId.
+    expect(res.body.issue.scent).toEqual(CSS_SCENT);
+    expect(res.body.issue.title).toBeUndefined();
+    expect(res.body.issue.description).toBeUndefined();
+    expect(res.body.issue.assigneeAgentId).toBeUndefined();
+  });
+
+  it("board agent refresh returns 200 with exactly the allowlisted agent fields", async () => {
+    await seedCompanyData();
+    const app = makeScentApp(db, {
+      ...portsWithFakeGateway(),
+      fetch: fakeGatewayResponse({ tags: ["triage"] }),
+    }, boardActor());
+    const res = await request(app)
+      .post(`/api/myrmidon/companies/${COMPANY_ID}/agents/${AGENT_ID}/scent/refresh`);
+
+    expect(res.status).toBe(200);
+    expect(Object.keys(res.body).sort()).toEqual(["agent"]);
+    expect(Object.keys(res.body.agent).sort()).toEqual([
+      "id",
+      "modelTier",
+      "scentClassifiedAt",
+      "scentTags",
+    ]);
+    // adapterConfig/runtimeConfig/metadata never leave the server.
+    expect(res.body.agent.adapterConfig).toBeUndefined();
+    expect(res.body.agent.runtimeConfig).toBeUndefined();
+    expect(res.body.agent.metadata).toBeUndefined();
+    expect(res.body.agent.scentTags).toEqual(["triage"]);
   });
 });
