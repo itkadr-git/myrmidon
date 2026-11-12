@@ -52,7 +52,13 @@ import {
 } from "@myrmidon/shared";
 import { logger } from "../../middleware/logger.js";
 import type { BoardMergeClient } from "./github-board-merge.js";
-import { decideBoardMerge, type BoardMergeReturnReason } from "./pr-policy.js";
+import {
+  decideBoardMerge,
+  pullRequiresFullCi,
+  requiredChecksForPull,
+  BOARD_MERGE_FULL_CI_LABEL,
+  type BoardMergeReturnReason,
+} from "./pr-policy.js";
 import type { ApprovedPrIssueRow, ReviewRoutingStore } from "./store.js";
 
 export interface BoardMergeDeps {
@@ -248,14 +254,42 @@ export function createBoardMerger(deps: BoardMergeDeps): BoardMerger {
       }
       result.evaluated += 1;
       const facts = pull.facts;
+
+      let files: readonly string[] | null = null;
+      if (deps.client.readPullFiles) {
+        const filesResult = await deps.client.readPullFiles({
+          companyId,
+          repository: row.repository,
+          number: row.number,
+        });
+        if (!filesResult.ok) {
+          if (filesResult.reason === "rate_limited") {
+            ctx.stop = true;
+          } else {
+            result.failed += 1;
+            rest(key, now, BOARD_MERGE_COOLDOWN_MS);
+            warnThrottled(`files:${key}:${filesResult.reason}`, now, { pr, reason: filesResult.reason }, "board merge: reading pull request files failed");
+          }
+          return;
+        }
+        files = filesResult.files;
+      }
+
+      const effectiveRequiredChecks = requiredChecksForPull({
+        defaultChecks: merge.requiredChecks,
+        files,
+        labels: facts.labels,
+      });
+
       const decide = (checks: Parameters<typeof decideBoardMerge>[0]["checks"]) =>
         decideBoardMerge({
           facts,
           baseBranches: merge.baseBranches,
           verdict: row.verdict,
           checks,
-          requiredChecks: merge.requiredChecks,
+          requiredChecks: effectiveRequiredChecks,
           approvedLabel: REVIEW_ROUTING_APPROVED_LABEL,
+          files,
         });
 
       let decision = decide(null);
@@ -264,7 +298,7 @@ export function createBoardMerger(deps: BoardMergeDeps): BoardMerger {
           companyId,
           repository: row.repository,
           headSha: facts.headSha!,
-          names: merge.requiredChecks,
+          names: effectiveRequiredChecks,
         });
         if (!checks.ok) {
           if (checks.reason === "rate_limited") {
@@ -288,21 +322,23 @@ export function createBoardMerger(deps: BoardMergeDeps): BoardMerger {
 
         case "wait":
         case "read_checks":
+        case "read_files":
           result.waiting += 1;
           return;
 
         case "label": {
+          const labelToApply = final.label ?? REVIEW_ROUTING_APPROVED_LABEL;
           const labeled = await deps.client.addApprovedLabel({
             companyId,
             repository: row.repository,
             number: row.number,
-            label: REVIEW_ROUTING_APPROVED_LABEL,
+            label: labelToApply,
           });
           // The gate that reads the label is a workflow run: look again after it had time to start.
           rest(key, now, BOARD_MERGE_COOLDOWN_MS);
           if (!labeled) {
             result.failed += 1;
-            warnThrottled(`label:${key}`, now, { pr }, "board merge: could not put the review marker on the pull request");
+            warnThrottled(`label:${key}`, now, { pr, label: labelToApply }, "board merge: could not put the label on the pull request");
             return;
           }
           result.labeled += 1;
@@ -311,7 +347,7 @@ export function createBoardMerger(deps: BoardMergeDeps): BoardMerger {
               companyId,
               action: REVIEW_ROUTING_BOARD_MERGE_LABELED_ACTION,
               issueId: row.issueId,
-              details: { repository: row.repository, pullRequest: row.number, headSha, label: REVIEW_ROUTING_APPROVED_LABEL },
+              details: { repository: row.repository, pullRequest: row.number, headSha, label: labelToApply },
             }),
           );
           return;

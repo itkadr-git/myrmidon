@@ -4,7 +4,12 @@ import path from "node:path";
 import { gunzipSync } from "node:zlib";
 import { afterEach, describe, expect, it } from "vitest";
 import postgres from "postgres";
-import { createBufferedTextFileWriter, runDatabaseBackup, runDatabaseRestore } from "./backup-lib.js";
+import {
+  createBufferedTextFileWriter,
+  parseBackupMinFreeBytes,
+  runDatabaseBackup,
+  runDatabaseRestore,
+} from "./backup-lib.js";
 import { ensurePostgresDatabase } from "./client.js";
 import {
   getEmbeddedPostgresTestSupport,
@@ -84,6 +89,31 @@ describe("createBufferedTextFileWriter", () => {
     expect(fs.readdirSync(tempDir)).toEqual(["backup.sql.gz"]);
   });
 });
+
+// myrmidon(OPE-12551): parseBackupMinFreeBytes lets tests lower the backup
+// free-space floor (CI runners sit right at the 6 GiB default; the embedded
+// cluster's own 1M-row probe table pushed workspaces-b under it mid-job).
+// The parser is the override contract: valid bytes pass through, anything
+// unset/blank/invalid/negative falls back to the 6 GiB production default.
+describe("parseBackupMinFreeBytes", () => {
+  const GIB = 1024 * 1024 * 1024;
+
+  it("parses a valid byte count", () => {
+    expect(parseBackupMinFreeBytes("67108864")).toBe(64 * 1024 * 1024);
+  });
+
+  it("accepts 0 to disable the gate", () => {
+    expect(parseBackupMinFreeBytes("0")).toBe(0);
+  });
+
+  it.each([undefined, "", "   ", "not-a-number", "-1", "1e999"])(
+    "falls back to the 6 GiB default for %j",
+    (rawValue) => {
+      expect(parseBackupMinFreeBytes(rawValue)).toBe(6 * GIB);
+    },
+  );
+});
+
 
 describeEmbeddedPostgres("runDatabaseBackup", () => {
   it(
