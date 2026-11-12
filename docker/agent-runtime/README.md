@@ -128,14 +128,21 @@ recreate.
 ### Shared package cache (OPE-12722)
 
 The runner shares the board's package cache the way the bot containers do. Set
-`OMP_RUNNER_CACHE_DIR` in the env file: a directory on the bot data disk, e.g.
-`/srv/myrmidon-cache` — the board's `general.botDisk.sharedPackageCachePath`.
-The compose file binds two subdirectories into the container:
+`OMP_RUNNER_CACHE_DIR` in the env file (optional): a directory on the bot data
+disk, e.g. `/srv/myrmidon-cache` — the board's
+`general.botDisk.sharedPackageCachePath`. Without it the compose file uses
+`${OMP_RUNNER_DATA_DIR}/cache`, a cache private to the runner that holds no
+board mirrors (the git wrapper then simply does nothing). The compose file binds
+two subdirectories into the container. Create both **before the first start**:
+docker creates a missing bind source as root.
 
 - `<OMP_RUNNER_CACHE_DIR>/git` → `/cache/git` (read-only). The board's git
-  mirrors live there (`git/<owner>/<repo>.git`, kept fresh by the board). The
-  image installs a small wrapper at `/usr/local/bin/git`, which the PATH
-  resolves ahead of `/usr/bin/git`: a plain
+  mirrors live there (`git/<owner>/<repo>.git`); the board writes and refreshes
+  them, so the directory must belong to the **board's user** and be
+  world-readable: `install -d -o <board uid> -m 0755 <OMP_RUNNER_CACHE_DIR>/git`.
+  If docker creates it as root instead, the board cannot write its mirrors
+  there. The image installs a small wrapper at `/usr/local/bin/git`, which the
+  PATH resolves ahead of `/usr/bin/git`: a plain
   `git clone https://github.com/<owner>/<repo>.git` runs as
   `git clone --reference-if-able /cache/git/<owner>/<repo>.git …`, so the clone
   borrows the existing objects instead of downloading a full pack again. The
@@ -143,27 +150,50 @@ The compose file binds two subdirectories into the container:
   clone without a mirror (another host, a storage-deciding option such as
   `--dissociate` or `--filter`) runs unchanged. A clone never fails because of
   the wrapper.
-- `<OMP_RUNNER_CACHE_DIR>/pnpm` → `/cache/pnpm` (read-write). The entrypoint
-  writes `/etc/profile.d/omp-runner-cache.sh` with
-  `npm_config_cache_dir=/cache/pnpm`; sshd does not pass container environment
-  variables to logins, and profile.d is what every board-spawned SSH command
-  and agent shell sources. npm and pnpm keep their registry download cache
-  there instead of one copy per runner. Create the directory before the first
-  start: `install -d -o 1000 -g 1000 <OMP_RUNNER_CACHE_DIR>/pnpm` (the
-  entrypoint also chowns it, but a mount point created by docker as root would
-  shadow it).
+- `<OMP_RUNNER_CACHE_DIR>/pnpm-omp` → `/cache/pnpm` (read-write). The runners'
+  **own** directory, owned by uid 1000:
+  `install -d -o 1000 -g 1000 -m 0755 <OMP_RUNNER_CACHE_DIR>/pnpm-omp`. It is
+  deliberately not `<OMP_RUNNER_CACHE_DIR>/pnpm`: the hermes bots (uid 10001)
+  mount that one and their prepare step re-owns it, so a runner that chowned it
+  would flip the owner back and forth and break one side. The entrypoint writes
+  `/etc/profile.d/omp-runner-cache.sh` with `npm_config_cache_dir=/cache/pnpm`
+  (sshd does not pass container environment variables to logins, and profile.d
+  is what every board-spawned SSH command and agent shell sources) when uid 1000
+  owns the mount. It fixes only a root-owned directory (docker created it) and
+  never chowns one of another uid: it logs a warning and leaves the default
+  cache. `cache-dir` is **pnpm's** metadata cache (registry metadata, not the
+  packages, which go to the store); npm's own cache setting is `cache` and is
+  not changed, npm keeps `~/.npm`.
 
-The pnpm **store** is never under `/cache`: the entrypoint writes
+The pnpm **store** is on neither mount. The entrypoint writes
 `/etc/profile.d/omp-runner-pnpm.sh` with
-`npm_config_store_dir=/workspace/.pnpm-store` and
-`npm_config_package_import_method=clone`, so pnpm imports `node_modules` by
-reflink from a store inside the workspace volume — one store per runner. A link
-cannot cross a filesystem boundary, which is why the store must not sit on the
-`/cache` bind (BOT-DISK-D in the bot-runtime image).
+`npm_config_store_dir=/workspace/.paperclip-runtime/pnpm-store` and
+`npm_config_package_import_method=clone-or-copy`, one store per runner, in the
+`workspace` volume. A link cannot cross a filesystem boundary, so the store must
+not sit on the `/cache` bind (BOT-DISK-D in the bot-runtime image); it must be on
+the same mount as the clones. It sits inside `.paperclip-runtime` because the
+board cleans the synchronized workspace on its own terms (`git clean -fdx -e
+.paperclip-runtime`, emptying the directory except `.paperclip-runtime`, a
+post-run cleanup that keeps only `.paperclip-runtime`) and never syncs that
+directory; only `.paperclip-runtime/runs/` is pruned. A store at
+`/workspace/.pnpm-store` would not have that protection. The reasoning is also
+in the header of `omp-ssh/compose.yml`.
 
-Measure the acceptance after a second task copy on the same runner:
-`docker exec <runner-name> du -xs /workspace` should add well under 700 MB
-(new objects and packages only, not a second full clone + store).
+`clone-or-copy` makes pnpm reflink packages from the store where the filesystem
+supports it (XFS with reflink enabled) and copy them otherwise. pnpm 9 does not
+fail when a reflink or link is refused, whatever the method: it copies silently.
+Nothing here turns a missing reflink into an error, so check the disk.
+
+Measure the acceptance by the disk, not by `du`: `du` counts a reflinked or
+hard-linked file at every path where it appears, so it reports far more than
+the disk holds. Take
+`df --output=used -B1M <OMP_RUNNER_DATA_DIR>` on the host before and after a
+second task copy on the same runner, with no other run or runner writing to that
+disk meanwhile. The delta should stay well under 700 MB (new objects and
+packages only, not a second full clone and store); a delta close to the size of
+the copy's `node_modules` means the reflink did not happen and pnpm copied. The
+store only grows: `pnpm store prune` (as the user `paperclip`) drops packages no
+project uses.
 
 One runner per agent:
 
@@ -172,7 +202,9 @@ One runner per agent:
 2. Start the container from `docker/agent-runtime/omp-ssh/compose.yml`. Use an
    env file with `OMP_RUNNER_NAME`, `OMP_RUNNER_IMAGE` (a digest from a
    successful signed workflow run), `OMP_RUNNER_AUTHORIZED_KEYS` (the public
-   key file) and `OMP_RUNNER_NETWORK` (the board container's network) and `OMP_RUNNER_DATA_DIR`: a directory on the bot data disk, not the root disk, with subdirectories `workspace/` (owned by 1000:1000), `home/` and `hostkeys/`. Agents clone and build repositories there, gigabytes per agent. The
+   key file) and `OMP_RUNNER_NETWORK` (the board container's network) and `OMP_RUNNER_DATA_DIR`: a directory on the bot data disk, not the root disk, with subdirectories `workspace/` (owned by 1000:1000), `home/` and `hostkeys/`. Agents clone and build repositories there, gigabytes per agent. Optionally
+   `OMP_RUNNER_CACHE_DIR` (the shared package cache above; create its `git` and
+   `pnpm-omp` subdirectories first). The
    limits default to 4 GB, 1 CPU and 1024 processes, as for an engineer bot
    container. Run
    `docker compose -p <runner-name> --env-file <file> -f docker/agent-runtime/omp-ssh/compose.yml up -d`.
@@ -191,6 +223,34 @@ Check after the first run: `docker top <board container>` shows no `omp`
 process during the run, and `docker top <runner-name>` shows it. The run log
 names the SSH environment in its `Syncing workspace and OMP runtime assets to`
 line.
+
+### Updating a runner that already runs (shared cache rollout)
+
+A runner started before the shared cache has no cache mounts and none of its
+environment files. Per runner, one at a time, while its agent has no run in
+progress (a recreate stops sshd and any run on it):
+
+1. Set `OMP_RUNNER_IMAGE` in the runner's env file to the new digest of a
+   successful signed workflow run.
+2. Optional: add `OMP_RUNNER_CACHE_DIR=<the board's sharedPackageCachePath>`.
+   Without the line the runner gets a private cache under
+   `${OMP_RUNNER_DATA_DIR}/cache` and works as before.
+3. Create the two directories (on the shared path; docker would create them as
+   root): `install -d -o <board uid> -m 0755 <OMP_RUNNER_CACHE_DIR>/git` and
+   `install -d -o 1000 -g 1000 -m 0755 <OMP_RUNNER_CACHE_DIR>/pnpm-omp`. The
+   `git` directory is the board's mirror directory; if the board already
+   mirrors there, it exists and nothing changes.
+4. Recreate: `docker compose -p <runner-name> --env-file <file> -f docker/agent-runtime/omp-ssh/compose.yml up -d`.
+   The `workspace`, `home` and `hostkeys` volumes are kept, so the pinned host
+   key is unchanged and the board's SSH environment needs no edit.
+5. Check: `docker logs <runner-name> 2>&1 | grep omp-runner:` shows
+   `pnpm metadata cache at /cache/pnpm` and `git mirrors at /cache/git: N repositories`
+   (and no `WARNING /cache/pnpm is owned by uid`);
+   `docker exec -u paperclip <runner-name> sh -c '. /etc/profile; command -v git; echo $npm_config_store_dir; echo $npm_config_cache_dir'`
+   prints `/usr/local/bin/git`, `/workspace/.paperclip-runtime/pnpm-store` and
+   `/cache/pnpm`.
+
+The pnpm store of the runner starts empty and fills on the first install.
 
 ## Publishing and Signing
 

@@ -1,7 +1,7 @@
 # myrmidon(OPE-12633 OMP-SSH-RUNNER): operator template, one SSH runner per
 # omp_local agent. See the "OMP SSH runner" section of
 # docker/agent-runtime/README.md for the whole procedure (key pair, board SSH
-# environment, agent default environment).
+# environment, agent default environment, cache directories, rollout).
 #
 # Required variables (an env file next to this compose file):
 #   OMP_RUNNER_NAME             container name, e.g. myrmidon-omp-runner-eng17
@@ -12,21 +12,53 @@
 #                               the bot data disk (XFS), not the root disk: agents clone and build
 #                               repositories there, gigabytes per agent. It must hold the
 #                               subdirectories workspace/ (owned by 1000:1000), home/ and hostkeys/.
-# myrmidon(OPE-12722 OMP-RUNNER-SHARED-CACHE): OMP_RUNNER_CACHE_DIR is the
-# runner's shared package cache directory on the bot data disk, e.g.
-# /srv/myrmidon-cache (the board's general.botDisk.sharedPackageCachePath).
-# It is bound at /cache: git/ holds the board's bare mirrors (the board keeps
-# them fresh; mounted read-only, the runner only reads them through the
-# wrapper at /usr/local/bin/git), pnpm/ is the runner's npm/pnpm download
-# cache. Create it owned by uid 1000 before the first start:
-#   install -d -o 1000 -g 1000 <OMP_RUNNER_CACHE_DIR>/pnpm
-# (git/ is created by the board on demand.)
-# Optional limits: OMP_RUNNER_MEMORY, OMP_RUNNER_CPUS, OMP_RUNNER_PIDS. The
-# defaults (4g, 1 CPU, 1024 processes) are those of an engineer bot container.
+# Optional variables:
+#   OMP_RUNNER_MEMORY, OMP_RUNNER_CPUS, OMP_RUNNER_PIDS. The defaults (4g, 1 CPU,
+#                               1024 processes) are those of an engineer bot container.
+#   OMP_RUNNER_CACHE_DIR        (myrmidon OPE-12722 OMP-RUNNER-SHARED-CACHE) the shared package
+#                               cache directory on the bot data disk, e.g. /srv/myrmidon-cache,
+#                               the board's general.botDisk.sharedPackageCachePath. Default:
+#                               ${OMP_RUNNER_DATA_DIR}/cache, a cache private to this runner (it
+#                               holds no board mirrors, so the git wrapper then does nothing).
+#                               Two subdirectories are bound, create both BEFORE the first start
+#                               (a missing bind source is created by docker as root):
+#     <cache>/git      -> /cache/git (read-only). The board's bare mirrors; the board writes and
+#                         refreshes them, the runner only reads them through the git wrapper at
+#                         /usr/local/bin/git. Owned by the BOARD's user, world-readable:
+#                           install -d -o <board uid> -m 0755 <cache>/git
+#                         If docker creates it as root instead, the board cannot write mirrors.
+#     <cache>/pnpm-omp -> /cache/pnpm. The runners' own pnpm metadata cache (cache-dir), shared by
+#                         all runners, owned by uid 1000:
+#                           install -d -o 1000 -g 1000 -m 0755 <cache>/pnpm-omp
+#                         It is NOT <cache>/pnpm: that directory belongs to the hermes bots
+#                         (uid 10001), whose prepare step re-owns it, and a runner must never
+#                         chown a directory the bots share. The entrypoint chowns /cache/pnpm
+#                         only when it is root-owned (created by docker) and otherwise leaves it.
+#
+# The pnpm STORE is on neither /cache mount nor at the root of the workspace
+# (myrmidon OPE-12722). A hard link or reflink cannot cross a mount point
+# (EXDEV), so the store must sit on the same mount as the clones: the
+# `workspace` volume. The board cleans what it syncs there, and every one of
+# its cleanups spares only `.paperclip-runtime`: a git-backed run does
+# `git clean -fdx -e .paperclip-runtime` (packages/adapter-utils/src/ssh.ts), a
+# plain run empties the directory except `.paperclip-runtime`
+# (clearRemoteDirectory), the post-run cleanup removes everything but
+# `.paperclip-runtime` (remote-managed-runtime.ts), and the sync in both
+# directions excludes it. Inside `.paperclip-runtime` only `runs/` is ever
+# pruned (older than 4 h, by the board and by the host GC). So the entrypoint
+# points pnpm at /workspace/.paperclip-runtime/pnpm-store (a profile.d file,
+# see entrypoint.sh): the store survives every board cleanup, stays on the
+# workspace mount and is never synced back. A store at /workspace/.pnpm-store
+# is spared today only because run copies live one level down, under
+# .paperclip-runtime/runs/<runId>/workspace; a cleanup at the workspace root
+# would remove it.
 #
 # No port is published: the board reaches the runner by container name on the
-# shared network. No host path other than the public key is mounted, so a host
-# path never sits inside the synchronized workspace (SANDBOX-REQUIREMENTS.md).
+# shared network. The host paths mounted are the board's public key
+# (read-only), the three data volumes under OMP_RUNNER_DATA_DIR and the two
+# cache directories above. The cache is bound at /cache, outside /workspace, so
+# no host path sits inside the synchronized workspace (SANDBOX-REQUIREMENTS.md);
+# the docker socket is never mounted.
 services:
   omp-runner:
     image: ${OMP_RUNNER_IMAGE:?set OMP_RUNNER_IMAGE}
@@ -46,8 +78,8 @@ services:
     volumes:
       - workspace:/workspace
       - home:/home/paperclip
-      - ${OMP_RUNNER_CACHE_DIR:?set OMP_RUNNER_CACHE_DIR}/git:/cache/git:ro
-      - ${OMP_RUNNER_CACHE_DIR:?set OMP_RUNNER_CACHE_DIR}/pnpm:/cache/pnpm
+      - ${OMP_RUNNER_CACHE_DIR:-${OMP_RUNNER_DATA_DIR:?set OMP_RUNNER_DATA_DIR}/cache}/git:/cache/git:ro
+      - ${OMP_RUNNER_CACHE_DIR:-${OMP_RUNNER_DATA_DIR:?set OMP_RUNNER_DATA_DIR}/cache}/pnpm-omp:/cache/pnpm
       - hostkeys:/var/lib/omp-runner/hostkeys
       - ${OMP_RUNNER_AUTHORIZED_KEYS:?set OMP_RUNNER_AUTHORIZED_KEYS}:/etc/ssh/omp-runner/authorized_keys:ro
 

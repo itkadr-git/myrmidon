@@ -70,7 +70,11 @@ COPY docker/agent-runtime/omp-ssh/entrypoint.sh /usr/local/bin/omp-runner-entryp
 # CommonJS marker beside it (the bot wrapper's 984781988) so the extension-less
 # file keeps CJS semantics under the repo root's "type": "module"; the image
 # copy does not include it — /usr/local/bin has no parent package.json, so
-# node defaults the file to CommonJS there.
+# node defaults the file to CommonJS there. Its shebang is the absolute
+# /usr/bin/node of the base image's NodeSource package, not `env node`: git runs
+# from hooks and `env -i` shells whose PATH may lack node. The build smoke below
+# RUNS the wrapper (a `git --version` through it, and a probe that the wrapper,
+# not /usr/bin/git, answered) and fails the build if it cannot.
 COPY docker/agent-runtime/omp-ssh/git-reference/git /usr/local/bin/git
 
 # The account must not be locked: with UsePAM off, sshd refuses every login of
@@ -80,8 +84,15 @@ RUN set -eu \
   && chmod 0755 /usr/local/bin/omp-runner-entrypoint /usr/local/bin/git \
   && chmod 0644 /etc/ssh/omp-runner/sshd_config \
   && node --check /usr/local/bin/git \
-  && echo "git wrapper: $(env -i PATH=/usr/local/bin:/usr/bin:/bin sh -c 'command -v git')" \
-  && echo "real git: $(/usr/bin/git --version | head -1)" \
+  && test -x /usr/bin/node \
+  && test "$(head -n 1 /usr/local/bin/git)" = '#!/usr/bin/node' \
+  && test "$(env -i PATH=/usr/local/bin:/usr/bin:/bin sh -c 'command -v git')" = /usr/local/bin/git \
+  && real_git="$(/usr/bin/git --version)" \
+  && wrapped_git="$(env -i PATH=/usr/local/bin:/usr/bin:/bin sh -c 'git --version')" \
+  && test -n "$real_git" \
+  && test "$wrapped_git" = "$real_git" \
+  && test "$(env -i PATH=/usr/local/bin:/usr/bin:/bin MYRMIDON_GIT_REAL=/bin/echo sh -c 'git wrapper-ran')" = wrapper-ran \
+  && echo "git wrapper: $wrapped_git" \
   && usermod -p '*' paperclip \
   && mkdir -p /run/sshd /var/lib/omp-runner/hostkeys /workspace /home/paperclip/.cache \
   && chown -R 1000:1000 /workspace /home/paperclip \

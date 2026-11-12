@@ -1,4 +1,4 @@
-#!/usr/bin/env node
+#!/usr/bin/node
 // docker/agent-runtime/omp-ssh/git-reference/git
 //
 // myrmidon(OPE-12722 OMP-RUNNER-SHARED-CACHE): git wrapper for the omp SSH
@@ -42,6 +42,12 @@
 //
 // CJS on purpose, like the other wrappers of this repository (no package.json
 // above /usr/local, so Node loads it as CommonJS).
+//
+// The interpreter is an absolute path, not `/usr/bin/env node`: git is started
+// from hooks, build scripts and `env -i` shells whose PATH may not hold node,
+// and a wrapper that cannot start would break every git call in the runner.
+// The base image installs Node from the NodeSource package, i.e. /usr/bin/node;
+// the Dockerfile smoke fails the build if that path or this line ever differs.
 
 "use strict";
 

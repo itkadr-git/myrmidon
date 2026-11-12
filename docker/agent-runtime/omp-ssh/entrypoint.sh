@@ -24,44 +24,71 @@ fi
 # The workspace and home volumes are created by docker as root on first use.
 chown 1000:1000 /workspace /home/paperclip
 
-# myrmidon(OPE-12722 OMP-RUNNER-SHARED-CACHE): npm and pnpm env for the
-# runner's SSH sessions. sshd does not pass container environment variables to
-# logins (PermitUserEnvironment no), and the board spawns every command as a
-# fresh SSH session, so Dockerfile ENV never reaches them: the only channel is
-# a profile file. /etc/profile.d/*.sh is sourced by /etc/profile before the
-# board's `exec env KEY=VAL <cmd>` (packages/adapter-utils ssh.ts) and by the
-# agent's own shells. Everything here is unconditional (unlike /cache/pnpm,
-# whose file is written only when the compose file mounts it):
-# - npm_config_store_dir=/workspace/.pnpm-store: the pnpm STORE lives in the
-#   workspace volume, one per runner — a store under /cache would make pnpm
-#   copy every package into every clone, because a reflink/hardlink cannot
-#   cross a filesystem boundary (BOT-DISK-D, bot-runtime image);
-# - npm_config_package_import_method=clone: a reflink, strictly — pnpm must
-#   fail loudly instead of silently copying when the kernel refuses it.
+# myrmidon(OPE-12722 OMP-RUNNER-SHARED-CACHE): pnpm env for the runner's SSH
+# sessions. sshd does not pass container environment variables to logins
+# (PermitUserEnvironment no), and the board spawns every command as a fresh SSH
+# session, so Dockerfile ENV never reaches them: the only channel is a profile
+# file. /etc/profile.d/*.sh is sourced by /etc/profile before the board's
+# `exec env KEY=VAL <cmd>` (packages/adapter-utils ssh.ts) and by the agent's
+# own shells. The pnpm file is unconditional (the cache file below is written
+# only when the compose file mounts a usable /cache/pnpm):
+# - npm_config_store_dir=/workspace/.paperclip-runtime/pnpm-store: the pnpm
+#   STORE lives in the workspace volume, one per runner — a store under /cache
+#   would make pnpm copy every package into every clone, because a
+#   reflink/hardlink cannot cross a filesystem boundary (BOT-DISK-D, bot-runtime
+#   image). It sits inside `.paperclip-runtime`, the one directory every board
+#   cleanup of the workspace spares (git clean -e, clearRemoteDirectory, the
+#   post-run cleanup) and the sync never copies; a store at /workspace/.pnpm-store
+#   would not have that protection (see compose.yml). pnpm creates the directory
+#   itself, as uid 1000 in the chowned /workspace;
+# - npm_config_package_import_method=clone-or-copy: a reflink where the
+#   filesystem has them (XFS with reflink=1), else a plain copy. pnpm 9 copies
+#   silently when a reflink or link is refused, whatever the method, so nothing
+#   here turns a missing reflink into an error: measure the disk (README), not
+#   the exit code.
 cat > /etc/profile.d/omp-runner-pnpm.sh <<'PROFILE'
-# Written by the omp-runner entrypoint (OPE-12722): the pnpm store lives in
-# the workspace volume (one per runner); the import is a reflink, strictly.
-export npm_config_store_dir=/workspace/.pnpm-store
-export npm_config_package_import_method=clone
+# Written by the omp-runner entrypoint (OPE-12722): the pnpm store lives in the
+# workspace volume (one per runner), inside .paperclip-runtime, which the board's
+# cleanups spare; the import is a reflink where possible, else a copy.
+export npm_config_store_dir=/workspace/.paperclip-runtime/pnpm-store
+export npm_config_package_import_method=clone-or-copy
 PROFILE
 chmod 0644 /etc/profile.d/omp-runner-pnpm.sh
 
-# The shared DOWNLOAD cache (registry metadata, never the store): written only
-# when the compose file mounts it. Without the mount npm keeps its default
-# (rootfs ~/.npm), so a runner started without OMP_RUNNER_CACHE_DIR is
-# unaffected. Guarded: the entrypoint runs with set -eu, and a root-owned
-# cache dir created by docker on first use would block uid 1000.
+# The shared pnpm METADATA cache (cache-dir: registry metadata, never the store;
+# npm keeps its own ~/.npm, whose variable is npm_config_cache): written only
+# when the compose file mounts /cache/pnpm and uid 1000 owns it. The mount is
+# the runners' own directory (<cache>/pnpm-omp on the host). The hermes bots
+# share <cache>/pnpm as uid 10001, and their prepare step re-owns it, so this
+# script never chowns a directory that belongs to somebody else: it fixes only
+# a root-owned one (docker creates a missing bind source as root), and a
+# directory of another uid is reported and left alone, with npm and pnpm on
+# their default per-runner cache. The file is removed first: /etc/profile.d
+# lives in the container layer, which survives a plain restart.
+rm -f /etc/profile.d/omp-runner-cache.sh
 if [ -d /cache/pnpm ]; then
-  mkdir -p /cache/pnpm 2>/dev/null || true
-  chown 1000:1000 /cache/pnpm 2>/dev/null || true
-  cat > /etc/profile.d/omp-runner-cache.sh <<'PROFILE'
-# Written by the omp-runner entrypoint (OPE-12722): the shared download cache
-# on the bot data disk. npm and pnpm (which read npm_config_*) keep their
-# registry metadata here instead of one copy per runner.
+  cache_uid=$(stat -c %u /cache/pnpm)
+  if [ "$cache_uid" = 0 ]; then
+    chown 1000:1000 /cache/pnpm 2>/dev/null || true
+    cache_uid=$(stat -c %u /cache/pnpm)
+  fi
+  if [ "$cache_uid" = 1000 ]; then
+    cat > /etc/profile.d/omp-runner-cache.sh <<'PROFILE'
+# Written by the omp-runner entrypoint (OPE-12722): the runners' shared pnpm
+# metadata cache on the bot data disk (pnpm reads npm_config_cache_dir).
 export npm_config_cache_dir=/cache/pnpm
 PROFILE
-  chmod 0644 /etc/profile.d/omp-runner-cache.sh
-  echo "omp-runner: npm/pnpm download cache at /cache/pnpm"
+    chmod 0644 /etc/profile.d/omp-runner-cache.sh
+    echo "omp-runner: pnpm metadata cache at /cache/pnpm"
+  else
+    echo "omp-runner: WARNING /cache/pnpm is owned by uid $cache_uid, not 1000; not used. Mount a directory of the runners' own (<cache>/pnpm-omp), not the bots' <cache>/pnpm" >&2
+  fi
+fi
+
+# The board's git mirrors, read through /usr/local/bin/git (mounted read-only):
+# one line so the operator sees whether the mount holds any.
+if [ -d /cache/git ]; then
+  echo "omp-runner: git mirrors at /cache/git: $(find /cache/git -mindepth 2 -maxdepth 2 -type d -name '*.git' | wc -l) repositories"
 fi
 
 exec /usr/sbin/sshd -D -e -f /etc/ssh/omp-runner/sshd_config
