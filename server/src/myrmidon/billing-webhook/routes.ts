@@ -11,6 +11,8 @@
 //     signatureStatus "verified", 200;
 //   - Valid signature + any other event type -> status "ignored",
 //     signatureStatus "verified", 200;
+//   - Repeat delivery of an already stored signed body -> 200 with
+//     stored "duplicate", no second row (1.7 PAYWALL-WEBHOOK-DEDUP, OPE-12678);
 //   - Malformed body with valid signature -> 400;
 //   - Ambiguous company count (zero or multiple) -> 503.
 //
@@ -121,11 +123,21 @@ export function billingWebhookRoutes(db: Db, deps: BillingWebhookRoutesDeps = {}
       const result = await service.ingest({
         eventType: parsed.type,
         payload: (parsed.payload ?? {}) as Record<string, unknown>,
+        // OPE-12678: dedup key — SHA-256 of the exact signed raw bytes, taken
+        // after the signature check (never before it).
+        rawBody: body,
       });
 
-      // 200 for every well-formed delivery — including the ignored ones — so
-      // the provider does not retry events this endpoint does not know.
-      res.status(200).json({ received: true, stored: result.stored, type: result.eventType });
+      // 200 for every well-formed delivery — including the ignored ones and
+      // redelivered duplicates — so the provider does not retry events this
+      // endpoint does not know. duplicate=true marks a repeat delivery of an
+      // already stored signed body: nothing new was written (OPE-12678).
+      res.status(200).json({
+        received: true,
+        stored: result.stored,
+        duplicate: result.stored === "duplicate",
+        type: result.eventType,
+      });
     } catch (error) {
       if (
         error &&

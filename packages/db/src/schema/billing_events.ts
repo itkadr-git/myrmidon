@@ -5,12 +5,25 @@
 // event here before any future business logic consumes it — the skeleton
 // stores, it does not act (no invoice state is derived yet).
 //
-// Contract (ticket OPE-12093):
+// myrmidon(1.7 PAYWALL-WEBHOOK, OPE-12630): the HMAC-SHA256 signature is
+// verified by the route before ingest; verified rows carry signature_status
+// "verified".
+//
+// myrmidon(1.7 PAYWALL-WEBHOOK-DEDUP, OPE-12678): body_sha256 is the SHA-256
+// of the exact signed request bytes. The partial unique index on
+// (company_id, body_sha256) — only where body_sha256 is not null — maps a
+// redelivered body to the existing row instead of a second one; rows written
+// before this column (body_sha256 NULL) are exempt from the index and are
+// left untouched.
+//
+// Contract (ticket OPE-12093 + OPE-12678):
 // - POST /api/billing/webhook accepts invoice.paid / invoice.failed;
 // - unknown event types are stored with status "ignored" and answered 200;
-// - the signature check is a stub for now (TODO before production).
+// - a repeat delivery of an already stored body is answered 200 with
+//   stored "duplicate" and writes no second row.
 
-import { index, jsonb, pgTable, text, timestamp, uuid } from "drizzle-orm/pg-core";
+import { index, jsonb, pgTable, text, timestamp, uniqueIndex, uuid } from "drizzle-orm/pg-core";
+import { sql } from "drizzle-orm";
 import { companies } from "./companies.js";
 
 export const BILLING_EVENT_STATUSES = ["received", "ignored"] as const;
@@ -36,11 +49,21 @@ export const billingEvents = pgTable(
     // Signature verification status: "stub" (skeleton default) or "verified"
     // (1.7 PAYWALL-WEBHOOK, OPE-12630: HMAC-SHA256 verified).
     signatureStatus: text("signature_status").notNull().default("stub"),
+    // SHA-256 hex of the exact raw request bytes (1.7 PAYWALL-WEBHOOK-DEDUP,
+    // OPE-12678). Nullable: rows stored before this column keep NULL and stay
+    // exempt from the dedup index.
+    bodySha256: text("body_sha256"),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   },
   (table) => ({
     companyIdx: index("billing_events_company_idx").on(table.companyId),
     typeIdx: index("billing_events_type_idx").on(table.eventType),
+    // Dedup of redelivered bodies: one row per (company, body hash). Partial
+    // on body_sha256 IS NOT NULL so pre-dedup rows (NULL hash) never conflict
+    // and are never rewritten.
+    bodySha256Uq: uniqueIndex("billing_events_company_body_sha256_uq")
+      .on(table.companyId, table.bodySha256)
+      .where(sql`${table.bodySha256} is not null`),
   }),
 );
 
