@@ -40,7 +40,7 @@ export function stackRegistryRoutes(db: Db, opts: StackRegistryRouteOptions = {}
     let next: StackDocument;
     try {
       const previous = await readStackDocument(db);
-      next = await collectStackLocal({ ...opts.collect, previous });
+      next = await collectStackLocal({ ...opts.collect, previous, db });
     } catch (error) {
       // A broken probe must not take the board down: keep the previous cache
       // and report what happened.

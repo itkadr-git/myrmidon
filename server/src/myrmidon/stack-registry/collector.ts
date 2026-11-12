@@ -6,6 +6,8 @@
 
 import { getServerInfoSnapshot, type ServerInfoSnapshot } from "../../server-info.js";
 import { request as httpRequest } from "node:http";
+import type { Db } from "@myrmidon/db";
+import { GATEWAY_BASE_URL_ENV } from "@myrmidon/shared";
 import {
   VENDOR_MIGRATION_SUPPORTED_VERSION,
   STACK_DOCUMENT_VERSION,
@@ -18,6 +20,13 @@ import {
   type StackSeedComponent,
   type StackSnapshot,
 } from "./domain.js";
+import { readInstanceGeneral } from "./store.js";
+import { AGENT_MEMORY_SETTINGS_KEY } from "../agent-memory/settings.js";
+import { EVALS_LANGFUSE_BASE_URL_ENV } from "../evals/langfuse.js";
+import {
+  MEMORY_HINDSIGHT_API_URL_ENV,
+  MEMORY_BOT_HINDSIGHT_API_URL_ENV,
+} from "../agent-memory/settings.js";
 
 export const STACK_DOCKER_SOCKET_ENV = "MYRMIDON_STACK_DOCKER_SOCKET";
 export const DEFAULT_STACK_DOCKER_SOCKET = "/var/run/docker.sock";
@@ -173,6 +182,76 @@ function httpVersionEndpointFor(seedName: string): string {
   return HTTP_VERSION_ENDPOINT_PATHS[seedName] ?? "/version";
 }
 
+/**
+ * STACK-PROBE-ENDPOINTS: the board already knows where its pinned components
+ * live — the LLM gateway base URL (MYRMIDON_LITELLM_BASE_URL), the agent
+ * memory service (instance setting general.agentMemory.apiUrl, then
+ * MYRMIDON_HINDSIGHT_API_URL / MYRMIDON_BOT_HINDSIGHT_API_URL, the same
+ * precedence readMemoryUiSettings uses) and the evals Langfuse contour
+ * (MYRMIDON_EVALS_LANGFUSE_BASE_URL). Those addresses feed the http-version
+ * probe when the dedicated MYRMIDON_STACK_HTTP_<NAME> override is not set;
+ * the override stays the first choice.
+ */
+export interface BoardEndpoints {
+  litellm: string | null;
+  hindsight: string | null;
+  langfuse: string | null;
+}
+
+/** An http(s) URL string, or null when unset/invalid (never throws). */
+function readHttpUrl(value: string | undefined): string | null {
+  const trimmed = value?.trim();
+  if (!trimmed) return null;
+  try {
+    const parsed = new URL(trimmed);
+    if (parsed.protocol !== "http:" && parsed.protocol !== "https:") return null;
+  } catch {
+    return null;
+  }
+  return trimmed;
+}
+
+/** Hindsight address precedence mirror of readMemoryUiSettings: the instance
+ * setting, then MYRMIDON_HINDSIGHT_API_URL, then the bot-addressed fallback. */
+function hindsightBoardUrl(general: Record<string, unknown> | null, env: NodeJS.ProcessEnv): string | null {
+  const stored = general?.[AGENT_MEMORY_SETTINGS_KEY];
+  const apiUrl =
+    stored && typeof stored === "object" && !Array.isArray(stored)
+      ? readHttpUrl((stored as Record<string, unknown>).apiUrl as string | undefined)
+      : null;
+  return (
+    apiUrl ??
+    readHttpUrl(env[MEMORY_HINDSIGHT_API_URL_ENV]) ??
+    readHttpUrl(env.HINDSIGHT_API_URL) ??
+    readHttpUrl(env[MEMORY_BOT_HINDSIGHT_API_URL_ENV])
+  );
+}
+
+/** The addresses the board already knows, from the stored instance settings
+ * and the process environment. Absent db (unit tests) reads env-only. */
+export async function readBoardEndpoints(db: Pick<Db, "select"> | null, env: NodeJS.ProcessEnv): Promise<BoardEndpoints> {
+  const general = db ? await readInstanceGeneral(db).catch(() => null) : null;
+  return {
+    litellm: readHttpUrl(env[GATEWAY_BASE_URL_ENV]) ?? readHttpUrl(env.LITELLM_BASE_URL),
+    hindsight: hindsightBoardUrl(general, env),
+    langfuse: readHttpUrl(env[EVALS_LANGFUSE_BASE_URL_ENV]),
+  };
+}
+
+/** Board-address fallback per component; null when the component has none. */
+function boardEndpointFor(name: string, endpoints: BoardEndpoints): string | null {
+  switch (name) {
+    case "litellm":
+      return endpoints.litellm;
+    case "hindsight":
+      return endpoints.hindsight;
+    case "langfuse":
+      return endpoints.langfuse;
+    default:
+      return null;
+  }
+}
+
 interface HttpJsonResponse {
   status: number;
   body: string;
@@ -226,12 +305,18 @@ function extractVersionField(body: string, preferredField?: string): string | nu
 /**
  * http-version probe (STACK-WATCH-LIVE): read the component's own version over
  * HTTP. The endpoint URL never ships in the seed — only the env var name is
- * seeded; the operator binds the address through MYRMIDON_STACK_HTTP_<NAME>.
- * A seed may name the JSON field the version rides in (httpVersionField, e.g.
- * litellm_version). A missing binding is an honest per-component unknown,
- * never a check failure.
+ * seeded; the operator binds the address through MYRMIDON_STACK_HTTP_<NAME>,
+ * and when that override is not set the probe falls back to the address the
+ * board already knows (STACK-PROBE-ENDPOINTS: the LLM gateway, the agent
+ * memory service, the evals Langfuse contour). A seed may name the JSON field
+ * the version rides in (httpVersionField, e.g. litellm_version). No binding
+ * at all is an honest per-component unknown, never a check failure.
  */
-async function probeHttpVersion(seed: StackSeedComponent): Promise<StackSnapshot["local"]> {
+async function probeHttpVersion(
+  seed: StackSeedComponent,
+  boardUrl: string | null,
+  env: NodeJS.ProcessEnv,
+): Promise<StackSnapshot["local"]> {
   const states: StackSnapshot["local"] = {
     version: null,
     commit: null,
@@ -246,20 +331,21 @@ async function probeHttpVersion(seed: StackSeedComponent): Promise<StackSnapshot
     states.unknownReason = "no http endpoint configured for this component";
     return states;
   }
-  const rawUrl = process.env[envName]?.trim();
+  const source = env[envName]?.trim() ? envName : `board settings (no ${envName} override)`;
+  const rawUrl = env[envName]?.trim() || boardUrl;
   if (!rawUrl) {
-    states.unknownReason = `http endpoint env ${envName} is not set`;
+    states.unknownReason = `http endpoint env ${envName} is not set and the board has no address for this component`;
     return states;
   }
   let url: URL;
   try {
     url = new URL(rawUrl);
   } catch {
-    states.unknownReason = `http endpoint env ${envName} is not a valid URL`;
+    states.unknownReason = `${source} is not a valid URL`;
     return states;
   }
   if (url.protocol !== "http:" && url.protocol !== "https:") {
-    states.unknownReason = `http endpoint env ${envName} must be http(s)`;
+    states.unknownReason = `${source} must be http(s)`;
     return states;
   }
   // The documented value is a base URL: one GET <base>/<endpoint> (hindsight
@@ -300,6 +386,14 @@ export interface CollectStackLocalOptions {
    * refresh never wipes the scheduled release check.
    */
   previous?: StackDocument;
+  /**
+   * STACK-PROBE-ENDPOINTS: the db handle the board-address fallback reads the
+   * stored instance settings (general.agentMemory) through. Absent (unit
+   * tests): the fallback reads the environment only.
+   */
+  db?: Pick<Db, "select"> | null;
+  /** Environment the probe reads; defaults to process.env. */
+  env?: NodeJS.ProcessEnv;
 }
 
 function carryPrevious(prev: StackSnapshot | undefined, snapshot: StackSnapshot): StackSnapshot {
@@ -325,7 +419,9 @@ function carryPrevious(prev: StackSnapshot | undefined, snapshot: StackSnapshot)
 export async function collectStackLocal(options: CollectStackLocalOptions = {}): Promise<StackDocument> {
   const checkedAt = (options.now ?? (() => new Date()))().toISOString();
   const previous = options.previous;
+  const env = options.env ?? process.env;
   const images = options.images ?? dockerImagesPort(process.env[STACK_DOCKER_SOCKET_ENV]?.trim() || DEFAULT_STACK_DOCKER_SOCKET);
+  const boardEndpoints = await readBoardEndpoints(options.db ?? null, env);
 
   const serverInfo = options.serverInfo ?? getServerInfoSnapshot();
   const boardGit = serverInfo.git;
@@ -388,7 +484,11 @@ export async function collectStackLocal(options: CollectStackLocalOptions = {}):
         break;
       }
       case "http-version": {
-        snapshot.local = { ...(await probeHttpVersion(seed)), checkedAt, patches: seededPatches };
+        snapshot.local = {
+          ...(await probeHttpVersion(seed, boardEndpointFor(seed.name, boardEndpoints), env)),
+          checkedAt,
+          patches: seededPatches,
+        };
         break;
       }
     }
