@@ -98,7 +98,7 @@ export async function refreshSourceDocument(input: {
 
   const fail = async (error: string): Promise<CorpusSourceOutcome> => {
     logger.warn({ ...logContext, error }, "corpus: a URL source could not be refreshed");
-    await ports.store.updateDocument(companyId, document.id, { sourceError: error }).catch(() => null);
+    await ports.store.updateDocument(companyId, document.id, { sourceError: error, lastAttemptedAt: fetchedAt }).catch(() => null);
     return { kind: "failed", error };
   };
 
@@ -113,7 +113,7 @@ export async function refreshSourceDocument(input: {
   // another go on every look at its address, the way a person would press "parse again".
   const sameContent = fetched.contentHash === document.contentHash;
   if (sameContent && document.status !== "failed") {
-    await ports.store.updateDocument(companyId, document.id, { lastFetchedAt: fetchedAt, sourceError: null });
+    await ports.store.updateDocument(companyId, document.id, { lastFetchedAt: fetchedAt, lastAttemptedAt: fetchedAt, sourceError: null });
     return { kind: "unchanged" };
   }
 
@@ -155,22 +155,29 @@ export async function refreshSourceDocument(input: {
     });
   }
 
-  const queued = await ports.store.updateDocument(companyId, document.id, {
-    blobRef,
-    // The bytes this version replaces stay until the new one is `ready` (the parse worker removes
-    // them then): if the new parse never finishes, nothing has been thrown away yet.
-    ...(replacedBytes ? { previousBlobRef: previousRef || null } : {}),
-    byteSize: fetched.bytes.byteLength,
-    mimeType: fetched.contentType ?? document.mimeType,
-    contentHash: fetched.contentHash,
-    lastFetchedAt: fetchedAt,
-    sourceError: null,
-    status: "queued",
-    error: null,
-    attempts: 0,
-    chunkCount: 0,
-    parsedAt: null,
-  });
+  let queued: CorpusDocumentRecord | null;
+  try {
+    queued = await ports.store.updateDocument(companyId, document.id, {
+      blobRef,
+      // The bytes this version replaces stay until the new one is `ready` (the parse worker removes
+      // them then): if the new parse never finishes, nothing has been thrown away yet.
+      ...(replacedBytes ? { previousBlobRef: previousRef || null } : {}),
+      byteSize: fetched.bytes.byteLength,
+      mimeType: fetched.contentType ?? document.mimeType,
+      contentHash: fetched.contentHash,
+      lastFetchedAt: fetchedAt,
+      lastAttemptedAt: fetchedAt,
+      sourceError: null,
+      status: "queued",
+      error: null,
+      attempts: 0,
+      chunkCount: 0,
+      parsedAt: null,
+    });
+  } catch (err) {
+    if (replacedBytes) await ports.blobs.delete(blobRef).catch(() => undefined);
+    return fail(describeError(err, "internal_error", logContext));
+  }
   if (!queued) {
     // Deleted while the bytes were being fetched: nothing to keep.
     if (replacedBytes) await ports.blobs.delete(blobRef).catch(() => undefined);

@@ -53,11 +53,9 @@ import {
  *   at `/cache/git` and clone with `--reference-if-able`, so the objects live
  *   once on the host. Empty or absent: no mirrors and no `/cache/git` mount;
  * - `gitMirrorRefreshMs` — how often the board fetches each mirror;
- * - `pnpmStoreDir` — where pnpm keeps its content-addressed store (default, since
- *   1.6.5-BOT-DISK-H8a: `/cache/pnpm-store`, one per partition, bound read-write
- *   to every bot of `sharedCacheRoles`; a path inside the bot's own tree is a
- *   store per bot and draws a warning). Never `/cache/pnpm`: that is the
- *   download cache;
+ * - `pnpmStoreDir` — where pnpm keeps its content-addressed store (default,
+ *   since OPE-12720: `/workspace/.pnpm-store`, one per bot, on the same bind
+ *   mount as the task clones). Never `/cache/pnpm`: that is the download cache;
  * - `pnpmImportMethod` — how pnpm puts a package into a clone: `clone` (the
  *   default, a reflink; strictly, a refused reflink fails loudly) or `copy` (an
  *   explicit opt-out). `clone-or-copy` and `hardlink` are refused; stored by an
@@ -155,57 +153,75 @@ const botRuntimePathSchema = z
 /**
  * myrmidon(BOT-DISK-D): where the pnpm store lives and how pnpm imports (see the module comment).
  *
- * myrmidon(1.6.5-BOT-DISK-H8a): the default store is ONE per partition,
- * `/cache/pnpm-store` (host `<sharedPackageCachePath>/pnpm-store`, bound
- * read-write to every bot of `sharedCacheRoles`), and the import method is
- * `clone` (a reflink: a copy-on-write copy that shares the store's blocks, so a
- * write to a file in node_modules never reaches the store). It is `clone`
- * strictly: pnpm's `clone-or-copy` copies silently where the reflink is
- * refused, which is exactly the failure this setting exists to make loud. A
- * reflink only works inside ONE filesystem, so the store has to be on the same
- * partition as the bot volumes.
+ * myrmidon(1.6.5-BOT-DISK-H8a): the import method is `clone` (a reflink: a
+ * copy-on-write copy that shares the store's blocks, so a write to a file in
+ * node_modules never reaches the store). It is `clone` strictly: pnpm's
+ * `clone-or-copy` copies silently where the reflink is refused, which is
+ * exactly the failure this setting exists to make loud.
+ *
+ * myrmidon(OPE-12720): the default store is `/workspace/.pnpm-store` — the
+ * per-bot store of BOT-DISK-D again, ON THE SAME BIND MOUNT as the task clones
+ * (`/workspace` is a link into the bot's single `/bot` mount): every clone's
+ * node_modules then links against one store of the same mount — no store bind
+ * mount, no dockergate allow-list pair. The 1.6.5 shared store
+ * `/cache/pnpm-store` sat on the root disk, a different mount than the clones,
+ * so pnpm copied ~3 GB of node_modules into every clone (a hard link cannot
+ * cross a mount point). It is deliberately NOT `/bot/.pnpm-store`: the `/bot`
+ * root is root-owned (0711) on a production host, the bot user (uid 10001)
+ * cannot create an entry there and every `pnpm install` would fail with
+ * EACCES; `/workspace` is chowned to the bot and the draft sweep skips
+ * `.pnpm-store` in it (server draft-lifecycle.ts). It is also the image's own
+ * `npm_config_store_dir` default (docker/bot-runtime/Dockerfile), so a profile
+ * written by this board is valid for a container still on the previous image.
+ * A stored value of the retired shared path is read as the new default (see
+ * {@link migrateBotDiskPnpm}). Never `/cache/pnpm`: that is the download cache.
  */
-export const BOT_DISK_DEFAULT_PNPM_STORE_DIR = "/cache/pnpm-store";
-/** The per-bot store of 1.6.4 and earlier: a stored value equal to it is migrated to the default. */
-export const BOT_DISK_LEGACY_PNPM_STORE_DIR = "/workspace/.pnpm-store";
+export const BOT_DISK_DEFAULT_PNPM_STORE_DIR = "/workspace/.pnpm-store";
 /** `copy` is the explicit opt-out (a full copy per clone); `clone` is the default. */
 export const BOT_DISK_PNPM_IMPORT_METHODS = ["clone", "copy"] as const;
 export type BotDiskPnpmImportMethod = (typeof BOT_DISK_PNPM_IMPORT_METHODS)[number];
 export const BOT_DISK_DEFAULT_PNPM_IMPORT_METHOD: BotDiskPnpmImportMethod = "clone";
 /** Methods an earlier release accepted and stored; they read back as `clone` (see {@link migrateBotDiskPnpm}). */
 export const BOT_DISK_LEGACY_PNPM_IMPORT_METHODS = ["hardlink", "clone-or-copy"] as const;
-/** The shared per-partition store mount inside a bot container. */
-export const BOT_DISK_SHARED_PNPM_STORE_DIR = BOT_DISK_DEFAULT_PNPM_STORE_DIR;
-/** Container roots of the bot's own tree: a store there is per bot, not shared. */
+/** The shared per-partition store of 1.6.5-1.6.7: retired with OPE-12720; a stored value equal to it is migrated to the default. */
+export const BOT_DISK_LEGACY_SHARED_PNPM_STORE_DIR = "/cache/pnpm-store";
+
+/** The retired shared store itself, or a path under it (an operator could have stored a subdirectory). */
+function isRetiredSharedPnpmStoreDir(value: string): boolean {
+  return value === BOT_DISK_LEGACY_SHARED_PNPM_STORE_DIR || value.startsWith(`${BOT_DISK_LEGACY_SHARED_PNPM_STORE_DIR}/`);
+}
+/** Container roots of the bot's own tree: a store there lives with this one bot. */
 export const BOT_DISK_PNPM_STORE_ROOTS = ["/workspace", "/data", "/scratch", "/bot"] as const;
 
 /**
  * Why `value` cannot be the pnpm store directory, or null when it can: a plain
  * absolute path (the cache-path rules) strictly under one of
- * {@link BOT_DISK_PNPM_STORE_ROOTS}, or the shared store mount
- * {@link BOT_DISK_SHARED_PNPM_STORE_DIR} itself or something under it. A store
- * anywhere else is on another filesystem than the clones, so a reflink (and a
- * hard link) fails.
+ * {@link BOT_DISK_PNPM_STORE_ROOTS} — the bot's own tree, the same mount (and
+ * superblock) as its clones. A store anywhere else is on another filesystem or
+ * another mount point than the clones, so a reflink (and a hard link) fails;
+ * the retired shared `/cache/pnpm-store` is not mounted into bots any more
+ * (OPE-12720). The default {@link BOT_DISK_DEFAULT_PNPM_STORE_DIR} is the one
+ * path of the tree the bot user can always create (the `/bot` root itself is
+ * root-owned).
  */
 export function botDiskPnpmStoreDirProblem(value: string): string | null {
   const plain = botDiskCachePathProblem(value);
   if (plain) return plain;
-  if (value === BOT_DISK_SHARED_PNPM_STORE_DIR || value.startsWith(`${BOT_DISK_SHARED_PNPM_STORE_DIR}/`)) return null;
   if (!BOT_DISK_PNPM_STORE_ROOTS.some((root) => value.startsWith(`${root}/`))) {
-    return `must be ${BOT_DISK_SHARED_PNPM_STORE_DIR} (the store shared by the partition) or inside the bot's own tree (under ${BOT_DISK_PNPM_STORE_ROOTS.join(", ")}): any other path is on another filesystem than the clones`;
+    return `must be inside the bot's own tree (under ${BOT_DISK_PNPM_STORE_ROOTS.join(", ")}): any other path is on another filesystem than the clones`;
   }
   return null;
 }
 
 /**
- * A warning (not an error) for a store that is allowed but defeats the point:
- * one inside the bot's own tree is a store PER BOT — no sharing between bots,
- * counted against that bot's quota. Null for the shared store.
+ * A warning (not an error) for an allowed store that is NOT the default: the
+ * store is one per bot and lives inside its own tree, so a custom path there
+ * works but is easy to mistake for the retired shared store of 1.6.5-1.6.7.
  */
 export function botDiskPnpmStoreDirWarning(value: string): string | null {
   if (botDiskPnpmStoreDirProblem(value) !== null) return null;
-  if (BOT_DISK_PNPM_STORE_ROOTS.some((root) => value.startsWith(`${root}/`))) {
-    return `pnpmStoreDir ${value} is inside the bot's own tree: a store per bot, not shared and counted in the bot's quota; the shared store is ${BOT_DISK_SHARED_PNPM_STORE_DIR}`;
+  if (value !== BOT_DISK_DEFAULT_PNPM_STORE_DIR) {
+    return `pnpmStoreDir ${value} is not the default ${BOT_DISK_DEFAULT_PNPM_STORE_DIR}: the store is per bot and inside its own tree`;
   }
   return null;
 }
@@ -227,12 +243,16 @@ export function botDiskPnpmImportMethodProblem(value: string): string | null {
 }
 
 /**
- * Reads the pnpm values stored by an earlier release (BOT-DISK-D: store
- * `/workspace/.pnpm-store`, method `hardlink` or `clone-or-copy`) as the values
- * in force today, with a note for each one changed: `/workspace/.pnpm-store`
- * becomes the shared store, `hardlink` and `clone-or-copy` become `clone`. Any
- * other stored value is kept (an unknown method is dropped to the default by
- * the caller). Nothing is changed silently: every migration is in `notes`.
+ * Reads the pnpm values stored by an earlier release as the values in force
+ * today, with a note for each one changed: the retired shared store
+ * `/cache/pnpm-store` (1.6.5-1.6.7) becomes the per-bot default
+ * `/workspace/.pnpm-store` (OPE-12720); `hardlink` and `clone-or-copy` become
+ * `clone`. Any other stored value is kept (an unknown method is dropped to the
+ * default by the caller). The target is a path every image generation can
+ * write (it is the previous image's own default too), so the rewritten profile
+ * env is valid for a bot container that still runs the previous image while
+ * the board rolls out. Nothing is changed silently: every migration is in
+ * `notes`.
  */
 export function migrateBotDiskPnpm(stored: { pnpmStoreDir?: string; pnpmImportMethod?: string }): {
   pnpmStoreDir?: string;
@@ -242,9 +262,9 @@ export function migrateBotDiskPnpm(stored: { pnpmStoreDir?: string; pnpmImportMe
   const notes: string[] = [];
   const out: { pnpmStoreDir?: string; pnpmImportMethod?: BotDiskPnpmImportMethod; notes: string[] } = { notes };
   if (typeof stored.pnpmStoreDir === "string") {
-    if (stored.pnpmStoreDir === BOT_DISK_LEGACY_PNPM_STORE_DIR) {
+    if (isRetiredSharedPnpmStoreDir(stored.pnpmStoreDir)) {
       out.pnpmStoreDir = BOT_DISK_DEFAULT_PNPM_STORE_DIR;
-      notes.push(`pnpmStoreDir ${stored.pnpmStoreDir} (per-bot store) is read as ${BOT_DISK_DEFAULT_PNPM_STORE_DIR} (the store shared by the partition)`);
+      notes.push(`pnpmStoreDir ${stored.pnpmStoreDir} (retired shared store) is read as ${BOT_DISK_DEFAULT_PNPM_STORE_DIR} (the per-bot store on the same mount as the clones)`);
     } else {
       out.pnpmStoreDir = stored.pnpmStoreDir;
     }
@@ -268,6 +288,15 @@ const pnpmStoreDirSchema = z
     const problem = botDiskPnpmStoreDirProblem(value);
     if (problem) ctx.addIssue({ code: "custom", message: `pnpmStoreDir ${problem}` });
   });
+
+/**
+ * myrmidon(OPE-12720): what an earlier release may have stored for the store
+ * directory: a valid path, or the retired shared store `/cache/pnpm-store` (or
+ * a path under it), which the strict schema above refuses now and
+ * {@link migrateBotDiskPnpm} reads as the default. Without this the stored
+ * value would be dropped silently, with no note in the log.
+ */
+const storedPnpmStoreDirSchema = z.union([pnpmStoreDirSchema, z.string().max(4096).refine(isRetiredSharedPnpmStoreDir)]);
 
 /**
  * myrmidon(1.6.5-BOT-DISK-UV-A): where uv keeps its package cache by default —
@@ -533,7 +562,7 @@ const storedBotDiskObjectSchema = z
     sharedBotRuntimePath: botRuntimePathSchema.optional().catch(undefined),
     gitMirrorRepos: gitMirrorReposSchema.optional().catch(undefined),
     gitMirrorRefreshMs: gitMirrorRefreshMsSchema.optional().catch(undefined),
-    pnpmStoreDir: pnpmStoreDirSchema.optional().catch(undefined),
+    pnpmStoreDir: storedPnpmStoreDirSchema.optional().catch(undefined),
     pnpmImportMethod: storedPnpmImportMethodSchema.optional().catch(undefined),
     // myrmidon(1.6.5-BOT-DISK-UV-A): uv — new keys; a stored value is validated, nothing migrated.
     uvCacheDir: uvCacheDirSchema.optional().catch(undefined),
@@ -707,6 +736,16 @@ export function resolveBotDiskSettings(options: {
       ...(stored.sharedPackageCachePath ? { sharedPackageCachePath: stored.sharedPackageCachePath } : {}),
       ...(stored.defaultRepo ? { defaultRepo: stored.defaultRepo } : {}),
       ...optionalLayoutKeys(stored),
+      // myrmidon(1.6.7-SETTINGS-BOTDISK-MERGE): the C7 mechanics keys the lifecycle
+      // keys above do not cover (botdIntervalSec, legacyPressureIdleDays,
+      // hermesPruneEnabled, hermesPruneDays, gitMigrationEnabled) must be part of
+      // the effective settings too. The service patches `base = resolve(...).settings`
+      // and then replaces the whole stored object (instance settings replace nested
+      // objects), so a stored key missing here was erased by the next PATCH of any
+      // other key — on the board gitMigrationEnabled=true vanished and the bot
+      // container lost MYRMIDON_GIT_MIGRATION_ENABLED. The keys that overlap with
+      // the lifecycle group above carry the same values, so spreading both is idempotent.
+      ...optionalMechanicsKeys(stored),
     },
     sources: { enabled: enabled[1], idleTtlMs: idleTtlMs[1] },
   };
@@ -892,10 +931,10 @@ export const BOT_DISK_WORKSPACE_LIFECYCLE_KEYS = [
 export interface BotDiskLayout {
   sharedPackageCachePath?: string;
   /**
-   * myrmidon(1.6.5-BOT-DISK-H11): the host directory whose `bin`,
-   * `lazy-packages` and `lsp` subdirectories every bot mounts READ-ONLY over
-   * its own (absent: every bot keeps its own, the 1.6.4 behaviour). Populated
-   * by the operator once; see docs/myrmidon/bot-shared-runtime.md.
+   * myrmidon(1.6.5-BOT-DISK-H11): the host directory whose `bin` subdirectory
+   * every bot mounts READ-ONLY over its own (absent: every bot keeps its own,
+   * the 1.6.4 behaviour; re-scoped to bin-only in OPE-12493). Populated
+   * by the operator once; see docs/myrmidon/bot-extra-mounts.md.
    */
   sharedBotRuntimePath?: string;
   gitMirrorRepos: string[];
@@ -969,7 +1008,7 @@ export function resolveSharedPackageCachePath(stored: unknown): string | undefin
 /**
  * myrmidon(1.6.5-BOT-DISK-H11): the shared bot runtime root in force, from the
  * stored `general.botDisk` (undefined: no shared runtime — every bot keeps its
- * own `bin`, `lazy-packages` and `lsp`). Not role-gated, unlike the package
+ * own `bin`). Not role-gated, unlike the package
  * cache: the runtime is the same for every bot of the instance, so one setting
  * applies to all of them (BOT-DISK-H11 in the epic design).
  */

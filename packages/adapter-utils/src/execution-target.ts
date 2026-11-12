@@ -43,6 +43,7 @@ import {
   SANDBOX_CALLBACK_BRIDGE_ENTRYPOINT,
   SANDBOX_CALLBACK_BRIDGE_HTTP2_MODE,
   sandboxCallbackBridgeDirectories,
+  SSH_BRIDGE_QUEUE_POLL_IDLE_WAIT_MS,
   startSandboxCallbackBridgeServer,
   startSandboxCallbackBridgeWorker,
   syncRemoteTextFileWithHashSkip,
@@ -82,6 +83,13 @@ import {
   type TerminalResultCleanupOptions,
 } from "./server-utils.js";
 import { sanitizeRemoteExecutionEnv } from "./remote-execution-env.js";
+import {
+  SSH_REMOTE_RUN_TAG_ENV,
+  describeSshRemoteRunStop,
+  isValidSshRemoteRunTag,
+  terminateSshRemoteRun,
+  type SshRemoteRunStopReport,
+} from "./ssh-remote-run-stop.js"; // myrmidon(OPE-12801)
 import { preferredShellForSandbox, shellCommandArgs } from "./sandbox-shell.js";
 import {
   runWithRuntimeParent,
@@ -305,6 +313,19 @@ export interface AdapterExecutionTargetProcessOptions {
   inheritProcessEnv?: boolean;
   // myrmidon(S2): adapter of the run, allows its provider credential variables
   runEnvAdapterType?: string | null;
+  /**
+   * myrmidon(OPE-12801): the run's cancellation signal. SSH only: when it is
+   * aborted by the time the local ssh client ends, the run's processes on the
+   * SSH environment are stopped and the result is verified.
+   */
+  signal?: AbortSignal;
+  /**
+   * myrmidon(OPE-12801): SSH only. Called with the verified result each time
+   * the run's remote processes had to be stopped (cancellation, timeout, a
+   * signalled ssh client). `ok: false` means a process survived or the result
+   * could not be established; the adapter records it in the run's events.
+   */
+  onRemoteRunStop?: (report: SshRemoteRunStopReport) => Promise<void> | void;
 }
 
 export interface AdapterExecutionTargetShellOptions {
@@ -912,10 +933,43 @@ export async function runAdapterExecutionTargetProcess(
     }
   }
 
-  const env =
-    target?.kind === "remote" && target.transport === "ssh"
-      ? sanitizeRemoteExecutionEnv(options.env)
-      : options.env;
+  // myrmidon(OPE-12801): the remote command of an SSH run carries the run id
+  // in its environment, and when the local ssh client is stopped (Stop, the
+  // run-stall watchdog, the adapter timeout) the run's processes on the SSH
+  // environment are stopped as well. Before this only the local client died:
+  // ssh runs without a pty, so the remote CLI and everything it had started
+  // stayed alive on the runner.
+  if (target?.kind === "remote" && target.transport === "ssh") {
+    const taggable = isValidSshRemoteRunTag(runId);
+    const sshEnv = sanitizeRemoteExecutionEnv(options.env);
+    const result = await runChildProcess(runId, command, args, {
+      cwd: options.cwd,
+      env: taggable ? { ...sshEnv, [SSH_REMOTE_RUN_TAG_ENV]: runId } : sshEnv,
+      stdin: options.stdin,
+      timeoutSec: options.timeoutSec,
+      graceSec: options.graceSec,
+      onLog: options.onLog,
+      onSpawn: options.onSpawn,
+      terminalResultCleanup: options.terminalResultCleanup,
+      localProcessSandbox: null,
+      remoteExecution: adapterExecutionTargetToRemoteSpec(target),
+      inheritProcessEnv: options.inheritProcessEnv, // myrmidon(S2)
+      runEnvAdapterType: options.runEnvAdapterType, // myrmidon(S2)
+    });
+    // A clean exit of the client means the remote command ended by itself.
+    if (taggable && (result.timedOut || result.signal != null || options.signal?.aborted === true)) {
+      const report = await terminateSshRemoteRun({ spec: target.spec, runTag: runId });
+      await options
+        .onLog(report.ok ? "stdout" : "stderr", `[paperclip] ${describeSshRemoteRunStop(report)}\n`)
+        .catch(() => undefined);
+      await Promise.resolve()
+        .then(() => options.onRemoteRunStop?.(report))
+        .catch(() => undefined);
+    }
+    return result;
+  }
+
+  const env = options.env;
 
   return await runChildProcess(runId, command, args, {
     cwd: options.cwd,
@@ -1428,6 +1482,7 @@ export async function prepareAdapterExecutionTargetRuntime(input: {
   timeoutSec?: number;
   workspaceRemoteDir?: string;
   syncWorkspace?: boolean;
+  workspaceSyncMode?: "full" | "git_checkout";
   workspaceInboundMode?: WorkspaceInboundMode;
   workspaceDurableSeed?: WorkspaceDurableSeedPaths;
   workspaceBaseline?: DirectorySnapshot;
@@ -1446,6 +1501,12 @@ export async function prepareAdapterExecutionTargetRuntime(input: {
   // counters without further changes here.
   onProgress?: RuntimeProgressSink;
   onRuntimeProgress?: RuntimeStatusSink;
+  /**
+   * myrmidon(OPE-12801): the run's cancellation signal. The SSH lane stops the
+   * workspace exchange and rejects with SshOperationAbortedError (ssh-abort.ts).
+   * The sandbox lane has its own stop (stopRemoteStartup) and ignores it.
+   */
+  signal?: AbortSignal;
   // Optional host span runner for the workspace tarball build. Only the confined
   // sandbox lane uses it: it forwards the runner to prepareCommandManagedRuntime
   // so the host pack time rides one `pack` span under the `stage.sync` step. The
@@ -1474,9 +1535,13 @@ export async function prepareAdapterExecutionTargetRuntime(input: {
       workspaceLocalDir: input.workspaceLocalDir,
       workspaceRemoteDir: input.workspaceRemoteDir,
       syncWorkspace: input.syncWorkspace,
+      workspaceSyncMode: input.workspaceSyncMode,
+      // myrmidon(OPE-12809): the ssh lane used to drop the caller's excludes.
+      workspaceExclude: input.workspaceExclude,
       assets: input.assets,
       additionalSources: input.additionalSources,
       onProgress: input.onProgress,
+      signal: input.signal, // myrmidon(OPE-12801)
     });
     return {
       target,
@@ -4836,6 +4901,26 @@ export async function startAdapterExecutionTargetPaperclipBridge(input: {
       timeoutMs: bridgeTimeoutMs,
       shellCommand,
     });
+    // The bridge poll loop long-polls the queue ONLY on the command-managed
+    // (ssh) transport (see SSH_BRIDGE_QUEUE_POLL_IDLE_WAIT_MS in
+    // sandbox-callback-bridge.ts): that is the transport where every poll
+    // spawns a fresh process on the host (OPE-12727). The worker's own default
+    // is no long-poll, so the ssh branch passes the budget explicitly. A
+    // sandbox transport already runs one persistent in-sandbox gateway, so its
+    // poll execs are cheap local lists and keep the legacy single-shot
+    // behavior — this also keeps per-iteration drain semantics unchanged for
+    // sandbox runs. An operator may shorten, lengthen, or disable (0) the
+    // remote block per install; an unset or invalid value takes the ssh
+    // default, and the worker clamps an oversized value to a safe maximum.
+    const bridgeQueuePollIdleWaitMsRaw = readProductEnv("BRIDGE_QUEUE_POLL_IDLE_MS")?.trim();
+    const bridgeQueuePollIdleWaitMsParsed = bridgeQueuePollIdleWaitMsRaw
+      ? Number(bridgeQueuePollIdleWaitMsRaw)
+      : Number.NaN;
+    const bridgeQueuePollIdleWaitMs = target.transport === "ssh"
+      ? (Number.isFinite(bridgeQueuePollIdleWaitMsParsed) && bridgeQueuePollIdleWaitMsParsed >= 0
+        ? bridgeQueuePollIdleWaitMsParsed
+        : SSH_BRIDGE_QUEUE_POLL_IDLE_WAIT_MS)
+      : 0;
     // `startSandboxCallbackBridgeWorker` keeps its awaited queue-directory
     // setup on the active `bridge.paperclip` step, and runs each request under
     // the run parent context (see `runWithRuntimeParent` inside that function).
@@ -4844,6 +4929,7 @@ export async function startAdapterExecutionTargetPaperclipBridge(input: {
     worker = await startSandboxCallbackBridgeWorker({
       client,
       queueDir,
+      pollIdleWaitMs: bridgeQueuePollIdleWaitMs,
       maxBodyBytes,
       getRuntimeParentContext: input.getRuntimeParentContext,
       runtimeSpan: input.runtimeSpan,

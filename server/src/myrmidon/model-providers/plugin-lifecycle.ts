@@ -13,12 +13,15 @@
 import type { Db } from "@myrmidon/db";
 import { plugins as pluginsTable } from "@myrmidon/db";
 import {
+  DEFAULT_ANTIGRAVITY_POOL_MODELS,
   DEFAULT_CHATGPT_POOL_MODELS,
+  isPoolModelProviderType,
   registerModelProviderConnector,
   unregisterModelProviderConnectorForPlugin,
   unregisterModelProviderConnectorsByPlugin,
   type PaperclipPluginManifestV1,
   type PluginRecord,
+  type PoolModelProviderType,
 } from "@myrmidon/shared";
 import type { PluginLifecycleManager } from "../../services/plugin-lifecycle.js";
 import { pluginRegistryService } from "../../services/plugin-registry.js";
@@ -35,12 +38,75 @@ export function isChatGptPoolKey(pluginKey: string): boolean {
   );
 }
 
+/** Identifies whether a pluginKey belongs to the Google Antigravity subscription pool connector. */
+export function isAntigravityPoolKey(pluginKey: string): boolean {
+  const norm = pluginKey.trim().toLowerCase();
+  return (
+    norm === "myrmidon.antigravity" ||
+    norm === "paperclip.antigravity" ||
+    norm.endsWith(".antigravity") ||
+    norm === "antigravity"
+  );
+}
+
+/** Identifies whether a pluginKey belongs to the Google AI Pro subscription pool connector. */
+export function isGoogleAiPoolKey(pluginKey: string): boolean {
+  const norm = pluginKey.trim().toLowerCase();
+  return (
+    norm === "myrmidon.google-ai" ||
+    norm === "paperclip.google-ai" ||
+    norm.endsWith(".google-ai") ||
+    norm === "google-ai"
+  );
+}
+
+/** The pool connector type a plugin key stands for, or null when it is not a pool plugin. */
+export function poolConnectorTypeForPluginKey(pluginKey: string): PoolModelProviderType | null {
+  if (isChatGptPoolKey(pluginKey)) return "chatgpt-pool";
+  if (isAntigravityPoolKey(pluginKey)) return "antigravity-pool";
+  if (isGoogleAiPoolKey(pluginKey)) return "google-ai-pool";
+  return null;
+}
+
+/** True when the plugin key is one of the three subscription pool connectors. */
+export function isPoolConnectorPluginKey(pluginKey: string): boolean {
+  return poolConnectorTypeForPluginKey(pluginKey) !== null;
+}
+
+/**
+ * What a pool connector registers when its plugin is ready and the manifest
+ * does not say otherwise. The antigravity model ids are the names of the
+ * gateway model groups. The antigravity and google-ai base URL is the address
+ * of the pool service as the board container reaches it; it differs per
+ * deployment, so it has no default and the operator enters it.
+ */
+const POOL_CONNECTOR_DEFAULTS: Record<
+  PoolModelProviderType,
+  { name: string; defaultBaseUrl: string | null; defaultModels: readonly string[] | undefined }
+> = {
+  "chatgpt-pool": {
+    name: "ChatGPT / Codex Subscription Pool",
+    defaultBaseUrl: "http://localhost:8895",
+    defaultModels: DEFAULT_CHATGPT_POOL_MODELS,
+  },
+  "antigravity-pool": {
+    name: "Antigravity Pool",
+    defaultBaseUrl: null,
+    defaultModels: DEFAULT_ANTIGRAVITY_POOL_MODELS,
+  },
+  "google-ai-pool": {
+    name: "Google AI Pool",
+    defaultBaseUrl: null,
+    defaultModels: undefined,
+  },
+};
+
 /** Determines if a plugin contributes model provider connector(s). */
 export function isModelProviderPlugin(plugin: {
   pluginKey: string;
   manifestJson?: PaperclipPluginManifestV1 | null;
 }): boolean {
-  if (isChatGptPoolKey(plugin.pluginKey)) return true;
+  if (isPoolConnectorPluginKey(plugin.pluginKey)) return true;
   const decls = plugin.manifestJson?.modelProviders;
   return Array.isArray(decls) && decls.length > 0;
 }
@@ -53,40 +119,31 @@ export function registerConnectorsForPlugin(plugin: {
   const decls = plugin.manifestJson?.modelProviders;
   if (Array.isArray(decls) && decls.length > 0) {
     for (const d of decls) {
+      const pool = isPoolModelProviderType(d.type) ? POOL_CONNECTOR_DEFAULTS[d.type] : undefined;
       registerModelProviderConnector({
         type: d.type,
-        name: d.name ??
-          (d.type === "chatgpt-pool"
-            ? "ChatGPT / Codex Subscription Pool"
-            : d.type === "antigravity-pool"
-              ? "Antigravity Pool"
-              : d.type === "google-ai-pool"
-                ? "Google AI Pool"
-                : undefined),
+        name: d.name ?? pool?.name,
         pluginKey: plugin.pluginKey,
-        defaultBaseUrl:
-          d.defaultBaseUrl ??
-          (d.type === "chatgpt-pool" ? "http://localhost:8895" : null),
-        defaultModels:
-          d.defaultModels ??
-          (d.type === "chatgpt-pool" ? DEFAULT_CHATGPT_POOL_MODELS : undefined),
-        supportsChannels:
-          d.supportsChannels ??
-          (d.type === "chatgpt-pool" ||
-            d.type === "antigravity-pool" ||
-            d.type === "google-ai-pool"),
+        defaultBaseUrl: d.defaultBaseUrl ?? pool?.defaultBaseUrl ?? null,
+        defaultModels: d.defaultModels ?? pool?.defaultModels,
+        supportsChannels: d.supportsChannels ?? Boolean(pool),
       });
     }
     return;
   }
 
-  if (isChatGptPoolKey(plugin.pluginKey)) {
+  // No manifest declaration: the three subscription pool plugins register by
+  // their plugin key (the installed antigravity and google-ai plugins do not
+  // declare modelProviders in their manifests).
+  const poolType = poolConnectorTypeForPluginKey(plugin.pluginKey);
+  if (poolType) {
+    const pool = POOL_CONNECTOR_DEFAULTS[poolType];
     registerModelProviderConnector({
-      type: "chatgpt-pool",
-      name: "ChatGPT / Codex Subscription Pool",
+      type: poolType,
+      name: pool.name,
       pluginKey: plugin.pluginKey,
-      defaultBaseUrl: "http://localhost:8895",
-      defaultModels: DEFAULT_CHATGPT_POOL_MODELS,
+      defaultBaseUrl: pool.defaultBaseUrl,
+      defaultModels: pool.defaultModels,
       supportsChannels: true,
     });
   }
@@ -145,7 +202,7 @@ export function bindModelProviderPluginLifecycle(
     unregisterConnectorsForPlugin(pluginKey, manifestJson);
   };
   const handlePluginReady = (payload: { pluginId: string; pluginKey: string }) => {
-    if (isChatGptPoolKey(payload.pluginKey)) {
+    if (isPoolConnectorPluginKey(payload.pluginKey)) {
       log.info({ pluginKey: payload.pluginKey }, "registering model provider connector for ready plugin");
       registerConnectorsForPlugin({ pluginKey: payload.pluginKey });
       return;
@@ -205,7 +262,7 @@ export function bindModelProviderPluginLifecycle(
     for (const plugin of rows) {
       if (plugin.status === "ready" && isModelProviderPlugin(plugin)) {
         registerConnectorsForPlugin(plugin);
-      } else if (isChatGptPoolKey(plugin.pluginKey) && plugin.status !== "ready") {
+      } else if (isPoolConnectorPluginKey(plugin.pluginKey) && plugin.status !== "ready") {
         unregisterConnectorsForPlugin(plugin.pluginKey, plugin.manifestJson);
       }
     }

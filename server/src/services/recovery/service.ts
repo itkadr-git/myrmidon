@@ -195,6 +195,7 @@ import {
   countStrandedAutoPolicyAttemptsInWindow,
   decideStrandedAutoPolicy,
   findActiveManagerAgentId,
+  findStrandedDispositionOwnerAgentId,
   isStrandedAutoPolicyCause,
   isStrandedAutoPolicyManagerHandoffAlreadyApplied,
   issueHasExistingExecutionWorkflow,
@@ -225,6 +226,11 @@ import {
   pullRequestCiStateFromStatusPayload,
   type PullRequestHeadResolver,
 } from "../../myrmidon/review-routing/github.js";
+import {
+  issueAnchorAgentId,
+  ownGroupReviewerPool,
+  resolveAgentGroupKey,
+} from "../../myrmidon/review-routing/policy.js";
 import { selectRunPullRequest } from "../../myrmidon/run-pull-request.js";
 
 const EXECUTION_PATH_HEARTBEAT_RUN_STATUSES = [
@@ -308,6 +314,7 @@ type LatestIssueRun =
       // myrmidon(L1): claimedAdapterType's input, so the L1 branch below can
       // gate hold suppression on the run's own adapter
       | "runnerProfileJson"
+      | "activeIdentityContextId"
     > & {
       resultJson?: unknown;
     })
@@ -585,7 +592,7 @@ const INTERACTION_CONTINUATION_REQUEUE_MAX_ATTEMPTS = 3;
 export const PROVIDER_QUOTA_RECOVERY_DEFAULT_BACKOFF_MS = 60 * 60 * 1000;
 
 const PROVIDER_QUOTA_ERROR_RE =
-  /(?:you(?:'|’)ve hit your (?:\w+ )?limit|usage limit(?: reached| exceeded)?|provider quota|quota (?:limit )?exceeded|model (?:is )?at capacity)/i;
+  /(?:you(?:'|’)ve hit your (?:\w+ )?limit|usage limit(?: reached| exceeded)?|provider quota|quota (?:limit )?exceeded|insufficient[_ ]quota|no deployments available|all deployments[^\n]{0,120}cooldown|model (?:is )?at capacity)/i;
 const CONFIGURATION_INCOMPLETE_ERROR_RE =
   /(?:model_not_found|model [^\n]{0,120} not found|missing (?:api )?(?:key|credentials?)|credentials? (?:are |is )?missing|no (?:api )?(?:key|credentials?) (?:was |were )?(?:found|configured|provided)|api key (?:is )?(?:not set|unavailable))/i;
 
@@ -704,6 +711,7 @@ export function classifyAdapterFailureForRecovery(
   }
   if (
     latestRun.errorCode !== "adapter_failed" &&
+    latestRun.errorCode !== "hermes_gateway_run_failed" &&
     latestRun.errorCode !== "provider_quota" &&
     latestRun.errorCode !== "configuration_incomplete"
   ) {
@@ -998,15 +1006,6 @@ function isRepeatedProductiveContinuationRecovery(
   );
 }
 
-const ADM_REVIEWER_AGENT_IDS = [
-  "dbd3f01c-518e-4c1d-a05a-2a4bf25acf93", // 0 -> adm-dev-review-8
-  "d674a53a-3abd-43fe-8f49-696a04937323", // 1 -> adm-dev-review-9
-  "07555686-c5f7-4536-ac2b-c9ab1027e89f", // 2 -> adm-dev-review-10
-  "62640ae6-658b-4cde-ba3a-b6a88e708df9", // 3 -> adm-dev-review-11
-  "b7040a16-03a0-4d3c-8060-709038ccc403", // 4 -> adm-dev-review-12
-  "c85f5dac-4a13-4bdb-9498-c666fe45d4c9", // 5 -> adm-dev-review-13
-];
-
 function getReviewerParticipantAgentId(issue: {
   executionPolicy?: unknown;
   executionState?: unknown;
@@ -1047,7 +1046,17 @@ function getReviewerParticipantAgentId(issue: {
 
 async function pickReviewerForIssue(
   db: Db,
-  issue: { companyId: string },
+  issue: {
+    id: string;
+    companyId: string;
+    status: string;
+    assigneeAgentId?: string | null;
+    assigneeUserId?: string | null;
+    createdByAgentId?: string | null;
+    createdByUserId?: string | null;
+    executionPolicy?: unknown;
+    executionState?: unknown;
+  },
   prProduct: typeof issueWorkProducts.$inferSelect,
 ): Promise<string | null> {
   const prInfo = selectRunPullRequest([
@@ -1060,9 +1069,32 @@ async function pickReviewerForIssue(
     } as any,
   ]);
   const prNumber = prInfo?.number;
+  const anchorAgentId = issueAnchorAgentId({
+    id: issue.id,
+    status: issue.status,
+    assigneeAgentId: issue.assigneeAgentId ?? null,
+    assigneeUserId: issue.assigneeUserId ?? null,
+    createdByAgentId: issue.createdByAgentId ?? null,
+    createdByUserId: issue.createdByUserId ?? null,
+    executionPolicy: issue.executionPolicy,
+    executionState: issue.executionState,
+  });
+  if (!anchorAgentId) return null;
+
+  const [anchor] = await db
+    .select({ name: agents.name, metadata: agents.metadata })
+    .from(agents)
+    .where(and(eq(agents.companyId, issue.companyId), eq(agents.id, anchorAgentId)));
+  const groupKey = resolveAgentGroupKey(anchor);
+  if (!groupKey) return null;
 
   const reviewerAgents = await db
-    .select({ id: agents.id, role: agents.role })
+    .select({
+      id: agents.id,
+      name: agents.name,
+      role: agents.role,
+      metadata: agents.metadata,
+    })
     .from(agents)
     .where(
       and(
@@ -1070,25 +1102,18 @@ async function pickReviewerForIssue(
         inArray(agents.role, ["reviewer", "code_reviewer"]),
       ),
     );
+  const eligibleReviewers = ownGroupReviewerPool(
+    reviewerAgents.filter((agent) => agent.id !== anchorAgentId),
+    groupKey,
+  );
 
-  if (reviewerAgents.length > 0) {
+  if (eligibleReviewers.length > 0) {
     if (typeof prNumber === "number" && Number.isSafeInteger(prNumber)) {
-      const idx = Math.abs(prNumber) % reviewerAgents.length;
-      const target = reviewerAgents[idx];
+      const idx = Math.abs(prNumber) % eligibleReviewers.length;
+      const target = eligibleReviewers[idx];
       if (target) return target.id;
     }
-    return reviewerAgents[0]?.id ?? null;
-  }
-
-  if (typeof prNumber === "number" && Number.isSafeInteger(prNumber)) {
-    const targetId = ADM_REVIEWER_AGENT_IDS[Math.abs(prNumber) % ADM_REVIEWER_AGENT_IDS.length];
-    if (targetId) {
-      const [existing] = await db
-        .select({ id: agents.id })
-        .from(agents)
-        .where(and(eq(agents.companyId, issue.companyId), eq(agents.id, targetId)));
-      if (existing) return existing.id;
-    }
+    return eligibleReviewers[0]?.id ?? null;
   }
 
   return null;
@@ -1229,6 +1254,7 @@ export function recoveryService(
         createdAt: heartbeatRuns.createdAt,
         // myrmidon(L1): claimedAdapterType's input, see LatestIssueRun
         runnerProfileJson: heartbeatRuns.runnerProfileJson,
+        activeIdentityContextId: heartbeatRuns.activeIdentityContextId,
       })
       .from(heartbeatRuns)
       .where(
@@ -1261,6 +1287,7 @@ export function recoveryService(
         createdAt: heartbeatRuns.createdAt,
         // myrmidon(L1): claimedAdapterType's input, see LatestIssueRun
         runnerProfileJson: heartbeatRuns.runnerProfileJson,
+        activeIdentityContextId: heartbeatRuns.activeIdentityContextId,
       })
       .from(heartbeatRuns)
       .where(
@@ -2124,6 +2151,7 @@ export function recoveryService(
         createdAt: heartbeatRuns.createdAt,
         // myrmidon(L1): claimedAdapterType's input, see LatestIssueRun
         runnerProfileJson: heartbeatRuns.runnerProfileJson,
+        activeIdentityContextId: heartbeatRuns.activeIdentityContextId,
       })
       .from(heartbeatRuns)
       .where(
@@ -4859,6 +4887,16 @@ export function recoveryService(
       const escalationTarget =
         !assigneePaused && !retriesLeft && escalationTargetId ? await getAgent(escalationTargetId) : null;
       const targetIsAdm = escalationTarget?.name.trim().toLowerCase() === "adm";
+      // myrmidon(OPE-12265): the `disposition_blocked` owner is the nearest
+      // lead/manager above the assignee, not the direct reviewer. `adm` (the
+      // chain fallback) stays the owner when no lead exists in the chain.
+      const dispositionOwnerAgentId =
+        !assigneePaused && !retriesLeft
+          ? await findStrandedDispositionOwnerAgentId(db, {
+              companyId: input.issue.companyId,
+              assigneeAgentId,
+            })
+          : null;
 
       let hasPendingCi = input.hasPendingCi ?? false;
       if (!hasPendingCi && openPrProduct) {
@@ -4889,6 +4927,7 @@ export function recoveryService(
         maxAttemptsPerDay,
         managerAgentId,
         escalationAgentId,
+        dispositionOwnerAgentId,
         targetIsAdm,
         requireAgentDisposition: successfulRunDisposition,
         hasExecutionWorkflow: issueHasExistingExecutionWorkflow({
@@ -5281,7 +5320,7 @@ export function recoveryService(
       } else if (autoPolicyDecision.kind === "disposition_blocked") {
         // myrmidon(OPE-9072): the issue has its own workflow (policy, monitor
         // or execution state): never take it over and never change the
-        // assignee. Block it with complete metadata owned by a senior agent
+        // assignee. Block it with complete metadata owned by the nearest lead
         // and wake that agent once. The wake key ties it to this successful
         // run, so a repeat pass stands down instead of waking again.
         const ownerAgentId = autoPolicyDecision.ownerAgentId;
@@ -5350,7 +5389,7 @@ export function recoveryService(
             {},
             {
               authorType: "system",
-              presentation: compactRecoveryPresentation("Escalated to a senior agent"),
+              presentation: compactRecoveryPresentation("Escalated to the nearest lead"),
               metadata: recoveryNoticeMetadata({
                 cause: recoveryCause,
                 latestRun,
@@ -6212,6 +6251,67 @@ export function recoveryService(
             .where(eq(heartbeatRuns.id, latestRun.id))
             .then((rows) => rows[0] ?? null)
         : null;
+      const participantLatestRunForRecovery =
+        issue.status === "in_review" && participantAgentId
+          ? await getLatestIssueRunForAgent(
+              issue.companyId,
+              issue.id,
+              participantAgentId,
+            )
+          : null;
+      const executionRecoverySource =
+        issue.status === "in_review"
+          ? participantLatestRunForRecovery
+          : latestRun;
+      // Provider outages are external availability failures, not evidence that
+      // a paused assignee should be escalated. Park them before the invokability
+      // gate so a 429/402/503 outage keeps a durable monitor.
+      const recoveryNow = new Date();
+      const providerQuotaMonitorRun =
+        issue.status === "in_review"
+          ? participantLatestRunForRecovery
+          : latestRun;
+      const preBudgetProviderQuotaClassification =
+        providerQuotaMonitorRun &&
+        !isStrandedIssueRecoveryIssue(issue) &&
+        (pendingReviewStage || issue.status !== "in_review") &&
+        isUnsuccessfulTerminalIssueRun(providerQuotaMonitorRun) &&
+        getAdapterFailureRecoveryTargetAgentId(issue) ===
+          providerQuotaMonitorRun.agentId
+          ? classifyAdapterFailureForRecovery(providerQuotaMonitorRun, recoveryNow)
+          : null;
+      if (
+        providerQuotaMonitorRun &&
+        preBudgetProviderQuotaClassification?.kind === "provider_quota"
+      ) {
+        if (
+          hasPendingProviderQuotaRecoveryMonitor(
+            issue,
+            providerQuotaMonitorRun,
+            recoveryNow,
+          )
+        ) {
+          result.skipped += 1;
+          continue;
+        }
+        const monitored = await scheduleProviderQuotaRecoveryMonitor({
+          issue,
+          latestRun: providerQuotaMonitorRun,
+          classification: preBudgetProviderQuotaClassification,
+        });
+        if (monitored) {
+          latestRun = await persistAdapterFailureRecoveryClassification(
+            providerQuotaMonitorRun,
+            preBudgetProviderQuotaClassification,
+          );
+          result.providerQuotaMonitored += 1;
+          result.issueIds.push(issue.id);
+        } else {
+          result.skipped += 1;
+        }
+        continue;
+      }
+
       // myrmidon(L1): the agent is non-invokable only because it is paused
       // (infrastructure), and the terminal run itself ended on an
       // infrastructure interrupt code within its retry budget, on a run
@@ -6357,18 +6457,6 @@ export function recoveryService(
         continue;
       }
 
-      const participantLatestRunForRecovery =
-        issue.status === "in_review" && participantAgentId
-          ? await getLatestIssueRunForAgent(
-              issue.companyId,
-              issue.id,
-              participantAgentId,
-            )
-          : null;
-      const executionRecoverySource =
-        issue.status === "in_review"
-          ? participantLatestRunForRecovery
-          : latestRun;
       if (
         executionRecoverySource?.agentId === agentId &&
         executionRecoverySource.contextSnapshot &&
@@ -6501,11 +6589,6 @@ export function recoveryService(
         result.skipped += 1;
         continue;
       }
-      const recoveryNow = new Date();
-      const providerQuotaMonitorRun =
-        issue.status === "in_review"
-          ? participantLatestRunForRecovery
-          : latestRun;
       if (
         hasPendingProviderQuotaRecoveryMonitor(
           issue,

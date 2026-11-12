@@ -182,7 +182,9 @@ import { startDistillSweep, stopDistillSweep } from "./myrmidon/distill/startup.
 import { startRedactionSubstitutionCleanup } from "./myrmidon/guardrails/index.js"; // myrmidon(1.7-REDACT)
 import { startKnowledgeExport, stopKnowledgeExport } from "./myrmidon/knowledge/git-export-job.js"; // myrmidon(1.7 KNOWLEDGE-2.0 L-8)
 import { startLessonDistillSweep, stopLessonDistillSweep } from "./myrmidon/lesson-distill/index.js"; // myrmidon(1.7 KNOWLEDGE-2.0 L-4)
+import { configuredGitSkillRecord } from "./myrmidon/skill-git-record/index.js";
 import { startAlertsSweep } from "./myrmidon/monitoring/alerts/index.js"; // myrmidon(1.6.6-ALERTS)
+import { startIntakeWorker } from "./services/intake-worker.js"; // myrmidon(1.7 WEBHOOK-INTAKE)
 import { startRootFanoutAlertSweep } from "./myrmidon/monitoring/alerts/root-fanout.js"; // myrmidon(OPE-9165)
 import { startTracingAttentionSweep, stopTracingAttentionSweep } from "./myrmidon/tracing-health/attention-sweep.js"; // myrmidon(TRACING-HEALTH)
 import { startModelProviderPoolSweep, stopModelProviderPoolSweep } from "./myrmidon/model-providers/sweep.js"; // myrmidon(1.6.6 OPE-7198)
@@ -207,7 +209,7 @@ import { createRunStallSweepFromHeartbeat, registerRunStallSweep, startRunStall 
 import { sweepGatewayRunReattach, GATEWAY_REATTACH_SWEEP_INTERVAL_MS } from "./myrmidon/gateway-run-reattach.js";
 import { GATEWAY_REMOTE_CLOSE_SWEEP_INTERVAL_MS } from "./myrmidon/gateway-run-close.js";
 import { readHotRestartIntent } from "./services/hot-restart.js"; // myrmidon(T1.6): predecessor boot id for the startup reattach pass
-import { createTaskPrSyncScheduler, reconcileClosedIssuePullRequests } from "./myrmidon/task-pr-sync/index.js"; // myrmidon(TASK-PR-SYNC)
+import { createTaskPrSyncScheduler, reconcileClosedIssuePullRequests, backfillPullRequestWorkProducts } from "./myrmidon/task-pr-sync/index.js"; // myrmidon(TASK-PR-SYNC)
 import { createBoardJanitorScheduler } from "./myrmidon/board-janitor/index.js"; // myrmidon(BOARD-JANITOR)
 import { createStaleBlockScheduler, createDefaultEventReader } from "./myrmidon/stale-block/index.js"; // myrmidon(STALE-BLOCK)
 import { createOwnerCardTtlScheduler } from "./myrmidon/owner-reply/index.js"; // myrmidon(1.6.5-F21-B)
@@ -474,7 +476,7 @@ async function startServerWithDatabaseTeardown(
       if (Date.now() >= deadline) {
         throw new Error(
           `PostgreSQL migrations are still not applied after ${Math.round(MIGRATION_WAIT_TIMEOUT_MS / 1000)}s. ` +
-            `PAPERCLIP_PROCESS_ROLE=api waits for the migration-owning process (worker/all); ` +
+            `MYRMIDON_PROCESS_ROLE=api waits for the migration-owning process (worker/all); ` +
             `start it, or run pnpm db:migrate.`,
         );
       }
@@ -1184,7 +1186,7 @@ async function startServerWithDatabaseTeardown(
   // myrmidon(PROCS-1.1/1.2): the stored process settings are read once the
   // schema is in place. The worker resolves its supervisor first so this read
   // — and every later PATCH — drives it: a stored `split` forks the api
-  // children right away. The emergency escape PAPERCLIP_PROCESS_MODE=single
+  // children right away. The emergency escape MYRMIDON_PROCESS_MODE=single
   // wins over the stored row inside resolveProcessesSettings (§7.2).
   const processSupervisor = processRoleProfile.role === "worker"
     ? createProcessSupervisor({
@@ -1336,7 +1338,11 @@ async function startServerWithDatabaseTeardown(
   let startupListenerBound = false;
   try {
   // myrmidon(OPE-11755): runnerd is local; bind its URL to the actual listening socket.
-  if (processRoleProfile.role === "all") {
+  // myrmidon(OPE-12274): `executesRuns` roles own runnerd registrations (worker in
+  // single mode serves the public port itself), so the PRP upgrade handler must
+  // live on the primary listener there too — in worker mode `openWorkerLoopbackListener`
+  // opens nothing and `runner_prp_websocket_server_not_configured` fired on every session.
+  if (processRoleProfile.executesRuns || processRoleProfile.role === "all") {
     setupRunnerPrpWebSocketServer(server);
   }
   setupEnvironmentCustomImageTerminalWebSocketServer(server, db as any, {
@@ -1955,6 +1961,13 @@ async function startServerWithDatabaseTeardown(
     const now = Date.now();
     if (now - lastClosedTaskReconcileAt < closedTaskReconcileIntervalMs) return;
     lastClosedTaskReconcileAt = now;
+    trackTaskPrSyncWork(backfillPullRequestWorkProducts({
+      db: db as any,
+    }).then((result) => {
+      if (result.linked > 0 || result.failed > 0) logger.info(result, "backfilled bot PR work products on tasks");
+    }).catch((err) => {
+      logger.warn({ errorKind: "task_pr_backfill_failed", errorName: err instanceof Error ? err.name : typeof err }, "bot PR work-product backfill failed");
+    }));
     trackTaskPrSyncWork(reconcileClosedIssuePullRequests({
       db: db as any,
       resolvePullRequestDetails: createPullRequestMergeDetailsResolver(db as any),
@@ -2020,6 +2033,9 @@ async function startServerWithDatabaseTeardown(
     wakeup: ((agentId: string, options: Record<string, unknown>) =>
       backgroundHeartbeat.wakeup(agentId, options as any)),
     track: trackHeartbeatSchedulerWork,
+    // myrmidon(OPE-12397): one GitHub read per PR per pass needs one sweeper —
+    // the same "scheduler" leadership gate TASK-PR-SYNC already uses.
+    isLeader: () => !heartbeatSchedulerStopped && leaderLeaseManager.isLeader("scheduler"),
   });
   // myrmidon(1.6.6 GUARD-RETURN): code tasks of dev projects must not stall on
   // non-coding roles (reviewer, lead, operator). Automatically returns tasks with
@@ -2241,6 +2257,9 @@ async function startServerWithDatabaseTeardown(
     wakeup: backgroundHeartbeat.wakeup,
     assignmentWakeup: backgroundHeartbeat.wakeup,
   });
+  // myrmidon(GITHUB-APP-WEBHOOK): the public App-webhook route (mounted in
+  // createApp, before this exists) ingests through this very instance.
+  app.locals.githubConnectionEvents = githubConnectionEvents;
   const tools = toolAccessService(db as any, {
     deploymentMode: config.deploymentMode,
     deploymentExposure: config.deploymentExposure,
@@ -2531,8 +2550,17 @@ async function startServerWithDatabaseTeardown(
     startDistillSweep(db as any); // myrmidon(1.6.6-K5): knowledge distiller v2 pass; a no-op unless the distill setting (or MYRMIDON_DISTILL_ENABLED=1) is on
     startRedactionSubstitutionCleanup(db as any); // myrmidon(1.7-REDACT): expire reversible substitutions
     startKnowledgeExport(db as any); // myrmidon(1.7 KNOWLEDGE-2.0 L-8): no-op unless MYRMIDON_KNOWLEDGE_EXPORT_REPO is set
-    startLessonDistillSweep({ db: db as any }); // myrmidon(1.7 KNOWLEDGE-2.0 L-4): hindsight lessons -> knowledge suggestions; a no-op unless MYRMIDON_LESSON_DISTILL_ENABLED=1
+    startLessonDistillSweep({
+      db: db as any,
+      readGeneral: async () => ((await instanceSettingsService(db as any).getGeneral()) as any)?.agentMemory,
+    }); // myrmidon(1.7 KNOWLEDGE-2.0 L-4, OPE-12628): hindsight lessons -> knowledge suggestions
+    // myrmidon(1.7 KNOWLEDGE-2.0 L-13): pull the verified-skill record at boot;
+    // delivery stays fail-closed on a missing or changed git snapshot.
+    void configuredGitSkillRecord()?.refresh().catch((error) =>
+      logger.warn({ err: error }, "skill-git-record: startup refresh failed"),
+    );
     startAlertsSweep(db as any); // myrmidon(1.6.6-ALERTS): dedup registry cleanup of closed alerts; a no-op unless MYRMIDON_ALERTS_SWEEP_INTERVAL_SEC is set
+    startIntakeWorker(db as any); // myrmidon(1.7 WEBHOOK-INTAKE): background parse worker for webhook drafts
     startRootFanoutAlertSweep(db); // myrmidon(OPE-9165): collect blocker roots every minute
     startTracingAttentionSweep(db as any); // myrmidon(TRACING-HEALTH): keep the "LLM tracing" operator signal fresh; a no-op unless the tracing settings are on
     startModelProviderPoolSweep(db as any); // myrmidon(1.6.6 OPE-7198): keep Codex/ChatGPT pool attention signals fresh

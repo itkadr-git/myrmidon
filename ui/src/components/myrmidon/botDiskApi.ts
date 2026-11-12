@@ -23,16 +23,16 @@ export interface BotDiskView {
     /** Roles whose bots get the shared cache; absent: the default list (1.6.6-SETTINGS-UI-B editable). */
     sharedCacheRoles?: string[];
     pnpmStore?: "workspace" | "shared";
-    /** pnpm store inside the bot's single mount; absent: /workspace/.pnpm-store. */
+    /** pnpm store inside the bot's own tree, on the clones' mount; absent: /workspace/.pnpm-store (OPE-12720; /cache/pnpm-store of 1.6.5-1.6.7 is retired and reads as the default). */
     pnpmStoreDir?: string;
-    /** Absent: hardlink. */
+    /** Absent: clone (the server reads a stored hardlink or clone-or-copy back as clone). */
     pnpmImportMethod?: "hardlink" | "clone-or-copy" | "copy";
     uvCacheDir?: string;
     uvLinkMode?: "clone" | "hardlink" | "copy";
     /**
      * The host directory of the shared bot runtime (1.6.5-BOT-DISK-H11):
-     * every bot on the default host mounts its bin, lazy-packages and lsp
-     * read-only over its own runtime paths. Absent: one copy per bot.
+     * every bot on the default host mounts its bin subdirectory
+     * read-only over its own runtime path. Absent: one copy per bot.
      */
     sharedBotRuntimePath?: string;
     // myrmidon(1.6.6-SETTINGS-UI-B): the five workspace-lifecycle numbers of

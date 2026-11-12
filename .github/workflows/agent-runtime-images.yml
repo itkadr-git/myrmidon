@@ -57,7 +57,7 @@ jobs:
           # the bake group (which has no such key -> "unknown key" error).
           docker buildx bake \
             -f docker/agent-runtime/buildx-bake.hcl \
-            base opencode pi codex gemini claude omp \
+            base opencode pi codex gemini claude omp omp-ssh \
             --push \
             --metadata-file=bake-metadata.json
           # Extract digests for cosign signing
@@ -68,6 +68,7 @@ jobs:
           GEMINI_DIGEST=$(jq -r '."gemini"."containerimage.digest"' bake-metadata.json)
           CLAUDE_DIGEST=$(jq -r '."claude"."containerimage.digest"' bake-metadata.json)
           OMP_DIGEST=$(jq -r '."omp"."containerimage.digest"' bake-metadata.json)
+          OMP_SSH_DIGEST=$(jq -r '."omp-ssh"."containerimage.digest"' bake-metadata.json)
           echo "base_digest=$BASE_DIGEST" >> "$GITHUB_OUTPUT"
           echo "opencode_digest=$OPENCODE_DIGEST" >> "$GITHUB_OUTPUT"
           echo "pi_digest=$PI_DIGEST" >> "$GITHUB_OUTPUT"
@@ -75,6 +76,7 @@ jobs:
           echo "gemini_digest=$GEMINI_DIGEST" >> "$GITHUB_OUTPUT"
           echo "claude_digest=$CLAUDE_DIGEST" >> "$GITHUB_OUTPUT"
           echo "omp_digest=$OMP_DIGEST" >> "$GITHUB_OUTPUT"
+          echo "omp_ssh_digest=$OMP_SSH_DIGEST" >> "$GITHUB_OUTPUT"
         env:
           VERSION: ${{ env.VERSION }}
           REGISTRY: ${{ env.REGISTRY }}
@@ -106,3 +108,7 @@ jobs:
       - name: Cosign sign omp
         run: |
           cosign sign --yes "${{ env.REGISTRY }}/agent-runtime-omp@${{ steps.bake.outputs.omp_digest }}"
+
+      - name: Cosign sign omp-ssh
+        run: |
+          cosign sign --yes "${{ env.REGISTRY }}/agent-runtime-omp-ssh@${{ steps.bake.outputs.omp_ssh_digest }}"

@@ -235,4 +235,115 @@ describePostgres("user block API with audit (OPE-10215)", () => {
     expect(auditEntry.reason).toBe(blockReason);
     expect(auditEntry.details.reason).toBe(blockReason);
   });
+
+  describe("PATCH /api/users/:id/block and POST /api/users/:id/reset-password (OPE-12116)", () => {
+    it("returns 404 when target user does not exist", async () => {
+      const adminApp = createApp(db, admin);
+      const nonExistentUserId = "00000000-0000-0000-0000-000000000000";
+      const blockRes = await request(adminApp)
+        .patch(`/api/users/${nonExistentUserId}/block`)
+        .send({ blocked: true });
+      expect(blockRes.status).toBe(404);
+
+      const resetRes = await request(adminApp)
+        .post(`/api/users/${nonExistentUserId}/reset-password`);
+      expect(resetRes.status).toBe(404);
+    });
+
+    it("blocks, unblocks, and resets password for target user", async () => {
+      const adminApp = createApp(db, admin);
+      // The OPE-8985 admin user route is the canonical way to create a managed
+      // user without a password (one-time set link, no SMTP).
+      const created = await request(adminApp)
+        .post("/api/myrmidon/users-admin-a/users")
+        .send({
+          username: `user-block-flow-${Date.now()}`,
+          name: "Flow User",
+          role: "member",
+        });
+      expect(created.status).toBe(201);
+      const targetUserId = created.body.id;
+
+      // 1. PATCH block
+      const blockRes = await request(adminApp)
+        .patch(`/api/users/${targetUserId}/block`)
+        .send({ blocked: true, reason: "Temporary freeze" });
+      expect(blockRes.status).toBe(200);
+      expect(blockRes.body.blocked).toBe(true);
+      expect(blockRes.body.reason).toBe("Temporary freeze");
+
+      // Verify the blocked flag through the managed-user listing: the block
+      // must appear in both user_blocks and the instance settings blocklist.
+      const listAfterBlock = await request(adminApp).get("/api/myrmidon/users-admin-a/users");
+      expect(listAfterBlock.status).toBe(200);
+      const blockedEntry = listAfterBlock.body.users.find(
+        (user: { id: string; blocked: boolean }) => user.id === targetUserId,
+      );
+      expect(blockedEntry).toBeDefined();
+      expect(blockedEntry.blocked).toBe(true);
+
+      // 2. PATCH unblock
+      const unblockRes = await request(adminApp)
+        .patch(`/api/users/${targetUserId}/block`)
+        .send({ blocked: false });
+      expect(unblockRes.status).toBe(200);
+      expect(unblockRes.body.blocked).toBe(false);
+
+      // Verify the unblocked flag through the managed-user listing.
+      const listAfterUnblock = await request(adminApp).get("/api/myrmidon/users-admin-a/users");
+      expect(listAfterUnblock.status).toBe(200);
+      const unblockedEntry = listAfterUnblock.body.users.find(
+        (user: { id: string; blocked: boolean }) => user.id === targetUserId,
+      );
+      expect(unblockedEntry).toBeDefined();
+      expect(unblockedEntry.blocked).toBe(false);
+
+      // 3. POST reset-password
+      const resetRes = await request(adminApp)
+        .post(`/api/users/${targetUserId}/reset-password`);
+      expect(resetRes.status).toBe(200);
+      expect(resetRes.body.ok).toBe(true);
+      expect(resetRes.body.userId).toBe(targetUserId);
+      expect(typeof resetRes.body.token).toBe("string");
+      expect(resetRes.body.token.length).toBeGreaterThan(10);
+      expect(resetRes.body.resetToken).toBe(resetRes.body.token);
+      expect(resetRes.body.passwordSetLink).toContain(resetRes.body.token);
+    });
+  });
+
+  describe("GET /api/users (OPE-12089)", () => {
+    it("returns paginated users with items and total, supporting second page, empty list, and role=admin", async () => {
+      const adminApp = createApp(db, admin);
+
+      // Default pagination
+      const list = await request(adminApp).get("/api/users");
+      expect(list.status).toBe(200);
+      expect(list.body).toHaveProperty("total");
+      expect(list.body).toHaveProperty("items");
+      expect(list.body).toHaveProperty("users");
+      expect(Array.isArray(list.body.items)).toBe(true);
+      expect(list.body.page).toBe(1);
+      expect(list.body.limit).toBe(20);
+
+      // Second page
+      const page2 = await request(adminApp).get("/api/users?page=2&limit=1");
+      expect(page2.status).toBe(200);
+      expect(page2.body.page).toBe(2);
+      expect(page2.body.limit).toBe(1);
+      expect(Array.isArray(page2.body.items)).toBe(true);
+
+      // Empty list for out-of-range page
+      const emptyList = await request(adminApp).get("/api/users?page=999&limit=10");
+      expect(emptyList.status).toBe(200);
+      expect(emptyList.body.items).toHaveLength(0);
+      expect(emptyList.body.users).toHaveLength(0);
+      expect(emptyList.body.total).toBeGreaterThanOrEqual(1);
+
+      // Filter role=admin
+      const adminUsers = await request(adminApp).get("/api/users?role=admin");
+      expect(adminUsers.status).toBe(200);
+      expect(Array.isArray(adminUsers.body.items)).toBe(true);
+      expect(adminUsers.body.items.every((u: { role: string }) => u.role === "instance_admin")).toBe(true);
+    });
+  });
 });

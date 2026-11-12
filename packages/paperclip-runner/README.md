@@ -16,18 +16,18 @@ imports or starts Paperclip's server, UI, CLI, or production database.
 
 ## Public package surfaces
 
-- `@paperclipai/paperclip-runner` — production contracts, clients/backends,
+- `@myrmidon/paperclip-runner` — production contracts, clients/backends,
   PRP validation/replay, canonical catalog/dispatcher, and compatibility check.
-- `@paperclipai/paperclip-runner/testing` — deterministic mocks plus PRP and
+- `@myrmidon/paperclip-runner/testing` — deterministic mocks plus PRP and
   semantic conformance kits. Tests and external conformance consumers import
   this explicitly.
-- `@paperclipai/paperclip-runner/evals` — versioned native-attempt metadata,
+- `@myrmidon/paperclip-runner/evals` — versioned native-attempt metadata,
   fail-closed package/binary compatibility checks, and explicit runnerd
   artifact resolution for eval consumers.
 
 The package root has no mock or scenario exports. Generic credential-free
 matrix orchestration lives in the workspace-private
-`@paperclipai/paperclip-eval-kernel`; scenario content and provider-backed eval
+`@myrmidon/paperclip-eval-kernel`; scenario content and provider-backed eval
 campaigns remain outside the runtime package.
 See [ADR 0001](docs/adr/0001-runner-testing-eval-package-boundaries.md).
 
@@ -164,8 +164,8 @@ prospective session configuration exactly.
 Run the complete contract gate with:
 
 ```sh
-pnpm install --filter @paperclipai/paperclip-runner --lockfile=false --offline --ignore-scripts --dev
-pnpm --filter @paperclipai/paperclip-runner verify
+pnpm install --filter @myrmidon/paperclip-runner --lockfile=false --offline --ignore-scripts --dev
+pnpm --filter @myrmidon/paperclip-runner verify
 ```
 
 The verification command requires a stable Rust toolchain with `cargo` on
@@ -176,7 +176,7 @@ Playwright browser libraries into a user-owned cache and run the same acceptance
 sequence with:
 
 ```sh
-pnpm --filter @paperclipai/paperclip-runner verify:rootless
+pnpm --filter @myrmidon/paperclip-runner verify:rootless
 ```
 
 The tracer's final line is stable:
@@ -198,30 +198,30 @@ The tracer's final line is stable:
 Run only the tracer with:
 
 ```sh
-pnpm --filter @paperclipai/paperclip-runner trace:conformance
+pnpm --filter @myrmidon/paperclip-runner trace:conformance
 ```
 
 Replay the Replay happy path, run a Local session, or open the browser
 devtool:
 
 ```sh
-pnpm --filter @paperclipai/paperclip-runner replay:fixture
-pnpm --filter @paperclipai/paperclip-runner trace:local-runner -- --scenario happy-path
-pnpm --filter @paperclipai/paperclip-runner trace:codex
-pnpm --filter @paperclipai/paperclip-runner demo:live-console -- --host 127.0.0.1 --port 4174
+pnpm --filter @myrmidon/paperclip-runner replay:fixture
+pnpm --filter @myrmidon/paperclip-runner trace:local-runner -- --scenario happy-path
+pnpm --filter @myrmidon/paperclip-runner trace:codex
+pnpm --filter @myrmidon/paperclip-runner demo:live-console -- --host 127.0.0.1 --port 4174
 
 # Live console: chat with a live session in the browser.
-pnpm --filter @paperclipai/paperclip-runner console:live-console
-pnpm --filter @paperclipai/paperclip-runner browser:dev --host 127.0.0.1 --port 4179
+pnpm --filter @myrmidon/paperclip-runner console:live-console
+pnpm --filter @myrmidon/paperclip-runner browser:dev --host 127.0.0.1 --port 4179
 
 # SDK: open the public-SDK reference console and mini consumer.
-pnpm --filter @paperclipai/paperclip-runner console:sdk
+pnpm --filter @myrmidon/paperclip-runner console:sdk
 
 # Standalone: run the standalone legacy/native/kill-switch tracer and page.
-pnpm --filter @paperclipai/paperclip-runner trace:standalone
-pnpm --filter @paperclipai/paperclip-runner trace:standalone -- --feature-flag enabled
-pnpm --filter @paperclipai/paperclip-runner trace:standalone -- --feature-flag enabled --kill-switch enabled
-pnpm --filter @paperclipai/paperclip-runner demo:standalone
+pnpm --filter @myrmidon/paperclip-runner trace:standalone
+pnpm --filter @myrmidon/paperclip-runner trace:standalone -- --feature-flag enabled
+pnpm --filter @myrmidon/paperclip-runner trace:standalone -- --feature-flag enabled --kill-switch enabled
+pnpm --filter @myrmidon/paperclip-runner demo:standalone
 
 ```
 
@@ -253,8 +253,8 @@ The deterministic workflow scorer and the chaos schedule do not require
 provider credentials:
 
 ```sh
-pnpm --filter @paperclipai/paperclip-runner test:runner-workflow-evals
-pnpm --filter @paperclipai/paperclip-runner report:runner-chaos-evals
+pnpm --filter @myrmidon/paperclip-runner test:runner-workflow-evals
+pnpm --filter @myrmidon/paperclip-runner report:runner-chaos-evals
 ```
 
 `report:runner-live-evals` is a paid, provider-backed command. Native Codex

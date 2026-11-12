@@ -27,6 +27,23 @@ import {
   type AgentExchangeRoom,
   type AgentExchangeSettings,
 } from "@myrmidon/shared";
+import {
+  buildParticipantPrompt,
+  collectPreviousRoundAnswers,
+  type RoundTotals,
+} from "./room-runner.js";
+
+// Round-running rules live in room-runner.ts (OPE-12079): the first-round
+// independence rule, the previous-round transcript assembly, and the cost
+// summation over all participants. Re-exported here so the engine's public
+// surface (and the existing importers/tests) keep their names.
+export {
+  buildParticipantPrompt,
+  collectPreviousRoundAnswers,
+  sumRoundTotals,
+  EMPTY_ROUND_TOTALS,
+  type RoundTotals,
+} from "./room-runner.js";
 
 /** Stable failure codes. Callers and tests switch on these, never messages. */
 export type AgentExchangeErrorCode =
@@ -37,6 +54,9 @@ export type AgentExchangeErrorCode =
   | "too_many_participants"
   | "token_budget_exhausted"
   | "round_cap_reached";
+
+/** The stop valve reason recorded on a stopped room. */
+export type AgentExchangeStopReason = "owner_stop" | "participant_stop";
 
 export class AgentExchangeError extends Error {
   readonly code: AgentExchangeErrorCode;
@@ -90,9 +110,19 @@ export interface AgentExchangeStore {
   getRoom(roomId: string): Promise<AgentExchangeRoom | null>;
   updateRoom(roomId: string, patch: RoomPatch): Promise<AgentExchangeRoom>;
   listRooms(companyId: string, issueId: string): Promise<AgentExchangeRoom[]>;
+  /**
+   * myrmidon(1.7 AGENT-EXCHANGE-METRICS, OPE-12097): counts the exchange
+   * sessions the agent participated in. `started` counts every room whose
+   * frozen roster names the agent; `completed` counts only the rooms that
+   * reached the `completed` status (the summary landed). A stopped room
+   * counts as started but not completed.
+   */
+  countAgentSessions?(agentId: string): Promise<{ started: number; completed: number }>;
   insertMessage(input: { roomId: string; round: number; participantIndex: number }): Promise<AgentExchangeMessage>;
   updateMessage(messageId: string, patch: MessagePatch): Promise<void>;
   listMessages(roomId: string): Promise<AgentExchangeMessage[]>;
+  /** Marks the room's still-`pending` messages as interrupted by a stop. */
+  failPendingMessages?(roomId: string, error: string): Promise<number>;
 }
 
 // ---------------------------------------------------------------------------
@@ -104,6 +134,8 @@ export interface AgentExchangeModelCallInput {
   model: string;
   messages: Array<{ role: "system" | "user"; content: string }>;
   timeoutMs: number;
+  /** Aborted when the room's stop valve interrupts the in-flight round. */
+  signal?: AbortSignal;
 }
 
 export interface AgentExchangeModelCallResult {
@@ -118,6 +150,17 @@ export interface AgentExchangeModelPort {
     promptPriceUsdPerMillion: number | null;
     completionPriceUsdPerMillion: number | null;
   }>;
+}
+
+/**
+ * The in-flight round of a room, keyed by roomId: created before the calls
+ * dispatch, aborted by the stop valve. An interrupted round lands as `error`
+ * messages (`room_stopped:interrupted_by_stop`) and writes no room totals.
+ */
+const activeRounds = new Map<string, AbortController>();
+
+function stopAbortReason(): AgentExchangeError {
+  return new AgentExchangeError("room_closed", "the room was stopped");
 }
 
 export interface AgentExchangeSummarySink {
@@ -156,23 +199,6 @@ export const AGENT_EXCHANGE_FINISHER_SYSTEM_PROMPT = [
   "and on what, (3) the recommended next step. Be brief (at most 400 words).",
 ].join("\n");
 
-/** The prompt of one participant call. Round 1 sees the opening prompt ONLY. */
-export function buildParticipantPrompt(input: {
-  round: number;
-  openingPrompt: string;
-  previousRoundAnswers: string[];
-}): string {
-  if (input.round === 1) return input.openingPrompt;
-  return [
-    input.openingPrompt,
-    "",
-    `Round ${input.round - 1} answers:`,
-    ...input.previousRoundAnswers,
-    "",
-    `Round ${input.round}: reply to the answers above — where do you agree, where do you differ?`,
-  ].join("\n");
-}
-
 // ---------------------------------------------------------------------------
 // Engine.
 // ---------------------------------------------------------------------------
@@ -190,6 +216,8 @@ async function requireRoom(store: AgentExchangeStore, roomId: string): Promise<A
 /**
  * The one model call of a participant. A failing or slow model lands as a
  * message in `error` state — one broken participant never kills the room.
+ * When the stop valve interrupts the round, the in-flight call is aborted and
+ * lands the same way, with the `room_stopped` error.
  */
 async function runParticipantCall(
   deps: AgentExchangeEngineDeps,
@@ -197,7 +225,8 @@ async function runParticipantCall(
   messageId: string,
   participant: AgentExchangeParticipantSpec,
   userPrompt: string,
-): Promise<{ tokens: number; costCents: number }> {
+  active: AbortController | null,
+): Promise<RoundConsumption> {
   void room;
   try {
     const result = await deps.models.call({
@@ -208,6 +237,7 @@ async function runParticipantCall(
         { role: "user", content: userPrompt },
       ],
       timeoutMs: deps.settings.responseTimeoutMs,
+      signal: active?.signal,
     });
     const prices = await deps.models.prices({ providerId: participant.providerId, model: participant.model });
     const costCents = agentExchangeCallCostCents({
@@ -224,47 +254,84 @@ async function runParticipantCall(
       costCents,
       completedAt: now(deps),
     });
-    return { tokens: result.promptTokens + result.completionTokens, costCents };
+    return { tokens: result.promptTokens + result.completionTokens, costCents, interrupted: false };
   } catch (error) {
     await deps.store.updateMessage(messageId, {
       status: "error",
-      error: `participant_error:${error instanceof Error ? error.message.slice(0, 200) : "call_failed"}`,
+      error: isStopInterruption(error)
+        ? "room_stopped:interrupted_by_stop"
+        : `participant_error:${error instanceof Error ? error.message.slice(0, 200) : "call_failed"}`,
       completedAt: now(deps),
     });
-    return { tokens: 0, costCents: 0 };
+    if (isStopInterruption(error)) return { tokens: 0, costCents: 0, interrupted: true };
+    return { tokens: 0, costCents: 0, interrupted: false };
   }
 }
 
+/** True when the error is the stop valve aborting an in-flight call. */
+function isStopInterruption(error: unknown): boolean {
+  return error instanceof AgentExchangeError && error.code === "room_closed";
+}
+
+/**
+ * What one round consumed. `RoundTotals` carries the money (room-runner.ts);
+ * `interrupted` is the stop-valve signal: true when the round was aborted
+ * mid-flight, so the caller must not write the room totals or bump the round.
+ */
+type RoundConsumption = RoundTotals & { interrupted: boolean };
+
 /**
  * Runs one round: creates the pending cells, then dispatches every
- * participant of the round in parallel. Returns what the round consumed.
+ * participant of the round in parallel. Returns what the round consumed;
+ * `interrupted` is true when the stop valve aborted the round mid-flight.
  */
 async function runRound(
   deps: AgentExchangeEngineDeps,
   room: AgentExchangeRoom,
   round: number,
   openingPrompt: string,
-): Promise<{ tokens: number; costCents: number }> {
+): Promise<RoundConsumption> {
   const participants = room.participants;
   const messages = round > 1 ? await deps.store.listMessages(room.id) : [];
-  const previousRoundAnswers = messages
-    .filter((m) => m.round === round - 1 && m.status === "done" && m.content)
-    .map((m) => `${participants[m.participantIndex]?.label ?? `participant-${m.participantIndex}`}: ${m.content}`);
+  // Round 1: previousRoundAnswers is empty, so every prompt is the opening
+  // prompt alone (the independence rule in room-runner.ts). Round n>1: every
+  // prompt carries the previous round's landed answers.
+  const previousRoundAnswers = collectPreviousRoundAnswers({
+    messages,
+    round: round - 1,
+    participants,
+  });
 
-  const calls: Array<Promise<{ tokens: number; costCents: number }>> = [];
-  for (let index = 0; index < participants.length; index += 1) {
-    const participant = participants[index];
-    const prompt = buildParticipantPrompt({ round, openingPrompt, previousRoundAnswers });
-    // The cell row exists before the call: a crash mid-round leaves a pending
-    // cell, not a silent gap, and a redispatch reuses it.
-    const cell = await deps.store.insertMessage({ roomId: room.id, round, participantIndex: index });
-    calls.push(runParticipantCall(deps, room, cell.id, participant, prompt));
+  const active = new AbortController();
+  activeRounds.set(room.id, active);
+  try {
+    const calls: Array<Promise<{ tokens: number; costCents: number; interrupted: boolean }>> = [];
+    for (let index = 0; index < participants.length; index += 1) {
+      const participant = participants[index];
+      const prompt = buildParticipantPrompt({ round, openingPrompt, previousRoundAnswers });
+      // The cell row exists before the call: a crash mid-round leaves a pending
+      // cell, not a silent gap, and a redispatch reuses it.
+      const cell = await deps.store.insertMessage({ roomId: room.id, round, participantIndex: index });
+      calls.push(runParticipantCall(deps, room, cell.id, participant, prompt, active));
+    }
+    const results = await Promise.all(calls);
+    // The room-round total = the sum over ALL participants' calls (room-runner);
+    // `interrupted` rides along per call and OR-folds here so the stop valve
+    // can tell an aborted round from a landed one.
+    const folded = results.reduce<RoundConsumption>(
+      (acc, r) => ({
+        tokens: acc.tokens + r.tokens,
+        costCents: acc.costCents + r.costCents,
+        interrupted: acc.interrupted || r.interrupted,
+      }),
+      { tokens: 0, costCents: 0, interrupted: false },
+    );
+    // The interrupted flag MUST ride with the totals: dropping it here made the
+    // caller write round totals and bump currentRound for an aborted round.
+    return { tokens: folded.tokens, costCents: folded.costCents, interrupted: folded.interrupted };
+  } finally {
+    if (activeRounds.get(room.id) === active) activeRounds.delete(room.id);
   }
-  const results = await Promise.all(calls);
-  return results.reduce(
-    (acc, r) => ({ tokens: acc.tokens + r.tokens, costCents: acc.costCents + r.costCents }),
-    { tokens: 0, costCents: 0 },
-  );
 }
 
 /** The transcript the finisher reads: every landed answer, in round order. */
@@ -295,7 +362,7 @@ export function buildSummaryBody(input: {
     input.finisherAnswer,
     "",
     "---",
-    `Room cost: ${input.totalTokens} tokens, ${(input.totalCostCents / 100).toFixed(2)} ¢ ` +
+    `Room cost: ${input.totalTokens} tokens, ${input.totalCostCents.toFixed(2)} ¢ ` +
       `(${input.participantCount} participants, ${input.answerCount} answers + finisher).`,
   ].join("\n");
 }
@@ -438,6 +505,7 @@ export async function openRoom(
   });
 
   const consumed = await runRound(deps, room, 1, openingPrompt);
+  if (consumed.interrupted) return room;
   room = await deps.store.updateRoom(room.id, {
     currentRound: 1,
     tokensUsed: consumed.tokens,
@@ -464,6 +532,10 @@ export async function runNextRound(
     throw new AgentExchangeError("token_budget_exhausted", `Room ${roomId} spent its token budget`);
   }
   const consumed = await runRound(deps, room, nextRound, openingPrompt);
+  if (consumed.interrupted) {
+    // The stop valve closed the room mid-round; the closed room is the truth.
+    return deps.store.getRoom(roomId).then((closed) => closed ?? room);
+  }
   return deps.store.updateRoom(roomId, {
     currentRound: nextRound,
     tokensUsed: room.tokensUsed + consumed.tokens,
@@ -471,19 +543,33 @@ export async function runNextRound(
   });
 }
 
-/** The stop valve. `finalize: true` runs the finisher on the stopped room. */
+/**
+ * The stop valve. `finalize: true` runs the finisher on the stopped room.
+ * The room's opener and every room participant may pull it; a participant
+ * stop interrupts the in-flight round and records `participant_stop`.
+ */
 export async function stopRoom(
   deps: AgentExchangeEngineDeps,
   input: { roomId: string; actorType: "user" | "agent"; actorId: string; finalize?: boolean },
 ): Promise<AgentExchangeRoom> {
   const room = await requireRoom(deps.store, input.roomId);
-  if (room.stopperType !== input.actorType || room.stopperId !== input.actorId) {
+  const isOpener = room.openerType === input.actorType && room.openerId === input.actorId;
+  const isParticipant =
+    input.actorType === "agent" &&
+    room.participants.some((p) => p.agentId !== null && p.agentId === input.actorId);
+  if (!isOpener && !isParticipant) {
     throw new AgentExchangeError(
       "not_room_stopper",
-      `Only the room owner (${room.stopperType}:${room.stopperId}) may stop room ${input.roomId}`,
+      `Only the room owner or a room participant may stop room ${input.roomId}`,
     );
   }
   if (room.status !== "open") return room;
+
+  const stopReason: AgentExchangeStopReason = isOpener ? "owner_stop" : "participant_stop";
+  // Abort before the room row closes: the in-flight calls reject immediately
+  // and land as room_stopped errors instead of racing the status flip.
+  const active = activeRounds.get(input.roomId);
+  if (active) active.abort(stopAbortReason());
 
   let tokens = room.tokensUsed;
   let costCents = room.costCents;
@@ -494,9 +580,10 @@ export async function stopRoom(
     tokens += finished.tokens;
     costCents += finished.costCents;
   }
+  await deps.store.failPendingMessages?.(input.roomId, "room_stopped:interrupted_by_stop");
   return deps.store.updateRoom(input.roomId, {
     status: input.finalize === true ? "completed" : "stopped",
-    stopReason: "owner_stop",
+    stopReason,
     closedAt: now(deps),
     tokensUsed: tokens,
     costCents,
@@ -513,6 +600,8 @@ export async function finalizeRoom(deps: AgentExchangeEngineDeps, roomId: string
   if (room.status !== "open") {
     throw new AgentExchangeError("room_closed", `Room ${roomId} is ${room.status}`);
   }
+  const active = activeRounds.get(roomId);
+  if (active) active.abort(stopAbortReason());
   const finished = await runFinisher(deps, room);
   return deps.store.updateRoom(roomId, {
     status: "completed",

@@ -1,0 +1,226 @@
+diff --git a/agent/context_compressor.py b/agent/context_compressor.py
+index c4d7753..eff3d01 100644
+--- a/agent/context_compressor.py
++++ b/agent/context_compressor.py
+@@ -245,7 +245,8 @@ def _exc_status_code(exc: Exception) -> Any:
+     return getattr(exc, "status_code", None) or getattr(getattr(exc, "response", None), "status_code", None)
+ 
+ 
+-HISTORICAL_TASK_HEADING = "## Historical Task Snapshot"
++# myrmidon(G1): 9-section context compaction summary heading
++HISTORICAL_TASK_HEADING = "## USER_CONTEXT"
+ 
+ 
+ SUMMARY_PREFIX = (
+@@ -1168,10 +1169,30 @@ _PATH_MENTION_RE = re.compile(r"(?:/|~/?|[A-Za-z]:\\)[^\s`'\")\]}<>]+")
+ _MEDIA_DIRECTIVE_RE = re.compile(r"MEDIA:\S+")
+ # Pre-#44454 alias. A summarizer that still emits it must be replaced, not prepended.
+ _LEGACY_ACTIVE_TASK_HEADING = "## Active Task"
+-_TASK_SNAPSHOT_HEADINGS = (HISTORICAL_TASK_HEADING, _LEGACY_ACTIVE_TASK_HEADING)
++# myrmidon(G1): preserve legacy headings for remediation parsers
++_LEGACY_HISTORICAL_TASK_HEADING = "## Historical Task Snapshot"
++_TASK_SNAPSHOT_HEADINGS = (HISTORICAL_TASK_HEADING, _LEGACY_HISTORICAL_TASK_HEADING, _LEGACY_ACTIVE_TASK_HEADING)
+ _HISTORICAL_TASK_SECTION_RE = re.compile(
+     rf"(?ms)^(?:{'|'.join(re.escape(heading) for heading in _TASK_SNAPSHOT_HEADINGS)})\s*\n.*?(?=^## |\Z)"
+ )
++# myrmidon(G1): task and PR tracking patterns for fallback summary extraction
++_TASK_TRACKING_MENTION_RE = re.compile(
++    r"\b[A-Z]{2,10}-\d+\b|(?i:\b(?:PR|pull\s+request)\s*#?\s*\d+\b)|#\d+\b"
++)
++_TASK_TRACKING_EXCLUDE = frozenset({
++    "UTF-8", "UTF-16", "UTF-32", "SHA-1", "SHA-256", "SHA-512",
++    "MD-5", "ISO-8601", "BASE-64", "HTTP-1", "HTTP-2", "HTTP-3",
++})
++
++
++def _collect_task_tracking_mentions(text: str, task_tracking: list[str], *, limit: int = 12) -> None:
++    if not text:
++        return
++    for match in _TASK_TRACKING_MENTION_RE.findall(text):
++        token = match.strip().rstrip(".,:;")
++        if token.upper() in _TASK_TRACKING_EXCLUDE:
++            continue
++        _dedupe_append(task_tracking, token, limit=limit)
+ 
+ 
+ def _redact_compaction_text(text: Any) -> str:
+@@ -1938,12 +1959,16 @@ _SECTION_INSTRUCTIONS: Dict[bool, Dict[str, str]] = {
+             "Write the summary in the same language the user was using in the "
+             "conversation — do not translate or switch to English. "
+         ),
+-        "historical_task": """[THE SINGLE MOST IMPORTANT FIELD. Capture the user's most recent unfulfilled
+-input verbatim — the exact words they used. This includes:
++        "historical_task": """[THE SINGLE MOST IMPORTANT FIELD. Who asked, what was asked, and the user's most recent unfulfilled
++input verbatim — the exact words they used, along with explicit user preferences and constraints.
++This includes:
+ - Explicit task assignments ("<specific user task>")
+ - Questions awaiting an answer ("<specific user question>")
+ - Decisions awaiting input ("<option A or B?>")
+ - Ongoing discussions where the assistant owes the next substantive reply
++Any security or safety constraint the user stated (files/data to avoid, operations that must not be
++performed, credential-handling rules) MUST be quoted VERBATIM here so it continues to apply after
++compaction — never paraphrase those.
+ A conversation where the user just asked a question IS an active task — the
+ task is "answer that question with full context". Do NOT write "None" merely
+ because the user did not issue an imperative command; reserve "None" for the
+@@ -3369,6 +3394,9 @@ class ContextCompressor(SummaryDispatchMixin, MicroCompactionMixin, ContextEngin
+         relevant_files: list[str] = []
+         blockers: list[str] = []
+         last_dropped_turns: list[str] = []
++        task_tracking: list[str] = []
++        if getattr(self, "_previous_summary", None):
++            _collect_task_tracking_mentions(self._previous_summary, task_tracking)
+         call_id_to_tool: dict[str, tuple[str, str]] = {}
+         for msg in turns_to_summarize:
+             if msg.get("role") != "assistant":
+@@ -3385,10 +3413,12 @@ class ContextCompressor(SummaryDispatchMixin, MicroCompactionMixin, ContextEngin
+                     except Exception:
+                         parsed = args
+                     _collect_paths_from_jsonish(parsed, relevant_files)
++                    _collect_task_tracking_mentions(args, task_tracking)
+         for msg in turns_to_summarize:
+             role = msg.get("role", "unknown")
+             text = _compact_fallback_turn(msg.get("content"))
+             _collect_path_mentions(text, relevant_files)
++            _collect_task_tracking_mentions(text, task_tracking)
+             synthetic_user = role == "user" and self._is_synthetic_compression_user_turn(msg)
+             tool_names = [_extract_tool_call_name_and_args(tc)[0] for tc in (msg.get("tool_calls") or [])] if role == "assistant" else []
+             turn_text = text
+@@ -3419,6 +3449,7 @@ class ContextCompressor(SummaryDispatchMixin, MicroCompactionMixin, ContextEngin
+             "relevant_files": relevant_files,
+             "blockers": blockers,
+             "last_dropped_turns": last_dropped_turns,
++            "task_tracking": task_tracking,
+         }
+ 
+     def _build_static_fallback_summary(
+@@ -3446,35 +3477,37 @@ class ContextCompressor(SummaryDispatchMixin, MicroCompactionMixin, ContextEngin
+         reason_text = f" Summary failure reason: {reason}." if reason else ""
+         body = f"""{HISTORICAL_TASK_HEADING}
+ {active_task}
+-
+-## Goal
+ Recovered from a deterministic fallback because the LLM context summarizer was unavailable. Continue from the protected recent messages after this summary and use current file/system state for exact details.{previous_summary_note}
+ 
+-## Constraints & Preferences
+-- This fallback was generated locally without an LLM summary call.
+-- Secrets and credentials were redacted before preservation.
+-- The summary may be incomplete; prefer verifying current files, git state, processes, and test results instead of assuming omitted details.
++## TASK_TRACKING
++{_bullets(anchors["task_tracking"], limit=12)}
+ 
+-## Completed Actions
++## COMPLETED
+ {chr(10).join(completed) if completed else "None recoverable from compacted turns."}
+ 
+-## Active State
+-Unknown from deterministic fallback. Inspect current repository/session state if needed.
++## PENDING
++{_bullets(anchors["last_dropped_turns"], limit=8)}
+ 
+-## Blocked
++## CURRENT_STATE
++Unknown from deterministic fallback. Inspect current repository/session state if needed.
+ {_bullets(anchors["blockers"], limit=5)}
+ 
+-## Key Decisions
+-None recoverable from deterministic fallback.
++## CODE_STATE
++{_bullets(anchors["relevant_files"], limit=12)}
++
++## TESTS
++Recovered fallback; inspect test execution logs.
+ 
+-## Resolved Questions
++## CHANGES
+ None recoverable from deterministic fallback.
+ 
+-## Relevant Files
+-{_bullets(anchors["relevant_files"], limit=12)}
++## VERSION_CONTROL_STATUS
++- Branch, commits, PR status: Inspect current git and PR state.
+ 
+-## Last Dropped Turns
+-{_bullets(anchors["last_dropped_turns"], limit=8)}
++## Constraints & Preferences
++- This fallback was generated locally without an LLM summary call.
++- Secrets and credentials were redacted before preservation.
++- The summary may be incomplete; prefer verifying current files, git state, processes, and test results instead of assuming omitted details.
+ 
+ ## Critical Context
+ Summary generation was unavailable, so this is a best-effort deterministic fallback for {len(turns_to_summarize)} compacted message(s).{reason_text}"""
+@@ -3951,7 +3984,7 @@ PREVIOUS SUMMARY:
+ NEW TURNS TO INCORPORATE:
+ {content_to_summarize}{_memory_section}
+ 
+-Update the summary using this exact structure. PRESERVE all existing information that is still relevant. ADD new completed actions to the numbered list (continue numbering). Move items from "In Progress" to "Completed Actions" when done. Move answered questions to "Resolved Questions". Update "Active State" to reflect current state. Remove information only if it is clearly obsolete. CRITICAL: Update "{HISTORICAL_TASK_HEADING}" to reflect the user's most recent unfulfilled input — this includes any question, decision request, or discussion turn that the assistant has not yet answered. Only write "None" if the last exchange was fully resolved.
++Update the summary using this exact structure. PRESERVE all existing information that is still relevant. ADD new completed actions to COMPLETED. Move finished items from PENDING to COMPLETED. Update CURRENT_STATE, CODE_STATE, TESTS, CHANGES, and VERSION_CONTROL_STATUS to reflect current state. Remove information only if it is clearly obsolete. CRITICAL: Update "{HISTORICAL_TASK_HEADING}" to reflect the user's most recent unfulfilled input and explicit constraints verbatim — this includes any question, decision request, or discussion turn that the assistant has not yet answered. Only write "None" if the last exchange was fully resolved.
+ 
+ {_template_sections}"""
+         else:
+@@ -3997,14 +4030,11 @@ This compaction should PRIORITISE preserving all information related to the focu
+         return f"""{HISTORICAL_TASK_HEADING}
+ {_section["historical_task"]}
+ 
+-## Goal
+-{_section["goal"]}
++## TASK_TRACKING
++[Exact task and ticket identifiers (e.g. OPE-..., issue keys), PR numbers (e.g. PR #...), and tracking IDs — copy verbatim from conversation or tools; do NOT paraphrase, omit, or renumber.]
+ 
+-## Constraints & Preferences
+-{_section["constraints"]}
+-
+-## Completed Actions
+-[Numbered list of concrete actions taken — include tool used, target, and outcome.
++## COMPLETED
++[Numbered list of concrete actions taken and finished goals — include tool used, target, and outcome.
+ Format each as: N. ACTION target — outcome [tool: name]
+ Example:
+ 1. READ config.py:45 — found `==` should be `!=` [tool: read_file]
+@@ -4012,30 +4042,27 @@ Example:
+ 3. TEST `pytest tests/` — 3/50 failed: test_parse, test_validate, test_edge [tool: terminal]
+ Be specific with file paths, commands, line numbers, and results.]
+ 
+-## Active State
+-[Current working state — include:
+-- Working directory and branch (if applicable)
+-- Modified/created files with brief note on each
+-- Test status (X/Y passing)
+-- Any running processes or servers
+-- Environment details that matter]
++## PENDING
++[Open tasks, remaining items, pending questions, next actions to execute, and unfulfilled objectives.]
+ 
+-## Blocked
+-[Any blockers, errors, or issues not yet resolved. Include exact error messages.]
++## CURRENT_STATE
++[Current working state — include:
++- Active working mode, running processes, servers
++- Blockers, errors, or issues not yet resolved (include exact error messages)
++- Important technical decisions and WHY they were made
++- Resolved errors and how they were fixed]
+ 
+-## Key Decisions
+-[Important technical decisions and WHY they were made]
++## CODE_STATE
++[Current repository and directory layout, relevant files read, modified, or created with brief note on each, and code structure.]
+ 
+-## Errors & Fixes
+-[Errors hit during the compacted turns and how each was resolved — include the
+-exact error text. Pay special attention to corrections the USER gave; quote
+-the user's correction and record what changed as a result.]
++## TESTS
++[What test suites or verification commands were run, exact test status (e.g. X/Y passing, failed, skipped), and results.]
+ 
+-## Resolved Questions
+-{_section["resolved_questions"]}
++## CHANGES
++[Specific list of code, file, and configuration changes made — describe exactly what changed.]
+ 
+-## Relevant Files
+-[Files read, modified, or created — with brief note on each]
++## VERSION_CONTROL_STATUS
++[Current git branch, commit SHAs, PR status (number, URL, draft/ready), and merge/conflict state.]
+ 
+ ## Critical Context
+ [Any specific values, error messages, configuration details, or data that would be lost without explicit preservation. NEVER include API keys, tokens, passwords, or credentials — write [REDACTED] instead.]{_session_log_section}

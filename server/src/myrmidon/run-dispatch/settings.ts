@@ -16,6 +16,7 @@
 
 import { eq } from "drizzle-orm";
 import { instanceSettings, type Db } from "@myrmidon/db";
+import { processRole } from "../../services/process-role.js";
 
 /** The `general.processes` key inside `instance_settings.general`. */
 export const RUN_DISPATCH_SETTINGS_KEY = "processes";
@@ -42,6 +43,15 @@ export const MIN_QUEUED_RESWEEP_SEC = 5;
 /** Ceiling of `queuedResweepSec`: above this the NOTIFY fallback is slower than the 5 min tick. */
 export const MAX_QUEUED_RESWEEP_SEC = 3600;
 
+/**
+ * OPE-12291: the floor of `queuedRunStaleAfterSec`. A run queued behind a cold
+ * container start must survive the worst-case wake (image pull + health wait,
+ * observed in the field at 3–7 minutes); below this floor a queued run expires
+ * before the container can possibly take it, burning the daily run limit on
+ * retries that never reach the model.
+ */
+export const MIN_QUEUED_RUN_STALE_AFTER_SEC = 300;
+
 /** The singleton row of `instance_settings` (see instance-settings.ts). */
 const DEFAULT_SINGLETON_KEY = "default";
 
@@ -65,11 +75,13 @@ function readProcessesRecord(general: unknown): Record<string, unknown> | null {
 }
 
 function resolveMode(raw: unknown): RunStartDispatchMode {
-  if (typeof raw !== "string") return DEFAULT_RUN_START_DISPATCH;
+  const role = processRole().role;
+  const splitDefault = role !== "all" ? "notify" : DEFAULT_RUN_START_DISPATCH;
+  if (typeof raw !== "string") return splitDefault;
   const normalized = raw.trim().toLowerCase();
   return (RUN_START_DISPATCH_MODES as readonly string[]).includes(normalized)
     ? (normalized as RunStartDispatchMode)
-    : DEFAULT_RUN_START_DISPATCH;
+    : splitDefault;
 }
 
 function resolveIntervalSec(raw: unknown): number {
@@ -89,7 +101,7 @@ function resolveIntervalSec(raw: unknown): number {
 function resolveStaleAfterSec(raw: unknown): number {
   const numeric = typeof raw === "number" ? raw : typeof raw === "string" && raw.trim() !== "" ? Number(raw) : Number.NaN;
   if (!Number.isFinite(numeric)) return DEFAULT_QUEUED_RUN_STALE_AFTER_SEC;
-  return Math.max(60, Math.min(604800, Math.round(numeric)));
+  return Math.max(MIN_QUEUED_RUN_STALE_AFTER_SEC, Math.min(604800, Math.round(numeric)));
 }
 
 /**

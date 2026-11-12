@@ -29,6 +29,7 @@ export const STACK_LOCAL_PROBES = [
   "health-commit", // the board server itself: the /api/health commit source
   "docker-image", // image digest/labels via the Docker API over the unix socket
   "container-labels", // version reported by container labels
+  "http-version", // GET an HTTP endpoint of the component; JSON {version}
   "env", // an explicit MYRMIDON_* version override
   "manual", // filled by the operator; no probe exists
   "none", // no local probe: reported as unknown with a reason
@@ -59,6 +60,25 @@ export interface StackSeedComponent {
   localProbe: StackLocalProbe;
   /** For docker-image probes: image reference(s) to inspect, without a tag. */
   imageRefs?: readonly string[];
+  /**
+   * For http-version probes: the HTTP endpoint to GET. Read from the
+   * environment / bound secret at probe time (the address never ships in the
+   * seed, only the env var name / secret ref name). The probe appends the
+   * component's documented endpoint to a bare base URL (hindsight /version,
+   * LiteLLM /public/model_hub/info, Langfuse /api/public/health) and reads
+   * the version from the JSON body — see httpVersionField below for the
+   * component-specific field name.
+   */
+  httpEndpointEnv?: string;
+  /**
+   * For http-version probes: the JSON field the component reports its version
+   * in, when it is neither `version` nor `api_version` (LiteLLM publishes
+   * `litellm_version` on /public/model_hub/info). Checked first; the generic
+   * fields stay accepted as fallbacks.
+   */
+  httpVersionField?: string;
+  /** Restrict github-tags release checks to tags with this prefix (e.g. "myr-v"). */
+  tagPrefix?: string;
   /** One-line note shown next to the component in the panel. */
   note?: string;
   /** Package coordinates for advisory / CVE lookups (part B advisory check). */
@@ -153,6 +173,8 @@ export interface StackUpstreamState {
   notes: StackReleaseNotes | null;
   /** Probe failure reason for this component, if any. */
   error: string | null;
+  /** When the last successful upstream fetch happened (null if never). */
+  staleSince: string | null;
   /** Known vulnerabilities from the advisory check; absent when clean or when the source degraded. */
   vulnerabilities?: readonly StackVulnerability[];
 }
@@ -240,6 +262,7 @@ export function parseUpstreamState(raw: unknown): StackUpstreamState | null {
     behindBy: intOrNull(raw.behindBy),
     notes,
     error: str(raw.error),
+    staleSince: str(raw.staleSince),
   };
 }
 
@@ -356,6 +379,11 @@ export function patchEntryFromDelta(delta: StackDeltaSeed): StackPatchEntry {
   };
 }
 
+//
+// Pinned Paperclip vendor release supported by the migration schema
+// (schema-paperclip-v2026.1106.0.sql).
+export const VENDOR_MIGRATION_SUPPORTED_VERSION = "v2026.1106.0";
+
 /**
  * The seed: every stack component the update panel tracks. Neutral public
  * names and upstream repos only — no hosts, no internal identifiers.
@@ -366,14 +394,15 @@ export const STACK_SEED: readonly StackSeedComponent[] = [
     releaseSource: "github-releases",
     upstream: { kind: "github", repo: "paperclipai/paperclip" },
     localProbe: "manual",
-    note: "Vendor upstream of the board fork; local version tracked via the board component.",
+    note: "Vendor upstream of the board fork; local version tracked via supported migration schema.",
   },
   {
     name: "myrmidon",
     releaseSource: "github-tags",
     upstream: { kind: "github", repo: "itkadr-git/myrmidon" },
     localProbe: "health-commit",
-    note: "The board itself; version/commit come from the /api/health source.",
+    tagPrefix: "myr-v",
+    note: "The board itself; version/commit come from the /api/health source. Release checks only count board release tags (myr-v*), not the vendored snapshot tags.",
   },
   {
     name: "hermes-agent",
@@ -396,30 +425,27 @@ export const STACK_SEED: readonly StackSeedComponent[] = [
     name: "litellm",
     releaseSource: "github-releases",
     upstream: { kind: "github", repo: "BerriAI/litellm" },
-    localProbe: "docker-image",
-    imageRefs: ["ghcr.io/berriai/litellm"],
+    localProbe: "http-version",
+    httpEndpointEnv: "MYRMIDON_STACK_HTTP_LITELLM",
+    httpVersionField: "litellm_version",
+    note: "Local version is read from the component's /public/model_hub/info endpoint (litellm_version field).",
     advisoryPackage: { name: "litellm", ecosystem: "PyPI" },
-  },
-  {
-    name: "ragflow",
-    releaseSource: "github-releases",
-    upstream: { kind: "github", repo: "infiniflow/ragflow" },
-    localProbe: "docker-image",
-    imageRefs: ["infiniflow/ragflow"],
-    advisoryPackage: { name: "ragflow", ecosystem: "PyPI" },
   },
   {
     name: "hindsight",
     releaseSource: "github-releases",
     upstream: { kind: "github", repo: "vectorize-io/hindsight" },
-    localProbe: "manual",
+    localProbe: "http-version",
+    httpEndpointEnv: "MYRMIDON_STACK_HTTP_HINDSIGHT",
+    note: "Local version is read from the component's own /version HTTP endpoint.",
   },
   {
     name: "langfuse",
     releaseSource: "github-releases",
     upstream: { kind: "github", repo: "langfuse/langfuse" },
-    localProbe: "docker-image",
-    imageRefs: ["langfuse/langfuse"],
+    localProbe: "http-version",
+    httpEndpointEnv: "MYRMIDON_STACK_HTTP_LANGFUSE",
+    note: "Local version is read from the component's /api/public/health endpoint.",
     advisoryPackage: { name: "langfuse", ecosystem: "npm" },
   },
   {

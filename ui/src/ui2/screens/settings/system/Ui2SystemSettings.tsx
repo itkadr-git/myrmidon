@@ -32,6 +32,10 @@ import {
 // myrmidon(OPE-3789): the Telegram notifications panel (TG-NOTIFY part F)
 // — five editable sections plus the settings change log, all off by default.
 import { Ui2TelegramNotifySettings } from "./Ui2TelegramNotifySettings";
+// myrmidon(OPE-12046): SWEEP-2 read-only "Fine settings" (behavior settings).
+import { Ui2FineSettings } from "./Ui2FineSettings";
+// myrmidon(OPE-12613): DB-SIZE — the editable "Database storage" retention panel.
+import { Ui2DatastoreRetentionSettings } from "./Ui2DatastoreRetentionSettings";
 
 const CHANGE_LOG_LIMIT = 30;
 
@@ -117,6 +121,13 @@ export function Ui2SystemSettings() {
       {/* myrmidon(OPE-3789): the Telegram notifications panel — the TG-NOTIFY-SETTINGS
           settings screen (part F), rendered as a section of the Channels screen. */}
       <Ui2TelegramNotifySettings />
+      {/* myrmidon(OPE-12046): SWEEP-2 — read-only "Fine settings" block: the
+          first-wave behavior variables resolved by the server (value + source). */}
+      <Ui2FineSettings />
+      {/* myrmidon(OPE-12613): DB-SIZE — "Database storage": the retention
+          levers (context days / batch ceiling / external backup), sources and
+          the last compaction pass outcome; editable by instance admins. */}
+      <Ui2DatastoreRetentionSettings />
       <Link className="text-sm text-primary underline underline-offset-4" to="/company/settings/secrets" data-testid="ui2-system-secrets-link">
         {t("ui2.settings.system.secretsLink")}
       </Link>

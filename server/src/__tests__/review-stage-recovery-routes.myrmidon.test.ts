@@ -123,6 +123,7 @@ describeEmbeddedPostgres("review stage recovery (route level)", () => {
         companyId,
         name: name!,
         role: "engineer",
+        metadata: { telegramGroup: "dev" },
         status: "active",
         adapterType: "codex_local",
         adapterConfig: {},
@@ -241,6 +242,25 @@ describeEmbeddedPostgres("review stage recovery (route level)", () => {
       expect(issue.status).toBe("in_review");
       expect(issue.executionState).toMatchObject({ status: "pending", lastDecisionOutcome: null });
       expect(await db.select().from(issueExecutionDecisions).where(eq(issueExecutionDecisions.issueId, s.issueId))).toHaveLength(0);
+    }
+  });
+
+  it("allows REQUEST CHANGES when current-head CI is running or unavailable if the comment references code (path:line)", async () => {
+    for (const state of ["pending", "unknown"] as const) {
+      const s = await seed({ status: "in_review", pullRequestStatus: "open" });
+      const res = await request(createApp(reviewerActor(s), async () => ({ state, pullRequestUrl: PR_URL, headSha: "test-head" })))
+        .patch(`/api/issues/${s.issueId}`)
+        .send({ status: "in_progress", comment: "REQUEST CHANGES: repack.js:318 without cleanup after failure." });
+
+      expect(res.status, JSON.stringify(res.body)).toBe(200);
+      const issue = await readIssue(s.issueId);
+      expect(issue.status).toBe("in_progress");
+      expect(issue.assigneeAgentId).toBe(s.engineerAgentId);
+      expect(issue.executionState).toMatchObject({
+        status: "changes_requested",
+        lastDecisionOutcome: "changes_requested",
+        returnAssignee: { type: "agent", agentId: s.engineerAgentId },
+      });
     }
   });
 

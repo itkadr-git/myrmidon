@@ -8,7 +8,8 @@
 // - the admin-key env carries the secret NAME: the client authenticates with
 //   the resolved VALUE from the store, never the name;
 // - a company without a value under that name is skipped;
-// - the allowlist pass runs after a company's reconciliation.
+// - the allowlist pass runs after a company's reconciliation, as a CHECK that
+//   reports the differences and never applies them (OPE-12345).
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Db } from "@myrmidon/db";
@@ -48,7 +49,8 @@ function portsWith(overrides: Partial<LitellmReconcilePorts>): LitellmReconcileP
   return {
     listCompanyIds: async () => ["company-a"],
     readAdminKey: async () => "admin-value",
-    refreshAgentAllowlists: vi.fn(async () => ({ attempted: 0, updated: 0, skipped: [] })),
+    resolveCredential: async () => null,
+    reportAgentAllowlists: vi.fn(async () => ({ attempted: 0, updated: 0, skipped: [] })),
     log: recordingLog(),
     ...overrides,
   };
@@ -85,7 +87,7 @@ describe("startLitellmModelReconciliation", () => {
     const refresh = vi.fn();
     await startLitellmModelReconciliation(emptyDb(), {
       env: {} as NodeJS.ProcessEnv,
-      ports: portsWith({ log, refreshAgentAllowlists: refresh }),
+      ports: portsWith({ log, reportAgentAllowlists: refresh }),
     });
     expect(fetchCalls).toHaveLength(0);
     expect(refresh).not.toHaveBeenCalled();
@@ -131,7 +133,7 @@ describe("startLitellmModelReconciliation", () => {
       ports: portsWith({
         log,
         readAdminKey: async () => null,
-        refreshAgentAllowlists: refresh,
+        reportAgentAllowlists: refresh,
       }),
     });
     expect(fetchCalls).toHaveLength(0);
@@ -141,13 +143,37 @@ describe("startLitellmModelReconciliation", () => {
     ).toBe(true);
   });
 
-  it("re-applies the agent allowlists after a company reconciles", async () => {
-    const refresh = vi.fn(async () => ({ attempted: 2, updated: 2, skipped: [] }));
+  it("checks the agent allowlists after a company reconciles and logs the report, applying nothing", async () => {
+    const log = recordingLog();
+    const report = vi.fn(async () => ({
+      attempted: 76,
+      updated: 0,
+      skipped: ["key-all-models:agent-9"],
+      dryRun: {
+        wouldChange: 75,
+        unchanged: 0,
+        added: { "antigravity/gemini-3.8-flash-high": 75 },
+        removed: {},
+        changes: [{ agentId: "agent-1", add: ["antigravity/gemini-3.8-flash-high"], remove: [] }],
+      },
+    }));
     await startLitellmModelReconciliation(emptyDb(), {
       env: ENABLED_ENV,
-      ports: portsWith({ refreshAgentAllowlists: refresh }),
+      ports: portsWith({ log, reportAgentAllowlists: report }),
     });
-    expect(refresh).toHaveBeenCalledWith(expect.anything(), "company-a", ENABLED_ENV);
+    expect(report).toHaveBeenCalledWith(expect.anything(), "company-a", ENABLED_ENV);
+    const line = log.lines.find((l) => l.message.includes("allowlists checked at startup"));
+    expect(line?.message).toContain("nothing applied");
+    expect(line?.fields).toMatchObject({
+      companyId: "company-a",
+      mode: "dry-run",
+      attempted: 76,
+      updated: 0,
+      keysToChange: 75,
+      namesToAdd: { "antigravity/gemini-3.8-flash-high": 75 },
+    });
+    // The log carries counts, never the per-agent change list.
+    expect(JSON.stringify(line?.fields)).not.toContain("agent-1");
   });
 
   it("one company's failure never stops the others or the caller", async () => {

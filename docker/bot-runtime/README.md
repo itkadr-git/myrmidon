@@ -195,18 +195,25 @@ mismatch fails the build, the same rule the Node.js variant states above.
 **Where things write.** The root filesystem is read-only at run time and the bot's writable
 directories are exactly its single `/bot` mount (BOT-DISK-D), so:
 
-- the pnpm store defaults to `/workspace/.pnpm-store` via `npm_config_store_dir`, inside that
-  mount like every clone root, because pnpm hard-links `node_modules` into its store and a hard
-  link cannot cross a mount (a store on a separate bind made pnpm copy every package into every
-  clone). `npm_config_package_import_method=hardlink` is set too; pnpm 9 still copies silently
-  when the kernel refuses a link, so `pnpm-hardlink-check.sh` proves the link from `/data/hermes`,
+- the pnpm store defaults to `/workspace/.pnpm-store` via `npm_config_store_dir` (OPE-12720; the
+  shared `/cache/pnpm-store` of 1.6.5-1.6.7 sat on the root disk and is retired), on the same
+  mount as the clones (`/workspace` is a link into `/bot`), because pnpm imports `node_modules`
+  from its store by links and a link cannot cross a mount (a store outside the bot's mount made
+  pnpm copy every package into every clone). It is not `/bot/.pnpm-store`: the `/bot` root is
+  root-owned (0711), the bot user cannot create entries in it.
+  `npm_config_package_import_method=clone` is set too; pnpm still copies silently when the
+  kernel refuses a reflink, so `pnpm-hardlink-check.sh` proves the link from `/data/hermes`,
   `/workspace` and `/scratch` at build time and `entrypoint.sh` repeats the check at every start
   (`/data/hermes/.myrmidon/hardlink-check.json`, shown on the board). `/cache/pnpm` is a download
   cache only, never the store; the paths and the method are the `pnpmStoreDir` and
   `pnpmImportMethod` settings, see
   [docs/myrmidon/bot-disk-cache.md](../../docs/myrmidon/bot-disk-cache.md);
-- `RUSTUP_HOME`/`CARGO_HOME` stay sealed under `/opt` and `cargo` writes its target dir into
-  the checked-out workspace;
+- `RUSTUP_HOME`/`CARGO_HOME` stay sealed under `/opt` and `CARGO_TARGET_DIR` directs `cargo`
+  artifacts to `/data/hermes/.cache/cargo-target` (OPE-12105), outside the task working tree.
+  botd keeps that directory under a per-bot byte quota (`cargoTargetQuotaBytes`, 2 GiB) and
+  evicts whole profile dirs, least recently written first (OPE-12110); the same pass caps
+  `hermes/.npm/_npx` at `npmNpxQuotaBytes` (512 MiB), see
+  [docs/myrmidon/bot-disk-cache.md](../../docs/myrmidon/bot-disk-cache.md);
 - Go's build cache defaults under `$HOME` (`/data/hermes`), the durable volume.
 
 **PATH never holds a writable volume.** The dev stage assembles `PATH` from `/opt` and
@@ -601,6 +608,26 @@ How a bot gets its task copy now, per the interface contract
   is unknown.
   When the board is unreachable botd deletes nothing. Botd reports disk state
   back with `POST /api/myrmidon/bots/me/disk-report`.
+
+### git-base repack on partial clones (1.6.7 OPE-12263)
+
+The per-bot bare bases (`git-base/<owner>/<repo>.git`) are **partial clones**
+(`partialclonefilter=blob:none`) and hold no full object closure, so a plain
+`git repack -A -d` fails there with `Failed to write bitmap index. Packfile
+doesn't have full closure` and leaves multi-gigabyte `.tmp-*-pack-*` /
+`tmp_idx_*` files in `objects/pack`; with more than 20 packs botd retried
+every cycle. Since 1.6.7 botd:
+
+- runs the repack with `-c repack.writeBitmaps=false -c pack.writeBitmaps=false`
+  (plus the existing `pack.threads=1`);
+- after a failed repack, and at botd startup, deletes stale temp pack files
+  (`.tmp-*-pack-*`, `tmp_pack_*`, `tmp_idx_*`, `tmp_rev_*` older than
+  30 minutes) from `objects/pack`, never touching a repository with a live
+  git lock file;
+- after a failure writes a `.myrmidon-repack-failed` marker holding the git
+  error and pauses new attempts for 6 hours (`REPACK_FAILURE_BACKOFF_MS`) —
+  the pack-count trigger does not bypass the pause — and logs the cause;
+- clears the failure marker after a successful repack.
 
 ## What's not verified yet
 

@@ -83,9 +83,13 @@
 # one at a time, never interrupting a run), and the superseded bot images
 # leave the list. Gated by MYRMIDON_BOT_IMAGE_ROLLOUT (default 1 when the
 # board has bot containers configured; 0 restores the manual path).
-# Last, a post-deploy smoke (bot-apply-smoke.sh) waits for at least one bot
-# container to re-apply; failing that within its window the deploy reports
-# DEGRADED and prints the rollback commands. Then the DEPLOY-HYGIENE image
+# Last, a post-deploy smoke (bot-apply-smoke.sh) waits for the bot fleet to be
+# healthy: with the bot rollout on at least one bot container must re-apply;
+# without it (MYRMIDON_BOT_IMAGE_ROLLOUT=0) the already-running gateways are
+# verified instead (no re-apply can happen). Containers stopped before the
+# deploy began and IDLE-STOP Exited(143) stops are not crashes
+# (DEPLOY-SMOKE-FALSE, 08.11). Failing that within its window the deploy
+# reports DEGRADED and prints the rollback commands. Then the DEPLOY-HYGIENE image
 # retention removes the component images older than MYRMIDON_DEPLOY_IMAGE_KEEP
 # previous releases (an image any container uses is never removed; a cleanup
 # failure is a WARNING, not a failed deploy).
@@ -142,9 +146,6 @@ set -euo pipefail
 # shellcheck source=lib.sh source-path=SCRIPTDIR
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib.sh"
 
-# myrmidon(F-05): the journal opens with the exact version of these scripts.
-log_script_version
-
 config="" digest="" expect_version="" expect_commit="" force=0 release_tag="" urgent=0 urgent_reason=""
 DRY_RUN=0
 while (($#)); do
@@ -173,6 +174,20 @@ if ((urgent)); then
   log "URGENT deploy (OPE-10414): $urgent_reason"
 fi
 load_config "$config"
+
+# myrmidon(F-05): the journal opens with the exact version of these scripts.
+log_script_version
+
+# myrmidon(DEPLOY-LOCK, OPE-12335): the exclusive deploy lock is taken before
+# every precheck and before anything changes — the only way a second run of
+# deploy.sh cannot slide into the maintenance window of the first one. Only the
+# option/config resolution above (which locates $STATE_DIR for the lock file)
+# runs ahead of it; MYRMIDON_DEPLOY_LOCK_FILE can override the default
+# ($STATE_DIR/deploy.lock), MYRMIDON_DEPLOY_LOCK_WAIT_SEC sets how long a
+# second run waits for the holder to finish (0 = refuse at once, exit code 42).
+# --dry-run never takes the lock, it only warns when a deploy is running. The
+# trap in acquire_deploy_lock releases it on every exit path (error, INT, TERM).
+acquire_deploy_lock "$MYRMIDON_DEPLOY_LOCK_FILE" "$MYRMIDON_DEPLOY_LOCK_WAIT_SEC" "${DRY_RUN:-0}" "$STATE_DIR"
 if ((urgent)); then
   # Urgent mode has a fixed, short drain. A deploy.env value must not silently
   # turn a critical deploy back into a long wait.
@@ -623,6 +638,9 @@ if [[ "$DRY_RUN" == "1" ]]; then
   fi
   plan "0.6 release components (${component_resolution:-none}, from the $component_source): board, ${MYR_RELEASE_COMPONENTS//,/, }, bot images; one maintenance window, all-or-nothing"
   plan "0.7 disk precheck passed (read-only): ${MYRMIDON_DEPLOY_MIN_FREE_GB:-15} GiB free on the filesystem of /var/lib/docker required before the first pull (MYRMIDON_DEPLOY_MIN_FREE_GB)"
+  if [[ -n "$MYRMIDON_COMPOSE_SET_ANCHOR_FILE" ]]; then
+    plan "0.8 compose-set anchor (OPE-7010): the declared compose set is synced to the live -f label after the deploy (anchor: $MYRMIDON_COMPOSE_SET_ANCHOR_FILE)"
+  fi
   if ((board_changed)); then
     plan "board: ${previous_image:-<none>} -> $ref"
   else
@@ -675,6 +693,7 @@ if [[ "$DRY_RUN" == "1" ]]; then
     plan "10. post-deploy smoke: wait for bot gateways to be healthy (bot-apply-smoke.sh, >=${MYR_SMOKE_MIN_HEALTHY_PERCENT}% healthy, timeout ${MYR_SMOKE_TIMEOUT_SEC}s); on failure the deploy reports DEGRADED and prints the rollback commands"
   fi
   plan "11. DEPLOY-HYGIENE: remove the component images older than ${MYRMIDON_DEPLOY_IMAGE_KEEP:-1} previous release(s) per repository (MYRMIDON_DEPLOY_IMAGE_KEEP; images used by a container are always kept)"
+  plan "11b. IMAGE-GC (OPE-12696): remove the myrmidon*/agent-runtime* images NO container uses (docker ps -a is authoritative) and prune the build cache (MYRMIDON_DEPLOY_IMAGE_GC=0 switches it off)"
   exit 0
 fi
 
@@ -1018,6 +1037,13 @@ if ((need_window)); then
   fi
 fi
 
+# COMPOSE-SET-ANCHOR (OPE-7010): synchronize after every deploy path, including
+# a component-only window and a no-op board path. Component rollout writes the
+# local override before this point; the live container label is therefore the
+# authoritative set to compare. The helper is best-effort and never fails a
+# healthy deploy.
+sync_compose_set_anchor
+
 # ONE-DEPLOY: the bot cards. With the window above the config phase already ran
 # inside it; without a window the whole rollout runs here. A failure is
 # DEGRADED (the board and the components are healthy); the rollback commands
@@ -1038,10 +1064,18 @@ else
   log "WARNING: MYRMIDON_BOT_IMAGE_ROLLOUT=0: the bot images of this release did not roll out with the board; move the bots by hand (this split is the 03.10 incident)"
 fi
 
-# RELEASE-GATE: post-deploy smoke. Within MYR_SMOKE_TIMEOUT_SEC at least one
-# bot container must re-apply; otherwise the deploy is DEGRADED with the
-# rollback commands. Skipped only when explicitly disabled or unconfigured
-# (no company): an unconfigured smoke on a bot fleet is itself reported.
+# RELEASE-GATE: post-deploy smoke. Within MYR_SMOKE_TIMEOUT_SEC the fleet must
+# be healthy: with the bot rollout on, at least one bot container must
+# re-apply; with MYRMIDON_BOT_IMAGE_ROLLOUT=0 no bot re-applies by design and
+# the smoke verifies the already-running gateways instead. DEPLOY-SMOKE-FALSE
+# (08.11): containers stopped before the deploy began and IDLE-STOP Exited(143)
+# stops are not crashes. DEPLOY-SMOKE-REMOTE (11.11): bots pinned to another
+# host are verified over their own apiBaseUrl /health, not the local docker.
+# DEPLOY-SMOKE-OOM-WARN (11.11): a single OOM of a container the deploy did
+# not touch is a WARNING, not a deploy failure (see bot-apply-smoke.sh).
+# Otherwise the deploy is DEGRADED with the rollback commands. Skipped only
+# when explicitly disabled or unconfigured (no company): an unconfigured smoke
+# on a bot fleet is itself reported.
 if [[ "$MYR_SMOKE_ENABLED" == "1" ]]; then
   if [[ -z "$MYR_SMOKE_COMPANY" ]]; then
     log "WARNING: post-deploy bot smoke skipped: MYRMIDON_DEPLOY_SMOKE_COMPANY is not set; the deploy cannot prove a bot re-applied"
@@ -1051,8 +1085,18 @@ if [[ "$MYR_SMOKE_ENABLED" == "1" ]]; then
     [[ -n "$MYR_SMOKE_AGENT" ]] && smoke_args+=(--agent "$MYR_SMOKE_AGENT")
     [[ -n "$HEALTH_TOKEN_FILE" ]] && smoke_args+=(--token-file "$HEALTH_TOKEN_FILE")
     [[ -f "$MYR_BOT_SUMMARY" ]] && smoke_args+=(--summary "$MYR_BOT_SUMMARY")
+    [[ -n "$deploy_started_at" ]] && smoke_args+=(--deploy-started-at "$deploy_started_at")
+    if [[ "$MYR_BOT_ROLLOUT_ENABLED" != "1" ]]; then
+      # DEPLOY-SMOKE-FALSE: without the rollout no bot re-applies; the smoke
+      # judges the fleet's health, not the re-apply that cannot happen.
+      smoke_args+=(--no-bot-rollout)
+    fi
     if ! "$MYR_SCRIPT_DIR/bot-apply-smoke.sh" "${smoke_args[@]}"; then
-      log "DEPLOYED-DEGRADED: no bot container re-applied within ${MYR_SMOKE_TIMEOUT_SEC}s (bot gateways failed post-deploy health check)"
+      if [[ "$MYR_BOT_ROLLOUT_ENABLED" != "1" ]]; then
+        log "DEPLOYED-DEGRADED: bot gateways failed post-deploy health check within ${MYR_SMOKE_TIMEOUT_SEC}s (no bot rollout: the already-running gateways had to pass; see the smoke output above)"
+      else
+        log "DEPLOYED-DEGRADED: no bot container re-applied within ${MYR_SMOKE_TIMEOUT_SEC}s (bot gateways failed post-deploy health check)"
+      fi
       log "Roll back the board with: $MYR_SCRIPT_DIR/rollback.sh --config $config"
       log "Roll back a component with: $MYR_SCRIPT_DIR/rollback-component.sh --config $config --component <dockergate|fleetd>"
       exit 1
@@ -1067,4 +1111,10 @@ if deploy_image_retention; then :; else
   log "WARNING: the old image cleanup failed; the deploy itself is complete and healthy (remove old images by hand: docker image ls)"
 fi
 
+# IMAGE-GC (OPE-12696): same success gate as DEPLOY-HYGIENE above — every
+# myrmidon*/agent-runtime* image that NO container uses is swept and the
+# build cache pruned. A failure of the sweep never fails the finished deploy.
+if deploy_image_gc; then :; else
+  log "WARNING: the unused image sweep failed; the deploy itself is complete and healthy (remove unused images by hand: docker image ls)"
+fi
 log "release gate passed: board and ${MYR_RELEASE_COMPONENTS:-no components} rolled out together, bots re-apply"

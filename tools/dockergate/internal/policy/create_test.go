@@ -182,7 +182,7 @@ func runMutations(t *testing.T, id, suffix string, cases []mutation) {
 // sends it, so an old body (no key) and a hardened body (exact key) are both
 // accepted, each rebuilding byte for byte; any other shape is denied.
 func TestCoreUlimitsShape(t *testing.T) {
-	const exact = `"Privileged":false,"Ulimits":[{"Name":"core","Soft":0,"Hard":0}]`
+	const exact = `,"Ulimits":[{"Name":"core","Soft":0,"Hard":0}]`
 	for _, tc := range []struct{ id, suffix string }{
 		{"bot-plain", ""},
 		{"helper-prepare", ".helper"},
@@ -193,38 +193,42 @@ func TestCoreUlimitsShape(t *testing.T) {
 			b, body := m.FindBody(t, tc.id, tc.suffix)
 			rt := createRoute(t, b.Name)
 
-			// Without the key the recorded body is still canonical (old driver).
-			if _, err := policy.ParseCreate(body, rt, env(m)); err != nil {
+			// Without the key the pre-1.6.7 body is still canonical (old driver).
+			without := replace(t, body, exact, "")
+			c, err := policy.ParseCreate(without, rt, env(m))
+			if err != nil {
 				t.Fatalf("body without Ulimits denied: %s (field %q, detail %q)", err.Code, err.Field, err.Detail)
 			}
+			if string(c.Body) != string(without) {
+				t.Fatalf("canonical body differs from the accepted one (without Ulimits):\n got %s\nwant %s", c.Body, without)
+			}
 
-			// The exact form is accepted and rebuilt byte for byte.
-			got := replace(t, body, `"Privileged":false`, exact)
-			c, err := policy.ParseCreate(got, rt, env(m))
+			// The exact form (recorded body) is accepted and rebuilt byte for byte.
+			c, err = policy.ParseCreate(body, rt, env(m))
 			if err != nil {
 				t.Fatalf("exact Ulimits denied: %s (field %q, detail %q)", err.Code, err.Field, err.Detail)
 			}
-			if string(c.Body) != string(got) {
-				t.Fatalf("canonical body differs from the accepted one:\n got %s\nwant %s", c.Body, got)
+			if string(c.Body) != string(body) {
+				t.Fatalf("canonical body differs from the accepted one:\n got %s\nwant %s", c.Body, body)
 			}
 
 			for _, bad := range []struct{ name, repl, code string }{
-				{"other name", `"Privileged":false,"Ulimits":[{"Name":"nofile","Soft":0,"Hard":0}]`, deny.JSONValue},
-				{"soft not zero", `"Privileged":false,"Ulimits":[{"Name":"core","Soft":1024,"Hard":0}]`, deny.JSONValue},
-				{"hard not zero", `"Privileged":false,"Ulimits":[{"Name":"core","Soft":0,"Hard":1024}]`, deny.JSONValue},
+				{"other name", `,"Ulimits":[{"Name":"nofile","Soft":0,"Hard":0}]`, deny.JSONValue},
+				{"soft not zero", `,"Ulimits":[{"Name":"core","Soft":1024,"Hard":0}]`, deny.JSONValue},
+				{"hard not zero", `,"Ulimits":[{"Name":"core","Soft":0,"Hard":1024}]`, deny.JSONValue},
 				// Negative ints parse as KindInt, so wantInt reports a value mismatch (JSONValue).
-				{"negative values", `"Privileged":false,"Ulimits":[{"Name":"core","Soft":-1,"Hard":-1}]`, deny.JSONValue},
-				{"values as strings", `"Privileged":false,"Ulimits":[{"Name":"core","Soft":"0","Hard":"0"}]`, deny.JSONType},
-				{"second entry", `"Privileged":false,"Ulimits":[{"Name":"core","Soft":0,"Hard":0},{"Name":"core","Soft":0,"Hard":0}]`, deny.JSONValue},
-				{"empty list", `"Privileged":false,"Ulimits":[]`, deny.JSONValue},
-				{"list of string", `"Privileged":false,"Ulimits":["core=0:0"]`, deny.JSONType},
-				{"object instead of list", `"Privileged":false,"Ulimits":{"core":0}`, deny.JSONType},
-				{"extra member", `"Privileged":false,"Ulimits":[{"Name":"core","Soft":0,"Hard":0,"Unit":1}]`, deny.JSONUnknownKey},
-				{"missing hard", `"Privileged":false,"Ulimits":[{"Name":"core","Soft":0}]`, deny.JSONValue},
-				{"upper case name", `"Privileged":false,"Ulimits":[{"Name":"CORE","Soft":0,"Hard":0}]`, deny.JSONValue},
+				{"negative values", `,"Ulimits":[{"Name":"core","Soft":-1,"Hard":-1}]`, deny.JSONValue},
+				{"values as strings", `,"Ulimits":[{"Name":"core","Soft":"0","Hard":"0"}]`, deny.JSONType},
+				{"second entry", `,"Ulimits":[{"Name":"core","Soft":0,"Hard":0},{"Name":"core","Soft":0,"Hard":0}]`, deny.JSONValue},
+				{"empty list", `,"Ulimits":[]`, deny.JSONValue},
+				{"list of string", `,"Ulimits":["core=0:0"]`, deny.JSONType},
+				{"object instead of list", `,"Ulimits":{"core":0}`, deny.JSONType},
+				{"extra member", `,"Ulimits":[{"Name":"core","Soft":0,"Hard":0,"Unit":1}]`, deny.JSONUnknownKey},
+				{"missing hard", `,"Ulimits":[{"Name":"core","Soft":0}]`, deny.JSONValue},
+				{"upper case name", `,"Ulimits":[{"Name":"CORE","Soft":0,"Hard":0}]`, deny.JSONValue},
 			} {
 				t.Run(bad.name, func(t *testing.T) {
-					mut := replace(t, body, `"Privileged":false`, bad.repl)
+					mut := replace(t, body, exact, bad.repl)
 					c, err := policy.ParseCreate(mut, rt, env(m))
 					wantDeny(t, c, err, bad.code)
 				})
@@ -446,8 +450,7 @@ func TestBotPackageCacheMounts(t *testing.T) {
 	}
 	all := []string{
 		cache + "/pnpm:/cache/pnpm:rw",
-		cache + "/pnpm-store:/cache/pnpm-store:rw", // 1.6.5-BOT-DISK-H8a
-		cache + "/uv:/cache/uv:rw",                 // 1.6.5-BOT-DISK-UV-A
+		cache + "/uv:/cache/uv:rw", // 1.6.5-BOT-DISK-UV-A
 		cache + "/go-mod:/cache/go-mod:rw",
 		cache + "/go-build:/cache/go-build:rw",
 		cache + "/gradle:/cache/gradle:rw",
@@ -738,7 +741,7 @@ func TestHelperBodyMutations(t *testing.T) {
 		{"script: another target", `data/hermes workspace scratch`, `data/hermes workspace scratch /`, false, deny.ScriptMismatch},
 		{"script: no -u", `set -eu`, `set -e`, false, deny.ScriptMismatch},
 		{"script: appended command", `chmod 0711 bot\n`, `chmod 0711 bot; id\n`, false, deny.ScriptMismatch},
-		{"script: empty", `"set -eu\ncd \"$1\"\nfor d in data/hermes workspace scratch; do\n  chmod 0700 \"$d\"\n  chown 10001:10001 \"$d\"\ndone\nchmod 0711 bot\nif test -d package-cache; then\n  install -d -o 10001 -g 10001 \"package-cache/pnpm\"\n  install -d -o 10001 -g 10001 \"package-cache/pnpm-store\"\n  install -d -o 10001 -g 10001 \"package-cache/uv\"\n  install -d -o 10001 -g 10001 \"package-cache/go-mod\"\n  install -d -o 10001 -g 10001 \"package-cache/go-build\"\n  install -d -o 10001 -g 10001 \"package-cache/gradle\"\nfi"`, `""`, false, deny.ScriptMismatch},
+		{"script: empty", `"set -eu\ncd \"$1\"\nfor d in data/hermes workspace scratch; do\n  chmod 0700 \"$d\"\n  chown 10001:10001 \"$d\"\ndone\nchmod 0711 bot\nif test -d package-cache; then\n  install -d -o 10001 -g 10001 \"package-cache/pnpm\"\n  install -d -o 10001 -g 10001 \"package-cache/uv\"\n  install -d -o 10001 -g 10001 \"package-cache/go-mod\"\n  install -d -o 10001 -g 10001 \"package-cache/go-build\"\n  install -d -o 10001 -g 10001 \"package-cache/gradle\"\nfi"`, `""`, false, deny.ScriptMismatch},
 		{"entrypoint changed", `"Entrypoint":["/bin/sh","-c"]`, `"Entrypoint":["/bin/sh"]`, false, deny.JSONValue},
 		{"entrypoint bash", `"Entrypoint":["/bin/sh","-c"]`, `"Entrypoint":["/bin/bash","-c"]`, false, deny.JSONValue},
 		{"cmd argument 1", `"myrmidon-helper"`, `"other"`, false, deny.JSONValue},
@@ -861,11 +864,9 @@ func TestBotSharedRuntimeMounts(t *testing.T) {
 	}
 	all := []string{
 		runtime + "/bin:/bot/hermes/bin:ro",
-		runtime + "/lazy-packages:/bot/hermes/lazy-packages:ro",
-		runtime + "/lsp:/bot/hermes/lsp:ro",
 	}
 
-	t.Run("the three runtime pairs under the root are accepted and kept canonical", func(t *testing.T) {
+	t.Run("the runtime pair under the root is accepted and kept canonical", func(t *testing.T) {
 		body := bodyWith(t, all...)
 		c, err := policy.ParseCreate(body, createRoute(t, "myrmidon-bot-"+k), withRoot(runtime))
 		if err != nil {
@@ -883,7 +884,7 @@ func TestBotSharedRuntimeMounts(t *testing.T) {
 			t,
 			shared+":/bot/hermes/media/site:ro",
 			cache+"/pnpm:/cache/pnpm:rw",
-			all[0], all[1], all[2],
+			all[0],
 		)
 		e := withRoot(runtime, shared)
 		e.PackageCacheRoot = cache
@@ -902,7 +903,9 @@ func TestBotSharedRuntimeMounts(t *testing.T) {
 	t.Run("a pair outside the root, in another subdirectory or writable is denied", func(t *testing.T) {
 		for _, bind := range []string{
 			"/srv/elsewhere/bin:/bot/hermes/bin:ro",
-			runtime + "/sub/lsp:/bot/hermes/lsp:ro",
+			runtime + "/lazy-packages:/bot/hermes/lazy-packages:ro",
+			runtime + "/lsp:/bot/hermes/lsp:ro",
+			runtime + "/sub/bin:/bot/hermes/bin:ro",
 			runtime + "/bin:/bot/hermes/bin:rw",
 		} {
 			c, err := policy.ParseCreate(bodyWith(t, bind), createRoute(t, "myrmidon-bot-"+k), withRoot(runtime))

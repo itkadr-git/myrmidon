@@ -43,7 +43,8 @@
 | A6 | `POST .../myrmidon-bot-<K>[.helper]/start` | запуск |
 | A7 | `POST .../myrmidon-bot-<K>.helper/wait?condition=not-running` | ожидание помощника |
 | A8 | `GET .../myrmidon-bot-<K>.helper/logs?stdout=true&stderr=true&tail=20` | журнал помощника |
-| A9 | `DELETE .../myrmidon-bot-<K>[.next\|.helper]?force=true&v=true` | удаление |
+| A9 | `DELETE .../myrmidon-bot-<K>[.next\|.helper]?force=true&v=true` | удаление (основной контейнер — только остановленный и при созданном `.next`: шаг recreate) |
+| A22 | `DELETE .../myrmidon-bot-<K>?force=true&v=true&myrmidon-decommission=true` | вывод бота из эксплуатации (OPE-12654): агент бота ушёл из среды ботов (другой адаптер или увольнение). Только основной контейнер, остановленный (`created`, `exited`, `dead`; иначе `state_precondition` `main_running`); запущенный `.next` или helper запрещает вызов (`next_running`, `helper_running`). Сначала удаляются остановленные остатки (`.next`, helper), затем основной контейнер без замены; каталог данных `<volumeRoot>/<K>` и проект квоты остаются проходу хозяйственной уборки на хосте (`bot_data_left_for_host_gc`, см. [Вывод из эксплуатации](#вывод-из-эксплуатации-a22)). Ограничение частоты — как у удаления основного контейнера через A9 (`stopPerWindow`) |
 | A10 | `POST .../myrmidon-bot-<K>/stop?t=30` | остановка (только внутри recreate) |
 | A11 | `POST .../myrmidon-bot-<K>/restart?t=30` | перезапуск (с пределом частоты) |
 | A18 | `POST .../myrmidon-bot-<K>/update` | обновление памяти, memory-swap и pids без перезапуска; тело строго `Memory`, `MemorySwap`, `PidsLimit` в пределах записанных лимитов бота |
@@ -69,7 +70,7 @@
 | `caller` | обязательно. `container` (имя контейнера доски), `containerLabels`, `uid`, `gid`, `argv`, `maxStartDelayTicks`, `mode` (`container-main-process` по умолчанию, `uid` только для CI) |
 | `volumeRoot` | каталог томов ботов на хосте; том бота `<root>/<botKey>/{hermes,workspace,scratch}`; раскладка контейнера бота — та, что объявляет контракт рантайма его образа: ОДНА привязка `<root>/<botKey>:/bot` (жёсткие ссылки не пересекают монтирования, BOT-DISK-D) или старая форма — те же три каталога, привязанные напрямую в `/data/hermes`, `/workspace` и `/scratch` в фиксированном порядке драйвера (образы с контрактом `1` без метки области, BOT-LAYOUT-V); контейнеры-помощники сохраняют три узкие привязки тех же каталогов; `/bot` и `/data` — зарезервированные пути контейнера |
 | `mountSources` | каталоги хоста, которые бот может смонтировать дополнительно, только для чтения (пустой или отсутствующий список — ни одного). Каждый дополнительный bind в теле создания должен начинаться с одного из этих путей целиком, иметь суффикс `ro` и точку монтирования вне `/workspace`, `/scratch`, `/bot`, `/tmp` — три поддерева данных владельца внутри `/data/hermes` это единственное исключение, и они принимаются по настоящему пути внутри единого монтирования бота (1.6.5-BOT-DISK-H11, см. [bot-extra-mounts.ru.md](bot-extra-mounts.ru.md#точка-монтирования-внутри-собственного-тома-бота-165-bot-disk-h-класс-j)); иначе `mount_source_not_allowed` или `binds_mismatch`. Список применим и при `SIGHUP` |
-| `botRuntimeRoot` | каталог хоста общей среды ботов (1.6.5-BOT-DISK-H11; настройка экземпляра доски `general.botDisk.sharedBotRuntimePath`, см. [bot-extra-mounts.ru.md](bot-extra-mounts.ru.md#общая-среда-ботов-165-bot-disk-h-класс-c)). Под ним, и только там, бот может смонтировать фиксированные подкаталоги `bin`, `lazy-packages` и `lsp` как привязки **на чтение** по настоящему пути внутри единого монтирования бота (`/bot/hermes/…`, `/bot-scope/<botKey>/hermes/…`, `/data/hermes/…`); другой корень, другой подкаталог, другая точка монтирования или `rw` — `mount_source_not_allowed`. Абсолютный каталог без `..`, `//` и завершающего `/`, вне `volumeRoot`, не пересекается с `scopeRoot` и `packageCacheRoot` и не является их родителем. Пустой или отсутствующий (по умолчанию) — ни одной привязки среды. Применим при `SIGHUP` |
+| `botRuntimeRoot` | каталог хоста общей среды ботов (1.6.5-BOT-DISK-H11; настройка экземпляра доски `general.botDisk.sharedBotRuntimePath`, см. [bot-extra-mounts.ru.md](bot-extra-mounts.ru.md#общая-среда-ботов-165-bot-disk-h-класс-c)). Под ним, и только там, бот может смонтировать фиксированный подкаталог `bin` как привязку **на чтение** по настоящему пути внутри единого монтирования бота (`/bot/hermes/…`, `/bot-scope/<botKey>/hermes/…`, `/data/hermes/…`); другой корень, другой подкаталог, другая точка монтирования или `rw` — `mount_source_not_allowed`. Абсолютный каталог без `..`, `//` и завершающего `/`, вне `volumeRoot`, не пересекается с `scopeRoot` и `packageCacheRoot` и не является их родителем. Пустой или отсутствующий (по умолчанию) — ни одной привязки среды. Применим при `SIGHUP` |
 | `packageCacheRoot` | каталог хоста с общим кэшем пакетов, тот же путь, что в настройке экземпляра доски (см. [bot-disk-cache.ru.md](bot-disk-cache.ru.md)). Под ним, и только там, бот может смонтировать на запись фиксированные подкаталоги `pnpm`, `go-mod`, `go-build`, `gradle` в `/cache/pnpm`, `/cache/go-mod`, `/cache/go-build`, `/cache/gradle`; любой другой bind на запись — `mount_source_not_allowed`. Подкаталог `git` принимается только как bind **на чтение** в `/cache/git` (голые зеркала git доски, 1.6.2-BOT-DISK-C); `git` с `rw` или в другой точке монтирования отклоняется так же. Абсолютный каталог без `..`, `//` и завершающего `/`, вне `volumeRoot`. Пустой или отсутствующий (по умолчанию) — ни одной привязки кэша. Применим при `SIGHUP` |
 | `scopeRoot` | каталог хоста общих областей изоляции (BOT-DISK-F, см. [bot-disk-cache.ru.md](bot-disk-cache.ru.md#область-изоляции-кто-делит-диск)): по подкаталогу `<kind>-<id>` на экземпляр. Бот может смонтировать только экземпляр из своего `bots[].scopeInstances`. Абсолютный каталог без `..`, `//` и завершающего `/`, не `volumeRoot` и не его родитель, не пересекается с `packageCacheRoot`. Пустой или отсутствующий (по умолчанию) — `<volumeRoot>/.scopes` (ключ бота не может начинаться с `.`, поэтому коллизии с каталогом бота нет). Применим при `SIGHUP` |
 | `network` | единственная сеть ботов |
@@ -82,7 +83,7 @@
 
 ## Журнал и счётчики
 
-Журнал (JSON, одна строка на решение) содержит маршрут, `botKey`, решение, код причины, и для отказа по полю тела: путь поля, длину значения и первые 12 символов sha256. Тел запросов и ответов, имён из tar, значений окружения, заголовков клиента и секретов в нём нет по построению. События без решения: `caller_decoy`, `reject_flood`, `caller_resolve_failed`, `caller_not_board_main`, `config_reload_failed`.
+Журнал (JSON, одна строка на решение) содержит маршрут, `botKey`, решение, код причины, и для отказа по полю тела: путь поля, длину значения и первые 12 символов sha256. Тел запросов и ответов, имён из tar, значений окружения, заголовков клиента и секретов в нём нет по построению. События без решения: `caller_decoy`, `reject_flood`, `caller_resolve_failed`, `caller_not_board_main`, `config_reload_failed`, а после вывода из эксплуатации (A22) — `bot_data_left_for_host_gc` (каталог данных остаётся проходу уборки на хосте), `disk_project_still_has_directory` (info; проект квоты ждёт того же прохода), `quota_left_for_host_gc`, `disk_project_removed`.
 
 Коды причин: `caller_resolve_failed`, `caller_not_board_main`, `caller_pin_stale`, `target_form`, `method_not_allowed`, `api_version`, `route_not_allowed`, `header_forbidden`, `content_type`, `body_not_allowed`, `body_too_large`, `json_syntax`, `json_duplicate_key`, `json_unknown_key`, `json_type`, `json_value`, `json_not_canonical`, `bot_not_enrolled`, `image_not_allowed`, `image_contract`, `image_user`, `helper_image_mismatch`, `name_label_mismatch`, `binds_mismatch`, `mount_source_not_allowed`, `network_mismatch`, `limit_exceeds_enrollment`, `script_mismatch`, `nonce_invalid`, `tar_syntax`, `tar_type`, `tar_owner`, `tar_mode`, `tar_path`, `tar_nonce`, `tar_order`, `tar_content`, `tar_too_large`, `tar_not_canonical`, `foreign_container`, `state_precondition`, `volume_root_invariant`, `rate_limited`, `concurrency_limited`, `upstream_error`, `upstream_timeout`, `upstream_upgrade`, `response_too_large`, `marker_too_large`.
 
@@ -100,6 +101,33 @@
 3. Если боту нужны дополнительные read-only тома, добавить их источники в `mountSources` (тоже структурной правкой); источник, не названный здесь, до демона не дойдёт. Если экземпляр использует общий кэш пакетов, задать `packageCacheRoot` тем же каталогом, что в настройке доски (тоже структурной правкой).
 4. Проверить: `dockergate check-config --config <файл>`.
 5. Отправить `SIGHUP` процессу dockergate.
+
+## Вывод из эксплуатации (A22)
+
+Агента, ушедшего из среды ботов — карточка перешла с `hermes_gateway` на другой адаптер, агент
+уволен или удалён, — доска выводит из эксплуатации (OPE-12654): проход сверки находит его раз в
+10 минут (`server/src/myrmidon/bot-containers/bot-decommission.ts`), путь увольнения/удаления
+вызывает вывод сразу. Работающий контейнер доска сначала останавливает маршрутом idle-stop (A17),
+затем вызывает A22. Проход не выводит бота, в отчёте гигиены клонов которого есть неотправленная
+работа (и работающего бота без пригодного отчёта); журнал доски сообщает об этом один раз на
+причину (`bot_decommission_held`).
+
+Каталог данных шлюз не удаляет: он работает под uid 65532 и держит корень томов только для
+чтения, его удаление не могло бы пройти. Удаляет его проход хозяйственной уборки на хосте
+(`scripts/myrmidon/host-gc/host-clone-cache-gc.mjs`, OPE-12654): по истечении срока удержания
+(24 ч) — и только когда на доске нет карточки `hermes_gateway` этого агента (ушёл на другой
+адаптер, уволен или удалён), у агента нет прогона в статусе `running`, у шлюза нет контейнера
+`myrmidon-bot-<K>` (в любом состоянии) и ни один git-worktree в каталоге не держит
+неотправленную работу (незакоммиченные правки, stash, незавершённая операция, коммиты вне
+удалённых репозиториев) — проход удаляет `<volumeRoot>/<K>`, затем снимает записи проекта
+квоты из `/etc/projid` и `/etc/projects` и его лимиты. В любом другом случае каталог
+остаётся, и журнал называет причину; недоступный демон docker или доска оставляют каталоги
+на месте (fail-closed). Шлюз отвечает на удаление после удаления контейнера и пишет
+`bot_data_left_for_host_gc`; проект квоты тоже остаётся (`Quota.Remove` отказывает, пока
+каталог существует), шлюз пишет `disk_project_still_has_directory` (info) и
+`quota_left_for_host_gc` — тот же проход, что удаляет каталог, после него снимает записи.
+Участник общей области изоляции сохраняет свой подкаталог под `scopeRoot`: A22 удаляет
+только контейнер.
 
 ## Участники общей области изоляции (BOT-DISK-F)
 
@@ -167,7 +195,7 @@ A3 и A13 принимают и литеральные запросы архив
 
 1. Образ берётся из `ghcr.io/itkadr-git/myrmidon-dockergate` строго по дайджесту; метка OCI `org.opencontainers.image.revision` сверяется с коммитом `main` или тега `myr-v*`.
 2. Каталог сокета `/run/myrmidon-dockergate/` создаётся при загрузке (tmpfiles) и монтируется в контейнер доски; сырой сокет демона в него не монтируется.
-3. dockergate запускается отдельным контейнером без привилегий: пользователь 65532, файловая система только для чтения, все capabilities сброшены, лимиты памяти и CPU заданы; доступ к сокету демона получает только он.
+3. dockergate запускается отдельным контейнером без привилегий: пользователь 65532, файловая система только для чтения, все capabilities сброшены, лимиты памяти и CPU заданы; доступ к сокету демона получает только он. Корень томов монтируется по своему пути только для чтения (для проверок томов в A4); выводу из эксплуатации монтирование на запись не нужно — удаление контейнера идёт через A22, а каталог данных принадлежит проходу уборки на хосте (см. [Вывод из эксплуатации](#вывод-из-эксплуатации-a22)).
 4. В окружении доски `MYRMIDON_BOT_DOCKER_SOCKET=/run/myrmidon-dockergate/engine.sock`, перезапуск доски (окно без пересборки ботов).
 5. Приёмка: `check-config`, полный цикл драйвера (status, create, writeProfile, start, restart, recreate) на одном боте, в журнале нет отказов кроме ожидаемых.
 6. Откат: вернуть прежнее значение `MYRMIDON_BOT_DOCKER_SOCKET`, перезапустить доску; dockergate остановить. Состояние контейнеров ботов при этом не меняется.

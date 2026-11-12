@@ -5,9 +5,11 @@ import { describe, it } from "node:test";
 
 import {
   PRESERVED_MIGRATION_COLUMNS,
+  checkCheckList,
   formatUnsupportedRelease,
   isStableReleaseTag,
   parseMigrationSql,
+  runCheckCheckList,
   sanitizeMigrationColumns,
   selectLatestStableRelease,
 } from "./vendor-release-add.mjs";
@@ -50,10 +52,70 @@ describe("vendor-release-add parseMigrationSql", () => {
       columns: ["agents.appearance", "browser_use_runs.a", "browser_use_runs.b", "routine_triggers.archived"],
     });
   });
+  it("parses unquoted table and column names (0313_private_task_access pattern)", () => {
+    const sql = [
+      'ALTER TABLE projects ADD COLUMN IF NOT EXISTS privacy_owner_user_id text;',
+      'CREATE TABLE custom_metrics ("id" uuid PRIMARY KEY);',
+      'ALTER TABLE ONLY public.projects ADD COLUMN notes text;',
+      'ALTER TABLE tasks RENAME COLUMN old_name TO new_name;',
+    ].join("\n--> statement-breakpoint\n");
+    assert.deepEqual(parseMigrationSql(sql), {
+      tables: ["custom_metrics"],
+      columns: [
+        "projects.notes",
+        "projects.privacy_owner_user_id",
+        "tasks.new_name",
+      ],
+    });
+  });
 
   it("does not mistake a column named like a keyword or a data update for a schema change", () => {
     const sql = 'UPDATE "tool_connections" SET "agent_instructions" = \'{"enabled": true}\';';
     assert.deepEqual(parseMigrationSql(sql), { tables: [], columns: [] });
+  });
+  it("parses ALTER TABLE statements wrapped in DO blocks or preceded by comments", () => {
+    const sql = `
+-- Add column to cases
+DO $case_foundation$
+BEGIN
+  ALTER TABLE "cases" ADD COLUMN "work_issue_id" uuid;
+  ALTER TABLE "cases" ADD COLUMN "phase" text;
+  ALTER TABLE "cases" ADD COLUMN "handoff_version" integer DEFAULT 0 NOT NULL;
+END $case_foundation$;
+`;
+    assert.deepEqual(parseMigrationSql(sql), {
+      tables: [],
+      columns: [
+        "cases.handoff_version",
+        "cases.phase",
+        "cases.work_issue_id",
+      ],
+    });
+  });
+});
+
+describe("vendor-release-add v2026.1106.0 registry entry (OPE-12237)", () => {
+  it("carries the 41 migrations 0334..0374 with non-empty tables/columns", () => {
+    const tsFile = path.resolve(import.meta.dirname, "../../cli/src/commands/myrmidon-migrate-vendor-releases.ts");
+    const content = fs.readFileSync(tsFile, "utf8");
+    const m = /export const VENDOR_EXTRA_RELEASES[^=]*= (\[[\s\S]*\]);\s*$/.exec(content);
+    assert.ok(m, "VENDOR_EXTRA_RELEASES found in vendor-releases.ts");
+    const releases = new Function(`return ${m[1]}`)();
+    const r1106 = releases.find((r) => r.release === "v2026.1106.0");
+    assert.ok(r1106, "v2026.1106.0 entry present");
+    assert.equal(r1106.extra.length, 95, "1106 carries all 95 extras since idx 280");
+    const last41 = r1106.extra.slice(-41);
+    assert.equal(last41[0].tag, "0334_rare_slipstream");
+    assert.equal(last41[40].tag, "0374_rare_wolfpack");
+    for (const e of last41) {
+      assert.match(e.sha256, /^[0-9a-f]{64}$/, `${e.tag} sha256`);
+      assert.ok(Number.isInteger(e.when) && e.when > 0, `${e.tag} when`);
+      assert.ok(Array.isArray(e.tables) && Array.isArray(e.columns), `${e.tag} tables/columns arrays`);
+    }
+    const tables = new Set(last41.flatMap((e) => e.tables));
+    const columns = new Set(last41.flatMap((e) => e.columns));
+    assert.equal(tables.size, 25, "25 new tables introduced by 0334..0374");
+    assert.equal(columns.size, 60, "60 new columns introduced by 0334..0374");
   });
 });
 
@@ -106,6 +168,89 @@ describe("vendor-release-add PR #1702 manual splice preservation (--regen)", () 
         );
       }
     }
+  });
+});
+
+describe("vendor-release-add --check-check-list", () => {
+  const all = {
+    registry: ["v2026.1001.0", "v2026.1005.0", "v2026.1012.0", "v2026.1023.0"],
+    smoke: ["v2026.916.0", "v2026.916.1", "v2026.1001.0", "v2026.1005.0", "v2026.1012.0", "v2026.1023.0"],
+    fixtures: ["v2026.916.0", "v2026.916.1", "v2026.1001.0", "v2026.1005.0", "v2026.1012.0", "v2026.1023.0"],
+  };
+
+  it("passes when every registry release is smoke-covered and fixture-covered", () => {
+    assert.deepEqual(checkCheckList(all), []);
+  });
+
+  it("fails when the vendor-watch check could mark a release supported without a smoke run", () => {
+    // The OPE-12241 regression: v2026.1023.0 was in the registry on main but absent
+    // from the db-migration-smoke matrix, so "supported" had no smoke proof.
+    const problems = checkCheckList({
+      registry: ["v2026.1005.0", "v2026.1023.0"],
+      smoke: ["v2026.1005.0"],
+      fixtures: all.fixtures,
+    });
+    assert.ok(
+      problems.some((p) => p.includes("v2026.1023.0") && p.includes("smoke matrix")),
+      `expected a missing-from-smoke-matrix problem, got: ${JSON.stringify(problems)}`,
+    );
+  });
+
+  it("runCheckCheckList throws an error when a release lacks smoke coverage", () => {
+    assert.throws(
+      () =>
+        runCheckCheckList({
+          registry: ["v2026.1005.0", "v2026.1023.0"],
+          smoke: ["v2026.1005.0"],
+          fixtures: ["v2026.1005.0", "v2026.1023.0"],
+        }),
+      /Vendor release check list failed with 1 problem\(s\)/,
+    );
+  });
+
+  it("fails when the smoke matrix names a release the registry does not support", () => {
+    const problems = checkCheckList({
+      registry: ["v2026.1005.0"],
+      smoke: ["v2026.916.0", "v2026.916.1", "v2026.1005.0", "v2026.1099.0"],
+      fixtures: all.fixtures,
+    });
+    assert.ok(
+      problems.some((p) => p.includes("v2026.1099.0") && p.includes("smoke matrix")),
+      `expected an unsupported-smoke problem, got: ${JSON.stringify(problems)}`,
+    );
+  });
+
+  it("fails when a fixture release is not in the registry", () => {
+    const problems = checkCheckList({
+      registry: ["v2026.1005.0"],
+      smoke: ["v2026.916.0", "v2026.916.1", "v2026.1005.0"],
+      fixtures: ["v2026.916.0", "v2026.916.1", "v2026.1005.0", "v2026.1099.0"],
+    });
+    assert.ok(
+      problems.some((p) => p.includes("v2026.1099.0") && p.includes("fixture release")),
+      `expected an unsupported-fixture problem, got: ${JSON.stringify(problems)}`,
+    );
+  });
+
+  it("keeps the real repository consistent: registry, smoke matrix and fixtures agree today", () => {
+    const tsFile = path.resolve(import.meta.dirname, "../../cli/src/commands/myrmidon-migrate-vendor-releases.ts");
+    const releasesLine = fs.readFileSync(tsFile, "utf8").split("\n").find((l) => l.startsWith("// releases:"));
+    const registry = releasesLine ? releasesLine.replace("// releases:", "").trim().split(/\s+/).filter(Boolean) : [];
+    const workflow = fs.readFileSync(
+      path.resolve(import.meta.dirname, "../../.github/workflows/myrmidon-paperclip-migration.yml"),
+      "utf8",
+    );
+    const matrix = /matrix:[\s\S]*?release:\n((?:\s+-\s+"v[\d.]+"\n)+)/.exec(workflow);
+    assert.ok(matrix, "release matrix found in the migration workflow");
+    const smoke = [...matrix[1].matchAll(/"([^"]+)"/g)].map((m) => m[1]);
+    const generator = fs.readFileSync(
+      path.join(import.meta.dirname, "paperclip-migration-generate-fixture.mjs"),
+      "utf8",
+    );
+    const block = /export const SUPPORTED_RELEASES = \[([\s\S]*?)\n\];/.exec(generator);
+    assert.ok(block, "SUPPORTED_RELEASES found in the fixture generator");
+    const fixtures = [...block[1].matchAll(/tag: "([^"]+)"/g)].map((m) => m[1]);
+    assert.deepEqual(checkCheckList({ registry, smoke, fixtures }), []);
   });
 });
 

@@ -1,8 +1,9 @@
 import assert from "node:assert/strict";
-import { describe, it } from "vitest";
+import { describe, it, vi } from "vitest";
 import type { Agent, Issue, IssueComment, PaperclipPluginManifestV1 } from "@myrmidon/plugin-sdk";
 import { createTestHarness } from "@myrmidon/plugin-sdk/testing";
 import { createHindsightPlugin, type FetchLike } from "./plugin.js";
+import { HindsightClient, DEFAULT_TIMEOUT_MS } from "./client.js";
 import manifest from "./manifest.js";
 import { resolveBank } from "./bank.js";
 
@@ -799,5 +800,212 @@ describe("manifest", () => {
   it("declares the API key field as a secret-ref", () => {
     const properties = manifest.instanceConfigSchema?.["properties"] as Record<string, { format?: string }>;
     assert.equal(properties["hindsightApiKeyRef"]?.format, "secret-ref");
+  });
+
+  it("declares the requestTimeoutMs field with 60000 default", () => {
+    const properties = manifest.instanceConfigSchema?.["properties"] as Record<string, { type?: string; default?: unknown }>;
+    assert.equal(properties["requestTimeoutMs"]?.type, "number");
+    assert.equal(properties["requestTimeoutMs"]?.default, 60000);
+  });
+});
+
+describe("request timeout and latency (OPE-8150)", () => {
+  it("defaults timeout to 60_000 ms instead of legacy 15_000 ms", () => {
+    assert.equal(DEFAULT_TIMEOUT_MS, 60_000);
+    const client = new HindsightClient("http://localhost:8888");
+    assert.equal(client.timeoutMs, 60_000);
+  });
+
+  it("accepts custom timeoutMs in HindsightClient", () => {
+    const client = new HindsightClient("http://localhost:8888", "token", undefined, 30_000);
+    assert.equal(client.timeoutMs, 30_000);
+  });
+
+  it("recall call with latency > 15s (e.g. 20s) succeeds under default 60s timeout", async () => {
+    vi.useFakeTimers();
+    try {
+      const mockFetch: FetchLike = async (_url, init) => {
+        return new Promise((resolve, reject) => {
+          const timer = setTimeout(() => {
+            resolve(jsonResponse({ results: [{ text: "recalled fact" }] }));
+          }, 20_000);
+          init?.signal?.addEventListener("abort", () => {
+            clearTimeout(timer);
+            reject(new DOMException("The operation was aborted", "AbortError"));
+          });
+        });
+      };
+      const client = new HindsightClient("http://localhost:8888", undefined, mockFetch);
+      const recallPromise = client.recall("adm", "test query");
+      await vi.advanceTimersByTimeAsync(20_000);
+      const res = await recallPromise;
+      assert.deepEqual(res.results, [{ text: "recalled fact" }]);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("recall call with latency > configured timeout fails with abort error (reproducing 15s cutoff)", async () => {
+    vi.useFakeTimers();
+    try {
+      const mockFetch: FetchLike = async (_url, init) => {
+        return new Promise((resolve, reject) => {
+          const timer = setTimeout(() => {
+            resolve(jsonResponse({ results: [{ text: "recalled fact" }] }));
+          }, 20_000);
+          init?.signal?.addEventListener("abort", () => {
+            clearTimeout(timer);
+            reject(new DOMException("The operation was aborted", "AbortError"));
+          });
+        });
+      };
+      const client = new HindsightClient("http://localhost:8888", undefined, mockFetch, 15_000);
+      const recallPromise = client.recall("adm", "test query");
+      const failureExpectation = assert.rejects(recallPromise, (err: unknown) => {
+        return err instanceof Error && (err.name === "AbortError" || String(err).includes("abort"));
+      });
+      await vi.advanceTimersByTimeAsync(15_001);
+      await failureExpectation;
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("passes requestTimeoutMs from plugin config into tool execution", async () => {
+    vi.useFakeTimers();
+    try {
+      let aborted = false;
+      const delayedFetch: FetchLike = async (url, init) => {
+        if (url.includes("/health")) return jsonResponse({ ok: true });
+        return new Promise((resolve, reject) => {
+          const timer = setTimeout(() => {
+            resolve(jsonResponse({ results: [{ text: "found memory" }] }));
+          }, 25_000);
+          init?.signal?.addEventListener("abort", () => {
+            aborted = true;
+            clearTimeout(timer);
+            reject(new DOMException("The operation was aborted", "AbortError"));
+          });
+        });
+      };
+
+      const harness = createTestHarness({
+        manifest: manifest as PaperclipPluginManifestV1,
+        config: {
+          hindsightApiUrl: API_URL,
+          requestTimeoutMs: 30_000,
+          recallOnRunStart: "never",
+        },
+      });
+      harness.seed({
+        agents: [agent({ id: AGENT_ADM, name: "ops-agent", bankId: "adm" })],
+      });
+      const plugin = createHindsightPlugin({ fetchImpl: delayedFetch });
+      await plugin.definition.setup(harness.ctx);
+
+      const toolPromise = harness.executeTool(
+        "hindsight_recall",
+        { query: "delayed test" },
+        { agentId: AGENT_ADM, runId: "run-lat", companyId: COMPANY, projectId: PROJECT },
+      );
+      await vi.advanceTimersByTimeAsync(25_000);
+      const toolResult = await toolPromise;
+      assert.equal(toolResult.content, "- found memory");
+      assert.equal(aborted, false);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("aborts hindsight_recall when latency exceeds configured requestTimeoutMs even if below default 60s", async () => {
+    vi.useFakeTimers();
+    try {
+      let aborted = false;
+      const delayedFetch: FetchLike = async (url, init) => {
+        if (url.includes("/health")) return jsonResponse({ ok: true });
+        return new Promise((resolve, reject) => {
+          const timer = setTimeout(() => {
+            resolve(jsonResponse({ results: [{ text: "found memory" }] }));
+          }, 35_000);
+          init?.signal?.addEventListener("abort", () => {
+            aborted = true;
+            clearTimeout(timer);
+            reject(new DOMException("The operation was aborted", "AbortError"));
+          });
+        });
+      };
+
+      const harness = createTestHarness({
+        manifest: manifest as PaperclipPluginManifestV1,
+        config: {
+          hindsightApiUrl: API_URL,
+          requestTimeoutMs: 30_000,
+          recallOnRunStart: "never",
+        },
+      });
+      harness.seed({
+        agents: [agent({ id: AGENT_ADM, name: "ops-agent", bankId: "adm" })],
+      });
+      const plugin = createHindsightPlugin({ fetchImpl: delayedFetch });
+      await plugin.definition.setup(harness.ctx);
+
+      const toolPromise = harness.executeTool(
+        "hindsight_recall",
+        { query: "delayed test" },
+        { agentId: AGENT_ADM, runId: "run-lat-timeout", companyId: COMPANY, projectId: PROJECT },
+      );
+      await vi.advanceTimersByTimeAsync(30_000);
+      const toolResult = await toolPromise;
+      assert.equal(aborted, true);
+      if (typeof toolResult.content !== "string") {
+        throw new TypeError("Expected hindsight_recall error content");
+      }
+      assert.match(toolResult.content, /Memory recall failed.*(?:AbortError|abort)/i);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("validates and propagates requestTimeoutMs to HindsightClient in onValidateConfig", async () => {
+    const fetchImpl: FetchLike = async () => jsonResponse({ ok: true });
+    const plugin = createHindsightPlugin({ fetchImpl });
+
+    let capturedTimeoutMs: number | undefined;
+    const healthSpy = vi.spyOn(HindsightClient.prototype, "health").mockImplementation(async function (this: HindsightClient) {
+      capturedTimeoutMs = this.timeoutMs;
+      return true;
+    });
+
+    try {
+      const validResult = await plugin.definition.onValidateConfig?.({
+        hindsightApiUrl: "http://localhost:8888",
+        requestTimeoutMs: 45_000,
+      });
+      assert.deepEqual(validResult, { ok: true });
+      assert.equal(capturedTimeoutMs, 45_000);
+
+      capturedTimeoutMs = undefined;
+      const defaultResult = await plugin.definition.onValidateConfig?.({
+        hindsightApiUrl: "http://localhost:8888",
+      });
+      assert.deepEqual(defaultResult, { ok: true });
+      assert.equal(capturedTimeoutMs, DEFAULT_TIMEOUT_MS);
+    } finally {
+      healthSpy.mockRestore();
+    }
+
+    const invalidNegative = await plugin.definition.onValidateConfig?.({
+      hindsightApiUrl: "http://localhost:8888",
+      requestTimeoutMs: -1000,
+    });
+    assert.equal(invalidNegative?.ok, false);
+    assert.ok(invalidNegative?.errors?.some((e) => e.includes("requestTimeoutMs")));
+
+    const invalidType = await plugin.definition.onValidateConfig?.({
+      hindsightApiUrl: "http://localhost:8888",
+      requestTimeoutMs: "fast" as unknown as number,
+    });
+    assert.equal(invalidType?.ok, false);
+    assert.ok(invalidType?.errors?.some((e) => e.includes("requestTimeoutMs")));
   });
 });

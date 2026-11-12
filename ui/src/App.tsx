@@ -98,6 +98,7 @@ import { GuardrailsScreen } from "./components/myrmidon/guardrails/GuardrailsScr
 import { ReviewRoutingScreen } from "./components/myrmidon/review-routing/ReviewRoutingScreenContainer"; // myrmidon(REVIEW-ROUTING)
 import { CorpusScreen } from "./components/myrmidon/corpus/CorpusScreenContainer"; // myrmidon(1.6.6 CORPUS E)
 import { KnowledgeReview } from "./pages/KnowledgeReview";
+import { KnowledgeSettingsScreen } from "./components/myrmidon/knowledge/KnowledgeSettingsScreen"; // myrmidon(1.7 KNOWLEDGE-2.0 L-11)
 import { Ui2KnowledgeCurrentUi } from "./ui2/screens/knowledge/Ui2KnowledgeCurrentUi"; // myrmidon(OPE-9222)
 import { BudgetLimitsScreen } from "./components/myrmidon/budget-limits/BudgetLimitsScreenContainer"; // myrmidon(1.7 BUDGET-CONFIG D)
 
@@ -243,6 +244,7 @@ function boardRoutes(streamlinedUiEnabled: boolean) {
       <Route path="wiki" element={<Ui2KnowledgeCurrentUi />} /> {/* myrmidon(OPE-9222): the Knowledge screen of the current UI */}
       <Route path="wiki/:spaceKey/:slug" element={<Ui2KnowledgeCurrentUi />} />
       <Route path="company/settings/corpus" element={<CorpusScreen />} /> {/* myrmidon(1.6.6 CORPUS E): the knowledge corpus settings screen route */}
+      <Route path="company/settings/knowledge" element={<KnowledgeSettingsScreen />} /> {/* myrmidon(1.7 KNOWLEDGE-2.0 L-11): the knowledge settings screen route */}
       <Route path="company/settings/budgets" element={<BudgetLimitsScreen />} /> {/* myrmidon(1.7 BUDGET-CONFIG D): per-level spend limits screen */}
       <Route path="company/settings/agent-exchange" element={<AgentExchangeFeedScreen />} /> {/* myrmidon(1.7-AGENT-EXCHANGE-B): the feed of the agents' discussion rooms */}
 
@@ -862,6 +864,14 @@ export function App() {
           <Route path="instance/settings" element={<LegacySettingsRedirect />} />
           <Route path="instance/settings/*" element={<LegacySettingsRedirect />} />
           <Route path="companies" element={<UnprefixedBoardRedirect />} />
+          {/* myrmidon(UI-2.0-WAVE-A, П2): the ui2 shell route roots get
+              unprefixed→prefixed redirects so a bare /commander, /fleet or
+              /quality link never turns into a bogus "company" via
+              extractCompanyPrefixFromPath (OPE-3922 defect 1). */}
+          <Route path="commander" element={<UnprefixedBoardRedirect />} />
+          <Route path="commander-chat" element={<UnprefixedBoardRedirect />} />
+          <Route path="fleet" element={<UnprefixedBoardRedirect />} />
+          <Route path="quality" element={<UnprefixedBoardRedirect />} />
           <Route path="issues" element={<UnprefixedBoardRedirect />} />
           <Route path="tasks" element={<UnprefixedBoardRedirect />} />
           <Route path="issues/:issueId" element={<UnprefixedBoardRedirect />} />

@@ -629,6 +629,32 @@ export const issueExecutionStateSchema = z.object({
   // myrmidon(OPE-11970): PR head the last changes-requested decision was made on;
   // a repeat return on the same head does not wake the executor again.
   lastChangesRequestedHeadSha: z.string().max(128).nullable().optional(),
+  // myrmidon(OPE-12181, REVIEW-CHECKS-NATIVE): the formal review decision as structure
+  // (decision + head sha + PR number), written together with lastDecisionId.
+  reviewDecision: z
+    .object({
+      reviewDecision: z.enum(["approved", "changes_requested"]),
+      headSha: z.string().max(128).nullable(),
+      pullRequestNumber: z.number().int().positive().nullable(),
+    })
+    .nullish(),
+  // myrmidon(1.7-GOAL-JUDGE, OPE-12149): durable round state of the review-cycle
+  // goal judge; preserved by the execution-policy transition builders.
+  goalJudgeRound: z
+    .object({
+      rounds: z.number().int().nonnegative(),
+      lastJudgedAtMs: z.number().int().nullable(),
+      lastHeadSha: z.string().max(128).nullable(),
+      lastVerdict: z
+        .object({
+          score: z.number(),
+          complete: z.boolean(),
+          missing: z.array(z.string().max(2000)),
+          summary: z.string().max(4000).optional(),
+        })
+        .nullish(),
+    })
+    .nullish(),
 });
 
 export const issueRecoveryActionReadModelSchema = z.object({
@@ -849,6 +875,10 @@ const createIssueBaseSchema = z.object({
     .optional()
     .nullable(),
   inheritExecutionWorkspaceFromIssueId: z.string().guid().optional().nullable(),
+  // 1.7 (PRIVATE-TASKS): privacy flag. The schema accepts it; the route
+  // rejects it with 403 unless the actor is a board actor. Agents can never
+  // set or clear it.
+  isPrivate: z.boolean().optional(),
   title: z.string().min(1),
   description: multilineTextSchema.optional().nullable(),
   status: z.enum(ISSUE_STATUSES),

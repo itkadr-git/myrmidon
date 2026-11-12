@@ -15,6 +15,7 @@ import { instanceSettings, type Db } from "@myrmidon/db";
 import {
   GITHUB_SHARED_IDENTITY_GENERAL_KEY,
   parseStoredGitHubSharedIdentitySettings,
+  type GitHubAppEntry,
   type GitHubSharedIdentitySettings,
 } from "./settings.js";
 import { resetGitHubAppTokenCacheForTests } from "./app-token.js";
@@ -46,6 +47,32 @@ export async function readGitHubSharedIdentitySettings(
     .where(eq(instanceSettings.singletonKey, SINGLETON_KEY))
     .then((rows) => rows[0] ?? null);
   return parseStoredGitHubSharedIdentitySettings(readCompaniesMap(row?.general)[normalizeCompanyId(companyId)]);
+}
+
+/**
+ * myrmidon(GITHUB-APP-WEBHOOK): the App entries of every company registered
+ * under one GitHub App id. An inbound App webhook names only the App, so the
+ * delivery is mapped to companies through it. Companies whose rules are off
+ * (`enabled: false`) serve nobody and are skipped.
+ */
+export async function listGitHubAppEntriesByAppId(
+  db: Runner,
+  appId: string,
+): Promise<Array<{ companyId: string; entry: GitHubAppEntry }>> {
+  const row = await db
+    .select({ general: instanceSettings.general })
+    .from(instanceSettings)
+    .where(eq(instanceSettings.singletonKey, SINGLETON_KEY))
+    .then((rows) => rows[0] ?? null);
+  const found: Array<{ companyId: string; entry: GitHubAppEntry }> = [];
+  for (const [companyId, raw] of Object.entries(readCompaniesMap(row?.general))) {
+    const settings = parseStoredGitHubSharedIdentitySettings(raw);
+    if (!settings.enabled) continue;
+    for (const entry of settings.apps) {
+      if (entry.appId === appId) found.push({ companyId, entry });
+    }
+  }
+  return found;
 }
 
 /** Replace the rules of one company under a row lock. */

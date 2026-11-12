@@ -167,6 +167,11 @@ function corpusHarness(
       async listDatasets(companyId) {
         return [...state.datasets.values()].filter((row) => row.companyId === companyId);
       },
+      async listDatasetNames(companyId) {
+        return [...state.datasets.values()]
+          .filter((row) => row.companyId === companyId)
+          .map((row) => ({ id: row.id, name: row.name }));
+      },
       async getDataset(companyId, datasetId) {
         return datasetOf(companyId, datasetId);
       },
@@ -246,6 +251,8 @@ function corpusHarness(
           refreshIntervalHours: input.source?.refreshIntervalHours ?? null,
           contentHash: input.source?.contentHash ?? null,
           lastFetchedAt: input.source?.fetchedAt ?? null,
+          lastAttemptedAt: input.source?.fetchedAt ?? null,
+          sourceFailCount: input.source ? 0 : null,
           sourceError: null,
           previousBlobRef: null,
         };
@@ -255,7 +262,16 @@ function corpusHarness(
       async updateDocument(companyId, documentId, patch) {
         const row = documentOf(companyId, documentId);
         if (!row) return null;
-        const next = { ...row, ...patch, updatedAt: AT };
+        const currentFailCount = row.sourceFailCount ?? 0;
+        const nextFailCount =
+          patch.sourceFailCount !== undefined
+            ? patch.sourceFailCount
+            : patch.sourceError !== undefined
+              ? patch.sourceError !== null
+                ? currentFailCount + 1
+                : 0
+              : row.sourceFailCount;
+        const next = { ...row, sourceFailCount: nextFailCount, ...patch, updatedAt: AT };
         state.documents.set(row.id, next);
         return next;
       },
@@ -271,16 +287,19 @@ function corpusHarness(
         return true;
       },
       async listSourceDocuments({ companyId, datasetId, dueAt, limit }) {
+        const dueTime = (row: CorpusDocumentRecord): number => {
+          const attemptedAt = new Date(row.lastAttemptedAt ?? row.lastFetchedAt ?? row.createdAt).getTime();
+          const period = row.refreshIntervalHours ?? 168;
+          const failures = row.sourceFailCount ?? 0;
+          const backoff = failures > 0 ? Math.min(2 ** Math.min(failures, 20), period) : period;
+          return attemptedAt + backoff * 3_600_000;
+        };
         return [...state.documents.values()]
           .filter((row) => row.sourceUrl !== null)
           .filter((row) => !companyId || row.companyId === companyId)
           .filter((row) => !datasetId || row.datasetId === datasetId)
-          .filter(
-            (row) =>
-              !dueAt ||
-              new Date(row.lastFetchedAt ?? row.createdAt).getTime() + (row.refreshIntervalHours ?? 168) * 3_600_000 <=
-                dueAt.getTime(),
-          )
+          .filter((row) => !dueAt || dueTime(row) <= dueAt.getTime())
+          .sort((a, b) => dueTime(a) - dueTime(b))
           .slice(0, limit);
       },
       async countDocuments(companyId, datasetId) {
@@ -1062,6 +1081,37 @@ describe("corpus API: upload, parse and search", () => {
     expect(stats).toMatchObject({ datasets: 1, documents: 1, ready: 1, pending: 0, failed: 0, chunks: 1, bytes: 12 });
   });
 
+  // OPE-12272: a REST search checks the dataset by id (`hasDataset`) and reads the names of its hits in one
+  // query. It must not run `listDatasets`, which counts the documents and chunks of every dataset.
+  it("searches without listing the datasets with their counters, and its answer does not change", async () => {
+    const h = enabled();
+    h.seedDataset();
+    const app = h.app();
+    const uploaded = await upload(app);
+    await h.worker.sweep();
+    const listDatasets = h.ports.store.listDatasets;
+    let listed = 0;
+    h.ports.store.listDatasets = async (companyId) => {
+      listed += 1;
+      return listDatasets(companyId);
+    };
+
+    const found = await request(app)
+      .post(`${companyPath()}/datasets/${DATASET_ID}/search`)
+      .send({ query: "corpus" });
+
+    expect(found.status).toBe(200);
+    expect(listed).toBe(0);
+    expect(found.body).toMatchObject({ datasetId: DATASET_ID, query: "corpus", mode: "hybrid", limit: 5 });
+    expect(found.body.hits).toHaveLength(1);
+    expect(found.body.hits[0]).toMatchObject({ text: "hello corpus", score: 0.9, documentName: "notes.txt", documentId: uploaded.body.document.id });
+
+    // The listing that does count is still there for the screen.
+    const datasets = await request(app).get(`${companyPath()}/datasets`);
+    expect(datasets.status).toBe(200);
+    expect(listed).toBe(1);
+  });
+
   it("retries a failed parse and gives up on the last attempt", async () => {
     const h = enabled();
     h.seedDataset();
@@ -1641,6 +1691,139 @@ describe("corpus API: documents by address, refreshed on a schedule", () => {
     expect(h.state.blobs.size).toBe(0);
   });
 
+  it("keeps previousBlobRef when deleting the replaced blob fails, and removes it on the next refresh", async () => {
+    const { h, web, app } = withSite({ [PAGE]: { body: "version 1 words" } });
+    const added = await addByUrl(app, { url: PAGE });
+    const documentId = added.body.document.id as string;
+    await h.worker.sweep();
+    const v1Ref = h.state.documents.get(documentId)!.blobRef;
+    expect(h.state.blobs.has(v1Ref)).toBe(true);
+
+    web.pages[PAGE] = { body: "version 2 words, changed" };
+    h.state.parse = { text: "v2 chunk", chunks: [{ index: 0, text: "v2 chunk" }] };
+    const { result: r1 } = await refreshAndWait(h, app);
+    expect(r1).toMatchObject({ checked: 1, updated: 1, failed: 0 });
+    const v2Ref = h.state.documents.get(documentId)!.blobRef;
+    expect(h.state.documents.get(documentId)!.previousBlobRef).toBe(v1Ref);
+
+    // Make blob delete fail when cleaning up v1 after parse
+    const originalDelete = h.ports.blobs.delete;
+    let failV1Delete = true;
+    h.ports.blobs.delete = async (ref) => {
+      if (failV1Delete && ref === v1Ref) {
+        throw new Error("EACCES: permission denied, unlink old blob");
+      }
+      return originalDelete(ref);
+    };
+
+    await h.worker.sweep();
+    // After parse, document is ready, previousBlobRef is still v1Ref, and v1 blob is still present
+    const docAfterFailedDelete = h.state.documents.get(documentId)!;
+    expect(docAfterFailedDelete).toMatchObject({ status: "ready", previousBlobRef: v1Ref });
+    expect(h.state.blobs.has(v1Ref)).toBe(true);
+    expect(h.state.blobs.has(v2Ref)).toBe(true);
+
+    // Now restore delete, and update to version 3. The next refresh removes the leftover v1 blob.
+    failV1Delete = false;
+    web.pages[PAGE] = { body: "version 3 words, newest" };
+    h.state.parse = { text: "v3 chunk", chunks: [{ index: 0, text: "v3 chunk" }] };
+    const { result: r2 } = await refreshAndWait(h, app);
+    expect(r2).toMatchObject({ checked: 1, updated: 1, failed: 0 });
+
+    // The two-generation-old v1Ref has been removed by the refresh pass
+    expect(h.state.blobs.has(v1Ref)).toBe(false);
+    const v3Ref = h.state.documents.get(documentId)!.blobRef;
+    expect(h.state.documents.get(documentId)!.previousBlobRef).toBe(v2Ref);
+    expect(h.state.blobs.has(v2Ref)).toBe(true);
+    expect(h.state.blobs.has(v3Ref)).toBe(true);
+
+    // After v3 parse, v2Ref is deleted as well
+    await h.worker.sweep();
+    expect(h.state.documents.get(documentId)).toMatchObject({ status: "ready", previousBlobRef: null });
+    expect(h.state.blobs.has(v2Ref)).toBe(false);
+    expect(h.state.blobs.size).toBe(1);
+    expect(h.state.blobs.has(v3Ref)).toBe(true);
+  });
+
+  it("removes the new blob and leaves the document unchanged when updateDocument throws", async () => {
+    const { h, web, app } = withSite({ [PAGE]: { body: "original words" } });
+    const added = await addByUrl(app, { url: PAGE });
+    const documentId = added.body.document.id as string;
+    await h.worker.sweep();
+    const oldRef = h.state.documents.get(documentId)!.blobRef;
+    const documentBefore = { ...h.state.documents.get(documentId)! };
+    expect(h.state.blobs.size).toBe(1);
+    expect(h.state.blobs.has(oldRef)).toBe(true);
+
+    web.pages[PAGE] = { body: "updated words that fail DB write" };
+
+    h.ports.store.updateDocument = async () => {
+      throw new Error("connection to server on socket failed: Connection refused");
+    };
+
+    const { result } = await refreshAndWait(h, app);
+
+    expect(result).toMatchObject({ checked: 1, updated: 0, failed: 1 });
+    expect(result.failures).toEqual([{ documentId, sourceUrl: PAGE, error: "internal_error" }]);
+
+    // In h.state.blobs, only the old file remains; the new one was cleaned up
+    expect(h.state.blobs.size).toBe(1);
+    expect([...h.state.blobs.keys()]).toEqual([oldRef]);
+
+    // Document is completely unchanged
+    expect(h.state.documents.get(documentId)).toEqual(documentBefore);
+    expect([...h.state.jobs.values()].filter((j) => j.documentId === documentId && j.state === "queued")).toHaveLength(0);
+  });
+
+  it("records sourceError and removes the new blob if updateDocument to queued fails but fail update succeeds", async () => {
+    const { h, web, app } = withSite({ [PAGE]: { body: "original words" } });
+    const added = await addByUrl(app, { url: PAGE });
+    const documentId = added.body.document.id as string;
+    await h.worker.sweep();
+    const oldRef = h.state.documents.get(documentId)!.blobRef;
+
+    web.pages[PAGE] = { body: "updated words" };
+    const originalUpdate = h.ports.store.updateDocument;
+    h.ports.store.updateDocument = async (companyId, id, patch) => {
+      if (patch.status === "queued") {
+        throw new Error("transient update failure");
+      }
+      return originalUpdate(companyId, id, patch);
+    };
+
+    const { result } = await refreshAndWait(h, app);
+    expect(result).toMatchObject({ checked: 1, updated: 0, failed: 1 });
+    expect(result.failures).toEqual([{ documentId, sourceUrl: PAGE, error: "internal_error" }]);
+
+    // New blob removed, only oldRef remains
+    expect([...h.state.blobs.keys()]).toEqual([oldRef]);
+    // Document status remains ready (not queued), blobRef remains oldRef
+    const doc = h.state.documents.get(documentId)!;
+    expect(doc.status).toBe("ready");
+    expect(doc.blobRef).toBe(oldRef);
+    expect(doc.sourceError).toBe("internal_error");
+    expect([...h.state.jobs.values()].filter((j) => j.documentId === documentId && j.state === "queued")).toHaveLength(0);
+  });
+
+  it("swallows blob deletion failure when rolling back after updateDocument throws", async () => {
+    const { h, web, app } = withSite({ [PAGE]: { body: "original words" } });
+    const added = await addByUrl(app, { url: PAGE });
+    const documentId = added.body.document.id as string;
+    await h.worker.sweep();
+
+    web.pages[PAGE] = { body: "updated words" };
+    h.ports.store.updateDocument = async () => {
+      throw new Error("db down");
+    };
+    h.ports.blobs.delete = async () => {
+      throw new Error("blob store down during cleanup");
+    };
+
+    const { result } = await refreshAndWait(h, app);
+    expect(result).toMatchObject({ checked: 1, updated: 0, failed: 1 });
+    expect(result.failures).toEqual([{ documentId, sourceUrl: PAGE, error: "internal_error" }]);
+  });
+
   it("parses a failed document again when the page still has the same hash", async () => {
     const { h, app } = withSite({ [PAGE]: { body: "same words" } });
     const added = await addByUrl(app, { url: PAGE });
@@ -2126,6 +2309,57 @@ describe("corpus API: documents by address, refreshed on a schedule", () => {
 
       expect(result.checked).toBe(0);
       expect(web.fetches()).toBe(0);
+    });
+
+    // myrmidon(1.6.7 OPE-12071): starvation prevention & exponential backoff on fetch failures.
+    it("51 documents with 404 do not crowd healthy documents out of limit=50, and fail count resets on success", async () => {
+      const pages: Record<string, Page> = {
+        "https://docs.example.com/healthy": { body: "healthy" },
+      };
+      for (let i = 0; i < 51; i++) {
+        pages[`https://docs.example.com/fail/${i}`] = { body: `initial ${i}` };
+      }
+      const { h, web, fetchUrl, app } = withSite(pages);
+
+      for (let i = 0; i < 51; i++) {
+        await addByUrl(app, { url: `https://docs.example.com/fail/${i}`, refreshIntervalHours: 24 });
+      }
+      await addByUrl(app, { url: "https://docs.example.com/healthy", refreshIntervalHours: 24 });
+
+      // Finish initial ingestion before turning the failing URLs into 404s. The worker's
+      // in-memory fake uses the production concurrency setting, so one sweep is sufficient;
+      // the loop also keeps this fixture correct if the setting is reduced later.
+      while ((await h.worker.sweep()).claimed > 0) { /* drain */ }
+
+      // After initial ingestion, 51 pages now start returning 404. The healthy page stays
+      // byte-identical: it must come back as `unchanged` in the sweeps below.
+      for (let i = 0; i < 51; i++) {
+        web.pages[`https://docs.example.com/fail/${i}`] = { status: 404 };
+      }
+
+      // At T0 + 25 hours, all 52 documents are due for their 24h refresh.
+      // Batch limit is 50: 50 failing docs fail and back off to T0 + 25h + 2h = T0 + 27h.
+      const sweep1 = await sweeper(h, fetchUrl, hours(25)).sweep();
+      expect(sweep1.failed).toBe(50);
+      expect(sweep1.checked).toBe(50);
+
+      // At T0 + 26 hours, the 50 failed docs are not due yet, so the remaining 2 documents
+      // (1 failing, 1 healthy) are not crowded out and get swept.
+      const sweep2 = await sweeper(h, fetchUrl, hours(26)).sweep();
+      expect(sweep2.failed).toBe(1);
+      expect(sweep2.unchanged).toBe(1);
+
+      const healthyDoc = [...h.state.documents.values()].find((d) => d.sourceUrl === "https://docs.example.com/healthy");
+      expect(healthyDoc?.sourceFailCount).toBe(0);
+      expect(healthyDoc?.sourceError).toBeNull();
+
+      // At T0 + 27 hours, backoff expires; one URL recovers and resets its fail counter on success.
+      web.pages["https://docs.example.com/fail/0"] = { body: "recovered page" };
+      await sweeper(h, fetchUrl, hours(27)).sweep();
+
+      const restoredDoc = [...h.state.documents.values()].find((d) => d.sourceUrl === "https://docs.example.com/fail/0");
+      expect(restoredDoc?.sourceFailCount).toBe(0);
+      expect(restoredDoc?.sourceError).toBeNull();
     });
   });
 });

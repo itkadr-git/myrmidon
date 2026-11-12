@@ -138,6 +138,7 @@
       "runsQueue": "Runs and queue",
       "system": "System",
       "language": "Language",
+      "channels": "Channels",
       "placeholderTitle": "Not in this wave yet",
       "placeholderBody": "This screen is part of the UI 2.0 rollout plan and lands with its wave. The current data lives on the existing screen; this placeholder exists so the 2.0 frame and routing are real from day one.",
       "placeholderLegacyLink": "Continue to the current screen",
@@ -156,6 +157,7 @@
       "autonomy": "Autonomy",
       "guards": "Guardrails",
       "castes": "Castes and models",
+      "channels": "Channels",
       "system": "System",
       "language": "Language"
     },
@@ -244,6 +246,7 @@
     "checkedAt": "Releases checked at {{time}}",
     "never": "never",
     "unknown": "unknown",
+    "stale": "stale {{hours}}h",
     "column": {
       "name": "Component",
       "source": "Release source",
@@ -276,6 +279,7 @@
       "health-commit": "Board build commit",
       "docker-image": "Docker image",
       "container-labels": "Container labels",
+      "http-version": "HTTP version endpoint",
       "env": "Environment override",
       "manual": "Operator set",
       "none": "Not visible from the board"

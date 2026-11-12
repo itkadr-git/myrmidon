@@ -195,14 +195,20 @@ Docker: dockergate намеренно отказывает в произволь
 **Куда что пишет.** Корневая файловая система в рантайме доступна только для чтения, а
 записываемые каталоги бота — ровно его три тома, поэтому:
 
-- склад pnpm по умолчанию — `/workspace/.pnpm-store` через `npm_config_store_dir`, то есть
-  на том же монтировании, что и клоны: pnpm ставит `node_modules` жёсткими ссылками, а
-  жёсткая ссылка не пересекает монтирование (склад на `/data` или `/cache` заставлял pnpm
-  копировать каждый пакет в каждый клон; 1.6.2 BOT-DISK-C). `pnpm-hardlink-check.sh`
-  проверяет это при сборке. Склад можно вынести в общий кэш пакетов экземпляра
-  (`pnpmStore: "shared"`), см. [docs/myrmidon/bot-disk-cache.ru.md](../../docs/myrmidon/bot-disk-cache.ru.md);
-- `RUSTUP_HOME`/`CARGO_HOME` остаются запечатанными под `/opt`, а `cargo` пишет свой
-  целевой каталог в выгруженное рабочее дерево;
+- склад pnpm по умолчанию — `/workspace/.pnpm-store` через `npm_config_store_dir` (OPE-12720;
+  общий `/cache/pnpm-store` 1.6.5–1.6.7 лежал на корневом диске и выведен из использования), то
+  есть на том же монтировании, что и клоны (`/workspace` — ссылка в `/bot`): pnpm импортирует
+  `node_modules` из склада ссылками, а ссылка не пересекает монтирование (склад вне монтирования
+  бота заставлял pnpm копировать каждый пакет в каждый клон). Это не `/bot/.pnpm-store`: корень
+  `/bot` принадлежит root (0711), пользователь бота не может создавать в нём записи.
+  `pnpm-hardlink-check.sh` проверяет это при сборке. Подробности о складе и
+  способе импорта — [docs/myrmidon/bot-disk-cache.ru.md](../../docs/myrmidon/bot-disk-cache.ru.md);
+- `RUSTUP_HOME`/`CARGO_HOME` остаются запечатанными под `/opt`, а `CARGO_TARGET_DIR` направляет
+  артефакты `cargo` в `/data/hermes/.cache/cargo-target` (OPE-12105), вне рабочего дерева задачи.
+  botd держит этот каталог в пределах квоты на бота (`cargoTargetQuotaBytes`, 2 ГиБ) и
+  удаляет целые каталоги профилей, к которым писали давнее всего (OPE-12110); тот же проход
+  ограничивает `hermes/.npm/_npx` значением `npmNpxQuotaBytes` (512 МиБ), см.
+  [docs/myrmidon/bot-disk-cache.ru.md](../../docs/myrmidon/bot-disk-cache.ru.md);
 - кэш сборки Go по умолчанию лежит под `$HOME` (`/data/hermes`), долговечный том.
 
 **`PATH` никогда не содержит записываемый том.** Стадия dev собирает `PATH` только из
@@ -593,6 +599,26 @@ loopback и стримит один кусок в секунду, чтобы п�
   botd состояние неизвестно.
   Когда доска недоступна, botd не удаляет ничего. Состояние диска botd
   возвращает доске через `POST /api/myrmidon/bots/me/disk-report`.
+
+### Репак git-base на частичных клонах (1.6.7 OPE-12263)
+
+Базовые bare-репозитории бота (`git-base/<owner>/<repo>.git`) — **частичные
+клоны** (`partialclonefilter=blob:none`) без полного замыкания объектов,
+поэтому обычный `git repack -A -d` падает с ошибкой `Failed to write bitmap
+index. Packfile doesn't have full closure` и оставляет многогигабайтные
+`.tmp-*-pack-*` / `tmp_idx_*` в `objects/pack`; при числе pack больше 20 botd
+повторял попытку каждый цикл. С 1.6.7 botd:
+
+- запускает repack с `-c repack.writeBitmaps=false -c pack.writeBitmaps=false`
+  (плюс прежний `pack.threads=1`);
+- после неудачного repack и при старте botd удаляет устаревшие временные
+  pack-файлы (`.tmp-*-pack-*`, `tmp_pack_*`, `tmp_idx_*`, `tmp_rev_*` старше
+  30 минут) из `objects/pack` и не трогает репозиторий, где есть живые
+  lock-файлы git;
+- после неудачи пишет метку `.myrmidon-repack-failed` с текстом ошибки git и
+  делает паузу 6 часов (`REPACK_FAILURE_BACKOFF_MS`) до следующей попытки —
+  триггер по числу pack паузу не обходит — и пишет причину в журнал;
+- снимает метку неудачи после успешного repack.
 
 ## Что ещё не проверено
 

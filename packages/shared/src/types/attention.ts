@@ -87,6 +87,14 @@ export const ATTENTION_SOURCE_KINDS = [
   // myrmidon(OPE-7932): a due issue monitor has not produced a wake claim.
   "issue_monitor_overdue",
   "provider_usage_warning",
+  // myrmidon(1.6.8 OPE-12709): every agent of one role finished >=5 runs in the
+  // last 30 min and none succeeded — the role's model channels are down.
+  "role_model_down",
+  // myrmidon(1.6.8 OPE-12709): a provider channel answered "no credits"
+  // (HTTP 402 / insufficient_quota) — the owner has to top the account up.
+  "provider_no_credits",
+  // MCP gateway tokens expiring within the operator attention window.
+  "mcp_gateway_token_expiring",
 ] as const;
 
 export type AttentionSourceKind = (typeof ATTENTION_SOURCE_KINDS)[number];
@@ -259,7 +267,7 @@ export type AttentionItemDetail =
       freeGb: number;
       growthBytesPerHour: number | null;
       mountPoint: string | null;
-      consumers: Array<{ path: string; sizeGb: number }>;
+      consumers: Array<{ path: string; sizeGb: number | null }>;
       images: AttentionDetailImage[];
     }
   | {

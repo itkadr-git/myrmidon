@@ -9,7 +9,7 @@
 // duplicating them.
 //
 // 1.6.5-BOT-DISK-H11: it also edits the shared bot runtime directory, whose
-// bin, lazy-packages and lsp subdirectories every bot mounts read-only, so the
+// bin subdirectory every bot mounts read-only, so the
 // runtime lives on the host once instead of once per bot.
 //
 // 1.6.5-BOT-DISK-H4d: the panel also shows the bot partition physically
@@ -48,6 +48,7 @@ import {
   WS_BOT_DISK_SETTING_DEFAULTS,
 } from "@myrmidon/shared";
 import { botDiskApi, botDiskQueryKey, type BotDiskView } from "./botDiskApi";
+import { describeSettingsError, isInstanceAdminRequiredError } from "./settingsErrors";
 import {
   BOT_DISK_REPORT_STALE_MS,
   botDiskLifecycleApi,
@@ -69,6 +70,8 @@ function BotDiskLifecycleSection({ now, taskStatuses }: { now?: number; taskStat
   const projects = Array.isArray(physical.data?.projects) ? physical.data.projects : [];
   const reports: BotDiskReportView[] = Array.isArray(reportsQuery.data?.reports) ? reportsQuery.data.reports : [];
   const loading = physical.isPending || reportsQuery.isPending;
+  // myrmidon(1.6.7 SETTINGS-GENERAL-CRASH): the 403 of a non-admin is shown as text, not as "no data".
+  const forbidden = isInstanceAdminRequiredError(physical.error) || isInstanceAdminRequiredError(reportsQuery.error);
   const botKeys = Array.from(new Set([...projects.map((p) => p.botKey), ...reports.map((r) => r.botKey)])).sort();
 
   return (
@@ -77,6 +80,10 @@ function BotDiskLifecycleSection({ now, taskStatuses }: { now?: number; taskStat
       {loading ? (
         <p className="text-xs text-muted-foreground" data-testid="bot-disk-lifecycle-loading">
           {t("botDisk.loading")}
+        </p>
+      ) : forbidden && !partition && botKeys.length === 0 ? (
+        <p role="alert" className="text-xs text-destructive" data-testid="bot-disk-lifecycle-forbidden">
+          {t("settings.instanceAdminRequired")}
         </p>
       ) : !partition && botKeys.length === 0 ? (
         <p className="text-xs text-muted-foreground" data-testid="bot-disk-lifecycle-empty">
@@ -236,7 +243,7 @@ export function BotDiskSettingsPanel({ now, taskStatuses }: { now?: number; task
       setReposDraft((saved.settings.gitMirrorRepos ?? []).join("\n"));
       queryClient.invalidateQueries({ queryKey: botDiskQueryKey });
     },
-    onError: (err) => setReposError(err instanceof Error ? err.message : t("area.settings-bots-host-1.bot-disk-settings-panel.errReposSave")),
+    onError: (err) => setReposError(describeSettingsError(err, t, "area.settings-bots-host-1.bot-disk-settings-panel.errReposSave")),
   });
 
   const parseRepos = (text: string) =>
@@ -268,7 +275,7 @@ export function BotDiskSettingsPanel({ now, taskStatuses }: { now?: number; task
       setStoreDraft(saved.settings.pnpmStoreDir ?? "");
       queryClient.invalidateQueries({ queryKey: botDiskQueryKey });
     },
-    onError: (err) => setStoreError(err instanceof Error ? err.message : t("area.settings-bots-host-1.bot-disk-settings-panel.errPnpmSave")),
+    onError: (err) => setStoreError(describeSettingsError(err, t, "area.settings-bots-host-1.bot-disk-settings-panel.errPnpmSave")),
   });
   const submitStore = () => {
     const dir = (storeDraft ?? "").trim();
@@ -292,7 +299,7 @@ export function BotDiskSettingsPanel({ now, taskStatuses }: { now?: number; task
       setUvCacheDirDraft(saved.settings.uvCacheDir ?? "");
       queryClient.invalidateQueries({ queryKey: botDiskQueryKey });
     },
-    onError: (err) => setUvError(err instanceof Error ? err.message : t("area.settings-bots-host-1.bot-disk-settings-panel.errUvSave")),
+    onError: (err) => setUvError(describeSettingsError(err, t, "area.settings-bots-host-1.bot-disk-settings-panel.errUvSave")),
   });
   const submitUvCacheDir = () => {
     const dir = (uvCacheDirDraft ?? "").trim();
@@ -319,7 +326,7 @@ export function BotDiskSettingsPanel({ now, taskStatuses }: { now?: number; task
       setDefaultRepoDraft(saved.settings.defaultRepo ?? "");
       queryClient.invalidateQueries({ queryKey: botDiskQueryKey });
     },
-    onError: (err) => setDefaultRepoError(err instanceof Error ? err.message : t("area.settings-bots-host-1.bot-disk-settings-panel.errDefaultRepoSave")),
+    onError: (err) => setDefaultRepoError(describeSettingsError(err, t, "area.settings-bots-host-1.bot-disk-settings-panel.errDefaultRepoSave")),
   });
   const submitDefaultRepo = () => {
     const repo = (defaultRepoDraft ?? "").trim();
@@ -331,8 +338,8 @@ export function BotDiskSettingsPanel({ now, taskStatuses }: { now?: number; task
   };
   const defaultRepoUnchanged = view !== undefined && (defaultRepoDraft ?? "").trim() === (view.settings.defaultRepo ?? "");
 
-  // myrmidon(1.6.5-BOT-DISK-H11): the host directory whose bin, lazy-packages
-  // and lsp subdirectories every bot mounts read-only over its own runtime.
+  // myrmidon(1.6.5-BOT-DISK-H11): the host directory whose bin subdirectory
+  // every bot mounts read-only over its own runtime.
   const saveRuntime = useMutation({
     mutationFn: (path: string) => botDiskApi.setSharedBotRuntimePath(path === "" ? null : path),
     onSuccess: (saved) => {
@@ -340,7 +347,7 @@ export function BotDiskSettingsPanel({ now, taskStatuses }: { now?: number; task
       setRuntimeDraft(saved.settings.sharedBotRuntimePath ?? "");
       queryClient.invalidateQueries({ queryKey: botDiskQueryKey });
     },
-    onError: (err) => setRuntimeError(err instanceof Error ? err.message : t("area.settings-bots-host-1.bot-disk-settings-panel.errRuntimeSave")),
+    onError: (err) => setRuntimeError(describeSettingsError(err, t, "area.settings-bots-host-1.bot-disk-settings-panel.errRuntimeSave")),
   });
   const submitRuntime = () => {
     const path = (runtimeDraft ?? "").trim();
@@ -359,7 +366,7 @@ export function BotDiskSettingsPanel({ now, taskStatuses }: { now?: number; task
       setDraft(saved.settings.sharedPackageCachePath ?? "");
       queryClient.invalidateQueries({ queryKey: botDiskQueryKey });
     },
-    onError: (err) => setError(err instanceof Error ? err.message : t("area.settings-bots-host-1.bot-disk-settings-panel.errCacheSave")),
+    onError: (err) => setError(describeSettingsError(err, t, "area.settings-bots-host-1.bot-disk-settings-panel.errCacheSave")),
   });
 
   const submit = () => {
@@ -585,7 +592,7 @@ function BotDiskLifecycleEditSection({
       setError(null);
       queryClient.invalidateQueries({ queryKey: botDiskQueryKey });
     },
-    onError: (err) => setError(err instanceof Error ? err.message : t("area.settings-bots-host-1.bot-disk-settings-panel.errLifecycleSave")),
+    onError: (err) => setError(describeSettingsError(err, t, "area.settings-bots-host-1.bot-disk-settings-panel.errLifecycleSave")),
   });
 
   if (!view) return null;

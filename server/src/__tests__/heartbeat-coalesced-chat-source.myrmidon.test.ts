@@ -11,9 +11,9 @@ describe("coalesced non-chat event wake context provenance", () => {
     taskId: "issue-1",
     taskKey: "issue-1",
     source: "chat:telegram",
-    commentId: "comment-1",
-    wakeCommentId: "comment-1",
-    wakeCommentIds: ["comment-1"],
+    commentId: "0f9d5a1e-2f0d-4a6b-8c6d-1e2f3a4b5c6d",
+    wakeCommentId: "0f9d5a1e-2f0d-4a6b-8c6d-1e2f3a4b5c6d",
+    wakeCommentIds: ["0f9d5a1e-2f0d-4a6b-8c6d-1e2f3a4b5c6d"],
     wakeReason: "External chat message received",
     wakeSource: "assignment",
     paperclipHarnessCheckedOut: true,
@@ -41,8 +41,8 @@ describe("coalesced non-chat event wake context provenance", () => {
       // must not be mixed with the incoming reason.
       wakeReason: "External chat message received",
       lastWakeReason: "issue_children_completed",
-      wakeCommentId: "comment-1",
-      wakeCommentIds: ["comment-1"],
+      wakeCommentId: "0f9d5a1e-2f0d-4a6b-8c6d-1e2f3a4b5c6d",
+      wakeCommentIds: ["0f9d5a1e-2f0d-4a6b-8c6d-1e2f3a4b5c6d"],
       paperclipHarnessCheckedOut: true,
       completedChildIssueId: "child-1",
       childIssueIds: ["child-1", "child-2"],
@@ -56,7 +56,7 @@ describe("coalesced non-chat event wake context provenance", () => {
         paperclipExternalChatExecutionBound: true,
         paperclipWake: {
           issue: { id: "issue-1", status: "in_progress" },
-          commentIds: ["comment-1"],
+          commentIds: ["0f9d5a1e-2f0d-4a6b-8c6d-1e2f3a4b5c6d"],
           externalChatProvider: "telegram",
           externalChatExecutionBound: true,
           checkedOutByHarness: false,
@@ -76,7 +76,7 @@ describe("coalesced non-chat event wake context provenance", () => {
         paperclipExternalChatExecutionBound: true,
         paperclipWake: {
           issue: { id: "issue-1", status: "in_progress" },
-          commentIds: ["comment-1"],
+          commentIds: ["0f9d5a1e-2f0d-4a6b-8c6d-1e2f3a4b5c6d"],
           externalChatProvider: "telegram",
           externalChatExecutionBound: true,
           checkedOutByHarness: false,
@@ -84,9 +84,9 @@ describe("coalesced non-chat event wake context provenance", () => {
       },
       {
         ...childrenCompletedWake,
-        commentId: "comment-2",
-        wakeCommentId: "comment-2",
-        wakeCommentIds: ["comment-2"],
+        commentId: "2aa92f18-06b6-4231-a2a5-bf7d7f41718e",
+        wakeCommentId: "2aa92f18-06b6-4231-a2a5-bf7d7f41718e",
+        wakeCommentIds: ["2aa92f18-06b6-4231-a2a5-bf7d7f41718e"],
       },
     );
 
@@ -115,9 +115,9 @@ describe("coalesced non-chat event wake context provenance", () => {
       issueId: "issue-1",
       source: "chat:slack",
       wakeReason: "External chat message received",
-      commentId: "cm-2",
-      wakeCommentId: "cm-2",
-      wakeCommentIds: ["cm-2"],
+      commentId: "44c2a9b7-1c35-4d28-8e6f-6b2c3d4e5f60",
+      wakeCommentId: "44c2a9b7-1c35-4d28-8e6f-6b2c3d4e5f60",
+      wakeCommentIds: ["44c2a9b7-1c35-4d28-8e6f-6b2c3d4e5f60"],
     });
 
     expect(merged.source).toBe("chat:slack");

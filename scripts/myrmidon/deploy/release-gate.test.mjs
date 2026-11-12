@@ -67,8 +67,89 @@ case "$1" in
     else
       cat "$file"
     fi ;;
-  ps) echo "cid-x"; exit 0 ;;
+  ps)
+    # DEPLOY-SMOKE-FALSE-2: a bot container the fleet removed (idle-stop) is
+    # gone from "docker ps -a" too - find_container must fall back to the
+    # canonical name and see "No such container" on inspect.
+    if [ -e "$SANDBOX/bot-missing-container" ]; then exit 0; fi
+    echo "cid-x"; exit 0 ;;
   inspect)
+    # A bot stopped by IDLE-STOP is a real Docker Exited(143), not merely a
+    # board-side stopped state. The smoke tests use this to exercise the
+    # deploy-start boundary and the idle-stop exception.
+    case "$*" in
+      *myrmidon-bot-22222222-2222-4222-8222-222222222222*)
+        if [ -e "$SANDBOX/bot-exited-143" ]; then
+          echo "exited|exited|143|false|2026-11-08T16:00:00.000000000Z"
+          exit 0
+        fi
+        if [ -e "$SANDBOX/bot-oom" ]; then
+          # OOMKilled exit 1, finished 18:00:01 — and the container (re)started
+          # AT the deploy start (18:00:00): the deploy re-created it, so an
+          # in-window OOM here is a deploy casualty (DEPLOY-SMOKE-OOM-WARN).
+          echo "exited|exited|1|true|2026-11-08T18:00:01.000000000Z|2026-11-08T18:00:00.000000000Z"
+          exit 0
+        fi
+        if [ -e "$SANDBOX/bot-oom-stale" ]; then
+          # DEPLOY-SMOKE-FALSE-2 (rc.19): OOMKilled stays true from an OLD OOM
+          # that finished BEFORE the deploy began — the deploy did not kill it.
+          echo "exited|exited|137|true|2026-11-08T17:59:59.000000000Z"
+          exit 0
+        fi
+        if [ -e "$SANDBOX/bot-oom-inwindow" ]; then
+          # OOMKilled exit 137, finished 18:00:01; the container (re)started
+          # 18:00:00.5, INSIDE the deploy window — the rollout re-created it,
+          # so the OOM is a deploy casualty even on a single bot.
+          echo "exited|exited|137|true|2026-11-08T18:00:01.000000000Z|2026-11-08T18:00:00.500000000Z"
+          exit 0
+        fi
+        if [ -e "$SANDBOX/bot-oom-untouched" ]; then
+          # DEPLOY-SMOKE-OOM-WARN (OPE-12716, rc.23): OOMKilled exit 137 at
+          # 18:00:01 — but the container started 17:59:55, BEFORE the deploy
+          # began (18:00:00), and the rollout never switched its card: the bot
+          # OOMed under its own heavy workload. A single such OOM is a warning
+          # with the id and the card's memory limit, not a deploy failure.
+          echo "exited|exited|137|true|2026-11-08T18:00:01.000000000Z|2026-11-08T17:59:55.000000000Z"
+          exit 0
+        fi
+        if [ -e "$SANDBOX/bot-exited-stale-unhealthy" ]; then
+          # rc.20 (10.11): Docker keeps the last Health.Status after the container
+          # stops — an idle-stopped bot (Exited 143 before the deploy) still reads
+          # "unhealthy".
+          echo "unhealthy|exited|143|false|2026-11-08T16:00:00.000000000Z"
+          exit 0
+        fi ;;
+      *myrmidon-bot-33333333-3333-4333-8333-333333333333*)
+        if [ -e "$SANDBOX/bot-oom-untouched2" ]; then
+          # DEPLOY-SMOKE-OOM-WARN: the SECOND untouched OOM (a fleet-wide OOM
+          # needs two) — same shape as bot-oom-untouched: started before the
+          # deploy began, OOMKilled exit 137 in the window.
+          echo "exited|exited|137|true|2026-11-08T18:00:01.000000000Z|2026-11-08T17:59:56.000000000Z"
+          exit 0
+        fi
+        if [ -e "$SANDBOX/bot-missing-container" ]; then
+          # DEPLOY-SMOKE-FALSE-2 (rc.19): the agent's container is gone ("No
+          # such container") — the fleet stopped it by idle-stop and removed it;
+          # there is no runtime container to inspect.
+          echo "Error: No such container: myrmidon-bot-33333333-3333-4333-8333-333333333333" >&2
+          exit 1
+        fi
+        if [ -e "$SANDBOX/bot-unhealthy-recovered" ]; then
+          # DEPLOY-SMOKE-FALSE-2 (rc.17/rc.19): Docker's healthcheck still says
+          # unhealthy right after the board's maintenance window, but the bot
+          # itself is already up — its gateway answers /health.
+          echo "unhealthy|running|0|false|"
+          exit 0
+        fi
+        if [ -e "$SANDBOX/bot-exited-143-inwindow" ]; then
+          echo "exited|exited|143|false|2026-11-08T18:00:01.000000000Z"
+          exit 0
+        fi
+        if [ -e "$SANDBOX/bot-exit1" ]; then
+          echo "exited|exited|1|false|2026-11-08T18:00:01.000000000Z"
+          exit 0
+        fi ;;
+    esac
     # a container exists for every service and runs; its image is not recorded
     # here (the previous image then falls back to the override file)
     case "$*" in
@@ -79,6 +160,11 @@ case "$1" in
             echo "healthy" ;;
           *)
             if [ -e "$SANDBOX/bot-unhealthy" ]; then
+              echo "unhealthy"
+            elif [ -e "$SANDBOX/bot-unhealthy-recovered" ] && echo "$*" | grep -q "myrmidon-bot-"; then
+              # DEPLOY-SMOKE-FALSE-2: Docker's healthcheck lags across the
+              # maintenance window — the bot container reports unhealthy even
+              # though the gateway inside already answers.
               echo "unhealthy"
             else
               echo "healthy"
@@ -108,8 +194,11 @@ case "$1" in
       *predeploy*) exit 0 ;;
       *)
         if [ -e "$SANDBOX/bot-unhealthy" ]; then
+          # The 03.11 incident: the gateway is really down (run_startup crash).
           exit 1
         fi
+        # DEPLOY-SMOKE-FALSE-2: every other bot's gateway answers its own
+        # /health probe (the bot recovered when the window closed).
         exit 0 ;;
     esac ;;
   compose)
@@ -183,11 +272,25 @@ exit 0
 const FAKE_CURL = `#!/usr/bin/env bash
 echo "curl $*" >> "$SANDBOX/calls.log"
 case "$*" in
+  # BOARD-LIVENESS (OPE-12211): the predeploy liveness probe on the copy reads
+  # -w %{http_code} (a plain curl prints the body); answer 200 / ok body.
+  *api/liveness*)
+    if [[ " $* " == *" -w "* ]]; then printf '200'; else printf '{"status":"ok"}'; fi
+    exit 0 ;;
   *api/health*) cat "$SANDBOX/health.json" ;;
   *bot-container/status*)
     id=""
     for a in "$@"; do case "$a" in *agents/*) id="\${a##*agents/}"; id="\${id%%/*}" ;; esac; done
     if [ -e "$SANDBOX/status-$id.json" ]; then cat "$SANDBOX/status-$id.json"; else echo "{}"; fi ;;
+  # DEPLOY-SMOKE-REMOTE (OPE-12716): the smoke probes a remote-host bot's
+  # gateway at its own apiBaseUrl /health. remote-health-down makes those
+  # probes fail (the remote host is unreachable).
+  *18721*/health*|*18722*/health*)
+    if [ -e "$SANDBOX/remote-health-down" ]; then exit 1; fi
+    echo "OK" ;;
+  # PERF-DIET-G: card configurations live behind agent-configurations.
+  *agent-configurations*)
+    if [ -e "$SANDBOX/agent-configs.json" ]; then cat "$SANDBOX/agent-configs.json"; else echo "[]"; fi ;;
   *agents*) cat "$SANDBOX/agents.json" ;;
   *issues*) echo '{"issues": []}' ;;
   *fleetd/health*)
@@ -423,8 +526,9 @@ describe("deploy.sh: release components roll out together (RELEASE-GATE)", () =>
     assert.match(log, /fleetd\/health/);
     assert.doesNotMatch(log, /dockergate\/health/);
     assert.match(out, /dockergate runs: version 1\.4\.0\+0123456789ab/);
-    // The smoke saw a running bot container.
-    assert.match(out, /re-applied after the deploy/);
+    // The smoke ran with MYRMIDON_BOT_IMAGE_ROLLOUT=0: no bot re-applies by
+    // design (DEPLOY-SMOKE-FALSE), the already-running gateways are verified.
+    assert.match(out, /no re-apply expected: --no-bot-rollout/);
     assert.match(out, /release gate passed/);
   });
 
@@ -490,7 +594,11 @@ describe("deploy.sh: release components roll out together (RELEASE-GATE)", () =>
     const sb = sandbox({ smoke: "created" });
     const { code, out } = run(sb, "deploy.sh", ["--digest", NEW]);
     assert.notEqual(code, 0);
-    assert.match(out, /DEGRADED: no bot container re-applied/i);
+    // MYRMIDON_BOT_IMAGE_ROLLOUT=0 (DEPLOY-SMOKE-FALSE): the smoke judges the
+    // already-running gateways, the re-apply message is gone.
+    assert.match(out, /DEGRADED: bot gateways failed post-deploy health check within 2s/i);
+    assert.match(out, /no bot rollout/);
+    assert.doesNotMatch(out, /no bot container re-applied/i);
     assert.match(out, /rollback\.sh --config/);
     assert.match(out, /rollback-component\.sh --config/);
     // The board and the components DID roll out; the failure is the smoke.
@@ -865,6 +973,441 @@ describe("bot-apply-smoke.sh", () => {
     ]);
     assert.equal(code, 0, out);
     assert.match(out, /all 1 bot gateways are idle-stopped/);
+  });
+
+  // DEPLOY-SMOKE-FALSE acceptance (OPE-12422, the 08.11 incidents): a deploy
+  // without the bot rollout succeeds while bots sit in Exited(143) from
+  // IDLE-STOP — both a stop from before the deploy began and an in-window one.
+  it("succeeds without the bot rollout while Exited(143) idle-stopped bots flank a healthy gateway", () => {
+    const sb = sandbox({ smoke: "ok" });
+    const bot1 = "11111111-1111-4111-8111-111111111111";
+    const bot2 = "22222222-2222-4222-8222-222222222222";
+    const bot3 = "33333333-3333-4333-8333-333333333333";
+    fs.writeFileSync(
+      path.join(sb.dir, "agents.json"),
+      JSON.stringify([
+        { id: bot1, adapterType: "hermes_gateway", name: "bot-running", status: "running" },
+        { id: bot2, adapterType: "hermes_gateway", name: "bot-idle-pre-deploy", status: "idle" },
+        { id: bot3, adapterType: "hermes_gateway", name: "bot-idle-in-window", status: "idle" },
+      ]),
+    );
+    fs.writeFileSync(
+      path.join(sb.dir, `status-${bot1}.json`),
+      JSON.stringify({
+        enabled: true,
+        container: { state: "running", image: CI_IMAGE },
+        containerError: null,
+      }),
+    );
+    const idleStatus = {
+      enabled: true,
+      container: { state: "stopped", image: CI_IMAGE, idleStopped: true },
+      idleStopRuntime: { idleStopped: true },
+      containerError: null,
+    };
+    fs.writeFileSync(path.join(sb.dir, `status-${bot2}.json`), JSON.stringify(idleStatus));
+    fs.writeFileSync(path.join(sb.dir, `status-${bot3}.json`), JSON.stringify(idleStatus));
+    // bot2: Exited(143) from 16:00, hours BEFORE the deploy started;
+    // bot3: Exited(143) at 18:00:01, after the deploy started at 18:00:00.
+    fs.writeFileSync(path.join(sb.dir, "bot-exited-143"), "");
+    fs.writeFileSync(path.join(sb.dir, "bot-exited-143-inwindow"), "");
+    const { code, out } = runSmoke(sb, [
+      "--board-url", "http://127.0.0.1:3100/api",
+      "--company", COMPANY,
+      "--timeout", "2",
+      "--interval", "1",
+      "--no-bot-rollout",
+      "--deploy-started-at", "2026-11-08T18:00:00Z",
+    ]);
+    assert.equal(code, 0, out);
+    assert.match(out, /no re-apply expected: --no-bot-rollout/);
+    assert.match(out, /1\/1 active bot gateways healthy, 2 idle-stopped/);
+  });
+
+  // DEPLOY-SMOKE-FALSE acceptance (OPE-12422): OOMKilled or a non-143 non-zero
+  // exit AFTER the deploy started is a real crash → DEPLOYED-DEGRADED.
+  it("fails with DEPLOYED-DEGRADED when a bot is OOMKilled or exits 1 after the deploy started", () => {
+    const sb = sandbox({ smoke: "ok" });
+    const bot1 = "11111111-1111-4111-8111-111111111111";
+    const bot2 = "22222222-2222-4222-8222-222222222222";
+    const bot3 = "33333333-3333-4333-8333-333333333333";
+    fs.writeFileSync(
+      path.join(sb.dir, "agents.json"),
+      JSON.stringify([
+        { id: bot1, adapterType: "hermes_gateway", name: "bot-running", status: "running" },
+        { id: bot2, adapterType: "hermes_gateway", name: "bot-oomed", status: "running" },
+        { id: bot3, adapterType: "hermes_gateway", name: "bot-exited", status: "running" },
+      ]),
+    );
+    fs.writeFileSync(
+      path.join(sb.dir, `status-${bot1}.json`),
+      JSON.stringify({
+        enabled: true,
+        container: { state: "running", image: CI_IMAGE },
+        containerError: null,
+      }),
+    );
+    fs.writeFileSync(
+      path.join(sb.dir, `status-${bot2}.json`),
+      JSON.stringify({
+        enabled: true,
+        container: { state: "exited", image: CI_IMAGE },
+        containerError: null,
+      }),
+    );
+    fs.writeFileSync(
+      path.join(sb.dir, `status-${bot3}.json`),
+      JSON.stringify({
+        enabled: true,
+        container: { state: "exited", image: CI_IMAGE },
+        containerError: null,
+      }),
+    );
+    // bot2: OOMKilled, exited 1 at 18:00:01; bot3: plain exit 1 at 18:00:01 —
+    // both after the deploy started at 18:00:00, neither idle-stop-flagged.
+    fs.writeFileSync(path.join(sb.dir, "bot-oom"), "");
+    fs.writeFileSync(path.join(sb.dir, "bot-exit1"), "");
+    const { code, out } = runSmoke(sb, [
+      "--board-url", "http://127.0.0.1:3100/api",
+      "--company", COMPANY,
+      "--timeout", "2",
+      "--interval", "1",
+      "--deploy-started-at", "2026-11-08T18:00:00Z",
+    ]);
+    assert.notEqual(code, 0);
+    assert.match(out, /SMOKE FAILED: DEPLOYED-DEGRADED: 2 bot containers had abnormal exits \/ crashed within 2s/);
+    assert.match(out, /crashed:oom/);
+    assert.match(out, /crashed:exit_1/);
+  });
+
+  // DEPLOY-SMOKE-FALSE-2 acceptance (the 10.11 rc.17/rc.19 incidents): a fleet
+  // that LOOKS broken through stale signals but is actually healthy must pass.
+  // The rc.19 fixture: 33/54 healthy is shrunk here to 1/1 active + the stale
+  // signals — same three defects per bot:
+  //   bot1: Docker healthcheck still "unhealthy" from the board's maintenance
+  //         window, but the gateway answers /health right now (recovered);
+  //   bot2: OOMKilled=true left over from an OLD OOM before the deploy began
+  //         (FinishedAt 17:59:59 < deploy-start 18:00:00);
+  //   bot3: no runtime container at all ("No such container") — the fleet
+  //         idle-stopped and removed it.
+  it("passes the smoke when unhealthy-recovered, stale-OOM and removed idle-stop containers are the only defects", () => {
+    const sb = sandbox({ smoke: "ok" });
+    const bot1 = "11111111-1111-4111-8111-111111111111";
+    const bot2 = "22222222-2222-4222-8222-222222222222";
+    const bot3 = "33333333-3333-4333-8333-333333333333";
+    fs.writeFileSync(
+      path.join(sb.dir, "agents.json"),
+      JSON.stringify([
+        { id: bot1, adapterType: "hermes_gateway", name: "bot-unhealthy-recovered", status: "running" },
+        { id: bot2, adapterType: "hermes_gateway", name: "bot-stale-oom", status: "running" },
+        { id: bot3, adapterType: "hermes_gateway", name: "bot-idle-removed", status: "idle" },
+      ]),
+    );
+    // Board-side: bot1's own board state is healthy again (the window closed);
+    // bot2/bot3 have no container state and no error.
+    fs.writeFileSync(
+      path.join(sb.dir, `status-${bot1}.json`),
+      JSON.stringify({
+        enabled: true,
+        container: { state: "running", image: CI_IMAGE },
+        containerError: null,
+      }),
+    );
+    fs.writeFileSync(
+      path.join(sb.dir, `status-${bot2}.json`),
+      JSON.stringify({ enabled: true, container: null, containerError: null }),
+    );
+    fs.writeFileSync(
+      path.join(sb.dir, `status-${bot3}.json`),
+      JSON.stringify({
+        enabled: true,
+        container: { state: "stopped", image: CI_IMAGE, idleStopped: true },
+        idleStopRuntime: { idleStopped: true },
+        containerError: null,
+      }),
+    );
+    fs.writeFileSync(path.join(sb.dir, "bot-unhealthy-recovered"), "");
+    fs.writeFileSync(path.join(sb.dir, "bot-oom-stale"), "");
+    fs.writeFileSync(path.join(sb.dir, "bot-missing-container"), "");
+    const { code, out } = runSmoke(sb, [
+      "--board-url", "http://127.0.0.1:3100/api",
+      "--company", COMPANY,
+      "--timeout", "2",
+      "--interval", "1",
+      "--deploy-started-at", "2026-11-08T18:00:00Z",
+    ]);
+    assert.equal(code, 0, out);
+    assert.match(out, /1\/1 active bot gateways healthy, 2 idle-stopped/);
+    assert.doesNotMatch(out, /crashed:/);
+    assert.doesNotMatch(out, /DEPLOYED-DEGRADED/);
+  });
+
+  // DEPLOY-SMOKE-FALSE-2 acceptance, the other side: a REAL in-window OOM
+  // (OOMKilled + exit 137, FinishedAt after the deploy start) must still fail
+  // the smoke — the windowing must not hide genuine deploy casualties.
+  // DEPLOY-SMOKE-OOM-WARN (OPE-12716) acceptance (в): the container was
+  // RE-CREATED by the rollout (StartedAt 18:00:00.5, inside the window), so a
+  // single OOM here is still a deploy casualty → DEPLOYED-DEGRADED.
+  it("fails with DEPLOYED-DEGRADED when a rollout-recreated container is OOMKilled with exit 137 inside the deploy window", () => {
+    const sb = sandbox({ smoke: "ok" });
+    const bot1 = "11111111-1111-4111-8111-111111111111";
+    const bot2 = "22222222-2222-4222-8222-222222222222";
+    fs.writeFileSync(
+      path.join(sb.dir, "agents.json"),
+      JSON.stringify([
+        { id: bot1, adapterType: "hermes_gateway", name: "bot-running", status: "running" },
+        { id: bot2, adapterType: "hermes_gateway", name: "bot-oomed-137", status: "running" },
+      ]),
+    );
+    fs.writeFileSync(
+      path.join(sb.dir, `status-${bot1}.json`),
+      JSON.stringify({
+        enabled: true,
+        container: { state: "running", image: CI_IMAGE },
+        containerError: null,
+      }),
+    );
+    fs.writeFileSync(
+      path.join(sb.dir, `status-${bot2}.json`),
+      JSON.stringify({ enabled: true, container: null, containerError: null }),
+    );
+    // bot2: OOMKilled=true, exit 137, finished at 18:00:01 — AFTER the deploy
+    // started at 18:00:00 → a deploy casualty.
+    fs.writeFileSync(path.join(sb.dir, "bot-oom-inwindow"), "");
+    const { code, out } = runSmoke(sb, [
+      "--board-url", "http://127.0.0.1:3100/api",
+      "--company", COMPANY,
+      "--timeout", "2",
+      "--interval", "1",
+      "--deploy-started-at", "2026-11-08T18:00:00Z",
+    ]);
+    assert.notEqual(code, 0);
+    assert.match(out, /DEPLOYED-DEGRADED/);
+    assert.match(out, /crashed:oom/);
+  });
+
+  // DEPLOY-SMOKE-REMOTE acceptance (OPE-12716, the 11.11 rc.23 incident):
+  // bots pinned to another host (adapterConfig.container.host = "myr-vm1") are
+  // invisible to the deploy host's docker; their gateways answer at their own
+  // apiBaseUrl. Healthy remote gateways must count healthy — no docker calls,
+  // no "No such container" noise.
+  it("counts remote-host bots through their apiBaseUrl /health as healthy without touching local docker", () => {
+    const sb = sandbox({ smoke: "ok" });
+    const bot1 = "11111111-1111-4111-8111-111111111111";
+    const bot2 = "22222222-2222-4222-8222-222222222222";
+    const bot3 = "33333333-3333-4333-8333-333333333333";
+    fs.writeFileSync(
+      path.join(sb.dir, "agents.json"),
+      JSON.stringify([
+        { id: bot1, adapterType: "hermes_gateway", name: "bot-local", status: "running" },
+        { id: bot2, adapterType: "hermes_gateway", name: "work-a", status: "running" },
+        { id: bot3, adapterType: "hermes_gateway", name: "work-b", status: "running" },
+      ]),
+    );
+    fs.writeFileSync(
+      path.join(sb.dir, `status-${bot1}.json`),
+      JSON.stringify({
+        enabled: true,
+        container: { state: "running", image: CI_IMAGE },
+        containerError: null,
+      }),
+    );
+    // Remote bots: the board sees their containers running (on their host).
+    const remoteStatus = {
+      enabled: true,
+      container: { state: "running", image: CI_IMAGE, host: "myr-vm1", hostPinned: true },
+      containerError: null,
+    };
+    fs.writeFileSync(path.join(sb.dir, `status-${bot2}.json`), JSON.stringify(remoteStatus));
+    fs.writeFileSync(path.join(sb.dir, `status-${bot3}.json`), JSON.stringify(remoteStatus));
+    // The card configurations: two bots pinned to myr-vm1 with apiBaseUrl.
+    fs.writeFileSync(
+      path.join(sb.dir, "agent-configs.json"),
+      JSON.stringify([
+        {
+          id: bot1,
+          adapterType: "hermes_gateway",
+          adapterConfig: { apiBaseUrl: "http://127.0.0.1:8642", container: { host: "local", memoryMb: 3072 } },
+        },
+        {
+          id: bot2,
+          adapterType: "hermes_gateway",
+          adapterConfig: { apiBaseUrl: "http://198.51.100.10:18721", container: { host: "myr-vm1", hostPinned: true, memoryMb: 3072 } },
+        },
+        {
+          id: bot3,
+          adapterType: "hermes_gateway",
+          adapterConfig: { apiBaseUrl: "http://198.51.100.10:18722", container: { host: "myr-vm1", hostPinned: true, memoryMb: 3072 } },
+        },
+      ]),
+    );
+    const { code, out } = runSmoke(sb, [
+      "--board-url", "http://127.0.0.1:3100/api",
+      "--company", COMPANY,
+      "--timeout", "2",
+      "--interval", "1",
+    ]);
+    assert.equal(code, 0, out);
+    assert.match(out, /3\/3 active bot gateways healthy/);
+    // The local docker never saw the remote bots.
+    assert.doesNotMatch(calls(sb), /docker inspect myrmidon-bot-22222222/);
+    assert.doesNotMatch(calls(sb), /docker inspect myrmidon-bot-33333333/);
+    assert.doesNotMatch(calls(sb), /docker logs myrmidon-bot-2/);
+    assert.doesNotMatch(out, /No such container/);
+    // The remote gateways were probed at their own addresses.
+    assert.match(calls(sb), /198\.51\.100\.10:18721\/health/);
+    assert.match(calls(sb), /198\.51\.100\.10:18722\/health/);
+  });
+
+  // DEPLOY-SMOKE-OOM-WARN acceptance (б): a SINGLE OOM of a container the
+  // deploy did not touch (StartedAt before the deploy began, no rollout
+  // switch) is a WARNING with the id and the memory limit — exit 0.
+  it("warns instead of failing when a single untouched container is OOMKilled in the deploy window", () => {
+    const sb = sandbox({ smoke: "ok" });
+    const bot1 = "11111111-1111-4111-8111-111111111111";
+    const bot2 = "22222222-2222-4222-8222-222222222222";
+    fs.writeFileSync(
+      path.join(sb.dir, "agents.json"),
+      JSON.stringify([
+        { id: bot1, adapterType: "hermes_gateway", name: "bot-running", status: "running" },
+        { id: bot2, adapterType: "hermes_gateway", name: "bot-oom-own-work", status: "running" },
+      ]),
+    );
+    fs.writeFileSync(
+      path.join(sb.dir, `status-${bot1}.json`),
+      JSON.stringify({
+        enabled: true,
+        container: { state: "running", image: CI_IMAGE },
+        containerError: null,
+      }),
+    );
+    fs.writeFileSync(
+      path.join(sb.dir, `status-${bot2}.json`),
+      JSON.stringify({ enabled: true, container: null, containerError: null }),
+    );
+    fs.writeFileSync(
+      path.join(sb.dir, "agent-configs.json"),
+      JSON.stringify([
+        { id: bot1, adapterType: "hermes_gateway", adapterConfig: { container: { host: "local", memoryMb: 3072 } } },
+        { id: bot2, adapterType: "hermes_gateway", adapterConfig: { container: { host: "local", memoryMb: 3072 } } },
+      ]),
+    );
+    // bot2: OOMKilled at 18:00:01, but the container started 17:59:55 — five
+    // minutes BEFORE the deploy began (18:00:00): the bot OOMed under its own
+    // workload, the deploy never touched it (the rc.23 adm-dev-eng-19 case).
+    fs.writeFileSync(path.join(sb.dir, "bot-oom-untouched"), "");
+    const { code, out } = runSmoke(sb, [
+      "--board-url", "http://127.0.0.1:3100/api",
+      "--company", COMPANY,
+      "--timeout", "2",
+      "--interval", "1",
+      "--deploy-started-at", "2026-11-08T18:00:00Z",
+    ]);
+    assert.equal(code, 0, out);
+    assert.match(out, /WARNING: bot 22222222.*OOMKilled/);
+    assert.match(out, /memory limit: 3072/);
+    assert.doesNotMatch(out, /DEPLOYED-DEGRADED/);
+    assert.match(out, /1\/1 active bot gateways healthy/);
+  });
+
+  // DEPLOY-SMOKE-OOM-WARN acceptance: two untouched OOMs are a fleet-wide OOM,
+  // not single-bot noise — every one of them stays a deploy casualty.
+  it("fails with DEPLOYED-DEGRADED when two untouched containers are OOMKilled in the deploy window", () => {
+    const sb = sandbox({ smoke: "ok" });
+    const bot1 = "11111111-1111-4111-8111-111111111111";
+    const bot2 = "22222222-2222-4222-8222-222222222222";
+    const bot3 = "33333333-3333-4333-8333-333333333333";
+    fs.writeFileSync(
+      path.join(sb.dir, "agents.json"),
+      JSON.stringify([
+        { id: bot1, adapterType: "hermes_gateway", name: "bot-running", status: "running" },
+        { id: bot2, adapterType: "hermes_gateway", name: "bot-oom-1", status: "running" },
+        { id: bot3, adapterType: "hermes_gateway", name: "bot-oom-2", status: "running" },
+      ]),
+    );
+    fs.writeFileSync(
+      path.join(sb.dir, `status-${bot1}.json`),
+      JSON.stringify({
+        enabled: true,
+        container: { state: "running", image: CI_IMAGE },
+        containerError: null,
+      }),
+    );
+    fs.writeFileSync(
+      path.join(sb.dir, `status-${bot2}.json`),
+      JSON.stringify({ enabled: true, container: null, containerError: null }),
+    );
+    fs.writeFileSync(
+      path.join(sb.dir, `status-${bot3}.json`),
+      JSON.stringify({ enabled: true, container: null, containerError: null }),
+    );
+    fs.writeFileSync(
+      path.join(sb.dir, "agent-configs.json"),
+      JSON.stringify([
+        { id: bot1, adapterType: "hermes_gateway", adapterConfig: { container: { host: "local", memoryMb: 3072 } } },
+        { id: bot2, adapterType: "hermes_gateway", adapterConfig: { container: { host: "local", memoryMb: 3072 } } },
+        { id: bot3, adapterType: "hermes_gateway", adapterConfig: { container: { host: "local", memoryMb: 3072 } } },
+      ]),
+    );
+    // Both OOMed containers started BEFORE the deploy began, both OOMKilled in
+    // the window: two untouched OOMs are a fleet-wide OOM → casualties.
+    fs.writeFileSync(path.join(sb.dir, "bot-oom-untouched"), "");
+    fs.writeFileSync(path.join(sb.dir, "bot-oom-untouched2"), "");
+    const { code, out } = runSmoke(sb, [
+      "--board-url", "http://127.0.0.1:3100/api",
+      "--company", COMPANY,
+      "--timeout", "2",
+      "--interval", "1",
+      "--deploy-started-at", "2026-11-08T18:00:00Z",
+    ]);
+    assert.notEqual(code, 0, out);
+    assert.match(out, /DEPLOYED-DEGRADED/);
+    assert.match(out, /2 bot containers had abnormal exits/);
+    assert.match(out, /multiple OOM-killed bots/);
+    assert.doesNotMatch(out, /WARNING: bot/);
+  });
+
+  // rc.20 (10.11): seven bots idle-stopped hours before the deploy were reported
+  // as crashed:docker_unhealthy from the stale health of their exited containers.
+  it("treats the stale unhealthy health of an exited, idle-stopped container as idle, not a crash", () => {
+    const sb = sandbox({ smoke: "ok" });
+    const bot1 = "11111111-1111-4111-8111-111111111111";
+    const bot2 = "22222222-2222-4222-8222-222222222222";
+    fs.writeFileSync(
+      path.join(sb.dir, "agents.json"),
+      JSON.stringify([
+        { id: bot1, adapterType: "hermes_gateway", name: "bot-running", status: "running" },
+        { id: bot2, adapterType: "hermes_gateway", name: "bot-idle-stale-unhealthy", status: "idle" },
+      ]),
+    );
+    fs.writeFileSync(
+      path.join(sb.dir, `status-${bot1}.json`),
+      JSON.stringify({
+        enabled: true,
+        container: { state: "running", image: CI_IMAGE },
+        containerError: null,
+      }),
+    );
+    fs.writeFileSync(
+      path.join(sb.dir, `status-${bot2}.json`),
+      JSON.stringify({
+        enabled: true,
+        container: { state: "stopped", image: CI_IMAGE, idleStopped: true },
+        idleStopRuntime: { idleStopped: true },
+        containerError: null,
+      }),
+    );
+    fs.writeFileSync(path.join(sb.dir, "bot-exited-stale-unhealthy"), "");
+    const { code, out } = runSmoke(sb, [
+      "--board-url", "http://127.0.0.1:3100/api",
+      "--company", COMPANY,
+      "--timeout", "2",
+      "--interval", "1",
+      "--deploy-started-at", "2026-11-08T18:00:00Z",
+    ]);
+    assert.equal(code, 0, out);
+    assert.doesNotMatch(out, /crashed:/);
+    assert.doesNotMatch(out, /DEPLOYED-DEGRADED/);
   });
 
   it("fails with DEPLOYED-DEGRADED when an abnormal exit / crash occurs", () => {

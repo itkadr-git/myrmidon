@@ -103,14 +103,18 @@ describe("myrmidon(EGRESS-A) buildBotEgressEnvEntries", () => {
     expect(noProxy).toContain("127.0.0.1");
     expect(noProxy).toContain("::1");
     expect(noProxy).toContain("media.example.com");
+    // OPE-10718: api.telegram.org always bypasses the capped egress proxy so
+    // sendChatAction ("typing…") keeps working when the browser holds all slots.
+    expect(noProxy).toContain("api.telegram.org");
     // Peer bots and the sidecars of the bots' network stay in the journal.
     expect(noProxy).not.toContain("myrmidon-bot-agent-b");
   });
 
   it("drops the board host when there is none and never repeats a host", () => {
     const settings = readBotEgressSettings(logModeEnv({ [BOT_EGRESS_NO_PROXY_ENV]: "localhost, localhost" }));
-    const noProxy = botEgressNoProxy(settings, null);
-    expect(noProxy).toEqual(["localhost", "127.0.0.1", "::1"]);
-    expect(botEgressNoProxy(settings, "not a url")).toEqual(["localhost", "127.0.0.1", "::1"]);
+    // api.telegram.org is a fixed member of NO_PROXY since OPE-10718 (keeps
+    // sendChatAction out of the capped egress proxy), so it is present here too.
+    expect(botEgressNoProxy(settings, null)).toEqual(["localhost", "127.0.0.1", "::1", "api.telegram.org"]);
+    expect(botEgressNoProxy(settings, "not a url")).toEqual(["localhost", "127.0.0.1", "::1", "api.telegram.org"]);
   });
 });

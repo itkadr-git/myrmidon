@@ -12,10 +12,11 @@ import { z } from "zod";
  * call — compresses the room into a summary that lands as an issue document
  * (`exchange:<roomId>`) together with what the room cost.
  *
- * The owner keeps the stop valve: `stop` ends the room immediately. A stopped
- * room makes NO further model calls — not even the finisher (the caller may
- * finalize explicitly with `finalize: true` when the owner wants the summary
- * of a stopped room).
+ * The stop valve: `stop` ends the room immediately. The room's opener and
+ * every named room participant may pull it; a stop interrupts an in-flight
+ * round (the interrupted calls land as `error` messages) and makes no further
+ * model calls — not even the finisher (the caller may finalize explicitly
+ * with `finalize: true` when they want the summary of a stopped room).
  *
  * DEBATE-ASYM (the role/judge mechanics) is not merged yet; the seam is the
  * `DebateAsymPort` in `server/src/myrmidon/agent-exchange/service.ts`. While

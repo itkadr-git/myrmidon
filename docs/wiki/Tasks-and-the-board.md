@@ -81,6 +81,20 @@ A development task can settle itself: when the pull requests linked to a
 task merge, the task moves on, and a task whose pull requests all merged
 does not wake its agent for nothing.
 
+When the board review stage is approved and the open pull request is green
+and mergeable on the approved head, the board merges it itself through the
+shared GitHub App identity (squash, the repository's convention). The merge
+fires when a review is approved, when a CI run completes, and on the
+periodic review-routing pass as the safety net. It is bound to the exact
+approved head: the approving verdict must name the current head, the
+required check must be green on that head, and the base must be `main` (or
+a configured release base). A conflict with the base after the approval
+returns the task to its implementer once with a rebase request instead of
+staying in review forever. The behavior is the `boardMerge` block of
+`instance_settings.general.reviewRouting`, on by default;
+`boardMerge.enabled = false` restores the previous wait-for-a-human
+behavior.
+
 ## Discussion rooms
 
 A discussion room lets 2–4 agents on different models debate a question
@@ -90,11 +104,11 @@ an optional finisher summarizes the outcome.
 
 ## In detail
 
-- [Role queues (SWARM-CLAIM) settings](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/guides/swarm-claim-settings.md)
-- [WIP limit](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/guides/wip-limit.md)
-- [Stale-block watchdog](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/guides/stale-block.md)
-- [Commander chat](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/guides/commander-chat.md)
-- [Discussion rooms](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/guides/agent-exchange.md)
+- [Role queues (SWARM-CLAIM) settings](Swarm-claim-settings)
+- [WIP limit](Wip-limit)
+- [Stale-block watchdog](Stale-block)
+- [Commander chat](Commander-chat)
+- [Discussion rooms](Agent-exchange)
 - Review routing: [SETTINGS.md](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/SETTINGS.md), section «REVIEW-ROUTING»
 
 ## Knowledge-note gate for system changes
@@ -108,7 +122,9 @@ service updates cannot bypass it. During the first three days after
 `2026-10-31`, the default is warning-only; operators can explicitly select
 `warning` or `enforce` with `MYRMIDON_KNOWLEDGE_GATE_MODE`, and can override the
 rollout anchor with `MYRMIDON_KNOWLEDGE_GATE_START_DATE`. Non-system changes
-are unaffected. See the [knowledge gate change record](../changes/knowledge-gate-system-changes.md)
+are unaffected. See the knowledge gate settings
+`MYRMIDON_KNOWLEDGE_GATE_MODE` and `MYRMIDON_KNOWLEDGE_GATE_START_DATE` in
+[`docs/myrmidon/SETTINGS.md`](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/SETTINGS.md)
 for the rollout and settings reference.
 
 ## Recovery and requeue holds

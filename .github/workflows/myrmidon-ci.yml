@@ -32,7 +32,10 @@ on:
 
 permissions:
   contents: read
-  pull-requests: read
+  checks: write
+  issues: write
+  pull-requests: write
+  statuses: write
 
 concurrency:
   # Main and tags never cancel each other; each push to main completes its run.
@@ -48,9 +51,14 @@ concurrency:
   # by any other label (review-in-progress, needs-rebase, ...) goes to its own
   # group, so it cannot cancel the real run, and every job in it is skipped.
   group: myrmidon-ci-${{ (contains(github.event.pull_request.title, 'rc.') || contains(github.event.pull_request.title, 'release') || contains(github.event.pull_request.labels.*.name, 'release') || startsWith(github.head_ref, 'rel/') || startsWith(github.base_ref, 'rel/')) && 'release-' || '' }}${{ github.event.pull_request.number || github.ref }}${{ (github.event_name != 'pull_request' || github.event.action != 'labeled' || github.event.label.name == 'full-ci') && '' || '-label-noop' }}
-  # OPE-12103: PR runs and pushes to main cancel superseded runs.
+  # OPE-12103: PR runs cancel superseded runs.
   # Manual re-runs (run_attempt > 1) do not cancel the current head run.
-  cancel-in-progress: ${{ (github.event_name == 'pull_request' && github.run_attempt == 1 && (github.event.action != 'labeled' || github.event.label.name == 'full-ci')) || (github.event_name == 'push' && github.ref == 'refs/heads/main') }}
+  # Pushes to main do not cancel the running main run (10.11): with merges more
+  # often than a full run (~25 min) every main run was cancelled and main had no
+  # completed run for hours, so main-green-gate never turned green. Without the
+  # cancel GitHub keeps the running main run and one pending run (a newer push
+  # replaces the pending one), so a recent main commit always completes.
+  cancel-in-progress: ${{ github.event_name == 'pull_request' && github.run_attempt == 1 && (github.event.action != 'labeled' || github.event.label.name == 'full-ci') }}
 
 env:
   NPM_CONFIG_AUDIT: "false"
@@ -75,15 +83,19 @@ jobs:
 
       - name: Ensure gh and jq (self-hosted runners may lack them)
         shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
           bin="$RUNNER_TEMP/tools-bin"; mkdir -p "$bin"
           if ! command -v jq >/dev/null; then
-            curl -fsSL -o "$bin/jq" https://github.com/jqlang/jq/releases/download/jq-1.7.1/jq-linux-amd64
+            # Release assets via the authenticated API: anonymous github.com downloads fail with 504 when GitHub throttles anonymous traffic.
+            curl -fsSL --retry 5 --retry-all-errors -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/octet-stream" -o "$bin/jq" https://api.github.com/repos/jqlang/jq/releases/assets/140520984
             chmod +x "$bin/jq"
           fi
           if ! command -v gh >/dev/null; then
-            curl -fsSL https://github.com/cli/cli/releases/download/v2.62.0/gh_2.62.0_linux_amd64.tar.gz | tar -xz -C "$RUNNER_TEMP"
+            curl -fsSL --retry 5 --retry-all-errors -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/octet-stream" -o "$RUNNER_TEMP/gh.tar.gz" https://api.github.com/repos/cli/cli/releases/assets/206502108
+            tar -xzf "$RUNNER_TEMP/gh.tar.gz" -C "$RUNNER_TEMP"
             cp "$RUNNER_TEMP/gh_2.62.0_linux_amd64/bin/gh" "$bin/gh"
           fi
           echo "$bin" >> "$GITHUB_PATH"
@@ -94,6 +106,7 @@ jobs:
           EVENT: ${{ github.event_name }}
           REPO: ${{ github.repository }}
           PR: ${{ github.event.pull_request.number }}
+          ACTION: ${{ github.event.action }}
           SHA: ${{ github.event_name == 'merge_group' && github.event.merge_group.head_sha || github.event.pull_request.head.sha }}
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -530,6 +543,7 @@ jobs:
     env:
       GITLEAKS_VERSION: 8.30.1
       GITLEAKS_SHA256: 551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb
+      GITLEAKS_ASSET_ID: "378332058" # gitleaks_8.30.1_linux_x64.tar.gz
     steps:
       - name: Checkout repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -634,13 +648,15 @@ jobs:
       - name: Secrets (gitleaks, new commits)
         if: ${{ !cancelled() }}
         env:
+          GH_TOKEN: ${{ github.token }}
           BASE: ${{ steps.range.outputs.base }}
           HEAD: ${{ steps.range.outputs.head }}
         run: |
           set -euo pipefail
           archive="gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz"
-          curl -fsSL -o "$RUNNER_TEMP/$archive" \
-            "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/${archive}"
+          # Release assets via the authenticated API: anonymous github.com downloads fail with 504 when GitHub throttles anonymous traffic.
+          curl -fsSL --retry 5 --retry-all-errors -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/octet-stream" \
+            -o "$RUNNER_TEMP/$archive" "https://api.github.com/repos/gitleaks/gitleaks/releases/assets/${GITLEAKS_ASSET_ID}"
           echo "${GITLEAKS_SHA256}  $RUNNER_TEMP/$archive" | sha256sum -c -
           tar -xzf "$RUNNER_TEMP/$archive" -C "$RUNNER_TEMP" gitleaks
           "$RUNNER_TEMP/gitleaks" git --no-banner --redact --verbose \
@@ -948,15 +964,19 @@ jobs:
     steps:
       - name: Ensure gh and jq (self-hosted runners may lack them)
         shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
           bin="$RUNNER_TEMP/tools-bin"; mkdir -p "$bin"
           if ! command -v jq >/dev/null; then
-            curl -fsSL -o "$bin/jq" https://github.com/jqlang/jq/releases/download/jq-1.7.1/jq-linux-amd64
+            # Release assets via the authenticated API: anonymous github.com downloads fail with 504 when GitHub throttles anonymous traffic.
+            curl -fsSL --retry 5 --retry-all-errors -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/octet-stream" -o "$bin/jq" https://api.github.com/repos/jqlang/jq/releases/assets/140520984
             chmod +x "$bin/jq"
           fi
           if ! command -v gh >/dev/null; then
-            curl -fsSL https://github.com/cli/cli/releases/download/v2.62.0/gh_2.62.0_linux_amd64.tar.gz | tar -xz -C "$RUNNER_TEMP"
+            curl -fsSL --retry 5 --retry-all-errors -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/octet-stream" -o "$RUNNER_TEMP/gh.tar.gz" https://api.github.com/repos/cli/cli/releases/assets/206502108
+            tar -xzf "$RUNNER_TEMP/gh.tar.gz" -C "$RUNNER_TEMP"
             cp "$RUNNER_TEMP/gh_2.62.0_linux_amd64/bin/gh" "$bin/gh"
           fi
           echo "$bin" >> "$GITHUB_PATH"
@@ -998,7 +1018,10 @@ jobs:
                (.name | startswith("tests (")) or
                .name == "tests (other + runner)" or
                .name == "checks" or
-               .name == "go tools (dockergate + fleetd)") and
+               .name == "go tools (dockergate + fleetd)" or
+               .name == "plugin readiness timing" or
+               .name == "Deployed migration numbers" or
+               .name == "migration guard") and
               .completed_at != null
             ) | .completed_at] | sort | last) as $test_end |
             ($test_end // ([$all[] | select(.name == "plan" and .completed_at != null) | .completed_at] | last)) as $last_pred_end |
@@ -1050,11 +1073,14 @@ jobs:
       issues: write
     steps:
       - name: Ensure gh CLI
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
           if command -v gh >/dev/null 2>&1; then exit 0; fi
           v=2.62.0
-          curl -fsSL "https://github.com/cli/cli/releases/download/v${v}/gh_${v}_linux_amd64.tar.gz" | tar -xz -C "$RUNNER_TEMP"
+          curl -fsSL --retry 5 --retry-all-errors -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/octet-stream" -o "$RUNNER_TEMP/gh.tar.gz" https://api.github.com/repos/cli/cli/releases/assets/206502108
+          tar -xzf "$RUNNER_TEMP/gh.tar.gz" -C "$RUNNER_TEMP"
           echo "$RUNNER_TEMP/gh_${v}_linux_amd64/bin" >> "$GITHUB_PATH"
       - name: Open, update or close the main-red issue
         env:

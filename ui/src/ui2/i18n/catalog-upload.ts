@@ -82,5 +82,10 @@ export function mergeCatalog(base: CatalogObject, uploaded: CatalogObject): Cata
       merged[key] = mergeCatalog(baseValue as CatalogObject, (uploadedValue as CatalogObject | undefined) ?? {});
     }
   }
+  for (const [key, uploadedValue] of Object.entries(uploaded)) {
+    if (!(key in merged) && uploadedValue !== undefined) {
+      merged[key] = uploadedValue;
+    }
+  }
   return merged;
 }

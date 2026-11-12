@@ -2328,6 +2328,7 @@ async function settleRetainedRunnerdSessionOwned(
         input.sourceCodexHome ?? resolveSourceCodexHome(input.environment),
       apiKey:
         input.environment?.CODEX_API_KEY ?? input.environment?.OPENAI_API_KEY,
+      openaiBaseUrl: input.environment?.OPENAI_BASE_URL,
     }),
   );
   // A previously journaled suspend must be honored before a later drain.
@@ -4366,6 +4367,7 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
         apiKey:
           this.options.environment?.CODEX_API_KEY ??
           this.options.environment?.OPENAI_API_KEY,
+        openaiBaseUrl: this.options.environment?.OPENAI_BASE_URL,
         nativeMcp: nativeMcpLaunchBinding(this.options.environment),
       });
     }
@@ -5262,6 +5264,7 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
         apiKey:
           this.options.environment?.CODEX_API_KEY ??
           this.options.environment?.OPENAI_API_KEY,
+        openaiBaseUrl: this.options.environment?.OPENAI_BASE_URL,
         nativeMcp: nativeMcpLaunchBinding(this.options.environment),
       });
     }

@@ -32,7 +32,16 @@ an older image; the guard turns a missing extension into a named error instead o
 
 ## Query shape
 
-One `search()` call runs these statements inside one transaction:
+One `search()` call runs two rankings, each in its own transaction, and the two transactions run side
+by side (`Promise.allSettled`). The time of a search is the longer of the two, not their sum. Each
+`SET LOCAL` stays on the connection of its own transaction. A statement error aborts a PostgreSQL
+transaction, and the product's driver rethrows it at the end of the transaction even when the caller
+caught it, so the full-text ranking, which may be cancelled (see step 3), cannot share a transaction
+with the vector ranking. The `SqlExecutor` of the product opens each transaction on its own pooled
+connection, so a search holds two connections while it runs; an executor bound to one connection must
+serialize the two transactions itself.
+
+The vector transaction:
 
 1. `set local hnsw.ef_search = 64` — the pilot's recall/latency balance; configurable.
 2. Vector ranking. The HNSW index knows the company, not the dataset (a chunk has no dataset column,
@@ -62,6 +71,10 @@ One `search()` call runs these statements inside one transaction:
    probe. The version is read from `pg_extension` and not tried with a `SET`, because a refused `SET`
    aborts the transaction and the product's driver rethrows it at the end of the transaction even when
    the caller caught it.
+
+The full-text transaction starts with `set local statement_timeout = 800` (the `fullTextTimeoutMs`
+option; `0` sets no bound of its own), and then runs step 3.
+
 3. Full-text ranking: `ts_rank` over the same rows with the tsquery
    `plainto_tsquery($5, $1) || to_tsquery($5, $or)`, where `$1` is the question as written and `$or`
    is a bounded OR of its significant words (`toFullTextQuery`: tokens of 4+ characters, stop words
@@ -83,6 +96,26 @@ One `search()` call runs these statements inside one transaction:
    (`litellm_proxy_config` against `litellm_proxy_config.yaml`) and the `ilike` does, so it keeps the
    match. `ilikeMaxLength: 0` switches the match off for every text.
 
+   The OR matches a large part of a big corpus, and every match is scored. On a corpus of 285 000
+   chunks the statement averaged 9.8 s and peaked at 104 s, against 0.4 s for the vector ranking, so
+   two bounds keep its cost in check:
+   - the time bound above. When the server cancels the ranking at the bound (SQLSTATE 57014, found on
+     the error or on its `cause`, because the query layer of the product wraps driver errors), the
+     full-text ranking is empty and the fusion runs on the vector ranking alone. The
+     `onFullTextTimeout` option is called with the company, the datasets, the length of the text (not the
+     text), the bound and the time used, so the product can log it. Any other error, and a cancel of the
+     vector ranking, is thrown as before. A search without an embedding has no ranking to fall back on,
+     so it throws the cancel instead of returning an empty list that looks like "nothing found";
+   - the candidate pool. A question without the substring match used to compute `similarity(content,
+     question)`, a trigram split of the whole chunk text, for every match before it sorted. Now an inner
+     statement scores the matches with `ts_rank` alone and keeps the best `fullTextRerankPool` (1 000 by
+     default, never fewer than `kCandidates`); the outer statement computes `similarity` over those rows,
+     breaks the ties of `ts_rank` with it, and cuts the list to `kCandidates`. `ts_rank` has many exact
+     ties, so the pool is wider than the list, and when the matches fit in the pool the answer is the
+     one of the old statement. `fullTextRerankPool: 0` brings the old statement back. A short text or
+     an identifier, which has the substring match, keeps its statement and its order unchanged: only
+     the time bound applies to it.
+
 Both rankings take `kCandidates = 100` rows, and the fusion (`k0 = 60`) turns them into one
 ranked list by rank, never by score: cosine distance and `ts_rank` are not comparable. Ties
 on the fused score are broken by the vector rank, then the full-text rank, then the id, so
@@ -101,7 +134,7 @@ to the wiring, not to this package.
 
 - [hybrid-search-index.myrmidon.test.ts](hybrid-search-index.myrmidon.test.ts) — unit tests
   with a recording `SqlExecutor`: statements, bound values, fusion order, escaping,
-  validation.
+  validation, the transaction of each ranking, the time bound and its cancel, and the candidate pool.
 - [hybrid-search-index.integration.myrmidon.test.ts](hybrid-search-index.integration.myrmidon.test.ts)
   — runs against a database that allows `CREATE EXTENSION`, taken from the first source that works:
   the external stand named by `CORPUS_TEST_PGVECTOR_DSN`, or else the embedded PostgreSQL 18 test

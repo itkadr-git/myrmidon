@@ -46,12 +46,14 @@ export type RunFailureClassificationReason =
  * not a property of the work itself.
  */
 export const TRANSIENT_RUN_FAILURE_ERROR_CODES: ReadonlySet<string> = new Set([
+  "hermes_gateway_rate_limited",
   "adapter_failed",
   "codex_transient_upstream",
   "codex_harness_crash",
   "claude_transient_upstream",
   "hermes_transient_upstream",
   "provider_quota",
+  "provider_garbage",
   "timeout",
   "continuation_source_context_missing",
   "controller_lease_lost",
@@ -130,7 +132,7 @@ export const PERMANENT_RUN_FAILURE_ERROR_FAMILIES: ReadonlySet<string> =
   ]);
 
 export const TRANSIENT_ERROR_MESSAGE_RE =
-  /\b(continuation_source_context_missing|stream (?:was )?interrupted|interrupted stream|premature close|response stream|legacy controller lease lost|controller lease lost|native_session_lease_lost|lease lost|econnreset|etimedout|econnrefused|socket hang up|fetch failed|clientnetworkerror|connection error|network error)\b/i;
+  /\b(continuation_source_context_missing|no deployments available|all deployments (?:[^\r\n.]{0,120}?)(?:are )?in cooldown|deployments in cooldown|stream (?:was )?interrupted|interrupted stream|premature close|response stream|legacy controller lease lost|controller lease lost|native_session_lease_lost|lease lost|econnreset|etimedout|econnrefused|socket hang up|fetch failed|clientnetworkerror|connection error|network error)\b|\b429\b|too many requests|rate_limit_error/i;
 
 export const PERMANENT_ERROR_MESSAGE_RE =
   /\b(continuation_user_authorization_missing|key not allowed to access model|refresh_token_reused|refresh_token_invalidated)\b/i;

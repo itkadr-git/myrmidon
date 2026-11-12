@@ -413,10 +413,18 @@ async function sourceIssueId(
     }
     // myrmidon(1.6.5-F-23): advisory signals only — no backing issue.
     case "secret_off_run_reads":
-    case "secret_off_run_grant_expiring": {
+    case "secret_off_run_grant_expiring":
+    case "mcp_gateway_token_expiring": {
       return { exists: true, issueId: null };
     }
     case "provider_usage_warning": {
+      return { exists: sourceId.length > 0, issueId: null };
+    }
+    // myrmidon(1.6.8 OPE-12709): role-model-down / no-credits cards are
+    // computed operator alerts (like provider_usage_warning) with no backing
+    // issue row — the subject id is the company-scoped card key.
+    case "role_model_down":
+    case "provider_no_credits": {
       return { exists: sourceId.length > 0, issueId: null };
     }
     // myrmidon(1.6.5-F-18): the empty-catalog card is computed from the

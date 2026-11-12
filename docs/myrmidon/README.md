@@ -54,6 +54,7 @@ Myrmidon — система управления компаниями из ИИ-
 | [egress.md](egress.md) | Правила исходящих обращений во внешние сервисы |
 | [media-tools.md](media-tools.md) | Общие медиа- и офисные инструменты для контейнерных ботов: сервис media-mcp, хранилище и квоты, инструменты (ffmpeg, офис, OCR, `dwg_convert`), развёртывание и границы изоляции (русская версия: [media-tools.ru.md](media-tools.ru.md)) |
 | [board-key-rotation.md](board-key-rotation.md) | Runbook оператора: ротация и отзыв ключей доски / PAT по ролям (ROLE-SCOPED-TOKENS) |
+| [external-nest-runbook.md](external-nest-runbook.md) | Runbook оператора: создание, изоляция и отзыв внешнего гнезда клиента (русская версия: [external-nest-runbook.ru.md](external-nest-runbook.ru.md)) |
 | [stack-updates.md](stack-updates.md) | Цикл обновлений стека: откуда «наше» и «у автора», отставание, вердикт «патч закрыт», плановая сверка и карточка `stack_update` (STACK-UPDATES часть D) |
 | [multi-instance.md](multi-instance.md) | Многопроцессный режим доски (1.6.6 BOARD-PROCESSES): роли worker/api, настройка, панель «Процессы», `/internal/ready` и `/healthz`, drain при выкате |
 | [tracks/](tracks/) | Задания шести треков V1.0 |
@@ -102,6 +103,7 @@ Myrmidon — система управления компаниями из ИИ-
 | [guides/mcp-tool-names.md](guides/mcp-tool-names.md) | Имена MCP-инструментов доски: `myrmidon*` вместо `paperclip*`, алиасы старых имён на один релиз, план снятия в 1.8 |
 | [guides/agent-instructions-revisions.md](guides/agent-instructions-revisions.md) | История ревизий инструкций агента: снимки, откат, журнал |
 | [guides/auto-resume.md](guides/auto-resume.md) | Автовозобновление агента из `error`: бэкофф 1/5/15, карточка оператору после потолка попыток, настройки |
+| [guides/deployment-cooldown-retries.md](guides/deployment-cooldown-retries.md) | Повторы при deployment cooldown и HTTP 429 (1.6.6 WAKE-5): распознавание cooldown/429, приоритет `Retry-After`, ограниченный бэкофф/джиттер/потолок, подавление немедленных пробуждений (русская версия: [guides/deployment-cooldown-retries.ru.md](guides/deployment-cooldown-retries.ru.md)) |
 | [guides/ui2-shell.md](guides/ui2-shell.md) | Оболочка Myrmidon 2.0 за флагом `enableMyrmidonUi2`: включение на инстанс и лично через `?ui=`, рамка (рейка/верхняя панель/телефонный каркас), экраны 2.0, токены и шрифты |
 | [guides/ui2-agents-fleet.md](guides/ui2-agents-fleet.md) | Экран «Флот агентов» UI-2: дерево, live-статусы, прокрутка, пустое состояние и навигация |
 | [guides/task-pr-sync.md](guides/task-pr-sync.md) | Закрытие задачи по слитым PR: проход по рабочим продуктам `pull_request`, возврат исполнителю без слияния, гейты после выката, сторож побудок |
@@ -135,6 +137,7 @@ Myrmidon — система управления компаниями из ИИ-
 | [guides/instance-users.md](guides/instance-users.md) | Instance users: поиск пользователей по всему инстансу, доступ только администраторам инстанса, состояния загрузки/пустого результата/ошибки и отказ 403 (русская версия: [guides/instance-users.ru.md](guides/instance-users.ru.md)) |
 | [guides/users-admin-ui.md](guides/users-admin-ui.md) | Экран «Пользователи» компании (1.7 USERS-ADMIN-UI B): управление пользователями в настройках компании (`/company/settings/users`), список и создание (пароль или одноразовая ссылка), блокировка, сброс пароля, роли (`instance_admin` / `member`), отключённая саморегистрация |
 | [guides/users-admin-a.md](guides/users-admin-a.md) | Управление пользователями и журнал аудита (1.7 USERS-ADMIN-A): REST API администрирования пользователей, одноразовые токены установки пароля, аудит-лог действий с дедупликацией и фильтрами |
+| [guides/redact-litellm-guardrail.md](guides/redact-litellm-guardrail.md) | Адаптер REDACT для LiteLLM: хуки `pre_call`/`post_call`, score-порог и режимы `flag`/`mask`/`block` (русская версия: [redact-litellm-guardrail.ru.md](guides/redact-litellm-guardrail.ru.md)) |
 
 ## Сборка и запуск
 

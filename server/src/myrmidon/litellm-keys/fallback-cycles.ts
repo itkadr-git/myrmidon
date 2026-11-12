@@ -1,4 +1,3 @@
-import type { Db } from "@myrmidon/db";
 import {
   describeFallbackCycle,
   findCardFallbackCycle,
@@ -119,13 +118,15 @@ export interface GatewayFallbackReport {
   cycles: Array<{ path: string[]; described: string }>;
   /** Known models and their provider/rates. */
   models?: GatewayFallbackModelInfo[];
+  /** Findings of a save that did not refuse it (for example a fallback inside one provider). */
+  warnings?: string[];
   /** Set instead of the fields above when the gateway could not be read. */
   error?: string;
 }
 
 /**
- * Reads the gateway's fallback topology through the admin key and reports its
- * loops.
+ * Reads the gateway's live fallback topology through the admin key and reports
+ * its loops. The gateway is the only source; the board keeps no copy.
  *
  * Read-only on purpose. The board does not push a topology over a working
  * gateway by itself: a write is an operator's decision, and the loops in the
@@ -137,7 +138,6 @@ export interface GatewayFallbackReport {
 export async function readGatewayFallbackTopology(
   deps: {
     readSecretValue(companyId: string, secretName: string): Promise<string | null>;
-    db?: Db;
   },
   input: {
     companyId: string;
@@ -151,11 +151,9 @@ export async function readGatewayFallbackTopology(
     adminKey = await deps.readSecretValue(input.companyId, adminKeySecret);
   }
 
-  // Use LitellmConfigClient with DB as primary source of truth and /router/settings as fallback
   const client = createLitellmConfigClient({
     litellmBaseUrl: baseUrl,
     litellmAdminKey: adminKey,
-    db: deps.db,
   });
 
   try {
@@ -175,12 +173,13 @@ export async function readGatewayFallbackTopology(
 }
 
 /**
- * Updates the gateway's fallback topology via LiteLLM database (source of truth) and /config/update.
+ * Writes the whole fallback topology to the gateway (`/config/update`), then
+ * answers what the gateway now reports, with the findings that did not refuse
+ * the save.
  */
 export async function updateGatewayFallbackTopology(
   deps: {
     readSecretValue(companyId: string, secretName: string): Promise<string | null>;
-    db?: Db;
   },
   input: {
     companyId: string;
@@ -199,9 +198,9 @@ export async function updateGatewayFallbackTopology(
   const client = createLitellmConfigClient({
     litellmBaseUrl: baseUrl,
     litellmAdminKey: adminKey,
-    db: deps.db,
   });
 
-  await client.updateFallbackTopology(input.chains, input.catalog);
-  return readGatewayFallbackTopology(deps, input);
+  const { warnings } = await client.updateFallbackTopology(input.chains, input.catalog);
+  const report = await readGatewayFallbackTopology(deps, input);
+  return warnings.length > 0 ? { ...report, warnings } : report;
 }

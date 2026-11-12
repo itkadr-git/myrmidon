@@ -88,4 +88,16 @@ describe("shouldWakeAssigneeForIssueComment", () => {
       }),
     ).toBe(false);
   });
+
+  it("does not require a comment id to decide whether an issue comment wakes", () => {
+    const base = {
+      selfComment: false,
+      resumeRequested: false,
+      commentCreatedByRunId: null,
+      issueAtCommentStart: {},
+      reopened: true,
+      currentStatus: "in_progress",
+    };
+    expect(shouldWakeAssigneeForIssueComment(base)).toBe(true);
+  });
 });

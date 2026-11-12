@@ -165,6 +165,33 @@ test('calculateCiResultLatency scopes to exact predecessor jobs and ignores unre
   assert.equal(result.evaluatedJobsCount, 3); // typecheck + build, tests (server 1/3), tests (workspaces-a)
 });
 
+test('calculateCiResultLatency recognizes plugin readiness timing and migration jobs as predecessors', () => {
+  const jobs = [
+    {
+      name: 'typecheck + build',
+      completed_at: '2026-11-09T05:01:06Z',
+      started_at: '2026-11-09T04:54:14Z',
+    },
+    {
+      name: 'plugin readiness timing',
+      completed_at: '2026-11-09T05:05:15Z',
+      started_at: '2026-11-09T05:03:25Z',
+    },
+    {
+      name: 'CI result',
+      started_at: '2026-11-09T05:05:17Z',
+      completed_at: '2026-11-09T05:05:23Z',
+    },
+  ];
+
+  const result = calculateCiResultLatency(jobs, { workflow: 'ci', maxLatencySec: 120 });
+  assert.equal(result.lastPredecessorJob, 'plugin readiness timing');
+  assert.equal(result.lastPredecessorEnd, '2026-11-09T05:05:15Z');
+  assert.equal(result.latencySeconds, 2);
+  assert.equal(result.passed, true);
+  assert.equal(result.evaluatedJobsCount, 2);
+});
+
 test('calculateCiResultLatency fails closed when latency exceeds threshold', () => {
   const jobs = [
     {

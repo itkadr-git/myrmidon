@@ -1,6 +1,7 @@
 // myrmidon(P6): broker candidate walk embedded into the launcher
 // myrmidon(GITHUB-SHARED-IDENTITY): plus the target-repository resolution a
 // non-container run needs to name the repository to the broker.
+import { PRODUCT_NAME } from "@myrmidon/shared";
 import { githubBrokerCandidatesLauncherSource, githubBrokerRepositoryLauncherSource } from "./myrmidon-github-broker.js";
 import { GITHUB_CREDENTIAL_HELPER_PROGRAM, githubCredentialHelperSource } from "./github-credential-helper.js";
 
@@ -11,18 +12,87 @@ const fs = require('node:fs');
 const path = require('node:path');
 const os = require('node:os');
 const { spawn } = require('node:child_process');
+const PRODUCT = ${JSON.stringify(PRODUCT_NAME)};
 const directory = path.dirname(fs.realpathSync(process.argv[1]));
 const program = path.basename(process.argv[1]);
 const originalPath = (process.env.PATH || '').split(path.delimiter).filter(p => {
   try { return fs.realpathSync(p) !== directory; } catch { return true; }
 });
-const executable = originalPath.map(p => path.join(p, program)).find(p => {
+const gitWrapperPaths = new Set([
+  directory,
+  '/opt/paperclip/bin',
+  '/usr/local/bin',
+].map(p => { try { return fs.realpathSync(path.join(p, 'git')); } catch { return ''; } }).filter(Boolean));
+async function realGitExecutable() {
+  const configured = process.env.MYRMIDON_GIT_REAL;
+  if (configured) {
+    try {
+      const resolved = fs.realpathSync(path.resolve(configured));
+      if (!gitWrapperPaths.has(resolved)) return configured;
+    } catch {}
+  }
+  for (const dir of originalPath) {
+    const candidate = path.join(dir, 'git');
+    try {
+      if (!fs.statSync(candidate).isFile() || fs.accessSync(candidate, fs.constants.X_OK) !== undefined) continue;
+      if (gitWrapperPaths.has(fs.realpathSync(candidate))) continue;
+      // The incident (OPE-12510): a PATH git that re-executes this launcher on
+      // the origin-remote lookup loops the two shims until the PID limit kills
+      // the bot. A candidate must answer the incident command on its own
+      // (real git answers it; mocks that delegate pass; a re-executing wrapper
+      // fails) before it is trusted for the real command.
+      // myrmidon(REBRAND-C): MYRMIDON_GIT_PROBE_ACTIVE; the PAPERCLIP_ spelling is
+      // still set and read so a bot image and a board one release apart agree.
+      if (process.env.MYRMIDON_GIT_PROBE_ACTIVE === '1' || process.env.PAPERCLIP_GIT_PROBE_ACTIVE === '1') return candidate;
+      const probeEnv = { ...process.env, MYRMIDON_GIT_PROBE_ACTIVE: '1', PAPERCLIP_GIT_PROBE_ACTIVE: '1', PAPERCLIP_GITHUB_OPERATION_ACTIVE: '1' };
+      const probe = spawn(candidate, ['config', '--get', 'remote.origin.url'], {
+        cwd: process.cwd(), env: probeEnv, stdio: ['ignore', 'ignore', 'ignore'],
+        // No spawn timeout here: it would signal only the direct child and
+        // orphan a looping candidate's descendants. The group kill below is
+        // the single owner of the probe deadline.
+        detached: true,
+      });
+      const pid = probe.pid;
+      let settled = false;
+      const verdict = new Promise((resolve) => {
+        probe.once('exit', (code) => { settled = true; resolve(code === 0 || code === 1); });
+        probe.once('error', () => { settled = true; resolve(false); });
+      });
+      const timer = setTimeout(() => {
+        if (settled || !pid) return;
+        try { process.kill(-pid, 'SIGKILL'); } catch { try { probe.kill('SIGKILL'); } catch {} }
+      }, 3000);
+      const safe = await verdict;
+      clearTimeout(timer);
+      if (!safe) continue;
+      return candidate;
+    } catch { continue; }
+  }
+  for (const candidate of ['/opt/paperclip/libexec/git', '/usr/bin/git']) {
+    try {
+      if (fs.statSync(candidate).isFile() && fs.accessSync(candidate, fs.constants.X_OK) === undefined) return candidate;
+    } catch {}
+  }
+  return '/opt/paperclip/libexec/git';
+}
+// Resolved once per invocation; the origin-remote lookup inside the broker
+// helpers reuses this answer so the probe never runs twice.
+const resolvedRealGit = { value: undefined };
+async function resolveRealGit() {
+  if (resolvedRealGit.value === undefined) resolvedRealGit.value = await realGitExecutable();
+  return resolvedRealGit.value;
+}
+let executable;
+if (program !== 'git') executable = originalPath.map(p => path.join(p, program)).find(p => {
   try { fs.accessSync(p, fs.constants.X_OK); return fs.statSync(p).isFile(); } catch { return false; }
 });
-if (!['git', 'gh'].includes(program) || !executable) {
-  process.stderr.write('Paperclip: requested GitHub command is not installed.\n');
+if (!['git', 'gh'].includes(program) || (program !== 'git' && !executable)) {
+  process.stderr.write(PRODUCT + ': requested GitHub command is not installed.\n');
   process.exit(127);
 }
+// Re-entry guard: when already inside a wrapper/operation, never re-enter
+// broker resolution or nested wrapper logic. Run the real binary directly.
+const isReentrant = process.env.PAPERCLIP_GITHUB_OPERATION_ACTIVE === '1';
 ${githubBrokerCandidatesLauncherSource()}
 ${githubBrokerRepositoryLauncherSource()}
 function isPrCreate(args) {
@@ -39,7 +109,7 @@ function sanitizePrCreateBase(args) {
     if (arg === "-B" || arg === "--base") {
       const val = args[i + 1];
       if (val && val.startsWith("bot/")) {
-        process.stderr.write("paperclip: base branch '" + val + "' is a bot branch; changing base to 'main'\\n");
+        process.stderr.write(PRODUCT + ": base branch '" + val + "' is a bot branch; changing base to 'main'\n");
         result.push(arg, "main");
         i++;
       } else {
@@ -48,7 +118,7 @@ function sanitizePrCreateBase(args) {
     } else if (arg.startsWith("--base=")) {
       const val = arg.slice("--base=".length);
       if (val.startsWith("bot/")) {
-        process.stderr.write("paperclip: base branch '" + val + "' is a bot branch; changing base to 'main'\\n");
+        process.stderr.write(PRODUCT + ": base branch '" + val + "' is a bot branch; changing base to 'main'\n");
         result.push("--base=main");
       } else {
         result.push(arg);
@@ -56,7 +126,7 @@ function sanitizePrCreateBase(args) {
     } else if (arg.startsWith("-B=")) {
       const val = arg.slice("-B=".length);
       if (val.startsWith("bot/")) {
-        process.stderr.write("paperclip: base branch '" + val + "' is a bot branch; changing base to 'main'\\n");
+        process.stderr.write(PRODUCT + ": base branch '" + val + "' is a bot branch; changing base to 'main'\n");
         result.push("-B=main");
       } else {
         result.push(arg);
@@ -69,9 +139,10 @@ function sanitizePrCreateBase(args) {
 }
 
 async function main() {
+  if (program === 'git') executable = await resolveRealGit();
   let env = { ...process.env };
   const diagnostic = (code) => {
-    process.stderr.write('Paperclip: GitHub ' + code + '; continuing without managed credentials.\n');
+    process.stderr.write(PRODUCT + ': GitHub ' + code + '; continuing without managed credentials.\n');
   };
   const configRoot = env.GH_CONFIG_DIR || os.tmpdir();
   // A missing/unwritable scratch directory must not break local Git. The
@@ -131,7 +202,7 @@ async function main() {
       const brokerAttempt = await paperclipRequestBrokerCredentials(env, brokerBaseUrls, undefined, repository);
       response = brokerAttempt.response;
       if (!response || !response.ok) {
-        if (brokerAttempt.tried.length > 0) process.stderr.write('Paperclip: GitHub broker candidates tried: ' + brokerAttempt.tried.join(', ') + '.\n');
+        if (brokerAttempt.tried.length > 0) process.stderr.write(PRODUCT + ': GitHub broker candidates tried: ' + brokerAttempt.tried.join(', ') + '.\n');
         if (!response) diagnostic('broker_transport_unavailable');
         else diagnostic(response.status === 401 || response.status === 403 ? 'capability_rejected' : 'broker_response_unavailable');
       } else {
@@ -139,8 +210,8 @@ async function main() {
       if (result.status === 'unavailable') {
         const reason = typeof result.reason === 'string'
           ? result.reason.replace(/[\x00-\x1f\x7f]/g, ' ').slice(0, 500)
-          : 'Check the GitHub connection in Paperclip';
-        process.stderr.write('Paperclip: GitHub access unavailable: ' + reason + '. Continuing without GitHub credentials.\n');
+          : 'Check the GitHub connection in ' + PRODUCT;
+        process.stderr.write(PRODUCT + ': GitHub access unavailable: ' + reason + '. Continuing without GitHub credentials.\n');
       }
       if (result.status === 'available' && configReady) {
         // The Git configuration above is the launcher's own: only the token,
@@ -158,6 +229,7 @@ async function main() {
   // Only this invocation and its children inherit the captured credential.
   // Its Git children use the real binary, so steering cannot split a gh operation.
   env.PATH = originalPath.join(path.delimiter);
+  env.PAPERCLIP_GITHUB_OPERATION_ACTIVE = '1';
   // Nested shell aliases must not reload the parent launcher profile and
   // recapture a newer identity. All ordinary descendants stay in this operation.
   env.ZDOTDIR = configDirectory;
@@ -169,10 +241,20 @@ async function main() {
   }
   const child = spawn(executable, childArgs, { env, stdio: 'inherit' });
   for (const signal of ['SIGINT', 'SIGTERM', 'SIGHUP']) process.on(signal, () => child.kill(signal));
-  child.once('error', () => { process.stderr.write('Paperclip: GitHub command could not start.\n'); process.exitCode = 1; });
+  child.once('error', () => { process.stderr.write(PRODUCT + ': GitHub command could not start.\n'); process.exitCode = 1; });
   child.once('exit', (code, signal) => { process.exitCode = code === null ? 128 : code; });
 }
-main().catch(() => { process.stderr.write('Paperclip: GitHub launcher_setup_failed.\n'); process.exitCode = 1; });
+if (isReentrant && program === 'git') {
+  // A nested invocation must bypass repository detection and the broker.
+  resolveRealGit().then((resolved) => {
+    const child = spawn(resolved, process.argv.slice(2), { env: process.env, stdio: 'inherit' });
+    for (const signal of ['SIGINT', 'SIGTERM', 'SIGHUP']) process.on(signal, () => child.kill(signal));
+    child.once('error', () => { process.stderr.write(PRODUCT + ': GitHub command could not start.\n'); process.exitCode = 1; });
+    child.once('exit', (code) => { process.exitCode = code === null ? 128 : code; });
+  });
+} else {
+  main().catch(() => { process.stderr.write(PRODUCT + ': GitHub launcher_setup_failed.\n'); process.exitCode = 1; });
+}
 `;
 }
 

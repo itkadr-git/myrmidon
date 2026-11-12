@@ -549,6 +549,7 @@ describe("cost routes", () => {
         to: new Date("2026-04-15T23:59:59.999Z"),
       },
       2,
+      { excludePrivate: false },
     );
     expect(res.body).toEqual(rows);
   });

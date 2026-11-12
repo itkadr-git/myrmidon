@@ -114,6 +114,10 @@ export interface Agent {
   lastHeartbeatAt: Date | null;
   metadata: Record<string, unknown> | null;
   orgChainHealth?: AgentOrgChainHealth;
+  // myrmidon(1.6.8 OPE-12709): ISO time of the first model refusal while the
+  // agent's role has an active ROLE_MODEL_DOWN signal ("model unavailable
+  // since"). Absent when the role is healthy; clears on the role's next success.
+  roleModelDownSince?: string | null;
   createdAt: Date;
   updatedAt: Date;
 }

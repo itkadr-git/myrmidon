@@ -1,0 +1,32 @@
+# myrmidon(OPE-12633 OMP-SSH-RUNNER): sshd of the omp SSH runner.
+# Key authentication only, one login (paperclip), no agent/X11 forwarding.
+# TCP forwarding stays on: the board's API bridge for remote runs may use it.
+Port 2222
+ListenAddress 0.0.0.0
+HostKey /var/lib/omp-runner/hostkeys/ssh_host_ed25519_key
+PidFile /run/sshd.pid
+
+PermitRootLogin no
+AllowUsers paperclip
+PubkeyAuthentication yes
+AuthorizedKeysFile /etc/ssh/omp-runner/authorized_keys
+PasswordAuthentication no
+KbdInteractiveAuthentication no
+UsePAM no
+PermitEmptyPasswords no
+
+AllowAgentForwarding no
+AllowTcpForwarding yes
+GatewayPorts no
+X11Forwarding no
+PermitTunnel no
+PermitUserEnvironment no
+
+PrintMotd no
+LogLevel INFO
+ClientAliveInterval 30
+ClientAliveCountMax 6
+MaxSessions 32
+MaxStartups 32:30:64
+
+Subsystem sftp internal-sftp

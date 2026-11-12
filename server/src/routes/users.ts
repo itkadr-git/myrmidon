@@ -1,12 +1,13 @@
 import { Router } from "express";
+import { z } from "zod";
 import type { Db } from "@myrmidon/db";
-import { blockUserSchema, updateCompanyMemberSchema } from "@myrmidon/shared";
+import { blockUserSchema, patchUserBlockSchema, updateCompanyMemberSchema } from "@myrmidon/shared";
 import { companies } from "@myrmidon/db";
 import { accessService } from "../services/access.js";
 import { assertCompanyAccess } from "./authz.js";
 import { validate } from "../middleware/validate.js";
 import { forbidden, notFound, unauthorized } from "../errors.js";
-import { getUser, setUserBlocked, UsersAdminError } from "../myrmidon/users-admin-a/service.js";
+import { getUser, listUsers, resetUserPassword, setUserBlocked, UsersAdminError } from "../myrmidon/users-admin-a/service.js";
 import { logActivity } from "../services/activity-log.js";
 
 function assertAdmin(req: import("express").Request) {
@@ -61,6 +62,12 @@ async function auditUserBlock(
   }
 }
 
+const listUsersQuerySchema = z.object({
+  page: z.coerce.number().int().min(1).optional().default(1),
+  limit: z.coerce.number().int().min(1).max(100).optional().default(20),
+  role: z.enum(["admin", "instance_admin", "member"]).optional(),
+});
+
 /**
  * myrmidon(OPE-10179): PATCH /api/companies/:companyId/users/:userId — a thin
  * alias over the canonical member route. Suspend/activate flow through
@@ -79,6 +86,34 @@ export function usersRoutes(db: Db): Router {
     }
     throw err;
   }
+
+  /**
+   * GET /api/users
+   * Instance administrator route to list users with pagination and role filter.
+   * (myrmidon 1.7 USERS-ADMIN-PAGINATION, OPE-12089)
+   */
+  router.get("/users", async (req, res) => {
+    assertAdmin(req);
+    const parsed = listUsersQuerySchema.safeParse(req.query);
+    if (!parsed.success) {
+      res.status(400).json({
+        error: "Validation error",
+        message: "Validation error",
+        code: "VALIDATION_ERROR",
+        details: parsed.error.flatten(),
+      });
+      return;
+    }
+    const { page, limit, role } = parsed.data;
+    const { users, total } = await listUsers(db, { page, limit, role });
+    res.status(200).json({
+      items: users,
+      users,
+      total,
+      page,
+      limit,
+    });
+  });
 
   /**
    * POST /api/users/:userId/block
@@ -127,6 +162,107 @@ export function usersRoutes(db: Db): Router {
           blocked: true,
           reason,
           sessionsClosed,
+        });
+      } catch (err) {
+        handleUsersAdminError(err, res);
+      }
+    },
+  );
+
+  /**
+   * PATCH /api/users/:userId/block
+   * Instance administrator route to block or unblock a user with audit logging.
+   * (myrmidon 1.7 USERS-ADMIN-BLOCK, OPE-12116)
+   */
+  router.patch(
+    "/users/:userId/block",
+    validate(patchUserBlockSchema),
+    async (req, res) => {
+      assertAdmin(req);
+      const userId = req.params.userId as string;
+      const actorUserId = getAdminActorId(req);
+      const blocked = req.body.blocked ?? true;
+      const reason = req.body.reason ? String(req.body.reason).trim() : null;
+
+      try {
+        const user = await getUser(db, userId);
+        if (!user) throw notFound("User not found");
+
+        if (blocked && userId === actorUserId) {
+          res.status(409).json({ error: "You cannot block yourself", code: "CONFLICT" });
+          return;
+        }
+
+        const { sessionsClosed } = await setUserBlocked(db, {
+          userId,
+          blocked,
+          actorUserId,
+          reason,
+        });
+
+        await auditUserBlock(db, {
+          actorId: actorUserId,
+          targetUserId: userId,
+          action: blocked ? "user.blocked" : "user.unblocked",
+          details: {
+            actor: actorUserId,
+            target: userId,
+            ...(reason ? { reason } : {}),
+            sessionsClosed,
+          },
+        });
+
+        res.status(200).json({
+          ok: true,
+          userId,
+          blocked,
+          ...(reason ? { reason } : {}),
+          sessionsClosed,
+        });
+      } catch (err) {
+        handleUsersAdminError(err, res);
+      }
+    },
+  );
+
+  /**
+   * POST /api/users/:userId/reset-password
+   * Instance administrator route to issue a one-time password reset token without SMTP.
+   * (myrmidon 1.7 USERS-ADMIN-BLOCK, OPE-12116)
+   */
+  router.post(
+    "/users/:userId/reset-password",
+    async (req, res) => {
+      assertAdmin(req);
+      const userId = req.params.userId as string;
+      const actorUserId = getAdminActorId(req);
+
+      try {
+        const user = await getUser(db, userId);
+        if (!user) throw notFound("User not found");
+
+        const result = await resetUserPassword(db, {
+          userId,
+          actorUserId,
+        });
+
+        await auditUserBlock(db, {
+          actorId: actorUserId,
+          targetUserId: userId,
+          action: "user.password_reset",
+          details: {
+            actor: actorUserId,
+            target: userId,
+            via: "reset_token",
+          },
+        });
+
+        res.status(200).json({
+          ok: true,
+          userId,
+          token: result.token,
+          resetToken: result.token,
+          passwordSetLink: result.passwordSetLink,
         });
       } catch (err) {
         handleUsersAdminError(err, res);

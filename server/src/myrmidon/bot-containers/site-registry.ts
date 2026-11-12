@@ -250,6 +250,16 @@ export async function bootstrapFleetSitesFromEnv(
     else logger.warn(f, m);
   };
 
+  // myrmidon(fleet-site audit): the variable is the pre-registry way to name a site. It carries a
+  // plain-http fleetd address and a bearer token, no client certificate. It still seeds a missing
+  // site, so a board that has it keeps working, but it is on its way out: the warning says so on
+  // every start while it is set, even when the value then fails to parse.
+  logWarn(
+    { variable: "MYRMIDON_FLEET_HOSTS" },
+    "MYRMIDON_FLEET_HOSTS is deprecated: it names sites over plain http with a bearer token and no mTLS. " +
+      "Register the site with POST /companies/:companyId/fleet/sites instead and unset the variable",
+  );
+
   let hostConfigs: Map<string, FleetHostConfig>;
   try {
     hostConfigs = parseFleetHosts(raw);

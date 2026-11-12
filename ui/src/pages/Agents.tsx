@@ -1,11 +1,16 @@
 import { useAgentChatEnabled } from "../hooks/useAgentChatEnabled";
-import { useState, useEffect, useMemo, lazy, Suspense } from "react";
+import { useState, useEffect, useMemo } from "react";
 import { Link, useNavigate, useLocation } from "@/lib/router";
-import { useQuery } from "@tanstack/react-query";
-import { agentsApi, type OrgNode } from "../api/agents";
+import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
+import {
+  agentsApi,
+  type OrgNode,
+  type BulkUpdateModelResponse,
+} from "../api/agents";
 import { builtInAgentsApi, type BuiltInAgentState } from "../api/builtInAgents";
 import { authApi } from "../api/auth";
 import { projectsApi } from "../api/projects";
+import { aiConnectionsApi } from "../api/ai-connections";
 import { filterAgentsByScope, parseAgentScope } from "./Agents.scope-filters";
 import { environmentsApi } from "../api/environments";
 import { heartbeatsApi } from "../api/heartbeats";
@@ -23,6 +28,7 @@ import { StarToggle } from "../components/StarToggle";
 import { EntityRow } from "../components/EntityRow";
 import { BuiltInLifecycleChip } from "../components/BuiltInAgentBadges";
 import { EmptyState } from "../components/EmptyState";
+import { ConfigureBuiltInAgentModal } from "../components/ConfigureBuiltInAgentModal";
 import { PageSkeleton } from "../components/PageSkeleton";
 import { OrgChart } from "./OrgChart";
 import { AgentTree } from "../components/AgentTree";
@@ -31,8 +37,9 @@ import { PageTabBar } from "../components/PageTabBar";
 import { Tabs } from "@/components/ui/tabs";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Button } from "@/components/ui/button";
+import { Checkbox } from "@/components/ui/checkbox";
 import { AlertTriangle, Bot, Plus, List, ListTree, Network } from "lucide-react";
-import { AGENT_ROLE_LABELS, type Agent, type Environment, type EnvironmentCapabilities } from "@myrmidon/shared";
+import { AGENT_ROLE_LABELS, type Agent, type AiManagedConnectionSummary, type Environment, type EnvironmentCapabilities } from "@myrmidon/shared";
 import {
   isStarred,
   resourceMembershipState,
@@ -45,6 +52,7 @@ import { getAdapterLabel } from "../adapters/adapter-display-registry";
 import { AgentWipBadge } from "../components/myrmidon/AgentWipBadge"; // myrmidon(1.6.1 WIP-LIMIT B)
 import { wipLimitApi, wipLimitStatusQueryKey, type WipLimitStatusEntry } from "../components/myrmidon/wip-limit/wipLimitApi"; // myrmidon(1.6.1 WIP-LIMIT B)
 // myrmidon(BOT-RUNTIME-TUNING D2): the model-fallback signal on an agent card
+import { RoleModelDownBadge } from "../components/myrmidon/RoleModelDownBadge"; // myrmidon(1.6.8 OPE-12709)
 import { AgentFallbackSignalBadge } from "../components/myrmidon/AgentFallbackSignalBadge";
 import {
   fallbackSignalApi,
@@ -57,14 +65,6 @@ const roleLabels = AGENT_ROLE_LABELS as Record<string, string>;
 // myrmidon(UI-RU): agents page copy runs through the fork i18n catalog.
 import { useTranslation } from "@/i18n";
 import { localizedAgentRoleLabel } from "../lib/agent-role-labels";
-
-// Lazy-loaded so the roster page doesn't statically pull in the full
-// AgentConfigForm module graph (the modal reuses its adapter/model pickers).
-const ConfigureBuiltInAgentModal = lazy(() =>
-  import("../components/ConfigureBuiltInAgentModal").then((m) => ({
-    default: m.ConfigureBuiltInAgentModal,
-  })),
-);
 
 export const AGENT_FILTER_TABS = ["all", "active", "paused", "error", "builtin"] as const;
 type FilterTab = (typeof AGENT_FILTER_TABS)[number];
@@ -352,6 +352,59 @@ export function Agents({ initialView = "tree" }: { initialView?: AgentsView } = 
   const membershipsQuery = useResourceMemberships(selectedCompanyId);
   const membershipMutation = useResourceMembershipMutation(selectedCompanyId);
 
+  // myrmidon(OPE-12225, FLEET-OPS-BULK): checkbox selection over the visible
+  // roster and the "change model / connection" action bar. Selection is a set
+  // of agent ids; the bulk call posts the documented partial-success contract
+  // ({updated[], failed[{id, reason}]}) — a single failed id must never be
+  // shown as a total failure.
+  const [selectedAgentIds, setSelectedAgentIds] = useState<Set<string>>(() => new Set());
+  const [bulkModel, setBulkModel] = useState("all");
+  const [bulkConnectionId, setBulkConnectionId] = useState("all");
+  const [bulkResult, setBulkResult] = useState<BulkUpdateModelResponse | null>(null);
+  const toggleAgentSelected = (agentId: string, selected: boolean) => {
+    setBulkResult(null);
+    setSelectedAgentIds((current) => {
+      const next = new Set(current);
+      if (selected) next.add(agentId);
+      else next.delete(agentId);
+      return next;
+    });
+  };
+  const setAllAgentsSelected = (selected: boolean) => {
+    setBulkResult(null);
+    setSelectedAgentIds(selected ? new Set(filtered.map((agent) => agent.id)) : new Set());
+  };
+  const queryClient = useQueryClient();
+  const bulkUpdateMutation = useMutation({
+    mutationFn: (request: { agentIds: string[]; model?: string; connectionId?: string }) =>
+      agentsApi.bulkUpdateModel(selectedCompanyId!, request),
+    onSuccess: (response) => {
+      setBulkResult(response);
+      setSelectedAgentIds(new Set());
+      setBulkModel("all");
+      setBulkConnectionId("all");
+      void queryClient.invalidateQueries({
+        queryKey: queryKeys.agents.list(selectedCompanyId!),
+      });
+    },
+  });
+  const { data: bulkConnections } = useQuery({
+    queryKey: ["ai-connections", selectedCompanyId ?? ""],
+    queryFn: () => aiConnectionsApi.list(selectedCompanyId!),
+    enabled: !!selectedCompanyId && selectedAgentIds.size > 0,
+  });
+  const bulkConnectionOptions = (bulkConnections?.connections ?? []).filter(
+    (connection): connection is AiManagedConnectionSummary => !!connection,
+  );
+  const applyBulkUpdate = () => {
+    if (!selectedCompanyId || selectedAgentIds.size === 0) return;
+    bulkUpdateMutation.mutate({
+      agentIds: [...selectedAgentIds],
+      ...(bulkModel !== "all" ? { model: bulkModel } : {}),
+      ...(bulkConnectionId !== "all" ? { connectionId: bulkConnectionId } : {}),
+    });
+  };
+
   // myrmidon(1.6.1 WIP-LIMIT B): per-agent live WIP (in progress + in review)
   // with its resolved limit, for the badge on each agent row. Read-only here;
   // the limit is edited on the WIP limit settings screen. A failing or empty
@@ -470,6 +523,25 @@ export function Agents({ initialView = "tree" }: { initialView?: AgentsView } = 
     const agentStarred = isStarred(membershipsQuery.data, "agent", agent.id);
     const builtInState = builtInByAgentId.get(agent.id);
     const showBuiltInLifecycle = builtInState?.status === "needs_setup" || builtInState?.status === "pending_approval";
+    // myrmidon(OPE-12225, FLEET-OPS-BULK): selection checkbox rides with the
+    // row; clicking it must not follow the row's link.
+    const agentSelected = selectedAgentIds.has(agent.id);
+    const agentCheckbox = (
+      <span
+        onClick={(e) => {
+          e.preventDefault();
+          e.stopPropagation();
+        }}
+        className="flex items-center"
+      >
+        <Checkbox
+          checked={agentSelected}
+          onCheckedChange={(checked) => toggleAgentSelected(agent.id, checked === true)}
+          aria-label={t("area.agents-3.agents.agents.selectForBulk", { name: agent.name })}
+          data-testid={`agent-select-${agent.id}`}
+        />
+      </span>
+    );
     // Keep lifecycle controls with the metadata only when the content area
     // has enough room; the sidebar can leave less space than the viewport suggests.
     const builtInCluster = builtInState && showBuiltInLifecycle ? (
@@ -507,11 +579,16 @@ export function Agents({ initialView = "tree" }: { initialView?: AgentsView } = 
           agent.pausedAt && tab !== "paused" ? "opacity-50" : "",
           resourceMembershipState(membershipsQuery.data, "agent", agent.id) === "left" ? "sm:text-foreground/55" : "",
         )}
-        leading={hasInvalidOrgChain ? (
-          <AlertTriangle className="h-3.5 w-3.5 text-amber-500" aria-label={t("agents.invalidReportingChain")} />
-        ) : (
-          <AgentStatusCapsule status={agent.status} />
-        )}
+        leading={
+          <>
+            {agentCheckbox}
+            {hasInvalidOrgChain ? (
+              <AlertTriangle className="h-3.5 w-3.5 text-amber-500" aria-label={t("agents.invalidReportingChain")} />
+            ) : (
+              <AgentStatusCapsule status={agent.status} />
+            )}
+          </>
+        }
         secondaryRow={builtInCluster && (
           <div className="@5xl:hidden flex flex-wrap items-center gap-1.5">
             {builtInCluster}
@@ -519,6 +596,7 @@ export function Agents({ initialView = "tree" }: { initialView?: AgentsView } = 
         )}
         meta={
           <div className="flex items-center gap-3">
+            <RoleModelDownBadge since={agent.roleModelDownSince} agentId={agent.id} />
             {builtInCluster && (
               <div className="hidden @5xl:flex items-center gap-1.5">
                 {builtInCluster}
@@ -683,6 +761,106 @@ export function Agents({ initialView = "tree" }: { initialView?: AgentsView } = 
         <p className="text-xs text-muted-foreground">{t("agents.agentCount", { count: filtered.length })}</p>
       )}
 
+      {/* myrmidon(OPE-12225, FLEET-OPS-BULK): selection + bulk "change model /
+          connection" bar. The result line always reports the partial split
+          ("N updated / M failed" with per-agent reasons) — never a total
+          failure when the server answered with a partial success. */}
+      {(selectedAgentIds.size > 0 || bulkResult) && (
+        <div
+          className="flex flex-wrap items-center gap-2 rounded-md border border-border bg-background px-3 py-2 text-sm"
+          data-testid="bulk-action-bar"
+        >
+          {selectedAgentIds.size > 0 && (
+            <>
+              <span className="text-xs font-medium text-muted-foreground">
+                {t("area.agents-3.agents.agents.bulkSelectedCount", { count: selectedAgentIds.size })}
+              </span>
+              <Button
+                type="button"
+                size="xs"
+                variant="ghost"
+                onClick={() => setAllAgentsSelected(false)}
+              >
+                {t("area.agents-3.agents.agents.clearSelection")}
+              </Button>
+              <Select value={bulkModel} onValueChange={setBulkModel}>
+                <SelectTrigger className="w-44" aria-label={t("area.agents-3.agents.agents.bulkChangeModel")}>
+                  <SelectValue placeholder={t("area.agents-3.agents.agents.bulkChangeModel")} />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="all">{t("area.agents-3.agents.agents.bulkUnchanged")}</SelectItem>
+                  {[...new Set(scopedAgents.map((agent) => agent.adapterModel).filter((model): model is string => !!model))]
+                    .sort()
+                    .map((model) => (
+                      <SelectItem key={model} value={model}>{model}</SelectItem>
+                    ))}
+                </SelectContent>
+              </Select>
+              <Select value={bulkConnectionId} onValueChange={setBulkConnectionId}>
+                <SelectTrigger className="w-48" aria-label={t("area.agents-3.agents.agents.bulkChangeConnection")}>
+                  <SelectValue placeholder={t("area.agents-3.agents.agents.bulkChangeConnection")} />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="all">{t("area.agents-3.agents.agents.bulkUnchanged")}</SelectItem>
+                  {bulkConnectionOptions.map((connection) => (
+                    <SelectItem key={connection.id} value={connection.id}>
+                      {connection.name}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+              <Button
+                type="button"
+                size="sm"
+                disabled={bulkUpdateMutation.isPending}
+                onClick={applyBulkUpdate}
+              >
+                {bulkUpdateMutation.isPending
+                  ? t("area.agents-3.agents.agents.bulkApplying")
+                  : t("area.agents-3.agents.agents.bulkApplyConfirm", { count: selectedAgentIds.size })}
+              </Button>
+            </>
+          )}
+          {selectedAgentIds.size === 0 && bulkResult && (
+            <Button
+              type="button"
+              size="xs"
+              variant="ghost"
+              onClick={() => setBulkResult(null)}
+            >
+              {t("area.agents-3.agents.agents.clearSelection")}
+            </Button>
+          )}
+          {bulkResult && (
+            <div className="flex flex-col gap-1" data-testid="bulk-result">
+              <p className="text-xs text-muted-foreground">
+                {bulkResult.updated.length === 0 && bulkResult.failed.length > 0
+                  ? t("area.agents-3.agents.agents.bulkResultAllFailed")
+                  : t("area.agents-3.agents.agents.bulkResultUpdated", { count: bulkResult.updated.length })}
+                {bulkResult.failed.length > 0 && (
+                  <>
+                    {" / "}
+                    {t("area.agents-3.agents.agents.bulkResultFailed", { count: bulkResult.failed.length })}
+                  </>
+                )}
+              </p>
+              {bulkResult.failed.length > 0 && (
+                <ul className="list-disc pl-5 text-xs text-destructive">
+                  {bulkResult.failed.map((failure) => {
+                    const failureName = (agents ?? []).find((agent) => agent.id === failure.id)?.name ?? failure.id;
+                    return (
+                      <li key={failure.id}>
+                        {failureName}: {failure.reason}
+                      </li>
+                    );
+                  })}
+                </ul>
+              )}
+            </div>
+          )}
+        </div>
+      )}
+
       {error && <p className="text-sm text-destructive">{error.message}</p>}
 
       {agents && agents.length === 0 && (
@@ -740,16 +918,14 @@ export function Agents({ initialView = "tree" }: { initialView?: AgentsView } = 
         </p>
       )}
       {configureState && selectedCompanyId && (
-        <Suspense fallback={null}>
-          <ConfigureBuiltInAgentModal
-            companyId={selectedCompanyId}
-            state={configureState}
-            open={configureState !== null}
-            onOpenChange={(open) => {
-              if (!open) setConfigureState(null);
-            }}
-          />
-        </Suspense>
+        <ConfigureBuiltInAgentModal
+          companyId={selectedCompanyId}
+          state={configureState}
+          open={configureState !== null}
+          onOpenChange={(open) => {
+            if (!open) setConfigureState(null);
+          }}
+        />
       )}
     </div>
   );

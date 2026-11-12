@@ -71,6 +71,9 @@ export interface ReviewReworkTaskFacts {
   priority: string | null;
   /** The agent recorded as the stage's return assignee (the author under review). */
   returnAssigneeAgentId: string | null;
+  /** Stored execution policy/state used by the review-cycle judge. */
+  executionPolicy?: Record<string, unknown> | null;
+  executionState?: Record<string, unknown> | null;
 }
 
 /** The rework child of a review task (`originKind = "review_rework"`). */
@@ -235,6 +238,22 @@ export function collectVerdictMarkers(
   const markers: ReviewReworkVerdictMarker[] = [];
   for (const comment of comments) markers.push(...parseReviewReworkVerdictMarkers(comment));
   return markers;
+}
+
+/**
+ * Cheap pre-read for the sweep's candidate narrowing (OPE-12397): does the
+ * candidate look like it may carry a verdict? The full freshness logic
+ * (head-acks, verdict-vs-ack ordering) stays in `decideReviewRework`; this
+ * only answers "is this row worth a GitHub read at all", so a false positive
+ * costs one ordinary pass and a false negative is impossible (the store
+ * computes the flag with the same `verdict`-keyword EXISTS the candidate
+ * query filters on; `decideReviewRework` still runs the real parser over the
+ * real comments before any move).
+ */
+export function rowHasOutstandingVerdict(
+  row: { verdictPresent?: boolean },
+): boolean {
+  return row.verdictPresent ?? false;
 }
 
 /**

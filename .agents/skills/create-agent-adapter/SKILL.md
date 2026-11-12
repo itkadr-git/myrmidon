@@ -43,9 +43,9 @@ Three separate registries consume adapter modules:
 
 ---
 
-## 2. Shared Types (`@paperclipai/adapter-utils`)
+## 2. Shared Types (`@myrmidon/adapter-utils`)
 
-All adapter interfaces live in `packages/adapter-utils/src/types.ts`. Import from `@paperclipai/adapter-utils` (types) or `@paperclipai/adapter-utils/server-utils` (runtime helpers).
+All adapter interfaces live in `packages/adapter-utils/src/types.ts`. Import from `@myrmidon/adapter-utils` (types) or `@myrmidon/adapter-utils/server-utils` (runtime helpers).
 
 ### Core Interfaces
 
@@ -184,7 +184,7 @@ packages/adapters/<name>/
 
 ```json
 {
-  "name": "@paperclipai/adapter-<name>",
+  "name": "@myrmidon/adapter-<name>",
   "version": "0.0.1",
   "private": true,
   "type": "module",
@@ -195,7 +195,7 @@ packages/adapters/<name>/
     "./cli": "./src/cli/index.ts"
   },
   "dependencies": {
-    "@paperclipai/adapter-utils": "workspace:*",
+    "@myrmidon/adapter-utils": "workspace:*",
     "picocolors": "^1.1.1"
   },
   "devDependencies": {
@@ -263,7 +263,7 @@ This is the most important file. It receives an `AdapterExecutionContext` and mu
 
 **Required behavior:**
 
-1. **Read config** — extract typed values from `ctx.config` using helpers (`asString`, `asNumber`, `asBoolean`, `asStringArray`, `parseObject` from `@paperclipai/adapter-utils/server-utils`)
+1. **Read config** — extract typed values from `ctx.config` using helpers (`asString`, `asNumber`, `asBoolean`, `asStringArray`, `parseObject` from `@myrmidon/adapter-utils/server-utils`)
 2. **Build environment** — call `buildPaperclipEnv(agent)` then layer in `PAPERCLIP_RUN_ID`, context vars (`PAPERCLIP_TASK_ID`, `PAPERCLIP_WAKE_REASON`, `PAPERCLIP_WAKE_COMMENT_ID`, `PAPERCLIP_APPROVAL_ID`, `PAPERCLIP_APPROVAL_STATUS`, `PAPERCLIP_LINKED_ISSUE_IDS`), user env overrides, and auth token
 3. **Resolve session** — check `runtime.sessionParams` / `runtime.sessionId` for an existing session; validate it's compatible (e.g. same cwd); decide whether to resume or start fresh
 4. **Render prompt** — use `renderTemplate(template, data)` with the template variables: `agentId`, `companyId`, `runId`, `company`, `agent`, `run`, `context`
@@ -414,8 +414,8 @@ After creating the adapter package, register it in all three consumers:
 ### 4.1 Server Registry (`server/src/adapters/registry.ts`)
 
 ```ts
-import { execute as myExecute, sessionCodec as mySessionCodec } from "@paperclipai/adapter-my-agent/server";
-import { agentConfigurationDoc as myDoc, models as myModels } from "@paperclipai/adapter-my-agent";
+import { execute as myExecute, sessionCodec as mySessionCodec } from "@myrmidon/adapter-my-agent/server";
+import { agentConfigurationDoc as myDoc, models as myModels } from "@myrmidon/adapter-my-agent";
 
 const myAgentAdapter: ServerAdapterModule = {
   type: "my_agent",
@@ -446,9 +446,9 @@ With `ui/src/adapters/my-agent/index.ts`:
 
 ```ts
 import type { UIAdapterModule } from "../types";
-import { parseMyAgentStdoutLine } from "@paperclipai/adapter-my-agent/ui";
+import { parseMyAgentStdoutLine } from "@myrmidon/adapter-my-agent/ui";
 import { MyAgentConfigFields } from "./config-fields";
-import { buildMyAgentConfig } from "@paperclipai/adapter-my-agent/ui";
+import { buildMyAgentConfig } from "@myrmidon/adapter-my-agent/ui";
 
 export const myAgentUIAdapter: UIAdapterModule = {
   type: "my_agent",
@@ -462,7 +462,7 @@ export const myAgentUIAdapter: UIAdapterModule = {
 ### 4.3 CLI Registry (`cli/src/adapters/registry.ts`)
 
 ```ts
-import { printMyAgentStreamEvent } from "@paperclipai/adapter-my-agent/cli";
+import { printMyAgentStreamEvent } from "@myrmidon/adapter-my-agent/cli";
 
 const myAgentCLIAdapter: CLIAdapterModule = {
   type: "my_agent",
@@ -511,7 +511,7 @@ if (sessionId && !proc.timedOut && exitCode !== 0 && isUnknownSessionError(outpu
 
 ## 6. Server-Utils Helpers
 
-Import from `@paperclipai/adapter-utils/server-utils`:
+Import from `@myrmidon/adapter-utils/server-utils`:
 
 | Helper | Purpose |
 |--------|---------|
@@ -535,7 +535,7 @@ Import from `@paperclipai/adapter-utils/server-utils`:
 
 ### Naming
 - Adapter type: `snake_case` (e.g. `claude_local`, `codex_local`)
-- Package name: `@paperclipai/adapter-<kebab-name>`
+- Package name: `@myrmidon/adapter-<kebab-name>`
 - Package directory: `packages/adapters/<kebab-name>/`
 
 ### Config Parsing
@@ -546,7 +546,7 @@ Import from `@paperclipai/adapter-utils/server-utils`:
 ### Prompt Templates
 - Support `promptTemplate` for every run
 - Use `renderTemplate()` with the standard variable set
-- Default prompt should use `DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE` from `@paperclipai/adapter-utils/server-utils` so local adapters share Paperclip's execution contract: act in the same heartbeat, avoid planning-only exits unless requested, leave durable progress and a next action, use child issues instead of polling, mark blockers with owner/action, and respect governance boundaries.
+- Default prompt should use `DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE` from `@myrmidon/adapter-utils/server-utils` so local adapters share Paperclip's execution contract: act in the same heartbeat, avoid planning-only exits unless requested, leave durable progress and a next action, use child issues instead of polling, mark blockers with owner/action, and respect governance boundaries.
 
 ### Error Handling
 - Differentiate timeout vs process error vs parse failure
@@ -561,7 +561,7 @@ Import from `@paperclipai/adapter-utils/server-utils`:
 
 ### Paperclip Skills Injection
 
-Paperclip ships shared skills (in the repo's top-level `skills/` directory) that agents need at runtime — things like the `paperclip` API skill and the `paperclip-create-agent` workflow skill. Each adapter is responsible for making these skills discoverable by its agent runtime **without polluting the agent's working directory**.
+Paperclip ships shared skills (in the repo's top-level `skills/` directory) that agents need at runtime — things like the `myrmidon` API skill and the `myrmidon-create-agent` workflow skill. Each adapter is responsible for making these skills discoverable by its agent runtime **without polluting the agent's working directory**.
 
 **The constraint:** never copy or symlink skills into the agent's `cwd`. The cwd is the user's project checkout — writing `.claude/skills/` or any other files into it would contaminate the repo with Paperclip internals, break git status, and potentially leak into commits.
 
@@ -625,9 +625,9 @@ async function ensureCodexSkillsInjected(onLog) {
 3. **Acceptable: env var** — if the runtime reads a skills/plugin path from an environment variable, point it at the repo's `skills/` directory directly.
 4. **Last resort: prompt injection** — if the runtime has no plugin system, include skill content in the prompt template itself. This uses tokens but avoids filesystem side effects entirely.
 
-**Skills as loaded procedures, not prompt bloat.** The Paperclip skills (like `paperclip` and `paperclip-create-agent`) are designed as on-demand procedures: the agent sees skill metadata (name + description) in its context, but only loads the full SKILL.md content when it decides to invoke a skill. This keeps the base prompt small. When writing `agentConfigurationDoc` or prompt templates for your adapter, do not inline skill content — let the agent runtime's skill discovery do the work. The descriptions in each SKILL.md frontmatter act as routing logic: they tell the agent when to load the full skill, not what the skill contains.
+**Skills as loaded procedures, not prompt bloat.** The Paperclip skills (like `myrmidon` and `myrmidon-create-agent`) are designed as on-demand procedures: the agent sees skill metadata (name + description) in its context, but only loads the full SKILL.md content when it decides to invoke a skill. This keeps the base prompt small. When writing `agentConfigurationDoc` or prompt templates for your adapter, do not inline skill content — let the agent runtime's skill discovery do the work. The descriptions in each SKILL.md frontmatter act as routing logic: they tell the agent when to load the full skill, not what the skill contains.
 
-**Explicit vs. fuzzy skill invocation.** For production workflows where reliability matters (e.g. an agent that must always call the Paperclip API to report status), use explicit instructions in the prompt template: "Use the paperclip skill to report your progress." Fuzzy routing (letting the model decide based on description matching) is fine for exploratory tasks but unreliable for mandatory procedures.
+**Explicit vs. fuzzy skill invocation.** For production workflows where reliability matters (e.g. an agent that must always call the Paperclip API to report status), use explicit instructions in the prompt template: "Use the myrmidon skill to report your progress." Fuzzy routing (letting the model decide based on description matching) is fine for exploratory tasks but unreliable for mandatory procedures.
 
 ---
 

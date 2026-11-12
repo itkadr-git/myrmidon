@@ -76,6 +76,12 @@ export interface BotContainerSpec {
  */
 export type BotContainerState = "running" | "stopped" | "missing" | "unhealthy";
 
+export interface BotContainerLimits {
+  memoryMb: number;
+  cpus: number;
+  pidsLimit: number;
+}
+
 export interface BotContainerStatus {
   botKey: string;
   state: BotContainerState;
@@ -110,6 +116,7 @@ export interface BotContainerStatus {
   memoryMb?: number;
   cpus?: number;
   pidsLimit?: number;
+  lastDenial?: string | null;
 }
 
 /** One template field whose live value (the container's inspect) no longer
@@ -135,6 +142,13 @@ export interface TemplateDriftReport {
   drifted: boolean;
   fields: TemplateDriftField[];
 }
+
+/** The error message of a lifecycle cleanup on a driver that has no `cleanup` (agent lifecycle, fleetd-routing.ts). */
+export const CLEANUP_UNSUPPORTED_MESSAGE = "container cleanup route is not supported by this driver";
+
+/** myrmidon(OPE-12654): the error message of a decommission on a driver that has neither
+ *  `decommission` nor `cleanup` (fleetd-routing.ts). */
+export const DECOMMISSION_UNSUPPORTED_MESSAGE = "bot decommission route is not supported by this driver";
 
 /** The error message of an IDLE-STOP stop on a driver that has no `stopIdle` (idle-stop.ts, fleetd-routing.ts). */
 export const IDLE_STOP_UNSUPPORTED_MESSAGE = "idle-stop route is not supported by this driver";
@@ -217,6 +231,23 @@ export interface BotContainerDriver {
    *  already written to disk. Resolves once healthy again; throws otherwise. */
   restart(botKey: string): Promise<void>;
   stop(botKey: string): Promise<void>;
+  /**
+   * myrmidon(OPE-12477): cleans up and removes the bot container and its host data directory
+   * when an agent is terminated or deleted. Must be idempotent (succeeds if already missing).
+   * Optional for legacy/test drivers; the lifecycle cleanup port fails closed when absent.
+   */
+  cleanup?(botKey: string): Promise<void>;
+  /**
+   * myrmidon(OPE-12654): removes the bot of an agent that left the bot-container runtime (its
+   * card moved to another adapter, or the agent is terminated or deleted): stops the main
+   * container if it still runs, then deletes it together with the bot's leftovers, its quota
+   * project and its host data directory. Idempotent: a bot without a container resolves.
+   * The local driver goes through dockergate's idle-stop (A17) and decommission (A22) routes;
+   * the plain delete (A9) refuses a main container without a `.next` replacement, which is why
+   * `cleanup` could not remove one there. Optional: fleetRoutingDriver falls back to the host's
+   * `cleanup` (fleetd removes the container and the bot directory itself).
+   */
+  decommission?(botKey: string): Promise<void>;
   /**
    * myrmidon(IDLE-STOP): stops an idle bot's container and records that the stop was
    * IDLE-STOP's (`BotContainerStatus.idleStopped`), so the wake path and the reconciler

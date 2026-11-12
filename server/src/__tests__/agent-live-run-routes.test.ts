@@ -17,6 +17,7 @@ const mockHeartbeatService = vi.hoisted(() => ({
   readLog: vi.fn(),
   wakeup: vi.fn(),
   getRun: vi.fn(),
+  cancelRun: vi.fn(),
 }));
 
 const mockIssueService = vi.hoisted(() => ({
@@ -436,6 +437,7 @@ describe("agent live run routes", () => {
       agentId: "agent-1",
       status: "succeeded",
     });
+    mockHeartbeatService.cancelRun.mockReset();
     mockWorkspaceOperationService.getById.mockResolvedValue({
       id: "operation-1",
       companyId: "company-1",
@@ -537,6 +539,62 @@ describe("agent live run routes", () => {
     });
   });
 
+  it("cancels a heartbeat run and records operator cancellation activity", async () => {
+    const runId = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+    const existingRun = {
+      id: runId,
+      companyId: "company-1",
+      agentId: routeAgentId,
+      status: "running",
+    };
+    const cancelledRun = {
+      ...existingRun,
+      status: "cancelled",
+    };
+    mockHeartbeatService.getRun.mockResolvedValueOnce(existingRun);
+    mockHeartbeatService.cancelRun.mockResolvedValueOnce(cancelledRun);
+
+    const app = await createApp({}, {
+      type: "board",
+      userId: "operator-user-1",
+      companyIds: ["company-1"],
+      source: "session",
+    });
+
+    const res = await requestApp(app, (baseUrl) =>
+      request(baseUrl).post(`/api/heartbeat-runs/${runId}/cancel`).send({}),
+    );
+
+    expect(res.status).toBe(200);
+    expect(res.body).toMatchObject({ id: runId, status: "cancelled" });
+    expect(mockHeartbeatService.cancelRun).toHaveBeenCalledWith(
+      runId,
+      "Cancelled by a board operator",
+      expect.objectContaining({
+        cancellationSource: {
+          code: "board_operator",
+          endpoint: "POST /api/heartbeat-runs/:runId/cancel",
+          actor: "operator-user-1",
+        },
+        resultJson: {
+          cancelledByActorType: "user",
+          cancelledByUserId: "operator-user-1",
+        },
+      }),
+    );
+    expect(mockLogActivity).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        companyId: "company-1",
+        actorType: "user",
+        actorId: "operator-user-1",
+        action: "heartbeat.cancelled",
+        entityType: "heartbeat_run",
+        entityId: runId,
+        details: { agentId: routeAgentId },
+      }),
+    );
+  });
 
   it("returns a compact active run payload for issue polling", async () => {
     const res = await requestApp(await createApp(), (baseUrl) =>

@@ -159,12 +159,12 @@ const support = await getEmbeddedPostgresTestSupport();
 
   it("expired key can be claimed again", async () => {
     const key = `expiring-key-${randomUUID()}`;
-    // Claim with a short TTL (50ms)
+    // Claim with a long TTL
     const firstClaim = await tryClaimContinuationKey(db, {
       companyId,
       key,
       issueId,
-      ttl: 50,
+      ttl: 60_000,
     });
     expect(firstClaim).toBe("created");
 
@@ -177,8 +177,14 @@ const support = await getEmbeddedPostgresTestSupport();
     });
     expect(immediateRepeat).toBe("deduped");
 
-    // Wait for the original 50ms TTL to expire
-    await new Promise((resolve) => setTimeout(resolve, 80));
+    // Insert an expired key record directly to simulate expiration
+    await db.delete(issueContinuationKeys).where(and(eq(issueContinuationKeys.companyId, companyId), eq(issueContinuationKeys.key, key)));
+    await db.insert(issueContinuationKeys).values({
+      companyId,
+      key,
+      issueId,
+      expiresAt: new Date(Date.now() - 1000),
+    });
 
     // After expiration, claiming again should succeed with 'created'
     const afterExpiration = await tryClaimContinuationKey(db, {

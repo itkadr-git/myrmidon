@@ -120,6 +120,22 @@ export function agentExchangeStore(db: DbExecutor): AgentExchangeStore {
       return rows.map(toRoom);
     },
 
+    async countAgentSessions(agentId: string): Promise<{ started: number; completed: number }> {
+      const rows = await db
+        .select({ status: agentExchangeRooms.status, participants: agentExchangeRooms.participants })
+        .from(agentExchangeRooms);
+      const rooms = rows.filter((row) =>
+        Array.isArray(row.participants) && row.participants.some((participant) =>
+          typeof participant === "object" && participant !== null &&
+          (participant as { agentId?: unknown }).agentId === agentId,
+        ),
+      );
+      return {
+        started: rooms.length,
+        completed: rooms.filter((room) => room.status === "completed").length,
+      };
+    },
+
     async insertMessage(input): Promise<AgentExchangeMessage> {
       const [row] = await db
         .insert(agentExchangeMessages)
@@ -152,6 +168,15 @@ export function agentExchangeStore(db: DbExecutor): AgentExchangeStore {
         .where(eq(agentExchangeMessages.roomId, roomId))
         .orderBy(asc(agentExchangeMessages.round), asc(agentExchangeMessages.participantIndex));
       return rows.map(toMessage);
+    },
+
+    async failPendingMessages(roomId: string, error: string): Promise<number> {
+      const rows = await db
+        .update(agentExchangeMessages)
+        .set({ status: "error", error, completedAt: new Date() })
+        .where(and(eq(agentExchangeMessages.roomId, roomId), eq(agentExchangeMessages.status, "pending")))
+        .returning({ id: agentExchangeMessages.id });
+      return rows.length;
     },
   };
 }

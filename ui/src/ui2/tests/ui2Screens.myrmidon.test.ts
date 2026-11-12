@@ -17,8 +17,17 @@ import { UI2_NAV_GROUPS, UI2_PHONE_TABS } from "../navModel";
 import { UI2_ROUTE_TABLE, isUi2RouteElementAPlaceholder } from "../routes";
 import { UI2_SETTINGS_SECTIONS } from "../shell/Ui2SettingsSidebar";
 import { fleetStatus } from "../screens/agent-overview/Ui2AgentsFleetPage";
+import { getReturnFreeReviewRate } from "../screens/quality/Ui2QualityScreen";
+import { applyCompanyPrefix, toCompanyRelativePath } from "@/lib/company-routes";
+import { UI2_LOCALES, ui2Messages } from "../i18n/locales";
 
 describe("myrmidon(UI2) route table integration", () => {
+  it("does not label task returns or run counts as run success", () => {
+    expect(getReturnFreeReviewRate({ returnRate: { enteredReview: 0, returned: 0 } })).toBeNull();
+    expect(getReturnFreeReviewRate({ returnRate: { enteredReview: 10, returned: 2 } })).toBe(80);
+    expect(getReturnFreeReviewRate({ returnRate: { enteredReview: 10, returned: 10 } })).toBe(0);
+  });
+
   it("routes every settings sidebar entry through UI2 or the company settings route tree", () => {
     const appSource = readFileSync(fileURLToPath(new URL("../../App.tsx", import.meta.url)), "utf8");
     const routeBlock = appSource.match(/function boardRoutes\([\s\S]*?(?=\nfunction )/)?.[0];
@@ -46,7 +55,7 @@ describe("myrmidon(UI2) route table integration", () => {
     expect(routeBlock).toBeDefined();
 
     const appPaths = new Set(
-      [...routeBlock!.matchAll(/path="([^"]+)"/g)].map(([, path]) => `/${path}`),
+      [...routeBlock!.matchAll(/\bpath="([^"]+)"/g)].map(([, path]) => `/${path}`),
     );
     const ui2Paths = new Set(UI2_ROUTE_TABLE.map((entry) => `/${entry.path}`));
     const routedPaths = new Set([...appPaths, ...ui2Paths]);
@@ -105,11 +114,58 @@ describe("myrmidon(UI2) route table integration", () => {
       "knowledge",
       "knowledge-page",
       "more",
+      "quality",
       "settings-autonomy-regulations",
+      "settings-channels",
       "settings-language",
       "settings-runs-queue",
       "settings-system",
+      "system",
     ]);
+  });
+
+  it("preserves company prefixes for both routes and activates exactly one phone tab", () => {
+    for (const path of ["/system", "/quality"]) {
+      const prefixed = applyCompanyPrefix(path, "ACME");
+      expect(prefixed).toBe(`/ACME${path}`);
+      expect(toCompanyRelativePath(prefixed)).toBe(path);
+      const active = UI2_PHONE_TABS.filter((tab) => isUi2PhoneTabActive(tab.to, path));
+      // System and quality live in the phone More drawer: no fixed tab lights up there.
+      expect(active).toEqual([]);
+    }
+  });
+
+  it("provides translated screen titles and loading, error, and empty states in both locales", () => {
+    expect(UI2_LOCALES).toEqual(["en", "ru"]);
+    for (const locale of UI2_LOCALES) {
+      const messages = ui2Messages[locale];
+      for (const key of [
+        "ui2.system.title", "ui2.system.noDeploys", "ui2.system.empty",
+        "ui2.quality.title", "ui2.quality.empty", "ui2.quality.emptyHint",
+        "ui2.common.loading", "ui2.common.error", "ui2.common.retry",
+      ] as const) {
+        expect(messages[key], `${locale}:${key}`).toBeTruthy();
+      }
+    }
+  });
+
+  it("keeps the system and quality routes and navigation singular", () => {
+    const byKey = new Map(UI2_ROUTE_TABLE.map((entry) => [entry.key, entry]));
+    expect(byKey.get("system")?.path).toBe("system");
+    expect(byKey.get("quality")?.path).toBe("quality");
+    for (const [path, key] of [["/system", "system"], ["/quality", "quality"]] as const) {
+      const route = byKey.get(key)!;
+      expect(route.path).toBe(path.slice(1));
+      expect(route.element).toBeTruthy();
+      expect(UI2_NAV_GROUPS.flatMap((group) => group.items).filter((item) => item.to === path)).toHaveLength(1);
+      // System and quality are reachable from the phone More drawer, not fixed tabs.
+      if (key === "system" || key === "quality") {
+        expect(UI2_PHONE_TABS.filter((item) => item.to === path)).toHaveLength(0);
+        expect(UI2_NAV_GROUPS.flatMap((group) => group.items).some((item) => item.to === path)).toBe(true);
+      } else {
+        expect(UI2_PHONE_TABS.filter((item) => item.to === path)).toHaveLength(1);
+      }
+    }
   });
 
   it("preserves full Secrets screen under UI2 without shadowing by a placeholder route", () => {

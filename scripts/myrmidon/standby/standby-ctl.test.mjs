@@ -9,6 +9,8 @@ import {
   parseReplicationStatus,
   generateStandbyConfig,
   generateBasebackupCommand,
+  parseBasebackupTimeout,
+  DEFAULT_BASEBACKUP_TIMEOUT_MS,
   planFailover,
   planSwitchback,
   planRehearsal,
@@ -101,7 +103,7 @@ function makeWorld(over = {}) {
     primaryLsn: "1/2000000",
     primarySystemId: "729374172937",
     standbySystemId: "729374172937",
-    slotRow: "streaming|1048576|6144",
+    slotRow: "reserved|1048576|6144",
     composeStopNoop: false,
     dockerStopFails: false,
     standbyInRecovery: true,
@@ -536,7 +538,7 @@ test("setupStandby creates physical replication slot before basebackup", () => {
   assert.match(dbOf(slotCall.args), /^replication=database dbname=paperclip/);
 });
 
-test("checkLag reports slot retention and fails closed on lost slot WAL", () => {
+test("checkLag reports slot retention and fails closed on non-reserved/extended slot WAL", () => {
   // Slot WAL lost -> fail closed
   const lostSlotMock = (cmd, args) => {
     const sql = args[args.indexOf("-c") + 1] || "";
@@ -553,15 +555,36 @@ test("checkLag reports slot retention and fails closed on lost slot WAL", () => 
   };
   const lostRes = checkLag("board", { pgRunner: "host" }, { runner: lostSlotMock });
   assert.equal(lostRes.success, false);
+  assert.equal(lostRes.rpoOk, false);
   assert.equal(lostRes.rpoStatus, "slot_wal_lost");
   assert.match(lostRes.error, /standby_board_slot/);
 
-  // Healthy slot retention -> success with slot info surfaced
+  // Slot WAL unreserved -> fail closed (rpoOk=false)
+  const unreservedSlotMock = (cmd, args) => {
+    const sql = args[args.indexOf("-c") + 1] || "";
+    if (cmd === "psql") {
+      if (sql.includes("pg_replication_slots")) {
+        return { exitCode: 0, stdout: "unreserved|5000000|2048\n", stderr: "" };
+      }
+      if (sql.includes("IDENTIFY_SYSTEM")) {
+        return { exitCode: 0, stdout: "729374172937|1|1/1000|\n", stderr: "" };
+      }
+      return { exitCode: 0, stdout: "1 | 1/1000 | 1/1000 | 2026-10-30 10:00:00+00\n", stderr: "" };
+    }
+    return { exitCode: 0, stdout: "", stderr: "" };
+  };
+  const unreservedRes = checkLag("board", { pgRunner: "host" }, { runner: unreservedSlotMock });
+  assert.equal(unreservedRes.success, false);
+  assert.equal(unreservedRes.rpoOk, false);
+  assert.equal(unreservedRes.rpoStatus, "slot_wal_unreserved");
+  assert.match(unreservedRes.error, /expected 'reserved' or 'extended'/);
+
+  // Healthy slot retention (reserved) -> success with slot info surfaced
   const healthySlotMock = (cmd, args) => {
     const sql = args[args.indexOf("-c") + 1] || "";
     if (cmd === "psql") {
       if (sql.includes("pg_replication_slots")) {
-        return { exitCode: 0, stdout: "streaming|1048576|2048\n", stderr: "" };
+        return { exitCode: 0, stdout: "reserved|1048576|2048\n", stderr: "" };
       }
       if (sql.includes("IDENTIFY_SYSTEM")) {
         return { exitCode: 0, stdout: "729374172937|1|1/1000|\n", stderr: "" };
@@ -572,9 +595,29 @@ test("checkLag reports slot retention and fails closed on lost slot WAL", () => 
   };
   const okRes = checkLag("board", { pgRunner: "host" }, { runner: healthySlotMock });
   assert.equal(okRes.success, true);
-  assert.equal(okRes.slotWalStatus, "streaming");
+  assert.equal(okRes.rpoOk, true);
+  assert.equal(okRes.slotWalStatus, "reserved");
   assert.equal(okRes.slotRetainedBytes, 1048576);
   assert.equal(okRes.slotRetentionWarn, false);
+
+  // Extended slot retention -> also acceptable as healthy
+  const extendedSlotMock = (cmd, args) => {
+    const sql = args[args.indexOf("-c") + 1] || "";
+    if (cmd === "psql") {
+      if (sql.includes("pg_replication_slots")) {
+        return { exitCode: 0, stdout: "extended|2097152|2048\n", stderr: "" };
+      }
+      if (sql.includes("IDENTIFY_SYSTEM")) {
+        return { exitCode: 0, stdout: "729374172937|1|1/1000|\n", stderr: "" };
+      }
+      return { exitCode: 0, stdout: "1 | 1/1000 | 1/1000 | 2026-10-30 10:00:00+00\n", stderr: "" };
+    }
+    return { exitCode: 0, stdout: "", stderr: "" };
+  };
+  const extRes = checkLag("board", { pgRunner: "host" }, { runner: extendedSlotMock });
+  assert.equal(extRes.success, true);
+  assert.equal(extRes.rpoOk, true);
+  assert.equal(extRes.slotWalStatus, "extended");
 });
 
 test("generateStandbyConfig includes required streaming parameters and credentials via passfile", () => {
@@ -584,8 +627,8 @@ test("generateStandbyConfig includes required streaming parameters and credentia
   assert.match(cfg, /passfile=\/var\/lib\/postgresql\/data\/\.pgpass/);
   assert.doesNotMatch(cfg, /password=/);
   assert.match(cfg, /hot_standby = 'on'/);
-  assert.match(cfg, /restore_command = /);
-  assert.match(cfg, /archive_cleanup_command = /);
+  assert.match(cfg, /restore_command = 'test -f \/srv\/backups\/wal\/%f && cp \/srv\/backups\/wal\/%f %p'/);
+  assert.match(cfg, /archive_cleanup_command = 'pg_archivecleanup \/srv\/backups\/wal %r'/);
 });
 
 test("generateBasebackupCommand generates slot and stream flags", () => {
@@ -597,6 +640,63 @@ test("generateBasebackupCommand generates slot and stream flags", () => {
   assert.ok(cmd.args.includes("-Fp"));
 });
 
+test("parseBasebackupTimeout maps --basebackup-timeout sec/ms to a numeric timeout", () => {
+  // The ADM 08.11 defect: the raw CLI string reached spawnSync and killed `setup` after 90 min
+  assert.equal(parseBasebackupTimeout("43200"), 43_200_000);
+  assert.equal(parseBasebackupTimeout("5400000ms"), 5_400_000);
+  assert.equal(parseBasebackupTimeout("0.5s"), 500);
+  assert.equal(DEFAULT_BASEBACKUP_TIMEOUT_MS, 43_200_000);
+  assert.throws(() => parseBasebackupTimeout("abc"), /positive number of seconds/);
+  assert.throws(() => parseBasebackupTimeout(""), /positive number of seconds/);
+  assert.throws(() => parseBasebackupTimeout("0"), /positive safe integer/);
+  assert.throws(() => parseBasebackupTimeout("-5s"), /positive number of seconds/);
+});
+
+test("runCli maps --basebackup-timeout to a NUMERIC basebackupTimeoutMs and passes it down", () => {
+  const w = makeWorld();
+  const { fsOps } = makeFs();
+
+  const code = runCli(
+    [
+      "setup",
+      "board",
+      "--basebackup-timeout=14400s",
+      "--pg-runner=host",
+      "--primary-host=192.0.2.1",
+      "--primary-port=15432",
+      "--force",
+    ],
+    {},
+    { runner: w.runner, fsOps }
+  );
+  assert.equal(code, 0);
+
+  const bbCall = w.calls.find((c) => c.cmd === "pg_basebackup" || (c.args && c.args.includes("pg_basebackup")));
+  assert.ok(bbCall, "pg_basebackup must be executed during setup");
+  assert.equal(typeof bbCall.ro.timeoutMs, "number");
+  assert.equal(bbCall.ro.timeoutMs, 14_400_000);
+  assert.equal(bbCall.ro.streamStderr, true);
+});
+
+test("setupStandby uses DEFAULT_BASEBACKUP_TIMEOUT_MS (>=12h) when timeout is omitted", () => {
+  const w = makeWorld();
+  const { fsOps } = makeFs();
+
+  const res = setupStandby(
+    "board",
+    { pgRunner: "host", readinessDelayMs: 0, force: true, ...PRIMARY },
+    { runner: w.runner, fsOps }
+  );
+  assert.equal(res.success, true);
+
+  const bbCall = w.calls.find((c) => c.cmd === "pg_basebackup" || (c.args && c.args.includes("pg_basebackup")));
+  assert.ok(bbCall);
+  assert.equal(typeof bbCall.ro.timeoutMs, "number");
+  assert.equal(bbCall.ro.timeoutMs, DEFAULT_BASEBACKUP_TIMEOUT_MS);
+  assert.ok(bbCall.ro.timeoutMs >= 12 * 60 * 60 * 1000);
+  assert.equal(bbCall.ro.streamStderr, true);
+});
+
 test("checkLag measures primary-to-standby lag and handles fail-closed errors", () => {
   const now = new Date("2026-10-30T12:00:00Z");
 
@@ -605,6 +705,9 @@ test("checkLag measures primary-to-standby lag and handles fail-closed errors", 
     const sql = args[args.indexOf("-c") + 1] || "";
     if (sql.includes("IDENTIFY_SYSTEM")) {
       return { exitCode: 0, stdout: "729374172937|1|1/2000000|\n", stderr: "" };
+    }
+    if (sql.includes("wal_status") || sql.includes("pg_replication_slots")) {
+      return { exitCode: 0, stdout: "reserved|1048576|6144\n", stderr: "" };
     }
     return {
       exitCode: 0,
@@ -966,6 +1069,10 @@ test("checkLag respects unified custom standbyPort and primaryPort on single clu
   const calls = [];
   const mockRunner = (cmd, args) => {
     calls.push({ cmd, args });
+    const sql = args.find((a) => typeof a === "string" && a.includes("wal_status")) || "";
+    if (sql.includes("wal_status")) {
+      return { exitCode: 0, stdout: "reserved|1048576|6144\n", stderr: "" };
+    }
     if (cmd === "psql") {
       return {
         exitCode: 0,
@@ -1181,6 +1288,10 @@ test("checkLag uses createPgRunner — docker mode wraps psql in docker exec", (
   const mockRunner = (cmd, args) => {
     calls.push({ cmd, args });
     if (cmd === "docker") {
+      const sql = args.find((a) => typeof a === "string" && a.includes("wal_status")) || "";
+      if (sql.includes("wal_status")) {
+        return { exitCode: 0, stdout: "reserved|1048576|6144\n", stderr: "" };
+      }
       // docker exec calls: simulate success with standby output
       return { exitCode: 0, stdout: "1|1/1000|1/1000|2026-10-31 12:00:00+00\n", stderr: "" };
     }
@@ -1203,6 +1314,10 @@ test("checkLag uses createPgRunner — host mode passes psql directly", () => {
   const calls = [];
   const mockRunner = (cmd, args) => {
     calls.push({ cmd, args });
+    const sql = args.find((a) => typeof a === "string" && (a.includes("SELECT") || a.includes("IDENTIFY_SYSTEM"))) || "";
+    if (sql.includes("wal_status") || sql.includes("pg_replication_slots")) {
+      return { exitCode: 0, stdout: "reserved|1048576|6144\n", stderr: "" };
+    }
     if (cmd === "psql") {
       return { exitCode: 0, stdout: "1|1/1000|1/1000|2026-10-31 12:00:00+00\n", stderr: "" };
     }
@@ -1228,6 +1343,10 @@ test("checkLag primary LSN uses replication protocol (IDENTIFY_SYSTEM)", () => {
       const isIdentify = args.includes("IDENTIFY_SYSTEM;");
       if (isIdentify) {
         return { exitCode: 0, stdout: "729374172937|1|0/2000|\n", stderr: "" };
+      }
+      const sql = args.find((a) => typeof a === "string" && a.includes("wal_status")) || "";
+      if (sql.includes("wal_status")) {
+        return { exitCode: 0, stdout: "reserved|1048576|6144\n", stderr: "" };
       }
       return { exitCode: 0, stdout: "1|1/1000|1/1000|2026-10-31 12:00:00+00\n", stderr: "" };
     }
@@ -1259,6 +1378,10 @@ test("checkLag standby query goes to container port 5432 via docker exec", () =>
       if (isIdentify) {
         return { exitCode: 0, stdout: "729374172937|1|0/2000|\n", stderr: "" };
       }
+      const sql = args.find((a) => typeof a === "string" && a.includes("wal_status")) || "";
+      if (sql.includes("wal_status")) {
+        return { exitCode: 0, stdout: "reserved|1048576|6144\n", stderr: "" };
+      }
       return { exitCode: 0, stdout: "1|1/1000|1/1000|2026-10-31 12:00:00+00\n", stderr: "" };
     }
     return { exitCode: 0, stdout: "", stderr: "" };
@@ -1267,9 +1390,9 @@ test("checkLag standby query goes to container port 5432 via docker exec", () =>
   const res = checkLag("board", { pgRunner: "docker" }, { runner: mockRunner });
   assert.equal(res.success, true);
 
-  // Find the standby query call (has pg_is_in_recovery or pg_last_wal)
+  // Find the standby query call (has psql or pg_is_in_recovery)
   const standbyCalls = calls.filter(
-    (c) => c.cmd === "docker" && !c.args.includes("IDENTIFY_SYSTEM;")
+    (c) => c.cmd === "docker" && c.args.some((arg) => arg.includes("pg_is_in_recovery"))
   );
   assert.ok(standbyCalls.length >= 1, "Standby query was made");
   for (const call of standbyCalls) {
@@ -1382,6 +1505,80 @@ test("resolvePrimaryEndpoint auto-detects from standby primary_conninfo when env
     if (oldHost !== undefined) process.env.PRIMARY_PG_HOST = oldHost;
     if (oldPort !== undefined) process.env.PRIMARY_PG_PORT = oldPort;
   }
+});
+
+test("resolvePrimaryEndpoint reads primary_conninfo from postgresql.auto.conf via docker exec when SHOW primary_conninfo fails", () => {
+  const oldHost = process.env.PRIMARY_PG_HOST;
+  const oldPort = process.env.PRIMARY_PG_PORT;
+  delete process.env.PRIMARY_PG_HOST;
+  delete process.env.PRIMARY_PG_PORT;
+  try {
+    const mockRunner = (cmd, args) => {
+      if (cmd === "docker" && args.includes("cat")) {
+        return {
+          exitCode: 0,
+          stdout: "primary_conninfo = 'host=192.0.2.77 port=15433 user=myr_replicator'\n",
+          stderr: "",
+        };
+      }
+      if (cmd === "psql") {
+        return { exitCode: 1, stdout: "", stderr: "ERROR: permission denied for parameter primary_conninfo" };
+      }
+      return { exitCode: 1, stdout: "", stderr: "" };
+    };
+    const ep = resolvePrimaryEndpoint({ pgRunner: "docker" }, "board", { runner: mockRunner });
+    assert.equal(ep.host, "192.0.2.77");
+    assert.equal(ep.port, 15433);
+    assert.equal(ep.source, "conninfo");
+  } finally {
+    if (oldHost !== undefined) process.env.PRIMARY_PG_HOST = oldHost;
+    if (oldPort !== undefined) process.env.PRIMARY_PG_PORT = oldPort;
+  }
+});
+
+test("resolvePrimaryEndpoint reads primary_conninfo from postgresql.auto.conf via fsOps in host mode", () => {
+  const oldHost = process.env.PRIMARY_PG_HOST;
+  const oldPort = process.env.PRIMARY_PG_PORT;
+  delete process.env.PRIMARY_PG_HOST;
+  delete process.env.PRIMARY_PG_PORT;
+  try {
+    const mockFs = {
+      existsSync: (p) => p.endsWith("postgresql.auto.conf"),
+      readFileSync: () => "primary_conninfo = 'host=192.0.2.88 port=15434 user=myr_replicator'\n",
+    };
+    const ep = resolvePrimaryEndpoint({ pgRunner: "host", dataDir: "/srv/standby/myrmidon-pg/data" }, "board", { fsOps: mockFs });
+    assert.equal(ep.host, "192.0.2.88");
+    assert.equal(ep.port, 15434);
+    assert.equal(ep.source, "conninfo");
+  } finally {
+    if (oldHost !== undefined) process.env.PRIMARY_PG_HOST = oldHost;
+    if (oldPort !== undefined) process.env.PRIMARY_PG_PORT = oldPort;
+  }
+});
+
+test("setupStandby drops and recreates lost inactive replication slot and reports in result", () => {
+  const w = makeWorld();
+  const { fsOps } = makeFs();
+  w.slotRow = "lost|0";
+
+  const res = setupStandby(
+    "board",
+    { replicatorPassword: "pw", pgRunner: "host", readinessDelayMs: 0, ...PRIMARY },
+    { runner: w.runner, fsOps }
+  );
+  assert.equal(res.success, true);
+  assert.equal(res.slotRecreated, true);
+  assert.equal(res.slotAction, "recreated_lost_inactive");
+
+  const dropCall = w.events.find(
+    (e) => isPsqlEvent(e) && e.args.some((a) => a.includes("pg_drop_replication_slot('standby_board_slot')"))
+  );
+  assert.ok(dropCall, "pg_drop_replication_slot must be called for lost inactive slot");
+
+  const createCall = w.events.find(
+    (e) => isPsqlEvent(e) && e.args.some((a) => a.includes("pg_create_physical_replication_slot"))
+  );
+  assert.ok(createCall, "pg_create_physical_replication_slot must be called after drop");
 });
 
 test("planRehearsal default drillDir is in-container path", () => {
@@ -2068,10 +2265,10 @@ test("rehearse --keep-drill needs real secrets, listens beyond loopback and STAR
   const w0 = makeWorld();
   const refused = executeRehearsal("board", { pgRunner: "docker", keepDrill: true }, { runner: w0.runner, fsOps: makeForbiddenFs(), env: {} });
   assert.equal(refused.success, false);
-  assert.match(refused.error, /BETTER_AUTH_SECRET and PAPERCLIP_DB_PASSWORD/);
+  assert.match(refused.error, /BETTER_AUTH_SECRET and MYRMIDON_DB_PASSWORD/);
   assert.equal(w0.calls.length, 0);
 
-  const env = { BETTER_AUTH_SECRET: "drill-secret", PAPERCLIP_DB_PASSWORD: "drill-pw" };
+  const env = { BETTER_AUTH_SECRET: "drill-secret", MYRMIDON_DB_PASSWORD: "drill-pw" };
   const w = makeWorld();
   const res = executeRehearsal(
     "board",
@@ -2190,6 +2387,8 @@ test("drill board reaches the drill PG over the compose network, not host.docker
 test("compose ships no default secrets (no weak 'paperclip' password) and the standby healthcheck uses psql -tA", () => {
   assert.doesNotMatch(composeCode, /PAPERCLIP_DB_PASSWORD:-paperclip/);
   assert.doesNotMatch(composeCode, /PAPERCLIP_DB_PASSWORD:-[^}]/);
+  // the only default of the canonical name is its deprecated alias, itself without a default
+  assert.doesNotMatch(composeCode, /MYRMIDON_DB_PASSWORD:-(?!\$\{PAPERCLIP_DB_PASSWORD:-\}\})/);
   assert.doesNotMatch(composeCode, /BETTER_AUTH_SECRET:-[^}]/);
   assert.match(composeCode, /psql -U paperclip -d paperclip -tA -c 'SELECT pg_is_in_recovery\(\)::int'/);
   assert.doesNotMatch(composeCode, /grep -q t\b/);
@@ -2203,6 +2402,7 @@ test("wrapper forwards the primary port and secrets by name, and can run compose
   assert.doesNotMatch(wrapperText, /PG_REPLICATOR_PASSWORD=/);
   assert.doesNotMatch(wrapperText, /BETTER_AUTH_SECRET=/);
   assert.doesNotMatch(wrapperText, /PAPERCLIP_DB_PASSWORD=/);
+  assert.doesNotMatch(wrapperText, /MYRMIDON_DB_PASSWORD=/);
   assert.match(wrapperText, /-e PG_REPLICATOR_PASSWORD(\s|\\)/);
 });
 

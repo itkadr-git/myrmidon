@@ -11,6 +11,7 @@ import {
   isBotContainersEnabled,
   readBotContainerAgentConfig,
 } from "./agent-config.js";
+import { botResourceCeilingProblem } from "./resource-ceilings.js";
 
 describe("isBotContainersEnabled", () => {
   it("uses a switch saved from the UI only for the production environment", () => {
@@ -277,6 +278,17 @@ describe("botContainerCardSaveProblem (1.6.4-BOT-CONTAINER-CARD)", () => {
     expect(botContainerCardSaveProblem("hermes_gateway", { container: { enabled: false, image: "x" } })).toBeNull();
   });
 
+  it("accepts idleStopMode off as well as always_on and on_demand (OPE-12291)", () => {
+    for (const mode of ["on_demand", "always_on", "off"] as const) {
+      expect(
+        botContainerCardSaveProblem("hermes_gateway", { container: { ...VALID_CONTAINER_CONFIG, image: PINNED_IMAGE, idleStopMode: mode } }, {}),
+      ).toBeNull();
+    }
+    expect(
+      botContainerCardSaveProblem("hermes_gateway", { container: { ...VALID_CONTAINER_CONFIG, image: PINNED_IMAGE, idleStopMode: "sometimes" } }, {}),
+    ).toContain("idleStopMode must be always_on, on_demand or off");
+  });
+
   it("refuses a block without `enabled`, naming the field", () => {
     const problem = botContainerCardSaveProblem("hermes_gateway", { container: { image: "x" } });
     expect(problem).toContain("container.enabled must be true or false");
@@ -322,6 +334,34 @@ describe("botContainerCardSaveProblem (1.6.4-BOT-CONTAINER-CARD)", () => {
         container: { ...VALID_CONTAINER_CONFIG, hostPinned: "yes" as unknown as boolean },
       }),
     ).toContain("hostPinned must be a boolean");
+  });
+});
+
+describe("botResourceCeilingProblem (OPE-12337)", () => {
+  const limits = { memoryMb: 2048, cpus: 2, pidsLimit: 512 };
+  it("names dockergate enrollment field and ceiling for each exceeded resource", () => {
+    for (const [field, value, expected] of [
+      ["memoryMb", 3072, "bots[].maxMemoryMb"],
+      ["cpus", 3, "bots[].maxCpus"],
+      ["pidsLimit", 513, "bots[].maxPids"],
+    ] as const) {
+      const problem = botResourceCeilingProblem({ ...limits, [field]: value }, limits);
+      expect(problem).toContain(expected);
+      expect(problem).toContain(String(limits[field]));
+    }
+  });
+  it("accepts requests at the ceiling", () => {
+    expect(botResourceCeilingProblem(limits, limits)).toBeNull();
+  });
+  it("is invoked by botContainerCardSaveProblem when ceilings are provided", () => {
+    const problem = botContainerCardSaveProblem(
+      "hermes_gateway",
+      { container: { ...VALID_CONTAINER_CONFIG, memoryMb: 3072 } },
+      {},
+      limits,
+    );
+    expect(problem).toContain("bots[].maxMemoryMb");
+    expect(problem).toContain("2048");
   });
 });
 

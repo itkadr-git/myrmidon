@@ -137,6 +137,7 @@ const specOnlyContractFirstRoutes = new Set<string>([
   "PUT /api/updates/settings",
   "PATCH /api/updates/settings",
   "POST /api/updates/validate",
+  "POST /api/monitoring/zabbix-webhook",
   "GET /api/myrmidon/companies/{companyId}/knowledge/search",
   "GET /api/myrmidon/companies/{companyId}/knowledge/items",
   "GET /api/myrmidon/companies/{companyId}/knowledge/items/{idOrSlug}",
@@ -159,12 +160,19 @@ const specOnlyContractFirstRoutes = new Set<string>([
   "POST /api/myrmidon/companies/{companyId}/knowledge/suggestions/{suggestionId}/decline",
   "POST /api/myrmidon/companies/{companyId}/knowledge/import",
   "POST /api/myrmidon/companies/{companyId}/knowledge/mcp",
+  // myrmidon(1.7 KNOWLEDGE-2.0 L-11): the Settings → Knowledge routes are
+  // mounted from server/src/myrmidon/knowledge/ (see app.ts), outside the
+  // scanner's directory scope, and documented contract-first in openapi.ts.
+  "GET /api/myrmidon/companies/{companyId}/knowledge/settings",
+  "PATCH /api/myrmidon/companies/{companyId}/knowledge/settings",
   // admin-assistant routes are mounted directly by app.ts, outside the
   // scanner's route-file scope; their OpenAPI entries are contract-first here.
   "GET /api/admin-assistant/cluster-health",
   "GET /api/admin-assistant/health",
   "GET /api/admin-assistant/dry-run",
   "GET /api/companies/{companyId}/admin-assistant/cluster-health",
+  "GET /api/admin-assistant/stuck-runs",
+  "GET /api/companies/{companyId}/admin-assistant/stuck-runs",
 ]);
 
 function createApp() {
@@ -851,6 +859,8 @@ describe("openapi routes", () => {
       "/api/companies/{companyId}/admin-assistant/cluster-health",
       "/api/admin-assistant/cluster-health",
       "/api/admin-assistant/health",
+      "/api/companies/{companyId}/admin-assistant/stuck-runs",
+      "/api/admin-assistant/stuck-runs",
     ]) {
       const operation = spec.paths[path].get;
       expect(operation.responses["401"]).toBeDefined();

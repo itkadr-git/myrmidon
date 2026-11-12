@@ -17,6 +17,7 @@ import {
   formatUtcTime,
   resetGitHubRateLimitForTests,
 } from "./github-rate-limit.js";
+import type { GitHubRequestSource } from "./github-rate-limit.js";
 
 export interface PullRequestCiJob {
   id: number;
@@ -87,12 +88,22 @@ export interface PullRequestCiResult {
   successfulRuns: number;
   failedRuns: number;
   failedJobs: PullRequestFailedJob[];
+  optionalFailedJobs?: PullRequestFailedJob[];
   runs: PullRequestCiJob[];
+}
+
+export const DEFAULT_REQUIRED_CHECKS: readonly string[] = ["CI result", "hot files review"];
+
+export interface SummarizeCheckRunsOptions {
+  headSha?: string | null;
+  repository?: string;
+  pullNumber?: number;
+  requiredChecks?: readonly string[];
 }
 
 export function summarizeCheckRuns(
   runs: readonly PullRequestCiJob[],
-  _options?: { headSha?: string | null; repository?: string; pullNumber?: number },
+  options?: SummarizeCheckRunsOptions,
 ): {
   status: PullRequestCiStatus;
   conclusion: PullRequestCiConclusion;
@@ -103,6 +114,7 @@ export function summarizeCheckRuns(
   successfulRuns: number;
   failedRuns: number;
   failedJobs: PullRequestFailedJob[];
+  optionalFailedJobs?: PullRequestFailedJob[];
 } {
   const meta = runs as unknown as {
     authoritative?: boolean;
@@ -129,11 +141,11 @@ export function summarizeCheckRuns(
       successfulRuns: 0,
       failedRuns: 0,
       failedJobs: [],
+      optionalFailedJobs: [],
     };
   }
 
-  const totalRuns = runs.length;
-  if (totalRuns === 0) {
+  if (runs.length === 0) {
     return {
       status: meta?.status ?? "pending",
       conclusion: meta?.conclusion ?? "no_checks",
@@ -144,50 +156,111 @@ export function summarizeCheckRuns(
       successfulRuns: 0,
       failedRuns: 0,
       failedJobs: [],
+      optionalFailedJobs: [],
     };
   }
 
+  // myrmidon(OPE-12624): a re-run of one check outside its workflow run leaves
+  // the older `cancelled` run next to the newer one; drop a `cancelled` run when
+  // the same check (name compared case-insensitively, trimmed) has a later run
+  // (by `startedAt`, ties/empty resolved by the larger `id`). Only `cancelled`
+  // collapses — older failures stay visible next to a newer success.
+  const runStartKey = (run: PullRequestCiJob): { at: number; id: number } => ({
+    at: run.startedAt ? new Date(run.startedAt).getTime() : Number.NaN,
+    id: run.id,
+  });
+  const isOutdatedCancelledRun = (run: PullRequestCiJob): boolean => {
+    if (run.conclusion !== "cancelled") return false;
+    const start = runStartKey(run);
+    const normalizedName = run.name.trim().toLowerCase();
+    return runs.some((other) => {
+      if (other === run) return false;
+      if (other.name.trim().toLowerCase() !== normalizedName) return false;
+      const otherStart = runStartKey(other);
+      if (Number.isNaN(otherStart.at) || Number.isNaN(start.at)) {
+        return otherStart.id > start.id;
+      }
+      if (otherStart.at !== start.at) return otherStart.at > start.at;
+      return otherStart.id > start.id;
+    });
+  };
+
+  const effectiveRuns = runs.filter((r) => !isOutdatedCancelledRun(r));
+  const totalRuns = effectiveRuns.length;
+
+  const configuredRequired =
+    options?.requiredChecks ??
+    (process.env.CI_REQUIRED_CHECKS
+      ? process.env.CI_REQUIRED_CHECKS.split(",").map((s) => s.trim()).filter(Boolean)
+      : process.env.PULL_REQUEST_CI_REQUIRED_CHECKS
+        ? process.env.PULL_REQUEST_CI_REQUIRED_CHECKS.split(",").map((s) => s.trim()).filter(Boolean)
+        : DEFAULT_REQUIRED_CHECKS);
+
+  const requiredNamesSet = new Set(configuredRequired.map((s) => s.trim().toLowerCase()));
+
+  const isKnownOptional = (name: string) => {
+    const lower = name.trim().toLowerCase();
+    return lower === "main-green" || lower.startsWith("main-green");
+  };
+
+  const hasConfiguredRequiredInRuns = effectiveRuns.some((r) =>
+    requiredNamesSet.has(r.name.trim().toLowerCase()),
+  );
+
+  const isCheckRequired = (run: PullRequestCiJob): boolean => {
+    if (isKnownOptional(run.name)) {
+      return false;
+    }
+    if (options?.requiredChecks !== undefined || hasConfiguredRequiredInRuns) {
+      return requiredNamesSet.has(run.name.trim().toLowerCase());
+    }
+    return true;
+  };
+
   const failedJobs: PullRequestFailedJob[] = [];
+  const optionalFailedJobs: PullRequestFailedJob[] = [];
   let successfulRuns = 0;
+  let successfulRequiredRuns = 0;
   let inProgressCount = 0;
+  let inProgressRequiredCount = 0;
   let latestCompletedAt: string | null = null;
 
-  for (const run of runs) {
+  for (const run of effectiveRuns) {
     if (run.completedAt) {
       if (!latestCompletedAt || new Date(run.completedAt).getTime() > new Date(latestCompletedAt).getTime()) {
         latestCompletedAt = run.completedAt;
       }
     }
 
+    const required = isCheckRequired(run);
+
     if (run.status !== "completed") {
       inProgressCount++;
+      if (required) {
+        inProgressRequiredCount++;
+      }
       continue;
     }
 
     const conclusion = run.conclusion;
     if (conclusion === "success" || conclusion === "skipped" || conclusion === "neutral") {
       successfulRuns++;
-    } else if (
-      conclusion === "failure" ||
-      conclusion === "timed_out" ||
-      conclusion === "action_required" ||
-      conclusion === "cancelled"
-    ) {
-      failedJobs.push({
-        id: run.id,
-        name: run.name,
-        conclusion: conclusion ?? "failure",
-        url: run.url,
-        completedAt: run.completedAt,
-      });
+      if (required) {
+        successfulRequiredRuns++;
+      }
     } else {
-      failedJobs.push({
+      const failedJob: PullRequestFailedJob = {
         id: run.id,
         name: run.name,
-        conclusion: conclusion ?? "unknown",
+        conclusion: conclusion ?? (conclusion === null ? "unknown" : "failure"),
         url: run.url,
         completedAt: run.completedAt,
-      });
+      };
+      if (required) {
+        failedJobs.push(failedJob);
+      } else {
+        optionalFailedJobs.push(failedJob);
+      }
     }
   }
 
@@ -198,16 +271,20 @@ export function summarizeCheckRuns(
 
   if (failedRuns > 0) {
     conclusion = "failure";
-    status = inProgressCount > 0 ? "in_progress" : "completed";
-    summary = `failure (${failedRuns} failed, ${successfulRuns} passed${inProgressCount > 0 ? `, ${inProgressCount} running` : ""})`;
-  } else if (inProgressCount > 0) {
+    status = inProgressRequiredCount > 0 ? "in_progress" : "completed";
+    summary = `failure (${failedRuns} failed, ${successfulRequiredRuns} passed${inProgressRequiredCount > 0 ? `, ${inProgressRequiredCount} running` : ""})`;
+  } else if (inProgressRequiredCount > 0) {
     status = "in_progress";
     conclusion = "pending";
-    summary = `in progress (${inProgressCount} running, ${successfulRuns} passed)`;
+    summary = `in progress (${inProgressRequiredCount} running, ${successfulRequiredRuns} passed)`;
   } else {
     status = "completed";
     conclusion = "success";
-    summary = `success (${successfulRuns}/${totalRuns} passed)`;
+    if (optionalFailedJobs.length > 0) {
+      summary = `success (${successfulRuns}/${totalRuns} passed, ${optionalFailedJobs.length} optional failed (не влияет))`;
+    } else {
+      summary = `success (${successfulRuns}/${totalRuns} passed)`;
+    }
   }
 
   return {
@@ -220,6 +297,7 @@ export function summarizeCheckRuns(
     successfulRuns,
     failedRuns,
     failedJobs,
+    optionalFailedJobs,
   };
 }
 
@@ -453,6 +531,21 @@ export const CI_CACHE_COMPLETED_TTL_MS = 30 * 60 * 1000; // 30m for completed CI
 export const CI_CACHE_INCOMPLETE_TTL_MS = 60 * 1000; // 60s for incomplete CI
 export const PR_HEAD_CACHE_TTL_MS = 60 * 1000; // 60s for PR head
 
+// myrmidon(OPE-12397): `resolveForIssue` runs on every wake payload build; a
+// task (or its comment history) naming dozens of PRs must not multiply into
+// dozens of GitHub reads per run start. The task's own live PR work products
+// are the primary signal; anything beyond the cap is dropped, oldest link last.
+export const CI_RESOLVE_FOR_ISSUE_MAX_REFS = 10;
+
+/** PR work products whose state can no longer change (their reads never return). */
+export const TERMINAL_PULL_REQUEST_PRODUCT_STATUSES = new Set([
+  "merged",
+  "closed",
+  "abandoned",
+  "cancelled",
+  "canceled",
+]);
+
 interface CacheEntry {
   expiresAt: number;
   result: PullRequestCiResult;
@@ -503,9 +596,13 @@ export async function withCiResolveDeadline<T>(
 
 export function createPullRequestCiResolver(
   db: Db,
-  options: PullRequestCiResolverOptions = {},
+  options: PullRequestCiResolverOptions & { source?: GitHubRequestSource } = {},
 ): PullRequestCiResolver {
-  const rawFetch = options.fetch ?? fetch;
+  // myrmidon(OPE-12397): `run-context` for run-start / wake-payload builds
+  // (heartbeat), `ui-refresh` for UI-triggered calls (routes); the historical
+  // default keeps the pre-OPE-12397 label for callers without a bucket.
+  const { source = "run-context", ...resolverOptions } = options;
+  const rawFetch = resolverOptions.fetch ?? fetch;
   const fetchImpl: FetchLike = (input, init) => {
     const timeoutSignal = AbortSignal.timeout(GITHUB_REQUEST_TIMEOUT_MS);
     const signal = init?.signal ? AbortSignal.any([init.signal, timeoutSignal]) : timeoutSignal;
@@ -522,6 +619,7 @@ export function createPullRequestCiResolver(
       fetch: fetchImpl,
       tokenProvider,
       secretNames,
+      source,
     });
 
   return {
@@ -912,16 +1010,27 @@ export function createPullRequestCiResolver(
         }
       };
 
-      // 1. Work products for this issue
-      const products = await db
-        .select()
-        .from(issueWorkProducts)
-        .where(
-          and(
-            eq(issueWorkProducts.companyId, companyId),
-            eq(issueWorkProducts.issueId, issueId),
-          ),
-        );
+      // 1. Work products for this issue. myrmidon(OPE-12397): only live PR
+      // products — a merged/closed PR cannot change its CI, and re-reading it
+      // on every wake burned the rate budget; terminal products keep their
+      // stored metadata.
+      const products = (
+        await db
+          .select()
+          .from(issueWorkProducts)
+          .where(
+            and(
+              eq(issueWorkProducts.companyId, companyId),
+              eq(issueWorkProducts.issueId, issueId),
+            ),
+          )
+      ).filter((product) => {
+        if (product.type !== "pull_request") return false;
+        const status = typeof product.status === "string" ? product.status.toLowerCase() : "";
+        if (TERMINAL_PULL_REQUEST_PRODUCT_STATUSES.has(status)) return false;
+        const metaState = (product.metadata as Record<string, unknown> | null)?.state;
+        return !(typeof metaState === "string" && TERMINAL_PULL_REQUEST_PRODUCT_STATUSES.has(metaState.toLowerCase()));
+      });
 
       for (const product of products) {
         const candidateTexts: unknown[] = [product.url, product.title];
@@ -1011,7 +1120,12 @@ export function createPullRequestCiResolver(
       }
 
       const results: PullRequestCiResult[] = [];
-      for (const reference of references.values()) {
+      // myrmidon(OPE-12397): a ceiling on the GitHub reads one wake build
+      // spends — the task's own products come first in insertion order, then
+      // description, comments and children; beyond the cap, older references
+      // (duplicates aside) are dropped.
+      const cappedReferences = [...references.values()].slice(0, CI_RESOLVE_FOR_ISSUE_MAX_REFS);
+      for (const reference of cappedReferences) {
         try {
           const result = await this.resolveForPullRequest(companyId, reference);
           results.push(result);
@@ -1038,4 +1152,151 @@ export function createPullRequestCiResolver(
       return results;
     },
   };
+}
+
+export type PullRequestHeadLane = "test" | "lint";
+
+export interface PullRequestHeadLaneEvidence {
+  lane: PullRequestHeadLane;
+  name: string;
+  headSha: string | null;
+  state: "success" | "failure" | "pending" | "missing" | "unknown";
+  status: "queued" | "in_progress" | "completed" | "missing" | "unknown";
+  conclusion: string | null;
+  finishedAt: string | null;
+}
+
+export function isTestCheckRun(name: string): boolean {
+  const n = name.trim().toLowerCase();
+  return (
+    /\b(test|tests|vitest|jest|pytest)\b/.test(n) ||
+    n.startsWith("tests (") ||
+    n.startsWith("test (")
+  );
+}
+
+export function isLintCheckRun(name: string): boolean {
+  const n = name.trim().toLowerCase();
+  return (
+    /\b(lint|linter|typecheck|type-check|checks|eslint|biome)\b/.test(n) ||
+    n.startsWith("checks (") ||
+    n.includes("typecheck")
+  );
+}
+
+export function summarizeHeadLaneEvidence(
+  runs: readonly PullRequestCiJob[],
+  options?: { headSha?: string | null },
+): PullRequestHeadLaneEvidence[] {
+  const headSha = options?.headSha ?? null;
+  const testRuns = runs.filter((r) => isTestCheckRun(r.name));
+  const lintRuns = runs.filter((r) => isLintCheckRun(r.name));
+
+  function summarizeLane(
+    lane: PullRequestHeadLane,
+    laneRuns: readonly PullRequestCiJob[],
+  ): PullRequestHeadLaneEvidence {
+    if (laneRuns.length === 0) {
+      return {
+        lane,
+        name: lane,
+        headSha,
+        state: "missing",
+        status: "missing",
+        conclusion: null,
+        finishedAt: null,
+      };
+    }
+
+    const pendingRun = laneRuns.find(
+      (r) => r.status === "queued" || r.status === "in_progress" || (r.status as string) === "pending",
+    );
+    if (pendingRun) {
+      return {
+        lane,
+        name: pendingRun.name,
+        headSha,
+        state: "pending",
+        status: pendingRun.status,
+        conclusion: pendingRun.conclusion,
+        finishedAt: null,
+      };
+    }
+
+    const failedRun = laneRuns.find(
+      (r) =>
+        r.conclusion &&
+        r.conclusion !== "success" &&
+        r.conclusion !== "neutral" &&
+        r.conclusion !== "skipped",
+    );
+    if (failedRun) {
+      return {
+        lane,
+        name: failedRun.name,
+        headSha,
+        state: "failure",
+        status: failedRun.status,
+        conclusion: failedRun.conclusion,
+        finishedAt: failedRun.completedAt ?? null,
+      };
+    }
+
+    let latestCompletedAt: string | null = null;
+    for (const r of laneRuns) {
+      if (r.completedAt) {
+        if (!latestCompletedAt || new Date(r.completedAt).getTime() > new Date(latestCompletedAt).getTime()) {
+          latestCompletedAt = r.completedAt;
+        }
+      }
+    }
+
+    return {
+      lane,
+      name: lane,
+      headSha,
+      state: "success",
+      status: "completed",
+      conclusion: "success",
+      finishedAt: latestCompletedAt,
+    };
+  }
+
+  return [summarizeLane("test", testRuns), summarizeLane("lint", lintRuns)];
+}
+
+/**
+ * myrmidon(1.7-GOAL-JUDGE): formats authoritative pull request CI test / check runs
+ * into structured text suitable for goal-judge evaluation and review verification.
+ */
+export function formatAuthoritativeCiOutput(
+  ciResults: readonly PullRequestCiResult[],
+): string | null {
+  if (!ciResults || ciResults.length === 0) return null;
+  const sections: string[] = [];
+  for (const ci of ciResults) {
+    const lines: string[] = [];
+    lines.push(`PR #${ci.pullNumber} (${ci.repository}):`);
+    if (ci.headSha) lines.push(`Head SHA: ${ci.headSha}`);
+    lines.push(
+      `CI Status: ${ci.status}, Conclusion: ${ci.conclusion} (Authoritative: ${ci.authoritative ? "true" : "false"})`,
+    );
+    lines.push(`Summary: ${ci.summary}`);
+    if (ci.failedJobs.length > 0) {
+      lines.push("Failed checks:");
+      for (const job of ci.failedJobs) {
+        lines.push(`  - ${job.name}: ${job.conclusion}${job.url ? ` (${job.url})` : ""}`);
+      }
+    }
+    if (ci.runs.length > 0) {
+      lines.push("Check runs:");
+      for (const run of ci.runs) {
+        lines.push(
+          `  - ${run.name}: ${run.status}/${run.conclusion ?? "pending"}${run.url ? ` (${run.url})` : ""}`,
+        );
+      }
+    }
+    sections.push(lines.join("\n"));
+  }
+  return sections.join("\n\n");
 }

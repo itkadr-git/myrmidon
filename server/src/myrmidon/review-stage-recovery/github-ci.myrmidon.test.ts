@@ -36,6 +36,8 @@ const CHECK_RUNS = "/repos/acme/app/commits/abc123/check-runs?check_name=CI%20re
 // third-party workflows included.
 const ALL_CHECK_RUNS = "/repos/acme/app/commits/abc123/check-runs?filter=latest&per_page=100";
 const openPull = { state: "open", head: { sha: "abc123" } };
+/** A completed CI result check belonging to the current head. */
+const ciResultOnHead = (conclusion: string) => ({ name: "CI result", status: "completed", conclusion, head_sha: "abc123" });
 
 function fakeFetch(routes: Record<string, unknown>, calls: Array<{ path: string; headers: Record<string, string> }> = []) {
   return async (url: string, init?: RequestInit) => {
@@ -160,11 +162,11 @@ describe("resolvePullRequestHeadCi", () => {
         token: "token",
         fetch: fakeFetch({
           [PULL]: openPull,
-          [CHECK_RUNS]: { check_runs: [{ name: "CI result", status: runStatus, conclusion: null }] },
+          [CHECK_RUNS]: { check_runs: [{ name: "CI result", status: runStatus, conclusion: null, head_sha: "abc123" }] },
           [ALL_CHECK_RUNS]: {
             total_count: 2,
             check_runs: [
-              { name: "CI result", status: runStatus, conclusion: null },
+              { name: "CI result", status: runStatus, conclusion: null, head_sha: "abc123" },
               { name: "build", status: "completed", conclusion: "success" },
             ],
           },
@@ -184,8 +186,8 @@ describe("resolvePullRequestHeadCi", () => {
         [PULL]: openPull,
         [CHECK_RUNS]: {
           check_runs: [
-            { name: "CI result", status: "completed", conclusion: "cancelled" },
-            { name: "CI result", status: "completed", conclusion: "skipped" },
+            { name: "CI result", status: "completed", conclusion: "cancelled", head_sha: "abc123" },
+            { name: "CI result", status: "completed", conclusion: "skipped", head_sha: "abc123" },
           ],
         },
         [ALL_CHECK_RUNS]: {
@@ -204,11 +206,40 @@ describe("resolvePullRequestHeadCi", () => {
         token: "token",
         fetch: fakeFetch({
           [PULL]: openPull,
-          [CHECK_RUNS]: { check_runs: [{ name: "CI result", status: "completed", conclusion }] },
+          [CHECK_RUNS]: { check_runs: [ciResultOnHead(conclusion)] },
         }),
       });
-      expect(result).toEqual({ state: "complete", headSha: "abc123" });
+      // myrmidon(OPE-12176): the verdict travels with the state so review
+      // admission can tell green from red without a second GitHub read.
+      expect(result).toEqual({ state: "complete", headSha: "abc123", finalCheckConclusion: conclusion });
     }
+  });
+
+  it("preserves completed-final-check state without a conclusion but excludes superseded runs", async () => {
+    const missingConclusion = await resolvePullRequestHeadCi({
+      reference,
+      token: "token",
+      fetch: fakeFetch({
+        [PULL]: openPull,
+        [CHECK_RUNS]: { check_runs: [{ name: "CI result", status: "completed", head_sha: "abc123" }] },
+      }),
+    });
+    expect(missingConclusion).toEqual({ state: "complete", headSha: "abc123" });
+
+    const superseded = await resolvePullRequestHeadCi({
+      reference,
+      token: "token",
+      fetch: fakeFetch({
+        [PULL]: openPull,
+        [CHECK_RUNS]: {
+          check_runs: [
+            { name: "CI result", status: "completed", conclusion: "cancelled" },
+            { name: "CI result", status: "completed", conclusion: "skipped" },
+          ],
+        },
+      }),
+    });
+    expect(superseded).toEqual({ state: "pending", headSha: "abc123" });
   });
 
   it("reads the pull request and the final check only while the aggregate check answers", async () => {
@@ -217,7 +248,7 @@ describe("resolvePullRequestHeadCi", () => {
       reference,
       token: "token",
       fetch: fakeFetch(
-        { [PULL]: openPull, [CHECK_RUNS]: { check_runs: [{ name: "CI result", status: "completed", conclusion: "success" }] } },
+        { [PULL]: openPull, [CHECK_RUNS]: { check_runs: [ciResultOnHead("success")] } },
         calls,
       ),
     });
@@ -322,14 +353,14 @@ describe("resolvePullRequestHeadCi", () => {
           [CHECK_RUNS]: (headers: Record<string, string>) =>
             headers.authorization
               ? new Response("{}", { status: 403 })
-              : new Response(JSON.stringify({ check_runs: [{ name: "CI result", status: "completed", conclusion: "success" }] }), {
+              : new Response(JSON.stringify({ check_runs: [ciResultOnHead("success")] }), {
                   status: 200,
                 }),
         },
         calls,
       ),
     });
-    expect(result).toEqual({ state: "complete", headSha: "abc123" });
+    expect(result).toEqual({ state: "complete", headSha: "abc123", finalCheckConclusion: "success" });
     expect(calls.map((call) => Boolean(call.headers.authorization))).toEqual([true, false, true, false]);
   });
 });
@@ -516,7 +547,7 @@ describe("createReviewPullRequestCiResolver", () => {
         metadata: { repository: "acme/app", number: 7 },
       }]),
       tokenProvider: async () => "token",
-      fetch: fakeFetch({ [PULL]: openPull, [CHECK_RUNS]: { check_runs: [{ name: "CI result", status: "queued" }] } }),
+      fetch: fakeFetch({ [PULL]: openPull, [CHECK_RUNS]: { check_runs: [{ name: "CI result", status: "queued", head_sha: "abc123" }] } }),
     });
     expect(await resolver({ companyId: "company-1", issueId: "issue-1" })).toEqual({
       state: "pending",
@@ -535,7 +566,7 @@ describe("createReviewPullRequestCiResolver", () => {
         metadata: { repo: "acme/app", number: 7 },
       }]),
       tokenProvider: async () => "token",
-      fetch: fakeFetch({ [PULL]: openPull, [CHECK_RUNS]: { check_runs: [{ name: "CI result", status: "queued" }] } }),
+      fetch: fakeFetch({ [PULL]: openPull, [CHECK_RUNS]: { check_runs: [{ name: "CI result", status: "queued", head_sha: "abc123" }] } }),
     });
     expect(await resolver({ companyId: "company-1", issueId: "issue-1" })).toEqual({
       state: "pending",
@@ -568,7 +599,7 @@ describe("createReviewPullRequestCiResolver", () => {
         metadata: { url: "https://github.com/acme/app/pull/7" },
       }]),
       tokenProvider: async () => "token",
-      fetch: fakeFetch({ [PULL]: openPull, [CHECK_RUNS]: { check_runs: [{ name: "CI result", status: "queued" }] } }),
+      fetch: fakeFetch({ [PULL]: openPull, [CHECK_RUNS]: { check_runs: [{ name: "CI result", status: "queued", head_sha: "abc123" }] } }),
     });
     expect(await resolver({ companyId: "company-1", issueId: "issue-1" })).toEqual({
       state: "pending",
@@ -585,7 +616,7 @@ describe("createReviewPullRequestCiResolver", () => {
         metadata: { url: "https://github.com/acme/other/pull/9" },
       }]),
       tokenProvider: async () => "token",
-      fetch: fakeFetch({ [PULL]: openPull, [CHECK_RUNS]: { check_runs: [{ name: "CI result", status: "queued" }] } }),
+      fetch: fakeFetch({ [PULL]: openPull, [CHECK_RUNS]: { check_runs: [{ name: "CI result", status: "queued", head_sha: "abc123" }] } }),
     });
     expect(await resolver({ companyId: "company-1", issueId: "issue-1" })).toEqual({
       state: "pending",

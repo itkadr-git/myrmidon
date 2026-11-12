@@ -1,5 +1,5 @@
 group "default" {
-  targets = ["base", "claude", "codex", "gemini", "opencode", "pi", "hermes", "omp"]
+  targets = ["base", "claude", "codex", "gemini", "opencode", "pi", "hermes", "omp", "omp-ssh"]
 }
 
 variable "VERSION" { default = "dev" }
@@ -95,4 +95,19 @@ target "omp" {
   dockerfile = "docker/agent-runtime/Dockerfile.omp"
   platforms = ["linux/amd64"]
   tags = ["${REGISTRY}/agent-runtime-omp:${VERSION}"]
+}
+
+# myrmidon(OPE-12633 OMP-SSH-RUNNER): SSH execution target for omp_local agents
+# (omp, Bun, pnpm, gh and sshd on top of base).
+target "omp-ssh" {
+  context = "."
+  dockerfile = "docker/agent-runtime/Dockerfile.omp-ssh"
+  platforms = ["linux/amd64"]
+  tags = ["${REGISTRY}/agent-runtime-omp-ssh:${VERSION}"]
+  args = {
+    BASE_TAG = "${VERSION}"
+  }
+  contexts = {
+    "paperclipai/agent-runtime-base:${VERSION}" = "target:base"
+  }
 }

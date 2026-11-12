@@ -53,16 +53,30 @@ import {
 } from "@myrmidon/adapter-utils/server-utils";
 import { myrmidonInheritedProcessEnv, readInheritProcessEnvFlag } from "@myrmidon/adapter-utils/myrmidon-run-env";
 import {
+  parseLocalProcessFilesystemScope,
+  parseLocalProcessNetworkScope,
+  parseLocalProcessNetworkAllowlist,
+  parseLocalProcessSandboxExtraPaths,
+  type LocalProcessSandboxOptions,
+} from "@myrmidon/adapter-utils/local-process-sandbox";
+import {
   promptArgumentOverflowResult,
   writePromptFile,
   type PromptFile,
 } from "@myrmidon/adapter-utils/myrmidon-prompt-transport";
 import { shellQuote } from "@myrmidon/adapter-utils/ssh";
+import { isSshOperationAbortedError } from "@myrmidon/adapter-utils/ssh-abort"; // myrmidon(OPE-12801)
+import { describeSshRemoteRunStop } from "@myrmidon/adapter-utils/ssh-remote-run-stop"; // myrmidon(OPE-12801)
 import { PRODUCT_NAME } from "@myrmidon/adapter-utils";
-import { isOmpUnknownSessionError, parseOmpJsonl } from "./parse.js";
+import {
+  isOmpUnknownSessionError,
+  OMP_TOOL_CALLS_REJECTED_ERROR_CODE,
+  parseOmpJsonl,
+  summarizeOmpToolRejections,
+} from "./parse.js";
 import { ensureOmpModelConfiguredAndAvailable } from "./models.js";
 import { resolveOmpSkillsHome } from "./skills.js";
-import { prepareOmpRuntimeConfig } from "./runtime-config.js";
+import { prepareOmpRuntimeConfig, writeOmpManagedSettings } from "./runtime-config.js";
 import { SANDBOX_INSTALL_COMMAND } from "../index.js";
 
 const __moduleDir = path.dirname(fileURLToPath(import.meta.url));
@@ -319,6 +333,9 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   const command = asString(config.command, "omp");
   const model = asString(config.model, "").trim();
   const thinking = asString(config.thinking, "").trim();
+  const workspaceSyncMode = asString(config.workspaceSync, "full");
+  const effectiveWorkspaceSyncMode: "full" | "git_checkout" =
+    workspaceSyncMode === "git_checkout" ? "git_checkout" : "full";
 
   const provider = parseModelProvider(model);
   const modelId = parseModelId(model);
@@ -535,16 +552,117 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       return asStringArray(config.args);
     })();
 
+    // myrmidon(1.6.7 OPE-12266): the tool list is adapter-configurable. The default
+    // matches omp 18.9.2 built-ins verified via `omp --help`/`omp --tools`: `ls` is
+    // not a built-in tool (hard error) and `find` needs the `fd` binary in PATH.
+    const ompTools = (() => {
+      const raw = asString(config.tools, "").trim();
+      if (!raw) return "read,bash,edit,write,grep";
+      const entries = raw.split(",").map((item) => item.trim()).filter(Boolean);
+      return entries.length > 0 ? entries.join(",") : "read,bash,edit,write,grep";
+    })();
+
+    // myrmidon(1.6.7 OPE-12266): local process confinement, mirroring codex_local.
+    // The omp session dir (--session-dir) and the managed agent-config dir are
+    // read/write managed paths; local runs only (remote targets confine on the host).
+    const targetWorkspaceRealization = executionTarget?.workspaceRealization ?? null;
+    const localFilesystemScope = executionTargetIsRemote
+      ? null
+      : parseLocalProcessFilesystemScope(config.filesystemScope);
+    const localNetworkScope = executionTargetIsRemote
+      ? null
+      : parseLocalProcessNetworkScope(config.networkScope);
+    const localProcessSandbox: LocalProcessSandboxOptions | null =
+      (localFilesystemScope || localNetworkScope) && !executionTargetIsRemote
+        ? {
+            workspaceDir: effectiveExecutionCwd,
+            filesystemScope: localFilesystemScope,
+            managedPaths: [
+              { path: isolatedSessionDir, access: "rw" },
+              ...(localAgentConfigDir ? [{ path: localAgentConfigDir, access: "rw" as const }] : []),
+            ],
+            extraPaths: parseLocalProcessSandboxExtraPaths(config.filesystemExtraPaths),
+            pathAliases: targetWorkspaceRealization?.mode === "copy"
+              ? targetWorkspaceRealization.pathAliases
+              : [],
+            outboundRestorePaths: targetWorkspaceRealization?.outboundRestorePaths ?? [],
+            homeDir: localFilesystemScope ? path.dirname(isolatedSessionDir) : null,
+            networkScope: localNetworkScope,
+            networkAllowlist: parseLocalProcessNetworkAllowlist(config.networkAllowlist),
+            networkTrustedUrls: [
+              buildPaperclipEnv(agent).PAPERCLIP_API_URL,
+            ].filter((url): url is string => Boolean(url)),
+            command: asString(config.filesystemSandboxCommand, "bwrap"),
+          }
+        : null;
+    if (localProcessSandbox) {
+      const scopes = [
+        localFilesystemScope ? "workspace filesystem" : null,
+        localNetworkScope ? `${localNetworkScope} network` : null,
+      ]
+        .filter(Boolean)
+        .join(" and ");
+      await onLog(
+        "stdout",
+        `[paperclip] Confining OMP with ${scopes} scope.\n`,
+      );
+    }
+
     let restoreRemoteWorkspace: (() => Promise<void>) | null = null;
     let remoteRuntimeRootDir: string | null = null;
     let localSkillsDir: string | null = null;
     let paperclipBridge: Awaited<ReturnType<typeof startAdapterExecutionTargetPaperclipBridge>> = null;
     let managedRemoteAgentConfigDir: string | null = null;
 
+    // myrmidon(OPE-12801): an SSH run opts into signal-based cancellation
+    // before the workspace exchange. Without the opt-in the server only marked
+    // the run cancelled: the exchange went on, OMP was started for a cancelled
+    // run, and the workspace was restored minutes after the cancellation.
+    // With it the server aborts ctx.signal and waits for this function to
+    // return (60s), so everything after an abort has to be short: the exchange
+    // is stopped, OMP is stopped on the runner, the workspace is not restored.
+    const sshCancellable = executionTarget?.kind === "remote" && executionTarget.transport === "ssh";
+    const cancelledBeforeOmp = (): AdapterExecutionResult => ({
+      exitCode: null,
+      signal: null,
+      timedOut: false,
+      errorCode: "cancelled",
+      errorMessage: "The run was cancelled before OMP started.",
+      executionRecovery: { kind: "bootstrap", providerWorkStarted: false },
+      resultJson: {
+        executionCancellation: {
+          state: "acknowledged",
+          acknowledgedAt: new Date().toISOString(),
+          forced: false,
+        },
+      },
+    });
+    const noteWorkspaceNotRestored = async () => {
+      const message =
+        "The run was cancelled: the workspace was not restored from the SSH environment. " +
+        "Uncommitted work of this run stays in the run's directory on the runner until its cleanup.";
+      await onLog("stdout", `[paperclip] ${message}\n`).catch(() => undefined);
+      await ctx
+        .onEvent?.({
+          eventType: "lifecycle",
+          stream: "system",
+          level: "warn",
+          message,
+          payload: { reason: "run_cancelled", runtimeRootDir: remoteRuntimeRootDir },
+        })
+        .catch(() => undefined);
+    };
+    if (sshCancellable) {
+      await ctx.onCancellationReady?.();
+      if (ctx.signal?.aborted) return cancelledBeforeOmp();
+    }
+
     if (executionTargetIsRemote) {
       try {
         if (!localAgentConfigDir) {
           managedRemoteAgentConfigDir = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-omp-agent-config-"));
+          // myrmidon(OPE-12805): same managed omp settings as the provider-config dir.
+          await writeOmpManagedSettings(managedRemoteAgentConfigDir);
         }
         const effectiveAgentConfigDir = localAgentConfigDir || managedRemoteAgentConfigDir!;
         const remoteSkillsStagingDir = path.join(effectiveAgentConfigDir, "skills");
@@ -560,10 +678,12 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
           adapterKey: "omp",
           timeoutSec,
           workspaceLocalDir: cwd,
+          workspaceSyncMode: effectiveWorkspaceSyncMode,
           installCommand: SANDBOX_INSTALL_COMMAND,
           detectCommand: command,
           onProgress: (line) => onLog("stdout", line),
           onRuntimeProgress: ctx.onRuntimeProgress,
+          signal: sshCancellable ? ctx.signal : undefined, // myrmidon(OPE-12801)
           assets: [
             {
               key: "skills",
@@ -602,11 +722,26 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
           env.OMP_CODING_AGENT_DIR = preparedRemoteRuntime.assetDirs.agentConfig;
         }
       } catch (error) {
+        // myrmidon(OPE-12801): a cancelled exchange is the run's cancellation,
+        // not an adapter failure, and nothing is restored after it.
+        const cancelled = sshCancellable && (ctx.signal?.aborted === true || isSshOperationAbortedError(error));
         await Promise.allSettled([
-          restoreRemoteWorkspace?.(),
+          cancelled ? Promise.resolve() : restoreRemoteWorkspace?.(),
           managedRemoteAgentConfigDir ? fs.rm(managedRemoteAgentConfigDir, { recursive: true, force: true }).catch(() => undefined) : Promise.resolve(),
         ]);
+        if (cancelled) {
+          await onLog("stdout", "[paperclip] The run was cancelled during the workspace exchange; OMP was not started.\n").catch(() => undefined);
+          return cancelledBeforeOmp();
+        }
         throw error;
+      }
+      // myrmidon(OPE-12801): cancelled between the exchange and the start of
+      // OMP. OMP changed nothing, so there is nothing to restore.
+      if (sshCancellable && ctx.signal?.aborted) {
+        if (managedRemoteAgentConfigDir) {
+          await fs.rm(managedRemoteAgentConfigDir, { recursive: true, force: true }).catch(() => undefined);
+        }
+        return cancelledBeforeOmp();
       }
     }
 
@@ -823,7 +958,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       if (modelId) args.push("--model", modelId);
       if (thinking) args.push("--thinking", thinking);
 
-      args.push("--tools", "read,bash,edit,write,grep,find,ls");
+      args.push("--tools", ompTools);
 
       if (sessionToResume) {
         args.push("--session", sessionToResume);
@@ -882,6 +1017,28 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         onLog: bufferedOnLog,
         runLogTail: paperclipBridge?.runLogTail,
         settleRunDisposition: paperclipBridge?.settleRunDisposition,
+        localProcessSandbox,
+        // myrmidon(OPE-12801): OMP and everything it started are stopped on
+        // the runner when the run is cancelled or times out. A stop that could
+        // not be verified goes to the run's events.
+        signal: sshCancellable ? ctx.signal : undefined,
+        onRemoteRunStop: async (report) => {
+          if (report.ok) return;
+          await ctx.onEvent?.({
+            eventType: "lifecycle",
+            stream: "system",
+            level: "error",
+            message: describeSshRemoteRunStop(report),
+            payload: {
+              reason: "remote_run_stop_failed",
+              found: report.found,
+              survivors: report.survivors,
+              survivorPids: report.survivorPids,
+              forced: report.forced,
+              error: report.error,
+            },
+          });
+        },
       });
 
       if (stdoutBuffer) {
@@ -950,15 +1107,28 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       const stderrLine = firstNonEmptyLine(attempt.proc.stderr);
       const rawExitCode = attempt.proc.exitCode;
       const parsedError = attempt.parsed.errors.find((error) => error.trim().length > 0) ?? "";
-      const effectiveExitCode = (rawExitCode ?? 0) === 0 && parsedError ? 1 : rawExitCode;
-      const fallbackErrorMessage = parsedError || stderrLine || `OMP exited with code ${rawExitCode ?? -1}`;
+      // myrmidon(OPE-12806): omp exits 0 after the model gives up on rejected tool
+      // calls; such a run did no work and must not be recorded as succeeded.
+      const toolRejection =
+        (rawExitCode ?? 0) === 0 && !parsedError && !attempt.proc.signal
+          ? summarizeOmpToolRejections(attempt.parsed.toolCalls)
+          : null;
+      if (toolRejection) {
+        await onLog(
+          "stdout",
+          `[paperclip] ${toolRejection.message} Marking the run as failed (${OMP_TOOL_CALLS_REJECTED_ERROR_CODE}).\n`,
+        );
+      }
+      const effectiveExitCode = (rawExitCode ?? 0) === 0 && (parsedError || toolRejection) ? 1 : rawExitCode;
+      const fallbackErrorMessage =
+        parsedError || toolRejection?.message || stderrLine || `OMP exited with code ${rawExitCode ?? -1}`;
 
       return {
         exitCode: effectiveExitCode,
         signal: attempt.proc.signal,
         timedOut: false,
         errorMessage: (effectiveExitCode ?? 0) === 0 ? null : fallbackErrorMessage,
-        errorCode: attempt.proc.errorCode ?? null,
+        errorCode: attempt.proc.errorCode ?? (toolRejection ? OMP_TOOL_CALLS_REJECTED_ERROR_CODE : null),
         usage: {
           inputTokens: attempt.parsed.usage.inputTokens,
           outputTokens: attempt.parsed.usage.outputTokens,
@@ -1002,6 +1172,8 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       );
 
       const initialSessionToResume = canResumeSession ? runtimeSessionId : null;
+      // myrmidon(OPE-12801): cancelled while the session files were listed
+      if (sshCancellable && ctx.signal?.aborted) return cancelledBeforeOmp();
       const initial = await runAttempt(initialSessionToResume);
       const initialFailed =
         !initial.proc.timedOut && ((initial.proc.exitCode ?? 0) !== 0 || initial.parsed.errors.length > 0);
@@ -1009,6 +1181,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       if (
         canResumeSession &&
         initialFailed &&
+        !(sshCancellable && ctx.signal?.aborted) && // myrmidon(OPE-12801): no retry for a cancelled run
         isOmpUnknownSessionError(initial.proc.stdout, initial.rawStderr)
       ) {
         await onLog(
@@ -1022,9 +1195,15 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       return await toResult(initial, initialSessionToResume);
     } finally {
       await systemPromptFile?.cleanup().catch(() => undefined);
+      // myrmidon(OPE-12801): after a cancellation the workspace is not
+      // restored. The restore takes minutes, the server waits 60s for a
+      // cancelled adapter, and past that limit the watchdog does not return
+      // the task to the queue.
+      const skipRestore = sshCancellable && ctx.signal?.aborted === true && restoreRemoteWorkspace !== null;
+      if (skipRestore) await noteWorkspaceNotRestored();
       await Promise.all([
         paperclipBridge?.stop(),
-        restoreRemoteWorkspace?.(),
+        skipRestore ? Promise.resolve() : restoreRemoteWorkspace?.(),
         managedRemoteAgentConfigDir ? fs.rm(managedRemoteAgentConfigDir, { recursive: true, force: true }).catch(() => undefined) : Promise.resolve(),
       ]);
     }

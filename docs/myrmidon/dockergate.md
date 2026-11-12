@@ -82,7 +82,8 @@ Extra read-only bot mounts (shared directories) are described in
 | A6 | `POST .../myrmidon-bot-<K>[.helper]/start` | start |
 | A7 | `POST .../myrmidon-bot-<K>.helper/wait?condition=not-running` | wait for the helper |
 | A8 | `GET .../myrmidon-bot-<K>.helper/logs?stdout=true&stderr=true&tail=20` | helper log |
-| A9 | `DELETE .../myrmidon-bot-<K>[.next\|.helper]?force=true&v=true` | delete |
+| A9 | `DELETE .../myrmidon-bot-<K>[.next\|.helper]?force=true&v=true` | delete (the main container only stopped and with a created `.next`: a recreate step) |
+| A22 | `DELETE .../myrmidon-bot-<K>?force=true&v=true&myrmidon-decommission=true` | decommission (OPE-12654): the bot's agent left the bot runtime (another adapter, or terminated). Main container only, stopped (`created`, `exited`, `dead`; otherwise `state_precondition` `main_running`); a running `.next` or helper refuses it (`next_running`, `helper_running`). Stopped leftovers (`.next`, helper) are deleted first, then the main container without a replacement; the data directory `<volumeRoot>/<K>` and the quota project stay for the host GC pass (`bot_data_left_for_host_gc`, see [Decommission](#decommission-a22)). Rate-limited like the A9 delete of the main container (`stopPerWindow`) |
 | A10 | `POST .../myrmidon-bot-<K>/stop?t=30` | stop (only inside a recreate) |
 | A11 | `POST .../myrmidon-bot-<K>/restart?t=30` | restart (rate-limited) |
 | A18 | `POST .../myrmidon-bot-<K>/update` | update memory, memory-swap and pids without restart; the body is exactly `Memory`, `MemorySwap`, `PidsLimit` (integers, any other key is `json_unknown_key`), `MemorySwap` is from `Memory` to twice `Memory`, and the daemon gets a body that the gate rewrote from the checked numbers |
@@ -119,7 +120,7 @@ A JSON file. An unknown key at any level, or a missing required key, prevents st
 | `volumeRoot` | the host directory of bot volumes; a bot's volumes are `<root>/<botKey>/{hermes,workspace,scratch}`; the bot container's layout is the one its image's runtime contract declares: the single bind `<root>/<botKey>:/bot` (hard links cannot cross mounts, BOT-DISK-D), or the legacy form — the same three directories bound directly at `/data/hermes`, `/workspace` and `/scratch` in the driver's fixed order (contract `1` images without the scope label, BOT-LAYOUT-V); the helper containers keep three narrow binds of the same directories; `/bot` and `/data` are reserved container paths |
 | `mountSources` | host directories a bot may mount in addition, read-only only (an empty or missing list allows none). Every extra bind in a create body must start with one of these paths in full, carry the `ro` suffix and use a mount point outside `/workspace`, `/scratch`, `/bot` and `/tmp` — the three owner-data subtrees of `/data/hermes` are the only exception and are accepted at their real path inside the bot's own mount (1.6.5-BOT-DISK-H11, see [bot-extra-mounts.md](bot-extra-mounts.md#a-mount-point-inside-the-bots-own-volume-165-bot-disk-h-class-j)); otherwise `mount_source_not_allowed` or `binds_mismatch`. The list is also applied on `SIGHUP` |
 | `packageCacheRoot` | the host directory of the shared package cache, the same path as the board's instance setting (see [bot-disk-cache.md](bot-disk-cache.md)). Under it, and only there, a bot may mount the fixed subdirectories `pnpm`, `go-mod`, `go-build`, `gradle` read-write at `/cache/pnpm`, `/cache/go-mod`, `/cache/go-build`, `/cache/gradle`; any other writable bind is `mount_source_not_allowed`. The subdirectory `git` is accepted only as a **read-only** bind at `/cache/git` (the board's bare git mirrors, 1.6.2-BOT-DISK-C); `git` with `rw`, or at another mount point, is refused the same way. An absolute directory without `..`, `//` or a trailing `/`, outside `volumeRoot`. Empty or missing (the default) allows no cache bind. Applied on `SIGHUP` |
-| `botRuntimeRoot` | the host directory of the shared bot runtime (1.6.5-BOT-DISK-H11; the board's instance setting `general.botDisk.sharedBotRuntimePath`, see [bot-extra-mounts.md](bot-extra-mounts.md#the-shared-bot-runtime-165-bot-disk-h-class-c)). Under it, and only there, a bot may mount the fixed subdirectories `bin`, `lazy-packages` and `lsp` as **read-only** binds at the path the driver really uses inside the bot's own mount (`/bot/hermes/…`, `/bot-scope/<botKey>/hermes/…`, `/data/hermes/…`); another root, another subdirectory, another mount point or `rw` is `mount_source_not_allowed`. An absolute directory without `..`, `//` or a trailing `/`, outside `volumeRoot`, not overlapping `scopeRoot` or `packageCacheRoot`, not a parent of either. Empty or missing (the default) allows no runtime bind. Applied on `SIGHUP` |
+| `botRuntimeRoot` | the host directory of the shared bot runtime (1.6.5-BOT-DISK-H11; the board's instance setting `general.botDisk.sharedBotRuntimePath`, see [bot-extra-mounts.md](bot-extra-mounts.md#the-shared-bot-runtime-165-bot-disk-h-class-c)). Under it, and only there, a bot may mount the fixed subdirectory `bin` as a **read-only** bind at the path the driver really uses inside the bot's own mount (`/bot/hermes/…`, `/bot-scope/<botKey>/hermes/…`, `/data/hermes/…`); another root, another subdirectory, another mount point or `rw` is `mount_source_not_allowed`. An absolute directory without `..`, `//` or a trailing `/`, outside `volumeRoot`, not overlapping `scopeRoot` or `packageCacheRoot`, not a parent of either. Empty or missing (the default) allows no runtime bind. Applied on `SIGHUP` |
 | `scopeRoot` | the host directory of shared isolation-scope instances (BOT-DISK-F, see [bot-disk-cache.md](bot-disk-cache.md#isolation-scope-who-shares-a-disk)): one subdirectory `<kind>-<id>` per instance. A bot may bind only an instance listed in its own `bots[].scopeInstances`. An absolute directory without `..`, `//` or a trailing `/`, not `volumeRoot` and not a parent of it, not overlapping `packageCacheRoot`. Empty or missing (the default): `<volumeRoot>/.scopes` (a bot key can never begin with `.`, so it cannot collide with a bot directory). Applied on `SIGHUP` |
 | `network` | the single bot network |
 | `images` | a non-empty list of images, by digest only (`name@sha256:...`); a tag is not allowed |
@@ -141,7 +142,9 @@ code and, for a body-field refusal, the field path, the value length and the fir
 characters of its sha256. Request and response bodies, names from tar files, environment
 values, client headers and secrets are absent by construction. Events without a decision:
 `caller_decoy`, `reject_flood`, `caller_resolve_failed`, `caller_not_board_main`,
-`config_reload_failed`.
+`config_reload_failed`, and after an A22 decommission `bot_data_left_for_host_gc` (the data
+directory stays for the host GC pass), `disk_project_still_has_directory` (info; the quota
+project waits for the same pass), `quota_left_for_host_gc`, `disk_project_removed`.
 
 Reason codes: `caller_resolve_failed`, `caller_not_board_main`, `caller_pin_stale`,
 `target_form`, `method_not_allowed`, `api_version`, `route_not_allowed`, `header_forbidden`,
@@ -179,6 +182,33 @@ signals: `denyPeer` or `resolveDecoys` growing, denials beyond the expected ones
    directory as the board's setting (also a structural edit).
 4. Check: `dockergate check-config --config <file>`.
 5. Send `SIGHUP` to the dockergate process.
+
+## Decommission (A22)
+
+An agent that leaves the bot runtime — its card moves from `hermes_gateway` to another
+adapter, or it is terminated or deleted — is decommissioned by the board (OPE-12654): the
+reconcile sweep finds it every 10 minutes (`server/src/myrmidon/bot-containers/bot-decommission.ts`),
+the terminate/delete path calls it at once. The board stops a running container with the
+idle-stop route (A17) and then calls A22. The sweep holds a bot whose clone-hygiene report shows
+unpushed work (and a running bot without a usable report); the board log says so once per
+reason (`bot_decommission_held`).
+
+The data directory is not removed by the gate: it runs as uid 65532 and holds the volume
+root read-only, so its delete could never succeed. The host GC pass
+(`scripts/myrmidon/host-gc/host-clone-cache-gc.mjs`, OPE-12654) owns the removal instead:
+after the retention delay (24 h), and only when the board lists no `hermes_gateway` card for
+the agent (moved away, terminated or deleted), no heartbeat run of the agent is `running`,
+the gate holds no `myrmidon-bot-<K>` container (any state), and no git worktree under the
+directory holds unpushed work (uncommitted edits, stash, an operation in progress, commits
+on no remote), the pass removes `<volumeRoot>/<K>` and then clears the quota project's
+`/etc/projid` and `/etc/projects` entries and its limits. Every other case keeps the
+directory and journalling names the reason; an unreachable docker daemon or board keeps the
+directories (fail-closed). The gate answers the delete after the container delete and logs
+`bot_data_left_for_host_gc`; the quota project stays too (`Quota.Remove` refuses while the
+directory exists), the gate logs `disk_project_still_has_directory` (info) and
+`quota_left_for_host_gc` — the same host pass that removes the directory clears the entries
+after it. A member of a shared scope instance keeps its subdirectory under `scopeRoot`:
+A22 removes only the container.
 
 ## Members of a shared isolation scope (BOT-DISK-F)
 
@@ -253,7 +283,9 @@ container — and nothing else under that path.
    into the board container; the raw daemon socket is not mounted into it.
 3. dockergate runs as a separate unprivileged container: user 65532, a read-only file system,
    all capabilities dropped, memory and CPU limits set; only it gets access to the daemon
-   socket.
+   socket. The volume root is mounted at its own path, read-only for the volume checks of
+   A4; a decommission never needs it read-write — the container delete goes through A22 and
+   the data directory belongs to the host GC pass (see [Decommission](#decommission-a22)).
 4. In the board's environment `MYRMIDON_BOT_DOCKER_SOCKET=/run/myrmidon-dockergate/engine.sock`,
    restart the board (a window without rebuilding the bots).
 5. Acceptance: `check-config`, a full driver cycle (status, create, writeProfile, start,

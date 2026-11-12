@@ -9,18 +9,26 @@ import {
   issueApprovals,
   issueThreadInteractions,
   heartbeatRuns,
-  activityLog,
   issueRecoveryActions,
   issueComments,
   issues,
 } from "@myrmidon/db";
+// OPE-12797 (ORCH-IO-SPLIT): run-event commits in this adapter go through the
+// event sink (`createPostgresRunEventSink`), which owns the activity-log
+// receipt write; this module no longer imports `activityLog` directly.
 import { ISSUE_DISPOSITION_REPAIR_RETRY_REASON } from "@myrmidon/shared";
 import { parseObject } from "../../../adapters/utils.js";
 import { evaluateAgentInvokabilityFromDb } from "../../../services/agent-invokability.js";
 import { budgetService } from "../../../services/budgets.js";
 import { isHeartbeatWakeOnDemandEnabled } from "../../../services/heartbeat-policy.js";
 import { collectDispositionRepairSourceState } from "../../../services/recovery/disposition-repair.js";
-import { appendHeartbeatRunEvent } from "../../../services/heartbeat-run-events.js";
+import { createPostgresRunEventSink } from "./event-sink.js";
+import type { RunEventSink } from "../application/event-sink.js";
+import {
+  scheduledRetryPromotedEventCommand,
+  scheduledRetrySuppressedEventCommand,
+  staleQueuedRunCancelledEventCommand,
+} from "../domain/run-event-command.js";
 import { emitAgentTaskRun } from "../../../services/agent-task-run-telemetry.js";
 import { issueService } from "../../../services/issues.js";
 import { randomUUID } from "node:crypto";
@@ -202,6 +210,7 @@ export function createPostgresRunDispatchAdapter(
   const budgets = budgetService(db);
   const treeControlSvc = issueTreeControlService(db);
   const issuesSvc = issueService(db);
+  const runEventSink: RunEventSink = createPostgresRunEventSink();
 
   async function withIssueThenRunLocks<T>(
     input: { runId: string; companyId: string },
@@ -720,20 +729,17 @@ export function createPostgresRunDispatchAdapter(
       .returning();
     if (!row) return { applied: false };
 
-    await appendHeartbeatRunEvent(tx as unknown as Db, {
-      companyId: row.companyId,
-      runId: row.id,
-      agentId: row.agentId,
-      eventType: "lifecycle",
-      stream: "system",
-      level: "info",
-      message: "Scheduled retry became due and was promoted to the queued run pool",
-      payload: {
+    await runEventSink.commitRunEvent(
+      tx as unknown as Db,
+      scheduledRetryPromotedEventCommand({
+        companyId: row.companyId,
+        runId: row.id,
+        agentId: row.agentId,
         scheduledRetryAttempt: row.scheduledRetryAttempt,
-        scheduledRetryAt: row.scheduledRetryAt ? new Date(row.scheduledRetryAt).toISOString() : null,
+        scheduledRetryAt: row.scheduledRetryAt,
         scheduledRetryReason: row.scheduledRetryReason,
-      },
-    });
+      }),
+    );
 
     return { applied: true as const, run: row, postCommitEffects: [queuedEffect(row)] };
   }
@@ -792,21 +798,20 @@ export function createPostgresRunDispatchAdapter(
         );
     }
 
-    await appendHeartbeatRunEvent(tx as unknown as Db, {
-      companyId: row.companyId,
-      runId: row.id,
-      agentId: row.agentId,
-      eventType: "lifecycle",
-      stream: "system",
-      level: "warn",
-      message: input.reason,
-      payload: {
-        ...input.details,
-        scheduledRetryAttempt: row.scheduledRetryAttempt,
-        scheduledRetryAt: row.scheduledRetryAt ? new Date(row.scheduledRetryAt).toISOString() : null,
-        scheduledRetryReason: row.scheduledRetryReason,
-      },
-    });
+    await runEventSink.commitRunEvent(
+      tx as unknown as Db,
+      scheduledRetrySuppressedEventCommand(
+        {
+          companyId: row.companyId,
+          runId: row.id,
+          agentId: row.agentId,
+          scheduledRetryAttempt: row.scheduledRetryAttempt,
+          scheduledRetryAt: row.scheduledRetryAt,
+          scheduledRetryReason: row.scheduledRetryReason,
+        },
+        { reason: input.reason, details: input.details },
+      ),
+    );
 
     return { applied: true, run: row };
   }
@@ -959,6 +964,8 @@ export function createPostgresRunDispatchAdapter(
             timeoutConfigured: false,
             timeoutSource: "stale_queued_run_gate",
             timeoutFired: false,
+            failedBeforeModel: true,
+            failed_before_model: true,
           },
           updatedAt: now,
         })
@@ -1009,12 +1016,33 @@ export function createPostgresRunDispatchAdapter(
           );
           const replayBlocked =
             parseObject(evidence.automaticRecovery).replay === "blocked";
+          // The parked intent must carry the issue scope: every serving path
+          // (release drain, stranded-wake reconcile, terminal cleanup) reads
+          // `payload ->> 'issueId'`. A resurrection without it could never be
+          // served or cleaned up, so it is not created at all.
+          const wakeIssueId =
+            readNonEmptyString((payload as Record<string, unknown> | null)?.issueId) ?? issueId;
 
           if (
             originalWakeup &&
             (originalWakeup.resurrectionCount ?? 0) < 1 &&
-            !replayBlocked
+            !replayBlocked &&
+            wakeIssueId
           ) {
+            // myrmidon(WAKE-STALL-ROOT-A): park as ordinary deferred queue
+            // input — `deferred_issue_execution` scoped by
+            // `payload ->> 'issueId'`, WITHOUT an `executionWait` marker. A
+            // bare `pending` row is read by no scheduler, so the wake
+            // stranded and the agent idled; an `executionWait` row is
+            // intentionally exempt from the stranded-wake reconcile and
+            // would strand again once the hold clears. Unmarked, the row is
+            // served by the existing bounded paths: the release drain
+            // promotes it through full admission once the lock is free, the
+            // stranded-wake reconcile cancels it on a terminal task or
+            // expires it after 30 minutes and re-wakes the agent. A hold
+            // that re-appears at promotion time skips this row terminally
+            // (its resurrection_count is already 1), so the loop stays
+            // bounded.
             await tx
               .insert(agentWakeupRequests)
               .values({
@@ -1024,8 +1052,11 @@ export function createPostgresRunDispatchAdapter(
                 source: originalWakeup.source,
                 triggerDetail: originalWakeup.triggerDetail,
                 reason: "resurrection_execution_reconciliation_required",
-                payload: originalWakeup.payload,
-                status: "pending",
+                payload: {
+                  ...(payload as Record<string, unknown> | null),
+                  issueId: wakeIssueId,
+                },
+                status: "deferred_issue_execution",
                 requestedByActorType: originalWakeup.requestedByActorType,
                 requestedByActorId: originalWakeup.requestedByActorId,
                 idempotencyKey: `${originalWakeup.idempotencyKey ?? originalWakeup.id}:resurrection:${randomUUID()}`,
@@ -1055,27 +1086,13 @@ export function createPostgresRunDispatchAdapter(
           );
       }
 
-      await appendHeartbeatRunEvent(tx as unknown as Db, {
-        companyId: row.companyId,
-        runId: row.id,
-        agentId: row.agentId,
-        eventType: "lifecycle",
-        stream: "system",
-        level: "warn",
-        message: decision.reason,
-        payload: decision.details,
-      });
-      await tx.insert(activityLog).values({
-        companyId: row.companyId,
-        actorType: "system",
-        actorId: "queued-run-timeout",
-        action: "heartbeat_run.cancelled",
-        entityType: "heartbeat_run",
-        entityId: row.id,
-        agentId: row.agentId,
-        runId: row.id,
-        details: { reason: decision.reason, errorCode: decision.errorCode, ...decision.details },
-      });
+      await runEventSink.commitRunEvent(
+        tx as unknown as Db,
+        staleQueuedRunCancelledEventCommand(
+          { companyId: row.companyId, runId: row.id, agentId: row.agentId },
+          decision,
+        ),
+      );
       return {
         outcome: "cancelled",
         reason: decision.reason,
@@ -1084,11 +1101,42 @@ export function createPostgresRunDispatchAdapter(
       };
   }
 
+  // myrmidon(OPE-12577): the wake of the assignee's manager after a final run guard
+  // stop does not continue the assignee's execution. The stopped run keeps its
+  // environment lease for a moment after the stop, and that execution hold
+  // (execution_owner_active) must not make the manager's queued run stale: it was
+  // cancelled as execution_reconciliation_required and the task stayed blocked.
+  // Bound like isRunGuardStopNeedsInputWake: exact source and reason, a blocked
+  // issue, the run's agent being the assignee's reports_to or `adm`.
+  async function isRunGuardStopManagerRun(
+    tx: Db,
+    run: HeartbeatRun,
+    contextSnapshot: Record<string, unknown>,
+    issueId: string,
+  ): Promise<boolean> {
+    if (run.invocationSource !== "automation") return false;
+    if (contextSnapshot.source !== RUN_GUARD_STOP_NEEDS_INPUT_SOURCE) return false;
+    if (readNonEmptyString(contextSnapshot.wakeReason) !== RUN_GUARD_STOP_NEEDS_INPUT_WAKE_REASON) return false;
+    const [issue] = await tx
+      .select({ status: issues.status, assigneeAgentId: issues.assigneeAgentId })
+      .from(issues)
+      .where(and(eq(issues.companyId, run.companyId), eq(issues.id, issueId)))
+      .limit(1);
+    if (!issue || issue.status !== "blocked") return false;
+    return isRunGuardStopWakeRecipient(tx, {
+      companyId: run.companyId,
+      assigneeAgentId: issue.assigneeAgentId,
+      agentId: run.agentId,
+    });
+  }
+
   async function decideCurrentRunStaleness(tx: Db, run: HeartbeatRun, now: Date) {
     const contextSnapshot = parseObject(run.contextSnapshot);
     const issueId = readNonEmptyString(contextSnapshot.issueId);
     if (!issueId) return { issueId: null, facts: null, decision: { stale: false as const } };
-    const recovery = await getExecutionBlocker(tx, run.companyId, issueId, { conversationResetCommentId: deriveCommentId(contextSnapshot) });
+    const recovery = (await isRunGuardStopManagerRun(tx, run, contextSnapshot, issueId))
+      ? null
+      : await getExecutionBlocker(tx, run.companyId, issueId, { conversationResetCommentId: deriveCommentId(contextSnapshot) });
     if (recovery) return { issueId, facts: null, decision: { stale: true as const,
       errorCode: "execution_reconciliation_required" as const, reason: recovery.nextAction,
       details: { issueId, recoveryActionId: recovery.recoveryActionId },

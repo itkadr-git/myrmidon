@@ -279,7 +279,7 @@ describe("no dockergate data: previous behaviour, marked not measured", () => {
         freeBytes: 90,
         usedPercent: 10,
       }),
-      partitionClient: { readPartitionUsage: async () => null },
+      partitionClient: { readPartitionUsage: async () => null, readRootUsage: async () => null },
       partitionRuntime: rt,
     };
     const sweep = createHostDiskSweep(deps);
@@ -304,7 +304,7 @@ describe("no dockergate data: previous behaviour, marked not measured", () => {
         freeBytes: 90,
         usedPercent: 10,
       }),
-      partitionClient: { readPartitionUsage: async () => usage(91) },
+      partitionClient: { readPartitionUsage: async () => usage(91), readRootUsage: async () => null },
       partitionRuntime: rt,
     };
     const sweep = createHostDiskSweep(deps);

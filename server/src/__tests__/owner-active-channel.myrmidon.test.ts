@@ -363,5 +363,87 @@ describeEmbeddedPostgres(
       expect(third.channel).toBe("telegram");
       invalidateOwnerActiveChannelSettingsCache();
     });
+
+    it("deliverCommanderReportForDb delivers report to Telegram when active channel is telegram", async () => {
+      invalidateOwnerActiveChannelSettingsCache();
+      const fixture = await seedFixture();
+      await markOwnerActivity(db, { userId: fixture.boardUserId, channel: "telegram" });
+
+      const { deliverCommanderReportForDb } = await import(
+        "../myrmidon/cto-chat/report-delivery.js"
+      );
+
+      const result = await deliverCommanderReportForDb(db, {
+        companyId: fixture.companyId,
+        ownerUserId: fixture.boardUserId,
+        reportText: "Commander status: all subtasks on schedule",
+        metadata: {
+          agentId: fixture.agentId,
+        },
+      });
+
+      expect(result.targetChannel).toBe("telegram");
+      expect(result.delivered).toBe(true);
+      expect(result.channelResolved).toBe("telegram");
+      expect(result.destination).toMatch(/^telegram:publication:/);
+
+      const publications = await db
+        .select()
+        .from(chatPublications)
+        .where(eq(chatPublications.companyId, fixture.companyId));
+      expect(publications.length).toBeGreaterThanOrEqual(1);
+      const pub = publications.find(
+        (p) => (p.payload as { text?: string }).text?.includes("Commander status"),
+      );
+      expect(pub).toBeDefined();
+      expect(pub?.endpointId).toBe(fixture.endpointId);
+      invalidateOwnerActiveChannelSettingsCache();
+    });
+
+    it("deliverCommanderReportForDb delivers report to web when active channel is web", async () => {
+      invalidateOwnerActiveChannelSettingsCache();
+      const fixture = await seedFixture();
+      await markOwnerActivity(db, { userId: fixture.boardUserId, channel: "web" });
+
+      const { deliverCommanderReportForDb } = await import(
+        "../myrmidon/cto-chat/report-delivery.js"
+      );
+
+      const result = await deliverCommanderReportForDb(db, {
+        companyId: fixture.companyId,
+        ownerUserId: fixture.boardUserId,
+        reportText: "Commander status: active in web console",
+        metadata: {
+          agentId: fixture.agentId,
+        },
+      });
+
+      expect(result.targetChannel).toBe("web");
+      expect(result.delivered).toBe(true);
+      expect(result.channelResolved).toBe("web");
+      expect(result.destination).toBe(`web:notification:${fixture.companyId}`);
+      invalidateOwnerActiveChannelSettingsCache();
+    });
+
+    it("deliverCommanderReportForDb falls back to default destination when active channel is null", async () => {
+      invalidateOwnerActiveChannelSettingsCache();
+      const fixture = await seedFixture();
+
+      const { deliverCommanderReportForDb } = await import(
+        "../myrmidon/cto-chat/report-delivery.js"
+      );
+
+      const result = await deliverCommanderReportForDb(db, {
+        companyId: fixture.companyId,
+        ownerUserId: fixture.boardUserId,
+        reportText: "Commander status: fallback default",
+      });
+
+      expect(result.targetChannel).toBe("default");
+      expect(result.delivered).toBe(true);
+      expect(result.channelResolved).toBeNull();
+      expect(result.destination).toBe(`default:board:${fixture.companyId}`);
+      invalidateOwnerActiveChannelSettingsCache();
+    });
   },
 );
