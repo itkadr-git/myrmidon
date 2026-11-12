@@ -17,6 +17,7 @@ import {
   resolveExecutionWorkspaceEnvironmentId,
   resolvePinnedIssueWorkspaceStrategyType,
   resolveExecutionWorkspaceMode,
+  resolveRunExecutionWorkspaceMode,
   resolveSharedWorkspaceConcurrency,
   selectEnvironmentExecutionWorkspaceSettings,
 } from "../services/execution-workspace-policy.ts";
@@ -507,6 +508,49 @@ describe("execution workspace policy helpers", () => {
         managedSandboxEnvironmentId: null,
       }),
     ).toThrow(ManagedSandboxUnavailableError);
+  });
+
+  // OPE-12881 (REVIEW-NO-CLONE): a reviewer run must not materialize a full
+  // repository checkout on the bot volume. The workspace mode is forced to
+  // agent_default so no git worktree / clone is created.
+  it("forces agent_default workspace mode for reviewer runs (OPE-12881)", () => {
+    // Simulates the heartbeat branch: isolatedReviewerRun === true.
+    // requestedExecutionWorkspaceMode must become agent_default regardless of
+    // what resolveExecutionWorkspaceMode returned.
+    const resolvedMode = resolveExecutionWorkspaceMode({
+      projectPolicy: { enabled: true, defaultMode: "isolated_workspace" },
+      issueSettings: null,
+      legacyUseProjectWorkspace: null,
+    });
+    expect(resolvedMode).toBe("isolated_workspace");
+
+    // The reviewer branch overrides to agent_default:
+    const requestedExecutionWorkspaceMode = resolveRunExecutionWorkspaceMode({
+      isReviewerRun: true,
+      trustPresetKind: "standard",
+      resolvedMode,
+    });
+    expect(requestedExecutionWorkspaceMode).toBe("agent_default");
+
+    // Non-reviewer runs keep the resolved mode:
+    const engineerMode = resolveRunExecutionWorkspaceMode({
+      isReviewerRun: false,
+      trustPresetKind: "standard",
+      resolvedMode,
+    });
+    expect(engineerMode).toBe("isolated_workspace");
+
+    // And buildExecutionWorkspaceAdapterConfig with agent_default strips the
+    // workspaceStrategy, so realizeExecutionWorkspace sees project_primary and
+    // skips worktree creation entirely.
+    const adapterConfig = buildExecutionWorkspaceAdapterConfig({
+      agentConfig: { workspaceStrategy: { type: "git_worktree" } },
+      projectPolicy: { enabled: true, defaultMode: "isolated_workspace" },
+      issueSettings: null,
+      mode: "agent_default",
+      legacyUseProjectWorkspace: null,
+    });
+    expect(adapterConfig.workspaceStrategy).toBeUndefined();
   });
 
   it("maps persisted execution workspace modes back to issue settings", () => {

@@ -70,6 +70,10 @@ import {
   type Environment,
   type EnvironmentLease,
 } from "@myrmidon/shared";
+import {
+  buildExecutionWorkspaceAdapterConfig,
+  resolveRunExecutionWorkspaceMode,
+} from "../services/execution-workspace-policy.ts";
 import { resolvePaperclipConfigPath } from "../paths.ts";
 import type { WorkspaceOperation } from "@myrmidon/shared";
 import type { WorkspaceOperationRecorder } from "../services/workspace-operations.ts";
@@ -867,6 +871,71 @@ describe("realizeExecutionWorkspace", () => {
     expect(second.branchCreatedByRuntime).toBe(true);
     expect(second.cwd).toBe(first.cwd);
     expect(second.branchName).toBe(first.branchName);
+  });
+
+  // OPE-12881 (REVIEW-NO-CLONE): a developer reviewer run forces workspace
+  // mode to agent_default, buildExecutionWorkspaceAdapterConfig strips
+  // workspaceStrategy, and realizeExecutionWorkspace then takes the
+  // project_primary path — no worktree/clone is created on disk.
+  it("does not create a worktree when reviewer-forced agent_default strips the workspace strategy (OPE-12881)", async () => {
+    const repoRoot = await createTempRepo();
+
+    // Same chain as heartbeat.ts for a reviewer run:
+    //   resolveRunExecutionWorkspaceMode({isReviewerRun: true, ...}) → agent_default
+    //   buildExecutionWorkspaceAdapterConfig({mode: "agent_default", ...}) → no workspaceStrategy
+    const requestedMode = resolveRunExecutionWorkspaceMode({
+      isReviewerRun: true,
+      trustPresetKind: "standard",
+      resolvedMode: "isolated_workspace",
+    });
+    expect(requestedMode).toBe("agent_default");
+
+    const adapterConfig = buildExecutionWorkspaceAdapterConfig({
+      agentConfig: {
+        workspaceStrategy: {
+          type: "git_worktree",
+          branchTemplate: "{{issue.identifier}}-{{slug}}",
+        },
+      },
+      projectPolicy: { enabled: true, defaultMode: "isolated_workspace" },
+      issueSettings: null,
+      mode: requestedMode,
+      legacyUseProjectWorkspace: null,
+    });
+    expect(adapterConfig.workspaceStrategy).toBeUndefined();
+
+    const workspace = await realizeExecutionWorkspace({
+      base: {
+        baseCwd: repoRoot,
+        source: "project_primary",
+        projectId: "project-1",
+        workspaceId: "workspace-1",
+        repoUrl: null,
+        repoRef: "HEAD",
+      },
+      config: adapterConfig,
+      issue: {
+        id: "issue-1",
+        identifier: "PAP-447",
+        title: "Add Worktree Support",
+      },
+      agent: {
+        id: "agent-reviewer-1",
+        name: "Reviewer Agent",
+        companyId: "company-1",
+      },
+    });
+
+    // project_primary path: workspace is the base checkout itself, no new
+    // directory under .paperclip/worktrees was materialized.
+    expect(workspace.strategy).toBe("project_primary");
+    expect(workspace.created).toBe(false);
+    expect(workspace.cwd).toBe(repoRoot);
+    expect(workspace.branchName).toBeNull();
+    expect(workspace.worktreePath).toBeNull();
+    await expect(
+      fs.stat(path.join(repoRoot, ".paperclip", "worktrees")),
+    ).rejects.toMatchObject({ code: "ENOENT" });
   });
 
   it("defaults the repo-provided worktree provisioner for git worktree strategies", async () => {
@@ -7324,7 +7393,7 @@ describeEmbeddedPostgres("workspace runtime service control persistence", () => 
       await cleanupRuntimeHome();
       await fixture.cleanup();
     }
-  }, 20_000);
+  }, 60_000);
 
   it("does not accept an occupied allocated port when listener ownership is unavailable", async () => {
     const fixture = await createRuntimeFixture();

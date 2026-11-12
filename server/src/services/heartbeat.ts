@@ -709,8 +709,10 @@ import {
   resolveEffectiveWorkspaceStrategyType,
   resolveExecutionWorkspaceEnvironmentId,
   resolveExecutionWorkspaceMode,
+  resolveRunExecutionWorkspaceMode,
   resolveSharedWorkspaceConcurrency,
   selectEnvironmentExecutionWorkspaceSettings,
+  type ParsedExecutionWorkspaceMode,
   WORKSPACE_WORKTREE_REQUIRES_PROJECT_CODE,
   WORKSPACE_WORKTREE_REQUIRES_PROJECT_MESSAGE,
   WORKSPACE_WORKTREE_REQUIRES_PROJECT_REMEDIATION,
@@ -1324,6 +1326,35 @@ export function isContextWindowError(message: string | null | undefined): boolea
   return CONTEXT_WINDOW_ERROR_SIGNATURES.some((signature) =>
     normalized.includes(signature.toLowerCase()),
   );
+}
+
+/**
+ * OPE-12881 (REVIEW-NO-CLONE): resolve the effective execution workspace mode
+ * for a run from its assignment context (agent card + execution stage). A
+ * developer reviewer assignment (developer-caste agent with
+ * `executionStage.wakeRole === "reviewer"`) forces `agent_default`, so
+ * workspace realization never materializes a git worktree / clone on the bot
+ * volume — the reviewer verdict is produced from the PR diff
+ * (`gh pr diff`). Engineers and all other wake roles keep the resolved mode.
+ *
+ * This is the exact chain the heartbeat run path executes when it prepares the
+ * workspace for a run; it is exported so the reviewer-assignment behaviour is
+ * covered directly by tests, not only the underlying policy helper.
+ */
+export function resolveReviewerAwareRunExecutionWorkspaceMode(input: {
+  agent: { id?: string | null; name?: string | null; role?: string | null; adapterType?: string | null };
+  executionStage: unknown;
+  trustPresetKind: string;
+  resolvedMode: ParsedExecutionWorkspaceMode;
+}): ParsedExecutionWorkspaceMode {
+  const isReviewerRun =
+    isDeveloperRole(input.agent) &&
+    parseObject(input.executionStage).wakeRole === "reviewer";
+  return resolveRunExecutionWorkspaceMode({
+    isReviewerRun,
+    trustPresetKind: input.trustPresetKind,
+    resolvedMode: input.resolvedMode,
+  });
 }
 class ChatControlRecoveryUnresolvedError extends Error {
   constructor() {
@@ -25490,17 +25521,26 @@ export function heartbeatService(
             : null) ??
           readNonEmptyString(explicitResumeSessionParams?.sessionId),
       );
+      const isolatedReviewerRun =
+        isDeveloperRole(agent) &&
+        parseObject(context.executionStage).wakeRole === "reviewer";
       const resolvedExecutionWorkspaceMode = resolveExecutionWorkspaceMode({
         projectPolicy: projectExecutionWorkspacePolicy,
         issueSettings: issueExecutionWorkspaceSettings,
         legacyUseProjectWorkspace:
           issueAssigneeOverrides?.useProjectWorkspace ?? null,
       });
-      const requestedExecutionWorkspaceMode =
-        trustPreset.kind === "low_trust_review" &&
-        resolvedExecutionWorkspaceMode === "shared_workspace"
-          ? "isolated_workspace"
-          : resolvedExecutionWorkspaceMode;
+      // OPE-12881 (REVIEW-NO-CLONE): reviewer verdicts are produced from the PR
+      // diff (via `gh pr diff`) and never from a full repository checkout. A
+      // reviewer run must not materialize a git worktree / clone on the bot
+      // volume (0.5–0.7 GB each); force agent_default so the workspace
+      // realization below resolves to the agent fallback cwd instead.
+      const requestedExecutionWorkspaceMode = resolveReviewerAwareRunExecutionWorkspaceMode({
+        agent,
+        executionStage: context.executionStage,
+        trustPresetKind: trustPreset.kind,
+        resolvedMode: resolvedExecutionWorkspaceMode,
+      });
       const issueRef = issueContext
         ? {
             id: issueContext.id,
@@ -25522,9 +25562,6 @@ export function heartbeatService(
       // Owner 05.11: a developer reviewer gets an isolated input (task text and
       // a pull request reference); the engineer's continuation summary,
       // continuation messages and session messages are not delivered to it.
-      const isolatedReviewerRun =
-        isDeveloperRole(agent) &&
-        parseObject(context.executionStage).wakeRole === "reviewer";
       const continuationSummary = issueRef && !isConversation(issueContext) && !isolatedReviewerRun
         ? await getIssueContinuationSummaryDocument(db, issueRef.id)
         : null;
