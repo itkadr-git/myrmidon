@@ -216,9 +216,9 @@ describe("docker/bot-runtime/Dockerfile", () => {
     assert.match(dockerfile, /--extra mcp\b/);
     // The provider is not a python extra any more: the builder clones the exact commit the
     // bundled catalog entry names, verifies it, and the plugin's own declared dependencies
-    // are installed through hermes' plugin installer (never a bare `uv pip install`).
+    // are installed through pm's workspace-member sync (never a bare `uv pip install`).
     assert.match(dockerfile, /plugin-catalog\/hindsight\.yaml/);
-    assert.match(dockerfile, /install_for_plugin_dir/);
+    assert.match(dockerfile, /lock_and_sync/);
     assert.match(dockerfile, /git -C \/tmp\/hindsight-plugin rev-parse HEAD/);
     // And actually checked, not just requested.
     assert.match(dockerfile, /import aiohttp, mcp, hindsight_client/);
@@ -229,10 +229,11 @@ describe("docker/bot-runtime/Dockerfile", () => {
     assert.match(entrypoint, /ln -s "\$\{catalog_dir\}\/hindsight"/);
   });
 
-  it("overrides aiohttp, httpx2 and certifi with their patched versions after the sync, and fails the build below them (OPE-12760)", () => {
-    // The lockfile of the pinned hermes (v2026.9.24, 0.21.5) resolves aiohttp 3.14.3,
-    // httpx2 2.7.0 and certifi 2026.5.20, which carry known advisories. Exact pins go over
-    // the synced venv; drop this step when the pinned hermes is >= 0.22.5.
+  it("overrides aiohttp, httpx2 and certifi with their pinned versions after the sync, and fails the build below them (OPE-12760)", () => {
+    // The v0.23.1 uv.lock already carries aiohttp 3.14.5, httpx2 2.15.1 and certifi
+    // 2026.10.19, so the exact-pin install is a no-op verification pass; the build-time
+    // check still fails the image if a future hermes bump regresses any of the three
+    // below the floors OPE-12760 set (drop both when upstream enforces them).
     const joined = dockerfileInstructions.replace(/\\\n\s*/g, " ");
     const install = joined.match(/^RUN uv pip install --python \/opt\/hermes-src\/\.venv\/bin\/python (.*)$/m);
     assert.ok(install, "expected a `uv pip install --python /opt/hermes-src/.venv/bin/python ...` override step");
@@ -244,17 +245,17 @@ describe("docker/bot-runtime/Dockerfile", () => {
     assert.match(check[1], /'httpx2': '2\.12\.0'/);
     assert.match(check[1], /'certifi': '2026\.10\.19'/);
     assert.match(check[1], /sys\.exit\(/);
-    // Order: after the sync, and after the Hindsight plugin installer (it resolves under hermes'
-    // core constraints from pyproject.toml, aiohttp==3.14.3, and would put aiohttp back if it ran
-    // later), check right after the install, all inside the builder stage.
+    // Order: after the uv sync, after the Hindsight plugin workspace-member sync
+    // (`lock_and_sync` — v0.23.1 removed hermes_cli.plugin_python_deps, the plugin is a
+    // uv workspace member now), check right after the install, all in the builder stage.
     const syncIdx = joined.indexOf("uv sync --frozen");
-    const pluginIdx = joined.indexOf("install_for_plugin_dir");
+    const pluginIdx = joined.indexOf("lock_and_sync");
     const installIdx = joined.indexOf(install[0]);
     const checkIdx = joined.indexOf(check[0]);
-    const runtimeIdx = joined.indexOf("FROM python:3.13-slim AS runtime");
+    const runtimeIdx = joined.indexOf("FROM python:3.14-slim AS runtime");
     assert.ok(syncIdx > 0, "expected uv sync --frozen in the builder stage");
-    assert.ok(pluginIdx > syncIdx, "expected the plugin installer after uv sync");
-    assert.ok(installIdx > pluginIdx, "expected the override after the plugin installer, which would otherwise reinstall aiohttp 3.14.3");
+    assert.ok(pluginIdx > syncIdx, "expected the plugin workspace sync after uv sync");
+    assert.ok(installIdx > pluginIdx, "expected the override after the plugin workspace sync, which would otherwise re-resolve aiohttp");
     assert.ok(checkIdx > installIdx, "expected the version check after the override");
     assert.ok(runtimeIdx > checkIdx, "expected the override and its check before the runtime stage");
   });
