@@ -161,9 +161,10 @@ function defaultLog() {
 }
 
 /**
- * The production fork: same entrypoint, same execArgv (tsx loader included),
- * role pinned through env so the dockergate argv check sees no difference
- * (design §6 — the worker stays tini's first child with the unchanged argv).
+ * The production fork: same entrypoint, same execArgv (parent runs loader-free
+ * in the prod image — the child inherits exactly that), role pinned through env
+ * so the dockergate argv check sees no difference (design §6 — the worker stays
+ * tini's first child with the unchanged argv).
  */
 export function defaultForkChild(env: NodeJS.ProcessEnv, execArgv: string[]): ChildProcess {
   return fork(process.argv[1], [], {
