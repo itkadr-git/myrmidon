@@ -776,6 +776,46 @@ describeEmbeddedPostgres("stack release check", () => {
     }
   });
 
+  it("http-version probe reads litellm_version from the LiteLLM model hub endpoint", async () => {
+    const realFetch = globalThis.fetch;
+    const seen: string[] = [];
+    globalThis.fetch = (async (url: RequestInfo | URL) => {
+      seen.push(String(url));
+      return new Response(JSON.stringify({ litellm_version: "v1.74.2" }), { status: 200 });
+    }) as typeof globalThis.fetch;
+    const saved = process.env.MYRMIDON_STACK_HTTP_LITELLM;
+    process.env.MYRMIDON_STACK_HTTP_LITELLM = "http://litellm.local:4000";
+    try {
+      const doc = await collectStackLocal({ now: NOW, serverInfo: { processStartedAt: "", git: { available: false, unavailableReason: "git_unavailable" } }, images: fakeImages({}) });
+      const litellm = doc.components.find((c) => c.name === "litellm")!;
+      expect(seen).toEqual(["http://litellm.local:4000/public/model_hub/info"]);
+      expect(litellm.local.version).toBe("v1.74.2");
+      expect(litellm.local.runningOn).toBe("http://litellm.local:4000");
+      expect(litellm.local.unknownReason).toBeNull();
+    } finally {
+      globalThis.fetch = realFetch;
+      if (saved === undefined) delete process.env.MYRMIDON_STACK_HTTP_LITELLM;
+      else process.env.MYRMIDON_STACK_HTTP_LITELLM = saved;
+    }
+  });
+
+  it("http-version probe reports an honest unknown when litellm answers without its version field", async () => {
+    const realFetch = globalThis.fetch;
+    globalThis.fetch = (async () => new Response(JSON.stringify({}), { status: 200 })) as typeof globalThis.fetch;
+    const saved = process.env.MYRMIDON_STACK_HTTP_LITELLM;
+    process.env.MYRMIDON_STACK_HTTP_LITELLM = "http://litellm.local:4000";
+    try {
+      const doc = await collectStackLocal({ now: NOW, serverInfo: { processStartedAt: "", git: { available: false, unavailableReason: "git_unavailable" } }, images: fakeImages({}) });
+      const litellm = doc.components.find((c) => c.name === "litellm")!;
+      expect(litellm.local.version).toBeNull();
+      expect(litellm.local.unknownReason).toContain("answered without a version field");
+    } finally {
+      globalThis.fetch = realFetch;
+      if (saved === undefined) delete process.env.MYRMIDON_STACK_HTTP_LITELLM;
+      else process.env.MYRMIDON_STACK_HTTP_LITELLM = saved;
+    }
+  });
+
   it("binds paperclip component to supported migration schema version", async () => {
     const doc = await collectStackLocal({
       now: NOW,

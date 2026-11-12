@@ -159,11 +159,13 @@ const HTTP_VERSION_REQUEST_TIMEOUT_MS = 5_000;
 /**
  * The endpoint each http-version component is probed on, relative to the base
  * URL the operator binds through MYRMIDON_STACK_HTTP_<NAME> (the documented
- * contract: one GET <base>/<endpoint> returning JSON with a `version` field).
+ * contract: one GET <base>/<endpoint> returning JSON with a version field).
+ * LiteLLM has no /version route; its public model-hub info endpoint answers
+ * the version as `litellm_version` (see httpVersionField on the seed).
  */
 const HTTP_VERSION_ENDPOINT_PATHS: Record<string, string> = {
   hindsight: "/version",
-  litellm: "/version",
+  litellm: "/public/model_hub/info",
   langfuse: "/api/public/health",
 };
 
@@ -197,11 +199,12 @@ async function httpJsonRequest(url: URL): Promise<HttpJsonResponse> {
 }
 
 /**
- * Parse an HTTP version response body: JSON with a `version` or `api_version`
- * field (non-empty string). Any other shape answers null (an honest unknown
- * instead of crashing).
+ * Parse an HTTP version response body: JSON with the component's preferred
+ * version field (when the seed names one) or the generic `version` /
+ * `api_version` field (non-empty string). Any other shape answers null (an
+ * honest unknown instead of crashing).
  */
-function extractVersionField(body: string): string | null {
+function extractVersionField(body: string, preferredField?: string): string | null {
   let parsed: unknown;
   try {
     parsed = JSON.parse(body);
@@ -210,7 +213,9 @@ function extractVersionField(body: string): string | null {
   }
   if (!parsed || typeof parsed !== "object") return null;
   const obj = parsed as Record<string, unknown>;
-  for (const raw of [obj.version, obj.api_version]) {
+  const fields = preferredField ? [preferredField, "version", "api_version"] : ["version", "api_version"];
+  for (const field of fields) {
+    const raw = obj[field];
     if (typeof raw === "string" && raw.trim().length > 0) {
       return raw.trim();
     }
@@ -222,7 +227,9 @@ function extractVersionField(body: string): string | null {
  * http-version probe (STACK-WATCH-LIVE): read the component's own version over
  * HTTP. The endpoint URL never ships in the seed — only the env var name is
  * seeded; the operator binds the address through MYRMIDON_STACK_HTTP_<NAME>.
- * A missing binding is an honest per-component unknown, never a check failure.
+ * A seed may name the JSON field the version rides in (httpVersionField, e.g.
+ * litellm_version). A missing binding is an honest per-component unknown,
+ * never a check failure.
  */
 async function probeHttpVersion(seed: StackSeedComponent): Promise<StackSnapshot["local"]> {
   const states: StackSnapshot["local"] = {
@@ -271,7 +278,7 @@ async function probeHttpVersion(seed: StackSeedComponent): Promise<StackSnapshot
     states.unknownReason = `http version endpoint ${url.toString()} answered ${res.status}`;
     return states;
   }
-  const version = extractVersionField(res.body);
+  const version = extractVersionField(res.body, seed.httpVersionField);
   if (!version) {
     states.unknownReason = `http version endpoint ${url.toString()} answered without a version field`;
     return states;
