@@ -12,6 +12,74 @@ version file to edit. Base Paperclip version is in the image label
 
 ## 1.6.7
 
+### IDLE-STOP works for fleetd bots: stopIdle route, idle-stopped mark, one warning per process (OPE-12663)
+
+- fleetd gains `POST /v1/bots/<key>/stopIdle`: it stops the container and records an
+  `hermes/.myrmidon/idle-stopped.json` mark in the bot's volume root, the same contract the
+  local docker driver has. The status and list answers carry `idleStopped: true` while the
+  mark stands; a wake (`start`) or an operator stop clears it. A docker container in any
+  non-running state (e.g. `exited`) now reads as `stopped`, so the reconciler honors the
+  mark and leaves the container down until the next run wakes it.
+- The fleetd driver client (`fleetd-driver.ts`) gained `stopIdle`, so IDLE-STOP stops bots
+  on a fleetd host instead of logging the unsupported-driver error.
+- The sweeper logs "driver cannot idle-stop" as a single warning per process instead of an
+  error on every sweep (the condition is permanent; a real stop failure still logs an error
+  per occurrence).
+
+### Stack registry: LiteLLM local version probe reads /public/model_hub/info (OPE-12718)
+
+- LiteLLM has no `/version` route, so the http-version probe always answered
+  "unreachable / 404" and the board showed no running version for the litellm
+  component. The probe now targets LiteLLM's public model-hub endpoint
+  `/public/model_hub/info` and reads the version from its `litellm_version`
+  field; the generic `version` / `api_version` fields stay accepted as
+  fallbacks. A bare base URL in `MYRMIDON_STACK_HTTP_LITELLM` is now enough —
+  the documented endpoint is appended automatically, as for hindsight and
+  Langfuse.
+
+### The pnpm store sits on the same mount as the task clones (OPE-12720)
+
+- On the bots disk the shared pnpm store of 1.6.5-1.6.7 (`/cache/pnpm-store`) was on the root
+  disk, while the task clones live under the bot's own bind mount. A hard link cannot cross a
+  mount point, so pnpm copied ~3 GB of `node_modules` into every clone. The store is now
+  `/workspace/.pnpm-store`: the per-bot store of BOT-DISK-D on the clones' own mount, chowned to
+  the bot and skipped by the draft sweep. It is not `/bot/.pnpm-store`: the `/bot` root is
+  root-owned (0711) on a production host, the bot user cannot create an entry there and every
+  `pnpm install` would fail with `EACCES`.
+- `/workspace/.pnpm-store` is also the previous image's own default, so the board can roll out
+  before the image: the profile `.env` it rewrites for a bot whose container still runs the
+  previous image names a path that image can write (no ordering between board and image is
+  required). A stored `general.botDisk.pnpmStoreDir` of `/cache/pnpm-store` reads as
+  `/workspace/.pnpm-store` with a note in the log; the setting accepts any path inside the
+  bot's own tree (`/workspace`, `/data`, `/scratch`, `/bot`) and refuses a path elsewhere
+  (`/cache/...` included).
+- The operator step is gone: `install -d <sharedPackageCachePath>/pnpm-store` is not needed, and
+  the `pnpm-store` subdirectory is dropped from dockergate's mount list and prepare scripts, so
+  deploy dockergate together with or after the board (the new dockergate refuses the old board's
+  `pnpm-store` bind; the old dockergate accepts the new board's shorter list). The host
+  subdirectory, if it exists, is unused and can be removed once no container of the previous
+  layout runs. `/cache/pnpm` stays the download cache.
+- Rollout for existing clones: their `node_modules/.modules.yaml` still has the old `storeDir`
+  (`/cache/pnpm-store/...`). The first `pnpm install` in such a clone finds a different store,
+  removes `node_modules` and installs again from the new store; without a TTY pnpm 10 asks for
+  the removal and aborts (`ERR_PNPM_ABORTED_REMOVE_MODULES_DIR_NO_TTY`). The bot image's pnpm
+  wrapper injects `--config.confirm-modules-purge=false` for `pnpm install`/`pnpm add` — the
+  pinned pnpm 10.18.1 reads `confirmModulesPurge` from the command line only, not from
+  `npm_config_*` or `.npmrc` — so an agent's plain `pnpm install` purges non-interactively.
+  `pnpm add` and `pnpm update` refuse with `ERR_PNPM_UNEXPECTED_STORE` until it has run. New
+  clones need nothing. The first install of each bot fills the new store from the download cache.
+- Acceptance check: compare `df` of the bot partition before and after a fresh `pnpm install` in
+  a new clone; the delta is the size of the packages that were new to the store, not the ~3 GB of
+  a full `node_modules`. `du -xs node_modules` is not a check: it counts a linked file in full.
+- Tests: the bot-disk-cache, template, docker-driver and profile-compile suites assert the new
+  default (under `/workspace`, never at the `/bot` root or at `/cache/pnpm-store`), the absent
+  bind and the migration; the image tests assert the Dockerfile and entrypoint defaults; the
+  dockergate policy tests drop the `pnpm-store` pair; the pnpm-wrapper purge test
+  (`pnpm-wrapper-purge.test.mjs`) asserts `--config.confirm-modules-purge=false` on
+  install/add and its absence on the light lanes.
+
+## 1.6.7
+
 ### A bot's npx and cargo caches stay under a byte quota (OPE-12110)
 
 One bot grew `hermes/.npm/_npx` by 2.2 GB in 45 minutes (npx fetched a whole vendor package with all
