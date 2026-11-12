@@ -238,7 +238,12 @@ describeEmbeddedPostgres(
         owner: { agentId: seeded.leadAgentId },
       });
       expect(blocked.blockedTransitionAt).toBeInstanceOf(Date);
-      expect(blocked.blockedOwnerNotifiedAt).toBeInstanceOf(Date);
+      // myrmidon(OPE-12887): the recovery service path only queues the owner
+      // wake (`enqueueWakeup`); `blocked_owner_notified_at` is stamped later
+      // by the delivery flow (`deliverAgentUnblockNotification` in the issues
+      // route), so it must still be null here — a Date here would mean the
+      // handoff claimed a delivery the wake queue has not confirmed.
+      expect(blocked.blockedOwnerNotifiedAt).toBeNull();
       expect(blocked.executionState).toBeNull();
       expect(blocked.executionPolicy).not.toBeNull();
 
@@ -281,7 +286,16 @@ describeEmbeddedPostgres(
       // handoff left the executor assigned: the stale assignment must not
       // hold the issue hostage, and the takeover must consume the blocked
       // state instead of carrying recovery metadata into in_progress.
+      // checkoutRunId is a real FK into heartbeat_runs, so the lead's run row
+      // must exist before checkout (same seeding as the checkout unit test).
       const leadRunId = randomUUID();
+      await db.insert(heartbeatRuns).values({
+        id: leadRunId,
+        companyId: seeded.companyId,
+        agentId: seeded.leadAgentId,
+        status: "running",
+        invocationSource: "manual",
+      });
       const claimed = await issueService(db).checkout(seeded.issueId, seeded.leadAgentId, ["blocked"], leadRunId);
 
       expect(claimed.status).toBe("in_progress");
