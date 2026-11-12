@@ -58,7 +58,7 @@ describeEmbeddedPostgres("stuck triggered issue monitor sweep", () => {
     // The ticks wake the assignee, and the woken runs execute in the background
     // (they write run events and company skills). Wait for them, or their writes
     // race the deletes below: a company_skills row inserted after its delete
-    // breaks the delete of companies.
+    // breaks the delete of companies (OPE-12856 CI failures).
     await drainHeartbeatRunsToQuiescence(db, heartbeatService(db));
     await db.delete(heartbeatRunEvents);
     await db.delete(issueRecoveryActions);
@@ -71,8 +71,16 @@ describeEmbeddedPostgres("stuck triggered issue monitor sweep", () => {
     await db.delete(environmentLeases);
     await db.delete(workspaceRuntimeServices);
     await db.delete(issues);
+    // heartbeat_runs rows carry wakeup_request_id -> agent_wakeup_requests, so
+    // the runs must go first: deleting wakes while a run still references one
+    // breaks heartbeat_runs_wakeup_request_id_agent_wakeup_requests_id_fk
+    // (OPE-12856 CI: 23503 on delete from agent_wakeup_requests).
     await db.delete(heartbeatRuns);
     await db.delete(agentWakeupRequests);
+    // Last backstop: if a wake claimed and registered its run between the two
+    // drains above, the first drain could not have seen it. Re-drain before the
+    // deletes that the run's epilogue writes touch (agents, company_skills).
+    await drainHeartbeatRunsToQuiescence(db, heartbeatService(db));
     await db.delete(agentRuntimeState);
     await db.delete(agents);
     await db.delete(companySkills);
