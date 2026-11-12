@@ -67915,11 +67915,14 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
             { timeout: 20_000, interval: 100 },
           );
           await lane.context.service.processPendingDeliveries();
+          // The due retry re-invokes the RPC while the hook still rejects it,
+          // so the retry attempt itself lands on record: initial failure plus
+          // exactly one retried call with freshly observed options.
           expect(
             lane.maintenanceRequests.filter(
               ({ method }) => method === "setWebhook",
             ),
-          ).toHaveLength(1);
+          ).toHaveLength(2);
           await lane.restart();
           lane.setSubscriptionInfo({
             allowed_updates: ["message", "chat_member"],
@@ -67942,8 +67945,10 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
           const mutations = lane.maintenanceRequests.filter(
             ({ method }) => method === "setWebhook",
           );
-          expect(mutations).toHaveLength(2);
-          expect(mutations[1]!.body.allowed_updates).toEqual([
+          // Initial failed call, one rejected retry, then the repaired call
+          // after restart — nothing must drive a fourth RPC.
+          expect(mutations).toHaveLength(3);
+          expect(mutations[2]!.body.allowed_updates).toEqual([
             "message",
             "chat_member",
             "stopped_message_generation",
