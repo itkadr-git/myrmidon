@@ -13,7 +13,7 @@ import {
   resetGatewaySlotReconcileThrottleForTest,
   shouldReconcileGatewaySlotsForAgent,
   type GatewaySlotReconcilePort,
-  type ResolvedGatewayCredentials,
+  type PassGatewayCredentials,
 } from "./gateway-slot-reconcile.js";
 
 // myrmidon(GATEWAY-SLOT-RECONCILE, OPE-11888): before a gateway agent's next
@@ -34,8 +34,8 @@ function makePort(options: {
   const probes: string[] = [];
   const stops: string[] = [];
   const resolveCalls: string[] = [];
-  let lastProbeCredentials: ResolvedGatewayCredentials | null = null;
-  let lastStopCredentials: ResolvedGatewayCredentials | null = null;
+  let lastProbeCredentials: PassGatewayCredentials | null = null;
+  let lastStopCredentials: PassGatewayCredentials | null = null;
   const port: GatewaySlotReconcilePort = {
     resolveCredentials: async ({ agentId }) => {
       resolveCalls.push(agentId);
