@@ -7330,7 +7330,14 @@ describeEmbeddedPostgres("workspace runtime service control persistence", () => 
     const fixture = await createRuntimeFixture();
     const cleanupRuntimeHome = await createRuntimeHome();
     const workspace = fixture.workspaces[0]!;
+    // Occupy the preferred port with THIS test's own listener instead of trusting a
+    // released findFreePort() port: on a loaded runner the freed port can be re-taken
+    // by an unrelated process (or the scan can stop early on excluded/reserved ports),
+    // and then the exhausted-conflict never carries `port: basePort`. Holding the
+    // listener keeps the port deterministically occupied; closing it before the start
+    // attempt would reintroduce the race.
     const basePort = await findFreePort();
+    const portBlocker = await listenOnPort(basePort);
     const fakeBin = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-runtime-no-lsof-"));
     const fakeLsof = path.join(fakeBin, "lsof");
     const previousPath = process.env.PATH;
@@ -7354,6 +7361,7 @@ describeEmbeddedPostgres("workspace runtime service control persistence", () => 
           attemptedPortCount: WORKSPACE_RUNTIME_PORT_ALLOCATION_ATTEMPTS,
         },
       });
+      expect(portBlocker.listening).toBe(true);
     } finally {
       if (previousPath === undefined) delete process.env.PATH;
       else process.env.PATH = previousPath;
@@ -7365,6 +7373,11 @@ describeEmbeddedPostgres("workspace runtime service control persistence", () => 
       await fs.rm(fakeBin, { recursive: true, force: true });
       await cleanupRuntimeHome();
       await fixture.cleanup();
+      portBlocker.close();
+      await new Promise<void>((resolve, reject) => {
+        portBlocker.once("close", resolve);
+        portBlocker.once("error", reject);
+      });
     }
   }, 20_000);
 
