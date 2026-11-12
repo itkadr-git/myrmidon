@@ -36,9 +36,12 @@ export async function drainEffectsUntilIdle(
 ) {
   let last;
   for (let i = 0; i < maxIterations; i += 1) {
-    last = await worker.drain(input);
-    const total = last.settled + last.released + last.skipped + last.failed;
+    const result = await worker.drain(input);
+    const total = result.settled + result.released + result.skipped + result.failed;
     if (total === 0) break;
+    // Keep the last drain that did real work: the trailing empty drain is
+    // the idle signal, not the outcome a test should assert on.
+    last = result;
   }
   return last ?? { scanned: 0, settled: 0, released: 0, skipped: 0, failed: 0 };
 }

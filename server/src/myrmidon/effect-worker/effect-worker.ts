@@ -290,15 +290,31 @@ export function createEffectWorker(db: Db): EffectWorker {
         await recordMilestone(intent.id, milestone);
         const runId = result.runId ?? intent.runId ?? null;
         if (runId) {
-          await appendRunEventForEffect(intent, runId, {
-            eventType: "effect_result",
-            message: `effect ${kind}: ${result.outcome}`,
-            payload: {
-              outcome: result.outcome,
-              ...(result.result ?? {}),
-            },
-            level: result.outcome === "settled" ? "info" : "warn",
-          });
+          try {
+            await appendRunEventForEffect(intent, runId, {
+              eventType: "effect_result",
+              message: `effect ${kind}: ${result.outcome}`,
+              payload: {
+                outcome: result.outcome,
+                ...(result.result ?? {}),
+              },
+              level: result.outcome === "settled" ? "info" : "warn",
+            });
+          } catch (eventError) {
+            // The delivery itself already settled (the intent row and, where
+            // present, the durable wake record it). A missing/incompatible
+            // run row (e.g. a vendor-emulated run id without a heartbeat_runs
+            // row, or a run rebound to another agent) must not revert a
+            // settled effect — record the failure in the milestone instead.
+            const runEventError = eventError instanceof Error ? eventError.message : String(eventError);
+            logger.warn(
+              { err: eventError, intentId: intent.id, kind, runId },
+              "effect worker: failed to append result run-event; outcome stays settled",
+            );
+            await recordMilestone(intent.id, {
+              effect: { ...milestone.effect, runEventError },
+            });
+          }
         }
         await db
           .update(agentWakeupRequests)
