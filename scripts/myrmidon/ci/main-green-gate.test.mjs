@@ -258,6 +258,7 @@ describe("main-green-gate.sh (OPE-10789)", () => {
 
   it("OPE-12889: is GREEN (exit 0) while a new main CI run is in_progress and the latest completed run succeeded", () => {
     const sandbox = makeSandbox({
+      headSha: NEW_SHA, // reviewer case: HEAD moved past the completed run
       runs: {
         workflow_runs: [
           // Newest run: still running on the fresh commit (main CI takes ~40 min).
@@ -289,6 +290,7 @@ describe("main-green-gate.sh (OPE-10789)", () => {
 
   it("OPE-12889: is GREEN (exit 0) while the newest main CI run is queued and the latest completed run succeeded", () => {
     const sandbox = makeSandbox({
+      headSha: NEW_SHA, // reviewer case: HEAD moved past the completed run
       runs: {
         workflow_runs: [
           {

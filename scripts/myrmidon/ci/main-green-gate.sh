@@ -18,11 +18,17 @@
 #   - OPE-12889: the verdict comes from the latest COMPLETED Myrmidon CI run on
 #     `main`. A queued/in_progress run is not red — while the previous completed
 #     run is green, PRs may merge (main CI takes ~40 minutes per merge).
+#   - OPE-12889 review: HEAD may have moved past the last completed run while a
+#     new main CI run on the fresh HEAD is still queued/in_progress; that
+#     in-flight run is not a verdict either. The gate stays green while a run for
+#     the current HEAD exists and has not failed, and red once the run on HEAD
+#     completes with a non-success conclusion.
 #   - Exits 0 (GREEN) when the latest completed Myrmidon CI run on `main` has
-#     conclusion: success AND no open issue labelled `main-red` exists.
+#     conclusion: success AND no open issue labelled `main-red` exists (an
+#     in-flight run on a moved HEAD does not change this).
 #   - Exits 1 (RED) when the latest completed `main` CI run concluded with
-#     failure/cancelled/timed_out/etc., an issue labelled `main-red` is open,
-#     or no completed run exists at all (fail closed).
+#     failure/cancelled/timed_out/etc., an issue labelled `main-red` is open, or
+#     no completed run exists at all (fail closed).
 #   - Fails closed (RED) on API / auth errors so network/token glitches never
 #     wave PRs through into an unverified main.
 #
@@ -48,7 +54,7 @@ while (($#)); do
   case "$1" in
     --check) mode="check"; shift ;;
     --status) mode="status"; shift ;;
-    -h|--help) sed -n '2,40p' "$0"; exit 0 ;;
+    -h|--help) sed -n '2,45p' "$0"; exit 0 ;;
     *) die "unknown argument: $1" ;;
   esac
 done
@@ -123,6 +129,24 @@ latest_run="$(jq -r '
   ) // empty
 ' <<<"$runs_json")"
 
+# Runs on the current HEAD that have not completed yet (queued/in_progress).
+# OPE-12889 review: their existence (not their state) decides whether a moved
+# HEAD keeps the verdict of the last completed run.
+head_pending_count="$(jq -r --arg sha "$head_sha" '
+  ([.workflow_runs[]?
+    | select(.head_sha == $sha and .status != "completed")]
+   | length)
+' <<<"$runs_json" 2>/dev/null || echo 0)"
+
+# Newest run on the current HEAD, completed or not — used to catch a HEAD whose
+# newest CI attempt already finished red while the last completed run overall is
+# an older success (stale-green protection).
+head_newest="$(jq -r --arg sha "$head_sha" '
+  ([.workflow_runs[]?
+    | select(.head_sha == $sha)]
+   | sort_by(.created_at) | reverse | .[0]) // empty
+' <<<"$runs_json" 2>/dev/null || true)"
+
 pending_info="$(jq -r '
   (
     [.workflow_runs[]? | select(.status != "completed")]
@@ -136,33 +160,50 @@ if [[ -n "$latest_run" && "$latest_run" != "null" ]]; then
   run_conclusion="$(jq -r '.conclusion // "unknown"' <<<"$latest_run")"
   run_sha="$(jq -r '.head_sha' <<<"$latest_run")"
 
-  case "$run_conclusion" in
-    success)
-      # Check if HEAD moved beyond the completed run
-      if [[ -n "$head_sha" && -n "$run_sha" && "$head_sha" != "$run_sha" ]]; then
-        reason="head moved to $head_sha and its CI has not completed yet"
+  if [[ "$run_conclusion" == "success" ]]; then
+    # OPE-12889: HEAD may have moved past the last completed run while a new
+    # main CI run on the fresh HEAD is still queued/in_progress. That in-flight
+    # run is not a verdict — the latest completed success keeps the gate green
+    # (the rerun/disarm lane re-evaluates when the in-flight run completes).
+    if [[ -n "$head_sha" && -n "$run_sha" && "$head_sha" != "$run_sha" ]]; then
+      if [[ "${head_pending_count:-0}" -eq 0 ]]; then
+        # Stale-green protection: HEAD moved but no run is in flight for it and
+        # its newest attempt is not pending. If its newest attempt already
+        # completed non-success, that run IS the verdict (fresh red); otherwise
+        # no CI has started for the new HEAD at all — fail closed.
+        head_conclusion="$(jq -r '.conclusion // "unknown"' <<<"${head_newest:-}" 2>/dev/null || true)"
+        if [[ -n "$head_newest" && "$head_newest" != "null" && "$head_conclusion" != "success" ]]; then
+          head_id="$(jq -r '.id' <<<"$head_newest")"
+          reason="latest completed run #$run_id is stale: run #$head_id on the current HEAD $head_sha concluded with $head_conclusion"
+          if [[ "$mode" == "status" ]]; then
+            printf 'red:%s\n' "$reason"
+            exit 0
+          fi
+          die "MAIN BRANCH CI IS RED ($reason) — PR merges are blocked until main CI is fixed and green"
+        fi
+        reason="head moved to $head_sha but no CI run has started or completed for it yet"
         if [[ "$mode" == "status" ]]; then
           printf 'pending:%s\n' "$reason"
           exit 0
         fi
         die "MAIN BRANCH HAS FRESH COMMITS WITHOUT GREEN CI ($reason)"
       fi
-      log "main branch CI is GREEN (latest completed run #$run_id succeeded on commit $run_sha). Merges permitted."
-      [[ -n "$pending_info" ]] && log "current CI state: $pending_info (not a red verdict)"
-      if [[ "$mode" == "status" ]]; then
-        printf 'green\n'
-      fi
-      exit 0
-      ;;
-    *)
-      reason="latest completed run #$run_id concluded with $run_conclusion on commit $run_sha"
-      if [[ "$mode" == "status" ]]; then
-        printf 'red:%s\n' "$reason"
-        exit 0
-      fi
-      die "MAIN BRANCH CI IS RED ($reason) — PR merges are blocked until main CI is fixed and green"
-      ;;
-  esac
+      log "main HEAD has CI in flight; verdict from last completed run #$run_id (success on commit $run_sha)."
+    fi
+    log "main branch CI is GREEN (latest completed run #$run_id succeeded on commit $run_sha). Merges permitted."
+    [[ -n "$pending_info" ]] && log "current CI state: $pending_info (not a red verdict)"
+    if [[ "$mode" == "status" ]]; then
+      printf 'green\n'
+    fi
+    exit 0
+  fi
+
+  reason="latest completed run #$run_id concluded with $run_conclusion on commit $run_sha"
+  if [[ "$mode" == "status" ]]; then
+    printf 'red:%s\n' "$reason"
+    exit 0
+  fi
+  die "MAIN BRANCH CI IS RED ($reason) — PR merges are blocked until main CI is fixed and green"
 fi
 
 # Default: could not verify green status. A queued/in_progress-only history
