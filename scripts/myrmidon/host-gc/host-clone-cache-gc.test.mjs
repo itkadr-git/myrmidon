@@ -33,6 +33,8 @@ const {
   pruneSshRunCopies,
   UsageError,
   scanRunnerTaskFolders,
+  scanRunnerNpmCaches,
+  pruneRunnerNpmCaches,
   issueIdentifierFromRunnerFolderName,
 } = await import(
   path.join(ROOT, "scripts/myrmidon/host-gc/host-clone-cache-gc.mjs")
@@ -793,6 +795,209 @@ describe("SSH runner run copies", () => {
 
 // myrmidon(1.6.8 OPE-12855): task folders of runner issues are GC'd when the issue is
 // done/cancelled and the folder is older than the clone TTL; the board is fail-closed.
+// myrmidon(1.6.8 OPE-12855): npm/npx caches of runner agents are pruned under the same
+// runner root gate as the run copies and the task folders.
+describe("runner npm caches", () => {
+  const HOUR = 60 * 60 * 1000;
+  const GC_SCRIPT = path.join(ROOT, "scripts/myrmidon/host-gc/host-clone-cache-gc.mjs");
+
+  // The TTL is judged by the newest mtime in the cache tree, so every mtime is backdated
+  // first and `freshMarker` writes a new file afterwards: a cache still being written by a
+  // live npm/npx call is `fresh` regardless of how old the cache root itself is.
+  const backdate = (dir, ageHours) => {
+    const t = new Date(Date.now() - ageHours * HOUR);
+    fs.utimesSync(dir, t, t);
+    for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+      const p = path.join(dir, entry.name);
+      if (entry.isDirectory()) backdate(p, ageHours);
+      else fs.utimesSync(p, t, t);
+    }
+  };
+  const makeNpmCache = (runnersRoot, runner, name, { ageHours = 5, freshMarker = false } = {}) => {
+    const cacheDir = path.join(runnersRoot, runner, "home", ".npm", name);
+    if (name === "_npx") {
+      const pkg = path.join(cacheDir, "hash123", "node_modules", "pkg");
+      fs.mkdirSync(pkg, { recursive: true });
+      fs.writeFileSync(path.join(pkg, "index.js"), "module");
+    } else {
+      fs.mkdirSync(path.join(cacheDir, "content-v2"), { recursive: true });
+      fs.writeFileSync(path.join(cacheDir, "content-v2", "blob"), "x");
+    }
+    backdate(cacheDir, ageHours);
+    if (freshMarker) {
+      const marker = path.join(cacheDir, "index-v5", "recent");
+      fs.mkdirSync(path.dirname(marker), { recursive: true });
+      fs.writeFileSync(marker, "wip");
+    }
+    return cacheDir;
+  };
+
+  it("marks caches whose newest tree mtime is older than the TTL", () => {
+    const runners = path.join(tmpDir, "omp-runners");
+    const old = makeNpmCache(runners, "eng24", "_cacache", { ageHours: 5 });
+    const fresh = makeNpmCache(runners, "eng24", "_npx", { ageHours: 5, freshMarker: true });
+    const items = scanRunnerNpmCaches(runners, Date.now(), 4);
+    const byPath = Object.fromEntries(items.map((i) => [i.path, i.reason]));
+    assert.equal(byPath[old], "ttl");
+    assert.equal(byPath[fresh], "fresh");
+    assert.equal(items.length, 2);
+  });
+
+  it("walks both _cacache and _npx and carries the cache kind", () => {
+    const runners = path.join(tmpDir, "omp-runners");
+    const cacache = makeNpmCache(runners, "eng24", "_cacache", { ageHours: 5 });
+    const npx = makeNpmCache(runners, "eng24", "_npx", { ageHours: 5 });
+    const items = scanRunnerNpmCaches(runners, Date.now(), 4);
+    assert.deepEqual(items.map((i) => [i.path, i.kind]), [
+      [cacache, "_cacache"],
+      [npx, "_npx"],
+    ]);
+  });
+
+  it("a runner without npm caches yields nothing", () => {
+    const runners = path.join(tmpDir, "omp-runners");
+    fs.mkdirSync(path.join(runners, "eng24", "home"), { recursive: true });
+    fs.mkdirSync(path.join(runners, "eng24", "workspace"), { recursive: true });
+    assert.deepEqual(scanRunnerNpmCaches(runners, Date.now(), 4), []);
+  });
+
+  it("a symlinked cache directory is skipped, not followed", () => {
+    const runners = path.join(tmpDir, "omp-runners");
+    const outside = path.join(tmpDir, "outside");
+    const victimCache = makeNpmCache(outside, "victim", "_cacache", { ageHours: 5 });
+    fs.mkdirSync(path.join(runners, "eng24", "home", ".npm"), { recursive: true });
+    fs.symlinkSync(victimCache, path.join(runners, "eng24", "home", ".npm", "_cacache"));
+    assert.deepEqual(scanRunnerNpmCaches(runners, Date.now(), 4), []);
+    assert.equal(fs.existsSync(path.join(victimCache, "content-v2", "blob")), true);
+  });
+
+  it("a missing root and a file root are reported and yield nothing", () => {
+    const events = [];
+    const missing = path.join(tmpDir, "nope");
+    assert.deepEqual(scanRunnerNpmCaches(missing, Date.now(), 4, { onEvent: (e) => events.push(e) }), []);
+    const notDir = path.join(tmpDir, "file-root");
+    fs.writeFileSync(notDir, "x");
+    assert.deepEqual(scanRunnerNpmCaches(notDir, Date.now(), 4, { onEvent: (e) => events.push(e) }), []);
+    assert.deepEqual(events[0], { event: "runner-npm-cache-root-missing", root: missing });
+    assert.equal(events[1].event, "runner-npm-cache-scan-failed");
+    assert.equal(events[1].root, notDir);
+    assert.match(events[1].error, /not a directory/);
+  });
+
+  it("parseArgs reads --npm-cache-ttl, MYRMIDON_HOST_GC_NPM_CACHE_TTL_HOURS and defaults to 4", () => {
+    const prev = process.env.MYRMIDON_HOST_GC_NPM_CACHE_TTL_HOURS;
+    process.env.MYRMIDON_HOST_GC_NPM_CACHE_TTL_HOURS = "6";
+    try {
+      const fromEnv = parseArgs(["node", "gc", "--env", "/nonexistent"]);
+      assert.equal(fromEnv.npmCacheTtlHours, 6);
+    } finally {
+      if (prev === undefined) delete process.env.MYRMIDON_HOST_GC_NPM_CACHE_TTL_HOURS;
+      else process.env.MYRMIDON_HOST_GC_NPM_CACHE_TTL_HOURS = prev;
+    }
+    const fromFlag = parseArgs(["node", "gc", "--env", "/nonexistent", "--npm-cache-ttl", "8"]);
+    assert.equal(fromFlag.npmCacheTtlHours, 8);
+    assert.equal(parseArgs(["node", "gc", "--env", "/nonexistent"]).npmCacheTtlHours, 4);
+  });
+
+  it("rejects an --npm-cache-ttl that is not a finite number or is below 1 hour", () => {
+    for (const bad of ["abc", "", "NaN", "Infinity", "-5", "0", "0.9"]) {
+      assert.throws(
+        () => parseArgs(["node", "gc", "--env", "/nonexistent", "--npm-cache-ttl", bad]),
+        (err) => err instanceof UsageError && /--npm-cache-ttl must be/.test(err.message),
+        `ttl ${JSON.stringify(bad)} must be refused`,
+      );
+    }
+    assert.throws(() => parseArgs(["node", "gc", "--env", "/nonexistent", "--npm-cache-ttl"]), UsageError, "a missing value");
+    assert.equal(parseArgs(["node", "gc", "--env", "/nonexistent", "--npm-cache-ttl", "1"]).npmCacheTtlHours, 1);
+    assert.equal(parseArgs(["node", "gc", "--env", "/nonexistent", "--npm-cache-ttl", "1.5"]).npmCacheTtlHours, 1.5);
+  });
+
+  // Async spawn: the task-folder suite of this file runs a fake-board HTTP server in this
+  // same process, and a sync spawn would block the event loop the server needs.
+  const runGcNpm = async (flags) => {
+    const botsRoot = path.join(tmpDir, "bots");
+    fs.mkdirSync(botsRoot, { recursive: true });
+    const journal = path.join(tmpDir, "gc-npm.jsonl");
+    const env = { ...GIT_ENV, HOST_GC_RUNNER_ROOTS: "", PATH: "/usr/bin:/bin", PAPERCLIP_API_URL: "http://127.0.0.1:9" };
+    const res = await new Promise((resolve, reject) => {
+      const child = subprocess.spawn(process.execPath, [
+        GC_SCRIPT, "--env", "/nonexistent", "--root", botsRoot,
+        "--journal", journal, "--lock", path.join(tmpDir, "gc-npm.lock"), "--proc-dir", path.join(tmpDir, "proc"),
+        ...flags,
+      ], { env, timeout: 120_000, killSignal: "SIGKILL" });
+      let stdout = "";
+      let stderr = "";
+      child.stdout.on("data", (d) => { stdout += d; });
+      child.stderr.on("data", (d) => { stderr += d; });
+      child.on("error", reject);
+      child.on("close", (code, signal) => resolve({ status: code === null ? (signal === "SIGKILL" ? 143 : code) : code, stdout, stderr }));
+    });
+    const events = fs.existsSync(journal)
+      ? fs.readFileSync(journal, "utf8").trim().split("\n").filter(Boolean).map((l) => JSON.parse(l))
+      : [];
+    return { res, events };
+  };
+
+  it("e2e: --apply removes old caches, keeps a cache being written, journals sizeBytes", async () => {
+    const runners = path.join(tmpDir, "omp-runners");
+    const oldCacache = makeNpmCache(runners, "eng24", "_cacache", { ageHours: 5 });
+    const oldNpx = makeNpmCache(runners, "eng24", "_npx", { ageHours: 5 });
+    const freshCacache = makeNpmCache(runners, "eng25", "_cacache", { ageHours: 5, freshMarker: true });
+    const { res, events } = await runGcNpm(["--apply", "--runner-root", runners]);
+    assert.equal(res.status, 0, res.stderr);
+    assert.equal(fs.existsSync(oldCacache), false, "old _cacache must be removed");
+    assert.equal(fs.existsSync(oldNpx), false, "old _npx must be removed");
+    assert.equal(fs.existsSync(freshCacache), true, "a cache being written must stay");
+    const removed = events.find((e) => e.event === "runner-npm-cache-removed" && e.path === oldCacache);
+    assert.ok(removed, "removal journaled");
+    assert.equal(removed.kind, "_cacache");
+    assert.equal(typeof removed.sizeBytes, "number", "size measured before the removal");
+    assert.ok(removed.sizeBytes > 0);
+    assert.ok(events.some((e) => e.event === "runner-npm-cache-removed" && e.kind === "_npx"));
+    assert.equal(events.find((e) => e.event === "apply-complete").runnerNpmCachesRemoved, 2);
+    assert.equal(JSON.parse(res.stdout).runnerNpmCachesRemoved, 2);
+  });
+
+  it("e2e: dry-run removes nothing and lists the plan", async () => {
+    const runners = path.join(tmpDir, "omp-runners");
+    const oldCacache = makeNpmCache(runners, "eng24", "_cacache", { ageHours: 5 });
+    const { res, events } = await runGcNpm(["--dry-run", "--runner-root", runners]);
+    assert.equal(res.status, 0, res.stderr);
+    assert.equal(fs.existsSync(oldCacache), true, "dry-run must not remove");
+    assert.equal(events.find((e) => e.event === "dry-run").runnerNpmCaches, 1);
+    const out = JSON.parse(res.stdout);
+    assert.deepEqual(out.plan.runnerNpmCaches.map((i) => [i.path, i.action]), [[oldCacache, "remove"]]);
+  });
+
+  it("e2e: --apply without a runner root leaves the npm pass off", async () => {
+    const { res } = await runGcNpm(["--apply"]);
+    assert.equal(res.status, 0, res.stderr);
+    assert.equal(JSON.parse(res.stdout).runnerNpmCachesRemoved, 0);
+  });
+
+  it("a .npm swapped for a symlink after the scan is not deleted through", () => {
+    const runners = path.join(tmpDir, "omp-runners");
+    const old = makeNpmCache(runners, "eng24", "_cacache", { ageHours: 5 });
+    const items = scanRunnerNpmCaches(runners, Date.now(), 4).filter((i) => i.reason === "ttl");
+    assert.equal(items.length, 1);
+    assert.equal(items[0].runnersRoot, runners, "the item carries the root the drop is guarded against");
+
+    const outsideCache = makeNpmCache(path.join(tmpDir, "outside"), "victim", "_cacache", { ageHours: 5 });
+    fs.renameSync(path.join(runners, "eng24", "home", ".npm"), path.join(tmpDir, "moved-npm"));
+    fs.symlinkSync(path.join(outsideCache, "..", ".."), path.join(runners, "eng24", "home", ".npm"));
+
+    const journal = path.join(tmpDir, "gc-npm.jsonl");
+    const gone = pruneRunnerNpmCaches(items, journal);
+    assert.deepEqual(gone, [], "nothing counted as removed");
+    assert.equal(fs.existsSync(path.join(outsideCache, "content-v2", "blob")), true, "the outside cache must survive");
+    const events = fs.readFileSync(journal, "utf8").trim().split("\n").filter(Boolean).map((l) => JSON.parse(l));
+    const failed = events.filter((e) => e.event === "runner-npm-cache-remove-failed");
+    assert.equal(failed.length, 1);
+    assert.equal(failed[0].path, old);
+    assert.match(failed[0].error, /symlink not allowed/);
+  });
+});
+
 describe("runner task folders", () => {
   const HOUR = 60 * 60 * 1000;
   const GC_SCRIPT = path.join(ROOT, "scripts/myrmidon/host-gc/host-clone-cache-gc.mjs");

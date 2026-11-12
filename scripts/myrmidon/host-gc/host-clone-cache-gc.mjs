@@ -6,6 +6,8 @@
 //   - vm-core:       /srv/myrmidon-bots/* (bot workspaces)
 //   - vm-core:       <runner root>/<runner>/workspace/.paperclip-runtime/runs/<runId> (SSH runner
 //                    run copies, OPE-12722; only when a runner root is configured)
+//   - vm-core:       <runner root>/<runner>/home/.npm/{_cacache,_npx} (runner agent npm/npx
+//                    caches, OPE-12855; only when a runner root is configured)
 //   - myr-dev-build: /srv/devbuild/* (build copies), /srv/devcache/* (build caches)
 //
 // Policy:
@@ -15,6 +17,9 @@
 //   - Build caches >72h: LRU eviction by mtime
 //   - SSH runner run copies >4h (by the run directory's mtime, set when the run starts): remove;
 //     runs only with --runner-root / HOST_GC_RUNNER_ROOTS
+//   - SSH runner npm/npx caches >4h (by the newest mtime in the cache tree, so a cache an
+//     npm/npx call is still writing stays fresh): remove; runs only with
+//     --runner-root / HOST_GC_RUNNER_ROOTS
 //   - SSH runner task folders for done/cancelled issues >24h: clean+pushed remove; unsafe
 //     git state archive first, then remove; active/board-unavailable folders stay
 //   - Atomic guards: lockfile, symlink checks, TOCTOU-safe deletion
@@ -31,6 +36,7 @@
 //   --runner-root <path>  SSH runner root to prune run copies under (repeatable; also
 //                         HOST_GC_RUNNER_ROOTS, colon-separated). No root, no pass.
 //   --run-copy-ttl <hours> Override the run-copy TTL (default 4; finite, at least 3 = longest run timeout)
+//   --npm-cache-ttl <hours> Override the npm cache TTL (default 4; finite, at least 1)
 
 import fs from "node:fs";
 import path from "node:path";
@@ -55,6 +61,15 @@ const SCRATCH_TTL_HOURS = 12;
 const RUN_COPY_TTL_HOURS = 4;
 const RUN_COPY_MIN_TTL_HOURS = 3;
 const DEFAULT_ENV_PATH = "/etc/myrmidon-host-gc.env";
+
+// myrmidon(1.6.8 OPE-12855): the npm/npx caches of a runner agent
+// (`<runner>/home/.npm/{_cacache,_npx}`) are pure download/index caches: npm refills them on
+// demand, so a removed entry costs a re-download and nothing else. The TTL is judged by the
+// newest mtime in the cache tree — a cache an npm/npx call is still writing stays `fresh` —
+// with a floor of 1 h so a scan cannot race a long npm install. Same runner-root gate as the
+// run-copy pass; no root, no pass.
+const NPM_CACHE_TTL_HOURS = 4;
+const NPM_CACHE_MIN_TTL_HOURS = 1;
 
 // myrmidon(1.6.8-BOT-CONTAINER-ORPHAN / OPE-12654): the data directory of a decommissioned
 // bot (the gate A22 removed its container, the board logs `bot_data_left_for_host_gc`) is
@@ -139,6 +154,17 @@ export function runCopyTtlError(hours) {
   return null;
 }
 
+/** `null` when `hours` is a usable npm cache TTL, otherwise the reason it is refused. */
+export function npmCacheTtlError(hours) {
+  if (typeof hours !== "number" || !Number.isFinite(hours)) {
+    return `--npm-cache-ttl must be a finite number of hours (got ${String(hours)})`;
+  }
+  if (hours < NPM_CACHE_MIN_TTL_HOURS) {
+    return `--npm-cache-ttl must be at least ${NPM_CACHE_MIN_TTL_HOURS} hour(s), the longest npm install can run (got ${hours})`;
+  }
+  return null;
+}
+
 export function parseArgs(argv) {
   let envPath = DEFAULT_ENV_PATH;
   for (let i = 2; i < argv.length; i++) {
@@ -169,6 +195,10 @@ export function parseArgs(argv) {
     procDir: process.env.PROC_DIR || "/proc",
     runnerRoots: (process.env.HOST_GC_RUNNER_ROOTS || "").split(":").map((r) => r.trim()).filter(Boolean),
     runCopyTtlHours: RUN_COPY_TTL_HOURS,
+    npmCacheTtlHours: (() => {
+      const envTtl = process.env.MYRMIDON_HOST_GC_NPM_CACHE_TTL_HOURS;
+      return envTtl !== undefined && !isNaN(Number(envTtl)) ? Number(envTtl) : NPM_CACHE_TTL_HOURS;
+    })(),
   };
   for (let i = 2; i < argv.length; i++) {
     const a = argv[i];
@@ -184,6 +214,7 @@ export function parseArgs(argv) {
     else if (a === "--proc-dir") args.procDir = argv[++i];
     else if (a === "--runner-root") args.runnerRoots.push(argv[++i]);
     else if (a === "--run-copy-ttl") args.runCopyTtlHours = Number(argv[++i]);
+    else if (a === "--npm-cache-ttl") args.npmCacheTtlHours = Number(argv[++i]);
     else if (a === "--env") i++;
     else if (a === "--help") {
       console.log("Usage: host-clone-cache-gc.mjs [--apply|--dry-run] [--root path] [--scratch-root path] [--journal path] [--lock path] [--clone-ttl h] [--cache-ttl h] [--scratch-ttl h] [--proc-dir path] [--runner-root path] [--run-copy-ttl h (>= 3)] [--env path]");
@@ -192,6 +223,8 @@ export function parseArgs(argv) {
   }
   const ttlError = runCopyTtlError(args.runCopyTtlHours);
   if (ttlError) throw new UsageError(ttlError);
+  const npmTtlError = npmCacheTtlError(args.npmCacheTtlHours);
+  if (npmTtlError) throw new UsageError(npmTtlError);
   return args;
 }
 
@@ -1142,6 +1175,105 @@ export function pruneSshRunCopies(items, journalPath) {
   return removed;
 }
 
+/**
+ * npm/npx caches of one runner agent under `<runnersRoot>/<runner>/home/.npm/`:
+ * `_cacache` (the download/index cache) and `_npx` (the npx package cache). Every component
+ * of the path must be a real directory — a symlinked `.npm` or cache dir skips the runner —
+ * and the TTL is judged by the newest mtime in the cache tree (`inspectPathTree`), so a
+ * cache an npm/npx call is still writing stays `fresh` no matter how old its root is. Each
+ * item carries `kind` (`_cacache`|`_npx`) and `runnersRoot`, the root the removal is
+ * guarded against.
+ *
+ * The scan never throws on the filesystem: a configured root that does not exist is reported
+ * as `runner-npm-cache-root-missing`, any other failure (per root or per runner) as
+ * `runner-npm-cache-scan-failed` with the error message, through `onEvent`, and the scan
+ * continues with the next runner — one unreadable directory must not abort the whole
+ * `--apply` pass.
+ */
+export function scanRunnerNpmCaches(runnersRoot, now, ttlHours, { onEvent = () => {} } = {}) {
+  const results = [];
+  const ttlMs = ttlHours * HOUR_MS;
+  const fail = (extra, err) => {
+    onEvent({ event: "runner-npm-cache-scan-failed", root: runnersRoot, ...extra, error: err?.message || String(err) });
+  };
+
+  const rootStat = lstatSafe(runnersRoot);
+  if (rootStat.err) {
+    if (isAbsent(rootStat.err)) onEvent({ event: "runner-npm-cache-root-missing", root: runnersRoot });
+    else fail({}, rootStat.err);
+    return results;
+  }
+  if (!rootStat.st.isDirectory()) {
+    fail({}, new Error("runner root is not a directory (a symlink is not followed)"));
+    return results;
+  }
+  let runners;
+  try {
+    runners = fs.readdirSync(runnersRoot, { withFileTypes: true });
+  } catch (err) {
+    fail({}, err);
+    return results;
+  }
+  for (const runner of runners) {
+    if (!runner.isDirectory()) continue;
+    const npmDir = path.join(runnersRoot, runner.name, "home", ".npm");
+    try {
+      const { st, err } = lstatSafe(npmDir);
+      if (err && !isAbsent(err)) throw err;
+      if (!st || !st.isDirectory() || st.isSymbolicLink()) continue;
+      for (const kind of ["_cacache", "_npx"]) {
+        const cachePath = path.join(npmDir, kind);
+        const cacheStat = lstatSafe(cachePath);
+        if (cacheStat.err && !isAbsent(cacheStat.err)) throw cacheStat.err;
+        if (!cacheStat.st || !cacheStat.st.isDirectory() || cacheStat.st.isSymbolicLink()) continue;
+        const tree = inspectPathTree(cachePath);
+        const ageMs = now - tree.maxMtimeMs;
+        results.push({
+          runner: runner.name,
+          kind,
+          path: cachePath,
+          runnersRoot,
+          ageMs,
+          sizeBytes: tree.totalSizeBytes,
+          reason: ageMs >= ttlMs ? "ttl" : "fresh",
+        });
+      }
+    } catch (err) {
+      if (!isAbsent(err)) fail({ runner: runner.name }, err);
+    }
+  }
+  return results;
+}
+
+/**
+ * Removes the planned npm caches (items of `scanRunnerNpmCaches`, reason `ttl`). The drop is
+ * guarded against the configured runner root, not against the cache's own parent: a `.npm`
+ * directory swapped for a symlink after the scan resolves outside the root and is refused
+ * (journaled `runner-npm-cache-remove-failed`). The size in each item was measured before
+ * the removal by the scan; returns the paths actually removed.
+ */
+export function pruneRunnerNpmCaches(items, journalPath) {
+  const removed = [];
+  for (const r of items) {
+    try {
+      atomicDrop(r.path, r.runnersRoot);
+    } catch (err) {
+      journalRecord(journalPath, { event: "runner-npm-cache-remove-failed", path: r.path, runner: r.runner, kind: r.kind, error: err.message });
+      continue;
+    }
+    removed.push(r.path);
+    journalRecord(journalPath, {
+      event: "runner-npm-cache-removed",
+      path: r.path,
+      runner: r.runner,
+      kind: r.kind,
+      ageHours: Math.round(r.ageMs / HOUR_MS),
+      sizeBytes: r.sizeBytes,
+    });
+  }
+  return removed;
+}
+
 // --- Archive ----------------------------------------------------------------
 
 function archiveClone(clonePath, archiveRoot) {
@@ -1184,7 +1316,7 @@ async function main() {
     const cloneTtlMs = args.cloneTtlHours * HOUR_MS;
     const cacheTtlMs = args.cacheTtlHours * HOUR_MS;
 
-    const plan = { clones: [], caches: [], scratch: [], botData: [], runCopies: [], runnerTaskFolders: [], kept: [], removed: [], archived: [] };
+    const plan = { clones: [], caches: [], scratch: [], botData: [], runCopies: [], runnerTaskFolders: [], runnerNpmCaches: [], kept: [], removed: [], archived: [] };
 
     // 1. Scan task clones
     const clones = scanTaskClones(root, now, args.cloneTtlHours);
@@ -1306,6 +1438,19 @@ async function main() {
       }
     }
 
+    // 3e. npm/npx caches of runner agents (OPE-12855): only when a runner root is
+    // configured, the same gate as 3c/3d. No board call: the TTL decision is purely local
+    // (newest mtime in the cache tree), so a board outage cannot block cache pruning.
+    for (const runnersRoot of args.runnerRoots) {
+      const items = scanRunnerNpmCaches(runnersRoot, now, args.npmCacheTtlHours, {
+        onEvent: (event) => journalRecord(args.journal, event),
+      });
+      for (const item of items) {
+        if (item.reason === "ttl") plan.runnerNpmCaches.push({ ...item, action: "remove" });
+        else plan.kept.push({ ...item, action: "keep", reason: "fresh" });
+      }
+    }
+
     // 4. Execute or report
     if (args.dryRun) {
       journalRecord(args.journal, {
@@ -1315,6 +1460,7 @@ async function main() {
         scratch: plan.scratch.length,
         runCopies: plan.runCopies.length,
         runnerTaskFolders: plan.runnerTaskFolders.length,
+        runnerNpmCaches: plan.runnerNpmCaches.length,
         kept: plan.kept.length,
       });
       console.log(JSON.stringify({ ok: true, dryRun: true, plan }, null, 2));
@@ -1383,6 +1529,8 @@ async function main() {
       }
       const runCopiesGone = pruneSshRunCopies(plan.runCopies.filter((x) => x.action === "remove"), args.journal);
       for (const gone of runCopiesGone) plan.removed.push({ path: gone });
+      const npmCachesGone = pruneRunnerNpmCaches(plan.runnerNpmCaches.filter((x) => x.action === "remove"), args.journal);
+      for (const gone of npmCachesGone) plan.removed.push({ path: gone });
       let runnerTaskFoldersRemoved = 0;
       // myrmidon(1.6.8 OPE-12855): archive-then-remove for folders whose git state could not
       // be proven, plain removal for clean closed ones; both guarded against the runner root.
@@ -1416,6 +1564,7 @@ async function main() {
         botDataRemoved: plan.botData.length,
         runCopiesRemoved: runCopiesGone.length,
         runnerTaskFoldersRemoved,
+        runnerNpmCachesRemoved: npmCachesGone.length,
         kept: plan.kept.length,
       });
       console.log(JSON.stringify({
@@ -1427,6 +1576,7 @@ async function main() {
         botDataRemoved: plan.botData.length,
         runCopiesRemoved: runCopiesGone.length,
         runnerTaskFoldersRemoved,
+        runnerNpmCachesRemoved: npmCachesGone.length,
         kept: plan.kept.length,
       }, null, 2));
     }
