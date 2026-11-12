@@ -1,3 +1,7 @@
+---
+settings-section: Name mapping PAPERCLIP_* → MYRMIDON_*
+---
+
 ## changelog-en
 
 ### The bridge queue poller blocks remotely instead of spawning an ssh process per poll (OPE-12727)
@@ -9,3 +13,7 @@
 ### Опрос очереди моста блокируется удалённо вместо запуска ssh-процесса на каждый опрос (OPE-12727)
 
 - В SSH-окружениях воркер моста опрашивал очередь запросов каждые 100 мс, и каждый опрос запускал новый `ssh`-процесс; под нагрузкой доска тратила ~30% ядра только на `spawn`. Теперь один опрос блокируется в удалённом шелле, пока не появится запрос или не истечёт пять секунд, поэтому простаивающий мост обходится одним exec раз в пять секунд вместо ~10 в секунду. Бюджет настраивается через `MYRMIDON_BRIDGE_QUEUE_POLL_IDLE_MS` (легаси `PAPERCLIP_BRIDGE_QUEUE_POLL_IDLE_MS`); `0` возвращает старое поведение.
+
+## settings-en
+
+| `PAPERCLIP_BRIDGE_QUEUE_POLL_IDLE_MS` | `MYRMIDON_BRIDGE_QUEUE_POLL_IDLE_MS` |
