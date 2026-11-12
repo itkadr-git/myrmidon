@@ -4397,7 +4397,10 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       expect(failedRun?.status).toBe("failed");
       expect(retryRun?.status).toBe("scheduled_retry");
     }
-  });
+    // Load-sensitive under CI: 20 seeded iterations with embedded Postgres can
+    // exceed the default 15s vitest timeout (observed failing on main run
+    // 43281151992, serialized 1/2). Same deflake as workspace-runtime 20s→60s.
+  }, 60_000);
 
   it("schedules an infra retry for a setup failure caused by a transient sandbox provider worker restart", async () => {
     // Reproduces the production incident: the "Kubernetes Sandbox" plugin
