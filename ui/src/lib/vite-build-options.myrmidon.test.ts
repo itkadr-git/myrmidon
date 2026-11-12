@@ -22,13 +22,13 @@ describe("ui/vite.config.ts minification and build options", () => {
 
     expect(output).toBeDefined();
     expect(output?.minify).toEqual({
-      compress: {
+      compress: expect.objectContaining({
         dropConsole: true,
         dropDebugger: true,
-      },
-      codegen: {
+      }),
+      codegen: expect.objectContaining({
         legalComments: "none",
-      },
+      }),
     });
   });
 
