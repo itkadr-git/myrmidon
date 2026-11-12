@@ -13,7 +13,7 @@ import {
 } from "../../__tests__/helpers/embedded-postgres.js";
 import { errorHandler } from "../../middleware/index.js";
 import { checkStackReleases, startStackCheckSweep } from "./check.js";
-import { collectStackLocal, type DockerImagesPort } from "./collector.js";
+import { collectStackLocal, type CollectStackLocalOptions, type DockerImagesPort } from "./collector.js";
 import {
   buildStackAttentionCards,
   stackComponentNeedsAttention,
@@ -130,6 +130,178 @@ function fakeImages(states: Record<string, Awaited<ReturnType<DockerImagesPort>>
 }
 
 describe("stack release check helpers", () => {
+  /** Minimal drizzle select stub for readInstanceGeneral(db). */
+  function fakeGeneralDb(general: Record<string, unknown> | null) {
+    return {
+      select: (() => ({
+        from: () => ({
+          where: () => Promise.resolve(general ? [{ general }] : []),
+        }),
+      })) as never,
+    };
+  }
+
+  /** The no-db env-only board endpoints; tests stub process.env per case. */
+  function stackCollectOptions(): CollectStackLocalOptions {
+    return {
+      now: NOW,
+      serverInfo: { processStartedAt: "", git: { available: false, unavailableReason: "git_unavailable" } },
+      images: fakeImages({}),
+      db: null,
+    };
+  }
+
+  it("STACK-PROBE-ENDPOINTS: litellm probe falls back to the gateway base URL the board already knows", async () => {
+    const realFetch = globalThis.fetch;
+    const seen: string[] = [];
+    globalThis.fetch = (async (url: RequestInfo | URL) => {
+      seen.push(String(url));
+      return new Response(JSON.stringify({ litellm_version: "v1.74.2" }), { status: 200 });
+    }) as typeof globalThis.fetch;
+    const savedGateway = process.env.MYRMIDON_LITELLM_BASE_URL;
+    const savedEndpoint = process.env.MYRMIDON_STACK_HTTP_LITELLM;
+    delete process.env.MYRMIDON_STACK_HTTP_LITELLM;
+    process.env.MYRMIDON_LITELLM_BASE_URL = "http://litellm.local:4000";
+    try {
+      const doc = await collectStackLocal(stackCollectOptions());
+      const litellm = doc.components.find((c) => c.name === "litellm")!;
+      expect(seen).toEqual(["http://litellm.local:4000/public/model_hub/info"]);
+      expect(litellm.local.version).toBe("v1.74.2");
+      expect(litellm.local.runningOn).toBe("http://litellm.local:4000");
+      expect(litellm.local.unknownReason).toBeNull();
+    } finally {
+      globalThis.fetch = realFetch;
+      if (savedGateway === undefined) delete process.env.MYRMIDON_LITELLM_BASE_URL;
+      else process.env.MYRMIDON_LITELLM_BASE_URL = savedGateway;
+      if (savedEndpoint === undefined) delete process.env.MYRMIDON_STACK_HTTP_LITELLM;
+      else process.env.MYRMIDON_STACK_HTTP_LITELLM = savedEndpoint;
+    }
+  });
+
+  it("STACK-PROBE-ENDPOINTS: the MYRMIDON_STACK_HTTP_* override still wins over the board address", async () => {
+    const realFetch = globalThis.fetch;
+    const seen: string[] = [];
+    globalThis.fetch = (async (url: RequestInfo | URL) => {
+      seen.push(String(url));
+      return new Response(JSON.stringify({ litellm_version: "v1.74.2" }), { status: 200 });
+    }) as typeof globalThis.fetch;
+    const savedGateway = process.env.MYRMIDON_LITELLM_BASE_URL;
+    const savedEndpoint = process.env.MYRMIDON_STACK_HTTP_LITELLM;
+    process.env.MYRMIDON_LITELLM_BASE_URL = "http://gateway.local:4000";
+    process.env.MYRMIDON_STACK_HTTP_LITELLM = "http://override.local:4000";
+    try {
+      const doc = await collectStackLocal(stackCollectOptions());
+      const litellm = doc.components.find((c) => c.name === "litellm")!;
+      expect(seen).toEqual(["http://override.local:4000/public/model_hub/info"]);
+      expect(litellm.local.version).toBe("v1.74.2");
+    } finally {
+      globalThis.fetch = realFetch;
+      if (savedGateway === undefined) delete process.env.MYRMIDON_LITELLM_BASE_URL;
+      else process.env.MYRMIDON_LITELLM_BASE_URL = savedGateway;
+      if (savedEndpoint === undefined) delete process.env.MYRMIDON_STACK_HTTP_LITELLM;
+      else process.env.MYRMIDON_STACK_HTTP_LITELLM = savedEndpoint;
+    }
+  });
+
+  it("STACK-PROBE-ENDPOINTS: hindsight probe falls back to the memory service address (env, then the stored setting)", async () => {
+    const realFetch = globalThis.fetch;
+    const seen: string[] = [];
+    globalThis.fetch = (async (url: RequestInfo | URL) => {
+      seen.push(String(url));
+      return new Response(JSON.stringify({ version: "1.1.0" }), { status: 200 });
+    }) as typeof globalThis.fetch;
+    const savedHindsight = process.env.MYRMIDON_HINDSIGHT_API_URL;
+    const savedBot = process.env.MYRMIDON_BOT_HINDSIGHT_API_URL;
+    const savedEndpoint = process.env.MYRMIDON_STACK_HTTP_HINDSIGHT;
+    delete process.env.MYRMIDON_STACK_HTTP_HINDSIGHT;
+    delete process.env.MYRMIDON_BOT_HINDSIGHT_API_URL;
+    try {
+      // env address is used when no stored setting exists
+      process.env.MYRMIDON_HINDSIGHT_API_URL = "http://hindsight-env.local:8080";
+      const fromEnv = await collectStackLocal(stackCollectOptions());
+      expect(seen).toEqual(["http://hindsight-env.local:8080/version"]);
+      const hindsightEnv = fromEnv.components.find((c) => c.name === "hindsight")!;
+      expect(hindsightEnv.local.version).toBe("1.1.0");
+
+      // the stored instance setting wins over the env
+      seen.length = 0;
+      const fromSetting = await collectStackLocal({
+        ...stackCollectOptions(),
+        db: fakeGeneralDb({ agentMemory: { apiUrl: "http://hindsight-setting.local:8080" } }),
+      });
+      expect(seen).toEqual(["http://hindsight-setting.local:8080/version"]);
+      const hindsightSetting = fromSetting.components.find((c) => c.name === "hindsight")!;
+      expect(hindsightSetting.local.version).toBe("1.1.0");
+      expect(hindsightSetting.local.runningOn).toBe("http://hindsight-setting.local:8080");
+    } finally {
+      globalThis.fetch = realFetch;
+      if (savedHindsight === undefined) delete process.env.MYRMIDON_HINDSIGHT_API_URL;
+      else process.env.MYRMIDON_HINDSIGHT_API_URL = savedHindsight;
+      if (savedBot === undefined) delete process.env.MYRMIDON_BOT_HINDSIGHT_API_URL;
+      else process.env.MYRMIDON_BOT_HINDSIGHT_API_URL = savedBot;
+      if (savedEndpoint === undefined) delete process.env.MYRMIDON_STACK_HTTP_HINDSIGHT;
+      else process.env.MYRMIDON_STACK_HTTP_HINDSIGHT = savedEndpoint;
+    }
+  });
+
+  it("STACK-PROBE-ENDPOINTS: langfuse probe falls back to the evals Langfuse base URL", async () => {
+    const realFetch = globalThis.fetch;
+    const seen: string[] = [];
+    globalThis.fetch = (async (url: RequestInfo | URL) => {
+      seen.push(String(url));
+      return new Response(JSON.stringify({ version: "3.2.0" }), { status: 200 });
+    }) as typeof globalThis.fetch;
+    const savedLangfuse = process.env.MYRMIDON_EVALS_LANGFUSE_BASE_URL;
+    const savedEndpoint = process.env.MYRMIDON_STACK_HTTP_LANGFUSE;
+    delete process.env.MYRMIDON_STACK_HTTP_LANGFUSE;
+    process.env.MYRMIDON_EVALS_LANGFUSE_BASE_URL = "http://langfuse.local:3000";
+    try {
+      const doc = await collectStackLocal(stackCollectOptions());
+      const langfuse = doc.components.find((c) => c.name === "langfuse")!;
+      expect(seen).toEqual(["http://langfuse.local:3000/api/public/health"]);
+      expect(langfuse.local.version).toBe("3.2.0");
+      expect(langfuse.local.runningOn).toBe("http://langfuse.local:3000");
+    } finally {
+      globalThis.fetch = realFetch;
+      if (savedLangfuse === undefined) delete process.env.MYRMIDON_EVALS_LANGFUSE_BASE_URL;
+      else process.env.MYRMIDON_EVALS_LANGFUSE_BASE_URL = savedLangfuse;
+      if (savedEndpoint === undefined) delete process.env.MYRMIDON_STACK_HTTP_LANGFUSE;
+      else process.env.MYRMIDON_STACK_HTTP_LANGFUSE = savedEndpoint;
+    }
+  });
+
+  it("STACK-PROBE-ENDPOINTS: no override and no board address is an honest unknown with a reason", async () => {
+    const savedGateway = process.env.MYRMIDON_LITELLM_BASE_URL;
+    const savedHindsight = process.env.MYRMIDON_HINDSIGHT_API_URL;
+    const savedBot = process.env.MYRMIDON_BOT_HINDSIGHT_API_URL;
+    const savedLangfuse = process.env.MYRMIDON_EVALS_LANGFUSE_BASE_URL;
+    delete process.env.MYRMIDON_LITELLM_BASE_URL;
+    delete process.env.MYRMIDON_HINDSIGHT_API_URL;
+    delete process.env.MYRMIDON_BOT_HINDSIGHT_API_URL;
+    delete process.env.MYRMIDON_EVALS_LANGFUSE_BASE_URL;
+    try {
+      const doc = await collectStackLocal({
+        ...stackCollectOptions(),
+        db: fakeGeneralDb({}),
+      });
+      const litellm = doc.components.find((c) => c.name === "litellm")!;
+      expect(litellm.local.version).toBeNull();
+      expect(litellm.local.unknownReason).toContain("MYRMIDON_STACK_HTTP_LITELLM is not set");
+      const hindsight = doc.components.find((c) => c.name === "hindsight")!;
+      expect(hindsight.local.version).toBeNull();
+      expect(hindsight.local.unknownReason).toContain("MYRMIDON_STACK_HTTP_HINDSIGHT is not set");
+    } finally {
+      if (savedGateway === undefined) delete process.env.MYRMIDON_LITELLM_BASE_URL;
+      else process.env.MYRMIDON_LITELLM_BASE_URL = savedGateway;
+      if (savedHindsight === undefined) delete process.env.MYRMIDON_HINDSIGHT_API_URL;
+      else process.env.MYRMIDON_HINDSIGHT_API_URL = savedHindsight;
+      if (savedBot === undefined) delete process.env.MYRMIDON_BOT_HINDSIGHT_API_URL;
+      else process.env.MYRMIDON_BOT_HINDSIGHT_API_URL = savedBot;
+      if (savedLangfuse === undefined) delete process.env.MYRMIDON_EVALS_LANGFUSE_BASE_URL;
+      else process.env.MYRMIDON_EVALS_LANGFUSE_BASE_URL = savedLangfuse;
+    }
+  });
+
   it("reads the release list newest-first and normalises versions", () => {
     const records = readReleaseList("github-releases", langfuseReleases());
     expect(records.map((r) => r.tag)).toEqual(["3.2.0", "3.1.0", "3.0.0"]);
@@ -765,7 +937,9 @@ describeEmbeddedPostgres("stack release check", () => {
 
   it("http-version probe reports an honest unknown when the env binding is missing", async () => {
     const saved = process.env.MYRMIDON_STACK_HTTP_LANGFUSE;
+    const savedBoard = process.env.MYRMIDON_EVALS_LANGFUSE_BASE_URL;
     delete process.env.MYRMIDON_STACK_HTTP_LANGFUSE;
+    delete process.env.MYRMIDON_EVALS_LANGFUSE_BASE_URL;
     try {
       const doc = await collectStackLocal({ now: NOW, serverInfo: { processStartedAt: "", git: { available: false, unavailableReason: "git_unavailable" } }, images: fakeImages({}) });
       const langfuse = doc.components.find((c) => c.name === "langfuse")!;
@@ -773,6 +947,7 @@ describeEmbeddedPostgres("stack release check", () => {
       expect(langfuse.local.unknownReason).toContain("MYRMIDON_STACK_HTTP_LANGFUSE is not set");
     } finally {
       if (saved !== undefined) process.env.MYRMIDON_STACK_HTTP_LANGFUSE = saved;
+      if (savedBoard !== undefined) process.env.MYRMIDON_EVALS_LANGFUSE_BASE_URL = savedBoard;
     }
   });
 
