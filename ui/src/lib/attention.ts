@@ -115,6 +115,8 @@ const SOURCE_META: Record<AttentionSourceKind, SourceMeta> = {
   provider_no_credits: { label: "Provider no credits" },
   litellm_budget: { label: "LLM key budget" },
   github_app_webhook_disabled: { label: "GitHub App webhook disabled" },
+  // myrmidon(OPE-12879): label for the done-with-open-PR attention card.
+  done_pr_not_merged: { label: "Done with open PR" },
 };
 
 export function sourceMeta(kind: AttentionSourceKind): SourceMeta {

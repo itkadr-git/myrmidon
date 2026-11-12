@@ -20,11 +20,16 @@
 //     literal argument;
 //   - `@myrmidon/<name>[/subpath]` specifiers are resolved the way Node does:
 //     walk up from the importing file's directory through
-//     node_modules/@myrmidon/<name>, read the package `exports` map, pick the
-//     target by `import`/`node`/`default` conditions (string targets and
-//     `./*` patterns included), then verify the target file exists and is
+//     node_modules/@myrmidon/<name>; with no such link, fall back to Node's
+//     self-reference rule: the nearest package.json above the importing file
+//     whose `name` equals the specifier's package, resolved through its own
+//     `exports` map. Read that map, pick the target by
+//     `import`/`node`/`default` conditions (string targets and `./*`
+//     patterns included), then verify the target file exists and is
 //     compiled JS (not `.ts`, not under `/src/`). Reached package files are
 //     then walked recursively for their own imports;
+//   - compiled test artifacts (`*.test.js`, `*.myrmidon.test.js`) are never
+//     loaded by the production runtime and are skipped;
 //   - relative specifiers ending in `.ts`;
 //   - `new URL("....ts", import.meta.url)` string literals.
 // Non-@myrmidon npm packages are intentionally not checked for existence;
@@ -46,6 +51,10 @@ import { fileURLToPath } from "node:url";
 
 const RUNTIME_CONDITIONS = new Set(["import", "node", "default"]);
 const JS_EXT = /\.(?:js|mjs|cjs)$/;
+// Compiled-in dist test artifacts: vitest/node test files that tsc emits next
+// to the runtime output. The production runtime never imports them, so the
+// audit skips them (their `new URL("../src/x.ts")` fixtures are expected).
+const TEST_ARTIFACT_EXT = /(?:^|\.)test\.js$|\.myrmidon\.test\.js$/;
 
 // ---------------------------------------------------------------------------
 // Source scanning: collect import-like string literals with line numbers.
@@ -269,6 +278,29 @@ function findPackageDir(fromDir, pkgName) {
   }
 }
 
+/**
+ * Node's self-reference rule: an `@myrmidon/<pkg>/...` import from inside
+ * package `<pkg>` itself resolves through that package's own package.json
+ * (`name` must match, `exports` must exist) — pnpm creates no self-link in
+ * node_modules for private workspace packages, so findPackageDir alone misses
+ * these. Walk up from fromDir to the nearest package.json and return its
+ * directory when it is the referenced package with an exports map.
+ */
+function findSelfReferenceDir(fromDir, pkgName) {
+  let dir = resolve(fromDir);
+  for (;;) {
+    if (existsSync(join(dir, "package.json"))) {
+      const pkgJson = readPackageJson(dir);
+      if (pkgJson && pkgJson.name === pkgName && pkgJson.exports !== undefined) {
+        return dir;
+      }
+    }
+    const parent = dirname(dir);
+    if (parent === dir) return null;
+    dir = parent;
+  }
+}
+
 function readPackageJson(pkgDir) {
   try {
     return JSON.parse(readFileSync(join(pkgDir, "package.json"), "utf8"));
@@ -374,7 +406,7 @@ export function resolveMyrmidonSpecifier(specifier, fromDir) {
   const pkgName = `${segments[0]}/${segments[1]}`;
   const rest = segments.slice(2);
   const subpath = rest.length > 0 ? `./${rest.join("/")}` : ".";
-  const pkgDir = findPackageDir(fromDir, pkgName);
+  const pkgDir = findPackageDir(fromDir, pkgName) ?? findSelfReferenceDir(fromDir, pkgName);
   if (!pkgDir) return { failure: "пакет не найден в node_modules", packageName: pkgName };
   const pkgJson = readPackageJson(pkgDir);
   if (!pkgJson) return { failure: "package.json не читается", packageName: pkgName };
@@ -432,7 +464,7 @@ export function walkJsFiles(distRoot, skipVendorRunner = false) {
       if (entry.isDirectory()) {
         if (skipVendorRunner && isVendorRunnerPath(distRoot, p)) continue;
         stack.push(p);
-      } else if (entry.isFile() && JS_EXT.test(entry.name)) {
+      } else if (entry.isFile() && JS_EXT.test(entry.name) && !TEST_ARTIFACT_EXT.test(entry.name)) {
         files.push(p);
       }
     }

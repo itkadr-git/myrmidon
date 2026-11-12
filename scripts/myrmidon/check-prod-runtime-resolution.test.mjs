@@ -315,4 +315,96 @@ describe("main on fixtures", () => {
       fs.rmSync(dir, { recursive: true, force: true });
     }
   });
+
+  it("(10) resolves self-referencing @myrmidon imports through the importing package's own exports", () => {
+    const dir = mkdtemp();
+    try {
+      // The adapter-utils/shared pattern: a workspace package whose compiled
+      // dist imports its own name by subpath. pnpm creates no
+      // node_modules/@myrmidon/<pkg> self-link, so resolution must fall back
+      // to Node's self-reference rule through the package's own package.json.
+      const pkgDir = path.join(dir, "packages", "selfpkg");
+      const pkgJson = {
+        name: "@myrmidon/selfpkg",
+        version: "1.0.0",
+        type: "module",
+        exports: { ".": "./dist/index.js", "./*": "./dist/*.js" },
+      };
+      fs.mkdirSync(pkgDir, { recursive: true });
+      fs.writeFileSync(path.join(pkgDir, "package.json"), JSON.stringify(pkgJson));
+      fs.mkdirSync(path.join(pkgDir, "dist"), { recursive: true });
+      fs.writeFileSync(
+        path.join(pkgDir, "dist", "index.js"),
+        'export const inner = 1;\nimport { target } from "@myrmidon/selfpkg/target";\nexport { target };\n',
+      );
+      fs.writeFileSync(path.join(pkgDir, "dist", "target.js"), "export const target = 2;\n");
+      const dist = writeServerDist(dir, "");
+      const selfDist = path.join(pkgDir, "dist");
+      // Audit the package's own dist tree directly, as CI audits each
+      // workspace package built under packages/<name>: the importing file is
+      // inside the package, so the self-reference fallback must resolve
+      // "@myrmidon/selfpkg/target" through the package's own exports map.
+      const failures = collectFailures(selfDist);
+      assert.deepEqual(
+        failures.map((f) => [path.basename(f.file), f.specifier, f.reason]),
+        [],
+      );
+      const { code, output } = runMain(dir, ["--dist", path.relative(dir, dist)]);
+      assert.equal(code, 0, output);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("(11) flags self-reference exports pointing at .ts when apply was skipped", () => {
+    const dir = mkdtemp();
+    try {
+      const pkgDir = path.join(dir, "packages", "selfpkg");
+      const pkgJson = {
+        name: "@myrmidon/selfpkg",
+        version: "1.0.0",
+        type: "module",
+        exports: { ".": "./dist/index.js", "./*": "./src/*.ts" },
+      };
+      fs.mkdirSync(pkgDir, { recursive: true });
+      fs.writeFileSync(path.join(pkgDir, "package.json"), JSON.stringify(pkgJson));
+      fs.mkdirSync(path.join(pkgDir, "src"), { recursive: true });
+      fs.writeFileSync(path.join(pkgDir, "src", "target.ts"), "export const target = 1;\n");
+      fs.mkdirSync(path.join(pkgDir, "dist"), { recursive: true });
+      fs.writeFileSync(
+        path.join(pkgDir, "dist", "index.js"),
+        'import { target } from "@myrmidon/selfpkg/target";\nexport const inner = 1;\n',
+      );
+      // Dev-manifest state (apply skipped): auditing the package's own dist
+      // tree, the self-referencing subpath import resolves through the
+      // package's own exports map to a src/.ts target — flagged.
+      const failures = collectFailures(path.join(pkgDir, "dist"));
+      assert.deepEqual(
+        failures.map((f) => [path.basename(f.file), f.specifier, f.reason]),
+        [
+          ["index.js", "@myrmidon/selfpkg/target", "exports указывает на .ts"],
+        ],
+      );
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+
+  it("(12) skips compiled dist test artifacts and their src-pointing new URL fixtures", () => {
+    const dir = mkdtemp();
+    try {
+      writePkg(dir, "a", { exports: { ".": { import: "./dist/index.js" } }, distFiles: { "index.js": "export const a = 1;\n" } });
+      const dist = writeServerDist(dir, 'import { a } from "@myrmidon/a";\nexport { a };\n', {
+        "myrmidon/app-plugin.myrmidon.test.js": 'const u = new URL("../../src/app.ts", import.meta.url);\nimport { a } from "@myrmidon/a";\n',
+        "services/heartbeat.test.js": 'const v = new URL("./heartbeat.ts", import.meta.url);\n',
+        "services/runtime.js": 'import { a } from "@myrmidon/a";\nexport { a };\n',
+      });
+      const { code, output } = runMain(dir, ["--dist", path.relative(dir, dist)]);
+      assert.equal(code, 0, output);
+      assert.match(output, /0 сбоев в 0 пакетах/);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
 });

@@ -99,6 +99,8 @@ export const ATTENTION_SOURCE_KINDS = [
   // GitHub settings page (GitHub answers 404 on the hook-config sync) — the
   // board receives no GitHub events until the App owner turns it on.
   "github_app_webhook_disabled",
+  // myrmidon(OPE-12879): a task is done, but its pull request is still open (unmerged).
+  "done_pr_not_merged",
 ] as const;
 
 export type AttentionSourceKind = (typeof ATTENTION_SOURCE_KINDS)[number];
