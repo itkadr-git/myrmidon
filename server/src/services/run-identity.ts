@@ -11,6 +11,12 @@ import {
 } from "@myrmidon/db";
 import { conflict, forbidden } from "../errors.js";
 import { isUuidLike } from "@myrmidon/shared";
+import {
+  decideRunActing,
+  readRunStallGraceMs,
+  runStallRefusalDetails,
+  RUN_STALL_REFUSAL_MESSAGE,
+} from "../myrmidon/run-stall/grace.js";
 import { queuedCommentIdsFromRunContext, queuedCommentIdsFromWakePayload } from "./issue-queued-comment-queue.js";
 
 /** Resolve an explicit click from persisted receipts, never caller context or message authors. */
@@ -443,10 +449,33 @@ export async function captureRunIdentity(
         ),
       )
       .for("update");
-    if (!run || run.status !== "running")
+    // myrmidon(OPE-12808): a run the stall sweep cancelled while its process is
+    // still alive may finish its work inside a grace window; any later refusal
+    // names the stall instead of the bare "requires an active run".
+    const graceMs = readRunStallGraceMs();
+    const acting = run ? decideRunActing(run, new Date(), graceMs) : ({ kind: "inactive" } as const);
+    if (run && acting.kind === "stall_expired")
+      throw forbidden(RUN_STALL_REFUSAL_MESSAGE, runStallRefusalDetails(run.id, acting.interruptedAt, graceMs));
+    if (!run || acting.kind === "inactive")
       throw forbidden(
         "Credential acquisition requires this agent's active run",
       );
+    // A grace-window run keeps its identity as is: queued steering is not
+    // accepted into a run the board has already stopped.
+    if (acting.kind === "stall_grace") {
+      const [context] = run.activeIdentityContextId
+        ? await tx
+            .select()
+            .from(runIdentityContexts)
+            .where(
+              and(
+                eq(runIdentityContexts.id, run.activeIdentityContextId),
+                eq(runIdentityContexts.runId, run.id),
+              ),
+            )
+        : [];
+      return { run, context: context ?? null };
+    }
     const [pending] = await tx
       .select()
       .from(runIdentityContexts)
