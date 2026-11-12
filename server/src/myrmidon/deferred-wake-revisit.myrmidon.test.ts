@@ -1,7 +1,9 @@
 // myrmidon(OPE-12807): the revisit cool-down of deferred wakes.
 import { describe, expect, it } from "vitest";
 import {
+  DEFERRED_WAKE_FRESH_WINDOW_MS,
   DEFERRED_WAKE_REVISIT_COOLDOWN_MS,
+  deferredWakeFreshSince,
   deferredWakeRevisitCutoff,
   isDeferredWakeRevisitDue,
 } from "./deferred-wake-revisit.js";
@@ -23,5 +25,11 @@ describe("deferred wake revisit cool-down", () => {
   it("the cut-off is the cool-down before now", () => {
     expect(deferredWakeRevisitCutoff(NOW).getTime()).toBe(NOW - DEFERRED_WAKE_REVISIT_COOLDOWN_MS);
     expect(DEFERRED_WAKE_REVISIT_COOLDOWN_MS).toBeGreaterThan(30_000);
+  });
+
+  it("the fresh window is bounded, so a long-stranded wake is always paced by the cool-down", () => {
+    expect(deferredWakeFreshSince(NOW).getTime()).toBe(NOW - DEFERRED_WAKE_FRESH_WINDOW_MS);
+    expect(DEFERRED_WAKE_FRESH_WINDOW_MS).toBeGreaterThan(0);
+    expect(DEFERRED_WAKE_FRESH_WINDOW_MS).toBeLessThanOrEqual(60 * 60_000);
   });
 });

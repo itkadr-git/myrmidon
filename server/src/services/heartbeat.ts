@@ -1038,7 +1038,7 @@ import {
 // budget-enforcement/).
 import { readBudgetEnforcement } from "../myrmidon/budget-enforcement/settings.js";
 import { evaluateBudgetLimitAdmission } from "../myrmidon/budget-limits/admission.js"; // myrmidon(1.7-BUDGET-CONFIG)
-import { deferredWakeRevisitCutoff } from "../myrmidon/deferred-wake-revisit.js"; // myrmidon(OPE-12807)
+import { deferredWakeFreshSince, deferredWakeRevisitCutoff } from "../myrmidon/deferred-wake-revisit.js"; // myrmidon(OPE-12807)
 import { guardrailsOnRunOutput } from "../myrmidon/guardrails/run-output.js"; // myrmidon(1.6-GRD)
 import {
   deliverBudgetSignalOnly,
@@ -23048,8 +23048,11 @@ export function heartbeatService(
         ), sql`${agentWakeupRequests.payload}->>'mutation' = 'interaction'`),
         sql`${agentWakeupRequests.payload}->'queuedCommentInterrupt' is null`,
         // myrmidon(OPE-12807): a wake already looked at waits out the cool-down; no gate here
-        // made the same 50 wakes cost a run lookup and a cursor update on every pass.
-        lte(agentWakeupRequests.updatedAt, deferredWakeRevisitCutoff(Date.now())),
+        // made the same 50 wakes cost a run lookup and a cursor update on every pass. A fresh
+        // wake is exempt: its `updatedAt` is its creation time, not a look, and its owner run
+        // may release the lock at any moment, so it is promoted on the next pass as before.
+        or(gt(agentWakeupRequests.requestedAt, deferredWakeFreshSince(Date.now())),
+          lte(agentWakeupRequests.updatedAt, deferredWakeRevisitCutoff(Date.now()))),
         cutoff ? gte(agentWakeupRequests.requestedAt, cutoff) : undefined))
       .orderBy(asc(agentWakeupRequests.updatedAt)).limit(50);
     for (const { wake } of strandedQueues) {

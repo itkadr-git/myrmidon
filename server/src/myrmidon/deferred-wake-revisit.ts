@@ -14,8 +14,23 @@
  * keeps the bounded scan fair: a revisited wake goes to the tail of the
  * `updatedAt` order. The cost is that a lifted hold is noticed up to one
  * cool-down later, the same order as the scheduler tick.
+ *
+ * The stranded-queue scan exempts a fresh wake from the cool-down. A new wake's
+ * `updatedAt` is its creation time, not a look, and a wake requested moments
+ * ago is the normal case of a queue whose owner run is about to finish: it
+ * must be promoted on the first pass after the lock is free, without a click.
+ * Only a wake older than the fresh window, the long-stranded kind that caused
+ * the load, is paced by the cool-down.
  */
 export const DEFERRED_WAKE_REVISIT_COOLDOWN_MS = 5 * 60_000;
+
+/** Age up to which a wake is looked at on every pass of the stranded-queue scan. */
+export const DEFERRED_WAKE_FRESH_WINDOW_MS = 10 * 60_000;
+
+/** A wake requested after this moment is fresh and not paced by the cool-down. */
+export function deferredWakeFreshSince(nowMs: number): Date {
+  return new Date(nowMs - DEFERRED_WAKE_FRESH_WINDOW_MS);
+}
 
 /** Latest `updatedAt` a wake may carry to be due for another look. */
 export function deferredWakeRevisitCutoff(nowMs: number): Date {
