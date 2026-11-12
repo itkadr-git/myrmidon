@@ -51,6 +51,12 @@ import {
   type ReconcileOutcome,
 } from "./reconciler.js";
 import { clearBotRolloutDeferred, recordBotRolloutDeferred, runDeferredRolloutWatcher } from "./deferred-reconciler.js";
+// myrmidon(OPE-12654): the bots of agents that left the runtime.
+import {
+  createBotDecommissionSweepState,
+  runBotDecommissionSweep,
+  type BotDecommissionCandidate,
+} from "./bot-decommission.js";
 import type { CompiledProfile } from "./types.js";
 // myrmidon(PERF-DIET-G): the cache one sweep shares between the bots it reconciles.
 import type { BotProfilePass } from "./profile-pass.js";
@@ -226,6 +232,18 @@ export interface BotContainerRuntimeDeps {
    * from the pair (db, companyId). Absent = no back-import, exactly as before.
    */
   backimportCompanyIdOf?: (agentId: string) => Promise<string | null>;
+  /**
+   * myrmidon(OPE-12654): the agents whose bot container may have outlived their place in the
+   * runtime — terminated, or moved to another adapter (agents-query.ts
+   * listBotDecommissionCandidates). With it, the sweep decommissions their bots after its
+   * regular passes (bot-decommission.ts); without it nothing is decommissioned, as before.
+   */
+  listDecommissionCandidates?: () => Promise<BotDecommissionCandidate[]>;
+  /**
+   * myrmidon(OPE-12654): true when the agent has a heartbeat run in "running"; its bot's
+   * decommission waits for a later sweep. Absent: not checked.
+   */
+  hasRunningRun?: (agentId: string) => Promise<boolean>;
 }
 
 export type ApplyBotContainerOutcome = ReconcileOutcome | { kind: "not_applicable"; reason: string };
@@ -693,12 +711,18 @@ async function runWithConcurrency<T>(items: readonly T[], limit: number, worker:
 export function startBotContainerReconciliation(
   listAgents: () => Promise<BotContainerAgent[]>,
   deps: BotContainerRuntimeDeps,
-  opts: { intervalMs?: number; env?: NodeJS.ProcessEnv } = {},
+  opts: {
+    intervalMs?: number;
+    env?: NodeJS.ProcessEnv;
+    /** myrmidon(OPE-12654): the decommission sweep's own period (bot-decommission.ts); tests shorten it. */
+    decommissionIntervalMs?: number;
+  } = {},
 ): () => void {
   if (!isBotContainersEnabled(opts.env)) return () => {};
   const intervalMs = opts.intervalMs ?? DEFAULT_RECONCILE_INTERVAL_MS;
   let stopped = false;
   const oomSyncState = { lastSinceNano: 0 };
+  const decommissionState = createBotDecommissionSweepState();
 
   // One sweep at a time: a slow sweep is still running when the next tick fires.
   // (Two reconciles of the same bot are excluded by the per-bot lock anyway; this
@@ -763,6 +787,25 @@ export function startBotContainerReconciliation(
           companyIdOf: deps.rolloutCompanyIdOf,
           env: opts.env,
         }).catch(() => undefined);
+      }
+      // myrmidon(OPE-12654): the bots of agents that left the runtime (another adapter, or
+      // terminated), which no pass above reaches any more. After the regular passes, and only
+      // after a successful listing (a failed one returned above): the listed agents are never
+      // decommissioned. At most every decommissionIntervalMs; never throws.
+      if (deps.listDecommissionCandidates && !stopped) {
+        await runBotDecommissionSweep(
+          agents,
+          {
+            driver: deps.driver,
+            lock: deps.lock ?? botKeyLock,
+            activity: deps.activity,
+            hasRunningRun: deps.hasRunningRun,
+            listCandidates: deps.listDecommissionCandidates,
+            intervalMs: opts.decommissionIntervalMs,
+            isStopped: () => stopped,
+          },
+          decommissionState,
+        );
       }
     })().finally(() => {
       tickInFlight = null;

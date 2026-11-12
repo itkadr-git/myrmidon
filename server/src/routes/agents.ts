@@ -111,7 +111,8 @@ import type { AgentCasteDirectoryPort } from "../services/agents.js";
 // myrmidon(1.6.8 OPE-12709): "model unavailable since" mark, same state as the role_model_down card
 import { listRoleModelDownSince } from "../services/attention.js";
 import { botKeyForAgent } from "../myrmidon/bot-containers/agent-config.js";
-import { CLEANUP_UNSUPPORTED_MESSAGE } from "../myrmidon/bot-containers/driver.js";
+import { DECOMMISSION_UNSUPPORTED_MESSAGE } from "../myrmidon/bot-containers/driver.js"; // myrmidon(OPE-12654)
+import { botKeyLock } from "../myrmidon/bot-containers/bot-key-lock.js"; // myrmidon(OPE-12654)
 import { getBotContainerRuntime } from "../myrmidon/bot-containers/routes-wiring.js";
 import { createAgentsModule, type AgentsModule } from "../modules/agents/index.js";
 import { badRequest, conflict, forbidden, HttpError, notFound, unprocessable } from "../errors.js";
@@ -620,8 +621,14 @@ export function agentRoutes(
       // An enabled card without a registered runtime is not safe to delete:
       // the container may still exist on a site while startup is unavailable.
       if (!runtime) throw new Error("bot container runtime is not configured; refusing lifecycle cleanup");
-      if (!runtime.driver.cleanup) throw new Error(CLEANUP_UNSUPPORTED_MESSAGE);
-      await runtime.driver.cleanup(botKey);
+      // myrmidon(OPE-12654): the decommission (stop, then dockergate's A22 delete of the main
+      // container with its quota project and data directory) instead of `cleanup`, whose plain
+      // delete the gate refuses for a main container without a `.next` replacement. Under the
+      // bot's lock, so it never runs beside a reconcile pass of the same bot. Still fail-closed:
+      // any error aborts the terminate/delete.
+      const decommission = runtime.driver.decommission;
+      if (!decommission) throw new Error(DECOMMISSION_UNSUPPORTED_MESSAGE);
+      await (runtime.lock ?? botKeyLock).run(botKey, () => decommission.call(runtime.driver, botKey));
     },
     agentsModule: agentsMod,
   });

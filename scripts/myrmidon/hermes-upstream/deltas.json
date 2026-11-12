@@ -597,6 +597,40 @@
         "path": "agent/context_compressor.py",
         "upstreamMarker": "atomic record|tool_result_id_variants|consumed_results"
       }
+    },
+    {
+      "id": "34-run-idempotency-txn-rollback",
+      "kind": "patch",
+      "patch": "docker/bot-runtime/patches/34-run-idempotency-txn-rollback.patch",
+      "files": [
+        "gateway/platforms/api_server_run_idempotency.py"
+      ],
+      "reason": "A write to the run idempotency store whose commit failed (disk full, I/O error, busy timeout) left the SQLite connection inside its transaction; every later BEGIN IMMEDIATE failed with 'cannot start a transaction within a transaction' and each run request answered 500 until the gateway restarted. Writes now roll back on any error, and a transaction left open is rolled back before the next BEGIN IMMEDIATE.",
+      "dropCondition": "Upstream rolls back a failed commit in the run idempotency store (update_status, extend_retention, status_for_run).",
+      "offer": null,
+      "offerNote": "Not offered yet.",
+      "probe": {
+        "source": "hermes",
+        "path": "gateway/platforms/api_server_run_idempotency.py",
+        "upstreamMarker": "in_transaction|_write_locked|def update_status[\\s\\S]*rollback\\(\\)"
+      }
+    },
+    {
+      "id": "35-skill-view-managed-name",
+      "kind": "patch",
+      "patch": "docker/bot-runtime/patches/35-skill-view-managed-name.patch",
+      "files": [
+        "tools/skills_tool.py"
+      ],
+      "reason": "Board-managed skills materialize in the bot profile as paperclip-managed/<slug>--<hash>/SKILL.md, but the skills index shows each one as paperclip-managed:<slug> (category = first path segment, name = frontmatter name). skill_view matched only exact directory names and bare frontmatter names, so every call with the index name answered 'not found', failed three times and the run guard stopped the run. When the exact-name passes find nothing, a qualified namespace:bare name now resolves to the skill whose parent-of-parent directory equals the namespace and whose frontmatter name equals the bare part; two same-slug skills still refuse as ambiguous.",
+      "dropCondition": "Upstream resolves a qualified namespace:name skill reference against the category directory and the frontmatter name of a locally installed skill, not only against plugin namespaces.",
+      "offer": null,
+      "offerNote": "Not offered yet.",
+      "probe": {
+        "source": "hermes",
+        "path": "tools/skills_tool.py",
+        "upstreamMarker": "qualified alias|parent\\.parent\\.name == namespace"
+      }
     }
   ]
 }

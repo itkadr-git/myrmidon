@@ -2696,6 +2696,67 @@ async function buildAttentionFeedSnapshot(
       // threshold is severity critical. Without dockergate data the statfs
       // block below runs unchanged ("not measured" — no partition card).
       const partitionState = hostDiskRuntime(db).partition.current();
+      // myrmidon(1.6.8 OPE-12697, DISK-ALERT): the host root (`/`) crossed a
+      // threshold in this process's sweep. The card names the fill level and
+      // the three consumers the board can name for the host root: docker
+      // volumes, docker images, workspace copies (paths to inspect live on
+      // the host; the board deletes nothing). One row for the whole
+      // instance, the dedup key stays constant while the level holds.
+      const rootState = hostDiskRuntime(db).root.current();
+      if (rootState.alertLevel === "warn" || rootState.alertLevel === "critical") {
+        const root = rootState.root!;
+        const thresholds = rootState.settings!;
+        const critical = rootState.alertLevel === "critical";
+        const dedupKey = "host_disk:root:/";
+        add(createItem({
+          companyId,
+          sourceKind: "host_disk_alert",
+          subject: {
+            kind: "agent",
+            id: "host-disk",
+            companyId,
+            title: "Host root disk",
+            identifier: null,
+            status: "alert",
+            href: `/${prefix}/instance`,
+            metadata: { measuredPath: root.mount, source: "dockergate" },
+          },
+          whyNow: critical
+            ? `Host root (${root.mount}) is ${Math.round(root.usedPercent)}% full — high-level alarm (critical threshold ${thresholds.rootCriticalPercent}%). Free space now: docker volumes, docker images, workspace copies.`
+            : `Host root (${root.mount}) is ${Math.round(root.usedPercent)}% full (threshold ${thresholds.rootThresholdPercent}%). Largest consumers to check: docker volumes, docker images, workspace copies.`,
+          decisionVerbs: decisionVerbs(
+            { id: "inspect", label: "Inspect", description: "Open the host disk panel and free space on the host root." },
+            { id: "dismiss", label: "Dismiss", description: "Dismiss this alert until usage drops and crosses again." },
+          ),
+          inlineResolvable: false,
+          entryRule: "the host root fill level crossed the saved threshold",
+          exitRule: "usage drops below the threshold or the row is dismissed",
+          dedupKey,
+          severity: critical ? "critical" : "high",
+          activityAt: toIso(rootState.evaluatedAt ?? root.at),
+          createdAt: toIso(root.at),
+          updatedAt: toIso(rootState.evaluatedAt ?? root.at),
+          relatedIssue: null,
+          detail: {
+            kind: "host_disk",
+            usedPercent: Math.round(root.usedPercent),
+            thresholdPercent: critical
+              ? thresholds.rootCriticalPercent
+              : thresholds.rootThresholdPercent,
+            usedGb: Math.round(root.usedBytes / (1024 * 1024 * 1024)),
+            totalGb: Math.round(root.totalBytes / (1024 * 1024 * 1024)),
+            freeGb: Math.round(root.freeBytes / (1024 * 1024 * 1024)),
+            growthBytesPerHour: null,
+            mountPoint: root.mount,
+            consumers: [
+              { path: "docker volumes", sizeGb: null },
+              { path: "docker images", sizeGb: null },
+              { path: "workspace copies", sizeGb: null },
+            ],
+            images: [],
+          },
+        }));
+      }
       if (partitionState.alertLevel === "warn" || partitionState.alertLevel === "critical") {
         const partition = partitionState.partition!;
         const thresholds = partitionState.settings!;

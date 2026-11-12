@@ -7,6 +7,9 @@ After=local-fs.target network.target
 Type=oneshot
 EnvironmentFile=-/etc/myrmidon-host-gc.env
 Environment=PAPERCLIP_API_URL=http://127.0.0.1:3100
+# OPE-12722: run copies of the omp SSH runners (a missing directory is only journaled
+# as run-copy-root-missing). Applies to this unit only, not to a wrapper that calls the script.
+Environment=HOST_GC_RUNNER_ROOTS=/srv/myrmidon-xfs/omp-runners
 ExecStart=/usr/bin/node /opt/myrmidon/scripts/myrmidon/host-gc/host-clone-cache-gc.mjs --apply
 Nice=10
 IOSchedulingClass=best-effort

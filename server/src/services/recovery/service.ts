@@ -226,6 +226,11 @@ import {
   pullRequestCiStateFromStatusPayload,
   type PullRequestHeadResolver,
 } from "../../myrmidon/review-routing/github.js";
+import {
+  issueAnchorAgentId,
+  ownGroupReviewerPool,
+  resolveAgentGroupKey,
+} from "../../myrmidon/review-routing/policy.js";
 import { selectRunPullRequest } from "../../myrmidon/run-pull-request.js";
 
 const EXECUTION_PATH_HEARTBEAT_RUN_STATUSES = [
@@ -1001,15 +1006,6 @@ function isRepeatedProductiveContinuationRecovery(
   );
 }
 
-const ADM_REVIEWER_AGENT_IDS = [
-  "dbd3f01c-518e-4c1d-a05a-2a4bf25acf93", // 0 -> adm-dev-review-8
-  "d674a53a-3abd-43fe-8f49-696a04937323", // 1 -> adm-dev-review-9
-  "07555686-c5f7-4536-ac2b-c9ab1027e89f", // 2 -> adm-dev-review-10
-  "62640ae6-658b-4cde-ba3a-b6a88e708df9", // 3 -> adm-dev-review-11
-  "b7040a16-03a0-4d3c-8060-709038ccc403", // 4 -> adm-dev-review-12
-  "c85f5dac-4a13-4bdb-9498-c666fe45d4c9", // 5 -> adm-dev-review-13
-];
-
 function getReviewerParticipantAgentId(issue: {
   executionPolicy?: unknown;
   executionState?: unknown;
@@ -1050,7 +1046,17 @@ function getReviewerParticipantAgentId(issue: {
 
 async function pickReviewerForIssue(
   db: Db,
-  issue: { companyId: string },
+  issue: {
+    id: string;
+    companyId: string;
+    status: string;
+    assigneeAgentId?: string | null;
+    assigneeUserId?: string | null;
+    createdByAgentId?: string | null;
+    createdByUserId?: string | null;
+    executionPolicy?: unknown;
+    executionState?: unknown;
+  },
   prProduct: typeof issueWorkProducts.$inferSelect,
 ): Promise<string | null> {
   const prInfo = selectRunPullRequest([
@@ -1063,9 +1069,32 @@ async function pickReviewerForIssue(
     } as any,
   ]);
   const prNumber = prInfo?.number;
+  const anchorAgentId = issueAnchorAgentId({
+    id: issue.id,
+    status: issue.status,
+    assigneeAgentId: issue.assigneeAgentId ?? null,
+    assigneeUserId: issue.assigneeUserId ?? null,
+    createdByAgentId: issue.createdByAgentId ?? null,
+    createdByUserId: issue.createdByUserId ?? null,
+    executionPolicy: issue.executionPolicy,
+    executionState: issue.executionState,
+  });
+  if (!anchorAgentId) return null;
+
+  const [anchor] = await db
+    .select({ name: agents.name, metadata: agents.metadata })
+    .from(agents)
+    .where(and(eq(agents.companyId, issue.companyId), eq(agents.id, anchorAgentId)));
+  const groupKey = resolveAgentGroupKey(anchor);
+  if (!groupKey) return null;
 
   const reviewerAgents = await db
-    .select({ id: agents.id, role: agents.role })
+    .select({
+      id: agents.id,
+      name: agents.name,
+      role: agents.role,
+      metadata: agents.metadata,
+    })
     .from(agents)
     .where(
       and(
@@ -1073,25 +1102,18 @@ async function pickReviewerForIssue(
         inArray(agents.role, ["reviewer", "code_reviewer"]),
       ),
     );
+  const eligibleReviewers = ownGroupReviewerPool(
+    reviewerAgents.filter((agent) => agent.id !== anchorAgentId),
+    groupKey,
+  );
 
-  if (reviewerAgents.length > 0) {
+  if (eligibleReviewers.length > 0) {
     if (typeof prNumber === "number" && Number.isSafeInteger(prNumber)) {
-      const idx = Math.abs(prNumber) % reviewerAgents.length;
-      const target = reviewerAgents[idx];
+      const idx = Math.abs(prNumber) % eligibleReviewers.length;
+      const target = eligibleReviewers[idx];
       if (target) return target.id;
     }
-    return reviewerAgents[0]?.id ?? null;
-  }
-
-  if (typeof prNumber === "number" && Number.isSafeInteger(prNumber)) {
-    const targetId = ADM_REVIEWER_AGENT_IDS[Math.abs(prNumber) % ADM_REVIEWER_AGENT_IDS.length];
-    if (targetId) {
-      const [existing] = await db
-        .select({ id: agents.id })
-        .from(agents)
-        .where(and(eq(agents.companyId, issue.companyId), eq(agents.id, targetId)));
-      if (existing) return existing.id;
-    }
+    return eligibleReviewers[0]?.id ?? null;
   }
 
   return null;

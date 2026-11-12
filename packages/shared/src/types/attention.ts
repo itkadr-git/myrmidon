@@ -267,7 +267,7 @@ export type AttentionItemDetail =
       freeGb: number;
       growthBytesPerHour: number | null;
       mountPoint: string | null;
-      consumers: Array<{ path: string; sizeGb: number }>;
+      consumers: Array<{ path: string; sizeGb: number | null }>;
       images: AttentionDetailImage[];
     }
   | {

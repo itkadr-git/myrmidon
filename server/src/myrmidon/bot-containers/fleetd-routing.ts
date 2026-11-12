@@ -32,7 +32,9 @@
 //   - statusWithDrift: the host's, else `status` + `templateDrift` (what the
 //     reconciler does with a driver that lacks the probe);
 //   - listRunning: the host's, else `list` filtered to running;
-//   - readCloneReport / readBotSkills: the host's, else null ("nothing to read").
+//   - readCloneReport / readBotSkills: the host's, else null ("nothing to read");
+//   - decommission (OPE-12654): the host's, else the host's `cleanup` (fleetd removes the
+//     container and the bot directory itself), else the "not supported" error.
 // A router that forwarded only the required methods silently turned all of the
 // above off for every bot (IDLE-STOP: "idle-stop route is not supported by this
 // driver" on each sweep).
@@ -40,6 +42,7 @@
 import { cardFleetHost, fleetSiteKey, type FleetHostConfig } from "./fleetd-hosts.js";
 import {
   CLEANUP_UNSUPPORTED_MESSAGE,
+  DECOMMISSION_UNSUPPORTED_MESSAGE,
   IDLE_STOP_UNSUPPORTED_MESSAGE,
   type BotContainerDriver,
   type BotContainerSpec,
@@ -297,6 +300,14 @@ export function fleetRoutingDriver(
       const driver = await driverFor(deps, agentOf(botKey));
       if (!driver.cleanup) throw new Error(CLEANUP_UNSUPPORTED_MESSAGE);
       await driver.cleanup(botKey);
+    },
+    async decommission(botKey: string): Promise<void> {
+      const driver = await driverFor(deps, agentOf(botKey));
+      // myrmidon(OPE-12654): a host without the decommission route (fleetd) removes the
+      // container and the bot directory in its own cleanup.
+      if (driver.decommission) await driver.decommission(botKey);
+      else if (driver.cleanup) await driver.cleanup(botKey);
+      else throw new Error(DECOMMISSION_UNSUPPORTED_MESSAGE);
     },
     async stopIdle(botKey: string): Promise<void> {
       const driver = await driverFor(deps, agentOf(botKey));

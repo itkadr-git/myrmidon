@@ -9,18 +9,26 @@ import {
   issueApprovals,
   issueThreadInteractions,
   heartbeatRuns,
-  activityLog,
   issueRecoveryActions,
   issueComments,
   issues,
 } from "@myrmidon/db";
+// OPE-12797 (ORCH-IO-SPLIT): run-event commits in this adapter go through the
+// event sink (`createPostgresRunEventSink`), which owns the activity-log
+// receipt write; this module no longer imports `activityLog` directly.
 import { ISSUE_DISPOSITION_REPAIR_RETRY_REASON } from "@myrmidon/shared";
 import { parseObject } from "../../../adapters/utils.js";
 import { evaluateAgentInvokabilityFromDb } from "../../../services/agent-invokability.js";
 import { budgetService } from "../../../services/budgets.js";
 import { isHeartbeatWakeOnDemandEnabled } from "../../../services/heartbeat-policy.js";
 import { collectDispositionRepairSourceState } from "../../../services/recovery/disposition-repair.js";
-import { appendHeartbeatRunEvent } from "../../../services/heartbeat-run-events.js";
+import { createPostgresRunEventSink } from "./event-sink.js";
+import type { RunEventSink } from "../application/event-sink.js";
+import {
+  scheduledRetryPromotedEventCommand,
+  scheduledRetrySuppressedEventCommand,
+  staleQueuedRunCancelledEventCommand,
+} from "../domain/run-event-command.js";
 import { emitAgentTaskRun } from "../../../services/agent-task-run-telemetry.js";
 import { issueService } from "../../../services/issues.js";
 import { randomUUID } from "node:crypto";
@@ -202,6 +210,7 @@ export function createPostgresRunDispatchAdapter(
   const budgets = budgetService(db);
   const treeControlSvc = issueTreeControlService(db);
   const issuesSvc = issueService(db);
+  const runEventSink: RunEventSink = createPostgresRunEventSink();
 
   async function withIssueThenRunLocks<T>(
     input: { runId: string; companyId: string },
@@ -720,20 +729,17 @@ export function createPostgresRunDispatchAdapter(
       .returning();
     if (!row) return { applied: false };
 
-    await appendHeartbeatRunEvent(tx as unknown as Db, {
-      companyId: row.companyId,
-      runId: row.id,
-      agentId: row.agentId,
-      eventType: "lifecycle",
-      stream: "system",
-      level: "info",
-      message: "Scheduled retry became due and was promoted to the queued run pool",
-      payload: {
+    await runEventSink.commitRunEvent(
+      tx as unknown as Db,
+      scheduledRetryPromotedEventCommand({
+        companyId: row.companyId,
+        runId: row.id,
+        agentId: row.agentId,
         scheduledRetryAttempt: row.scheduledRetryAttempt,
-        scheduledRetryAt: row.scheduledRetryAt ? new Date(row.scheduledRetryAt).toISOString() : null,
+        scheduledRetryAt: row.scheduledRetryAt,
         scheduledRetryReason: row.scheduledRetryReason,
-      },
-    });
+      }),
+    );
 
     return { applied: true as const, run: row, postCommitEffects: [queuedEffect(row)] };
   }
@@ -792,21 +798,20 @@ export function createPostgresRunDispatchAdapter(
         );
     }
 
-    await appendHeartbeatRunEvent(tx as unknown as Db, {
-      companyId: row.companyId,
-      runId: row.id,
-      agentId: row.agentId,
-      eventType: "lifecycle",
-      stream: "system",
-      level: "warn",
-      message: input.reason,
-      payload: {
-        ...input.details,
-        scheduledRetryAttempt: row.scheduledRetryAttempt,
-        scheduledRetryAt: row.scheduledRetryAt ? new Date(row.scheduledRetryAt).toISOString() : null,
-        scheduledRetryReason: row.scheduledRetryReason,
-      },
-    });
+    await runEventSink.commitRunEvent(
+      tx as unknown as Db,
+      scheduledRetrySuppressedEventCommand(
+        {
+          companyId: row.companyId,
+          runId: row.id,
+          agentId: row.agentId,
+          scheduledRetryAttempt: row.scheduledRetryAttempt,
+          scheduledRetryAt: row.scheduledRetryAt,
+          scheduledRetryReason: row.scheduledRetryReason,
+        },
+        { reason: input.reason, details: input.details },
+      ),
+    );
 
     return { applied: true, run: row };
   }
@@ -1081,27 +1086,13 @@ export function createPostgresRunDispatchAdapter(
           );
       }
 
-      await appendHeartbeatRunEvent(tx as unknown as Db, {
-        companyId: row.companyId,
-        runId: row.id,
-        agentId: row.agentId,
-        eventType: "lifecycle",
-        stream: "system",
-        level: "warn",
-        message: decision.reason,
-        payload: decision.details,
-      });
-      await tx.insert(activityLog).values({
-        companyId: row.companyId,
-        actorType: "system",
-        actorId: "queued-run-timeout",
-        action: "heartbeat_run.cancelled",
-        entityType: "heartbeat_run",
-        entityId: row.id,
-        agentId: row.agentId,
-        runId: row.id,
-        details: { reason: decision.reason, errorCode: decision.errorCode, ...decision.details },
-      });
+      await runEventSink.commitRunEvent(
+        tx as unknown as Db,
+        staleQueuedRunCancelledEventCommand(
+          { companyId: row.companyId, runId: row.id, agentId: row.agentId },
+          decision,
+        ),
+      );
       return {
         outcome: "cancelled",
         reason: decision.reason,

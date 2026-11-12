@@ -60,7 +60,7 @@ import {
   type ReviewReworkExecutorCandidate,
   type ReviewReworkPrFact,
 } from "./domain.js";
-import type { ReviewReworkPrResolver, ReviewReworkPrSnapshot } from "./resolver.js";
+import type { ReviewReworkPrResolver, ReviewReworkPrSnapshot, ReviewReworkPrReference } from "./resolver.js";
 import type { ReworkCandidateRow, ReviewReworkStore } from "./store.js";
 
 export { DEFAULT_REVIEW_REWORK_SWEEP_INTERVAL_SEC } from "@myrmidon/shared";
@@ -71,6 +71,10 @@ export const REVIEW_REWORK_PAGE_SIZE = 200;
 /** Moves (create/reopen/block/unblock/close) per company per pass. */
 export const REVIEW_REWORK_MAX_MOVES_PER_PASS = 20;
 export const REVIEW_REWORK_ACTOR_ID = "review_rework_sweep";
+/** Activity-log action for a goal-judge round applied by this sweep. */
+export const GOAL_JUDGE_ROUND_APPLIED_ACTION = "review_rework.goal_judge_round";
+/** The comment marker a goal-judge round writes; a new round only starts past it. */
+export const GOAL_JUDGE_ROUND_MARKER = "[GOAL-JUDGE]";
 
 const FULL_PR_REFERENCE_PATTERN =
   /(?:https?:\/\/(?:www\.)?github\.com\/)?([A-Za-z0-9_.-]+)\/([A-Za-z0-9_.-]+)(?:\/pull)?#([1-9][0-9]*)\b/g;
@@ -133,6 +137,23 @@ export interface ReviewReworkSweepDeps {
   env?: NodeJS.ProcessEnv;
   now?: () => Date;
   log?: Pick<Logger, "info" | "warn">;
+  /** Optional resolver for PR unified diffs. */
+  resolveDiff?: (
+    companyId: string,
+    reference: ReviewReworkPrReference & { headSha?: string | null },
+  ) => Promise<string | null>;
+  /** Optional resolver for authoritative CI / test output. */
+  resolveCiOutput?: (
+    companyId: string,
+    issueId: string,
+    prs: readonly ReviewReworkPrFact[],
+  ) => Promise<string | null>;
+  /** Optional goal judge review-cycle round controller. */
+  goalJudge?: {
+    judge(input: import("../goal-judge/controller.js").GoalJudgeReviewTaskFacts): Promise<import("../goal-judge/controller.js").GoalJudgeDecision>;
+  };
+  /** Per-company judge factory; model providers and secrets are company-scoped. */
+  goalJudgeFactory?: (companyId: string) => ReviewReworkSweepDeps["goalJudge"];
 }
 
 function readIntervalSec(env: NodeJS.ProcessEnv | undefined, fallback: number) {
@@ -401,6 +422,92 @@ export function createReviewReworkSweep(deps: ReviewReworkSweepDeps): ReviewRewo
       );
       if (deliveringTaskAssigneeAgentId) break;
     }
+    // Goal judge is a fail-open optional gate: disabled/unconfigured means noop,
+    // while a concrete return/escalation is applied under the same status guard
+    // as every other review-loop move.
+    const goalJudge = deps.goalJudgeFactory?.(task.companyId) ?? deps.goalJudge;
+    if (goalJudge && task.status === "in_review") {
+      let resolvedDiff: string | null = null;
+      if (deps.resolveDiff) {
+        const diffs: string[] = [];
+        for (const pr of prs) {
+          const [owner, repo] = pr.repo.split("/");
+          if (owner && repo) {
+            try {
+              const d = await deps.resolveDiff(task.companyId, {
+                owner,
+                repo,
+                number: pr.number,
+                headSha: pr.headSha,
+              });
+              if (d) diffs.push(d);
+            } catch {
+              // ignore diff fetch failures
+            }
+          }
+        }
+        if (diffs.length > 0) {
+          resolvedDiff = diffs.join("\n\n");
+        }
+      }
+      const fallbackDiff = prs.map((pr) => `${pr.prKey} @ ${pr.headSha ?? "unknown"}`).join("\n");
+
+      let resolvedCiOutput: string | null = null;
+      if (deps.resolveCiOutput) {
+        try {
+          resolvedCiOutput = await deps.resolveCiOutput(task.companyId, task.id, prs);
+        } catch {
+          // ignore CI output fetch failure
+        }
+      }
+      const fallbackCiOutput = comments.map((comment) => comment.body).join("\n");
+
+      const judgeDecision = await goalJudge.judge({
+        issueId: task.id,
+        companyId: task.companyId,
+        status: task.status,
+        criteria: task.description ?? task.title,
+        diff: resolvedDiff ?? fallbackDiff,
+        testOutput: resolvedCiOutput ?? fallbackCiOutput,
+        claims: comments.at(-1)?.body ?? null,
+        headSha: prs.map((pr) => pr.headSha).filter((sha): sha is string => Boolean(sha)).join(",") || null,
+        returnAssigneeAgentId: task.returnAssigneeAgentId,
+        executionPolicy: task.executionPolicy as import("@myrmidon/shared").IssueExecutionPolicy | null,
+        // myrmidon(1.7-GOAL-JUDGE, OPE-12149): seed the controller with the round
+        // state persisted by the previous sweeps (issues.executionState ->
+        // goalJudgeRound), so the <=maxReviewRounds budget spans real review
+        // cycles even when the controller instance was recreated per company.
+        roundState:
+          ((task.executionState as Record<string, unknown> | null | undefined)?.goalJudgeRound as
+            | import("../goal-judge/controller.js").GoalJudgeRoundState
+            | null
+            | undefined) ?? null,
+      });
+      if (judgeDecision.kind !== "noop" && judgeDecision.kind !== "pass") {
+        const applied = await deps.store.applyGoalJudgeDecision({
+          issueId: task.id,
+          companyId: task.companyId,
+          expectStatus: task.status,
+          patch: judgeDecision.patch ?? { status: task.status },
+          comment: judgeDecision.commentBody,
+        });
+        if (applied) {
+          await deps.logActivity({
+            companyId: task.companyId,
+            action: GOAL_JUDGE_ROUND_APPLIED_ACTION,
+            issueId: task.id,
+            details: {
+              kind: judgeDecision.kind,
+              roundsUsed: judgeDecision.roundsUsed,
+              verdict: judgeDecision.verdict,
+            },
+          });
+          return true;
+        }
+        return false;
+      }
+    }
+
     const reopenedAfterLoopClose = await deps.store.reopenedAfterLoopClose(task.companyId, task.id);
     const decision = decideReviewRework({
       task,

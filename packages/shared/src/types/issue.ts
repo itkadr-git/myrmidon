@@ -827,6 +827,23 @@ export interface IssueExecutionState {
     headSha: string | null;
     pullRequestNumber: number | null;
   } | null;
+  /**
+   * myrmidon(1.7-GOAL-JUDGE, OPE-12149): durable round state of the goal-achievement
+   * judge in the review loop. Written by the goal-judge round controller so the
+   * ≤maxReviewRounds budget survives sweep processes and server restarts; the
+   * policy transition builders carry it forward unchanged.
+   */
+  goalJudgeRound?: {
+    rounds: number;
+    lastJudgedAtMs: number | null;
+    lastHeadSha: string | null;
+    lastVerdict?: {
+      score: number;
+      complete: boolean;
+      missing: string[];
+      summary?: string;
+    } | null;
+  } | null;
 }
 
 export interface IssueExecutionDecision {

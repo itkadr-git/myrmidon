@@ -46,7 +46,10 @@ export function isKnowledgeAutoSection(folderPath: string | null | undefined): b
 // ---------------------------------------------------------------------------
 
 export const knowledgeSourceInputSchema = z.object({
-  kind: z.enum(["task", "pr", "issue", "run", "document", "decision", "url"]),
+  // Single source of truth for the kind list: `KNOWLEDGE_SOURCE_KINDS` in
+  // server/domain.ts (mirrored by @myrmidon/db). The parity test in
+  // knowledge-domain.myrmidon.test.ts fails when these options drift.
+  kind: z.enum(["task", "pr", "issue", "run", "document", "decision", "url", "debate"]),
   ref: z.string().min(1).max(2000),
   note: z.string().max(2000).nullish(),
 });

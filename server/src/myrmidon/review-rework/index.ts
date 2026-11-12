@@ -7,8 +7,21 @@ import { instanceSettingsService } from "../../services/instance-settings.js";
 import { isInstanceUnderMaintenance } from "../maintenance/gate.js";
 import { reviewReworkSettingsService } from "./settings.js";
 import { createReviewReworkSweep } from "./sweep.js";
-import { createPullRequestReviewFactsResolver } from "./resolver.js";
+import {
+  createPullRequestReviewFactsResolver,
+  createPullRequestDiffResolver,
+} from "./resolver.js";
 import { createPgReviewReworkStore } from "./store.js";
+import { createGoalJudgeModelPort } from "../goal-judge/wiring.js";
+import {
+  createGoalJudgeRoundController,
+  createPgGoalJudgeLedger,
+} from "../goal-judge/controller.js";
+import { goalJudgeSettingsService } from "../goal-judge/settings.js";
+import {
+  createPullRequestCiResolver,
+  formatAuthoritativeCiOutput,
+} from "../../services/github-pull-request-ci.js";
 
 export * from "./domain.js";
 export * from "./settings.js";
@@ -21,7 +34,9 @@ export {
 export { createPgReviewReworkStore, type ReviewReworkStore } from "./store.js";
 export {
   createPullRequestReviewFactsResolver,
+  createPullRequestDiffResolver,
   type ReviewReworkPrResolver,
+  type ReviewReworkDiffResolver,
 } from "./resolver.js";
 
 type WakeFn = (agentId: string, options: Record<string, unknown>) => Promise<unknown>;
@@ -42,13 +57,43 @@ export function createReviewReworkScheduler(input: {
   const settings = reviewReworkSettingsService(input.db, {
     settings: instanceSettingsService(input.db),
   });
+  const goalJudges = new Map<string, ReturnType<typeof createGoalJudgeRoundController>>();
+  // myrmidon(1.7-GOAL-JUDGE, OPE-12149): the round ledger is shared across all
+  // per-company controllers and persisted in Postgres (issues.execution_state
+  // -> goalJudgeRound), so the <=maxReviewRounds budget survives controller
+  // recreation, sweep restarts and multi-worker deployments.
+  const sharedRoundLedger = createPgGoalJudgeLedger(input.db);
+  const diffResolver = createPullRequestDiffResolver(input.db, { source: "review-rework" });
+  const ciResolver = createPullRequestCiResolver(input.db, { source: "review-rework" });
   const sweep = createReviewReworkSweep({
     store: createPgReviewReworkStore(input.db),
     resolvePr: createPullRequestReviewFactsResolver(input.db, { source: "review-rework" }),
+    resolveDiff: diffResolver,
+    resolveCiOutput: async (companyId, issueId) => {
+      const ciResults = await ciResolver.resolveForIssue(companyId, issueId);
+      return formatAuthoritativeCiOutput(ciResults);
+    },
     readSettings: () => settings.read(),
     isUnderMaintenance: () => isInstanceUnderMaintenance(input.db),
     isLeader: input.isLeader,
     enqueueWake: (agentId, wake) => input.wakeup(agentId, wake as Record<string, unknown>),
+    // myrmidon(1.7-GOAL-JUDGE): the round controller wired to the company's
+    // model providers, secret store and the instance goal-judge switch. The
+    // judge itself stays a noop unless the instance switch is enabled.
+    goalJudgeFactory: (companyId) => {
+      let controller = goalJudges.get(companyId);
+      if (!controller) {
+        controller = createGoalJudgeRoundController({
+          settings: goalJudgeSettingsService(input.db, {
+            settings: instanceSettingsService(input.db),
+          }),
+          models: createGoalJudgeModelPort(input.db, companyId),
+          ledger: sharedRoundLedger,
+        });
+        goalJudges.set(companyId, controller);
+      }
+      return controller;
+    },
     logActivity: async (entry) => {
       const { logActivity } = await import("../../services/activity-log.js");
       await logActivity(input.db, {
