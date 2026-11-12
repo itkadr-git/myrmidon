@@ -4315,10 +4315,10 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
 
   // myrmidon(OPE-12900): 20 sequential executeRun cycles, each awaiting the
   // release-path bookkeeping of a failed run (wakeup status, retry row, run
-  // events, issue release). The loop measures ~26s of awaited work on a
-  // loaded local machine (CI ~2x faster), so the shared 15s testTimeout is
-  // below the test's real cost; the third-arg budget below is per-test
-  // headroom, not a global change.
+  // events, issue release). The awaited loop measures ~13-16s on CI runners
+  // and ~42s on a loaded 1-CPU machine, so the shared 15s testTimeout is
+  // below the test's real cost under runner load; the third-arg budget below
+  // is per-test headroom, not a global change.
   it(
     "reliably synchronizes bounded retries across 20 consecutive executions",
     async () => {
@@ -4449,7 +4449,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       await heartbeat.drainActiveRunExecutions();
     }
   },
-  40_000);
+  60_000);
 
   it("schedules an infra retry for a setup failure caused by a transient sandbox provider worker restart", async () => {
     // Reproduces the production incident: the "Kubernetes Sandbox" plugin
