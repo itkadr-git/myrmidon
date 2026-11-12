@@ -799,12 +799,17 @@ describe("agent live run routes", () => {
 
     expect(res.status).toBe(304);
     expect(res.text).toBe("");
+    // Route: listVersionKey(companyId, agentId, limit, summary, actorShape,
+    // wakeReason, hasResult, before) — no query filters on this request.
     expect(mockHeartbeatService.listVersionKey).toHaveBeenCalledWith(
       "company-1",
       undefined,
-      undefined,
+      200,
       false,
       '["board:local-board:user",["company-1"],null]',
+      undefined,
+      false,
+      undefined,
     );
     expect(mockHeartbeatService.list).not.toHaveBeenCalled();
     expect(mockRunSecretRedactionRegistry.redactForRuns).not.toHaveBeenCalled();
