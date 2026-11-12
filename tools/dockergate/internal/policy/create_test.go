@@ -450,7 +450,8 @@ func TestBotPackageCacheMounts(t *testing.T) {
 	}
 	all := []string{
 		cache + "/pnpm:/cache/pnpm:rw",
-		cache + "/uv:/cache/uv:rw", // 1.6.5-BOT-DISK-UV-A
+		cache + "/pnpm-store:/cache/pnpm-store:rw", // 1.6.5-BOT-DISK-H8a
+		cache + "/uv:/cache/uv:rw",                 // 1.6.5-BOT-DISK-UV-A
 		cache + "/go-mod:/cache/go-mod:rw",
 		cache + "/go-build:/cache/go-build:rw",
 		cache + "/gradle:/cache/gradle:rw",
@@ -741,7 +742,7 @@ func TestHelperBodyMutations(t *testing.T) {
 		{"script: another target", `data/hermes workspace scratch`, `data/hermes workspace scratch /`, false, deny.ScriptMismatch},
 		{"script: no -u", `set -eu`, `set -e`, false, deny.ScriptMismatch},
 		{"script: appended command", `chmod 0711 bot\n`, `chmod 0711 bot; id\n`, false, deny.ScriptMismatch},
-		{"script: empty", `"set -eu\ncd \"$1\"\nfor d in data/hermes workspace scratch; do\n  chmod 0700 \"$d\"\n  chown 10001:10001 \"$d\"\ndone\nchmod 0711 bot\nif test -d package-cache; then\n  install -d -o 10001 -g 10001 \"package-cache/pnpm\"\n  install -d -o 10001 -g 10001 \"package-cache/uv\"\n  install -d -o 10001 -g 10001 \"package-cache/go-mod\"\n  install -d -o 10001 -g 10001 \"package-cache/go-build\"\n  install -d -o 10001 -g 10001 \"package-cache/gradle\"\nfi"`, `""`, false, deny.ScriptMismatch},
+		{"script: empty", `"set -eu\ncd \"$1\"\nfor d in data/hermes workspace scratch; do\n  chmod 0700 \"$d\"\n  chown 10001:10001 \"$d\"\ndone\nchmod 0711 bot\nif test -d package-cache; then\n  install -d -o 10001 -g 10001 \"package-cache/pnpm\"\n  install -d -o 10001 -g 10001 \"package-cache/pnpm-store\"\n  install -d -o 10001 -g 10001 \"package-cache/uv\"\n  install -d -o 10001 -g 10001 \"package-cache/go-mod\"\n  install -d -o 10001 -g 10001 \"package-cache/go-build\"\n  install -d -o 10001 -g 10001 \"package-cache/gradle\"\nfi"`, `""`, false, deny.ScriptMismatch},
 		{"entrypoint changed", `"Entrypoint":["/bin/sh","-c"]`, `"Entrypoint":["/bin/sh"]`, false, deny.JSONValue},
 		{"entrypoint bash", `"Entrypoint":["/bin/sh","-c"]`, `"Entrypoint":["/bin/bash","-c"]`, false, deny.JSONValue},
 		{"cmd argument 1", `"myrmidon-helper"`, `"other"`, false, deny.JSONValue},
