@@ -46046,26 +46046,40 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
           await acquired;
           const command = f.interaction("close");
           delivery = f.adapter.handleGatewayInteraction(command);
-          await expect.poll(() => command.deferReply.mock.calls.length).toBe(1);
+          // The acknowledgement is the control-plane response that must win
+          // before the DB lock is observed; use an explicit budget rather than
+          // Vitest's short default poll timeout under loaded CI shards.
           await expect
-            .poll(async () => {
-              try {
-                await db.transaction(async (tx) => {
-                  await tx
-                    .select()
-                    .from(chatEndpoints)
-                    .where(eq(chatEndpoints.id, f.endpoint.id))
-                    .for("no key update", { noWait: true });
-                });
-                return false;
-              } catch (error) {
-                const code =
-                  (error as { code?: unknown; cause?: { code?: unknown } })
-                    .cause?.code ?? (error as { code?: unknown }).code;
-                if (code !== "55P03") throw error;
-                return true;
-              }
+            .poll(() => command.deferReply.mock.calls.length, {
+              timeout: 20_000,
+              interval: 100,
             })
+            .toBe(1);
+          await expect
+            .poll(
+              async () => {
+                try {
+                  await db.transaction(async (tx) => {
+                    await tx
+                      .select()
+                      .from(chatEndpoints)
+                      .where(eq(chatEndpoints.id, f.endpoint.id))
+                      .for("no key update", { noWait: true });
+                  });
+                  return false;
+                } catch (error) {
+                  const code =
+                    (error as { code?: unknown; cause?: { code?: unknown } })
+                      .cause?.code ?? (error as { code?: unknown }).code;
+                  if (code !== "55P03") throw error;
+                  return true;
+                }
+              },
+              // The blocked DB wait is held by a live transaction on the loaded
+              // shard; give the lock probe the same explicit budget as the
+              // acknowledgement poll above.
+              { timeout: 20_000, interval: 100 },
+            )
             .toBe(true);
           expect(command.editReply).not.toHaveBeenCalled();
           if (loss === "retired runtime")
