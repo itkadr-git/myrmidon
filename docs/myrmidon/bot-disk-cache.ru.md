@@ -404,10 +404,13 @@ BOT-LAYOUT-V (1.6.5) раскладка следует метке контрак
 (`/cache/pnpm-store/...`). В таком клоне первый `pnpm install` видит другое
 хранилище, удаляет `node_modules` и ставит заново из нового хранилища; без TTY
 pnpm 10 просит подтвердить удаление и прерывается
-(`ERR_PNPM_ABORTED_REMOVE_MODULES_DIR_NO_TTY`), поэтому один раз запустите
-`pnpm install --config.confirmModulesPurge=false` (pnpm 10.18.1 читает эту
-настройку только из командной строки, не из `npm_config_*` и не из `.npmrc`) либо
-после `rm -rf node_modules`; `pnpm add` и `pnpm update` отказывают с
+(`ERR_PNPM_ABORTED_REMOVE_MODULES_DIR_NO_TTY`). Обёртка pnpm образа бота
+(`build-wrappers/pnpm`) подставляет `--config.confirm-modules-purge=false` для
+`pnpm install`/`pnpm add` — pnpm 10.18.1 читает эту настройку только из
+командной строки, не из `npm_config_*` и не из `.npmrc` — поэтому обычный
+`pnpm install` агента удаляет `node_modules` без вопроса; вне обёртки один раз
+запустите `pnpm install --config.confirmModulesPurge=false` (либо после
+`rm -rf node_modules`). `pnpm add` и `pnpm update` отказывают с
 `ERR_PNPM_UNEXPECTED_STORE`, пока этот install не выполнен. Новым клонам ничего не
 нужно. Первая установка каждого бота наполняет новое хранилище из кэша загрузок.
 Каталог хоста `<packageCacheRoot>/pnpm-store` после переноса не используется и его

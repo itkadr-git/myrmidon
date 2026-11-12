@@ -55,6 +55,27 @@ const LIGHT = new Set([
 // `pnpm store <probe>` passes; `pnpm store <anything else>` refuses.
 const STORE_LIGHT = new Set(["status", "path"]);
 
+// myrmidon(1.6.8 BOT-PNPM-STORE-FS): pnpm 10 refuses to purge an existing
+// node_modules whose .modules.yaml points at a different storeDir when the
+// session has no TTY (ERR_PNPM_ABORTED_REMOVE_MODULES_DIR_NO_TTY). Agents
+// install without a TTY, so the wrapper must inject the non-interactive
+// confirmation for the mutating subcommands that can hit this path.
+// `confirmModulesPurge` is only read from the CLI (env/.npmrc do NOT work),
+// hence the explicit --config.* flag here.
+const PURGE_SUBCOMMANDS = new Set(["install", "add"]);
+const PURGE_FLAG = "--config.confirm-modules-purge=false";
+
+function needsPurgeFlag(argv) {
+  const first = argv.find((a) => !a.startsWith("-"));
+  return first !== undefined && PURGE_SUBCOMMANDS.has(first);
+}
+
+function withPurgeFlag(argv) {
+  // Idempotent: do not duplicate the flag if the caller already passed it.
+  if (argv.includes(PURGE_FLAG)) return argv;
+  return [PURGE_FLAG, ...argv];
+}
+
 function isLight(argv) {
   // A flag cluster like `-v --loglevel warn` stays light if the FIRST
   // non-flag argument is a light subcommand.
@@ -80,6 +101,8 @@ function runReal(argv, { light = false } = {}) {
     env = fb.env;
     if (fb.warning) process.stderr.write(fb.warning + "\n");
   }
+  // argv already carries the purge flag when needed: main() injected it
+  // before the devbuild-gate decision so the refusal line shows it too.
   const child = spawn(REAL_PNPM, argv, { stdio: "inherit", env });
   for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"]) {
     process.on(signal, () => child.kill(signal));
@@ -94,7 +117,10 @@ function runReal(argv, { light = false } = {}) {
 }
 
 function main() {
-  const argv = process.argv.slice(2);
+  // Apply the purge-flag injection up front: it must be visible in the
+  // refusal message too (the operator copy-pastes the devbuild line).
+  let argv = process.argv.slice(2);
+  argv = needsPurgeFlag(argv) ? withPurgeFlag(argv) : argv;
   if (devbuildPresent()) {
     runReal(argv);
     return;

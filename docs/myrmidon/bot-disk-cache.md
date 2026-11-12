@@ -398,10 +398,13 @@ have `node_modules/.modules.yaml` with the old `storeDir`
 (`/cache/pnpm-store/...`). In such a clone the first `pnpm install` finds a
 different store, removes `node_modules` and installs again from the new store;
 without a TTY pnpm 10 asks for the removal and aborts
-(`ERR_PNPM_ABORTED_REMOVE_MODULES_DIR_NO_TTY`), so run it once with
-`pnpm install --config.confirmModulesPurge=false` (pnpm 10.18.1 reads that
-setting from the command line only, not from `npm_config_*` or `.npmrc`) or after
-`rm -rf node_modules`; `pnpm add` and `pnpm update` refuse with
+(`ERR_PNPM_ABORTED_REMOVE_MODULES_DIR_NO_TTY`). The bot image's pnpm wrapper
+(`build-wrappers/pnpm`) injects `--config.confirm-modules-purge=false` for
+`pnpm install`/`pnpm add` — pnpm 10.18.1 reads that setting from the command
+line only, not from `npm_config_*` or `.npmrc` — so an agent's plain
+`pnpm install` purges non-interactively; outside the wrapper run it once with
+`pnpm install --config.confirmModulesPurge=false` (or after
+`rm -rf node_modules`). `pnpm add` and `pnpm update` refuse with
 `ERR_PNPM_UNEXPECTED_STORE` until that install has run. New clones need nothing.
 The first install of each bot fills the new store from the download cache. The
 host directory `<packageCacheRoot>/pnpm-store` is unused after the move and can

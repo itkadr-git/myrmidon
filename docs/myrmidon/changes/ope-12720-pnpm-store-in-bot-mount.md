@@ -25,19 +25,21 @@
 - Rollout for existing clones: their `node_modules/.modules.yaml` still has the old `storeDir`
   (`/cache/pnpm-store/...`). The first `pnpm install` in such a clone finds a different store,
   removes `node_modules` and installs again from the new store; without a TTY pnpm 10 asks for
-  the removal and aborts (`ERR_PNPM_ABORTED_REMOVE_MODULES_DIR_NO_TTY`), so that first install
-  is run with `pnpm install --config.confirmModulesPurge=false` (or after `rm -rf node_modules`);
-  `pnpm add` and `pnpm update` refuse with `ERR_PNPM_UNEXPECTED_STORE` until it has run. No
-  environment variable is set for this: the pinned pnpm 10.18.1 reads `confirmModulesPurge` from
-  the command line only, not from `npm_config_*` or `.npmrc`. New clones need nothing. The first
-  install of each bot fills the new store from the download cache.
+  the removal and aborts (`ERR_PNPM_ABORTED_REMOVE_MODULES_DIR_NO_TTY`). The bot image's pnpm
+  wrapper injects `--config.confirm-modules-purge=false` for `pnpm install`/`pnpm add` — the
+  pinned pnpm 10.18.1 reads `confirmModulesPurge` from the command line only, not from
+  `npm_config_*` or `.npmrc` — so an agent's plain `pnpm install` purges non-interactively.
+  `pnpm add` and `pnpm update` refuse with `ERR_PNPM_UNEXPECTED_STORE` until it has run. New
+  clones need nothing. The first install of each bot fills the new store from the download cache.
 - Acceptance check: compare `df` of the bot partition before and after a fresh `pnpm install` in
   a new clone; the delta is the size of the packages that were new to the store, not the ~3 GB of
   a full `node_modules`. `du -xs node_modules` is not a check: it counts a linked file in full.
 - Tests: the bot-disk-cache, template, docker-driver and profile-compile suites assert the new
   default (under `/workspace`, never at the `/bot` root or at `/cache/pnpm-store`), the absent
   bind and the migration; the image tests assert the Dockerfile and entrypoint defaults; the
-  dockergate policy tests drop the `pnpm-store` pair.
+  dockergate policy tests drop the `pnpm-store` pair; the pnpm-wrapper purge test
+  (`pnpm-wrapper-purge.test.mjs`) asserts `--config.confirm-modules-purge=false` on
+  install/add and its absence on the light lanes.
 
 ## changelog-ru
 
@@ -66,20 +68,22 @@
 - Выкат для существующих клонов: в их `node_modules/.modules.yaml` прежний `storeDir`
   (`/cache/pnpm-store/...`). Первый `pnpm install` в таком клоне видит другое хранилище,
   удаляет `node_modules` и ставит заново из нового хранилища; без TTY pnpm 10 просит
-  подтвердить удаление и прерывается (`ERR_PNPM_ABORTED_REMOVE_MODULES_DIR_NO_TTY`), поэтому
-  этот первый install запускают с `pnpm install --config.confirmModulesPurge=false` (или после
-  `rm -rf node_modules`); `pnpm add` и `pnpm update` отказывают с `ERR_PNPM_UNEXPECTED_STORE`,
-  пока он не выполнен. Переменная окружения для этого не задаётся: закреплённый pnpm 10.18.1
-  читает `confirmModulesPurge` только из командной строки, не из `npm_config_*` и не из
-  `.npmrc`. Новым клонам ничего не нужно. Первая установка каждого бота наполняет новое
-  хранилище из кэша загрузок.
+  подтвердить удаление и прерывается (`ERR_PNPM_ABORTED_REMOVE_MODULES_DIR_NO_TTY`). Обёртка
+  pnpm образа бота подставляет `--config.confirm-modules-purge=false` для `pnpm install`/
+  `pnpm add` — закреплённый pnpm 10.18.1 читает `confirmModulesPurge` только из командной
+  строки, не из `npm_config_*` и не из `.npmrc` — поэтому обычный `pnpm install` агента
+  удаляет `node_modules` без вопроса. `pnpm add` и `pnpm update` отказывают с
+  `ERR_PNPM_UNEXPECTED_STORE`, пока он не выполнен. Новым клонам ничего не нужно. Первая
+  установка каждого бота наполняет новое хранилище из кэша загрузок.
 - Проверка приёмки: сравните `df` раздела ботов до и после свежего `pnpm install` в новом
   клоне; разница — размер пакетов, новых для хранилища, а не ~3 ГБ полного `node_modules`.
   `du -xs node_modules` проверкой не является: он считает файл-ссылку целиком.
 - Тесты: наборы bot-disk-cache, template, docker-driver и profile-compile проверяют новое
   умолчание (под `/workspace`, никогда не в корне `/bot` и не `/cache/pnpm-store`), отсутствие
   привязки и миграцию; тесты образа проверяют умолчания Dockerfile и entrypoint; тесты политик
-  dockergate убирают пару `pnpm-store`.
+  dockergate убирают пару `pnpm-store`; тест обёртки pnpm (`pnpm-wrapper-purge.test.mjs`)
+  проверяет `--config.confirm-modules-purge=false` у install/add и его отсутствие у лёгких
+  команд.
 
 ## settings-en-replace
 
