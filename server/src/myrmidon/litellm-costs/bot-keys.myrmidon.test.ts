@@ -158,6 +158,46 @@ describe("myrmidon(M2-A secret_ref) gateway bot keys", () => {
     expect(ports.calls).toEqual([]);
   });
 
+  // myrmidon(OPE-12804)
+  it("attributes an omp_local engineer's gateway spend to that agent and its run, by its own key only", async () => {
+    const ports = fakePorts({ "secret-omp": { latest: "sk-test-key-omp" } }, { "fleet-llm-shared-key": "sk-shared" });
+    const omp = (agentId: string, env: Record<string, unknown> | undefined, extra: Record<string, unknown> = {}): GatewayBotCard => ({
+      agentId,
+      adapterType: "omp_local",
+      adapterConfig: { ...(env ? { env } : {}), ...extra },
+    });
+    const keys = await resolveGatewayBotKeys(
+      COMPANY,
+      [
+        omp("agent-omp", { [KEY_ENV]: secretRef("secret-omp") }, { provider: "custom" }),
+        omp("agent-omp-nokey", { OTHER: "x" }),
+        omp("agent-omp-gone", { [KEY_ENV]: secretRef("secret-gone") }),
+      ],
+      SETTINGS,
+      ports,
+    );
+    // no shared-secret fallback for omp: a card without its own key is not attributed
+    expect(keys).toEqual([{ agentId: "agent-omp", keyValue: "sk-test-key-omp" }]);
+
+    const windows = [
+      {
+        runId: "run-omp-1",
+        agentId: "agent-omp",
+        issueId: "issue-1",
+        startedAt: new Date("2026-09-30T10:00:00.000Z"),
+        finishedAt: null,
+      },
+    ];
+    const { rows, skippedUnattributed } = collectRows(
+      [entry({ apiKey: gatewayKeyHash("sk-test-key-omp") })],
+      botKeyIndex(keys),
+      windows,
+    );
+    expect(skippedUnattributed).toBe(0);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({ agentId: "agent-omp", heartbeatRunId: "run-omp-1", issueId: "issue-1" });
+  });
+
   it("reads the key env name and the shared secret name from the instance settings", () => {
     expect(readGatewayBotKeySettings({})).toEqual({ keyEnv: null, keySecret: null });
     expect(readGatewayBotKeySettings({ MYRMIDON_BOT_LLM_API_KEY_ENV: ` ${KEY_ENV} ` })).toEqual({ keyEnv: KEY_ENV, keySecret: KEY_ENV });

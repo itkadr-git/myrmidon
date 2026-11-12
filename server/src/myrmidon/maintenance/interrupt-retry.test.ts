@@ -46,4 +46,27 @@ describe("maintenance interrupt retry claim", () => {
     await expect(p.interruptRunForMaintenance!("run-1", "window-1")).rejects.toThrow("connection lost");
     expect(schedule).toHaveBeenCalledTimes(1);
   });
+
+  // myrmidon(OPE-12802): the retry must carry the "continue, do not restart" instruction.
+  it("hands the retry an instruction to continue from the interrupted run", async () => {
+    const schedule = vi.fn().mockResolvedValue({ outcome: "scheduled" });
+    const cancelRun = vi.fn().mockResolvedValue({ status: "cancelled", lastUsefulActionAt: new Date("2026-11-12T01:50:00.000Z") });
+    const p = maintenanceHeartbeatPort({ cancelRun, scheduleBoundedRetry: schedule } as unknown as Heartbeat);
+
+    await p.interruptRunForMaintenance!("run-7", "window-9");
+
+    expect(schedule).toHaveBeenCalledWith(
+      "run-7",
+      expect.objectContaining({
+        retryReason: "myrmidon_maintenance",
+        wakeReason: "myrmidon_maintenance_retry",
+        livenessContinuationState: "maintenance_interrupt_retry",
+        livenessContinuationInstruction: expect.stringContaining("run-7"),
+      }),
+    );
+    const opts = schedule.mock.calls[0]![1] as { livenessContinuationInstruction: string };
+    expect(opts.livenessContinuationInstruction).toContain("window-9");
+    expect(opts.livenessContinuationInstruction).toContain("2026-11-12T01:50:00.000Z");
+    expect(opts.livenessContinuationInstruction).toContain("Не начинай заново");
+  });
 });

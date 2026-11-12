@@ -2,9 +2,14 @@ import { describe, expect, it } from "vitest";
 import { RUN_GUARD_STOP_REASONS } from "@myrmidon/adapter-utils/run-guard";
 import { MAINTENANCE_INTERRUPT_ERROR_CODE } from "./maintenance/domain.js";
 import {
+  CALL_LIMIT_CONTINUATION_HINT,
   RUN_GUARD_CONTINUATION_CONTEXT_KEY,
   buildRunGuardStopComment,
   buildRunGuardStopNotice,
+  findPreviousLimitStopRun,
+  isRepeatedEmptyLimitStop,
+  isRunGuardLimitStopReason,
+  runHasUsefulOutcome,
   maxTurnContinuationSchedulerCeiling,
   parseRunGuardContinuationPolicy,
   readRunGuardContinuationCount,
@@ -295,5 +300,124 @@ describe("call-limit continuation ceilings", () => {
   it("leaves the max-turn ceiling whole by the continuations the call limit already made", () => {
     expect(maxTurnContinuationSchedulerCeiling(2, { contextSnapshot: {} })).toBe(2);
     expect(maxTurnContinuationSchedulerCeiling(2, { contextSnapshot: { [RUN_GUARD_CONTINUATION_CONTEXT_KEY]: 3 } })).toBe(5);
+  });
+});
+
+// myrmidon(OPE-12799): the second limit stop in a row without a result is final.
+describe("repeated empty limit stops (OPE-12799)", () => {
+  const callLimit = { errorCode: "model_call_limit", status: "cancelled" };
+  const noProgress = { errorCode: "no_progress_exploration", status: "cancelled" };
+  const empty = { issueCommentsCreated: 0, documentRevisionsCreated: 0, workProductsCreated: 0 };
+
+  it("counts a comment, a document revision or a work product as the result of a run, and nothing else", () => {
+    expect(runHasUsefulOutcome(empty)).toBe(false);
+    expect(runHasUsefulOutcome(null)).toBe(false);
+    expect(runHasUsefulOutcome({})).toBe(false);
+    expect(runHasUsefulOutcome({ ...empty, issueCommentsCreated: 1 })).toBe(true);
+    expect(runHasUsefulOutcome({ ...empty, documentRevisionsCreated: 1 })).toBe(true);
+    expect(runHasUsefulOutcome({ ...empty, workProductsCreated: 2 })).toBe(true);
+    // Tool calls and activity are not a result: 150 calls of execute_code leave nothing.
+    expect(
+      runHasUsefulOutcome({ ...empty, toolOrActionEventsCreated: 150, activityEventsCreated: 3 } as never),
+    ).toBe(false);
+  });
+
+  it("takes the two limits as limit stops and no other reason", () => {
+    expect(isRunGuardLimitStopReason("model_call_limit")).toBe(true);
+    expect(isRunGuardLimitStopReason("no_progress_exploration")).toBe(true);
+    expect(isRunGuardLimitStopReason("repeated_tool_call")).toBe(false);
+    expect(isRunGuardLimitStopReason("tool_retry_loop")).toBe(false);
+    expect(isRunGuardLimitStopReason("idle_timeout")).toBe(false);
+    expect(isRunGuardLimitStopReason(null)).toBe(false);
+  });
+
+  it("finds the previous limit stop of the issue, newest first", () => {
+    const previous = { id: "p1", ...callLimit };
+    expect(findPreviousLimitStopRun([previous, { id: "p0", errorCode: null, status: "succeeded" }])).toBe(previous);
+    expect(findPreviousLimitStopRun([{ id: "p1", ...noProgress }])?.id).toBe("p1");
+    expect(findPreviousLimitStopRun([])).toBeNull();
+  });
+
+  it("skips runs that say nothing about the task: transport failures, maintenance, cancellations", () => {
+    const previous = { id: "p1", ...callLimit };
+    expect(
+      findPreviousLimitStopRun([
+        { id: "p3", errorCode: MAINTENANCE_INTERRUPT_ERROR_CODE, status: "interrupted" },
+        { id: "p2", errorCode: "adapter_failed", status: "failed" },
+        { id: "p2c", errorCode: null, status: "cancelled" },
+        previous,
+      ]),
+    ).toBe(previous);
+  });
+
+  it("does not look past a run that succeeded or a guard stop of another kind", () => {
+    expect(
+      findPreviousLimitStopRun([{ id: "p2", errorCode: null, status: "succeeded" }, { id: "p1", ...callLimit }]),
+    ).toBeNull();
+    expect(
+      findPreviousLimitStopRun([
+        { id: "p2", errorCode: "repeated_tool_call", status: "failed" },
+        { id: "p1", ...callLimit },
+      ]),
+    ).toBeNull();
+  });
+
+  it("makes the second empty limit stop in a row final, although the run made 'write' calls", () => {
+    // Prod, 11.11: 806494c1 (149 execute_code) then its continuation 139ee93f, both left nothing.
+    const run = { ...callLimit, resultJson: { runGuardStats: { modelCalls: 150, writeCalls: 149 } } };
+    expect(shouldContinueAfterRunGuardStop(run)).toBe(true);
+    expect(
+      isRepeatedEmptyLimitStop({ run, runHasUsefulOutcome: false, previousLimitStop: { hasUsefulOutcome: false } }),
+    ).toBe(true);
+    expect(
+      isRepeatedEmptyLimitStop({
+        run: noProgress,
+        runHasUsefulOutcome: false,
+        previousLimitStop: { hasUsefulOutcome: false },
+      }),
+    ).toBe(true);
+  });
+
+  it("leaves the first limit stop, and a stop next to a run with a result, to the continuation rules", () => {
+    expect(isRepeatedEmptyLimitStop({ run: callLimit, runHasUsefulOutcome: false, previousLimitStop: null })).toBe(false);
+    expect(
+      isRepeatedEmptyLimitStop({ run: callLimit, runHasUsefulOutcome: true, previousLimitStop: { hasUsefulOutcome: false } }),
+    ).toBe(false);
+    expect(
+      isRepeatedEmptyLimitStop({ run: callLimit, runHasUsefulOutcome: false, previousLimitStop: { hasUsefulOutcome: true } }),
+    ).toBe(false);
+  });
+
+  it("is false for a run the guard did not stop at a limit", () => {
+    const previousLimitStop = { hasUsefulOutcome: false };
+    expect(
+      isRepeatedEmptyLimitStop({ run: { errorCode: "repeated_tool_call" }, runHasUsefulOutcome: false, previousLimitStop }),
+    ).toBe(false);
+    expect(
+      isRepeatedEmptyLimitStop({ run: { errorCode: "adapter_failed" }, runHasUsefulOutcome: false, previousLimitStop }),
+    ).toBe(false);
+  });
+
+  it("tells the lead that two runs in a row left nothing and the retry is stopped", () => {
+    const text = buildRunGuardStopComment(callLimit, { modelCalls: 150, writeCalls: 149 }, { repeatedEmpty: true });
+    expect(text).toBe(
+      "Второй прогон подряд остановлен защитой без результата: лимит вызовов модели (150 вызовов модели). " +
+        "Ни один из двух прогонов не оставил ни коммита, ни комментария, ни документа. Автоповтор остановлен. " +
+        "Нужна новая вводная: уточнить задачу или разбить её на части по 1–2 часа.",
+    );
+    expect(buildRunGuardStopNotice(callLimit, { modelCalls: 150 }, { repeatedEmpty: true })?.body).toBe(
+      buildRunGuardStopComment(callLimit, { modelCalls: 150 }, { repeatedEmpty: true }),
+    );
+    // The ordinary final stop keeps its text.
+    expect(buildRunGuardStopComment(callLimit, { modelCalls: 150 })).toBe(
+      "Прогон остановлен защитой: лимит вызовов модели (150 вызовов модели). " +
+        "Нужна новая вводная: уточнить задачу или разбить её; автоповтора не будет.",
+    );
+  });
+
+  it("tells the continuation of a call-limit stop to pick the work up, not to start over", () => {
+    expect(CALL_LIMIT_CONTINUATION_HINT).toContain("Не начинай задачу заново");
+    expect(CALL_LIMIT_CONTINUATION_HINT).toContain("git status");
+    expect(CALL_LIMIT_CONTINUATION_HINT).toContain("закоммить и запушь");
   });
 });

@@ -113,9 +113,15 @@ export async function resolveGatewayBotKeys(
   };
 
   for (const card of cards) {
-    if (card.adapterType !== "hermes_gateway") continue;
+    // myrmidon(OPE-12804): an omp_local engineer calls the gateway with its OWN key too
+    // (env MYRMIDON_LLM_API_KEY -> {env:...} in its provider config), but this list used to
+    // take hermes_gateway cards only, so every omp call was "unattributed" and never got a
+    // heartbeat_run_id. omp has no profile compiler: only the card's own binding is its key,
+    // never the shared secret (attributing by it would be a guess).
+    const isOmp = card.adapterType === "omp_local";
+    if (card.adapterType !== "hermes_gateway" && !isOmp) continue;
     const config = asRecord(card.adapterConfig);
-    if (!config || !cardUsesLlmGateway(config)) continue;
+    if (!config || (!isOmp && !cardUsesLlmGateway(config))) continue;
     if (!settings.keyEnv) continue; // the compiler gives such a bot no gateway key either
 
     // A card's own env binding wins (the profile compiler's precedence).
@@ -125,6 +131,7 @@ export async function resolveGatewayBotKeys(
       result.push({ agentId: card.agentId, keyValue: own });
       continue;
     }
+    if (isOmp) continue;
     const value = (await readShared())?.trim();
     if (value) result.push({ agentId: card.agentId, keyValue: value });
   }

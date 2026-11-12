@@ -78,6 +78,8 @@ import {
   factCheckGatewayPaperclipSkills,
   reconcileGatewayPaperclipSkills,
 } from "./myrmidon-skills-reconcile.js";
+// myrmidon(OPE-12796): same-call tool failure streaks.
+import { createToolFailureRepeatTracker, type ToolFailureRepeatTracker } from "./myrmidon-tool-failure-repeat.js";
 
 type SessionKeyStrategy = "issue" | "agent" | "run" | "none";
 
@@ -144,15 +146,19 @@ type ExecutionState = {
   guardToolArguments: Map<string, unknown[]>;
   guardModelTurnObserved: boolean;
   guardPendingToolCalls: number;
-  /** 1.7 AGENT-RUNTIME: повторы одинаковых ошибок инструментов (OPE-10096) */
-  consecutiveToolErrors: {
-    toolName: string;
-    count: number;
-    lastError: string;
-  } | null;
+  /** 1.7 AGENT-RUNTIME: повторы одинаковых ошибок инструментов (OPE-10096);
+   * myrmidon(OPE-12796): one and the same call, see myrmidon-tool-failure-repeat.ts */
+  toolFailureRepeat: ToolFailureRepeatTracker;
   /** The single RunGuard correction queued for this gateway run. */
   runGuardHintSent: { reason: "repeated_tool_call" | "model_call_limit" } | null;
   runGuardHintStopEmitted: boolean;
+  /**
+   * myrmidon(OPE-12799): the wrap-up message ("N calls left: commit, push, write
+   * where you are") was steered. Kept apart from runGuardHintSent: it is not a
+   * correction, is sent whether or not one was, and is not the hint-before-stop
+   * that resultJson.runGuardHint measures.
+   */
+  runGuardWrapUpHintSent: boolean;
 };
 
 type TextRedactor = (value: string) => string;
@@ -949,9 +955,10 @@ function createExecutionState(runId: string): ExecutionState {
     guardToolArguments: new Map(),
     guardModelTurnObserved: false,
     guardPendingToolCalls: 0,
-    consecutiveToolErrors: null,
+    toolFailureRepeat: createToolFailureRepeatTracker(),
     runGuardHintSent: null,
     runGuardHintStopEmitted: false,
+    runGuardWrapUpHintSent: false,
   };
 }
 
@@ -1095,7 +1102,19 @@ export function buildRunGuardHintMessage(hint: {
   tool?: string;
   repeatCount?: number;
   modelCalls?: number;
+  remaining?: number;
 }): string {
+  // myrmidon(OPE-12799): the wrap-up message, sent while the run still has calls
+  // left. The next run starts in a fresh session and sees only what is pushed and
+  // what is written on the task, so the agent is told to put its work there.
+  if (hint.reason === "model_call_limit" && typeof hint.remaining === "number" && hint.remaining > 0) {
+    return (
+      `Защита: до остановки прогона осталось ${hint.remaining} вызовов модели. ` +
+      "Сохрани сделанное сейчас: закоммить и запушь изменения в ветку задачи, затем напиши комментарий в задаче — " +
+      "что сделано, что осталось и с чего продолжить. Следующий прогон начнётся с чистой сессии и увидит только " +
+      "запушенные коммиты и этот комментарий. Если задача закончена — заверши её как обычно."
+    );
+  }
   if (hint.reason === "repeated_tool_call") {
     const tool = hint.tool ?? "инструмент";
     const count = hint.repeatCount ?? 3;
@@ -1114,6 +1133,8 @@ async function sendRunGuardHint(input: {
     reason: "repeated_tool_call" | "model_call_limit";
     tool?: string;
     repeatCount?: number;
+    modelCalls?: number;
+    remaining?: number;
   };
 }): Promise<void> {
   const message = buildRunGuardHintMessage(input.hint);
@@ -1191,7 +1212,14 @@ async function observeModelTurn(input: {
   const alreadyStopped = ctx.runGuard.stopped;
   const decision = ctx.runGuard.modelCall();
   if (decision.stop && !alreadyStopped) await ctx.onRunGuardStop?.(decision.reason!);
-  else if (!decision.stop && decision.hint && !state.runGuardHintSent) {
+  else if (!decision.stop && decision.hint && typeof decision.hint.remaining === "number") {
+    // myrmidon(OPE-12799): the wrap-up message before the call limit; see
+    // ExecutionState.runGuardWrapUpHintSent.
+    if (!state.runGuardWrapUpHintSent) {
+      state.runGuardWrapUpHintSent = true;
+      await sendRunGuardHint({ ...input, hint: decision.hint });
+    }
+  } else if (!decision.stop && decision.hint && !state.runGuardHintSent) {
     state.runGuardHintSent = { reason: decision.hint.reason };
     await sendRunGuardHint({ ...input, hint: decision.hint });
   }
@@ -1311,6 +1339,7 @@ async function logCompactEvent(input: {
     const name = toolNameFromEvent(record);
     const preview = truncateForLog(toolPreviewFromEvent(record, redactText), COMPACT_TOOL_PREVIEW_MAX_CHARS);
     pushToolPreview(state, name, preview);
+    state.toolFailureRepeat.started(name, preview);
     // myrmidon(1.6.7 TOKENS-TRACE / OPE-10727): accumulate tool result sizes
     // from the preview content. The preview is the tool arguments/result
     // snippet captured at tool.started time.
@@ -1330,37 +1359,25 @@ async function logCompactEvent(input: {
     }
 
     // 1.7 AGENT-RUNTIME: лимит повторов одинаковых ошибок инструментов (OPE-10096)
-    if (toolHasError(record)) {
-      const errStr = String(record?.error ?? record?.stderr ?? record?.message ?? "").trim().slice(0, 200);
-      const isSameTool = Boolean(state.consecutiveToolErrors && state.consecutiveToolErrors.toolName === name);
-      const isSameError = Boolean(
-        isSameTool &&
-        state.consecutiveToolErrors?.lastError &&
-        errStr.length > 0 &&
-        state.consecutiveToolErrors.lastError === errStr,
-      );
-
-      let currentError = state.consecutiveToolErrors;
-      if (isSameTool && isSameError && currentError) {
-        currentError.count++;
-      } else {
-        currentError = { toolName: name, count: 1, lastError: errStr };
-        state.consecutiveToolErrors = currentError;
-      }
-
-      if (currentError.count >= 3) {
-        const errorMsg = `Repeated tool failure limit exceeded: ${name} failed ${currentError.count} times consecutively with the same error.`;
-        await ctx.onLog("stderr", `\n[agent-runtime] STOP CONDITION: ${errorMsg} Aborting run to prevent idle tool failure loop.\n`);
-        markTerminal(state, {
-          runId: state.runId,
-          status: "failed",
-          eventName: "agent.runtime.stop_condition",
-          payload: { error: errorMsg },
-          output: errorMsg,
-        });
-      }
-    } else {
-      state.consecutiveToolErrors = null;
+    // myrmidon(OPE-12796): the gateway sends `error` as a boolean, so the old
+    // string compare matched any two failures of a tool. Count only the same call
+    // (name + arguments, + text when the event has one) failing again after the
+    // model saw the previous failure; failures of one parallel batch count once.
+    const failed = toolHasError(record);
+    const rawError = record?.error;
+    const errText = typeof rawError === "string" ? rawError.trim().slice(0, 200) : null;
+    const repeat = state.toolFailureRepeat.completed(name, failed, errText);
+    if (repeat) {
+      const errorMsg = `Repeated tool failure limit exceeded: ${name} failed ${repeat.count} times consecutively with the same error.`;
+      const callText = repeat.preview ? ` Call: ${name} ${repeat.preview}.` : "";
+      await ctx.onLog("stderr", `\n[agent-runtime] STOP CONDITION: ${errorMsg}${callText} Aborting run to prevent idle tool failure loop.\n`);
+      markTerminal(state, {
+        runId: state.runId,
+        status: "failed",
+        eventName: "agent.runtime.stop_condition",
+        payload: { error: errorMsg },
+        output: errorMsg,
+      });
     }
   } else if (eventName === "reasoning.available") {
     const reasoning = redactText(extractReasoningPreview(record));

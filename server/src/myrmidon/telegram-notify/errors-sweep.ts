@@ -88,6 +88,7 @@ export async function tgNotifySweepAll(deps: TgNotifySweepDeps): Promise<{
               .then((feed) => feed.items),
         },
         limiter,
+        now: deps.now,
       });
       sent += result.sent;
       dropped += result.droppedRateLimited;
