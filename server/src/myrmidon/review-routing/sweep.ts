@@ -6,7 +6,10 @@
 //  1. a task in `in_review` with no reviewer gets a one-stage review with the
 //     least-loaded eligible reviewer (reviewer roles, below the load ceiling,
 //     never the task's author or assignee); the choice is written as a system
-//     comment and an activity entry, and the reviewer is woken;
+//     comment and an activity entry, and the reviewer is woken. Every pool of
+//     this routing (assign, reassign, rebalance, PR lane) holds only
+//     queue-eligible reviewers of the task's own agent group (OPE-12683): an
+//     empty own group raises the signal or does nothing, it never widens;
 //  2. when no reviewer is eligible the task is signalled on the attention desk
 //     (`no_reviewer`) instead of staying silent;
 //  3. a review this routing started that has had no verdict for
@@ -70,6 +73,7 @@ import {
   issueAnchorAgentId,
   issueNeedsReviewer,
   minutesSince,
+  ownGroupReviewerPool,
   pickPrReviewer,
   pickReviewer,
   readPendingAgentReview,
@@ -497,12 +501,11 @@ export function createReviewRoutingSweep(deps: ReviewRoutingSweepDeps): ReviewRo
       }
       return "";
     };
-    const poolForGroup = async (groupKey: string): Promise<ReviewerCandidate[]> => {
-      const all = await pool();
-      if (!groupKey) return all.filter((c) => c.swarmQueueEligible !== false);
-      const matching = all.filter((c) => c.swarmQueueEligible !== false && resolveAgentGroupKey(c) === groupKey);
-      return matching.length > 0 ? matching : all.filter((c) => c.swarmQueueEligible !== false);
-    };
+    // myrmidon(OPE-12683): a task is reviewed only inside its own agent group
+    // by queue-eligible reviewers. An empty own group yields an empty pool, never
+    // the whole company pool: shop and business bots must not review dev tasks.
+    const poolForGroup = async (groupKey: string): Promise<ReviewerCandidate[]> =>
+      ownGroupReviewerPool(await pool(), groupKey);
     const bumpLoad = (agentId: string, delta: number) => {
       if (reviewerPool) {
         const candidate = reviewerPool.find((entry) => entry.id === agentId);
@@ -720,7 +723,16 @@ export function createReviewRoutingSweep(deps: ReviewRoutingSweepDeps): ReviewRo
           continue;
         }
 
-        const candidates = await pool();
+        // myrmidon(OPE-12683): only queue-eligible reviewers of the issue's own
+        // group may take a rebalanced review; none in the group, no rebalance.
+        let candidates: ReviewerCandidate[];
+        try {
+          candidates = await poolForGroup(await getIssueGroupKey(row, review.reviewerAgentId));
+        } catch (err) {
+          result.failed += 1;
+          log.warn({ err, issueId: row.id, companyId }, "review routing failed to read the own-group pool for a rebalance");
+          continue;
+        }
         const excluded = excludedReviewerIds(row, [
           review.reviewerAgentId,
           ...(review.returnAssigneeAgentId ? [review.returnAssigneeAgentId] : []),
@@ -802,6 +814,19 @@ export function createReviewRoutingSweep(deps: ReviewRoutingSweepDeps): ReviewRo
     lastPrLaneAtMs = now.getTime();
 
     const signals: ReviewRoutingSignal[] = [];
+    // myrmidon(OPE-12683): a pull request is reviewed only inside the agent
+    // group of its engineer or author, by queue-eligible reviewers. A group is
+    // resolved from the agent row; an unknown group (no engineer, no linked
+    // author) leaves only the queue-eligibility filter.
+    const laneGroupByAgent = new Map<string, string>();
+    const laneAgentGroup = async (agentId: string | null | undefined): Promise<string> => {
+      if (!agentId) return "";
+      const cached = laneGroupByAgent.get(agentId);
+      if (cached !== undefined) return cached;
+      const key = resolveAgentGroupKey(await deps.store.getAgent(companyId, agentId));
+      laneGroupByAgent.set(agentId, key);
+      return key;
+    };
     const existingWork = await deps.store.listInProgressPrIssues(companyId, REVIEW_ROUTING_PR_PAGE_SIZE);
     for (const row of existingWork) {
       try {
@@ -816,8 +841,9 @@ export function createReviewRoutingSweep(deps: ReviewRoutingSweepDeps): ReviewRo
           deps.store.loadByAgent(companyId),
           deps.store.openPrTaskLoadByAgent(companyId, "review"),
         ]);
+        const taskGroup = await laneAgentGroup(issueAnchorAgentId(row));
         const picked = pickPrReviewer({
-          reviewers: reviewerRows.map((agent) => ({ ...agent, load: 0 })),
+          reviewers: ownGroupReviewerPool(reviewerRows.map((agent) => ({ ...agent, load: 0 })), taskGroup),
           boardLoadByAgent: boardLoad,
           openPrLoadByAgent: openReviewLoad,
           excluded: new Set([row.assigneeAgentId ?? "", row.createdByAgentId ?? ""]),
@@ -907,6 +933,18 @@ export function createReviewRoutingSweep(deps: ReviewRoutingSweepDeps): ReviewRo
         authorAgents.set(login.toLowerCase(), ids);
       }
       return new Set(ids);
+    };
+    // myrmidon(OPE-12683): the reviewers of a pull request are those of the
+    // group(s) of the author's linked agents. An author with no linked agent
+    // has no known group: only the queue-eligibility filter applies.
+    const reviewersForAuthor = async (login: string | null | undefined): Promise<ReviewerCandidate[]> => {
+      const groups = new Set<string>();
+      for (const agentId of await authorExcluded(login)) {
+        const group = await laneAgentGroup(agentId);
+        if (group) groups.add(group);
+      }
+      if (groups.size === 0) return ownGroupReviewerPool(reviewers, "");
+      return [...groups].flatMap((group) => ownGroupReviewerPool(reviewers, group));
     };
 
     let newAssignments = 0;
@@ -1006,7 +1044,7 @@ export function createReviewRoutingSweep(deps: ReviewRoutingSweepDeps): ReviewRo
         const picked =
           kind === "review"
             ? pickPrReviewer({
-                reviewers,
+                reviewers: await reviewersForAuthor(head.authorLogin),
                 boardLoadByAgent: boardLoad,
                 openPrLoadByAgent: openReviewByAgent,
                 excluded,
