@@ -168,6 +168,26 @@ describe.skipIf(process.platform === "win32")("syncDirectoryFromSsh staging dire
 
     expect(await leftoverStagingDirs()).toEqual([]);
   }, 20_000);
+  it("settles promptly when the extracting tar dies before the ssh stream is drained", async () => {
+    // Regression for OPE-12842: with a large source the SIGTERM lands while
+    // ssh.stdout is paused with buffered data piped to the already-dead
+    // tar.stdin; the paused stream never drains the dead process's EOF, so
+    // ssh's "close" never fired and the restore hung until the test timeout.
+    // A stream big enough to leave buffered data behind is what triggers it,
+    // so grow the source past the pipe buffer before syncing.
+    setEnv("FAKE_SSH_MODE", "serve");
+    setEnv("FAKE_TAR_MODE", "die-on-extract");
+    const filler = Buffer.alloc(1024 * 1024, 0x61);
+    for (let i = 0; i < 24; i += 1) {
+      await writeFile(path.join(sourceDir, `filler-${i}.bin`), filler);
+    }
+
+    await expect(syncDirectoryFromSsh({ spec, remoteDir: "/workspace", localDir })).rejects.toThrow(
+      "No space left on device",
+    );
+
+    expect(await leftoverStagingDirs()).toEqual([]);
+  }, 20_000);
 
   it("removes a staging directory that holds read-only directories", async () => {
     setEnv("FAKE_SSH_MODE", "serve");

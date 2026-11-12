@@ -1773,11 +1773,16 @@ export async function syncDirectoryFromSsh(input: {
         tarExitCode = code;
         tarSignal = signal;
         // Nothing reads ssh's output once tar is gone, so ssh would block on a
-        // full pipe and the restore would never settle. Stop it; maybeFinish
-        // runs when it closes.
+        // full pipe and the restore would never settle. Stop it. The kill alone
+        // is not enough to settle (OPE-12842): after tar's death the pipe from
+        // ssh.stdout is detached while the stream stays paused with buffered
+        // data, so the dead process's EOF is never drained and its "close"
+        // event never fires. Destroying the paused stream lets "close" happen,
+        // and maybeFinish settles the restore with tar's real failure.
         if (code !== 0 && !sshExited) {
           sshStoppedAfterTarFailure = true;
           ssh.kill("SIGTERM");
+          ssh.stdout?.destroy();
         }
         maybeFinish();
       });
