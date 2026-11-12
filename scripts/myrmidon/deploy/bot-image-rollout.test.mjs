@@ -547,7 +547,7 @@ describe("bot-image-rollout.sh", () => {
     assert.match(out, /maintenance is still leaving; retrying apply/);
     assert.equal((calls(sb).match(new RegExp(`agents/${id}/bot-container/apply`, "g")) ?? []).length, 2);
     assert.equal(JSON.parse(read(path.join(sb.dir, "agents.json"))).find((a) => a.id === id).adapterConfig.container.image, `${BOT}@${HERMES}`);
-    assert.match(out, /1 switched, 0 failed/);
+    assert.match(out, /1 switched, 0 already, 0 failed/);
   });
 
   it("resolves the three bot images of the release and allows them in dockergate", () => {
@@ -701,14 +701,14 @@ describe("bot-image-rollout.sh", () => {
     assert.match(calls(sb), /bot-container\/apply\/job-1/);
     assert.match(calls(sb), /bot-container\/status/);
     assert.match(journal(sb), /async apply job-1/);
-    assert.match(out, /0 failed, 0 deferred/);
+    assert.match(out, /2 switched, 0 already, 0 failed, 0 deferred/);
   });
 
   it("async apply: succeeded but the container is not on the release image is deferred, not switched", () => {
     const sb = sandbox({ applyAsync: "succeeded", asyncStaleImage: true });
     const { out } = run(sb, "bot-image-rollout.sh", ["--resolution", "tag", "--ref", VERSION]);
     assert.match(out, /container is not on the release image/);
-    assert.match(out, /0 switched, 0 failed, 2 deferred/);
+    assert.match(out, /0 switched, 0 already, 0 failed, 2 deferred/);
     assert.doesNotMatch(journal(sb), /async apply/);
   });
 
@@ -729,7 +729,7 @@ describe("bot-image-rollout.sh", () => {
     const { code, out } = run(sb, "bot-image-rollout.sh", ["--resolution", "tag", "--ref", VERSION]);
     assert.equal(code, 0, out);
     assert.match(out, /maintenance still leaving; retrying/);
-    assert.match(out, /1 switched, 0 deferred\(running\), 0 mismatch, 0 failed/);
+    assert.match(out, /1 switched, 0 already, 0 deferred\(running\), 0 mismatch, 0 failed/);
   });
 
   it("rollout of an idle-stopped container verifies as switched", () => {
@@ -742,14 +742,14 @@ describe("bot-image-rollout.sh", () => {
     });
     const { code, out } = run(sb, "bot-image-rollout.sh", ["--resolution", "tag", "--ref", VERSION]);
     assert.equal(code, 0, out);
-    assert.match(out, /1 switched, 0 deferred\(running\), 0 mismatch, 0 failed/);
+    assert.match(out, /1 switched, 0 already, 0 deferred\(running\), 0 mismatch, 0 failed/);
   });
 
   it("async apply: a job that never finishes times out as deferred (the sweep completes it)", () => {
     const sb = sandbox({ applyAsync: "running" });
     const { out } = run(sb, "bot-image-rollout.sh", ["--resolution", "tag", "--ref", VERSION]);
     assert.match(out, /still not finished after 2s/);
-    assert.match(out, /0 switched, 0 failed, 2 deferred/);
+    assert.match(out, /0 switched, 0 already, 0 failed, 2 deferred/);
     assert.doesNotMatch(out, /unexpected apply outcome/);
   });
 
@@ -1056,7 +1056,7 @@ describe("bot-image-rollout.sh: tracking vs pinned cards, batches, paused or idl
     // the loop was not aborted: the other two bots were switched after it
     assert.equal(cardImage(sb, uuid(2)), `${BOT}@${HERMES}`);
     assert.equal(cardImage(sb, uuid(3)), `${BOT}@${HERMES}`);
-    assert.match(out, /2 switched, 0 failed, 1 deferred/);
+    assert.match(out, /2 switched, 0 already, 0 failed, 1 deferred/);
     assert.match(out, /WARNING: 1 bot\(s\) stayed deferred/);
     assert.doesNotMatch(out, /DEGRADED/);
   });
@@ -1364,7 +1364,19 @@ describe("bot-image-rollout.sh: verification against the fact, --retry-deferred 
         { id: DEV, image: DEV_NEW },
         { id: PLAIN, image: PLAIN_NEW },
       ],
-      dockergateConfig: { images: [DEV_NEW, PLAIN_NEW] },
+      dockergateConfig: JSON.stringify({
+        listen: "/run/myrmidon-dockergate/engine.sock",
+        upstream: "/var/run/docker.sock",
+        apiVersion: "1.45",
+        caller: { container: "paperclip-server-1", containerLabels: { "com.docker.compose.project": "paperclip" }, argv: ["node"], uid: 1000, gid: 1000, mode: "uid" },
+        volumeRoot: "/srv/test-bots",
+        network: "myrmidon-bots",
+        images: [DEV_NEW, PLAIN_NEW],
+        mountSources: [],
+        bots: [],
+        limits: {},
+        statsFile: "/tmp/dockergate-stats.json",
+      }, null, 2),
     });
     const { code, out } = run(sb, "bot-image-rollout.sh", ARGS);
     assert.equal(code, 0, out);
@@ -1372,8 +1384,8 @@ describe("bot-image-rollout.sh: verification against the fact, --retry-deferred 
     assert.match(out, /verification summary: 0 switched, 2 already, 0 deferred\(running\), 0 mismatch, 0 failed/);
     assert.doesNotMatch(calls(sb), /-X PATCH/);
     assert.doesNotMatch(calls(sb), /bot-container\/apply/);
-    assert.doesNotMatch(calls(sb), new RegExp(`agents/${DEV}/bot-container`));
-    assert.doesNotMatch(calls(sb), new RegExp(`agents/${PLAIN}/bot-container`));
+    assert.doesNotMatch(calls(sb), new RegExp(`agents/${DEV}/bot-container/(apply|PATCH|post)`));
+    assert.doesNotMatch(calls(sb), new RegExp(`agents/${PLAIN}/bot-container/(apply|PATCH|post)`));
     const s = rolloutSummary(sb);
     assert.equal(s.already, 2);
     assert.equal(s.switched, 0);

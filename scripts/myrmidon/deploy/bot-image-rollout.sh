@@ -794,7 +794,7 @@ switch_one_bot() {
   # re-applying recreated a healthy container and delayed a busy bot's work.
   # A card on the release image over a stale container is NOT skipped: the
   # apply below is what finishes a bot a previous rollout left deferred.
-  if [[ -n "$target" ]] && container_on_image "$id" "$target"; then
+  if [[ -n "$target" ]] && is_release_ref "$current" && container_on_image "$id" "$target"; then
     bot_log "bot $id already on the release image ($current): skipped"
     journal "agent $id already on $target: skipped"
     return 3
