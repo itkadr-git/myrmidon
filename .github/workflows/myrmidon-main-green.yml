@@ -17,13 +17,21 @@ on:
   workflow_run:
     workflows: ["Myrmidon CI"]
     types: [completed]
+    branches: [main]
   schedule:
     - cron: "*/15 * * * *"
   workflow_dispatch:
 
 concurrency:
-  group: myrmidon-main-green-${{ github.event_name == 'pull_request' && github.event.pull_request.number || 'global' }}
-  cancel-in-progress: true
+  # OPE-12889: the rerun/disarm lane must not be cancelled by workflow_run
+  # events from Myrmidon CI on non-main branches (dozens of cancelled reruns on
+  # 12-13.11). Gate-check runs keep their per-PR group with cancellation; the
+  # global lane has its own group and never cancels in progress.
+  group: >-
+    ${{ github.event_name == 'pull_request'
+        && format('myrmidon-main-green-pr-{0}', github.event.pull_request.number)
+        || 'myrmidon-main-green-global' }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 permissions:
   contents: read

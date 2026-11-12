@@ -3,8 +3,10 @@
 #
 # MERGE-ON-RED-MAIN GATE (OPE-10789):
 # Prevents GitHub auto-merge (and bot direct merges) from merging pull requests
-# into `main` when the latest Myrmidon CI run on `main` is red (failed, timed out,
-# cancelled) or still running/pending.
+# into `main` when the latest COMPLETED Myrmidon CI run on `main` is red
+# (failed, timed out, cancelled). OPE-12889: a queued/in_progress run is not red —
+# the verdict is taken from the last completed main CI run, so the ~40-minute
+# main CI window after each merge no longer blocks green PRs.
 #
 # On 03.11 (OPE-10788), main broke at 12:34 IRK. GitHub native auto-merge
 # (autoMergeRequest) only evaluates PR-level status checks (e.g. CI result on the PR
@@ -13,10 +15,14 @@
 # broken main, compounding the breakage.
 #
 # This gate acts as a required PR check (like release `freeze`):
-#   - Exits 0 (GREEN) only when the latest Myrmidon CI on `main` has completed
-#     with conclusion: success AND no open issue labelled `main-red` exists.
-#   - Exits 1 (RED) when `main` CI is failing, running, queued, cancelled,
-#     or an issue labelled `main-red` is open.
+#   - OPE-12889: the verdict comes from the latest COMPLETED Myrmidon CI run on
+#     `main`. A queued/in_progress run is not red — while the previous completed
+#     run is green, PRs may merge (main CI takes ~40 minutes per merge).
+#   - Exits 0 (GREEN) when the latest completed Myrmidon CI run on `main` has
+#     conclusion: success AND no open issue labelled `main-red` exists.
+#   - Exits 1 (RED) when the latest completed `main` CI run concluded with
+#     failure/cancelled/timed_out/etc., an issue labelled `main-red` is open,
+#     or no completed run exists at all (fail closed).
 #   - Fails closed (RED) on API / auth errors so network/token glitches never
 #     wave PRs through into an unverified main.
 #
@@ -24,7 +30,7 @@
 # engine (`autoMergeRequest`) refuses to merge any PR while this check is red.
 #
 # Modes:
-#   --check        Exits 0 if main is green, 1 if main is red or pending.
+#   --check        Exits 0 if the last completed main CI run is green, 1 otherwise.
 #   --status       Prints a one-line status (green | red:<reason> | pending:<reason>).
 #
 # Environment:
@@ -42,7 +48,7 @@ while (($#)); do
   case "$1" in
     --check) mode="check"; shift ;;
     --status) mode="status"; shift ;;
-    -h|--help) sed -n '2,32p' "$0"; exit 0 ;;
+    -h|--help) sed -n '2,40p' "$0"; exit 0 ;;
     *) die "unknown argument: $1" ;;
   esac
 done
@@ -89,86 +95,81 @@ if [[ -n "$open_red_issues" ]]; then
   die "MAIN BRANCH IS RED ($reason) — PR merges are blocked until main CI is fixed and green"
 fi
 
-# 2. Inspect the latest Myrmidon CI workflow run on base branch (event=push, branch=$base_branch)
+# 2. Inspect the latest COMPLETED Myrmidon CI workflow run on base branch (event=push, branch=$base_branch)
 # OPE-11694: Query workflow runs directly by branch and event=push, NOT check-runs on head commit SHA.
 # Check-runs by commit SHA mix runs from release tags, other branches, or PRs sharing that SHA.
 # Release tags run "Myrmidon CI (tag)" on the same SHA as main HEAD; a failure in tag CI must
 # not block PR merges when main branch CI is green.
+# OPE-12889: A queued/in_progress run is NOT the verdict — the gate reads the latest
+# run whose status == completed, so the ~40-minute main CI window after a merge
+# does not block PRs while the previous completed run is green.
 head_sha="$(gh api "repos/$repo/commits/$base_branch" --jq '.sha' 2>/dev/null || true)"
 
-runs_json="$(gh api "repos/$repo/actions/workflows/myrmidon-ci.yml/runs?branch=$base_branch&event=push&per_page=5" 2>/dev/null || true)"
+runs_json="$(gh api "repos/$repo/actions/workflows/myrmidon-ci.yml/runs?branch=$base_branch&event=push&per_page=20" 2>/dev/null || true)"
 
 if [[ -z "$runs_json" || "$(jq -r '.workflow_runs // empty' <<<"$runs_json")" == "[]" ]]; then
-  runs_json="$(gh api "repos/$repo/actions/runs?branch=$base_branch&event=push&per_page=5" 2>/dev/null || true)"
+  runs_json="$(gh api "repos/$repo/actions/runs?branch=$base_branch&event=push&per_page=20" 2>/dev/null || true)"
 fi
 
 latest_run="$(jq -r '
   def match_workflow:
     (.path == null or .path == ".github/workflows/myrmidon-ci.yml" or .name == null or .name == "Myrmidon CI");
   (
-    [.workflow_runs[]? | select(.head_branch == "'"$base_branch"'" and (.event == null or .event == "push") and match_workflow)]
+    [.workflow_runs[]? | select(.head_branch == "'"$base_branch"'" and (.event == null or .event == "push") and match_workflow and .status == "completed")]
     | sort_by(.created_at) | reverse | .[0]
   ) // (
-    [.workflow_runs[]? | select(.head_branch == "'"$base_branch"'" and (.event == null or .event == "push"))]
+    [.workflow_runs[]? | select(.head_branch == "'"$base_branch"'" and (.event == null or .event == "push") and .status == "completed")]
     | sort_by(.created_at) | reverse | .[0]
+  ) // empty
+' <<<"$runs_json")"
+
+pending_info="$(jq -r '
+  (
+    [.workflow_runs[]? | select(.status != "completed")]
+    | sort_by(.created_at) | reverse | .[0]
+    | "run #\(.id) is \(.status)"
   ) // empty
 ' <<<"$runs_json")"
 
 if [[ -n "$latest_run" && "$latest_run" != "null" ]]; then
   run_id="$(jq -r '.id' <<<"$latest_run")"
-  run_status="$(jq -r '.status' <<<"$latest_run")"
-  run_conclusion="$(jq -r '.conclusion // "pending"' <<<"$latest_run")"
+  run_conclusion="$(jq -r '.conclusion // "unknown"' <<<"$latest_run")"
   run_sha="$(jq -r '.head_sha' <<<"$latest_run")"
 
-  if [[ "$run_status" == "completed" ]]; then
-    case "$run_conclusion" in
-      success)
-        # Check if HEAD moved beyond the completed run
-        if [[ -n "$head_sha" && -n "$run_sha" && "$head_sha" != "$run_sha" ]]; then
-          reason="head moved to $head_sha and its CI is pending"
-          if [[ "$mode" == "status" ]]; then
-            printf 'pending:%s\n' "$reason"
-            exit 0
-          fi
-          die "MAIN BRANCH HAS FRESH COMMITS WITHOUT GREEN CI ($reason)"
-        fi
-        log "main branch CI is GREEN (workflow run #$run_id succeeded on commit $run_sha). Merges permitted."
-        if [[ "$mode" == "status" ]]; then
-          printf 'green\n'
-        fi
-        exit 0
-        ;;
-      failure|cancelled|timed_out|startup_failure|action_required)
-        reason="run #$run_id concluded with $run_conclusion on commit $run_sha"
-        if [[ "$mode" == "status" ]]; then
-          printf 'red:%s\n' "$reason"
-          exit 0
-        fi
-        die "MAIN BRANCH CI IS RED ($reason) — PR merges are blocked until main CI is fixed and green"
-        ;;
-      *)
-        reason="run #$run_id has conclusion: $run_conclusion on commit $run_sha"
+  case "$run_conclusion" in
+    success)
+      # Check if HEAD moved beyond the completed run
+      if [[ -n "$head_sha" && -n "$run_sha" && "$head_sha" != "$run_sha" ]]; then
+        reason="head moved to $head_sha and its CI has not completed yet"
         if [[ "$mode" == "status" ]]; then
           printf 'pending:%s\n' "$reason"
           exit 0
         fi
-        die "MAIN BRANCH CI IS NOT GREEN ($reason)"
-        ;;
-    esac
-  else
-    reason="run #$run_id is $run_status (head $run_sha)"
-    if [[ "$mode" == "status" ]]; then
-      printf 'pending:%s\n' "$reason"
+        die "MAIN BRANCH HAS FRESH COMMITS WITHOUT GREEN CI ($reason)"
+      fi
+      log "main branch CI is GREEN (latest completed run #$run_id succeeded on commit $run_sha). Merges permitted."
+      [[ -n "$pending_info" ]] && log "current CI state: $pending_info (not a red verdict)"
+      if [[ "$mode" == "status" ]]; then
+        printf 'green\n'
+      fi
       exit 0
-    fi
-    die "MAIN BRANCH CI IS NOT COMPLETED ($reason) — PR merges are blocked until main CI completes successfully"
-  fi
+      ;;
+    *)
+      reason="latest completed run #$run_id concluded with $run_conclusion on commit $run_sha"
+      if [[ "$mode" == "status" ]]; then
+        printf 'red:%s\n' "$reason"
+        exit 0
+      fi
+      die "MAIN BRANCH CI IS RED ($reason) — PR merges are blocked until main CI is fixed and green"
+      ;;
+  esac
 fi
 
-# Default: could not verify green status
-reason="no completed green Myrmidon CI run found for $base_branch"
+# Default: could not verify green status. A queued/in_progress-only history
+# (no completed run at all) also lands here and fails closed.
+reason="no completed Myrmidon CI run found for $base_branch${pending_info:+ ($pending_info)}"
 if [[ "$mode" == "status" ]]; then
-  printf 'pending:%s\n' "$reason"
+  printf 'red:%s\n' "$reason"
   exit 0
 fi
 die "CANNOT CONFIRM GREEN STATUS FOR $base_branch ($reason) — failing closed (red)"

@@ -256,12 +256,100 @@ describe("main-green-gate.sh (OPE-10789)", () => {
     assert.match(res.stderr, /MAIN BRANCH CI IS RED.*timed_out/i);
   });
 
-  it("is RED (exit 1) while main CI is currently in_progress or queued", () => {
+  it("OPE-12889: is GREEN (exit 0) while a new main CI run is in_progress and the latest completed run succeeded", () => {
+    const sandbox = makeSandbox({
+      runs: {
+        workflow_runs: [
+          // Newest run: still running on the fresh commit (main CI takes ~40 min).
+          {
+            id: 2004,
+            head_branch: "main",
+            head_sha: NEW_SHA,
+            status: "in_progress",
+            conclusion: null,
+            created_at: "2026-11-03T12:40:00Z",
+          },
+          // Previous completed run on the merged commit was green.
+          {
+            id: 1001,
+            head_branch: "main",
+            head_sha: GREEN_SHA,
+            status: "completed",
+            conclusion: "success",
+            created_at: "2026-11-03T12:00:00Z",
+          },
+        ],
+      },
+    });
+    const res = runGate(sandbox, ["--check"]);
+    assert.equal(res.status, 0, "an in-progress run must not turn the gate red");
+    assert.match(res.stderr, /main branch CI is GREEN/i);
+    assert.match(res.stderr, /run #2004 is in_progress/);
+  });
+
+  it("OPE-12889: is GREEN (exit 0) while the newest main CI run is queued and the latest completed run succeeded", () => {
     const sandbox = makeSandbox({
       runs: {
         workflow_runs: [
           {
-            id: 2004,
+            id: 2005,
+            head_branch: "main",
+            head_sha: NEW_SHA,
+            status: "queued",
+            conclusion: null,
+            created_at: "2026-11-03T12:41:00Z",
+          },
+          {
+            id: 1001,
+            head_branch: "main",
+            head_sha: GREEN_SHA,
+            status: "completed",
+            conclusion: "success",
+            created_at: "2026-11-03T12:00:00Z",
+          },
+        ],
+      },
+    });
+    const res = runGate(sandbox, ["--status"]);
+    assert.equal(res.status, 0);
+    assert.equal(res.stdout.trim(), "green");
+  });
+
+  it("OPE-12889: is RED (exit 1) when the latest completed run failed even though a newer run is in_progress", () => {
+    const sandbox = makeSandbox({
+      runs: {
+        workflow_runs: [
+          {
+            id: 2006,
+            head_branch: "main",
+            head_sha: NEW_SHA,
+            status: "in_progress",
+            conclusion: null,
+            created_at: "2026-11-03T13:10:00Z",
+          },
+          {
+            id: 2002,
+            head_branch: "main",
+            head_sha: RED_SHA,
+            status: "completed",
+            conclusion: "failure",
+            created_at: "2026-11-03T12:34:00Z",
+          },
+        ],
+      },
+    });
+    const res = runGate(sandbox, ["--check"]);
+    assert.equal(res.status, 1, "gate must be red when the last completed run failed");
+    assert.match(res.stderr, /MAIN BRANCH CI IS RED.*run #2002 concluded with failure/i);
+  });
+
+  it("OPE-12889: is RED (exit 1) with a reason when no completed run exists (only in_progress)", () => {
+    const sandbox = makeSandbox({
+      headSha: NEW_SHA,
+      runs: {
+        workflow_runs: [
+          {
+            id: 2007,
             head_branch: "main",
             head_sha: NEW_SHA,
             status: "in_progress",
@@ -272,19 +360,30 @@ describe("main-green-gate.sh (OPE-10789)", () => {
       },
     });
     const res = runGate(sandbox, ["--check"]);
-    assert.equal(res.status, 1, "gate must be red while CI is in-progress");
-    assert.match(res.stderr, /NOT COMPLETED.*in_progress/i);
+    assert.equal(res.status, 1, "no completed run at all must fail closed");
+    assert.match(res.stderr, /CANNOT CONFIRM GREEN STATUS/i);
+    assert.match(res.stderr, /run #2007 is in_progress/i);
   });
 
-  it("is RED (exit 1) when main HEAD moved to a new commit whose CI has not completed", () => {
+  it("is RED (exit 1) when main HEAD moved to a new commit whose CI has completed with failure", () => {
     const sandbox = makeSandbox({
       headSha: NEW_SHA, // main moved to NEW_SHA
       runs: {
         workflow_runs: [
+          // The run on NEW_SHA completed with failure.
+          {
+            id: 2008,
+            head_branch: "main",
+            head_sha: NEW_SHA,
+            status: "completed",
+            conclusion: "failure",
+            created_at: "2026-11-03T12:50:00Z",
+          },
+          // The previous commit was green but is no longer the latest completed run.
           {
             id: 1001,
             head_branch: "main",
-            head_sha: GREEN_SHA, // previous commit was green
+            head_sha: GREEN_SHA,
             status: "completed",
             conclusion: "success",
             created_at: "2026-11-03T12:00:00Z",
@@ -292,11 +391,10 @@ describe("main-green-gate.sh (OPE-10789)", () => {
         ],
       },
     });
-    writeJson(sandbox, `check-runs-${NEW_SHA}.json`, { check_runs: [] });
 
     const res = runGate(sandbox, ["--check"]);
-    assert.equal(res.status, 1, "gate must hold when fresh commits exist without green CI");
-    assert.match(res.stderr, /FRESH COMMITS WITHOUT GREEN CI/i);
+    assert.equal(res.status, 1, "gate must be red when the run on HEAD completed with failure");
+    assert.match(res.stderr, /MAIN BRANCH CI IS RED.*run #2008 concluded with failure/i);
   });
 
   it("is GREEN (exit 0) when the latest Myrmidon CI on main succeeded and no main-red issue exists", () => {
@@ -339,7 +437,7 @@ describe("main-green-gate.sh (OPE-10789)", () => {
     });
     const redRes = runGate(redSandbox, ["--status"]);
     assert.equal(redRes.status, 0);
-    assert.match(redRes.stdout, /^red:run #2002 concluded with failure/);
+    assert.match(redRes.stdout, /^red:latest completed run #2002 concluded with failure/);
 
     const greenSandbox = makeSandbox({
       headSha: GREEN_SHA,
@@ -442,7 +540,7 @@ describe("main-green-gate.sh (OPE-10789)", () => {
 
     const res = runGate(sandbox, ["--check"]);
     assert.equal(res.status, 1, "gate must be red when main CI run failed");
-    assert.match(res.stderr, /MAIN BRANCH CI IS RED.*run #41949314014 concluded with failure/i);
+    assert.match(res.stderr, /MAIN BRANCH CI IS RED.*latest completed run #41949314014 concluded with failure/i);
   });
 });
 
