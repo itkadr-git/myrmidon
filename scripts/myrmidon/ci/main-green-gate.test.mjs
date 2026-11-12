@@ -57,7 +57,14 @@ case "$sub" in
             body='{"sha": "'"$commit"'"}'
           fi
         elif [[ "$url" =~ /actions/ ]]; then
-          body="$(cat "$SANDBOX/runs.json")"
+          if [[ "$url" =~ workflows/myrmidon-main-green.yml/runs ]]; then
+            body='{"workflow_runs": []}'
+            if [ -f "$SANDBOX/gate-runs.json" ]; then
+              body="$(cat "$SANDBOX/gate-runs.json")"
+            fi
+          else
+            body="$(cat "$SANDBOX/runs.json")"
+          fi
         elif [[ "$url" =~ /pulls ]]; then
           body="$(cat "$SANDBOX/pulls.json")"
         else
@@ -150,6 +157,9 @@ function makeSandbox(opts = {}) {
     ],
   });
   writeJson(dir, "pulls.json", opts.pulls ?? []);
+  if (opts.gateRuns) {
+    writeJson(dir, "gate-runs.json", { workflow_runs: opts.gateRuns });
+  }
 
   if (opts.apiDown) {
     fs.writeFileSync(path.join(dir, "api-down"), "1");
@@ -256,31 +266,82 @@ describe("main-green-gate.sh (OPE-10789)", () => {
     assert.match(res.stderr, /MAIN BRANCH CI IS RED.*timed_out/i);
   });
 
-  it("is RED (exit 1) while main CI is currently in_progress or queued", () => {
+  it("OPE-12889: is GREEN (exit 0) while main CI is in_progress when the previous completed run succeeded", () => {
     const sandbox = makeSandbox({
+      headSha: NEW_SHA,
       runs: {
         workflow_runs: [
           {
             id: 2004,
+            name: "Myrmidon CI",
+            path: ".github/workflows/myrmidon-ci.yml",
             head_branch: "main",
             head_sha: NEW_SHA,
             status: "in_progress",
             conclusion: null,
             created_at: "2026-11-03T12:40:00Z",
           },
+          {
+            id: 1001,
+            name: "Myrmidon CI",
+            path: ".github/workflows/myrmidon-ci.yml",
+            head_branch: "main",
+            head_sha: GREEN_SHA,
+            status: "completed",
+            conclusion: "success",
+            created_at: "2026-11-03T12:00:00Z",
+          },
         ],
       },
     });
     const res = runGate(sandbox, ["--check"]);
-    assert.equal(res.status, 1, "gate must be red while CI is in-progress");
-    assert.match(res.stderr, /NOT COMPLETED.*in_progress/i);
+    assert.equal(res.status, 0, "gate must stay green while main CI runs on a previously green main");
+    assert.match(res.stderr, /main branch CI is GREEN/i);
   });
 
-  it("is RED (exit 1) when main HEAD moved to a new commit whose CI has not completed", () => {
+  it("OPE-12889: is RED (exit 1) when the latest completed run is queued and the previous completed run failed", () => {
     const sandbox = makeSandbox({
-      headSha: NEW_SHA, // main moved to NEW_SHA
       runs: {
         workflow_runs: [
+          {
+            id: 2005,
+            head_branch: "main",
+            head_sha: NEW_SHA,
+            status: "queued",
+            conclusion: null,
+            created_at: "2026-11-03T12:40:00Z",
+          },
+          {
+            id: 2002,
+            head_branch: "main",
+            head_sha: RED_SHA,
+            status: "completed",
+            conclusion: "failure",
+            created_at: "2026-11-03T12:34:00Z",
+          },
+        ],
+      },
+    });
+    const res = runGate(sandbox, ["--check"]);
+    assert.equal(res.status, 1, "gate must be red when the last completed run failed");
+    assert.match(res.stderr, /MAIN BRANCH CI IS RED.*run #2002 concluded with failure/i);
+  });
+
+  it("OPE-12889: is GREEN (exit 0) when main HEAD moved on but the latest completed run succeeded (in-flight run covers it)", () => {
+    const sandbox = makeSandbox({
+      headSha: NEW_SHA, // main moved to NEW_SHA, its run in flight
+      runs: {
+        workflow_runs: [
+          {
+            id: 2006,
+            name: "Myrmidon CI",
+            path: ".github/workflows/myrmidon-ci.yml",
+            head_branch: "main",
+            head_sha: NEW_SHA,
+            status: "in_progress",
+            conclusion: null,
+            created_at: "2026-11-03T12:45:00Z",
+          },
           {
             id: 1001,
             head_branch: "main",
@@ -295,8 +356,8 @@ describe("main-green-gate.sh (OPE-10789)", () => {
     writeJson(sandbox, `check-runs-${NEW_SHA}.json`, { check_runs: [] });
 
     const res = runGate(sandbox, ["--check"]);
-    assert.equal(res.status, 1, "gate must hold when fresh commits exist without green CI");
-    assert.match(res.stderr, /FRESH COMMITS WITHOUT GREEN CI/i);
+    assert.equal(res.status, 0, "in-flight main run must not block merges when the previous completed run is green");
+    assert.match(res.stderr, /main branch CI is GREEN/i);
   });
 
   it("is GREEN (exit 0) when the latest Myrmidon CI on main succeeded and no main-red issue exists", () => {
@@ -526,16 +587,18 @@ describe("Merge gate integration (OPE-10789 Acceptance Criteria)", () => {
             conclusion: "success",
             created_at: "2026-11-03T13:00:00Z",
           },
-          // Failed gate run for PR 2258
-          {
-            id: 9001,
-            head_sha: "pr2258sha123456789012345678901234567890",
-            status: "completed",
-            conclusion: "failure",
-            created_at: "2026-11-03T12:35:00Z",
-          },
         ],
       },
+      gateRuns: [
+        // Failed gate run for PR 2258
+        {
+          id: 9001,
+          head_sha: "pr2258sha123456789012345678901234567890",
+          status: "completed",
+          conclusion: "failure",
+          created_at: "2026-11-03T12:35:00Z",
+        },
+      ],
       pulls: [
         {
           number: 2258,

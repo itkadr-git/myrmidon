@@ -1,15 +1,8 @@
 name: Main green gate
 
-# MERGE-ON-RED-MAIN (OPE-10789/OPE-10912):
-# The PR check is not sufficient: main can turn red after it passes. On every
-# completed Myrmidon CI run for main, disarm native auto-merge while main is red.
+# OPE-12889: the gate verdict comes from the latest COMPLETED Myrmidon CI run on
+# main, so a run still in flight no longer blocks PR merges or marks the gate red.
 #
-# This workflow runs the `main-green` check on pull requests targeting main.
-# Operator: add this check ("main-green" of "Main green gate") to the required status
-# checks of main; GitHub auto-merge will then refuse to merge whenever main is red.
-#
-# When "Myrmidon CI" completes on main, the second job re-runs failed gate checks
-# for open PRs once main is green again.
 
 on:
   pull_request:
@@ -22,8 +15,12 @@ on:
   workflow_dispatch:
 
 concurrency:
-  group: myrmidon-main-green-${{ github.event_name == 'pull_request' && github.event.pull_request.number || 'global' }}
-  cancel-in-progress: true
+  # OPE-12889: Myrmidon CI workflow_run events fire for every branch, so the old
+  # shared group with cancel-in-progress kept cancelling the rerun lane
+  # mid-flight. PR runs cancel only their own superseded run; the rerun lane
+  # (workflow_run/schedule/dispatch) has its own group and never cancels.
+  group: myrmidon-main-green-${{ github.event_name == 'pull_request' && format('pr-{0}', github.event.pull_request.number) || 'rerun' }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' && true || false }}
 
 permissions:
   contents: read
