@@ -436,8 +436,8 @@ describeEmbeddedPostgres("escalateStrandedAssignedIssue: stalled execution revie
   }
 
   it("does not schedule a CI-wait monitor when a verdict on the current head exists (OPE-12859)", async () => {
-    const seeded = await seedVerdictOnHead("abc123");
-    const { service, wakes } = createService({ state: "pending", pullRequestUrl: PR_URL, headSha: "abc123" });
+    const seeded = await seedVerdictOnHead("abc1234");
+    const { service, wakes } = createService({ state: "pending", pullRequestUrl: PR_URL, headSha: "abc1234" });
 
     const result = await escalate(service, seeded);
 
@@ -450,8 +450,8 @@ describeEmbeddedPostgres("escalateStrandedAssignedIssue: stalled execution revie
   });
 
   it("does not defer release recovery for CI when a verdict on the current head exists (OPE-12859)", async () => {
-    const seeded = await seedVerdictOnHead("abc123");
-    const { service, wakes } = createService({ state: "pending", pullRequestUrl: PR_URL, headSha: "abc123" });
+    const seeded = await seedVerdictOnHead("abc1234");
+    const { service, wakes } = createService({ state: "pending", pullRequestUrl: PR_URL, headSha: "abc1234" });
 
     expect(await service.deferReviewParticipantReleaseForCi({ companyId: seeded.companyId, runId: seeded.runId })).toBe(false);
     expect(wakes).toHaveLength(0);
@@ -463,8 +463,11 @@ describeEmbeddedPostgres("escalateStrandedAssignedIssue: stalled execution revie
   });
 
   it("still schedules the CI-wait when the verdict names a different head (OPE-12859)", async () => {
-    const seeded = await seedVerdictOnHead("old-head");
-    const { service, wakes } = createService({ state: "pending", pullRequestUrl: PR_URL, headSha: "abc123" });
+    // Use valid hex SHAs: readReviewVerdictRecord normalizes headSha through
+    // /^[0-9a-f]{7,40}$/ and drops non-hex values, which would make the
+    // verdict count for any head.
+    const seeded = await seedVerdictOnHead("1111111");
+    const { service, wakes } = createService({ state: "pending", pullRequestUrl: PR_URL, headSha: "abc1234" });
 
     const result = await escalate(service, seeded);
 
