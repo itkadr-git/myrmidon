@@ -328,6 +328,9 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   const command = asString(config.command, "omp");
   const model = asString(config.model, "").trim();
   const thinking = asString(config.thinking, "").trim();
+  const workspaceSyncMode = asString(config.workspaceSync, "full");
+  const effectiveWorkspaceSyncMode: "full" | "git_checkout" =
+    workspaceSyncMode === "git_checkout" ? "git_checkout" : "full";
 
   const provider = parseModelProvider(model);
   const modelId = parseModelId(model);
@@ -668,6 +671,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
           adapterKey: "omp",
           timeoutSec,
           workspaceLocalDir: cwd,
+          workspaceSyncMode: effectiveWorkspaceSyncMode,
           installCommand: SANDBOX_INSTALL_COMMAND,
           detectCommand: command,
           onProgress: (line) => onLog("stdout", line),

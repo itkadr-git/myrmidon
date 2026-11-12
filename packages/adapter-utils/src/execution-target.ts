@@ -1482,6 +1482,7 @@ export async function prepareAdapterExecutionTargetRuntime(input: {
   timeoutSec?: number;
   workspaceRemoteDir?: string;
   syncWorkspace?: boolean;
+  workspaceSyncMode?: "full" | "git_checkout";
   workspaceInboundMode?: WorkspaceInboundMode;
   workspaceDurableSeed?: WorkspaceDurableSeedPaths;
   workspaceBaseline?: DirectorySnapshot;
@@ -1534,6 +1535,7 @@ export async function prepareAdapterExecutionTargetRuntime(input: {
       workspaceLocalDir: input.workspaceLocalDir,
       workspaceRemoteDir: input.workspaceRemoteDir,
       syncWorkspace: input.syncWorkspace,
+      workspaceSyncMode: input.workspaceSyncMode,
       // myrmidon(OPE-12809): the ssh lane used to drop the caller's excludes.
       workspaceExclude: input.workspaceExclude,
       assets: input.assets,

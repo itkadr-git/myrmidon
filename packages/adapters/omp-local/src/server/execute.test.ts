@@ -1170,4 +1170,72 @@ describe("omp local execution", () => {
       expect(prepareCall?.signal).toBeUndefined();
     });
   });
+
+  it("passes workspaceSyncMode: \"full\" by default and \"git_checkout\" when configured", async () => {
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-omp-workspace-sync-"));
+    cleanupDirs.push(rootDir);
+    const workspaceDir = path.join(rootDir, "workspace");
+    await mkdir(workspaceDir, { recursive: true });
+
+    const runExecute = (workspaceSync?: string) =>
+      execute({
+        runId: "run-workspace-sync",
+        authToken: "test-host-api-token",
+        executionTarget: {
+          kind: "remote",
+          transport: "sandbox",
+          providerKey: "test",
+          remoteCwd: "/remote/workspace",
+          // Sandbox targets execute through the provider runtime runner; session listing
+          // (ls on the target) goes through it, so the test supplies a minimal one.
+          runner: {
+            execute: async () => ({
+              exitCode: 0,
+              signal: null,
+              timedOut: false,
+              stdout: "",
+              stderr: "",
+              pid: 1,
+              startedAt: new Date().toISOString(),
+            }),
+          } as never,
+        },
+        agent: {
+          id: "agent-1",
+          companyId: "company-1",
+          name: "OMP Builder",
+          adapterType: "omp_local",
+          adapterConfig: {},
+        },
+        runtime: {
+          sessionId: null,
+          sessionParams: null,
+          sessionDisplayId: null,
+          taskKey: null,
+        },
+        config: {
+          command: "omp",
+          model: "openai/gpt-4o",
+          // myrmidon(OPE-12795): the adapter reads workspaceSync from the resolved config.
+          ...(workspaceSync ? { workspaceSync } : {}),
+        },
+        context: {
+          paperclipWorkspace: {
+            cwd: workspaceDir,
+            source: "project_primary",
+          },
+        },
+        onLog: async () => {},
+      });
+
+    await runExecute(undefined);
+    expect(prepareAdapterExecutionTargetRuntime).toHaveBeenCalledWith(
+      expect.objectContaining({ workspaceSyncMode: "full" }),
+    );
+
+    await runExecute("git_checkout");
+    expect(prepareAdapterExecutionTargetRuntime).toHaveBeenLastCalledWith(
+      expect.objectContaining({ workspaceSyncMode: "git_checkout" }),
+    );
+  });
 });

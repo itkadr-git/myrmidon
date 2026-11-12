@@ -248,6 +248,7 @@ export async function prepareRemoteManagedRuntime(input: {
   workspaceLocalDir: string;
   workspaceRemoteDir?: string;
   syncWorkspace?: boolean;
+  workspaceSyncMode?: "full" | "git_checkout";
   /** Extra workspace exclude patterns, added to the reproducible directories. */
   workspaceExclude?: string[];
   assets?: RemoteManagedRuntimeAsset[];
@@ -260,7 +261,8 @@ export async function prepareRemoteManagedRuntime(input: {
   signal?: AbortSignal;
 }): Promise<PreparedRemoteManagedRuntime> {
   const baseWorkspaceRemoteDir = input.workspaceRemoteDir ?? input.spec.remoteCwd;
-  const syncWorkspace = input.syncWorkspace !== false;
+  const gitCheckoutRequested = input.workspaceSyncMode === "git_checkout";
+  const syncWorkspace = input.syncWorkspace !== false || gitCheckoutRequested;
   const workspaceRemoteDir = syncWorkspace
     ? path.posix.join(
         baseWorkspaceRemoteDir,
@@ -301,7 +303,7 @@ export async function prepareRemoteManagedRuntime(input: {
     // SshOperationAbortedError reaches the adapter, which must not start the
     // agent CLI. The outer catch below removes the run directory on the target
     // (best-effort); the stale-run prune is the safety net.
-    const { preparedWorkspace, baselineSnapshot } = await withSilenceHeartbeat(
+    const { preparedWorkspace, baselineSnapshot, gitCheckout } = await withSilenceHeartbeat(
       { sink: input.onProgress, label: "Preparing workspace for ssh" },
       async (onProgress) => {
         const prepared = syncWorkspace
@@ -312,10 +314,17 @@ export async function prepareRemoteManagedRuntime(input: {
               exclude: input.workspaceExclude,
               onProgress,
               signal: input.signal,
+              gitOnly: gitCheckoutRequested,
             })
           : null;
         throwIfSshAborted(input.signal, "Workspace preparation");
-        const snapshot = prepared
+        // myrmidon(OPE-12795): git_checkout takes no baseline snapshot of the
+        // shared workspace; a non-git workspace falls back to the full mode.
+        const gitCheckoutActive = gitCheckoutRequested && prepared?.gitBacked === true;
+        if (gitCheckoutRequested && !gitCheckoutActive) {
+          console.info("[paperclip] workspaceSyncMode=git_checkout requested for a non-git workspace; falling back to full sync.");
+        }
+        const snapshot = prepared && !gitCheckoutActive
           ? await raceSshAbort(
               captureDirectorySnapshot(input.workspaceLocalDir, {
                 exclude: sshWorkspaceBaselineExcludes(prepared),
@@ -324,7 +333,7 @@ export async function prepareRemoteManagedRuntime(input: {
               "Workspace preparation",
             )
           : null;
-        return { preparedWorkspace: prepared, baselineSnapshot: snapshot };
+        return { preparedWorkspace: prepared, baselineSnapshot: snapshot, gitCheckout: gitCheckoutActive };
       },
     );
 
@@ -349,7 +358,10 @@ export async function prepareRemoteManagedRuntime(input: {
       // myrmidon(OPE-12801): nothing ran on the target before a cancellation at
       // this point, so there is nothing to bring back; a restore here would keep
       // the cancelled run busy for minutes.
-      if (preparedWorkspace && baselineSnapshot && !input.signal?.aborted) {
+      //
+      // In git_checkout mode there is no baseline snapshot and the shared
+      // workspace is never restored (OPE-12795); `baselineSnapshot` is null then.
+      if (preparedWorkspace && baselineSnapshot && !gitCheckout && !input.signal?.aborted) {
         await restoreWorkspaceFromSshExecution({
           spec: input.spec,
           localDir: input.workspaceLocalDir,
@@ -418,7 +430,7 @@ export async function prepareRemoteManagedRuntime(input: {
       additionalSourceDirs,
       restoreWorkspace: async (onProgress?: RuntimeProgressSink) => {
         try {
-          if (preparedWorkspace && baselineSnapshot) {
+          if (preparedWorkspace && baselineSnapshot && !gitCheckout) {
             // myrmidon(OPE-12801): after the download reaches 100% the restore
             // copies and merges the tree locally without output; a finished omp
             // run was cancelled as stalled in that phase and its work was lost.

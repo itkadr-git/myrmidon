@@ -1851,18 +1851,24 @@ export async function prepareWorkspaceForSshExecution(input: {
    * before and after it.
    */
   signal?: AbortSignal;
+  gitOnly?: boolean;
 }): Promise<{ gitBacked: boolean; workspaceExclude: string[] }> {
   const remoteDir = input.remoteDir ?? input.spec.remoteCwd;
   throwIfSshAborted(input.signal, "Workspace preparation");
   const gitSnapshot = await readLocalGitWorkspaceSnapshot(input.localDir);
   // myrmidon(OPE-12809): the same patterns go to the upload here and, through
   // the returned workspaceExclude, to the baseline snapshot and the restore.
-  const workspaceExclude = await resolveSshWorkspaceTransferExcludes({
-    localDir: input.localDir,
-    gitBacked: gitSnapshot !== null,
-    extraExclude: input.exclude,
-    onProgress: input.onProgress,
-  });
+  // myrmidon(OPE-12795): a git-only checkout transfers no working tree, so
+  // there is nothing to exclude and nothing to report as skipped.
+  const gitOnlyCheckout = gitSnapshot !== null && input.gitOnly === true;
+  const workspaceExclude = gitOnlyCheckout
+    ? []
+    : await resolveSshWorkspaceTransferExcludes({
+        localDir: input.localDir,
+        gitBacked: gitSnapshot !== null,
+        extraExclude: input.exclude,
+        onProgress: input.onProgress,
+      });
 
   if (gitSnapshot) {
     throwIfSshAborted(input.signal, "Workspace preparation");
@@ -1873,21 +1879,23 @@ export async function prepareWorkspaceForSshExecution(input: {
       snapshot: gitSnapshot,
       onProgress: input.onProgress,
     });
-    await syncDirectoryToSsh({
-      spec: input.spec,
-      localDir: input.localDir,
-      remoteDir,
-      exclude: [".git", ".paperclip-runtime", ...workspaceExclude],
-      onProgress: input.onProgress,
-      progressLabel: "workspace",
-      signal: input.signal,
-    });
-    throwIfSshAborted(input.signal, "Workspace preparation");
-    await removeDeletedPathsOnSsh({
-      spec: input.spec,
-      remoteDir,
-      deletedPaths: gitSnapshot.deletedPaths,
-    });
+    if (!input.gitOnly) {
+      await syncDirectoryToSsh({
+        spec: input.spec,
+        localDir: input.localDir,
+        remoteDir,
+        exclude: [".git", ".paperclip-runtime", ...workspaceExclude],
+        onProgress: input.onProgress,
+        progressLabel: "workspace",
+        signal: input.signal,
+      });
+      throwIfSshAborted(input.signal, "Workspace preparation");
+      await removeDeletedPathsOnSsh({
+        spec: input.spec,
+        remoteDir,
+        deletedPaths: gitSnapshot.deletedPaths,
+      });
+    }
     return { gitBacked: true, workspaceExclude };
   }
 
