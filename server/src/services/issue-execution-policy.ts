@@ -525,7 +525,7 @@ function principalsEqual(a: IssueExecutionStagePrincipal | null, b: IssueExecuti
   return a.type === "agent" ? a.agentId === b.agentId : a.userId === b.userId;
 }
 
-function resolveMaxReviewRounds(policy: IssueExecutionPolicy | null): number {
+export function resolveMaxReviewRounds(policy: IssueExecutionPolicy | null): number {
   const configured = policy?.reviewEscalationPolicy?.maxReviewRounds ?? policy?.maxReviewRounds;
   if (configured == null) return DEFAULT_MAX_REVIEW_ROUNDS;
   return typeof configured === "number" && configured > 0 ? configured : DEFAULT_MAX_REVIEW_ROUNDS;
@@ -541,7 +541,11 @@ export function resolveReviewEscalationParticipant(
   const configured = policy?.reviewEscalationPolicy ?? issue.reviewEscalationPolicy;
   const reviewOwnerIds = new Set([issue.responsibleUserId, issue.createdByUserId].filter((id): id is string => Boolean(id)));
   if (
-    configured && configured.policyRevision.trim().length > 0 && configured.participantRoles.length > 0
+    configured &&
+    typeof configured.policyRevision === "string" &&
+    configured.policyRevision.trim().length > 0 &&
+    Array.isArray(configured.participantRoles) &&
+    configured.participantRoles.length > 0
   ) {
     const lookup = (role: (typeof configured.participantRoles)[number]) =>
       issue.reviewEscalationParticipants?.[role] ?? configured.participants?.[role];
@@ -563,10 +567,12 @@ export function resolveReviewEscalationParticipant(
   }
   // Configured policies are strict: they never fall back to the issue owner or
   // another stage participant.
-  if (configured) return null;
+  if (configured && Array.isArray(configured.participantRoles) && configured.participantRoles.length > 0) return null;
   // myrmidon(OPE-9031): without a policy the stage goes to the next agent of
   // the senior chain, never to a human.
-  const chain = issue.defaultEscalationAgentIds;
+  const chain =
+    issue.defaultEscalationAgentIds ??
+    (Array.isArray((configured as any)?.escalationAgentIds) ? (configured as any).escalationAgentIds : null);
   if (!chain) return null;
   const holderIndex = escalatedHolder?.type === "agent" && escalatedHolder.agentId
     ? chain.indexOf(escalatedHolder.agentId)
@@ -704,6 +710,11 @@ function buildStateWithCompletedStages(input: {
     ...(input.previous?.lastChangesRequestedHeadSha
       ? { lastChangesRequestedHeadSha: input.previous.lastChangesRequestedHeadSha }
       : {}),
+    // myrmidon(1.7-GOAL-JUDGE, OPE-12149): the judge round budget must survive
+    // stage-completion bookkeeping, otherwise every new cycle restarts at round 1.
+    ...(input.previous?.goalJudgeRound !== undefined
+      ? { goalJudgeRound: input.previous.goalJudgeRound }
+      : {}),
   };
 }
 
@@ -758,6 +769,11 @@ function buildPendingState(input: {
     // return compares its PR head with the head of the previous return.
     ...(input.previous?.lastChangesRequestedHeadSha
       ? { lastChangesRequestedHeadSha: input.previous.lastChangesRequestedHeadSha }
+      : {}),
+    // myrmidon(1.7-GOAL-JUDGE, OPE-12149): the judge round budget must survive a
+    // re-entry into the review stage, otherwise every cycle restarts at round 1.
+    ...(input.previous?.goalJudgeRound !== undefined
+      ? { goalJudgeRound: input.previous.goalJudgeRound }
       : {}),
     ...(input.reviewCycleId ? { reviewCycleId: input.reviewCycleId } : {}),
     ...(input.escalationPolicyRevision || input.previous?.escalationPolicyRevision
@@ -1777,4 +1793,59 @@ export function applyIssueExecutionPolicyTransition(input: TransitionInput): Tra
 
 export function applyIssueMonitorPolicyTransition(input: TransitionInput): TransitionResult {
   return { patch: applyMonitorTransition(input, {}) };
+}
+
+/**
+ * myrmidon(1.7-GOAL-JUDGE): applies a goal judge review round decision to
+ * transition fields before or during a review stage transition.
+ *
+ * - return_to_executor: complete=false returns the task to in_progress with
+ *   missing criteria comment and restores returnAssignee;
+ * - escalate_to_reviewer: keeps/sets status in_review, assigns escalation participant
+ *   if available, and records the score & missing report;
+ * - pass / noop: proceeds to review stage without blocking.
+ */
+export function applyGoalJudgeDecisionToTransition(input: {
+  issue: IssueLike;
+  policy: IssueExecutionPolicy | null;
+  decision: {
+    kind: "pass" | "return_to_executor" | "escalate_to_reviewer" | "noop";
+    patch?: Record<string, unknown>;
+    commentBody?: string | null;
+  };
+}): {
+  patch: Record<string, unknown>;
+  commentBody: string | null;
+  returnedToExecutor: boolean;
+  escalated: boolean;
+} {
+  const { decision } = input;
+  if (decision.kind === "return_to_executor") {
+    return {
+      patch: {
+        status: "in_progress",
+        ...(decision.patch ?? {}),
+      },
+      commentBody: decision.commentBody ?? null,
+      returnedToExecutor: true,
+      escalated: false,
+    };
+  }
+  if (decision.kind === "escalate_to_reviewer") {
+    return {
+      patch: {
+        status: "in_review",
+        ...(decision.patch ?? {}),
+      },
+      commentBody: decision.commentBody ?? null,
+      returnedToExecutor: false,
+      escalated: true,
+    };
+  }
+  return {
+    patch: decision.patch ?? {},
+    commentBody: decision.commentBody ?? null,
+    returnedToExecutor: false,
+    escalated: false,
+  };
 }

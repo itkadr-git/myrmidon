@@ -1068,9 +1068,13 @@ fi
 # re-apply; with MYRMIDON_BOT_IMAGE_ROLLOUT=0 no bot re-applies by design and
 # the smoke verifies the already-running gateways instead. DEPLOY-SMOKE-FALSE
 # (08.11): containers stopped before the deploy began and IDLE-STOP Exited(143)
-# stops are not crashes. Otherwise the deploy is DEGRADED with the rollback
-# commands. Skipped only when explicitly disabled or unconfigured
-# (no company): an unconfigured smoke on a bot fleet is itself reported.
+# stops are not crashes. DEPLOY-SMOKE-REMOTE (11.11): bots pinned to another
+# host are verified over their own apiBaseUrl /health, not the local docker.
+# DEPLOY-SMOKE-OOM-WARN (11.11): a single OOM of a container the deploy did
+# not touch is a WARNING, not a deploy failure (see bot-apply-smoke.sh).
+# Otherwise the deploy is DEGRADED with the rollback commands. Skipped only
+# when explicitly disabled or unconfigured (no company): an unconfigured smoke
+# on a bot fleet is itself reported.
 if [[ "$MYR_SMOKE_ENABLED" == "1" ]]; then
   if [[ -z "$MYR_SMOKE_COMPANY" ]]; then
     log "WARNING: post-deploy bot smoke skipped: MYRMIDON_DEPLOY_SMOKE_COMPANY is not set; the deploy cannot prove a bot re-applied"
