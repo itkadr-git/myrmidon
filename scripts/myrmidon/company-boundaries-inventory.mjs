@@ -72,6 +72,87 @@ export async function collectInventory(transport) {
     summary: { total: sections.length, covered: sections.filter((s) => s.covered).length, counts },
   };
 }
+/* --- Source labels (OPE-12912): safe attribution, never credential payload --- */
+
+const SOURCE_LABEL_COVERAGE_STATES = Object.freeze(["data", "empty", "denied", "not-found", "error"]);
+
+const SOURCE_LABEL_CREDENTIAL_FIELDS = Object.freeze([
+  "credential",
+  "credentials",
+  "token",
+  "apiKey",
+  "secret",
+  "password",
+  "authorization",
+]);
+
+/** Reasons a source entry fails exact attribution; the report never invents labels. */
+export const SOURCE_LABEL_REASONS = Object.freeze({
+  unknownEndpoint: "unknown-endpoint",
+  unknownCategory: "unknown-category",
+  categoryEndpointMismatch: "category-endpoint-mismatch",
+  coverageUnknown: "unknown-coverage",
+});
+
+/** Fixed marker emitted when a credential-bearing field is present; the value itself is never copied. */
+export const SOURCE_LABEL_CREDENTIAL_REDACTED = "redacted";
+
+function sourceLabelString(value) {
+  return typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
+}
+
+function sourceHasCredential(source) {
+  if (!source || typeof source !== "object") return false;
+  return SOURCE_LABEL_CREDENTIAL_FIELDS.some((field) => {
+    const value = source[field];
+    return value !== null && value !== undefined && value !== "" && value !== false;
+  });
+}
+
+/**
+ * Pure formatter for one inventory source entry. Only validated registry labels
+ * (endpoint path, matching section category), a canonical coverage state, and a
+ * redacted credential-presence marker are emitted. Endpoint/category values are
+ * shown only when they resolve through INVENTORY_SECTIONS; anything else —
+ * including credential-shaped strings — stays out of the report.
+ */
+export function formatInventorySourceLabel(source) {
+  const endpoint = sourceLabelString(source?.endpoint);
+  const category = sourceLabelString(source?.category);
+  const coverage = sourceLabelString(source?.coverage);
+  const section = endpoint ? sectionForPath(endpoint) : null;
+
+  let reason = null;
+  const endpointLabel = section ? endpoint : null;
+  if (!section) reason = SOURCE_LABEL_REASONS.unknownEndpoint;
+  const categoryLabel = section && category && category === section.key ? category : null;
+  if (section && !categoryLabel && reason === null) {
+    reason = category ? SOURCE_LABEL_REASONS.categoryEndpointMismatch : SOURCE_LABEL_REASONS.unknownCategory;
+  }
+  const coverageLabel = coverage && SOURCE_LABEL_COVERAGE_STATES.includes(coverage) ? coverage : "unknown";
+  if (coverageLabel === "unknown" && reason === null) reason = SOURCE_LABEL_REASONS.coverageUnknown;
+
+  return canonicalize({
+    endpoint: endpointLabel,
+    category: categoryLabel,
+    coverage: coverageLabel,
+    credential: sourceHasCredential(source) ? SOURCE_LABEL_CREDENTIAL_REDACTED : null,
+    attribution: reason === null ? "resolved" : "unknown",
+    reason,
+  });
+}
+
+/** Deterministic batch form: per-entry labels sorted by (endpoint, category, coverage). */
+export function formatInventorySourceLabels(sources) {
+  if (!Array.isArray(sources)) return [];
+  return sources
+    .map((source) => formatInventorySourceLabel(source))
+    .sort((a, b) => {
+      const ka = `${a.endpoint ?? ""}\0${a.category ?? ""}\0${a.coverage}`;
+      const kb = `${b.endpoint ?? ""}\0${b.category ?? ""}\0${b.coverage}`;
+      return ka < kb ? -1 : ka > kb ? 1 : 0;
+    });
+}
 
 function canonicalize(value) {
   if (Array.isArray(value)) return value.map(canonicalize);
@@ -85,9 +166,17 @@ function canonicalize(value) {
   return value;
 }
 
-/** Deterministic normalized form of a probe report (sorted object keys, section order preserved). */
+/**
+ * Deterministic normalized form of a probe report (sorted object keys, section
+ * order preserved). `sourceLabels` (OPE-12912) participates in normalization
+ * only when provided, so existing reports keep their shape and hash.
+ */
 export function normalizeInventoryReport(report) {
-  return canonicalize({ sections: report.sections, summary: report.summary });
+  const base = { sections: report.sections, summary: report.summary };
+  if (report.sourceLabels !== undefined) {
+    base.sourceLabels = report.sourceLabels;
+  }
+  return canonicalize(base);
 }
 
 /** Stable sha256 over the normalized report; equal runs on the same fixture produce equal hashes. */
