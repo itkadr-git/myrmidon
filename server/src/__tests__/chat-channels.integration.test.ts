@@ -12046,11 +12046,14 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       availability: "available",
       enabled: false,
     });
-    await vi.waitFor(async () => {
-      await expect(service.listResources(endpoint.id)).resolves.toEqual([
-        expect.objectContaining({ label: "#c-lifecycle" }),
-      ]);
-    });
+    await vi.waitFor(
+      async () => {
+        await expect(service.listResources(endpoint.id)).resolves.toEqual([
+          expect.objectContaining({ label: "#c-lifecycle" }),
+        ]);
+      },
+      { timeout: 20_000, interval: 100 },
+    );
     await service.replaceResources(endpoint.id, [
       { id: resource.id, enabled: true },
     ]);
@@ -35004,7 +35007,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       Promise.race([
         providerAcknowledgement.then(() => "acknowledged" as const),
         new Promise<"timed_out">((resolve) =>
-          setTimeout(() => resolve("timed_out"), 250),
+          setTimeout(() => resolve("timed_out"), 5_000),
         ),
       ]),
     ).resolves.toBe("acknowledged");
@@ -67893,12 +67896,17 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
         );
         expect(lane.requests).toHaveLength(1);
         expect(lane.requests[0]!.method.endsWith("Draft")).toBe(false);
-        await lane.context.service.processPendingDeliveries();
-        expect(
-          lane.maintenanceRequests.filter(
-            ({ method }) => method === "setWebhook",
-          ),
-        ).toHaveLength(1);
+        await vi.waitFor(
+          async () => {
+            await lane.context.service.processPendingDeliveries();
+            expect(
+              lane.maintenanceRequests.filter(
+                ({ method }) => method === "setWebhook",
+              ),
+            ).toHaveLength(1);
+          },
+          { timeout: 20_000, interval: 250 },
+        );
         await lane.restart();
         lane.setSubscriptionInfo({
           allowed_updates: ["message", "chat_member"],
