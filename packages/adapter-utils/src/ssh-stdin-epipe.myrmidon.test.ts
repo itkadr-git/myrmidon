@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, readdir, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -18,7 +18,10 @@ import {
 //    died with an unhandled exception;
 // 2) in the tar|ssh upload pair (`syncDirectoryToSsh`) an ssh side that dies
 //    early stops the paired tar (SIGTERM through the stdin error handler or
-//    the ssh-close handler) and settles with the ssh report instead of hanging;
+//    the ssh-close handler) and settles with the ssh report instead of hanging.
+//    The stop is proven against the process table: after the rejection no
+//    `tar` process may remain with a working directory inside the fixture
+//    tree — sampled immediately and again after a reap grace window.
 // 3) stderr above the 64 KiB tail limit (`createStderrTailBuffer`) is capped
 //    to the tail and marked with «…обрезано N байт»: the beginning is dropped,
 //    the end is kept, so the final diagnostic line survives.
@@ -67,6 +70,38 @@ describe.skipIf(process.platform === "win32")("ssh stdin EPIPE and stderr tail (
   async function leftoverStagingDirs(): Promise<string[]> {
     return (await readdir(isolatedTmp)).filter((name) => name.startsWith(SYNC_BACK_PREFIX));
   }
+
+  // Process-table witness for the paired tar: `tar -C <dir>` shows its working
+  // directory as the second field of /proc/<pid>/cmdline ("tar\0-C\0<dir>\0…"),
+  // so a surviving tar inside the fixture tree is detectable without knowing
+  // the PID. Non-Linux (macOS) runners have no per-process cmdline, so the
+  // witness degrades there to "no process evidence found".
+  async function survivingTarCmdlines(): Promise<string[]> {
+    let pids: string[] = [];
+    try {
+      pids = await readdir("/proc");
+    } catch {
+      return [];
+    }
+    const found: string[] = [];
+    for (const pid of pids) {
+      if (!/^\d+$/.test(pid)) continue;
+      let cmdline: string;
+      try {
+        cmdline = (await readFile(`/proc/${pid}/cmdline`, "utf8")).replaceAll("\0", " ").trim();
+      } catch {
+        continue; // vanished or not readable
+      }
+      if (!/(^| )tar( |$)/.test(cmdline)) continue;
+      if (cmdline.includes(rootDir)) found.push(`${pid} ${cmdline}`);
+    }
+    return found;
+  }
+
+  // SIGTERM→SIGKILL escalation is not part of this code path (tar exits on
+  // TERM), but a wedged tar must not be reported as "stopped" before the
+  // kernel had a fair chance to reap it.
+  const tarReapGraceMs = 1_000;
 
   beforeEach(async () => {
     rootDir = await mkdtemp(path.join(os.tmpdir(), "ssh-stdin-epipe-test-"));
@@ -119,6 +154,23 @@ describe.skipIf(process.platform === "win32")("ssh stdin EPIPE and stderr tail (
     await expect(syncDirectoryToSsh({ spec, localDir: sourceDir, remoteDir: "/workspace" })).rejects.toThrow(
       /ssh stdin|remote host closed connection|exited with code 255|exited before tar finished/,
     );
+
+    // Managed rejection is not proof by itself: check the process table so a
+    // surviving (never-signalled) tar cannot pass this test. The immediate
+    // sample may still catch tar mid-death — the SIGTERM was delivered
+    // microseconds before the rejection — so it is diagnosis only; the hard
+    // assertion is the post-grace sample, where a signalled tar is long gone.
+    const immediateWitness = await survivingTarCmdlines();
+    await new Promise((resolve) => setTimeout(resolve, tarReapGraceMs));
+    const settledWitness = await survivingTarCmdlines();
+
+    expect(
+      settledWitness,
+      `paired tar survived the ssh failure (after ${tarReapGraceMs} ms grace): ${settledWitness.join(" | ") || "no /proc evidence (non-Linux runner?)"}`,
+    ).toEqual([]);
+    if (immediateWitness.length > 0) {
+      console.log(`[ssh-stdin-epipe] tar was mid-death at the first sample: ${immediateWitness.join(" | ")}`);
+    }
   }, 20_000);
 
   it("caps stderr above the tail limit with the truncation marker, keeping the end", async () => {
