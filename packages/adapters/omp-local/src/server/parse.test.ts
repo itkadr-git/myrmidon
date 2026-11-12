@@ -278,6 +278,55 @@ describe("summarizeOmpToolRejections", () => {
       { type: "tool_execution_start", toolCallId: "x1", toolName: "bash", args: {} },
     ]).toolCalls)).toBeNull();
   });
+
+  it("lets the last end event of a tool call decide its outcome", () => {
+    const end = (id: string, toolName: string, isError: boolean, text: string) =>
+      ({ type: "tool_execution_end", toolCallId: id, toolName, isError, result: { content: [{ type: "text", text }], details: {} } });
+    // every call reports a failed intermediate end event before the successful final one
+    const parsed = parse([
+      ...["b1", "b2", "b3"].flatMap((id) => [
+        { type: "tool_execution_start", toolCallId: id, toolName: "bash", args: {} },
+        end(id, "bash", true, "partial output"),
+        end(id, "bash", false, "ok"),
+      ]),
+    ]);
+    expect(parsed.toolCalls).toHaveLength(3);
+    expect(summarizeOmpToolRejections(parsed.toolCalls)).toBeNull();
+    // and the other way round: a final failure is still reported
+    const rejected = parse([
+      { type: "tool_execution_start", toolCallId: "b1", toolName: "bash", args: {} },
+      end("b1", "bash", false, "partial output"),
+      end("b1", "bash", true, SERVICE_MODE),
+    ]);
+    expect(summarizeOmpToolRejections(rejected.toolCalls)).toMatchObject({ finishedCalls: 1, rejectedCalls: 1, allRejected: true });
+  });
+
+  it("counts entries that share a toolCallId as one call", () => {
+    const entry = (toolCallId: string, toolName: string, isError: boolean, result: string) =>
+      ({ toolCallId, toolName, args: {}, result, isError });
+    // failed entries followed by a successful final entry of the same call
+    expect(summarizeOmpToolRejections([
+      entry("b1", "bash", true, "partial output"),
+      entry("b1", "bash", true, "partial output"),
+      entry("b1", "bash", true, "partial output"),
+      entry("b1", "bash", false, "ok"),
+    ])).toBeNull();
+    // three failed entries of one call are one failed call, not a rejected tool
+    expect(summarizeOmpToolRejections([
+      entry("r1", "read", false, "file contents"),
+      entry("b1", "bash", true, "exit code 1"),
+      entry("b1", "bash", true, "exit code 1"),
+      entry("b1", "bash", true, "exit code 1"),
+    ])).toBeNull();
+    // distinct calls are still counted separately
+    expect(summarizeOmpToolRejections([
+      entry("r1", "read", false, "file contents"),
+      entry("b1", "bash", true, SERVICE_MODE),
+      entry("b1", "bash", true, SERVICE_MODE),
+      entry("b2", "bash", true, SERVICE_MODE),
+      entry("b3", "bash", true, SERVICE_MODE),
+    ])?.rejectedTools).toEqual([{ toolName: "bash", calls: 3, sampleError: SERVICE_MODE }]);
+  });
 });
 
 describe("isOmpUnknownSessionError", () => {

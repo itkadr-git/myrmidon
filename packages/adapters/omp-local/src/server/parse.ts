@@ -262,7 +262,15 @@ function toolErrorText(result: string | null): string {
 export function summarizeOmpToolRejections(
   toolCalls: ParsedOmpOutput["toolCalls"],
 ): OmpToolRejectionSummary | null {
-  const finished = toolCalls.filter((call) => call.result !== null);
+  // One call is counted once: when several finished entries share a toolCallId
+  // (a repeated or intermediate end event), the last one decides the outcome.
+  const lastFinishedById = new Map<string, ParsedOmpOutput["toolCalls"][number]>();
+  for (const call of toolCalls) {
+    if (call.result !== null && call.toolCallId) lastFinishedById.set(call.toolCallId, call);
+  }
+  const finished = toolCalls.filter(
+    (call) => call.result !== null && (!call.toolCallId || lastFinishedById.get(call.toolCallId) === call),
+  );
   if (finished.length === 0) return null;
 
   const byTool = new Map<string, { calls: number; rejected: number; sampleError: string }>();
