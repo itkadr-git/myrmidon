@@ -25,7 +25,9 @@
 // An override requires non-empty text AND the board journal issue; the script
 // posts the violation list with the reason to the journal issue as a comment
 // BEFORE tagging (a failed post refuses: no silent bypasses). CI is never
-// bypassable: a red/failed/unknown CI check is a hard refusal.
+// bypassable: there is no flag to skip the check (tests inject a fake CI
+// checker through the module API, `run(args, { ciStatus })`), and a red,
+// running, missing or unverifiable CI is a hard refusal.
 //
 // Board API: PAPERCLIP_API_URL (default http://127.0.0.1:3100),
 // PAPERCLIP_API_KEY, PAPERCLIP_COMPANY_ID (default: this company).
@@ -64,14 +66,13 @@ options:
   --branch <name>        branch whose CI must be green (default: default branch)
   --board-label NAME     release label name (default: "<major>.<minor>" of --version)
   --dry-run              run every check, print the plan, tag nothing
-  --skip-gh              skip CI checks (offline runs/tests)
   -h | --help`);
 }
 
 export function parseArgs(argv) {
   const args = {
     version: null, rc: null, override: null, journal: null, root: null,
-    sha: null, branch: null, boardLabel: null, dryRun: false, skipGh: false,
+    sha: null, branch: null, boardLabel: null, dryRun: false,
   };
   for (let i = 0; i < argv.length; i += 1) {
     const a = argv[i];
@@ -85,7 +86,6 @@ export function parseArgs(argv) {
       case "--branch": args.branch = argv[++i]; break;
       case "--board-label": args.boardLabel = argv[++i]; break;
       case "--dry-run": args.dryRun = true; break;
-      case "--skip-gh": args.skipGh = true; break;
       case "-h": case "--help": args.help = true; break;
       default: throw new UsageError(`unknown argument: ${a}`);
     }
@@ -326,9 +326,9 @@ export function commitOnBranch(root, sha, branch) {
 
 // --- gh (CI) ---------------------------------------------------------------
 
-export function ghAvailable() {
+export function ghAvailable(opts = {}) {
   try {
-    execFileSync("gh", ["--version"], { encoding: "utf8" });
+    execFileSync("gh", ["--version"], { encoding: "utf8", ...(opts.env ? { env: opts.env } : {}) });
     return true;
   } catch {
     return false;
@@ -344,7 +344,7 @@ export function ghRunJson(repo, extraArgs, opts = {}) {
 }
 
 export function ciStatusForCommit(root, { repo = GITHUB_REPO, branch, sha, env } = {}) {
-  if (!ghAvailable()) {
+  if (!ghAvailable({ env })) {
     return { ok: false, reason: "gh is not available/authenticated" };
   }
   try {
@@ -478,10 +478,12 @@ export async function run(args, deps = {}) {
     }
   }
 
-  // 5. CI
+  // 5. CI -- always (no skip flag): an unverified commit is not releasable.
   let ciProblem = null;
-  if (!args.skipGh && sha) {
-    const ci = ghImpl(gitRoot, { repo: GITHUB_REPO, branch, sha });
+  if (!sha) {
+    ciProblem = "no commit to check: cannot verify CI";
+  } else {
+    const ci = ghImpl(gitRoot, { repo: GITHUB_REPO, branch, sha, env: deps.env });
     if (!ci.ok) {
       ciProblem = ci.reason;
     }

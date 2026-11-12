@@ -35,7 +35,8 @@ The script checks, in order:
    `--sha` overrides).
 5. **CI.** `gh run list` for the commit must show every run completed and
    successful (skipped/neutral do not block). A red, running or missing CI
-   is a hard refusal — CI is never bypassable.
+   is a hard refusal — CI is never bypassable, and there is no flag to skip
+   the check.
 
 On any violation the script prints the full list and exits 1 without
 tagging.
@@ -71,7 +72,11 @@ node scripts/myrmidon/release/cut-rc.mjs --version 1.7.0 --rc 25 \
 | `--board-label NAME` | release label (default: `<major>.<minor>`) |
 | `--root <dir>` | repository root (default: cwd) |
 | `--dry-run` | run all checks, print the plan, tag nothing |
-| `--skip-gh` | skip the CI check (offline runs/tests only) |
+
+There is no flag that skips the CI check: a production invocation always
+verifies that CI of the release commit is green (`gh run list`), and a
+missing, running, red or unverifiable CI is a hard refusal. Tests inject a
+fake CI checker through the module API (`run(args, { ciStatus })`).
 
 ## Environment
 
@@ -124,7 +129,7 @@ node scripts/myrmidon/release/cut-rc.mjs --version 1.7.0 --rc 25
    коммит — HEAD `origin/<branch>`, можно `--sha`).
 5. **CI.** `gh run list` по коммиту: все прогоны завершены и успешны
    (skipped/neutral не блокируют). Красный, идущий или отсутствующий CI —
-   жёсткий отказ. CI не обходится.
+   жёсткий отказ. CI не обходится, и флага пропуска проверки не существует.
 
 При любом нарушении скрипт печатает полный список и завершается с кодом 1,
 не ставя тег.
@@ -160,7 +165,11 @@ node scripts/myrmidon/release/cut-rc.mjs --version 1.7.0 --rc 25 \
 | `--board-label ИМЯ` | метка выпуска (по умолчанию `<major>.<minor>`) |
 | `--root <dir>` | корень репозитория (по умолчанию cwd) |
 | `--dry-run` | все проверки без постановки тега |
-| `--skip-gh` | пропустить проверку CI (только офлайн/тесты) |
+
+Флага, пропускающего проверку CI, не существует: боевой запуск всегда
+проверяет зелёный CI коммита выпуска (`gh run list`), а отсутствующий,
+идущий, красный или непроверяемый CI — жёсткий отказ. Тесты подменяют
+проверку CI через API модуля (`run(args, { ciStatus })`).
 
 ## Окружение
 

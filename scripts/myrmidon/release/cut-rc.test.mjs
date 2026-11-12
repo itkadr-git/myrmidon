@@ -23,6 +23,8 @@ import {
   resolveRef,
   commitOnBranch,
   defaultBranch,
+  mainSync,
+  ciStatusForCommit,
 } from "./cut-rc.mjs";
 
 // --- helpers -----------------------------------------------------------------
@@ -136,15 +138,26 @@ test("validateArgs rejects missing version / bad rc / override without journal",
 test("parseArgs maps flags", () => {
   const a = parseArgs([
     "--version", "1.7.0", "--rc", "25", "--override", "because",
-    "--journal", "ope-12408", "--dry-run", "--skip-gh", "--sha", "abc123",
+    "--journal", "ope-12408", "--dry-run", "--sha", "abc123",
   ]);
   assert.equal(a.version, "1.7.0");
   assert.equal(a.rc, "25");
   assert.equal(a.override, "because");
   assert.equal(a.journal, "ope-12408");
   assert.equal(a.dryRun, true);
-  assert.equal(a.skipGh, true);
   assert.equal(a.sha, "abc123");
+});
+
+test("parseArgs has no CI-skip flag: --skip-gh is a usage error", () => {
+  assert.throws(
+    () => parseArgs(["--version", "1.7.0", "--rc", "25", "--skip-gh"]),
+    /unknown argument: --skip-gh/,
+  );
+});
+
+test("mainSync: --skip-gh is a usage error (no CI bypass in the public CLI)", () => {
+  // Exits 2 (usage error) before touching the board, git or gh.
+  assert.equal(mainSync(["--version", "1.7.0", "--rc", "25", "--skip-gh"]), 2);
 });
 
 // --- pr state ------------------------------------------------------------------
@@ -299,8 +312,8 @@ test("run: open task refuses and tags nothing (exit 1)", async () => {
   const board = fakeBoard({ labels: [LABEL_17], issues, workProductsByIssue: { i1: [], i2: [] } });
   const logs = [];
   const code = await run(
-    { version: "1.7.0", rc: "25", skipGh: true, root, boardLabel: "1.7" },
-    { api: API, fetchBoard: board.fetchBoard, log: (m) => logs.push(m), err: () => {}, root },
+    { version: "1.7.0", rc: "25", root, boardLabel: "1.7" },
+    { api: API, fetchBoard: board.fetchBoard, log: (m) => logs.push(m), err: () => {}, root, ciStatus: () => ({ ok: true }) },
   );
   assert.equal(code, 1);
   assert.equal(runGit(root, ["tag", "-l", "myr-v1.7.0-rc.25"]), "");
@@ -315,8 +328,8 @@ test("run: done task with unmerged PR refuses (exit 1)", async () => {
     workProductsByIssue: { i1: [prWp("open", "PR #3001: unmerged")], i2: [] },
   });
   const code = await run(
-    { version: "1.7.0", rc: "25", skipGh: true, root, boardLabel: "1.7" },
-    { api: API, fetchBoard: board.fetchBoard, log: () => {}, err: () => {}, root },
+    { version: "1.7.0", rc: "25", root, boardLabel: "1.7" },
+    { api: API, fetchBoard: board.fetchBoard, log: () => {}, err: () => {}, root, ciStatus: () => ({ ok: true }) },
   );
   assert.equal(code, 1);
   assert.equal(runGit(root, ["tag", "-l", "myr-v1.7.0-rc.25"]), "");
@@ -327,8 +340,8 @@ test("run: everything clean -> tags the commit (exit 0)", async () => {
   const root = makeRepo();
   const board = fakeBoard({ labels: [LABEL_17], issues: CLEAN_ISSUES, workProductsByIssue: { i1: [], i2: [] } });
   const code = await run(
-    { version: "1.7.0", rc: "25", skipGh: true, root, boardLabel: "1.7" },
-    { api: API, fetchBoard: board.fetchBoard, log: () => {}, err: () => {}, root },
+    { version: "1.7.0", rc: "25", root, boardLabel: "1.7" },
+    { api: API, fetchBoard: board.fetchBoard, log: () => {}, err: () => {}, root, ciStatus: () => ({ ok: true }) },
   );
   assert.equal(code, 0);
   const tagged = runGit(root, ["rev-parse", "myr-v1.7.0-rc.25"]);
@@ -341,8 +354,8 @@ test("run: existing tag refuses (exit 1)", async () => {
   runGit(root, ["tag", "myr-v1.7.0-rc.25", "main"]);
   const board = fakeBoard({ labels: [LABEL_17], issues: CLEAN_ISSUES, workProductsByIssue: { i1: [], i2: [] } });
   const code = await run(
-    { version: "1.7.0", rc: "25", skipGh: true, root, boardLabel: "1.7" },
-    { api: API, fetchBoard: board.fetchBoard, log: () => {}, err: () => {}, root },
+    { version: "1.7.0", rc: "25", root, boardLabel: "1.7" },
+    { api: API, fetchBoard: board.fetchBoard, log: () => {}, err: () => {}, root, ciStatus: () => ({ ok: true }) },
   );
   assert.equal(code, 1);
 });
@@ -358,8 +371,8 @@ test("run: override + journal records the comment and tags (exit 0)", async () =
     workProductsByIssue: { i1: [], i2: [] },
   });
   const code = await run(
-    { version: "1.7.0", rc: "25", skipGh: true, root, boardLabel: "1.7", override: "rc.24 already shipped; list is stale", journal: "OPE-12408" },
-    { api: API, fetchBoard: board.fetchBoard, log: () => {}, err: () => {}, root },
+    { version: "1.7.0", rc: "25", root, boardLabel: "1.7", override: "rc.24 already shipped; list is stale", journal: "OPE-12408" },
+    { api: API, fetchBoard: board.fetchBoard, log: () => {}, err: () => {}, root, ciStatus: () => ({ ok: true }) },
   );
   assert.equal(code, 0);
   // tagged
@@ -380,8 +393,8 @@ test("run: override without a reachable board refuses (no silent bypass, exit 1)
   const issues = [issue("i1", "OPE-100", "done"), issue("i2", "OPE-102", "todo")];
   const board = fakeBoard({ labels: [LABEL_17], issues, failPost: true });
   const code = await run(
-    { version: "1.7.0", rc: "25", skipGh: true, root, boardLabel: "1.7", override: "why", journal: "OPE-12408" },
-    { api: API, fetchBoard: board.fetchBoard, log: () => {}, err: () => {}, root },
+    { version: "1.7.0", rc: "25", root, boardLabel: "1.7", override: "why", journal: "OPE-12408" },
+    { api: API, fetchBoard: board.fetchBoard, log: () => {}, err: () => {}, root, ciStatus: () => ({ ok: true }) },
   );
   assert.equal(code, 1);
   assert.equal(runGit(root, ["tag", "-l", "myr-v1.7.0-rc.25"]), "");
@@ -393,8 +406,8 @@ test("run: dry-run tags nothing even when clean", async () => {
   const board = fakeBoard({ labels: [LABEL_17], issues: CLEAN_ISSUES, workProductsByIssue: { i1: [], i2: [] } });
   const logs = [];
   const code = await run(
-    { version: "1.7.0", rc: "25", skipGh: true, root, boardLabel: "1.7", dryRun: true },
-    { api: API, fetchBoard: board.fetchBoard, log: (m) => logs.push(m), err: () => {}, root },
+    { version: "1.7.0", rc: "25", root, boardLabel: "1.7", dryRun: true },
+    { api: API, fetchBoard: board.fetchBoard, log: (m) => logs.push(m), err: () => {}, root, ciStatus: () => ({ ok: true }) },
   );
   assert.equal(code, 0);
   assert.equal(runGit(root, ["tag", "-l", "myr-v1.7.0-rc.25"]), "");
@@ -421,8 +434,8 @@ test("run: missing release label on the board refuses", async () => {
   const root = makeRepo();
   const board = fakeBoard({ labels: [{ id: "other", name: "1.8" }], issues: [] });
   const code = await run(
-    { version: "1.7.0", rc: "25", skipGh: true, root, boardLabel: "1.7" },
-    { api: API, fetchBoard: board.fetchBoard, log: () => {}, err: () => {}, root },
+    { version: "1.7.0", rc: "25", root, boardLabel: "1.7" },
+    { api: API, fetchBoard: board.fetchBoard, log: () => {}, err: () => {}, root, ciStatus: () => ({ ok: true }) },
   );
   assert.equal(code, 1);
 });
@@ -438,8 +451,98 @@ test("run: sha not on the branch refuses", async () => {
   runGit(root, ["checkout", "-q", "main"]);
   const board = fakeBoard({ labels: [LABEL_17], issues: CLEAN_ISSUES, workProductsByIssue: { i1: [], i2: [] } });
   const code = await run(
-    { version: "1.7.0", rc: "25", skipGh: true, root, boardLabel: "1.7", sha: side },
-    { api: API, fetchBoard: board.fetchBoard, log: () => {}, err: () => {}, root },
+    { version: "1.7.0", rc: "25", root, boardLabel: "1.7", sha: side },
+    { api: API, fetchBoard: board.fetchBoard, log: () => {}, err: () => {}, root, ciStatus: () => ({ ok: true }) },
   );
   assert.equal(code, 1);
+});
+
+// --- CI is mandatory: behavioral proofs ---------------------------------------
+
+// CI must be confirmed before any tag: a production invocation (no injected
+// ciStatus, the real `gh` binary) without a green-CI confirmation must refuse
+// and leave the repository untagged, no matter how clean the board is. The
+// tests stub `gh` with a throwaway shim script on PATH so no network and no
+// real gh auth is involved.
+function ghShim(root, script) {
+  const bin = fs.mkdtempSync(path.join(os.tmpdir(), "cut-rc-ghbin-"));
+  const shim = path.join(bin, "gh");
+  fs.writeFileSync(shim, script);
+  fs.chmodSync(shim, 0o755);
+  return bin;
+}
+
+test("ciStatusForCommit treats missing runs as not ok", () => {
+  const bin = ghShim(null, '#!/bin/sh\nif [ "$1" = "--version" ]; then echo "gh 2.0"; exit 0; fi\necho "[]"\n');
+  const res = ciStatusForCommit(null, {
+    repo: "itkadr-git/myrmidon", branch: "main", sha: "0".repeat(40),
+    env: { PATH: `${bin}:/usr/bin:/bin` },
+  });
+  assert.equal(res.ok, false);
+  assert.match(res.reason, /no CI runs found/);
+});
+
+test("ciStatusForCommit treats a failing gh as not ok", () => {
+  const bin = ghShim(null, '#!/bin/sh\nif [ "$1" = "--version" ]; then echo "gh 2.0"; exit 0; fi\nif [ "$1" = "run" ]; then echo "gh: auth error" >&2; exit 1; fi\nexit 1\n');
+  const res = ciStatusForCommit(null, {
+    repo: "itkadr-git/myrmidon", branch: "main", sha: "0".repeat(40),
+    env: { PATH: `${bin}:/usr/bin:/bin` },
+  });
+  assert.equal(res.ok, false);
+  assert.match(res.reason, /gh run list failed/);
+});
+
+test("ciStatusForCommit is green only when every run for the sha succeeded", () => {
+  const sha = "1".repeat(40);
+  const runs = JSON.stringify([
+    { databaseId: 1, headSha: sha, status: "completed", conclusion: "success", workflowName: "CI", event: "push" },
+  ]);
+  const bin = ghShim(null, `#!/bin/sh\nif [ "$1" = "--version" ]; then echo "gh 2.0"; exit 0; fi\necho '${runs}'\n`);
+  const res = ciStatusForCommit(null, {
+    repo: "itkadr-git/myrmidon", branch: "main", sha,
+    env: { PATH: `${bin}:/usr/bin:/bin` },
+  });
+  assert.deepEqual(res, { ok: true });
+});
+
+test("run: clean board + real gh with no CI data -> hard refusal, no tag", async () => {
+  const run = await importRun();
+  const root = makeRepo();
+  const board = fakeBoard({ labels: [LABEL_17], issues: CLEAN_ISSUES, workProductsByIssue: { i1: [], i2: [] } });
+  const bin = ghShim(root, '#!/bin/sh\nif [ "$1" = "--version" ]; then echo "gh 2.0"; exit 0; fi\necho "[]"\n');
+  const errors = [];
+  const code = await run(
+    { version: "1.7.0", rc: "25", root, boardLabel: "1.7" },
+    {
+      api: API, fetchBoard: board.fetchBoard, log: () => {}, err: (m) => errors.push(m), root,
+      // no ciStatus injection: the real production CI path runs
+      env: { PATH: `${bin}:/usr/bin:/bin` },
+    },
+  );
+  assert.equal(code, 1);
+  const text = errors.join("\n");
+  assert.match(text, /RELEASE-CUT REFUSED/);
+  assert.match(text, /no CI runs found/);
+  assert.match(text, /Not bypassable/);
+  assert.equal(runGit(root, ["tag", "-l", "myr-v1.7.0-rc.25"]), "");
+});
+
+test("run: clean board + real gh green-CI shim -> tags (production path proven)", async () => {
+  const run = await importRun();
+  const root = makeRepo();
+  const sha = runGit(root, ["rev-parse", "main"]);
+  const runs = JSON.stringify([
+    { databaseId: 1, headSha: sha, status: "completed", conclusion: "success", workflowName: "CI", event: "push" },
+  ]);
+  const board = fakeBoard({ labels: [LABEL_17], issues: CLEAN_ISSUES, workProductsByIssue: { i1: [], i2: [] } });
+  const bin = ghShim(root, `#!/bin/sh\nif [ "$1" = "--version" ]; then echo "gh 2.0"; exit 0; fi\necho '${runs}'\n`);
+  const code = await run(
+    { version: "1.7.0", rc: "25", root, boardLabel: "1.7" },
+    {
+      api: API, fetchBoard: board.fetchBoard, log: () => {}, err: () => {}, root,
+      env: { PATH: `${bin}:/usr/bin:/bin` },
+    },
+  );
+  assert.equal(code, 0);
+  assert.equal(runGit(root, ["rev-parse", "myr-v1.7.0-rc.25"]), sha);
 });
