@@ -45,6 +45,8 @@ export class IdleStopService {
   private startupTimes: Map<string, number> = new Map();
   private inFlightStarts: Map<string, Promise<void>> = new Map();
   private configCache?: { value: IdleStopConfig; expiresAt: number };
+  /** OPE-12663: the "driver cannot idle-stop" warning is logged once per process, not once per sweep. */
+  private unsupportedStopWarned = false;
 
   constructor(driver: BotContainerDriver, db: Db, config: Partial<IdleStopConfig> = {}, loggerInstance?: IdleStopLogger) {
     this.driver = driver;
@@ -215,13 +217,22 @@ export class IdleStopService {
       );
       return;
     }
-
     this.logger.info(`Stopping idle container for bot ${botKey} (idle for ${idleDurationSec}s)`);
     try {
       if (!this.driver.stopIdle) throw new Error(IDLE_STOP_UNSUPPORTED_MESSAGE);
       await this.driver.stopIdle(botKey);
     } catch (error) {
-      this.logger.error(`Failed to stop container for bot ${botKey} [${error instanceof Error ? error.message : String(error)}]`);
+      const message = error instanceof Error ? error.message : String(error);
+      if (message === IDLE_STOP_UNSUPPORTED_MESSAGE) {
+        // OPE-12663: an unsupported driver is a permanent condition, not an
+        // incident — one warning per process instead of an error per sweep.
+        if (!this.unsupportedStopWarned) {
+          this.unsupportedStopWarned = true;
+          this.logger.warn(`Bot containers on this driver cannot be idle-stopped [${message}]`);
+        }
+        return;
+      }
+      this.logger.error(`Failed to stop container for bot ${botKey} [${message}]`);
     }
   }
 

@@ -388,6 +388,19 @@ export function fleetdBotContainerDriver(
       });
     },
 
+    // myrmidon(OPE-12663): IDLE-STOP over the wire. fleetd stops the container
+    // and records the idle-stopped mark on its host, so the reconciler leaves
+    // the container down and the next wake starts it (the local driver's A17
+    // contract). The mark-write failure mode lives fleetd-side: it starts the
+    // container back up and answers the error, which surfaces here as-is.
+    async stopIdle(botKey: string): Promise<void> {
+      await callVoid({
+        method: "POST",
+        path: `/bots/${encodeURIComponent(botKey)}/stopIdle`,
+        timeoutMs: START_TIMEOUT_MS,
+      });
+    },
+
     async cleanup(botKey: string): Promise<void> {
       await callVoid({
         method: "POST",
