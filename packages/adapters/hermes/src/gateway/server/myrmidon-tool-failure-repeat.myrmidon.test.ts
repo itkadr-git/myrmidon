@@ -91,4 +91,23 @@ describe("tool failure repeat tracker (OPE-12796)", () => {
     t.started("terminal", "x");
     expect(t.completed("terminal", true, null)).toBeNull();
   });
+
+  // myrmidon(OPE-12878): the guard steers its one hint and drops the streak, so
+  // the stop needs TOOL_FAILURE_REPEAT_LIMIT fresh failures after the hint.
+  it("resetStreak drops the current streak; a fresh one builds from zero", () => {
+    const t = createToolFailureRepeatTracker();
+    t.started("terminal", "x");
+    t.completed("terminal", true, null);
+    t.started("terminal", "x");
+    t.completed("terminal", true, null);
+    t.started("terminal", "x");
+    expect(t.completed("terminal", true, null)?.count).toBe(3);
+    t.resetStreak();
+    t.started("terminal", "x");
+    expect(t.completed("terminal", true, null)).toBeNull();
+    t.started("terminal", "x");
+    expect(t.completed("terminal", true, null)).toBeNull();
+    t.started("terminal", "x");
+    expect(t.completed("terminal", true, null)?.count).toBe(3);
+  });
 });
