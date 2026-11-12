@@ -7,6 +7,8 @@
 //   - myr-dev-build: /srv/devbuild/* (build copies), /srv/devcache/* (build caches)
 //   - vm-core:       <runner root>/<runner>/workspace/.paperclip-runtime/runs/<runId> (SSH runner
 //                    run copies, OPE-12722; only when a runner root is configured)
+//   - vm-core:       <runner root>/<runner>/{workspace,home}/<task folder> (SSH runner task
+//                    folders of closed issues, OPE-12855; only when a runner root is configured)
 //
 // Policy:
 //   - Task clones (done/cancelled >24h, clean+pushed): remove
@@ -15,6 +17,9 @@
 //   - Build caches >72h: LRU eviction by mtime
 //   - SSH runner run copies >4h (by the run directory's mtime, set when the run starts): remove;
 //     runs only with --runner-root / HOST_GC_RUNNER_ROOTS
+//   - SSH runner task folders of done/cancelled issues >24h: clean+pushed remove; unsafe git
+//     state archive first, then remove; other statuses or an unreachable board stay; runs only
+//     with --runner-root / HOST_GC_RUNNER_ROOTS
 //   - Atomic guards: lockfile, symlink checks, TOCTOU-safe deletion
 //   - JSONL journal at /var/log/myrmidon-host-gc.jsonl
 //
@@ -52,6 +57,22 @@ const CACHE_TTL_HOURS = 72;
 // than that may still belong to a live run.
 const RUN_COPY_TTL_HOURS = 4;
 const RUN_COPY_MIN_TTL_HOURS = 3;
+
+// myrmidon(1.6.8 OPE-12855, ported from #3004): a runner keeps one task folder per board issue
+// it ever checked out: the clone folder `<runner>/workspace/OPE-<n>/` (the repo inside is a
+// full clone) and worktree folders (`<runner>/workspace/OPE-<n>-wt/`, `<runner>/home/wt-ope<n>`),
+// whose `.git` file points into a run directory that is deleted when the run ends. A done or
+// cancelled issue's folder is never cleaned up. The folder of a done/cancelled issue is removed
+// like a task clone (the clone TTL, git-clean guards), with one difference: a folder whose git
+// state cannot be proven from the host (a worktree with a dead gitdir fails every git command)
+// is archived to `<runner root>/.gc-archive/` first and only then removed — the archive is the
+// safety net for work the host cannot inspect. Folders of issues in any other status are kept,
+// an unreachable board keeps the folder (fail-closed), and the pass runs only when a runner
+// root is configured (the same gate as the run-copy pass above).
+const RUNNER_TASK_FOLDER_NAME = /^(OPE-\d+(?:-wt)?|wt-ope\d+)$/i;
+const RUNNER_TASK_FOLDER_KEY = /^(?:OPE-(\d+)(?:-wt)?|wt-ope(\d+))$/i;
+// Directories never walked while hunting for git repos inside a task folder.
+const TASK_FOLDER_SCAN_SKIP_NAMES = new Set(["node_modules", ".next", ".helper", ".gc-archive"]);
 
 /** A usage error: the CLI prints it as JSON and exits non-zero (never a stack trace). */
 export class UsageError extends Error {}
@@ -505,6 +526,163 @@ export function pruneSshRunCopies(items, journalPath) {
   return removed;
 }
 
+// --- Runner task folders (OPE-12855, ported from #3004) -----------------------
+
+export function issueIdentifierFromRunnerFolderName(name) {
+  const m = RUNNER_TASK_FOLDER_KEY.exec(name);
+  return m ? `OPE-${m[1] ?? m[2]}` : null;
+}
+
+// Git directories inside one task folder worth guarding: the folder itself when it carries
+// a `.git` entry (a worktree checked out as the task folder), `<folder>/repo` (the omp
+// clone layout), then any nested repository up to depth 3 — including linked worktrees,
+// whose `.git` is a file pointing at the main repo's worktrees dir. `node_modules`, `.next`
+// and `.helper` are never walked. Returns `null` when the folder is unreadable: the caller
+// cannot prove it clean.
+function runnerFolderGitDirs(folder) {
+  try {
+    fs.readdirSync(folder);
+  } catch {
+    return null;
+  }
+  if (fs.existsSync(path.join(folder, ".git"))) return [folder];
+  const dirs = [];
+  const seen = new Set();
+  const visit = (dir, depth) => {
+    let entries;
+    try {
+      entries = fs.readdirSync(dir, { withFileTypes: true });
+    } catch {
+      return;
+    }
+    for (const entry of entries) {
+      if (entry.isSymbolicLink() || !entry.isDirectory()) continue;
+      if (entry.name.startsWith(".") || TASK_FOLDER_SCAN_SKIP_NAMES.has(entry.name)) continue;
+      const child = path.join(dir, entry.name);
+      if (fs.existsSync(path.join(child, ".git")) && !seen.has(child)) {
+        seen.add(child);
+        dirs.push(child);
+      }
+      if (depth > 0) visit(child, depth - 1);
+    }
+  };
+  visit(folder, 3);
+  return dirs;
+}
+
+// Verdict for one folder: `remove` (every git repo inside is clean and fully pushed), or
+// `archive-remove` (unpushed work, or a git state the host cannot read — the archive keeps
+// what the host could not inspect). The board status is checked first.
+function judgeRunnerTaskFolder(folder, boardStatus) {
+  if (boardStatus !== undefined) {
+    if (!boardStatus.ok) {
+      return { action: "keep", reason: `board-unavailable${boardStatus.statusCode ? `-${boardStatus.statusCode}` : ""}` };
+    }
+    if (!["done", "cancelled"].includes(boardStatus.status)) {
+      return { action: "keep", reason: `issue-status:${boardStatus.status}` };
+    }
+  }
+  const gitDirs = runnerFolderGitDirs(folder);
+  if (gitDirs === null) return { action: "archive-remove", reason: "unreadable-folder" };
+  if (gitDirs.length === 0) return { action: "remove", reason: "no-git-repos" };
+  for (const dir of gitDirs) {
+    const readable = isGitWorktree(dir);
+    if (!readable || !isClean(dir) || !isPushed(dir) || hasStash(dir) || hasAlternates(dir)) {
+      return { action: "archive-remove", reason: "unsafe-archive" };
+    }
+  }
+  return { action: "remove", reason: "clean-pushed" };
+}
+
+/**
+ * Task folders of runner issues (OPE-12855) under `<runnersRoot>/<runner>/{workspace,home}/`:
+ * names `OPE-<n>`, `OPE-<n>-wt` (workspace) and `wt-ope<n>` (home). A folder younger than
+ * `ttlHours` (the clone TTL, by the folder's own mtime) is `retention`; an older one asks the
+ * board for the issue status (fail-closed: an unreachable board keeps the folder) and the git
+ * guards decide `remove` vs `archive-remove`. Every component of the path must be a real
+ * directory; a symlink anywhere skips the entry. The scan never throws: per-root and
+ * per-runner failures go through `onEvent` (`runner-folder-root-missing`,
+ * `runner-folder-scan-failed`) and the scan continues — one unreadable runner must not abort
+ * the whole `--apply` pass. `fetchStatus` is injectable for tests; the default is the board
+ * call the clone pass uses.
+ */
+export async function scanRunnerTaskFolders(runnersRoot, now, ttlHours, { onEvent = () => {}, fetchStatus = fetchIssueStatus } = {}) {
+  const results = [];
+  const ttlMs = ttlHours * HOUR_MS;
+  const fail = (extra, err) => {
+    onEvent({ event: "runner-folder-scan-failed", root: runnersRoot, ...extra, error: err?.message || String(err) });
+  };
+  const rootStat = lstatSafe(runnersRoot);
+  if (rootStat.err) {
+    if (isAbsent(rootStat.err)) onEvent({ event: "runner-folder-root-missing", root: runnersRoot });
+    else fail({}, rootStat.err);
+    return results;
+  }
+  if (!rootStat.st.isDirectory()) {
+    fail({}, new Error("runner root is not a directory (a symlink is not followed)"));
+    return results;
+  }
+  let runners;
+  try {
+    runners = fs.readdirSync(runnersRoot, { withFileTypes: true });
+  } catch (err) {
+    fail({}, err);
+    return results;
+  }
+  for (const runner of runners) {
+    if (!runner.isDirectory()) continue;
+    for (const base of ["workspace", "home"]) {
+      const baseDir = path.join(runnersRoot, runner.name, base);
+      const { st: baseSt, err: baseErr } = lstatSafe(baseDir);
+      if (baseErr && !isAbsent(baseErr)) {
+        fail({ runner: runner.name }, baseErr);
+        continue;
+      }
+      if (!baseSt || !baseSt.isDirectory()) continue;
+      let entries;
+      try {
+        entries = fs.readdirSync(baseDir, { withFileTypes: true });
+      } catch (err) {
+        fail({ runner: runner.name }, err);
+        continue;
+      }
+      for (const entry of entries) {
+        if (!entry.isDirectory() || !RUNNER_TASK_FOLDER_NAME.test(entry.name)) continue;
+        const folder = path.join(baseDir, entry.name);
+        const { st, err } = lstatSafe(folder);
+        if (err && !isAbsent(err)) {
+          fail({ runner: runner.name, path: folder }, err);
+          continue;
+        }
+        if (!st || !st.isDirectory()) continue;
+        const item = {
+          runner: runner.name,
+          name: entry.name,
+          identifier: issueIdentifierFromRunnerFolderName(entry.name),
+          path: folder,
+          runnersRoot,
+          ageMs: now - st.mtimeMs,
+          mtimeMs: st.mtimeMs,
+          action: "keep",
+          reason: "retention",
+        };
+        if (now - st.mtimeMs >= ttlMs && item.identifier) {
+          try {
+            const verdict = judgeRunnerTaskFolder(folder, await fetchStatus(item.identifier));
+            item.action = verdict.action;
+            item.reason = verdict.reason;
+          } catch (err) {
+            fail({ runner: runner.name, path: folder }, err);
+            item.reason = "scan-failed";
+          }
+        }
+        results.push(item);
+      }
+    }
+  }
+  return results;
+}
+
 // --- Archive ----------------------------------------------------------------
 
 function archiveClone(clonePath, archiveRoot) {
@@ -547,7 +725,7 @@ async function main() {
     const cloneTtlMs = args.cloneTtlHours * HOUR_MS;
     const cacheTtlMs = args.cacheTtlHours * HOUR_MS;
 
-    const plan = { clones: [], caches: [], runCopies: [], kept: [], removed: [], archived: [] };
+    const plan = { clones: [], caches: [], runCopies: [], runnerTaskFolders: [], kept: [], removed: [], archived: [] };
 
     // 1. Scan task clones
     const clones = scanTaskClones(root, now, args.cloneTtlHours);
@@ -599,10 +777,35 @@ async function main() {
       }
     }
 
+    // 3d. Task folders of runner issues (OPE-12855): only when a runner root is configured,
+    // the same gate as 3c. The scan asks the board for the issue status (fail-closed: an
+    // unreachable board keeps the folder) and the git guards decide removal vs archive.
+    for (const runnersRoot of args.runnerRoots) {
+      const items = await scanRunnerTaskFolders(runnersRoot, now, args.cloneTtlHours, {
+        onEvent: (event) => journalRecord(args.journal, event),
+      });
+      for (const item of items) {
+        if (item.action === "keep") {
+          if (item.reason !== "retention") {
+            journalRecord(args.journal, {
+              event: "runner-task-folder-skipped",
+              path: item.path,
+              identifier: item.identifier,
+              runner: item.runner,
+              reason: item.reason,
+            });
+          }
+          plan.kept.push({ ...item, action: "keep", reason: item.reason });
+          continue;
+        }
+        plan.runnerTaskFolders.push({ ...item, action: item.action });
+      }
+    }
+
 
     // 3. Execute or report
     if (args.dryRun) {
-      journalRecord(args.journal, { event: "dry-run", clones: plan.clones.length, caches: plan.caches.length, runCopies: plan.runCopies.length, kept: plan.kept.length });
+      journalRecord(args.journal, { event: "dry-run", clones: plan.clones.length, caches: plan.caches.length, runCopies: plan.runCopies.length, runnerTaskFolders: plan.runnerTaskFolders.length, kept: plan.kept.length });
       console.log(JSON.stringify({ ok: true, dryRun: true, plan }, null, 2));
     } else {
       // Apply: process archives first, then removals
@@ -638,8 +841,33 @@ async function main() {
       }
       const runCopiesGone = pruneSshRunCopies(plan.runCopies.filter((x) => x.action === "remove"), args.journal);
       for (const gone of runCopiesGone) plan.removed.push({ path: gone });
-      journalRecord(args.journal, { event: "apply-complete", runCopiesRemoved: runCopiesGone.length, removed: plan.removed.length, archived: plan.archived.length, kept: plan.kept.length });
-      console.log(JSON.stringify({ ok: true, dryRun: false, removed: plan.removed.length, archived: plan.archived.length, runCopiesRemoved: runCopiesGone.length, kept: plan.kept.length }, null, 2));
+      let runnerTaskFoldersRemoved = 0;
+      // myrmidon(1.6.8 OPE-12855): archive-then-remove for folders whose git state could not
+      // be proven, plain removal for clean closed ones; both guarded against the runner root.
+      for (const f of plan.runnerTaskFolders.filter((x) => x.action === "archive-remove")) {
+        try {
+          const archivePath = archiveClone(f.path, path.join(f.runnersRoot, ".gc-archive"));
+          journalRecord(args.journal, { event: "runner-task-folder-archived", path: f.path, archive: archivePath, reason: f.reason });
+          atomicDrop(f.path, f.runnersRoot);
+          plan.archived.push({ path: f.path, archive: archivePath });
+          journalRecord(args.journal, { event: "runner-task-folder-removed-after-archive", path: f.path, archive: archivePath });
+          runnerTaskFoldersRemoved++;
+        } catch (err) {
+          journalRecord(args.journal, { event: "runner-task-folder-archive-failed", path: f.path, error: err.message });
+        }
+      }
+      for (const f of plan.runnerTaskFolders.filter((x) => x.action === "remove")) {
+        try {
+          atomicDrop(f.path, f.runnersRoot);
+          plan.removed.push({ path: f.path });
+          journalRecord(args.journal, { event: "runner-task-folder-removed", path: f.path, reason: f.reason, runner: f.runner, ageHours: Math.round(f.ageMs / HOUR_MS) });
+          runnerTaskFoldersRemoved++;
+        } catch (err) {
+          journalRecord(args.journal, { event: "runner-task-folder-remove-failed", path: f.path, error: err.message });
+        }
+      }
+      journalRecord(args.journal, { event: "apply-complete", runCopiesRemoved: runCopiesGone.length, runnerTaskFoldersRemoved, removed: plan.removed.length, archived: plan.archived.length, kept: plan.kept.length });
+      console.log(JSON.stringify({ ok: true, dryRun: false, removed: plan.removed.length, archived: plan.archived.length, runCopiesRemoved: runCopiesGone.length, runnerTaskFoldersRemoved, kept: plan.kept.length }, null, 2));
     }
   } finally {
     lock.release();

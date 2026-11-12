@@ -8,6 +8,7 @@ Host-side garbage collector for bot task clones and build caches on `vm-core` an
 |------|------|------|
 | vm-core | `/srv/myrmidon-bots/*` | Bot workspaces (git clones) |
 | vm-core | `<runner root>/<runner>/workspace/.paperclip-runtime/runs/<runId>` | SSH runner run copies (OPE-12722); only when a runner root is configured, see below |
+| vm-core | `<runner root>/<runner>/{workspace,home}/OPE-<n>[-wt]`, `wt-ope<n>` | SSH runner task folders (OPE-12855); only when a runner root is configured, see below |
 | myr-dev-build | `/srv/devbuild/*` | Build copies per agent/task |
 | myr-dev-build | `/srv/devcache/*` | Build caches (git-wt, pnpm, etc.) |
 
@@ -20,6 +21,7 @@ Host-side garbage collector for bot task clones and build caches on `vm-core` an
 | Active checkout/worktree | — | Never touched |
 | Build cache | > 72 h | LRU eviction by mtime |
 | SSH runner run copy (`<runner root>/<runner>/workspace/.paperclip-runtime/runs/<runId>`, OPE-12722) | > 4 h (`--run-copy-ttl`, at least 3) | Counted from the run directory's own mtime (set when the run starts). Runs **only when a runner root is configured** (`--runner-root` / `HOST_GC_RUNNER_ROOTS`); a path through a symlink is skipped |
+| SSH runner task folder (`<runner root>/<runner>/{workspace,home}/OPE-<n>[-wt]`, `wt-ope<n>`, OPE-12855) | > 24 h (clone TTL) | Issue `done`/`cancelled` on the board **and** every git repo inside is clean, pushed, stash-free and alternates-free → remove; dirty/unpushed or a git state that cannot be read (a worktree with a dead gitdir) → archive to `<runner root>/.gc-archive/` first, then remove; any other issue status or an unreachable board → keep. Runs **only when a runner root is configured** (`--runner-root` / `HOST_GC_RUNNER_ROOTS`), the same gate as the run-copy pass |
 | `state.db`, `session`, `auth`, `credential`, `.git` | — | Never deleted |
 
 ## Atomic Guards
@@ -146,3 +148,33 @@ What the pass does:
 - A runner root that does not exist is journaled as `run-copy-root-missing`; an unreadable root
   or runner directory as `run-copy-scan-failed` (root, runner, error). Neither stops the rest of
   the pass or the other passes of the same `--apply`.
+
+## SSH runner task folders (OPE-12855)
+
+An SSH runner keeps one task folder per board issue it ever checked out: the clone folder
+`<runner>/workspace/OPE-<n>/` (with the repo inside) and worktree folders
+(`<runner>/workspace/OPE-<n>-wt/`, `<runner>/home/wt-ope<n>`), whose `.git` file points into a
+run directory that is deleted when the run ends. Nothing removed them: on 11.11 the omp runners
+held 27 task folders, 14 of them for closed issues.
+
+The pass shares the gate of the run-copy pass above: it runs only when a runner root is
+configured (`--runner-root` / `HOST_GC_RUNNER_ROOTS`), per the same host matrix. What it does:
+
+- A folder is a candidate when it is older than the clone TTL (24 h, `--clone-ttl`, by the
+  folder's own mtime) and its name parses an issue identifier (`OPE-<n>`, `OPE-<n>-wt`,
+  `wt-ope<n>`, case-insensitive). The board is asked for the issue status
+  (`GET /api/issues/{identifier}`, the same board guard as the task clones). A folder of an
+  issue in any other status is kept (`issue-status:<status>`); an unreachable board keeps the
+  folder (fail-closed, `board-unavailable[-<status code>]`).
+- The folder is removed when every git repository found inside (the folder itself, `repo/`,
+  or nested up to depth 3; `.next`, `.helper`, `node_modules`, `.gc-archive` are not walked) is
+  clean, fully pushed, stash-free and alternates-free. A folder with no git repository at all
+  is removed outright (`no-git-repos`).
+- Unpushed work, or a git state that cannot be proven from the host (a worktree whose gitdir
+  is gone fails every git command) → the folder is archived to `<runner root>/.gc-archive/`
+  first (zstd/tar.gz + verification) and removed only after the archive verifies — the archive
+  is the safety net for work the host could not inspect.
+- Every removal is guarded against the runner root (`runner-task-folder-remove-failed` on a
+  containment violation); a missing root is journaled as `runner-folder-root-missing`, an
+  unreadable root or runner as `runner-folder-scan-failed`. Neither stops the rest of the
+  pass. `runnerTaskFoldersRemoved` in `apply-complete` counts the folders actually removed.
