@@ -13,10 +13,10 @@ export const GIT_MIRROR_ROOT = process.env.MYRMIDON_GIT_MIRROR_ROOT || "/cache/g
 export const DEFAULT_PRUNE_EXPIRE = "2.weeks.ago";
 
 function getFleetLockPath() {
-  // OPE-12720: the shared pnpm store (/cache/pnpm-store, 1.6.5-1.6.7) is no
-  // longer mounted; /cache/pnpm (the download cache) stays the shared anchor
-  // when it is mounted.
   try {
+    if (fs.existsSync("/cache/pnpm-store")) {
+      return "/cache/pnpm-store/.fleet-git-migration.lock";
+    }
     if (fs.existsSync("/cache/pnpm")) {
       return "/cache/pnpm/.fleet-git-migration.lock";
     }

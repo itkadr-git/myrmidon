@@ -263,6 +263,24 @@ merge-conflict return, the merged-PR close).
   App's page tick **Active** under **Webhook** — GitHub offers no API for that
   switch — and check **Advanced → Recent deliveries**: the `ping` answers
   `202`.
+- **Disabled-webhook alert (`github_app_webhook_disabled`).** If GitHub
+  answers `HTTP 404` on the hook-config `PATCH` during `webhook-sync` (the
+  endpoint returns `502` with code `github_webhook_sync_failed`), the App's
+  **Webhook → Active** toggle is off on GitHub and the board receives no GitHub
+  events at all. The server raises a `critical` attention card
+  (`github_app_webhook_disabled`, dedup key per company + App entry) telling
+  the App owner to open **Settings → Developer settings → GitHub Apps →
+  Webhook → Active** on GitHub and re-run `webhook-sync`. Once `webhook-sync`
+  succeeds (`200` on `PATCH` + read-back), the latch is cleared and the card
+  disappears automatically.
+  - *Visibility & boundaries:* the signal carries only `companyId`, `entryId`,
+    `appId`, `webhookHost` (host only, no path/query) and timestamps
+    (`firstSeenAt`, `lastSeenAt`) — never tokens, keys or webhook secrets.
+    Because the latch is **process-local** in server memory (like
+    `auth_401_burst`, not persisted to DB), a server restart clears it until
+    the next `webhook-sync` hits `404`, and in a split deployment only the
+    process that served `webhook-sync` holds the signal. Dismissing the card
+    hides it until the next `webhook-sync` receives `404`.
 - **A board save keeps it.** A save of the shared-identity rules that omits
   `webhookSecretId` (the board panel does) keeps the stored one; an explicit
   `null` clears it.

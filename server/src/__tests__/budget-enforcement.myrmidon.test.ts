@@ -316,6 +316,79 @@ describeEmbeddedPostgres("budget enforcement modes against the real service", ()
     expect((await agentRow(agentId)).status).toBe("paused");
     expect((await agentRow(agentId)).pauseReason).toBe("budget");
   });
+
+  // myrmidon(1.7 TOKEN-BUDGET-SIGNAL, OPE-12232): the token budget is a
+  // signal — the acceptance edge of the ticket. Tokens past 100% of the
+  // issue budget produce the warn level and NOTHING else: the agent is not
+  // paused, the issue has no pauseReason, no incident/approval appears and
+  // a run of the same agent+issue still starts.
+  it("token_budget_signal: tokens past the budget only raise the signal", async () => {
+    const { companyId, agentId, issueId } = await seed();
+    const service = budgetService(db, {});
+
+    // The issue-scoped token policy — 1000 tokens, warn at 80%.
+    await db.insert(budgetPolicies).values({
+      companyId,
+      scopeType: "issue",
+      scopeId: issueId,
+      metric: "issue_tokens",
+      windowKind: "lifetime",
+      amount: 1000,
+      warnPercent: 80,
+      hardStopEnabled: true,
+      notifyEnabled: true,
+      isActive: true,
+    });
+
+    // 500 + 600 tokens for the issue — 110% of the budget.
+    const first = await insertCostEvent(companyId, agentId, 1);
+    await db
+      .update(costEvents)
+      .set({ issueId, inputTokens: 400, cachedInputTokens: 50, outputTokens: 50 })
+      .where(eq(costEvents.id, first.id));
+    const second = await insertCostEvent(companyId, agentId, 1);
+    await db
+      .update(costEvents)
+      .set({ issueId, inputTokens: 500, cachedInputTokens: 60, outputTokens: 40 })
+      .where(eq(costEvents.id, second.id));
+
+    // A money cost event also flows through evaluation: the token policy
+    // must stay out of the enforcement path (no incident from tokens).
+    await service.evaluateCostEvent(first);
+
+    const signal = await service.getTokenBudgetSignal(companyId, issueId);
+    expect(signal).not.toBeNull();
+    expect(signal?.level).toBe("warn");
+    expect(signal?.observedTokens).toBe(1100);
+    expect(signal?.amountTokens).toBe(1000);
+    expect(signal?.utilizationPercent).toBe(110);
+    expect(signal?.enforcement).toBe("signal");
+
+    // Nothing stopped: the agent runs, the issue has no budget pause state,
+    // no incident and no approval exists, and a run is admitted.
+    expect((await agentRow(agentId)).status).toBe("active");
+    expect((await agentRow(agentId)).pauseReason).toBeNull();
+    const incidents = await db.select().from(budgetIncidents).where(eq(budgetIncidents.companyId, companyId));
+    expect(incidents).toHaveLength(0);
+    const openApprovals = await db.select().from(approvals);
+    expect(openApprovals).toHaveLength(0);
+    expect(await service.getInvocationBlock(companyId, agentId, { issueId })).toBeNull();
+
+    // Below the info threshold the level is quiet (none): the card renders
+    // nothing for it. The policy itself is still there (non-null payload).
+    await db.delete(costEvents);
+    const quiet = await service.getTokenBudgetSignal(companyId, issueId);
+    expect(quiet?.level).toBe("none");
+  });
+
+  it("money hard-stop regression: the billed-cents pipeline still pauses", async () => {
+    const { companyId, agentId } = await seed();
+    const service = budgetService(db, {});
+    const event = await insertCostEvent(companyId, agentId, 150);
+    await service.evaluateCostEvent(event);
+    expect((await agentRow(agentId)).status).toBe("paused");
+    expect((await agentRow(agentId)).pauseReason).toBe("budget");
+  });
 });
 
 describeEmbeddedPostgres("budget enforcement settings service", () => {

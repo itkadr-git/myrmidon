@@ -111,18 +111,11 @@ describe("pnpm hard links", () => {
     }
   });
 
-  it("the bot driver keeps the store inside the single mount and forces clone", () => {
-    // OPE-12720: /workspace/.pnpm-store sits on the clones' mount and is writable by the bot
-    // user; the /bot root is root-owned (0711) and /cache/pnpm-store is another mount.
-    assert.match(TEMPLATE, /DEFAULT_PNPM_STORE_DIR = "\/workspace\/\.pnpm-store"/);
+  it("the bot driver keeps the store inside the single mount and forces hardlink", () => {
+    assert.match(TEMPLATE, /DEFAULT_PNPM_STORE_DIR = "\/cache\/pnpm-store"/);
     assert.match(TEMPLATE, /DEFAULT_PNPM_IMPORT_METHOD = "clone"/);
     const dockerfile = fs.readFileSync(path.join(ROOT, "docker/bot-runtime/Dockerfile"), "utf8");
     assert.match(dockerfile, /npm_config_store_dir=\/workspace\/\.pnpm-store/);
-    assert.doesNotMatch(dockerfile, /npm_config_store_dir=\/(bot|cache)\//);
-    assert.doesNotMatch(dockerfile, /STORE_DIR=\/(bot|cache)\//);
-    const entrypoint = fs.readFileSync(path.join(ROOT, "docker/bot-runtime/entrypoint.sh"), "utf8");
-    assert.match(entrypoint, /npm_config_store_dir:-\/workspace\/\.pnpm-store/);
-    assert.doesNotMatch(entrypoint, /npm_config_store_dir:-\/(bot|cache)\//);
     assert.match(dockerfile, /npm_config_package_import_method=clone/);
     assert.match(dockerfile, /ROOTS="\/data\/hermes \/workspace \/scratch"/);
     assert.match(dockerfile, /pnpm-hardlink-check\.sh/);

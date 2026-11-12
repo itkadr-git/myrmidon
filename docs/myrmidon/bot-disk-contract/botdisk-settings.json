@@ -4,6 +4,6 @@
   "partitionThresholdPercent": 85,
   "partitionRefuseOpenPercent": 90,
   "partitionCriticalPercent": 95,
-  "pnpmStoreDir": "/workspace/.pnpm-store",
+  "pnpmStoreDir": "/cache/pnpm-store",
   "pnpmImportMethod": "clone"
 }
