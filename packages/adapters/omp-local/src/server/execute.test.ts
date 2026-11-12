@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -564,6 +564,91 @@ describe("omp local execution", () => {
     expect(result.errorMessage).toBe("Timed out after 30s");
   });
 
+  // myrmidon(OPE-12806): omp exits 0 after the model gives up on rejected tool
+  // calls. Such a run is failed with its own error code, not succeeded.
+  it("fails the run with omp_tool_calls_rejected when omp exits 0 but every shell call was rejected", async () => {
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-omp-rejected-"));
+    cleanupDirs.push(rootDir);
+    const workspaceDir = path.join(rootDir, "workspace");
+    await mkdir(workspaceDir, { recursive: true });
+
+    const refusal = "Service mode does not accept async or timeout; use ready.timeout for readiness.";
+    const events: unknown[] = [];
+    for (const id of ["b1", "b2", "b3"]) {
+      events.push({ type: "tool_execution_start", toolCallId: id, toolName: "bash", args: { command: "git status", name: "inspect", timeout: 30 } });
+      events.push({ type: "tool_execution_end", toolCallId: id, toolName: "bash", isError: true, result: { content: [{ type: "text", text: refusal }], details: {} } });
+    }
+    events.push({ type: "turn_end", message: { role: "assistant", content: "I could not run any command." }, toolResults: [] });
+
+    const makeExecuteInput = (runId: string, logs: string[]) => ({
+      runId,
+      agent: {
+        id: "agent-1",
+        companyId: "company-1",
+        name: "OMP Builder",
+        adapterType: "omp_local",
+        adapterConfig: {},
+      },
+      runtime: {
+        sessionId: null,
+        sessionParams: null,
+        sessionDisplayId: null,
+        taskKey: null,
+      },
+      config: {
+        command: "omp",
+        model: "openai/gpt-4o",
+      },
+      context: {
+        paperclipWorkspace: {
+          cwd: workspaceDir,
+          source: "project_primary",
+        },
+      },
+      onLog: async (_stream: string, text: string) => {
+        logs.push(text);
+      },
+    });
+
+    runAdapterExecutionTargetProcess.mockImplementationOnce(async () => ({
+      exitCode: 0,
+      signal: null,
+      timedOut: false,
+      stdout: events.map((event) => JSON.stringify(event)).join("\n"),
+      stderr: "",
+      pid: 127,
+      startedAt: new Date().toISOString(),
+    }));
+
+    const logs: string[] = [];
+    const result = await execute(makeExecuteInput("run-rejected", logs));
+
+    expect(result.exitCode).toBe(1);
+    expect(result.errorCode).toBe("omp_tool_calls_rejected");
+    expect(result.errorMessage).toBe(`OMP finished, but all 3 tool call(s) were rejected: ${refusal}`);
+    expect(logs.join("")).toContain("Marking the run as failed (omp_tool_calls_rejected)");
+
+    // A run whose tool calls worked stays successful.
+    const okEvents = [
+      { type: "tool_execution_start", toolCallId: "b1", toolName: "bash", args: { command: "git status" } },
+      { type: "tool_execution_end", toolCallId: "b1", toolName: "bash", isError: false, result: { content: [{ type: "text", text: "clean" }], details: {} } },
+      { type: "turn_end", message: { role: "assistant", content: "done" }, toolResults: [] },
+    ];
+    runAdapterExecutionTargetProcess.mockImplementationOnce(async () => ({
+      exitCode: 0,
+      signal: null,
+      timedOut: false,
+      stdout: okEvents.map((event) => JSON.stringify(event)).join("\n"),
+      stderr: "",
+      pid: 128,
+      startedAt: new Date().toISOString(),
+    }));
+    const okResult = await execute(makeExecuteInput("run-not-rejected", []));
+    expect(okResult.exitCode).toBe(0);
+    expect(okResult.errorMessage).toBeNull();
+    expect(okResult.errorCode ?? null).toBeNull();
+  });
+
   it("discovers newly created session file via set diff and ignores preexisting files", async () => {
     const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-omp-diff-"));
     cleanupDirs.push(rootDir);
@@ -754,6 +839,81 @@ describe("omp local execution", () => {
     const targetProcOptions = targetProcCall?.[4];
     expect(targetProcOptions?.env?.PI_CODING_AGENT_DIR).toBe("/remote/runtime/agentConfig");
     expect(targetProcOptions?.env?.OMP_CODING_AGENT_DIR).toBe("/remote/runtime/agentConfig");
+  });
+
+  // myrmidon(OPE-12805): the agent config dir staged to a remote runner carries
+  // the managed omp settings, so omp offers `bash` without `name`/`ready`.
+  it("stages a config.yml that switches off bash service launch for remote execution", async () => {
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-omp-remote-settings-"));
+    cleanupDirs.push(rootDir);
+    const workspaceDir = path.join(rootDir, "workspace");
+    await mkdir(workspaceDir, { recursive: true });
+
+    // The staged dir is removed when the run ends, so read it while it is staged.
+    let stagedSettings: string | null = null;
+    prepareAdapterExecutionTargetRuntime.mockImplementationOnce(async (input?: PrepareRuntimeCallShape) => {
+      const agentConfigAsset = input?.assets?.find((asset) => asset.key === "agentConfig");
+      stagedSettings = agentConfigAsset
+        ? await readFile(path.join(agentConfigAsset.localDir, "config.yml"), "utf8").catch(() => null)
+        : null;
+      return {
+        workspaceRemoteDir: "/remote/workspace",
+        runtimeRootDir: "/remote/runtime",
+        assetDirs: {
+          skills: "/remote/runtime/skills",
+          agentConfig: "/remote/runtime/agentConfig",
+        },
+        restoreWorkspace: vi.fn(async () => undefined),
+      };
+    });
+
+    await execute({
+      runId: "run-remote-settings",
+      authToken: "test-host-api-token",
+      executionTarget: {
+        kind: "remote",
+        transport: "sandbox",
+        providerKey: "test",
+        remoteCwd: "/remote/workspace",
+        runner: {
+          execute: async () => ({
+            exitCode: 0,
+            signal: null,
+            timedOut: false,
+            stdout: "",
+            stderr: "",
+            pid: 1,
+            startedAt: new Date().toISOString(),
+          }),
+        } as never,
+      },
+      agent: {
+        id: "agent-1",
+        companyId: "company-1",
+        name: "OMP Builder",
+        adapterType: "omp_local",
+        adapterConfig: {},
+      },
+      runtime: {
+        sessionId: null,
+        sessionParams: null,
+        sessionDisplayId: null,
+        taskKey: null,
+      },
+      config: {
+        command: "omp",
+        model: "openai/gpt-4o",
+      },
+      context: {
+        paperclipWorkspace: {
+          cwd: workspaceDir,
+          source: "project_primary",
+        },
+      },
+      onLog: async () => {},
+    });
+
+    expect(stagedSettings).toBe("launch:\n  enabled: false\n");
   });
 
   it("prepends existing skill bin/ dirs to PATH and ignores skills without bin/ dir", async () => {

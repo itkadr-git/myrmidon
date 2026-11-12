@@ -107,6 +107,33 @@ export function findProviderConfig(
   return null;
 }
 
+// myrmidon(OPE-12805): omp settings every board-managed run starts with.
+//
+// omp 18.9.2 ships `launch.enabled: true`. With it the `bash` tool schema gains
+// the service-launch fields `name` and `ready`, and a call that carries a
+// non-blank `name` is a service launch: omp rejects it when `timeout` or
+// `async` is also present ("Service mode does not accept async or timeout; use
+// ready.timeout for readiness."). Models that fill every optional field of a
+// tool schema (seen on the engineers' fallback model: `name`, `timeout: 30`,
+// `ready: {host: "", log: "", port: 0, timeout: 0}` on every call) therefore
+// had every shell command rejected. Board runs are one-shot `omp -p` runs and
+// do not supervise long-lived services, so the feature is switched off: omp
+// then offers `bash` without `name` and `ready`.
+export const OMP_MANAGED_SETTINGS_FILE = "config.yml";
+export const OMP_MANAGED_SETTINGS: YamlMapping = {
+  launch: { enabled: false },
+};
+
+// Write the managed omp settings into an agent config dir the board owns
+// (never into a user's own ~/.omp/agent).
+export async function writeOmpManagedSettings(agentConfigDir: string): Promise<void> {
+  await fs.writeFile(
+    path.join(agentConfigDir, OMP_MANAGED_SETTINGS_FILE),
+    writeYamlDocument(OMP_MANAGED_SETTINGS),
+    "utf8",
+  );
+}
+
 // Materialize custom OMP providers supplied via MYRMIDON_OMP_PROVIDERS (or the
 // pi fallback, see PROVIDER_ENV_NAMES) into a managed models.yml inside agent
 // config dir ($PI_CODING_AGENT_DIR).
@@ -138,6 +165,7 @@ export async function prepareOmpRuntimeConfig(input: {
       yamlContent,
       "utf8",
     );
+    await writeOmpManagedSettings(agentConfigDir);
   } catch (err) {
     await fs.rm(agentConfigDir, { recursive: true, force: true }).catch(() => undefined);
     throw err;

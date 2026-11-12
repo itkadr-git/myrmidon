@@ -66,10 +66,15 @@ import {
 } from "@myrmidon/adapter-utils/myrmidon-prompt-transport";
 import { shellQuote } from "@myrmidon/adapter-utils/ssh";
 import { PRODUCT_NAME } from "@myrmidon/adapter-utils";
-import { isOmpUnknownSessionError, parseOmpJsonl } from "./parse.js";
+import {
+  isOmpUnknownSessionError,
+  OMP_TOOL_CALLS_REJECTED_ERROR_CODE,
+  parseOmpJsonl,
+  summarizeOmpToolRejections,
+} from "./parse.js";
 import { ensureOmpModelConfiguredAndAvailable } from "./models.js";
 import { resolveOmpSkillsHome } from "./skills.js";
-import { prepareOmpRuntimeConfig } from "./runtime-config.js";
+import { prepareOmpRuntimeConfig, writeOmpManagedSettings } from "./runtime-config.js";
 import { SANDBOX_INSTALL_COMMAND } from "../index.js";
 
 const __moduleDir = path.dirname(fileURLToPath(import.meta.url));
@@ -611,6 +616,8 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       try {
         if (!localAgentConfigDir) {
           managedRemoteAgentConfigDir = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-omp-agent-config-"));
+          // myrmidon(OPE-12805): same managed omp settings as the provider-config dir.
+          await writeOmpManagedSettings(managedRemoteAgentConfigDir);
         }
         const effectiveAgentConfigDir = localAgentConfigDir || managedRemoteAgentConfigDir!;
         const remoteSkillsStagingDir = path.join(effectiveAgentConfigDir, "skills");
@@ -1018,15 +1025,28 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       const stderrLine = firstNonEmptyLine(attempt.proc.stderr);
       const rawExitCode = attempt.proc.exitCode;
       const parsedError = attempt.parsed.errors.find((error) => error.trim().length > 0) ?? "";
-      const effectiveExitCode = (rawExitCode ?? 0) === 0 && parsedError ? 1 : rawExitCode;
-      const fallbackErrorMessage = parsedError || stderrLine || `OMP exited with code ${rawExitCode ?? -1}`;
+      // myrmidon(OPE-12806): omp exits 0 after the model gives up on rejected tool
+      // calls; such a run did no work and must not be recorded as succeeded.
+      const toolRejection =
+        (rawExitCode ?? 0) === 0 && !parsedError && !attempt.proc.signal
+          ? summarizeOmpToolRejections(attempt.parsed.toolCalls)
+          : null;
+      if (toolRejection) {
+        await onLog(
+          "stdout",
+          `[paperclip] ${toolRejection.message} Marking the run as failed (${OMP_TOOL_CALLS_REJECTED_ERROR_CODE}).\n`,
+        );
+      }
+      const effectiveExitCode = (rawExitCode ?? 0) === 0 && (parsedError || toolRejection) ? 1 : rawExitCode;
+      const fallbackErrorMessage =
+        parsedError || toolRejection?.message || stderrLine || `OMP exited with code ${rawExitCode ?? -1}`;
 
       return {
         exitCode: effectiveExitCode,
         signal: attempt.proc.signal,
         timedOut: false,
         errorMessage: (effectiveExitCode ?? 0) === 0 ? null : fallbackErrorMessage,
-        errorCode: attempt.proc.errorCode ?? null,
+        errorCode: attempt.proc.errorCode ?? (toolRejection ? OMP_TOOL_CALLS_REJECTED_ERROR_CODE : null),
         usage: {
           inputTokens: attempt.parsed.usage.inputTokens,
           outputTokens: attempt.parsed.usage.outputTokens,
