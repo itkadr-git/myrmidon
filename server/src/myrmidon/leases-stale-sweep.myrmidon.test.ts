@@ -2,6 +2,10 @@ import { describe, expect, it } from "vitest";
 import {
   DEFAULT_STALE_LEASE_GRACE_MS,
   STALE_LEASE_SWEEP_PAGE_SIZE,
+  STALE_LEASE_TEARDOWN_ATTEMPT_CAP,
+  STALE_LEASE_TEARDOWN_ATTEMPTS_METADATA_KEY,
+  STALE_LEASE_TEARDOWN_CAP_ERROR_KIND,
+  STALE_LEASE_TEARDOWN_CAP_FAILURE_REASON,
   readStaleLeaseGraceMs,
 } from "./leases-stale-sweep.js";
 
@@ -20,5 +24,20 @@ describe("readStaleLeaseGraceMs", () => {
 
   it("caps a tick at 50 leases", () => {
     expect(STALE_LEASE_SWEEP_PAGE_SIZE).toBe(50);
+  });
+});
+
+describe("stale lease teardown retry cap (OPE-12899)", () => {
+  it("bounds teardown retries at three attempts", () => {
+    expect(STALE_LEASE_TEARDOWN_ATTEMPT_CAP).toBe(3);
+  });
+
+  it("counts attempts in a dedicated lease metadata key", () => {
+    expect(STALE_LEASE_TEARDOWN_ATTEMPTS_METADATA_KEY).toBe("staleLeaseTeardownAttempts");
+  });
+
+  it("stamps the capped release and card evidence with constant kinds only", () => {
+    expect(STALE_LEASE_TEARDOWN_CAP_FAILURE_REASON).toBe("stale_lease_teardown_cap");
+    expect(STALE_LEASE_TEARDOWN_CAP_ERROR_KIND).toBe("lease_teardown_cap_reached");
   });
 });

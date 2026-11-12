@@ -905,7 +905,10 @@ import { MAINTENANCE_INTERRUPT_ERROR_CODE, MAINTENANCE_RETRY_REASON } from "../m
 // docs/myrmidon/DIVERGENCE.md.
 import { jsonTextUuid } from "../myrmidon/db-hot-path/json-uuid.js";
 // myrmidon(P1): stale active environment lease sweep
-import { createStaleActiveLeaseSweep } from "../myrmidon/leases-stale-sweep.js";
+import {
+  createStaleActiveLeaseSweep,
+  raiseStaleLeaseTeardownCard,
+} from "../myrmidon/leases-stale-sweep.js";
 // myrmidon(M3): skip idle timer heartbeats
 import { hasOtherActionableWork, skipIdleHeartbeatsEnabled } from "../myrmidon/heartbeat-idle-skip.js";
 // myrmidon(1.2-COST-CACHING): idle-skip metrics + prompt cache by cost data.
@@ -21189,6 +21192,16 @@ export function heartbeatService(
       activeRunExecutions.has(run.id) ||
       (!!run.processPid && isProcessAlive(run.processPid)) ||
       (!!run.processGroupId && isProcessGroupAlive(run.processGroupId)),
+    // OPE-12899: a lease released with failed cleanup after the teardown
+    // attempt cap must surface to the operator; the release never depends on
+    // the card succeeding.
+    raiseOperatorAttention: (input) =>
+      raiseStaleLeaseTeardownCard({
+        db,
+        lease: input.lease,
+        run: input.run,
+        issueRef: input.issueRef,
+      }),
     afterRelease: async (lease) => {
       if (!lease.heartbeatRunId) return;
       await acknowledgeRemoteStop(lease.heartbeatRunId, lease.companyId);
@@ -22597,7 +22610,7 @@ export function heartbeatService(
     // myrmidon(P1): retire active leases left on terminal runs on this tick too
     try {
       const staleActive = await sweepStaleActiveEnvironmentLeases();
-      if (staleActive.released > 0 || staleActive.failed > 0) {
+      if (staleActive.released > 0 || staleActive.failed > 0 || staleActive.capped > 0) {
         logger.warn(staleActive, "swept stale active environment leases on terminal heartbeat runs");
       }
     } catch {

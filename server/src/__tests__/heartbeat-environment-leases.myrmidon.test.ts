@@ -10,6 +10,7 @@ import {
   environments,
   heartbeatRunEvents,
   heartbeatRuns,
+  issueRecoveryActions,
   issues,
 } from "@myrmidon/db";
 import {
@@ -57,6 +58,7 @@ vi.mock("../modules/wake-queue/index.js", async (importOriginal) => {
 
 import { logger } from "../middleware/logger.ts";
 import { heartbeatService, type HeartbeatEnvironmentRuntime } from "../services/heartbeat.ts";
+import { getConversationOwnershipBlocker } from "../services/conversation-continuation.js";
 
 // P1: cancel and pause release environment leases; stale active leases are swept.
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
@@ -72,6 +74,7 @@ type Heartbeat = ReturnType<typeof heartbeatService> & {
     released: number;
     skippedAlive: number;
     failed: number;
+    capped: number;
   }>;
 };
 
@@ -103,6 +106,7 @@ describeEmbeddedPostgres("environment leases on cancel, pause and sweep (P1)", (
     if (previousGrace === undefined) delete process.env.MYRMIDON_STALE_LEASE_GRACE_MS;
     else process.env.MYRMIDON_STALE_LEASE_GRACE_MS = previousGrace;
     await db.delete(activityLog);
+    await db.delete(issueRecoveryActions);
     await db.delete(environmentLeases);
     await db.delete(environments);
     await db.update(issues).set({ executionRunId: null, checkoutRunId: null });
@@ -393,7 +397,7 @@ describeEmbeddedPostgres("environment leases on cancel, pause and sweep (P1)", (
       expect((await leaseRow(leaseId)).status).toBe("expired");
     });
 
-    it("keeps the lease active when the teardown fails and logs only the error kind", async () => {
+    it("keeps the lease active for the first two failed teardowns and logs only the error kind", async () => {
       const { companyId, agentId, environmentId } = await seedAgent();
       const { runId } = await seedRun({
         companyId,
@@ -405,13 +409,100 @@ describeEmbeddedPostgres("environment leases on cancel, pause and sweep (P1)", (
       const fake = fakeRuntime({ teardownFails: true });
       const heartbeat = heartbeatService(db, { environmentRuntime: fake.runtime }) as Heartbeat;
 
-      const result = await heartbeat.sweepStaleActiveEnvironmentLeases!();
+      const first = await heartbeat.sweepStaleActiveEnvironmentLeases!();
+      const second = await heartbeat.sweepStaleActiveEnvironmentLeases!();
 
-      expect(result).toMatchObject({ inspected: 1, released: 0, failed: 1 });
-      expect((await leaseRow(leaseId)).status).toBe("active");
+      expect(first).toMatchObject({ inspected: 1, released: 0, failed: 1, capped: 0 });
+      expect(second).toMatchObject({ inspected: 1, released: 0, failed: 1, capped: 0 });
+      expect(fake.teardownCalls).toEqual([leaseId, leaseId]);
+      const lease = await leaseRow(leaseId);
+      expect(lease.status).toBe("active");
+      expect(lease.cleanupStatus).toBeNull();
+      const attempts = (lease.metadata ?? {}) as Record<string, unknown>;
+      expect(attempts.staleLeaseTeardownAttempts).toBe(2);
       const logged = JSON.stringify(vi.mocked(logger.warn).mock.calls);
       expect(logged).toContain("destroy_failed");
       expect(logged).not.toContain("sk-example");
+      expect(logged).not.toContain("lease_teardown_cap_reached");
+    });
+
+    it("releases the lease with failed cleanup and raises the operator card on the third failed teardown", async () => {
+      const { companyId, agentId, environmentId } = await seedAgent();
+      const { runId } = await seedRun({
+        companyId,
+        agentId,
+        status: "cancelled",
+        finishedAt: new Date(Date.now() - 60 * MINUTE),
+      });
+      const leaseId = await seedActiveLease({ companyId, environmentId, runId, provider: "fake" });
+      const fake = fakeRuntime({ teardownFails: true });
+      const heartbeat = heartbeatService(db, { environmentRuntime: fake.runtime }) as Heartbeat;
+
+      await heartbeat.sweepStaleActiveEnvironmentLeases!();
+      await heartbeat.sweepStaleActiveEnvironmentLeases!();
+      const third = await heartbeat.sweepStaleActiveEnvironmentLeases!();
+
+      expect(third).toMatchObject({ inspected: 1, released: 0, failed: 0, capped: 1 });
+      expect(fake.teardownCalls).toEqual([leaseId, leaseId]);
+      const lease = await leaseRow(leaseId);
+      expect(lease.status).toBe("expired");
+      expect(lease.cleanupStatus).toBe("failed");
+      expect(lease.failureReason).toBe("stale_lease_teardown_cap");
+      expect(lease.releasedAt).not.toBeNull();
+      const logged = JSON.stringify(vi.mocked(logger.warn).mock.calls);
+      expect(logged).toContain("lease_teardown_cap_reached");
+      expect(logged).not.toContain("sk-example");
+      const [card] = await db
+        .select()
+        .from(issueRecoveryActions)
+        .where(eq(issueRecoveryActions.fingerprint, `stale-lease-teardown:${leaseId}`));
+      expect(card).toBeDefined();
+      expect(card!.kind).toBe("active_run_watchdog");
+      expect(card!.ownerType).toBe("board");
+      expect(card!.status).toBe("active");
+      const evidence = card!.evidence as Record<string, unknown>;
+      expect(evidence.errorKind).toBe("lease_teardown_cap_reached");
+      expect(JSON.stringify(evidence)).not.toContain("sk-example");
+    });
+
+    it("stops blocking issue continuation once the capped lease is released with failed cleanup", async () => {
+      const { companyId, agentId, environmentId } = await seedAgent();
+      const issueId = randomUUID();
+      const runId = randomUUID();
+      await db.insert(heartbeatRuns).values({
+        id: runId,
+        companyId,
+        agentId,
+        status: "interrupted",
+        runtimeMode: "legacy",
+        runnerProfileJson: { adapterDispatch: { adapterType: "claude_local" } },
+        invocationSource: "manual",
+        startedAt: new Date(Date.now() - 70 * MINUTE),
+        finishedAt: new Date(Date.now() - 60 * MINUTE),
+        processPid: DEAD_PID,
+        contextSnapshot: { issueId },
+      });
+      await db.insert(issues).values({
+        id: issueId,
+        companyId,
+        title: "Blocked continuation",
+        status: "in_progress",
+        priority: "high",
+        assigneeAgentId: agentId,
+        executionRunId: runId,
+      });
+      const leaseId = await seedActiveLease({ companyId, environmentId, runId, provider: "fake" });
+
+      const heartbeat = heartbeatService(db, { environmentRuntime: fakeRuntime({ teardownFails: true }).runtime }) as Heartbeat;
+      await heartbeat.sweepStaleActiveEnvironmentLeases!();
+      await heartbeat.sweepStaleActiveEnvironmentLeases!();
+      await heartbeat.sweepStaleActiveEnvironmentLeases!();
+
+      const blocker = await getConversationOwnershipBlocker(db, companyId, issueId);
+      expect(blocker).toBeNull();
+      const blockedLease = await leaseRow(leaseId);
+      expect(blockedLease.status).toBe("expired");
+      expect(blockedLease.cleanupStatus).toBe("failed");
     });
 
     it("handles at most 50 leases per tick", async () => {
