@@ -20,6 +20,7 @@ const apiPrefixes: Record<string, string> = {
   "access.ts": "/api",
   "activity.ts": "/api",
   "adapters.ts": "/api",
+  "adm-access-requests.ts": "/api",
   "agents.ts": "/api",
   "announcements.ts": "/api",
   "ai-connections.ts": "/api",

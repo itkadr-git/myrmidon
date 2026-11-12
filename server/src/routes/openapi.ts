@@ -295,6 +295,11 @@ import {
   blockerGraphRootsResponseSchema,
   validateMaintenanceWindowCronRequestSchema,
   checkUpdatesRequestSchema,
+  // myrmidon(1.7 COMPANY-BOUNDARIES, ADR-0052): ADM access-request control-plane API.
+  createAdmAccessRequestSchema,
+  decideAdmAccessRequestSchema,
+  revokeAdmAccessRequestSchema,
+  executeAdmCapabilitySchema,
 } from "@myrmidon/shared";
 import {
   COMPANY_IMPORT_TRANSFERS_API_PATH,
@@ -12195,5 +12200,108 @@ registry.registerPath({
     400: r.badRequest,
     401: r.unauthorized,
     503: { description: "Sink not configured: the token reference or the target company is unset" },
+  },
+});
+// ─── ADM access requests (1.7 COMPANY-BOUNDARIES, ADR-0052) ───────────────────
+// The only cross-company control channel: source-company callers create, list,
+// revoke and execute their company's requests; decide is reserved for the ADM
+// control-plane company's board operators. Mirrors routes/adm-access-requests.ts.
+registry.registerPath({
+  method: "post",
+  path: "/api/companies/{companyId}/adm/access-requests",
+  tags: ["adm"],
+  summary: "Create an ADM access request from a source company",
+  request: {
+    params: z.object({ companyId: z.string().uuid() }),
+    body: jsonBody(createAdmAccessRequestSchema),
+  },
+  responses: {
+    200: r.ok(z.object({ isExisting: z.boolean() }).passthrough()),
+    201: r.ok(z.object({ isExisting: z.literal(false) }).passthrough()),
+    400: r.badRequest,
+    401: r.unauthorized,
+    403: r.forbidden,
+  },
+});
+
+registry.registerPath({
+  method: "get",
+  path: "/api/companies/{companyId}/adm/access-requests",
+  tags: ["adm"],
+  summary: "List ADM access requests of a source company",
+  request: {
+    params: z.object({ companyId: z.string().uuid() }),
+  },
+  responses: {
+    200: r.ok(z.array(z.unknown())),
+    401: r.unauthorized,
+    403: r.forbidden,
+  },
+});
+
+registry.registerPath({
+  method: "get",
+  path: "/api/adm/access-requests/{id}",
+  tags: ["adm"],
+  summary: "Fetch one ADM access request visible to the caller's company",
+  request: {
+    params: z.object({ id: z.string().uuid() }),
+  },
+  responses: {
+    200: r.ok(z.unknown()),
+    401: r.unauthorized,
+    403: r.forbidden,
+    404: r.notFound,
+  },
+});
+
+registry.registerPath({
+  method: "post",
+  path: "/api/adm/access-requests/{id}/decide",
+  tags: ["adm"],
+  summary: "Approve or deny an ADM access request (ADM operators only)",
+  request: {
+    params: z.object({ id: z.string().uuid() }),
+    body: jsonBody(decideAdmAccessRequestSchema),
+  },
+  responses: {
+    200: r.ok(z.unknown()),
+    400: r.badRequest,
+    401: r.unauthorized,
+    403: r.forbidden,
+  },
+});
+
+registry.registerPath({
+  method: "post",
+  path: "/api/companies/{companyId}/adm/access-requests/{id}/revoke",
+  tags: ["adm"],
+  summary: "Revoke an approved ADM access request",
+  request: {
+    params: z.object({ companyId: z.string().uuid(), id: z.string().uuid() }),
+    body: jsonBody(revokeAdmAccessRequestSchema),
+  },
+  responses: {
+    200: r.ok(z.unknown()),
+    400: r.badRequest,
+    401: r.unauthorized,
+    403: r.forbidden,
+  },
+});
+
+registry.registerPath({
+  method: "post",
+  path: "/api/companies/{companyId}/adm/capability/execute",
+  tags: ["adm"],
+  summary: "Execute an approved ADM capability token",
+  request: {
+    params: z.object({ companyId: z.string().uuid() }),
+    body: jsonBody(executeAdmCapabilitySchema),
+  },
+  responses: {
+    200: r.ok(z.unknown()),
+    400: r.badRequest,
+    401: r.unauthorized,
+    403: r.forbidden,
   },
 });

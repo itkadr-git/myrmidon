@@ -36,6 +36,7 @@
   "api.use(serverOnboardingRoutes(db))",
   "api.use(boardChatRoutes(db, { deploymentMode: opts.deploymentMode }))",
   "api.use(approvalRoutes(db, { pluginWorkerManager: workerManager }))",
+  "api.use(admAccessRequestRoutes(db, {\n    capabilityExecutor: createAdmCapabilityToolExecutor(db, () => app.locals.toolGateway),\n  }))",
   "api.use(secretRoutes(db))",
   "api.use(managedAgentProfileRoutes(db))",
   "api.use(remoteAgentProfileRoutes(db))",
