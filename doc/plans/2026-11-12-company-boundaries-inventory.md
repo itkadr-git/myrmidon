@@ -128,6 +128,13 @@ per-agent статуса (`GET /api/myrmidon/agents/:id/memory` без чтен�
 - `covered-nonempty` — агент подтверждён (HTTP 200) и присутствует явный идентификатор банка (`bankId`), само содержимое памяти не запрашивается и отбрасывается allowlist-ом;
 - `unavailable` — источник недоступен (`403`, `404`, сетевая ошибка, некорректный payload); отсутствие эндпоинта или 403 никогда не маскируется под `covered-empty` и фиксируется finding `memory_coverage_incomplete`.
 
+Подтверждённый read-only источник (контракт endpoint'а, не комментарий в коде):
+- `server/src/app.ts:1328` — `api.use(myrmidonAgentMemoryRoutes(db))`: маршрут смонтирован в приложении доски;
+- `server/src/myrmidon/agent-memory/routes.ts:88` — `router.get("/myrmidon/agents/:id/memory", ...)`: маршрут существует, это GET (read-only surface: рядом только другие GET; mutating clear/invalidate/export — отдельные маршруты и не вызываются probe-ом);
+- `server/src/myrmidon/agent-memory/service.ts:51` — `MemoryCardStatus { enabled: boolean; bank: MemoryBankResolution | null; reason: string | null }`: ровно та форма `{enabled, bank, reason}`, которую разбирает probe; `MemoryBankResolution { bankId, source }` даёт пары `bankId`/`bankSource` отчёта;
+- `ui/src/components/myrmidon/agent-memory/memoryApi.ts:40` — тот же URL и та же форма потребляются UI-вкладкой Memory карточки агента (независимый второй потребитель контракта).
+Поведенческая проверка контракта: `node --test scripts/myrmidon/company-boundaries-inventory.test.mjs` — блок "memory coverage contract (server source of truth)" (6 тестов) сверяет регистрацию маршрута, форму ответа `service.status()`, пары bankId/source и URL с реальными исходниками server/ и ui/; при переименовании/удалении маршрута или смене формы ответа тест падает с "contract mismatch", а не молча помечает всех агентов `unavailable`.
+
 Для пилота: убедиться, что копия профиля Life-агентов переносится с ними; corporate
 knowledge-корпус остаётся в ADM-компании.
 
@@ -167,6 +174,9 @@ node scripts/myrmidon/company-boundaries-inventory.mjs diff --before before.json
 
 ## Пакет тестирования
 
-`node --test scripts/myrmidon/company-boundaries-inventory.test.mjs` — 27 тестов
-(parseArgs, redact, memoryCoverageStatusFor / probeMemoryCoverage, все summarizers, findings, diff, SECTIONS-покрытие, exit-коды).
+`node --test scripts/myrmidon/company-boundaries-inventory.test.mjs` — 33 теста
+(parseArgs, redact, memoryCoverageStatusFor / probeMemoryCoverage, блок контракта
+"memory coverage contract (server source of truth)" — сверка маршрута/формы/URL
+с исходниками server/ и ui/, все summarizers, findings, diff, SECTIONS-покрытие,
+exit-коды).
 В CI прогоняется автоматически (`scripts/myrmidon/*.test.mjs` через node --test).
