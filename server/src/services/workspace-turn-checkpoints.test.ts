@@ -253,11 +253,11 @@ describe("per-turn checkpoints (OPE-12738)", () => {
   });
 
   it("rejects unsafe run ids and negative turns", async () => {
-    expect(() => createTurnCheckpoint({
+    await expect(createTurnCheckpoint({
       worktreePath: repoRoot,
       runId: "../escape",
       turnNumber: 1,
-    })).toThrow(TurnCheckpointError);
+    })).rejects.toBeInstanceOf(TurnCheckpointError);
     await expect(createTurnCheckpoint({
       worktreePath: repoRoot,
       runId: RUN_ID,

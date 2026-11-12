@@ -101,7 +101,7 @@ function runGit(args: string[], cwd: string): Promise<string> {
         resolve(stdout.trim());
       } else {
         const error = new Error(stderr.trim() || stdout.trim() || `git ${args.join(" ")} failed`);
-        (error as NodeJS.ErrnoException & { gitCode?: number }).gitCode = code;
+        (error as NodeJS.ErrnoException & { gitCode?: number }).gitCode = code ?? undefined;
         reject(error);
       }
     });
@@ -241,10 +241,10 @@ export async function createTurnCheckpoint(input: {
     if (parentSha) commitArgs.push("-p", parentSha);
     const commitSha = await runGitWithEnv(commitArgs, input.worktreePath, {
       ...env,
-      GIT_AUTHOR_NAME: env.GIT_AUTHOR_NAME ?? "myrmidon-turn-checkpoint",
-      GIT_AUTHOR_EMAIL: env.GIT_AUTHOR_EMAIL ?? "checkpoint@myrmidon.invalid",
-      GIT_COMMITTER_NAME: env.GIT_COMMITTER_NAME ?? "myrmidon-turn-checkpoint",
-      GIT_COMMITTER_EMAIL: env.GIT_COMMITTER_EMAIL ?? "checkpoint@myrmidon.invalid",
+      GIT_AUTHOR_NAME: process.env.GIT_AUTHOR_NAME ?? "myrmidon-turn-checkpoint",
+      GIT_AUTHOR_EMAIL: process.env.GIT_AUTHOR_EMAIL ?? "checkpoint@myrmidon.invalid",
+      GIT_COMMITTER_NAME: process.env.GIT_COMMITTER_NAME ?? "myrmidon-turn-checkpoint",
+      GIT_COMMITTER_EMAIL: process.env.GIT_COMMITTER_EMAIL ?? "checkpoint@myrmidon.invalid",
       GIT_COMMITTER_DATE: new Date().toISOString(),
     });
     await runGit(["update-ref", ref, commitSha], input.worktreePath);
