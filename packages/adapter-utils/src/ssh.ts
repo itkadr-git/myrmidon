@@ -1743,6 +1743,7 @@ export async function prepareWorkspaceForSshExecution(input: {
   localDir: string;
   remoteDir?: string;
   onProgress?: RuntimeProgressSink;
+  gitOnly?: boolean;
 }): Promise<{ gitBacked: boolean }> {
   const remoteDir = input.remoteDir ?? input.spec.remoteCwd;
   const gitSnapshot = await readLocalGitWorkspaceSnapshot(input.localDir);
@@ -1755,19 +1756,21 @@ export async function prepareWorkspaceForSshExecution(input: {
       snapshot: gitSnapshot,
       onProgress: input.onProgress,
     });
-    await syncDirectoryToSsh({
-      spec: input.spec,
-      localDir: input.localDir,
-      remoteDir,
-      exclude: [".git", ".paperclip-runtime"],
-      onProgress: input.onProgress,
-      progressLabel: "workspace",
-    });
-    await removeDeletedPathsOnSsh({
-      spec: input.spec,
-      remoteDir,
-      deletedPaths: gitSnapshot.deletedPaths,
-    });
+    if (!input.gitOnly) {
+      await syncDirectoryToSsh({
+        spec: input.spec,
+        localDir: input.localDir,
+        remoteDir,
+        exclude: [".git", ".paperclip-runtime"],
+        onProgress: input.onProgress,
+        progressLabel: "workspace",
+      });
+      await removeDeletedPathsOnSsh({
+        spec: input.spec,
+        remoteDir,
+        deletedPaths: gitSnapshot.deletedPaths,
+      });
+    }
     return { gitBacked: true };
   }
 

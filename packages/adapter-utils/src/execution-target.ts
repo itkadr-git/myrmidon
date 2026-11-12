@@ -1429,6 +1429,7 @@ export async function prepareAdapterExecutionTargetRuntime(input: {
   timeoutSec?: number;
   workspaceRemoteDir?: string;
   syncWorkspace?: boolean;
+  workspaceSyncMode?: "full" | "git_checkout";
   workspaceInboundMode?: WorkspaceInboundMode;
   workspaceDurableSeed?: WorkspaceDurableSeedPaths;
   workspaceBaseline?: DirectorySnapshot;
@@ -1475,6 +1476,7 @@ export async function prepareAdapterExecutionTargetRuntime(input: {
       workspaceLocalDir: input.workspaceLocalDir,
       workspaceRemoteDir: input.workspaceRemoteDir,
       syncWorkspace: input.syncWorkspace,
+      workspaceSyncMode: input.workspaceSyncMode,
       assets: input.assets,
       additionalSources: input.additionalSources,
       onProgress: input.onProgress,
