@@ -598,6 +598,7 @@ if [[ "$DRY_RUN" == "1" ]]; then
   bot_log "  5. switch every bot card to the release image, one at a time${canary:+ (canary $canary first)}; busy cards are handed to the server reconciler for R3 application"
   bot_log "  6. remove the superseded bot images from images; SIGHUP"
   bot_log "  6b. DEPLOY-HYGIENE: remove the local bot/component images older than MYRMIDON_DEPLOY_IMAGE_KEEP=${MYRMIDON_DEPLOY_IMAGE_KEEP:-1} previous release(s) (images used by a container are kept)"
+  bot_log "  6c. IMAGE-GC (OPE-12696): remove the local myrmidon*/agent-runtime* images NO container uses and prune the build cache (MYRMIDON_DEPLOY_IMAGE_GC=0 switches it off)"
   bot_log "  7. journal: $MYR_BOT_ROLLOUT_LOG"
   categories="$(bot_categories || true)"
   if [[ -n "$categories" ]]; then
@@ -1273,6 +1274,13 @@ finalize_rollout() {
   if [[ -z "${MYRMIDON_DEPLOY_DISK_PRECHECK_DONE:-}" ]]; then
     if deploy_image_retention; then :; else
       bot_log "WARNING: the old image cleanup failed; the rollout itself is complete (remove old images by hand: docker image ls)"
+    fi
+    # IMAGE-GC (OPE-12696): the standalone rollout ends healthy here — sweep
+    # the myrmidon*/agent-runtime* images no container uses. When the rollout
+    # runs inside deploy.sh, deploy.sh does the sweep itself after its own
+    # success gate (MYRMIDON_DEPLOY_DISK_PRECHECK_DONE is set).
+    if deploy_image_gc; then :; else
+      bot_log "WARNING: the unused image sweep failed; the rollout itself is complete (remove unused images by hand: docker image ls)"
     fi
   fi
 
