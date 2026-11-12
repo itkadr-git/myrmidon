@@ -54,14 +54,13 @@ export interface AdmRequestStoredPayload {
 export function admAccessRequestService(db: Db) {
   function mapApprovalToRecord(
     row: typeof approvals.$inferSelect,
-  ): Omit<RedactedAdmRequest, "expiresAt"> & {
+  ): RedactedAdmRequest & {
     id: string;
     targetCompanyId: string;
     requesterType: string;
     requesterId: string;
     decisionNote: string | null;
     decidedByUserId: string | null;
-    expiresAt: Date | null;
   } {
     const payload = (row.payload ?? {}) as unknown as AdmRequestStoredPayload;
     const createdAt = row.createdAt ?? new Date();
@@ -98,7 +97,7 @@ export function admAccessRequestService(db: Db) {
       requesterId: payload.requesterId ?? (row.requestedByAgentId ?? row.requestedByUserId ?? ""),
       decisionNote: row.decisionNote ?? null,
       decidedByUserId: row.decidedByUserId ?? null,
-      expiresAt: computedExpiry,
+      expiresAt: computedExpiry?.toISOString() ?? null,
     };
   }
 
