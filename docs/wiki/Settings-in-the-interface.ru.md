@@ -277,7 +277,8 @@ general). Сохранение — частичная запись: пишетс
 - `GET /api/myrmidon/behavior-settings/definitions` — список всех определений настроек, их scope, типов и значений по умолчанию.
 - `GET /api/myrmidon/behavior-settings` (а также `?key=:key` или `/key/:key`) — чтение действующих настроек инстанса и источников значений (`ui`, `env`, `default`).
 - `PATCH /api/myrmidon/behavior-settings` (и алиас `PUT`) — изменение настроек уровня инстанса (только для администраторов инстанса).
-- `GET|PATCH /api/myrmidon/behavior-settings/company/:companyId` — чтение и обновление настроек уровня компании (требуются права доступа к компании).
+- `GET /api/myrmidon/behavior-settings/company/:companyId` — чтение настроек уровня компании (требуются права доступа к компании).
+- `PATCH /api/myrmidon/behavior-settings/company/:companyId` — обновление настроек уровня компании (board-пользователи с доступом к компании, либо агентские ключи с грантом `users:manage_permissions`; ключ без гранта получает 403).
 
 Строго соблюдается изоляция scope: маршруты инстанса отклоняют ключи компании, а маршруты компании отклоняют ключи инстанса с ошибкой HTTP 400. Полная спецификация API и каталог настроек: [SETTINGS.ru.md](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/SETTINGS.ru.md#17--api-runtime-настроек-behavior-settings-settings-to-ui).
 

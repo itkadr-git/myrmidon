@@ -277,7 +277,8 @@ Starting with Myrmidon 1.7 (SETTINGS-TO-UI), runtime behavior settings can be re
 - `GET /api/myrmidon/behavior-settings/definitions` — list all setting definitions, scopes, types, and defaults.
 - `GET /api/myrmidon/behavior-settings` (and `?key=:key` or `/key/:key`) — read effective instance settings and sources (`ui`, `env`, `default`).
 - `PATCH /api/myrmidon/behavior-settings` (and `PUT` alias) — update instance-level settings (instance admin only).
-- `GET|PATCH /api/myrmidon/behavior-settings/company/:companyId` — read and update company-scoped settings (company access required).
+- `GET /api/myrmidon/behavior-settings/company/:companyId` — read company-scoped settings (company access required).
+- `PATCH /api/myrmidon/behavior-settings/company/:companyId` — update company-scoped settings (board users with company access, or agent keys holding the `users:manage_permissions` company grant; agent keys without the grant get 403).
 
 Scope isolation is strictly enforced: instance endpoints reject company-scoped keys, and company endpoints reject instance-scoped keys with HTTP 400. Full API specification and setting catalog: [SETTINGS.md](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/SETTINGS.md#17--behavior-settings-api-runtime-settings-settings-to-ui).
 
