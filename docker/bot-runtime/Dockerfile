@@ -204,6 +204,28 @@ o = install('/opt/hermes-plugins/hindsight'); \
 print('hindsight plugin deps:', o.status, o.detail if hasattr(o, 'detail') else ''); \
 raise SystemExit(0 if o.status in ('installed', 'none') else 1)"
 
+# myrmidon(OPE-12760): security override over the synced venv. The pinned hermes (v2026.9.24,
+# 0.21.5) locks aiohttp 3.14.3 (GHSA-2g87-pp6c-29x5, GHSA-5wr8-gcqf-gqf3: the gateway API
+# server runs on aiohttp), httpx2 2.7.0 (GHSA-8xx6-hgc6-gc2m, GHSA-f2fp-rgf2-35cp and others:
+# HTTP MCP runs on it) and certifi 2026.5.20 (GHSA-6q48-6c7w-9gw2). Upstream raised aiohttp to
+# 3.14.5 in 0.22.5 (PR #142691) and httpx2 to 2.12.0 in 0.22.2 (PR #138026). Exact versions, over
+# the venv `uv sync` built (httpx2 pulls its matching httpcore2 along). The step sits AFTER the
+# Hindsight plugin installer on purpose: that installer resolves under hermes' core constraints
+# read from pyproject.toml (aiohttp==3.14.3) and would put aiohttp back to 3.14.3 if this ran
+# before it. The version check below fails the build if any floor is not met. Drop both steps
+# (and the matching test in dockerfile.test.mjs) when the pinned hermes is >= 0.22.5: its own
+# uv.lock then carries these versions. See docs/myrmidon/hermes-deltas.md.
+RUN uv pip install --python /opt/hermes-src/.venv/bin/python \
+    aiohttp==3.14.5 httpx2==2.12.0 certifi==2026.10.19
+
+RUN /opt/hermes-src/.venv/bin/python -c \
+    "import re, sys; from importlib.metadata import version; \
+floors = {'aiohttp': '3.14.5', 'httpx2': '2.12.0', 'certifi': '2026.10.19'}; \
+key = lambda v: tuple(map(int, re.findall(r'\d+', v))); \
+bad = [n + ' ' + version(n) + ' < ' + f for n, f in floors.items() if key(version(n)) < key(f)]; \
+print('hermes venv security floors:', {n: version(n) for n in floors}); \
+sys.exit('below the OPE-12760 floor: ' + ', '.join(bad) if bad else 0)"
+
 # Fail the build loudly if any package this image relies on being preinstalled (never
 # lazily) fails to import from the synced venv, instead of only discovering it the first
 # time a bot profile tries to use MCP tools or hindsight memory at runtime.
