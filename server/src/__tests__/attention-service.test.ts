@@ -44,7 +44,7 @@ import {
 } from "./helpers/embedded-postgres.js";
 import { errorHandler } from "../middleware/index.js";
 import { attentionRoutes } from "../routes/attention.js";
-import { attentionService } from "../services/attention.js";
+import { attentionService, listRoleModelDownSince } from "../services/attention.js";
 import { listAttentionExhaustedRuns } from "../services/attention-exhausted-runs.js";
 import { agentService } from "../services/agents.js";
 import { ingestCloneReport, resetCloneHygieneStateForTests } from "../myrmidon/bot-containers/clone-hygiene.js";
@@ -2841,6 +2841,44 @@ describeEmbeddedPostgres("attention service", () => {
       const items = (await feed(companyId)).items;
       expect(items.filter((item) => item.sourceKind === "provider_no_credits")).toEqual([]);
       expect(items.filter((item) => item.sourceKind === "role_model_down")).toEqual([]);
+    });
+
+    // myrmidon(1.6.8 OPE-12709): "model unavailable since HH:MM" mark on agents.
+    it("reports the first refusal time for a role with an active role_model_down signal", async () => {
+      const { companyId } = await seedCompany("RMK");
+      // 6 refusals finished 5..10 min ago: the earliest one is 10 min ago.
+      await seedFailingRole({ companyId, role: "reviewer", name: "Reviewer since", runs: 6, providerModelGroup: "chatgpt-pool/gpt-6-luna" });
+
+      const since = await listRoleModelDownSince(db, companyId, NOW);
+      expect(since.size).toBe(1);
+      expect(since.get("reviewer")).toBe(finishedAt(10).toISOString());
+    });
+
+    it("drops the mark after the role's first successful run", async () => {
+      const { companyId } = await seedCompany("RML");
+      const agentId = await seedFailingRole({ companyId, role: "lead", name: "Lead since", runs: 5 });
+      expect((await listRoleModelDownSince(db, companyId, NOW)).has("lead")).toBe(true);
+
+      await seedRun({ companyId, agentId, status: "succeeded", finishedMinutesAgo: 1 });
+      expect((await listRoleModelDownSince(db, companyId, NOW)).has("lead")).toBe(false);
+    });
+
+    it("marks only the down role, not agents of other roles", async () => {
+      const { companyId } = await seedCompany("RMM");
+      await seedFailingRole({ companyId, role: "reviewer", name: "Reviewer down", runs: 5 });
+      const healthy = await seedRoleAgent({ companyId, name: "Engineer ok", role: "engineer" });
+      await seedRun({ companyId, agentId: healthy, status: "succeeded", finishedMinutesAgo: 2 });
+
+      const since = await listRoleModelDownSince(db, companyId, NOW);
+      expect([...since.keys()]).toEqual(["reviewer"]);
+      expect(since.has("engineer")).toBe(false);
+    });
+
+    it("does not mark a role whose failures are ordinary adapter errors", async () => {
+      const { companyId } = await seedCompany("RMN");
+      await seedFailingRole({ companyId, role: "qa", name: "QA ordinary", runs: 6, error: "adapter failed: exit code 1" });
+
+      expect((await listRoleModelDownSince(db, companyId, NOW)).size).toBe(0);
     });
   });
 });

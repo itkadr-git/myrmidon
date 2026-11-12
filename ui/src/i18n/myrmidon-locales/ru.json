@@ -241,6 +241,7 @@
     "managedByMyrmidon": "Управляется Myrmidon",
     "sandboxProvider": "Провайдер песочницы {{provider}}",
     "unknownEnvironment": "Неизвестное окружение",
+    "roleModelDownSince": "Модель недоступна с {{time}}",
     "invalidReportingChain": "Нарушена цепочка подчинения",
     "selectOrganization": "Выберите организацию, чтобы видеть агентов.",
     "setUp": "Настроить",

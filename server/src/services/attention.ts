@@ -1519,6 +1519,144 @@ export function invalidateAttentionFeedCache(db: Db, companyId?: string) {
   }
 }
 
+// myrmidon(1.6.8 OPE-12709): the ONE query behind the role_model_down card and
+// the agent-list/card "model unavailable since HH:MM" mark. Per-role aggregate
+// of the finished runs in the detection window; downRoles holds the roles with
+// an active signal (floor reached, 0 succeeded, refusal floor reached).
+type RoleModelDownAgg = {
+  finishedCount: number;
+  succeededCount: number;
+  refusalCount: number;
+  lastError: string | null;
+  lastFinishedAt: string | null;
+  lastRefusalError: string | null;
+  lastRefusalAt: string | null;
+  firstRefusalAt: string | null;
+  primaryChannel: string;
+  primaryRuns: number;
+};
+
+async function loadRoleModelDownState(db: Db, companyId: string, now: number) {
+  const windowStart = new Date(now - ROLE_MODEL_DOWN_WINDOW_MS);
+  const channelExpr = sql<string>`coalesce(${heartbeatRuns.resultJson} ->> 'providerModelGroup', 'unknown')`;
+  // A finished run counts as a model refusal when the adapter marked the
+  // provider failure in resultJson (model_unavailable /
+  // provider_error_as_content) or the error text carries a provider
+  // quota/limit marker (model_unavailable / overload /
+  // insufficient_quota / credits insufficient / 402 / 429).
+  const modelRefusalExpr = sql`(
+    ${heartbeatRuns.resultJson} ->> 'model_unavailable' = 'true'
+    or ${heartbeatRuns.resultJson} ->> 'provider_error_as_content' = 'true'
+    or ${heartbeatRuns.error} ilike '%model_unavailable%'
+    or ${heartbeatRuns.error} ilike '%overload%'
+    or ${heartbeatRuns.error} ilike '%insufficient_quota%'
+    or ${heartbeatRuns.error} ilike '%credits insufficient%'
+    or ${heartbeatRuns.error} ~* '(^|[^[:alnum:]])(402|429)([^[:alnum:]]|$)'
+  )`;
+  // 402 / 429 match as whole numbers only: a substring match would fire on
+  // any id, port or duration that happens to contain those digits.
+  const noCreditsErrorExpr = sql`(${heartbeatRuns.error} is not null and (${heartbeatRuns.error} ~* '(^|[^[:alnum:]])402([^[:alnum:]]|$)' or ${heartbeatRuns.error} ilike '%insufficient_quota%' or ${heartbeatRuns.error} ilike '%credits insufficient%'))`;
+  const roleRows = await db
+    .select({
+      role: agents.role,
+      channel: channelExpr,
+      finishedCount: sql<number>`count(*)::int`,
+      succeededCount: sql<number>`count(*) filter (where ${heartbeatRuns.status} = 'succeeded')::int`,
+      refusalCount: sql<number>`count(*) filter (where ${modelRefusalExpr})::int`,
+      lastError: sql<string | null>`(array_agg(${heartbeatRuns.error} order by ${heartbeatRuns.finishedAt} desc nulls last))[1]`,
+      lastFinishedAt: sql<string | null>`max(${heartbeatRuns.finishedAt})::text`,
+      lastRefusalError: sql<string | null>`(array_agg(${heartbeatRuns.error} order by ${heartbeatRuns.finishedAt} desc nulls last) filter (where ${modelRefusalExpr}))[1]`,
+      lastRefusalAt: sql<string | null>`max(${heartbeatRuns.finishedAt}) filter (where ${modelRefusalExpr})::text`,
+      firstRefusalAt: sql<string | null>`min(${heartbeatRuns.finishedAt}) filter (where ${modelRefusalExpr})::text`,
+      noCreditsRunError: sql<string | null>`(array_agg(${heartbeatRuns.error} order by ${heartbeatRuns.finishedAt} desc nulls last) filter (where ${noCreditsErrorExpr}))[1]`,
+      noCreditsAt: sql<string | null>`max(${heartbeatRuns.finishedAt}) filter (where ${noCreditsErrorExpr})::text`,
+    })
+    .from(heartbeatRuns)
+    .innerJoin(agents, eq(agents.id, heartbeatRuns.agentId))
+    .where(and(
+      eq(heartbeatRuns.companyId, companyId),
+      eq(agents.companyId, companyId),
+      inArray(heartbeatRuns.status, ["succeeded", "failed", "timed_out"]),
+      isNotNull(heartbeatRuns.finishedAt),
+      gte(heartbeatRuns.finishedAt, windowStart),
+      // updated_at is never older than finished_at; the extra bound lets
+      // heartbeat_runs_company_status_updated_idx serve the window instead
+      // of scanning every finished run of the company.
+      gte(heartbeatRuns.updatedAt, windowStart),
+    ))
+    .groupBy(agents.role, channelExpr);
+
+  // Role cards: the >=5-refused / 0-succeeded threshold is per ROLE —
+  // runs across all channels of the role count together, so an outage
+  // spread over a primary and a fallback channel still trips it. Only
+  // runs classified as model refusals (adapter marker or provider
+  // quota/limit markers in the error text) count toward the floor:
+  // ordinary adapter/process failures must not raise this
+  // operator-critical signal.
+  const byRole = new Map<string, RoleModelDownAgg>();
+  for (const row of roleRows) {
+    const agg = byRole.get(row.role) ?? {
+      finishedCount: 0,
+      succeededCount: 0,
+      refusalCount: 0,
+      lastError: null,
+      lastFinishedAt: null,
+      lastRefusalError: null,
+      lastRefusalAt: null,
+      firstRefusalAt: null,
+      primaryChannel: row.channel,
+      primaryRuns: 0,
+    };
+    agg.finishedCount += row.finishedCount;
+    agg.succeededCount += row.succeededCount;
+    agg.refusalCount += row.refusalCount;
+    if (row.lastFinishedAt != null
+      && (agg.lastFinishedAt == null || row.lastFinishedAt > agg.lastFinishedAt)) {
+      agg.lastFinishedAt = row.lastFinishedAt;
+      agg.lastError = row.lastError;
+    }
+    if (row.lastRefusalAt != null
+      && (agg.lastRefusalAt == null || row.lastRefusalAt > agg.lastRefusalAt)) {
+      agg.lastRefusalAt = row.lastRefusalAt;
+      agg.lastRefusalError = row.lastRefusalError;
+    }
+    if (row.firstRefusalAt != null
+      && (agg.firstRefusalAt == null || row.firstRefusalAt < agg.firstRefusalAt)) {
+      agg.firstRefusalAt = row.firstRefusalAt;
+    }
+    if (row.finishedCount > agg.primaryRuns) {
+      agg.primaryRuns = row.finishedCount;
+      agg.primaryChannel = row.channel;
+    }
+    byRole.set(row.role, agg);
+  }
+  // The dedupKey is per ROLE (not per channel): ONE card per role even
+  // when several channels failed. The card disappears on the role's
+  // first successful run — the 0-succeeded condition drops out. The
+  // floor counts MODEL-REFUSAL finishes only; a role whose runs fail
+  // for ordinary (non-provider) reasons stays silent.
+  const downRoles = [...byRole.entries()]
+    .filter(([, agg]) => agg.finishedCount >= ROLE_MODEL_DOWN_MIN_RUNS
+      && agg.succeededCount === 0
+      && agg.refusalCount >= ROLE_MODEL_DOWN_MIN_RUNS);
+
+  return { roleRows, downRoles };
+}
+
+/**
+ * Roles with an active ROLE_MODEL_DOWN signal -> ISO time of the first model
+ * refusal in the window ("model unavailable since"). One query per company.
+ * The mark clears on the role's first successful run (0-succeeded condition).
+ */
+export async function listRoleModelDownSince(
+  db: Db,
+  companyId: string,
+  now: number = Date.now(),
+): Promise<Map<string, string>> {
+  const { downRoles } = await loadRoleModelDownState(db, companyId, now);
+  return new Map(downRoles.map(([role, agg]) => [role, toIso(agg.firstRefusalAt ?? agg.lastRefusalAt ?? agg.lastFinishedAt)]));
+}
+
 /**
  * Rebuild one cache key, at most once at a time.
  *
@@ -1644,112 +1782,7 @@ async function buildAttentionFeedSnapshot(
       // pacing of the Telegram delivery lives in the errors channel
       // (errorChannelPublicationKey adds an hour bucket for these kinds).
       {
-        const windowStart = new Date(now - ROLE_MODEL_DOWN_WINDOW_MS);
-        const channelExpr = sql<string>`coalesce(${heartbeatRuns.resultJson} ->> 'providerModelGroup', 'unknown')`;
-        // A finished run counts as a model refusal when the adapter marked the
-        // provider failure in resultJson (model_unavailable /
-        // provider_error_as_content) or the error text carries a provider
-        // quota/limit marker (model_unavailable / overload /
-        // insufficient_quota / credits insufficient / 402 / 429).
-        const modelRefusalExpr = sql`(
-          ${heartbeatRuns.resultJson} ->> 'model_unavailable' = 'true'
-          or ${heartbeatRuns.resultJson} ->> 'provider_error_as_content' = 'true'
-          or ${heartbeatRuns.error} ilike '%model_unavailable%'
-          or ${heartbeatRuns.error} ilike '%overload%'
-          or ${heartbeatRuns.error} ilike '%insufficient_quota%'
-          or ${heartbeatRuns.error} ilike '%credits insufficient%'
-          or ${heartbeatRuns.error} ~* '(^|[^[:alnum:]])(402|429)([^[:alnum:]]|$)'
-        )`;
-        // 402 / 429 match as whole numbers only: a substring match would fire on
-        // any id, port or duration that happens to contain those digits.
-        const noCreditsErrorExpr = sql`(${heartbeatRuns.error} is not null and (${heartbeatRuns.error} ~* '(^|[^[:alnum:]])402([^[:alnum:]]|$)' or ${heartbeatRuns.error} ilike '%insufficient_quota%' or ${heartbeatRuns.error} ilike '%credits insufficient%'))`;
-        const roleRows = await db
-          .select({
-            role: agents.role,
-            channel: channelExpr,
-            finishedCount: sql<number>`count(*)::int`,
-            succeededCount: sql<number>`count(*) filter (where ${heartbeatRuns.status} = 'succeeded')::int`,
-            refusalCount: sql<number>`count(*) filter (where ${modelRefusalExpr})::int`,
-            lastError: sql<string | null>`(array_agg(${heartbeatRuns.error} order by ${heartbeatRuns.finishedAt} desc nulls last))[1]`,
-            lastFinishedAt: sql<string | null>`max(${heartbeatRuns.finishedAt})::text`,
-            lastRefusalError: sql<string | null>`(array_agg(${heartbeatRuns.error} order by ${heartbeatRuns.finishedAt} desc nulls last) filter (where ${modelRefusalExpr}))[1]`,
-            lastRefusalAt: sql<string | null>`max(${heartbeatRuns.finishedAt}) filter (where ${modelRefusalExpr})::text`,
-            noCreditsRunError: sql<string | null>`(array_agg(${heartbeatRuns.error} order by ${heartbeatRuns.finishedAt} desc nulls last) filter (where ${noCreditsErrorExpr}))[1]`,
-            noCreditsAt: sql<string | null>`max(${heartbeatRuns.finishedAt}) filter (where ${noCreditsErrorExpr})::text`,
-          })
-          .from(heartbeatRuns)
-          .innerJoin(agents, eq(agents.id, heartbeatRuns.agentId))
-          .where(and(
-            eq(heartbeatRuns.companyId, companyId),
-            eq(agents.companyId, companyId),
-            inArray(heartbeatRuns.status, ["succeeded", "failed", "timed_out"]),
-            isNotNull(heartbeatRuns.finishedAt),
-            gte(heartbeatRuns.finishedAt, windowStart),
-            // updated_at is never older than finished_at; the extra bound lets
-            // heartbeat_runs_company_status_updated_idx serve the window instead
-            // of scanning every finished run of the company.
-            gte(heartbeatRuns.updatedAt, windowStart),
-          ))
-          .groupBy(agents.role, channelExpr);
-
-        // Role cards: the >=5-refused / 0-succeeded threshold is per ROLE —
-        // runs across all channels of the role count together, so an outage
-        // spread over a primary and a fallback channel still trips it. Only
-        // runs classified as model refusals (adapter marker or provider
-        // quota/limit markers in the error text) count toward the floor:
-        // ordinary adapter/process failures must not raise this
-        // operator-critical signal.
-        const byRole = new Map<string, {
-          finishedCount: number;
-          succeededCount: number;
-          refusalCount: number;
-          lastError: string | null;
-          lastFinishedAt: string | null;
-          lastRefusalError: string | null;
-          lastRefusalAt: string | null;
-          primaryChannel: string;
-          primaryRuns: number;
-        }>();
-        for (const row of roleRows) {
-          const agg = byRole.get(row.role) ?? {
-            finishedCount: 0,
-            succeededCount: 0,
-            refusalCount: 0,
-            lastError: null,
-            lastFinishedAt: null,
-            lastRefusalError: null,
-            lastRefusalAt: null,
-            primaryChannel: row.channel,
-            primaryRuns: 0,
-          };
-          agg.finishedCount += row.finishedCount;
-          agg.succeededCount += row.succeededCount;
-          agg.refusalCount += row.refusalCount;
-          if (row.lastFinishedAt != null
-            && (agg.lastFinishedAt == null || row.lastFinishedAt > agg.lastFinishedAt)) {
-            agg.lastFinishedAt = row.lastFinishedAt;
-            agg.lastError = row.lastError;
-          }
-          if (row.lastRefusalAt != null
-            && (agg.lastRefusalAt == null || row.lastRefusalAt > agg.lastRefusalAt)) {
-            agg.lastRefusalAt = row.lastRefusalAt;
-            agg.lastRefusalError = row.lastRefusalError;
-          }
-          if (row.finishedCount > agg.primaryRuns) {
-            agg.primaryRuns = row.finishedCount;
-            agg.primaryChannel = row.channel;
-          }
-          byRole.set(row.role, agg);
-        }
-        // The dedupKey is per ROLE (not per channel): ONE card per role even
-        // when several channels failed. The card disappears on the role's
-        // first successful run — the 0-succeeded condition drops out. The
-        // floor counts MODEL-REFUSAL finishes only; a role whose runs fail
-        // for ordinary (non-provider) reasons stays silent.
-        const downRoles = [...byRole.entries()]
-          .filter(([, agg]) => agg.finishedCount >= ROLE_MODEL_DOWN_MIN_RUNS
-            && agg.succeededCount === 0
-            && agg.refusalCount >= ROLE_MODEL_DOWN_MIN_RUNS);
+        const { roleRows, downRoles } = await loadRoleModelDownState(db, companyId, now);
 
         for (const [role, agg] of downRoles) {
           const observedAt = toIso(agg.lastRefusalAt ?? agg.lastFinishedAt);
