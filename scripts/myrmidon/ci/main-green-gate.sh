@@ -15,20 +15,18 @@
 # broken main, compounding the breakage.
 #
 # This gate acts as a required PR check (like release `freeze`):
-#   - OPE-12889: the verdict comes from the latest COMPLETED Myrmidon CI run on
-#     `main`. A queued/in_progress run is not red — while the previous completed
-#     run is green, PRs may merge (main CI takes ~40 minutes per merge).
-#   - OPE-12889 review: HEAD may have moved past the last completed run while a
-#     new main CI run on the fresh HEAD is still queued/in_progress; that
-#     in-flight run is not a verdict either. The gate stays green while a run for
-#     the current HEAD exists and has not failed, and red once the run on HEAD
-#     completes with a non-success conclusion.
-#   - Exits 0 (GREEN) when the latest completed Myrmidon CI run on `main` has
-#     conclusion: success AND no open issue labelled `main-red` exists (an
-#     in-flight run on a moved HEAD does not change this).
-#   - Exits 1 (RED) when the latest completed `main` CI run concluded with
-#     failure/cancelled/timed_out/etc., an issue labelled `main-red` is open, or
-#     no completed run exists at all (fail closed).
+#   - OPE-12889 (incl. review round): while the CURRENT main HEAD has a
+#     queued/in_progress CI run, the verdict comes from the latest COMPLETED
+#     run with conclusion success — an in-flight run is not a verdict, and a
+#     cancelled run (superseded by the next push before it could finish) is not
+#     a red verdict either. When the in-flight run completes, the rerun/disarm
+#     lane re-evaluates: success keeps main green, failure turns it red.
+#   - Exits 0 (GREEN) when the verdict run has conclusion: success AND no open
+#     issue labelled `main-red` exists.
+#   - Exits 1 (RED) when the verdict run concluded with
+#     failure/cancelled/timed_out/etc. (no in-flight run on the current HEAD to
+#     defer to, and no completed success to fall back to), an issue labelled
+#     `main-red` is open, or no completed run exists at all (fail closed).
 #   - Fails closed (RED) on API / auth errors so network/token glitches never
 #     wave PRs through into an unverified main.
 #
@@ -36,7 +34,7 @@
 # engine (`autoMergeRequest`) refuses to merge any PR while this check is red.
 #
 # Modes:
-#   --check        Exits 0 if the last completed main CI run is green, 1 otherwise.
+#   --check        Exits 0 if the main CI verdict is green, 1 otherwise.
 #   --status       Prints a one-line status (green | red:<reason> | pending:<reason>).
 #
 # Environment:
@@ -54,7 +52,7 @@ while (($#)); do
   case "$1" in
     --check) mode="check"; shift ;;
     --status) mode="status"; shift ;;
-    -h|--help) sed -n '2,45p' "$0"; exit 0 ;;
+    -h|--help) sed -n '2,46p' "$0"; exit 0 ;;
     *) die "unknown argument: $1" ;;
   esac
 done
@@ -101,14 +99,13 @@ if [[ -n "$open_red_issues" ]]; then
   die "MAIN BRANCH IS RED ($reason) — PR merges are blocked until main CI is fixed and green"
 fi
 
-# 2. Inspect the latest COMPLETED Myrmidon CI workflow run on base branch (event=push, branch=$base_branch)
+# 2. Inspect Myrmidon CI workflow runs on base branch (event=push, branch=$base_branch)
 # OPE-11694: Query workflow runs directly by branch and event=push, NOT check-runs on head commit SHA.
 # Check-runs by commit SHA mix runs from release tags, other branches, or PRs sharing that SHA.
 # Release tags run "Myrmidon CI (tag)" on the same SHA as main HEAD; a failure in tag CI must
 # not block PR merges when main branch CI is green.
-# OPE-12889: A queued/in_progress run is NOT the verdict — the gate reads the latest
-# run whose status == completed, so the ~40-minute main CI window after a merge
-# does not block PRs while the previous completed run is green.
+# OPE-12889: A queued/in_progress run is NOT the verdict — the gate reads completed runs, so
+# the ~40-minute main CI window after a merge does not block PRs.
 head_sha="$(gh api "repos/$repo/commits/$base_branch" --jq '.sha' 2>/dev/null || true)"
 
 runs_json="$(gh api "repos/$repo/actions/workflows/myrmidon-ci.yml/runs?branch=$base_branch&event=push&per_page=20" 2>/dev/null || true)"
@@ -117,21 +114,28 @@ if [[ -z "$runs_json" || "$(jq -r '.workflow_runs // empty' <<<"$runs_json")" ==
   runs_json="$(gh api "repos/$repo/actions/runs?branch=$base_branch&event=push&per_page=20" 2>/dev/null || true)"
 fi
 
-latest_run="$(jq -r '
+select_completed="$(cat <<'JQ'
   def match_workflow:
     (.path == null or .path == ".github/workflows/myrmidon-ci.yml" or .name == null or .name == "Myrmidon CI");
   (
-    [.workflow_runs[]? | select(.head_branch == "'"$base_branch"'" and (.event == null or .event == "push") and match_workflow and .status == "completed")]
+    [.workflow_runs[]? | select(.head_branch == "BASEBRANCH" and (.event == null or .event == "push") and match_workflow and EXTRA and .status == "completed")]
     | sort_by(.created_at) | reverse | .[0]
   ) // (
-    [.workflow_runs[]? | select(.head_branch == "'"$base_branch"'" and (.event == null or .event == "push") and .status == "completed")]
+    [.workflow_runs[]? | select(.head_branch == "BASEBRANCH" and (.event == null or .event == "push") and EXTRA and .status == "completed")]
     | sort_by(.created_at) | reverse | .[0]
   ) // empty
-' <<<"$runs_json")"
+JQ
+)"
+
+latest_run="$(sed -e 's#BASEBRANCH#'"$base_branch"'#g' -e 's#EXTRA#true#' <<<"$select_completed" | jq -r "$(cat)" <<<"$runs_json")"
+
+# Latest COMPLETED run with conclusion success — the fallback verdict while the
+# current HEAD has CI in flight (OPE-12889 review).
+last_success="$(sed -e 's#BASEBRANCH#'"$base_branch"'#g' -e 's#EXTRA#.conclusion == "success"#' <<<"$select_completed" | jq -r "$(cat)" <<<"$runs_json")"
 
 # Runs on the current HEAD that have not completed yet (queued/in_progress).
-# OPE-12889 review: their existence (not their state) decides whether a moved
-# HEAD keeps the verdict of the last completed run.
+# OPE-12889 review: their existence (not their state) decides whether the
+# verdict defers to the latest completed success.
 head_pending_count="$(jq -r --arg sha "$head_sha" '
   ([.workflow_runs[]?
     | select(.head_sha == $sha and .status != "completed")]
@@ -139,8 +143,8 @@ head_pending_count="$(jq -r --arg sha "$head_sha" '
 ' <<<"$runs_json" 2>/dev/null || echo 0)"
 
 # Newest run on the current HEAD, completed or not — used to catch a HEAD whose
-# newest CI attempt already finished red while the last completed run overall is
-# an older success (stale-green protection).
+# newest CI attempt already finished red while the last completed success is an
+# older commit and nothing is in flight (stale-green protection).
 head_newest="$(jq -r --arg sha "$head_sha" '
   ([.workflow_runs[]?
     | select(.head_sha == $sha)]
@@ -155,55 +159,64 @@ pending_info="$(jq -r '
   ) // empty
 ' <<<"$runs_json")"
 
+green_exit() {
+  local run_id="$1" run_sha="$2" deferred="$3"
+  if [[ "$deferred" == "1" ]]; then
+    log "main HEAD has CI in flight (${pending_info:-unknown}); verdict from latest completed success run #$run_id (commit $run_sha)."
+  fi
+  log "main branch CI is GREEN (latest completed success run #$run_id on commit $run_sha). Merges permitted."
+  [[ -n "$pending_info" ]] && [[ "$deferred" != "1" ]] && log "current CI state: $pending_info (not a red verdict)"
+  if [[ "$mode" == "status" ]]; then
+    printf 'green\n'
+  fi
+  exit 0
+}
+
+red_exit() {
+  local reason="$1"
+  if [[ "$mode" == "status" ]]; then
+    printf 'red:%s\n' "$reason"
+    exit 0
+  fi
+  die "MAIN BRANCH CI IS RED ($reason) — PR merges are blocked until main CI is fixed and green"
+}
+
+# 3. In-flight deferral (OPE-12889 review): while the current HEAD has a
+# queued/in_progress main CI run, the verdict is the latest COMPLETED run with
+# conclusion success. A cancelled run superseded by the next push is not red.
+if [[ "${head_pending_count:-0}" -gt 0 && -n "$last_success" && "$last_success" != "null" ]]; then
+  s_id="$(jq -r '.id' <<<"$last_success")"
+  s_sha="$(jq -r '.head_sha' <<<"$last_success")"
+  green_exit "$s_id" "$s_sha" 1
+fi
+
 if [[ -n "$latest_run" && "$latest_run" != "null" ]]; then
   run_id="$(jq -r '.id' <<<"$latest_run")"
   run_conclusion="$(jq -r '.conclusion // "unknown"' <<<"$latest_run")"
   run_sha="$(jq -r '.head_sha' <<<"$latest_run")"
 
   if [[ "$run_conclusion" == "success" ]]; then
-    # OPE-12889: HEAD may have moved past the last completed run while a new
-    # main CI run on the fresh HEAD is still queued/in_progress. That in-flight
-    # run is not a verdict — the latest completed success keeps the gate green
-    # (the rerun/disarm lane re-evaluates when the in-flight run completes).
     if [[ -n "$head_sha" && -n "$run_sha" && "$head_sha" != "$run_sha" ]]; then
-      if [[ "${head_pending_count:-0}" -eq 0 ]]; then
-        # Stale-green protection: HEAD moved but no run is in flight for it and
-        # its newest attempt is not pending. If its newest attempt already
-        # completed non-success, that run IS the verdict (fresh red); otherwise
-        # no CI has started for the new HEAD at all — fail closed.
-        head_conclusion="$(jq -r '.conclusion // "unknown"' <<<"${head_newest:-}" 2>/dev/null || true)"
-        if [[ -n "$head_newest" && "$head_newest" != "null" && "$head_conclusion" != "success" ]]; then
-          head_id="$(jq -r '.id' <<<"$head_newest")"
-          reason="latest completed run #$run_id is stale: run #$head_id on the current HEAD $head_sha concluded with $head_conclusion"
-          if [[ "$mode" == "status" ]]; then
-            printf 'red:%s\n' "$reason"
-            exit 0
-          fi
-          die "MAIN BRANCH CI IS RED ($reason) — PR merges are blocked until main CI is fixed and green"
+      # HEAD moved past the completed success and nothing is in flight for it.
+      if [[ -n "$head_newest" && "$head_newest" != "null" ]]; then
+        h_conclusion="$(jq -r '.conclusion // "unknown"' <<<"$head_newest")"
+        if [[ "$h_conclusion" != "success" ]]; then
+          h_id="$(jq -r '.id' <<<"$head_newest")"
+          red_exit "latest completed run #$run_id is stale: run #$h_id on the current HEAD $head_sha concluded with $h_conclusion"
         fi
-        reason="head moved to $head_sha but no CI run has started or completed for it yet"
-        if [[ "$mode" == "status" ]]; then
-          printf 'pending:%s\n' "$reason"
-          exit 0
-        fi
-        die "MAIN BRANCH HAS FRESH COMMITS WITHOUT GREEN CI ($reason)"
       fi
-      log "main HEAD has CI in flight; verdict from last completed run #$run_id (success on commit $run_sha)."
+      # Fail closed: HEAD moved but no CI run has even started for it yet.
+      reason="head moved to $head_sha but no CI run has started or completed for it yet"
+      if [[ "$mode" == "status" ]]; then
+        printf 'pending:%s\n' "$reason"
+        exit 0
+      fi
+      die "MAIN BRANCH HAS FRESH COMMITS WITHOUT GREEN CI ($reason)"
     fi
-    log "main branch CI is GREEN (latest completed run #$run_id succeeded on commit $run_sha). Merges permitted."
-    [[ -n "$pending_info" ]] && log "current CI state: $pending_info (not a red verdict)"
-    if [[ "$mode" == "status" ]]; then
-      printf 'green\n'
-    fi
-    exit 0
+    green_exit "$run_id" "$run_sha" 0
   fi
 
-  reason="latest completed run #$run_id concluded with $run_conclusion on commit $run_sha"
-  if [[ "$mode" == "status" ]]; then
-    printf 'red:%s\n' "$reason"
-    exit 0
-  fi
-  die "MAIN BRANCH CI IS RED ($reason) — PR merges are blocked until main CI is fixed and green"
+  red_exit "latest completed run #$run_id concluded with $run_conclusion on commit $run_sha"
 fi
 
 # Default: could not verify green status. A queued/in_progress-only history
