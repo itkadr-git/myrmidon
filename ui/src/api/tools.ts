@@ -86,6 +86,14 @@ import { api } from "./client";
  */
 
 export type ToolApplicationsResponse = { applications: ToolApplication[] };
+// myrmidon(1.7 TOOL-COMPLAINTS-UI, OPE-12229): re-exported for the complaints
+// panel consumers that read the complaint contracts off the tools API client.
+export type {
+  ToolComplaint,
+  ToolComplaintStatus,
+  ToolComplaintThresholdWarning,
+  ToolComplaintsFeedResponse,
+} from "@myrmidon/shared";
 export type ToolConnectionsResponse = { connections: ToolConnection[] };
 export type ToolCatalogResponse = { catalog: ToolCatalogEntry[] };
 export type ToolRuntimeSlotsResponse = { runtimeSlots: ToolRuntimeSlot[] };

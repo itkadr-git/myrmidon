@@ -43,7 +43,7 @@ import {
 } from "@myrmidon/shared";
 import { forbidden, notFound, unauthorized } from "../../errors.js";
 import { validate } from "../../middleware/validate.js";
-import { hasCompanyAccess } from "../../routes/authz.js";
+import { getActorInfo, hasCompanyAccess } from "../../routes/authz.js";
 import { persistActivity, publishActivity } from "../../services/activity-log.js";
 import { readAgentToolPermissions } from "@myrmidon/shared";
 import type { agents } from "@myrmidon/db";
@@ -159,22 +159,20 @@ export function toolComplaintRoutes(db: Db) {
   });
 
   // myrmidon(1.7 TOOL-COMPLAINTS-UI, OPE-12229): the board triages a
-  // complaint (acknowledge, resolve). The company scope travels the same
-  // path as the feed read: the row must belong to a company the actor may
-  // see, and an agent may only act inside its own company.
+  // complaint (acknowledge, resolve). Board-only: an agent files complaints,
+  // it never closes them — the triage action is the operator's decision.
+  // The company scope travels the same path as the feed read: the row must
+  // belong to a company the actor may see.
   router.patch(
     "/myrmidon/tool-complaints/:id",
     validate(toolComplaintUpdateSchema),
     async (req, res) => {
-      const { actor } = req;
-      if (actor.type === "agent") {
-        if (!actor.companyId) throw unauthorized();
-      } else if (actor.type !== "board") {
-        throw unauthorized();
+      const actorInfo = getActorInfo(req);
+      if (actorInfo.actorType !== "user") {
+        throw forbidden("Only board users can triage tool complaints");
       }
       const requested = typeof req.query.companyId === "string" ? req.query.companyId.trim() : "";
-      const companyId =
-        actor.type === "agent" ? actor.companyId : requested || (actor.companyIds?.[0] ?? "");
+      const companyId = requested || (req.actor.companyIds?.[0] ?? "");
       if (!companyId || !hasCompanyAccess(req, companyId)) {
         throw forbidden("User does not have access to this company");
       }
@@ -191,10 +189,9 @@ export function toolComplaintRoutes(db: Db) {
         if (!updated) return {};
         const { publication } = await persistActivity(tx as unknown as Db, {
           companyId,
-          actorType: actor.type === "board" ? "board" : "agent",
-          actorId: actor.type === "board" ? (actor.userId ?? null) : actor.agentId,
-          agentId: actor.type === "agent" ? actor.agentId : null,
-          ...(actor.type === "agent" && actor.keyId ? { agentApiKeyId: actor.keyId } : {}),
+          actorType: actorInfo.actorType,
+          actorId: actorInfo.actorId,
+          agentId: null,
           action: TOOL_COMPLAINT_UPDATED_ACTION,
           entityType: "tool_complaint",
           entityId: updated.id,

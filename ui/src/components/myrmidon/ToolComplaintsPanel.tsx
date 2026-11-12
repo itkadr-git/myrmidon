@@ -32,11 +32,14 @@ import {
   toolsApi,
   type ToolComplaint,
   type ToolComplaintStatus,
-  type ToolComplaintsFeedResponse,
+  type ToolComplaintThresholdWarning,
 } from "@/api/tools";
 
 // myrmidon(OPE-8950): visible strings live in area.settings-company.tool-complaints-panel.*
 type Translate = (key: string, options?: Record<string, unknown>) => string;
+
+/** The threshold warning card the feed travels with (one per tool). */
+type ThresholdWarning = ToolComplaintThresholdWarning;
 
 /** The complaint statuses the status filter offers, in display order. */
 export const COMPLAINT_STATUS_FILTERS = ["all", "open", "acknowledged", "resolved"] as const;
@@ -44,7 +47,7 @@ export type ComplaintStatusFilter = (typeof COMPLAINT_STATUS_FILTERS)[number];
 
 export interface ToolComplaintsPanelViewProps {
   complaints: ToolComplaint[];
-  thresholdWarnings: ToolComplaintsFeedResponse["thresholdWarnings"];
+  thresholdWarnings: ThresholdWarning[];
   loading: boolean;
   error: string | null;
   pendingId: string | null;
