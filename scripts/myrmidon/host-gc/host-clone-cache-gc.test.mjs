@@ -8,6 +8,9 @@ import subprocess from "node:child_process";
 import { describe, it, beforeEach, afterEach } from "node:test";
 
 const ROOT = path.resolve(new URL("../../..", import.meta.url).pathname);
+// A bot container exports empty GIT_AUTHOR_*/GIT_COMMITTER_* variables; git honors an
+// empty env var over config, which breaks commit fixtures. Strip them everywhere.
+const GIT_ENV = Object.fromEntries(Object.entries(process.env).filter(([k]) => !/^(GIT_AUTHOR_|GIT_COMMITTER_)/.test(k)));
 const {
   parseArgs,
   acquireLock,
@@ -413,7 +416,7 @@ describe("unpushed-work scan", () => {
     // Identity goes on argv (-c): a PATH `git` that is a launcher wrapper may strip
     // GIT_AUTHOR_*/GIT_COMMITTER_* from the environment, argv config survives.
     const git = (args, cwd2 = dir) => {
-      const r = subprocess.spawnSync("git", ["-c", "user.name=t", "-c", "user.email=t@t", ...args], { cwd: cwd2, encoding: "utf8", env: process.env });
+      const r = subprocess.spawnSync("git", ["-c", "user.name=t", "-c", "user.email=t@t", ...args], { cwd: cwd2, encoding: "utf8", env: GIT_ENV });
       if (r.status !== 0) throw new Error(`git ${args.join(" ")}: ${r.stderr}`);
       return r;
     };
@@ -798,7 +801,7 @@ describe("runner task folders", () => {
     // Identity goes on argv (-c): a PATH `git` that is a launcher wrapper may strip
     // GIT_AUTHOR_*/GIT_COMMITTER_* from the environment, argv config survives.
     const git = (args, cwd2 = dir) => {
-      const r = subprocess.spawnSync("git", ["-c", "user.name=t", "-c", "user.email=t@t", ...args], { cwd: cwd2, encoding: "utf8", env: process.env });
+      const r = subprocess.spawnSync("git", ["-c", "user.name=t", "-c", "user.email=t@t", ...args], { cwd: cwd2, encoding: "utf8", env: GIT_ENV });
       if (r.status !== 0) throw new Error(`git ${args.join(" ")}: ${r.stderr}`);
       return r;
     };
@@ -973,7 +976,11 @@ describe("runner task folders", () => {
     const botsRoot = path.join(tmpDir, "bots");
     fs.mkdirSync(botsRoot, { recursive: true });
     const journal = path.join(tmpDir, "gc-task.jsonl");
-    const env = { ...process.env, HOST_GC_RUNNER_ROOTS: "", PATH: process.env.PATH, PAPERCLIP_API_URL: "http://127.0.0.1:9", ...envOverrides };
+    // A plain PATH: the GC subprocess makes ~a dozen read-only git calls per folder,
+    // and a launcher-wrapper `git` on PATH multiplies each into a probe/broker walk
+    // that together busts the 120 s spawn timeout. The host GC runs on a host whose
+    // PATH git is the real binary, so this matches production.
+    const env = { ...GIT_ENV, HOST_GC_RUNNER_ROOTS: "", PATH: "/usr/bin:/bin", PAPERCLIP_API_URL: "http://127.0.0.1:9", ...envOverrides };
     const res = subprocess.spawnSync(process.execPath, [
       GC_SCRIPT, "--env", "/nonexistent", "--root", botsRoot,
       "--journal", journal, "--lock", path.join(tmpDir, "gc-task.lock"), "--proc-dir", path.join(tmpDir, "proc"),
@@ -1034,11 +1041,22 @@ describe("runner task folders", () => {
   it("e2e: dry-run removes nothing and lists the plan", async () => {
     const runners = path.join(tmpDir, "runners");
     const clean = makeTaskFolder(runners, "eng21", "OPE-9201", { ageHours: 30 });
-    const { res, events } = runGcTask(["--dry-run", "--runner-root", runners]);
-    assert.equal(res.status, 0, res.stderr);
-    assert.equal(fs.existsSync(clean), true);
-    assert.equal(events.find((e) => e.event === "dry-run").runnerTaskFolders, 1);
-    const out = JSON.parse(res.stdout);
-    assert.deepEqual(out.plan.runnerTaskFolders.map((i) => [i.path, i.action]), [[clean, "remove"]]);
+    const http = await import("node:http");
+    const fake = http.createServer((req, res) => {
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ status: "done" }));
+    });
+    await new Promise((resolve) => fake.listen(0, "127.0.0.1", resolve));
+    const port = fake.address().port;
+    try {
+      const { res, events } = runGcTask(["--dry-run", "--runner-root", runners], { PAPERCLIP_API_URL: `http://127.0.0.1:${port}` });
+      assert.equal(res.status, 0, res.stderr);
+      assert.equal(fs.existsSync(clean), true);
+      assert.equal(events.find((e) => e.event === "dry-run").runnerTaskFolders, 1);
+      const out = JSON.parse(res.stdout);
+      assert.deepEqual(out.plan.runnerTaskFolders.map((i) => [i.path, i.action]), [[clean, "remove"]]);
+    } finally {
+      fake.close();
+    }
   });
 });

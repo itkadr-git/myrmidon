@@ -92,8 +92,8 @@ const HERMES_GATEWAY_ADAPTER_TYPE = "hermes_gateway";
 // archive is the safety net for work the host cannot inspect. Folders of issues in any
 // other status are kept, and the pass runs only when a runner root is configured (the
 // same gate as the run-copy pass above).
-const RUNNER_TASK_FOLDER_NAME = /^(OPE-\d+(?:-wt)?|wt-ope\d+)$/;
-const RUNNER_TASK_FOLDER_KEY = /OPE-(\d+)/;
+const RUNNER_TASK_FOLDER_NAME = /^(OPE-\d+(?:-wt)?|wt-ope\d+)$/i;
+const RUNNER_TASK_FOLDER_KEY = /OPE-(\d+)/i;
 
 // --- Env Config -------------------------------------------------------------
 
