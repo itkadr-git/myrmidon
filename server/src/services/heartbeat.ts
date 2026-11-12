@@ -12900,9 +12900,195 @@ export function heartbeatService(
     return dropped;
   }
 
+  // myrmidon(OPE-12725): give a just-triggered monitor this long before the
+  // sweep treats it as abandoned; matches the 5-minute claim-staleness
+  // convention above with margin for the wake to start a run.
+  const MONITOR_TRIGGERED_STALE_GRACE_MS = 10 * 60_000;
+
+  // myrmidon(OPE-12725, MONITOR-TRIGGERED-STUCK): after a monitor fires,
+  // `buildIssueMonitorTriggeredPatch` strips the policy monitor and nulls
+  // `monitorNextCheckAt`. If the woken run dies without settling the wait, the
+  // issue keeps `execution_state.monitor.status = "triggered"` forever: no
+  // timer exists, so nothing ever re-checks. This level-triggered sweep runs
+  // on every scheduler tick next to `dropInactiveDueIssueMonitors` and closes
+  // monitors whose `timeoutAt` (persisted in execution state after the
+  // trigger) has expired, waking the assignee once per trigger; while the
+  // timeout is still ahead it re-arms a bounded next check after a grace
+  // period. An orphaned monitor (`execution_policy` monitor stripped or the
+  // policy gone) has the same post-trigger shape and is covered by the same
+  // predicate; clearing it also unblocks comment-driven wakes that the
+  // release-drain monitor gate would otherwise keep deferring.
+  async function sweepStuckTriggeredIssueMonitors(now: Date) {
+    const graceCutoff = new Date(now.getTime() - MONITOR_TRIGGERED_STALE_GRACE_MS);
+    const stuck = await db
+      .select(issueMonitorDispatchColumns)
+      .from(issues)
+      .innerJoin(companies, eq(companies.id, issues.companyId))
+      .where(
+        and(
+          eq(companies.status, "active"),
+          sql`${issues.monitorNextCheckAt} is null`,
+          isNull(issues.assigneeUserId),
+          sql`${issues.assigneeAgentId} is not null`,
+          inArray(issues.status, ["in_progress", "in_review", "blocked"]),
+          sql`${issues.executionState} -> 'monitor' ->> 'status' = 'triggered'`,
+          or(
+            isNull(issues.monitorLastTriggeredAt),
+            lt(issues.monitorLastTriggeredAt, graceCutoff),
+          ),
+        ),
+      )
+      .orderBy(asc(issues.monitorLastTriggeredAt))
+      .limit(50);
+
+    let swept = 0;
+    for (const row of stuck) {
+      try {
+        const state = parseIssueExecutionState(row.executionState)?.monitor ?? null;
+        const timeoutAt = parseMonitorDate(state?.timeoutAt ?? null);
+        const lastTriggeredAt = row.monitorLastTriggeredAt ?? parseMonitorDate(state?.lastTriggeredAt ?? null);
+        if (!timeoutAt || !lastTriggeredAt) continue;
+
+        if (now.getTime() < timeoutAt.getTime()) {
+          // Still inside the configured timeout window: re-arm a bounded next
+          // check so the wait can resume. Dispatch works without a policy
+          // monitor (`issueMonitorLimitClearReason` then returns null and the
+          // due wake goes out as a plain re-check of the external wait).
+          const backoffMs = Math.min(
+            10 * 60_000,
+            30_000 * Math.pow(2, Math.min(row.monitorAttemptCount ?? 0, 4)),
+          );
+          const nextCheckAt = new Date(Math.min(now.getTime() + backoffMs, timeoutAt.getTime()));
+          const [rearmed] = await db
+            .update(issues)
+            .set({
+              monitorNextCheckAt: nextCheckAt,
+              monitorWakeRequestedAt: null,
+              updatedAt: now,
+            })
+            .where(
+              and(
+                eq(issues.id, row.id),
+                sql`${issues.monitorNextCheckAt} is null`,
+                sql`${issues.executionState} -> 'monitor' ->> 'status' = 'triggered'`,
+              ),
+            )
+            .returning({ id: issues.id });
+          if (!rearmed) continue;
+          await logActivity(db, {
+            companyId: row.companyId,
+            actorType: "system",
+            actorId: "heartbeat_scheduler",
+            agentId: null,
+            runId: null,
+            action: "issue.monitor_rearmed_after_trigger",
+            entityType: "issue",
+            entityId: row.id,
+            details: {
+              identifier: row.identifier,
+              lastTriggeredAt: lastTriggeredAt.toISOString(),
+              timeoutAt: timeoutAt.toISOString(),
+              nextCheckAt: nextCheckAt.toISOString(),
+              attemptCount: row.monitorAttemptCount ?? 0,
+              source: "scheduled",
+            },
+          });
+          swept += 1;
+          continue;
+        }
+
+        const policy = normalizeIssueExecutionPolicy(row.executionPolicy ?? null);
+        const [cleared] = await db
+          .update(issues)
+          .set({
+            ...buildIssueMonitorClearedPatch({
+              issue: row,
+              policy,
+              clearReason: "timeout_exceeded",
+              clearedAt: now,
+            }),
+            updatedAt: now,
+          })
+          .where(
+            and(
+              eq(issues.id, row.id),
+              sql`${issues.monitorNextCheckAt} is null`,
+              sql`${issues.executionState} -> 'monitor' ->> 'status' = 'triggered'`,
+            ),
+          )
+          .returning({ id: issues.id });
+        if (!cleared) continue;
+
+        await logActivity(db, {
+          companyId: row.companyId,
+          actorType: "system",
+          actorId: "heartbeat_scheduler",
+          agentId: null,
+          runId: null,
+          action: "issue.monitor_timeout_swept",
+          entityType: "issue",
+          entityId: row.id,
+          details: {
+            identifier: row.identifier,
+            lastTriggeredAt: lastTriggeredAt.toISOString(),
+            timeoutAt: timeoutAt.toISOString(),
+            attemptCount: row.monitorAttemptCount ?? 0,
+            notes: row.monitorNotes ?? null,
+            serviceName: state?.serviceName ?? null,
+            clearReason: "timeout_exceeded",
+            source: "scheduled",
+          },
+        });
+
+        await enqueueWakeup(row.assigneeAgentId!, {
+          source: "automation",
+          triggerDetail: "system",
+          reason: "issue_monitor_timeout",
+          idempotencyKey: `issue-monitor-timeout:${row.id}:${lastTriggeredAt.toISOString()}`,
+          payload: withRecoveryContext(
+            {
+              issueId: row.id,
+              clearReason: "timeout_exceeded",
+              monitorAttemptCount: row.monitorAttemptCount ?? 0,
+              monitorNotes: row.monitorNotes ?? null,
+              serviceName: state?.serviceName ?? null,
+              timeoutAt: state?.timeoutAt ?? null,
+              maxAttempts: state?.maxAttempts ?? null,
+            },
+            "status_only",
+          ),
+          requestedByActorType: "system",
+          requestedByActorId: "heartbeat_scheduler",
+          contextSnapshot: withRecoveryContext(
+            {
+              issueId: row.id,
+              source: "issue.monitor.timeout_sweep",
+              wakeReason: "issue_monitor_timeout",
+              clearReason: "timeout_exceeded",
+              monitorAttemptCount: row.monitorAttemptCount ?? 0,
+              monitorNotes: row.monitorNotes ?? null,
+              serviceName: state?.serviceName ?? null,
+              timeoutAt: state?.timeoutAt ?? null,
+              maxAttempts: state?.maxAttempts ?? null,
+            },
+            "status_only",
+          ),
+        });
+
+        swept += 1;
+      } catch (err) {
+        logger.error({ err, issueId: row.id }, "failed to sweep stuck triggered issue monitor");
+      }
+    }
+    return swept;
+  }
+
   async function tickDueIssueMonitors(now = new Date()) {
     await dropInactiveDueIssueMonitors(now).catch((err) => {
       logger.error({ err }, "dropping inactive issue monitors failed");
+    });
+    await sweepStuckTriggeredIssueMonitors(now).catch((err) => {
+      logger.error({ err }, "sweeping stuck triggered issue monitors failed");
     });
     const staleClaimThreshold = new Date(now.getTime() - 5 * 60 * 1000);
     const dueMonitors = await db

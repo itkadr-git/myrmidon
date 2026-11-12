@@ -1587,6 +1587,7 @@ const ISSUE_WAKE_DIAGNOSTIC_KNOWN_REASONS = new Set([
   "issue_execution_same_name",
   "issue_monitor_recovery",
   "issue_monitor_recovery_issue",
+  "issue_monitor_timeout",
   "issue_reassignment_rollback",
   "issue_recovery_action_restored",
   "issue_review_path_lost",
