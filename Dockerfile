@@ -151,7 +151,9 @@ RUN pnpm --filter @myrmidon/plugin-sdk build
 ARG PAPERCLIP_BUILD_COMMIT=""
 ENV NODE_OPTIONS=--max-old-space-size=4096
 RUN pnpm --filter @myrmidon/server build
+RUN pnpm --filter myrmidon build
 RUN test -f server/dist/index.js || (echo "ERROR: server build output missing" && exit 1)
+RUN test -f cli/dist/index.js || (echo "ERROR: cli build output missing" && exit 1)
 RUN rm -rf packages/paperclip-runner/runner/target
 
 FROM base AS production
@@ -268,7 +270,7 @@ HEALTHCHECK --interval=30s --timeout=5s --start-period=60s --retries=3 \
   CMD curl -fsS "http://127.0.0.1:${PORT}/api/liveness" || exit 1
 
 ENTRYPOINT ["/usr/bin/tini", "--", "docker-entrypoint.sh"]
-CMD ["node", "--import", "./server/node_modules/tsx/dist/loader.mjs", "server/dist/index.js"]
+CMD ["node", "server/dist/index.js"]
 
 # Cloud image variant (build with `--target cloud`): the production image
 # plus built bundled sandbox-provider plugins. Managed instances receive a
