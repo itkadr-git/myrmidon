@@ -12,6 +12,7 @@ import {
   pullRequestHeadCiStateFromChecks,
   pullRequestHeadFinalCheckConclusion,
   reviewAdmissionDedupKey,
+  reviewVerdictCoversHead,
   selectOpenPullRequestWorkProduct,
 } from "./policy.js";
 import {
@@ -389,5 +390,32 @@ describe("reviewAdmissionDedupKey", () => {
     expect(reviewAdmissionDedupKey({ issueId: "issue-1", headSha: "   ", agentId: "agent-1" })).toBe(
       `${REVIEW_ADMISSION_KEY_PREFIX}issue-1:agent-1`,
     );
+  });
+});
+
+// myrmidon(OPE-12859): a stored verdict suppresses reviewer re-wakes only for
+// the head it names; a new head needs a new verdict.
+describe("reviewVerdictCoversHead", () => {
+  it("covers the head when the verdict names it", () => {
+    expect(reviewVerdictCoversHead({ headSha: "ABC123" }, "abc123")).toBe(true);
+  });
+
+  it("does not cover a different head", () => {
+    expect(reviewVerdictCoversHead({ headSha: "abc123" }, "def456")).toBe(false);
+  });
+
+  it("does not cover when there is no verdict", () => {
+    expect(reviewVerdictCoversHead(null, "abc123")).toBe(false);
+    expect(reviewVerdictCoversHead(undefined, "abc123")).toBe(false);
+  });
+
+  it("counts a head-less verdict (older records) for any head", () => {
+    expect(reviewVerdictCoversHead({ headSha: null }, "abc123")).toBe(true);
+    expect(reviewVerdictCoversHead({}, "abc123")).toBe(true);
+  });
+
+  it("does not cover when the current head is unknown", () => {
+    expect(reviewVerdictCoversHead({ headSha: "abc123" }, null)).toBe(false);
+    expect(reviewVerdictCoversHead({ headSha: "abc123" }, undefined)).toBe(false);
   });
 });
