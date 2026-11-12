@@ -1,5 +1,5 @@
 ---
-settings-section: Workspace restore merge lock (packages/adapter-utils)
+settings-section: Track 2 — wake and run core
 ---
 
 ## changelog-en
@@ -45,8 +45,6 @@ settings-section: Workspace restore merge lock (packages/adapter-utils)
 
 | `LOCK_WAIT_MS` (internal constant, not an environment variable) | OPE-12793 | `600000` | How long `acquireDirectoryMergeLock` waits for a live lock holder before throwing `ERR_WORKSPACE_RESTORE_LOCK_TIMEOUT`. Split from `LOCK_STALE_MS` (30000 ms), which remains only the stale-marker for lock directories without a readable `owner.json`. Defined in `packages/adapter-utils/src/workspace-restore-merge.ts`; not configurable. | Fixed constant; raising it only delays the failure of a genuinely stuck holder |
 
-## settings-ru-append
-
-<!-- section: Замок слияния восстановления рабочей копии (packages/adapter-utils) -->
+## settings-ru
 
 | `LOCK_WAIT_MS` (внутренняя константа, не переменная окружения) | OPE-12793 | `600000` | Сколько `acquireDirectoryMergeLock` ждёт живого владельца замка до выброса `ERR_WORKSPACE_RESTORE_LOCK_TIMEOUT`. Отделена от `LOCK_STALE_MS` (30000 мс), который остаётся только порогом протухания для замков без читаемого `owner.json`. Определена в `packages/adapter-utils/src/workspace-restore-merge.ts`; не настраивается. | Фиксированная константа; увеличение лишь отодвигает падение при реально зависшем владельце |
