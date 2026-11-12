@@ -482,6 +482,55 @@ it("does not hold maintenance-interrupted runs scheduled for retry", () => {
   })).toBe(false);
 });
 
+// myrmidon(PROVIDER-GARBAGE / OPE-12286): a provider stub reply returned with
+// HTTP 200 is an upstream outage, not a provider execution outcome. The stub
+// text proves the provider never processed the prompt, so a legacy failed run
+// marked provider_garbage is retried by the bounded scheduler (paused retries)
+// instead of waiting for operator reconciliation — exactly the model-unavailable
+// exclusion below, with the same "no provider work happened" semantics.
+it("does not hold provider_garbage runs for reconciliation; ordinary failures stay held", () => {
+  const garbageRun = {
+    runtimeMode: "legacy", status: "failed", errorCode: "provider_garbage",
+    scheduledRetryAttempt: 0,
+    resultJson: { executionRecovery: { kind: "bootstrap", providerWorkStarted: false } },
+  };
+  expect(legacyExecutionNeedsReconciliation(garbageRun)).toBe(false);
+  expect(legacyExecutionNeedsReconciliation({
+    ...garbageRun, resultJson: {},
+  })).toBe(false);
+  // The same failure without the provider_garbage code stays a reconciliation
+  // hold: the exclusion is keyed on the errorCode, not on generic outcome text.
+  expect(legacyExecutionNeedsReconciliation({
+    ...garbageRun, errorCode: "unknown_upstream_failure", resultJson: {},
+  })).toBe(true);
+});
+
+// myrmidon(PROVIDER-OUTAGE-RECOVERY, OPE-12506): a provider outage that never
+// reached provider execution is retried by the quota monitor even after the
+// ordinary retry budget is exhausted; without both the outage classification
+// and the bootstrap evidence the outcome is unknown and stays held.
+it("does not hold a provider outage whose bootstrap evidence proves no provider work, even after the retry budget", () => {
+  const outage = {
+    runtimeMode: "legacy", status: "failed", errorCode: "hermes_gateway_run_failed",
+    scheduledRetryAttempt: 3,
+    resultJson: {
+      errorMessage: "HTTP 429: No deployments available. All deployments in cooldown.",
+      errorFamily: "provider_quota",
+      executionRecovery: { kind: "bootstrap", providerWorkStarted: false },
+    },
+  };
+  expect(legacyExecutionNeedsReconciliation(outage)).toBe(false);
+  expect(legacyExecutionNeedsReconciliation({
+    ...outage, resultJson: { errorMessage: outage.resultJson.errorMessage, errorFamily: "provider_quota" },
+  })).toBe(true);
+  expect(legacyExecutionNeedsReconciliation({
+    ...outage, resultJson: { executionRecovery: { kind: "bootstrap", providerWorkStarted: false } },
+  })).toBe(true);
+  expect(legacyExecutionNeedsReconciliation({
+    ...outage, resultJson: { ...outage.resultJson, executionRecovery: { kind: "bootstrap", providerWorkStarted: true } },
+  })).toBe(true);
+});
+
 // myrmidon(CONTINUATION-WAIT-HOLD): a queued review/response wait is cancelled
 // before provider startup and must not create an execution reconciliation hold.
 it("does not hold queued continuations cancelled before provider startup", () => {

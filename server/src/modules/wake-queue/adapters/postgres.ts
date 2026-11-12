@@ -11,6 +11,7 @@ import type { Db } from "@myrmidon/db";
 import { tryClaimContinuationKey } from "../../../services/continuation-dedupe.js";
 import { runContextPersistenceFields } from "@myrmidon/db";
 import { extractIssueReferenceIdentifiers } from "@myrmidon/shared";
+import { isValidWakeCommentId } from "../../run-dispatch/domain/wake-context.js";
 import {
   activityLog,
   agentWakeupRequests,
@@ -175,16 +176,22 @@ function toDeferredWakeCandidate(row: typeof agentWakeupRequests.$inferSelect): 
 }
 
 export type WakeQueuePostgresAdapterDeps = {
-  resolveResponsibleUserId: WakeQueueHost["resolveResponsibleUserId"];
-  getRoutineEnv: WakeQueueHost["getRoutineEnv"];
-  resolveSessionBeforeForWakeup: WakeQueueHost["resolveSessionBeforeForWakeup"];
+  resolveResponsibleUserId: (
+    input: Parameters<WakeQueueHost["resolveResponsibleUserId"]>[0] & { tx: Db },
+  ) => ReturnType<WakeQueueHost["resolveResponsibleUserId"]>;
+  getRoutineEnv: (
+    input: Parameters<WakeQueueHost["getRoutineEnv"]>[0] & { tx: Db },
+  ) => ReturnType<WakeQueueHost["getRoutineEnv"]>;
+  resolveSessionBeforeForWakeup: (
+    input: Parameters<WakeQueueHost["resolveSessionBeforeForWakeup"]>[0] & { tx: Db },
+  ) => ReturnType<WakeQueueHost["resolveSessionBeforeForWakeup"]>;
 };
 
-function buildHost(_tx: Db, deps: WakeQueuePostgresAdapterDeps): WakeQueueHost {
+function buildHost(tx: Db, deps: WakeQueuePostgresAdapterDeps): WakeQueueHost {
   return {
-    resolveResponsibleUserId: deps.resolveResponsibleUserId,
-    getRoutineEnv: deps.getRoutineEnv,
-    resolveSessionBeforeForWakeup: deps.resolveSessionBeforeForWakeup,
+    resolveResponsibleUserId: (input) => deps.resolveResponsibleUserId({ ...input, tx }),
+    getRoutineEnv: (input) => deps.getRoutineEnv({ ...input, tx }),
+    resolveSessionBeforeForWakeup: (input) => deps.resolveSessionBeforeForWakeup({ ...input, tx }),
   };
 }
 
@@ -308,10 +315,14 @@ function buildTransaction(tx: Db, deps: WakeQueuePostgresAdapterDeps, db: Db, ru
     },
 
     async getQueuedCommentLiveness({ companyId, issueId, wakeAgentId, finishingRunId, finishingRunAgentId, queuedCommentIds }) {
-      const rows = await tx
+      // uuid-column boundary (OPE-12209): drop malformed queued ids before the
+      // query, never build `inArray` over a uuid column with them. The queue
+      // must keep draining around a poisoned id instead of throwing.
+      const validCommentIds = queuedCommentIds.filter(isValidWakeCommentId);
+      const rows = validCommentIds.length === 0 ? [] : await tx
         .select({ id: issueComments.id, deletedAt: issueComments.deletedAt, createdByRunId: issueComments.createdByRunId })
         .from(issueComments)
-        .where(and(eq(issueComments.companyId, companyId), eq(issueComments.issueId, issueId), inArray(issueComments.id, queuedCommentIds), currentConversationCommentCondition()));
+        .where(and(eq(issueComments.companyId, companyId), eq(issueComments.issueId, issueId), inArray(issueComments.id, validCommentIds), currentConversationCommentCondition()));
       const targetsFinishingRunAgent = wakeAgentId === finishingRunAgentId;
       const liveNonSelfCommentIds = queuedCommentIds.filter((commentId) => {
         const row = rows.find((candidate) => candidate.id === commentId);
@@ -407,10 +418,12 @@ function buildTransaction(tx: Db, deps: WakeQueuePostgresAdapterDeps, db: Db, ru
     },
 
     async getCommentSelfAuthorship({ companyId, issueId, finishingRunId, commentIds }) {
-      const rows = await tx
+      // uuid-column boundary (OPE-12209): same rule as getQueuedCommentLiveness.
+      const validCommentIds = commentIds.filter(isValidWakeCommentId);
+      const rows = validCommentIds.length === 0 ? [] : await tx
         .select({ createdByRunId: issueComments.createdByRunId })
         .from(issueComments)
-        .where(and(eq(issueComments.companyId, companyId), eq(issueComments.issueId, issueId), inArray(issueComments.id, commentIds)));
+        .where(and(eq(issueComments.companyId, companyId), eq(issueComments.issueId, issueId), inArray(issueComments.id, validCommentIds)));
       return { allSelfAuthored: rows.length > 0 && rows.every((row) => row.createdByRunId === finishingRunId) };
     },
 
@@ -419,7 +432,10 @@ function buildTransaction(tx: Db, deps: WakeQueuePostgresAdapterDeps, db: Db, ru
         run.companyId !== companyId || run.id !== finishingRunId ||
         readNonEmptyString(parseObject(run.contextSnapshot).issueId) !== issueId
       ) return false;
-      const uniqueCommentIds = [...new Set(commentIds)];
+      // uuid-column boundary (OPE-12209): drop malformed queued ids before the
+      // query, never build `inArray` over a uuid column with them, and skip the
+      // query entirely when no valid id remains.
+      const uniqueCommentIds = [...new Set(commentIds)].filter(isValidWakeCommentId);
       if (uniqueCommentIds.length === 0) return false;
       const parent = await tx.select({ status: issues.status, assigneeAgentId: issues.assigneeAgentId, identifier: issues.identifier })
         .from(issues).where(and(eq(issues.companyId, companyId), eq(issues.id, issueId)))
@@ -430,7 +446,7 @@ function buildTransaction(tx: Db, deps: WakeQueuePostgresAdapterDeps, db: Db, ru
         authorAgentId: issueComments.authorAgentId })
         .from(issueComments).where(and(
           eq(issueComments.companyId, companyId), eq(issueComments.issueId, issueId),
-          inArray(issueComments.id, uniqueCommentIds), isNull(issueComments.deletedAt), currentConversationCommentCondition(),
+          inArray(issueComments.id, uniqueCommentIds.filter(isValidWakeCommentId)), isNull(issueComments.deletedAt), currentConversationCommentCondition(),
         ));
       if (comments.length !== uniqueCommentIds.length || comments.some((comment) =>
         comment.createdByRunId !== run.id || (comment.authorAgentId !== null && comment.authorAgentId !== run.agentId)

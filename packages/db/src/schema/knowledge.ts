@@ -68,8 +68,8 @@ export type KnowledgeRevisionStatus = (typeof KNOWLEDGE_REVISION_STATUSES)[numbe
 export const KNOWLEDGE_REVISION_LANGS = ["en", "ru"] as const;
 export type KnowledgeRevisionLang = (typeof KNOWLEDGE_REVISION_LANGS)[number];
 
-/** Source kinds a claim may cite. */
-export const KNOWLEDGE_SOURCE_KINDS = ["task", "pr", "issue", "run", "document", "decision", "url"] as const;
+/** Source kinds a claim may cite. Single source of truth: server/domain.ts mirrors this list. */
+export const KNOWLEDGE_SOURCE_KINDS = ["task", "pr", "issue", "run", "document", "decision", "url", "debate"] as const;
 export type KnowledgeSourceKind = (typeof KNOWLEDGE_SOURCE_KINDS)[number];
 
 export const knowledgeItems = pgTable(
@@ -387,3 +387,35 @@ export const knowledgeDeviations = pgTable(
 
 export type KnowledgeDeviation = typeof knowledgeDeviations.$inferSelect;
 export type NewKnowledgeDeviation = typeof knowledgeDeviations.$inferInsert;
+
+// ---------------------------------------------------------------------------
+// Knowledge Settings (§3.8, L-11)
+// ---------------------------------------------------------------------------
+// Company-scoped knowledge settings: limits, auto-accept and the maintenance
+// schedule. Exactly one row per company; company deletion cascades.
+export const knowledgeSettings = pgTable(
+  "knowledge_settings",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    companyId: uuid("company_id")
+      .notNull()
+      .references(() => companies.id, { onDelete: "cascade" }),
+    maxItems: integer("max_items"),
+    maxRevisionBytes: integer("max_revision_bytes"),
+    autoAcceptEnabled: boolean("auto_accept_enabled"),
+    autoAcceptMinConfidence: text("auto_accept_min_confidence"),
+    schedule: text("schedule"),
+    sectionReviewers: jsonb("section_reviewers")
+      .$type<Array<{ section: string; reviewerKind: "user" | "agent"; reviewerId: string }>>()
+      .notNull()
+      .default([]),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    uniqueIndex("knowledge_settings_company_uq").on(table.companyId),
+  ],
+);
+
+export type KnowledgeSettings = typeof knowledgeSettings.$inferSelect;
+export type NewKnowledgeSettings = typeof knowledgeSettings.$inferInsert;

@@ -115,7 +115,12 @@ export function costRoutes(
     assigneeAgentId: string | null;
     assigneeUserId: string | null;
     status: string;
+    isPrivate?: boolean | null;
   }) {
+    if (issue.isPrivate && req.actor.type === "agent") {
+      res.status(404).json({ error: "Issue not found" });
+      return false;
+    }
     const decision = await access.decide({
       actor: req.actor,
       action: "issue:read",
@@ -271,6 +276,18 @@ export function costRoutes(
     const excludeRoot = req.query.excludeRoot === "true" || req.query.excludeRoot === "1";
     const summary = await costs.issueTreeSummary(issue.companyId, issue.id, { excludeRoot });
     res.json(summary);
+  });
+
+  // myrmidon(1.7 TOKEN-BUDGET-SIGNAL, OPE-12232): the soft token-budget signal
+  // of one issue. Read-only: it never pauses, never sets a pauseReason and is
+  // never consulted on run admission — the money hard-stop keeps that role.
+  router.get("/issues/:id/token-budget-signal", async (req, res) => {
+    const rawId = req.params.id as string;
+    const issue = await getAccessibleResource(req, res, resolveIssueByRef(rawId), "Issue not found");
+    if (!issue) return;
+    if (!(await assertIssueCostReadAllowed(req, res, issue))) return;
+    const signal = await budgets.getTokenBudgetSignal(issue.companyId, issue.id);
+    res.json(signal);
   });
 
   router.get("/companies/:companyId/costs/by-agent", async (req, res) => {
@@ -485,7 +502,9 @@ export function costRoutes(
     if (!(await assertCompanyCostReadAllowed(req, res, companyId))) return;
     const range = parseCostDateRange(req.query);
     const limit = parseIssueCostLimit(req.query);
-    const rows = await costs.byIssue(companyId, range, limit);
+    const rows = await costs.byIssue(companyId, range, limit, {
+      excludePrivate: req.actor.type === "agent",
+    });
     res.json(rows);
   });
 

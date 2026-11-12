@@ -64,6 +64,7 @@ export interface FleetOnboardStore {
   createJob(input: { companyId: string; serverId: string; kind: OnboardJobKind; createdBy: string | null }): Promise<OnboardJob>;
   getJob(companyId: string, jobId: string): Promise<OnboardJob | null>;
   getJobById(jobId: string): Promise<OnboardJob | null>;
+  getActiveJob?(companyId: string, serverId: string): Promise<OnboardJob | null>;
   listJobs(companyId: string, serverId?: string): Promise<OnboardJob[]>;
   /** Atomically move pending→claimed and hand the executor its work. */
   claimNext(companyId: string): Promise<OnboardJobClaim | null>;
@@ -290,7 +291,13 @@ export function fleetOnboardStore(db: Db): FleetOnboardStore {
             lt(myrmidonFleetOnboardJobs.updatedAt, cutoff),
           ),
         )
-        .returning({ id: myrmidonFleetOnboardJobs.id });
+        .returning({ id: myrmidonFleetOnboardJobs.id, companyId: myrmidonFleetOnboardJobs.companyId, serverId: myrmidonFleetOnboardJobs.serverId });
+      for (const row of rows) {
+        await db
+          .update(myrmidonFleetServers)
+          .set({ onboardState: "needs_attention", updatedAt: new Date() })
+          .where(and(eq(myrmidonFleetServers.companyId, row.companyId), eq(myrmidonFleetServers.id, row.serverId)));
+      }
       return rows.length;
     },
 

@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  REVIEW_ADMISSION_KEY_PREFIX,
   REVIEW_CI_WAIT_MAX_ATTEMPTS,
   REVIEW_DECISION_MAX_REWAKES,
   REVIEW_DECISION_RECOVERY_INSTRUCTION,
@@ -10,6 +11,8 @@ import {
   pullRequestHeadCiStateFromAllChecks,
   pullRequestHeadCiStateFromChecks,
   pullRequestHeadFinalCheckConclusion,
+  reviewAdmissionDedupKey,
+  reviewVerdictCoversHead,
   selectOpenPullRequestWorkProduct,
 } from "./policy.js";
 import {
@@ -353,5 +356,66 @@ describe("decideReviewAdmission (OPE-12176)", () => {
 
   it("admits a critical issue's reviewer even when the exact head CI is red", () => {
     expect(decideReviewAdmission({ ci: "complete", headFinalCheck: "red", critical: true })).toBe("admit");
+  });
+});
+
+// myrmidon(OPE-12177): the dedup key of a review-admission wake is keyed on the
+// exact PR head; without a head it falls back to the legacy agent-keyed format.
+describe("reviewAdmissionDedupKey", () => {
+  it("keys on the exact PR head SHA", () => {
+    expect(reviewAdmissionDedupKey({ issueId: "issue-1", headSha: "abc123", agentId: "agent-1" })).toBe(
+      `${REVIEW_ADMISSION_KEY_PREFIX}issue-1:abc123`,
+    );
+  });
+
+  it("keeps the same key for the same issue + head regardless of the reviewer", () => {
+    const first = reviewAdmissionDedupKey({ issueId: "issue-1", headSha: "abc123", agentId: "agent-1" });
+    const second = reviewAdmissionDedupKey({ issueId: "issue-1", headSha: "abc123", agentId: "agent-2" });
+    expect(second).toBe(first);
+  });
+
+  it("produces a new key when the head moves", () => {
+    const before = reviewAdmissionDedupKey({ issueId: "issue-1", headSha: "abc123", agentId: "agent-1" });
+    const after = reviewAdmissionDedupKey({ issueId: "issue-1", headSha: "def456", agentId: "agent-1" });
+    expect(after).not.toBe(before);
+  });
+
+  it("falls back to the legacy agent-keyed format without a head", () => {
+    expect(reviewAdmissionDedupKey({ issueId: "issue-1", headSha: null, agentId: "agent-1" })).toBe(
+      `${REVIEW_ADMISSION_KEY_PREFIX}issue-1:agent-1`,
+    );
+    expect(reviewAdmissionDedupKey({ issueId: "issue-1", headSha: undefined, agentId: "agent-1" })).toBe(
+      `${REVIEW_ADMISSION_KEY_PREFIX}issue-1:agent-1`,
+    );
+    expect(reviewAdmissionDedupKey({ issueId: "issue-1", headSha: "   ", agentId: "agent-1" })).toBe(
+      `${REVIEW_ADMISSION_KEY_PREFIX}issue-1:agent-1`,
+    );
+  });
+});
+
+// myrmidon(OPE-12859): a stored verdict suppresses reviewer re-wakes only for
+// the head it names; a new head needs a new verdict.
+describe("reviewVerdictCoversHead", () => {
+  it("covers the head when the verdict names it", () => {
+    expect(reviewVerdictCoversHead({ headSha: "ABC123" }, "abc123")).toBe(true);
+  });
+
+  it("does not cover a different head", () => {
+    expect(reviewVerdictCoversHead({ headSha: "abc123" }, "def456")).toBe(false);
+  });
+
+  it("does not cover when there is no verdict", () => {
+    expect(reviewVerdictCoversHead(null, "abc123")).toBe(false);
+    expect(reviewVerdictCoversHead(undefined, "abc123")).toBe(false);
+  });
+
+  it("counts a head-less verdict (older records) for any head", () => {
+    expect(reviewVerdictCoversHead({ headSha: null }, "abc123")).toBe(true);
+    expect(reviewVerdictCoversHead({}, "abc123")).toBe(true);
+  });
+
+  it("does not cover when the current head is unknown", () => {
+    expect(reviewVerdictCoversHead({ headSha: "abc123" }, null)).toBe(false);
+    expect(reviewVerdictCoversHead({ headSha: "abc123" }, undefined)).toBe(false);
   });
 });

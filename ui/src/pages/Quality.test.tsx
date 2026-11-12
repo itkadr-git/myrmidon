@@ -81,6 +81,7 @@ function report(overrides: Partial<BaselineMetricsReport> = {}): BaselineMetrics
     window: { from: "2026-09-18T00:00:00.000Z", to: "2026-10-02T12:00:00.000Z" },
     generatedAt: "2026-10-02T12:05:00.000Z",
     source: { statusLog: "activity_log", costs: "litellm_cost_events" },
+    runSuccess: { succeeded: 19, failed: 5, total: 24, rate: 0.79 },
     byProject: [row()],
     byRole: [row({ key: "engineer", tasksCompleted: 4 })],
     ...overrides,

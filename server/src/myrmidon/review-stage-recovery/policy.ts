@@ -25,6 +25,12 @@ export const REVIEW_CI_WAIT_INTERVAL_MS = 10 * 60 * 1000;
 /** CI waits per review stage (18 x 10 min = 3 h); afterwards the normal retry/escalation applies. */
 export const REVIEW_CI_WAIT_MAX_ATTEMPTS = 18;
 
+export {
+  REVIEW_GATE_MAX_NEW_REVIEW_WAKES_PER_TICK,
+  type ReviewWakesQuota,
+  admitReviewerUnderWakesQuota,
+} from "./review-wakes-quota.js";
+
 /**
  * Reviewer re-wakes for a missing decision before the board escalation. The
  * first one is the release tail's own review-participant recovery run; the
@@ -45,9 +51,11 @@ export const REVIEW_DECISION_RECOVERY_INSTRUCTION =
   "If you cannot decide, mark the issue blocked with the exact unblock action.";
 
 export const REVIEW_CI_WAIT_RECOVERY_INSTRUCTION =
-  "The board waited for CI on the pull request head. Check the current CI result of the head commit, then submit " +
-  "the review decision now: PATCH status=in_progress with a comment to return it, or status=done with a comment to " +
-  "approve it. If CI is still running, end the run without a decision; the board checks CI again.";
+  "The board waited for CI on the pull request head. Do not wait for CI to decide: the merge gate " +
+  "checks the `CI result` of the head independently, so review the diff and submit the review decision " +
+  "now — PATCH status=in_progress with a comment to return it, or status=done with a comment to " +
+  "approve it. If (and only if) the diff itself is unreadable, end the run without a decision; the " +
+  "board checks the pull request again.";
 
 /**
  * Name of the aggregate check of the Myrmidon CI workflow (`ci-result` job of
@@ -56,6 +64,51 @@ export const REVIEW_CI_WAIT_RECOVERY_INSTRUCTION =
  * other checks (`checks`, `freeze`, ...) have already failed.
  */
 export const REVIEW_CI_FINAL_CHECK_NAME = "CI result";
+
+/**
+ * myrmidon(OPE-12177): the idempotency-key namespace of review-admission
+ * wakeups. The key deduplicates wakes per issue, so every writer must build it
+ * with `reviewAdmissionDedupKey` — never interpolate a custom tail.
+ */
+export const REVIEW_ADMISSION_KEY_PREFIX = "issue-review-admission:";
+
+/**
+ * myrmidon(OPE-12177): dedup key of a review-admission wake. The tail is the
+ * exact PR head the admission decision was made on, so the same head never
+ * wakes the reviewer twice (idempotency) while a pushed fix — a new head —
+ * produces a fresh key and a fresh wake. Without a head SHA (no PR work
+ * product, or a board that cannot read one) the legacy agent-keyed format is
+ * kept, so those boards dedup exactly as before.
+ */
+export function reviewAdmissionDedupKey(input: {
+  issueId: string;
+  headSha?: string | null;
+  agentId: string;
+}): string {
+  const headSha = typeof input.headSha === "string" ? input.headSha.trim() : "";
+  return headSha
+    ? `${REVIEW_ADMISSION_KEY_PREFIX}${input.issueId}:${headSha}`
+    : `${REVIEW_ADMISSION_KEY_PREFIX}${input.issueId}:${input.agentId}`;
+}
+
+/**
+ * myrmidon(OPE-12859): does the stored review verdict already cover this PR
+ * head? A verdict with a head SHA counts only for the same head; a verdict
+ * without one (older records) counts for any head of the same review stage.
+ * When it returns true the review itself is done — only the merge-time
+ * `CI result` gate is still pending — so the board must not re-wake the
+ * reviewer while CI is running.
+ */
+export function reviewVerdictCoversHead(
+  verdict: { headSha?: string | null } | null | undefined,
+  headSha: string | null | undefined,
+): boolean {
+  if (!verdict) return false;
+  const verdictHead = typeof verdict.headSha === "string" ? verdict.headSha.trim().toLowerCase() : "";
+  if (!verdictHead) return true;
+  const currentHead = typeof headSha === "string" ? headSha.trim().toLowerCase() : "";
+  return Boolean(currentHead) && verdictHead === currentHead;
+}
 
 /** CI on the head of the issue's open pull request, as far as the board can read it. */
 export type ReviewPullRequestCiState =

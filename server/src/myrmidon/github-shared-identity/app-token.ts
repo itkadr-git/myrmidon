@@ -115,16 +115,25 @@ export function githubAppJwt(appId: string, privateKeyPem: string, now = new Dat
 type CachedToken = { token: string; expiresAt: number };
 const tokenCache = new Map<string, CachedToken>();
 const installationCache = new Map<string, string>();
+// myrmidon(OPE-12446): single-flight minting. Concurrent requests for the same
+// (App, installation, repository, permission set) join one in-flight mint
+// instead of each missing the not-yet-populated token cache and POSTing its
+// own access token: a credential storm outpacing one mint was exhausting the
+// installation's 5000/hour budget (852 credentials requests in 10 minutes).
+const tokenInflight = new Map<string, Promise<{ token: string; expiresAt: string; installationId: string; reused: boolean }>>();
+const installationInflight = new Map<string, Promise<string>>();
 
 const resetListeners: Array<() => void> = [];
 export function onResetGitHubAppTokenCache(fn: () => void) {
   resetListeners.push(fn);
 }
 
-/** Tests only: forget cached tokens and installation ids. */
+/** Tests only: forget cached tokens, installation ids and in-flight mints. */
 export function resetGitHubAppTokenCacheForTests() {
   tokenCache.clear();
   installationCache.clear();
+  tokenInflight.clear();
+  installationInflight.clear();
   for (const fn of resetListeners) {
     try {
       fn();
@@ -169,9 +178,55 @@ async function githubRequest(
   return parsed as Record<string, unknown>;
 }
 
+async function resolveInstallationId(input: {
+  appId: string;
+  privateKeyPem: string | (() => Promise<string> | string);
+  repository: string;
+  explicitInstallationId: string | null;
+  fetchImpl: typeof fetch;
+  now: () => number;
+}): Promise<string> {
+  if (input.explicitInstallationId) {
+    return String(input.explicitInstallationId).trim();
+  }
+  const repoKey = input.repository.toLowerCase();
+  const installationKey = `${input.appId}:${repoKey}`;
+  const cached = installationCache.get(installationKey);
+  if (cached) return cached;
+
+  const inflight = installationInflight.get(installationKey);
+  if (inflight) return inflight;
+
+  const promise = (async () => {
+    const pem = typeof input.privateKeyPem === "function" ? await input.privateKeyPem() : input.privateKeyPem;
+    const [owner, repo] = input.repository.split("/") as [string, string];
+    const jwt = githubAppJwt(input.appId, pem, new Date(input.now()));
+    const installation = await githubRequest(
+      input.fetchImpl,
+      "GET",
+      `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/installation`,
+      jwt,
+    );
+    const id = installation.id;
+    if (typeof id !== "number" && typeof id !== "string") {
+      throw new GitHubAppTokenError("The GitHub App is not installed on this repository");
+    }
+    const resolvedId = String(id);
+    installationCache.set(installationKey, resolvedId);
+    return resolvedId;
+  })().finally(() => {
+    if (installationInflight.get(installationKey) === promise) {
+      installationInflight.delete(installationKey);
+    }
+  });
+
+  installationInflight.set(installationKey, promise);
+  return promise;
+}
+
 export async function mintGitHubAppInstallationToken(input: {
   appId: string;
-  privateKeyPem: string;
+  privateKeyPem: string | (() => Promise<string> | string);
   installationId: string | null;
   /** Normalized `owner/repo`. */
   repository: string;
@@ -180,43 +235,85 @@ export async function mintGitHubAppInstallationToken(input: {
   fetchImpl?: typeof fetch;
   now?: () => number;
 }): Promise<{ token: string; expiresAt: string; installationId: string; reused: boolean }> {
-  const fetchImpl = input.fetchImpl ?? fetch;
   const now = input.now ?? Date.now;
-  const [owner, repo] = input.repository.split("/") as [string, string];
   const repoKey = input.repository.toLowerCase();
-  const installationKey = `${input.appId}:${repoKey}`;
+  const fetchImpl = input.fetchImpl ?? fetch;
   const requestedPermissions = githubAppTokenPermissionsFor(input.permissions);
   const permissionsKey = GITHUB_APP_TOKEN_PERMISSION_KEYS.map((key) => `${key}=${requestedPermissions[key] ?? "none"}`).join(",");
-  let installationId = input.installationId ?? installationCache.get(installationKey) ?? null;
-  const cacheKey = (id: string) => `${input.appId}:${id}:${repoKey}:${permissionsKey}`;
-  if (installationId) {
-    const cached = tokenCache.get(cacheKey(installationId));
+
+  // One lazy read per mint call: the installation lookup and the mint flight
+  // share the same promise, so a cold mint resolves the secret exactly once
+  // (previously twice when the installation id had to be discovered) and warm
+  // paths — token cache hit or joining an in-flight mint — resolve it zero
+  // times. Every avoided read is one fewer row in secret_access_events.
+  let pemPromise: Promise<string> | null = null;
+  const resolvePem = (): Promise<string> => {
+    if (!pemPromise) {
+      pemPromise = (async () => {
+        return typeof input.privateKeyPem === "function" ? await input.privateKeyPem() : input.privateKeyPem;
+      })();
+    }
+    return pemPromise;
+  };
+
+  // Check cache early if installationId is explicitly known or cached
+  const knownInstallationId = input.installationId
+    ? String(input.installationId).trim()
+    : installationCache.get(`${input.appId}:${repoKey}`) ?? null;
+
+  if (knownInstallationId) {
+    const cacheKey = `${input.appId}:${knownInstallationId}:${repoKey}:${permissionsKey}`;
+    const cached = tokenCache.get(cacheKey);
     if (cached && cached.expiresAt - TOKEN_REUSE_MARGIN_MS > now()) {
-      return { token: cached.token, expiresAt: new Date(cached.expiresAt).toISOString(), installationId, reused: true };
+      return { token: cached.token, expiresAt: new Date(cached.expiresAt).toISOString(), installationId: knownInstallationId, reused: true };
     }
+    const inflight = tokenInflight.get(cacheKey);
+    if (inflight) return inflight.then((minted) => ({ ...minted, reused: true }));
   }
-  const jwt = githubAppJwt(input.appId, input.privateKeyPem, new Date(now()));
-  if (!installationId) {
-    const installation = await githubRequest(
-      fetchImpl, "GET", `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/installation`, jwt,
-    );
-    const id = installation.id;
-    if (typeof id !== "number" && typeof id !== "string") {
-      throw new GitHubAppTokenError("The GitHub App is not installed on this repository");
-    }
-    installationId = String(id);
-    installationCache.set(installationKey, installationId);
-  }
-  const issued = await githubRequest(
+
+  const installationId = await resolveInstallationId({
+    appId: input.appId,
+    privateKeyPem: resolvePem,
+    repository: input.repository,
+    explicitInstallationId: input.installationId,
     fetchImpl,
-    "POST",
-    `/app/installations/${encodeURIComponent(installationId)}/access_tokens`,
-    jwt,
-    { repositories: [repo], permissions: requestedPermissions },
-  );
-  const token = typeof issued.token === "string" ? issued.token : "";
-  const expiresAtMs = typeof issued.expires_at === "string" ? Date.parse(issued.expires_at) : Number.NaN;
-  if (!token || !Number.isFinite(expiresAtMs)) throw new GitHubAppTokenError("GitHub returned no installation token");
-  tokenCache.set(cacheKey(installationId), { token, expiresAt: expiresAtMs });
-  return { token, expiresAt: new Date(expiresAtMs).toISOString(), installationId, reused: false };
+    now,
+  });
+
+  // Single-flight and cache keyed by (App, installation, repository, permissions)
+  const cacheKey = `${input.appId}:${installationId}:${repoKey}:${permissionsKey}`;
+  const cached = tokenCache.get(cacheKey);
+  if (cached && cached.expiresAt - TOKEN_REUSE_MARGIN_MS > now()) {
+    return { token: cached.token, expiresAt: new Date(cached.expiresAt).toISOString(), installationId, reused: true };
+  }
+
+  const inflight = tokenInflight.get(cacheKey);
+  // A caller that joins an in-flight mint rides the token that flight produces —
+  // it spent no installation budget of its own, so it reports `reused: true`
+  // exactly like a cache hit and the journal records a single issue instead
+  // of one per joining caller.
+  if (inflight) return inflight.then((minted) => ({ ...minted, reused: true }));
+
+  const mint = (async () => {
+    const pem = await resolvePem();
+    const jwt = githubAppJwt(input.appId, pem, new Date(now()));
+    const [, repo] = input.repository.split("/") as [string, string];
+    const issued = await githubRequest(
+      fetchImpl,
+      "POST",
+      `/app/installations/${encodeURIComponent(installationId)}/access_tokens`,
+      jwt,
+      { repositories: [repo], permissions: requestedPermissions },
+    );
+    const token = typeof issued.token === "string" ? issued.token : "";
+    const expiresAtMs = typeof issued.expires_at === "string" ? Date.parse(issued.expires_at) : Number.NaN;
+    if (!token || !Number.isFinite(expiresAtMs)) throw new GitHubAppTokenError("GitHub returned no installation token");
+    tokenCache.set(cacheKey, { token, expiresAt: expiresAtMs });
+    return { token, expiresAt: new Date(expiresAtMs).toISOString(), installationId, reused: false };
+  })().finally(() => {
+    if (tokenInflight.get(cacheKey) === mint) tokenInflight.delete(cacheKey);
+  });
+
+  tokenInflight.set(cacheKey, mint);
+  return mint;
 }

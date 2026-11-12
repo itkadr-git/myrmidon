@@ -95,7 +95,10 @@ export function modelProviderRoutes(deps: ModelProviderRoutesDeps): Router {
 
   const actorFor = (req: Request) => {
     const info = getActorInfo(req);
-    return { type: info.actorType, id: info.actorId };
+    // myrmidon(OPE-12361): the change log shows the author; carry the real
+    // user name/email so the UI renders a name instead of `user:<id>`.
+    const name = req.actor.userName ?? req.actor.userEmail ?? null;
+    return { type: info.actorType, id: info.actorId, name };
   };
 
   const parse = <T>(schema: ZodType<T>, body: unknown): T => {
@@ -233,8 +236,11 @@ export function modelProviderRoutes(deps: ModelProviderRoutesDeps): Router {
     res.json({ channels: [], enabled: false, message: "LiteLLM gateway sync is not configured" });
   };
 
+  // Model groups as the provider screen shows them. The company-level
+  // `/litellm/channels` path is NOT served here: it belongs to the gateway
+  // deployments (litellm-channels), which app.ts mounts after this router, so
+  // a handler here would shadow it.
   router.get("/myrmidon/companies/:companyId/model-providers/litellm/channels", handleLitellmChannels);
-  router.get("/myrmidon/companies/:companyId/litellm/channels", handleLitellmChannels);
 
   router.get("/myrmidon/companies/:companyId/model-providers/:id/channels", async (req, res) => {
     const companyId = req.params.companyId as string;
@@ -272,15 +278,6 @@ export function modelProviderRoutes(deps: ModelProviderRoutesDeps): Router {
     const body = parse(startCodexOAuthSchema, bodyOf(req));
     const result = await deps.service.startOAuth(companyId, providerId, body);
     res.status(200).json(result);
-  });
-
-  router.post("/myrmidon/companies/:companyId/model-providers/:id/oauth/complete", async (req, res) => {
-    const companyId = req.params.companyId as string;
-    const providerId = req.params.id as string;
-    assertCompanyAdmin(req, companyId);
-    const body = parse(completeCodexOAuthSchema, bodyOf(req));
-    const account = await deps.service.completeOAuth(companyId, providerId, body);
-    res.status(201).json({ ok: true, account });
   });
 
   router.post("/myrmidon/companies/:companyId/model-providers/:id/account-status", async (req, res) => {
@@ -358,9 +355,16 @@ export function modelProviderRoutes(deps: ModelProviderRoutesDeps): Router {
     const companyId = req.params.companyId as string;
     const id = req.params.id as string;
     assertCompanyAdmin(req, companyId);
-    const body = parse(poolAccountOAuthCompleteSchema, bodyOf(req));
-    const result = await deps.service.oauthComplete(companyId, id, body);
-    res.status(200).json(result);
+    const raw = bodyOf(req);
+    if (raw && typeof raw === "object" && "accountNumber" in raw) {
+      const body = parse(poolAccountOAuthCompleteSchema, raw);
+      const result = await deps.service.oauthComplete(companyId, id, body);
+      res.status(200).json(result);
+      return;
+    }
+    const body = parse(completeCodexOAuthSchema, raw);
+    const account = await deps.service.completeOAuth(companyId, id, body);
+    res.status(201).json({ ok: true, account });
   };
   router.post("/myrmidon/companies/:companyId/model-providers/:id/oauth/complete", oauthCompleteHandler);
   router.post("/myrmidon/companies/:companyId/model-providers/providers/:id/oauth/complete", oauthCompleteHandler);

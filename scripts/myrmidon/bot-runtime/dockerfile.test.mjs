@@ -83,6 +83,19 @@ describe("docker/bot-runtime/Dockerfile", () => {
     }
   });
 
+  // myrmidon(OPE-10494, 10.11): Debian's gh 2.46.0 fails `gh pr view` / `gh pr edit`
+  // ("Projects (classic) is being deprecated"); every variant ships the pinned release.
+  it("ships gh from its pinned, checksummed release and never from apt", () => {
+    const ghStage = dockerfile.match(/^FROM [^\n]+ AS gh_dist\n([\s\S]*?)\nFROM /m)?.[1] ?? "";
+    assert.match(ghStage, /^ARG GH_VERSION=\d+\.\d+\.\d+$/m);
+    assert.match(ghStage, /^ARG GH_SHA256=[0-9a-f]{64}$/m);
+    assert.match(ghStage, /sha256sum -c -/);
+    assert.match(dockerfile, /^COPY --from=gh_dist \/usr\/local\/bin\/gh \/usr\/bin\/gh$/m);
+    for (const block of dockerfile.matchAll(/apt-get install -y --no-install-recommends([\s\S]*?)&& rm -rf/g)) {
+      assert.doesNotMatch(block[1], /(^|\s)gh(\s|$)/, "gh must not come from apt");
+    }
+  });
+
   it("pins the hermes version and a matching git tag through build args with exact defaults", () => {
     // hermes-agent's git tags (vYYYY.M.D, calendar-based) and its
     // pyproject.toml `version` field (0.x.y, bumped independently) do not
@@ -186,8 +199,13 @@ describe("docker/bot-runtime/Dockerfile", () => {
     // tools/lazy_deps.py's own hash-pinned allowlist is the bar every
     // dependency in this image should clear; a bare `uv pip install
     // aiohttp==...` bypasses uv.lock's hash verification even though the
-    // exact same pin already exists there.
-    assert.doesNotMatch(dockerfileInstructions, /uv pip install[^\n]*aiohttp/);
+    // exact same pin already exists there. The one sanctioned exception is the
+    // exact-pinned security override over the synced venv (OPE-12760, checked below).
+    const unlockedAiohttp = dockerfileInstructions
+      .replace(/\\\n\s*/g, " ")
+      .split("\n")
+      .filter((line) => /uv pip install[^\n]*aiohttp/.test(line) && !/aiohttp==3\.14\.5(\s|$)/.test(line));
+    assert.deepEqual(unlockedAiohttp, []);
     assert.match(dockerfile, /uv sync --frozen --extra sms --extra mcp --python/);
     // The "hindsight" extra is gone from hermes 0.21.5 (the provider moved to the plugin
     // catalog) — requesting it would silently resolve to nothing.
@@ -209,6 +227,36 @@ describe("docker/bot-runtime/Dockerfile", () => {
     assert.match(dockerfile, /^COPY --from=builder --chown=root:root \/opt\/hermes-plugins \/opt\/hermes-plugins$/m);
     const entrypoint = fs.readFileSync(path.join(IMAGE_DIR, "entrypoint.sh"), "utf8");
     assert.match(entrypoint, /ln -s "\$\{catalog_dir\}\/hindsight"/);
+  });
+
+  it("overrides aiohttp, httpx2 and certifi with their patched versions after the sync, and fails the build below them (OPE-12760)", () => {
+    // The lockfile of the pinned hermes (v2026.9.24, 0.21.5) resolves aiohttp 3.14.3,
+    // httpx2 2.7.0 and certifi 2026.5.20, which carry known advisories. Exact pins go over
+    // the synced venv; drop this step when the pinned hermes is >= 0.22.5.
+    const joined = dockerfileInstructions.replace(/\\\n\s*/g, " ");
+    const install = joined.match(/^RUN uv pip install --python \/opt\/hermes-src\/\.venv\/bin\/python (.*)$/m);
+    assert.ok(install, "expected a `uv pip install --python /opt/hermes-src/.venv/bin/python ...` override step");
+    assert.deepEqual(install[1].trim().split(/\s+/).sort(), ["aiohttp==3.14.5", "certifi==2026.10.19", "httpx2==2.12.0"]);
+    // The build-time check reads the installed versions back and exits non-zero below a floor.
+    const check = joined.match(/^RUN \/opt\/hermes-src\/\.venv\/bin\/python -c\s+"([^\n]*importlib\.metadata[^\n]*)"$/m);
+    assert.ok(check, "expected a build-time version check through importlib.metadata");
+    assert.match(check[1], /'aiohttp': '3\.14\.5'/);
+    assert.match(check[1], /'httpx2': '2\.12\.0'/);
+    assert.match(check[1], /'certifi': '2026\.10\.19'/);
+    assert.match(check[1], /sys\.exit\(/);
+    // Order: after the sync, and after the Hindsight plugin installer (it resolves under hermes'
+    // core constraints from pyproject.toml, aiohttp==3.14.3, and would put aiohttp back if it ran
+    // later), check right after the install, all inside the builder stage.
+    const syncIdx = joined.indexOf("uv sync --frozen");
+    const pluginIdx = joined.indexOf("install_for_plugin_dir");
+    const installIdx = joined.indexOf(install[0]);
+    const checkIdx = joined.indexOf(check[0]);
+    const runtimeIdx = joined.indexOf("FROM python:3.13-slim AS runtime");
+    assert.ok(syncIdx > 0, "expected uv sync --frozen in the builder stage");
+    assert.ok(pluginIdx > syncIdx, "expected the plugin installer after uv sync");
+    assert.ok(installIdx > pluginIdx, "expected the override after the plugin installer, which would otherwise reinstall aiohttp 3.14.3");
+    assert.ok(checkIdx > installIdx, "expected the version check after the override");
+    assert.ok(runtimeIdx > checkIdx, "expected the override and its check before the runtime stage");
   });
 
   it("import-smokes every module a patch changes, so a patch that applies but breaks a module fails the build", () => {
@@ -561,7 +609,6 @@ describe("docker/bot-runtime/Dockerfile (development variant)", () => {
       "curl",
       "g++",
       "gcc",
-      "gh",
       "git",
       "jq",
       "libc6-dev",
@@ -588,9 +635,10 @@ describe("docker/bot-runtime/Dockerfile (development variant)", () => {
     assert.match(devVariant, /^ARG GO_SHA256=[0-9a-f]{64}$/m);
     assert.match(devVariant, /^ARG RUSTUP_SHA256_AMD64=[0-9a-f]{64}$/m);
     assert.match(devVariant, /^ARG DOCKER_CLI_SHA256=[0-9a-f]{64}$/m);
-    // Four downloads in the variant: Node.js 24, Go, the Docker CLI tarball and
-    // rustup — each with its own digest check.
-    assert.equal(devVariant.match(/sha256sum -c -/g)?.length, 4);
+    assert.match(devVariant, /^ARG GH_SHA256=[0-9a-f]{64}$/m);
+    // Five downloads in the variant: Node.js 24, the GitHub CLI, Go, the Docker
+    // CLI tarball and rustup — each with its own digest check.
+    assert.equal(devVariant.match(/sha256sum -c -/g)?.length, 5);
     // The pnpm version is verified in the image it was installed into.
     assert.match(devStage, /pnpm --version \| grep -x "\$\{PNPM_VERSION\}"/);
   });

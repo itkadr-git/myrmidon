@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   approvedPrSince,
   buildDevflowSignals,
+  buildProviderGarbageSignals,
   extractPrNumber,
   redCiSince,
   staleMarkerSince,
@@ -12,6 +13,29 @@ import {
 const now = new Date("2026-10-27T20:00:00Z");
 
 describe("DEVFLOW runtime signals", () => {
+  it("builds a critical provider-garbage signal with outcome and model group", () => {
+    const signals = buildProviderGarbageSignals([
+      {
+        id: 1,
+        agentId: "agent-a",
+        createdAt: "2026-10-27T19:59:00Z",
+        payload: { outcomeText: "server overloaded", modelGroup: "nexus-grok-4.7", runCount: 5 },
+      },
+    ], "company-a", now);
+    expect(signals).toMatchObject([{
+      metric: "providerGarbageP1",
+      severity: "critical",
+      detail: { outcomeText: "server overloaded", modelGroup: "nexus-grok-4.7", runCount: 5 },
+      dedupKey: "devflow:company-a:providerGarbageP1:server overloaded:nexus-grok-4.7",
+    }]);
+  });
+
+  it("ignores provider-garbage events outside the sliding window and without text", () => {
+    expect(buildProviderGarbageSignals([
+      { id: 1, agentId: "agent-a", createdAt: "2026-10-27T19:49:59Z", payload: { outcomeText: "old" } },
+      { id: 2, agentId: "agent-b", createdAt: "2026-10-27T19:59:00Z", payload: {} },
+    ], "company-a", now)).toEqual([]);
+  });
   it("delivers a company-scoped deterministic alert only at the threshold", () => {
     const sample = {
       companyId: "company-a",

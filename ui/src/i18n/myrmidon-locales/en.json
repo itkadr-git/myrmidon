@@ -241,6 +241,7 @@
     "managedByMyrmidon": "Managed by Myrmidon",
     "sandboxProvider": "{{provider}} sandbox provider",
     "unknownEnvironment": "Unknown environment",
+    "roleModelDownSince": "Model unavailable since {{time}}",
     "invalidReportingChain": "Invalid reporting chain",
     "selectOrganization": "Select an organization to view agents.",
     "setUp": "Set up",
@@ -350,7 +351,8 @@
     "reviewRouting": "Review routing",
     "corpus": "Knowledge corpus",
     "agentExchange": "Agent exchanges",
-    "budgets": "Budgets"
+    "budgets": "Budgets",
+    "knowledge": "Knowledge"
   },
   "corpus": {
     "title": "Knowledge corpus",
@@ -753,6 +755,9 @@
       "deprecated": "deprecated"
     },
     "revision": "revision {{count}}",
+    "gitDrift": "Git record drift: {{reason}}",
+    "gitDriftMissing": "missing from git",
+    "gitDriftContentMismatch": "content differs from git",
     "approver": {
       "unmanaged": "no approval needed (unmanaged)",
       "notApproved": "not approved",
@@ -846,6 +851,7 @@
     "sourceStackUpdate": "Stack update"
   },
   "settings": {
+    "instanceAdminRequired": "Instance admin access required",
     "companyBreadcrumb": "Company",
     "title": "Settings",
     "general": "General",
@@ -1223,6 +1229,11 @@
     "ageSeconds": "{{count}} s"
   },
   "runQueue": {
+    "behaviorLoadFailed": "Failed to load the Runs & Queue settings.",
+    "behaviorBadShape": "The server returned the settings in an unexpected format, so this panel cannot show them.",
+    "behaviorSaveFailed": "Saving the setting failed.",
+    "behaviorInvalid": "Enter a valid value; nothing was saved.",
+    "behaviorEmpty": "This server does not serve any Runs & Queue settings yet.",
     "priorityTitle": "Run queue priority",
     "priorityDescription": "When the admission ceilings are closed, queued runs start in priority order: review, release and current-release work first. Weights apply on the next admission pass — saving needs no server restart.",
     "notServed": "This server does not expose queue priority settings yet (the feature arrives with a release update); nothing here is saved.",
@@ -1259,6 +1270,13 @@
       "only": "Queue position {{position}}"
     },
     "waiting": "waiting: {{reason}}",
+    "waitDetailLimit": "limit {{limit}}{{source}}",
+    "waitDetailRunning": "{{running}} running",
+    "limitSource": {
+      "board": " (board)",
+      "gateway": " (gateway)",
+      "memory": " (memory)"
+    },
     "waitReason": {
       "global_cap": "the concurrency ceiling is full",
       "start_ramp": "the start ramp paces new starts",
@@ -1530,6 +1548,23 @@
     }
   },
   "swarmClaim": {
+    "scent": {
+      "title": "Task scent (classifier model)",
+      "description": "The board scores each unassigned task against the agent castes with a cheap classifier model (the scent). Pick the LiteLLM model alias and, if needed, the secret that holds its API key. Applies without a restart.",
+      "loading": "Loading the scent settings...",
+      "model": {
+        "label": "Classifier model",
+        "customMode": "Enter manually",
+        "selectMode": "Pick from the list",
+        "help": "The LiteLLM gateway alias of the cheap model that classifies tasks."
+      },
+      "secret": {
+        "label": "API key secret",
+        "defaultOption": "Gateway default key",
+        "help": "The company secret that holds the key for this model. Leave the default to use the gateway's own key."
+      },
+      "save": "Save scent settings"
+    },
     "title": "Self-organization (swarm)",
     "intro": "The board itself matches a free agent to each unassigned task by caste and scent, and wakes that agent on its own task. Every value applies without a restart — the server re-reads these settings on each claim and sweep tick. Turning the swarm off releases the live leases immediately; assignees are not touched. Environment variables stay forced overrides; each field shows whether the saved value or the override is in force.",
     "enableLabel": "Enable the swarm",
@@ -1779,7 +1814,6 @@
     "colRule": "Rule",
     "colMode": "Mode",
     "colLevel": "Level",
-    "colAgent": "Agent",
     "colDecision": "Decision",
     "colSurface": "Surface",
     "colRun": "Run",
@@ -1806,5 +1840,127 @@
       "off": "off"
     }
   },
-  "ui2.nav.group.plugins": "Plugins"
+  "ui2.nav.group.plugins": "Plugins",
+  "knowledgeSettings": {
+    "title": "Knowledge settings",
+    "intro": "Limits, auto-accept and the maintenance schedule for company knowledge items.",
+    "maxItems": "Maximum items",
+    "maxRevisionBytes": "Maximum revision size (bytes)",
+    "bounds": "From {{min}} to {{max}}. Default: {{fallback}}.",
+    "invalidNumber": "Enter a whole number within the allowed range.",
+    "autoAccept": "Auto-accept",
+    "autoAcceptHint": "Accept incoming revisions automatically when confidence meets the threshold.",
+    "minConfidence": "Minimum confidence",
+    "minConfidenceHint": "Only accept revisions with confidence equal to or higher than this tier. Default: {{fallback}}.",
+    "invalidConfidence": "Enter a fraction between 0 and 1 (up to four decimals).",
+    "schedule": "Maintenance schedule",
+    "scheduleHint": "Standard 5-part cron syntax (e.g. 0 3 * * * for 03:00 daily). Leave empty to disable. Default: {{fallback}}.",
+    "invalidSchedule": "Enter a valid 5-field cron expression, or leave empty.",
+    "reviewers": "Section reviewers",
+    "reviewersHint": "Default reviewers routed by section path.",
+    "section": "Section",
+    "reviewerKind": "Kind",
+    "kindUser": "User",
+    "kindAgent": "Agent",
+    "reviewerId": "ID",
+    "addReviewer": "Add reviewer",
+    "removeReviewer": "Remove",
+    "invalidReviewers": "Each reviewer needs a section and a non-empty ID.",
+    "save": "Save changes",
+    "saved": "Settings saved",
+    "saveError": "Failed to save settings",
+    "noCompany": "Select a company to edit knowledge settings.",
+    "loadError": "Failed to load knowledge settings",
+    "loading": "Loading…",
+    "source.ui": "UI override",
+    "source.env": "Environment",
+    "source.default": "Default"
+  },
+  "modelProviders": {
+    "channels": {
+      "plan": "Plan",
+      "actions": "Actions",
+      "oauthLogin": "Codex OAuth Login",
+      "oauthStarting": "Starting OAuth...",
+      "oauthCardTitle": "Codex OAuth Authorization (Account #{{accountNumber}})",
+      "oauthCode": "Code",
+      "oauthUrl": "URL",
+      "oauthComplete": "Complete Authorization",
+      "oauthCompleting": "Completing...",
+      "oauthRefresh": "Refresh",
+      "addAccount": "Connect Codex Account (OAuth)",
+      "connectCodexOAuth": "Connect Codex Account via OAuth",
+      "accountLabel": "Label",
+      "accountEmail": "Email (optional)",
+      "delete": "Delete",
+      "accountFallback": "Account #{{n}}",
+      "subscription": "Subscription",
+      "summaryLive": "{{live}} live / {{total}} total",
+      "summaryExhausted": "{{count}} exhausted",
+      "summaryDisabled": "{{count}} disabled",
+      "summaryError": "{{count}} in error",
+      "summaryNextReset": "next reset {{at}}"
+    },
+    "changeLog": {
+      "secretsRedacted": "Secrets are redacted in log entries",
+      "actor": "Author",
+      "actorAgent": "agent",
+      "actorBoard": "board",
+      "actorSystem": "system",
+      "actorUser": "user",
+      "showDiff": "Show diff",
+      "hideDiff": "Hide diff",
+      "after": "After",
+      "before": "Before",
+      "rollback": "Roll back",
+      "rollbackConfirm": "Roll back this entry?",
+      "rollingBack": "Rolling back..."
+    },
+    "fallbacks": {
+      "sourceOfTruth": "Source of truth:",
+      "sourceOfTruthValue": "LiteLLM DB & /config/update",
+      "configuredGroups": "{{count}} configured groups",
+      "reset": "Reset",
+      "save": "Save Changes",
+      "saving": "Saving...",
+      "saveSuccess": "Fallback topology successfully saved to LiteLLM /config/update and database.",
+      "saveFailed": "Failed to save fallback chains.",
+      "cycleDetected": "Cycle detected in topology! Saving is disabled until cycles are resolved:",
+      "unknownGroups": "Unknown model groups ({{count}}) not present in LiteLLM catalog:",
+      "freeBadge": "Free",
+      "unknownGroupBadge": "Unknown Group",
+      "unknownBadge": "Unknown",
+      "autoOrder": "Auto-order",
+      "autoOrderTitle": "Sort targets: free first, then cheap on different provider",
+      "deleteChain": "Delete chain",
+      "chainLabel": "Fallback Chain:",
+      "noFallbacks": "No fallbacks configured (single point of failure).",
+      "moveUp": "Move up",
+      "moveDown": "Move down",
+      "removeTarget": "Remove target",
+      "addTargetPlaceholder": "Add fallback target model/group...",
+      "add": "Add",
+      "newGroupPlaceholder": "New model group name (e.g. gpt-4o, zephyr-beta)...",
+      "addGroup": "Add Model Group",
+      "chainExists": "Chain for model group '{{model}}' already exists.",
+      "poolProviderNote": "Pool provider: {{provider}}",
+      "warn": {
+        "diversity": {
+          "single_provider": "Fallback chain for '{{model}}' relies on a single provider ({{provider}}). At least one fallback target must use a different provider for redundancy."
+        },
+        "order": {
+          "free_after_paid": "Free channel appears after paid channels in chain for '{{model}}'. Free channels should come first.",
+          "paid_same_provider": "Paid fallback channel uses the same provider ({{provider}}) as primary model '{{model}}'.",
+          "paid_same_provider_repeat": "Subsequent paid fallback channel uses the same provider ({{provider}}) as an earlier paid fallback.",
+          "cheaper_after_expensive": "Cheaper channel appears after a more expensive channel in chain for '{{model}}'."
+        }
+      }
+    },
+    "signals": {
+      "bannedTitle": "Codex/ChatGPT account #{{n}} ({{label}}) banned / token expired",
+      "bannedWhy": "Account #{{n}} ({{label}}) token has expired or access was revoked. The account was taken out of rotation — relogin or replace credentials.",
+      "exhaustedTitle": "Codex/ChatGPT account #{{n}} ({{label}}) quota exhausted",
+      "exhaustedWhy": "Account #{{n}} ({{label}}) reached 100% quota and was removed from rotation until the window reset."
+    }
+  }
 }

@@ -1,20 +1,26 @@
 // ui/src/ui2/screens/settings/system/Ui2FineSettings.tsx
 //
-// myrmidon(OPE-12046): Settings → System → "Fine settings" (SWEEP-2, read-only).
-// Shows the first-wave behavior settings ("тонкие настройки": env-driven
-// behavior variables of the 1.7 SETTINGS-TO-UI registry) exactly as the
-// server resolves them — value plus its source (ui / env / default) — via
-// GET /api/myrmidon/behavior-settings. Nothing on this screen writes: the
-// editable surface is the next slice; here every row is read-only.
-//
-// The registry metadata (env name, section) comes from the same registry the
-// server serves (GET /myrmidon/behavior-settings/definitions), so the screen
-// cannot drift from the server. Unknown keys in the view are ignored; keys
-// the server has not resolved are skipped (the acceptance contract: every
-// displayed row is read from the API).
+// myrmidon(OPE-12046): Settings → System → "Fine settings" (SWEEP-2).
+// myrmidon(OPE-12611): SWEEP-2 write — instance admins can edit values inline:
+// boolean -> checkbox, number -> numeric input, string -> text input.
+// JSON values stay read-only. Save sends a PATCH with only the changed key.
+// Non-admins see the table in read-only mode without inputs or buttons.
+// myrmidon(OPE-12695): a row whose source is "ui" also offers "Reset to
+// env/default" (two-step inline confirm, no window.confirm). The confirmed
+// reset sends one PATCH with `null` — the server drops the saved value and
+// the read falls back to env or default (mergeBehaviorSettings, #2854).
 
-import { useQuery } from "@tanstack/react-query";
-import { behaviorSettingsQueryKey, getBehaviorSettings, getBehaviorSettingsDefinitions } from "@/api/myrmidonBehaviorSettings";
+import { useState } from "react";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import {
+  behaviorSettingsApi,
+  behaviorSettingsQueryKey,
+  getBehaviorSettings,
+  getBehaviorSettingsDefinitions,
+  type BehaviorSettingDefinition,
+  type BehaviorSettingValue,
+} from "@/api/myrmidonBehaviorSettings";
+import { useIsInstanceAdmin } from "@/components/myrmidon/licensingApi";
 import { useUi2I18n } from "../../../i18n/Ui2I18n";
 import {
   Ui2DeniedState,
@@ -23,12 +29,14 @@ import {
 } from "../../../components/ui2StateViews";
 import { Ui2Section } from "../../../components/ui2Primitives";
 
-/** The first wave (SWEEP-2): the obvious env-driven behavior variables. */
+/** The first wave (SWEEP-2): the obvious env-driven behavior variables.
+ *  myrmidon(OPE-12677): only keys with a real code consumer stay here — the
+ *  ratchet test packages/shared/src/myrmidon-behavior-settings-consumers.test.ts
+ *  keeps the "every setting has a consumer" invariant. `debug_mode`,
+ *  `max_concurrent_agents`, `default_timeout_seconds` and `autonomy_level`
+ *  have no reader in the code (their registry entries do nothing), so they
+ *  must not be offered for editing until they are wired. */
 export const FINE_SETTINGS_KEYS = [
-  "debug_mode",
-  "max_concurrent_agents",
-  "default_timeout_seconds",
-  "autonomy_level",
   "bot_egress_mode",
   "tool_breaker_failures",
   "tool_breaker_cooldown_ms",
@@ -39,6 +47,8 @@ export const FINE_SETTINGS_KEYS = [
   "input_limit_precheck",
 ] as const;
 
+type FineValueType = BehaviorSettingDefinition["valueType"];
+
 export type FineSettingRow = {
   key: string;
   value: string;
@@ -46,7 +56,7 @@ export type FineSettingRow = {
   envName: string;
 };
 
-/** Format one resolved value for the read-only table. */
+/** Format one resolved value for display in the table. */
 export function formatFineSettingValue(value: unknown): string {
   if (value === null || value === undefined) return "—";
   if (typeof value === "boolean") return value ? "true" : "false";
@@ -79,8 +89,18 @@ export function buildFineSettingsRows(view: FineSettingsDefs): FineSettingRow[] 
   });
 }
 
+function errorText(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
 export function Ui2FineSettings() {
   const { t } = useUi2I18n();
+  const isInstanceAdmin = useIsInstanceAdmin();
+  const queryClient = useQueryClient();
+  const [draft, setDraft] = useState<Record<string, BehaviorSettingValue>>({});
+  const [errors, setErrors] = useState<Record<string, string>>({});
+  const [savingKey, setSavingKey] = useState<string | null>(null);
+  const [resetArmKey, setResetArmKey] = useState<string | null>(null);
 
   const viewQuery = useQuery({
     queryKey: behaviorSettingsQueryKey,
@@ -94,7 +114,36 @@ export function Ui2FineSettings() {
     staleTime: 300_000,
   });
 
-  if (viewQuery.isLoading) {
+  const updateMutation = useMutation({
+    mutationFn: ({ key, value }: { key: string; value: BehaviorSettingValue }) =>
+      behaviorSettingsApi.update({ [key]: value }),
+    onMutate: ({ key }) => {
+      setSavingKey(key);
+      setErrors((current) => ({ ...current, [key]: "" }));
+    },
+    onSuccess: (data, { key }) => {
+      queryClient.setQueryData(behaviorSettingsQueryKey, data);
+      setDraft((current) => {
+        const next = { ...current };
+        delete next[key];
+        return next;
+      });
+      setResetArmKey((current) => (current === key ? null : current));
+      setSavingKey(null);
+    },
+    onError: (error, { key }) => {
+      setDraft((current) => {
+        const next = { ...current };
+        delete next[key];
+        return next;
+      });
+      setResetArmKey((current) => (current === key ? null : current));
+      setErrors((current) => ({ ...current, [key]: errorText(error) }));
+      setSavingKey(null);
+    },
+  });
+
+  if (viewQuery.isLoading || isInstanceAdmin === null) {
     return (
       <Ui2Section title={t("ui2.settings.system.fine.title")}>
         <Ui2SkeletonRows rows={4} dense />
@@ -131,6 +180,8 @@ export function Ui2FineSettings() {
     sources: viewQuery.data?.sources ?? {},
     definitions,
   });
+  const definitionByKey = new Map(definitions.map((definition) => [definition.key, definition]));
+  const settings = viewQuery.data?.settings ?? {};
 
   return (
     <Ui2Section
@@ -149,23 +200,138 @@ export function Ui2FineSettings() {
               <th className="ui2-fine-value py-1 font-medium">{t("ui2.settings.system.fine.value")}</th>
               <th className="ui2-fine-source py-1 font-medium">{t("ui2.settings.system.fine.source")}</th>
               <th className="ui2-fine-env py-1 font-medium">{t("ui2.settings.system.fine.env")}</th>
+              {isInstanceAdmin && (
+                <th className="ui2-fine-action py-1 font-medium">
+                  {t("ui2.settings.system.fine.action")}
+                </th>
+              )}
             </tr>
           </thead>
           <tbody>
-            {rows.map((row) => (
-              <tr key={row.key} data-testid={`ui2-fine-row-${row.key}`} className="ui2-fine-row border-t border-border">
-                <td className="ui2-fine-key py-1.5 font-mono text-xs">{row.key}</td>
-                <td className="ui2-fine-val py-1.5 font-mono text-xs">{row.value}</td>
-                <td className="ui2-fine-src py-1.5 text-xs text-muted-foreground">
-                  {row.source === "ui"
-                    ? t("ui2.settings.system.fine.sourceUi")
-                    : row.source === "env"
-                      ? t("ui2.settings.system.fine.sourceEnv")
-                      : t("ui2.settings.system.fine.sourceDefault")}
-                </td>
-                <td className="ui2-fine-envname py-1.5 font-mono text-xs text-muted-foreground">{row.envName}</td>
-              </tr>
-            ))}
+            {rows.map((row) => {
+              const definition = definitionByKey.get(row.key);
+              const valueType: FineValueType | undefined = definition?.valueType;
+              const editable = isInstanceAdmin && valueType !== "json" && valueType !== undefined;
+              const value = draft[row.key] ?? settings[row.key];
+              return (
+                <tr
+                  key={row.key}
+                  data-testid={`ui2-fine-row-${row.key}`}
+                  className="ui2-fine-row border-t border-border"
+                >
+                  <td className="ui2-fine-key py-1.5 font-mono text-xs">{row.key}</td>
+                  <td className="ui2-fine-val py-1.5 font-mono text-xs">
+                    {editable ? (
+                      valueType === "boolean" ? (
+                        <input
+                          aria-label={row.key}
+                          type="checkbox"
+                          checked={Boolean(value)}
+                          onChange={(event) =>
+                            setDraft((current) => ({
+                              ...current,
+                              [row.key]: event.target.checked,
+                            }))
+                          }
+                        />
+                      ) : (
+                        <input
+                          aria-label={row.key}
+                          type={valueType === "number" ? "number" : "text"}
+                          value={value == null ? "" : String(value)}
+                          onChange={(event) =>
+                            setDraft((current) => ({
+                              ...current,
+                              [row.key]:
+                                valueType === "number"
+                                  ? event.target.value === ""
+                                    ? ""
+                                    : Number(event.target.value)
+                                  : event.target.value,
+                            }))
+                          }
+                        />
+                      )
+                    ) : (
+                      row.value
+                    )}
+                  </td>
+                  <td className="ui2-fine-src py-1.5 text-xs text-muted-foreground">
+                    {row.source === "ui"
+                      ? t("ui2.settings.system.fine.sourceUi")
+                      : row.source === "env"
+                        ? t("ui2.settings.system.fine.sourceEnv")
+                        : t("ui2.settings.system.fine.sourceDefault")}
+                  </td>
+                  <td className="ui2-fine-envname py-1.5 font-mono text-xs text-muted-foreground">
+                    {row.envName}
+                  </td>
+                  {isInstanceAdmin && (
+                    <td className="ui2-fine-action py-1.5">
+                      {editable && (row.key in draft || savingKey === row.key) && (
+                        <button
+                          type="button"
+                          disabled={savingKey === row.key}
+                          onClick={() => {
+                            const next = draft[row.key];
+                            if (next !== undefined) {
+                              updateMutation.mutate({ key: row.key, value: next });
+                            }
+                          }}
+                        >
+                          {savingKey === row.key
+                            ? t("ui2.settings.system.fine.saving")
+                            : t("ui2.settings.system.fine.save")}
+                        </button>
+                      )}
+                      {editable && row.source === "ui" && resetArmKey !== row.key && (
+                        <button
+                          type="button"
+                          data-testid={`ui2-fine-reset-${row.key}`}
+                          disabled={savingKey === row.key}
+                          onClick={() => setResetArmKey(row.key)}
+                        >
+                          {t("ui2.settings.system.fine.reset")}
+                        </button>
+                      )}
+                      {editable && row.source === "ui" && resetArmKey === row.key && (
+                        <>
+                          <button
+                            type="button"
+                            data-testid={`ui2-fine-reset-confirm-${row.key}`}
+                            disabled={savingKey === row.key}
+                            onClick={() => {
+                              // myrmidon(OPE-12695): the reset sends `null`,
+                              // not the default — mergeBehaviorSettings then
+                              // deletes the saved value and the read falls
+                              // back to env or default.
+                              updateMutation.mutate({ key: row.key, value: null });
+                            }}
+                          >
+                            {savingKey === row.key
+                              ? t("ui2.settings.system.fine.resetting")
+                              : t("ui2.settings.system.fine.resetConfirm")}
+                          </button>
+                          <button
+                            type="button"
+                            data-testid={`ui2-fine-reset-cancel-${row.key}`}
+                            disabled={savingKey === row.key}
+                            onClick={() => setResetArmKey(null)}
+                          >
+                            {t("ui2.settings.system.fine.cancelReset")}
+                          </button>
+                        </>
+                      )}
+                      {errors[row.key] && (
+                        <div role="alert" className="ui2-fine-error text-xs text-destructive">
+                          {errors[row.key]}
+                        </div>
+                      )}
+                    </td>
+                  )}
+                </tr>
+              );
+            })}
           </tbody>
         </table>
       )}

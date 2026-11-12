@@ -195,18 +195,25 @@ mismatch fails the build, the same rule the Node.js variant states above.
 **Where things write.** The root filesystem is read-only at run time and the bot's writable
 directories are exactly its single `/bot` mount (BOT-DISK-D), so:
 
-- the pnpm store defaults to `/workspace/.pnpm-store` via `npm_config_store_dir`, inside that
-  mount like every clone root, because pnpm hard-links `node_modules` into its store and a hard
-  link cannot cross a mount (a store on a separate bind made pnpm copy every package into every
-  clone). `npm_config_package_import_method=hardlink` is set too; pnpm 9 still copies silently
-  when the kernel refuses a link, so `pnpm-hardlink-check.sh` proves the link from `/data/hermes`,
+- the pnpm store is the shared `/cache/pnpm-store` mount (OPE-12869) when the board's
+  profile carries `npm_config_store_dir` (bots with the shared package cache); the image's own
+  default `/workspace/.pnpm-store` applies to a bot without that mount. The shared store works
+  because it sits on the same XFS filesystem as the bot volumes: pnpm imports `node_modules`
+  by reflink (`npm_config_package_import_method=clone`), one physical copy for all bots; a hard
+  link cannot cross a mount, and a store on another filesystem (the root disk of 1.6.5) made
+  pnpm copy every package into every clone. pnpm still copies silently when the kernel refuses
+  a reflink, so `pnpm-hardlink-check.sh` proves the link from `/data/hermes`,
   `/workspace` and `/scratch` at build time and `entrypoint.sh` repeats the check at every start
   (`/data/hermes/.myrmidon/hardlink-check.json`, shown on the board). `/cache/pnpm` is a download
   cache only, never the store; the paths and the method are the `pnpmStoreDir` and
   `pnpmImportMethod` settings, see
   [docs/myrmidon/bot-disk-cache.md](../../docs/myrmidon/bot-disk-cache.md);
-- `RUSTUP_HOME`/`CARGO_HOME` stay sealed under `/opt` and `cargo` writes its target dir into
-  the checked-out workspace;
+- `RUSTUP_HOME`/`CARGO_HOME` stay sealed under `/opt` and `CARGO_TARGET_DIR` directs `cargo`
+  artifacts to `/data/hermes/.cache/cargo-target` (OPE-12105), outside the task working tree.
+  botd keeps that directory under a per-bot byte quota (`cargoTargetQuotaBytes`, 2 GiB) and
+  evicts whole profile dirs, least recently written first (OPE-12110); the same pass caps
+  `hermes/.npm/_npx` at `npmNpxQuotaBytes` (512 MiB), see
+  [docs/myrmidon/bot-disk-cache.md](../../docs/myrmidon/bot-disk-cache.md);
 - Go's build cache defaults under `$HOME` (`/data/hermes`), the durable volume.
 
 **PATH never holds a writable volume.** The dev stage assembles `PATH` from `/opt` and

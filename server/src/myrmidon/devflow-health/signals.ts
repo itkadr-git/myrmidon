@@ -7,11 +7,19 @@ export interface DevflowSample {
   title: string;
   metric: DevflowMetric;
   since: string;
+  /** Precomputed dedup key; the default derives one from company/metric/subject. */
+  dedupKey?: string;
 }
 
 export interface DevflowSignal extends DevflowSample {
   durationMs: number;
   dedupKey: string;
+  severity?: "critical" | "high" | "medium" | "low";
+  detail?: {
+    outcomeText: string;
+    modelGroup: string | null;
+    runCount: number;
+  };
 }
 
 export function buildDevflowSignals(samples: DevflowSample[], settings: unknown, now: Date): DevflowSignal[] {
@@ -20,11 +28,62 @@ export function buildDevflowSignals(samples: DevflowSample[], settings: unknown,
     if (!Number.isFinite(since) || since > now.getTime()) return [];
     const durationMs = now.getTime() - since;
     return evaluateDevflowThresholds({ [sample.metric]: durationMs }, settings)
-      .map(() => ({ ...sample, durationMs, dedupKey: `devflow:${sample.companyId}:${sample.metric}:${sample.subjectId}` }));
+      .map(() => ({
+        ...sample,
+        durationMs,
+        dedupKey: sample.dedupKey ?? `devflow:${sample.companyId}:${sample.metric}:${sample.subjectId}`,
+      }));
   });
 }
 
 /** Red means an actual failed completion, not a cancelled/skipped/pending run. */
+export interface ProviderGarbageEvent {
+  id: number;
+  agentId: string;
+  createdAt: Date | string;
+  payload: Record<string, unknown> | null;
+}
+
+/** Build one critical signal per provider-garbage burst in the persisted event window. */
+export function buildProviderGarbageSignals(
+  events: ProviderGarbageEvent[],
+  companyId: string,
+  now: Date,
+  windowMs = 10 * 60_000,
+): DevflowSignal[] {
+  const groups = new Map<string, ProviderGarbageEvent[]>();
+  const windowStart = now.getTime() - windowMs;
+  for (const event of events) {
+    const created = event.createdAt instanceof Date ? event.createdAt : new Date(event.createdAt);
+    const outcomeText = typeof event.payload?.outcomeText === "string" ? event.payload.outcomeText : "";
+    if (!Number.isFinite(created.getTime()) || created.getTime() < windowStart || outcomeText.length === 0) continue;
+    const modelGroup = typeof event.payload?.modelGroup === "string" ? event.payload.modelGroup : null;
+    const key = `${outcomeText.trim().toLocaleLowerCase()}\\0${modelGroup ?? ""}`;
+    const group = groups.get(key) ?? [];
+    group.push(event);
+    groups.set(key, group);
+  }
+  return [...groups.values()].map((group) => {
+    const first = group.reduce((a, b) => (new Date(a.createdAt).getTime() <= new Date(b.createdAt).getTime() ? a : b));
+    const latest = group.reduce((a, b) => (new Date(a.createdAt).getTime() >= new Date(b.createdAt).getTime() ? a : b));
+    const outcomeText = typeof latest.payload?.outcomeText === "string" ? latest.payload.outcomeText : "";
+    const modelGroup = typeof latest.payload?.modelGroup === "string" ? latest.payload.modelGroup : null;
+    const runCount = typeof latest.payload?.runCount === "number" ? latest.payload.runCount : group.length;
+    return {
+      companyId,
+      subjectId: latest.agentId,
+      subjectKind: "agent" as const,
+      title: `Provider garbage: ${outcomeText}${modelGroup ? ` (${modelGroup})` : ""}`,
+      metric: "providerGarbageP1" as const,
+      since: new Date(first.createdAt).toISOString(),
+      durationMs: Math.max(0, now.getTime() - new Date(first.createdAt).getTime()),
+      dedupKey: `devflow:${companyId}:providerGarbageP1:${outcomeText.trim().toLocaleLowerCase()}:${modelGroup ?? "unknown"}`,
+      severity: "critical" as const,
+      detail: { outcomeText, modelGroup, runCount },
+    };
+  });
+}
+
 export function redCiSince(events: { conclusion: string | null; at: string }[]): string | null {
   let since: string | null = null;
   const sorted = events

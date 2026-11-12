@@ -32,7 +32,10 @@ on:
 
 permissions:
   contents: read
-  pull-requests: read
+  checks: write
+  issues: write
+  pull-requests: write
+  statuses: write
 
 concurrency:
   # Main and tags never cancel each other; each push to main completes its run.
@@ -48,9 +51,14 @@ concurrency:
   # by any other label (review-in-progress, needs-rebase, ...) goes to its own
   # group, so it cannot cancel the real run, and every job in it is skipped.
   group: myrmidon-ci-${{ (contains(github.event.pull_request.title, 'rc.') || contains(github.event.pull_request.title, 'release') || contains(github.event.pull_request.labels.*.name, 'release') || startsWith(github.head_ref, 'rel/') || startsWith(github.base_ref, 'rel/')) && 'release-' || '' }}${{ github.event.pull_request.number || github.ref }}${{ (github.event_name != 'pull_request' || github.event.action != 'labeled' || github.event.label.name == 'full-ci') && '' || '-label-noop' }}
-  # OPE-12103: PR runs and pushes to main cancel superseded runs.
+  # OPE-12103: PR runs cancel superseded runs.
   # Manual re-runs (run_attempt > 1) do not cancel the current head run.
-  cancel-in-progress: ${{ (github.event_name == 'pull_request' && github.run_attempt == 1 && (github.event.action != 'labeled' || github.event.label.name == 'full-ci')) || (github.event_name == 'push' && github.ref == 'refs/heads/main') }}
+  # Pushes to main do not cancel the running main run (10.11): with merges more
+  # often than a full run (~25 min) every main run was cancelled and main had no
+  # completed run for hours, so main-green-gate never turned green. Without the
+  # cancel GitHub keeps the running main run and one pending run (a newer push
+  # replaces the pending one), so a recent main commit always completes.
+  cancel-in-progress: ${{ github.event_name == 'pull_request' && github.run_attempt == 1 && (github.event.action != 'labeled' || github.event.label.name == 'full-ci') }}
 
 env:
   NPM_CONFIG_AUDIT: "false"
@@ -98,6 +106,7 @@ jobs:
           EVENT: ${{ github.event_name }}
           REPO: ${{ github.repository }}
           PR: ${{ github.event.pull_request.number }}
+          ACTION: ${{ github.event.action }}
           SHA: ${{ github.event_name == 'merge_group' && github.event.merge_group.head_sha || github.event.pull_request.head.sha }}
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -663,20 +672,44 @@ jobs:
       - name: PR text - publish scan (title and body)
         if: ${{ !cancelled() && github.event_name == 'pull_request' }}
         env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
           PR_TITLE: ${{ github.event.pull_request.title }}
           PR_BODY: ${{ github.event.pull_request.body }}
           MYRMIDON_FORBIDDEN_PATTERNS: ${{ secrets.MYRMIDON_FORBIDDEN_PATTERNS }}
         run: |
           set -euo pipefail
+          # Read the current title and body, so a re-run sees an edited description.
+          # If the API call fails, keep the values of the triggering event: the scan is not weakened.
+          if live="$(gh api "repos/$GITHUB_REPOSITORY/pulls/$PR_NUMBER" 2>/dev/null)" \
+            && t="$(printf '%s' "$live" | jq -r '.title // ""')" \
+            && b="$(printf '%s' "$live" | jq -r '.body // ""')"; then
+            PR_TITLE="$t"
+            PR_BODY="$b"
+          else
+            echo "::warning::Could not read the current PR text from the API. Scanning the text of the triggering event."
+          fi
           printf '%s\n%s\n' "$PR_TITLE" "$PR_BODY" | node scripts/myrmidon/publish-scan.mjs
 
       - name: PR text - AI signatures (title and body)
         if: ${{ !cancelled() && github.event_name == 'pull_request' }}
         env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
           PR_TITLE: ${{ github.event.pull_request.title }}
           PR_BODY: ${{ github.event.pull_request.body }}
         run: |
           set -euo pipefail
+          # Read the current title and body, so a re-run sees an edited description.
+          # If the API call fails, keep the values of the triggering event: the scan is not weakened.
+          if live="$(gh api "repos/$GITHUB_REPOSITORY/pulls/$PR_NUMBER" 2>/dev/null)" \
+            && t="$(printf '%s' "$live" | jq -r '.title // ""')" \
+            && b="$(printf '%s' "$live" | jq -r '.body // ""')"; then
+            PR_TITLE="$t"
+            PR_BODY="$b"
+          else
+            echo "::warning::Could not read the current PR text from the API. Scanning the text of the triggering event."
+          fi
           printf '%s\n%s\n' "$PR_TITLE" "$PR_BODY" | node scripts/myrmidon/ai-signature-scan.mjs
 
       - name: Internal addresses (private networks)
@@ -945,9 +978,17 @@ jobs:
           node --test scripts/myrmidon/ci/check-deployed-migrations.test.mjs
 
   ci-result:
-    # Single stable name for the ruleset. Lanes the plan did not need are
-    # skipped; any failure, or a skip without a successful plan, fails it.
-    name: CI result
+    # Single stable check name for the ruleset on real runs; a label-noop run
+    # (a `labeled` event with any label other than `full-ci`) must NOT create
+    # a check named `CI result` at all — GitHub rulesets read a `skipped`
+    # required check as satisfied, so a noop `skipped` run would wave the PR
+    # through auto-merge without any tests on the head (OPE-12841: PR #2965
+    # merged on a cancelled run's head). A dynamic `name:` publishes no
+    # `CI result` check on a noop run; the `!cancelled()` gate stays so a real
+    # run whose `plan` failed still fails the summary (re-gating on
+    # `needs.plan.result` would publish a satisfying `skipped` check on a red
+    # plan — the same defect class).
+    name: ${{ (github.event_name != 'pull_request' || github.event.action != 'labeled' || github.event.label.name == 'full-ci') && 'CI result' || 'CI result (label noop)' }}
     if: ${{ !cancelled() && (github.event_name != 'pull_request' || github.event.action != 'labeled' || github.event.label.name == 'full-ci') }}
     needs: [plan, migration-guard, typecheck, tests-affected, tests, tests-other, checks, dockergate, plugin-readiness, deployed-migrations]
     runs-on: ${{ fromJSON(vars.CI_RUNNER_LIGHT || vars.MYR_RUNNER_LIGHT || '"vps-ci"') }}

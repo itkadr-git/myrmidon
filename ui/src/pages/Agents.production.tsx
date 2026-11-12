@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo, lazy, Suspense } from "react";
+import { useState, useEffect, useMemo } from "react";
 import { Link, useNavigate, useLocation } from "@/lib/router";
 import { useQuery } from "@tanstack/react-query";
 import { agentsApi, type OrgNode } from "../api/agents";
@@ -18,8 +18,10 @@ import { AgentStatusBadge, AgentStatusCapsule } from "../components/StatusBadge"
 import { MembershipAction } from "../components/MembershipAction";
 import { StarToggle } from "../components/StarToggle";
 import { EntityRow } from "../components/EntityRow";
+import { RoleModelDownBadge } from "../components/myrmidon/RoleModelDownBadge"; // myrmidon(1.6.8 OPE-12709)
 import { BuiltInLifecycleChip } from "../components/BuiltInAgentBadges";
 import { EmptyState } from "../components/EmptyState";
+import { ConfigureBuiltInAgentModal } from "../components/ConfigureBuiltInAgentModal";
 import { PageSkeleton } from "../components/PageSkeleton";
 import { relativeTime, cn, agentRouteRef, agentUrl } from "../lib/utils";
 import { PageTabBar } from "../components/PageTabBar";
@@ -39,15 +41,6 @@ import { usePublishSharedQueryData, useSharedPollingQuery } from "../hooks/useSh
 import { getAdapterLabel } from "../adapters/adapter-display-registry";
 import { useTranslation } from "@/i18n";
 import { localizedAgentRoleLabel } from "../lib/agent-role-labels";
-
-
-// Lazy-loaded so the roster page doesn't statically pull in the full
-// AgentConfigForm module graph (the modal reuses its adapter/model pickers).
-const ConfigureBuiltInAgentModal = lazy(() =>
-  import("../components/ConfigureBuiltInAgentModal").then((m) => ({
-    default: m.ConfigureBuiltInAgentModal,
-  })),
-);
 
 export const AGENT_FILTER_TABS = ["all", "active", "paused", "error", "builtin"] as const;
 type FilterTab = (typeof AGENT_FILTER_TABS)[number];
@@ -469,6 +462,7 @@ export function Agents() {
         }
         meta={
           <div className="flex items-center gap-3">
+            <RoleModelDownBadge since={agent.roleModelDownSince} agentId={agent.id} />
             {builtInCluster && (
               <div className="hidden xl:flex items-center gap-1.5">
                 {builtInCluster}
@@ -657,16 +651,14 @@ export function Agents() {
         </p>
       )}
       {configureState && selectedCompanyId && (
-        <Suspense fallback={null}>
-          <ConfigureBuiltInAgentModal
-            companyId={selectedCompanyId}
-            state={configureState}
-            open={configureState !== null}
-            onOpenChange={(open) => {
-              if (!open) setConfigureState(null);
-            }}
-          />
-        </Suspense>
+        <ConfigureBuiltInAgentModal
+          companyId={selectedCompanyId}
+          state={configureState}
+          open={configureState !== null}
+          onOpenChange={(open) => {
+            if (!open) setConfigureState(null);
+          }}
+        />
       )}
     </div>
   );

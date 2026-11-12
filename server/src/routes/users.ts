@@ -1,4 +1,5 @@
 import { Router } from "express";
+import { z } from "zod";
 import type { Db } from "@myrmidon/db";
 import { blockUserSchema, patchUserBlockSchema, updateCompanyMemberSchema } from "@myrmidon/shared";
 import { companies } from "@myrmidon/db";
@@ -6,7 +7,7 @@ import { accessService } from "../services/access.js";
 import { assertCompanyAccess } from "./authz.js";
 import { validate } from "../middleware/validate.js";
 import { forbidden, notFound, unauthorized } from "../errors.js";
-import { getUser, resetUserPassword, setUserBlocked, UsersAdminError } from "../myrmidon/users-admin-a/service.js";
+import { getUser, listUsers, resetUserPassword, setUserBlocked, UsersAdminError } from "../myrmidon/users-admin-a/service.js";
 import { logActivity } from "../services/activity-log.js";
 
 function assertAdmin(req: import("express").Request) {
@@ -61,6 +62,12 @@ async function auditUserBlock(
   }
 }
 
+const listUsersQuerySchema = z.object({
+  page: z.coerce.number().int().min(1).optional().default(1),
+  limit: z.coerce.number().int().min(1).max(100).optional().default(20),
+  role: z.enum(["admin", "instance_admin", "member"]).optional(),
+});
+
 /**
  * myrmidon(OPE-10179): PATCH /api/companies/:companyId/users/:userId — a thin
  * alias over the canonical member route. Suspend/activate flow through
@@ -79,6 +86,34 @@ export function usersRoutes(db: Db): Router {
     }
     throw err;
   }
+
+  /**
+   * GET /api/users
+   * Instance administrator route to list users with pagination and role filter.
+   * (myrmidon 1.7 USERS-ADMIN-PAGINATION, OPE-12089)
+   */
+  router.get("/users", async (req, res) => {
+    assertAdmin(req);
+    const parsed = listUsersQuerySchema.safeParse(req.query);
+    if (!parsed.success) {
+      res.status(400).json({
+        error: "Validation error",
+        message: "Validation error",
+        code: "VALIDATION_ERROR",
+        details: parsed.error.flatten(),
+      });
+      return;
+    }
+    const { page, limit, role } = parsed.data;
+    const { users, total } = await listUsers(db, { page, limit, role });
+    res.status(200).json({
+      items: users,
+      users,
+      total,
+      page,
+      limit,
+    });
+  });
 
   /**
    * POST /api/users/:userId/block

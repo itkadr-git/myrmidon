@@ -385,6 +385,7 @@ export interface DockerCreateContainerBody {
     NetworkMode: string;
     Binds: string[];
     Privileged: boolean;
+    Ulimits: Array<{ Name: string; Soft: number; Hard: number }>;
   };
 }
 
@@ -492,6 +493,7 @@ export function buildCreateContainerRequestBody(
         sharedMount: resolveSpecSharedMount(spec, config.volumeRoot),
       }),
       Privileged: false,
+      Ulimits: [{ Name: "core", Soft: 0, Hard: 0 }],
     },
   };
 }
@@ -516,6 +518,7 @@ export interface DockerHelperContainerBody {
     NetworkMode: string;
     Binds: string[];
     Privileged: boolean;
+    Ulimits: Array<{ Name: string; Soft: number; Hard: number }>;
   };
 }
 
@@ -564,6 +567,7 @@ export function buildHelperContainerRequestBody(params: {
       NetworkMode: "none",
       Binds: buildHelperBinds(params.volumeRoot, params.botKey, params.scope, asRoot, params.packageCachePath),
       Privileged: false,
+      Ulimits: [{ Name: "core", Soft: 0, Hard: 0 }],
     },
   };
 }
@@ -1716,6 +1720,11 @@ export function dockerBotContainerDriver(
     if (!info) return { botKey, state: "missing" };
     const marker = await readAppliedMarker(botKey, info);
     const idleStopped = await readIdleStopped(botKey);
+    const memoryBytes = info.HostConfig?.Memory;
+    const memoryMb = typeof memoryBytes === "number" && memoryBytes > 0 ? Math.round(memoryBytes / (1024 * 1024)) : undefined;
+    const nanoCpus = info.HostConfig?.NanoCpus;
+    const cpus = typeof nanoCpus === "number" && nanoCpus > 0 ? nanoCpus / 1e9 : undefined;
+    const pidsLimit = typeof info.HostConfig?.PidsLimit === "number" && info.HostConfig.PidsLimit > 0 ? info.HostConfig.PidsLimit : undefined;
     return {
       botKey,
       state: botStateFromInspect(info),
@@ -1723,6 +1732,9 @@ export function dockerBotContainerDriver(
       restartHash: marker?.restartHash,
       filesHash: marker?.filesHash,
       maxConcurrentRuns: marker?.maxConcurrentRuns,
+      memoryMb,
+      cpus,
+      pidsLimit,
       // myrmidon(OPE-4789): the raw inspect rides along, so a caller that
       // already asked for the status (the reconciler, once per bot per pass)
       // can hand it to templateDrift instead of paying a second inspect.
@@ -2000,6 +2012,49 @@ export function dockerBotContainerDriver(
     await writeIdleStopped(botKey, false).catch(() => undefined);
   }
 
+  /**
+   * myrmidon(OPE-12654): the bot of an agent that left the bot-container runtime. dockergate
+   * deletes a main container through the plain delete (A9) only stopped AND with a `.next`
+   * replacement ready (the recreate rule), so the old cleanup's delete was refused on every
+   * lifecycle call, and its `rm` of the data directory did nothing: the board has no mount of
+   * the volume root. The decommission route (A22) deletes the stopped main container without a
+   * replacement, the bot's leftover `.next`/helper, its quota project and its data directory.
+   * A container that still runs is stopped first through the idle-stop route (A17: refused in
+   * the middle of a recreate or next to a running helper, so nothing is cut off mid-apply). A
+   * bot without a container is done (404). The callers hold the bot's lock (bot-key-lock.ts),
+   * so a `.next` found here is the stale leftover of an interrupted recreate, as in `create`:
+   * it is removed before the stop, which A17 would otherwise refuse as "recreate_active".
+   */
+  async function decommission(botKey: string): Promise<void> {
+    const name = containerNameFor(botKey);
+    const info = await inspectByName(name);
+    if (info) {
+      const state = info.State?.Status;
+      if (state !== "created" && state !== "exited" && state !== "dead") {
+        await removeByName(replacementContainerNameFor(botKey));
+        const stopRes = await requestWithRateLimitRetry({
+          method: "POST",
+          path: `/containers/${nameSegment(name)}/stop?t=${BOT_STOP_TIMEOUT_SEC}&myrmidon-idle=true`,
+          timeoutMs: (BOT_STOP_TIMEOUT_SEC + 30) * 1000,
+        });
+        if (stopRes.status >= 400 && stopRes.status !== 404) throw describeFailure(`docker stop ${name} before its decommission`, stopRes);
+      }
+      const res = await requestWithRateLimitRetry({
+        method: "DELETE",
+        path: `/containers/${nameSegment(name)}?force=true&v=true&myrmidon-decommission=true`,
+      });
+      if (res.status >= 400 && res.status !== 404) throw describeFailure(`docker decommission ${name}`, res);
+    }
+    // The bot is gone: nothing is left to wake or to template.
+    await writeIdleStopped(botKey, false).catch(() => undefined);
+    templateContextCache.delete(botKey);
+  }
+
+  /** myrmidon(OPE-12654): the lifecycle cleanup of a terminated or deleted agent is the decommission. */
+  async function cleanup(botKey: string): Promise<void> {
+    await decommission(botKey);
+  }
+
   async function stopIdle(botKey: string): Promise<void> {
     const name = containerNameFor(botKey);
     const res = await requestWithRateLimitRetry({ method: "POST", path: `/containers/${nameSegment(name)}/stop?t=${BOT_STOP_TIMEOUT_SEC}&myrmidon-idle=true` });
@@ -2018,5 +2073,5 @@ export function dockerBotContainerDriver(
     return client.getOomEvents(sinceNano);
   }
 
-  return { status, list, listRunning, templateDrift, statusWithDrift, updateResources, create, recreate, writeProfile, start, restart, stop, stopIdle, readCloneReport, readBotSkills, getOomEvents };
+  return { status, list, listRunning, templateDrift, statusWithDrift, updateResources, create, recreate, writeProfile, start, restart, stop, cleanup, decommission, stopIdle, readCloneReport, readBotSkills, getOomEvents };
 }

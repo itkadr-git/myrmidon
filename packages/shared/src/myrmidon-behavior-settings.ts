@@ -91,7 +91,7 @@ const dSettings: Array<{
   key: string;
   envName: string;
   default: unknown;
-  section: "channels" | "models";
+  section: "channels" | "models" | "foraging" | "system";
   validate: (value: unknown) => unknown | null;
 }> = [
   { key: "telegramDmConversations", envName: "MYRMIDON_TELEGRAM_DM_CONVERSATIONS", default: "", section: "channels", validate: (value) => typeof value === "string" ? value : null },
@@ -113,15 +113,46 @@ const dSettings: Array<{
   { key: "ctoChatModel", envName: "MYRMIDON_CTO_CHAT_MODEL", default: "dashscope-qwen-flash", section: "models", validate: nonEmptyString },
   { key: "ctoChatTimeoutSec", envName: "MYRMIDON_CTO_CHAT_TIMEOUT_SEC", default: 90, section: "models", validate: positiveInteger() },
   { key: "ctoChatMaxTasks", envName: "MYRMIDON_CTO_CHAT_MAX_TASKS", default: 8, section: "models", validate: positiveInteger() },
+  // myrmidon(OPE-12124): master switches of the 1.6 features, movable from
+  // env to "Тонкие настройки". Kill-switch semantics: the default is ON so an
+  // instance that never declares anything keeps its current behaviour (the
+  // feature's own contour settings decide), while a saved UI value turns the
+  // feature off without a restart and the env variable stays the forced
+  // override (the contract of resolveSetting: ui → env → default).
+  { key: "foragingEnabled", envName: "MYRMIDON_FORAGING_ENABLED", default: true, section: "foraging", validate: booleanSetting },
+  { key: "baselineEnabled", envName: "MYRMIDON_BASELINE_ENABLED", default: true, section: "system", validate: booleanSetting },
+  { key: "ctoChatEnabled", envName: "MYRMIDON_CTO_CHAT_ENABLED", default: true, section: "models", validate: booleanSetting },
+  { key: "evalsEnabled", envName: "MYRMIDON_EVALS_ENABLED", default: true, section: "models", validate: booleanSetting },
   { key: "evalsModel", envName: "MYRMIDON_EVALS_MODEL", default: "", section: "models", validate: nonEmptyString },
   { key: "evalsTimeoutSec", envName: "MYRMIDON_EVALS_TIMEOUT_SEC", default: 120, section: "models", validate: positiveInteger() },
   { key: "evalsLangfuseExport", envName: "MYRMIDON_EVALS_LANGFUSE", default: false, section: "models", validate: booleanSetting },
+  // myrmidon(1.7 SWEEP-2, OPE-12619): the access-hub surface switch and the
+  // ssh-operation timeout, movable from env to "Тонкие настройки" by the same
+  // OPE-12124 rule: an explicit env value stays the forced override, otherwise
+  // a saved UI value applies without a restart, otherwise the default. The
+  // section stays off by default; the ssh admin-key secret name and host
+  // addresses remain env/secret-store owned (never editable here).
+  { key: "accessHubEnabled", envName: "MYRMIDON_ACCESS_HUB_ENABLED", default: false, section: "system", validate: booleanSetting },
+  { key: "accessHubSshTimeoutMs", envName: "MYRMIDON_ACCESS_HUB_SSH_TIMEOUT_MS", default: 30_000, section: "system", validate: (value) => validateInteger(value, 1_000, 300_000) },
   { key: "ocrBackend", envName: "MYRMIDON_OCR_BACKEND", default: "ragflow", section: "models", validate: (value) => value === "ragflow" || value === "litellm" ? value : null },
   { key: "ocrModel", envName: "MYRMIDON_OCR_MODEL", default: "", section: "models", validate: nonEmptyString },
   { key: "ocrMaxBytes", envName: "MYRMIDON_OCR_MAX_BYTES", default: 32 * 1024 * 1024, section: "models", validate: positiveInteger() },
   { key: "ocrMaxPages", envName: "MYRMIDON_OCR_MAX_PAGES", default: 500, section: "models", validate: positiveInteger() },
   { key: "ocrMaxChars", envName: "MYRMIDON_OCR_MAX_CHARS", default: 2_000_000, section: "models", validate: positiveInteger() },
   { key: "ocrTimeoutSec", envName: "MYRMIDON_OCR_TIMEOUT_SEC", default: 120, section: "models", validate: positiveInteger() },
+  // myrmidon(OPE-12628): lesson-distill sweep settings in "Тонкие настройки"
+  { key: "lessonDistillEnabled", envName: "MYRMIDON_LESSON_DISTILL_ENABLED", default: false, section: "system", validate: booleanSetting },
+  { key: "lessonDistillWindowHours", envName: "MYRMIDON_LESSON_DISTILL_WINDOW_HOURS", default: 24, section: "system", validate: positiveInteger() },
+  { key: "lessonDistillRepeatThreshold", envName: "MYRMIDON_LESSON_DISTILL_REPEAT_THRESHOLD", default: 2, section: "system", validate: positiveInteger() },
+  { key: "lessonDistillPeriodMinutes", envName: "MYRMIDON_LESSON_DISTILL_PERIOD_MINUTES", default: 60, section: "system", validate: positiveInteger() },
+  // myrmidon(OPE-12627, SWEEP-2 KNOWLEDGE-GATE): the knowledge-gate mode and
+  // its rollout start date moved to "Тонкие настройки". The default `auto`
+  // keeps the built-in date-based rollout byte-for-byte as before; a saved UI
+  // value pins the mode (`warning`/`enforce`) or shifts the start date without
+  // a restart, and the env variables stay the forced override (the precedence
+  // for this contour is decided in the gate itself: env → saved → date).
+  { key: "knowledgeGateMode", envName: "MYRMIDON_KNOWLEDGE_GATE_MODE", default: "auto", section: "system", validate: (value) => value === "auto" || value === "warning" || value === "enforce" ? value : null },
+  { key: "knowledgeGateStartDate", envName: "MYRMIDON_KNOWLEDGE_GATE_START_DATE", default: "2026-10-31T00:00:00.000Z", section: "system", validate: (value) => typeof value === "string" && Number.isFinite(Date.parse(value)) ? value : null },
 ];
 for (const setting of dSettings) {
   behaviorSettingRegistry.register({
@@ -914,6 +945,7 @@ export function createBehaviorSettingsPatchSchema(scope?: SettingScope) {
       .refine((val) => def.validate(val) !== null, {
         message: `Invalid value for setting '${def.key}'`,
       })
+      .nullable()
       .optional();
   }
   
@@ -932,6 +964,12 @@ export function mergeBehaviorSettings(base: Record<string, unknown>, patch: Beha
   const result = { ...base };
   
   for (const [key, value] of Object.entries(patch)) {
+    if (value === null) {
+      // myrmidon(1.7): a null resets the key — the saved value is removed so
+      // the read falls back to env or default (resolveSetting precedence).
+      delete result[key];
+      continue;
+    }
     if (value !== undefined) {
       result[key] = value;
     }

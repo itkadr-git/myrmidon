@@ -246,6 +246,7 @@
     "checkedAt": "Releases checked at {{time}}",
     "never": "never",
     "unknown": "unknown",
+    "stale": "stale {{hours}}h",
     "column": {
       "name": "Component",
       "source": "Release source",
@@ -278,6 +279,7 @@
       "health-commit": "Board build commit",
       "docker-image": "Docker image",
       "container-labels": "Container labels",
+      "http-version": "HTTP version endpoint",
       "env": "Environment override",
       "manual": "Operator set",
       "none": "Not visible from the board"

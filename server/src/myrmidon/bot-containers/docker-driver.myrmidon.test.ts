@@ -169,8 +169,10 @@ describe("buildCreateContainerRequestBody", () => {
           "/srv/myrmidon/bots/agent-a:/bot",
         ],
         Privileged: false,
+        Ulimits: [{ Name: "core", Soft: 0, Hard: 0 }],
       },
     });
+    expect(Object.keys(body.HostConfig).at(-1)).toBe("Ulimits");
   });
 
   it("has exactly ONE bind for the bot's data: hard links cannot cross mounts (BOT-DISK-D)", () => {
@@ -457,6 +459,8 @@ describe("buildHelperContainerRequestBody", () => {
     expect(body.NetworkDisabled).toBe(true);
     expect(body.HostConfig.ReadonlyRootfs).toBe(true);
     expect(body.HostConfig.Privileged).toBe(false);
+    expect(body.HostConfig.Ulimits).toEqual([{ Name: "core", Soft: 0, Hard: 0 }]);
+    expect(Object.keys(body.HostConfig).at(-1)).toBe("Ulimits");
     // A helper only writes files, so it keeps the three narrow binds of the same host directories.
     expect(body.HostConfig.Binds).toEqual([
       "/srv/myrmidon/bots/agent-a/hermes:/data/hermes",
@@ -480,6 +484,8 @@ describe("buildHelperContainerRequestBody", () => {
     expect(body.HostConfig.CapDrop).toEqual(["ALL"]);
     expect(body.HostConfig.CapAdd).toEqual(["CHOWN", "FOWNER"]);
     expect(body.HostConfig.NetworkMode).toBe("none");
+    expect(body.HostConfig.Ulimits).toEqual([{ Name: "core", Soft: 0, Hard: 0 }]);
+    expect(Object.keys(body.HostConfig).at(-1)).toBe("Ulimits");
     // myrmidon(BOT-ROOT-TRAVERSE): besides the three narrow binds the prepare helper
     // also carries the bot's own root as the SAME bind the bot container gets at /bot,
     // so its script can fix the traversal bit of the one mount point the narrow binds
@@ -490,6 +496,26 @@ describe("buildHelperContainerRequestBody", () => {
       "/srv/myrmidon/bots/agent-a/scratch:/scratch",
       "/srv/myrmidon/bots/agent-a:/bot",
     ]);
+  });
+
+  it("apply-profile and prepare-volumes with scope also pin RLIMIT_CORE=0 as the last HostConfig key", () => {
+    const scope = { scopeRoot: "/srv/myrmidon/bots/.scopes", dirName: "caste-eng" };
+    const botBody = buildCreateContainerRequestBody(spec(), CONFIG, undefined, false, scope);
+    expect(botBody.HostConfig.Ulimits).toEqual([{ Name: "core", Soft: 0, Hard: 0 }]);
+    expect(Object.keys(botBody.HostConfig).at(-1)).toBe("Ulimits");
+
+    for (const role of ["prepare-volumes", "apply-profile"] as const) {
+      const helperBody = buildHelperContainerRequestBody({
+        botKey: "agent-a",
+        image: "myrmidon-hermes:1.1.0",
+        role,
+        script: role === "prepare-volumes" ? buildPrepareVolumesScript({ scope: true }) : "true",
+        volumeRoot: CONFIG.volumeRoot,
+        scope,
+      });
+      expect(helperBody.HostConfig.Ulimits).toEqual([{ Name: "core", Soft: 0, Hard: 0 }]);
+      expect(Object.keys(helperBody.HostConfig).at(-1)).toBe("Ulimits");
+    }
   });
 });
 
@@ -997,6 +1023,30 @@ async function startFakeDaemon(tmp: string, images: Record<string, Record<string
     if (!container) return send(404, { message: `No such container: ${name}` });
 
     if (!action && method === "DELETE") {
+      // myrmidon(OPE-12654): the gate's rules for the MAIN container, so a driver that deletes
+      // one outside them fails here and not only on the live board. The plain delete (A9) needs
+      // it stopped with a created `.next` replacement (a recreate); the decommission delete
+      // (A22, myrmidon-decommission=true) needs it stopped, refuses a running `.next` or
+      // helper, and takes the stopped leftovers with it. A .next or a helper needs only to exist.
+      const isMain = !name.endsWith(".next") && !name.endsWith(".helper");
+      const decommissionFlag = query["myrmidon-decommission"];
+      if (decommissionFlag !== undefined && (!isMain || decommissionFlag !== "true")) {
+        return send(403, { message: "dockergate: denied (route_not_allowed)" });
+      }
+      if (isMain) {
+        const next = containers.get(`${name}.next`);
+        const helper = containers.get(`${name}.helper`);
+        if (container.state === "running") return send(403, { message: "dockergate: denied (state_precondition)" });
+        if (decommissionFlag === "true") {
+          if (next?.state === "running" || helper?.state === "running") {
+            return send(403, { message: "dockergate: denied (state_precondition)" });
+          }
+          containers.delete(`${name}.next`);
+          containers.delete(`${name}.helper`);
+        } else if (next?.state !== "created") {
+          return send(403, { message: "dockergate: denied (state_precondition)" });
+        }
+      }
       if (container.state === "running" && query.force !== "true") return send(409, { message: "container is running" });
       containers.delete(name);
       return send(204);
@@ -1238,6 +1288,9 @@ describe("dockerBotContainerDriver against a fake Docker daemon", () => {
       image: "myrmidon-hermes:1.1.0",
       restartHash: "restart-1",
       filesHash: "files-1",
+      memoryMb: 1536,
+      cpus: 1,
+      pidsLimit: 256,
       // myrmidon(OPE-4789): the raw inspect rides along for the drift check.
       inspect: undefined,
     });
@@ -2035,6 +2088,88 @@ describe("dockerBotContainerDriver against a fake Docker daemon", () => {
         const newStatus = await driver.status("agent-a");
         expect(newStatus).toMatchObject({ state: "stopped", idleStopped: true, image: "myrmidon-hermes:1.2.0" });
       });
+    });
+  });
+
+  // myrmidon(OPE-12654): the bot of an agent that left the bot-container runtime. The fake
+  // models the gate's rules for deleting the main container (see the DELETE handler), so the
+  // old cleanup — a plain delete of a main container without a replacement — fails here as it
+  // failed on the live board.
+  describe("decommission", () => {
+    const changes = (requests: RecordedRequest[]) => requests.filter((r) => r.method !== "GET");
+
+    it("stops a running bot through the idle-stop route, then deletes it through the decommission route", async () => {
+      await driver.create(spec());
+      await driver.writeProfile("agent-a", testProfile());
+      await driver.start("agent-a");
+      expect(bot()?.state).toBe("running");
+      const before = daemon.requests.length;
+      await driver.decommission!("agent-a");
+      const after = changes(daemon.requests.slice(before));
+      expect(after.map((r) => `${r.method} ${r.path}`)).toEqual([
+        // a stale replacement would make the idle-stop route refuse the stop; none here (404)
+        "DELETE /containers/myrmidon-bot-agent-a.next",
+        "POST /containers/myrmidon-bot-agent-a/stop",
+        "DELETE /containers/myrmidon-bot-agent-a",
+      ]);
+      expect(after[0]?.query).toEqual({ force: "true", v: "true" });
+      expect(after[1]?.query).toEqual({ t: String(BOT_STOP_TIMEOUT_SEC), "myrmidon-idle": "true" });
+      expect(after[2]?.query).toEqual({ force: "true", v: "true", "myrmidon-decommission": "true" });
+      expect([...daemon.containers.keys()]).toEqual([]);
+      expect(await driver.status("agent-a")).toEqual({ botKey: "agent-a", state: "missing" });
+    });
+
+    it("deletes a stopped bot without stopping it again, and is a no-op once the bot is gone", async () => {
+      await driver.create(spec()); // created, never started
+      const before = daemon.requests.length;
+      await driver.decommission!("agent-a");
+      const after = changes(daemon.requests.slice(before));
+      expect(after.map((r) => `${r.method} ${r.path}`)).toEqual(["DELETE /containers/myrmidon-bot-agent-a"]);
+      expect(after[0]?.query["myrmidon-decommission"]).toBe("true");
+      expect(daemon.containers.size).toBe(0);
+
+      const again = daemon.requests.length;
+      await driver.decommission!("agent-a");
+      // one inspect (404) and nothing to delete
+      expect(daemon.requests.slice(again).map((r) => `${r.method} ${r.path}`)).toEqual(["GET /containers/myrmidon-bot-agent-a/json"]);
+    });
+
+    it("the plain delete of a stopped bot without a replacement is refused; cleanup now goes through the decommission", async () => {
+      await driver.create(spec());
+      const plain = await rawRequest(daemon.socketPath, "DELETE", "/v1.45/containers/myrmidon-bot-agent-a?force=true&v=true");
+      expect(plain.status).toBe(403);
+      expect(plain.body).toContain("state_precondition");
+      expect(bot()).toBeDefined();
+
+      await driver.cleanup!("agent-a");
+      expect(bot()).toBeUndefined();
+      expect(daemon.requests.filter((r) => r.method === "DELETE" && r.query["myrmidon-decommission"] === "true")).toHaveLength(1);
+    });
+
+    it("takes the stopped leftover of an interrupted recreate with it", async () => {
+      await driver.create(spec());
+      daemon.containers.set("myrmidon-bot-agent-a.next", { ...bot()!, id: "stale", name: "myrmidon-bot-agent-a.next" });
+      await driver.decommission!("agent-a");
+      expect(daemon.containers.size).toBe(0);
+    });
+
+    it("a running helper blocks it: nothing is deleted and the refusal surfaces", async () => {
+      await driver.create(spec());
+      daemon.containers.set("myrmidon-bot-agent-a.helper", { ...bot()!, id: "helper", name: "myrmidon-bot-agent-a.helper", state: "running" });
+      await expect(driver.decommission!("agent-a")).rejects.toThrow(/state_precondition/);
+      expect([...daemon.containers.keys()].sort()).toEqual(["myrmidon-bot-agent-a", "myrmidon-bot-agent-a.helper"]);
+    });
+
+    it("forgets the idle-stopped mark of the bot it removed", async () => {
+      await driver.create(spec());
+      await driver.writeProfile("agent-a", testProfile());
+      await driver.start("agent-a");
+      await driver.stopIdle!("agent-a");
+      const stateFile = path.join(stateDir, "agent-a.json");
+      expect(fs.existsSync(stateFile)).toBe(true);
+      await driver.decommission!("agent-a");
+      expect(bot()).toBeUndefined();
+      expect(fs.existsSync(stateFile)).toBe(false);
     });
   });
 

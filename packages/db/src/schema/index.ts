@@ -147,6 +147,8 @@ export { completionContracts } from "./completion_contracts.js";
 export { nativeRunResults } from "./native_run_results.js";
 export { nativeRunFinalizations } from "./native_run_finalizations.js";
 export { workAssessments } from "./work_assessments.js";
+// myrmidon(1.7 TOOL-COMPLAINTS-API, OPE-12228): agent complaints about tools.
+export { toolComplaints } from "./tool_complaints.js";
 export { statusDecisions } from "./status_decisions.js";
 export { statusDecisionEffects } from "./status_decision_effects.js";
 export { heartbeatRunWatchdogDecisions } from "./heartbeat_run_watchdog_decisions.js";
@@ -306,6 +308,7 @@ export {
   knowledgeDeviations,
   type KnowledgeDeviation,
   type NewKnowledgeDeviation,
+  knowledgeSettings,
   KNOWLEDGE_KINDS,
   KNOWLEDGE_ITEM_STATUSES,
   KNOWLEDGE_REVISION_LANGS,
@@ -350,6 +353,8 @@ export { userPasswordSetTokens, userBlocks } from "./user_password_set_tokens.js
 export { legacyBlockedImports } from "./legacy_blocked_imports.js";
 // myrmidon(1.7-REDACT): redaction substitutions with expiry TTL
 export { redactionSubstitutions } from "./redaction_substitutions.js";
+// myrmidon(1.7 REDACT, OPE-8660): per-nest redaction settings (dictionaries + rules).
+export { nestRedactSettings } from "./nest_redact_settings.js";
 // myrmidon(1.7 POST-TASK-REFLECT, OPE-12095): outbox queue for post-task reflection jobs on issue completion.
 export {
   reflectJobs,
@@ -370,3 +375,5 @@ export {
   type BillingEventRow,
   type NewBillingEventRow,
 } from "./billing_events.js";
+// myrmidon(1.7 WEBHOOK-INTAKE, OPE-12041): raw inbound webhook drafts (signature + dedup).
+export { webhookIntakeDrafts } from "./webhook_intake_drafts.js";

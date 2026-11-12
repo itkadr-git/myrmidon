@@ -20,11 +20,18 @@ export interface StackBacklogDraft {
   summary: string;
 }
 
+export interface ExistingStackTask {
+  title: string;
+  originId: string | null;
+}
+
 export interface StackBacklogDraftOptions {
   /** Minimum upstream lag in releases; defaults to 2. */
   lagThreshold?: number;
   /** Components that already have an open task — skipped (deduplication). */
   openComponents?: readonly string[];
+  /** Existing stack-update task identities, including closed tasks, for release deduplication. */
+  existingDrafts?: readonly ExistingStackTask[];
 }
 
 /** Default upstream lag (in releases) that warrants a backlog draft. */
@@ -44,11 +51,20 @@ export function decideStackBacklogDrafts(
   options: StackBacklogDraftOptions = {},
 ): StackBacklogDraft[] {
   const lagThreshold = options.lagThreshold ?? STACK_BACKLOG_LAG_DEFAULT;
-  const open = new Set(options.openComponents ?? []);
+  // Dedup keys cover open AND closed tasks of the same release: a task the
+  // team already reviewed and closed (done/cancelled) must not reappear on
+  // the next sweep just because it left the "open" query.
+  const knownTitles = new Set(
+    (options.existingDrafts ?? []).map((existing) => existing.title.toLowerCase()),
+  );
+  const knownOrigins = new Set(
+    (options.existingDrafts ?? []).map((existing) => existing.originId).filter((v): v is string => Boolean(v)),
+  );
+  const openComponentSet = new Set(options.openComponents ?? []);
   const cards = new Map(buildStackAttentionCards(doc).map((card) => [card.component, card]));
   const drafts: StackBacklogDraft[] = [];
   for (const component of doc.components) {
-    if (open.has(component.name)) continue;
+    if (openComponentSet.has(component.name)) continue;
     const upstream = component.upstreamState;
     if (!upstream || !upstream.latest) continue;
     const behindBy = upstream.behindBy ?? null;
@@ -60,9 +76,12 @@ export function decideStackBacklogDrafts(
     const whyNow = lagging
       ? `Upstream release ${upstream.latest} is ${behindBy} release(s) ahead of the running version (${ourVersion ?? "unknown"}).`
       : `Upstream release ${upstream.latest} carries a security note; our version is ${ourVersion ?? "unknown"}.`;
+    const title = card?.title ?? `${component.name} ${upstream.latest}`;
+    if (knownTitles.has(title.toLowerCase())) continue;
+    if (knownOrigins.has(`${component.name}:${upstream.latest}`)) continue;
     drafts.push({
       component: component.name,
-      title: card?.title ?? `${component.name} ${upstream.latest}`,
+      title,
       summary: summaryFor(card, whyNow),
     });
   }

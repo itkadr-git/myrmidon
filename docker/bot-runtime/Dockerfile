@@ -204,6 +204,28 @@ o = install('/opt/hermes-plugins/hindsight'); \
 print('hindsight plugin deps:', o.status, o.detail if hasattr(o, 'detail') else ''); \
 raise SystemExit(0 if o.status in ('installed', 'none') else 1)"
 
+# myrmidon(OPE-12760): security override over the synced venv. The pinned hermes (v2026.9.24,
+# 0.21.5) locks aiohttp 3.14.3 (GHSA-2g87-pp6c-29x5, GHSA-5wr8-gcqf-gqf3: the gateway API
+# server runs on aiohttp), httpx2 2.7.0 (GHSA-8xx6-hgc6-gc2m, GHSA-f2fp-rgf2-35cp and others:
+# HTTP MCP runs on it) and certifi 2026.5.20 (GHSA-6q48-6c7w-9gw2). Upstream raised aiohttp to
+# 3.14.5 in 0.22.5 (PR #142691) and httpx2 to 2.12.0 in 0.22.2 (PR #138026). Exact versions, over
+# the venv `uv sync` built (httpx2 pulls its matching httpcore2 along). The step sits AFTER the
+# Hindsight plugin installer on purpose: that installer resolves under hermes' core constraints
+# read from pyproject.toml (aiohttp==3.14.3) and would put aiohttp back to 3.14.3 if this ran
+# before it. The version check below fails the build if any floor is not met. Drop both steps
+# (and the matching test in dockerfile.test.mjs) when the pinned hermes is >= 0.22.5: its own
+# uv.lock then carries these versions. See docs/myrmidon/hermes-deltas.md.
+RUN uv pip install --python /opt/hermes-src/.venv/bin/python \
+    aiohttp==3.14.5 httpx2==2.12.0 certifi==2026.10.19
+
+RUN /opt/hermes-src/.venv/bin/python -c \
+    "import re, sys; from importlib.metadata import version; \
+floors = {'aiohttp': '3.14.5', 'httpx2': '2.12.0', 'certifi': '2026.10.19'}; \
+key = lambda v: tuple(map(int, re.findall(r'\d+', v))); \
+bad = [n + ' ' + version(n) + ' < ' + f for n, f in floors.items() if key(version(n)) < key(f)]; \
+print('hermes venv security floors:', {n: version(n) for n in floors}); \
+sys.exit('below the OPE-12760 floor: ' + ', '.join(bad) if bad else 0)"
+
 # Fail the build loudly if any package this image relies on being preinstalled (never
 # lazily) fails to import from the synced venv, instead of only discovering it the first
 # time a bot profile tries to use MCP tools or hindsight memory at runtime.
@@ -217,13 +239,13 @@ RUN /opt/hermes-src/.venv/bin/python -c 'import aiohttp, mcp, hindsight_client'
 # api_server_runs): 15; agent.redact: 12; tools.delegation_live_log: 13;
 # hermes_state_registry, gateway.session_db_recovery/session(_persistence/_recovery/_lifecycle/_transcript),
 # run/run_startup/run_shutdown: 18; agent.opencode_affinity and agent.transports.chat_completions: 28;
-# hermes_state_maintenance: 30)
+# hermes_state_maintenance: 30; gateway.platforms.api_server_run_idempotency: 34)
 # plus the vendored memory provider (a relative-import package, so a broken plugin tree
 # fails the build here, not at the first bot start). `git apply` only proves the hunks
 # land; a patch that applies cleanly but breaks a module's imports or top-level code
 # would otherwise surface only when a bot starts. No bytecode is written, so the sealed
 # tree stays as the build left it.
-RUN PYTHONDONTWRITEBYTECODE=1 /opt/hermes-src/.venv/bin/python -c 'import hermes_state, hermes_state_maintenance, tools.environments.base, tools.environments.base_session_env, gateway.run, gateway.session_db_recovery, gateway.session_persistence, gateway.session_recovery, gateway.session_lifecycle, gateway.session_transcript, hermes_state_registry, gateway.run_startup, gateway.run_shutdown, gateway.platforms.api_server_runs, tools.environments.local, tools.github_broker_context, tools.run_workspace, tools.github_launcher_context, agent.session_persistence, agent.redact, tools.delegation_live_log, agent.context_economy, tools.stale_result_tool, agent.turn_request_assembly, agent.tool_result_classification, toolsets, model_tools, agent.opencode_affinity, agent.transports.chat_completions'
+RUN PYTHONDONTWRITEBYTECODE=1 /opt/hermes-src/.venv/bin/python -c 'import hermes_state, hermes_state_maintenance, tools.environments.base, tools.environments.base_session_env, gateway.run, gateway.session_db_recovery, gateway.session_persistence, gateway.session_recovery, gateway.session_lifecycle, gateway.session_transcript, hermes_state_registry, gateway.run_startup, gateway.run_shutdown, gateway.platforms.api_server_runs, tools.environments.local, tools.github_broker_context, tools.run_workspace, tools.github_launcher_context, agent.session_persistence, agent.redact, tools.delegation_live_log, agent.context_economy, tools.stale_result_tool, agent.turn_request_assembly, agent.tool_result_classification, toolsets, model_tools, agent.opencode_affinity, agent.transports.chat_completions, gateway.platforms.api_server_run_idempotency'
 
 # myrmidon(G1): behaviour check for patch 06 — the state-DB generation probe must not
 # walk /proc/self/fd once per write while the gateway holds hundreds of descriptors
@@ -266,6 +288,12 @@ RUN PYTHONDONTWRITEBYTECODE=1 HERMES_HOME=/tmp/run-skills-test /opt/hermes-src/.
 # stranded unanswered tail prompts (left by failed attempts) are superseded by the new
 # prompt instead of piling up as user rows, against a real SessionDB.
 RUN PYTHONDONTWRITEBYTECODE=1 /opt/hermes-src/.venv/bin/python /tmp/patch-tests/stranded_run_turn.py /opt/hermes-src
+# myrmidon(OPE-12719): behaviour regression for 35-skill-view-managed-name.patch —
+# board skills materialize as paperclip-managed/<slug>--<hash> but the agent-facing
+# index shows "paperclip-managed:<slug>"; skill_view must resolve that qualified alias
+# (zero-candidate fallback only), keep bare/slash forms working, refuse an unknown
+# namespace, and refuse two same-slug board skills as ambiguous.
+RUN PYTHONDONTWRITEBYTECODE=1 HERMES_HOME=/tmp/skill-view-test /opt/hermes-src/.venv/bin/python /tmp/patch-tests/skill_view_managed_name.py /opt/hermes-src
 # myrmidon(G1): behaviour regression for 16-context-economy.patch (input-token measures A and B):
 # both rewrite earlier rows of the request and so break the provider's prompt cache; they are OFF by
 # default (request byte for byte unchanged, reader not in the tool schema) and, switched on, turn every
@@ -317,6 +345,16 @@ RUN PYTHONDONTWRITEBYTECODE=1 /opt/hermes-src/.venv/bin/python /tmp/patch-tests/
 # volume, a temp directory that is not RAM), for a store and a gateway without a running turn, and for
 # min_vacuum_interval_days.
 RUN PYTHONDONTWRITEBYTECODE=1 /opt/hermes-src/.venv/bin/python /tmp/patch-tests/vacuum_by_freelist.py /opt/hermes-src
+# myrmidon(G1): behaviour regression for 32-compaction-summary-9-sections.patch:
+# summary template and fallback summary contain all 9 standardized sections.
+RUN PYTHONDONTWRITEBYTECODE=1 /opt/hermes-src/.venv/bin/python /tmp/patch-tests/compaction_summary_9_sections.py /opt/hermes-src
+# myrmidon(G1): behaviour regression for 33-compaction-tool-pairs-sampling.patch:
+# tool call and result pairs are preserved atomically during summary sampling.
+RUN PYTHONDONTWRITEBYTECODE=1 /opt/hermes-src/.venv/bin/python /tmp/patch-tests/compaction_tool_pairs_sampling.py /opt/hermes-src
+# myrmidon(OPE-12759): behaviour regression for 34-run-idempotency-txn-rollback.patch:
+# a failed commit in the run idempotency store must not leave the connection inside its
+# transaction (every later run request answered 500 until the gateway restarted).
+RUN PYTHONDONTWRITEBYTECODE=1 /opt/hermes-src/.venv/bin/python /tmp/patch-tests/run_idempotency_txn_rollback.py /opt/hermes-src
 # myrmidon(G1): names imported inside functions of the patched modules resolve too
 # (the import smoke above runs only top-level imports; a missing lazily imported name
 # broke every run of the 1.6.0 dev image while the build passed).
@@ -381,6 +419,27 @@ RUN set -eu; \
     rm -rf /tmp/node.tar.xz /opt/node24/include /opt/node24/share /opt/node24/CHANGELOG.md /opt/node24/README.md; \
     /opt/node24/bin/node --version | grep -x "v${NODE24_VERSION}"
 
+# myrmidon(OPE-10494, 10.11): the GitHub CLI from its own pinned release, not Debian's
+# `gh` package (2.46.0, January 2025): that one fails `gh pr view` / `gh pr edit` with
+# "GraphQL: Projects (classic) is being deprecated", and bots looped on it.
+FROM python:3.13-slim AS gh_dist
+ARG GH_VERSION=2.103.3
+ARG GH_SHA256=4c806978ffce1cec70853302a56d70ac6da4f19bae7adca4e1a8ab00633dd91d
+
+RUN apt-get update \
+  && apt-get install -y --no-install-recommends \
+    ca-certificates \
+    curl \
+  && rm -rf /var/lib/apt/lists/*
+
+RUN set -eu; \
+    curl -fsSL -o /tmp/gh.tar.gz "https://github.com/cli/cli/releases/download/v${GH_VERSION}/gh_${GH_VERSION}_linux_amd64.tar.gz"; \
+    echo "${GH_SHA256}  /tmp/gh.tar.gz" | sha256sum -c -; \
+    tar -xzf /tmp/gh.tar.gz -C /tmp; \
+    install -m 0755 "/tmp/gh_${GH_VERSION}_linux_amd64/bin/gh" /usr/local/bin/gh; \
+    rm -rf /tmp/gh.tar.gz "/tmp/gh_${GH_VERSION}_linux_amd64"; \
+    /usr/local/bin/gh --version | grep -q "gh version ${GH_VERSION} "
+
 FROM python:3.13-slim AS runtime
 ARG HERMES_VERSION
 
@@ -414,13 +473,15 @@ RUN apt-get update \
   && apt-get install -y --no-install-recommends \
     ca-certificates \
     curl \
-    gh \
     git \
     jq \
     openssh-client \
     ripgrep \
     tini \
   && rm -rf /var/lib/apt/lists/*
+# gh: the pinned release from the gh_dist stage (see there), at the path the
+# github-launcher shim resolves.
+COPY --from=gh_dist /usr/local/bin/gh /usr/bin/gh
 
 # myrmidon(G1): --home-dir /data/hermes (not /home/bot) — the G3 driver runs this
 # image with ReadonlyRootfs: true (docker-driver.ts buildCreateContainerRequestBody),
@@ -801,7 +862,7 @@ USER root
 
 # Build tools the repository needs to install and build its workspaces:
 # gcc/g++/make/pkg-config for native addons and node-gyp, python3 (present in
-# the base) for node-gyp itself, gh for the pull-request cycle, zstd and unzip
+# the base) for node-gyp itself, zstd and unzip
 # for archives, xz-utils for the tarballs above. Same --no-install-recommends
 # discipline as the other stages.
 RUN apt-get update \
@@ -811,7 +872,6 @@ RUN apt-get update \
     curl \
     g++ \
     gcc \
-    gh \
     git \
     jq \
     libc6-dev \
@@ -1008,7 +1068,11 @@ RUN set -eu; \
       echo "pnpm install must refuse without the devbuild gateway" >&2; exit 1; \
     fi; \
     case "$out" in \
-      *"devbuild pnpm install"*) ;; \
+      *"Refused: pnpm --config.confirm-modules-purge=false install"*) ;; \
+      *) echo "pnpm install refusal must name the refused invocation and its devbuild replacement, got: $out" >&2; exit 1 ;; \
+    esac; \
+    case "$out" in \
+      *"devbuild pnpm --config.confirm-modules-purge=false install"*) ;; \
       *) echo "pnpm install refusal must name the devbuild replacement, got: $out" >&2; exit 1 ;; \
     esac; \
     case "$out" in \

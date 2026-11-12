@@ -217,8 +217,10 @@ import {
   countStalledReviewDeferrals,
   isMaintenanceInterruptedRun,
   decideStalledReviewRecovery,
+  reviewVerdictCoversHead,
   type ReviewPullRequestCiFacts,
 } from "../../myrmidon/review-stage-recovery/policy.js";
+import { readReviewVerdictRecord } from "../../myrmidon/review-verdict/record.js";
 import { orphanBlockerFitsCreator } from "../../myrmidon/recovery/orphan-blocker-caste.js";
 import type { ReviewPullRequestCiResolver } from "../../myrmidon/review-stage-recovery/github-ci.js";
 import {
@@ -226,6 +228,11 @@ import {
   pullRequestCiStateFromStatusPayload,
   type PullRequestHeadResolver,
 } from "../../myrmidon/review-routing/github.js";
+import {
+  issueAnchorAgentId,
+  ownGroupReviewerPool,
+  resolveAgentGroupKey,
+} from "../../myrmidon/review-routing/policy.js";
 import { selectRunPullRequest } from "../../myrmidon/run-pull-request.js";
 
 const EXECUTION_PATH_HEARTBEAT_RUN_STATUSES = [
@@ -309,6 +316,7 @@ type LatestIssueRun =
       // myrmidon(L1): claimedAdapterType's input, so the L1 branch below can
       // gate hold suppression on the run's own adapter
       | "runnerProfileJson"
+      | "activeIdentityContextId"
     > & {
       resultJson?: unknown;
     })
@@ -586,7 +594,7 @@ const INTERACTION_CONTINUATION_REQUEUE_MAX_ATTEMPTS = 3;
 export const PROVIDER_QUOTA_RECOVERY_DEFAULT_BACKOFF_MS = 60 * 60 * 1000;
 
 const PROVIDER_QUOTA_ERROR_RE =
-  /(?:you(?:'|’)ve hit your (?:\w+ )?limit|usage limit(?: reached| exceeded)?|provider quota|quota (?:limit )?exceeded|model (?:is )?at capacity)/i;
+  /(?:you(?:'|’)ve hit your (?:\w+ )?limit|usage limit(?: reached| exceeded)?|provider quota|quota (?:limit )?exceeded|insufficient[_ ]quota|no deployments available|all deployments[^\n]{0,120}cooldown|model (?:is )?at capacity)/i;
 const CONFIGURATION_INCOMPLETE_ERROR_RE =
   /(?:model_not_found|model [^\n]{0,120} not found|missing (?:api )?(?:key|credentials?)|credentials? (?:are |is )?missing|no (?:api )?(?:key|credentials?) (?:was |were )?(?:found|configured|provided)|api key (?:is )?(?:not set|unavailable))/i;
 
@@ -705,6 +713,7 @@ export function classifyAdapterFailureForRecovery(
   }
   if (
     latestRun.errorCode !== "adapter_failed" &&
+    latestRun.errorCode !== "hermes_gateway_run_failed" &&
     latestRun.errorCode !== "provider_quota" &&
     latestRun.errorCode !== "configuration_incomplete"
   ) {
@@ -999,15 +1008,6 @@ function isRepeatedProductiveContinuationRecovery(
   );
 }
 
-const ADM_REVIEWER_AGENT_IDS = [
-  "dbd3f01c-518e-4c1d-a05a-2a4bf25acf93", // 0 -> adm-dev-review-8
-  "d674a53a-3abd-43fe-8f49-696a04937323", // 1 -> adm-dev-review-9
-  "07555686-c5f7-4536-ac2b-c9ab1027e89f", // 2 -> adm-dev-review-10
-  "62640ae6-658b-4cde-ba3a-b6a88e708df9", // 3 -> adm-dev-review-11
-  "b7040a16-03a0-4d3c-8060-709038ccc403", // 4 -> adm-dev-review-12
-  "c85f5dac-4a13-4bdb-9498-c666fe45d4c9", // 5 -> adm-dev-review-13
-];
-
 function getReviewerParticipantAgentId(issue: {
   executionPolicy?: unknown;
   executionState?: unknown;
@@ -1048,7 +1048,17 @@ function getReviewerParticipantAgentId(issue: {
 
 async function pickReviewerForIssue(
   db: Db,
-  issue: { companyId: string },
+  issue: {
+    id: string;
+    companyId: string;
+    status: string;
+    assigneeAgentId?: string | null;
+    assigneeUserId?: string | null;
+    createdByAgentId?: string | null;
+    createdByUserId?: string | null;
+    executionPolicy?: unknown;
+    executionState?: unknown;
+  },
   prProduct: typeof issueWorkProducts.$inferSelect,
 ): Promise<string | null> {
   const prInfo = selectRunPullRequest([
@@ -1061,9 +1071,32 @@ async function pickReviewerForIssue(
     } as any,
   ]);
   const prNumber = prInfo?.number;
+  const anchorAgentId = issueAnchorAgentId({
+    id: issue.id,
+    status: issue.status,
+    assigneeAgentId: issue.assigneeAgentId ?? null,
+    assigneeUserId: issue.assigneeUserId ?? null,
+    createdByAgentId: issue.createdByAgentId ?? null,
+    createdByUserId: issue.createdByUserId ?? null,
+    executionPolicy: issue.executionPolicy,
+    executionState: issue.executionState,
+  });
+  if (!anchorAgentId) return null;
+
+  const [anchor] = await db
+    .select({ name: agents.name, metadata: agents.metadata })
+    .from(agents)
+    .where(and(eq(agents.companyId, issue.companyId), eq(agents.id, anchorAgentId)));
+  const groupKey = resolveAgentGroupKey(anchor);
+  if (!groupKey) return null;
 
   const reviewerAgents = await db
-    .select({ id: agents.id, role: agents.role })
+    .select({
+      id: agents.id,
+      name: agents.name,
+      role: agents.role,
+      metadata: agents.metadata,
+    })
     .from(agents)
     .where(
       and(
@@ -1071,25 +1104,18 @@ async function pickReviewerForIssue(
         inArray(agents.role, ["reviewer", "code_reviewer"]),
       ),
     );
+  const eligibleReviewers = ownGroupReviewerPool(
+    reviewerAgents.filter((agent) => agent.id !== anchorAgentId),
+    groupKey,
+  );
 
-  if (reviewerAgents.length > 0) {
+  if (eligibleReviewers.length > 0) {
     if (typeof prNumber === "number" && Number.isSafeInteger(prNumber)) {
-      const idx = Math.abs(prNumber) % reviewerAgents.length;
-      const target = reviewerAgents[idx];
+      const idx = Math.abs(prNumber) % eligibleReviewers.length;
+      const target = eligibleReviewers[idx];
       if (target) return target.id;
     }
-    return reviewerAgents[0]?.id ?? null;
-  }
-
-  if (typeof prNumber === "number" && Number.isSafeInteger(prNumber)) {
-    const targetId = ADM_REVIEWER_AGENT_IDS[Math.abs(prNumber) % ADM_REVIEWER_AGENT_IDS.length];
-    if (targetId) {
-      const [existing] = await db
-        .select({ id: agents.id })
-        .from(agents)
-        .where(and(eq(agents.companyId, issue.companyId), eq(agents.id, targetId)));
-      if (existing) return existing.id;
-    }
+    return eligibleReviewers[0]?.id ?? null;
   }
 
   return null;
@@ -1184,6 +1210,93 @@ export function recoveryService(
       .then((rows) => rows[0] ?? null);
   }
 
+  /**
+   * myrmidon(OPE-12859): the issue's review verdict on the current PR head is
+   * already recorded. Further wakes of the reviewer would be empty runs — the
+   * reviewer has nothing to add until a new head appears, and the merge-time
+   * `CI result` gate is enforced independently of the reviewer.
+   */
+  async function issueReviewVerdictSettledForOpenPrHead(issue: {
+    id: string;
+    companyId: string;
+    executionState: unknown;
+  }): Promise<boolean> {
+    const verdict = readReviewVerdictRecord(issue.executionState);
+    if (!verdict) return false;
+    const openPr = await db.query.issueWorkProducts.findFirst({
+      where: and(
+        eq(issueWorkProducts.issueId, issue.id),
+        eq(issueWorkProducts.type, "pull_request"),
+        inArray(issueWorkProducts.status, [
+          "open",
+          "active",
+          "ready_for_review",
+          "approved",
+        ]),
+      ),
+    });
+    if (!openPr) return false;
+    const { headSha } = await resolvePrCiState(
+      issue.companyId,
+      openPr,
+      deps.prHeadResolver ?? defaultPrHeadResolver,
+    );
+    return reviewVerdictCoversHead(verdict, headSha);
+  }
+
+  /**
+   * myrmidon(OPE-12859): true when the run is a reviewer (execution-review
+   * participant) recovery run — the same predicate the wake-queue release tail
+   * uses, kept local to avoid a cross-module dependency.
+   */
+  function isReviewerRecoveryRun(run: {
+    contextSnapshot: unknown;
+  }): boolean {
+    const context = parseObject(run.contextSnapshot);
+    const wakeReason =
+      typeof context.wakeReason === "string" ? context.wakeReason : null;
+    const retryReason =
+      typeof context.retryReason === "string" ? context.retryReason : null;
+    return (
+      retryReason === EXECUTION_REVIEW_PARTICIPANT_RECOVERY_REASON ||
+      wakeReason === "execution_review_requested" ||
+      wakeReason === "execution_approval_requested" ||
+      // A continuation wake that carried the reviewer stage context (a
+      // reviewer woken as the issue assignee).
+      (retryReason === "issue_continuation_needed" &&
+        parseObject(context.executionStage).wakeRole === "reviewer")
+    );
+  }
+
+  /**
+   * myrmidon(OPE-12859): schedule the "Review CI wait" monitor for an
+   * in_progress issue whose reviewer run ended without a verdict while CI is
+   * running. No-op (returns false) when a monitor is already scheduled, so a
+   * sweep pass never stacks monitors; the monitor wakes the reviewer once when
+   * CI is terminal.
+   */
+  async function scheduleReviewCiWaitMonitorIfEligible(
+    issue: typeof issues.$inferSelect,
+    latestRun: NonNullable<LatestIssueRun>,
+  ): Promise<boolean> {
+    if (issue.monitorNextCheckAt) return false;
+    const state = parseIssueExecutionState(issue.executionState);
+    if (state?.status !== "pending" || state.currentStageType !== "review") {
+      return false;
+    }
+    const ci = await resolveReviewPullRequestCi({
+      companyId: issue.companyId,
+      issueId: issue.id,
+    });
+    if (ci.state !== "pending" && ci.state !== "unknown") return false;
+    const nextCheckAt = new Date(Math.max(
+      Date.now() + REVIEW_CI_WAIT_INTERVAL_MS,
+      (ci.rateLimit?.resetEpochSeconds ?? 0) * 1000,
+    ));
+    await scheduleReviewCiWaitMonitor({ issue, latestRun, ci, nextCheckAt });
+    return true;
+  }
+
   async function isAgentInvokable(
     agent: typeof agents.$inferSelect | null | undefined,
   ) {
@@ -1230,6 +1343,7 @@ export function recoveryService(
         createdAt: heartbeatRuns.createdAt,
         // myrmidon(L1): claimedAdapterType's input, see LatestIssueRun
         runnerProfileJson: heartbeatRuns.runnerProfileJson,
+        activeIdentityContextId: heartbeatRuns.activeIdentityContextId,
       })
       .from(heartbeatRuns)
       .where(
@@ -1262,6 +1376,7 @@ export function recoveryService(
         createdAt: heartbeatRuns.createdAt,
         // myrmidon(L1): claimedAdapterType's input, see LatestIssueRun
         runnerProfileJson: heartbeatRuns.runnerProfileJson,
+        activeIdentityContextId: heartbeatRuns.activeIdentityContextId,
       })
       .from(heartbeatRuns)
       .where(
@@ -2125,6 +2240,7 @@ export function recoveryService(
         createdAt: heartbeatRuns.createdAt,
         // myrmidon(L1): claimedAdapterType's input, see LatestIssueRun
         runnerProfileJson: heartbeatRuns.runnerProfileJson,
+        activeIdentityContextId: heartbeatRuns.activeIdentityContextId,
       })
       .from(heartbeatRuns)
       .where(
@@ -4437,6 +4553,11 @@ export function recoveryService(
         state.currentParticipant?.type !== "agent" || state.currentParticipant.agentId !== run.agentId) return false;
     const ci = await resolveReviewPullRequestCi({ companyId: input.companyId, issueId });
     if (ci.state !== "pending" && ci.state !== "unknown") return false;
+    // myrmidon(OPE-12859): the verdict on this head is already recorded — the
+    // merge gate enforces `CI result` independently, so there is nothing for
+    // the reviewer to do and no CI-wait monitor to keep scheduling.
+    const verdict = readReviewVerdictRecord(issue.executionState);
+    if (verdict && reviewVerdictCoversHead(verdict, ci.headSha)) return false;
     const nextCheckAt = new Date(Math.max(
       Date.now() + REVIEW_CI_WAIT_INTERVAL_MS,
       (ci.rateLimit?.resetEpochSeconds ?? 0) * 1000,
@@ -4499,6 +4620,16 @@ export function recoveryService(
       companyId: input.issue.companyId,
       issueId: input.issue.id,
     });
+    // myrmidon(OPE-12859): a verdict on the current head is already recorded —
+    // the merge gate enforces `CI result` independently, so the reviewer must
+    // not be woken again (nor a CI-wait monitor stacked) until a new head
+    // appears. The deferral is silent: no wake, no monitor, no budget spend.
+    // Returning false lets escalateStrandedAssignedIssue know the issue is
+    // already settled; it returns null (no escalation) in that case.
+    const recordedVerdict = readReviewVerdictRecord(input.issue.executionState);
+    if (recordedVerdict && reviewVerdictCoversHead(recordedVerdict, ci.headSha)) {
+      return false;
+    }
     const decision: ReturnType<typeof decideStalledReviewRecovery> = interruptedByMaintenance
       ? { kind: "retry_decision", attempt: 1 + deferrals.decisionRetries, maxAttempts: 1 + deferrals.decisionRetries }
       : decideStalledReviewRecovery({
@@ -4638,6 +4769,23 @@ export function recoveryService(
     // without a decision first waits for CI on the PR head, then gets one more
     // explicit decision request. Only after that is it escalated, and the
     // escalation keeps the stage (participant, return assignee) as it is.
+    // myrmidon(OPE-12859): when the review verdict already covers the current
+    // PR head, the review is done — only the merge-time `CI result` gate is
+    // still pending. There is nothing for recovery to do: no wake, no
+    // CI-wait monitor, no escalation. Return null so the sweep counts it as
+    // skipped rather than escalated.
+    {
+      const recordedVerdict = readReviewVerdictRecord(input.issue.executionState);
+      if (recordedVerdict) {
+        const ciFacts = await resolveReviewPullRequestCi({
+          companyId: input.issue.companyId,
+          issueId: input.issue.id,
+        });
+        if (reviewVerdictCoversHead(recordedVerdict, ciFacts.headSha)) {
+          return null;
+        }
+      }
+    }
     if (await deferStalledExecutionReview(input)) return input.issue;
 
     const openPrProduct = await db.query.issueWorkProducts.findFirst({
@@ -6224,6 +6372,67 @@ export function recoveryService(
             .where(eq(heartbeatRuns.id, latestRun.id))
             .then((rows) => rows[0] ?? null)
         : null;
+      const participantLatestRunForRecovery =
+        issue.status === "in_review" && participantAgentId
+          ? await getLatestIssueRunForAgent(
+              issue.companyId,
+              issue.id,
+              participantAgentId,
+            )
+          : null;
+      const executionRecoverySource =
+        issue.status === "in_review"
+          ? participantLatestRunForRecovery
+          : latestRun;
+      // Provider outages are external availability failures, not evidence that
+      // a paused assignee should be escalated. Park them before the invokability
+      // gate so a 429/402/503 outage keeps a durable monitor.
+      const recoveryNow = new Date();
+      const providerQuotaMonitorRun =
+        issue.status === "in_review"
+          ? participantLatestRunForRecovery
+          : latestRun;
+      const preBudgetProviderQuotaClassification =
+        providerQuotaMonitorRun &&
+        !isStrandedIssueRecoveryIssue(issue) &&
+        (pendingReviewStage || issue.status !== "in_review") &&
+        isUnsuccessfulTerminalIssueRun(providerQuotaMonitorRun) &&
+        getAdapterFailureRecoveryTargetAgentId(issue) ===
+          providerQuotaMonitorRun.agentId
+          ? classifyAdapterFailureForRecovery(providerQuotaMonitorRun, recoveryNow)
+          : null;
+      if (
+        providerQuotaMonitorRun &&
+        preBudgetProviderQuotaClassification?.kind === "provider_quota"
+      ) {
+        if (
+          hasPendingProviderQuotaRecoveryMonitor(
+            issue,
+            providerQuotaMonitorRun,
+            recoveryNow,
+          )
+        ) {
+          result.skipped += 1;
+          continue;
+        }
+        const monitored = await scheduleProviderQuotaRecoveryMonitor({
+          issue,
+          latestRun: providerQuotaMonitorRun,
+          classification: preBudgetProviderQuotaClassification,
+        });
+        if (monitored) {
+          latestRun = await persistAdapterFailureRecoveryClassification(
+            providerQuotaMonitorRun,
+            preBudgetProviderQuotaClassification,
+          );
+          result.providerQuotaMonitored += 1;
+          result.issueIds.push(issue.id);
+        } else {
+          result.skipped += 1;
+        }
+        continue;
+      }
+
       // myrmidon(L1): the agent is non-invokable only because it is paused
       // (infrastructure), and the terminal run itself ended on an
       // infrastructure interrupt code within its retry budget, on a run
@@ -6369,18 +6578,6 @@ export function recoveryService(
         continue;
       }
 
-      const participantLatestRunForRecovery =
-        issue.status === "in_review" && participantAgentId
-          ? await getLatestIssueRunForAgent(
-              issue.companyId,
-              issue.id,
-              participantAgentId,
-            )
-          : null;
-      const executionRecoverySource =
-        issue.status === "in_review"
-          ? participantLatestRunForRecovery
-          : latestRun;
       if (
         executionRecoverySource?.agentId === agentId &&
         executionRecoverySource.contextSnapshot &&
@@ -6513,11 +6710,6 @@ export function recoveryService(
         result.skipped += 1;
         continue;
       }
-      const recoveryNow = new Date();
-      const providerQuotaMonitorRun =
-        issue.status === "in_review"
-          ? participantLatestRunForRecovery
-          : latestRun;
       if (
         hasPendingProviderQuotaRecoveryMonitor(
           issue,
@@ -6766,6 +6958,22 @@ export function recoveryService(
             openPr,
             deps.prHeadResolver ?? defaultPrHeadResolver,
           );
+          // myrmidon(OPE-12859): the review verdict on the current head is
+          // already recorded — only the merge-time `CI result` gate is still
+          // pending. Re-waking the reviewer burns empty runs (the reviewer
+          // answers "CI is not terminal, no verdict" and exits); the CI-wait
+          // monitor alone watches the head and the merge gate enforces CI
+          // independently.
+          {
+            const verdict = readReviewVerdictRecord(issue.executionState);
+            if (
+              verdict &&
+              reviewVerdictCoversHead(verdict, prCi.headSha)
+            ) {
+              result.skipped += 1;
+              continue;
+            }
+          }
           if (prCi.ci === "green") {
             let reviewerAgentId = getReviewerParticipantAgentId(issue);
             if (!reviewerAgentId) {
@@ -7264,6 +7472,44 @@ export function recoveryService(
           continue;
         }
 
+        // myrmidon(OPE-12859): a reviewer run that ended without a verdict while
+        // CI on the PR head is still running must not be re-woken immediately —
+        // that is the empty-run loop ("CI is not terminal, no verdict" → wake →
+        // same answer). Schedule the CI-wait monitor instead: it wakes the
+        // reviewer once when CI is terminal. A verdict on the current head is
+        // handled by `issueReviewVerdictSettledForOpenPrHead` above.
+        if (isReviewerRecoveryRun(successfulRun)) {
+          const openPrForCiWait = await db.query.issueWorkProducts.findFirst({
+            where: and(
+              eq(issueWorkProducts.issueId, issue.id),
+              eq(issueWorkProducts.type, "pull_request"),
+              inArray(issueWorkProducts.status, [
+                "open",
+                "active",
+                "ready_for_review",
+                "approved",
+              ]),
+            ),
+          });
+          if (openPrForCiWait) {
+            const prCiForWait = await resolvePrCiState(
+              issue.companyId,
+              openPrForCiWait,
+              deps.prHeadResolver ?? defaultPrHeadResolver,
+            );
+            if (prCiForWait.ci !== "green") {
+              const monitored = await scheduleReviewCiWaitMonitorIfEligible(
+                issue,
+                successfulRun,
+              );
+              if (monitored) {
+                result.skipped += 1;
+                continue;
+              }
+            }
+          }
+        }
+
         const queued = await enqueueStrandedIssueRecovery({
           issueId: issue.id,
           companyId: issue.companyId,
@@ -7396,6 +7642,15 @@ export function recoveryService(
       }
 
       if (await isInvocationBudgetBlocked(issue, agentId)) {
+        result.skipped += 1;
+        continue;
+      }
+
+      // myrmidon(OPE-12859): a review verdict on the current PR head is already
+      // recorded — the reviewer has nothing to add while CI runs (the merge
+      // gate enforces `CI result` independently), so a continuation wake here
+      // would be an empty run.
+      if (await issueReviewVerdictSettledForOpenPrHead(issue)) {
         result.skipped += 1;
         continue;
       }

@@ -397,6 +397,10 @@ export function idlePickupCandidateRows(db: Db, companyId: string, agentId: stri
         ),
         isNull(issues.hiddenAt),
         isNull(issues.conversationAgentId),
+        // 1.7 PRIVATE-TASKS part C: private tasks never become idle-pickup
+        // candidates for an agent (neither general assigned-task lane nor
+        // in_review participant lane).
+        eq(issues.isPrivate, false),
         // Not blocked by an unresolved blocker: no `blocks` edge whose blocker
         // is anything other than `done`. This mirrors the board's readiness
         // rule (only a done blocker resolves its dependent): an open blocker

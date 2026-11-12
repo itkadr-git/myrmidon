@@ -3432,6 +3432,24 @@ registry.registerPath({
 
 registry.registerPath({
   method: "get",
+  path: "/api/agents/{id}/stats",
+  tags: ["agents"],
+  summary: "Get agent stats",
+  request: { params: z.object({ id: z.string() }) },
+  responses: {
+    200: r.ok(
+      z.object({
+        exchanges_started: z.number().int().nonnegative(),
+        exchanges_completed: z.number().int().nonnegative(),
+      }),
+    ),
+    401: r.unauthorized,
+    404: r.notFound,
+  },
+});
+
+registry.registerPath({
+  method: "get",
   path: "/api/agents/{id}/skills",
   tags: ["agents"],
   summary: "List agent skills",
@@ -3972,6 +3990,22 @@ registry.registerPath({
   summary: "Update a company user (suspension revokes the user's sessions)",
   request: { params: z.object({ companyId: z.string(), userId: z.string() }) },
   responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden, 404: r.notFound },
+});
+
+// myrmidon 1.7 USERS-ADMIN-PAGINATION (OPE-12089): instance user listing with pagination and role filter
+registry.registerPath({
+  method: "get",
+  path: "/api/users",
+  tags: ["users"],
+  summary: "List users with pagination and role filter",
+  request: {
+    query: z.object({
+      page: z.coerce.number().int().min(1).optional().default(1),
+      limit: z.coerce.number().int().min(1).max(100).optional().default(20),
+      role: z.enum(["admin", "instance_admin", "member"]).optional(),
+    }),
+  },
+  responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden },
 });
 
 // myrmidon(OPE-10215): user-block operators. The mandatory reason is validated
@@ -7961,6 +7995,27 @@ registry.registerPath({
 });
 
 registry.registerPath({
+  method: "post",
+  path: "/api/companies/{companyId}/servers/onboarding/dry-run",
+  tags: ["servers"],
+  description: "Runs read-only DNS, SSH authentication, and passwordless-sudo probes. Returns stable per-check status/code values; credentials are never returned or persisted.",
+  request: {
+    params: z.object({ companyId: z.string() }),
+    body: jsonBody(z.object({
+      host: z.string(),
+      port: z.number().int().min(1).max(65535).optional(),
+      username: z.string(),
+      auth: z.object({
+        password: z.string().optional(),
+        privateKey: z.string().optional(),
+      }),
+      timeoutMs: z.number().int().min(1000).max(60000).optional(),
+    })),
+  },
+  responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden, 404: r.notFound },
+});
+
+registry.registerPath({
   method: "get",
   path: "/api/assets/{assetId}/content",
   tags: ["assets"],
@@ -10006,6 +10061,13 @@ registerCurrentRoute({
 });
 
 registerCurrentRoute({
+  method: "get",
+  path: "/api/issues/{id}/token-budget-signal",
+  tags: ["costs"],
+  summary: "Get the issue token-budget signal (info/warn; never pauses or blocks)",
+});
+
+registerCurrentRoute({
   method: "put",
   path: "/api/companies/{companyId}/resource-memberships/me/documents/{documentId}",
   tags: ["resource-memberships"],
@@ -12033,10 +12095,28 @@ registerCurrentRoute({
   responses: { 200: r.ok(), 202: r.ok(), 401: r.unauthorized, 403: r.forbidden, 404: r.notFound, 409: r.conflict, 422: r.unprocessable },
 });
 
+// --- myrmidon(1.7 KNOWLEDGE-2.0 L-11): Settings → Knowledge ---------------
+
+registerCurrentRoute({
+  method: "get",
+  path: "/api/myrmidon/companies/{companyId}/knowledge/settings",
+  tags: ["knowledge"], summary: "Read the company knowledge settings (effective values with ui/env/default source badges)",
+  responses: { 200: r.ok(), 401: r.unauthorized, 403: r.forbidden },
+});
+registerCurrentRoute({
+  method: "patch",
+  path: "/api/myrmidon/companies/{companyId}/knowledge/settings",
+  tags: ["knowledge"], summary: "Patch the company knowledge settings (instance admin; journaled as knowledge.settings_updated)",
+  responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden },
+});
+
 // myrmidon(1.7 WEBHOOK-INTAKE): public webhook intake ingress. Accepts an
 // event, responds 202 with the intake id and enqueues the payload for parsing.
 // Per-source rate limits apply (429 with Retry-After); an optional per-source
 // token (configured via env refs) is verified by the route handler itself.
+// myrmidon(1.6.8 INTAKE-AUTH): source names are case-normalized; an unknown
+// source (absent from config.sources) answers 404, and a configured tokenRef
+// whose secret did not resolve answers 503 without enqueueing.
 registerCurrentRoute({
   method: "post",
   path: "/api/intake/{source}",
@@ -12054,7 +12134,9 @@ registerCurrentRoute({
     400: r.badRequest,
     401: r.unauthorized,
     403: r.forbidden,
+    404: r.notFound,
     429: r.tooManyRequests,
+    503: r.serverError,
   },
 });
 

@@ -135,6 +135,18 @@ class FakeStore implements ReviewReworkStore {
   async reopenedAfterLoopClose(_companyId: string, _issueId: string) {
     return false;
   }
+  async applyGoalJudgeDecision(_input: {
+    issueId: string;
+    companyId: string;
+    expectStatus: string;
+    patch: Record<string, unknown>;
+    comment: string | null;
+  }) {
+    // myrmidon(1.7-GOAL-JUDGE): this acceptance fixture covers the GitHub
+    // rate-limit and budget paths; the judge is not wired here, so the
+    // controller write path is never exercised by this store.
+    return true;
+  }
   async awaitAcceptance(_input: unknown) {
     return true;
   }

@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -68,19 +68,30 @@ test("predeploy retention does not prune at or under limit", () => {
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const LIB = path.join(HERE, "lib.sh");
 
-// Fake docker: every call is logged; the answers come from sandbox files.
-//   images.txt     per-repository files images-<last-path-part>.txt with
-//                  lines "created<TAB>id<TAB>tag" for
-//                  `docker image ls <repo> --no-trunc`
-//   containers.txt container ids for `docker ps -a -q`
-//   used-images.txt the image ids `docker inspect <cid>` answers, one per line
-//                   (the images the containers use; never removed)
+//   gc-images.txt   lines "repo<TAB>id" for `docker image ls --format
+//                   '{{.Repository}}\t{{.ID}}'` (the IMAGE-GC sweep input)
+//   gc-ancestors.txt lines "id<TAB>container-id" — which image id has a
+//                   container (any state, incl. created)
+//   gc-sizes.txt    lines "id<TAB>bytes" — what `docker image inspect
+//                   --format '{{.Size}}'` answers
+//   builder-prune-fails  the presence of this file makes `docker builder
+//                   prune` exit 1
 const FAKE_DOCKER = `#!/usr/bin/env bash
 echo "docker $*" >> "$SANDBOX/calls.log"
 last=""
 for a in "$@"; do last="$a"; done
 case "$1" in
   ps)
+    # IMAGE-GC (OPE-12696): docker ps -a -q --filter ancestor=<id> — the
+    # container ids of that image, any state (docker ps -a includes created).
+    if [ "$3" = "-q" ] && [ "$4" = "--filter" ]; then
+      want=""
+      for a in "$@"; do case "$a" in ancestor=*) want="\${a#ancestor=}" ;; esac; done
+      while IFS=$'\\t' read -r iid cid; do
+        [ "$iid" = "$want" ] && echo "$cid"
+      done < "$SANDBOX/gc-ancestors.txt" 2>/dev/null
+      exit 0
+    fi
     cat "$SANDBOX/containers.txt" 2>/dev/null
     exit 0 ;;
   inspect)
@@ -92,10 +103,22 @@ case "$1" in
         if [ "$#" -ge 4 ] && [ "$3" = "--format" ]; then
           case "$4" in *RootFS.Layers*) echo '["sha256:local-layer"]'; exit 0 ;; esac
         fi
+        if [ "$#" -ge 5 ] && [ "$4" = "--format" ]; then
+          case "$5" in
+            '{{.Size}}')
+              grep -F "$3" "$SANDBOX/gc-sizes.txt" 2>/dev/null | head -n1 | cut -f2
+              exit 0 ;;
+          esac
+        fi
         if [ -n "\${FAKE_LOCAL_IMAGE:-}" ] && [ "$last" = "$FAKE_LOCAL_IMAGE" ]; then exit 0; fi
         echo "Error: No such image: $last" >&2
         exit 1 ;;
       ls)
+        if [ "$#" -ge 4 ] && [ "$3" = "--format" ]; then
+          case "$4" in
+            *'{{.Repository}}'*) cat "$SANDBOX/gc-images.txt" 2>/dev/null; exit 0 ;;
+          esac
+        fi
         repo=""
         for a in "$@"; do
           # the repository is the first bare argument after the ls subcommand
@@ -118,6 +141,15 @@ case "$1" in
             exit 1
           fi
         done
+        # IMAGE-GC: an image with a container (any state) must not be removed.
+        if [ -f "$SANDBOX/gc-ancestors.txt" ]; then
+          while IFS=$'\\t' read -r iid cid; do
+            if [ "$last" = "$iid" ]; then
+              echo "Error: conflict: unable to remove repository reference (must force) - container is using its referenced image" >&2
+              exit 1
+            fi
+          done < "$SANDBOX/gc-ancestors.txt"
+        fi
         echo "deleted $last"
         exit 0 ;;
     esac
@@ -125,6 +157,12 @@ case "$1" in
   system)
     echo "TYPE            TOTAL     ACTIVE    SIZE      RECLAIMABLE"
     echo "Images          8         3         33GB      20GB"
+    exit 0 ;;
+  builder)
+    if [ -e "$SANDBOX/builder-prune-fails" ]; then
+      echo "failed to prune" >&2
+      exit 1
+    fi
     exit 0 ;;
   buildx)
     case "$*" in
@@ -181,7 +219,7 @@ function runHelper(sb, body, { dryRun = false, configExtra = "" } = {}) {
   return { code: result.status, out: `${result.stdout}${result.stderr}` };
 }
 
-function sandbox({ freeGb, images = [], containers = [], usedImages = [] } = {}) {
+function sandbox({ freeGb, images = [], containers = [], usedImages = [], gcImages = [], gcAncestors = [], gcSizes = [] } = {}) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "myrmidon-deploy-hygiene-"));
   const bin = path.join(dir, "bin");
   fs.mkdirSync(bin);
@@ -200,6 +238,12 @@ function sandbox({ freeGb, images = [], containers = [], usedImages = [] } = {})
   }
   fs.writeFileSync(path.join(dir, "containers.txt"), containers.join("\n") + (containers.length ? "\n" : ""));
   fs.writeFileSync(path.join(dir, "used-images.txt"), usedImages.join("\n") + (usedImages.length ? "\n" : ""));
+  // IMAGE-GC (OPE-12696): the sweep input (one "repo<TAB>id" line per image,
+  // as docker image ls --format answers), which ids have a container (any
+  // state) and the per-image byte sizes.
+  fs.writeFileSync(path.join(dir, "gc-images.txt"), gcImages.map((i) => [i.repo, i.id].join("\t")).join("\n") + (gcImages.length ? "\n" : ""));
+  fs.writeFileSync(path.join(dir, "gc-ancestors.txt"), gcAncestors.map((a) => [a.image, a.container].join("\t")).join("\n") + (gcAncestors.length ? "\n" : ""));
+  fs.writeFileSync(path.join(dir, "gc-sizes.txt"), gcSizes.map((s) => [s.id, s.bytes].join("\t")).join("\n") + (gcSizes.length ? "\n" : ""));
   return { dir, bin };
 }
 
@@ -209,6 +253,8 @@ const calls = (sb) => read(path.join(sb.dir, "calls.log"));
 describe("log_script_version (myrmidon(F-05)): the deploy journal opens with the script version", () => {
   // The journal line of a deploy run is the fake-git answer below; the real
   // value is `git describe --tags --always` of the clone holding the scripts.
+  // OPE-12335: the stamp precedes the deploy lock, so a run refused at the
+  // lock (or --help) still stamps its journal with the exact script version.
   const FAKE_GIT = `#!/usr/bin/env bash
 for a in "$@"; do
   case "$a" in
@@ -251,15 +297,21 @@ exit 0
   // Keep the fake invocation environment isolated from a host BASH_ENV. A host
   // startup file can otherwise override the fake git and hide the fixture's
   // fallback/error branches.
-  function runJournal(sb, exactPath = false) {
-    return spawnSync("bash", [path.join(HERE, "deploy.sh")], {
-      env: { ...process.env, BASH_ENV: "", PATH: exactPath ? sb.bin : `${sb.bin}:${process.env.PATH}`, SANDBOX: sb.dir },
+  function runJournal(sb, exactPath = false, args = [], extraEnv = {}) {
+    return spawnSync("bash", [path.join(HERE, "deploy.sh"), ...args], {
+      env: { ...process.env, BASH_ENV: "", PATH: exactPath ? sb.bin : `${sb.bin}:${process.env.PATH}`, SANDBOX: sb.dir, ...extraEnv },
       encoding: "utf8",
     });
   }
-  function journalHead(sb, exactPath = false) {
-    const r = runJournal(sb, exactPath);
-    return r.stderr.split("\n")[0];
+  function journalHead(sb, exactPath = false, r = null) {
+    const result = r ?? runJournal(sb, exactPath);
+    const journal = fs.readdirSync(sb.dir, { recursive: true })
+      .map((name) => path.join(sb.dir, name))
+      .filter((name) => fs.statSync(name).isFile())
+      .map((name) => ({ name, text: fs.readFileSync(name, "utf8") })
+      )
+      .find(({ text }) => text.includes("deploy scripts at"));
+    return (journal?.text ?? result.stderr).split("\n")[0];
   }
   function assertNoStdoutStamp(r) {
     assert.ok(
@@ -270,30 +322,74 @@ exit 0
 
   it("the journal's first line names the script version (git describe)", () => {
     const sb = versionSandbox(FAKE_GIT);
-    const r = runJournal(sb);
-    assert.equal(journalHead(sb), "deploy scripts at myr-v1.6.5-rc.7-3-gdeadbee");
+    const envFile = path.join(sb.dir, "deploy.env");
+    fs.writeFileSync(envFile, "COMPOSE_DIR=.\nCOMPOSE_SERVICE=server\nHEALTH_URL=http://127.0.0.1:1/api/health\n");
+    const r = runJournal(sb, false, ["--config", envFile, "--digest", "sha256:" + "a".repeat(64), "--dry-run"]);
+    assert.equal(journalHead(sb, false, r), "deploy scripts at myr-v1.6.5-rc.7-3-gdeadbee");
     assertNoStdoutStamp(r);
   });
 
   it("falls back to unknown when git cannot answer", () => {
     const sb = versionSandbox(BROKEN_GIT);
-    const r = runJournal(sb);
-    assert.equal(journalHead(sb), "deploy scripts at unknown");
+    const envFile = path.join(sb.dir, "deploy.env");
+    fs.writeFileSync(envFile, "COMPOSE_DIR=.\nCOMPOSE_SERVICE=server\nHEALTH_URL=http://127.0.0.1:1/api/health\n");
+    const r = runJournal(sb, false, ["--config", envFile, "--digest", "sha256:" + "a".repeat(64), "--dry-run"]);
+    assert.equal(journalHead(sb, false, r), "deploy scripts at unknown");
     assertNoStdoutStamp(r);
   });
 
   it("falls back to unknown when git itself is not installed", () => {
     const sb = versionSandbox(null);
-    const r = runJournal(sb, true);
-    assert.equal(journalHead(sb, true), "deploy scripts at unknown");
+    const envFile = path.join(sb.dir, "deploy.env");
+    fs.writeFileSync(envFile, "COMPOSE_DIR=.\nCOMPOSE_SERVICE=server\nHEALTH_URL=http://127.0.0.1:1/api/health\n");
+    const r = runJournal(sb, true, ["--config", envFile, "--digest", "sha256:" + "a".repeat(64), "--dry-run"]);
+    assert.equal(journalHead(sb, true, r), "deploy scripts at unknown");
     assertNoStdoutStamp(r);
   });
 
   it("describes the scripts' directory when it is not inside a git clone", () => {
     const sb = versionSandbox(NO_CLONE_GIT);
-    const r = runJournal(sb);
-    assert.equal(journalHead(sb), "deploy scripts at fallback-sha1");
+    const envFile = path.join(sb.dir, "deploy.env");
+    fs.writeFileSync(envFile, "COMPOSE_DIR=.\nCOMPOSE_SERVICE=server\nHEALTH_URL=http://127.0.0.1:1/api/health\n");
+    const r = runJournal(sb, false, ["--config", envFile, "--digest", "sha256:" + "a".repeat(64), "--dry-run"]);
+    assert.equal(journalHead(sb, false, r), "deploy scripts at fallback-sha1");
     assertNoStdoutStamp(r);
+  });
+
+  it("stamps the journal even when the run is refused at the deploy lock (OPE-12335)", async () => {
+    // A run that never gets past the lock must still carry the version stamp:
+    // the journal of the REFUSED run is the one an operator reads to learn
+    // which script version tried to deploy. A holder process keeps the flock
+    // on the lock file, so deploy.sh exits 42 right after the stamp.
+    const sb = versionSandbox(FAKE_GIT);
+    const envFile = path.join(sb.dir, "deploy.env");
+    fs.writeFileSync(envFile, `COMPOSE_DIR=${sb.dir}\nCOMPOSE_SERVICE=server\nHEALTH_URL=http://127.0.0.1:1/api/health\n`);
+    const stateDir = path.join(sb.dir, "state");
+    fs.mkdirSync(stateDir, { recursive: true });
+    const lockFile = path.join(stateDir, "deploy.lock");
+    const holder = spawn("bash", ["-c", `
+      exec 9<>"$1"
+      flock -n 9
+      printf '60001 2026-11-08T12:00:00Z 1.6.5\\n' > "$1"
+      echo READY
+      read line
+    `, "_", lockFile], { stdio: ["pipe", "pipe", "inherit"] });
+    await new Promise((resolve) => {
+      holder.stdout.on("data", (d) => {
+        if (d.toString().includes("READY")) resolve();
+      });
+    });
+    try {
+      const r = runJournal(sb, false, ["--config", envFile, "--digest", "sha256:" + "a".repeat(64)], { MYRMIDON_DEPLOY_LOCK_FILE: lockFile, PATH: `${sb.bin}:${process.env.PATH}` });
+      assert.equal(r.status, 42, `${r.stdout || ""}${r.stderr || ""}`);
+      assert.equal(journalHead(sb, false, r), "deploy scripts at myr-v1.6.5-rc.7-3-gdeadbee");
+      assertNoStdoutStamp(r);
+      assert.match(`${r.stdout || ""}${r.stderr || ""}`, /another deploy is already running/);
+      assert.match(`${r.stdout || ""}${r.stderr || ""}`, /60001/);
+    } finally {
+      holder.stdin.write("\n");
+      await new Promise((resolve) => holder.on("exit", resolve));
+    }
   });
 });
 
@@ -550,5 +646,115 @@ describe("deploy_image_retention (DEPLOY-HYGIENE, OPE-5107)", () => {
     ]) {
       assert.ok(out.includes(repo), `default MYRMIDON_DEPLOY_IMAGE_REPOS misses ${repo}`);
     }
+  });
+});
+
+describe("deploy_image_gc (IMAGE-GC, OPE-12696)", () => {
+  const BOARD = "ghcr.io/itkadr-git/myrmidon";
+  const HERMES = "ghcr.io/itkadr-git/myrmidon-hermes";
+  const RUNTIME = "ghcr.io/itkadr-git/agent-runtime";
+  const FOREIGN = "ghcr.io/itkadr-git/hindsight";
+  const sha = (c) => "sha256:" + c.repeat(64);
+
+  // The issue's ТЕСТ: three images — one with a container (kept), one with
+  // none (removed), one in a foreign repository with none (never touched).
+  it("removes the unused myrmidon/agent-runtime images, keeps the used one and the foreign repo", () => {
+    const used = sha("1");
+    const unused = sha("2");
+    const foreign = sha("3");
+    const runtimeUnused = sha("4");
+    const sb = sandbox({
+      freeGb: 42,
+      gcImages: [
+        { repo: BOARD, id: used },
+        { repo: HERMES, id: unused },
+        { repo: FOREIGN, id: foreign },
+        { repo: RUNTIME, id: runtimeUnused },
+      ],
+      gcAncestors: [{ image: used, container: "cid-board" }],
+      gcSizes: [
+        { id: used, bytes: 1000 },
+        { id: unused, bytes: 2000 },
+        { id: foreign, bytes: 4000 },
+        { id: runtimeUnused, bytes: 8000 },
+      ],
+    });
+    const { code, out } = runHelper(sb, "deploy_image_gc");
+    assert.equal(code, 0, out);
+    const log = calls(sb);
+    assert.doesNotMatch(log, new RegExp(`docker image rm ${used.replace(/\$/g, "\\$")}`));
+    assert.match(log, new RegExp(`docker image rm ${unused.replace(/\$/g, "\\$")}`));
+    assert.match(log, new RegExp(`docker image rm ${runtimeUnused.replace(/\$/g, "\\$")}`));
+    assert.doesNotMatch(log, new RegExp(`docker image rm ${foreign.replace(/\$/g, "\\$")}`));
+    assert.doesNotMatch(log, new RegExp(`docker image rm ${used.replace(/\$/g, "\\$")}`));
+    // 2000 + 8000 bytes freed; the used (1000) and foreign (4000) are not counted
+    assert.match(out, /image gc: 2 image\(s\) removed, 1 in use kept, 0 failed, 10000 bytes freed/);
+    // the build cache is pruned because something was removed
+    assert.match(log, /docker builder prune -af/);
+  });
+
+  it("a created-state container keeps its image (docker ps -a is authoritative)", () => {
+    const createdUser = sha("5");
+    const sb = sandbox({
+      freeGb: 42,
+      gcImages: [{ repo: BOARD, id: createdUser }],
+      gcAncestors: [{ image: createdUser, container: "cid-created" }],
+      gcSizes: [{ id: createdUser, bytes: 500 }],
+    });
+    const { code, out } = runHelper(sb, "deploy_image_gc");
+    assert.equal(code, 0, out);
+    assert.match(calls(sb), /docker ps -a -q --filter ancestor=/);
+    assert.doesNotMatch(calls(sb), /docker image rm/);
+    assert.match(out, /image gc: 0 image\(s\) removed, 1 in use kept/);
+    // nothing was removed, so the build cache is not pruned
+    assert.doesNotMatch(calls(sb), /docker builder prune/);
+  });
+
+  it("MYRMIDON_DEPLOY_IMAGE_GC=0 switches the sweep off", () => {
+    const sb = sandbox({
+      freeGb: 42,
+      gcImages: [{ repo: BOARD, id: sha("6") }],
+    });
+    const { code, out } = runHelper(sb, "deploy_image_gc", { configExtra: "MYRMIDON_DEPLOY_IMAGE_GC=0" });
+    assert.equal(code, 0, out);
+    assert.match(out, /image gc: disabled \(MYRMIDON_DEPLOY_IMAGE_GC=0\)/);
+    assert.doesNotMatch(calls(sb), /docker image rm|docker builder prune/);
+  });
+
+  it("a multi-tag image is swept once, not once per tag", () => {
+    const multi = sha("7");
+    const sb = sandbox({
+      freeGb: 42,
+      gcImages: [
+        { repo: BOARD, id: multi },
+        { repo: HERMES, id: multi },
+      ],
+      gcSizes: [{ id: multi, bytes: 3000 }],
+    });
+    const { code, out } = runHelper(sb, "deploy_image_gc");
+    assert.equal(code, 0, out);
+    const rms = calls(sb).split("\n").filter((l) => l.startsWith("docker image rm "));
+    assert.deepEqual(rms, [`docker image rm ${multi}`]);
+    assert.match(out, /image gc: 1 image\(s\) removed, 0 in use kept, 0 failed, 3000 bytes freed/);
+  });
+
+  it("the default glob list covers myrmidon* and agent-runtime* and nothing else", () => {
+    const sb = sandbox({ freeGb: 42 });
+    const { code, out } = runHelper(sb, 'printf "%s\\n" "$MYRMIDON_DEPLOY_IMAGE_GC_REPOS"');
+    assert.equal(code, 0, out);
+    assert.equal(out.trim(), "ghcr.io/itkadr-git/myrmidon*,ghcr.io/itkadr-git/agent-runtime*");
+  });
+
+  it("a failing builder prune never fails the sweep", () => {
+    const sb = sandbox({
+      freeGb: 42,
+      gcImages: [{ repo: BOARD, id: sha("8") }],
+      gcSizes: [{ id: sha("8"), bytes: 100 }],
+    });
+    fs.writeFileSync(path.join(sb.dir, "builder-prune-fails"), "");
+    const { code, out } = runHelper(sb, "deploy_image_gc");
+    assert.equal(code, 0, out);
+    assert.match(out, /image gc: WARNING: docker builder prune failed \(cache kept\)/);
+    assert.match(out, /image gc: 1 image\(s\) removed, 0 in use kept, 0 failed, 100 bytes freed/);
   });
 });

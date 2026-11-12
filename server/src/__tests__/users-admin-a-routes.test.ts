@@ -101,7 +101,29 @@ describePostgres("users-admin-a routes", () => {
 
     const list = await request(app).get("/api/myrmidon/users-admin-a/users");
     expect(list.status).toBe(200);
+    expect(list.body).toHaveProperty("total");
+    expect(Array.isArray(list.body.users)).toBe(true);
     expect(list.body.users.find((u: { id: string }) => u.id === created.body.id)).toMatchObject({ username: "alice.ops", role: "member", blocked: false });
+
+    // Test empty list / pagination / role filter
+    const emptyList = await request(app).get("/api/myrmidon/users-admin-a/users?page=10&limit=5");
+    expect(emptyList.status).toBe(200);
+    expect(emptyList.body.users).toHaveLength(0);
+    expect(emptyList.body.items).toHaveLength(0);
+    expect(emptyList.body.total).toBeGreaterThan(0);
+
+    const secondPage = await request(app).get("/api/myrmidon/users-admin-a/users?page=2&limit=1");
+    expect(secondPage.status).toBe(200);
+    expect(secondPage.body.page).toBe(2);
+    expect(secondPage.body.limit).toBe(1);
+
+    const adminRoleList = await request(app).get("/api/myrmidon/users-admin-a/users?role=admin");
+    expect(adminRoleList.status).toBe(200);
+    expect(adminRoleList.body.users.every((u: { role: string }) => u.role === "instance_admin")).toBe(true);
+
+    const memberRoleList = await request(app).get("/api/myrmidon/users-admin-a/users?role=member");
+    expect(memberRoleList.status).toBe(200);
+    expect(memberRoleList.body.users.every((u: { role: string }) => u.role === "member")).toBe(true);
   });
 
   it("creates an instance admin, rejects a duplicate login and a short password", async () => {

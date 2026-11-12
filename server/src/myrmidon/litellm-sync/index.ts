@@ -27,7 +27,12 @@ export { withCompanySyncGuard } from "./lock.js";
 export {
   updateAgentAllowlistsForCompany,
   updateAgentGatewayKeyWithAllowlist,
+  type AllowlistDryRunReport,
+  type AllowlistKeyChange,
+  type AllowlistSyncOptions,
   type AllowlistSyncResult
 } from "./agent-allowlist-handler.js";
 
 export { startLitellmModelReconciliation } from "./startup-reconciler.js";
+
+export { summarizeAllowlistResult } from "./allowlist-report.js";

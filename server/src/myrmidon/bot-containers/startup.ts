@@ -28,7 +28,14 @@ import { eq } from "drizzle-orm";
 import { logger } from "../../middleware/logger.js";
 import { logActivity } from "../../services/activity-log.js";
 import { instanceSettingsService } from "../../services/instance-settings.js"; // myrmidon(1.6.1-BOT-DISK-D)
-import { listBotContainerAgents } from "./agents-query.js";
+import {
+  agentHasRunningRun,
+  HERMES_GATEWAY_ADAPTER_TYPE,
+  lastBotContainerBlock,
+  listBotContainerAgents,
+  listBotDecommissionCandidates,
+} from "./agents-query.js";
+import type { BotDecommissionCandidate } from "./bot-decommission.js"; // myrmidon(OPE-12654)
 import { isBotContainersEnabled } from "./agent-config.js";
 import { containerOomRecorder } from "./container-oom-store.js";
 import type { BotContainerDriver } from "./driver.js";
@@ -155,6 +162,15 @@ export interface BotContainersStartupPorts {
   startSiteHealth?: typeof startSiteHealth;
   /** myrmidon(1.6.6 OPE-9154): unattended periodic client cert rotation. */
   startFleetSiteCertRotation?: typeof startFleetSiteCertRotation;
+  /**
+   * myrmidon(OPE-12654): the decommission sweep's reads (agents-query.ts): its candidates, the
+   * running-run check, and the container block of an agent's last hermes_gateway card (the host
+   * its bot still lives on after the card moved to another adapter). Optional so a test can
+   * replace one; the defaults are the database reads.
+   */
+  listDecommissionCandidates?: (db: Db) => () => Promise<BotDecommissionCandidate[]>;
+  hasRunningRun?: (db: Db) => (agentId: string) => Promise<boolean>;
+  readLastContainerBlock?: (db: Db) => (agentId: string) => Promise<unknown>;
   log: BotContainersLog;
 }
 
@@ -189,6 +205,9 @@ const defaultPorts: BotContainersStartupPorts = {
   startSiteScheduler,
   startSiteHealth,
   startFleetSiteCertRotation,
+  listDecommissionCandidates: (db) => listBotDecommissionCandidates(db),
+  hasRunningRun: (db) => agentHasRunningRun(db),
+  readLastContainerBlock: (db) => lastBotContainerBlock(db),
   log: logger,
 };
 
@@ -282,6 +301,7 @@ function build(
       });
 
     const readAgentFn = ports.readAgent(db);
+    const readLastContainerBlock = (ports.readLastContainerBlock ?? lastBotContainerBlock)(db);
     const routingDriver = fleetRoutingDriver(
       {
         local: localDriver,
@@ -296,15 +316,29 @@ function build(
           return scoped;
         },
         ready: () => clientManager.ensureFresh(),
+        // myrmidon(1.6.7 FLEET-SITE-ENROLL): a host that could not be asked in a routed list is
+        // logged, and the list of the other hosts is still returned.
+        onHostError: ({ host, botKeys, error }) => {
+          ports.log.warn?.({ host, bots: botKeys.length, err: error }, "fleet routing: a host could not be listed");
+        },
       },
       async (botKey: string) => {
         // A failed agent read must surface as a reconcile error: swallowing it
         // would route a bot with container.host to the local driver.
         const agent = await readAgentFn(botKey);
         if (!agent) return undefined;
+        const adapterConfig = agent.adapterConfig as { container?: unknown };
+        // myrmidon(OPE-12654): a card that moved to another adapter lost its container block,
+        // but the bot it leaves behind still lives on the host its last hermes_gateway card
+        // named: the decommission of that bot is routed there, not to the local driver. A failed
+        // read surfaces as an error, like a failed agent read.
+        if (adapterConfig?.container === undefined && agent.adapterType !== HERMES_GATEWAY_ADAPTER_TYPE) {
+          const container = await readLastContainerBlock(botKey);
+          return { companyId: agent.companyId, adapterConfig: container === null ? {} : { container } };
+        }
         return {
           companyId: agent.companyId,
-          adapterConfig: agent.adapterConfig as { container?: unknown },
+          adapterConfig,
         };
       },
     );
@@ -360,6 +394,9 @@ function build(
           .then((rows) => rows[0] ?? null);
         return row?.companyId ?? null;
       },
+      // myrmidon(OPE-12654): the decommission sweep (bot-decommission.ts) inside the reconcile tick.
+      listDecommissionCandidates: (ports.listDecommissionCandidates ?? listBotDecommissionCandidates)(db),
+      hasRunningRun: (ports.hasRunningRun ?? agentHasRunningRun)(db),
     };
     const stopSweep = ports.startReconciliation(ports.listAgents(db), runtime, { intervalMs, env });
     return { runtime, stopSweep, clientManager };

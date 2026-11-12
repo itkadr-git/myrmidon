@@ -48,6 +48,8 @@ const (
 	A19 = "A19"
 	// A20 updates one enrolled bot's resource ceilings in dockergate config.
 	A20 = "A20"
+	// A21 returns one enrolled bot's resource limits and ceilings in dockergate config.
+	A21 = "A21"
 )
 
 // A15 is the disk route PUT /myrmidon/disk/<botKey>/quota (contract C5). It is
@@ -65,6 +67,17 @@ const (
 	A17 = "A17"
 	A18 = "A18"
 )
+
+// A22 is the decommission delete of a bot's main container (OPE-12654):
+// DELETE containers/myrmidon-bot-<K>?force=true&v=true&myrmidon-decommission=true.
+// It is a variant of A9 for the main container only, the way A17 is a variant
+// of A10: the agent left the bot runtime (another adapter, or terminated), so
+// the main container goes without a `.next` replacement, and the gate drops the
+// bot's quota project and its data directory with it.
+const A22 = "A22"
+
+// decommissionTail is the query of A22: the query of A9 plus the fixed flag.
+const decommissionTail = "?force=true&v=true&myrmidon-decommission=true"
 
 // skillsReadQuery is the skills directory the gate serves for A16, in the same
 // literal-encoded form the marker and clone-report queries use.
@@ -303,14 +316,24 @@ func Parse(method, target string, images Images) (*Route, *deny.Error) {
 	}
 	if rest, ok := strings.CutPrefix(target, "/myrmidon/bots/"); ok {
 		key, hasLimitsSuffix := strings.CutSuffix(rest, "/limits")
-		if hasLimitsSuffix && IsBotKey(key) && method == "PUT" {
-			return &Route{ID: A20, Method: method, ConfigBotKey: key}, nil
+		if hasLimitsSuffix && IsBotKey(key) {
+			if method == "PUT" {
+				return &Route{ID: A20, Method: method, ConfigBotKey: key}, nil
+			}
+			if method == "GET" {
+				return &Route{ID: A21, Method: method, ConfigBotKey: key}, nil
+			}
 		}
 		return nil, notAllowed()
 	}
 	if rest, ok := strings.CutPrefix(target, "/myrmidon/config/bots/"); ok {
-		if IsBotKey(rest) && method == "PUT" {
-			return &Route{ID: A20, Method: method, ConfigBotKey: rest}, nil
+		if IsBotKey(rest) {
+			if method == "PUT" {
+				return &Route{ID: A20, Method: method, ConfigBotKey: rest}, nil
+			}
+			if method == "GET" {
+				return &Route{ID: A21, Method: method, ConfigBotKey: rest}, nil
+			}
 		}
 		return nil, notAllowed()
 	}
@@ -373,6 +396,13 @@ func Parse(method, target string, images Images) (*Route, *deny.Error) {
 			return nil, notAllowed()
 		}
 		r.ID = A9
+	case decommissionTail:
+		// myrmidon(OPE-12654): the decommission delete exists for the main
+		// container only; a .next or a helper is deleted through A9.
+		if method != "DELETE" || suffix != SuffixMain {
+			return nil, notAllowed()
+		}
+		r.ID = A22
 	case "/json":
 		if method != "GET" || suffix != SuffixMain {
 			return nil, notAllowed()
@@ -433,10 +463,20 @@ func Parse(method, target string, images Images) (*Route, *deny.Error) {
 		}
 		r.ID = A18
 	case "/config/update":
-		if method != "PUT" || suffix != SuffixMain {
+		if method == "PUT" && suffix == SuffixMain {
+			r.ID = A20
+			r.ConfigBotKey = key
+		} else if method == "GET" && suffix == SuffixMain {
+			r.ID = A21
+			r.ConfigBotKey = key
+		} else {
 			return nil, notAllowed()
 		}
-		r.ID = A20
+	case "/config/limits":
+		if method != "GET" || suffix != SuffixMain {
+			return nil, notAllowed()
+		}
+		r.ID = A21
 		r.ConfigBotKey = key
 	default:
 		if q, ok := strings.CutPrefix(tail, "/archive?path="); ok {

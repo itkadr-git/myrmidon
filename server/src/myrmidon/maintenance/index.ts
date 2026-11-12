@@ -11,6 +11,7 @@ import {
   type MaintenanceDocument,
 } from "./domain.js";
 import { getCachedMaintenanceDocument } from "./gate.js";
+import { maintenanceRetryContinuation } from "./interrupt-continuation.js"; // myrmidon(OPE-12802)
 import { maintenanceRoutes } from "./routes.js";
 import { maintenanceService, type MaintenanceHeartbeatPort } from "./service.js";
 import { resolveZabbixSettings, zabbixMaintenanceHooks } from "./zabbix.js"; // myrmidon(1.7, OPE-4101)
@@ -100,6 +101,8 @@ export function maintenanceHeartbeatPort(heartbeat: ReturnType<typeof heartbeatS
           retryReason: MAINTENANCE_RETRY_REASON,
           wakeReason: MAINTENANCE_RETRY_WAKE_REASON,
           delayMs: 0,
+          // myrmidon(OPE-12802): the retry continues from the saved work, it does not start over.
+          ...maintenanceRetryContinuation({ runId, windowId, lastUsefulActionAt: stopped?.lastUsefulActionAt }),
         }),
       );
       return { retryScheduled: retry.outcome === "scheduled" };

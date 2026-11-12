@@ -32,7 +32,20 @@ match against agent name, role, or title), `status` (one or comma-separated
 statuses), exact `role`, and `reportsTo` (manager ID or `none` for root agents).
 These filters combine with AND after access filtering; unsupported query
 parameters still return HTTP 400. See the
-[fleet guide](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/guides/ui2-agents-fleet.md).
+[fleet guide](Ui2-agents-fleet).
+
+## Company agent quota
+
+Creating an agent is limited by the company's subscription tier: when the
+company already has as many active agents (every agent that is not
+`terminated`) as its tier's quota allows, the create call is rejected with
+`HTTP 403 Forbidden` and error code `quota_exceeded`. Within the quota,
+creation works as before. A company without a tier row defaults to the
+`free` tier with a quota of 5 agents; terminated agents do not occupy
+quota slots, so terminating an agent frees a slot. Until the
+`company_tiers` table is deployed (the 1.7 TIER-SCHEMA migration), the
+check stays dormant and creation is unlimited. Details and troubleshooting:
+[company agent quota guide](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/guides/company-agent-quota.md).
 
 ## Agents Fleet screen
 
@@ -41,7 +54,7 @@ agents by reporting relationship, shows each agent's status and latest live
 run, and links to the agent detail/chat page. The fleet refreshes agent data
 every 30 seconds and live runs every 15 seconds; paused agents retain their
 distinct paused status. See the
-[fleet guide](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/guides/ui2-agents-fleet.md)
+[fleet guide](Ui2-agents-fleet)
 for details.
 
 ## The container runtime
@@ -163,6 +176,15 @@ The board watches its agents and repairs what breaks:
   assignee is woken — the board does not wait for a hard timeout to notice
   a stuck run.
 
+## Lifecycle: termination vs deletion and financial history
+
+Agent lifecycle includes pause, resume, clear error, termination, and deletion:
+
+- **Termination** (`POST /api/agents/:id/terminate`): Permanently deactivates an agent. Heartbeats are disabled, but the agent's historical records, tasks, run logs, and financial records are preserved for auditing.
+- **Deletion** (`DELETE /api/agents/:id`): Completely removes an agent record. To guarantee financial history integrity and auditability, an agent with recorded expenses (`cost_events`) cannot be deleted: the API returns `HTTP 409 Conflict` with code `agent_has_cost_events` and message instructing to terminate the agent instead. Similarly, if any other records in the database still reference the agent, foreign-key violations return `HTTP 409 Conflict` with code `agent_referenced` instead of a 500 error.
+
+For agents with a container card (bot container) on local or remote execution sites, both termination and deletion invoke container cleanup (`POST /v1/bots/{botKey}/cleanup` or `DELETE /v1/bots/{botKey}`) to stop and remove the container and remove the host data directory before mutating the database. This cleanup is fail-closed: if the remote site is unreachable or cleanup fails, the terminate/delete action aborts and preserves the agent record in the database, preventing orphaned containers.
+
 ## The OMP runtime image
 
 The standalone `agent-runtime-omp` image runs `omp` directly on Bun 1.4.3 with
@@ -175,13 +197,13 @@ The `omp` bake target is `linux/amd64`; CI is configured to build, publish and
 cosign-sign the pushed digest using keyless OIDC. Check the workflow run and
 registry digest before treating a tag as available; configuration alone does
 not prove a successful publication. Build/run instructions and the CI scope
-are in the [Agent Runtime Image Family](../../docker/agent-runtime/README.md).
+are in the [Agent Runtime Image Family](https://github.com/itkadr-git/myrmidon/blob/main/docker/agent-runtime/README.md).
 
 
-- [Bot container: the Container section](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/guides/bot-container-card.md)
-- [Agent memory card](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/guides/agent-memory-card.md)
-- [Agent instructions: revision history and restore](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/guides/agent-instructions-revisions.md)
-- [Automatic resume from error](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/guides/auto-resume.md)
-- [Run stall detection](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/guides/run-stall.md)
-- [Board administrator toggle](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/guides/agent-board-admin.md)
-- [Parallel helper subagents](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/guides/parallel-helpers.md)
+- [Bot container: the Container section](Bot-container-card)
+- [Agent memory card](Agent-memory-card)
+- [Agent instructions: revision history and restore](Agent-instructions-revisions)
+- [Automatic resume from error](Auto-resume)
+- [Run stall detection](Run-stall)
+- [Board administrator toggle](Agent-board-admin)
+- [Parallel helper subagents](Parallel-helpers)

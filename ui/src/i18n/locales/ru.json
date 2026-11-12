@@ -280,7 +280,8 @@
       "container-labels": "Метки контейнера",
       "env": "Переменная окружения",
       "manual": "Задано оператором",
-      "none": "Не видно с доски"
+      "none": "Не видно с доски",
+      "http-version": "HTTP version endpoint"
     },
     "schedule": "Запланировать обновление",
     "dialog": {
@@ -293,7 +294,8 @@
       "cancel": "Отмена",
       "created": "Черновик задачи создан: {{identifier}}",
       "failed": "Не удалось создать задачу: {{message}}"
-    }
+    },
+    "stale": "устарело {{hours}}ч"
   },
   "autonomy": {
     "title": "Матрица автономности",

@@ -484,7 +484,11 @@ describe("ssh env-lab fixture", () => {
     // quotes are escaped. Assert the command still runs: cd, env, and the argv.
     expect(remoteScript).toContain("cd ");
     expect(remoteScript).toContain("/srv/paperclip/workspace");
-    expect(remoteScript).toContain("exec env ");
+    // myrmidon(OPE-12810): env values no longer ride argv; the script reads them from stdin.
+    expect(remoteScript).not.toContain("exec env ");
+    expect(remoteScript).not.toContain("FOO=");
+    expect(remoteScript).toContain("dd bs=1 count=");
+    expect(target.stdinPrefix).toContain("export FOO=");
     expect(remoteScript).toContain("node");
     expect(remoteScript).toContain("--version");
     await target.cleanup();

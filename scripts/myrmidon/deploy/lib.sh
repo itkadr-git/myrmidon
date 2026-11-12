@@ -27,6 +27,12 @@ log_script_version() {
   printf 'deploy scripts at %s\n' "${describe:-unknown}" >&2
 }
 
+script_version_string() {
+  local clone
+  clone="$(git -C "$MYR_SCRIPT_DIR" rev-parse --show-toplevel 2>/dev/null)" || clone=""
+  GIT_CONFIG_NOSYSTEM=1 git -C "${clone:-$MYR_SCRIPT_DIR}" describe --tags --always 2>/dev/null || echo "unknown"
+}
+
 # Runs a command, or prints it in dry-run mode.
 run() {
   if [[ "${DRY_RUN:-0}" == "1" ]]; then
@@ -408,6 +414,13 @@ load_config() {
   : "${COMPOSE_SERVICE:?COMPOSE_SERVICE is required}"
   : "${COMPOSE_FILES:=docker-compose.yml}"
   : "${COMPOSE_OVERRIDE_FILE:=docker-compose.myrmidon-image.yml}"
+  # myrmidon(COMPOSE-SET-ANCHOR): the declared compose set of the board is
+  # kept in a machine-readable anchor block (one fragment per line between
+  # board-mount-set:begin/end markers); a watchdog compares it with the live
+  # container label. Empty settings disable the sync step below.
+  : "${MYRMIDON_COMPOSE_SET_ANCHOR_FILE:=}"
+  : "${MYRMIDON_COMPOSE_SET_ANCHOR_GIT:=}"
+  : "${MYRMIDON_COMPOSE_SET_LABEL_SOURCE:=}"
   : "${HEALTH_URL:?HEALTH_URL is required}"
   # BOARD-LIVENESS (OPE-12211): optional liveness URL next to HEALTH_URL.
   # Empty derives it from HEALTH_URL (…/api/health -> …/api/liveness); when
@@ -444,6 +457,8 @@ load_config() {
   : "${RUNS_WAIT_TIMEOUT_SEC:=1800}"
   : "${ALLOW_UNKNOWN_RUNS:=0}"
   : "${POLL_INTERVAL_SEC:=5}"
+  : "${MYRMIDON_DEPLOY_LOCK_FILE:=}"
+  : "${MYRMIDON_DEPLOY_LOCK_WAIT_SEC:=0}"
   # PREDEPLOY-DB-CHECK (the 05.10 incident): before the maintenance window the
   # new board image must come up on a COPY of the production database (the
   # predeploy dump) with the new dockergate, on its own network, and answer the
@@ -482,6 +497,11 @@ load_config() {
   : "${MYRMIDON_DEPLOY_DB_DUMP_RESERVE_GB:=5}"
   : "${MYRMIDON_DEPLOY_IMAGE_KEEP:=1}"
   : "${MYRMIDON_DEPLOY_IMAGE_REPOS:=$MYRMIDON_IMAGE,ghcr.io/itkadr-git/myrmidon-dockergate,ghcr.io/itkadr-git/myrmidon-fleetd,ghcr.io/itkadr-git/myrmidon-hermes,ghcr.io/itkadr-git/myrmidon-hermes-dev,ghcr.io/itkadr-git/myrmidon-hermes-node}"
+  # myrmidon(IMAGE-GC, OPE-12696): after a healthy deploy every image of these
+  # repository globs that NO container uses is removed and the build cache is
+  # pruned (deploy_image_gc). Rollback images stay in GHCR.
+  : "${MYRMIDON_DEPLOY_IMAGE_GC:=1}"
+  : "${MYRMIDON_DEPLOY_IMAGE_GC_REPOS:=ghcr.io/itkadr-git/myrmidon*,ghcr.io/itkadr-git/agent-runtime*}"
   # DB-TUNING (OPE-5009): the PostgreSQL settings from the database audit
   # (OPE-4270) are applied DECLARATIVELY by the deploy — the values live in
   # scripts/myrmidon/deploy/db-tuning.sql, the reset in db-tuning-rollback.sql,
@@ -952,6 +972,235 @@ prune_dumps() {
 record_history() {
   mkdir -p "$STATE_DIR"
   printf '%s %s %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$1" "$2" >>"$HISTORY_FILE"
+}
+
+# --- COMPOSE-SET-ANCHOR (the 07.10 drift) -------------------------------------
+# myrmidon(COMPOSE-SET-ANCHOR): a release deploy can itself change the set of
+# compose files the board runs from (COMPOSE_FILES, the board image override
+# and the component override files written by this deploy). Installations keep
+# the declared set in a machine-readable anchor block — a file that lists one
+# compose fragment per line between `board-mount-set:begin`/`board-mount-set:end`
+# markers — and a watchdog compares that list against the live container's
+# com.docker.compose.project.config_files label. When the deploy changes the
+# set and the anchor is not updated in the same deploy, the watchdog drifts on
+# the next run and an operator has to register the change by hand after the
+# fact (the 07.10 incident).
+#
+# sync_compose_set_anchor() closes that gap: after the board container was
+# (re)created it reads the LIVE label of the container this deploy manages,
+# compares it (by basename, the way the watchdog compares) with the fragment
+# list in the anchor block, and when they differ rewrites the block and commits
+# the anchor file with one commit whose message names the deploy reference.
+# The production checklist also carries a human-readable snapshot in §1 (the
+# `## §1. Набор docker-compose файлов` heading with its Markdown list); when
+# that known heading follows the block, its list is rebuilt from the same live
+# label — the whole snapshot (machine-readable block and prose) moves in the
+# one commit, and every other line of the file stays byte-for-byte intact.
+#
+# Settings (all optional, see deploy.env.example; empty = the step is skipped
+# with a log line, so an installation without an anchor still deploys):
+#   MYRMIDON_COMPOSE_SET_ANCHOR_FILE  the file carrying the begin/end block
+#   MYRMIDON_COMPOSE_SET_ANCHOR_GIT   the git repository of that file
+#                                     (the commit lands there; may equal
+#                                     ANCHOR_FILE's parent repo)
+#   MYRMIDON_COMPOSE_SET_LABEL_SOURCE an optional shell command that prints
+#                                     the live config_files label (overrides
+#                                     the docker inspect of the local daemon,
+#                                     so the step is testable on a stand)
+#
+# The function never fails the deploy: a healthy board outranks a drifted
+# anchor, and the watchdog still catches the residue on its next run (the
+# anchor block's format and the watchdog itself are not touched here).
+# Returns 0 always; the outcome is logged and, when something was rewritten,
+# ANCHOR_SYNC_COMMIT holds the commit sha.
+sync_compose_set_anchor() {
+  ANCHOR_SYNC_COMMIT=""
+  ANCHOR_SYNC_ACTION="skipped"
+  if [[ -z "$MYRMIDON_COMPOSE_SET_ANCHOR_FILE" ]]; then
+    log "COMPOSE-SET-ANCHOR: skipped (MYRMIDON_COMPOSE_SET_ANCHOR_FILE is empty; the declared compose set is not managed by this deploy)"
+    return 0
+  fi
+  local anchor_file="$MYRMIDON_COMPOSE_SET_ANCHOR_FILE"
+  if [[ ! -f "$anchor_file" ]]; then
+    log "WARNING: COMPOSE-SET-ANCHOR: the anchor file does not exist: $anchor_file (nothing was rewritten; check the setting)"
+    return 0
+  fi
+  local label_raw
+  if [[ -n "$MYRMIDON_COMPOSE_SET_LABEL_SOURCE" ]]; then
+    label_raw="$(bash -c "$MYRMIDON_COMPOSE_SET_LABEL_SOURCE" 2>/dev/null || true)"
+  else
+    # The board container this deploy manages, by the labels compose puts on it
+    # (the same lookup board_running_image() uses; works even when the compose
+    # files do not validate).
+    local board_id
+    board_id="$(docker ps -a -q \
+      --filter "label=com.docker.compose.service=$COMPOSE_SERVICE" \
+      --filter "label=com.docker.compose.project.working_dir=$COMPOSE_DIR" 2>/dev/null | head -n1)" || board_id=""
+    if [[ -z "$board_id" ]]; then
+      log "WARNING: COMPOSE-SET-ANCHOR: no container of service $COMPOSE_SERVICE in project $COMPOSE_DIR (the container may not exist yet); the anchor was not re-checked"
+      return 0
+    fi
+    label_raw="$(docker inspect -f '{{index .Config.Labels "com.docker.compose.project.config_files"}}' "$board_id" 2>/dev/null || true)"
+  fi
+  if [[ -z "$label_raw" ]]; then
+    log "WARNING: COMPOSE-SET-ANCHOR: no live config_files label on the board container; the anchor was not re-checked"
+    return 0
+  fi
+  # Compare by basename, the way the watchdog does: the anchor names fragments
+  # relative to a project directory, the label carries absolute paths.
+  local label_basenames anchor_basenames
+  label_basenames="$(printf '%s\n' "$label_raw" | tr ',' '\n' | sed 's#.*/##; s/^[[:space:]]*//; s/[[:space:]]*$//' | sed '/^$/d' | sort -u)"
+  # grep exits 1 when the block has no fragment line: that is the "no readable
+  # block" case handled below, not an error under set -e / pipefail.
+  anchor_basenames="$(sed -n '/board-mount-set:begin/,/board-mount-set:end/p' "$anchor_file" | { grep -oE '^[[:space:]]*[A-Za-z0-9._/-]+\.ya?ml[[:space:]]*$' || true; } | sed 's#^.*/##; s/^[[:space:]]*//; s/[[:space:]]*$//' | sort -u)"
+  if [[ -z "$anchor_basenames" ]]; then
+    log "WARNING: COMPOSE-SET-ANCHOR: no readable board-mount-set block in $anchor_file (the block format is the watchdog's contract and is not created here); the anchor was not re-checked"
+    return 0
+  fi
+  if ! grep -q 'board-mount-set:end' "$anchor_file"; then
+    log "WARNING: COMPOSE-SET-ANCHOR: the board-mount-set block in $anchor_file has no end marker; nothing was rewritten"
+    return 0
+  fi
+  if [[ "$anchor_basenames" == "$label_basenames" ]]; then
+    ANCHOR_SYNC_ACTION="match"
+    log "COMPOSE-SET-ANCHOR: the anchor matches the live set ($(printf '%s' "$label_basenames" | grep -c . || true) fragments)"
+    return 0
+  fi
+  # Diverged: rewrite the block from the live label, keeping one fragment per
+  # line between the markers exactly as the format expects. The live label
+  # carries absolute paths; the block keeps them verbatim (the watchdog's
+  # parser accepts paths, and the project directory is the label's own).
+  local tmp printed=0 anchor_dir in_block=0 indent="" prose_written=0 prose_indent=""
+  # The production checklist also carries a human-readable snapshot in §1.
+  # When that known heading is present, keep its Markdown list synchronized
+  # with the same live label; unrelated prose remains byte-for-byte intact.
+  emit_prose_snapshot() {
+    local frag
+    while IFS= read -r frag; do
+      [[ -z "$frag" ]] && continue
+      frag="${frag##*/}"
+      # shellcheck disable=SC2016  # the format string stays literal; values are passed as arguments
+      printf '%s- `%s`\n' "$prose_indent" "$frag"
+    done < <(printf '%s\n' "$label_raw" | tr ',' '\n' | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')
+  }
+  # The §1 prose snapshot is detected on the ORIGINAL file before the rewrite:
+  # the production layout puts the exact `## §1.` heading before the block and
+  # the Markdown fragment list directly above it (blank/fence lines between the
+  # list and the block are allowed). Only that adjacent list is the snapshot —
+  # any other Markdown list in the file is not ours to touch. Without the exact
+  # heading or the adjacent list the prose is left byte-for-byte alone.
+  local prose_start=0 prose_end=0
+  local begin_no heading_no i l
+  # grep exits 1 on no match (a checklist without the §1 heading is the normal
+  # shape too); under the caller's pipefail that must not kill the deploy.
+  begin_no="$(grep -n 'board-mount-set:begin' "$anchor_file" 2>/dev/null | head -n1 | cut -d: -f1 || true)"
+  heading_no="$(grep -nF -- '## §1. Набор docker-compose файлов' "$anchor_file" 2>/dev/null | head -n1 | cut -d: -f1 || true)"
+  if [[ -n "$begin_no" && -n "$heading_no" ]] && (( heading_no < begin_no )); then
+    # walk up from the block over blank/fence lines to the closest list item,
+    # then over the whole run of list items to the FIRST one
+    i=$(( begin_no - 1 ))
+    l=""
+    while (( i > heading_no )); do
+      l="$(sed -n "${i}p" "$anchor_file")"
+      if [[ -z "${l//[[:space:]]/}" || "$l" == *'```'* ]]; then
+        i=$(( i - 1 ))
+        continue
+      fi
+      break
+    done
+    if [[ "$l" =~ ^([[:space:]]*)-[[:space:]]+\` ]]; then
+      prose_end="$i"
+      prose_indent="${BASH_REMATCH[1]}"
+      prose_start="$i"
+      while (( prose_start - 1 > heading_no )) \
+        && [[ "$(sed -n "$(( prose_start - 1 ))p" "$anchor_file")" =~ ^[[:space:]]*-[[:space:]]+\` ]]; do
+        prose_start=$(( prose_start - 1 ))
+      done
+    fi
+  fi
+  # the previous set, read BEFORE the file is replaced (for the log line below)
+  local anchor_had
+  anchor_had="$(sed -n '/board-mount-set:begin/,/board-mount-set:end/p' "$anchor_file" | { grep -oE '^[[:space:]]*[A-Za-z0-9._/-]+\.ya?ml[[:space:]]*$' || true; } | sed 's#^.*/##; s/^[[:space:]]*//; s/[[:space:]]*$//' | tr '\n' ' ')"
+  anchor_dir="$(dirname "$anchor_file")"
+  tmp="$(mktemp "$anchor_file.XXXXXX")"
+  local file_line=0
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    file_line=$(( file_line + 1 ))
+    if [[ "$line" == *board-mount-set:begin* ]]; then
+      printf '%s\n' "$line" >>"$tmp"
+      indent=""
+      if [[ "$line" =~ ^([[:space:]]+) ]]; then
+        indent="${BASH_REMATCH[1]}"
+      fi
+      # Write fragments relative to the anchor file's own directory when they
+      # live under it (the anchor's own style, and the watchdog resolves
+      # relative names against its project dir); absolute otherwise. The
+      # watchdog's parser accepts both shapes.
+      printf '%s\n' "$label_raw" | tr ',' '\n' | sed 's/^[[:space:]]*//; s/[[:space:]]*$//' | sed '/^$/d' \
+        | while IFS= read -r frag; do
+            case "$frag" in
+              "$anchor_dir"/*) printf '%s%s\n' "$indent" "${frag#"$anchor_dir"/}" ;;
+              *) printf '%s%s\n' "$indent" "$frag" ;;
+            esac
+          done >>"$tmp"
+      printed=1
+      in_block=1
+      continue
+    fi
+    if [[ "$in_block" == "1" ]]; then
+      # the old fragment lines of the block are dropped; the end marker closes it
+      if [[ "$line" == *board-mount-set:end* ]]; then
+        printf '%s\n' "$line" >>"$tmp"
+        in_block=0
+      fi
+      continue
+    fi
+    if [[ "$prose_written" == "0" && "$prose_start" != "0" && "$file_line" == "$prose_start" ]]; then
+      emit_prose_snapshot >>"$tmp"
+      prose_written=1
+      continue
+    fi
+    printf '%s\n' "$line" >>"$tmp"
+  done <"$anchor_file"
+  if [[ "$printed" != "1" ]]; then
+    rm -f "$tmp"
+    log "WARNING: COMPOSE-SET-ANCHOR: no board-mount-set:begin marker in $anchor_file; nothing was rewritten"
+    return 0
+  fi
+  # Replace atomically, keep owner and mode (a config write rule).
+  local mode owner
+  mode="$(stat -c '%a' "$anchor_file" 2>/dev/null || printf '644')"
+  owner="$(stat -c '%u:%g' "$anchor_file" 2>/dev/null || printf '')"
+  mv -f "$tmp" "$anchor_file"
+  chmod "$mode" "$anchor_file"
+  if [[ -n "$owner" ]]; then
+    chown "$owner" "$anchor_file" 2>/dev/null || true
+  fi
+  ANCHOR_SYNC_ACTION="rewritten"
+  log "COMPOSE-SET-ANCHOR: the live set differs from the anchor; the block was rewritten from the live label:"
+  # shown in the file's / the label's own order (the comparison above is sorted)
+  log "  anchor had: $anchor_had"
+  log "  live label: $(printf '%s\n' "$label_raw" | tr ',' '\n' | sed 's#.*/##; s/^[[:space:]]*//; s/[[:space:]]*$//' | sed '/^$/d' | tr '\n' ' ')"
+  if [[ "$prose_written" == "1" ]]; then
+    log "  §1 prose snapshot: the fragment list follows the same live set"
+  fi
+  # One commit naming the deploy, when the anchor lives in a git repository.
+  if command -v git >/dev/null 2>&1 && [[ -n "$MYRMIDON_COMPOSE_SET_ANCHOR_GIT" && -d "$MYRMIDON_COMPOSE_SET_ANCHOR_GIT/.git" ]]; then
+    local rel msg
+    rel="$(realpath --relative-to="$MYRMIDON_COMPOSE_SET_ANCHOR_GIT" "$anchor_file" 2>/dev/null || printf '%s' "$anchor_file")"
+    msg="chore(deploy): sync board-mount-set anchor to the live compose set (deploy $MYRMIDON_IMAGE@${digest:-<unknown>})"
+    if git -C "$MYRMIDON_COMPOSE_SET_ANCHOR_GIT" add -- "$rel" >/dev/null 2>&1 \
+      && ANCHOR_SYNC_COMMIT="$(git -C "$MYRMIDON_COMPOSE_SET_ANCHOR_GIT" commit -m "$msg" -- "$rel" 2>/dev/null \
+        && git -C "$MYRMIDON_COMPOSE_SET_ANCHOR_GIT" rev-parse --short HEAD 2>/dev/null)"; then
+      log "COMPOSE-SET-ANCHOR: committed $rel as $ANCHOR_SYNC_COMMIT in $MYRMIDON_COMPOSE_SET_ANCHOR_GIT"
+    else
+      ANCHOR_SYNC_COMMIT=""
+      log "WARNING: COMPOSE-SET-ANCHOR: the git commit of $rel failed (the file is rewritten; commit it by hand)"
+    fi
+  else
+    log "WARNING: COMPOSE-SET-ANCHOR: MYRMIDON_COMPOSE_SET_ANCHOR_GIT is not a git repository; the file is rewritten, commit it by hand"
+  fi
+  return 0
 }
 
 # --- DB-TUNING (OPE-5009): the PostgreSQL settings of the audit, declaratively
@@ -1978,4 +2227,158 @@ done | sed 's/^sha256://' | sort -u)" || used_ids=""
     done <<<"$entries"
   done
   log "image retention: $removed image(s) removed, $skipped in use and kept, $fresh newer than the running release kept (keep $keep previous release(s) per repository)"
+}
+
+# IMAGE-GC (OPE-12696): after a successful deploy sweep every image of the
+# repository globs in MYRMIDON_DEPLOY_IMAGE_GC_REPOS that NO container uses —
+# including exited and `created` ones (`docker ps -a` is authoritative) — and
+# prune the build cache. Foreign images (hindsight, langfuse, grafana…) are
+# never touched. Set MYRMIDON_DEPLOY_IMAGE_GC=0 to switch the sweep off.
+# Callers run it only after a fully successful deploy, so a failed deploy
+# never deletes anything; failures inside the sweep are logged, not fatal.
+deploy_image_gc() {
+  local enabled="${MYRMIDON_DEPLOY_IMAGE_GC:-1}"
+  if [[ "$enabled" != "1" ]]; then
+    log "image gc: disabled (MYRMIDON_DEPLOY_IMAGE_GC=$enabled)"
+    return 0
+  fi
+  local -A seen=()
+  local id repo glob size freed=0 removed=0 skipped=0 failed=0 matched
+  local -a globs=()
+  IFS=',' read -ra globs <<<"${MYRMIDON_DEPLOY_IMAGE_GC_REPOS:-}"
+  # `docker image ls` prints one line per tag; dedupe image ids so a
+  # multi-tag image is checked, counted and removed exactly once.
+  while IFS=$'\t' read -r repo id; do
+    [[ -n "$repo" && -n "$id" ]] || continue
+    [[ -z "${seen[$id]:-}" ]] || continue
+    matched=""
+    for glob in "${globs[@]}"; do
+      # shellcheck disable=SC2254 # the glob list is operator-controlled
+      case "$repo" in
+        $glob) matched="$glob"; break ;;
+      esac
+    done
+    [[ -n "$matched" ]] || continue
+    seen[$id]=1
+    if [[ -n "$(docker ps -a -q --filter "ancestor=$id" 2>/dev/null)" ]]; then
+      skipped=$((skipped + 1))
+      continue
+    fi
+    size="$(docker image inspect "$id" --format '{{.Size}}' 2>/dev/null || true)"
+    [[ "$size" =~ ^[0-9]+$ ]] || size=0
+    if docker image rm "$id" >/dev/null 2>&1; then
+      removed=$((removed + 1))
+      freed=$((freed + size))
+      log "image gc: removed $repo image ${id#sha256:} (no container uses it; freed $size bytes)"
+    else
+      failed=$((failed + 1))
+      log "image gc: WARNING: failed to remove $repo image ${id#sha256:}"
+    fi
+  done < <(docker image ls --format '{{.Repository}}\t{{.ID}}' 2>/dev/null)
+  if ((removed > 0)); then
+    # Layer blobs of the removed images may still sit in the build cache.
+    docker builder prune -af >/dev/null 2>&1 \
+      || log "image gc: WARNING: docker builder prune failed (cache kept)"
+  fi
+  log "image gc: $removed image(s) removed, $skipped in use kept, $failed failed, $freed bytes freed"
+}
+
+MYR_DEPLOY_LOCK_FILE=""
+MYR_DEPLOY_LOCK_DIR_CREATED=""
+
+release_deploy_lock() {
+  # NOTE: no `local` here — the function runs as the EXIT trap after
+  # acquire_deploy_lock has returned, so any `local` would die with
+  # "unbound variable" under set -u on bash 5.2 (CI printed
+  # "deploy.sh: line 1: lock_file: unbound variable" for every test).
+  sig="${1:-EXIT}"
+  trap - EXIT INT TERM
+  if [[ -n "${MYR_DEPLOY_LOCK_FILE:-}" && -f "$MYR_DEPLOY_LOCK_FILE" ]]; then
+    flock -u 200 2>/dev/null || true
+    exec 200>&- 2>/dev/null || true
+    rm -f "$MYR_DEPLOY_LOCK_FILE" 2>/dev/null || true
+  fi
+  if [[ -n "${MYR_DEPLOY_LOCK_DIR_CREATED:-}" && -d "$MYR_DEPLOY_LOCK_DIR_CREATED" ]]; then
+    rmdir "$MYR_DEPLOY_LOCK_DIR_CREATED" 2>/dev/null || true
+  fi
+  if [[ "$sig" == "INT" ]]; then
+    kill -INT $$
+  elif [[ "$sig" == "TERM" ]]; then
+    kill -TERM $$
+  fi
+}
+
+# Acquire exclusive deploy lock. Usage: acquire_deploy_lock
+acquire_deploy_lock() {
+  local lock_file="$1"
+  local wait_sec="$2"
+  local dry_run="$3"
+  local state_dir="$4"
+
+  if ! [[ "$wait_sec" =~ ^[0-9]+$ ]]; then
+    wait_sec=0
+  fi
+
+  if [[ -z "$lock_file" ]]; then
+    if [[ -n "$state_dir" ]]; then
+      lock_file="$state_dir/deploy.lock"
+    else
+      lock_file="/var/lib/myrmidon/deploy/deploy.lock"
+    fi
+  fi
+
+  if [[ "$dry_run" == "1" ]]; then
+    if [[ -f "$lock_file" ]]; then
+      if ! ( exec 200<"$lock_file" && flock -n 200 ); then
+        local holder_pid="" holder_started="" holder_version=""
+        if [[ -s "$lock_file" ]]; then
+          read -r holder_pid holder_started holder_version < "$lock_file" 2>/dev/null || true
+        fi
+        log "WARNING: another deploy is currently running (lock file $lock_file is locked by PID: ${holder_pid:-unknown}, started: ${holder_started:-unknown}, version: ${holder_version:-unknown})"
+      fi
+    fi
+    return 0
+  fi
+
+  local dir
+  dir="$(dirname "$lock_file")"
+  if [[ ! -d "$dir" ]]; then
+    MYR_DEPLOY_LOCK_DIR_CREATED="$dir"
+    mkdir -p "$dir"
+  fi
+
+  exec 200<>"$lock_file"
+
+  if (( wait_sec > 0 )); then
+    log "waiting up to ${wait_sec}s for deploy lock (${lock_file})..."
+    if ! flock -w "$wait_sec" 200; then
+      local holder_pid="" holder_started="" holder_version=""
+      if [[ -s "$lock_file" ]]; then
+        read -r holder_pid holder_started holder_version < "$lock_file" 2>/dev/null || true
+      fi
+      log "ERROR: deploy lock $lock_file is held by another process (PID: ${holder_pid:-unknown}, started: ${holder_started:-unknown}, version: ${holder_version:-unknown}) after waiting ${wait_sec}s"
+      if [[ -n "${MYR_DEPLOY_LOCK_DIR_CREATED:-}" && -d "$MYR_DEPLOY_LOCK_DIR_CREATED" ]]; then
+        rmdir "$MYR_DEPLOY_LOCK_DIR_CREATED" 2>/dev/null || true
+      fi
+      exit 42
+    fi
+  else
+    if ! flock -n 200; then
+      local holder_pid="" holder_started="" holder_version=""
+      if [[ -s "$lock_file" ]]; then
+        read -r holder_pid holder_started holder_version < "$lock_file" 2>/dev/null || true
+      fi
+      log "ERROR: another deploy is already running (lock file $lock_file is locked by PID: ${holder_pid:-unknown}, started: ${holder_started:-unknown}, version: ${holder_version:-unknown})"
+      if [[ -n "${MYR_DEPLOY_LOCK_DIR_CREATED:-}" && -d "$MYR_DEPLOY_LOCK_DIR_CREATED" ]]; then
+        rmdir "$MYR_DEPLOY_LOCK_DIR_CREATED" 2>/dev/null || true
+      fi
+      exit 42
+    fi
+  fi
+
+  printf '%s %s %s\n' "$$" "$(date -u +'%Y-%m-%dT%H:%M:%SZ')" "$(script_version_string)" > "$lock_file"
+  MYR_DEPLOY_LOCK_FILE="$lock_file"
+  trap release_deploy_lock EXIT
+  trap 'release_deploy_lock INT' INT
+  trap 'release_deploy_lock TERM' TERM
 }
