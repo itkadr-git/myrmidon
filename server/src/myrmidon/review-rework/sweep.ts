@@ -57,6 +57,7 @@ import {
   encodeReworkFingerprint,
   reviewReworkPrKey,
   type ReviewReworkDecision,
+  type ReviewReworkChildFacts,
   type ReviewReworkExecutorCandidate,
   type ReviewReworkPrFact,
 } from "./domain.js";
@@ -265,6 +266,28 @@ function reworkDescription(input: {
   ].join("\n");
 }
 
+/**
+ * myrmidon(OPE-12785): the per-task reads of one page, loaded in one query each
+ * before the loop over the candidates (the loop used to run them task by task:
+ * ~125k comment selects a day). Every field is optional — a store without the
+ * batch methods, or a failed batch read, leaves the per-task read in place.
+ */
+interface PagePrefetch {
+  comments?: Map<string, Array<{ id: string; body: string; createdAt: Date }>>;
+  children?: Map<string, ReviewReworkChildFacts | null>;
+  loopClosed?: Set<string>;
+}
+
+/** True when `processTask` would read the task at all (the cheap skip-guard, OPE-12397). */
+function isProcessable(row: ReworkCandidateRow): boolean {
+  const hasLivePrProduct = row.products.some(
+    (product) =>
+      product.status !== "archived" &&
+      !TERMINAL_PULL_REQUEST_PRODUCT_STATUSES.has(product.status.toLowerCase()),
+  );
+  return !((row.childPresent === false && row.verdictPresent === false) && !hasLivePrProduct);
+}
+
 export function createReviewReworkSweep(deps: ReviewReworkSweepDeps): ReviewReworkSweep {
   const log = deps.log ?? logger;
   let lastSweepAtMs = 0;
@@ -356,6 +379,30 @@ export function createReviewReworkSweep(deps: ReviewReworkSweepDeps): ReviewRewo
     }
   }
 
+  async function loadPrefetch(companyId: string, rows: readonly ReworkCandidateRow[]): Promise<PagePrefetch> {
+    // myrmidon(OPE-12785): only the candidates `processTask` will read.
+    const ids = rows.filter(isProcessable).map((row) => row.task.id);
+    const prefetch: PagePrefetch = {};
+    if (ids.length === 0) return prefetch;
+    // A failed batch read must not fail the pass: the per-task reads remain.
+    try {
+      if (deps.store.listCommentsForIssues) prefetch.comments = await deps.store.listCommentsForIssues(ids);
+    } catch (err) {
+      log.warn({ err, companyId }, "review rework comment batch read failed; reading per task");
+    }
+    try {
+      if (deps.store.findReworkChildren) prefetch.children = await deps.store.findReworkChildren(companyId, ids);
+    } catch (err) {
+      log.warn({ err, companyId }, "review rework child batch read failed; reading per task");
+    }
+    try {
+      if (deps.store.loopClosedIssueIds) prefetch.loopClosed = await deps.store.loopClosedIssueIds(companyId, ids);
+    } catch (err) {
+      log.warn({ err, companyId }, "review rework loop-close batch read failed; reading per task");
+    }
+    return prefetch;
+  }
+
   async function sweepCompany(
     companyId: string,
     settings: ReviewReworkSettings,
@@ -366,10 +413,11 @@ export function createReviewReworkSweep(deps: ReviewReworkSweepDeps): ReviewRewo
   ): Promise<void> {
     const rows = await deps.store.listCandidateTasks(companyId, REVIEW_REWORK_PAGE_SIZE);
     result.scanned += rows.length;
+    const prefetch = await loadPrefetch(companyId, rows);
     for (const row of rows) {
       if (moves.count >= REVIEW_REWORK_MAX_MOVES_PER_PASS) return;
       try {
-        const moved = await processTask(row, settings, now, result, moves, prFactsCache);
+        const moved = await processTask(row, settings, now, result, moves, prFactsCache, prefetch);
         if (moved) moves.count += 1;
       } catch (err) {
         result.failed += 1;
@@ -385,6 +433,7 @@ export function createReviewReworkSweep(deps: ReviewReworkSweepDeps): ReviewRewo
     result: ReviewReworkSweepResult,
     _moves: { count: number },
     prFactsCache: Map<string, ReviewReworkPrSnapshot | null>,
+    prefetch: PagePrefetch = {},
   ): Promise<boolean> {
     const { task } = row;
     // myrmidon(OPE-12397): a task with neither a rework child, nor a verdict
@@ -395,19 +444,13 @@ export function createReviewReworkSweep(deps: ReviewReworkSweepDeps): ReviewRewo
     // processed. Terminal PR products (merged/closed/…) are not live either:
     // the loop already settled those tasks, and re-reading them every pass
     // burned reads on `pr_terminal` no-ops.
-    const hasLivePrProduct = row.products.some(
-      (product) =>
-        product.status !== "archived" &&
-        !TERMINAL_PULL_REQUEST_PRODUCT_STATUSES.has(product.status.toLowerCase()),
-    );
-    if (
-      (row.childPresent === false && row.verdictPresent === false)
-      && !hasLivePrProduct
-    ) {
-      return false;
-    }
-    const comments = await deps.store.listComments(task.id);
-    const child = await deps.store.findReworkChild(task.companyId, task.id);
+    if (!isProcessable(row)) return false;
+    // myrmidon(OPE-12785): the page's batch reads first, the per-task read only
+    // when the batch has no entry for the task.
+    const comments = prefetch.comments?.get(task.id) ?? (await deps.store.listComments(task.id));
+    const child = prefetch.children?.has(task.id)
+      ? (prefetch.children.get(task.id) ?? null)
+      : await deps.store.findReworkChild(task.companyId, task.id);
     const prs = await prFacts(row, comments.map((comment) => comment.body), prFactsCache);
     if (prs.length === 0) return false;
     // The delivering task's assignee: the first PR with coordinates that names
@@ -508,7 +551,11 @@ export function createReviewReworkSweep(deps: ReviewReworkSweepDeps): ReviewRewo
       }
     }
 
-    const reopenedAfterLoopClose = await deps.store.reopenedAfterLoopClose(task.companyId, task.id);
+    // myrmidon(OPE-12785): the veto exists only for a task the loop closed.
+    const reopenedAfterLoopClose =
+      prefetch.loopClosed && !prefetch.loopClosed.has(task.id)
+        ? false
+        : await deps.store.reopenedAfterLoopClose(task.companyId, task.id);
     const decision = decideReviewRework({
       task,
       prs,
