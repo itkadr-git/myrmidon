@@ -70,11 +70,19 @@ import {
 } from "../myrmidon/input-overflow-guard.js";
 // myrmidon(RUN-GUARD-LOOPS): a run the run guard stopped is not retried; its issue is blocked.
 // myrmidon(RUN-GUARD-CONTINUE): except a call-limit stop of a run that made changes.
+// myrmidon(OPE-12799): the second limit stop in a row without a result is final.
 import {
+  CALL_LIMIT_CONTINUATION_HINT,
   NO_PROGRESS_AUTO_RETRY_HINT,
   RUN_GUARD_CONTINUATION_CONTEXT_KEY,
+  RUN_GUARD_EMPTY_STOP_LOOKBACK_MS,
+  RUN_GUARD_EMPTY_STOP_LOOKBACK_RUNS,
   buildRunGuardStopComment,
   buildRunGuardStopNotice,
+  findPreviousLimitStopRun,
+  isRepeatedEmptyLimitStop,
+  isRunGuardLimitStopReason,
+  runHasUsefulOutcome,
   maxTurnContinuationSchedulerCeiling,
   parseRunGuardContinuationPolicy,
   readRunGuardContinuationCount,
@@ -16843,9 +16851,13 @@ export function heartbeatService(
     const reason = readRunGuardStopReason(run);
     if (!reason) return null;
     const issueId = readNonEmptyString(parseObject(run.contextSnapshot).issueId);
+    // myrmidon(OPE-12799): the second limit stop in a row that left nothing on
+    // the board is final, whatever `writeCalls` says.
+    const repeatedEmpty = issueId ? await isRepeatedEmptyRunGuardLimitStop(run, issueId) : false;
     // Only a run of an issue continues: a run without one has no task to resume.
     if (
       issueId &&
+      !repeatedEmpty &&
       shouldContinueAfterRunGuardStop(run, guardStats) &&
       (await continueRunStoppedAtCallLimit(run, agent, guardStats))
     ) {
@@ -16855,8 +16867,14 @@ export function heartbeatService(
       eventType: "lifecycle",
       stream: "system",
       level: "warn",
-      message: `Run stopped by the run guard (${reason}); it will not be retried automatically`,
-      payload: { runGuardStopReason: reason, runGuardStats: guardStats },
+      message: repeatedEmpty
+        ? `Run stopped by the run guard (${reason}) without a result, the second time in a row for the issue; it will not be retried automatically`
+        : `Run stopped by the run guard (${reason}); it will not be retried automatically`,
+      payload: {
+        runGuardStopReason: reason,
+        runGuardStats: guardStats,
+        ...(repeatedEmpty ? { runGuardRepeatedEmptyStop: true } : {}),
+      },
     });
     if (!issueId) return null;
     const issue = await db
@@ -16878,14 +16896,14 @@ export function heartbeatService(
       issue,
       previousStatus: issue.status,
       latestRun: run,
-      notice: buildRunGuardStopNotice(run, guardStats),
+      notice: buildRunGuardStopNotice(run, guardStats, { repeatedEmpty }),
     });
     if (escalated) {
       await recovery
         .wakeManagerForRunGuardStop({
           issue,
           latestRun: run,
-          stopText: buildRunGuardStopComment(run, guardStats),
+          stopText: buildRunGuardStopComment(run, guardStats, { repeatedEmpty }),
         })
         .catch((err) => {
           logger.warn(
@@ -16895,6 +16913,57 @@ export function heartbeatService(
         });
     }
     return escalated;
+  }
+
+  // myrmidon(OPE-12799): is this limit stop (model call limit, exploration
+  // without a write) the second in a row for the issue and the agent with
+  // nothing left on the board? The result of a run is what the liveness evidence
+  // counts by run id: comments, document revisions, work products. The previous
+  // runs are taken by issue and agent, not by retry chain: a wake of another kind
+  // (idle pickup, monitor, maintenance retry) starts a new chain, and the chain
+  // counter with it. A failure to read the history answers false: the stop is
+  // then handled as before.
+  async function isRepeatedEmptyRunGuardLimitStop(
+    run: typeof heartbeatRuns.$inferSelect,
+    issueId: string,
+  ): Promise<boolean> {
+    if (!isRunGuardLimitStopReason(readRunGuardStopReason(run))) return false;
+    try {
+      const evidence = (await buildRunLivenessInput(run, parseObject(run.resultJson))).evidence;
+      if (runHasUsefulOutcome(evidence)) return false;
+      const since = new Date(run.createdAt.getTime() - RUN_GUARD_EMPTY_STOP_LOOKBACK_MS);
+      const previousRuns = await db
+        .select()
+        .from(heartbeatRuns)
+        .where(
+          and(
+            eq(heartbeatRuns.companyId, run.companyId),
+            eq(heartbeatRuns.agentId, run.agentId),
+            ne(heartbeatRuns.id, run.id),
+            sql`coalesce(${heartbeatRuns.contextIssueId}, ${heartbeatRuns.contextSnapshot}->>'issueId') = ${issueId}`,
+            isNotNull(heartbeatRuns.startedAt),
+            lt(heartbeatRuns.createdAt, run.createdAt),
+            gte(heartbeatRuns.createdAt, since),
+          ),
+        )
+        .orderBy(desc(heartbeatRuns.createdAt))
+        .limit(RUN_GUARD_EMPTY_STOP_LOOKBACK_RUNS);
+      const previous = findPreviousLimitStopRun(previousRuns);
+      const previousEvidence = previous
+        ? (await buildRunLivenessInput(previous, parseObject(previous.resultJson))).evidence
+        : null;
+      return isRepeatedEmptyLimitStop({
+        run,
+        runHasUsefulOutcome: false,
+        previousLimitStop: previous ? { hasUsefulOutcome: runHasUsefulOutcome(previousEvidence) } : null,
+      });
+    } catch (err) {
+      logger.warn(
+        { err, runId: run.id, issueId },
+        "failed to check whether the run guard stop repeats an empty one",
+      );
+      return false;
+    }
   }
 
   // myrmidon(RUN-GUARD-CONTINUE): continue the work of a run the run guard
@@ -16962,7 +17031,11 @@ export function heartbeatService(
               livenessContinuationInstruction: NO_PROGRESS_AUTO_RETRY_HINT,
               livenessContinuationState: "no_progress_exploration_auto_retry",
             }
-          : {}),
+          : {
+              // myrmidon(OPE-12799): the fresh session is told to pick the work up, not to start over.
+              livenessContinuationInstruction: CALL_LIMIT_CONTINUATION_HINT,
+              livenessContinuationState: "model_call_limit_continuation",
+            }),
       });
       if (scheduled.outcome !== "scheduled") return false;
       await appendRunEvent(run, {

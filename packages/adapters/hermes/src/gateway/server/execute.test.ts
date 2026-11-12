@@ -4897,6 +4897,16 @@ describe("execute — run guard hint-before-stop (RUN-GUARD-HINT B)", () => {
     );
   });
 
+  // myrmidon(OPE-12799): the wrap-up message before the call limit tells the agent
+  // to put its work where the next run (fresh session) will find it.
+  it("buildRunGuardHintMessage renders the wrap-up message when calls are left before the limit", () => {
+    const message = buildRunGuardHintMessage({ reason: "model_call_limit", modelCalls: 135, remaining: 15 });
+    expect(message).toContain("осталось 15 вызовов модели");
+    expect(message).toContain("закоммить и запушь");
+    expect(message).toContain("комментарий в задаче");
+    expect(message).not.toContain("записей не было");
+  });
+
   it("steers one correction on the third repeated tool call, keeps the run going, and omits runGuardHint when the run completes normally", async () => {
     const steerBodies: Array<Record<string, unknown>> = [];
     const repeatedArgs = { path: "/workspace/big/file.ts" };
