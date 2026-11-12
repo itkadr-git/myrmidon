@@ -80,7 +80,7 @@ export function parseProviderIdentity(
     fenceCandidates.some(
       (candidate) =>
         !Number.isInteger(candidate) ||
-        candidate < 49_152 ||
+        candidate < 61_000 ||
         candidate > 65_535,
     ) ||
     new Set(fenceCandidates).size !== 3

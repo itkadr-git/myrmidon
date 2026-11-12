@@ -206,7 +206,7 @@ describe("Codex app-server Codex driver", () => {
       requestedModel: "gpt-5.6-sol",
       effectiveModel: "gpt-5.6-sol",
       permissionMode: "approve-all",
-      providerLifetimeFenceCandidates: [60_001, 60_002, 60_003],
+      providerLifetimeFenceCandidates: [61_001, 61_002, 61_003],
     };
     const first = new FakeCodexTransport(
       "thread-1",

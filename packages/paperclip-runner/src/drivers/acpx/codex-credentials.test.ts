@@ -1710,11 +1710,11 @@ function credentialLeasePortsForScope(
     .update("\0")
     .update(home)
     .digest();
-  const start = digest.readUInt16BE(0) % 16_384;
-  const step = (digest.readUInt16BE(2) | 1) % 16_384;
+  const start = digest.readUInt16BE(0) % 4_536;
+  const step = (digest.readUInt16BE(2) | 1) % 4_536;
   return Array.from(
     { length: 3 },
-    (_, index) => 49_152 + ((start + index * step) % 16_384),
+    (_, index) => 61_000 + ((start + index * step) % 4_536),
   );
 }
 

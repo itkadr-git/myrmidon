@@ -22,8 +22,13 @@ const MAX_AUTONOMOUS_CREDENTIAL_CLEANUP_ATTEMPTS = 8;
 const CREDENTIAL_CLEANUP_INTENT = ".paperclip-auth-cleanup-required";
 const CREDENTIAL_STAGING_FILE = ".paperclip-auth-staging-v1";
 const CREDENTIAL_LEASE_HOST = "127.0.0.1";
-const CREDENTIAL_LEASE_PORT_MIN = 49_152;
-const CREDENTIAL_LEASE_PORT_COUNT = 16_384;
+// The lease range sits above the Linux ephemeral window (net.ipv4.ip_local_
+// port_range, conventionally 32768-60999) so unrelated outbound sockets can
+// never occupy quorum candidates and fabricate an "already has an active
+// lease" failure. The fence validators below must stay in sync with this
+// range.
+const CREDENTIAL_LEASE_PORT_MIN = 61_000;
+const CREDENTIAL_LEASE_PORT_COUNT = 4_536;
 const CREDENTIAL_LEASE_CANDIDATES = 3;
 const CREDENTIAL_LEASE_QUORUM = 2;
 const DIRECTORY_SYNC_HELPER_KILL_ACK_TIMEOUT_MS = 1_000;

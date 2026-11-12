@@ -5161,7 +5161,7 @@ export function providerSessionIdentityFromDurableProviderState(input: {
         identity.providerLifetimeFenceCandidates.some(
           (port) =>
             !Number.isInteger(port) ||
-            Number(port) < 49_152 ||
+            Number(port) < 61_000 ||
             Number(port) > 65_535,
         )
       ) {
