@@ -718,6 +718,10 @@ describe("OPE-12838: export changes select the tests that reach them (was OPE-10
       [{ file: "server/src/index.ts", source: 'import "@myrmidon/shared/nonexistent";' }],
     );
     assert.notEqual(graph, null);
+    // The wildcard "./*" export resolves to a file that does not exist, so the
+    // specifier is unresolved: no node, no edge — the graph just stops there
+    // (runtime wiring), and a source-level hit does not escalate to full.
+    assert.equal(graph.edges.get("packages/shared/src/nonexistent"), undefined);
     assert.deepEqual(graph.edges.get("server/src/index"), []);
   });
 

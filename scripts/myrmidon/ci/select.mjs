@@ -359,6 +359,11 @@ export function classifyChanges(
 
 // ------------------------------------------------- export-change selection
 
+/** Whether at least one candidate file of a module path is readable on disk. */
+function moduleReadable(modulePath) {
+  return moduleFiles(modulePath).some((candidate) => fs.existsSync(path.join(exportGraphRoot, candidate)));
+}
+
 /** Module path of a repo-relative file: extension stripped, /index kept. */
 function modulePathOf(file) {
   return file.replace(/\.(?:d\.ts|tsx?|mts|cts|mjs|cjs|jsx?)$/, "");
@@ -435,9 +440,17 @@ export function buildImportGraph(testFiles, packages, rootModules = null) {
     const pkg = packagesByName.get(name);
     if (!pkg) return undefined;
     const rest = parts.slice(spec.startsWith("@") ? 2 : 1).join("/");
-    const owner = ownerOf(modulePath, packages) ?? pkg;
-    const file = resolveExport(owner, rest ? `./${rest}` : ".");
-    return file ? restoreIndex(modulePathOf(file)) : null;
+    // Cross-package imports resolve through the target package's exports;
+    // self-package imports fall back to the owning package (same thing).
+    // A "./*" wildcard pattern can map to a file that does not exist; that is
+    // an unresolved import, not a module — except build outputs: dist/ is
+    // gitignored and absent before a build, which is normal workspace state,
+    // not an unknown dependence.
+    const file = resolveExport(pkg, rest ? `./${rest}` : ".");
+    if (!file) return null;
+    const resolvedModule = restoreIndex(modulePathOf(file));
+    if (moduleReadable(resolvedModule) || /(?:^|\/)dist(?:-preview|-flow-preview)?\//.test(resolvedModule)) return resolvedModule;
+    return null;
   };
 
   const resolveSpec = (spec, modulePath) => {
