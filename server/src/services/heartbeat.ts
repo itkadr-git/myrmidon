@@ -13013,11 +13013,12 @@ export function heartbeatService(
           10 * 60_000,
           30_000 * Math.pow(2, Math.min(row.monitorAttemptCount ?? 0, 4)),
         );
-        const rearmNextCheckAt = timeoutAt
-          ? new Date(Math.min(now.getTime() + backoffMs, timeoutAt.getTime()))
-          : isReviewCiWaitMonitor
-            ? new Date(now.getTime() + backoffMs)
-            : null;
+        const rearmNextCheckAt =
+          timeoutAt && timeoutAt.getTime() > now.getTime()
+            ? new Date(Math.min(now.getTime() + backoffMs, timeoutAt.getTime()))
+            : isReviewCiWaitMonitor
+              ? new Date(now.getTime() + backoffMs)
+              : null;
         if (rearmNextCheckAt) {
           // Still inside the configured timeout window: re-arm a bounded next
           // check so the wait can resume. Dispatch works without a policy

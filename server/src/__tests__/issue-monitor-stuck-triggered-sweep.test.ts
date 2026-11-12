@@ -29,6 +29,7 @@ import {
 import { drainHeartbeatRunsToQuiescence } from "./helpers/drain-heartbeat-runs.js";
 import { heartbeatService } from "../services/heartbeat.ts";
 import { parseIssueExecutionState } from "../services/issue-execution-policy.ts";
+import { REVIEW_CI_WAIT_MONITOR_SERVICE_NAME } from "../myrmidon/review-stage-recovery/policy.ts";
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
@@ -95,6 +96,7 @@ describeEmbeddedPostgres("stuck triggered issue monitor sweep", () => {
     issueStatus?: "in_progress" | "in_review" | "blocked" | "done";
     timeoutAt?: string | null;
     lastTriggeredAt?: string;
+    serviceName?: string;
   }): Promise<{
     companyId: string;
     agentId: string;
@@ -171,7 +173,7 @@ describeEmbeddedPostgres("stuck triggered issue monitor sweep", () => {
           notes: "Check deploy",
           scheduledBy: "assignee",
           kind: "external_service",
-          serviceName: "github-actions",
+          serviceName: input?.serviceName ?? "github-actions",
           externalRef: null,
           timeoutAt,
           maxAttempts: 3,
@@ -269,6 +271,41 @@ describeEmbeddedPostgres("stuck triggered issue monitor sweep", () => {
     expect(issue.monitorNextCheckAt).not.toBeNull();
     expect(issue.monitorNextCheckAt!.getTime()).toBeGreaterThan(tickAt.getTime());
     expect(issue.monitorNextCheckAt!.getTime()).toBeLessThanOrEqual(new Date("2026-04-11T13:00:00.000Z").getTime());
+  });
+
+  it("re-arms a Review CI wait monitor with no timeout (OPE-12886)", async () => {
+    const { issueId } = await seedTriggeredFixture({
+      serviceName: REVIEW_CI_WAIT_MONITOR_SERVICE_NAME,
+      timeoutAt: null,
+      lastTriggeredAt: "2026-04-11T12:00:00.000Z",
+    });
+    const heartbeat = heartbeatService(db);
+    const tickAt = new Date("2026-04-11T12:30:00.000Z");
+
+    await heartbeat.tickTimers(tickAt);
+
+    const issue = await db.select().from(issues).where(eq(issues.id, issueId)).then((rows) => rows[0]!);
+    // Not closed as timed out: a Review CI wait monitor has no deadline, the
+    // sweep must resume the wait instead of clearing it.
+    expect(parseIssueExecutionState(issue.executionState)?.monitor).toMatchObject({
+      status: "triggered",
+      clearReason: null,
+      clearedAt: null,
+      serviceName: REVIEW_CI_WAIT_MONITOR_SERVICE_NAME,
+      timeoutAt: null,
+    });
+    expect(issue.monitorNextCheckAt).not.toBeNull();
+    expect(issue.monitorNextCheckAt!.getTime()).toBeGreaterThan(tickAt.getTime());
+    expect(issue.monitorNextCheckAt!.getTime()).toBeLessThanOrEqual(tickAt.getTime() + 10 * 60_000);
+    // No timeout wake for a still-alive wait: the wait resumes.
+    expect(await db.select().from(agentWakeupRequests)).toHaveLength(0);
+    const activity = await db
+      .select()
+      .from(activityLog)
+      .where(eq(activityLog.entityId, issueId))
+      .then((rows) => rows.map((row) => row.action));
+    expect(activity).toContain("issue.monitor_rearmed_after_trigger");
+    expect(activity).not.toContain("issue.monitor_timeout_swept");
   });
 
   it("leaves a fresh triggered monitor alone before the grace period ends", async () => {
