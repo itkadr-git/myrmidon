@@ -1665,6 +1665,7 @@ export async function syncDirectoryFromSsh(input: {
       let sshStoppedAfterTarFailure = false;
       let sshExitCode: number | null = null;
       let tarExitCode: number | null = null;
+      let tarSignal: NodeJS.Signals | null = null; // myrmidon(OPE-12788)
 
       const maybeFinish = () => {
         if (settled || !sshExited || !tarExited) return;
@@ -1674,8 +1675,15 @@ export async function syncDirectoryFromSsh(input: {
           reject(new Error(sshStderrTail.text().trim() || `ssh exited with code ${sshExitCode ?? -1}`));
           return;
         }
-        if ((tarExitCode ?? 0) !== 0) {
-          reject(new Error(tarStderrTail.text().trim() || `tar exited with code ${tarExitCode ?? -1}`));
+        // myrmidon(OPE-12788): code === null means tar was killed by a signal
+        // (e.g. the OOM killer); its staging copy is incomplete, so it is a failure.
+        if (tarExitCode === null) {
+          const tarStderrText = tarStderrTail.text().trim();
+          reject(new Error(`tar terminated by signal ${tarSignal ?? "unknown"}${tarStderrText ? `: ${tarStderrText}` : ""}`));
+          return;
+        }
+        if (tarExitCode !== 0) {
+          reject(new Error(tarStderrTail.text().trim() || `tar exited with code ${tarExitCode}`));
           return;
         }
         resolve();
@@ -1712,13 +1720,14 @@ export async function syncDirectoryFromSsh(input: {
         sshExitCode = code;
         maybeFinish();
       });
-      tar.on("close", (code) => {
+      tar.on("close", (code, signal) => {
         tarExited = true;
         tarExitCode = code;
+        tarSignal = signal;
         // Nothing reads ssh's output once tar is gone, so ssh would block on a
         // full pipe and the restore would never settle. Stop it; maybeFinish
         // runs when it closes.
-        if ((code ?? 0) !== 0 && !sshExited) {
+        if (code !== 0 && !sshExited) {
           sshStoppedAfterTarFailure = true;
           ssh.kill("SIGTERM");
         }
