@@ -69612,6 +69612,13 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
           await retirePublicationFixture(restarted ?? service, endpoint.id);
         }
       },
+      // Each variant boots a full service, restarts it mid-test and drains the
+      // pending-publication lanes 20+ times over ~100KB payloads. Under the
+      // soak/serial-shard load the github variant was observed crossing the
+      // global 15s testTimeout (15.1s) while its slack sibling passed in 6.4s
+      // (OPE-12858, loop run 3). 30s matches the config's hookTimeout headroom
+      // and still catches a genuinely hung test.
+      30_000,
     );
 
     it("preserves an accepted native Slack response whose rendered mentions exceed the Markdown cap", async () => {
