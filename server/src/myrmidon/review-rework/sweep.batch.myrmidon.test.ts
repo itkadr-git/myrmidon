@@ -91,6 +91,9 @@ class CountingStore implements ReviewReworkStore {
   async closeReviewTask() {
     return true;
   }
+  async applyGoalJudgeDecision() {
+    return true;
+  }
   async reopenedAfterLoopClose(_companyId: string, issueId: string) {
     this.calls.reopened.push(issueId);
     return false;
