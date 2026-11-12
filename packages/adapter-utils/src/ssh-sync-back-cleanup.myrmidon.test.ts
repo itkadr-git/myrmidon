@@ -29,9 +29,12 @@ case "$FAKE_SSH_MODE" in
     exit 255 ;;
   serve-term255)
     # Like the real ssh client: SIGTERM ends it with exit code 255, not by signal.
+    # The trap goes first: a SIGTERM that lands before it exists kills this shell
+    # by the default action and leaves the background tar holding ssh's pipes.
+    child=
+    trap 'if [ -n "$child" ]; then kill "$child" 2>/dev/null; fi; echo "Killed by signal 15." >&2; exit 255' TERM
     tar -cf - -C "$FAKE_SSH_SOURCE_DIR" . &
     child=$!
-    trap 'kill "$child" 2>/dev/null; echo "Killed by signal 15." >&2; exit 255' TERM
     wait "$child" ;;
   hold)
     # Serves the stream, then stays connected until the test creates the release file.
