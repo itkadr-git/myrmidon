@@ -8,6 +8,9 @@ import subprocess from "node:child_process";
 import { describe, it, beforeEach, afterEach } from "node:test";
 
 const ROOT = path.resolve(new URL("../../..", import.meta.url).pathname);
+// A bot container exports empty GIT_AUTHOR_*/GIT_COMMITTER_* variables; git honors an
+// empty env var over config, which breaks commit fixtures. Strip them everywhere.
+const GIT_ENV = Object.fromEntries(Object.entries(process.env).filter(([k]) => !/^(GIT_AUTHOR_|GIT_COMMITTER_)/.test(k)));
 const {
   parseArgs,
   acquireLock,
@@ -29,6 +32,10 @@ const {
   scanSshRunCopies,
   pruneSshRunCopies,
   UsageError,
+  scanRunnerTaskFolders,
+  scanRunnerNpmCaches,
+  pruneRunnerNpmCaches,
+  issueIdentifierFromRunnerFolderName,
 } = await import(
   path.join(ROOT, "scripts/myrmidon/host-gc/host-clone-cache-gc.mjs")
 );
@@ -409,8 +416,10 @@ describe("unpushed-work scan", () => {
 
   const makeRepo = (dir, { dirty = false, ahead = false, stash = false } = {}) => {
     fs.mkdirSync(dir, { recursive: true });
+    // Identity goes on argv (-c): a PATH `git` that is a launcher wrapper may strip
+    // GIT_AUTHOR_*/GIT_COMMITTER_* from the environment, argv config survives.
     const git = (args, cwd2 = dir) => {
-      const r = subprocess.spawnSync("git", args, { cwd: cwd2, encoding: "utf8", env: { ...process.env, GIT_AUTHOR_NAME: "t", GIT_AUTHOR_EMAIL: "t@t", GIT_COMMITTER_NAME: "t", GIT_COMMITTER_EMAIL: "t@t" } });
+      const r = subprocess.spawnSync("git", ["-c", "user.name=t", "-c", "user.email=t@t", ...args], { cwd: cwd2, encoding: "utf8", env: GIT_ENV });
       if (r.status !== 0) throw new Error(`git ${args.join(" ")}: ${r.stderr}`);
       return r;
     };
@@ -780,6 +789,490 @@ describe("SSH runner run copies", () => {
       assert.match(res.stderr, /--run-copy-ttl must be/);
       assert.equal(fs.existsSync(old), true);
       assert.deepEqual(events, []);
+    }
+  });
+});
+
+// myrmidon(1.6.8 OPE-12855): task folders of runner issues are GC'd when the issue is
+// done/cancelled and the folder is older than the clone TTL; the board is fail-closed.
+// myrmidon(1.6.8 OPE-12855): npm/npx caches of runner agents are pruned under the same
+// runner root gate as the run copies and the task folders.
+describe("runner npm caches", () => {
+  const HOUR = 60 * 60 * 1000;
+  const GC_SCRIPT = path.join(ROOT, "scripts/myrmidon/host-gc/host-clone-cache-gc.mjs");
+
+  // The TTL is judged by the newest mtime in the cache tree, so every mtime is backdated
+  // first and `freshMarker` writes a new file afterwards: a cache still being written by a
+  // live npm/npx call is `fresh` regardless of how old the cache root itself is.
+  const backdate = (dir, ageHours) => {
+    const t = new Date(Date.now() - ageHours * HOUR);
+    fs.utimesSync(dir, t, t);
+    for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+      const p = path.join(dir, entry.name);
+      if (entry.isDirectory()) backdate(p, ageHours);
+      else fs.utimesSync(p, t, t);
+    }
+  };
+  const makeNpmCache = (runnersRoot, runner, name, { ageHours = 5, freshMarker = false } = {}) => {
+    const cacheDir = path.join(runnersRoot, runner, "home", ".npm", name);
+    if (name === "_npx") {
+      const pkg = path.join(cacheDir, "hash123", "node_modules", "pkg");
+      fs.mkdirSync(pkg, { recursive: true });
+      fs.writeFileSync(path.join(pkg, "index.js"), "module");
+    } else {
+      fs.mkdirSync(path.join(cacheDir, "content-v2"), { recursive: true });
+      fs.writeFileSync(path.join(cacheDir, "content-v2", "blob"), "x");
+    }
+    backdate(cacheDir, ageHours);
+    if (freshMarker) {
+      const marker = path.join(cacheDir, "index-v5", "recent");
+      fs.mkdirSync(path.dirname(marker), { recursive: true });
+      fs.writeFileSync(marker, "wip");
+    }
+    return cacheDir;
+  };
+
+  it("marks caches whose newest tree mtime is older than the TTL", () => {
+    const runners = path.join(tmpDir, "omp-runners");
+    const old = makeNpmCache(runners, "eng24", "_cacache", { ageHours: 5 });
+    const fresh = makeNpmCache(runners, "eng24", "_npx", { ageHours: 5, freshMarker: true });
+    const items = scanRunnerNpmCaches(runners, Date.now(), 4);
+    const byPath = Object.fromEntries(items.map((i) => [i.path, i.reason]));
+    assert.equal(byPath[old], "ttl");
+    assert.equal(byPath[fresh], "fresh");
+    assert.equal(items.length, 2);
+  });
+
+  it("walks both _cacache and _npx and carries the cache kind", () => {
+    const runners = path.join(tmpDir, "omp-runners");
+    const cacache = makeNpmCache(runners, "eng24", "_cacache", { ageHours: 5 });
+    const npx = makeNpmCache(runners, "eng24", "_npx", { ageHours: 5 });
+    const items = scanRunnerNpmCaches(runners, Date.now(), 4);
+    assert.deepEqual(items.map((i) => [i.path, i.kind]), [
+      [cacache, "_cacache"],
+      [npx, "_npx"],
+    ]);
+  });
+
+  it("a runner without npm caches yields nothing", () => {
+    const runners = path.join(tmpDir, "omp-runners");
+    fs.mkdirSync(path.join(runners, "eng24", "home"), { recursive: true });
+    fs.mkdirSync(path.join(runners, "eng24", "workspace"), { recursive: true });
+    assert.deepEqual(scanRunnerNpmCaches(runners, Date.now(), 4), []);
+  });
+
+  it("a symlinked cache directory is skipped, not followed", () => {
+    const runners = path.join(tmpDir, "omp-runners");
+    const outside = path.join(tmpDir, "outside");
+    const victimCache = makeNpmCache(outside, "victim", "_cacache", { ageHours: 5 });
+    fs.mkdirSync(path.join(runners, "eng24", "home", ".npm"), { recursive: true });
+    fs.symlinkSync(victimCache, path.join(runners, "eng24", "home", ".npm", "_cacache"));
+    assert.deepEqual(scanRunnerNpmCaches(runners, Date.now(), 4), []);
+    assert.equal(fs.existsSync(path.join(victimCache, "content-v2", "blob")), true);
+  });
+
+  it("a missing root and a file root are reported and yield nothing", () => {
+    const events = [];
+    const missing = path.join(tmpDir, "nope");
+    assert.deepEqual(scanRunnerNpmCaches(missing, Date.now(), 4, { onEvent: (e) => events.push(e) }), []);
+    const notDir = path.join(tmpDir, "file-root");
+    fs.writeFileSync(notDir, "x");
+    assert.deepEqual(scanRunnerNpmCaches(notDir, Date.now(), 4, { onEvent: (e) => events.push(e) }), []);
+    assert.deepEqual(events[0], { event: "runner-npm-cache-root-missing", root: missing });
+    assert.equal(events[1].event, "runner-npm-cache-scan-failed");
+    assert.equal(events[1].root, notDir);
+    assert.match(events[1].error, /not a directory/);
+  });
+
+  it("parseArgs reads --npm-cache-ttl, MYRMIDON_HOST_GC_NPM_CACHE_TTL_HOURS and defaults to 4", () => {
+    const prev = process.env.MYRMIDON_HOST_GC_NPM_CACHE_TTL_HOURS;
+    process.env.MYRMIDON_HOST_GC_NPM_CACHE_TTL_HOURS = "6";
+    try {
+      const fromEnv = parseArgs(["node", "gc", "--env", "/nonexistent"]);
+      assert.equal(fromEnv.npmCacheTtlHours, 6);
+    } finally {
+      if (prev === undefined) delete process.env.MYRMIDON_HOST_GC_NPM_CACHE_TTL_HOURS;
+      else process.env.MYRMIDON_HOST_GC_NPM_CACHE_TTL_HOURS = prev;
+    }
+    const fromFlag = parseArgs(["node", "gc", "--env", "/nonexistent", "--npm-cache-ttl", "8"]);
+    assert.equal(fromFlag.npmCacheTtlHours, 8);
+    assert.equal(parseArgs(["node", "gc", "--env", "/nonexistent"]).npmCacheTtlHours, 4);
+  });
+
+  it("rejects an --npm-cache-ttl that is not a finite number or is below 1 hour", () => {
+    for (const bad of ["abc", "", "NaN", "Infinity", "-5", "0", "0.9"]) {
+      assert.throws(
+        () => parseArgs(["node", "gc", "--env", "/nonexistent", "--npm-cache-ttl", bad]),
+        (err) => err instanceof UsageError && /--npm-cache-ttl must be/.test(err.message),
+        `ttl ${JSON.stringify(bad)} must be refused`,
+      );
+    }
+    assert.throws(() => parseArgs(["node", "gc", "--env", "/nonexistent", "--npm-cache-ttl"]), UsageError, "a missing value");
+    assert.equal(parseArgs(["node", "gc", "--env", "/nonexistent", "--npm-cache-ttl", "1"]).npmCacheTtlHours, 1);
+    assert.equal(parseArgs(["node", "gc", "--env", "/nonexistent", "--npm-cache-ttl", "1.5"]).npmCacheTtlHours, 1.5);
+  });
+
+  // Async spawn: the task-folder suite of this file runs a fake-board HTTP server in this
+  // same process, and a sync spawn would block the event loop the server needs.
+  const runGcNpm = async (flags) => {
+    const botsRoot = path.join(tmpDir, "bots");
+    fs.mkdirSync(botsRoot, { recursive: true });
+    const journal = path.join(tmpDir, "gc-npm.jsonl");
+    const env = { ...GIT_ENV, HOST_GC_RUNNER_ROOTS: "", PATH: "/usr/bin:/bin", PAPERCLIP_API_URL: "http://127.0.0.1:9" };
+    const res = await new Promise((resolve, reject) => {
+      const child = subprocess.spawn(process.execPath, [
+        GC_SCRIPT, "--env", "/nonexistent", "--root", botsRoot,
+        "--journal", journal, "--lock", path.join(tmpDir, "gc-npm.lock"), "--proc-dir", path.join(tmpDir, "proc"),
+        ...flags,
+      ], { env, timeout: 120_000, killSignal: "SIGKILL" });
+      let stdout = "";
+      let stderr = "";
+      child.stdout.on("data", (d) => { stdout += d; });
+      child.stderr.on("data", (d) => { stderr += d; });
+      child.on("error", reject);
+      child.on("close", (code, signal) => resolve({ status: code === null ? (signal === "SIGKILL" ? 143 : code) : code, stdout, stderr }));
+    });
+    const events = fs.existsSync(journal)
+      ? fs.readFileSync(journal, "utf8").trim().split("\n").filter(Boolean).map((l) => JSON.parse(l))
+      : [];
+    return { res, events };
+  };
+
+  it("e2e: --apply removes old caches, keeps a cache being written, journals sizeBytes", async () => {
+    const runners = path.join(tmpDir, "omp-runners");
+    const oldCacache = makeNpmCache(runners, "eng24", "_cacache", { ageHours: 5 });
+    const oldNpx = makeNpmCache(runners, "eng24", "_npx", { ageHours: 5 });
+    const freshCacache = makeNpmCache(runners, "eng25", "_cacache", { ageHours: 5, freshMarker: true });
+    const { res, events } = await runGcNpm(["--apply", "--runner-root", runners]);
+    assert.equal(res.status, 0, res.stderr);
+    assert.equal(fs.existsSync(oldCacache), false, "old _cacache must be removed");
+    assert.equal(fs.existsSync(oldNpx), false, "old _npx must be removed");
+    assert.equal(fs.existsSync(freshCacache), true, "a cache being written must stay");
+    const removed = events.find((e) => e.event === "runner-npm-cache-removed" && e.path === oldCacache);
+    assert.ok(removed, "removal journaled");
+    assert.equal(removed.kind, "_cacache");
+    assert.equal(typeof removed.sizeBytes, "number", "size measured before the removal");
+    assert.ok(removed.sizeBytes > 0);
+    assert.ok(events.some((e) => e.event === "runner-npm-cache-removed" && e.kind === "_npx"));
+    assert.equal(events.find((e) => e.event === "apply-complete").runnerNpmCachesRemoved, 2);
+    assert.equal(JSON.parse(res.stdout).runnerNpmCachesRemoved, 2);
+  });
+
+  it("e2e: dry-run removes nothing and lists the plan", async () => {
+    const runners = path.join(tmpDir, "omp-runners");
+    const oldCacache = makeNpmCache(runners, "eng24", "_cacache", { ageHours: 5 });
+    const { res, events } = await runGcNpm(["--dry-run", "--runner-root", runners]);
+    assert.equal(res.status, 0, res.stderr);
+    assert.equal(fs.existsSync(oldCacache), true, "dry-run must not remove");
+    assert.equal(events.find((e) => e.event === "dry-run").runnerNpmCaches, 1);
+    const out = JSON.parse(res.stdout);
+    assert.deepEqual(out.plan.runnerNpmCaches.map((i) => [i.path, i.action]), [[oldCacache, "remove"]]);
+  });
+
+  it("e2e: --apply without a runner root leaves the npm pass off", async () => {
+    const { res } = await runGcNpm(["--apply"]);
+    assert.equal(res.status, 0, res.stderr);
+    assert.equal(JSON.parse(res.stdout).runnerNpmCachesRemoved, 0);
+  });
+
+  it("a .npm swapped for a symlink after the scan is not deleted through", () => {
+    const runners = path.join(tmpDir, "omp-runners");
+    const old = makeNpmCache(runners, "eng24", "_cacache", { ageHours: 5 });
+    const items = scanRunnerNpmCaches(runners, Date.now(), 4).filter((i) => i.reason === "ttl");
+    assert.equal(items.length, 1);
+    assert.equal(items[0].runnersRoot, runners, "the item carries the root the drop is guarded against");
+
+    const outsideCache = makeNpmCache(path.join(tmpDir, "outside"), "victim", "_cacache", { ageHours: 5 });
+    fs.renameSync(path.join(runners, "eng24", "home", ".npm"), path.join(tmpDir, "moved-npm"));
+    fs.symlinkSync(path.join(outsideCache, "..", ".."), path.join(runners, "eng24", "home", ".npm"));
+
+    const journal = path.join(tmpDir, "gc-npm.jsonl");
+    const gone = pruneRunnerNpmCaches(items, journal);
+    assert.deepEqual(gone, [], "nothing counted as removed");
+    assert.equal(fs.existsSync(path.join(outsideCache, "content-v2", "blob")), true, "the outside cache must survive");
+    const events = fs.readFileSync(journal, "utf8").trim().split("\n").filter(Boolean).map((l) => JSON.parse(l));
+    const failed = events.filter((e) => e.event === "runner-npm-cache-remove-failed");
+    assert.equal(failed.length, 1);
+    assert.equal(failed[0].path, old);
+    assert.match(failed[0].error, /symlink not allowed/);
+  });
+});
+
+describe("runner task folders", () => {
+  const HOUR = 60 * 60 * 1000;
+  const GC_SCRIPT = path.join(ROOT, "scripts/myrmidon/host-gc/host-clone-cache-gc.mjs");
+
+  const makeRepo = (dir, { dirty = false, ahead = false } = {}) => {
+    fs.mkdirSync(dir, { recursive: true });
+    // Identity goes on argv (-c): a PATH `git` that is a launcher wrapper may strip
+    // GIT_AUTHOR_*/GIT_COMMITTER_* from the environment, argv config survives.
+    const git = (args, cwd2 = dir) => {
+      const r = subprocess.spawnSync("git", ["-c", "user.name=t", "-c", "user.email=t@t", ...args], { cwd: cwd2, encoding: "utf8", env: GIT_ENV });
+      if (r.status !== 0) throw new Error(`git ${args.join(" ")}: ${r.stderr}`);
+      return r;
+    };
+    const upstream = `${dir}.upstream.git`;
+    git(["init", "-q", "--bare", upstream]);
+    git(["init", "-q"]);
+    git(["remote", "add", "origin", upstream]);
+    fs.writeFileSync(path.join(dir, "f.txt"), "one\n");
+    git(["add", "."]);
+    git(["commit", "-q", "-m", "one"]);
+    git(["push", "-q", "-u", "origin", "HEAD:main"]);
+    if (ahead) {
+      fs.writeFileSync(path.join(dir, "f.txt"), "one\ntwo\n");
+      git(["commit", "-qam", "two"]);
+    }
+    if (dirty) fs.writeFileSync(path.join(dir, "dirty.txt"), "wip\n");
+    return dir;
+  };
+
+  const makeTaskFolder = (runnersRoot, runner, name, { ageHours = 48, repo = "clone", ahead = false, dirty = false, worktree = false } = {}) => {
+    const base = name.startsWith("wt-") ? "home" : "workspace";
+    const dir = path.join(runnersRoot, runner, base, name);
+    fs.mkdirSync(dir, { recursive: true });
+    if (worktree) {
+      fs.writeFileSync(path.join(dir, ".git"), `gitdir: ${path.join(tmpDir, "gone-runs", "r1", "repo", ".git")}\n`);
+      fs.writeFileSync(path.join(dir, "f.txt"), "x\n");
+    } else if (repo === "clone") {
+      makeRepo(path.join(dir, "repo"), { ahead, dirty });
+    }
+    const t = new Date(Date.now() - ageHours * HOUR);
+    fs.utimesSync(dir, t, t);
+    return dir;
+  };
+
+  const scanWith = (runnersRoot, statuses = {}) =>
+    scanRunnerTaskFolders(runnersRoot, Date.now(), 24, {
+      fetchStatus: async (identifier) => statuses[identifier] ?? { ok: true, status: "done" },
+      onEvent: () => {},
+    });
+
+  it("parses OPE identifiers from folder names", () => {
+    assert.equal(issueIdentifierFromRunnerFolderName("OPE-12855"), "OPE-12855");
+    assert.equal(issueIdentifierFromRunnerFolderName("OPE-12551-wt"), "OPE-12551");
+    assert.equal(issueIdentifierFromRunnerFolderName("wt-ope12613"), "OPE-12613");
+    assert.equal(issueIdentifierFromRunnerFolderName("not-a-task"), null);
+  });
+
+  it("a clean pushed folder of a done issue is removed", async () => {
+    const runners = path.join(tmpDir, "runners");
+    const folder = makeTaskFolder(runners, "eng21", "OPE-12855");
+    const items = await scanWith(runners, { "OPE-12855": { ok: true, status: "done" } });
+    assert.deepEqual(items.map((i) => [i.path, i.action, i.reason]), [[folder, "remove", "clean-pushed"]]);
+  });
+
+  it("a cancelled issue's folder is removed like a done one", async () => {
+    const runners = path.join(tmpDir, "runners");
+    makeTaskFolder(runners, "eng21", "OPE-12855");
+    const items = await scanWith(runners, { "OPE-12855": { ok: true, status: "cancelled" } });
+    assert.equal(items[0].action, "remove");
+  });
+
+  it("an active issue keeps its folder", async () => {
+    const runners = path.join(tmpDir, "runners");
+    const folder = makeTaskFolder(runners, "eng21", "OPE-12855");
+    const items = await scanWith(runners, { "OPE-12855": { ok: true, status: "in_progress" } });
+    assert.deepEqual(items.map((i) => [i.path, i.action, i.reason]), [[folder, "keep", "issue-status:in_progress"]]);
+  });
+
+  it("an unreachable board keeps the folder (fail-closed)", async () => {
+    const runners = path.join(tmpDir, "runners");
+    const folder = makeTaskFolder(runners, "eng21", "OPE-12855");
+    const items = await scanWith(runners, { "OPE-12855": { ok: false, reason: "board-unavailable" } });
+    assert.deepEqual(items.map((i) => [i.path, i.action, i.reason]), [[folder, "keep", "board-unavailable"]]);
+  });
+
+  it("a 403 from the board keeps the folder and names the status code", async () => {
+    const runners = path.join(tmpDir, "runners");
+    const folder = makeTaskFolder(runners, "eng21", "OPE-12855");
+    const items = await scanWith(runners, { "OPE-12855": { ok: false, reason: "board-forbidden", statusCode: 403 } });
+    assert.deepEqual(items.map((i) => [i.path, i.action, i.reason]), [[folder, "keep", "board-unavailable-403"]]);
+  });
+
+  it("unpushed commits hold the folder as unsafe", async () => {
+    const runners = path.join(tmpDir, "runners");
+    const folder = makeTaskFolder(runners, "eng21", "OPE-12855", { ahead: true });
+    const items = await scanWith(runners);
+    assert.deepEqual(items.map((i) => [i.path, i.action, i.reason]), [[folder, "archive-remove", "unsafe-archive"]]);
+  });
+
+  it("a dirty tree holds the folder as unsafe", async () => {
+    const runners = path.join(tmpDir, "runners");
+    const folder = makeTaskFolder(runners, "eng21", "OPE-12855", { dirty: true });
+    const items = await scanWith(runners);
+    assert.deepEqual(items.map((i) => [i.path, i.action, i.reason]), [[folder, "archive-remove", "unsafe-archive"]]);
+  });
+
+  it("a worktree with a dead gitdir is archived, never silently deleted", async () => {
+    const runners = path.join(tmpDir, "runners");
+    const folder = makeTaskFolder(runners, "eng21", "OPE-12855", { worktree: true });
+    const items = await scanWith(runners);
+    assert.deepEqual(items.map((i) => [i.path, i.action, i.reason]), [[folder, "archive-remove", "unsafe-archive"]]);
+  });
+
+  it("a home worktree folder (wt-ope...) is scanned like a workspace one", async () => {
+    const runners = path.join(tmpDir, "runners");
+    const folder = makeTaskFolder(runners, "eng21", "wt-ope12613", { worktree: true });
+    const items = await scanWith(runners);
+    assert.deepEqual(items.map((i) => [i.path, i.action, i.reason]), [[folder, "archive-remove", "unsafe-archive"]]);
+  });
+
+  it("a folder with no git repo inside is removed outright", async () => {
+    const runners = path.join(tmpDir, "runners");
+    const folder = makeTaskFolder(runners, "eng21", "OPE-12855", { repo: "none" });
+    const items = await scanWith(runners);
+    assert.deepEqual(items.map((i) => [i.path, i.action, i.reason]), [[folder, "remove", "no-git-repos"]]);
+  });
+
+  it("a fresh folder is not even asked to the board", async () => {
+    const runners = path.join(tmpDir, "runners");
+    makeTaskFolder(runners, "eng21", "OPE-12855", { ageHours: 1 });
+    let calls = 0;
+    const items = await scanRunnerTaskFolders(runners, Date.now(), 24, {
+      fetchStatus: async () => { calls++; return { ok: true, status: "done" }; },
+    });
+    assert.equal(calls, 0);
+    assert.equal(items[0].action, "keep");
+    assert.equal(items[0].reason, "retention");
+  });
+
+  it("a symlinked runner is skipped", async () => {
+    const runners = path.join(tmpDir, "runners");
+    const outside = path.join(tmpDir, "outside");
+    makeTaskFolder(outside, "victim", "OPE-12855");
+    fs.mkdirSync(runners, { recursive: true });
+    fs.symlinkSync(path.join(outside, "victim"), path.join(runners, "eng8"));
+    const items = await scanWith(runners);
+    assert.deepEqual(items, []);
+  });
+
+  it("a missing root and a file root are reported and yield nothing", async () => {
+    const events = [];
+    const missing = path.join(tmpDir, "nope");
+    assert.deepEqual(await scanRunnerTaskFolders(missing, Date.now(), 24, { onEvent: (e) => events.push(e) }), []);
+    const notDir = path.join(tmpDir, "file-root");
+    fs.writeFileSync(notDir, "x");
+    assert.deepEqual(await scanRunnerTaskFolders(notDir, Date.now(), 24, { onEvent: (e) => events.push(e) }), []);
+    assert.deepEqual(events[0], { event: "runner-folder-root-missing", root: missing });
+    assert.equal(events[1].event, "runner-folder-scan-failed");
+    assert.equal(events[1].root, notDir);
+    assert.match(events[1].error, /not a directory/);
+  });
+
+  it("a scan error of one folder keeps the other folder's verdict", async () => {
+    const runners = path.join(tmpDir, "runners");
+    makeTaskFolder(runners, "eng-bad", "OPE-1");
+    const good = makeTaskFolder(runners, "eng-good", "OPE-2");
+    const items = await scanRunnerTaskFolders(runners, Date.now(), 24, {
+      fetchStatus: async (identifier) => {
+        if (identifier === "OPE-1") throw new Error("boom");
+        return { ok: true, status: "done" };
+      },
+      onEvent: () => {},
+    });
+    const byPath = Object.fromEntries(items.map((i) => [i.path, i.reason]));
+    assert.equal(byPath[good], "clean-pushed");
+    const bad = items.find((i) => i.identifier === "OPE-1");
+    assert.equal(bad.reason, "scan-failed");
+    assert.equal(bad.action, "keep");
+  });
+
+  // Async spawn: the fake-board e2e runs the HTTP server in this same process, and
+  // spawnSync would block the event loop the server needs to answer the child.
+  const runGcTask = async (flags, envOverrides = {}) => {
+    const botsRoot = path.join(tmpDir, "bots");
+    fs.mkdirSync(botsRoot, { recursive: true });
+    const journal = path.join(tmpDir, "gc-task.jsonl");
+    // A plain PATH: the GC subprocess makes ~a dozen read-only git calls per folder,
+    // and a launcher-wrapper `git` on PATH multiplies each into a probe/broker walk
+    // that together busts the spawn timeout. The host GC runs on a host whose PATH
+    // git is the real binary, so this matches production.
+    const env = { ...GIT_ENV, HOST_GC_RUNNER_ROOTS: "", PATH: "/usr/bin:/bin", PAPERCLIP_API_URL: "http://127.0.0.1:9", ...envOverrides };
+    const res = await new Promise((resolve, reject) => {
+      const child = subprocess.spawn(process.execPath, [
+        GC_SCRIPT, "--env", "/nonexistent", "--root", botsRoot,
+        "--journal", journal, "--lock", path.join(tmpDir, "gc-task.lock"), "--proc-dir", path.join(tmpDir, "proc"),
+        ...flags,
+      ], { encoding: "utf8", env, timeout: 120_000, killSignal: "SIGKILL" });
+      let stdout = "";
+      let stderr = "";
+      child.stdout.on("data", (d) => { stdout += d; });
+      child.stderr.on("data", (d) => { stderr += d; });
+      child.on("error", reject);
+      child.on("close", (code, signal) => resolve({ status: code === null ? (signal === "SIGKILL" ? 143 : code) : code, stdout, stderr }));
+    });
+    const events = fs.existsSync(journal)
+      ? fs.readFileSync(journal, "utf8").trim().split("\n").filter(Boolean).map((l) => JSON.parse(l))
+      : [];
+    return { res, events };
+  };
+
+  it("e2e: --apply removes the clean done folder and archives the unpushed one, board via local fake", async () => {
+    const runners = path.join(tmpDir, "runners");
+    const clean = makeTaskFolder(runners, "eng21", "OPE-9001", { ageHours: 30 });
+    const unpushed = makeTaskFolder(runners, "eng21", "OPE-9002", { ageHours: 30, ahead: true });
+    const active = makeTaskFolder(runners, "eng21", "OPE-9003", { ageHours: 30 });
+    const fresh = makeTaskFolder(runners, "eng21", "OPE-9004", { ageHours: 1 });
+    const http = await import("node:http");
+    const statuses = { "OPE-9001": "done", "OPE-9002": "done", "OPE-9003": "in_progress" };
+    const fake = http.createServer((req, res) => {
+      const m = /\/api\/issues\/([^/?]+)/.exec(req.url || "");
+      const status = m && statuses[decodeURIComponent(m[1])];
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ status: status || "todo" }));
+    });
+    await new Promise((resolve) => fake.listen(0, "127.0.0.1", resolve));
+    const port = fake.address().port;
+    try {
+      const { res, events } = await runGcTask(["--apply", "--runner-root", runners], { PAPERCLIP_API_URL: `http://127.0.0.1:${port}` });
+      assert.equal(res.status, 0, res.stderr);
+      assert.equal(fs.existsSync(clean), false, "clean done folder must be removed");
+      assert.equal(fs.existsSync(unpushed), false, "unpushed folder must be removed after archive");
+      assert.equal(fs.existsSync(active), true, "active issue's folder must stay");
+      assert.equal(fs.existsSync(fresh), true, "fresh folder must stay");
+      assert.ok(fs.readdirSync(path.join(runners, ".gc-archive")).some((n) => n.startsWith("OPE-9002-")), "archive present");
+      const removed = events.find((e) => e.event === "runner-task-folder-removed" && e.path === clean);
+      assert.ok(removed, "clean removal journaled");
+      assert.equal(removed.reason, "clean-pushed");
+      assert.ok(events.some((e) => e.event === "runner-task-folder-archived" && e.path === unpushed));
+      assert.ok(events.some((e) => e.event === "runner-task-folder-removed-after-archive" && e.path === unpushed));
+      assert.ok(events.some((e) => e.event === "runner-task-folder-skipped" && e.path === active && e.reason === "issue-status:in_progress"));
+      const done = events.find((e) => e.event === "apply-complete");
+      assert.equal(done.runnerTaskFoldersRemoved, 2);
+      assert.equal(JSON.parse(res.stdout).runnerTaskFoldersRemoved, 2);
+    } finally {
+      fake.close();
+    }
+  });
+
+  it("e2e: an unreachable board keeps every folder (fail-closed apply)", async () => {
+    const runners = path.join(tmpDir, "runners");
+    const clean = makeTaskFolder(runners, "eng21", "OPE-9101", { ageHours: 30 });
+    const { res } = await runGcTask(["--apply", "--runner-root", runners]);
+    assert.equal(res.status, 0, res.stderr);
+    assert.equal(fs.existsSync(clean), true, "unreachable board must keep the folder");
+  });
+
+  it("e2e: dry-run removes nothing and lists the plan", async () => {
+    const runners = path.join(tmpDir, "runners");
+    const clean = makeTaskFolder(runners, "eng21", "OPE-9201", { ageHours: 30 });
+    const http = await import("node:http");
+    const fake = http.createServer((req, res) => {
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ status: "done" }));
+    });
+    await new Promise((resolve) => fake.listen(0, "127.0.0.1", resolve));
+    const port = fake.address().port;
+    try {
+      const { res, events } = await runGcTask(["--dry-run", "--runner-root", runners], { PAPERCLIP_API_URL: `http://127.0.0.1:${port}` });
+      assert.equal(res.status, 0, res.stderr);
+      assert.equal(fs.existsSync(clean), true);
+      assert.equal(events.find((e) => e.event === "dry-run").runnerTaskFolders, 1);
+      const out = JSON.parse(res.stdout);
+      assert.deepEqual(out.plan.runnerTaskFolders.map((i) => [i.path, i.action]), [[clean, "remove"]]);
+    } finally {
+      fake.close();
     }
   });
 });
