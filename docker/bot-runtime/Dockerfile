@@ -57,7 +57,7 @@ ARG HERMES_AIOHTTP_VERSION=3.14.5
 # this exact pyproject.toml/uv.lock pair, rather than picking one blind.
 FROM ghcr.io/astral-sh/uv:0.11.6-python3.13-trixie@sha256:b3c543b6c4f23a5f2df22866bd7857e5d304b67a564f4feab6ac22044dde719b AS uv_bin
 
-FROM python:3.13-slim AS builder
+FROM python:3.14-slim AS builder
 ARG HERMES_VERSION
 ARG HERMES_GIT_REF
 ARG HERMES_GIT_SHA
@@ -145,16 +145,15 @@ RUN set -eu; \
 #
 # myrmidon(G1): the venv's `bin/python` is a symlink to whichever interpreter `uv sync`
 # picked, and the runtime stage copies only /opt/hermes-src, so that interpreter must exist
-# in the runtime stage too. hermes ships a `.python-version` (3.11, a dev-machine pin) that
-# `uv sync` honours: when the stage's Python is not 3.11 it silently downloads a managed
-# CPython into $HOME (/root/.local/share/uv/python/...) and links the venv to it — a path
-# absent from the runtime stage and unreadable by the bot user, so the image died at start
-# with "bad interpreter: Permission denied". pyproject.toml's `requires-python`
-# (>=3.11,<3.14) admits this stage's Python 3.13, and hermes' own upstream Docker image
-# runs Debian 13's system Python (3.13) the same way (its `uv sync` step sees only
-# pyproject.toml + uv.lock, never `.python-version`), so the venv is pinned to the base
-# image's interpreter. The builder and runtime stages MUST stay on the same
-# `python:3.13-slim`, so that path is the same interpreter in both; the runtime-stage
+# in the runtime stage too. hermes ships a `.python-version` (now 3.14) that `uv sync`
+# honours: on a mismatched stage interpreter it silently downloads a managed CPython into
+# $HOME (/root/.local/share/uv/python/...) and links the venv to it — a path absent from
+# the runtime stage and unreadable by the bot user, so the image died at start with
+# "bad interpreter: Permission denied". Since v0.23.1 the lockfile itself requires
+# `python_full_version >= '3.14'` (the `pm` subpackage's lock pins `==3.14.*`), so the
+# old `python:3.13-slim` base failed `uv sync --frozen` outright — the venv is now pinned
+# to the stage's own Python 3.14. The builder and runtime stages MUST stay on the same
+# `python:3.14-slim`, so that path is the same interpreter in both; the runtime-stage
 # assertion below checks it. UV_PYTHON_DOWNLOADS=never turns any future mismatch into a
 # build error instead of a dangling link.
 ENV UV_PYTHON_DOWNLOADS=never
@@ -370,7 +369,7 @@ RUN rm -rf /opt/hermes-src/.git \
 
 # myrmidon(1.6.5 BOT-DISK-H): Node.js 24 for the workspace mechanism (myr-ws, botd and the
 # git wrapper) that every bot image variant now carries; the dev variant reuses it.
-FROM python:3.13-slim AS node24_dist
+FROM python:3.14-slim AS node24_dist
 ARG NODE24_VERSION=24.21.0
 ARG NODE24_SHA256=fd8e59d5a511510f6a298afb548f18c7d2b1be404d8b4a27d94fbe49f56cb2d6
 
@@ -393,7 +392,7 @@ RUN set -eu; \
 # myrmidon(OPE-10494, 10.11): the GitHub CLI from its own pinned release, not Debian's
 # `gh` package (2.46.0, January 2025): that one fails `gh pr view` / `gh pr edit` with
 # "GraphQL: Projects (classic) is being deprecated", and bots looped on it.
-FROM python:3.13-slim AS gh_dist
+FROM python:3.14-slim AS gh_dist
 ARG GH_VERSION=2.103.3
 ARG GH_SHA256=4c806978ffce1cec70853302a56d70ac6da4f19bae7adca4e1a8ab00633dd91d
 
@@ -411,7 +410,7 @@ RUN set -eu; \
     rm -rf /tmp/gh.tar.gz "/tmp/gh_${GH_VERSION}_linux_amd64"; \
     /usr/local/bin/gh --version | grep -q "gh version ${GH_VERSION} "
 
-FROM python:3.13-slim AS runtime
+FROM python:3.14-slim AS runtime
 ARG HERMES_VERSION
 
 # myrmidon.bot-runtime.contract: the G3 container driver
@@ -668,7 +667,7 @@ ENTRYPOINT ["/usr/bin/tini", "--", "/usr/local/bin/bot-runtime-entrypoint"]
 # digest of the linux-x64 .tar.xz from that release's SHASUMS256.txt. Bump both
 # together. The build fails on a digest mismatch.
 # ---------------------------------------------------------------------------
-FROM python:3.13-slim AS node_dist
+FROM python:3.14-slim AS node_dist
 ARG NODE_VERSION=22.23.3
 ARG NODE_SHA256=df450af89261115ef9f9e3830c3eeb2cc9213b63c720b1af623cb5dcbe2e02de
 
@@ -775,7 +774,7 @@ RUN node /opt/node-tools/smoke.cjs && npm --version
 # Go: the repository's dockergate and fleetd tools are Go modules (go 1.25,
 # stdlib only), and CI runs gofmt/go vet/go test over them in their own lanes.
 # The official tarball is pinned by exact version and sha256, like Node.js.
-FROM python:3.13-slim AS go_dist
+FROM python:3.14-slim AS go_dist
 ARG GO_VERSION=1.25.14
 ARG GO_SHA256=a21ae5633a269bcd7e90cf767e48225633795e99d831742cbf3397064fee7712
 
@@ -801,7 +800,7 @@ RUN set -eu; \
 # tarball is pinned by exact version and sha256 like every other download
 # here, and only the `docker` binary is copied out of it — the tarball also
 # ships dockerd, containerd and runc, and none of those may enter this image.
-FROM python:3.13-slim AS docker_cli_dist
+FROM python:3.14-slim AS docker_cli_dist
 ARG DOCKER_CLI_VERSION=29.7.2
 ARG DOCKER_CLI_SHA256=803d433f226db4776e1768fd319fc6c6e4935a456acf84fcc0080818b854bc8f
 

@@ -33,7 +33,7 @@ it("pins the async writer-acquire scanner fail-closed patch", () => {
 // instructions only, not comment prose explaining that absence.
 // The Node.js variant is a separate final stage (`runtime-node`, checked below);
 // the default image, i.e. everything before it, must stay node-free.
-const variantStart = dockerfile.indexOf("FROM python:3.13-slim AS node_dist");
+const variantStart = dockerfile.indexOf("FROM python:3.14-slim AS node_dist");
 assert.ok(variantStart > 0, "Dockerfile must define the node_dist stage of the Node.js variant");
 // The development variant (runtime-dev) is a third final stage. The Node.js
 // variant test must stop before it: the dev stage legitimately runs as root
@@ -41,11 +41,11 @@ assert.ok(variantStart > 0, "Dockerfile must define the node_dist stage of the N
 // (myrmidon 1.6.5 BOT-DISK-H: the `node24_dist` helper stage now sits before `runtime`,
 // because the workspace mechanism of every variant runs on it; the dev-only helper
 // stages start at `go_dist`.)
-const devVariantStart = dockerfile.indexOf("FROM python:3.13-slim AS go_dist");
+const devVariantStart = dockerfile.indexOf("FROM python:3.14-slim AS go_dist");
 assert.ok(devVariantStart > 0, "Dockerfile must define the go_dist stage of the development variant");
 assert.ok(devVariantStart > variantStart, "the development variant must follow the Node.js variant stages");
-const node24StageStart = dockerfile.indexOf("FROM python:3.13-slim AS node24_dist");
-const runtimeStageStart = dockerfile.indexOf("FROM python:3.13-slim AS runtime\n");
+const node24StageStart = dockerfile.indexOf("FROM python:3.14-slim AS node24_dist");
+const runtimeStageStart = dockerfile.indexOf("FROM python:3.14-slim AS runtime\n");
 assert.ok(node24StageStart > 0 && node24StageStart < runtimeStageStart, "Dockerfile must define the node24_dist stage before the runtime stage");
 const node24Stage = dockerfile.slice(node24StageStart, runtimeStageStart);
 const dockerfileInstructions = dockerfile
@@ -129,8 +129,8 @@ describe("docker/bot-runtime/Dockerfile", () => {
     // the workspace mechanism (git wrapper, myr-ws, botd); it must return to the contract
     // user before it ends. The Node.js variant stage never uses root.
     const runtimeStage = beforeDevVariant.slice(
-      beforeDevVariant.indexOf("FROM python:3.13-slim AS runtime\n"),
-      beforeDevVariant.indexOf("FROM python:3.13-slim AS node_dist"),
+      beforeDevVariant.indexOf("FROM python:3.14-slim AS runtime\n"),
+      beforeDevVariant.indexOf("FROM python:3.14-slim AS node_dist"),
     );
     assert.ok(runtimeStage.length > 0, "expected the runtime stage");
     assert.ok(runtimeStage.lastIndexOf("USER 10001:10001") > runtimeStage.lastIndexOf("USER root"), "the runtime stage must return to the contract user after root");
@@ -245,7 +245,7 @@ describe("docker/bot-runtime/Dockerfile", () => {
     // the runtime stage copies the tree.
     const syncIdx = dockerfileInstructions.indexOf("uv sync --frozen");
     const smokeIdx = dockerfileInstructions.indexOf(smoke[0]);
-    const runtimeIdx = dockerfileInstructions.indexOf("FROM python:3.13-slim AS runtime");
+    const runtimeIdx = dockerfileInstructions.indexOf("FROM python:3.14-slim AS runtime");
     assert.ok(syncIdx > 0 && smokeIdx > syncIdx, "expected the import smoke after uv sync");
     assert.ok(runtimeIdx > smokeIdx, "expected the import smoke in the builder stage");
   });
@@ -278,13 +278,13 @@ describe("docker/bot-runtime/Dockerfile", () => {
     assert.match(dockerfile, /^COPY tests\/ \/tmp\/patch-tests\/$/m);
     const syncIdx = dockerfileInstructions.indexOf("uv sync --frozen");
     const runIdx = dockerfileInstructions.indexOf(run[0]);
-    const runtimeIdx = dockerfileInstructions.indexOf("FROM python:3.13-slim AS runtime");
+    const runtimeIdx = dockerfileInstructions.indexOf("FROM python:3.14-slim AS runtime");
     assert.ok(runIdx > syncIdx, "expected the regression run after uv sync");
     assert.ok(runtimeIdx > runIdx, "expected the regression run in the builder stage");
     // The builder stage's test copy must not reach the runtime image. Index into the raw
     // Dockerfile here: the instruction list above has its comment lines stripped, so its
     // offsets do not address the file it came from.
-    assert.doesNotMatch(dockerfile.slice(dockerfile.indexOf("FROM python:3.13-slim AS runtime")), /patch-tests/);
+    assert.doesNotMatch(dockerfile.slice(dockerfile.indexOf("FROM python:3.14-slim AS runtime")), /patch-tests/);
   });
 
   it("rejects undefined names in patched modules like missing SessionStore in run_startup.py (#1381, OPE-10755)", () => {
@@ -309,7 +309,7 @@ describe("docker/bot-runtime/Dockerfile", () => {
   });
 
   it("ships uv in the runtime stage too, so a still-permitted lazy install (an opt-in backend) actually works", () => {
-    const runtimeStage = dockerfile.slice(dockerfile.indexOf("FROM python:3.13-slim AS runtime"));
+    const runtimeStage = dockerfile.slice(dockerfile.indexOf("FROM python:3.14-slim AS runtime"));
     assert.match(runtimeStage, /^COPY --chmod=0755 --from=uv_bin \/usr\/local\/bin\/uv \/usr\/local\/bin\/uvx/m);
   });
 
@@ -321,13 +321,13 @@ describe("docker/bot-runtime/Dockerfile", () => {
   });
 
   it("keeps Cargo build output in the durable per-agent cache, not a workspace", () => {
-    const runtimeStage = dockerfile.slice(dockerfile.indexOf("FROM python:3.13-slim AS runtime"));
+    const runtimeStage = dockerfile.slice(dockerfile.indexOf("FROM python:3.14-slim AS runtime"));
     assert.match(runtimeStage, /^\s*CARGO_TARGET_DIR=\/data\/hermes\/\.cache\/cargo-target(?:\s|$)/m);
     assert.doesNotMatch(runtimeStage, /^\s*CARGO_TARGET_DIR=\/(?:workspace|scratch)(?:\/|\s|$)/m);
   });
 
   it("strips the clone's .git history before the runtime stage copies /opt/hermes-src", () => {
-    const builderStageEnd = dockerfile.indexOf("FROM python:3.13-slim AS runtime");
+    const builderStageEnd = dockerfile.indexOf("FROM python:3.14-slim AS runtime");
     assert.ok(builderStageEnd > 0, "expected a runtime stage after the builder stage");
     // The removal must happen in the builder stage (i.e. before this index),
     // strictly before the runtime stage's COPY --from=builder picks the
@@ -467,7 +467,7 @@ describe("docker/bot-runtime/patches/", () => {
     // the first variant stage) ships no npm and no browser.
     // The main image carries Node 24 only for the workspace mechanism (/opt/node24, from the
     // node24_dist helper stage, which is excluded here): no npm, no browser.
-    const mainImageInstructions = dockerfileInstructions.slice(dockerfileInstructions.indexOf("FROM python:3.13-slim AS runtime"));
+    const mainImageInstructions = dockerfileInstructions.slice(dockerfileInstructions.indexOf("FROM python:3.14-slim AS runtime"));
     assert.ok(mainImageInstructions.length > 0, "expected the runtime stage in the main image");
     assert.doesNotMatch(mainImageInstructions, /chromium|playwright|agent-browser|nodejs|\bnpm\b|\bnpx\b/i);
     const variants = dockerfile.slice(variantStart).split("\n").filter((l) => !l.trim().startsWith("#")).join("\n");
@@ -718,8 +718,8 @@ describe("myrmidon-bot-image.yml", () => {
     // myrmidon(1.6.5 BOT-DISK-H, D9): the mechanism lives in the base `runtime` stage, so
     // runtime-node and runtime-dev inherit it; the dev stage must not repeat it.
     const devStage = flat.slice(
-      flat.indexOf("FROM python:3.13-slim AS runtime\n"),
-      flat.indexOf("FROM python:3.13-slim AS node_dist"),
+      flat.indexOf("FROM python:3.14-slim AS runtime\n"),
+      flat.indexOf("FROM python:3.14-slim AS node_dist"),
     );
     const devOnlyStage = flat.slice(flat.indexOf("FROM runtime AS runtime-dev"));
 
