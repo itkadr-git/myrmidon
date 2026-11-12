@@ -41,7 +41,6 @@ done
 chmod 0711 bot
 if test -d package-cache; then
   install -d -o 10001 -g 10001 "package-cache/pnpm"
-  install -d -o 10001 -g 10001 "package-cache/pnpm-store"
   install -d -o 10001 -g 10001 "package-cache/uv"
   install -d -o 10001 -g 10001 "package-cache/go-mod"
   install -d -o 10001 -g 10001 "package-cache/go-build"
@@ -62,7 +61,6 @@ for d in data/hermes workspace scratch scope; do
 done
 if test -d package-cache; then
   install -d -o 10001 -g 10001 "package-cache/pnpm"
-  install -d -o 10001 -g 10001 "package-cache/pnpm-store"
   install -d -o 10001 -g 10001 "package-cache/uv"
   install -d -o 10001 -g 10001 "package-cache/go-mod"
   install -d -o 10001 -g 10001 "package-cache/go-build"

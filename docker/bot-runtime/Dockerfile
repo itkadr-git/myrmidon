@@ -1068,7 +1068,11 @@ RUN set -eu; \
       echo "pnpm install must refuse without the devbuild gateway" >&2; exit 1; \
     fi; \
     case "$out" in \
-      *"devbuild pnpm install"*) ;; \
+      *"Refused: pnpm --config.confirm-modules-purge=false install"*) ;; \
+      *) echo "pnpm install refusal must name the refused invocation and its devbuild replacement, got: $out" >&2; exit 1 ;; \
+    esac; \
+    case "$out" in \
+      *"devbuild pnpm --config.confirm-modules-purge=false install"*) ;; \
       *) echo "pnpm install refusal must name the devbuild replacement, got: $out" >&2; exit 1 ;; \
     esac; \
     case "$out" in \
