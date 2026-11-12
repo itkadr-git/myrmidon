@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import {
+  type Db,
   agents,
   connectionEventDeliveries,
   heartbeatRunEvents,
@@ -299,5 +300,159 @@ describe("collectDevflowHealth", () => {
 
     const signals = await collectDevflowHealth(db, companyId, now);
     expect(signals.find((s) => s.metric === "providerGarbageP1")).toBeUndefined();
+  });
+});
+
+// Captures the tables each select().from() ran against so the test can assert
+// the comments query was skipped (no active PRs) or issued with the right
+// issue-id scope.
+function createCapturingDb(fixtures: Parameters<typeof createMockDb>[0]): {
+  db: Db;
+  queriedTables: unknown[];
+  whereConditions: Array<{ table: unknown; condition: unknown }>;
+} {
+  const queriedTables: unknown[] = [];
+  const whereConditions: Array<{ table: unknown; condition: unknown }> = [];
+  const db = {
+    select: vi.fn(() => ({
+      from: vi.fn((table: unknown) => {
+        queriedTables.push(table);
+        const queryChain: Record<string, unknown> = {
+          innerJoin: vi.fn(() => queryChain),
+          leftJoin: vi.fn(() => queryChain),
+          where: vi.fn((condition: unknown) => {
+            whereConditions.push({ table, condition });
+            return queryChain;
+          }),
+          limit: vi.fn(() => queryChain),
+          then: (resolve: (val: unknown) => void) => {
+            if (table === agents) return resolve(fixtures.agents ?? []);
+            if (table === issues) return resolve(fixtures.reviews ?? []);
+            if (table === issueWorkProducts) return resolve(fixtures.products ?? []);
+            if (table === issueComments) return resolve(fixtures.comments ?? []);
+            if (table === connectionEventDeliveries) return resolve(fixtures.deliveries ?? []);
+            if (table === instanceSettings) return resolve(fixtures.instanceSettings ?? []);
+            if (table === heartbeatRunEvents) return resolve(fixtures.garbageEvents ?? []);
+            return resolve(fixtures.latestMerged ?? [{ mergedAt: null }]);
+          },
+        };
+        return queryChain;
+      }),
+    })),
+  };
+  return { db: db as unknown as Db, queriedTables, whereConditions };
+}
+
+// Drizzle conditions form a tree of plain objects: and(...) carries operands in
+// queryChunks, inArray keeps its raw values on the node, isNull embeds the
+// Column instance. Walking every property generically avoids pinning internal
+// AST class names; string values plus Column nodes are all the assertions need.
+function collectConditionParts(condition: unknown): { values: Set<string>; columns: Set<object> } {
+  const values = new Set<string>();
+  const columns = new Set<object>();
+  const visit = (node: unknown, seen: Set<object>): void => {
+    if (typeof node === "string") {
+      values.add(node);
+      return;
+    }
+    if (node === null || typeof node !== "object" || seen.has(node)) return;
+    seen.add(node);
+    if ("table" in node && "name" in node) columns.add(node);
+    const record = node as Record<string, unknown>;
+    for (const part of Object.values(record)) {
+      if (Array.isArray(part)) {
+        for (const item of part) visit(item, seen);
+      } else {
+        visit(part, seen);
+      }
+    }
+  };
+  visit(condition, new Set());
+  return { values, columns };
+}
+
+describe("collectDevflowHealth verdict comments scoping (OPE-12784)", () => {
+  it("does not query issueComments when no issue has an active PR", async () => {
+    const { db, queriedTables } = createCapturingDb({ products: [] });
+
+    await collectDevflowHealth(db, companyId, now);
+
+    expect(queriedTables).not.toContain(issueComments);
+  });
+
+  it("scopes the comments query to issues with active PRs", async () => {
+    const prIssueId = "issue-with-pr";
+    const otherIssueId = "issue-without-pr";
+    const { db, whereConditions } = createCapturingDb({
+      products: [
+        {
+          product: {
+            id: "prod-1",
+            status: "open",
+            type: "pull_request",
+            provider: "github",
+            externalId: "301",
+            createdAt: new Date("2026-10-27T16:00:00Z"),
+            metadata: { repo: "itkadr-git/myrmidon", number: 301 },
+          },
+          issue: { id: prIssueId, title: "Active PR task", status: "in_review" },
+        },
+      ],
+      comments: [
+        { issueId: prIssueId, body: "APPROVE PR #301", createdAt: new Date("2026-10-27T17:00:00Z") },
+        { issueId: otherIssueId, body: "verdict on unrelated issue", createdAt: new Date("2026-10-27T17:00:00Z") },
+      ],
+    });
+
+    await collectDevflowHealth(db, companyId, now);
+
+    const commentsWhere = whereConditions.find(({ table }) => table === issueComments);
+    expect(commentsWhere).toBeDefined();
+    const parts = collectConditionParts(commentsWhere?.condition);
+    expect(parts.values.has(prIssueId)).toBe(true);
+    expect(parts.values.has(otherIssueId)).toBe(false);
+    expect(parts.columns.has(issueComments.deletedAt)).toBe(true);
+  });
+
+  it("excludes merged PR issues from the comments query scope", async () => {
+    const activeIssueId = "issue-active-pr";
+    const mergedIssueId = "issue-merged-pr";
+    const { db, whereConditions } = createCapturingDb({
+      products: [
+        {
+          product: {
+            id: "prod-active",
+            status: "open",
+            type: "pull_request",
+            provider: "github",
+            externalId: "302",
+            createdAt: new Date("2026-10-27T16:00:00Z"),
+            metadata: { number: 302 },
+          },
+          issue: { id: activeIssueId, title: "Active PR task", status: "in_review" },
+        },
+        {
+          product: {
+            id: "prod-merged",
+            status: "merged",
+            type: "pull_request",
+            provider: "github",
+            externalId: "303",
+            createdAt: new Date("2026-10-27T16:00:00Z"),
+            metadata: { number: 303 },
+          },
+          issue: { id: mergedIssueId, title: "Merged PR task", status: "done" },
+        },
+      ],
+      comments: [{ issueId: activeIssueId, body: "APPROVE PR #302", createdAt: new Date("2026-10-27T17:00:00Z") }],
+    });
+
+    await collectDevflowHealth(db, companyId, now);
+
+    const commentsWhere = whereConditions.find(({ table }) => table === issueComments);
+    expect(commentsWhere).toBeDefined();
+    const parts = collectConditionParts(commentsWhere?.condition);
+    expect(parts.values.has(activeIssueId)).toBe(true);
+    expect(parts.values.has(mergedIssueId)).toBe(false);
   });
 });
