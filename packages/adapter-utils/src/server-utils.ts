@@ -122,6 +122,8 @@ interface SpawnTarget {
   args: string[];
   cwd?: string;
   env?: Record<string, string | undefined>;
+  /** myrmidon(OPE-12810): written to child stdin ahead of opts.stdin (SSH env block). */
+  stdinPrefix?: string;
   cleanup?: () => Promise<void>;
 }
 
@@ -3762,6 +3764,7 @@ async function resolveSpawnTarget(
       command: sshResolved,
       args: spawnTarget.args,
       cwd: process.cwd(),
+      stdinPrefix: spawnTarget.stdinPrefix,
       cleanup: spawnTarget.cleanup,
     };
   }
@@ -4882,7 +4885,7 @@ export async function runChildProcess(
           env: childEnv,
           detached: process.platform !== "win32",
           shell: false,
-          stdio: [opts.stdin != null ? "pipe" : "ignore", "pipe", "pipe"],
+          stdio: [opts.stdin != null || target.stdinPrefix ? "pipe" : "ignore", "pipe", "pipe"],
         }) as ChildProcessWithEvents;
         const startedAt = new Date().toISOString();
         const processGroupId = resolveProcessGroupId(child);
@@ -5036,10 +5039,11 @@ export async function runChildProcess(
         });
 
         const stdin = child.stdin;
-        if (opts.stdin != null && stdin) {
+        if ((opts.stdin != null || target.stdinPrefix) && stdin) {
           void spawnPersistPromise.finally(() => {
             if (child.killed || stdin.destroyed) return;
-            stdin.write(opts.stdin as string);
+            // myrmidon(OPE-12810): SSH env block first, then the caller's stdin.
+            stdin.write((target.stdinPrefix ?? "") + ((opts.stdin as string | null | undefined) ?? ""));
             stdin.end();
           });
         }
