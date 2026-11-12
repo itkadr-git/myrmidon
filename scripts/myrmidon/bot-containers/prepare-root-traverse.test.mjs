@@ -153,7 +153,7 @@ describe("prepare script: bot root traversal (BOT-ROOT-TRAVERSE)", () => {
     assert.equal(cacheBlock[0], "if test -d package-cache; then");
     assert.equal(cacheBlock.at(-1), "fi");
     const installs = cacheBlock.slice(1, -1);
-    assert.equal(installs.length, 5); // the PACKAGE_CACHE_MOUNTS list
+    assert.equal(installs.length, 6); // the PACKAGE_CACHE_MOUNTS list
     for (const line of installs) {
       assert.match(line, /^  install -d -o 10001 -g 10001 "package-cache\/[a-z-]+"$/);
     }

@@ -23,9 +23,9 @@ export interface BotDiskView {
     /** Roles whose bots get the shared cache; absent: the default list (1.6.6-SETTINGS-UI-B editable). */
     sharedCacheRoles?: string[];
     pnpmStore?: "workspace" | "shared";
-    /** pnpm store inside the bot's own tree, on the clones' mount; absent: /workspace/.pnpm-store (OPE-12720; /cache/pnpm-store of 1.6.5-1.6.7 is retired and reads as the default). */
+    /** pnpm store; absent: the shared /cache/pnpm-store mount (OPE-12869; a path in the bot's own tree is a store per bot). */
     pnpmStoreDir?: string;
-    /** Absent: clone (the server reads a stored hardlink or clone-or-copy back as clone). */
+    /** Absent: hardlink. */
     pnpmImportMethod?: "hardlink" | "clone-or-copy" | "copy";
     uvCacheDir?: string;
     uvLinkMode?: "clone" | "hardlink" | "copy";
