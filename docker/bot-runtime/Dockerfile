@@ -217,13 +217,13 @@ RUN /opt/hermes-src/.venv/bin/python -c 'import aiohttp, mcp, hindsight_client'
 # api_server_runs): 15; agent.redact: 12; tools.delegation_live_log: 13;
 # hermes_state_registry, gateway.session_db_recovery/session(_persistence/_recovery/_lifecycle/_transcript),
 # run/run_startup/run_shutdown: 18; agent.opencode_affinity and agent.transports.chat_completions: 28;
-# hermes_state_maintenance: 30)
+# hermes_state_maintenance: 30; gateway.platforms.api_server_run_idempotency: 34)
 # plus the vendored memory provider (a relative-import package, so a broken plugin tree
 # fails the build here, not at the first bot start). `git apply` only proves the hunks
 # land; a patch that applies cleanly but breaks a module's imports or top-level code
 # would otherwise surface only when a bot starts. No bytecode is written, so the sealed
 # tree stays as the build left it.
-RUN PYTHONDONTWRITEBYTECODE=1 /opt/hermes-src/.venv/bin/python -c 'import hermes_state, hermes_state_maintenance, tools.environments.base, tools.environments.base_session_env, gateway.run, gateway.session_db_recovery, gateway.session_persistence, gateway.session_recovery, gateway.session_lifecycle, gateway.session_transcript, hermes_state_registry, gateway.run_startup, gateway.run_shutdown, gateway.platforms.api_server_runs, tools.environments.local, tools.github_broker_context, tools.run_workspace, tools.github_launcher_context, agent.session_persistence, agent.redact, tools.delegation_live_log, agent.context_economy, tools.stale_result_tool, agent.turn_request_assembly, agent.tool_result_classification, toolsets, model_tools, agent.opencode_affinity, agent.transports.chat_completions'
+RUN PYTHONDONTWRITEBYTECODE=1 /opt/hermes-src/.venv/bin/python -c 'import hermes_state, hermes_state_maintenance, tools.environments.base, tools.environments.base_session_env, gateway.run, gateway.session_db_recovery, gateway.session_persistence, gateway.session_recovery, gateway.session_lifecycle, gateway.session_transcript, hermes_state_registry, gateway.run_startup, gateway.run_shutdown, gateway.platforms.api_server_runs, tools.environments.local, tools.github_broker_context, tools.run_workspace, tools.github_launcher_context, agent.session_persistence, agent.redact, tools.delegation_live_log, agent.context_economy, tools.stale_result_tool, agent.turn_request_assembly, agent.tool_result_classification, toolsets, model_tools, agent.opencode_affinity, agent.transports.chat_completions, gateway.platforms.api_server_run_idempotency'
 
 # myrmidon(G1): behaviour check for patch 06 — the state-DB generation probe must not
 # walk /proc/self/fd once per write while the gateway holds hundreds of descriptors
@@ -323,6 +323,10 @@ RUN PYTHONDONTWRITEBYTECODE=1 /opt/hermes-src/.venv/bin/python /tmp/patch-tests/
 # myrmidon(G1): behaviour regression for 33-compaction-tool-pairs-sampling.patch:
 # tool call and result pairs are preserved atomically during summary sampling.
 RUN PYTHONDONTWRITEBYTECODE=1 /opt/hermes-src/.venv/bin/python /tmp/patch-tests/compaction_tool_pairs_sampling.py /opt/hermes-src
+# myrmidon(OPE-12759): behaviour regression for 34-run-idempotency-txn-rollback.patch:
+# a failed commit in the run idempotency store must not leave the connection inside its
+# transaction (every later run request answered 500 until the gateway restarted).
+RUN PYTHONDONTWRITEBYTECODE=1 /opt/hermes-src/.venv/bin/python /tmp/patch-tests/run_idempotency_txn_rollback.py /opt/hermes-src
 # myrmidon(G1): names imported inside functions of the patched modules resolve too
 # (the import smoke above runs only top-level imports; a missing lazily imported name
 # broke every run of the 1.6.0 dev image while the build passed).
