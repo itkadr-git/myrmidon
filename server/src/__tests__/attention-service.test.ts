@@ -2823,5 +2823,24 @@ describeEmbeddedPostgres("attention service", () => {
       const items = (await feed(companyId)).items.filter((item) => item.sourceKind === "role_model_down");
       expect(items).toEqual([]);
     });
+
+    it("matches 402 and 429 as whole numbers, not inside ids, ports or durations", async () => {
+      const { companyId } = await seedCompany("RMJ");
+      const agentId = await seedRoleAgent({ companyId, name: "Eng ids", role: "engineer" });
+      for (let i = 0; i < 6; i += 1) {
+        await seedRun({
+          companyId,
+          agentId,
+          status: "failed",
+          error: "run 5a3c402b-91f0 exited with code 1 after 14290 ms (OPE-12402, port 4290)",
+          providerModelGroup: "kie-gpt-6.1-terra",
+          finishedMinutesAgo: 5 + i,
+        });
+      }
+
+      const items = (await feed(companyId)).items;
+      expect(items.filter((item) => item.sourceKind === "provider_no_credits")).toEqual([]);
+      expect(items.filter((item) => item.sourceKind === "role_model_down")).toEqual([]);
+    });
   });
 });

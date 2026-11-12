@@ -1638,10 +1638,11 @@ async function buildAttentionFeedSnapshot(
       //    insufficient_quota / Credits insufficient) means the provider
       //    channel has no money: ONE card per channel — a top-up question for
       //    the owner, never silenced by the role cooldown.
-      // The feed rebuild is stateless (dedupKey + dismissal do the "once per
-      // hour per role" pacing via the dismissal window), so the collector
-      // itself keeps no latch: the card disappears on the role's first
-      // successful run because the 0-succeeded condition drops out.
+      // The feed rebuild is stateless, so the collector itself keeps no latch:
+      // the card disappears on the role's first successful run because the
+      // 0-succeeded condition drops out. The "at most once per hour per role"
+      // pacing of the Telegram delivery lives in the errors channel
+      // (errorChannelPublicationKey adds an hour bucket for these kinds).
       {
         const windowStart = new Date(now - ROLE_MODEL_DOWN_WINDOW_MS);
         const channelExpr = sql<string>`coalesce(${heartbeatRuns.resultJson} ->> 'providerModelGroup', 'unknown')`;
@@ -1657,10 +1658,11 @@ async function buildAttentionFeedSnapshot(
           or ${heartbeatRuns.error} ilike '%overload%'
           or ${heartbeatRuns.error} ilike '%insufficient_quota%'
           or ${heartbeatRuns.error} ilike '%credits insufficient%'
-          or ${heartbeatRuns.error} ilike '%402%'
-          or ${heartbeatRuns.error} ilike '%429%'
+          or ${heartbeatRuns.error} ~* '(^|[^[:alnum:]])(402|429)([^[:alnum:]]|$)'
         )`;
-        const noCreditsErrorExpr = sql`(${heartbeatRuns.error} is not null and (${heartbeatRuns.error} ilike '%402%' or ${heartbeatRuns.error} ilike '%insufficient_quota%' or ${heartbeatRuns.error} ilike '%credits insufficient%'))`;
+        // 402 / 429 match as whole numbers only: a substring match would fire on
+        // any id, port or duration that happens to contain those digits.
+        const noCreditsErrorExpr = sql`(${heartbeatRuns.error} is not null and (${heartbeatRuns.error} ~* '(^|[^[:alnum:]])402([^[:alnum:]]|$)' or ${heartbeatRuns.error} ilike '%insufficient_quota%' or ${heartbeatRuns.error} ilike '%credits insufficient%'))`;
         const roleRows = await db
           .select({
             role: agents.role,
@@ -1683,6 +1685,10 @@ async function buildAttentionFeedSnapshot(
             inArray(heartbeatRuns.status, ["succeeded", "failed", "timed_out"]),
             isNotNull(heartbeatRuns.finishedAt),
             gte(heartbeatRuns.finishedAt, windowStart),
+            // updated_at is never older than finished_at; the extra bound lets
+            // heartbeat_runs_company_status_updated_idx serve the window instead
+            // of scanning every finished run of the company.
+            gte(heartbeatRuns.updatedAt, windowStart),
           ))
           .groupBy(agents.role, channelExpr);
 
@@ -1763,10 +1769,10 @@ async function buildAttentionFeedSnapshot(
             whyNow: `All model channels for role "${role}" are down: ${agg.finishedCount} run(s) finished in the last 30 min, ${agg.refusalCount} failed as model refusals, 0 succeeded (model ${agg.primaryChannel}). Last provider error: ${agg.lastRefusalError ?? agg.lastError ?? "unknown"}.`,
             decisionVerbs: decisionVerbs(
               { id: "inspect", label: "Inspect", description: "Open the agents list and the provider routing." },
-              { id: "dismiss", label: "Dismiss", description: "Dismiss this alert for one hour (it re-raises while the role keeps failing)." },
+              { id: "dismiss", label: "Dismiss", description: "Dismiss this alert (it re-raises when the role fails again)." },
             ),
             inlineResolvable: false,
-            entryRule: `${ROLE_MODEL_DOWN_MIN_RUNS}+ runs of the role finished in the last 30 min and every finish is a model refusal (provider marked unavailable/quota-limited), 0 succeeded`,
+            entryRule: `${ROLE_MODEL_DOWN_MIN_RUNS}+ runs of the role finished in the last 30 min, ${ROLE_MODEL_DOWN_MIN_RUNS}+ of them model refusals (provider marked unavailable/quota-limited), 0 succeeded`,
             exitRule: "the role's next run succeeds, or the row is dismissed.",
             dedupKey: `role_model_down:${role}`,
             severity: "critical",

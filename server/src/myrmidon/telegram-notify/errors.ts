@@ -106,8 +106,27 @@ export function filterErrorChannelCard(
 /** Publication idempotency prefix: one row per attention card, ever. */
 export const ERROR_CHANNEL_PUBLICATION_PREFIX = "notify:errors:";
 
-export function errorChannelPublicationKey(input: Pick<AttentionItem, "companyId" | "dedupKey">): string {
-  return `${ERROR_CHANNEL_PUBLICATION_PREFIX}${input.companyId}:${input.dedupKey}`;
+/**
+ * Kinds whose card keeps one stable dedupKey for as long as the condition lasts
+ * (the role stays down, the channel stays out of credits) and comes back with
+ * the same key on a later outage. "One row per card, ever" would deliver the
+ * first outage and stay silent on every later one, so these kinds are staged
+ * at most once per hour per dedupKey: the publication key carries the hour
+ * bucket. A role that stays down is re-sent once an hour; the card leaves the
+ * feed on the role's first successful run.
+ */
+const HOURLY_DEDUP_SOURCE_KINDS: ReadonlySet<string> = new Set(["role_model_down", "provider_no_credits"]);
+const HOUR_MS = 60 * 60 * 1000;
+
+export function errorChannelPublicationKey(
+  input: Pick<AttentionItem, "companyId" | "dedupKey"> & Partial<Pick<AttentionItem, "sourceKind">>,
+  now: Date = new Date(),
+): string {
+  const key = `${ERROR_CHANNEL_PUBLICATION_PREFIX}${input.companyId}:${input.dedupKey}`;
+  if (input.sourceKind && HOURLY_DEDUP_SOURCE_KINDS.has(input.sourceKind)) {
+    return `${key}:h${Math.floor(now.getTime() / HOUR_MS)}`;
+  }
+  return key;
 }
 
 /** Max characters of one card's message text that reach Telegram. */
@@ -322,6 +341,8 @@ export interface ErrorChannelSweepDeps {
   stage?: typeof stageErrorChannelPublication;
   /** Rate limiter; production keeps ONE instance for the process lifetime (see createTgNotifySweepRunner). */
   limiter?: HourlyRateLimiter;
+  /** Clock seam for the hourly publication key; production uses the wall clock. */
+  now?: () => Date;
 }
 
 /**
@@ -364,7 +385,7 @@ export async function sweepErrorChannel(
       endpointId: target.endpointId,
       conversationId: target.conversationId,
       issueId: target.issueId,
-      idempotencyKey: errorChannelPublicationKey(item),
+      idempotencyKey: errorChannelPublicationKey(item, deps.now?.() ?? new Date()),
       text: errorChannelCardText(item),
     });
     if (staged) {
