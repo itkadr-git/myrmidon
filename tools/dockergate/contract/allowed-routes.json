@@ -89,6 +89,14 @@
    ]
   },
   {
+   "id": "A22",
+   "method": "DELETE",
+   "template": "containers/{name}?force=true\u0026v=true\u0026myrmidon-decommission=true",
+   "suffixes": [
+    ""
+   ]
+  },
+  {
    "id": "A10",
    "method": "POST",
    "template": "containers/{name}/stop?t=30",
@@ -124,6 +132,14 @@
    "id": "A20",
    "method": "PUT",
    "template": "containers/{name}/config/update",
+   "suffixes": [
+    ""
+   ]
+  },
+  {
+   "id": "A21",
+   "method": "GET",
+   "template": "containers/{name}/config/limits",
    "suffixes": [
     ""
    ]

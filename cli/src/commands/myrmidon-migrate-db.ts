@@ -142,8 +142,9 @@ export async function databaseIdentity(q: Q): Promise<{ name: string; oid: strin
   return { name: rows[0]!.name, oid: rows[0]!.oid };
 }
 
-export async function countRows(q: Q, table: string): Promise<number> {
-  const rows = await all<{ n: number }>(q, sql.raw(`select count(*)::int as n from ${qi("public")}.${qi(table)}`));
+export async function countRows(q: Q, table: string, where?: string): Promise<number> {
+  const whereSql = where ? ` where ${where}` : "";
+  const rows = await all<{ n: number }>(q, sql.raw(`select count(*)::int as n from ${qi("public")}.${qi(table)}${whereSql}`));
   return rows[0]?.n ?? 0;
 }
 
@@ -167,14 +168,33 @@ export async function countNonEmpty(q: Q, table: string, column: ColumnInfo): Pr
 export type TableDigest = { rows: number; digest: string };
 
 /** Order-independent content digest of the given columns of a table (all except `exclude`). */
-export async function tableDigest(q: Q, table: string, info: TableInfo, exclude: Set<string>): Promise<TableDigest> {
+export async function tableDigest(
+  q: Q,
+  table: string,
+  info: TableInfo,
+  exclude: Set<string>,
+  narrowedCols?: Set<string>,
+  where?: string,
+): Promise<TableDigest> {
   const excluded = info.columns.filter((c) => exclude.has(c.name)).map((c) => ql(c.name));
   const strip = excluded.length > 0 ? ` - array[${excluded.join(",")}]::text[]` : "";
+  let expr = `to_jsonb(t)${strip}`;
+  if (narrowedCols && narrowedCols.size > 0) {
+    const cols = info.columns.filter((c) => narrowedCols.has(c.name) && !exclude.has(c.name));
+    if (cols.length > 0) {
+      const strippedArray = cols.map((c) => ql(c.name)).join(",");
+      const buildPairs = cols
+        .map((c) => `${ql(c.name)}, case when t.${qi(c.name)} is null then null else trunc(t.${qi(c.name)})::bigint end`)
+        .join(", ");
+      expr = `(${expr} - array[${strippedArray}]::text[] || jsonb_build_object(${buildPairs}))`;
+    }
+  }
+  const whereSql = where ? ` where ${where}` : "";
   const rows = await all<{ n: number; d: string }>(
     q,
     sql.raw(
       `select count(*)::int as n, coalesce(md5(string_agg(h, ',' order by h collate "C")), 'empty') as d ` +
-        `from (select md5((to_jsonb(t)${strip})::text) as h from ${qi("public")}.${qi(table)} t) s`,
+        `from (select md5((${expr})::text) as h from ${qi("public")}.${qi(table)} t${whereSql}) s`,
     ),
   );
   return { rows: rows[0]?.n ?? 0, digest: rows[0]?.d ?? "empty" };
@@ -352,15 +372,23 @@ export async function readPage(
   carrierColumns: string[],
   after: string | null,
   limit: number | null,
-): Promise<{ lastRid: string | null; rows: { rest: string; carriers: Record<string, unknown> }[] }> {
-  const strip = carrierColumns.length > 0 ? ` - array[${carrierColumns.map(ql).join(",")}]::text[]` : "";
+  narrowedNumericColumns: string[] = [],
+): Promise<{
+  lastRid: string | null;
+  rows: { rest: string; carriers: Record<string, unknown>; narrowed: [string, string][] }[];
+}> {
+  const allExcluded = [...carrierColumns, ...narrowedNumericColumns];
+  const strip = allExcluded.length > 0 ? ` - array[${allExcluded.map(ql).join(",")}]::text[]` : "";
   const carrierSelect = carrierColumns.map((c, i) => `, to_jsonb(t.${qi(c)}) as ${qi(`cv${i}`)}`).join("");
+  const narrowedSelect = narrowedNumericColumns
+    .map((c, i) => `, case when t.${qi(c)} is null then null else trunc(t.${qi(c)})::text end as ${qi(`nv${i}`)}`)
+    .join("");
   const where = after === null ? "" : ` where t.ctid > ${ql(after)}::tid`;
   const lim = limit === null ? "" : ` limit ${Math.trunc(limit)}`;
   const rows = await all<Record<string, unknown>>(
     q,
     sql.raw(
-      `select t.ctid::text as rid, (to_jsonb(t)${strip})::text as rest${carrierSelect} ` +
+      `select t.ctid::text as rid, (to_jsonb(t)${strip})::text as rest${carrierSelect}${narrowedSelect} ` +
         `from ${qi("public")}.${qi(table)} t${where} order by t.ctid${lim}`,
     ),
   );
@@ -369,17 +397,18 @@ export async function readPage(
     rows: rows.map((row) => ({
       rest: String(row.rest),
       carriers: Object.fromEntries(carrierColumns.map((c, i) => [c, row[`cv${i}`] ?? null])),
+      narrowed: narrowedNumericColumns.map(
+        (c, i) => [c, row[`nv${i}`] === null || row[`nv${i}`] === undefined ? "null" : String(row[`nv${i}`])] as [string, string],
+      ),
     })),
   };
 }
 
-export function rowJson(rest: string, carriers: Record<string, unknown>): string {
-  return mergeJsonText(
-    rest,
-    Object.entries(carriers)
-      .filter(([, v]) => v !== null && v !== undefined)
-      .map(([k, v]) => [k, JSON.stringify(v)] as [string, string]),
-  );
+export function rowJson(rest: string, carriers: Record<string, unknown>, narrowed: [string, string][] = []): string {
+  const carrierEntries = Object.entries(carriers)
+    .filter(([, v]) => v !== null && v !== undefined)
+    .map(([k, v]) => [k, JSON.stringify(v)] as [string, string]);
+  return mergeJsonText(rest, [...carrierEntries, ...narrowed]);
 }
 
 /** Inserts a page of JSON rows into the target table, restricted to the given columns. */

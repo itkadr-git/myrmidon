@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import {
   activityLog,
+  companies,
   connectionEventDeliveries,
   connectionGrants,
   externalObjects,
@@ -29,6 +30,8 @@ import type { IssueAssignmentWakeupDeps } from "./issue-assignment-wakeup.js";
 import { logger } from "../middleware/logger.js";
 import { parseIssueExecutionState } from "./issue-execution-policy.js";
 import { notifyBoardMergeTrigger } from "../myrmidon/review-routing/merge-trigger.js";
+import { isRepositoryAllowed } from "../myrmidon/github-shared-identity/settings.js";
+import { listGitHubAppEntriesByAppId } from "../myrmidon/github-shared-identity/store.js";
 import {
   extractPullRequestIssueIdentifier,
   pullRequestWorkProductData,
@@ -59,6 +62,14 @@ export type GitHubEventsWatchdogResult = {
   activePrCount: number;
   alarmsCreated: number;
   alarmsResolved: number;
+};
+
+/** myrmidon(GITHUB-APP-WEBHOOK): what one App webhook delivery did, per matched company. */
+export type GitHubAppWebhookIngestResult = {
+  companies: number;
+  processed: number;
+  duplicate: number;
+  ignored: number;
 };
 
 function record(value: unknown): Record<string, unknown> {
@@ -208,6 +219,79 @@ function normalizeLeasedPayload(event: LeasedEvent): Record<string, unknown> {
       accountId: identifier(payload.accountId),
       accountLogin: boundedString(payload.accountLogin, 100),
       repositorySelection: boundedString(payload.repositorySelection, 40),
+    });
+  }
+  return compact(base);
+}
+
+function githubIdString(value: unknown): string | null {
+  return typeof value === "number" && Number.isSafeInteger(value) && value > 0 ? String(value) : identifier(value);
+}
+
+/**
+ * myrmidon(GITHUB-APP-WEBHOOK): a raw GitHub webhook body -> the flat record
+ * the Cloud connector leases (`normalizeLeasedPayload` is written for that
+ * shape: string ids, `repository` as `owner/repo`, camelCase pull-request and
+ * head fields). A raw body would be dropped by it, so the translation is done
+ * once here and everything downstream is the unchanged connector path.
+ */
+export function connectorPayloadFromGitHubWebhook(
+  eventName: string,
+  raw: Record<string, unknown>,
+): Record<string, unknown> {
+  const repository = record(raw.repository);
+  const sender = record(raw.sender);
+  const base = {
+    event: eventName,
+    action: stringValue(raw.action),
+    installationId: githubIdString(record(raw.installation).id),
+    repositoryId: githubIdString(repository.id),
+    repository: stringValue(repository.full_name),
+    senderId: githubIdString(sender.id),
+    senderLogin: stringValue(sender.login),
+  };
+  if (eventName === "pull_request") {
+    const pullRequest = record(raw.pull_request);
+    const head = record(pullRequest.head);
+    const baseBranch = record(pullRequest.base);
+    return compact({
+      ...base,
+      number: positiveInteger(raw.number) ?? positiveInteger(pullRequest.number),
+      url: stringValue(pullRequest.html_url),
+      state: stringValue(pullRequest.state),
+      // GitHub computes `mergeable` lazily: null means "not known yet".
+      mergeable: pullRequest.mergeable === false || pullRequest.mergeable_state === "dirty"
+        ? "CONFLICTING"
+        : pullRequest.mergeable === true
+          ? "MERGEABLE"
+          : null,
+      merged: pullRequest.merged === true,
+      mergedAt: stringValue(pullRequest.merged_at),
+      updatedAt: stringValue(pullRequest.updated_at),
+      title: stringValue(pullRequest.title),
+      headRef: stringValue(head.ref),
+      headSha: stringValue(head.sha),
+      baseRef: stringValue(baseBranch.ref),
+      baseSha: stringValue(baseBranch.sha),
+    });
+  }
+  if (eventName === "check_run" || eventName === "check_suite" || eventName === "workflow_run") {
+    const object = record(raw[eventName]);
+    const pullRequests = Array.isArray(object.pull_requests) ? object.pull_requests : [];
+    const pullRequestNumber = positiveInteger(record(pullRequests[0]).number);
+    return compact({
+      ...base,
+      number: pullRequestNumber,
+      pullRequestNumber,
+      headSha: stringValue(object.head_sha),
+      status: stringValue(object.status),
+      conclusion: stringValue(object.conclusion),
+      // A suite is identified by its own id; a run and a check carry theirs.
+      runId: eventName === "check_suite" ? null : githubIdString(object.id),
+      checkSuiteId: eventName === "check_suite"
+        ? githubIdString(object.id)
+        : githubIdString(object.check_suite_id ?? record(object.check_suite).id),
+      htmlUrl: stringValue(object.html_url),
     });
   }
   return compact(base);
@@ -806,7 +890,10 @@ export function githubConnectionEventService(
     }).where(and(eq(toolConnections.id, binding.connectionId), eq(toolConnections.companyId, binding.companyId)));
   }
 
-  async function processForCompany(companyId: string, bindings: GitHubBinding[], event: LeasedEvent) {
+  // myrmidon(GITHUB-APP-WEBHOOK): `appId` is set only for deliveries that arrive
+  // through our own GitHub App's webhook: such a delivery has no connector
+  // binding to name as the activity entity.
+  async function processForCompany(companyId: string, bindings: GitHubBinding[], event: LeasedEvent, appId?: string) {
     const receiptAt = now();
     const normalizedEvent = { ...event, payload: normalizeLeasedPayload(event) };
     const [receipt] = await db.insert(connectionEventDeliveries).values({
@@ -882,7 +969,7 @@ export function githubConnectionEventService(
           actorId: "system:github-webhook",
           action: "tool_connection.webhook_processed",
           entityType: "tool_connection",
-          entityId: bindings[0]!.connectionId,
+          entityId: bindings[0]?.connectionId ?? `github-app:${appId ?? "unknown"}`,
           details: {
             provider: "github",
             event: event.event,
@@ -890,6 +977,7 @@ export function githubConnectionEventService(
             deliveryId: event.id,
             installationId: event.installationId,
             repositoryId: event.repositoryId,
+            ...(appId ? { appId } : {}),
           },
         }, postCommitPublications);
       };
@@ -928,6 +1016,65 @@ export function githubConnectionEventService(
   }
 
   return {
+    /**
+     * myrmidon(GITHUB-APP-WEBHOOK): one delivery of our own GitHub App's
+     * webhook (signature already verified by the route). The companies are the
+     * ones whose App entry carries this App id and allows the delivery's
+     * repository; each goes through the same `processForCompany` the connector
+     * poll uses, with no bindings. A delivery that names no repository, or
+     * that no company serves, is ignored and nothing is recorded.
+     */
+    async ingestAppWebhook(input: {
+      appId: string;
+      deliveryId: string;
+      eventName: string;
+      payload: Record<string, unknown>;
+    }): Promise<GitHubAppWebhookIngestResult> {
+      const result: GitHubAppWebhookIngestResult = { companies: 0, processed: 0, duplicate: 0, ignored: 0 };
+      const repository = stringValue(record(input.payload.repository).full_name);
+      const candidateIds = repository
+        ? [...new Set(
+            (await listGitHubAppEntriesByAppId(db, input.appId))
+              .filter(({ entry }) => isRepositoryAllowed(entry.allowedRepos, repository))
+              .map(({ companyId }) => companyId),
+          )]
+        : [];
+      // The rules of a deleted company can outlive it; a receipt for it would
+      // fail on the company key and fail the delivery for everybody else.
+      const companyIds = candidateIds.length === 0
+        ? []
+        : (await db.select({ id: companies.id }).from(companies).where(inArray(companies.id, candidateIds))).map((row) => row.id);
+      if (companyIds.length === 0) {
+        result.ignored = 1;
+        return result;
+      }
+      result.companies = companyIds.length;
+      const event: LeasedEvent = {
+        id: input.deliveryId,
+        provider: "github",
+        event: input.eventName,
+        action: stringValue(input.payload.action),
+        installationId: githubIdString(record(input.payload.installation).id),
+        repositoryId: githubIdString(record(input.payload.repository).id),
+        createdAt: now().toISOString(),
+        payload: connectorPayloadFromGitHubWebhook(input.eventName, input.payload),
+        bindingIds: [],
+      };
+      // One company failing must not keep the others from their delivery; the
+      // failure is raised after all were tried, and a GitHub redelivery then
+      // replays only what did not finish (processed receipts answer duplicate).
+      let failure: unknown;
+      for (const companyId of companyIds) {
+        try {
+          result[await processForCompany(companyId, [], event, input.appId)] += 1;
+        } catch (error) {
+          failure ??= error;
+        }
+      }
+      if (failure !== undefined) throw failure;
+      return result;
+    },
+
     async pollOnce(): Promise<GitHubConnectionEventPollResult> {
       if (now().getTime() < nextPollAt) {
         return { leased: 0, processed: 0, duplicate: 0, ignored: 0, failed: 0 };

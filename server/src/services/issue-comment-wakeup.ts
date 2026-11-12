@@ -1,3 +1,4 @@
+
 /**
  * Whether a comment on an issue wakes the assignee.
  *
@@ -5,9 +6,7 @@
  * prompt-budget notice — the signal the board used to write into the agent's
  * most recent in_progress task, 17 copies in two hours on the live board — is
  * not a message for the agent whose prompt is already over budget. The copies
- * already in threads must not wake anyone, so the guard rides here, where every
- * comment wake is decided, and the wake path passes it `isPromptBudgetSignalNotice`
- * over the comment row.
+ * already in threads must not wake anyone, whatever the issue status.
  */
 export function shouldWakeAssigneeForIssueComment(input: {
   selfComment: boolean;

@@ -3,10 +3,10 @@ import { describe, expect, it } from "vitest";
 import { FLEET_HOSTS_ENV, cardFleetHost, cardFleetHostPinned, parseFleetHosts } from "./fleetd-hosts.js";
 import { readFleetdDriverConfig } from "./fleetd-driver.js";
 
-// Everything here is placeholder data: fake names and example.com addresses.
+// Everything here is placeholder data: fake names and addresses from the private ranges.
 
 const ENTRY = (over: Record<string, unknown> = {}): string =>
-  JSON.stringify([{ name: "host-a", url: "http://fleetd.example.com:9100", tokenSecret: "secret-a", ...over }]);
+  JSON.stringify([{ name: "host-a", url: "http://10.0.0.20:9100", tokenSecret: "secret-a", ...over }]);
 
 describe("myrmidon(FLEETD-VMEXEC) fleet hosts — parsing", () => {
   it("an unset or empty setting yields no hosts", () => {
@@ -17,11 +17,11 @@ describe("myrmidon(FLEETD-VMEXEC) fleet hosts — parsing", () => {
 
   it("parses name/url/tokenSecret, trims and strips trailing slashes", () => {
     const hosts = parseFleetHosts(
-      JSON.stringify([{ name: " host-a ", url: "http://fleetd.example.com:9100/", tokenSecret: " secret-a " }]),
+      JSON.stringify([{ name: " host-a ", url: "http://10.0.0.20:9100/", tokenSecret: " secret-a " }]),
     );
     expect(hosts.get("host-a")).toEqual({
       name: "host-a",
-      url: "http://fleetd.example.com:9100",
+      url: "http://10.0.0.20:9100",
       tokenSecret: "secret-a",
     });
   });
@@ -44,8 +44,8 @@ describe("myrmidon(FLEETD-VMEXEC) fleet hosts — parsing", () => {
     expect(() =>
       parseFleetHosts(
         JSON.stringify([
-          { name: "host-a", url: "http://a:1", tokenSecret: "s" },
-          { name: "host-a", url: "http://b:2", tokenSecret: "s" },
+          { name: "host-a", url: "http://10.0.0.1:1", tokenSecret: "s" },
+          { name: "host-a", url: "http://10.0.0.2:2", tokenSecret: "s" },
         ]),
       ),
     ).toThrow(/duplicate host name/);
@@ -56,14 +56,14 @@ describe("myrmidon(FLEETD-VMEXEC) fleet hosts — parsing", () => {
 describe("myrmidon(FLEETD-VMEXEC) fleet hosts — per-host overrides", () => {
   it("carries no override fields when the entry states none", () => {
     const host = parseFleetHosts(ENTRY()).get("host-a");
-    expect(host).toEqual({ name: "host-a", url: "http://fleetd.example.com:9100", tokenSecret: "secret-a" });
+    expect(host).toEqual({ name: "host-a", url: "http://10.0.0.20:9100", tokenSecret: "secret-a" });
   });
 
   it("parses every override field, trimmed, with trailing slashes stripped from urls", () => {
     const host = parseFleetHosts(
       ENTRY({
-        hindsightUrl: "http://hindsight.internal:8890/",
-        llmBaseUrl: " http://llm.internal:4000 ",
+        hindsightUrl: "http://10.0.0.10:8890/",
+        llmBaseUrl: " http://10.0.0.10:4000 ",
         boardAddress: " board.internal:3100 ",
         boardExtraHost: "board.internal",
         volumeRoot: "/srv/bots",
@@ -73,10 +73,10 @@ describe("myrmidon(FLEETD-VMEXEC) fleet hosts — per-host overrides", () => {
     ).get("host-a");
     expect(host).toEqual({
       name: "host-a",
-      url: "http://fleetd.example.com:9100",
+      url: "http://10.0.0.20:9100",
       tokenSecret: "secret-a",
-      hindsightUrl: "http://hindsight.internal:8890",
-      llmBaseUrl: "http://llm.internal:4000",
+      hindsightUrl: "http://10.0.0.10:8890",
+      llmBaseUrl: "http://10.0.0.10:4000",
       boardAddress: "board.internal:3100",
       boardExtraHost: "board.internal",
       volumeRoot: "/srv/bots",
@@ -154,5 +154,41 @@ describe("myrmidon(FLEETD-VMEXEC) fleet hosts — driver config binding", () => 
   it("throws when the url or the token is missing", () => {
     expect(() => readFleetdDriverConfig({ MYRMIDON_FLEET_HOST_TOKEN: "t" })).toThrow(/MYRMIDON_FLEET_HOST_URL/);
     expect(() => readFleetdDriverConfig({ MYRMIDON_FLEET_HOST_URL: "http://f:9100" })).toThrow(/MYRMIDON_FLEET_HOST_TOKEN/);
+  });
+});
+describe("myrmidon(fleet-site audit) fleet hosts — plain http only to a private address", () => {
+  it("accepts the private ranges and loopback for the host url and for the override urls", () => {
+    for (const host of ["10.1.2.3", "172.16.0.9", "172.31.1.1", "192.168.5.5", "100.64.0.7", "100.127.1.1", "127.0.0.1"]) {
+      const parsed = parseFleetHosts(
+        ENTRY({ url: `http://${host}:9100`, hindsightUrl: `http://${host}:8890`, llmBaseUrl: `http://${host}:4000` }),
+      ).get("host-a");
+      expect(parsed).toMatchObject({ url: `http://${host}:9100`, hindsightUrl: `http://${host}:8890`, llmBaseUrl: `http://${host}:4000` });
+    }
+  });
+
+  it("refuses a DNS name, a public address and a link-local address as the host url", () => {
+    for (const host of ["fleetd.example.com", "fleetd.internal", "fleetd", "8.8.8.8", "192.0.2.10", "169.254.1.1", "172.32.0.1", "100.128.0.1"]) {
+      expect(() => parseFleetHosts(ENTRY({ url: `http://${host}:9100` }))).toThrow(/url must use a private IP address/);
+    }
+  });
+
+  it("refuses the same addresses as hindsightUrl and llmBaseUrl", () => {
+    for (const host of ["hindsight.example.com", "8.8.8.8", "192.0.2.10"]) {
+      expect(() => parseFleetHosts(ENTRY({ hindsightUrl: `http://${host}:8890` }))).toThrow(/hindsightUrl" must use a private IP address/);
+      expect(() => parseFleetHosts(ENTRY({ llmBaseUrl: `http://${host}:4000` }))).toThrow(/llmBaseUrl" must use a private IP address/);
+    }
+  });
+
+  it("looks at the host the URL parser finds, not at the text in front of it", () => {
+    for (const url of ["http://10.0.0.5@8.8.8.8:9100", "http://10.0.0.5.evil.example:9100", "http://10.0.0.5:80@evil.example:9100", "http://010.0.0.5:9100"]) {
+      expect(() => parseFleetHosts(ENTRY({ url }))).toThrow(/private IP address/);
+    }
+    // 10.1 is the address 10.0.0.1 to every URL parser
+    expect(parseFleetHosts(ENTRY({ url: "http://10.1:9100" })).get("host-a")?.url).toBe("http://10.1:9100");
+  });
+
+  it("the first problem named is the scheme, then the address", () => {
+    expect(() => parseFleetHosts(ENTRY({ url: "https://10.0.0.20:9100" }))).toThrow(/url must be http/);
+    expect(() => parseFleetHosts(ENTRY({ url: "http://" }))).toThrow(/not a valid URL|url must/);
   });
 });

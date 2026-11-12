@@ -10,6 +10,7 @@ import {
   withQueuedCommentIdsInWakePayload,
 } from "../../../services/issue-queued-comment-queue.js";
 import { logActivity as persistActivityLogRow, type ActivityPublication } from "../../../services/activity-log.js";
+import { isValidWakeCommentId } from "../../../modules/run-dispatch/domain/wake-context.js";
 import { decideQueuedCommentWakeLookup } from "../domain/policy.js";
 import { parseObject, readNonEmptyString } from "../domain/values.js";
 // myrmidon(1.6.5 PROMPT-BUDGET-SIGNAL): the signal notices left in agent tasks
@@ -117,8 +118,9 @@ function buildTransaction(tx: Db, companyId: string, deps: QueuedCommentQueuePos
 
     async buildQueueSnapshot({ issue, actor, wake, state, queueRun, activeRun }): Promise<IssueQueuedCommentQueue> {
       const commentIds = queuedCommentIdsFromWakePayload(wake?.payload ?? null);
+      const validCommentIds = commentIds.filter(isValidWakeCommentId);
       const rows: Array<typeof issueComments.$inferSelect> =
-        commentIds.length > 0
+        validCommentIds.length > 0
           ? await tx
               .select()
               .from(issueComments)
@@ -126,7 +128,7 @@ function buildTransaction(tx: Db, companyId: string, deps: QueuedCommentQueuePos
                 and(
                   eq(issueComments.companyId, companyId),
                   eq(issueComments.issueId, issue.id),
-                  inArray(issueComments.id, commentIds),
+                  inArray(issueComments.id, validCommentIds),
                 ),
               )
           : [];

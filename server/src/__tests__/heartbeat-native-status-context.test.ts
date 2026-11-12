@@ -1,14 +1,18 @@
 import { describe, expect, it } from "vitest";
 import { mergeCoalescedContextSnapshot } from "../services/heartbeat.ts";
 
+const COMMENT_ID = "11111111-1111-4111-8111-111111111111";
+const DIFFERENT_COMMENT_ID = "22222222-2222-4222-8222-222222222222";
+const NEW_COMMENT_ID = "33333333-3333-4333-8333-333333333333";
+
 describe("native status wake context provenance", () => {
   it("preserves a verified chat source when status control flow coalesces into the run", () => {
     const merged = mergeCoalescedContextSnapshot(
       {
         issueId: "issue-1",
         source: "chat:discord",
-        wakeCommentId: "comment-1",
-        wakeCommentIds: ["comment-1"],
+        wakeCommentId: COMMENT_ID,
+        wakeCommentIds: [COMMENT_ID],
       },
       {
         issueId: "issue-1",
@@ -22,8 +26,8 @@ describe("native status wake context provenance", () => {
       source: "chat:discord",
       statusDecisionSource: "native_status_decision",
       wakeReason: "issue_status_changed",
-      wakeCommentId: "comment-1",
-      wakeCommentIds: ["comment-1"],
+      wakeCommentId: COMMENT_ID,
+      wakeCommentIds: [COMMENT_ID],
     });
   });
 
@@ -41,11 +45,11 @@ describe("native status wake context provenance", () => {
     issueId: "issue-1",
     source: "chat:telegram",
     wakeReason: "External chat message received",
-    wakeCommentIds: ["comment-1"],
+    wakeCommentIds: [COMMENT_ID],
     paperclipExternalChatExecutionBound: true,
     paperclipWake: {
       issue: { id: "issue-1", status: "in_review" },
-      commentIds: ["comment-1"],
+      commentIds: [COMMENT_ID],
       externalChatProvider: "telegram",
       externalChatExecutionBound: true,
       checkedOutByHarness: false,
@@ -87,7 +91,7 @@ describe("native status wake context provenance", () => {
 
   it.each([
     { ...statusControl, issueId: "unrelated-issue" },
-    { ...statusControl, wakeCommentIds: ["new-comment"] },
+    { ...statusControl, wakeCommentIds: [NEW_COMMENT_ID] },
     { ...statusControl, statusDecisionSource: "ordinary-control" },
     { issueId: "issue-1", source: "chat:discord" },
   ])(
@@ -102,7 +106,7 @@ describe("native status wake context provenance", () => {
   it("does not preserve mismatched provider or payload-comment provenance", () => {
     for (const paperclipWake of [
       { ...reviewedContext.paperclipWake, externalChatProvider: "github" },
-      { ...reviewedContext.paperclipWake, commentIds: ["different-comment"] },
+      { ...reviewedContext.paperclipWake, commentIds: [DIFFERENT_COMMENT_ID] },
       { ...reviewedContext.paperclipWake, externalChatExecutionBound: false },
     ]) {
       const merged = mergeCoalescedContextSnapshot(

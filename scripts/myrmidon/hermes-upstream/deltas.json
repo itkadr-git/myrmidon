@@ -563,6 +563,74 @@
         "path": "tests/tools/test_process_heartbeat.py",
         "upstreamMarker": "heartbeat-regression"
       }
+    },
+    {
+      "id": "32-compaction-summary-9-sections",
+      "kind": "patch",
+      "patch": "docker/bot-runtime/patches/32-compaction-summary-9-sections.patch",
+      "files": [
+        "agent/context_compressor.py"
+      ],
+      "reason": "Unifies context compaction summary structure across fresh, iterative-update, and deterministic fallback summaries into 9 standardized sections: USER_CONTEXT, TASK_TRACKING, COMPLETED, PENDING, CURRENT_STATE, CODE_STATE, TESTS, CHANGES, VERSION_CONTROL_STATUS, with verbatim task/ticket IDs and PR numbers, while preserving legacy task snapshot heading parsers.",
+      "dropCondition": "Upstream adopts a 9-section structured compaction summary with verbatim task and ticket ID tracking.",
+      "offer": null,
+      "offerNote": "Not offered yet.",
+      "probe": {
+        "source": "hermes",
+        "path": "agent/context_compressor.py",
+        "upstreamMarker": "TASK_TRACKING|VERSION_CONTROL_STATUS"
+      }
+    },
+    {
+      "id": "33-compaction-tool-pairs-sampling",
+      "kind": "patch",
+      "patch": "docker/bot-runtime/patches/33-compaction-tool-pairs-sampling.patch",
+      "files": [
+        "agent/context_compressor.py"
+      ],
+      "reason": "When sampling session history for the summarizer, _serialize_records_for_summary emitted each message as an independent record and slice boundaries cut between assistant tool calls and their tool results, leaving orphaned results or unmatched calls in the summary prompt. Serialization now treats each assistant message with tool calls and all its corresponding tool results (paired via tool_call_id variants) as one atomic record. Orphaned results without a call are omitted from the summary transcript, and oversized atomic records bound intra-record while preserving both the tool calls section and tool results.",
+      "dropCondition": "Upstream treats tool calls and their results as atomic units during summary serialization and sampling.",
+      "offer": null,
+      "offerNote": "Not offered yet.",
+      "probe": {
+        "source": "hermes",
+        "path": "agent/context_compressor.py",
+        "upstreamMarker": "atomic record|tool_result_id_variants|consumed_results"
+      }
+    },
+    {
+      "id": "34-run-idempotency-txn-rollback",
+      "kind": "patch",
+      "patch": "docker/bot-runtime/patches/34-run-idempotency-txn-rollback.patch",
+      "files": [
+        "gateway/platforms/api_server_run_idempotency.py"
+      ],
+      "reason": "A write to the run idempotency store whose commit failed (disk full, I/O error, busy timeout) left the SQLite connection inside its transaction; every later BEGIN IMMEDIATE failed with 'cannot start a transaction within a transaction' and each run request answered 500 until the gateway restarted. Writes now roll back on any error, and a transaction left open is rolled back before the next BEGIN IMMEDIATE.",
+      "dropCondition": "Upstream rolls back a failed commit in the run idempotency store (update_status, extend_retention, status_for_run).",
+      "offer": null,
+      "offerNote": "Not offered yet.",
+      "probe": {
+        "source": "hermes",
+        "path": "gateway/platforms/api_server_run_idempotency.py",
+        "upstreamMarker": "in_transaction|_write_locked|def update_status[\\s\\S]*rollback\\(\\)"
+      }
+    },
+    {
+      "id": "35-skill-view-managed-name",
+      "kind": "patch",
+      "patch": "docker/bot-runtime/patches/35-skill-view-managed-name.patch",
+      "files": [
+        "tools/skills_tool.py"
+      ],
+      "reason": "Board-managed skills materialize in the bot profile as paperclip-managed/<slug>--<hash>/SKILL.md, but the skills index shows each one as paperclip-managed:<slug> (category = first path segment, name = frontmatter name). skill_view matched only exact directory names and bare frontmatter names, so every call with the index name answered 'not found', failed three times and the run guard stopped the run. When the exact-name passes find nothing, a qualified namespace:bare name now resolves to the skill whose parent-of-parent directory equals the namespace and whose frontmatter name equals the bare part; two same-slug skills still refuse as ambiguous.",
+      "dropCondition": "Upstream resolves a qualified namespace:name skill reference against the category directory and the frontmatter name of a locally installed skill, not only against plugin namespaces.",
+      "offer": null,
+      "offerNote": "Not offered yet.",
+      "probe": {
+        "source": "hermes",
+        "path": "tools/skills_tool.py",
+        "upstreamMarker": "qualified alias|parent\\.parent\\.name == namespace"
+      }
     }
   ]
 }

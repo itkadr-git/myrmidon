@@ -4,9 +4,10 @@
 // when a Docker socket is reachable, image digests for the seeded components.
 // External release data is part B and is deliberately not touched here.
 
-import http from "node:http";
 import { getServerInfoSnapshot, type ServerInfoSnapshot } from "../../server-info.js";
+import { request as httpRequest } from "node:http";
 import {
+  VENDOR_MIGRATION_SUPPORTED_VERSION,
   STACK_DOCUMENT_VERSION,
   STACK_SEED,
   emptyStackDocument,
@@ -46,7 +47,7 @@ function dockerImageInspectRequest(
 ): Promise<DockerHttpResponse> {
   return new Promise((resolve, reject) => {
     const segment = imageRef.split("/").map(encodeURIComponent).join("/");
-    const req = http.request(
+    const req = httpRequest(
       { socketPath, path: `/${DOCKER_API_VERSION}/images/${segment}/json`, method: "GET" },
       (res) => {
         const chunks: Buffer[] = [];
@@ -80,10 +81,22 @@ function summarizeImageInspect(raw: string): DockerImageInspectSummary | null {
   return { repoTag, digest, labels: parsed.Config?.Labels ?? {} };
 }
 
-/** Docker image inspect over the unix socket; null when the image is absent. */
+/** Docker image inspect over the unix socket; null when the image is absent
+ * or the socket itself is unreachable (the board container has no docker.sock
+ * by design — that is an honest unknown, not an infrastructure failure). */
 export function dockerImagesPort(socketPath: string = DEFAULT_STACK_DOCKER_SOCKET): DockerImagesPort {
   return async (imageRef) => {
-    const res = await dockerImageInspectRequest(socketPath, imageRef);
+    let res: DockerHttpResponse;
+    try {
+      res = await dockerImageInspectRequest(socketPath, imageRef);
+    } catch (err) {
+      // ENOENT (no socket file) / ECONNREFUSED (daemon down): the probe is
+      // simply unavailable on this host. Treat like an absent image so the
+      // check keeps working; a daemon HTTP error below stays an exception.
+      const code = (err as NodeJS.ErrnoException | undefined)?.code;
+      if (code === "ENOENT" || code === "ECONNREFUSED" || code === "ENOTDIR") return null;
+      throw err;
+    }
     if (res.status === 404) return null;
     if (res.status >= 400) {
       throw new Error(`docker image inspect ${imageRef} failed: ${res.status} ${res.body.toString("utf8").slice(0, 200)}`);
@@ -119,9 +132,10 @@ async function probeDockerImages(
   const runningOn: string[] = [];
   for (const ref of refs) {
     // A thrown error is an infrastructure failure of the probe port itself
-    // (socket unreachable, daemon error): the route turns it into a 503 so
-    // the previous cache survives. A missing image (null) is a normal,
-    // per-component unknown, not a failure.
+    // (daemon HTTP error, misbehaving stub): the route turns it into a 503 so
+    // the previous cache survives. A missing image or an unreachable docker
+    // socket (null — see dockerImagesPort) is a normal, per-component unknown,
+    // not a failure: the board container has no docker.sock by design.
     const summary = await images(imageRefWithoutTag(ref));
     if (!summary) continue;
     found = true;
@@ -134,6 +148,136 @@ async function probeDockerImages(
     return states;
   }
   states.unknownReason = "image not present on the Docker host reachable from the board";
+  return states;
+}
+
+// STACK-WATCH-LIVE: the probe budget is five seconds — a slow component
+// endpoint must not delay the sweep; an unreachable endpoint is an honest
+// per-component unknown.
+const HTTP_VERSION_REQUEST_TIMEOUT_MS = 5_000;
+
+/**
+ * The endpoint each http-version component is probed on, relative to the base
+ * URL the operator binds through MYRMIDON_STACK_HTTP_<NAME> (the documented
+ * contract: one GET <base>/<endpoint> returning JSON with a `version` field).
+ */
+const HTTP_VERSION_ENDPOINT_PATHS: Record<string, string> = {
+  hindsight: "/version",
+  litellm: "/version",
+  langfuse: "/api/public/health",
+};
+
+function httpVersionEndpointFor(seedName: string): string {
+  return HTTP_VERSION_ENDPOINT_PATHS[seedName] ?? "/version";
+}
+
+interface HttpJsonResponse {
+  status: number;
+  body: string;
+}
+
+/**
+ * GET an HTTP(S) endpoint and return status + raw body. Uses globalThis.fetch
+ * so tests can stub the probe without a live socket; a timeout aborts the
+ * request after HTTP_VERSION_REQUEST_TIMEOUT_MS.
+ */
+async function httpJsonRequest(url: URL): Promise<HttpJsonResponse> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), HTTP_VERSION_REQUEST_TIMEOUT_MS);
+  try {
+    const res = await globalThis.fetch(url, {
+      method: "GET",
+      headers: { accept: "application/json" },
+      signal: controller.signal,
+    });
+    return { status: res.status, body: await res.text() };
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/**
+ * Parse an HTTP version response body: JSON with a `version` or `api_version`
+ * field (non-empty string). Any other shape answers null (an honest unknown
+ * instead of crashing).
+ */
+function extractVersionField(body: string): string | null {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(body);
+  } catch {
+    return null;
+  }
+  if (!parsed || typeof parsed !== "object") return null;
+  const obj = parsed as Record<string, unknown>;
+  for (const raw of [obj.version, obj.api_version]) {
+    if (typeof raw === "string" && raw.trim().length > 0) {
+      return raw.trim();
+    }
+  }
+  return null;
+}
+
+/**
+ * http-version probe (STACK-WATCH-LIVE): read the component's own version over
+ * HTTP. The endpoint URL never ships in the seed — only the env var name is
+ * seeded; the operator binds the address through MYRMIDON_STACK_HTTP_<NAME>.
+ * A missing binding is an honest per-component unknown, never a check failure.
+ */
+async function probeHttpVersion(seed: StackSeedComponent): Promise<StackSnapshot["local"]> {
+  const states: StackSnapshot["local"] = {
+    version: null,
+    commit: null,
+    digest: null,
+    runningOn: null,
+    unknownReason: null,
+    checkedAt: null,
+    patches: [],
+  };
+  const envName = seed.httpEndpointEnv;
+  if (!envName) {
+    states.unknownReason = "no http endpoint configured for this component";
+    return states;
+  }
+  const rawUrl = process.env[envName]?.trim();
+  if (!rawUrl) {
+    states.unknownReason = `http endpoint env ${envName} is not set`;
+    return states;
+  }
+  let url: URL;
+  try {
+    url = new URL(rawUrl);
+  } catch {
+    states.unknownReason = `http endpoint env ${envName} is not a valid URL`;
+    return states;
+  }
+  if (url.protocol !== "http:" && url.protocol !== "https:") {
+    states.unknownReason = `http endpoint env ${envName} must be http(s)`;
+    return states;
+  }
+  // The documented value is a base URL: one GET <base>/<endpoint> (hindsight
+  // and LiteLLM /version, Langfuse /api/public/health). A value that already
+  // names the endpoint path keeps working unchanged.
+  const endpoint = httpVersionEndpointFor(seed.name);
+  if (!url.pathname || url.pathname === "/") url.pathname = endpoint;
+  let res: HttpJsonResponse;
+  try {
+    res = await httpJsonRequest(url);
+  } catch {
+    states.unknownReason = `http version endpoint ${url.toString()} unreachable`;
+    return states;
+  }
+  if (res.status < 200 || res.status >= 300) {
+    states.unknownReason = `http version endpoint ${url.toString()} answered ${res.status}`;
+    return states;
+  }
+  const version = extractVersionField(res.body);
+  if (!version) {
+    states.unknownReason = `http version endpoint ${url.toString()} answered without a version field`;
+    return states;
+  }
+  states.version = version;
+  states.runningOn = url.origin;
   return states;
 }
 
@@ -219,7 +363,13 @@ export async function collectStackLocal(options: CollectStackLocalOptions = {}):
         break;
       }
       case "manual": {
-        snapshot.local.unknownReason = "managed by the operator; no automatic probe";
+        if (seed.name === "paperclip") {
+          snapshot.local.version = VENDOR_MIGRATION_SUPPORTED_VERSION;
+          snapshot.local.runningOn = "supported migration schema";
+          snapshot.local.unknownReason = null;
+        } else {
+          snapshot.local.unknownReason = "managed by the operator; no automatic probe";
+        }
         break;
       }
       case "none": {
@@ -228,6 +378,10 @@ export async function collectStackLocal(options: CollectStackLocalOptions = {}):
       }
       case "container-labels": {
         snapshot.local.unknownReason = "no matching container labels found";
+        break;
+      }
+      case "http-version": {
+        snapshot.local = { ...(await probeHttpVersion(seed)), checkedAt, patches: seededPatches };
         break;
       }
     }

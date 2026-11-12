@@ -56,6 +56,7 @@ interface Fixture {
   managerChain?: Map<string, Array<{ id: string; role: string; model?: string | null }>>;
   reviewers: Array<{
     id: string;
+    name?: string | null;
     role: string;
     metadata?: Record<string, unknown> | null;
     status?: string | null;
@@ -140,6 +141,7 @@ type SettingsOverride = {
   maxLoadPerReviewer?: number;
   reassignAfterHours?: number;
   reassignAfterMinutes?: number;
+  rebalanceAfterMinutes?: number;
   prWatch?: Partial<ReviewRoutingSettings["prWatch"]> & {
     steward?: Partial<ReviewRoutingSettings["prWatch"]["steward"]>;
   };
@@ -1246,6 +1248,326 @@ describe("overdue review", () => {
   });
 });
 
+describe("review rebalancing", () => {
+  const LEAD = "dddddddd-0000-4000-8000-000000000001";
+
+  it("rebalances an overdue-waiting pending review to an idle reviewer or lead with empty queue and wakes them", async () => {
+    const t = setup(
+      { rebalanceAfterMinutes: 30, reassignAfterHours: 24 },
+      {
+        reviewers: [
+          { id: REV_A, role: "reviewer" },
+          { id: LEAD, role: "lead" },
+        ],
+        load: new Map([
+          [REV_A, 5],
+          [LEAD, 0],
+        ]),
+      },
+    );
+    const policy = { stages: [{ id: "s", type: "review", participants: [{ type: "agent", agentId: REV_A }] }] };
+    const state = {
+      status: "pending",
+      currentStageId: "s",
+      currentStageType: "review",
+      currentParticipant: { type: "agent", agentId: REV_A },
+      returnAssignee: { type: "agent", agentId: ASSIGNEE },
+    };
+    t.fixture.rows.set("1", row("1", { assigneeAgentId: REV_A, executionPolicy: policy, executionState: state }));
+    t.fixture.history.set("1", {
+      lastAt: new Date(NOW.getTime() - 45 * 60 * 1000), // 45 min ago
+      reviewerAgentIds: [REV_A],
+    });
+
+    const result = await t.sweep.sweep(NOW, { force: true });
+    expect(result).toMatchObject({ reassigned: 1, failed: 0 });
+
+    const updated = t.fixture.rows.get("1");
+    expect(updated?.assigneeAgentId).toBe(LEAD);
+    const nextState = updated?.executionState as Record<string, unknown>;
+    expect((nextState.currentParticipant as { agentId: string }).agentId).toBe(LEAD);
+
+    expect(t.wakes).toHaveLength(1);
+    expect(t.wakes[0].agentId).toBe(LEAD);
+    expect(t.wakes[0].issueId).toBe("1");
+
+    expect(t.comments).toHaveLength(1);
+    expect(t.comments[0].body).toContain("rebalanced to @" + LEAD);
+    expect(t.activities).toContainEqual(
+      expect.objectContaining({
+        action: REVIEW_ROUTING_REASSIGNED_ACTION,
+        details: expect.objectContaining({
+          reviewerAgentId: LEAD,
+          reviewerRole: "lead",
+          previousReviewerAgentId: REV_A,
+          rebalanced: true,
+        }),
+      }),
+    );
+  });
+
+  it("skips rebalancing when no eligible pool member has an empty queue (load === 0)", async () => {
+    const t = setup(
+      { rebalanceAfterMinutes: 30, reassignAfterHours: 24 },
+      {
+        reviewers: [
+          { id: REV_A, role: "reviewer" },
+          { id: REV_B, role: "reviewer" },
+        ],
+        load: new Map([
+          [REV_A, 5],
+          [REV_B, 2], // queue is not empty
+        ]),
+      },
+    );
+    const policy = { stages: [{ id: "s", type: "review", participants: [{ type: "agent", agentId: REV_A }] }] };
+    const state = {
+      status: "pending",
+      currentStageId: "s",
+      currentStageType: "review",
+      currentParticipant: { type: "agent", agentId: REV_A },
+      returnAssignee: { type: "agent", agentId: ASSIGNEE },
+    };
+    t.fixture.rows.set("1", row("1", { assigneeAgentId: REV_A, executionPolicy: policy, executionState: state }));
+    t.fixture.history.set("1", {
+      lastAt: new Date(NOW.getTime() - 45 * 60 * 1000),
+      reviewerAgentIds: [REV_A],
+    });
+
+    const result = await t.sweep.sweep(NOW, { force: true });
+    expect(result).toMatchObject({ reassigned: 0, failed: 0 });
+    expect(t.fixture.rows.get("1")?.assigneeAgentId).toBe(REV_A);
+    expect(t.wakes).toHaveLength(0);
+  });
+
+  it("skips rebalancing if wait time is less than rebalanceAfterMinutes", async () => {
+    const t = setup(
+      { rebalanceAfterMinutes: 30, reassignAfterHours: 24 },
+      {
+        reviewers: [
+          { id: REV_A, role: "reviewer" },
+          { id: REV_B, role: "reviewer" },
+        ],
+        load: new Map([
+          [REV_A, 5],
+          [REV_B, 0],
+        ]),
+      },
+    );
+    const policy = { stages: [{ id: "s", type: "review", participants: [{ type: "agent", agentId: REV_A }] }] };
+    const state = {
+      status: "pending",
+      currentStageId: "s",
+      currentStageType: "review",
+      currentParticipant: { type: "agent", agentId: REV_A },
+      returnAssignee: { type: "agent", agentId: ASSIGNEE },
+    };
+    t.fixture.rows.set("1", row("1", { assigneeAgentId: REV_A, executionPolicy: policy, executionState: state }));
+    t.fixture.history.set("1", {
+      lastAt: new Date(NOW.getTime() - 15 * 60 * 1000), // only 15 min, threshold 30
+      reviewerAgentIds: [REV_A],
+    });
+
+    const result = await t.sweep.sweep(NOW, { force: true });
+    expect(result).toMatchObject({ reassigned: 0, failed: 0 });
+    expect(t.fixture.rows.get("1")?.assigneeAgentId).toBe(REV_A);
+    expect(t.wakes).toHaveLength(0);
+  });
+
+  it("never rebalances an escalated review stage", async () => {
+    const t = setup(
+      { rebalanceAfterMinutes: 30, reassignAfterHours: 24 },
+      {
+        reviewers: [
+          { id: REV_A, role: "reviewer" },
+          { id: REV_B, role: "reviewer" },
+        ],
+        load: new Map([
+          [REV_A, 5],
+          [REV_B, 0],
+        ]),
+      },
+    );
+    const policy = { stages: [{ id: "s", type: "review", participants: [{ type: "agent", agentId: REV_A }] }] };
+    const state = {
+      status: "pending",
+      currentStageId: "s",
+      currentStageType: "review",
+      currentParticipant: { type: "agent", agentId: REV_A },
+      returnAssignee: { type: "agent", agentId: ASSIGNEE },
+      escalationToParticipant: { type: "agent", agentId: REV_A },
+      escalationReason: "max_review_rounds_exceeded",
+    };
+    t.fixture.rows.set("1", row("1", { assigneeAgentId: REV_A, executionPolicy: policy, executionState: state }));
+    t.fixture.history.set("1", {
+      lastAt: new Date(NOW.getTime() - 60 * 60 * 1000),
+      reviewerAgentIds: [REV_A],
+    });
+
+    const result = await t.sweep.sweep(NOW, { force: true });
+    expect(result).toMatchObject({ reassigned: 0, failed: 0 });
+    expect(t.fixture.rows.get("1")?.assigneeAgentId).toBe(REV_A);
+    expect(t.wakes).toHaveLength(0);
+  });
+
+  it("never rebalances to the returnAssignee (author)", async () => {
+    const t = setup(
+      { rebalanceAfterMinutes: 30, reassignAfterHours: 24 },
+      {
+        reviewers: [
+          { id: REV_A, role: "reviewer" },
+          { id: ASSIGNEE, role: "lead" }, // ASSIGNEE is returnAssignee!
+        ],
+        load: new Map([
+          [REV_A, 5],
+          [ASSIGNEE, 0],
+        ]),
+      },
+    );
+    const policy = { stages: [{ id: "s", type: "review", participants: [{ type: "agent", agentId: REV_A }] }] };
+    const state = {
+      status: "pending",
+      currentStageId: "s",
+      currentStageType: "review",
+      currentParticipant: { type: "agent", agentId: REV_A },
+      returnAssignee: { type: "agent", agentId: ASSIGNEE },
+    };
+    t.fixture.rows.set("1", row("1", { assigneeAgentId: REV_A, executionPolicy: policy, executionState: state }));
+    t.fixture.history.set("1", {
+      lastAt: new Date(NOW.getTime() - 45 * 60 * 1000),
+      reviewerAgentIds: [REV_A],
+    });
+
+    const result = await t.sweep.sweep(NOW, { force: true });
+    expect(result).toMatchObject({ reassigned: 0, failed: 0 });
+    expect(t.fixture.rows.get("1")?.assigneeAgentId).toBe(REV_A);
+  });
+});
+
+// myrmidon(OPE-12683): every pool of the routing holds only queue-eligible
+// reviewers of the task's own agent group. Shop and business bots (bbq*, work*,
+// dispatch) must never take a development review, and an empty own group means
+// no move at all, not a wider pool. Group = the telegramGroup metadata, else
+// the agent name prefix, as `resolveAgentGroupKey` reads it.
+const DEV_ENGINEER = { id: ASSIGNEE, name: "adm-dev-eng-23", role: "engineer" };
+const DEV_REVIEWER_A = { id: REV_A, name: "adm-dev-review-1", role: "reviewer" };
+const DEV_REVIEWER_B = { id: REV_B, name: "adm-dev-review-2", role: "reviewer" };
+// These ids sort before every dev id: an unfiltered pick lands on them first.
+const SHOP_ID_1 = "99999999-0000-4000-8000-000000000001";
+const SHOP_ID_2 = "99999999-0000-4000-8000-000000000002";
+const SHOP_REVIEWER_1 = { id: SHOP_ID_1, name: "bbq-worker-1", role: "reviewer" };
+const SHOP_REVIEWER_2 = { id: SHOP_ID_2, name: "bbq-worker-2", role: "reviewer" };
+const QUEUE_OFF = { swarmQueueEligible: false };
+
+describe("own-group review pools (OPE-12683)", () => {
+  function pendingReviewRow(holderId: string) {
+    const policy = { stages: [{ id: "s", type: "review", participants: [{ type: "agent", agentId: holderId }] }] };
+    const state = {
+      status: "pending",
+      currentStageId: "s",
+      currentStageType: "review",
+      currentParticipant: { type: "agent", agentId: holderId },
+      returnAssignee: { type: "agent", agentId: ASSIGNEE },
+    };
+    return row("1", { assigneeAgentId: holderId, executionPolicy: policy, executionState: state });
+  }
+
+  function rebalanceSetup(reviewers: Fixture["reviewers"], loads: Array<[string, number]>, holderId = REV_A) {
+    const t = setup(
+      { rebalanceAfterMinutes: 30, reassignAfterHours: 24 },
+      { reviewers, load: new Map(loads) },
+    );
+    t.fixture.rows.set("1", pendingReviewRow(holderId));
+    t.fixture.history.set("1", {
+      lastAt: new Date(NOW.getTime() - 45 * 60 * 1000),
+      reviewerAgentIds: [holderId],
+    });
+    return t;
+  }
+
+  it("rebalance never picks an agent of another group, even with an empty queue", async () => {
+    const t = rebalanceSetup([DEV_ENGINEER, DEV_REVIEWER_A, DEV_REVIEWER_B, SHOP_REVIEWER_1], [[REV_A, 5]]);
+
+    const result = await t.sweep.sweep(NOW, { force: true });
+
+    expect(result).toMatchObject({ reassigned: 1, failed: 0 });
+    expect(t.fixture.rows.get("1")?.assigneeAgentId).toBe(REV_B);
+    expect(t.wakes.map((wake) => wake.agentId)).toEqual([REV_B]);
+  });
+
+  it("rebalance never picks a reviewer switched out of the queue", async () => {
+    const dev3 = { id: "cccccccc-0000-4000-8000-0000000000a1", name: "adm-dev-review-3", role: "reviewer" };
+    const t = rebalanceSetup(
+      [DEV_ENGINEER, DEV_REVIEWER_A, { ...DEV_REVIEWER_B, metadata: QUEUE_OFF }, dev3],
+      [[REV_A, 5]],
+    );
+
+    const result = await t.sweep.sweep(NOW, { force: true });
+
+    expect(result).toMatchObject({ reassigned: 1, failed: 0 });
+    expect(t.fixture.rows.get("1")?.assigneeAgentId).toBe(dev3.id);
+  });
+
+  it("rebalance does nothing when the own group has no eligible reviewer to take the review", async () => {
+    const t = rebalanceSetup(
+      [DEV_ENGINEER, DEV_REVIEWER_A, { ...DEV_REVIEWER_B, metadata: QUEUE_OFF }, SHOP_REVIEWER_1],
+      [[REV_A, 5]],
+    );
+
+    const result = await t.sweep.sweep(NOW, { force: true });
+
+    expect(result).toMatchObject({ reassigned: 0, failed: 0 });
+    expect(t.fixture.rows.get("1")?.assigneeAgentId).toBe(REV_A);
+    expect(t.wakes).toHaveLength(0);
+    expect(t.comments).toHaveLength(0);
+  });
+
+  it("anchors a misrouted review on the engineer's group, not on the shop reviewer holding it", async () => {
+    // A development review sits with a shop reviewer. The issue's group is that
+    // of the engineer the review returns to, so the move goes back to dev.
+    const t = rebalanceSetup(
+      [DEV_ENGINEER, DEV_REVIEWER_B, SHOP_REVIEWER_1, SHOP_REVIEWER_2],
+      [[SHOP_ID_1, 5]],
+      SHOP_ID_1,
+    );
+
+    const result = await t.sweep.sweep(NOW, { force: true });
+
+    expect(result).toMatchObject({ reassigned: 1, failed: 0 });
+    expect(t.fixture.rows.get("1")?.assigneeAgentId).toBe(REV_B);
+  });
+
+  it("an overdue review is not reassigned to another group when its own group has no other reviewer", async () => {
+    const t = setup(
+      { reassignAfterHours: 24 },
+      { reviewers: [DEV_ENGINEER, DEV_REVIEWER_A, SHOP_REVIEWER_1] },
+    );
+    t.fixture.rows.set("1", pendingReviewRow(REV_A));
+    t.fixture.history.set("1", {
+      lastAt: new Date(NOW.getTime() - 30 * 60 * 60 * 1000),
+      reviewerAgentIds: [REV_A],
+    });
+
+    const result = await t.sweep.sweep(NOW, { force: true });
+
+    expect(result).toMatchObject({ reassigned: 0, signaled: 1, failed: 0 });
+    expect(t.fixture.rows.get("1")?.assigneeAgentId).toBe(REV_A);
+  });
+
+  it("a task with no reviewer raises no_reviewer instead of going to another group", async () => {
+    const t = setup({}, { reviewers: [DEV_ENGINEER, SHOP_REVIEWER_1] });
+    t.fixture.rows.set("1", row("1"));
+
+    const result = await t.sweep.sweep(NOW, { force: true });
+
+    expect(result).toMatchObject({ assigned: 0, signaled: 1 });
+    expect(t.fixture.rows.get("1")?.executionPolicy).toBeNull();
+    expect(readReviewRoutingSignals(COMPANY)).toEqual([
+      expect.objectContaining({ kind: "no_reviewer", issueId: "1" }),
+    ]);
+  });
+});
+
 describe("PR lane (fake store + fake resolver)", () => {
   interface PrFixture {
     candidates: PrCandidateRow[];
@@ -1257,12 +1579,14 @@ describe("PR lane (fake store + fake resolver)", () => {
     openMergeLoad: Map<string, number>;
     created: Array<{ title: string; kind: string; assigneeAgentId: string; headSha: string }>;
     cancelled: string[];
+    /** Overrides the default reviewer + steward agents of the fake store. */
+    reviewers?: Fixture["reviewers"];
   }
 
   function prStore(fx: PrFixture): ReviewRoutingStore {
     const base = makeStore({
       rows: fx.rows,
-      reviewers: [{ id: REV_A, role: "reviewer" }, { id: STEWARD, role: "devops" }],
+      reviewers: fx.reviewers ?? [{ id: REV_A, role: "reviewer" }, { id: STEWARD, role: "devops" }],
       load: new Map(),
       history: new Map(),
       activities: [],
@@ -1496,6 +1820,85 @@ describe("PR lane (fake store + fake resolver)", () => {
     });
     const result = await t.sweep.sweep(NOW, { force: true });
     expect(result.prTasksCreated).toBe(1);
+  });
+
+  // myrmidon(OPE-12683): the PR lane applies the same own-group + queue filter.
+  describe("own-group reviewers (OPE-12683)", () => {
+    const FLAGGED_FIRST = { id: "aaaaaaaa-1111-4000-8000-000000000001", name: "adm-dev-review-0", role: "reviewer", metadata: QUEUE_OFF };
+
+    function engineerTask() {
+      return row("existing", { status: "in_progress", assigneeAgentId: ASSIGNEE, createdByAgentId: AUTHOR });
+    }
+
+    it("hands an existing PR task only to a queue-eligible reviewer of its engineer's group", async () => {
+      const task = engineerTask();
+      const t = prSetup({ enabled: true, prWatch: { enabled: true } }, {
+        rows: new Map([["existing", task]]),
+        existingWork: [task],
+        headState: headState({ ci: "pending" }),
+        reviewers: [DEV_ENGINEER, SHOP_REVIEWER_1, FLAGGED_FIRST, DEV_REVIEWER_A],
+      });
+
+      const result = await t.sweep.sweep(NOW, { force: true });
+
+      expect(result.assigned).toBe(1);
+      expect(t.fixture.rows.get("existing")).toMatchObject({ status: "in_review", assigneeAgentId: REV_A });
+      expect(t.wakes).toEqual([expect.objectContaining({ agentId: REV_A, issueId: "existing" })]);
+    });
+
+    it("leaves an existing PR task alone when its group has no eligible reviewer", async () => {
+      const task = engineerTask();
+      const t = prSetup({ enabled: true, prWatch: { enabled: true } }, {
+        rows: new Map([["existing", task]]),
+        existingWork: [task],
+        headState: headState({ ci: "pending" }),
+        reviewers: [DEV_ENGINEER, SHOP_REVIEWER_1, FLAGGED_FIRST],
+      });
+
+      const result = await t.sweep.sweep(NOW, { force: true });
+
+      expect(result.assigned).toBe(0);
+      expect(t.fixture.rows.get("existing")?.status).toBe("in_progress");
+      expect(t.wakes).toHaveLength(0);
+      expect(t.fixture.created).toHaveLength(0);
+    });
+
+    it("routes a PR to a reviewer of the group of its author's linked agent", async () => {
+      const t = prSetup({}, {
+        authorAgents: [ASSIGNEE],
+        reviewers: [DEV_ENGINEER, SHOP_REVIEWER_1, FLAGGED_FIRST, DEV_REVIEWER_A],
+      });
+
+      const result = await t.sweep.sweep(NOW, { force: true });
+
+      expect(result).toMatchObject({ prTasksCreated: 1, failed: 0 });
+      expect(t.fixture.created).toEqual([expect.objectContaining({ kind: "review", assigneeAgentId: REV_A })]);
+      expect(t.wakes).toEqual([{ agentId: REV_A, issueId: "task-review-7" }]);
+    });
+
+    it("raises no_reviewer and creates no task when the author's group has no eligible reviewer", async () => {
+      const t = prSetup({}, {
+        authorAgents: [ASSIGNEE],
+        reviewers: [DEV_ENGINEER, SHOP_REVIEWER_1, FLAGGED_FIRST],
+      });
+
+      const result = await t.sweep.sweep(NOW, { force: true });
+
+      expect(result).toMatchObject({ prTasksCreated: 0, signaled: 1 });
+      expect(t.fixture.created).toHaveLength(0);
+      expect(readReviewRoutingSignals(COMPANY)).toEqual([
+        expect.objectContaining({ kind: "no_reviewer", pr: { repository: "acme/widgets", number: 7, headSha: "aaaaaaaa" } }),
+      ]);
+    });
+
+    it("an author with no linked agent has no known group: only the queue flag filters", async () => {
+      const t = prSetup({}, { reviewers: [FLAGGED_FIRST, DEV_REVIEWER_A] });
+
+      const result = await t.sweep.sweep(NOW, { force: true });
+
+      expect(result).toMatchObject({ prTasksCreated: 1, failed: 0 });
+      expect(t.fixture.created).toEqual([expect.objectContaining({ kind: "review", assigneeAgentId: REV_A })]);
+    });
   });
 });
 

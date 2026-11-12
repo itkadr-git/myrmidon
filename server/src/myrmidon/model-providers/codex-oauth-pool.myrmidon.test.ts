@@ -160,6 +160,85 @@ describe("myrmidon(1.6.6 OPE-10810) Codex OAuth pool accounts, limit windows and
       expect(res.summary?.disabled).toBe(1); // #3 is K-12 disabled
       expect(res.summary?.exhausted).toBe(1); // #4 is exhausted
       expect(res.summary?.banned).toBe(1); // #5 is banned
+      expect(res.summary?.error).toBe(0);
+    });
+
+    it("myrmidon(OPE-12361): counts error accounts in summary, excludes them from live, and handles empty name/email", async () => {
+      const rawAccounts = [
+        {
+          account_number: 1,
+          label: "",
+          email: "",
+          plan: "plus",
+          state: "active",
+        },
+        {
+          account_number: 2,
+          label: "Account Active #2",
+          plan: "pro",
+          state: "active",
+        },
+        {
+          account_number: 3,
+          label: "Account Error #3 (TOS)",
+          plan: "team",
+          state: "error",
+        },
+        {
+          account_number: 4,
+          label: "Account Error #4 (TOS)",
+          plan: "team",
+          state: "error",
+        },
+      ];
+
+      const { service } = createServiceWithCatalog(rawAccounts);
+      const res = await service.listChannels("company-1", "prov-pool");
+
+      expect(res.channels).toHaveLength(4);
+      expect(res.channels[0].n).toBe(1);
+      // Empty connector labels must become the localized UI sentinel Account #1.
+      expect(res.channels[0].label).toBe("Account #1");
+
+      expect(res.summary).toBeDefined();
+      expect(res.summary?.total).toBe(4);
+      expect(res.summary?.live).toBe(2); // #1 and #2 only, error accounts excluded
+      expect(res.summary?.error).toBe(2);
+      expect(res.summary?.exhausted).toBe(0);
+      expect(res.summary?.disabled).toBe(0);
+    });
+
+    it("myrmidon(OPE-12361): ignores stale channel windows and preserves the next future reset", async () => {
+      const nowEpoch = Math.floor(Date.now() / 1000);
+      const staleEpoch = nowEpoch - 86400 * 18;
+      const futureEpoch = nowEpoch + 86400 * 3;
+      const laterFutureEpoch = nowEpoch + 86400 * 7;
+
+      const accounts = [
+        {
+          account_number: 1,
+          label: "Stale Account",
+          plan: "plus",
+          state: "active",
+          windows: { primary: { resets_at: staleEpoch } },
+        },
+        {
+          account_number: 2,
+          label: "Future Account",
+          plan: "plus",
+          state: "active",
+          windows: {
+            primary: { resets_at: laterFutureEpoch },
+            secondary: { resets_at: futureEpoch },
+          },
+        },
+      ];
+
+      const { service } = createServiceWithCatalog(accounts);
+      const result = await service.listChannels("company-1", "prov-pool");
+
+      expect(result.summary?.nextResetAt).toBe(futureEpoch);
+      expect(result.summary?.nextResetText).toBeNull();
     });
 
     it("maps 5-hour primary and weekly secondary limit windows correctly", async () => {

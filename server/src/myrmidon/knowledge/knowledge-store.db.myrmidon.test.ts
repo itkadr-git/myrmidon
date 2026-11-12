@@ -41,6 +41,7 @@ import { knowledgeRoutes } from "./routes.js";
 import { errorHandler } from "../../middleware/index.js";
 import { createDbRegulationStore } from "../wiki-cortex/store.js";
 import { createKnowledgeAutonomyRegulationsBackend } from "../autonomy/knowledge-regulations.js";
+import { writeNestRedactConfig } from "../redact/store.js";
 import { resolvedRules } from "./rules.js";
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
@@ -638,6 +639,25 @@ describeEmbeddedPostgres("myrmidon(1.6.6 KNOWLEDGE-2.0 K-1) knowledge store over
     expect(events.some((event) => event.event === "knowledge.suggested")).toBe(true);
   });
 
+  it("1.7 L-12: a debate source is persisted (source_kind='debate') and read back", async () => {
+    companyId = await makeCompany();
+    const store = makeStore();
+    await store.create({ companyId, nestId: companyId, slug: "debate-slug", title: "T", content: "c" }, AGENT);
+    const debateId = "55555555-5555-4555-8555-555555555555";
+    const suggestion = await store.suggest(companyId, BOT, {
+      companyId,
+      body: "The debate concluded: pin provider versions in the lockfile.",
+      rationale: "debate outcome",
+      targetSlug: "debate-slug",
+      sourceKind: "debate",
+      sourceRef: debateId,
+    });
+    expect(suggestion.status).toBe("pending");
+    const [row] = await db.select().from(knowledgeSuggestions).where(eq(knowledgeSuggestions.id, suggestion.id)).limit(1);
+    expect(row!.sourceKind).toBe("debate");
+    expect(row!.sourceRef).toBe(debateId);
+  });
+
   it("suggest with same idempotencyKey returns existing suggestion without creating duplicate (S8 idempotency)", async () => {
     companyId = await makeCompany();
     const store = makeStore();
@@ -1083,8 +1103,46 @@ describeEmbeddedPostgres("myrmidon(1.6.6 KNOWLEDGE-2.0 K-1) knowledge store over
       expect(newRev.summary).toBe("Updated summary");
     });
   });
-});
 
+  describe("myrmidon(1.7-REDACT) per-nest redaction on create/draft (OPE-8660)", () => {
+    it("a nest rule and dictionary redact the content before it is stored; another nest keeps plain text", async () => {
+      companyId = await makeCompany();
+      const nestWithRules = companyId;
+      const nestPlain = await makeCompany();
+      const mod = createKnowledgeModule(db, companyId);
+      await writeNestRedactConfig(db, nestWithRules, {
+        rules: { contracts: false, invoices: false, signers: false },
+        counterparties: { "Acme LLC": "[COUNTERPARTY]" },
+      });
+      const created = await mod.create(
+        { slug: "redacted", title: "Redacted page", content: "Acme LLC supplies invoice 42", summary: "check" },
+        AGENT,
+      );
+      expect(created).not.toHaveProperty("content"); // the item DTO carries no content
+      const rev1 = (await mod.listRevisions("redacted"))[0]!;
+      expect(rev1.content).toBe("[COUNTERPARTY] supplies invoice 42");
+
+      // The nest without a stored row keeps the safe default behaviour and the
+      // disabled rules leave contract numbers untouched.
+      const plain = createKnowledgeModule(db, nestPlain);
+      await plain.create(
+        { slug: "plain", title: "Plain page", content: "Acme LLC supplies invoice 42", summary: "check" },
+        AGENT,
+      );
+      const plainRev = (await plain.listRevisions("plain"))[0]!;
+      expect(plainRev.content).toBe("Acme LLC supplies invoice 42");
+
+      // The draft path applies the same rules.
+      await mod.draft("redacted", { content: "Acme LLC ships contract №7 too" }, AGENT);
+      const stored = await db
+        .select()
+        .from(knowledgeRevisions)
+        .where(eq(knowledgeRevisions.companyId, nestWithRules))
+        .then((rows) => rows);
+      expect(stored.some((r) => r.content === "[COUNTERPARTY] ships contract №7 too")).toBe(true);
+    });
+  });
+});
 // ----------------------------------------------------------------- hygiene
 // Acceptance criterion: "в коде модуля 0 триггеров и 0 `sql\`` с диалектными
 // операторами" — the module must reach the database only through Drizzle
@@ -1117,6 +1175,8 @@ describe("myrmidon(1.6.6 KNOWLEDGE-2.0 K-1) module hygiene", () => {
       "seed-product.ts",
       "seed.ts",
       "service.ts",
+      "settings-routes.ts",
+      "settings.ts",
       "store.ts",
     ]);
   });
@@ -1131,8 +1191,14 @@ describe("myrmidon(1.6.6 KNOWLEDGE-2.0 K-1) module hygiene", () => {
     });
   }
 
-  it("domain.ts imports nothing from the database layer", () => {
+  it("domain.ts stays comment-free of database-layer references (imports and mention-gate)", () => {
     const text = readFileSync(join(moduleDir, "domain.ts"), "utf8");
-    expect(text).not.toMatch(/@myrmidon\/db|drizzle/);
+    // The import gate: domain.ts must not import @myrmidon/db or drizzle.
+    expect(text).not.toMatch(/^import\s.*(@myrmidon\/db|drizzle)/m);
+    expect(text).not.toMatch(/from\s+"(@myrmidon\/db|drizzle)/);
+    // The mention gate applies to code only: strip comments so the doc comment
+    // naming @myrmidon/db (1.7 L-12 source-kind parity) doesn't trip it.
+    const codeOnly = text.replace(/\/\*[\s\S]*?\*\//g, "").replace(/\/\/.*$/gm, "");
+    expect(codeOnly).not.toMatch(/@myrmidon\/db|drizzle/);
   });
 });

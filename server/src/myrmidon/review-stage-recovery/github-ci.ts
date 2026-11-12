@@ -413,34 +413,52 @@ export async function resolvePullRequestHeadCi(input: {
 }
 
 /** The pull request work product of an issue and its GitHub reference, as far as the board can read them. */
-type IssuePullRequestTarget =
+export type IssuePullRequestTarget =
   | { kind: "none" }
   | { kind: "unreadable"; pullRequestUrl: string | null }
   | { kind: "ok"; pullRequestUrl: string | null; reference: GitHubPullRequestReference };
 
-async function loadIssuePullRequestTarget(
+export async function loadIssuePullRequestTarget(
   db: Db,
   companyId: string,
   issueId: string,
 ): Promise<IssuePullRequestTarget> {
-  const products = await db
-    .select({
-      id: issueWorkProducts.id,
-      type: issueWorkProducts.type,
-      status: issueWorkProducts.status,
-      url: issueWorkProducts.url,
-      metadata: issueWorkProducts.metadata,
-      isPrimary: issueWorkProducts.isPrimary,
-      updatedAt: issueWorkProducts.updatedAt,
-    })
-    .from(issueWorkProducts)
-    .where(
-      and(
-        eq(issueWorkProducts.companyId, companyId),
-        eq(issueWorkProducts.issueId, issueId),
-        eq(issueWorkProducts.type, "pull_request"),
-      ),
-    );
+  let products: Array<{
+    id: string;
+    type: string;
+    status: string;
+    url: string | null;
+    metadata: unknown;
+    isPrimary: boolean | null;
+    updatedAt: Date;
+  }>;
+  try {
+    products = await db
+      .select({
+        id: issueWorkProducts.id,
+        type: issueWorkProducts.type,
+        status: issueWorkProducts.status,
+        url: issueWorkProducts.url,
+        metadata: issueWorkProducts.metadata,
+        isPrimary: issueWorkProducts.isPrimary,
+        updatedAt: issueWorkProducts.updatedAt,
+      })
+      .from(issueWorkProducts)
+      .where(
+        and(
+          eq(issueWorkProducts.companyId, companyId),
+          eq(issueWorkProducts.issueId, issueId),
+          eq(issueWorkProducts.type, "pull_request"),
+        ),
+      );
+  } catch {
+    // myrmidon(OPE-12146): a work-product read that fails (storage degraded,
+    // network loss) is NOT proof that no PR exists. Report it as `unreadable`
+    // so the self-check gate treats it as unknown evidence (a counted
+    // technical rejection), while recovery callers keep their bounded wait.
+    // Only a genuinely empty product list below answers `none`.
+    return { kind: "unreadable", pullRequestUrl: null };
+  }
   const product = selectOpenPullRequestWorkProduct(products);
   if (!product) return { kind: "none" };
   const metadata = asRecord(product.metadata) ?? {};
@@ -455,6 +473,46 @@ async function loadIssuePullRequestTarget(
   const reference = extractGitHubPullRequestReferences([effectiveUrl, repo && number ? `${repo}#${number}` : null])[0] ?? null;
   if (!reference) return { kind: "unreadable", pullRequestUrl: effectiveUrl };
   return { kind: "ok", pullRequestUrl: effectiveUrl, reference };
+}
+
+/**
+ * myrmidon(OPE-12177): the head SHA of the issue's open pull request as the
+ * stored work-product metadata holds it (kept fresh by the PR sync sweep and
+ * the GitHub webhook). No GitHub read and no token; the review-admission
+ * dedup key uses it so the same head dedups and a moved head wakes again.
+ */
+export async function readReviewPullRequestHeadSha(input: {
+  db: Db;
+  companyId: string;
+  issueId: string;
+}): Promise<string | null> {
+  try {
+    const products = await input.db
+      .select({
+        id: issueWorkProducts.id,
+        type: issueWorkProducts.type,
+        status: issueWorkProducts.status,
+        isPrimary: issueWorkProducts.isPrimary,
+        updatedAt: issueWorkProducts.updatedAt,
+        metadata: issueWorkProducts.metadata,
+      })
+      .from(issueWorkProducts)
+      .where(
+        and(
+          eq(issueWorkProducts.companyId, input.companyId),
+          eq(issueWorkProducts.issueId, input.issueId),
+          eq(issueWorkProducts.type, "pull_request"),
+        ),
+      );
+    const product = selectOpenPullRequestWorkProduct(products);
+    const metadata = asRecord(product?.metadata);
+    const headSha = metadata?.headSha;
+    return typeof headSha === "string" && headSha.trim() !== "" ? headSha.trim() : null;
+  } catch {
+    // An unreadable store must not fail the wake path: the key falls back to
+    // the legacy agent-keyed format.
+    return null;
+  }
 }
 
 export function createReviewPullRequestCiResolver(input: {

@@ -10,6 +10,375 @@ version file to edit. Base Paperclip version is in the image label
 
 ## Unreleased
 
+## 1.6.7
+
+### Corpus: the full-text ranking starts after the embedding again (1.6.7 CORPUS-LATENCY, OPE-12272)
+
+- The change "the full-text ranking starts together with the embedding" is taken back. The full-text
+  ranking has a time bound of 800 ms. When it started first, the bound ran out while the question was
+  still being embedded, and whether the ranking finished in time or was cancelled depended on a race with
+  the embedding and with the load of the database. The top 5 of the same question then changed between
+  identical runs (21 of 70 questions of the golden set, against 5 before), and hit@5 of the cold run fell
+  to 57 of 70 (the limit is 58).
+- A search embeds the question first and then starts the vector and the full-text ranking side by side, as
+  it did in the full-text bound change. `CorpusSearchQuery.embedding` is a plain vector again.
+- Kept from the same change: the cache of the resolved embedder key
+  (`MYRMIDON_CORPUS_EMBED_KEY_CACHE_TTL_SEC`) and the sampled step timings on the info log
+  (`MYRMIDON_CORPUS_STEP_TIMINGS_SAMPLE`).
+
+### Saving the bot disk settings no longer erases keys the screen does not show (SETTINGS-BOTDISK-MERGE)
+
+- Found by QA on 1.6.7-rc.9: after a Save of Settings -> General -> "Bot disk lifecycle" the stored `general.botDisk.gitMigrationEnabled: true` was gone, so `MYRMIDON_GIT_MIGRATION_ENABLED` was no longer set when a bot container was recreated.
+- Cause: `PATCH /api/myrmidon/bot-disk` merges the patch over `resolveBotDiskSettings(...).settings` and stores the result as the whole `botDisk` object (instance settings replace nested objects). That effective view left out the five BOT-DISK-H5c / OPE-9673 mechanics keys (`botdIntervalSec`, `legacyPressureIdleDays`, `hermesPruneEnabled`, `hermesPruneDays`, `gitMigrationEnabled`), so any PATCH of another key (also every Save of this panel) dropped them from the row.
+- Fix: the effective settings now carry every stored mechanics key, so the merge keeps them; an explicit `null` still returns a key to its default. `GET /api/myrmidon/bot-disk` shows these keys when they are stored. No contract change, no UI change.
+
+## 1.6.7
+
+### Settings → General no longer crashes on the Runs & Queue panel (SETTINGS-GENERAL-CRASH)
+
+- Fixed: a few seconds after opening Settings → General the page fell to the error screen "values is not iterable". The Runs & Queue panel read a `values[]` array from `GET /api/myrmidon/behavior-settings`, while the server answers `{ settings, sources }` (the contract every other behavior-settings panel uses). The panel now reads that contract; a response of any other shape, or a failed request, is shown as an error inside the panel and never takes the page down. A value typed into a field that cannot be parsed is flagged and not sent.
+- Fixed: a non-administrator who opens the Channels or Bot disk settings now sees "Нужны права администратора экземпляра" / "Instance admin access required" (translated) instead of raw English or no message at all.
+- Fixed: the swarm "scent" block of Settings → General showed raw `swarmClaim.scent.*` keys; the ru/en strings are added.
+- Test: the server contract test now pins that `GET /api/myrmidon/behavior-settings` answers `{ settings, sources }` and carries every runs-queue key; the panel's key list is checked against the registry.
+
+### Instance → General: the "Workspace hygiene" panel is on the page (1.6.7 SETTINGS-UI, OPE-6249)
+
+- The two disk ceilings of the workspace quota sweep, `workspaceQuotaMb` (one execution workspace) and
+  `totalQuotaMb` (the sum of one company's measured workspaces), had a read/write route
+  (`GET`/`PATCH /api/myrmidon/workspace-hygiene`) and a finished panel component, but the component was
+  never placed on the page, so the production UI had no way to see or change them. The panel "Workspace
+  hygiene" now sits on Settings → General next to the bot disk panels. It shows both ceilings, the source
+  of each value (default, environment override, saved here), the biggest measured workspaces and the last
+  sweep, and saves through the existing `PATCH` route. An empty field means the cap is off.
+- A save applies at once: the sweep reads the stored ceilings at the top of every tick, no restart.
+- The source labels of the panel went through i18n (they were fixed English strings). A save or a read
+  refused with 403 now says "Instance admin rights are required." instead of the raw server text; the
+  `PATCH` route stays instance-admin only.
+- The merged-workspace cooldown and the stuck-workspace signal delay stay in the Runs & Queue panel; they
+  are not part of this one.
+
+## 1.6.7
+
+### Corpus: the embedder key is kept for 60 s, the full-text ranking starts with the embedding, and the step timings reach the info log (1.6.7 CORPUS-LATENCY, OPE-12272)
+
+- A cold question needs the API key of the company's embedder secret. The secrets service resolved it
+  on every such question: several reads and one write of a secret access event, and the reads queue
+  behind a busy database. The resolved key is now kept in the board process for 60 s (setting
+  `MYRMIDON_CORPUS_EMBED_KEY_CACHE_TTL_SEC`, `0` turns it off). The lookup of the secret row still runs
+  on every question and the cache key holds the secret id and its latest version, so a rotated,
+  replaced or deactivated secret is never served from an older entry. An embedder without the secret
+  still answers `corpus_embedder_not_configured` at once.
+- **Audit change, on purpose.** The access event of the embedder secret is written when the key is
+  actually resolved, that is at most once per TTL and company (and once per secret version), not on every
+  search. A reader of the access log sees about one `myrmidon-corpus` read a minute under load instead
+  of one per cold question. Set the TTL to `0` to get one event per question again.
+- The full-text ranking of a search does not need the vector. A search now starts the embedding and the
+  full-text ranking together: the index receives the embedding as a promise (the type of
+  `CorpusSearchQuery.embedding` is `number[] | PromiseLike<number[]>`), runs the full-text ranking at
+  once and runs the vector ranking when the embedding is ready. The 800 ms time bound of the full-text
+  ranking runs from its own start, so it now elapses while the question is still being embedded. The
+  fusion and the hits are the same as before; a failed embedding still fails the search; a cancelled
+  full-text ranking is still replaced by the vector ranking alone.
+- The step timings of a search (`corpus search: handler step timings` of the REST route, the new
+  `corpus mcp search: handler step timings` of the agent route, and `corpus search: embed and index
+  timings`) went to the debug log. One search in N now writes them on the info log, so the split of a
+  slow search can be read in production without debug (setting
+  `MYRMIDON_CORPUS_STEP_TIMINGS_SAMPLE`, default 20; `1` is every search, `0` keeps them on debug). The
+  other searches still write them on debug.
+
+## 1.6.7
+
+### MODEL-PROVIDERS-POOLS-WEB: model channels, the ChatGPT and Antigravity pools, the fallback order and the agent key lists work from the board web UI
+
+- The "Model providers" screen called `/model-providers/providers/...`, a path the server never had, so every call answered 404 (the list, the model list, the channels, the key rotation and the removal). The client now calls the paths the server mounts: `/model-providers` and `/model-providers/:id/...`. The change log of the screen no longer adds a second `/api` prefix, and the LiteLLM channel rows of both server spellings fill the same table columns.
+- The `antigravity-pool` and `google-ai-pool` provider types are registered when the plugins `myrmidon.antigravity` and `myrmidon.google-ai` are ready, as `chatgpt-pool` is. Both support channels. `antigravity-pool` brings the four model groups `antigravity/gemini-3.8-flash-high`, `antigravity/gemini-3.8-flash-medium`, `antigravity/gemini-3.8-flash-low` and `antigravity/gemini-3.5-flash-lite`; the model id is the LiteLLM group name. `google-ai-pool` has no default models. A connector that declares no models no longer gets the ChatGPT models. The pool service address has no default for these two types: enter it in the base URL field.
+- A pool lives on its own LiteLLM deployments. For `chatgpt-pool`, `antigravity-pool` and `google-ai-pool` the board sends no `/model/new`, `/model/update` or `/model/delete` when a model is enabled or disabled, when the key is rotated, when the provider is removed, or at the startup reconciliation. The board still shows or hides the pool models, and the fallback order (`GET` and `PUT .../litellm/fallbacks`) and the agent key lists stay board settings. The LiteLLM provider prefix of the pool types is now `openai`.
+- Removing a provider that is not a pool deletes only its own gateway deployments, found by deployment id and by the provider's own `api_base`. Before this change a removal deleted every database deployment of each removed model group, which also removed the deployments of other providers and of the pool routers.
+- The agent key allowlist pass read no enabled model (the joined rows were keyed by the SQL table names), so it never changed a key. It reads the registry now. To keep it from rewriting the model lists of every restricted key on its own, the startup check and the provider-change hooks run it as a dry run: they count the keys that would change, log the model names that would be added or removed, and send nothing. Applying is an explicit owner or admin action: `POST /api/myrmidon/companies/:companyId/litellm/keys/allowlist-sync` answers the dry-run report, and `?apply=true` applies it.
+
+## 1.6.7
+
+### Native runner: the gateway address now reaches Codex through its config file
+
+Codex 0.157 ignores the `OPENAI_BASE_URL` environment variable and reads the gateway address only
+from the `openai_base_url` key of its config. Passing the variable (previous fix) was therefore not
+enough: a native Codex agent that used an LLM gateway (for example LiteLLM) still sent its gateway
+key to api.openai.com and got 401 on the first turn. When the agent environment has
+`OPENAI_BASE_URL`, the native runner now also writes `openai_base_url = "<url>"` to the
+`config.toml` of the isolated Codex home, ahead of all tables and next to the existing keys. Only an
+`http://` or `https://` address without whitespace, quotes or control characters is accepted; any
+other value stops the launch with a clear error that does not repeat the value. Without
+`OPENAI_BASE_URL` the config is unchanged.
+
+### Corpus: a search no longer counts every dataset, and a repeated question reuses its vector (1.6.7 CORPUS-LATENCY, OPE-12272)
+
+- The `corpus_search` tool (the route the agents use) called the same store read as `corpus_list_datasets`
+  on every search. That read counts the documents and the chunks of every dataset of the company, to get
+  the id and the name of each dataset. On a corpus of hundreds of thousands of chunks it took 3 to 5 s, so
+  the agent route was about 3 s slower than the REST search of one dataset. The search now reads only the
+  ids and names (new store port method `listDatasetNames`, one query with no counters). The answer of the
+  search does not change: the same datasets, the same hits, the same `datasetName` in each hit. The tools
+  `corpus_get_document` and `corpus_list_documents` also take the dataset name from this read and no
+  longer count the dataset.
+- The dataset list with its counters (`corpus_list_datasets`, the board screen, the shadow search) is kept
+  per company for 60 s. A write through the corpus ports (dataset, document or chunk change) drops the
+  list of that company at once, so an upload, a parse result or a delete shows in the list without
+  waiting. A change made outside the board process (an import script on its own connection) shows after
+  at most the TTL. The counters of one dataset (`getDataset`) no longer load every document row to count
+  the documents: the count is the sum of the per-status counts that the same read already had.
+- The vector of a search question is kept for 600 s (was 60 s) and for at most 512 questions (was 128),
+  so a repeated question, for example a run of a golden set, does not call the embedder again. The key is
+  the company, the embedder (base URL, model, dimensions) and the exact text of the question. Identical
+  questions in flight at the same time share one embedder call. A failed embedder call is never kept.
+- Two new settings, both in seconds: `MYRMIDON_CORPUS_QUERY_EMBED_CACHE_TTL_SEC` and
+  `MYRMIDON_CORPUS_DATASET_LIST_CACHE_TTL_SEC`. `0` turns the matching cache off.
+
+## 1.6.7
+
+### A bot's npx and cargo caches stay under a byte quota (OPE-12110)
+
+One bot grew `hermes/.npm/_npx` by 2.2 GB in 45 minutes (npx fetched a whole vendor package with all
+its binaries), and a Rust `target/` in a task working copy reached 2.4 GB. botd now bounds both:
+
+- `hermes/.npm/_npx`: entries older than 24 h are removed, and when the rest weighs more than the
+  quota (512 MiB per bot) the entries written longest ago go first, until it fits.
+- `hermes/.cache/cargo-target`, the per-bot `CARGO_TARGET_DIR` the bot image already sets (outside
+  every task working copy): quota 2 GiB per bot, whole profile dirs (`debug`, `release`, a target
+  triple) removed least recently written first. A bot that never builds Rust has no such directory
+  and nothing creates it.
+
+Both passes work on whole entries, never remove a path a process holds open, and never touch an entry
+written in the last 15 minutes (an install or a build may still be going), so a quota can stay
+exceeded for one pass. Each eviction is a line in the botd log. The quotas are set with
+`MYRMIDON_BOTD_NPM_NPX_QUOTA_BYTES` and `MYRMIDON_BOTD_CARGO_TARGET_QUOTA_BYTES` on the botd process.
+
+## 1.6.7
+
+### Corpus: the full-text part of a search has a time bound, and the two parts run side by side (1.6.7 CORPUS-SEARCH)
+
+- A search of the knowledge corpus ranks chunks twice: by vector distance and by full text. The full-text
+  part of a natural-language question matched a large part of a big corpus and scored every match, and it
+  also computed a trigram `similarity` over the whole text of every match. On a corpus of 285 000 chunks
+  it took 9.8 s on average and up to 104 s, while the vector part took 0.4 s.
+- The full-text part now runs in its own transaction with `statement_timeout` of 800 ms (new option
+  `fullTextTimeoutMs`; `0` sets no bound of its own). When the server cancels it, the search answers from
+  the vector part alone, and the server log gets a warning with the company, the datasets, the length of
+  the query text and the time used. Every other error is still an error. A search that has no vector
+  part (a text-only search) has nothing to fall back on, so it returns the cancel error and not an empty
+  list.
+- The vector part and the full-text part run at the same time, each in its own transaction on its own
+  pooled connection, so a search takes the longer of the two and not their sum. A search holds two
+  connections while it runs.
+- For a question without the substring match, `similarity` now runs only over the best 1 000 chunks by
+  `ts_rank` (new option `fullTextRerankPool`; `0` brings the old statement back). Short query texts and
+  identifiers keep their statement and their order.
+
+### Remote sites: plain http is checked against the site record, fleet calls are audited, snapshots drop secret files
+
+- The hermes adapter allowed plain http to a bot gateway on a remote site when only the host name matched the site.
+  It now needs all of these: the site is active and marked `privateNetwork` or `tunnel`; the site address and the
+  target are IP literals in a private range (RFC 1918, RFC 6598 shared address space or loopback); the target host is the site host;
+  and the target port is inside the gateway port range of the site record (`gatewayPortStart`..`gatewayPortEnd`).
+  A site record without a port range allows no plain-http port. The `dangerouslyAllowInsecureRemoteHttp` flag of a
+  card is not changed.
+- The site registry is the only source of the site. The `fleetSite` and `fleetSites` fields of a card were read
+  before the registry and could describe a site that does not exist; they are not read any more.
+- `PATCH /api/myrmidon/fleet/sites/:name` takes `privateNetwork: true` and `tunnel: true` for a private IP address of
+  the site only (400 otherwise), and a site that carries a flag cannot be moved to another kind of address unless
+  the flags are cleared in the same request. The request also takes `gatewayPortStart` and `gatewayPortEnd`, so a
+  site that has no range (the env bootstrap writes none) can get one.
+- `MYRMIDON_FLEET_HOSTS` is deprecated. An `http://` address in it (`url`, `hindsightUrl`, `llmBaseUrl`) must now be
+  a private IP literal; a DNS name or a public address is refused. The board logs a warning at start while the
+  variable is set. Register sites with `POST /api/companies/:companyId/fleet/sites` instead.
+- Control calls on remote sites leave a row in the company activity log: `fleet.site.enroll`, `fleet.site.patch`,
+  `fleet.site.drain`, `fleet.site.resume`, `fleet.site.delete`, `fleet.bot.restart`, `fleet.bot.stop`,
+  `fleet.bot.move`, `fleet.bot.logs` (entity `fleet_site` or `agent`). A row says who, what, the outcome
+  (`ok`, `denied`, `rejected`, `failed`) and a few non-secret facts. It never holds a token, a secret name, a
+  certificate or a log. Only an actor of the company writes into its trail. Reading a log is recorded once a minute
+  per actor and bot.
+- The replica store no longer keeps the secret profile files. A stored snapshot leaves out `hermes/.env` and
+  `hermes/config.yaml` (the files the profile compiler writes as secrets), and its manifest is rewritten to match.
+  The apply that follows every restore writes the files again. A snapshot that cannot be read and checked in full is
+  refused, and the previous replica stays. Replicas that were stored before this change are replaced on the next two
+  snapshot passes.
+
+### Remote sites: the board generates the site token, enroll is owner-only and limited to private addresses, bots of remote sites no longer break the local bot lists
+
+- `POST /api/companies/:companyId/fleet/sites` no longer takes `tokenSecret`. The field named any secret of the company, and the board then sent the value of that secret as a bearer token, together with its client certificate, to the address from the same request. The board now generates a random token for each new site, keeps it in the company secret `myrmidon-fleet-site-token-<site>`, and returns it once in the enroll answer as `fleetd.token`. Put it in the `token` key of `fleetd.json`. A request that carries `tokenSecret` gets `400`. A site that is already enrolled keeps its own token secret and needs no action.
+- The host of a site address (enroll, and a changed `url` in `PATCH`) must be a private IPv4 address (10/8, 172.16/12, 192.168/16, 100.64/10) or a host listed in the new setting `MYRMIDON_FLEET_SITE_URL_ALLOWLIST`. Any other host gets `400` and the board issues no certificate and no key. A `PATCH` that leaves the stored address as it is is not checked again.
+- Enroll, `PATCH` and delete of a site are for the company owner (and the instance admin). Before, a company admin could do it. Drain, resume, restart and stop stay open to the company admin.
+- Moving a bot to another site, reading the status of a move and reading the log of a bot of a remote site (`/fleet/bots/:key/move`, `/fleet/bots/:key/logs`, `/api/myrmidon/fleet/bots/:key/logs`) need a company admin. Before, any member of the company could do it.
+- The enroll answer carries `Cache-Control: no-store`: it holds the server key and the token.
+- Deleting a site also deletes the token secret that the board generated for it. The token secret of an older site is never deleted with the site.
+- The fleet router lists bots per host. `list` and `listRunning` sent every bot key to the local driver and to every site. The local dockergate refused each bot of a remote site (`bot_not_enrolled`), and one refused call failed the whole list, so the clone-report pass and the idle sweep saw no bot. Now each host gets only the bots of its own cards. A host that fails no longer fails the list: the failure is logged (`fleet routing: a host could not be listed`), and the list fails only when no host answered. The clone-report key list and the disk-quota sweep skip bots that run on a remote site.
+
+### fleetd: audit log, request limits, client certificate allowlist and clean-up
+
+- fleetd writes one JSON audit line per API request to stdout (the journal): time, route, method,
+  bot key, status, the SHA-256 of the client certificate and the duration. Bodies, query strings
+  and tokens are not logged.
+- A JSON request body is limited to 1 MiB. A restore is limited to 20 GiB of file content and
+  2,000,000 archive entries; above that it answers `413 restore_too_large` and changes nothing.
+  The HTTP server now has header, read and idle timeouts. It has no write timeout, so a long
+  snapshot is not cut.
+- New optional key `clientCertSha256` in `fleetd.json`: a list of SHA-256 fingerprints of the
+  client certificates that may call the API. When the list is set, fleetd refuses any other
+  certificate in the TLS handshake. When it is empty or absent, nothing changes. The board renews
+  its client certificate, so do not pin a fingerprint without a plan for the renewal.
+- fleetd removes the `.replaced-*` and `.quarantined-*` directories that are older than 7 days
+  from the volume root, at start and then every 24 hours.
+- The out-of-memory listener now also reports the containers that fleetd creates itself
+  (`fleet-<botKey>`), not only `myrmidon-bot-*`.
+- A systemd drop-in with sandboxing options for the fleetd unit is added in
+  `docs/myrmidon/fleetd/myrmidon-fleetd.service.d/`.
+
+### fleetd on a remote site: a safe marker read, the same container template, writable caches
+
+- A bot can no longer stall or exhaust fleetd through its applied marker. fleetd runs as root and
+  reads `hermes/.myrmidon/applied.json` from a directory the bot owns. It now opens the file without
+  following a symlink and without blocking, accepts only a regular file, and reads at most 64 KiB.
+  A symlink, a FIFO, a directory or a larger file counts as "no marker".
+- A container on a remote site now gets the template of the board host: `/tmp` as a tmpfs, an init
+  process, the `on-failure` restart policy, and `MemorySwap` equal to `Memory`. A container that
+  exists already gets the template at its next recreate.
+- fleetd refuses a spec with `cpus` below 0.01 (a tiny value used to round to "no CPU limit"), with
+  a `gatewayPort` outside 1024-65535, or with a `boardExtraHost` that differs from the site's own.
+  The answer is `spec_invalid`. The board address in a container always comes from the site
+  configuration.
+- New configuration key `writableMountRoots` (default: empty). An extra mount without `readOnly` is
+  accepted only when its source, with symlinks resolved, is inside one of these directories (and
+  inside `allowedMounts`). Work bots can use their shared package caches on a remote site. Roll out
+  the new binary before the configuration that uses the key.
+
+### Gateway channels and fallbacks managed from the board (LITELLM-BOARD)
+
+- `GET /api/myrmidon/companies/:companyId/litellm/channels` lists the gateway deployments again. The
+  model-provider routes are mounted first and used to answer that path with
+  `{channels: [], enabled: false}`. They now serve only
+  `/model-providers/litellm/channels`, the model-group list of the provider screen.
+- The fallback topology lives in the gateway only. `GET .../litellm/fallbacks` reads the live router
+  settings; `PUT .../litellm/fallbacks` sends the whole list with `POST /config/update`. The board no
+  longer keeps a copy of the topology in its own database, and a save the gateway refuses is no longer
+  reported as stored. A `PUT` without a `chains` list answers 400 instead of clearing the list.
+- The model catalog reads the provider of a model from `model_info.litellm_provider`
+  (`custom_llm_provider` stays as the second choice). Before, every catalog row had no provider and
+  every fallback save was refused for it.
+- A fallback inside one provider (for example `zai-glm-5.3` to `zai-glm-5.3-flash`) is allowed. The
+  answer lists it in `warnings`, as it lists a model whose provider the catalog does not know. A target
+  that is not in the catalog, a loop, a free channel after a paid one and a cheaper channel after a
+  dearer one are still refused with 422.
+- `PUT .../litellm/fallbacks` stays behind the admin-key setting. Without it the answer is 503 with
+  `code: litellm_gateway_not_configured` and `missing` — the names of the variables to set.
+
+### Board-to-gateway sync: provider and channel keys, order, pause, names, agent keys
+
+The board registered models and channels in LiteLLM in ways the gateway ignores or rejects. All of it is
+now checked against LiteLLM v1.104.1.
+
+- **Keys travel as values.** LiteLLM has no secret manager here, so a `secrets/<name>` reference was stored
+  as the key, and a plugin model went out with an empty one. The board now resolves the company secret and
+  sends its value, for provider models, plugin models, channels and the startup reconciliation (which built
+  its sync service without a resolver and failed on the first enabled model of a company). A secret with no
+  value is an error, never an empty key.
+- **Order is `litellm_params.order`.** `/model/update` writes only `litellm_params`, so the order, priority and
+  disabled flags the board put in `model_info` were dropped. `priority`, `disabled` and `provider` are not
+  LiteLLM parameters and are no longer sent. A deployment without an order is only used when no ordered one
+  of its group is healthy.
+- **Disabling a channel pauses it.** LiteLLM has no `disabled` parameter; it has a pause flag. Disabling calls
+  `/model/block`, enabling calls `/model/unblock`; the router skips a paused deployment, and the definition
+  and the stored key stay in the gateway. Only deployments stored in the gateway database can be paused. A
+  channel can be created paused.
+- **Removing a model works.** `/model/delete` takes only a deployment id; the board sent model names and every
+  removal failed. It now looks the deployments up and deletes them by id. Switching a model off removes only
+  the deployment on the provider's own endpoint; deployments from the static gateway config are never touched.
+- **Key rotation keeps the group's other channels.** Rotating a provider key updated the first deployment under
+  the model name and deleted the other ones. It now rotates only the deployment on the provider's endpoint and
+  never deletes a channel on another endpoint.
+- **The registry name can be set.** The model's LiteLLM name was always `<type>/<model name>`, so it could not
+  match a group that already exists (`kimi/kimi-for-coding`). It can now be given when the provider is created
+  (`litellmModelNames`) and changed with the model update (`litellmModelName`, while the model is disabled).
+  The upstream model is always the provider's own model name. Registering the same name on the same endpoint
+  again no longer adds a second deployment.
+- **Agent keys are found where agents keep them.** The allowlist update looked for a `llm-gateway-key-<name>-<id>`
+  secret that live agents do not have. It now follows the card's key binding (`MYRMIDON_LLM_API_KEY`, else
+  `apiKey`) to the secret value and updates the key through `/key/update` by its sha256. Keys that allow all
+  models are still left alone, and an empty allowlist is still never sent when models are switched off.
+
+## 1.6.7
+
+### Native runner: Codex can use an OpenAI-compatible gateway
+
+The native runner passes only an allowlist of environment variables to the Codex app-server. The
+list had the API key but not `OPENAI_BASE_URL`, so a Codex agent that was configured for an LLM
+gateway (for example LiteLLM) still sent its requests, and its key, to api.openai.com and got
+401. `OPENAI_BASE_URL` is now on both allowlists (the TypeScript transport and the Rust runnerd).
+It is an address, not a credential.
+
+### A bot on a remote site can read its managed skills
+
+fleetd writes the profile files of a bot on a remote site. It created the missing directories of a
+file as its own user and gave the bot user only the file's own directory. So `hermes/skills` and
+`hermes/skills/paperclip-managed` stayed owned by root with mode 0700, and the bot gateway failed:
+"Permission denied: /data/hermes/skills/paperclip-managed". fleetd now gives the bot user every
+directory between the bot volume root and the file. The volume root itself stays as it is.
+
+## 1.6.7
+
+### An approved pull request whose head moved goes back to the implementer instead of waiting forever
+
+The board merge loop only merges the head a review verdict names. When the branch moved after
+the approval (a new push, or the base merged in), the loop skipped the pull request silently and
+nobody was asked to look again: approved PRs sat open for a day with green CI. Now, when the verdict
+names another head, the task goes back to the implementer with a "head moved after approval" note,
+the same path as a conflict or a branch behind its base; the implementer resubmits and the reviewer
+approves the current head. A verdict that names no head is still skipped.
+
+### Corpus search no longer loads every hit's chunks and jobs
+
+One corpus search resolved each hit's document with a full read that also loaded the
+document's chunks (embeddings included) and parse jobs, and the dataset check loaded every
+document of the dataset (OPE-12272). Both are now one bounded company-scoped query (document
+titles for the hits, dataset existence), and the search handler and the search index log
+their step durations on the debug log (`corpus search: handler step timings`,
+`corpus search: embed and index timings`), so a slow search can be attributed to the
+embedding call or to the SQL.
+
+### Remote sites: fleet restart/stop/logs reach the site, the network profile is editable, a new bot's first apply no longer races
+
+- Fleet bot actions (`POST /api/myrmidon/fleet/bots/:key/restart|stop`, `GET …/logs`) looked up the site transport
+  as `companyId:siteName`, while the client manager keys it as `companyId/siteName` (`fleetSiteKey`): every call
+  answered 502 "no valid mTLS client certificate". The lookups now use `fleetSiteKey`.
+- The same `companyId:siteName` lookup broke the bot move between sites (`fleet-move-wiring`); fixed the same way.
+- The fleet client manager kept the old site row when a refresh found the connection unchanged, so a changed
+  profile, status or capacity never reached `getSite()` (the hermes adapter's plain-http check) until a restart.
+  The fresh row now replaces the cached one; the client is kept.
+- `PATCH /api/myrmidon/fleet/sites/:name` accepts `privateNetwork` and `tunnel` and merges them into the stored
+  site profile (admin only). A site enrolled without `privateNetwork` could not get it later, and the hermes
+  adapter refused its plain-http gateway on an IPsec-internal address.
+- The bot profile compiler ensures the card's board API key before the parallel block: the MCP source listing
+  ensures it too, and on a new bot's first apply the two concurrent get-or-create calls both created the
+  secret ("Secret already exists: …-paperclip-api-key").
+
+### OMP agents resume their session again with omp 18.9.2
+
+omp 18.9.2 writes a `{"type":"title",…}` line before the `{"type":"session",…,"cwd":…}`
+header of a session file. The omp-local adapter read only the first line, never found the
+saved working directory and started every next heartbeat as a fresh session (OPE-12287).
+The header is now looked up among the first 10 lines (the remote path reads `head -n 10`
+too), so both the old and the new session file formats resume with `--session <file>`.
+
+### The block owner's unblock wake is no longer cancelled as "assignee changed"
+
+When the board blocks an issue and wakes its block owner with `issue_unblock_requested`
+(stranded-issue disposition, routable blocked issues), that owner — typically a senior
+agent asked to assign a final status — is usually not the assignee. The queued-run gate
+cancelled every such run as `issue_assignee_changed`, so the block could never be resolved
+and the same owner was woken again and again (on 2026-11-08 the operator agent spent 36 runs
+in an hour on two issues this way). The gate now lets the run start when it is an automation
+`issue_unblock_requested` wake, the issue is still `blocked`, and the run's agent is the
+recorded block owner (`blockerMetadata.owner` or `unblockDescriptor.owner`); any other
+non-assignee is cancelled as before, and a terminal issue still stops the run.
+
 ## 1.6.6
 
 ### IDLE-STOP: stop idle bot containers, wake on demand with health check (IDLE-STOP)
@@ -3780,7 +4149,6 @@ in the middle of a session. Every setting is a key of the `context_economy:` blo
   run-backed wake keeps the key, run-backed or running duplicates are re-keyed with audit
   metadata and keep their status, and only duplicates that never acquired a run are
   marked `skipped`. Running work is never cancelled.
-
 
 ### Merge queue: CI checks the candidate commit on top of fresh main (MERGE-QUEUE)
 

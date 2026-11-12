@@ -85,13 +85,13 @@ does not require host filesystem access. See the fleetd configuration reference 
 - [Per-bot disk quota](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/bot-disk-quota.md)
 - [Shared package cache and git objects](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/bot-disk-cache.md)
 - [Host disk usage signal](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/host-disk.md)
-- [Workspace cleanup after merge](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/guides/workspace-cleanup.md)
-- [Stack registry](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/guides/stack-registry.md)
-- [Fleet dashboard data: VictoriaMetrics + Zabbix connections, snapshot API, selfcheck](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/guides/fleet-dashboard-monitoring.md)
-- [Maintenance banner](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/guides/maintenance-banner.md)
-- [Server console](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/guides/server-console.md)
-- [Automatic rollback by health](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/guides/deploy-auto-rollback.md)
-- [Stand scenario: kill the gateway mid-run](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/guides/team-liveness-stand-scenario.md)
+- [Workspace cleanup after merge](Workspace-cleanup)
+- [Stack registry](Stack-registry)
+- [Fleet dashboard data: VictoriaMetrics + Zabbix connections, snapshot API, selfcheck](Fleet-dashboard-monitoring)
+- [Maintenance banner](Maintenance-banner)
+- [Server console](Server-console)
+- [Automatic rollback by health](Deploy-auto-rollback)
+- [Stand scenario: kill the gateway mid-run](Team-liveness-stand-scenario)
 - `/metrics`: [SETTINGS.md](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/SETTINGS.md), section «METRICS»
 
 ### Run scratch cleanup

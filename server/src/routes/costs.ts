@@ -115,7 +115,12 @@ export function costRoutes(
     assigneeAgentId: string | null;
     assigneeUserId: string | null;
     status: string;
+    isPrivate?: boolean | null;
   }) {
+    if (issue.isPrivate && req.actor.type === "agent") {
+      res.status(404).json({ error: "Issue not found" });
+      return false;
+    }
     const decision = await access.decide({
       actor: req.actor,
       action: "issue:read",
@@ -485,7 +490,9 @@ export function costRoutes(
     if (!(await assertCompanyCostReadAllowed(req, res, companyId))) return;
     const range = parseCostDateRange(req.query);
     const limit = parseIssueCostLimit(req.query);
-    const rows = await costs.byIssue(companyId, range, limit);
+    const rows = await costs.byIssue(companyId, range, limit, {
+      excludePrivate: req.actor.type === "agent",
+    });
     res.json(rows);
   });
 

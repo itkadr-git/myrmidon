@@ -41,11 +41,11 @@ import {
   type PaperclipWakeHistoryMode,
 } from "./wake-history.js";
 export {
-  PAPERCLIP_WAKE_PAYLOAD_JSON_MAX_CHARS,
-  PAPERCLIP_WAKE_RECENT_MAX_MESSAGES,
-  PAPERCLIP_WAKE_RECENT_MESSAGE_MAX_CHARS,
-  PAPERCLIP_WAKE_RECENT_TOTAL_MAX_CHARS,
-  PAPERCLIP_WAKE_SUMMARY_MAX_CHARS,
+  MYRMIDON_WAKE_PAYLOAD_JSON_MAX_CHARS,
+  MYRMIDON_WAKE_RECENT_MAX_MESSAGES,
+  MYRMIDON_WAKE_RECENT_MESSAGE_MAX_CHARS,
+  MYRMIDON_WAKE_RECENT_TOTAL_MAX_CHARS,
+  MYRMIDON_WAKE_SUMMARY_MAX_CHARS,
   resolvePaperclipWakeHistoryMode,
   type PaperclipWakeHistoryMode,
 } from "./wake-history.js";
@@ -122,6 +122,8 @@ interface SpawnTarget {
   args: string[];
   cwd?: string;
   env?: Record<string, string | undefined>;
+  /** myrmidon(OPE-12810): written to child stdin ahead of opts.stdin (SSH env block). */
+  stdinPrefix?: string;
   cleanup?: () => Promise<void>;
 }
 
@@ -2063,7 +2065,7 @@ export function normalizePaperclipWakePayload(
 // continuation evidence), so the JSON copy keeps the envelope's shape and
 // cursors but not its bulky parts (myrmidon(WAKE-HISTORY): the history reached the
 // model three times), and the whole block is capped at
-// PAPERCLIP_WAKE_PAYLOAD_JSON_MAX_CHARS with the emptied keys named in
+// MYRMIDON_WAKE_PAYLOAD_JSON_MAX_CHARS with the emptied keys named in
 // `jsonTruncation`.
 export function stringifyPaperclipWakePayload(
   value: unknown,
@@ -3762,6 +3764,7 @@ async function resolveSpawnTarget(
       command: sshResolved,
       args: spawnTarget.args,
       cwd: process.cwd(),
+      stdinPrefix: spawnTarget.stdinPrefix,
       cleanup: spawnTarget.cleanup,
     };
   }
@@ -4882,7 +4885,7 @@ export async function runChildProcess(
           env: childEnv,
           detached: process.platform !== "win32",
           shell: false,
-          stdio: [opts.stdin != null ? "pipe" : "ignore", "pipe", "pipe"],
+          stdio: [opts.stdin != null || target.stdinPrefix ? "pipe" : "ignore", "pipe", "pipe"],
         }) as ChildProcessWithEvents;
         const startedAt = new Date().toISOString();
         const processGroupId = resolveProcessGroupId(child);
@@ -5036,10 +5039,11 @@ export async function runChildProcess(
         });
 
         const stdin = child.stdin;
-        if (opts.stdin != null && stdin) {
+        if ((opts.stdin != null || target.stdinPrefix) && stdin) {
           void spawnPersistPromise.finally(() => {
             if (child.killed || stdin.destroyed) return;
-            stdin.write(opts.stdin as string);
+            // myrmidon(OPE-12810): SSH env block first, then the caller's stdin.
+            stdin.write((target.stdinPrefix ?? "") + ((opts.stdin as string | null | undefined) ?? ""));
             stdin.end();
           });
         }

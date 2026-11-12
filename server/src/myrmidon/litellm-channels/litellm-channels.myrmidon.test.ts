@@ -58,6 +58,12 @@ describe("LiteLLM Channels Client & Mock Transport (OPE-9854)", () => {
     requests.length = 0;
   });
 
+  /**
+   * A mock of the LiteLLM admin API shaped like v1.104.1: `/model/info` reports
+   * the order in `litellm_params`, the pause as `model_info.blocked`, and never
+   * the stored key; `/model/delete` and `/model/block` take their id as `id` /
+   * `model_id`.
+   */
   async function startMockGateway(handler?: (reqUrl: string, body: any) => { status?: number; data: any }) {
     server = createServer((req, res) => {
       let raw = "";
@@ -98,20 +104,19 @@ describe("LiteLLM Channels Client & Mock Transport (OPE-9854)", () => {
 
         if (req.url === "/model/update") {
           res.writeHead(200, { "Content-Type": "application/json" });
-          res.end(JSON.stringify({
-            message: "Model updated",
-            data: {
-              model_name: parsedBody.model_name || "test-model",
-              litellm_params: parsedBody.litellm_params || {},
-              model_info: parsedBody.model_info || {},
-            },
-          }));
+          res.end(JSON.stringify({ message: "Model updated" }));
           return;
         }
 
         if (req.url === "/model/delete") {
           res.writeHead(200, { "Content-Type": "application/json" });
           res.end(JSON.stringify({ message: "Model deleted" }));
+          return;
+        }
+
+        if (req.url === "/model/block" || req.url === "/model/unblock") {
+          res.writeHead(200, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({ model_id: parsedBody.model_id }));
           return;
         }
 
@@ -123,32 +128,28 @@ describe("LiteLLM Channels Client & Mock Transport (OPE-9854)", () => {
                 model_name: "gpt-4o",
                 litellm_params: {
                   model: "openai/gpt-4o",
-                  provider: "openai",
                   api_base: "https://api.openai.com/v1",
-                  api_key: "secrets/openai-key",
+                  order: 1,
+                  weight: 10,
                 },
                 model_info: {
                   id: "deploy-openai-1",
-                  order: 1,
-                  priority: 1,
-                  weight: 10,
-                  disabled: false,
+                  db_model: true,
+                  blocked: false,
                 },
               },
               {
                 model_name: "gpt-4o",
                 litellm_params: {
                   model: "azure/gpt-4o-east",
-                  provider: "azure",
                   api_base: "https://my-azure.openai.azure.com",
-                  api_key: "secrets/azure-key",
+                  order: 2,
+                  weight: 5,
                 },
                 model_info: {
                   id: "deploy-azure-2",
-                  order: 2,
-                  priority: 2,
-                  weight: 5,
-                  disabled: true,
+                  db_model: true,
+                  blocked: true,
                 },
               },
             ],
@@ -167,7 +168,7 @@ describe("LiteLLM Channels Client & Mock Transport (OPE-9854)", () => {
     return `http://127.0.0.1:${port}`;
   }
 
-  it("verifies HTTP methods and bodies for addChannel (/model/new)", async () => {
+  it("verifies HTTP methods and bodies for addChannel (/model/new): the key travels as a value, the order in litellm_params", async () => {
     const baseUrl = await startMockGateway();
     const client = createLitellmChannelsClient({
       litellmBaseUrl: baseUrl,
@@ -181,6 +182,7 @@ describe("LiteLLM Channels Client & Mock Transport (OPE-9854)", () => {
       providerType: "openai",
       baseUrl: "https://api.openai.com/v1",
       credentialSecretName: "openai-secret",
+      apiKey: "resolved-key-value",
       order: 1,
       weight: 10,
       disabled: false,
@@ -190,31 +192,51 @@ describe("LiteLLM Channels Client & Mock Transport (OPE-9854)", () => {
     expect(requests[0]!.method).toBe("POST");
     expect(requests[0]!.path).toBe("/model/new");
     expect(requests[0]!.auth).toBe("Bearer test-admin-key");
-    expect(requests[0]!.body).toMatchObject({
+    // Exactly what LiteLLM persists and honors: no `secrets/<name>` reference,
+    // no `provider`, `priority` or `disabled`, and no order in `model_info`.
+    expect(requests[0]!.body).toEqual({
       model_name: "gpt-4o",
       litellm_params: {
         model: "openai/gpt-4o",
-        provider: "openai",
         api_base: "https://api.openai.com/v1",
-        api_key: "secrets/openai-secret",
+        api_key: "resolved-key-value",
         order: 1,
         weight: 10,
-        disabled: false,
       },
-      model_info: {
-        id: "chan-primary",
-        order: 1,
-        priority: 1,
-        weight: 10,
-        disabled: false,
-      },
+      model_info: { id: "chan-primary" },
     });
+    expect(JSON.stringify(requests[0]!.body)).not.toContain("secrets/");
 
     expect(result.id).toBe("chan-primary");
     expect(result.modelName).toBe("gpt-4o");
     expect(result.order).toBe(1);
     expect(result.weight).toBe(10);
     expect(result.disabled).toBe(false);
+    expect(result.credentialSecretName).toBe("openai-secret");
+    // The answer never carries the key value.
+    expect(JSON.stringify(result)).not.toContain("resolved-key-value");
+  });
+
+  it("prefixes a bare provider model with the provider type, and sends no order the caller did not set", async () => {
+    const baseUrl = await startMockGateway();
+    const client = createLitellmChannelsClient({ litellmBaseUrl: baseUrl, litellmAdminKey: "test-admin-key" });
+
+    await client.addChannel({ modelName: "kimi/kimi-for-coding", providerModel: "kimi-for-coding", providerType: "openai" });
+
+    expect(requests[0]!.body.litellm_params).toEqual({ model: "openai/kimi-for-coding" });
+  });
+
+  it("refuses a secrets/<name> reference as the key: LiteLLM would store it verbatim", async () => {
+    const baseUrl = await startMockGateway();
+    const client = createLitellmChannelsClient({ litellmBaseUrl: baseUrl, litellmAdminKey: "test-admin-key" });
+
+    await expect(
+      client.addChannel({ modelName: "gpt-4o", providerModel: "openai/gpt-4o", apiKey: "secrets/openai-secret" }),
+    ).rejects.toMatchObject({ status: 422, details: { code: "litellm_credential_reference" } });
+    await expect(
+      client.updateChannel({ channelId: "chan-primary", apiKey: "secrets/openai-secret" }),
+    ).rejects.toMatchObject({ status: 422 });
+    expect(requests).toHaveLength(0);
   });
 
   it("defaults missing weight to 0 for simple-shuffle routing", async () => {
@@ -234,7 +256,7 @@ describe("LiteLLM Channels Client & Mock Transport (OPE-9854)", () => {
     expect(result.weight).toBe(0);
   });
 
-  it("verifies HTTP methods and bodies for updateChannel (/model/update)", async () => {
+  it("verifies HTTP methods and bodies for updateChannel (/model/update): only litellm_params carry the change", async () => {
     const baseUrl = await startMockGateway();
     const client = createLitellmChannelsClient({
       litellmBaseUrl: baseUrl,
@@ -242,71 +264,105 @@ describe("LiteLLM Channels Client & Mock Transport (OPE-9854)", () => {
     });
 
     const result = await client.updateChannel({
-      channelId: "chan-primary",
+      channelId: "deploy-openai-1",
       order: 3,
       weight: 25,
-      disabled: false,
     });
 
-    expect(requests).toHaveLength(1);
-    expect(requests[0]!.method).toBe("POST");
-    expect(requests[0]!.path).toBe("/model/update");
+    expect(requests.map((r) => `${r.method} ${r.path}`)).toEqual(["POST /model/update", "GET /model/info"]);
     expect(requests[0]!.auth).toBe("Bearer test-admin-key");
-    expect(requests[0]!.body).toMatchObject({
-      model_info: {
-        id: "chan-primary",
-        order: 3,
-        priority: 3,
-        weight: 25,
-        disabled: false,
-      },
+    expect(requests[0]!.body).toEqual({
+      model_info: { id: "deploy-openai-1" },
+      litellm_params: { order: 3, weight: 25 },
     });
 
-    expect(result.id).toBe("chan-primary");
-    expect(result.order).toBe(3);
-    expect(result.weight).toBe(25);
+    // The answer is the gateway's own view of the deployment, not an echo.
+    expect(result.id).toBe("deploy-openai-1");
+    expect(result.providerModel).toBe("openai/gpt-4o");
   });
 
-  it("verifies HTTP methods and bodies for disableChannel (/model/update)", async () => {
+  it("rotates the key on update with the resolved value, and leaves it alone when none is given", async () => {
+    const baseUrl = await startMockGateway();
+    const client = createLitellmChannelsClient({ litellmBaseUrl: baseUrl, litellmAdminKey: "test-admin-key" });
+
+    await client.updateChannel({ channelId: "deploy-openai-1", apiKey: "rotated-key-value" });
+    await client.updateChannel({ channelId: "deploy-openai-1", order: 2 });
+
+    const updates = requests.filter((r) => r.path === "/model/update");
+    expect(updates[0]!.body.litellm_params).toEqual({ api_key: "rotated-key-value" });
+    expect(updates[1]!.body.litellm_params).not.toHaveProperty("api_key");
+  });
+
+  it("disableChannel pauses the deployment with /model/block and does not rewrite its parameters", async () => {
     const baseUrl = await startMockGateway();
     const client = createLitellmChannelsClient({
       litellmBaseUrl: baseUrl,
       litellmAdminKey: "test-admin-key",
     });
 
-    const result = await client.disableChannel("chan-primary");
+    const result = await client.disableChannel("deploy-azure-2");
 
-    expect(requests).toHaveLength(1);
-    expect(requests[0]!.method).toBe("POST");
-    expect(requests[0]!.path).toBe("/model/update");
-    expect(requests[0]!.body).toMatchObject({
-      model_info: {
-        id: "chan-primary",
-        disabled: true,
-      },
-    });
+    expect(requests.map((r) => `${r.method} ${r.path}`)).toEqual(["POST /model/block", "GET /model/info"]);
+    expect(requests[0]!.body).toEqual({ model_id: "deploy-azure-2" });
+    // LiteLLM has no `disabled` parameter: nothing like it is ever sent.
+    expect(JSON.stringify(requests)).not.toContain("disabled");
+    expect(result.id).toBe("deploy-azure-2");
     expect(result.disabled).toBe(true);
   });
 
-  it("verifies HTTP methods and bodies for enableChannel (/model/update)", async () => {
+  it("enableChannel resumes the deployment with /model/unblock", async () => {
     const baseUrl = await startMockGateway();
     const client = createLitellmChannelsClient({
       litellmBaseUrl: baseUrl,
       litellmAdminKey: "test-admin-key",
     });
 
-    const result = await client.enableChannel("chan-primary");
+    const result = await client.enableChannel("deploy-openai-1");
 
-    expect(requests).toHaveLength(1);
     expect(requests[0]!.method).toBe("POST");
-    expect(requests[0]!.path).toBe("/model/update");
-    expect(requests[0]!.body).toMatchObject({
-      model_info: {
-        id: "chan-primary",
-        disabled: false,
-      },
-    });
+    expect(requests[0]!.path).toBe("/model/unblock");
+    expect(requests[0]!.body).toEqual({ model_id: "deploy-openai-1" });
     expect(result.disabled).toBe(false);
+  });
+
+  it("updateChannel with order and disabled writes the parameters first, then pauses", async () => {
+    const baseUrl = await startMockGateway();
+    const client = createLitellmChannelsClient({ litellmBaseUrl: baseUrl, litellmAdminKey: "test-admin-key" });
+
+    await client.updateChannel({ channelId: "deploy-azure-2", order: 5, disabled: true });
+
+    expect(requests.map((r) => r.path)).toEqual(["/model/update", "/model/block", "/model/info"]);
+    expect(requests[0]!.body.litellm_params).toEqual({ order: 5 });
+  });
+
+  it("a channel created disabled is paused right away, with an id known before the first call", async () => {
+    const baseUrl = await startMockGateway();
+    const client = createLitellmChannelsClient({ litellmBaseUrl: baseUrl, litellmAdminKey: "test-admin-key" });
+
+    const result = await client.addChannel({ modelName: "gpt-4o", providerModel: "openai/gpt-4o", disabled: true });
+
+    expect(requests.map((r) => r.path)).toEqual(["/model/new", "/model/block"]);
+    const createdId = requests[0]!.body.model_info.id as string;
+    expect(createdId).toMatch(/^[0-9a-f-]{36}$/);
+    expect(requests[1]!.body).toEqual({ model_id: createdId });
+    expect(result.id).toBe(createdId);
+    expect(result.disabled).toBe(true);
+  });
+
+  it("a channel meant to be off is not left serving when the pause fails", async () => {
+    const baseUrl = await startMockGateway((path) =>
+      path === "/model/block"
+        ? { status: 400, data: { error: { message: "Cannot edit config-based model." } } }
+        : { status: 200, data: {} },
+    );
+    const client = createLitellmChannelsClient({ litellmBaseUrl: baseUrl, litellmAdminKey: "test-admin-key" });
+
+    await expect(
+      client.addChannel({ modelName: "gpt-4o", providerModel: "openai/gpt-4o", disabled: true }),
+    ).rejects.toThrow(/Cannot edit config-based model/);
+
+    expect(requests.map((r) => r.path)).toEqual(["/model/new", "/model/block", "/model/delete"]);
+    expect(requests[2]!.body).toEqual({ id: requests[0]!.body.model_info.id });
   });
 
   it("verifies HTTP methods and bodies for deleteChannel (/model/delete)", async () => {
@@ -343,7 +399,7 @@ describe("LiteLLM Channels Client & Mock Transport (OPE-9854)", () => {
       modelName: "gpt-4o",
       providerModel: "openai/gpt-4o",
       providerType: "openai",
-      credentialSecretName: "openai-key",
+      credentialSecretName: null,
       order: 1,
       weight: 10,
       disabled: false,
@@ -353,11 +409,38 @@ describe("LiteLLM Channels Client & Mock Transport (OPE-9854)", () => {
       modelName: "gpt-4o",
       providerModel: "azure/gpt-4o-east",
       providerType: "azure",
-      credentialSecretName: "azure-key",
       order: 2,
       weight: 5,
       disabled: true,
     });
+  });
+
+  it("reads the order the way the router does: litellm_params first, model_info only as a fallback; the pause is `blocked`", async () => {
+    const baseUrl = await startMockGateway((path) => ({
+      status: 200,
+      data: {
+        data: [
+          {
+            model_name: "g",
+            // stale model_info.order from an older write; the router uses litellm_params.order
+            litellm_params: { model: "openai/a", order: 4 },
+            model_info: { id: "c-1", order: 1, priority: 1, disabled: true },
+          },
+          {
+            model_name: "g",
+            litellm_params: { model: "openai/b", api_key: "must-not-leak" },
+            model_info: { id: "c-2", order: 2 },
+          },
+        ],
+      },
+    }));
+    const client = createLitellmChannelsClient({ litellmBaseUrl: baseUrl, litellmAdminKey: "test-admin-key" });
+
+    const [first, second] = await client.listChannels();
+
+    expect(first).toMatchObject({ id: "c-1", order: 4, disabled: false });
+    expect(second).toMatchObject({ id: "c-2", order: 2, disabled: false });
+    expect(JSON.stringify([first, second])).not.toContain("must-not-leak");
   });
 
   it("изменение order сохраняется across updates and reorders", async () => {
@@ -368,7 +451,7 @@ describe("LiteLLM Channels Client & Mock Transport (OPE-9854)", () => {
         providerModel: "anthropic/claude-3-5-sonnet",
         providerType: "anthropic",
         baseUrl: null,
-        credentialSecretName: "anthropic-key",
+        credentialSecretName: null,
         order: 1,
         weight: 10,
         disabled: false,
@@ -379,7 +462,7 @@ describe("LiteLLM Channels Client & Mock Transport (OPE-9854)", () => {
         providerModel: "bedrock/anthropic.claude-3-5-sonnet",
         providerType: "bedrock",
         baseUrl: null,
-        credentialSecretName: "aws-key",
+        credentialSecretName: null,
         order: 2,
         weight: 5,
         disabled: false,
@@ -395,36 +478,23 @@ describe("LiteLLM Channels Client & Mock Transport (OPE-9854)", () => {
               model_name: c.modelName,
               litellm_params: {
                 model: c.providerModel,
-                provider: c.providerType,
-                api_key: `secrets/${c.credentialSecretName}`,
-              },
-              model_info: {
-                id: c.id,
                 order: c.order,
                 weight: c.weight,
-                disabled: c.disabled,
               },
+              model_info: { id: c.id, blocked: c.disabled },
             })),
           },
         };
       }
       if (path === "/model/update") {
+        // v1.104.1 persists litellm_params only.
         const id = body.model_info?.id;
         const target = inMemoryChannels.find((c) => c.id === id);
         if (target) {
-          if (body.model_info.order !== undefined) target.order = body.model_info.order;
-          if (body.model_info.weight !== undefined) target.weight = body.model_info.weight;
-          if (body.model_info.disabled !== undefined) target.disabled = body.model_info.disabled;
+          if (body.litellm_params?.order !== undefined) target.order = body.litellm_params.order;
+          if (body.litellm_params?.weight !== undefined) target.weight = body.litellm_params.weight;
         }
-        return {
-          status: 200,
-          data: {
-            data: {
-              model_name: target?.modelName,
-              model_info: target ? { id: target.id, order: target.order, weight: target.weight } : {},
-            },
-          },
-        };
+        return { status: 200, data: { message: "Model updated" } };
       }
       return { status: 404, data: {} };
     });
@@ -440,10 +510,20 @@ describe("LiteLLM Channels Client & Mock Transport (OPE-9854)", () => {
     expect(current.find((c) => c.id === "ch-2")?.order).toBe(2);
 
     // Swap order via reorderChannels
-    await client.reorderChannels([
+    const reordered = await client.reorderChannels([
       { channelId: "ch-1", order: 2 },
       { channelId: "ch-2", order: 1 },
     ]);
+    expect(reordered.map((c) => [c.id, c.order])).toEqual([
+      ["ch-1", 2],
+      ["ch-2", 1],
+    ]);
+    // One read for the whole batch, after both writes.
+    expect(requests.filter((r) => r.path === "/model/update").map((r) => r.body.litellm_params)).toEqual([
+      { order: 2 },
+      { order: 1 },
+    ]);
+    expect(requests.filter((r) => r.path === "/model/info" && r.method === "GET")).toHaveLength(2);
 
     // Subsequent list confirms order is saved and reflected
     current = await client.listChannels();
@@ -713,5 +793,113 @@ describe("LiteLLM Channels Express Routes & Authorization (OPE-9854)", () => {
       });
     expect(negativeOrder.status).toBe(400);
     expect(negativeOrder.body.error).toMatch(/order must be a non-negative number/);
+  });
+});
+
+describe("LiteLLM Channels service resolves the key on the board", () => {
+  function makeService(secrets: Record<string, string>) {
+    const calls: Array<{ op: string; input: any }> = [];
+    const port: LitellmChannelsPort = {
+      async listChannels() {
+        return [];
+      },
+      async addChannel(input) {
+        calls.push({ op: "add", input });
+        return {
+          id: input.channelId || "gen-1",
+          modelName: input.modelName,
+          providerModel: input.providerModel || input.modelName,
+          providerType: null,
+          baseUrl: null,
+          credentialSecretName: input.credentialSecretName ?? null,
+          order: input.order ?? 0,
+          weight: input.weight ?? 0,
+          disabled: false,
+        };
+      },
+      async updateChannel(input) {
+        calls.push({ op: "update", input });
+        return {
+          id: input.channelId,
+          modelName: "gpt-4o",
+          providerModel: "openai/gpt-4o",
+          providerType: null,
+          baseUrl: null,
+          credentialSecretName: null,
+          order: input.order ?? 0,
+          weight: 0,
+          disabled: false,
+        };
+      },
+      async disableChannel() {
+        throw new Error("not used");
+      },
+      async enableChannel() {
+        throw new Error("not used");
+      },
+      async deleteChannel() {},
+      async reorderChannels() {
+        return [];
+      },
+    };
+    const service = createLitellmChannelsService({
+      db: {} as any,
+      readSecretValue: async (_companyId, name) => secrets[name] ?? null,
+      resolvePort: async () => port,
+    });
+    return { service, calls };
+  }
+
+  it("addChannel hands the port the VALUE of the named company secret", async () => {
+    const { service, calls } = makeService({ "openai-secret": "resolved-key-value" });
+
+    const channel = await service.addChannel(COMPANY_A, {
+      modelName: "gpt-4o",
+      providerModel: "openai/gpt-4o",
+      credentialSecretName: "openai-secret",
+    });
+
+    expect(calls[0]!.input.apiKey).toBe("resolved-key-value");
+    expect(channel.credentialSecretName).toBe("openai-secret");
+    expect(JSON.stringify(channel)).not.toContain("resolved-key-value");
+  });
+
+  it("an explicit apiKey wins over the secret name", async () => {
+    const { service, calls } = makeService({ "openai-secret": "from-the-store" });
+
+    await service.addChannel(COMPANY_A, {
+      modelName: "gpt-4o",
+      providerModel: "openai/gpt-4o",
+      credentialSecretName: "openai-secret",
+      apiKey: "typed-by-the-operator",
+    });
+
+    expect(calls[0]!.input.apiKey).toBe("typed-by-the-operator");
+  });
+
+  it("a named secret without a value is a 422, not an empty key at the gateway", async () => {
+    const { service, calls } = makeService({});
+
+    await expect(
+      service.addChannel(COMPANY_A, {
+        modelName: "gpt-4o",
+        providerModel: "openai/gpt-4o",
+        credentialSecretName: "missing-secret",
+      }),
+    ).rejects.toMatchObject({ status: 422, details: { code: "channel_credential_unresolved" } });
+    await expect(
+      service.updateChannel(COMPANY_A, { channelId: "chan-1", credentialSecretName: "missing-secret" }),
+    ).rejects.toMatchObject({ status: 422 });
+    expect(calls).toHaveLength(0);
+  });
+
+  it("updateChannel rotates the gateway key from the named secret, and sends none when no key is named", async () => {
+    const { service, calls } = makeService({ "openai-secret": "rotated-key-value" });
+
+    await service.updateChannel(COMPANY_A, { channelId: "chan-1", credentialSecretName: "openai-secret" });
+    await service.updateChannel(COMPANY_A, { channelId: "chan-1", order: 2 });
+
+    expect(calls[0]!.input.apiKey).toBe("rotated-key-value");
+    expect(calls[1]!.input.apiKey).toBeNull();
   });
 });

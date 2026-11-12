@@ -33,17 +33,20 @@ import {
   buildReviewRoutingAssignPatch,
   evaluateReviewerAvailability,
   excludedReviewerIds,
+  issueAnchorAgentId,
   issueNeedsReviewer,
+  ownGroupReviewerPool,
   pickReviewer,
   policyHasReviewerParticipant,
   readPendingAgentReview,
+  resolveAgentGroupKey,
   type ReviewerCandidate,
   type RoutingIssue,
 } from "../myrmidon/review-routing/policy.js";
 import { readReviewRoutingSettings } from "../myrmidon/review-routing/settings.js";
 import { createPgReviewRoutingStore } from "../myrmidon/review-routing/store.js";
 // myrmidon(OPE-10460): gate REQUEST CHANGES on final CI status for the live PR head.
-import { createReviewHeadFailedChecksResolver, createReviewPullRequestCiResolver } from "../myrmidon/review-stage-recovery/github-ci.js";
+import { createReviewHeadFailedChecksResolver, createReviewPullRequestCiResolver, readReviewPullRequestHeadSha } from "../myrmidon/review-stage-recovery/github-ci.js";
 import type { ReviewHeadFailedChecksResolver, ReviewPullRequestCiResolver } from "../myrmidon/review-stage-recovery/github-ci.js";
 // myrmidon(OPE-11970): a review return on the same PR head, or only on infrastructure checks, does not wake the executor.
 import { decideReviewReturnWake, recordSuppressedReviewReturn } from "../myrmidon/review-return-guard/guard.js";
@@ -67,6 +70,7 @@ import {
   REVIEW_GATE_MAX_NEW_REVIEW_WAKES_PER_TICK,
   admitReviewerUnderWakesQuota,
   decideReviewAdmission,
+  reviewAdmissionDedupKey,
 } from "../myrmidon/review-stage-recovery/policy.js";
 import {
   clearReviewWakesQuotas,
@@ -90,6 +94,15 @@ import {
   acceptSteeredIdentity,
   rejectSteeredIdentity,
 } from "../services/run-identity.js";
+import {
+  type SelfCheckEvidenceDeps,
+  type SelfCheckGateResolver,
+  createSelfCheckGateResolver,
+  DEFAULT_MAX_TECHNICAL_REJECTIONS,
+  rejectSelfCheckGate,
+  SELF_CHECK_REJECT_CODES,
+  type SelfCheckGateDecision,
+} from "../myrmidon/self-check-gate/index.js";
 import { createHash, randomUUID } from "node:crypto";
 import { Router, type Request, type Response } from "express";
 import multer from "multer";
@@ -236,6 +249,7 @@ import {
   type IssueWriteDenialCode,
   type IssueWriteDenialContext,
   validateIdeasProjectConstraints,
+  SWARM_QUEUE_ELIGIBILITY_METADATA_KEY,
   checkIdeasWeeklySLA,
   isIdeasProjectName,
 } from "@myrmidon/shared";
@@ -481,6 +495,7 @@ import {
   queuedCommentIdsFromWakePayload,
   withQueuedCommentIdsInWakePayload,
 } from "../services/issue-queued-comment-queue.js";
+import { isValidWakeCommentId } from "../modules/run-dispatch/index.js";
 // myrmidon(HANDOFF-CAS): guarded agent-to-agent task handoff mechanics for the
 // PATCH /api/issues/{id} path, ported from vendor paperclipai/paperclip#13686.
 import * as handoffCas from "../myrmidon/handoff-cas.js";
@@ -622,10 +637,12 @@ type CompanySearchService = {
   extract(
     companyId: string,
     query: CompanySearchExtractQuery,
+    options?: { excludePrivate?: boolean },
   ): Promise<CompanySearchExtractResponse>;
   search(
     companyId: string,
     query: CompanySearchQuery,
+    options?: { excludePrivate?: boolean },
   ): Promise<CompanySearchResponse>;
 };
 type ActivityIssueRelationSummary = {
@@ -1576,6 +1593,7 @@ const ISSUE_WAKE_DIAGNOSTIC_KNOWN_REASONS = new Set([
   "queued_run_stale_timeout",
   "goal_control",
   "heartbeat.disabled",
+  "heartbeat.private_issue_suppressed",
   "heartbeat.scheduling_suppressed",
   "heartbeat.timer.cached_identical_prompt",
   "heartbeat.timer.no_actionable_work",
@@ -1598,6 +1616,7 @@ const ISSUE_WAKE_DIAGNOSTIC_KNOWN_REASONS = new Set([
   "issue_execution_same_name",
   "issue_monitor_recovery",
   "issue_monitor_recovery_issue",
+  "issue_monitor_timeout",
   "issue_reassignment_rollback",
   "issue_recovery_action_restored",
   "issue_review_path_lost",
@@ -3088,6 +3107,12 @@ function buildExecutionStageWakeup(input: {
    * participant is woken so it can decide without a new submission.
    */
   reenteringReview?: boolean;
+  /**
+   * myrmidon(OPE-12177): the exact PR head the admission decision was made on.
+   * The review-admission dedup key is keyed on it; null falls back to the
+   * legacy agent-keyed format.
+   */
+  headSha?: string | null;
 }) {
   const { issueId, previousState, nextState, interruptedRunId } = input;
   if (!nextState) return null;
@@ -3147,7 +3172,7 @@ function buildExecutionStageWakeup(input: {
         requestedByActorId: input.requestedByActorId,
         idempotencyKey:
           nextState.currentStageType === "review"
-            ? `issue-review-admission:${issueId}:${agentId}`
+            ? reviewAdmissionDedupKey({ issueId, headSha: input.headSha, agentId })
             : undefined,
         contextSnapshot: {
           issueId,
@@ -3761,12 +3786,16 @@ export function issueRoutes(
     }) => Promise<unknown>;
     resolveReviewPullRequestCi?: ReviewPullRequestCiResolver;
     resolveReviewHeadFailedChecks?: ReviewHeadFailedChecksResolver;
+    resolveReviewAdmissionHeadSha?: typeof readReviewPullRequestHeadSha;
     insertReviewAdmissionWakeup?: (
       agentId: string,
       options: WakeupOptions,
       tx: Db,
       companyId?: string,
     ) => Promise<{ created: boolean; skippedMissingAgent?: boolean; deduplicated?: boolean }>;
+    resolveSelfCheckGate?: SelfCheckGateResolver;
+    selfCheckEvidenceDeps?: Partial<SelfCheckEvidenceDeps>;
+    selfCheckGateMaxTechnicalFailures?: number;
   } = {},
 ) {
   const router = Router();
@@ -5274,7 +5303,7 @@ export function issueRoutes(
       nextAssigneeAgentId !== input.actorAgentId &&
       (executionReviewParticipants.some(
         (participant) => participant.type === "agent" && participant.agentId === nextAssigneeAgentId,
-      ) || (await agentsSvc.getById(String(nextAssigneeAgentId)))?.role === "reviewer")
+      ) || ["reviewer", "lead"].includes((await agentsSvc.getById(String(nextAssigneeAgentId)))?.role ?? ""))
     ) return null;
 
     throw unprocessable(INVALID_AGENT_IN_REVIEW_DISPOSITION_MESSAGE, {
@@ -5288,6 +5317,134 @@ export function issueRoutes(
         "scheduled_issue_monitor",
       ],
     });
+  }
+
+  // myrmidon(OPE-12683): a task may not leave its project team at the
+  // in_review hand-off. Refuse out-of-team or queue-ineligible reviewer
+  // stage participants — and an explicit reviewer/lead `assigneeAgentId`,
+  // which the disposition gate itself accepts as a review hand-off — on the
+  // transition into review, before any state is written, with the list of
+  // teammates that would be accepted instead. The same rule holds for a
+  // reviewer change while the issue is already in review: a participant the
+  // request adds, or a reassignment to a participant, is checked; a reviewer
+  // the issue already holds is left alone so an unrelated update never fails.
+  async function assertReviewParticipantEligibility(input: {
+    existing: IssueRouteSnapshot;
+    updateFields: Record<string, unknown>;
+  }) {
+    const nextStatus = typeof input.updateFields.status === "string"
+      ? input.updateFields.status
+      : input.existing.status;
+    if (nextStatus !== "in_review" || isConversation(input.existing)) {
+      return;
+    }
+    const wasInReview = input.existing.status === "in_review";
+    const agentParticipantIds = (
+      candidatePolicy: ReturnType<typeof safeNormalizeIssueExecutionPolicy>,
+    ) =>
+      new Set(
+        (candidatePolicy?.stages ?? []).flatMap((stage) =>
+          stage.type === "review" || stage.type === "approval"
+            ? stage.participants.flatMap((participant) =>
+              participant.type === "agent" && participant.agentId ? [participant.agentId] : [],
+            )
+            : [],
+        ),
+      );
+    const existingPolicy = safeNormalizeIssueExecutionPolicy(input.existing.executionPolicy ?? null);
+    const nextPolicy = input.updateFields.executionPolicy !== undefined
+      ? safeNormalizeIssueExecutionPolicy(input.updateFields.executionPolicy ?? null)
+      : existingPolicy;
+    const nextParticipantIds = agentParticipantIds(nextPolicy);
+    const nextAssigneeAgentId =
+      input.updateFields.assigneeAgentId === undefined
+        ? input.existing.assigneeAgentId
+        : input.updateFields.assigneeAgentId;
+    const participantIds = new Set<string>();
+    if (!wasInReview) {
+      for (const participantId of nextParticipantIds) participantIds.add(participantId);
+      // myrmidon(OPE-12683): an explicit reviewer/lead `assigneeAgentId` on the
+      // transition is itself a review hand-off (the disposition gate treats it
+      // as one), so it faces the same teammate-eligibility rule as a stage
+      // participant. A plain engineer reassignment is not a review hand-off.
+      if (typeof nextAssigneeAgentId === "string" && nextAssigneeAgentId.length > 0) {
+        const assigneeRole = (await agentsSvc.getById(nextAssigneeAgentId))?.role ?? "";
+        if (["reviewer", "lead"].includes(assigneeRole)) {
+          participantIds.add(nextAssigneeAgentId);
+        }
+      }
+    } else {
+      // myrmidon(OPE-12683): an issue already in review changes its reviewer
+      // by adding a participant to the policy, or by reassigning to one. A
+      // reassignment to a non-participant dissolves the review (the vendor
+      // transition) and hands the task to an engineer: not a reviewer change.
+      const previousParticipantIds = agentParticipantIds(existingPolicy);
+      for (const participantId of nextParticipantIds) {
+        if (!previousParticipantIds.has(participantId)) participantIds.add(participantId);
+      }
+      if (
+        typeof nextAssigneeAgentId === "string" &&
+        nextAssigneeAgentId.length > 0 &&
+        nextAssigneeAgentId !== input.existing.assigneeAgentId &&
+        nextParticipantIds.has(nextAssigneeAgentId)
+      ) {
+        participantIds.add(nextAssigneeAgentId);
+      }
+    }
+    if (participantIds.size === 0) return;
+
+    const anchorId = issueAnchorAgentId(input.existing);
+    const [anchorAgent, routingSettings] = await Promise.all([
+      anchorId ? agentsSvc.getById(anchorId) : Promise.resolve(null),
+      readReviewRoutingSettings(instanceSettings),
+    ]);
+    const anchorGroup = resolveAgentGroupKey(anchorAgent ?? undefined);
+    // myrmidon(OPE-12683): participants are deduped, so each id loads once.
+    const rejected: Array<{ agentId: string; reason: string }> = [];
+    for (const participantId of participantIds) {
+      const agent = await agentsSvc.getById(participantId);
+      if (!agent) {
+        rejected.push({ agentId: participantId, reason: "not_found" });
+        continue;
+      }
+      if (agent.metadata?.[SWARM_QUEUE_ELIGIBILITY_METADATA_KEY] === false) {
+        rejected.push({ agentId: participantId, reason: "swarm_queue_ineligible" });
+        continue;
+      }
+      if (anchorGroup && resolveAgentGroupKey(agent) !== anchorGroup) {
+        rejected.push({ agentId: participantId, reason: "outside_issue_group" });
+      }
+    }
+    if (rejected.length === 0) return;
+
+    let eligibleReviewers: Array<{ id: string; name?: string | null; role?: string }> = [];
+    try {
+      const routingStore = createPgReviewRoutingStore(db);
+      const [reviewerRows, loads] = await Promise.all([
+        routingStore.listReviewerAgents(input.existing.companyId, routingSettings.reviewerRoles ?? []),
+        routingStore.loadByAgent(input.existing.companyId),
+      ]);
+      const eligible = reviewerRows
+        .filter((row) =>
+          row.swarmQueueEligible !== false &&
+          row.metadata?.[SWARM_QUEUE_ELIGIBILITY_METADATA_KEY] !== false &&
+          !rejected.some((entry) => entry.agentId === row.id) &&
+          (!anchorGroup || resolveAgentGroupKey(row) === anchorGroup))
+        .sort((a, b) => (loads.get(a.id) ?? 0) - (loads.get(b.id) ?? 0) || a.id.localeCompare(b.id))
+        .slice(0, 5);
+      eligibleReviewers = eligible.map((row) => ({ id: row.id, name: row.name, role: row.role }));
+    } catch {
+      // Advisory only: the 422 stands even when the eligible list cannot be built.
+    }
+
+    throw unprocessable(
+      "Review participants must be invokable teammates of the issue's project team with swarm queue eligibility",
+      {
+        code: "invalid_review_participant",
+        rejected,
+        eligibleReviewers,
+      },
+    );
   }
 
   async function logExpiredRequestConfirmations(input: {
@@ -5660,8 +5817,12 @@ export function issueRoutes(
   async function assertIssueReadAllowed(
     req: Request,
     res: Response,
-    issue: Parameters<typeof decideIssueAccess>[1],
+    issue: Parameters<typeof decideIssueAccess>[1] & { isPrivate?: boolean | null },
   ) {
+    if (issue.isPrivate && req.actor.type === "agent") {
+      res.status(404).json({ error: "Issue not found" });
+      return false;
+    }
     const key = `${issue.id}:${issue.companyId}:${issue.projectId ?? ""}:${issue.parentId ?? ""}:${issue.assigneeAgentId ?? ""}:${issue.assigneeUserId ?? ""}:${issue.status}`;
     const value = memoizeIssueReadDecision(req, key, () =>
       decideIssueAccess(req, issue, "issue:read"),
@@ -5776,12 +5937,16 @@ export function issueRoutes(
   }
 
   async function filterIssuesForActor<
-    T extends Parameters<typeof decideIssueAccess>[1],
+    T extends Parameters<typeof decideIssueAccess>[1] & { isPrivate?: boolean | null },
   >(req: Request, rows: T[]) {
+    const visibleRows =
+      req.actor.type === "agent"
+        ? rows.filter((issue) => !issue.isPrivate)
+        : rows;
     const decisions = await Promise.all(
-      rows.map((issue) => decideIssueAccess(req, issue, "issue:read")),
+      visibleRows.map((issue) => decideIssueAccess(req, issue, "issue:read")),
     );
-    return rows.filter((_, index) => decisions[index]?.allowed);
+    return visibleRows.filter((_, index) => decisions[index]?.allowed);
   }
 
   async function actorCanReadCompanyScope(req: Request, companyId: string) {
@@ -7641,15 +7806,18 @@ export function issueRoutes(
       return response ? [response.comment] : [];
     }
     const ids = queuedCommentIdsFromWakePayload(wake?.payload);
-    if (ids.length === 0) return [];
+    // uuid-column boundary (OPE-12209): never build an `inArray` over
+    // `issue_comments.id` from a payload with malformed ids.
+    const validIds = ids.filter(isValidWakeCommentId);
+    if (validIds.length === 0) return [];
     const rows = await executor
       .select()
       .from(issueComments)
       .where(
-        and(eq(issueComments.issueId, issueId), inArray(issueComments.id, ids)),
+        and(eq(issueComments.issueId, issueId), inArray(issueComments.id, validIds)),
       );
     const byId = new Map(rows.map((row) => [row.id, row]));
-    return ids.flatMap((id) => {
+    return validIds.flatMap((id) => {
       const row = byId.get(id);
       // myrmidon(UPSTREAM-13539): normalize authorType so the queue renderer never sees null.
       return row && !row.deletedAt ? [{ ...row, authorType: row.authorType ?? (row.authorAgentId ? "agent" as const : "user" as const) }] : [];
@@ -8489,10 +8657,13 @@ export function issueRoutes(
       });
       return;
     }
-    const result = await getSearchService().extract(
-      companyId,
-      parsedQuery.data,
-    );
+    const searchService = getSearchService();
+    const result =
+      req.actor.type === "agent"
+        ? await searchService.extract(companyId, parsedQuery.data, {
+            excludePrivate: true,
+          })
+        : await searchService.extract(companyId, parsedQuery.data);
     res.json(result);
   });
 
@@ -8540,7 +8711,13 @@ export function issueRoutes(
       });
       return;
     }
-    const result = await getSearchService().search(companyId, query);
+    const searchService = getSearchService();
+    const result =
+      req.actor.type === "agent"
+        ? await searchService.search(companyId, query, {
+            excludePrivate: true,
+          })
+        : await searchService.search(companyId, query);
     res.json(result);
   });
 
@@ -8825,6 +9002,8 @@ export function issueRoutes(
       sortField: sortField === "updated" || sortField === "id" ? sortField : undefined,
       afterId: req.query.afterId as string | undefined,
       sortDir: sortDir === "asc" || sortDir === "desc" ? sortDir : undefined,
+      excludePrivate: req.actor.type === "agent",
+      maskPrivate: req.actor.type === "agent",
       updatedSince: rawUpdatedSince,
     };
     const requestKey = issueListRequestKey({
@@ -9057,6 +9236,8 @@ export function issueRoutes(
       includeBlockedInboxAttention: true,
       hasPlanDocument,
       q: req.query.q as string | undefined,
+      excludePrivate: req.actor.type === "agent",
+      maskPrivate: req.actor.type === "agent",
     } as const;
 
     if (!(await actorCanReadCompanyScope(req, companyId))) {
@@ -9372,12 +9553,16 @@ export function issueRoutes(
       activeRecoveryAction,
     ] = await Promise.all([
       resolveIssueProjectAndGoal(issue),
-      svc.getAncestors(issue.id),
+      svc.getAncestors(issue.id, { maskPrivate: req.actor.type === "agent" }),
       svc.getCommentCursor(issue.id),
       wakeCommentId ? svc.getComment(wakeCommentId) : null,
-      svc.getRelationSummaries(issue.id),
+      svc.getRelationSummaries(issue.id, {
+        maskPrivate: req.actor.type === "agent",
+      }),
       svc
-        .listBlockerAttention(issue.companyId, [issue])
+        .listBlockerAttention(issue.companyId, [issue], db, {
+          maskPrivate: req.actor.type === "agent",
+        })
         .then((map) => map.get(issue.id) ?? null),
       svc
         .listReviewAttention(issue.companyId, [issue])
@@ -9568,7 +9753,9 @@ export function issueRoutes(
     if (!issue) return;
     if (!(await assertIssueReadAllowed(req, res, issue))) return;
 
-    const diagnostic = await svc.getBlockerDiagnostics(issue.id);
+    const diagnostic = await svc.getBlockerDiagnostics(issue.id, undefined, {
+      maskPrivate: req.actor.type === "agent",
+    });
     const visibleBlockers = await filterIssuesForActor(
       req,
       diagnostic.blockers,
@@ -9611,7 +9798,9 @@ export function issueRoutes(
     const [wakeDiagnostic, blockerDiagnostic, includeInternalIds] =
       await Promise.all([
         svc.getWakeDiagnostics(issue.id),
-        svc.getBlockerDiagnostics(issue.id),
+        svc.getBlockerDiagnostics(issue.id, undefined, {
+          maskPrivate: req.actor.type === "agent",
+        }),
         actorCanReadCompanyScope(req, issue.companyId),
       ]);
     const visibleBlockers = await filterIssuesForActor(
@@ -9663,7 +9852,9 @@ export function issueRoutes(
     if (!(await assertIssueReadAllowed(req, res, issue))) return;
 
     const [diagnostic, includeInternalIds] = await Promise.all([
-      svc.getSubtreeDiagnostics(issue.id),
+      svc.getSubtreeDiagnostics(issue.id, {
+        maskPrivate: req.actor.type === "agent",
+      }),
       actorCanReadCompanyScope(req, issue.companyId),
     ]);
     const allBlockers = [...diagnostic.blockersByIssueId.values()].flat();
@@ -9738,12 +9929,16 @@ export function issueRoutes(
       externalChannelBinding,
     ] = await Promise.all([
       resolveIssueProjectAndGoal(issue),
-      svc.getAncestors(issue.id),
+      svc.getAncestors(issue.id, { maskPrivate: req.actor.type === "agent" }),
       svc.findMentionedProjectIds(issue.id, { includeCommentBodies: false }),
       documentsSvc.getIssueDocumentPayload(issue),
-      svc.getRelationSummaries(issue.id),
+      svc.getRelationSummaries(issue.id, {
+        maskPrivate: req.actor.type === "agent",
+      }),
       svc
-        .listBlockerAttention(issue.companyId, [issue])
+        .listBlockerAttention(issue.companyId, [issue], db, {
+          maskPrivate: req.actor.type === "agent",
+        })
         .then((map) => map.get(issue.id) ?? null),
       svc
         .listReviewAttention(issue.companyId, [issue])
@@ -10792,6 +10987,7 @@ export function issueRoutes(
                 assigneeAgentId: issueRows.assigneeAgentId,
                 assigneeUserId: issueRows.assigneeUserId,
                 status: issueRows.status,
+                isPrivate: issueRows.isPrivate,
               })
               .from(issueRows)
               .where(
@@ -12695,6 +12891,14 @@ export function issueRoutes(
       }
       if (await assertLowTrustControlPlaneDenied(req, res, companyId, null))
         return;
+      // 1.7 (PRIVATE-TASKS): only board actors may create a private issue.
+      if (req.body.isPrivate === true && req.actor.type !== "board") {
+        res.status(403).json({
+          error: "Only board actors can set isPrivate on issue creation",
+          details: { field: "isPrivate", securityPrinciples: ["Least Privilege", "Fail Securely"] },
+        });
+        return;
+      }
       assertNoAgentHostWorkspaceCommandMutation(
         req,
         collectIssueWorkspaceCommandPaths(req.body),
@@ -13283,6 +13487,20 @@ export function issueRoutes(
         )
       )
         return;
+      // 1.7 (PRIVATE-TASKS): only board actors may create a private issue.
+      // createChildIssueSchema inherits isPrivate from createIssueBaseSchema,
+      // so guard it here as well — agents must never create private issues
+      // through any creation surface.
+      if (req.body.isPrivate === true && req.actor.type !== "board") {
+        res.status(403).json({
+          error: "Only board actors can set isPrivate on issue creation",
+          details: {
+            field: "isPrivate",
+            securityPrinciples: ["Least Privilege", "Fail Securely"],
+          },
+        });
+        return;
+      }
       assertNoAgentHostWorkspaceCommandMutation(
         req,
         collectIssueWorkspaceCommandPaths(req.body),
@@ -13505,6 +13723,7 @@ export function issueRoutes(
       "Issue not found",
     );
     if (!sourceIssue) return;
+    if (!(await assertIssueReadAllowed(req, res, sourceIssue))) return;
     const decompositions = await svc.listAcceptedPlanDecompositions(
       sourceIssue.id,
     );
@@ -13525,6 +13744,24 @@ export function issueRoutes(
       if (!sourceIssue) return;
       if (!(await assertAgentIssueMutationAllowed(req, res, sourceIssue)))
         return;
+      // 1.7 (PRIVATE-TASKS): only board actors may create private issues.
+      // Each child inherits isPrivate from createIssueBaseSchema; guard the
+      // whole batch here so no child slips a privacy flag past board-only.
+      if (
+        req.actor.type !== "board" &&
+        (req.body.children as Array<Record<string, unknown>>).some(
+          (child) => child.isPrivate === true,
+        )
+      ) {
+        res.status(403).json({
+          error: "Only board actors can set isPrivate on issue creation",
+          details: {
+            field: "isPrivate",
+            securityPrinciples: ["Least Privilege", "Fail Securely"],
+          },
+        });
+        return;
+      }
 
       const requestedChildren = [];
       for (const child of req.body.children as Array<
@@ -14043,6 +14280,20 @@ export function issueRoutes(
         "Issue not found",
       );
       if (!existing) return;
+      // 1.7 (PRIVATE-TASKS): only board actors may change the privacy flag.
+      if (
+        req.body.isPrivate !== undefined &&
+        req.body.isPrivate !== existing.isPrivate &&
+        req.actor.type !== "board"
+      ) {
+        await denyIssueWrite(
+          req,
+          res,
+          existing,
+          "issue_write_private_flag_rejected",
+        );
+        return;
+      }
       assertNoAgentHostWorkspaceCommandMutation(
         req,
         collectIssueWorkspaceCommandPaths(req.body),
@@ -14104,19 +14355,23 @@ export function issueRoutes(
       const stageState = existing.executionState as Record<string, unknown> | null;
       const stageParticipant = stageState?.currentParticipant as Record<string, unknown> | null | undefined;
       const stageReturnAssignee = stageState?.returnAssignee as Record<string, unknown> | null | undefined;
-      const stageHandBackAssigneeId =
+      const stageHandsBack =
         stageState?.status === "pending" &&
         (stageState?.currentStageType === "review" || stageState?.currentStageType === "approval") &&
         normalizedAssigneeAgentId === undefined &&
         targetStatus === "in_progress" &&
         stageParticipant?.type === "agent" &&
         typeof stageParticipant?.agentId === "string" &&
-        stageParticipant.agentId === existing.assigneeAgentId &&
+        stageParticipant.agentId === existing.assigneeAgentId;
+      const stageHandBackAssigneeId =
+        stageHandsBack &&
         stageReturnAssignee?.type === "agent" &&
         typeof stageReturnAssignee?.agentId === "string"
           ? stageReturnAssignee.agentId
           : null;
-      const targetAssigneeAgentId = stageHandBackAssigneeId ?? requestedAssigneeAgentId;
+      const targetAssigneeAgentId = stageHandsBack
+        ? stageHandBackAssigneeId
+        : requestedAssigneeAgentId;
       const isAssigneeChange =
         normalizedAssigneeAgentId !== undefined &&
         normalizedAssigneeAgentId !== existing.assigneeAgentId;
@@ -14574,7 +14829,6 @@ export function issueRoutes(
       transitionIssue.executionReviewParticipantAgentIds = reviewParticipantAgentIds;
       // Role is only needed when the issue enters or leaves review (return-assignee choice); skip the lookup otherwise.
       if (
-        nextExecutionPolicy === null &&
         existing.assigneeAgentId &&
         (existing.status === "in_review" || updateFields.status === "in_review")
       ) {
@@ -14593,6 +14847,15 @@ export function issueRoutes(
             ? undefined
             : (updateFields.assigneeUserId as string | null),
       };
+      let candidateLoads: Map<string, number> | undefined;
+      if (
+        (updateFields.status === "in_review" || existing.status === "in_review") &&
+        nextExecutionPolicy &&
+        summarizeExecutionParticipants(nextExecutionPolicy, "review").length > 1
+      ) {
+        const routingStore = createPgReviewRoutingStore(db);
+        candidateLoads = await routingStore.loadByAgent(existing.companyId);
+      }
       const transition = applyIssueExecutionPolicyTransition({
         // myrmidon(OPE-9031): senior escalation chain for the round limit.
         issue: transitionIssue,
@@ -14612,6 +14875,7 @@ export function issueRoutes(
         reviewRequest: reviewRequest === undefined ? undefined : reviewRequest,
         monitorExplicitlyUpdated:
           req.body.executionPolicy !== undefined && monitorChanged,
+        candidateLoads,
       });
       // myrmidon(MON-RESTORE): capture and strip transient notice before persistence.
       const monitorClearNotice = transition.patch.monitorClearNotice as
@@ -15051,6 +15315,152 @@ export function issueRoutes(
         existing.status !== "in_review" && updateFields.status === "in_review";
       const persistReviewActivityTransactionally =
         enteringReviewRequested || Boolean(reviewInteractionId);
+      // myrmidon(OPE-12683): refuse ineligible reviewers before any gate or
+      // state write; runs for every actor on the transition into review.
+      await assertReviewParticipantEligibility({ existing, updateFields });
+      let selfCheckGateBypassPatch: Record<string, unknown> | null = null;
+      if (
+        enteringReviewRequested &&
+        (req.actor.type === "agent" || actor.actorType === "agent")
+      ) {
+        const resolveGate =
+          opts.resolveSelfCheckGate ??
+          createSelfCheckGateResolver({
+            db,
+            evidenceDeps: opts.selfCheckEvidenceDeps,
+          });
+        let gateDecision: SelfCheckGateDecision;
+        try {
+          gateDecision = await resolveGate({
+            companyId: existing.companyId,
+            issueId: existing.id,
+          });
+        } catch (error) {
+          // myrmidon(OPE-12146): the stop-gate must not turn review entry into
+          // a 500 when its evidence read fails (issue row visible, storage
+          // degraded, test mocks without plain selects). But it must not fail
+          // open either: an unreadable gate is UNKNOWN evidence, which counts
+          // as a technical rejection and hits the 3-limit bypass like any
+          // other failed check. EMPTY_DIFF is still hard-only: it can only be
+          // produced by the resolver with a real diff in hand.
+          logger.warn(
+            { err: error, issueId: existing.id },
+            "self_check_gate_evidence_read_failed",
+          );
+          gateDecision = rejectSelfCheckGate(
+            SELF_CHECK_REJECT_CODES.TEST_FAILED,
+            "[TEST_FAILED] Не удалось получить статус проверок (evidence read failed).",
+          );
+        }
+
+        const executionState =
+          (existing.executionState as Record<string, unknown> | null) ?? {};
+        const currentRejections =
+          typeof executionState.selfCheckGateRejections === "number"
+            ? executionState.selfCheckGateRejections
+            : 0;
+        const currentTechnicalRejections =
+          typeof executionState.selfCheckGateTechnicalRejections === "number"
+            ? executionState.selfCheckGateTechnicalRejections
+            : currentRejections;
+
+        const maxTechnicalRejections =
+          opts.selfCheckGateMaxTechnicalFailures ??
+          DEFAULT_MAX_TECHNICAL_REJECTIONS;
+
+        const isEmptyDiff =
+          gateDecision.kind === "reject" &&
+          gateDecision.code === SELF_CHECK_REJECT_CODES.EMPTY_DIFF;
+
+        const isTechnicalFailure =
+          gateDecision.kind === "reject" && !isEmptyDiff;
+
+        const bypassAllowed =
+          isTechnicalFailure && currentTechnicalRejections >= maxTechnicalRejections;
+
+        if (gateDecision.kind === "reject" && !bypassAllowed) {
+          const nextRejections = currentRejections + 1;
+          const nextTechnicalRejections = isTechnicalFailure
+            ? currentTechnicalRejections + 1
+            : currentTechnicalRejections;
+          await db
+            .update(issueRows)
+            .set({
+              executionState: {
+                ...executionState,
+                selfCheckGateRejections: nextRejections,
+                selfCheckGateTechnicalRejections: nextTechnicalRejections,
+                selfCheckGateLastRejectCode: gateDecision.code,
+                selfCheckGateLastRejectReason: gateDecision.message,
+              },
+            })
+            .where(eq(issueRows.id, existing.id));
+
+          await logActivity(db, {
+            companyId: existing.companyId,
+            actorType: actor.actorType,
+            actorId: actor.actorId,
+            agentId: actor.agentId ?? null,
+            runId: actor.runId ?? null,
+            action: "self_check_gate_rejected",
+            entityType: "issue",
+            entityId: existing.id,
+            details: {
+              code: gateDecision.code,
+              reason: gateDecision.message,
+              rejectionCount: nextRejections,
+              technicalRejectionCount: nextTechnicalRejections,
+            },
+          });
+
+          await svc.addComment(
+            existing.id,
+            gateDecision.message,
+            {},
+            { authorType: "system" },
+          );
+
+          res.status(422).json({
+            error: gateDecision.message,
+            code: gateDecision.code,
+          });
+          return;
+        }
+
+        // bypassAllowed is only true for a rejection, but the declared union
+        // is not narrowed here; including the kind check narrows gateDecision
+        // so reject-only fields (message) are read type-safely. A non-reject
+        // bypass is impossible by construction.
+        if (bypassAllowed && gateDecision.kind === "reject") {
+          const reject = gateDecision;
+          const note = "гейт не пройден, см. причины";
+          selfCheckGateBypassPatch = {
+            selfCheckGateNote: note,
+            selfCheckGateBypassed: true,
+            selfCheckGateRejections: currentRejections,
+            selfCheckGateTechnicalRejections: currentTechnicalRejections,
+          };
+          const existingExecutionState =
+            parseIssueExecutionState(existing.executionState) ??
+            (existing.executionState as Record<string, unknown> | null) ??
+            {};
+          updateFields.executionState = {
+            ...existingExecutionState,
+            ...(typeof updateFields.executionState === "object" &&
+            updateFields.executionState !== null
+              ? updateFields.executionState
+              : {}),
+            ...selfCheckGateBypassPatch,
+          };
+
+          await svc.addComment(
+            existing.id,
+            `[SELF_CHECK_GATE] Допуск к ревьюеру с пометкой: ${note} (${reject.message})`,
+            {},
+            { authorType: "system" },
+          );
+        }
+      }
 
       const requestedAssigneeUserId =
         updateFields.assigneeUserId === undefined
@@ -15762,6 +16172,17 @@ export function issueRoutes(
             }
             Object.assign(updateFields, lockedTransition.patch);
             Object.assign(issueUpdateData, lockedTransition.patch);
+            if (selfCheckGateBypassPatch) {
+              const currentMergedState = {
+                ...(typeof issueUpdateData.executionState === "object" &&
+                issueUpdateData.executionState !== null
+                  ? (issueUpdateData.executionState as Record<string, unknown>)
+                  : {}),
+                ...selfCheckGateBypassPatch,
+              };
+              updateFields.executionState = currentMergedState;
+              issueUpdateData.executionState = currentMergedState;
+            }
             if (lockedTransition.decision?.outcome === "changes_requested") {
               const ci = await (opts.resolveReviewPullRequestCi ?? createReviewPullRequestCiResolver({ db }))({
                 companyId: lockedExisting.companyId,
@@ -15883,8 +16304,20 @@ export function issueRoutes(
                     ...candidate,
                     load: loads.get(candidate.id) ?? 0,
                   }));
+                  // myrmidon(OPE-12683): only queue-eligible reviewers of the
+                  // issue's own project team — the anchor's group (name prefix
+                  // or telegramGroup) — qualify. There is no fallback to the
+                  // whole pool: with no teammate in capacity nobody is picked
+                  // here, and the sweep raises the no-reviewer signal. Shares
+                  // `ownGroupReviewerPool` with the sweep's pools.
+                  const anchorId = issueAnchorAgentId(routingIssue);
+                  const anchorRow = anchorId
+                    ? candidateRows.find((candidate) => candidate.id === anchorId)
+                      ?? await txReviewRoutingStore.getAgent(routingIssue.companyId, anchorId)
+                    : null;
+                  const anchorGroup = resolveAgentGroupKey(anchorRow ?? undefined);
                   const reviewer = pickReviewer({
-                    candidates,
+                    candidates: ownGroupReviewerPool(candidates, anchorGroup),
                     excluded: excludedReviewerIds(routingIssue),
                     maxLoad: settings.maxLoadPerReviewer,
                     authorModel,
@@ -15973,6 +16406,12 @@ export function issueRoutes(
               updated.status === "in_review" &&
               (enteringReviewRequested || assigneeWillChange)
             ) {
+              // myrmidon(OPE-12177): the dedup key tail is the exact PR head.
+              // Read it from the stored work-product metadata (webhook-kept
+              // fresh, no GitHub call); a fallback resolver may refine it.
+              const reviewAdmissionHeadSha = await (
+                opts.resolveReviewAdmissionHeadSha ?? readReviewPullRequestHeadSha
+              )({ db, companyId: updated.companyId, issueId: updated.id });
               const stageWake = buildExecutionStageWakeup({
                 issueId: updated.id,
                 previousState: parseIssueExecutionState(existing.executionState),
@@ -15982,6 +16421,7 @@ export function issueRoutes(
                 requestedByActorId: actor.actorId,
                 // myrmidon(OPE-10045): wake the kept participant when the task returns to review.
                 reenteringReview: existing.status !== "in_review",
+                headSha: reviewAdmissionHeadSha,
               });
               const ciAdmissionCandidate =
                 stageWake?.wakeup.reason === "execution_review_requested" ||
@@ -16267,7 +16707,11 @@ export function issueRoutes(
                   triggerDetail: "system",
                   reason: enteringReviewRequested ? "issue_entered_review" : "issue_review_reassigned",
                   payload: { issueId: updated.id, mutation: "review_admission" },
-                  idempotencyKey: `issue-review-admission:${updated.id}:${updated.assigneeAgentId}`,
+                  idempotencyKey: reviewAdmissionDedupKey({
+                    issueId: updated.id,
+                    headSha: reviewAdmissionHeadSha,
+                    agentId: updated.assigneeAgentId,
+                  }),
                   requestedByActorType: actor.actorType,
                   requestedByActorId: actor.actorId,
                   contextSnapshot: { issueId: updated.id, taskId: updated.id },
@@ -17209,11 +17653,24 @@ export function issueRoutes(
         issue.status === "in_review" &&
         (executionStageWakeup?.wakeup.reason === "execution_review_requested" ||
           executionStageWakeup?.wakeup.reason === "execution_review_participant_recovery");
+      // myrmidon(OPE-12177): the dedup key tail is the exact PR head; read it
+      // from the stored work-product metadata (no GitHub call). For the CI-gated
+      // admission path the read verdict refines it further below.
+      let reviewAdmissionHeadSha = isReviewCiWakeCandidate
+        ? await (opts.resolveReviewAdmissionHeadSha ?? readReviewPullRequestHeadSha)({
+          db,
+          companyId: issue.companyId,
+          issueId: issue.id,
+        })
+        : null;
       if (isReviewCiWakeCandidate) {
         const reviewCi = await (opts.resolveReviewPullRequestCi ?? createReviewPullRequestCiResolver({ db }))({
           companyId: issue.companyId,
           issueId: issue.id,
         });
+        if (typeof reviewCi.headSha === "string" && reviewCi.headSha.trim() !== "") {
+          reviewAdmissionHeadSha = reviewCi.headSha;
+        }
         // myrmidon(OPE-12176): the same green-head rule as the transition path —
         // a red or unfinished head of a non-critical issue does not wake a reviewer.
         const critical = issue.priority === "critical";
@@ -17573,7 +18030,11 @@ export function issueRoutes(
                 }
               : issue.status === "in_review"
                 ? {
-                    idempotencyKey: `issue-review-admission:${issue.id}:${issue.assigneeAgentId}`,
+                    idempotencyKey: reviewAdmissionDedupKey({
+                      issueId: issue.id,
+                      headSha: reviewAdmissionHeadSha,
+                      agentId: issue.assigneeAgentId,
+                    }),
                   }
                 : {}),
             payload: {
@@ -18016,12 +18477,32 @@ export function issueRoutes(
                 routingStore.listReviewerAgents(issue.companyId, reviewRoutingSettings.reviewerRoles),
                 routingStore.loadByAgent(issue.companyId),
               ]);
+              // myrmidon(OPE-12780): availability mirrors the pick gates — only
+              // queue-eligible reviewers of the issue's own group count, so an
+              // empty own team signals instead of staying silent because some
+              // other team's reviewer has capacity.
+              const signalAnchorId = issueAnchorAgentId(reviewerSignalIssue!);
+              const signalAnchorRow = signalAnchorId
+                ? await routingStore.getAgent(issue.companyId, signalAnchorId)
+                : null;
+              const signalAnchorGroup = resolveAgentGroupKey(signalAnchorRow ?? undefined);
               const authorModel = reviewerSignalIssue?.createdByAgentId
                 ? await routingStore.getAgentModel?.(issue.companyId, reviewerSignalIssue.createdByAgentId) ?? null
                 : null;
               unavailable =
                 evaluateReviewerAvailability({
-                  reviewers: reviewerRows.map((agent) => ({ id: agent.id, role: agent.role, invokable: agent.invokable ?? true, model: agent.model })),
+                  reviewers: ownGroupReviewerPool(
+                    reviewerRows.map((agent) => ({
+                      id: agent.id,
+                      name: agent.name,
+                      role: agent.role,
+                      metadata: agent.metadata,
+                      swarmQueueEligible: agent.swarmQueueEligible,
+                      invokable: agent.invokable ?? true,
+                      model: agent.model,
+                    })),
+                    signalAnchorGroup,
+                  ),
                   loadByAgent,
                   issue: reviewerSignalIssue!,
                   maxLoad: reviewRoutingSettings.maxLoadPerReviewer,
@@ -18125,6 +18606,14 @@ export function issueRoutes(
         "Issue not found",
       );
       if (!issue) return;
+      // 1.7 PRIVATE-TASKS part C: an agent key never checks out a private
+      // issue — the route answers 404 like every other agent read of it, so
+      // the checkout attempt cannot even confirm the task exists. Board
+      // actors keep the usual behavior.
+      if (issue.isPrivate && req.actor.type === "agent") {
+        res.status(404).json({ error: "Issue not found" });
+        return;
+      }
 
       if (issue.projectId) {
         const project = await projectsSvc.getById(issue.projectId);
@@ -18247,6 +18736,7 @@ export function issueRoutes(
       });
 
       if (
+        !issue.isPrivate &&
         shouldWakeAssigneeOnCheckout({
           actorType: req.actor.type,
           actorAgentId:
@@ -21021,6 +21511,11 @@ export function issueRoutes(
           interruptedRunId,
           requestedByActorType: actor.actorType,
           requestedByActorId: actor.actorId,
+          headSha: await (opts.resolveReviewAdmissionHeadSha ?? readReviewPullRequestHeadSha)({
+            db,
+            companyId: currentIssue.companyId,
+            issueId: currentIssue.id,
+          }),
         });
       } else {
         const commentOptions = {

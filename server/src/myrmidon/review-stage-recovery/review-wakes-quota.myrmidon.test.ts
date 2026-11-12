@@ -43,6 +43,28 @@ describe("admitReviewerUnderWakesQuota", () => {
     );
   });
 
+  it("a moved PR head of an already admitted issue is a re-wake: admitted free in the same tick (OPE-12177)", () => {
+    const quota = freshReviewWakesQuota();
+    const oldHead = "issue-review-admission:issue-1:head-abc";
+    const movedHead = "issue-review-admission:issue-1:head-def";
+    const legacy = "issue-review-admission:issue-1:reviewer-1";
+    expect(admitReviewerUnderWakesQuota(quota, false, oldHead)).toBe("admit");
+    expect(quota.remaining).toBe(0);
+    // Same issue, new head-keyed key in the same pass: not a new review.
+    expect(admitReviewerUnderWakesQuota(quota, false, movedHead)).toBe("admit");
+    expect(admitReviewerUnderWakesQuota(quota, false, movedHead)).toBe("admit");
+    expect(admitReviewerUnderWakesQuota(quota, false, legacy)).toBe("admit");
+    expect(quota.remaining).toBe(0);
+    // A genuinely different issue still defers on the spent budget.
+    expect(admitReviewerUnderWakesQuota(quota, false, "issue-review-admission:issue-2:head-abc")).toBe(
+      "quota_reached",
+    );
+    // An issue whose first admission was deferred does not become admitted.
+    expect(admitReviewerUnderWakesQuota(quota, false, "issue-review-admission:issue-2:head-def")).toBe(
+      "quota_reached",
+    );
+  });
+
   it("a critical issue goes outside the quota and never spends it", () => {
     const quota = freshReviewWakesQuota();
     expect(admitReviewerUnderWakesQuota(quota, true)).toBe("admit");

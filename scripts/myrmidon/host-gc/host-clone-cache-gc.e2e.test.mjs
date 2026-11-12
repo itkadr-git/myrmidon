@@ -195,4 +195,121 @@ describe("host-clone-cache-gc e2e", () => {
     assert.equal(out.ok, false);
     assert.equal(out.reason, "lock held");
   });
+
+  describe("scratch-gc e2e (BOT-DISK-SCRATCH)", () => {
+    it("apply prunes stale scratch directories and writes scratch-pruned to journal", async () => {
+      const botsRoot = path.join(tmpDir, "bots");
+      const bot1Scratch = path.join(botsRoot, "bot-1/hermes/cache/scratch");
+      fs.mkdirSync(bot1Scratch, { recursive: true });
+
+      const lock = path.join(tmpDir, "test.lock");
+      const journal = path.join(tmpDir, "journal.jsonl");
+
+      const now = Date.now();
+      const staleTime = new Date(now - 15 * 3600 * 1000);
+      const freshTime = new Date(now - 2 * 3600 * 1000);
+
+      // Stale directory
+      const staleDir = path.join(bot1Scratch, "myrmidon-migrate-stale");
+      fs.mkdirSync(path.join(staleDir, "nested"), { recursive: true });
+      fs.writeFileSync(path.join(staleDir, "nested/db.sqlite"), "data-content");
+      fs.utimesSync(path.join(staleDir, "nested/db.sqlite"), staleTime, staleTime);
+      fs.utimesSync(path.join(staleDir, "nested"), staleTime, staleTime);
+      fs.utimesSync(staleDir, staleTime, staleTime);
+
+      // Fresh directory
+      const freshDir = path.join(bot1Scratch, "fresh-run-dir");
+      fs.mkdirSync(freshDir, { recursive: true });
+      fs.writeFileSync(path.join(freshDir, "output.log"), "fresh-content");
+      fs.utimesSync(path.join(freshDir, "output.log"), freshTime, freshTime);
+      fs.utimesSync(freshDir, freshTime, freshTime);
+
+      // Protected gh-cli-cache
+      const ghDir = path.join(bot1Scratch, "gh-cli-cache");
+      fs.mkdirSync(ghDir, { recursive: true });
+      fs.writeFileSync(path.join(ghDir, "hosts.yml"), "gh-cache");
+      fs.utimesSync(path.join(ghDir, "hosts.yml"), staleTime, staleTime);
+      fs.utimesSync(ghDir, staleTime, staleTime);
+
+      // Stale directory kept open by a background process
+      const openDir = path.join(bot1Scratch, "open-test-run");
+      fs.mkdirSync(openDir, { recursive: true });
+      const openFile = path.join(openDir, "active.log");
+      fs.writeFileSync(openFile, "working");
+      fs.utimesSync(openFile, staleTime, staleTime);
+      fs.utimesSync(openDir, staleTime, staleTime);
+
+      // Hold open file with a child process
+      const holder = spawn("tail", ["-f", openFile], { stdio: "ignore" });
+
+      try {
+        // Wait briefly for holder to open file
+        await new Promise((resolve) => setTimeout(resolve, 100));
+
+        const r = await runScript([
+          "--root", botsRoot,
+          "--lock", lock,
+          "--journal", journal,
+          "--apply",
+        ]);
+        assert.equal(r.status, 0, r.stderr);
+
+        // Stale dir should be removed
+        assert.equal(fs.existsSync(staleDir), false);
+
+        // Fresh, gh-cli-cache, and openDir must still exist
+        assert.ok(fs.existsSync(freshDir));
+        assert.ok(fs.existsSync(ghDir));
+        assert.ok(fs.existsSync(openDir));
+
+        // Journal should contain scratch-pruned for staleDir
+        const lines = fs.readFileSync(journal, "utf8").trim().split("\n");
+        const events = lines.map((l) => JSON.parse(l));
+
+        const prunedEvent = events.find((e) => e.event === "scratch-pruned");
+        assert.ok(prunedEvent, "scratch-pruned event must be logged");
+        assert.equal(prunedEvent.path, staleDir);
+        assert.ok(prunedEvent.sizeBytes > 0);
+
+        // No scratch-pruned event for fresh, gh-cli-cache, or openDir
+        assert.equal(events.some((e) => e.path === freshDir), false);
+        assert.equal(events.some((e) => e.path === ghDir), false);
+        assert.equal(events.some((e) => e.path === openDir), false);
+      } finally {
+        holder.kill("SIGKILL");
+      }
+    });
+
+    it("respects threshold from env config file", async () => {
+      const botsRoot = path.join(tmpDir, "bots");
+      const bot1Scratch = path.join(botsRoot, "bot-1/hermes/cache/scratch");
+      fs.mkdirSync(bot1Scratch, { recursive: true });
+
+      const envFile = path.join(tmpDir, "myrmidon-host-gc.env");
+      // Set TTL to 6 hours
+      fs.writeFileSync(envFile, "SCRATCH_TTL_HOURS=6\n");
+
+      const lock = path.join(tmpDir, "test.lock");
+      const journal = path.join(tmpDir, "journal.jsonl");
+
+      const now = Date.now();
+      // 8 hours old (older than 6h env threshold, but younger than 12h default)
+      const age8h = new Date(now - 8 * 3600 * 1000);
+      const testDir = path.join(bot1Scratch, "test-8h");
+      fs.mkdirSync(testDir, { recursive: true });
+      fs.writeFileSync(path.join(testDir, "file.txt"), "8h");
+      fs.utimesSync(path.join(testDir, "file.txt"), age8h, age8h);
+      fs.utimesSync(testDir, age8h, age8h);
+
+      const r = await runScript([
+        "--root", botsRoot,
+        "--lock", lock,
+        "--journal", journal,
+        "--env", envFile,
+        "--apply",
+      ]);
+      assert.equal(r.status, 0, r.stderr);
+      assert.equal(fs.existsSync(testDir), false);
+    });
+  });
 });

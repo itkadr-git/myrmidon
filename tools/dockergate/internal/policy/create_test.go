@@ -182,7 +182,7 @@ func runMutations(t *testing.T, id, suffix string, cases []mutation) {
 // sends it, so an old body (no key) and a hardened body (exact key) are both
 // accepted, each rebuilding byte for byte; any other shape is denied.
 func TestCoreUlimitsShape(t *testing.T) {
-	const exact = `"Privileged":false,"Ulimits":[{"Name":"core","Soft":0,"Hard":0}]`
+	const exact = `,"Ulimits":[{"Name":"core","Soft":0,"Hard":0}]`
 	for _, tc := range []struct{ id, suffix string }{
 		{"bot-plain", ""},
 		{"helper-prepare", ".helper"},
@@ -193,38 +193,42 @@ func TestCoreUlimitsShape(t *testing.T) {
 			b, body := m.FindBody(t, tc.id, tc.suffix)
 			rt := createRoute(t, b.Name)
 
-			// Without the key the recorded body is still canonical (old driver).
-			if _, err := policy.ParseCreate(body, rt, env(m)); err != nil {
+			// Without the key the pre-1.6.7 body is still canonical (old driver).
+			without := replace(t, body, exact, "")
+			c, err := policy.ParseCreate(without, rt, env(m))
+			if err != nil {
 				t.Fatalf("body without Ulimits denied: %s (field %q, detail %q)", err.Code, err.Field, err.Detail)
 			}
+			if string(c.Body) != string(without) {
+				t.Fatalf("canonical body differs from the accepted one (without Ulimits):\n got %s\nwant %s", c.Body, without)
+			}
 
-			// The exact form is accepted and rebuilt byte for byte.
-			got := replace(t, body, `"Privileged":false`, exact)
-			c, err := policy.ParseCreate(got, rt, env(m))
+			// The exact form (recorded body) is accepted and rebuilt byte for byte.
+			c, err = policy.ParseCreate(body, rt, env(m))
 			if err != nil {
 				t.Fatalf("exact Ulimits denied: %s (field %q, detail %q)", err.Code, err.Field, err.Detail)
 			}
-			if string(c.Body) != string(got) {
-				t.Fatalf("canonical body differs from the accepted one:\n got %s\nwant %s", c.Body, got)
+			if string(c.Body) != string(body) {
+				t.Fatalf("canonical body differs from the accepted one:\n got %s\nwant %s", c.Body, body)
 			}
 
 			for _, bad := range []struct{ name, repl, code string }{
-				{"other name", `"Privileged":false,"Ulimits":[{"Name":"nofile","Soft":0,"Hard":0}]`, deny.JSONValue},
-				{"soft not zero", `"Privileged":false,"Ulimits":[{"Name":"core","Soft":1024,"Hard":0}]`, deny.JSONValue},
-				{"hard not zero", `"Privileged":false,"Ulimits":[{"Name":"core","Soft":0,"Hard":1024}]`, deny.JSONValue},
+				{"other name", `,"Ulimits":[{"Name":"nofile","Soft":0,"Hard":0}]`, deny.JSONValue},
+				{"soft not zero", `,"Ulimits":[{"Name":"core","Soft":1024,"Hard":0}]`, deny.JSONValue},
+				{"hard not zero", `,"Ulimits":[{"Name":"core","Soft":0,"Hard":1024}]`, deny.JSONValue},
 				// Negative ints parse as KindInt, so wantInt reports a value mismatch (JSONValue).
-				{"negative values", `"Privileged":false,"Ulimits":[{"Name":"core","Soft":-1,"Hard":-1}]`, deny.JSONValue},
-				{"values as strings", `"Privileged":false,"Ulimits":[{"Name":"core","Soft":"0","Hard":"0"}]`, deny.JSONType},
-				{"second entry", `"Privileged":false,"Ulimits":[{"Name":"core","Soft":0,"Hard":0},{"Name":"core","Soft":0,"Hard":0}]`, deny.JSONValue},
-				{"empty list", `"Privileged":false,"Ulimits":[]`, deny.JSONValue},
-				{"list of string", `"Privileged":false,"Ulimits":["core=0:0"]`, deny.JSONType},
-				{"object instead of list", `"Privileged":false,"Ulimits":{"core":0}`, deny.JSONType},
-				{"extra member", `"Privileged":false,"Ulimits":[{"Name":"core","Soft":0,"Hard":0,"Unit":1}]`, deny.JSONUnknownKey},
-				{"missing hard", `"Privileged":false,"Ulimits":[{"Name":"core","Soft":0}]`, deny.JSONValue},
-				{"upper case name", `"Privileged":false,"Ulimits":[{"Name":"CORE","Soft":0,"Hard":0}]`, deny.JSONValue},
+				{"negative values", `,"Ulimits":[{"Name":"core","Soft":-1,"Hard":-1}]`, deny.JSONValue},
+				{"values as strings", `,"Ulimits":[{"Name":"core","Soft":"0","Hard":"0"}]`, deny.JSONType},
+				{"second entry", `,"Ulimits":[{"Name":"core","Soft":0,"Hard":0},{"Name":"core","Soft":0,"Hard":0}]`, deny.JSONValue},
+				{"empty list", `,"Ulimits":[]`, deny.JSONValue},
+				{"list of string", `,"Ulimits":["core=0:0"]`, deny.JSONType},
+				{"object instead of list", `,"Ulimits":{"core":0}`, deny.JSONType},
+				{"extra member", `,"Ulimits":[{"Name":"core","Soft":0,"Hard":0,"Unit":1}]`, deny.JSONUnknownKey},
+				{"missing hard", `,"Ulimits":[{"Name":"core","Soft":0}]`, deny.JSONValue},
+				{"upper case name", `,"Ulimits":[{"Name":"CORE","Soft":0,"Hard":0}]`, deny.JSONValue},
 			} {
 				t.Run(bad.name, func(t *testing.T) {
-					mut := replace(t, body, `"Privileged":false`, bad.repl)
+					mut := replace(t, body, exact, bad.repl)
 					c, err := policy.ParseCreate(mut, rt, env(m))
 					wantDeny(t, c, err, bad.code)
 				})

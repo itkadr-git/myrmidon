@@ -78,6 +78,8 @@ import {
   factCheckGatewayPaperclipSkills,
   reconcileGatewayPaperclipSkills,
 } from "./myrmidon-skills-reconcile.js";
+// myrmidon(OPE-12796): same-call tool failure streaks.
+import { createToolFailureRepeatTracker, type ToolFailureRepeatTracker } from "./myrmidon-tool-failure-repeat.js";
 
 type SessionKeyStrategy = "issue" | "agent" | "run" | "none";
 
@@ -144,12 +146,19 @@ type ExecutionState = {
   guardToolArguments: Map<string, unknown[]>;
   guardModelTurnObserved: boolean;
   guardPendingToolCalls: number;
-  /** 1.7 AGENT-RUNTIME: повторы одинаковых ошибок инструментов (OPE-10096) */
-  consecutiveToolErrors: {
-    toolName: string;
-    count: number;
-    lastError: string;
-  } | null;
+  /** 1.7 AGENT-RUNTIME: повторы одинаковых ошибок инструментов (OPE-10096);
+   * myrmidon(OPE-12796): one and the same call, see myrmidon-tool-failure-repeat.ts */
+  toolFailureRepeat: ToolFailureRepeatTracker;
+  /** The single RunGuard correction queued for this gateway run. */
+  runGuardHintSent: { reason: "repeated_tool_call" | "model_call_limit" } | null;
+  runGuardHintStopEmitted: boolean;
+  /**
+   * myrmidon(OPE-12799): the wrap-up message ("N calls left: commit, push, write
+   * where you are") was steered. Kept apart from runGuardHintSent: it is not a
+   * correction, is sent whether or not one was, and is not the hint-before-stop
+   * that resultJson.runGuardHint measures.
+   */
+  runGuardWrapUpHintSent: boolean;
 };
 
 type TextRedactor = (value: string) => string;
@@ -946,7 +955,10 @@ function createExecutionState(runId: string): ExecutionState {
     guardToolArguments: new Map(),
     guardModelTurnObserved: false,
     guardPendingToolCalls: 0,
-    consecutiveToolErrors: null,
+    toolFailureRepeat: createToolFailureRepeatTracker(),
+    runGuardHintSent: null,
+    runGuardHintStopEmitted: false,
+    runGuardWrapUpHintSent: false,
   };
 }
 
@@ -1080,7 +1092,119 @@ function popGuardToolArguments(state: ExecutionState, name: string): unknown {
   return args;
 }
 
-async function observeModelTurn(ctx: AdapterExecutionContext, state: ExecutionState): Promise<void> {
+// myrmidon(RUN-GUARD-HINT): part B — the adapter renders the guard's single
+// hint-before-stop decision as one correction message queued into the running
+// agent dialog (POST /v1/runs/{id}/steer), using the epic's phrasing. The hint
+// fires exactly once per run (RunGuard refuses to hint the same reason twice
+// and state.runGuardHintSent blocks a second steer).
+export function buildRunGuardHintMessage(hint: {
+  reason: "repeated_tool_call" | "model_call_limit";
+  tool?: string;
+  repeatCount?: number;
+  modelCalls?: number;
+  remaining?: number;
+}): string {
+  // myrmidon(OPE-12799): the wrap-up message, sent while the run still has calls
+  // left. The next run starts in a fresh session and sees only what is pushed and
+  // what is written on the task, so the agent is told to put its work there.
+  if (hint.reason === "model_call_limit" && typeof hint.remaining === "number" && hint.remaining > 0) {
+    return (
+      `Защита: до остановки прогона осталось ${hint.remaining} вызовов модели. ` +
+      "Сохрани сделанное сейчас: закоммить и запушь изменения в ветку задачи, затем напиши комментарий в задаче — " +
+      "что сделано, что осталось и с чего продолжить. Следующий прогон начнётся с чистой сессии и увидит только " +
+      "запушенные коммиты и этот комментарий. Если задача закончена — заверши её как обычно."
+    );
+  }
+  if (hint.reason === "repeated_tool_call") {
+    const tool = hint.tool ?? "инструмент";
+    const count = hint.repeatCount ?? 3;
+    return `Защита: вызываешь ${tool} с теми же аргументами ${count}-й раз — смени подход: читай другое место или другим инструментом, переходи к правке по задаче`;
+  }
+  return "Защита: лимит вызовов модели, записей не было — переходи к правке по месту из задачи или опиши блокер в комментарии";
+}
+
+async function sendRunGuardHint(input: {
+  ctx: AdapterExecutionContext;
+  state: ExecutionState;
+  baseUrl: URL;
+  headers: Record<string, string>;
+  redactText: TextRedactor;
+  hint: {
+    reason: "repeated_tool_call" | "model_call_limit";
+    tool?: string;
+    repeatCount?: number;
+    modelCalls?: number;
+    remaining?: number;
+  };
+}): Promise<void> {
+  const message = buildRunGuardHintMessage(input.hint);
+  try {
+    await fetchJson(apiUrl(input.baseUrl, `/v1/runs/${encodeURIComponent(input.state.runId)}/steer`), {
+      method: "POST",
+      headers: input.headers,
+      body: JSON.stringify({ input: message }),
+    });
+    await input.ctx.onLog(
+      "stdout",
+      `[hermes-gateway] run guard hint delivered (${input.hint.reason})\n`,
+    );
+  } catch (err) {
+    // The hint is advisory: a failed steer must not fail the run.
+    await input.ctx.onLog(
+      "stderr",
+      `[hermes-gateway] run guard hint delivery failed: ${redactErrorMessage(err, input.redactText)}\n`,
+    );
+  }
+}
+
+// myrmidon(RUN-GUARD-HINT) part B: a run that was hinted and then reached a
+// final stop (the guard stopped it, or the run ended non-completed after the
+// correction) records the hint reason in resultJson for the part-D
+// measurement and emits a run-log event for debugging. Shared across the
+// cancelled, timeout, and terminal-result exit paths.
+async function emitRunGuardHintStopIfNeeded(input: {
+  ctx: AdapterExecutionContext;
+  state: ExecutionState;
+  outcome: TerminalState | "cancelled" | "timeout";
+}): Promise<{ reason: "repeated_tool_call" | "model_call_limit" } | null> {
+  const { ctx, state, outcome } = input;
+  if (!state.runGuardHintSent) return null;
+  const isStoppedOrNonCompleted =
+    Boolean(ctx.runGuard?.stopped) ||
+    outcome === "cancelled" ||
+    outcome === "timeout" ||
+    outcome.status !== "completed";
+  if (!isStoppedOrNonCompleted) return null;
+
+  const runGuardHint = { reason: state.runGuardHintSent.reason };
+  if (!state.runGuardHintStopEmitted) {
+    state.runGuardHintStopEmitted = true;
+    await ctx.onEvent?.({
+      eventType: "run_guard_hint_stop",
+      stream: "system",
+      level: "warn",
+      message: `Run stopped after run guard hint (${runGuardHint.reason})`,
+      payload: {
+        runGuardHint: { reason: runGuardHint.reason },
+        runGuardStopReason: ctx.runGuard?.stopReason ?? runGuardHint.reason,
+      },
+    });
+    await ctx.onLog(
+      "stderr",
+      `[hermes-gateway] run guard stop after hint (${runGuardHint.reason})\n`,
+    );
+  }
+  return runGuardHint;
+}
+
+async function observeModelTurn(input: {
+  ctx: AdapterExecutionContext;
+  state: ExecutionState;
+  baseUrl: URL;
+  headers: Record<string, string>;
+  redactText: TextRedactor;
+}): Promise<void> {
+  const { ctx, state } = input;
   if (!ctx.runGuard || state.guardModelTurnObserved) return;
   state.guardModelTurnObserved = true;
   // myrmidon(RUN-GUARD-LOOPS): a stopped guard keeps answering stop; report the
@@ -1088,6 +1212,17 @@ async function observeModelTurn(ctx: AdapterExecutionContext, state: ExecutionSt
   const alreadyStopped = ctx.runGuard.stopped;
   const decision = ctx.runGuard.modelCall();
   if (decision.stop && !alreadyStopped) await ctx.onRunGuardStop?.(decision.reason!);
+  else if (!decision.stop && decision.hint && typeof decision.hint.remaining === "number") {
+    // myrmidon(OPE-12799): the wrap-up message before the call limit; see
+    // ExecutionState.runGuardWrapUpHintSent.
+    if (!state.runGuardWrapUpHintSent) {
+      state.runGuardWrapUpHintSent = true;
+      await sendRunGuardHint({ ...input, hint: decision.hint });
+    }
+  } else if (!decision.stop && decision.hint && !state.runGuardHintSent) {
+    state.runGuardHintSent = { reason: decision.hint.reason };
+    await sendRunGuardHint({ ...input, hint: decision.hint });
+  }
 }
 
 async function observeRunGuardEvent(input: {
@@ -1095,6 +1230,9 @@ async function observeRunGuardEvent(input: {
   state: ExecutionState;
   eventName: string | null;
   record: Record<string, unknown> | null;
+  baseUrl: URL;
+  headers: Record<string, string>;
+  redactText: TextRedactor;
 }): Promise<void> {
   const { ctx, state, eventName, record } = input;
   const guard = ctx.runGuard;
@@ -1104,7 +1242,7 @@ async function observeRunGuardEvent(input: {
     if (state.guardPendingToolCalls === 1) {
       guard.pauseIdle();
     }
-    await observeModelTurn(ctx, state);
+    await observeModelTurn(input);
     const name = toolNameFromEvent(record);
     const args = record?.input ?? record?.arguments ?? record?.preview;
     if (args !== undefined) pushGuardToolArguments(state, name, args);
@@ -1115,6 +1253,10 @@ async function observeRunGuardEvent(input: {
     const alreadyStopped = guard.stopped;
     const decision = guard.toolStarted(name, args);
     if (decision.stop && !alreadyStopped) await ctx.onRunGuardStop?.(decision.reason!);
+    else if (!decision.stop && decision.hint && !state.runGuardHintSent) {
+      state.runGuardHintSent = { reason: decision.hint.reason };
+      await sendRunGuardHint({ ...input, hint: decision.hint });
+    }
     return;
   }
   if (eventName === "tool.completed") {
@@ -1142,7 +1284,7 @@ async function observeRunGuardEvent(input: {
       eventName === "llm.started") &&
     state.guardPendingToolCalls === 0
   ) {
-    await observeModelTurn(ctx, state);
+    await observeModelTurn(input);
   }
   guard.event();
 }
@@ -1197,6 +1339,7 @@ async function logCompactEvent(input: {
     const name = toolNameFromEvent(record);
     const preview = truncateForLog(toolPreviewFromEvent(record, redactText), COMPACT_TOOL_PREVIEW_MAX_CHARS);
     pushToolPreview(state, name, preview);
+    state.toolFailureRepeat.started(name, preview);
     // myrmidon(1.6.7 TOKENS-TRACE / OPE-10727): accumulate tool result sizes
     // from the preview content. The preview is the tool arguments/result
     // snippet captured at tool.started time.
@@ -1216,37 +1359,25 @@ async function logCompactEvent(input: {
     }
 
     // 1.7 AGENT-RUNTIME: лимит повторов одинаковых ошибок инструментов (OPE-10096)
-    if (toolHasError(record)) {
-      const errStr = String(record?.error ?? record?.stderr ?? record?.message ?? "").trim().slice(0, 200);
-      const isSameTool = Boolean(state.consecutiveToolErrors && state.consecutiveToolErrors.toolName === name);
-      const isSameError = Boolean(
-        isSameTool &&
-        state.consecutiveToolErrors?.lastError &&
-        errStr.length > 0 &&
-        state.consecutiveToolErrors.lastError === errStr,
-      );
-
-      let currentError = state.consecutiveToolErrors;
-      if (isSameTool && isSameError && currentError) {
-        currentError.count++;
-      } else {
-        currentError = { toolName: name, count: 1, lastError: errStr };
-        state.consecutiveToolErrors = currentError;
-      }
-
-      if (currentError.count >= 3) {
-        const errorMsg = `Repeated tool failure limit exceeded: ${name} failed ${currentError.count} times consecutively with the same error.`;
-        await ctx.onLog("stderr", `\n[agent-runtime] STOP CONDITION: ${errorMsg} Aborting run to prevent idle tool failure loop.\n`);
-        markTerminal(state, {
-          runId: state.runId,
-          status: "failed",
-          eventName: "agent.runtime.stop_condition",
-          payload: { error: errorMsg },
-          output: errorMsg,
-        });
-      }
-    } else {
-      state.consecutiveToolErrors = null;
+    // myrmidon(OPE-12796): the gateway sends `error` as a boolean, so the old
+    // string compare matched any two failures of a tool. Count only the same call
+    // (name + arguments, + text when the event has one) failing again after the
+    // model saw the previous failure; failures of one parallel batch count once.
+    const failed = toolHasError(record);
+    const rawError = record?.error;
+    const errText = typeof rawError === "string" ? rawError.trim().slice(0, 200) : null;
+    const repeat = state.toolFailureRepeat.completed(name, failed, errText);
+    if (repeat) {
+      const errorMsg = `Repeated tool failure limit exceeded: ${name} failed ${repeat.count} times consecutively with the same error.`;
+      const callText = repeat.preview ? ` Call: ${name} ${repeat.preview}.` : "";
+      await ctx.onLog("stderr", `\n[agent-runtime] STOP CONDITION: ${errorMsg}${callText} Aborting run to prevent idle tool failure loop.\n`);
+      markTerminal(state, {
+        runId: state.runId,
+        status: "failed",
+        eventName: "agent.runtime.stop_condition",
+        payload: { error: errorMsg },
+        output: errorMsg,
+      });
     }
   } else if (eventName === "reasoning.available") {
     const reasoning = redactText(extractReasoningPreview(record));
@@ -1404,7 +1535,15 @@ async function handleEvent(input: {
   // myrmidon(N4-RUN-LIVENESS): every gateway event is proof of life; the
   // liveness watch (when enabled) reads this stamp instead of the wall clock.
   touchRunLiveness(state);
-  await observeRunGuardEvent({ ctx, state, eventName, record });
+  await observeRunGuardEvent({
+    ctx,
+    state,
+    eventName,
+    record,
+    baseUrl,
+    headers: approvalHeaders,
+    redactText,
+  });
 
   if (debugEvents) {
     // myrmidon(G4): raw event JSON is now opt-in (adapterConfig.debugEvents);
@@ -2223,6 +2362,10 @@ export function mapFinalResultForTest(input: {
   modelAttemptId?: string | null;
   /** Digests of static wake blocks to persist for delta computation on next turn. */
   wakeBlockDigests?: Record<string, string>;
+  /** myrmidon(RUN-GUARD-HINT) part B: set when the run reached its final stop
+   * after the guard's hint-before-stop correction was queued — the server
+   * persists it into resultJson for the part-D measurement. */
+  runGuardHint?: { reason: "repeated_tool_call" | "model_call_limit" } | null;
 }): AdapterExecutionResult {
   const redactText = input.redactText ?? sanitizeSensitiveText;
   const payload = input.terminal.payload ?? {};
@@ -2421,6 +2564,10 @@ export function mapFinalResultForTest(input: {
       // providerErrorAsContent, not only the "No reply" sentinel. Replay safety
       // is a separate question, answered by executionRecovery above.
       ...(providerErrorAsContent ? { model_unavailable: true } : {}),
+      // myrmidon(RUN-GUARD-HINT) part B: a run stopped after the guard's
+      // hint-before-stop correction carries the hint reason in resultJson for
+      // the part-D measurement and debugging.
+      ...(input.runGuardHint ? { runGuardHint: input.runGuardHint } : {}),
     },
   };
 }
@@ -3548,6 +3695,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   await flushCompactDeltaLines(ctx, state, { final: true });
 
   if (outcome === "cancelled") {
+    const runGuardHint = await emitRunGuardHintStopIfNeeded({ ctx, state, outcome });
     await stopRun({ ctx, baseUrl, headers: eventHeaders, runId, redactText });
     const finalStatus = await fetchFinalStatus({ baseUrl, headers: eventHeaders, runId, deadlineMs: STOP_GRACE_MS });
     // myrmidon(G4): only claim the cancellation acknowledged once
@@ -3576,6 +3724,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         last_event: state.lastEventName,
         promptBreakdown,
         final_status: redactForLog(finalStatus, [], 0, redactText),
+        ...(runGuardHint ? { runGuardHint } : {}),
         ...(terminationVerified
           ? {
               executionCancellation: {
@@ -3598,6 +3747,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   }
 
   if (outcome === "timeout") {
+    const runGuardHint = await emitRunGuardHintStopIfNeeded({ ctx, state, outcome });
     await stopRun({ ctx, baseUrl, headers: eventHeaders, runId, redactText });
     const finalStatus = await fetchFinalStatus({ baseUrl, headers: eventHeaders, runId, deadlineMs: STOP_GRACE_MS });
     // myrmidon(G4): operator cancellation can race in after Promise.race
@@ -3622,6 +3772,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         last_event: state.lastEventName,
         promptBreakdown,
         final_status: redactForLog(finalStatus, [], 0, redactText),
+        ...(runGuardHint ? { runGuardHint } : {}),
         ...(cancelledToo
           ? {
               executionCancellation: {
@@ -3680,6 +3831,12 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   const toolResultChars = state.toolResultCharsAccum ?? null;
   const toolResultTokens = state.toolResultTokensAccum ?? null;
 
+  // myrmidon(RUN-GUARD-HINT) part B: a run that was hinted and then reached a
+  // final stop (the guard stopped it, or the run ended non-completed after the
+  // correction) records the hint reason in resultJson for the part-D
+  // measurement and emits a run-log event for debugging.
+  const runGuardHint = await emitRunGuardHintStopIfNeeded({ ctx, state, outcome });
+
   const finalResult = mapFinalResultForTest({
     terminal: outcome,
     outputChunks: state.outputChunks,
@@ -3698,6 +3855,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     toolResultChars,
     toolResultTokens,
     wakeBlockDigests: body.wakeBlockDigests,
+    ...(runGuardHint ? { runGuardHint } : {}),
   });
   // myrmidon(MEMORY-CENTRAL-B): remember this turn in the central store once
   // the run reached a terminal outcome (whatever it was — a failed turn's

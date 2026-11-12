@@ -34,6 +34,29 @@ export interface ReviewWakesQuota {
    * one handoff costs exactly one slot.
    */
   admittedKeys?: Set<string>;
+  /**
+   * Issues whose review already holds a slot in this tick. A later admission
+   * of the SAME issue (a moved PR head builds a fresh head-keyed key,
+   * OPE-12177) is a re-wake of a review already under way, not a new review,
+   * so it is admitted free instead of being deferred by the spent budget.
+   */
+  admittedIssueIds?: Set<string>;
+}
+
+/**
+ * Prefix of the review-admission idempotency key. Mirrors
+ * `REVIEW_ADMISSION_KEY_PREFIX` of `policy.ts` (not imported: `policy.ts`
+ * imports this module). Key shapes (`reviewAdmissionDedupKey`):
+ * `issue-review-admission:{issueId}:{headSha}` or, without a head SHA,
+ * `issue-review-admission:{issueId}:{agentId}`.
+ */
+const REVIEW_ADMISSION_KEY_PREFIX = "issue-review-admission:";
+
+/** The issue id of a review-admission key, or null for a foreign/empty key. */
+function admissionKeyIssueId(admissionKey: string | undefined): string | null {
+  if (!admissionKey || !admissionKey.startsWith(REVIEW_ADMISSION_KEY_PREFIX)) return null;
+  const issueId = admissionKey.slice(REVIEW_ADMISSION_KEY_PREFIX.length).split(":", 1)[0];
+  return issueId ? issueId : null;
 }
 
 /**
@@ -60,18 +83,28 @@ export function admitReviewerUnderWakesQuota(
   // sites of one handoff; the second evaluation must observe the first one's
   // decision instead of spending a second slot.
   if (admissionKey && quota?.admittedKeys?.has(admissionKey)) return "admit";
+  // Same issue, new key (the PR head moved): the review is already running
+  // under a slot spent earlier in this tick — admit without a second spend.
+  const issueId = admissionKeyIssueId(admissionKey);
+  if (issueId && quota?.admittedIssueIds?.has(issueId)) {
+    (quota.admittedKeys ??= new Set()).add(admissionKey!);
+    return "admit";
+  }
   const remaining = Math.max(0, Math.floor(quota?.remaining ?? 0));
   if (remaining < 1) return "quota_reached";
   quota!.remaining = remaining - 1;
   if (admissionKey) {
     (quota!.admittedKeys ??= new Set()).add(admissionKey);
   }
+  if (issueId) {
+    (quota!.admittedIssueIds ??= new Set()).add(issueId);
+  }
   return "admit";
 }
 
 /** A fresh budget for one tick: `REVIEW_GATE_MAX_NEW_REVIEW_WAKES_PER_TICK` wakes per company. */
 export function freshReviewWakesQuota(): ReviewWakesQuota {
-  return { remaining: REVIEW_GATE_MAX_NEW_REVIEW_WAKES_PER_TICK, admittedKeys: new Set() };
+  return { remaining: REVIEW_GATE_MAX_NEW_REVIEW_WAKES_PER_TICK, admittedKeys: new Set(), admittedIssueIds: new Set() };
 }
 
 /** Clears every company's budget for the new tick (missing entries start fresh on demand). */

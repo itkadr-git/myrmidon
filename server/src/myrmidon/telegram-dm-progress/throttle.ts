@@ -4,6 +4,12 @@
 // edited again. Pure: the caller passes the stored row's text and its last
 // update time, and the freshly composed text.
 //
+// myrmidon(1.7-TG-LOCALE): the elapsed suffix is language-agnostic — the
+// headline ends with the composed elapsed line in either language
+// (" · <1 мин" ru, " · <1 min" en, minutes and hour+minute forms), and the
+// step-kind word comparison stays locale-neutral: the caller passes the
+// recorded step kinds, so the verb wording never leaks into the decision.
+//
 // Rules, in order:
 // 1. no row yet → publish (the first status post);
 // 2. same text → never (no duplicate edits);
@@ -33,13 +39,19 @@ export interface DmStatusPublishDecision {
   reason: DmStatusPublishReason;
 }
 
-const ELAPSED_SUFFIX = / · (?:<1 мин|\d+ мин|\d+ ч \d+ мин)$/;
+// myrmidon(1.7-TG-LOCALE): the trailing elapsed line in either language.
+// ru: " · <1 мин" | " · N мин" | " · H ч M мин"; en: " · <1 min" | " · N min"
+// | " · H h M min". The separator before it is the midline dot both locales
+// compose with.
+const ELAPSED_SUFFIX =
+  / · (?:<1 (?:мин|min)|\d+ (?:мин|min)|\d+ (?:ч|h) \d+ (?:мин|min))$/;
 
 /**
  * The kind of the current step shown in a status text: the first word of the
  * headline after the agent name, with the elapsed-time suffix removed
- * ("Агент: правлю слайды 4, 9 · 3 мин" → "правлю"). The status labels start
- * with a verb per kind, so the verb is the kind. Null for an empty text.
+ * ("Агент: правлю слайды 4, 9 · 3 мин" → "правлю"; "Agent: editing slides
+ * 4, 9 · 3 min" → "editing"). The status labels start with a verb per kind
+ * in both locales, so the verb is the kind. Null for an empty text.
  */
 export function dmStatusStepKind(text: string, agentName: string): string | null {
   const headline = (text.split("\n")[0] ?? "").replace(ELAPSED_SUFFIX, "").trim();

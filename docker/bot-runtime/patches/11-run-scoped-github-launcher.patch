@@ -147,7 +147,7 @@ index 0000000..0fec488
 +GITHUB_LAUNCHER_DIR_NAME = "PAPERCLIP_GITHUB_LAUNCHER_DIR"
 +_RUN_ID_PATTERN = re.compile(r"^[A-Za-z0-9_.-]{1,128}$")
 +
-+_GITHUB_LAUNCHER: ContextVar[Optional[dict]] = ContextVar("PAPERCLIP_GITHUB_LAUNCHER", default=None)
++_GITHUB_LAUNCHER: ContextVar[Optional[dict]] = ContextVar("MYRMIDON_GITHUB_LAUNCHER", default=None)
 +
 +
 +def github_launcher_root() -> str:

@@ -420,6 +420,13 @@ async function sourceIssueId(
     case "provider_usage_warning": {
       return { exists: sourceId.length > 0, issueId: null };
     }
+    // myrmidon(1.6.8 OPE-12709): role-model-down / no-credits cards are
+    // computed operator alerts (like provider_usage_warning) with no backing
+    // issue row — the subject id is the company-scoped card key.
+    case "role_model_down":
+    case "provider_no_credits": {
+      return { exists: sourceId.length > 0, issueId: null };
+    }
     // myrmidon(1.6.5-F-18): the empty-catalog card is computed from the
     // process-level signal registry and its subject id is the stable
     // company-scoped key the feed emits (`litellm:${companyId}`), not a

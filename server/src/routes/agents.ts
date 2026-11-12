@@ -108,9 +108,17 @@ import {
   workspaceOperationService,
 } from "../services/index.js";
 import type { AgentCasteDirectoryPort } from "../services/agents.js";
+// myrmidon(1.6.8 OPE-12709): "model unavailable since" mark, same state as the role_model_down card
+import { listRoleModelDownSince } from "../services/attention.js";
+import { botKeyForAgent } from "../myrmidon/bot-containers/agent-config.js";
+import { DECOMMISSION_UNSUPPORTED_MESSAGE } from "../myrmidon/bot-containers/driver.js"; // myrmidon(OPE-12654)
+import { botKeyLock } from "../myrmidon/bot-containers/bot-key-lock.js"; // myrmidon(OPE-12654)
+import { getBotContainerRuntime } from "../myrmidon/bot-containers/routes-wiring.js";
+import { createAgentsModule, type AgentsModule } from "../modules/agents/index.js";
 import { badRequest, conflict, forbidden, HttpError, notFound, unprocessable } from "../errors.js";
 import { CHAT_INBOUND_WAKE_KEY_PREFIX } from "../myrmidon/chat-holds/chat-backed.js"; // myrmidon(1.6.5 OWNER-CHAT-ADMISSION)
 import { PAPERCLIP_CORE_SKILL_KEYS } from "../services/company-skills.js";
+import { agentExchangeStore } from "../myrmidon/agent-exchange/store.js"; // myrmidon(1.7 AGENT-EXCHANGE-METRICS, OPE-12097)
 import { createRunSecretRedactionRegistry } from "../services/run-secret-redaction.js";
 import { assertAuthenticated, assertBoard, assertCompanyAccess, assertInstanceAdmin, buildActorSecretContext, getAccessibleResource, getActorInfo, hasCompanyAccess } from "./authz.js";
 import { runAdapterLoginStartSpine } from "./adapter-login-route-spine.js";
@@ -301,6 +309,11 @@ import {
 import { managedAgentProfileService } from "../services/managed-agent-profiles.js";
 // myrmidon(1.6.4-BOT-CONTAINER-CARD): a container block without enabled/limits is refused on save
 import { botContainerCardSaveProblem } from "../myrmidon/bot-containers/agent-config.js";
+import {
+  botResourceCeilingProblem,
+  readBotResourceCeilings,
+  type BotResourceCeilings,
+} from "../myrmidon/bot-containers/resource-ceilings.js";
 import { remoteAgentProfileService } from "../services/remote-agent-profiles.js";
 
 const AGENT_SKILL_ASSIGNMENT_MODES = ["add", "remove", "replace"] as const;
@@ -546,6 +559,7 @@ export function agentRoutes(
      * then a no-op, which keeps the pre-directory behavior exactly.
      */
     casteDirectory?: AgentCasteDirectoryPort;
+    agentsModule?: AgentsModule;
   } = {},
 ) {
   // Legacy hardcoded maps — used as fallback when adapter module does not
@@ -589,8 +603,35 @@ export function agentRoutes(
   ] as const;
   const KNOWN_INSTRUCTIONS_BUNDLE_KEY_SET: ReadonlySet<string> = new Set(KNOWN_INSTRUCTIONS_BUNDLE_KEYS);
 
+  const agentsMod = options.agentsModule ?? createAgentsModule(db);
+  const agentQuotaMiddleware = agentsMod.quotaMiddleware();
+
   const router = Router();
-  const svc = agentService(db, { castes: options.casteDirectory });
+  const svc = agentService(db, {
+    castes: options.casteDirectory,
+    // myrmidon(OPE-12477): before terminate/delete removes or hides the agent's
+    // row, the bot's container and host data are cleaned up through the active
+    // container runtime (local docker or fleetd behind the routing driver).
+    // Fail-closed: only an enabled container card is cleaned; no runtime or a
+    // fleetd error surfaces to the caller instead of silently succeeding.
+    cleanupBotContainer: async (agent) => {
+      const runtime = getBotContainerRuntime();
+      const botKey = botKeyForAgent(agent.id);
+      if (!botKey) return;
+      // An enabled card without a registered runtime is not safe to delete:
+      // the container may still exist on a site while startup is unavailable.
+      if (!runtime) throw new Error("bot container runtime is not configured; refusing lifecycle cleanup");
+      // myrmidon(OPE-12654): the decommission (stop, then dockergate's A22 delete of the main
+      // container with its quota project and data directory) instead of `cleanup`, whose plain
+      // delete the gate refuses for a main container without a `.next` replacement. Under the
+      // bot's lock, so it never runs beside a reconcile pass of the same bot. Still fail-closed:
+      // any error aborts the terminate/delete.
+      const decommission = runtime.driver.decommission;
+      if (!decommission) throw new Error(DECOMMISSION_UNSUPPORTED_MESSAGE);
+      await (runtime.lock ?? botKeyLock).run(botKey, () => decommission.call(runtime.driver, botKey));
+    },
+    agentsModule: agentsMod,
+  });
   const access = accessService(db);
   const approvalsSvc = approvalService(db);
   const budgets = budgetService(db);
@@ -1693,6 +1734,16 @@ export function agentRoutes(
     };
   }
 
+  // myrmidon(1.6.8 OPE-12709): one query per company; the mark is advisory, so a
+  // failed lookup degrades to "no mark" instead of failing the agent read.
+  async function readRoleModelDownSince(companyId: string): Promise<Map<string, string>> {
+    try {
+      return await listRoleModelDownSince(db, companyId);
+    } catch {
+      return new Map();
+    }
+  }
+
   async function buildAgentDetail(
     agent: NonNullable<Awaited<ReturnType<typeof svc.getById>>>,
     options?: { restricted?: boolean },
@@ -1705,9 +1756,11 @@ export function agentRoutes(
     const baseAgent = redactAgentRowForResponse(
       options?.restricted ? redactForRestrictedAgentView(agent) : agent,
     );
+    const roleModelDownSince = (await readRoleModelDownSince(agent.companyId)).get(agent.role);
 
     return {
       ...baseAgent,
+      ...(roleModelDownSince ? { roleModelDownSince } : {}),
       chainOfCommand,
       access: accessState,
     };
@@ -2525,6 +2578,7 @@ export function agentRoutes(
     adapterType: string | null | undefined;
     adapterConfig: Record<string, unknown>;
     constraintAdapterConfig?: Record<string, unknown>;
+    agentId?: string;
   }): Promise<Record<string, unknown>> {
     const normalizedAdapterConfig = await secretsSvc.normalizeAdapterConfigForPersistence(
       input.companyId,
@@ -2540,6 +2594,7 @@ export function agentRoutes(
       input.constraintAdapterConfig
         ? { ...input.constraintAdapterConfig, ...normalizedAdapterConfig }
         : normalizedAdapterConfig,
+      input.agentId,
     );
     return normalizePaperclipRunnerAdapterConfig(
       input.adapterType ?? "",
@@ -2755,9 +2810,24 @@ export function agentRoutes(
     companyId: string,
     adapterType: string | null | undefined,
     adapterConfig: Record<string, unknown>,
+    agentId?: string,
   ) {
-    // myrmidon(1.6.4-BOT-CONTAINER-CARD): refuse a container block the reconciler could never apply.
-    const containerProblem = botContainerCardSaveProblem(adapterType, adapterConfig);
+    // myrmidon(OPE-12337): refuse limits exceeding enrolled dockergate ceilings.
+    let ceilings: BotResourceCeilings | null = null;
+    if (
+      adapterType === "hermes_gateway" &&
+      agentId &&
+      typeof adapterConfig?.container === "object" &&
+      adapterConfig.container !== null &&
+      (adapterConfig.container as Record<string, unknown>).enabled === true
+    ) {
+      const botKey = botKeyForAgent(agentId);
+      if (botKey) {
+        ceilings = await readBotResourceCeilings(botKey);
+      }
+    }
+    // myrmidon(1.6.4-BOT-CONTAINER-CARD, OPE-12337): refuse a container block the reconciler could never apply or exceeding ceilings.
+    const containerProblem = botContainerCardSaveProblem(adapterType, adapterConfig, process.env, ceilings);
     if (containerProblem) throw unprocessable(`Invalid hermes_gateway adapterConfig: ${containerProblem}`);
     const localProblem = localAdapterConfigProblem(adapterType, adapterConfig);
     if (localProblem) throw unprocessable(`Invalid ${adapterType} adapterConfig: ${localProblem}`);
@@ -4232,11 +4302,21 @@ function getActorIdentityPart(req: Request): string {
 
     // Compute the validator before the response query so a matching ETag
     // avoids hydrating and filtering the full agent list.
+    // myrmidon(1.6.8 OPE-12709): the "model unavailable since" mark is derived
+    // from runs, not from agent rows, so it joins the validator — otherwise a
+    // 304 would keep a stale mark on screen.
+    const roleModelDown = await readRoleModelDownSince(companyId);
+    const listShape = roleModelDown.size > 0
+      ? `${actorShape}|rmd:${JSON.stringify([...roleModelDown.entries()].sort())}`
+      : actorShape;
     const vk = normalizedFilters
-      ? await svc.listSummariesVersionKey(companyId, actorShape, JSON.stringify(normalizedFilters))
-      : await svc.listSummariesVersionKey(companyId, actorShape);
+      ? await svc.listSummariesVersionKey(companyId, listShape, JSON.stringify(normalizedFilters))
+      : await svc.listSummariesVersionKey(companyId, listShape);
     if (notModifiedOrSetEtag(req, res, vk)) return;
-    const sourceRows = await svc.listSummaries(companyId);
+    const sourceRows = (await svc.listSummaries(companyId)).map((row) => {
+      const since = roleModelDown.get(row.role);
+      return since ? { ...row, roleModelDownSince: since } : row;
+    });
     const result = await filterAgentsForActor(req, sourceRows);
     const filteredRows = normalizedFilters ? filterAgentListItems(result, normalizedFilters) : result;
     const responseRows = canReadConfigs
@@ -4402,6 +4482,7 @@ function getActorIdentityPart(req: Request): string {
       status: "todo,in_progress,blocked",
       includeRoutineExecutions: true,
       limit: ISSUE_LIST_DEFAULT_LIMIT,
+      excludePrivate: true,
     });
     const worktreeActivation = await resolveWorktreeRunExecutionActivationState({
       getExperimental: () => instanceSettingsService(db).getExperimental(),
@@ -4456,6 +4537,7 @@ function getActorIdentityPart(req: Request): string {
       inboxArchivedByUserId: query.userId,
       status: query.status,
       limit: ISSUE_LIST_DEFAULT_LIMIT,
+      excludePrivate: true,
     });
 
     res.json(rows.map((row: any) => row.activeRun && req.actor?.type === "agent" && row.activeRun.execution ? {
@@ -4631,6 +4713,24 @@ function getActorIdentityPart(req: Request): string {
         sessionParamsJson: redactEventPayload(session.sessionParamsJson ?? null),
       })),
     );
+  });
+
+  // myrmidon(1.7 AGENT-EXCHANGE-METRICS, OPE-12097): the experience-exchange
+  // session counters of an agent. `exchanges_started` counts every room whose
+  // frozen roster names the agent; `exchanges_completed` counts only the rooms
+  // that finished with the summary (status `completed`). The counters are
+  // derived on read from `agent_exchange_rooms` — no second state to keep in
+  // sync: a session starts when the room is opened, completes when the room
+  // closes with a summary, and a stopped room stays started-but-not-completed.
+  router.get("/agents/:id/stats", async (req, res) => {
+    assertBoard(req);
+    const id = req.params.id as string;
+    const agent = await getAccessibleResource(req, res, svc.getById(id), "Agent not found");
+    if (!agent) return;
+    await assertBoardCanManageAgentsForCompany(req, agent.companyId);
+
+    const counts = (await agentExchangeStore(db).countAgentSessions?.(id)) ?? { started: 0, completed: 0 };
+    res.json({ exchanges_started: counts.started, exchanges_completed: counts.completed });
   });
 
   router.post("/agents/:id/runtime-state/reset-session", validate(resetAgentSessionSchema), async (req, res) => {
@@ -4961,9 +5061,13 @@ function getActorIdentityPart(req: Request): string {
     res.status(outcome.status).json(outcome.body);
   });
 
-  router.post("/companies/:companyId/agents", validate(createAgentSchema), async (req, res) => {
-    const companyId = req.params.companyId as string;
-    await assertCanCreateAgentsForCompany(req, companyId);
+  router.post(
+    "/companies/:companyId/agents",
+    agentQuotaMiddleware,
+    validate(createAgentSchema),
+    async (req, res) => {
+      const companyId = req.params.companyId as string;
+      await assertCanCreateAgentsForCompany(req, companyId);
 
     const company = await db
       .select()
@@ -5845,6 +5949,7 @@ function getActorIdentityPart(req: Request): string {
         companyId: existing.companyId,
         adapterType: requestedAdapterType,
         adapterConfig: effectiveAdapterConfig,
+        agentId: existing.id,
       });
       assertLocalAdapterSecurityChangeAllowed(
         req,
@@ -8110,6 +8215,10 @@ function getActorIdentityPart(req: Request): string {
       "Issue not found",
     );
     if (!issue) return;
+    if (issue.isPrivate && req.actor.type === "agent") {
+      res.status(404).json({ error: "Issue not found" });
+      return;
+    }
 
     const liveRuns = await db
       .select({
@@ -8160,6 +8269,10 @@ function getActorIdentityPart(req: Request): string {
   router.get("/issues/:issueId/execution", async (req, res) => {
     const issue = await getAccessibleResource(req, res, issueService(db).getById(req.params.issueId as string), "Issue not found");
     if (!issue) return;
+    if (issue.isPrivate && req.actor.type === "agent") {
+      res.status(404).json({ error: "Issue not found" });
+      return;
+    }
     const [run] = await db.select({ id: heartbeatRuns.id, agentId: heartbeatRuns.agentId }).from(heartbeatRuns).where(and(
       eq(heartbeatRuns.companyId, issue.companyId),
       sql`${heartbeatRuns.contextSnapshot} ->> 'issueId' = ${issue.id}`,
@@ -8180,6 +8293,10 @@ function getActorIdentityPart(req: Request): string {
       "Issue not found",
     );
     if (!issue) return;
+    if (issue.isPrivate && req.actor.type === "agent") {
+      res.status(404).json({ error: "Issue not found" });
+      return;
+    }
 
     let run = issue.executionRunId ? await heartbeat.getRunIssueSummary(issue.executionRunId) : null;
     if (

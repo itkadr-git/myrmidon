@@ -6,6 +6,7 @@
 export {
   STACK_GENERAL_KEY,
   STACK_DOCUMENT_VERSION,
+  VENDOR_MIGRATION_SUPPORTED_VERSION,
   STACK_RELEASE_SOURCES,
   STACK_CHECKABLE_RELEASE_SOURCES,
   STACK_LOCAL_PROBES,
@@ -47,6 +48,12 @@ export { readStackDocument, writeStackDocument, preserveStackGeneralKey } from "
 export { stackRegistryRoutes, myrmidonStackRegistryRoutes, type StackRegistryRouteOptions } from "./routes.js";
 export { checkStackReleases, startStackCheckSweep, stopStackCheckSweep, STACK_CHECK_PER_PAGE, type StackCheckOptions } from "./check.js";
 export {
+  findStackCheckAppEntries,
+  resolveStackCheckGitHubAppToken,
+  STACK_CHECK_SYSTEM_ROLE,
+  type StackGitHubAppTokenResolution,
+} from "./github-app.js";
+export {
   STACK_CHECK_INTERVAL_ENV,
   STACK_CHECK_MIN_INTERVAL_SEC,
   readStackCheckIntervalSec,
@@ -60,12 +67,23 @@ export {
 export {
   buildStackAttentionCards,
   stackComponentNeedsAttention,
+  stackUpstreamIsStale,
   STACK_ATTENTION_EXCERPT_MAX,
   type StackAttentionCard,
 } from "./attention.js";
 export {
+  buildStackLagTask,
+  buildStackDigestLine,
+  cardsForDigest,
+  cardsForLagTasks,
+  fileStackLagTasks,
+  stackLagTaskIdempotencyKey,
+  type StackLagTask,
+} from "./escalation.js";
+export {
   decideStackBacklogDrafts,
   STACK_BACKLOG_LAG_DEFAULT,
+  type ExistingStackTask,
   type StackBacklogDraft,
   type StackBacklogDraftOptions,
 } from "./backlog-draft.js";

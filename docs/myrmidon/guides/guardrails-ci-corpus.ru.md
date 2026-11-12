@@ -51,7 +51,7 @@ myrmidon(1.7-GRD-CI): блокирующие режимы не включают�
 После любой правки детектора или корпуса — пересоздать осознанно:
 
 ```sh
-pnpm --filter @paperclipai/server exec tsx \
+pnpm --filter @myrmidon/server exec tsx \
   ../scripts/myrmidon/guardrails-eval/refresh.ts
 ```
 

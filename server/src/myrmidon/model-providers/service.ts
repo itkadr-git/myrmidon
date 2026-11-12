@@ -272,9 +272,12 @@ export function createModelProviderService(deps: ModelProviderServiceDeps) {
   }
 
   /**
-   * The litellm model name for one provider model. Keeps the provider's own
-   * spelling: part B registers it under `openai/<name>` style prefixes, which
-   * is derived there — the store records what the provider answered.
+   * The default litellm model name for one provider model. Keeps the provider's
+   * own spelling: part B registers it under `openai/<name>` style prefixes,
+   * which is derived there — the store records what the provider answered.
+   * The operator may set another name (a gateway group that already exists, such
+   * as `kimi/kimi-for-coding`) at creation or with `setModels`; the upstream
+   * model is always the provider's own `modelName`, whatever the group is called.
    */
   function litellmModelNameOf(provider: ProviderRow, modelName: string): string {
     // A pool model id is (or maps to) the name of the pool's own gateway model
@@ -355,19 +358,42 @@ export function createModelProviderService(deps: ModelProviderServiceDeps) {
     }
   }
 
-  /** Replaces the provider's model cache with a fresh snapshot. */
-  async function writeModelCache(provider: ProviderRow, models: string[]): Promise<void> {
+  /**
+   * Replaces the provider's model cache with a fresh snapshot. `litellmNames`
+   * are names the operator chose (at creation, or kept from the previous
+   * snapshot on a key rotation); the rest get the default.
+   */
+  async function writeModelCache(
+    provider: ProviderRow,
+    models: string[],
+    litellmNames: ReadonlyMap<string, string> = new Map(),
+  ): Promise<void> {
     await deps.db.delete(modelProviderModels).where(eq(modelProviderModels.providerId, provider.id));
     if (models.length === 0) return;
     await deps.db.insert(modelProviderModels).values(
       models.map((modelName) => ({
         providerId: provider.id,
         modelName,
-        litellmModelName: litellmModelNameOf(provider, modelName),
+        litellmModelName: litellmNames.get(modelName) ?? litellmModelNameOf(provider, modelName),
         enabled: true,
         free: provider.free,
       })),
     );
+  }
+
+  /** The LiteLLM names the operator chose in the current snapshot: only those that differ from the default. */
+  async function customLitellmNames(provider: ProviderRow): Promise<Map<string, string>> {
+    const rows = await deps.db
+      .select({ modelName: modelProviderModels.modelName, litellmModelName: modelProviderModels.litellmModelName })
+      .from(modelProviderModels)
+      .where(eq(modelProviderModels.providerId, provider.id));
+    const custom = new Map<string, string>();
+    for (const row of rows) {
+      if (row.litellmModelName !== litellmModelNameOf(provider, row.modelName)) {
+        custom.set(row.modelName, row.litellmModelName);
+      }
+    }
+    return custom;
   }
 
   /** Creates a provider: validate the key first, then write store + DB. */
@@ -402,6 +428,17 @@ export function createModelProviderService(deps: ModelProviderServiceDeps) {
       key: input.body.key,
     });
 
+    // A name for a model the provider does not list is a typo, not a setting:
+    // refuse before anything is written.
+    const requestedNames = Object.entries(input.body.litellmModelNames ?? {});
+    const unknownModels = requestedNames.map(([modelName]) => modelName).filter((modelName) => !models.includes(modelName));
+    if (unknownModels.length > 0) {
+      throw unprocessable(
+        `litellmModelNames names models the provider does not list: ${unknownModels.join(", ")}`,
+        { code: "model_provider_unknown_model" },
+      );
+    }
+
     const inserted = await deps.db
       .insert(modelProviders)
       .values({
@@ -426,7 +463,7 @@ export function createModelProviderService(deps: ModelProviderServiceDeps) {
       description: `Model provider key of "${name}" (${row.type}); write-only, never returned by the API`,
     });
 
-    await writeModelCache(row, models);
+    await writeModelCache(row, models, new Map(requestedNames));
     const stored = { ...row, credentialSecretName: finalSecretName };
     await deps.db
       .update(modelProviders)
@@ -479,8 +516,11 @@ export function createModelProviderService(deps: ModelProviderServiceDeps) {
     }
 
     const models = await validateKey({ type: row.type, baseUrl: row.baseUrl, key: input.key });
+    // The operator's LiteLLM names survive the new snapshot: the gateway
+    // registrations are keyed by them.
+    const keptNames = await customLitellmNames(row);
     await deps.secrets.rotateSecret(secretId, input.key);
-    await writeModelCache(row, models);
+    await writeModelCache(row, models, keptNames);
     await deps.db
       .update(modelProviders)
       .set({ credentialSecretName: secretName, keyValidatedAt: now(), updatedAt: now() })
@@ -746,19 +786,41 @@ export function createModelProviderService(deps: ModelProviderServiceDeps) {
       .sort((a, b) => a.modelName.localeCompare(b.modelName));
   }
 
-  /** Applies the per-model enable/disable (and free/paid) switches. */
+  /**
+   * Applies the per-model enable/disable (and free/paid) switches and the
+   * LiteLLM model name. A rename is accepted only for a model that is disabled
+   * before the call: the gateway registration is keyed by the name, and the
+   * enable/disable sync unregisters the name the row holds AFTER the write, so a
+   * rename of an enabled model would strand the old registration. Rename and
+   * enable in one call is fine: the sync registers the new name.
+   */
   async function setModels(input: {
     companyId: string;
     providerId: string;
-    models: Array<{ modelName: string; enabled?: boolean; free?: boolean }>;
+    models: Array<{ modelName: string; enabled?: boolean; free?: boolean; litellmModelName?: string }>;
     activity?: (entry: ModelProviderActivityEntry) => Promise<void> | void;
   }): Promise<ModelProviderModelView[]> {
     const provider = await loadProvider(input.companyId, input.providerId);
     const beforeModels = await listModels(input.companyId, input.providerId);
     for (const model of input.models) {
+      const before = beforeModels.find((entry) => entry.modelName === model.modelName);
+      if (
+        model.litellmModelName !== undefined &&
+        before &&
+        before.litellmModelName !== model.litellmModelName &&
+        before.enabled
+      ) {
+        throw conflict(
+          `model "${model.modelName}" is enabled; disable it before changing its LiteLLM name`,
+          { code: "model_provider_model_enabled" },
+        );
+      }
+    }
+    for (const model of input.models) {
       const patch: Partial<typeof modelProviderModels.$inferInsert> = { updatedAt: now() };
       if (model.enabled !== undefined) patch.enabled = model.enabled;
       if (model.free !== undefined) patch.free = model.free;
+      if (model.litellmModelName !== undefined) patch.litellmModelName = model.litellmModelName;
       await deps.db
         .update(modelProviderModels)
         .set(patch)
@@ -800,6 +862,10 @@ export function createModelProviderService(deps: ModelProviderServiceDeps) {
         return "Сессия истекла";
       case "not_logged_in":
         return "Не авторизован";
+      case "ok":
+        return "Работает";
+      case "error":
+        return "Ошибка";
       default:
         return state;
     }
@@ -807,7 +873,10 @@ export function createModelProviderService(deps: ModelProviderServiceDeps) {
 
   function mapRawAccountToChannel(raw: any): PoolAccountChannelView {
     const n = typeof raw.n === "number" ? raw.n : Number(raw.n || raw.account_number || 0);
-    const label = typeof raw.label === "string" ? raw.label : `Account #${n}`;
+    const label =
+      typeof raw.label === "string" && raw.label.trim().length > 0
+        ? raw.label
+        : `Account #${n}`;
     const state = typeof raw.state === "string" ? raw.state : typeof raw.status === "string" ? raw.status : "unknown";
     const resetText = [raw.error, raw.message, raw.status_message, raw.statusMessage,
       ...(Array.isArray(raw.usage?.recent_errors) ? raw.usage.recent_errors.map((e: any) => e?.message) : []),
@@ -1029,24 +1098,39 @@ export function createModelProviderService(deps: ModelProviderServiceDeps) {
 
     const signals = evaluateAccountSignals(companyId, provider.id, channels, now());
     recordPoolAccountSignals(companyId, provider.id, signals);
+    const nowEpoch = Math.floor(now().getTime() / 1000);
+    const staleToleranceSec = 3600; // an hour of clock skew is fine
+    // myrmidon(OPE-12361 review): the pool connectors answer only
+    // { accounts: with_usage(...) } — there is no pool-level `pool.resetAt`
+    // document, so that read was dead code and production always fell through
+    // to the per-channel windows below. Compute the reset from the channel
+    // windows instead: take the earliest window that still lies in the future
+    // (ignoring banned/disabled accounts whose cached windows are stale), so a
+    // rotated cache cannot shadow the real upcoming reset of live accounts.
+    const futureChannelResets = channels
+      .filter((channel) => !channel.isBanned && !channel.isDisabled)
+      .flatMap((channel) => [
+        channel.limitedUntil,
+        channel.windows.primary?.resetsAt,
+        channel.windows.secondary?.resetsAt,
+      ])
+      .filter(
+        (value): value is number =>
+          typeof value === "number" && value + staleToleranceSec >= nowEpoch,
+      )
+      .sort((a, b) => a - b);
     const summary = {
       total: channels.length,
       live: channels.filter(
         (channel) =>
-          !channel.isBanned && !channel.isExhausted && !channel.isDisabled,
+          !channel.isBanned && !channel.isExhausted && !channel.isDisabled && channel.state !== "error",
       ).length,
       exhausted: channels.filter((channel) => channel.isExhausted).length,
       banned: channels.filter((channel) => channel.isBanned).length,
+      error: channels.filter((channel) => channel.state === "error").length,
       disabled: channels.filter((channel) => channel.isDisabled).length,
-      nextResetAt:
-        channels
-          .flatMap((channel) => [
-            channel.limitedUntil,
-            channel.windows.primary?.resetsAt,
-            channel.windows.secondary?.resetsAt,
-          ])
-          .filter((value): value is number => typeof value === "number" && value > 0)
-          .sort((a, b) => a - b)[0] ?? null,
+      nextResetAt: futureChannelResets[0] ?? null,
+      nextResetText: null as string | null,
     };
 
     return {
@@ -1243,7 +1327,12 @@ export function createModelProviderService(deps: ModelProviderServiceDeps) {
       intervalSec,
       status: "pending",
       plan: input?.plan ?? "plus",
-      label: input?.label ?? `Account #${accountNumber}`,
+      // myrmidon(OPE-12361 review): an empty label string must fall back to the
+      // same "Account #N" sentinel the UI localizes, not render blank.
+      label:
+        typeof input?.label === "string" && input.label.trim().length > 0
+          ? input.label
+          : `Account #${accountNumber}`,
     };
     oauthSessions.set(sessionKey(companyId, providerId, accountNumber), state);
 

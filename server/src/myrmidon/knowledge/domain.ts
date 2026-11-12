@@ -71,7 +71,15 @@ export function selectKnowledgeRevision<T extends {
   return approved.find((revision) => revision.translationOf === canonical.id && revision.lang === requestedLang) ?? canonical;
 }
 
-export const KNOWLEDGE_SOURCE_KINDS = ["task", "pr", "issue", "run", "document", "decision", "url"] as const;
+/**
+ * Source kinds a claim may cite. §2.2/§4.5 (1.7 L-12): the outcome of an
+ * agent debate (including an experience-exchange room turn) proposes knowledge
+ * with `kind: "debate"` and the debate/room id in `source_ref`. Single source
+ * of truth: `@myrmidon/db` re-exports the same constant, and
+ * `knowledgeSourceInputSchema` in `@myrmidon/shared` pins its `kind` options —
+ * the parity test in `knowledge-domain.myrmidon.test.ts` fails when they drift.
+ */
+export const KNOWLEDGE_SOURCE_KINDS = ["task", "pr", "issue", "run", "document", "decision", "url", "debate"] as const;
 export type KnowledgeSourceKind = (typeof KNOWLEDGE_SOURCE_KINDS)[number];
 
 export const KNOWLEDGE_SUGGESTION_STATUSES = ["pending", "accepted", "declined"] as const;

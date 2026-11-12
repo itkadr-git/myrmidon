@@ -49,6 +49,11 @@ export async function recordModelProviderActivity(
   if (!sanitizedDetails.category) {
     sanitizedDetails.category = "models";
   }
+  // myrmidon(OPE-12361): persist the display name so the change log renders
+  // the author as a name instead of `user:<id>`.
+  if (entry.actor?.name && !sanitizedDetails.actorName) {
+    sanitizedDetails.actorName = entry.actor.name;
+  }
   await logActivity(db, {
     companyId: entry.companyId,
     actorType: entry.actor?.type === "agent" ? "agent" : "user",
@@ -180,6 +185,12 @@ export function createPluginProviderModelSync(
     return createLitellmSyncService({
       db,
       litellm: createLitellmSyncClient({ litellmBaseUrl: settings.baseUrl, litellmAdminKey: key }),
+      // LiteLLM has no secret manager: plugin models are registered with the
+      // credential VALUE resolved here, same as the provider routes above.
+      resolveCredential: async (ownerCompanyId, secretName) => {
+        const credentialRow = await secrets.getByName(ownerCompanyId, secretName);
+        return credentialRow ? secrets.resolveSecretValue(ownerCompanyId, credentialRow.id, "latest") : null;
+      },
     });
   }
   const declaration = (plugin: PluginRecord): PluginProviderModelDeclaration | null =>
@@ -223,6 +234,7 @@ export function createPluginProviderModelSync(
       for (const modelName of modelNames) {
         const modelId = modelName.slice(provider.provider.length + 1);
         await gateway.registerPluginModel({
+          companyId,
           modelName,
           providerType: litellmProvider(provider.provider),
           baseUrl: provider.baseUrl,
@@ -264,7 +276,8 @@ export function createPluginProviderModelSync(
           return other?.models.map((model: PluginProviderModelDeclaration["models"][number]) => `${other.provider}/${model.id}`) ?? [];
         }));
       for (const modelName of modelNames) {
-        if (!stillOwnedNames.has(modelName)) await gateway.unregisterModel(modelName);
+        // Only the deployment the board registered: the plugin's own endpoint.
+        if (!stillOwnedNames.has(modelName)) await gateway.unregisterModel(modelName, { baseUrl: provider.baseUrl });
       }
       const removableModelNames = modelNames.filter((modelName) => !stillOwnedNames.has(modelName));
       await updateAgentAllowlistsForCompany(

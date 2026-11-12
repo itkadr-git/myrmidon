@@ -43,6 +43,9 @@ export const MAX_REVIEW_ROUTING_QUEUE_THRESHOLD = 100;
 export const DEFAULT_REVIEW_ROUTING_REASSIGN_AFTER_HOURS = 24;
 export const MAX_REVIEW_ROUTING_REASSIGN_AFTER_HOURS = 24 * 90;
 export const MAX_REVIEW_ROUTING_REASSIGN_AFTER_MINUTES = 24 * 90 * 60;
+/** Minutes a pending review waits before being rebalanced to an idle pool member; 0 = never. */
+export const DEFAULT_REVIEW_ROUTING_REBALANCE_AFTER_MINUTES = 30;
+export const MAX_REVIEW_ROUTING_REBALANCE_AFTER_MINUTES = 60 * 24 * 30;
 
 /** PR-watch defaults: the lane mirrors the board task it replaced, off only on request. */
 export const DEFAULT_REVIEW_ROUTING_PR_WATCH_ENABLED = true;
@@ -319,6 +322,12 @@ export const reviewRoutingSettingsSchema = z
       .min(1)
       .max(MAX_REVIEW_ROUTING_QUEUE_THRESHOLD)
       .default(DEFAULT_REVIEW_ROUTING_QUEUE_THRESHOLD),
+    rebalanceAfterMinutes: z
+      .number()
+      .int()
+      .min(0)
+      .max(MAX_REVIEW_ROUTING_REBALANCE_AFTER_MINUTES)
+      .default(DEFAULT_REVIEW_ROUTING_REBALANCE_AFTER_MINUTES),
     prWatch: reviewRoutingPrWatchField,
     // myrmidon(OPE-11767): the board-side merge block; additive, ON by default.
     boardMerge: reviewRoutingBoardMergeField,

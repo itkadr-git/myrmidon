@@ -53,8 +53,13 @@ import {
   mergeCompanyBaseSkillsIntoAgentConfig,
 } from "./company-base-skill-keys.js";
 import { readCompanyBaseSkillKeysPort } from "./company-base-skill-keys-port.js";
-import { conflict, notFound, unprocessable, badRequest } from "../errors.js";
+import { conflict, notFound, unprocessable, badRequest, forbidden } from "../errors.js";
 import { isForeignKeyViolation } from "../db-errors.js";
+import {
+  createAgentsModule,
+  AgentQuotaExceededError,
+  type AgentsModule,
+} from "../modules/agents/index.js";
 import {
   collectSecretRefs,
   collectUserSecretRefs,
@@ -380,8 +385,31 @@ export function deduplicateAgentName(
   return `${candidateName} ${Date.now()}`;
 }
 
-export function agentService(db: Db, ports?: { castes?: AgentCasteDirectoryPort }) {
+export function agentService(
+  db: Db,
+  ports?: {
+    castes?: AgentCasteDirectoryPort;
+    /** Cleans an enabled bot container before lifecycle state or row changes. */
+    cleanupBotContainer?: (agent: { id: string; adapterType: string; adapterConfig: Record<string, unknown> }) => Promise<void>;
+    agentsModule?: AgentsModule;
+  },
+) {
   const secretsSvc = secretService(db);
+  const agentsMod = ports?.agentsModule ?? createAgentsModule(db);
+
+  async function cleanupBotContainerIfEnabled(existing: { id: string; adapterType: string; adapterConfig: unknown }): Promise<void> {
+    const config = existing.adapterConfig;
+    const container = config && typeof config === "object" && !Array.isArray(config)
+      ? (config as Record<string, unknown>).container
+      : undefined;
+    if (existing.adapterType !== "hermes_gateway" || !container || typeof container !== "object" || Array.isArray(container)) return;
+    if ((container as Record<string, unknown>).enabled !== true) return;
+    await ports?.cleanupBotContainer?.({
+      id: existing.id,
+      adapterType: existing.adapterType,
+      adapterConfig: config as Record<string, unknown>,
+    });
+  }
 
   // myrmidon(1.6.1 CUSTOM-CASTES B): refuse a role key that is not a caste of
   // this company. 400 with a message that names the key and where it must be
@@ -1115,6 +1143,16 @@ export function agentService(db: Db, ports?: { castes?: AgentCasteDirectoryPort 
         await ensureManager(companyId, data.reportsTo);
       }
 
+      // myrmidon(1.7 TIER-QUOTA-CHECK OPE-12092): enforce agent quota per company subscription tier
+      try {
+        await agentsMod.assertCompanyAgentQuota(companyId);
+      } catch (err: unknown) {
+        if (err instanceof AgentQuotaExceededError) {
+          throw forbidden(err.message, { code: "quota_exceeded" });
+        }
+        throw err;
+      }
+
       const existingAgents = await db
         .select({ id: agents.id, name: agents.name, status: agents.status })
         .from(agents)
@@ -1269,6 +1307,11 @@ export function agentService(db: Db, ports?: { castes?: AgentCasteDirectoryPort 
     terminate: async (id: string) => {
       const existing = await getById(id);
       if (!existing) return null;
+      // myrmidon(OPE-12477): remove the bot's container and its host data before
+      // the row is terminated. Fail-closed: a fleetd failure aborts the
+      // termination so the agent is not hidden from the board while its
+      // container keeps running on a remote site.
+      await cleanupBotContainerIfEnabled(existing);
       await db
         .update(agents)
         .set({
@@ -1341,6 +1384,12 @@ export function agentService(db: Db, ports?: { castes?: AgentCasteDirectoryPort 
           featureKeys: builtInMarker.featureKeys,
         });
       }
+
+      // myrmidon(OPE-12477): remove the bot's container and its host data before
+      // the row (and every referencing row) is deleted. Fail-closed: a fleetd
+      // failure aborts the deletion so the record stays visible and retryable
+      // instead of leaving an orphaned running container on the site.
+      await cleanupBotContainerIfEnabled(existing);
 
       return db.transaction(async (tx) => {
         await tx

@@ -105,6 +105,7 @@ func (d *dockerClient) create(ctx context.Context, sp spec, binds []string) erro
 	host["ReadonlyRootfs"] = true
 	host["CapDrop"] = []string{"ALL"}
 	host["SecurityOpt"] = []string{"no-new-privileges:true"}
+	host["Ulimits"] = []map[string]any{{"Name": "core", "Soft": 0, "Hard": 0}}
 	host["Tmpfs"] = map[string]string{"/tmp": ""}
 	host["Init"] = true
 	host["RestartPolicy"] = map[string]string{"Name": "on-failure"}
@@ -211,6 +212,14 @@ func (d *dockerClient) status(ctx context.Context, bot string) (botStatus, error
 		return botStatus{}, err
 	}
 	state := x.State.Status
+	// OPE-12663: the board's state model has no docker-specific values — any
+	// non-running container (created, exited, dead) is "stopped", the same
+	// mapping the local docker driver does (botStateFromInspect). Without it
+	// the reconciler would not recognize an idle-stopped (exited) container
+	// as stopped and would treat the idle-stop mark as lost.
+	if state != "running" {
+		state = "stopped"
+	}
 	return botStatus{BotKey: bot, State: state, Image: x.Config.Image}, nil
 }
 func (d *dockerClient) logs(ctx context.Context, bot string) (string, error) {

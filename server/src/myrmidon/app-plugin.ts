@@ -18,6 +18,7 @@ export { myrmidonProcessesRouter } from "./processes/index.js"; // myrmidon(PROC
 export { myrmidonPauseGuardRoutes } from "./pause-guard/index.js";
 export { myrmidonRunPriorityRoutes } from "./run-priority/index.js"; // myrmidon(1.6.5 RUN-PRIORITY A)
 export { myrmidonBudgetEnforcementRoutes } from "./budget-enforcement/index.js"; // myrmidon(1.7-BUDGET-CONFIG-B)
+export { nestRedactRoutes } from "./redact/index.js"; // myrmidon(1.7-REDACT): GET/PATCH per-nest redaction dictionaries and rules (OPE-8660)
 export { myrmidonBehaviorSettingsRoutes } from "./behavior-settings/index.js"; // myrmidon(SETTINGS-CORE)
 export { myrmidonTelegramDmProgressRoutes } from "./telegram-dm-progress/index.js"; // myrmidon(DM-PROGRESS)
 export { myrmidonBridgeLanguageRoutes } from "./bridge-language/index.js";
@@ -100,6 +101,7 @@ export { siteHealthRoutes } from "./bot-containers/site-health-routes.js"; // my
 export { myrmidonPromptBudgetAdviceRoutes } from "./prompt-budget-advice/index.js"; // myrmidon(1.6.3 PROMPT-BUDGET C)
 export { myrmidonMonitoringLinkRoutes } from "./monitoring/links/index.js"; // myrmidon(1.6.6 MONITORING E)
 export { myrmidonMonitoringDashboardRoutes } from "./monitoring/dashboard/index.js"; // myrmidon(1.6.6 MONITORING C)
+export { myrmidonWebhookIntakeRoutes } from "./monitoring/intake/index.js"; // myrmidon(1.7 WEBHOOK-INTAKE, OPE-12041)
 export { myrmidonCloudConnectorRoutes } from "./cloud-connector/index.js"; // myrmidon(CLOUD-CONNECTOR)
 export { myrmidonBoardProcessRegistryRoutes } from "./process-registry/index.js"; // myrmidon(1.6.6 PROCS-0.1)
 export { poolChatRoutes } from "./pool-chat/routes.js";
@@ -107,6 +109,7 @@ export { createPoolChatHttpTransport } from "./pool-chat/transports.js";
 export type { PoolChatTransportResolver } from "./pool-chat/service.js";
 export { myrmidonAutonomyRoutes } from "./autonomy/index.js"; // myrmidon(1.6-AUTONOMY)
 export { myrmidonKnowledgeRoutes, myrmidonKnowledgeMcpRoutes } from "./knowledge/index.js"; // myrmidon(1.6.6 KNOWLEDGE-2.0 K-2)
+export { myrmidonKnowledgeSettingsRoutes } from "./knowledge/index.js"; // myrmidon(1.7 KNOWLEDGE-2.0 L-11): Settings → Knowledge
 export { sweepTelegramNotifyProactivity } from "./channel-connectors/bridge/notify-sweep.js";
 export { accessHubRoutes } from "./access-hub/routes.js"; // myrmidon(SEC1)
 export { ui2LanguageRoutes } from "./ui2-language/routes.js"; // myrmidon(UI2-I18N)
@@ -123,6 +126,7 @@ export { createCorpusShadowSearch } from "./corpus/shadow-search.js";
 export { myrmidonArchitectDataMcpRoutes, myrmidonArchitectDataRoutes } from "./architect-data/index.js";
 export { myrmidonSttRoutes } from "./stt/index.js"; // myrmidon(1.6.1 VOICE-STT A1)
 export { myrmidonGitHubSharedIdentityRoutes } from "./github-shared-identity/index.js"; // myrmidon(GITHUB-SHARED-IDENTITY)
+export { myrmidonGitHubAppWebhookRoutes } from "./github-app-webhook/index.js"; // myrmidon(GITHUB-APP-WEBHOOK)
 export { createTelegramVoiceSttWiring } from "./channel-connectors/bridge/voice-stt.js"; // myrmidon(1.6.5 VOICE-STT A) myrmidon(1.6.6 CH-CONNECTOR-D)
 export { myrmidonVoiceMeetingProtocolRoutes } from "./voice-meeting-protocol/index.js"; // myrmidon(1.6.5 VOICE-STT B)
 export { myrmidonEvalsRoutes } from "./evals/index.js"; // myrmidon(1.6-EVALS)
@@ -144,3 +148,5 @@ export { myrmidonGuardrailsRoutes } from "./guardrails/index.js"; // myrmidon(1.
 export { goalJudgeRoutes, myrmidonGoalJudgeRoutes } from "./goal-judge/routes.js"; // myrmidon(1.7-GOAL-JUDGE)
 export { goalJudgeSettingsService } from "./goal-judge/settings.js"; // myrmidon(1.7-GOAL-JUDGE)
 export { createGoalJudgeModelPort, evaluateGoalJudge } from "./goal-judge/wiring.js"; // myrmidon(1.7-GOAL-JUDGE)
+export { apiPathAliasMiddleware } from "./api-path-aliases.js"; // myrmidon(1.7-RB-PATH / OPE-12082)
+export { configuredGitSkillRecord, skillGitRecordRoutes } from "./skill-git-record/index.js";

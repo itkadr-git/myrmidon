@@ -43,10 +43,15 @@ case "$sub" in
     case "$url" in
       *"pulls/"*"/files")
         jq -r "$jq_filter" "${dir}/files.json" ;;
-      *"issues/"*"/labels")
+      *"issues/"*"/labels/"*)
+        # label deletion or specific label
+        sed -i '/review-approved/d' "${dir}/labels.json" 2>/dev/null || true ;;
+      *"issues/"*"/labels"*)
         jq -r "$jq_filter" "${dir}/labels.json" ;;
       *"statuses/"*)
         echo "status call to $url" >> "${callsLog}" ;;
+      *"check-runs"*)
+        echo "check-runs call to $url" >> "${callsLog}" ;;
     esac
     ;;
 esac
@@ -76,6 +81,9 @@ describe("hot-files-check", () => {
     const res = runCheck({ EVENT: "merge_group" });
     assert.equal(res.status, 0);
     assert.match(res.calls, /field: state=success/);
+    assert.match(res.calls, /check-runs call/);
+    assert.match(res.calls, /field: name=hot files review/);
+    assert.match(res.calls, /field: status=completed/);
   });
 
   it("passes when no hot files are touched", () => {
@@ -84,6 +92,9 @@ describe("hot-files-check", () => {
     assert.match(res.stdout, /Ключевые файлы не затронуты/);
     assert.match(res.calls, /field: state=success/);
     assert.match(res.calls, /no hot files touched/);
+    assert.match(res.calls, /check-runs call/);
+    assert.match(res.calls, /field: name=hot files review/);
+    assert.match(res.calls, /field: status=completed/);
   });
 
   it("sets pending when hot file is touched and review-approved label is missing", () => {
@@ -92,6 +103,7 @@ describe("hot-files-check", () => {
     assert.match(res.stdout, /PR трогает ключевые файлы ядра/);
     assert.match(res.calls, /field: state=pending/);
     assert.match(res.calls, /waiting for review-approved/);
+    assert.doesNotMatch(res.calls, /check-runs call/);
   });
 
   it("passes when hot file is touched and review-approved label is present", () => {
@@ -100,6 +112,39 @@ describe("hot-files-check", () => {
     assert.match(res.stdout, /Метка review-approved есть/);
     assert.match(res.calls, /field: state=success/);
     assert.match(res.calls, /review-approved/);
+    assert.match(res.calls, /check-runs call/);
+    assert.match(res.calls, /field: name=hot files review/);
+    assert.match(res.calls, /field: status=completed/);
+  });
+
+  it("removes review-approved on synchronize event and sets pending", () => {
+    const res = runCheck(
+      { ACTION: "synchronize" },
+      ["server/src/services/heartbeat.ts"],
+      ["review-approved"],
+    );
+    assert.equal(res.status, 0);
+    assert.match(res.stdout, /Новый push после ревью/);
+    assert.match(res.calls, /gh api -X DELETE.*labels\/review-approved/);
+    assert.match(res.calls, /field: state=pending/);
+    assert.doesNotMatch(res.calls, /check-runs call/);
+  });
+
+  it("removes review-approved on synchronize event and passes when no hot files touched", () => {
+    const res = runCheck(
+      { ACTION: "synchronize" },
+      ["docs/readme.md"],
+      ["review-approved"],
+    );
+    assert.equal(res.status, 0);
+    assert.match(res.stdout, /Новый push после ревью/);
+    assert.match(res.calls, /gh api -X DELETE.*labels\/review-approved/);
+    assert.match(res.stdout, /Ключевые файлы не затронуты/);
+    assert.match(res.calls, /field: state=success/);
+    assert.match(res.calls, /no hot files touched/);
+    assert.match(res.calls, /check-runs call/);
+    assert.match(res.calls, /field: name=hot files review/);
+    assert.match(res.calls, /field: status=completed/);
   });
 
   it("exits cleanly without PR context (push to main / manual dispatch)", () => {

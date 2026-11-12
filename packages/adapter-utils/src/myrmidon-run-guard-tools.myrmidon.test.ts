@@ -9,12 +9,20 @@ describe("classifyToolCall (run guard exploration vs write)", () => {
     },
   );
 
-  it.each(["patch", "write_file", "execute_code", "web_search", "browser_navigate", "memory", "some_new_tool"])(
+  it.each(["patch", "write_file", "web_search", "browser_navigate", "memory", "some_new_tool"])(
     "treats %s as a write (anything not known to be read-only resets the counters)",
     (name) => {
       expect(classifyToolCall(name, "x")).toBe("write");
     },
   );
+
+  // myrmidon(OPE-12799): the guard cannot see what a script did, so execute_code is
+  // neither a confirmed write nor a read.
+  it("treats execute_code as opaque, whatever the preview says", () => {
+    expect(classifyToolCall("execute_code", "print(1)")).toBe("opaque");
+    expect(classifyToolCall("Execute_Code", "import subprocess def sh(cmd, cwd=")).toBe("opaque");
+    expect(classifyToolCall("execute_code", undefined)).toBe("opaque");
+  });
 
   it("classifies the terminal tool by its command, from a preview string or structured arguments", () => {
     expect(classifyToolCall("terminal", "sed -n '55,75p' file.ts")).toBe("read");

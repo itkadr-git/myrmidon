@@ -129,7 +129,10 @@ function createMocks() {
       return server as any;
     },
     async listJobs(companyId, serverId) {
-      return store.jobs.filter((j: any) => j.companyId === companyId && (!serverId || j.serverId === serverId));
+      return store.jobs
+        .filter((j: any) => j.companyId === companyId && (!serverId || j.serverId === serverId))
+        .slice()
+        .reverse();
     },
     async expireStale() {
       return 0;
@@ -309,7 +312,7 @@ describe("SERVER-ONBOARD logic", () => {
       getServer: mockGetServer,
     });
 
-    await service.addServer({
+    const { serverId, job: initialJob } = await service.addServer({
       companyId: "company-1",
       slug: "srv-2",
       name: "Srv 2",
@@ -324,10 +327,18 @@ describe("SERVER-ONBOARD logic", () => {
 
     expect(store.servers[0].onboardState).toBe("new");
 
+    // Complete initial job before starting subsequent job
+    await service.claim("company-1", "valid-executor-token");
+    await service.report("valid-executor-token", {
+      companyId: "company-1",
+      jobId: initialJob.id,
+      status: "succeeded",
+    });
+
     // Start subsequent recheck job
     const job = await service.startJob({
       companyId: "company-1",
-      serverId: "server-1",
+      serverId,
       kind: "recheck",
       createdBy: "actor-2",
     });
@@ -364,5 +375,127 @@ describe("SERVER-ONBOARD logic", () => {
       }),
     ).rejects.toThrow("DB error");
     expect(secretsStore["fleet/orphan-test/bootstrap-password"]).toBeUndefined();
+  });
+
+  it("blocks concurrent active jobs for the same server", async () => {
+    const { mockStore, mockSecrets, mockGetServer } = createMocks();
+    const service = onboardService(null as any, {
+      store: mockStore,
+      settings: mockSettings,
+      secrets: mockSecrets,
+      getServer: mockGetServer,
+    });
+    const { serverId, job } = await service.addServer({
+      companyId: "company-1",
+      slug: "srv-concurrent",
+      name: "Concurrent Test",
+      hostname: "192.0.2.11",
+      port: 22,
+      username: "root",
+      role: "generic",
+      keepPassword: false,
+      auth: { type: "password", password: "pwd" },
+      createdBy: null,
+    });
+
+    expect(job.status).toBe("pending");
+
+    // Second startJob on same server should throw 409
+    await expect(
+      service.startJob({ companyId: "company-1", serverId, kind: "recheck", createdBy: null }),
+    ).rejects.toThrow("already in progress");
+
+    // Claim the job and report succeeded
+    await service.claim("company-1", "valid-executor-token");
+    await service.report("valid-executor-token", { companyId: "company-1", jobId: job.id, status: "succeeded" });
+
+    // Now startJob should succeed
+    const job2 = await service.startJob({ companyId: "company-1", serverId, kind: "recheck", createdBy: null });
+    expect(job2.status).toBe("pending");
+  });
+
+  it("handles retry and resume flows with audit trail", async () => {
+    const { mockStore, mockSecrets, mockGetServer, store } = createMocks();
+    const service = onboardService(null as any, {
+      store: mockStore,
+      settings: mockSettings,
+      secrets: mockSecrets,
+      getServer: mockGetServer,
+    });
+    const { serverId, job } = await service.addServer({
+      companyId: "company-1",
+      slug: "srv-retry",
+      name: "Retry Test",
+      hostname: "192.0.2.12",
+      port: 22,
+      username: "root",
+      role: "generic",
+      keepPassword: false,
+      auth: { type: "password", password: "pwd" },
+      createdBy: null,
+    });
+
+    // While job is active, resume returns the same active job
+    const resumedActive = await service.resume({ companyId: "company-1", serverId });
+    expect(resumedActive.id).toBe(job.id);
+    expect(resumedActive.status).toBe("pending");
+
+    // Fail the job
+    await service.claim("company-1", "valid-executor-token");
+    await service.report("valid-executor-token", { companyId: "company-1", jobId: job.id, status: "failed", error: "network unreachable" });
+
+    const storeServer = store.servers.find((s: any) => s.id === serverId);
+    expect(storeServer?.onboardState).toBe("needs_attention");
+
+    // Resume now triggers a retry
+    const retriedJob = await service.resume({ companyId: "company-1", serverId });
+    expect(retriedJob.id).not.toBe(job.id);
+    expect(retriedJob.status).toBe("pending");
+    expect(retriedJob.kind).toBe("onboard");
+  });
+
+  it("expires stale running jobs and transitions server to needs_attention", async () => {
+    const { mockStore, mockSecrets, mockGetServer, store } = createMocks();
+    mockStore.expireStale = async (_olderThanMs: number) => {
+      let expired = 0;
+      for (const j of store.jobs) {
+        if (j.status === "pending" || j.status === "claimed" || j.status === "running") {
+          j.status = "expired";
+          expired++;
+          const s = store.servers.find((srv: any) => srv.id === j.serverId);
+          if (s) s.onboardState = "needs_attention";
+        }
+      }
+      return expired;
+    };
+    const service = onboardService(null as any, {
+      store: mockStore,
+      settings: mockSettings,
+      secrets: mockSecrets,
+      getServer: mockGetServer,
+    });
+    const { serverId, job } = await service.addServer({
+      companyId: "company-1",
+      slug: "srv-stale",
+      name: "Stale Test",
+      hostname: "192.0.2.13",
+      port: 22,
+      username: "root",
+      role: "generic",
+      keepPassword: false,
+      auth: { type: "password", password: "pwd" },
+      createdBy: null,
+    });
+
+    await service.claim("company-1", "valid-executor-token");
+
+    const { expired } = await service.tick();
+    expect(expired).toBe(1);
+
+    const expiredJob = await service.getJob("company-1", job.id);
+    expect(expiredJob?.status).toBe("expired");
+
+    const storeServer = store.servers.find((s: any) => s.id === serverId);
+    expect(storeServer?.onboardState).toBe("needs_attention");
   });
 });

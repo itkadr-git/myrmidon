@@ -713,3 +713,163 @@ describe("myrmidon(PERF-DIET-G): the sweep shares one pass between its bots", ()
     expect(seen).toEqual([undefined]);
   });
 });
+
+// myrmidon(OPE-12654): an agent that left the bot-container runtime (another adapter, or
+// terminated) is in none of the listings that reconcile, idle-stop or collect from its bot, so
+// its container kept running and its data stayed. The sweep decommissions such bots after its
+// regular passes; bot-decommission.myrmidon.test.ts covers the rules in depth.
+describe("myrmidon(OPE-12654): the sweep decommissions the bots of agents that left the runtime", () => {
+  const cleanClone = {
+    path: "/workspace/repo",
+    dirty: false,
+    inProgress: false,
+    stashCount: 0,
+    unpushedCommits: 0,
+    hasRemote: true,
+    linkedWorktrees: 0,
+    referencedBy: 0,
+    idleSeconds: 60,
+    branch: "main",
+    mergedIntoDefault: true,
+    error: null,
+  };
+  const report = (repos: Array<Record<string, unknown>>) => JSON.stringify({ version: 1, inspectedAt: new Date().toISOString(), repos });
+
+  function activitySink() {
+    const entries: Array<{ level: string; agentId: string; botKey: string; message: string; details?: Record<string, unknown> }> = [];
+    return {
+      entries,
+      record(entry: { level: "info" | "error"; agentId: string; botKey: string; message: string; details?: Record<string, unknown> }) {
+        entries.push(entry);
+      },
+    };
+  }
+
+  /** A driver that knows the state and the clone report of each bot and records decommissions. */
+  function decommissionDriver(states: Record<string, BotContainerStatus["state"]>, reports: Record<string, string | null> = {}) {
+    const decommissioned: string[] = [];
+    const driver = minimalDriver({
+      status: async (botKey) => ({ botKey, state: states[botKey] ?? "missing", restartHash: "r", filesHash: "f" }),
+      readCloneReport: async (botKey) => reports[botKey] ?? null,
+      decommission: async (botKey) => {
+        decommissioned.push(botKey);
+      },
+    });
+    return { driver, decommissioned };
+  }
+
+  const switched = { agentId: "agent-switched", adapterType: "omp_local", status: "idle" };
+
+  it("decommissions the running bot of an agent that moved to another adapter when its clones are clean", async () => {
+    const { driver, decommissioned } = decommissionDriver({ "agent-switched": "running" }, { "agent-switched": report([cleanClone]) });
+    const sink = activitySink();
+    const listDecommissionCandidates = vi.fn(async () => [switched]);
+    const hasRunningRun = vi.fn(async () => false);
+    const stop = startBotContainerReconciliation(
+      async () => [],
+      deps(driver, { activity: sink, listDecommissionCandidates, hasRunningRun }),
+      { env: ENABLED },
+    );
+    try {
+      await vi.waitFor(() => expect(decommissioned).toEqual(["agent-switched"]));
+      await vi.waitFor(() =>
+        expect(sink.entries.find((entry) => entry.details?.event === "bot_decommissioned")).toMatchObject({
+          level: "info",
+          agentId: "agent-switched",
+          botKey: "agent-switched",
+          details: { adapterType: "omp_local", containerState: "running" },
+        }),
+      );
+      expect(hasRunningRun).toHaveBeenCalledWith("agent-switched");
+    } finally {
+      stop();
+    }
+  });
+
+  it("holds the bot when a clone has an unpushed commit: nothing is removed and the reason is recorded", async () => {
+    const dirty = report([cleanClone, { ...cleanClone, path: "/workspace/feature", branch: "feature", unpushedCommits: 2 }]);
+    const { driver, decommissioned } = decommissionDriver({ "agent-switched": "running" }, { "agent-switched": dirty });
+    const sink = activitySink();
+    const stop = startBotContainerReconciliation(
+      async () => [],
+      deps(driver, { activity: sink, listDecommissionCandidates: async () => [switched], hasRunningRun: async () => false }),
+      { env: ENABLED },
+    );
+    try {
+      await vi.waitFor(() => expect(sink.entries.some((entry) => entry.details?.event === "bot_decommission_held")).toBe(true));
+      await flush();
+      expect(decommissioned).toEqual([]);
+      const held = sink.entries.find((entry) => entry.details?.event === "bot_decommission_held");
+      expect(held).toMatchObject({ level: "error", agentId: "agent-switched", botKey: "agent-switched" });
+      expect(held?.details?.clones).toEqual(["/workspace/feature: unpushed work: 2 commits on no remote"]);
+    } finally {
+      stop();
+    }
+  });
+
+  it("never touches a hermes_gateway agent the sweep reconciles, even when the candidate listing names it", async () => {
+    const { driver, decommissioned } = decommissionDriver({ "agent-a": "running" }, { "agent-a": report([cleanClone]) });
+    const listDecommissionCandidates = vi.fn(async () => [{ agentId: "agent-a", adapterType: "hermes_gateway", status: "idle" }]);
+    const stop = startBotContainerReconciliation(async () => [agent()], deps(driver, { listDecommissionCandidates }), { env: ENABLED });
+    try {
+      await vi.waitFor(() => expect(listDecommissionCandidates).toHaveBeenCalled());
+      await flush();
+      expect(decommissioned).toEqual([]);
+    } finally {
+      stop();
+    }
+  });
+
+  it("decommissions the stopped bot of a terminated agent", async () => {
+    // A stopped container writes no report any more: without one it goes (a running one would be held).
+    const { driver, decommissioned } = decommissionDriver({ "agent-gone": "stopped" });
+    const stop = startBotContainerReconciliation(
+      async () => [],
+      deps(driver, { listDecommissionCandidates: async () => [{ agentId: "agent-gone", adapterType: "hermes_gateway", status: "terminated" }] }),
+      { env: ENABLED },
+    );
+    try {
+      await vi.waitFor(() => expect(decommissioned).toEqual(["agent-gone"]));
+    } finally {
+      stop();
+    }
+  });
+
+  it("decommissions nothing when the agent listing failed", async () => {
+    const { driver, decommissioned } = decommissionDriver({ "agent-switched": "stopped" });
+    const sink = activitySink();
+    const listDecommissionCandidates = vi.fn(async () => [switched]);
+    const stop = startBotContainerReconciliation(
+      async () => {
+        throw new Error("database is down");
+      },
+      deps(driver, { activity: sink, listDecommissionCandidates }),
+      { env: ENABLED },
+    );
+    try {
+      await vi.waitFor(() => expect(sink.entries.some((entry) => entry.message.includes("failed to list agents"))).toBe(true));
+      await flush();
+      expect(listDecommissionCandidates).not.toHaveBeenCalled();
+      expect(decommissioned).toEqual([]);
+    } finally {
+      stop();
+    }
+  });
+
+  it("waits for an agent's running heartbeat run", async () => {
+    const { driver, decommissioned } = decommissionDriver({ "agent-switched": "stopped" });
+    const sink = activitySink();
+    const stop = startBotContainerReconciliation(
+      async () => [],
+      deps(driver, { activity: sink, listDecommissionCandidates: async () => [switched], hasRunningRun: async () => true }),
+      { env: ENABLED },
+    );
+    try {
+      await vi.waitFor(() => expect(sink.entries.some((entry) => entry.details?.event === "bot_decommission_held")).toBe(true));
+      expect(decommissioned).toEqual([]);
+      expect(sink.entries.find((entry) => entry.details?.event === "bot_decommission_held")?.level).toBe("info");
+    } finally {
+      stop();
+    }
+  });
+});
