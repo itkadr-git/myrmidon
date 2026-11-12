@@ -6,7 +6,7 @@ import {
   createPullRequestMergeDetailsResolver,
   extractGitHubPullRequestReferences,
 } from "../../services/github-pull-request-merge.js";
-import { findApprovalPendingMergePullRequest } from "../review-stage-recovery/pre-merge-approval.js";
+import { findApprovalPendingMergePullRequest, type LiveOpenPullRequestLookup } from "../review-stage-recovery/pre-merge-approval.js";
 
 export const ISSUE_DONE_PULL_REQUEST_GATE = "issue_done_pull_request_gate";
 
