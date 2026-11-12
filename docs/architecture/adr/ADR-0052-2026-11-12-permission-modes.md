@@ -45,8 +45,21 @@
 |---|---|---|
 | `supervised` | обратимые действия внутри утверждённого плана: чтение, локальные тесты, поиск, черновики в задаче | план (`request_confirmation`), каждое изменение кода в рабочей копии сверх плана, каждый вызов класса `approval_required` |
 | `auto_edits` | всё из `supervised` + обратимые правки файлов в execution workspace (edit/create/delete в рабочей копии, коммиты в свою ветку) | план, вызовы класса `approval_required`, всё за границей workspace (push в чужие ветки, внешние сервисы) |
-| `auto` | всё из `auto_edits` + вызовы класса `approval_required`, помеченные `modeLiftable: true` (см. «Маппинг»), + push в свою ветку и открытие PR | план, необратимые и внешние действия из списка «всегда подтверждается» |
-| `full` | всё из `auto`, кроме списка «всегда подтверждается» | только список «всегда подтверждается» |
+| `auto` | всё из `auto_edits` + вызовы класса `approval_required`, помеченные `modeLiftable: true` и не входящие в инвариантное множество §5 (см. «Маппинг»), + push в свою ветку и открытие PR | план; всё из инвариантного списка §5 |
+| `full` | всё из `auto`, кроме инвариантного списка §5 | только список «всегда подтверждается» |
+
+**Правило приоритета (норма ADR, не опция):** инвариантное множество §5 стоит **над**
+режимом и над флагом `modeLiftable`. Порядок применения вердикта — строго этот:
+
+1. `forbidden` → отказ во всех режимах;
+2. класс из инвариантного множества §5 → `approval_required` (или отказ, где он сегодня
+   `forbidden`) **во всех режимах**, независимо от `modeLiftable`;
+3. `approval_required` + `modeLiftable: true` + режим `auto`/`full` → `allowed`;
+4. иначе вердикт матрицы работает как сегодня.
+
+Класс не может одновременно входить в инвариантное множество §5 и помечаться
+`modeLiftable: true`; если такая правка появится в реестре — это баг реализации, а не
+конфигурация. Проверка на этот конфликт входит в объём PR 2 (unit-тест на инвариант).
 
 Режим **не даёт** (ни в одном режиме):
 
@@ -80,13 +93,16 @@
 ### 3. Маппинг на существующие механизмы доски
 
 **Матрица автономии.** Режим действует как коэффициент при вердикте, а не как замена
-матрицы:
+матрицы, и применяется в порядке приоритета из §1 (правило приоритета выше):
 
 - `forbidden` → отказ во всех режимах (инвариант; `forbidden` не лифтируется никогда);
+- класс из инвариантного множества §5 → не лифтируется ни в каком режиме, включая `full`,
+  даже если класс помечен `modeLiftable: true` (правило приоритета, шаг 2 §1);
 - `approval_required` → в `supervised`/`auto_edits` остаётся картой одобрения; в `auto`/`full`
-  превращается в `allowed` **только** для классов действий, явно помеченных
+  превращается в `allowed` **только** для классов действий, (а) явно помеченных
   `modeLiftable: true` в реестре классов (`packages/shared/src/myrmidon-autonomy.ts:20` —
-  потребуется флаг; **не покрыто, нужен код**). По умолчанию класс не лифтируемый:
+  потребуется флаг; **не покрыто, нужен код**) и (б) не входящих в инвариантное множество §5.
+  По умолчанию класс не лифтируемый:
   включение режима ничего не меняет, пока класс явно не помечен;
 - `allowed` → разрешено во всех режимах.
 
@@ -124,7 +140,7 @@ supersede-правила — `server/src/services/issue-thread-interactions.ts:5
 | E5 | `server/src/services/instance-settings.ts:59,895` — `preserveAutonomyGeneralKey` | **точка для нового ключа** `myrmidonPermissionModes` (дефолт/кап инстанса); **не покрыто, нужен код** |
 | E6 | `packages/shared/src/types/workspace-runtime.ts:167-196` — policy-контейнеры проекта/задачи | **кандидат** для поля режима задачи/проекта; **не покрыто, нужен код** |
 | E7 | `server/src/modules/run-dispatch/adapters/postgres.ts:262` — `loadGateFacts`, гейт допуска прогона | **не покрыто, нужен код**: зафиксировать effective mode в снапшоте прогона (аудит-строка) |
-| E8 | `server/src/services/change-consent-gate.ts:117` — `assertConsented` | **прецедент** enforcement «всегда подтверждается»; **не покрыто, нужен код** для остальных пунктов списка |
+| E8 | `server/src/services/change-consent-gate.ts:117` (`assertConsented`) | **прецедент и точка** для п. 6 (consent-гейт мутаций инструкций/скиллов: `agent:instructions:update`, `agent:instructions_bundle:update`, `skill:custom:write`); для остальных пунктов — см. явные точки в §5 |
 | E9 | `server/src/services/issue-execution-policy.ts:416,455` — стадии/approvals | **не меняется** режимами |
 | E10 | `server/src/services/issue-thread-interactions.ts:385,530,548` — resolver-политика и жизненный цикл интеракций | **не меняется** режимами |
 | E11 | `server/src/services/execution-workspace-policy.ts:55` — резолв стратегии workspace | **не меняется** режимами |
@@ -132,25 +148,66 @@ supersede-правила — `server/src/services/issue-thread-interactions.ts:5
 
 ### 5. «Всегда подтверждается» (инвариантный список, независимо от режима)
 
-Ни один режим, включая `full`, не убирает подтверждение для:
+Ни один режим, включая `full`, не убирает подтверждение для перечисленного ниже. Каждая
+позиция — с реальной точкой enforcement в коде на момент ADR: инвариантное множество — это
+не декларация, а существующие швы, которые PR 1 обязан сохранить.
 
 1. **Деньги**: `spend_above_threshold` выше инстанс-лимита; любые платёжные действия
-   (ADR-0014 «money only owner»).
+   (ADR-0014 «money only owner»). Enforcement — двойной: (а) бюджетный hard-stop,
+   `getInvocationBlock` (`server/src/services/budgets.ts:1173`) отказывает в допуске прогона
+   при превышении лимита (`hardStopEnabled`); (б) класс `spend_above_threshold` остаётся
+   `forbidden` в safe defaults (`myrmidon-autonomy.ts:242`), т.е. по правилу приоритета §1
+   не лифтируется. Статус: **покрыто**; PR 1 добавляет тест «lift spend_above_threshold не
+   влияет на вердикт».
 2. **Выкат на бой** и переключение боевого конфигурационного состояния — операция ADM,
-   не агента (`deploy` остаётся `approval_required` и не помечается `modeLiftable`).
+   не агента. Enforcement: deploy-класс `forbidden`/`approval_required` вне auto-секций
+   (`myrmidon-autonomy.ts:242`), применяется в knowledge-гейтах
+   (`knowledge/routes.ts:224-247`, `assertPublishAllowed`) и в E1. Статус: **покрыто
+   матрицей**; deploy-класс не помечается `modeLiftable` — PR 1 фиксирует это в реестре;
+   новая точка не нужна.
 3. **Слияние в `main`/`rel/*`, force-push в защищённые ссылки, правка тегов релиза.**
-4. **Публикация наружу платформы**: `knowledge_external_publish` (сегодня `forbidden`,
+   Enforcement: классы слияния/force — `forbidden` для агентов
+   (`myrmidon-autonomy.ts:242`), применяется в E1/E2 (403/hold); маршрута вливания PR
+   с agent-ключом у агента нет — вливание делает ADM. Статус: **покрыто матрицей +
+   отсутствием маршрута**; не лифтируется.
+4. **Публикация наружу платформы**: `knowledge_external_publish` (сегодня `forbidden` в
    `AUTONOMY_SAFE_DEFAULTS`, `myrmidon-autonomy.ts:242`) и любые внешние сообщения от
    имени компании вне настроенных каналов.
+   Enforcement: `forbidden` в матрице → 403 в E1/E2; knowledge-публикация — гейт
+   `assertPublishAllowed` (`knowledge/routes.ts:224-247`): `resolveAutonomy` → 403/409 +
+   parked-карточка. Статус: **покрыто**.
 5. **`rule_approve`** — сегодня `forbidden` для агентов (тест П4), остаётся человеческим.
-6. **Мутации чужих инструкций/профилей/скиллов** — consent-гейт (E12).
+   Enforcement: `forbidden` в матрице; route-гейт `assertRuleApproveAllowed` на всех
+   мутирующих knowledge-маршрутах (`knowledge/routes.ts:706`, `:725`), тест П4 в CI.
+   Статус: **покрыто**.
+6. **Мутации чужих инструкций/профилей/скиллов** — consent-гейт. Enforcement:
+   `assertConsented` (`change-consent-gate.ts:117`) на маршрутах
+   `agent:instructions:update`, `agent:instructions_bundle:update`, `skill:custom:write`.
+   Статус: **покрыто** (E12).
 7. **Назначение/переназначение задач на человека** и любые действия от имени владельца.
+   Enforcement сегодня: `tasks:assign` + `assignmentTargetIsInCompany`
+   (`server/src/services/authorization.ts:1115+`) ограничивает назначение пределами
+   компании, но подтверждения человека нет: **не покрыто, нужен код** (PR 2) — точка
+   enforcement одна, assign-маршруты issues (`routes/issues.ts:755,2400,5502`), требование:
+   назначение агентом на человека требует принятого `request_confirmation` от человека.
+   До реализации п. 7 режим задачи не поднимается выше `auto_edits` (§6).
 8. **Секреты**: появившийся у агента credential → `POST /api/agents/me/secret-proposals`;
-   секреты никогда не пишутся в комментарии/документы/файлы.
-9. **Удаление инстанс-уровня данных**: компании, агенты, доставленные knowledge-наборы.
+   секреты никогда не пишутся в комментарии/документы/файлы. Enforcement:
+   `assertCanResolveProposal` (`server/src/services/secret-proposal-authorization.ts`)
+   требует company-admin (`assertSecretDefinitionAdmin`) на resolve — агент-актор не
+   проходит; у агента только путь предложения. Статус: **покрыто**.
+9. **Удаление инстанс-уровня данных**: компании (`DELETE /api/companies/:companyId`,
+   `routes/companies.ts:1358`, гейт `assertBoard`, `routes/authz.ts:57`), агенты
+   (`routes/agents.ts:6288`, `assertBoard`), ключи агентов (`routes/agents.ts:6352`),
+   knowledge archive/supersede (`myrmidon/knowledge/routes.ts:697,715` — гейт
+   `assertPublishAllowed` + `assertRuleApproveAllowed`). Мутации — только под
+   board-актором; маршрутов удаления с agent-ключом нет. Статус: **покрыто**.
 
 Этот список — часть контракта ADR: реализация режимов не может его сузить; расширение
-списка — новый ADR.
+списка — новый ADR. Для всех позиций, кроме п. 7, точка enforcement существует сегодня;
+PR 1 (контракт) обязан сохранить их as-is, PR 2 (lift-механизм) обязан добавить
+(а) юнит-тест инварианта «§5 не лифтируется», (б) недостающий шов п. 7, (в) unit-тест
+«§5 ∩ modeLiftable = ∅».
 
 ### 6. Что НЕ меняем (совместимость с текущими дефолтами)
 
@@ -181,14 +238,15 @@ supersede-правила — `server/src/services/issue-thread-interactions.ts:5
 - обновление `docs/myrmidon/SETTINGS.md` и `docs/architecture/execution-workspaces.md`.
 
 **PR 2 — enforcement (средний PR):**
-- чтение effective mode в `tool-gateway.ts` (E1) и `gate.ts` (E2), коэффициент из §3 с
-  `modeLiftable` (E3);
+- чтение effective mode в `tool-gateway.ts` (E1) и `gate.ts` (E2), правило приоритета
+  (§1) и коэффициент из §3 с `modeLiftable` (E3);
 - фиксация effective mode в фактах прогона (E7) для аудита;
-- enforcement инвариантного списка §5 на обезвреженных классах (E8, по образцу
-  consent-гейта);
+- недостающий шов п. 7 §5 в `server/src/routes/issues.ts` (назначение агентом на человека
+  требует принятого `request_confirmation` по образцу E8 `assertConsented`) + unit-тесты
+  инварианта «§5 не лифтируется» и «§5 ∩ modeLiftable = ∅»;
 - тесты гейта по каждому режиму (mock-вердикты, без embedded Postgres — по образцу
   существующих юнит-тестов `server/src/myrmidon/autonomy/*.test.ts`);
-- обновление ADR: статус `accepted`, снятие пометок «не покрыто».
+- обновление ADR: статус `accepted`, снятие пометки «не покрыто» с п. 7.
 
 Порядок: PR 1 мержится первым; PR 2 не начинает enforcement без контракта. Третий PR
 (UI выбора режима в карточке задачи) — отдельно, после того как REST-контракт примут.
