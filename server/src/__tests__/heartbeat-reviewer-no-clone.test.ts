@@ -1,12 +1,15 @@
 import { describe, expect, it } from "vitest";
 import { isDeveloperRole } from "@myrmidon/shared";
 import {
+  buildReviewerInputFromTaskData,
   resolveReviewerAwareRunExecutionWorkspaceMode,
+  selectReviewerPullRequestRef,
 } from "../services/heartbeat.ts";
 import {
   buildExecutionWorkspaceAdapterConfig,
   resolveExecutionWorkspaceMode,
 } from "../services/execution-workspace-policy.ts";
+import { buildReviewerInputFixture } from "@myrmidon/shared";
 
 // OPE-12881 (REVIEW-NO-CLONE): a review task assigned to a developer reviewer
 // must not materialize a full repository checkout on the bot volume. The
@@ -118,5 +121,91 @@ describe("OPE-12881 reviewer assignment workspace mode", () => {
       legacyUseProjectWorkspace: null,
     });
     expect(adapterConfig.workspaceStrategy).toBeUndefined();
+  });
+
+  it("reviewer input fixture carries a read-only diff command, no checkout", () => {
+    const fixture = buildReviewerInputFixture({
+      issue: {
+        id: "issue-1",
+        identifier: "OPE-12881",
+        title: "REVIEW-NO-CLONE",
+        description: "Acceptance criteria:\n- no workspace copy\n- verdict from diff",
+        acceptanceCriteria: [],
+      },
+      pr: {
+        number: 3005,
+        repository: "itkadr-git/myrmidon",
+        baseBranch: "main",
+        headBranch: "bot/OPE-12881",
+        headSha: "edcdab04d3aa16a83d802158a65111e159ccb9c7",
+      },
+    });
+    expect(fixture.diffCommand).toBe("gh pr diff 3005 -R itkadr-git/myrmidon");
+    expect(fixture.forbiddenDataExcluded).toBe(true);
+    expect(fixture.prMetadata.headSha).toBe("edcdab04d3aa16a83d802158a65111e159ccb9c7");
+  });
+
+  it("reviewer diff command is null for malformed PR reference (safety)", () => {
+    const fixture = buildReviewerInputFixture({
+      issue: {
+        id: "issue-1",
+        identifier: "OPE-12881",
+        title: "REVIEW-NO-CLONE",
+        description: "",
+        acceptanceCriteria: [],
+      },
+      pr: {
+        number: -1,
+        repository: "not-a-repo",
+        baseBranch: null,
+        headBranch: null,
+        headSha: null,
+      },
+    });
+    expect(fixture.diffCommand).toBeNull();
+  });
+
+  it("selectReviewerPullRequestRef picks PR from CI records (no network)", () => {
+    const pr = selectReviewerPullRequestRef({
+      pullRequestsCi: [
+        {
+          repository: "itkadr-git/myrmidon",
+          pullNumber: 3005,
+          headSha: "edcdab04d3aa16a83d802158a65111e159ccb9c7",
+          headRef: "bot/OPE-12881",
+        },
+      ],
+      workProductMetadata: [
+        { repo: "itkadr-git/myrmidon", number: 3005, baseRef: "main", headRef: "bot/OPE-12881" },
+      ],
+    });
+    expect(pr).toEqual({
+      number: 3005,
+      repository: "itkadr-git/myrmidon",
+      baseBranch: "main",
+      headBranch: "bot/OPE-12881",
+      headSha: "edcdab04d3aa16a83d802158a65111e159ccb9c7",
+    });
+  });
+
+  it("buildReviewerInputFromTaskData produces diff command for reviewer", () => {
+    const fixture = buildReviewerInputFromTaskData({
+      issue: {
+        id: "issue-1",
+        identifier: "OPE-12881",
+        title: "REVIEW-NO-CLONE",
+        description: "Acceptance criteria:\n- no workspace copy\n- verdict from diff",
+      },
+      pullRequest: {
+        number: 3005,
+        repository: "itkadr-git/myrmidon",
+        baseBranch: "main",
+        headBranch: "bot/OPE-12881",
+        headSha: "edcdab04d3aa16a83d802158a65111e159ccb9c7",
+      },
+    });
+    expect(fixture.diffCommand).toBe("gh pr diff 3005 -R itkadr-git/myrmidon");
+    expect(fixture.prMetadata.number).toBe(3005);
+    expect(fixture.prMetadata.repository).toBe("itkadr-git/myrmidon");
   });
 });
