@@ -575,25 +575,18 @@ export function botTreeRealPath(
 export const GIT_MIRROR_MOUNT = { hostSubdir: "git", containerPath: "/cache/git" } as const;
 
 /**
- * myrmidon(OPE-12720): where pnpm keeps its content-addressed store by default
- * (settings `pnpmStoreDir`; the image's `npm_config_store_dir` is the same
- * value): ONE store per bot, at `/workspace/.pnpm-store` — on the SAME bind
- * mount as the task clones (`/workspace` is a link into the bot's single
- * `/bot` mount). Every clone's node_modules then links against one store of
- * that mount — no store bind mount, no dockergate allow-list pair, no second
- * mount point to cross (hard links do not cross mount points at all, which is
- * why the 1.6.5 shared `/cache/pnpm-store` on the root disk made pnpm copy
- * ~3 GB of node_modules into every clone). Not `/bot/.pnpm-store`: the `/bot`
- * root is root-owned (0711) on a production host and the bot user (uid 10001)
- * cannot create an entry in it, so every `pnpm install` would fail with
- * EACCES; `/workspace` is chowned to the bot and the draft sweep skips
- * `.pnpm-store` in it (draft-lifecycle.ts). The previous image has the same
- * default, so a profile env written by this board is valid for a container
- * still running the previous image. The instance setting is validated to stay
- * inside the bot's own tree (packages/shared myrmidon-bot-disk.ts). Never
- * `/cache/pnpm`: that is the download cache.
+ * myrmidon(1.6.5-BOT-DISK-H8a): where pnpm keeps its content-addressed store by
+ * default (settings `pnpmStoreDir`; the image's `npm_config_store_dir` is the
+ * same value): ONE store per partition, the host directory
+ * `<sharedPackageCachePath>/pnpm-store` bound read-write at `/cache/pnpm-store`
+ * into every bot of `sharedCacheRoles` (see {@link PACKAGE_CACHE_MOUNTS}). It
+ * replaces the per-bot `/workspace/.pnpm-store` of BOT-DISK-D (8 stores of
+ * 2.4 GiB each). It must be on the same partition as the bot volumes: a reflink
+ * only works inside one filesystem, and the instance setting is validated for
+ * that (packages/shared myrmidon-bot-disk.ts). Never `/cache/pnpm`: that is the
+ * download cache.
  */
-export const DEFAULT_PNPM_STORE_DIR = "/workspace/.pnpm-store";
+export const DEFAULT_PNPM_STORE_DIR = "/cache/pnpm-store";
 
 /** The import method pnpm is told to use: `clone` — a reflink, strictly. Not
  *  `clone-or-copy`: that copies silently where the reflink is refused, and the
@@ -601,9 +594,10 @@ export const DEFAULT_PNPM_STORE_DIR = "/workspace/.pnpm-store";
  *  store (copy-on-write), unlike a hard link. */
 export const DEFAULT_PNPM_IMPORT_METHOD = "clone";
 
-/** Container roots a pnpm store may live under: the bot's own tree (a store
- *  per bot; the settings validation warns about a path that is not the default). */
+/** Container roots a pnpm store may live under: the shared store mount, and the
+ *  bot's own tree (a store per bot; the settings validation warns about it). */
 export const PNPM_STORE_ROOTS: readonly string[] = [
+  DEFAULT_PNPM_STORE_DIR,
   "/workspace",
   "/data",
   "/scratch",
@@ -664,9 +658,10 @@ export interface PackageCacheMount {
  * Mirrored by dockergate (`PackageCacheMounts` in tools/dockergate/internal/policy/create.go).
  */
 export const PACKAGE_CACHE_MOUNTS: readonly PackageCacheMount[] = [
-  // pnpm: a DOWNLOAD cache only (registry metadata). The STORE is not a mount:
-  // since OPE-12720 it is /workspace/.pnpm-store, on the clones' own mount (DEFAULT_PNPM_STORE_DIR).
+  // pnpm: a DOWNLOAD cache only (registry metadata), never the store (see the next entry).
   { hostSubdir: "pnpm", containerPath: "/cache/pnpm", envName: "npm_config_cache_dir" },
+  // myrmidon(1.6.5-BOT-DISK-H8a): the pnpm STORE, one per partition (DEFAULT_PNPM_STORE_DIR).
+  { hostSubdir: "pnpm-store", containerPath: DEFAULT_PNPM_STORE_DIR, envName: "npm_config_store_dir" },
   // myrmidon(1.6.5-BOT-DISK-UV-A): the uv cache, one per partition (DEFAULT_UV_CACHE_DIR).
   { hostSubdir: "uv", containerPath: DEFAULT_UV_CACHE_DIR, envName: "UV_CACHE_DIR" },
   { hostSubdir: "go-mod", containerPath: "/cache/go-mod", envName: "GOMODCACHE" },
@@ -680,11 +675,11 @@ export const PACKAGE_CACHE_MOUNTS: readonly PackageCacheMount[] = [
  *
  * myrmidon(1.6.5-BOT-DISK-H8a): pnpm imports a package into a project's
  * node_modules by reflink (`clone`): the copy shares the store's blocks on disk
- * and a write does not reach the store. Since OPE-12720 the store is
- * {@link DEFAULT_PNPM_STORE_DIR} (`/workspace/.pnpm-store`) — the same mount as
- * every clone, no store mount; `/cache/pnpm` stays a download cache only. Both
- * values come from the bot-disk settings (`pnpmStoreDir`, `pnpmImportMethod`);
- * a stored value of an earlier release is migrated on read.
+ * and a write does not reach the store. A reflink works between mount points of
+ * one filesystem, so the store is the shared `/cache/pnpm-store` mount (one per
+ * partition, {@link DEFAULT_PNPM_STORE_DIR}); `/cache/pnpm` stays a download
+ * cache only. Both values come from the bot-disk settings (`pnpmStoreDir`,
+ * `pnpmImportMethod`); a stored value of an earlier release is migrated on read.
  */
 export function packageCacheEnv(
   pnpm: { storeDir?: string; importMethod?: string } = {},
