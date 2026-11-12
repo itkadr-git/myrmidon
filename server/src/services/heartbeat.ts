@@ -36782,6 +36782,9 @@ export function heartbeatService(
         wakeReason?: string;
         maxAttempts?: number;
         delayMs?: number;
+        // myrmidon(OPE-12802): the maintenance retry tells the next run to continue, not restart.
+        livenessContinuationInstruction?: string;
+        livenessContinuationState?: string;
       },
     ) => {
       const run = await getRun(runId, { unsafeFullResultJson: true });
