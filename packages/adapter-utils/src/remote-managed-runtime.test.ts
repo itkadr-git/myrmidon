@@ -3,6 +3,12 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
+const realWorkspaceRestoreMerge = vi.hoisted(() => ({
+  captureDirectorySnapshot: null as
+    | null
+    | ((rootDir: string, options?: { exclude?: string[] }) => Promise<unknown>),
+}));
+
 const {
   captureDirectorySnapshot,
   prepareWorkspaceForSshExecution,
@@ -10,10 +16,14 @@ const {
   runSshCommand,
   syncDirectoryToSsh,
 } = vi.hoisted(() => ({
-  captureDirectorySnapshot: vi.fn(async () => ({
-    exclude: [],
-    entries: new Map(),
-  })),
+  // A spy over the real implementation (wired in the module mock below): the
+  // OPE-12809 suite reads the real baseline, the OPE-12795 suite counts calls.
+  captureDirectorySnapshot: vi.fn(async (rootDir: string, options?: { exclude?: string[] }) => {
+    if (!realWorkspaceRestoreMerge.captureDirectorySnapshot) {
+      throw new Error("workspace-restore-merge mock is not initialised");
+    }
+    return realWorkspaceRestoreMerge.captureDirectorySnapshot(rootDir, options);
+  }),
   prepareWorkspaceForSshExecution: vi.fn(async () => ({ gitBacked: false })),
   restoreWorkspaceFromSshExecution: vi.fn(async () => undefined),
   runSshCommand: vi.fn(async () => ({
@@ -32,6 +42,7 @@ vi.mock("./ssh.js", () => ({
 
 vi.mock("./workspace-restore-merge.js", async (importOriginal) => {
   const actual = (await importOriginal()) as typeof import("./workspace-restore-merge.js");
+  realWorkspaceRestoreMerge.captureDirectorySnapshot = actual.captureDirectorySnapshot;
   return {
     ...actual,
     captureDirectorySnapshot,
@@ -581,6 +592,59 @@ describe("remote managed runtime: run directory cleanup (OPE-12633, OPE-12664)",
     expect(sshCommands()).toHaveLength(2);
   });
 
+  // myrmidon(OPE-12801)
+  it("keeps writing output lines while the workspace preparation and the restore are silent", async () => {
+    vi.useFakeTimers();
+    try {
+      const rootDir = await mkdtemp(path.join(os.tmpdir(), "myrmidon-remote-run-pulse-"));
+      cleanupDirs.push(rootDir);
+      const workspaceDir = path.join(rootDir, "workspace");
+      await mkdir(workspaceDir, { recursive: true });
+      await writeFile(path.join(workspaceDir, "README.md"), "hello\n", "utf8");
+
+      const lines: string[] = [];
+      const sink = (line: string) => {
+        lines.push(line);
+      };
+
+      let finishPrepare: (value: { gitBacked: boolean }) => void = () => {};
+      prepareWorkspaceForSshExecution.mockImplementationOnce(
+        () => new Promise<{ gitBacked: boolean }>((resolve) => { finishPrepare = resolve; }),
+      );
+      const preparing = prepareRemoteManagedRuntime({
+        spec,
+        runId: "run-pulse",
+        adapterKey: "omp",
+        workspaceLocalDir: workspaceDir,
+        onProgress: sink,
+      });
+      // 25 minutes of a silent preparation: longer than the 20-minute stall threshold.
+      await vi.advanceTimersByTimeAsync(25 * 60_000);
+      expect(lines.filter((line) => line.startsWith("[paperclip] Preparing workspace for ssh: still working"))).toHaveLength(25);
+      finishPrepare({ gitBacked: false });
+      vi.useRealTimers();
+      const prepared = await preparing;
+
+      vi.useFakeTimers();
+      lines.length = 0;
+      let finishRestore: () => void = () => {};
+      restoreWorkspaceFromSshExecution.mockImplementationOnce(
+        () => new Promise<undefined>((resolve) => { finishRestore = () => resolve(undefined); }),
+      );
+      const restoring = prepared.restoreWorkspace(sink);
+      await vi.advanceTimersByTimeAsync(25 * 60_000);
+      expect(lines.filter((line) => line.startsWith("[paperclip] Restoring workspace from ssh: still working"))).toHaveLength(25);
+      finishRestore();
+      await restoring;
+
+      const settled = lines.length;
+      await vi.advanceTimersByTimeAsync(10 * 60_000);
+      expect(lines).toHaveLength(settled);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("logs a failed removal and still rethrows the restore error, not the removal error", async () => {
     const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => undefined);
     try {
@@ -636,6 +700,94 @@ describe("remote managed runtime: run directory cleanup (OPE-12633, OPE-12664)",
 
     expect(restoreWorkspaceFromSshExecution).not.toHaveBeenCalled();
     expect(sshCommands()).toEqual([]);
+  });
+});
+
+describe("remote managed runtime: reproducible directories stay out of the exchange (OPE-12809)", () => {
+  const cleanupDirs: string[] = [];
+  const spec = {
+    host: "127.0.0.1",
+    port: 2222,
+    username: "fixture",
+    remoteWorkspacePath: "/workspace",
+    remoteCwd: "/workspace",
+    privateKey: "PRIVATE KEY",
+    knownHosts: "KNOWN HOSTS",
+    strictHostKeyChecking: true,
+  };
+
+  afterEach(async () => {
+    vi.clearAllMocks();
+    while (cleanupDirs.length > 0) {
+      const dir = cleanupDirs.pop();
+      if (dir) await rm(dir, { recursive: true, force: true }).catch(() => undefined);
+    }
+  });
+
+  it("passes the caller's excludes to the upload and restores against a baseline without the excluded directories", async () => {
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "myrmidon-remote-run-excludes-"));
+    cleanupDirs.push(rootDir);
+    const workspaceDir = path.join(rootDir, "workspace");
+    await mkdir(path.join(workspaceDir, "src"), { recursive: true });
+    await mkdir(path.join(workspaceDir, "node_modules", "pkg"), { recursive: true });
+    await mkdir(path.join(workspaceDir, "packages", "db", "node_modules", "dep"), { recursive: true });
+    await writeFile(path.join(workspaceDir, "src", "edited.ts"), "export const a = 1;\n", "utf8");
+    await writeFile(path.join(workspaceDir, "node_modules", "pkg", "index.js"), "module.exports = 1;\n", "utf8");
+    await writeFile(path.join(workspaceDir, "packages", "db", "node_modules", "dep", "index.js"), "module.exports = 2;\n", "utf8");
+
+    const resolvedExclude = ["node_modules", "node_modules/*", "*/node_modules", "*/node_modules/*", "custom-cache"];
+    const prepareMock = prepareWorkspaceForSshExecution as unknown as {
+      mockImplementationOnce: (impl: () => Promise<{ gitBacked: boolean; workspaceExclude: string[] }>) => void;
+    };
+    prepareMock.mockImplementationOnce(async () => ({ gitBacked: false, workspaceExclude: resolvedExclude }));
+
+    const prepared = await prepareRemoteManagedRuntime({
+      spec,
+      runId: "run-excludes",
+      adapterKey: "omp",
+      workspaceLocalDir: workspaceDir,
+      workspaceExclude: ["custom-cache"],
+    });
+
+    expect(prepareWorkspaceForSshExecution).toHaveBeenCalledWith(expect.objectContaining({
+      localDir: workspaceDir,
+      exclude: ["custom-cache"],
+    }));
+
+    await prepared.restoreWorkspace();
+
+    expect(restoreWorkspaceFromSshExecution).toHaveBeenCalledTimes(1);
+    const restoreCalls = restoreWorkspaceFromSshExecution.mock.calls as unknown as Array<[{
+      baselineSnapshot: { exclude: string[]; entries: Map<string, unknown> };
+    }]>;
+    const baseline = restoreCalls[0][0].baselineSnapshot;
+    // The restore takes its download and merge excludes from the baseline.
+    expect(baseline.exclude).toEqual([".paperclip-runtime", ...resolvedExclude]);
+    const paths = [...baseline.entries.keys()];
+    expect(paths).toContain("src/edited.ts");
+    expect(paths).toContain("packages/db");
+    expect(paths.filter((entry) => entry.includes("node_modules"))).toEqual([]);
+  });
+
+  it("keeps the previous baseline when the workspace preparation reports no excludes", async () => {
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "myrmidon-remote-run-excludes-none-"));
+    cleanupDirs.push(rootDir);
+    const workspaceDir = path.join(rootDir, "workspace");
+    await mkdir(workspaceDir, { recursive: true });
+    await writeFile(path.join(workspaceDir, "README.md"), "hello\n", "utf8");
+
+    const prepared = await prepareRemoteManagedRuntime({
+      spec,
+      runId: "run-excludes-none",
+      adapterKey: "omp",
+      workspaceLocalDir: workspaceDir,
+    });
+    await prepared.restoreWorkspace();
+
+    const restoreCalls = restoreWorkspaceFromSshExecution.mock.calls as unknown as Array<[{
+      baselineSnapshot: { exclude: string[] };
+    }]>;
+    expect(restoreCalls[0][0].baselineSnapshot.exclude).toEqual([".paperclip-runtime"]);
   });
 });
 

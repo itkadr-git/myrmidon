@@ -172,3 +172,76 @@ export function createRuntimeProgressReporter(
     },
   };
 }
+
+// myrmidon(OPE-12801): liveness pulse for phases that report no bytes.
+//
+// The run-stall watchdog measures silence by the run's last output line. Some
+// sync/restore phases do real work without moving a byte counter: hashing the
+// workspace for the restore baseline, unpacking an archive on the target,
+// merging the restored tree. On a multi-gigabyte workspace such a phase runs
+// for tens of minutes, and the watchdog cancelled live runs in it.
+//
+// `withSilenceHeartbeat` runs `work` with a wrapped sink. While `work` is
+// pending and nothing was written to the sink for `intervalMs`, it writes a
+// "still working" line itself. The pulse stops after `maxDurationMs`, so a
+// phase that hangs for real is still caught by the watchdog.
+
+export const SILENCE_HEARTBEAT_INTERVAL_MS = 60_000;
+export const SILENCE_HEARTBEAT_MAX_DURATION_MS = 90 * 60_000;
+
+export interface SilenceHeartbeatOptions {
+  sink: RuntimeProgressSink | undefined;
+  /** What is running, e.g. "Preparing workspace for ssh". */
+  label: string;
+  /** Write a pulse line after this much silence. Default 60 s. */
+  intervalMs?: number;
+  /** Stop pulsing this long after the start. Default 90 min. */
+  maxDurationMs?: number;
+  /** Injectable clock for deterministic tests. Default `Date.now`. */
+  now?: () => number;
+}
+
+export async function withSilenceHeartbeat<T>(
+  options: SilenceHeartbeatOptions,
+  work: (sink: RuntimeProgressSink | undefined) => Promise<T>,
+): Promise<T> {
+  const sink = options.sink;
+  if (!sink) return await work(undefined);
+
+  const intervalMs =
+    options.intervalMs && options.intervalMs > 0 ? options.intervalMs : SILENCE_HEARTBEAT_INTERVAL_MS;
+  const maxDurationMs =
+    options.maxDurationMs && options.maxDurationMs > 0
+      ? options.maxDurationMs
+      : SILENCE_HEARTBEAT_MAX_DURATION_MS;
+  const now = options.now ?? Date.now;
+  const startedAt = now();
+  let lastLineAt = startedAt;
+
+  const wrappedSink: RuntimeProgressSink = (line) => {
+    lastLineAt = now();
+    return sink(line);
+  };
+
+  const timer = setInterval(() => {
+    const current = now();
+    if (current - startedAt > maxDurationMs) {
+      clearInterval(timer);
+      return;
+    }
+    if (current - lastLineAt < intervalMs) return;
+    lastLineAt = current;
+    const elapsedSec = Math.round((current - startedAt) / 1000);
+    // A pulse must never fail or block the work it reports on.
+    void Promise.resolve()
+      .then(() => sink(`[paperclip] ${options.label}: still working (${elapsedSec}s)\n`))
+      .catch(() => undefined);
+  }, intervalMs);
+  timer.unref?.();
+
+  try {
+    return await work(wrappedSink);
+  } finally {
+    clearInterval(timer);
+  }
+}

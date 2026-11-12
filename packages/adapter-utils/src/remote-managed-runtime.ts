@@ -14,7 +14,8 @@ import {
   type SandboxManagedRuntimeAssetRestoreContext,
 } from "./sandbox-managed-runtime.js";
 import { captureDirectorySnapshot } from "./workspace-restore-merge.js";
-import type { RuntimeProgressSink } from "./runtime-progress.js";
+import { withSilenceHeartbeat, type RuntimeProgressSink } from "./runtime-progress.js";
+import { raceSshAbort, throwIfSshAborted } from "./ssh-abort.js"; // myrmidon(OPE-12801)
 
 // The fixed heavy-directory excludes every referenced project drops,
 // regardless of its ignore resolution. A `git`-resolved project additionally
@@ -226,6 +227,20 @@ export function remoteExecutionSessionMatches(saved: unknown, current: SshRemote
   );
 }
 
+// myrmidon(OPE-12809): the baseline snapshot carries the exclude list of the
+// whole exchange. restoreWorkspaceFromSshExecution reads it back from the
+// snapshot for the download and the merge, so a directory that was not
+// uploaded is not downloaded either, and the board's own copy of it is neither
+// overwritten nor deleted. `workspaceExclude` holds the reproducible
+// directories resolved by prepareWorkspaceForSshExecution
+// (ssh-workspace-excludes.ts).
+function sshWorkspaceBaselineExcludes(prepared: { gitBacked: boolean; workspaceExclude?: string[] }): string[] {
+  const base = prepared.gitBacked
+    ? [...GIT_ARCHIVE_EXCLUDES, ".paperclip-runtime"]
+    : [".paperclip-runtime"];
+  return mergeExcludes(base, prepared.workspaceExclude);
+}
+
 export async function prepareRemoteManagedRuntime(input: {
   spec: SshRemoteExecutionSpec;
   runId: string;
@@ -234,12 +249,16 @@ export async function prepareRemoteManagedRuntime(input: {
   workspaceRemoteDir?: string;
   syncWorkspace?: boolean;
   workspaceSyncMode?: "full" | "git_checkout";
+  /** Extra workspace exclude patterns, added to the reproducible directories. */
+  workspaceExclude?: string[];
   assets?: RemoteManagedRuntimeAsset[];
   /** Referenced (additional) projects to stage as plain, read-only trees. */
   additionalSources?: SandboxAdditionalSource[];
   // Upload progress sink. Threaded for the byte-counting transport rewrite; the
   // child task wires it into the workspace/asset transfers.
   onProgress?: RuntimeProgressSink;
+  /** myrmidon(OPE-12801): the run's cancellation signal; rejects with SshOperationAbortedError. */
+  signal?: AbortSignal;
 }): Promise<PreparedRemoteManagedRuntime> {
   const baseWorkspaceRemoteDir = input.workspaceRemoteDir ?? input.spec.remoteCwd;
   const gitCheckoutRequested = input.workspaceSyncMode === "git_checkout";
@@ -273,30 +292,55 @@ export async function prepareRemoteManagedRuntime(input: {
   }
 
   try {
-    const preparedWorkspace = syncWorkspace
-      ? await prepareWorkspaceForSshExecution({
-          spec: input.spec,
-          localDir: input.workspaceLocalDir,
-          remoteDir: workspaceRemoteDir,
-          onProgress: input.onProgress,
-          gitOnly: gitCheckoutRequested,
-        })
-      : null;
-    const gitCheckout = gitCheckoutRequested && preparedWorkspace?.gitBacked === true;
-    if (gitCheckoutRequested && !gitCheckout) {
-      console.info("[paperclip] workspaceSyncMode=git_checkout requested for a non-git workspace; falling back to full sync.");
-    }
-    const baselineSnapshot = preparedWorkspace && !gitCheckout
-      ? await captureDirectorySnapshot(input.workspaceLocalDir, {
-          exclude: preparedWorkspace.gitBacked
-            ? [...GIT_ARCHIVE_EXCLUDES, ".paperclip-runtime"]
-            : [".paperclip-runtime"],
-        })
-      : null;
+    // myrmidon(OPE-12801): the upload ends with a silent unpack on the target and
+    // the baseline snapshot hashes every workspace file without reporting bytes.
+    // On a 3.8 GB workspace that was 30-40 minutes with no output line, and the
+    // run-stall watchdog cancelled the run before omp started. The pulse keeps
+    // the run's last-output time moving while this work is in progress.
+    //
+    // myrmidon(OPE-12801): a cancelled run stops here. The transfer processes
+    // are killed (ssh.ts), the hashing of the local tree is abandoned, and the
+    // SshOperationAbortedError reaches the adapter, which must not start the
+    // agent CLI. The outer catch below removes the run directory on the target
+    // (best-effort); the stale-run prune is the safety net.
+    const { preparedWorkspace, baselineSnapshot, gitCheckout } = await withSilenceHeartbeat(
+      { sink: input.onProgress, label: "Preparing workspace for ssh" },
+      async (onProgress) => {
+        const prepared = syncWorkspace
+          ? await prepareWorkspaceForSshExecution({
+              spec: input.spec,
+              localDir: input.workspaceLocalDir,
+              remoteDir: workspaceRemoteDir,
+              exclude: input.workspaceExclude,
+              onProgress,
+              signal: input.signal,
+              gitOnly: gitCheckoutRequested,
+            })
+          : null;
+        throwIfSshAborted(input.signal, "Workspace preparation");
+        // myrmidon(OPE-12795): git_checkout takes no baseline snapshot of the
+        // shared workspace; a non-git workspace falls back to the full mode.
+        const gitCheckoutActive = gitCheckoutRequested && prepared?.gitBacked === true;
+        if (gitCheckoutRequested && !gitCheckoutActive) {
+          console.info("[paperclip] workspaceSyncMode=git_checkout requested for a non-git workspace; falling back to full sync.");
+        }
+        const snapshot = prepared && !gitCheckoutActive
+          ? await raceSshAbort(
+              captureDirectorySnapshot(input.workspaceLocalDir, {
+                exclude: sshWorkspaceBaselineExcludes(prepared),
+              }),
+              input.signal,
+              "Workspace preparation",
+            )
+          : null;
+        return { preparedWorkspace: prepared, baselineSnapshot: snapshot, gitCheckout: gitCheckoutActive };
+      },
+    );
 
     const assetDirs: Record<string, string> = {};
     try {
       for (const asset of input.assets ?? []) {
+        throwIfSshAborted(input.signal, "Runtime asset upload");
         const remoteDir = path.posix.join(runtimeRootDir, asset.key);
         assetDirs[asset.key] = remoteDir;
         await syncDirectoryToSsh({
@@ -307,12 +351,17 @@ export async function prepareRemoteManagedRuntime(input: {
           exclude: asset.exclude,
           onProgress: input.onProgress,
           progressLabel: asset.key,
+          signal: input.signal,
         });
       }
     } catch (error) {
+      // myrmidon(OPE-12801): nothing ran on the target before a cancellation at
+      // this point, so there is nothing to bring back; a restore here would keep
+      // the cancelled run busy for minutes.
+      //
       // In git_checkout mode there is no baseline snapshot and the shared
       // workspace is never restored (OPE-12795); `baselineSnapshot` is null then.
-      if (preparedWorkspace && baselineSnapshot && !gitCheckout) {
+      if (preparedWorkspace && baselineSnapshot && !gitCheckout && !input.signal?.aborted) {
         await restoreWorkspaceFromSshExecution({
           spec: input.spec,
           localDir: input.workspaceLocalDir,
@@ -332,6 +381,7 @@ export async function prepareRemoteManagedRuntime(input: {
     // the other projects continue (no workspace restore, unlike an asset failure).
     const additionalSourceDirs: Record<string, string> = {};
     for (const source of input.additionalSources ?? []) {
+      throwIfSshAborted(input.signal, "Referenced project upload"); // myrmidon(OPE-12801)
       const { localPath, projectId, ignoreResolution } = source;
       try {
         if (!path.posix.isAbsolute(localPath)) {
@@ -381,14 +431,22 @@ export async function prepareRemoteManagedRuntime(input: {
       restoreWorkspace: async (onProgress?: RuntimeProgressSink) => {
         try {
           if (preparedWorkspace && baselineSnapshot && !gitCheckout) {
-            await restoreWorkspaceFromSshExecution({
-              spec: input.spec,
-              localDir: input.workspaceLocalDir,
-              remoteDir: workspaceRemoteDir,
-              baselineSnapshot,
-              restoreGitHistory: preparedWorkspace.gitBacked,
-              onProgress,
-            });
+            // myrmidon(OPE-12801): after the download reaches 100% the restore
+            // copies and merges the tree locally without output; a finished omp
+            // run was cancelled as stalled in that phase and its work was lost.
+            await withSilenceHeartbeat(
+              { sink: onProgress, label: "Restoring workspace from ssh" },
+              async (restoreProgress) => {
+                await restoreWorkspaceFromSshExecution({
+                  spec: input.spec,
+                  localDir: input.workspaceLocalDir,
+                  remoteDir: workspaceRemoteDir,
+                  baselineSnapshot,
+                  restoreGitHistory: preparedWorkspace.gitBacked,
+                  onProgress: restoreProgress,
+                });
+              },
+            );
           }
           for (const asset of input.assets ?? []) {
             if (!asset.restore) continue;
