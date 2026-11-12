@@ -1,7 +1,13 @@
 import fs from "node:fs/promises";
+import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { findProviderConfig, prepareOmpRuntimeConfig } from "./runtime-config.js";
+import {
+  findProviderConfig,
+  OMP_MANAGED_SETTINGS_FILE,
+  prepareOmpRuntimeConfig,
+  writeOmpManagedSettings,
+} from "./runtime-config.js";
 
 const cleanupPaths = new Set<string>();
 
@@ -184,6 +190,36 @@ describe("prepareOmpRuntimeConfig", () => {
       "PAPERCLIP_OMP_PROVIDERS is a deprecated alias of MYRMIDON_OMP_PROVIDERS; rename it in the agent environment.",
       "PAPERCLIP_OMP_PROVIDERS contains invalid JSON; custom providers ignored.",
     ]);
+    await prepared.cleanup();
+  });
+});
+
+// myrmidon(OPE-12805)
+describe("managed omp settings", () => {
+  it("switches off bash service launch next to the managed models.yml", async () => {
+    const prepared = await prepareOmpRuntimeConfig({
+      env: { MYRMIDON_OMP_PROVIDERS: JSON.stringify({ gw: { baseUrl: "http://gw/v1", api: "openai-completions" } }) },
+    });
+    const agentConfigDir = prepared.env.PI_CODING_AGENT_DIR;
+    expect(agentConfigDir).toBeTruthy();
+    cleanupPaths.add(agentConfigDir);
+
+    expect(OMP_MANAGED_SETTINGS_FILE).toBe("config.yml");
+    const settings = await fs.readFile(path.join(agentConfigDir, "config.yml"), "utf8");
+    expect(settings).toBe("launch:\n  enabled: false\n");
+    await prepared.cleanup();
+  });
+
+  it("writes the same settings into any board-owned agent config dir", async () => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), "myrmidon-omp-settings-test-"));
+    cleanupPaths.add(dir);
+    await writeOmpManagedSettings(dir);
+    expect(await fs.readFile(path.join(dir, "config.yml"), "utf8")).toBe("launch:\n  enabled: false\n");
+  });
+
+  it("still writes nothing when no provider config is set (the user's own omp dir is not touched)", async () => {
+    const prepared = await prepareOmpRuntimeConfig({ env: {} });
+    expect(prepared.agentConfigDir).toBeNull();
     await prepared.cleanup();
   });
 });

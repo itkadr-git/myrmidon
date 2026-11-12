@@ -1,5 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { parseOmpJsonl, isOmpUnknownSessionError } from "./parse.js";
+import {
+  parseOmpJsonl,
+  isOmpUnknownSessionError,
+  summarizeOmpToolRejections,
+  OMP_TOOL_CALLS_REJECTED_ERROR_CODE,
+} from "./parse.js";
 
 describe("parseOmpJsonl", () => {
   it("parses agent lifecycle and messages", () => {
@@ -207,6 +212,71 @@ describe("parseOmpJsonl", () => {
 
     const parsed = parseOmpJsonl(stdout);
     expect(parsed.errors).toEqual(["Connection to provider lost"]);
+  });
+});
+
+// myrmidon(OPE-12806)
+describe("summarizeOmpToolRejections", () => {
+  const SERVICE_MODE = "Service mode does not accept async or timeout; use ready.timeout for readiness.";
+
+  function toolEvents(id: string, toolName: string, isError: boolean, text: string) {
+    return [
+      { type: "tool_execution_start", toolCallId: id, toolName, args: {} },
+      { type: "tool_execution_end", toolCallId: id, toolName, isError, result: { content: [{ type: "text", text }], details: {} } },
+    ];
+  }
+
+  function parse(events: unknown[]) {
+    return parseOmpJsonl(events.map((event) => JSON.stringify(event)).join("\n"));
+  }
+
+  it("uses a dedicated error code", () => {
+    expect(OMP_TOOL_CALLS_REJECTED_ERROR_CODE).toBe("omp_tool_calls_rejected");
+  });
+
+  it("reports a run in which every tool call was rejected", () => {
+    const parsed = parse([
+      ...toolEvents("c1", "bash", true, SERVICE_MODE),
+      ...toolEvents("c2", "bash", true, SERVICE_MODE),
+    ]);
+    const summary = summarizeOmpToolRejections(parsed.toolCalls);
+    expect(summary).toMatchObject({ finishedCalls: 2, rejectedCalls: 2, allRejected: true });
+    expect(summary?.message).toBe(`OMP finished, but all 2 tool call(s) were rejected: ${SERVICE_MODE}`);
+  });
+
+  it("reports a run in which the shell was rejected on every call although reads succeeded", () => {
+    // The shape of the production runs: read works, every bash call is refused.
+    const parsed = parse([
+      ...toolEvents("r1", "read", false, "file contents"),
+      ...toolEvents("b1", "bash", true, SERVICE_MODE),
+      ...toolEvents("b2", "bash", true, SERVICE_MODE),
+      ...toolEvents("b3", "bash", true, SERVICE_MODE),
+    ]);
+    const summary = summarizeOmpToolRejections(parsed.toolCalls);
+    expect(summary?.allRejected).toBe(false);
+    expect(summary?.rejectedTools).toEqual([{ toolName: "bash", calls: 3, sampleError: SERVICE_MODE }]);
+    expect(summary?.message).toBe(`OMP finished, but all 3 "bash" call(s) were rejected: ${SERVICE_MODE}`);
+  });
+
+  it("does not report ordinary runs", () => {
+    expect(summarizeOmpToolRejections(parse([]).toolCalls)).toBeNull();
+    // a tool that failed at first and then worked
+    expect(summarizeOmpToolRejections(parse([
+      ...toolEvents("b1", "bash", true, "exit code 1"),
+      ...toolEvents("b2", "bash", true, "exit code 1"),
+      ...toolEvents("b3", "bash", true, "exit code 1"),
+      ...toolEvents("b4", "bash", false, "ok"),
+    ]).toolCalls)).toBeNull();
+    // one or two failed calls of a tool next to successful work
+    expect(summarizeOmpToolRejections(parse([
+      ...toolEvents("e1", "edit", true, "no match"),
+      ...toolEvents("e2", "edit", true, "no match"),
+      ...toolEvents("w1", "write", false, "written"),
+    ]).toolCalls)).toBeNull();
+    // a call that never finished is not counted as rejected
+    expect(summarizeOmpToolRejections(parse([
+      { type: "tool_execution_start", toolCallId: "x1", toolName: "bash", args: {} },
+    ]).toolCalls)).toBeNull();
   });
 });
 
