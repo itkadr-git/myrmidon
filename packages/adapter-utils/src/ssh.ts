@@ -589,6 +589,18 @@ const SSH_SYNC_BACK_DIR_PREFIX = "paperclip-ssh-sync-back-";
 // (a board restart or kill) before its `finally` could run.
 const SSH_SYNC_BACK_STALE_MS = 4 * 60 * 60 * 1000;
 
+// Staging directories of the restores running in this process. The age check in
+// pruneStaleSshSyncBackDirs cannot tell them from leftovers: when tar finishes
+// extracting it gives the directory the mtime of the remote workspace root,
+// which can be days old, while the copy into the workspace is still running.
+const activeSshSyncBackDirs = new Set<string>();
+
+async function createSshSyncBackDir(): Promise<string> {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), SSH_SYNC_BACK_DIR_PREFIX));
+  activeSshSyncBackDirs.add(path.basename(dir));
+  return dir;
+}
+
 // Gives the owner rwx on every directory under `rootDir`. A restored workspace
 // can hold read-only directories (a Go module cache is 0555); unlinking an
 // entry needs write permission on its parent, so `fs.rm` fails on such a tree.
@@ -613,18 +625,24 @@ async function makeTreeOwnerWritable(rootDir: string): Promise<void> {
 async function removeSshSyncBackDir(dir: string): Promise<void> {
   const rmOptions = { recursive: true, force: true, maxRetries: 5, retryDelay: 200 };
   try {
-    await fs.rm(dir, rmOptions);
-    return;
-  } catch {
-    // Fall through to the permission repair below.
-  }
-  try {
-    await makeTreeOwnerWritable(dir);
-    await fs.rm(dir, rmOptions);
-  } catch (error) {
-    console.warn(
-      `[paperclip] Failed to remove SSH sync-back temp dir ${dir}: ${error instanceof Error ? error.message : String(error)}`,
-    );
+    try {
+      await fs.rm(dir, rmOptions);
+      return;
+    } catch {
+      // Fall through to the permission repair below.
+    }
+    try {
+      await makeTreeOwnerWritable(dir);
+      await fs.rm(dir, rmOptions);
+    } catch (error) {
+      console.warn(
+        `[paperclip] Failed to remove SSH sync-back temp dir ${dir}: ${error instanceof Error ? error.message : String(error)}`,
+      );
+    }
+  } finally {
+    // The restore is over either way; a directory that is still there is a
+    // leftover now and the next prune retries it once it is old enough.
+    activeSshSyncBackDirs.delete(path.basename(dir));
   }
 }
 
@@ -636,6 +654,7 @@ async function pruneStaleSshSyncBackDirs(nowMs: number = Date.now()): Promise<vo
     const entries = await fs.readdir(tmpRoot, { withFileTypes: true });
     for (const entry of entries) {
       if (!entry.isDirectory() || !entry.name.startsWith(SSH_SYNC_BACK_DIR_PREFIX)) continue;
+      if (activeSshSyncBackDirs.has(entry.name)) continue;
       const dir = path.join(tmpRoot, entry.name);
       const info = await fs.stat(dir).catch(() => null);
       if (!info || nowMs - info.mtimeMs < SSH_SYNC_BACK_STALE_MS) continue;
@@ -1548,12 +1567,10 @@ export async function syncDirectoryFromSsh(input: {
 
   // Nothing may sit between creating the staging directory and the `try` whose
   // `finally` removes it.
-  const stagingDir = await fs
-    .mkdtemp(path.join(os.tmpdir(), SSH_SYNC_BACK_DIR_PREFIX))
-    .catch(async (error: unknown) => {
-      await auth.cleanup();
-      throw error;
-    });
+  const stagingDir = await createSshSyncBackDir().catch(async (error: unknown) => {
+    await auth.cleanup();
+    throw error;
+  });
 
   try {
     await new Promise<void>((resolve, reject) => {
@@ -1570,13 +1587,15 @@ export async function syncDirectoryFromSsh(input: {
       let settled = false;
       let sshExited = false;
       let tarExited = false;
+      let sshStoppedAfterTarFailure = false;
       let sshExitCode: number | null = null;
       let tarExitCode: number | null = null;
 
       const maybeFinish = () => {
         if (settled || !sshExited || !tarExited) return;
         settled = true;
-        if ((sshExitCode ?? 0) !== 0) {
+        // ssh answers our SIGTERM with exit code 255; that must not hide why tar failed.
+        if (!sshStoppedAfterTarFailure && (sshExitCode ?? 0) !== 0) {
           reject(new Error(sshStderr.trim() || `ssh exited with code ${sshExitCode ?? -1}`));
           return;
         }
@@ -1625,6 +1644,7 @@ export async function syncDirectoryFromSsh(input: {
         // full pipe and the restore would never settle. Stop it; maybeFinish
         // runs when it closes.
         if ((code ?? 0) !== 0 && !sshExited) {
+          sshStoppedAfterTarFailure = true;
           ssh.kill("SIGTERM");
         }
         maybeFinish();
@@ -1702,7 +1722,7 @@ export async function restoreWorkspaceFromSshExecution(input: {
 }): Promise<void> {
   const remoteDir = input.remoteDir ?? input.spec.remoteCwd;
   if (input.baselineSnapshot) {
-    const stagingDir = await fs.mkdtemp(path.join(os.tmpdir(), SSH_SYNC_BACK_DIR_PREFIX));
+    const stagingDir = await createSshSyncBackDir();
     const importedRef = input.restoreGitHistory
       ? `refs/paperclip/ssh-sync/imported/${randomUUID()}`
       : null;

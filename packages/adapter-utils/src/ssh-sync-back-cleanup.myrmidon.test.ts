@@ -27,6 +27,16 @@ case "$FAKE_SSH_MODE" in
     tar -cf - -C "$FAKE_SSH_SOURCE_DIR" . | head -c 20000
     echo "Connection reset by peer" >&2
     exit 255 ;;
+  serve-term255)
+    # Like the real ssh client: SIGTERM ends it with exit code 255, not by signal.
+    tar -cf - -C "$FAKE_SSH_SOURCE_DIR" . &
+    child=$!
+    trap 'kill "$child" 2>/dev/null; echo "Killed by signal 15." >&2; exit 255' TERM
+    wait "$child" ;;
+  hold)
+    # Serves the stream, then stays connected until the test creates the release file.
+    tar -cf - -C "$FAKE_SSH_SOURCE_DIR" .
+    while [ ! -e "$FAKE_SSH_RELEASE" ]; do sleep 0.05; done ;;
 esac
 `;
 
@@ -145,6 +155,17 @@ describe.skipIf(process.platform === "win32")("syncDirectoryFromSsh staging dire
     expect(await leftoverStagingDirs()).toEqual([]);
   }, 20_000);
 
+  it("reports why tar failed, not the exit code ssh gives to the SIGTERM that stops it", async () => {
+    setEnv("FAKE_SSH_MODE", "serve-term255");
+    setEnv("FAKE_TAR_MODE", "die-on-extract");
+
+    await expect(syncDirectoryFromSsh({ spec, remoteDir: "/workspace", localDir })).rejects.toThrow(
+      "No space left on device",
+    );
+
+    expect(await leftoverStagingDirs()).toEqual([]);
+  }, 20_000);
+
   it("removes a staging directory that holds read-only directories", async () => {
     setEnv("FAKE_SSH_MODE", "serve");
     const readOnlyDir = path.join(sourceDir, "pkg", "mod");
@@ -176,4 +197,42 @@ describe.skipIf(process.platform === "win32")("syncDirectoryFromSsh staging dire
     expect(await leftoverStagingDirs()).toEqual([`${SYNC_BACK_PREFIX}fresh01`]);
     expect((await stat(otherDir)).isDirectory()).toBe(true);
   });
+
+  it("does not prune the staging directory of a restore that is still running", async () => {
+    // When tar finishes extracting it gives the staging directory the mtime of
+    // the remote workspace root, which can be older than the prune threshold
+    // while the restore is still copying it into the workspace. The directory
+    // is backdated here to stand for that.
+    const releaseFile = path.join(rootDir, "release");
+    const otherLocalDir = path.join(rootDir, "other-local-workspace");
+    await mkdir(otherLocalDir, { recursive: true });
+    setEnv("FAKE_SSH_RELEASE", releaseFile);
+    setEnv("FAKE_SSH_MODE", "hold");
+    const running = syncDirectoryFromSsh({ spec, remoteDir: "/workspace", localDir });
+    try {
+      let activeDir = "";
+      for (let attempt = 0; attempt < 200 && !activeDir; attempt += 1) {
+        activeDir = (await leftoverStagingDirs())[0] ?? "";
+        if (!activeDir) await new Promise((resolve) => setTimeout(resolve, 25));
+      }
+      expect(activeDir).not.toBe("");
+      const sixHoursAgo = new Date(Date.now() - 6 * 60 * 60 * 1000);
+      await utimes(path.join(isolatedTmp, activeDir), sixHoursAgo, sixHoursAgo);
+
+      // The second restore prunes when it starts; ssh of the first one is
+      // already running, so the mode can change for the second.
+      setEnv("FAKE_SSH_MODE", "serve");
+      await syncDirectoryFromSsh({ spec, remoteDir: "/workspace", localDir: otherLocalDir });
+
+      expect(await leftoverStagingDirs()).toEqual([activeDir]);
+
+      await writeFile(releaseFile, "");
+      await running;
+      expect(await readFile(path.join(localDir, "hello.txt"), "utf8")).toBe("hello from the runner\n");
+      expect(await leftoverStagingDirs()).toEqual([]);
+    } finally {
+      await writeFile(releaseFile, "");
+      await running.catch(() => undefined);
+    }
+  }, 20_000);
 });
