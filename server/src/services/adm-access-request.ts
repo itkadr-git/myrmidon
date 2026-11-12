@@ -1,6 +1,6 @@
 import { and, desc, eq, sql } from "drizzle-orm";
 import type { Db } from "@myrmidon/db";
-import { approvals } from "@myrmidon/db";
+import { approvals, budgetPolicies, companySecrets, companySkills, issues, knowledgeItems, projects, toolConnections } from "@myrmidon/db";
 import {
   ADM_ACCESS_REQUEST_TYPE,
   admScopeHash,
@@ -19,6 +19,169 @@ import {
 } from "@myrmidon/shared";
 import { badRequest, conflict, forbidden, notFound } from "../errors.js";
 import { logActivity } from "./activity-log.js";
+
+/** Parses `type:key` resource refs (e.g. `skill:atlas-report` → `atlas-report`). */
+function admResourceKeyFromRef(resourceRef: string): string {
+  const colon = resourceRef.indexOf(":");
+  return colon >= 0 ? resourceRef.slice(colon + 1).trim() : resourceRef.trim();
+}
+
+export interface AdmResourceProjection {
+  key: string | null;
+  name: string | null;
+  status: string | null;
+  createdAt: string | null;
+}
+
+export interface AdmScopedResource {
+  projection: AdmResourceProjection;
+}
+
+/**
+ * Resolves one resource row inside the target (ADM) company namespace only.
+ * Every branch is keyed by `(companyId, key)`; the source company never
+ * appears in a lookup. Projections carry name/status/timestamps — never raw
+ * secret values, markdown bodies, credentials or issue content.
+ */
+async function admLookupScopedResource(
+  db: Db,
+  targetCompanyId: string,
+  resourceType: string,
+  key: string,
+): Promise<AdmScopedResource | null> {
+  switch (resourceType) {
+    case "skill": {
+      const row = await db
+        .select({ key: companySkills.key, name: companySkills.name, status: companySkills.trustLevel, createdAt: companySkills.createdAt })
+        .from(companySkills)
+        .where(and(eq(companySkills.companyId, targetCompanyId), eq(companySkills.key, key)))
+        .limit(1)
+        .then((rows) => rows[0] ?? null);
+      return row
+        ? { projection: { key: row.key, name: row.name, status: row.status, createdAt: row.createdAt?.toISOString() ?? null } }
+        : null;
+    }
+    case "secret": {
+      const row = await db
+        .select({ key: companySecrets.key, name: companySecrets.name, status: companySecrets.status, createdAt: companySecrets.createdAt })
+        .from(companySecrets)
+        .where(and(eq(companySecrets.companyId, targetCompanyId), eq(companySecrets.key, key)))
+        .limit(1)
+        .then((rows) => rows[0] ?? null);
+      return row
+        ? { projection: { key: row.key, name: row.name, status: row.status, createdAt: row.createdAt?.toISOString() ?? null } }
+        : null;
+    }
+    case "connection":
+    case "tool": {
+      const row = await db
+        .select({ key: toolConnections.name, name: toolConnections.name, status: toolConnections.status, createdAt: toolConnections.createdAt })
+        .from(toolConnections)
+        .where(and(eq(toolConnections.companyId, targetCompanyId), eq(toolConnections.name, key)))
+        .limit(1)
+        .then((rows) => rows[0] ?? null);
+      return row
+        ? { projection: { key: row.key, name: row.name, status: row.status, createdAt: row.createdAt?.toISOString() ?? null } }
+        : null;
+    }
+    case "project": {
+      const row = await db
+        .select({ key: projects.id, name: projects.name, status: projects.status, createdAt: projects.createdAt })
+        .from(projects)
+        .where(and(eq(projects.companyId, targetCompanyId), eq(projects.name, key)))
+        .limit(1)
+        .then((rows) => rows[0] ?? null);
+      return row
+        ? { projection: { key, name: row.name, status: row.status, createdAt: row.createdAt?.toISOString() ?? null } }
+        : null;
+    }
+    case "task": {
+      const row = await db
+        .select({ key: issues.id, name: issues.title, status: issues.status, createdAt: issues.createdAt })
+        .from(issues)
+        .where(and(eq(issues.companyId, targetCompanyId), eq(issues.id, key)))
+        .limit(1)
+        .then((rows) => rows[0] ?? null);
+      return row
+        ? { projection: { key: row.key, name: row.name, status: row.status, createdAt: row.createdAt?.toISOString() ?? null } }
+        : null;
+    }
+    case "budget": {
+      const row = await db
+        .select({ key: budgetPolicies.scopeType, name: budgetPolicies.windowKind, status: budgetPolicies.metric, createdAt: budgetPolicies.createdAt })
+        .from(budgetPolicies)
+        .where(and(eq(budgetPolicies.companyId, targetCompanyId), eq(budgetPolicies.scopeType, key), eq(budgetPolicies.isActive, true)))
+        .limit(1)
+        .then((rows) => rows[0] ?? null);
+      return row
+        ? { projection: { key: row.key, name: row.name, status: row.status, createdAt: row.createdAt?.toISOString() ?? null } }
+        : null;
+    }
+    case "memory": {
+      const row = await db
+        .select({ key: knowledgeItems.slug, name: knowledgeItems.title, status: knowledgeItems.status, createdAt: knowledgeItems.createdAt })
+        .from(knowledgeItems)
+        .where(and(eq(knowledgeItems.companyId, targetCompanyId), eq(knowledgeItems.slug, key)))
+        .limit(1)
+        .then((rows) => rows[0] ?? null);
+      return row
+        ? { projection: { key: row.key, name: row.name, status: row.status, createdAt: row.createdAt?.toISOString() ?? null } }
+        : null;
+    }
+    default:
+      return null;
+  }
+}
+
+/**
+ * Aggregate-only read (budget health and counts). Returns company-scoped
+ * counters and, for budgets, warn/hard-stop state — never per-agent raw cost
+ * rows of another company.
+ */
+async function admAggregateScopedResource(
+  db: Db,
+  targetCompanyId: string,
+  resourceType: string,
+  key: string,
+): Promise<Record<string, unknown>> {
+  switch (resourceType) {
+    case "budget": {
+      const rows = await db
+        .select({
+          scopeType: budgetPolicies.scopeType,
+          scopeId: budgetPolicies.scopeId,
+          metric: budgetPolicies.metric,
+          windowKind: budgetPolicies.windowKind,
+          amount: budgetPolicies.amount,
+          hardStopEnabled: budgetPolicies.hardStopEnabled,
+          isActive: budgetPolicies.isActive,
+        })
+        .from(budgetPolicies)
+        .where(and(eq(budgetPolicies.companyId, targetCompanyId), eq(budgetPolicies.isActive, true)))
+        .limit(50);
+      const scoped = rows.filter((row) => key.length === 0 || row.scopeType === key);
+      return {
+        count: scoped.length,
+        scopes: [...new Set(scoped.map((row) => row.scopeType))],
+        hardStopEnabled: scoped.every((row) => row.hardStopEnabled),
+      };
+    }
+    case "task": {
+      const target = await db
+        .select({ companyId: issues.companyId })
+        .from(issues)
+        .where(and(eq(issues.companyId, targetCompanyId), eq(issues.id, key)))
+        .limit(1)
+        .then((rows) => rows[0] ?? null);
+      return { count: target ? 1 : 0, exists: target !== null };
+    }
+    default: {
+      const found = await admLookupScopedResource(db, targetCompanyId, resourceType, key);
+      return { count: found ? 1 : 0 };
+    }
+  }
+}
+
 
 export const ADM_APPROVAL_TYPE = ADM_ACCESS_REQUEST_TYPE;
 
@@ -485,46 +648,81 @@ export function admAccessRequestService(db: Db) {
         throw forbidden("ADM capability has expired");
       }
 
-      // 4. Safe execution projection: never returns raw secrets or cross-tenant sensitive data.
+      // 4. Scoped execution against the target company's data: every lookup is
+      // double-keyed by (targetCompanyId, resourceRef-derived key) so the
+      // capability can never surface another company's row. Only metadata
+      // projections and aggregates leave the ADM boundary — never raw secret
+      // values, markdown bodies, connection credentials or issue content.
       let executionResult: Record<string, unknown>;
       switch (claims.action) {
         case "read_metadata": {
+          const resourceKey = admResourceKeyFromRef(claims.resourceRef);
+          const found = await admLookupScopedResource(db, claims.targetCompanyId, claims.resourceType, resourceKey);
           executionResult = {
             kind: "metadata_projection",
             resourceType: claims.resourceType,
             resourceRef: claims.resourceRef,
             scopeHash: claims.scopeHash,
-            available: true,
+            // Existence oracle stays closed: unknown and foreign ids answer identically.
+            available: found !== null,
+            projection: found?.projection ?? null,
             version: "1.0",
           };
           break;
         }
         case "query_aggregate": {
+          const resourceKey = admResourceKeyFromRef(claims.resourceRef);
+          const aggregate = await admAggregateScopedResource(db, claims.targetCompanyId, claims.resourceType, resourceKey);
           executionResult = {
             kind: "aggregate_metrics",
             resourceType: claims.resourceType,
             resourceRef: claims.resourceRef,
-            count: 1,
+            scopeHash: claims.scopeHash,
+            ...aggregate,
             sampleAt: new Date().toISOString(),
           };
           break;
         }
         case "invoke_tool": {
-          executionResult = {
-            kind: "tool_execution_result",
-            resourceType: claims.resourceType,
-            resourceRef: claims.resourceRef,
-            status: "succeeded",
-            output: "Executed via ADM controlled gateway",
-          };
+          const resourceKey = admResourceKeyFromRef(claims.resourceRef);
+          const tool = await db
+            .select({ id: toolConnections.id, name: toolConnections.name, status: toolConnections.status, enabled: toolConnections.enabled })
+            .from(toolConnections)
+            .where(and(eq(toolConnections.companyId, claims.targetCompanyId), eq(toolConnections.name, resourceKey)))
+            .limit(1)
+            .then((rows) => rows[0] ?? null);
+          if (!tool || !tool.enabled || tool.status !== "active") {
+            // Deny-by-default: a disabled/unknown tool never reports success.
+            executionResult = {
+              kind: "tool_execution_result",
+              resourceType: claims.resourceType,
+              resourceRef: claims.resourceRef,
+              status: "denied",
+              reason: "tool_not_available",
+            };
+          } else {
+            executionResult = {
+              kind: "tool_execution_result",
+              resourceType: claims.resourceType,
+              resourceRef: claims.resourceRef,
+              status: "succeeded",
+              connectionId: tool.id,
+              executedAt: new Date().toISOString(),
+              output: "Executed via ADM controlled gateway (metadata envelope only)",
+            };
+          }
           break;
         }
         case "grant_capability": {
+          // ADR-0052: an approval never becomes a standing grant. The
+          // confirmation echoes the approved envelope only.
           executionResult = {
             kind: "scoped_grant_confirmation",
             resourceType: claims.resourceType,
             resourceRef: claims.resourceRef,
             granted: true,
+            requestId: claims.requestId,
+            expiresAt: payload.expiresAt ?? null,
           };
           break;
         }

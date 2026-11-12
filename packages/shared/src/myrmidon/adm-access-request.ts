@@ -24,6 +24,7 @@ export const admResourceTypes = [
   "project",
   "budget",
   "memory",
+  "task",
   "tool",
 ] as const;
 
