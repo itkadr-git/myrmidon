@@ -54,7 +54,7 @@ export interface AdmRequestStoredPayload {
 export function admAccessRequestService(db: Db) {
   function mapApprovalToRecord(
     row: typeof approvals.$inferSelect,
-  ): RedactedAdmRequest & {
+  ): Omit<RedactedAdmRequest, "expiresAt"> & {
     id: string;
     targetCompanyId: string;
     requesterType: string;
@@ -151,7 +151,7 @@ export function admAccessRequestService(db: Db) {
         justification: input.justification,
         requestedScope: input.requestedScope,
         scopeHash,
-        ttlSeconds: input.ttlSeconds,
+        ttlSeconds: input.ttlSeconds ?? 3600,
         idempotencyKey: input.idempotencyKey,
         correlationRunId: input.correlationRunId ?? actor.runId ?? null,
       };
@@ -188,8 +188,7 @@ export function admAccessRequestService(db: Db) {
           resourceType: input.resourceType,
           resourceRef: input.resourceRef,
           action: input.action,
-          scopeHash,
-          ttlSeconds: input.ttlSeconds,
+          ttlSeconds: input.ttlSeconds ?? 3600,
           idempotencyKey: input.idempotencyKey,
           correlationRunId: storedPayload.correlationRunId,
         },

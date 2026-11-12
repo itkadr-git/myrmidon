@@ -104,8 +104,8 @@ export function admAccessRequestRoutes(db: Db) {
       if (!targetCompanyId) {
         throw forbidden("ADM control-plane company is not configured");
       }
-      // Only the ADM company can decide. Agents never decide, even ADM agents.
-      if (req.actor.type !== "board" && req.actor.type !== "user") {
+      // Only ADM company operators can decide. Agent keys never act as ADM operators.
+      if (req.actor.type !== "board") {
         throw forbidden("Only ADM company operators can decide access requests");
       }
       if (
