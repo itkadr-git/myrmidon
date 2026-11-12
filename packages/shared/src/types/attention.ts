@@ -95,6 +95,10 @@ export const ATTENTION_SOURCE_KINDS = [
   "provider_no_credits",
   // MCP gateway tokens expiring within the operator attention window.
   "mcp_gateway_token_expiring",
+  // myrmidon(OPE-12868): a GitHub App's webhook is not "Active" on the App's
+  // GitHub settings page (GitHub answers 404 on the hook-config sync) — the
+  // board receives no GitHub events until the App owner turns it on.
+  "github_app_webhook_disabled",
 ] as const;
 
 export type AttentionSourceKind = (typeof ATTENTION_SOURCE_KINDS)[number];

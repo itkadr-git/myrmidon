@@ -60,6 +60,11 @@ import {
   readGitHubSharedIdentitySettings,
   writeGitHubSharedIdentitySettings,
 } from "../myrmidon/github-shared-identity/store.js";
+import {
+  forgetGitHubAppWebhookDisabledSignals,
+  hasGitHubAppWebhookDisabledSignal,
+} from "../myrmidon/github-shared-identity/webhook-disabled-signal.js";
+import { attentionService } from "../services/attention.js";
 
 // Made at run time: a literal looks like a real key to the secret scanner.
 const WEBHOOK_SECRET = `test-${randomUUID()}`;
@@ -628,6 +633,7 @@ const support = await getEmbeddedPostgresTestSupport();
       hook.config = null;
       hook.patchStatus = 200;
       fakeFetch.mockClear();
+      forgetGitHubAppWebhookDisabledSignals();
     });
 
     afterEach(() => {
@@ -708,6 +714,47 @@ const support = await getEmbeddedPostgresTestSupport();
 
       hook.patchStatus = 200;
       await request(server()).post(syncPath(companyId, entry.id)).send({ webhookUrl: PUBLIC_URL }).expect(200);
+      expect(await webhookSecretsOf(companyId, keySecretId)).toHaveLength(1);
+    });
+
+    it("myrmidon(OPE-12868): raises a critical attention card on HTTP 404 from GitHub on webhook-sync, and clears it on recovery", async () => {
+      const { companyId, entry, keySecretId } = await seedEntry();
+      hook.patchStatus = 404;
+
+      // 1. GitHub returns 404 on the PATCH (webhook not Active in App settings).
+      const refused = await request(server()).post(syncPath(companyId, entry.id)).send({ webhookUrl: PUBLIC_URL });
+      expect(refused.status).toBe(502);
+      expect(refused.body).toMatchObject({ code: "github_webhook_sync_failed" });
+      expect(refused.text).toContain("404");
+
+      // 2. The signal latch is tripped.
+      expect(hasGitHubAppWebhookDisabledSignal(companyId, entry.id)).toBe(true);
+
+      // 3. The attention feed surfaces the card with critical severity and operator guidance.
+      const feed = await attentionService(db, { feedCacheTtlMs: 0 }).list(companyId);
+      const card = feed.items.find((item) => item.sourceKind === "github_app_webhook_disabled");
+      expect(card).toBeDefined();
+      expect(card!.severity).toBe("critical");
+      expect(card!.subject.title).toContain("GitHub App webhook disabled");
+      expect(card!.whyNow).toContain("Webhook → Active");
+      expect(card!.whyNow).toContain("Settings → Developer settings → GitHub Apps");
+      expect(card!.detail).toMatchObject({ kind: "generic" });
+      expect((card!.detail as { summaryExcerpt: string }).summaryExcerpt).toContain("not Active");
+
+      // 4. Operator flips the switch in GitHub App settings -> webhook-sync is re-run and succeeds (200).
+      hook.patchStatus = 200;
+      const recovered = await request(server()).post(syncPath(companyId, entry.id)).send({ webhookUrl: PUBLIC_URL });
+      expect(recovered.status).toBe(200);
+
+      // 5. The latch is cleared immediately.
+      expect(hasGitHubAppWebhookDisabledSignal(companyId, entry.id)).toBe(false);
+
+      // 6. The attention feed automatically drops the card.
+      const feedAfter = await attentionService(db, { feedCacheTtlMs: 0 }).list(companyId);
+      const cardAfter = feedAfter.items.find((item) => item.sourceKind === "github_app_webhook_disabled");
+      expect(cardAfter).toBeUndefined();
+
+      // Secret was preserved throughout.
       expect(await webhookSecretsOf(companyId, keySecretId)).toHaveLength(1);
     });
 

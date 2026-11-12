@@ -114,6 +114,7 @@ const SOURCE_META: Record<AttentionSourceKind, SourceMeta> = {
   role_model_down: { label: "Role model down" },
   provider_no_credits: { label: "Provider no credits" },
   litellm_budget: { label: "LLM key budget" },
+  github_app_webhook_disabled: { label: "GitHub App webhook disabled" },
 };
 
 export function sourceMeta(kind: AttentionSourceKind): SourceMeta {
@@ -187,6 +188,7 @@ export function attentionKind(item: AttentionItem): AttentionKind {
     case "auth_401_burst":
     case "foraging_limit":
     case "litellm_budget":
+    case "github_app_webhook_disabled":
       return "blocking";
     case "approval":
     case "issue_thread_interaction":

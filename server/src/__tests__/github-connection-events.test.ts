@@ -803,6 +803,10 @@ describeEmbeddedPostgres.sequential("GitHub connection event delivery", () => {
     expect(alarmIssue?.status).toBe("todo");
     expect(alarmIssue?.priority).toBe("high");
     expect(alarmIssue?.title).toContain("ALARM: события GitHub");
+    // The alarm is addressable: it mints the company issue number/identifier
+    // like any other task (issuePrefix-N), so it carries a stable issue key.
+    expect(alarmIssue?.issueNumber).toBeGreaterThan(0);
+    expect(alarmIssue?.identifier).toBe(`WDC-${alarmIssue?.issueNumber}`);
 
     // Second sweep with healthy event timestamp (now - 2 minutes) -> resolves alarm
     const healthyTime = new Date("2026-11-03T01:05:00.000Z");
