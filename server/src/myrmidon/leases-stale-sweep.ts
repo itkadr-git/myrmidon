@@ -84,7 +84,10 @@ async function claimStaleLeaseTeardownAttempt(
   expectedAttempts: number,
 ): Promise<boolean> {
   const claimed = await db.execute(sql`update ${environmentLeases} set metadata = jsonb_set(${staleLeaseMetadataObjectSql}, array[${STALE_LEASE_TEARDOWN_ATTEMPTS_METADATA_KEY}], to_jsonb((${expectedAttempts}::int + 1)), true) where id = ${leaseId} and status = 'active' and ${staleLeaseTeardownAttemptsSql} = ${expectedAttempts}::int returning id`);
-  return claimed.rows.length > 0;
+  // Row access is driver-agnostic: node-postgres wraps rows in `{ rows }`,
+  // other drivers return the array directly.
+  const rows = Array.isArray(claimed) ? claimed : ((claimed as { rows?: unknown[] } | null)?.rows ?? []);
+  return rows.length > 0;
 }
 
 /**
@@ -172,7 +175,18 @@ export function createStaleActiveLeaseSweep(deps: StaleActiveLeaseSweepDeps) {
     const rows = await deps.db
       .select({
         lease: environmentLeases,
-        run: { id: heartbeatRuns.id, nativeIssueId: heartbeatRuns.nativeIssueId },
+        // isRunStillActive reads the process identity columns below; the sweep
+        // itself only needs id and nativeIssueId for bookkeeping.
+        run: {
+          id: heartbeatRuns.id,
+          nativeIssueId: heartbeatRuns.nativeIssueId,
+          runtimeMode: heartbeatRuns.runtimeMode,
+          status: heartbeatRuns.status,
+          errorCode: heartbeatRuns.errorCode,
+          nativePhase: heartbeatRuns.nativePhase,
+          processPid: heartbeatRuns.processPid,
+          processGroupId: heartbeatRuns.processGroupId,
+        },
         issueRef: sql<
           string | null
         >`coalesce(${heartbeatRuns.nativeIssueId}::text, ${heartbeatRuns.contextSnapshot} ->> 'issueId')`,
@@ -196,7 +210,7 @@ export function createStaleActiveLeaseSweep(deps: StaleActiveLeaseSweepDeps) {
         result.skippedAlive += 1;
         continue;
       }
-      const [lease] = await deps.environments.getLeaseById(row.lease.id);
+      const lease = await deps.environments.getLeaseById(row.lease.id);
       if (!lease) {
         continue;
       }
@@ -217,9 +231,9 @@ export function createStaleActiveLeaseSweep(deps: StaleActiveLeaseSweepDeps) {
       // raise the operator attention card instead of retrying forever. A
       // released lease is terminal bookkeeping; the ownership blocker no longer
       // holds the issue for it (conversation-continuation.ts).
-      const claimedAttempts = row.leaseAttempts ?? 0;
+      const claimedAttempts = Number(row.leaseAttempts ?? 0);
       if (claimedAttempts >= STALE_LEASE_TEARDOWN_ATTEMPT_CAP) {
-        const [released] = await deps.environments.releaseLease(lease.id, "expired", {
+        const released = await deps.environments.releaseLease(lease.id, "expired", {
           cleanupStatus: "failed",
           failureReason: STALE_LEASE_TEARDOWN_CAP_FAILURE_REASON,
         });
@@ -264,9 +278,12 @@ export function createStaleActiveLeaseSweep(deps: StaleActiveLeaseSweepDeps) {
         result.released += 1;
         await deps.afterRelease?.(lease);
       } catch {
-        // The claimed attempt stays in metadata; the lease stays active and a
-        // later tick retries. Log a constant errorKind only: the exception can
-        // carry a provider credential in its message, code, cause or stack.
+        // The claimed attempt stays in metadata. While attempts remain below
+        // the cap the lease stays active for a later tick; on the final failed
+        // attempt the lease is released with failed cleanup right here, so the
+        // cap never spends a tick without progress (OPE-12899). Log constant
+        // errorKind values only: the exception can carry a provider credential
+        // in its message, code, cause or stack.
         result.failed += 1;
         logger.warn(
           {
@@ -277,6 +294,37 @@ export function createStaleActiveLeaseSweep(deps: StaleActiveLeaseSweepDeps) {
           },
           "stale lease teardown failed",
         );
+        if (claimedAttempts + 1 >= STALE_LEASE_TEARDOWN_ATTEMPT_CAP) {
+          const released = await deps.environments.releaseLease(lease.id, "expired", {
+            cleanupStatus: "failed",
+            failureReason: STALE_LEASE_TEARDOWN_CAP_FAILURE_REASON,
+          });
+          result.capped += 1;
+          logger.warn(
+            {
+              errorKind: STALE_LEASE_TEARDOWN_CAP_ERROR_KIND,
+              leaseId: lease.id,
+              runId: row.run.id,
+              attempts: claimedAttempts + 1,
+            },
+            "stale lease teardown cap reached; lease released with failed cleanup",
+          );
+          const cappedLease = released?.lease ?? lease;
+          await deps
+            .raiseOperatorAttention?.({
+              lease: cappedLease,
+              run: { id: row.run.id },
+              issueRef: row.issueRef,
+            })
+            ?.catch((_: unknown) => {
+              // The exception can carry provider credentials; log the constant kind only.
+              logger.warn(
+                { errorKind: STALE_LEASE_CARD_ERROR_KIND, leaseId: lease.id },
+                "could not raise the stale lease teardown attention card",
+              );
+            });
+          await deps.afterRelease?.(cappedLease);
+        }
       }
     }
     return result;

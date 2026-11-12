@@ -298,7 +298,7 @@ describeEmbeddedPostgres("environment leases on cancel, pause and sweep (P1)", (
 
       const result = await heartbeat.sweepStaleActiveEnvironmentLeases!();
 
-      expect(result).toEqual({ inspected: 1, released: 1, skippedAlive: 0, failed: 0 });
+      expect(result).toEqual({ inspected: 1, released: 1, skippedAlive: 0, failed: 0, capped: 0 });
       expect(fake.teardownCalls).toEqual([leaseId]);
       const lease = await leaseRow(leaseId);
       expect(lease.status).toBe("expired");
@@ -433,6 +433,7 @@ describeEmbeddedPostgres("environment leases on cancel, pause and sweep (P1)", (
         agentId,
         status: "cancelled",
         finishedAt: new Date(Date.now() - 60 * MINUTE),
+        withIssue: true,
       });
       const leaseId = await seedActiveLease({ companyId, environmentId, runId, provider: "fake" });
       const fake = fakeRuntime({ teardownFails: true });
@@ -442,8 +443,8 @@ describeEmbeddedPostgres("environment leases on cancel, pause and sweep (P1)", (
       await heartbeat.sweepStaleActiveEnvironmentLeases!();
       const third = await heartbeat.sweepStaleActiveEnvironmentLeases!();
 
-      expect(third).toMatchObject({ inspected: 1, released: 0, failed: 0, capped: 1 });
-      expect(fake.teardownCalls).toEqual([leaseId, leaseId]);
+      expect(third).toMatchObject({ inspected: 1, released: 0, failed: 1, capped: 1 });
+      expect(fake.teardownCalls).toEqual([leaseId, leaseId, leaseId]);
       const lease = await leaseRow(leaseId);
       expect(lease.status).toBe("expired");
       expect(lease.cleanupStatus).toBe("failed");
