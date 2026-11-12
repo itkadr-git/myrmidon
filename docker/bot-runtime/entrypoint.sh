@@ -278,7 +278,7 @@ physical_path() {
 reflink_self_check() {
   local store method roots root probe src dst err ok_all=true entries="" sep="" ok shared
   store="$(dotenv_value npm_config_store_dir)"
-  store="${store:-${npm_config_store_dir:-/bot/.pnpm-store}}"
+  store="${store:-${npm_config_store_dir:-/workspace/.pnpm-store}}"
   method="reflink"
   roots="${MYRMIDON_REFLINK_ROOTS:-/data/hermes /workspace /scratch}"
   probe=".myrmidon-reflink-probe.$$"

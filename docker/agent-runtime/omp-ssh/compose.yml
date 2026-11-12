@@ -18,21 +18,11 @@
 # No port is published: the board reaches the runner by container name on the
 # shared network. No host path other than the public key is mounted, so a host
 # path never sits inside the synchronized workspace (SANDBOX-REQUIREMENTS.md).
-#
-# myrmidon(OPE-12720): the pnpm store is pinned INSIDE /workspace
-# (npm_config_store_dir), explicitly: without the variable pnpm resolves the
-# store from the cwd convention (the first workspace directory up the tree),
-# which breaks for a command run outside the workspace, and a store on another
-# mount than the clones cannot hard-link or reflink. `clone-or-copy` keeps
-# installs working on filesystems without reflink support.
 services:
   omp-runner:
     image: ${OMP_RUNNER_IMAGE:?set OMP_RUNNER_IMAGE}
     container_name: ${OMP_RUNNER_NAME:?set OMP_RUNNER_NAME}
     restart: unless-stopped
-    environment:
-      npm_config_store_dir: /workspace/.pnpm-store
-      npm_config_package_import_method: clone-or-copy
     networks: [board]
     mem_limit: ${OMP_RUNNER_MEMORY:-4g}
     memswap_limit: ${OMP_RUNNER_MEMORY:-4g}

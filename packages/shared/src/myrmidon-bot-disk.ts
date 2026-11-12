@@ -54,8 +54,8 @@ import {
  *   once on the host. Empty or absent: no mirrors and no `/cache/git` mount;
  * - `gitMirrorRefreshMs` — how often the board fetches each mirror;
  * - `pnpmStoreDir` — where pnpm keeps its content-addressed store (default,
- *   since OPE-12720: `/bot/.pnpm-store`, one per bot, inside the bot's own
- *   tree). Never `/cache/pnpm`: that is the download cache;
+ *   since OPE-12720: `/workspace/.pnpm-store`, one per bot, on the same bind
+ *   mount as the task clones). Never `/cache/pnpm`: that is the download cache;
  * - `pnpmImportMethod` — how pnpm puts a package into a clone: `clone` (the
  *   default, a reflink; strictly, a refused reflink fails loudly) or `copy` (an
  *   explicit opt-out). `clone-or-copy` and `hardlink` are refused; stored by an
@@ -159,20 +159,24 @@ const botRuntimePathSchema = z
  * `clone-or-copy` copies silently where the reflink is refused, which is
  * exactly the failure this setting exists to make loud.
  *
- * myrmidon(OPE-12720): the default store is INSIDE the bot's own tree,
- * `/bot/.pnpm-store` (the single `/bot` mount holds hermes, workspace and
- * scratch of this one bot): every clone's node_modules then reflinks (or
- * hard-links) against one store of the same superblock — no store bind mount,
- * no dockergate allow-list pair, no second mount point to cross. The 1.6.5
- * shared per-partition store `/cache/pnpm-store` did that only for bots OF the
- * shared cache roles, and every bot WITHOUT the shared cache (and every omp
- * executor) kept its own full store anyway. A stored value of a retired path
- * is migrated to the new default (see {@link migrateBotDiskPnpm}). Never
- * `/cache/pnpm`: that is the download cache.
+ * myrmidon(OPE-12720): the default store is `/workspace/.pnpm-store` — the
+ * per-bot store of BOT-DISK-D again, ON THE SAME BIND MOUNT as the task clones
+ * (`/workspace` is a link into the bot's single `/bot` mount): every clone's
+ * node_modules then links against one store of the same mount — no store bind
+ * mount, no dockergate allow-list pair. The 1.6.5 shared store
+ * `/cache/pnpm-store` sat on the root disk, a different mount than the clones,
+ * so pnpm copied ~3 GB of node_modules into every clone (a hard link cannot
+ * cross a mount point). It is deliberately NOT `/bot/.pnpm-store`: the `/bot`
+ * root is root-owned (0711) on a production host, the bot user (uid 10001)
+ * cannot create an entry there and every `pnpm install` would fail with
+ * EACCES; `/workspace` is chowned to the bot and the draft sweep skips
+ * `.pnpm-store` in it (server draft-lifecycle.ts). It is also the image's own
+ * `npm_config_store_dir` default (docker/bot-runtime/Dockerfile), so a profile
+ * written by this board is valid for a container still on the previous image.
+ * A stored value of the retired shared path is read as the new default (see
+ * {@link migrateBotDiskPnpm}). Never `/cache/pnpm`: that is the download cache.
  */
-export const BOT_DISK_DEFAULT_PNPM_STORE_DIR = "/bot/.pnpm-store";
-/** The per-bot store of 1.6.4 and earlier: a stored value equal to it is migrated to the default. */
-export const BOT_DISK_LEGACY_PNPM_STORE_DIR = "/workspace/.pnpm-store";
+export const BOT_DISK_DEFAULT_PNPM_STORE_DIR = "/workspace/.pnpm-store";
 /** `copy` is the explicit opt-out (a full copy per clone); `clone` is the default. */
 export const BOT_DISK_PNPM_IMPORT_METHODS = ["clone", "copy"] as const;
 export type BotDiskPnpmImportMethod = (typeof BOT_DISK_PNPM_IMPORT_METHODS)[number];
@@ -191,7 +195,9 @@ export const BOT_DISK_PNPM_STORE_ROOTS = ["/workspace", "/data", "/scratch", "/b
  * superblock) as its clones. A store anywhere else is on another filesystem or
  * another mount point than the clones, so a reflink (and a hard link) fails;
  * the retired shared `/cache/pnpm-store` is not mounted into bots any more
- * (OPE-12720).
+ * (OPE-12720). The default {@link BOT_DISK_DEFAULT_PNPM_STORE_DIR} is the one
+ * path of the tree the bot user can always create (the `/bot` root itself is
+ * root-owned).
  */
 export function botDiskPnpmStoreDirProblem(value: string): string | null {
   const plain = botDiskCachePathProblem(value);
@@ -218,10 +224,7 @@ export function botDiskPnpmStoreDirWarning(value: string): string | null {
 /**
  * Why `value` cannot be the pnpm import method, or null when it can: `clone` or
  * `copy`. `clone-or-copy` is refused on purpose (it copies silently when the
- * reflink is refused). `hardlink` is refused where the store is on a different
- * mount than the workspace; with the per-bot store (OPE-12720) it would mostly
- * work, but pnpm's own fallback and uv-style tolerance is not wanted here:
- * `clone` stays the one default, `copy` is the explicit opt-out.
+ * reflink is refused), `hardlink` cannot cross the bind mounts of the shared store.
  */
 export function botDiskPnpmImportMethodProblem(value: string): string | null {
   if ((BOT_DISK_PNPM_IMPORT_METHODS as readonly string[]).includes(value)) return null;
@@ -236,12 +239,14 @@ export function botDiskPnpmImportMethodProblem(value: string): string | null {
 
 /**
  * Reads the pnpm values stored by an earlier release as the values in force
- * today, with a note for each one changed: the retired per-bot store
- * `/workspace/.pnpm-store` (1.6.4 and earlier) and the retired shared store
- * `/cache/pnpm-store` (1.6.5-1.6.7) both become the per-bot default
- * `/bot/.pnpm-store` (OPE-12720); `hardlink` and `clone-or-copy` become
+ * today, with a note for each one changed: the retired shared store
+ * `/cache/pnpm-store` (1.6.5-1.6.7) becomes the per-bot default
+ * `/workspace/.pnpm-store` (OPE-12720); `hardlink` and `clone-or-copy` become
  * `clone`. Any other stored value is kept (an unknown method is dropped to the
- * default by the caller). Nothing is changed silently: every migration is in
+ * default by the caller). The target is a path every image generation can
+ * write (it is the previous image's own default too), so the rewritten profile
+ * env is valid for a bot container that still runs the previous image while
+ * the board rolls out. Nothing is changed silently: every migration is in
  * `notes`.
  */
 export function migrateBotDiskPnpm(stored: { pnpmStoreDir?: string; pnpmImportMethod?: string }): {
@@ -252,9 +257,9 @@ export function migrateBotDiskPnpm(stored: { pnpmStoreDir?: string; pnpmImportMe
   const notes: string[] = [];
   const out: { pnpmStoreDir?: string; pnpmImportMethod?: BotDiskPnpmImportMethod; notes: string[] } = { notes };
   if (typeof stored.pnpmStoreDir === "string") {
-    if (stored.pnpmStoreDir === BOT_DISK_LEGACY_PNPM_STORE_DIR || stored.pnpmStoreDir === BOT_DISK_LEGACY_SHARED_PNPM_STORE_DIR) {
+    if (stored.pnpmStoreDir === BOT_DISK_LEGACY_SHARED_PNPM_STORE_DIR) {
       out.pnpmStoreDir = BOT_DISK_DEFAULT_PNPM_STORE_DIR;
-      notes.push(`pnpmStoreDir ${stored.pnpmStoreDir} (retired store path) is read as ${BOT_DISK_DEFAULT_PNPM_STORE_DIR} (the per-bot store inside the bot's own tree)`);
+      notes.push(`pnpmStoreDir ${stored.pnpmStoreDir} (retired shared store) is read as ${BOT_DISK_DEFAULT_PNPM_STORE_DIR} (the per-bot store on the same mount as the clones)`);
     } else {
       out.pnpmStoreDir = stored.pnpmStoreDir;
     }

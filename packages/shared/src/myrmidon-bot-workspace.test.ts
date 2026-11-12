@@ -182,7 +182,7 @@ describe("myrmidon(1.6.5-BOT-DISK-H5c) profile env contract (C7)", () => {
         hermesPruneDays: 14,
         gitMigrationEnabled: true,
         // Neighbouring keys of the same settings row ride along untouched.
-        pnpmStoreDir: "/bot/.pnpm-store",
+        pnpmStoreDir: "/workspace/.pnpm-store",
       }),
     ).toEqual({
       graceClosingMinutes: 45,

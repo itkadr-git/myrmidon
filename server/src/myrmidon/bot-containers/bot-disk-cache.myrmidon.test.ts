@@ -5,6 +5,8 @@
 import { describe, expect, it, vi } from "vitest";
 
 import {
+  BOT_DISK_DEFAULT_PNPM_STORE_DIR,
+  BOT_DISK_LEGACY_SHARED_PNPM_STORE_DIR,
   botDiskCachePathProblem,
   botDiskPnpmImportMethodProblem,
   botDiskPnpmStoreDirProblem,
@@ -41,6 +43,7 @@ import {
   GIT_MIRROR_MOUNT,
   packageCacheEnv,
   PACKAGE_CACHE_MOUNTS,
+  pnpmEnv,
   PNPM_STORE_ROOTS,
   UV_CACHE_ROOTS,
   uvEnv,
@@ -128,20 +131,21 @@ describe("myrmidon(1.6.1-BOT-DISK-B) buildBinds with the shared package cache", 
   });
 
   it("points every tool at its mount, the per-bot pnpm store with clone import, and leaves pip out", () => {
-    // OPE-12720: /cache/pnpm is only a download (metadata) cache; the store lives
-    // INSIDE the bot's own /bot tree (no store mount), imported by reflink (strictly `clone`).
+    // OPE-12720: /cache/pnpm is only a download (metadata) cache; the store is
+    // /workspace/.pnpm-store, on the clones' own mount (no store mount), imported
+    // by reflink (strictly `clone`).
     expect(packageCacheEnv()).toEqual({
       npm_config_cache_dir: "/cache/pnpm",
       GOMODCACHE: "/cache/go-mod",
       GOCACHE: "/cache/go-build",
       GRADLE_USER_HOME: "/cache/gradle",
-      npm_config_store_dir: "/bot/.pnpm-store",
+      npm_config_store_dir: "/workspace/.pnpm-store",
       npm_config_package_import_method: "clone",
       // myrmidon(1.6.5-BOT-DISK-UV-A): the uv cache, one per partition, clone by default.
       UV_CACHE_DIR: "/cache/uv",
       UV_LINK_MODE: "clone",
     });
-    expect(DEFAULT_PNPM_STORE_DIR).toBe("/bot/.pnpm-store");
+    expect(DEFAULT_PNPM_STORE_DIR).toBe("/workspace/.pnpm-store");
     expect(DEFAULT_PNPM_IMPORT_METHOD).toBe("clone");
     expect(PNPM_STORE_ROOTS).toEqual(["/workspace", "/data", "/scratch", BOT_ROOT_MOUNT, BOT_SCOPE_MOUNT]);
     expect(DEFAULT_UV_CACHE_DIR).toBe("/cache/uv");
@@ -150,14 +154,47 @@ describe("myrmidon(1.6.1-BOT-DISK-B) buildBinds with the shared package cache", 
     expect(PACKAGE_CACHE_MOUNTS.map((mount) => mount.hostSubdir)).not.toContain("pip");
   });
 
-  it("mounts NO pnpm store: the store is per bot, inside its own /bot tree (OPE-12720)", () => {
+  it("mounts NO pnpm store: the store is per bot, on the clones' own mount (OPE-12720)", () => {
     const binds = buildBinds(volumeRoot, botKey, { sharedPackageCachePath: cache });
     expect(binds.join()).not.toContain("pnpm-store");
     expect(PACKAGE_CACHE_MOUNTS.map((m) => m.hostSubdir)).not.toContain("pnpm-store");
-    // The store env names the per-bot path inside the bot's own tree.
-    expect(packageCacheEnv().npm_config_store_dir).toBe("/bot/.pnpm-store");
+    // The store env names the per-bot path on the clones' own mount.
+    expect(packageCacheEnv().npm_config_store_dir).toBe("/workspace/.pnpm-store");
     // Without a cache, likewise, no store mount and the same per-bot store env.
     expect(buildBinds(volumeRoot, botKey).join()).not.toContain("pnpm-store");
+  });
+
+  it("puts the default pnpm store under /workspace, never at the /bot root or /cache/pnpm-store (OPE-12720)", () => {
+    // /bot is root-owned 0711 on a production host (uid 10001 cannot create an entry
+    // there: EACCES), and /cache/pnpm-store is a different mount than the task clones
+    // (pnpm copies ~3 GB per clone). /workspace is chowned to the bot, on the clones' mount.
+    const defaults = [
+      BOT_DISK_DEFAULT_PNPM_STORE_DIR,
+      DEFAULT_PNPM_STORE_DIR,
+      packageCacheEnv().npm_config_store_dir,
+      pnpmEnv().npm_config_store_dir,
+      resolveBotDiskLayout(undefined).pnpmStoreDir,
+      resolveBotDiskLayout({ sharedPackageCachePath: cache }).pnpmStoreDir,
+      // A stored value of the retired shared store reads as the default.
+      resolveBotDiskLayout({ pnpmStoreDir: BOT_DISK_LEGACY_SHARED_PNPM_STORE_DIR }).pnpmStoreDir,
+      migrateBotDiskPnpm({ pnpmStoreDir: "/cache/pnpm-store" }).pnpmStoreDir,
+    ];
+    for (const dir of defaults) {
+      expect(dir).toBe("/workspace/.pnpm-store");
+      expect(dir?.startsWith("/workspace/")).toBe(true);
+      expect(dir?.startsWith(`${BOT_ROOT_MOUNT}/`)).toBe(false);
+      expect(dir?.startsWith("/cache/pnpm-store")).toBe(false);
+    }
+    // No env value of the cache set, and no bind of any layout, points at the retired store
+    // or at an entry of the /bot root.
+    for (const [name, value] of Object.entries(packageCacheEnv())) {
+      expect(value, name).not.toContain("/cache/pnpm-store");
+      if (name === "npm_config_store_dir") expect(value.startsWith(`${BOT_ROOT_MOUNT}/`), name).toBe(false);
+    }
+    expect(buildBinds(volumeRoot, botKey, { sharedPackageCachePath: cache, gitMirror: true }).join()).not.toContain("pnpm-store");
+    // The retired path is refused as a setting; its stored value migrates, with a note.
+    expect(botDiskPnpmStoreDirProblem("/cache/pnpm-store")).not.toBeNull();
+    expect(migrateBotDiskPnpm({ pnpmStoreDir: "/cache/pnpm-store" }).notes).toEqual([expect.stringMatching(/\/cache\/pnpm-store.*\/workspace\/\.pnpm-store/)]);
   });
 
   it("never lets the pnpm store be the /cache/pnpm mount, whatever the settings", () => {
@@ -271,7 +308,7 @@ describe("myrmidon(1.6.2-BOT-DISK-C) git mirror and pnpm store settings", () => 
       sharedPackageCachePath: cache,
       gitMirrorRepos: ["itkadr-git/myrmidon", "itkadr-git/myrmidon-deploy"],
       gitMirrorRefreshMs: 15 * 60 * 1000,
-      pnpmStoreDir: "/bot/.pnpm-store",
+      pnpmStoreDir: "/workspace/.pnpm-store",
       pnpmImportMethod: "clone",
       // myrmidon(1.6.5-BOT-DISK-UV-A): the uv pair is part of the layout.
       uvCacheDir: "/cache/uv",
@@ -292,10 +329,10 @@ describe("myrmidon(1.6.2-BOT-DISK-C) git mirror and pnpm store settings", () => 
     expect(layout.pnpmImportMethod).toBe("copy");
     // No cache path: the mirrors have nowhere to live.
     expect(resolveBotDiskLayout({ gitMirrorRepos: ["owner/repo"] }).gitMirrorRepos).toEqual([]);
-    expect(resolveBotDiskLayout(undefined).pnpmStoreDir).toBe("/bot/.pnpm-store");
+    expect(resolveBotDiskLayout(undefined).pnpmStoreDir).toBe("/workspace/.pnpm-store");
     expect(resolveBotDiskLayout(undefined).pnpmImportMethod).toBe("clone");
     // The former pnpmStore key is gone: a stored value is ignored.
-    expect(resolveBotDiskLayout({ pnpmStore: "shared" }).pnpmStoreDir).toBe("/bot/.pnpm-store");
+    expect(resolveBotDiskLayout({ pnpmStore: "shared" }).pnpmStoreDir).toBe("/workspace/.pnpm-store");
   });
 
   it("drops an invalid stored value and keeps the rest", () => {
@@ -319,8 +356,8 @@ describe("myrmidon(1.6.2-BOT-DISK-C) git mirror and pnpm store settings", () => 
     expect(mergeBotDiskSettings(set, { gitMirrorRepos: [] }).gitMirrorRepos).toBeUndefined();
   });
 
-  it("validates a PATCH of the keys; the pnpm store is the shared mount or inside the bot's own tree", () => {
-    expect(patchBotDiskSettingsSchema.safeParse({ gitMirrorRepos: ["owner/repo"], gitMirrorRefreshMs: 60_000, pnpmStoreDir: "/bot/.pnpm-store", pnpmImportMethod: "clone" }).success).toBe(true);
+  it("validates a PATCH of the keys; the pnpm store is inside the bot's own tree", () => {
+    expect(patchBotDiskSettingsSchema.safeParse({ gitMirrorRepos: ["owner/repo"], gitMirrorRefreshMs: 60_000, pnpmStoreDir: "/workspace/.pnpm-store", pnpmImportMethod: "clone" }).success).toBe(true);
     expect(patchBotDiskSettingsSchema.safeParse({ gitMirrorRepos: null, gitMirrorRefreshMs: null, pnpmStoreDir: null, pnpmImportMethod: null }).success).toBe(true);
     for (const bad of ["/cache/pnpm", "/cache/pnpm/store", "/srv/store", "/workspace", "/workspace/", "relative", "/workspace/../etc", "/tmp/store"]) {
       expect(patchBotDiskSettingsSchema.safeParse({ pnpmStoreDir: bad }).success, bad).toBe(false);
@@ -328,7 +365,6 @@ describe("myrmidon(1.6.2-BOT-DISK-C) git mirror and pnpm store settings", () => 
     }
     // OPE-12720: the store must be inside the bot's own tree; the retired
     // shared /cache/pnpm-store is refused (no longer mounted).
-    expect(botDiskPnpmStoreDirProblem("/bot/.pnpm-store")).toBeNull();
     expect(botDiskPnpmStoreDirProblem("/workspace/.pnpm-store")).toBeNull();
     expect(botDiskPnpmStoreDirProblem("/data/hermes/.pnpm-store")).toBeNull();
     expect(botDiskPnpmStoreDirProblem("/cache/pnpm-store")).not.toBeNull();
@@ -376,12 +412,12 @@ describe("myrmidon(1.6.5-BOT-DISK-H8a) pnpm store and import method", () => {
   it("warns about a store path that is not the per-bot default; anything outside the bot's own tree is refused", () => {
     expect(botDiskPnpmStoreDirProblem("/workspace/.pnpm-store")).toBeNull();
     expect(patchBotDiskSettingsSchema.safeParse({ pnpmStoreDir: "/workspace/.my-store" }).success).toBe(true);
-    expect(botDiskPnpmStoreDirWarning("/workspace/.my-store")).toMatch(/not the default \/bot\/\.pnpm-store/);
+    expect(botDiskPnpmStoreDirWarning("/workspace/.my-store")).toMatch(/not the default \/workspace\/\.pnpm-store/);
     expect(botDiskPnpmStoreDirWarning("/scratch/store")).toMatch(/not the default/);
-    expect(botDiskPnpmStoreDirWarning("/bot/.pnpm-store")).toBeNull();
+    expect(botDiskPnpmStoreDirWarning("/workspace/.pnpm-store")).toBeNull();
     expect(botDiskPnpmStoreDirWarning("/srv/elsewhere")).toBeNull(); // refused, not warned
     expect(botDiskPnpmWarnings({ pnpmStoreDir: "/workspace/.my-store", pnpmImportMethod: "clone" })).toHaveLength(1);
-    expect(botDiskPnpmWarnings({ pnpmStoreDir: "/bot/.pnpm-store" })).toEqual([]);
+    expect(botDiskPnpmWarnings({ pnpmStoreDir: "/workspace/.pnpm-store" })).toEqual([]);
     expect(botDiskPnpmWarnings({})).toEqual([]);
     expect(botDiskPnpmWarnings(undefined)).toEqual([]);
     // The warning does not change the value in force.
@@ -389,26 +425,26 @@ describe("myrmidon(1.6.5-BOT-DISK-H8a) pnpm store and import method", () => {
   });
 
   it("migrates the values an earlier release stored, and says so", () => {
-    // BOT-DISK-D wrote the per-bot store; 1.6.5-1.6.7 wrote the shared store
-    // (OPE-12720 retires both) — each reads as the new per-bot default.
-    const legacy = { pnpmStoreDir: "/workspace/.pnpm-store", pnpmImportMethod: "hardlink" };
+    // BOT-DISK-D wrote the per-bot store (which is the default again, nothing to
+    // migrate); 1.6.5-1.6.7 wrote the shared store (OPE-12720 retires it) — it reads
+    // as the per-bot default, a path the previous image can write too.
+    const legacy = { pnpmStoreDir: "/cache/pnpm-store", pnpmImportMethod: "hardlink" };
     expect(migrateBotDiskPnpm(legacy)).toEqual({
-      pnpmStoreDir: "/bot/.pnpm-store",
+      pnpmStoreDir: "/workspace/.pnpm-store",
       pnpmImportMethod: "clone",
-      notes: [expect.stringMatching(/\/workspace\/\.pnpm-store.*\/bot\/\.pnpm-store/), expect.stringMatching(/hardlink is read as clone/)],
+      notes: [expect.stringMatching(/\/cache\/pnpm-store.*\/workspace\/\.pnpm-store/), expect.stringMatching(/hardlink is read as clone/)],
     });
-    expect(migrateBotDiskPnpm({ pnpmStoreDir: "/cache/pnpm-store" })).toEqual({
-      pnpmStoreDir: "/bot/.pnpm-store",
-      pnpmImportMethod: undefined,
-      notes: [expect.stringMatching(/\/cache\/pnpm-store.*\/bot\/\.pnpm-store/)],
+    expect(migrateBotDiskPnpm({ pnpmStoreDir: "/workspace/.pnpm-store" })).toEqual({
+      pnpmStoreDir: "/workspace/.pnpm-store",
+      notes: [],
     });
     expect(migrateBotDiskPnpm({ pnpmImportMethod: "clone-or-copy" }).pnpmImportMethod).toBe("clone");
     // Read through the settings: layout, normalized values and the notes of the log.
     expect(resolveBotDiskLayout({ ...legacy, sharedPackageCachePath: cache })).toMatchObject({
-      pnpmStoreDir: "/bot/.pnpm-store",
+      pnpmStoreDir: "/workspace/.pnpm-store",
       pnpmImportMethod: "clone",
     });
-    expect(normalizeStoredBotDiskSettings(legacy)).toEqual({ pnpmStoreDir: "/bot/.pnpm-store", pnpmImportMethod: "clone" });
+    expect(normalizeStoredBotDiskSettings(legacy)).toEqual({ pnpmStoreDir: "/workspace/.pnpm-store", pnpmImportMethod: "clone" });
     expect(botDiskPnpmWarnings(legacy)).toHaveLength(2);
     // A value that is already today's, or another valid one, is kept, with no note.
     expect(migrateBotDiskPnpm({ pnpmStoreDir: "/data/hermes/.store", pnpmImportMethod: "copy" })).toEqual({
@@ -421,7 +457,7 @@ describe("myrmidon(1.6.5-BOT-DISK-H8a) pnpm store and import method", () => {
     expect(resolveBotDiskLayout({ pnpmImportMethod: "reflink" } as never).pnpmImportMethod).toBe("clone");
     // A migrated value is what a later write persists.
     expect(mergeBotDiskSettings(normalizeStoredBotDiskSettings(legacy) as Parameters<typeof mergeBotDiskSettings>[0], { enabled: true })).toMatchObject({
-      pnpmStoreDir: "/bot/.pnpm-store",
+      pnpmStoreDir: "/workspace/.pnpm-store",
       pnpmImportMethod: "clone",
     });
   });
