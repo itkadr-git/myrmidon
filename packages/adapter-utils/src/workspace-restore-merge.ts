@@ -191,6 +191,17 @@ function entriesMatch(left: SnapshotEntry | null | undefined, right: SnapshotEnt
 const LOCK_STALE_MS = 30_000;
 
 /**
+ * How long an acquirer waits for a *live* directory-merge lock before giving
+ * up with {@link WORKSPACE_RESTORE_LOCK_TIMEOUT_CODE}. Distinct from
+ * {@link LOCK_STALE_MS}, which is only the "lock directory without a readable
+ * owner record outlived this" threshold. The merge under the lock used to
+ * capture a full sha256 snapshot of the target directory (27k files / 0.9 GB
+ * on shared omp workspaces → 3–10 minutes), so the wait must comfortably
+ * cover another run's merge, not just its mkdir. (OPE-12793)
+ */
+const LOCK_WAIT_MS = 10 * 60 * 1000;
+
+/**
  * The stable `code` a lock-timeout error carries, so a caller can identify it
  * without matching on the error message text (the message embeds the lock
  * directory path).
@@ -280,7 +291,9 @@ async function isLockStale(lockDir: string): Promise<boolean> {
 }
 
 async function acquireDirectoryMergeLock(lockDir: string): Promise<() => Promise<void>> {
-  const deadline = Date.now() + LOCK_STALE_MS;
+  // Two distinct deadlines: stale-detection for owner-less lock directories is
+  // LOCK_STALE_MS; how long we wait for a live holder is LOCK_WAIT_MS (OPE-12793).
+  const deadline = Date.now() + LOCK_WAIT_MS;
   while (true) {
     try {
       await fs.mkdir(lockDir);
@@ -439,6 +452,43 @@ export async function captureDirectorySnapshot(
   };
 }
 
+// myrmidon(OPE-12793): `walkDirectory` skips an excluded directory without
+// descending, so a path is out of scope when it or any ancestor is excluded.
+function isExcludedOrUnderExcluded(relative: string, exclude: readonly string[]): boolean {
+  if (exclude.length === 0) return false;
+  const parts = relative.split("/");
+  let prefix = "";
+  for (const part of parts) {
+    prefix = prefix ? `${prefix}/${part}` : part;
+    if (shouldExcludePath(prefix, exclude)) return true;
+  }
+  return false;
+}
+
+// myrmidon(OPE-12793): every ancestor of `relative` must be a real directory.
+// A point lookup follows intermediate symlinks; the old walk never entered one,
+// so a path behind a symlink swapped in by the target was never deleted.
+async function parentChainIsPlain(
+  root: string,
+  relative: string,
+  cache: Map<string, boolean>,
+): Promise<boolean> {
+  const parts = relative.split("/");
+  parts.pop();
+  let prefix = "";
+  for (const part of parts) {
+    prefix = prefix ? `${prefix}/${part}` : part;
+    let plain = cache.get(prefix);
+    if (plain === undefined) {
+      const stats = await fs.lstat(path.join(root, prefix)).catch(() => null);
+      plain = !!stats && stats.isDirectory();
+      cache.set(prefix, plain);
+    }
+    if (!plain) return false;
+  }
+  return true;
+}
+
 export async function mergeDirectoryWithBaseline(input: {
   baseline: DirectorySnapshot;
   sourceDir: string;
@@ -449,13 +499,24 @@ export async function mergeDirectoryWithBaseline(input: {
   const source = await captureDirectorySnapshot(input.sourceDir, { exclude: input.baseline.exclude });
   await withDirectoryMergeLock(input.targetDir, async (canonicalTargetDir) => {
     await input.beforeApply?.();
-    const current = await captureDirectorySnapshot(canonicalTargetDir, { exclude: input.baseline.exclude });
+    // Point-check only the baseline leaf entries the source no longer has,
+    // instead of capturing a full sha256 snapshot of the target under the
+    // lock: the merge no longer walks ~27k target files while other restores
+    // wait on the lock. (OPE-12793)
+    // myrmidon(OPE-12793): the full walk this replaces honoured
+    // `baseline.exclude`, so an excluded path (or anything under an excluded
+    // directory, e.g. a nested repository's `.git`) was never a deletion
+    // candidate; the point check must keep that. It also never descended into a
+    // symlinked directory, so every ancestor must still be a real directory.
+    const plainParents = new Map<string, boolean>();
     const deletedLeafEntries = [...input.baseline.entries.entries()]
       .filter(([relative, entry]) => entry.kind !== "dir" && !source.entries.has(relative))
       .sort(([left], [right]) => right.length - left.length);
 
     for (const [relative, baselineEntry] of deletedLeafEntries) {
-      if (!entriesMatch(current.entries.get(relative), baselineEntry)) continue;
+      if (isExcludedOrUnderExcluded(relative, input.baseline.exclude)) continue;
+      if (!(await parentChainIsPlain(canonicalTargetDir, relative, plainParents))) continue;
+      if (!(await directoryEntryMatchesBaseline(canonicalTargetDir, relative, baselineEntry))) continue;
       await fs.rm(path.join(canonicalTargetDir, relative), { recursive: true, force: true }).catch(() => undefined);
     }
 

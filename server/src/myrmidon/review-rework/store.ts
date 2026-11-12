@@ -73,6 +73,26 @@ export interface ReviewReworkStore {
   listActiveCompanyIds(): Promise<string[]>;
   listCandidateTasks(companyId: string, limit: number): Promise<ReworkCandidateRow[]>;
   listComments(issueId: string): Promise<Array<{ id: string; body: string; createdAt: Date }>>;
+  /**
+   * myrmidon(OPE-12785): one query for the comments of a whole page of
+   * candidates (the per-task `listComments` ran once per candidate every pass).
+   * Optional: a store without it (hand-built test fakes) is read per task.
+   * Every requested id has an entry, empty when the task has no comments.
+   */
+  listCommentsForIssues?(
+    issueIds: readonly string[],
+  ): Promise<Map<string, Array<{ id: string; body: string; createdAt: Date }>>>;
+  /** myrmidon(OPE-12785): the newest rework child per review task, one query. */
+  findReworkChildren?(
+    companyId: string,
+    reviewIssueIds: readonly string[],
+  ): Promise<Map<string, ReviewReworkChildFacts | null>>;
+  /**
+   * myrmidon(OPE-12785): the subset of the tasks the loop itself ever closed —
+   * `reopenedAfterLoopClose` can only be true for those, so the sweep asks it
+   * for them alone.
+   */
+  loopClosedIssueIds?(companyId: string, issueIds: readonly string[]): Promise<Set<string>>;
   findReworkChild(companyId: string, reviewIssueId: string): Promise<ReviewReworkChildFacts | null>;
   /** The assignee of another task whose work product is this PR (the delivering task). */
   deliveringTaskAssignee(
@@ -273,18 +293,34 @@ export function createPgReviewReworkStore(db: Db): ReviewReworkStore {
         .orderBy(asc(issues.updatedAt), asc(issues.id))
         .limit(limit);
 
-      const out: ReworkCandidateRow[] = [];
-      for (const row of rows) {
-        const products = await db
-          .select({ metadata: issueWorkProducts.metadata, url: issueWorkProducts.url, status: issueWorkProducts.status })
+      // myrmidon(OPE-12785): the work products of the whole page in one query
+      // (was one select per candidate).
+      const productsByIssue = new Map<string, Array<{ metadata: unknown; url: string | null; status: string }>>();
+      if (rows.length > 0) {
+        const productRows = await db
+          .select({
+            issueId: issueWorkProducts.issueId,
+            metadata: issueWorkProducts.metadata,
+            url: issueWorkProducts.url,
+            status: issueWorkProducts.status,
+          })
           .from(issueWorkProducts)
           .where(
             and(
-              eq(issueWorkProducts.issueId, row.id),
+              inArray(issueWorkProducts.issueId, rows.map((row) => row.id)),
               eq(issueWorkProducts.type, "pull_request"),
               sql`${issueWorkProducts.status} <> 'archived'`,
             ),
           );
+        for (const product of productRows) {
+          const list = productsByIssue.get(product.issueId) ?? [];
+          list.push(product);
+          productsByIssue.set(product.issueId, list);
+        }
+      }
+      const out: ReworkCandidateRow[] = [];
+      for (const row of rows) {
+        const products = productsByIssue.get(row.id) ?? [];
         out.push({
           task: taskFacts(row),
           textParts: [row.title, row.description ?? ""],
@@ -316,6 +352,78 @@ export function createPgReviewReworkStore(db: Db): ReviewReworkStore {
         .from(issueComments)
         .where(and(eq(issueComments.issueId, issueId), isNull(issueComments.deletedAt)))
         .orderBy(asc(issueComments.createdAt));
+    },
+
+    // myrmidon(OPE-12785): `issue_id = any($ids)` — one round trip per pass.
+    async listCommentsForIssues(issueIds) {
+      const out = new Map<string, Array<{ id: string; body: string; createdAt: Date }>>();
+      const unique = [...new Set(issueIds)];
+      for (const id of unique) out.set(id, []);
+      if (unique.length === 0) return out;
+      const rows = await db
+        .select({
+          issueId: issueComments.issueId,
+          id: issueComments.id,
+          body: issueComments.body,
+          createdAt: issueComments.createdAt,
+        })
+        .from(issueComments)
+        .where(and(inArray(issueComments.issueId, unique), isNull(issueComments.deletedAt)))
+        .orderBy(asc(issueComments.createdAt));
+      for (const row of rows) {
+        out.get(row.issueId)?.push({ id: row.id, body: row.body, createdAt: row.createdAt });
+      }
+      return out;
+    },
+
+    async findReworkChildren(companyId, reviewIssueIds) {
+      const out = new Map<string, ReviewReworkChildFacts | null>();
+      const unique = [...new Set(reviewIssueIds)];
+      for (const id of unique) out.set(id, null);
+      if (unique.length === 0) return out;
+      // Newest first, so the first row seen per parent is the one
+      // `findReworkChild` (order by created_at desc limit 1) returns.
+      const rows = await db
+        .select()
+        .from(issues)
+        .where(
+          and(
+            eq(issues.companyId, companyId),
+            inArray(issues.parentId, unique),
+            eq(issues.originKind, REVIEW_REWORK_ORIGIN_KIND),
+          ),
+        )
+        .orderBy(desc(issues.createdAt));
+      for (const row of rows) {
+        if (!row.parentId || out.get(row.parentId)) continue;
+        const decoded = decodeReworkFingerprint(row.originFingerprint);
+        out.set(row.parentId, {
+          id: row.id,
+          identifier: row.identifier,
+          status: row.status,
+          assigneeAgentId: row.assigneeAgentId,
+          prKey: decoded.prKey,
+          baselineHeadSha: decoded.baselineHeadSha,
+        });
+      }
+      return out;
+    },
+
+    async loopClosedIssueIds(companyId, issueIds) {
+      const unique = [...new Set(issueIds)];
+      if (unique.length === 0) return new Set<string>();
+      const rows = await db
+        .selectDistinct({ entityId: activityLog.entityId })
+        .from(activityLog)
+        .where(
+          and(
+            eq(activityLog.companyId, companyId),
+            eq(activityLog.entityType, "issue"),
+            inArray(activityLog.entityId, unique),
+            eq(activityLog.action, REVIEW_REWORK_CLOSED_ACTION),
+          ),
+        );
+      return new Set(rows.map((row) => row.entityId));
     },
 
     async findReworkChild(companyId, reviewIssueId) {

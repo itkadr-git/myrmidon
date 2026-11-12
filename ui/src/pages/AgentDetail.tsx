@@ -45,6 +45,7 @@ import { assetsApi } from "../api/assets";
 import { toolsApi } from "../api/tools";
 import { getUIAdapter, buildTranscript, onAdapterChange } from "../adapters";
 import { StatusBadge } from "../components/StatusBadge";
+import { RoleModelDownBadge } from "../components/myrmidon/RoleModelDownBadge"; // myrmidon(1.6.8 OPE-12709)
 import { MarkdownBody } from "../components/MarkdownBody";
 import { CopyText } from "../components/CopyText";
 import { IssueRow } from "../components/IssueRow";
@@ -1788,7 +1789,10 @@ export function AgentOverview({
         <section className="rounded-lg border border-border p-4" aria-labelledby="agent-identity-heading">
           <div className="mb-4 flex items-center justify-between gap-3">
             <h3 id="agent-identity-heading" className="text-sm font-medium">{t("area.agents-3.agent-detail.agentOverview.identity")}</h3>
-            <StatusBadge status={agent.status} />
+            <div className="flex flex-wrap items-center justify-end gap-2">
+              <RoleModelDownBadge since={agent.roleModelDownSince} agentId={agent.id} />
+              <StatusBadge status={agent.status} />
+            </div>
           </div>
           <div className="space-y-3">
             <SummaryRow label={t("agents.filterRole")}><span className="text-sm">{roleLabels[agent.role] ?? agent.role}</span></SummaryRow>

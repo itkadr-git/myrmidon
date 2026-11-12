@@ -70,11 +70,19 @@ import {
 } from "../myrmidon/input-overflow-guard.js";
 // myrmidon(RUN-GUARD-LOOPS): a run the run guard stopped is not retried; its issue is blocked.
 // myrmidon(RUN-GUARD-CONTINUE): except a call-limit stop of a run that made changes.
+// myrmidon(OPE-12799): the second limit stop in a row without a result is final.
 import {
+  CALL_LIMIT_CONTINUATION_HINT,
   NO_PROGRESS_AUTO_RETRY_HINT,
   RUN_GUARD_CONTINUATION_CONTEXT_KEY,
+  RUN_GUARD_EMPTY_STOP_LOOKBACK_MS,
+  RUN_GUARD_EMPTY_STOP_LOOKBACK_RUNS,
   buildRunGuardStopComment,
   buildRunGuardStopNotice,
+  findPreviousLimitStopRun,
+  isRepeatedEmptyLimitStop,
+  isRunGuardLimitStopReason,
+  runHasUsefulOutcome,
   maxTurnContinuationSchedulerCeiling,
   parseRunGuardContinuationPolicy,
   readRunGuardContinuationCount,
@@ -141,6 +149,17 @@ import {
   DAILY_RUN_LIMIT_RETRY_REASON,
   computeDailyRunLimitDeferral,
 } from "../myrmidon/daily-run-limit-deferral.js";
+// myrmidon(OPE-12800): one growing pause per agent after its model channel fails.
+import {
+  MODEL_CHANNEL_PAUSE_CONTEXT_KEY,
+  MODEL_CHANNEL_PAUSE_LOOKBACK_MS,
+  MODEL_CHANNEL_PAUSE_LOOKBACK_RUNS,
+  computeModelChannelPause,
+  computeModelChannelPauseDueAt,
+  isModelChannelPausePollWake,
+  isWakeSubjectToModelChannelPause,
+  type ModelChannelPause,
+} from "../myrmidon/model-channel-pause.js";
 import { clearChatHoldsOnOwnerMessage } from "../myrmidon/chat-holds/clear-on-message.js";
 // myrmidon(L2, round 3 fix): retire the woken agent's own waiting run that the
 // bypassed hold would cancel at its claim, so the wake is not lost with it.
@@ -1037,6 +1056,7 @@ import {
 // budget-enforcement/).
 import { readBudgetEnforcement } from "../myrmidon/budget-enforcement/settings.js";
 import { evaluateBudgetLimitAdmission } from "../myrmidon/budget-limits/admission.js"; // myrmidon(1.7-BUDGET-CONFIG)
+import { deferredWakeFreshSince, deferredWakeRevisitCutoff } from "../myrmidon/deferred-wake-revisit.js"; // myrmidon(OPE-12807)
 import { guardrailsOnRunOutput } from "../myrmidon/guardrails/run-output.js"; // myrmidon(1.6-GRD)
 import {
   deliverBudgetSignalOnly,
@@ -9279,7 +9299,7 @@ export function buildPaperclipTaskMarkdown(input: {
       }
       if (acceptedPlanContinuation) {
         directive =
-          "Implement the accepted plan on this issue when the work is small and cohesive. Use the paperclip-converting-plans-to-tasks skill to decide whether decomposition is justified. Create the minimum child issue graph only for qualifying ownership, parallelism, dependency, review, or lifecycle boundaries. Do not create a child merely because a plan was accepted.";
+          "Implement the accepted plan on this issue when the work is small and cohesive. Use the myrmidon-converting-plans-to-tasks skill to decide whether decomposition is justified. Create the minimum child issue graph only for qualifying ownership, parallelism, dependency, review, or lifecycle boundaries. Do not create a child merely because a plan was accepted.";
       }
       lines.push(
         `- Work mode: ${quoteTaskScalar("planning")}`,
@@ -9298,7 +9318,7 @@ export function buildPaperclipTaskMarkdown(input: {
       lines.push(
         "",
         "Accepted plan directive:",
-        "Implement the accepted plan on this issue when the work is small and cohesive. Use the paperclip-converting-plans-to-tasks skill to decide whether decomposition is justified. Create the minimum child issue graph only for qualifying ownership, parallelism, dependency, review, or lifecycle boundaries. Do not create a child merely because a plan was accepted.",
+        "Implement the accepted plan on this issue when the work is small and cohesive. Use the myrmidon-converting-plans-to-tasks skill to decide whether decomposition is justified. Create the minimum child issue graph only for qualifying ownership, parallelism, dependency, review, or lifecycle boundaries. Do not create a child merely because a plan was accepted.",
       );
     }
     if (rejectedPlan) {
@@ -16804,9 +16824,13 @@ export function heartbeatService(
     const reason = readRunGuardStopReason(run);
     if (!reason) return null;
     const issueId = readNonEmptyString(parseObject(run.contextSnapshot).issueId);
+    // myrmidon(OPE-12799): the second limit stop in a row that left nothing on
+    // the board is final, whatever `writeCalls` says.
+    const repeatedEmpty = issueId ? await isRepeatedEmptyRunGuardLimitStop(run, issueId) : false;
     // Only a run of an issue continues: a run without one has no task to resume.
     if (
       issueId &&
+      !repeatedEmpty &&
       shouldContinueAfterRunGuardStop(run, guardStats) &&
       (await continueRunStoppedAtCallLimit(run, agent, guardStats))
     ) {
@@ -16816,8 +16840,14 @@ export function heartbeatService(
       eventType: "lifecycle",
       stream: "system",
       level: "warn",
-      message: `Run stopped by the run guard (${reason}); it will not be retried automatically`,
-      payload: { runGuardStopReason: reason, runGuardStats: guardStats },
+      message: repeatedEmpty
+        ? `Run stopped by the run guard (${reason}) without a result, the second time in a row for the issue; it will not be retried automatically`
+        : `Run stopped by the run guard (${reason}); it will not be retried automatically`,
+      payload: {
+        runGuardStopReason: reason,
+        runGuardStats: guardStats,
+        ...(repeatedEmpty ? { runGuardRepeatedEmptyStop: true } : {}),
+      },
     });
     if (!issueId) return null;
     const issue = await db
@@ -16839,14 +16869,14 @@ export function heartbeatService(
       issue,
       previousStatus: issue.status,
       latestRun: run,
-      notice: buildRunGuardStopNotice(run, guardStats),
+      notice: buildRunGuardStopNotice(run, guardStats, { repeatedEmpty }),
     });
     if (escalated) {
       await recovery
         .wakeManagerForRunGuardStop({
           issue,
           latestRun: run,
-          stopText: buildRunGuardStopComment(run, guardStats),
+          stopText: buildRunGuardStopComment(run, guardStats, { repeatedEmpty }),
         })
         .catch((err) => {
           logger.warn(
@@ -16856,6 +16886,57 @@ export function heartbeatService(
         });
     }
     return escalated;
+  }
+
+  // myrmidon(OPE-12799): is this limit stop (model call limit, exploration
+  // without a write) the second in a row for the issue and the agent with
+  // nothing left on the board? The result of a run is what the liveness evidence
+  // counts by run id: comments, document revisions, work products. The previous
+  // runs are taken by issue and agent, not by retry chain: a wake of another kind
+  // (idle pickup, monitor, maintenance retry) starts a new chain, and the chain
+  // counter with it. A failure to read the history answers false: the stop is
+  // then handled as before.
+  async function isRepeatedEmptyRunGuardLimitStop(
+    run: typeof heartbeatRuns.$inferSelect,
+    issueId: string,
+  ): Promise<boolean> {
+    if (!isRunGuardLimitStopReason(readRunGuardStopReason(run))) return false;
+    try {
+      const evidence = (await buildRunLivenessInput(run, parseObject(run.resultJson))).evidence;
+      if (runHasUsefulOutcome(evidence)) return false;
+      const since = new Date(run.createdAt.getTime() - RUN_GUARD_EMPTY_STOP_LOOKBACK_MS);
+      const previousRuns = await db
+        .select()
+        .from(heartbeatRuns)
+        .where(
+          and(
+            eq(heartbeatRuns.companyId, run.companyId),
+            eq(heartbeatRuns.agentId, run.agentId),
+            ne(heartbeatRuns.id, run.id),
+            sql`coalesce(${heartbeatRuns.contextIssueId}, ${heartbeatRuns.contextSnapshot}->>'issueId') = ${issueId}`,
+            isNotNull(heartbeatRuns.startedAt),
+            lt(heartbeatRuns.createdAt, run.createdAt),
+            gte(heartbeatRuns.createdAt, since),
+          ),
+        )
+        .orderBy(desc(heartbeatRuns.createdAt))
+        .limit(RUN_GUARD_EMPTY_STOP_LOOKBACK_RUNS);
+      const previous = findPreviousLimitStopRun(previousRuns);
+      const previousEvidence = previous
+        ? (await buildRunLivenessInput(previous, parseObject(previous.resultJson))).evidence
+        : null;
+      return isRepeatedEmptyLimitStop({
+        run,
+        runHasUsefulOutcome: false,
+        previousLimitStop: previous ? { hasUsefulOutcome: runHasUsefulOutcome(previousEvidence) } : null,
+      });
+    } catch (err) {
+      logger.warn(
+        { err, runId: run.id, issueId },
+        "failed to check whether the run guard stop repeats an empty one",
+      );
+      return false;
+    }
   }
 
   // myrmidon(RUN-GUARD-CONTINUE): continue the work of a run the run guard
@@ -16923,7 +17004,11 @@ export function heartbeatService(
               livenessContinuationInstruction: NO_PROGRESS_AUTO_RETRY_HINT,
               livenessContinuationState: "no_progress_exploration_auto_retry",
             }
-          : {}),
+          : {
+              // myrmidon(OPE-12799): the fresh session is told to pick the work up, not to start over.
+              livenessContinuationInstruction: CALL_LIMIT_CONTINUATION_HINT,
+              livenessContinuationState: "model_call_limit_continuation",
+            }),
       });
       if (scheduled.outcome !== "scheduled") return false;
       await appendRunEvent(run, {
@@ -19086,6 +19171,158 @@ export function heartbeatService(
     return { outcome: "deferred", run: deferred };
   }
 
+  // myrmidon(OPE-12800): the pause of one agent after consecutive failures of
+  // its model channel (see myrmidon/model-channel-pause.ts). It is derived from
+  // the agent's own finished runs, so every wake reason sees the same pause and
+  // nothing has to be stored or cleared. Fails open: an error here must never
+  // stop the queue, the run is then started as before.
+  async function getAgentModelChannelPause(
+    agent: { id: string; companyId: string },
+    now: Date = new Date(),
+  ): Promise<ModelChannelPause | null> {
+    try {
+      const rows = await db
+        .select({
+          status: heartbeatRuns.status,
+          errorCode: heartbeatRuns.errorCode,
+          finishedAt: heartbeatRuns.finishedAt,
+          errorFamily: sql<string | null>`${heartbeatRuns.resultJson} ->> 'errorFamily'`,
+          modelResponseStarted: sql<boolean>`coalesce((${heartbeatRuns.resultJson} ->> 'modelResponseStarted') = 'true', false)`,
+          modelUnavailable: sql<boolean>`coalesce((${heartbeatRuns.resultJson} ->> 'model_unavailable') = 'true', false)`,
+          inputTokens: sql<string | null>`${heartbeatRuns.usageJson} ->> 'inputTokens'`,
+          outputTokens: sql<string | null>`${heartbeatRuns.usageJson} ->> 'outputTokens'`,
+        })
+        .from(heartbeatRuns)
+        .where(
+          and(
+            eq(heartbeatRuns.companyId, agent.companyId),
+            eq(heartbeatRuns.agentId, agent.id),
+            // A parked run keeps its creation time, so the window is twice the
+            // streak's own: the filter only bounds the index scan.
+            gte(heartbeatRuns.createdAt, new Date(now.getTime() - 2 * MODEL_CHANNEL_PAUSE_LOOKBACK_MS)),
+            gte(heartbeatRuns.finishedAt, new Date(now.getTime() - MODEL_CHANNEL_PAUSE_LOOKBACK_MS)),
+            inArray(heartbeatRuns.status, ["succeeded", "failed", "timed_out"]),
+          ),
+        )
+        .orderBy(desc(heartbeatRuns.finishedAt))
+        .limit(MODEL_CHANNEL_PAUSE_LOOKBACK_RUNS);
+      return computeModelChannelPause(
+        rows.map((row) => ({
+          status: row.status,
+          errorCode: row.errorCode,
+          finishedAt: row.finishedAt,
+          errorFamily: row.errorFamily,
+          modelResponseStarted: row.modelResponseStarted === true,
+          modelUnavailable: row.modelUnavailable === true,
+          inputTokens: row.inputTokens === null ? null : Number(row.inputTokens),
+          outputTokens: row.outputTokens === null ? null : Number(row.outputTokens),
+        })),
+        now,
+      );
+    } catch (err) {
+      logger.warn(
+        { err: err instanceof Error ? err.message : String(err), agentId: agent.id },
+        "model channel pause: could not read the agent's recent runs; not pausing",
+      );
+      return null;
+    }
+  }
+
+  // myrmidon(OPE-12800): a queued run of an agent whose model channel is paused
+  // is not started and not cancelled: the same row waits in `scheduled_retry`
+  // until the pause ends, and the due-retry sweep brings it back to this gate
+  // (the first such run is the probe of the channel). The run's retry identity
+  // (`scheduled_retry_reason`, `scheduled_retry_attempt`) is left alone, as in
+  // the daily-run-limit wait; the only trace is `contextSnapshot.modelChannelPause`.
+  // The issue lock is kept, as for any scheduled retry: the wait is at most the
+  // ceiling of the ladder (30 minutes).
+  //
+  // A wake made by a user is not held (it runs at once and probes the channel).
+  async function deferQueuedRunForModelChannelPause(
+    run: typeof heartbeatRuns.$inferSelect,
+    agent: { id: string; companyId: string },
+  ): Promise<boolean> {
+    const now = new Date();
+    const pause = await getAgentModelChannelPause(agent, now);
+    if (!pause) return false;
+    const wake = run.wakeupRequestId
+      ? await db
+          .select({
+            payload: agentWakeupRequests.payload,
+            requestedByActorType: agentWakeupRequests.requestedByActorType,
+          })
+          .from(agentWakeupRequests)
+          .where(eq(agentWakeupRequests.id, run.wakeupRequestId))
+          .limit(1)
+          .then((rows) => rows[0] ?? null)
+      : null;
+    if (
+      !isWakeSubjectToModelChannelPause({
+        manualUserWake: parseObject(wake?.payload).manualUserWake === true,
+        requestedByActorType: wake?.requestedByActorType ?? null,
+      })
+    ) {
+      return false;
+    }
+    const context = parseObject(run.contextSnapshot);
+    const dueAt = computeModelChannelPauseDueAt(pause.pauseUntil);
+    const previousDeferrals = Number(
+      parseObject(context[MODEL_CHANNEL_PAUSE_CONTEXT_KEY]).count ?? 0,
+    );
+    const deferred = await db
+      .update(heartbeatRuns)
+      .set({
+        status: "scheduled_retry",
+        scheduledRetryAt: dueAt,
+        ...runContextPersistenceFields({
+          ...context,
+          [MODEL_CHANNEL_PAUSE_CONTEXT_KEY]: {
+            count: (Number.isFinite(previousDeferrals) ? previousDeferrals : 0) + 1,
+            deferredAt: now.toISOString(),
+            streak: pause.streak,
+            lastFailureAt: pause.lastFailureAt.toISOString(),
+            pauseUntil: pause.pauseUntil.toISOString(),
+            dueAt: dueAt.toISOString(),
+          },
+        }),
+        executionStatusDeliveryId: randomUUID(),
+        updatedAt: now,
+      })
+      .where(
+        and(
+          eq(heartbeatRuns.id, run.id),
+          eq(heartbeatRuns.companyId, run.companyId),
+          eq(heartbeatRuns.status, "queued"),
+        ),
+      )
+      .returning()
+      .then((rows) => rows[0] ?? null);
+    // The run left `queued` under us (cancelled or deferred by a concurrent
+    // claim): either way it is not to be started by this caller.
+    if (!deferred) return true;
+
+    publishLiveEvent({
+      companyId: deferred.companyId,
+      type: "heartbeat.run.status",
+      payload: buildHeartbeatRunStatusLiveEventPayload(deferred),
+    });
+    await appendRunEvent(deferred, {
+      eventType: "lifecycle",
+      stream: "system",
+      level: "warn",
+      message: `Model channel of the agent failed ${pause.streak} time(s) in a row; the run waits until ${pause.pauseUntil.toISOString()}`,
+      payload: {
+        reason: "model_channel_pause",
+        streak: pause.streak,
+        delayMs: pause.delayMs,
+        lastFailureAt: pause.lastFailureAt.toISOString(),
+        pauseUntil: pause.pauseUntil.toISOString(),
+        scheduledRetryAt: dueAt.toISOString(),
+      },
+    });
+    return true;
+  }
+
   async function cancelQueuedRunForHeartbeatDailyCap(
     run: typeof heartbeatRuns.$inferSelect,
     dailyCapBlock: NonNullable<
@@ -19611,6 +19848,11 @@ export function heartbeatService(
       }
       return null;
     }
+
+    // myrmidon(OPE-12800): while the agent's model channel is paused no run of
+    // the agent starts, whatever woke it (a retry, an assignment, a comment of
+    // another agent): the run waits for the end of the pause.
+    if (await deferQueuedRunForModelChannelPause(run, agent)) return null;
 
     const issueId = readNonEmptyString(context.issueId);
     if (issueId) {
@@ -22900,7 +23142,7 @@ export function heartbeatService(
         sql`${agentWakeupRequests.payload}->'queuedCommentInterrupt' is null`,
         sql`${agentWakeupRequests.payload}->'executionWait' is null`,
         lte(agentWakeupRequests.requestedAt, settleBefore),
-        lte(agentWakeupRequests.updatedAt, new Date(now - 30_000)),
+        lte(agentWakeupRequests.updatedAt, deferredWakeRevisitCutoff(now)), // myrmidon(OPE-12807)
         not(exists(db.select({ id: issueRecoveryActions.id }).from(issueRecoveryActions).where(and(
           eq(issueRecoveryActions.companyId, issues.companyId), eq(issueRecoveryActions.sourceIssueId, issues.id),
           executionBlockerPredicate(),
@@ -22917,7 +23159,7 @@ export function heartbeatService(
       // the later ones in this bounded scan.
       const [claimed] = await db.update(agentWakeupRequests).set({ updatedAt: new Date() }).where(and(
         eq(agentWakeupRequests.id, wake.id), eq(agentWakeupRequests.status, "deferred_issue_execution"),
-        lte(agentWakeupRequests.updatedAt, new Date(now - 30_000)),
+        lte(agentWakeupRequests.updatedAt, deferredWakeRevisitCutoff(now)),
       )).returning({ id: agentWakeupRequests.id });
       if (!claimed) continue;
       // Runs can persist the task key as either issueId (canonical) or taskId
@@ -23013,9 +23255,19 @@ export function heartbeatService(
           sql`${agentWakeupRequests.payload} #> '{_paperclipWakeContext,wakeCommentIds}' <> '[]'::jsonb`,
         ), sql`${agentWakeupRequests.payload}->>'mutation' = 'interaction'`),
         sql`${agentWakeupRequests.payload}->'queuedCommentInterrupt' is null`,
+        // myrmidon(OPE-12807): a wake already looked at waits out the cool-down; no gate here
+        // made the same 50 wakes cost a run lookup and a cursor update on every pass. A fresh
+        // wake is exempt: its `updatedAt` is its creation time, not a look, and its owner run
+        // may release the lock at any moment, so it is promoted on the next pass as before.
+        or(gt(agentWakeupRequests.requestedAt, deferredWakeFreshSince(Date.now())),
+          lte(agentWakeupRequests.updatedAt, deferredWakeRevisitCutoff(Date.now()))),
         cutoff ? gte(agentWakeupRequests.requestedAt, cutoff) : undefined))
       .orderBy(asc(agentWakeupRequests.updatedAt)).limit(50);
     for (const { wake } of strandedQueues) {
+      // myrmidon(OPE-12807): move the cursor first, so a wake skipped below leaves the head of the scan too.
+      await db.update(agentWakeupRequests).set({ updatedAt: new Date() }).where(and(
+        eq(agentWakeupRequests.id, wake.id), eq(agentWakeupRequests.status, "deferred_issue_execution"),
+      ));
       // myrmidon(UPSTREAM-13539): the stranded-queue scan also adopts interaction receipts.
       if (!queuedCommentIdsFromWakePayload(wake.payload).length &&
           !await readQueuedInteractionResponse(db, wake.companyId, String(wake.payload?.issueId), wake.payload)) continue;
@@ -23023,9 +23275,6 @@ export function heartbeatService(
         eq(heartbeatRuns.companyId, wake.companyId), eq(heartbeatRuns.agentId, wake.agentId),
         sql`${heartbeatRuns.contextSnapshot}->>'issueId' = ${String(wake.payload?.issueId)}`,
       )).orderBy(desc(heartbeatRuns.createdAt), desc(heartbeatRuns.id)).limit(1);
-      await db.update(agentWakeupRequests).set({ updatedAt: new Date() }).where(and(
-        eq(agentWakeupRequests.id, wake.id), eq(agentWakeupRequests.status, "deferred_issue_execution"),
-      ));
       if (!latest || latest.runtimeMode !== "legacy" || !isHeartbeatRunTerminalStatus(latest.status)) continue;
       const cancelledAdmission = latest.status === "cancelled" && !latest.startedAt &&
         latest.errorCode === "execution_reconciliation_required";
@@ -31862,6 +32111,33 @@ export function heartbeatService(
       }
     }
 
+    // myrmidon(OPE-12800): while the agent's model channel is paused, a wake
+    // that only polls for work (idle pickup, the heartbeat timer) creates
+    // neither a wake row nor a run: the same source asks again on its next
+    // tick. Wakes that carry an event are admitted and their run is parked by
+    // the claim gate (deferQueuedRunForModelChannelPause).
+    if (
+      isModelChannelPausePollWake(reason) &&
+      isWakeSubjectToModelChannelPause({
+        manualUserWake: opts.manualUserWake,
+        requestedByActorType: opts.requestedByActorType,
+      })
+    ) {
+      const modelChannelPause = await getAgentModelChannelPause(agent);
+      if (modelChannelPause) {
+        logger.info(
+          {
+            agentId,
+            reason,
+            streak: modelChannelPause.streak,
+            pauseUntil: modelChannelPause.pauseUntil.toISOString(),
+          },
+          "model channel pause: poll wake dropped",
+        );
+        return null;
+      }
+    }
+
     // myrmidon(1.6.5 F-26 T5, design §3.7): the run-without-task gate. An
     // automatic wake of a swarm reason that names no existing task must never
     // reach the adapter — it is recorded `skipped` here with 0 tokens. Manual
@@ -36695,6 +36971,9 @@ export function heartbeatService(
         wakeReason?: string;
         maxAttempts?: number;
         delayMs?: number;
+        // myrmidon(OPE-12802): the maintenance retry tells the next run to continue, not restart.
+        livenessContinuationInstruction?: string;
+        livenessContinuationState?: string;
       },
     ) => {
       const run = await getRun(runId, { unsafeFullResultJson: true });

@@ -408,6 +408,25 @@ describeEmbeddedPostgres("stranded deferred wake reconcile (OPE-8268)", () => {
     expect((await wakeRow(wakeId)).status).not.toBe("deferred_issue_execution");
   });
 
+  // myrmidon(OPE-12807): a wake looked at recently is not re-evaluated on the next pass.
+  it("does not revisit a wake inside the cool-down, and revisits it once the cool-down is over", async () => {
+    const issueId = await seedIssue("todo");
+    await seedFinishedRun(issueId);
+    const wakeId = await seedDeferredWake(issueId, {
+      reason: "issue_execution_deferred",
+      updatedAt: new Date(Date.now() - 2 * MINUTE),
+    });
+
+    const early = await heartbeat.reconcileStrandedDeferredWakes();
+    expect(early.revisited).toBe(0);
+    expect((await wakeRow(wakeId)).status).toBe("deferred_issue_execution");
+
+    await db.update(agentWakeupRequests).set({ updatedAt: new Date(Date.now() - 6 * MINUTE) })
+      .where(eq(agentWakeupRequests.id, wakeId));
+    const later = await heartbeat.reconcileStrandedDeferredWakes();
+    expect(later.revisited).toBe(1);
+  });
+
   it("is idempotent: a second pass changes nothing", async () => {
     const done = await seedIssue("done");
     await seedDeferredWake(done);

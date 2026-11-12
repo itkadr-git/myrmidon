@@ -37,11 +37,10 @@ describe("RunGuard no-progress exploration stop", () => {
     });
   });
 
-  it("resets the streak on a write: patch, write_file, execute_code, terminal git commit, curl PATCH", () => {
+  it("resets the streak on a write: patch, write_file, terminal git commit, curl PATCH", () => {
     const writes: Array<[string, unknown]> = [
       ["patch", "a.ts"],
       ["write_file", "a.ts"],
-      ["execute_code", "print(1)"],
       ["terminal", "git commit -m x"],
       ["terminal", "gh pr create --title x"],
       ["terminal", "curl -X PATCH http://example.com/api/issues/1 -d '{}'"],
@@ -217,7 +216,7 @@ describe("RunGuard write calls", () => {
     guard.toolStarted("terminal", "pnpm test");
     guard.toolStarted("terminal", "echo x > out.txt");
     guard.toolStarted("terminal", "sed -i s/a/b/ f.ts");
-    guard.toolStarted("execute_code", "print(1)");
+    guard.toolStarted("some_new_tool", "x");
     expect(guard.stats().writeCalls).toBe(4);
   });
 
@@ -285,6 +284,81 @@ describe("RunGuard write calls", () => {
       stop: false, hint: { reason: "repeated_tool_call", tool: "read_file", repeatCount: 1 },
     });
     expect(guard.modelCall()).toEqual({ stop: false, hint: { reason: "model_call_limit", modelCalls: 1 } });
+    expect(guard.modelCall()).toEqual({ stop: true, reason: "model_call_limit" });
+  });
+});
+
+// myrmidon(OPE-12799): engineers ran everything through execute_code (run 7cb1b9a2:
+// 151 calls of 151). The guard took each for a write, so the no-progress stop never
+// tripped, the run burned the whole call limit, and the board took the stop for
+// productive work and repeated it.
+describe("RunGuard opaque calls (execute_code) are not confirmed writes", () => {
+  it("stops a run that only calls execute_code at the no-progress limit, long before the call limit", () => {
+    const guard = new RunGuard({ role: "engineer" });
+    const preview = "import subprocess def sh(cmd, cwd=";
+    for (let call = 1; call < DEFAULT_CODE_NO_PROGRESS_LIMIT; call += 1) {
+      expect(guard.modelCall().stop).toBe(false);
+      expect(guard.toolStarted("execute_code", preview)).toEqual({ stop: false });
+    }
+    expect(guard.modelCall().stop).toBe(false);
+    expect(guard.toolStarted("execute_code", preview)).toEqual({ stop: true, reason: "no_progress_exploration" });
+    expect(guard.stats()).toMatchObject({
+      modelCalls: DEFAULT_CODE_NO_PROGRESS_LIMIT,
+      writeCalls: 0,
+      opaqueCalls: DEFAULT_CODE_NO_PROGRESS_LIMIT,
+      readOnlyStreak: DEFAULT_CODE_NO_PROGRESS_LIMIT,
+    });
+  });
+
+  it("does not let execute_code reset the streak of reads", () => {
+    const guard = new RunGuard({ noProgressLimit: 5, repeatedToolCallLimit: 0 });
+    for (let call = 0; call < 3; call += 1) expect(guard.toolStarted("read_file", `before-${call}`).stop).toBe(false);
+    expect(guard.toolStarted("execute_code", "print(1)").stop).toBe(false);
+    expect(guard.stats()).toMatchObject({ readOnlyStreak: 4, writeCalls: 0, opaqueCalls: 1 });
+    expect(guard.toolStarted("read_file", "after")).toEqual({ stop: true, reason: "no_progress_exploration" });
+  });
+
+  it("still starts the streak over at a confirmed write between execute_code calls", () => {
+    const guard = new RunGuard({ noProgressLimit: 5, repeatedToolCallLimit: 0 });
+    for (let round = 0; round < 10; round += 1) {
+      for (let call = 0; call < 4; call += 1) expect(guard.toolStarted("execute_code", "print(1)").stop).toBe(false);
+      expect(guard.toolStarted("patch", "a.ts").stop).toBe(false);
+    }
+    expect(guard.stats()).toMatchObject({ writeCalls: 10, opaqueCalls: 40, readOnlyStreak: 0 });
+  });
+
+  it("never takes the same execute_code preview for a repeated call", () => {
+    const guard = new RunGuard({ noProgressLimit: 0, repeatedToolCallLimit: 2 });
+    for (let call = 0; call < 20; call += 1) {
+      expect(guard.toolStarted("execute_code", "import subprocess def sh(cmd, cwd=")).toEqual({ stop: false });
+    }
+  });
+});
+
+// myrmidon(OPE-12799): the stop at the call limit lost the work of the run: nothing
+// told the agent the limit was near, and the next run starts in a fresh session.
+describe("RunGuard wrap-up hint before the model call limit", () => {
+  it("hints once, 15 calls before the limit, after writes as well, and stops at the limit as before", () => {
+    const guard = new RunGuard({ modelCallLimit: 150, noProgressLimit: 0, repeatedToolCallLimit: 0 });
+    for (let call = 1; call < 135; call += 1) {
+      expect(guard.modelCall()).toEqual({ stop: false });
+      guard.toolStarted("patch", `file-${call}.ts`);
+    }
+    expect(guard.modelCall()).toEqual({
+      stop: false,
+      hint: { reason: "model_call_limit", modelCalls: 135, remaining: 15 },
+    });
+    for (let call = 136; call <= 150; call += 1) expect(guard.modelCall()).toEqual({ stop: false });
+    expect(guard.modelCall()).toEqual({ stop: true, reason: "model_call_limit" });
+    expect(guard.stats().modelCalls).toBe(150);
+  });
+
+  it("is not given for a limit below 100 calls", () => {
+    const guard = new RunGuard({ modelCallLimit: 50, noProgressLimit: 0, repeatedToolCallLimit: 0 });
+    for (let call = 1; call <= 50; call += 1) {
+      expect(guard.modelCall()).toEqual({ stop: false });
+      guard.toolStarted("patch", `file-${call}.ts`);
+    }
     expect(guard.modelCall()).toEqual({ stop: true, reason: "model_call_limit" });
   });
 });

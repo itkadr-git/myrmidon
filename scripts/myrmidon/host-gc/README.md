@@ -7,6 +7,7 @@ Host-side garbage collector for bot task clones and build caches on `vm-core` an
 | Host | Root | What |
 |------|------|------|
 | vm-core | `/srv/myrmidon-bots/*` | Bot workspaces (git clones) |
+| vm-core | `<runner root>/<runner>/workspace/.paperclip-runtime/runs/<runId>` | SSH runner run copies (OPE-12722); only when a runner root is configured, see below |
 | myr-dev-build | `/srv/devbuild/*` | Build copies per agent/task |
 | myr-dev-build | `/srv/devcache/*` | Build caches (git-wt, pnpm, etc.) |
 
@@ -18,6 +19,7 @@ Host-side garbage collector for bot task clones and build caches on `vm-core` an
 | Task clone (unsafe) | > 24 h | Archive to `.gc-archive/` first, then remove |
 | Active checkout/worktree | — | Never touched |
 | Build cache | > 72 h | LRU eviction by mtime |
+| SSH runner run copy (`<runner root>/<runner>/workspace/.paperclip-runtime/runs/<runId>`, OPE-12722) | > 4 h (`--run-copy-ttl`, at least 3) | Counted from the run directory's own mtime (set when the run starts). Runs **only when a runner root is configured** (`--runner-root` / `HOST_GC_RUNNER_ROOTS`); a path through a symlink is skipped |
 | `state.db`, `session`, `auth`, `credential`, `.git` | — | Never deleted |
 
 ## Atomic Guards
@@ -35,6 +37,7 @@ Every action is appended as JSONL to `/var/log/myrmidon-host-gc.jsonl`:
 {"at":"2026-11-01T23:00:00.000Z","event":"clone-removed","path":"/srv/myrmidon-bots/OPE-12345","reason":"clean-pushed"}
 {"at":"2026-11-01T23:00:00.000Z","event":"clone-archived","path":"/srv/myrmidon-bots/OPE-12346","archive":"/srv/myrmidon-bots/.gc-archive/OPE-12346-20261101-230000.tar.zst"}
 {"at":"2026-11-01T23:00:00.000Z","event":"cache-removed","path":"/srv/devcache/git-wt/abc123","reason":"ttl","sizeBytes":12345678}
+{"at":"2026-11-01T23:00:00.000Z","event":"run-copy-removed","path":"/srv/myrmidon-xfs/omp-runners/eng17/workspace/.paperclip-runtime/runs/<runId>","runner":"eng17","ageHours":6,"sizeBytes":1048576}
 ```
 
 ## Usage
@@ -53,6 +56,10 @@ node scripts/myrmidon/host-gc/host-clone-cache-gc.mjs \
   --lock /tmp/test.lock \
   --clone-ttl 48 \
   --cache-ttl 96
+
+# Prune SSH runner run copies too (see below)
+node scripts/myrmidon/host-gc/host-clone-cache-gc.mjs --apply \
+  --runner-root /srv/myrmidon-xfs/omp-runners --run-copy-ttl 4
 ```
 
 ## systemd Deployment
@@ -97,3 +104,45 @@ The default remains dry-run. Do not enable `--apply` in the timer or service unt
 ```bash
 node --test scripts/myrmidon/host-gc/host-clone-cache-gc.test.mjs
 ```
+
+## SSH runner run copies (OPE-12722)
+
+An SSH runner (the container an `omp_local` agent runs in) keeps one copy of the workspace
+per run under `<runner>/workspace/.paperclip-runtime/runs/<runId>`. A failed or cancelled run
+never reaches the restore that removes its copy, and the adapter prunes old copies only when
+the next run on that runner starts, so an idle runner keeps them.
+
+**The pass runs only when a runner root is configured; without one it does nothing.** Configure
+it in either of two ways:
+
+- the environment variable `HOST_GC_RUNNER_ROOTS=/srv/myrmidon-xfs/omp-runners` (colon-separated
+  for several roots);
+- `--runner-root <path>` on the command line (repeatable).
+
+Which hosts get it:
+
+- A host that installs the repo unit `systemd/myrmidon-host-gc.service` as is: the unit sets
+  `HOST_GC_RUNNER_ROOTS` in its `Environment=` line, so the pass is enabled. A wrapper that calls
+  the script does not inherit that line: it must set the variable or pass `--runner-root` itself.
+- A wrapper that calls the script once per bot root should pass the runner root on **one**
+  invocation only; otherwise the pass repeats once per bot (harmless: the repeats find nothing to
+  remove, but the journal gets noisy).
+
+What the pass does:
+
+- A copy is removed when it is older than `--run-copy-ttl` hours (default 4, the same as the
+  adapter's own prune, `REMOTE_RUN_DIR_RETENTION_MINUTES`). The age is counted from the run
+  directory's own mtime, which is set when the run starts; files written deeper inside the copy
+  do not extend it. The TTL must be a finite number of at least 3 hours (the longest run
+  timeout): anything else makes the script exit with an error and remove nothing.
+- Every component of `<runner>/workspace/.paperclip-runtime/runs` must be a real directory; a
+  path through a symlink is skipped. Each removal is guarded against the runner root, so a
+  `workspace` swapped for a symlink between the scan and the removal is refused
+  (`run-copy-remove-failed`).
+- `run-copy-removed` carries `runner`, `ageHours` and `sizeBytes` (apparent size, measured
+  before the removal, best-effort). `runCopiesRemoved` in `apply-complete` counts the copies
+  actually removed. A copy younger than the TTL is listed in the dry-run `plan.kept` with
+  reason `fresh`.
+- A runner root that does not exist is journaled as `run-copy-root-missing`; an unreadable root
+  or runner directory as `run-copy-scan-failed` (root, runner, error). Neither stops the rest of
+  the pass or the other passes of the same `--apply`.

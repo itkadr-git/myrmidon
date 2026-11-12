@@ -108,6 +108,8 @@ import {
   workspaceOperationService,
 } from "../services/index.js";
 import type { AgentCasteDirectoryPort } from "../services/agents.js";
+// myrmidon(1.6.8 OPE-12709): "model unavailable since" mark, same state as the role_model_down card
+import { listRoleModelDownSince } from "../services/attention.js";
 import { botKeyForAgent } from "../myrmidon/bot-containers/agent-config.js";
 import { CLEANUP_UNSUPPORTED_MESSAGE } from "../myrmidon/bot-containers/driver.js";
 import { getBotContainerRuntime } from "../myrmidon/bot-containers/routes-wiring.js";
@@ -1718,6 +1720,16 @@ export function agentRoutes(
     };
   }
 
+  // myrmidon(1.6.8 OPE-12709): one query per company; the mark is advisory, so a
+  // failed lookup degrades to "no mark" instead of failing the agent read.
+  async function readRoleModelDownSince(companyId: string): Promise<Map<string, string>> {
+    try {
+      return await listRoleModelDownSince(db, companyId);
+    } catch {
+      return new Map();
+    }
+  }
+
   async function buildAgentDetail(
     agent: NonNullable<Awaited<ReturnType<typeof svc.getById>>>,
     options?: { restricted?: boolean },
@@ -1730,9 +1742,11 @@ export function agentRoutes(
     const baseAgent = redactAgentRowForResponse(
       options?.restricted ? redactForRestrictedAgentView(agent) : agent,
     );
+    const roleModelDownSince = (await readRoleModelDownSince(agent.companyId)).get(agent.role);
 
     return {
       ...baseAgent,
+      ...(roleModelDownSince ? { roleModelDownSince } : {}),
       chainOfCommand,
       access: accessState,
     };
@@ -4274,11 +4288,21 @@ function getActorIdentityPart(req: Request): string {
 
     // Compute the validator before the response query so a matching ETag
     // avoids hydrating and filtering the full agent list.
+    // myrmidon(1.6.8 OPE-12709): the "model unavailable since" mark is derived
+    // from runs, not from agent rows, so it joins the validator — otherwise a
+    // 304 would keep a stale mark on screen.
+    const roleModelDown = await readRoleModelDownSince(companyId);
+    const listShape = roleModelDown.size > 0
+      ? `${actorShape}|rmd:${JSON.stringify([...roleModelDown.entries()].sort())}`
+      : actorShape;
     const vk = normalizedFilters
-      ? await svc.listSummariesVersionKey(companyId, actorShape, JSON.stringify(normalizedFilters))
-      : await svc.listSummariesVersionKey(companyId, actorShape);
+      ? await svc.listSummariesVersionKey(companyId, listShape, JSON.stringify(normalizedFilters))
+      : await svc.listSummariesVersionKey(companyId, listShape);
     if (notModifiedOrSetEtag(req, res, vk)) return;
-    const sourceRows = await svc.listSummaries(companyId);
+    const sourceRows = (await svc.listSummaries(companyId)).map((row) => {
+      const since = roleModelDown.get(row.role);
+      return since ? { ...row, roleModelDownSince: since } : row;
+    });
     const result = await filterAgentsForActor(req, sourceRows);
     const filteredRows = normalizedFilters ? filterAgentListItems(result, normalizedFilters) : result;
     const responseRows = canReadConfigs

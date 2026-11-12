@@ -16091,10 +16091,17 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       livenessState: "advanced",
     });
 
+    // Recovery now requires the task and reviewer to share an agent group.
+    // Keep this CI-wakeup fixture eligible rather than relying on ADM fallback.
+    await db.update(agents)
+      .set({ metadata: { telegramGroup: "dev" } })
+      .where(eq(agents.id, agentId));
+
     await db.insert(agents).values({
       id: reviewerAgentId,
       companyId,
       name: "adm-dev-review-9",
+      metadata: { telegramGroup: "dev" },
       role: "reviewer",
       status: "active",
       adapterKind: "hermes_gateway",

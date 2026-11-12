@@ -5,12 +5,16 @@
 // Targets:
 //   - vm-core:       /srv/myrmidon-bots/* (bot workspaces)
 //   - myr-dev-build: /srv/devbuild/* (build copies), /srv/devcache/* (build caches)
+//   - vm-core:       <runner root>/<runner>/workspace/.paperclip-runtime/runs/<runId> (SSH runner
+//                    run copies, OPE-12722; only when a runner root is configured)
 //
 // Policy:
 //   - Task clones (done/cancelled >24h, clean+pushed): remove
 //   - Task clones (done/cancelled >24h, dirty/unpushed): archive first, then remove
 //   - Active checkouts/worktrees: never touch
 //   - Build caches >72h: LRU eviction by mtime
+//   - SSH runner run copies >4h (by the run directory's mtime, set when the run starts): remove;
+//     runs only with --runner-root / HOST_GC_RUNNER_ROOTS
 //   - Atomic guards: lockfile, symlink checks, TOCTOU-safe deletion
 //   - JSONL journal at /var/log/myrmidon-host-gc.jsonl
 //
@@ -22,6 +26,9 @@
 //   --lock <path>         Override lockfile path (for testing)
 //   --clone-ttl <hours>   Override clone TTL (default 24)
 //   --cache-ttl <hours>   Override cache TTL (default 72)
+//   --runner-root <path>  SSH runner root to prune run copies under (repeatable; also
+//                         HOST_GC_RUNNER_ROOTS, colon-separated). No root, no pass.
+//   --run-copy-ttl <hours> Override the run-copy TTL (default 4; finite, at least 3 = longest run timeout)
 
 import fs from "node:fs";
 import path from "node:path";
@@ -33,6 +40,33 @@ const HOUR_MS = 60 * 60 * 1000;
 const CLONE_TTL_HOURS = 24;
 const CACHE_TTL_HOURS = 72;
 
+// myrmidon(1.6.8 OPE-12722 / OPE-12759): an SSH runner (the omp container) keeps one copy of
+// the workspace per run under `<runner>/workspace/.paperclip-runtime/runs/<runId>`. A run that
+// fails or is cancelled never reaches the restore that removes its copy, and the adapter prunes
+// old copies only when the next run on that runner starts. On 11.11 an idle fleet left 47 GB
+// of such copies; the bots disk filled up and nine bots stayed down for 15 hours. This pass
+// removes run copies older than the longest run timeout (3 h) plus a margin.
+// The 4 h matches REMOTE_RUN_DIR_RETENTION_MINUTES (240) in
+// packages/adapter-utils/src/remote-managed-runtime.ts, the adapter's own prune on the next run;
+// keep the two in step. The TTL cannot be set below the longest run timeout (3 h): a copy younger
+// than that may still belong to a live run.
+const RUN_COPY_TTL_HOURS = 4;
+const RUN_COPY_MIN_TTL_HOURS = 3;
+
+/** A usage error: the CLI prints it as JSON and exits non-zero (never a stack trace). */
+export class UsageError extends Error {}
+
+/** `null` when `hours` is a usable run-copy TTL, otherwise the reason it is refused. */
+export function runCopyTtlError(hours) {
+  if (typeof hours !== "number" || !Number.isFinite(hours)) {
+    return `--run-copy-ttl must be a finite number of hours (got ${String(hours)})`;
+  }
+  if (hours < RUN_COPY_MIN_TTL_HOURS) {
+    return `--run-copy-ttl must be at least ${RUN_COPY_MIN_TTL_HOURS} hours, the longest run timeout (got ${hours})`;
+  }
+  return null;
+}
+
 // --- Args -------------------------------------------------------------------
 
 export function parseArgs(argv) {
@@ -43,6 +77,8 @@ export function parseArgs(argv) {
     lock: "/var/run/myrmidon-host-gc.lock",
     cloneTtlHours: CLONE_TTL_HOURS,
     cacheTtlHours: CACHE_TTL_HOURS,
+    runnerRoots: (process.env.HOST_GC_RUNNER_ROOTS || "").split(":").map((r) => r.trim()).filter(Boolean),
+    runCopyTtlHours: RUN_COPY_TTL_HOURS,
   };
   for (let i = 2; i < argv.length; i++) {
     const a = argv[i];
@@ -53,11 +89,15 @@ export function parseArgs(argv) {
     else if (a === "--lock") args.lock = argv[++i];
     else if (a === "--clone-ttl") args.cloneTtlHours = Number(argv[++i]);
     else if (a === "--cache-ttl") args.cacheTtlHours = Number(argv[++i]);
+    else if (a === "--runner-root") args.runnerRoots.push(argv[++i]);
+    else if (a === "--run-copy-ttl") args.runCopyTtlHours = Number(argv[++i]);
     else if (a === "--help") {
-      console.log("Usage: host-clone-cache-gc.mjs [--apply|--dry-run] [--root path] [--journal path] [--lock path] [--clone-ttl h] [--cache-ttl h]");
+      console.log("Usage: host-clone-cache-gc.mjs [--apply|--dry-run] [--root path] [--journal path] [--lock path] [--clone-ttl h] [--cache-ttl h] [--runner-root path] [--run-copy-ttl h (>= 3)]");
       process.exit(0);
     }
   }
+  const ttlError = runCopyTtlError(args.runCopyTtlHours);
+  if (ttlError) throw new UsageError(ttlError);
   return args;
 }
 
@@ -261,6 +301,135 @@ export async function filterClosedTaskClones(clones, options = {}) {
   return { candidates, skipped };
 }
 
+// Minimal helper for the run-copy size measurement (taken from main).
+export function inspectPathTree(targetPath) {
+  let maxMtimeMs = 0;
+  let totalSizeBytes = 0;
+  const inodes = new Set();
+
+  function walk(current) {
+    let st;
+    try {
+      st = fs.lstatSync(current);
+    } catch {
+      return;
+    }
+    if (st.mtimeMs > maxMtimeMs) maxMtimeMs = st.mtimeMs;
+    totalSizeBytes += st.size || 0;
+    inodes.add(`${st.dev}:${st.ino}`);
+
+    if (st.isDirectory() && !st.isSymbolicLink()) {
+      let entries = [];
+      try {
+        entries = fs.readdirSync(current);
+      } catch {
+        return;
+      }
+      for (const entry of entries) {
+        walk(path.join(current, entry));
+      }
+    }
+  }
+
+  walk(targetPath);
+  return { maxMtimeMs, totalSizeBytes, inodes };
+}
+
+// --- SSH runner run copies (OPE-12722) -----------------------------------------
+
+function lstatSafe(p) {
+  try {
+    return { st: fs.lstatSync(p), err: null };
+  } catch (err) {
+    return { st: null, err };
+  }
+}
+
+// The path is simply not there (a runner without runs yet, a copy the adapter removed between
+// two calls): expected, not worth a journal line. Anything else (EACCES, EIO, ...) is.
+function isAbsent(err) {
+  return err?.code === "ENOENT" || err?.code === "ENOTDIR";
+}
+
+/**
+ * Run copies under `<runnersRoot>/<runner>/workspace/.paperclip-runtime/runs/<runId>`.
+ * Every component of the path must be a real directory (a symlink anywhere skips the
+ * runner); a copy older than `ttlHours` (by the run directory's own mtime, set when the run
+ * starts) is `ttl`, a newer one is `fresh`. Each item carries `runnersRoot`, the root the
+ * removal is guarded against.
+ *
+ * The scan never throws on the filesystem: a configured root that does not exist is reported
+ * as `run-copy-root-missing`, any other failure (per root or per runner) as
+ * `run-copy-scan-failed` with the error message, through `onEvent`, and the scan continues
+ * with the next runner — one unreadable directory must not abort the whole `--apply` pass.
+ */
+export function scanSshRunCopies(runnersRoot, now, ttlHours, { onEvent = () => {} } = {}) {
+  const results = [];
+  const ttlMs = ttlHours * HOUR_MS;
+  const fail = (extra, err) => {
+    onEvent({ event: "run-copy-scan-failed", root: runnersRoot, ...extra, error: err?.message || String(err) });
+  };
+
+  const rootStat = lstatSafe(runnersRoot);
+  if (rootStat.err) {
+    if (isAbsent(rootStat.err)) onEvent({ event: "run-copy-root-missing", root: runnersRoot });
+    else fail({}, rootStat.err);
+    return results;
+  }
+  if (!rootStat.st.isDirectory()) {
+    fail({}, new Error("runner root is not a directory (a symlink is not followed)"));
+    return results;
+  }
+  let runners;
+  try {
+    runners = fs.readdirSync(runnersRoot, { withFileTypes: true });
+  } catch (err) {
+    fail({}, err);
+    return results;
+  }
+  for (const runner of runners) {
+    if (!runner.isDirectory()) continue;
+    try {
+      let dir = path.join(runnersRoot, runner.name);
+      let ok = true;
+      for (const part of ["workspace", ".paperclip-runtime", "runs"]) {
+        dir = path.join(dir, part);
+        const { st, err } = lstatSafe(dir);
+        if (err && !isAbsent(err)) throw err;
+        if (!st || !st.isDirectory()) {
+          ok = false;
+          break;
+        }
+      }
+      if (!ok) continue;
+      for (const run of fs.readdirSync(dir, { withFileTypes: true })) {
+        if (!run.isDirectory()) continue;
+        const runPath = path.join(dir, run.name);
+        const { st, err } = lstatSafe(runPath);
+        if (err && !isAbsent(err)) {
+          fail({ runner: runner.name, path: runPath }, err);
+          continue;
+        }
+        if (!st || !st.isDirectory()) continue;
+        const ageMs = now - st.mtimeMs;
+        results.push({
+          runner: runner.name,
+          name: run.name,
+          path: runPath,
+          runsDir: dir,
+          runnersRoot,
+          ageMs,
+          mtimeMs: st.mtimeMs,
+          reason: ageMs >= ttlMs ? "ttl" : "fresh",
+        });
+      }
+    } catch (err) {
+      if (!isAbsent(err)) fail({ runner: runner.name }, err);
+    }
+  }
+  return results;
+}
+
 // --- Atomic deletion --------------------------------------------------------
 
 export function atomicDrop(filePath, expectedRoot) {
@@ -300,6 +469,40 @@ export function atomicDrop(filePath, expectedRoot) {
   const tempLstat = fs.lstatSync(tempPath);
   if (tempLstat.isSymbolicLink()) throw new Error("TOCTOU race detected: file swapped during atomic rename");
   fs.unlinkSync(tempPath);
+}
+
+/**
+ * Removes the planned run copies (items of `scanSshRunCopies`, reason `ttl`). The drop is
+ * guarded against the configured runner root, not against the copy's own parent: a runner's
+ * `workspace` swapped for a symlink after the scan resolves outside the root and is refused
+ * (journaled `run-copy-remove-failed`). The size is measured before the removal, best-effort.
+ * Returns the paths actually removed.
+ */
+export function pruneSshRunCopies(items, journalPath) {
+  const removed = [];
+  for (const r of items) {
+    let sizeBytes = null;
+    try {
+      sizeBytes = inspectPathTree(r.path).totalSizeBytes;
+    } catch {
+      // best-effort: the size is informational
+    }
+    try {
+      atomicDrop(r.path, r.runnersRoot);
+    } catch (err) {
+      journalRecord(journalPath, { event: "run-copy-remove-failed", path: r.path, runner: r.runner, error: err.message });
+      continue;
+    }
+    removed.push(r.path);
+    journalRecord(journalPath, {
+      event: "run-copy-removed",
+      path: r.path,
+      runner: r.runner,
+      ageHours: Math.round(r.ageMs / HOUR_MS),
+      sizeBytes,
+    });
+  }
+  return removed;
 }
 
 // --- Archive ----------------------------------------------------------------
@@ -344,7 +547,7 @@ async function main() {
     const cloneTtlMs = args.cloneTtlHours * HOUR_MS;
     const cacheTtlMs = args.cacheTtlHours * HOUR_MS;
 
-    const plan = { clones: [], caches: [], kept: [], removed: [], archived: [] };
+    const plan = { clones: [], caches: [], runCopies: [], kept: [], removed: [], archived: [] };
 
     // 1. Scan task clones
     const clones = scanTaskClones(root, now, args.cloneTtlHours);
@@ -383,9 +586,23 @@ async function main() {
       }
     }
 
+    // 3c. SSH runner run copies (OPE-12722): only when a runner root is configured.
+    // A failure of one root or runner is journaled and skipped, never thrown: it must not
+    // abort the clones and caches passes of the same --apply.
+    for (const runnersRoot of args.runnerRoots) {
+      const items = scanSshRunCopies(runnersRoot, now, args.runCopyTtlHours, {
+        onEvent: (event) => journalRecord(args.journal, event),
+      });
+      for (const item of items) {
+        if (item.reason === "ttl") plan.runCopies.push({ ...item, action: "remove" });
+        else plan.kept.push({ ...item, action: "keep", reason: "fresh" });
+      }
+    }
+
+
     // 3. Execute or report
     if (args.dryRun) {
-      journalRecord(args.journal, { event: "dry-run", clones: plan.clones.length, caches: plan.caches.length, kept: plan.kept.length });
+      journalRecord(args.journal, { event: "dry-run", clones: plan.clones.length, caches: plan.caches.length, runCopies: plan.runCopies.length, kept: plan.kept.length });
       console.log(JSON.stringify({ ok: true, dryRun: true, plan }, null, 2));
     } else {
       // Apply: process archives first, then removals
@@ -419,8 +636,10 @@ async function main() {
           journalRecord(args.journal, { event: "cache-remove-failed", path: c.path, error: err.message });
         }
       }
-      journalRecord(args.journal, { event: "apply-complete", removed: plan.removed.length, archived: plan.archived.length, kept: plan.kept.length });
-      console.log(JSON.stringify({ ok: true, dryRun: false, removed: plan.removed.length, archived: plan.archived.length, kept: plan.kept.length }, null, 2));
+      const runCopiesGone = pruneSshRunCopies(plan.runCopies.filter((x) => x.action === "remove"), args.journal);
+      for (const gone of runCopiesGone) plan.removed.push({ path: gone });
+      journalRecord(args.journal, { event: "apply-complete", runCopiesRemoved: runCopiesGone.length, removed: plan.removed.length, archived: plan.archived.length, kept: plan.kept.length });
+      console.log(JSON.stringify({ ok: true, dryRun: false, removed: plan.removed.length, archived: plan.archived.length, runCopiesRemoved: runCopiesGone.length, kept: plan.kept.length }, null, 2));
     }
   } finally {
     lock.release();
@@ -430,6 +649,11 @@ async function main() {
 // Only run main when executed directly (not when imported by tests)
 if (process.argv[1] && path.resolve(process.argv[1]) === path.resolve(new URL(import.meta.url).pathname)) {
   main().catch((err) => {
+    if (err instanceof UsageError) {
+      console.error(JSON.stringify({ ok: false, reason: err.message }));
+      process.exitCode = 2;
+      return;
+    }
     console.error(err);
     process.exitCode = 1;
   });

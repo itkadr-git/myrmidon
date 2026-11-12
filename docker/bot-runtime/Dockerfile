@@ -288,6 +288,12 @@ RUN PYTHONDONTWRITEBYTECODE=1 HERMES_HOME=/tmp/run-skills-test /opt/hermes-src/.
 # stranded unanswered tail prompts (left by failed attempts) are superseded by the new
 # prompt instead of piling up as user rows, against a real SessionDB.
 RUN PYTHONDONTWRITEBYTECODE=1 /opt/hermes-src/.venv/bin/python /tmp/patch-tests/stranded_run_turn.py /opt/hermes-src
+# myrmidon(OPE-12719): behaviour regression for 35-skill-view-managed-name.patch —
+# board skills materialize as paperclip-managed/<slug>--<hash> but the agent-facing
+# index shows "paperclip-managed:<slug>"; skill_view must resolve that qualified alias
+# (zero-candidate fallback only), keep bare/slash forms working, refuse an unknown
+# namespace, and refuse two same-slug board skills as ambiguous.
+RUN PYTHONDONTWRITEBYTECODE=1 HERMES_HOME=/tmp/skill-view-test /opt/hermes-src/.venv/bin/python /tmp/patch-tests/skill_view_managed_name.py /opt/hermes-src
 # myrmidon(G1): behaviour regression for 16-context-economy.patch (input-token measures A and B):
 # both rewrite earlier rows of the request and so break the provider's prompt cache; they are OFF by
 # default (request byte for byte unchanged, reader not in the tool schema) and, switched on, turn every
