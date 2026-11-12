@@ -67,9 +67,16 @@ import {
   REVIEW_CI_FINAL_CHECK_NAME,
   REVIEW_CI_WAIT_INTERVAL_MS,
   REVIEW_CI_WAIT_MONITOR_SERVICE_NAME,
+  REVIEW_GATE_MAX_NEW_REVIEW_WAKES_PER_TICK,
+  admitReviewerUnderWakesQuota,
   decideReviewAdmission,
   reviewAdmissionDedupKey,
 } from "../myrmidon/review-stage-recovery/policy.js";
+import {
+  clearReviewWakesQuotas,
+  reviewWakesQuotaForCompany,
+  reviewWakesQuotaTickStarted,
+} from "../myrmidon/review-stage-recovery/review-wakes-quota.js";
 import {
   buildReviewApprovalPendingMergeNotice,
   findApprovalPendingMergePullRequest,
@@ -16422,6 +16429,7 @@ export function issueRoutes(
               let reviewerAdmissionDeferred = false;
               if (stageWake?.agentId) {
                 let admitReviewer = true;
+                const admissionCritical = updated.priority === "critical";
                 if (ciAdmissionCandidate) {
                   const ci = await (opts.resolveReviewPullRequestCi ?? createReviewPullRequestCiResolver({ db }))({
                     companyId: updated.companyId,
@@ -16433,7 +16441,7 @@ export function issueRoutes(
                   // issue is not charged an extra GitHub read.
                   let headFailedChecks: readonly string[] = [];
                   let headFailedReadOk = false;
-                  if (ci.state === "complete" && updated.priority !== "critical") {
+                  if (ci.state === "complete" && !admissionCritical) {
                     const headFailed = await (opts.resolveReviewHeadFailedChecks ??
                       createReviewHeadFailedChecksResolver({ db }))({
                       companyId: updated.companyId,
@@ -16454,7 +16462,7 @@ export function issueRoutes(
                       headFailedReadOk && headFailedChecks.length > 0 ? "red" :
                       headFailedReadOk && headFailedChecks.length === 0 ? "green" :
                       "green",
-                    critical: updated.priority === "critical",
+                    critical: admissionCritical,
                   });
                   if (admissionDecision !== "admit") {
                     admitReviewer = false;
@@ -16561,6 +16569,117 @@ export function issueRoutes(
                     if (typeof monitorPatch.patch.monitorWakeRequestedAt !== "undefined") {
                       updated.monitorWakeRequestedAt = monitorPatch.patch.monitorWakeRequestedAt as Date | null;
                     }
+                  }
+                }
+                // myrmidon(OPE-12178): an admitted (green-CI, non-critical) reviewer
+                // wake still spends the tick's new-wake quota. Critical issues are
+                // admitted immediately and never spend it. A wake the quota cannot
+                // admit is deferred without loss: the same "Review CI wait" monitor
+                // the green-CI gate arms wakes the reviewer on a later tick.
+                // The admission key makes the shared post-update quota re-check of
+                // THIS handoff free (one handoff spends exactly one slot).
+                if (
+                  admitReviewer &&
+                  !reviewerAdmissionDeferred &&
+                  admitReviewerUnderWakesQuota(
+                    reviewWakesQuotaForCompany(updated.companyId),
+                    admissionCritical,
+                    stageWake.wakeup.idempotencyKey,
+                  ) === "quota_reached"
+                ) {
+                  admitReviewer = false;
+                  reviewerAdmissionDeferred = true;
+                  const previousPolicy = normalizeIssueExecutionPolicy(
+                    (updateFields.executionPolicy ?? existing.executionPolicy) as any,
+                  );
+                  const monitor = {
+                    nextCheckAt: new Date(Date.now() + REVIEW_CI_WAIT_INTERVAL_MS).toISOString(),
+                    notes: `Review admission waits for the next tick's reviewer-wake quota (${REVIEW_GATE_MAX_NEW_REVIEW_WAKES_PER_TICK} per tick); the reviewer is woken without loss once a slot frees.`,
+                    scheduledBy: "assignee" as const,
+                    kind: "external_service" as const,
+                    serviceName: REVIEW_CI_WAIT_MONITOR_SERVICE_NAME,
+                    externalRef: updated.id,
+                    timeoutAt: null,
+                    maxAttempts: null,
+                    recoveryPolicy: "wake_owner" as const,
+                  };
+                  updateFields.executionPolicy = {
+                    ...(previousPolicy ?? { mode: "normal", commentRequired: true, stages: [] }),
+                    monitor,
+                  } as any;
+                  issueUpdateData.executionPolicy = updateFields.executionPolicy;
+                  issueUpdateData.monitorNextCheckAt = new Date(monitor.nextCheckAt);
+                  issueUpdateData.monitorScheduledBy = monitor.scheduledBy;
+                  issueUpdateData.monitorAttemptCount = 0;
+                  issueUpdateData.monitorWakeRequestedAt = null;
+                  issueUpdateData.monitorLastTriggeredAt = null;
+                  const quotaMonitorPatch = applyIssueMonitorPolicyTransition({
+                    issue: updated,
+                    policy: updateFields.executionPolicy,
+                    previousPolicy: normalizeIssueExecutionPolicy(
+                      (existing.executionPolicy ?? null) as any,
+                    ),
+                    requestedStatus: updated.status,
+                    requestedAssigneePatch: {},
+                    actor: {
+                      agentId: actor.agentId ?? null,
+                      userId: actor.actorType === "user" ? actor.actorId : null,
+                    },
+                    monitorExplicitlyUpdated: true,
+                  });
+                  Object.assign(issueUpdateData, quotaMonitorPatch.patch);
+                  const persistedQuotaMonitor = await svc.update(
+                    id,
+                    {
+                      executionPolicy: updateFields.executionPolicy,
+                      monitorNextCheckAt: issueUpdateData.monitorNextCheckAt,
+                      monitorScheduledBy: issueUpdateData.monitorScheduledBy,
+                      monitorAttemptCount: issueUpdateData.monitorAttemptCount,
+                      monitorWakeRequestedAt: issueUpdateData.monitorWakeRequestedAt,
+                      monitorLastTriggeredAt: issueUpdateData.monitorLastTriggeredAt,
+                      ...quotaMonitorPatch.patch,
+                    },
+                    tx,
+                  );
+                  if (persistedQuotaMonitor) Object.assign(updated, persistedQuotaMonitor);
+                  if (typeof quotaMonitorPatch.patch.executionState !== "undefined") {
+                    updated.executionState = quotaMonitorPatch.patch.executionState as Record<string, unknown> | null;
+                  }
+                  if (typeof quotaMonitorPatch.patch.monitorNextCheckAt !== "undefined") {
+                    updated.monitorNextCheckAt = quotaMonitorPatch.patch.monitorNextCheckAt as Date | null;
+                  }
+                  if (typeof quotaMonitorPatch.patch.monitorWakeRequestedAt !== "undefined") {
+                    updated.monitorWakeRequestedAt = quotaMonitorPatch.patch.monitorWakeRequestedAt as Date | null;
+                  }
+                  // One operator-visible row per deferred tick (deduped per tick start),
+                  // so the board can see a wake was postponed, not lost.
+                  const quotaEventIdempotencyKey = `review-admission-quota-deferred:${updated.id}:${(reviewWakesQuotaTickStarted() ?? new Date(0)).toISOString()}`;
+                  const priorQuotaEvent = await tx.query.activityLog.findFirst({
+                    where: and(
+                      eq(activityLog.companyId, updated.companyId),
+                      eq(activityLog.entityType, "issue"),
+                      eq(activityLog.entityId, updated.id),
+                      eq(activityLog.action, "review_admission_quota_deferred"),
+                      sql`${activityLog.details}->>'idempotencyKey' = ${quotaEventIdempotencyKey}`,
+                    ),
+                  });
+                  if (!priorQuotaEvent) {
+                    await logActivity(tx as unknown as Db, {
+                      companyId: updated.companyId,
+                      actorType: "system",
+                      actorId: "review-admission",
+                      agentId: null,
+                      runId: actor.runId,
+                      action: "review_admission_quota_deferred",
+                      entityType: "issue",
+                      entityId: updated.id,
+                      details: {
+                        idempotencyKey: quotaEventIdempotencyKey,
+                        quota: REVIEW_GATE_MAX_NEW_REVIEW_WAKES_PER_TICK,
+                        reviewerAgentId: stageWake.agentId,
+                        nextCheckAt: issueUpdateData.monitorNextCheckAt?.toISOString() ?? null,
+                      },
+                    });
                   }
                 }
                 if (admitReviewer) {
@@ -17581,6 +17700,43 @@ export function issueRoutes(
               "green",
             critical,
           }) !== "admit";
+      }
+      // myrmidon(OPE-12178): the non-transactional wake path spends the same
+      // per-tick reviewer-wake quota as the transition path. A green-head wake
+      // the quota cannot admit is deferred without loss: the stage keeps its
+      // pending state and the stranded-stage recovery plus the tick quota
+      // budget bring the reviewer wake on a later tick, same as the CI deferral.
+      // The admission key (`issue-review-admission:{issueId}:{agentId}`, built
+      // by buildExecutionStageWakeup) is the one the transactional path of the
+      // SAME handoff already spent, so this re-check of the same admission is
+      // free and only a genuinely new admission pays a second slot.
+      if (isReviewCiWakeCandidate && !deferExecutionReviewWakeForCi) {
+        const admissionCritical = issue.priority === "critical";
+        if (
+          !admissionCritical &&
+          admitReviewerUnderWakesQuota(
+            reviewWakesQuotaForCompany(issue.companyId),
+            admissionCritical,
+            executionStageWakeup?.wakeup.idempotencyKey,
+          ) === "quota_reached"
+        ) {
+          deferExecutionReviewWakeForCi = true;
+          await logActivity(db, {
+            companyId: issue.companyId,
+            actorType: "system",
+            actorId: "review-admission",
+            agentId: null,
+            runId: actor.runId,
+            action: "review_admission_quota_deferred",
+            entityType: "issue",
+            entityId: issue.id,
+            details: {
+              idempotencyKey: `review-admission-quota-deferred:${issue.id}:${(reviewWakesQuotaTickStarted() ?? new Date(0)).toISOString()}`,
+              quota: REVIEW_GATE_MAX_NEW_REVIEW_WAKES_PER_TICK,
+              reviewerAgentId: executionStageWakeup?.agentId ?? null,
+            },
+          });
+        }
       }
 
       if (closesRecoveryIssue) {
