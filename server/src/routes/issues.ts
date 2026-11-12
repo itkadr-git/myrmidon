@@ -18321,12 +18321,32 @@ export function issueRoutes(
                 routingStore.listReviewerAgents(issue.companyId, reviewRoutingSettings.reviewerRoles),
                 routingStore.loadByAgent(issue.companyId),
               ]);
+              // myrmidon(OPE-12780): availability mirrors the pick gates — only
+              // queue-eligible reviewers of the issue's own group count, so an
+              // empty own team signals instead of staying silent because some
+              // other team's reviewer has capacity.
+              const signalAnchorId = issueAnchorAgentId(reviewerSignalIssue!);
+              const signalAnchorRow = signalAnchorId
+                ? await routingStore.getAgent(issue.companyId, signalAnchorId)
+                : null;
+              const signalAnchorGroup = resolveAgentGroupKey(signalAnchorRow ?? undefined);
               const authorModel = reviewerSignalIssue?.createdByAgentId
                 ? await routingStore.getAgentModel?.(issue.companyId, reviewerSignalIssue.createdByAgentId) ?? null
                 : null;
               unavailable =
                 evaluateReviewerAvailability({
-                  reviewers: reviewerRows.map((agent) => ({ id: agent.id, role: agent.role, invokable: agent.invokable ?? true, model: agent.model })),
+                  reviewers: ownGroupReviewerPool(
+                    reviewerRows.map((agent) => ({
+                      id: agent.id,
+                      name: agent.name,
+                      role: agent.role,
+                      metadata: agent.metadata,
+                      swarmQueueEligible: agent.swarmQueueEligible,
+                      invokable: agent.invokable ?? true,
+                      model: agent.model,
+                    })),
+                    signalAnchorGroup,
+                  ),
                   loadByAgent,
                   issue: reviewerSignalIssue!,
                   maxLoad: reviewRoutingSettings.maxLoadPerReviewer,
