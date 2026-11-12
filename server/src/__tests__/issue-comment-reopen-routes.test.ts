@@ -2,6 +2,7 @@ import express from "express";
 import request from "supertest";
 import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { HttpError } from "../errors.js";
+import { clearReviewWakesQuotas } from "../myrmidon/review-stage-recovery/review-wakes-quota.js";
 
 const mockIssueService = vi.hoisted(() => ({
   getById: vi.fn(),
@@ -351,6 +352,7 @@ describe.sequential("issue comment reopen routes", () => {
   }, 60_000);
 
   beforeEach(() => {
+    clearReviewWakesQuotas(new Date());
     vi.clearAllMocks();
     mockIssueService.getById.mockReset();
     mockIssueService.getByIdForUpdate.mockReset();

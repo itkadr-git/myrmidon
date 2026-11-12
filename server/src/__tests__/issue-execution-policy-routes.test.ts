@@ -2,6 +2,7 @@ import express from "express";
 import request from "supertest";
 import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { normalizeIssueExecutionPolicy } from "../services/issue-execution-policy.ts";
+import { clearReviewWakesQuotas } from "../myrmidon/review-stage-recovery/review-wakes-quota.js";
 
 // myrmidon(OPE-12683): the route module graph is cold-loaded once in
 // beforeAll, so per-test vi.doMock overrides never reach it. These holders are
@@ -290,6 +291,7 @@ describe("issue execution policy routes", () => {
   }, 60_000);
 
   beforeEach(async () => {
+    clearReviewWakesQuotas(new Date());
     vi.clearAllMocks();
     mockIssueService.assertCheckoutOwner.mockResolvedValue({ adoptedFromRunId: null });
     mockIssueService.getByIdForUpdate.mockImplementation(async () => mockIssueService.getById());
