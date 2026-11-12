@@ -3624,6 +3624,78 @@ describe("execute — managed instructions bundle (G4)", () => {
   });
 });
 
+// myrmidon(OPE-12796): the repeated-tool-failure stop counts the same call failing
+// again after the model saw the previous failure, not any failures of one tool.
+describe("execute — repeated tool failure limit (OPE-12796)", () => {
+  const started = (tool: string, preview: string): string =>
+    `event: tool.started\ndata: ${JSON.stringify({ tool, preview })}\n\n`;
+  const completed = (tool: string, error: boolean | string): string =>
+    `event: tool.completed\ndata: ${JSON.stringify({ tool, duration: 0.1, error })}\n\n`;
+
+  async function runWithEvents(frames: string[]): Promise<string[]> {
+    const sse = `${frames.join("")}event: run.completed\ndata: {"status":"completed","output":"done"}\n\n`;
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.endsWith("/v1/runs")) {
+        return new Response(JSON.stringify({ run_id: "run-tool-fail", status: "started" }), { status: 200 });
+      }
+      if (url.endsWith("/events")) {
+        return new Response(sseStream(sse), { status: 200, headers: { "content-type": "text/event-stream" } });
+      }
+      return new Response(JSON.stringify({ status: "completed", output: "done" }), { status: 200 });
+    }));
+    const ctx = makeCtx({ apiBaseUrl: "http://127.0.0.1:8642", apiKey: "secret-key", timeoutSec: 5 });
+    await execute(ctx);
+    return (ctx.onLog as ReturnType<typeof vi.fn>).mock.calls.map(([, line]) => String(line));
+  }
+  const stopped = (lines: string[]): boolean => lines.some((l) => l.includes("Repeated tool failure limit exceeded"));
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it("does not stop on three parallel failing skill_view calls of one model turn", async () => {
+    const lines = await runWithEvents([
+      started("skill_view", "{\"name\":\"a\"}"), started("skill_view", "{\"name\":\"b\"}"), started("skill_view", "{\"name\":\"c\"}"),
+      completed("skill_view", true), completed("skill_view", true), completed("skill_view", true),
+    ]);
+    expect(stopped(lines)).toBe(false);
+  });
+
+  it("does not stop on three sequential failures with different arguments", async () => {
+    const lines = await runWithEvents([
+      started("terminal", "gh pr checks 1"), completed("terminal", true),
+      started("terminal", "jq .x f.json"), completed("terminal", true),
+      started("terminal", "gh run rerun 9"), completed("terminal", true),
+    ]);
+    expect(stopped(lines)).toBe(false);
+  });
+
+  it("stops on the same call failing three times in separate turns, with the call in the log", async () => {
+    for (const error of [true, "exit 1"] as const) {
+      const lines = await runWithEvents([
+        started("terminal", "gh run rerun 9"), completed("terminal", error),
+        started("terminal", "gh run rerun 9"), completed("terminal", error),
+        started("terminal", "gh run rerun 9"), completed("terminal", error),
+      ]);
+      const stop = lines.find((l) => l.includes("Repeated tool failure limit exceeded"));
+      expect(stop).toContain("terminal failed 3 times consecutively with the same error.");
+      expect(stop).toContain("gh run rerun 9");
+    }
+  });
+
+  it("a success between two identical failures resets the counter", async () => {
+    const lines = await runWithEvents([
+      started("terminal", "x"), completed("terminal", true),
+      started("terminal", "x"), completed("terminal", true),
+      started("terminal", "y"), completed("terminal", false),
+      started("terminal", "x"), completed("terminal", true),
+      started("terminal", "x"), completed("terminal", true),
+    ]);
+    expect(stopped(lines)).toBe(false);
+  });
+});
+
 describe("execute — compact progress logging (G4)", () => {
   // myrmidon(G4): tool.completed never carries preview/detail on the real wire
   // (gateway/platforms/api_server_runs.py's _FIXED_EVENT_FIELDS:

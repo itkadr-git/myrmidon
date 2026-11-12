@@ -52,6 +52,7 @@ import { getAdapterLabel } from "../adapters/adapter-display-registry";
 import { AgentWipBadge } from "../components/myrmidon/AgentWipBadge"; // myrmidon(1.6.1 WIP-LIMIT B)
 import { wipLimitApi, wipLimitStatusQueryKey, type WipLimitStatusEntry } from "../components/myrmidon/wip-limit/wipLimitApi"; // myrmidon(1.6.1 WIP-LIMIT B)
 // myrmidon(BOT-RUNTIME-TUNING D2): the model-fallback signal on an agent card
+import { RoleModelDownBadge } from "../components/myrmidon/RoleModelDownBadge"; // myrmidon(1.6.8 OPE-12709)
 import { AgentFallbackSignalBadge } from "../components/myrmidon/AgentFallbackSignalBadge";
 import {
   fallbackSignalApi,
@@ -595,6 +596,7 @@ export function Agents({ initialView = "tree" }: { initialView?: AgentsView } = 
         )}
         meta={
           <div className="flex items-center gap-3">
+            <RoleModelDownBadge since={agent.roleModelDownSince} agentId={agent.id} />
             {builtInCluster && (
               <div className="hidden @5xl:flex items-center gap-1.5">
                 {builtInCluster}

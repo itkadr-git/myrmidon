@@ -18,6 +18,7 @@ import { AgentStatusBadge, AgentStatusCapsule } from "../components/StatusBadge"
 import { MembershipAction } from "../components/MembershipAction";
 import { StarToggle } from "../components/StarToggle";
 import { EntityRow } from "../components/EntityRow";
+import { RoleModelDownBadge } from "../components/myrmidon/RoleModelDownBadge"; // myrmidon(1.6.8 OPE-12709)
 import { BuiltInLifecycleChip } from "../components/BuiltInAgentBadges";
 import { EmptyState } from "../components/EmptyState";
 import { ConfigureBuiltInAgentModal } from "../components/ConfigureBuiltInAgentModal";
@@ -461,6 +462,7 @@ export function Agents() {
         }
         meta={
           <div className="flex items-center gap-3">
+            <RoleModelDownBadge since={agent.roleModelDownSince} agentId={agent.id} />
             {builtInCluster && (
               <div className="hidden xl:flex items-center gap-1.5">
                 {builtInCluster}

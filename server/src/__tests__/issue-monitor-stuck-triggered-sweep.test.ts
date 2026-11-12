@@ -26,6 +26,7 @@ import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
 } from "./helpers/embedded-postgres.js";
+import { drainHeartbeatRunsToQuiescence } from "./helpers/drain-heartbeat-runs.js";
 import { heartbeatService } from "../services/heartbeat.ts";
 import { parseIssueExecutionState } from "../services/issue-execution-policy.ts";
 
@@ -54,6 +55,11 @@ describeEmbeddedPostgres("stuck triggered issue monitor sweep", () => {
   }, 20_000);
 
   async function cleanupRows() {
+    // The ticks wake the assignee, and the woken runs execute in the background
+    // (they write run events and company skills). Wait for them, or their writes
+    // race the deletes below: a company_skills row inserted after its delete
+    // breaks the delete of companies.
+    await drainHeartbeatRunsToQuiescence(db, heartbeatService(db));
     await db.delete(heartbeatRunEvents);
     await db.delete(issueRecoveryActions);
     await db.delete(issueComments);

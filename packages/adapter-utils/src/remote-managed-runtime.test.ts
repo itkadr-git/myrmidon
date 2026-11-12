@@ -4,11 +4,16 @@ import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 const {
+  captureDirectorySnapshot,
   prepareWorkspaceForSshExecution,
   restoreWorkspaceFromSshExecution,
   runSshCommand,
   syncDirectoryToSsh,
 } = vi.hoisted(() => ({
+  captureDirectorySnapshot: vi.fn(async () => ({
+    exclude: [],
+    entries: new Map(),
+  })),
   prepareWorkspaceForSshExecution: vi.fn(async () => ({ gitBacked: false })),
   restoreWorkspaceFromSshExecution: vi.fn(async () => undefined),
   runSshCommand: vi.fn(async () => ({
@@ -24,6 +29,14 @@ vi.mock("./ssh.js", () => ({
   runSshCommand,
   syncDirectoryToSsh,
 }));
+
+vi.mock("./workspace-restore-merge.js", async (importOriginal) => {
+  const actual = (await importOriginal()) as typeof import("./workspace-restore-merge.js");
+  return {
+    ...actual,
+    captureDirectorySnapshot,
+  };
+});
 
 import {
   buildRemoteRunDirectoryRemoveCommand,
@@ -623,5 +636,147 @@ describe("remote managed runtime: run directory cleanup (OPE-12633, OPE-12664)",
 
     expect(restoreWorkspaceFromSshExecution).not.toHaveBeenCalled();
     expect(sshCommands()).toEqual([]);
+  });
+});
+
+describe("remote managed runtime: git_checkout workspaceSyncMode (OPE-12795)", () => {
+  const cleanupDirs: string[] = [];
+  const spec = {
+    host: "127.0.0.1",
+    port: 2222,
+    username: "fixture",
+    remoteWorkspacePath: "/workspace",
+    remoteCwd: "/workspace",
+    privateKey: "PRIVATE KEY",
+    knownHosts: "KNOWN HOSTS",
+    strictHostKeyChecking: true,
+  };
+
+  afterEach(async () => {
+    vi.clearAllMocks();
+    while (cleanupDirs.length > 0) {
+      const dir = cleanupDirs.pop();
+      if (dir) await rm(dir, { recursive: true, force: true }).catch(() => undefined);
+    }
+  });
+
+  const sshCommands = () => runSshCommand.mock.calls.map((call) => (call as unknown[])[1]);
+  const isRemoveCommand = (command: unknown) => String(command).includes("rm -rf -- ");
+
+  async function prepare(
+    runId: string,
+    options: {
+      assets?: RemoteManagedRuntimeAsset[];
+      gitBacked?: boolean;
+      syncWorkspace?: boolean;
+    } = {},
+  ) {
+    prepareWorkspaceForSshExecution.mockResolvedValue({ gitBacked: options.gitBacked ?? true });
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "myrmidon-remote-git-checkout-"));
+    cleanupDirs.push(rootDir);
+    const workspaceDir = path.join(rootDir, "workspace");
+    await mkdir(workspaceDir, { recursive: true });
+    await writeFile(path.join(workspaceDir, "README.md"), "hello\n", "utf8");
+    return prepareRemoteManagedRuntime({
+      spec,
+      runId,
+      adapterKey: "omp",
+      workspaceLocalDir: workspaceDir,
+      workspaceSyncMode: "git_checkout",
+      syncWorkspace: options.syncWorkspace,
+      assets: options.assets,
+    });
+  }
+
+  it("skips the baseline snapshot and the workspace restore, keeping a per-run directory", async () => {
+    let assetRestored = false;
+    const prepared = await prepare("run-git-checkout-ok", {
+      assets: [
+        {
+          key: "home",
+          localDir: "/does-not-matter",
+          restore: async () => {
+            assetRestored = true;
+          },
+        },
+      ],
+    });
+
+    // `gitOnly` reaches the ssh layer and the run directory stays per-run
+    // (`<base>/.paperclip-runtime/runs/<runId>/workspace`), like the full mode.
+    expect(prepareWorkspaceForSshExecution).toHaveBeenCalledWith(
+      expect.objectContaining({ gitOnly: true }),
+    );
+    expect(prepared.workspaceRemoteDir).toBe(
+      "/workspace/.paperclip-runtime/runs/run-git-checkout-ok/workspace",
+    );
+    // No baseline snapshot of the shared workspace is taken.
+    expect(captureDirectorySnapshot).not.toHaveBeenCalled();
+
+    await prepared.restoreWorkspace();
+
+    // No restore-from-ssh, but the asset restore still runs...
+    expect(restoreWorkspaceFromSshExecution).not.toHaveBeenCalled();
+    expect(assetRestored).toBe(true);
+    // ...and the run copy is removed after the restore.
+    const removeIndex = sshCommands().findIndex(isRemoveCommand);
+    expect(removeIndex).toBeGreaterThanOrEqual(0);
+    expect(String(sshCommands()[removeIndex])).toContain(
+      "/workspace/.paperclip-runtime/runs/run-git-checkout-ok",
+    );
+  });
+
+  it("falls back to the full mode (snapshot + restore) for a non-git workspace", async () => {
+    const infoSpy = vi.spyOn(console, "info").mockImplementation(() => {});
+    try {
+      const prepared = await prepare("run-git-checkout-non-git", { gitBacked: false });
+
+      expect(captureDirectorySnapshot).toHaveBeenCalledTimes(1);
+      expect(prepareWorkspaceForSshExecution).toHaveBeenCalledWith(
+        expect.objectContaining({ gitOnly: true }),
+      );
+      expect(
+        infoSpy.mock.calls.some((call) =>
+          String(call[0]).includes("falling back to full sync"),
+        ),
+      ).toBe(true);
+
+      await prepared.restoreWorkspace();
+
+      // The full-mode restore is back for a non-git workspace.
+      expect(restoreWorkspaceFromSshExecution).toHaveBeenCalledTimes(1);
+    } finally {
+      infoSpy.mockRestore();
+    }
+  });
+
+  it("stages into separate per-run directories for two runs on the same workspace", async () => {
+    const first = await prepare("run-git-a");
+    const second = await prepare("run-git-b");
+
+    expect(first.workspaceRemoteDir).toBe(
+      "/workspace/.paperclip-runtime/runs/run-git-a/workspace",
+    );
+    expect(second.workspaceRemoteDir).toBe(
+      "/workspace/.paperclip-runtime/runs/run-git-b/workspace",
+    );
+    expect(prepareWorkspaceForSshExecution).toHaveBeenCalledTimes(2);
+    expect(prepareWorkspaceForSshExecution.mock.calls.every((call) =>
+      Boolean((call as unknown as [{ gitOnly?: boolean }])[0]?.gitOnly),
+    )).toBe(true);
+  });
+
+  it("restores nothing and still removes the run copy when asset staging fails", async () => {
+    syncDirectoryToSsh.mockRejectedValueOnce(new Error("asset upload failed"));
+    await expect(
+      prepare("run-git-checkout-asset-fail", {
+        assets: [{ key: "home", localDir: "/does-not-matter" }],
+      }),
+    ).rejects.toThrow("asset upload failed");
+
+    // The asset-failure rollback path must NOT restore the shared workspace.
+    expect(restoreWorkspaceFromSshExecution).not.toHaveBeenCalled();
+    // The never-started run's copy is removed instead.
+    expect(sshCommands().some(isRemoveCommand)).toBe(true);
   });
 });
