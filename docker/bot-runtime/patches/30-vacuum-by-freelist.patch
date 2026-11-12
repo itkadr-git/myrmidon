@@ -187,7 +187,7 @@ index a87b6f5..51152be 100644
 +        """How much the file has grown since the last VACUUM, as a fraction of the
 +        post-VACUUM size (e.g. 1.0 = the file doubled).  None when there is no
 +        recorded baseline (no VACUUM yet, or the size cannot be read).
-+        myrmidon(OPE-12883): after a VACUUM the file holds only live data, so the
++        myrmidon: after a VACUUM the file holds only live data, so the
 +        post-VACUUM size is the baseline; a large growth means a high-water mark
 +        from deleted sessions whose pages were reused in place."""
 +        raw = self.get_meta("last_vacuum_size_bytes")
@@ -230,7 +230,7 @@ index a87b6f5..51152be 100644
 +        delete, is reclaimed once the ratio is reached.  It fires when either ``freelist_count / page_count`` >
 +        ``min_vacuum_freelist_ratio`` (many free pages) OR the file has grown by more than
 +        ``vacuum_growth_trigger`` since the last VACUUM (high-water mark from steady write/delete cycles
-+        where SQLite reuses pages in-place and the freelist never gets large).  myrmidon(OPE-12883): the
++        where SQLite reuses pages in-place and the freelist never gets large).  myrmidon: the
 +        size trigger catches the common bot pattern — sessions are pruned by the startup retention pass,
 +        but the file keeps its high-water mark because new sessions reuse the freed pages before the
 +        freelist reaches 25 %.  It waits (and the whole pass is retried by the next housekeeping tick
