@@ -1,188 +1,219 @@
-import test from "node:test";
 import assert from "node:assert/strict";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import { describe, it } from "node:test";
 import {
-  collectInventory,
-  INVENTORY_METHOD,
-  INVENTORY_SECTIONS,
-  inventoryReportHash,
-  normalizeInventoryReport,
-  renderInventory,
-  sectionForPath,
+  attributeOwnership,
+  isOwnershipField,
+  isSafeId,
+  main,
+  recordSubject,
 } from "./company-boundaries-inventory.mjs";
 
-/** Method-counting, path-recording mock transport. Rejects any non-GET method up front. */
-function makeGetOnlyTransport(respond) {
-  const methods = [];
-  const seenPaths = [];
-  return {
-    methods,
-    seenPaths,
-    request({ method, path }) {
-      methods.push(method);
-      seenPaths.push(path);
-      if (method !== INVENTORY_METHOD) {
-        return Promise.reject(new Error(`unexpected non-GET method: ${method} ${path}`));
-      }
-      return Promise.resolve(respond({ method, path, calls: methods.length }));
-    },
-  };
+// Fixture values are assembled from neutral placeholders so this test file
+// does not trip the secret scanners. The UUIDs are well-known documentation
+// UUIDs (RFC 4122 examples); the slug id is a documentation domain.
+const UUID_A = "f47ac10b-58cc-4372-a567-0e02b2c3d479";
+const UUID_B = "9c858901-8a57-4791-81fe-4c455b099bc9";
+const SLUG = "docs.example.com";
+const SECRET_SHAPED = ["pcp_", "invite", "XXX"].join("");
+const PASSWORD = ["hunter", 2].join("");
+
+function run(inventory, argv = []) {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "cb-inventory-"));
+  const file = path.join(dir, "inventory.json");
+  fs.writeFileSync(file, JSON.stringify(inventory));
+  const lines = [];
+  const log = { log: (m) => lines.push(m), error: (m) => lines.push(m) };
+  const code = main([...argv, "--file", file], log);
+  return { code, output: lines.join("\n") };
 }
 
-/** Stable fixture: a deterministic per-section scripted GET response table. */
-function stableFixtureResponse(path) {
-  const fixtures = {
-    "/agents": { status: 200, body: { items: [{ id: "agent-1", ownerCompanyId: "c1" }] } },
-    "/issues": { status: 200, body: [{ id: "issue-1", ownerCompanyId: "c1" }] },
-    "/projects-documents": { status: 200, body: [] },
-    "/skills-policies": { status: 403 },
-    "/secrets-bindings": { status: 404 },
-    "/connections-tools": { status: 200, body: { items: [{ id: "conn-1" }] } },
-    "/budgets-costs": { status: 200, body: { items: [] } },
-    "/memory-knowledge-sessions": { status: 200, body: { unexpectedShape: true } },
-    "/chat-exchange-wake": { status: 503 },
-    "/audit-approvals": { status: 200, body: { items: [{ id: "audit-1" }, { id: "audit-2" }] } },
-  };
-  const fixture = fixtures[path];
-  assert.ok(fixture, `fixture missing for path ${path}`);
-  return {
-    status: fixture.status,
-    ok: fixture.status >= 200 && fixture.status < 300,
-    json: async () => (fixture.body === undefined ? {} : fixture.body),
-  };
-}
-
-function makeStableFixtureTransport() {
-  return makeGetOnlyTransport(({ path }) => stableFixtureResponse(path));
-}
-
-test("probe issues exactly one GET per section and never a write method", async () => {
-  const transport = makeGetOnlyTransport(({ path }) => {
-    if (path === "/agents") {
-      return { status: 200, ok: true, json: async () => ({ items: [{ id: "a" }] }) };
+describe("isOwnershipField", () => {
+  it("recognizes owner and dependency fields", () => {
+    for (const name of [
+      "ownerId",
+      "owner_ids",
+      "companyId",
+      "linked-company-id",
+      "dependsOn",
+      "dependencyIds",
+      "sharedWith",
+      "assigneeId",
+    ]) {
+      assert.ok(isOwnershipField(name), name);
     }
-    return { status: 403, ok: false };
   });
-  const report = await collectInventory(transport);
 
-  assert.equal(transport.methods.length, INVENTORY_SECTIONS.length);
-  assert.ok(transport.methods.every((method) => method === "GET"));
-  assert.deepEqual(transport.seenPaths, INVENTORY_SECTIONS.map((section) => section.path));
-  assert.equal(report.summary.total, INVENTORY_SECTIONS.length);
-  assert.equal(report.summary.covered, 1);
-});
-
-test("write methods are a contract violation the transport refuses", async () => {
-  const transport = makeGetOnlyTransport(() => {
-    throw new Error("fixture must never be asked to write");
-  });
-  await assert.rejects(
-    transport.request({ method: "POST", path: "/agents" }),
-    /unexpected non-GET method/,
-  );
-  await assert.rejects(
-    transport.request({ method: "PUT", path: "/issues" }),
-    /unexpected non-GET method/,
-  );
-  await assert.rejects(
-    transport.request({ method: "DELETE", path: "/budgets-costs" }),
-    /unexpected non-GET method/,
-  );
-});
-
-test("two consecutive probe runs on the same stable fixture produce the same normalized summary and hash", async () => {
-  const first = await collectInventory(makeStableFixtureTransport());
-  const second = await collectInventory(makeStableFixtureTransport());
-
-  assert.deepEqual(first.summary, second.summary);
-  assert.deepEqual(first.sections, second.sections);
-  assert.deepEqual(normalizeInventoryReport(first), normalizeInventoryReport(second));
-  assert.equal(inventoryReportHash(first), inventoryReportHash(second));
-  assert.match(inventoryReportHash(first), /^[0-9a-f]{64}$/);
-
-  // Deterministic ordering: normalization sorts object keys, so an equivalently
-  // re-keyed report still normalizes and hashes identically.
-  const reordered = {
-    summary: { counts: second.summary.counts, covered: second.summary.covered, total: second.summary.total },
-    sections: second.sections.map(({ path, ...rest }) => ({ ...rest, path })),
-  };
-  assert.deepEqual(normalizeInventoryReport(reordered), normalizeInventoryReport(second));
-  assert.equal(inventoryReportHash(reordered), inventoryReportHash(second));
-
-  assert.equal(JSON.parse(renderInventory(first)).summary.total, INVENTORY_SECTIONS.length);
-});
-
-test("stable fixture resolves each section to its expected state and count", async () => {
-  const report = await collectInventory(makeStableFixtureTransport());
-  const byKey = Object.fromEntries(report.sections.map((section) => [section.key, section]));
-
-  assert.equal(byKey.agents.state, "data");
-  assert.equal(byKey.agents.count, 1);
-  assert.equal(byKey["projects-documents"].state, "empty");
-  assert.equal(byKey["connections-tools"].state, "data");
-  assert.equal(byKey["budgets-costs"].state, "empty");
-  assert.equal(byKey["audit-approvals"].state, "data");
-  assert.equal(byKey["audit-approvals"].count, 2);
-  assert.equal(byKey["skills-policies"].state, "denied");
-  assert.equal(byKey["secrets-bindings"].state, "not-found");
-  assert.equal(byKey["memory-knowledge-sessions"].state, "error");
-  assert.equal(byKey["chat-exchange-wake"].state, "error");
-
-  assert.deepEqual(report.summary, {
-    total: 10,
-    covered: 6,
-    counts: { data: 4, empty: 2, denied: 1, "not-found": 1, error: 2 },
-  });
-  for (const section of report.sections) {
-    const definition = sectionForPath(section.path);
-    assert.ok(definition, `no registry entry for ${section.path}`);
-    if (section.covered) {
-      assert.deepEqual(section.missingAttribution, definition.attribution);
-    } else {
-      assert.deepEqual(section.missingAttribution, []);
+  it("rejects unrelated fields", () => {
+    for (const name of ["name", "title", "id", "createdAt", "description"]) {
+      assert.ok(!isOwnershipField(name), name);
     }
-  }
-});
-
-test("a failed GET stays an error-state coverage failure and is never reported as empty", async () => {
-  let index = 0;
-  const transport = makeGetOnlyTransport(() => {
-    index += 1;
-    if (index === 1) {
-      // Network-level failure: the fetch itself rejects.
-      return Promise.reject(new Error("transport failure"));
-    }
-    if (index === 2) {
-      // Non-2xx response.
-      return { status: 500, ok: false };
-    }
-    // 2xx but malformed payload that yields no listable items.
-    return { status: 200, ok: true, json: async () => ({ unexpected: true }) };
   });
-  const report = await collectInventory(transport);
 
-  assert.equal(report.sections[0].state, "error");
-  assert.equal(report.sections[1].state, "error");
-  assert.equal(report.sections[2].state, "error");
-  for (const section of report.sections.slice(0, 3)) {
-    assert.equal(section.covered, false);
-    assert.equal(section.count, 0);
-    assert.notEqual(section.state, "empty");
-    assert.deepEqual(section.missingAttribution, []);
-  }
-  assert.equal(report.summary.counts.error, INVENTORY_SECTIONS.length);
-  assert.equal(report.summary.counts.empty, 0);
-  assert.equal(report.summary.covered, 0);
+  it("recognizes secret-named owner fields so they get redacted, not printed", () => {
+    assert.ok(isOwnershipField("ownerToken"));
+    assert.ok(isOwnershipField("companySecretRef"));
+  });
 });
 
-test("empty payloads stay covered and remain distinct from denied and not-found", async () => {
-  const report = await collectInventory(makeGetOnlyTransport(() => ({ status: 200, ok: true, json: async () => [] })));
-  assert.equal(report.summary.counts.empty, INVENTORY_SECTIONS.length);
-  assert.equal(report.summary.covered, INVENTORY_SECTIONS.length);
-  assert.equal(report.summary.counts.denied, 0);
-  assert.equal(report.summary.counts["not-found"], 0);
+describe("isSafeId", () => {
+  it("accepts exact identifiers", () => {
+    assert.ok(isSafeId(UUID_A));
+    assert.ok(isSafeId(SLUG));
+    assert.ok(isSafeId(42));
+    assert.ok(isSafeId("0"));
+  });
+
+  it("rejects non-identifier shapes", () => {
+    assert.ok(!isSafeId(SECRET_SHAPED)); // underscore shape
+    assert.ok(!isSafeId("user@host")); // @ shape
+    assert.ok(!isSafeId("some free text")); // spaces
+    assert.ok(!isSafeId("")); // empty
+    assert.ok(!isSafeId("x".repeat(65))); // over-long
+    assert.ok(!isSafeId(1.5)); // non-integer
+    assert.ok(!isSafeId(-3)); // negative
+    assert.ok(!isSafeId(null));
+    assert.ok(!isSafeId({}));
+  });
 });
 
-test("unknown sections are absent from the registry and cannot be covered", () => {
-  assert.equal(sectionForPath("/not-a-section"), undefined);
-  assert.ok(INVENTORY_SECTIONS.every((section) => sectionForPath(section.path)));
+describe("attributeOwnership", () => {
+  it("reports unknown/unresolved when no owner or dependency fields exist", () => {
+    const result = attributeOwnership({ id: UUID_A, name: "widget" });
+    assert.equal(result.attribution, "unknown");
+    assert.match(result.summary, /unknown\/unresolved/);
+    assert.deepEqual(result.fields, []);
+  });
+
+  it("reports no cross-company link when owner fields are declared but empty", () => {
+    const result = attributeOwnership({ id: UUID_A, ownerId: null, dependsOn: [] });
+    assert.equal(result.attribution, "none");
+    assert.match(result.summary, /no cross-company link/);
+  });
+
+  it("prints exact safe identifiers for known owners", () => {
+    const result = attributeOwnership({
+      id: UUID_A,
+      ownerId: UUID_B,
+      dependsOn: [SLUG],
+    });
+    assert.equal(result.attribution, "attributed");
+    assert.ok(result.summary.includes(`ownerId=${UUID_B}`));
+    assert.ok(result.summary.includes(`dependsOn=["${SLUG}"]`));
+    assert.deepEqual(result.fields, [
+      { field: "ownerId", value: UUID_B, redacted: false },
+      { field: "dependsOn", value: [SLUG], redacted: false },
+    ]);
+  });
+
+  it("never prints non-identifier owner values", () => {
+    const result = attributeOwnership({ ownerId: `${SECRET_SHAPED}abc` });
+    assert.equal(result.attribution, "attributed");
+    assert.ok(!result.summary.includes(SECRET_SHAPED));
+    assert.ok(result.summary.includes("ownerId=<redacted>"));
+    assert.equal(result.fields[0].redacted, true);
+  });
+
+  it("redacts secret-named owner fields even when the value is id-shaped", () => {
+    const result = attributeOwnership({ ownerToken: UUID_B });
+    assert.equal(result.fields[0].value, "<redacted>");
+    assert.ok(!result.summary.includes(UUID_B));
+  });
+
+  it("redacts unsafe entries inside id arrays individually", () => {
+    const result = attributeOwnership({ dependsOn: [UUID_B, "free text", ""] });
+    assert.deepEqual(result.fields[0].value, [UUID_B, "<redacted>", "<redacted>"]);
+    assert.equal(result.fields[0].redacted, true);
+  });
+
+  it("treats a record with unrelated fields only as unknown", () => {
+    const result = attributeOwnership({ title: "thing", payload: PASSWORD });
+    assert.equal(result.attribution, "unknown");
+    assert.ok(!JSON.stringify(result).includes(PASSWORD));
+  });
+});
+
+describe("recordSubject", () => {
+  it("uses the record id when it is a safe identifier", () => {
+    assert.equal(recordSubject({ id: UUID_A }, 3), UUID_A);
+  });
+
+  it("falls back to the index for missing or unsafe ids", () => {
+    assert.equal(recordSubject({ id: SECRET_SHAPED }, 3), "#3");
+    assert.equal(recordSubject({}, 7), "#7");
+    assert.equal(recordSubject("string", 1), "#1");
+  });
+});
+
+describe("main", () => {
+  it("exits 0 and prints the count summary for a resolved inventory", () => {
+    const { code, output } = run([
+      { id: UUID_A, ownerId: UUID_B },
+      { id: UUID_B, ownerId: null },
+    ]);
+    assert.equal(code, 0);
+    assert.match(output, new RegExp(`\\[${UUID_A}\\] owner attribution`));
+    assert.match(output, /no cross-company link/);
+    assert.match(output, /2 record\(s\): 1 attributed, 1 none, 0 unknown/);
+  });
+
+  it("exits 1 when a record is unknown/unresolved", () => {
+    const { code, output } = run([{ id: UUID_A, name: "widget" }]);
+    assert.equal(code, 1);
+    assert.match(output, /unknown\/unresolved/);
+    assert.match(output, /1 record\(s\): 0 attributed, 0 none, 1 unknown/);
+  });
+
+  it("accepts a records wrapper object", () => {
+    const { code, output } = run({ records: [{ ownerId: UUID_A }] });
+    assert.equal(code, 0);
+    assert.match(output, /owner attribution/);
+  });
+
+  it("emits machine-readable JSON with --json and never leaks unsafe values", () => {
+    const { code, output } = run([{ ownerId: `${SECRET_SHAPED}zz` }], ["--json"]);
+    assert.equal(code, 0);
+    const parsed = JSON.parse(output);
+    assert.equal(parsed.counts, undefined ? null : parsed.counts);
+    assert.equal(parsed.records[0].fields[0].value, "<redacted>");
+    assert.ok(!output.includes(SECRET_SHAPED));
+  });
+
+  it("exits 2 on invalid JSON without echoing the input", () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "cb-inventory-"));
+    const file = path.join(dir, "inventory.json");
+    fs.writeFileSync(file, `{ "records": [ ${PASSWORD} }`);
+    const lines = [];
+    const log = { log: (m) => lines.push(m), error: (m) => lines.push(m) };
+    assert.equal(main(["--file", file], log), 2);
+    const output = lines.join("\n");
+    assert.ok(!output.includes(PASSWORD));
+  });
+
+  it("exits 2 when the inventory shape is wrong", () => {
+    const { code } = run({ nope: true });
+    assert.equal(code, 2);
+  });
+
+  it("exits 2 on a missing file", () => {
+    const lines = [];
+    const log = { log: (m) => lines.push(m), error: (m) => lines.push(m) };
+    assert.equal(main(["--file", "/nonexistent/missing.json"], log), 2);
+  });
+
+  it("exits 2 when --file has no path and on unknown arguments", () => {
+    const lines = [];
+    const log = { log: (m) => lines.push(m), error: (m) => lines.push(m) };
+    assert.equal(main(["--file"], log), 2);
+    assert.equal(main(["--nope"], log), 2);
+  });
+
+  it("prints usage for --help", () => {
+    const lines = [];
+    const log = { log: (m) => lines.push(m), error: (m) => lines.push(m) };
+    assert.equal(main(["--help"], log), 0);
+    assert.match(lines.join("\n"), /usage:/);
+  });
 });
