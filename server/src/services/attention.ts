@@ -122,6 +122,15 @@ import {
   auth401BurstSignalSeverity,
   auth401BurstSignalWhyNow,
 } from "../myrmidon/auth-401-burst/attention.js";
+// myrmidon(OPE-12868): the GitHub App webhook-disabled operator signal
+// registry — webhook-sync latches it on a GitHub 404 and clears it on a
+// confirmed sync.
+import {
+  readGitHubAppWebhookDisabledSignals,
+  githubAppWebhookDisabledSignalDedupKey,
+  githubAppWebhookDisabledSignalSeverity,
+  githubAppWebhookDisabledSignalWhyNow,
+} from "../myrmidon/github-shared-identity/webhook-disabled-signal.js";
 // myrmidon(OPE-6011): the held-task card (a settled execution-reconciliation
 // hold silently skipping every wake of the task's assignee).
 import {
@@ -255,6 +264,11 @@ const ATTENTION_SOURCE_KINDS: AttentionSourceKind[] = [
   // myrmidon(1.6.8 OPE-12709): a provider channel has no credits (402 /
   // insufficient_quota) — a top-up question for the owner, not a retry.
   "provider_no_credits",
+  // myrmidon(OPE-12868): one card per App whose webhook GitHub reports as
+  // absent (HTTP 404 on the App-hook config PATCH) — the App's "Active"
+  // webhook switch is a GitHub-side setting no API can turn on, and while it
+  // is off the board receives no GitHub events at all.
+  "github_app_webhook_disabled",
 ];
 
 const SEVERITY_RANK: Record<AttentionSeverity, number> = {
@@ -339,6 +353,10 @@ const SOURCE_RANK: Record<AttentionSourceKind, number> = {
   codex_pool_alert: 4,
   // myrmidon(OPE-7932): overdue monitors need operator visibility, below blockers.
   issue_monitor_overdue: 12,
+  // myrmidon(OPE-12868): a disabled App webhook stops every GitHub event (CI,
+  // PR, comments) for the whole board — an active ops stop ranked with the
+  // other auth/ops alerts.
+  github_app_webhook_disabled: 0,
 };
 
 const PENDING_INTERACTION_STATUSES = ["pending"] as const;
@@ -3434,6 +3452,55 @@ async function buildAttentionFeedSnapshot(
             },
           }));
         }
+      }
+
+      // myrmidon(OPE-12868): one card per GitHub App whose webhook GitHub
+      // reports as absent. webhook-sync (the operator endpoint that points an
+      // App's webhook at this board) latches the signal when the hook-config
+      // PATCH answers HTTP 404 — the App's "Active" webhook switch is off on
+      // the App's GitHub settings page — and clears it when a later sync is
+      // confirmed. While the switch is off the board receives no GitHub
+      // events at all, so this is an active stop, not advice. No credential
+      // reaches the signal: ids, the webhook host and timestamps only.
+      for (const signal of readGitHubAppWebhookDisabledSignals(companyId)) {
+        add(createItem({
+          companyId,
+          sourceKind: "github_app_webhook_disabled",
+          subject: {
+            kind: "company",
+            id: signal.entryId,
+            companyId,
+            title: "GitHub App webhook disabled",
+            identifier: null,
+            status: "alert",
+            href: `/${prefix}/instance`,
+            metadata: {
+              appId: signal.appId,
+              webhookHost: signal.webhookHost,
+              firstSeenAt: signal.firstSeenAt,
+              lastSeenAt: signal.lastSeenAt,
+            },
+          },
+          whyNow: githubAppWebhookDisabledSignalWhyNow(signal),
+          decisionVerbs: decisionVerbs(
+            { id: "inspect", label: "Inspect", description: "Open the GitHub shared identity settings and re-run webhook sync after enabling the webhook." },
+            { id: "dismiss", label: "Dismiss", description: "Dismiss this alert until the next sync reports the webhook again." },
+          ),
+          inlineResolvable: false,
+          entryRule: "a webhook sync got HTTP 404 from GitHub on the App's hook config (webhook not Active)",
+          exitRule: "a webhook sync is confirmed by GitHub or the row is dismissed",
+          dedupKey: githubAppWebhookDisabledSignalDedupKey(signal),
+          severity: githubAppWebhookDisabledSignalSeverity(),
+          activityAt: signal.lastSeenAt,
+          createdAt: signal.firstSeenAt,
+          updatedAt: signal.lastSeenAt,
+          relatedIssue: null,
+          detail: {
+            kind: "generic",
+            summaryExcerpt: excerpt(`App ${signal.appId}: webhook not Active on the App's GitHub settings page; board receives no GitHub events (webhook host ${signal.webhookHost}).`),
+            images: [],
+          },
+        }));
       }
 
       // myrmidon(REVIEW-ROUTING): one card per task whose review has no

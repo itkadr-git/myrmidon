@@ -1307,16 +1307,37 @@ export function githubConnectionEventService(
           ].join("\n");
 
           if (!existingAlarm) {
-            await db.insert(issues).values({
-              companyId,
-              title: `1.6.6 P1 ALARM: ${silenceReason} при открытых PR`,
-              description,
-              status: "todo",
-              priority: "high",
-              originKind: "github_events_silence",
-              originId: companyId,
-              createdAt: currentTime,
-              updatedAt: currentTime,
+            // The alarm is a first-class task: mint the company issue number and
+            // identifier exactly like every other creation path, so the alarm is
+            // addressable by its OPE-N key (github-events-silence watchdog).
+            await db.transaction(async (tx) => {
+              const [maxRow] = await tx
+                .select({ maxNum: sql<number>`coalesce(max(${issues.issueNumber}), 0)` })
+                .from(issues)
+                .where(eq(issues.companyId, companyId));
+              const [company] = await tx
+                .update(companies)
+                .set({
+                  issueCounter: sql`greatest(${companies.issueCounter}, ${maxRow.maxNum}) + 1`,
+                })
+                .where(eq(companies.id, companyId))
+                .returning({
+                  issueCounter: companies.issueCounter,
+                  issuePrefix: companies.issuePrefix,
+                });
+              await tx.insert(issues).values({
+                companyId,
+                title: `1.6.6 P1 ALARM: ${silenceReason} при открытых PR`,
+                description,
+                status: "todo",
+                priority: "high",
+                originKind: "github_events_silence",
+                originId: companyId,
+                issueNumber: company.issueCounter,
+                identifier: `${company.issuePrefix}-${company.issueCounter}`,
+                createdAt: currentTime,
+                updatedAt: currentTime,
+              });
             });
             result.alarmsCreated += 1;
           } else if (existingAlarm.status === "done" || existingAlarm.status === "cancelled") {

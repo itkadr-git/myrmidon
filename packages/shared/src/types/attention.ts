@@ -93,6 +93,10 @@ export const ATTENTION_SOURCE_KINDS = [
   // myrmidon(1.6.8 OPE-12709): a provider channel answered "no credits"
   // (HTTP 402 / insufficient_quota) — the owner has to top the account up.
   "provider_no_credits",
+  // myrmidon(OPE-12868): a GitHub App's webhook is not "Active" on the App's
+  // GitHub settings page (GitHub answers 404 on the hook-config sync) — the
+  // board receives no GitHub events until the App owner turns it on.
+  "github_app_webhook_disabled",
 ] as const;
 
 export type AttentionSourceKind = (typeof ATTENTION_SOURCE_KINDS)[number];
