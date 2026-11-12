@@ -13,9 +13,21 @@
 
 import test from "node:test";
 import assert from "node:assert/strict";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { spawnSync } from "node:child_process";
+import { join } from "node:path";
+import { tmpdir } from "node:os";
+import { fileURLToPath } from "node:url";
 
 import {
+  ATTRIBUTION_REPORT_SCHEMA,
+  EXIT_OK,
+  EXIT_USAGE,
+  SUPPORTED_DOMAINS,
+  attributeInventoryReport,
   attributeOwnership,
+  buildAttributionReport,
+  isSupportedDomain,
   summarizeAttribution,
 } from "./company-boundaries-inventory.mjs";
 
@@ -200,4 +212,191 @@ test("unrecognized section kinds do not invent owners", () => {
   const result = attributeOwnership("not-a-section", { id: "x", ownerAgentId: AGENT_ID });
   assert.equal(result.owner, "unknown");
   assert.equal(result.ownerKnown, false);
+});
+
+// ---------------------------------------------------------------------------
+// Review round 2: domain allowlist + report wiring (behavioral coverage)
+// ---------------------------------------------------------------------------
+
+test("declared domain outside the supported allowlist collapses to unknown", () => {
+  const result = attributeOwnership("projects-documents", {
+    id: "proj-1",
+    leadAgentId: AGENT_ID,
+    domain: "PROD-DB-PASSWORD",
+  });
+  assert.equal(result.domain, "unknown");
+  assert.equal(result.domainSource, "domain");
+  assert.equal(result.owner, AGENT_ID);
+});
+
+test("metadata.domain outside the allowlist is not copied into the result", () => {
+  const result = attributeOwnership("secrets-bindings", {
+    id: "sec-1",
+    ownerUserId: USER_ID,
+    metadata: { domain: "internal-hostname.corp.example" },
+  });
+  assert.equal(result.domain, "unknown");
+  assert.equal(result.domainSource, "metadata.domain");
+});
+
+test("every supported domain identifier is allowlisted", () => {
+  for (const domain of ["adm", "bbq", "life", "work", "company", "public_link"]) {
+    assert.equal(isSupportedDomain(domain), true, domain);
+  }
+  assert.equal(isSupportedDomain("nope"), false);
+  assert.equal(isSupportedDomain(""), false);
+  assert.equal(isSupportedDomain(null), false);
+  assert.equal(SUPPORTED_DOMAINS.has("adm"), true);
+});
+
+test("supported declared domain survives attribution (canonical lowercase)", () => {
+  const result = attributeOwnership("issues", {
+    id: "i-1",
+    assigneeAgentId: AGENT_ID,
+    domain: "BBQ",
+  });
+  assert.equal(result.domain, "bbq");
+  assert.equal(result.domainSource, "domain");
+});
+
+test("attribution summary contains no sensitive values (leak check)", () => {
+  const SECRET = "hunter2-super-secret-value";
+  const rows = [
+    {
+      id: "i-1",
+      title: `leak marker ${SECRET}`,
+      description: SECRET,
+      body: SECRET,
+      assigneeAgentId: AGENT_ID,
+      domain: SECRET,
+      metadata: { domain: SECRET, token: SECRET },
+      value: SECRET,
+      token: SECRET,
+      apiKey: SECRET,
+    },
+    {
+      id: "i-2",
+      title: "no owner",
+      assigneeAgentId: null,
+      metadata: { domain: SECRET },
+    },
+  ];
+  const summary = summarizeAttribution(rows.map((row) => attributeOwnership("issues", row)));
+  const serialized = JSON.stringify(summary);
+  assert.ok(!serialized.includes(SECRET));
+  assert.equal(summary.total, 2);
+  assert.equal(summary.knownOwners, 1);
+  assert.equal(summary.unknownOwners, 1);
+  assert.deepEqual(summary.owners, [
+    { owner: AGENT_ID, known: true, count: 1 },
+    { owner: "unknown", known: false, count: 1 },
+  ]);
+  // Arbitrary domain strings never reach the summary keys.
+  assert.deepEqual(Object.keys(summary.domains), ["unknown"]);
+});
+
+test("attribution summary domains are deterministically sorted", () => {
+  const rows = [
+    { id: "1", assigneeAgentId: AGENT_ID, domain: "work" },
+    { id: "2", assigneeAgentId: AGENT_ID, domain: "adm" },
+    { id: "3", assigneeAgentId: AGENT_ID, domain: "bbq" },
+  ];
+  const summary = summarizeAttribution(rows.map((row) => attributeOwnership("issues", row)));
+  assert.deepEqual(Object.keys(summary.domains), ["adm", "bbq", "work"]);
+  const again = summarizeAttribution([...rows].reverse().map((row) => attributeOwnership("issues", row)));
+  assert.deepEqual(again, summary);
+});
+
+test("attributeInventoryReport wires captured sections into per-section summaries", () => {
+  const sections = {
+    issues: [
+      { id: "i-1", assigneeAgentId: AGENT_ID, domain: "adm" },
+      { id: "i-2", assigneeAgentId: null },
+    ],
+    agents: [{ id: "a-1", reportsTo: "lead-1" }],
+    projects: [{ id: "p-1", leadAgentId: AGENT_ID, domain: "work" }],
+    secretBindings: [{ id: "s-1", ownerUserId: USER_ID, metadata: { domain: "bbq" } }],
+    ignored: [{ id: "x-1", assigneeAgentId: AGENT_ID }],
+    summary: { total: 99 },
+    notArray: "nope",
+  };
+  const report = attributeInventoryReport(sections);
+  assert.deepEqual(Object.keys(report.sections).sort(), ["agents", "issues", "projects-documents", "secrets-bindings"]);
+  assert.equal(report.sections.issues.total, 2);
+  assert.equal(report.sections.issues.knownOwners, 1);
+  assert.deepEqual(report.sections.issues.domains, { adm: 1, unknown: 1 });
+  assert.equal(report.sections.agents.total, 1);
+  assert.deepEqual(report.sections["projects-documents"].domains, { work: 1 });
+  assert.deepEqual(report.sections["secrets-bindings"].domains, { bbq: 1 });
+  // Unmapped sections are ignored without invention.
+  assert.equal(report.sections.ignored, undefined);
+  assert.equal(attributeInventoryReport(null).sections.agents, undefined);
+  assert.deepEqual(attributeInventoryReport({ issues: [] }).sections.issues, {
+    total: 0, knownOwners: 0, unknownOwners: 0, owners: [], domains: {},
+  });
+});
+
+test("buildAttributionReport produces a deterministic dry-run report envelope", () => {
+  const report = buildAttributionReport({ issues: [{ id: "i-1", assigneeAgentId: AGENT_ID, domain: "adm" }] });
+  assert.equal(report.schema, ATTRIBUTION_REPORT_SCHEMA);
+  assert.equal(report.mode, "dry-run-read-only");
+  const again = buildAttributionReport({ issues: [{ id: "i-1", assigneeAgentId: AGENT_ID, domain: "adm" }] });
+  assert.deepEqual(again, report);
+  const serialized = JSON.stringify(report);
+  assert.ok(!serialized.includes("value"));
+});
+
+// Behavioral coverage: exercise the actual CLI entry point end-to-end.
+const SCRIPT_PATH = fileURLToPath(new URL("./company-boundaries-inventory.mjs", import.meta.url));
+
+test("CLI attribution command appends attribution summary to a captured report", () => {
+  const dir = mkdtempSync(join(tmpdir(), "cbi-cli-"));
+  try {
+    const captured = {
+      sections: {
+        issues: [
+          { id: "i-1", title: "top secret title", assigneeAgentId: AGENT_ID, domain: "adm" },
+          { id: "i-2", assigneeAgentId: null, metadata: { domain: "NOT-A-DOMAIN" } },
+        ],
+        secretBindings: [{ id: "s-1", ownerUserId: USER_ID, value: "hunter2" }],
+      },
+    };
+    const reportFile = join(dir, "captured.json");
+    const outFile = join(dir, "attribution.json");
+    writeFileSync(reportFile, JSON.stringify(captured));
+    const run = spawnSync(process.execPath, [SCRIPT_PATH, "attribution", "--report", reportFile, "--out", outFile], { encoding: "utf8" });
+    assert.equal(run.status, EXIT_OK, run.stderr);
+    const report = JSON.parse(readFileSync(outFile, "utf8"));
+    assert.equal(report.schema, ATTRIBUTION_REPORT_SCHEMA);
+    assert.equal(report.mode, "dry-run-read-only");
+    assert.equal(report.attribution.sections.issues.total, 2);
+    assert.deepEqual(report.attribution.sections.issues.domains, { adm: 1, unknown: 1 });
+    const serialized = readFileSync(outFile, "utf8");
+    assert.ok(!serialized.includes("top secret title"));
+    assert.ok(!serialized.includes("hunter2"));
+    assert.ok(!serialized.includes("NOT-A-DOMAIN"));
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("CLI attribution prints to stdout and fails with usage exit on bad input", () => {
+  const dir = mkdtempSync(join(tmpdir(), "cbi-cli-"));
+  try {
+    const reportFile = join(dir, "captured.json");
+    writeFileSync(reportFile, JSON.stringify({ issues: [{ id: "i-1", assigneeAgentId: AGENT_ID, domain: "work" }] }));
+    const ok = spawnSync(process.execPath, [SCRIPT_PATH, "attribution", "--report", reportFile], { encoding: "utf8" });
+    assert.equal(ok.status, EXIT_OK);
+    const stdoutReport = JSON.parse(ok.stdout);
+    assert.deepEqual(stdoutReport.attribution.sections.issues.domains, { work: 1 });
+
+    const missing = spawnSync(process.execPath, [SCRIPT_PATH, "attribution"], { encoding: "utf8" });
+    assert.equal(missing.status, EXIT_USAGE);
+    assert.ok(missing.stderr.includes("--report"));
+
+    const unknownCmd = spawnSync(process.execPath, [SCRIPT_PATH, "explode"], { encoding: "utf8" });
+    assert.equal(unknownCmd.status, EXIT_USAGE);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 });
