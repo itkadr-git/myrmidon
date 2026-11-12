@@ -885,7 +885,6 @@ async function streamSshToLocalFile(input: {
     ssh.on("close", (code) => {
       sshExitCode = code;
     });
-    ssh.stdin?.on("error", (error) => fail(childWriteError(error, "ssh", stderrTail.text(), sshExitCode)));
     sink.on("error", fail);
     ssh.on("close", (code) => {
       sink.end(() => {
