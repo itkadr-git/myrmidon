@@ -35,6 +35,7 @@ import {
   excludedReviewerIds,
   issueAnchorAgentId,
   issueNeedsReviewer,
+  ownGroupReviewerPool,
   pickReviewer,
   policyHasReviewerParticipant,
   readPendingAgentReview,
@@ -5315,7 +5316,10 @@ export function issueRoutes(
   // stage participants — and an explicit reviewer/lead `assigneeAgentId`,
   // which the disposition gate itself accepts as a review hand-off — on the
   // transition into review, before any state is written, with the list of
-  // teammates that would be accepted instead.
+  // teammates that would be accepted instead. The same rule holds for a
+  // reviewer change while the issue is already in review: a participant the
+  // request adds, or a reassignment to a participant, is checked; a reviewer
+  // the issue already holds is left alone so an unrelated update never fails.
   async function assertReviewParticipantEligibility(input: {
     existing: IssueRouteSnapshot;
     updateFields: Record<string, unknown>;
@@ -5323,37 +5327,59 @@ export function issueRoutes(
     const nextStatus = typeof input.updateFields.status === "string"
       ? input.updateFields.status
       : input.existing.status;
-    if (
-      input.existing.status === "in_review" ||
-      nextStatus !== "in_review" ||
-      isConversation(input.existing)
-    ) {
+    if (nextStatus !== "in_review" || isConversation(input.existing)) {
       return;
     }
-    const policy = input.updateFields.executionPolicy !== undefined
+    const wasInReview = input.existing.status === "in_review";
+    const agentParticipantIds = (
+      candidatePolicy: ReturnType<typeof safeNormalizeIssueExecutionPolicy>,
+    ) =>
+      new Set(
+        (candidatePolicy?.stages ?? []).flatMap((stage) =>
+          stage.type === "review" || stage.type === "approval"
+            ? stage.participants.flatMap((participant) =>
+              participant.type === "agent" && participant.agentId ? [participant.agentId] : [],
+            )
+            : [],
+        ),
+      );
+    const existingPolicy = safeNormalizeIssueExecutionPolicy(input.existing.executionPolicy ?? null);
+    const nextPolicy = input.updateFields.executionPolicy !== undefined
       ? safeNormalizeIssueExecutionPolicy(input.updateFields.executionPolicy ?? null)
-      : safeNormalizeIssueExecutionPolicy(input.existing.executionPolicy ?? null);
-    const participantIds = new Set(
-      policy
-        ? [
-          summarizeExecutionParticipants(policy, "review"),
-          summarizeExecutionParticipants(policy, "approval"),
-        ].flat().flatMap((participant) =>
-          participant.type === "agent" && participant.agentId ? [participant.agentId] : [],
-        )
-        : [],
-    );
-    // myrmidon(OPE-12683): an explicit reviewer/lead `assigneeAgentId` on the
-    // transition is itself a review hand-off (the disposition gate treats it
-    // as one), so it faces the same teammate-eligibility rule as a stage
-    // participant. A plain engineer reassignment is not a review hand-off.
+      : existingPolicy;
+    const nextParticipantIds = agentParticipantIds(nextPolicy);
     const nextAssigneeAgentId =
       input.updateFields.assigneeAgentId === undefined
         ? input.existing.assigneeAgentId
         : input.updateFields.assigneeAgentId;
-    if (typeof nextAssigneeAgentId === "string" && nextAssigneeAgentId.length > 0) {
-      const assigneeRole = (await agentsSvc.getById(nextAssigneeAgentId))?.role ?? "";
-      if (["reviewer", "lead"].includes(assigneeRole)) {
+    const participantIds = new Set<string>();
+    if (!wasInReview) {
+      for (const participantId of nextParticipantIds) participantIds.add(participantId);
+      // myrmidon(OPE-12683): an explicit reviewer/lead `assigneeAgentId` on the
+      // transition is itself a review hand-off (the disposition gate treats it
+      // as one), so it faces the same teammate-eligibility rule as a stage
+      // participant. A plain engineer reassignment is not a review hand-off.
+      if (typeof nextAssigneeAgentId === "string" && nextAssigneeAgentId.length > 0) {
+        const assigneeRole = (await agentsSvc.getById(nextAssigneeAgentId))?.role ?? "";
+        if (["reviewer", "lead"].includes(assigneeRole)) {
+          participantIds.add(nextAssigneeAgentId);
+        }
+      }
+    } else {
+      // myrmidon(OPE-12683): an issue already in review changes its reviewer
+      // by adding a participant to the policy, or by reassigning to one. A
+      // reassignment to a non-participant dissolves the review (the vendor
+      // transition) and hands the task to an engineer: not a reviewer change.
+      const previousParticipantIds = agentParticipantIds(existingPolicy);
+      for (const participantId of nextParticipantIds) {
+        if (!previousParticipantIds.has(participantId)) participantIds.add(participantId);
+      }
+      if (
+        typeof nextAssigneeAgentId === "string" &&
+        nextAssigneeAgentId.length > 0 &&
+        nextAssigneeAgentId !== input.existing.assigneeAgentId &&
+        nextParticipantIds.has(nextAssigneeAgentId)
+      ) {
         participantIds.add(nextAssigneeAgentId);
       }
     }
@@ -16254,24 +16280,20 @@ export function issueRoutes(
                     ...candidate,
                     load: loads.get(candidate.id) ?? 0,
                   }));
-                  // myrmidon(OPE-12683): prefer the issue's own project team —
-                  // the anchor's group (name prefix or telegramGroup) — and only
-                  // fall back to the whole eligible pool when no teammate has
-                  // queue capacity. Mirrors the sweep's poolForGroup.
+                  // myrmidon(OPE-12683): only queue-eligible reviewers of the
+                  // issue's own project team — the anchor's group (name prefix
+                  // or telegramGroup) — qualify. There is no fallback to the
+                  // whole pool: with no teammate in capacity nobody is picked
+                  // here, and the sweep raises the no-reviewer signal. Shares
+                  // `ownGroupReviewerPool` with the sweep's pools.
                   const anchorId = issueAnchorAgentId(routingIssue);
                   const anchorRow = anchorId
                     ? candidateRows.find((candidate) => candidate.id === anchorId)
                       ?? await txReviewRoutingStore.getAgent(routingIssue.companyId, anchorId)
                     : null;
                   const anchorGroup = resolveAgentGroupKey(anchorRow ?? undefined);
-                  const eligibleCandidates = candidates.filter((candidate) =>
-                    candidate.swarmQueueEligible !== false &&
-                    candidate.metadata?.[SWARM_QUEUE_ELIGIBILITY_METADATA_KEY] !== false);
-                  const affinityPool = anchorGroup
-                    ? eligibleCandidates.filter((candidate) => resolveAgentGroupKey(candidate) === anchorGroup)
-                    : eligibleCandidates;
                   const reviewer = pickReviewer({
-                    candidates: affinityPool.length > 0 ? affinityPool : candidates,
+                    candidates: ownGroupReviewerPool(candidates, anchorGroup),
                     excluded: excludedReviewerIds(routingIssue),
                     maxLoad: settings.maxLoadPerReviewer,
                     authorModel,

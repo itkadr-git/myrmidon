@@ -29,8 +29,8 @@ import { REVIEW_ROUTING_SETTINGS_KEY } from "@myrmidon/shared";
 
 // myrmidon(OPE-12683): on the transition into review the board must pick a
 // reviewer from the issue's own project team. With no explicit participants the
-// least-loaded eligible teammate wins; an out-of-team reviewer is never picked
-// while a teammate has capacity. These tests run against the real route stack
+// least-loaded eligible teammate wins; an out-of-team reviewer is never picked,
+// even when no teammate is eligible. These tests run against the real route stack
 // on embedded Postgres: the auto-pick branch reads review-routing settings from
 // the instance row and candidates from the real store, so mocks cannot prove it.
 
@@ -142,14 +142,15 @@ describeEmbeddedPostgres("myrmidon review auto-pick teammate affinity", () => {
     expect(res.body.assigneeAgentId).toBe(teammateReviewerId);
   });
 
-  it("falls back to the whole eligible pool when no teammate reviewer exists", async () => {
-    const { companyId, actor } = await seedCompanyWithBoardAccess(ctx.db, "Autopick fallback pool");
+  it("never falls back to an out-of-team reviewer when no teammate reviewer is eligible", async () => {
+    const { companyId, actor } = await seedCompanyWithBoardAccess(ctx.db, "Autopick no fallback pool");
     const authorId = randomUUID();
     const teammateReviewerId = randomUUID();
     const outOfTeamReviewerId = randomUUID();
     await seedRoutingAgents({ db: ctx.db, companyId, authorId, teammateReviewerId, outOfTeamReviewerId });
     // The teammate reviewer is queue-ineligible: only the out-of-team reviewer
-    // is available, so the pick must fall back to it instead of stalling.
+    // is left. It must not be picked; the issue waits for a teammate and the
+    // sweep raises the no-reviewer signal.
     await ctx.db
       .update(agents)
       .set({ metadata: { swarmQueueEligible: false } })
@@ -159,12 +160,72 @@ describeEmbeddedPostgres("myrmidon review auto-pick teammate affinity", () => {
     const res = await request(routeApp(ctx.db, actor, issueRoutes))
       .patch(`/api/issues/${issueId}`)
       .send({ status: "in_review" });
+
     expect(res.status).toBe(200);
-    expect(res.body.executionState?.currentParticipant).toMatchObject({
-      type: "agent",
-      agentId: outOfTeamReviewerId,
+    expect(res.body.executionState?.currentParticipant?.agentId).not.toBe(outOfTeamReviewerId);
+    expect(res.body.assigneeAgentId).not.toBe(outOfTeamReviewerId);
+  });
+
+  it("refuses an out-of-team reviewer added while the issue is already in review", async () => {
+    const { companyId, actor } = await seedCompanyWithBoardAccess(ctx.db, "Autopick in_review reviewer change");
+    const authorId = randomUUID();
+    const teammateReviewerId = randomUUID();
+    const outOfTeamReviewerId = randomUUID();
+    await seedRoutingAgents({ db: ctx.db, companyId, authorId, teammateReviewerId, outOfTeamReviewerId });
+    const stageId = randomUUID();
+    const issueId = randomUUID();
+    await ctx.db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Reviewer change while in review",
+      status: "in_review",
+      priority: "medium",
+      assigneeAgentId: teammateReviewerId,
+      createdByAgentId: authorId,
+      executionPolicy: {
+        mode: "normal",
+        stages: [{
+          id: stageId,
+          type: "review",
+          approvalsNeeded: 1,
+          participants: [{ id: randomUUID(), type: "agent", agentId: teammateReviewerId, userId: null }],
+        }],
+      },
+      executionState: {
+        status: "pending",
+        currentStageId: stageId,
+        currentStageIndex: 0,
+        currentStageType: "review",
+        currentParticipant: { type: "agent", agentId: teammateReviewerId, userId: null },
+        returnAssignee: { type: "agent", agentId: authorId, userId: null },
+        completedStageIds: [],
+        lastDecisionId: null,
+        lastDecisionOutcome: null,
+      },
     });
-    expect(res.body.assigneeAgentId).toBe(outOfTeamReviewerId);
+
+    const res = await request(routeApp(ctx.db, actor, issueRoutes))
+      .patch(`/api/issues/${issueId}`)
+      .send({
+        executionPolicy: {
+          mode: "normal",
+          stages: [{
+            id: stageId,
+            type: "review",
+            approvalsNeeded: 1,
+            participants: [
+              { id: randomUUID(), type: "agent", agentId: teammateReviewerId, userId: null },
+              { id: randomUUID(), type: "agent", agentId: outOfTeamReviewerId, userId: null },
+            ],
+          }],
+        },
+      });
+
+    // The eligibility gate fires on a reviewer change while in review too; the
+    // anchor is the engineer the review returns to, not the current reviewer.
+    expect(res.status).toBe(422);
+    expect(res.body.code ?? res.body.details?.code).toBe("invalid_review_participant");
+    expect(res.body.details?.rejected?.[0]?.agentId).toBe(outOfTeamReviewerId);
   });
 
   it("refuses an out-of-team reviewer assignee on the transition into review", async () => {

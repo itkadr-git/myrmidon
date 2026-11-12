@@ -1130,6 +1130,169 @@ describe("issue execution policy routes", () => {
     });
   });
 
+  // myrmidon(OPE-12683): the eligibility rule also holds for a reviewer change
+  // while the issue is already in review. A reviewer the issue already holds is
+  // not re-checked, so an unrelated update never fails on a legacy reviewer.
+  const IN_REVIEW_ISSUE_ID = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+  const REVIEW_STAGE_ID = "11111111-1111-4111-8111-111111111111";
+  const CURRENT_REVIEWER_ID = "33333333-3333-4333-8333-333333333333";
+  const ENGINEER_ID = "44444444-4444-4444-8444-444444444444";
+  const NEXT_REVIEWER_ID = "55555555-5555-4555-8555-555555555555";
+
+  function reviewTeamDirectory(next: { name: string; metadata?: Record<string, unknown> }) {
+    return [
+      {
+        id: CURRENT_REVIEWER_ID,
+        companyId: "company-1",
+        name: "adm-dev-review-7",
+        role: "reviewer",
+        metadata: {},
+        permissions: null,
+      },
+      {
+        id: ENGINEER_ID,
+        companyId: "company-1",
+        name: "adm-dev-eng-23",
+        role: "engineer",
+        metadata: {},
+        permissions: null,
+      },
+      {
+        id: NEXT_REVIEWER_ID,
+        companyId: "company-1",
+        name: next.name,
+        role: "reviewer",
+        metadata: next.metadata ?? {},
+        permissions: null,
+      },
+    ];
+  }
+
+  function pendingReviewIssue(participantIds: string[]) {
+    const policy = normalizeIssueExecutionPolicy({
+      stages: [
+        {
+          id: REVIEW_STAGE_ID,
+          type: "review",
+          participants: participantIds.map((agentId) => ({ type: "agent", agentId })),
+        },
+      ],
+    })!;
+    const issue = {
+      id: IN_REVIEW_ISSUE_ID,
+      companyId: "company-1",
+      status: "in_review",
+      assigneeAgentId: CURRENT_REVIEWER_ID,
+      assigneeUserId: null,
+      createdByUserId: "local-board",
+      identifier: "PAP-1280",
+      title: "Reviewer change while in review",
+      executionPolicy: policy,
+      executionState: {
+        status: "pending",
+        currentStageId: REVIEW_STAGE_ID,
+        currentStageIndex: 0,
+        currentStageType: "review",
+        currentParticipant: { type: "agent", agentId: CURRENT_REVIEWER_ID },
+        returnAssignee: { type: "agent", agentId: ENGINEER_ID },
+        completedStageIds: [],
+        lastDecisionId: null,
+        lastDecisionOutcome: null,
+      },
+    };
+    mockIssueService.getById.mockResolvedValue(issue);
+    mockIssueService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) => ({
+      ...issue,
+      ...patch,
+      updatedAt: new Date(),
+    }));
+    return issue;
+  }
+
+  it("rejects a reassignment of an in_review task to an out-of-team reviewer participant", async () => {
+    pendingReviewIssue([CURRENT_REVIEWER_ID, NEXT_REVIEWER_ID]);
+
+    await withAgentDirectory(reviewTeamDirectory({ name: "bbq-worker-1" }), async () => {
+      const res = await request(await createApp())
+        .patch(`/api/issues/${IN_REVIEW_ISSUE_ID}`)
+        .send({ assigneeAgentId: NEXT_REVIEWER_ID });
+
+      expect(res.status).toBe(422);
+      expect(res.body).toMatchObject({ code: "invalid_review_participant" });
+      expect(res.body.details.rejected).toEqual([
+        { agentId: NEXT_REVIEWER_ID, reason: "outside_issue_group" },
+      ]);
+    });
+    expect(mockIssueService.update).not.toHaveBeenCalled();
+  });
+
+  it("rejects a queue-ineligible reviewer added to the policy of an in_review task", async () => {
+    pendingReviewIssue([CURRENT_REVIEWER_ID]);
+    const policy = normalizeIssueExecutionPolicy({
+      stages: [
+        {
+          id: REVIEW_STAGE_ID,
+          type: "review",
+          participants: [
+            { type: "agent", agentId: CURRENT_REVIEWER_ID },
+            { type: "agent", agentId: NEXT_REVIEWER_ID },
+          ],
+        },
+      ],
+    })!;
+
+    await withAgentDirectory(
+      reviewTeamDirectory({ name: "adm-dev-review-8", metadata: { swarmQueueEligible: false } }),
+      async () => {
+        const res = await request(await createApp())
+          .patch(`/api/issues/${IN_REVIEW_ISSUE_ID}`)
+          .send({ executionPolicy: policy });
+
+        expect(res.status).toBe(422);
+        expect(res.body).toMatchObject({ code: "invalid_review_participant" });
+        expect(res.body.details.rejected).toEqual([
+          { agentId: NEXT_REVIEWER_ID, reason: "swarm_queue_ineligible" },
+        ]);
+      },
+    );
+    expect(mockIssueService.update).not.toHaveBeenCalled();
+  });
+
+  it("accepts a reassignment of an in_review task to an eligible teammate participant", async () => {
+    pendingReviewIssue([CURRENT_REVIEWER_ID, NEXT_REVIEWER_ID]);
+
+    await withAgentDirectory(reviewTeamDirectory({ name: "adm-dev-review-8" }), async () => {
+      const res = await request(await createApp())
+        .patch(`/api/issues/${IN_REVIEW_ISSUE_ID}`)
+        .send({ assigneeAgentId: NEXT_REVIEWER_ID });
+
+      expect(res.status).toBe(200);
+      const updatePatch = mockIssueService.update.mock.calls[0]?.[1] as Record<string, unknown>;
+      expect(updatePatch.status).toBe("in_review");
+      expect(updatePatch.assigneeAgentId).toBe(NEXT_REVIEWER_ID);
+    });
+  });
+
+  it("does not treat a reassignment of an in_review task to a non-participant as a reviewer change", async () => {
+    pendingReviewIssue([CURRENT_REVIEWER_ID]);
+
+    await withAgentDirectory(
+      reviewTeamDirectory({ name: "bbq-worker-1" }),
+      async () => {
+        const res = await request(await createApp())
+          .patch(`/api/issues/${IN_REVIEW_ISSUE_ID}`)
+          .send({ assigneeAgentId: NEXT_REVIEWER_ID });
+
+        // The review dissolves and the task returns to an engineer lane; no
+        // reviewer is added, so the eligibility rule has nothing to refuse.
+        expect(res.status).toBe(200);
+        const updatePatch = mockIssueService.update.mock.calls[0]?.[1] as Record<string, unknown>;
+        expect(updatePatch.status).toBe("in_progress");
+        expect(updatePatch.assigneeAgentId).toBe(NEXT_REVIEWER_ID);
+      },
+    );
+  });
+
 
   it("allows an agent-authored in_review resubmission after changes_requested preserving returnAssignee", async () => {
     const policy = normalizeIssueExecutionPolicy({
