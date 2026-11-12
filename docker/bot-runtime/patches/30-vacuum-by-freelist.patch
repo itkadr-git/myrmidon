@@ -27,10 +27,11 @@ index cfe3a89..af611f4 100644
      """Stale-session auto-archive plus auto-prune/VACUUM for ONE profile's state.db; both are gated
      by sessions.min_interval_hours (VACUUM additionally by its own throttles). Opens its own
      SessionDB — SQLite connections are thread-bound.
-@@ -4690,6 +4706,9 @@
+@@ -4690,7 +4706,9 @@
                  min_interval_hours=int(_sess_cfg.get("min_interval_hours", 24)),
                  min_vacuum_interval_days=int(_sess_cfg.get("min_vacuum_interval_days", 30)),
                  vacuum=bool(_sess_cfg.get("vacuum_after_prune", True)),
+-                sessions_dir=_profile_sessions_dir(launch))
 +                vacuum_growth_trigger=float(_sess_cfg.get("vacuum_growth_trigger", 1.0)),
 +                sessions_dir=_profile_sessions_dir(launch),
 +                vacuum_defer=lambda: _vacuum_defer_reason(runner))
@@ -100,7 +101,7 @@ index a87b6f5..51152be 100644
  # Prune/archive filters in evaluation order: (kwarg, applies-when, builder -> (clauses, params)).
  # ``applies-when``: "notnone" (numeric/time bounds; 0 is a real bound) or "truthy" ("" = unset).
  _PRUNE_FILTERS = (
-@@ -368,15 +398,134 @@
+@@ -368,16 +398,138 @@
              self._record_db_file_identity()
          return optimized
  
@@ -221,8 +222,13 @@ index a87b6f5..51152be 100644
      ) -> Dict[str, Any]:
          """Idempotent startup auto-maintenance (never raises): prune inactive sessions, reap stale open
          state-owned rows, optional VACUUM.  Runs at most once per ``min_interval_hours``; VACUUM has its own
-         ``min_vacuum_interval_days`` throttle and fires when either ``freelist_count / page_count`` >
-         ``min_vacuum_freelist_ratio`` (many free pages) OR the file has grown by more than
+         ``min_vacuum_interval_days`` throttle and also requires ``freelist_count / page_count`` >
+         ``min_vacuum_freelist_ratio`` so a small prune on a dense multi-GB database never triggers a full
+-        rewrite.  Stale-open reconciliation: cron/kanban/subagent/one-shot CLI rows never set ``ended_at``
++        rewrite.  myrmidon(G1): the VACUUM no longer needs the prune to have deleted rows in this very
++        pass (``pruned > 0``): whatever was freed earlier, by this prune, by another process or by an API
++        delete, is reclaimed once the ratio is reached.  It fires when either ``freelist_count / page_count`` >
++        ``min_vacuum_freelist_ratio`` (many free pages) OR the file has grown by more than
 +        ``vacuum_growth_trigger`` since the last VACUUM (high-water mark from steady write/delete cycles
 +        where SQLite reuses pages in-place and the freelist never gets large).  myrmidon(OPE-12883): the
 +        size trigger catches the common bot pattern — sessions are pruned by the startup retention pass,
@@ -235,7 +241,7 @@ index a87b6f5..51152be 100644
          when their process dies and prune only deletes ended rows, so after pruning, open rows from
          :attr:`_AUTO_PRUNE_STALE_OPEN_SOURCES` older than ``retention_days`` are closed
          (``startup_orphan_reap``); they stay resumable and age from their close.  Returns ``{"skipped",
-@@ -427,48 +542,57 @@
+@@ -427,45 +542,57 @@
                  respect_gateway_heartbeats=False,  # state-owned lifecycles, not gateway heartbeats
              )
              result["closed"] = len(closed)
@@ -277,15 +283,18 @@ index a87b6f5..51152be 100644
 -                    except Exception as exc:
 -                        logger.warning("state.db VACUUM failed: %s", exc)
 -                else:
+-                    logger.debug("state.db auto-maintenance: skipping VACUUM, only "
+-                                 "%.1f%% of pages reclaimable (threshold %.0f%%)",
+-                                 ratio * 100.0, min_vacuum_freelist_ratio * 100.0)
 +                size_triggered = self._vacuum_size_triggered(vacuum_growth_trigger)
 +                if (ratio is not None and ratio <= min_vacuum_freelist_ratio
 +                        and not size_triggered):
-                     logger.debug("state.db auto-maintenance: skipping VACUUM, only "
-                                  "%.1f%% of pages reclaimable (threshold %.0f%%), "
-                                  "size growth %.0f%% < %.0f%%",
-                                  ratio * 100.0, min_vacuum_freelist_ratio * 100.0,
-                                  (self._size_growth_since_vacuum() or 0.0) * 100.0,
-                                  vacuum_growth_trigger * 100.0)
++                    logger.debug("state.db auto-maintenance: skipping VACUUM, only "
++                                 "%.1f%% of pages reclaimable (threshold %.0f%%), "
++                                 "size growth %.0f%% < %.0f%%",
++                                 ratio * 100.0, min_vacuum_freelist_ratio * 100.0,
++                                 (self._size_growth_since_vacuum() or 0.0) * 100.0,
++                                 vacuum_growth_trigger * 100.0)
 -            # Record even when pruned == 0 so the throttle holds.
 -            self.set_meta("last_auto_prune", str(now))
 +                elif ratio is None and pruned <= 0 and not size_triggered:
