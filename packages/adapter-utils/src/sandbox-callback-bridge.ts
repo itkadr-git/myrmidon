@@ -844,7 +844,10 @@ export async function startSandboxCallbackBridgeWorker(input: {
   // DEFAULT_BRIDGE_QUEUE_POLL_IDLE_WAIT_MS doc explains the transport and
   // watchdog math). The value must be finite and ≥ 0; 0 disables the remote
   // block (every poll is a single-shot list, the legacy behavior). Defaults
-  // to DEFAULT_BRIDGE_QUEUE_POLL_IDLE_WAIT_MS.
+  // to DEFAULT_BRIDGE_QUEUE_POLL_IDLE_WAIT_MS. Only the command-managed
+  // (ssh) transport pays a process spawn per poll, so only that transport
+  // enables the block: callers on other transports pass 0 and keep the
+  // legacy single-shot list.
   pollIdleWaitMs?: number | null;
   // Per-iteration timeout for one poll-loop client call (the `listJsonFiles`
   // poll and one `processRequestFile`). On timeout the loop `catch` runs

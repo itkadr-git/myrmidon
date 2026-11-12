@@ -1689,7 +1689,7 @@ describe("sandbox callback bridge", () => {
   });
 
   it(
-    "idle-polls the queue with at most one blocking exec per wait budget",
+    "idle-polls the queue with at most one blocking exec per wait budget (worker passes an ssh budget)",
     async () => {
     // Board CPU overload (OPE-12727): over SSH, every poll `listJsonFiles` exec
     // spawns a fresh `ssh` process, so a 100 ms cadence burns ~10 spawns a
@@ -1706,7 +1706,10 @@ describe("sandbox callback bridge", () => {
     const queueDir = path.posix.join(rootDir, "queue");
 
     const countingRunner = createExecRunner();
-    const { promise: execRecorded, resolve: recordExec } = Promise.withResolvers<void>();
+    let recordExec!: () => void;
+    const execRecorded = new Promise<void>((resolve) => {
+      recordExec = resolve;
+    });
     let pendingExecs = 0;
     const runner = {
       execute: async (
@@ -1751,12 +1754,84 @@ describe("sandbox callback bridge", () => {
     // Nothing was ever queued, so every exec so far is a poll list exec. An
     // idle window of (budget + one wake sleep) must fit two budgets: the
     // first poll, then the re-poll after the first budget elapses.
-    console.log("PROBE_EXECS", listCallsBeforeStop); expect(listCallsBeforeStop).toBeLessThanOrEqual(2);
+    expect(listCallsBeforeStop).toBeLessThanOrEqual(2);
     },
     // Real-clock integration: the child `/bin/sh` sleep loop only advances
     // with OS time, and the window covers two 5 s idle budgets.
     30_000,
   );
+
+  it(
+    "single-shot poll stays cheap when the worker disables the idle wait",
+    async () => {
+    // Sandbox targets keep the legacy single-shot list (the factory passes
+    // `pollIdleWaitMs: 0`): a `waitMs: 0` budget must NOT prepend the remote
+    // wait loop, so an idle window costs one quick list per poll interval and
+    // the drain on stop never waits out a remote block.
+    //
+    // Real-clock exception: the code under test runs a child `/bin/sh` whose
+    // sleep/timers only advance with OS time, so fake timers cannot drive the
+    // exec boundary.
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-bridge-single-shot-"));
+    cleanupDirs.push(rootDir);
+    const queueDir = path.posix.join(rootDir, "queue");
+
+    const countingRunner = createExecRunner();
+    let recordList!: () => void;
+    const firstList = new Promise<void>((resolve) => {
+      recordList = resolve;
+    });
+    let pendingExecs = 0;
+    const runner = {
+      execute: async (
+        input: {
+          command: string;
+          args?: string[];
+          cwd?: string;
+          env?: Record<string, string>;
+          stdin?: string;
+          timeoutMs?: number;
+        },
+      ): Promise<RunProcessResult> => {
+        pendingExecs += 1;
+        recordList();
+        return countingRunner.execute(input);
+      },
+    };
+
+    const client = createCommandManagedSandboxCallbackBridgeQueueClient({
+      runner,
+      remoteCwd: rootDir,
+      timeoutMs: 30_000,
+    });
+    const worker = await startSandboxCallbackBridgeWorker({
+      client,
+      queueDir,
+      pollIntervalMs: 200,
+      pollIdleWaitMs: 0,
+      authorizeRequest: async () => null,
+      handleRequest: async () => ({ status: 200, body: "ok" }),
+    });
+
+    await firstList;
+    // Three poll intervals of idle time. With the wait loop disabled each
+    // poll returns immediately, so execs flow continuously; the drain at
+    // stop() must not hang on a remote block either.
+    await new Promise((resolve) => setTimeout(resolve, 700));
+    const execsBeforeStop = pendingExecs;
+    const stopStartedAt = Date.now();
+    await worker.stop();
+    const stopMs = Date.now() - stopStartedAt;
+
+    // The window covered ≥3 poll intervals, so the single-shot loop must
+    // have listed at least three times (no idle block), and stop() must
+    // drain promptly (no 5 s remote block to wait out).
+    expect(execsBeforeStop).toBeGreaterThanOrEqual(3);
+    expect(stopMs).toBeLessThan(1_500);
+    },
+    15_000,
+  );
+
 
   // Capture the run-level error the worker surfaces through `runtimeSpan`. The
   // worker runs a throwing function under the `sandbox.callbackBridge.workerFailed`

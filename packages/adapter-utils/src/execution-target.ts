@@ -4836,18 +4836,24 @@ export async function startAdapterExecutionTargetPaperclipBridge(input: {
       timeoutMs: bridgeTimeoutMs,
       shellCommand,
     });
-    // The bridge poll loop long-polls the queue (see
-    // DEFAULT_BRIDGE_QUEUE_POLL_IDLE_WAIT_MS in sandbox-callback-bridge.ts). An
+    // The bridge poll loop long-polls the queue ONLY on the command-managed
+    // (ssh) transport (see DEFAULT_BRIDGE_QUEUE_POLL_IDLE_WAIT_MS in
+    // sandbox-callback-bridge.ts): that is the transport where every poll
+    // spawns a fresh process on the host (OPE-12727). A sandbox transport
+    // already runs one persistent in-sandbox gateway, so its poll execs are
+    // cheap local lists and keep the legacy single-shot behavior — this also
+    // keeps per-iteration drain semantics unchanged for sandbox runs. An
     // operator may shorten, lengthen, or disable (0) the remote block per
     // install; an unset or invalid value takes the worker default.
     const bridgeQueuePollIdleWaitMsRaw = readProductEnv("BRIDGE_QUEUE_POLL_IDLE_MS");
     const bridgeQueuePollIdleWaitMsParsed = bridgeQueuePollIdleWaitMsRaw === undefined
       ? Number.NaN
       : Number(bridgeQueuePollIdleWaitMsRaw);
-    const bridgeQueuePollIdleWaitMs =
-      Number.isFinite(bridgeQueuePollIdleWaitMsParsed) && bridgeQueuePollIdleWaitMsParsed >= 0
+    const bridgeQueuePollIdleWaitMs = target.transport === "ssh"
+      ? (Number.isFinite(bridgeQueuePollIdleWaitMsParsed) && bridgeQueuePollIdleWaitMsParsed >= 0
         ? bridgeQueuePollIdleWaitMsParsed
-        : undefined;
+        : undefined)
+      : 0;
     // `startSandboxCallbackBridgeWorker` keeps its awaited queue-directory
     // setup on the active `bridge.paperclip` step, and runs each request under
     // the run parent context (see `runWithRuntimeParent` inside that function).
