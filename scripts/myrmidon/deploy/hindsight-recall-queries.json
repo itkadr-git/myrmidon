@@ -1,15 +1,15 @@
 {
-  "_comment": "OPE-12680: the 10 canonical recall queries. Fill the queries with real prompts from the board's daily traffic (MCP tool calls, gateway memory calls) before the first baseline run; keep them stable across all before/after comparisons.",
+  "_comment": "OPE-12680: stable representative prompts for the adm bank. Keep query text unchanged across baseline and after runs; replace only through a reviewed change when the workload changes.",
   "queries": [
-    { "name": "q01-architecture", "query": "<fill: архитектурное решение из задач прошлых недель>" },
-    { "name": "q02-incident", "query": "<fill: разбор недавнего инцидента>" },
-    { "name": "q03-deploy", "query": "<fill: как выкатывается доска>" },
-    { "name": "q04-db", "query": "<fill: настройки/схема базы>" },
-    { "name": "q05-agent-role", "query": "<fill: роль и права агента>" },
-    { "name": "q06-review", "query": "<fill: процесс ревью и слияния PR>" },
-    { "name": "q07-memory", "query": "<fill: как устроена память агентов>" },
-    { "name": "q08-task-flow", "query": "<fill: жизненный цикл задачи на доске>" },
-    { "name": "q09-external", "query": "<fill: правила внешних вызовов>" },
-    { "name": "q10-conventions", "query": "<fill: конвенции репозитория>" }
+    { "name": "q01-architecture", "query": "What architectural decisions changed the Myrmidon control plane in the last few weeks?" },
+    { "name": "q02-incident", "query": "What was the root cause and remediation of the most recent production incident?" },
+    { "name": "q03-deploy", "query": "How is the Myrmidon board deployed and what is the approved release procedure?" },
+    { "name": "q04-db", "query": "What are the important database schemas, migrations, and operational database settings?" },
+    { "name": "q05-agent-role", "query": "What are the role, permissions, and tool access rules for an engineering agent?" },
+    { "name": "q06-review", "query": "What is the required pull request review, CI, and merge workflow?" },
+    { "name": "q07-memory", "query": "How is agent memory stored, recalled, retained, and synchronized?" },
+    { "name": "q08-task-flow", "query": "What is the lifecycle of a task on the Paperclip board?" },
+    { "name": "q09-external", "query": "What rules govern external calls, credentials, and secret handling?" },
+    { "name": "q10-conventions", "query": "What repository conventions and verification rules must engineers follow?" }
   ]
 }

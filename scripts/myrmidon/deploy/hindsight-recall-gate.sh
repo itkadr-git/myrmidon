@@ -27,7 +27,7 @@
 #       [--pg-container myrmidon-pg] [--pg-user paperclip] [--db myrmidon_hindsight]
 #   hindsight-recall-gate.sh recall --api http://127.0.0.1:8890 --bank adm \
 #       [--queries hindsight-recall-queries.json] \
-#       [--key "$HINDSIGHT_API_KEY"] [--out gate-result.json]
+#       [--baseline baseline-result.json] [--key "$HINDSIGHT_API_KEY"] [--out gate-result.json]
 # The board role (paperclip) is enough for `sizes`: pg_total_relation_size()
 # needs no privilege on the table. On vm-core docker needs root:
 #   DOCKER="sudo docker" hindsight-recall-gate.sh sizes ...
@@ -46,6 +46,7 @@ API_URL=
 API_KEY=${HINDSIGHT_API_KEY:-}
 BANK=
 QUERIES_FILE=$(dirname "$0")/hindsight-recall-queries.json
+BASELINE_FILE=
 LOG_FILE=
 OUT_FILE=
 
@@ -103,10 +104,10 @@ cmd_recall() {
   [[ -n "$BANK" ]] || die "recall: --bank is required (the hindsight bank to replay against, e.g. adm)" 1
   [[ -f "$QUERIES_FILE" ]] || die "recall: queries file not found: $QUERIES_FILE" 1
   # The key goes through the environment, not argv (visible in ps).
-  HINDSIGHT_GATE_KEY="$API_KEY" python3 - "$API_URL" "$BANK" "$QUERIES_FILE" "$OUT_FILE" <<'PY'
+  HINDSIGHT_GATE_KEY="$API_KEY" python3 - "$API_URL" "$BANK" "$QUERIES_FILE" "$BASELINE_FILE" "$OUT_FILE" <<'PY'
 import hashlib, json, os, sys, urllib.parse, urllib.request
 
-api_url, bank, queries_file, out_file = sys.argv[1:5]
+api_url, bank, queries_file, baseline_file, out_file = sys.argv[1:6]
 api_key = os.environ.get("HINDSIGHT_GATE_KEY", "")
 qs = json.load(open(queries_file))
 items = qs["queries"] if isinstance(qs, dict) else qs
@@ -138,12 +139,29 @@ for q in items:
     print(f"{name}: hits={len(texts)} sha16={h}")
     results.append({"name": name, "hits": len(texts), "sha16": h})
 report = {"bank": bank, "queries": results, "failures": failures}
+regressions = []
+if baseline_file:
+    try:
+        baseline = json.load(open(baseline_file))
+        baseline_by_name = {r["name"]: r for r in baseline.get("queries", [])}
+        for result in results:
+            before = baseline_by_name.get(result["name"])
+            if before is None:
+                regressions.append(f"{result['name']}: missing from baseline")
+            elif result["hits"] < before.get("hits", 0):
+                regressions.append(f"{result['name']}: hits {result['hits']} < baseline {before.get('hits', 0)}")
+        report["baseline"] = baseline_file
+        report["regressions"] = regressions
+    except (OSError, json.JSONDecodeError, TypeError, KeyError) as e:
+        print(f"ERROR: invalid baseline {baseline_file}: {e}", file=sys.stderr)
+        sys.exit(1)
+report["regressions"] = regressions
 out = json.dumps(report, ensure_ascii=False, indent=2)
 if out_file:
     open(out_file, "w").write(out)
 else:
     print(out)
-sys.exit(1 if (failures or any(r["hits"] == 0 for r in results)) else 0)
+sys.exit(1 if (failures or any(r["hits"] == 0 for r in results) or regressions) else 0)
 PY
 }
 
@@ -159,6 +177,7 @@ while [[ $# -gt 0 ]]; do
     --bank) BANK=$2; shift 2 ;;
     --key) API_KEY=$2; shift 2 ;;
     --queries) QUERIES_FILE=$2; shift 2 ;;
+    --baseline) BASELINE_FILE=$2; shift 2 ;;
     --out) OUT_FILE=$2; shift 2 ;;
     *) die "unknown argument: $1" 1 ;;
   esac
