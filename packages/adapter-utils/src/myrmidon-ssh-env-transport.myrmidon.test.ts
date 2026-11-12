@@ -17,6 +17,8 @@ vi.mock("node:child_process", async (importOriginal) => {
       child.stdout = new EventEmitter();
       child.stderr = new EventEmitter();
       child.stdin = {
+        // spawnText (ssh.ts, #2959) attaches an "error" listener to child.stdin before end().
+        on: () => child.stdin,
         end: (chunk?: string) => {
           entry.stdin = chunk ?? "";
           setImmediate(() => child.emit("close", 0, null));
