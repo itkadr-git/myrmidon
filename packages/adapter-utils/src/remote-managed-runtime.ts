@@ -310,7 +310,9 @@ export async function prepareRemoteManagedRuntime(input: {
         });
       }
     } catch (error) {
-      if (preparedWorkspace && baselineSnapshot) {
+      // In git_checkout mode there is no baseline snapshot and the shared
+      // workspace is never restored (OPE-12795); `baselineSnapshot` is null then.
+      if (preparedWorkspace && baselineSnapshot && !gitCheckout) {
         await restoreWorkspaceFromSshExecution({
           spec: input.spec,
           localDir: input.workspaceLocalDir,

@@ -978,15 +978,35 @@ describe("omp local execution", () => {
     const workspaceDir = path.join(rootDir, "workspace");
     await mkdir(workspaceDir, { recursive: true });
 
-    const runExecute = (adapterConfig: Record<string, unknown>) =>
+    const runExecute = (workspaceSync?: string) =>
       execute({
         runId: "run-workspace-sync",
+        authToken: "test-host-api-token",
+        executionTarget: {
+          kind: "remote",
+          transport: "sandbox",
+          providerKey: "test",
+          remoteCwd: "/remote/workspace",
+          // Sandbox targets execute through the provider runtime runner; session listing
+          // (ls on the target) goes through it, so the test supplies a minimal one.
+          runner: {
+            execute: async () => ({
+              exitCode: 0,
+              signal: null,
+              timedOut: false,
+              stdout: "",
+              stderr: "",
+              pid: 1,
+              startedAt: new Date().toISOString(),
+            }),
+          } as never,
+        },
         agent: {
           id: "agent-1",
           companyId: "company-1",
           name: "OMP Builder",
           adapterType: "omp_local",
-          adapterConfig,
+          adapterConfig: workspaceSync ? { workspaceSync } : {},
         },
         runtime: {
           sessionId: null,
@@ -1007,12 +1027,12 @@ describe("omp local execution", () => {
         onLog: async () => {},
       });
 
-    await runExecute({});
+    await runExecute(undefined);
     expect(prepareAdapterExecutionTargetRuntime).toHaveBeenCalledWith(
       expect.objectContaining({ workspaceSyncMode: "full" }),
     );
 
-    await runExecute({ workspaceSync: "git_checkout" });
+    await runExecute("git_checkout");
     expect(prepareAdapterExecutionTargetRuntime).toHaveBeenLastCalledWith(
       expect.objectContaining({ workspaceSyncMode: "git_checkout" }),
     );
