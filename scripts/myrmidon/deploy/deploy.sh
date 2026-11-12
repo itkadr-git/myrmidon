@@ -412,7 +412,7 @@ declare -A COMP_REPO=(
   [dockergate]="ghcr.io/itkadr-git/myrmidon-dockergate"
   [fleetd]="ghcr.io/itkadr-git/myrmidon-fleetd"
 )
-declare -A COMP_REF=() COMP_PRE=()
+declare -A COMP_REF=() COMP_PRE=() COMP_SITE=()
 component_names=()
 changed_components=()
 if [[ -n "$component_digests" ]]; then
@@ -424,6 +424,10 @@ if [[ -n "$component_digests" ]]; then
     component_names+=("$name")
     COMP_REF[$name]="${COMP_REPO[$name]}@$cdigest"
     COMP_PRE[$name]="$(component_current_ref "$name")"
+    # HOST-TARGETING, ONE-DEPLOY: remember the mode (site components roll back
+    # to the site's own backup, not to a --to-image ref).
+    host_var="MYR_$(printf '%s' "$name" | tr '[:lower:]' '[:upper:]')_HOST"
+    [[ "${!host_var:-}" == site:* ]] && COMP_SITE[$name]=1
     host_var="MYR_$(printf '%s' "$name" | tr '[:lower:]' '[:upper:]')_HOST"
     if [[ "${!host_var:-local}" == "skip" ]]; then
       continue
@@ -721,7 +725,13 @@ rollback_everything() {
   for ((i = ${#rolled_components[@]} - 1; i >= 0; i--)); do
     name="${rolled_components[i]}"
     rb_args=(--config "$config" --component "$name")
-    [[ -n "${COMP_PRE[$name]}" ]] && rb_args+=(--to-image "${COMP_PRE[$name]}")
+    # A site component runs no image, so its rollback target is not a ref:
+    # rollback-component.sh restores the site's own <binary>.pre-deploy
+    # backup. --to-image stays for the compose/remote modes (what the
+    # container ran before, from the pre-state).
+    if [[ "${COMP_SITE[$name]:-}" != "1" ]]; then
+      [[ -n "${COMP_PRE[$name]}" ]] && rb_args+=(--to-image "${COMP_PRE[$name]}")
+    fi
     if "$MYR_SCRIPT_DIR/rollback-component.sh" "${rb_args[@]}"; then
       log "rolled $name back"
     else

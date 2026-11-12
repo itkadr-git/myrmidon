@@ -33,6 +33,15 @@ const FAKE_DOCKER = `#!/usr/bin/env bash
 echo "docker $*" >> "$SANDBOX/calls.log"
 case "$1" in
   pull) exit 0 ;;
+  create)
+    echo "cid-site-extract" ;;
+  cp)
+    # docker cp <cid>:/usr/local/bin/fleetd <tmp>: the real docker cp writes
+    # the file INTO the last argument (the local path), not stdout.
+    for last in "$@"; do :; done
+    if [ -e "$SANDBOX/site-fleetd-binary" ]; then cat "$SANDBOX/site-fleetd-binary" > "$last"; else printf 'fake-fleetd-binary\n' > "$last"; fi
+    exit 0 ;;
+  rm) exit 0 ;;
   run)
     case "$*" in
       *check-config*) if [ -e "$SANDBOX/check-config-fails" ]; then echo "config: refused" >&2; exit 1; fi; exit 0 ;;
@@ -236,7 +245,6 @@ case "$1" in
   rev-parse) echo "$SANDBOX/clone" ;;
   remote) cat "$SANDBOX/git-origin" ;;
   fetch) ;;
-  merge-base) exit 0 ;;
   ls-remote) cat "$SANDBOX/git-tags" ;;
 esac
 `;
@@ -247,6 +255,18 @@ esac
 const FAKE_SSH = `#!/usr/bin/env bash
 echo "ssh $*" >> "$SANDBOX/calls.log"
 if [ -e "$SANDBOX/ssh-fails" ]; then echo "ssh: connect failed" >&2; exit 255; fi
+if [ -e "$SANDBOX/site-command-log-only" ]; then
+  case "$*" in
+    *"sha256sum "*) sha256sum "$SANDBOX/site-current-binary" 2>/dev/null || sha256sum "$SANDBOX/site-fleetd-binary" 2>/dev/null ;;
+    *"cat > "*) cat > "$SANDBOX/site-current-binary" ;;
+    *)
+      tee -a "$SANDBOX/site-stdin.log" >/dev/null
+      # site-restore-fails-3: the restore script "finds no backup" — the site
+      # exits 3, rollback-component.sh must die with the explicit message.
+      if [ -e "$SANDBOX/site-restore-fails-3" ]; then exit 3; fi ;;
+  esac
+  exit 0
+fi
 # Drop the ssh options, keep user@host, then run the rest locally (with
 # bash -c when the remote command came as one string).
 while [ "$#" -gt 0 ]; do
@@ -304,6 +324,15 @@ case "$*" in
   *dockergate/health*)
     if [ -e "$SANDBOX/component-health-bad" ]; then exit 1; fi
     echo "OK" ;;
+  # Site mode (OPE-12880): the site health endpoint is fleetd's mTLS
+  # /v1/health on the site host. fleetd-site-health-bad makes it fail like
+  # the compose-mode fleetd-health-bad counter does.
+  *9100*/v1/health*|*site-fleetd*)
+    if [ -f "$SANDBOX/fleetd-site-health-bad" ]; then
+      n="$(cat "$SANDBOX/fleetd-site-health-bad")"
+      if [ "$n" -gt 0 ]; then echo $((n - 1)) > "$SANDBOX/fleetd-site-health-bad"; exit 1; fi
+    fi
+    echo '{"siteId":"myr-vm1","status":"ok","version":"1.4.0+0123456789ab"}' ;;
   *) echo "{}" ;;
 esac
 `;
@@ -719,12 +748,96 @@ describe("rollout-component.sh", () => {
     assert.match(out, /cannot pull|compose up failed|not a service of the compose project|compose project itself cannot be read/);
   });
 
+  it("HOST=site:<user>@<host>: the release binary is extracted, streamed and installed on the site, no compose is touched (OPE-12880)", () => {
+    const sb = sandbox();
+    fs.appendFileSync(sb.config, [
+      "MYR_FLEETD_HOST=site:root@myr-vm1",
+      "MYR_FLEETD_SITE_SERVICE=myrmidon-fleetd",
+      "MYR_FLEETD_SITE_BINARY=/usr/local/bin/fleetd",
+      "MYR_FLEETD_SITE_HEALTH_URL=https://fleetd.internal:9100/v1/health",
+      "",
+    ].join("\n"));
+    fs.writeFileSync(path.join(sb.dir, "site-command-log-only"), "");
+    fs.writeFileSync(path.join(sb.dir, "site-fleetd-binary"), "fake-fleetd-bytes\n");
+    const { code, out } = run(sb, "rollout-component.sh", ["--component", "fleetd", "--digest", FD]);
+    assert.equal(code, 0, out);
+    const log = calls(sb);
+    // The extract ran on THIS host from the release image, by digest.
+    assert.match(log, new RegExp(`docker create --name myr-site-extract-fleetd-\\d+ ghcr\\.io/itkadr-git/myrmidon-fleetd@${FD}`));
+    assert.match(log, /docker cp cid-site-extract:\/usr\/local\/bin\/fleetd/);
+    assert.match(log, /docker rm -f cid-site-extract/);
+    // The binary was streamed to the site, the activation script ran there.
+    assert.match(log, /ssh -o BatchMode=yes -o ConnectTimeout=10 root@myr-vm1 cat > '\/usr\/local\/bin\/fleetd\.new'/);
+    assert.match(log, /SITE_BIN='\/usr\/local\/bin\/fleetd' SITE_UNIT='myrmidon-fleetd' bash -s/);
+    // The activation payload: backup, swap, restart, is-active proof.
+    const stdin = read(path.join(sb.dir, "site-stdin.log"));
+    assert.match(stdin, /cp -a "\$SITE_BIN" "\$SITE_BIN\.pre-deploy"/);
+    assert.match(stdin, /systemctl restart "\$SITE_UNIT"/);
+    assert.match(stdin, /systemctl is-active "\$SITE_UNIT"/);
+    // The health endpoint was probed.
+    assert.match(log, /9100\/v1\/health/);
+    // NO compose anywhere: no override file, no compose up.
+    assert.doesNotMatch(log, /up -d --no-deps fleetd/);
+    assert.ok(!fs.existsSync(path.join(sb.composeDir, "docker-compose.myrmidon-fleetd.yml")));
+    // The history entry records the rollout with the previous site sha256 and
+    // the rollback hint (the rollback restores the site's own backup).
+    assert.match(read(path.join(sb.dir, "state", "history.log")), new RegExp(
+      `deploy-site-fleetd.*ghcr\\.io/itkadr-git/myrmidon-fleetd@${FD} \\(previous site sha256: [0-9a-f]{64}; rollback = the site's <binary>\\.pre-deploy backup\\)`,
+    ));
+  });
+  it("HOST=site:<user>@<host>: a site health failure reports DEGRADED with the rollback commands", () => {
+    const sb = sandbox();
+    fs.appendFileSync(sb.config, [
+      "MYR_FLEETD_HOST=site:root@myr-vm1",
+      "MYR_FLEETD_SITE_HEALTH_URL=https://fleetd.internal:9100/v1/health",
+      "",
+    ].join("\n"));
+    fs.writeFileSync(path.join(sb.dir, "site-command-log-only"), "");
+    fs.writeFileSync(path.join(sb.dir, "fleetd-site-health-bad"), "5");
+    const { code, out } = run(sb, "rollout-component.sh", ["--component", "fleetd", "--digest", FD]);
+    assert.notEqual(code, 0, out);
+    assert.match(out, /DEGRADED: fleetd did not answer at https:\/\/fleetd\.internal:9100\/v1\/health/);
+    assert.match(out, /rollback-component\.sh --config .* --component fleetd/);
+  });
+
+  it("HOST=site:<user>@<host>: --dry-run prints the site plan and runs nothing remote", () => {
+    const sb = sandbox();
+    fs.appendFileSync(sb.config, [
+      "MYR_FLEETD_HOST=site:root@myr-vm1",
+      "MYR_FLEETD_SITE_HEALTH_URL=https://fleetd.internal:9100/v1/health",
+      "",
+    ].join("\n"));
+    const { code, out } = run(sb, "rollout-component.sh", ["--component", "fleetd", "--digest", FD, "--dry-run"]);
+    assert.equal(code, 0, out);
+    assert.match(out, /Component plan \(site target\)/);
+    assert.match(out, /myrmidon-fleetd\.service exists on root@myr-vm1/);
+    assert.match(out, /install the new binary and systemctl restart myrmidon-fleetd/);
+    assert.doesNotMatch(calls(sb), /docker create|docker pull/);
+    assert.ok(!fs.existsSync(path.join(sb.dir, "site-stdin.log")));
+  });
+
+  it("HOST=site:<user>@<host>: the site is refused when the unit never ran there (fail-closed pre-check)", () => {
+    const sb = sandbox({ sshFails: true });
+    fs.appendFileSync(sb.config, "MYR_FLEETD_HOST=site:root@myr-vm1\n");
+    const { code, out } = run(sb, "rollout-component.sh", ["--component", "fleetd", "--digest", FD]);
+    assert.notEqual(code, 0);
+    assert.match(out, /no unit myrmidon-fleetd\.service on root@myr-vm1/);
+  });
+
   it("rejects a malformed MYR_<COMPONENT>_HOST value", () => {
     const sb = sandbox();
     fs.appendFileSync(sb.config, "MYR_FLEETD_HOST=elsewhere\n");
     const { code, out } = run(sb, "rollout-component.sh", ["--component", "fleetd", "--digest", FD]);
     assert.notEqual(code, 0);
-    assert.match(out, /MYR_FLEETD_HOST must be local, skip or remote:/);
+    assert.match(out, /MYR_FLEETD_HOST must be local, skip, remote:<user>@<host> or site:<user>@<host>/);
+  });
+
+  it("rejects a site:<user>@<host> value without a host", () => {
+    const sb = sandbox();
+    fs.appendFileSync(sb.config, "MYR_FLEETD_HOST=site:\n");
+    const { code, out } = run(sb, "rollout-component.sh", ["--component", "fleetd", "--digest", FD]);
+    assert.notEqual(code, 0);
+    assert.match(out, /MYR_FLEETD_HOST must be local, skip, remote:<user>@<host> or site:<user>@<host>/);
   });
 
   it("refuses a component image that is not in the registry, changing nothing", () => {
@@ -848,13 +961,65 @@ describe("rollback-component.sh", () => {
     assert.match(out, /SKIP: fleetd is not managed by this deploy/);
     assert.doesNotMatch(calls(sb), /docker pull/);
   });
-
   it("dies with a clear message when no previous component image is recorded", () => {
     const sb = sandbox();
     const { code, out } = run(sb, "rollback-component.sh", ["--component", "dockergate"]);
     assert.notEqual(code, 0);
     assert.match(out, /no previous dockergate image recorded/);
   });
+
+  it("HOST=site:<user>@<host>: the rollback restores the site's own backup, restarts and proves health (OPE-12880)", () => {
+    const sb = sandbox();
+    fs.appendFileSync(sb.config, [
+      "MYR_FLEETD_HOST=site:root@myr-vm1",
+      "MYR_FLEETD_SITE_HEALTH_URL=https://fleetd.internal:9100/v1/health",
+      "",
+    ].join("\n"));
+    fs.writeFileSync(path.join(sb.dir, "site-command-log-only"), "");
+    // A rollout first: the activation makes the backup the rollback restores.
+    assert.equal(run(sb, "rollout-component.sh", ["--component", "fleetd", "--digest", FD]).code, 0);
+    const callsBeforeRollback = calls(sb).split("\n").length;
+    const { code, out } = run(sb, "rollback-component.sh", ["--component", "fleetd"]);
+    assert.equal(code, 0, out);
+    const log = calls(sb).split("\n").slice(callsBeforeRollback - 1).join("\n");
+    // The rollback itself pulls nothing: it restores the backup, it does not deploy.
+    assert.doesNotMatch(log, /docker pull/);
+    assert.match(log, /SITE_BIN='\/usr\/local\/bin\/fleetd' bash -s/);
+    assert.match(log, /root@myr-vm1 systemctl restart 'myrmidon-fleetd'/);
+    // The rollback history entry records the restored backup.
+    assert.match(read(path.join(sb.dir, "state", "history.log")), /rollback-site-fleetd.*restored the site's backup \(sha256: [0-9a-f]{64}\)/);
+    // The restore payload: the backup is installed through the staged copy.
+    const stdinLog = read(path.join(sb.dir, "site-stdin.log"));
+    assert.match(stdinLog, /cp -a "\$SITE_BIN\.pre-deploy" "\$SITE_BIN\.staged"/);
+    assert.match(out, /rolled fleetd back on root@myr-vm1 to the site's own backup/);
+    // The health endpoint was probed after the restart.
+    assert.match(log, /9100\/v1\/health/);
+  });
+
+  it("HOST=site:<user>@<host>: the rollback dies clearly when the site has no backup (first deploy)", () => {
+    const sb = sandbox();
+    fs.appendFileSync(sb.config, [
+      "MYR_FLEETD_HOST=site:root@myr-vm1",
+      "MYR_FLEETD_SITE_HEALTH_URL=https://fleetd.internal:9100/v1/health",
+      "",
+    ].join("\n"));
+    fs.writeFileSync(path.join(sb.dir, "site-command-log-only"), "");
+    fs.writeFileSync(path.join(sb.dir, "site-restore-fails-3"), "");
+    // No rollout ran: the site has no backup and the restore script exits 3.
+    const { code, out } = run(sb, "rollback-component.sh", ["--component", "fleetd"]);
+    assert.notEqual(code, 0);
+    assert.match(out, /no \/usr\/local\/bin\/fleetd\.pre-deploy backup on root@myr-vm1/);
+    assert.match(out, /nothing to roll back to/);
+  });
+
+  it("HOST=site:<user>@<host>: --to-image is refused on a site target", () => {
+    const sb = sandbox();
+    fs.appendFileSync(sb.config, "MYR_FLEETD_HOST=site:root@myr-vm1\n");
+    const { code, out } = run(sb, "rollback-component.sh", ["--component", "fleetd", "--to-image", `ghcr.io/itkadr-git/myrmidon-fleetd@${FD}`]);
+    assert.notEqual(code, 0);
+    assert.match(out, /--to-image is a compose-mode option/);
+  });
+
 });
 
 describe("bot-apply-smoke.sh", () => {
@@ -1571,6 +1736,48 @@ describe("ONE-DEPLOY: all components in one window, all-or-nothing", () => {
     const bad = run(sb, "deploy.sh", ["--release", "myr-v1.4.0", "--digest", `sha256:${"7".repeat(64)}`, "--dry-run"]);
     assert.notEqual(bad.code, 0);
     assert.match(bad.out, /does not match the board image/);
+  });
+});
+
+describe("ONE-DEPLOY site component", () => {
+  it("a failed SITE fleetd rolls everything back together: the board and dockergate return, the site restores its own backup", () => {
+    const sb = sandbox();
+    writeComponentOverride(sb, "dockergate", PRE_DG);
+    fs.appendFileSync(sb.config, [
+      "MYR_FLEETD_HOST=site:root@myr-vm1",
+      "MYR_FLEETD_SITE_HEALTH_URL=https://fleetd.internal:9100/v1/health",
+      "",
+    ].join("\n"));
+    // A site fleetd has no compose override anywhere, so the canonical boot
+    // unit of THIS install no longer lists the fleetd override file: re-render
+    // the sandbox unit the way render_boot_unit would (dockergate only).
+    const unit = fs.readFileSync(path.join(HERE, "paperclip.service.template"), "utf8")
+      .replaceAll("__COMPOSE_DIR__", sb.composeDir)
+      .replaceAll(
+        "__COMPOSE_FILE_ARGS__",
+        `-f ${sb.composeDir}/docker-compose.yml -f ${sb.composeDir}/docker-compose.myrmidon-image.yml -f ${sb.composeDir}/docker-compose.myrmidon-dockergate.yml`,
+      )
+      .replaceAll("__COMPOSE_SERVICE__", "server");
+    fs.writeFileSync(path.join(sb.dir, "systemd", "paperclip.service"), unit);
+    fs.writeFileSync(path.join(sb.dir, "site-command-log-only"), "");
+    fs.writeFileSync(path.join(sb.dir, "fleetd-site-health-bad"), "3");
+    const { code, out } = run(sb, "deploy.sh", ["--digest", NEW]);
+    assert.notEqual(code, 0, out);
+    assert.match(out, /ROLLING BACK TOGETHER/);
+    // The board and dockergate went back to their previous images.
+    assert.equal(imageOf(sb.override), `${CI_IMAGE}@${OLD}`);
+    assert.equal(imageOf(path.join(sb.composeDir, "docker-compose.myrmidon-dockergate.yml")), PRE_DG);
+    // The site fleetd rolled back by restoring its OWN backup: the restore
+    // script went over ssh, then restart + is-active.
+    const rollbackCalls = calls(sb);
+    assert.match(rollbackCalls, /SITE_BIN='\/usr\/local\/bin\/fleetd' bash -s/);
+    assert.match(rollbackCalls, /root@myr-vm1 systemctl restart 'myrmidon-fleetd'/);
+    // The restore payload (no pull, no install_ref of a site: digest).
+    const stdinLog = read(path.join(sb.dir, "site-stdin.log"));
+    assert.match(stdinLog, /cp -a "\$SITE_BIN\.pre-deploy" "\$SITE_BIN\.staged"/);
+    assert.doesNotMatch(rollbackCalls, /docker pull --quiet site:/);
+    // No compose override was ever written for the site fleetd.
+    assert.ok(!fs.existsSync(path.join(sb.composeDir, "docker-compose.myrmidon-fleetd.yml")));
   });
 });
 

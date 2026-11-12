@@ -160,6 +160,25 @@ the rollout created `paperclip-fleetd-1` on the board host, it exited at once (n
 `/etc/myrmidon-fleetd/config.json` there) and the operator removed it by hand — point
 `MYR_FLEETD_HOST` at the host fleetd actually runs on.
 
+`site:<user>@<host>` (1.7) rolls a component that is a systemd binary on a remote SITE host —
+no compose project there. The rollout extracts the binary from the release image on the deploy
+host (`docker create` + `docker cp`; the fleetd image is distroless, there is nothing to exec
+into), streams it over ssh to `<binary>.new` on the site, then the site script backs up the
+current binary to `<binary>.pre-deploy`, swaps it, restarts the unit
+(`MYR_<COMPONENT>_SITE_SERVICE`, default `myrmidon-<component>`) and requires it `active` —
+on any failure the SITE restores its own backup and restarts again, so a failed rollout never
+leaves the site down. The health is proven from the deploy host against
+`MYR_<COMPONENT>_SITE_HEALTH_URL` (REQUIRED; fleetd answers `/v1/health` over mTLS — pass the
+cert arguments in the same value, like any health URL). The unit must already exist on the
+site: enroll the host per [remote-execution-sites.md §4.2](guides/remote-execution-sites.md);
+a rollout onto a host that never ran the service is refused (fail-closed, the 1.4.0 pattern).
+`rollback-component.sh` targets the same site: it restores the site's OWN backup
+(`<binary>.pre-deploy`, made by the last activation on the site), restarts the unit and proves
+the same health URL. `--to-image` stays a compose-mode option — a site has no image, so the
+empty rollback target means "restore the backup"; when the backup is absent (the rollout never
+replaced an earlier binary), the rollback fails with an explicit "nothing to roll back to"
+message instead of redeploying the current release.
+
 When your installation runs a component from a compose file of its own (dockergate of the
 1.4.0 production install runs from `myrmidon/compose.yml`, not from a
 `docker-compose.myrmidon-dockergate.yml` override), set `MYR_<COMPONENT>_COMPOSE_SERVICE`

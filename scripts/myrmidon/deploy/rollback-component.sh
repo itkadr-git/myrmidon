@@ -59,32 +59,86 @@ if [[ "$COMPONENT_HOST" == "skip" ]]; then
   exit 0
 fi
 component_host_parse "$component" "$COMPONENT_HOST"
+COMPONENT_NAME="$component"
+component_site_env "$component"
 
-if [[ -n "$to_image" ]]; then
-  ref="$to_image"
-elif [[ -f "$COMPONENT_PREVIOUS_FILE" ]]; then
-  ref="$(tr -d '[:space:]' <"$COMPONENT_PREVIOUS_FILE")"
+if [[ "$COMPONENT_SITE" == "1" ]]; then
+  # SITE ROLLBACK SOURCE (the 1.7 site mode): the site's own backup of the
+  # binary, <binary>.pre-deploy, made by the last activation on the SITE. A
+  # digest alone identifies a binary only through its image ref — a site has
+  # no image — and the remembered site image ref from a PAST rollout names the
+  # same NEW release (the rollout records the ref it rolled out, not what the
+  # site ran before). So --to-image stays a compose-mode option: a site
+  # rollback restores the backup and reports the restored sha256.
+  [[ -z "$to_image" ]] || die "--to-image is a compose-mode option; a site rollback restores the site's own <binary>.pre-deploy backup"
 else
-  die "no previous $component image recorded in $STATE_DIR; pass --to-image <ref>"
+  if [[ -n "$to_image" ]]; then
+    ref="$to_image"
+  elif [[ -f "$COMPONENT_PREVIOUS_FILE" ]]; then
+    ref="$(tr -d '[:space:]' <"$COMPONENT_PREVIOUS_FILE")"
+  else
+    die "no previous $component image recorded in $STATE_DIR; pass --to-image <ref>"
+  fi
+  [[ "$ref" =~ ^[A-Za-z0-9./_:@-]+$ ]] || die "rollback target is not an image reference: $ref"
+  if ! check_ci_image_for_repo "$repo" "$ref"; then
+    log "WARNING: $component rollback target is not a verified CI image: $CI_CHECK_REASON"
+    log "WARNING: continuing anyway, rollback is the emergency path"
+  fi
 fi
-[[ "$ref" =~ ^[A-Za-z0-9./_:@-]+$ ]] || die "rollback target is not an image reference: $ref"
-
-current_ref="$(component_host_previous_ref)"
-
-if ! check_ci_image_for_repo "$repo" "$ref"; then
-  log "WARNING: $component rollback target is not a verified CI image: $CI_CHECK_REASON"
-  log "WARNING: continuing anyway, rollback is the emergency path"
-fi
+current_ref=""
 
 if [[ "$DRY_RUN" == "1" ]]; then
-  log "dry run: nothing will be changed. Plan (${COMPONENT_HOST%%:*} target${COMPONENT_REMOTE:+, ssh $COMPONENT_REMOTE}):"
-  plan "1. docker pull $ref"
-  plan "2. set image in $COMPONENT_OVERRIDE_PATH (from ${current_ref:-<none>}); docker compose up -d --no-deps $COMPONENT_SERVICE"
-  if [[ "$component" == "dockergate" ]]; then
-    plan "3. health: the container runs; its self-check log line reports the version of the restored binary and the hash of the config"
+  if [[ "$COMPONENT_SITE" == "1" ]]; then
+    log "dry run: nothing will be changed. Plan (site target, ssh $COMPONENT_REMOTE):"
+    plan "1. install the site's own backup $COMPONENT_SITE_BINARY.pre-deploy"
+    plan "2. systemctl restart $COMPONENT_SITE_SERVICE (through ssh $COMPONENT_REMOTE)"
+    plan "3. health: ${COMPONENT_SITE_HEALTH_URL:-<unset>}"
   else
-    plan "3. health: ${COMPONENT_HEALTH_URL:-<unset>}"
+    log "dry run: nothing will be changed. Plan (${COMPONENT_HOST%%:*} target${COMPONENT_REMOTE:+, ssh $COMPONENT_REMOTE}):"
+    plan "1. docker pull $ref"
+    plan "2. set image in $COMPONENT_OVERRIDE_PATH (from ${current_ref:-<none>}); docker compose up -d --no-deps $COMPONENT_SERVICE"
+    if [[ "$component" == "dockergate" ]]; then
+      plan "3. health: the container runs; its self-check log line reports the version of the restored binary and the hash of the config"
+    else
+      plan "3. health: ${COMPONENT_HEALTH_URL:-<unset>}"
+    fi
   fi
+  exit 0
+fi
+
+if [[ "$COMPONENT_SITE" == "1" ]]; then
+  # The site rollback: restore the site's OWN backup of the binary (the
+  # activation of the last rollout made it on the SITE, before it swapped),
+  # restart the unit and require the health URL. No image pull: a digest
+  # identifies a binary only through an image ref, and a site has no image;
+  # the remembered site ref from a past rollout names the NEW release, so it
+  # is not a rollback target (see the ref-resolution block above).
+  log "1/3 restore the site's own backup on $COMPONENT_REMOTE"
+  site_restore_rc=0
+  component_site_restore_backup || site_restore_rc=$?
+  ((site_restore_rc == 3)) && die "no $COMPONENT_SITE_BINARY.pre-deploy backup on $COMPONENT_REMOTE: the last rollout did not replace an earlier binary, there is nothing to roll back to"
+  ((site_restore_rc == 0)) || die "site rollback of $component failed on $COMPONENT_REMOTE (restore rc=$site_restore_rc)"
+  log "2/3 restart $COMPONENT_SITE_SERVICE"
+  component_site_ssh "systemctl restart '$COMPONENT_SITE_SERVICE'" \
+    || die "site rollback of $component failed on $COMPONENT_REMOTE (restart failed)"
+  restored_digest="$(component_site_current_digest)"
+  record_history "rollback-site-$component" "restored the site's backup (sha256: ${restored_digest:-unknown})"
+  log "3/3 health"
+  if [[ -n "$COMPONENT_SITE_HEALTH_URL" ]]; then
+    health_ok=0
+    for _ in $(seq 1 "$((HEALTH_TIMEOUT_SEC / POLL_INTERVAL_SEC + 1))"); do
+      # shellcheck disable=SC2086
+      if curl -fsS --max-time 10 $COMPONENT_SITE_HEALTH_URL >/dev/null 2>&1; then
+        health_ok=1
+        break
+      fi
+      sleep "$POLL_INTERVAL_SEC"
+    done
+    [[ "$health_ok" == "1" ]] || die "$component did not answer at $COMPONENT_SITE_HEALTH_URL after rollback"
+  else
+    log "WARNING: no MYR_${component^^}_SITE_HEALTH_URL configured; skipping the health probe"
+  fi
+  log "rolled $component back on $COMPONENT_REMOTE to the site's own backup ($COMPONENT_SITE_BINARY.pre-deploy, sha256: ${restored_digest:-unknown})"
   exit 0
 fi
 
