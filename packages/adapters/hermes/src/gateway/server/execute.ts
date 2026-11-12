@@ -78,6 +78,8 @@ import {
   factCheckGatewayPaperclipSkills,
   reconcileGatewayPaperclipSkills,
 } from "./myrmidon-skills-reconcile.js";
+// myrmidon(OPE-12796): same-call tool failure streaks.
+import { createToolFailureRepeatTracker, type ToolFailureRepeatTracker } from "./myrmidon-tool-failure-repeat.js";
 
 type SessionKeyStrategy = "issue" | "agent" | "run" | "none";
 
@@ -144,12 +146,9 @@ type ExecutionState = {
   guardToolArguments: Map<string, unknown[]>;
   guardModelTurnObserved: boolean;
   guardPendingToolCalls: number;
-  /** 1.7 AGENT-RUNTIME: повторы одинаковых ошибок инструментов (OPE-10096) */
-  consecutiveToolErrors: {
-    toolName: string;
-    count: number;
-    lastError: string;
-  } | null;
+  /** 1.7 AGENT-RUNTIME: повторы одинаковых ошибок инструментов (OPE-10096);
+   * myrmidon(OPE-12796): one and the same call, see myrmidon-tool-failure-repeat.ts */
+  toolFailureRepeat: ToolFailureRepeatTracker;
   /** The single RunGuard correction queued for this gateway run. */
   runGuardHintSent: { reason: "repeated_tool_call" | "model_call_limit" } | null;
   runGuardHintStopEmitted: boolean;
@@ -949,7 +948,7 @@ function createExecutionState(runId: string): ExecutionState {
     guardToolArguments: new Map(),
     guardModelTurnObserved: false,
     guardPendingToolCalls: 0,
-    consecutiveToolErrors: null,
+    toolFailureRepeat: createToolFailureRepeatTracker(),
     runGuardHintSent: null,
     runGuardHintStopEmitted: false,
   };
@@ -1114,6 +1113,7 @@ async function sendRunGuardHint(input: {
     reason: "repeated_tool_call" | "model_call_limit";
     tool?: string;
     repeatCount?: number;
+    modelCalls?: number;
   };
 }): Promise<void> {
   const message = buildRunGuardHintMessage(input.hint);
@@ -1311,6 +1311,7 @@ async function logCompactEvent(input: {
     const name = toolNameFromEvent(record);
     const preview = truncateForLog(toolPreviewFromEvent(record, redactText), COMPACT_TOOL_PREVIEW_MAX_CHARS);
     pushToolPreview(state, name, preview);
+    state.toolFailureRepeat.started(name, preview);
     // myrmidon(1.6.7 TOKENS-TRACE / OPE-10727): accumulate tool result sizes
     // from the preview content. The preview is the tool arguments/result
     // snippet captured at tool.started time.
@@ -1330,37 +1331,25 @@ async function logCompactEvent(input: {
     }
 
     // 1.7 AGENT-RUNTIME: лимит повторов одинаковых ошибок инструментов (OPE-10096)
-    if (toolHasError(record)) {
-      const errStr = String(record?.error ?? record?.stderr ?? record?.message ?? "").trim().slice(0, 200);
-      const isSameTool = Boolean(state.consecutiveToolErrors && state.consecutiveToolErrors.toolName === name);
-      const isSameError = Boolean(
-        isSameTool &&
-        state.consecutiveToolErrors?.lastError &&
-        errStr.length > 0 &&
-        state.consecutiveToolErrors.lastError === errStr,
-      );
-
-      let currentError = state.consecutiveToolErrors;
-      if (isSameTool && isSameError && currentError) {
-        currentError.count++;
-      } else {
-        currentError = { toolName: name, count: 1, lastError: errStr };
-        state.consecutiveToolErrors = currentError;
-      }
-
-      if (currentError.count >= 3) {
-        const errorMsg = `Repeated tool failure limit exceeded: ${name} failed ${currentError.count} times consecutively with the same error.`;
-        await ctx.onLog("stderr", `\n[agent-runtime] STOP CONDITION: ${errorMsg} Aborting run to prevent idle tool failure loop.\n`);
-        markTerminal(state, {
-          runId: state.runId,
-          status: "failed",
-          eventName: "agent.runtime.stop_condition",
-          payload: { error: errorMsg },
-          output: errorMsg,
-        });
-      }
-    } else {
-      state.consecutiveToolErrors = null;
+    // myrmidon(OPE-12796): the gateway sends `error` as a boolean, so the old
+    // string compare matched any two failures of a tool. Count only the same call
+    // (name + arguments, + text when the event has one) failing again after the
+    // model saw the previous failure; failures of one parallel batch count once.
+    const failed = toolHasError(record);
+    const rawError = record?.error;
+    const errText = typeof rawError === "string" ? rawError.trim().slice(0, 200) : null;
+    const repeat = state.toolFailureRepeat.completed(name, failed, errText);
+    if (repeat) {
+      const errorMsg = `Repeated tool failure limit exceeded: ${name} failed ${repeat.count} times consecutively with the same error.`;
+      const callText = repeat.preview ? ` Call: ${name} ${repeat.preview}.` : "";
+      await ctx.onLog("stderr", `\n[agent-runtime] STOP CONDITION: ${errorMsg}${callText} Aborting run to prevent idle tool failure loop.\n`);
+      markTerminal(state, {
+        runId: state.runId,
+        status: "failed",
+        eventName: "agent.runtime.stop_condition",
+        payload: { error: errorMsg },
+        output: errorMsg,
+      });
     }
   } else if (eventName === "reasoning.available") {
     const reasoning = redactText(extractReasoningPreview(record));
