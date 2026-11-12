@@ -93,7 +93,7 @@ const HERMES_GATEWAY_ADAPTER_TYPE = "hermes_gateway";
 // other status are kept, and the pass runs only when a runner root is configured (the
 // same gate as the run-copy pass above).
 const RUNNER_TASK_FOLDER_NAME = /^(OPE-\d+(?:-wt)?|wt-ope\d+)$/i;
-const RUNNER_TASK_FOLDER_KEY = /OPE-(\d+)/i;
+const RUNNER_TASK_FOLDER_KEY = /^(?:OPE-(\d+)(?:-wt)?|wt-ope(\d+))$/i;
 
 // --- Env Config -------------------------------------------------------------
 
@@ -452,7 +452,7 @@ export function scanSshRunCopies(runnersRoot, now, ttlHours, { onEvent = () => {
 
 export function issueIdentifierFromRunnerFolderName(name) {
   const m = RUNNER_TASK_FOLDER_KEY.exec(name);
-  return m ? `OPE-${m[1]}` : null;
+  return m ? `OPE-${m[1] ?? m[2]}` : null;
 }
 
 // Git directories inside one task folder worth guarding: the folder itself when it carries

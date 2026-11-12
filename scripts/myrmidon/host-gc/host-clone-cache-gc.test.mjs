@@ -972,22 +972,32 @@ describe("runner task folders", () => {
     assert.equal(bad.action, "keep");
   });
 
-  const runGcTask = (flags, envOverrides = {}) => {
+  // Async spawn: the fake-board e2e runs the HTTP server in this same process, and
+  // spawnSync would block the event loop the server needs to answer the child.
+  const runGcTask = async (flags, envOverrides = {}) => {
     const botsRoot = path.join(tmpDir, "bots");
     fs.mkdirSync(botsRoot, { recursive: true });
     const journal = path.join(tmpDir, "gc-task.jsonl");
     // A plain PATH: the GC subprocess makes ~a dozen read-only git calls per folder,
     // and a launcher-wrapper `git` on PATH multiplies each into a probe/broker walk
-    // that together busts the 120 s spawn timeout. The host GC runs on a host whose
-    // PATH git is the real binary, so this matches production.
+    // that together busts the spawn timeout. The host GC runs on a host whose PATH
+    // git is the real binary, so this matches production.
     const env = { ...GIT_ENV, HOST_GC_RUNNER_ROOTS: "", PATH: "/usr/bin:/bin", PAPERCLIP_API_URL: "http://127.0.0.1:9", ...envOverrides };
-    const res = subprocess.spawnSync(process.execPath, [
-      GC_SCRIPT, "--env", "/nonexistent", "--root", botsRoot,
-      "--journal", journal, "--lock", path.join(tmpDir, "gc-task.lock"), "--proc-dir", path.join(tmpDir, "proc"),
-      ...flags,
-    ], { encoding: "utf8", env, timeout: 120_000 });
+    const res = await new Promise((resolve, reject) => {
+      const child = subprocess.spawn(process.execPath, [
+        GC_SCRIPT, "--env", "/nonexistent", "--root", botsRoot,
+        "--journal", journal, "--lock", path.join(tmpDir, "gc-task.lock"), "--proc-dir", path.join(tmpDir, "proc"),
+        ...flags,
+      ], { encoding: "utf8", env, timeout: 120_000, killSignal: "SIGKILL" });
+      let stdout = "";
+      let stderr = "";
+      child.stdout.on("data", (d) => { stdout += d; });
+      child.stderr.on("data", (d) => { stderr += d; });
+      child.on("error", reject);
+      child.on("close", (code, signal) => resolve({ status: code === null ? (signal === "SIGKILL" ? 143 : code) : code, stdout, stderr }));
+    });
     const events = fs.existsSync(journal)
-      ? fs.readFileSync(journal, "utf8").trim().split("\n").map((l) => JSON.parse(l))
+      ? fs.readFileSync(journal, "utf8").trim().split("\n").filter(Boolean).map((l) => JSON.parse(l))
       : [];
     return { res, events };
   };
@@ -1009,7 +1019,7 @@ describe("runner task folders", () => {
     await new Promise((resolve) => fake.listen(0, "127.0.0.1", resolve));
     const port = fake.address().port;
     try {
-      const { res, events } = runGcTask(["--apply", "--runner-root", runners], { PAPERCLIP_API_URL: `http://127.0.0.1:${port}` });
+      const { res, events } = await runGcTask(["--apply", "--runner-root", runners], { PAPERCLIP_API_URL: `http://127.0.0.1:${port}` });
       assert.equal(res.status, 0, res.stderr);
       assert.equal(fs.existsSync(clean), false, "clean done folder must be removed");
       assert.equal(fs.existsSync(unpushed), false, "unpushed folder must be removed after archive");
@@ -1033,7 +1043,7 @@ describe("runner task folders", () => {
   it("e2e: an unreachable board keeps every folder (fail-closed apply)", async () => {
     const runners = path.join(tmpDir, "runners");
     const clean = makeTaskFolder(runners, "eng21", "OPE-9101", { ageHours: 30 });
-    const { res } = runGcTask(["--apply", "--runner-root", runners]);
+    const { res } = await runGcTask(["--apply", "--runner-root", runners]);
     assert.equal(res.status, 0, res.stderr);
     assert.equal(fs.existsSync(clean), true, "unreachable board must keep the folder");
   });
@@ -1049,7 +1059,7 @@ describe("runner task folders", () => {
     await new Promise((resolve) => fake.listen(0, "127.0.0.1", resolve));
     const port = fake.address().port;
     try {
-      const { res, events } = runGcTask(["--dry-run", "--runner-root", runners], { PAPERCLIP_API_URL: `http://127.0.0.1:${port}` });
+      const { res, events } = await runGcTask(["--dry-run", "--runner-root", runners], { PAPERCLIP_API_URL: `http://127.0.0.1:${port}` });
       assert.equal(res.status, 0, res.stderr);
       assert.equal(fs.existsSync(clean), true);
       assert.equal(events.find((e) => e.event === "dry-run").runnerTaskFolders, 1);
