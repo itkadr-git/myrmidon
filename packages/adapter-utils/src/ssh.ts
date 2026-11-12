@@ -220,6 +220,50 @@ async function execFileText(
   });
 }
 
+const STDERR_TAIL_LIMIT_BYTES = 64 * 1024;
+
+interface StderrTailBuffer {
+  append(chunk: unknown): void;
+  text(): string;
+}
+
+function createStderrTailBuffer(limitBytes = STDERR_TAIL_LIMIT_BYTES): StderrTailBuffer {
+  let buf = Buffer.alloc(0);
+  let droppedBytes = 0;
+
+  return {
+    append(chunk: unknown) {
+      const next = Buffer.isBuffer(chunk) ? chunk : Buffer.from(String(chunk), "utf8");
+      if (next.length === 0) return;
+      if (next.length >= limitBytes) {
+        droppedBytes += buf.length + (next.length - limitBytes);
+        buf = Buffer.from(next.subarray(next.length - limitBytes));
+        return;
+      }
+      const combined = Buffer.concat([buf, next]);
+      if (combined.length <= limitBytes) {
+        buf = combined;
+        return;
+      }
+      const overflow = combined.length - limitBytes;
+      droppedBytes += overflow;
+      buf = Buffer.from(combined.subarray(overflow));
+    },
+    text() {
+      const tail = buf.toString("utf8");
+      if (droppedBytes === 0) return tail;
+      return `…обрезано ${droppedBytes} байт\n${tail}`;
+    },
+  };
+}
+
+function childWriteError(error: Error, processName: string, stderr: string, code: number | null): Error {
+  const exit = code == null ? "" : ` (код выхода ${code})`;
+  const details = stderr.trim();
+  return new Error(`${processName} stdin: ${error.message}${exit}${details ? `\n${details}` : ""}`, { cause: error });
+}
+
+
 async function spawnText(
   file: string,
   args: string[],
@@ -239,6 +283,7 @@ async function spawnText(
     let stderr = "";
     let settled = false;
     let timedOut = false;
+    let childExitCode: number | null = null;
 
     const finishReject = (error: Error & { stdout?: string; stderr?: string; code?: number | null; killed?: boolean }) => {
       if (settled) return;
@@ -306,6 +351,7 @@ async function spawnText(
 
     child.on("close", (code, signal) => {
       clearTimers();
+      childExitCode = code;
       if (settled) return;
       settled = true;
       if (code === 0) {
@@ -322,6 +368,9 @@ async function spawnText(
     });
 
     if (options.stdin != null && child.stdin) {
+      child.stdin.on("error", (error) => {
+        finishReject(Object.assign(childWriteError(error, file, stderr, childExitCode), { code: childExitCode }));
+      });
       child.stdin.end(options.stdin);
     }
   });
@@ -753,8 +802,9 @@ async function streamLocalFileToSsh(input: {
       stdio: ["pipe", "ignore", "pipe"],
     });
 
-    let sshStderr = "";
+    const stderrTail = createStderrTailBuffer();
     let settled = false;
+    let sshExitCode: number | null = null;
 
     const fail = (error: Error) => {
       if (settled) return;
@@ -765,10 +815,11 @@ async function streamLocalFileToSsh(input: {
     };
 
     ssh.stderr?.on("data", (chunk) => {
-      sshStderr += String(chunk);
+      stderrTail.append(chunk);
     });
     source.on("error", fail);
     ssh.on("error", fail);
+    ssh.stdin?.on("error", (error) => fail(childWriteError(error, "ssh", stderrTail.text(), sshExitCode)));
     if (input.progress) {
       input.progress.counter.on("error", fail);
       source.pipe(input.progress.counter).pipe(ssh.stdin ?? null);
@@ -776,10 +827,11 @@ async function streamLocalFileToSsh(input: {
       source.pipe(ssh.stdin ?? null);
     }
     ssh.on("close", (code) => {
+      sshExitCode = code;
       if (settled) return;
       settled = true;
       if ((code ?? 0) !== 0) {
-        reject(new Error(sshStderr.trim() || `ssh exited with code ${code ?? -1}`));
+        reject(new Error(stderrTail.text().trim() || `ssh exited with code ${code ?? -1}`));
         return;
       }
       resolve();
@@ -808,8 +860,9 @@ async function streamSshToLocalFile(input: {
     });
     const sink = createWriteStream(input.localFile, { mode: 0o600 });
 
-    let sshStderr = "";
+    const stderrTail = createStderrTailBuffer();
     let settled = false;
+    let sshExitCode: number | null = null;
 
     const fail = (error: Error) => {
       if (settled) return;
@@ -826,16 +879,20 @@ async function streamSshToLocalFile(input: {
       ssh.stdout?.pipe(sink);
     }
     ssh.stderr?.on("data", (chunk) => {
-      sshStderr += String(chunk);
+      stderrTail.append(chunk);
     });
     ssh.on("error", fail);
+    ssh.on("close", (code) => {
+      sshExitCode = code;
+    });
+    ssh.stdin?.on("error", (error) => fail(childWriteError(error, "ssh", stderrTail.text(), sshExitCode)));
     sink.on("error", fail);
     ssh.on("close", (code) => {
       sink.end(() => {
         if (settled) return;
         settled = true;
         if ((code ?? 0) !== 0) {
-          reject(new Error(sshStderr.trim() || `ssh exited with code ${code ?? -1}`));
+          reject(new Error(stderrTail.text().trim() || `ssh exited with code ${code ?? -1}`));
           return;
         }
         resolve();
@@ -1454,11 +1511,12 @@ export async function syncDirectoryToSsh(input: {
       stdio: ["pipe", "ignore", "pipe"],
     });
 
-    let tarStderr = "";
-    let sshStderr = "";
+    const tarStderrTail = createStderrTailBuffer();
+    const sshStderrTail = createStderrTailBuffer();
     let settled = false;
     let tarExited = false;
     let sshExited = false;
+    let tarStoppedAfterSshExit = false;
     let tarExitCode: number | null = null;
     let sshExitCode: number | null = null;
 
@@ -1467,12 +1525,16 @@ export async function syncDirectoryToSsh(input: {
         return;
       }
       settled = true;
-      if ((tarExitCode ?? 0) !== 0) {
-        reject(new Error(tarStderr.trim() || `tar exited with code ${tarExitCode ?? -1}`));
+      if (!tarStoppedAfterSshExit && (tarExitCode ?? 0) !== 0) {
+        reject(new Error(tarStderrTail.text().trim() || `tar exited with code ${tarExitCode ?? -1}`));
         return;
       }
       if ((sshExitCode ?? 0) !== 0) {
-        reject(new Error(sshStderr.trim() || `ssh exited with code ${sshExitCode ?? -1}`));
+        reject(new Error(sshStderrTail.text().trim() || `ssh exited with code ${sshExitCode ?? -1}`));
+        return;
+      }
+      if (tarStoppedAfterSshExit) {
+        reject(new Error(sshStderrTail.text().trim() || `ssh exited before tar finished (code ${sshExitCode ?? -1})`));
         return;
       }
       resolve();
@@ -1494,11 +1556,18 @@ export async function syncDirectoryToSsh(input: {
     } else {
       tar.stdout?.pipe(ssh.stdin ?? null);
     }
+    ssh.stdin?.on("error", (error) => {
+      if (!tarExited) {
+        tarStoppedAfterSshExit = true;
+        tar.kill("SIGTERM");
+      }
+      fail(childWriteError(error, "ssh", sshStderrTail.text(), sshExitCode));
+    });
     tar.stderr?.on("data", (chunk) => {
-      tarStderr += String(chunk);
+      tarStderrTail.append(chunk);
     });
     ssh.stderr?.on("data", (chunk) => {
-      sshStderr += String(chunk);
+      sshStderrTail.append(chunk);
     });
 
     tar.on("error", fail);
@@ -1506,11 +1575,18 @@ export async function syncDirectoryToSsh(input: {
     tar.on("close", (code) => {
       tarExited = true;
       tarExitCode = code;
+      if ((code ?? 0) !== 0 && !sshExited) {
+        ssh.kill("SIGTERM");
+      }
       maybeFinish();
     });
     ssh.on("close", (code) => {
       sshExited = true;
       sshExitCode = code;
+      if (!tarExited) {
+        tarStoppedAfterSshExit = true;
+        tar.kill("SIGTERM");
+      }
       maybeFinish();
     });
     }).finally(auth.cleanup);
@@ -1582,8 +1658,8 @@ export async function syncDirectoryFromSsh(input: {
         env: tarSpawnEnv(),
       });
 
-      let sshStderr = "";
-      let tarStderr = "";
+      const sshStderrTail = createStderrTailBuffer();
+      const tarStderrTail = createStderrTailBuffer();
       let settled = false;
       let sshExited = false;
       let tarExited = false;
@@ -1596,11 +1672,11 @@ export async function syncDirectoryFromSsh(input: {
         settled = true;
         // ssh answers our SIGTERM with exit code 255; that must not hide why tar failed.
         if (!sshStoppedAfterTarFailure && (sshExitCode ?? 0) !== 0) {
-          reject(new Error(sshStderr.trim() || `ssh exited with code ${sshExitCode ?? -1}`));
+          reject(new Error(sshStderrTail.text().trim() || `ssh exited with code ${sshExitCode ?? -1}`));
           return;
         }
         if ((tarExitCode ?? 0) !== 0) {
-          reject(new Error(tarStderr.trim() || `tar exited with code ${tarExitCode ?? -1}`));
+          reject(new Error(tarStderrTail.text().trim() || `tar exited with code ${tarExitCode ?? -1}`));
           return;
         }
         resolve();
@@ -1621,10 +1697,10 @@ export async function syncDirectoryFromSsh(input: {
         ssh.stdout?.pipe(tar.stdin ?? null);
       }
       ssh.stderr?.on("data", (chunk) => {
-        sshStderr += String(chunk);
+        sshStderrTail.append(chunk);
       });
       tar.stderr?.on("data", (chunk) => {
-        tarStderr += String(chunk);
+        tarStderrTail.append(chunk);
       });
 
       // tar can exit before ssh does (disk full, a corrupt stream); the broken
