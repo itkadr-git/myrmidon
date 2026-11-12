@@ -112,6 +112,14 @@ export interface ReviewReworkStore {
     expectStatus: string;
     comment: string;
   }): Promise<boolean>;
+  /** Apply a goal-judge decision with the same locked status guard as the loop. */
+  applyGoalJudgeDecision(input: {
+    issueId: string;
+    companyId: string;
+    expectStatus: string;
+    patch: Record<string, unknown>;
+    comment: string | null;
+  }): Promise<boolean>;
   /** True only when a human/ADM reactivated an issue the loop had closed. */
   reopenedAfterLoopClose(companyId: string, issueId: string): Promise<boolean>;
   awaitAcceptance(input: {
@@ -153,6 +161,8 @@ function taskFacts(row: typeof issues.$inferSelect): ReviewReworkTaskFacts {
     goalId: row.goalId,
     billingCode: row.billingCode,
     priority: row.priority,
+    executionPolicy: row.executionPolicy,
+    executionState: row.executionState,
     returnAssigneeAgentId:
       returnParticipant
       && returnParticipant.type === "agent"
@@ -482,6 +492,19 @@ export function createPgReviewReworkStore(db: Db): ReviewReworkStore {
         (current) => current.status === input.expectStatus,
         () => ({ status: "done", executionState: null, executionPolicy: null }),
         input.comment,
+      );
+    },
+
+    // myrmidon(1.7-GOAL-JUDGE): the goal-judge round controller's write path —
+    // the same locked guard/build/comment shape as every loop move above, so a
+    // return or escalation races a human exactly like a rework move does.
+    async applyGoalJudgeDecision(input) {
+      return applyGuardedPatch(
+        input.issueId,
+        input.companyId,
+        (current) => current.status === input.expectStatus,
+        () => input.patch,
+        input.comment ?? undefined,
       );
     },
 

@@ -475,6 +475,23 @@
         "path": "agent/context_compressor.py",
         "upstreamMarker": "TASK_TRACKING|VERSION_CONTROL_STATUS"
       }
+    },
+    {
+      "id": "34-run-idempotency-txn-rollback",
+      "kind": "patch",
+      "patch": "docker/bot-runtime/patches/34-run-idempotency-txn-rollback.patch",
+      "files": [
+        "gateway/platforms/api_server_run_idempotency.py"
+      ],
+      "reason": "A write to the run idempotency store whose commit failed (disk full, I/O error, busy timeout) left the SQLite connection inside its transaction; every later BEGIN IMMEDIATE failed and each run request answered 500 until the gateway restarted. Writes now go through _write_locked, which rolls back on any error, and _immediate_txn rolls back a transaction left open before it begins. Rebased onto the v0.23.1 file in OPE-12710.",
+      "dropCondition": "Upstream rolls back a failed commit in the run idempotency store (update_status, extend_retention, status_for_run).",
+      "offer": null,
+      "offerNote": "Not offered yet.",
+      "probe": {
+        "source": "hermes",
+        "path": "gateway/platforms/api_server_run_idempotency.py",
+        "upstreamMarker": "in_transaction|_write_locked|def update_status[\\s\\S]*rollback\\(\\)"
+      }
     }
   ]
 }

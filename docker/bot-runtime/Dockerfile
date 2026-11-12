@@ -19,15 +19,17 @@
 # hermes relative to the installed module's __file__, not from wheel
 # package-data.
 
-# HERMES_VERSION is the version embedded in the release tag's annotated tag
-# object (JSON body, "version" field) — the number the release itself claims;
-# HERMES_GIT_REF is that tag. Since v0.22.0 the two share the numbering
-# scheme (v0.23.1 <-> "version": "0.23.1"), but pyproject.toml's `version =`
-# is pinned to the placeholder 0.0.0 in release trees, so the version check
-# below reads the tag object, not pyproject.toml. Update both together when
-# HERMES_VERSION moves.
-ARG HERMES_VERSION=0.23.1
-ARG HERMES_GIT_REF=v0.23.1
+# HERMES_VERSION is the `version =` field in hermes' pyproject.toml (the
+# number it reports itself); HERMES_GIT_REF is the git tag that ships that
+# version. The two do NOT share a numbering scheme: hermes-agent tags
+# releases by date (vYYYY.M.D) while pyproject.toml's version field is a
+# separate, independently-bumped 0.x.y counter. v2026.9.24 is the tag we
+# confirmed (via the GitHub API and `git ls-remote --tags`, against every
+# recent release tag) carries `version = "0.21.5"` — do not assume a future
+# HERMES_VERSION bump maps to `v<that number>`; look the date tag up the same
+# way and update both.
+ARG HERMES_VERSION=0.21.5
+ARG HERMES_GIT_REF=v2026.9.24
 # The exact commit `HERMES_GIT_REF` must resolve to (confirmed via the GitHub API
 # against both the fork and upstream, and by `git ls-remote --tags` on the fork).
 # A git tag is a mutable ref — upstream (or an MITM on the clone) moving it would otherwise
@@ -35,7 +37,7 @@ ARG HERMES_GIT_REF=v0.23.1
 # fails loudly on a mismatch, before the shallow clone's `.git` is ever removed, so this
 # check is only meaningful pinned here, not as a comment. Update both together when
 # HERMES_GIT_REF moves to a new tag.
-ARG HERMES_GIT_SHA=3b421578588243f920886e6fe79a6faa87ea026e
+ARG HERMES_GIT_SHA=f97608f178d1ffeca59860195ab7da295f7c8e5f
 # myrmidon(HERMES-UPSTREAM): clone the pinned tag from the author's repository.
 # Our hermes changes live in this repository (docker/bot-runtime/patches/*.patch)
 # and HERMES_GIT_SHA below pins the exact tree, so a moved or tampered upstream
@@ -50,14 +52,14 @@ ARG HERMES_REPO=https://github.com/NousResearch/hermes-agent.git
 # builder stage below) gets aiohttp through the same hash-verified lockfile path as
 # every other dependency in this image, instead of a separate unlocked `uv pip
 # install`. See docker/bot-runtime/README.md.
-ARG HERMES_AIOHTTP_VERSION=3.14.5
+ARG HERMES_AIOHTTP_VERSION=3.14.3
 
 # Same uv build + digest hermes-agent's own upstream Dockerfile pins (its
 # `uv_source` stage) — reusing a version we found already vetted against
 # this exact pyproject.toml/uv.lock pair, rather than picking one blind.
 FROM ghcr.io/astral-sh/uv:0.11.6-python3.13-trixie@sha256:b3c543b6c4f23a5f2df22866bd7857e5d304b67a564f4feab6ac22044dde719b AS uv_bin
 
-FROM python:3.14-slim AS builder
+FROM python:3.13-slim AS builder
 ARG HERMES_VERSION
 ARG HERMES_GIT_REF
 ARG HERMES_GIT_SHA
@@ -99,13 +101,9 @@ RUN set -eu; \
 # (wrong build-arg, moved tag, upstream renumbering) instead of silently
 # shipping a different hermes than the labels claim.
 RUN set -eu; \
-    # The release tag is annotated; its JSON body carries the real "version"
-    # (pyproject.toml ships 0.0.0 in release trees since v0.22.0, so it cannot
-    # be checked). Split the tag object on its first blank line and parse the body.
-    tag_body="$(git cat-file tag "${HERMES_GIT_REF}" | sed '1,/^$/d')"; \
-    tagged_version="$(printf '%s' "$tag_body" | python3 -c 'import json,sys; print(json.loads(sys.stdin.read())["version"])')"; \
-    if [ "$tagged_version" != "${HERMES_VERSION}" ]; then \
-      echo "tag ${HERMES_GIT_REF} claims version '$tagged_version' != HERMES_VERSION=${HERMES_VERSION}" >&2; \
+    pinned="$(sed -n 's/^version = "\(.*\)"$/\1/p' pyproject.toml)"; \
+    if [ "$pinned" != "${HERMES_VERSION}" ]; then \
+      echo "HERMES_GIT_REF=${HERMES_GIT_REF} has pyproject version '$pinned' != HERMES_VERSION=${HERMES_VERSION}" >&2; \
       exit 1; \
     fi
 
@@ -145,15 +143,16 @@ RUN set -eu; \
 #
 # myrmidon(G1): the venv's `bin/python` is a symlink to whichever interpreter `uv sync`
 # picked, and the runtime stage copies only /opt/hermes-src, so that interpreter must exist
-# in the runtime stage too. hermes ships a `.python-version` (now 3.14) that `uv sync`
-# honours: on a mismatched stage interpreter it silently downloads a managed CPython into
-# $HOME (/root/.local/share/uv/python/...) and links the venv to it — a path absent from
-# the runtime stage and unreadable by the bot user, so the image died at start with
-# "bad interpreter: Permission denied". Since v0.23.1 the lockfile itself requires
-# `python_full_version >= '3.14'` (the `pm` subpackage's lock pins `==3.14.*`), so the
-# old `python:3.13-slim` base failed `uv sync --frozen` outright — the venv is now pinned
-# to the stage's own Python 3.14. The builder and runtime stages MUST stay on the same
-# `python:3.14-slim`, so that path is the same interpreter in both; the runtime-stage
+# in the runtime stage too. hermes ships a `.python-version` (3.11, a dev-machine pin) that
+# `uv sync` honours: when the stage's Python is not 3.11 it silently downloads a managed
+# CPython into $HOME (/root/.local/share/uv/python/...) and links the venv to it — a path
+# absent from the runtime stage and unreadable by the bot user, so the image died at start
+# with "bad interpreter: Permission denied". pyproject.toml's `requires-python`
+# (>=3.11,<3.14) admits this stage's Python 3.13, and hermes' own upstream Docker image
+# runs Debian 13's system Python (3.13) the same way (its `uv sync` step sees only
+# pyproject.toml + uv.lock, never `.python-version`), so the venv is pinned to the base
+# image's interpreter. The builder and runtime stages MUST stay on the same
+# `python:3.13-slim`, so that path is the same interpreter in both; the runtime-stage
 # assertion below checks it. UV_PYTHON_DOWNLOADS=never turns any future mismatch into a
 # build error instead of a dangling link.
 ENV UV_PYTHON_DOWNLOADS=never
@@ -205,26 +204,48 @@ o = install('/opt/hermes-plugins/hindsight'); \
 print('hindsight plugin deps:', o.status, o.detail if hasattr(o, 'detail') else ''); \
 raise SystemExit(0 if o.status in ('installed', 'none') else 1)"
 
+# myrmidon(OPE-12760): security override over the synced venv. The pinned hermes (v2026.9.24,
+# 0.21.5) locks aiohttp 3.14.3 (GHSA-2g87-pp6c-29x5, GHSA-5wr8-gcqf-gqf3: the gateway API
+# server runs on aiohttp), httpx2 2.7.0 (GHSA-8xx6-hgc6-gc2m, GHSA-f2fp-rgf2-35cp and others:
+# HTTP MCP runs on it) and certifi 2026.5.20 (GHSA-6q48-6c7w-9gw2). Upstream raised aiohttp to
+# 3.14.5 in 0.22.5 (PR #142691) and httpx2 to 2.12.0 in 0.22.2 (PR #138026). Exact versions, over
+# the venv `uv sync` built (httpx2 pulls its matching httpcore2 along). The step sits AFTER the
+# Hindsight plugin installer on purpose: that installer resolves under hermes' core constraints
+# read from pyproject.toml (aiohttp==3.14.3) and would put aiohttp back to 3.14.3 if this ran
+# before it. The version check below fails the build if any floor is not met. Drop both steps
+# (and the matching test in dockerfile.test.mjs) when the pinned hermes is >= 0.22.5: its own
+# uv.lock then carries these versions. See docs/myrmidon/hermes-deltas.md.
+RUN uv pip install --python /opt/hermes-src/.venv/bin/python \
+    aiohttp==3.14.5 httpx2==2.12.0 certifi==2026.10.19
+
+RUN /opt/hermes-src/.venv/bin/python -c \
+    "import re, sys; from importlib.metadata import version; \
+floors = {'aiohttp': '3.14.5', 'httpx2': '2.12.0', 'certifi': '2026.10.19'}; \
+key = lambda v: tuple(map(int, re.findall(r'\d+', v))); \
+bad = [n + ' ' + version(n) + ' < ' + f for n, f in floors.items() if key(version(n)) < key(f)]; \
+print('hermes venv security floors:', {n: version(n) for n in floors}); \
+sys.exit('below the OPE-12760 floor: ' + ', '.join(bad) if bad else 0)"
+
 # Fail the build loudly if any package this image relies on being preinstalled (never
 # lazily) fails to import from the synced venv, instead of only discovering it the first
 # time a bot profile tries to use MCP tools or hindsight memory at runtime.
 RUN /opt/hermes-src/.venv/bin/python -c 'import aiohttp, mcp, hindsight_client'
 
 # myrmidon(G1): import smoke for every module a patch in patches/ changes
-# (hermes_state: 06; tools.environments.base and base_session_env: 02; gateway.run and
-# gateway.run_bootstrap: 05; gateway.platforms.api_server_runs, tools.environments.local and
-# tools.github_broker_context: 09; tools.run_workspace (also api_server_runs/local): 10;
-# tools.github_launcher_context: 11; tools.run_skills (also api_server_runs/local): 14;
-# agent.session_persistence (also api_server_runs): 15; agent.redact: 12;
-# tools.delegation_live_log: 13; hermes_state_registry, gateway.session_db_recovery/
-# session(_persistence/_recovery), run/run_startup/run_shutdown: 22;
-# agent.opencode_affinity and agent.transports.chat_completions: 28; hermes_state_maintenance: 30)
+# (hermes_state: 04, 06; tools.environments.base and base_session_env: 02; gateway.run: 05;
+# gateway.platforms.api_server_runs, tools.environments.local and tools.github_broker_context: 09;
+# tools.run_workspace (also api_server_runs/local): 10; tools.github_launcher_context: 11;
+# tools.run_skills (also api_server_runs/local): 14; agent.session_persistence (also
+# api_server_runs): 15; agent.redact: 12; tools.delegation_live_log: 13;
+# hermes_state_registry, gateway.session_db_recovery/session(_persistence/_recovery/_lifecycle/_transcript),
+# run/run_startup/run_shutdown: 18; agent.opencode_affinity and agent.transports.chat_completions: 28;
+# hermes_state_maintenance: 30; gateway.platforms.api_server_run_idempotency: 34)
 # plus the vendored memory provider (a relative-import package, so a broken plugin tree
 # fails the build here, not at the first bot start). `git apply` only proves the hunks
 # land; a patch that applies cleanly but breaks a module's imports or top-level code
 # would otherwise surface only when a bot starts. No bytecode is written, so the sealed
 # tree stays as the build left it.
-RUN PYTHONDONTWRITEBYTECODE=1 /opt/hermes-src/.venv/bin/python -c 'import hermes_state, hermes_state_maintenance, tools.environments.base, tools.environments.base_session_env, gateway.run, gateway.session_db_recovery, gateway.session_persistence, gateway.session_recovery, gateway.session_lifecycle, gateway.session_transcript, hermes_state_registry, gateway.run_startup, gateway.run_shutdown, gateway.platforms.api_server_runs, tools.environments.local, tools.github_broker_context, tools.run_workspace, tools.github_launcher_context, agent.session_persistence, agent.redact, tools.delegation_live_log, agent.context_economy, tools.stale_result_tool, agent.turn_request_assembly, agent.tool_result_classification, toolsets, model_tools, agent.opencode_affinity, agent.transports.chat_completions'
+RUN PYTHONDONTWRITEBYTECODE=1 /opt/hermes-src/.venv/bin/python -c 'import hermes_state, hermes_state_maintenance, tools.environments.base, tools.environments.base_session_env, gateway.run, gateway.session_db_recovery, gateway.session_persistence, gateway.session_recovery, gateway.session_lifecycle, gateway.session_transcript, hermes_state_registry, gateway.run_startup, gateway.run_shutdown, gateway.platforms.api_server_runs, tools.environments.local, tools.github_broker_context, tools.run_workspace, tools.github_launcher_context, agent.session_persistence, agent.redact, tools.delegation_live_log, agent.context_economy, tools.stale_result_tool, agent.turn_request_assembly, agent.tool_result_classification, toolsets, model_tools, agent.opencode_affinity, agent.transports.chat_completions, gateway.platforms.api_server_run_idempotency'
 
 # myrmidon(G1): behaviour check for patch 06 — the state-DB generation probe must not
 # walk /proc/self/fd once per write while the gateway holds hundreds of descriptors
@@ -280,10 +301,10 @@ RUN PYTHONDONTWRITEBYTECODE=1 /opt/hermes-src/.venv/bin/python /tmp/patch-tests/
 # spill file and the omitted range; read_file stays pinned, skill_view is exempt, the settings come from
 # config.yaml.
 RUN PYTHONDONTWRITEBYTECODE=1 /opt/hermes-src/.venv/bin/python /tmp/patch-tests/tool_result_head_tail.py /opt/hermes-src
-# myrmidon(G1): behaviour regression for 32-compaction-summary-9-sections.patch and
-# 27-compaction-keep-prefix.patch: a summary that stopped on the output limit is kept instead of
-# failing the compression, wake packages are not quoted into it, and a compaction keeps the system
-# prompt and tool schemas (the cached prefix) as they are.
+# myrmidon(G1): behaviour regression for 26-compaction-summary-cap.patch and 27-compaction-keep-prefix.patch:
+# the summary is asked for and held to 8000 characters, a summary that stopped on the output limit is
+# kept instead of failing the compression, wake packages are not quoted into it, and a compaction
+# keeps the system prompt and tool schemas (the cached prefix) as they are.
 RUN PYTHONDONTWRITEBYTECODE=1 /opt/hermes-src/.venv/bin/python /tmp/patch-tests/compaction_summary_cap.py /opt/hermes-src
 # myrmidon(G1): behaviour regression for 17-disabled-tools-by-name.patch (input-token measure D):
 # agent.disabled_tools removes single tools from the model's schema, and leaves it alone when unset.
@@ -308,7 +329,6 @@ RUN PYTHONDONTWRITEBYTECODE=1 /opt/hermes-src/.venv/bin/python /tmp/patch-tests/
 # prompt_cache_key (the header's own value, bounded to 64 characters), a pinned key and every endpoint
 # without the option are untouched, and api.openai.com keeps its content-addressed key.
 RUN PYTHONDONTWRITEBYTECODE=1 /opt/hermes-src/.venv/bin/python /tmp/patch-tests/session_affinity_prompt_cache_key.py /opt/hermes-src
-
 # myrmidon(G1): behaviour regression for 29-gateway-outage-keeps-primary.patch: a lost connection to
 # the model gateway is retried against the primary for the outage budget instead of moving the run to a
 # fallback, model/provider errors still move it at once, and a run on a fallback tries the primary again
@@ -322,9 +342,13 @@ RUN PYTHONDONTWRITEBYTECODE=1 /opt/hermes-src/.venv/bin/python /tmp/patch-tests/
 # myrmidon(G1): behaviour regression for 32-compaction-summary-9-sections.patch:
 # summary template and fallback summary contain all 9 standardized sections.
 RUN PYTHONDONTWRITEBYTECODE=1 /opt/hermes-src/.venv/bin/python /tmp/patch-tests/compaction_summary_9_sections.py /opt/hermes-src
-# myrmidon(G1): behaviour regression for 32-compaction-summary-9-sections.patch (sampling part):
+# myrmidon(G1): behaviour regression for 33-compaction-tool-pairs-sampling.patch:
 # tool call and result pairs are preserved atomically during summary sampling.
 RUN PYTHONDONTWRITEBYTECODE=1 /opt/hermes-src/.venv/bin/python /tmp/patch-tests/compaction_tool_pairs_sampling.py /opt/hermes-src
+# myrmidon(OPE-12759): behaviour regression for 34-run-idempotency-txn-rollback.patch:
+# a failed commit in the run idempotency store must not leave the connection inside its
+# transaction (every later run request answered 500 until the gateway restarted).
+RUN PYTHONDONTWRITEBYTECODE=1 /opt/hermes-src/.venv/bin/python /tmp/patch-tests/run_idempotency_txn_rollback.py /opt/hermes-src
 # myrmidon(G1): names imported inside functions of the patched modules resolve too
 # (the import smoke above runs only top-level imports; a missing lazily imported name
 # broke every run of the 1.6.0 dev image while the build passed).
@@ -369,7 +393,7 @@ RUN rm -rf /opt/hermes-src/.git \
 
 # myrmidon(1.6.5 BOT-DISK-H): Node.js 24 for the workspace mechanism (myr-ws, botd and the
 # git wrapper) that every bot image variant now carries; the dev variant reuses it.
-FROM python:3.14-slim AS node24_dist
+FROM python:3.13-slim AS node24_dist
 ARG NODE24_VERSION=24.21.0
 ARG NODE24_SHA256=fd8e59d5a511510f6a298afb548f18c7d2b1be404d8b4a27d94fbe49f56cb2d6
 
@@ -392,7 +416,7 @@ RUN set -eu; \
 # myrmidon(OPE-10494, 10.11): the GitHub CLI from its own pinned release, not Debian's
 # `gh` package (2.46.0, January 2025): that one fails `gh pr view` / `gh pr edit` with
 # "GraphQL: Projects (classic) is being deprecated", and bots looped on it.
-FROM python:3.14-slim AS gh_dist
+FROM python:3.13-slim AS gh_dist
 ARG GH_VERSION=2.103.3
 ARG GH_SHA256=4c806978ffce1cec70853302a56d70ac6da4f19bae7adca4e1a8ab00633dd91d
 
@@ -410,7 +434,7 @@ RUN set -eu; \
     rm -rf /tmp/gh.tar.gz "/tmp/gh_${GH_VERSION}_linux_amd64"; \
     /usr/local/bin/gh --version | grep -q "gh version ${GH_VERSION} "
 
-FROM python:3.14-slim AS runtime
+FROM python:3.13-slim AS runtime
 ARG HERMES_VERSION
 
 # myrmidon.bot-runtime.contract: the G3 container driver
@@ -667,7 +691,7 @@ ENTRYPOINT ["/usr/bin/tini", "--", "/usr/local/bin/bot-runtime-entrypoint"]
 # digest of the linux-x64 .tar.xz from that release's SHASUMS256.txt. Bump both
 # together. The build fails on a digest mismatch.
 # ---------------------------------------------------------------------------
-FROM python:3.14-slim AS node_dist
+FROM python:3.13-slim AS node_dist
 ARG NODE_VERSION=22.23.3
 ARG NODE_SHA256=df450af89261115ef9f9e3830c3eeb2cc9213b63c720b1af623cb5dcbe2e02de
 
@@ -774,7 +798,7 @@ RUN node /opt/node-tools/smoke.cjs && npm --version
 # Go: the repository's dockergate and fleetd tools are Go modules (go 1.25,
 # stdlib only), and CI runs gofmt/go vet/go test over them in their own lanes.
 # The official tarball is pinned by exact version and sha256, like Node.js.
-FROM python:3.14-slim AS go_dist
+FROM python:3.13-slim AS go_dist
 ARG GO_VERSION=1.25.14
 ARG GO_SHA256=a21ae5633a269bcd7e90cf767e48225633795e99d831742cbf3397064fee7712
 
@@ -800,7 +824,7 @@ RUN set -eu; \
 # tarball is pinned by exact version and sha256 like every other download
 # here, and only the `docker` binary is copied out of it — the tarball also
 # ships dockerd, containerd and runc, and none of those may enter this image.
-FROM python:3.14-slim AS docker_cli_dist
+FROM python:3.13-slim AS docker_cli_dist
 ARG DOCKER_CLI_VERSION=29.7.2
 ARG DOCKER_CLI_SHA256=803d433f226db4776e1768fd319fc6c6e4935a456acf84fcc0080818b854bc8f
 
