@@ -67859,109 +67859,118 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       },
     );
 
-    it("retries an unknown subscription mutation after restart using freshly observed options, not a recovered confirmation flag", async () => {
-      const lane = await draftFixture();
-      try {
-        await db
-          .delete(chatActions)
-          .where(
-            and(
-              eq(chatActions.endpointId, lane.endpoint.id),
-              eq(chatActions.kind, "telegram_stop_subscription"),
-            ),
-          );
-        lane.setSubscriptionInfo({});
-        lane.setMaintenanceHook(async (method) => {
-          if (method === "setWebhook")
-            throw new Error("Synthetic unknown subscription response");
-          return undefined;
-        });
-        await lane.processSubscriptionAttempt();
-        const [action] = await db
-          .select()
-          .from(chatActions)
-          .where(
-            and(
-              eq(chatActions.endpointId, lane.endpoint.id),
-              eq(chatActions.kind, "telegram_maintenance"),
-              sql`${chatActions.payload}->>'operation' = 'stop_subscription'`,
-            ),
-          );
-        expect(action).toMatchObject({
-          status: "failed",
-          result: { retryable: true, providerConfirmed: false },
-        });
-        expect((await lane.send("unknown-subscription"))?.state).toBe(
-          "published",
-        );
-        expect(lane.requests).toHaveLength(1);
-        expect(lane.requests[0]!.method.endsWith("Draft")).toBe(false);
-        await vi.waitFor(
-          async () => {
-            await lane.context.service.processPendingDeliveries();
-            expect(
-              lane.maintenanceRequests.filter(
-                ({ method }) => method === "setWebhook",
+    it(
+      "retries an unknown subscription mutation after restart using freshly observed options, not a recovered confirmation flag",
+      async () => {
+        const lane = await draftFixture();
+        try {
+          await db
+            .delete(chatActions)
+            .where(
+              and(
+                eq(chatActions.endpointId, lane.endpoint.id),
+                eq(chatActions.kind, "telegram_stop_subscription"),
               ),
-            ).toHaveLength(1);
-          },
-          { timeout: 20_000, interval: 250 },
-        );
-        await lane.restart();
-        lane.setSubscriptionInfo({
-          allowed_updates: ["message", "chat_member"],
-        });
-        lane.setMaintenanceHook(undefined);
-        await db
-          .update(chatActions)
-          .set({
-            result: {
-              ...action!.result,
-              providerConfirmed: true,
-              retryAt: new Date(0).toISOString(),
-            },
-          })
-          .where(eq(chatActions.id, action!.id));
-        await Promise.all([
-          lane.context.service.processPendingDeliveries(),
-          lane.context.service.processPendingDeliveries(),
-        ]);
-        const mutations = lane.maintenanceRequests.filter(
-          ({ method }) => method === "setWebhook",
-        );
-        expect(mutations).toHaveLength(2);
-        expect(mutations[1]!.body.allowed_updates).toEqual([
-          "message",
-          "chat_member",
-          "stopped_message_generation",
-        ]);
-        const [receipt] = await db
-          .select()
-          .from(chatActions)
-          .where(
-            and(
-              eq(chatActions.endpointId, lane.endpoint.id),
-              eq(chatActions.kind, "telegram_stop_subscription"),
-            ),
-          );
-        expect(receipt?.status).toBe("processed");
-        const serialized = JSON.stringify(receipt);
-        expect(serialized).not.toContain(lane.configuredWebhook.url);
-        expect(serialized).not.toContain(lane.configuredWebhook.secret_token);
-        lane.requests.length = 0;
-        lane.setHook(async (method, body) => {
-          if (method.endsWith("Draft"))
-            expect((await lane.deliver(Number(body.draft_id))).status).toBe(
-              200,
             );
-        });
-        expect((await lane.send("repaired-after-unknown"))?.state).toBe(
-          "cancelled",
-        );
-      } finally {
-        await lane.close();
-      }
-    });
+          lane.setSubscriptionInfo({});
+          lane.setMaintenanceHook(async (method) => {
+            if (method === "setWebhook")
+              throw new Error("Synthetic unknown subscription response");
+            return undefined;
+          });
+          await lane.processSubscriptionAttempt();
+          const [action] = await db
+            .select()
+            .from(chatActions)
+            .where(
+              and(
+                eq(chatActions.endpointId, lane.endpoint.id),
+                eq(chatActions.kind, "telegram_maintenance"),
+                sql`${chatActions.payload}->>'operation' = 'stop_subscription'`,
+              ),
+            );
+          expect(action).toMatchObject({
+            status: "failed",
+            result: { retryable: true, providerConfirmed: false },
+          });
+          expect((await lane.send("unknown-subscription"))?.state).toBe(
+            "published",
+          );
+          expect(lane.requests).toHaveLength(1);
+          expect(lane.requests[0]!.method.endsWith("Draft")).toBe(false);
+          await vi.waitFor(
+            async () => {
+              await lane.context.service.processPendingDeliveries();
+              expect(
+                lane.maintenanceRequests.filter(
+                  ({ method }) => method === "setWebhook",
+                ),
+              ).toHaveLength(1);
+            },
+            { timeout: 20_000, interval: 250 },
+          );
+          await lane.restart();
+          lane.setSubscriptionInfo({
+            allowed_updates: ["message", "chat_member"],
+          });
+          lane.setMaintenanceHook(undefined);
+          await db
+            .update(chatActions)
+            .set({
+              result: {
+                ...action!.result,
+                providerConfirmed: true,
+                retryAt: new Date(0).toISOString(),
+              },
+            })
+            .where(eq(chatActions.id, action!.id));
+          await Promise.all([
+            lane.context.service.processPendingDeliveries(),
+            lane.context.service.processPendingDeliveries(),
+          ]);
+          const mutations = lane.maintenanceRequests.filter(
+            ({ method }) => method === "setWebhook",
+          );
+          expect(mutations).toHaveLength(2);
+          expect(mutations[1]!.body.allowed_updates).toEqual([
+            "message",
+            "chat_member",
+            "stopped_message_generation",
+          ]);
+          const [receipt] = await db
+            .select()
+            .from(chatActions)
+            .where(
+              and(
+                eq(chatActions.endpointId, lane.endpoint.id),
+                eq(chatActions.kind, "telegram_stop_subscription"),
+              ),
+            );
+          expect(receipt?.status).toBe("processed");
+          const serialized = JSON.stringify(receipt);
+          expect(serialized).not.toContain(lane.configuredWebhook.url);
+          expect(serialized).not.toContain(lane.configuredWebhook.secret_token);
+          lane.requests.length = 0;
+          lane.setHook(async (method, body) => {
+            if (method.endsWith("Draft"))
+              expect((await lane.deliver(Number(body.draft_id))).status).toBe(
+                200,
+              );
+          });
+          expect((await lane.send("repaired-after-unknown"))?.state).toBe(
+            "cancelled",
+          );
+        } finally {
+          await lane.close();
+        }
+      },
+      // Soak RUN 1 on f23c0baa: this single test legitimately crossed the
+      // global 15s testTimeout under serial-shard load while its inner
+      // vi.waitFor above allows 20s — the outer budget must exceed the inner
+      // poll or it kills a still-progressing waitFor. 30s matches the
+      // hookTimeout headroom convention (OPE-12858).
+      30_000,
+    );
 
     it("returns 503 on failed Stop commit and accepts the exact verified retry before final send", async () => {
       const lane = await draftFixture();
