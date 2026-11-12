@@ -12,6 +12,8 @@ import {
   updateExecutionWorkspaceSchema,
   workspaceOverviewQuerySchema,
   workspaceRuntimeControlTargetSchema,
+  executionWorkspaceTurnRestoreSchema,
+  executionWorkspaceTurnDiffQuerySchema,
 } from "@myrmidon/shared";
 import type { WorkspaceRuntimeDesiredState, WorkspaceRuntimeServiceStateMap } from "@myrmidon/shared";
 import {
@@ -63,6 +65,28 @@ import {
 import { conflict, unprocessable } from "../errors.js";
 // myrmidon(B1c): product name in user-facing texts; see product.ts.
 import { PRODUCT_NAME as PN } from "../myrmidon/product.js";
+import {
+  diffTurnCheckpoints,
+  listTurnCheckpoints,
+  restoreTurnCheckpoint,
+  TURN_CHECKPOINT_BUSY_CODE,
+  TURN_CHECKPOINT_MISSING_CODE,
+  TurnCheckpointError,
+} from "../services/workspace-turn-checkpoints.js";
+
+function handleTurnCheckpointError(res: Response, err: unknown) {
+  if (err instanceof TurnCheckpointError) {
+    const status = err.code === TURN_CHECKPOINT_BUSY_CODE
+      ? 409
+      : err.code === TURN_CHECKPOINT_MISSING_CODE
+        ? 404
+        : 422;
+    res.status(status).json({ error: err.message, code: err.code, details: err.details });
+    return;
+  }
+  const message = err instanceof Error ? err.message : "turn checkpoint operation failed";
+  res.status(422).json({ error: message });
+}
 
 const WORKSPACE_CONTROL_OUTPUT_MAX_CHARS = 256 * 1024;
 
@@ -174,6 +198,115 @@ export function executionWorkspaceRoutes(db: Db, opts: { pluginWorkerManager?: P
       return;
     }
     res.json(readiness);
+  });
+
+  /**
+   * OPE-12738 per-turn checkpoints: list the snapshot refs
+   * (refs/myrmidon/turns/<runId>/<turnN>) recorded on this workspace's
+   * worktree for one run. Read-only introspection.
+   */
+  router.get("/execution-workspaces/:id/turn-checkpoints", async (req, res) => {
+    const id = req.params.id as string;
+    const workspace = await getAccessibleResource(req, res, svc.getById(id), "Execution workspace not found");
+    if (!workspace) return;
+    if (!(await assertExecutionWorkspaceReadAllowed(req, res, workspace.companyId))) return;
+    const runId = typeof req.query.runId === "string" ? req.query.runId : "";
+    if (!runId) {
+      res.status(400).json({ error: "runId query parameter is required" });
+      return;
+    }
+    const worktreePath = workspace.providerRef ?? workspace.cwd;
+    if (!worktreePath) {
+      res.status(409).json({ error: "Execution workspace has no local worktree path" });
+      return;
+    }
+    try {
+      const checkpoints = await listTurnCheckpoints({ worktreePath, runId });
+      res.json({ runId, checkpoints });
+    } catch (err) {
+      handleTurnCheckpointError(res, err);
+    }
+  });
+
+  /** OPE-12738: turn→turn introspection diff between two snapshot refs. */
+  router.get("/execution-workspaces/:id/turn-checkpoints/diff", async (req, res) => {
+    const id = req.params.id as string;
+    const workspace = await getAccessibleResource(req, res, svc.getById(id), "Execution workspace not found");
+    if (!workspace) return;
+    if (!(await assertExecutionWorkspaceReadAllowed(req, res, workspace.companyId))) return;
+    const parsed = executionWorkspaceTurnDiffQuerySchema.safeParse(req.query);
+    if (!parsed.success) {
+      res.status(422).json({
+        error: "Invalid turn checkpoint diff query",
+        details: parsed.error.flatten(),
+      });
+      return;
+    }
+    const worktreePath = workspace.providerRef ?? workspace.cwd;
+    if (!worktreePath) {
+      res.status(409).json({ error: "Execution workspace has no local worktree path" });
+      return;
+    }
+    try {
+      const diff = await diffTurnCheckpoints({
+        worktreePath,
+        runId: parsed.data.runId,
+        fromTurn: parsed.data.fromTurn,
+        toTurn: parsed.data.toTurn,
+      });
+      res.json(diff);
+    } catch (err) {
+      handleTurnCheckpointError(res, err);
+    }
+  });
+
+  /**
+   * OPE-12738: restore the working worktree to a previous turn's checkpoint.
+   * Refuses with 409 while the worktree is claimed by another active run.
+   */
+  router.post("/execution-workspaces/:id/turn-checkpoints/restore", validate(executionWorkspaceTurnRestoreSchema), async (req, res) => {
+    const id = req.params.id as string;
+    const workspace = await getAccessibleResource(req, res, svc.getById(id), "Execution workspace not found");
+    if (!workspace) return;
+    assertBoard(req);
+    if (!(await assertRuntimeManageAllowed(req, res, workspace.companyId))) return;
+    const worktreePath = workspace.providerRef ?? workspace.cwd;
+    if (!worktreePath) {
+      res.status(409).json({ error: "Execution workspace has no local worktree path" });
+      return;
+    }
+    const actor = getActorInfo(req);
+    try {
+      const result = await restoreTurnCheckpoint({
+        db,
+        companyId: workspace.companyId,
+        worktreePath,
+        runId: req.body.runId as string,
+        targetTurnNumber: req.body.targetTurnNumber as number,
+        executionWorkspaceId: workspace.id,
+      });
+      await logActivity(db, {
+        companyId: workspace.companyId,
+        actorType: actor.actorType,
+        actorId: actor.actorId,
+        agentId: actor.agentId,
+        runId: actor.runId,
+        agentApiKeyId: actor.agentApiKeyId,
+        action: "execution_workspace.turn_checkpoint_restored",
+        entityType: "execution_workspace",
+        entityId: workspace.id,
+        details: {
+          runId: result.runId,
+          targetTurnNumber: result.targetTurnNumber,
+          ref: result.ref,
+          commitSha: result.commitSha,
+          sourceIssueId: workspace.sourceIssueId,
+        },
+      });
+      res.json(result);
+    } catch (err) {
+      handleTurnCheckpointError(res, err);
+    }
   });
 
   /**
