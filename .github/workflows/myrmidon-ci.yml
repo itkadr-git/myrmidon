@@ -6,9 +6,10 @@ name: Myrmidon CI
 #   fast - ordinary pull requests: typecheck (no Rust), build (no Rust release binary)
 #          and only the tests that the change touches directly;
 #   full - push to main, manual runs, merge queue (always full), PRs labelled
-#          `full-ci` or `review-approved` (the label itself starts a full run:
-#          the owner account has no merge queue, so the approval label is the
-#          "ready to land" gate), and PRs touching
+#          `full-ci` (the label itself starts a full run). Since 30.10 the
+#          `review-approved` label no longer forces the full tier on a PR: the
+#          full tier runs on main after the merge (owner decision, CI capacity),
+#          and PRs touching
 #          shared foundations (lockfile, db, shared, runner, CI...): every lane.
 # A red full run on main opens (or updates) an issue labelled `main-red`.
 # Everything runs on GitHub-hosted runners without secrets. See docs/myrmidon/ci.md.
@@ -20,7 +21,7 @@ name: Myrmidon CI
 
 on:
   pull_request:
-    # `labeled` makes the `review-approved` (and `full-ci`) label start a run
+    # `labeled` makes the `full-ci` label start a run
     # on the same head, which the plan then escalates to the full tier.
     types: [opened, synchronize, reopened, labeled]
   merge_group:
@@ -31,18 +32,33 @@ on:
 
 permissions:
   contents: read
+  checks: write
+  issues: write
+  pull-requests: write
+  statuses: write
 
 concurrency:
-  # Superseded runs are cancelled on PRs and on main alike; a cancelled run
-  # reports no `CI result`, so it can never look green. A cancelled
-  # merge_group run evicts the group from the queue, so queue runs are never
-  # cancelled.
+  # Main and tags never cancel each other; each push to main completes its run.
+  # On PRs, fresh pushes (run_attempt == 1) cancel superseded runs; re-runs
+  # (run_attempt > 1) do NOT cancel whatever is currently running for the head.
+  # Merge group candidates are never cancelled.
   #
-  # `labeled` only matters for `full-ci` and `review-approved`. A run started
+  # Release PRs (by title with rc.* or release, release label, or rel/* branch)
+  # get an isolated concurrency group with `release-` prefix so ordinary PRs do not
+  # block or cancel release testing.
+  #
+  # `labeled` only matters for `full-ci`. A run started
   # by any other label (review-in-progress, needs-rebase, ...) goes to its own
   # group, so it cannot cancel the real run, and every job in it is skipped.
-  group: myrmidon-ci-${{ github.event.pull_request.number || github.ref }}${{ (github.event_name != 'pull_request' || github.event.action != 'labeled' || github.event.label.name == 'full-ci' || github.event.label.name == 'review-approved') && '' || '-label-noop' }}
-  cancel-in-progress: ${{ github.event_name != 'merge_group' && (github.event_name != 'pull_request' || github.event.action != 'labeled' || github.event.label.name == 'full-ci' || github.event.label.name == 'review-approved') }}
+  group: myrmidon-ci-${{ (contains(github.event.pull_request.title, 'rc.') || contains(github.event.pull_request.title, 'release') || contains(github.event.pull_request.labels.*.name, 'release') || startsWith(github.head_ref, 'rel/') || startsWith(github.base_ref, 'rel/')) && 'release-' || '' }}${{ github.event.pull_request.number || github.ref }}${{ (github.event_name != 'pull_request' || github.event.action != 'labeled' || github.event.label.name == 'full-ci') && '' || '-label-noop' }}
+  # OPE-12103: PR runs cancel superseded runs.
+  # Manual re-runs (run_attempt > 1) do not cancel the current head run.
+  # Pushes to main do not cancel the running main run (10.11): with merges more
+  # often than a full run (~25 min) every main run was cancelled and main had no
+  # completed run for hours, so main-green-gate never turned green. Without the
+  # cancel GitHub keeps the running main run and one pending run (a newer push
+  # replaces the pending one), so a recent main commit always completes.
+  cancel-in-progress: ${{ github.event_name == 'pull_request' && github.run_attempt == 1 && (github.event.action != 'labeled' || github.event.label.name == 'full-ci') }}
 
 env:
   NPM_CONFIG_AUDIT: "false"
@@ -52,17 +68,50 @@ env:
 jobs:
   plan:
     name: plan
-    if: ${{ (github.event_name != 'pull_request' || github.event.action != 'labeled' || github.event.label.name == 'full-ci' || github.event.label.name == 'review-approved') }}
-    runs-on: ${{ fromJSON(vars.MYR_RUNNER || '"ubuntu-latest"') }}
+    if: ${{ (github.event_name != 'pull_request' || github.event.action != 'labeled' || github.event.label.name == 'full-ci') }}
+    runs-on: ${{ fromJSON(vars.CI_RUNNER_LIGHT || vars.MYR_RUNNER_LIGHT || '"vps-ci"') }}
     timeout-minutes: 10
     outputs:
       tier: ${{ steps.plan.outputs.tier }}
+      is_release: ${{ steps.plan.outputs.is_release }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           persist-credentials: false
           fetch-depth: 0
+
+      - name: Ensure gh and jq (self-hosted runners may lack them)
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          bin="$RUNNER_TEMP/tools-bin"; mkdir -p "$bin"
+          if ! command -v jq >/dev/null; then
+            # Release assets via the authenticated API: anonymous github.com downloads fail with 504 when GitHub throttles anonymous traffic.
+            curl -fsSL --retry 5 --retry-all-errors -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/octet-stream" -o "$bin/jq" https://api.github.com/repos/jqlang/jq/releases/assets/140520984
+            chmod +x "$bin/jq"
+          fi
+          if ! command -v gh >/dev/null; then
+            curl -fsSL --retry 5 --retry-all-errors -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/octet-stream" -o "$RUNNER_TEMP/gh.tar.gz" https://api.github.com/repos/cli/cli/releases/assets/206502108
+            tar -xzf "$RUNNER_TEMP/gh.tar.gz" -C "$RUNNER_TEMP"
+            cp "$RUNNER_TEMP/gh_2.62.0_linux_amd64/bin/gh" "$bin/gh"
+          fi
+          echo "$bin" >> "$GITHUB_PATH"
+
+      - name: Hot files review check
+        if: ${{ github.event_name == 'pull_request' || github.event_name == 'merge_group' }}
+        env:
+          EVENT: ${{ github.event_name }}
+          REPO: ${{ github.repository }}
+          PR: ${{ github.event.pull_request.number }}
+          ACTION: ${{ github.event.action }}
+          SHA: ${{ github.event_name == 'merge_group' && github.event.merge_group.head_sha || github.event.pull_request.head.sha }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          ./scripts/myrmidon/ci/hot-files-check.sh
 
       - name: Setup Node.js
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
@@ -93,24 +142,53 @@ jobs:
           EVENT: ${{ github.event_name }}
           BASE: ${{ github.event_name == 'merge_group' && github.event.merge_group.base_sha || github.event.pull_request.base.sha }}
           HEAD: ${{ github.event_name == 'merge_group' && github.event.merge_group.head_sha || github.event.pull_request.head.sha }}
-          FULL_LABEL: ${{ github.event_name == 'merge_group' || (github.event_name == 'pull_request' && (contains(github.event.pull_request.labels.*.name, 'full-ci') || contains(github.event.pull_request.labels.*.name, 'review-approved'))) }}
+          FULL_LABEL: ${{ github.event_name == 'merge_group' || (github.event_name == 'pull_request' && contains(github.event.pull_request.labels.*.name, 'full-ci')) }}
           BASE_REF: ${{ github.event.pull_request.base.ref }}
+          HEAD_REF: ${{ github.head_ref }}
+          REF: ${{ github.ref }}
+          PR_TITLE: ${{ github.event.pull_request.title }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          GH_TOKEN: ${{ github.token }}
+          # 31.10: CI_PR_FAST=true lowers a full-classified PR plan to the fast tier for every base
+          # (full-ci label keeps full). rel/* PRs use the same lowering but escalate back to full above
+          # MAX_FAST_FILES_PER_PACKAGE; other PRs add --pr-light: a package over the limit runs its direct
+          # tests (changed, next to the source, direct importers, shared guards; capped, drops are logged)
+          # instead of going full. main, merge_group and tags never get either flag.
+          PR_FAST: ${{ vars.CI_PR_FAST }}
         run: |
           set -euo pipefail
           args=(plan --out "$RUNNER_TEMP/plan.json")
           # A merge-group candidate is a merge commit over its base: the same
           # base..head diff the PR was checked with, on top of the fresh main.
           if [ "$EVENT" = "pull_request" ] || [ "$EVENT" = "merge_group" ]; then
-            if [ -n "$BASE" ] && git cat-file -e "$BASE^{commit}" 2>/dev/null; then
+            if [ -n "${BASE:-}" ] && git cat-file -e "${BASE}^{commit}" 2>/dev/null; then
               args+=(--base "$BASE" --head "$HEAD")
             else
               # Fail safe: without a comparable base the plan cannot pick a
               # tier, so run every lane.
-              echo "::warning::base commit $BASE not found; forcing the full tier"
+              echo "::warning::base commit ${BASE:-} not found; forcing the full tier"
             fi
-            if [ "$FULL_LABEL" = "true" ]; then args+=(--force-full); fi
-            case "$BASE_REF" in rel/*) args+=(--release-fast) ;; esac
+            if [ "${FULL_LABEL:-}" = "true" ]; then
+              args+=(--force-full)
+            elif [[ "${PR_TITLE:-}" =~ (rc\.[0-9]+|release) ]] || [[ "${BASE_REF:-}" =~ ^rel/ ]] || [[ "${HEAD_REF:-}" =~ ^rel/ ]]; then
+              echo "Release stream detected ($PR_TITLE / ${BASE_REF:-} / ${HEAD_REF:-}): applying --release-fast"
+              args+=(--release-fast)
+            elif [ "$EVENT" = "pull_request" ] && [ "${PR_FAST:-}" = "true" ]; then
+              args+=(--release-fast --pr-light)
+            fi
+            if [ "$EVENT" = "pull_request" ] && [ -n "${PR_NUMBER:-}" ]; then
+              pr_head="$(gh api "repos/$GITHUB_REPOSITORY/pulls/$PR_NUMBER" --jq '.head.sha' 2>/dev/null || true)"
+              if [ -n "$pr_head" ] && [ "${HEAD:-}" != "$pr_head" ]; then
+                echo "::warning title=Obsolete Run::Commit ${HEAD:-} is superseded by head $pr_head on PR #$PR_NUMBER. Running minimal docs tier."
+                args=(plan --out "$RUNNER_TEMP/plan.json" --tier docs)
+              fi
+            fi
           fi
+          is_rel="false"
+          if [ "${REF:-}" = "refs/heads/main" ] || [[ "${REF:-}" =~ ^refs/tags/ ]] || [[ "${PR_TITLE:-}" =~ (rc\.[0-9]+|release) ]] || [[ "${BASE_REF:-}" =~ ^rel/ ]] || [[ "${HEAD_REF:-}" =~ ^rel/ ]]; then
+            is_rel="true"
+          fi
+          echo "is_release=$is_rel" >> "$GITHUB_OUTPUT"
           node scripts/myrmidon/ci/affected-tests.mjs "${args[@]}"
 
       - name: Upload plan
@@ -120,13 +198,39 @@ jobs:
           path: ${{ runner.temp }}/plan.json
           retention-days: 3
 
+  migration-guard:
+    name: migration guard
+    needs: plan
+    if: ${{ github.event_name == 'pull_request' && (needs.plan.outputs.tier == 'fast' || needs.plan.outputs.tier == 'full') }}
+    runs-on: ${{ fromJSON(vars.CI_RUNNER_LIGHT || vars.MYR_RUNNER || '"ubuntu-latest"') }}
+    timeout-minutes: 5
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+
+      - name: Setup Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version: 24
+          package-manager-cache: false
+
+      - name: Run migration collision guard
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: node scripts/myrmidon/ci/migration-guard.mjs pr "$HEAD_SHA" "$PR_NUMBER"
+
   typecheck:
     name: typecheck + build
     # typecheck and build share one checkout, install and Rust cache; the build
     # steps run even when the typecheck failed, so one run shows both failures.
     needs: plan
     if: ${{ needs.plan.outputs.tier == 'fast' || needs.plan.outputs.tier == 'full' }}
-    runs-on: ${{ fromJSON(vars.CI_RUNNER_TYPECHECK || vars.MYR_RUNNER || '"ubuntu-latest"') }}
+    runs-on: ${{ fromJSON((needs.plan.outputs.is_release == 'true' && (vars.CI_RUNNER_PRIORITY || vars.CI_RUNNER_LIGHT || vars.MYR_RUNNER_LIGHT || '"vps-ci"')) || (github.event_name != 'pull_request' && vars.CI_RUNNER_MAIN) || vars.CI_RUNNER_TYPECHECK || vars.MYR_RUNNER || '"ubuntu-latest"') }}
     timeout-minutes: 45
     env:
       NODE_OPTIONS: --max-old-space-size=4096
@@ -183,6 +287,7 @@ jobs:
           save-if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
 
       - name: Install dependencies
+        id: install
         run: pnpm install --frozen-lockfile
 
       - name: Typecheck all workspaces
@@ -198,26 +303,39 @@ jobs:
           pnpm --filter @myrmidon/paperclip-runner typecheck:typescript
 
       - name: Build Runner issue-thread viewer
-        if: ${{ !cancelled() }}
+        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
         run: pnpm --filter @myrmidon/paperclip-runner build:issue-thread
 
       - name: Build
-        if: ${{ !cancelled() && needs.plan.outputs.tier == 'full' }}
+        if: ${{ !cancelled() && steps.install.outcome == 'success' && needs.plan.outputs.tier == 'full' }}
         run: pnpm build
 
       - name: Build (runner TypeScript only, no Rust release binary)
-        if: ${{ !cancelled() && needs.plan.outputs.tier == 'fast' }}
+        if: ${{ !cancelled() && steps.install.outcome == 'success' && needs.plan.outputs.tier == 'fast' }}
         run: |
           set -euo pipefail
           pnpm run preflight:workspace-links
           pnpm --filter @myrmidon/paperclip-runner build:typescript
           pnpm -r --filter '!@myrmidon/paperclip-runner' build
 
+      - name: Vendor name in the build — built UI bundle and fresh response snapshots
+        # REBRAND F: the vendor's name stays only in the LICENSE, the third-party
+        # notices and the About attribution line. Ratchet: the visible count may
+        # not grow above scripts/myrmidon/vendor-name/vendor-name-policy.json.
+        # The snapshots are captured afresh here, so the gate reads the bundle and
+        # the server answers of THIS commit, not a stale checked-in copy.
+        run: |
+          set -euo pipefail
+          snapshots="$RUNNER_TEMP/vendor-name-snapshots"
+          pnpm --filter @myrmidon/server exec tsx ../scripts/myrmidon/vendor-name/capture-snapshots.ts --out "$snapshots"
+          node scripts/myrmidon/vendor-name/check-vendor-name.mjs --target snapshots --snapshots "$snapshots"
+          node scripts/myrmidon/vendor-name/check-vendor-name.mjs --target bundle
+
   tests-affected:
     name: tests (affected)
     needs: plan
     if: ${{ needs.plan.outputs.tier == 'fast' }}
-    runs-on: ${{ fromJSON(vars.MYR_RUNNER || '"ubuntu-latest"') }}
+    runs-on: ${{ (needs.plan.outputs.is_release == 'true') && fromJSON(vars.CI_RUNNER_PRIORITY || vars.CI_RUNNER_LIGHT || vars.MYR_RUNNER_LIGHT || '"vps-ci"') || fromJSON(vars.MYR_RUNNER || '"ubuntu-latest"') }}
     timeout-minutes: 60
     steps:
       - name: Checkout repository
@@ -267,7 +385,7 @@ jobs:
     name: tests (${{ matrix.label }})
     needs: plan
     if: ${{ needs.plan.outputs.tier == 'full' }}
-    runs-on: ${{ fromJSON(vars.CI_RUNNER_TESTS || vars.MYR_RUNNER || '"ubuntu-latest"') }}
+    runs-on: ${{ fromJSON((needs.plan.outputs.is_release == 'true' && (vars.CI_RUNNER_PRIORITY || vars.CI_RUNNER_LIGHT || vars.MYR_RUNNER_LIGHT || '"vps-ci"')) || (github.event_name != 'pull_request' && vars.CI_RUNNER_MAIN) || vars.CI_RUNNER_TESTS || vars.MYR_RUNNER || '"ubuntu-latest"') }}
     timeout-minutes: 45
     strategy:
       fail-fast: false
@@ -275,10 +393,20 @@ jobs:
         # Same split as the vendor's trusted PR CI: `pnpm test:run` equals the
         # union of the general groups and the serialized server suites.
         include:
-          - { label: "server 1/3", mode: general, group: general-server, shard_index: 0, shard_count: 3 }
-          - { label: "server 2/3", mode: general, group: general-server, shard_index: 1, shard_count: 3 }
-          - { label: "server 3/3", mode: general, group: general-server, shard_index: 2, shard_count: 3 }
-          - { label: "workspaces-a", mode: general, group: general-workspaces-a }
+        # general-server: 6 shards balanced by recorded suite cost
+        # (scripts/general-server-shard-durations.json). shard_count must equal
+        # the number of entries; scripts/myrmidon/ci/general-server-shards.test.mjs
+        # checks that the shards cover every suite exactly once.
+          - { label: "server 1/6", mode: general, group: general-server, shard_index: 0, shard_count: 6 }
+          - { label: "server 2/6", mode: general, group: general-server, shard_index: 1, shard_count: 6 }
+          - { label: "server 3/6", mode: general, group: general-server, shard_index: 2, shard_count: 6 }
+          - { label: "server 4/6", mode: general, group: general-server, shard_index: 3, shard_count: 6 }
+          - { label: "server 5/6", mode: general, group: general-server, shard_index: 4, shard_count: 6 }
+          - { label: "server 6/6", mode: general, group: general-server, shard_index: 5, shard_count: 6 }
+          # Split the UI-heavy lane to keep each Vitest process below the
+          # GitHub runner's Node heap limit.
+          - { label: "workspaces-a (1/2)", mode: general, group: general-workspaces-a, shard_index: 0, shard_count: 2 }
+          - { label: "workspaces-a (2/2)", mode: general, group: general-workspaces-a, shard_index: 1, shard_count: 2 }
           - { label: "workspaces-b", mode: general, group: general-workspaces-b }
           - { label: "serialized 1/2", mode: serialized, shard_index: 0, shard_count: 2 }
           - { label: "serialized 2/2", mode: serialized, shard_index: 1, shard_count: 2 }
@@ -338,7 +466,7 @@ jobs:
     name: tests (other + runner)
     needs: plan
     if: ${{ needs.plan.outputs.tier == 'full' }}
-    runs-on: ${{ fromJSON(vars.CI_RUNNER_TESTS_OTHER || vars.MYR_RUNNER || '"ubuntu-latest"') }}
+    runs-on: ${{ fromJSON((needs.plan.outputs.is_release == 'true' && (vars.CI_RUNNER_PRIORITY || vars.CI_RUNNER_LIGHT || vars.MYR_RUNNER_LIGHT || '"vps-ci"')) || (github.event_name != 'pull_request' && vars.CI_RUNNER_MAIN) || vars.CI_RUNNER_TESTS || vars.MYR_RUNNER || '"ubuntu-latest"') }}
     timeout-minutes: 50
     steps:
       - name: Checkout repository
@@ -409,12 +537,13 @@ jobs:
     # gitleaks, the internal-address scan, dependency licenses and plugin
     # compatibility. Every step runs even if an earlier one failed.
     name: checks
-    if: ${{ (github.event_name != 'pull_request' || github.event.action != 'labeled' || github.event.label.name == 'full-ci' || github.event.label.name == 'review-approved') }}
-    runs-on: ${{ fromJSON(vars.MYR_RUNNER || '"ubuntu-latest"') }}
+    if: ${{ (github.event_name != 'pull_request' || github.event.action != 'labeled' || github.event.label.name == 'full-ci') }}
+    runs-on: ${{ fromJSON((github.event_name != 'pull_request' && vars.CI_RUNNER_MAIN) || vars.MYR_RUNNER || '"ubuntu-latest"') }}
     timeout-minutes: 20
     env:
       GITLEAKS_VERSION: 8.30.1
       GITLEAKS_SHA256: 551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb
+      GITLEAKS_ASSET_ID: "378332058" # gitleaks_8.30.1_linux_x64.tar.gz
     steps:
       - name: Checkout repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -489,20 +618,45 @@ jobs:
           printf 'Running %s\n' "${files[@]}"
           node --test "${files[@]}"
 
+      - name: Brand release audit (DEBRAND gate)
+        if: ${{ !cancelled() }}
+        run: |
+          node scripts/myrmidon/docs-branding-guard.mjs
+          node scripts/myrmidon/brand-release-audit.mjs --gate
+
       - name: SQL template lint (myrmidon)
         if: ${{ !cancelled() }}
         run: node scripts/myrmidon/ci/sql-template-lint.mjs --root server/src
 
+      - name: i18n guard (repo guard scanner and English catalog key precheck)
+        if: ${{ !cancelled() }}
+        run: node --experimental-strip-types scripts/myrmidon/i18n/precheck.mts ui/src
+
+      - name: Migration numbers are unique in packages/db/src/migrations
+        if: ${{ !cancelled() }}
+        run: |
+          set -euo pipefail
+          d=packages/db/src/migrations
+          dup=$(ls "$d" | grep -E '^[0-9]+_.*\.sql$' | grep -oE '^[0-9]+_' | sort | uniq -d || true)
+          if [ -n "$dup" ]; then
+            echo "::error::duplicate migration numbers (renumber your migration): $dup"
+            ls "$d" | grep -E "^($(echo $dup | tr ' ' '|'))" || true
+            exit 1
+          fi
+          echo "migration numbers unique: $(ls "$d" | grep -cE '^[0-9]+_.*\.sql$') SQL migrations"
+
       - name: Secrets (gitleaks, new commits)
         if: ${{ !cancelled() }}
         env:
+          GH_TOKEN: ${{ github.token }}
           BASE: ${{ steps.range.outputs.base }}
           HEAD: ${{ steps.range.outputs.head }}
         run: |
           set -euo pipefail
           archive="gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz"
-          curl -fsSL -o "$RUNNER_TEMP/$archive" \
-            "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/${archive}"
+          # Release assets via the authenticated API: anonymous github.com downloads fail with 504 when GitHub throttles anonymous traffic.
+          curl -fsSL --retry 5 --retry-all-errors -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/octet-stream" \
+            -o "$RUNNER_TEMP/$archive" "https://api.github.com/repos/gitleaks/gitleaks/releases/assets/${GITLEAKS_ASSET_ID}"
           echo "${GITLEAKS_SHA256}  $RUNNER_TEMP/$archive" | sha256sum -c -
           tar -xzf "$RUNNER_TEMP/$archive" -C "$RUNNER_TEMP" gitleaks
           "$RUNNER_TEMP/gitleaks" git --no-banner --redact --verbose \
@@ -514,6 +668,49 @@ jobs:
           BASE: ${{ steps.range.outputs.base }}
           HEAD: ${{ steps.range.outputs.head }}
         run: node scripts/myrmidon/ai-signature-scan.mjs --commits "$BASE..$HEAD"
+
+      - name: PR text - publish scan (title and body)
+        if: ${{ !cancelled() && github.event_name == 'pull_request' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          PR_TITLE: ${{ github.event.pull_request.title }}
+          PR_BODY: ${{ github.event.pull_request.body }}
+          MYRMIDON_FORBIDDEN_PATTERNS: ${{ secrets.MYRMIDON_FORBIDDEN_PATTERNS }}
+        run: |
+          set -euo pipefail
+          # Read the current title and body, so a re-run sees an edited description.
+          # If the API call fails, keep the values of the triggering event: the scan is not weakened.
+          if live="$(gh api "repos/$GITHUB_REPOSITORY/pulls/$PR_NUMBER" 2>/dev/null)" \
+            && t="$(printf '%s' "$live" | jq -r '.title // ""')" \
+            && b="$(printf '%s' "$live" | jq -r '.body // ""')"; then
+            PR_TITLE="$t"
+            PR_BODY="$b"
+          else
+            echo "::warning::Could not read the current PR text from the API. Scanning the text of the triggering event."
+          fi
+          printf '%s\n%s\n' "$PR_TITLE" "$PR_BODY" | node scripts/myrmidon/publish-scan.mjs
+
+      - name: PR text - AI signatures (title and body)
+        if: ${{ !cancelled() && github.event_name == 'pull_request' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          PR_TITLE: ${{ github.event.pull_request.title }}
+          PR_BODY: ${{ github.event.pull_request.body }}
+        run: |
+          set -euo pipefail
+          # Read the current title and body, so a re-run sees an edited description.
+          # If the API call fails, keep the values of the triggering event: the scan is not weakened.
+          if live="$(gh api "repos/$GITHUB_REPOSITORY/pulls/$PR_NUMBER" 2>/dev/null)" \
+            && t="$(printf '%s' "$live" | jq -r '.title // ""')" \
+            && b="$(printf '%s' "$live" | jq -r '.body // ""')"; then
+            PR_TITLE="$t"
+            PR_BODY="$b"
+          else
+            echo "::warning::Could not read the current PR text from the API. Scanning the text of the triggering event."
+          fi
+          printf '%s\n%s\n' "$PR_TITLE" "$PR_BODY" | node scripts/myrmidon/ai-signature-scan.mjs
 
       - name: Internal addresses (private networks)
         if: ${{ !cancelled() }}
@@ -542,6 +739,14 @@ jobs:
         if: ${{ !cancelled() }}
         run: node scripts/myrmidon/check-licenses.mjs
 
+      - name: Vendor name — recorded response snapshots (ratchet)
+        # REBRAND F: the same gate as in the build lane, on the snapshot set
+        # committed in the repository (scripts/myrmidon/vendor-name/snapshots).
+        # Runs in every tier, so a change that only touches our own policy or
+        # snapshots is still checked.
+        if: ${{ !cancelled() }}
+        run: node scripts/myrmidon/vendor-name/check-vendor-name.mjs --target snapshots
+
       - name: Plugin compatibility — build plugin SDK and shared from the repository
         id: sdk
         if: ${{ !cancelled() }}
@@ -568,8 +773,8 @@ jobs:
     name: go tools (dockergate + fleetd)
     # fleetd is folded in (one checkout, one runner): tools/fleetd, see
     # docs/myrmidon/fleetd-vmexec.md. Every step runs even if an earlier one failed.
-    if: ${{ (github.event_name != 'pull_request' || github.event.action != 'labeled' || github.event.label.name == 'full-ci' || github.event.label.name == 'review-approved') }}
-    runs-on: ${{ fromJSON(vars.MYR_RUNNER || '"ubuntu-latest"') }}
+    if: ${{ (github.event_name != 'pull_request' || github.event.action != 'labeled' || github.event.label.name == 'full-ci') }}
+    runs-on: ${{ fromJSON((github.event_name != 'pull_request' && vars.CI_RUNNER_MAIN_GO) || vars.CI_RUNNER_GO || '"ubuntu-latest"') }}
     timeout-minutes: 30
     env:
       GO_IMAGE: golang:1.25-bookworm@sha256:3b4a11519ad929d1e1d261a12cff056f0c85b735253d7d861346b9c6f8b36437
@@ -664,29 +869,213 @@ jobs:
               go vet ./...
               go test -count=1 ./...
             '
+
+  plugin-readiness:
+    name: plugin readiness timing
+    needs: plan
+    if: ${{ !cancelled() && needs.plan.outputs.tier != 'docs' }}
+    runs-on: ${{ fromJSON(vars.CI_RUNNER_CHECKS || vars.MYR_RUNNER || '"ubuntu-latest"') }}
+    timeout-minutes: 15
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgrespassword
+          POSTGRES_DB: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
+      - name: Setup Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version: 24
+          package-manager-cache: false
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6
+        with:
+          version: 9.15.4
+          run_install: false
+
+      - name: Locate pnpm store
+        if: ${{ !cancelled() }}
+        id: pnpm_store
+        run: echo "path=$(pnpm store path --silent)" >> "$GITHUB_OUTPUT"
+
+      - name: Restore pnpm store (read only)
+        if: ${{ !cancelled() }}
+        uses: actions/cache/restore@caa296126883cff596d87d8935842f9db880ef25 # v5
+        with:
+          path: ${{ steps.pnpm_store.outputs.path }}
+          key: myr-pnpm-${{ runner.os }}-${{ hashFiles('pnpm-lock.yaml') }}
+          restore-keys: myr-pnpm-${{ runner.os }}-
+
+      - name: Install dependencies
+        if: ${{ !cancelled() }}
+        run: pnpm install --frozen-lockfile
+
+      - name: Build plugin SDK
+        if: ${{ !cancelled() }}
+        run: pnpm --filter @myrmidon/plugin-sdk ensure-build-deps
+
+      - name: Measure plugin readiness and reload timing
+        if: ${{ !cancelled() }}
+        env:
+          DATABASE_URL: postgres://postgres:postgrespassword@127.0.0.1:5432/postgres
+          PAPERCLIP_MIGRATION_AUTO_APPLY: "true"
+          PORT: 3100
+          PLUGIN_READY_THRESHOLD_SEC: "10"
+        run: |
+          set -euo pipefail
+          node scripts/measure-plugin-readiness.mjs
+
+      - name: Upload plugin readiness timing artifact
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: plugin-readiness-timing
+          path: plugin-readiness-timing.json
+          retention-days: 7
+
+  deployed-migrations:
+    name: Deployed migration numbers
+    runs-on: ${{ fromJSON(vars.CI_RUNNER_LIGHT || vars.MYR_RUNNER || '"ubuntu-latest"') }}
+    timeout-minutes: 5
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - name: Setup Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version: 24
+          package-manager-cache: false
+      - name: Check migration numbers against production
+        env:
+          BASE: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha || github.event.before }}
+          HEAD: ${{ github.event.pull_request.head.sha || github.event.merge_group.head_sha || github.sha }}
+        run: |
+          set -euo pipefail
+          if [ -n "$BASE" ] && git cat-file -e "$BASE^{commit}" 2>/dev/null; then
+            node scripts/myrmidon/ci/check-deployed-migrations.mjs --base "$BASE" --head "$HEAD"
+          else
+            echo "::warning::base commit unavailable; checking full migration directory"
+            node scripts/myrmidon/ci/check-deployed-migrations.mjs
+          fi
+          node --test scripts/myrmidon/ci/check-deployed-migrations.test.mjs
+
   ci-result:
-    # Single stable name for the ruleset. Lanes the plan did not need are
-    # skipped; any failure, or a skip without a successful plan, fails it.
-    name: CI result
-    if: ${{ !cancelled() && (github.event_name != 'pull_request' || github.event.action != 'labeled' || github.event.label.name == 'full-ci' || github.event.label.name == 'review-approved') }}
-    needs: [plan, typecheck, tests-affected, tests, tests-other, checks, dockergate]
-    runs-on: ${{ fromJSON(vars.MYR_RUNNER || '"ubuntu-latest"') }}
+    # Single stable check name for the ruleset on real runs; a label-noop run
+    # (a `labeled` event with any label other than `full-ci`) must NOT create
+    # a check named `CI result` at all — GitHub rulesets read a `skipped`
+    # required check as satisfied, so a noop `skipped` run would wave the PR
+    # through auto-merge without any tests on the head (OPE-12841: PR #2965
+    # merged on a cancelled run's head). A dynamic `name:` publishes no
+    # `CI result` check on a noop run; the `!cancelled()` gate stays so a real
+    # run whose `plan` failed still fails the summary (re-gating on
+    # `needs.plan.result` would publish a satisfying `skipped` check on a red
+    # plan — the same defect class).
+    name: ${{ (github.event_name != 'pull_request' || github.event.action != 'labeled' || github.event.label.name == 'full-ci') && 'CI result' || 'CI result (label noop)' }}
+    if: ${{ !cancelled() && (github.event_name != 'pull_request' || github.event.action != 'labeled' || github.event.label.name == 'full-ci') }}
+    needs: [plan, migration-guard, typecheck, tests-affected, tests, tests-other, checks, dockergate, plugin-readiness, deployed-migrations]
+    runs-on: ${{ fromJSON(vars.CI_RUNNER_LIGHT || vars.MYR_RUNNER_LIGHT || '"vps-ci"') }}
     timeout-minutes: 5
     steps:
       - name: Ensure gh and jq (self-hosted runners may lack them)
         shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
           bin="$RUNNER_TEMP/tools-bin"; mkdir -p "$bin"
           if ! command -v jq >/dev/null; then
-            curl -fsSL -o "$bin/jq" https://github.com/jqlang/jq/releases/download/jq-1.7.1/jq-linux-amd64
+            # Release assets via the authenticated API: anonymous github.com downloads fail with 504 when GitHub throttles anonymous traffic.
+            curl -fsSL --retry 5 --retry-all-errors -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/octet-stream" -o "$bin/jq" https://api.github.com/repos/jqlang/jq/releases/assets/140520984
             chmod +x "$bin/jq"
           fi
           if ! command -v gh >/dev/null; then
-            curl -fsSL https://github.com/cli/cli/releases/download/v2.62.0/gh_2.62.0_linux_amd64.tar.gz | tar -xz -C "$RUNNER_TEMP"
+            curl -fsSL --retry 5 --retry-all-errors -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/octet-stream" -o "$RUNNER_TEMP/gh.tar.gz" https://api.github.com/repos/cli/cli/releases/assets/206502108
+            tar -xzf "$RUNNER_TEMP/gh.tar.gz" -C "$RUNNER_TEMP"
             cp "$RUNNER_TEMP/gh_2.62.0_linux_amd64/bin/gh" "$bin/gh"
           fi
           echo "$bin" >> "$GITHUB_PATH"
+
+      - name: Verify queue latency
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          RUN_ID: ${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          echo "Checking CI result start latency relative to predecessor jobs (fail-closed gate)..."
+          if ! command -v gh >/dev/null || ! command -v jq >/dev/null; then
+            echo "ERROR: gh or jq not available for latency check" >&2
+            exit 1
+          fi
+
+          jobs_data=""
+          for attempt in 1 2 3; do
+            jobs_data="$(gh api "repos/$REPO/actions/runs/$RUN_ID/jobs?per_page=100" 2>/dev/null || true)"
+            if [ -n "$jobs_data" ] && echo "$jobs_data" | jq -e '.jobs | length > 0' >/dev/null 2>&1; then
+              break
+            fi
+            sleep 2
+          done
+
+          if [ -z "$jobs_data" ]; then
+            echo "ERROR: Unable to fetch job data from GitHub API after retries" >&2
+            exit 1
+          fi
+
+          res="$(echo "$jobs_data" | jq -r '
+            .jobs as $all |
+            ([$all[] | select(.name == "CI result" and .started_at != null) | .started_at] | last) as $ci_start |
+            ([$all[] | select(
+              (.name == "typecheck + build" or
+               .name == "tests (affected)" or
+               (.name | startswith("tests (")) or
+               .name == "tests (other + runner)" or
+               .name == "checks" or
+               .name == "go tools (dockergate + fleetd)" or
+               .name == "plugin readiness timing" or
+               .name == "Deployed migration numbers" or
+               .name == "migration guard") and
+              .completed_at != null
+            ) | .completed_at] | sort | last) as $test_end |
+            ($test_end // ([$all[] | select(.name == "plan" and .completed_at != null) | .completed_at] | last)) as $last_pred_end |
+            if ($ci_start and $last_pred_end) then
+              (($ci_start | fromdateiso8601) - ($last_pred_end | fromdateiso8601))
+            else
+              empty
+            end
+          ')"
+
+          if [ -z "$res" ]; then
+            echo "ERROR: Could not compute start latency: missing start/completion timestamps" >&2
+            exit 1
+          fi
+
+          echo "CI result started ${res}s after the last predecessor job finished."
+          if [ "$res" -gt 120 ]; then
+            echo "ERROR: CI result start latency exceeded threshold: ${res}s > 120s" >&2
+            exit 1
+          fi
+          echo "PASS: CI result started within 2 minutes (${res}s <= 120s)."
+
       - name: Check lane results
         env:
           RESULTS: ${{ toJSON(needs) }}
@@ -705,13 +1094,26 @@ jobs:
     name: report main status
     needs: [ci-result]
     if: ${{ !cancelled() && github.event_name == 'push' && github.ref == 'refs/heads/main' }}
-    runs-on: ${{ fromJSON(vars.MYR_RUNNER || '"ubuntu-latest"') }}
+    runs-on: ${{ fromJSON(vars.CI_RUNNER_LIGHT || vars.MYR_RUNNER_LIGHT || '"vps-ci"') }}
     timeout-minutes: 5
+    # 31.10: reporting must never turn a main run red. The light own-runner pool (vps-ci) has no gh,
+    # so this job failed with exit 127 on green runs and main CI read as failed.
+    continue-on-error: true
     permissions:
       actions: read
       contents: read
       issues: write
     steps:
+      - name: Ensure gh CLI
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          if command -v gh >/dev/null 2>&1; then exit 0; fi
+          v=2.62.0
+          curl -fsSL --retry 5 --retry-all-errors -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/octet-stream" -o "$RUNNER_TEMP/gh.tar.gz" https://api.github.com/repos/cli/cli/releases/assets/206502108
+          tar -xzf "$RUNNER_TEMP/gh.tar.gz" -C "$RUNNER_TEMP"
+          echo "$RUNNER_TEMP/gh_${v}_linux_amd64/bin" >> "$GITHUB_PATH"
       - name: Open, update or close the main-red issue
         env:
           GH_TOKEN: ${{ github.token }}

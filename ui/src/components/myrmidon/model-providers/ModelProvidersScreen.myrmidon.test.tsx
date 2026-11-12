@@ -12,11 +12,13 @@ import { flushSync } from "react-dom";
 import { createRoot, type Root } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { i18n } from "@/i18n";
 import { ModelProvidersScreenView } from "./ModelProvidersScreen";
 import {
   modelProvidersApi,
   sortModels,
   type ModelProviderModelView,
+  type ModelProviderChannelsView,
   type ModelProvidersView,
 } from "./modelProvidersApi";
 
@@ -33,6 +35,11 @@ vi.mock("./modelProvidersApi", async (importOriginal) => ({
     models: vi.fn(),
     updateModels: vi.fn(),
     channels: vi.fn(),
+    litellmChannels: vi.fn(),
+    oauthBegin: vi.fn(),
+    oauthStatus: vi.fn(),
+    oauthComplete: vi.fn(),
+    oauthRefresh: vi.fn(),
   },
 }));
 
@@ -125,6 +132,16 @@ beforeEach(() => {
       { modelName: "gpt-4o", litellmModelName: "openai/gpt-4o", enabled: false, free: false },
     ],
   });
+  vi.mocked(modelProvidersApi.litellmChannels).mockResolvedValue({ channels: [] });
+  vi.mocked(modelProvidersApi.oauthBegin).mockResolvedValue({
+    accountNumber: 1,
+    userCode: "TEST-CODE",
+    verificationUri: "https://auth.openai.com/codex/device",
+    expiresInSec: 900,
+    intervalSec: 5,
+  });
+  vi.mocked(modelProvidersApi.oauthComplete).mockResolvedValue({ ok: true, accountNumber: 1 });
+  vi.mocked(modelProvidersApi.oauthRefresh).mockResolvedValue({ ok: true, accountNumber: 1 });
 });
 
 afterEach(() => {
@@ -376,6 +393,211 @@ describe("myrmidon(1.6.6 OPE-7198) chatgpt-pool provider card with channels and 
     expect(container.textContent).toContain("Заблокирован");
   });
 
+  it("renders models for pool channels when provided (1.6.6 OPE-9932)", async () => {
+    vi.mocked(modelProvidersApi.channels).mockResolvedValue({
+      providerId: "prov-pool",
+      providerType: "chatgpt-pool",
+      channels: [
+        {
+          n: 1,
+          label: "ChatGPT Plus Account #1",
+          email: "plus1@example.com",
+          state: "active",
+          stateRu: "Активен",
+          models: ["gpt-4o", "o1-mini", "o1-preview"],
+          limitedUntil: null,
+          lastOk: 1700000000,
+          windows: {
+            primary: { usedPct: 20, windowMin: 300, resetsAt: 1700018000 },
+            secondary: { usedPct: 10, windowMin: 10080, resetsAt: 1700600000 },
+          },
+          isBanned: false,
+          isExhausted: false,
+        },
+      ],
+      signals: [],
+    });
+
+    const poolView: ModelProvidersView = {
+      providers: [
+        {
+          id: "prov-pool",
+          type: "chatgpt-pool",
+          name: "ChatGPT Codex Pool",
+          baseUrl: "http://localhost:8895",
+          hasKey: true,
+          free: false,
+          createdAt: "2026-10-14T00:00:00.000Z",
+          updatedAt: "2026-10-14T00:00:00.000Z",
+        },
+      ],
+      changeLog: [],
+    };
+
+    const { root: r } = render({ view: poolView });
+    root = r;
+    await flushReact();
+
+    const channelModelsEl = container.querySelector('[data-testid="myrmidon-pool-channel-models-1"]');
+    expect(channelModelsEl).toBeTruthy();
+    expect(channelModelsEl?.textContent).toBe("gpt-4o, o1-mini, o1-preview");
+  });
+
+  it("renders Plus, Pro, K-12 plans and excludes K-12 disabled accounts (1.6.6 OPE-10810)", async () => {
+    vi.mocked(modelProvidersApi.channels).mockResolvedValue({
+      providerId: "prov-pool",
+      providerType: "chatgpt-pool",
+      channels: [
+        {
+          n: 1,
+          label: "ChatGPT Plus #1",
+          plan: "plus",
+          state: "active",
+          stateRu: "Активен",
+          limitedUntil: null,
+          lastOk: 1700000000,
+          windows: {
+            primary: { usedPct: 15, windowMin: 300, resetsAt: 1700018000 },
+            secondary: { usedPct: 10, windowMin: 10080, resetsAt: 1700600000 },
+          },
+          isBanned: false,
+          isExhausted: false,
+          isDisabled: false,
+        },
+        {
+          n: 2,
+          label: "ChatGPT Pro #2",
+          plan: "pro",
+          state: "active",
+          stateRu: "Активен",
+          limitedUntil: null,
+          lastOk: 1700000000,
+          windows: {
+            primary: { usedPct: 90, windowMin: 300, resetsAt: 1700018000 },
+            secondary: { usedPct: 80, windowMin: 10080, resetsAt: 1700600000 },
+          },
+          isBanned: false,
+          isExhausted: false,
+          isDisabled: false,
+        },
+        {
+          n: 3,
+          label: "ChatGPT K-12 #3",
+          plan: "k-12",
+          state: "disabled",
+          stateRu: "Отключен (K-12)",
+          limitedUntil: null,
+          lastOk: null,
+          windows: { primary: null, secondary: null },
+          isBanned: false,
+          isExhausted: false,
+          isDisabled: true,
+          isExcluded: true,
+        },
+      ],
+      signals: [],
+      summary: {
+        total: 3,
+        live: 2,
+        exhausted: 0,
+        banned: 0,
+        error: 0,
+        disabled: 1,
+        nextResetAt: null,
+        nextResetText: null,
+      },
+    });
+
+    const poolView: ModelProvidersView = {
+      providers: [
+        {
+          id: "prov-pool",
+          type: "chatgpt-pool",
+          name: "ChatGPT Codex Pool",
+          baseUrl: "http://localhost:8895",
+          hasKey: true,
+          free: false,
+          createdAt: "2026-10-14T00:00:00.000Z",
+          updatedAt: "2026-10-14T00:00:00.000Z",
+        },
+      ],
+      changeLog: [],
+    };
+
+    const { root: r } = render({ view: poolView });
+    root = r;
+    await flushReact();
+
+    const plan1 = container.querySelector('[data-testid="myrmidon-pool-channel-plan-1"]');
+    const plan2 = container.querySelector('[data-testid="myrmidon-pool-channel-plan-2"]');
+    const plan3 = container.querySelector('[data-testid="myrmidon-pool-channel-plan-3"]');
+    expect(plan1?.textContent).toBe("PLUS");
+    expect(plan2?.textContent).toBe("PRO");
+    expect(plan3?.textContent).toBe("K-12");
+
+    const disabledSummary = container.querySelector('[data-testid="myrmidon-pool-summary-disabled"]');
+    expect(disabledSummary?.textContent).toContain("1 disabled");
+
+    expect(container.textContent).toContain("Отключен (K-12)");
+  });
+
+  it("handles Codex OAuth begin, code display, and completion (1.6.6 OPE-10810)", async () => {
+    vi.mocked(modelProvidersApi.channels).mockResolvedValue({
+      providerId: "prov-pool",
+      providerType: "chatgpt-pool",
+      channels: [],
+      signals: [],
+      summary: { total: 0, live: 0, exhausted: 0, banned: 0, error: 0, disabled: 0, nextResetAt: null, nextResetText: null },
+    });
+
+    const poolView: ModelProvidersView = {
+      providers: [
+        {
+          id: "prov-pool",
+          type: "chatgpt-pool",
+          name: "ChatGPT Codex Pool",
+          baseUrl: "http://localhost:8895",
+          hasKey: true,
+          free: false,
+          createdAt: "2026-10-14T00:00:00.000Z",
+          updatedAt: "2026-10-14T00:00:00.000Z",
+        },
+      ],
+      changeLog: [],
+    };
+
+    const { root: r } = render({ view: poolView });
+    root = r;
+    await flushReact();
+
+    const beginBtn = container.querySelector('[data-testid="myrmidon-pool-oauth-begin-btn-prov-pool"]');
+    expect(beginBtn).toBeTruthy();
+
+    await act(async () => {
+      beginBtn?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flushReact();
+
+    expect(modelProvidersApi.oauthBegin).toHaveBeenCalledWith(COMPANY_ID, "prov-pool");
+
+    const codeEl = container.querySelector('[data-testid="myrmidon-pool-oauth-code-prov-pool"]');
+    const uriEl = container.querySelector('[data-testid="myrmidon-pool-oauth-uri-prov-pool"]');
+    expect(codeEl?.textContent).toBe("TEST-CODE");
+    expect(uriEl?.textContent).toBe("https://auth.openai.com/codex/device");
+
+    const completeBtn = container.querySelector('[data-testid="myrmidon-pool-oauth-complete-btn-prov-pool"]');
+    expect(completeBtn).toBeTruthy();
+
+    await act(async () => {
+      completeBtn?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flushReact();
+
+    expect(modelProvidersApi.oauthComplete).toHaveBeenCalledWith(COMPANY_ID, "prov-pool", {
+      accountNumber: 1,
+    });
+  });
+
   it("omits chatgpt-pool from type select when availableTypes excludes it", async () => {
     const viewWithoutPool: ModelProvidersView = {
       providers: [],
@@ -427,5 +649,195 @@ describe("myrmidon(1.6.6 OPE-7198) chatgpt-pool provider card with channels and 
     const options = Array.from(typeSelect?.options ?? []).map((o) => o.value);
     expect(options).toContain("chatgpt-pool");
   });
+
+  describe("LiteLLM channels & model groups (OPE-9853)", () => {
+    it("renders LiteLLM channels list with group, provider, provider model, order and weight", async () => {
+      const { root: r } = render({
+        litellmChannelsData: {
+          channels: [
+            {
+              id: "chan-1",
+              group: "gpt-4o",
+              provider: "openai",
+              providerModel: "gpt-4o-2024-08-06",
+              order: 1,
+              weight: 10,
+            },
+            {
+              id: "chan-2",
+              group: "qwen-max",
+              provider: "dashscope",
+              providerModel: "qwen-max",
+              order: null,
+              weight: null,
+            },
+          ],
+        },
+      });
+      root = r;
+      await flushReact();
+
+      const section = container.querySelector('[data-testid="myrmidon-litellm-channels-section"]');
+      expect(section).not.toBeNull();
+
+      const table = container.querySelector('[data-testid="myrmidon-litellm-channels-table"]');
+      expect(table).not.toBeNull();
+
+      const row1Group = container.querySelector('[data-testid="myrmidon-litellm-channel-group-chan-1"]');
+      const row1Prov = container.querySelector('[data-testid="myrmidon-litellm-channel-provider-chan-1"]');
+      const row1Mod = container.querySelector('[data-testid="myrmidon-litellm-channel-provider-model-chan-1"]');
+      const row1Ord = container.querySelector('[data-testid="myrmidon-litellm-channel-order-chan-1"]');
+      const row1Wt = container.querySelector('[data-testid="myrmidon-litellm-channel-weight-chan-1"]');
+
+      expect(row1Group?.textContent).toBe("gpt-4o");
+      expect(row1Prov?.textContent).toBe("openai");
+      expect(row1Mod?.textContent).toBe("gpt-4o-2024-08-06");
+      expect(row1Ord?.textContent).toBe("1");
+      expect(row1Wt?.textContent).toBe("10");
+
+      const row2Ord = container.querySelector('[data-testid="myrmidon-litellm-channel-order-chan-2"]');
+      const row2Wt = container.querySelector('[data-testid="myrmidon-litellm-channel-weight-chan-2"]');
+      expect(row2Ord?.textContent).toBe("—");
+      expect(row2Wt?.textContent).toBe("—");
+    });
+
+    it("renders empty state when no LiteLLM channels exist", async () => {
+      const { root: r } = render({
+        litellmChannelsData: { channels: [] },
+      });
+      root = r;
+      await flushReact();
+
+      const empty = container.querySelector('[data-testid="myrmidon-litellm-channels-empty"]');
+      expect(empty).not.toBeNull();
+      expect(empty?.textContent).toContain("No LiteLLM model groups or channels found");
+    });
+
+    it("renders error without leaking secret tokens or keys", async () => {
+      const leakError = "Failed with Bearer sk-secret-token-1234567 and pcp_invite_abcdefg";
+      const { root: r } = render({
+        litellmChannelsError: leakError,
+      });
+      root = r;
+      await flushReact();
+
+      const errEl = container.querySelector('[data-testid="myrmidon-litellm-channels-error"]');
+      expect(errEl).not.toBeNull();
+      expect(errEl?.textContent).not.toContain("sk-secret-token-1234567");
+      expect(errEl?.textContent).not.toContain("pcp_invite_abcdefg");
+      expect(errEl?.textContent).toContain("<redacted>");
+    });
+  });
+  it("renders audit log entry with actor, action, category, and rollback button", async () => {
+    const onRollback = vi.fn();
+    const testView: ModelProvidersView = {
+      providers: [],
+      changeLog: [{
+        id: "audit-1", at: "2026-10-02T12:00:00.000Z",
+        actor: { type: "board", id: "user-123" }, action: "model_provider_models_updated",
+        category: "models", summary: "Updated models for provider", canRollback: true,
+        before: { models: [{ modelName: "gpt-4o", enabled: false }] },
+        after: { models: [{ modelName: "gpt-4o", enabled: true }] },
+      }],
+    };
+    const { root: r } = render({ view: testView, onRollback });
+    root = r; await flushReact();
+    const entry = container.querySelector('[data-testid="myrmidon-model-providers-changelog-entry"]');
+    expect(entry?.textContent).toContain("model_provider_models_updated");
+    // myrmidon(OPE-12361): actor now renders as a display name (when the server
+    // carries one) or a localized role label + id — not `type:id`.
+    expect(entry?.textContent).toContain("board · user-123");
+    expect(entry?.textContent).not.toContain("board:user-123");
+    expect(entry?.textContent).toContain("MODELS");
+    const rollbackBtn = container.querySelector('[data-testid="myrmidon-model-providers-changelog-rollback"]');
+    expect(rollbackBtn).not.toBeNull();
+    await act(async () => rollbackBtn?.dispatchEvent(new MouseEvent("click", { bubbles: true })));
+    const confirmBtn = container.querySelector('[data-testid="myrmidon-model-providers-changelog-rollback-confirm"]');
+    expect(confirmBtn).not.toBeNull();
+    await act(async () => confirmBtn?.dispatchEvent(new MouseEvent("click", { bubbles: true })));
+    expect(onRollback).toHaveBeenCalledWith("audit-1");
+  });
+
+  describe("myrmidon(OPE-12361): Russian locale strings and pool counters", () => {
+    beforeEach(() => {
+      void i18n.changeLanguage("ru");
+    });
+
+    afterEach(() => {
+      void i18n.changeLanguage("en");
+    });
+
+    it("renders table headers, pool status badges, counters, and no OAuth button on antigravity pool in Russian", async () => {
+      const antiView: ModelProvidersView = {
+        providers: [
+          {
+            id: "prov-antigravity",
+            type: "antigravity-pool",
+            name: "Antigravity Pool",
+            baseUrl: "https://antigravity.test",
+            hasKey: true,
+            free: true,
+            createdAt: "2026-10-01T10:00:00.000Z",
+            updatedAt: "2026-10-02T12:00:00.000Z",
+          },
+        ],
+        changeLog: [],
+      };
+
+      const channelsData: ModelProviderChannelsView = {
+        providerId: "prov-antigravity",
+        providerType: "antigravity-pool",
+        channels: [
+          {
+            n: 1, label: "", state: "active", stateRu: "Активен",
+            limitedUntil: null, lastOk: null, windows: { primary: null, secondary: null },
+            isBanned: false, isExhausted: false,
+          },
+          {
+            n: 2, label: "Acc 2", state: "error", stateRu: "Ошибка",
+            error: "TOS violation", limitedUntil: null, lastOk: null,
+            windows: { primary: null, secondary: null },
+            isBanned: false, isExhausted: false,
+          },
+        ],
+        summary: {
+          total: 2, live: 1, exhausted: 0, banned: 0, disabled: 0,
+          error: 1, nextResetAt: null, nextResetText: null,
+        },
+        signals: [
+          {
+            dedupKey: "banned:2", accountNumber: 2, label: "Acc 2",
+            kind: "banned", severity: "high", title: "Account banned",
+            whyNow: "TOS violation", summaryExcerpt: "TOS violation",
+            resetsAt: null, activityAt: "2026-11-08T00:00:00Z",
+          },
+        ],
+      };
+
+      vi.mocked(modelProvidersApi.channels).mockResolvedValue(channelsData);
+      const { root: r } = render({
+        view: antiView,
+      });
+      root = r;
+      await flushReact();
+
+      const text = container.textContent ?? "";
+      // Russian headers and pool badges
+      expect(text).toContain("Учётка №1");
+      expect(text).toContain("Тариф");
+      expect(text).toContain("Действия");
+      expect(text).toContain("1 живых / 2 всего");
+      expect(text).toContain("1 в ошибке");
+      // Antigravity pool MUST NOT show Codex OAuth Login button
+      expect(text).not.toContain("Codex OAuth Login");
+      expect(text).not.toContain("Войти через Codex OAuth");
+      // Signals should be rendered in Russian
+      expect(text).toContain("заблокирована / токен истёк");
+      // No raw unparsed keys
+      expect(text).not.toContain("modelProviders.channels.plan");
+      expect(text).not.toContain("modelProviders.channels.actions");
+    });
+  });
+
 });
 

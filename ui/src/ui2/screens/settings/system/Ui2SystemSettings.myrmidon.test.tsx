@@ -10,6 +10,7 @@
 
 import { flushSync } from "react-dom";
 import { createRoot, type Root } from "react-dom/client";
+import { MemoryRouter } from "react-router-dom";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { Ui2SystemSettings } from "./Ui2SystemSettings";
@@ -30,6 +31,20 @@ const mockActivityApi = vi.hoisted(() => ({
 
 vi.mock("@/api/activity", () => ({
   activityApi: mockActivityApi,
+}));
+
+// myrmidon(OPE-12046): the SWEEP-2 read-only "Fine settings" block reads the
+// behavior-settings API on mount; stub it so the screen test never fetches.
+const mockBehaviorApi = vi.hoisted(() => ({
+  get: vi.fn(),
+  getDefinitions: vi.fn(),
+}));
+
+vi.mock("@/api/myrmidonBehaviorSettings", () => ({
+  behaviorSettingsQueryKey: ["myrmidon", "behavior-settings"] as const,
+  behaviorSettingsApi: mockBehaviorApi,
+  getBehaviorSettings: () => mockBehaviorApi.get(),
+  getBehaviorSettingsDefinitions: () => mockBehaviorApi.getDefinitions(),
 }));
 
 vi.mock("@/context/CompanyContext", () => ({
@@ -59,9 +74,11 @@ describe("myrmidon(UI2) Ui2SystemSettings screen parity", () => {
     flushSync(() => {
       root!.render(
         <QueryClientProvider client={queryClient}>
-          <Ui2I18nProvider initialLocale="en">
-            <Ui2SystemSettings />
-          </Ui2I18nProvider>
+          <MemoryRouter>
+            <Ui2I18nProvider initialLocale="en">
+              <Ui2SystemSettings />
+            </Ui2I18nProvider>
+          </MemoryRouter>
         </QueryClientProvider>,
       );
     });
@@ -121,6 +138,13 @@ describe("myrmidon(UI2) Ui2SystemSettings screen parity", () => {
         createdAt: "2026-10-02T11:30:00.000Z",
       },
     ]);
+    mockBehaviorApi.get.mockResolvedValue({
+      settings: { bot_egress_mode: "off" },
+      sources: { bot_egress_mode: "default" },
+    });
+    mockBehaviorApi.getDefinitions.mockResolvedValue([
+      { key: "bot_egress_mode", envName: "MYRMIDON_BOT_EGRESS_MODE", default: "off", scope: "instance", section: "system", valueType: "string" },
+    ]);
   });
 
   afterEach(() => {
@@ -167,5 +191,25 @@ describe("myrmidon(UI2) Ui2SystemSettings screen parity", () => {
     expect(container.querySelector(".ui2-members-row")).toBeNull();
     expect(container.querySelector(".ui2-key-name")).toBeNull();
     expect(container.querySelector(".ui2-changelog-entry")).toBeNull();
+  });
+
+  it("renders link to secret references in Secrets and does not mount secret refs directly", async () => {
+    await renderScreen();
+    const link = container.querySelector<HTMLAnchorElement>('[data-testid="ui2-system-secrets-link"]');
+    expect(link).not.toBeNull();
+    expect(link?.getAttribute("href")).toBe("/company/settings/secrets");
+    expect(container.querySelector('[data-testid^="ui2-secret-setting-"]')).toBeNull();
+  });
+
+  it("myrmidon(OPE-12046): mounts the read-only fine-settings block fed by the behavior-settings API", async () => {
+    await renderScreen();
+
+    expect(mockBehaviorApi.get).toHaveBeenCalled();
+    const row = container.querySelector('[data-testid="ui2-fine-row-bot_egress_mode"]');
+    expect(row).not.toBeNull();
+    expect(row?.textContent).toContain("off");
+    // Nothing on the fine-settings block writes.
+    const fineTable = container.querySelector("table.ui2-fine");
+    expect(fineTable?.querySelector("input, textarea, select")).toBeNull();
   });
 });

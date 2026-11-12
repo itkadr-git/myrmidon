@@ -1,6 +1,7 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { writeProductEnv } from "@myrmidon/shared/env-alias"; // myrmidon(REBRAND-C)
 import type { AdapterExecutionContext, AdapterExecutionResult } from "@myrmidon/adapter-utils";
 import type { RunProcessResult } from "@myrmidon/adapter-utils/server-utils";
 import {
@@ -217,7 +218,7 @@ async function buildClaudeRuntimeConfig(input: ClaudeExecutionInput): Promise<Cl
 
   const envConfig = parseObject(config.env);
   const env: Record<string, string> = { ...buildPaperclipEnv(agent) };
-  env.PAPERCLIP_RUN_ID = runId;
+  writeProductEnv(env, "RUN_ID", runId); // myrmidon(REBRAND-C)
 
   const wakeTaskId =
     (typeof context.taskId === "string" && context.taskId.trim().length > 0 && context.taskId.trim()) ||
@@ -245,25 +246,25 @@ async function buildClaudeRuntimeConfig(input: ClaudeExecutionInput): Promise<Cl
   const issueWorkMode = readPaperclipIssueWorkModeFromContext(context);
 
   if (wakeTaskId) {
-    env.PAPERCLIP_TASK_ID = wakeTaskId;
+    writeProductEnv(env, "TASK_ID", wakeTaskId); // myrmidon(REBRAND-C)
   }
   if (issueWorkMode) {
-    env.PAPERCLIP_ISSUE_WORK_MODE = issueWorkMode;
+    writeProductEnv(env, "ISSUE_WORK_MODE", issueWorkMode); // myrmidon(REBRAND-C)
   }
   if (wakeReason) {
-    env.PAPERCLIP_WAKE_REASON = wakeReason;
+    writeProductEnv(env, "WAKE_REASON", wakeReason); // myrmidon(REBRAND-C)
   }
   if (wakeCommentId) {
-    env.PAPERCLIP_WAKE_COMMENT_ID = wakeCommentId;
+    writeProductEnv(env, "WAKE_COMMENT_ID", wakeCommentId); // myrmidon(REBRAND-C)
   }
   if (approvalId) {
-    env.PAPERCLIP_APPROVAL_ID = approvalId;
+    writeProductEnv(env, "APPROVAL_ID", approvalId); // myrmidon(REBRAND-C)
   }
   if (approvalStatus) {
-    env.PAPERCLIP_APPROVAL_STATUS = approvalStatus;
+    writeProductEnv(env, "APPROVAL_STATUS", approvalStatus); // myrmidon(REBRAND-C)
   }
   if (linkedIssueIds.length > 0) {
-    env.PAPERCLIP_LINKED_ISSUE_IDS = linkedIssueIds.join(",");
+    writeProductEnv(env, "LINKED_ISSUE_IDS", linkedIssueIds.join(",")); // myrmidon(REBRAND-C)
   }
   applyPaperclipWorkspaceEnv(env, {
     workspaceCwd: shapedWorkspaceEnv.workspaceCwd,
@@ -305,7 +306,7 @@ async function buildClaudeRuntimeConfig(input: ClaudeExecutionInput): Promise<Cl
   }
 
   if (authToken) {
-    env.PAPERCLIP_API_KEY = authToken;
+    writeProductEnv(env, "API_KEY", authToken); // myrmidon(REBRAND-C)
   }
 
   const runtimeEnv = Object.fromEntries(

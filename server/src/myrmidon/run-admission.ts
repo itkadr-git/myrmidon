@@ -1405,8 +1405,7 @@ export function createRunAdmission(options: {
       active = Math.max(0, active - 1);
     },
     syncRunning(running) {
-      // Only raise: lowering could drop slots reserved for claims still in flight.
-      if (Number.isInteger(running) && running > active) active = running;
+      if (Number.isInteger(running)) active = Math.max(0, running);
     },
     limited() {
       return lastLimited;
@@ -1522,6 +1521,13 @@ export function scheduleQueuedResweep(sweep: () => unknown, delayMs = RESWEEP_DE
     void sweep();
   }, delayMs);
   resweepTimer.unref?.();
+}
+
+export function cancelQueuedResweep(): void {
+  if (resweepTimer) {
+    clearTimeout(resweepTimer);
+    resweepTimer = null;
+  }
 }
 
 let shared: RunAdmission | null = null;
@@ -1654,6 +1660,7 @@ export function sharedRunAdmission(): RunAdmission {
 
 /** Test hook: drop the process-wide admission so the next call rereads the env. */
 export function resetSharedRunAdmissionForTests(): void {
+  cancelQueuedResweep();
   shared = null;
   memoryLimitWarningLogged = false;
   hostMemoryWarningLogged = false;

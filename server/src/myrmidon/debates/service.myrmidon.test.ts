@@ -8,8 +8,10 @@
 import { describe, expect, it } from "vitest";
 import {
   DEBATE_AGREE_MARKER,
+  DEBATE_PROTOCOL_DOCUMENT_KEY,
   DEBATE_RESULT_DOCUMENT_KEY,
   defaultDebateSettings,
+  parseDebateProtocolDocument,
   resolveCasteDebateSettings,
   type DebateModelCall,
   type DebateSettings,
@@ -95,9 +97,12 @@ describe("myrmidon(1.7-DEBATE-ASYM-A): the debate service", () => {
 
     expect(result.issueId).toBe(ISSUE);
     expect(result.documentKey).toBe(DEBATE_RESULT_DOCUMENT_KEY);
-    expect(h.documents).toHaveLength(1);
-    const doc = h.documents[0]!;
-    expect(doc.key).toBe(DEBATE_RESULT_DOCUMENT_KEY);
+    // The protocol document grows while the debate runs (one write per
+    // replica, OPE-12096); the result document is the one that carries the
+    // verdict and the cost.
+    const doc = h.documents.find((d) => d.key === DEBATE_RESULT_DOCUMENT_KEY)!;
+    expect(doc).toBeTruthy();
+    expect(h.documents.some((d) => d.key === DEBATE_PROTOCOL_DOCUMENT_KEY)).toBe(true);
     // Acceptance 3: the document carries the cost.
     expect(doc.body).toContain("## Cost");
     expect(doc.body).toContain("Total");
@@ -167,7 +172,7 @@ describe("myrmidon(1.7-DEBATE-ASYM-A): the debate service", () => {
     const result = await service.run({ companyId: COMPANY, issueId: ISSUE }, { agentId: AGENT, userId: null, runId: null });
     expect(result.outcome.stopReason).toBe("rounds_exhausted");
     expect(result.outcome.roundsRun).toBe(3);
-    expect(h.documents[0]!.body).toContain("rounds_exhausted");
+    expect(h.documents.find((d) => d.key === DEBATE_RESULT_DOCUMENT_KEY)!.body).toContain("rounds_exhausted");
   });
 
   it("records the cost even when the models are free (zero cents, real tokens)", async () => {
@@ -227,5 +232,134 @@ describe("myrmidon(1.7-DEBATE-ASYM-A): the debate service", () => {
     await expect(
       service.run({ companyId: "40000000-0000-4000-8000-000000000004", issueId: ISSUE }, { agentId: null, userId: "u", runId: null }),
     ).rejects.toMatchObject({ code: "debate_issue_not_found" });
+  });
+
+  it("PRIVATE-TASKS (G3): an agent cannot debate a private task — the same not-found answer, nothing spent", async () => {
+    // The private task looks exactly like a missing one to an agent caller:
+    // the same DebateConfigError code AND the same message (no way to tell a
+    // private task from a nonexistent one by the error text).
+    const notFoundMessage = `issue ${ISSUE} does not exist in this company`;
+    const h = harness({
+      loadIssue: async (issueId) =>
+        issueId === ISSUE
+          ? {
+              id: ISSUE,
+              companyId: COMPANY,
+              identifier: "OPE-1",
+              title: "Secret private task title",
+              isPrivate: true,
+            }
+          : null,
+    });
+    const service = debateService(h.deps);
+    await expect(
+      service.run({ companyId: COMPANY, issueId: ISSUE }, { agentId: AGENT, userId: null, runId: null }),
+    ).rejects.toMatchObject({ code: "debate_issue_not_found", message: notFoundMessage });
+    // Refused before any spend: no model calls, no documents on the task.
+    expect(h.calls).toHaveLength(0);
+    expect(h.documents).toHaveLength(0);
+    expect(h.activities).toHaveLength(0);
+    expect(h.costs).toHaveLength(0);
+
+    // The same private task is debatable by a board (non-agent) caller.
+    // Only the private-task loader is shared; writes/costs/activity go to this
+    // harness's own default deps so the assertions below see them.
+    const board = harness({
+      loadIssue: h.deps.loadIssue,
+    });
+    const boardService = debateService(board.deps);
+    const result = await boardService.run(
+      { companyId: COMPANY, issueId: ISSUE },
+      { agentId: null, userId: "user-a", runId: null },
+    );
+    expect(result.issueId).toBe(ISSUE);
+    expect(result.outcome.question).toBe("Secret private task title");
+    expect(board.documents.length).toBeGreaterThan(0);
+  });
+
+  it("PRIVATE-TASKS (G3): an agent keeps running debates on a public task", async () => {
+    // The flag defaults to false on real rows; an undefined flag in the ref
+    // must not refuse an agent run (pre-privacy behaviour unchanged).
+    const h = harness({
+      loadIssue: async (issueId) =>
+        issueId === ISSUE
+          ? { id: ISSUE, companyId: COMPANY, identifier: "OPE-1", title: "Which bbq channel to prioritize?" }
+          : null,
+    });
+    const service = debateService(h.deps);
+    const result = await service.run(
+      { companyId: COMPANY, issueId: ISSUE },
+      { agentId: AGENT, userId: null, runId: null },
+    );
+    expect(result.issueId).toBe(ISSUE);
+    expect(h.calls.length).toBeGreaterThan(0);
+    expect(h.documents.length).toBeGreaterThan(0);
+  });
+
+  it("2 rounds → the protocol document holds both exchange replicas in order (OPE-12096 acceptance)", async () => {
+    const h = harness({
+      readSettings: async (): Promise<DebateSettingsResolution> => ({
+        settings: { ...defaultDebateSettings(), rounds: 2 },
+        source: "settings",
+        problem: null,
+      }),
+      callModel:
+        async (): Promise<DebateModelCall> =>
+        async (_cfg, _sys, _user, context) => {
+          h.calls.push(`${context.role}:${context.round}:${context.independent}`);
+          const text =
+            context.role === "critic"
+              ? context.round === 0
+                ? `round-0 critic flaw`
+                : `round-${context.round} critic flaw. ${DEBATE_AGREE_MARKER}`
+              : context.role === "judge"
+                ? "VERDICT: done."
+                : `round-${context.round} generator position`;
+          return { text, usage: { inputTokens: 100, outputTokens: 100 } };
+        },
+    });
+    const service = debateService(h.deps);
+    const result = await service.run({ companyId: COMPANY, issueId: ISSUE }, { agentId: AGENT, userId: null, runId: null });
+    expect(result.outcome.roundsPlanned).toBe(2);
+    expect(result.outcome.roundsRun).toBe(1);
+    expect(result.outcome.stopReason).toBe("agreement");
+    // The call sheet proves the two rounds actually ran (round 0 independent
+    // first answers, then the cross-reading exchange round 1).
+    expect(h.calls).toEqual([
+      "generator:0:true",
+      "critic:0:true",
+      "generator:1:false",
+      "critic:1:false",
+      "judge:1:false",
+    ]);
+    // The protocol document's LAST write (the finished stamp) carries the
+    // whole transcript; earlier writes are the running snapshots checked below.
+    const protocolDoc = h.documents.filter((d) => d.key === DEBATE_PROTOCOL_DOCUMENT_KEY).at(-1)!;
+    expect(protocolDoc).toBeTruthy();
+    const parsed = parseDebateProtocolDocument(protocolDoc.body);
+    expect(parsed).not.toBeNull();
+    expect(parsed?.status).toBe("finished");
+    expect(parsed?.stopReason).toBe("agreement");
+    expect(parsed?.roundsRun).toBe(1);
+    expect(Object.keys(parsed?.rounds ?? {})).toEqual(["r0#0", "r0#1", "r1#0", "r1#1"]);
+    // Both exchange replicas (and the independent first answers) are present
+    // in key order — the acceptance's "both replicas in order".
+    expect(parsed?.rounds["r0#0"]?.text).toBe("round-0 generator position");
+    expect(parsed?.rounds["r0#1"]?.text).toBe("round-0 critic flaw");
+    expect(parsed?.rounds["r1#0"]?.text).toBe("round-1 generator position");
+    expect(parsed?.rounds["r1#1"]?.text).toBe(`round-1 critic flaw. ${DEBATE_AGREE_MARKER}`);
+    expect(parsed?.rounds["r1#1"]?.recordedAt).toBe("2026-10-05T00:00:00.000Z");
+    // The transcript grew while the debate ran: one write per replica plus the
+    // finished stamp; every intermediate write is valid JSON with entries in
+    // order (readable by GET at any moment of the run).
+    const protocolWrites = h.documents.filter((d) => d.key === DEBATE_PROTOCOL_DOCUMENT_KEY);
+    expect(protocolWrites).toHaveLength(5);
+    for (const [i, write] of protocolWrites.entries()) {
+      const p = parseDebateProtocolDocument(write.body)!;
+      expect(Object.keys(p.rounds)).toEqual(
+        ["r0#0", "r0#1", "r1#0", "r1#1"].slice(0, [1, 2, 3, 4, 4][i]),
+      );
+      expect(p.status).toBe(i < 4 ? "running" : "finished");
+    }
   });
 });

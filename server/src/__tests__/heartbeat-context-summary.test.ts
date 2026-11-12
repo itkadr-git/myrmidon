@@ -1,7 +1,9 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   buildPaperclipTaskMarkdown,
+  buildReviewerInputFromTaskData,
   mergeCoalescedContextSnapshot,
+  selectReviewerPullRequestRef,
   summarizeHeartbeatRunContextSnapshot,
   summarizeHeartbeatRunListResultJson,
 } from "../services/heartbeat.js";
@@ -65,13 +67,13 @@ describe("buildPaperclipTaskMarkdown", () => {
         description: "Original request",
       },
       wakeComment: {
-        id: "comment-3",
+        id: "3bb03c29-17c7-4d42-b3b6-c8e89052829f",
         body: "burst-four",
       },
       wakeComments: [
-        { id: "comment-1", body: "burst-two" },
-        { id: "comment-2", body: "burst-three" },
-        { id: "comment-3", body: "burst-four" },
+        { id: "0f9d5a1e-2f0d-4a6b-8c6d-1e2f3a4b5c6d", body: "burst-two" },
+        { id: "2aa92f18-06b6-4231-a2a5-bf7d7f41718e", body: "burst-three" },
+        { id: "3bb03c29-17c7-4d42-b3b6-c8e89052829f", body: "burst-four" },
       ],
     });
 
@@ -297,7 +299,7 @@ describe("buildPaperclipTaskMarkdown", () => {
         description: null,
       },
       wakeComment: {
-        id: "comment-1",
+        id: "0f9d5a1e-2f0d-4a6b-8c6d-1e2f3a4b5c6d",
         body: "Please revise the plan.",
       },
     });
@@ -388,7 +390,7 @@ describe("buildPaperclipTaskMarkdown", () => {
         description: "Full multi-paragraph brief that the session already received.",
       },
       wakeComment: {
-        id: "comment-1",
+        id: "0f9d5a1e-2f0d-4a6b-8c6d-1e2f3a4b5c6d",
         body: "Please also update the changelog.",
       },
     };
@@ -434,7 +436,7 @@ describe("buildPaperclipTaskMarkdown", () => {
         description: null,
       },
       wakeComment: {
-        id: "comment-1",
+        id: "0f9d5a1e-2f0d-4a6b-8c6d-1e2f3a4b5c6d",
         body: "Please revise the plan.",
       },
       interaction: {
@@ -466,8 +468,8 @@ describe("mergeCoalescedContextSnapshot", () => {
       },
       {
         issueId: "issue-1",
-        commentId: "comment-1",
-        wakeCommentId: "comment-1",
+        commentId: "0f9d5a1e-2f0d-4a6b-8c6d-1e2f3a4b5c6d",
+        wakeCommentId: "0f9d5a1e-2f0d-4a6b-8c6d-1e2f3a4b5c6d",
         wakeReason: "issue_commented",
       },
     );
@@ -477,8 +479,8 @@ describe("mergeCoalescedContextSnapshot", () => {
     expect(merged.interactionStatus).toBeUndefined();
     expect(merged.continuationPolicy).toBeUndefined();
     expect(merged.checkboxSelection).toBeUndefined();
-    expect(merged.commentId).toBe("comment-1");
-    expect(merged.wakeCommentId).toBe("comment-1");
+    expect(merged.commentId).toBe("0f9d5a1e-2f0d-4a6b-8c6d-1e2f3a4b5c6d");
+    expect(merged.wakeCommentId).toBe("0f9d5a1e-2f0d-4a6b-8c6d-1e2f3a4b5c6d");
   });
 
   it("preserves resolved interaction state for the interaction wake itself", () => {
@@ -524,8 +526,8 @@ describe("mergeCoalescedContextSnapshot", () => {
       },
       {
         issueId: "issue-1",
-        commentId: "comment-1",
-        wakeCommentId: "comment-1",
+        commentId: "0f9d5a1e-2f0d-4a6b-8c6d-1e2f3a4b5c6d",
+        wakeCommentId: "0f9d5a1e-2f0d-4a6b-8c6d-1e2f3a4b5c6d",
         wakeReason: "issue_commented",
       },
       { preserveExistingInteractionContinuation: true },
@@ -535,17 +537,17 @@ describe("mergeCoalescedContextSnapshot", () => {
     expect(merged.interactionKind).toBe("request_confirmation");
     expect(merged.interactionStatus).toBe("accepted");
     expect(merged.continuationPolicy).toBe("wake_assignee_on_accept");
-    expect(merged.commentId).toBe("comment-1");
-    expect(merged.wakeCommentId).toBe("comment-1");
+    expect(merged.commentId).toBe("0f9d5a1e-2f0d-4a6b-8c6d-1e2f3a4b5c6d");
+    expect(merged.wakeCommentId).toBe("0f9d5a1e-2f0d-4a6b-8c6d-1e2f3a4b5c6d");
   });
 
   it("keeps a queued comment when an interaction joins its successor wake", () => {
     const merged = mergeCoalescedContextSnapshot(
       {
         issueId: "issue-1",
-        commentId: "comment-1",
-        wakeCommentId: "comment-1",
-        wakeCommentIds: ["comment-1"],
+        commentId: "0f9d5a1e-2f0d-4a6b-8c6d-1e2f3a4b5c6d",
+        wakeCommentId: "0f9d5a1e-2f0d-4a6b-8c6d-1e2f3a4b5c6d",
+        wakeCommentIds: ["0f9d5a1e-2f0d-4a6b-8c6d-1e2f3a4b5c6d"],
         wakeReason: "issue_commented",
       },
       {
@@ -562,9 +564,9 @@ describe("mergeCoalescedContextSnapshot", () => {
     expect(merged.interactionId).toBe("interaction-1");
     expect(merged.interactionKind).toBe("ask_user_questions");
     expect(merged.interactionStatus).toBe("answered");
-    expect(merged.commentId).toBe("comment-1");
-    expect(merged.wakeCommentId).toBe("comment-1");
-    expect(merged.wakeCommentIds).toEqual(["comment-1"]);
+    expect(merged.commentId).toBe("0f9d5a1e-2f0d-4a6b-8c6d-1e2f3a4b5c6d");
+    expect(merged.wakeCommentId).toBe("0f9d5a1e-2f0d-4a6b-8c6d-1e2f3a4b5c6d");
+    expect(merged.wakeCommentIds).toEqual(["0f9d5a1e-2f0d-4a6b-8c6d-1e2f3a4b5c6d"]);
   });
 });
 
@@ -574,8 +576,8 @@ describe("summarizeHeartbeatRunContextSnapshot", () => {
       issueId: "issue-1",
       taskId: "task-1",
       taskKey: "PAP-1",
-      commentId: "comment-1",
-      wakeCommentId: "comment-2",
+      commentId: "0f9d5a1e-2f0d-4a6b-8c6d-1e2f3a4b5c6d",
+      wakeCommentId: "2aa92f18-06b6-4231-a2a5-bf7d7f41718e",
       wakeReason: "retry_failed_run",
       wakeSource: "on_demand",
       wakeTriggerDetail: "manual",
@@ -595,8 +597,8 @@ describe("summarizeHeartbeatRunContextSnapshot", () => {
       issueId: "issue-1",
       taskId: "task-1",
       taskKey: "PAP-1",
-      commentId: "comment-1",
-      wakeCommentId: "comment-2",
+      commentId: "0f9d5a1e-2f0d-4a6b-8c6d-1e2f3a4b5c6d",
+      wakeCommentId: "2aa92f18-06b6-4231-a2a5-bf7d7f41718e",
       wakeReason: "retry_failed_run",
       wakeSource: "on_demand",
       wakeTriggerDetail: "manual",
@@ -623,6 +625,8 @@ describe("summarizeHeartbeatRunListResultJson", () => {
         totalCostUsd: "1.25",
         costUsd: "0.75",
         costUsdCamel: "0.5",
+        outcome: null,
+        stopKind: null,
       }),
     ).toEqual({
       summary: "Completed the task",
@@ -630,6 +634,30 @@ describe("summarizeHeartbeatRunListResultJson", () => {
       total_cost_usd: 1.25,
       cost_usd: 0.75,
       costUsd: 0.5,
+    });
+  });
+
+  it("myrmidon(OPE-12316): keeps outcome/stopKind codes in the summarized resultJson", () => {
+    expect(
+      summarizeHeartbeatRunListResultJson({
+        summary: "Execution stopped",
+        outcome: "blocked",
+        stopKind: "budget_limit",
+      }),
+    ).toEqual({
+      summary: "Execution stopped",
+      outcome: "blocked",
+      stopKind: "budget_limit",
+    });
+    // myrmidon(OPE-12316): codes alone (no legacy summary) still summarize.
+    expect(
+      summarizeHeartbeatRunListResultJson({
+        outcome: "failed",
+        stopKind: "iteration_limit",
+      }),
+    ).toEqual({
+      outcome: "failed",
+      stopKind: "iteration_limit",
     });
   });
 
@@ -641,7 +669,133 @@ describe("summarizeHeartbeatRunListResultJson", () => {
         message: undefined,
         error: "   ",
         totalCostUsd: "abc",
+        outcome: null,
+        stopKind: null,
       }),
     ).toBeNull();
+  });
+});
+
+describe("developer reviewer isolated input", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  const issue = {
+    id: "issue-1",
+    identifier: "OPE-10333",
+    title: "Task-scoped reviewer isolation",
+    description:
+      "Only the task specification belongs in reviewer context.\n\nAcceptance criteria:\n- Reviewer receives no coder session history.",
+  };
+  const pullRequest = {
+    number: 2469,
+    repository: "itkadr-git/myrmidon",
+    baseBranch: "main",
+    headBranch: "bot/OPE-10333",
+    headSha: "503bb749b79f2083b6436235e621510ddc856353",
+  };
+
+  it("builds the input from task text and a PR reference, without a diff or engineer content", () => {
+    const reviewerInput = buildReviewerInputFromTaskData({ issue, pullRequest });
+
+    expect(reviewerInput).toMatchObject({
+      taskIdentifier: "OPE-10333",
+      taskTitle: "Task-scoped reviewer isolation",
+      acceptanceCriteria: ["Reviewer receives no coder session history."],
+      prMetadata: pullRequest,
+      diffCommand: "gh pr diff 2469 -R itkadr-git/myrmidon",
+      forbiddenDataExcluded: true,
+    });
+    expect(reviewerInput).not.toHaveProperty("diff");
+    expect(reviewerInput).not.toHaveProperty("coderSessionHistory");
+    expect(reviewerInput).not.toHaveProperty("comments");
+    expect(reviewerInput.prMetadata).not.toHaveProperty("authorLogin");
+  });
+
+  it("makes no network call while building the input", () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+    buildReviewerInputFromTaskData({ issue, pullRequest });
+    selectReviewerPullRequestRef({
+      pullRequestsCi: [
+        { repository: "itkadr-git/myrmidon", pullNumber: 2469, headSha: "sha-1", headRef: "bot/OPE-10333" },
+      ],
+      workProductMetadata: [{ repo: "itkadr-git/myrmidon", number: 2469, baseRef: "main" }],
+    });
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("takes the PR reference from the CI record and the work-product metadata the board already stores", () => {
+    expect(
+      selectReviewerPullRequestRef({
+        pullRequestsCi: [
+          { repository: "itkadr-git/myrmidon", pullNumber: 2469, headSha: "sha-1", headRef: "bot/OPE-10333" },
+        ],
+        workProductMetadata: [
+          { repo: "itkadr-git/other", number: 2469, baseRef: "wrong", headRef: "wrong" },
+          { repo: "ItKadr-Git/Myrmidon", number: 2469, baseRef: "main", headRef: "stale-metadata-ref" },
+        ],
+      }),
+    ).toEqual({
+      number: 2469,
+      repository: "itkadr-git/myrmidon",
+      baseBranch: "main",
+      // The live CI record wins over the work-product metadata for the head.
+      headBranch: "bot/OPE-10333",
+      headSha: "sha-1",
+    });
+    // Without matching metadata the CI record still names head ref and SHA.
+    expect(
+      selectReviewerPullRequestRef({
+        pullRequestsCi: [{ repository: "itkadr-git/myrmidon", pullNumber: 7, headSha: null, headRef: "ci-head" }],
+        workProductMetadata: [],
+      }),
+    ).toEqual({
+      number: 7,
+      repository: "itkadr-git/myrmidon",
+      baseBranch: null,
+      headBranch: "ci-head",
+      headSha: null,
+    });
+  });
+
+  it("falls back to the work product alone and returns null when the board holds no PR", () => {
+    expect(
+      selectReviewerPullRequestRef({
+        pullRequestsCi: [],
+        workProductMetadata: [null, { repo: "itkadr-git/myrmidon", number: "12", baseRef: "main", headRef: "bot/x" }],
+      }),
+    ).toEqual({
+      number: 12,
+      repository: "itkadr-git/myrmidon",
+      baseBranch: "main",
+      headBranch: "bot/x",
+      headSha: null,
+    });
+    expect(selectReviewerPullRequestRef({ pullRequestsCi: [], workProductMetadata: [] })).toBeNull();
+    expect(
+      selectReviewerPullRequestRef({
+        pullRequestsCi: [],
+        workProductMetadata: [{ repo: "itkadr-git/myrmidon" }],
+      }),
+    ).toBeNull();
+  });
+
+  it("renders the PR reference and the read-it-yourself diff instruction into the task markdown", () => {
+    const reviewerInput = buildReviewerInputFromTaskData({ issue, pullRequest });
+    const markdown = buildPaperclipTaskMarkdown({
+      issue: { ...issue, status: "in_review", workMode: "standard" },
+      reviewerInput,
+    });
+    expect(markdown).toContain("Reviewer input (isolated");
+    expect(markdown).toContain("#2469 itkadr-git/myrmidon");
+    expect(markdown).toContain("base=main head=bot/OPE-10333 sha=503bb749b79f2083b6436235e621510ddc856353");
+    expect(markdown).toContain("`gh pr diff 2469 -R itkadr-git/myrmidon`");
+    expect(markdown).toContain("- Reviewer receives no coder session history.");
+    expect(markdown).not.toContain("diff --git");
+    // Without the isolated input (every non-developer reviewer) the task markdown is unchanged.
+    expect(buildPaperclipTaskMarkdown({ issue: { ...issue, status: "in_review", workMode: "standard" } }))
+      .not.toContain("Reviewer input (isolated");
   });
 });

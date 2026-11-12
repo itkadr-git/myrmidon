@@ -81,6 +81,29 @@ describe("isSecretSensitiveHttpRequest", () => {
       ),
     ).toBe(false);
   });
+
+  it("identifies the onboarding dry-run route as secret-sensitive", () => {
+    // The request body carries the SSH password or private key for the
+    // probes — validation errors and crash metadata must stay generic.
+    expect(
+      isSecretSensitiveHttpRequest(
+        "POST",
+        "/api/companies/5cbe79ee-acb3-4597-896e-7662742593cd/servers/onboarding/dry-run",
+      ),
+    ).toBe(true);
+    expect(
+      isSecretSensitiveHttpRequest(
+        "POST",
+        "/api/companies/5cbe79ee-acb3-4597-896e-7662742593cd/servers/onboarding/dry-run/",
+      ),
+    ).toBe(true);
+    expect(
+      isSecretSensitiveHttpRequest(
+        "GET",
+        "/api/companies/5cbe79ee-acb3-4597-896e-7662742593cd/servers/onboarding/dry-run",
+      ),
+    ).toBe(false);
+  });
 });
 
 describe("shouldSilenceHttpSuccessLog", () => {
@@ -162,6 +185,12 @@ describe("shouldSilenceHttpSuccessLog", () => {
     expect(
       shouldSilenceHttpSuccessLog("PATCH", "/api/issues/PAP-1383", 200),
     ).toBe(false);
+  });
+
+  it("preserves static success silencing for the root and asset prefixes", () => {
+    expect(shouldSilenceHttpSuccessLog("GET", "/", 200)).toBe(true);
+    expect(shouldSilenceHttpSuccessLog("GET", "/assets/app.js", 200)).toBe(true);
+    expect(shouldSilenceHttpSuccessLog("GET", "/api/issues/PAP-1383", 200)).toBe(false);
   });
 
   it("keeps failing requests visible", () => {

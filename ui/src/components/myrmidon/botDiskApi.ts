@@ -18,10 +18,12 @@ export interface BotDiskView {
     /** `owner/repo` names with a host-side git mirror; absent: none. */
     gitMirrorRepos?: string[];
     gitMirrorRefreshMs?: number;
+    /** Absent: no fallback repository for tasks without a project or PR. */
+    defaultRepo?: string;
     /** Roles whose bots get the shared cache; absent: the default list (1.6.6-SETTINGS-UI-B editable). */
     sharedCacheRoles?: string[];
     pnpmStore?: "workspace" | "shared";
-    /** pnpm store inside the bot's single mount; absent: /workspace/.pnpm-store. */
+    /** pnpm store; absent: the shared /cache/pnpm-store mount (OPE-12869; a path in the bot's own tree is a store per bot). */
     pnpmStoreDir?: string;
     /** Absent: hardlink. */
     pnpmImportMethod?: "hardlink" | "clone-or-copy" | "copy";
@@ -29,8 +31,8 @@ export interface BotDiskView {
     uvLinkMode?: "clone" | "hardlink" | "copy";
     /**
      * The host directory of the shared bot runtime (1.6.5-BOT-DISK-H11):
-     * every bot on the default host mounts its bin, lazy-packages and lsp
-     * read-only over its own runtime paths. Absent: one copy per bot.
+     * every bot on the default host mounts its bin subdirectory
+     * read-only over its own runtime path. Absent: one copy per bot.
      */
     sharedBotRuntimePath?: string;
     // myrmidon(1.6.6-SETTINGS-UI-B): the five workspace-lifecycle numbers of

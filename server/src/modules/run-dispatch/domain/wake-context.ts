@@ -5,6 +5,19 @@
 // independently maintained copy in either file could silently drift out of
 // sync with the other and change only one of the two gates that read it.
 
+// Comment IDs become values of the `issue_comments.id` and
+// `chat_message_links.comment_id` uuid columns the moment a wake is resolved
+// against the database. Like vendor #13912 (isUuidLike), reject anything that
+// is not a UUID before it can reach a uuid-column query: a malformed id in a
+// queued wake must be dropped there instead of poisoning the query or the
+// whole queue. Passing wake context may carry opaque reference strings for
+// rendering, but anything consumed as a comment row identifier must be a UUID.
+const UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+
+export function isValidWakeCommentId(value: unknown): value is string {
+  return typeof value === "string" && UUID_REGEX.test(value.trim());
+}
+
 function parseObject(value: unknown): Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value)
     ? (value as Record<string, unknown>)
@@ -54,7 +67,7 @@ export function extractWakeCommentIds(
   const out: string[] = [];
   for (const entry of raw) {
     const value = readNonEmptyString(entry);
-    if (!value || out.includes(value)) continue;
+    if (!value || !isValidWakeCommentId(value) || out.includes(value)) continue;
     out.push(value);
   }
   return out;
@@ -65,13 +78,14 @@ export function deriveCommentId(
   payload?: Record<string, unknown> | null,
 ): string | null {
   const batchedCommentId = extractWakeCommentIds(contextSnapshot).at(-1);
-  return (
-    batchedCommentId ??
-    readNonEmptyString(contextSnapshot?.wakeCommentId) ??
-    readNonEmptyString(contextSnapshot?.commentId) ??
-    readNonEmptyString(payload?.commentId) ??
-    null
-  );
+  if (batchedCommentId) return batchedCommentId;
+  const wakeCommentId = readNonEmptyString(contextSnapshot?.wakeCommentId);
+  if (wakeCommentId && isValidWakeCommentId(wakeCommentId)) return wakeCommentId;
+  const commentId = readNonEmptyString(contextSnapshot?.commentId);
+  if (commentId && isValidWakeCommentId(commentId)) return commentId;
+  const payloadCommentId = readNonEmptyString(payload?.commentId);
+  if (payloadCommentId && isValidWakeCommentId(payloadCommentId)) return payloadCommentId;
+  return null;
 }
 
 /**

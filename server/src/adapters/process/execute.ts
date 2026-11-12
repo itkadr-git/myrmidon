@@ -1,4 +1,5 @@
 import type { AdapterExecutionContext, AdapterExecutionResult } from "../types.js";
+import { writeProductEnv } from "@myrmidon/shared/env-alias";
 import {
   asString,
   asNumber,
@@ -35,8 +36,8 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     if (isPaperclipRuntimeEnvKey(k) && k in env) continue;
     env[k] = v;
   }
-  env.PAPERCLIP_RUN_ID = runId;
-  if (authToken) env.PAPERCLIP_API_KEY = authToken;
+  writeProductEnv(env, "RUN_ID", runId); // myrmidon(REBRAND-C)
+  if (authToken) writeProductEnv(env, "API_KEY", authToken); // myrmidon(REBRAND-C)
   // runtimeEnv is only used to resolve the command path and log HOME below;
   // the child env is built inside runChildProcess from
   // sanitizeInheritedPaperclipEnv(process.env) + env, so a PAPERCLIP_API_KEY

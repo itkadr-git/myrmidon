@@ -32,14 +32,89 @@ an older image; the guard turns a missing extension into a named error instead o
 
 ## Query shape
 
-One `search()` call runs three statements inside one transaction:
+One `search()` call runs two rankings, each in its own transaction, and the two transactions run side
+by side (`Promise.allSettled`). The time of a search is the longer of the two, not their sum. Each
+`SET LOCAL` stays on the connection of its own transaction. A statement error aborts a PostgreSQL
+transaction, and the product's driver rethrows it at the end of the transaction even when the caller
+caught it, so the full-text ranking, which may be cancelled (see step 3), cannot share a transaction
+with the vector ranking. The `SqlExecutor` of the product opens each transaction on its own pooled
+connection, so a search holds two connections while it runs; an executor bound to one connection must
+serialize the two transactions itself.
+
+The vector transaction:
 
 1. `set local hnsw.ef_search = 64` — the pilot's recall/latency balance; configurable.
-2. Vector ranking: `order by embedding <=> $1::vector` over the dataset's chunks, with
-   `embedding` passed as a pgvector literal.
-3. Full-text ranking: `ts_rank` over the same rows with `plainto_tsquery($5, $1)` and an
-   `ilike '%…%'` trigram prefilter; `%` and `_` in the query text are escaped before they
-   reach the pattern.
+2. Vector ranking. The HNSW index knows the company, not the dataset (a chunk has no dataset column,
+   the dataset lives on `corpus_documents`), and the dataset and `ready` filters run after the index
+   scan. Without the iterative scan the scan stops after `ef_search = 64` rows, so the filter leaves
+   whatever of them belongs to the dataset: on production about half of the 100 candidates. The
+   ranking therefore reads the pgvector version from `pg_extension` (on every search, since the product
+   builds the index for every request; one cheap lookup) and then, on pgvector 0.8 and later:
+   - `set local hnsw.iterative_scan = relaxed_order` with `hnsw.max_scan_tuples = 100000` (the
+     `maxScanTuples` option; pgvector's own limit is 20 000, which a question far from a dataset of
+     13 % of the corpus reached with 47 to 67 of the 100 candidates), and the plain
+     `order by embedding <=> $1::vector limit k` statement: an index scan that the planner picks keeps
+     going until `k` rows have passed the filters. The relaxed scan returns the rows slightly out of
+     order, so the rows are sorted by score before the fusion. A dataset that holds too few chunks
+     for `k` returns what it has;
+   - a dataset of at most `exactSetMaxChunks` embedded chunks (10 000 by default; `0` switches the
+     routing off) is ranked exactly instead: the same statement with `order by (embedding <=> $1) + 0`,
+     which keeps the planner off the index and reads the chunks of the requested datasets. That takes
+     milliseconds for a small dataset, while the index scan, cut by company only, has to walk far to
+     find a few chunks of it. The size comes from a bounded probe (`count(*)` with `limit
+     exactSetMaxChunks + 1`);
+   - a search without a dataset probes the company the same way: a company of at most
+     `exactSetMaxChunks` embedded chunks is ranked exactly, a larger one goes through the iterative
+     scan.
+
+   On pgvector before 0.8 (no `hnsw.iterative_scan`) the ranking is the plain statement alone, with no
+   probe. The version is read from `pg_extension` and not tried with a `SET`, because a refused `SET`
+   aborts the transaction and the product's driver rethrows it at the end of the transaction even when
+   the caller caught it.
+
+The full-text transaction starts with `set local statement_timeout = 800` (the `fullTextTimeoutMs`
+option; `0` sets no bound of its own), and then runs step 3.
+
+3. Full-text ranking: `ts_rank` over the same rows with the tsquery
+   `plainto_tsquery($5, $1) || to_tsquery($5, $or)`, where `$1` is the question as written and `$or`
+   is a bounded OR of its significant words (`toFullTextQuery`: tokens of 4+ characters, stop words
+   dropped, at most 8 terms, joined with ` | `; empty means the question alone). `plainto_tsquery`
+   alone made every word mandatory, so a natural-language question matched nothing on the RU corpus:
+   in the 07.11 golden bench the full-text leg returned 0 rows for 98.6% of the questions and the
+   hybrid search degraded to vector-only. The OR alone drops numbers and short words, so a question
+   that names a chunk by its number or code (`the document number 97`) matched every chunk that
+   shares the other words and lost the chunk; the question as a whole, every word mandatory, still
+   finds it, and `ts_rank`, which sums over the distinct terms a chunk holds, puts it first. The
+   OR gives what the whole question does not find. A query text of at most `ilikeMaxLength`
+   characters (16 by default) also gets an `ilike '%…%'` trigram match;
+   `%` and `_` in the query text are escaped before they reach the pattern. A longer text is matched
+   by the `tsvector` alone: the trigram index reads one posting list per trigram of the pattern, so
+   the cost of the match grows with the length of the text (a 40-character question read from 150 ms
+   to 1.2 s on a cold index in production), while a long question is almost never a verbatim
+   substring of a chunk. The exception is a single token without whitespace of up to 64 characters:
+   it is an identifier (a file name, a version, a task code), which the `tsvector` does not find
+   (`litellm_proxy_config` against `litellm_proxy_config.yaml`) and the `ilike` does, so it keeps the
+   match. `ilikeMaxLength: 0` switches the match off for every text.
+
+   The OR matches a large part of a big corpus, and every match is scored. On a corpus of 285 000
+   chunks the statement averaged 9.8 s and peaked at 104 s, against 0.4 s for the vector ranking, so
+   two bounds keep its cost in check:
+   - the time bound above. When the server cancels the ranking at the bound (SQLSTATE 57014, found on
+     the error or on its `cause`, because the query layer of the product wraps driver errors), the
+     full-text ranking is empty and the fusion runs on the vector ranking alone. The
+     `onFullTextTimeout` option is called with the company, the datasets, the length of the text (not the
+     text), the bound and the time used, so the product can log it. Any other error, and a cancel of the
+     vector ranking, is thrown as before. A search without an embedding has no ranking to fall back on,
+     so it throws the cancel instead of returning an empty list that looks like "nothing found";
+   - the candidate pool. A question without the substring match used to compute `similarity(content,
+     question)`, a trigram split of the whole chunk text, for every match before it sorted. Now an inner
+     statement scores the matches with `ts_rank` alone and keeps the best `fullTextRerankPool` (1 000 by
+     default, never fewer than `kCandidates`); the outer statement computes `similarity` over those rows,
+     breaks the ties of `ts_rank` with it, and cuts the list to `kCandidates`. `ts_rank` has many exact
+     ties, so the pool is wider than the list, and when the matches fit in the pool the answer is the
+     one of the old statement. `fullTextRerankPool: 0` brings the old statement back. A short text or
+     an identifier, which has the substring match, keeps its statement and its order unchanged: only
+     the time bound applies to it.
 
 Both rankings take `kCandidates = 100` rows, and the fusion (`k0 = 60`) turns them into one
 ranked list by rank, never by score: cosine distance and `ts_rank` are not comparable. Ties
@@ -59,7 +134,7 @@ to the wiring, not to this package.
 
 - [hybrid-search-index.myrmidon.test.ts](hybrid-search-index.myrmidon.test.ts) — unit tests
   with a recording `SqlExecutor`: statements, bound values, fusion order, escaping,
-  validation.
+  validation, the transaction of each ranking, the time bound and its cancel, and the candidate pool.
 - [hybrid-search-index.integration.myrmidon.test.ts](hybrid-search-index.integration.myrmidon.test.ts)
   — runs against a database that allows `CREATE EXTENSION`, taken from the first source that works:
   the external stand named by `CORPUS_TEST_PGVECTOR_DSN`, or else the embedded PostgreSQL 18 test

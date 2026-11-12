@@ -58,6 +58,7 @@ export const AGENT_ROLES = [
   "devops",
   "researcher",
   "general",
+  "architect",
 ] as const;
 export type AgentRole = (typeof AGENT_ROLES)[number];
 
@@ -74,6 +75,7 @@ export const AGENT_ROLE_LABELS: Record<AgentRole, string> = {
   devops: "DevOps",
   researcher: "Researcher",
   general: "General",
+  architect: "Architect",
 };
 
 export const AGENT_DEFAULT_MAX_CONCURRENT_RUNS = 20;
@@ -367,6 +369,7 @@ export const ISSUE_ORIGIN_KINDS = [
   TASK_WATCHDOG_PRODUCT_BUG_ORIGIN_KIND,
   ONBOARDING_FIRST_TASK_ORIGIN_KIND,
   "chat_channel",
+  "stack_update",
 ] as const;
 export type BuiltInIssueOriginKind = (typeof ISSUE_ORIGIN_KINDS)[number];
 export type PluginIssueOriginKind = `plugin:${string}`;
@@ -394,6 +397,7 @@ export const ISSUE_RECOVERY_ACTION_KINDS = [
   "workspace_myr_ws",
   "devbuild",
   "disk_space",
+  "resource.oom",
   "operator_action",
 ] as const;
 export type IssueRecoveryActionKind = (typeof ISSUE_RECOVERY_ACTION_KINDS)[number];
@@ -447,6 +451,9 @@ export type IssueTreeHoldStatus = (typeof ISSUE_TREE_HOLD_STATUSES)[number];
 
 export const ISSUE_TREE_HOLD_RELEASE_POLICY_STRATEGIES = ["manual", "after_active_runs_finish"] as const;
 export type IssueTreeHoldReleasePolicyStrategy = (typeof ISSUE_TREE_HOLD_RELEASE_POLICY_STRATEGIES)[number];
+
+export const ISSUE_ACCEPTANCE_SCENARIOS_DOCUMENT_KEY = "acceptance-scenarios" as const;
+export type IssueAcceptanceScenariosDocumentKey = typeof ISSUE_ACCEPTANCE_SCENARIOS_DOCUMENT_KEY;
 
 export const ISSUE_CONTINUATION_SUMMARY_DOCUMENT_KEY = "continuation-summary" as const;
 export const PIPELINE_CASE_BODY_DOCUMENT_KEY = "pipeline-case-body" as const;
@@ -770,6 +777,7 @@ export const SECRET_BINDING_TARGET_TYPES = [
   "run",
   "tool_connection",
   "system",
+  "github_actions",
 ] as const;
 export type SecretBindingTargetType = (typeof SECRET_BINDING_TARGET_TYPES)[number];
 
@@ -885,10 +893,15 @@ export const FINANCE_UNITS = [
 ] as const;
 export type FinanceUnit = (typeof FINANCE_UNITS)[number];
 
-export const BUDGET_SCOPE_TYPES = ["company", "agent", "project"] as const;
+// myrmidon(1.7 TOKEN-BUDGET-SIGNAL, OPE-12232): the issue scope and the
+// issue_tokens metric carry the token budget — a signal, never a limit
+// (Alex's epic decision). The money pipeline branches on these values:
+// every pause/incident/admission path checks metric === "billed_cents"
+// and skips anything else, so a token policy can never pause a scope.
+export const BUDGET_SCOPE_TYPES = ["company", "agent", "project", "issue"] as const;
 export type BudgetScopeType = (typeof BUDGET_SCOPE_TYPES)[number];
 
-export const BUDGET_METRICS = ["billed_cents"] as const;
+export const BUDGET_METRICS = ["billed_cents", "issue_tokens"] as const;
 export type BudgetMetric = (typeof BUDGET_METRICS)[number];
 
 export const BUDGET_WINDOW_KINDS = ["calendar_month_utc", "lifetime"] as const;

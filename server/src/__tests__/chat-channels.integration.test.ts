@@ -1045,6 +1045,13 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
         // conversations are active. Retire those bindings after assertions.
         await db.update(chatConversations).set({ state: "completed" })
           .where(and(inArray(chatConversations.companyId, [...fixtureCompanies]), inArray(chatConversations.state, ["active", "waiting"])));
+        // A fixture service that died while holding a credential-mutation or
+        // conversation lease would make the next case's receipt-reaction sweep
+        // wait the full 10s acquire window and fail with a 409. Lease rows are
+        // company-scoped, so retire them with the rest of the fixture cleanup.
+        await db
+          .delete(chatEndpointLeases)
+          .where(inArray(chatEndpointLeases.companyId, [...fixtureCompanies]));
       }
       fixtureServices.clear();
       fixtureCompanies.clear();
@@ -1059,7 +1066,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
     await db.insert(companies).values({
       id: companyId,
       name: `Chat Test ${companyId.slice(0, 8)}`,
-      issuePrefix: `C${companyId.replaceAll("-", "").slice(0, 7).toUpperCase()}`,
+      issuePrefix: `C${companyId.replaceAll("-", "").toUpperCase()}`,
       requireBoardApprovalForNewAgents: false,
     });
     const now = new Date();
@@ -1538,6 +1545,35 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       runId,
     });
     await service.processPendingPublications();
+    // Publication processing can commit the issue comment and its link in
+    // separate async steps. Wait for the exact final publication before the
+    // setup test checks the round-trip proof, instead of relying on the
+    // current drain timing.
+    await vi.waitFor(async () => {
+      // The scheduler may have handed the publication to its endpoint worker
+      // between the initial drain and this assertion. Join another drain on
+      // each retry so the setup proof observes the durable outbox state, not
+      // the scheduler's transient hand-off window.
+      await service.processPendingPublications();
+      const publication = await db
+        .select({
+          id: chatPublications.id,
+        })
+        .from(chatPublications)
+        .where(
+          and(
+            eq(chatPublications.endpointId, endpointId),
+            eq(chatPublications.conversationId, conversation.id),
+            eq(chatPublications.state, "published"),
+            isNotNull(chatPublications.commentId),
+            sql`${chatPublications.payload}->>'interactionId' is null`,
+            sql`${chatPublications.payload}->>'progressState' is null`,
+          ),
+        )
+        .limit(1)
+        .then((rows) => rows[0]);
+      expect(publication).toBeDefined();
+    });
     const providerRuntime = fakeRuntime.endpoints.get(endpointId);
     if (providerRuntime) providerRuntime.posts.length = 0;
   }
@@ -5974,6 +6010,9 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
     expect(deferred).toHaveLength(1);
 
     deferred.shift()?.();
+    // The GitHub drain owns a fixed reorder window; running its scheduled
+    // task is not the same as advancing the window to its deadline.
+    await new Promise((resolve) => setTimeout(resolve, 800));
     await vi.waitFor(async () => {
       const rows = await db
         .select()
@@ -47237,7 +47276,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
     const updateOutcome = await Promise.race([
       resourceUpdate,
       new Promise<"timed_out">((resolve) =>
-        setTimeout(() => resolve("timed_out"), 500),
+        setTimeout(() => resolve("timed_out"), 2_500),
       ),
     ]);
     releasePost();

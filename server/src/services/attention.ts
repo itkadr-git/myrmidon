@@ -29,6 +29,8 @@ import {
   projects,
   projectWorkspaces,
   secretAccessEvents,
+  toolMcpGatewayTokens,
+  toolMcpGateways,
 } from "@myrmidon/db";
 import { deriveProjectUrlKey, botDiskQuotaWhyNow } from "@myrmidon/shared";
 import type {
@@ -86,20 +88,27 @@ import {
 } from "../myrmidon/pause-guard/attention.js";
 import { hostCpuHoldSignal, hostMemoryHoldSignal } from "../myrmidon/run-admission.js"; // myrmidon(1.6.2/1.6.5 RUN-ADMISSION)
 // myrmidon(BOT-RUNTIME-TUNING D): the model fallback share raises one card per agent
-import { readModelFallbackSignals } from "../myrmidon/litellm-fallback-signal/attention.js";
+import { readModelFallbackSignals, readModelFallbackDeadendSignals } from "../myrmidon/litellm-fallback-signal/attention.js";
 // myrmidon(FEATURES): an enabled feature that stays misconfigured or failing raises one operator card
+import { collectDevflowHealth } from "../myrmidon/devflow-health/collector.js";
 import { readFeatureAttentionSignals } from "../myrmidon/features/attention.js";
 // myrmidon(1.6.6 OPE-7198): Codex/ChatGPT pool banned/exhausted role signals
-import { readPoolAccountSignals } from "../myrmidon/model-providers/signals.js";
+import { readPoolAccountSignals, readPackageExpirySignals } from "../myrmidon/model-providers/signals.js";
 // myrmidon(1.6.5-F-18): an empty gateway model catalog raises one card per
 // company — the accounting key is misconfigured, not a quiet window.
-import { readEmptyCatalogSignal } from "../myrmidon/litellm-costs/attention.js";
+import {
+  readEmptyCatalogSignal,
+  readLitellmBudgetSignals,
+} from "../myrmidon/litellm-costs/attention.js";
 // myrmidon(1.6.5-F11-A): the «media not connected» signals the profile compile records.
 import { readMediaMcpSignals } from "../myrmidon/bot-containers/media-mcp.js";
 // myrmidon(1.6.1-BOT-DISK-C): the disk quota sweep records one signal per bot
 // volume at/over its quota; the feed turns the registry into cards.
 import { buildBotDiskCards, readBotDiskReports } from "../myrmidon/bot-containers/bot-disk-cards.js"; // myrmidon(1.6.5 BOT-DISK-H4c)
 import { readBotDiskQuotaSignals } from "../myrmidon/bot-containers/bot-quota.js";
+// myrmidon(OPE-7202): provider-reported warnings surface before reset.
+import { buildProviderUsageAttentionCard } from "../myrmidon/provider-usage/attention.js";
+import { providerUsageService } from "./provider-usage.js";
 
 // myrmidon(STALE-BLOCK): the lifted-block operator signal registry.
 import {
@@ -108,6 +117,22 @@ import {
   staleBlockSignalSeverity,
   staleBlockSignalWhyNow,
 } from "../myrmidon/stale-block/attention.js";
+// myrmidon(OPE-11890): the auth-401 burst operator signal registry.
+import {
+  readAuth401BurstSignal,
+  auth401BurstSignalDedupKey,
+  auth401BurstSignalSeverity,
+  auth401BurstSignalWhyNow,
+} from "../myrmidon/auth-401-burst/attention.js";
+// myrmidon(OPE-12868): the GitHub App webhook-disabled operator signal
+// registry — webhook-sync latches it on a GitHub 404 and clears it on a
+// confirmed sync.
+import {
+  readGitHubAppWebhookDisabledSignals,
+  githubAppWebhookDisabledSignalDedupKey,
+  githubAppWebhookDisabledSignalSeverity,
+  githubAppWebhookDisabledSignalWhyNow,
+} from "../myrmidon/github-shared-identity/webhook-disabled-signal.js";
 // myrmidon(OPE-6011): the held-task card (a settled execution-reconciliation
 // hold silently skipping every wake of the task's assignee).
 import {
@@ -209,10 +234,14 @@ const ATTENTION_SOURCE_KINDS: AttentionSourceKind[] = [
   "bot_media_mcp",
   // myrmidon(STALE-BLOCK): one card per block the watchdog lifted.
   "stale_block",
+  // myrmidon(OPE-11890): one card while the auth-401 burst latch is tripped.
+  "auth_401_burst",
   "host_disk_alert",
   // myrmidon(1.6.5-F-18): the gateway model catalog is empty — the accounting
   // key is misconfigured; one card per company.
   "empty_model_catalog",
+  // myrmidon(OPE-11776): key cap and spend threshold cards.
+  "litellm_budget",
   // myrmidon(1.6.1-WIP-LIMIT-A): the per-agent work-in-progress over-limit signal.
   "wip_limit",
   // myrmidon(REVIEW-ROUTING): no reviewer available, or a review overdue.
@@ -230,6 +259,20 @@ const ATTENTION_SOURCE_KINDS: AttentionSourceKind[] = [
   "owner_pending_card",
   // myrmidon(1.6.6 OPE-7198): banned or exhausted Codex / ChatGPT subscription accounts.
   "codex_pool_alert",
+  "provider_usage_warning",
+  // myrmidon(1.6.8 OPE-12709): a whole role's model channels are down (>=5
+  // finished runs in 30 min, 0 succeeded).
+  "role_model_down",
+  // myrmidon(1.6.8 OPE-12709): a provider channel has no credits (402 /
+  // insufficient_quota) — a top-up question for the owner, not a retry.
+  "provider_no_credits",
+  // myrmidon(OPE-12517): one card per expiring/expired MCP gateway token.
+  "mcp_gateway_token_expiring",
+  // myrmidon(OPE-12868): one card per App whose webhook GitHub reports as
+  // absent (HTTP 404 on the App-hook config PATCH) — the App's "Active"
+  // webhook switch is a GitHub-side setting no API can turn on, and while it
+  // is off the board receives no GitHub events at all.
+  "github_app_webhook_disabled",
 ];
 
 const SEVERITY_RANK: Record<AttentionSeverity, number> = {
@@ -253,11 +296,16 @@ const SOURCE_RANK: Record<AttentionSourceKind, number> = {
   join_request: 10,
   stack_update: 11,
   stale_block: 12,
+  // myrmidon(OPE-11890): a 401 storm is an active-auth stop — ranked with the
+  // other auth/ops alerts at the top of the feed.
+  auth_401_burst: 0,
   host_disk_alert: 0,
   model_fallback_alert: 13,
   // myrmidon(1.6.5-F-18): an empty catalog blocks the gateway spend limits and
   // the model picker — a stop, ranked with the other gateway-ops alerts.
   empty_model_catalog: 0,
+  // myrmidon(OPE-11776): budget exhaustion is a critical operational alert.
+  litellm_budget: 3,
   // myrmidon(1.6.5-F11-A): «media not connected» is configuration advice, not
   // an error — ranked with the other advisory sources.
   bot_media_mcp: 13,
@@ -293,6 +341,13 @@ const SOURCE_RANK: Record<AttentionSourceKind, number> = {
   // myrmidon(1.6.5 F-09): a queue stall is a workload notice — advice, ranked
   // with the other capacity signals.
   queue_stall: 14,
+  provider_usage_warning: 19,
+  // myrmidon(1.6.8 OPE-12709): a whole role cannot run — an active stop for the
+  // affected role, ranked with the other auth/ops alerts.
+  role_model_down: 0,
+  // myrmidon(1.6.8 OPE-12709): "no credits" blocks the provider channel until
+  // the owner tops up — an active stop like the budget alerts.
+  provider_no_credits: 0,
   // myrmidon(1.6.5-F-23): off-run secret reads are a deliberate surface
   // extension — visible as advice, never a stop; ranked with the other
   // advisory notices.
@@ -302,12 +357,26 @@ const SOURCE_RANK: Record<AttentionSourceKind, number> = {
   codex_pool_alert: 4,
   // myrmidon(OPE-7932): overdue monitors need operator visibility, below blockers.
   issue_monitor_overdue: 12,
+  // myrmidon(OPE-12517): an expiring/expired MCP gateway token is ops advice —
+  // the gateway keeps serving until expiry, and the card's job is a rotation
+  // heads-up, ranked with the other advisory notices.
+  mcp_gateway_token_expiring: 18,
+  // myrmidon(OPE-12868): a disabled App webhook stops every GitHub event (CI,
+  // PR, comments) for the whole board — an active ops stop ranked with the
+  // other auth/ops alerts.
+  github_app_webhook_disabled: 0,
 };
 
 const PENDING_INTERACTION_STATUSES = ["pending"] as const;
 const OPEN_RECOVERY_STATUSES = ["active", "escalated"] as const;
 const HUMAN_RECOVERY_OWNER_TYPES = ["user", "board"] as const;
 const DETAIL_EXCERPT_LENGTH = 160;
+// myrmidon(1.6.8 OPE-12709): ROLE-MODEL-DOWN detection window and floor. A
+// role whose agents finished at least ROLE_MODEL_DOWN_MIN_RUNS runs in the
+// last 30 min with zero successes AND at least that many finishes classified
+// as model refusals raises the "model channels down" card.
+const ROLE_MODEL_DOWN_WINDOW_MS = 30 * 60 * 1000;
+const ROLE_MODEL_DOWN_MIN_RUNS = 5;
 const DETAIL_IMAGE_LIMIT = 3;
 const OPEN_DECISION_DEFAULT_LIMIT = 500;
 const OPEN_DECISION_MAX_LIMIT = 1_000;
@@ -1468,6 +1537,144 @@ export function invalidateAttentionFeedCache(db: Db, companyId?: string) {
   }
 }
 
+// myrmidon(1.6.8 OPE-12709): the ONE query behind the role_model_down card and
+// the agent-list/card "model unavailable since HH:MM" mark. Per-role aggregate
+// of the finished runs in the detection window; downRoles holds the roles with
+// an active signal (floor reached, 0 succeeded, refusal floor reached).
+type RoleModelDownAgg = {
+  finishedCount: number;
+  succeededCount: number;
+  refusalCount: number;
+  lastError: string | null;
+  lastFinishedAt: string | null;
+  lastRefusalError: string | null;
+  lastRefusalAt: string | null;
+  firstRefusalAt: string | null;
+  primaryChannel: string;
+  primaryRuns: number;
+};
+
+async function loadRoleModelDownState(db: Db, companyId: string, now: number) {
+  const windowStart = new Date(now - ROLE_MODEL_DOWN_WINDOW_MS);
+  const channelExpr = sql<string>`coalesce(${heartbeatRuns.resultJson} ->> 'providerModelGroup', 'unknown')`;
+  // A finished run counts as a model refusal when the adapter marked the
+  // provider failure in resultJson (model_unavailable /
+  // provider_error_as_content) or the error text carries a provider
+  // quota/limit marker (model_unavailable / overload /
+  // insufficient_quota / credits insufficient / 402 / 429).
+  const modelRefusalExpr = sql`(
+    ${heartbeatRuns.resultJson} ->> 'model_unavailable' = 'true'
+    or ${heartbeatRuns.resultJson} ->> 'provider_error_as_content' = 'true'
+    or ${heartbeatRuns.error} ilike '%model_unavailable%'
+    or ${heartbeatRuns.error} ilike '%overload%'
+    or ${heartbeatRuns.error} ilike '%insufficient_quota%'
+    or ${heartbeatRuns.error} ilike '%credits insufficient%'
+    or ${heartbeatRuns.error} ~* '(^|[^[:alnum:]])(402|429)([^[:alnum:]]|$)'
+  )`;
+  // 402 / 429 match as whole numbers only: a substring match would fire on
+  // any id, port or duration that happens to contain those digits.
+  const noCreditsErrorExpr = sql`(${heartbeatRuns.error} is not null and (${heartbeatRuns.error} ~* '(^|[^[:alnum:]])402([^[:alnum:]]|$)' or ${heartbeatRuns.error} ilike '%insufficient_quota%' or ${heartbeatRuns.error} ilike '%credits insufficient%'))`;
+  const roleRows = await db
+    .select({
+      role: agents.role,
+      channel: channelExpr,
+      finishedCount: sql<number>`count(*)::int`,
+      succeededCount: sql<number>`count(*) filter (where ${heartbeatRuns.status} = 'succeeded')::int`,
+      refusalCount: sql<number>`count(*) filter (where ${modelRefusalExpr})::int`,
+      lastError: sql<string | null>`(array_agg(${heartbeatRuns.error} order by ${heartbeatRuns.finishedAt} desc nulls last))[1]`,
+      lastFinishedAt: sql<string | null>`max(${heartbeatRuns.finishedAt})::text`,
+      lastRefusalError: sql<string | null>`(array_agg(${heartbeatRuns.error} order by ${heartbeatRuns.finishedAt} desc nulls last) filter (where ${modelRefusalExpr}))[1]`,
+      lastRefusalAt: sql<string | null>`max(${heartbeatRuns.finishedAt}) filter (where ${modelRefusalExpr})::text`,
+      firstRefusalAt: sql<string | null>`min(${heartbeatRuns.finishedAt}) filter (where ${modelRefusalExpr})::text`,
+      noCreditsRunError: sql<string | null>`(array_agg(${heartbeatRuns.error} order by ${heartbeatRuns.finishedAt} desc nulls last) filter (where ${noCreditsErrorExpr}))[1]`,
+      noCreditsAt: sql<string | null>`max(${heartbeatRuns.finishedAt}) filter (where ${noCreditsErrorExpr})::text`,
+    })
+    .from(heartbeatRuns)
+    .innerJoin(agents, eq(agents.id, heartbeatRuns.agentId))
+    .where(and(
+      eq(heartbeatRuns.companyId, companyId),
+      eq(agents.companyId, companyId),
+      inArray(heartbeatRuns.status, ["succeeded", "failed", "timed_out"]),
+      isNotNull(heartbeatRuns.finishedAt),
+      gte(heartbeatRuns.finishedAt, windowStart),
+      // updated_at is never older than finished_at; the extra bound lets
+      // heartbeat_runs_company_status_updated_idx serve the window instead
+      // of scanning every finished run of the company.
+      gte(heartbeatRuns.updatedAt, windowStart),
+    ))
+    .groupBy(agents.role, channelExpr);
+
+  // Role cards: the >=5-refused / 0-succeeded threshold is per ROLE —
+  // runs across all channels of the role count together, so an outage
+  // spread over a primary and a fallback channel still trips it. Only
+  // runs classified as model refusals (adapter marker or provider
+  // quota/limit markers in the error text) count toward the floor:
+  // ordinary adapter/process failures must not raise this
+  // operator-critical signal.
+  const byRole = new Map<string, RoleModelDownAgg>();
+  for (const row of roleRows) {
+    const agg = byRole.get(row.role) ?? {
+      finishedCount: 0,
+      succeededCount: 0,
+      refusalCount: 0,
+      lastError: null,
+      lastFinishedAt: null,
+      lastRefusalError: null,
+      lastRefusalAt: null,
+      firstRefusalAt: null,
+      primaryChannel: row.channel,
+      primaryRuns: 0,
+    };
+    agg.finishedCount += row.finishedCount;
+    agg.succeededCount += row.succeededCount;
+    agg.refusalCount += row.refusalCount;
+    if (row.lastFinishedAt != null
+      && (agg.lastFinishedAt == null || row.lastFinishedAt > agg.lastFinishedAt)) {
+      agg.lastFinishedAt = row.lastFinishedAt;
+      agg.lastError = row.lastError;
+    }
+    if (row.lastRefusalAt != null
+      && (agg.lastRefusalAt == null || row.lastRefusalAt > agg.lastRefusalAt)) {
+      agg.lastRefusalAt = row.lastRefusalAt;
+      agg.lastRefusalError = row.lastRefusalError;
+    }
+    if (row.firstRefusalAt != null
+      && (agg.firstRefusalAt == null || row.firstRefusalAt < agg.firstRefusalAt)) {
+      agg.firstRefusalAt = row.firstRefusalAt;
+    }
+    if (row.finishedCount > agg.primaryRuns) {
+      agg.primaryRuns = row.finishedCount;
+      agg.primaryChannel = row.channel;
+    }
+    byRole.set(row.role, agg);
+  }
+  // The dedupKey is per ROLE (not per channel): ONE card per role even
+  // when several channels failed. The card disappears on the role's
+  // first successful run — the 0-succeeded condition drops out. The
+  // floor counts MODEL-REFUSAL finishes only; a role whose runs fail
+  // for ordinary (non-provider) reasons stays silent.
+  const downRoles = [...byRole.entries()]
+    .filter(([, agg]) => agg.finishedCount >= ROLE_MODEL_DOWN_MIN_RUNS
+      && agg.succeededCount === 0
+      && agg.refusalCount >= ROLE_MODEL_DOWN_MIN_RUNS);
+
+  return { roleRows, downRoles };
+}
+
+/**
+ * Roles with an active ROLE_MODEL_DOWN signal -> ISO time of the first model
+ * refusal in the window ("model unavailable since"). One query per company.
+ * The mark clears on the role's first successful run (0-succeeded condition).
+ */
+export async function listRoleModelDownSince(
+  db: Db,
+  companyId: string,
+  now: number = Date.now(),
+): Promise<Map<string, string>> {
+  const { downRoles } = await loadRoleModelDownState(db, companyId, now);
+  return new Map(downRoles.map(([role, agg]) => [role, toIso(agg.firstRefusalAt ?? agg.lastRefusalAt ?? agg.lastFinishedAt)]));
+}
+
 /**
  * Rebuild one cache key, at most once at a time.
  *
@@ -1545,6 +1752,139 @@ async function buildAttentionFeedSnapshot(
         if (!includeDismissed && dismissal?.isActive) return;
         collected.push({ ...item, dismissal });
       };
+
+      for (const aggregate of await providerUsageService(db).list(companyId)) {
+        const warning = aggregate.warning;
+        if (!warning || Date.parse(warning.observedAt) >= Date.parse(warning.resetsAt)) continue;
+        const card = buildProviderUsageAttentionCard(warning);
+        add(createItem({
+          companyId,
+          sourceKind: "provider_usage_warning",
+          subject: { kind: "company", id: companyId, companyId, title: card.title, identifier: null, status: null, href: `/${prefix}/apps`, metadata: card.metadata },
+          whyNow: card.whyNow,
+          decisionVerbs: [],
+          inlineResolvable: false,
+          entryRule: warning.trigger === "usage" ? `provider usage reached ${warning.thresholdPercent}% before reset` : `provider window passed ${warning.thresholdPercent}% of its length before reset`,
+          exitRule: "provider window resets or usage falls below threshold",
+          dedupKey: card.dedupKey,
+          severity: card.severity,
+          activityAt: warning.observedAt,
+          createdAt: warning.observedAt,
+          updatedAt: warning.observedAt,
+          relatedIssue: null,
+          detail: { kind: "provider_usage", provider: warning.provider, windowKind: warning.window === "package" ? "package" : warning.window === "rolling_5h" ? "5h" : "week", usedPercent: warning.limit > 0 ? warning.used / warning.limit * 100 : 0, thresholdPercent: warning.thresholdPercent, resetsAt: warning.resetsAt, credentialRef: warning.credentialRef, images: [] },
+        }));
+      }
+
+      // myrmidon(1.6.8 OPE-12709): ROLE-MODEL-DOWN + provider "no credits".
+      // One query over the last 30 min of finished runs joined to the agents
+      // table answers both signals:
+      //  - a role where >=5 runs finished (succeeded/failed/timed_out;
+      //    cancelled never counts — it is a deliberate stop, not a model
+      //    failure) and 0 succeeded is a role whose model channels are down —
+      //    but ONLY when every finished run failed as a MODEL REFUSAL: the
+      //    adapter marked the provider failure in resultJson
+      //    (model_unavailable / provider_error_as_content) or the error text
+      //    carries a provider quota/limit marker (model_unavailable, overload,
+      //    insufficient_quota, credits insufficient, 402, 429). Ordinary
+      //    adapter or process failures never raise this operator-critical
+      //    signal. ONE card per role with the model group and the last
+      //    provider error;
+      //  - a run whose error text carries a no-credits marker (HTTP 402 /
+      //    insufficient_quota / Credits insufficient) means the provider
+      //    channel has no money: ONE card per channel — a top-up question for
+      //    the owner, never silenced by the role cooldown.
+      // The feed rebuild is stateless, so the collector itself keeps no latch:
+      // the card disappears on the role's first successful run because the
+      // 0-succeeded condition drops out. The "at most once per hour per role"
+      // pacing of the Telegram delivery lives in the errors channel
+      // (errorChannelPublicationKey adds an hour bucket for these kinds).
+      {
+        const { roleRows, downRoles } = await loadRoleModelDownState(db, companyId, now);
+
+        for (const [role, agg] of downRoles) {
+          const observedAt = toIso(agg.lastRefusalAt ?? agg.lastFinishedAt);
+          add(createItem({
+            companyId,
+            sourceKind: "role_model_down",
+            subject: {
+              kind: "company",
+              id: `role_model_down:${companyId}:${role}`,
+              companyId,
+              title: `Role ${role}: model channels down`,
+              identifier: role,
+              status: "down",
+              href: `/${prefix}/agents`,
+              metadata: { role, modelGroup: agg.primaryChannel, finishedRuns: agg.finishedCount, refusedRuns: agg.refusalCount, succeededRuns: 0 },
+            },
+            whyNow: `All model channels for role "${role}" are down: ${agg.finishedCount} run(s) finished in the last 30 min, ${agg.refusalCount} failed as model refusals, 0 succeeded (model ${agg.primaryChannel}). Last provider error: ${agg.lastRefusalError ?? agg.lastError ?? "unknown"}.`,
+            decisionVerbs: decisionVerbs(
+              { id: "inspect", label: "Inspect", description: "Open the agents list and the provider routing." },
+              { id: "dismiss", label: "Dismiss", description: "Dismiss this alert (it re-raises when the role fails again)." },
+            ),
+            inlineResolvable: false,
+            entryRule: `${ROLE_MODEL_DOWN_MIN_RUNS}+ runs of the role finished in the last 30 min, ${ROLE_MODEL_DOWN_MIN_RUNS}+ of them model refusals (provider marked unavailable/quota-limited), 0 succeeded`,
+            exitRule: "the role's next run succeeds, or the row is dismissed.",
+            dedupKey: `role_model_down:${role}`,
+            severity: "critical",
+            activityAt: observedAt,
+            createdAt: observedAt,
+            updatedAt: observedAt,
+            relatedIssue: null,
+            detail: {
+              kind: "generic",
+              summaryExcerpt: excerpt(agg.lastError ?? "model_unavailable"),
+              images: [],
+            },
+          }));
+        }
+
+        // No-credits cards: an INDEPENDENT operator signal per channel ("a
+        // top-up question for the owner, not a repeat/cool-down" — task item
+        // 2). Raised even when its role is also down; the role card and this
+        // card answer different questions (why is the role dead vs. who pays).
+        const noCreditRows = roleRows.filter((row) => row.noCreditsRunError !== null);
+        const noCreditsSeen = new Set<string>();
+        for (const row of noCreditRows) {
+          if (noCreditsSeen.has(row.channel)) continue;
+          noCreditsSeen.add(row.channel);
+          const observedAt = toIso(row.noCreditsAt);
+          const channel = row.channel;
+          add(createItem({
+            companyId,
+            sourceKind: "provider_no_credits",
+            subject: {
+              kind: "company",
+              id: `provider_no_credits:${companyId}:${channel}`,
+              companyId,
+              title: `Provider channel ${channel}: no credits`,
+              identifier: channel,
+              status: "no_credits",
+              href: `/${prefix}/company/settings/models`,
+              metadata: { channel, role: row.role },
+            },
+            whyNow: `Provider channel "${channel}" answered "no credits" (402/insufficient_quota). The channel refuses work until the account is topped up.`,
+            decisionVerbs: decisionVerbs(
+              { id: "inspect", label: "Inspect", description: "Open the model settings and the provider billing." },
+              { id: "dismiss", label: "Dismiss", description: "Dismiss this alert (it re-raises while the channel keeps refusing)." },
+            ),
+            inlineResolvable: false,
+            entryRule: "a run's error text carries a no-credits marker (402 / insufficient_quota / Credits insufficient)",
+            exitRule: "the channel answers a run without a no-credits error, or the row is dismissed.",
+            dedupKey: `provider_no_credits:${channel}`,
+            severity: "critical",
+            activityAt: observedAt,
+            createdAt: observedAt,
+            updatedAt: observedAt,
+            relatedIssue: null,
+            detail: {
+              kind: "generic",
+              summaryExcerpt: excerpt(row.noCreditsRunError),
+              images: [],
+            },
+          }));
+        }
+      }
 
       const pendingApprovals = await db
         .select({
@@ -2374,6 +2714,67 @@ async function buildAttentionFeedSnapshot(
       // threshold is severity critical. Without dockergate data the statfs
       // block below runs unchanged ("not measured" — no partition card).
       const partitionState = hostDiskRuntime(db).partition.current();
+      // myrmidon(1.6.8 OPE-12697, DISK-ALERT): the host root (`/`) crossed a
+      // threshold in this process's sweep. The card names the fill level and
+      // the three consumers the board can name for the host root: docker
+      // volumes, docker images, workspace copies (paths to inspect live on
+      // the host; the board deletes nothing). One row for the whole
+      // instance, the dedup key stays constant while the level holds.
+      const rootState = hostDiskRuntime(db).root.current();
+      if (rootState.alertLevel === "warn" || rootState.alertLevel === "critical") {
+        const root = rootState.root!;
+        const thresholds = rootState.settings!;
+        const critical = rootState.alertLevel === "critical";
+        const dedupKey = "host_disk:root:/";
+        add(createItem({
+          companyId,
+          sourceKind: "host_disk_alert",
+          subject: {
+            kind: "agent",
+            id: "host-disk",
+            companyId,
+            title: "Host root disk",
+            identifier: null,
+            status: "alert",
+            href: `/${prefix}/instance`,
+            metadata: { measuredPath: root.mount, source: "dockergate" },
+          },
+          whyNow: critical
+            ? `Host root (${root.mount}) is ${Math.round(root.usedPercent)}% full — high-level alarm (critical threshold ${thresholds.rootCriticalPercent}%). Free space now: docker volumes, docker images, workspace copies.`
+            : `Host root (${root.mount}) is ${Math.round(root.usedPercent)}% full (threshold ${thresholds.rootThresholdPercent}%). Largest consumers to check: docker volumes, docker images, workspace copies.`,
+          decisionVerbs: decisionVerbs(
+            { id: "inspect", label: "Inspect", description: "Open the host disk panel and free space on the host root." },
+            { id: "dismiss", label: "Dismiss", description: "Dismiss this alert until usage drops and crosses again." },
+          ),
+          inlineResolvable: false,
+          entryRule: "the host root fill level crossed the saved threshold",
+          exitRule: "usage drops below the threshold or the row is dismissed",
+          dedupKey,
+          severity: critical ? "critical" : "high",
+          activityAt: toIso(rootState.evaluatedAt ?? root.at),
+          createdAt: toIso(root.at),
+          updatedAt: toIso(rootState.evaluatedAt ?? root.at),
+          relatedIssue: null,
+          detail: {
+            kind: "host_disk",
+            usedPercent: Math.round(root.usedPercent),
+            thresholdPercent: critical
+              ? thresholds.rootCriticalPercent
+              : thresholds.rootThresholdPercent,
+            usedGb: Math.round(root.usedBytes / (1024 * 1024 * 1024)),
+            totalGb: Math.round(root.totalBytes / (1024 * 1024 * 1024)),
+            freeGb: Math.round(root.freeBytes / (1024 * 1024 * 1024)),
+            growthBytesPerHour: null,
+            mountPoint: root.mount,
+            consumers: [
+              { path: "docker volumes", sizeGb: null },
+              { path: "docker images", sizeGb: null },
+              { path: "workspace copies", sizeGb: null },
+            ],
+            images: [],
+          },
+        }));
+      }
       if (partitionState.alertLevel === "warn" || partitionState.alertLevel === "critical") {
         const partition = partitionState.partition!;
         const thresholds = partitionState.settings!;
@@ -3010,6 +3411,106 @@ async function buildAttentionFeedSnapshot(
         }));
       }
 
+      // myrmidon(OPE-11890): one card while the auth-401 burst latch is
+      // tripped. The error handler records every 401 into the in-process
+      // detector (myrmidon/auth-401-burst); when the sliding window crosses
+      // the threshold the latch trips and this registry holds the signal. The
+      // card exists exactly while the latch is set — the operator dismisses
+      // it, ADM (or a process restart) resets the latch. No credential ever
+      // reaches the signal: counts, thresholds, window, trippedAt only.
+      {
+        const signal = readAuth401BurstSignal();
+        if (signal) {
+          add(createItem({
+            companyId,
+            sourceKind: "auth_401_burst",
+            subject: {
+              kind: "agent",
+              id: "auth-401-burst",
+              companyId,
+              title: "Auth 401 burst",
+              identifier: null,
+              status: "alert",
+              href: `/${prefix}/instance`,
+              metadata: {
+                trippedAt: signal.trippedAt,
+                windowTotal: signal.windowTotal,
+                threshold: signal.threshold,
+                windowSeconds: Math.round(signal.windowMs / 1000),
+              },
+            },
+            whyNow: auth401BurstSignalWhyNow(signal),
+            decisionVerbs: decisionVerbs(
+              { id: "inspect", label: "Inspect", description: "Open the metrics panel and check the auth 401 burst families." },
+              { id: "dismiss", label: "Dismiss", description: "Dismiss this alert until the latch resets." },
+            ),
+            inlineResolvable: false,
+            entryRule: "the auth-401 sliding window crossed the burst threshold",
+            exitRule: "the detector latch resets or the row is dismissed",
+            dedupKey: auth401BurstSignalDedupKey(signal),
+            severity: auth401BurstSignalSeverity(),
+            activityAt: signal.trippedAt,
+            createdAt: signal.trippedAt,
+            updatedAt: signal.trippedAt,
+            relatedIssue: null,
+            detail: {
+              kind: "generic",
+              summaryExcerpt: excerpt(`windowTotal=${signal.windowTotal} threshold=${signal.threshold} windowSeconds=${Math.round(signal.windowMs / 1000)}`),
+              images: [],
+            },
+          }));
+        }
+      }
+
+      // myrmidon(OPE-12868): one card per GitHub App whose webhook GitHub
+      // reports as absent. webhook-sync (the operator endpoint that points an
+      // App's webhook at this board) latches the signal when the hook-config
+      // PATCH answers HTTP 404 — the App's "Active" webhook switch is off on
+      // the App's GitHub settings page — and clears it when a later sync is
+      // confirmed. While the switch is off the board receives no GitHub
+      // events at all, so this is an active stop, not advice. No credential
+      // reaches the signal: ids, the webhook host and timestamps only.
+      for (const signal of readGitHubAppWebhookDisabledSignals(companyId)) {
+        add(createItem({
+          companyId,
+          sourceKind: "github_app_webhook_disabled",
+          subject: {
+            kind: "company",
+            id: signal.entryId,
+            companyId,
+            title: "GitHub App webhook disabled",
+            identifier: null,
+            status: "alert",
+            href: `/${prefix}/instance`,
+            metadata: {
+              appId: signal.appId,
+              webhookHost: signal.webhookHost,
+              firstSeenAt: signal.firstSeenAt,
+              lastSeenAt: signal.lastSeenAt,
+            },
+          },
+          whyNow: githubAppWebhookDisabledSignalWhyNow(signal),
+          decisionVerbs: decisionVerbs(
+            { id: "inspect", label: "Inspect", description: "Open the GitHub shared identity settings and re-run webhook sync after enabling the webhook." },
+            { id: "dismiss", label: "Dismiss", description: "Dismiss this alert until the next sync reports the webhook again." },
+          ),
+          inlineResolvable: false,
+          entryRule: "a webhook sync got HTTP 404 from GitHub on the App's hook config (webhook not Active)",
+          exitRule: "a webhook sync is confirmed by GitHub or the row is dismissed",
+          dedupKey: githubAppWebhookDisabledSignalDedupKey(signal),
+          severity: githubAppWebhookDisabledSignalSeverity(),
+          activityAt: signal.lastSeenAt,
+          createdAt: signal.firstSeenAt,
+          updatedAt: signal.lastSeenAt,
+          relatedIssue: null,
+          detail: {
+            kind: "generic",
+            summaryExcerpt: excerpt(`App ${signal.appId}: webhook not Active on the App's GitHub settings page; board receives no GitHub events (webhook host ${signal.webhookHost}).`),
+            images: [],
+          },
+        }));
+      }
+
       // myrmidon(REVIEW-ROUTING): one card per task whose review has no
       // reviewer available or no verdict for too long. The sweep replaces the
       // company's set on every pass (myrmidon/review-routing/attention.ts),
@@ -3062,7 +3563,8 @@ async function buildAttentionFeedSnapshot(
       // /issues/:id/execution-hold/confirm-continue: the person attests the
       // failed run left no external action, the hold is superseded and the
       // assignee is woken explicitly.
-      for (const card of await listExecutionHoldCards(db, companyId)) {
+      const executionHoldCards = await listExecutionHoldCards(db, companyId);
+      for (const card of executionHoldCards) {
         add(createItem({
           companyId,
           sourceKind: "replay_blocked",
@@ -3109,6 +3611,44 @@ async function buildAttentionFeedSnapshot(
           detail: {
             kind: "generic",
             summaryExcerpt: excerpt(executionHoldSignalDetail(card)),
+            images: [],
+          },
+        }));
+      }
+
+      // myrmidon(OPE-7707): company-level visibility alarm when tasks are held by replay=blocked
+      if (executionHoldCards.length > 0) {
+        add(createItem({
+          companyId,
+          sourceKind: "execution_hold",
+          subject: {
+            kind: "company",
+            id: `execution-holds-aggregate:${companyId}`,
+            companyId,
+            title: `${executionHoldCards.length} tasks held by execution recovery (replay=blocked)`,
+            identifier: null,
+            status: "active",
+            href: `/${prefix}/company/settings`,
+            metadata: {
+              heldCount: executionHoldCards.length,
+            },
+          },
+          whyNow: `${executionHoldCards.length} tasks are held by execution recovery (replay=blocked) without progress: engineers cannot pick them up until holds are cleared.`,
+          decisionVerbs: decisionVerbs(
+            { id: "inspect", label: "Inspect", description: "Open attention feed items for held tasks." },
+          ),
+          inlineResolvable: false,
+          entryRule: "at least one issue is held by execution recovery replay=blocked",
+          exitRule: "no issues are held by execution recovery replay=blocked",
+          dedupKey: `execution-holds-aggregate:${companyId}`,
+          severity: executionHoldCards.length >= 5 ? "critical" : "high",
+          activityAt: new Date().toISOString(),
+          createdAt: new Date().toISOString(),
+          updatedAt: new Date().toISOString(),
+          relatedIssue: null,
+          detail: {
+            kind: "generic",
+            summaryExcerpt: `${executionHoldCards.length} open issues are currently excluded from swarm pickup by execution recovery holds.`,
             images: [],
           },
         }));
@@ -3604,6 +4144,34 @@ async function buildAttentionFeedSnapshot(
         }));
       }
 
+      for (const deadend of readModelFallbackDeadendSignals(companyId)) {
+        add(createItem({
+          companyId,
+          sourceKind: "model_fallback_alert",
+          subject: {
+            kind: "agent", id: deadend.agentId, companyId,
+            title: deadend.title, identifier: null, status: null,
+            href: `/${prefix}/agents/${deadend.agentId}`,
+            metadata: { requestId: deadend.requestId, model: deadend.model },
+          },
+          whyNow: deadend.whyNow,
+          decisionVerbs: decisionVerbs(
+            { id: "inspect", label: "Inspect", description: "Inspect the failed request and fallback chain." },
+            { id: "dismiss", label: "Dismiss", description: "Dismiss this fallback alert." },
+          ),
+          inlineResolvable: true,
+          entryRule: "a live attributed gateway request failed after fallback routing.",
+          exitRule: "no failed attributed gateway request remains in the sweep window or the alert is dismissed.",
+          dedupKey: deadend.dedupKey,
+          severity: deadend.severity,
+          activityAt: deadend.activityAt,
+          createdAt: deadend.activityAt,
+          updatedAt: deadend.activityAt,
+          relatedIssue: null,
+          detail: { kind: "generic", summaryExcerpt: excerpt(deadend.summaryExcerpt), images: [] },
+        }));
+      }
+
       // myrmidon(1.6.6 OPE-7198): attention cards for banned or exhausted Codex / ChatGPT pool accounts.
       if (serviceOptions.poolSignalsSync) {
         await serviceOptions.poolSignalsSync(companyId).catch(() => {
@@ -3647,6 +4215,49 @@ async function buildAttentionFeedSnapshot(
           detail: {
             kind: "generic",
             summaryExcerpt: excerpt(poolSignal.summaryExcerpt),
+            images: [],
+          },
+        }));
+      }
+
+      // myrmidon(1.6.6 OPE-7189 part J): attention card when an LLM provider package
+      // is nearing expiration (e.g. 15-day packages like nghimmo) or expired.
+      for (const sig of readPackageExpirySignals(companyId)) {
+        add(createItem({
+          companyId,
+          sourceKind: "provider_usage_warning",
+          subject: {
+            kind: "company",
+            id: sig.providerId,
+            companyId,
+            title: sig.title,
+            identifier: sig.packageName ?? sig.providerName,
+            status: sig.status,
+            href: `/${prefix}/company/settings/models`,
+            metadata: {
+              providerId: sig.providerId,
+              providerName: sig.providerName,
+              packageName: sig.packageName,
+              expiresAt: sig.expiresAt,
+            },
+          },
+          whyNow: sig.whyNow,
+          decisionVerbs: decisionVerbs(
+            { id: "inspect", label: "Inspect", description: "Open the provider settings and rotate/extend package." },
+            { id: "dismiss", label: "Dismiss", description: "Dismiss this package alert." },
+          ),
+          inlineResolvable: true,
+          entryRule: sig.status === "expired" ? "LLM provider package has expired" : "LLM provider package reached expiration warning threshold",
+          exitRule: "the key is rotated, package is renewed, or the alert is dismissed.",
+          dedupKey: sig.dedupKey,
+          severity: sig.severity,
+          activityAt: sig.observedAt,
+          createdAt: sig.observedAt,
+          updatedAt: sig.observedAt,
+          relatedIssue: null,
+          detail: {
+            kind: "generic",
+            summaryExcerpt: excerpt(sig.whyNow),
             images: [],
           },
         }));
@@ -3733,6 +4344,45 @@ async function buildAttentionFeedSnapshot(
           detail: {
             kind: "generic",
             summaryExcerpt: excerpt(emptyCatalogSignal.summary),
+            images: [],
+          },
+        }));
+      }
+
+      for (const budgetSignal of readLitellmBudgetSignals(companyId)) {
+        add(createItem({
+          companyId,
+          sourceKind: "litellm_budget",
+          // The subject id is the stable dedupKey (kind + company + agent), not
+          // the bare agent id: one agent can hold several cards at once and the
+          // triage / queue rows are keyed by (sourceKind, subject id).
+          subject: {
+            kind: "agent",
+            id: budgetSignal.dedupKey,
+            companyId,
+            title: budgetSignal.title,
+            identifier: budgetSignal.agentId,
+            status: null,
+            href: `/${prefix}/costs`,
+            metadata: { litellmBudgetSignal: budgetSignal.kind, agentId: budgetSignal.agentId },
+          },
+          whyNow: budgetSignal.whyNow,
+          decisionVerbs: decisionVerbs(
+            { id: "inspect", label: "Inspect", description: "Open the Costs page: its Gateway tab lists the cap and spend of every bot key." },
+            { id: "dismiss", label: "Dismiss", description: "Dismiss this alert." },
+          ),
+          inlineResolvable: true,
+          entryRule: "a bot's LiteLLM key reaches 80% of its cap, exhausts it, or its 24 h spend is an outlier against the previous six days.",
+          exitRule: "the next evaluation (every 15 minutes) no longer reports this condition.",
+          dedupKey: budgetSignal.dedupKey,
+          severity: budgetSignal.severity,
+          activityAt: budgetSignal.activityAt,
+          createdAt: budgetSignal.activityAt,
+          updatedAt: budgetSignal.activityAt,
+          relatedIssue: null,
+          detail: {
+            kind: "generic",
+            summaryExcerpt: excerpt(budgetSignal.summary),
             images: [],
           },
         }));
@@ -3897,12 +4547,124 @@ async function buildAttentionFeedSnapshot(
         }
       }
 
+      // myrmidon(OPE-12517): MCP gateway token expiry cards.
+      // Surfaces unrevoked tokens whose expiresAt <= now + 14 days (including already expired).
+      // Differentiates used vs expired-unused via lastUsedAt:
+      // - If token was used (lastUsedAt is not null), or expires in future: prompt rotation.
+      // - If token is already expired AND unused (lastUsedAt is null): prompt revoke (separate revoke recommendation, not auto-revoke).
+      // Deduplicated by token id; disappears once rotated/revoked/expiry extended.
+      // Never exposes tokenHash or secrets in whyNow / metadata / detail.
+      {
+        const fourteenDaysAhead = new Date(now + 14 * 24 * 60 * 60 * 1000);
+        const candidateTokens = await db
+          .select({
+            tokenId: toolMcpGatewayTokens.id,
+            tokenName: toolMcpGatewayTokens.name,
+            expiresAt: toolMcpGatewayTokens.expiresAt,
+            lastUsedAt: toolMcpGatewayTokens.lastUsedAt,
+            createdAt: toolMcpGatewayTokens.createdAt,
+            updatedAt: toolMcpGatewayTokens.updatedAt,
+            gatewayId: toolMcpGateways.id,
+            gatewayName: toolMcpGateways.name,
+            gatewaySlug: toolMcpGateways.slug,
+          })
+          .from(toolMcpGatewayTokens)
+          .innerJoin(toolMcpGateways, eq(toolMcpGatewayTokens.gatewayId, toolMcpGateways.id))
+          .where(and(
+            eq(toolMcpGatewayTokens.companyId, companyId),
+            isNull(toolMcpGatewayTokens.revokedAt),
+            isNotNull(toolMcpGatewayTokens.expiresAt),
+            lte(toolMcpGatewayTokens.expiresAt, fourteenDaysAhead),
+          ));
+
+        for (const token of candidateTokens) {
+          if (!token.expiresAt) continue;
+          const isExpired = token.expiresAt.getTime() <= now;
+          const isUnused = token.lastUsedAt === null;
+          const isExpiredUnused = isExpired && isUnused;
+
+          const expiryIso = token.expiresAt.toISOString();
+          const href = `/${prefix}/settings/gateways/${token.gatewayId}`;
+
+          let whyNow: string;
+          let verbs: ReturnType<typeof decisionVerbs>;
+          let summaryExcerpt: string;
+
+          if (isExpiredUnused) {
+            whyNow = `MCP gateway token "${token.tokenName}" on gateway "${token.gatewayName}" expired on ${expiryIso} and was never used; recommend revoking it.`;
+            verbs = decisionVerbs(
+              { id: "revoke", label: "Revoke", description: "Open the gateway settings to revoke this expired unused token." },
+              { id: "rotate", label: "Rotate", description: "Rotate the token to issue a new credential." },
+              { id: "dismiss", label: "Dismiss", description: "Dismiss this token expiry notice." },
+            );
+            summaryExcerpt = `MCP gateway token "${token.tokenName}" expired on ${expiryIso} without ever being used. Review and revoke it from gateway "${token.gatewayName}".`;
+          } else if (isExpired) {
+            whyNow = `MCP gateway token "${token.tokenName}" on gateway "${token.gatewayName}" expired on ${expiryIso}; rotate the token to restore client access.`;
+            verbs = decisionVerbs(
+              { id: "rotate", label: "Rotate", description: "Open the gateway settings to rotate this expired token." },
+              { id: "revoke", label: "Revoke", description: "Revoke this expired token if no longer needed." },
+              { id: "dismiss", label: "Dismiss", description: "Dismiss this token expiry notice." },
+            );
+            summaryExcerpt = `Active MCP gateway token "${token.tokenName}" expired on ${expiryIso}. Rotate it on gateway "${token.gatewayName}" to maintain access.`;
+          } else {
+            whyNow = `MCP gateway token "${token.tokenName}" on gateway "${token.gatewayName}" expires on ${expiryIso}; rotate before expiry.`;
+            verbs = decisionVerbs(
+              { id: "rotate", label: "Rotate", description: "Open the gateway settings to rotate this token before it expires." },
+              { id: "dismiss", label: "Dismiss", description: "Dismiss this token expiry warning." },
+            );
+            summaryExcerpt = `MCP gateway token "${token.tokenName}" on gateway "${token.gatewayName}" expires on ${expiryIso}. Plan rotation to avoid disruption.`;
+          }
+
+          add(createItem({
+            companyId,
+            sourceKind: "mcp_gateway_token_expiring",
+            subject: {
+              kind: "company",
+              id: token.tokenId,
+              companyId,
+              title: `MCP gateway token expiry: ${token.tokenName}`,
+              identifier: null,
+              status: isExpired ? "expired" : "expiring",
+              href,
+              metadata: {
+                tokenId: token.tokenId,
+                tokenName: token.tokenName,
+                gatewayId: token.gatewayId,
+                gatewayName: token.gatewayName,
+                gatewaySlug: token.gatewaySlug,
+                expiresAt: expiryIso,
+                lastUsedAt: token.lastUsedAt ? token.lastUsedAt.toISOString() : null,
+                isExpired,
+                isUnused,
+                recommendedAction: isExpiredUnused ? "revoke" : "rotate",
+              },
+            },
+            whyNow,
+            decisionVerbs: verbs,
+            inlineResolvable: true,
+            entryRule: "an unrevoked MCP gateway token has expiresAt <= now + 14 days.",
+            exitRule: "the token is rotated, revoked, has its expiry extended, or the notice is dismissed.",
+            dedupKey: `mcp-gateway-token-expiring:${token.tokenId}`,
+            severity: isExpired ? "high" : "medium",
+            activityAt: toIso(token.updatedAt ?? token.createdAt ?? new Date(now)),
+            createdAt: toIso(token.createdAt ?? new Date(now)),
+            updatedAt: toIso(token.updatedAt ?? new Date(now)),
+            relatedIssue: null,
+            detail: {
+              kind: "generic",
+              summaryExcerpt,
+              images: [],
+            },
+          }));
+        }
+      }
+
       // myrmidon(FEATURES): a feature that is enabled and has been
       // misconfigured or failing for over 30 minutes raises ONE card on the
       // operator desk (the Features page holds the detail). The signals come
       // from the process-level clock the health pass feeds (features/
       // attention.ts); the card disappears when the feature is healthy again.
-      for (const feature of readFeatureAttentionSignals()) {
+      for (const feature of readFeatureAttentionSignals(new Date(now))) {
         add(createItem({
           companyId,
           sourceKind: "agent_error_alert",
@@ -3935,6 +4697,43 @@ async function buildAttentionFeedSnapshot(
             summaryExcerpt: excerpt(feature.whyNow),
             images: [],
           },
+        }));
+      }
+
+      // myrmidon(DEVFLOW): deterministic persisted-source alerts, refreshed by
+      // the existing attention runtime. Recovery removes the card automatically.
+      // myrmidon(PROVIDER-GARBAGE / OPE-12286): provider garbage bursts carry
+      // the stub outcome text, model group and severity from the signal itself.
+      for (const signal of await collectDevflowHealth(db, companyId, new Date(now))) {
+        const isProviderGarbage = signal.metric === "providerGarbageP1";
+        const whyNow = isProviderGarbage
+          ? `Provider garbage burst: ${signal.detail?.runCount ?? "?"} run(s) received the stub outcome "${signal.detail?.outcomeText ?? ""}"${signal.detail?.modelGroup ? ` on model group ${signal.detail.modelGroup}` : ""}.`
+          : `${signal.metric}: ${Math.floor(signal.durationMs / 60_000)} minutes; configured threshold exceeded.`;
+        add(createItem({
+          companyId,
+          sourceKind: "agent_error_alert",
+          subject: { kind: signal.subjectKind, id: signal.subjectId, companyId,
+            title: signal.title, identifier: null, status: "warning",
+            href: `/${prefix}/${signal.subjectKind === "agent" ? "agents" : "issues"}/${signal.subjectId}`,
+            metadata: { devflowMetric: signal.metric, durationMs: signal.durationMs,
+              ...(isProviderGarbage ? {
+                providerGarbage: true,
+                outcomeText: signal.detail?.outcomeText,
+                modelGroup: signal.detail?.modelGroup,
+                runCount: signal.detail?.runCount,
+              } : {}) } },
+          whyNow,
+          decisionVerbs: decisionVerbs(
+            { id: "inspect", label: "Inspect", description: "Inspect the affected engineer or issue." },
+            { id: "dismiss", label: "Dismiss", description: "Dismiss this alert." },
+          ),
+          inlineResolvable: true,
+          entryRule: "a persisted DEVFLOW duration reaches its configured threshold.",
+          exitRule: "the engineer resumes, review ends, CI recovers, or the row is dismissed.",
+          dedupKey: signal.dedupKey, severity: signal.severity ?? "medium",
+          activityAt: signal.since, createdAt: signal.since, updatedAt: signal.since,
+          relatedIssue: null,
+          detail: { kind: "generic", summaryExcerpt: whyNow, images: [] },
         }));
       }
 

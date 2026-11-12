@@ -29,6 +29,11 @@ is published under a `myrmidon*` name; the old `paperclip*` names keep
 working as deprecated aliases for one release so installed systems do not
 break.
 
+Gateway access tokens issued to external callers are proactively monitored:
+the operator attention feed surfaces warning cards 14 days before a token
+expires, recommending rotation for active tokens and revocation for unused
+expired tokens without leaking credential hashes.
+
 ## Cloud storage and Microsoft 365
 
 The cloud connector makes cloud storage a first-class board module: the
@@ -54,6 +59,12 @@ hands a run its credentials for exactly that run. A company can authorize
 GitHub once for the whole server with its own GitHub App instead of
 per-person OAuth identities.
 
+To prevent exhausting GitHub App installation rate limits, tokens are cached
+in-memory by the broker, shared concurrently via single-flight deduplication,
+cached on disk in the run scratch directory (`PAPERCLIP_GITHUB_CREDENTIALS_CACHE_DIR`),
+and protected by a per-run request fuse (`MYRMIDON_GITHUB_CREDENTIALS_FUSE_PER_MINUTE`, default 60/min).
+See [GitHub Credentials Cache Guide](Github-credentials-cache).
+
 ## Plugins and capabilities
 
 Plugins operate as isolated processes with declared capabilities. When background
@@ -61,17 +72,21 @@ workers orchestrate issues, capabilities like `issue.attachments.write` permit
 uploading bounded files (evidence, reports, logs) without granting direct access
 to board admin keys or database storage.
 
+The UI2 shell also exposes installed plugin sidebar contributions and launchers
+in its desktop rail and mobile navigation. Plugin pages load their UI
+contribution on direct navigation. See the [UI2 shell guide](Ui2-shell).
+
 ## In detail
 
-- [Browser bridge: gateway and pairing](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/guides/browser-bridge-gateway.md)
-- [Browser bridge extension](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/guides/bridge-extension.md)
-- [Connector panel](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/guides/connector-panel.md)
-- [Browsers: live screen console](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/guides/browsers.md)
-- [External MCP connectors](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/guides/external-mcp-connectors.md)
-- [Board MCP tool names](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/guides/mcp-tool-names.md)
-- [Cloud storage connector](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/guides/cloud-connector.md)
-- [Microsoft 365 files and mail for container bots](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/guides/cloud-files-connector.md)
+- [Browser bridge: gateway and pairing](Browser-bridge-gateway)
+- [Browser bridge extension](Bridge-extension)
+- [Connector panel](Connector-panel)
+- [Browsers: live screen console](Browsers)
+- [External MCP connectors](External-mcp-connectors)
+- [Board MCP tool names](Mcp-tool-names)
+- [Cloud storage connector](Cloud-connector)
+- [Microsoft 365 files and mail for container bots](Cloud-files-connector)
 - [Shared media and office tools](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/media-tools.md)
-- [OCR path: PDF to text](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/guides/ocr.md)
-- [Shared GitHub identity](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/guides/github-shared-identity.md)
-- [Plugin runtime capabilities](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/guides/plugin-capabilities.md)
+- [OCR path: PDF to text](Ocr)
+- [Shared GitHub identity](Github-shared-identity)
+- [Plugin runtime capabilities](Plugin-capabilities)

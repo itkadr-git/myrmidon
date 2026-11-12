@@ -28,6 +28,7 @@ describe("readOcrSettings", () => {
       backend: "ragflow",
       baseUrl: null,
       keySecret: null,
+      model: null,
       maxBytes: DEFAULT_OCR_MAX_BYTES,
       maxPages: DEFAULT_OCR_MAX_PAGES,
       timeoutMs: DEFAULT_OCR_TIMEOUT_SEC * 1000,

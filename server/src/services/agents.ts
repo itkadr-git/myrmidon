@@ -1,7 +1,13 @@
 import { createHash, randomBytes } from "node:crypto";
-import { and, desc, eq, gte, inArray, lt, ne, or, sql } from "drizzle-orm";
+import { and, desc, eq, gte, inArray, lt, ne, notInArray, or, sql } from "drizzle-orm";
 import { resolveStatusOnResume } from "../myrmidon/pause-drain.js";
 import { versionKeyEtag } from "../middleware/version-key-etag.js";
+import {
+  filterAgentListItems,
+  normalizeAgentListFilters,
+  type AgentListFilters,
+  type NormalizedAgentListFilters,
+} from "./agents-filters.js";
 import type { Db } from "@myrmidon/db";
 import { listAgentProjectIds } from "../myrmidon/project-membership.js";
 import {
@@ -19,10 +25,16 @@ import {
   issueExecutionDecisions,
   issues,
   issueComments,
+  nativeRunFinalizations,
+  nativeRunResults,
+  statusDecisionEffects,
+  statusDecisions,
+  workAssessments,
 } from "@myrmidon/db";
 import {
   AGENT_DEFAULT_MAX_CONCURRENT_RUNS,
   agentRuntimeConfigSchema,
+  issueExecutionStateSchema,
   getAgentWorkEligibility,
   isUuidLike,
   normalizeAgentApiKeyScope,
@@ -41,7 +53,13 @@ import {
   mergeCompanyBaseSkillsIntoAgentConfig,
 } from "./company-base-skill-keys.js";
 import { readCompanyBaseSkillKeysPort } from "./company-base-skill-keys-port.js";
-import { conflict, notFound, unprocessable, badRequest } from "../errors.js";
+import { conflict, notFound, unprocessable, badRequest, forbidden } from "../errors.js";
+import { isForeignKeyViolation } from "../db-errors.js";
+import {
+  createAgentsModule,
+  AgentQuotaExceededError,
+  type AgentsModule,
+} from "../modules/agents/index.js";
 import {
   collectSecretRefs,
   collectUserSecretRefs,
@@ -128,6 +146,13 @@ interface ClaudeLoginContext {
   applyExistingWithoutClaim?: boolean;
   inheritedFromAgentId?: string | null;
 }
+
+export {
+  normalizeAgentListFilters,
+  filterAgentListItems,
+  type AgentListFilters,
+  type NormalizedAgentListFilters,
+} from "./agents-filters.js";
 
 interface UpdateAgentOptions {
   recordRevision?: RevisionMetadata;
@@ -360,8 +385,31 @@ export function deduplicateAgentName(
   return `${candidateName} ${Date.now()}`;
 }
 
-export function agentService(db: Db, ports?: { castes?: AgentCasteDirectoryPort }) {
+export function agentService(
+  db: Db,
+  ports?: {
+    castes?: AgentCasteDirectoryPort;
+    /** Cleans an enabled bot container before lifecycle state or row changes. */
+    cleanupBotContainer?: (agent: { id: string; adapterType: string; adapterConfig: Record<string, unknown> }) => Promise<void>;
+    agentsModule?: AgentsModule;
+  },
+) {
   const secretsSvc = secretService(db);
+  const agentsMod = ports?.agentsModule ?? createAgentsModule(db);
+
+  async function cleanupBotContainerIfEnabled(existing: { id: string; adapterType: string; adapterConfig: unknown }): Promise<void> {
+    const config = existing.adapterConfig;
+    const container = config && typeof config === "object" && !Array.isArray(config)
+      ? (config as Record<string, unknown>).container
+      : undefined;
+    if (existing.adapterType !== "hermes_gateway" || !container || typeof container !== "object" || Array.isArray(container)) return;
+    if ((container as Record<string, unknown>).enabled !== true) return;
+    await ports?.cleanupBotContainer?.({
+      id: existing.id,
+      adapterType: existing.adapterType,
+      adapterConfig: config as Record<string, unknown>,
+    });
+  }
 
   // myrmidon(1.6.1 CUSTOM-CASTES B): refuse a role key that is not a caste of
   // this company. 400 with a message that names the key and where it must be
@@ -470,7 +518,7 @@ export function agentService(db: Db, ports?: { castes?: AgentCasteDirectoryPort 
 
   async function listAgentSummaries(
     companyId: string,
-    options?: { includeTerminated?: boolean },
+    options?: { includeTerminated?: boolean; filters?: AgentListFilters },
   ): Promise<AgentListItem[]> {
     const conditions = [eq(agents.companyId, companyId)];
     if (!options?.includeTerminated) {
@@ -487,7 +535,7 @@ export function agentService(db: Db, ports?: { castes?: AgentCasteDirectoryPort 
     const projectIdsByAgent = await listAgentProjectIds(db, companyId);
     // Field-by-field on purpose: the projection is the contract, so a column
     // added to AgentListItem must be added here too (or the build breaks).
-    return hydrated.map((row) => ({
+    const items = hydrated.map((row) => ({
       id: row.id,
       companyId: row.companyId,
       name: row.name,
@@ -518,6 +566,7 @@ export function agentService(db: Db, ports?: { castes?: AgentCasteDirectoryPort 
       createdAt: row.createdAt,
       updatedAt: row.updatedAt,
     }));
+    return options?.filters ? filterAgentListItems(items, options.filters) : items;
   }
 
   async function listCompanyAgentRows(companyId: string) {
@@ -554,6 +603,7 @@ export function agentService(db: Db, ports?: { castes?: AgentCasteDirectoryPort 
   async function listSummariesVersionKey(
     companyId: string,
     actorShape: string = "all",
+    filters?: AgentListFilters | NormalizedAgentListFilters | string | null,
   ): Promise<string> {
     const { start } = currentUtcMonthWindow();
     const [agg] = await db
@@ -576,16 +626,35 @@ export function agentService(db: Db, ports?: { castes?: AgentCasteDirectoryPort 
           gte(costEvents.occurredAt, start),
         ),
       );
-    return versionKeyEtag("agents-list", [
+
+    let filterKey: string | null = null;
+    if (typeof filters === "string") {
+      filterKey = filters;
+    } else if (filters) {
+      const normalized = "statuses" in filters
+        ? (filters as NormalizedAgentListFilters)
+        : normalizeAgentListFilters(filters as AgentListFilters);
+      if (normalized) {
+        filterKey = JSON.stringify(normalized);
+      }
+    }
+
+    const parts: Array<string | number | boolean | null | undefined> = [
       companyId,
       actorShape,
+    ];
+    if (filterKey) {
+      parts.push(filterKey);
+    }
+    parts.push(
       agg?.rowCount ?? 0,
       agg?.maxUpdatedAt ?? null,
       agg?.maxStatus ?? null,
       spendAgg?.spendSum ?? "0",
       spendAgg?.spendRowCount ?? 0,
       start.toISOString().slice(0, 10),
-    ]);
+    );
+    return versionKeyEtag("agents-list", parts);
   }
 
   async function hydrateAgentSpend<T extends { id: string; companyId: string; spentMonthlyCents: number }>(rows: T[]) {
@@ -920,6 +989,16 @@ export function agentService(db: Db, ports?: { castes?: AgentCasteDirectoryPort 
     }
 
     const normalizedPatch = { ...data } as Partial<typeof agents.$inferInsert>;
+    // myrmidon(OPE-12150): moving an agent out of `error` by a status patch also
+    // clears the stale reason; before, an idle agent kept «контейнер не поднят».
+    if (
+      existing.status === "error" &&
+      data.status &&
+      data.status !== "error" &&
+      !Object.prototype.hasOwnProperty.call(data, "errorReason")
+    ) {
+      normalizedPatch.errorReason = null;
+    }
     if (data.permissions !== undefined) {
       normalizedPatch.permissions = normalizeAgentPermissions(data.permissions);
     }
@@ -1062,6 +1141,16 @@ export function agentService(db: Db, ports?: { castes?: AgentCasteDirectoryPort 
       await assertRoleIsCompanyCaste(companyId, data.role);
       if (data.reportsTo) {
         await ensureManager(companyId, data.reportsTo);
+      }
+
+      // myrmidon(1.7 TIER-QUOTA-CHECK OPE-12092): enforce agent quota per company subscription tier
+      try {
+        await agentsMod.assertCompanyAgentQuota(companyId);
+      } catch (err: unknown) {
+        if (err instanceof AgentQuotaExceededError) {
+          throw forbidden(err.message, { code: "quota_exceeded" });
+        }
+        throw err;
       }
 
       const existingAgents = await db
@@ -1218,7 +1307,11 @@ export function agentService(db: Db, ports?: { castes?: AgentCasteDirectoryPort 
     terminate: async (id: string) => {
       const existing = await getById(id);
       if (!existing) return null;
-
+      // myrmidon(OPE-12477): remove the bot's container and its host data before
+      // the row is terminated. Fail-closed: a fleetd failure aborts the
+      // termination so the agent is not hidden from the board while its
+      // container keeps running on a remote site.
+      await cleanupBotContainerIfEnabled(existing);
       await db
         .update(agents)
         .set({
@@ -1235,6 +1328,48 @@ export function agentService(db: Db, ports?: { castes?: AgentCasteDirectoryPort 
         .set({ revokedAt: new Date() })
         .where(eq(agentApiKeys.agentId, id));
 
+      const candidates = await db
+        .select({ id: agents.id, name: agents.name, role: agents.role })
+        .from(agents)
+        .where(and(eq(agents.companyId, existing.companyId), ne(agents.id, id), notInArray(agents.status, ["retired", "terminated"])));
+      const openIssues = await db
+        .select()
+        .from(issues)
+        .where(and(eq(issues.companyId, existing.companyId), notInArray(issues.status, ["done", "cancelled"])));
+      const load = new Map<string, number>();
+      for (const issue of openIssues) if (issue.assigneeAgentId) load.set(issue.assigneeAgentId, (load.get(issue.assigneeAgentId) ?? 0) + 1);
+      const replacement = candidates
+        .filter((candidate) => candidate.role === existing.role)
+        .sort((a, b) => (load.get(a.id) ?? 0) - (load.get(b.id) ?? 0) || a.id.localeCompare(b.id))[0];
+      if (replacement) {
+        for (const issue of openIssues) {
+          const parsed = issueExecutionStateSchema.safeParse(issue.executionState);
+          const state = parsed.success ? parsed.data : null;
+          const assigneeMatch = issue.assigneeAgentId === id;
+          const participantMatch = state?.currentParticipant?.type === "agent" && state.currentParticipant.agentId === id;
+          const returnMatch = state?.returnAssignee?.type === "agent" && state.returnAssignee.agentId === id;
+          if (!assigneeMatch && !participantMatch && !returnMatch) continue;
+          const nextState = state
+            ? {
+                ...state,
+                currentParticipant: participantMatch ? { type: "agent" as const, agentId: replacement.id } : state.currentParticipant,
+                returnAssignee: returnMatch ? { type: "agent" as const, agentId: replacement.id } : state.returnAssignee,
+              }
+            : undefined;
+          await db.update(issues).set({
+            ...(assigneeMatch ? { assigneeAgentId: replacement.id } : {}),
+            ...(nextState ? { executionState: nextState } : {}),
+            updatedAt: new Date(),
+          }).where(eq(issues.id, issue.id));
+          await db.insert(issueComments).values({
+            companyId: issue.companyId,
+            issueId: issue.id,
+            authorType: "system",
+            body: `Terminated agent ${existing.name} was replaced by ${replacement.name} for open work.`,
+          });
+          load.set(replacement.id, (load.get(replacement.id) ?? 0) + 1);
+        }
+      }
       return getById(id);
     },
 
@@ -1250,42 +1385,131 @@ export function agentService(db: Db, ports?: { castes?: AgentCasteDirectoryPort 
         });
       }
 
+      // myrmidon(OPE-12477): remove the bot's container and its host data before
+      // the row (and every referencing row) is deleted. Fail-closed: a fleetd
+      // failure aborts the deletion so the record stays visible and retryable
+      // instead of leaving an orphaned running container on the site.
+      await cleanupBotContainerIfEnabled(existing);
+
       return db.transaction(async (tx) => {
         await tx
           .select({ id: agents.id })
           .from(agents)
           .where(eq(agents.id, id))
           .for("update");
-        await issueThreadInteractionService(tx as unknown as Db)
-          .cancelPendingForDeletedAddressee(existing.companyId, id);
-        await tx
-          .update(agents)
-          .set({ reportsTo: null, updatedAt: new Date() })
-          .where(eq(agents.reportsTo, id));
-        await tx
-          .update(issues)
-          .set({ assigneeAgentId: null, createdByAgentId: null })
-          .where(or(eq(issues.assigneeAgentId, id), eq(issues.createdByAgentId, id)));
-        await tx.delete(heartbeatRunEvents).where(eq(heartbeatRunEvents.agentId, id));
-        await tx.delete(agentTaskSessions).where(eq(agentTaskSessions.agentId, id));
-        await tx.delete(activityLog).where(
-          or(
-            eq(activityLog.agentId, id),
-            sql`${activityLog.runId} in (select ${heartbeatRuns.id} from ${heartbeatRuns} where ${heartbeatRuns.agentId} = ${id})`,
-          ),
-        );
-        await tx.delete(issueExecutionDecisions).where(eq(issueExecutionDecisions.actorAgentId, id));
-        await tx.delete(issueComments).where(eq(issueComments.authorAgentId, id));
-        await tx.delete(heartbeatRuns).where(eq(heartbeatRuns.agentId, id));
-        await tx.delete(agentWakeupRequests).where(eq(agentWakeupRequests.agentId, id));
-        await tx.delete(agentApiKeys).where(eq(agentApiKeys.agentId, id));
-        await tx.delete(agentRuntimeState).where(eq(agentRuntimeState.agentId, id));
-        const deleted = await tx
-          .delete(agents)
-          .where(eq(agents.id, id))
-          .returning()
-          .then((rows) => rows[0] ?? null);
-        return deleted ? normalizeAgentRow(deleted) : null;
+
+        // Financial history integrity: agents with recorded cost_events cannot be deleted,
+        // as deleting them would violate foreign keys or erase financial audit trails.
+        // Callers should terminate the agent instead.
+        const hasCostEvents = await tx
+          .select({ id: costEvents.id })
+          .from(costEvents)
+          .where(eq(costEvents.agentId, id))
+          .limit(1);
+
+        if (hasCostEvents.length > 0) {
+          throw conflict(
+            "Agent cannot be deleted because financial cost events are recorded for it; the agent must be terminated instead",
+            { code: "agent_has_cost_events" },
+          );
+        }
+
+        try {
+          await issueThreadInteractionService(tx as unknown as Db)
+            .cancelPendingForDeletedAddressee(existing.companyId, id);
+          await tx
+            .update(agents)
+            .set({ reportsTo: null, updatedAt: new Date() })
+            .where(eq(agents.reportsTo, id));
+          await tx
+            .update(issues)
+            .set({ assigneeAgentId: null, createdByAgentId: null })
+            .where(or(eq(issues.assigneeAgentId, id), eq(issues.createdByAgentId, id)));
+          await tx.delete(heartbeatRunEvents).where(
+            or(
+              eq(heartbeatRunEvents.agentId, id),
+              sql`${heartbeatRunEvents.runId} in (select ${heartbeatRuns.id} from ${heartbeatRuns} where ${heartbeatRuns.agentId} = ${id})`,
+            ),
+          );
+          await tx.delete(agentTaskSessions).where(eq(agentTaskSessions.agentId, id));
+          await tx
+            .update(agentTaskSessions)
+            .set({ lastRunId: null })
+            .where(
+              sql`${agentTaskSessions.lastRunId} in (select ${heartbeatRuns.id} from ${heartbeatRuns} where ${heartbeatRuns.agentId} = ${id})`,
+            );
+          await tx.delete(activityLog).where(
+            or(
+              eq(activityLog.agentId, id),
+              sql`${activityLog.runId} in (select ${heartbeatRuns.id} from ${heartbeatRuns} where ${heartbeatRuns.agentId} = ${id})`,
+            ),
+          );
+          await tx.delete(issueExecutionDecisions).where(eq(issueExecutionDecisions.actorAgentId, id));
+          await tx.delete(issueComments).where(eq(issueComments.authorAgentId, id));
+
+          const agentRunIdsSql = sql`select ${heartbeatRuns.id} from ${heartbeatRuns} where ${heartbeatRuns.agentId} = ${id}`;
+          const agentDecisionIdsSql = sql`select ${statusDecisions.id} from ${statusDecisions} where ${statusDecisions.runId} in (${agentRunIdsSql})`;
+
+          await tx
+            .update(issues)
+            .set({ lastStatusDecisionId: null })
+            .where(sql`${issues.lastStatusDecisionId} in (${agentDecisionIdsSql})`);
+
+          await tx.delete(statusDecisionEffects).where(
+            sql`${statusDecisionEffects.decisionId} in (${agentDecisionIdsSql})`,
+          );
+          await tx.delete(nativeRunFinalizations).where(
+            sql`${nativeRunFinalizations.runId} in (${agentRunIdsSql})`,
+          );
+          await tx
+            .update(statusDecisions)
+            .set({ supersedesDecisionId: null })
+            .where(
+              or(
+                sql`${statusDecisions.runId} in (${agentRunIdsSql})`,
+                sql`${statusDecisions.supersedesDecisionId} in (${agentDecisionIdsSql})`,
+              ),
+            );
+          await tx.delete(statusDecisions).where(
+            sql`${statusDecisions.runId} in (${agentRunIdsSql})`,
+          );
+          await tx
+            .update(workAssessments)
+            .set({ supersedesAssessmentId: null })
+            .where(
+              or(
+                sql`${workAssessments.runId} in (${agentRunIdsSql})`,
+                sql`${workAssessments.supersedesAssessmentId} in (
+                  select ${workAssessments.id} from ${workAssessments} where ${workAssessments.runId} in (${agentRunIdsSql})
+                )`,
+              ),
+            );
+          await tx.delete(workAssessments).where(
+            sql`${workAssessments.runId} in (${agentRunIdsSql})`,
+          );
+          await tx.delete(nativeRunResults).where(
+            sql`${nativeRunResults.runId} in (${agentRunIdsSql})`,
+          );
+
+          await tx.delete(heartbeatRuns).where(eq(heartbeatRuns.agentId, id));
+          await tx.delete(agentWakeupRequests).where(eq(agentWakeupRequests.agentId, id));
+          await tx.delete(agentApiKeys).where(eq(agentApiKeys.agentId, id));
+          await tx.delete(agentRuntimeState).where(eq(agentRuntimeState.agentId, id));
+          const deleted = await tx
+            .delete(agents)
+            .where(eq(agents.id, id))
+            .returning()
+            .then((rows) => rows[0] ?? null);
+          return deleted ? normalizeAgentRow(deleted) : null;
+        } catch (err) {
+          if (isForeignKeyViolation(err)) {
+            throw conflict(
+              "Agent cannot be deleted because another record still references it; the agent must be terminated instead",
+              { code: "agent_referenced" },
+            );
+          }
+          throw err;
+        }
       });
     },
 

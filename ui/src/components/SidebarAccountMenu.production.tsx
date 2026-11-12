@@ -1,3 +1,4 @@
+import { DOCS_URL, FEEDBACK_URL } from "@/lib/myrmidon-links";
 import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import {
@@ -23,10 +24,12 @@ import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { cn, SIDEBAR_RAIL_HIDDEN_LABEL } from "../lib/utils";
 import { ThemeToggle } from "./ThemeToggle";
 import { SidebarServerInfo } from "./SidebarServerInfo";
+// myrmidon(UI-RU): fork language switcher in the account menu.
+import { LanguageToggle } from "./myrmidon/LanguageToggle";
+// myrmidon(OPE-9382): interface version switcher in the account menu.
+import { UiInterfaceToggle } from "./myrmidon/UiInterfaceToggle";
 
 const PROFILE_SETTINGS_PATH = "/company/settings/instance/profile";
-const DOCS_URL = "https://docs.paperclip.ing/";
-const FEEDBACK_URL = "https://paperclip.ing/feedback";
 const ABOUT_SETTINGS_PATH = "/company/settings";
 
 interface SidebarAccountMenuProps {
@@ -215,6 +218,10 @@ export function SidebarAccountMenu({
                 onClick={() => setOpen(false)}
               />
               <ThemeToggle variant="menu-action" onAfterToggle={() => setOpen(false)} />
+              {/* myrmidon(UI-RU): language selection lives beside the theme toggle. */}
+              <LanguageToggle onAfterChange={() => setOpen(false)} />
+              {/* myrmidon(OPE-9382): interface version toggle */}
+              <UiInterfaceToggle onAfterChange={() => setOpen(false)} />
               {deploymentMode === "authenticated" ? (
                 <button
                   type="button"

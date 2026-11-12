@@ -47,8 +47,12 @@ In Myrmidon, the board running on `vm-core` is the single management plane (`tar
 
 ## 2. Site-Agent API Contract
 
-All calls use standard HTTP over private network with a bearer authorization header:
-`Authorization: Bearer <SITE_TOKEN>`.
+All calls use HTTPS with mutual TLS and a bearer authorization header:
+- The board validates the site's HTTPS URL, CA certificate, client certificate, and client key before creating the transport.
+- The client certificate must be signed by the enrolled site CA; the CA fingerprint is checked against the enrollment record.
+- `Authorization: Bearer ***` is still required by site-agent after the TLS handshake.
+- Missing or invalid certificate material is rejected before the request is sent with a clear configuration error.
+
 Request and response bodies are JSON (`Content-Type: application/json; charset=utf-8`).
 
 ### 2.1 Route Catalog
@@ -66,6 +70,7 @@ Request and response bodies are JSON (`Content-Type: application/json; charset=u
 | `POST` | `/v1/bots/{botKey}/restart` | Restart container gateway |
 | `POST` | `/v1/bots/{botKey}/stop` | Stop container gateway |
 | `GET` | `/v1/bots/{botKey}/logs?tail=N` | Fetch bounded, redacted container stdout/stderr |
+| `POST` | `/v1/bots/{botKey}/cleanup` | Clean up container and remove bot data directory (also accepts `DELETE`) |
 | `POST` | `/v1/leases/claim` | Acquire or renew an execution lease with epoch fencing |
 | `POST` | `/v1/leases/release` | Explicitly release an execution lease upon task completion |
 
@@ -173,7 +178,9 @@ Body specifies container layout:
 Constraints:
 - `image` must match a pinned `@sha256:` digest listed in the site's `imageAllowlist`.
 - `memoryMb`, `cpus`, `pidsLimit` must not exceed the site's enrolled quota for this bot.
-- `extraMounts` are strictly read-only and must be listed in the site's host mount allowlist.
+- `extraMounts` are read-only by default and must come from the site's `allowedMounts`. A mount without `readOnly: true` is read-write. It is accepted only when its source, with symlinks resolved, is inside one of the site's `writableMountRoots` (see 4.2). Otherwise the request fails with `mount_not_allowed`.
+- `cpus` must be at least `0.01`. `gatewayPort`, when set, must be between `1024` and `65535`. `boardExtraHost`, when set, must equal the `boardExtraHost` of the site itself. Otherwise the request fails with `spec_invalid`.
+- The rest of the container template is fixed and is not part of the spec: read-only root file system, all capabilities dropped, `/tmp` as a tmpfs, an init process, the `on-failure` restart policy, and no swap beyond the memory limit.
 
 #### 2.2.4 `PUT /v1/bots/{botKey}/profile`
 
@@ -234,6 +241,22 @@ Response:
 If the site was fenced or the lease epoch is stale:
 `{"acquired": false, "leaseEpoch": 14, "expiresAt": "", "fenced": true, "reason": "site_fenced"}`.
 
+#### 2.2.6 `POST /v1/bots/{botKey}/cleanup` and `DELETE /v1/bots/{botKey}`
+
+Stops and removes the `fleet-<botKey>` container and removes the bot data directory (`volumeRoot/<botKey>`) on the site host:
+
+```json
+{
+  "status": "cleaned",
+  "botKey": "work-qa"
+}
+```
+
+Behavior and guarantees:
+- **Routes**: Accepted via `POST /v1/bots/{botKey}/cleanup`, `DELETE /v1/bots/{botKey}/cleanup`, or `DELETE /v1/bots/{botKey}` (and action `destroy`).
+- **Idempotency**: A missing container (Docker 404) or already-deleted data directory counts as success.
+- **Fail-closed lifecycle**: When terminating (`POST /api/agents/:id/terminate`) or deleting (`DELETE /api/agents/:id`) an agent with an enabled container card, Myrmidon calls cleanup before any database mutation. If the driver or fleetd fails, the terminate or delete operation aborts and keeps the agent record intact for retry instead of leaving an orphaned running container.
+
 ---
 
 ## 3. Health & Error States
@@ -293,7 +316,8 @@ Every error response follows single-line, secret-safe reason codes:
 | `403` | `bot_not_enrolled` | Bot key is not declared in site enrollment table |
 | `403` | `limit_exceeds_enrollment` | Spec memory, CPU, or pids exceed enrolled maximums |
 | `403` | `image_not_allowed` | Image is not pinned by digest or not allowlisted |
-| `403` | `mount_not_allowed` | Extra mount source is not on host allowlist |
+| `403` | `mount_not_allowed` | Extra mount source is not on host allowlist, or a read-write mount is outside every writable root |
+| `403` | `spec_invalid` | A spec value is outside the policy: `cpus` below `0.01`, `gatewayPort` outside `1024`-`65535`, or a `boardExtraHost` that differs from the site's |
 | `404` | `container_missing` | Target container does not exist on start/restart/stop |
 | `409` | `lease_conflict` | Execution lease already held by another execution ID |
 | `409` | `epoch_stale` | Provided lease epoch is older than current site epoch |
@@ -309,41 +333,21 @@ Every error response follows single-line, secret-safe reason codes:
 
 1. **Host requirements**: a dedicated Linux VM with Docker (e.g. `myr-vm1`). Project-quota XFS at `/srv/myrmidon-xfs` is recommended for per-bot disk limits; on ext4 the quotas are simply absent and `volumeRoot` can point at any directory (e.g. `/srv/myrmidon-bots`).
 2. **Network**: the board must reach `fleetd` on its listen address (private LAN or tunnel). Do not publish port `9100` publicly; bind `listen` to the LAN address, not `0.0.0.0`.
-3. **Site PKI (mTLS is mandatory)**: `fleetd` serves HTTPS only, requires a client certificate signed by the site CA, and then checks the bearer token on top. It refuses to start without `siteCA`, `serverCert` and `serverKey`. There is no issuing command in the product; issue the material once per site with `openssl` on a trusted admin host, in a `0700` directory, and never print the key files:
-   ```bash
-   umask 077; mkdir site-myr-vm1 && cd site-myr-vm1
-   # site CA (3 years)
-   openssl ecparam -name prime256v1 -genkey -noout -out ca.key
-   openssl req -x509 -new -key ca.key -sha256 -days 1095 -subj "/CN=myrmidon-site-ca-myr-vm1" -out ca.crt
-   # fleetd server certificate: the SAN must match the host or IP in the enroll `url`
-   openssl ecparam -name prime256v1 -genkey -noout -out server.key
-   openssl req -new -key server.key -subj "/CN=fleetd-myr-vm1" -out server.csr
-   printf "subjectAltName=IP:192.0.2.10\nextendedKeyUsage=serverAuth\n" > server.ext
-   openssl x509 -req -in server.csr -CA ca.crt -CAkey ca.key -CAcreateserial -days 365 -sha256 -extfile server.ext -out server.crt
-   # board client certificate
-   openssl ecparam -name prime256v1 -genkey -noout -out client.key
-   openssl req -new -key client.key -subj "/CN=myrmidon-board" -out client.csr
-   printf "extendedKeyUsage=clientAuth\n" > client.ext
-   openssl x509 -req -in client.csr -CA ca.crt -CAkey ca.key -CAcreateserial -days 365 -sha256 -extfile client.ext -out client.crt
-   # bearer token (fleetd requires at least 32 characters)
-   openssl rand -hex 32 > token
-   cat client.crt client.key > client.pem
-   openssl verify -CAfile ca.crt server.crt client.crt
-   ```
-   Server and client certificates live 365 days and the CA 3 years; rotation is manual (re-issue, replace the files on the site, update the secret value). Keep `ca.key` off the site and off the board.
+3. **Site PKI (mTLS is mandatory)**: `fleetd` serves HTTPS only, requires a client certificate signed by the site CA, and then checks the bearer token on top. It refuses to start without `siteCA`, `serverCert` and `serverKey`. The root site-CA (ECDSA P-256) is generated and stored centrally by the board in company secrets (`myrmidon-site-ca`, 10-year validity, private key never leaves the board). Upon enrollment, the board automatically issues a client certificate (valid 90 days, auto-renewed 30 days before expiration) and a server certificate for fleetd with SAN derived from the site URL. The board also generates the bearer token of the site (random, 64 hex characters; fleetd requires at least 32), stores it in the company secret `myrmidon-fleet-site-token-<site>` and returns it once. The public `ca.crt`, the server certificate and key, and the token are all in the enroll response. The operator prepares no secret: enroll the site first (section 4.3), then configure the site agent with these values (section 4.2).
+   The site-CA private key is stored securely in the company and never leaves the board. The enroll response is shown once and carries `Cache-Control: no-store`.
 
 ---
 
 ### 4.2 Site-Agent Configuration (`myr-vm1`)
 
-Copy `ca.crt`, `server.crt` and `server.key` to `/etc/myrmidon/pki/` (key `0600`) and the `fleetd` binary to `/usr/local/bin/fleetd`. Create `/etc/myrmidon/fleetd.json` with permissions `0600`. The file is read with unknown keys rejected, so use exactly these names:
+Enroll the site first (section 4.3). Copy `ca.crt`, `server.crt` and `server.key` from the enroll response to `/etc/myrmidon/pki/` (key `0600`) and the `fleetd` binary to `/usr/local/bin/fleetd`. Create `/etc/myrmidon/fleetd.json` with permissions `0600`. The file is read with unknown keys rejected, so use exactly these names:
 
 ```json
 {
   "siteId": "myr-vm1",
   "epoch": 1,
   "listen": "192.0.2.10:9100",
-  "token": "<contents of the token file>",
+  "token": "<fleetd.token from the enroll response>",
   "upstream": "/var/run/docker.sock",
   "siteCA": "/etc/myrmidon/pki/ca.crt",
   "serverCert": "/etc/myrmidon/pki/server.crt",
@@ -351,7 +355,10 @@ Copy `ca.crt`, `server.crt` and `server.key` to `/etc/myrmidon/pki/` (key `0600`
   "volumeRoot": "/srv/myrmidon-bots",
   "network": "myrmidon-bots",
   "images": ["ghcr.io/itkadr-git/myrmidon-hermes@sha256:*"],
+  "allowedMounts": ["/srv/myrmidon-cache"],
+  "writableMountRoots": ["/srv/myrmidon-cache"],
   "boardAddress": "192.0.2.1:3100",
+  // Legacy hostname stays resolvable as a compatibility alias during rollout.
   "boardExtraHost": "paperclip-server-1:192.0.2.1",
   "gatewayBindIp": "192.0.2.10",
   "gatewayPortStart": 18700,
@@ -362,7 +369,7 @@ Copy `ca.crt`, `server.crt` and `server.key` to `/etc/myrmidon/pki/` (key `0600`
 }
 ```
 
-Notes: the allowlist key is `images` (not `imageAllowlist`) and only `repo@sha256:*` references are accepted, tags are rejected; without `gatewayPortStart`/`gatewayPortEnd` the port allocator fails with `gateway_port_exhausted`, and without `volumeRoot` creating a bot fails with `volume_root_not_configured`; `boardExtraHost` here is a Docker `ExtraHosts` entry in `name:ip` form; `bots[]` must not be empty and is static (adding a bot means editing the file and restarting the unit). Validate before starting:
+Notes: the allowlist key is `images` (not `imageAllowlist`) and only `repo@sha256:*` references are accepted, tags are rejected; without `gatewayPortStart`/`gatewayPortEnd` the port allocator fails with `gateway_port_exhausted`, and without `volumeRoot` creating a bot fails with `volume_root_not_configured`; `boardExtraHost` here is a Docker `ExtraHosts` entry in `name:ip` form, and it is the only board address a container gets: a spec that names a different one is refused with `spec_invalid`; `allowedMounts` lists the host directories that extra mounts may come from; `writableMountRoots` (default: empty) lists the directories in which an extra mount may be read-write, for example shared package caches that are mounted at `/cache/*`. A read-write mount needs both: its source must be inside `allowedMounts` and, with symlinks resolved, inside one of the `writableMountRoots`. Each root must be a clean absolute path, must not be `/`, and must not contain or lie inside `volumeRoot`. Do not nest one writable source below another: a bot with write access to the upper directory can replace the lower one with a symlink, and Docker follows the link at the next start of the container that mounts the lower directory. With the key empty, every extra mount is read-only. The key is new, and a `fleetd` binary from before it rejects it as an unknown key, so roll out the binary first and the configuration second; `bots[]` must not be empty and is static (adding a bot means editing the file and restarting the unit). Validate before starting:
 
 ```bash
 /usr/local/bin/fleetd --check-config --config /etc/myrmidon/fleetd.json
@@ -397,8 +404,16 @@ systemctl enable --now myrmidon-fleetd
 Verify health with the client certificate (without it the TLS handshake is refused; with it but without the token the answer is `401`):
 ```bash
 curl -s --cacert ca.crt --cert client.crt --key client.key \
-  -H "Authorization: Bearer $(cat token)" https://192.0.2.10:9100/v1/health | jq .
+  -H "Authorization: Bearer $FLEETD_TOKEN" https://192.0.2.10:9100/v1/health | jq .
 ```
+
+#### Audit log, limits, client certificate allowlist and hardening
+
+- **Audit log.** fleetd writes one JSON line per API request to stdout, which the journal keeps (`journalctl -u myrmidon-fleetd -o cat | grep '"event":"audit"'`). A line has the time, the route (the bot key is shown as `{botKey}`), the method, `botKey`, the status, `clientCertSha256` and the duration in milliseconds. Bodies, query strings and tokens are not logged. A snapshot that broke off in the middle of the stream is marked `"aborted":true`.
+- **Limits.** A JSON request body is limited to 1 MiB. A restore is limited to 20 GiB of file content and 2,000,000 archive entries; above that it answers `413 restore_too_large` and changes nothing. The server limits the time for the request headers (5 s) and for the request (60 s), and it closes idle connections after 2 minutes. A restore upload may pause for up to 2 minutes between two reads. There is no write timeout: a snapshot streams a whole datadir for as long as the board reads it.
+- **Clean-up.** The datadirs that a restore or a quarantine moves aside (`.replaced-*` and `.quarantined-*` in `volumeRoot`) are removed after 7 days. The first sweep runs when fleetd starts, then one sweep runs every 24 hours.
+- **Client certificate allowlist (optional).** By default fleetd accepts every client certificate that the site CA signed. To allow only some of them, add `"clientCertSha256": ["<64 hex digits>"]` to `fleetd.json`. Each entry is the SHA-256 fingerprint of a client certificate. Colons, upper case and a `sha256:` prefix are accepted. fleetd then refuses any other certificate in the TLS handshake. An empty or missing list keeps the old behaviour. Take the fingerprint from the `clientCertSha256` field of the audit log, or from `openssl x509 -in client.crt -noout -fingerprint -sha256`. A change needs a restart of the unit, and `--check-config` rejects a malformed entry. The board renews its client certificate 30 days before it expires, and the renewed certificate has a new fingerprint. Add the new fingerprint to the list before the board uses the new certificate, or the board loses the site.
+- **systemd drop-in.** [`docs/myrmidon/fleetd/myrmidon-fleetd.service.d/hardening.conf`](../fleetd/myrmidon-fleetd.service.d/hardening.conf) adds `ProtectSystem=strict`, a short `CapabilityBoundingSet`, `NoNewPrivileges`, `PrivateTmp` and other sandboxing options to the unit above. Its comments list what fleetd writes and reads. Set `ReadWritePaths` to your `volumeRoot` and install the file in `/etc/systemd/system/myrmidon-fleetd.service.d/`.
 
 ---
 
@@ -406,34 +421,25 @@ curl -s --cacert ca.crt --cert client.crt --key client.key \
 
 Sites are registered through the board API, no database edits. `MYRMIDON_FLEET_HOSTS` is a legacy bootstrap path that accepts only `http://` addresses and cannot carry mTLS material; do not use it for an mTLS site.
 
-1. Store the secrets in the company (values come from the files, they are never part of the enroll request). Either two secrets `fleetd-myr-vm1-token` (the token) and `fleetd-myr-vm1-client` (`client.pem`: certificate and key PEM blocks, or `{"cert":"...","key":"..."}` JSON), or a pair `fleetd-myr-vm1-client-cert` and `fleetd-myr-vm1-client-key`:
+1. Enroll the site (company owner or instance admin only; company admins, members, viewers and agents get `403`). The board generates the bearer token of the site itself. The request never names a secret: a request with `tokenSecret` gets `400`. The host of `url` must be a private IPv4 address (10/8, 172.16/12, 192.168/16, 100.64/10) or a host listed in `MYRMIDON_FLEET_SITE_URL_ALLOWLIST`; any other host gets `400` and the board issues nothing. The address in the example is a documentation address: use the private address of your site.
    ```bash
-   jq -Rs '{name:"fleetd-myr-vm1-token", value:.}' < token \
-     | curl -sf -X POST "$BOARD/api/companies/$COMPANY/secrets" -H "Authorization: Bearer $BOARD_KEY" -H 'content-type: application/json' -d @-
-   jq -Rs '{name:"fleetd-myr-vm1-client", value:.}' < client.pem \
-     | curl -sf -X POST "$BOARD/api/companies/$COMPANY/secrets" -H "Authorization: Bearer $BOARD_KEY" -H 'content-type: application/json' -d @-
+   curl -sf -X POST "$BOARD/api/companies/$COMPANY/fleet/sites" \
+        -H "Authorization: Bearer ***" -H 'content-type: application/json' \
+        -d '{
+          "name": "myr-vm1",
+          "url": "https://192.0.2.10:9100",
+          "capacity": { "maxCpus": 4, "maxMemoryMb": 32768, "maxBots": 5 },
+          "gatewayPortStart": 18700,
+          "gatewayPortEnd": 18799,
+          "imageAllowlist": ["ghcr.io/itkadr-git/myrmidon-hermes@sha256:*"],
+          "hindsightUrl": "http://hindsight.internal:8890",
+          "llmBaseUrl": "http://llm.internal:4000",
+          "volumeRoot": "/srv/myrmidon-bots",
+          "network": "myrmidon-bots"
+        }'
    ```
-2. Enroll the site (company owner/admin or instance admin only; viewers, members and agents get `403`). Optionally add `caFingerprint` (sha256 of `ca.crt`, `openssl x509 -in ca.crt -noout -fingerprint -sha256`) to pin the CA:
-   ```bash
-   jq -n --rawfile ca ca.crt '{
-     name: "myr-vm1",
-     url: "https://192.0.2.10:9100",
-     tokenSecret: "fleetd-myr-vm1-token",
-     clientCertSecretKey: "fleetd-myr-vm1-client",
-     caCert: $ca,
-     capacity: { maxCpus: 4, maxMemoryMb: 32768, maxBots: 5 },
-     gatewayPortStart: 18700,
-     gatewayPortEnd: 18799,
-     imageAllowlist: ["ghcr.io/itkadr-git/myrmidon-hermes@sha256:*"],
-     hindsightUrl: "http://hindsight.internal:8890",
-     llmBaseUrl: "http://llm.internal:4000",
-     volumeRoot: "/srv/myrmidon-bots",
-     network: "myrmidon-bots"
-   }' | curl -sf -X POST "$BOARD/api/companies/$COMPANY/fleet/sites" \
-        -H "Authorization: Bearer $BOARD_KEY" -H 'content-type: application/json' -d @-
-   ```
-   The request is rejected with `400` when the pinned fingerprint does not match `caCert`, the client certificate in the named secret is not signed by `caCert`, the URL is not `https://host[:port]`, the CA is not a PEM certificate, a named secret does not exist in the company, the port range is inverted or `maxBots` exceeds the number of ports; with `409` when the name is taken. `GET /api/companies/$COMPANY/fleet/sites` lists sites (references and the CA fingerprint, never secret values); `DELETE /api/companies/$COMPANY/fleet/sites/myr-vm1` (admins only) removes one with `204`, or answers `409` while bots (`container.host`) still sit on the site. The board refuses to connect to a site whose stored CA no longer matches the fingerprint recorded at enroll. The board picks the site up within 30 seconds, no restart.
-3. The gateway port range in the profile mirrors `fleetd.json` for the operator's reference; `fleetd.json` is authoritative.
+   The `caCert`, `caFingerprint`, and `clientCertSecretKey` fields are managed automatically by the board and rejected if passed by the client (code `400`). In the `201` response (header `Cache-Control: no-store`), the board returns the public CA certificate (`site.caCert`, `fleetd.caCert`), the issued fleetd server certificate and key (`fleetd.serverCert`, `fleetd.serverKey`) and the generated bearer token (`fleetd.token`). The response is shown once: the operator stores the files on the site at `/etc/myrmidon/pki/` and the token in `fleetd.json` (section 4.2). The board keeps the token in the company secret `myrmidon-fleet-site-token-myr-vm1` and reads it from there. `GET /api/companies/$COMPANY/fleet/sites` lists sites (including the public `caCert` and fingerprint, no private keys, no token); `DELETE /api/companies/$COMPANY/fleet/sites/myr-vm1` (company owner) removes the site with `204` and cleans up the associated client secret and the token secret the board generated. `PATCH /api/myrmidon/fleet/sites/myr-vm1?companyId=$COMPANY` (labels, capacity, address) is owner-only too, and a changed address follows the same host rule. A site enrolled before the board generated tokens keeps its own token secret; nothing changes for it.
+2. The gateway port range in the profile mirrors `fleetd.json` for the operator's reference; `fleetd.json` is authoritative.
 
 ---
 

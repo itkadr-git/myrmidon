@@ -6,8 +6,10 @@ import {
   discoverProjectWorkspaceSkillDirectories,
   findMissingLocalSkillIds,
   normalizeGitHubSkillDirectory,
+  parseGitHubSourceUrl,
   parseSkillImportSourceInput,
   readLocalSkillImportFromDirectory,
+  resolveGitHubPinnedRef,
 } from "../services/company-skills.js";
 
 const cleanupDirs = new Set<string>();
@@ -429,5 +431,17 @@ describe("missing local skill reconciliation", () => {
     ]);
 
     expect(missingIds).toEqual(["skill-1"]);
+  });
+
+  describe("resolveGitHubPinnedRef", () => {
+    it("preserves an explicit 40-character SHA as pinned and tracking ref without remote resolution", async () => {
+      const sha = "b".repeat(40);
+      const parsed = parseGitHubSourceUrl(`https://github.com/acme/skills/tree/${sha}`);
+      const resolved = await resolveGitHubPinnedRef(parsed);
+      expect(resolved).toEqual({
+        pinnedRef: sha,
+        trackingRef: sha,
+      });
+    });
   });
 });

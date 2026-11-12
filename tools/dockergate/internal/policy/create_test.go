@@ -176,6 +176,67 @@ func runMutations(t *testing.T, id, suffix string, cases []mutation) {
 	}
 }
 
+// myrmidon(1.6.7 BOT-HARDENING): HostConfig.Ulimits is an OPTIONAL member of
+// both forms, and when present it must be exactly [{Name:"core",Soft:0,Hard:0}].
+// The key is optional on purpose: the gate is deployed before the driver that
+// sends it, so an old body (no key) and a hardened body (exact key) are both
+// accepted, each rebuilding byte for byte; any other shape is denied.
+func TestCoreUlimitsShape(t *testing.T) {
+	const exact = `,"Ulimits":[{"Name":"core","Soft":0,"Hard":0}]`
+	for _, tc := range []struct{ id, suffix string }{
+		{"bot-plain", ""},
+		{"helper-prepare", ".helper"},
+		{"helper-apply-0123456789abcdef", ".helper"},
+	} {
+		t.Run(tc.id, func(t *testing.T) {
+			m := fixture.Load(t)
+			b, body := m.FindBody(t, tc.id, tc.suffix)
+			rt := createRoute(t, b.Name)
+
+			// Without the key the pre-1.6.7 body is still canonical (old driver).
+			without := replace(t, body, exact, "")
+			c, err := policy.ParseCreate(without, rt, env(m))
+			if err != nil {
+				t.Fatalf("body without Ulimits denied: %s (field %q, detail %q)", err.Code, err.Field, err.Detail)
+			}
+			if string(c.Body) != string(without) {
+				t.Fatalf("canonical body differs from the accepted one (without Ulimits):\n got %s\nwant %s", c.Body, without)
+			}
+
+			// The exact form (recorded body) is accepted and rebuilt byte for byte.
+			c, err = policy.ParseCreate(body, rt, env(m))
+			if err != nil {
+				t.Fatalf("exact Ulimits denied: %s (field %q, detail %q)", err.Code, err.Field, err.Detail)
+			}
+			if string(c.Body) != string(body) {
+				t.Fatalf("canonical body differs from the accepted one:\n got %s\nwant %s", c.Body, body)
+			}
+
+			for _, bad := range []struct{ name, repl, code string }{
+				{"other name", `,"Ulimits":[{"Name":"nofile","Soft":0,"Hard":0}]`, deny.JSONValue},
+				{"soft not zero", `,"Ulimits":[{"Name":"core","Soft":1024,"Hard":0}]`, deny.JSONValue},
+				{"hard not zero", `,"Ulimits":[{"Name":"core","Soft":0,"Hard":1024}]`, deny.JSONValue},
+				// Negative ints parse as KindInt, so wantInt reports a value mismatch (JSONValue).
+				{"negative values", `,"Ulimits":[{"Name":"core","Soft":-1,"Hard":-1}]`, deny.JSONValue},
+				{"values as strings", `,"Ulimits":[{"Name":"core","Soft":"0","Hard":"0"}]`, deny.JSONType},
+				{"second entry", `,"Ulimits":[{"Name":"core","Soft":0,"Hard":0},{"Name":"core","Soft":0,"Hard":0}]`, deny.JSONValue},
+				{"empty list", `,"Ulimits":[]`, deny.JSONValue},
+				{"list of string", `,"Ulimits":["core=0:0"]`, deny.JSONType},
+				{"object instead of list", `,"Ulimits":{"core":0}`, deny.JSONType},
+				{"extra member", `,"Ulimits":[{"Name":"core","Soft":0,"Hard":0,"Unit":1}]`, deny.JSONUnknownKey},
+				{"missing hard", `,"Ulimits":[{"Name":"core","Soft":0}]`, deny.JSONValue},
+				{"upper case name", `,"Ulimits":[{"Name":"CORE","Soft":0,"Hard":0}]`, deny.JSONValue},
+			} {
+				t.Run(bad.name, func(t *testing.T) {
+					mut := replace(t, body, exact, bad.repl)
+					c, err := policy.ParseCreate(mut, rt, env(m))
+					wantDeny(t, c, err, bad.code)
+				})
+			}
+		})
+	}
+}
+
 // The schema of the bot form: every field of the driver's body, changed.
 func TestBotBodyMutations(t *testing.T) {
 	m := fixture.Load(t)
@@ -503,7 +564,7 @@ func TestRedTeam_RT1_5_UnknownKeys(t *testing.T) {
 		`"Devices":[]`, `"DeviceRequests":[]`, `"CapAdd":["SYS_ADMIN"]`, `"PidMode":"host"`, `"IpcMode":"host"`,
 		`"UsernsMode":"host"`, `"UTSMode":"host"`, `"CgroupParent":"/"`, `"Sysctls":{}`, `"PortBindings":{}`,
 		`"Mounts":[]`, `"VolumesFrom":["x"]`, `"Links":["x"]`, `"Dns":["1.1.1.1"]`, `"ExtraHosts":["a:b"]`,
-		`"Runtime":"runc"`, `"Cgroup":"x"`, `"OomKillDisable":true`, `"Ulimits":[]`, `"LogConfig":{}`,
+		`"Runtime":"runc"`, `"Cgroup":"x"`, `"OomKillDisable":true`, `"LogConfig":{}`,
 		`"Isolation":"x"`, `"MaskedPaths":[]`, `"ReadonlyPaths":[]`, `"GroupAdd":["0"]`, `"StorageOpt":{}`,
 		`"ShmSize":1`, `"AutoRemove":true`, `"PublishAllPorts":true`, `"CpusetCpus":"0"`, `"CpuShares":1`,
 		`"BlkioWeight":1`, `"MemorySwap":-1`, `"OomScoreAdj":-1000`, `"Tmpfsx":{}`, `"VolumeDriver":"x"`,
@@ -804,11 +865,9 @@ func TestBotSharedRuntimeMounts(t *testing.T) {
 	}
 	all := []string{
 		runtime + "/bin:/bot/hermes/bin:ro",
-		runtime + "/lazy-packages:/bot/hermes/lazy-packages:ro",
-		runtime + "/lsp:/bot/hermes/lsp:ro",
 	}
 
-	t.Run("the three runtime pairs under the root are accepted and kept canonical", func(t *testing.T) {
+	t.Run("the runtime pair under the root is accepted and kept canonical", func(t *testing.T) {
 		body := bodyWith(t, all...)
 		c, err := policy.ParseCreate(body, createRoute(t, "myrmidon-bot-"+k), withRoot(runtime))
 		if err != nil {
@@ -826,7 +885,7 @@ func TestBotSharedRuntimeMounts(t *testing.T) {
 			t,
 			shared+":/bot/hermes/media/site:ro",
 			cache+"/pnpm:/cache/pnpm:rw",
-			all[0], all[1], all[2],
+			all[0],
 		)
 		e := withRoot(runtime, shared)
 		e.PackageCacheRoot = cache
@@ -845,7 +904,9 @@ func TestBotSharedRuntimeMounts(t *testing.T) {
 	t.Run("a pair outside the root, in another subdirectory or writable is denied", func(t *testing.T) {
 		for _, bind := range []string{
 			"/srv/elsewhere/bin:/bot/hermes/bin:ro",
-			runtime + "/sub/lsp:/bot/hermes/lsp:ro",
+			runtime + "/lazy-packages:/bot/hermes/lazy-packages:ro",
+			runtime + "/lsp:/bot/hermes/lsp:ro",
+			runtime + "/sub/bin:/bot/hermes/bin:ro",
 			runtime + "/bin:/bot/hermes/bin:rw",
 		} {
 			c, err := policy.ParseCreate(bodyWith(t, bind), createRoute(t, "myrmidon-bot-"+k), withRoot(runtime))

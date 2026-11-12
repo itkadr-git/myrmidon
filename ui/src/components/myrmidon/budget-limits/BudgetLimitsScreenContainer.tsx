@@ -20,6 +20,7 @@ import {
   budgetLimitsQueryKey,
   budgetLimitsSignalOnlyQueryKey,
   budgetLimitsUsageQueryKey,
+  downloadBudgetReport,
   type BudgetLimitLevel,
   type BudgetLimitUpsertBody,
   type BudgetLimitsSignalOnlyView,
@@ -146,6 +147,13 @@ export function BudgetLimitsScreen() {
       onSaveLimit={(level, ref, body) => saveLimit.mutate({ level, ref, body })}
       onDeleteLimit={(level, ref) => removeLimit.mutate({ level, ref })}
       onToggleSignalOnly={(signalOnly) => saveSignalOnly.mutate(signalOnly)}
+      onExport={async (format) => {
+        try {
+          await downloadBudgetReport(companyId, format);
+        } catch (err) {
+          setError(readable(err));
+        }
+      }}
       pending={saveLimit.isPending || removeLimit.isPending || saveSignalOnly.isPending}
       error={error}
     />

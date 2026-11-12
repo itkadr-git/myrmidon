@@ -38,6 +38,10 @@ export const issues = pgTable(
     projectWorkspaceId: uuid("project_workspace_id").references(() => projectWorkspaces.id, { onDelete: "set null" }),
     goalId: uuid("goal_id").references(() => goals.id),
     parentId: uuid("parent_id").references((): AnyPgColumn => issues.id),
+    // 1.7 (PRIVATE-TASKS): privacy flag — hidden from agent swarm matching and
+    // agent-facing read paths. Only board actors can set/change it. Full ACL
+    // and sharing are deferred to 1.8; this is the storage + write contract.
+    isPrivate: boolean("is_private").notNull().default(false),
     title: text("title").notNull(),
     titleNeedsGeneration: boolean("title_needs_generation").notNull().default(false),
     description: text("description"),
@@ -74,6 +78,7 @@ export const issues = pgTable(
     createdByAgentId: uuid("created_by_agent_id").references(() => agents.id),
     createdByUserId: text("created_by_user_id"),
     responsibleUserId: text("responsible_user_id"),
+    responsibleAgentId: uuid("responsible_agent_id").references(() => agents.id),
     issueNumber: integer("issue_number"),
     identifier: text("identifier"),
     originKind: text("origin_kind").notNull().default("manual"),
@@ -140,6 +145,7 @@ export const issues = pgTable(
       table.status,
     ),
     responsibleUserIdx: index("issues_company_responsible_user_idx").on(table.companyId, table.responsibleUserId),
+    responsibleAgentIdx: index("issues_company_responsible_agent_idx").on(table.companyId, table.responsibleAgentId),
     parentIdx: index("issues_company_parent_idx").on(table.companyId, table.parentId),
     projectIdx: index("issues_company_project_idx").on(table.companyId, table.projectId),
     originIdx: index("issues_company_origin_idx").on(table.companyId, table.originKind, table.originId),

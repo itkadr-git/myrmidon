@@ -79,6 +79,11 @@ esac
 const FAKE_CURL = `#!/usr/bin/env bash
 echo "curl $*" >> "$SANDBOX/calls.log"
 case "$*" in
+  # BOARD-LIVENESS (OPE-12211): the predeploy liveness probe on the copy reads
+  # -w %{http_code} (a plain curl prints the body); answer 200 / ok body.
+  *api/liveness*)
+    if [[ " $* " == *" -w "* ]]; then printf '200'; else printf '{"status":"ok"}'; fi
+    exit 0 ;;
   *myrmidon/deploy-jobs*) cat "$SANDBOX/board-jobs.json" ;;
   *myrmidon/maintenance*) cat "$SANDBOX/board-maintenance.json" ;;
   # PREDEPLOY-DB-CHECK: the throwaway copy answers from its own file.
@@ -177,10 +182,13 @@ function sandbox({ job = null, windowState = "on", health, predeployHealth } = {
       "MYR_DOCKERGATE_HEALTH_URL=http://127.0.0.1:3100/dockergate/health",
       "MYR_FLEETD_HEALTH_URL=http://127.0.0.1:3100/fleetd/health",
       "MYRMIDON_BOT_IMAGE_ROLLOUT=0",
+      "MYRMIDON_DEPLOY_MIN_FREE_GB=0",
       // PREDEPLOY-DB-CHECK (the 05.10 incident): the pre-window check is ON by
       // default and refuses without its inputs. The path list is company-free
       // here (this harness has no BOARD_COMPANY_ID).
-      "MYRMIDON_PREDEPLOY_POSTGRES_IMAGE=postgres:16-alpine",
+      `MYRMIDON_PREDEPLOY_POSTGRES_IMAGE=postgres:16-alpine`,
+      "MYRMIDON_PREDEPLOY_IO_DEVICE=/dev/fake-docker-data",
+      "MYRMIDON_PREDEPLOY_IO_RATE=30000000",
       `MYRMIDON_PREDEPLOY_BOARD_ENV_FILE=${predeployEnv}`,
       "MYRMIDON_PREDEPLOY_BOARD_PORT=13110",
       "MYRMIDON_PREDEPLOY_API_PATHS=/api/health,/api/companies",
@@ -265,6 +273,9 @@ echo "curl $*" >> "$SANDBOX/calls.log"
 case "$*" in
   *myrmidon/deploy-jobs*) cat "$SANDBOX/board-jobs.json" ;;
   *myrmidon/maintenance*) cat "$SANDBOX/board-maintenance.json" ;;
+  *api/liveness*)
+    if [[ " $* " == *" -w "* ]]; then printf '200'; else printf '{"status":"ok"}'; fi
+    exit 0 ;;
   *api/health*)
     if grep -q "${NEW}" "$SANDBOX/compose/docker-compose.myrmidon-image.yml" 2>/dev/null; then
       printf '{"status":"ok","version":"0.0.0","commit":"${COMMIT}"}'
@@ -311,6 +322,9 @@ esac
     const flip = `#!/usr/bin/env bash
 echo "curl $*" >> "$SANDBOX/calls.log"
 case "$*" in
+  *api/liveness*)
+    if [[ " $* " == *" -w "* ]]; then printf '200'; else printf '{"status":"ok"}'; fi
+    exit 0 ;;
   *myrmidon/deploy-jobs*) cat "$SANDBOX/board-jobs.json" ;;
   *myrmidon/maintenance*)
     if [ ! -e "$SANDBOX/seen-entering" ]; then

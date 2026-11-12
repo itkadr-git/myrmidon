@@ -7,8 +7,10 @@
 // and the reopen path. No database, no network: the store, the resolver and
 // the wake port are all in-memory.
 
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it } from "vitest";
 import {
+  DEFAULT_REVIEW_REWORK_SWEEP_INTERVAL_SEC,
+  REVIEW_REWORK_ACCEPTANCE_ACTION,
   REVIEW_REWORK_BLOCKED_ACTION,
   REVIEW_REWORK_CLOSED_ACTION,
   REVIEW_REWORK_CREATED_ACTION,
@@ -16,6 +18,7 @@ import {
   REVIEW_REWORK_WAKE_REASON,
   type ReviewReworkSettings,
 } from "@myrmidon/shared";
+import { resetGitHubRateLimitForTests, setGitHubRateLimitForTests } from "../../services/github-rate-limit.js";
 import {
   createReviewReworkSweep,
   extractPrCoordinates,
@@ -24,6 +27,11 @@ import {
 import type { CreateReworkTaskInput, ReworkCandidateRow, ReviewReworkStore } from "./store.js";
 import type { ReviewReworkChildFacts, ReviewReworkTaskFacts } from "./domain.js";
 import type { ReviewReworkPrResolver, ReviewReworkPrSnapshot } from "./resolver.js";
+import {
+  createGoalJudgeRoundController,
+  type GoalJudgeRoundLedger,
+  type GoalJudgeRoundState,
+} from "../goal-judge/controller.js";
 
 const VERDICT_AT = "2026-10-04T16:57:32.000Z";
 const PR_URL = "https://github.com/acme/repo/pull/484";
@@ -95,6 +103,50 @@ class FakeStore implements ReviewReworkStore {
     this.closed.push(input);
     return true;
   }
+  appliedGoalJudgeDecisions: Array<{
+    issueId: string;
+    expectStatus: string;
+    patch: Record<string, unknown>;
+    comment: string | null;
+  }> = [];
+  applyGoalJudgeDecisionResult = true;
+  async applyGoalJudgeDecision(input: {
+    issueId: string;
+    companyId: string;
+    expectStatus: string;
+    patch: Record<string, unknown>;
+    comment: string | null;
+  }) {
+    this.appliedGoalJudgeDecisions.push({
+      issueId: input.issueId,
+      expectStatus: input.expectStatus,
+      patch: input.patch,
+      comment: input.comment,
+    });
+    // Mirror the PG store: the guarded patch mutates the persisted row (status,
+    // assignee) so subsequent sweep passes read the updated facts.
+    const row = this.rows.find((candidate) => candidate.task.id === input.issueId);
+    if (row) {
+      const patch = input.patch as {
+        status?: string;
+        assigneeAgentId?: string | null;
+        assigneeUserId?: string | null;
+      };
+      if (typeof patch.status === "string") row.task.status = patch.status;
+      if (patch.assigneeAgentId !== undefined) row.task.assigneeAgentId = patch.assigneeAgentId;
+      if (patch.assigneeUserId !== undefined) row.task.assigneeUserId = patch.assigneeUserId;
+    }
+    return this.applyGoalJudgeDecisionResult;
+  }
+  reopenedAfterLoopCloseResult = false;
+  awaited: Array<{ issueId: string; assigneeAgentId: string | null; comment: string }> = [];
+  async reopenedAfterLoopClose(_companyId: string, _issueId: string) {
+    return this.reopenedAfterLoopCloseResult;
+  }
+  async awaitAcceptance(input: { issueId: string; companyId: string; expectStatus: string; assigneeAgentId: string | null; comment: string }) {
+    this.awaited.push({ issueId: input.issueId, assigneeAgentId: input.assigneeAgentId, comment: input.comment });
+    return true;
+  }
   async stampReworkFingerprint(input: { issueId: string; originFingerprint: string }) {
     this.stamped.push(input);
     return true;
@@ -127,16 +179,31 @@ function build(input: {
   snapshot: ReviewReworkPrSnapshot | null;
   settings?: Partial<ReviewReworkSettings>;
   maintenance?: boolean;
+  intervalMs?: number;
+  env?: NodeJS.ProcessEnv;
+  isLeader?: () => boolean;
+  resolvePr?: ReviewReworkPrResolver;
+  goalJudge?: ReviewReworkSweepDeps["goalJudge"];
+  goalJudgeFactory?: ReviewReworkSweepDeps["goalJudgeFactory"];
+  resolveDiff?: ReviewReworkSweepDeps["resolveDiff"];
+  resolveCiOutput?: ReviewReworkSweepDeps["resolveCiOutput"];
 }) {
   const wakes: WakeCall[] = [];
   const activities: Array<{ action: string; details: Record<string, unknown> }> = [];
-  const resolvePr: ReviewReworkPrResolver = async () =>
-    input.snapshot ?? { state: "unknown", headSha: null, reviewDecision: null, updatedAt: null };
+  let resolveCalls = 0;
+  const resolvePr: ReviewReworkPrResolver = async (companyId, reference) => {
+    resolveCalls += 1;
+    if (input.resolvePr) {
+      return input.resolvePr(companyId, reference);
+    }
+    return input.snapshot ?? { state: "unknown", headSha: null, reviewDecision: null, updatedAt: null };
+  };
   const deps: ReviewReworkSweepDeps = {
     store: input.store,
     resolvePr,
     readSettings: async () => ({
       enabled: true,
+      sweepIntervalSec: DEFAULT_REVIEW_REWORK_SWEEP_INTERVAL_SEC,
       fallbackAssigneeAgentId: null,
       ...input.settings,
     }),
@@ -147,12 +214,21 @@ function build(input: {
       activities.push({ action: entry.action, details: entry.details });
     },
     isUnderMaintenance: async () => input.maintenance ?? false,
-    intervalMs: 60_000,
+    ...(input.intervalMs === undefined ? {} : { intervalMs: input.intervalMs }),
+    ...(input.env === undefined ? {} : { env: input.env }),
+    ...(input.isLeader === undefined ? {} : { isLeader: input.isLeader }),
+    ...(input.goalJudge === undefined ? {} : { goalJudge: input.goalJudge }),
+    ...(input.goalJudgeFactory === undefined ? {} : { goalJudgeFactory: input.goalJudgeFactory }),
+    ...(input.resolveDiff === undefined ? {} : { resolveDiff: input.resolveDiff }),
+    ...(input.resolveCiOutput === undefined ? {} : { resolveCiOutput: input.resolveCiOutput }),
   };
-  return { sweep: createReviewReworkSweep(deps), wakes, activities };
+  return { sweep: createReviewReworkSweep(deps), wakes, activities, getResolveCalls: () => resolveCalls };
 }
 
 describe("review rework sweep", () => {
+  afterEach(() => {
+    resetGitHubRateLimitForTests();
+  });
   it("acceptance 1: RETURN opens a rework task with the PR author and blocks the review", async () => {
     const store = new FakeStore();
     store.rows = [candidateRow(reviewTask())];
@@ -328,6 +404,77 @@ describe("review rework sweep", () => {
     expect(store.created).toHaveLength(0);
   });
 
+  it("OPE-12260: a task reopened by a person after the loop closed it is handed back for acceptance, not closed again", async () => {
+    const store = new FakeStore();
+    store.reopenedAfterLoopCloseResult = true;
+    store.rows = [candidateRow(reviewTask({ status: "in_review" }))];
+    store.comments = verdictComment();
+    const { sweep, activities } = build({
+      store,
+      snapshot: { state: "merged", headSha: HEAD_OLD, reviewDecision: null, updatedAt: null },
+    });
+
+    const result = await sweep.sweep(new Date("2026-10-05T09:00:00Z"), { force: true });
+
+    expect(result.closed).toBe(0);
+    expect(result.awaitedAcceptance).toBe(1);
+    expect(store.closed).toHaveLength(0);
+    expect(store.awaited).toHaveLength(1);
+    expect(store.awaited[0]!.issueId).toBe("review-1");
+    expect(store.awaited[0]!.assigneeAgentId).toBe("author-agent");
+    expect(store.awaited[0]!.comment).toContain("acceptance pending");
+    expect(activities.map((entry) => entry.action)).toContain(REVIEW_REWORK_ACCEPTANCE_ACTION);
+    // The idempotence marker: a second pass sees the handoff comment and noops.
+    store.comments = [
+      ...verdictComment(),
+      { id: "c-2", body: "Code merged; acceptance pending by the review-return loop: PR acme/repo#484 is merged.", createdAt: new Date("2026-10-05T09:01:00Z") },
+    ];
+    const second = await sweep.sweep(new Date("2026-10-05T09:02:00Z"), { force: true });
+    expect(second.awaitedAcceptance).toBe(0);
+    expect(second.closed).toBe(0);
+    expect(store.awaited).toHaveLength(1);
+    expect(store.closed).toHaveLength(0);
+  });
+
+  it("OPE-12260: a description naming a live/operator acceptance step also holds the close", async () => {
+    const store = new FakeStore();
+    store.rows = [
+      candidateRow(reviewTask({
+        status: "in_review",
+        description: "Критерий приёмки: живая приёмка на бою, шаг выполняет оператор.",
+      })),
+    ];
+    store.comments = verdictComment();
+    const { sweep } = build({
+      store,
+      snapshot: { state: "merged", headSha: HEAD_OLD, reviewDecision: null, updatedAt: null },
+    });
+
+    const result = await sweep.sweep(new Date("2026-10-05T09:00:00Z"), { force: true });
+
+    expect(result.closed).toBe(0);
+    expect(result.awaitedAcceptance).toBe(1);
+    expect(store.closed).toHaveLength(0);
+    expect(store.awaited).toHaveLength(1);
+  });
+
+  it("OPE-12260: an ordinary merged review still closes with no acceptance markers", async () => {
+    const store = new FakeStore();
+    store.rows = [candidateRow(reviewTask({ status: "in_review" }))];
+    store.comments = verdictComment();
+    const { sweep } = build({
+      store,
+      snapshot: { state: "merged", headSha: HEAD_OLD, reviewDecision: null, updatedAt: null },
+    });
+
+    const result = await sweep.sweep(new Date("2026-10-05T09:00:00Z"), { force: true });
+
+    expect(result.closed).toBe(1);
+    expect(result.awaitedAcceptance).toBe(0);
+    expect(store.closed).toHaveLength(1);
+    expect(store.awaited).toHaveLength(0);
+  });
+
   it("a settled rework with a newer RETURN reopens the same task", async () => {
     const store = new FakeStore();
     store.rows = [candidateRow(reviewTask({ status: "todo" }))];
@@ -391,6 +538,7 @@ describe("review rework sweep", () => {
     const { sweep } = build({
       store,
       snapshot: { state: "open", headSha: HEAD_OLD, reviewDecision: null, updatedAt: null },
+      intervalMs: 60_000,
     });
     await sweep.sweep(new Date("2026-10-04T17:00:00Z"));
     store.created = [];
@@ -450,6 +598,395 @@ describe("review rework sweep", () => {
     expect(result.failed).toBe(0);
     expect(result.reworkCreated).toBe(1);
     expect(store.created[0]!.originFingerprint).toBe(`acme/repo#484@${HEAD_OLD}`);
+  });
+
+  // myrmidon(OPE-12397): the sweep's GitHub budget. Every candidate pass used
+  // to re-read every linked PR — the acceptance is one read per PR per pass,
+  // no reads for rows that cannot move, and the pass itself paced by the
+  // stored setting (the env override wins only as the deployment fallback).
+  describe("one GitHub read per pull request per pass (OPE-12397)", () => {
+    const PASS_AT = new Date("2026-10-04T17:00:00Z");
+    const snapshot: ReviewReworkPrSnapshot = { state: "open", headSha: HEAD_OLD, reviewDecision: null, updatedAt: null };
+
+    it("reads one PR once even when the task names it twice", async () => {
+      const store = new FakeStore();
+      const row = candidateRow(reviewTask());
+      // The URL in the text, the full-repo reference and the work product all
+      // point at the same pull request; the old path resolved it per match.
+      row.textParts = [`Review https://github.com/acme/repo/pull/484 (acme/repo#484)`, ""];
+      store.rows = [row];
+      store.comments = verdictComment();
+      const { sweep, getResolveCalls } = build({ store, snapshot });
+
+      const result = await sweep.sweep(PASS_AT, { force: true });
+
+      expect(getResolveCalls()).toBe(1);
+      expect(result.reworkCreated).toBe(1);
+    });
+
+    it("reads a shared PR once when two review tasks link it and evaluates both tasks", async () => {
+      const store = new FakeStore();
+      const first = candidateRow(reviewTask());
+      const second = candidateRow(reviewTask({ id: "review-2", identifier: "OPE-4418" }));
+      store.rows = [first, second];
+      store.comments = verdictComment();
+      const { sweep, getResolveCalls } = build({ store, snapshot });
+
+      const result = await sweep.sweep(PASS_AT, { force: true });
+
+      // One read for acme/repo#484; the second task rides on the same pass snapshot.
+      expect(getResolveCalls()).toBe(1);
+      // Both tasks link the same PR with RETURN verdict; both should have rework created and be blocked
+      expect(result.reworkCreated).toBe(2);
+      expect(result.blocked).toBe(2);
+      expect(store.created).toHaveLength(2);
+      expect(store.blocked).toHaveLength(2);
+    });
+
+    it("skips a candidate with no rework child, no verdict and no live product", async () => {
+      const store = new FakeStore();
+      const row = candidateRow(reviewTask());
+      row.childPresent = false;
+      row.verdictPresent = false;
+      row.products = []; // nothing live either
+      store.rows = [row];
+      store.comments = [];
+      const { sweep, getResolveCalls } = build({ store, snapshot });
+
+      const result = await sweep.sweep(PASS_AT, { force: true });
+
+      // The read would have been a `no_linked_pr` no-op; the guard drops the
+      // row before the comments and GitHub reads.
+      expect(getResolveCalls()).toBe(0);
+      expect(result.scanned).toBe(1);
+      expect(store.created).toHaveLength(0);
+    });
+
+    it("short-circuits and makes zero GitHub calls when rate limited", async () => {
+      const store = new FakeStore();
+      const row = candidateRow(reviewTask());
+      store.rows = [row];
+      store.comments = verdictComment();
+      const { sweep, getResolveCalls } = build({ store, snapshot });
+
+      // When rate-limited, isGitHubRateLimited() is true
+      setGitHubRateLimitForTests(Math.floor(Date.now() / 1000) + 3600, 0);
+
+      const result = await sweep.sweep(PASS_AT, { force: true });
+
+      expect(result.skippedPass).toBe(true);
+      expect(getResolveCalls()).toBe(0);
+      expect(store.created).toHaveLength(0);
+    });
+
+    it("skips a candidate whose only product is terminal", async () => {
+      const store = new FakeStore();
+      const row = candidateRow(reviewTask());
+      row.childPresent = false;
+      row.verdictPresent = false;
+      row.products = [{ repo: "acme/repo", number: 484, url: PR_URL, status: "merged" }];
+      store.rows = [row];
+      store.comments = [];
+      const { sweep, getResolveCalls } = build({ store, snapshot });
+
+      const result = await sweep.sweep(PASS_AT, { force: true });
+
+      expect(getResolveCalls()).toBe(0);
+      expect(store.created).toHaveLength(0);
+    });
+
+    it("keeps a row whose flags are unknown (hand-built) — the guard never skips the old path", async () => {
+      const store = new FakeStore();
+      const row = candidateRow(reviewTask());
+      row.childPresent = undefined;
+      row.verdictPresent = undefined;
+      row.products = [];
+      store.rows = [row];
+      store.comments = verdictComment();
+      const { sweep, getResolveCalls } = build({ store, snapshot });
+
+      const result = await sweep.sweep(PASS_AT, { force: true });
+
+      expect(getResolveCalls()).toBe(1);
+      expect(result.reworkCreated).toBe(1);
+    });
+  });
+
+  describe("the sweep interval is a setting with an env override (OPE-12397)", () => {
+    const snapshot: ReviewReworkPrSnapshot = {
+      state: "open",
+      headSha: HEAD_OLD,
+      reviewDecision: null,
+      updatedAt: null,
+    };
+
+    function seeded(store: FakeStore) {
+      store.rows = [candidateRow(reviewTask())];
+      store.comments = verdictComment();
+    }
+
+    it("paces by the stored setting (300 s default) without intervalMs", async () => {
+      const store = new FakeStore();
+      seeded(store);
+      const { sweep } = build({ store, snapshot, settings: { sweepIntervalSec: 300 } });
+      await sweep.sweep(new Date("2026-10-04T17:00:00Z"));
+      const second = await sweep.sweep(new Date("2026-10-04T17:04:59Z"));
+      expect(second.skippedPass).toBe(true);
+      const third = await sweep.sweep(new Date("2026-10-04T17:05:00Z"));
+      expect(third.skippedPass).toBe(false);
+    });
+
+    it("the env override beats the stored setting and the input range holds", async () => {
+      const store = new FakeStore();
+      seeded(store);
+      const { sweep } = build({
+        store,
+        snapshot,
+        settings: { sweepIntervalSec: 3600 },
+        env: { MYRMIDON_REVIEW_REWORK_SWEEP_INTERVAL_SEC: "120" },
+      });
+      await sweep.sweep(new Date("2026-10-04T17:00:00Z"));
+      // The stored 3600 s would hold the pass; the env 120 s does not.
+      const second = await sweep.sweep(new Date("2026-10-04T17:02:00Z"));
+      expect(second.skippedPass).toBe(false);
+    });
+
+    it("an out-of-range or malformed env value falls back to the stored setting", async () => {
+      const store = new FakeStore();
+      seeded(store);
+      const { sweep } = build({
+        store,
+        snapshot,
+        settings: { sweepIntervalSec: 300 },
+        env: { MYRMIDON_REVIEW_REWORK_SWEEP_INTERVAL_SEC: "banana" },
+      });
+      await sweep.sweep(new Date("2026-10-04T17:00:00Z"));
+      const second = await sweep.sweep(new Date("2026-10-04T17:04:00Z"));
+      expect(second.skippedPass).toBe(true); // still inside the stored 300 s
+      const third = await sweep.sweep(new Date("2026-10-04T17:05:00Z"));
+      expect(third.skippedPass).toBe(false);
+    });
+
+    it("an explicit intervalMs (tests, callers pinning the pace) wins over everything", async () => {
+      const store = new FakeStore();
+      seeded(store);
+      const { sweep } = build({
+        store,
+        snapshot,
+        settings: { sweepIntervalSec: 3600 },
+        intervalMs: 60_000,
+        env: { MYRMIDON_REVIEW_REWORK_SWEEP_INTERVAL_SEC: "3600" },
+      });
+      await sweep.sweep(new Date("2026-10-04T17:00:00Z"));
+      const second = await sweep.sweep(new Date("2026-10-04T17:01:00Z"));
+      expect(second.skippedPass).toBe(false);
+    });
+  });
+
+  it("only the leader sweeps; a secondary process keeps its timer but reads nothing", async () => {
+    const store = new FakeStore();
+    store.rows = [candidateRow(reviewTask())];
+    store.comments = verdictComment();
+    const { sweep, getResolveCalls } = build({
+      store,
+      snapshot: { state: "open", headSha: HEAD_OLD, reviewDecision: null, updatedAt: null },
+      isLeader: () => false,
+    });
+
+    const result = await sweep.sweep(new Date("2026-10-04T17:00:00Z"));
+
+    expect(result.skippedPass).toBe(true);
+    expect(getResolveCalls()).toBe(0);
+    expect(store.created).toHaveLength(0);
+
+    // The leader changeover: the next tick runs the pass immediately.
+    const store2 = new FakeStore();
+    store2.rows = [candidateRow(reviewTask())];
+    store2.comments = verdictComment();
+    let leading = false;
+    const { sweep: sweep2, getResolveCalls: getCalls2 } = build({
+      store: store2,
+      snapshot: { state: "open", headSha: HEAD_OLD, reviewDecision: null, updatedAt: null },
+      isLeader: () => leading,
+    });
+    await sweep2.sweep(new Date("2026-10-04T17:00:00Z"));
+    leading = true;
+    const second = await sweep2.sweep(new Date("2026-10-04T17:00:10Z"));
+    expect(second.skippedPass).toBe(false);
+    expect(getCalls2()).toBe(1);
+  });
+
+  it("passes resolved diff and CI output to goalJudge when configured", async () => {
+    const store = new FakeStore();
+    const task = reviewTask();
+    task.status = "in_review";
+    store.rows = [candidateRow(task)];
+    store.comments = [{ id: "c1", body: "Initial comment", createdAt: new Date("2026-10-04T12:00:00Z") }];
+
+    let judgedFacts: any = null;
+    const fakeJudge = {
+      judge: async (facts: any) => {
+        judgedFacts = facts;
+        return {
+          kind: "pass" as const,
+          verdict: { score: 1.0, complete: true, missing: [] },
+          roundsUsed: 1,
+        };
+      },
+    };
+
+    const { sweep } = build({
+      store,
+      snapshot: { state: "open", headSha: HEAD_NEW, reviewDecision: null, updatedAt: null },
+      goalJudge: fakeJudge,
+      resolveDiff: async (_companyId, ref) => `--- a/file.ts\n+++ b/file.ts\n@@ -1 +1 @@\n-// ${ref.repo}#${ref.number}`,
+      resolveCiOutput: async (_companyId, _issueId, _prs) => "Test check runs: all 4 passed.",
+    });
+
+    await sweep.sweep(new Date("2026-10-04T17:00:00Z"));
+
+    expect(judgedFacts).not.toBeNull();
+    expect(judgedFacts.diff).toContain("--- a/file.ts");
+    expect(judgedFacts.testOutput).toBe("Test check runs: all 4 passed.");
+  });
+
+  it("production wiring: shared/persisted round ledger preserves rounds across sweep cycles up to escalation", async () => {
+    const store = new FakeStore();
+    const task = reviewTask();
+    task.status = "in_review";
+    task.description = "Acceptance Criteria:\n1. Alpha feature works\n2. Beta feature works\n3. Tests pass";
+    task.returnAssigneeAgentId = "author-agent";
+    task.executionPolicy = {
+      mode: "normal",
+      reviewEscalationPolicy: {
+        maxReviewRounds: 3,
+        participantRoles: ["lead"],
+        fallbackQueue: "review-recovery",
+        timeoutAt: null,
+        policyRevision: "rev-1",
+        participants: {
+          lead: { type: "agent", agentId: "adm-dev-lead" },
+        },
+        escalationAgentIds: ["adm-dev-lead"],
+      },
+    } as any;
+
+    // Simulate PG-backed ledger: writes update the row's executionState.goalJudgeRound
+    const row = candidateRow(task);
+    store.rows = [row];
+
+    const pgSimulatedLedger: GoalJudgeRoundLedger = {
+      async load(_companyId, issueId) {
+        const found = store.rows.find((r) => r.task.id === issueId);
+        return (found?.task.executionState?.goalJudgeRound as GoalJudgeRoundState) ?? null;
+      },
+      async save(_companyId, issueId, state) {
+        const found = store.rows.find((r) => r.task.id === issueId);
+        if (found) {
+          found.task.executionState = {
+            ...(found.task.executionState ?? {}),
+            goalJudgeRound: state,
+          };
+        }
+      },
+      async clear(_companyId, issueId) {
+        const found = store.rows.find((r) => r.task.id === issueId);
+        if (found?.task.executionState) {
+          delete (found.task.executionState as any).goalJudgeRound;
+        }
+      },
+    };
+
+    let modelCalls = 0;
+    const fakeModelPort = {
+      async call() {
+        modelCalls += 1;
+        // All rounds report missing criteria to exercise the <= 3 bound
+        return {
+          content: JSON.stringify({
+            score: 0.5,
+            complete: false,
+            missing: ["Beta feature works"],
+            summary: "Beta not implemented",
+          }),
+          promptTokens: 10,
+          completionTokens: 10,
+        };
+      },
+    };
+
+    // The factory mirrors review-rework/index.ts: creates a controller with the shared ledger
+    const goalJudgeFactory = (_companyId: string) =>
+      createGoalJudgeRoundController({
+        settings: {
+          read: async () => ({
+            enabled: true,
+            providerId: "prov-1",
+            model: "test-model",
+            maxRounds: 3,
+            strictCriteria: true,
+            autoEscalate: true,
+          }),
+        } as any,
+        models: fakeModelPort,
+        ledger: pgSimulatedLedger,
+      });
+
+    let currentHead = "head-sha-1";
+    const { sweep } = build({
+      store,
+      snapshot: { state: "open", headSha: currentHead, reviewDecision: null, updatedAt: null },
+      goalJudgeFactory,
+      resolvePr: async () => ({ state: "open", headSha: currentHead, reviewDecision: null, updatedAt: null }),
+      // Production paces passes via sweepIntervalSec (300 s default); the
+      // ledger test ticks every minute and must not be gated by the default.
+      intervalMs: 60_000,
+    });
+
+    // --- Cycle 1 (round 1) ---
+    // Task is in_review. Judge runs round 1 -> returns to executor with in_progress.
+    await sweep.sweep(new Date("2026-10-04T17:00:00Z"));
+    expect(store.appliedGoalJudgeDecisions).toHaveLength(1);
+    expect(store.appliedGoalJudgeDecisions[0]!.patch.status).toBe("in_progress");
+    expect(store.appliedGoalJudgeDecisions[0]!.comment).toContain("[GOAL-JUDGE] Complete: false");
+    expect(store.appliedGoalJudgeDecisions[0]!.comment).toContain("round 1/3");
+    expect(row.task.status).toBe("in_progress");
+    expect(row.task.executionState?.goalJudgeRound).toMatchObject({ rounds: 1, lastHeadSha: "head-sha-1" });
+    expect(modelCalls).toBe(1);
+
+    // --- Cycle 2 (round 2) ---
+    // Executor pushes new code, moves task back to in_review
+    currentHead = "head-sha-2";
+    row.task.status = "in_review";
+    await sweep.sweep(new Date("2026-10-04T17:01:00Z"));
+    expect(store.appliedGoalJudgeDecisions).toHaveLength(2);
+    expect(store.appliedGoalJudgeDecisions[1]!.patch.status).toBe("in_progress");
+    expect(store.appliedGoalJudgeDecisions[1]!.comment).toContain("round 2/3");
+    expect(row.task.status).toBe("in_progress");
+    expect(row.task.executionState?.goalJudgeRound).toMatchObject({ rounds: 2, lastHeadSha: "head-sha-2" });
+    expect(modelCalls).toBe(2);
+
+    // --- Cycle 3 (round 3) ---
+    // Executor pushes again, moves task back to in_review.
+    // 3rd missing round hits maxReviewRounds limit -> escalates to reviewer with report!
+    currentHead = "head-sha-3";
+    row.task.status = "in_review";
+    await sweep.sweep(new Date("2026-10-04T17:02:00Z"));
+    expect(store.appliedGoalJudgeDecisions).toHaveLength(3);
+    const escDecision = store.appliedGoalJudgeDecisions[2]!;
+    expect(escDecision.patch.status).toBe("in_review");
+    expect(escDecision.patch.assigneeAgentId).toBe("adm-dev-lead");
+    expect(escDecision.comment).toContain("[GOAL-JUDGE ESCALATION] Лимит раундов судьи исчерпан (3/3)");
+    expect(escDecision.comment).toContain("Beta feature works");
+    expect(row.task.status).toBe("in_review");
+    expect(row.task.executionState?.goalJudgeRound).toMatchObject({ rounds: 3, lastHeadSha: "head-sha-3" });
+    expect(modelCalls).toBe(3);
+
+    // --- Cycle 4 (enforce <= 3 limit across subsequent passes) ---
+    currentHead = "head-sha-4";
+    await sweep.sweep(new Date("2026-10-04T17:03:00Z"));
+    // No new model call made; modelCalls stays 3!
+    expect(modelCalls).toBe(3);
   });
 });
 

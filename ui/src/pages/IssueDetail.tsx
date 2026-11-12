@@ -1,3 +1,4 @@
+import { FEEDBACK_TERMS_URL } from "@/lib/myrmidon-links";
 // myrmidon(DEBRAND-c): persist browser state under the Myrmidon namespace.
 import { clearLegacyChatMessageRequests } from "@/lib/chat-message-request";
 import { agentChatDraft } from "@/lib/agent-chat-draft";
@@ -191,6 +192,8 @@ import { IssueContinuationHandoff } from "../components/IssueContinuationHandoff
 import { IssueAttachmentsSection } from "../components/IssueAttachmentsSection";
 // myrmidon(U3): files trigger + on-demand drawer, replacing the fixed panel below.
 import { IssueFilesDrawer } from "@/components/myrmidon/IssueFilesDrawer";
+// myrmidon(1.7 TOKEN-BUDGET-SIGNAL, OPE-12232): the soft token-budget signal badge on the task card.
+import { TokenBudgetSignalBadge } from "@/components/myrmidon/TokenBudgetSignalBadge";
 import { IssueDocumentsSection } from "../components/IssueDocumentsSection";
 import { IssuePlanDecompositionsSection } from "../components/IssuePlanDecompositionsSection";
 import { IssueOutputSection } from "../components/issue-output/IssueOutputSection";
@@ -433,9 +436,6 @@ function buildPlanDecisionResponseText(
   return reason ? `Requested changes\n\n${reason}` : "Requested changes";
 }
 
-const FEEDBACK_TERMS_URL =
-  import.meta.env.VITE_FEEDBACK_TERMS_URL?.trim() ||
-  "https://paperclip.ing/tos";
 const ISSUE_COMMENT_AUTOLOAD_LIMIT = ISSUE_COMMENT_PAGE_SIZE * 3;
 const JUMP_TO_LATEST_MAX_COMMENT_PAGES = 10;
 function treeControlPreviewErrorCopy(error: unknown): string {
@@ -2597,6 +2597,17 @@ function IssueDetailActivityTab({
         Awaited<ReturnType<typeof issuesApi.getCostSummary>>
       >(issueId),
   });
+  // myrmidon(1.7 TOKEN-BUDGET-SIGNAL, OPE-12232): the read-only soft signal of
+  // the issue's token budget. Absent payload means no active token budget and
+  // the badge renders nothing; the server never pauses on this path.
+  const { data: tokenBudgetSignal } = useQuery({
+    queryKey: queryKeys.issues.tokenBudgetSignal(issueId),
+    queryFn: () => issuesApi.getTokenBudgetSignal(issueId),
+    placeholderData:
+      keepPreviousDataForSameQueryTail<
+        Awaited<ReturnType<typeof issuesApi.getTokenBudgetSignal>> | null
+      >(issueId),
+  });
   const initialLoading =
     (activityLoading && activity === undefined) ||
     (linkedRunsLoading && linkedRuns === undefined);
@@ -2683,6 +2694,12 @@ function IssueDetailActivityTab({
           <div className="text-sm font-medium text-muted-foreground mb-1">
             {i18n.t("area.issue-threads-runs-2.issue-detail.costSummary")}
           </div>
+          {/* myrmidon(1.7 TOKEN-BUDGET-SIGNAL): the card view of the soft signal — informs, never stops. */}
+          {tokenBudgetSignal ? (
+            <div className="mb-1.5">
+              <TokenBudgetSignalBadge signal={tokenBudgetSignal} />
+            </div>
+          ) : null}
           {!issueCostSummary.hasCost &&
           !issueCostSummary.hasTokens &&
           !hasIssueTreeCost ? (

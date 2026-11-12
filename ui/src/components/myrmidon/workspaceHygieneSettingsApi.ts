@@ -15,6 +15,7 @@ import type {
   WorkspaceHygieneLimitSource,
 } from "@myrmidon/shared";
 import { api } from "@/api/client";
+import { i18n } from "@/i18n";
 
 /** Mirrors server WorkspaceHygieneWorkspaceView (the server module is not importable from the UI). */
 export interface WorkspaceHygieneWorkspaceRow {
@@ -75,15 +76,31 @@ export const workspaceHygieneSettingsApi = {
     api.patch<WorkspaceHygieneSettingsView>("/myrmidon/workspace-hygiene", patch),
 };
 
+/** The per-key source label: where the value in force came from (all strings through i18n). */
 export function describeWorkspaceHygieneSource(
   source: WorkspaceHygieneLimitSource | undefined,
 ): string {
   switch (source) {
     case "settings":
-      return "Saved here";
+      return i18n.t("area.settings-bots-host-2.workspace-hygiene-settings-panel.sourceSettings");
     case "env":
-      return "Environment override";
+      return i18n.t("area.settings-bots-host-2.workspace-hygiene-settings-panel.sourceEnv");
     default:
-      return "Default";
+      return i18n.t("area.settings-bots-host-2.workspace-hygiene-settings-panel.sourceDefault");
   }
+}
+
+/**
+ * A readable message for a failed read or write. The PATCH route is
+ * instance-admin only (`assertInstanceAdmin`), so a 403 gets the plain "admin
+ * rights needed" sentence instead of the raw server text; any other failure
+ * keeps the server's own message, and `fallback` stands in when there is none.
+ * The status is read off the error object (the shape of the client `ApiError`),
+ * so this works for any error that carries one.
+ */
+export function describeWorkspaceHygieneError(err: unknown, fallback: string): string {
+  if (typeof err === "object" && err !== null && (err as { status?: unknown }).status === 403) {
+    return i18n.t("area.settings-bots-host-2.workspace-hygiene-settings-panel.forbidden");
+  }
+  return err instanceof Error && err.message ? err.message : fallback;
 }

@@ -52,6 +52,16 @@ describe("Codex app-server transport limits", () => {
     expect(invalid.GIT_CONFIG_KEY_0).toBeUndefined();
   });
 
+  it("passes the OpenAI-compatible endpoint of the built-in provider", () => {
+    const environment = createSanitizedCodexEnvironment({
+      PATH: "/safe/bin",
+      OPENAI_BASE_URL: "http://llm-gateway.internal:4000/v1",
+      DATABASE_URL: "must-not-cross",
+    });
+    expect(environment.OPENAI_BASE_URL).toBe("http://llm-gateway.internal:4000/v1");
+    expect(environment.DATABASE_URL).toBeUndefined();
+  });
+
   it("redacts real Basic credentials without corrupting ordinary question copy", () => {
     expect(redactCodexDiagnostic("Authorization: Basic dXNlcjpwYXNz"))
       .toBe("Authorization: Basic [REDACTED]");

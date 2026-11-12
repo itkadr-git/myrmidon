@@ -32,18 +32,24 @@ func testClientTLS() *tls.ConnectionState {
 	return &tls.ConnectionState{PeerCertificates: []*x509.Certificate{{}}}
 }
 
+// testBoardExtraHost is the board address the test site is configured with.
+const testBoardExtraHost = "board.example.test:192.0.2.1"
+
 func testConfig() *config {
 	cfg := &config{
-		SiteId:  "myr-vm1",
-		Epoch:   1,
-		Listen:  "127.0.0.1:0",
-		Token:   fakeBearer(),
-		Network: "net-a",
-		Images:  []string{"example.com/bot@sha256:aa"},
+		SiteId:        "myr-vm1",
+		Epoch:         1,
+		Listen:        "127.0.0.1:0",
+		Token:         fakeBearer(),
+		Network:       "net-a",
+		GatewayBindIP: "127.0.0.1",
+		Images:        []string{"example.com/bot@sha256:aa"},
 		Bots: []bot{
 			{BotKey: "bot-example-one", MaxMemoryMb: 1536, MaxCpus: 1, MaxPids: 256},
 		},
 	}
+	// The board address of the site: fleetd takes it from here, not from a spec.
+	cfg.BoardExtraHost = testBoardExtraHost
 	return cfg
 }
 
@@ -61,6 +67,13 @@ type fakeDocker struct {
 	calls           []string
 	startStopStatus int
 	logsBody        []byte
+	// inspectStatus overrides the State.Status the inspect answers (empty —
+	// "running"); OPE-12663 uses it to prove exited maps to stopped.
+	inspectStatus string
+	// missingImage makes the first create answer 404 "No such image" until an
+	// images/create (pull) arrives — OPE-12194.
+	missingImage bool
+	pullError    string
 }
 
 func (f *fakeDocker) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -71,11 +84,23 @@ func (f *fakeDocker) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		path = path[i:]
 	} else if i := strings.Index(path, "/_ping"); i >= 0 {
 		path = path[i:]
+	} else if i := strings.Index(path, "/images/"); i >= 0 {
+		path = path[i:]
 	}
 	f.calls = append(f.calls, r.Method+" "+path)
 	switch {
 	case path == "/_ping":
 		_, _ = w.Write([]byte("OK"))
+	case r.Method == http.MethodPost && path == "/images/create":
+		if f.pullError != "" {
+			_, _ = w.Write([]byte(`{"status":"Pulling"}` + "\n" + `{"error":"` + f.pullError + `"}` + "\n"))
+			return
+		}
+		f.missingImage = false
+		_, _ = w.Write([]byte(`{"status":"Pulling from bot"}` + "\n" + `{"status":"Digest: sha256:aa"}` + "\n"))
+	case r.Method == http.MethodPost && path == "/containers/create" && f.missingImage:
+		w.WriteHeader(http.StatusNotFound)
+		_, _ = w.Write([]byte(`{"message":"No such image: example.com/bot@sha256:aa"}`))
 	case r.Method == http.MethodPost && path == "/containers/create":
 		var body map[string]any
 		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
@@ -100,7 +125,11 @@ func (f *fakeDocker) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "no such container", http.StatusNotFound)
 			return
 		}
-		out := map[string]any{"State": map[string]any{"Status": "running"}, "Config": map[string]any{"Image": c["Image"], "User": c["User"]}, "HostConfig": c["HostConfig"]}
+		status := "running"
+		if f.inspectStatus != "" {
+			status = f.inspectStatus
+		}
+		out := map[string]any{"State": map[string]any{"Status": status}, "Config": map[string]any{"Image": c["Image"], "User": c["User"]}, "HostConfig": c["HostConfig"]}
 		_ = json.NewEncoder(w).Encode(out)
 	case r.Method == http.MethodPost && (strings.HasSuffix(path, "/start") || strings.HasSuffix(path, "/stop")):
 		if f.startStopStatus != 0 {
@@ -120,7 +149,14 @@ func newServerWithDocker(t *testing.T) (*server, *httptest.Server, *fakeDocker) 
 	fake := &fakeDocker{containers: map[string]map[string]any{}}
 	cfg := testConfig()
 	cfg.VolumeRoot = t.TempDir()
-	socket := filepath.Join(t.TempDir(), "docker.sock")
+	// A unix socket path is limited to about 107 bytes. t.TempDir() carries the
+	// name of the test, which is too long for a subtest with a long name.
+	sockDir, err := os.MkdirTemp("", "fd-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(sockDir) })
+	socket := filepath.Join(sockDir, "docker.sock")
 	listener, err := net.Listen("unix", socket)
 	if err != nil {
 		t.Fatal(err)
@@ -270,6 +306,35 @@ func TestWriteProfileUsesIsolatedVolumeRoot(t *testing.T) {
 	}
 }
 
+// T4 (08.11): a profile file in a new nested directory gives the bot user every
+// directory MkdirAll created on the way, not only the file's own directory, and
+// never the root of the bot volume.
+func TestWriteProfileChownsCreatedIntermediateDirs(t *testing.T) {
+	s, _ := newServer(t)
+	resetChownLog(nil)
+	defer resetChownLog(nil)
+	key := s.cfg.Bots[0].BotKey
+	rec := routeRequest(s, http.MethodPut, "/v1/bots/"+key+"/profile", fakeBearer(), `{"profile":{"botKey":"`+key+`","files":[{"path":"hermes/skills/paperclip-managed/myrmidon/SKILL.md","content":"# skill"}]}}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("profile write failed: %d %s", rec.Code, rec.Body.String())
+	}
+	root, err := filepath.EvalSymlinks(filepath.Join(s.cfg.VolumeRoot, key))
+	if err != nil {
+		t.Fatal(err)
+	}
+	chownMu.Lock()
+	defer chownMu.Unlock()
+	for _, rel := range []string{"hermes", "hermes/skills", "hermes/skills/paperclip-managed", "hermes/skills/paperclip-managed/myrmidon"} {
+		got, ok := chownLog[filepath.Join(root, rel)]
+		if !ok || got != [2]int{botUID, botUID} {
+			t.Fatalf("directory %s not given to the bot user: %v %v (log %v)", rel, got, ok, chownLog)
+		}
+	}
+	if _, ok := chownLog[root]; ok {
+		t.Fatalf("the bot volume root must stay as it is, got chown of %s", root)
+	}
+}
+
 func TestMountPolicy(t *testing.T) {
 	if err := validateMounts([]mountSpec{{Source: "/srv/bots", Destination: "/data", ReadOnly: true}}, []string{"/srv/bots"}); err != nil {
 		t.Fatalf("allowed mount rejected: %v", err)
@@ -337,6 +402,32 @@ func TestTemplateDriftRefusesMismatchedKey(t *testing.T) {
 	}
 }
 
+func TestDriftFieldsIgnoresMissingUlimits(t *testing.T) {
+	s := &server{cfg: testConfig()}
+	sp := spec{
+		BotKey:    "bot-example-one",
+		Image:     "example.com/bot@sha256:aa",
+		MemoryMb:  1024,
+		Cpus:      1,
+		PidsLimit: 256,
+		Network:   "net-a",
+	}
+	var x dockerInspect
+	x.Config.Image = sp.Image
+	x.Config.User = "10001"
+	x.HostConfig.NetworkMode = s.cfg.Network
+	x.HostConfig.ReadonlyRootfs = true
+	x.HostConfig.Memory = sp.MemoryMb * 1024 * 1024
+	x.HostConfig.NanoCPUs = int64(sp.Cpus * 1e9)
+	x.HostConfig.PidsLimit = sp.PidsLimit
+	x.HostConfig.ShmSize = 64 * 1024 * 1024
+
+	fields := s.driftFields(sp, &x)
+	if len(fields) != 0 {
+		t.Fatalf("expected no drift fields for inspect without Ulimits, got %v", fields)
+	}
+}
+
 func TestUnknownActionIsRefused(t *testing.T) {
 	s, _ := newServer(t)
 	key := s.cfg.Bots[0].BotKey
@@ -398,6 +489,180 @@ func TestValidateConfig(t *testing.T) {
 	}
 }
 
+func TestValidateGatewayBindIPTable(t *testing.T) {
+	tests := []struct {
+		name        string
+		portStart   int
+		portEnd     int
+		bindIP      string
+		wantErr     bool
+		errContains string
+	}{
+		{
+			name:      "valid IPv4 loopback with port range",
+			portStart: 18700,
+			portEnd:   18799,
+			bindIP:    "127.0.0.1",
+			wantErr:   false,
+		},
+		{
+			name:      "valid alternate IPv4 loopback with port range",
+			portStart: 18700,
+			portEnd:   18799,
+			bindIP:    "127.0.0.2",
+			wantErr:   false,
+		},
+		{
+			name:      "valid IPv6 loopback with port range",
+			portStart: 18700,
+			portEnd:   18799,
+			bindIP:    "::1",
+			wantErr:   false,
+		},
+		{
+			name:      "valid remote site interface IP with port range",
+			portStart: 18700,
+			portEnd:   18799,
+			bindIP:    "192.0.2.10",
+			wantErr:   false,
+		},
+		{
+			name:      "valid alternate remote site interface IP with port range",
+			portStart: 18700,
+			portEnd:   18799,
+			bindIP:    "198.51.100.10",
+			wantErr:   false,
+		},
+		{
+			name:      "valid non-loopback IPv6 interface IP with port range",
+			portStart: 18700,
+			portEnd:   18799,
+			bindIP:    "2001:db8::1",
+			wantErr:   false,
+		},
+		{
+			name:        "missing gatewayBindIp when port range configured",
+			portStart:   18700,
+			portEnd:     18799,
+			bindIP:      "",
+			wantErr:     true,
+			errContains: "gatewayBindIp is required",
+		},
+		{
+			name:        "whitespace gatewayBindIp when port range configured",
+			portStart:   18700,
+			portEnd:     18799,
+			bindIP:      "   ",
+			wantErr:     true,
+			errContains: "gatewayBindIp is required",
+		},
+		{
+			name:        "invalid IP format",
+			portStart:   18700,
+			portEnd:     18799,
+			bindIP:      "not-an-ip",
+			wantErr:     true,
+			errContains: "not a valid IP address",
+		},
+		{
+			name:        "0.0.0.0 rejected as unspecified",
+			portStart:   18700,
+			portEnd:     18799,
+			bindIP:      "0.0.0.0",
+			wantErr:     true,
+			errContains: "unspecified",
+		},
+		{
+			name:        ":: rejected as unspecified",
+			portStart:   18700,
+			portEnd:     18799,
+			bindIP:      "::",
+			wantErr:     true,
+			errContains: "unspecified",
+		},
+		{
+			name:        "0:0:0:0:0:0:0:0 rejected as unspecified",
+			portStart:   18700,
+			portEnd:     18799,
+			bindIP:      "0:0:0:0:0:0:0:0",
+			wantErr:     true,
+			errContains: "unspecified",
+		},
+		{
+			name:        "only portStart set without gatewayBindIp",
+			portStart:   18700,
+			portEnd:     0,
+			bindIP:      "",
+			wantErr:     true,
+			errContains: "gatewayBindIp is required",
+		},
+		{
+			name:        "only portEnd set without gatewayBindIp",
+			portStart:   0,
+			portEnd:     18799,
+			bindIP:      "",
+			wantErr:     true,
+			errContains: "gatewayBindIp is required",
+		},
+		{
+			name:      "no port range and empty bind IP is allowed",
+			portStart: 0,
+			portEnd:   0,
+			bindIP:    "",
+			wantErr:   false,
+		},
+		{
+			name:      "no port range and loopback bind IP is allowed",
+			portStart: 0,
+			portEnd:   0,
+			bindIP:    "127.0.0.1",
+			wantErr:   false,
+		},
+		{
+			name:      "no port range and remote site interface IP is allowed",
+			portStart: 0,
+			portEnd:   0,
+			bindIP:    "192.0.2.10",
+			wantErr:   false,
+		},
+		{
+			name:        "no port range but 0.0.0.0 rejected as unspecified",
+			portStart:   0,
+			portEnd:     0,
+			bindIP:      "0.0.0.0",
+			wantErr:     true,
+			errContains: "unspecified",
+		},
+		{
+			name:        "no port range but :: rejected as unspecified",
+			portStart:   0,
+			portEnd:     0,
+			bindIP:      "::",
+			wantErr:     true,
+			errContains: "unspecified",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := testConfig()
+			cfg.GatewayPortStart = tt.portStart
+			cfg.GatewayPortEnd = tt.portEnd
+			cfg.GatewayBindIP = tt.bindIP
+
+			err := validate(cfg)
+			if (err != nil) != tt.wantErr {
+				t.Fatalf("validate() error = %v, wantErr %v", err, tt.wantErr)
+			}
+			if tt.wantErr && tt.errContains != "" {
+				if err == nil || !strings.Contains(err.Error(), tt.errContains) {
+					t.Fatalf("validate() error = %v, want containing %q", err, tt.errContains)
+				}
+			}
+		})
+	}
+}
+
 func TestValidSiteId(t *testing.T) {
 	for _, ok := range []string{"a", "myr-vm1", "site-01", "fleetd-local"} {
 		if !validSiteId(ok) {
@@ -415,6 +680,9 @@ func TestStrictDecodeRejectsUnknownKeys(t *testing.T) {
 	var out config
 	if err := strictDecode([]byte(`{"listen":"a","tlsCert":"server.pem","tlsKey":"server-key.pem","tlsClientCA":"site-ca.pem","unknown":1,"bots":[{"botKey":"k","maxMemoryMb":1,"maxCpus":1,"maxPids":1}]}`), &out); err == nil {
 		t.Fatal("unknown key accepted")
+	}
+	if err := strictDecode([]byte(`{"listen":"a","tlsCert":"server.pem","tlsKey":"server-key.pem","tlsClientCA":"site-ca.pem","bots":[{"botKey":"k","maxMemoryMb":1,"maxCpus":1,"maxPids":1}]} {}`), &out); err == nil {
+		t.Fatal("trailing JSON content accepted")
 	}
 }
 
@@ -531,6 +799,14 @@ func TestCreateAppliesFixedTemplateToHostConfig(t *testing.T) {
 	if opt, _ := host["SecurityOpt"].([]any); len(opt) != 1 || opt[0] != "no-new-privileges:true" {
 		t.Fatalf("SecurityOpt is %v", host["SecurityOpt"])
 	}
+	ulimits, _ := host["Ulimits"].([]any)
+	if len(ulimits) != 1 {
+		t.Fatalf("Ulimits is %v", host["Ulimits"])
+	}
+	u, _ := ulimits[0].(map[string]any)
+	if len(u) != 3 || u["Name"] != "core" || u["Soft"] != float64(0) || u["Hard"] != float64(0) {
+		t.Fatalf("Ulimits[0] is %v", ulimits[0])
+	}
 	if host["Memory"] != float64(1024*1024*1024) || host["NanoCpus"] != float64(1e9) || host["PidsLimit"] != float64(256) {
 		t.Fatalf("limits wrong: %v %v %v", host["Memory"], host["NanoCpus"], host["PidsLimit"])
 	}
@@ -566,6 +842,55 @@ func TestCreateAppliesFixedTemplateToHostConfig(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(s.cfg.VolumeRoot, key, "hermes")); err != nil {
 		t.Fatalf("volume directory not prepared: %v", err)
+	}
+}
+
+func TestCreateFailsClosedWhenGatewayBindIPIsEmpty(t *testing.T) {
+	s, _, fake := newServerWithDocker(t)
+	s.cfg.GatewayPortStart, s.cfg.GatewayPortEnd = 18801, 18810
+	s.cfg.GatewayBindIP = ""
+	s.docker.gatewayBindIP = ""
+	key := s.cfg.Bots[0].BotKey
+	rec := routeRequest(s, http.MethodPost, "/v1/bots", fakeBearer(), createBody(key))
+	if rec.Code != http.StatusBadGateway {
+		t.Fatalf("expected 502 Bad Gateway, got %d %s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "gateway_bind_ip_required") {
+		t.Fatalf("expected gateway_bind_ip_required in body, got: %s", rec.Body.String())
+	}
+	if _, ok := fake.containers["fleet-"+key]; ok {
+		t.Fatalf("container must not be created when gatewayBindIP is empty")
+	}
+}
+
+// myrmidon(OPE-12194): a site without the release image pulls it and creates.
+func TestCreatePullsMissingImageThenCreates(t *testing.T) {
+	s, _, fake := newServerWithDocker(t)
+	fake.missingImage = true
+	key := "bot-example-one"
+	rec := routeRequest(s, http.MethodPost, "/v1/bots", fakeBearer(), createBody(key))
+	if rec.Code >= 300 {
+		t.Fatalf("create failed: %d %s (calls %v)", rec.Code, rec.Body.String(), fake.calls)
+	}
+	joined := strings.Join(fake.calls, ",")
+	if !strings.Contains(joined, "POST /images/create") {
+		t.Fatalf("no pull, calls: %v", fake.calls)
+	}
+	if _, ok := fake.containers["fleet-"+key]; !ok {
+		t.Fatalf("container not created after pull, calls: %v", fake.calls)
+	}
+}
+
+func TestCreateReportsAFailedPull(t *testing.T) {
+	s, _, fake := newServerWithDocker(t)
+	fake.missingImage = true
+	fake.pullError = "manifest unknown"
+	rec := routeRequest(s, http.MethodPost, "/v1/bots", fakeBearer(), createBody("bot-example-one"))
+	if rec.Code < 300 {
+		t.Fatalf("create must fail when the pull fails: %d", rec.Code)
+	}
+	if !strings.Contains(rec.Body.String(), "manifest unknown") {
+		t.Fatalf("pull error not reported: %s", rec.Body.String())
 	}
 }
 
@@ -711,6 +1036,105 @@ func TestDockerActionsAcceptAlreadyApplied304(t *testing.T) {
 	}
 }
 
+// OPE-12663: the idle-stop route stops the container and records the
+// idle-stopped mark in the bot's volume root; the mark surfaces in the status
+// (so the reconciler leaves the container down) and a start clears it (the
+// next wake brings the container up like the local docker driver's A17).
+func TestStopIdleWritesMarkAndStartClearsIt(t *testing.T) {
+	s, _, _ := newServerWithDocker(t)
+	key := s.cfg.Bots[0].BotKey
+	markPath := filepath.Join(s.cfg.VolumeRoot, key, "hermes", ".myrmidon", "idle-stopped.json")
+
+	// The container must exist for stop/start to answer: create it first.
+	if rec := routeRequest(s, http.MethodPost, "/v1/bots", s.cfg.Token, `{"spec":{"botKey":"`+key+`","image":"example.com/bot@sha256:aa","memoryMb":1536,"cpus":1,"pidsLimit":256,"network":"net-a"}}`); rec.Code != http.StatusOK {
+		t.Fatalf("create failed: %d %s", rec.Code, rec.Body.String())
+	}
+	if rec := routeRequest(s, http.MethodPost, "/v1/bots/"+key+"/stopIdle", s.cfg.Token, ""); rec.Code != http.StatusOK {
+		t.Fatalf("stopIdle failed: %d %s", rec.Code, rec.Body.String())
+	}
+	if _, err := os.Stat(markPath); err != nil {
+		t.Fatalf("idle-stopped mark not written: %v", err)
+	}
+
+	// The status carries the mark so the board's reconciler honors it.
+	rec := routeRequest(s, http.MethodGet, "/v1/bots/"+key+"/status", s.cfg.Token, "")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status failed: %d %s", rec.Code, rec.Body.String())
+	}
+	var st botStatus
+	if err := json.Unmarshal(rec.Body.Bytes(), &st); err != nil {
+		t.Fatalf("body: %v", err)
+	}
+	if st.IdleStopped == nil || !*st.IdleStopped {
+		t.Fatalf("status does not report the idle-stopped mark: %+v", st)
+	}
+
+	// The next wake (driver.start) clears the mark.
+	if rec := routeRequest(s, http.MethodPost, "/v1/bots/"+key+"/start", s.cfg.Token, ""); rec.Code != http.StatusOK {
+		t.Fatalf("start failed: %d %s", rec.Code, rec.Body.String())
+	}
+	if _, err := os.Stat(markPath); !os.IsNotExist(err) {
+		t.Fatalf("start did not clear the idle-stopped mark: %v", err)
+	}
+	rec = routeRequest(s, http.MethodGet, "/v1/bots/"+key+"/status", s.cfg.Token, "")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status after start failed: %d %s", rec.Code, rec.Body.String())
+	}
+	var st2 botStatus
+	if err := json.Unmarshal(rec.Body.Bytes(), &st2); err != nil {
+		t.Fatalf("body: %v", err)
+	}
+	if st2.IdleStopped != nil {
+		t.Fatalf("status still reports the mark after start: %+v", st2)
+	}
+}
+
+// OPE-12663: an idle-stopped container is docker-"exited", and the board's
+// reconciler honors the idle-stopped mark only for state "stopped" — so any
+// non-running docker status must come back as "stopped" (the same mapping the
+// local docker driver does).
+func TestStatusMapsExitedToStopped(t *testing.T) {
+	s, _, fake := newServerWithDocker(t)
+	key := s.cfg.Bots[0].BotKey
+	if rec := routeRequest(s, http.MethodPost, "/v1/bots", s.cfg.Token, `{"spec":{"botKey":"`+key+`","image":"example.com/bot@sha256:aa","memoryMb":1536,"cpus":1,"pidsLimit":256,"network":"net-a"}}`); rec.Code != http.StatusOK {
+		t.Fatalf("create failed: %d %s", rec.Code, rec.Body.String())
+	}
+	fake.mu.Lock()
+	fake.inspectStatus = "exited"
+	fake.mu.Unlock()
+	rec := routeRequest(s, http.MethodGet, "/v1/bots/"+key+"/status", s.cfg.Token, "")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status failed: %d %s", rec.Code, rec.Body.String())
+	}
+	var st botStatus
+	if err := json.Unmarshal(rec.Body.Bytes(), &st); err != nil {
+		t.Fatalf("body: %v", err)
+	}
+	if st.State != "stopped" {
+		t.Fatalf("exited must read as stopped: %+v", st)
+	}
+}
+
+// OPE-12663: an operator stop is not an idle stop — it clears the mark so a
+// manually stopped bot is not resurrected by the reconciler as "idle-stopped".
+func TestOperatorStopClearsIdleMark(t *testing.T) {
+	s, _, _ := newServerWithDocker(t)
+	key := s.cfg.Bots[0].BotKey
+	markPath := filepath.Join(s.cfg.VolumeRoot, key, "hermes", ".myrmidon", "idle-stopped.json")
+	if err := os.MkdirAll(filepath.Dir(markPath), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(markPath, []byte(`{"botKey":"`+key+`","idleStopped":true}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if rec := routeRequest(s, http.MethodPost, "/v1/bots/"+key+"/stop", s.cfg.Token, ""); rec.Code != http.StatusOK {
+		t.Fatalf("stop failed: %d %s", rec.Code, rec.Body.String())
+	}
+	if _, err := os.Stat(markPath); !os.IsNotExist(err) {
+		t.Fatalf("operator stop did not clear the idle-stopped mark: %v", err)
+	}
+}
+
 func TestDemuxDockerLogsBeforeRedaction(t *testing.T) {
 	frame := func(stream byte, body string) []byte {
 		b := make([]byte, 8+len(body))
@@ -851,6 +1275,53 @@ func TestQuarantine(t *testing.T) {
 	}
 }
 
+func TestCleanup(t *testing.T) {
+	tempRoot := t.TempDir()
+	s, _, fake := newServerWithDocker(t)
+	s.cfg.VolumeRoot = tempRoot
+	key := s.cfg.Bots[0].BotKey
+
+	botDir := filepath.Join(tempRoot, key)
+	if err := os.MkdirAll(botDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(botDir, "test.txt"), []byte("data"), 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	fake.mu.Lock()
+	fake.containers["fleet-"+key] = map[string]any{"Image": "test-image"}
+	fake.mu.Unlock()
+
+	rec := routeRequest(s, http.MethodPost, "/v1/bots/"+key+"/cleanup", s.cfg.Token, "")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("cleanup failed: %d %s", rec.Code, rec.Body.String())
+	}
+
+	if _, err := os.Stat(botDir); !os.IsNotExist(err) {
+		t.Fatalf("bot directory still exists at original path: %v", err)
+	}
+
+	fake.mu.Lock()
+	_, containerExists := fake.containers["fleet-"+key]
+	fake.mu.Unlock()
+	if containerExists {
+		t.Fatalf("docker container still exists after cleanup")
+	}
+
+	// Idempotency: second cleanup when container and datadir are already gone succeeds
+	rec2 := routeRequest(s, http.MethodDelete, "/v1/bots/"+key+"/cleanup", s.cfg.Token, "")
+	if rec2.Code != http.StatusOK {
+		t.Fatalf("idempotent cleanup failed: %d %s", rec2.Code, rec2.Body.String())
+	}
+
+	// DELETE /v1/bots/:botKey bare endpoint also triggers cleanup
+	rec3 := routeRequest(s, http.MethodDelete, "/v1/bots/"+key, s.cfg.Token, "")
+	if rec3.Code != http.StatusOK {
+		t.Fatalf("direct delete cleanup failed: %d %s", rec3.Code, rec3.Body.String())
+	}
+}
+
 // chownLog records the owner changes restore asks for; tests do not run as root,
 // so the real os.Lchown would be refused.
 var chownMu sync.Mutex
@@ -938,6 +1409,23 @@ func TestRestoreKeepsSymlinkAndRefusesTruncatedArchive(t *testing.T) {
 		if len(entries) != 0 {
 			t.Fatalf("cut %d: a failed restore left %d entries in the volume root", cut, len(entries))
 		}
+	}
+}
+
+func TestRestoreRejectsUnknownManifestField(t *testing.T) {
+	_, key, archive := snapshotOf(t)
+	needle := []byte(`"version":1`)
+	if !bytes.Contains(archive, needle) {
+		t.Fatal("snapshot manifest version not found")
+	}
+	tampered := bytes.Replace(archive, needle, []byte(`"unknown":1`), 1)
+	root := t.TempDir()
+	rec := restoreInto(t, root, key, tampered)
+	if rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), "unknown field") {
+		t.Fatalf("expected unknown manifest field rejection, got %d %s", rec.Code, rec.Body.String())
+	}
+	if _, err := os.Stat(filepath.Join(root, key)); !os.IsNotExist(err) {
+		t.Fatalf("datadir exists after rejected manifest: %v", err)
 	}
 }
 
@@ -1084,5 +1572,97 @@ func TestRestoreFailsWhenOwnerCannotBeSet(t *testing.T) {
 	}
 	if len(entries) != 0 {
 		t.Fatalf("a failed restore left %d entries in the volume root", len(entries))
+	}
+}
+
+func TestIsImageAllowed(t *testing.T) {
+	allowed := []string{
+		"ghcr.io/itkadr-git/myrmidon-hermes@sha256:*",
+		"example.com/pinned@sha256:abcdef",
+	}
+
+	tests := []struct {
+		name  string
+		image string
+		want  bool
+	}{
+		{"wildcard match 1", "ghcr.io/itkadr-git/myrmidon-hermes@sha256:11223344", true},
+		{"wildcard match 2", "ghcr.io/itkadr-git/myrmidon-hermes@sha256:cb168227", true},
+		{"exact match", "example.com/pinned@sha256:abcdef", true},
+		{"exact match wrong digest", "example.com/pinned@sha256:999999", false},
+		{"foreign repo under wildcard", "ghcr.io/evil/myrmidon-hermes@sha256:11223344", false},
+		{"prefix match without sha256 tag", "ghcr.io/itkadr-git/myrmidon-hermes:latest", false},
+		{"tag without digest", "example.com/pinned:latest", false},
+		{"missing digest value", "ghcr.io/itkadr-git/myrmidon-hermes@sha256:", false},
+		{"empty image", "", false},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := isImageAllowed(tc.image, allowed); got != tc.want {
+				t.Errorf("isImageAllowed(%q) = %v, want %v", tc.image, got, tc.want)
+			}
+		})
+	}
+
+	if isImageAllowed("ghcr.io/itkadr-git/myrmidon-hermes@sha256:11223344", nil) {
+		t.Error("nil allowed list should reject")
+	}
+	if isImageAllowed("ghcr.io/itkadr-git/myrmidon-hermes@sha256:11223344", []string{}) {
+		t.Error("empty allowed list should reject")
+	}
+}
+
+func TestImagePatternAllowedAndRefused(t *testing.T) {
+	s, _, fake := newServerWithDocker(t)
+	key := s.cfg.Bots[0].BotKey
+	s.cfg.Images = []string{"ghcr.io/itkadr-git/myrmidon-hermes@sha256:*"}
+	s.docker.images = s.cfg.Images
+
+	patternImage1 := "ghcr.io/itkadr-git/myrmidon-hermes@sha256:cb1682270001"
+	if !s.imageAllowed(patternImage1) {
+		t.Fatalf("server.imageAllowed rejected %s", patternImage1)
+	}
+	if !s.docker.allowedImage(patternImage1) {
+		t.Fatalf("docker.allowedImage rejected %s", patternImage1)
+	}
+
+	// 1. Create with pattern image passes both checks and reaches Docker
+	bodyCreate := strings.Replace(createBody(key), "example.com/bot@sha256:aa", patternImage1, 1)
+	if rec := routeRequest(s, http.MethodPost, "/v1/bots", fakeBearer(), bodyCreate); rec.Code != http.StatusOK {
+		t.Fatalf("pattern image create: got %d %s", rec.Code, rec.Body.String())
+	}
+	if c, ok := fake.containers["fleet-"+key]; !ok || c["Image"] != patternImage1 {
+		t.Fatalf("container not created with expected image: %v", c)
+	}
+
+	// 2. Recreate with another digest under pattern passes both checks
+	patternImage2 := "ghcr.io/itkadr-git/myrmidon-hermes@sha256:cb1682270002"
+	bodyRecreate := strings.Replace(createBody(key), "example.com/bot@sha256:aa", patternImage2, 1)
+	if rec := routeRequest(s, http.MethodPost, "/v1/bots/"+key+"/recreate", fakeBearer(), bodyRecreate); rec.Code != http.StatusOK {
+		t.Fatalf("pattern image recreate: got %d %s", rec.Code, rec.Body.String())
+	}
+	if c, ok := fake.containers["fleet-"+key]; !ok || c["Image"] != patternImage2 {
+		t.Fatalf("container not recreated with expected image: %v", c)
+	}
+
+	// 3. Foreign repository image under pattern is refused (403 image_not_allowed) on create and recreate
+	foreignImage := "ghcr.io/foreign-org/myrmidon-hermes@sha256:cb1682270001"
+	foreignBody := strings.Replace(createBody(key), "example.com/bot@sha256:aa", foreignImage, 1)
+	if rec := routeRequest(s, http.MethodPost, "/v1/bots", fakeBearer(), foreignBody); rec.Code != http.StatusForbidden || !strings.Contains(rec.Body.String(), "image_not_allowed") {
+		t.Fatalf("foreign image create: got %d %s", rec.Code, rec.Body.String())
+	}
+	if rec := routeRequest(s, http.MethodPost, "/v1/bots/"+key+"/recreate", fakeBearer(), foreignBody); rec.Code != http.StatusForbidden || !strings.Contains(rec.Body.String(), "image_not_allowed") {
+		t.Fatalf("foreign image recreate: got %d %s", rec.Code, rec.Body.String())
+	}
+
+	// 4. Tag without digest is refused (403) on create and recreate
+	tagImage := "ghcr.io/itkadr-git/myrmidon-hermes:latest"
+	tagBody := strings.Replace(createBody(key), "example.com/bot@sha256:aa", tagImage, 1)
+	if rec := routeRequest(s, http.MethodPost, "/v1/bots", fakeBearer(), tagBody); rec.Code != http.StatusForbidden {
+		t.Fatalf("tag without digest create: got %d %s", rec.Code, rec.Body.String())
+	}
+	if rec := routeRequest(s, http.MethodPost, "/v1/bots/"+key+"/recreate", fakeBearer(), tagBody); rec.Code != http.StatusForbidden {
+		t.Fatalf("tag without digest recreate: got %d %s", rec.Code, rec.Body.String())
 	}
 }

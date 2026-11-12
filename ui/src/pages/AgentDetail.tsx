@@ -2,7 +2,7 @@ import { mergeRunLogChunks, readChunkSeq } from "../lib/run-log-chunks";
 import { getPageVisibility, usePageVisibility } from "../lib/page-visibility";
 import { useCallback, useEffect, useMemo, useState, useRef } from "react";
 import { useParams, useNavigate, Link, Navigate, useBeforeUnload, type NavigateFunction } from "@/lib/router";
-import { useQuery, useMutation, useQueryClient, type QueryClient } from "@tanstack/react-query";
+import { useInfiniteQuery, useQuery, useMutation, useQueryClient, type QueryClient } from "@tanstack/react-query";
 import {
   agentsApi,
   type AgentKey,
@@ -45,6 +45,7 @@ import { assetsApi } from "../api/assets";
 import { toolsApi } from "../api/tools";
 import { getUIAdapter, buildTranscript, onAdapterChange } from "../adapters";
 import { StatusBadge } from "../components/StatusBadge";
+import { RoleModelDownBadge } from "../components/myrmidon/RoleModelDownBadge"; // myrmidon(1.6.8 OPE-12709)
 import { MarkdownBody } from "../components/MarkdownBody";
 import { CopyText } from "../components/CopyText";
 import { IssueRow } from "../components/IssueRow";
@@ -58,6 +59,7 @@ import { InlineBanner } from "../components/InlineBanner";
 import { BuiltInBundlePanel } from "../components/BuiltInBundlePanel";
 import { ConfigureBuiltInAgentModal } from "../components/ConfigureBuiltInAgentModal";
 import { TrustPresetSection } from "../components/TrustPresetSection";
+import { AgentAccessPolicySection } from "../components/AgentAccessPolicySection";
 import { FileTree, buildFileTree } from "../components/FileTree";
 import { ScrollToBottom } from "../components/ScrollToBottom";
 import { SourceResolvedFoldCallout } from "../components/SourceResolvedFoldCallout";
@@ -933,9 +935,17 @@ export function AgentDetail() {
 
   const { data: heartbeats } = useQuery({
     queryKey: queryKeys.heartbeats(resolvedCompanyId!, agent?.id ?? undefined),
-    queryFn: () => heartbeatsApi.list(resolvedCompanyId!, agent?.id ?? undefined),
+    queryFn: () => heartbeatsApi.list(resolvedCompanyId!, agent?.id ?? undefined, 200),
     enabled: !!resolvedCompanyId && !!agent?.id && shouldLoadHeartbeats,
   });
+  const heartbeatPages = useInfiniteQuery({
+    queryKey: [...queryKeys.heartbeats(resolvedCompanyId!, agent?.id ?? undefined), "history"],
+    queryFn: ({ pageParam }) => heartbeatsApi.listPage(resolvedCompanyId!, agent!.id, pageParam),
+    initialPageParam: undefined as string | undefined,
+    getNextPageParam: (lastPage) => lastPage.nextCursor ?? undefined,
+    enabled: !!resolvedCompanyId && !!agent?.id && activeView === "run-detail",
+  });
+  const historyRuns = heartbeatPages.data?.pages.flatMap((page) => page.runs);
 
   const { data: allIssues } = useQuery({
     queryKey: [...queryKeys.issues.list(resolvedCompanyId!), "participant-agent", resolvedAgentId ?? "__none__"],
@@ -1516,7 +1526,10 @@ export function AgentDetail() {
 
       {activeView === "run-detail" && (
         <RunsTab
-          runs={heartbeats ?? []}
+          runs={historyRuns ?? heartbeats ?? []}
+          hasMore={heartbeatPages.hasNextPage}
+          loadMore={() => heartbeatPages.fetchNextPage()}
+          isLoadingMore={heartbeatPages.isFetchingNextPage}
           companyId={resolvedCompanyId!}
           agentId={agent.id}
           agentRouteId={canonicalAgentRef}
@@ -1776,7 +1789,10 @@ export function AgentOverview({
         <section className="rounded-lg border border-border p-4" aria-labelledby="agent-identity-heading">
           <div className="mb-4 flex items-center justify-between gap-3">
             <h3 id="agent-identity-heading" className="text-sm font-medium">{t("area.agents-3.agent-detail.agentOverview.identity")}</h3>
-            <StatusBadge status={agent.status} />
+            <div className="flex flex-wrap items-center justify-end gap-2">
+              <RoleModelDownBadge since={agent.roleModelDownSince} agentId={agent.id} />
+              <StatusBadge status={agent.status} />
+            </div>
           </div>
           <div className="space-y-3">
             <SummaryRow label={t("agents.filterRole")}><span className="text-sm">{roleLabels[agent.role] ?? agent.role}</span></SummaryRow>
@@ -2156,6 +2172,14 @@ export function ConfigurationTab({
           })
         }
       /> : null}
+
+      {content === "permissions" && operatorCanManageBoardAdmins ? (
+        <AgentAccessPolicySection
+          permissions={agent.permissions}
+          disabled={updatePermissions.isPending}
+          onChange={(next) => updatePermissions.mutate(next)}
+        />
+      ) : null}
 
       {content === "permissions" ? <div>
         <h3 className="text-sm font-medium mb-3">{t("area.agents-3.agent-detail.configurationTab.permissions")}</h3>
@@ -3197,6 +3221,9 @@ function RunListItem({ run, isSelected, agentId }: { run: HeartbeatRun; isSelect
 
 function RunsTab({
   runs,
+  hasMore,
+  loadMore,
+  isLoadingMore,
   companyId,
   agentId,
   agentRouteId,
@@ -3205,6 +3232,9 @@ function RunsTab({
   adapterConfig,
 }: {
   runs: HeartbeatRun[];
+  hasMore?: boolean;
+  loadMore?: () => void;
+  isLoadingMore?: boolean;
   companyId: string;
   agentId: string;
   agentRouteId: string;
@@ -3249,6 +3279,13 @@ function RunsTab({
         {sorted.map((run) => (
           <RunListItem key={run.id} run={run} isSelected={false} agentId={agentRouteId} />
         ))}
+        {hasMore && (
+          <div className="p-2 border-t border-border text-center">
+            <Button variant="ghost" size="sm" onClick={() => loadMore?.()} disabled={isLoadingMore}>
+              {isLoadingMore ? "Loading…" : "Load older runs"}
+            </Button>
+          </div>
+        )}
       </div>
     );
   }
@@ -3265,6 +3302,13 @@ function RunsTab({
         {sorted.map((run) => (
           <RunListItem key={run.id} run={run} isSelected={run.id === effectiveRunId} agentId={agentRouteId} />
         ))}
+        {hasMore && (
+          <div className="p-2 border-t border-border text-center">
+            <Button variant="ghost" size="sm" onClick={() => loadMore?.()} disabled={isLoadingMore}>
+              {isLoadingMore ? "Loading…" : "Load older runs"}
+            </Button>
+          </div>
+        )}
         </div>
       </div>
 

@@ -8,12 +8,13 @@
 //   GET  /api/myrmidon/fleet/bots/:key/move — api-prefixed alias
 //
 // The bot key is the agent id; the company is the bot's own (read from its card), never
-// taken from the request, and the caller must have access to it.
+// taken from the request, and the caller must be an admin of it: a move changes where the bot
+// runs, and the log of a bot can hold anything the bot printed.
 
 import { Router, type Request, type Response } from "express";
 import { z } from "zod";
 import { badRequest, conflict, notFound } from "../../errors.js";
-import { assertBoard, assertCompanyAccess } from "../../routes/authz.js";
+import { assertBoard, assertCompanyAdmin } from "../../routes/authz.js";
 import { FleetMoveError, type FleetMoveService } from "./fleet-move-service.js";
 
 const moveBodySchema = z.object({
@@ -25,6 +26,7 @@ export interface FleetMoveRoutesDeps {
   service: Pick<FleetMoveService, "startMove" | "getLatestMove">;
   /** The company that owns the bot, or null when there is no such bot. */
   botCompanyId: (botKey: string) => Promise<string | null>;
+  getSiteLogs: (siteName: string, companyId: string, botKey: string, tail?: number) => Promise<string>;
 }
 
 export function fleetMoveRoutes(deps: FleetMoveRoutesDeps): Router {
@@ -34,7 +36,7 @@ export function fleetMoveRoutes(deps: FleetMoveRoutesDeps): Router {
     assertBoard(req);
     const companyId = await deps.botCompanyId(botKey);
     if (!companyId) throw notFound(`Bot "${botKey}" not found`);
-    assertCompanyAccess(req, companyId);
+    assertCompanyAdmin(req, companyId);
     return companyId;
   }
 
@@ -85,6 +87,18 @@ export function fleetMoveRoutes(deps: FleetMoveRoutesDeps): Router {
     res.json({ move });
   }
 
+  async function handleLogsGet(req: Request, res: Response): Promise<void> {
+    assertBoard(req);
+    const botKey = typeof req.params.key === "string" ? req.params.key : undefined;
+    const site = typeof req.query.site === "string" ? req.query.site : undefined;
+    const tail = req.query.tail === undefined ? 100 : Number(req.query.tail);
+    if (!botKey || !site) throw badRequest("botKey and site are required");
+    if (!Number.isInteger(tail) || tail < 1 || tail > 1000) throw badRequest("tail must be an integer between 1 and 1000");
+    const companyId = await authorizedCompany(req, botKey);
+    if (!deps.getSiteLogs) throw conflict("site-agent logs are unavailable");
+    res.type("text/plain").send(await deps.getSiteLogs(site, companyId, botKey, tail));
+  }
+
   // Both unprefixed and /api/myrmidon prefixed paths
   router.post("/fleet/bots/:key/move", (req, res, next) => {
     void handleMovePost(req, res).catch(next);
@@ -98,6 +112,8 @@ export function fleetMoveRoutes(deps: FleetMoveRoutesDeps): Router {
   router.get("/api/myrmidon/fleet/bots/:key/move", (req, res, next) => {
     void handleMoveGet(req, res).catch(next);
   });
+  router.get("/fleet/bots/:key/logs", (req, res, next) => { void handleLogsGet(req, res).catch(next); });
+  router.get("/api/myrmidon/fleet/bots/:key/logs", (req, res, next) => { void handleLogsGet(req, res).catch(next); });
 
   return router;
 }

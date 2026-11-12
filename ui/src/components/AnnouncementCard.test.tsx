@@ -4,6 +4,7 @@ import { createRoot } from "react-dom/client";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { AnnouncementCard } from "./AnnouncementCard";
 import { announcementPreview, announcementAnimationPreview } from "@/lib/announcement-preview";
+import { DOCS_URL } from "@/lib/myrmidon-links";
 
 vi.mock("@/lib/router", () => ({ Link: ({ to, children, ...props }: { to: string; children: ReactNode }) => <a href={to} {...props}>{children}</a> }));
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
@@ -66,7 +67,7 @@ describe("AnnouncementCard", () => {
     expect(div.querySelector("script")).toBeNull();
     expect(div.querySelector("h2")?.textContent).toBe("<script>hello</script>");
     expect(div.querySelector('[role="region"]')?.getAttribute("aria-labelledby")).toBe(div.querySelector("h2")?.id);
-    expect(div.querySelector('a[href="https://paperclip.ing"]')?.getAttribute("rel")).toContain("noreferrer");
+    expect(div.querySelector(`a[href="${DOCS_URL}"]`)?.getAttribute("rel")).toContain("noreferrer");
     expect(div.querySelector('a[href="/projects"]')).not.toBeNull();
     await act(async () => div.querySelector("img")!.dispatchEvent(new Event("error")));
     expect(div.querySelector("img")).toBeNull();

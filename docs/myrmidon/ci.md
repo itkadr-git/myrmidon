@@ -38,13 +38,25 @@ Workflow [`myrmidon-ci.yml`](../../.github/workflows/myrmidon-ci.yml) — на �
    пакета) или изменённый модуль (относительный путь).
 
 Пример: правка `packages/adapters/grok-local` — все тесты адаптера плюс тесты `server`/`ui`,
-которые импортируют `@paperclipai/adapter-grok-local`. Правка
+которые импортируют `@myrmidon/adapter-grok-local`. Правка
 `server/src/services/heartbeat.ts` — тесты, импортирующие `heartbeat`; если их больше 60,
 PR получает полный уровень.
 
 Серверные наборы, которые `run-vitest-stable.mjs` запускает по одному (маршруты, authz и его
 явный список), и здесь идут по одному в отдельном процессе; остальные — одним запуском в один
 поток, как в полном уровне.
+
+**Лёгкий CI для PR (`--pr-light`).** Когда переменная репозитория `CI_PR_FAST=true`, обычный PR (не `rel/*`) не уходит в полный уровень из-за размера: пакет, где отбор дал больше 60 файлов, получает *прямую* выборку, а уровень остаётся `fast`. В неё входят, по убыванию важности:
+1. тесты, изменённые в самом PR (`changed`);
+2. тесты рядом с изменённым исходником (`co-located`: `имя.test.ts`, `имя.<вид>.test.ts`, например `.myrmidon.test.ts`, и `имя.test.ts` в каталоге `__tests__` на этом уровне или выше);
+3. тесты, которые мокают изменённый модуль (`vi.mock("<path>")`, `vi.doMock("<path>")`);
+4. тесты, которые импортируют типы из изменённого модуля (`import type ...`);
+5. охранные наборы `SHARED_GUARD_TESTS` (сервер, включая `server-startup-feedback-export.test.ts`);
+6. тесты, которые импортируют изменённый файл напрямую (относительный путь, `@/` в `ui`, подпуть пакета по его `exports`).
+
+Импорт корня пакета, который лишь реэкспортирует изменённый файл, косвенный и не считается. Внутри ступени сначала идут тесты с именем по изменённому файлу (`heartbeat-*.test.ts` для `heartbeat.ts`), затем ближайшие в дереве, затем по пути. Больше 60 — берутся первые 60 в этом порядке, а `plan` пишет в журнал, сколько отброшено (имена — в `plan.json`).
+
+**Защита контрактов и экспортов (OPE-10709):** если PR меняет публичный экспорт (`export ...`), интерфейс (`interface ...`) или тип (`type ...`) модуля, который используется или мокается тестами или кодом сервера, PR автоматически переводится в полный уровень (`tier: full`) со всеми шаshard'ами серверных тестов. Режимы `--pr-light` и `--release-fast` не понижают такой запуск до `fast`, что исключает ситуации, когда чужие тесты падают только после вливания в `main` (как #2296 и #1949). Метка `full-ci`, `main`, merge queue, тег и `rel/*` ведут себя как раньше. Отброшенное и косвенные эффекты реализации без изменения экспортов ловит полный прогон на `main`.
 
 **Чего быстрый уровень не ловит:** косвенные эффекты — тест, который зависит от изменённого
 кода через цепочку импортов. Это ловит полный прогон на `main`.
@@ -101,8 +113,8 @@ run 37277281522), а релиз публиковать руками.
 | `plan` | все | Выбирает уровень и тесты, план — артефакт `test-plan` |
 | `typecheck + build` | fast, full | Один job (общие checkout и install). Сначала `pnpm -r typecheck`; на fast без `typecheck:rust` раннера. Затем (даже если typecheck упал) `pnpm build` (`NODE_OPTIONS=--max-old-space-size=4096`); на fast раннер собирается только как TypeScript, без релизной сборки Rust |
 | `tests (affected)` | fast | Отобранные тесты |
-| `tests (server 1/3)` … `(3/3)`, `tests (serialized 1/2)`, `(2/2)`, `tests (workspaces-a)`, `tests (workspaces-b)` | full | Весь `pnpm test:run`; шардов меньше, чем у вендора: лимит GitHub — 40 одновременных jobs на аккаунт, а каждый job заново делает checkout и install |
-| `tests (other + runner)` | full | Один job: пакеты, которые `pnpm test:run` не запускает (ниже), затем `pnpm --filter @paperclipai/paperclip-runner check:all` (проверка раннера у вендора) |
+| `tests (server 1/6)` … `(6/6)`, `tests (serialized 1/2)`, `(2/2)`, `tests (workspaces-a)`, `tests (workspaces-b)` | full | Весь `pnpm test:run`. Шарды server делятся по замеренной стоимости наборов (`scripts/general-server-shard-durations.json`, алгоритм LPT в `scripts/general-server-shard.mjs`); манифест обновляется `scripts/myrmidon/ci/shard-durations-from-logs.mjs` по логам последних зелёных прогонов main, а `general-server-shards.test.mjs` в `checks` проверяет, что шарды вместе покрывают каждый набор ровно один раз. Число шардов ограничено лимитом GitHub — 40 одновременных jobs на аккаунт, а каждый job заново делает checkout и install |
+| `tests (other + runner)` | full | Один job: пакеты, которые `pnpm test:run` не запускает (ниже), затем `pnpm --filter @myrmidon/paperclip-runner check:all` (проверка раннера у вендора) |
 | `go tools (dockergate + fleetd)` | все | gofmt, go vet, go test для `tools/dockergate` (+ контракт с драйвером) и `tools/fleetd` |
 | `checks` | все | Шаги: `shellcheck` скриптов выката; в `myrmidon-ci-tag.yml` (тег `myr-vX.Y.Z`) — гейт журнала релиза (RELEASE-CUT-CHANGELOG: `collect-fragments.mjs --version X.Y.Z --check`, непустой раздел версии и пустой «без выпуска» в обоих CHANGELOG, без него тег красный — инцидент 1.6.3); `node --test` по `scripts/myrmidon/**/*.test.mjs` (сюда входят сторож CHANGE-FRAGMENTS — ниже — и сторож полос тестов `test-lane-coverage.test.mjs`: каждый серверный тест ровно в одной полосе, OPE-4472); секреты (gitleaks); внутренние адреса (частные сети и запрещённые шаблоны); лицензии зависимостей; совместимость плагинов. Каждый шаг выполняется, даже если предыдущий упал: в журнале видно все сбои сразу |
 | **`CI result`** | все | Сводная: зелёная, если `plan` прошёл и каждая проверка прошла или не требовалась уровнем |
@@ -132,6 +144,24 @@ run 37277281522), а релиз публиковать руками.
 прогоне на PR любого уровня, включая `docs`: пропущенные уровнем проверки она принимает как
 «не требовались», но только если `plan` прошёл. У отменённого прогона (новый push) `CI result`
 не запускается вовсе — ложного зелёного нет.
+
+### Проверка ключевых файлов (hot files review / hot-files-review)
+
+PR, который трогает ключевые файлы ядра (`server/src/services/heartbeat.ts`, `server/src/services/execution-continuation.ts`, `packages/db/**`, `packages/adapters/hermes/**`, скрипты выката, Dockerfile, workflows — полный список в `scripts/myrmidon/ci/hot-files-check.sh`), требует обязательного ревью перед слиянием.
+
+**Контракт проверки и контексты:**
+- Защита ветки `main` (branch protection) требует обязательный check-run **`hot files review`**, а ruleset — статус **`hot-files-review`**.
+- Скрипт `scripts/myrmidon/ci/hot-files-check.sh` обеспечивает совместимость с обоими механизмами:
+  - Выставляет commit status (через GitHub Statuses API) для обоих контекстов: `hot files review` и `hot-files-review`.
+  - В терминальных состояниях (`success`, `failure`, `error`) выставляет check-run (через Check-Runs API) с именами `hot files review` и `hot-files-review` со статусом `completed` и соответствующим `conclusion`.
+- **Поведение при ожидании ревью (`pending`):**
+  - Если ключевые файлы затронуты и метки `review-approved` нет, скрипт выставляет `pending` («waiting for review-approved») **только** через commit status.
+  - Check-run со статусом `in_progress` в состоянии pending намеренно не создаётся: незавершённый check-run воспринимается сборщиком снимка CI доски как активное задание и зависает, блокируя вынесение вердикта ревьюера.
+- **Снятие метки при `synchronize` (новый push):**
+  - При событии `synchronize` (любой новый коммит в ветку PR) метка `review-approved` удаляется до проверки списка затронутых файлов (`DELETE repos/:repo/issues/:pr/labels/review-approved`), кроме случаев, когда головной коммит — слияние ветки `main` (update-branch от бота).
+  - Это предотвращает слияние устаревшего одобрения при досыле правок и обеспечивает немедленное выставление терминального `success` check-run для PR без hot-файлов без ручного вмешательства оператора.
+- **Права workflow:**
+  - В `.github/workflows/myrmidon-ci.yml` и `.github/workflows/myrmidon-hot-files-review.yml` для работы гейта заданы права `checks: write` (создание check-run), `issues: write` (снятие и чтение меток) и `statuses: write` (выставление статусов коммита).
 
 ### Тесты, которые `pnpm test:run` не запускает
 
@@ -257,8 +287,8 @@ variables → Actions) — наши домены, имена хостов, по�
    плагинов, согласованность возможностей (`pluginCapabilityValidator`), минимальная версия
    хоста. Это те же проверки, что делает `plugin-loader` при установке.
 2. **Установка как на сервере:** `install.mjs` ставит каждый плагин в свой чистый каталог
-   (`npm install --ignore-scripts`), затем заменяет все копии `@paperclipai/plugin-sdk` и
-   `@paperclipai/shared` пакетами, собранными из репозитория (`pnpm pack` — ровно то, что было
+   (`npm install --ignore-scripts`), затем заменяет все копии `@myrmidon/plugin-sdk` и
+   `@myrmidon/shared` пакетами, собранными из репозитория (`pnpm pack` — ровно то, что было
    бы опубликовано). Так плагин работает с нашим SDK, а не с версией из npm.
 3. **Проверка установленного пакета** (`check.ts`): модуль манифеста загружается, проходит
    те же проверки, файл воркера на месте. Затем воркер запускается через
@@ -273,9 +303,9 @@ variables → Actions) — наши домены, имена хостов, по�
 Локально:
 
 ```sh
-pnpm --filter @paperclipai/plugin-sdk ensure-build-deps
+pnpm --filter @myrmidon/plugin-sdk ensure-build-deps
 node scripts/myrmidon/plugin-compat/install.mjs --work /tmp/plugin-compat
-pnpm --filter @paperclipai/server exec tsx ../scripts/myrmidon/plugin-compat/check.ts --work /tmp/plugin-compat
+pnpm --filter @myrmidon/server exec tsx ../scripts/myrmidon/plugin-compat/check.ts --work /tmp/plugin-compat
 ```
 
 Новая версия плагина на установке: поменять версию в `plugins.json` и обновить снимок
@@ -299,7 +329,7 @@ pnpm --filter @paperclipai/server exec tsx ../scripts/myrmidon/plugin-compat/che
 
 ```sh
 pnpm --filter @myrmidon/hindsight-paperclip build
-pnpm --filter @paperclipai/server exec tsx ../scripts/myrmidon/plugin-compat/check-fork-manifest.ts
+pnpm --filter @myrmidon/server exec tsx ../scripts/myrmidon/plugin-compat/check-fork-manifest.ts
 ```
 
 Установка на инстансе — как у любого локального плагина: `POST /api/plugins/install`
@@ -326,7 +356,7 @@ Workflow [`myrmidon-image.yml`](../../.github/workflows/myrmidon-image.yml), job
   выпусками — `<последний выпуск>+<N>.git.<sha>` (до первого выпуска `0.0.0+…`; последним
   выпуском может быть и кандидат — база берётся целиком, например `1.2.3-rc.1+2.git.…`).
   Версия
-  Paperclip, взятого за основу, в номер не входит: она в метке образа
+  базового продукта, взятого за основу, в номер не входит: она в метке образа
   `io.github.itkadr-git.myrmidon.base.paperclip-version`.
 - **Порядок:** образ сначала публикуется только по digest, затем smoke: `docker run` с
   `local_trusted` (он отдаёт версию без входа), `/api/health` должен ответить `status: ok` и
@@ -494,7 +524,7 @@ pnpm install --frozen-lockfile
 node scripts/myrmidon/ci/affected-tests.mjs plan --base origin/main --head HEAD --out /tmp/plan.json
 node scripts/myrmidon/ci/affected-tests.mjs run --plan /tmp/plan.json   # быстрый уровень
 pnpm typecheck
-pnpm test:run          # полный уровень, или по частям: pnpm test:run:general -- --group general-server --shard-index 0 --shard-count 5
+pnpm test:run          # полный уровень, или по частям: pnpm test:run:general -- --group general-server --shard-index 0 --shard-count 6
 node scripts/myrmidon/ci/affected-tests.mjs extra                       # прочие пакеты
 pnpm build
 node --test $(find scripts/myrmidon -name '*.test.mjs')

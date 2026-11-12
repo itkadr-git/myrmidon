@@ -401,8 +401,19 @@ const FAKE_CURL = `#!/usr/bin/env bash
 echo "curl $*" >> "$SANDBOX/calls.log"
 case "$*" in
   *api/public/health*) if [ -e "$SANDBOX/probe-fails" ]; then exit 7; fi; cat "$SANDBOX/langfuse-health.json" ;;
-  *) cat "$SANDBOX/health.json" ;;
+  *)
+    # Model curl's -o /dev/null -w '%{http_code}' used by the predeploy
+    # liveness and API probes; ordinary GETs still return the health body.
+    case " $* " in
+      *" -w %{http_code} "*) printf '200' ;;
+      *) cat "$SANDBOX/health.json" ;;
+    esac ;;
 esac
+`;
+
+const FAKE_SYSTEMCTL = `#!/usr/bin/env bash
+echo "systemctl $*" >> "$SANDBOX/calls.log"
+exit 0
 `;
 
 function deploySandbox({ langfuseHealth = { status: "OK", version: "4.2.1" }, tracing } = {}) {
@@ -414,6 +425,7 @@ function deploySandbox({ langfuseHealth = { status: "OK", version: "4.2.1" }, tr
   fs.writeFileSync(path.join(bin, "docker"), FAKE_DOCKER, { mode: 0o755 });
   fs.writeFileSync(path.join(bin, "git"), FAKE_GIT, { mode: 0o755 });
   fs.writeFileSync(path.join(bin, "curl"), FAKE_CURL, { mode: 0o755 });
+  fs.writeFileSync(path.join(bin, "systemctl"), FAKE_SYSTEMCTL, { mode: 0o755 });
   fs.writeFileSync(path.join(dir, "calls.log"), "");
   fs.writeFileSync(
     path.join(dir, "imagetools.json"),
@@ -496,10 +508,13 @@ function deploySandbox({ langfuseHealth = { status: "OK", version: "4.2.1" }, tr
     "MYR_FLEETD_HEALTH_URL=http://127.0.0.1:3100/fleetd/health",
     "MYRMIDON_BOT_IMAGE_ROLLOUT=0",
     "MYRMIDON_DEPLOY_SMOKE=0",
+    "MYRMIDON_DEPLOY_MIN_FREE_GB=0",
     // PREDEPLOY-DB-CHECK (the 05.10 incident): the pre-window check is ON by
     // default and refuses without its inputs. No BOARD_COMPANY_ID here, so the
     // walked path list stays company-free.
     "MYRMIDON_PREDEPLOY_POSTGRES_IMAGE=postgres:16-alpine",
+    "MYRMIDON_PREDEPLOY_IO_DEVICE=/dev/fake-docker-data",
+    "MYRMIDON_PREDEPLOY_IO_RATE=30000000",
     `MYRMIDON_PREDEPLOY_BOARD_ENV_FILE=${predeployEnv}`,
     "MYRMIDON_PREDEPLOY_BOARD_PORT=13110",
     "MYRMIDON_PREDEPLOY_API_PATHS=/api/health,/api/companies",

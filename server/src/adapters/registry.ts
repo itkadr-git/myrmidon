@@ -1,5 +1,6 @@
 import type { AdapterRuntimeCommandSpec, ServerAdapterModule } from "./types.js";
 import { parseAdapterModelsEnv } from "../services/adapter-models-env.js";
+import { getPluginProviderModels } from "../myrmidon/plugin-provider-models.js";
 import { stampClaudeAgentIdHeader } from "./claude-agent-id-header.js";
 // myrmidon(B1c): product name in user-facing runner texts; see product.ts.
 import { PRODUCT_NAME } from "../myrmidon/product.js";
@@ -100,7 +101,9 @@ import {
 import {
   createHermesGatewayServerAdapter,
   createHermesLocalServerAdapter,
+  setFleetSiteSecurityResolver,
 } from "@myrmidon/hermes-paperclip-adapter";
+import { getActiveFleetSite } from "../myrmidon/bot-containers/site-registry.js";
 import {
   execute as openCodeExecute,
   listOpenCodeSkills,
@@ -123,6 +126,7 @@ import {
 } from "@myrmidon/adapter-openclaw-gateway";
 import { listCodexModels, refreshCodexModels } from "./codex-models.js";
 import { listCursorModels } from "./cursor-models.js";
+import { listGatewayModels, refreshGatewayModels } from "./hermes-gateway-models.js";
 import {
   execute as piExecute,
   listPiSkills,
@@ -796,7 +800,25 @@ const kimiLocalAdapter: ServerAdapterModule = {
 const hermesGatewayAdapter: ServerAdapterModule = {
   ...createHermesGatewayServerAdapter(),
   runtimeToolDelivery: "invocation_context",
+  listModels: listGatewayModels,
+  refreshModels: refreshGatewayModels,
+  // LiteLLM /v1/models is the live catalog for hermes_gateway: a successful
+  // empty answer means every model was removed, so `[]` must suppress the
+  // declared-env and static fallbacks instead of acting as a failure signal.
+  modelsAreAuthoritativeWhenEmpty: true,
 };
+
+setFleetSiteSecurityResolver((siteName: string, companyId?: string) => {
+  const site = getActiveFleetSite(siteName, companyId);
+  if (!site) return null;
+  return {
+    name: site.name,
+    url: site.url,
+    status: site.status,
+    profile: site.profile,
+    companyId: site.companyId,
+  };
+});
 
 const hermesLocalAdapter: ServerAdapterModule = {
   ...createHermesLocalServerAdapter(),
@@ -1065,31 +1087,62 @@ function getDeclaredAdapterModels(): ReturnType<typeof parseAdapterModelsEnv> {
   return value;
 }
 
-export async function listAdapterModels(type: string): Promise<{ id: string; label: string }[]> {
+export async function listAdapterModels(type: string, companyId?: string): Promise<{ id: string; label: string }[]> {
+  const pluginModels = (companyId ? getPluginProviderModels(companyId) : [])
+    .filter((model) => model.pluginKey === type || model.provider === type || `${model.pluginKey}-plugin` === type)
+    .map(({ modelId, label }) => ({ id: modelId, label }));
+  if (pluginModels.length > 0) return pluginModels;
+  const adapter = findActiveServerAdapter(type);
+  if (adapter?.listModels) {
+    try {
+      const discovered = await adapter.listModels();
+      // An empty dynamic result is authoritative only for adapters that opted
+      // in (e.g. hermes_gateway, where LiteLLM /v1/models is the live catalog
+      // and `[]` means models were removed). Discovery helpers that return []
+      // on failure (CLI adapters, unreachable gateways) must fall through to
+      // declared env models and static fallbacks below.
+      if (Array.isArray(discovered) && (discovered.length > 0 || adapter.modelsAreAuthoritativeWhenEmpty)) {
+        return discovered;
+      }
+    } catch {
+      // Fall through to declared models or static list if dynamic discovery fails
+    }
+  }
   const declaredModels = getDeclaredAdapterModels();
   if (declaredModels && declaredModels[type]?.length) {
     return declaredModels[type].map((m) => ({ id: m.id, label: m.label ?? m.id }));
   }
-  const adapter = findActiveServerAdapter(type);
   if (!adapter) return [];
-  if (adapter.listModels) {
-    const discovered = await adapter.listModels();
-    if (discovered.length > 0) return discovered;
-  }
   return adapter.models ?? [];
 }
 
 export async function refreshAdapterModels(type: string): Promise<{ id: string; label: string }[]> {
   const adapter = findActiveServerAdapter(type);
+  if (adapter?.refreshModels) {
+    try {
+      const refreshed = await adapter.refreshModels();
+      if (Array.isArray(refreshed) && (refreshed.length > 0 || adapter.modelsAreAuthoritativeWhenEmpty)) {
+        return refreshed;
+      }
+    } catch {
+      // Fall through to listModels or static fallbacks
+    }
+  }
+  if (adapter?.listModels) {
+    try {
+      const discovered = await adapter.listModels();
+      if (Array.isArray(discovered) && (discovered.length > 0 || adapter.modelsAreAuthoritativeWhenEmpty)) {
+        return discovered;
+      }
+    } catch {
+      // Fall through to declared models or static list
+    }
+  }
+  const declaredModels = getDeclaredAdapterModels();
+  if (declaredModels && declaredModels[type]?.length) {
+    return declaredModels[type].map((m) => ({ id: m.id, label: m.label ?? m.id }));
+  }
   if (!adapter) return [];
-  if (adapter.refreshModels) {
-    const refreshed = await adapter.refreshModels();
-    if (refreshed.length > 0) return refreshed;
-  }
-  if (adapter.listModels) {
-    const discovered = await adapter.listModels();
-    if (discovered.length > 0) return discovered;
-  }
   return adapter.models ?? [];
 }
 

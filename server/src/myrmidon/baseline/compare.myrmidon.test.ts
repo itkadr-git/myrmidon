@@ -35,7 +35,15 @@ function report(
   byRole: BaselineGroupMetrics[],
   generatedAt = "2026-09-15T00:00:00.000Z",
 ): BaselineMetricsResponse {
-  return { window: WINDOW, generatedAt, source: SOURCE, byProject, byRole };
+  return {
+    window: WINDOW,
+    generatedAt,
+    source: SOURCE,
+    runSuccess: { succeeded: 0, failed: 0, total: 0, rate: null },
+    byProject,
+    byRole,
+    overall: group("overall"),
+  };
 }
 
 describe("myrmidon(1.6.2-BASELINE-C) compareWithBaseline", () => {

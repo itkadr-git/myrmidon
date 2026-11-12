@@ -69,6 +69,8 @@ const SOURCE_META: Record<AttentionSourceKind, SourceMeta> = {
   bot_media_mcp: { label: "Media not connected" },
   // myrmidon(STALE-BLOCK): label for the lifted-stale-block source.
   stale_block: { label: "Stale block lifted" },
+  // myrmidon(OPE-11890): label for the auth-401 burst detector source.
+  auth_401_burst: { label: "Auth 401 burst" },
   host_disk_alert: { label: "Host disk" },
   // myrmidon(1.6.1-WIP-LIMIT-A): label for the WIP-limit source added with the per-agent WIP limit.
   wip_limit: { label: "WIP limit" },
@@ -96,6 +98,7 @@ const SOURCE_META: Record<AttentionSourceKind, SourceMeta> = {
   // myrmidon(1.6.5-F-23): labels for the off-run secret read sources.
   secret_off_run_reads: { label: "Off-run secret reads" },
   secret_off_run_grant_expiring: { label: "Off-run secret grant expiring" },
+  mcp_gateway_token_expiring: { label: "Gateway token expiring" },
   // myrmidon(1.6.5-F-18): label for the empty gateway model catalog signal.
   empty_model_catalog: { label: "Model catalog" },
   // myrmidon(1.6.5 F-09): label for the queue_stall source — a queued run
@@ -105,6 +108,13 @@ const SOURCE_META: Record<AttentionSourceKind, SourceMeta> = {
   codex_pool_alert: { label: "Codex pool alert" },
   // myrmidon(OPE-7932): label for an overdue issue monitor.
   issue_monitor_overdue: { label: "Overdue issue monitor" },
+  provider_usage_warning: { label: "Provider usage" },
+  // myrmidon(1.6.8 OPE-12709): labels for the role-model-down and provider
+  // no-credits operator signals.
+  role_model_down: { label: "Role model down" },
+  provider_no_credits: { label: "Provider no credits" },
+  litellm_budget: { label: "LLM key budget" },
+  github_app_webhook_disabled: { label: "GitHub App webhook disabled" },
 };
 
 export function sourceMeta(kind: AttentionSourceKind): SourceMeta {
@@ -175,7 +185,10 @@ export function attentionKind(item: AttentionItem): AttentionKind {
     case "replay_blocked":
     case "budget_alert":
     case "host_disk_alert":
+    case "auth_401_burst":
     case "foraging_limit":
+    case "litellm_budget":
+    case "github_app_webhook_disabled":
       return "blocking";
     case "approval":
     case "issue_thread_interaction":
@@ -297,12 +310,18 @@ export function attentionDetailLine(item: AttentionItem): string | null {
         parts.push(gbPerHour >= 1 ? `+${gbPerHour.toFixed(1)} GB/hour` : `+${Math.round(gbPerHour * 1024)} MB/hour`);
       }
       if (detail.consumers.length > 0) {
-        parts.push(`biggest: ${detail.consumers.map((c) => `${c.path} (${c.sizeGb} GB)`).join(", ")}`);
+        parts.push(
+          `biggest: ${detail.consumers
+            .map((c) => (c.sizeGb !== null ? `${c.path} (${c.sizeGb} GB)` : c.path))
+            .join(", ")}`,
+        );
       }
       return parts.join(" — ");
     }
     case "generic":
       return quote(detail.summaryExcerpt);
+    case "provider_usage":
+      return `${detail.provider}: ${Math.round(detail.usedPercent)}% used (warning at ${detail.thresholdPercent}%, resets ${detail.resetsAt})`;
     default:
       return null;
   }

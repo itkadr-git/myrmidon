@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // ARCH-GUARD: fitness functions of the architecture invariants
-// INV-10..INV-13 from docs/architecture/README.md (invariant index, section 0 of the target architecture).
+// INV-10..INV-14 from docs/architecture/README.md (invariant index, section 0 of the target architecture).
 //
 // Violations of any invariant = red CI, before any human review:
 //   INV-10  no automatic agent wake without a task: every enqueueWakeup call
@@ -28,11 +28,16 @@ import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
+// INV-14: orchestration decision modules are pure and must not reach I/O.
+// The adapter/application layer owns reads, transactions, and event sinks.
+const INV14_DECISION_LAYER = "decision layer imports no database, network, or I/O clients";
+
 export const INVARIANTS = {
   INV10: "no automatic agent wake without a task (enqueueWakeup needs issue/task context)",
   INV11: "one swarm queue order implementation (orderSwarmQueueCandidates)",
   INV12: "no pilot fields/word in swarm settings and code",
   INV13: "migration numbers unique, ordered, gapless in files and journal",
+  INV14: INV14_DECISION_LAYER,
 };
 
 const SWARM_SERVER_DIR = "server/src/myrmidon/swarm-claim";
@@ -271,6 +276,28 @@ export function checkNoPilot(root) {
   return findings;
 }
 
+const DECISION_LAYER_DIRS = [
+  "server/src/modules/run-dispatch/domain",
+];
+const DECISION_IO_IMPORT = /(?:from\s+["'](?:@myrmidon\/db|drizzle-orm|node:(?:fs|net|http|https|child_process)(?:\/[^"']*)?|\.\.\/[^"']*(?:adapters?|stores?|repositor(?:y|ies)|services?|db)(?:\/[^"']*)?)["']|import\s*\(\s*["'](?:@myrmidon\/db|drizzle-orm|node:[^"']*)["']\s*\))/;
+
+export function checkDecisionLayerPurity(root) {
+  const findings = [];
+  for (const relDir of DECISION_LAYER_DIRS) {
+    for (const rel of listTsFiles(root, relDir)) {
+      if (/\.test\.tsx?$|\.myrmidon\.test\.tsx?$/.test(rel)) continue;
+      const text = readIfExists(root, rel);
+      if (!text) continue;
+      text.split("\n").forEach((line, index) => {
+        if (DECISION_IO_IMPORT.test(line.replace(/\/\/.*$/, ""))) {
+          findings.push(`${rel}:${index + 1}: decision layer imports I/O dependency (INV-14)`);
+        }
+      });
+    }
+  }
+  return findings;
+}
+
 function migrationNumber(value) {
   const match = /^(\d{4})_/.exec(value);
   return match ? Number(match[1]) : null;
@@ -343,7 +370,27 @@ export function checkMigrations(root) {
   const journalText = readIfExists(root, JOURNAL);
   if (journalText) {
     const journal = JSON.parse(journalText);
-    const tags = (journal.entries ?? []).map((e) => e.tag);
+    const entries = journal.entries ?? [];
+    const seenIndices = new Map();
+    for (let i = 0; i < entries.length; i += 1) {
+      const entry = entries[i];
+      // Historical entries before 180 have a grandfathered duplicate idx (entry 175).
+      if (typeof entry.idx === "number" && entry.idx >= 180) {
+        const existing = seenIndices.get(entry.idx);
+        if (existing) {
+          findings.push(`${JOURNAL}: duplicate journal idx ${entry.idx} (${existing}, ${entry.tag}) (INV-13)`);
+        } else {
+          seenIndices.set(entry.idx, entry.tag ?? `entry ${i}`);
+        }
+      }
+      if (entry.tag && typeof entry.idx === "number" && entry.idx >= 180) {
+        const tagNum = migrationNumber(entry.tag);
+        if (tagNum !== null && tagNum !== entry.idx) {
+          findings.push(`${JOURNAL}: entry ${i} idx ${entry.idx} does not match tag ${entry.tag} (INV-13)`);
+        }
+      }
+    }
+    const tags = entries.map((e) => e.tag);
     const journalFiles = tags.map((t) => `${t}.sql`);
     if (journalFiles.length !== files.length) {
       findings.push(`${JOURNAL}: journal/file count mismatch (${journalFiles.length} vs ${files.length}) (INV-13)`);
@@ -369,6 +416,7 @@ export function check(root) {
   push("INV-11", checkSingleQueueOrder(root_));
   push("INV-12", checkNoPilot(root_));
   push("INV-13", checkMigrations(root_));
+  push("INV-14", checkDecisionLayerPurity(root_));
   push("ADR-INVENTORY", checkArchitectureInventory(root_));
   return { findings };
 }
@@ -391,7 +439,7 @@ function main(argv) {
     console.error("Fix the violation or change the invariant via an ADR (docs/architecture/adr/).");
     process.exit(1);
   }
-  console.log("ARCH-GUARD: all invariants hold (INV-10..INV-13).");
+  console.log("ARCH-GUARD: all invariants hold (INV-10..INV-14).");
 }
 
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {

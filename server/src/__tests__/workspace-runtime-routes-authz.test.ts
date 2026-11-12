@@ -1,6 +1,6 @@
 import express from "express";
 import request from "supertest";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 
 const mockProjectService = vi.hoisted(() => ({
   create: vi.fn(),
@@ -203,6 +203,20 @@ function buildExecutionWorkspace(overrides: Record<string, unknown> = {}) {
 }
 
 describe.sequential("workspace runtime service route authorization", () => {
+  // Load the route module graph once, outside any test's budget. It is huge
+  // (routes/*.ts and everything they import), and its cold load took 10-12 s
+  // on a GitHub runner and more on a slower one. It used to be paid inside the
+  // first test's 15 s budget, which timed it out on a slow runner. 60 s is about
+  // 2x the slowest cold load measured.
+  beforeAll(async () => {
+    registerWorkspaceRouteMocks();
+    await Promise.all([
+      import("../routes/projects.js"),
+      import("../routes/execution-workspaces.js"),
+      import("../middleware/index.js"),
+    ]);
+  }, 60_000);
+
   const projectId = "11111111-1111-4111-8111-111111111111";
   const workspaceId = "22222222-2222-4222-8222-222222222222";
   const executionWorkspaceId = "33333333-3333-4333-8333-333333333333";

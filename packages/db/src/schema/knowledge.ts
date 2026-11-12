@@ -68,8 +68,8 @@ export type KnowledgeRevisionStatus = (typeof KNOWLEDGE_REVISION_STATUSES)[numbe
 export const KNOWLEDGE_REVISION_LANGS = ["en", "ru"] as const;
 export type KnowledgeRevisionLang = (typeof KNOWLEDGE_REVISION_LANGS)[number];
 
-/** Source kinds a claim may cite. */
-export const KNOWLEDGE_SOURCE_KINDS = ["task", "pr", "issue", "run", "document", "decision", "url"] as const;
+/** Source kinds a claim may cite. Single source of truth: server/domain.ts mirrors this list. */
+export const KNOWLEDGE_SOURCE_KINDS = ["task", "pr", "issue", "run", "document", "decision", "url", "debate"] as const;
 export type KnowledgeSourceKind = (typeof KNOWLEDGE_SOURCE_KINDS)[number];
 
 export const knowledgeItems = pgTable(
@@ -152,6 +152,8 @@ export const knowledgeRevisions = pgTable(
     status: text("status").$type<KnowledgeRevisionStatus>().notNull().default("draft"),
     lang: text("lang").$type<KnowledgeRevisionLang>().notNull().default("en"),
     translationOf: uuid("translation_of").references((): AnyPgColumn => knowledgeRevisions.id, { onDelete: "set null" }),
+    title: text("title"),
+    summary: text("summary"),
     content: text("content").notNull(),
     /** What changed, free text — shown in the revision diff (K-4 UI). */
     changeSummary: text("change_summary"),
@@ -256,6 +258,8 @@ export const knowledgeSuggestions = pgTable(
     /** Provenance trust (L-5): `external` = the only source is a foreign url. */
     trust: text("trust").$type<KnowledgeSuggestionTrust>(),
     status: text("status").$type<KnowledgeSuggestionStatus>().notNull().default("pending"),
+    /** Server-side idempotency for propose (1.6.6 ADM-CONN E): unique per nest. */
+    idempotencyKey: text("idempotency_key"),
     createdByAgentId: text("created_by_agent_id"),
     createdByUserId: text("created_by_user_id"),
     decidedBy: text("decided_by"),
@@ -267,6 +271,14 @@ export const knowledgeSuggestions = pgTable(
     companyIdx: index("knowledge_suggestions_company_idx").on(table.companyId),
     // L-5: provenance lookups (which external suggestions are pending).
     trustIdx: index("knowledge_suggestions_trust_idx").on(table.trust),
+    // Idempotency (1.6.6 ADM-CONN E): at most one suggestion per
+    // (nest_id, idempotency_key). Partial unique index — Postgres unique
+    // indexes allow multiple NULLs, so legacy rows without a key are not
+    // affected. This is the DB-side atomicity contract behind store.ts's
+    // unique-violation read-back.
+    idempotencyKeyUq: uniqueIndex("knowledge_suggestions_idempotency_key_uq")
+      .on(table.nestId, table.idempotencyKey)
+      .where(sql`${table.idempotencyKey} is not null`),
   }),
 );
 
@@ -336,3 +348,74 @@ export const knowledgeSearch = pgTable(
     nestIdx: index("knowledge_search_nest_idx").on(table.nestId),
   }),
 );
+
+/**
+ * Knowledge deviations (§ meta/deviations):
+ * Discrepancies between documented knowledge and reality.
+ * Structure: page, was, became, how_verified, task.
+ */
+export const knowledgeDeviations = pgTable(
+  "knowledge_deviations",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    companyId: uuid("company_id")
+      .notNull()
+      .references(() => companies.id, { onDelete: "cascade" }),
+    nestId: uuid("nest_id")
+      .notNull()
+      .references(() => companies.id, { onDelete: "cascade" }),
+    page: text("page").notNull(),
+    was: text("was").notNull(),
+    became: text("became").notNull(),
+    howVerified: text("how_verified").notNull(),
+    task: text("task"),
+    status: text("status").$type<"open" | "resolved">().notNull().default("open"),
+    createdByAgentId: text("created_by_agent_id"),
+    createdByUserId: text("created_by_user_id"),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => ({
+    companyIdx: index("knowledge_deviations_company_idx").on(table.companyId),
+    nestIdx: index("knowledge_deviations_nest_idx").on(table.nestId),
+    pageIdx: index("knowledge_deviations_page_idx").on(table.page),
+    taskIdx: index("knowledge_deviations_task_idx").on(table.task),
+    nestCreatedAtIdx: index("knowledge_deviations_nest_created_at_idx").on(table.nestId, table.createdAt),
+    nestStatusIdx: index("knowledge_deviations_nest_status_idx").on(table.nestId, table.status),
+  }),
+);
+
+export type KnowledgeDeviation = typeof knowledgeDeviations.$inferSelect;
+export type NewKnowledgeDeviation = typeof knowledgeDeviations.$inferInsert;
+
+// ---------------------------------------------------------------------------
+// Knowledge Settings (§3.8, L-11)
+// ---------------------------------------------------------------------------
+// Company-scoped knowledge settings: limits, auto-accept and the maintenance
+// schedule. Exactly one row per company; company deletion cascades.
+export const knowledgeSettings = pgTable(
+  "knowledge_settings",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    companyId: uuid("company_id")
+      .notNull()
+      .references(() => companies.id, { onDelete: "cascade" }),
+    maxItems: integer("max_items"),
+    maxRevisionBytes: integer("max_revision_bytes"),
+    autoAcceptEnabled: boolean("auto_accept_enabled"),
+    autoAcceptMinConfidence: text("auto_accept_min_confidence"),
+    schedule: text("schedule"),
+    sectionReviewers: jsonb("section_reviewers")
+      .$type<Array<{ section: string; reviewerKind: "user" | "agent"; reviewerId: string }>>()
+      .notNull()
+      .default([]),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    uniqueIndex("knowledge_settings_company_uq").on(table.companyId),
+  ],
+);
+
+export type KnowledgeSettings = typeof knowledgeSettings.$inferSelect;
+export type NewKnowledgeSettings = typeof knowledgeSettings.$inferInsert;

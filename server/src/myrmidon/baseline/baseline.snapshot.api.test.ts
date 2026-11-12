@@ -45,8 +45,19 @@ function metrics(): BaselineMetricsResponse {
     window: { from: FROM, to: TO },
     generatedAt: NOW.toISOString(),
     source: { statusLog: "activity_log", costs: "none" },
+    runSuccess: { succeeded: 0, failed: 0, total: 0, rate: null },
     byProject: [],
     byRole: [],
+    overall: {
+      key: "overall",
+      tasksCompleted: 0,
+      cycleTimeHours: { mean: 0, median: 0, p90: 0 },
+      timeInReviewHours: { mean: 0, median: 0 },
+      returnRate: { enteredReview: 0, returned: 0, rate: 0 },
+      blockedHours: { total: 0, mean: 0, topCauses: [] },
+      runsPerTask: { total: 0, mean: 0 },
+      costPerTask: { totalCents: 0, meanCents: 0 },
+    },
   };
 }
 

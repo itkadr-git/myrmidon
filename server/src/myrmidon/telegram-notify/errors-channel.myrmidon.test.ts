@@ -80,7 +80,7 @@ const ISSUE_CENTRAL_ERROR: ErrorChannelSettings = {
 function card(input: {
   id: string;
   companyId: string;
-  sourceKind: "failed_run" | "agent_error_alert" | "budget_alert";
+  sourceKind: "failed_run" | "agent_error_alert" | "budget_alert" | "litellm_budget" | "role_model_down" | "provider_no_credits";
   severity: "critical" | "high" | "medium" | "low";
   dedupKey: string;
   title: string;
@@ -563,6 +563,75 @@ describeEmbeddedPostgres("telegram-notify errors channel (TG-NOTIFY-C)", () => {
     });
     expect(relaxed.checked).toBe(1);
     expect(relaxed.sent).toBe(1);
+  });
+
+  it("delivers litellm_budget attention cards through the error channel", async () => {
+    const { companyId, agentId } = await seedCompany();
+    await seedDmConversation(companyId, agentId, "770099");
+    await writeSettings(ISSUE_CENTRAL_ERROR, companyId);
+    const feed = {
+      list: async () => [
+        card({
+          id: "litellm-budget-near-cap",
+          companyId,
+          sourceKind: "litellm_budget",
+          severity: "high",
+          dedupKey: `litellm_budget:near_cap:${companyId}:${agentId}`,
+          title: `LiteLLM key near cap: bot-${agentId}`,
+          subjectId: `litellm_budget:near_cap:${companyId}:${agentId}`,
+          whyNow: "Gateway spend is 85.0% of the key cap.",
+        }),
+      ],
+    };
+    const result = await sweepErrorChannel(companyId, {
+      db,
+      settings: settingsSource,
+      feed,
+    });
+    expect(result.checked).toBe(1);
+    expect(result.sent).toBe(1);
+    const rows = await db
+      .select()
+      .from(chatPublications)
+      .where(eq(chatPublications.companyId, companyId));
+    expect(rows).toHaveLength(1);
+    expect(rows[0].idempotencyKey).toBe(`notify:errors:${companyId}:litellm_budget:near_cap:${companyId}:${agentId}`);
+    expect((rows[0].payload as any).text).toContain("[high] LiteLLM key near cap: bot-");
+    expect((rows[0].payload as any).text).toContain("Gateway spend is 85.0% of the key cap.");
+  });
+
+  // myrmidon(1.6.8 OPE-12709): the role card keeps one dedup key across outages, so the
+  // delivery is once per hour per role, and a later outage is delivered again.
+  it("delivers a role_model_down card once per hour and again for a later outage", async () => {
+    const { companyId, agentId } = await seedCompany();
+    await seedDmConversation(companyId, agentId, "770099");
+    await writeSettings(ISSUE_CENTRAL_ERROR, companyId);
+    const feed = {
+      list: async () => [
+        card({
+          id: "role-model-down-reviewer",
+          companyId,
+          sourceKind: "role_model_down",
+          severity: "critical",
+          dedupKey: "role_model_down:reviewer",
+          title: "Role reviewer: model channels down",
+          subjectId: `role_model_down:${companyId}:reviewer`,
+          whyNow: "All model channels for role reviewer are down.",
+        }),
+      ],
+    };
+    const passAt = (iso: string) =>
+      sweepErrorChannel(companyId, { db, settings: settingsSource, feed, now: () => new Date(iso) });
+    expect((await passAt("2026-11-11T12:05:00.000Z")).sent).toBe(1);
+    // Same hour: the card is still raised, nothing new is staged.
+    expect((await passAt("2026-11-11T12:35:00.000Z")).sent).toBe(0);
+    // A later hour (the role stayed down, or went down again after a success): sent again.
+    expect((await passAt("2026-11-11T13:05:00.000Z")).sent).toBe(1);
+    const rows = await db
+      .select()
+      .from(chatPublications)
+      .where(eq(chatPublications.companyId, companyId));
+    expect(rows.filter((row) => row.idempotencyKey.startsWith(ERROR_CHANNEL_PUBLICATION_PREFIX))).toHaveLength(2);
   });
 
   it("maxPerHour drops cards beyond the limit; the drop is not queued anywhere", async () => {

@@ -1,14 +1,18 @@
 import { randomUUID } from "node:crypto";
 import {
+  activityLog,
+  companies,
   connectionEventDeliveries,
   connectionGrants,
   externalObjects,
+  heartbeatRuns,
   issueWorkProducts,
+  issueComments,
   issues,
   toolConnections,
   type Db,
 } from "@myrmidon/db";
-import { and, eq, sql } from "drizzle-orm";
+import { and, desc, eq, inArray, sql } from "drizzle-orm";
 import {
   logActivity,
   publishActivity,
@@ -20,9 +24,19 @@ import {
   type PaperclipCloudConnector,
   type SealedConnectorEvents,
 } from "./paperclip-cloud-connector.js";
+import { issueService } from "./issues.js";
 import { issueThreadInteractionService } from "./issue-thread-interactions.js";
 import type { IssueAssignmentWakeupDeps } from "./issue-assignment-wakeup.js";
 import { logger } from "../middleware/logger.js";
+import { parseIssueExecutionState } from "./issue-execution-policy.js";
+import { notifyBoardMergeTrigger } from "../myrmidon/review-routing/merge-trigger.js";
+import { isRepositoryAllowed } from "../myrmidon/github-shared-identity/settings.js";
+import { listGitHubAppEntriesByAppId } from "../myrmidon/github-shared-identity/store.js";
+import {
+  extractPullRequestIssueIdentifier,
+  pullRequestWorkProductData,
+} from "../myrmidon/task-pr-sync/linking.js";
+import { workProductService } from "./work-products.js";
 
 type LeasedEvent = SealedConnectorEvents["events"][number];
 type GitHubBinding = {
@@ -41,6 +55,21 @@ export type GitHubConnectionEventPollResult = {
   duplicate: number;
   ignored: number;
   failed: number;
+};
+
+export type GitHubEventsWatchdogResult = {
+  scannedCompanies: number;
+  activePrCount: number;
+  alarmsCreated: number;
+  alarmsResolved: number;
+};
+
+/** myrmidon(GITHUB-APP-WEBHOOK): what one App webhook delivery did, per matched company. */
+export type GitHubAppWebhookIngestResult = {
+  companies: number;
+  processed: number;
+  duplicate: number;
+  ignored: number;
 };
 
 function record(value: unknown): Record<string, unknown> {
@@ -107,33 +136,70 @@ function normalizeLeasedPayload(event: LeasedEvent): Record<string, unknown> {
     senderLogin: boundedString(payload.senderLogin, 100),
   };
   if (event.event === "pull_request") {
+    const rawMergeable = payload.mergeable ?? payload.mergeableState ?? payload.mergeable_state;
+    const mergeable = rawMergeable === "CONFLICTING" || rawMergeable === false || rawMergeable === "dirty"
+      ? "CONFLICTING"
+      : rawMergeable === "MERGEABLE" || rawMergeable === true || rawMergeable === "clean"
+        ? "MERGEABLE"
+        : boundedString(rawMergeable, 40);
     return compact({
       ...base,
       number: positiveInteger(payload.number),
       url: githubUrl(payload.url),
       state: boundedString(payload.state, 40),
+      mergeable,
       merged: payload.merged === true,
       mergedAt: isoDate(payload.mergedAt),
       updatedAt: isoDate(payload.updatedAt),
+      title: boundedString(payload.title, 1_000),
       headRef: boundedString(payload.headRef, 300),
       headSha: commitSha(payload.headSha),
       baseRef: boundedString(payload.baseRef, 300),
       baseSha: commitSha(payload.baseSha),
     });
   }
-  if (event.event === "workflow_run" || event.event === "check_suite") {
+  if (event.event === "workflow_run" || event.event === "check_suite" || event.event === "check_run") {
+    const rawCheckRun = record(payload.check_run);
+    const rawCheckSuite = record(payload.check_suite);
+    const rawWorkflowRun = record(payload.workflow_run);
+    const checkSuite = record(payload.checkSuite) ?? rawCheckSuite;
+    const checkRun = record(payload.checkRun) ?? rawCheckRun;
+    const workflowRun = record(payload.workflowRun) ?? rawWorkflowRun;
+
+    const workflowPullRequests = workflowRun.pullRequests ?? workflowRun.pull_requests;
+    const workflowPullRequestNumber = Array.isArray(workflowPullRequests) ? positiveInteger(record(workflowPullRequests[0]).number) : null;
+    const checkPullRequests = checkSuite.pullRequests ?? checkSuite.pull_requests;
+    const checkPullRequestNumber = Array.isArray(checkPullRequests) ? positiveInteger(record(checkPullRequests[0]).number) : null;
+    const checkRunPullRequests = checkRun.pullRequests ?? checkRun.pull_requests;
+    const checkRunPullRequestNumber = Array.isArray(checkRunPullRequests) ? positiveInteger(record(checkRunPullRequests[0]).number) : null;
+    const pullRequest = record(payload.pullRequest);
+
+    const headSha = commitSha(payload.headSha)
+      ?? commitSha(checkRun.head_sha)
+      ?? commitSha(checkRun.headSha)
+      ?? commitSha(checkSuite.head_sha)
+      ?? commitSha(checkSuite.headSha)
+      ?? commitSha(workflowRun.head_sha)
+      ?? commitSha(workflowRun.headSha);
+
+    const conclusion = boundedString(payload.conclusion ?? checkRun.conclusion ?? checkSuite.conclusion ?? workflowRun.conclusion, 40);
+    const status = boundedString(payload.status ?? checkRun.status ?? checkSuite.status ?? workflowRun.status, 40);
+    const runId = identifier(payload.runId ?? checkRun.id ?? workflowRun.id);
+    const checkSuiteId = identifier(payload.checkSuiteId ?? checkSuite.id ?? record(checkRun.check_suite ?? checkRun.checkSuite).id);
+    const htmlUrl = githubUrl(payload.htmlUrl ?? checkRun.html_url ?? checkRun.htmlUrl ?? checkSuite.html_url ?? checkSuite.htmlUrl ?? workflowRun.html_url ?? workflowRun.htmlUrl);
+
     return compact({
       ...base,
       action: boundedString(payload.action, 100),
-      repository: boundedString(payload.repository, 300),
-      number: positiveInteger(payload.number),
-      pullRequestNumber: positiveInteger(payload.pullRequestNumber),
-      headSha: commitSha(payload.headSha),
-      conclusion: boundedString(payload.conclusion, 40),
-      status: boundedString(payload.status, 40),
-      runId: identifier(payload.runId),
-      checkSuiteId: identifier(payload.checkSuiteId),
-      htmlUrl: githubUrl(payload.htmlUrl),
+      repository: boundedString(payload.repository ?? record(payload.repository).full_name, 300),
+      number: checkRunPullRequestNumber ?? workflowPullRequestNumber ?? checkPullRequestNumber ?? positiveInteger(payload.number),
+      pullRequestNumber: positiveInteger(pullRequest.number) ?? checkRunPullRequestNumber ?? checkPullRequestNumber ?? workflowPullRequestNumber ?? positiveInteger(payload.pullRequestNumber) ?? positiveInteger(payload.number),
+      headSha,
+      conclusion,
+      status,
+      runId,
+      checkSuiteId,
+      htmlUrl,
     });
   }
   if (event.event === "installation_repositories") {
@@ -158,6 +224,79 @@ function normalizeLeasedPayload(event: LeasedEvent): Record<string, unknown> {
   return compact(base);
 }
 
+function githubIdString(value: unknown): string | null {
+  return typeof value === "number" && Number.isSafeInteger(value) && value > 0 ? String(value) : identifier(value);
+}
+
+/**
+ * myrmidon(GITHUB-APP-WEBHOOK): a raw GitHub webhook body -> the flat record
+ * the Cloud connector leases (`normalizeLeasedPayload` is written for that
+ * shape: string ids, `repository` as `owner/repo`, camelCase pull-request and
+ * head fields). A raw body would be dropped by it, so the translation is done
+ * once here and everything downstream is the unchanged connector path.
+ */
+export function connectorPayloadFromGitHubWebhook(
+  eventName: string,
+  raw: Record<string, unknown>,
+): Record<string, unknown> {
+  const repository = record(raw.repository);
+  const sender = record(raw.sender);
+  const base = {
+    event: eventName,
+    action: stringValue(raw.action),
+    installationId: githubIdString(record(raw.installation).id),
+    repositoryId: githubIdString(repository.id),
+    repository: stringValue(repository.full_name),
+    senderId: githubIdString(sender.id),
+    senderLogin: stringValue(sender.login),
+  };
+  if (eventName === "pull_request") {
+    const pullRequest = record(raw.pull_request);
+    const head = record(pullRequest.head);
+    const baseBranch = record(pullRequest.base);
+    return compact({
+      ...base,
+      number: positiveInteger(raw.number) ?? positiveInteger(pullRequest.number),
+      url: stringValue(pullRequest.html_url),
+      state: stringValue(pullRequest.state),
+      // GitHub computes `mergeable` lazily: null means "not known yet".
+      mergeable: pullRequest.mergeable === false || pullRequest.mergeable_state === "dirty"
+        ? "CONFLICTING"
+        : pullRequest.mergeable === true
+          ? "MERGEABLE"
+          : null,
+      merged: pullRequest.merged === true,
+      mergedAt: stringValue(pullRequest.merged_at),
+      updatedAt: stringValue(pullRequest.updated_at),
+      title: stringValue(pullRequest.title),
+      headRef: stringValue(head.ref),
+      headSha: stringValue(head.sha),
+      baseRef: stringValue(baseBranch.ref),
+      baseSha: stringValue(baseBranch.sha),
+    });
+  }
+  if (eventName === "check_run" || eventName === "check_suite" || eventName === "workflow_run") {
+    const object = record(raw[eventName]);
+    const pullRequests = Array.isArray(object.pull_requests) ? object.pull_requests : [];
+    const pullRequestNumber = positiveInteger(record(pullRequests[0]).number);
+    return compact({
+      ...base,
+      number: pullRequestNumber,
+      pullRequestNumber,
+      headSha: stringValue(object.head_sha),
+      status: stringValue(object.status),
+      conclusion: stringValue(object.conclusion),
+      // A suite is identified by its own id; a run and a check carry theirs.
+      runId: eventName === "check_suite" ? null : githubIdString(object.id),
+      checkSuiteId: eventName === "check_suite"
+        ? githubIdString(object.id)
+        : githubIdString(object.check_suite_id ?? record(object.check_suite).id),
+      htmlUrl: stringValue(object.html_url),
+    });
+  }
+  return compact(base);
+}
+
 function bindingRows(rows: Array<{
   grant: typeof connectionGrants.$inferSelect;
   connection: typeof toolConnections.$inferSelect;
@@ -172,9 +311,17 @@ function bindingRows(rows: Array<{
       ? `agent:${grant.subjectAgentId}`
       : grant.kind === "user" && grant.subjectUserId
         ? grant.subjectUserId
-        : null;
+        : typeof oauth.connectorSubjectUserId === "string" && oauth.connectorSubjectUserId.length > 0
+          ? oauth.connectorSubjectUserId
+          : typeof oauth.connectorSubjectAgentId === "string" && oauth.connectorSubjectAgentId.length > 0
+            ? `agent:${oauth.connectorSubjectAgentId}`
+            : grant.createdByUserId ?? (grant.kind === "organization" ? `company:${grant.companyId}` : null);
     if (!subject) return [];
-    return github.installationIds.map((installationId) => ({
+    const rawInstallationIds = github.installationIds;
+    const installationIds = Array.isArray(rawInstallationIds)
+      ? rawInstallationIds.map((id) => String(id)).filter(Boolean)
+      : [];
+    return installationIds.map((installationId) => ({
       id: `${grant.id}_${installationId}`,
       companyId: grant.companyId,
       connectionId: connection.id,
@@ -214,8 +361,10 @@ function githubSnapshotUpdate(payload: Record<string, unknown>) {
       number,
       state,
       merged,
+      ...(stringValue(payload.mergeable) ? { mergeable: stringValue(payload.mergeable) } : {}),
       ...(stringValue(payload.url) ? { url: stringValue(payload.url) } : {}),
       ...(stringValue(payload.mergedAt) ? { mergedAt: stringValue(payload.mergedAt) } : {}),
+      ...(stringValue(payload.title) ? { title: stringValue(payload.title) } : {}),
       ...(stringValue(payload.headRef) ? { headRef: stringValue(payload.headRef) } : {}),
       ...(stringValue(payload.headSha) ? { headSha: stringValue(payload.headSha) } : {}),
       ...(stringValue(payload.baseRef) ? { baseRef: stringValue(payload.baseRef) } : {}),
@@ -223,6 +372,60 @@ function githubSnapshotUpdate(payload: Record<string, unknown>) {
     },
     remoteVersion: stringValue(payload.updatedAt),
   } as const;
+}
+
+/**
+ * myrmidon(OPE-12483): the bot opens PRs through the GitHub API with a branch
+ * `bot/<KEY>` (see docker/bot-runtime/botd/lib/archive.js) and records no
+ * work-product row on the board, so the done gate sees an unlinked task as
+ * "no code" and closes it while the PR is still open. Extract the task key from
+ * the PR's branch or title and persist the pull_request work product as part of
+ * webhook application, so `task-pr-sync`, the done gate, and the review-routing
+ * merge path all observe the delivery through the normal linked surface.
+ */
+export async function linkPullRequestToIssue(
+  database: Db,
+  companyId: string,
+  snapshot: ReturnType<typeof githubSnapshotUpdate>,
+): Promise<{ linked: boolean; issueId: string | null; workProductId: string | null }> {
+  if (!snapshot) return { linked: false, issueId: null, workProductId: null };
+  const existing = await database
+    .select({ id: issueWorkProducts.id })
+    .from(issueWorkProducts)
+    .where(and(
+      eq(issueWorkProducts.companyId, companyId),
+      eq(issueWorkProducts.type, "pull_request"),
+      eq(issueWorkProducts.provider, "github"),
+      sql`lower(${issueWorkProducts.externalId}) = lower(${snapshot.externalId})`,
+    ))
+    .limit(1);
+  if (existing.length > 0) return { linked: true, issueId: null, workProductId: existing[0]!.id };
+
+  const key = extractPullRequestIssueIdentifier({
+    headRef: snapshot.data.headRef,
+    title: snapshot.data.title ?? null,
+  });
+  if (!key) return { linked: false, issueId: null, workProductId: null };
+
+  const [issueRow] = await database
+    .select({ id: issues.id, identifier: issues.identifier })
+    .from(issues)
+    .where(and(eq(issues.companyId, companyId), eq(issues.identifier, key)))
+    .limit(1);
+  if (!issueRow) return { linked: false, issueId: null, workProductId: null };
+
+  const created = await workProductService(database).createForIssue(issueRow.id, companyId, pullRequestWorkProductData({
+    repository: snapshot.repository,
+    number: snapshot.number,
+    url: snapshot.data.url ?? null,
+    title: snapshot.data.title ?? null,
+    headRef: snapshot.data.headRef ?? null,
+    headSha: snapshot.data.headSha ?? null,
+    state: snapshot.state,
+    merged: snapshot.merged,
+  }));
+  if (!created) return { linked: false, issueId: issueRow.id, workProductId: null };
+  return { linked: true, issueId: issueRow.id, workProductId: created.id };
 }
 
 export function githubConnectionEventService(
@@ -254,20 +457,80 @@ export function githubConnectionEventService(
     return bindingRows(rows);
   }
 
-  async function applyCiCompletionEvent(companyId: string, event: LeasedEvent) {
-    if (!options.assignmentWakeup || (event.event !== "workflow_run" && event.event !== "check_suite")) return;
-    const payload = normalizeLeasedPayload(event);
-    const status = stringValue(payload.status);
+  async function applyCiCompletionEvent(companyId: string, event: LeasedEvent, database: Db = db) {
+    if (event.event !== "workflow_run" && event.event !== "check_suite" && event.event !== "check_run") return;
+    const payload = event.payload;
+    const status = stringValue(payload.status) ?? (stringValue(payload.conclusion) ? "completed" : null);
     const conclusion = stringValue(payload.conclusion);
-    if (status && status !== "completed") return;
-    if (!conclusion) return;
-    const repository = stringValue(payload.repository);
-    const pullRequestNumber = positiveInteger(payload.pullRequestNumber) ?? positiveInteger(payload.number);
+    if (!status || !["queued", "in_progress", "completed"].includes(status)) return;
+    const repositoryValue = payload.repository;
+    const repository = stringValue(repositoryValue) ?? stringValue(record(repositoryValue).full_name);
+    const pullRequestNumber = positiveInteger(payload.pullRequestNumber) ?? positiveInteger(payload.number) ?? positiveInteger(payload.checkSuitePullRequestNumber);
     const headSha = commitSha(payload.headSha);
     const runId = identifier(payload.runId) ?? identifier(payload.checkSuiteId) ?? event.id;
     if (!repository || !pullRequestNumber || !headSha) return;
 
-    const products = await db.select({ product: issueWorkProducts, issue: issues })
+    const active = status === "queued" || status === "in_progress";
+    if (!active && !conclusion) return;
+    const currentTime = now();
+    const products = await database.select().from(issueWorkProducts)
+      .where(and(
+        eq(issueWorkProducts.companyId, companyId),
+        eq(issueWorkProducts.type, "pull_request"),
+        eq(issueWorkProducts.provider, "github"),
+      ));
+
+    const matchingProduct = products.find((product) => {
+      const metadata = record(product.metadata);
+      const productRepository = stringValue(metadata.repository) ?? stringValue(metadata.repo);
+      const productNumber = positiveInteger(metadata.number)
+        ?? (product.externalId ? Number(product.externalId.match(/#pull\/(\d+)$/)?.[1]) : null);
+      return productRepository?.toLowerCase() === repository.toLowerCase() && productNumber === pullRequestNumber;
+    });
+
+    if (!active && matchingProduct) {
+      const metadata = record(matchingProduct.metadata);
+      const lastCompleted = record(metadata.lastCompletedCi);
+      if (lastCompleted && lastCompleted.headSha === headSha && lastCompleted.conclusion === conclusion) {
+        return;
+      }
+    }
+
+    for (const product of products) {
+      const metadata = record(product.metadata);
+      const productRepository = stringValue(metadata.repository) ?? stringValue(metadata.repo);
+      const productNumber = positiveInteger(metadata.number)
+        ?? (product.externalId ? Number(product.externalId.match(/#pull\/(\d+)$/)?.[1]) : null);
+      if (productRepository?.toLowerCase() !== repository.toLowerCase() || productNumber !== pullRequestNumber) continue;
+      await database.update(issueWorkProducts).set({
+        metadata: {
+          ...metadata,
+          activeCi: active ? { repository, number: pullRequestNumber, headSha, runId, status, observedAt: currentTime.toISOString() } : null,
+          ...(active ? { lastCompletedCi: null } : {
+            lastCompletedCi: {
+              repository,
+              number: pullRequestNumber,
+              headSha,
+              conclusion,
+              runId,
+              completedAt: currentTime.toISOString(),
+            },
+          }),
+        },
+        updatedAt: currentTime,
+      }).where(eq(issueWorkProducts.id, product.id));
+    }
+
+    // myrmidon(OPE-11767): a successful CI run may be the moment an approved
+    // pull request becomes mergeable; the board's merge re-reads the required
+    // checks itself, so this only announces where to look.
+    if (!active && conclusion === "success") {
+      notifyBoardMergeTrigger({ companyId, repository, number: pullRequestNumber, headSha, source: "ci_completed" });
+    }
+
+    if (!options.assignmentWakeup || !conclusion || active) return;
+
+    const completionProducts = await database.select({ product: issueWorkProducts, issue: issues })
       .from(issueWorkProducts)
       .innerJoin(issues, eq(issues.id, issueWorkProducts.issueId))
       .where(and(
@@ -275,15 +538,77 @@ export function githubConnectionEventService(
         eq(issueWorkProducts.type, "pull_request"),
         eq(issueWorkProducts.provider, "github"),
       ));
-    const matching = products.find(({ product }: { product: typeof issueWorkProducts.$inferSelect }) => {
+    const matching = completionProducts.find(({ product }: { product: typeof issueWorkProducts.$inferSelect }) => {
       const metadata = record(product.metadata);
       const repo = stringValue(metadata.repo) ?? stringValue(metadata.repository);
-      const number = positiveInteger(metadata.number) ?? Number(product.externalId);
+      const number = positiveInteger(metadata.number)
+        ?? (product.externalId ? Number(product.externalId.match(/#pull\/(\d+)$/)?.[1]) : null);
       return repo?.toLowerCase() === repository.toLowerCase() && number === pullRequestNumber;
     });
     if (!matching?.issue.assigneeAgentId) return;
 
-    await options.assignmentWakeup(matching.issue.assigneeAgentId, {
+    // A PR work product is the opt-in boundary: unrelated task types keep their
+    // existing routing. Never let an old head failure undo a newer PR review.
+    const metadata = record(matching.product.metadata);
+    const expectedHead = commitSha(metadata.headSha) ?? commitSha(metadata.sha);
+    let assigneeAgentId = matching.issue.assigneeAgentId;
+    const htmlUrl = githubUrl(payload.htmlUrl);
+    if (["failure", "timed_out", "action_required", "startup_failure"].includes(conclusion)
+      && (!expectedHead || expectedHead === headSha)) {
+      const publications: ActivityPublication[] = [];
+      await db.transaction(async (tx) => {
+        const [current] = await tx.select().from(issues).where(and(
+          eq(issues.id, matching.issue.id), eq(issues.companyId, companyId),
+        )).for("update");
+        if (!current || current.status !== "in_review" || current.workMode !== "standard") return;
+        const state = parseIssueExecutionState(current.executionState);
+        if (state && (state.status !== "pending" || state.currentStageType !== "review")) return;
+        const executor = state?.returnAssignee;
+        if (executor && executor.type !== "agent") return;
+        const executorId = executor?.agentId ?? current.assigneeAgentId;
+        if (!executorId) return;
+        assigneeAgentId = executorId;
+        const reason = `CI ${conclusion}: ${repository}#${pullRequestNumber}, head ${headSha}, ${event.event} ${runId}${htmlUrl ? ` — ${htmlUrl}` : ""}`;
+        await tx.update(issues).set({
+          status: "in_progress",
+          statusVersion: sql`${issues.statusVersion} + 1`,
+          assigneeAgentId: executorId,
+          assigneeUserId: null,
+          ...(state ? { executionState: {
+            ...state, status: "changes_requested", reviewRequest: null,
+            lastDecisionOutcome: "changes_requested",
+          } } : {}),
+          updatedAt: now(),
+        }).where(and(eq(issues.id, current.id), eq(issues.companyId, companyId)));
+        await tx.insert(issueComments).values({
+          companyId, issueId: current.id, authorType: "system", body: reason,
+        });
+        await logActivity(tx as unknown as Db, {
+          companyId, actorType: "system", actorId: "system:github-ci",
+          action: "issue.ci_failed", entityType: "issue", entityId: current.id,
+          details: { previousStatus: "in_review", status: "in_progress", conclusion,
+            repository, pullRequestNumber, headSha, runId, htmlUrl, deliveryId: event.id },
+        }, publications);
+      });
+      for (const publication of publications) {
+        try { publishActivity(publication); }
+        catch (error) { logger.warn({ err: error, companyId }, "CI return activity publication failed after commit"); }
+      }
+    }
+
+    if (matching.issue.monitorNextCheckAt) {
+      await database.update(issues).set({
+        monitorNextCheckAt: null,
+        monitorWakeRequestedAt: null,
+        monitorLastTriggeredAt: currentTime,
+        executionPolicy: sql`jsonb_set(coalesce(${issues.executionPolicy}, '{}'::jsonb), '{monitor}', 'null'::jsonb)`,
+        executionState: sql`case when ${issues.executionState} is not null then jsonb_set(${issues.executionState}, '{monitor,status}', '"cleared"'::jsonb) else null end`,
+        updatedAt: currentTime,
+      }).where(eq(issues.id, matching.issue.id));
+    }
+
+    const idempotencyKey = `ci_completed:${repository}:${pullRequestNumber}:${headSha}`;
+    await options.assignmentWakeup(assigneeAgentId, {
       source: "automation",
       triggerDetail: "system",
       reason: "ci_completed",
@@ -294,10 +619,11 @@ export function githubConnectionEventService(
         headSha,
         conclusion,
         runId,
+        htmlUrl,
         event: event.event,
         deliveryId: event.id,
       },
-      idempotencyKey: `ci_completed:${event.event}:${runId}:${headSha}`,
+      idempotencyKey,
       requestedByActorType: "system",
       requestedByActorId: "system:github-ci",
       contextSnapshot: {
@@ -312,11 +638,19 @@ export function githubConnectionEventService(
     });
   }
 
-  async function applyPullRequestEvent(companyId: string, event: LeasedEvent) {
+  async function applyPullRequestEvent(database: Db, companyId: string, event: LeasedEvent) {
     const snapshot = githubSnapshotUpdate(event.payload);
     if (!snapshot) return;
+    // myrmidon(OPE-12483): bind bot-opened PRs (branch `bot/<KEY>` or the task
+    // key in the title) to their task before any consumer reads work products;
+    // an existing product short-circuits, so this is one cheap select per event.
+    try {
+      await linkPullRequestToIssue(database, companyId, snapshot);
+    } catch (err) {
+      logger.warn({ errorKind: "task_pr_link_failed", errorName: err instanceof Error ? err.name : typeof err, deliveryId: event.id }, "could not link a pull request to its task");
+    }
     const appliedAt = now();
-    await db.update(externalObjects).set({
+    await database.update(externalObjects).set({
       statusKey: snapshot.statusKey,
       statusLabel: snapshot.statusLabel,
       statusCategory: snapshot.statusCategory,
@@ -335,14 +669,157 @@ export function githubConnectionEventService(
       eq(externalObjects.objectType, "pull_request"),
       sql`lower(${externalObjects.externalId}) = lower(${snapshot.externalId})`,
     ));
+    await db.update(issueWorkProducts).set({ metadata: sql`(${issueWorkProducts.metadata} - 'activeCi') || ${JSON.stringify({ repository: snapshot.repository, number: snapshot.number, headSha: snapshot.data.headSha })}::jsonb`, updatedAt: appliedAt })
+      .where(and(eq(issueWorkProducts.companyId, companyId), eq(issueWorkProducts.type, "pull_request"), eq(issueWorkProducts.provider, "github"), eq(issueWorkProducts.externalId, snapshot.externalId)));
     if (snapshot.merged && event.action === "closed") {
-      await issueThreadInteractionService(db, { wakeup: options.wakeup })
+      const products = await database.select({ product: issueWorkProducts, issue: issues })
+        .from(issueWorkProducts)
+        .innerJoin(issues, eq(issues.id, issueWorkProducts.issueId))
+        .where(and(
+          eq(issueWorkProducts.companyId, companyId),
+          eq(issueWorkProducts.type, "pull_request"),
+          eq(issueWorkProducts.provider, "github"),
+        ));
+      const matching = products.find(({ product }) => {
+        const metadata = record(product.metadata);
+        const repository = stringValue(metadata.repository) ?? stringValue(metadata.repo);
+        const externalId = product.externalId;
+        const number = positiveInteger(metadata.number)
+          ?? (externalId ? Number(externalId.match(/#pull\/(\d+)$/i)?.[1]) : NaN);
+        return repository?.toLowerCase() === `${snapshot.owner}/${snapshot.repo}`.toLowerCase()
+          && (number === snapshot.number || externalId?.toLowerCase() === snapshot.externalId.toLowerCase());
+      });
+      if (matching && matching.issue.status !== "done" && matching.issue.status !== "cancelled") {
+        await database.update(issueWorkProducts).set({
+          status: "merged",
+          updatedAt: appliedAt,
+        }).where(and(
+          eq(issueWorkProducts.id, matching.product.id),
+          eq(issueWorkProducts.companyId, companyId),
+        ));
+        await issueService(db).update(matching.issue.id, {
+          status: "done",
+          completedAt: now(),
+          actorAgentId: null,
+          actorUserId: null,
+          companyGuard: companyId,
+        }, database);
+      }
+      await issueThreadInteractionService(database, { wakeup: options.wakeup })
         .sweepMergedPullRequestConfirmations([{
           companyId,
           owner: snapshot.owner,
           repo: snapshot.repo,
           number: snapshot.number,
         }]);
+    }
+
+    const isConflicting = (
+      stringValue(event.payload.mergeable) === "CONFLICTING" ||
+      event.payload.mergeable === false ||
+      stringValue(event.payload.mergeableState) === "CONFLICTING" ||
+      stringValue(event.payload.mergeable_state) === "dirty" ||
+      snapshot.data.mergeable === "CONFLICTING"
+    );
+
+    if (isConflicting && snapshot.state !== "closed" && !snapshot.merged) {
+      const products = await database.select({ product: issueWorkProducts, issue: issues })
+        .from(issueWorkProducts)
+        .innerJoin(issues, eq(issues.id, issueWorkProducts.issueId))
+        .where(and(
+          eq(issueWorkProducts.companyId, companyId),
+          eq(issueWorkProducts.type, "pull_request"),
+          eq(issueWorkProducts.provider, "github"),
+        ));
+      const matching = products.find(({ product }) => {
+        const metadata = record(product.metadata);
+        const repository = stringValue(metadata.repository) ?? stringValue(metadata.repo);
+        const externalId = product.externalId;
+        const number = positiveInteger(metadata.number)
+          ?? (externalId ? Number(externalId.match(/#pull\/(\d+)$/i)?.[1]) : NaN);
+        return repository?.toLowerCase() === `${snapshot.owner}/${snapshot.repo}`.toLowerCase()
+          && (number === snapshot.number || externalId?.toLowerCase() === snapshot.externalId.toLowerCase());
+      });
+
+      if (matching) {
+        let transitioned = false;
+        let returnedAssigneeId: string | null = null;
+        const publications: ActivityPublication[] = [];
+        await database.transaction(async (tx) => {
+          const [current] = await tx.select().from(issues).where(and(
+            eq(issues.id, matching.issue.id), eq(issues.companyId, companyId),
+          )).for("update");
+          if (!current || current.status !== "in_review" || current.workMode !== "standard") return;
+          const state = parseIssueExecutionState(current.executionState);
+          if (state && (state.status !== "pending" || state.currentStageType !== "review")) return;
+          const executor = state?.returnAssignee;
+          if (executor && executor.type !== "agent") return;
+          let executorId = executor?.agentId ?? null;
+          if (!executorId && matching.product.createdByRunId) {
+            const [run] = await tx.select({ agentId: heartbeatRuns.agentId })
+              .from(heartbeatRuns)
+              .where(eq(heartbeatRuns.id, matching.product.createdByRunId))
+              .limit(1);
+            if (run?.agentId) executorId = run.agentId;
+          }
+          if (!executorId) executorId = current.assigneeAgentId;
+          if (!executorId) return;
+
+          const commentBody = `PR ${snapshot.owner}/${snapshot.repo}#${snapshot.number}: merge conflict (mergeable=CONFLICTING), влей свежий main.`;
+          await tx.update(issues).set({
+            status: "in_progress",
+            statusVersion: sql`${issues.statusVersion} + 1`,
+            assigneeAgentId: executorId,
+            assigneeUserId: null,
+            ...(state ? { executionState: {
+              ...state, status: "changes_requested", reviewRequest: null,
+              lastDecisionOutcome: "changes_requested",
+            } } : {}),
+            updatedAt: appliedAt,
+          }).where(and(eq(issues.id, current.id), eq(issues.companyId, companyId)));
+          await tx.insert(issueComments).values({
+            companyId, issueId: current.id, authorType: "system", body: commentBody,
+          });
+          await logActivity(tx as unknown as Db, {
+            companyId, actorType: "system", actorId: "system:github-conflict",
+            action: "issue.merge_conflict", entityType: "issue", entityId: current.id,
+            details: { previousStatus: "in_review", status: "in_progress", mergeable: "CONFLICTING",
+              repository: snapshot.repository, pullRequestNumber: snapshot.number, deliveryId: event.id },
+          }, publications);
+          transitioned = true;
+          returnedAssigneeId = executorId;
+        });
+        if (transitioned) {
+          for (const publication of publications) {
+            try { publishActivity(publication); }
+            catch (error) { logger.warn({ err: error, companyId }, "Conflict return activity publication failed after commit"); }
+          }
+          if (options.assignmentWakeup && returnedAssigneeId) {
+            await options.assignmentWakeup(returnedAssigneeId, {
+              source: "automation",
+              triggerDetail: "system",
+              reason: "pr_merge_conflict",
+              payload: {
+                issueId: matching.issue.id,
+                repository: snapshot.repository,
+                pullRequestNumber: snapshot.number,
+                mergeable: "CONFLICTING",
+                event: event.event,
+                deliveryId: event.id,
+              },
+              idempotencyKey: `pr_merge_conflict:${snapshot.repository}#${snapshot.number}:${matching.issue.id}`,
+              requestedByActorType: "system",
+              requestedByActorId: "system:github-conflict",
+              contextSnapshot: {
+                issueId: matching.issue.id,
+                source: "github_pr_conflict",
+                repository: snapshot.repository,
+                pullRequestNumber: snapshot.number,
+              },
+            });
+          }
+        }
+      }
     }
   }
 
@@ -413,7 +890,10 @@ export function githubConnectionEventService(
     }).where(and(eq(toolConnections.id, binding.connectionId), eq(toolConnections.companyId, binding.companyId)));
   }
 
-  async function processForCompany(companyId: string, bindings: GitHubBinding[], event: LeasedEvent) {
+  // myrmidon(GITHUB-APP-WEBHOOK): `appId` is set only for deliveries that arrive
+  // through our own GitHub App's webhook: such a delivery has no connector
+  // binding to name as the activity entity.
+  async function processForCompany(companyId: string, bindings: GitHubBinding[], event: LeasedEvent, appId?: string) {
     const receiptAt = now();
     const normalizedEvent = { ...event, payload: normalizeLeasedPayload(event) };
     const [receipt] = await db.insert(connectionEventDeliveries).values({
@@ -447,8 +927,8 @@ export function githubConnectionEventService(
     const postCommitPublications: ActivityPublication[] = [];
     try {
       const applyAndFinalize = async (database: Db) => {
-        if (event.event === "pull_request") await applyPullRequestEvent(companyId, normalizedEvent);
-        await applyCiCompletionEvent(companyId, normalizedEvent);
+        if (event.event === "pull_request") await applyPullRequestEvent(database, companyId, normalizedEvent);
+        await applyCiCompletionEvent(companyId, normalizedEvent, database);
         if (event.event === "installation" || event.event === "installation_repositories") {
           for (const binding of bindings) await applyInstallationEvent(database, binding, normalizedEvent);
         } else {
@@ -489,7 +969,7 @@ export function githubConnectionEventService(
           actorId: "system:github-webhook",
           action: "tool_connection.webhook_processed",
           entityType: "tool_connection",
-          entityId: bindings[0]!.connectionId,
+          entityId: bindings[0]?.connectionId ?? `github-app:${appId ?? "unknown"}`,
           details: {
             provider: "github",
             event: event.event,
@@ -497,10 +977,11 @@ export function githubConnectionEventService(
             deliveryId: event.id,
             installationId: event.installationId,
             repositoryId: event.repositoryId,
+            ...(appId ? { appId } : {}),
           },
         }, postCommitPublications);
       };
-      if (event.event === "installation" || event.event === "installation_repositories") {
+      if (event.event === "pull_request" || event.event === "workflow_run" || event.event === "check_suite" || event.event === "check_run" || event.event === "installation" || event.event === "installation_repositories") {
         await db.transaction(async (tx) => applyAndFinalize(tx as unknown as Db));
       } else {
         await applyAndFinalize(db);
@@ -535,6 +1016,65 @@ export function githubConnectionEventService(
   }
 
   return {
+    /**
+     * myrmidon(GITHUB-APP-WEBHOOK): one delivery of our own GitHub App's
+     * webhook (signature already verified by the route). The companies are the
+     * ones whose App entry carries this App id and allows the delivery's
+     * repository; each goes through the same `processForCompany` the connector
+     * poll uses, with no bindings. A delivery that names no repository, or
+     * that no company serves, is ignored and nothing is recorded.
+     */
+    async ingestAppWebhook(input: {
+      appId: string;
+      deliveryId: string;
+      eventName: string;
+      payload: Record<string, unknown>;
+    }): Promise<GitHubAppWebhookIngestResult> {
+      const result: GitHubAppWebhookIngestResult = { companies: 0, processed: 0, duplicate: 0, ignored: 0 };
+      const repository = stringValue(record(input.payload.repository).full_name);
+      const candidateIds = repository
+        ? [...new Set(
+            (await listGitHubAppEntriesByAppId(db, input.appId))
+              .filter(({ entry }) => isRepositoryAllowed(entry.allowedRepos, repository))
+              .map(({ companyId }) => companyId),
+          )]
+        : [];
+      // The rules of a deleted company can outlive it; a receipt for it would
+      // fail on the company key and fail the delivery for everybody else.
+      const companyIds = candidateIds.length === 0
+        ? []
+        : (await db.select({ id: companies.id }).from(companies).where(inArray(companies.id, candidateIds))).map((row) => row.id);
+      if (companyIds.length === 0) {
+        result.ignored = 1;
+        return result;
+      }
+      result.companies = companyIds.length;
+      const event: LeasedEvent = {
+        id: input.deliveryId,
+        provider: "github",
+        event: input.eventName,
+        action: stringValue(input.payload.action),
+        installationId: githubIdString(record(input.payload.installation).id),
+        repositoryId: githubIdString(record(input.payload.repository).id),
+        createdAt: now().toISOString(),
+        payload: connectorPayloadFromGitHubWebhook(input.eventName, input.payload),
+        bindingIds: [],
+      };
+      // One company failing must not keep the others from their delivery; the
+      // failure is raised after all were tried, and a GitHub redelivery then
+      // replays only what did not finish (processed receipts answer duplicate).
+      let failure: unknown;
+      for (const companyId of companyIds) {
+        try {
+          result[await processForCompany(companyId, [], event, input.appId)] += 1;
+        } catch (error) {
+          failure ??= error;
+        }
+      }
+      if (failure !== undefined) throw failure;
+      return result;
+    },
+
     async pollOnce(): Promise<GitHubConnectionEventPollResult> {
       if (now().getTime() < nextPollAt) {
         return { leased: 0, processed: 0, duplicate: 0, ignored: 0, failed: 0 };
@@ -550,61 +1090,291 @@ export function githubConnectionEventService(
         nextPollAt = now().getTime() + 5 * 60_000;
         return { leased: 0, processed: 0, duplicate: 0, ignored: 0, failed: 0 };
       }
-      const first = bindings[0]!;
-      const lease = await connector.leaseEvents({ subject: first.subject, companyId: first.companyId });
-      if (!lease) {
-        emptyPolls += 1;
-        nextPollAt = now().getTime() + Math.min(5 * 60_000, 5_000 * (2 ** Math.min(emptyPolls, 6)));
-        return { leased: 0, processed: 0, duplicate: 0, ignored: 0, failed: 0 };
+
+      const targetMap = new Map<string, { subject: string; companyId: string }>();
+      for (const binding of bindings) {
+        const key = `${binding.companyId}:${binding.subject}`;
+        if (!targetMap.has(key)) {
+          targetMap.set(key, { subject: binding.subject, companyId: binding.companyId });
+        }
       }
-      emptyPolls = 0;
-      nextPollAt = now().getTime() + 5_000;
-      const result: GitHubConnectionEventPollResult = {
-        leased: lease.events.length,
+
+      const totalResult: GitHubConnectionEventPollResult = {
+        leased: 0,
         processed: 0,
         duplicate: 0,
         ignored: 0,
         failed: 0,
       };
-      const acknowledge: string[] = [];
-      for (const event of lease.events) {
-        const matched = bindings.filter((binding) => event.bindingIds.includes(binding.id));
-        if (matched.length === 0) {
-          result.ignored += 1;
-          acknowledge.push(event.id);
+
+      let anyLeased = false;
+
+      for (const target of targetMap.values()) {
+        let lease;
+        try {
+          lease = await connector.leaseEvents({ subject: target.subject, companyId: target.companyId });
+        } catch {
+          totalResult.failed += 1;
           continue;
         }
-        try {
-          const companies = new Map<string, GitHubBinding[]>();
-          for (const binding of matched) companies.set(binding.companyId, [...(companies.get(binding.companyId) ?? []), binding]);
-          for (const [companyId, companyBindings] of companies) {
-            const status = await processForCompany(companyId, companyBindings, event);
-            result[status] += 1;
+        if (!lease || !Array.isArray(lease.events) || lease.events.length === 0) {
+          continue;
+        }
+        anyLeased = true;
+        totalResult.leased += lease.events.length;
+        const acknowledge: string[] = [];
+        for (const event of lease.events) {
+          const matched = bindings.filter((binding) => event.bindingIds.includes(binding.id));
+          if (matched.length === 0) {
+            totalResult.ignored += 1;
+            acknowledge.push(event.id);
+            continue;
           }
-          acknowledge.push(event.id);
-          if (event.event === "installation" && (event.action === "deleted" || event.action === "suspend")) {
-            await Promise.all(matched.map((binding) => connector.setWebhookBinding({
-              subject: binding.subject,
-              companyId: binding.companyId,
-              id: binding.id,
-              installationId: binding.installationId,
-              connectionId: binding.connectionId,
-              grantId: binding.grantId,
-              active: false,
-            })));
+          try {
+            const companies = new Map<string, GitHubBinding[]>();
+            for (const binding of matched) companies.set(binding.companyId, [...(companies.get(binding.companyId) ?? []), binding]);
+            for (const [companyId, companyBindings] of companies) {
+              const status = await processForCompany(companyId, companyBindings, event);
+              totalResult[status] += 1;
+            }
+            acknowledge.push(event.id);
+            if (event.event === "installation" && (event.action === "deleted" || event.action === "suspend")) {
+              await Promise.all(matched.map((binding) => connector.setWebhookBinding({
+                subject: binding.subject,
+                companyId: binding.companyId,
+                id: binding.id,
+                installationId: binding.installationId,
+                connectionId: binding.connectionId,
+                grantId: binding.grantId,
+                active: false,
+              })));
+            }
+          } catch {
+            totalResult.failed += 1;
           }
-        } catch {
-          result.failed += 1;
+        }
+        if (acknowledge.length > 0) {
+          try {
+            await connector.acknowledgeEvents({
+              subject: target.subject,
+              companyId: target.companyId,
+              leaseId: lease.leaseId,
+              deliveryIds: acknowledge,
+            });
+          } catch {
+            totalResult.failed += 1;
+          }
         }
       }
-      if (acknowledge.length > 0) {
-        await connector.acknowledgeEvents({
-          subject: first.subject,
-          companyId: first.companyId,
-          leaseId: lease.leaseId,
-          deliveryIds: acknowledge,
-        });
+
+      if (!anyLeased) {
+        emptyPolls += 1;
+        nextPollAt = now().getTime() + Math.min(5 * 60_000, 5_000 * (2 ** Math.min(emptyPolls, 6)));
+      } else {
+        emptyPolls = 0;
+        nextPollAt = now().getTime() + 5_000;
       }
+
+      return totalResult;
+    },
+
+    async sweepWatchdog(currentTime: Date = now()): Promise<GitHubEventsWatchdogResult> {
+      const bindings = await activeBindings();
+      const companyIds = Array.from(new Set(bindings.map((b) => b.companyId)));
+      const rawThreshold = Number(process.env.MYRMIDON_GITHUB_EVENTS_MAX_SILENCE_MIN ?? process.env.PAPERCLIP_GITHUB_EVENTS_MAX_SILENCE_MIN);
+      const thresholdMin = Number.isFinite(rawThreshold) && rawThreshold > 0 ? rawThreshold : 15;
+      const staleThresholdMs = thresholdMin * 60 * 1000;
+      const ciStaleThresholdMs = Math.max(staleThresholdMs, 30 * 60 * 1000);
+
+      const result: GitHubEventsWatchdogResult = {
+        scannedCompanies: companyIds.length,
+        activePrCount: 0,
+        alarmsCreated: 0,
+        alarmsResolved: 0,
+      };
+
+      for (const companyId of companyIds) {
+        const activePrs = await db.select({
+          product: issueWorkProducts,
+          issue: issues,
+        })
+          .from(issueWorkProducts)
+          .innerJoin(issues, eq(issues.id, issueWorkProducts.issueId))
+          .where(and(
+            eq(issueWorkProducts.companyId, companyId),
+            eq(issueWorkProducts.type, "pull_request"),
+            eq(issueWorkProducts.provider, "github"),
+            inArray(issues.status, ["in_progress", "in_review"]),
+          ));
+
+        const nonClosedPrs = activePrs.filter(({ product }) => product.status !== "closed" && product.status !== "merged");
+        result.activePrCount += nonClosedPrs.length;
+
+        const alarmKey = `github-events-silence:${companyId}`;
+        const existingAlarms = await db.select().from(issues).where(and(
+          eq(issues.companyId, companyId),
+          eq(issues.originKind, "github_events_silence"),
+          eq(issues.originId, companyId),
+        ));
+        const existingAlarm = existingAlarms[0] ?? null;
+
+        if (nonClosedPrs.length === 0) {
+          if (existingAlarm && existingAlarm.status !== "done" && existingAlarm.status !== "cancelled") {
+            await db.update(issues).set({
+              status: "done",
+              updatedAt: currentTime,
+            }).where(eq(issues.id, existingAlarm.id));
+            await db.insert(issueComments).values({
+              companyId,
+              issueId: existingAlarm.id,
+              authorType: "system",
+              body: "Все активные PR закрыты или влиты. Тревога по тишине событий GitHub снята.",
+              createdAt: currentTime,
+              updatedAt: currentTime,
+            });
+            result.alarmsResolved += 1;
+          }
+          continue;
+        }
+
+        const [lastActivity] = await db.select({ createdAt: activityLog.createdAt })
+          .from(activityLog)
+          .where(and(
+            eq(activityLog.companyId, companyId),
+            eq(activityLog.action, "tool_connection.webhook_processed"),
+          ))
+          .orderBy(desc(activityLog.createdAt))
+          .limit(1);
+
+        let lastEventAtMs: number | null = lastActivity?.createdAt ? new Date(lastActivity.createdAt).getTime() : null;
+
+        for (const binding of bindings.filter((b) => b.companyId === companyId)) {
+          const lastWebhookAt = binding.providerTenant?.github?.lastWebhookAt;
+          if (lastWebhookAt) {
+            const ms = new Date(lastWebhookAt).getTime();
+            if (!Number.isNaN(ms) && (!lastEventAtMs || ms > lastEventAtMs)) {
+              lastEventAtMs = ms;
+            }
+          }
+        }
+
+        const [lastCiDelivery] = await db.select({ createdAt: connectionEventDeliveries.createdAt })
+          .from(connectionEventDeliveries)
+          .where(and(
+            eq(connectionEventDeliveries.companyId, companyId),
+            eq(connectionEventDeliveries.provider, "github"),
+            inArray(connectionEventDeliveries.event, ["check_run", "check_suite", "workflow_run", "status"]),
+          ))
+          .orderBy(desc(connectionEventDeliveries.createdAt))
+          .limit(1);
+
+        const lastCiEventAtMs: number | null = lastCiDelivery?.createdAt
+          ? new Date(lastCiDelivery.createdAt).getTime()
+          : null;
+
+        const isGeneralSilent = !lastEventAtMs || (currentTime.getTime() - lastEventAtMs > staleThresholdMs);
+        const isCiSilent = !lastCiEventAtMs || (currentTime.getTime() - lastCiEventAtMs > ciStaleThresholdMs);
+        const isSilent = isGeneralSilent || isCiSilent;
+
+        if (isSilent) {
+          const silenceMin = lastEventAtMs
+            ? Math.max(thresholdMin, Math.round((currentTime.getTime() - lastEventAtMs) / 60000))
+            : thresholdMin;
+          const ciSilenceMin = lastCiEventAtMs
+            ? Math.round((currentTime.getTime() - lastCiEventAtMs) / 60000)
+            : null;
+          const silenceReason = isGeneralSilent
+            ? `события GitHub не поступают ${silenceMin} мин`
+            : `события CI (check_run/workflow_run) не поступают ${ciSilenceMin ?? "∞"} мин`;
+          const description = [
+            `## Тревога: ${silenceReason} на доску`,
+            "",
+            `- Активных PR в работе: ${nonClosedPrs.length}`,
+            `- Последнее общее событие: ${lastEventAtMs ? new Date(lastEventAtMs).toISOString() : "никогда"} (${silenceMin} мин назад)`,
+            `- Последнее событие CI: ${lastCiEventAtMs ? new Date(lastCiEventAtMs).toISOString() : "никогда"} (${ciSilenceMin !== null ? `${ciSilenceMin} мин назад` : "события CI отсутствуют"})`,
+            `- Порог тишины общих событий: ${thresholdMin} мин`,
+            `- Порог тишины событий CI: ${Math.round(ciStaleThresholdMs / 60000)} мин`,
+            "",
+            "События GitHub CI необходимы для автоматического снятия гейта Review CI wait и возврата задач инженерам при сбоях.",
+            "",
+            "### Что проверить:",
+            "1. Подписку GitHub App на события check_run, check_suite, workflow_run, status.",
+            "2. Статус webhook в GitHub App и облачного коннектора.",
+            "3. Ответы leaseEvents коннектора и логи сервера.",
+            "4. Значение webhookHealth в подключениях компании.",
+            "",
+            "_Сторож закроет эту задачу автоматически, когда события GitHub и CI снова начнут обрабатываться доской._",
+          ].join("\n");
+
+          if (!existingAlarm) {
+            // The alarm is a first-class task: mint the company issue number and
+            // identifier exactly like every other creation path, so the alarm is
+            // addressable by its OPE-N key (github-events-silence watchdog).
+            await db.transaction(async (tx) => {
+              const [maxRow] = await tx
+                .select({ maxNum: sql<number>`coalesce(max(${issues.issueNumber}), 0)` })
+                .from(issues)
+                .where(eq(issues.companyId, companyId));
+              const [company] = await tx
+                .update(companies)
+                .set({
+                  issueCounter: sql`greatest(${companies.issueCounter}, ${maxRow.maxNum}) + 1`,
+                })
+                .where(eq(companies.id, companyId))
+                .returning({
+                  issueCounter: companies.issueCounter,
+                  issuePrefix: companies.issuePrefix,
+                });
+              await tx.insert(issues).values({
+                companyId,
+                title: `1.6.6 P1 ALARM: ${silenceReason} при открытых PR`,
+                description,
+                status: "todo",
+                priority: "high",
+                originKind: "github_events_silence",
+                originId: companyId,
+                issueNumber: company.issueCounter,
+                identifier: `${company.issuePrefix}-${company.issueCounter}`,
+                createdAt: currentTime,
+                updatedAt: currentTime,
+              });
+            });
+            result.alarmsCreated += 1;
+          } else if (existingAlarm.status === "done" || existingAlarm.status === "cancelled") {
+            await db.update(issues).set({
+              status: "todo",
+              description,
+              updatedAt: currentTime,
+            }).where(eq(issues.id, existingAlarm.id));
+            await db.insert(issueComments).values({
+              companyId,
+              issueId: existingAlarm.id,
+              authorType: "system",
+              body: `Тревога возобновлена: ${silenceReason} при ${nonClosedPrs.length} активных PR.`,
+              createdAt: currentTime,
+              updatedAt: currentTime,
+            });
+            result.alarmsCreated += 1;
+          }
+        } else {
+          if (existingAlarm && existingAlarm.status !== "done" && existingAlarm.status !== "cancelled") {
+            await db.update(issues).set({
+              status: "done",
+              updatedAt: currentTime,
+            }).where(eq(issues.id, existingAlarm.id));
+            await db.insert(issueComments).values({
+              companyId,
+              issueId: existingAlarm.id,
+              authorType: "system",
+              body: `События GitHub и CI снова поступают. Последнее общее событие: ${lastEventAtMs ? new Date(lastEventAtMs).toISOString() : "неизвестно"}, последнее событие CI: ${lastCiEventAtMs ? new Date(lastCiEventAtMs).toISOString() : "неизвестно"}. Тревога снята.`,
+              createdAt: currentTime,
+              updatedAt: currentTime,
+            });
+            result.alarmsResolved += 1;
+          }
+        }
+      }
+
       return result;
     },
   };

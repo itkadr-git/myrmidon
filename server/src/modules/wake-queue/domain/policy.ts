@@ -74,6 +74,8 @@ export type PreDrainFacts = {
   legacyExecutionNeedsReconciliation: boolean;
   /** True when the finishing run is cancelled and its stored result carries an acknowledged execution cancellation. */
   executionCancellationAcknowledged: boolean;
+  /** vendor #16357 (OPE-12205): true when a board-operator stop cancelled a run that never started (no startedAt, no process). */
+  executionCancellationUnstartedOperatorStop: boolean;
 };
 
 export type PreDrainDecision =
@@ -113,6 +115,13 @@ export function decidePreDrain(facts: PreDrainFacts): PreDrainDecision {
   }
 
   if (facts.executionCancellationAcknowledged) {
+    return { kind: "released" };
+  }
+
+  // vendor #16357 (OPE-12205): a board-operator stop of a run that never
+  // started is not an execution. Like any operator stop, it must leave the
+  // issue's deferred follow-up deferred instead of promoting the next link.
+  if (facts.executionCancellationUnstartedOperatorStop) {
     return { kind: "released" };
   }
 
@@ -215,6 +224,8 @@ export type ReleaseRecoveryReviewParticipantFacts = {
 export type ReleaseRecoveryImmediateFacts = {
   /** True when the issue is todo/in_progress, unassigned to a user, not hidden, still assigned to the finishing run's agent, and the run ended failed/timed_out/cancelled. */
   applies: boolean;
+  /** True when the issue is in status todo (recovery must not flip todo to in_progress without new inputs, OPE-4519). */
+  isTodoIssue?: boolean;
   /** True when the finishing run itself carried the disposition-repair retry reason. */
   isDispositionRepairRetry: boolean;
   hasExplicitBlockerPath: boolean;
@@ -408,6 +419,7 @@ export function decideReleaseRecovery(facts: ReleaseRecoveryFacts): ReleaseRecov
   if (shared.isStrandedRecoveryOrigin) return { kind: "blocked_recovery_in_place" };
 
   const shouldBlockImmediately =
+    immediate.isTodoIssue === true ||
     immediate.sourceRequiresExplicitRecovery === true ||
     !shared.recoveryAgentInvokable ||
     !shared.recoveryAgentPresent ||

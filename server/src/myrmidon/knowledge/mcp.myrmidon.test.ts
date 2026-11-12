@@ -62,6 +62,36 @@ const call = (actor: unknown, mod: ReturnType<typeof makeModule>, name: string, 
   request(app(actor, mod)).post(url).send({ jsonrpc: "2.0", id: 1, method: "tools/call", params: { name, arguments: args } });
 
 describe("myrmidon(1.6.6 K-3) knowledge MCP: rule grade", () => {
+  it("knowledge_write_draft exposes and forwards changeSummary and sources", async () => {
+    const mod = makeModule({ ...ruleItem(["engineer"]), kind: "wiki", folderPath: "ops" });
+
+    const listRes = await request(app(operator, mod)).post(url).send({ jsonrpc: "2.0", id: 1, method: "tools/list" });
+    expect(listRes.status).toBe(200);
+    const tools = listRes.body.result?.tools as Array<{ name: string; inputSchema: { properties: Record<string, unknown> } }>;
+    const writeDraftTool = tools.find((t) => t.name === "knowledge_write_draft");
+    expect(writeDraftTool?.inputSchema.properties.changeSummary).toBeDefined();
+    expect(writeDraftTool?.inputSchema.properties.sources).toBeDefined();
+
+    const sources = [{ kind: "task", ref: "OPE-10263", note: "Acceptance work" }, { kind: "pr", ref: "itkadr-git/myrmidon#2187" }];
+    const response = await call(operator, mod, "knowledge_write_draft", {
+      idOrSlug: "ops/runbook",
+      content: "Updated guidance",
+      changeSummary: "Clarified deployment steps",
+      sources,
+    });
+
+    expect(response.status).toBe(200);
+    expect(mod.draft).toHaveBeenCalledWith(
+      "ops/runbook",
+      expect.objectContaining({
+        content: "Updated guidance",
+        changeSummary: "Clarified deployment steps",
+        sources,
+      }),
+      expect.anything(),
+    );
+  });
+
   it("knowledge_publish of an old approved revision of a smm rule: operator 403, owner 200", async () => {
     const mod = makeModule(ruleItem(["smm"]));
     const args = { idOrSlug: "rules/smm/publications", revisionId: "rev-old-approved" };
@@ -89,6 +119,34 @@ describe("myrmidon(1.6.6 K-3) knowledge MCP: rule grade", () => {
   it("a note is not graded", async () => {
     const mod = makeModule({ ...ruleItem(["smm"]), kind: "note", folderPath: "notes" });
     expect((await call(operator, mod, "knowledge_publish", { idOrSlug: "notes/x" })).status).toBe(200);
+  });
+
+  it("1.7 L-12: knowledge_propose accepts a debate source and forwards sourceKind/sourceRef", async () => {
+    const mod = makeModule(ruleItem(["engineer"]));
+    const debateId = "44444444-4444-4444-8444-444444444444";
+    const response = await call(operator, mod, "knowledge_propose", {
+      body: "The debate concluded: rate-limit provider calls with backoff.",
+      sources: [{ kind: "debate", ref: debateId }],
+    });
+    expect(response.status).toBe(200);
+    expect(response.body.error).toBeUndefined();
+    expect(mod.suggest).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ sourceKind: "debate", sourceRef: debateId }),
+    );
+  });
+
+  it("knowledge_propose still refuses an unknown source kind", async () => {
+    const mod = makeModule(ruleItem(["engineer"]));
+    const response = await call(operator, mod, "knowledge_propose", {
+      body: "Unknown kind",
+      sources: [{ kind: "foo", ref: "whatever" }],
+    });
+    // A ZodError is not an HttpErrorLike, so the MCP surface reports it as an
+    // isError result (200) with code "unknown" — the refusal path, no store work.
+    expect(response.body.result?.isError).toBe(true);
+    expect(response.body.error).toBeUndefined();
+    expect(mod.suggest).not.toHaveBeenCalled();
   });
 
   it("the tool list is pinned: only knowledge_publish publishes, nothing approves, rolls back, archives, supersedes or imports", () => {

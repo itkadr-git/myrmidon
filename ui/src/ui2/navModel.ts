@@ -35,11 +35,26 @@ export interface Ui2NavItem {
    * confirmed live (K-4: the knowledge REST of K-2 may not be deployed yet).
    */
   requires?: "knowledge";
+  /**
+   * Explicit route root for the active-item match (П5). Defaults to the
+   * first segment of `to`; set it only when `to` alone is ambiguous.
+   */
+  root?: string;
 }
 
 export interface Ui2NavGroup {
   labelKey: string | null;
   items: Ui2NavItem[];
+}
+
+/**
+ * Route root of a nav item's destination (`"/agents/all"` → `"agents"`).
+ * myrmidon(UI-2.0-WAVE-A, П5): activity is matched by ROOT, so at most one
+ * rail item / phone tab lights up for any pathname — duplicate roots are
+ * pinned by the wave-A guard test (ui2WaveARoutes.myrmidon.test.ts).
+ */
+export function ui2NavRouteRoot(item: Ui2NavItem): string {
+  return item.root ?? item.to.replace(/^\//, "").split("/")[0]!;
 }
 
 // myrmidon(1.6.6 KNOWLEDGE-2.0 K-4): catalog ids of the "Работа" group sit in
@@ -56,11 +71,11 @@ export const UI2_NAV_GROUPS: Ui2NavGroup[] = [
   {
     labelKey: "ui2.nav.group.observe",
     items: [
-      { labelKey: "ui2.nav.center", to: "/dashboard", icon: Gauge },
+      { labelKey: "ui2.nav.center", to: "/commander", icon: Gauge },
       { labelKey: "ui2.nav.agents", to: "/agents", icon: Bot },
       { labelKey: "ui2.nav.servers", to: "/fleet", icon: Server },
       { labelKey: "ui2.nav.costs", to: "/activity/costs", icon: Wallet },
-      { labelKey: "ui2.nav.quality", to: "/dashboard", icon: Activity },
+      { labelKey: "ui2.nav.quality", to: "/quality", icon: Activity },
     ],
   },
   {
@@ -89,7 +104,10 @@ export const UI2_NAV_GROUPS: Ui2NavGroup[] = [
   },
   {
     labelKey: "ui2.nav.group.manage",
-    items: [{ labelKey: "ui2.nav.settings", to: "/company/settings", icon: LayoutGrid }],
+    items: [
+      { labelKey: "ui2.nav.settings", to: "/company/settings", icon: LayoutGrid },
+      { labelKey: "ui2.nav.system", to: "/system", icon: Server },
+    ],
   },
   // myrmidon(1.6.5 SWARM-T4, design §5.4 / IA v2 §2.3 п.10, 12): the swarm
   // queue and the foraging page live in a dedicated "More" group at the rail
@@ -105,11 +123,11 @@ export const UI2_NAV_GROUPS: Ui2NavGroup[] = [
 
 /** Phone bottom bar: 6 tabs (Center / Decisions / Agents / Servers / Commander / More). */
 export const UI2_PHONE_TABS: Ui2NavItem[] = [
-  { labelKey: "ui2.nav.center", to: "/dashboard", icon: Gauge },
+  { labelKey: "ui2.nav.center", to: "/commander", icon: Gauge },
   { labelKey: "ui2.nav.waiting", to: "/decisions", icon: CircleAlert, badge: "attention" },
   { labelKey: "ui2.nav.agents", to: "/agents", icon: Bot },
   { labelKey: "ui2.nav.servers", to: "/fleet", icon: Server },
   // myrmidon(1.6-CTO-CHAT-A): same switch on the phone tab bar.
   { labelKey: "ui2.nav.commander", to: "/commander-chat", icon: MessagesSquare },
-  { labelKey: "ui2.nav.more", to: "/agents/all", icon: LayoutGrid },
+  { labelKey: "ui2.nav.more", to: "/more", icon: LayoutGrid },
 ];

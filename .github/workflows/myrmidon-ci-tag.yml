@@ -52,7 +52,7 @@ env:
 jobs:
   typecheck:
     name: typecheck
-    runs-on: ${{ fromJSON(vars.CI_RUNNER_TYPECHECK || '"ubuntu-latest"') }}
+    runs-on: ${{ fromJSON(vars.CI_RUNNER_MAIN || vars.CI_RUNNER_TYPECHECK || '"ubuntu-latest"') }}
     timeout-minutes: 30
     steps:
       - name: Checkout repository
@@ -105,7 +105,7 @@ jobs:
 
   build:
     name: build
-    runs-on: ${{ fromJSON(vars.CI_RUNNER_BUILD || '"ubuntu-latest"') }}
+    runs-on: ${{ fromJSON(vars.CI_RUNNER_MAIN || vars.CI_RUNNER_BUILD || '"ubuntu-latest"') }}
     timeout-minutes: 40
     env:
       NODE_OPTIONS: --max-old-space-size=4096
@@ -162,7 +162,7 @@ jobs:
 
   tests:
     name: tests (${{ matrix.label }})
-    runs-on: ${{ fromJSON(vars.CI_RUNNER_TESTS || '"ubuntu-latest"') }}
+    runs-on: ${{ fromJSON(vars.CI_RUNNER_MAIN || vars.CI_RUNNER_TESTS || '"ubuntu-latest"') }}
     timeout-minutes: 30
     strategy:
       fail-fast: false
@@ -171,11 +171,16 @@ jobs:
         # `pnpm test:run` equals the union of the general groups and the
         # serialized server suites.
         include:
-          - { label: "server 1/5", mode: general, group: general-server, shard_index: 0, shard_count: 5 }
-          - { label: "server 2/5", mode: general, group: general-server, shard_index: 1, shard_count: 5 }
-          - { label: "server 3/5", mode: general, group: general-server, shard_index: 2, shard_count: 5 }
-          - { label: "server 4/5", mode: general, group: general-server, shard_index: 3, shard_count: 5 }
-          - { label: "server 5/5", mode: general, group: general-server, shard_index: 4, shard_count: 5 }
+        # general-server: 6 shards balanced by recorded suite cost
+        # (scripts/general-server-shard-durations.json). shard_count must equal
+        # the number of entries; scripts/myrmidon/ci/general-server-shards.test.mjs
+        # checks that the shards cover every suite exactly once.
+          - { label: "server 1/6", mode: general, group: general-server, shard_index: 0, shard_count: 6 }
+          - { label: "server 2/6", mode: general, group: general-server, shard_index: 1, shard_count: 6 }
+          - { label: "server 3/6", mode: general, group: general-server, shard_index: 2, shard_count: 6 }
+          - { label: "server 4/6", mode: general, group: general-server, shard_index: 3, shard_count: 6 }
+          - { label: "server 5/6", mode: general, group: general-server, shard_index: 4, shard_count: 6 }
+          - { label: "server 6/6", mode: general, group: general-server, shard_index: 5, shard_count: 6 }
           - { label: "workspaces-a 1/2", mode: general, group: general-workspaces-a, shard_index: 0, shard_count: 2 }
           - { label: "workspaces-a 2/2", mode: general, group: general-workspaces-a, shard_index: 1, shard_count: 2 }
           - { label: "workspaces-b", mode: general, group: general-workspaces-b }
@@ -238,7 +243,7 @@ jobs:
     # Packages whose tests `pnpm test:run` does not run (hermes adapter, MCP
     # servers, several adapters...): scripts/myrmidon/ci/extra-test-lanes.json.
     name: tests (other packages)
-    runs-on: ${{ fromJSON(vars.CI_RUNNER_TESTS_OTHER || '"ubuntu-latest"') }}
+    runs-on: ${{ fromJSON(vars.CI_RUNNER_MAIN || vars.CI_RUNNER_TESTS_OTHER || '"ubuntu-latest"') }}
     timeout-minutes: 20
     steps:
       - name: Checkout repository
@@ -283,7 +288,7 @@ jobs:
     # The vendor verifies the runner in its own lane (check:all: TypeScript,
     # protocol, Rust and API authority checks).
     name: tests (runner)
-    runs-on: ${{ fromJSON(vars.CI_RUNNER_TESTS_RUNNER || '"ubuntu-latest"') }}
+    runs-on: ${{ fromJSON(vars.CI_RUNNER_MAIN || vars.CI_RUNNER_TESTS_RUNNER || '"ubuntu-latest"') }}
     timeout-minutes: 40
     steps:
       - name: Checkout repository
@@ -338,11 +343,12 @@ jobs:
     # internal-address scan, dependency licenses and plugin compatibility.
     # Every step runs even if an earlier one failed.
     name: checks
-    runs-on: ubuntu-latest
+    runs-on: ${{ fromJSON(vars.CI_RUNNER_MAIN || '"ubuntu-latest"') }}
     timeout-minutes: 20
     env:
       GITLEAKS_VERSION: 8.30.1
       GITLEAKS_SHA256: 551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb
+      GITLEAKS_ASSET_ID: "378332058" # gitleaks_8.30.1_linux_x64.tar.gz
     steps:
       - name: Checkout repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -417,13 +423,15 @@ jobs:
       - name: Secrets (gitleaks, new commits)
         if: ${{ !cancelled() }}
         env:
+          GH_TOKEN: ${{ github.token }}
           BASE: ${{ steps.range.outputs.base }}
           HEAD: ${{ steps.range.outputs.head }}
         run: |
           set -euo pipefail
           archive="gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz"
-          curl -fsSL -o "$RUNNER_TEMP/$archive" \
-            "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/${archive}"
+          # Release assets via the authenticated API: anonymous github.com downloads fail with 504 when GitHub throttles anonymous traffic.
+          curl -fsSL --retry 5 --retry-all-errors -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/octet-stream" \
+            -o "$RUNNER_TEMP/$archive" "https://api.github.com/repos/gitleaks/gitleaks/releases/assets/${GITLEAKS_ASSET_ID}"
           echo "${GITLEAKS_SHA256}  $RUNNER_TEMP/$archive" | sha256sum -c -
           tar -xzf "$RUNNER_TEMP/$archive" -C "$RUNNER_TEMP" gitleaks
           "$RUNNER_TEMP/gitleaks" git --no-banner --redact --verbose \
@@ -476,7 +484,7 @@ jobs:
     # tools/fleetd: gofmt, go vet and the unit tests, in the same pinned Go
     # image the fleetd image workflow builds from.
     name: fleetd
-    runs-on: ubuntu-latest
+    runs-on: ${{ fromJSON(vars.CI_RUNNER_MAIN_GO || '"ubuntu-latest"') }}
     timeout-minutes: 20
     env:
       GO_IMAGE: golang:1.25-bookworm@sha256:3b4a11519ad929d1e1d261a12cff056f0c85b735253d7d861346b9c6f8b36437
@@ -510,7 +518,7 @@ jobs:
     # tools/dockergate: gofmt, go vet, the unit tests, and the contract with
     # the driver (fixtures emitted afresh from the TypeScript of this commit).
     name: dockergate
-    runs-on: ubuntu-latest
+    runs-on: ${{ fromJSON(vars.CI_RUNNER_MAIN_GO || '"ubuntu-latest"') }}
     timeout-minutes: 20
     env:
       GO_IMAGE: golang:1.25-bookworm@sha256:3b4a11519ad929d1e1d261a12cff056f0c85b735253d7d861346b9c6f8b36437
@@ -585,9 +593,89 @@ jobs:
     name: CI result
     if: ${{ !cancelled() }}
     needs: [typecheck, build, tests, tests-other, tests-runner, checks, dockergate, fleetd]
-    runs-on: ubuntu-latest
+    runs-on: ${{ fromJSON(vars.CI_RUNNER_LIGHT || vars.MYR_RUNNER_LIGHT || '"vps-ci"') }}
     timeout-minutes: 5
     steps:
+      - name: Ensure gh and jq (self-hosted runners may lack them)
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          bin="$RUNNER_TEMP/tools-bin"; mkdir -p "$bin"
+          if ! command -v jq >/dev/null; then
+            # Release assets via the authenticated API: anonymous github.com downloads fail with 504 when GitHub throttles anonymous traffic.
+            curl -fsSL --retry 5 --retry-all-errors -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/octet-stream" -o "$bin/jq" https://api.github.com/repos/jqlang/jq/releases/assets/140520984
+            chmod +x "$bin/jq"
+          fi
+          if ! command -v gh >/dev/null; then
+            curl -fsSL --retry 5 --retry-all-errors -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/octet-stream" -o "$RUNNER_TEMP/gh.tar.gz" https://api.github.com/repos/cli/cli/releases/assets/206502108
+            tar -xzf "$RUNNER_TEMP/gh.tar.gz" -C "$RUNNER_TEMP"
+            cp "$RUNNER_TEMP/gh_2.62.0_linux_amd64/bin/gh" "$bin/gh"
+          fi
+          echo "$bin" >> "$GITHUB_PATH"
+
+      - name: Verify queue latency
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          RUN_ID: ${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          echo "Checking CI result start latency relative to predecessor jobs (fail-closed gate)..."
+          if ! command -v gh >/dev/null || ! command -v jq >/dev/null; then
+            echo "ERROR: gh or jq not available for latency check" >&2
+            exit 1
+          fi
+
+          jobs_data=""
+          for attempt in 1 2 3; do
+            jobs_data="$(gh api "repos/$REPO/actions/runs/$RUN_ID/jobs?per_page=100" 2>/dev/null || true)"
+            if [ -n "$jobs_data" ] && echo "$jobs_data" | jq -e '.jobs | length > 0' >/dev/null 2>&1; then
+              break
+            fi
+            sleep 2
+          done
+
+          if [ -z "$jobs_data" ]; then
+            echo "ERROR: Unable to fetch job data from GitHub API after retries" >&2
+            exit 1
+          fi
+
+          res="$(echo "$jobs_data" | jq -r '
+            .jobs as $all |
+            ([$all[] | select(.name == "CI result" and .started_at != null) | .started_at] | last) as $ci_start |
+            ([$all[] | select(
+              (.name == "typecheck" or
+               .name == "build" or
+               (.name | startswith("tests (")) or
+               .name == "tests (other packages)" or
+               .name == "tests (runner)" or
+               .name == "checks" or
+               .name == "fleetd" or
+               .name == "dockergate") and
+              .completed_at != null
+            ) | .completed_at] | sort | last) as $last_pred_end |
+            if ($ci_start and $last_pred_end) then
+              (($ci_start | fromdateiso8601) - ($last_pred_end | fromdateiso8601))
+            else
+              empty
+            end
+          ')"
+
+          if [ -z "$res" ]; then
+            echo "ERROR: Could not compute start latency: missing start/completion timestamps" >&2
+            exit 1
+          fi
+
+          echo "CI result started ${res}s after the last predecessor job finished."
+          if [ "$res" -gt 120 ]; then
+            echo "ERROR: CI result start latency exceeded threshold: ${res}s > 120s" >&2
+            exit 1
+          fi
+          echo "PASS: CI result started within 2 minutes (${res}s <= 120s)."
+
       - name: Check lane results
         env:
           RESULTS: ${{ toJSON(needs) }}

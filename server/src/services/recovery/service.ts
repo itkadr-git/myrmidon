@@ -1,6 +1,10 @@
 import { hasLiveLegacyController } from "../legacy-controller-lease.js";
 // myrmidon(B1): product name in the notice bodies below; see product.ts.
 import { productSaid } from "../../myrmidon/product.js";
+// myrmidon(RUN-GUARD-LOOPS): runs stopped by the run guard are never retried.
+import { buildRunGuardStopComment, buildRunGuardStopNotice, readRunGuardStopReason } from "../../myrmidon/run-guard-stop.js";
+// myrmidon(RUN-GUARD-ESCALATE): a task blocked by a final guard stop wakes its manager.
+import { wakeManagerForRunGuardStop as wakeManagerForRunGuardStopImpl } from "../../myrmidon/run-guard-escalation.js";
 // myrmidon(1.6.6 RUN-RETRY-POLICY): transient/permanent classification, the
 // exponential backoff and the attempt ceiling of a failed run's retry.
 import {
@@ -20,6 +24,7 @@ import {
   gte,
   inArray,
   isNull,
+  lt,
   not,
   notInArray,
   or,
@@ -37,10 +42,15 @@ import {
   ONBOARDING_FIRST_TASK_ORIGIN_KIND,
   PROVIDER_QUOTA_MONITOR_SERVICE_NAME,
   ISSUE_DISPOSITION_REPAIR_RETRY_REASON,
+  buildContinuationKey,
   requiresExecutionReconciliation,
   type IssueCommentMetadata,
   type IssueCommentPresentation,
 } from "@myrmidon/shared";
+import {
+  releaseContinuationKey,
+  tryClaimContinuationKey,
+} from "../continuation-dedupe.js";
 import {
   agents,
   agentTaskSessions,
@@ -49,9 +59,11 @@ import {
   activityLog,
   chatConversations,
   companies,
+  externalObjects,
   heartbeatRunWatchdogDecisions,
   heartbeatRuns,
   issueAttachments,
+  issueWorkProducts,
   issueComments,
   issueApprovals,
   issueRecoveryActions,
@@ -93,6 +105,8 @@ import {
   legacyExecutionNeedsReconciliation,
   terminalizeLegacyExecution,
 } from "../legacy-execution-recovery.js";
+import { hasConversationContinuationPolicy } from "../conversation-continuation.js";
+import { executionFailureRetryCount } from "../execution-recovery-attempt.js";
 // myrmidon(L1): infrastructure interruptions do not create a stranded-issue
 // escalation while the original agent is only briefly non-invokable (paused)
 // -- gated to a conversation adapter or one with its own idempotency key,
@@ -151,6 +165,7 @@ import {
 } from "./origins.js";
 import { withRecoveryContext } from "./status-only-context.js";
 import { isAutomaticRecoverySuppressedByPauseHold } from "./pause-hold-guard.js";
+import { hasNewInputsSince } from "./new-inputs.js";
 import {
   collectDispositionRepairSourceState,
   dispositionRepairDelayMs,
@@ -180,15 +195,45 @@ import {
   countStrandedAutoPolicyAttemptsInWindow,
   decideStrandedAutoPolicy,
   findActiveManagerAgentId,
+  findStrandedDispositionOwnerAgentId,
   isStrandedAutoPolicyCause,
   isStrandedAutoPolicyManagerHandoffAlreadyApplied,
   issueHasExistingExecutionWorkflow,
   readStrandedAutoPolicyEnabled,
   readStrandedAutoRetriesPerDay,
   STRANDED_AUTO_POLICY_RETRY_SOURCE,
+  isPendingCiForOpenPr,
 } from "../../myrmidon/stranded-autopolicy.js";
 // myrmidon(L3b): an operator-paused agent's issues are not stranded
 import { operatorPauseExemptsStrandedIssue } from "../../myrmidon/paused-stranded.js";
+// myrmidon(OPE-10045): a reviewer run without a decision is not a stall while
+// CI runs, and gets an explicit decision request before the board escalation.
+import {
+  REVIEW_CI_WAIT_INTERVAL_MS,
+  REVIEW_CI_WAIT_MONITOR_SERVICE_NAME,
+  REVIEW_DECISION_RECOVERY_INSTRUCTION,
+  REVIEW_STAGE_RECOVERY_DEFERRED_ACTION,
+  REVIEW_STAGE_RECOVERY_WINDOW_MS,
+  countStalledReviewDeferrals,
+  isMaintenanceInterruptedRun,
+  decideStalledReviewRecovery,
+  reviewVerdictCoversHead,
+  type ReviewPullRequestCiFacts,
+} from "../../myrmidon/review-stage-recovery/policy.js";
+import { readReviewVerdictRecord } from "../../myrmidon/review-verdict/record.js";
+import { orphanBlockerFitsCreator } from "../../myrmidon/recovery/orphan-blocker-caste.js";
+import type { ReviewPullRequestCiResolver } from "../../myrmidon/review-stage-recovery/github-ci.js";
+import {
+  createGitHubPrHeadResolver,
+  pullRequestCiStateFromStatusPayload,
+  type PullRequestHeadResolver,
+} from "../../myrmidon/review-routing/github.js";
+import {
+  issueAnchorAgentId,
+  ownGroupReviewerPool,
+  resolveAgentGroupKey,
+} from "../../myrmidon/review-routing/policy.js";
+import { selectRunPullRequest } from "../../myrmidon/run-pull-request.js";
 
 const EXECUTION_PATH_HEARTBEAT_RUN_STATUSES = [
   "queued",
@@ -271,6 +316,7 @@ type LatestIssueRun =
       // myrmidon(L1): claimedAdapterType's input, so the L1 branch below can
       // gate hold suppression on the run's own adapter
       | "runnerProfileJson"
+      | "activeIdentityContextId"
     > & {
       resultJson?: unknown;
     })
@@ -508,8 +554,16 @@ function didAutomaticRecoveryFail(
 
   const latestContext = parseObject(latestRun.contextSnapshot);
   const latestRetryReason = readNonEmptyString(latestContext.retryReason);
+  const latestWakeReason = readNonEmptyString(latestContext.wakeReason);
+  const matchesReason =
+    latestRetryReason === expectedRetryReason ||
+    (expectedRetryReason === "assignment_recovery" &&
+      (latestWakeReason === "issue_assignment_recovery" ||
+        latestContext.source === "issue.assignment_recovery" ||
+        (latestRetryReason === "transient_failure" &&
+          readNonEmptyString(latestContext.source) === "issue.assignment_recovery")));
   return (
-    latestRetryReason === expectedRetryReason &&
+    matchesReason &&
     UNSUCCESSFUL_HEARTBEAT_RUN_TERMINAL_STATUSES.includes(
       latestRun.status as (typeof UNSUCCESSFUL_HEARTBEAT_RUN_TERMINAL_STATUSES)[number],
     )
@@ -540,7 +594,7 @@ const INTERACTION_CONTINUATION_REQUEUE_MAX_ATTEMPTS = 3;
 export const PROVIDER_QUOTA_RECOVERY_DEFAULT_BACKOFF_MS = 60 * 60 * 1000;
 
 const PROVIDER_QUOTA_ERROR_RE =
-  /(?:you(?:'|’)ve hit your (?:\w+ )?limit|usage limit(?: reached| exceeded)?|provider quota|quota (?:limit )?exceeded|model (?:is )?at capacity)/i;
+  /(?:you(?:'|’)ve hit your (?:\w+ )?limit|usage limit(?: reached| exceeded)?|provider quota|quota (?:limit )?exceeded|insufficient[_ ]quota|no deployments available|all deployments[^\n]{0,120}cooldown|model (?:is )?at capacity)/i;
 const CONFIGURATION_INCOMPLETE_ERROR_RE =
   /(?:model_not_found|model [^\n]{0,120} not found|missing (?:api )?(?:key|credentials?)|credentials? (?:are |is )?missing|no (?:api )?(?:key|credentials?) (?:was |were )?(?:found|configured|provided)|api key (?:is )?(?:not set|unavailable))/i;
 
@@ -659,6 +713,7 @@ export function classifyAdapterFailureForRecovery(
   }
   if (
     latestRun.errorCode !== "adapter_failed" &&
+    latestRun.errorCode !== "hermes_gateway_run_failed" &&
     latestRun.errorCode !== "provider_quota" &&
     latestRun.errorCode !== "configuration_incomplete"
   ) {
@@ -953,6 +1008,179 @@ function isRepeatedProductiveContinuationRecovery(
   );
 }
 
+function getReviewerParticipantAgentId(issue: {
+  executionPolicy?: unknown;
+  executionState?: unknown;
+}): string | null {
+  const state = parseIssueExecutionState(issue.executionState);
+  if (
+    state?.currentStageType === "review" &&
+    state.currentParticipant?.type === "agent" &&
+    typeof state.currentParticipant.agentId === "string" &&
+    state.currentParticipant.agentId.length > 0
+  ) {
+    return state.currentParticipant.agentId;
+  }
+  const policy = issue.executionPolicy as Record<string, unknown> | null;
+  if (!policy || !Array.isArray(policy.stages)) return null;
+  for (const stage of policy.stages) {
+    if (
+      stage &&
+      typeof stage === "object" &&
+      stage.type === "review" &&
+      Array.isArray(stage.participants)
+    ) {
+      for (const p of stage.participants) {
+        if (
+          p &&
+          typeof p === "object" &&
+          p.type === "agent" &&
+          typeof p.agentId === "string" &&
+          p.agentId.length > 0
+        ) {
+          return p.agentId;
+        }
+      }
+    }
+  }
+  return null;
+}
+
+async function pickReviewerForIssue(
+  db: Db,
+  issue: {
+    id: string;
+    companyId: string;
+    status: string;
+    assigneeAgentId?: string | null;
+    assigneeUserId?: string | null;
+    createdByAgentId?: string | null;
+    createdByUserId?: string | null;
+    executionPolicy?: unknown;
+    executionState?: unknown;
+  },
+  prProduct: typeof issueWorkProducts.$inferSelect,
+): Promise<string | null> {
+  const prInfo = selectRunPullRequest([
+    {
+      type: prProduct.type,
+      provider: prProduct.provider ?? "github",
+      url: prProduct.url,
+      status: prProduct.status,
+      metadata: prProduct.metadata,
+    } as any,
+  ]);
+  const prNumber = prInfo?.number;
+  const anchorAgentId = issueAnchorAgentId({
+    id: issue.id,
+    status: issue.status,
+    assigneeAgentId: issue.assigneeAgentId ?? null,
+    assigneeUserId: issue.assigneeUserId ?? null,
+    createdByAgentId: issue.createdByAgentId ?? null,
+    createdByUserId: issue.createdByUserId ?? null,
+    executionPolicy: issue.executionPolicy,
+    executionState: issue.executionState,
+  });
+  if (!anchorAgentId) return null;
+
+  const [anchor] = await db
+    .select({ name: agents.name, metadata: agents.metadata })
+    .from(agents)
+    .where(and(eq(agents.companyId, issue.companyId), eq(agents.id, anchorAgentId)));
+  const groupKey = resolveAgentGroupKey(anchor);
+  if (!groupKey) return null;
+
+  const reviewerAgents = await db
+    .select({
+      id: agents.id,
+      name: agents.name,
+      role: agents.role,
+      metadata: agents.metadata,
+    })
+    .from(agents)
+    .where(
+      and(
+        eq(agents.companyId, issue.companyId),
+        inArray(agents.role, ["reviewer", "code_reviewer"]),
+      ),
+    );
+  const eligibleReviewers = ownGroupReviewerPool(
+    reviewerAgents.filter((agent) => agent.id !== anchorAgentId),
+    groupKey,
+  );
+
+  if (eligibleReviewers.length > 0) {
+    if (typeof prNumber === "number" && Number.isSafeInteger(prNumber)) {
+      const idx = Math.abs(prNumber) % eligibleReviewers.length;
+      const target = eligibleReviewers[idx];
+      if (target) return target.id;
+    }
+    return eligibleReviewers[0]?.id ?? null;
+  }
+
+  return null;
+}
+
+async function resolvePrCiState(
+  companyId: string,
+  prProduct: typeof issueWorkProducts.$inferSelect,
+  resolver?: PullRequestHeadResolver,
+): Promise<{ ci: "green" | "not_green" | "pending"; headSha: string | null }> {
+  const metadata = parseObject(prProduct.metadata);
+  if (metadata) {
+    if (metadata.ci === "green" || metadata.ci === "not_green") {
+      return {
+        ci: metadata.ci as "green" | "not_green",
+        headSha: typeof metadata.headSha === "string" ? metadata.headSha : null,
+      };
+    }
+    if (metadata.ciState === "green" || metadata.ciState === "not_green") {
+      return {
+        ci: metadata.ciState as "green" | "not_green",
+        headSha: typeof metadata.headSha === "string" ? metadata.headSha : null,
+      };
+    }
+    if (metadata.statusPayload && typeof metadata.statusPayload === "object") {
+      const ci = pullRequestCiStateFromStatusPayload(metadata.statusPayload as Record<string, unknown>);
+      return {
+        ci,
+        headSha: typeof metadata.headSha === "string" ? metadata.headSha : null,
+      };
+    }
+  }
+
+  if (resolver) {
+    const prInfo = selectRunPullRequest([
+      {
+        type: prProduct.type,
+        provider: prProduct.provider ?? "github",
+        url: prProduct.url,
+        status: prProduct.status,
+        metadata: prProduct.metadata,
+      } as any,
+    ]);
+    if (prInfo && typeof prInfo.number === "number") {
+      try {
+        const head = await resolver.resolve({
+          companyId,
+          repository: prInfo.repo,
+          number: prInfo.number,
+        });
+        if (head && (head.ci === "green" || head.ci === "not_green")) {
+          return { ci: head.ci, headSha: head.headSha };
+        }
+      } catch {
+        // Fall through to default not_green
+      }
+    }
+  }
+
+  return {
+    ci: "not_green",
+    headSha: typeof metadata?.headSha === "string" ? metadata.headSha : null,
+  };
+}
+
 export function recoveryService(
   db: Db,
   deps: {
@@ -962,12 +1190,16 @@ export function recoveryService(
     ) => Promise<typeof heartbeatRuns.$inferSelect | null>;
     liveRunExecutions?: Readonly<{ has(id: string): boolean }>;
     beforeOrphanedRunTerminalWrite?: (runId: string) => Promise<void>;
+    /** myrmidon(OPE-10045): CI of the issue's open PR head; tests inject a fake. */
+    resolveReviewPullRequestCi?: ReviewPullRequestCiResolver;
+    prHeadResolver?: PullRequestHeadResolver;
   },
 ) {
   const issuesSvc = issueService(db);
   const recoveryActionsSvc = issueRecoveryActionService(db);
   const treeControlSvc = issueTreeControlService(db);
   const budgets = budgetService(db);
+  const defaultPrHeadResolver = createGitHubPrHeadResolver({ db });
   let resolvedDependencyWakeBackstopCandidateCursor: string | null = null;
 
   async function getAgent(agentId: string) {
@@ -976,6 +1208,93 @@ export function recoveryService(
       .from(agents)
       .where(eq(agents.id, agentId))
       .then((rows) => rows[0] ?? null);
+  }
+
+  /**
+   * myrmidon(OPE-12859): the issue's review verdict on the current PR head is
+   * already recorded. Further wakes of the reviewer would be empty runs — the
+   * reviewer has nothing to add until a new head appears, and the merge-time
+   * `CI result` gate is enforced independently of the reviewer.
+   */
+  async function issueReviewVerdictSettledForOpenPrHead(issue: {
+    id: string;
+    companyId: string;
+    executionState: unknown;
+  }): Promise<boolean> {
+    const verdict = readReviewVerdictRecord(issue.executionState);
+    if (!verdict) return false;
+    const openPr = await db.query.issueWorkProducts.findFirst({
+      where: and(
+        eq(issueWorkProducts.issueId, issue.id),
+        eq(issueWorkProducts.type, "pull_request"),
+        inArray(issueWorkProducts.status, [
+          "open",
+          "active",
+          "ready_for_review",
+          "approved",
+        ]),
+      ),
+    });
+    if (!openPr) return false;
+    const { headSha } = await resolvePrCiState(
+      issue.companyId,
+      openPr,
+      deps.prHeadResolver ?? defaultPrHeadResolver,
+    );
+    return reviewVerdictCoversHead(verdict, headSha);
+  }
+
+  /**
+   * myrmidon(OPE-12859): true when the run is a reviewer (execution-review
+   * participant) recovery run — the same predicate the wake-queue release tail
+   * uses, kept local to avoid a cross-module dependency.
+   */
+  function isReviewerRecoveryRun(run: {
+    contextSnapshot: unknown;
+  }): boolean {
+    const context = parseObject(run.contextSnapshot);
+    const wakeReason =
+      typeof context.wakeReason === "string" ? context.wakeReason : null;
+    const retryReason =
+      typeof context.retryReason === "string" ? context.retryReason : null;
+    return (
+      retryReason === EXECUTION_REVIEW_PARTICIPANT_RECOVERY_REASON ||
+      wakeReason === "execution_review_requested" ||
+      wakeReason === "execution_approval_requested" ||
+      // A continuation wake that carried the reviewer stage context (a
+      // reviewer woken as the issue assignee).
+      (retryReason === "issue_continuation_needed" &&
+        parseObject(context.executionStage).wakeRole === "reviewer")
+    );
+  }
+
+  /**
+   * myrmidon(OPE-12859): schedule the "Review CI wait" monitor for an
+   * in_progress issue whose reviewer run ended without a verdict while CI is
+   * running. No-op (returns false) when a monitor is already scheduled, so a
+   * sweep pass never stacks monitors; the monitor wakes the reviewer once when
+   * CI is terminal.
+   */
+  async function scheduleReviewCiWaitMonitorIfEligible(
+    issue: typeof issues.$inferSelect,
+    latestRun: NonNullable<LatestIssueRun>,
+  ): Promise<boolean> {
+    if (issue.monitorNextCheckAt) return false;
+    const state = parseIssueExecutionState(issue.executionState);
+    if (state?.status !== "pending" || state.currentStageType !== "review") {
+      return false;
+    }
+    const ci = await resolveReviewPullRequestCi({
+      companyId: issue.companyId,
+      issueId: issue.id,
+    });
+    if (ci.state !== "pending" && ci.state !== "unknown") return false;
+    const nextCheckAt = new Date(Math.max(
+      Date.now() + REVIEW_CI_WAIT_INTERVAL_MS,
+      (ci.rateLimit?.resetEpochSeconds ?? 0) * 1000,
+    ));
+    await scheduleReviewCiWaitMonitor({ issue, latestRun, ci, nextCheckAt });
+    return true;
   }
 
   async function isAgentInvokable(
@@ -1024,6 +1343,7 @@ export function recoveryService(
         createdAt: heartbeatRuns.createdAt,
         // myrmidon(L1): claimedAdapterType's input, see LatestIssueRun
         runnerProfileJson: heartbeatRuns.runnerProfileJson,
+        activeIdentityContextId: heartbeatRuns.activeIdentityContextId,
       })
       .from(heartbeatRuns)
       .where(
@@ -1056,6 +1376,7 @@ export function recoveryService(
         createdAt: heartbeatRuns.createdAt,
         // myrmidon(L1): claimedAdapterType's input, see LatestIssueRun
         runnerProfileJson: heartbeatRuns.runnerProfileJson,
+        activeIdentityContextId: heartbeatRuns.activeIdentityContextId,
       })
       .from(heartbeatRuns)
       .where(
@@ -1919,6 +2240,7 @@ export function recoveryService(
         createdAt: heartbeatRuns.createdAt,
         // myrmidon(L1): claimedAdapterType's input, see LatestIssueRun
         runnerProfileJson: heartbeatRuns.runnerProfileJson,
+        activeIdentityContextId: heartbeatRuns.activeIdentityContextId,
       })
       .from(heartbeatRuns)
       .where(
@@ -1980,7 +2302,9 @@ export function recoveryService(
 
   async function enqueueStrandedIssueRecovery(input: {
     issueId: string;
+    companyId: string;
     agentId: string;
+    continuationHead?: string;
     reason:
       | "issue_assignment_recovery"
       | "issue_continuation_needed"
@@ -2019,7 +2343,23 @@ export function recoveryService(
         // Failure recovery shares the durable incident budget and delay. It
         // cannot fall through into the productive-work continuation queue.
         if (predecessor.runtimeMode === "native") return null;
-        if (legacyExecutionNeedsReconciliation(predecessor)) {
+        // myrmidon(RUN-GUARD-LOOPS): a run stopped by the run guard is never
+        // retried or continued automatically: the same task and context repeat
+        // the behaviour that tripped the guard. The issue is blocked for a new
+        // input when the run is stopped (heartbeat) or when the sweep reaches it.
+        if (readRunGuardStopReason(predecessor)) return null;
+        // myrmidon(WAKE-2): recovery through the stranded-issue sweep should not
+        // be blocked by the bounded transient retry scheduler. The scheduler is
+        // designed for failure retries (transient errors) and has many checks
+        // that return "not_scheduled" for generic continuation recovery. Only
+        // block recovery when the failure retry budget is actually exhausted.
+        const isContinuationRecoveryWithBudget =
+          input.reason === "issue_continuation_needed" &&
+          executionFailureRetryCount(predecessor) < 2;
+        if (
+          legacyExecutionNeedsReconciliation(predecessor) &&
+          !isContinuationRecoveryWithBudget
+        ) {
           await terminalizeLegacyExecution({
             db,
             run: predecessor,
@@ -2027,9 +2367,29 @@ export function recoveryService(
           });
           return null;
         }
-        if (deps.scheduleRecoveryRetry)
-          return deps.scheduleRecoveryRetry(predecessor.id);
-        return null;
+        // For conversation-continuation runs with remaining retry budget,
+        // fall through to direct enqueueWakeup below. The bounded retry
+        // scheduler is for transient failure retries, not continuation recovery.
+        // However, respect the retry budget: when the predecessor's retry
+        // budget is exhausted (executionFailureRetryCount >= 2), do NOT
+        // create a new run — the incident budget must not be reset.
+        const needsReconciliation = legacyExecutionNeedsReconciliation(predecessor);
+        if (
+          input.reason === "issue_continuation_needed" &&
+          (hasConversationContinuationPolicy(predecessor) ||
+            (needsReconciliation && isContinuationRecoveryWithBudget))
+        ) {
+          if (executionFailureRetryCount(predecessor) >= 2) {
+            return null;
+          }
+          // Fall through to direct enqueueWakeup below.
+        } else if (deps.scheduleRecoveryRetry) {
+          const scheduled = await deps.scheduleRecoveryRetry(predecessor.id);
+          return scheduled && typeof scheduled === "object" && "id" in scheduled
+            ? scheduled
+            : null;
+        }
+        // Fall through to direct enqueue for generic continuation recovery
       }
     }
     if (
@@ -2057,45 +2417,115 @@ export function recoveryService(
       )
         return null;
     }
-    const queued = await deps.enqueueWakeup(input.agentId, {
-      source: "automation",
-      triggerDetail: "system",
-      reason: input.reason,
-      idempotencyKey: input.idempotencyKey ?? undefined,
-      // The sweep can combine an old in-progress issue snapshot with a newer
-      // successful run. Validate eligibility under the enqueue issue lock so
-      // completion or reassignment cannot create a redundant continuation.
-      ...(input.source === "issue.productive_terminal_continuation_recovery"
-        ? {
-            issueStateGuard: {
-              statuses: ["in_progress"],
-              assigneeAgentId: input.agentId,
-            },
-          }
-        : {}),
-      payload: withRecoveryContext(
-        {
-          issueId: input.issueId,
-          ...(input.retryOfRunId ? { retryOfRunId: input.retryOfRunId } : {}),
-          ...(input.extraContext ?? {}),
-        },
-        "normal_model",
-      ),
-      requestedByActorType: "system",
-      requestedByActorId: null,
-      contextSnapshot: withRecoveryContext(
-        {
-          issueId: input.issueId,
-          taskId: input.issueId,
-          wakeReason: input.reason,
-          retryReason: input.retryReason,
-          source: input.source,
-          ...(input.retryOfRunId ? { retryOfRunId: input.retryOfRunId } : {}),
-          ...(input.extraContext ?? {}),
-        },
-        "normal_model",
-      ),
-    });
+    let continuationClaimKey: string | null = null;
+    if (input.reason === "issue_continuation_needed") {
+      const key = buildContinuationKey({
+        issueId: input.issueId,
+        event: `issue_continuation_needed:${input.agentId}`,
+        head: input.continuationHead ?? "unversioned",
+      });
+      const claimed = await tryClaimContinuationKey(db, {
+        companyId: input.companyId,
+        issueId: input.issueId,
+        key,
+        // Recovery runs without a concrete run head can recur for the same
+        // issue indefinitely; don't suppress those retries for a full day.
+        ttl:
+          !input.continuationHead ||
+          input.source === "issue.continuation_recovery" ||
+          input.source === "issue.interaction_continuation_recovery" ||
+          input.source === STRANDED_AUTO_POLICY_RETRY_SOURCE
+            ? 60 * 1_000
+            : 24 * 60 * 60 * 1_000,
+      });
+      if (claimed === "deduped") return null;
+      continuationClaimKey = key;
+    }
+
+    const extraContext = { ...(input.extraContext ?? {}) };
+    if (
+      (input.reason === EXECUTION_REVIEW_PARTICIPANT_RECOVERY_REASON ||
+        input.retryReason === EXECUTION_REVIEW_PARTICIPANT_RECOVERY_REASON) &&
+      !extraContext.executionStage
+    ) {
+      const [issueRow] = await db
+        .select({ executionState: issues.executionState })
+        .from(issues)
+        .where(eq(issues.id, input.issueId))
+        .limit(1);
+      const parsed = parseIssueExecutionState(issueRow?.executionState);
+      if (parsed) {
+        extraContext.executionStage = {
+          wakeRole: "reviewer" as const,
+          stageId: parsed.currentStageId ?? null,
+          stageType: parsed.currentStageType ?? null,
+          currentParticipant: parsed.currentParticipant ?? null,
+          returnAssignee: parsed.returnAssignee ?? null,
+          reviewRequest: parsed.reviewRequest ?? null,
+          lastDecisionOutcome: parsed.lastDecisionOutcome ?? null,
+          allowedActions: ["approve", "request_changes"],
+        };
+      }
+    }
+
+    let queued: typeof heartbeatRuns.$inferSelect | null;
+    try {
+      queued = await deps.enqueueWakeup(input.agentId, {
+        source: "automation",
+        triggerDetail: "system",
+        reason: input.reason,
+        idempotencyKey: input.idempotencyKey ?? undefined,
+        // The sweep can combine an old in-progress issue snapshot with a newer
+        // successful run. Validate eligibility under the enqueue issue lock so
+        // completion or reassignment cannot create a redundant continuation.
+        ...(input.source === "issue.productive_terminal_continuation_recovery"
+          ? {
+              issueStateGuard: {
+                statuses: ["in_progress"],
+                assigneeAgentId: input.agentId,
+              },
+            }
+          : {}),
+        payload: withRecoveryContext(
+          {
+            issueId: input.issueId,
+            ...(input.retryOfRunId ? { retryOfRunId: input.retryOfRunId } : {}),
+            ...(continuationClaimKey ? { continuationClaimKey } : {}),
+            ...extraContext,
+          },
+          "normal_model",
+        ),
+        requestedByActorType: "system",
+        requestedByActorId: null,
+        contextSnapshot: withRecoveryContext(
+          {
+            issueId: input.issueId,
+            taskId: input.issueId,
+            wakeReason: input.reason,
+            retryReason: input.retryReason,
+            source: input.source,
+            ...(input.retryOfRunId ? { retryOfRunId: input.retryOfRunId } : {}),
+            ...(continuationClaimKey ? { continuationClaimKey } : {}),
+            ...extraContext,
+          },
+          "normal_model",
+        ),
+      });
+    } catch (error) {
+      if (continuationClaimKey) {
+        await releaseContinuationKey(db, {
+          companyId: input.companyId,
+          key: continuationClaimKey,
+        });
+      }
+      throw error;
+    }
+    if (!queued && continuationClaimKey) {
+      await releaseContinuationKey(db, {
+        companyId: input.companyId,
+        key: continuationClaimKey,
+      });
+    }
 
     if (queued && input.retryOfRunId) {
       return db
@@ -2197,7 +2627,56 @@ export function recoveryService(
         projectId: issue.projectId,
       },
     );
-    return Boolean(budgetBlock);
+    if (budgetBlock) return true;
+
+    try {
+      const [agent] = await db
+        .select({ runtimeConfig: agents.runtimeConfig })
+        .from(agents)
+        .where(and(eq(agents.id, agentId), eq(agents.companyId, issue.companyId)))
+        .limit(1);
+      const runtimeConfig = agent?.runtimeConfig;
+      const heartbeat =
+        runtimeConfig && typeof runtimeConfig === "object" && !Array.isArray(runtimeConfig)
+          ? (runtimeConfig as Record<string, unknown>).heartbeat
+          : null;
+      const heartbeatConfig =
+        heartbeat && typeof heartbeat === "object" && !Array.isArray(heartbeat)
+          ? (heartbeat as Record<string, unknown>)
+          : null;
+      const configuredLimit =
+        heartbeatConfig?.maxDailyRuns ??
+        heartbeatConfig?.dailyRunLimit ??
+        heartbeatConfig?.dailyRunCap ??
+        heartbeatConfig?.maxRunsPerDay;
+      const dailyLimit =
+        configuredLimit === null || configuredLimit === undefined || configuredLimit === ""
+          ? null
+          : Math.floor(Number(configuredLimit));
+      if (dailyLimit !== null && Number.isFinite(dailyLimit) && dailyLimit >= 0) {
+        const now = new Date();
+        const start = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()));
+        const end = new Date(start.getTime() + 24 * 60 * 60 * 1000);
+        const [row] = await db
+          .select({ total: sql<number>`count(*)::integer` })
+          .from(heartbeatRuns)
+          .where(
+            and(
+              eq(heartbeatRuns.companyId, issue.companyId),
+              eq(heartbeatRuns.agentId, agentId),
+              gte(heartbeatRuns.startedAt, start),
+              lt(heartbeatRuns.startedAt, end),
+              notInArray(heartbeatRuns.status, ["queued", "scheduled_retry"]),
+              sql`coalesce((${heartbeatRuns.resultJson}->>'failedBeforeModel') = 'true' or (${heartbeatRuns.resultJson}->>'failed_before_model') = 'true', false) = false`,
+            ),
+          );
+        if (Number(row?.total ?? 0) >= dailyLimit) return true;
+      }
+    } catch {
+      // If daily cap inspection fails, defer to downstream heartbeat admission
+    }
+
+    return false;
   }
 
   async function reconcileUnassignedBlockingIssues() {
@@ -2208,6 +2687,7 @@ export function recoveryService(
         identifier: issues.identifier,
         status: issues.status,
         createdByAgentId: issues.createdByAgentId,
+        casteKey: issues.casteKey,
       })
       .from(issueRelations)
       .innerJoin(issues, eq(issueRelations.issueId, issues.id))
@@ -2248,6 +2728,12 @@ export function recoveryService(
         creatorAgent.companyId !== candidate.companyId ||
         !(await isAgentInvokable(creatorAgent))
       ) {
+        skipped += 1;
+        continue;
+      }
+      // myrmidon(OPE-12220): a caste-bound subtask is not handed back to a creator
+      // of another caste (the lead that sliced the epic); the caste matcher assigns it.
+      if (!orphanBlockerFitsCreator({ issueCasteKey: candidate.casteKey, creatorRole: creatorAgent.role })) {
         skipped += 1;
         continue;
       }
@@ -3978,6 +4464,294 @@ export function recoveryService(
     return scheduled ? "queued" : "skipped";
   }
 
+  // myrmidon(OPE-10045): CI of the open PR head, read lazily so the resolver's
+  // GitHub/secrets imports stay out of the heartbeat import graph.
+  async function resolveReviewPullRequestCi(input: {
+    companyId: string;
+    issueId: string;
+  }): Promise<ReviewPullRequestCiFacts> {
+    try {
+      if (deps.resolveReviewPullRequestCi) return await deps.resolveReviewPullRequestCi(input);
+      const { createReviewPullRequestCiResolver } = await import(
+        "../../myrmidon/review-stage-recovery/github-ci.js"
+      );
+      return await createReviewPullRequestCiResolver({ db })(input);
+    } catch {
+      return { state: "unknown", pullRequestUrl: null, headSha: null, reason: "resolver_error" };
+    }
+  }
+
+  async function scheduleReviewCiWaitMonitor(input: {
+    issue: typeof issues.$inferSelect;
+    latestRun: NonNullable<LatestIssueRun>;
+    ci: ReviewPullRequestCiFacts;
+    nextCheckAt: Date;
+  }) {
+    const previousPolicy = normalizeIssueExecutionPolicy(
+      input.issue.executionPolicy ?? null,
+    );
+    const policy = {
+      ...(previousPolicy ?? {
+        mode: "normal" as const,
+        commentRequired: true,
+        stages: [],
+      }),
+      monitor: {
+        nextCheckAt: input.nextCheckAt.toISOString(),
+        notes:
+          `Review waits for CI on the head of ${input.ci.pullRequestUrl ?? "the pull request"}` +
+          `${input.ci.headSha ? ` (${input.ci.headSha.slice(0, 12)})` : ""}; ` +
+          `${input.ci.state === "unknown" ? `CI state could not be read (${input.ci.reason ?? "unknown reason"}); ` : ""}` +
+          `${input.ci.rateLimit?.remaining !== null && input.ci.rateLimit?.remaining !== undefined ? `GitHub rate limit remaining=${input.ci.rateLimit.remaining}/${input.ci.rateLimit.limit ?? "unknown"}; ` : ""}` +
+          `${input.ci.rateLimit?.resetEpochSeconds ? `rate limit reset at ${new Date(input.ci.rateLimit.resetEpochSeconds * 1000).toISOString()}; ` : ""}` +
+          "the board wakes the reviewer to decide when the wait ends.",
+        scheduledBy: "assignee" as const,
+        kind: "external_service" as const,
+        serviceName: REVIEW_CI_WAIT_MONITOR_SERVICE_NAME,
+        externalRef: input.ci.pullRequestUrl ?? input.latestRun.id,
+        timeoutAt: null,
+        maxAttempts: null,
+        recoveryPolicy: "wake_owner" as const,
+      },
+    };
+    const transition = applyIssueMonitorPolicyTransition({
+      issue: input.issue,
+      policy,
+      previousPolicy,
+      requestedStatus: input.issue.status,
+      requestedAssigneePatch: {},
+      actor: { agentId: null, userId: null },
+      monitorExplicitlyUpdated: true,
+    });
+    return issuesSvc.update(input.issue.id, {
+      ...transition.patch,
+      executionPolicy: policy,
+    });
+  }
+
+  async function deferReviewParticipantReleaseForCi(input: {
+    companyId: string;
+    runId: string;
+  }): Promise<boolean> {
+    const run = await db.query.heartbeatRuns.findFirst({
+      where: and(eq(heartbeatRuns.companyId, input.companyId), eq(heartbeatRuns.id, input.runId)),
+    });
+    const issueId = parseObject(run?.contextSnapshot).issueId;
+    if (!run || run.status !== "succeeded" || typeof issueId !== "string" || !issueId) return false;
+    const context = parseObject(run.contextSnapshot);
+    const wakeReason = context.wakeReason;
+    const retryReason = context.retryReason;
+    if (retryReason !== EXECUTION_REVIEW_PARTICIPANT_RECOVERY_REASON &&
+        wakeReason !== "execution_review_requested" &&
+        wakeReason !== "execution_approval_requested") return false;
+    const issue = await db.query.issues.findFirst({
+      where: and(eq(issues.companyId, input.companyId), eq(issues.id, issueId)),
+    });
+    if (!issue || issue.status !== "in_review" || issue.monitorNextCheckAt || issue.assigneeUserId) return false;
+    const state = parseIssueExecutionState(issue.executionState);
+    if (state?.status !== "pending" || state.currentStageType !== "review" ||
+        state.currentParticipant?.type !== "agent" || state.currentParticipant.agentId !== run.agentId) return false;
+    const ci = await resolveReviewPullRequestCi({ companyId: input.companyId, issueId });
+    if (ci.state !== "pending" && ci.state !== "unknown") return false;
+    // myrmidon(OPE-12859): the verdict on this head is already recorded — the
+    // merge gate enforces `CI result` independently, so there is nothing for
+    // the reviewer to do and no CI-wait monitor to keep scheduling.
+    const verdict = readReviewVerdictRecord(issue.executionState);
+    if (verdict && reviewVerdictCoversHead(verdict, ci.headSha)) return false;
+    const nextCheckAt = new Date(Math.max(
+      Date.now() + REVIEW_CI_WAIT_INTERVAL_MS,
+      (ci.rateLimit?.resetEpochSeconds ?? 0) * 1000,
+    ));
+    await scheduleReviewCiWaitMonitor({ issue, latestRun: run, ci, nextCheckAt });
+    return true;
+  }
+
+  /**
+   * myrmidon(OPE-10045): true when the escalation of a stalled execution
+   * review is deferred (a CI wait was scheduled or the reviewer was woken
+   * again), false when the normal escalation must run.
+   */
+  async function deferStalledExecutionReview(input: {
+    issue: typeof issues.$inferSelect;
+    latestRun: LatestIssueRun;
+    recoveryCause?: StrandedRecoveryCause;
+  }): Promise<boolean> {
+    if (input.recoveryCause !== EXECUTION_REVIEW_PARTICIPANT_RECOVERY_REASON) return false;
+    if (input.issue.status !== "in_review") return false;
+    const latestRun = input.latestRun;
+    // Only a reviewer run that ended normally without a decision. Failed or
+    // cancelled runs keep their own retry budget and escalation.
+    // myrmidon(OPE-12201): except a run the maintenance drain interrupted (a
+    // deploy draining the board or the bot): the reviewer is woken again without
+    // spending the decision budget instead of the stage moving to `blocked`.
+    const interruptedByMaintenance = isMaintenanceInterruptedRun(latestRun);
+    if (!latestRun || (latestRun.status !== "succeeded" && !interruptedByMaintenance)) return false;
+    const state = parseIssueExecutionState(input.issue.executionState);
+    if (state?.status !== "pending") return false;
+    const participant = state.currentParticipant;
+    const participantAgentId =
+      participant?.type === "agent" ? participant.agentId ?? null : null;
+    if (!participantAgentId || latestRun.agentId !== participantAgentId) return false;
+    const participantAgent = await getAgent(participantAgentId);
+    if (
+      !participantAgent ||
+      participantAgent.companyId !== input.issue.companyId ||
+      !(await isAgentInvokable(participantAgent))
+    ) {
+      return false;
+    }
+    if (await isInvocationBudgetBlocked(input.issue, participantAgentId)) return false;
+
+    const stageId = state.currentStageId ?? null;
+    const deferralRows = await db
+      .select({ details: activityLog.details })
+      .from(activityLog)
+      .where(
+        and(
+          eq(activityLog.companyId, input.issue.companyId),
+          eq(activityLog.entityType, "issue"),
+          eq(activityLog.entityId, input.issue.id),
+          eq(activityLog.action, REVIEW_STAGE_RECOVERY_DEFERRED_ACTION),
+          gte(activityLog.createdAt, new Date(Date.now() - REVIEW_STAGE_RECOVERY_WINDOW_MS)),
+        ),
+      );
+    const deferrals = countStalledReviewDeferrals(deferralRows, stageId);
+    const ci = await resolveReviewPullRequestCi({
+      companyId: input.issue.companyId,
+      issueId: input.issue.id,
+    });
+    // myrmidon(OPE-12859): a verdict on the current head is already recorded —
+    // the merge gate enforces `CI result` independently, so the reviewer must
+    // not be woken again (nor a CI-wait monitor stacked) until a new head
+    // appears. The deferral is silent: no wake, no monitor, no budget spend.
+    // Returning false lets escalateStrandedAssignedIssue know the issue is
+    // already settled; it returns null (no escalation) in that case.
+    const recordedVerdict = readReviewVerdictRecord(input.issue.executionState);
+    if (recordedVerdict && reviewVerdictCoversHead(recordedVerdict, ci.headSha)) {
+      return false;
+    }
+    const decision: ReturnType<typeof decideStalledReviewRecovery> = interruptedByMaintenance
+      ? { kind: "retry_decision", attempt: 1 + deferrals.decisionRetries, maxAttempts: 1 + deferrals.decisionRetries }
+      : decideStalledReviewRecovery({
+          ci: ci.state,
+          ciWaitsUsed: deferrals.ciWaits,
+          // The release tail's own review-participant retry was the first re-wake.
+          decisionRewakesUsed: 1 + deferrals.decisionRetries,
+        });
+    if (decision.kind === "escalate") return false;
+
+    const activityDetails = {
+      identifier: input.issue.identifier,
+      kind: decision.kind === "wait_for_ci" ? "ci_wait" : interruptedByMaintenance ? "maintenance_retry" : "decision_retry",
+      attempt: decision.attempt,
+      maxAttempts: decision.maxAttempts,
+      stageId,
+      stageType: state.currentStageType ?? null,
+      participantAgentId,
+      latestRunId: latestRun.id,
+      ciState: ci.state,
+      ...(ci.state === "unknown" ? { ciUnknownReason: ci.reason ?? null } : {}),
+      ...(ci.rateLimit ? { rateLimitRemaining: ci.rateLimit.remaining, rateLimitResetEpoch: ci.rateLimit.resetEpochSeconds } : {}),
+      pullRequestUrl: ci.pullRequestUrl,
+      headSha: ci.headSha,
+    };
+
+    if (decision.kind === "wait_for_ci") {
+      // myrmidon(OPE-10063): a CI the board cannot read is waited for like a running one;
+      // one warning line per wait says why (reason codes carry no token).
+      if (ci.state === "unknown") {
+        logger.warn(
+          {
+            issueId: input.issue.id,
+            identifier: input.issue.identifier,
+            reason: ci.reason ?? null,
+            rateLimitRemaining: ci.rateLimit?.remaining ?? null,
+            rateLimitResetEpoch: ci.rateLimit?.resetEpochSeconds ?? null,
+            attempt: decision.attempt,
+            maxAttempts: decision.maxAttempts,
+          },
+          `myrmidon(OPE-10063): CI of the review pull request head is unreadable (${ci.reason ?? "unknown reason"}); waiting for CI instead of blocking`,
+        );
+      }
+      const intervalCheckAt = Date.now() + REVIEW_CI_WAIT_INTERVAL_MS;
+      const resetCheckAt = (ci.rateLimit?.resetEpochSeconds ?? 0) * 1000;
+      const nextCheckAt = new Date(Math.max(intervalCheckAt, resetCheckAt));
+      const updated = await scheduleReviewCiWaitMonitor({
+        issue: input.issue,
+        latestRun,
+        ci,
+        nextCheckAt,
+      }).catch((error: unknown) => {
+        logger.warn(
+          {
+            issueId: input.issue.id,
+            error: error instanceof Error ? error.message : String(error),
+          },
+          "myrmidon(OPE-10045): could not schedule the review CI wait; escalating instead",
+        );
+        return null;
+      });
+      if (!updated) return false;
+      await logActivity(db, {
+        companyId: input.issue.companyId,
+        actorType: "system",
+        actorId: "recovery",
+        agentId: null,
+        runId: latestRun.id,
+        action: REVIEW_STAGE_RECOVERY_DEFERRED_ACTION,
+        entityType: "issue",
+        entityId: input.issue.id,
+        details: { ...activityDetails, nextCheckAt: nextCheckAt.toISOString() },
+      });
+      return true;
+    }
+
+    // The attempt is recorded before the wake: the woken run can finish and
+    // come back here before this function returns, and it must see the count.
+    await logActivity(db, {
+      companyId: input.issue.companyId,
+      actorType: "system",
+      actorId: "recovery",
+      agentId: null,
+      runId: latestRun.id,
+      action: REVIEW_STAGE_RECOVERY_DEFERRED_ACTION,
+      entityType: "issue",
+      entityId: input.issue.id,
+      details: activityDetails,
+    });
+    const executionStage = state
+      ? {
+          wakeRole: "reviewer" as const,
+          stageId,
+          stageType: state.currentStageType ?? null,
+          currentParticipant: state.currentParticipant ?? null,
+          returnAssignee: state.returnAssignee ?? null,
+          reviewRequest: state.reviewRequest ?? null,
+          lastDecisionOutcome: state.lastDecisionOutcome ?? null,
+          allowedActions: ["approve", "request_changes"],
+        }
+      : null;
+    const queued = await enqueueStrandedIssueRecovery({
+      issueId: input.issue.id,
+      companyId: input.issue.companyId,
+      agentId: participantAgentId,
+      reason: EXECUTION_REVIEW_PARTICIPANT_RECOVERY_REASON,
+      retryReason: EXECUTION_REVIEW_PARTICIPANT_RECOVERY_REASON,
+      source: "issue.execution_review_recovery",
+      retryOfRunId: latestRun.id,
+      extraContext: {
+        currentStageId: stageId,
+        currentStageType: state.currentStageType ?? null,
+        ...(executionStage ? { executionStage } : {}),
+        reviewRecoveryInstruction:
+          `The previous reviewer run ended again without a decision while this execution-review stage is pending. ${REVIEW_DECISION_RECOVERY_INSTRUCTION}`,
+        reviewDecisionRetryAttempt: decision.attempt,
+        reviewDecisionMaxRetries: decision.maxAttempts,
+      },
+    }).catch(() => null);
+    return Boolean(queued);
+  }
+
   async function escalateStrandedAssignedIssue(input: {
     issue: typeof issues.$inferSelect;
     previousStatus: StrandedPreviousStatus;
@@ -3989,24 +4763,124 @@ export function recoveryService(
     rerouteToSharedQueue?: boolean;
     scheduledRetryAttempt?: number | null;
     scheduledRetryReason?: string | null;
+    hasPendingCi?: boolean;
   }) {
+    // myrmidon(OPE-10045): a pending review stage whose reviewer run ended
+    // without a decision first waits for CI on the PR head, then gets one more
+    // explicit decision request. Only after that is it escalated, and the
+    // escalation keeps the stage (participant, return assignee) as it is.
+    // myrmidon(OPE-12859): when the review verdict already covers the current
+    // PR head, the review is done — only the merge-time `CI result` gate is
+    // still pending. There is nothing for recovery to do: no wake, no
+    // CI-wait monitor, no escalation. Return null so the sweep counts it as
+    // skipped rather than escalated.
+    {
+      const recordedVerdict = readReviewVerdictRecord(input.issue.executionState);
+      if (recordedVerdict) {
+        const ciFacts = await resolveReviewPullRequestCi({
+          companyId: input.issue.companyId,
+          issueId: input.issue.id,
+        });
+        if (reviewVerdictCoversHead(recordedVerdict, ciFacts.headSha)) {
+          return null;
+        }
+      }
+    }
+    if (await deferStalledExecutionReview(input)) return input.issue;
+
+    const openPrProduct = await db.query.issueWorkProducts.findFirst({
+      where: and(
+        eq(issueWorkProducts.issueId, input.issue.id),
+        eq(issueWorkProducts.type, "pull_request"),
+        inArray(issueWorkProducts.status, [
+          "open",
+          "active",
+          "ready_for_review",
+          "approved",
+        ]),
+      ),
+    });
+
+    // OPE-9295: in stranded sweep, an issue with an open PR and status in_progress
+    // transitions to in_review at the current assignee (review in parallel with CI),
+    // instead of blocking.
+    const isProductiveContinuationRecovery =
+      input.latestRun?.contextSnapshot &&
+      typeof input.latestRun.contextSnapshot === "object" &&
+      (input.latestRun.contextSnapshot as Record<string, unknown>).retryReason ===
+        "issue_continuation_needed";
+    if (
+      openPrProduct &&
+      isProductiveContinuationRecovery &&
+      (input.previousStatus === "in_progress" || input.issue.status === "in_progress")
+    ) {
+      const prCi = await resolvePrCiState(
+        input.issue.companyId,
+        openPrProduct,
+        deps.prHeadResolver ?? defaultPrHeadResolver,
+      );
+      const existingReviewer = getReviewerParticipantAgentId(input.issue);
+      let patchExecutionPolicy: unknown = undefined;
+      let reviewerAgentId = existingReviewer;
+      if (!reviewerAgentId) {
+        reviewerAgentId = await pickReviewerForIssue(db, input.issue, openPrProduct);
+        if (reviewerAgentId) {
+          patchExecutionPolicy = {
+            mode: "normal",
+            stages: [
+              {
+                type: "review",
+                approvalsNeeded: 1,
+                participants: [{ type: "agent", agentId: reviewerAgentId }],
+              },
+            ],
+          };
+        }
+      }
+      const updated = await issuesSvc.update(input.issue.id, {
+        status: "in_review" as const,
+        ...(patchExecutionPolicy ? { executionPolicy: patchExecutionPolicy } : {}),
+      } as any);
+      if (prCi.ci === "green" && reviewerAgentId) {
+        await deps.enqueueWakeup(reviewerAgentId, {
+          source: "automation",
+          triggerDetail: "system",
+          reason: "execution_review_requested",
+          payload: {
+            issueId: input.issue.id,
+            headSha: prCi.headSha,
+            ci: "green",
+          },
+          idempotencyKey: `ci_green:${input.issue.id}:${prCi.headSha ?? "green"}`,
+          contextSnapshot: {
+            issueId: input.issue.id,
+            taskId: input.issue.id,
+            wakeReason: "execution_review_requested",
+          },
+        }).catch(() => null);
+      }
+      return updated;
+    }
+
     const recoveryCause = resolveStrandedRecoveryCause(
       input.latestRun,
       input.recoveryCause,
     );
+    const successfulRunDisposition =
+      recoveryCause.startsWith("successful_run_") ||
+      Boolean(input.successfulRunHandoffEvidence);
 
     // legacy stranded-recovery issues retain their in-place escalation.
     if (
       input.rerouteToSharedQueue &&
       !isStrandedIssueRecoveryIssue(input.issue) &&
-      recoveryCause !== SUCCESSFUL_RUN_MISSING_STATE_REASON &&
+      !successfulRunDisposition &&
       input.latestRun?.contextSnapshot &&
       typeof input.latestRun.contextSnapshot === "object" &&
       "retryReason" in input.latestRun.contextSnapshot &&
       isInfraInterruptErrorCode(input.latestRun.errorCode) &&
       input.recoveryCause !== "configuration_incomplete" &&
       input.latestRun.status !== "failed" &&
-      input.recoveryCause !== SUCCESSFUL_RUN_MISSING_STATE_REASON &&
       !infraInterruptRetryBudgetExhausted({
         scheduledRetryAttempt: input.scheduledRetryAttempt,
         scheduledRetryReason: input.scheduledRetryReason,
@@ -4042,9 +4916,10 @@ export function recoveryService(
     }
     // myrmidon(L4): a successful run that leaves the issue without a
     // disposition resolves by bounded auto-retry, then manager review,
-    // instead of escalating straight to an owner card. Only the last-run-
-    // succeeded causes are in scope; a failed run stays on the vendor path
-    // below (L1's concern). See ../../myrmidon/stranded-autopolicy.ts.
+    // instead of escalating straight to an owner card. An exhausted
+    // successful-run handoff also stays on the agent disposition path if its
+    // corrective attempt failed; unrelated failed-run causes retain L1's
+    // vendor path. See ../../myrmidon/stranded-autopolicy.ts.
     //
     // The `previousStatus`/`issue.status === "in_progress"` check narrows
     // this to the actual "in progress, no disposition" case the spec
@@ -4062,8 +4937,11 @@ export function recoveryService(
     const strandedAutoPolicyLatestRun = input.latestRun;
     if (
       readStrandedAutoPolicyEnabled() &&
-      strandedAutoPolicyLatestRun?.status === "succeeded" &&
-      !input.rerouteToSharedQueue &&
+      strandedAutoPolicyLatestRun &&
+      (strandedAutoPolicyLatestRun.status === "succeeded" ||
+        successfulRunDisposition) &&
+      (!input.rerouteToSharedQueue ||
+        successfulRunDisposition) &&
       isStrandedAutoPolicyCause(recoveryCause) &&
       (input.previousStatus === "in_progress" || input.issue.status === "in_progress") &&
       input.issue.assigneeAgentId &&
@@ -4071,6 +4949,24 @@ export function recoveryService(
     ) {
       const latestRun = strandedAutoPolicyLatestRun;
       const assigneeAgentId = input.issue.assigneeAgentId;
+      const handoffEvidence = input.successfulRunHandoffEvidence ??
+        isExhaustedSuccessfulRunHandoff(latestRun);
+      const handoffExhausted = Boolean(
+        handoffEvidence &&
+          handoffEvidence.handoffAttempt >= handoffEvidence.maxHandoffAttempts,
+      );
+      // A replay must stand down even when its queued wake used the last retry.
+      // Check before the counter can select a manager handoff or blocked state.
+      const retryIdempotencyKey = buildStrandedAutoPolicyRetryIdempotencyKey({
+        issueId: input.issue.id,
+        sourceRunId: latestRun.id,
+      });
+      if (!handoffExhausted && await findExistingStrandedAutoPolicyRetryWake({
+        companyId: input.issue.companyId,
+        idempotencyKey: retryIdempotencyKey,
+      })) {
+        return input.issue;
+      }
       const maxAttemptsPerDay = readStrandedAutoRetriesPerDay();
       const [attemptsInWindow, managerAgentId, assigneeAgent] = await Promise.all([
         countStrandedAutoPolicyAttemptsInWindow(db, {
@@ -4112,17 +5008,112 @@ export function recoveryService(
       const escalationTarget =
         !assigneePaused && !retriesLeft && escalationTargetId ? await getAgent(escalationTargetId) : null;
       const targetIsAdm = escalationTarget?.name.trim().toLowerCase() === "adm";
+      // myrmidon(OPE-12265): the `disposition_blocked` owner is the nearest
+      // lead/manager above the assignee, not the direct reviewer. `adm` (the
+      // chain fallback) stays the owner when no lead exists in the chain.
+      const dispositionOwnerAgentId =
+        !assigneePaused && !retriesLeft
+          ? await findStrandedDispositionOwnerAgentId(db, {
+              companyId: input.issue.companyId,
+              assigneeAgentId,
+            })
+          : null;
+
+      let hasPendingCi = input.hasPendingCi ?? false;
+      if (!hasPendingCi && openPrProduct) {
+        const lastComment = await db.query.issueComments.findFirst({
+          where: eq(issueComments.issueId, input.issue.id),
+          orderBy: desc(issueComments.createdAt),
+        });
+        const externalPrObject = openPrProduct.externalId
+          ? await db.query.externalObjects.findFirst({
+              where: and(
+                eq(externalObjects.companyId, input.issue.companyId),
+                eq(externalObjects.providerKey, "github"),
+                eq(externalObjects.objectType, "pull_request"),
+                eq(externalObjects.externalId, openPrProduct.externalId),
+              ),
+            })
+          : null;
+        hasPendingCi = isPendingCiForOpenPr({
+          openPr: openPrProduct,
+          lastComment,
+          contextSnapshot: latestRun?.contextSnapshot,
+          externalPrObject,
+        });
+      }
+
       const autoPolicyDecision = decideStrandedAutoPolicy({
         attemptsInWindow,
         maxAttemptsPerDay,
         managerAgentId,
         escalationAgentId,
+        dispositionOwnerAgentId,
         targetIsAdm,
-        hasExecutionWorkflow: issueHasExistingExecutionWorkflow(input.issue),
+        requireAgentDisposition: successfulRunDisposition,
+        hasExecutionWorkflow: issueHasExistingExecutionWorkflow({
+          ...input.issue,
+          hasOpenPullRequest: Boolean(openPrProduct),
+        }),
+        hasPendingCi,
+        successfulRunHandoffExhausted: handoffExhausted,
         assigneePaused,
       });
 
-      if (autoPolicyDecision.kind === "retry") {
+      if (autoPolicyDecision.kind === "monitor_external_service") {
+        const nextCheckAt = autoPolicyDecision.nextCheckAt
+          ? new Date(autoPolicyDecision.nextCheckAt)
+          : new Date(Date.now() + 10 * 60 * 1000);
+        const previousPolicy = (input.issue.executionPolicy ?? null) as any;
+        const policy = {
+          ...(previousPolicy ?? {
+            mode: "normal" as const,
+            commentRequired: true,
+            stages: [],
+          }),
+          monitor: {
+            nextCheckAt: nextCheckAt.toISOString(),
+            notes: autoPolicyDecision.notes,
+            scheduledBy: "assignee" as const,
+            kind: "external_service" as const,
+            serviceName: autoPolicyDecision.serviceName,
+            externalRef: openPrProduct?.url ?? null,
+            timeoutAt: null,
+            maxAttempts: null,
+            recoveryPolicy: "wake_owner" as const,
+          },
+        };
+        const transition = applyIssueMonitorPolicyTransition({
+          issue: input.issue,
+          policy,
+          previousPolicy,
+          requestedStatus: input.issue.status,
+          requestedAssigneePatch: {},
+          actor: { agentId: null, userId: null },
+          monitorExplicitlyUpdated: true,
+        });
+        const updated = await issuesSvc.update(input.issue.id, {
+          ...transition.patch,
+          executionPolicy: policy,
+        });
+        await logActivity(db, {
+          companyId: input.issue.companyId,
+          actorType: "system",
+          actorId: "system",
+          agentId: null,
+          runId: latestRun.id,
+          action: "issue.stranded_autopolicy_monitor_external_service",
+          entityType: "issue",
+          entityId: input.issue.id,
+          details: {
+            identifier: input.issue.identifier,
+            recoveryCause,
+            serviceName: autoPolicyDecision.serviceName,
+            nextCheckAt: nextCheckAt.toISOString(),
+          },
+        });
+        return updated;
+      } else if (autoPolicyDecision.kind === "retry") {
         // myrmidon(L4): `enqueueWakeup` *throws* (not a falsy return) when the
         // assignee turns out not to be invokable or is over its invocation
         // budget (heartbeat.ts's `conflict(...)` on both checks) — exactly
@@ -4174,7 +5165,9 @@ export function recoveryService(
         try {
           queued = await enqueueStrandedIssueRecovery({
             issueId: input.issue.id,
+            companyId: input.issue.companyId,
             agentId: assigneeAgentId,
+            continuationHead: latestRun.id,
             reason: "issue_continuation_needed",
             retryReason: "issue_continuation_needed",
             source: STRANDED_AUTO_POLICY_RETRY_SOURCE,
@@ -4448,7 +5441,7 @@ export function recoveryService(
       } else if (autoPolicyDecision.kind === "disposition_blocked") {
         // myrmidon(OPE-9072): the issue has its own workflow (policy, monitor
         // or execution state): never take it over and never change the
-        // assignee. Block it with complete metadata owned by a senior agent
+        // assignee. Block it with complete metadata owned by the nearest lead
         // and wake that agent once. The wake key ties it to this successful
         // run, so a repeat pass stands down instead of waking again.
         const ownerAgentId = autoPolicyDecision.ownerAgentId;
@@ -4517,7 +5510,7 @@ export function recoveryService(
             {},
             {
               authorType: "system",
-              presentation: compactRecoveryPresentation("Escalated to a senior agent"),
+              presentation: compactRecoveryPresentation("Escalated to the nearest lead"),
               metadata: recoveryNoticeMetadata({
                 cause: recoveryCause,
                 latestRun,
@@ -4573,6 +5566,24 @@ export function recoveryService(
         }
       }
       // autoPolicyDecision.kind === "vendor_default" falls through as-is.
+    }
+
+    if (successfulRunDisposition) {
+      // Missing escalation agents, a paused assignee, or disabled auto-policy
+      // are not permission to create a board-owned liveness block for a
+      // successful-run disposition handoff. For an exhausted failure, keep
+      // the vendor's cause-keyed board escalation instead of turning every
+      // successful_run_* cause into a silent no-op.
+      if (input.latestRun?.status === "succeeded") return input.issue;
+      if (input.issue.originKind === "stranded_issue_recovery") {
+        return issuesSvc.update(input.issue.id, {
+          status: "blocked",
+          blockedByIssueIds: await existingUnresolvedBlockerIssueIds(
+            input.issue.companyId,
+            input.issue.id,
+          ),
+        });
+      }
     }
 
     const approvedInfraReroute = Boolean(
@@ -4689,7 +5700,7 @@ export function recoveryService(
       typeof input.latestRun.contextSnapshot === "object" &&
       "retryReason" in input.latestRun.contextSnapshot &&
       isInfraInterruptErrorCode(input.latestRun.errorCode) &&
-      recoveryCause !== SUCCESSFUL_RUN_MISSING_STATE_REASON &&
+      !successfulRunDisposition &&
       input.latestRun.status !== "failed" &&
       recoveryCause !== "configuration_incomplete" &&
       !infraInterruptRetryBudgetExhausted({
@@ -4721,7 +5732,7 @@ export function recoveryService(
       blockedByIssueIds: blockerIds,
       // myrmidon(BLOCKED-REASON): without an open blocker the board-owned
       // recovery action is the reason; name it so the block is never reasonless.
-      ...(blockerIds.length === 0
+      ...(blockerIds.length === 0 && !successfulRunDisposition
         ? {
             unblockDescriptor: recoveryLivenessDescriptor(
               input.issue.id,
@@ -5103,6 +6114,80 @@ export function recoveryService(
     issueCreatedAtGte?: Date | null;
     issueIds?: string[];
   }) {
+    const strandedReviewBlocks = await db
+      .select()
+      .from(issues)
+      .where(and(
+        eq(issues.status, "blocked"),
+        isNull(issues.assigneeUserId),
+        sql`${issues.executionState} ->> 'currentStageType' = 'review'`,
+        sql`${issues.executionState} ->> 'status' in ('pending', 'changes_requested')`,
+        opts?.issueCreatedAtGte ? gte(issues.createdAt, opts.issueCreatedAtGte) : undefined,
+        opts?.issueIds ? inArray(issues.id, opts.issueIds) : undefined,
+        isNull(issues.hiddenAt),
+      ));
+    let reviewBlocksRestored = 0;
+    for (const blockedIssue of strandedReviewBlocks) {
+      const state = parseIssueExecutionState(blockedIssue.executionState);
+      if (!state || (state.status !== "pending" && state.status !== "changes_requested")) continue;
+      if (blockedIssue.blockerMetadata?.blockReason === "human_decision") continue;
+      if ((await existingUnresolvedBlockerIssueIds(blockedIssue.companyId, blockedIssue.id)).length > 0) continue;
+      if (await hasPendingWakeInteraction(blockedIssue.companyId, blockedIssue.id)) continue;
+      if (await recoveryActionsSvc.getActiveForIssue(blockedIssue.companyId, blockedIssue.id)) continue;
+      const targetAgentId = state.status === "changes_requested"
+        ? (state.returnAssignee?.type === "agent" ? state.returnAssignee.agentId : blockedIssue.assigneeAgentId)
+        : (state.currentParticipant?.type === "agent" ? state.currentParticipant.agentId : null);
+      if (!targetAgentId) continue;
+      const target = await getAgent(targetAgentId);
+      if (!target || target.companyId !== blockedIssue.companyId || !(await isAgentInvokable(target))) continue;
+      const restored = await db.transaction(async (tx) => {
+        const [current] = await tx.select().from(issues)
+          .where(and(eq(issues.id, blockedIssue.id), eq(issues.companyId, blockedIssue.companyId)))
+          .for("update");
+        if (!current || current.status !== "blocked" ||
+          JSON.stringify(current.executionState) !== JSON.stringify(blockedIssue.executionState) ||
+          current.blockerMetadata?.blockReason === "human_decision") return false;
+        const blockers = await tx.select({ id: issueRelations.issueId }).from(issueRelations)
+          .innerJoin(issues, eq(issues.id, issueRelations.issueId))
+          .where(and(eq(issueRelations.companyId, current.companyId),
+            eq(issueRelations.relatedIssueId, current.id), eq(issueRelations.type, "blocks"),
+            notInArray(issues.status, ["done", "cancelled"])));
+        if (blockers.length) return false;
+        await tx.update(issues).set({
+          status: state.status === "pending" ? "in_review" : "in_progress",
+          assigneeAgentId: targetAgentId,
+          assigneeUserId: null,
+          unblockDescriptor: null,
+          blockerMetadata: null,
+          updatedAt: new Date(),
+        }).where(eq(issues.id, current.id));
+        return true;
+      });
+      if (!restored) continue;
+      reviewBlocksRestored += 1;
+      const queued = await enqueueStrandedIssueRecovery({
+        issueId: blockedIssue.id,
+        companyId: blockedIssue.companyId,
+        agentId: targetAgentId,
+        reason: state.status === "pending"
+          ? EXECUTION_REVIEW_PARTICIPANT_RECOVERY_REASON
+          : "issue_continuation_needed",
+        retryReason: state.status === "pending"
+          ? EXECUTION_REVIEW_PARTICIPANT_RECOVERY_REASON
+          : "issue_continuation_needed",
+        source: state.status === "pending"
+          ? "issue.execution_review_recovery"
+          : "issue.continuation_recovery",
+        extraContext: state.status === "pending" ? {
+          currentStageId: state.currentStageId ?? null,
+          currentStageType: "review",
+        } : undefined,
+      });
+      if (!queued) {
+        // The regular stranded-work sweep can retry an agent wake on its next pass.
+        continue;
+      }
+    }
     const candidates = await db
       .select()
       .from(issues)
@@ -5125,6 +6210,7 @@ export function recoveryService(
     candidates.splice(0, candidates.length, ...(await filterAgentsOutsideMaintenance(db, candidates, (issue) => issue.assigneeAgentId))); // myrmidon(R3): no stranded-issue redispatch or escalation during maintenance
 
     const result = {
+      reviewBlocksRestored,
       assignmentDispatched: 0,
       dispatchRequeued: 0,
       continuationRequeued: 0,
@@ -5169,6 +6255,16 @@ export function recoveryService(
     }
 
     for (const issue of candidates) {
+      // The candidate list is a snapshot. A continuation may have been closed
+      // after it was read; never reconcile or escalate a terminal issue from
+      // that stale snapshot.
+      const [currentIssue] = await db.select({ status: issues.status }).from(issues)
+        .where(and(eq(issues.companyId, issue.companyId), eq(issues.id, issue.id)))
+        .limit(1);
+      if (!currentIssue || currentIssue.status === "done" || currentIssue.status === "cancelled") {
+        result.skipped += 1;
+        continue;
+      }
       if (issue.conversationAgentId) {
         const lastRun = await getLatestIssueRun(issue.companyId, issue.id);
         if (lastRun?.status === "succeeded") {
@@ -5194,6 +6290,18 @@ export function recoveryService(
         currentParticipant?.type === "agent"
           ? currentParticipant.agentId
           : null;
+      const pendingReviewStage =
+        issue.status === "in_review" && pendingExecutionState?.currentStageType === "review";
+      if (pendingReviewStage) {
+        const reviewCi = await resolveReviewPullRequestCi({
+          companyId: issue.companyId,
+          issueId: issue.id,
+        });
+        if (reviewCi.state === "pending" || reviewCi.state === "unknown") {
+          result.skipped += 1;
+          continue;
+        }
+      }
       const agentId =
         issue.status === "in_review" && participantAgentId
           ? participantAgentId
@@ -5264,6 +6372,67 @@ export function recoveryService(
             .where(eq(heartbeatRuns.id, latestRun.id))
             .then((rows) => rows[0] ?? null)
         : null;
+      const participantLatestRunForRecovery =
+        issue.status === "in_review" && participantAgentId
+          ? await getLatestIssueRunForAgent(
+              issue.companyId,
+              issue.id,
+              participantAgentId,
+            )
+          : null;
+      const executionRecoverySource =
+        issue.status === "in_review"
+          ? participantLatestRunForRecovery
+          : latestRun;
+      // Provider outages are external availability failures, not evidence that
+      // a paused assignee should be escalated. Park them before the invokability
+      // gate so a 429/402/503 outage keeps a durable monitor.
+      const recoveryNow = new Date();
+      const providerQuotaMonitorRun =
+        issue.status === "in_review"
+          ? participantLatestRunForRecovery
+          : latestRun;
+      const preBudgetProviderQuotaClassification =
+        providerQuotaMonitorRun &&
+        !isStrandedIssueRecoveryIssue(issue) &&
+        (pendingReviewStage || issue.status !== "in_review") &&
+        isUnsuccessfulTerminalIssueRun(providerQuotaMonitorRun) &&
+        getAdapterFailureRecoveryTargetAgentId(issue) ===
+          providerQuotaMonitorRun.agentId
+          ? classifyAdapterFailureForRecovery(providerQuotaMonitorRun, recoveryNow)
+          : null;
+      if (
+        providerQuotaMonitorRun &&
+        preBudgetProviderQuotaClassification?.kind === "provider_quota"
+      ) {
+        if (
+          hasPendingProviderQuotaRecoveryMonitor(
+            issue,
+            providerQuotaMonitorRun,
+            recoveryNow,
+          )
+        ) {
+          result.skipped += 1;
+          continue;
+        }
+        const monitored = await scheduleProviderQuotaRecoveryMonitor({
+          issue,
+          latestRun: providerQuotaMonitorRun,
+          classification: preBudgetProviderQuotaClassification,
+        });
+        if (monitored) {
+          latestRun = await persistAdapterFailureRecoveryClassification(
+            providerQuotaMonitorRun,
+            preBudgetProviderQuotaClassification,
+          );
+          result.providerQuotaMonitored += 1;
+          result.issueIds.push(issue.id);
+        } else {
+          result.skipped += 1;
+        }
+        continue;
+      }
+
       // myrmidon(L1): the agent is non-invokable only because it is paused
       // (infrastructure), and the terminal run itself ended on an
       // infrastructure interrupt code within its retry budget, on a run
@@ -5409,20 +6578,12 @@ export function recoveryService(
         continue;
       }
 
-      const participantLatestRunForRecovery =
-        issue.status === "in_review" && participantAgentId
-          ? await getLatestIssueRunForAgent(
-              issue.companyId,
-              issue.id,
-              participantAgentId,
-            )
-          : null;
-      const executionRecoverySource =
-        issue.status === "in_review"
-          ? participantLatestRunForRecovery
-          : latestRun;
       if (
         executionRecoverySource?.agentId === agentId &&
+        executionRecoverySource.contextSnapshot &&
+        typeof executionRecoverySource.contextSnapshot === "object" &&
+        "requestedByActorId" in executionRecoverySource.contextSnapshot &&
+        executionRecoverySource.contextSnapshot.requestedByActorId &&
         (
           await readChatControlRecoveryStop(db, {
             companyId: issue.companyId,
@@ -5455,7 +6616,24 @@ export function recoveryService(
               eq(heartbeatRuns.id, executionRecoverySource.id),
             ),
           );
-        if (source && legacyExecutionNeedsReconciliation(source)) {
+        // myrmidon(WAKE-2): for generic issue continuation recovery with
+        // remaining retry budget, do NOT terminalize — the recovery path
+        // below will create a new run via enqueueStrandedIssueRecovery.
+        // Only terminalize when the retry budget is exhausted.
+        // Recovery issues (stranded_issue_recovery) always use the
+        // terminalization path to avoid duplicate comments.
+        // Cancelled runs (system/operator cancellation) also use the
+        // terminalization path — they are not continuation recoveries.
+        const isContinuationRecovery =
+          issue.status !== "in_review" &&
+          issue.originKind !== "stranded_issue_recovery" &&
+          source?.status === "failed" &&
+          executionFailureRetryCount(source ?? {}) < 2;
+        if (
+          source &&
+          legacyExecutionNeedsReconciliation(source) &&
+          !isContinuationRecovery
+        ) {
           await terminalizeLegacyExecution({
             db,
             run: source,
@@ -5532,11 +6710,6 @@ export function recoveryService(
         result.skipped += 1;
         continue;
       }
-      const recoveryNow = new Date();
-      const providerQuotaMonitorRun =
-        issue.status === "in_review"
-          ? participantLatestRunForRecovery
-          : latestRun;
       if (
         hasPendingProviderQuotaRecoveryMonitor(
           issue,
@@ -5732,7 +6905,11 @@ export function recoveryService(
 
           const queued = await enqueueStrandedIssueRecovery({
             issueId: issue.id,
+            companyId: issue.companyId,
             agentId,
+            continuationHead:
+              latestPostResolutionRun?.id ??
+              acceptedContinuationInteraction.id,
             reason: "issue_continuation_needed",
             retryReason: "issue_continuation_needed",
             source: "issue.interaction_continuation_recovery",
@@ -5763,6 +6940,82 @@ export function recoveryService(
       }
 
       if (issue.status === "in_review") {
+        const openPr = await db.query.issueWorkProducts.findFirst({
+          where: and(
+            eq(issueWorkProducts.issueId, issue.id),
+            eq(issueWorkProducts.type, "pull_request"),
+            inArray(issueWorkProducts.status, [
+              "open",
+              "active",
+              "ready_for_review",
+              "approved",
+            ]),
+          ),
+        });
+        if (openPr) {
+          const prCi = await resolvePrCiState(
+            issue.companyId,
+            openPr,
+            deps.prHeadResolver ?? defaultPrHeadResolver,
+          );
+          // myrmidon(OPE-12859): the review verdict on the current head is
+          // already recorded — only the merge-time `CI result` gate is still
+          // pending. Re-waking the reviewer burns empty runs (the reviewer
+          // answers "CI is not terminal, no verdict" and exits); the CI-wait
+          // monitor alone watches the head and the merge gate enforces CI
+          // independently.
+          {
+            const verdict = readReviewVerdictRecord(issue.executionState);
+            if (
+              verdict &&
+              reviewVerdictCoversHead(verdict, prCi.headSha)
+            ) {
+              result.skipped += 1;
+              continue;
+            }
+          }
+          if (prCi.ci === "green") {
+            let reviewerAgentId = getReviewerParticipantAgentId(issue);
+            if (!reviewerAgentId) {
+              reviewerAgentId = await pickReviewerForIssue(db, issue, openPr);
+              if (reviewerAgentId) {
+                await issuesSvc.update(issue.id, {
+                  executionPolicy: {
+                    mode: "normal",
+                    stages: [
+                      {
+                        type: "review",
+                        approvalsNeeded: 1,
+                        participants: [{ type: "agent", agentId: reviewerAgentId }],
+                      },
+                    ],
+                  },
+                } as any).catch(() => null);
+              }
+            }
+            if (reviewerAgentId) {
+              await deps.enqueueWakeup(reviewerAgentId, {
+                source: "automation",
+                triggerDetail: "system",
+                reason: "execution_review_requested",
+                payload: {
+                  issueId: issue.id,
+                  headSha: prCi.headSha,
+                  ci: "green",
+                },
+                idempotencyKey: `ci_green:${issue.id}:${prCi.headSha ?? "green"}`,
+                contextSnapshot: {
+                  issueId: issue.id,
+                  taskId: issue.id,
+                  wakeReason: "execution_review_requested",
+                },
+              }).catch(() => null);
+            }
+          }
+          result.skipped += 1;
+          continue;
+        }
+
         if (!participantAgentId || !pendingExecutionState) {
           result.skipped += 1;
           continue;
@@ -5922,9 +7175,23 @@ export function recoveryService(
           continue;
         }
 
+        const executionStage = pendingExecutionState
+          ? {
+              wakeRole: "reviewer" as const,
+              stageId: pendingExecutionState.currentStageId ?? null,
+              stageType: pendingExecutionState.currentStageType ?? null,
+              currentParticipant: pendingExecutionState.currentParticipant ?? null,
+              returnAssignee: pendingExecutionState.returnAssignee ?? null,
+              reviewRequest: pendingExecutionState.reviewRequest ?? null,
+              lastDecisionOutcome: pendingExecutionState.lastDecisionOutcome ?? null,
+              allowedActions: ["approve", "request_changes"],
+            }
+          : null;
+
         // If participant has a live run somewhere, just enqueue a recovery wake instead of escalating
         const queued = await enqueueStrandedIssueRecovery({
           issueId: issue.id,
+          companyId: issue.companyId,
           agentId: participantAgentId,
           reason: EXECUTION_REVIEW_PARTICIPANT_RECOVERY_REASON,
           retryReason: EXECUTION_REVIEW_PARTICIPANT_RECOVERY_REASON,
@@ -5933,8 +7200,10 @@ export function recoveryService(
           extraContext: {
             currentStageId: pendingExecutionState.currentStageId ?? null,
             currentStageType: pendingExecutionState.currentStageType ?? null,
+            ...(executionStage ? { executionStage } : {}),
+            // myrmidon(OPE-10045): the explicit decision request.
             reviewRecoveryInstruction:
-              "The previous reviewer run ended while this execution-review stage was still pending. Submit the review decision now, or mark the issue blocked with the exact unblock action.",
+              `The previous reviewer run ended while this execution-review stage was still pending. ${REVIEW_DECISION_RECOVERY_INSTRUCTION}`,
           },
         });
         if (queued) {
@@ -5975,6 +7244,55 @@ export function recoveryService(
           );
           if (queued) {
             result.assignmentDispatched += 1;
+            result.issueIds.push(issue.id);
+          } else {
+            result.skipped += 1;
+          }
+          continue;
+        }
+
+        // myrmidon(OPE-4519): assignment_recovery must not wake the executor again
+        // when there are no new inputs (comments, blocker changes, status changes, PR)
+        // since the prior run. The cycle is interrupted and made visible to the operator.
+        const runBeganAt = latestRun.startedAt ?? latestRun.createdAt;
+        const hasNewInputs = await hasNewInputsSince(db, {
+          companyId: issue.companyId,
+          issueId: issue.id,
+          since: runBeganAt,
+          excludeRunId: latestRun.id,
+        });
+
+        const isAssignmentRecoveryCycle = didAutomaticRecoveryFail(
+          latestRun,
+          "assignment_recovery",
+        );
+        if (!hasNewInputs && isAssignmentRecoveryCycle) {
+          if (
+            latestRun.status === "succeeded" &&
+            !(await wasTodoHandedBackDuringOrAfterLatestRun(issue, latestRun))
+          ) {
+            result.skipped += 1;
+            continue;
+          }
+
+          const updated = await escalateStrandedAssignedIssue({
+            issue,
+            previousStatus: "todo",
+            latestRun,
+            notice: {
+              body:
+                productSaid("automatically retried dispatch for this assigned `todo` issue after a lost wake/run, ") +
+                "but it still has no live execution path. " +
+                "Returning it to the shared engineer queue for intervention.",
+              title: "No live execution path",
+              tone: "danger",
+            },
+            rerouteToSharedQueue: true,
+            scheduledRetryAttempt: scheduledRetryColumns?.scheduledRetryAttempt ?? null,
+            scheduledRetryReason: scheduledRetryColumns?.scheduledRetryReason ?? null,
+          });
+          if (updated) {
+            result.escalated += 1;
             result.issueIds.push(issue.id);
           } else {
             result.skipped += 1;
@@ -6023,6 +7341,7 @@ export function recoveryService(
 
         const queued = await enqueueStrandedIssueRecovery({
           issueId: issue.id,
+          companyId: issue.companyId,
           agentId,
           reason: "issue_assignment_recovery",
           retryReason: "assignment_recovery",
@@ -6058,6 +7377,18 @@ export function recoveryService(
       }
       const handoffEvidence = isExhaustedSuccessfulRunHandoff(latestRun);
       if (handoffEvidence) {
+        if (issue.originKind === "routine_execution" && handoffEvidence.exhausted) {
+          const updated = await issuesSvc.update(issue.id, {
+            status: "done",
+            companyGuard: issue.companyId,
+          });
+          if (updated) {
+            result.issueIds.push(issue.id);
+          } else {
+            result.skipped += 1;
+          }
+          continue;
+        }
         if (isPluginManagedIssueLifecycle(issue)) {
           result.skipped += 1;
           continue;
@@ -6073,7 +7404,6 @@ export function recoveryService(
           latestRun,
           recoveryCause: SUCCESSFUL_RUN_MISSING_STATE_REASON,
           successfulRunHandoffEvidence: handoffEvidence,
-          rerouteToSharedQueue: true,
           scheduledRetryAttempt: scheduledRetryColumns?.scheduledRetryAttempt ?? null,
           scheduledRetryReason: scheduledRetryColumns?.scheduledRetryReason ?? null,
         });
@@ -6142,9 +7472,49 @@ export function recoveryService(
           continue;
         }
 
+        // myrmidon(OPE-12859): a reviewer run that ended without a verdict while
+        // CI on the PR head is still running must not be re-woken immediately —
+        // that is the empty-run loop ("CI is not terminal, no verdict" → wake →
+        // same answer). Schedule the CI-wait monitor instead: it wakes the
+        // reviewer once when CI is terminal. A verdict on the current head is
+        // handled by `issueReviewVerdictSettledForOpenPrHead` above.
+        if (isReviewerRecoveryRun(successfulRun)) {
+          const openPrForCiWait = await db.query.issueWorkProducts.findFirst({
+            where: and(
+              eq(issueWorkProducts.issueId, issue.id),
+              eq(issueWorkProducts.type, "pull_request"),
+              inArray(issueWorkProducts.status, [
+                "open",
+                "active",
+                "ready_for_review",
+                "approved",
+              ]),
+            ),
+          });
+          if (openPrForCiWait) {
+            const prCiForWait = await resolvePrCiState(
+              issue.companyId,
+              openPrForCiWait,
+              deps.prHeadResolver ?? defaultPrHeadResolver,
+            );
+            if (prCiForWait.ci !== "green") {
+              const monitored = await scheduleReviewCiWaitMonitorIfEligible(
+                issue,
+                successfulRun,
+              );
+              if (monitored) {
+                result.skipped += 1;
+                continue;
+              }
+            }
+          }
+        }
+
         const queued = await enqueueStrandedIssueRecovery({
           issueId: issue.id,
+          companyId: issue.companyId,
           agentId,
+          continuationHead: successfulRun.id,
           reason: "issue_continuation_needed",
           retryReason: "issue_continuation_needed",
           source: "issue.productive_terminal_continuation_recovery",
@@ -6190,7 +7560,9 @@ export function recoveryService(
             issue,
             previousStatus: "in_progress",
             latestRun,
-            notice: {
+            // myrmidon(RUN-GUARD-LOOPS): a run stopped by the run guard says why
+            // and what is needed instead of the generic non-retryable wording.
+            notice: buildRunGuardStopNotice(latestRun) ?? {
               body:
                 productSaid("detected a non-retryable failure on this issue's continuation run ") +
                 `(\`${classification.errorCode}\`). Skipping automatic retries and moving it to \`blocked\` ` +
@@ -6200,6 +7572,15 @@ export function recoveryService(
             },
           });
           if (updated) {
+            // myrmidon(RUN-GUARD-ESCALATE): the sweep blocks a guard-stopped run's task too.
+            if (latestRun && readRunGuardStopReason(latestRun)) {
+              await wakeManagerForRunGuardStop({ issue, latestRun }).catch((error) => {
+                logger.warn(
+                  { error: error instanceof Error ? error.message : String(error), issueId: issue.id },
+                  "run guard stop: could not wake the manager",
+                );
+              });
+            }
             result.escalated += 1;
             result.issueIds.push(issue.id);
           } else {
@@ -6265,13 +7646,29 @@ export function recoveryService(
         continue;
       }
 
+      // myrmidon(OPE-12859): a review verdict on the current PR head is already
+      // recorded — the reviewer has nothing to add while CI runs (the merge
+      // gate enforces `CI result` independently), so a continuation wake here
+      // would be an empty run.
+      if (await issueReviewVerdictSettledForOpenPrHead(issue)) {
+        result.skipped += 1;
+        continue;
+      }
+
       const queued = await enqueueStrandedIssueRecovery({
         issueId: issue.id,
+        companyId: issue.companyId,
         agentId,
+        continuationHead: latestRun?.id ?? issue.checkoutRunId ?? undefined,
         reason: "issue_continuation_needed",
         retryReason: "issue_continuation_needed",
         source: "issue.continuation_recovery",
         retryOfRunId: latestRun?.id ?? issue.checkoutRunId ?? null,
+        extraContext: {
+          issueRecovery: true,
+          recoveryMode: "stranded_assigned_issue",
+          ...(latestRun?.id ? { continuationHead: latestRun.id } : {}),
+        },
       });
       if (queued) {
         result.continuationRequeued += 1;
@@ -6989,10 +8386,39 @@ export function recoveryService(
     return result;
   }
 
+  // myrmidon(RUN-GUARD-ESCALATE): after the escalation blocked a task whose run the
+  // run guard stopped, wake the assignee's manager (reports_to, else `adm`) with
+  // `run_guard_stop_needs_input`, once per issue per 30 minutes. Callers: the guard
+  // stop handling in heartbeat.ts and the stranded sweep below.
+  async function wakeManagerForRunGuardStop(input: {
+    issue: { id: string; companyId: string; assigneeAgentId: string | null };
+    latestRun: { id: string; errorCode?: string | null; resultJson?: unknown };
+    stopText?: string | null;
+  }) {
+    const stopReason = readRunGuardStopReason(input.latestRun);
+    if (!stopReason) return null;
+    // Only a task the escalation actually blocked is worth the manager's attention: a
+    // deferred review stage or a rerouted task keeps its status and its own path.
+    const current = await db
+      .select({ status: issues.status })
+      .from(issues)
+      .where(and(eq(issues.companyId, input.issue.companyId), eq(issues.id, input.issue.id)))
+      .then((rows) => rows[0] ?? null);
+    if (current?.status !== "blocked") return null;
+    return wakeManagerForRunGuardStopImpl(db, deps.enqueueWakeup, {
+      issue: input.issue,
+      latestRun: input.latestRun,
+      stopReason,
+      stopText: input.stopText ?? buildRunGuardStopComment(input.latestRun),
+    });
+  }
+
   return {
     buildRunOutputSilence,
+    deferReviewParticipantReleaseForCi,
     escalateStrandedRecoveryIssueInPlace,
     escalateStrandedAssignedIssue,
+    wakeManagerForRunGuardStop,
     recordWatchdogDecision,
     scanSilentActiveRuns,
     reconcileStrandedAssignedIssues,

@@ -1,6 +1,6 @@
 import { execFile as execFileCallback, spawn } from "node:child_process";
 import { createServer } from "node:http";
-import { mkdir, mkdtemp, readFile, readdir, rm, utimes, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, readdir, rename, rm, utimes, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
@@ -293,8 +293,9 @@ describe("sandbox callback bridge", () => {
     const directories = sandboxCallbackBridgeDirectories(queueDir);
     const schema = { openapi: "3.1.0", paths: {} };
     const forwarded: string[] = [];
+    const client = createFileSystemSandboxCallbackBridgeQueueClient();
     const worker = await startSandboxCallbackBridgeWorker({
-      client: createFileSystemSandboxCallbackBridgeQueueClient(), queueDir,
+      client, queueDir,
       handleRequest: async (request) => {
         forwarded.push(`${request.method} ${request.path}`);
         return { status: 200, body: JSON.stringify(schema) };
@@ -311,7 +312,7 @@ describe("sandbox callback bridge", () => {
       { method: "GET", path: "/api/secrets" },
     ];
     for (const [index, request] of requests.entries()) {
-      await writeFile(path.join(directories.requestsDir, `schema-${index}.json`), JSON.stringify({
+      await client.writeTextFile(path.join(directories.requestsDir, `schema-${index}.json`), JSON.stringify({
         id: `schema-${index}`, ...request, query: "", headers: {}, body: "", createdAt: new Date().toISOString(),
       }));
     }
@@ -384,9 +385,30 @@ describe("sandbox callback bridge", () => {
     const queueDir = path.posix.join(rootDir, "queue");
     const directories = sandboxCallbackBridgeDirectories(queueDir);
     const processed: string[] = [];
+    const baseClient = createFileSystemSandboxCallbackBridgeQueueClient();
+
+    // Seed both requests before starting the poller. Observing a directory listing
+    // is not a synchronization point: the poller may list the first file before
+    // the second write lands, making the shutdown assertion depend on scheduling.
+    await mkdir(directories.requestsDir, { recursive: true });
+    for (const id of ["req-a", "req-b"]) {
+      await writeFile(
+        path.posix.join(directories.requestsDir, `${id}.json`),
+        `${JSON.stringify({
+          id,
+          method: "GET",
+          path: "/api/agents/me",
+          query: "",
+          headers: {},
+          body: "",
+          createdAt: new Date().toISOString(),
+        })}\n`,
+        "utf8",
+      );
+    }
 
     const worker = await startSandboxCallbackBridgeWorker({
-      client: createFileSystemSandboxCallbackBridgeQueueClient(),
+      client: baseClient,
       queueDir,
       authorizeRequest: async () => null,
       handleRequest: async (request) => {
@@ -399,33 +421,8 @@ describe("sandbox callback bridge", () => {
       },
     });
 
-    await writeFile(
-      path.posix.join(directories.requestsDir, "req-a.json"),
-      `${JSON.stringify({
-        id: "req-a",
-        method: "GET",
-        path: "/api/agents/me",
-        query: "",
-        headers: {},
-        body: "",
-        createdAt: new Date().toISOString(),
-      })}\n`,
-      "utf8",
-    );
-    await writeFile(
-      path.posix.join(directories.requestsDir, "req-b.json"),
-      `${JSON.stringify({
-        id: "req-b",
-        method: "GET",
-        path: "/api/agents/me",
-        query: "",
-        headers: {},
-        body: "",
-        createdAt: new Date().toISOString(),
-      })}\n`,
-      "utf8",
-    );
-
+    // Both files existed before polling began, so the first poll observes the
+    // complete queued batch. Give the worker its normal drain window.
     await worker.stop({ drainTimeoutMs: 1_000 });
 
     expect(processed).toEqual(["req-a", "req-b"]);
@@ -1147,11 +1144,14 @@ describe("sandbox callback bridge", () => {
     });
 
     const requestFile = await waitForJsonFile(directories.requestsDir);
+    const responsePath = path.posix.join(directories.responsesDir, requestFile);
+    const responseTempPath = `${responsePath}.tmp`;
     await writeFile(
-      path.posix.join(directories.responsesDir, requestFile),
+      responseTempPath,
       '{"status":200,"headers":{"content-type":"application/json"},"body"',
       "utf8",
     );
+    await rename(responseTempPath, responsePath);
 
     const response = await responsePromise;
     expect(response.status).toBe(502);
@@ -1688,6 +1688,158 @@ describe("sandbox callback bridge", () => {
     expect(script).toContain("/workspace/c");
   });
 
+  it(
+    "idle-polls the queue with at most one blocking exec per wait budget (worker passes an ssh budget)",
+    async () => {
+    // Board CPU overload (OPE-12727): over SSH, every poll `listJsonFiles` exec
+    // spawns a fresh `ssh` process, so a 100 ms cadence burns ~10 spawns a
+    // second on the host. When the worker passes an idle wait budget, ONE exec
+    // must block in the remote shell until a request appears or the budget
+    // elapses: an idle window of a budget plus one wake sleep then costs at
+    // most two list execs, not dozens.
+    //
+    // This test deliberately waits on the real clock: the code under test runs
+    // a child `/bin/sh` whose `sleep` loop only advances with OS time, so fake
+    // timers cannot drive it.
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-bridge-idle-poll-"));
+    cleanupDirs.push(rootDir);
+    const queueDir = path.posix.join(rootDir, "queue");
+
+    const countingRunner = createExecRunner();
+    let recordListExec!: () => void;
+    const listExecRecorded = new Promise<void>((resolve) => {
+      recordListExec = resolve;
+    });
+    let pollExecs = 0;
+    const runner = {
+      execute: async (
+        input: {
+          command: string;
+          args?: string[];
+          cwd?: string;
+          env?: Record<string, string>;
+          stdin?: string;
+          timeoutMs?: number;
+        },
+      ): Promise<RunProcessResult> => {
+        // Count only the poll list execs: the startup `mkdir` exec is not a
+        // poll. The list script is the only one that loops over `*.json`.
+        if ((input.args ?? []).some((arg) => arg.includes("for file in"))) {
+          pollExecs += 1;
+          recordListExec();
+        }
+        return countingRunner.execute(input);
+      },
+    };
+
+    const client = createCommandManagedSandboxCallbackBridgeQueueClient({
+      runner,
+      remoteCwd: rootDir,
+      timeoutMs: 30_000,
+    });
+    const idleWaitMs = 5_000;
+    const worker = await startSandboxCallbackBridgeWorker({
+      client,
+      queueDir,
+      pollIntervalMs: 1_000,
+      pollIdleWaitMs: idleWaitMs,
+      authorizeRequest: async () => null,
+      handleRequest: async () => ({ status: 200, body: "ok" }),
+    });
+
+    // The first poll exec starts right after the worker startup; wait until
+    // it is recorded, then stay idle for one full wait budget plus the wake
+    // sleep.
+    await listExecRecorded;
+    await new Promise((resolve) => setTimeout(resolve, idleWaitMs + 1_000));
+    const pollExecsBeforeStop = pollExecs;
+    await worker.stop();
+
+    // Nothing was ever queued, so every list exec is an idle poll. The
+    // remote loop is also bound by whole-second wall clock, so a poll may
+    // return up to a second before the budget: the window then fits the
+    // first poll and at most one re-poll, never the ~6 single-shot polls of
+    // the legacy cadence.
+    expect(pollExecsBeforeStop).toBeGreaterThanOrEqual(1);
+    expect(pollExecsBeforeStop).toBeLessThanOrEqual(2);
+    },
+    // Real-clock integration: the child `/bin/sh` sleep loop only advances
+    // with OS time, and the window covers two 5 s idle budgets.
+    30_000,
+  );
+
+  it(
+    "single-shot poll stays cheap when the worker disables the idle wait",
+    async () => {
+    // Sandbox targets keep the legacy single-shot list (the factory passes
+    // `pollIdleWaitMs: 0`): a `waitMs: 0` budget must NOT prepend the remote
+    // wait loop, so an idle window costs one quick list per poll interval and
+    // the drain on stop never waits out a remote block.
+    //
+    // Real-clock exception: the code under test runs a child `/bin/sh` whose
+    // sleep/timers only advance with OS time, so fake timers cannot drive the
+    // exec boundary.
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-bridge-single-shot-"));
+    cleanupDirs.push(rootDir);
+    const queueDir = path.posix.join(rootDir, "queue");
+
+    const countingRunner = createExecRunner();
+    let recordList!: () => void;
+    const firstList = new Promise<void>((resolve) => {
+      recordList = resolve;
+    });
+    let pendingExecs = 0;
+    const runner = {
+      execute: async (
+        input: {
+          command: string;
+          args?: string[];
+          cwd?: string;
+          env?: Record<string, string>;
+          stdin?: string;
+          timeoutMs?: number;
+        },
+      ): Promise<RunProcessResult> => {
+        pendingExecs += 1;
+        recordList();
+        return countingRunner.execute(input);
+      },
+    };
+
+    const client = createCommandManagedSandboxCallbackBridgeQueueClient({
+      runner,
+      remoteCwd: rootDir,
+      timeoutMs: 30_000,
+    });
+    const worker = await startSandboxCallbackBridgeWorker({
+      client,
+      queueDir,
+      pollIntervalMs: 200,
+      pollIdleWaitMs: 0,
+      authorizeRequest: async () => null,
+      handleRequest: async () => ({ status: 200, body: "ok" }),
+    });
+
+    await firstList;
+    // Three poll intervals of idle time. With the wait loop disabled each
+    // poll returns immediately, so execs flow continuously; the drain at
+    // stop() must not hang on a remote block either.
+    await new Promise((resolve) => setTimeout(resolve, 700));
+    const execsBeforeStop = pendingExecs;
+    const stopStartedAt = Date.now();
+    await worker.stop();
+    const stopMs = Date.now() - stopStartedAt;
+
+    // The window covered ≥3 poll intervals, so the single-shot loop must
+    // have listed at least three times (no idle block), and stop() must
+    // drain promptly (no 5 s remote block to wait out).
+    expect(execsBeforeStop).toBeGreaterThanOrEqual(3);
+    expect(stopMs).toBeLessThan(1_500);
+    },
+    15_000,
+  );
+
+
   // Capture the run-level error the worker surfaces through `runtimeSpan`. The
   // worker runs a throwing function under the `sandbox.callbackBridge.workerFailed`
   // span; this double records that error and re-throws, like the real runner.
@@ -1768,6 +1920,244 @@ describe("sandbox callback bridge", () => {
     expect(workerErrors[0]).toContain("timed out");
 
     await worker.stop({ drainTimeoutMs: 10 });
+  });
+
+  // An in-memory queue client for the long-poll tests. `onList` sees every
+  // request-directory list call (with the options the worker passed) and
+  // returns the listing; every other client method is a no-op.
+  function createListObservingClient(
+    requestsDir: string,
+    onList: (options: { waitMs?: number } | undefined) => Promise<string[]>,
+  ): SandboxCallbackBridgeQueueClient {
+    return {
+      makeDir: async () => {},
+      makeDirs: async () => {},
+      listJsonFiles: async (dir, options) => (dir === requestsDir ? await onList(options) : []),
+      readTextFile: async () => "",
+      writeTextFile: async () => {},
+      rename: async () => {},
+      remove: async () => {},
+    };
+  }
+
+  async function waitForCondition(predicate: () => boolean, timeoutMs: number) {
+    const deadline = Date.now() + timeoutMs;
+    while (Date.now() < deadline) {
+      if (predicate()) {
+        return;
+      }
+      await new Promise((resolve) => setTimeout(resolve, 5));
+    }
+    throw new Error("waitForCondition timed out");
+  }
+
+  it("stop() abandons an idle long-poll instead of waiting out the remote block, and drops its late result", async () => {
+    // The worker is almost always parked inside a multi-second long-poll, so a
+    // `stop()` that waited for the in-flight poll would add the stop drain
+    // (2 s by default) to every run's teardown. With nothing in flight, stop
+    // must return right away, and a poll result that lands afterwards must not
+    // be processed.
+    const queueDir = "/virtual-bridge/queue";
+    const directories = sandboxCallbackBridgeDirectories(queueDir);
+
+    let releaseLongPoll!: (fileNames: string[]) => void;
+    const longPoll = new Promise<string[]>((resolve) => {
+      releaseLongPoll = resolve;
+    });
+    let longPollStarted = false;
+    const requestReads: string[] = [];
+    let handlerCalls = 0;
+
+    const client: SandboxCallbackBridgeQueueClient = {
+      ...createListObservingClient(directories.requestsDir, async (options) => {
+        if (options?.waitMs) {
+          longPollStarted = true;
+          // The idle long-poll: parked until the test releases it.
+          return await longPoll;
+        }
+        // Every single-shot list (`stop()` runs one to fail pending requests)
+        // sees an empty queue.
+        return [];
+      }),
+      readTextFile: async (remotePath) => {
+        requestReads.push(remotePath);
+        return bridgeRequestJson("req-late");
+      },
+    };
+
+    const worker = await startSandboxCallbackBridgeWorker({
+      client,
+      queueDir,
+      pollIdleWaitMs: 5_000,
+      authorizeRequest: async () => null,
+      handleRequest: async () => {
+        handlerCalls += 1;
+        return { status: 200, body: "ok" };
+      },
+    });
+    await waitForCondition(() => longPollStarted, 2_000);
+
+    const stopStartedAt = Date.now();
+    await worker.stop();
+    const stopMs = Date.now() - stopStartedAt;
+    // The default stop drain is 2 s: waiting for the idle poll would take at
+    // least that long.
+    expect(stopMs).toBeLessThan(1_000);
+
+    // The abandoned poll lands late with a request in it. The loop already
+    // left, so nothing reads or handles it.
+    releaseLongPoll(["req-late.json"]);
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    expect(requestReads).toEqual([]);
+    expect(handlerCalls).toBe(0);
+  });
+
+  it("does not treat a long-poll that outlasts the iteration timeout but fits the wait budget as a failure", async () => {
+    // The long-poll exec blocks by design for up to the idle budget, so it
+    // runs under `iterationTimeoutMs + pollIdleWaitMs`. A poll that takes
+    // longer than `iterationTimeoutMs` alone but less than the sum is healthy:
+    // it must neither time out, nor surface a run-level error, nor back off.
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-bridge-long-poll-budget-"));
+    cleanupDirs.push(rootDir);
+
+    const queueDir = path.posix.join(rootDir, "queue");
+    const directories = sandboxCallbackBridgeDirectories(queueDir);
+    await mkdir(directories.requestsDir, { recursive: true });
+    await writeFile(path.posix.join(directories.requestsDir, "req-a.json"), bridgeRequestJson("req-a"), "utf8");
+
+    const { runtimeSpan, workerErrors } = createWorkerErrorCapture();
+
+    const base = createFileSystemSandboxCallbackBridgeQueueClient();
+    const pollOptions: Array<{ waitMs?: number } | undefined> = [];
+    const client: SandboxCallbackBridgeQueueClient = {
+      ...base,
+      listJsonFiles: async (dir, options) => {
+        pollOptions.push(options);
+        if (pollOptions.length === 1) {
+          // 1250 ms: past the 1000 ms iteration timeout, inside 1000 + 500 ms.
+          await new Promise((resolve) => setTimeout(resolve, 1_250));
+        }
+        return await base.listJsonFiles(dir);
+      },
+    };
+
+    const worker = await startSandboxCallbackBridgeWorker({
+      client,
+      queueDir,
+      iterationTimeoutMs: 1_000,
+      watchdogTimeoutMs: 10_000,
+      pollIdleWaitMs: 500,
+      runtimeSpan,
+      authorizeRequest: async () => null,
+      handleRequest: async () => ({ status: 200, body: "ok" }),
+    });
+
+    const responseFile = await waitForJsonFile(directories.responsesDir, 3_000);
+    const responseBody = await readFile(path.posix.join(directories.responsesDir, responseFile), "utf8");
+    expect(JSON.parse(responseBody).status).toBe(200);
+    // The first poll carried the idle budget and was not failed.
+    expect(pollOptions[0]).toEqual({ waitMs: 500 });
+    expect(workerErrors).toEqual([]);
+
+    await worker.stop({ drainTimeoutMs: 10 });
+  });
+
+  it("clamps the idle wait to half of the shorter of the iteration timeout and the watchdog", async () => {
+    // The worker default is no long-poll; a positive budget is clamped so one
+    // healthy idle poll stays well inside both windows. An unset, null,
+    // negative, or non-finite budget takes the default (single-shot list).
+    const cases: Array<{
+      label: string;
+      options: {
+        pollIdleWaitMs?: number | null;
+        iterationTimeoutMs?: number;
+        watchdogTimeoutMs?: number;
+      };
+      expected: { waitMs: number } | undefined;
+    }> = [
+      { label: "unset", options: {}, expected: undefined },
+      { label: "null", options: { pollIdleWaitMs: null }, expected: undefined },
+      { label: "negative", options: { pollIdleWaitMs: -5 }, expected: undefined },
+      { label: "NaN", options: { pollIdleWaitMs: Number.NaN }, expected: undefined },
+      { label: "zero", options: { pollIdleWaitMs: 0 }, expected: undefined },
+      { label: "within both windows", options: { pollIdleWaitMs: 5_000 }, expected: { waitMs: 5_000 } },
+      {
+        label: "oversized vs iteration timeout",
+        options: { pollIdleWaitMs: 60_000, iterationTimeoutMs: 400, watchdogTimeoutMs: 10_000 },
+        expected: { waitMs: 200 },
+      },
+      {
+        label: "oversized vs default windows",
+        options: { pollIdleWaitMs: 60_000 },
+        expected: { waitMs: 5_000 },
+      },
+      {
+        label: "oversized vs watchdog",
+        options: { pollIdleWaitMs: 5_000, iterationTimeoutMs: 10_000, watchdogTimeoutMs: 1_000 },
+        expected: { waitMs: 500 },
+      },
+    ];
+
+    for (const testCase of cases) {
+      const queueDir = "/virtual-bridge/queue";
+      const directories = sandboxCallbackBridgeDirectories(queueDir);
+      const pollOptions: Array<{ waitMs?: number } | undefined> = [];
+      const client = createListObservingClient(directories.requestsDir, async (options) => {
+        pollOptions.push(options);
+        return [];
+      });
+      const worker = await startSandboxCallbackBridgeWorker({
+        client,
+        queueDir,
+        ...testCase.options,
+        authorizeRequest: async () => null,
+        handleRequest: async () => ({ status: 200, body: "ok" }),
+      });
+      // The loop issues its first poll as the worker starts. Snapshot before
+      // `stop()`, which adds a single-shot list of its own.
+      await waitForCondition(() => pollOptions.length > 0, 2_000);
+      const firstPollOptions = pollOptions[0];
+      await worker.stop({ drainTimeoutMs: 10 });
+      expect(firstPollOptions, testCase.label).toEqual(testCase.expected);
+    }
+  });
+
+  it("runs a long-poll list exec under the base timeout plus the wait, with a wall-clock bound in the remote loop", async () => {
+    const runner = {
+      execute: vi.fn(async (_input: { args?: string[]; timeoutMs?: number }) => ({
+        exitCode: 0,
+        signal: null,
+        timedOut: false,
+        stdout: "",
+        stderr: "",
+        pid: null,
+        startedAt: new Date().toISOString(),
+      })),
+    };
+    const client = createCommandManagedSandboxCallbackBridgeQueueClient({
+      runner,
+      remoteCwd: "/workspace",
+      timeoutMs: 30_000,
+    });
+
+    await client.listJsonFiles("/workspace/queue", { waitMs: 5_000 });
+    await client.listJsonFiles("/workspace/queue");
+
+    const [longPollCall, singleShotCall] = runner.execute.mock.calls.map((call) => call[0]);
+    const longPollScript = longPollCall.args?.[longPollCall.args.length - 1] ?? "";
+    const singleShotScript = singleShotCall.args?.[singleShotCall.args.length - 1] ?? "";
+
+    // The wait rides on top of the base exec timeout, so a healthy long-poll
+    // never hits the runner timeout.
+    expect(longPollCall.timeoutMs).toBe(35_000);
+    // Two bounds: 100 steps of `sleep 0.05`, and 5 whole seconds of wall clock.
+    expect(longPollScript).toContain("sleep 0.05");
+    expect(longPollScript).toContain("-ge 100 ]");
+    expect(longPollScript).toContain("date +%s");
+    expect(longPollScript).toContain("-ge 5 ]");
+    // A single-shot list has neither the wait loop nor the extra budget.
+    expect(singleShotCall.timeoutMs).toBe(30_000);
+    expect(singleShotScript).not.toContain("sleep");
   });
 
   it("does not abandon an in-flight handler, so a started mutation is not applied twice", async () => {

@@ -29,6 +29,7 @@ export const STACK_LOCAL_PROBES = [
   "health-commit", // the board server itself: the /api/health commit source
   "docker-image", // image digest/labels via the Docker API over the unix socket
   "container-labels", // version reported by container labels
+  "http-version", // GET an HTTP endpoint of the component; JSON {version}
   "env", // an explicit MYRMIDON_* version override
   "manual", // filled by the operator; no probe exists
   "none", // no local probe: reported as unknown with a reason
@@ -59,8 +60,29 @@ export interface StackSeedComponent {
   localProbe: StackLocalProbe;
   /** For docker-image probes: image reference(s) to inspect, without a tag. */
   imageRefs?: readonly string[];
+  /**
+   * For http-version probes: the HTTP endpoint to GET. Read from the
+   * environment / bound secret at probe time (the address never ships in the
+   * seed, only the env var name / secret ref name). The probe appends the
+   * component's documented endpoint to a bare base URL (hindsight /version,
+   * LiteLLM /public/model_hub/info, Langfuse /api/public/health) and reads
+   * the version from the JSON body — see httpVersionField below for the
+   * component-specific field name.
+   */
+  httpEndpointEnv?: string;
+  /**
+   * For http-version probes: the JSON field the component reports its version
+   * in, when it is neither `version` nor `api_version` (LiteLLM publishes
+   * `litellm_version` on /public/model_hub/info). Checked first; the generic
+   * fields stay accepted as fallbacks.
+   */
+  httpVersionField?: string;
+  /** Restrict github-tags release checks to tags with this prefix (e.g. "myr-v"). */
+  tagPrefix?: string;
   /** One-line note shown next to the component in the panel. */
   note?: string;
+  /** Package coordinates for advisory / CVE lookups (part B advisory check). */
+  advisoryPackage?: StackAdvisoryPackage;
   /** Carried deltas over upstream, seeded here and evaluated by part B. */
   deltas?: readonly StackDeltaSeed[];
 }
@@ -113,6 +135,26 @@ export interface StackReleaseNotes {
   hasSecurity: boolean;
 }
 
+/** Package coordinates for advisory / CVE lookups (OSV.dev ecosystem terms). */
+export interface StackAdvisoryPackage {
+  /** Package name in the advisory ecosystem (e.g. "litellm", "langfuse"). */
+  name: string;
+  /** Advisory ecosystem (e.g. "PyPI", "npm"); absent = name-only query. */
+  ecosystem?: string;
+}
+
+/** One known vulnerability attached to a component by the advisory check. */
+export interface StackVulnerability {
+  /** Canonical advisory id: CVE when known, otherwise the source id (GHSA/OSV). */
+  id: string;
+  /** Severity level from the source (e.g. "HIGH", "CRITICAL", "UNKNOWN"). */
+  severity: string;
+  /** Explicit CVE alias when the canonical id is not a CVE itself. */
+  cveId?: string | null;
+  /** Short advisory summary, when the source provides one. */
+  summary?: string | null;
+}
+
 /** The upstream side of a component: what the last release check learned. */
 export interface StackUpstreamState {
   /** When the last check (successful or not) touched this component. */
@@ -131,6 +173,10 @@ export interface StackUpstreamState {
   notes: StackReleaseNotes | null;
   /** Probe failure reason for this component, if any. */
   error: string | null;
+  /** When the last successful upstream fetch happened (null if never). */
+  staleSince: string | null;
+  /** Known vulnerabilities from the advisory check; absent when clean or when the source degraded. */
+  vulnerabilities?: readonly StackVulnerability[];
 }
 
 /** Component-level verdict of the patch-closed rule. */
@@ -153,10 +199,14 @@ export interface StackSnapshot {
   localProbe: StackLocalProbe;
   note?: string;
   local: StackComponentState;
+  /** Advisory coordinates for CVE lookups; absent when component is unmapped. */
+  advisoryPackage?: StackAdvisoryPackage;
   /** Upstream release state (part B); absent on version 1 documents. */
   upstreamState?: StackUpstreamState;
   /** Patch-closed verdict (part B); absent on version 1 documents. */
   patchClosed?: StackPatchClosed;
+  /** Known vulnerabilities from the advisory check; absent when clean or degraded. */
+  vulnerabilities?: readonly StackVulnerability[];
 }
 
 export interface StackDocument {
@@ -212,6 +262,7 @@ export function parseUpstreamState(raw: unknown): StackUpstreamState | null {
     behindBy: intOrNull(raw.behindBy),
     notes,
     error: str(raw.error),
+    staleSince: str(raw.staleSince),
   };
 }
 
@@ -233,6 +284,24 @@ function parsePatchEntry(raw: unknown): StackPatchEntry | null {
 function parsePatchClosed(raw: unknown): StackPatchClosed | null {
   if (!isRecord(raw) || !STACK_PATCH_CLOSED_STATES.includes(raw.state as StackPatchClosedState)) return null;
   return { state: raw.state as StackPatchClosedState, reason: str(raw.reason) };
+}
+
+function parseVulnerability(raw: unknown): StackVulnerability | null {
+  if (!isRecord(raw) || typeof raw.id !== "string" || typeof raw.severity !== "string") return null;
+  return {
+    id: raw.id,
+    severity: raw.severity,
+    ...(typeof raw.cveId === "string" ? { cveId: raw.cveId } : {}),
+    ...(typeof raw.summary === "string" ? { summary: raw.summary } : {}),
+  };
+}
+
+function parseAdvisoryPackage(raw: unknown): StackAdvisoryPackage | null {
+  if (!isRecord(raw) || typeof raw.name !== "string") return null;
+  return {
+    name: raw.name,
+    ...(typeof raw.ecosystem === "string" ? { ecosystem: raw.ecosystem } : {}),
+  };
 }
 
 function parseLocalState(raw: unknown): StackComponentState {
@@ -270,6 +339,10 @@ export function parseStackDocument(raw: unknown): StackDocument {
     .map((c): StackSnapshot => {
       const upstreamState = parseUpstreamState(c.upstreamState);
       const patchClosed = parsePatchClosed(c.patchClosed);
+      const advisoryPackage = parseAdvisoryPackage(c.advisoryPackage);
+      const vulnerabilities = Array.isArray(c.vulnerabilities)
+        ? c.vulnerabilities.map(parseVulnerability).filter((v): v is StackVulnerability => v !== null)
+        : undefined;
       return {
         version: 1,
         name: c.name as string,
@@ -280,8 +353,10 @@ export function parseStackDocument(raw: unknown): StackDocument {
         localProbe: c.localProbe as StackLocalProbe,
         ...(typeof c.note === "string" ? { note: c.note } : {}),
         local: parseLocalState(c.local),
+        ...(advisoryPackage ? { advisoryPackage } : {}),
         ...(upstreamState ? { upstreamState } : {}),
         ...(patchClosed ? { patchClosed } : {}),
+        ...(vulnerabilities && vulnerabilities.length > 0 ? { vulnerabilities } : {}),
       };
     });
   return {
@@ -304,6 +379,11 @@ export function patchEntryFromDelta(delta: StackDeltaSeed): StackPatchEntry {
   };
 }
 
+//
+// Pinned Paperclip vendor release supported by the migration schema
+// (schema-paperclip-v2026.1106.0.sql).
+export const VENDOR_MIGRATION_SUPPORTED_VERSION = "v2026.1106.0";
+
 /**
  * The seed: every stack component the update panel tracks. Neutral public
  * names and upstream repos only — no hosts, no internal identifiers.
@@ -314,14 +394,15 @@ export const STACK_SEED: readonly StackSeedComponent[] = [
     releaseSource: "github-releases",
     upstream: { kind: "github", repo: "paperclipai/paperclip" },
     localProbe: "manual",
-    note: "Vendor upstream of the board fork; local version tracked via the board component.",
+    note: "Vendor upstream of the board fork; local version tracked via supported migration schema.",
   },
   {
     name: "myrmidon",
     releaseSource: "github-tags",
     upstream: { kind: "github", repo: "itkadr-git/myrmidon" },
     localProbe: "health-commit",
-    note: "The board itself; version/commit come from the /api/health source.",
+    tagPrefix: "myr-v",
+    note: "The board itself; version/commit come from the /api/health source. Release checks only count board release tags (myr-v*), not the vendored snapshot tags.",
   },
   {
     name: "hermes-agent",
@@ -344,28 +425,28 @@ export const STACK_SEED: readonly StackSeedComponent[] = [
     name: "litellm",
     releaseSource: "github-releases",
     upstream: { kind: "github", repo: "BerriAI/litellm" },
-    localProbe: "docker-image",
-    imageRefs: ["ghcr.io/berriai/litellm"],
-  },
-  {
-    name: "ragflow",
-    releaseSource: "github-releases",
-    upstream: { kind: "github", repo: "infiniflow/ragflow" },
-    localProbe: "docker-image",
-    imageRefs: ["infiniflow/ragflow"],
+    localProbe: "http-version",
+    httpEndpointEnv: "MYRMIDON_STACK_HTTP_LITELLM",
+    httpVersionField: "litellm_version",
+    note: "Local version is read from the component's /public/model_hub/info endpoint (litellm_version field).",
+    advisoryPackage: { name: "litellm", ecosystem: "PyPI" },
   },
   {
     name: "hindsight",
     releaseSource: "github-releases",
     upstream: { kind: "github", repo: "vectorize-io/hindsight" },
-    localProbe: "manual",
+    localProbe: "http-version",
+    httpEndpointEnv: "MYRMIDON_STACK_HTTP_HINDSIGHT",
+    note: "Local version is read from the component's own /version HTTP endpoint.",
   },
   {
     name: "langfuse",
     releaseSource: "github-releases",
     upstream: { kind: "github", repo: "langfuse/langfuse" },
-    localProbe: "docker-image",
-    imageRefs: ["langfuse/langfuse"],
+    localProbe: "http-version",
+    httpEndpointEnv: "MYRMIDON_STACK_HTTP_LANGFUSE",
+    note: "Local version is read from the component's /api/public/health endpoint.",
+    advisoryPackage: { name: "langfuse", ecosystem: "npm" },
   },
   {
     name: "clickhouse",
@@ -448,6 +529,7 @@ export function seedStackDocument(): StackDocument {
       releaseSource: seed.releaseSource,
       upstream: seed.upstream,
       localProbe: seed.localProbe,
+      ...(seed.advisoryPackage ? { advisoryPackage: seed.advisoryPackage } : {}),
       ...(seed.note ? { note: seed.note } : {}),
       local: {
         version: null,

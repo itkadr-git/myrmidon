@@ -50,5 +50,6 @@ Every product decision seeded from the OPE-401 registry has a repository ADR. Th
 | `decisions/2026-09-28-run-cap-min-3` | [ADR-0049](ADR-0049-2026-09-28-run-cap-min-3.md) | 2026-09-28 |
 | `decisions/2026-09-28-locks-first-release` | [ADR-0050](ADR-0050-2026-09-28-locks-first-release.md) | 2026-09-28 |
 | `decisions/2026-09-29-standby-checks-muted` | [ADR-0051](ADR-0051-2026-09-29-standby-checks-muted.md) | 2026-09-29 |
+| — (OPE-12763 spec) | [ADR-0052](ADR-0052-company-boundaries-and-adm-channel.md) | 2026-11-12 |
 
-Total: **46** product decisions. Source record: OPE-401.
+Total: **46** product decisions (+1 spec ADR without OPE-401 registry entry). Source record: OPE-401.

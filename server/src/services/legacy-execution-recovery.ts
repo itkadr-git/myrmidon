@@ -1,3 +1,4 @@
+import { isRunGuardStopReason } from "@myrmidon/adapter-utils/run-guard";
 import { normalizeMaxTurnStopReason } from "./heartbeat-stop-metadata.js";
 import { hasConversationContinuationPolicy } from "./conversation-continuation.js";
 import { randomUUID } from "node:crypto";
@@ -15,6 +16,7 @@ import { RUN_STALL_ERROR_CODE } from "../myrmidon/run-stall/constants.js";
 // reassignment) are retried or released, not held -- only for a conversation
 // adapter or one with its own idempotency key, see infra-interrupts.ts
 import { shouldSkipReconciliationForInfraInterrupt } from "../myrmidon/infra-interrupts.js";
+import { looksLikePendingInteractionAddresseeWake } from "../modules/run-dispatch/myrmidon-pending-interaction-wake.js";
 
 type Run = typeof heartbeatRuns.$inferSelect;
 export const LEGACY_RECOVERY_CAUSE = "legacy_execution_requires_reconciliation";
@@ -28,11 +30,41 @@ export function legacyExecutionNeedsReconciliation(
     !["failed", "timed_out", "interrupted", "cancelled"].includes(run.status)
   )
     return false;
+  // Guard stops are terminal for the current run, but must NOT enter
+  // reconciliation hold (no manual hold); normal next wake without auto-replay of the same revision.
+  // myrmidon(RUN-GUARD-LOOPS): the list of guard stop reasons now lives in adapter-utils.
+  if (isRunGuardStopReason(run.errorCode) || isRunGuardStopReason(run.resultJson?.runGuardStopReason)) {
+    return false;
+  }
   // Maintenance interruption explicitly means retry, including after the
   // bounded retry scheduler's ordinary attempt budget is exhausted.
   if (run.errorCode === MAINTENANCE_INTERRUPT_ERROR_CODE) return false;
   if (run.errorCode === RUN_STALL_ERROR_CODE) return false; // myrmidon(RUN-STALL): stall interruption, the sweep re-opens the task itself
+  // myrmidon(PROVIDER-GARBAGE / OPE-12286): a provider stub reply returned with
+  // HTTP 200 never reached the model — the stub text is the whole outcome, so
+  // no provider work happened by construction. The bounded retry scheduler
+  // (paused provider_garbage retries) owns the attempt budget for these runs,
+  // the same treatment as model-unavailable below; never hold for reconciliation.
+  if (run.errorCode === "provider_garbage") return false;
   if (shouldSkipReconciliationForInfraInterrupt(run)) return false; // myrmidon(L1): infrastructure interruption, retried or released, not held
+  if (
+    run.errorCode === "hermes_gateway_connect_failed" ||
+    run.scheduledRetryReason === "connect_failed_transient_retry"
+  ) {
+    return false;
+  }
+  // myrmidon(OPE-2587): a run woken for a pending interaction addressee killed by process_lost
+  // is eligible for bounded retry, not operator reconciliation hold, while attempts remain.
+  if (
+    run.errorCode === "process_lost" &&
+    run.contextSnapshot &&
+    looksLikePendingInteractionAddresseeWake(
+      run.contextSnapshot as Record<string, unknown>,
+    ) &&
+    executionFailureRetryCount(run) < 2
+  ) {
+    return false;
+  }
   // myrmidon(CONTINUATION-WAIT-HOLD): a queued continuation cancelled before
   // provider startup is a deliberate wait, not an unknown provider outcome.
   if (
@@ -63,6 +95,17 @@ export function legacyExecutionNeedsReconciliation(
   // that the bootstrap evidence proves never started. Keep unknown outcomes held.
   if ((run.errorCode === "workspace_git_scan_timeout" || run.errorCode === "workspace_git_scan_saturated") &&
       evidence?.kind === "bootstrap" && evidence.providerWorkStarted === false) return false;
+  // myrmidon(PROVIDER-OUTAGE-RECOVERY, OPE-12506): a classified provider outage
+  // (errorFamily provider_quota: 429/402/503, "no deployments available",
+  // "insufficient_quota") whose bootstrap evidence proves provider work never
+  // started is an external channel wait owned by the durable quota monitor. The
+  // exhausted retry budget must not turn it into a reconciliation hold, or the
+  // monitor wake can never issue the bounded retry once the channel recovers.
+  // Without both pieces of evidence the outcome stays unknown and is held.
+  if (
+    (run.resultJson as Record<string, unknown> | null | undefined)?.errorFamily === "provider_quota" &&
+    evidence?.kind === "bootstrap" && evidence.providerWorkStarted === false
+  ) return false;
   if (executionFailureRetryCount(run) >= 2) return true;
   return !(
     evidence?.kind === "bootstrap" && evidence.providerWorkStarted === false
@@ -132,6 +175,10 @@ export async function terminalizeLegacyExecution(input: {
       review.currentParticipant?.type === "agent" && review.currentParticipant.agentId === run.agentId;
     if (
       task &&
+      // A board-restored task may deliberately return to the unassigned ready
+      // queue. A later stranded-run sweep must not recreate a board-owned
+      // reconciliation hold for that task (OPE-10434/OPE-10219).
+      (task.assigneeAgentId !== null || isCurrentReviewer) &&
       !isSupersededConversationRun(task, updated) &&
       (task.assigneeAgentId === run.agentId || isCurrentReviewer) &&
       !["done", "cancelled"].includes(task.status)

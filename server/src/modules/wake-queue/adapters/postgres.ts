@@ -8,8 +8,10 @@ import { getExecutionBlocker } from "../../../services/execution-blocker.js";
 import { logger } from "../../../middleware/logger.js";
 import { and, asc, eq, inArray, isNull, notInArray, or, sql } from "drizzle-orm";
 import type { Db } from "@myrmidon/db";
+import { tryClaimContinuationKey } from "../../../services/continuation-dedupe.js";
 import { runContextPersistenceFields } from "@myrmidon/db";
 import { extractIssueReferenceIdentifiers } from "@myrmidon/shared";
+import { isValidWakeCommentId } from "../../run-dispatch/domain/wake-context.js";
 import {
   activityLog,
   agentWakeupRequests,
@@ -123,6 +125,7 @@ function toIssueSnapshot(row: IssueRow): IssueSnapshot {
     parentId: row.parentId,
     originId: row.originId,
     originRunId: row.originRunId,
+    issueRole: row.casteKey,
   };
 }
 
@@ -173,16 +176,22 @@ function toDeferredWakeCandidate(row: typeof agentWakeupRequests.$inferSelect): 
 }
 
 export type WakeQueuePostgresAdapterDeps = {
-  resolveResponsibleUserId: WakeQueueHost["resolveResponsibleUserId"];
-  getRoutineEnv: WakeQueueHost["getRoutineEnv"];
-  resolveSessionBeforeForWakeup: WakeQueueHost["resolveSessionBeforeForWakeup"];
+  resolveResponsibleUserId: (
+    input: Parameters<WakeQueueHost["resolveResponsibleUserId"]>[0] & { tx: Db },
+  ) => ReturnType<WakeQueueHost["resolveResponsibleUserId"]>;
+  getRoutineEnv: (
+    input: Parameters<WakeQueueHost["getRoutineEnv"]>[0] & { tx: Db },
+  ) => ReturnType<WakeQueueHost["getRoutineEnv"]>;
+  resolveSessionBeforeForWakeup: (
+    input: Parameters<WakeQueueHost["resolveSessionBeforeForWakeup"]>[0] & { tx: Db },
+  ) => ReturnType<WakeQueueHost["resolveSessionBeforeForWakeup"]>;
 };
 
-function buildHost(_tx: Db, deps: WakeQueuePostgresAdapterDeps): WakeQueueHost {
+function buildHost(tx: Db, deps: WakeQueuePostgresAdapterDeps): WakeQueueHost {
   return {
-    resolveResponsibleUserId: deps.resolveResponsibleUserId,
-    getRoutineEnv: deps.getRoutineEnv,
-    resolveSessionBeforeForWakeup: deps.resolveSessionBeforeForWakeup,
+    resolveResponsibleUserId: (input) => deps.resolveResponsibleUserId({ ...input, tx }),
+    getRoutineEnv: (input) => deps.getRoutineEnv({ ...input, tx }),
+    resolveSessionBeforeForWakeup: (input) => deps.resolveSessionBeforeForWakeup({ ...input, tx }),
   };
 }
 
@@ -218,6 +227,14 @@ function buildTransaction(tx: Db, deps: WakeQueuePostgresAdapterDeps, db: Db, ru
         .set({ executionRunId: null })
         .where(and(eq(issues.companyId, companyId), eq(issues.id, issueId), eq(issues.executionRunId, runId)));
     },
+    async claimContinuationKey({ companyId, issueId, key }): Promise<"created" | "deduped"> {
+      return tryClaimContinuationKey(tx, {
+        companyId,
+        issueId,
+        key,
+        ttl: 24 * 60 * 60 * 1_000,
+      });
+    },
     async findInvokableAgent({ companyId, agentId }): Promise<InvokableAgentSnapshot | null> {
       const agent = await tx
         .select()
@@ -226,7 +243,7 @@ function buildTransaction(tx: Db, deps: WakeQueuePostgresAdapterDeps, db: Db, ru
         .then((rows) => rows[0] ?? null);
       if (!agent) return null;
       const invokability = await evaluateAgentInvokabilityFromDb(tx, agent);
-      return { id: agent.id, companyId: agent.companyId, name: agent.name, invokable: invokability.invokable };
+      return { id: agent.id, companyId: agent.companyId, name: agent.name, role: agent.role, invokable: invokability.invokable };
     },
 
     async findNextDeferredWake({ companyId, issueId, excludedWakeIds }) {
@@ -298,10 +315,14 @@ function buildTransaction(tx: Db, deps: WakeQueuePostgresAdapterDeps, db: Db, ru
     },
 
     async getQueuedCommentLiveness({ companyId, issueId, wakeAgentId, finishingRunId, finishingRunAgentId, queuedCommentIds }) {
-      const rows = await tx
+      // uuid-column boundary (OPE-12209): drop malformed queued ids before the
+      // query, never build `inArray` over a uuid column with them. The queue
+      // must keep draining around a poisoned id instead of throwing.
+      const validCommentIds = queuedCommentIds.filter(isValidWakeCommentId);
+      const rows = validCommentIds.length === 0 ? [] : await tx
         .select({ id: issueComments.id, deletedAt: issueComments.deletedAt, createdByRunId: issueComments.createdByRunId })
         .from(issueComments)
-        .where(and(eq(issueComments.companyId, companyId), eq(issueComments.issueId, issueId), inArray(issueComments.id, queuedCommentIds), currentConversationCommentCondition()));
+        .where(and(eq(issueComments.companyId, companyId), eq(issueComments.issueId, issueId), inArray(issueComments.id, validCommentIds), currentConversationCommentCondition()));
       const targetsFinishingRunAgent = wakeAgentId === finishingRunAgentId;
       const liveNonSelfCommentIds = queuedCommentIds.filter((commentId) => {
         const row = rows.find((candidate) => candidate.id === commentId);
@@ -397,10 +418,12 @@ function buildTransaction(tx: Db, deps: WakeQueuePostgresAdapterDeps, db: Db, ru
     },
 
     async getCommentSelfAuthorship({ companyId, issueId, finishingRunId, commentIds }) {
-      const rows = await tx
+      // uuid-column boundary (OPE-12209): same rule as getQueuedCommentLiveness.
+      const validCommentIds = commentIds.filter(isValidWakeCommentId);
+      const rows = validCommentIds.length === 0 ? [] : await tx
         .select({ createdByRunId: issueComments.createdByRunId })
         .from(issueComments)
-        .where(and(eq(issueComments.companyId, companyId), eq(issueComments.issueId, issueId), inArray(issueComments.id, commentIds)));
+        .where(and(eq(issueComments.companyId, companyId), eq(issueComments.issueId, issueId), inArray(issueComments.id, validCommentIds)));
       return { allSelfAuthored: rows.length > 0 && rows.every((row) => row.createdByRunId === finishingRunId) };
     },
 
@@ -409,7 +432,10 @@ function buildTransaction(tx: Db, deps: WakeQueuePostgresAdapterDeps, db: Db, ru
         run.companyId !== companyId || run.id !== finishingRunId ||
         readNonEmptyString(parseObject(run.contextSnapshot).issueId) !== issueId
       ) return false;
-      const uniqueCommentIds = [...new Set(commentIds)];
+      // uuid-column boundary (OPE-12209): drop malformed queued ids before the
+      // query, never build `inArray` over a uuid column with them, and skip the
+      // query entirely when no valid id remains.
+      const uniqueCommentIds = [...new Set(commentIds)].filter(isValidWakeCommentId);
       if (uniqueCommentIds.length === 0) return false;
       const parent = await tx.select({ status: issues.status, assigneeAgentId: issues.assigneeAgentId, identifier: issues.identifier })
         .from(issues).where(and(eq(issues.companyId, companyId), eq(issues.id, issueId)))
@@ -420,7 +446,7 @@ function buildTransaction(tx: Db, deps: WakeQueuePostgresAdapterDeps, db: Db, ru
         authorAgentId: issueComments.authorAgentId })
         .from(issueComments).where(and(
           eq(issueComments.companyId, companyId), eq(issueComments.issueId, issueId),
-          inArray(issueComments.id, uniqueCommentIds), isNull(issueComments.deletedAt), currentConversationCommentCondition(),
+          inArray(issueComments.id, uniqueCommentIds.filter(isValidWakeCommentId)), isNull(issueComments.deletedAt), currentConversationCommentCondition(),
         ));
       if (comments.length !== uniqueCommentIds.length || comments.some((comment) =>
         comment.createdByRunId !== run.id || (comment.authorAgentId !== null && comment.authorAgentId !== run.agentId)
@@ -600,6 +626,18 @@ function buildTransaction(tx: Db, deps: WakeQueuePostgresAdapterDeps, db: Db, ru
 
     async queueReviewParticipantRecoveryRun({ companyId, issue, finishingRun, recoveryAgent, sessionBefore, now }) {
       const executionState = parseIssueExecutionState(issue.executionState);
+      const executionStage = executionState
+        ? {
+            wakeRole: "reviewer" as const,
+            stageId: executionState.currentStageId ?? null,
+            stageType: executionState.currentStageType ?? null,
+            currentParticipant: executionState.currentParticipant ?? null,
+            returnAssignee: executionState.returnAssignee ?? null,
+            reviewRequest: executionState.reviewRequest ?? null,
+            lastDecisionOutcome: executionState.lastDecisionOutcome ?? null,
+            allowedActions: ["approve", "request_changes"],
+          }
+        : null;
       const wakeupRequest = await tx
         .insert(agentWakeupRequests)
         .values({
@@ -615,6 +653,7 @@ function buildTransaction(tx: Db, deps: WakeQueuePostgresAdapterDeps, db: Db, ru
               retryReason: EXECUTION_REVIEW_PARTICIPANT_RECOVERY_RETRY_REASON,
               currentStageId: executionState?.currentStageId ?? null,
               currentStageType: executionState?.currentStageType ?? null,
+              ...(executionStage ? { executionStage } : {}),
             },
             "normal_model",
           ),
@@ -645,8 +684,15 @@ function buildTransaction(tx: Db, deps: WakeQueuePostgresAdapterDeps, db: Db, ru
               retryOfRunId: finishingRun.id,
               currentStageId: executionState?.currentStageId ?? null,
               currentStageType: executionState?.currentStageType ?? null,
+              ...(executionStage ? { executionStage } : {}),
+              // myrmidon(OPE-10045): name both decisions explicitly (same text as
+              // REVIEW_DECISION_RECOVERY_INSTRUCTION in myrmidon/review-stage-recovery).
               reviewRecoveryInstruction:
-                "The previous reviewer run ended while this execution-review stage was still pending. Submit the review decision now, or mark the issue blocked with the exact unblock action.",
+                "The previous reviewer run ended while this execution-review stage was still pending. " +
+                "Submit the review decision now: PATCH the issue with status=in_progress and a comment to return it for changes, " +
+                "or with status=done and a comment to approve it. An approval given before the pull request is merged is recorded " +
+                "and the task closes after the merge. A verdict written only as a comment is not a decision. " +
+                "If you cannot decide, mark the issue blocked with the exact unblock action.",
             },
             "normal_model",
           )),
@@ -1108,6 +1154,10 @@ export function createPostgresWakeQueueAdapter(db: Db, deps: WakeQueuePostgresAd
         : [];
       const result: ReleaseTransactionResult & { run: RunSnapshot } = await db.transaction(async (rawTx: unknown): Promise<ReleaseTransactionResult & { run: RunSnapshot }> => {
         const tx = rawTx as unknown as Db;
+        // A contended issue lock must fail quickly. Keeping a pool connection
+        // waiting for the role-level statement_timeout can starve the holder
+        // and turn concurrent idle-pickup attempts into a pool deadlock.
+        await tx.execute(sql`set local lock_timeout = '5s'`);
 
         // Lock the context issue (if any) and every issue that still references this
         // run, in id order, so two concurrent finalizations can never deadlock on
@@ -1197,7 +1247,12 @@ export function createPostgresWakeQueueAdapter(db: Db, deps: WakeQueuePostgresAd
           hasAssigneeUser: Boolean(issueRow?.assigneeUserId),
           assigneeAgentMatchesRunAgent: issueRow?.assigneeAgentId === run.agentId,
           legacyExecutionNeedsReconciliation:
-            !input.ignoreUnrecordedReconciliation && legacyExecutionNeedsReconciliation(run),
+            !input.ignoreUnrecordedReconciliation &&
+            // Once recovery has restored a task to the unassigned ready queue,
+            // this terminal run is historical evidence only. Do not let a later
+            // replay sweep turn it back into a permanent hold.
+            Boolean(issueRow?.assigneeAgentId) &&
+            legacyExecutionNeedsReconciliation(run),
           // An operator stop never promotes old queued work by itself. The
           // next explicit wake adopts those messages atomically when it
           // queues a run.
@@ -1206,6 +1261,17 @@ export function createPostgresWakeQueueAdapter(db: Db, deps: WakeQueuePostgresAd
             (parseObject(run.resultJson?.executionCancellation).state === "acknowledged" || isAcknowledgedNativeStop(run)) &&
             !interruptedQueue &&
             !input.deferredWakesPostdateRun,
+          // vendor #16357 (OPE-12205): a board-operator stop of a run that
+          // never started (no startedAt: queued/claimed without a running
+          // process) is not an execution either. Its deferred follow-up must
+          // stay deferred like any other operator stop; otherwise stopping
+          // work that had not begun would launch the next link of the chain.
+          executionCancellationUnstartedOperatorStop:
+            run.status === "cancelled" &&
+            !run.startedAt &&
+            !run.processPid &&
+            !run.processGroupId &&
+            parseObject(parseObject(parseObject(run.resultJson).executionCancellation).source).code === "board_operator",
         };
         const preDrain = decidePreDrain(preDrainFacts);
 

@@ -1,10 +1,13 @@
-// myrmidon(UI-0a): the settings side panel — a 10-section skeleton keyed to
-// the screen-map §3.1 spec ("Settings: internal side panel of 10 sections").
+// myrmidon(UI-0a): the settings side panel — an 11-section list keyed to
+// the screen-map §3.1 spec (10 sections) plus the Channels section
+// (OPE-10136, ia-v2 §2.3 item 13).
 // Sections land as real screens with their waves (UI-0c re-skins the ones
 // that already have data; the rest stay skeleton rows). Rendered inside the
 // ui2 shell for any /company/settings/* route under the flag.
+import clsx from "clsx";
 import { NavLink } from "@/lib/router";
 import { useTranslation } from "@/i18n";
+import { useUi2I18nOptional } from "../i18n/Ui2I18n";
 
 export const UI2_SETTINGS_SECTIONS = [
   { key: "general", path: "/company/settings" },
@@ -15,14 +18,21 @@ export const UI2_SETTINGS_SECTIONS = [
   { key: "budgets", path: "/company/settings/budgets" },
   { key: "autonomy", path: "/company/settings/autonomy" },
   { key: "castes", path: "/company/settings/castes" },
+  { key: "channels", path: "/company/settings/channels" },
   { key: "system", path: "/company/settings/system" },
+  { key: "language", path: "/company/settings/language" },
 ] as const;
 
 export function Ui2SettingsSidebar() {
-  const { t } = useTranslation();
+  const { t: tApp } = useTranslation();
+  const ui2I18n = useUi2I18nOptional();
+  const t = (key: string, values?: Record<string, string | number>) => {
+    const ui2Translation = ui2I18n?.t(key as never, values);
+    return ui2Translation && ui2Translation !== key ? ui2Translation : tApp(key, values);
+  };
   return (
     <nav
-      className="myr-ui2__settings-nav"
+      className="myr-ui2__settings-nav myr-ui2-settings-sidebar"
       aria-label={t("ui2.settings.navLabel")}
       style={{
         display: "flex",
@@ -39,6 +49,10 @@ export function Ui2SettingsSidebar() {
         <NavLink
           key={section.key}
           to={section.path}
+          end={section.key === "general"}
+          className={({ isActive }) =>
+            clsx("myr-ui2-settings-item", isActive && "myr-ui2-settings-item--active")
+          }
           style={({ isActive }) => ({
             display: "flex",
             alignItems: "center",

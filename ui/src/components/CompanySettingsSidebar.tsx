@@ -185,6 +185,14 @@ export function CompanySettingsSidebar() {
               end
             />
           )}
+          {isInstanceAdmin && (
+            <SidebarNavItem
+              to={`${INSTANCE_SETTINGS_PATH_PREFIX}/users`}
+              label={t("area.shell-sidebar-layout-1.company-settings-sidebar.instanceUsers")}
+              icon={Users}
+              end
+            />
+          )}
           {/* myrmidon(LICENSING): closed-module licenses, instance admin only */}
           {isInstanceAdmin && (
             <SidebarNavItem to={LICENSES_PATH} label={t("licensing.title")} icon={BadgeCheck} end />

@@ -33,7 +33,6 @@ const sweep: SweepState = { timer: null, running: false, settings: null };
 
 export function startLessonDistillSweep(deps: LessonDistillSweepDeps): void {
   const settings = resolveLessonDistillSettings(deps.env ?? process.env);
-  if (!settings.enabled) return; // off until MYRMIDON_LESSON_DISTILL_ENABLED=1 — the default stays silent.
   if (sweep.timer) return; // one sweep per process.
   sweep.settings = settings;
 
@@ -43,6 +42,7 @@ export function startLessonDistillSweep(deps: LessonDistillSweepDeps): void {
     try {
       const storedGeneral = deps.readGeneral ? await deps.readGeneral() : undefined;
       const current = resolveLessonDistillSettings(deps.env ?? process.env, storedGeneral);
+      if (!current.enabled) return;
       if (!current.memoryBaseUrl) {
         logger.warn("lesson-distill: enabled but no memory service address (env or stored settings); tick skipped");
         return;

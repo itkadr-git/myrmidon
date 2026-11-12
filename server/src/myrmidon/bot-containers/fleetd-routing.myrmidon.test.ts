@@ -1,7 +1,14 @@
 import { describe, expect, it } from "vitest";
 
 import { fleetRoutingDriver, type FleetRoutingDeps, type RoutedBotAgent } from "./fleetd-routing.js";
-import type { BotContainerDriver, BotContainerSpec, BotContainerStatus } from "./driver.js";
+import {
+  CLEANUP_UNSUPPORTED_MESSAGE,
+  DECOMMISSION_UNSUPPORTED_MESSAGE,
+  type BotContainerDriver,
+  type BotContainerSpec,
+  type BotContainerStatus,
+  type BotSkillDirectory,
+} from "./driver.js";
 import type { CompiledProfile } from "./types.js";
 
 // Everything here is placeholder data: fake bot keys and statuses.
@@ -56,6 +63,9 @@ function recordingDriver(name: string): BotContainerDriver & { calls: string[] }
     },
     async stop(botKey) {
       calls.push(`${name}:stop:${botKey}`);
+    },
+    async cleanup(botKey) {
+      calls.push(`${name}:cleanup:${botKey}`);
     },
   };
   return Object.assign(driver, { calls });
@@ -123,13 +133,13 @@ describe("myrmidon(FLEETD-VMEXEC) fleet routing — every driver call goes by th
     expect(d.fleetA.calls).toEqual([]);
   });
 
-  it("list is the union over the local driver and every fleet host", async () => {
+  it("list asks the local driver for the bots of the local host and does not touch the sites", async () => {
     const d = deps();
     const routed = fleetRoutingDriver(d, () => agent(null));
     const bots = await routed.list(["bot-a"]);
-    expect(bots).toHaveLength(2);
+    expect(bots).toHaveLength(1);
     expect(d.local.calls).toEqual(["local:list"]);
-    expect(d.fleetA.calls).toEqual(["fleet-a:list"]);
+    expect(d.fleetA.calls).toEqual([]);
   });
 
   it("supports dynamic fleet map provider (hot-reload)", async () => {
@@ -282,5 +292,496 @@ describe("myrmidon(1.6.6 T3) fleet routing — provider is asked by company", ()
     const r = fleetRoutingDriver({ local, fleet }, () => ({ adapterConfig: { container: { host: "myr-vm1" } } }));
     await expect(r.start("bot-x")).rejects.toThrow(/no companyId/);
     expect([...local.calls, ...c1.calls, ...c2.calls]).toEqual([]);
+  });
+});
+
+// myrmidon(IDLE-STOP): the router answers every optional method of BotContainerDriver. It used
+// to forward only the required ones, so a service that tests `driver.stopIdle` (IDLE-STOP),
+// `driver.readCloneReport` (clone-report collector, git-store route), `driver.readBotSkills`
+// (skill back-import), `driver.listRunning` or `driver.statusWithDrift` (reconciler) found the
+// method missing for every bot, local ones included. The board log said, on every sweep:
+// "Failed to stop container for bot <id> [idle-stop route is not supported by this driver]".
+describe("myrmidon(IDLE-STOP) fleet routing — optional driver methods", () => {
+  const runningStatus = (botKey: string): BotContainerStatus => ({ botKey, state: "running" });
+  const skills: BotSkillDirectory[] = [{ name: "s1", files: [{ path: "SKILL.md", content: "x" }] }];
+  type Recording = BotContainerDriver & { calls: string[] };
+
+  /** A local-docker-like driver: the recording driver plus every optional method. */
+  function fullRecordingDriver(name: string, over: { running?: BotContainerStatus[] } = {}): Recording {
+    const base = recordingDriver(name);
+    const calls = base.calls;
+    const driver: Recording = Object.assign(base, {
+      async stopIdle(botKey: string) {
+        calls.push(`${name}:stopIdle:${botKey}`);
+      },
+      async listRunning() {
+        calls.push(`${name}:listRunning`);
+        return over.running ?? [runningStatus(`${name}-bot`)];
+      },
+      async statusWithDrift(s: BotContainerSpec) {
+        calls.push(`${name}:statusWithDrift:${s.botKey}`);
+        return { status: runningStatus(s.botKey), drift: { drifted: true, fields: [{ field: "HostConfig.Memory", expected: 1, actual: 2 }] } };
+      },
+      async readCloneReport(botKey: string) {
+        calls.push(`${name}:readCloneReport:${botKey}`);
+        return `{"from":"${name}"}`;
+      },
+      async readBotSkills(botKey: string) {
+        calls.push(`${name}:readBotSkills:${botKey}`);
+        return skills;
+      },
+    });
+    return driver;
+  }
+
+  /** A fleetd-like driver: the required methods only (what the real fleetd client offers). */
+  const plainDriver = (name: string, state: BotContainerStatus["state"] = "running"): Recording => {
+    const driver = recordingDriver(name);
+    driver.status = async (botKey: string) => {
+      driver.calls.push(`${name}:status:${botKey}`);
+      return { botKey, state };
+    };
+    return driver;
+  };
+
+  const twoHosts = (fleetA: Recording, local: Recording = fullRecordingDriver("local")) => {
+    const agents = new Map<string, RoutedBotAgent>([
+      ["bot-local", agent(null)],
+      ["bot-fleet", agent("host-a")],
+      ["bot-fleet-off", agent("host-a")],
+    ]);
+    return { local, routed: fleetRoutingDriver({ local, fleet: new Map([["host-a", fleetA]]) }, (botKey) => agents.get(botKey)) };
+  };
+
+  it("the router has every optional method, whichever the hosts behind it have", () => {
+    // The router is typed Required<BotContainerDriver>, so a method added to the interface fails
+    // the build until it is routed; this is the runtime half of the same guard.
+    const routed = fleetRoutingDriver({ local: recordingDriver("local"), fleet: new Map() }, () => undefined);
+    for (const method of ["listRunning", "updateResources", "statusWithDrift", "stopIdle", "readCloneReport", "readBotSkills", "cleanup", "decommission"] as const) {
+      expect(typeof routed[method], method).toBe("function");
+    }
+  });
+
+  describe("cleanup", () => {
+    it("a bot on a site goes to that site's cleanup (OPE-12477)", async () => {
+      const fleetA = fullRecordingDriver("fleet-a");
+      const { local, routed } = twoHosts(fleetA);
+      await routed.cleanup!("bot-fleet");
+      expect(fleetA.calls).toEqual(["fleet-a:cleanup:bot-fleet"]);
+      expect(local.calls).toEqual([]);
+    });
+
+    it("a site driver without cleanup fails with the cleanup 'not supported' error and nothing is cleaned", async () => {
+      const fleetA = plainDriver("fleet-a");
+      delete (fleetA as Partial<Recording>).cleanup;
+      const { local, routed } = twoHosts(fleetA);
+      await expect(routed.cleanup!("bot-fleet")).rejects.toThrow(CLEANUP_UNSUPPORTED_MESSAGE);
+      expect(fleetA.calls).toEqual([]);
+      expect(local.calls).toEqual([]);
+    });
+  });
+
+  // myrmidon(OPE-12654): the bot of an agent that left the runtime. The local driver has the
+  // decommission route; a fleetd site removes the container and the directory in its cleanup.
+  describe("decommission", () => {
+    const withDecommission = (driver: Recording, name: string): Recording =>
+      Object.assign(driver, {
+        async decommission(botKey: string) {
+          driver.calls.push(`${name}:decommission:${botKey}`);
+        },
+      });
+
+    it("a local bot goes to the local driver's decommission", async () => {
+      const fleetA = fullRecordingDriver("fleet-a");
+      const local = withDecommission(fullRecordingDriver("local"), "local");
+      const { routed } = twoHosts(fleetA, local);
+      await routed.decommission!("bot-local");
+      expect(local.calls).toEqual(["local:decommission:bot-local"]);
+      expect(fleetA.calls).toEqual([]);
+    });
+
+    it("a bot on a site without the decommission route goes to that site's cleanup", async () => {
+      const fleetA = plainDriver("fleet-a");
+      const local = withDecommission(fullRecordingDriver("local"), "local");
+      const { routed } = twoHosts(fleetA, local);
+      await routed.decommission!("bot-fleet");
+      expect(fleetA.calls).toEqual(["fleet-a:cleanup:bot-fleet"]);
+      expect(local.calls).toEqual([]);
+    });
+
+    it("a site driver with its own decommission is asked for it, not for cleanup", async () => {
+      const fleetA = withDecommission(fullRecordingDriver("fleet-a"), "fleet-a");
+      const { local, routed } = twoHosts(fleetA);
+      await routed.decommission!("bot-fleet");
+      expect(fleetA.calls).toEqual(["fleet-a:decommission:bot-fleet"]);
+      expect(local.calls).toEqual([]);
+    });
+
+    it("a host with neither fails with the decommission 'not supported' error and nothing is removed", async () => {
+      const fleetA = plainDriver("fleet-a");
+      delete (fleetA as Partial<Recording>).cleanup;
+      const { local, routed } = twoHosts(fleetA);
+      await expect(routed.decommission!("bot-fleet")).rejects.toThrow(DECOMMISSION_UNSUPPORTED_MESSAGE);
+      expect(fleetA.calls).toEqual([]);
+      expect(local.calls).toEqual([]);
+    });
+
+    it("an unknown host is an error, never a decommission on the local driver", async () => {
+      const local = withDecommission(fullRecordingDriver("local"), "local");
+      const routed = fleetRoutingDriver({ local, fleet: new Map() }, () => agent("host-x"));
+      await expect(routed.decommission!("bot-a")).rejects.toThrow(/names no configured fleet host/);
+      expect(local.calls).toEqual([]);
+    });
+  });
+
+  describe("stopIdle", () => {
+    it("a local bot goes to the local driver's stopIdle (not to stop: stop would drop the idle-stopped mark)", async () => {
+      const fleetA = fullRecordingDriver("fleet-a");
+      const { local, routed } = twoHosts(fleetA);
+      await routed.stopIdle!("bot-local");
+      expect(local.calls).toEqual(["local:stopIdle:bot-local"]);
+      expect(fleetA.calls).toEqual([]);
+    });
+
+    it("a bot on a site goes to that site's driver", async () => {
+      const fleetA = fullRecordingDriver("fleet-a");
+      const { local, routed } = twoHosts(fleetA);
+      await routed.stopIdle!("bot-fleet");
+      expect(fleetA.calls).toEqual(["fleet-a:stopIdle:bot-fleet"]);
+      expect(local.calls).toEqual([]);
+    });
+
+    it("a site driver without stopIdle fails with the IDLE-STOP 'not supported' error and nothing is stopped", async () => {
+      const fleetA = plainDriver("fleet-a");
+      const { local, routed } = twoHosts(fleetA);
+      await expect(routed.stopIdle!("bot-fleet")).rejects.toThrow("idle-stop route is not supported by this driver");
+      expect(fleetA.calls).toEqual([]);
+      expect(local.calls).toEqual([]);
+    });
+
+    it("an unknown host is still an error, never a stop on the local driver", async () => {
+      const local = fullRecordingDriver("local");
+      const routed = fleetRoutingDriver({ local, fleet: new Map() }, () => agent("host-x"));
+      await expect(routed.stopIdle!("bot-a")).rejects.toThrow(/names no configured fleet host/);
+      expect(local.calls).toEqual([]);
+    });
+  });
+
+  describe("statusWithDrift", () => {
+    it("uses the one-inspect probe of the bot's own driver", async () => {
+      const fleetA = fullRecordingDriver("fleet-a");
+      const { local, routed } = twoHosts(fleetA);
+      const probed = await routed.statusWithDrift!(spec("bot-local"));
+      expect(probed.drift.drifted).toBe(true);
+      expect(local.calls).toEqual(["local:statusWithDrift:bot-local"]);
+      expect(fleetA.calls).toEqual([]);
+    });
+
+    it("a host without the probe answers through status + templateDrift(spec, status), as the reconciler does", async () => {
+      const fleetA = plainDriver("fleet-a");
+      const { routed } = twoHosts(fleetA);
+      const probed = await routed.statusWithDrift!(spec("bot-fleet"));
+      expect(probed.status.state).toBe("running");
+      expect(probed.drift).toEqual({ drifted: false, fields: [] });
+      expect(fleetA.calls).toEqual(["fleet-a:status:bot-fleet", "fleet-a:templateDrift:bot-fleet"]);
+    });
+
+    it("a host without the probe and without a container is asked for no drift", async () => {
+      const fleetA = plainDriver("fleet-a", "missing");
+      const { routed } = twoHosts(fleetA);
+      const probed = await routed.statusWithDrift!(spec("bot-fleet"));
+      expect(probed.status.state).toBe("missing");
+      expect(probed.drift).toEqual({ drifted: false, fields: [] });
+      expect(fleetA.calls).toEqual(["fleet-a:status:bot-fleet"]);
+    });
+  });
+
+  describe("listRunning", () => {
+    it("is the union over the local driver and every host; a host without the probe is filtered from list", async () => {
+      const local = fullRecordingDriver("local", { running: [runningStatus("bot-local")] });
+      const fleetA = recordingDriver("fleet-a");
+      fleetA.list = async () => {
+        fleetA.calls.push("fleet-a:list");
+        return [runningStatus("bot-fleet"), { botKey: "bot-fleet-off", state: "stopped" }];
+      };
+      const { routed } = twoHosts(fleetA, local);
+      const bots = await routed.listRunning!(["bot-local", "bot-fleet", "bot-fleet-off"]);
+      expect(bots.map((b) => b.botKey)).toEqual(["bot-local", "bot-fleet"]);
+      expect(local.calls).toEqual(["local:listRunning"]);
+      expect(fleetA.calls).toEqual(["fleet-a:list"]);
+    });
+  });
+
+  describe("readCloneReport and readBotSkills", () => {
+    it("are read from the bot's own driver", async () => {
+      const fleetA = fullRecordingDriver("fleet-a");
+      const { local, routed } = twoHosts(fleetA);
+      expect(await routed.readCloneReport!("bot-local")).toBe('{"from":"local"}');
+      expect(await routed.readCloneReport!("bot-fleet")).toBe('{"from":"fleet-a"}');
+      expect(await routed.readBotSkills!("bot-local")).toBe(skills);
+      expect(await routed.readBotSkills!("bot-fleet")).toBe(skills);
+      expect(local.calls).toEqual(["local:readCloneReport:bot-local", "local:readBotSkills:bot-local"]);
+      expect(fleetA.calls).toEqual(["fleet-a:readCloneReport:bot-fleet", "fleet-a:readBotSkills:bot-fleet"]);
+    });
+
+    it("a host that cannot read them (fleetd) answers null: nothing to collect, nothing to import", async () => {
+      const fleetA = plainDriver("fleet-a");
+      const { routed } = twoHosts(fleetA);
+      expect(await routed.readCloneReport!("bot-fleet")).toBeNull();
+      expect(await routed.readBotSkills!("bot-fleet")).toBeNull();
+      expect(fleetA.calls).toEqual([]);
+    });
+  });
+
+  describe("getOomEvents", () => {
+    it("collects OOM events across local and all fleet drivers, handling rejected fleet hosts gracefully", async () => {
+      const local = recordingDriver("local");
+      local.getOomEvents = async () => [
+        {
+          containerId: "cid-local",
+          botKey: "bot-local",
+          time: 100,
+          timeNano: 100_000_000_000,
+          source: "docker.events",
+        },
+      ];
+      const fleetA = recordingDriver("fleet-a");
+      fleetA.getOomEvents = async () => [
+        {
+          containerId: "cid-fleet-a",
+          botKey: "bot-fleet",
+          time: 200,
+          timeNano: 200_000_000_000,
+          source: "docker.events",
+        },
+      ];
+      const fleetB = recordingDriver("fleet-b");
+      fleetB.getOomEvents = async () => {
+        throw new Error("fleet-b unreachable");
+      };
+
+      const d: FleetRoutingDeps = {
+        local,
+        fleet: new Map([
+          ["host-a", fleetA],
+          ["host-b", fleetB],
+        ]),
+      };
+      const routed = fleetRoutingDriver(d, () => agent(null));
+      const events = await routed.getOomEvents!(50);
+      expect(events).toEqual([
+        {
+          containerId: "cid-local",
+          botKey: "bot-local",
+          time: 100,
+          timeNano: 100_000_000_000,
+          source: "docker.events",
+        },
+        {
+          containerId: "cid-fleet-a",
+          botKey: "bot-fleet",
+          time: 200,
+          timeNano: 200_000_000_000,
+          source: "docker.events",
+        },
+      ]);
+    });
+  });
+});
+
+// myrmidon(1.6.7 FLEET-SITE-ENROLL): the routed list used to send every bot key to the local driver and
+// to every site. The local dockergate refuses a bot it does not know (`bot_not_enrolled`), and one
+// refused call failed the whole list, so the clone-report pass and the idle sweep saw nothing as soon
+// as one bot ran on a remote site.
+describe("myrmidon(1.6.7 FLEET-SITE-ENROLL) fleet routing — a list asks each host for its own bots", () => {
+  type Reported = { host: string | null; botKeys: readonly string[]; error: unknown };
+
+  /**
+   * A driver that knows only the bots it owns, as the real ones do: a key it does not own is refused
+   * with `bot_not_enrolled`, which fails the whole call. `calls` records the keys of every list.
+   */
+  function enrolledDriver(
+    name: string,
+    owned: readonly string[],
+    opts: { unreachable?: boolean; stopped?: readonly string[]; probe?: boolean } = {},
+  ): BotContainerDriver & { calls: string[] } {
+    const driver = recordingDriver(name);
+    const answer = (keys: readonly string[]): BotContainerStatus[] => {
+      if (opts.unreachable) throw new Error(`${name} is unreachable`);
+      const stranger = keys.find((key) => !owned.includes(key));
+      if (stranger) throw new Error(`${name}: bot_not_enrolled: ${stranger}`);
+      return keys.map((botKey) => ({ botKey, state: opts.stopped?.includes(botKey) ? "stopped" : "running" }));
+    };
+    driver.list = async (keys) => {
+      driver.calls.push(`${name}:list:${keys.join(",")}`);
+      return answer(keys);
+    };
+    if (opts.probe) {
+      driver.listRunning = async (keys) => {
+        driver.calls.push(`${name}:listRunning:${keys.join(",")}`);
+        return answer(keys).filter((bot) => bot.state === "running");
+      };
+    }
+    return driver;
+  }
+
+  /** The card of each bot: a host name, null for the local host; a bot not in the map has no card. */
+  const cards =
+    (hosts: Record<string, string | null>) =>
+    (botKey: string): RoutedBotAgent | undefined =>
+      botKey in hosts ? agent(hosts[botKey] ?? null) : undefined;
+
+  const mixedHosts = {
+    "bot-l1": null,
+    "bot-a1": "host-a",
+    "bot-b1": "host-b",
+    "bot-l2": null,
+    "bot-a2": "host-a",
+  } as const;
+  const mixedKeys = ["bot-l1", "bot-a1", "bot-b1", "bot-l2", "bot-a2"];
+
+  it("sends the local driver only the local bots and each site only its own", async () => {
+    const local = enrolledDriver("local", ["bot-l1", "bot-l2"]);
+    const siteA = enrolledDriver("site-a", ["bot-a1", "bot-a2"]);
+    const siteB = enrolledDriver("site-b", ["bot-b1"]);
+    const routed = fleetRoutingDriver({ local, fleet: new Map([["host-a", siteA], ["host-b", siteB]]) }, cards(mixedHosts));
+    const bots = await routed.list(mixedKeys);
+    expect(local.calls).toEqual(["local:list:bot-l1,bot-l2"]);
+    expect(siteA.calls).toEqual(["site-a:list:bot-a1,bot-a2"]);
+    expect(siteB.calls).toEqual(["site-b:list:bot-b1"]);
+    // the local bots first, then the sites in the order their first bot appears
+    expect(bots.map((bot) => bot.botKey)).toEqual(["bot-l1", "bot-l2", "bot-a1", "bot-a2", "bot-b1"]);
+  });
+
+  it("listRunning does the same; a site without the probe is asked through list and filtered", async () => {
+    const local = enrolledDriver("local", ["bot-l1", "bot-l2"], { probe: true, stopped: ["bot-l2"] });
+    const siteA = enrolledDriver("site-a", ["bot-a1", "bot-a2"], { stopped: ["bot-a2"] });
+    const siteB = enrolledDriver("site-b", ["bot-b1"], { probe: true });
+    const routed = fleetRoutingDriver({ local, fleet: new Map([["host-a", siteA], ["host-b", siteB]]) }, cards(mixedHosts));
+    const bots = await routed.listRunning!(mixedKeys);
+    expect(local.calls).toEqual(["local:listRunning:bot-l1,bot-l2"]);
+    expect(siteA.calls).toEqual(["site-a:list:bot-a1,bot-a2"]);
+    expect(siteB.calls).toEqual(["site-b:listRunning:bot-b1"]);
+    expect(bots.map((bot) => bot.botKey)).toEqual(["bot-l1", "bot-a1", "bot-b1"]);
+  });
+
+  it("a site that fails does not fail the list: the other hosts are returned and the failure is reported", async () => {
+    const local = enrolledDriver("local", ["bot-l1", "bot-l2"]);
+    const siteA = enrolledDriver("site-a", ["bot-a1", "bot-a2"]);
+    const siteB = enrolledDriver("site-b", ["bot-b1"], { unreachable: true });
+    const reported: Reported[] = [];
+    const routed = fleetRoutingDriver(
+      { local, fleet: new Map([["host-a", siteA], ["host-b", siteB]]), onHostError: (info) => { reported.push(info); } },
+      cards(mixedHosts),
+    );
+    for (const ask of [() => routed.list(mixedKeys), () => routed.listRunning!(mixedKeys)]) {
+      reported.length = 0;
+      const bots = await ask();
+      expect(bots.map((bot) => bot.botKey)).toEqual(["bot-l1", "bot-l2", "bot-a1", "bot-a2"]);
+      expect(reported).toHaveLength(1);
+      expect(reported[0]).toMatchObject({ host: "host-b", botKeys: ["bot-b1"] });
+      expect(String((reported[0]!.error as Error).message)).toContain("site-b is unreachable");
+    }
+  });
+
+  it("the local driver failing does not hide the sites either", async () => {
+    const local = enrolledDriver("local", ["bot-l1", "bot-l2"], { unreachable: true });
+    const siteA = enrolledDriver("site-a", ["bot-a1", "bot-a2"]);
+    const siteB = enrolledDriver("site-b", ["bot-b1"]);
+    const reported: Reported[] = [];
+    const routed = fleetRoutingDriver(
+      { local, fleet: new Map([["host-a", siteA], ["host-b", siteB]]), onHostError: (info) => { reported.push(info); } },
+      cards(mixedHosts),
+    );
+    const bots = await routed.list(mixedKeys);
+    expect(bots.map((bot) => bot.botKey)).toEqual(["bot-a1", "bot-a2", "bot-b1"]);
+    expect(reported).toMatchObject([{ host: null, botKeys: ["bot-l1", "bot-l2"] }]);
+  });
+
+  it("fails when no host answered, so a total outage is not an empty list", async () => {
+    const local = enrolledDriver("local", ["bot-l1", "bot-l2"], { unreachable: true });
+    const siteA = enrolledDriver("site-a", ["bot-a1", "bot-a2"], { unreachable: true });
+    const siteB = enrolledDriver("site-b", ["bot-b1"], { unreachable: true });
+    const reported: Reported[] = [];
+    const routed = fleetRoutingDriver(
+      { local, fleet: new Map([["host-a", siteA], ["host-b", siteB]]), onHostError: (info) => { reported.push(info); } },
+      cards(mixedHosts),
+    );
+    await expect(routed.list(mixedKeys)).rejects.toThrow(/is unreachable/);
+    expect(reported).toHaveLength(3);
+  });
+
+  it("a bot on a host that is not configured is left out and reported; it is never sent to the local driver", async () => {
+    const local = enrolledDriver("local", ["bot-l1"]);
+    const reported: Reported[] = [];
+    const routed = fleetRoutingDriver(
+      { local, fleet: new Map(), onHostError: (info) => { reported.push(info); } },
+      cards({ "bot-l1": null, "bot-x": "host-x" }),
+    );
+    const bots = await routed.list(["bot-l1", "bot-x"]);
+    expect(bots.map((bot) => bot.botKey)).toEqual(["bot-l1"]);
+    expect(local.calls).toEqual(["local:list:bot-l1"]);
+    expect(reported).toHaveLength(1);
+    expect(reported[0]).toMatchObject({ host: "host-x", botKeys: ["bot-x"] });
+    expect(String((reported[0]!.error as Error).message)).toMatch(/names no configured fleet host/);
+    // only that bot asked: nothing could be listed, so the list fails instead of looking empty
+    await expect(routed.list(["bot-x"])).rejects.toThrow(/names no configured fleet host/);
+  });
+
+  it("a card that cannot be read does not send its bot to the local driver", async () => {
+    const local = enrolledDriver("local", ["bot-l1"]);
+    const reported: Reported[] = [];
+    const routed = fleetRoutingDriver(
+      { local, fleet: new Map(), onHostError: (info) => { reported.push(info); } },
+      (botKey) => {
+        if (botKey === "bot-gone") throw new Error("agent read failed");
+        if (botKey === "bot-odd") return agent("Not A Host");
+        return agent(null);
+      },
+    );
+    const bots = await routed.list(["bot-l1", "bot-gone", "bot-odd"]);
+    expect(bots.map((bot) => bot.botKey)).toEqual(["bot-l1"]);
+    expect(local.calls).toEqual(["local:list:bot-l1"]);
+    expect(reported.map((item) => item.botKeys)).toEqual([["bot-gone"], ["bot-odd"]]);
+  });
+
+  it("a bot without a card record goes to the local driver, as every other routed call does", async () => {
+    const local = enrolledDriver("local", ["bot-unknown"]);
+    const routed = fleetRoutingDriver({ local, fleet: new Map() }, () => undefined);
+    expect((await routed.list(["bot-unknown"])).map((bot) => bot.botKey)).toEqual(["bot-unknown"]);
+  });
+
+  it("the same site name in two companies is two clients, each asked for its own company's bots", async () => {
+    const local = enrolledDriver("local", []);
+    const clientA = enrolledDriver("co-a", ["bot-1"]);
+    const clientB = enrolledDriver("co-b", ["bot-2"]);
+    const routed = fleetRoutingDriver(
+      { local, fleet: new Map([["company-a/myr-vm1", clientA], ["company-b/myr-vm1", clientB]]) },
+      (botKey) => ({ companyId: botKey === "bot-1" ? "company-a" : "company-b", adapterConfig: { container: { host: "myr-vm1" } } }),
+    );
+    const bots = await routed.list(["bot-1", "bot-2"]);
+    expect(bots.map((bot) => bot.botKey)).toEqual(["bot-1", "bot-2"]);
+    expect(clientA.calls).toEqual(["co-a:list:bot-1"]);
+    expect(clientB.calls).toEqual(["co-b:list:bot-2"]);
+    expect(local.calls).toEqual([]);
+  });
+
+  it("a list of no bots asks nobody", async () => {
+    const d = deps();
+    const routed = fleetRoutingDriver(d, () => agent(null));
+    expect(await routed.list([])).toEqual([]);
+    expect(await routed.listRunning!([])).toEqual([]);
+    expect(d.local.calls).toEqual([]);
+    expect(d.fleetA.calls).toEqual([]);
+  });
+
+  it("a reporter that throws does not turn a partial list into a failure", async () => {
+    const local = enrolledDriver("local", ["bot-l1"]);
+    const siteA = enrolledDriver("site-a", ["bot-a1"], { unreachable: true });
+    const routed = fleetRoutingDriver(
+      { local, fleet: new Map([["host-a", siteA]]), onHostError: () => { throw new Error("reporter broke"); } },
+      cards({ "bot-l1": null, "bot-a1": "host-a" }),
+    );
+    expect((await routed.list(["bot-l1", "bot-a1"])).map((bot) => bot.botKey)).toEqual(["bot-l1"]);
   });
 });

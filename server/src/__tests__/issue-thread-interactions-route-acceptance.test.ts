@@ -1,0 +1,160 @@
+import { randomUUID } from "node:crypto";
+import request from "supertest";
+import { expect, it } from "vitest";
+import { eq } from "drizzle-orm";
+import { activityLog, agentWakeupRequests, agents, heartbeatRunEvents, heartbeatRuns, issues, issueThreadInteractions } from "@myrmidon/db";
+import { issueRoutes } from "../routes/issues.js";
+import {
+  describeEmbeddedPostgres,
+  resetCompanyIssueFixtures,
+  routeApp,
+  seedCompanyWithBoardAccess,
+  useEmbeddedPostgres,
+} from "./helpers/route-test-harness.js";
+
+describeEmbeddedPostgres("issue-thread-interaction routes acceptance (OPE-9150)", () => {
+  const ctx = useEmbeddedPostgres("interaction-route-acceptance-", {
+    resetEach: async (db) => {
+      for (let attempt = 0; ; attempt += 1) {
+        try {
+          await db.delete(issueThreadInteractions);
+          await db.delete(activityLog);
+          await db.delete(heartbeatRunEvents);
+          await db.delete(heartbeatRuns);
+          await db.delete(agentWakeupRequests);
+          await db.delete(agents);
+          await resetCompanyIssueFixtures(db);
+          break;
+        } catch (error) {
+          if (attempt >= 4) throw error;
+          await new Promise((resolve) => setTimeout(resolve, 100));
+        }
+      }
+    },
+  });
+
+  async function seed() {
+    const seeded = await seedCompanyWithBoardAccess(ctx.db, "Interaction route acceptance");
+    const companyId = seeded.companyId;
+    const issueId = randomUUID();
+
+    await ctx.db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Interaction test issue",
+      status: "in_progress",
+      priority: "medium",
+    });
+
+    return { ...seeded, issueId };
+  }
+
+  function appFor(seeded: Awaited<ReturnType<typeof seed>>) {
+    return routeApp(ctx.db, seeded.actor, issueRoutes);
+  }
+
+  it("rejects interaction creation without addressee via HTTP route with 422 and writes no row to DB", async () => {
+    const seeded = await seed();
+    const callingApp = appFor(seeded);
+    const body = {
+      kind: "request_confirmation",
+      payload: { version: 1, prompt: "Confirm without addressee" },
+    };
+
+    const first = await request(callingApp)
+      .post(`/api/issues/${seeded.issueId}/interactions`)
+      .send(body);
+    const second = await request(callingApp)
+      .post(`/api/issues/${seeded.issueId}/interactions`)
+      .send(body);
+
+    expect(first.status).toBe(422);
+    expect(second.status).toBe(422);
+    expect(first.body.error).toContain("Cannot determine recipient for interaction");
+    expect(second.body.error).toBe(first.body.error);
+
+    const rows = await ctx.db
+      .select()
+      .from(issueThreadInteractions)
+      .where(eq(issueThreadInteractions.issueId, seeded.issueId));
+    expect(rows).toHaveLength(0);
+
+    const publications = await ctx.db
+      .select()
+      .from(activityLog)
+      .where(eq(activityLog.entityId, seeded.issueId));
+    expect(publications).toHaveLength(0);
+
+    const wakeups = await ctx.db
+      .select()
+      .from(agentWakeupRequests)
+      .where(eq(agentWakeupRequests.companyId, seeded.companyId));
+    expect(wakeups).toHaveLength(0);
+  });
+
+  it("creates interaction with explicit agent addressee via HTTP route and persists route_type and timeout_at in DB", async () => {
+    const seeded = await seed();
+    const targetAgentId = randomUUID();
+
+    await ctx.db.insert(agents).values({
+      id: targetAgentId,
+      companyId: seeded.companyId,
+      name: "Target Agent",
+      role: "engineer",
+      status: "active",
+    });
+
+    const res = await request(appFor(seeded))
+      .post(`/api/issues/${seeded.issueId}/interactions`)
+      .send({
+        kind: "request_confirmation",
+        addresseeAgentId: targetAgentId,
+        payload: { version: 1, prompt: "Please approve" },
+      });
+
+    expect(res.status).toBe(201);
+    expect(res.body.id).toBeDefined();
+    expect(res.body.addresseeAgentId).toBe(targetAgentId);
+    expect(res.body.routeType).toBe("decision");
+    expect(res.body.timeoutAt).toBeDefined();
+    expect(typeof res.body.timeoutAt).toBe("string");
+
+    const [dbRow] = await ctx.db
+      .select()
+      .from(issueThreadInteractions)
+      .where(eq(issueThreadInteractions.id, res.body.id));
+    expect(dbRow).toBeDefined();
+    expect(dbRow.addresseeAgentId).toBe(targetAgentId);
+    expect(dbRow.routeType).toBe("decision");
+    expect(dbRow.timeoutAt).toBeDefined();
+  });
+
+  it("creates interaction with explicit user addressee via HTTP route and persists route_type and timeout_at in DB", async () => {
+    const seeded = await seed();
+    const targetUserId = `user-${randomUUID()}`;
+
+    const res = await request(appFor(seeded))
+      .post(`/api/issues/${seeded.issueId}/interactions`)
+      .send({
+        kind: "request_confirmation",
+        addresseeUserId: targetUserId,
+        payload: { version: 1, prompt: "Please review" },
+      });
+
+    expect(res.status).toBe(201);
+    expect(res.body.id).toBeDefined();
+    expect(res.body.addresseeUserId).toBe(targetUserId);
+    expect(res.body.routeType).toBe("human_input");
+    expect(res.body.timeoutAt).toBeDefined();
+    expect(typeof res.body.timeoutAt).toBe("string");
+
+    const [dbRow] = await ctx.db
+      .select()
+      .from(issueThreadInteractions)
+      .where(eq(issueThreadInteractions.id, res.body.id));
+    expect(dbRow).toBeDefined();
+    expect(dbRow.addresseeUserId).toBe(targetUserId);
+    expect(dbRow.routeType).toBe("human_input");
+    expect(dbRow.timeoutAt).toBeDefined();
+  });
+});

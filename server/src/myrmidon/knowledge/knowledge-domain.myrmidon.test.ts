@@ -9,7 +9,10 @@
 // whole tree is assembled; the store's export reuses the same pure builder.
 
 import { describe, expect, it } from "vitest";
+import { KNOWLEDGE_SOURCE_KINDS as DB_KNOWLEDGE_SOURCE_KINDS } from "@myrmidon/db";
+import { knowledgeSourceInputSchema } from "@myrmidon/shared";
 import {
+  KNOWLEDGE_SOURCE_KINDS,
   KnowledgeDomainError,
   assertApprovable,
   assertItemTransition,
@@ -19,6 +22,7 @@ import {
   assertValidSlug,
   normalizeKnowledgeRevisionLang,
   assertTranslationOf,
+  assertKnowledgeWriteProtection,
   canTransitionItem,
   draftPointerFields,
   extractLinkTargets,
@@ -44,6 +48,30 @@ const page = (over: Partial<KnowledgeTreePage> = {}): KnowledgeTreePage => ({
   approverKind: null,
   content: "Body text.\n",
   ...over,
+});
+
+describe("knowledge domain — source-kind parity across server, @myrmidon/db and @myrmidon/shared (1.7 L-12)", () => {
+  it("KNOWLEDGE_SOURCE_KINDS matches the @myrmidon/db export exactly", () => {
+    // The db schema re-exports the same constant: when one list drifts, name
+    // both so the failing test says which copy diverged.
+    expect([...KNOWLEDGE_SOURCE_KINDS]).toEqual([...DB_KNOWLEDGE_SOURCE_KINDS]);
+    expect([...DB_KNOWLEDGE_SOURCE_KINDS]).toEqual([...KNOWLEDGE_SOURCE_KINDS]);
+  });
+
+  it("knowledgeSourceInputSchema.kind options match KNOWLEDGE_SOURCE_KINDS exactly", () => {
+    // The shared z.enum is the only gate REST propose and MCP knowledge_propose/
+    // rule_propose pass through: a kind missing here is rejected before the store.
+    const inputOptions = knowledgeSourceInputSchema.shape.kind.options;
+    expect([...inputOptions]).toEqual([...KNOWLEDGE_SOURCE_KINDS]);
+    expect([...KNOWLEDGE_SOURCE_KINDS]).toEqual([...inputOptions]);
+  });
+
+  it("accepts kind \"debate\" (1.7 L-12) and still refuses an unknown kind", () => {
+    const debate = knowledgeSourceInputSchema.safeParse({ kind: "debate", ref: "11111111-2222-4333-8444-555555555555" });
+    expect(debate.success).toBe(true);
+    const unknown = knowledgeSourceInputSchema.safeParse({ kind: "foo", ref: "whatever" });
+    expect(unknown.success).toBe(false);
+  });
 });
 
 describe("knowledge domain — slugs and single-line metadata", () => {
@@ -272,5 +300,119 @@ describe("knowledge domain — canonical markdown tree (export/import)", () => {
     durations.sort((a, b) => a - b);
     const p95 = durations[Math.ceil(durations.length * 0.95) - 1]!;
     expect(p95).toBeLessThan(300);
+  });
+});
+
+describe("knowledge write protection against probe markers and truncations (OPE-9762)", () => {
+  const previousContent = "A".repeat(1000);
+
+  it("rejects probe marker __probe", () => {
+    expect(() =>
+      assertKnowledgeWriteProtection({
+        newContent: "checking page existence __probe marker",
+        previousContent,
+      }),
+    ).toThrow(/__probe/);
+  });
+
+  it("rejects probe marker __probe even during initial creation (previousContent: null)", () => {
+    expect(() =>
+      assertKnowledgeWriteProtection({
+        newContent: "initial page creation with __probe marker",
+        previousContent: null,
+      }),
+    ).toThrow(/__probe/);
+  });
+
+  it("permits legitimate initial short stubs during creation (previousContent: null)", () => {
+    // Initial creation has no prior revision to overwrite/truncate, so short stubs are allowed
+    // unless they contain explicit probe markers.
+    expect(() =>
+      assertKnowledgeWriteProtection({
+        newContent: "short initial stub",
+        previousContent: null,
+      }),
+    ).not.toThrow();
+  });
+
+  it("rejects single line shorter than 20 characters on update of existing content", () => {
+    expect(() =>
+      assertKnowledgeWriteProtection({
+        newContent: "ping",
+        previousContent,
+      }),
+    ).toThrow(/shorter than 20 characters/);
+  });
+
+  it("rejects new content shorter than 20% of previous revision", () => {
+    expect(() =>
+      assertKnowledgeWriteProtection({
+        newContent: "A".repeat(150),
+        previousContent,
+      }),
+    ).toThrow(/less than 20%/);
+  });
+
+  it("requires both force: true and non-empty reason to override a violation", () => {
+    // force without reason throws
+    expect(() =>
+      assertKnowledgeWriteProtection({
+        newContent: "ping",
+        previousContent,
+        force: true,
+      }),
+    ).toThrow(/shorter than 20 characters/);
+
+    expect(() =>
+      assertKnowledgeWriteProtection({
+        newContent: "ping",
+        previousContent,
+        force: true,
+        reason: "   ",
+      }),
+    ).toThrow(/shorter than 20 characters/);
+
+    // reason without force throws
+    expect(() =>
+      assertKnowledgeWriteProtection({
+        newContent: "ping",
+        previousContent,
+        force: false,
+        reason: "Valid reason without force",
+      }),
+    ).toThrow(/shorter than 20 characters/);
+  });
+
+  it("returns violation metadata when force: true and valid reason are provided", () => {
+    const v1 = assertKnowledgeWriteProtection({
+      newContent: "ping",
+      previousContent,
+      force: true,
+      reason: "Deliberate test probe",
+    });
+    expect(v1).toEqual(
+      expect.objectContaining({
+        kind: "short_single_line",
+      }),
+    );
+
+    const v2 = assertKnowledgeWriteProtection({
+      newContent: "A".repeat(150),
+      previousContent,
+      force: true,
+      reason: "Truncating for rewrite",
+    });
+    expect(v2).toEqual(
+      expect.objectContaining({
+        kind: "severe_truncation",
+      }),
+    );
+
+    // Normal valid write returns null (no violation)
+    const v3 = assertKnowledgeWriteProtection({
+      newContent: "A".repeat(1000),
+      previousContent,
+    });
+    expect(v3).toBeNull();
   });
 });

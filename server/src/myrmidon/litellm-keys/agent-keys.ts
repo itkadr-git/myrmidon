@@ -9,6 +9,9 @@ import {
 } from "@myrmidon/shared";
 import { badRequest, conflict, forbidden, notFound, unprocessable } from "../../errors.js";
 import { secretService } from "../../services/index.js";
+import { readBudgetProjectionSettings } from "../litellm-budget-sync/settings.js";
+import { keyBudgetUsage, type KeyBudgetLimitView, type KeyBudgetUsageView } from "./key-budget-adapter.js";
+import { AGENT_SPEND_WINDOW_MS, readAgentSpendWindows, type AgentSpendWindow } from "./key-spend.js";
 
 /**
  * myrmidon(M2-B): one LLM gateway virtual key per agent, held in the company
@@ -45,6 +48,13 @@ export interface AgentGatewayKeyDeps {
   readSecretValue(companyId: string, secretName: string): Promise<string | null>;
   /** Finds a company secret id by name; null when absent. */
   findSecretId(companyId: string, secretName: string): Promise<string | null>;
+  /**
+   * Resolves a company secret by id (the form a card binding carries) and
+   * returns its value; null when the secret or the version is gone. Optional:
+   * without it a card's key binding cannot be followed and only the
+   * board-managed secret name is used.
+   */
+  readSecretValueById?(companyId: string, secretId: string, version?: number | "latest"): Promise<string | null>;
   /** Creates a company secret; returns its id. */
   createSecret(input: {
     companyId: string;
@@ -54,16 +64,23 @@ export interface AgentGatewayKeyDeps {
   }): Promise<{ id: string }>;
   /** Rotates a company secret to a new value. */
   rotateSecret(secretId: string, value: string): Promise<void>;
+  /** Deletes a company secret by id. */
+  deleteSecret?(secretId: string): Promise<void>;
   /** The key-management port of the gateway, built from the admin key. */
   gateway(input: { baseUrl: string; adminKey: string }): GatewayKeyAdminPort;
+  /**
+   * Ledger spend per agent over the last 24 h / 7 days (OPE-11776). Absent: the
+   * shared, cached, time-bounded read of litellm_cost_events (key-spend.ts).
+   */
+  readSpendWindows?(): Promise<AgentSpendWindow[]>;
   env?: NodeJS.ProcessEnv;
   log?: { info(fields: object, message: string): void; warn(fields: object, message: string): void };
 }
 
 /** The key-management surface of the gateway this module uses. */
 export interface GatewayKeyAdminPort {
-  /** Installs a key under an alias. The gateway stores its sha256. */
-  createKey(input: { alias: string; value: string }): Promise<void>;
+  /** Installs a key under an alias with optional allowed models. The gateway stores its sha256. */
+  createKey(input: { alias: string; value: string; models?: string[] }): Promise<void>;
   /** Replaces the value behind an alias. Returns false when the alias is unknown. */
   rotateKey(input: { alias: string; value: string }): Promise<boolean>;
   /** Removes a key by alias. */
@@ -72,14 +89,30 @@ export interface GatewayKeyAdminPort {
    * Replaces the model allowlist of an existing key WITHOUT touching its
    * value. Optional: the allowlist feature (1.6.1 MODEL-PROVIDERS B) skips
    * gracefully when a port does not implement it. Returns false when the
-   * alias is unknown to the gateway.
+   * key is unknown to the gateway.
+   *
+   * The key is addressed by `keyHash` (the sha256 of its value, the form the
+   * gateway stores: `/key/update` takes `key` as the value or its hash) when
+   * the caller has it, otherwise by `alias`. A hash is how a key is found when
+   * its alias is not the board's derived secret name; `key_alias` is then NOT
+   * sent, because `/key/update` would rename the key to it.
    */
-  setKeyAllowedModels?(input: { alias: string; models: string[] }): Promise<boolean>;
+  setKeyAllowedModels?(input: { alias: string; keyHash?: string; models: string[] }): Promise<boolean>;
+  /**
+   * Reads key metadata from the gateway (such as model allowlist). Addressed
+   * like `setKeyAllowedModels`: by `keyHash` (`GET /key/info?key=<hash>`) when
+   * given, otherwise by `alias` (`GET /key/list`). Null for an unknown key.
+   */
+  getKeyInfo?(input: { alias: string; keyHash?: string }): Promise<{ models?: string[]; maxBudgetUsd?: number | null; spendUsd?: number | null } | null>;
 }
 
 /** What a card's gateway key looks like to a caller: never the value itself. */
 export interface AgentGatewayKeyView {
   agentId: string;
+  /** Agent display name for the key budget projection view. */
+  agentName?: string | null;
+  /** Agent role (caste) for matching budget projection limits. */
+  role?: string | null;
   /** The secret-store name that carries the key. */
   secretName: string;
   /** True when the store holds a value for it. */
@@ -88,11 +121,22 @@ export interface AgentGatewayKeyView {
   valueHash: string | null;
   /** Whether this instance may manage gateway keys at all. */
   canManageKeys: boolean;
+  /** Allowed models list. Empty array means all models allowed. */
+  models?: string[];
+  /** Key budget limit projected from the OPE-8675 budget projection. */
+  budget?: KeyBudgetLimitView | null;
+  /** LiteLLM /key/info cap in USD; null when unavailable or uncapped. */
+  maxBudgetUsd?: number | null;
+  /** Gateway's cumulative spend in USD for this key, for cap comparison. */
+  gatewaySpendUsd?: number | null;
+  /** Spend facts from the board ledger (OPE-11776). */
+  usage?: KeyBudgetUsageView | null;
 }
 
 export interface AgentGatewayKeyInput {
   companyId: string;
   agentId: string;
+  models?: string[];
 }
 
 /**
@@ -124,7 +168,11 @@ export async function createAgentGatewayKey(
 
   const adminKey = await requireAdminKey(deps, input.companyId, settings);
   const value = generateGatewayKeyValue();
-  await deps.gateway({ baseUrl: settings.baseUrl!, adminKey }).createKey({ alias: secretName, value });
+  await deps.gateway({ baseUrl: settings.baseUrl!, adminKey }).createKey({
+    alias: secretName,
+    value,
+    models: input.models,
+  });
   await deps.createSecret({
     companyId: input.companyId,
     name: secretName,
@@ -139,6 +187,7 @@ export async function createAgentGatewayKey(
       present: true,
       valueHash: gatewayKeyValueHash(value),
       canManageKeys: true,
+      models: input.models ?? [],
     },
     value,
   };
@@ -194,6 +243,90 @@ export async function rotateAgentGatewayKey(
 }
 
 /**
+ * Revokes one agent's gateway key. Deletes the key from the gateway and
+ * deletes the secret from the company secret store.
+ */
+export async function revokeAgentGatewayKey(
+  deps: AgentGatewayKeyDeps,
+  input: AgentGatewayKeyInput,
+): Promise<AgentGatewayKeyView> {
+  const settings = requireKeyManagement(deps.env ?? process.env);
+  const agent = await loadAgent(deps.db, input);
+  const secretName = agentKeySecretName({ agentId: agent.id, agentSlug: agent.name });
+
+  const secretId = await deps.findSecretId(input.companyId, secretName);
+  if (!secretId) {
+    throw notFound(
+      `agent "${agent.name}" has no gateway key to revoke`,
+      { code: "gateway_key_absent", secretName },
+    );
+  }
+
+  const adminKey = await requireAdminKey(deps, input.companyId, settings);
+  await deps
+    .gateway({ baseUrl: settings.baseUrl!, adminKey })
+    .deleteKey({ alias: secretName });
+
+  if (deps.deleteSecret) {
+    await deps.deleteSecret(secretId);
+  }
+  log(deps).info({ companyId: input.companyId, agentId: agent.id }, "agent gateway key revoked");
+  return {
+    agentId: agent.id,
+    secretName,
+    present: false,
+    valueHash: null,
+    canManageKeys: true,
+    models: [],
+  };
+}
+
+/**
+ * Updates an agent's gateway key model allowlist WITHOUT rotating the key value.
+ */
+export async function updateAgentGatewayKeyAllowlist(
+  deps: AgentGatewayKeyDeps,
+  input: AgentGatewayKeyInput & { models: string[] },
+): Promise<AgentGatewayKeyView> {
+  const settings = requireKeyManagement(deps.env ?? process.env);
+  const agent = await loadAgent(deps.db, input);
+  const secretName = agentKeySecretName({ agentId: agent.id, agentSlug: agent.name });
+
+  const secretId = await deps.findSecretId(input.companyId, secretName);
+  if (!secretId) {
+    throw notFound(
+      `agent "${agent.name}" has no gateway key yet; create one first`,
+      { code: "gateway_key_absent", secretName },
+    );
+  }
+
+  const adminKey = await requireAdminKey(deps, input.companyId, settings);
+  const gw = deps.gateway({ baseUrl: settings.baseUrl!, adminKey });
+  if (!gw.setKeyAllowedModels) {
+    throw unprocessable("gateway does not support setting allowed models", {
+      code: "gateway_allowlist_unsupported",
+    });
+  }
+  const applied = await gw.setKeyAllowedModels({ alias: secretName, models: input.models });
+  if (!applied) {
+    throw unprocessable(
+      `the gateway does not hold a key named "${secretName}"`,
+      { code: "gateway_key_unknown", secretName },
+    );
+  }
+  log(deps).info({ companyId: input.companyId, agentId: agent.id }, "agent gateway key allowlist updated");
+  const value = await deps.readSecretValue(input.companyId, secretName);
+  return {
+    agentId: agent.id,
+    secretName,
+    present: true,
+    valueHash: value ? gatewayKeyValueHash(value) : null,
+    canManageKeys: true,
+    models: input.models,
+  };
+}
+
+/**
  * The state of an agent's key. An agent reaches this for itself; a board member
  * for any agent of the company. The value is never part of the answer.
  */
@@ -205,12 +338,28 @@ export async function readAgentGatewayKey(
   const agent = await loadAgent(deps.db, input);
   const secretName = agentKeySecretName({ agentId: agent.id, agentSlug: agent.name });
   const value = await deps.readSecretValue(input.companyId, secretName);
+  let models: string[] | undefined;
+  if (value && settings.canManageKeys && settings.baseUrl && settings.adminKeySecret) {
+    try {
+      const adminKey = await deps.readSecretValue(input.companyId, settings.adminKeySecret);
+      if (adminKey) {
+        const gw = deps.gateway({ baseUrl: settings.baseUrl, adminKey });
+        if (gw.getKeyInfo) {
+          const info = await gw.getKeyInfo({ alias: secretName });
+          if (info) models = info.models ?? [];
+        }
+      }
+    } catch {
+      // non-fatal: models remain undefined if gateway query fails
+    }
+  }
   return {
     agentId: agent.id,
     secretName,
     present: Boolean(value),
     valueHash: value ? gatewayKeyValueHash(value) : null,
     canManageKeys: settings.canManageKeys,
+    ...(models !== undefined ? { models } : {}),
   };
 }
 
@@ -221,19 +370,101 @@ export async function listAgentGatewayKeys(
 ): Promise<AgentGatewayKeyView[]> {
   const settings = readGatewayKeySettings(deps.env ?? process.env);
   const rows = await deps.db
-    .select({ id: agents.id, name: agents.name })
+    .select({ id: agents.id, name: agents.name, role: agents.role })
     .from(agents)
     .where(eq(agents.companyId, companyId));
+
+  let projection: Awaited<ReturnType<typeof readBudgetProjectionSettings>> | null = null;
+  try {
+    projection = await readBudgetProjectionSettings(deps.db, companyId);
+  } catch {
+    // Budget projection is optional here: key listing must not fail when absent.
+  }
+
+  let gw: GatewayKeyAdminPort | null = null;
+  if (settings.canManageKeys && settings.baseUrl && settings.adminKeySecret) {
+    try {
+      const adminKey = await deps.readSecretValue(companyId, settings.adminKeySecret);
+      if (adminKey) {
+        gw = deps.gateway({ baseUrl: settings.baseUrl, adminKey });
+      }
+    } catch {
+      gw = null;
+    }
+  }
+
+  // Ledger spend (OPE-11776). The read is shared with the key-usage report,
+  // cached and time-bounded (key-spend.ts); the key list must still answer when
+  // it fails — key management does not depend on the ledger. The attention
+  // signals are not raised from here: key-budgets.ts raises them for the bot
+  // keys, on the sweep's cadence.
+  const now = new Date();
+  const windowStart = new Date(now.getTime() - AGENT_SPEND_WINDOW_MS);
+  let spendByAgent: Map<string, AgentSpendWindow> | null = null;
+  try {
+    const windows = await (deps.readSpendWindows ? deps.readSpendWindows() : readAgentSpendWindows(deps.db, now));
+    spendByAgent = new Map(windows.filter((spent) => spent.companyId === companyId).map((spent) => [spent.agentId, spent]));
+  } catch (err) {
+    deps.log?.warn({ err, companyId }, "LiteLLM ledger spend read failed; key usage is unavailable");
+  }
+
   const views: AgentGatewayKeyView[] = [];
   for (const row of rows) {
     const secretName = agentKeySecretName({ agentId: row.id, agentSlug: row.name });
     const value = await deps.readSecretValue(companyId, secretName);
+    let models: string[] | undefined;
+    let maxBudgetUsd: number | null = null;
+    let gatewaySpendUsd: number | null = null;
+    if (value && gw?.getKeyInfo) {
+      try {
+        const info = await gw.getKeyInfo({ alias: secretName });
+        if (info) {
+          models = info.models ?? [];
+          maxBudgetUsd = info.maxBudgetUsd ?? null;
+          gatewaySpendUsd = info.spendUsd ?? null;
+        }
+      } catch {
+        // non-fatal
+      }
+    }
+    let budget: KeyBudgetLimitView | null = null;
+    let usage: KeyBudgetUsageView | null = null;
+    if (projection && row.role) {
+      const match = projection.limits.find(
+        (limit) => limit.level === "caste" && limit.scopeId === row.role && limit.amountUsd > 0,
+      );
+      if (match) {
+        budget = {
+          amountUsd: match.amountUsd,
+          periodHours: match.periodHours,
+          mode: match.mode,
+          effectiveMode: projection.signalOnly || match.mode === "soft" ? "soft" : "block",
+          caste: row.role,
+        };
+      }
+    }
+    // No ledger read, no ledger numbers: zeros here would read as "spent nothing".
+    if (value && spendByAgent) {
+      const spent = spendByAgent.get(row.id);
+      usage = keyBudgetUsage(spent?.dailyCents ?? 0, maxBudgetUsd ?? 0, windowStart, {
+        capSpentCents: gatewaySpendUsd == null ? undefined : gatewaySpendUsd * 100,
+        weeklySpentCents: spent?.weeklyCents ?? 0,
+        zeroCostEvents: spent?.zeroCostEvents ?? 0,
+      });
+    }
     views.push({
       agentId: row.id,
+      agentName: row.name,
+      role: row.role ?? null,
       secretName,
       present: Boolean(value),
       valueHash: value ? gatewayKeyValueHash(value) : null,
       canManageKeys: settings.canManageKeys,
+      ...(models !== undefined ? { models } : {}),
+      budget,
+      maxBudgetUsd,
+      gatewaySpendUsd,
+      usage,
     });
   }
   return views;
@@ -336,6 +567,15 @@ export function defaultAgentGatewayKeyDeps(
         .then((row) => (row ? secrets.resolveSecretValue(companyId, row.id, "latest") : null)),
     findSecretId: (companyId, secretName) =>
       secrets.getByName(companyId, secretName).then((row) => row?.id ?? null),
+    readSecretValueById: async (companyId, secretId, version = "latest") => {
+      // A binding whose secret was deleted or whose pinned version is gone is
+      // "no key", not a failure of the whole pass.
+      try {
+        return await secrets.resolveSecretValue(companyId, secretId, version);
+      } catch {
+        return null;
+      }
+    },
     createSecret: async (input) => {
       const created = (await secrets.create(
         input.companyId,
@@ -351,6 +591,9 @@ export function defaultAgentGatewayKeyDeps(
     },
     rotateSecret: async (secretId, value) => {
       await secrets.rotate(secretId, { value }, { userId: null, agentId: null });
+    },
+    deleteSecret: async (secretId) => {
+      await secrets.remove(secretId);
     },
     gateway: ({ baseUrl, adminKey }) => createGatewayKeyAdminPort(baseUrl, adminKey),
   };
@@ -394,9 +637,38 @@ export function createGatewayKeyAdminPort(baseUrl: string, adminKey: string): Ga
     return { status: response.status, body: parsed };
   }
 
+  async function get(
+    path: string,
+    opts: { okStatuses?: number[] } = {},
+  ): Promise<{ status: number; body: unknown }> {
+    const response = await fetch(url(path), {
+      method: "GET",
+      headers: { Authorization: `Bearer ${adminKey}` },
+    });
+    const text = await response.text();
+    let parsed: unknown = null;
+    try {
+      parsed = text ? JSON.parse(text) : null;
+    } catch {
+      parsed = null;
+    }
+    const ok = opts.okStatuses ? opts.okStatuses.includes(response.status) : response.ok;
+    if (!ok) {
+      throw unprocessable(`LLM gateway ${path.split("?")[0]} answered ${response.status}`, {
+        code: "gateway_key_request_failed",
+        status: response.status,
+      });
+    }
+    return { status: response.status, body: parsed };
+  }
+
   return {
-    async createKey({ alias, value }) {
-      await post("/key/generate", { key_alias: alias, key: value });
+    async createKey({ alias, value, models }) {
+      await post("/key/generate", {
+        key_alias: alias,
+        key: value,
+        ...(models !== undefined ? { models } : {}),
+      });
     },
     async rotateKey({ alias, value }) {
       const response = await post("/key/update", { key_alias: alias, key: value });
@@ -404,17 +676,70 @@ export function createGatewayKeyAdminPort(baseUrl: string, adminKey: string): Ga
       return response.status < 400;
     },
     async deleteKey({ alias }) {
-      await post("/key/delete", { key_aliases: [alias] });
+      await post("/key/delete", { key_aliases: [alias] }, { okStatuses: [200, 404] });
     },
-    async setKeyAllowedModels({ alias, models }) {
-      // `/key/update` with key_alias but NO `key` field keeps the installed
-      // value and only replaces the metadata the fields present describe —
-      // here `models`, the allowlist the key may call. The agent's stored
-      // secret therefore never needs a rotation to change its allowlist.
-      // A 404 means the gateway does not know the alias: report false rather
+    async setKeyAllowedModels({ alias, keyHash, models }) {
+      // `/key/update` is a merge patch: it only replaces the fields present —
+      // here `models`, the allowlist the key may call — so the agent's stored
+      // secret never needs a rotation to change its allowlist. The key is
+      // addressed by `key` (LiteLLM v1.104.1 takes the value or its sha256
+      // hash; a value that does not start with "sk-" is read as a hash, so the
+      // board always sends the hash) or, without one, by `key_alias`. Never
+      // both: `key_alias` in the body is a new alias to SET.
+      // A 404 means the gateway does not know the key: report false rather
       // than throwing, exactly like rotateKey treats it.
-      const response = await post("/key/update", { key_alias: alias, models }, { okStatuses: [200, 404] });
+      const response = await post(
+        "/key/update",
+        keyHash ? { key: keyHash, models } : { key_alias: alias, models },
+        { okStatuses: [200, 404] },
+      );
       return response.status !== 404;
+    },
+    async getKeyInfo({ alias, keyHash }) {
+      if (keyHash) {
+        // `/key/info` is GET-only and takes the key's hash, which keeps the
+        // value out of URLs and access logs. An unknown key answers 404; a
+        // deleted one is still served from the archive with status "deleted".
+        const response = await get(`/key/info?key=${encodeURIComponent(keyHash)}`, { okStatuses: [200, 404] });
+        const info = (response.body as { info?: Record<string, unknown> } | null)?.info;
+        if (response.status === 404 || !info || info.status === "deleted") return null;
+        return {
+          models: Array.isArray(info.models)
+            ? info.models.filter((model): model is string => typeof model === "string")
+            : [],
+          maxBudgetUsd:
+            typeof info.max_budget === "number" && Number.isFinite(info.max_budget) && info.max_budget > 0
+              ? info.max_budget
+              : null,
+          spendUsd:
+            typeof info.spend === "number" && Number.isFinite(info.spend) && info.spend >= 0 ? info.spend : null,
+        };
+      }
+      // The gateway has no lookup by alias on /key/info (it is GET-only, by key
+      // value or hash: a POST answers 405). /key/list filters by alias, exact
+      // match, and with return_full_object answers the key objects.
+      const response = await get(
+        `/key/list?key_alias=${encodeURIComponent(alias)}&return_full_object=true&size=1`,
+      );
+      const keys = (response.body as { keys?: unknown } | null)?.keys;
+      const found = Array.isArray(keys)
+        ? keys.find(
+            (entry): entry is { key_alias?: unknown; models?: unknown; max_budget?: unknown; spend?: unknown } =>
+              typeof entry === "object" && entry !== null && (entry as { key_alias?: unknown }).key_alias === alias,
+          )
+        : undefined;
+      if (!found) return null;
+      const rawBudget = found.max_budget;
+      const rawSpend = found.spend;
+      return {
+        models: Array.isArray(found.models)
+          ? found.models.filter((model): model is string => typeof model === "string")
+          : [],
+        maxBudgetUsd: typeof rawBudget === "number" && Number.isFinite(rawBudget) && rawBudget > 0
+          ? rawBudget : null,
+        spendUsd: typeof rawSpend === "number" && Number.isFinite(rawSpend) && rawSpend >= 0
+          ? rawSpend : null,
+      };
     },
   };
 }

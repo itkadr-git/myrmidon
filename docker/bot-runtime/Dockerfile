@@ -79,6 +79,7 @@ RUN apt-get update \
     build-essential \
     ca-certificates \
     git \
+    pyflakes3 \
     python3-dev \
   && rm -rf /var/lib/apt/lists/*
 
@@ -203,6 +204,28 @@ o = install('/opt/hermes-plugins/hindsight'); \
 print('hindsight plugin deps:', o.status, o.detail if hasattr(o, 'detail') else ''); \
 raise SystemExit(0 if o.status in ('installed', 'none') else 1)"
 
+# myrmidon(OPE-12760): security override over the synced venv. The pinned hermes (v2026.9.24,
+# 0.21.5) locks aiohttp 3.14.3 (GHSA-2g87-pp6c-29x5, GHSA-5wr8-gcqf-gqf3: the gateway API
+# server runs on aiohttp), httpx2 2.7.0 (GHSA-8xx6-hgc6-gc2m, GHSA-f2fp-rgf2-35cp and others:
+# HTTP MCP runs on it) and certifi 2026.5.20 (GHSA-6q48-6c7w-9gw2). Upstream raised aiohttp to
+# 3.14.5 in 0.22.5 (PR #142691) and httpx2 to 2.12.0 in 0.22.2 (PR #138026). Exact versions, over
+# the venv `uv sync` built (httpx2 pulls its matching httpcore2 along). The step sits AFTER the
+# Hindsight plugin installer on purpose: that installer resolves under hermes' core constraints
+# read from pyproject.toml (aiohttp==3.14.3) and would put aiohttp back to 3.14.3 if this ran
+# before it. The version check below fails the build if any floor is not met. Drop both steps
+# (and the matching test in dockerfile.test.mjs) when the pinned hermes is >= 0.22.5: its own
+# uv.lock then carries these versions. See docs/myrmidon/hermes-deltas.md.
+RUN uv pip install --python /opt/hermes-src/.venv/bin/python \
+    aiohttp==3.14.5 httpx2==2.12.0 certifi==2026.10.19
+
+RUN /opt/hermes-src/.venv/bin/python -c \
+    "import re, sys; from importlib.metadata import version; \
+floors = {'aiohttp': '3.14.5', 'httpx2': '2.12.0', 'certifi': '2026.10.19'}; \
+key = lambda v: tuple(map(int, re.findall(r'\d+', v))); \
+bad = [n + ' ' + version(n) + ' < ' + f for n, f in floors.items() if key(version(n)) < key(f)]; \
+print('hermes venv security floors:', {n: version(n) for n in floors}); \
+sys.exit('below the OPE-12760 floor: ' + ', '.join(bad) if bad else 0)"
+
 # Fail the build loudly if any package this image relies on being preinstalled (never
 # lazily) fails to import from the synced venv, instead of only discovering it the first
 # time a bot profile tries to use MCP tools or hindsight memory at runtime.
@@ -213,13 +236,16 @@ RUN /opt/hermes-src/.venv/bin/python -c 'import aiohttp, mcp, hindsight_client'
 # gateway.platforms.api_server_runs, tools.environments.local and tools.github_broker_context: 09;
 # tools.run_workspace (also api_server_runs/local): 10; tools.github_launcher_context: 11;
 # tools.run_skills (also api_server_runs/local): 14; agent.session_persistence (also
-# api_server_runs): 15; agent.redact: 12; tools.delegation_live_log: 13)
+# api_server_runs): 15; agent.redact: 12; tools.delegation_live_log: 13;
+# hermes_state_registry, gateway.session_db_recovery/session(_persistence/_recovery/_lifecycle/_transcript),
+# run/run_startup/run_shutdown: 18; agent.opencode_affinity and agent.transports.chat_completions: 28;
+# hermes_state_maintenance: 30; gateway.platforms.api_server_run_idempotency: 34)
 # plus the vendored memory provider (a relative-import package, so a broken plugin tree
 # fails the build here, not at the first bot start). `git apply` only proves the hunks
 # land; a patch that applies cleanly but breaks a module's imports or top-level code
 # would otherwise surface only when a bot starts. No bytecode is written, so the sealed
 # tree stays as the build left it.
-RUN PYTHONDONTWRITEBYTECODE=1 /opt/hermes-src/.venv/bin/python -c 'import hermes_state, tools.environments.base, tools.environments.base_session_env, gateway.run, gateway.platforms.api_server_runs, tools.environments.local, tools.github_broker_context, tools.run_workspace, tools.github_launcher_context, agent.session_persistence, agent.redact, tools.delegation_live_log, agent.context_economy, tools.stale_result_tool, agent.turn_request_assembly, agent.tool_result_classification, toolsets, model_tools'
+RUN PYTHONDONTWRITEBYTECODE=1 /opt/hermes-src/.venv/bin/python -c 'import hermes_state, hermes_state_maintenance, tools.environments.base, tools.environments.base_session_env, gateway.run, gateway.session_db_recovery, gateway.session_persistence, gateway.session_recovery, gateway.session_lifecycle, gateway.session_transcript, hermes_state_registry, gateway.run_startup, gateway.run_shutdown, gateway.platforms.api_server_runs, tools.environments.local, tools.github_broker_context, tools.run_workspace, tools.github_launcher_context, agent.session_persistence, agent.redact, tools.delegation_live_log, agent.context_economy, tools.stale_result_tool, agent.turn_request_assembly, agent.tool_result_classification, toolsets, model_tools, agent.opencode_affinity, agent.transports.chat_completions, gateway.platforms.api_server_run_idempotency'
 
 # myrmidon(G1): behaviour check for patch 06 — the state-DB generation probe must not
 # walk /proc/self/fd once per write while the gateway holds hundreds of descriptors
@@ -262,19 +288,82 @@ RUN PYTHONDONTWRITEBYTECODE=1 HERMES_HOME=/tmp/run-skills-test /opt/hermes-src/.
 # stranded unanswered tail prompts (left by failed attempts) are superseded by the new
 # prompt instead of piling up as user rows, against a real SessionDB.
 RUN PYTHONDONTWRITEBYTECODE=1 /opt/hermes-src/.venv/bin/python /tmp/patch-tests/stranded_run_turn.py /opt/hermes-src
+# myrmidon(OPE-12719): behaviour regression for 35-skill-view-managed-name.patch —
+# board skills materialize as paperclip-managed/<slug>--<hash> but the agent-facing
+# index shows "paperclip-managed:<slug>"; skill_view must resolve that qualified alias
+# (zero-candidate fallback only), keep bare/slash forms working, refuse an unknown
+# namespace, and refuse two same-slug board skills as ambiguous.
+RUN PYTHONDONTWRITEBYTECODE=1 HERMES_HOME=/tmp/skill-view-test /opt/hermes-src/.venv/bin/python /tmp/patch-tests/skill_view_managed_name.py /opt/hermes-src
 # myrmidon(G1): behaviour regression for 16-context-economy.patch (input-token measures A and B):
-# every wake message but the newest and every stale heavy tool result become short notes in the
-# per-call request copy, read_stale_tool_result returns the original for a note's ref, and each
-# switch (HERMES_KEEP_STALE_WAKES / HERMES_KEEP_STALE_TOOL_RESULTS) gives the old request back byte
-# for byte. Runs against the same synced venv and patched tree as the checks above.
+# both rewrite earlier rows of the request and so break the provider's prompt cache; they are OFF by
+# default (request byte for byte unchanged, reader not in the tool schema) and, switched on, turn every
+# wake message but the newest and every stale heavy tool result into short notes in the per-call
+# request copy (skill_view and other instruction loads never), read_stale_tool_result returns the
+# original for a note's ref, and the wake detection matches the adapter's current identity head.
+# Runs against the same synced venv and patched tree as the checks above.
 RUN PYTHONDONTWRITEBYTECODE=1 /opt/hermes-src/.venv/bin/python /tmp/patch-tests/context_economy.py /opt/hermes-src
+# myrmidon(G1): behaviour regression for 25-tool-result-head-tail.patch: a new tool result over 16000
+# characters is stored and sent as its first 8000 and last 4000 characters plus a marker that names the
+# spill file and the omitted range; read_file stays pinned, skill_view is exempt, the settings come from
+# config.yaml.
+RUN PYTHONDONTWRITEBYTECODE=1 /opt/hermes-src/.venv/bin/python /tmp/patch-tests/tool_result_head_tail.py /opt/hermes-src
+# myrmidon(G1): behaviour regression for 26-compaction-summary-cap.patch and 27-compaction-keep-prefix.patch:
+# the summary is asked for and held to 8000 characters, a summary that stopped on the output limit is
+# kept instead of failing the compression, wake packages are not quoted into it, and a compaction
+# keeps the system prompt and tool schemas (the cached prefix) as they are.
+RUN PYTHONDONTWRITEBYTECODE=1 /opt/hermes-src/.venv/bin/python /tmp/patch-tests/compaction_summary_cap.py /opt/hermes-src
 # myrmidon(G1): behaviour regression for 17-disabled-tools-by-name.patch (input-token measure D):
 # agent.disabled_tools removes single tools from the model's schema, and leaves it alone when unset.
 RUN PYTHONDONTWRITEBYTECODE=1 /opt/hermes-src/.venv/bin/python /tmp/patch-tests/disabled_tools.py /opt/hermes-src
+# myrmidon(G1): behaviour regression for 19-redact-auth-bearer-template-syntax.patch:
+# authorization headers in code literals/templates (`Bearer ${token}`, <token>,
+# variable identifiers) must not be false-masked into `***`, while long high-entropy
+# secrets (e.g. `Bearer ghp_...` 36+ chars) are masked safely without syntax corruption.
+RUN PYTHONDONTWRITEBYTECODE=1 /opt/hermes-src/.venv/bin/python /tmp/patch-tests/auth_header_redact_templates.py /opt/hermes-src
+# myrmidon(OPE-10602): behaviour regression for 20-run-scoped-run-id.patch after the
+# rc.29 defect: the gateway's internal ``run_<hex>`` id must never reach $PAPERCLIP_RUN_ID
+# (it 500ed every agent board mutation with ``invalid input syntax for type uuid``), only
+# the X-Paperclip-Run-Id header's UUID does, and a run's child env sees exactly its own
+# board run id.
+RUN PYTHONDONTWRITEBYTECODE=1 /opt/hermes-src/.venv/bin/python /tmp/patch-tests/run_id_context_scope.py /opt/hermes-src
+# myrmidon(OPE-10858): behaviour regression for 24-max-tokens-recovery.patch:
+# Hermes custom OpenAI-compatible provider forwards configured max_tokens, resets
+# length_continue_retries after successful tool step, and boosts output tokens on retry.
+RUN PYTHONDONTWRITEBYTECODE=1 /opt/hermes-src/.venv/bin/python /tmp/patch-tests/max_tokens_recovery.py /opt/hermes-src
+# myrmidon(G1): behaviour regression for 28-session-affinity-prompt-cache-key.patch: a providers entry
+# that names a session_affinity_header gets the conversation key in the chat-completions body as
+# prompt_cache_key (the header's own value, bounded to 64 characters), a pinned key and every endpoint
+# without the option are untouched, and api.openai.com keeps its content-addressed key.
+RUN PYTHONDONTWRITEBYTECODE=1 /opt/hermes-src/.venv/bin/python /tmp/patch-tests/session_affinity_prompt_cache_key.py /opt/hermes-src
+# myrmidon(G1): behaviour regression for 29-gateway-outage-keeps-primary.patch: a lost connection to
+# the model gateway is retried against the primary for the outage budget instead of moving the run to a
+# fallback, model/provider errors still move it at once, and a run on a fallback tries the primary again
+# every few model calls.
+RUN PYTHONDONTWRITEBYTECODE=1 /opt/hermes-src/.venv/bin/python /tmp/patch-tests/gateway_outage_fallback.py /opt/hermes-src
+# myrmidon(G1): behaviour regression for 30-vacuum-by-freelist.patch: the automatic state.db VACUUM runs on the
+# freelist share alone (no prune of the same pass needed), and waits for room (twice the live data free on the
+# volume, a temp directory that is not RAM), for a store and a gateway without a running turn, and for
+# min_vacuum_interval_days.
+RUN PYTHONDONTWRITEBYTECODE=1 /opt/hermes-src/.venv/bin/python /tmp/patch-tests/vacuum_by_freelist.py /opt/hermes-src
+# myrmidon(G1): behaviour regression for 32-compaction-summary-9-sections.patch:
+# summary template and fallback summary contain all 9 standardized sections.
+RUN PYTHONDONTWRITEBYTECODE=1 /opt/hermes-src/.venv/bin/python /tmp/patch-tests/compaction_summary_9_sections.py /opt/hermes-src
+# myrmidon(G1): behaviour regression for 33-compaction-tool-pairs-sampling.patch:
+# tool call and result pairs are preserved atomically during summary sampling.
+RUN PYTHONDONTWRITEBYTECODE=1 /opt/hermes-src/.venv/bin/python /tmp/patch-tests/compaction_tool_pairs_sampling.py /opt/hermes-src
+# myrmidon(OPE-12759): behaviour regression for 34-run-idempotency-txn-rollback.patch:
+# a failed commit in the run idempotency store must not leave the connection inside its
+# transaction (every later run request answered 500 until the gateway restarted).
+RUN PYTHONDONTWRITEBYTECODE=1 /opt/hermes-src/.venv/bin/python /tmp/patch-tests/run_idempotency_txn_rollback.py /opt/hermes-src
 # myrmidon(G1): names imported inside functions of the patched modules resolve too
 # (the import smoke above runs only top-level imports; a missing lazily imported name
 # broke every run of the 1.6.0 dev image while the build passed).
-RUN PYTHONDONTWRITEBYTECODE=1 /opt/hermes-src/.venv/bin/python /tmp/patch-tests/lazy_imports_resolve.py /opt/hermes-src hermes_state tools.environments.base tools.environments.base_session_env gateway.run gateway.platforms.api_server_runs tools.environments.local tools.github_broker_context tools.run_workspace tools.github_launcher_context tools.run_skills agent.session_persistence agent.context_economy tools.stale_result_tool agent.turn_request_assembly model_tools
+RUN PYTHONDONTWRITEBYTECODE=1 /opt/hermes-src/.venv/bin/python /tmp/patch-tests/lazy_imports_resolve.py /opt/hermes-src hermes_state tools.environments.base tools.environments.base_session_env gateway.run gateway.platforms.api_server_runs tools.environments.local tools.github_broker_context tools.run_workspace tools.github_launcher_context tools.run_skills agent.session_persistence agent.context_economy tools.stale_result_tool agent.turn_request_assembly model_tools agent.gateway_outage agent.turn_recovery agent.turn_api_error agent.turn_retry_state agent.conversation_loop hermes_state_maintenance
+# myrmidon(OPE-10755): statically verify no undefined names (pyflakes F821 / NameError
+# on start) in any module touched by patches/*.patch (#1381 / rc.31 incident where
+# missing SessionStore in gateway/run_startup.py passed top-level import checks but
+# crashed fleet startup).
+RUN PYTHONDONTWRITEBYTECODE=1 /opt/hermes-src/.venv/bin/python /tmp/patch-tests/undefined_names.py /opt/hermes-src
 
 # The provider itself, through hermes' OWN discovery path (the same one the gateway uses at
 # start): a staging home gets the same symlink the entrypoint will make at run time, and
@@ -330,6 +419,27 @@ RUN set -eu; \
     rm -rf /tmp/node.tar.xz /opt/node24/include /opt/node24/share /opt/node24/CHANGELOG.md /opt/node24/README.md; \
     /opt/node24/bin/node --version | grep -x "v${NODE24_VERSION}"
 
+# myrmidon(OPE-10494, 10.11): the GitHub CLI from its own pinned release, not Debian's
+# `gh` package (2.46.0, January 2025): that one fails `gh pr view` / `gh pr edit` with
+# "GraphQL: Projects (classic) is being deprecated", and bots looped on it.
+FROM python:3.13-slim AS gh_dist
+ARG GH_VERSION=2.103.3
+ARG GH_SHA256=4c806978ffce1cec70853302a56d70ac6da4f19bae7adca4e1a8ab00633dd91d
+
+RUN apt-get update \
+  && apt-get install -y --no-install-recommends \
+    ca-certificates \
+    curl \
+  && rm -rf /var/lib/apt/lists/*
+
+RUN set -eu; \
+    curl -fsSL -o /tmp/gh.tar.gz "https://github.com/cli/cli/releases/download/v${GH_VERSION}/gh_${GH_VERSION}_linux_amd64.tar.gz"; \
+    echo "${GH_SHA256}  /tmp/gh.tar.gz" | sha256sum -c -; \
+    tar -xzf /tmp/gh.tar.gz -C /tmp; \
+    install -m 0755 "/tmp/gh_${GH_VERSION}_linux_amd64/bin/gh" /usr/local/bin/gh; \
+    rm -rf /tmp/gh.tar.gz "/tmp/gh_${GH_VERSION}_linux_amd64"; \
+    /usr/local/bin/gh --version | grep -q "gh version ${GH_VERSION} "
+
 FROM python:3.13-slim AS runtime
 ARG HERMES_VERSION
 
@@ -352,6 +462,11 @@ LABEL org.opencontainers.image.title="myrmidon-hermes" \
 # key-based ssh from a bot (-i <tmp key>, -o UserKnownHostsFile=<writable dir>).
 # jq: bots pipe JSON API responses (board, shop, ads APIs) through it in shell
 # steps; it is a small text tool, not a media tool.
+# gh (OPE-10494): the GitHub CLI for `gh pr view` etc. — every bot variant
+# (runtime, runtime-node, runtime-dev) needs it, not just the dev variant; the
+# github-launcher wrapper in packages/adapter-utils/src/github-launcher.ts
+# stages a per-run shim that execs the real `gh` binary, so the base image
+# must actually ship one.
 # No media tools (ffmpeg, yt-dlp, ...): forbidden by docs/myrmidon/CONVENTIONS.md §8
 # and out of scope — media handling is a separate service outside this image.
 RUN apt-get update \
@@ -364,6 +479,9 @@ RUN apt-get update \
     ripgrep \
     tini \
   && rm -rf /var/lib/apt/lists/*
+# gh: the pinned release from the gh_dist stage (see there), at the path the
+# github-launcher shim resolves.
+COPY --from=gh_dist /usr/local/bin/gh /usr/bin/gh
 
 # myrmidon(G1): --home-dir /data/hermes (not /home/bot) — the G3 driver runs this
 # image with ReadonlyRootfs: true (docker-driver.ts buildCreateContainerRequestBody),
@@ -558,6 +676,8 @@ RUN /opt/hermes-src/.venv/bin/python -c 'import os, sys; real = os.path.realpath
 
 # /health needs no auth (unlike /v1/capabilities, which is Bearer-gated) —
 # see docker/bot-runtime/README.md and gateway/platforms/api_server.py.
+# The gateway starts before session retention. Keep this window for image and
+# process startup only; state.db size must not affect health.
 HEALTHCHECK --interval=30s --timeout=5s --start-period=45s --retries=3 \
   CMD curl -fsS "http://127.0.0.1:${API_SERVER_PORT}/health" || exit 1
 
@@ -742,7 +862,7 @@ USER root
 
 # Build tools the repository needs to install and build its workspaces:
 # gcc/g++/make/pkg-config for native addons and node-gyp, python3 (present in
-# the base) for node-gyp itself, gh for the pull-request cycle, zstd and unzip
+# the base) for node-gyp itself, zstd and unzip
 # for archives, xz-utils for the tarballs above. Same --no-install-recommends
 # discipline as the other stages.
 RUN apt-get update \
@@ -752,7 +872,6 @@ RUN apt-get update \
     curl \
     g++ \
     gcc \
-    gh \
     git \
     jq \
     libc6-dev \
@@ -876,8 +995,9 @@ RUN chmod 0755 /opt/paperclip/bin/pnpm /opt/paperclip/bin/tsc /opt/paperclip/bin
 #     (see README.md). pnpm 10 itself still COPIES when the kernel refuses the
 #     clone, so the guards are the build-time check below and the start-time
 #     reflink self-check in entrypoint.sh (BOT-DISK-D, BOT-DISK-H8b);
-#   - Rust's RUSTUP_HOME/CARGO_HOME stay sealed under /opt and cargo writes its
-#     target dir into the checked-out workspace, never into the image;
+#   - Rust's RUSTUP_HOME/CARGO_HOME stay sealed under /opt; cargo writes its
+#     build output to CARGO_TARGET_DIR=/data/hermes/.cache/cargo-target — the
+#     durable bot volume, never a checked-out workspace (see the ENV below);
 #   - Go's build cache defaults under $HOME (/data/hermes) — the durable volume.
 # PATH is assembled from /opt and /usr only — never a writable volume.
 # myrmidon(G1) CONTAINER-GITHUB-WRITE: /opt/paperclip/bin is prepended so the
@@ -904,7 +1024,8 @@ ENV PATH=/opt/paperclip/bin:/opt/node24/bin:/opt/pnpm/bin:/opt/go/bin:/opt/cargo
     npm_config_store_dir=/workspace/.pnpm-store \
     npm_config_package_import_method=clone \
     GOTOOLCHAIN=local \
-    GOFLAGS=-mod=mod
+    GOFLAGS=-mod=mod \
+    CARGO_TARGET_DIR=/data/hermes/.cache/cargo-target
 
 USER 10001:10001
 
@@ -947,7 +1068,11 @@ RUN set -eu; \
       echo "pnpm install must refuse without the devbuild gateway" >&2; exit 1; \
     fi; \
     case "$out" in \
-      *"devbuild pnpm install"*) ;; \
+      *"Refused: pnpm --config.confirm-modules-purge=false install"*) ;; \
+      *) echo "pnpm install refusal must name the refused invocation and its devbuild replacement, got: $out" >&2; exit 1 ;; \
+    esac; \
+    case "$out" in \
+      *"devbuild pnpm --config.confirm-modules-purge=false install"*) ;; \
       *) echo "pnpm install refusal must name the devbuild replacement, got: $out" >&2; exit 1 ;; \
     esac; \
     case "$out" in \

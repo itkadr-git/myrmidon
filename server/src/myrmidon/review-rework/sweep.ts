@@ -18,7 +18,11 @@
 //     the reviewer is woken. The first sight of a head for a verdict that
 //     pinned none only stores the baseline;
 //  3. every linked PR merged or closed settles the review `done` with one
-//     neutral comment — the reviewer's job is over;
+//     neutral comment — the reviewer's job is over; when the task says
+//     acceptance is still owed (a live / operator step, or the task a person
+//     reopened after the loop already closed it), the loop instead hands the
+//     merged task back to the executor as `in_progress` («код влит, приёмка
+//     ожидается») and never closes it (OPE-12260);
 //  4. a settled rework with a newer outstanding RETURN reopens the same task
 //     with the new verdict link instead of creating a duplicate.
 //
@@ -29,7 +33,9 @@
 // is injected, so tests never touch the network.
 
 import type { Logger } from "pino";
+import { isGitHubRateLimited } from "../../services/github-rate-limit.js";
 import {
+  REVIEW_REWORK_ACCEPTANCE_ACTION,
   REVIEW_REWORK_BLOCKED_ACTION,
   REVIEW_REWORK_CLOSED_ACTION,
   REVIEW_REWORK_CREATED_ACTION,
@@ -38,8 +44,12 @@ import {
   REVIEW_REWORK_UNBLOCKED_ACTION,
   REVIEW_REWORK_WAKE_IDEMPOTENCY_PREFIX,
   REVIEW_REWORK_WAKE_REASON,
+  DEFAULT_REVIEW_REWORK_SWEEP_INTERVAL_SEC,
+  MIN_REVIEW_REWORK_SWEEP_INTERVAL_SEC,
+  MAX_REVIEW_REWORK_SWEEP_INTERVAL_SEC,
   type ReviewReworkSettings,
 } from "@myrmidon/shared";
+import { TERMINAL_PULL_REQUEST_PRODUCT_STATUSES } from "../../services/github-pull-request-ci.js";
 import { logger } from "../../middleware/logger.js";
 import {
   REVIEW_REWORK_HEAD_ACK_MARKER,
@@ -47,18 +57,25 @@ import {
   encodeReworkFingerprint,
   reviewReworkPrKey,
   type ReviewReworkDecision,
+  type ReviewReworkChildFacts,
   type ReviewReworkExecutorCandidate,
   type ReviewReworkPrFact,
 } from "./domain.js";
-import type { ReviewReworkPrResolver } from "./resolver.js";
+import type { ReviewReworkPrResolver, ReviewReworkPrSnapshot, ReviewReworkPrReference } from "./resolver.js";
 import type { ReworkCandidateRow, ReviewReworkStore } from "./store.js";
 
-export const DEFAULT_REVIEW_REWORK_SWEEP_INTERVAL_SEC = 60;
+export { DEFAULT_REVIEW_REWORK_SWEEP_INTERVAL_SEC } from "@myrmidon/shared";
+/** Deployment fallback for `sweepIntervalSec` before the instance row stores one (OPE-12397). */
+export const REVIEW_REWORK_SWEEP_INTERVAL_SEC_ENV = "MYRMIDON_REVIEW_REWORK_SWEEP_INTERVAL_SEC";
 /** Candidates inspected per company per pass (oldest update first). */
 export const REVIEW_REWORK_PAGE_SIZE = 200;
 /** Moves (create/reopen/block/unblock/close) per company per pass. */
 export const REVIEW_REWORK_MAX_MOVES_PER_PASS = 20;
 export const REVIEW_REWORK_ACTOR_ID = "review_rework_sweep";
+/** Activity-log action for a goal-judge round applied by this sweep. */
+export const GOAL_JUDGE_ROUND_APPLIED_ACTION = "review_rework.goal_judge_round";
+/** The comment marker a goal-judge round writes; a new round only starts past it. */
+export const GOAL_JUDGE_ROUND_MARKER = "[GOAL-JUDGE]";
 
 const FULL_PR_REFERENCE_PATTERN =
   /(?:https?:\/\/(?:www\.)?github\.com\/)?([A-Za-z0-9_.-]+)\/([A-Za-z0-9_.-]+)(?:\/pull)?#([1-9][0-9]*)\b/g;
@@ -75,11 +92,18 @@ export interface ReviewReworkSweepResult {
   blocked: number;
   unblocked: number;
   closed: number;
+  awaitedAcceptance: number;
   baselinesRecorded: number;
   failed: number;
 }
 
 export interface ReviewReworkSweepDeps {
+  /**
+   * myrmidon(OPE-12397): when wired, the pass runs only on the "scheduler"
+   * leader process (the same gate TASK-PR-SYNC uses); without it the sweep
+   * behaves as before (every process).
+   */
+  isLeader?: () => boolean;
   store: ReviewReworkStore;
   /** The GitHub seam (state, head sha, review decision, updated_at). */
   resolvePr: ReviewReworkPrResolver;
@@ -105,9 +129,42 @@ export interface ReviewReworkSweepDeps {
     details: Record<string, unknown>;
   }) => Promise<void>;
   isUnderMaintenance?: () => Promise<boolean>;
+  /**
+   * myrmidon(OPE-12397): when rate limited, background passes must not query GitHub.
+   */
+  isRateLimited?: () => boolean;
   intervalMs?: number;
+  /** Deployment fallback for the interval before the instance row stores one (OPE-12397). */
+  env?: NodeJS.ProcessEnv;
   now?: () => Date;
   log?: Pick<Logger, "info" | "warn">;
+  /** Optional resolver for PR unified diffs. */
+  resolveDiff?: (
+    companyId: string,
+    reference: ReviewReworkPrReference & { headSha?: string | null },
+  ) => Promise<string | null>;
+  /** Optional resolver for authoritative CI / test output. */
+  resolveCiOutput?: (
+    companyId: string,
+    issueId: string,
+    prs: readonly ReviewReworkPrFact[],
+  ) => Promise<string | null>;
+  /** Optional goal judge review-cycle round controller. */
+  goalJudge?: {
+    judge(input: import("../goal-judge/controller.js").GoalJudgeReviewTaskFacts): Promise<import("../goal-judge/controller.js").GoalJudgeDecision>;
+  };
+  /** Per-company judge factory; model providers and secrets are company-scoped. */
+  goalJudgeFactory?: (companyId: string) => ReviewReworkSweepDeps["goalJudge"];
+}
+
+function readIntervalSec(env: NodeJS.ProcessEnv | undefined, fallback: number) {
+  const raw = env?.[REVIEW_REWORK_SWEEP_INTERVAL_SEC_ENV]?.trim();
+  if (!raw || !/^\d+$/.test(raw)) return fallback;
+  const value = Number(raw);
+  if (!Number.isSafeInteger(value) || value < MIN_REVIEW_REWORK_SWEEP_INTERVAL_SEC || value > MAX_REVIEW_REWORK_SWEEP_INTERVAL_SEC) {
+    return fallback;
+  }
+  return value;
 }
 
 export interface ReviewReworkSweep {
@@ -209,32 +266,72 @@ function reworkDescription(input: {
   ].join("\n");
 }
 
+/**
+ * myrmidon(OPE-12785): the per-task reads of one page, loaded in one query each
+ * before the loop over the candidates (the loop used to run them task by task:
+ * ~125k comment selects a day). Every field is optional — a store without the
+ * batch methods, or a failed batch read, leaves the per-task read in place.
+ */
+interface PagePrefetch {
+  comments?: Map<string, Array<{ id: string; body: string; createdAt: Date }>>;
+  children?: Map<string, ReviewReworkChildFacts | null>;
+  loopClosed?: Set<string>;
+}
+
+/** True when `processTask` would read the task at all (the cheap skip-guard, OPE-12397). */
+function isProcessable(row: ReworkCandidateRow): boolean {
+  const hasLivePrProduct = row.products.some(
+    (product) =>
+      product.status !== "archived" &&
+      !TERMINAL_PULL_REQUEST_PRODUCT_STATUSES.has(product.status.toLowerCase()),
+  );
+  return !((row.childPresent === false && row.verdictPresent === false) && !hasLivePrProduct);
+}
+
 export function createReviewReworkSweep(deps: ReviewReworkSweepDeps): ReviewReworkSweep {
-  const intervalMs = deps.intervalMs ?? DEFAULT_REVIEW_REWORK_SWEEP_INTERVAL_SEC * 1000;
   const log = deps.log ?? logger;
   let lastSweepAtMs = 0;
+  let effectiveIntervalMs = deps.intervalMs ?? readIntervalSec(deps.env, DEFAULT_REVIEW_REWORK_SWEEP_INTERVAL_SEC) * 1000;
 
   async function prFacts(
     row: ReworkCandidateRow,
     commentBodies: readonly string[],
+    prFactsCache: Map<string, ReviewReworkPrSnapshot | null>,
   ): Promise<ReviewReworkPrFact[]> {
-    const coordinates = extractPrCoordinates(
+    // myrmidon(OPE-12397): one GitHub read per PR per pass, shared across
+    // every candidate that links the same PR. The fetched snapshot is cached
+    // for the pass so sibling tasks evaluate their decisions without re-querying
+    // or being dropped.
+    const rawCoordinates = extractPrCoordinates(
       [...row.textParts, ...commentBodies],
       row.products.map((product) => ({ repo: product.repo, number: product.number, url: product.url ?? null })),
     );
+    const seenInTask = new Set<string>();
+    const coordinates = rawCoordinates.filter((coordinate) => {
+      const key = reviewReworkPrKey(coordinate);
+      if (seenInTask.has(key)) return false;
+      seenInTask.add(key);
+      return true;
+    });
     const facts: ReviewReworkPrFact[] = [];
     for (const coordinate of coordinates) {
-      const [owner, repo] = coordinate.repo.split("/");
-      let snapshot = null;
-      if (owner && repo) {
-        try {
-          snapshot = await deps.resolvePr(row.task.companyId, { owner, repo, number: coordinate.number });
-        } catch {
-          snapshot = null;
+      const key = reviewReworkPrKey(coordinate);
+      let snapshot: ReviewReworkPrSnapshot | null = null;
+      if (prFactsCache.has(key)) {
+        snapshot = prFactsCache.get(key) ?? null;
+      } else {
+        const [owner, repo] = coordinate.repo.split("/");
+        if (owner && repo) {
+          try {
+            snapshot = await deps.resolvePr(row.task.companyId, { owner, repo, number: coordinate.number });
+          } catch {
+            snapshot = null;
+          }
         }
+        prFactsCache.set(key, snapshot);
       }
       facts.push({
-        prKey: reviewReworkPrKey(coordinate),
+        prKey: key,
         repo: coordinate.repo,
         number: coordinate.number,
         state: snapshot?.state ?? "unknown",
@@ -282,19 +379,45 @@ export function createReviewReworkSweep(deps: ReviewReworkSweepDeps): ReviewRewo
     }
   }
 
+  async function loadPrefetch(companyId: string, rows: readonly ReworkCandidateRow[]): Promise<PagePrefetch> {
+    // myrmidon(OPE-12785): only the candidates `processTask` will read.
+    const ids = rows.filter(isProcessable).map((row) => row.task.id);
+    const prefetch: PagePrefetch = {};
+    if (ids.length === 0) return prefetch;
+    // A failed batch read must not fail the pass: the per-task reads remain.
+    try {
+      if (deps.store.listCommentsForIssues) prefetch.comments = await deps.store.listCommentsForIssues(ids);
+    } catch (err) {
+      log.warn({ err, companyId }, "review rework comment batch read failed; reading per task");
+    }
+    try {
+      if (deps.store.findReworkChildren) prefetch.children = await deps.store.findReworkChildren(companyId, ids);
+    } catch (err) {
+      log.warn({ err, companyId }, "review rework child batch read failed; reading per task");
+    }
+    try {
+      if (deps.store.loopClosedIssueIds) prefetch.loopClosed = await deps.store.loopClosedIssueIds(companyId, ids);
+    } catch (err) {
+      log.warn({ err, companyId }, "review rework loop-close batch read failed; reading per task");
+    }
+    return prefetch;
+  }
+
   async function sweepCompany(
     companyId: string,
     settings: ReviewReworkSettings,
     now: Date,
     result: ReviewReworkSweepResult,
     moves: { count: number },
+    prFactsCache: Map<string, ReviewReworkPrSnapshot | null>,
   ): Promise<void> {
     const rows = await deps.store.listCandidateTasks(companyId, REVIEW_REWORK_PAGE_SIZE);
     result.scanned += rows.length;
+    const prefetch = await loadPrefetch(companyId, rows);
     for (const row of rows) {
       if (moves.count >= REVIEW_REWORK_MAX_MOVES_PER_PASS) return;
       try {
-        const moved = await processTask(row, settings, now, result, moves);
+        const moved = await processTask(row, settings, now, result, moves, prFactsCache, prefetch);
         if (moved) moves.count += 1;
       } catch (err) {
         result.failed += 1;
@@ -309,11 +432,26 @@ export function createReviewReworkSweep(deps: ReviewReworkSweepDeps): ReviewRewo
     now: Date,
     result: ReviewReworkSweepResult,
     _moves: { count: number },
+    prFactsCache: Map<string, ReviewReworkPrSnapshot | null>,
+    prefetch: PagePrefetch = {},
   ): Promise<boolean> {
     const { task } = row;
-    const comments = await deps.store.listComments(task.id);
-    const child = await deps.store.findReworkChild(task.companyId, task.id);
-    const prs = await prFacts(row, comments.map((comment) => comment.body));
+    // myrmidon(OPE-12397): a task with neither a rework child, nor a verdict
+    // keyword on it, nor a live PR work product can never produce a move — its
+    // GitHub reads were spent on a `no_linked_pr` no-op. Both flags ride on the
+    // candidate row from the store query; `undefined` (hand-built test rows)
+    // assumes present, so the guard never skips what the old path would have
+    // processed. Terminal PR products (merged/closed/…) are not live either:
+    // the loop already settled those tasks, and re-reading them every pass
+    // burned reads on `pr_terminal` no-ops.
+    if (!isProcessable(row)) return false;
+    // myrmidon(OPE-12785): the page's batch reads first, the per-task read only
+    // when the batch has no entry for the task.
+    const comments = prefetch.comments?.get(task.id) ?? (await deps.store.listComments(task.id));
+    const child = prefetch.children?.has(task.id)
+      ? (prefetch.children.get(task.id) ?? null)
+      : await deps.store.findReworkChild(task.companyId, task.id);
+    const prs = await prFacts(row, comments.map((comment) => comment.body), prFactsCache);
     if (prs.length === 0) return false;
     // The delivering task's assignee: the first PR with coordinates that names
     // a task other than this review.
@@ -327,6 +465,97 @@ export function createReviewReworkSweep(deps: ReviewReworkSweepDeps): ReviewRewo
       );
       if (deliveringTaskAssigneeAgentId) break;
     }
+    // Goal judge is a fail-open optional gate: disabled/unconfigured means noop,
+    // while a concrete return/escalation is applied under the same status guard
+    // as every other review-loop move.
+    const goalJudge = deps.goalJudgeFactory?.(task.companyId) ?? deps.goalJudge;
+    if (goalJudge && task.status === "in_review") {
+      let resolvedDiff: string | null = null;
+      if (deps.resolveDiff) {
+        const diffs: string[] = [];
+        for (const pr of prs) {
+          const [owner, repo] = pr.repo.split("/");
+          if (owner && repo) {
+            try {
+              const d = await deps.resolveDiff(task.companyId, {
+                owner,
+                repo,
+                number: pr.number,
+                headSha: pr.headSha,
+              });
+              if (d) diffs.push(d);
+            } catch {
+              // ignore diff fetch failures
+            }
+          }
+        }
+        if (diffs.length > 0) {
+          resolvedDiff = diffs.join("\n\n");
+        }
+      }
+      const fallbackDiff = prs.map((pr) => `${pr.prKey} @ ${pr.headSha ?? "unknown"}`).join("\n");
+
+      let resolvedCiOutput: string | null = null;
+      if (deps.resolveCiOutput) {
+        try {
+          resolvedCiOutput = await deps.resolveCiOutput(task.companyId, task.id, prs);
+        } catch {
+          // ignore CI output fetch failure
+        }
+      }
+      const fallbackCiOutput = comments.map((comment) => comment.body).join("\n");
+
+      const judgeDecision = await goalJudge.judge({
+        issueId: task.id,
+        companyId: task.companyId,
+        status: task.status,
+        criteria: task.description ?? task.title,
+        diff: resolvedDiff ?? fallbackDiff,
+        testOutput: resolvedCiOutput ?? fallbackCiOutput,
+        claims: comments.at(-1)?.body ?? null,
+        headSha: prs.map((pr) => pr.headSha).filter((sha): sha is string => Boolean(sha)).join(",") || null,
+        returnAssigneeAgentId: task.returnAssigneeAgentId,
+        executionPolicy: task.executionPolicy as import("@myrmidon/shared").IssueExecutionPolicy | null,
+        // myrmidon(1.7-GOAL-JUDGE, OPE-12149): seed the controller with the round
+        // state persisted by the previous sweeps (issues.executionState ->
+        // goalJudgeRound), so the <=maxReviewRounds budget spans real review
+        // cycles even when the controller instance was recreated per company.
+        roundState:
+          ((task.executionState as Record<string, unknown> | null | undefined)?.goalJudgeRound as
+            | import("../goal-judge/controller.js").GoalJudgeRoundState
+            | null
+            | undefined) ?? null,
+      });
+      if (judgeDecision.kind !== "noop" && judgeDecision.kind !== "pass") {
+        const applied = await deps.store.applyGoalJudgeDecision({
+          issueId: task.id,
+          companyId: task.companyId,
+          expectStatus: task.status,
+          patch: judgeDecision.patch ?? { status: task.status },
+          comment: judgeDecision.commentBody,
+        });
+        if (applied) {
+          await deps.logActivity({
+            companyId: task.companyId,
+            action: GOAL_JUDGE_ROUND_APPLIED_ACTION,
+            issueId: task.id,
+            details: {
+              kind: judgeDecision.kind,
+              roundsUsed: judgeDecision.roundsUsed,
+              verdict: judgeDecision.verdict,
+            },
+          });
+          return true;
+        }
+        return false;
+      }
+    }
+
+    // myrmidon(OPE-12785): the veto exists only for a task the loop closed.
+    const reopenedAfterLoopClose =
+      prefetch.loopClosed && !prefetch.loopClosed.has(task.id)
+        ? false
+        : await deps.store.reopenedAfterLoopClose(task.companyId, task.id);
     const decision = decideReviewRework({
       task,
       prs,
@@ -334,6 +563,7 @@ export function createReviewReworkSweep(deps: ReviewReworkSweepDeps): ReviewRewo
       child,
       deliveringTaskAssigneeAgentId,
       fallbackAssigneeAgentId: settings.fallbackAssigneeAgentId ?? null,
+      reopenedAfterLoopClose,
     });
     void now;
     return applyDecision(row, prs, decision, result);
@@ -347,6 +577,28 @@ export function createReviewReworkSweep(deps: ReviewReworkSweepDeps): ReviewRewo
   ): Promise<boolean> {
     const { task } = row;
     switch (decision.kind) {
+      case "await_acceptance": {
+        const awaited = await deps.store.awaitAcceptance({
+          issueId: task.id,
+          companyId: task.companyId,
+          expectStatus: task.status,
+          assigneeAgentId: decision.assigneeAgentId,
+          comment:
+            `Code merged; acceptance pending by the review-return loop: PR ${decision.prRefs.join(", ")} is` +
+            ` ${decision.outcome}, but the task names a live / operator acceptance step or was reopened by a` +
+            " person after a previous automatic close. The loop will not close it — the executor runs the" +
+            " acceptance and settles the task.",
+        });
+        if (!awaited) return false;
+        result.awaitedAcceptance += 1;
+        await deps.logActivity({
+          companyId: task.companyId,
+          action: REVIEW_REWORK_ACCEPTANCE_ACTION,
+          issueId: task.id,
+          details: { reason: "acceptance_owed", outcome: decision.outcome, prRefs: decision.prRefs },
+        });
+        return true;
+      }
       case "close_review": {
         const closed = await deps.store.closeReviewTask({
           issueId: task.id,
@@ -557,10 +809,28 @@ export function createReviewReworkSweep(deps: ReviewReworkSweepDeps): ReviewRewo
         blocked: 0,
         unblocked: 0,
         closed: 0,
+        awaitedAcceptance: 0,
         baselinesRecorded: 0,
         failed: 0,
       };
-      if (!options?.force && now.getTime() - lastSweepAtMs < intervalMs) {
+      const settings = await deps.readSettings();
+      if (deps.intervalMs === undefined) {
+        // myrmidon(OPE-12397): the stored interval is read on every pass, so a
+        // change applies without a restart; a set MYRMIDON_REVIEW_REWORK_
+        // SWEEP_INTERVAL_SEC overrides the stored value (the LiteLlm budget
+        // sync rule) and the panel shows the override read-only.
+        effectiveIntervalMs = readIntervalSec(deps.env, settings.sweepIntervalSec) * 1000;
+      }
+      if (!options?.force && now.getTime() - lastSweepAtMs < effectiveIntervalMs) {
+        result.skippedPass = true;
+        return result;
+      }
+      // myrmidon(OPE-12397): when wired with a leadership gate, only the
+      // "scheduler" leader sweeps — secondary processes never re-read every
+      // candidate's PRs (the pre-1.6.7 drain), and no replica waste. The
+      // timer still ticks so `lastSweepAtMs` stays consistent; a leader
+      // changeover re-sweeps immediately.
+      if (deps.isLeader && !deps.isLeader()) {
         result.skippedPass = true;
         return result;
       }
@@ -569,13 +839,19 @@ export function createReviewReworkSweep(deps: ReviewReworkSweepDeps): ReviewRewo
         result.skippedPass = true;
         return result;
       }
-      const settings = await deps.readSettings();
+      if ((deps.isRateLimited ?? isGitHubRateLimited)()) {
+        result.skippedPass = true;
+        return result;
+      }
       if (!settings.enabled) return result;
       const moves = { count: 0 };
+      // myrmidon(OPE-12397): one GitHub read per PR per pass, shared across
+      // every candidate that links the same PR.
+      const prFactsCache = new Map<string, ReviewReworkPrSnapshot | null>();
       const companyIds = await deps.store.listActiveCompanyIds();
       for (const companyId of companyIds) {
         try {
-          await sweepCompany(companyId, settings, now, result, moves);
+          await sweepCompany(companyId, settings, now, result, moves, prFactsCache);
         } catch (err) {
           result.failed += 1;
           log.warn({ err, companyId }, "review rework sweep failed for one company");

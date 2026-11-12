@@ -35,6 +35,12 @@ type IssueLike = AssigneeLike & {
    * escalation, never a human), `[]` = computed, nobody eligible (recovery).
    */
   defaultEscalationAgentIds?: string[] | null;
+  /** Role of the currently assigned agent, when resolved by the route. */
+  assigneeAgentRole?: string | null;
+  /** Replacement engineer when a persisted return assignee was terminated. */
+  terminatedReturnAssigneeAgentId?: string | null;
+  fallbackReturnAssigneeAgentId?: string | null;
+  executionReviewParticipantAgentIds?: string[];
   executionPolicy?: IssueExecutionPolicy | Record<string, unknown> | null;
   executionState?: IssueExecutionState | Record<string, unknown> | null;
   monitorNextCheckAt?: Date | null;
@@ -76,6 +82,12 @@ type TransitionInput = {
   commentBody?: string | null;
   reviewRequest?: IssueExecutionState["reviewRequest"] | null;
   monitorExplicitlyUpdated?: boolean;
+  candidateLoads?: ReadonlyMap<string, number>;
+  /**
+   * myrmidon(OPE-10045): internal — the participant of a stage whose id no
+   * longer exists in the policy; preferred when the replacement stage starts.
+   */
+  restartPreferredParticipant?: IssueExecutionStagePrincipal | null;
 };
 
 type TransitionResult = {
@@ -392,9 +404,26 @@ export function setIssueExecutionPolicyMonitorScheduledBy(
   };
 }
 
+export function safeNormalizeIssueExecutionPolicy(input: unknown): IssueExecutionPolicy | null {
+  if (input == null) return null;
+  try {
+    return normalizeIssueExecutionPolicy(input);
+  } catch {
+    return null;
+  }
+}
+
 export function normalizeIssueExecutionPolicy(input: unknown): IssueExecutionPolicy | null {
   if (input == null) return null;
-  const parsed = issueExecutionPolicySchema.safeParse(input);
+  // Older persisted rows or legacy callers may contain `sequential`; normalize it to `normal`
+  // so existing policies with stages and monitor are preserved without failing validation.
+  const legacyCoerced =
+    typeof input === "object" &&
+    !Array.isArray(input) &&
+    (input as { mode?: unknown }).mode === "sequential"
+      ? { ...input, mode: "normal" }
+      : input;
+  const parsed = issueExecutionPolicySchema.safeParse(legacyCoerced);
   if (!parsed.success) {
     throw unprocessable("Invalid execution policy", parsed.error.flatten());
   }
@@ -496,7 +525,7 @@ function principalsEqual(a: IssueExecutionStagePrincipal | null, b: IssueExecuti
   return a.type === "agent" ? a.agentId === b.agentId : a.userId === b.userId;
 }
 
-function resolveMaxReviewRounds(policy: IssueExecutionPolicy | null): number {
+export function resolveMaxReviewRounds(policy: IssueExecutionPolicy | null): number {
   const configured = policy?.reviewEscalationPolicy?.maxReviewRounds ?? policy?.maxReviewRounds;
   if (configured == null) return DEFAULT_MAX_REVIEW_ROUNDS;
   return typeof configured === "number" && configured > 0 ? configured : DEFAULT_MAX_REVIEW_ROUNDS;
@@ -512,7 +541,11 @@ export function resolveReviewEscalationParticipant(
   const configured = policy?.reviewEscalationPolicy ?? issue.reviewEscalationPolicy;
   const reviewOwnerIds = new Set([issue.responsibleUserId, issue.createdByUserId].filter((id): id is string => Boolean(id)));
   if (
-    configured && configured.policyRevision.trim().length > 0 && configured.participantRoles.length > 0
+    configured &&
+    typeof configured.policyRevision === "string" &&
+    configured.policyRevision.trim().length > 0 &&
+    Array.isArray(configured.participantRoles) &&
+    configured.participantRoles.length > 0
   ) {
     const lookup = (role: (typeof configured.participantRoles)[number]) =>
       issue.reviewEscalationParticipants?.[role] ?? configured.participants?.[role];
@@ -534,10 +567,12 @@ export function resolveReviewEscalationParticipant(
   }
   // Configured policies are strict: they never fall back to the issue owner or
   // another stage participant.
-  if (configured) return null;
+  if (configured && Array.isArray(configured.participantRoles) && configured.participantRoles.length > 0) return null;
   // myrmidon(OPE-9031): without a policy the stage goes to the next agent of
   // the senior chain, never to a human.
-  const chain = issue.defaultEscalationAgentIds;
+  const chain =
+    issue.defaultEscalationAgentIds ??
+    (Array.isArray((configured as any)?.escalationAgentIds) ? (configured as any).escalationAgentIds : null);
   if (!chain) return null;
   const holderIndex = escalatedHolder?.type === "agent" && escalatedHolder.agentId
     ? chain.indexOf(escalatedHolder.agentId)
@@ -589,14 +624,34 @@ function selectStageParticipant(
   stage: IssueExecutionStage,
   opts?: {
     preferred?: IssueExecutionStagePrincipal | null;
-    exclude?: IssueExecutionStagePrincipal | null;
+    exclude?: IssueExecutionStagePrincipal | (IssueExecutionStagePrincipal | null)[] | null;
+    candidateLoads?: ReadonlyMap<string, number>;
   },
 ): IssueExecutionStagePrincipal | null {
-  const participants = stage.participants.filter((participant) => !principalsEqual(participant, opts?.exclude ?? null));
+  const rawExclude = opts?.exclude ?? null;
+  const rawExcluded = Array.isArray(rawExclude) ? rawExclude : rawExclude ? [rawExclude] : [];
+  const excluded = rawExcluded.filter(
+    (candidate): candidate is IssueExecutionStagePrincipal => candidate != null,
+  );
+  const participants = stage.participants.filter(
+    (participant) => !excluded.some((candidate) => principalsEqual(participant, candidate)),
+  );
   if (participants.length === 0) return null;
   if (opts?.preferred) {
     const preferred = participants.find((participant) => principalsEqual(participant, opts.preferred ?? null));
     if (preferred) return preferred;
+  }
+  if (opts?.candidateLoads && participants.length > 1) {
+    const sorted = [...participants].sort((a, b) => {
+      const loadA = a.type === "agent" && a.agentId ? (opts.candidateLoads?.get(a.agentId) ?? 0) : 0;
+      const loadB = b.type === "agent" && b.agentId ? (opts.candidateLoads?.get(b.agentId) ?? 0) : 0;
+      if (loadA !== loadB) return loadA - loadB;
+      const idA = (a.type === "agent" ? a.agentId : a.userId) ?? "";
+      const idB = (b.type === "agent" ? b.agentId : b.userId) ?? "";
+      return idA.localeCompare(idB);
+    });
+    const best = sorted[0];
+    return best ? { type: best.type, agentId: best.agentId ?? null, userId: best.userId ?? null } : null;
   }
   const first = participants[0];
   return first ? { type: first.type, agentId: first.agentId ?? null, userId: first.userId ?? null } : null;
@@ -651,6 +706,15 @@ function buildStateWithCompletedStages(input: {
     lastDecisionId: input.previous?.lastDecisionId ?? null,
     lastDecisionOutcome: input.previous?.lastDecisionOutcome ?? null,
     monitor: input.previous?.monitor ?? null,
+    // myrmidon(OPE-11970): the state keeps its status, so it keeps the head of the last return.
+    ...(input.previous?.lastChangesRequestedHeadSha
+      ? { lastChangesRequestedHeadSha: input.previous.lastChangesRequestedHeadSha }
+      : {}),
+    // myrmidon(1.7-GOAL-JUDGE, OPE-12149): the judge round budget must survive
+    // stage-completion bookkeeping, otherwise every new cycle restarts at round 1.
+    ...(input.previous?.goalJudgeRound !== undefined
+      ? { goalJudgeRound: input.previous.goalJudgeRound }
+      : {}),
   };
 }
 
@@ -701,6 +765,16 @@ function buildPendingState(input: {
     lastDecisionOutcome: input.previous?.lastDecisionOutcome ?? null,
     monitor: input.previous?.monitor ?? null,
     changesRequestedCount: input.changesRequestedCount ?? input.previous?.changesRequestedCount ?? 0,
+    // myrmidon(OPE-11970): the executor resubmits, the reviewer decides again: the next
+    // return compares its PR head with the head of the previous return.
+    ...(input.previous?.lastChangesRequestedHeadSha
+      ? { lastChangesRequestedHeadSha: input.previous.lastChangesRequestedHeadSha }
+      : {}),
+    // myrmidon(1.7-GOAL-JUDGE, OPE-12149): the judge round budget must survive a
+    // re-entry into the review stage, otherwise every cycle restarts at round 1.
+    ...(input.previous?.goalJudgeRound !== undefined
+      ? { goalJudgeRound: input.previous.goalJudgeRound }
+      : {}),
     ...(input.reviewCycleId ? { reviewCycleId: input.reviewCycleId } : {}),
     ...(input.escalationPolicyRevision || input.previous?.escalationPolicyRevision
       ? { escalationPolicyRevision: input.escalationPolicyRevision ?? input.previous?.escalationPolicyRevision }
@@ -772,16 +846,56 @@ function buildPendingStagePatch(input: {
   });
 }
 
+function safeReturnAssignee(
+  currentAssignee: IssueExecutionStagePrincipal | null,
+  reviewStage: IssueExecutionStage | null,
+  issue: IssueLike,
+  actor: IssueExecutionStagePrincipal | null,
+) {
+  const reviewerIds = issue.executionReviewParticipantAgentIds ?? [];
+  const isReviewerRole = (role: string | null | undefined) => role === "reviewer" || role === "lead";
+  const isReviewer = (principal: IssueExecutionStagePrincipal | null) => {
+    if (principal?.type !== "agent") return false;
+    const isCurrentAssignee = principal.agentId === issue.assigneeAgentId;
+    const assignedAgentIsReviewer = isCurrentAssignee && isReviewerRole(issue.assigneeAgentRole);
+    return assignedAgentIsReviewer ||
+      reviewerIds.includes(principal.agentId ?? "") ||
+      (!isCurrentAssignee && (reviewStage ? stageHasParticipant(reviewStage, principal) : false));
+  };
+  if (!isReviewer(currentAssignee)) return currentAssignee;
+  if (currentAssignee?.type === "agent" &&
+      currentAssignee.agentId === issue.assigneeAgentId && isReviewerRole(issue.assigneeAgentRole)) return null;
+  if (!isReviewer(actor)) return actor;
+  return null;
+}
+
+function replaceTerminatedReturnAssignee(
+  currentAssignee: IssueExecutionStagePrincipal | null,
+  issue: IssueLike,
+) {
+  if (
+    currentAssignee?.type !== "agent" ||
+    currentAssignee.agentId !== issue.terminatedReturnAssigneeAgentId ||
+    !issue.fallbackReturnAssigneeAgentId
+  ) {
+    return currentAssignee;
+  }
+  return { type: "agent" as const, agentId: issue.fallbackReturnAssigneeAgentId };
+}
+
 function clearExecutionStatePatch(input: {
   patch: Record<string, unknown>;
   issueStatus: string;
   requestedStatus?: string;
+  requestedAssigneePatchProvided?: boolean;
   returnAssignee: IssueExecutionStagePrincipal | null;
 }) {
   input.patch.executionState = null;
-  if (input.requestedStatus === undefined && input.issueStatus === "in_review" && input.returnAssignee) {
-    input.patch.status = "in_progress";
-    Object.assign(input.patch, patchForPrincipal(input.returnAssignee));
+  if (input.issueStatus === "in_review") {
+    if (input.requestedStatus === undefined) input.patch.status = "in_progress";
+    if (!input.requestedAssigneePatchProvided && input.returnAssignee) {
+      Object.assign(input.patch, patchForPrincipal(input.returnAssignee));
+    }
   }
 }
 
@@ -797,11 +911,66 @@ function canAutoSkipPendingStage(input: {
     input.stage.participants.every((participant) => principalsEqual(participant, input.returnAssignee));
 }
 
+/**
+ * myrmidon(OPE-12231): REVIEW-INDEPENDENCE. Everyone who is doing (or just
+ * finished) the work — the issue assignee, the submitting actor and the
+ * persisted return assignee — is excluded from reviewer selection for the
+ * next stage, on top of whatever single-principal exclusion the caller
+ * already passes (historically the return assignee).
+ *
+ * During review the issue assignee is the reviewer, not the executor, so it
+ * stays eligible (and keeps its sticky escalated hold). The same holds for
+ * a blocked-review restart, where the previous reviewer must be preserved
+ * verbatim (review-stage-restart semantics, OPE-10045). In every other
+ * status the assignee — and, unless the board is driving, the submitting
+ * actor — are the executors of the submitted work.
+ */
+function executorPrincipals(input: {
+  issue: IssueLike;
+  existingState: IssueExecutionState | null;
+  actor: IssueExecutionStagePrincipal | null;
+  allowBoardOverride?: boolean;
+}): IssueExecutionStagePrincipal[] {
+  const principals: IssueExecutionStagePrincipal[] = [];
+  const add = (principal: IssueExecutionStagePrincipal | null) => {
+    if (principal && !principals.some((candidate) => principalsEqual(candidate, principal))) {
+      principals.push(principal);
+    }
+  };
+  add(input.existingState?.returnAssignee ?? null);
+  if (input.issue.status !== "in_review" && input.issue.status !== "blocked") {
+    // A reviewer/lead-role assignee is not an executor merely because the issue
+    // still points at them; the submitting actor is the executor here. The same
+    // holds when the assignee sits in the review roster itself: the route
+    // exposes the roster as executionReviewParticipantAgentIds and
+    // safeReturnAssignee already treats roster membership as reviewer status
+    // (OPE-9487). The executor exclusion must use the same reviewer definition,
+    // otherwise a single-roster-member review stage empties out and a legal
+    // submission dies with "No eligible review participant" (OPE-12231).
+    const assigneeInReviewRoster =
+      input.issue.assigneeAgentId != null &&
+      (input.issue.executionReviewParticipantAgentIds ?? []).includes(input.issue.assigneeAgentId);
+    const assigneeIsReviewerRole =
+      input.issue.assigneeAgentRole === "reviewer" ||
+      input.issue.assigneeAgentRole === "lead" ||
+      assigneeInReviewRoster;
+    if (!assigneeIsReviewerRole) add(assigneePrincipal(input.issue));
+    if (!input.allowBoardOverride) add(input.actor);
+  }
+  return principals;
+}
+
 function applyIssueExecutionStageTransition(input: TransitionInput): TransitionResult {
   const patch: Record<string, unknown> = {};
   const existingState = parseIssueExecutionState(input.issue.executionState);
   const currentAssignee = assigneePrincipal(input.issue);
   const actor = actorPrincipal(input.actor);
+  const excludedExecutors = executorPrincipals({
+    issue: input.issue,
+    existingState,
+    actor,
+    allowBoardOverride: input.allowBoardOverride,
+  });
   const requestedAssigneePatchProvided =
     input.requestedAssigneePatch.assigneeAgentId !== undefined || input.requestedAssigneePatch.assigneeUserId !== undefined;
   const explicitAssignee = assigneePrincipal(input.requestedAssigneePatch);
@@ -815,9 +984,24 @@ function applyIssueExecutionStageTransition(input: TransitionInput): TransitionR
   if (!input.policy) {
     if (existingState) {
       patch.executionState = null;
-      if (input.issue.status === "in_review" && existingState.returnAssignee) {
-        patch.status = "in_progress";
-        Object.assign(patch, patchForPrincipal(existingState.returnAssignee));
+      if (input.issue.status === "in_review") {
+        patch.status = requestedStatus ?? "in_progress";
+        if (requestedAssigneePatchProvided) {
+          Object.assign(patch, patchForPrincipal(explicitAssignee));
+        } else if (existingState.returnAssignee) {
+          const safeAssignee = safeReturnAssignee(
+            existingState.returnAssignee,
+            null,
+            input.issue,
+            actor,
+          );
+          if (safeAssignee || !principalsEqual(actor, currentAssignee)) {
+            Object.assign(patch, patchForPrincipal(safeAssignee));
+          }
+        } else if (requestedStatus !== undefined && actor) {
+          const safeAssignee = safeReturnAssignee(currentAssignee, null, input.issue, actor);
+          if (safeAssignee) Object.assign(patch, patchForPrincipal(safeAssignee));
+        }
       }
     }
     return { patch };
@@ -834,10 +1018,30 @@ function applyIssueExecutionStageTransition(input: TransitionInput): TransitionR
   }
 
   if (existingState?.currentStageId && !currentStage) {
+    // myrmidon(OPE-10045): the stored stage id is gone from the policy (the
+    // policy was re-sent, e.g. by an operator returning a blocked task to
+    // review). A request for `in_review` must start the policy's stage, not
+    // leave the task in review with an idle state and no participant who could
+    // decide. The return assignee and the previous participant carry over.
+    if (requestedStatus === "in_review") {
+      return applyIssueExecutionStageTransition({
+        ...input,
+        issue: {
+          ...input.issue,
+          executionState: {
+            ...blankExecutionState(),
+            returnAssignee: existingState.returnAssignee ?? null,
+            monitor: existingState.monitor ?? null,
+          },
+        },
+        restartPreferredParticipant: existingState.currentParticipant ?? null,
+      });
+    }
     clearExecutionStatePatch({
       patch,
       issueStatus: input.issue.status,
       requestedStatus,
+      requestedAssigneePatchProvided,
       returnAssignee: existingState.returnAssignee,
     });
     return { patch };
@@ -847,7 +1051,10 @@ function applyIssueExecutionStageTransition(input: TransitionInput): TransitionR
     const currentParticipant =
       existingState?.currentParticipant ??
       selectStageParticipant(activeStage, {
-        exclude: existingState?.returnAssignee ?? null,
+        exclude: [
+          existingState?.returnAssignee ?? null,
+          ...excludedExecutors,
+        ],
       });
     if (!currentParticipant) {
       throw unprocessable(`No eligible ${activeStage.type} participant is configured for this issue`);
@@ -905,16 +1112,22 @@ function applyIssueExecutionStageTransition(input: TransitionInput): TransitionR
       }
       return { patch };
     }
-    if (!escalatedHold && !stageHasParticipant(activeStage, currentParticipant)) {
+    if (!escalatedHold &&
+        !stageHasParticipant(activeStage, currentParticipant) &&
+        !principalsEqual(currentParticipant, actor)) {
       const participant = selectStageParticipant(activeStage, {
         preferred: explicitAssignee ?? existingState?.currentParticipant ?? null,
-        exclude: existingState?.returnAssignee ?? null,
+        exclude: [
+          existingState?.returnAssignee ?? null,
+          ...excludedExecutors,
+        ],
       });
       if (!participant) {
         clearExecutionStatePatch({
           patch,
           issueStatus: input.issue.status,
           requestedStatus,
+          requestedAssigneePatchProvided,
           returnAssignee: existingState?.returnAssignee ?? null,
         });
         return { patch };
@@ -926,7 +1139,7 @@ function applyIssueExecutionStageTransition(input: TransitionInput): TransitionR
         policy: input.policy,
         stage: activeStage,
         participant,
-        returnAssignee: existingState?.returnAssignee ?? currentAssignee ?? actor,
+        returnAssignee: safeReturnAssignee(existingState?.returnAssignee ?? currentAssignee, activeStage, input.issue, actor),
         reviewRequest: effectiveReviewRequest,
       });
       return {
@@ -963,7 +1176,10 @@ function applyIssueExecutionStageTransition(input: TransitionInput): TransitionR
 
         const participant = selectStageParticipant(nextStage, {
           preferred: explicitAssignee,
-          exclude: existingState?.returnAssignee ?? null,
+          exclude: [
+            existingState?.returnAssignee ?? null,
+            ...excludedExecutors,
+          ],
         });
         if (!participant) {
           throw unprocessable(`No eligible ${nextStage.type} participant is configured for this issue`);
@@ -975,7 +1191,7 @@ function applyIssueExecutionStageTransition(input: TransitionInput): TransitionR
           policy: input.policy,
           stage: nextStage,
           participant,
-          returnAssignee: existingState?.returnAssignee ?? currentAssignee ?? actor,
+          returnAssignee: safeReturnAssignee(existingState?.returnAssignee ?? currentAssignee, nextStage, input.issue, actor),
           reviewRequest: input.reviewRequest ?? null,
         });
         return {
@@ -1124,8 +1340,29 @@ function applyIssueExecutionStageTransition(input: TransitionInput): TransitionR
           }
         }
         patch.status = "in_progress";
-        Object.assign(patch, patchForPrincipal(existingState.returnAssignee));
+        if (requestedAssigneePatchProvided) {
+          Object.assign(patch, patchForPrincipal(explicitAssignee));
+        } else {
+          const safeAssignee = replaceTerminatedReturnAssignee(
+            safeReturnAssignee(
+              existingState.returnAssignee,
+              activeStage,
+              input.issue,
+              actor,
+            ),
+            input.issue,
+          );
+          if (safeAssignee) Object.assign(patch, patchForPrincipal(safeAssignee));
+        }
         patch.executionState = buildChangesRequestedState(existingState, activeStage, nextRounds);
+        const replacedReturnAssignee = replaceTerminatedReturnAssignee(existingState.returnAssignee, input.issue);
+        if (replacedReturnAssignee !== existingState.returnAssignee) {
+          const changesRequestedState = buildChangesRequestedState(existingState, activeStage, nextRounds);
+          patch.executionState = {
+            ...changesRequestedState,
+            returnAssignee: replacedReturnAssignee,
+          };
+        }
         return {
           patch,
           decision,
@@ -1161,7 +1398,7 @@ function applyIssueExecutionStageTransition(input: TransitionInput): TransitionR
           policy: input.policy,
           stage: activeStage,
           participant: explicitAssignee,
-          returnAssignee: existingState?.returnAssignee ?? currentAssignee ?? actor,
+          returnAssignee: safeReturnAssignee(existingState?.returnAssignee ?? currentAssignee, activeStage, input.issue, actor),
           reviewRequest: effectiveReviewRequest,
         });
         return { patch };
@@ -1184,7 +1421,7 @@ function applyIssueExecutionStageTransition(input: TransitionInput): TransitionR
         policy: input.policy,
         stage: activeStage,
         participant: currentParticipant,
-        returnAssignee: existingState?.returnAssignee ?? currentAssignee ?? actor,
+        returnAssignee: safeReturnAssignee(existingState?.returnAssignee ?? currentAssignee, activeStage, input.issue, actor),
         reviewRequest: effectiveReviewRequest,
       });
       return {
@@ -1216,16 +1453,35 @@ function applyIssueExecutionStageTransition(input: TransitionInput): TransitionR
       : nextPendingStage(input.policy, existingState);
   if (!pendingStage) return { patch };
 
-  const returnAssignee = existingState?.returnAssignee ?? currentAssignee;
+  // Keep the executor excluded even when it is not a safe return destination.
+  const isReviewerRole = input.issue.assigneeAgentRole === "reviewer" || input.issue.assigneeAgentRole === "lead";
+  const participantExclusion = isReviewerRole &&
+    !existingState?.returnAssignee ? null : existingState?.returnAssignee ?? currentAssignee ?? actor;
+  const returnAssignee = canAutoSkipPendingStage({ stage: pendingStage, returnAssignee: participantExclusion, requestedStatus })
+    ? participantExclusion
+    : safeReturnAssignee(
+        participantExclusion,
+        pendingStage,
+        input.issue,
+        actor,
+      );
   const skippedStageIds = [...(existingState?.completedStageIds ?? [])];
   let participant = selectStageParticipant(pendingStage, {
     preferred:
       existingState?.status === CHANGES_REQUESTED_STATUS
         ? explicitAssignee ?? existingState.currentParticipant ?? null
-        : explicitAssignee,
-    exclude: returnAssignee,
+        : explicitAssignee ?? input.restartPreferredParticipant ?? null,
+    exclude: [
+      pendingStage.type === "review"
+        ? (returnAssignee ?? participantExclusion)
+        : (pendingStage.participants.length === 1 && stageHasParticipant(pendingStage, participantExclusion)
+            ? returnAssignee
+            : participantExclusion),
+      ...excludedExecutors,
+    ],
+    candidateLoads: input.candidateLoads,
   });
-  while (!participant && canAutoSkipPendingStage({ stage: pendingStage, returnAssignee, requestedStatus })) {
+  while (!participant && canAutoSkipPendingStage({ stage: pendingStage, returnAssignee: participantExclusion, requestedStatus })) {
     skippedStageIds.push(pendingStage.id);
     pendingStage = nextPendingStage(
       input.policy,
@@ -1248,7 +1504,8 @@ function applyIssueExecutionStageTransition(input: TransitionInput): TransitionR
         existingState?.status === CHANGES_REQUESTED_STATUS
           ? explicitAssignee ?? existingState.currentParticipant ?? null
           : explicitAssignee,
-      exclude: returnAssignee,
+      exclude: [participantExclusion, ...excludedExecutors],
+      candidateLoads: input.candidateLoads,
     });
   }
   if (!participant) {
@@ -1279,7 +1536,7 @@ function applyIssueExecutionStageTransition(input: TransitionInput): TransitionR
 
 function applyMonitorTransition(input: TransitionInput, stagePatch: Record<string, unknown>) {
   const patch: Record<string, unknown> = {};
-  const previousPolicy = input.previousPolicy ?? normalizeIssueExecutionPolicy(input.issue.executionPolicy ?? null);
+  const previousPolicy = input.previousPolicy ?? safeNormalizeIssueExecutionPolicy(input.issue.executionPolicy ?? null);
   const existingState = parseIssueExecutionState(input.issue.executionState);
   const currentMonitorState = derivePersistedMonitorState({
     issue: input.issue,
@@ -1415,7 +1672,7 @@ function applyMonitorTransition(input: TransitionInput, stagePatch: Record<strin
       };
     } else {
       patch.executionPolicy = {
-        ...(input.policy ?? previousPolicy ?? { mode: "sequential", commentRequired: false, stages: [] }),
+        ...(input.policy ?? previousPolicy ?? { mode: "normal", commentRequired: false, stages: [] }),
         monitor: restoredMonitor,
       };
       patch.monitorNextCheckAt = new Date(nextCheckAt);
@@ -1536,4 +1793,59 @@ export function applyIssueExecutionPolicyTransition(input: TransitionInput): Tra
 
 export function applyIssueMonitorPolicyTransition(input: TransitionInput): TransitionResult {
   return { patch: applyMonitorTransition(input, {}) };
+}
+
+/**
+ * myrmidon(1.7-GOAL-JUDGE): applies a goal judge review round decision to
+ * transition fields before or during a review stage transition.
+ *
+ * - return_to_executor: complete=false returns the task to in_progress with
+ *   missing criteria comment and restores returnAssignee;
+ * - escalate_to_reviewer: keeps/sets status in_review, assigns escalation participant
+ *   if available, and records the score & missing report;
+ * - pass / noop: proceeds to review stage without blocking.
+ */
+export function applyGoalJudgeDecisionToTransition(input: {
+  issue: IssueLike;
+  policy: IssueExecutionPolicy | null;
+  decision: {
+    kind: "pass" | "return_to_executor" | "escalate_to_reviewer" | "noop";
+    patch?: Record<string, unknown>;
+    commentBody?: string | null;
+  };
+}): {
+  patch: Record<string, unknown>;
+  commentBody: string | null;
+  returnedToExecutor: boolean;
+  escalated: boolean;
+} {
+  const { decision } = input;
+  if (decision.kind === "return_to_executor") {
+    return {
+      patch: {
+        status: "in_progress",
+        ...(decision.patch ?? {}),
+      },
+      commentBody: decision.commentBody ?? null,
+      returnedToExecutor: true,
+      escalated: false,
+    };
+  }
+  if (decision.kind === "escalate_to_reviewer") {
+    return {
+      patch: {
+        status: "in_review",
+        ...(decision.patch ?? {}),
+      },
+      commentBody: decision.commentBody ?? null,
+      returnedToExecutor: false,
+      escalated: true,
+    };
+  }
+  return {
+    patch: decision.patch ?? {},
+    commentBody: decision.commentBody ?? null,
+    returnedToExecutor: false,
+    escalated: false,
+  };
 }

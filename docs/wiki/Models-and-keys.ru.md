@@ -63,14 +63,34 @@
 [SETTINGS.md](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/SETTINGS.md),
 `MYRMIDON_LITELLM_KEY_SECRET`.
 
+## Расходы по задачам
+
+Для запросов о расходах на уровне задач API расходов компании предоставляет
+`GET /api/companies/:companyId/costs/by-issue?from&to&limit`. Он группирует
+события расходов по задачам, сортирует их по убыванию суммы и возвращает
+идентификаторы и названия задач, итоги токенов и число уникальных запусков.
+Лимит по умолчанию — 20, максимум — 100; большее значение возвращает HTTP
+400. См. [описание изменения эндпоинта](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/changes/1-7-costs-by-issue.md).
+
+## Бюджеты и расход виртуальных ключей LiteLLM
+
+Доска отслеживает бюджет и расход ключей LiteLLM напрямую из реестра `litellm_cost_events` и метаданных ключей LiteLLM (`/key/list`), заменяя сканирование базы хостовыми скриптами:
+
+- **Интерфейс Costs и Keys**: Экран **Costs** отображает панель **Key budget and spend** с суточным (24ч) и недельным (7д) расходом по каждому ключу и агенту, долей использования капа и предупреждениями о маршрутах без цены (неоценённые модели в LiteLLM). На экране **Keys** для каждого ключа также выводится блок использования.
+- **API расхода по ключам**: `GET /api/companies/:companyId/litellm/key-usage` возвращает капы и агрегированный расход с кэшированием по TTL и ограничением выполнения запросов (10 секунд).
+- **Карточки внимания и сигналы**: При достижении ≥80% капа бюджета (`near_cap`), исчерпании лимита (`exhausted`) или аномальном суточном расходе ≥2× от среднего за предыдущие 6 дней (`anomalous_daily_spend`) доска формирует карточки `litellm_budget` в ленте внимания. Они доставляются операторам через канал ошибок в Telegram (важность high/critical) и секцию расходов суточного дайджеста.
+- **Метрики Prometheus**: Защищённый эндпоинт `/metrics` отдаёт:
+  - `myrmidon_llm_key_spend_cents{company_id,agent_id,window="24h"|"7d"}`
+  - `myrmidon_llm_key_budget_utilization_percent{company_id,agent_id}`
+
 ## Подробнее
 
-- [Провайдеры моделей компании](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/guides/model-providers.md)
-- [Режимы исполнения бюджетов](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/guides/budget-enforcement.md)
-- [Проекция бюджетов в LiteLLM](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/guides/litellm-budget-projection.md)
-- [Советы по бюджету промпта и глубокий анализ](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/guides/prompt-budget-advice.md)
-- [Лимиты допуска запусков](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/guides/run-limits.md)
-- [Здоровье трассировки LLM](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/guides/tracing-health.md)
+- [Провайдеры моделей компании](Model-providers.ru)
+- [Режимы исполнения бюджетов](Budget-enforcement.ru)
+- [Проекция бюджетов в LiteLLM](Litellm-budget-projection.ru)
+- [Советы по бюджету промпта и глубокий анализ](Prompt-budget-advice.ru)
+- [Лимиты допуска запусков](Run-limits.ru)
+- [Здоровье трассировки LLM](Tracing-health.ru)
 
 ## Действующий лимит задачи
 
@@ -78,4 +98,4 @@ API лимитов бюджета разрешает действующий ли
 задачи, фуражировки, роли, проекта и компании. Ответ указывает уровень,
 который победил при разрешении, и источник лимита. Подробности о приоритете,
 доступе и режиме «только сигнал» — в
-[руководстве по лимитам бюджета](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/guides/budget-limits.ru.md).
+[руководстве по лимитам бюджета](Budget-limits.ru).

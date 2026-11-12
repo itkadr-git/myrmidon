@@ -44,6 +44,12 @@ const (
 	// A14 is GET /myrmidon/disk: the one route outside the Docker API prefix. It
 	// reads the bot partition (statfs and the project quotas), never the daemon.
 	A14 = "A14"
+	// A19 is GET /myrmidon/events/oom: transports OOM events (docker events oom / cgroup memory.events oom_kill).
+	A19 = "A19"
+	// A20 updates one enrolled bot's resource ceilings in dockergate config.
+	A20 = "A20"
+	// A21 returns one enrolled bot's resource limits and ceilings in dockergate config.
+	A21 = "A21"
 )
 
 // A15 is the disk route PUT /myrmidon/disk/<botKey>/quota (contract C5). It is
@@ -62,6 +68,17 @@ const (
 	A18 = "A18"
 )
 
+// A22 is the decommission delete of a bot's main container (OPE-12654):
+// DELETE containers/myrmidon-bot-<K>?force=true&v=true&myrmidon-decommission=true.
+// It is a variant of A9 for the main container only, the way A17 is a variant
+// of A10: the agent left the bot runtime (another adapter, or terminated), so
+// the main container goes without a `.next` replacement, and the gate drops the
+// bot's quota project and its data directory with it.
+const A22 = "A22"
+
+// decommissionTail is the query of A22: the query of A9 plus the fixed flag.
+const decommissionTail = "?force=true&v=true&myrmidon-decommission=true"
+
 // skillsReadQuery is the skills directory the gate serves for A16, in the same
 // literal-encoded form the marker and clone-report queries use.
 const skillsReadQuery = "path=%2Fbot%2Fhermes%2Fskills"
@@ -79,6 +96,9 @@ const diskQuotaTail = "/quota"
 // DiskTarget is the request-target of A14 (contract C5). It has no API prefix:
 // it is not a call to the daemon.
 const DiskTarget = "/myrmidon/disk"
+
+// EventsOomTarget is the request-target of A19 (OPE-9934). It has no API prefix.
+const EventsOomTarget = "/myrmidon/events/oom"
 
 // diskPrefix is where every disk route lives; what is under it and is not a
 // route of this list is refused as route_not_allowed.
@@ -160,6 +180,8 @@ type Route struct {
 	LegacyMarker bool
 	// Mount is the container path of an A5 upload.
 	Mount string
+	// ConfigBotKey is the target bot for A20 configuration updates.
+	ConfigBotKey string
 }
 
 // NameOf builds the container name of a bot with a role suffix.
@@ -283,8 +305,43 @@ func Parse(method, target string, images Images) (*Route, *deny.Error) {
 		}
 		return nil, notAllowed()
 	}
+	if target == EventsOomTarget || strings.HasPrefix(target, EventsOomTarget+"?") {
+		if method == "GET" {
+			return &Route{ID: A19, Method: method}, nil
+		}
+		return nil, notAllowed()
+	}
+	if method == "PUT" && (target == "/myrmidon/config/update" || strings.HasPrefix(target, "/myrmidon/config/update?")) {
+		return &Route{ID: A20, Method: method}, nil
+	}
+	if rest, ok := strings.CutPrefix(target, "/myrmidon/bots/"); ok {
+		key, hasLimitsSuffix := strings.CutSuffix(rest, "/limits")
+		if hasLimitsSuffix && IsBotKey(key) {
+			if method == "PUT" {
+				return &Route{ID: A20, Method: method, ConfigBotKey: key}, nil
+			}
+			if method == "GET" {
+				return &Route{ID: A21, Method: method, ConfigBotKey: key}, nil
+			}
+		}
+		return nil, notAllowed()
+	}
+	if rest, ok := strings.CutPrefix(target, "/myrmidon/config/bots/"); ok {
+		if IsBotKey(rest) {
+			if method == "PUT" {
+				return &Route{ID: A20, Method: method, ConfigBotKey: rest}, nil
+			}
+			if method == "GET" {
+				return &Route{ID: A21, Method: method, ConfigBotKey: rest}, nil
+			}
+		}
+		return nil, notAllowed()
+	}
 	if rest, ok := strings.CutPrefix(target, DiskPrefix); ok {
 		return parseDisk(method, rest)
+	}
+	if strings.HasPrefix(target, "/myrmidon/") {
+		return nil, notAllowed()
 	}
 	if strings.HasPrefix(target, diskPrefix) {
 		return nil, notAllowed()
@@ -339,6 +396,13 @@ func Parse(method, target string, images Images) (*Route, *deny.Error) {
 			return nil, notAllowed()
 		}
 		r.ID = A9
+	case decommissionTail:
+		// myrmidon(OPE-12654): the decommission delete exists for the main
+		// container only; a .next or a helper is deleted through A9.
+		if method != "DELETE" || suffix != SuffixMain {
+			return nil, notAllowed()
+		}
+		r.ID = A22
 	case "/json":
 		if method != "GET" || suffix != SuffixMain {
 			return nil, notAllowed()
@@ -398,6 +462,22 @@ func Parse(method, target string, images Images) (*Route, *deny.Error) {
 			return nil, notAllowed()
 		}
 		r.ID = A18
+	case "/config/update":
+		if method == "PUT" && suffix == SuffixMain {
+			r.ID = A20
+			r.ConfigBotKey = key
+		} else if method == "GET" && suffix == SuffixMain {
+			r.ID = A21
+			r.ConfigBotKey = key
+		} else {
+			return nil, notAllowed()
+		}
+	case "/config/limits":
+		if method != "GET" || suffix != SuffixMain {
+			return nil, notAllowed()
+		}
+		r.ID = A21
+		r.ConfigBotKey = key
 	default:
 		if q, ok := strings.CutPrefix(tail, "/archive?path="); ok {
 			// A5: the path parameter is one of three literals, then the fixed flag.

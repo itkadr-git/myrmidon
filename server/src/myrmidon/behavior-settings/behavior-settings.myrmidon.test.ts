@@ -8,10 +8,13 @@ import express from "express";
 import request from "supertest";
 import { describe, expect, it, vi } from "vitest";
 import type { Db } from "@myrmidon/db";
+import { behaviorSettingRegistry, resolveBehaviorSettings } from "@myrmidon/shared";
 import { errorHandler } from "../../middleware/index.js";
 import { behaviorSettingsRoutes } from "./routes.js";
+import type { AgentGrantPermissionChecker } from "../../routes/authz.js";
 import {
   BEHAVIOR_SETTINGS_INSTANCE_ACTION,
+  BEHAVIOR_SETTINGS_COMPANY_ACTION,
   behaviorSettingsService,
   type BehaviorSettingsServiceDeps,
 } from "./service.js";
@@ -42,6 +45,7 @@ interface HarnessOptions {
   env?: Record<string, string | undefined>;
   companyIds?: string[];
   settingsError?: Error;
+  hasPermission?: AgentGrantPermissionChecker;
 }
 
 function harness(options: HarnessOptions = {}) {
@@ -91,7 +95,7 @@ function harness(options: HarnessOptions = {}) {
       (req as unknown as { actor: unknown }).actor = actor;
       next();
     });
-    scoped.use("/api", behaviorSettingsRoutes({} as Db, behaviorSettingsService({} as Db, deps)));
+    scoped.use("/api", behaviorSettingsRoutes({} as Db, behaviorSettingsService({} as Db, deps), options.hasPermission ?? (async () => false)));
     scoped.use(errorHandler);
     return scoped;
   };
@@ -100,6 +104,45 @@ function harness(options: HarnessOptions = {}) {
 
 const INSTANCE_URL = "/api/myrmidon/behavior-settings";
 const COMPANY_URL = (companyId: string) => `/api/myrmidon/behavior-settings/${companyId}`;
+
+describe("myrmidon(1.7) behavior settings: guardrail and fleet keys (SETTINGS-TO-UI C)", () => {
+  it("registers the keys with strict list validation", () => {
+    for (const key of ["bot_egress_mode", "tool_breaker_failures", "run_env_allow", "bot_containers", "bot_reconcile_interval_sec", "bot_image_allowlist", "bot_mount_sources", "bot_container_github_env_allowlist", "bot_yolo", "bot_hindsight_allowed_banks", "bot_mcp_servers", "browser_fleet", "browser_idle_timeout_min", "browser_max_duration_min", "stack_check_interval_sec"]) {
+      expect(behaviorSettingRegistry.get(key)?.scope).toBe("instance");
+    }
+    const valid = resolveBehaviorSettings({ stored: { bot_image_allowlist: ["repo/image:tag"] }, env: {} });
+    expect(valid.settings.bot_image_allowlist).toEqual(["repo/image:tag"]);
+    const blank = resolveBehaviorSettings({ stored: { bot_image_allowlist: ["repo/image:tag", " "] }, env: {} });
+    expect(blank.settings.bot_image_allowlist).toEqual([]);
+  });
+
+  it("validates the baseline interval and lets saved disable an env interval", () => {
+    const env = { MYRMIDON_BASELINE_INTERVAL_SEC: "3600" };
+    expect(resolveBehaviorSettings({ stored: { baseline_interval_sec: 0 }, env }).settings.baseline_interval_sec).toBe(0);
+    expect(resolveBehaviorSettings({ stored: {}, env }).settings.baseline_interval_sec).toBe(3600);
+    expect(resolveBehaviorSettings({ stored: { baseline_interval_sec: 59 }, env }).settings.baseline_interval_sec).toBe(3600);
+    expect(resolveBehaviorSettings({ stored: { baseline_interval_sec: 604801 }, env }).settings.baseline_interval_sec).toBe(3600);
+    expect(resolveBehaviorSettings({ stored: {}, env: { MYRMIDON_BASELINE_INTERVAL_SEC: "3600" } }).sources.baseline_interval_sec).toBe("env");
+  });
+
+  it("validates saved input precheck factors and preserves environment fallback", () => {
+    const env = { MYRMIDON_INPUT_LIMIT_PRECHECK: "0", MYRMIDON_INPUT_LIMIT_CHARS_PER_TOKEN: "4", MYRMIDON_INPUT_LIMIT_SAFETY: "0.8" };
+    const view = resolveBehaviorSettings({ stored: { input_limit_precheck: true, input_limit_chars_per_token: 2.5, input_limit_safety: 0.75 }, env });
+    expect(view.settings).toMatchObject({ input_limit_precheck: true, input_limit_chars_per_token: 2.5, input_limit_safety: 0.75 });
+    const fallback = resolveBehaviorSettings({ stored: { input_limit_chars_per_token: 0, input_limit_safety: 1.1 }, env });
+    expect(fallback.settings).toMatchObject({ input_limit_precheck: false, input_limit_chars_per_token: 4, input_limit_safety: 0.8 });
+  });
+
+  it("keeps the shared precedence: a saved value wins, the environment is the default", () => {
+    const env = { MYRMIDON_TOOL_BREAKER_FAILURES: "3" };
+    const saved = resolveBehaviorSettings({ stored: { tool_breaker_failures: 0 }, env });
+    expect(saved.settings.tool_breaker_failures).toBe(0);
+    expect(saved.sources.tool_breaker_failures).toBe("ui");
+    const unsaved = resolveBehaviorSettings({ stored: {}, env });
+    expect(unsaved.settings.tool_breaker_failures).toBe(3);
+    expect(unsaved.sources.tool_breaker_failures).toBe("env");
+  });
+});
 
 describe("myrmidon(1.7) behavior settings: reading the effective values", () => {
   it("reports the environment as the source when it declares a value", async () => {
@@ -119,6 +162,26 @@ describe("myrmidon(1.7) behavior settings: reading the effective values", () => 
 
     expect(res.body.settings.debug_mode).toBe(false);
     expect(res.body.sources.debug_mode).toBe("env");
+  });
+
+  it("answers { settings, sources } with no values[] and carries every runs-queue key", async () => {
+    // myrmidon(1.6.7 SETTINGS-GENERAL-CRASH): the Runs & Queue tab of
+    // Settings -> General reads exactly this body. It used to read a `values[]`
+    // array the server never sent, and the page fell to the error screen.
+    const { app } = harness();
+    const res = await request(app).get(INSTANCE_URL).expect(200);
+
+    expect(Object.keys(res.body).sort()).toEqual(["settings", "sources"]);
+    expect(res.body.values).toBeUndefined();
+    const runsQueueKeys = behaviorSettingRegistry
+      .getAll()
+      .filter((def) => def.section === "runs-queue")
+      .map((def) => def.key);
+    expect(runsQueueKeys.length).toBeGreaterThan(0);
+    for (const key of runsQueueKeys) {
+      expect(key in res.body.settings, key).toBe(true);
+      expect(["ui", "env", "default"], key).toContain(res.body.sources[key]);
+    }
   });
 
   it("reports the stored settings as the source once they exist", async () => {
@@ -177,6 +240,36 @@ describe("myrmidon(1.7) behavior settings: access", () => {
     const h = harness();
     await request(h.withActor(outsider)).get(COMPANY_URL(COMPANY_ID)).expect(403);
     await request(h.withActor(outsider)).patch(COMPANY_URL(COMPANY_ID)).send({ debug_mode: true }).expect(403);
+  });
+
+  it("refuses an agent without the company permission grant on company writes (both paths)", async () => {
+    const h = harness();
+    await request(h.withActor(agentActor)).patch(`/api/myrmidon/behavior-settings/company/${COMPANY_ID}`).send({ review_routing_enabled: false }).expect(403);
+    await request(h.withActor(agentActor)).patch(COMPANY_URL(COMPANY_ID)).send({ review_routing_enabled: false }).expect(403);
+    expect(h.updated).toEqual([]);
+    expect(h.audits).toEqual([]);
+  });
+
+  it("admits an agent holding the users:manage_permissions company grant on company writes", async () => {
+    const granted: AgentGrantPermissionChecker = async (companyId, principalType, principalId, permissionKey) => {
+      expect(companyId).toBe(COMPANY_ID);
+      expect(principalType).toBe("agent");
+      expect(principalId).toBe("11111111-1111-4111-8111-111111111111");
+      expect(permissionKey).toBe("users:manage_permissions");
+      return true;
+    };
+    const h = harness({ hasPermission: granted });
+    await request(h.withActor(agentActor)).patch(`/api/myrmidon/behavior-settings/company/${COMPANY_ID}`).send({ review_routing_enabled: false }).expect(200);
+    await request(h.withActor(agentActor)).patch(COMPANY_URL(COMPANY_ID)).send({ review_routing_enabled: false }).expect(200);
+    expect(h.updated.length).toBeGreaterThan(0);
+  });
+
+  it("keeps board member company writes and agent company reads working", async () => {
+    const h = harness();
+    await request(h.withActor(member)).patch(`/api/myrmidon/behavior-settings/company/${COMPANY_ID}`).send({ review_routing_enabled: true }).expect(200);
+    expect(h.updated.length).toBeGreaterThan(0);
+    await request(h.withActor(agentActor)).get(`/api/myrmidon/behavior-settings/company/${COMPANY_ID}`).expect(200);
+    await request(h.withActor(agentActor)).get(COMPANY_URL(COMPANY_ID)).expect(200);
   });
 });
 
@@ -495,5 +588,174 @@ describe("myrmidon(1.7) behavior settings: permission matrix", () => {
     await request(h.withActor(member)).get(`${INSTANCE_URL}/definitions`).expect(200);
     await request(h.withActor(member)).get(INSTANCE_URL).expect(200);
     await request(h.withActor(member)).get(`${INSTANCE_URL}?key=autonomy_level`).expect(200);
+  });
+});
+
+describe("myrmidon(1.7) behavior settings: a null patch resets the saved value (SETTINGS-TO-UI A)", () => {
+  it("removes the saved instance value so the read falls back to the env value with source env", async () => {
+    const h = harness({ env: { MYRMIDON_DEBUG_MODE: "true" } });
+
+    // Save an override: the stored value wins over the env.
+    const saved = await request(h.withActor(admin))
+      .patch(INSTANCE_URL)
+      .send({ debug_mode: false })
+      .expect(200);
+    expect(saved.body.settings.debug_mode).toBe(false);
+    expect(saved.body.sources.debug_mode).toBe("ui");
+
+    // Reset it: null removes the saved value instead of storing a null.
+    const reset = await request(h.withActor(admin))
+      .patch(INSTANCE_URL)
+      .send({ debug_mode: null })
+      .expect(200);
+    expect(reset.body.settings.debug_mode).toBe(true);
+    expect(reset.body.sources.debug_mode).toBe("env");
+
+    // A later read keeps the env fallback, not ui.
+    const read = await request(h.withActor(member)).get(INSTANCE_URL).expect(200);
+    expect(read.body.settings.debug_mode).toBe(true);
+    expect(read.body.sources.debug_mode).toBe("env");
+
+    // The key left storage entirely (a null is never stored).
+    expect(h.updated.at(-1)?.behaviorSettings).toEqual({});
+  });
+
+  it("falls back to the registry default when no env value declares the key", async () => {
+    const h = harness({ env: {} });
+
+    await request(h.withActor(admin)).patch(INSTANCE_URL).send({ pause_drain_grace_sec: 300 }).expect(200);
+    const saved = await request(h.withActor(member)).get(INSTANCE_URL).expect(200);
+    expect(saved.body.settings.pause_drain_grace_sec).toBe(300);
+    expect(saved.body.sources.pause_drain_grace_sec).toBe("ui");
+
+    const reset = await request(h.withActor(admin))
+      .patch(INSTANCE_URL)
+      .send({ pause_drain_grace_sec: null })
+      .expect(200);
+    expect(reset.body.settings.pause_drain_grace_sec).toBe(120);
+    expect(reset.body.sources.pause_drain_grace_sec).toBe("default");
+
+    const read = await request(h.withActor(member)).get(INSTANCE_URL).expect(200);
+    expect(read.body.settings.pause_drain_grace_sec).toBe(120);
+    expect(read.body.sources.pause_drain_grace_sec).toBe("default");
+    expect(h.updated.at(-1)?.behaviorSettings).toEqual({});
+  });
+
+  it("audits a reset like an ordinary write: changedKeys, apply and resweep fire", async () => {
+    const h = harness({ env: { MYRMIDON_DEBUG_MODE: "true" } });
+    await request(h.withActor(admin)).patch(INSTANCE_URL).send({ debug_mode: false }).expect(200);
+    h.audits.length = 0;
+    h.calls.length = 0;
+
+    await request(h.withActor(admin)).patch(INSTANCE_URL).send({ debug_mode: null }).expect(200);
+
+    // changedKeys is the resolved-value diff: saved false -> env true.
+    expect(h.audits).toHaveLength(1);
+    expect(h.audits[0]).toMatchObject({ action: BEHAVIOR_SETTINGS_INSTANCE_ACTION, entityType: "instance_settings" });
+    expect((h.audits[0].details as { changedKeys: string[] }).changedKeys).toEqual(["debug_mode"]);
+    expect(h.calls).toContain("write");
+    expect(h.calls).toContain(`apply:${JSON.stringify({})}`);
+    expect(h.calls).toContain("resweep");
+  });
+
+  it("resets one key and writes another in the same PATCH without erasing other stored keys", async () => {
+    const h = harness({ env: {} });
+    // Three saved keys: one to reset, one to rewrite, one left untouched.
+    await request(h.withActor(admin))
+      .patch(INSTANCE_URL)
+      .send({ pause_drain_grace_sec: 300, pause_drain_enabled: false, swarm_scent_weight_similarity: 0.9 })
+      .expect(200);
+
+    const res = await request(h.withActor(admin))
+      .patch(INSTANCE_URL)
+      .send({ pause_drain_grace_sec: null, pause_drain_enabled: true })
+      .expect(200);
+    expect(res.body.settings.pause_drain_grace_sec).toBe(120);
+    expect(res.body.sources.pause_drain_grace_sec).toBe("default");
+    expect(res.body.settings.pause_drain_enabled).toBe(true);
+    expect(res.body.sources.pause_drain_enabled).toBe("ui");
+
+    // Storage keeps the rewritten key and the untouched key; only the reset key left.
+    expect(h.updated.at(-1)?.behaviorSettings).toEqual({
+      pause_drain_enabled: true,
+      swarm_scent_weight_similarity: 0.9,
+    });
+
+    const read = await request(h.withActor(member)).get(INSTANCE_URL).expect(200);
+    expect(read.body.settings.swarm_scent_weight_similarity).toBe(0.9);
+    expect(read.body.sources.swarm_scent_weight_similarity).toBe("ui");
+    expect(read.body.settings.pause_drain_grace_sec).toBe(120);
+    expect(read.body.sources.pause_drain_grace_sec).toBe("default");
+  });
+
+  it("rejects a null for an unknown key with 400 and writes nothing", async () => {
+    const h = harness();
+    await request(h.withActor(admin)).patch(INSTANCE_URL).send({ no_such_setting: null }).expect(400);
+    expect(h.updated).toEqual([]);
+    expect(h.audits).toEqual([]);
+    expect(h.calls).toEqual([]);
+  });
+
+  it("rejects a null for a key outside the endpoint scope with 400", async () => {
+    const h = harness();
+    // company-only key on the instance endpoint
+    await request(h.withActor(admin)).patch(INSTANCE_URL).send({ review_routing_enabled: null }).expect(400);
+    // instance-only key on the company endpoint (both aliases)
+    await request(h.withActor(member)).patch(COMPANY_URL(COMPANY_ID)).send({ debug_mode: null }).expect(400);
+    await request(h.withActor(member))
+      .patch(`/api/myrmidon/behavior-settings/company/${COMPANY_ID}`)
+      .send({ debug_mode: null })
+      .expect(400);
+    expect(h.updated).toEqual([]);
+    expect(h.calls).toEqual([]);
+  });
+
+  it("refuses a null reset from a non-admin board member with 403", async () => {
+    const h = harness({ stored: { debug_mode: true } });
+    await request(h.withActor(member)).patch(INSTANCE_URL).send({ debug_mode: null }).expect(403);
+    await request(h.withActor(member)).put(INSTANCE_URL).send({ debug_mode: null }).expect(403);
+    // The saved value is untouched after the refused resets.
+    expect(h.updated).toEqual([]);
+    expect(h.calls).toEqual([]);
+  });
+
+  it("resets a saved company value back to its default", async () => {
+    const h = harness({ env: {} });
+    await request(h.withActor(member))
+      .patch(COMPANY_URL(COMPANY_ID))
+      .send({ review_routing_enabled: false })
+      .expect(200);
+    const saved = await request(h.withActor(member)).get(COMPANY_URL(COMPANY_ID)).expect(200);
+    expect(saved.body.settings.review_routing_enabled).toBe(false);
+    expect(saved.body.sources.review_routing_enabled).toBe("ui");
+
+    h.audits.length = 0;
+    h.calls.length = 0;
+    const reset = await request(h.withActor(member))
+      .patch(COMPANY_URL(COMPANY_ID))
+      .send({ review_routing_enabled: null })
+      .expect(200);
+    expect(reset.body.settings.review_routing_enabled).toBe(true);
+    expect(reset.body.sources.review_routing_enabled).toBe("default");
+
+    const read = await request(h.withActor(member)).get(COMPANY_URL(COMPANY_ID)).expect(200);
+    expect(read.body.settings.review_routing_enabled).toBe(true);
+    expect(read.body.sources.review_routing_enabled).toBe("default");
+
+    expect(h.updated.at(-1)?.behaviorSettings).toEqual({});
+    expect(h.audits).toHaveLength(1);
+    expect(h.audits[0]).toMatchObject({ action: BEHAVIOR_SETTINGS_COMPANY_ACTION, entityType: "company_settings" });
+    expect((h.audits[0].details as { changedKeys: string[] }).changedKeys).toEqual(["review_routing_enabled"]);
+    expect(h.calls).toContain("resweep");
+  });
+
+  it("refuses a company null reset from a user without company access with 403", async () => {
+    const h = harness({ stored: { review_routing_enabled: false } });
+    await request(h.withActor(outsider))
+      .patch(COMPANY_URL(COMPANY_ID))
+      .send({ review_routing_enabled: null })
+      .expect(403);
+    expect(h.updated).toEqual([]);
+    expect(h.calls).toEqual([]);
   });
 });

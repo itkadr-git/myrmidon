@@ -12,6 +12,12 @@ const PATH_CANDIDATE_RE = /(?:^|[\s`"'(])((?:server|ui|packages|doc|scripts|\.gi
 const WAITING_FOR_REVIEW_OR_APPROVAL_RE =
   /\bwait(?:ing)? for\b.{0,160}\b(?:review(?:er)?(?: feedback)?|approval|board|human|user|operator)\b/i;
 
+// myrmidon(OPE-12799): the run guard stops that cut a run off at a limit.
+const RUN_GUARD_LIMIT_ERROR_CODES = new Set(["model_call_limit", "no_progress_exploration"]);
+export const RUN_GUARD_LIMIT_NEXT_ACTION =
+  "Do not start the task over. Check the working copy and the issue branch (git status, git log, git diff) and the latest issue comments, " +
+  "continue implementation from what is already there, and commit, push and comment early: runs are limited by the number of model calls.";
+
 type IssueSummaryInput = {
   id: string;
   identifier: string | null;
@@ -130,7 +136,8 @@ export function extractContinuationSummaryNextAction(body: string | null | undef
 export function continuationSummaryParksExecutor(body: string | null | undefined) {
   const nextAction = extractContinuationSummaryNextAction(body);
   if (!nextAction) return false;
-  return WAITING_FOR_REVIEW_OR_APPROVAL_RE.test(nextAction);
+  return WAITING_FOR_REVIEW_OR_APPROVAL_RE.test(nextAction) &&
+    !/\bcontinue implementation\b/i.test(nextAction);
 }
 
 export function buildContinuationSummaryMarkdown(input: {
@@ -149,11 +156,28 @@ export function buildContinuationSummaryMarkdown(input: {
     recentActions.push(`Latest run error${run.errorCode ? ` (${run.errorCode})` : ""}: ${truncateText(run.error, 500)}`);
   }
 
+  // myrmidon(OPE-12799): a run the run guard stopped at a limit did not fail on
+  // the task. The next run starts in a fresh session and reads this summary, so
+  // it is told that the work was cut off and where to look for what was done.
+  const stoppedAtLimit = RUN_GUARD_LIMIT_ERROR_CODES.has(run.errorCode ?? "");
+  if (stoppedAtLimit) {
+    recentActions.push(
+      "The run was stopped by the run guard at a limit before it finished; it did not report what it did. " +
+        "Uncommitted work may be in the working copy, pushed work is on the issue branch.",
+    );
+  }
+
   const paths = extractPathCandidates(resultSummary, run.stdoutExcerpt, run.stderrExcerpt, input.previousSummaryBody);
   const objective = extractMarkdownSection(issue.description, "Objective") ?? issue.description?.trim() ?? "No objective captured.";
   const acceptanceCriteria = extractMarkdownSection(issue.description, "Acceptance Criteria") ?? "No explicit acceptance criteria captured.";
   const mode = inferMode(issue, run);
-  const nextAction = inferNextAction(issue, run, extractPreviousNextAction(input.previousSummaryBody));
+  const nextAction = stoppedAtLimit && issue.status !== "done" && issue.status !== "in_review"
+    ? RUN_GUARD_LIMIT_NEXT_ACTION
+    : issue.status === "in_progress"
+    ? run.status === "failed" || run.status === "timed_out"
+      ? inferNextAction(issue, run, extractPreviousNextAction(input.previousSummaryBody))
+      : "Continue implementation from the latest concrete actions and acceptance criteria; do not wait for reviewer feedback."
+    : inferNextAction(issue, run, extractPreviousNextAction(input.previousSummaryBody));
 
   const body = [
     "# Continuation Summary",

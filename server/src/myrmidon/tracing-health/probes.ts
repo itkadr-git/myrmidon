@@ -10,6 +10,13 @@
 // client over /spend/logs/v2) so gateway address and credentials come from
 // one source. The Langfuse ClickHouse endpoints are new MYRMIDON_TRACING_*
 // rows (deployment-off by default).
+//
+// myrmidon(1.7, OPE-4101, SETTINGS-TO-UI E): the behavior windows (window,
+// health TTL, signal interval) resolve live through the part A registry — a UI
+// change applies without a restart, and a set env var stays a forced override.
+// ClickHouse / Langfuse addresses and credentials stay env-only.
+
+import { liveTracingHealthSettings } from "../system-settings/live.js"; // myrmidon(1.7, OPE-4101)
 
 import { resolveOptionalInstanceSecret } from "../secret-settings/runtime.js"; // myrmidon(SETTINGS-UI E2.6)
 import {
@@ -95,6 +102,20 @@ export function readTracingHealthSettings(env: NodeJS.ProcessEnv = process.env):
   };
 }
 
+/**
+ * Live view of the tracing health settings: the behavior windows (window,
+ * health TTL) resolve through the part A registry so a UI change applies
+ * without a restart; infra fields stay env-only. myrmidon(1.7, OPE-4101).
+ */
+export function resolveTracingHealthSettings(env: NodeJS.ProcessEnv = process.env): TracingHealthSettings {
+  const base = readTracingHealthSettings(env);
+  const live = liveTracingHealthSettings(env);
+  return {
+    ...base,
+    windowMs: live.windowSec * 1000,
+    cacheTtlMs: live.healthTtlSec * 1000,
+  };
+}
 /**
  * myrmidon(SETTINGS-UI E2.6): the ClickHouse password may come from a bound secret ref.
  * The env value (emergency override) still wins; the ref is read server-side per check.

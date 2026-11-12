@@ -69,6 +69,44 @@ type Result struct {
 	HardBytes int64
 }
 
+// botProjectEnsurer is the minimal registration capability used after bot creation.
+type botProjectEnsurer interface {
+	Ensure(ctx context.Context, botKey string) (int, error)
+}
+
+// botProjectRemover is the cleanup capability used after bot deletion.
+type botProjectRemover interface {
+	Remove(ctx context.Context, botKey string) error
+}
+
+// diskProjectEnsurer is nil for tests and for configurations that don't enable
+// bot volume project registration.
+var diskProjectEnsurer botProjectEnsurer
+var diskProjectRemover botProjectRemover
+
+// SetDiskProjectEnsurer installs the dockergate disk registration implementation.
+func SetDiskProjectEnsurer(ensurer botProjectEnsurer) { diskProjectEnsurer = ensurer }
+
+// EnsureBotDiskProject registers one bot directory through the audited gate boundary.
+func EnsureBotDiskProject(ctx context.Context, botKey string) error {
+	if diskProjectEnsurer == nil {
+		return nil
+	}
+	_, err := diskProjectEnsurer.Ensure(ctx, botKey)
+	return err
+}
+
+// SetDiskProjectRemover installs the dockergate disk cleanup implementation.
+func SetDiskProjectRemover(remover botProjectRemover) { diskProjectRemover = remover }
+
+// RemoveBotDiskProject removes one bot's XFS project through the audited gate boundary.
+func RemoveBotDiskProject(ctx context.Context, botKey string) error {
+	if diskProjectRemover == nil {
+		return nil
+	}
+	return diskProjectRemover.Remove(ctx, botKey)
+}
+
 // Quota sets project quotas on the bot volumes.
 type Quota struct {
 	// VolumeRoot is the directory with one subdirectory per bot key.
@@ -104,6 +142,145 @@ func ValidBytes(n int64) bool { return n >= MinQuotaBytes && n <= MaxQuotaBytes 
 // most 1 TiB, so the product does not overflow).
 func softBytes(hard int64) int64 { return hard * 8 / 10 }
 
+// Ensure registers a bot directory in the XFS project tables without setting
+// a quota. It is safe to call after directory creation and on retries.
+func (q *Quota) Ensure(ctx context.Context, botKey string) (int, error) {
+	if !route.IsBotKey(botKey) {
+		return 0, ErrBadKey
+	}
+	q.mu.Lock()
+	defer q.mu.Unlock()
+
+	root, err := filepath.Abs(q.VolumeRoot)
+	if err != nil {
+		return 0, fmt.Errorf("disk: invalid volume root: %w", err)
+	}
+	root, err = filepath.EvalSymlinks(root)
+	if err != nil {
+		return 0, fmt.Errorf("disk: volume root unavailable: %w", err)
+	}
+	dir := filepath.Join(root, botKey)
+	fi, err := os.Lstat(dir)
+	if err != nil {
+		return 0, fmt.Errorf("disk: bot directory unavailable: %w", err)
+	}
+	if !fi.IsDir() || fi.Mode()&os.ModeSymlink != 0 {
+		return 0, fmt.Errorf("disk: bot directory is not a real directory")
+	}
+	resolved, err := filepath.EvalSymlinks(dir)
+	if err != nil || resolved != dir {
+		return 0, fmt.Errorf("disk: bot directory path is not canonical")
+	}
+	if err := q.checkEnabled(ctx); err != nil {
+		return 0, err
+	}
+	projid, err := readLines(q.ProjidFile)
+	if err != nil {
+		return 0, fmt.Errorf("disk: read %s: %w", q.ProjidFile, err)
+	}
+	projects, err := readLines(q.ProjectsFile)
+	if err != nil {
+		return 0, fmt.Errorf("disk: read %s: %w", q.ProjectsFile, err)
+	}
+	id := 0
+	for _, l := range projid {
+		if lineKey(l) == botKey {
+			id, _ = strconv.Atoi(lineValue(l))
+			break
+		}
+	}
+	if id <= 0 {
+		id = allocate(botKey, projid, projects)
+	}
+	idText := strconv.Itoa(id)
+	newProjid, changedA := setLine(projid, func(l string) bool { return lineKey(l) == botKey }, botKey+":"+idText)
+	newProjects, changedB := setLine(projects, func(l string) bool { return lineKey(l) == idText || lineValue(l) == dir }, idText+":"+dir)
+	if changedA {
+		if err := writeAtomic(q.ProjidFile, joinLines(newProjid)); err != nil {
+			return 0, fmt.Errorf("disk: write %s: %w", q.ProjidFile, err)
+		}
+	}
+	if changedB {
+		if err := writeAtomic(q.ProjectsFile, joinLines(newProjects)); err != nil {
+			return 0, fmt.Errorf("disk: write %s: %w", q.ProjectsFile, err)
+		}
+	}
+	_, err = q.Exec.Run(ctx, q.Binary, "-x", "-c", "project -s -p "+dir+" "+idText, q.VolumeRoot)
+	if err != nil {
+		return 0, fmt.Errorf("disk: xfs_quota: %w", err)
+	}
+	return id, nil
+}
+
+// Remove deletes the project-table entries for one bot after its volume has been removed.
+// It refuses to remove a mapping while the bot directory still exists.
+func (q *Quota) Remove(ctx context.Context, botKey string) error {
+	if !route.IsBotKey(botKey) {
+		return ErrBadKey
+	}
+	q.mu.Lock()
+	defer q.mu.Unlock()
+
+	root, err := filepath.Abs(q.VolumeRoot)
+	if err != nil {
+		return fmt.Errorf("disk: invalid volume root: %w", err)
+	}
+	root, err = filepath.EvalSymlinks(root)
+	if err != nil {
+		return fmt.Errorf("disk: volume root unavailable: %w", err)
+	}
+	dir := filepath.Join(root, botKey)
+	if _, err := os.Lstat(dir); err == nil {
+		return fmt.Errorf("disk: bot directory still exists")
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("disk: inspect bot directory: %w", err)
+	}
+	projid, err := readLines(q.ProjidFile)
+	if err != nil {
+		return fmt.Errorf("disk: read %s: %w", q.ProjidFile, err)
+	}
+	projects, err := readLines(q.ProjectsFile)
+	if err != nil {
+		return fmt.Errorf("disk: read %s: %w", q.ProjectsFile, err)
+	}
+	id := 0
+	for _, line := range projid {
+		if lineKey(line) == botKey {
+			id, _ = strconv.Atoi(lineValue(line))
+			break
+		}
+	}
+	newProjid := make([]string, 0, len(projid))
+	for _, line := range projid {
+		if lineKey(line) != botKey {
+			newProjid = append(newProjid, line)
+		}
+	}
+	newProjects := make([]string, 0, len(projects))
+	for _, line := range projects {
+		if lineValue(line) == dir || (id > 0 && lineKey(line) == strconv.Itoa(id)) {
+			continue
+		}
+		newProjects = append(newProjects, line)
+	}
+	if len(newProjid) != len(projid) {
+		if err := writeAtomic(q.ProjidFile, joinLines(newProjid)); err != nil {
+			return fmt.Errorf("disk: write %s: %w", q.ProjidFile, err)
+		}
+	}
+	if len(newProjects) != len(projects) {
+		if err := writeAtomic(q.ProjectsFile, joinLines(newProjects)); err != nil {
+			return fmt.Errorf("disk: write %s: %w", q.ProjectsFile, err)
+		}
+	}
+	if id > 0 {
+		if _, err := q.Exec.Run(ctx, q.Binary, "-x", "-c", "limit -p bhard=0 bsoft=0 "+strconv.Itoa(id), q.VolumeRoot); err != nil {
+			return fmt.Errorf("disk: xfs_quota: %w", err)
+		}
+	}
+	return nil
+}
+
 // Put sets the hard limit of the bot's volume to hard bytes and the soft one to 0.8 of
 // it. It is idempotent: the same botKey keeps its project id, the files are not
 // rewritten when they already say the same, and xfs_quota is run again with the
@@ -130,12 +307,21 @@ func (q *Quota) Put(ctx context.Context, botKey string, hard int64) (Result, err
 	if err != nil {
 		return Result{}, fmt.Errorf("disk: read %s: %w", q.ProjectsFile, err)
 	}
-	id := allocate(botKey, projid, projects)
-	dir := q.VolumeRoot + "/" + botKey
+	id := 0
+	for _, l := range projid {
+		if lineKey(l) == botKey {
+			id, _ = strconv.Atoi(lineValue(l))
+			break
+		}
+	}
+	if id <= 0 {
+		id = allocate(botKey, projid, projects)
+	}
+	dir := filepath.Join(q.VolumeRoot, botKey)
 
 	newProjid, changedA := setLine(projid, func(l string) bool { return lineKey(l) == botKey }, botKey+":"+strconv.Itoa(id))
 	idText := strconv.Itoa(id)
-	newProjects, changedB := setLine(projects, func(l string) bool { return lineKey(l) == idText }, idText+":"+dir)
+	newProjects, changedB := setLine(projects, func(l string) bool { return lineKey(l) == idText || lineValue(l) == dir }, idText+":"+dir)
 	// projid first: a project that is in /etc/projects but has no name is the
 	// worse half-state.
 	if changedA {
@@ -257,18 +443,18 @@ func allocate(botKey string, projid, projects []string) int {
 		if err != nil || id < 0 {
 			continue
 		}
-		if k == botKey {
-			return id
-		}
-		if id >= next {
+		if id > 0 && id >= next {
 			next = id + 1
+		}
+		if k == botKey && id > 0 {
+			return id
 		}
 	}
 	for _, l := range projects {
 		if lineKey(l) == "" {
 			continue
 		}
-		if id, err := strconv.Atoi(lineKey(l)); err == nil && id >= next {
+		if id, err := strconv.Atoi(lineKey(l)); err == nil && id > 0 && id >= next {
 			next = id + 1
 		}
 	}

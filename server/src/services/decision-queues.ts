@@ -28,6 +28,11 @@ import type {
 import { notFound, unprocessable } from "../errors.js";
 // myrmidon(SUB): the stack registry keeps its components in instance settings, not a table
 import { readStackDocument } from "../myrmidon/stack-registry/store.js";
+// myrmidon(OPE-11776): the key budget card id prefix
+import { LITELLM_BUDGET_ATTENTION_DEDUP_PREFIX } from "../myrmidon/litellm-costs/attention.js";
+// myrmidon(OPE-11890): the auth-401 burst signal registry (process-level latch).
+import { readAuth401BurstSignal } from "../myrmidon/auth-401-burst/index.js";
+import { hasGitHubAppWebhookDisabledSignal } from "../myrmidon/github-shared-identity/webhook-disabled-signal.js";
 import { logActivity } from "./activity-log.js";
 import {
   authorizationService,
@@ -262,11 +267,16 @@ async function sourceIssueId(
       return { exists: Boolean(row), issueId, ownerAgentId: row?.agentId ?? null };
     }
     case "agent_error_alert": {
-      const row = await db.select({ id: agents.id })
+      const agentRow = await db.select({ id: agents.id })
         .from(agents)
         .where(and(eq(agents.companyId, companyId), eq(agents.id, sourceId)))
         .then((rows) => rows[0] ?? null);
-      return { exists: Boolean(row), issueId: null, agentId: row?.id ?? null };
+      if (agentRow) return { exists: true, issueId: null, agentId: agentRow.id };
+      const issueRow = await db.select({ id: issues.id })
+        .from(issues)
+        .where(and(eq(issues.companyId, companyId), eq(issues.id, sourceId)))
+        .then((rows) => rows[0] ?? null);
+      return { exists: Boolean(issueRow), issueId: issueRow?.id ?? null, agentId: null };
     }
     case "join_request": {
       const row = await db.select({ id: joinRequests.id })
@@ -293,6 +303,18 @@ async function sourceIssueId(
     // while the board runs (the row is dismissable, never stale-checked).
     case "host_disk_alert": {
       return { exists: true, issueId: null };
+    }
+    // myrmidon(OPE-11890): the auth-401 burst signal is process-level state;
+    // the source id is the fixed "auth-401-burst" subject, so existence is the
+    // live latch — the card disappears when the latch resets.
+    case "auth_401_burst": {
+      return { exists: readAuth401BurstSignal() !== null, issueId: null };
+    }
+    // myrmidon(OPE-12868): the webhook-disabled signal is process-level state;
+    // the source id is the App entry id — existence is the live latch, which
+    // webhook-sync clears on the next confirmed sync.
+    case "github_app_webhook_disabled": {
+      return { exists: hasGitHubAppWebhookDisabledSignal(companyId, sourceId), issueId: null };
     }
     // myrmidon(1.6.5-PAUSE-GUARD): the leftover-pauses signal subject is the
     // company itself (one card per company), so existence is always true while
@@ -398,8 +420,19 @@ async function sourceIssueId(
     }
     // myrmidon(1.6.5-F-23): advisory signals only — no backing issue.
     case "secret_off_run_reads":
-    case "secret_off_run_grant_expiring": {
+    case "secret_off_run_grant_expiring":
+    case "mcp_gateway_token_expiring": {
       return { exists: true, issueId: null };
+    }
+    case "provider_usage_warning": {
+      return { exists: sourceId.length > 0, issueId: null };
+    }
+    // myrmidon(1.6.8 OPE-12709): role-model-down / no-credits cards are
+    // computed operator alerts (like provider_usage_warning) with no backing
+    // issue row — the subject id is the company-scoped card key.
+    case "role_model_down":
+    case "provider_no_credits": {
+      return { exists: sourceId.length > 0, issueId: null };
     }
     // myrmidon(1.6.5-F-18): the empty-catalog card is computed from the
     // process-level signal registry and its subject id is the stable
@@ -413,6 +446,18 @@ async function sourceIssueId(
     // (`codex_pool:...`), not a stored row — same shape as foraging_limit / empty_model_catalog above.
     case "codex_pool_alert": {
       return { exists: sourceId.startsWith("codex_pool:"), issueId: null };
+    }
+    // myrmidon(OPE-11776): the key budget card is computed from the
+    // process-level signal registry and its subject id is the stable dedupKey
+    // (`litellm_budget:<kind>:<companyId>:<agentId>`), not a stored row. The
+    // company segment must be the caller's company, so one company's card id
+    // never resolves in another. No agentId is returned: the spend of a key is
+    // board-only, an agent-read authority does not cover it.
+    case "litellm_budget": {
+      return {
+        exists: sourceId.startsWith(LITELLM_BUDGET_ATTENTION_DEDUP_PREFIX) && sourceId.split(":")[2] === companyId,
+        issueId: null,
+      };
     }
   }
 }

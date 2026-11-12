@@ -1,7 +1,28 @@
 import express from "express";
 import request from "supertest";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { normalizeIssueExecutionPolicy } from "../services/issue-execution-policy.ts";
+import { clearReviewWakesQuotas } from "../myrmidon/review-stage-recovery/review-wakes-quota.js";
+
+// myrmidon(OPE-12683): the route module graph is cold-loaded once in
+// beforeAll, so per-test vi.doMock overrides never reach it. These holders are
+// mutable per-test fixtures read by the module mocks registered there; tests
+// that never touch them keep the defaults below.
+const mockAgentDirectory = vi.hoisted(() =>
+  new Map<string, Record<string, unknown> | null>(),
+);
+const mockReviewerStoreRows = vi.hoisted(() =>
+  new Map<string, { rows: Array<Record<string, unknown>>; loads?: Map<string, number> }>(),
+);
+const mockRoutingSettings = vi.hoisted(() =>
+  new Map<string, Record<string, unknown>>(),
+);
+function withAgentDirectory<T>(rows: Array<Record<string, unknown>>, run: () => Promise<T>) {
+  for (const row of rows) mockAgentDirectory.set(row.id as string, row);
+  return run().finally(() => {
+    for (const row of rows) mockAgentDirectory.delete(row.id as string);
+  });
+}
 
 const mockIssueService = vi.hoisted(() => ({
   getById: vi.fn(),
@@ -39,15 +60,30 @@ const defaultRow = {
   contextSnapshot: { issueId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa" },
   permissions: null,
 };
-const mockDbSelectWhere = vi.hoisted(() => vi.fn(() => ({
-  for: () => ({
+const mockDbSelectWhere = vi.hoisted(() => {
+  const createQueryChain = (): any => ({
+    where: () => createQueryChain(),
+    orderBy: () => createQueryChain(),
+    limit: () => createQueryChain(),
+    offset: () => createQueryChain(),
+    for: () => createQueryChain(),
     then: (onFulfilled: (rows: unknown[]) => unknown, onRejected?: (reason: unknown) => unknown) =>
       Promise.resolve([defaultRow]).then(onFulfilled, onRejected),
-  }),
-  then: (onFulfilled: (rows: unknown[]) => unknown, onRejected?: (reason: unknown) => unknown) =>
-    Promise.resolve([defaultRow]).then(onFulfilled, onRejected),
-})));
-const mockDbSelectFrom = vi.hoisted(() => vi.fn(() => ({ where: mockDbSelectWhere })));
+  });
+  return vi.fn(() => createQueryChain());
+});
+const mockDbSelectFrom = vi.hoisted(() => vi.fn(() => {
+  const createQueryChain = (): any => ({
+    where: mockDbSelectWhere,
+    orderBy: () => createQueryChain(),
+    limit: () => createQueryChain(),
+    offset: () => createQueryChain(),
+    for: () => createQueryChain(),
+    then: (onFulfilled: (rows: unknown[]) => unknown, onRejected?: (reason: unknown) => unknown) =>
+      Promise.resolve([defaultRow]).then(onFulfilled, onRejected),
+  });
+  return createQueryChain();
+}));
 const mockDbSelect = vi.hoisted(() => vi.fn(() => ({ from: mockDbSelectFrom })));
 const mockDbInsert = vi.hoisted(() => vi.fn(() => ({ values: vi.fn(async () => undefined) })));
 const mockDb = vi.hoisted(() => ({
@@ -92,18 +128,45 @@ function registerModuleMocks() {
     RunnerGoalConflictError: class RunnerGoalConflictError extends Error {},
   }));
 
+  vi.doMock("../myrmidon/review-routing/settings.js", () => ({
+    readReviewRoutingSettings: vi.fn(async (_svc?: unknown) => {
+      const custom = mockRoutingSettings.get("company-1");
+      if (custom) return custom;
+      return { enabled: false };
+    }),
+  }));
+  vi.doMock("../myrmidon/review-routing/store.js", () => ({
+    createPgReviewRoutingStore: () => ({
+      listReviewerAgents: vi.fn(async (_companyId: string, roles?: readonly string[]) => {
+        const entry = mockReviewerStoreRows.get("company-1");
+        const rows = entry?.rows ?? [];
+        return roles && roles.length > 0
+          ? rows.filter((row) => roles.includes(String(row.role)))
+          : rows;
+      }),
+      loadByAgent: vi.fn(async () =>
+        mockReviewerStoreRows.get("company-1")?.loads ?? new Map<string, number>()),
+      getAgent: vi.fn(async (_companyId: string, agentId: string) =>
+        mockReviewerStoreRows.get("company-1")?.rows.find((row) => row.id === agentId) ?? null),
+      getAgentModel: vi.fn(async () => null),
+    }),
+  }));
   vi.doMock("../services/index.js", () => ({
     companyService: () => ({
       getById: vi.fn(async () => ({ id: "company-1" })),
     }),
     accessService: () => mockAccessService,
     agentService: () => ({
-      getById: vi.fn(async (agentId: string) => ({
-        id: agentId,
-        companyId: "company-1",
-        role: "reviewer",
-        permissions: null,
-      })),
+      getById: vi.fn(async (agentId: string) => {
+        const custom = mockAgentDirectory.get(agentId);
+        if (custom !== undefined) return custom;
+        return {
+          id: agentId,
+          companyId: "company-1",
+          role: "reviewer",
+          permissions: null,
+        };
+      }),
       resolveByReference: vi.fn(async (_companyId: string, reference: string) => ({
         ambiguous: false,
         agent: {
@@ -210,12 +273,25 @@ async function createApp(actor?: TestActor) {
 }
 
 describe("issue execution policy routes", () => {
-  beforeEach(() => {
-    vi.resetModules();
+  // Cold-load the route module graph here, once, outside any test's budget. It
+  // is huge: ~10-12 s on a GitHub runner and more on a slower one. The first
+  // test used to pay it inside its 15 s timeout, and vi.resetModules() made
+  // every later test re-evaluate the graph (~1 s each). The mocks are hoisted
+  // module-level objects, so no test needs a module reset. 60 s is ~2x the
+  // slowest cold load measured.
+  beforeAll(async () => {
     vi.doUnmock("../services/index.js");
     vi.doUnmock("../routes/issues.js");
     vi.doUnmock("../middleware/index.js");
     registerModuleMocks();
+    await Promise.all([
+      import("../middleware/index.js"),
+      import("../routes/issues.js"),
+    ]);
+  }, 60_000);
+
+  beforeEach(async () => {
+    clearReviewWakesQuotas(new Date());
     vi.clearAllMocks();
     mockIssueService.assertCheckoutOwner.mockResolvedValue({ adoptedFromRunId: null });
     mockIssueService.getByIdForUpdate.mockImplementation(async () => mockIssueService.getById());
@@ -265,6 +341,96 @@ describe("issue execution policy routes", () => {
       };
     });
     mockAccessService.hasPermission.mockResolvedValue(false);
+    await import("../routes/issues.js");
+  });
+
+  it("clears return assignee when assigned executor is a reviewer", async () => {
+    const issue = {
+      id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      companyId: "company-1",
+      status: "todo",
+      assigneeAgentId: "44444444-4444-4444-8444-444444444444",
+      assigneeUserId: null,
+      createdByUserId: "local-board",
+      identifier: "PAP-1048R",
+      title: "Reviewer assignee should not be returned to",
+      executionPolicy: normalizeIssueExecutionPolicy({
+        stages: [{
+          id: "66666666-6666-4666-8666-666666666666",
+          type: "review",
+          participants: [{ type: "agent", agentId: "44444444-4444-4444-8444-444444444444" }],
+        }],
+      }),
+      executionState: null,
+      reviewPolicy: "not_creator",
+    };
+    mockIssueService.getById.mockResolvedValue(issue);
+    mockIssueService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) => ({
+      ...issue,
+      ...patch,
+      updatedAt: new Date(),
+    }));
+
+    const res = await request(await createApp({
+      type: "agent",
+      agentId: "33333333-3333-4333-8333-333333333333",
+      companyId: "company-1",
+      runId: "55555555-5555-4555-8555-555555555555",
+    }))
+      .patch("/api/issues/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa")
+      .send({ status: "in_review", executionPolicy: issue.executionPolicy });
+
+    expect(res.status).toBe(200);
+    const updatePatch = mockIssueService.update.mock.calls[0]?.[1] as Record<string, unknown>;
+    expect(updatePatch.status).toBe("in_review");
+    expect(updatePatch.assigneeAgentId).toBe("44444444-4444-4444-8444-444444444444");
+    // The assigned executor (44444…) is a review participant, so it must not be the return target;
+    // the actor who submitted the issue for review (33333…, not a participant) is the last executor (OPE-9487).
+    expect(updatePatch.executionState).toMatchObject({
+      returnAssignee: { type: "agent", agentId: "33333333-3333-4333-8333-333333333333" },
+    });
+  });
+
+  it("keeps an explicit assignee when removing policy from review", async () => {
+    const issue = {
+      id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      companyId: "company-1",
+      status: "in_review",
+      assigneeAgentId: null,
+      assigneeUserId: null,
+      createdByUserId: "local-board",
+      identifier: "PAP-1048",
+      title: "Return to explicit executor",
+      executionPolicy: null,
+      executionState: {
+        status: "pending",
+        currentStageId: "11111111-1111-4111-8111-111111111111",
+        currentStageIndex: 0,
+        currentStageType: "review",
+        currentParticipant: { type: "agent", agentId: "reviewer-agent" },
+        returnAssignee: { type: "agent", agentId: "33333333-3333-4333-8333-333333333333" },
+        completedStageIds: [],
+        lastDecisionId: null,
+        lastDecisionOutcome: null,
+      },
+    };
+    mockIssueService.getById.mockResolvedValue(issue);
+    mockIssueService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) => ({
+      ...issue,
+      ...patch,
+      updatedAt: new Date(),
+    }));
+
+    const res = await request(await createApp())
+      .patch("/api/issues/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa")
+      .send({ status: "in_progress", assigneeAgentId: "new-executor", executionPolicy: null });
+
+    expect(res.status).toBe(200);
+    const updatePatch = mockIssueService.update.mock.calls[0]?.[1] as Record<string, unknown>;
+    expect(updatePatch).toMatchObject({
+      status: "in_progress",
+      assigneeAgentId: "new-executor",
+    });
   });
 
   it("reauthorizes a terminal verdict against the review policy held under the update lock", async () => {
@@ -748,6 +914,449 @@ describe("issue execution policy routes", () => {
           currentParticipant: expect.objectContaining({
             type: "agent",
             agentId: "44444444-4444-4444-8444-444444444444",
+          }),
+        }),
+      }),
+      expect.anything(),
+    );
+  });
+
+  // myrmidon(OPE-12683): the transition into review must refuse reviewers
+  // outside the issue's project team or without swarm queue eligibility,
+  // before any state is written, and point at eligible teammates instead.
+  it("rejects a swarm-queue-ineligible review participant on entering review", async () => {
+    const issue = {
+      id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      companyId: "company-1",
+      status: "todo",
+      assigneeAgentId: "33333333-3333-4333-8333-333333333333",
+      assigneeUserId: null,
+      createdByUserId: "local-board",
+      identifier: "PAP-1270",
+      title: "Ineligible reviewer",
+      executionPolicy: null,
+      executionState: null,
+    };
+    const policy = normalizeIssueExecutionPolicy({
+      stages: [
+        {
+          id: "11111111-1111-4111-8111-111111111111",
+          type: "review",
+          participants: [{ type: "agent", agentId: "44444444-4444-4444-8444-444444444444" }],
+        },
+      ],
+    })!;
+    mockIssueService.getById.mockResolvedValue(issue);
+    mockIssueService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) => ({
+      ...issue,
+      ...patch,
+      updatedAt: new Date(),
+    }));
+
+    await withAgentDirectory([
+      {
+        id: "33333333-3333-4333-8333-333333333333",
+        companyId: "company-1",
+        name: "adm-dev-eng-23",
+        role: "engineer",
+        metadata: {},
+      },
+      {
+        id: "44444444-4444-4444-8444-444444444444",
+        companyId: "company-1",
+        name: "adm-dev-review-8",
+        role: "reviewer",
+        metadata: { swarmQueueEligible: false },
+      },
+    ], async () => {
+      const res = await request(await createApp({
+        type: "agent",
+        agentId: "33333333-3333-4333-8333-333333333333",
+        companyId: "company-1",
+        runId: "55555555-5555-4555-8555-555555555555",
+      }))
+        .patch("/api/issues/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa")
+        .send({ status: "in_review", executionPolicy: policy });
+
+      expect(res.status).toBe(422);
+      expect(res.body).toMatchObject({ code: "invalid_review_participant" });
+      expect(res.body.details.rejected).toEqual([
+        { agentId: "44444444-4444-4444-8444-444444444444", reason: "swarm_queue_ineligible" },
+      ]);
+    });
+    expect(mockIssueService.update).not.toHaveBeenCalled();
+  });
+
+  it("rejects an out-of-team review participant and lists eligible teammates", async () => {
+    const issue = {
+      id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      companyId: "company-1",
+      status: "todo",
+      assigneeAgentId: "33333333-3333-4333-8333-333333333333",
+      assigneeUserId: null,
+      createdByUserId: "local-board",
+      identifier: "PAP-1271",
+      title: "Out-of-team reviewer",
+      executionPolicy: null,
+      executionState: null,
+    };
+    const policy = normalizeIssueExecutionPolicy({
+      stages: [
+        {
+          id: "11111111-1111-4111-8111-111111111111",
+          type: "review",
+          participants: [{ type: "agent", agentId: "66666666-6666-4666-8666-666666666666" }],
+        },
+      ],
+    })!;
+    mockIssueService.getById.mockResolvedValue(issue);
+    mockIssueService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) => ({
+      ...issue,
+      ...patch,
+      updatedAt: new Date(),
+    }));
+
+    mockReviewerStoreRows.set("company-1", {
+      rows: [
+        { id: "44444444-4444-4444-8444-444444444444", name: "adm-dev-review-8", role: "reviewer", metadata: {} },
+        { id: "77777777-7777-4777-8777-777777777777", name: "adm-dev-review-9", role: "reviewer", metadata: {} },
+      ],
+      // review-8 (0 load) must be listed before the loaded review-9 (1).
+      loads: new Map([["77777777-7777-4777-8777-777777777777", 1]]),
+    });
+    try {
+      await withAgentDirectory([
+        {
+          id: "33333333-3333-4333-8333-333333333333",
+          companyId: "company-1",
+          name: "adm-dev-eng-23",
+          role: "engineer",
+          metadata: {},
+        },
+        {
+          id: "66666666-6666-4666-8666-666666666666",
+          companyId: "company-1",
+          name: "bbq-worker-1",
+          role: "reviewer",
+          metadata: {},
+        },
+      ], async () => {
+        const res = await request(await createApp())
+          .patch("/api/issues/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa")
+          .send({ status: "in_review", executionPolicy: policy });
+
+        expect(res.status).toBe(422);
+        expect(res.body).toMatchObject({ code: "invalid_review_participant" });
+        expect(res.body.details.rejected).toEqual([
+          { agentId: "66666666-6666-4666-8666-666666666666", reason: "outside_issue_group" },
+        ]);
+        expect(res.body.details.eligibleReviewers).toEqual([
+          { id: "44444444-4444-4444-8444-444444444444", name: "adm-dev-review-8", role: "reviewer" },
+          { id: "77777777-7777-4777-8777-777777777777", name: "adm-dev-review-9", role: "reviewer" },
+        ]);
+      });
+    } finally {
+      mockReviewerStoreRows.delete("company-1");
+    }
+    expect(mockIssueService.update).not.toHaveBeenCalled();
+  });
+
+  it("accepts a same-team eligible review participant on entering review", async () => {
+    const issue = {
+      id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      companyId: "company-1",
+      status: "todo",
+      assigneeAgentId: "33333333-3333-4333-8333-333333333333",
+      assigneeUserId: null,
+      createdByUserId: "local-board",
+      identifier: "PAP-1272",
+      title: "Eligible teammate reviewer",
+      executionPolicy: null,
+      executionState: null,
+    };
+    const policy = normalizeIssueExecutionPolicy({
+      stages: [
+        {
+          id: "11111111-1111-4111-8111-111111111111",
+          type: "review",
+          participants: [{ type: "agent", agentId: "44444444-4444-4444-8444-444444444444" }],
+        },
+      ],
+    })!;
+    mockIssueService.getById.mockResolvedValue(issue);
+    mockIssueService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) => ({
+      ...issue,
+      ...patch,
+      updatedAt: new Date(),
+    }));
+
+    await withAgentDirectory([
+      {
+        id: "33333333-3333-4333-8333-333333333333",
+        companyId: "company-1",
+        name: "adm-dev-eng-23",
+        role: "engineer",
+        metadata: {},
+      },
+      {
+        id: "44444444-4444-4444-8444-444444444444",
+        companyId: "company-1",
+        name: "adm-dev-review-8",
+        role: "reviewer",
+        metadata: {},
+      },
+    ], async () => {
+      const res = await request(await createApp({
+        type: "agent",
+        agentId: "33333333-3333-4333-8333-333333333333",
+        companyId: "company-1",
+        runId: "55555555-5555-4555-8555-555555555555",
+      }))
+        .patch("/api/issues/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa")
+        .send({ status: "in_review", executionPolicy: policy });
+
+      expect(res.status).toBe(200);
+      expect(mockIssueService.update).toHaveBeenCalledWith(
+        "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+        expect.objectContaining({
+          status: "in_review",
+          executionState: expect.objectContaining({
+            currentParticipant: expect.objectContaining({
+              type: "agent",
+              agentId: "44444444-4444-4444-8444-444444444444",
+            }),
+          }),
+        }),
+        expect.anything(),
+      );
+    });
+  });
+
+  // myrmidon(OPE-12683): the eligibility rule also holds for a reviewer change
+  // while the issue is already in review. A reviewer the issue already holds is
+  // not re-checked, so an unrelated update never fails on a legacy reviewer.
+  const IN_REVIEW_ISSUE_ID = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+  const REVIEW_STAGE_ID = "11111111-1111-4111-8111-111111111111";
+  const CURRENT_REVIEWER_ID = "33333333-3333-4333-8333-333333333333";
+  const ENGINEER_ID = "44444444-4444-4444-8444-444444444444";
+  const NEXT_REVIEWER_ID = "55555555-5555-4555-8555-555555555555";
+
+  function reviewTeamDirectory(next: { name: string; metadata?: Record<string, unknown> }) {
+    return [
+      {
+        id: CURRENT_REVIEWER_ID,
+        companyId: "company-1",
+        name: "adm-dev-review-7",
+        role: "reviewer",
+        metadata: {},
+        permissions: null,
+      },
+      {
+        id: ENGINEER_ID,
+        companyId: "company-1",
+        name: "adm-dev-eng-23",
+        role: "engineer",
+        metadata: {},
+        permissions: null,
+      },
+      {
+        id: NEXT_REVIEWER_ID,
+        companyId: "company-1",
+        name: next.name,
+        role: "reviewer",
+        metadata: next.metadata ?? {},
+        permissions: null,
+      },
+    ];
+  }
+
+  function pendingReviewIssue(participantIds: string[]) {
+    const policy = normalizeIssueExecutionPolicy({
+      stages: [
+        {
+          id: REVIEW_STAGE_ID,
+          type: "review",
+          participants: participantIds.map((agentId) => ({ type: "agent", agentId })),
+        },
+      ],
+    })!;
+    const issue = {
+      id: IN_REVIEW_ISSUE_ID,
+      companyId: "company-1",
+      status: "in_review",
+      assigneeAgentId: CURRENT_REVIEWER_ID,
+      assigneeUserId: null,
+      createdByUserId: "local-board",
+      identifier: "PAP-1280",
+      title: "Reviewer change while in review",
+      executionPolicy: policy,
+      executionState: {
+        status: "pending",
+        currentStageId: REVIEW_STAGE_ID,
+        currentStageIndex: 0,
+        currentStageType: "review",
+        currentParticipant: { type: "agent", agentId: CURRENT_REVIEWER_ID },
+        returnAssignee: { type: "agent", agentId: ENGINEER_ID },
+        completedStageIds: [],
+        lastDecisionId: null,
+        lastDecisionOutcome: null,
+      },
+    };
+    mockIssueService.getById.mockResolvedValue(issue);
+    mockIssueService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) => ({
+      ...issue,
+      ...patch,
+      updatedAt: new Date(),
+    }));
+    return issue;
+  }
+
+  it("rejects a reassignment of an in_review task to an out-of-team reviewer participant", async () => {
+    pendingReviewIssue([CURRENT_REVIEWER_ID, NEXT_REVIEWER_ID]);
+
+    await withAgentDirectory(reviewTeamDirectory({ name: "bbq-worker-1" }), async () => {
+      const res = await request(await createApp())
+        .patch(`/api/issues/${IN_REVIEW_ISSUE_ID}`)
+        .send({ assigneeAgentId: NEXT_REVIEWER_ID });
+
+      expect(res.status).toBe(422);
+      expect(res.body).toMatchObject({ code: "invalid_review_participant" });
+      expect(res.body.details.rejected).toEqual([
+        { agentId: NEXT_REVIEWER_ID, reason: "outside_issue_group" },
+      ]);
+    });
+    expect(mockIssueService.update).not.toHaveBeenCalled();
+  });
+
+  it("rejects a queue-ineligible reviewer added to the policy of an in_review task", async () => {
+    pendingReviewIssue([CURRENT_REVIEWER_ID]);
+    const policy = normalizeIssueExecutionPolicy({
+      stages: [
+        {
+          id: REVIEW_STAGE_ID,
+          type: "review",
+          participants: [
+            { type: "agent", agentId: CURRENT_REVIEWER_ID },
+            { type: "agent", agentId: NEXT_REVIEWER_ID },
+          ],
+        },
+      ],
+    })!;
+
+    await withAgentDirectory(
+      reviewTeamDirectory({ name: "adm-dev-review-8", metadata: { swarmQueueEligible: false } }),
+      async () => {
+        const res = await request(await createApp())
+          .patch(`/api/issues/${IN_REVIEW_ISSUE_ID}`)
+          .send({ executionPolicy: policy });
+
+        expect(res.status).toBe(422);
+        expect(res.body).toMatchObject({ code: "invalid_review_participant" });
+        expect(res.body.details.rejected).toEqual([
+          { agentId: NEXT_REVIEWER_ID, reason: "swarm_queue_ineligible" },
+        ]);
+      },
+    );
+    expect(mockIssueService.update).not.toHaveBeenCalled();
+  });
+
+  it("accepts a reassignment of an in_review task to an eligible teammate participant", async () => {
+    pendingReviewIssue([CURRENT_REVIEWER_ID, NEXT_REVIEWER_ID]);
+
+    await withAgentDirectory(reviewTeamDirectory({ name: "adm-dev-review-8" }), async () => {
+      const res = await request(await createApp())
+        .patch(`/api/issues/${IN_REVIEW_ISSUE_ID}`)
+        .send({ assigneeAgentId: NEXT_REVIEWER_ID });
+
+      expect(res.status).toBe(200);
+      const updatePatch = mockIssueService.update.mock.calls[0]?.[1] as Record<string, unknown>;
+      expect(updatePatch.status).toBe("in_review");
+      expect(updatePatch.assigneeAgentId).toBe(NEXT_REVIEWER_ID);
+    });
+  });
+
+  it("does not treat a reassignment of an in_review task to a non-participant as a reviewer change", async () => {
+    pendingReviewIssue([CURRENT_REVIEWER_ID]);
+
+    await withAgentDirectory(
+      reviewTeamDirectory({ name: "bbq-worker-1" }),
+      async () => {
+        const res = await request(await createApp())
+          .patch(`/api/issues/${IN_REVIEW_ISSUE_ID}`)
+          .send({ assigneeAgentId: NEXT_REVIEWER_ID });
+
+        // The review dissolves and the task returns to an engineer lane; no
+        // reviewer is added, so the eligibility rule has nothing to refuse.
+        expect(res.status).toBe(200);
+        const updatePatch = mockIssueService.update.mock.calls[0]?.[1] as Record<string, unknown>;
+        expect(updatePatch.status).toBe("in_progress");
+        expect(updatePatch.assigneeAgentId).toBe(NEXT_REVIEWER_ID);
+      },
+    );
+  });
+
+
+  it("allows an agent-authored in_review resubmission after changes_requested preserving returnAssignee", async () => {
+    const policy = normalizeIssueExecutionPolicy({
+      stages: [
+        {
+          id: "11111111-1111-4111-8111-111111111111",
+          type: "review",
+          participants: [{ type: "agent", agentId: "44444444-4444-4444-8444-444444444444" }],
+        },
+      ],
+    })!;
+    const issue = {
+      id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      companyId: "company-1",
+      status: "in_progress",
+      assigneeAgentId: "33333333-3333-4333-8333-333333333333",
+      assigneeUserId: null,
+      createdByUserId: "local-board",
+      identifier: "PAP-1005",
+      title: "Resubmit after changes requested",
+      executionPolicy: policy,
+      executionState: {
+        status: "changes_requested",
+        currentStageId: "11111111-1111-4111-8111-111111111111",
+        currentStageIndex: 0,
+        currentStageType: "review",
+        currentParticipant: { type: "agent", agentId: "44444444-4444-4444-8444-444444444444" },
+        returnAssignee: { type: "agent", agentId: "33333333-3333-4333-8333-333333333333" },
+        lastDecisionOutcome: "changes_requested",
+      },
+    };
+    mockIssueService.getById.mockResolvedValue(issue);
+    mockIssueService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) => ({
+      ...issue,
+      ...patch,
+      updatedAt: new Date(),
+    }));
+
+    const res = await request(await createApp({
+      type: "agent",
+      agentId: "33333333-3333-4333-8333-333333333333",
+      companyId: "company-1",
+      runId: "55555555-5555-4555-8555-555555555555",
+    }))
+      .patch("/api/issues/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa")
+      .send({ status: "in_review" });
+
+    expect(res.status).toBe(200);
+    expect(mockIssueService.update).toHaveBeenCalledWith(
+      "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      expect.objectContaining({
+        status: "in_review",
+        assigneeAgentId: "44444444-4444-4444-8444-444444444444",
+        executionState: expect.objectContaining({
+          status: "pending",
+          currentParticipant: expect.objectContaining({
+            type: "agent",
+            agentId: "44444444-4444-4444-8444-444444444444",
+          }),
+          returnAssignee: expect.objectContaining({
+            type: "agent",
+            agentId: "33333333-3333-4333-8333-333333333333",
           }),
         }),
       }),
@@ -1303,5 +1912,123 @@ describe("issue execution policy routes", () => {
         details: expect.not.objectContaining({ externalRef: expect.anything() }),
       }),
     );
+  });
+
+  describe("legacy executionPolicy mode=sequential route compatibility (OPE-9971)", () => {
+    it("allows changing issue status when stored executionPolicy has legacy mode=sequential", async () => {
+      const legacyIssue = {
+        id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+        companyId: "company-1",
+        status: "in_progress",
+        executionPolicy: {
+          mode: "sequential",
+          stages: [{ id: "stage-1", type: "review", participants: [] }],
+        },
+        executionState: null,
+      };
+      mockIssueService.getById.mockResolvedValue(legacyIssue);
+      mockIssueService.getByIdForUpdate.mockResolvedValue(legacyIssue);
+      mockIssueService.update.mockResolvedValue({
+        ...legacyIssue,
+        status: "done",
+        executionPolicy: {
+          mode: "normal",
+          stages: [{ id: "stage-1", type: "review", participants: [] }],
+        },
+      });
+
+      const res = await request(await createApp())
+        .patch("/api/issues/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa")
+        .send({ status: "done" });
+
+      expect(res.status).toBe(200);
+      expect(mockIssueService.update.mock.calls[0][0]).toBe("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa");
+      expect(mockIssueService.update.mock.calls[0][1]).toEqual(expect.objectContaining({ status: "done" }));
+    });
+
+    it("permits explicit { executionPolicy: null } when stored executionPolicy has legacy mode=sequential", async () => {
+      const legacyIssue = {
+        id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+        companyId: "company-1",
+        status: "in_progress",
+        executionPolicy: {
+          mode: "sequential",
+          stages: [{ id: "stage-1", type: "review", participants: [] }],
+        },
+        executionState: null,
+      };
+      mockIssueService.getById.mockResolvedValue(legacyIssue);
+      mockIssueService.getByIdForUpdate.mockResolvedValue(legacyIssue);
+      mockIssueService.update.mockResolvedValue({
+        ...legacyIssue,
+        executionPolicy: null,
+      });
+
+      const res = await request(await createApp())
+        .patch("/api/issues/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa")
+        .send({ executionPolicy: null });
+
+      expect(res.status).toBe(200);
+      expect(mockIssueService.update.mock.calls[0][0]).toBe("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa");
+      expect(mockIssueService.update.mock.calls[0][1]).toEqual(expect.objectContaining({ executionPolicy: null }));
+    });
+
+    it("accepts comments when stored executionPolicy has legacy mode=sequential", async () => {
+      const legacyIssue = {
+        id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+        companyId: "company-1",
+        status: "in_progress",
+        executionPolicy: {
+          mode: "sequential",
+          stages: [{ id: "stage-1", type: "review", participants: [] }],
+        },
+        executionState: null,
+      };
+      mockIssueService.getById.mockResolvedValue(legacyIssue);
+      mockIssueService.getByIdForUpdate.mockResolvedValue(legacyIssue);
+      mockIssueService.addComment.mockResolvedValue({
+        id: "comment-1",
+        issueId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+        body: "Test comment",
+        createdAt: new Date(),
+      });
+
+      const res = await request(await createApp())
+        .post("/api/issues/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa/comments")
+        .send({ body: "Test comment" });
+
+      expect(res.status).toBe(201);
+      expect(mockIssueService.addComment.mock.calls[0][0]).toBe("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa");
+      expect(mockIssueService.addComment.mock.calls[0][1]).toBe("Test comment");
+    });
+  });
+
+  describe("concurrent status and executionPolicy update validation (vendor #13178 / OPE-12207)", () => {
+    it("rejects updating executionPolicy and status to 'done' in the same PATCH request", async () => {
+      const issue = {
+        id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+        companyId: "company-1",
+        status: "in_progress",
+        executionPolicy: {
+          mode: "normal",
+          stages: [{ id: "stage-1", type: "review", participants: [] }],
+        },
+        executionState: null,
+      };
+      mockIssueService.getById.mockResolvedValue(issue);
+      mockIssueService.getByIdForUpdate.mockResolvedValue(issue);
+
+      const res = await request(await createApp())
+        .patch("/api/issues/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa")
+        .send({
+          status: "done",
+          executionPolicy: null,
+        });
+
+      expect(res.status).toBe(422);
+      expect(res.body.error).toContain(
+        "Cannot update executionPolicy and transition status to 'done' in the same request",
+      );
+    });
   });
 });

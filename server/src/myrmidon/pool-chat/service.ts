@@ -201,3 +201,5 @@ export function poolChatService(db: Db, resolveTransport: PoolChatTransportResol
     },
   };
 }
+
+export type PoolChatService = ReturnType<typeof poolChatService>;

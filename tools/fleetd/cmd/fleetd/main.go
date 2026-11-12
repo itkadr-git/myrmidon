@@ -7,6 +7,7 @@ package main
 
 import (
 	"archive/tar"
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"crypto/subtle"
@@ -19,6 +20,7 @@ import (
 	"hash"
 	"io"
 	"log"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -36,6 +38,9 @@ type botStatus struct {
 	RestartHash *string `json:"restartHash"`
 	FilesHash   *string `json:"filesHash"`
 	GatewayPort int     `json:"gatewayPort,omitempty"`
+	// OPE-12663: nil/absent — no mark or unreadable; true — IDLE-STOP stopped
+	// this container and the reconciler must leave it down until a wake.
+	IdleStopped *bool `json:"idleStopped,omitempty"`
 }
 
 // spec is the driver contract's BotContainerSpec.
@@ -91,6 +96,7 @@ type config struct {
 	SiteCA           string        `json:"siteCA,omitempty"`
 	ServerCert       string        `json:"serverCert,omitempty"`
 	ServerKey        string        `json:"serverKey,omitempty"`
+	ClientCertSha256 []string      `json:"clientCertSha256,omitempty"`
 	Version          string        `json:"version,omitempty"`
 	DockerAPIVersion string        `json:"dockerApiVersion,omitempty"`
 	VolumeRoot       string        `json:"volumeRoot,omitempty"`
@@ -104,6 +110,14 @@ type config struct {
 	GatewayPortEnd   int           `json:"gatewayPortEnd,omitempty"`
 	Bots             []bot         `json:"bots"`
 	Memory           *memoryConfig `json:"memory,omitempty"`
+
+	// WritableMountRoots lists the host directories in which an extra mount may
+	// be read-write (for example a shared package cache). A mount without
+	// readOnly is accepted only when its source, with symlinks resolved, is
+	// inside one of them. As for every extra mount, the source as written must
+	// also be inside AllowedMounts. Empty (the default): every extra mount is
+	// read-only.
+	WritableMountRoots []string `json:"writableMountRoots,omitempty"`
 }
 
 type bot struct {
@@ -121,7 +135,7 @@ func strictDecode(data []byte, out any) error {
 	if err := dec.Decode(out); err != nil {
 		return err
 	}
-	if dec.More() {
+	if err := dec.Decode(new(any)); err != io.EOF {
 		return fmt.Errorf("trailing JSON content")
 	}
 	return nil
@@ -160,21 +174,26 @@ func main() {
 	if cfg.Memory != nil && cfg.Memory.Enabled && err != nil {
 		log.Fatalf("config is invalid: %v", err)
 	}
-	srv := &server{cfg: &cfg, memory: memory, docker: newDockerClient(&cfg)}
-	mux := http.NewServeMux()
-	mux.HandleFunc("/v1/health", srv.requireAuth(srv.health))
-	mux.HandleFunc("/v1/bots", srv.requireAuth(srv.list))
-	mux.HandleFunc("/v1/bots/", srv.requireAuth(srv.route))
-	mux.HandleFunc("/v1/memory/recall", srv.requireAuth(srv.memoryRecall))
-	mux.HandleFunc("/v1/memory/retain", srv.requireAuth(srv.memoryRetain))
-	mux.HandleFunc("/v1/memory/export", srv.requireAuth(srv.memoryExport))
+	srv := &server{cfg: &cfg, memory: memory, docker: newDockerClient(&cfg), oom: newOomStore(1000)}
+	go srv.startOomListener(context.Background())
+	go srv.runLeftoverCleanup(context.Background(), leftoverSweepEvery)
 	log.Printf("fleetd listening on %s (mTLS)", cfg.Listen)
-	log.Fatal((&http.Server{
-		Addr:              cfg.Listen,
-		Handler:           mux,
-		TLSConfig:         tlsConf,
-		ReadHeaderTimeout: 5 * time.Second,
-	}).ListenAndServeTLS("", ""))
+	log.Fatal(newHTTPServer(cfg.Listen, srv.handler(os.Stdout), tlsConf).ListenAndServeTLS("", ""))
+}
+
+// handler is the whole API: the routes behind the bearer check, wrapped by the
+// audit log (one JSON line per request, written to auditOut) and by the
+// read-deadline release of long requests.
+func (s *server) handler(auditOut io.Writer) http.Handler {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/v1/health", s.requireAuth(s.health))
+	mux.HandleFunc("/v1/bots", s.requireAuth(s.list))
+	mux.HandleFunc("/v1/bots/", s.requireAuth(s.route))
+	mux.HandleFunc("/v1/events/oom", s.requireAuth(s.eventsOom))
+	mux.HandleFunc("/v1/memory/recall", s.requireAuth(s.memoryRecall))
+	mux.HandleFunc("/v1/memory/retain", s.requireAuth(s.memoryRetain))
+	mux.HandleFunc("/v1/memory/export", s.requireAuth(s.memoryExport))
+	return newAuditLog(auditOut).wrap(readDeadlines(mux))
 }
 
 // requireTLS is the serving-time check: the site API is mTLS-only, so the CA
@@ -223,12 +242,21 @@ func buildTLSConfig(cfg *config) (*tls.Config, error) {
 	if !pool.AppendCertsFromPEM(caPEM) {
 		return nil, fmt.Errorf("site CA contains no certificates")
 	}
-	return &tls.Config{
+	conf := &tls.Config{
 		MinVersion:   tls.VersionTLS12,
 		Certificates: []tls.Certificate{pair},
 		ClientCAs:    pool,
 		ClientAuth:   tls.RequireAndVerifyClientCert,
-	}, nil
+	}
+	allowed, err := parseClientCertAllowlist(cfg.ClientCertSha256)
+	if err != nil {
+		return nil, err
+	}
+	if len(allowed) > 0 {
+		conf.VerifyPeerCertificate = verifyPeerAllowlist(allowed)
+		conf.VerifyConnection = verifyConnAllowlist(allowed)
+	}
+	return conf, nil
 }
 
 func validate(cfg *config) error {
@@ -252,8 +280,33 @@ func validate(cfg *config) error {
 	if err := checkTLSPaths(cfg); err != nil {
 		return err
 	}
+	if _, err := parseClientCertAllowlist(cfg.ClientCertSha256); err != nil {
+		return err
+	}
 	if cfg.Upstream == "" {
 		cfg.Upstream = "/var/run/docker.sock"
+	}
+	if cfg.GatewayPortStart != 0 || cfg.GatewayPortEnd != 0 {
+		if strings.TrimSpace(cfg.GatewayBindIP) == "" {
+			return fmt.Errorf("gatewayBindIp is required when gatewayPortStart/gatewayPortEnd is configured")
+		}
+	}
+	if cfg.GatewayBindIP != "" {
+		ip := net.ParseIP(cfg.GatewayBindIP)
+		if ip == nil {
+			return fmt.Errorf("gatewayBindIp %q is not a valid IP address", cfg.GatewayBindIP)
+		}
+		if ip.IsUnspecified() {
+			return fmt.Errorf("gatewayBindIp %q is unspecified (0.0.0.0 or :: is not allowed; must be a specific interface IP or loopback)", cfg.GatewayBindIP)
+		}
+	}
+	for i, root := range cfg.WritableMountRoots {
+		if !filepath.IsAbs(root) || filepath.Clean(root) != root || root == "/" || strings.ContainsAny(root, ":,") {
+			return fmt.Errorf("writableMountRoots[%d] %q must be a clean absolute path other than /", i, root)
+		}
+		if cfg.VolumeRoot != "" && (pathWithin(cfg.VolumeRoot, root) || pathWithin(root, cfg.VolumeRoot)) {
+			return fmt.Errorf("writableMountRoots[%d] %q overlaps volumeRoot", i, root)
+		}
 	}
 	if len(cfg.Bots) == 0 {
 		return fmt.Errorf("at least one bots[] entry is required")
@@ -311,7 +364,11 @@ type server struct {
 	cfg       *config
 	memory    *memoryClient
 	docker    *dockerClient
+	oom       *oomStore
 	gatewayMu sync.Mutex
+
+	// restoreCap overrides the restore limits; the zero value means the defaults.
+	restoreCap restoreCaps
 }
 
 func (s *server) memoryRecall(w http.ResponseWriter, r *http.Request) {
@@ -447,6 +504,7 @@ func (s *server) list(w http.ResponseWriter, r *http.Request) {
 		}
 		status.GatewayPort = s.gatewayPort(enrolled.BotKey)
 		s.fillApplied(&status)
+		s.fillIdleStopped(&status)
 		statuses = append(statuses, status)
 	}
 	writeJSON(w, map[string]any{"bots": statuses})
@@ -462,6 +520,14 @@ func (s *server) route(w http.ResponseWriter, r *http.Request) {
 	}
 	botKey := parts[0]
 	if len(parts) == 1 {
+		if r.Method == http.MethodDelete {
+			if !s.enrolled(botKey) {
+				http.Error(w, "bot_not_enrolled", http.StatusForbidden)
+				return
+			}
+			s.handleCleanup(w, r, botKey)
+			return
+		}
 		http.Error(w, "route_not_allowed", http.StatusForbidden)
 		return
 	}
@@ -471,6 +537,15 @@ func (s *server) route(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	switch {
+	case action == "stopIdle" && r.Method == http.MethodPost:
+		// OPE-12663: IDLE-STOP. The mark-write failure mode mirrors the local
+		// docker driver: the container is started back up, never left down
+		// without its mark.
+		if err := s.stopIdle(r.Context(), botKey); err != nil {
+			http.Error(w, err.Error(), http.StatusBadGateway)
+			return
+		}
+		writeJSON(w, map[string]string{"botKey": botKey, "state": "stopped"})
 	case action == "status" && r.Method == http.MethodGet:
 		status, err := s.docker.status(r.Context(), botKey)
 		if err != nil {
@@ -479,6 +554,7 @@ func (s *server) route(w http.ResponseWriter, r *http.Request) {
 		}
 		status.GatewayPort = s.gatewayPort(botKey)
 		s.fillApplied(&status)
+		s.fillIdleStopped(&status)
 		writeJSON(w, status)
 	case action == "logs" && r.Method == http.MethodGet:
 		logs, err := s.docker.logs(r.Context(), botKey)
@@ -498,12 +574,19 @@ func (s *server) route(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, err.Error(), status)
 			return
 		}
+		// OPE-12663: a fresh (re)created container is not idle-stopped.
+		s.clearIdleStopped(botKey)
 		writeJSON(w, map[string]string{"botKey": botKey, "state": "created"})
 	case (action == "start" || action == "restart" || action == "stop") && r.Method == http.MethodPost:
 		if err := s.docker.action(r.Context(), botKey, action); err != nil {
 			http.Error(w, err.Error(), 502)
 			return
 		}
+		// OPE-12663: a wake (start) or an operator stop/restart is not an
+		// idle stop — the mark must not survive it, or the reconciler would
+		// treat a running container as idle-stopped. Best effort: the mark is
+		// advisory state, a failed clear is not worth failing the action.
+		s.clearIdleStopped(botKey)
 		writeJSON(w, map[string]string{"botKey": botKey, "state": action})
 	case (action == "profile" && r.Method == http.MethodPut) || (action == "writeProfile" && r.Method == http.MethodPost):
 		var p profile
@@ -562,6 +645,8 @@ func (s *server) route(w http.ResponseWriter, r *http.Request) {
 		s.handleRestore(w, r, botKey)
 	case action == "quarantine" && r.Method == http.MethodPost:
 		s.handleQuarantine(w, r, botKey)
+	case (action == "cleanup" || action == "destroy") && (r.Method == http.MethodPost || r.Method == http.MethodDelete):
+		s.handleCleanup(w, r, botKey)
 	default:
 		if r.Method == http.MethodPost || r.Method == http.MethodPut {
 			http.Error(w, "route_not_allowed", http.StatusForbidden)
@@ -776,9 +861,18 @@ func checkNoSymlinkParents(root, target string) error {
 }
 
 // extractSnapshot unpacks the archive into the empty directory dir and checks
-// it against the manifest. It returns the HTTP status for a failure.
+// it against the manifest, within the default restore limits. It returns the
+// HTTP status for a failure.
 func extractSnapshot(src io.Reader, dir string) (int, error) {
-	tr := tar.NewReader(src)
+	return extractSnapshotCapped(src, dir, defaultRestoreCaps())
+}
+
+// extractSnapshotCapped is extractSnapshot with explicit limits. An archive
+// that goes over the summed file size or the number of entries, or whose
+// stream is larger than both allow for, fails with 413 restore_too_large
+// before more of it is written.
+func extractSnapshotCapped(src io.Reader, dir string, caps restoreCaps) (int, error) {
+	tr := tar.NewReader(&capReader{r: src, n: caps.streamCap()})
 	mh := newManifestHasher()
 	var manifest *snapshotManifest
 
@@ -786,6 +880,9 @@ func extractSnapshot(src io.Reader, dir string) (int, error) {
 		hdr, err := tr.Next()
 		if err == io.EOF {
 			break
+		}
+		if tooLarge(err) {
+			return http.StatusRequestEntityTooLarge, errRestoreTooLarge
 		}
 		if err != nil {
 			return http.StatusBadRequest, fmt.Errorf("invalid archive: %v", err)
@@ -795,12 +892,20 @@ func extractSnapshot(src io.Reader, dir string) (int, error) {
 		}
 		if hdr.Name == snapshotManifestName {
 			body, err := io.ReadAll(io.LimitReader(tr, 1<<20))
+			if tooLarge(err) {
+				return http.StatusRequestEntityTooLarge, errRestoreTooLarge
+			}
 			if err != nil {
 				return http.StatusBadRequest, fmt.Errorf("invalid archive: %v", err)
 			}
 			var m snapshotManifest
-			if err := json.Unmarshal(body, &m); err != nil {
+			dec := json.NewDecoder(bytes.NewReader(body))
+			dec.DisallowUnknownFields()
+			if err := dec.Decode(&m); err != nil {
 				return http.StatusBadRequest, fmt.Errorf("invalid manifest: %v", err)
+			}
+			if err := dec.Decode(new(any)); err != io.EOF {
+				return http.StatusBadRequest, fmt.Errorf("invalid manifest: trailing data")
 			}
 			manifest = &m
 			continue
@@ -816,6 +921,9 @@ func extractSnapshot(src io.Reader, dir string) (int, error) {
 		if err := checkNoSymlinkParents(dir, target); err != nil {
 			return http.StatusBadRequest, err
 		}
+		if mh.entries >= caps.entries {
+			return http.StatusRequestEntityTooLarge, errRestoreTooLarge
+		}
 
 		switch hdr.Typeflag {
 		case tar.TypeDir:
@@ -824,6 +932,9 @@ func extractSnapshot(src io.Reader, dir string) (int, error) {
 			}
 			mh.entry('d', name, 0, "")
 		case tar.TypeReg:
+			if hdr.Size < 0 || hdr.Size > caps.bytes-mh.bytes {
+				return http.StatusRequestEntityTooLarge, errRestoreTooLarge
+			}
 			if err := os.MkdirAll(filepath.Dir(target), 0755); err != nil {
 				return http.StatusInternalServerError, fmt.Errorf("mkdir parent failed: %v", err)
 			}
@@ -834,6 +945,9 @@ func extractSnapshot(src io.Reader, dir string) (int, error) {
 			mh.entry('f', name, hdr.Size, "")
 			n, err := io.Copy(io.MultiWriter(f, mh.h), tr)
 			closeErr := f.Close()
+			if tooLarge(err) {
+				return http.StatusRequestEntityTooLarge, errRestoreTooLarge
+			}
 			if err != nil {
 				return http.StatusBadRequest, fmt.Errorf("write file failed: %v", err)
 			}
@@ -910,7 +1024,8 @@ func (s *server) handleRestore(w http.ResponseWriter, r *http.Request, botKey st
 		return
 	}
 
-	if status, err := extractSnapshot(newZstdRawReader(r.Body), staging); err != nil {
+	upload := &deadlineBody{ReadCloser: r.Body, rc: http.NewResponseController(w), stall: restoreStallTimeout}
+	if status, err := extractSnapshotCapped(newZstdRawReader(upload), staging, s.restoreLimit()); err != nil {
 		_ = os.RemoveAll(staging)
 		http.Error(w, err.Error(), status)
 		return
@@ -954,6 +1069,24 @@ func (s *server) handleQuarantine(w http.ResponseWriter, r *http.Request, botKey
 	}
 
 	writeJSON(w, map[string]string{"status": "quarantined", "path": target})
+}
+
+func (s *server) handleCleanup(w http.ResponseWriter, r *http.Request, botKey string) {
+	ctx := r.Context()
+	// 1. Remove docker container if present
+	if err := s.docker.remove(ctx, botKey); err != nil && !strings.Contains(err.Error(), "404") {
+		http.Error(w, fmt.Sprintf("failed to remove container: %v", err), http.StatusInternalServerError)
+		return
+	}
+
+	// 2. Remove bot data directory if present
+	dir := filepath.Join(s.volumeRoot(), botKey)
+	if err := os.RemoveAll(dir); err != nil && !os.IsNotExist(err) {
+		http.Error(w, fmt.Sprintf("failed to remove bot datadir: %v", err), http.StatusInternalServerError)
+		return
+	}
+
+	writeJSON(w, map[string]string{"status": "cleaned", "botKey": botKey})
 }
 
 func (s *server) enrolled(botKey string) bool {
@@ -1056,9 +1189,15 @@ func (s *server) checkSpec(botKey string, sp *spec) error {
 }
 
 func decodeBody(r *http.Request, out any) error {
-	dec := json.NewDecoder(r.Body)
+	dec := json.NewDecoder(http.MaxBytesReader(nil, r.Body, maxJSONBody))
 	dec.DisallowUnknownFields()
-	return dec.Decode(out)
+	if err := dec.Decode(out); err != nil {
+		return err
+	}
+	if err := dec.Decode(new(any)); err != io.EOF {
+		return fmt.Errorf("trailing JSON content")
+	}
+	return nil
 }
 
 func writeJSON(w http.ResponseWriter, body any) {

@@ -12,7 +12,7 @@ import {
   type SwarmClaimSettings,
   type SwarmQueueCandidate,
 } from "@myrmidon/shared";
-import { agentWakeupRequests, agents, chatConversations, companies, goals, heartbeatRuns, instanceSettings, issueClaims, issueLabels, issueThreadInteractions, issueWatchdogs, issues } from "@myrmidon/db";
+import { agentWakeupRequests, agents, chatConversations, companies, goals, heartbeatRuns, instanceSettings, issueClaims, issueLabels, issueRelations, issueThreadInteractions, issueWatchdogs, issues } from "@myrmidon/db";
 import { claimCovers, selectQueueForAgent } from "./domain.js";
 import { createSwarmClaimSweeper } from "./sweep.js";
 import type { SwarmClaimEnqueueWakeup } from "./service.js";
@@ -120,9 +120,10 @@ describe("myrmidon(1.6.1 SWARM-IDLE-WAKE) sweep pass", () => {
           const selectQuery = {
             innerJoin: (joinedTable: unknown) => ({
               where: () => {
-                if (joinedTable === issues) {
+                if (joinedTable === issues || joinedTable === issueRelations) {
                   return {
                     orderBy: () => ({ limit: () => Promise.resolve([]) }),
+                    then: (resolve: (rows: unknown[]) => unknown) => Promise.resolve([]).then(resolve),
                   };
                 }
                 return {

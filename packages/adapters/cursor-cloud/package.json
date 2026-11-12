@@ -2,13 +2,13 @@
   "name": "@myrmidon/adapter-cursor-cloud",
   "version": "0.3.1",
   "license": "MIT",
-  "homepage": "https://github.com/paperclipai/paperclip",
+  "homepage": "https://github.com/itkadr-git/myrmidon",
   "bugs": {
-    "url": "https://github.com/paperclipai/paperclip/issues"
+    "url": "https://github.com/itkadr-git/myrmidon/issues"
   },
   "repository": {
     "type": "git",
-    "url": "https://github.com/paperclipai/paperclip",
+    "url": "https://github.com/itkadr-git/myrmidon",
     "directory": "packages/adapters/cursor-cloud"
   },
   "type": "module",
@@ -52,7 +52,8 @@
   "dependencies": {
     "@cursor/sdk": "^1.0.28",
     "@myrmidon/adapter-utils": "workspace:*",
-    "picocolors": "^1.1.1"
+    "picocolors": "^1.1.1",
+    "@myrmidon/shared": "workspace:*"
   },
   "devDependencies": {
     "@types/node": "^24.0.0",

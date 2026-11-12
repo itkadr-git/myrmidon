@@ -7,15 +7,20 @@
 // of its own: everything testable in it is pushed down into domain.ts/service.ts.
 
 import type { BotContainerSpec, BotExtraMount, BotSharedMount } from "./driver.js";
+import { liveSavedSetting } from "../behavior-settings/live.js";
 import { BOT_KEY_PATTERN, isImageAllowed, parseImageAllowlist } from "./template.js";
 import type { SharedMountSettings } from "@myrmidon/shared";
 import { resolveBotSharedMount } from "./shared-mount.js";
 import { FLEET_HOST_NAME_PATTERN } from "./fleetd-hosts.js";
+import { type BotResourceCeilings, botResourceCeilingProblem } from "./resource-ceilings.js";
 
 const BOT_IMAGE_ALLOWLIST_ENV = "MYRMIDON_BOT_IMAGE_ALLOWLIST";
 export const BOT_CONTAINERS_ENV = "MYRMIDON_BOT_CONTAINERS";
 
 export function isBotContainersEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
+  // A switch saved from the UI wins over the environment.
+  const saved = env === process.env ? liveSavedSetting<boolean>("bot_containers") : undefined;
+  if (saved !== undefined) return saved;
   const raw = env[BOT_CONTAINERS_ENV]?.trim().toLowerCase();
   return raw === "1" || raw === "true" || raw === "yes" || raw === "on";
 }
@@ -48,6 +53,7 @@ export function botContainerCardSaveProblem(
   adapterType: string | null | undefined,
   adapterConfig: Record<string, unknown> | null | undefined,
   env: NodeJS.ProcessEnv = process.env,
+  ceilings?: BotResourceCeilings | null,
 ): string | null {
   if (adapterType !== HERMES_GATEWAY_ADAPTER_TYPE) return null;
   const raw = adapterConfig?.container;
@@ -58,13 +64,17 @@ export function botContainerCardSaveProblem(
   }
   if (raw.enabled !== true) return null;
   const { memoryMb, cpus, pidsLimit } = raw;
-  if (raw.idleStopMode !== undefined && raw.idleStopMode !== "always_on" && raw.idleStopMode !== "on_demand") return "adapterConfig.container.idleStopMode must be always_on or on_demand";
+  if (raw.idleStopMode !== undefined && raw.idleStopMode !== "always_on" && raw.idleStopMode !== "on_demand" && raw.idleStopMode !== "off") return "adapterConfig.container.idleStopMode must be always_on, on_demand or off";
   const missing: string[] = [];
   if (typeof memoryMb !== "number" || !Number.isFinite(memoryMb) || memoryMb <= 0) missing.push("memoryMb (a positive number)");
   if (typeof cpus !== "number" || !Number.isFinite(cpus) || cpus <= 0) missing.push("cpus (a positive number)");
   if (typeof pidsLimit !== "number" || !Number.isInteger(pidsLimit) || pidsLimit <= 0) missing.push("pidsLimit (a positive integer)");
   if (missing.length > 0) {
     return `adapterConfig.container is enabled but lacks ${missing.join(", ")}; defaults are memoryMb ${BOT_CONTAINER_DEFAULTS.memoryMb}, cpus ${BOT_CONTAINER_DEFAULTS.cpus}, pidsLimit ${BOT_CONTAINER_DEFAULTS.pidsLimit}`;
+  }
+  if (ceilings) {
+    const ceilingProblem = botResourceCeilingProblem(raw, ceilings);
+    if (ceilingProblem) return ceilingProblem;
   }
   if (raw.host !== undefined && raw.host !== null) {
     if (typeof raw.host !== "string" || !FLEET_HOST_NAME_PATTERN.test(raw.host.trim())) {
@@ -103,7 +113,9 @@ export function botContainerImageSaveProblem(image: unknown, env: NodeJS.Process
   if (!IMMUTABLE_IMAGE_DIGEST_PATTERN.test(trimmed)) {
     return `adapterConfig.container.image "${trimmed}" is not pinned by digest: use name@sha256:<64 hex>, a tag such as :latest is refused when the container is created`;
   }
-  const allowlist = parseImageAllowlist(env[BOT_IMAGE_ALLOWLIST_ENV]);
+  // A list saved from the UI wins over the environment.
+  const savedAllowlist = env === process.env ? liveSavedSetting<string[]>("bot_image_allowlist") : undefined;
+  const allowlist = savedAllowlist ?? parseImageAllowlist(env[BOT_IMAGE_ALLOWLIST_ENV]);
   if (allowlist.length > 0 && !isImageAllowed(trimmed, allowlist)) {
     return `adapterConfig.container.image "${trimmed}" is not in ${BOT_IMAGE_ALLOWLIST_ENV}`;
   }

@@ -8,27 +8,35 @@ import type { Db } from "@myrmidon/db";
 import { logger } from "../../middleware/logger.js";
 import { maintenanceService } from "../maintenance/service.js";
 import { maintenanceHeartbeatPort } from "../maintenance/index.js";
-import { readZabbixSettings, zabbixMaintenanceHooks } from "../maintenance/zabbix.js";
+import { resolveZabbixSettings, zabbixMaintenanceHooks } from "../maintenance/zabbix.js"; // myrmidon(1.7, OPE-4101)
 import { heartbeatService } from "../../services/index.js";
 import { hostReportReader } from "./host-report.js";
-import { readDeployJobsSettings } from "./settings.js";
+import { resolveDeployJobsSettings } from "./settings.js"; // myrmidon(1.7, OPE-4101)
 import { deployJobsRoutes } from "./routes.js";
 import { deployJobsService, type DeployJobServiceDeps } from "./service.js";
 import { backgroundInterval } from "../monitoring/board-load/lanes.js"; // myrmidon(1.6.6 OPE-9058)
+import { createUpdateNotifier } from "../bot-containers/update-notify.js";
 
 export { digestProblem, parseDigest, verifyCiImage } from "./domain.js";
 export { deployJobsService } from "./service.js";
 export type { DeployJobsService } from "./service.js";
+// myrmidon(1.7-AUTO-UPDATE-B): the update policy screen. Mounted next to the
+// deploy jobs and deliberately *not* behind MYRMIDON_DEPLOY_ENABLED: an
+// instance that has deploys switched off must still be able to set the window
+// and the mode, so the settings are ready before the first deploy.
+export { myrmidonAutoUpdateRoutes } from "./auto-update-routes.js";
 
 const SYSTEM_ACTOR = { actorType: "system", actorId: "myrmidon-deploy-jobs" } as const;
 
 function defaultDeps(db: Db): DeployJobServiceDeps {
-  const settings = readDeployJobsSettings();
+  // myrmidon(1.7, OPE-4101): the service resolves behavior settings live on
+  // every use, so no static `settings` snapshot is passed here; a UI change
+  // applies without a restart. Infra fields (paths, URLs) stay env-only.
   // The maintenance port talks to the same service the R3 routes use; the
   // deploy job is just another client of the maintenance API.
   const maintenance = maintenanceService(db, {
     heartbeat: maintenanceHeartbeatPort(heartbeatService(db)),
-    hooks: zabbixMaintenanceHooks(readZabbixSettings()),
+    hooks: zabbixMaintenanceHooks(resolveZabbixSettings()),
   });
   return {
     maintenance: {
@@ -60,7 +68,7 @@ function defaultDeps(db: Db): DeployJobServiceDeps {
         return null;
       }
     },
-    settings,
+    notifyUpdate: createUpdateNotifier(db),
   };
 }
 
@@ -76,7 +84,9 @@ export function myrmidonDeployJobsRoutes(db: Db) {
  */
 export async function startDeployJobs(db: Db): Promise<() => void> {
   const service = deployJobsService(db, defaultDeps(db));
-  const settings = readDeployJobsSettings();
+  // myrmidon(1.7, OPE-4101): resolve live so a UI change without a restart is
+  // honored on every tick; the interval itself stays the startup value.
+  const settings = resolveDeployJobsSettings();
   try {
     await service.tick();
   } catch (err) {

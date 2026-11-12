@@ -106,6 +106,13 @@ describeEmbeddedPostgres("myrmidon(1.6.6 KNOWLEDGE-2.0 K-8) knowledge seed", () 
     expect(vision!.deliveredContent).toBe(visionFixture);
     expect(visionFixture.replace("Автономный кибер-муравейник", "Изменённый текст"))
       .not.toBe(vision!.deliveredContent);
+
+    // DEBRAND 1.6.6 (OPE-9333): the ADR-0008 seed title shown in the
+    // Knowledge UI carries no vendor brand; the body still attributes the
+    // decision to the vendor-upstream context via the verbatim owner quote.
+    const noUpstream = await store.get(companyId, "decisions/2026-09-27-no-upstream");
+    expect(noUpstream!.title).toBe("В апстрим не отправляем");
+    expect(noUpstream!.title).not.toMatch(/Paperclip/);
   });
 
   it("applies supersede chains (FORAGING variant-2 → включить сейчас)", async () => {

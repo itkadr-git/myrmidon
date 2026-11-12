@@ -52,8 +52,10 @@
 
 import { and, asc, eq, gte, sql } from "drizzle-orm";
 import { companies, heartbeatRuns, type Db } from "@myrmidon/db";
+import { isUuidLike } from "@myrmidon/shared";
 import {
   DEFAULT_QUEUED_RESWEEP_SEC,
+  DEFAULT_QUEUED_RUN_STALE_AFTER_SEC,
   loadRunDispatchSettings,
   type RunDispatchSettings,
   type RunStartDispatchMode,
@@ -150,6 +152,49 @@ export interface RunDispatchLog {
   error?: (fields: Record<string, unknown>, message: string) => void;
 }
 
+/**
+ * myrmidon(OPE-11947): a queued run the sweep found stale. `issueId` is the
+ * task the run stood on, already resolved to a real issue UUID (or null when
+ * it had none), so the wake that follows the cancellation can resume that
+ * task instead of inventing a task id.
+ */
+export interface StaleQueuedRunRef {
+  id: string;
+  agentId: string;
+  companyId: string;
+  createdAt: Date;
+  issueId?: string | null;
+}
+
+/** What `wakeAgent` learns about the run whose cancellation it follows. */
+export interface StaleQueuedRunWakeOptions {
+  issueId?: string | null;
+}
+
+/**
+ * myrmidon(OPE-11947): the issue UUID a queued run stood on, or null. Reads the
+ * same places the run identity gate reads (`contextSnapshot.issueId`/`taskId`,
+ * the denormalized `contextIssueId`, `nativeIssueId`) but returns the first
+ * value that is a real UUID: anything else (a `system:*` marker, a stray key)
+ * is not a task and must never be fed back into a wake context, where
+ * `lockIdentityTask` would reject it and fail the run at setup.
+ */
+export function resolveStaleQueuedRunIssueId(run: {
+  contextSnapshot?: unknown;
+  contextIssueId?: string | null;
+  nativeIssueId?: string | null;
+}): string | null {
+  const context =
+    run.contextSnapshot && typeof run.contextSnapshot === "object" && !Array.isArray(run.contextSnapshot)
+      ? (run.contextSnapshot as Record<string, unknown>)
+      : {};
+  const candidates: unknown[] = [context.issueId, run.contextIssueId, run.nativeIssueId, context.taskId];
+  for (const candidate of candidates) {
+    if (typeof candidate === "string" && isUuidLike(candidate)) return candidate.trim();
+  }
+  return null;
+}
+
 export interface RunStartDispatcher {
   /** The mode in force right now; re-read on every call, never cached. */
   mode: () => Promise<RunStartDispatchMode>;
@@ -167,7 +212,14 @@ export interface RunStartDispatcherDeps {
     agentId: string,
     options?: RunStartDispatchOptions,
   ) => Promise<unknown[]>;
-  /** Defaults to the stored `general.processes` reader. */
+  listStaleQueuedRuns?: (options: { executionCutoff: Date | null; staleAfterMs: number }) => Promise<StaleQueuedRunRef[]>;
+  createCancelStaleQueuedRun?: (run: StaleQueuedRunRef, staleAfterMs: number) => Promise<boolean>;
+  /**
+   * Wakes the agent after its stale queued run was cancelled. `options.issueId`
+   * is the task the cancelled run stood on (null when it had none): the wake
+   * continues that task (myrmidon(OPE-11947)).
+   */
+  wakeAgent?: (agentId: string, companyId: string, options: StaleQueuedRunWakeOptions) => Promise<void>;
   loadSettings?: () => Promise<RunDispatchSettings>;
   /** The worktree execution cutoff, when the host has one. */
   readCutoff?: () => Promise<Date | null>;
@@ -190,6 +242,7 @@ export function createRunStartDispatcher(deps: RunStartDispatcherDeps): RunStart
   const loadSettings = deps.loadSettings ?? (async () => ({
     runStartDispatch: "inline" as RunStartDispatchMode,
     queuedResweepSec: DEFAULT_QUEUED_RESWEEP_SEC,
+    queuedRunStaleAfterSec: DEFAULT_QUEUED_RUN_STALE_AFTER_SEC,
   }));
 
   const mode = async (): Promise<RunStartDispatchMode> =>
@@ -201,10 +254,17 @@ export function createRunStartDispatcher(deps: RunStartDispatcherDeps): RunStart
   ): Promise<unknown[]> => {
     const { runStartDispatch } = await loadSettings();
     if (runStartDispatch === "inline") {
+      // In a split deployment, api processes must not take the vendor start
+      // path even when the persisted setting is `inline`. They publish the
+      // wake to the worker; the default remains byte-for-byte unchanged for
+      // single-process/all deployments, where the role gate is true (or is
+      // not injected by a standalone caller).
+      if (deps.executesRuns && deps.executesRuns() !== true) {
+        await publishRemoteStart(agentId, runStartDispatch);
+        return [];
+      }
       // The vendor path, byte for byte: the dispatcher adds no gate, no extra
-      // await and no reordering in the default mode. `inline` is a mode, not a
-      // role split — a single-process deployment with the default setting must
-      // behave exactly like main, whatever the role context says.
+      // await and no reordering in the default mode.
       return deps.startNextQueuedRunForAgent(agentId, options);
     }
     // myrmidon(1.6.6 RUN-DISPATCH-NOTIFY, OPE-6444): the role gate of T1.1. In
@@ -248,6 +308,17 @@ export function createRunStartDispatcher(deps: RunStartDispatcherDeps): RunStart
 
   const sweepQueuedWithoutRunning = async (): Promise<QueuedResweepOutcome> => {
     const cutoff = deps.readCutoff ? await deps.readCutoff() : null;
+    const settings = await loadSettings();
+    const staleAfterMs = settings.queuedRunStaleAfterSec * 1000;
+    const staleCandidates = await deps.listStaleQueuedRuns?.({ executionCutoff: cutoff, staleAfterMs }) ?? [];
+    for (const run of staleCandidates) {
+      try {
+        const cancelled = await deps.createCancelStaleQueuedRun?.(run, staleAfterMs);
+        if (cancelled) await deps.wakeAgent?.(run.agentId, run.companyId, { issueId: run.issueId ?? null });
+      } catch (err) {
+        deps.log?.error?.({ err, runId: run.id, agentId: run.agentId }, "stale queued run cleanup failed");
+      }
+    }
     const agents = await deps.listQueuedAgents({ cutoff });
     let started = 0;
     let failed = 0;

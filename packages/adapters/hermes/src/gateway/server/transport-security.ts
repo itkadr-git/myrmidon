@@ -45,14 +45,206 @@ export function isRemotePlainHttp(url: URL): boolean {
   return url.protocol === "http:" && !isLoopbackHostname(url.hostname);
 }
 
-// myrmidon(H3): trust is now narrow — plain http is allowed without any
-// card flag only for the fleet's own bot-container host names; the
-// escape-hatch flag remains for unsafe local development against any other
-// remote host and is no longer written into bot cards by the container
-// sync (W2a used to set it because the adapter had no narrower way).
-export function allowsInsecureRemoteHttp(url: URL, config: Record<string, unknown>): boolean {
+export function getFleetHostPlacement(config: Record<string, unknown>): string | null {
+  const container = config.container;
+  if (typeof container !== "object" || container === null || Array.isArray(container)) return null;
+  const host = (container as Record<string, unknown>).host;
+  if (typeof host !== "string") return null;
+  const trimmed = host.trim();
+  if (trimmed.length === 0 || trimmed === "local") return null;
+  return trimmed;
+}
+
+export function isFleetHostPlacement(config: Record<string, unknown>): boolean {
+  return getFleetHostPlacement(config) !== null;
+}
+
+export interface FleetSiteSecurityProfile {
+  privateNetwork?: boolean;
+  tunnel?: boolean;
+  private_network?: boolean;
+  /** The host-port range the site hands out for bot gateways (`gatewayPortStart`..`gatewayPortEnd`, inclusive). */
+  gatewayPortStart?: number;
+  gatewayPortEnd?: number;
+}
+
+const DECIMAL_OCTET = /^(?:0|[1-9]\d{0,2})$/;
+
+// myrmidon(fleet-site audit): "private" for the plain-http decision means an IP literal in RFC 1918
+// (10/8, 172.16/12, 192.168/16), the shared address space of overlay VPNs (100.64/10) or loopback.
+// A DNS name is never private here: it cannot be checked without a lookup, and a lookup can change
+// between the check and the connection. The input is a URL hostname, so an IPv4 literal is already
+// in canonical dotted form; an octet with a leading zero is refused anyway, because some resolvers
+// read it as octal.
+// A copy of this rule lives in server/src/myrmidon/bot-containers/private-address.ts (the adapter
+// package does not depend on the server); both unit tests carry the same vector table.
+export function isPrivateAddressHostname(hostname: string): boolean {
+  const value = hostname.toLowerCase().replace(/^\[|\]$/g, "");
+  if (value === "localhost" || value === "::1" || value === "0:0:0:0:0:0:0:1") return true;
+  const parts = value.split(".");
+  if (parts.length !== 4 || !parts.every((part) => DECIMAL_OCTET.test(part))) return false;
+  const [a, b] = parts.map(Number);
+  if (parts.some((part) => Number(part) > 255)) return false;
+  return (
+    a === 10 ||
+    a === 127 ||
+    (a === 172 && b >= 16 && b <= 31) ||
+    (a === 192 && b === 168) ||
+    (a === 100 && b >= 64 && b <= 127)
+  );
+}
+
+function urlPort(url: URL): number {
+  if (url.port) return Number(url.port);
+  return url.protocol === "https:" ? 443 : 80;
+}
+
+function siteGatewayPortRange(profile: unknown): { start: number; end: number } | null {
+  if (!profile || typeof profile !== "object") return null;
+  const { gatewayPortStart: start, gatewayPortEnd: end } = profile as FleetSiteSecurityProfile;
+  if (typeof start !== "number" || typeof end !== "number") return null;
+  if (!Number.isInteger(start) || !Number.isInteger(end)) return null;
+  if (start < 1 || end > 65535 || start > end) return null;
+  return { start, end };
+}
+
+export interface FleetSiteSecurityTarget {
+  name: string;
+  url: string;
+  status?: string;
+  profile?: FleetSiteSecurityProfile | Record<string, unknown> | null;
+  companyId?: string;
+}
+
+export type FleetSiteSecurityResolver = (
+  siteName: string,
+  companyId?: string,
+) => FleetSiteSecurityTarget | null | undefined;
+
+export interface FleetSiteSecurityOptions {
+  sites?: readonly FleetSiteSecurityTarget[] | null;
+  site?: FleetSiteSecurityTarget | null;
+  resolver?: FleetSiteSecurityResolver | null;
+  companyId?: string;
+}
+
+export function isSitePrivateNetwork(profile?: unknown): boolean {
+  if (!profile || typeof profile !== "object") return false;
+  const p = profile as FleetSiteSecurityProfile;
+  return p.privateNetwork === true || p.tunnel === true || p.private_network === true;
+}
+
+let activeFleetSiteResolver: FleetSiteSecurityResolver | null = null;
+let activeFleetSites: readonly FleetSiteSecurityTarget[] = [];
+
+export function setFleetSiteSecurityResolver(resolver: FleetSiteSecurityResolver | null): void {
+  activeFleetSiteResolver = resolver;
+}
+
+export function setActiveFleetSites(sites: readonly FleetSiteSecurityTarget[]): void {
+  activeFleetSites = sites;
+}
+
+export function resetFleetSiteSecurityForTests(): void {
+  activeFleetSiteResolver = null;
+  activeFleetSites = [];
+}
+
+// myrmidon(fleet-site audit): plain http to a site is allowed only when ALL of these hold:
+//   - the site is active and its record is marked privateNetwork / tunnel;
+//   - the site address and the target address are IP literals in a private range;
+//   - the target host is the site's host, and the target port is inside the gateway port range
+//     the site record declares (a record without a range allows no plain-http port at all).
+// The flag is an operator's claim; the address and the port have to agree with it.
+export function isFleetSitePlainHttpAllowed(
+  url: URL,
+  site: FleetSiteSecurityTarget | null | undefined,
+): boolean {
+  if (!site) return false;
+  if (site.status && site.status !== "active") return false;
+  if (!isSitePrivateNetwork(site.profile)) return false;
+  let siteUrl: URL;
+  try {
+    siteUrl = new URL(site.url);
+  } catch {
+    return false;
+  }
+  if (!isPrivateAddressHostname(siteUrl.hostname) || !isPrivateAddressHostname(url.hostname)) return false;
+  if (siteUrl.hostname.toLowerCase() !== url.hostname.toLowerCase()) return false;
+  const range = siteGatewayPortRange(site.profile);
+  if (!range) return false;
+  const port = urlPort(url);
+  return port >= range.start && port <= range.end;
+}
+
+export function resolveFleetSiteTarget(
+  siteName: string,
+  _config: Record<string, unknown>,
+  options?: FleetSiteSecurityOptions | readonly FleetSiteSecurityTarget[] | FleetSiteSecurityResolver,
+): FleetSiteSecurityTarget | null {
+  // 1. Check explicit options (set by code, never by a card)
+  if (typeof options === "function") {
+    const res = options(siteName);
+    if (res) return res;
+  } else if (Array.isArray(options)) {
+    const list = options as readonly FleetSiteSecurityTarget[];
+    const found = list.find((s: FleetSiteSecurityTarget) => s.name === siteName);
+    if (found) return found;
+  } else if (options && typeof options === "object") {
+    const opts = options as FleetSiteSecurityOptions;
+    if (opts.site && (opts.site.name === siteName || !opts.site.name)) {
+      return opts.site;
+    }
+    if (Array.isArray(opts.sites)) {
+      const found = (opts.sites as readonly FleetSiteSecurityTarget[]).find(
+        (s: FleetSiteSecurityTarget) => s.name === siteName,
+      );
+      if (found) return found;
+    }
+    if (typeof opts.resolver === "function") {
+      const res = opts.resolver(siteName, opts.companyId);
+      if (res) return res;
+    }
+  }
+
+  // The card (`config`) is never a source here: its `fleetSite` / `fleetSites` fields are not read.
+  // A card author can type anything into them, so they must not describe the site they trust. The
+  // source of truth is the site registry: the options a caller passes in code, the active sites and
+  // the active resolver (registry.ts wires it to the fleet client manager).
+
+  // 2. Check activeFleetSites registry
+  const activeFound = activeFleetSites.find((s: FleetSiteSecurityTarget) => s.name === siteName);
+  if (activeFound) return activeFound;
+
+  // 3. Check activeFleetSiteResolver
+  if (typeof activeFleetSiteResolver === "function") {
+    const res = activeFleetSiteResolver(siteName);
+    if (res) return res;
+  }
+
+  return null;
+}
+
+// myrmidon(fleet-site audit):
+// Plain HTTP is only trusted if the card is attached to a fleet site (container.host) that the site
+// registry knows, the site is active and marked as private network or secure tunnel, the site address
+// and the target are private IP literals, url.hostname is the site's host and url.port is inside the
+// gateway port range of the site record (see isFleetSitePlainHttpAllowed).
+export function allowsInsecureRemoteHttp(
+  url: URL,
+  config: Record<string, unknown>,
+  options?: FleetSiteSecurityOptions | readonly FleetSiteSecurityTarget[] | FleetSiteSecurityResolver,
+): boolean {
   if (isBotContainerHostname(url.hostname)) return true;
-  return parseBooleanLike(config[INSECURE_REMOTE_HTTP_ESCAPE_HATCH]) === true;
+  if (parseBooleanLike(config[INSECURE_REMOTE_HTTP_ESCAPE_HATCH]) === true) return true;
+
+  const fleetHost = getFleetHostPlacement(config);
+  if (fleetHost) {
+    const site = resolveFleetSiteTarget(fleetHost, config, options);
+    return isFleetSitePlainHttpAllowed(url, site);
+  }
+
+  return false;
 }
 
 export function remotePlainHttpDeniedMessage(hostname: string): string {

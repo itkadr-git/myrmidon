@@ -33,13 +33,13 @@ let tmp;
 let originRoot;
 
 function git(cwd, ...args) {
-  const r = spawnSync("git", args, { cwd, encoding: "utf8", env: { ...GIT_ENV, HOME: tmp } });
+  const r = spawnSync("git", ["-c", "user.name=t", "-c", "user.email=t@example.com", ...args], { cwd, encoding: "utf8", env: { ...GIT_ENV, HOME: tmp } });
   assert.equal(r.status, 0, `git ${args.join(" ")}: ${r.stderr}`);
   return r.stdout.trim();
 }
 
 function tryGit(cwd, ...args) {
-  return spawnSync("git", args, { cwd, encoding: "utf8", env: { ...GIT_ENV, HOME: tmp } });
+  return spawnSync("git", ["-c", "user.name=t", "-c", "user.email=t@example.com", ...args], { cwd, encoding: "utf8", env: { ...GIT_ENV, HOME: tmp } });
 }
 
 /** Origin with two branches and two commits on main; returns the commit ids. */

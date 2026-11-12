@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -131,6 +131,13 @@ vi.mock("@myrmidon/adapter-utils/execution-target", async (importOriginal) => {
       }
       return actual.runAdapterExecutionTargetShellCommand(...args);
     },
+    // myrmidon(OPE-12801): the cancellation tests use an SSH target; creating
+    // the session directory on it is not under test and must not open ssh.
+    ensureAdapterExecutionTargetDirectory: (...args: Parameters<typeof actual.ensureAdapterExecutionTargetDirectory>) => {
+      const target = args[1];
+      if (target?.kind === "remote" && target.transport === "ssh") return Promise.resolve();
+      return actual.ensureAdapterExecutionTargetDirectory(...args);
+    },
     prepareAdapterExecutionTargetRuntime: (...args: Parameters<typeof actual.prepareAdapterExecutionTargetRuntime>) => {
       if (args[0]?.adapterKey === "omp") {
         return prepareAdapterExecutionTargetRuntime(...args);
@@ -234,6 +241,66 @@ describe("omp local execution", () => {
           cwd: workspaceDir,
         },
         sessionDisplayId: "session-123",
+        taskKey: null,
+      },
+      config: {
+        command: "omp",
+        model: "openai/gpt-4o",
+      },
+      context: {
+        paperclipWorkspace: {
+          cwd: workspaceDir,
+          source: "project_primary",
+        },
+      },
+      onLog: async () => {},
+    });
+
+    const call = runAdapterExecutionTargetProcess.mock.calls[0] as unknown as
+      | [string, unknown, string, string[]]
+      | undefined;
+    expect(call).toBeDefined();
+    const args = call![3];
+    expect(args).toContain("--session");
+    expect(args).toContain(sessionFilePath);
+  });
+
+  it("resumes with --session when omp 18.9.2 writes title line before the session header", async () => {
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-omp-resume-title-"));
+    cleanupDirs.push(rootDir);
+    const workspaceDir = path.join(rootDir, "workspace");
+    const sessionDir = path.join(rootDir, "sessions");
+    await mkdir(workspaceDir, { recursive: true });
+    await mkdir(sessionDir, { recursive: true });
+
+    const sessionFilePath = path.join(sessionDir, "session-title-first.jsonl");
+    // omp 18.9.2 writes {"type":"title",…} as the first line and the
+    // {"type":"session",…,"cwd":…} header on the second line.
+    await writeFile(
+      sessionFilePath,
+      [
+        JSON.stringify({ type: "title", title: "omp session" }),
+        JSON.stringify({ type: "session", cwd: workspaceDir }),
+      ].join("\n") + "\n",
+      "utf8",
+    );
+
+    await execute({
+      runId: "run-title-first",
+      agent: {
+        id: "agent-1",
+        companyId: "company-1",
+        name: "OMP Builder",
+        adapterType: "omp_local",
+        adapterConfig: {},
+      },
+      runtime: {
+        sessionId: sessionFilePath,
+        sessionParams: {
+          sessionId: sessionFilePath,
+          cwd: workspaceDir,
+        },
+        sessionDisplayId: "session-title-first",
         taskKey: null,
       },
       config: {
@@ -504,6 +571,91 @@ describe("omp local execution", () => {
     expect(result.errorMessage).toBe("Timed out after 30s");
   });
 
+  // myrmidon(OPE-12806): omp exits 0 after the model gives up on rejected tool
+  // calls. Such a run is failed with its own error code, not succeeded.
+  it("fails the run with omp_tool_calls_rejected when omp exits 0 but every shell call was rejected", async () => {
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-omp-rejected-"));
+    cleanupDirs.push(rootDir);
+    const workspaceDir = path.join(rootDir, "workspace");
+    await mkdir(workspaceDir, { recursive: true });
+
+    const refusal = "Service mode does not accept async or timeout; use ready.timeout for readiness.";
+    const events: unknown[] = [];
+    for (const id of ["b1", "b2", "b3"]) {
+      events.push({ type: "tool_execution_start", toolCallId: id, toolName: "bash", args: { command: "git status", name: "inspect", timeout: 30 } });
+      events.push({ type: "tool_execution_end", toolCallId: id, toolName: "bash", isError: true, result: { content: [{ type: "text", text: refusal }], details: {} } });
+    }
+    events.push({ type: "turn_end", message: { role: "assistant", content: "I could not run any command." }, toolResults: [] });
+
+    const makeExecuteInput = (runId: string, logs: string[]) => ({
+      runId,
+      agent: {
+        id: "agent-1",
+        companyId: "company-1",
+        name: "OMP Builder",
+        adapterType: "omp_local",
+        adapterConfig: {},
+      },
+      runtime: {
+        sessionId: null,
+        sessionParams: null,
+        sessionDisplayId: null,
+        taskKey: null,
+      },
+      config: {
+        command: "omp",
+        model: "openai/gpt-4o",
+      },
+      context: {
+        paperclipWorkspace: {
+          cwd: workspaceDir,
+          source: "project_primary",
+        },
+      },
+      onLog: async (_stream: string, text: string) => {
+        logs.push(text);
+      },
+    });
+
+    runAdapterExecutionTargetProcess.mockImplementationOnce(async () => ({
+      exitCode: 0,
+      signal: null,
+      timedOut: false,
+      stdout: events.map((event) => JSON.stringify(event)).join("\n"),
+      stderr: "",
+      pid: 127,
+      startedAt: new Date().toISOString(),
+    }));
+
+    const logs: string[] = [];
+    const result = await execute(makeExecuteInput("run-rejected", logs));
+
+    expect(result.exitCode).toBe(1);
+    expect(result.errorCode).toBe("omp_tool_calls_rejected");
+    expect(result.errorMessage).toBe(`OMP finished, but all 3 tool call(s) were rejected: ${refusal}`);
+    expect(logs.join("")).toContain("Marking the run as failed (omp_tool_calls_rejected)");
+
+    // A run whose tool calls worked stays successful.
+    const okEvents = [
+      { type: "tool_execution_start", toolCallId: "b1", toolName: "bash", args: { command: "git status" } },
+      { type: "tool_execution_end", toolCallId: "b1", toolName: "bash", isError: false, result: { content: [{ type: "text", text: "clean" }], details: {} } },
+      { type: "turn_end", message: { role: "assistant", content: "done" }, toolResults: [] },
+    ];
+    runAdapterExecutionTargetProcess.mockImplementationOnce(async () => ({
+      exitCode: 0,
+      signal: null,
+      timedOut: false,
+      stdout: okEvents.map((event) => JSON.stringify(event)).join("\n"),
+      stderr: "",
+      pid: 128,
+      startedAt: new Date().toISOString(),
+    }));
+    const okResult = await execute(makeExecuteInput("run-not-rejected", []));
+    expect(okResult.exitCode).toBe(0);
+    expect(okResult.errorMessage).toBeNull();
+    expect(okResult.errorCode ?? null).toBeNull();
+  });
+
   it("discovers newly created session file via set diff and ignores preexisting files", async () => {
     const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-omp-diff-"));
     cleanupDirs.push(rootDir);
@@ -696,6 +848,81 @@ describe("omp local execution", () => {
     expect(targetProcOptions?.env?.OMP_CODING_AGENT_DIR).toBe("/remote/runtime/agentConfig");
   });
 
+  // myrmidon(OPE-12805): the agent config dir staged to a remote runner carries
+  // the managed omp settings, so omp offers `bash` without `name`/`ready`.
+  it("stages a config.yml that switches off bash service launch for remote execution", async () => {
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-omp-remote-settings-"));
+    cleanupDirs.push(rootDir);
+    const workspaceDir = path.join(rootDir, "workspace");
+    await mkdir(workspaceDir, { recursive: true });
+
+    // The staged dir is removed when the run ends, so read it while it is staged.
+    let stagedSettings: string | null = null;
+    prepareAdapterExecutionTargetRuntime.mockImplementationOnce(async (input?: PrepareRuntimeCallShape) => {
+      const agentConfigAsset = input?.assets?.find((asset) => asset.key === "agentConfig");
+      stagedSettings = agentConfigAsset
+        ? await readFile(path.join(agentConfigAsset.localDir, "config.yml"), "utf8").catch(() => null)
+        : null;
+      return {
+        workspaceRemoteDir: "/remote/workspace",
+        runtimeRootDir: "/remote/runtime",
+        assetDirs: {
+          skills: "/remote/runtime/skills",
+          agentConfig: "/remote/runtime/agentConfig",
+        },
+        restoreWorkspace: vi.fn(async () => undefined),
+      };
+    });
+
+    await execute({
+      runId: "run-remote-settings",
+      authToken: "test-host-api-token",
+      executionTarget: {
+        kind: "remote",
+        transport: "sandbox",
+        providerKey: "test",
+        remoteCwd: "/remote/workspace",
+        runner: {
+          execute: async () => ({
+            exitCode: 0,
+            signal: null,
+            timedOut: false,
+            stdout: "",
+            stderr: "",
+            pid: 1,
+            startedAt: new Date().toISOString(),
+          }),
+        } as never,
+      },
+      agent: {
+        id: "agent-1",
+        companyId: "company-1",
+        name: "OMP Builder",
+        adapterType: "omp_local",
+        adapterConfig: {},
+      },
+      runtime: {
+        sessionId: null,
+        sessionParams: null,
+        sessionDisplayId: null,
+        taskKey: null,
+      },
+      config: {
+        command: "omp",
+        model: "openai/gpt-4o",
+      },
+      context: {
+        paperclipWorkspace: {
+          cwd: workspaceDir,
+          source: "project_primary",
+        },
+      },
+      onLog: async () => {},
+    });
+
+    expect(stagedSettings).toBe("launch:\n  enabled: false\n");
+  });
+
   it("prepends existing skill bin/ dirs to PATH and ignores skills without bin/ dir", async () => {
     const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-omp-skill-path-"));
     cleanupDirs.push(rootDir);
@@ -754,5 +981,421 @@ describe("omp local execution", () => {
     const entries = pathValue.split(path.delimiter);
     expect(entries[0]).toBe(skillWithBinBinDir);
     expect(entries).not.toContain(path.join(skillWithoutBinDir, "bin"));
+  });
+
+  // myrmidon(1.6.7 OPE-12266): the default tool list must match omp 18.9.2
+  // built-ins — `ls` is a hard error and `find` requires the fd binary.
+  it("passes the omp 18.9.2 verified default tool list and honors config.tools", async () => {
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-omp-tools-"));
+    cleanupDirs.push(rootDir);
+    const workspaceDir = path.join(rootDir, "workspace");
+    await mkdir(workspaceDir, { recursive: true });
+
+    const runExecute = async (config: Record<string, unknown>) => {
+      await execute({
+        runId: "run-tools",
+        agent: {
+          id: "agent-1",
+          companyId: "company-1",
+          name: "OMP Builder",
+          adapterType: "omp_local",
+          adapterConfig: {},
+        },
+        runtime: {
+          sessionId: null,
+          sessionParams: null,
+          sessionDisplayId: null,
+          taskKey: null,
+        },
+        config: { command: "omp", model: "openai/gpt-4o", ...config },
+        context: {
+          paperclipWorkspace: {
+            cwd: workspaceDir,
+            source: "project_primary",
+          },
+        },
+        onLog: async () => {},
+      });
+    };
+
+    await runExecute({});
+    let call = runAdapterExecutionTargetProcess.mock.calls[0] as unknown as
+      | [string, unknown, string, string[]]
+      | undefined;
+    expect(call).toBeDefined();
+    expect(call![3]).toEqual(expect.arrayContaining(["--tools", "read,bash,edit,write,grep"]));
+
+    runAdapterExecutionTargetProcess.mockClear();
+    await runExecute({ tools: "read,bash,grep" });
+    call = runAdapterExecutionTargetProcess.mock.calls[0] as unknown as
+      | [string, unknown, string, string[]]
+      | undefined;
+    expect(call).toBeDefined();
+    expect(call![3]).toEqual(expect.arrayContaining(["--tools", "read,bash,grep"]));
+  });
+
+  // myrmidon(1.6.7 OPE-12266): local process confinement mirrors codex_local —
+  // filesystemScope=workspace builds sandbox options with the omp session dir
+  // as a read/write managed path and logs the "Confining OMP" line.
+  it("builds local process sandbox options and logs the confining line for filesystemScope=workspace", async () => {
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-omp-sandbox-"));
+    cleanupDirs.push(rootDir);
+    const workspaceDir = path.join(rootDir, "workspace");
+    await mkdir(workspaceDir, { recursive: true });
+
+    const logs: Array<{ stream: string; text: string }> = [];
+    await execute({
+      runId: "run-sandbox",
+      agent: {
+        id: "agent-1",
+        companyId: "company-1",
+        name: "OMP Builder",
+        adapterType: "omp_local",
+        adapterConfig: {},
+      },
+      runtime: {
+        sessionId: null,
+        sessionParams: null,
+        sessionDisplayId: null,
+        taskKey: null,
+      },
+      config: {
+        command: "omp",
+        model: "openai/gpt-4o",
+        filesystemScope: "workspace",
+      },
+      context: {
+        paperclipWorkspace: {
+          cwd: workspaceDir,
+          source: "project_primary",
+        },
+      },
+      onLog: async (stream: string, text: string) => {
+        logs.push({ stream, text });
+      },
+    });
+
+    const allText = logs.map((entry) => entry.text).join("");
+    expect(allText).toContain("Confining OMP with workspace filesystem scope.");
+
+    const call = runAdapterExecutionTargetProcess.mock.calls[0] as unknown as
+      | [string, unknown, string, string[], { localProcessSandbox?: { workspaceDir: string; filesystemScope: string; command: string; managedPaths: Array<{ path: string; access: string }> } }]
+      | undefined;
+    expect(call).toBeDefined();
+    const sandbox = call![4]?.localProcessSandbox;
+    expect(sandbox).toBeDefined();
+    expect(sandbox!.workspaceDir).toBe(workspaceDir);
+    expect(sandbox!.filesystemScope).toBe("workspace");
+    expect(sandbox!.command).toBe("bwrap");
+    expect(sandbox!.managedPaths.some((managed) => managed.access === "rw")).toBe(true);
+  });
+
+  // myrmidon(1.6.7 OPE-12266): without sandbox config there is no confinement
+  // and no confining log — behavior of existing agents is preserved.
+  it("does not confine and does not log the confining line without sandbox config", async () => {
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-omp-nosandbox-"));
+    cleanupDirs.push(rootDir);
+    const workspaceDir = path.join(rootDir, "workspace");
+    await mkdir(workspaceDir, { recursive: true });
+
+    const logs: Array<{ stream: string; text: string }> = [];
+    await execute({
+      runId: "run-no-sandbox",
+      agent: {
+        id: "agent-1",
+        companyId: "company-1",
+        name: "OMP Builder",
+        adapterType: "omp_local",
+        adapterConfig: {},
+      },
+      runtime: {
+        sessionId: null,
+        sessionParams: null,
+        sessionDisplayId: null,
+        taskKey: null,
+      },
+      config: {
+        command: "omp",
+        model: "openai/gpt-4o",
+      },
+      context: {
+        paperclipWorkspace: {
+          cwd: workspaceDir,
+          source: "project_primary",
+        },
+      },
+      onLog: async (stream: string, text: string) => {
+        logs.push({ stream, text });
+      },
+    });
+
+    const allText = logs.map((entry) => entry.text).join("");
+    expect(allText).not.toContain("Confining OMP");
+
+    const call = runAdapterExecutionTargetProcess.mock.calls[0] as unknown as
+      | [string, unknown, string, string[], { localProcessSandbox?: unknown }]
+      | undefined;
+    expect(call).toBeDefined();
+    expect(call![4]?.localProcessSandbox).toBeFalsy();
+  });
+
+  // myrmidon(OPE-12801)
+  describe("cancellation of an SSH run", () => {
+    type RuntimeEvent = { eventType: string; level?: string; message?: string; payload?: Record<string, unknown> };
+
+    async function makeSshRun(runId: string) {
+      const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-omp-ssh-cancel-"));
+      cleanupDirs.push(rootDir);
+      const workspaceDir = path.join(rootDir, "workspace");
+      await mkdir(workspaceDir, { recursive: true });
+      const controller = new AbortController();
+      const events: RuntimeEvent[] = [];
+      const onCancellationReady = vi.fn(async () => undefined);
+      const restoreWorkspace = vi.fn(async () => undefined);
+      const input = {
+        runId,
+        authToken: "test-host-api-token",
+        executionTarget: {
+          kind: "remote" as const,
+          transport: "ssh" as const,
+          remoteCwd: "/remote/workspace",
+          spec: {
+            host: "ssh.example.test",
+            port: 22,
+            username: "ssh-user",
+            remoteCwd: "/remote/workspace",
+            remoteWorkspacePath: "/remote/workspace",
+            privateKey: null,
+            knownHosts: null,
+            strictHostKeyChecking: true,
+          },
+        },
+        agent: {
+          id: "agent-1",
+          companyId: "company-1",
+          name: "OMP Builder",
+          adapterType: "omp_local",
+          adapterConfig: {},
+        },
+        runtime: { sessionId: null, sessionParams: null, sessionDisplayId: null, taskKey: null },
+        config: { command: "omp", model: "openai/gpt-4o" },
+        context: { paperclipWorkspace: { cwd: workspaceDir, source: "project_primary" } },
+        onLog: async () => {},
+        signal: controller.signal,
+        onCancellationReady,
+        onEvent: async (event: RuntimeEvent) => {
+          events.push(event);
+        },
+      };
+      const preparedRuntime = {
+        workspaceRemoteDir: "/remote/workspace",
+        runtimeRootDir: "/remote/runtime",
+        assetDirs: { skills: "/remote/runtime/skills", agentConfig: "/remote/runtime/agentConfig" },
+        restoreWorkspace,
+      };
+      return { input, controller, events, onCancellationReady, restoreWorkspace, preparedRuntime };
+    }
+
+    function abortedTransfer(): Error {
+      return Object.assign(new Error("Workspace upload was cancelled"), { code: "ssh_operation_aborted" });
+    }
+
+    it("does not start OMP and does not restore the workspace when the run is cancelled during the exchange", async () => {
+      const run = await makeSshRun("run-cancel-during-prepare");
+      prepareAdapterExecutionTargetRuntime.mockImplementationOnce(async (prepareInput) => {
+        // The exchange gets the run's signal and ends with the cancellation.
+        expect(prepareInput?.signal).toBe(run.controller.signal);
+        run.controller.abort(new Error("Cancelled by control plane"));
+        throw abortedTransfer();
+      });
+
+      const result = await execute(run.input);
+
+      expect(run.onCancellationReady).toHaveBeenCalledTimes(1);
+      expect(runAdapterExecutionTargetProcess).not.toHaveBeenCalled();
+      expect(run.restoreWorkspace).not.toHaveBeenCalled();
+      expect(result.errorCode).toBe("cancelled");
+      expect(result.executionRecovery).toEqual({ kind: "bootstrap", providerWorkStarted: false });
+      expect(result.resultJson?.executionCancellation).toMatchObject({ state: "acknowledged" });
+    });
+
+    it("does not start the exchange for a run that is already cancelled", async () => {
+      const run = await makeSshRun("run-cancel-before-prepare");
+      run.onCancellationReady.mockImplementationOnce(async () => {
+        run.controller.abort(new Error("Cancelled by control plane"));
+      });
+
+      const result = await execute(run.input);
+
+      expect(prepareAdapterExecutionTargetRuntime).not.toHaveBeenCalled();
+      expect(runAdapterExecutionTargetProcess).not.toHaveBeenCalled();
+      expect(result.errorCode).toBe("cancelled");
+    });
+
+    it("does not restore the workspace after a cancellation during OMP and records why", async () => {
+      const run = await makeSshRun("run-cancel-during-omp");
+      prepareAdapterExecutionTargetRuntime.mockImplementationOnce(async () => run.preparedRuntime);
+      runAdapterExecutionTargetProcess.mockImplementationOnce(async (_runId, _target, _command, _args, options) => {
+        expect(options?.signal).toBe(run.controller.signal);
+        run.controller.abort(new Error("Cancelled by control plane"));
+        return {
+          exitCode: null,
+          signal: "SIGTERM",
+          timedOut: false,
+          stdout: "",
+          stderr: "",
+          pid: 123,
+          startedAt: new Date().toISOString(),
+        };
+      });
+
+      await execute(run.input);
+
+      expect(runAdapterExecutionTargetProcess).toHaveBeenCalledTimes(1);
+      expect(run.restoreWorkspace).not.toHaveBeenCalled();
+      expect(run.events).toEqual([
+        expect.objectContaining({
+          eventType: "lifecycle",
+          level: "warn",
+          payload: { reason: "run_cancelled", runtimeRootDir: "/remote/runtime" },
+        }),
+      ]);
+    });
+
+    it("records an error event when the run's processes could not be stopped on the runner", async () => {
+      const run = await makeSshRun("run-cancel-survivor");
+      prepareAdapterExecutionTargetRuntime.mockImplementationOnce(async () => run.preparedRuntime);
+      runAdapterExecutionTargetProcess.mockImplementationOnce(async (_runId, _target, _command, _args, options) => {
+        run.controller.abort(new Error("Cancelled by control plane"));
+        const onRemoteRunStop = options?.onRemoteRunStop as (report: Record<string, unknown>) => Promise<void>;
+        await onRemoteRunStop({ ok: true, found: 2, survivors: 0, forced: false, survivorPids: [], error: null });
+        await onRemoteRunStop({ ok: false, found: 2, survivors: 1, forced: true, survivorPids: [4242], error: null });
+        return {
+          exitCode: null,
+          signal: "SIGTERM",
+          timedOut: false,
+          stdout: "",
+          stderr: "",
+          pid: 123,
+          startedAt: new Date().toISOString(),
+        };
+      });
+
+      await execute(run.input);
+
+      const errors = run.events.filter((event) => event.level === "error");
+      expect(errors).toHaveLength(1);
+      expect(errors[0].message).toContain("4242");
+      expect(errors[0].payload).toMatchObject({ reason: "remote_run_stop_failed", survivors: 1, survivorPids: [4242] });
+    });
+
+    it("restores the workspace of an SSH run that was not cancelled", async () => {
+      const run = await makeSshRun("run-ssh-not-cancelled");
+      prepareAdapterExecutionTargetRuntime.mockImplementationOnce(async () => run.preparedRuntime);
+
+      const result = await execute(run.input);
+
+      expect(run.onCancellationReady).toHaveBeenCalledTimes(1);
+      expect(result.exitCode).toBe(0);
+      expect(run.restoreWorkspace).toHaveBeenCalledTimes(1);
+      expect(run.events).toEqual([]);
+    });
+
+    it("does not opt a sandbox run into signal-based cancellation", async () => {
+      const run = await makeSshRun("run-sandbox-no-opt-in");
+
+      await execute({
+        ...run.input,
+        executionTarget: {
+          kind: "remote",
+          transport: "sandbox",
+          providerKey: "test",
+          remoteCwd: "/remote/workspace",
+          runner: {
+            execute: async () => ({
+              exitCode: 0,
+              signal: null,
+              timedOut: false,
+              stdout: "",
+              stderr: "",
+              pid: 1,
+              startedAt: new Date().toISOString(),
+            }),
+          } as never,
+        },
+      });
+
+      expect(run.onCancellationReady).not.toHaveBeenCalled();
+      const prepareCall = prepareAdapterExecutionTargetRuntime.mock.calls[0]?.[0];
+      expect(prepareCall?.signal).toBeUndefined();
+    });
+  });
+
+  it("passes workspaceSyncMode: \"full\" by default and \"git_checkout\" when configured", async () => {
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-omp-workspace-sync-"));
+    cleanupDirs.push(rootDir);
+    const workspaceDir = path.join(rootDir, "workspace");
+    await mkdir(workspaceDir, { recursive: true });
+
+    const runExecute = (workspaceSync?: string) =>
+      execute({
+        runId: "run-workspace-sync",
+        authToken: "test-host-api-token",
+        executionTarget: {
+          kind: "remote",
+          transport: "sandbox",
+          providerKey: "test",
+          remoteCwd: "/remote/workspace",
+          // Sandbox targets execute through the provider runtime runner; session listing
+          // (ls on the target) goes through it, so the test supplies a minimal one.
+          runner: {
+            execute: async () => ({
+              exitCode: 0,
+              signal: null,
+              timedOut: false,
+              stdout: "",
+              stderr: "",
+              pid: 1,
+              startedAt: new Date().toISOString(),
+            }),
+          } as never,
+        },
+        agent: {
+          id: "agent-1",
+          companyId: "company-1",
+          name: "OMP Builder",
+          adapterType: "omp_local",
+          adapterConfig: {},
+        },
+        runtime: {
+          sessionId: null,
+          sessionParams: null,
+          sessionDisplayId: null,
+          taskKey: null,
+        },
+        config: {
+          command: "omp",
+          model: "openai/gpt-4o",
+          // myrmidon(OPE-12795): the adapter reads workspaceSync from the resolved config.
+          ...(workspaceSync ? { workspaceSync } : {}),
+        },
+        context: {
+          paperclipWorkspace: {
+            cwd: workspaceDir,
+            source: "project_primary",
+          },
+        },
+        onLog: async () => {},
+      });
+
+    await runExecute(undefined);
+    expect(prepareAdapterExecutionTargetRuntime).toHaveBeenCalledWith(
+      expect.objectContaining({ workspaceSyncMode: "full" }),
+    );
+
+    await runExecute("git_checkout");
+    expect(prepareAdapterExecutionTargetRuntime).toHaveBeenLastCalledWith(
+      expect.objectContaining({ workspaceSyncMode: "git_checkout" }),
+    );
   });
 });

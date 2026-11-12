@@ -196,10 +196,14 @@ describeEmbeddedPostgres("heartbeat local environment lifecycle", () => {
           [
             "const fs = require('node:fs');",
             `fs.writeFileSync(${JSON.stringify(envPath)}, JSON.stringify({`,
-            "agentId: process.env.PAPERCLIP_AGENT_ID ?? null,",
-            "companyId: process.env.PAPERCLIP_COMPANY_ID ?? null,",
-            "apiUrl: process.env.PAPERCLIP_API_URL ?? null,",
-            "runId: process.env.PAPERCLIP_RUN_ID ?? null,",
+            "agentId: process.env.PAPERCLIP_AGENT_ID ?? process.env.MYRMIDON_AGENT_ID ?? null,",
+            "companyId: process.env.PAPERCLIP_COMPANY_ID ?? process.env.MYRMIDON_COMPANY_ID ?? null,",
+            "apiUrl: process.env.PAPERCLIP_API_URL ?? process.env.MYRMIDON_API_URL ?? null,",
+            "runId: process.env.PAPERCLIP_RUN_ID ?? process.env.MYRMIDON_RUN_ID ?? null,",
+            "myrmidonAgentId: process.env.MYRMIDON_AGENT_ID ?? null,",
+            "myrmidonApiUrl: process.env.MYRMIDON_API_URL ?? null,",
+            "myrmidonRunId: process.env.MYRMIDON_RUN_ID ?? null,",
+            "myrmidonApiKeyPresent: Boolean(process.env.MYRMIDON_API_KEY),",
             "apiKeyPresent: Boolean(process.env.PAPERCLIP_API_KEY),",
             "}));",
           ].join(" "),
@@ -221,6 +225,9 @@ describeEmbeddedPostgres("heartbeat local environment lifecycle", () => {
       companyId,
       runId: queued!.id,
       apiKeyPresent: true,
+      myrmidonAgentId: agentId,
+      myrmidonRunId: queued!.id,
+      myrmidonApiKeyPresent: true,
     });
     expect(captured.apiUrl).toEqual(expect.stringMatching(/^https?:\/\//));
   });

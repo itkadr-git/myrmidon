@@ -27,11 +27,6 @@ export const activityLog = pgTable(
       table.agentId,
       table.createdAt,
     ),
-    companyResponsibleUserCreatedIdx: index("activity_log_company_responsible_user_created_idx").on(
-      table.companyId,
-      table.responsibleUserId,
-      table.createdAt,
-    ),
     runIdIdx: index("activity_log_run_id_idx").on(table.runId),
     entityIdx: index("activity_log_entity_type_id_idx").on(table.entityType, table.entityId),
     // myrmidon(DB-CARE / 1.6.6 DEFECT): the feature health pass reads the
@@ -47,6 +42,22 @@ export const activityLog = pgTable(
     companyActionCreatedIdx: index("activity_log_company_action_created_idx").on(
       table.companyId,
       table.action,
+      table.createdAt.desc(),
+    ),
+    // myrmidon(DB-CARE / 1.6.6 DEFECT): the chat-holds feature health leg
+    // also filters details->>'continuation' (ports.ts activity.latest), and
+    // the composite above still evaluated that residual per heap row — the
+    // rc.16 acceptance (25.10) measured 16k rows removed by filter, 36-52 ms
+    // warm, missing the <50 ms gate. This expression index carries the
+    // details key as an index column, so the leg reads the (company, action,
+    // continuation) slice directly with no heap residual. Not partial on the
+    // value: the production statement binds key and value as parameters, and
+    // a bound parameter never implies a partial-index predicate. See
+    // migration 0428_activity_log_company_action_continuation_idx.
+    companyActionContinuationIdx: index("activity_log_company_action_continuation_idx").on(
+      table.companyId,
+      table.action,
+      sql`((${table.details} ->> 'continuation'))`,
       table.createdAt.desc(),
     ),
     // myrmidon(DB-CARE): the attention feed resolves the issues whose assignee
@@ -69,5 +80,10 @@ export const activityLog = pgTable(
       .where(
         sql`${table.entityType} = 'issue' and ${table.action} <> ALL (ARRAY['issue.read_marked', 'issue.read_unmarked', 'issue.inbox_archived', 'issue.inbox_unarchived'])`,
       ),
+    // myrmidon(1.6.6 OPE-10438): the activity anti-join previously had to scan
+    // rows because existing indexes began with unrelated company columns.
+    issueCreatedAtIdx: index("activity_log_issue_created_at_idx")
+      .on(table.companyId, table.entityType, table.entityId, table.createdAt)
+      .where(sql`${table.entityType} = 'issue' and ${table.actorType} <> 'system'`),
   }),
 );

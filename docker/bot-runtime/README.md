@@ -195,18 +195,25 @@ mismatch fails the build, the same rule the Node.js variant states above.
 **Where things write.** The root filesystem is read-only at run time and the bot's writable
 directories are exactly its single `/bot` mount (BOT-DISK-D), so:
 
-- the pnpm store defaults to `/workspace/.pnpm-store` via `npm_config_store_dir`, inside that
-  mount like every clone root, because pnpm hard-links `node_modules` into its store and a hard
-  link cannot cross a mount (a store on a separate bind made pnpm copy every package into every
-  clone). `npm_config_package_import_method=hardlink` is set too; pnpm 9 still copies silently
-  when the kernel refuses a link, so `pnpm-hardlink-check.sh` proves the link from `/data/hermes`,
+- the pnpm store is the shared `/cache/pnpm-store` mount (OPE-12869) when the board's
+  profile carries `npm_config_store_dir` (bots with the shared package cache); the image's own
+  default `/workspace/.pnpm-store` applies to a bot without that mount. The shared store works
+  because it sits on the same XFS filesystem as the bot volumes: pnpm imports `node_modules`
+  by reflink (`npm_config_package_import_method=clone`), one physical copy for all bots; a hard
+  link cannot cross a mount, and a store on another filesystem (the root disk of 1.6.5) made
+  pnpm copy every package into every clone. pnpm still copies silently when the kernel refuses
+  a reflink, so `pnpm-hardlink-check.sh` proves the link from `/data/hermes`,
   `/workspace` and `/scratch` at build time and `entrypoint.sh` repeats the check at every start
   (`/data/hermes/.myrmidon/hardlink-check.json`, shown on the board). `/cache/pnpm` is a download
   cache only, never the store; the paths and the method are the `pnpmStoreDir` and
   `pnpmImportMethod` settings, see
   [docs/myrmidon/bot-disk-cache.md](../../docs/myrmidon/bot-disk-cache.md);
-- `RUSTUP_HOME`/`CARGO_HOME` stay sealed under `/opt` and `cargo` writes its target dir into
-  the checked-out workspace;
+- `RUSTUP_HOME`/`CARGO_HOME` stay sealed under `/opt` and `CARGO_TARGET_DIR` directs `cargo`
+  artifacts to `/data/hermes/.cache/cargo-target` (OPE-12105), outside the task working tree.
+  botd keeps that directory under a per-bot byte quota (`cargoTargetQuotaBytes`, 2 GiB) and
+  evicts whole profile dirs, least recently written first (OPE-12110); the same pass caps
+  `hermes/.npm/_npx` at `npmNpxQuotaBytes` (512 MiB), see
+  [docs/myrmidon/bot-disk-cache.md](../../docs/myrmidon/bot-disk-cache.md);
 - Go's build cache defaults under `$HOME` (`/data/hermes`), the durable volume.
 
 **PATH never holds a writable volume.** The dev stage assembles `PATH` from `/opt` and
@@ -240,6 +247,28 @@ Connection settings come only from the bot profile env (`DEVBUILD_HOST`, `DEVBUI
 to the `devbuild` skill and exits 1. The ssh key is read from `/opt/devbuild-ssh/id_ed25519`,
 mounted by the runtime template (part C); key authorization and the remote resource limits are
 the fleet operator's part (D). The image adds `rsync` to the apt set for the transport.
+
+**Env-delivered key, start self-check, local heavy-run heap cap (1.6.5 DEVBUILD-IN-BOTS).**
+Three additions relax the mount requirement and keep stray local heavy runs survivable:
+
+- When the key file is absent or unreadable and the secret env `DEVBUILD_SSH_KEY_DATA`
+  (the OpenSSH private key text) is set, `devbuild` materializes it into a per-process
+  private directory (0700 dir, 0600 file) under the run scratch — never into `/workspace` —
+  and removes it on exit. A readable key file still wins over the env key, and the
+  missing-everything error is unchanged. This is how the board hands the key to a bot whose
+  container has no `/opt/devbuild-ssh` mount.
+- The bot entrypoint runs a devbuild self-check at start: with `DEVBUILD_HOST` set it probes
+  `devbuild 'true'`, logs one line (`devbuild self-check ok: …` or
+  `ERROR: devbuild self-check failed: …`) and writes a machine-readable
+  `${HERMES_HOME}/.myrmidon/devbuild-check.json` for the board. The check never stops the
+  gateway; bots without `DEVBUILD_HOST` stay silent; `MYRMIDON_DEVBUILD_CHECK=0` disables
+  the probe.
+- Heavy commands that pass the devbuild gate (a build container, or a direct binary path in
+  an ordinary bot container) run with a container-safe heap cap: the wrappers append
+  `--max-old-space-size=2048` (override `MYRMIDON_LOCAL_NODE_HEAP_MB`, `0` disables) to the
+  child's `NODE_OPTIONS` — a caller's own `--max-old-space-size` wins — and print one stderr
+  warning pointing at `devbuild`. Version/help probes skip both. The cap is a rollout-period
+  fallback; the fleet target stays 0 local tsc/vitest runs.
 
 ### Shared git objects and the clone report (1.6.2 BOT-DISK-C)
 
@@ -579,6 +608,26 @@ How a bot gets its task copy now, per the interface contract
   is unknown.
   When the board is unreachable botd deletes nothing. Botd reports disk state
   back with `POST /api/myrmidon/bots/me/disk-report`.
+
+### git-base repack on partial clones (1.6.7 OPE-12263)
+
+The per-bot bare bases (`git-base/<owner>/<repo>.git`) are **partial clones**
+(`partialclonefilter=blob:none`) and hold no full object closure, so a plain
+`git repack -A -d` fails there with `Failed to write bitmap index. Packfile
+doesn't have full closure` and leaves multi-gigabyte `.tmp-*-pack-*` /
+`tmp_idx_*` files in `objects/pack`; with more than 20 packs botd retried
+every cycle. Since 1.6.7 botd:
+
+- runs the repack with `-c repack.writeBitmaps=false -c pack.writeBitmaps=false`
+  (plus the existing `pack.threads=1`);
+- after a failed repack, and at botd startup, deletes stale temp pack files
+  (`.tmp-*-pack-*`, `tmp_pack_*`, `tmp_idx_*`, `tmp_rev_*` older than
+  30 minutes) from `objects/pack`, never touching a repository with a live
+  git lock file;
+- after a failure writes a `.myrmidon-repack-failed` marker holding the git
+  error and pauses new attempts for 6 hours (`REPACK_FAILURE_BACKOFF_MS`) —
+  the pack-count trigger does not bypass the pause — and logs the cause;
+- clears the failure marker after a successful repack.
 
 ## What's not verified yet
 

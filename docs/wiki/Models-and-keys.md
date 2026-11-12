@@ -62,19 +62,39 @@ models visible) and access to `/spend/logs/v2` and `/v1/model/info`. See
 [SETTINGS.md](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/SETTINGS.md),
 `MYRMIDON_LITELLM_KEY_SECRET`.
 
+## Costs by task
+
+For task-level spend queries, the company costs API provides
+`GET /api/companies/:companyId/costs/by-issue?from&to&limit`. It groups cost
+events by task, orders by spend descending, and returns task identifiers,
+titles, token totals, and distinct run counts. The default limit is 20 and the
+maximum is 100; higher values return HTTP 400. See the
+[cost endpoint change note](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/changes/1-7-costs-by-issue.md).
+
+## LiteLLM virtual key budgets and spend
+
+The board tracks virtual key budgets and spend directly from the `litellm_cost_events` ledger and LiteLLM key metadata (`/key/list`), replacing host-side database scanning scripts:
+
+- **Costs and Keys UI**: The **Costs** view provides a **Key budget and spend** panel with daily (24h) and weekly (7d) spend per key/agent, current budget cap utilization, and warnings for zero-cost routes (unpriced models in LiteLLM). The **Keys** view also displays usage blocks for each key.
+- **Key usage API**: `GET /api/companies/:companyId/litellm/key-usage` serves key caps and aggregated spend with cached TTL and bounded 10-second queries.
+- **Attention cards and alerts**: When a key reaches ≥80% of its budget cap (`near_cap`), exhausts its budget (`exhausted`), or daily spend spikes to ≥2× the previous 6-day daily average (`anomalous_daily_spend`), the board generates `litellm_budget` cards in the attention feed. These cards dispatch to operators through the Telegram error channel (severity high/critical) and the daily digest spend section.
+- **Prometheus metrics**: The protected `/metrics` endpoint exports:
+  - `myrmidon_llm_key_spend_cents{company_id,agent_id,window="24h"|"7d"}`
+  - `myrmidon_llm_key_budget_utilization_percent{company_id,agent_id}`
+
 ## In detail
 
-- [Company model providers](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/guides/model-providers.md)
-- [Budget enforcement modes](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/guides/budget-enforcement.md)
-- [LiteLLM budget projection](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/guides/litellm-budget-projection.md)
-- [Prompt budget advice and deep analysis](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/guides/prompt-budget-advice.md)
-- [Run admission limits](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/guides/run-limits.md)
-- [LLM tracing health](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/guides/tracing-health.md)
+- [Company model providers](Model-providers)
+- [Budget enforcement modes](Budget-enforcement)
+- [LiteLLM budget projection](Litellm-budget-projection)
+- [Prompt budget advice and deep analysis](Prompt-budget-advice)
+- [Run admission limits](Run-limits)
+- [LLM tracing health](Tracing-health)
 
 ## Effective issue limits
 
 The budget-limit API can resolve the active limit for a task across issue,
 foraging, role, project, and company scopes. The response identifies the
 winning scope and source limit; see the
-[budget limits guide](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/guides/budget-limits.md)
+[budget limits guide](Budget-limits)
 for precedence, authorization, and the signal-only override.

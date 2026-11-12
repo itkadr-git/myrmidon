@@ -1,6 +1,6 @@
 import express from "express";
 import request from "supertest";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 
 function createSelectChain(rows: unknown[]) {
   const query = {
@@ -75,6 +75,14 @@ async function createApp(
 }
 
 describe.sequential("GET /invites/:token/test-resolution", () => {
+  // Cold-load the route module graph here, once, outside any test's budget. It
+  // is huge: ~10-12 s on a GitHub runner and more on a slower one. The first
+  // test used to pay it inside its 20 s timeout. 60 s is ~2x the slowest cold
+  // load measured.
+  beforeAll(async () => {
+    await Promise.all([import("../routes/access.js"), import("../middleware/index.js")]);
+  }, 60_000);
+
   beforeEach(() => {
     vi.clearAllMocks();
   });

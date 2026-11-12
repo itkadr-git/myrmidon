@@ -8,7 +8,14 @@ export { companySkillPolicyService, normalizeSkillPolicySourceType } from "./com
 // myrmidon(1.6.5 BASE-SKILLS): the company base-skills registry.
 export { companyBaseSkillService, type CompanyBaseSkillActor } from "./company-base-skills.js";
 export { folderService } from "./folders.js";
-export { agentService, deduplicateAgentName } from "./agents.js";
+export {
+  agentService,
+  deduplicateAgentName,
+  filterAgentListItems,
+  normalizeAgentListFilters,
+  type AgentListFilters,
+  type NormalizedAgentListFilters,
+} from "./agents.js";
 export {
   builtInAgentService,
   deriveBuiltInAgentStatus,
@@ -89,6 +96,7 @@ export type {
   WorkTimelineSpan,
 } from "./work-timeline.js";
 export { approvalService } from "./approvals.js";
+export { admAccessRequestService, ADM_APPROVAL_TYPE, type AdmActorContext } from "./adm-access-request.js";
 export { budgetService } from "./budgets.js";
 export { secretService } from "./secrets.js";
 export { createRunSecretRedactionRegistry } from "./run-secret-redaction.js";
@@ -105,6 +113,8 @@ export { smokeLabService } from "./smoke-lab.js";
 export { backfillLegacyToolOAuthTokens } from "./tool-oauth-legacy-backfill.js";
 export { toolAccessPolicyService } from "./tool-access-policy.js";
 export { routineService } from "./routines.js";
+export { providerUsageService } from "./provider-usage.js";
+export type { ProviderUsageIngestResult } from "./provider-usage.js";
 export { costService } from "./costs.js";
 export { financeService } from "./finance.js";
 export { heartbeatService, resolveHeartbeatSchedulingSuppression } from "./heartbeat.js";
@@ -220,3 +230,30 @@ export {
   type RemoteAgentProfileInput,
   type RemoteAgentService,
 } from "./remote-agent-profiles.js";
+export {
+  tryClaimContinuationKey,
+  clearExpiredContinuationKeys,
+  type ContinuationDedupeOutcome,
+} from "./continuation-dedupe.js";
+export {
+  sessionService,
+  revokeAllUserSessions,
+  setSessionDb,
+  getSessionDb,
+} from "./session-service.js";
+export {
+  MockSshExecutor,
+  createMockSshExecutor,
+  SshAuthenticationError,
+  SshConnectionError,
+  SshTimeoutError,
+  type CommandHandler,
+  type LoggedCommand,
+  type MockServerInventory,
+  type MockSshConfig,
+  type SshAuthScenario,
+  type SshConnectionOptions,
+  type SshExecuteOptions,
+  type SshExecutionResult,
+  type SshExecutor,
+} from "./fleet/mock-ssh-executor.js";

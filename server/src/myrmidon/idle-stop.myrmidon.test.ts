@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { IdleStopService, type IdleStopConfig, type IdleStopLogger } from './idle-stop.js';
 import { BotContainerDriver, BotContainerStatus } from './bot-containers/driver.js';
+import { fleetRoutingDriver } from './bot-containers/fleetd-routing.js';
 import { heartbeatRuns, agents, botApplyJobs, instanceSettings } from '@myrmidon/db';
 
 vi.mock('@myrmidon/db', () => ({
@@ -454,6 +455,32 @@ describe('IdleStopService', () => {
       expect(mockDriver.start).toHaveBeenCalledWith(botKey);
     });
 
+    it('should start an exited container on wake and wait for health', async () => {
+      const botKey = 'exited-bot';
+
+      vi.mocked(mockDriver.status)
+        .mockResolvedValueOnce({ botKey, state: 'stopped', inspect: { State: { Status: 'exited' } } })
+        .mockResolvedValueOnce({ botKey, state: 'running' });
+
+      const result = await idleStopService.wake(botKey);
+
+      expect(result).toBe(true);
+      expect(mockDriver.start).toHaveBeenCalledWith(botKey);
+    });
+
+    it('should start a created container on wake and wait for health', async () => {
+      const botKey = 'created-bot';
+
+      vi.mocked(mockDriver.status)
+        .mockResolvedValueOnce({ botKey, state: 'stopped', inspect: { State: { Status: 'created' } } })
+        .mockResolvedValueOnce({ botKey, state: 'running' });
+
+      const result = await idleStopService.wake(botKey);
+
+      expect(result).toBe(true);
+      expect(mockDriver.start).toHaveBeenCalledWith(botKey);
+    });
+
     it('should return true without starting anything for an agent without a bot container', async () => {
       const botKey = 'host-run-agent';
       vi.mocked(mockDriver.status).mockResolvedValue({ botKey, state: 'missing' });
@@ -494,6 +521,18 @@ describe('IdleStopService', () => {
   });
 
   describe('ensureStartedAndHealthy', () => {
+    it('restarts a running container marked idle-stopped before allowing the queued run to contact gateway', async () => {
+      const botKey = 'idle-stopped-running-bot';
+
+      vi.mocked(mockDriver.status)
+        .mockResolvedValueOnce({ botKey, state: 'running', idleStopped: true })
+        .mockResolvedValueOnce({ botKey, state: 'running', idleStopped: false });
+
+      await expect(idleStopService.ensureStartedAndHealthy(botKey)).resolves.toBeUndefined();
+      expect(mockDriver.start).toHaveBeenCalledWith(botKey);
+      expect(mockDriver.status).toHaveBeenCalledTimes(2);
+    });
+
     it('should return immediately if container is running', async () => {
       const botKey = 'running-bot';
 
@@ -511,6 +550,45 @@ describe('IdleStopService', () => {
 
       vi.mocked(mockDriver.status)
         .mockResolvedValueOnce({ botKey, state: 'stopped' })
+        .mockResolvedValueOnce({ botKey, state: 'running' });
+
+      await expect(idleStopService.ensureStartedAndHealthy(botKey)).resolves.toBeUndefined();
+      expect(mockDriver.start).toHaveBeenCalledWith(botKey);
+    });
+
+    it('should start an exited container on claim and wait for health', async () => {
+      const botKey = 'exited-bot';
+
+      vi.mocked(mockDriver.status)
+        .mockResolvedValueOnce({ botKey, state: 'stopped', inspect: { State: { Status: 'exited' } } })
+        .mockResolvedValueOnce({ botKey, state: 'running' });
+
+      await expect(idleStopService.ensureStartedAndHealthy(botKey)).resolves.toBeUndefined();
+      expect(mockDriver.start).toHaveBeenCalledWith(botKey);
+    });
+
+    it('should start a created container on claim and wait for health', async () => {
+      const botKey = 'created-bot';
+
+      vi.mocked(mockDriver.status)
+        .mockResolvedValueOnce({ botKey, state: 'stopped', inspect: { State: { Status: 'created' } } })
+        .mockResolvedValueOnce({ botKey, state: 'running' });
+
+      await expect(idleStopService.ensureStartedAndHealthy(botKey)).resolves.toBeUndefined();
+      expect(mockDriver.start).toHaveBeenCalledWith(botKey);
+    });
+
+    it('should start an exited container even when idle-stop config is disabled', async () => {
+      const disabledConfig: IdleStopConfig = {
+        ...testConfig,
+        enabled: false,
+      };
+
+      idleStopService = new IdleStopService(mockDriver as any, mockDb, disabledConfig);
+      const botKey = 'exited-bot';
+
+      vi.mocked(mockDriver.status)
+        .mockResolvedValueOnce({ botKey, state: 'stopped', inspect: { State: { Status: 'exited' } } })
         .mockResolvedValueOnce({ botKey, state: 'running' });
 
       await expect(idleStopService.ensureStartedAndHealthy(botKey)).resolves.toBeUndefined();
@@ -602,6 +680,66 @@ describe('IdleStopService', () => {
 
       expect(mockDriver.start).toHaveBeenCalledWith('b');
     });
+
+    it('deduplicates concurrent ensureStartedAndHealthy calls for the same bot', async () => {
+      const botKey = 'concurrent-bot';
+      let startResolve: () => void;
+      const startPromise = new Promise<void>((resolve) => {
+        startResolve = resolve;
+      });
+      let isStarted = false;
+
+      vi.mocked(mockDriver.status).mockImplementation(async (key: string) => {
+        if (isStarted) {
+          return { botKey: key, state: 'running', idleStopped: false };
+        }
+        return { botKey: key, state: 'stopped', idleStopped: true };
+      });
+
+      vi.mocked(mockDriver.start).mockImplementation(async () => {
+        await startPromise;
+        isStarted = true;
+      });
+
+      const call1 = idleStopService.ensureStartedAndHealthy(botKey);
+      const call2 = idleStopService.ensureStartedAndHealthy(botKey);
+      const call3 = idleStopService.ensureStartedAndHealthy(botKey);
+
+      await vi.waitFor(() => {
+        expect(mockDriver.start).toHaveBeenCalledTimes(1);
+      });
+
+      startResolve!();
+      await Promise.all([call1, call2, call3]);
+
+      expect(mockDriver.start).toHaveBeenCalledTimes(1);
+    });
+
+    it('mass waking N>=5 stopped bots concurrently starts all of them without unhandled errors', async () => {
+      const bots = ['bot-1', 'bot-2', 'bot-3', 'bot-4', 'bot-5', 'bot-6'];
+      const started = new Set<string>();
+
+      vi.mocked(mockDriver.status).mockImplementation(async (botKey: string) => {
+        if (started.has(botKey)) {
+          return { botKey, state: 'running', idleStopped: false };
+        }
+        return { botKey, state: 'stopped', idleStopped: true };
+      });
+
+      vi.mocked(mockDriver.start).mockImplementation(async (botKey: string) => {
+        await new Promise((r) => setTimeout(r, 10));
+        started.add(botKey);
+      });
+
+      // Concurrently wake 6 distinct stopped bots
+      await Promise.all(bots.map((b) => idleStopService.ensureStartedAndHealthy(b)));
+
+      for (const b of bots) {
+        expect(mockDriver.start).toHaveBeenCalledWith(b);
+        expect(started.has(b)).toBe(true);
+      }
+      expect(mockDriver.start).toHaveBeenCalledTimes(6);
+    });
   });
 
   describe('disabled functionality', () => {
@@ -637,7 +775,7 @@ describe('IdleStopService', () => {
     it('is enabled by default', () => {
       const service = new IdleStopService(mockDriver, mockDb, {}, mockLogger);
       service.start();
-      expect(mockLogger.info).toHaveBeenCalledWith('Starting IDLE-STOP service: afterSec=1800, healthTimeoutMs=30000');
+      expect(mockLogger.info).toHaveBeenCalledWith('Starting IDLE-STOP service: afterSec=1800, healthTimeoutMs=420000');
       service.stop();
     });
 
@@ -658,6 +796,92 @@ describe('IdleStopService', () => {
 
       expect(mockDriver.stopIdle).not.toHaveBeenCalled();
       expect(mockDriver.stop).not.toHaveBeenCalled();
+    });
+
+    it('never stops an "off" bot (OPE-12291)', async () => {
+      const botKey = '550e8400-e29b-41d4-a716-446655440000';
+      mockDb.select.mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            then: vi.fn().mockImplementation((resolve: any) =>
+              resolve([{ agentId: botKey, adapterConfig: { container: { enabled: true, idleStopMode: 'off' } } }]),
+            ),
+          }),
+        }),
+      });
+      vi.mocked(mockDriver.list).mockResolvedValue([{ botKey, state: 'running' }]);
+
+      await idleStopService.performSweep();
+
+      expect(mockDriver.stopIdle).not.toHaveBeenCalled();
+      expect(mockDriver.stop).not.toHaveBeenCalled();
+    });
+
+    it('never stops a bot whose role is in alwaysOnRoles, even on on_demand (OPE-12291)', async () => {
+      const botKey = '550e8400-e29b-41d4-a716-446655440000';
+      mockDb.select.mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            then: vi.fn().mockImplementation((resolve: any) =>
+              resolve([
+                {
+                  agentId: botKey,
+                  agentRole: 'lead',
+                  adapterConfig: { container: { enabled: true, idleStopMode: 'on_demand' } },
+                },
+              ]),
+            ),
+          }),
+        }),
+      });
+      vi.mocked(mockDriver.list).mockResolvedValue([{ botKey, state: 'running' }]);
+
+      await idleStopService.performSweep();
+
+      expect(mockDriver.stopIdle).not.toHaveBeenCalled();
+      expect(mockDriver.stop).not.toHaveBeenCalled();
+    });
+
+    it('stops a lead-role bot when alwaysOnRoles is explicitly empty (OPE-12291)', async () => {
+      settingsState.general = { idleStop: { enabled: true, afterSec: 300, healthTimeoutMs: 30000, alwaysOnRoles: [] } };
+      const botKey = '550e8400-e29b-41d4-a716-446655440000';
+      let runsQueryCount = 0;
+      mockDb.select.mockImplementation(() => ({
+        from: vi.fn().mockImplementation((table: any) => {
+          if (table === botApplyJobs) {
+            return { where: vi.fn().mockReturnValue({ limit: vi.fn().mockReturnValue({ then: vi.fn().mockImplementation((resolve: any) => resolve([])) }) }) };
+          }
+          if (table === agents) {
+            return {
+              where: vi.fn().mockImplementation(() => ({
+                limit: vi.fn().mockReturnValue({ then: vi.fn().mockImplementation((resolve: any) => resolve([{ id: botKey }])) }),
+                then: vi.fn().mockImplementation((resolve: any) =>
+                  resolve([{ agentId: botKey, agentRole: 'lead', adapterConfig: { container: { enabled: true, idleStopMode: 'on_demand' } } }]),
+                ),
+              })),
+            };
+          }
+          if (table === heartbeatRuns) {
+            runsQueryCount++;
+            if (runsQueryCount === 1) return { where: vi.fn().mockReturnValue({ limit: vi.fn().mockReturnValue({ then: vi.fn().mockImplementation((resolve: any) => resolve([])) }) }) };
+            const oldDate = new Date(Date.now() - 400000);
+            return {
+              where: vi.fn().mockReturnValue({
+                orderBy: vi.fn().mockReturnValue({
+                  limit: vi.fn().mockReturnValue({ then: vi.fn().mockImplementation((resolve: any) => resolve([{ finishedAt: oldDate, startedAt: oldDate }])) }),
+                }),
+              }),
+            };
+          }
+          return { where: vi.fn().mockReturnValue({ then: vi.fn().mockImplementation((resolve: any) => resolve([])) }) };
+        }),
+      }));
+      vi.mocked(mockDriver.list).mockResolvedValue([{ botKey, state: 'running' }]);
+      vi.mocked(mockDriver.stopIdle!).mockResolvedValue(undefined);
+
+      await idleStopService.performSweep();
+
+      expect(mockDriver.stopIdle).toHaveBeenCalledWith(botKey);
     });
   });
 
@@ -687,6 +911,108 @@ describe('IdleStopService', () => {
       const state = await idleStopService.readRuntimeState('b');
 
       expect(state.lastStoppedAt).toBeNull();
+    });
+  });
+
+  // myrmidon(IDLE-STOP): on the board the service gets `getBotContainerRuntime().driver`, which is
+  // the fleet-routing driver (startup.ts), not the docker driver. The router did not forward
+  // `stopIdle`, so on the live board every stop failed with "idle-stop route is not supported by
+  // this driver" and the idle containers kept their memory. These tests run the service over the
+  // real router.
+  describe('over the fleet-routing driver', () => {
+    const botKey = '550e8400-e29b-41d4-a716-446655440000';
+
+    function routedDrivers(cardHost: string | null, opts: { siteHasStopIdle?: boolean } = {}) {
+      const running: BotContainerStatus[] = [{ botKey, state: 'running' }];
+      const local = {
+        status: vi.fn(), start: vi.fn(), stop: vi.fn(), restart: vi.fn(), create: vi.fn(), recreate: vi.fn(),
+        writeProfile: vi.fn(), templateDrift: vi.fn(),
+        list: vi.fn().mockResolvedValue(cardHost === null ? running : []),
+        stopIdle: vi.fn().mockResolvedValue(undefined),
+      };
+      const site = {
+        ...local,
+        status: vi.fn(), start: vi.fn(), stop: vi.fn(),
+        list: vi.fn().mockResolvedValue(cardHost === null ? [] : running),
+        stopIdle: opts.siteHasStopIdle === false ? undefined : vi.fn().mockResolvedValue(undefined),
+      };
+      const routed = fleetRoutingDriver(
+        { local: local as any, fleet: new Map([['host-a', site as any]]) },
+        () => ({ adapterConfig: cardHost === null ? { container: { enabled: true } } : { container: { enabled: true, host: cardHost } } }),
+      );
+      return { local, site, routed };
+    }
+
+    /** The board data of one bot that has been idle for 400 s (afterSec is 300). */
+    function mockIdleBot() {
+      mockListBotKeys(mockDb, [botKey]);
+      let runsQueryCount = 0;
+      const thenable = (rows: unknown[]) => vi.fn().mockImplementation((resolve: any) => resolve(rows));
+      mockDb.select.mockImplementation(() => ({
+        from: vi.fn().mockImplementation((table: any) => {
+          if (table === botApplyJobs) return { where: vi.fn().mockReturnValue({ limit: vi.fn().mockReturnValue({ then: thenable([]) }) }) };
+          if (table === agents) return { where: vi.fn().mockReturnValue({ limit: vi.fn().mockReturnValue({ then: thenable([{ id: botKey }]) }) }) };
+          if (table === heartbeatRuns) {
+            runsQueryCount++;
+            if (runsQueryCount === 1) return { where: vi.fn().mockReturnValue({ limit: vi.fn().mockReturnValue({ then: thenable([]) }) }) }; // no active runs
+            const oldDate = new Date(Date.now() - 400000);
+            return {
+              where: vi.fn().mockReturnValue({
+                orderBy: vi.fn().mockReturnValue({
+                  limit: vi.fn().mockReturnValue({ then: thenable([{ finishedAt: oldDate, startedAt: oldDate }]) }),
+                }),
+              }),
+            };
+          }
+          return { where: vi.fn().mockReturnValue({ limit: vi.fn().mockReturnValue({ then: thenable([]) }) }) };
+        }),
+      }));
+    }
+
+    it('stops an idle local container through the router instead of logging "not supported"', async () => {
+      const { local, site, routed } = routedDrivers(null);
+      mockIdleBot();
+      const service = new IdleStopService(routed, mockDb, testConfig, mockLogger);
+
+      await service.performSweep();
+
+      expect(local.stopIdle).toHaveBeenCalledTimes(1);
+      expect(local.stopIdle).toHaveBeenCalledWith(botKey);
+      expect(local.stop).not.toHaveBeenCalled();
+      expect(site.stopIdle).not.toHaveBeenCalled();
+      expect(mockLogger.error).not.toHaveBeenCalled();
+    });
+
+    it('stops an idle container of a bot placed on a site through that site\'s driver', async () => {
+      const { local, site, routed } = routedDrivers('host-a');
+      mockIdleBot();
+      const service = new IdleStopService(routed, mockDb, testConfig, mockLogger);
+
+      await service.performSweep();
+
+      expect(site.stopIdle).toHaveBeenCalledWith(botKey);
+      expect(local.stopIdle).not.toHaveBeenCalled();
+      expect(mockLogger.error).not.toHaveBeenCalled();
+    });
+
+    // myrmidon(OPE-12663): an unsupported driver is a permanent condition — one
+    // warning per process instead of an error on every sweep; no plain stop is
+    // done in its place (that would lose the idle-stopped mark contract).
+    it('a site driver that cannot idle-stop gets one warning per process, and no plain stop is done in its place', async () => {
+      const { site, routed } = routedDrivers('host-a', { siteHasStopIdle: false });
+      mockIdleBot();
+      const service = new IdleStopService(routed, mockDb, testConfig, mockLogger);
+
+      await service.performSweep();
+      mockIdleBot(); // the per-sweep query mock is single-use: reset it for the second sweep
+      await service.performSweep();
+
+      expect(site.stop).not.toHaveBeenCalled();
+      expect(mockLogger.warn).toHaveBeenCalledTimes(1);
+      expect(mockLogger.warn).toHaveBeenCalledWith(
+        'Bot containers on this driver cannot be idle-stopped [idle-stop route is not supported by this driver]',
+      );
+      expect(mockLogger.error).not.toHaveBeenCalled();
     });
   });
 });

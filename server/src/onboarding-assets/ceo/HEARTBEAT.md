@@ -1,6 +1,6 @@
 # HEARTBEAT.md -- CEO Heartbeat Checklist
 
-Run this checklist on every heartbeat. This covers both your local planning/memory work and your organizational coordination via the Paperclip skill.
+Run this checklist on every heartbeat. This covers both your local planning/memory work and your organizational coordination via the Myrmidon skill.
 
 ## 1. Identity and Context
 
@@ -31,7 +31,7 @@ If `PAPERCLIP_APPROVAL_ID` is set:
 
 ## 5. Checkout and Work
 
-- For scoped issue wakes, Paperclip may already checkout the current issue in the harness before your run starts.
+- For scoped issue wakes, Myrmidon may already checkout the current issue in the harness before your run starts.
 - Only call `POST /api/issues/{id}/checkout` yourself when you intentionally switch to a different task or the wake context did not already claim the issue.
 - Never retry a 409 -- that task belongs to someone else.
 - Do the work. Update status and comment when done.
@@ -51,7 +51,7 @@ Status quick guide:
 - When you know the needed work and owner, create those subtasks directly. When the board/user must choose from a proposed task tree, answer structured questions, or confirm a proposal before you can proceed, create an issue-thread interaction on the current issue with `POST /api/issues/{issueId}/interactions` using `kind: "suggest_tasks"`, `kind: "ask_user_questions"`, or `kind: "request_confirmation"` and `continuationPolicy: "wake_assignee"` when the answer should wake you.
 - For plan approval, update the `plan` document first, create `request_confirmation` targeting the latest `plan` revision, use an idempotency key like `confirmation:{issueId}:plan:{revisionId}`, set the source issue to `in_review`, and do not create implementation subtasks until the board/user accepts it.
 - `ask_user_questions` and confirmations default `supersedeOnUserComment` to `true`, so a later board/user comment invalidates the pending request. Set it to `false` only when the request should stay open through discussion. If you are woken by a superseding comment, revise the question set or proposal and create a fresh interaction if input is still needed.
-- Use `paperclip-create-agent` skill when hiring new agents.
+- Use `myrmidon-create-agent` skill when hiring new agents.
 - Assign work to the right agent for the job.
 
 ## 7. Fact Extraction
@@ -79,7 +79,7 @@ Status quick guide:
 
 ## Rules
 
-- Always use the Paperclip skill for coordination.
+- Always use the Myrmidon skill for coordination.
 - Always include `X-Paperclip-Run-Id` header on mutating API calls.
 - Comment in concise markdown: status line + bullets + links.
 - Self-assign via checkout only when explicitly @-mentioned.

@@ -48,6 +48,11 @@ export interface HostDiskSweepDeps {
   /** myrmidon(1.6.5-BOT-DISK-H10): threshold state the sweep feeds with each measurement. */
   partitionRuntime?: import("./partition.js").BotPartitionThresholdRuntime | null;
   /**
+   * myrmidon(1.6.8 OPE-12697, DISK-ALERT): host-root threshold state the
+   * sweep feeds with each measurement; null keeps the root unmeasured.
+   */
+  rootRuntime?: import("./root.js").HostRootThresholdRuntime | null;
+  /**
    * myrmidon(1.6.5 F-03): how often an unmeasured sweep repeats the ERROR log
    * line. The transition into `unmeasured` logs one error at once; while the
    * state holds, the error repeats no more often than this interval and every
@@ -88,6 +93,7 @@ export function createHostDiskSweep(deps: HostDiskSweepDeps): HostDiskSweep {
   let consumers: HostDiskConsumerEntry[] = [];
   const partitionClient = deps.partitionClient ?? null;
   const partitionRuntime = deps.partitionRuntime ?? null;
+  const rootRuntime = deps.rootRuntime ?? null;
   // myrmidon(1.6.5 F-03): null = "no result yet", so the first ever sweep
   // that fails logs the transition error; `lastUnmeasuredErrorAt` throttles
   // the repeats while the path stays missing.
@@ -133,6 +139,18 @@ export function createHostDiskSweep(deps: HostDiskSweepDeps): HostDiskSweep {
     if (partitionRuntime) {
       if (partitionUsage) await partitionRuntime.updateFromPartition(partitionUsage);
       else partitionRuntime.markUnmeasured();
+    }
+    // myrmidon(1.6.8 OPE-12697, DISK-ALERT): the host root (`/`) is measured
+    // from the same dockergate answer. The root signal mirrors the bot
+    // partition's: measured → the root runtime evaluates warn/critical;
+    // not measured → "not measured", nothing else changes. Observation and
+    // signal only — the sweep deletes nothing.
+    const rootUsage = partitionClient
+      ? await partitionClient.readRootUsage()
+      : null;
+    if (rootRuntime) {
+      if (rootUsage) await rootRuntime.updateFromRoot(rootUsage);
+      else rootRuntime.markUnmeasured();
     }
     if (!usage) {
       const error = hostDiskUnmeasuredError(deps.dataRootPath);

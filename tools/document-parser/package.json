@@ -1,0 +1,11 @@
+{
+  "name": "@myrmidon/document-parser-adapter",
+  "version": "0.1.0",
+  "description": "HTTP DocumentParser adapter for Docling-serve and knowledge corpus",
+  "type": "module",
+  "main": "bin/server.mjs",
+  "scripts": {
+    "start": "node bin/server.mjs"
+  },
+  "dependencies": {}
+}

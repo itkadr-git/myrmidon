@@ -10,84 +10,4145 @@ version file to edit. Base Paperclip version is in the image label
 
 ## Unreleased
 
+## 1.6.7
+
+### Corpus: the full-text ranking starts after the embedding again (1.6.7 CORPUS-LATENCY, OPE-12272)
+
+- The change "the full-text ranking starts together with the embedding" is taken back. The full-text
+  ranking has a time bound of 800 ms. When it started first, the bound ran out while the question was
+  still being embedded, and whether the ranking finished in time or was cancelled depended on a race with
+  the embedding and with the load of the database. The top 5 of the same question then changed between
+  identical runs (21 of 70 questions of the golden set, against 5 before), and hit@5 of the cold run fell
+  to 57 of 70 (the limit is 58).
+- A search embeds the question first and then starts the vector and the full-text ranking side by side, as
+  it did in the full-text bound change. `CorpusSearchQuery.embedding` is a plain vector again.
+- Kept from the same change: the cache of the resolved embedder key
+  (`MYRMIDON_CORPUS_EMBED_KEY_CACHE_TTL_SEC`) and the sampled step timings on the info log
+  (`MYRMIDON_CORPUS_STEP_TIMINGS_SAMPLE`).
+
+### Saving the bot disk settings no longer erases keys the screen does not show (SETTINGS-BOTDISK-MERGE)
+
+- Found by QA on 1.6.7-rc.9: after a Save of Settings -> General -> "Bot disk lifecycle" the stored `general.botDisk.gitMigrationEnabled: true` was gone, so `MYRMIDON_GIT_MIGRATION_ENABLED` was no longer set when a bot container was recreated.
+- Cause: `PATCH /api/myrmidon/bot-disk` merges the patch over `resolveBotDiskSettings(...).settings` and stores the result as the whole `botDisk` object (instance settings replace nested objects). That effective view left out the five BOT-DISK-H5c / OPE-9673 mechanics keys (`botdIntervalSec`, `legacyPressureIdleDays`, `hermesPruneEnabled`, `hermesPruneDays`, `gitMigrationEnabled`), so any PATCH of another key (also every Save of this panel) dropped them from the row.
+- Fix: the effective settings now carry every stored mechanics key, so the merge keeps them; an explicit `null` still returns a key to its default. `GET /api/myrmidon/bot-disk` shows these keys when they are stored. No contract change, no UI change.
+
+## 1.6.7
+
+### Settings → General no longer crashes on the Runs & Queue panel (SETTINGS-GENERAL-CRASH)
+
+- Fixed: a few seconds after opening Settings → General the page fell to the error screen "values is not iterable". The Runs & Queue panel read a `values[]` array from `GET /api/myrmidon/behavior-settings`, while the server answers `{ settings, sources }` (the contract every other behavior-settings panel uses). The panel now reads that contract; a response of any other shape, or a failed request, is shown as an error inside the panel and never takes the page down. A value typed into a field that cannot be parsed is flagged and not sent.
+- Fixed: a non-administrator who opens the Channels or Bot disk settings now sees "Нужны права администратора экземпляра" / "Instance admin access required" (translated) instead of raw English or no message at all.
+- Fixed: the swarm "scent" block of Settings → General showed raw `swarmClaim.scent.*` keys; the ru/en strings are added.
+- Test: the server contract test now pins that `GET /api/myrmidon/behavior-settings` answers `{ settings, sources }` and carries every runs-queue key; the panel's key list is checked against the registry.
+
+### Instance → General: the "Workspace hygiene" panel is on the page (1.6.7 SETTINGS-UI, OPE-6249)
+
+- The two disk ceilings of the workspace quota sweep, `workspaceQuotaMb` (one execution workspace) and
+  `totalQuotaMb` (the sum of one company's measured workspaces), had a read/write route
+  (`GET`/`PATCH /api/myrmidon/workspace-hygiene`) and a finished panel component, but the component was
+  never placed on the page, so the production UI had no way to see or change them. The panel "Workspace
+  hygiene" now sits on Settings → General next to the bot disk panels. It shows both ceilings, the source
+  of each value (default, environment override, saved here), the biggest measured workspaces and the last
+  sweep, and saves through the existing `PATCH` route. An empty field means the cap is off.
+- A save applies at once: the sweep reads the stored ceilings at the top of every tick, no restart.
+- The source labels of the panel went through i18n (they were fixed English strings). A save or a read
+  refused with 403 now says "Instance admin rights are required." instead of the raw server text; the
+  `PATCH` route stays instance-admin only.
+- The merged-workspace cooldown and the stuck-workspace signal delay stay in the Runs & Queue panel; they
+  are not part of this one.
+
+## 1.6.7
+
+### Corpus: the embedder key is kept for 60 s, the full-text ranking starts with the embedding, and the step timings reach the info log (1.6.7 CORPUS-LATENCY, OPE-12272)
+
+- A cold question needs the API key of the company's embedder secret. The secrets service resolved it
+  on every such question: several reads and one write of a secret access event, and the reads queue
+  behind a busy database. The resolved key is now kept in the board process for 60 s (setting
+  `MYRMIDON_CORPUS_EMBED_KEY_CACHE_TTL_SEC`, `0` turns it off). The lookup of the secret row still runs
+  on every question and the cache key holds the secret id and its latest version, so a rotated,
+  replaced or deactivated secret is never served from an older entry. An embedder without the secret
+  still answers `corpus_embedder_not_configured` at once.
+- **Audit change, on purpose.** The access event of the embedder secret is written when the key is
+  actually resolved, that is at most once per TTL and company (and once per secret version), not on every
+  search. A reader of the access log sees about one `myrmidon-corpus` read a minute under load instead
+  of one per cold question. Set the TTL to `0` to get one event per question again.
+- The full-text ranking of a search does not need the vector. A search now starts the embedding and the
+  full-text ranking together: the index receives the embedding as a promise (the type of
+  `CorpusSearchQuery.embedding` is `number[] | PromiseLike<number[]>`), runs the full-text ranking at
+  once and runs the vector ranking when the embedding is ready. The 800 ms time bound of the full-text
+  ranking runs from its own start, so it now elapses while the question is still being embedded. The
+  fusion and the hits are the same as before; a failed embedding still fails the search; a cancelled
+  full-text ranking is still replaced by the vector ranking alone.
+- The step timings of a search (`corpus search: handler step timings` of the REST route, the new
+  `corpus mcp search: handler step timings` of the agent route, and `corpus search: embed and index
+  timings`) went to the debug log. One search in N now writes them on the info log, so the split of a
+  slow search can be read in production without debug (setting
+  `MYRMIDON_CORPUS_STEP_TIMINGS_SAMPLE`, default 20; `1` is every search, `0` keeps them on debug). The
+  other searches still write them on debug.
+
+## 1.6.7
+
+### MODEL-PROVIDERS-POOLS-WEB: model channels, the ChatGPT and Antigravity pools, the fallback order and the agent key lists work from the board web UI
+
+- The "Model providers" screen called `/model-providers/providers/...`, a path the server never had, so every call answered 404 (the list, the model list, the channels, the key rotation and the removal). The client now calls the paths the server mounts: `/model-providers` and `/model-providers/:id/...`. The change log of the screen no longer adds a second `/api` prefix, and the LiteLLM channel rows of both server spellings fill the same table columns.
+- The `antigravity-pool` and `google-ai-pool` provider types are registered when the plugins `myrmidon.antigravity` and `myrmidon.google-ai` are ready, as `chatgpt-pool` is. Both support channels. `antigravity-pool` brings the four model groups `antigravity/gemini-3.8-flash-high`, `antigravity/gemini-3.8-flash-medium`, `antigravity/gemini-3.8-flash-low` and `antigravity/gemini-3.5-flash-lite`; the model id is the LiteLLM group name. `google-ai-pool` has no default models. A connector that declares no models no longer gets the ChatGPT models. The pool service address has no default for these two types: enter it in the base URL field.
+- A pool lives on its own LiteLLM deployments. For `chatgpt-pool`, `antigravity-pool` and `google-ai-pool` the board sends no `/model/new`, `/model/update` or `/model/delete` when a model is enabled or disabled, when the key is rotated, when the provider is removed, or at the startup reconciliation. The board still shows or hides the pool models, and the fallback order (`GET` and `PUT .../litellm/fallbacks`) and the agent key lists stay board settings. The LiteLLM provider prefix of the pool types is now `openai`.
+- Removing a provider that is not a pool deletes only its own gateway deployments, found by deployment id and by the provider's own `api_base`. Before this change a removal deleted every database deployment of each removed model group, which also removed the deployments of other providers and of the pool routers.
+- The agent key allowlist pass read no enabled model (the joined rows were keyed by the SQL table names), so it never changed a key. It reads the registry now. To keep it from rewriting the model lists of every restricted key on its own, the startup check and the provider-change hooks run it as a dry run: they count the keys that would change, log the model names that would be added or removed, and send nothing. Applying is an explicit owner or admin action: `POST /api/myrmidon/companies/:companyId/litellm/keys/allowlist-sync` answers the dry-run report, and `?apply=true` applies it.
+
+## 1.6.7
+
+### Native runner: the gateway address now reaches Codex through its config file
+
+Codex 0.157 ignores the `OPENAI_BASE_URL` environment variable and reads the gateway address only
+from the `openai_base_url` key of its config. Passing the variable (previous fix) was therefore not
+enough: a native Codex agent that used an LLM gateway (for example LiteLLM) still sent its gateway
+key to api.openai.com and got 401 on the first turn. When the agent environment has
+`OPENAI_BASE_URL`, the native runner now also writes `openai_base_url = "<url>"` to the
+`config.toml` of the isolated Codex home, ahead of all tables and next to the existing keys. Only an
+`http://` or `https://` address without whitespace, quotes or control characters is accepted; any
+other value stops the launch with a clear error that does not repeat the value. Without
+`OPENAI_BASE_URL` the config is unchanged.
+
+### Corpus: a search no longer counts every dataset, and a repeated question reuses its vector (1.6.7 CORPUS-LATENCY, OPE-12272)
+
+- The `corpus_search` tool (the route the agents use) called the same store read as `corpus_list_datasets`
+  on every search. That read counts the documents and the chunks of every dataset of the company, to get
+  the id and the name of each dataset. On a corpus of hundreds of thousands of chunks it took 3 to 5 s, so
+  the agent route was about 3 s slower than the REST search of one dataset. The search now reads only the
+  ids and names (new store port method `listDatasetNames`, one query with no counters). The answer of the
+  search does not change: the same datasets, the same hits, the same `datasetName` in each hit. The tools
+  `corpus_get_document` and `corpus_list_documents` also take the dataset name from this read and no
+  longer count the dataset.
+- The dataset list with its counters (`corpus_list_datasets`, the board screen, the shadow search) is kept
+  per company for 60 s. A write through the corpus ports (dataset, document or chunk change) drops the
+  list of that company at once, so an upload, a parse result or a delete shows in the list without
+  waiting. A change made outside the board process (an import script on its own connection) shows after
+  at most the TTL. The counters of one dataset (`getDataset`) no longer load every document row to count
+  the documents: the count is the sum of the per-status counts that the same read already had.
+- The vector of a search question is kept for 600 s (was 60 s) and for at most 512 questions (was 128),
+  so a repeated question, for example a run of a golden set, does not call the embedder again. The key is
+  the company, the embedder (base URL, model, dimensions) and the exact text of the question. Identical
+  questions in flight at the same time share one embedder call. A failed embedder call is never kept.
+- Two new settings, both in seconds: `MYRMIDON_CORPUS_QUERY_EMBED_CACHE_TTL_SEC` and
+  `MYRMIDON_CORPUS_DATASET_LIST_CACHE_TTL_SEC`. `0` turns the matching cache off.
+
+## 1.6.7
+
+### A bot's npx and cargo caches stay under a byte quota (OPE-12110)
+
+One bot grew `hermes/.npm/_npx` by 2.2 GB in 45 minutes (npx fetched a whole vendor package with all
+its binaries), and a Rust `target/` in a task working copy reached 2.4 GB. botd now bounds both:
+
+- `hermes/.npm/_npx`: entries older than 24 h are removed, and when the rest weighs more than the
+  quota (512 MiB per bot) the entries written longest ago go first, until it fits.
+- `hermes/.cache/cargo-target`, the per-bot `CARGO_TARGET_DIR` the bot image already sets (outside
+  every task working copy): quota 2 GiB per bot, whole profile dirs (`debug`, `release`, a target
+  triple) removed least recently written first. A bot that never builds Rust has no such directory
+  and nothing creates it.
+
+Both passes work on whole entries, never remove a path a process holds open, and never touch an entry
+written in the last 15 minutes (an install or a build may still be going), so a quota can stay
+exceeded for one pass. Each eviction is a line in the botd log. The quotas are set with
+`MYRMIDON_BOTD_NPM_NPX_QUOTA_BYTES` and `MYRMIDON_BOTD_CARGO_TARGET_QUOTA_BYTES` on the botd process.
+
+## 1.6.7
+
+### Corpus: the full-text part of a search has a time bound, and the two parts run side by side (1.6.7 CORPUS-SEARCH)
+
+- A search of the knowledge corpus ranks chunks twice: by vector distance and by full text. The full-text
+  part of a natural-language question matched a large part of a big corpus and scored every match, and it
+  also computed a trigram `similarity` over the whole text of every match. On a corpus of 285 000 chunks
+  it took 9.8 s on average and up to 104 s, while the vector part took 0.4 s.
+- The full-text part now runs in its own transaction with `statement_timeout` of 800 ms (new option
+  `fullTextTimeoutMs`; `0` sets no bound of its own). When the server cancels it, the search answers from
+  the vector part alone, and the server log gets a warning with the company, the datasets, the length of
+  the query text and the time used. Every other error is still an error. A search that has no vector
+  part (a text-only search) has nothing to fall back on, so it returns the cancel error and not an empty
+  list.
+- The vector part and the full-text part run at the same time, each in its own transaction on its own
+  pooled connection, so a search takes the longer of the two and not their sum. A search holds two
+  connections while it runs.
+- For a question without the substring match, `similarity` now runs only over the best 1 000 chunks by
+  `ts_rank` (new option `fullTextRerankPool`; `0` brings the old statement back). Short query texts and
+  identifiers keep their statement and their order.
+
+### Remote sites: plain http is checked against the site record, fleet calls are audited, snapshots drop secret files
+
+- The hermes adapter allowed plain http to a bot gateway on a remote site when only the host name matched the site.
+  It now needs all of these: the site is active and marked `privateNetwork` or `tunnel`; the site address and the
+  target are IP literals in a private range (RFC 1918, RFC 6598 shared address space or loopback); the target host is the site host;
+  and the target port is inside the gateway port range of the site record (`gatewayPortStart`..`gatewayPortEnd`).
+  A site record without a port range allows no plain-http port. The `dangerouslyAllowInsecureRemoteHttp` flag of a
+  card is not changed.
+- The site registry is the only source of the site. The `fleetSite` and `fleetSites` fields of a card were read
+  before the registry and could describe a site that does not exist; they are not read any more.
+- `PATCH /api/myrmidon/fleet/sites/:name` takes `privateNetwork: true` and `tunnel: true` for a private IP address of
+  the site only (400 otherwise), and a site that carries a flag cannot be moved to another kind of address unless
+  the flags are cleared in the same request. The request also takes `gatewayPortStart` and `gatewayPortEnd`, so a
+  site that has no range (the env bootstrap writes none) can get one.
+- `MYRMIDON_FLEET_HOSTS` is deprecated. An `http://` address in it (`url`, `hindsightUrl`, `llmBaseUrl`) must now be
+  a private IP literal; a DNS name or a public address is refused. The board logs a warning at start while the
+  variable is set. Register sites with `POST /api/companies/:companyId/fleet/sites` instead.
+- Control calls on remote sites leave a row in the company activity log: `fleet.site.enroll`, `fleet.site.patch`,
+  `fleet.site.drain`, `fleet.site.resume`, `fleet.site.delete`, `fleet.bot.restart`, `fleet.bot.stop`,
+  `fleet.bot.move`, `fleet.bot.logs` (entity `fleet_site` or `agent`). A row says who, what, the outcome
+  (`ok`, `denied`, `rejected`, `failed`) and a few non-secret facts. It never holds a token, a secret name, a
+  certificate or a log. Only an actor of the company writes into its trail. Reading a log is recorded once a minute
+  per actor and bot.
+- The replica store no longer keeps the secret profile files. A stored snapshot leaves out `hermes/.env` and
+  `hermes/config.yaml` (the files the profile compiler writes as secrets), and its manifest is rewritten to match.
+  The apply that follows every restore writes the files again. A snapshot that cannot be read and checked in full is
+  refused, and the previous replica stays. Replicas that were stored before this change are replaced on the next two
+  snapshot passes.
+
+### Remote sites: the board generates the site token, enroll is owner-only and limited to private addresses, bots of remote sites no longer break the local bot lists
+
+- `POST /api/companies/:companyId/fleet/sites` no longer takes `tokenSecret`. The field named any secret of the company, and the board then sent the value of that secret as a bearer token, together with its client certificate, to the address from the same request. The board now generates a random token for each new site, keeps it in the company secret `myrmidon-fleet-site-token-<site>`, and returns it once in the enroll answer as `fleetd.token`. Put it in the `token` key of `fleetd.json`. A request that carries `tokenSecret` gets `400`. A site that is already enrolled keeps its own token secret and needs no action.
+- The host of a site address (enroll, and a changed `url` in `PATCH`) must be a private IPv4 address (10/8, 172.16/12, 192.168/16, 100.64/10) or a host listed in the new setting `MYRMIDON_FLEET_SITE_URL_ALLOWLIST`. Any other host gets `400` and the board issues no certificate and no key. A `PATCH` that leaves the stored address as it is is not checked again.
+- Enroll, `PATCH` and delete of a site are for the company owner (and the instance admin). Before, a company admin could do it. Drain, resume, restart and stop stay open to the company admin.
+- Moving a bot to another site, reading the status of a move and reading the log of a bot of a remote site (`/fleet/bots/:key/move`, `/fleet/bots/:key/logs`, `/api/myrmidon/fleet/bots/:key/logs`) need a company admin. Before, any member of the company could do it.
+- The enroll answer carries `Cache-Control: no-store`: it holds the server key and the token.
+- Deleting a site also deletes the token secret that the board generated for it. The token secret of an older site is never deleted with the site.
+- The fleet router lists bots per host. `list` and `listRunning` sent every bot key to the local driver and to every site. The local dockergate refused each bot of a remote site (`bot_not_enrolled`), and one refused call failed the whole list, so the clone-report pass and the idle sweep saw no bot. Now each host gets only the bots of its own cards. A host that fails no longer fails the list: the failure is logged (`fleet routing: a host could not be listed`), and the list fails only when no host answered. The clone-report key list and the disk-quota sweep skip bots that run on a remote site.
+
+### fleetd: audit log, request limits, client certificate allowlist and clean-up
+
+- fleetd writes one JSON audit line per API request to stdout (the journal): time, route, method,
+  bot key, status, the SHA-256 of the client certificate and the duration. Bodies, query strings
+  and tokens are not logged.
+- A JSON request body is limited to 1 MiB. A restore is limited to 20 GiB of file content and
+  2,000,000 archive entries; above that it answers `413 restore_too_large` and changes nothing.
+  The HTTP server now has header, read and idle timeouts. It has no write timeout, so a long
+  snapshot is not cut.
+- New optional key `clientCertSha256` in `fleetd.json`: a list of SHA-256 fingerprints of the
+  client certificates that may call the API. When the list is set, fleetd refuses any other
+  certificate in the TLS handshake. When it is empty or absent, nothing changes. The board renews
+  its client certificate, so do not pin a fingerprint without a plan for the renewal.
+- fleetd removes the `.replaced-*` and `.quarantined-*` directories that are older than 7 days
+  from the volume root, at start and then every 24 hours.
+- The out-of-memory listener now also reports the containers that fleetd creates itself
+  (`fleet-<botKey>`), not only `myrmidon-bot-*`.
+- A systemd drop-in with sandboxing options for the fleetd unit is added in
+  `docs/myrmidon/fleetd/myrmidon-fleetd.service.d/`.
+
+### fleetd on a remote site: a safe marker read, the same container template, writable caches
+
+- A bot can no longer stall or exhaust fleetd through its applied marker. fleetd runs as root and
+  reads `hermes/.myrmidon/applied.json` from a directory the bot owns. It now opens the file without
+  following a symlink and without blocking, accepts only a regular file, and reads at most 64 KiB.
+  A symlink, a FIFO, a directory or a larger file counts as "no marker".
+- A container on a remote site now gets the template of the board host: `/tmp` as a tmpfs, an init
+  process, the `on-failure` restart policy, and `MemorySwap` equal to `Memory`. A container that
+  exists already gets the template at its next recreate.
+- fleetd refuses a spec with `cpus` below 0.01 (a tiny value used to round to "no CPU limit"), with
+  a `gatewayPort` outside 1024-65535, or with a `boardExtraHost` that differs from the site's own.
+  The answer is `spec_invalid`. The board address in a container always comes from the site
+  configuration.
+- New configuration key `writableMountRoots` (default: empty). An extra mount without `readOnly` is
+  accepted only when its source, with symlinks resolved, is inside one of these directories (and
+  inside `allowedMounts`). Work bots can use their shared package caches on a remote site. Roll out
+  the new binary before the configuration that uses the key.
+
+### Gateway channels and fallbacks managed from the board (LITELLM-BOARD)
+
+- `GET /api/myrmidon/companies/:companyId/litellm/channels` lists the gateway deployments again. The
+  model-provider routes are mounted first and used to answer that path with
+  `{channels: [], enabled: false}`. They now serve only
+  `/model-providers/litellm/channels`, the model-group list of the provider screen.
+- The fallback topology lives in the gateway only. `GET .../litellm/fallbacks` reads the live router
+  settings; `PUT .../litellm/fallbacks` sends the whole list with `POST /config/update`. The board no
+  longer keeps a copy of the topology in its own database, and a save the gateway refuses is no longer
+  reported as stored. A `PUT` without a `chains` list answers 400 instead of clearing the list.
+- The model catalog reads the provider of a model from `model_info.litellm_provider`
+  (`custom_llm_provider` stays as the second choice). Before, every catalog row had no provider and
+  every fallback save was refused for it.
+- A fallback inside one provider (for example `zai-glm-5.3` to `zai-glm-5.3-flash`) is allowed. The
+  answer lists it in `warnings`, as it lists a model whose provider the catalog does not know. A target
+  that is not in the catalog, a loop, a free channel after a paid one and a cheaper channel after a
+  dearer one are still refused with 422.
+- `PUT .../litellm/fallbacks` stays behind the admin-key setting. Without it the answer is 503 with
+  `code: litellm_gateway_not_configured` and `missing` — the names of the variables to set.
+
+### Board-to-gateway sync: provider and channel keys, order, pause, names, agent keys
+
+The board registered models and channels in LiteLLM in ways the gateway ignores or rejects. All of it is
+now checked against LiteLLM v1.104.1.
+
+- **Keys travel as values.** LiteLLM has no secret manager here, so a `secrets/<name>` reference was stored
+  as the key, and a plugin model went out with an empty one. The board now resolves the company secret and
+  sends its value, for provider models, plugin models, channels and the startup reconciliation (which built
+  its sync service without a resolver and failed on the first enabled model of a company). A secret with no
+  value is an error, never an empty key.
+- **Order is `litellm_params.order`.** `/model/update` writes only `litellm_params`, so the order, priority and
+  disabled flags the board put in `model_info` were dropped. `priority`, `disabled` and `provider` are not
+  LiteLLM parameters and are no longer sent. A deployment without an order is only used when no ordered one
+  of its group is healthy.
+- **Disabling a channel pauses it.** LiteLLM has no `disabled` parameter; it has a pause flag. Disabling calls
+  `/model/block`, enabling calls `/model/unblock`; the router skips a paused deployment, and the definition
+  and the stored key stay in the gateway. Only deployments stored in the gateway database can be paused. A
+  channel can be created paused.
+- **Removing a model works.** `/model/delete` takes only a deployment id; the board sent model names and every
+  removal failed. It now looks the deployments up and deletes them by id. Switching a model off removes only
+  the deployment on the provider's own endpoint; deployments from the static gateway config are never touched.
+- **Key rotation keeps the group's other channels.** Rotating a provider key updated the first deployment under
+  the model name and deleted the other ones. It now rotates only the deployment on the provider's endpoint and
+  never deletes a channel on another endpoint.
+- **The registry name can be set.** The model's LiteLLM name was always `<type>/<model name>`, so it could not
+  match a group that already exists (`kimi/kimi-for-coding`). It can now be given when the provider is created
+  (`litellmModelNames`) and changed with the model update (`litellmModelName`, while the model is disabled).
+  The upstream model is always the provider's own model name. Registering the same name on the same endpoint
+  again no longer adds a second deployment.
+- **Agent keys are found where agents keep them.** The allowlist update looked for a `llm-gateway-key-<name>-<id>`
+  secret that live agents do not have. It now follows the card's key binding (`MYRMIDON_LLM_API_KEY`, else
+  `apiKey`) to the secret value and updates the key through `/key/update` by its sha256. Keys that allow all
+  models are still left alone, and an empty allowlist is still never sent when models are switched off.
+
+## 1.6.7
+
+### Native runner: Codex can use an OpenAI-compatible gateway
+
+The native runner passes only an allowlist of environment variables to the Codex app-server. The
+list had the API key but not `OPENAI_BASE_URL`, so a Codex agent that was configured for an LLM
+gateway (for example LiteLLM) still sent its requests, and its key, to api.openai.com and got
+401. `OPENAI_BASE_URL` is now on both allowlists (the TypeScript transport and the Rust runnerd).
+It is an address, not a credential.
+
+### A bot on a remote site can read its managed skills
+
+fleetd writes the profile files of a bot on a remote site. It created the missing directories of a
+file as its own user and gave the bot user only the file's own directory. So `hermes/skills` and
+`hermes/skills/paperclip-managed` stayed owned by root with mode 0700, and the bot gateway failed:
+"Permission denied: /data/hermes/skills/paperclip-managed". fleetd now gives the bot user every
+directory between the bot volume root and the file. The volume root itself stays as it is.
+
+## 1.6.7
+
+### An approved pull request whose head moved goes back to the implementer instead of waiting forever
+
+The board merge loop only merges the head a review verdict names. When the branch moved after
+the approval (a new push, or the base merged in), the loop skipped the pull request silently and
+nobody was asked to look again: approved PRs sat open for a day with green CI. Now, when the verdict
+names another head, the task goes back to the implementer with a "head moved after approval" note,
+the same path as a conflict or a branch behind its base; the implementer resubmits and the reviewer
+approves the current head. A verdict that names no head is still skipped.
+
+### Corpus search no longer loads every hit's chunks and jobs
+
+One corpus search resolved each hit's document with a full read that also loaded the
+document's chunks (embeddings included) and parse jobs, and the dataset check loaded every
+document of the dataset (OPE-12272). Both are now one bounded company-scoped query (document
+titles for the hits, dataset existence), and the search handler and the search index log
+their step durations on the debug log (`corpus search: handler step timings`,
+`corpus search: embed and index timings`), so a slow search can be attributed to the
+embedding call or to the SQL.
+
+### Remote sites: fleet restart/stop/logs reach the site, the network profile is editable, a new bot's first apply no longer races
+
+- Fleet bot actions (`POST /api/myrmidon/fleet/bots/:key/restart|stop`, `GET …/logs`) looked up the site transport
+  as `companyId:siteName`, while the client manager keys it as `companyId/siteName` (`fleetSiteKey`): every call
+  answered 502 "no valid mTLS client certificate". The lookups now use `fleetSiteKey`.
+- The same `companyId:siteName` lookup broke the bot move between sites (`fleet-move-wiring`); fixed the same way.
+- The fleet client manager kept the old site row when a refresh found the connection unchanged, so a changed
+  profile, status or capacity never reached `getSite()` (the hermes adapter's plain-http check) until a restart.
+  The fresh row now replaces the cached one; the client is kept.
+- `PATCH /api/myrmidon/fleet/sites/:name` accepts `privateNetwork` and `tunnel` and merges them into the stored
+  site profile (admin only). A site enrolled without `privateNetwork` could not get it later, and the hermes
+  adapter refused its plain-http gateway on an IPsec-internal address.
+- The bot profile compiler ensures the card's board API key before the parallel block: the MCP source listing
+  ensures it too, and on a new bot's first apply the two concurrent get-or-create calls both created the
+  secret ("Secret already exists: …-paperclip-api-key").
+
+### OMP agents resume their session again with omp 18.9.2
+
+omp 18.9.2 writes a `{"type":"title",…}` line before the `{"type":"session",…,"cwd":…}`
+header of a session file. The omp-local adapter read only the first line, never found the
+saved working directory and started every next heartbeat as a fresh session (OPE-12287).
+The header is now looked up among the first 10 lines (the remote path reads `head -n 10`
+too), so both the old and the new session file formats resume with `--session <file>`.
+
+### The block owner's unblock wake is no longer cancelled as "assignee changed"
+
+When the board blocks an issue and wakes its block owner with `issue_unblock_requested`
+(stranded-issue disposition, routable blocked issues), that owner — typically a senior
+agent asked to assign a final status — is usually not the assignee. The queued-run gate
+cancelled every such run as `issue_assignee_changed`, so the block could never be resolved
+and the same owner was woken again and again (on 2026-11-08 the operator agent spent 36 runs
+in an hour on two issues this way). The gate now lets the run start when it is an automation
+`issue_unblock_requested` wake, the issue is still `blocked`, and the run's agent is the
+recorded block owner (`blockerMetadata.owner` or `unblockDescriptor.owner`); any other
+non-assignee is cancelled as before, and a terminal issue still stops the run.
+
 ## 1.6.6
 
-### The company agent list ships without adapter_config; the config stays one request away (PERF-DIET G2)
+### IDLE-STOP: stop idle bot containers, wake on demand with health check (IDLE-STOP)
 
-- `GET /api/companies/:companyId/agents` no longer returns `adapterConfig`. The
-  heavy, secret-bearing column (environment bindings, secret and API-access
-  references) is not read from the database at all for this response: the list
-  now selects the narrow projection and extracts the model in SQL
-  (`adapter_config->>'model'`) into a new `adapterModel` field.
-- The full configuration stays available exactly as before through
-  `GET /agents/:id` (detail), `GET /agents/:id/configuration` and
-  `GET /companies/:companyId/agent-configurations`; access rules
-  (`filterAgentsForActor`, the restricted view) and spend hydration are
-  unchanged. An actor without `agent_config:read` keeps the old disclosure:
-  the restricted list view blanks `runtimeConfig` and `adapterModel` instead of
-  blanking `adapterConfig`.
-- The board UI follows: the agents list renders its model column from
-  `adapterModel`; the new-issue dialog and the issue properties pane read the
-  selected assignee's configuration on demand (only for a `paperclip_runner`
-  provider or the required-user-secret warning); the secret-access section of
-  Settings → Secrets reads the configuration endpoint for the whole company.
-- The `paperclipai secrets migrate-inline-env` CLI command follows too: it reads
-  `GET /companies/:companyId/agent-configurations`, because the slim list no
-  longer carries the inline env bindings that command migrates.
-- The bot-image rollout (`scripts/myrmidon/deploy/bot-image-rollout.sh`) follows
-  on the same footing: bot cards — the `container` block included — are read from
-  `GET /companies/:companyId/agent-configurations`, so the enrollment limits in
-  `bots[]` and the card's current image still come from the board after the list
-  went slim. Its fake-board test serves a list row with no `adapterConfig` at all,
-  which pins the rollout to the configurations endpoint.
+- Periodic sweeper stops bot containers that have had no active heartbeat runs
+  for longer than `MYRMIDON_IDLE_STOP_AFTER_SEC` (default 30 min), via
+  `BotContainerDriver.stop(botKey)` — the driver itself is unchanged.
+- Before a claimed run starts, the board wakes a stopped container with
+  `driver.start(botKey)` and waits for it to become healthy, up to
+  `MYRMIDON_IDLE_START_HEALTH_TIMEOUT_MS` (default 420 s). On timeout the run is
+  cancelled with a clear journal error — it never starts blind.
+- Cold-start duration (start → healthy) is logged for every wake.
+- The feature is on by default since OPE-7898 (IDLE-STOP board controls): `MYRMIDON_IDLE_STOP_ENABLED` set to `false`, `0`, `no` or `off`
+  turns it off when nothing is stored in the instance settings; the stored instance settings (idle threshold, health timeout, switch) win
+  over the environment, and each agent can be set to the mode "On demand" or "Always on".
 
-### A busy bot no longer holds the bot image rollout (BOT-ROLLOUT-SKIP-BUSY, OPE-5098)
+### Live browser screen is connected (BROWSER-CONSOLE part B)
 
-- The batch pass of `bot-image-rollout.sh` no longer waits on a busy bot: a
-  bot whose agent is not paused/idle (or whose apply answers `deferred`) moves
-  to a tail list and its batch ends as soon as the free bots are switched —
-  the next batch starts at once. Before this, one busy bot held its whole
-  batch for the full `MYRMIDON_BOT_IMAGE_ROLLOUT_BOT_TIMEOUT_SEC` (the rc.3 /
-  rc.5 fact: 15 batches stretched to 3.5–4 h).
-- After the last batch a tail pass retries the deferred bots until the same
-  deadline; a bot that frees up (paused/idle) switches at once, inside the
-  same run.
-- Past the deadline the optional force stage applies the still-deferred bots
-  without the status gate: the reconciler's own pause-and-apply path opens
-  the maintenance window and drains the in-flight run to its end — a run is
-  never interrupted. Gated by the new
-  `MYRMIDON_BOT_IMAGE_ROLLOUT_FORCE_DEFERRED_SEC` (default = the bot timeout;
-  `0` disables the stage and keeps the pre-1.6.5 apply behaviour).
-- The final report lists every bot still not on the release image with its
-  reason (agent status / the deferred reason of the apply outcome), and the
-  summary JSON gains `deferredBots: [{id, reason}]` (an addition only — no
-  existing field renamed).
+- Settings -> Browsers: pressing "Open screen" now shows the live Chromium
+  picture. The panel signs a short-lived (5-minute) Guacamole auth-JSON for a
+  VNC connection and loads the shared Guacamole client in the screen frame —
+  the same client, URL and `guacamole-json-secret-key` as the server console;
+  no second Guacamole deployment. The picture rides guacd -> x11vnc on the
+  exec host (Xvfb :99); the board talks to the exec host through the new
+  screen node, and activity on the panel keeps the session timers alive.
+- New settings: `MYRMIDON_BROWSER_VNC_TARGET` (the `host[:port]` guacd must
+  reach; unset — the console token answers 503, the session itself keeps
+  working) and `MYRMIDON_BROWSER_CONSOLE_MCP_URLS` (endpoint -> browser map
+  for the gateway pause guard).
+- The bot pause got its server-side insurance wired into the tool gateway:
+  while an owner screen session is open, MCP calls aimed at the live browser
+  answer 423 before reaching the browser.
+- New operational service on the exec host: `browser-console-node.service`
+  (ops/browser-console-node, python3 stdlib) — opens/stops the x11vnc session
+  units, stops/starts the bot MCP path on pause/resume, clears site data over
+  CDP, and releases the screen itself if the board stopped reporting
+  heartbeats (2 minutes). Install/rollback scripts ship with the node.
 
-### Memory is written once per run and run-start recall is conditional (1.6.5 PERF-DIET HS/D1)
+### Custom castes in the interface (CUSTOM-CASTES C)
 
-- The memory fork (`packages/plugins/hindsight-paperclip`, version
-  `0.3.0-myrmidon.2`) no longer writes one memory per ticket comment. A run's
-  comments wait in run-scoped plugin state and are retained as one consolidated
-  digest per bank when the run finishes: the document is headed
-  `Run <runId> digest` and lists the comments with their author and ticket,
-  and its metadata carries `kind: "run-digest"`, `runId`, `agentIds`,
-  `issueIds` and `commentCount`. Duplicate comment ids collapse, bodies under
-  200 characters and board-machinery comments (a `## …` heading, a status
-  change, a wake notice, a `Review:` verdict) are dropped, and the buffer is
-  cleared after the flush. A comment outside a run — a human's, or an event
-  that carries no run id — is retained immediately, as before, because it is
-  new input for whichever run picks the ticket up next. A failed retention is
-  a warning in the plugin log; the run never fails because of memory.
-- Run-start recall became conditional. The new plugin instance configuration
-  field `recallOnRunStart` (not an environment variable) takes `new-issue`
-  (the default), `always` or `never`. `new-issue` searches the agent's bank
-  only when the agent has not already searched for this ticket, so repeated
-  wakes of one ticket no longer pay for the same local rerank; `always` keeps
-  the previous behaviour, `never` turns run-start recall off. The
-  `hindsight_recall` tool still searches on demand.
-- Memory bank routing is unchanged: the card's
-  `adapterConfig.hindsight.bankId`, then `bankByAgentId`, then the agent stays
-  closed.
+- The company caste directory now has a screen: **Company Settings → Agent
+  castes** (`/company/settings/caste-directory`). The first visit seeds the
+  twelve built-in castes; the owner adds their own, edits names (EN/RU),
+  description, color (token palette), icon, default model, swarm
+  participation (`swarmEligible`) and a per-caste active-task limit (empty =
+  the global swarm limit). Create/edit/delete go through part A's API
+  (`POST`/`PATCH`/`DELETE` `/api/myrmidon/companies/:id/castes[/:key]`); the
+  caste key and the built-in flag never change after creation. A caste with
+  live agents on it cannot be deleted outright: the screen asks for a
+  reassignment target and the delete runs only with `reassignTo` — the agents
+  (and their queued tasks, which follow `agents.role`) move to the target
+  caste in one transaction. The same directory drives every role picker: the
+  role select on the agent card, the role rows of the autonomy matrix and
+  the onboarding select all list the company's castes, falling back to the
+  built-in twelve while the directory is unavailable. A custom role that has
+  no directory entry displays its key instead of breaking the label.
+
+### 1.6.2 — AUTONOMY-MATRIX: an `approval_required` cell now holds the action instead of refusing it (pause / resume / wakeup)
+
+Pausing, resuming and waking an agent (action class `pause_wake_agents`) is now enforced at
+the API seam: `POST /agents/:id/pause`, `POST /agents/:id/resume` and `POST /agents/:id/wakeup`
+consult the autonomy matrix before they touch the agent. `forbidden` keeps answering
+`403 autonomy_forbidden`. `approval_required` no longer answers `403
+autonomy_approval_required`: the attempt is recorded as an ordinary approval card
+(`tool_action_requests` + `tool_invocations`, `tool_name = autonomy_action_<class>`) and the
+route answers `202 { held: true, approvalId }` without pausing, resuming or waking anyone.
+
+The card is decided through the regular action-request approval entry
+(`POST /api/tool-gateway/action-requests/:id/approve`, board-only). On approval the stored
+descriptor is replayed on behalf of the original actor — pause/resume through the agent
+service, wakeup through the heartbeat service — **exactly once**: the request is claimed with
+a conditional `UPDATE ... WHERE status = 'approved'` (`approved` → `executing`), so a second
+approval, or a retry that no longer finds the row approved, executes nothing; a rejection
+executes nothing. Both rows are settled (`executed` / `failed` and `succeeded` / `failed`) and
+the execution is logged as `myrmidon.autonomy.action_executed`.
+
+The matrix is read from `instance_settings.general.myrmidonAutonomy` on every request, so
+editing a cell in the Regulations UI takes effect without a restart — no env override and no
+new settings key. Board and admin callers are not subject to the matrix. Guide:
+`docs/myrmidon/guides/autonomy-matrix-holding-actions.md` (RU: `…ru.md`).
+
+### Cloud storage docs: connector guide links and the Russian settings section (CLOUD-CONNECTOR)
+
+- The cloud-storage bullet in the root README now points at
+  [docs/myrmidon/guides/cloud-connector.md](docs/myrmidon/guides/cloud-connector.md) — the guide of
+  the connector module — instead of the 1.3 `cloud-files` guide, which documents the temporary
+  Microsoft 365 file-and-mail service for bots and carries none of the `MYRMIDON_CLOUD_*` variables.
+- The Russian settings registry gains the connector section the English one already had, so an owner
+  reading `SETTINGS.ru.md` finds the provider client credentials and the callback base address.
+
+### 1.6.5 SWARM-PANEL-COOLING (OPE-6894): the swarm panel loses its dead cooling knobs, gains the real one, speaks Russian
+
+- Removed: `pheromone.cooldownBaseMin` and `pheromone.cooldownCapMin` from the
+  swarm-claim settings contract (`packages/shared/src/myrmidon-swarm-claim.ts`)
+  and from the "Self-organization (swarm)" panel — no server code ever read
+  them; the real cooling rule is `general.swarm` (the F-26 wake-task guard).
+  A stored pre-1.6.5 `general.swarmClaim.pheromone` block that still carries
+  the dead keys keeps parsing: they are stripped on read (mirrors the retired
+  pilot keys), so no existing install loses its swarm settings.
+- Added: a "Task cooling" block in the same panel section editing the one rule
+  the board applies — `general.swarm.cooldownBaseMin` (default 30 min),
+  `general.swarm.cooldownCeilingHours` (default 24 h) and the
+  run-without-task gate. Empty fields mean the server default; saving PATCHes
+  `general.swarm` through the instance-general settings API, so a change
+  applies on the next wake without a restart. `updateGeneral` writes the
+  stored document underneath, so `general.swarmClaim` survives the save (and
+  a claim save keeps the cooling block) — pinned by
+  `server/src/services/instance-settings-swarm-cooling.myrmidon.test.ts`.
+- Localized: every string of the swarm-claim panel — the master switch, the
+  pheromone mapping, the advanced extras, the change journal, the new cooling
+  block, the live status line and the field-source badges — runs through the
+  fork i18n catalog (`swarmClaim` namespace, en + ru). No hardcoded English
+  remains in `SwarmClaimSettingsPanel.tsx`.
+- How to check: Instance → General → "Self-organization (swarm)" in Russian:
+  the pheromone grid has 8 fields (no cooldown pair); set the cooldown base to
+  10, leave the ceiling empty, save, then look at the wake-task guard read
+  back — `readSwarmSettings` returns 10 and a task whose stale run finished
+  20 minutes ago wakes again (covered by
+  `server/src/myrmidon/wake-task-guard.myrmidon.test.ts`).
+
+### The publish gate survives transient gh api failures (1.6.5 TAG-CI-RETRY)
+
+- The 1.6.5 rc.13 incident: the tag's CI run finished `success` 50 minutes in,
+  but one `gh api` read of the runs list failed transiently (5xx / a
+  secondary rate limit while polling every 20 s). The old gate swallowed the
+  failure (`|| true`), the jq pipeline then read EMPTY input and answered an
+  EMPTY verdict — and `"" != "missing"` read as a COMPLETED run with an empty
+  conclusion, killing the publish after 36 minutes with "(conclusion: )"
+  while the CI was still green on its way to success.
+- `runs_of` now retries the `gh api` read with backoff
+  (`MYRMIDON_RELEASE_GH_RETRIES`, default 3; `MYRMIDON_RELEASE_GH_RETRY_SLEEP`,
+  default 5 s); a persistent failure answers an empty runs list which every
+  caller normalizes to `missing` — the gate keeps WAITING (a retryable
+  answer), never a bogus refusal.
+- `run_verdict`/`run_status` normalize an empty/blank read to `missing` —
+  an empty conclusion can no longer kill the publish.
+- The poll budget grew from 120 to 180 polls (40 → 60 minutes): the tag CI
+  measured ~50 minutes (18:15 → 19:05), so the old budget would have timed
+  out a clean publish even without the API glitch. The publish job's
+  `timeout-minutes: 90` still bounds the run.
+
+### ARCH-GUARD: architecture invariants in the repository and checked in CI (OPE-6856)
+
+- `docs/architecture/` holds the invariants catalog (INV-0..INV-13) and the ADR
+  records of the product decisions from the decision registry.
+- `scripts/myrmidon/ci/arch-invariants-gate.mjs` turns INV-10..INV-13 into CI
+  checks (no automatic wake-up without a task, one swarm queue ordering, no
+  pilot fields, unique and gapless migration numbers); dependency rules are in
+  `.dependency-cruiser.cjs`. The pull request template asks which ADR a change
+  implements or amends.
+- Dependency-blocked idle pickup now binds its wake-up to the task whose
+  dependency release made the agent eligible, so the automatic wake is auditable.
+
+### A change of a bot's memory or pids limit reaches the running container without a restart (1.6.6 BOT-RESOURCES-APPLY, OPE-10565)
+
+- When `adapterConfig.container.memoryMb`, `cpus`, or `pidsLimit` are changed in the
+  card, the reconciler updates container resources as a single coordinated operation:
+  it updates dockergate's `bots[]` configuration and runtime ceilings via dockergate
+  route A20 (`PUT /containers/<name>/config/update`), validating against instance platform
+  ceilings with atomic reload, then applies the limits to the running container via
+  live `docker update` (route A18, memory, memory-swap, pids) without container restart.
+- If requested limits exceed platform ceilings, dockergate rejects the update with a
+  clear error (`requested resource limits exceed platform ceiling`), keeping the container
+  running with its existing limits.
+- A driver without live updates keeps the previous behaviour: the container is
+  recreated. Any other kind of drift still recreates the container.
+
+### CI: merge queue candidates run the full tier (OPE-8531)
+
+- Ordinary pull requests run the fast tier; the full tier runs when the `review-approved` or `full-ci` label is set (the label starts a run on the same head), on the merge queue candidate (`merge_group`, if a queue is enabled), and on `main`.
+
+### Board bots search and read the knowledge corpus with the corpus_* MCP tools (1.6.6 CORPUS-2.0, part D — MCP)
+
+- The board now serves a company's corpus over its own MCP endpoint,
+  `POST /api/myrmidon/companies/:companyId/corpus/mcp` (`initialize`, `tools/list`,
+  `tools/call`), next to the existing OCR endpoint. It answers with the four tools
+  the RAGFlow facade answered before — `corpus_search` (query, dataset(s), top_k →
+  chunks with a score, the document they came from and a link),
+  `corpus_get_document`, `corpus_list_datasets`, `corpus_list_documents` — so a
+  shadow comparison can put the same request to both paths.
+- The tools follow the module's switch and are read on every call, so switching
+  the corpus on or off takes effect on the bot's next call, with no restart. With
+  the module off, `tools/list` comes back empty and a call that names a corpus
+  tool is answered as a tool result with `corpus_disabled`: a bot on an instance
+  that never turned the corpus on sees exactly the tool set it saw before.
+- The operator's purpose limit holds: a `top_k`/`limit` above the module's ceiling
+  is refused with `invalid_tool_input` instead of being silently clamped.
+- Every failure is a tool result carrying a stable code — `corpus_disabled`,
+  `corpus_unavailable`, `invalid_tool_input`, `dataset_not_found`,
+  `document_not_found`, `query_failed` — never a broken transport a bot can only
+  retry blindly.
+
+### Import pre-parsed RAGFlow chunks into the company corpus (1.6.6 CORPUS-2.0)
+
+- The resumable corpus importer copies RAGFlow dataset, document and chunk metadata without parsing source files again, checks source counts before writes or embeddings, and reports new (`embedded`) and reused vectors separately. The operator guide documents the required bge-m3/1024 model alignment, secure environment, preflight, resume and acceptance steps.
+
+### The CLI is now called `myrmidon`; `paperclipai` keeps working (DEBRAND-d)
+
+- The CLI package and binary are renamed to `myrmidon`. The old `paperclipai`
+  binary stays as a synonym and prints `paperclipai is deprecated, use myrmidon`
+  to stderr once per run, then works as before.
+- Help texts of the top-level commands say Myrmidon. `PAPERCLIP_*` variables and
+  `@paperclipai/*` imports are unchanged.
+- Managed installs find the CLI in either package directory, so existing
+  installs and updates keep working.
+
+### Knowledge UI: ADR-0008 seed title no longer says the vendor name (DEBRAND, OPE-9333)
+
+- The seeded knowledge item `decisions/2026-09-27-no-upstream` (ADR-0008, shown
+  in the Knowledge UI decisions folder) is now titled "В апстрим не отправляем",
+  matching the debranded ADR-0008 record in `docs/architecture/adr/`. The
+  vendor name stays only in the license/attribution and fork-history entries,
+  and in the owner's verbatim quote, which are out of DEBRAND scope.
+- Follow-up to the architecture-records debrand reviewed in OPE-9331 (PR #1805);
+  same wording as the ADR file so the registry, the docs record and the
+  Knowledge UI item agree.
+- Regression coverage: `knowledge-seed.db.myrmidon.test.ts` now asserts the
+  seeded item's title exactly and rejects a vendor-brand title.
+
+### The installation pulls the issuer's signed deny-list itself (OPE-9084, 1.6.6)
+
+- The board now periodically fetches the signed `license.deny.json` from the URL in
+  `MYR_LICENSE_DENY_URL` (default interval 60s, override via `MYR_LICENSE_DENY_PULL_INTERVAL_MS`,
+  minimum 1s). The manual admin `POST /api/licensing/deny-list` remains for offline installs.
+- Each pull verifies the Ed25519 signature against the trusted issuer keys, enforces the
+  monotonic serial rule (a lower serial is rejected and logged, the file stays untouched),
+  and replaces the file next to `license.key` atomically (temp file + rename, 0644).
+- The puller holds no private key and never serves the list; it only downloads, verifies and
+  installs it. No URL configured -> the puller stays idle and starts no timer.
+- Timer lifecycle: started with the app's background work, stopped on the shutdown hook
+  (`app.locals.paperclipShutdown`), `unref`'d so it never keeps the process alive.
+
+### Project-scoped development process (OPE-9681)
+
+- Documents the `developmentProcess` project setting: `enabled`, `executionPolicy`, and optional `pipelineId`.
+- When enabled, only newly created issues in that project inherit the normalized execution policy when they have no explicit policy; other projects retain their existing defaults and explicit issue policies take precedence.
+- Adds the English and Russian operator guidance to this change fragment; the shared settings registries remain unchanged.
+
+### DEVFLOW: collect queue health durations and thresholds (#1960)
+
+- Environment overrides for devflow health thresholds:
+  - `MYRMIDON_DEVFLOW_ENGINEER_IDLE_MS`: idle engineer alert threshold in milliseconds.
+  - `MYRMIDON_DEVFLOW_REVIEW_QUEUE_MS`: review queue age alert threshold in milliseconds.
+  - `MYRMIDON_DEVFLOW_RED_CI_MS`: red CI alert threshold in milliseconds.
+  - `MYRMIDON_DEVFLOW_APPROVAL_MARKER_MS`: legacy alias for stale marker alert threshold in milliseconds.
+  - `MYRMIDON_DEVFLOW_AUTO_MERGE_MS`: legacy alias for stalled merge alert threshold in milliseconds.
+  - `MYRMIDON_DEVFLOW_REVIEW_ROUTER_MS`: legacy alias for stalled router alert threshold in milliseconds.
+  - `MYRMIDON_DEVFLOW_APPROVED_NOT_MERGED_MS`: alert threshold in milliseconds for an approved pull request that is not merged (default 7200000, 2 h; the `approvedNotMergedMs` instance setting wins).
+  - `MYRMIDON_DEVFLOW_NO_MERGES_MS`: alert threshold in milliseconds for a period without any merge (default 21600000, 6 h; the `noMergesMs` instance setting wins).
+
+### DEBRAND runtime environment aliases (OPE-8124)
+
+- Managed settings: `MYRMIDON_MANAGED_CONFIG`, `MYRMIDON_SETTING_DEFAULTS`, `MYRMIDON_HIDDEN_SETTINGS` (legacy aliases accepted for one release).
+- Datastore care: `MYRMIDON_HEARTBEAT_RUN_CONTEXT_RETENTION_DAYS` (legacy alias accepted for one release).
+- Migrated product settings include: `API_URL`, `CLOUD_API_ORIGIN`, `IN_WORKTREE`, `PROCESS_ROLE`, `PROCESS_MODE`, `ADAPTER_MODELS`, `RUNNER_API_TOOLS_ENABLED`, `RUNNER_API_TOOLS_COMPANY_IDS`, `MANAGED_CONFIG`, `SETTING_DEFAULTS`, `HIDDEN_SETTINGS`, and `HEARTBEAT_RUN_CONTEXT_RETENTION_DAYS`.
+- Remaining `PAPERCLIP_*` uses inside server/shared are compatibility inputs, generated/public API fields, process/adapter transport contracts, or independent vendor integrations; they were not blindly renamed.
+
+### F-09 B-UI: admission denial counter on the "Runs & queue" screen (1.6.6)
+
+- The "Runs & queue" screen shows, next to the queue and memory snapshots,
+  how many times the admission sweep refused to start a queued run since the
+  server started: the total, the breakdown by gate (global cap, start ramp,
+  memory of the server container, free memory of the host, host CPU load) and
+  the most recent refusal with its reason and time.
+- The counter comes from the `admissionDenials` field of the runtime-limits
+  response (the field and its type are shipped by the legacy-screen change;
+  this change wires the ui2 screen to it). Gates with zero refusals are not
+  listed, and a reason this build does not know is shown exactly as the
+  server sends it.
+- The field is optional: a server that does not send it (or sends `null`)
+  leaves the whole block hidden and the screen keeps working. Both UI
+  languages are covered.
+
+### GUARD-RETURN: return code tasks on noncoding roles (#2036)
+
+- Environment overrides for guard-return and devflow:
+  - `MYRMIDON_GUARD_RETURN_INTERVAL_SEC`: interval in seconds for the periodic guard-return sweep (default 300).
+  - `MYRMIDON_DEVFLOW_CODE_TASKS_NONCODING_MS`: threshold in milliseconds for devflow alert on code tasks held by non-coding roles (default 1800000).
+
+### Guarded agent-to-agent task handoff on the general PATCH path (1.6.6 UPSTREAM-HANDOFF, part A)
+
+- `PATCH /api/issues/{id}` accepts optional `expectedAssigneeAgentId` (nullable)
+  and `expectedStatusVersion`. When both are present and the update changes the
+  assignee, the handoff runs as compare-and-set, following vendor
+  paperclipai/paperclip#13686: the expectations are checked first without a lock
+  and again under `SELECT ... FOR UPDATE` inside the commit transaction; any
+  owner, version or user-assignment mismatch answers
+  `409 issue_reassignment_conflict` and the row is left untouched. Requests
+  without the fields keep the previous behavior.
+- A guarded handoff stops the previous owner's live run through the existing
+  ownership-change stop (`stopRunnerGoalForOwnershipChange` +
+  `heartbeat.cancelRun`, confirmed stop), then commits in one transaction: a
+  re-read under `FOR UPDATE`, the CAS and stopped-run fences (executionRunId
+  unchanged, no running/queued/scheduled_retry run — otherwise
+  `409 reassignment_stop_unconfirmed`), the new owner, `statusVersion + 1`, the
+  `in_progress → todo` demote, and an `issue.reassigned` activity receipt
+  (`commandId`, `disposition applied/duplicate/conflict/rollback`,
+  `stateRevision`, `scheduledWakeKeys`). The response carries the applied
+  receipt.
+- Handoff idempotency: an optional `handoffIdempotencyKey` is checked against
+  the activity journal (action + commandId + sha256 fingerprint of the inputs,
+  no new index or migration). A replay with the same fingerprint returns the
+  stored `duplicate` receipt without mutating; the same key with a different
+  fingerprint answers `409 idempotency_conflict`.
+- Guarded rollback: when the commit phase fails after the previous owner's run
+  was already stopped under confirmation, the previous owner receives a
+  restore wake (issue-state guard: statuses todo/in_progress, previous owner,
+  previous version; executionRunId in the snapshot), the failure is recorded as
+  a `rollback` receipt, and restore errors are aggregated into the receipt and
+  logged — never swallowed. The new owner's wake carries a deterministic
+  idempotency key and the part-B statusVersion guard, so a lost delivery cannot
+  enqueue the wake twice and a stale delivery cannot start a turn.
+- Forbidden handoff states match the vendor: `in_review`, `done`, `cancelled`,
+  conversation issues and issues with a pending execution stage refuse a
+  guarded reassignment with 409.
+- `reason` (optional) records the handoff cause both in the receipt and as a
+  thread comment. Every disposition — applied, duplicate, conflict, rollback —
+  lands in the activity journal, which feeds the weekly handoff counter.
+
+### hermes_local switch-off flag (hermes-local-off)
+
+- New operator environment variable `MYRMIDON_DISABLE_HERMES_LOCAL`. When it is
+  exactly `1`, the `hermes_local` adapter is treated as disabled: it is left out
+  of the enabled adapter list offered for new agents, `GET /api/adapters/:type`
+  reports it as disabled, and creating or switching an agent to `hermes_local`
+  is rejected with "Adapter is not available on this instance".
+- Off by default: when the variable is unset or has any other value, nothing
+  changes. Existing agents and the registered adapter are not modified.
+
+### Hindsight plugin: API key field is a secret reference (SETTINGS-UI, OPE-6249)
+
+- `hindsightApiKeyRef` in the Hindsight plugin settings is now declared as a
+  `secret-ref` field, so the settings screen offers the secret picker instead
+  of a plain text box.
+
+### Comment wakes of one task are collected into one run (1.6.6 INBOX-BATCH)
+
+- Comments written on one task inside a short window no longer start one run
+  each: the first comment still wakes the assignee at once, but the run it
+  queues waits out `MYRMIDON_WAKE_BATCH_WINDOW_MS` before it is claimed — off by
+  default, so a deployment that wants the burst sets the variable (10 s is the
+  recommended window) — and every comment that arrives inside the window is merged into
+  that waiting run's wake — the agent starts **once**, with the whole list of
+  comment ids in the order they were written.
+- A comment wake is never held when someone is waiting on the run: a run
+  checked out by the operator, a run bound to an external chat, an interaction
+  wake or its continuation, and any wake that carries no comment id keep the
+  immediate per-event delivery.
+- The window is a debounce, not a queue: a held run stays an ordinary `queued`
+  run, nothing new is written for it, and it is retried when the window closes
+  (the same resweep the run-admission gates use), by the periodic queued-run
+  sweep and by any later wake of the same agent — a missed timer costs the
+  window, never the run.
+- `MYRMIDON_WAKE_BATCH_WINDOW_MS=0` (or `off`) is the default: with no window
+  the board keeps the per-event delivery of one run per comment.
+
+### Instance core settings are editable from the board (1.6.6 SETTINGS-UI)
+
+- Instance admins can configure the shared bot mount, including host path, write access and bot allowlist, with an explicit confirmation. Paths are checked before storage. Existing containers take mount changes on reconciliation/recreation, not as an in-place bind update.
+- Run queue priority now uses the live `/api/myrmidon/run-priority` contract, including issue weights and starvation limits. Changes apply to the queue without a server restart.
+- Prompt-budget deep analysis can target an agent selected from the current company.
+
+### Instance → Features: every fork feature with its settings and live health (1.6.2 FEATURES)
+
+- New page **Instance → Features** (`/company/settings/instance/features`, a "Features" entry in the
+  settings sidebar and tab bar) and API `GET /api/myrmidon/features`. A registry of 14 fork features —
+  swarm self-claim and idle wake, run admission, bot disk lifecycle, shared package cache, bot language
+  servers, agent memory card, cost attribution sweep, Telegram DM status and progress, chat hold rules,
+  budget enforcement, plugin entitlements, host disk signal, workspace quotas, model fallback signal —
+  each with a name, a description, a guide link, the **effective configuration** (every value with its
+  source: settings, server environment, default or derived, and the variable that forces it) and a link to
+  its settings panel. The swarm self-claim and the bot disk lifecycle (which had no panel) carry an
+  inline on/off switch (`PATCH /api/myrmidon/features/:key`, instance admin only; locked while an
+  environment variable forces the value).
+- **Live health per feature** from a small contract each module implements: status `working` / `off` /
+  `misconfigured` / `failing`, last successful run, last error with the count over 24 hours, and one effect
+  metric ("issues claimed in 24 h", "directories reaped in 24 h", "runs held in the queue now"). Built on
+  data that already exists (activity log, run, publication, spend and budget tables, module state) plus a
+  bounded in-process record of each timed sweep's passes. A module with no health signal — the bot
+  language servers, and the chat hold rules while nothing was lifted — reports
+  **`unknown — no health signal`**, never a fake `working`.
+- **Attention signal**: a feature that is enabled and `misconfigured` or `failing` for more than 30 minutes
+  raises one card in the attention queue (and clears when it recovers). The health pass runs every five
+  minutes (`MYRMIDON_FEATURE_HEALTH_INTERVAL_SEC`).
+- The bot disk sweep now reports what it did (a volume root that cannot be listed, directories reaped,
+  errors) instead of only logging, so a volume root that does not exist shows as `misconfigured` rather than
+  failing on every pass unseen. See [guides/features-page.md](guides/features-page.md), [SETTINGS.md](SETTINGS.md).
+
+### Knowledge REST and MCP: one service, one set of rights (KNOWLEDGE-2.0 K-2 part B)
+
+- New REST surface `/api/myrmidon/companies/:companyId/knowledge/*` (search,
+  items, revisions, backlinks, suggestions, export/import, create, draft,
+  submit, publish, approve, rollback, archive, supersede, propose) and one MCP
+  endpoint `POST .../knowledge/mcp` over the same module and the same gates.
+- Gate order: company access, tool grant (`permissions.toolAccess`), injection
+  scan on writes, autonomy matrix, K-1 domain gates.
+- Autonomy matrix: new action classes `knowledge_publish`, `rule_approve`,
+  `skill_promote`, `knowledge_external_publish` with safe defaults
+  (`rule_approve` forbidden for agents; `knowledge_publish` needs approval
+  outside the auto sections). Publish, rollback, archive and supersede by an
+  agent follow the same matrix; an agent never archives or supersedes a rule;
+  a bulk import by an agent needs the matrix to say `allowed`.
+- `POST .../knowledge/import` accepts the gzipped tree produced by `export`
+  (own raw body parser on the route).
+- OpenAPI entries and the guide `docs/myrmidon/guides/knowledge.md` (EN + RU).
+
+### Rules in the knowledge module: derivation, resolver, delivery (KNOWLEDGE-2.0 K-3)
+
+- The caste directory gains `sensitive` (additive migration
+  `0413_knowledge_rules.sql`): a sensitive caste's rules are the owner's to
+  approve, every other caste's are the board operator's — the owner's matrix of
+  29.09 ("разработка — оператор доски (ADM), площадки и SMM — Alex").
+  `cmo` seeds as sensitive; the flag is edited through the castes API.
+- `approver_kind` is derived from the rule's castes in code
+  (`server/src/myrmidon/knowledge/rules.ts`): a rule that governs any sensitive
+  caste asks for `owner`, every other rule asks for `operator`. Nobody types the
+  field by hand, and approving as a lower grade still answers 403 — the SMM rule
+  is refused to the board operator and approved by the owner.
+- A rule's castes live on the knowledge item (`knowledge_items.roles`, a GIN
+  index) — the port of the wiki model's `roles`, `["*"]` meaning every caste —
+  and ride through the tree export/import (`roles:` line).
+- The delivery path reads the knowledge module:
+  `knowledge.rules.resolved(nest, caste)` feeds the profile compiler, so the
+  wiki tables are no longer a second carrier of rules. `REGULATIONS.md` gains a
+  `Source: <slug> · revision <n>` line in every section (the page id is the
+  slug) plus a `Provenance:` line when the revision carries sources, and stays a
+  pure function of the approved set — same approved revisions, same bytes.
+- N-4: `0413_knowledge_rules.sql` moves the legacy wiki regulations into
+  `knowledge_items` as `kind=rule` — text, history, statuses, the delivered
+  revision and one provenance record per revision. The slug stays the page key,
+  so every reference resolves to the same page.
+- Legacy CRUD for autonomy regulations (`/myrmidon/autonomy/regulations*`) and
+  wiki-cortex (`/wiki-regulations/*`) reads and writes through `knowledge_items`
+  (`kind=rule`) without creating state in `myrmidon_wiki_regulations`.
+
+### Knowledge and Regulations screens in UI 2.0 (OPE-5957, K-4)
+
+- Added the read-only "Knowledge" screen (space tree, search, `[[...]]` links, sources panel, revision diff and rollback by approver kind) and the "Regulations" screen of Autonomy to the UI 2.0 shell.
+- The "Work" navigation group is shown only after the server confirms the knowledge REST (K-2) responds, so nothing appears while the API is not deployed.
+
+### Knowledge base seed: decisions/ and product/ (KNOWLEDGE-2.0 K-8)
+
+- New seed corpus `server/src/myrmidon/knowledge/seed-data.ts`: 46 owner
+  decisions imported from the OPE-401 registry ("Реестр решений ADM"), one
+  knowledge item per decision with `decided_by`, ISO date, the owner's
+  verbatim quote, and a `sources` pointer back to the registry entry. Each
+  decision lives in the `decisions/` folder as a dated record, so agents read
+  decisions as individual entries instead of a 204 KB document (arch §6 K-8).
+- New seed corpus `server/src/myrmidon/knowledge/seed-product.ts`: the four
+  `product/` pages — `product/vision` (Alex's "Концепция Myrmidon 2.0" text
+  verbatim, per the dont_revise_owners_existing_texts memory),
+  `product/principles` (principles P1–P14), `product/colony-model` (the
+  ant-colony model → product capabilities map), and `product/open-core`
+  (open core MIT + closed modules licensing model).
+- New seeder `seedKnowledgeBase(db, companyId, nestId)` in
+  `server/src/myrmidon/knowledge/seed.ts`, exported from the module barrel.
+  Idempotent: existing slugs are skipped. Supersede chains are applied via
+  `store.supersede` in a second pass, so cancelled decisions (e.g. FORAGING
+  "вариант 2" 03.10 → "включить сейчас" 03.10) link to their replacement and
+  keep their history.
+- Tests: `knowledge-seed.db.myrmidon.test.ts` (3 tests over embedded Postgres)
+  asserting ≥40 decisions with decided_by/date/quote, 4 product pages, the
+  FORAGING supersede chain, and idempotency on re-run.
+
+### Knowledge distiller v2: closed tasks to suggestions (KNOWLEDGE-2.0 K-5)
+
+- New server module `server/src/myrmidon/distill/`: `domain.ts` (pure
+  filtering rules: silent `noise` drop, ≥1 internal source per proposal, the
+  `life`-source exclusion for common sections (I-7), the ≤10 human package,
+  the 1M-input-token / 30-min budget as a signal, auto-accept restricted to
+  `glossary`/`releases`/`how-made`), `settings.ts` (the stored
+  `general.knowledgeDistill` row + per-key env overrides, same resolution
+  shape as foraging), `raw.ts` (raw material by `completedAt`: tasks closed
+  in the pass window with their final comments, documents and work-product
+  refs, capped at `maxTasksPerPass`, the private-contour split at the
+  selection edge), `model.ts` (the free-model call through the same
+  OpenAI-compatible gateway transport the debates use; one call per pass;
+  the answer parsed leniently), `service.ts` (the pass: pick → call → filter
+  → land suggestions through the K-1 knowledge module; zero pages created
+  directly; the numeric report written as a `knowledge.distill.pass` event
+  into the knowledge journal), `startup.ts` (the sweep: foraging-shaped
+  timer, live settings read per tick, disabled by default), `index.ts`
+  (barrel).
+- The startup is wired into `server/src/index.ts` next to the foraging
+  sweep: `startDistillSweep(db)` / `stopDistillSweep()`.
+- New bundled skill
+  `packages/skills-catalog/catalog/bundled/paperclip-operations/knowledge-distill/SKILL.md`
+  (registered in the shipped-catalog list): the `knowledge-curator` playbook
+  that replaces the plugin `paperclip-distill` skill — proposal texts for
+  the suggestion queue, never pages, never unsourced claims.
+- New pure-domain test `server/src/myrmidon/distill/distill-domain.test.ts`
+  covering each K-5 criterion decidable without a board: silent noise, the
+  source rule, the package cap, the budget signal, the life boundary, the
+  settings resolution, the lenient parser, the window math.
+
+### Knowledge module: transfer from the plugin (KNOWLEDGE-2.0 K-6)
+
+- New `server/src/myrmidon/knowledge/migrate/`: `frontmatter.ts` (a
+  frontmatter parser with no dependency — values never leave the process,
+  only key names reach the report), `classify.ts` (the §5.3 class rules as a
+  deterministic, path-based classifier; the only rule that reads the file is
+  the stub rule, and it reads its length), `map.ts` (the operator-authored
+  slug map: parsed hard, never guessed), `links.ts` (`[[…]]` rewritten into
+  knowledge slugs, unresolved targets kept verbatim and counted),
+  `source.ts` (reads the plugin wiki export), `report.ts` (numbers-only
+  reports), `run.ts` (`classify` plans, `import` writes through the K-1
+  service), `index.ts` (barrel).
+- New `scripts/knowledge-migrate.ts` + `pnpm knowledge:migrate`:
+  `classify --root <export> [--emit-map <file>]` seeds the operator's map and
+  prints the class counts, their sum and the link rate; `import --root <export>
+  --map <map.json> --company-id <uuid> [--nest-id <uuid>] [--actor-agent <id>]`
+  writes items, revisions, sources and supersedes. Both accept `--dry-run`
+  (compute everything, write nothing) and both exit non-zero when the class sum
+  does not match `expectedTotal` or a page failed.
+- Every imported page gets a revision, a source list (`wiki/<path>` plus the
+  page's own frontmatter refs and the map's `defaultSources`) and its parsed
+  frontmatter fields (title, tags, summary); regulations are imported as
+  `kind=rule` drafts with their `approverKind`. Class C pages are created and
+  then superseded by their `mergeInto` target. A second source page for the
+  same target is appended as an extra revision — its knowledge is not dropped.
+- The report holds numbers, class names, slugs and frontmatter *key names*;
+  page bodies and field values are never printed (§5.3: pages can carry
+  personal data).
+- The map's `kind` is validated against the domain's own knowledge kinds, so a
+  typo (`rulle`) fails while the map is parsed, not halfway through writing.
+  Links also resolve when they are written as the *title* of an imported page —
+  the form the plugin wiki used most — so a title-only link no longer counts as
+  unresolved. A regulation whose name §5.3 does not know has no approver and
+  fails on write with `rule_requires_approver_kind`; the operator runbook says
+  so and tells the operator to set `approverKind` in the map.
+- Tests: `server/src/myrmidon/knowledge/migrate/migrate.myrmidon.test.ts`
+  (frontmatter parsing, every class rule, map validation, link rewriting,
+  classify report invariants, and `runImport` over a stub writer: create,
+  shared-target append, supersede, dry-run, failure reporting).
+
+### Board load lanes now cover the auth middleware and the periodic sweeps
+
+- About 71% of the board's DB statements were counted in the `untagged` lane: the request lane was attached only inside the `/api` router, after the auth / actor / run-identity middleware and outside the provider webhook ingress, and the board's own timers inherit the empty context of the startup code that armed them. A request is now tagged `http_route` before any other middleware, and a new `background_sweep` lane covers the periodic sweeps and housekeeping timers (features, alerts, deploy jobs, maintenance, canary, distill, litellm sync, leases, plugin jobs, email polling and others). The `myrmidon_board_db_queries_total{lane}` and `myrmidon_board_lane_busy_seconds_total{lane}` series gain the `background_sweep` label value. Nothing is scheduled, delayed or reordered; only the attribution changes.
+
+- Production acceptance measurement is not included in this code change: no post-deploy 24-hour sample was available. The authenticated `GET /metrics` endpoint exposes cumulative `myrmidon_board_db_queries_total{role,lane}` counters, including `lane="untagged"`, and uses the bearer configured through `MYRMIDON_METRICS_TOKEN_SECRET` or `MYRMIDON_METRICS_TOKEN`. To measure, scrape the same process/role at T0 and T0+24h and compute `100 * (delta untagged / sum of per-lane deltas)`; preserve the `role` and instance/target identity and do not compare cumulative values across process restarts. If scrape access is unavailable, use the instance-admin `/api/myrmidon/board-load/lanes` route instead.
+
+### Live console scratch cleanup
+
+The live console browser server now removes the temporary working directory it creates when it closes or fails to start. Caller-provided directories are left untouched.
+
+### Model menu: the group tree of `/model`, the rules that build it and the owner's editor (1.6.6-MODEL-MENU A+B)
+
+- The bot's model list stops being a flat wall of buttons: `/model` becomes a
+  menu of groups, and the owner decides in the board which models are visible,
+  how they are grouped and how deep the nesting goes (the owner's decision of
+  10.10, following the flat list of 1.6.5).
+- Part A — the menu model itself. `@paperclipai/shared` (`myrmidon-model-menu.ts`)
+  carries the canonical shape of `instance_settings.general.modelMenu`: a tree
+  of groups of any depth (title, models, nested groups) plus the list of hidden
+  models, validated as a whole (a hand-edited row that does not match is
+  ignored entirely — the automatic menu is shown rather than half a tree), at
+  most 8 levels deep.
+- With no tree stored the menu is built automatically: one group per
+  provider/family of the gateway catalog, DashScope first, then z.ai, then the
+  rest alphabetically (`Прочие` for what matches no family), so the 1.6.5 order
+  survives without any settings.
+- A catalog model the tree does not mention is never lost: it lands in the
+  `Новые` group. A model the tree names but the catalog does not offer is
+  dropped and reported (`missingModelIds`), a model named twice is kept once at
+  its first position, and the invariant `visible = catalog − hidden` holds.
+- The screens of the menu
+  (`server/src/myrmidon/agent-chat-bridge/model-menu.ts`) are built from the
+  resolved tree: the first screen is the first level, a group opens into its
+  subgroups and models, the last row is `Назад` while the position is not the
+  root, and a level longer than `MODEL_MENU_PAGE_SIZE` (20) is paged with
+  `Ещё →`, never past Telegram's limit of 100 buttons per message. The
+  transport is not in this part: the entries are `{ kind, label }` plus the
+  position they lead to.
+- Part B — the setting and its editor. `GET /api/myrmidon/model-menu` (any
+  board member) reports the menu in force: the stored tree, the catalog it was
+  resolved against and the groups the bot would show;
+  `PATCH /api/myrmidon/model-menu` (instance admin) saves the tree and the
+  hidden list, keeps the keys a patch leaves out, refuses a tree past the
+  depth/width/model-count limits (`400 model_menu_tree_too_large`) and writes
+  one activity-log line (`instance.model_menu.updated`, with the changed keys).
+  The row lives in `instance_settings.general.modelMenu`, and a hand-edited
+  value that does not validate reads as absent, so it can never wipe the other
+  general settings.
+- Instance → General («Model menu») is the editor: the catalog selector, a list
+  editor for the group tree — rename, reorder, nest, add a group of models from
+  the catalog, delete — and the hidden models, with the menu the bot would show
+  drawn under the editor. Saving writes the same row the bot reads, so a change
+  applies without a restart.
+- The inline buttons of the bot land in the following part (the button
+  transport is the 1.6.5 F-07 work).
+
+### Per-agent notification preferences mute event-shaped wakes (NOTIF-PREFS)
+
+- An agent's `runtimeConfig.notifications` block now mutes whole wake event
+  classes at generation time: `assignment` (issue assigned / assignment
+  recovery), `mention` (a comment @-mentioned the agent) and `review`
+  (execution review / approval requested, changes requested), plus an
+  `enabled` master switch. Absence of the block — or any malformed field —
+  means "notify": agents without a block behave exactly as before.
+- The filter runs in `enqueueWakeup`, the single funnel every wake path goes
+  through, so every call point (issue create, delegation, interactions,
+  monitors, review handoff) is covered at once. Manual board wakes are an
+  operator override and bypass the filter; reasons outside the three classes
+  (timers, monitors, idle pickup, retries, …) always pass.
+- A suppressed wake is logged (`wake suppressed by agent notification
+  preferences`) and never becomes a run. Contract lives in
+  `packages/shared/src/notification-prefs.ts`; decisions are covered by
+  `packages/shared/src/notification-prefs.test.ts` and
+  `server/src/__tests__/notification-prefs-wake.test.ts`.
+
+### OOM process-loss recovery is classified as `resource.oom` (1.6.6 OOM RECOVERY)
+
+- When a finalized agent run has run-correlated OOM evidence from the container monitor, recovery factory creates a typed `resource.oom` action instead of an unexplained generic failure.
+- OOM evidence must match the finalized run (and its issue); unrelated or missing evidence does not create an OOM recovery action.
+- The action is routed to the infrastructure/DevOps recovery owner, uses the standard 60-minute recovery SLA, and keeps the evidence and run ID for operator diagnosis. The configured OOM runbook reference is shown in the recovery action.
+- The issue recovery card displays a dedicated OOM label and headline. Operators should inspect the linked run evidence and follow the runbook before retrying or changing container resources.
+
+### Run queue priority and shared bot mount panels speak Russian and English (1.6.6 SETTINGS-UI, OPE-11232, OPE-11233)
+
+- The "Run queue priority" and "Shared bot mount" panels of Instance settings now take every visible string (titles, field captions, hints, buttons, validation messages) from the RU/EN catalogs. Before, they were hard-coded in English. The field captions name each weight in words instead of showing the internal field key.
+- Behaviour is unchanged: the instance administrator can still set the shared directory path, and the server does not restrict `hostPath`.
+
+### Settings UI: execution policy badge and attention feed panel (SETTINGS-UI S, OPE-11234)
+
+- Mounted `AttentionFeedSettingsPanel` in Settings > Instance > General, allowing administrators to view and update attention feed windows (`attentionFailedRunHorizonDays` and `attentionFeedCacheTtlSeconds`).
+- Displayed `general.executionMode` as a read-only badge (`execution-mode-badge`) in Settings > Instance > General, clarifying that execution targets are cloud/platform-configured and cannot be modified via human toggle.
+- Added localized UI descriptions (EN/RU) and test coverage in `InstanceGeneralSettings.test.tsx`.
+- Published administrator guides in `docs/myrmidon/guides/instance-execution-policy-and-attention(.ru).md`.
+
+### Experimental workspace-repair and duplex switches in Instance Settings (1.6.6 SETTINGS-UI)
+
+- Added settings cards in Settings > Instance > Experimental for existing runtime keys:
+  - `enableWorkspaceBranchReconcileForward`: allows runtime to fast-forward execution workspace branch on branch-containment check before run starts. Kill-switch semantics: turning off prevents automatic fast-forward if manual diagnostic is required.
+  - `enableWorkspaceDirtyQuarantineRepair`: automatically quarantines dirty workspaces and repairs clean worktree before run. Kill-switch semantics: turning off preserves untouched dirty worktree state for post-mortem forensics.
+  - `enableSandboxDuplexBridge`: duplex stream transport for sandbox runner communications. Kill-switch semantics: turning off falls back to file bridge transport when socket/pipe duplex experiences transport degradation.
+- Clear kill-switch and availability descriptions in RU and EN; values are managed via existing instance settings GET/PATCH endpoints and properly respect cloud-managed read-only locks.
+- `enablePipelines` remains without runtime-consumer and is not enabled in production configurations.
+
+### Typed adapter settings in Agent Settings (SETTINGS-UI, OPE-11239)
+
+- **Hermes gateway**: typed controls for the status poll interval, the run-create timeout, liveness by gateway events, raw debug events, runtime MCP URL rewrite and internal base URL, and central session history (switch, Hindsight URL, bank ID, turns to restore). There is no field for the central history API key: a credential is never typed into the form. The create timeout, the history URL and the MCP base URL are validated on save, because the gateway ignores bad values silently.
+- **Claude / Codex local**: filesystem sandbox (workspace scope, extra paths; a path followed by `(rw)` is writable), network sandbox (deny or allowlist), the Claude hello-probe timeout and cleanup grace after the final result, and the Codex output inactivity timeout. Host paths are hidden under the managed-sandbox-only policy. These keys are validated on save with the parsers the run path uses, and changing a sandbox or permission key needs an instance admin (also on create and on agent hire). The create form's permission defaults are not a change.
+- **Hermes local**: switch for including the configured MCP servers; values set on the create form (toolsets, sandbox, timeouts) are now stored. Comma-separated sandbox lists are honoured at run time instead of being ignored.
+- **OpenClaw gateway**: client ID, mode and version, with the adapter defaults shown as placeholders.
+
+### Settings UI: remaining product modules without editing (SETTINGS-UI, OPE-11246)
+
+- Added settings UI and verified stored controls for product modules identified in audit:
+  - Foraging: enable/disable per foraging source through the existing registry PUT (`/api/myrmidon/foraging/sources/:name`).
+  - LiteLLM budget synchronization: distinct settings panel on Instance → General for `enabled`, `signalOnly`, and `sweepIntervalSec` via `/api/myrmidon/litellm-budget-sync/settings`.
+  - Skill lifecycle pilot: settings panel on Instance → General with stored GET/PUT controls via `/api/myrmidon/skills/pilot`.
+- Plugin entitlement expiration: retained read-only display with clarification that expiration is part of the cryptographically signed entitlement payload and cannot be edited locally without invalidating the signature.
+
+### Corpus search: the full-text leg keeps the question as a whole next to the OR of its words; a small company is ranked exactly (1.6.6 OPE-12034)
+
+- The full-text ranking matches `plainto_tsquery(question) || to_tsquery(OR of significant words)`.
+  The OR alone, which replaced the all-words match so that a natural-language question finds
+  something, drops numbers and words shorter than 4 characters: a question that names a chunk by its
+  number or code matched every chunk that shares the other words, and the chunk was lost in the
+  tie (the hybrid recall of the integration suite fell from 1.00 to 0.85). The question taken as a
+  whole singles such a chunk out, and `ts_rank` puts it first. The tie-break by `similarity` uses the
+  question as written, not the OR string. The statement no longer raises a "query doesn't contain
+  lexemes" notice for a question with no significant word.
+- A search that names no dataset probes the company the same way a dataset search probes its
+  dataset: a company of up to 10 000 embedded chunks (`exactSetMaxChunks`) is ranked exactly, a
+  larger one goes through the HNSW iterative scan.
+
+### Corpus search: vector ranking through the HNSW iterative scan, shorter substring match (1.6.6 OPE-12034)
+
+- The vector ranking of the corpus search no longer loses candidates to the dataset filter. The index
+  knows the company, not the dataset, so the old statement returned only the chunks of the dataset
+  among the 64 rows the index scan reached (on production 51 of the 100 requested candidates per call
+  on average). With pgvector 0.8 the search now runs with the HNSW iterative scan
+  (`hnsw.iterative_scan = relaxed_order`), which keeps scanning until the limit is filled, and sorts
+  the rows by score; the scan may visit up to 100 000 index tuples (`hnsw.max_scan_tuples`; pgvector's
+  own 20 000 left a question far from work-craft with 47 to 67 of the 100 candidates). A dataset of up
+  to 10 000 embedded chunks is ranked exactly over its own chunks
+  instead (milliseconds, where the index scan has to walk far to find a few of them). With pgvector
+  before 0.8 the search keeps the previous statement; the version is read from `pg_extension` (one lookup
+  per search) instead of being tried with `SET`, so no failed `SET` can abort the transaction.
+- The full-text ranking adds the `ILIKE '%…%'` trigram match only for query texts of up to 16
+  characters (`ilikeMaxLength`) and for an identifier, a single token without whitespace of up to 64
+  characters (a file name, a version, a task code), which the `tsvector` does not find. On a long
+  question the trigram index reads one posting list per
+  trigram of the pattern: a cold run took 0.3 to 1.2 s on production for a match that did not add
+  a single row to the 16 long questions measured, while the `tsvector` match alone takes
+  milliseconds. Other longer texts are matched by the `tsvector` only.
+- No migration and no setting: the limits are options of `createPostgresSearchIndex`
+  (`exactSetMaxChunks`, `ilikeMaxLength`, `maxScanTuples`).
+
+### Recover stranded deferred issue-execution wakes (OPE-9445)
+
+- Scheduler reconciliation now expires deferred issue-execution wakes older than 30 minutes, records `deferred_issue_execution_expired`, and wakes the agent again with the affected issue context. Execution-wait wakes remain parked until their blocker is released; queue-drain behavior is preserved. A gauge, `myrmidon_deferred_issue_execution_over_30m`, exposes stale wakes for monitoring.
+
+### DEVFLOW: return in_review task to PR author on merge conflict (#OPE-9976)
+
+- When an open PR of an `in_review` task has `mergeable=CONFLICTING`, task is returned to the PR author in `in_progress` status with a conflict comment.
+
+### PERF: issue list board key defaults, GitHub credentials cache, API load latency alert (OPE-9997) (#2034)
+
+- **Issue List Defaults for Board Keys**: Extended `issuesListAgentDefaults` (`instance_settings.general`) to apply compact view and default limit of 200 (max 500) to integration board keys (`req.actor.source === "board_key"`).
+- **GitHub Operation Credentials Cache**: In-memory broker cache for GitHub installation credentials with a 50-minute TTL, keyed by identity context, run, and repository. Actively validates grant and connection state before returning cached tokens.
+- **API Load Monitoring and Alerting**: In-memory latency tracking middleware on `/runtime-tools/github/credentials` and `/api/companies/:companyId/issues` via `boardLoadRequestMiddleware()`. Flags route samples with `alert: true` when p95 duration exceeds 2000 ms (2 seconds), exposed through `GET /api/myrmidon/board-load/api-load`.
+
+### Safe project backfill planner
+
+Added a read-only snapshot planner for open issue project assignments. Ambiguous and unverified mappings remain excluded; production mutation stays operator-owned.
+
+### The leader lease of the board: backend (PROCS-1.7 part A)
+
+The board can now run as several processes against one database (design
+OPE-5394 §5). This part delivers the protocol and the tables; the settings
+panel that switches the mode is part B of the same task (OPE-5413).
+
+- New tables: `board_processes` (one row per running process, refreshed by a
+  10 s pulse; rows older than 2 min are reaped by the leader) and
+  `board_leases` (`name` PK, `holder_boot_id`, `epoch`, `acquired_at`,
+  `expires_at`) — migration 0388.
+- The leader lease service (`server/src/services/leader-lease.ts`) implements
+  the design §5.3 protocol: acquire as `INSERT … ON CONFLICT DO NOTHING`
+  followed by `UPDATE … WHERE name=? AND (expires_at < clock_timestamp() OR
+  holder_boot_id=me) RETURNING epoch`; the holder renews with the same UPDATE
+  every TTL/3 (default TTL 30 s → every 10 s); a renewal that returns no row
+  means the lease is lost and fires `onLost()` with an abort signal (design
+  §5.4: the former leader stops its in-flight background passes and returns
+  to the contender loop).
+- The leader-only work is gated on the lease: the execution-control sweeps
+  and the scheduled database backup check the lease before every pass. With
+  the default (single-process) configuration nothing changes — the running
+  process is the leader of everything and no lease rows are written.
+- Graceful shutdown releases the leases right after the timers stop, so a
+  standby takes over within one renewal tick (≤ 1 s); after kill -9 the lease
+  expires and is taken over within the TTL (≤ 30 s by default).
+- Every handover raises the «лидер сменился» attention signal (an
+  activity-log entry) and publishes the `board.leader_changed` live event,
+  so the panel sees the handover without restarting the board.
+- The setting is `general.processes` (design §5.7: `{ mode: "single" |
+  "split", apiCount, leaderLeaseTtlSec? }`), read live from the board UI —
+  no restart needed. With the block absent the board behaves exactly as
+  before.
+- Read routes for the panel (part B): `GET /api/myrmidon/board-processes`
+  and `GET /api/myrmidon/processes/leases`, answering the contract formats
+  in `docs/myrmidon/board-leases-contract/*.json`.
+
+Tests: unit coverage of acquire/renew/expire/release and the integration T2
+(two contenders on one embedded Postgres: exactly one leader per lease,
+handover on release ≤ 1 s, takeover after kill -9 within the TTL).
+
+### Integration stand "two processes, one database" and race tests T1–T8 (PROCS-1.9, OPE-5415)
+
+- Added `server/src/__tests__/procs/procs-races-t1-t8.test.ts` implementing the end-to-end integration test stand against a single shared test database (embedded Postgres) verifying all 8 race conditions T1–T8 from design OPE-5394 §8 / §10:
+  - T1: Two executors dispatching one agent's queue through the real claim path (`dispatchRunStart`) do not duplicate starts; each run gets exactly one `running` transition.
+  - T2: Dual leader / lease expiry: a standby does not steal a live lease and takes over after release; two concurrent reattach sweeps adopt an expired run exactly once.
+  - T3: Bot container apply on an api process answers 409 `bot_containers_disabled`, journals no apply job and leaves the card untouched (the `caller_not_board_main` verdict is the docker gate's and is covered by its Go tests).
+  - T4: Gateway run reattach protects active controller leases and ensures expired leases are adopted by exactly one surviving process.
+  - T5: A real `PATCH /api/myrmidon/processes` through one api process is read through the other, and concurrent PATCHes of different keys through both processes lose no edit.
+  - T6: Two real `ProcessBus` instances with their own LISTEN connections on the shared database: a `live_event` published on one process reaches the other, the origin filter keeps it from coming back, and another channel is not delivered. (The bus itself is covered here; this build does not yet publish live events onto it.)
+  - T7: The real process supervisor moves single -> split (two real api children) -> single under a steady request load against the shared port, with zero 5xx; the budget is at most one connection error per transition (same as the drain/failover suite). It runs as a second suite in the same file with its own database.
+  - T8: A real `SIGKILL` of an api process holding a run lease: the survivor keeps serving, the dead process's registry row stays until the reaper window, the live lease is not stolen, and after it expires the reattach sweep re-claims the run exactly once. The reaper's 2 minute window is not waited for.
+
+- Fixed a lost update found by T5: `PATCH /api/myrmidon/processes` read, merged and wrote the processes settings outside any cross-process lock, so two processes saving different keys at once could drop one of them. The whole read-merge-write now runs under a database advisory lock.
+
+### Process split follow-ups: one worker shutdown, fail-closed single-route proxy (OPE-9107)
+
+- The worker entry no longer installs a second SIGTERM handler: the board
+  runtime shutdown is idempotent, so a repeated signal closes resources once.
+- The single-route proxy of an api process fails closed: when the
+  `singletonProxy` setting cannot be read and has no cached value it forwards
+  to the worker (503 with `Retry-After` while the worker is down) instead of
+  serving the route locally.
+- Headers named in `Connection:` are removed in both directions (RFC 9110
+  section 7.6.1). The worker gets `X-Forwarded-For` equal to the client address
+  resolved by the api process under `TRUST_PROXY`.
+- Docs: a standalone worker is launched with `HOST=127.0.0.1`
+  ([multi-instance.md](multi-instance.md)).
+
+### Run admission can be serialized in Postgres (1.6.6 PROCS-2/T2.1)
+
+- With `processes.admissionStore = "db"`, claiming a queued run takes a
+  transaction-scoped advisory lock (`myrmidon:run-admission`), counts the
+  running rows (global and per agent) and moves the run to `running` in the
+  same transaction. Two worker processes can no longer both take the last free
+  slot. The global cap is the configured `maxConcurrentRuns` of run admission;
+  the per-agent cap is the agent's heartbeat `maxConcurrentRuns`.
+- The default `memory` mode is unchanged: no lock, no extra counts. Shadow
+  comparison and the remaining PROCS-2 items (attention signals, pairing codes,
+  import owner, `secrets_changed`) ship in follow-up changes.
+
+### The board tracks provider key and account usage and warns before a package or window runs out (1.6.6 OPE-7189 part E)
+
+- Agent adapters report usage of an LLM key or a Codex account with a versioned
+  event, `POST /api/companies/:companyId/provider-usage-reports`. The board keeps
+  the latest value per key, window kind and window start; repeated and older
+  reports do not overwrite newer ones, and a reset starts a new period.
+- A warning fires before the package or window resets, when usage or the elapsed share of the window crosses the
+  configurable per-company threshold (`PATCH .../provider-usage-warning-threshold`); the text says which one fired. It shows
+  up in the attention feed and as a comment in the issue that owns the secret.
+  Raw keys and OAuth values are never stored.
+- The secrets registry shows the remaining usage per key (`GET .../provider-usage`), matched by the secret key or id.
+- Migrations `0411` and `0412` add the usage snapshot, event receipt and warning
+  delivery tables.
+
+### The GitHub broker capability header is redacted from the board HTTP log
+
+- `server/src/middleware/http-log-redaction.ts`: `req.headers["x-paperclip-github-capability"]`
+  is added to `HTTP_LOG_REDACT_PATHS`. The gh wrapper and the git credential
+  helper send the run-scoped `github_credentials` capability (valid for 30
+  days) in this header on every `POST /runtime-tools/github/credentials`, and
+  pino-http logged it in clear text.
+- Operator action: capabilities already written to the existing logs stay
+  valid until they expire; rotate `AGENT_JWT_SECRET` or purge the logs
+  accordingly.
+
+### REMOTE-SITES-T4: remote site health, automatic drain and failover (OPE-7651)
+
+- New `site-monitor` lane (30 s), off by default (`MYRMIDON_SITE_HEALTH=1`). It probes `GET /v1/health` of each remote site (5 s timeout) and keeps the result in the new `myrmidon_fleet_sites.health` and `lastSeenAt`. Three misses in a row (90 s) turn the site `draining` automatically (no new placements, an alert in the log and `myrmidon_fleet_site_reachable 0`); a rejected certificate or an answer that is not the health contract puts it in `quarantined` and drops its client. A drain set by an operator is never lifted or acted on by the monitor.
+- After 10 minutes unavailable the failover moves each unpinned bot of the site to the board host from its last replica, after finalizing its running runs as `failed` with the new error code `site_lost` and queuing the bounded retry (an atomic claim on each run: a live controller lease, a reattach in flight or an earlier claim leave it alone, so a retry is never doubled). The retry runs once the bot's move has closed its maintenance window, against the new host. Pinned bots are never moved and are reported; a bot without a replica is reported and its runs are left for the returning site. `site_lost` joins `MYRMIDON_INFRA_INTERRUPT_CODES`.
+- The board keeps replicas of the remote datadirs itself: the replica lane pulls a snapshot of each bot of an answering site every 15 minutes into `MYRMIDON_FLEET_REPLICA_DIR`. A snapshot of a running bot is file-level; the move's phase log says when the replica was taken, and what changed after that is lost.
+- A bot has at most one unfinished move: the claim is a partial unique index on `myrmidon_fleet_moves`, so two board processes cannot both move one bot. The migration adds `myrmidon_fleet_sites.health`, `myrmidon_fleet_moves.source` (`live` or `replica`) and that index.
+- When the site answers three times in a row after being lost, the return pass reconciles the registry against the site: every bot container the site-agent reports (`GET /v1/bots`, the bots enrolled on the site; hand-run containers it does not know are never touched) whose bot is not in the board's registry for that site is stopped, and the datadir of a bot that was failed over is also set aside. A bot with an unfinished move is left to that move. The drain is lifted afterwards only by an operator, or automatically when the site carries the label `autoResume=true`; the buttons are T8. A draining site keeps its client and stays reachable for a move only while `MYRMIDON_SITE_HEALTH=1`: without the switch the client map and the move wiring behave as before T4.
+- Pinned bots: the health reducer holds the whole site's failover back while any bot on it is pinned. That would keep the unpinned bots on a dead site too, so the monitor feeds the reducer `pinnedBotCount: 0` on purpose and the failover skips each pinned bot on its own (reported, never moved).
+- A manual move of a bot that already has an unfinished move is refused with 409 naming that move (id, sites, phase) and what to do: repeating the request with the same destination resumes it, as before; the new part is that the database now enforces the rule across processes.
+- The Fleet screen shows a state badge and the last answer time for each site (`GET /api/myrmidon/fleet/sites`). `/metrics` gains `myrmidon_fleet_site_reachable`, `myrmidon_fleet_site_last_seen_seconds`, `myrmidon_fleet_exec_retries_total` and `myrmidon_fleet_moves_total`.
+
+Runtime setting: `MYRMIDON_QUEUED_RESWEEP` controls the queued-run resweep
+interval; set it to `0` to disable the background resweep. The default remains
+enabled outside test runners.
+
+### Run start dispatch over the process bus: the `notify` mode (1.6.6 RUN-DISPATCH-NOTIFY)
+
+- Part B of T1.4. With `general.processes.runStartDispatch = "notify"`, a
+  process that must not execute runs (`role.executesRuns = false`, the api
+  role of T1.1) no longer starts a run locally: it publishes
+  `run_queued {agentId, companyId, schemaVersion: 1}` to the process bus
+  (T1.3) and the executor process's listener lifts the queued run via
+  `startNextQueuedRunForAgent`. The executor itself starts inline in every
+  mode and additionally publishes, so a second executor reacts without
+  waiting for its resweep.
+- The worker listener subscribes to `run_queued` on the bus; every bus
+  (re-)listen fires the part-A resweep as the reconnect catch-up — a NOTIFY
+  lost while the connection was down is recovered within one resweep
+  interval, per the design rule «NOTIFY is the accelerator, the timer is
+  correctness» (OPE-5394 section 0 item 2). A burst of messages for one
+  agent folds into a single start attempt; a second attempt is a no-op on
+  the vendor agent start lock anyway (one `controllerBootId` per run).
+- The resweep timer and the bus subscription now follow the role: an api
+  process arms neither; the single-process default (`inline`, no
+  `PAPERCLIP_PROCESS_ROLE`) is byte-for-byte the behaviour of part A and of
+  main.
+- The bus starts only in a multi-process deployment
+  (`PAPERCLIP_PROCESS_ROLE` set to a role value). Its postgres.js client is
+  dedicated (`max: 1`, `createPostgresJsClient` in `@paperclipai/db`): a
+  `sql.listen` connection is pinned for the lifetime of the listener and
+  never shares the drizzle pool. A bus that fails to start degrades the
+  `notify` mode to the resweep — logged, never fatal.
+
+### Settings screens for workspace hygiene, channels and the model-fallback signal (SETTINGS-UI A)
+
+- Three new sections on Instance → General cover the settings routes that
+  already existed without a screen: "Workspace hygiene"
+  (`GET`/`PATCH /api/myrmidon/workspace-hygiene` — per-workspace and total
+  disk ceilings, the last sweep report and the largest workspaces),
+  "Channels (Telegram & chat bridges)"
+  (`GET`/`PATCH /api/myrmidon/channel-settings` — ten channel fields;
+  `telegramApiBaseUrl` stays deployment-only and is shown read-only) and
+  "Model fallback signal"
+  (`GET`/`PATCH /api/myrmidon/model-fallback/settings` — the switch, the
+  threshold, the minimum calls, the window and the check interval).
+- The stored row is the source of truth: a saved value applies without a
+  restart — the scheduler re-resolves the row before each pass and read paths
+  re-check on use. `MYRMIDON_*` environment variables stay forced per-key
+  overrides exactly as the server modules already worked; each field in the
+  panels shows its origin (`ui`/`settings`, `env` or `default`).
+- Numeric fields are range-validated in the panel (the server validator stays
+  the authority); an out-of-range or unparseable value blocks the save rather
+  than being sent. Every PATCH writes the audit entry the route already
+  produces.
+- The retention screen (datastore-care) is intentionally not part of this
+  slice: the server core is still in progress, the panel lands after it in
+  its own follow-up.
+
+### Parallel helpers: clear host-capacity hints
+
+- Clearing Shared build slots or Dev host memory now sends an explicit `null` in the settings PATCH, removing the stored capacity hint. Server validation and persistence already accept nullable values.
+
+### Company settings: feedback sharing, responsible user, pause/resume (SETTINGS-UI, OPE-8796)
+
+- Organization settings now expose three fields that already existed in the
+  API and the stored company row but had no screen: the feedback data sharing
+  switch (`feedbackDataSharingEnabled`; enabling records the consent on the
+  server), the default responsible user (`defaultResponsibleUserId`, chosen
+  from active company members) and pause/resume of the organization
+  (`status` `paused`/`active`), both read from and written through
+  `GET`/`PATCH /api/companies/:id`.
+- Pause and resume ask for confirmation before the request is sent. Saving
+  state, the saved mark and server errors (including a permission refusal)
+  are shown inline. Values apply without a restart: the company list is
+  refetched after every successful change.
+
+### Skills Store: discover skills and check delivery (SKILLS-UI)
+
+- Documented discovery from an agentskills.io site, SHA-256-verified archive
+  imports, required environment names and role-scoped use of existing secrets.
+- Added guidance for interpreting discovery/import errors, checking delivery for
+  a selected agent, and using the separate Apps MCP connector path. Documentation
+  does not claim provider account, balance, or general runtime acceptance.
+
+### Stale-block sweep no longer freezes the board with an idle transaction
+
+- The sweep that lifts dead blocks locked the task row, then wrote its activity rows through the
+  root database handle instead of its own transaction. The `activity_log` insert touches the same
+  task row, so it queued behind the sweep's own lock: the transaction stayed `idle in transaction`
+  for about two minutes, blocking other writers, and the next sweep tick repeated it.
+- Activity rows are now written inside the unblock transaction. The transaction also sets
+  `idle_in_transaction_session_timeout = 15s` and logs a warning with the path name
+  (`stale_block_sweep.unblock`) when it stays open longer than 2 s.
+
+### Orphaned run scratch directories are swept and measured
+
+The board now removes orphaned heartbeat run scratch directories (`paperclip-run-*` in the temp directory) on a timer. Only directories that carry the run marker file and are older than the TTL are removed; unmarked directories are never touched. The volume is exported on `/metrics`: `myrmidon_run_scratch_removed_dirs_total`, `myrmidon_run_scratch_removed_bytes_total`, `myrmidon_run_scratch_remaining_dirs`, `myrmidon_run_scratch_remaining_bytes`.
+
+### UI2 plugin navigation and direct plugin-page loading (1.6.6)
+
+- The UI2 desktop rail now has a Plugins group populated from installed plugin
+  sidebar contributions and launchers. The mobile navigation exposes the same
+  entries; it observes the plugin section's rendered height so page content
+  reserves the space it needs.
+- A plugin page loads its matching UI contribution when opened directly, rather
+  than relying on the sidebar having loaded the plugin first.
+- The release acceptance set is Personal bot, License issuer, Google AI Pro,
+  ChatGPT and Antigravity. The rail and phone-nav tests cover the contribution
+  and launcher rendering paths; they do not substitute for the pending live
+  acceptance of each plugin's form.
+- English and Russian labels are provided. The shell implementation is covered
+  by rail, phone-navigation and direct-page tests.
+- Verification recorded before this documentation follow-up: exact-head CI run
+  [40354943018](https://github.com/itkadr-git/myrmidon/actions/runs/40354943018)
+  passed on code head `e454535918d1e116be9a0bfb280e73f243f0194a`. This follow-up
+  adds documentation; its own exact-head checks must be evaluated on the new
+  commit. The live check of all five release plugins, direct URLs and forms at
+  1440/390 in Russian remains ADM acceptance after the rc.17 rollout.
+- Tests and implementation references: `ui/src/ui2/shell/Ui2Rail.tsx`,
+  `Ui2Rail.plugins.test.tsx`, `Ui2PhoneNav.tsx`,
+  `Ui2PhoneNav.plugins.test.tsx`, `ui/src/pages/PluginPage.tsx` and
+  `PluginPage.test.tsx`.
+
+### The worker's loopback listener follows MYRMIDON_WORKER_HOST/PORT; the T1-T8 stand boots a worker for T3
+
+- The worker opened its internal loopback listener on a fixed 127.0.0.1:3101
+  while the api side (single-route proxy) and the launch map of the
+  orchestrator already used `MYRMIDON_WORKER_HOST` / `MYRMIDON_WORKER_PORT`.
+  Both sides now resolve the address through one function, so a launch map
+  with a non-default worker port no longer leaves the api dialing a closed port.
+- Test stand: the bot-container route is a single route that an api process
+  forwards to the worker, so T3 now runs against a real worker (own free
+  loopback port) and checks the worker's `409 bot_containers_disabled` arriving
+  through the api processes.
+
+### BOARD-JANITOR: daily board hygiene routine and report (1.6.7)
+
+- Automated daily board maintenance sweep running at 08:00 Irkutsk (00:00 UTC) and on-demand via `POST /api/myrmidon/board-janitor/run`.
+- Automatically closes tasks with merged PRs.
+- Safely lifts false blocks when no blocker or child task is open and no active question is pending.
+- Automatically routes unassigned release tasks to role-based queue (DEVFLOW-9678) via notifySwarmIssueEvent.
+- Flags untouched tasks (>21 days) with label "залежалась".
+- Daily report written as document `janitor-YYYY-MM-DD` on service ticket.
+
+### Continue RAGFlow corpus import after partial document failures (1.6.7)
+
+- Preserve available chunks from failed RAGFlow documents, report partial document IDs, and list documents without chunks instead of creating empty corpus rows.
+- Optionally upload unparsed source files through the normal corpus parser when `CORPUS_IMPORT_UPLOAD_UNPARSED=1` is enabled.
+
+### Hindsight model groups (OPE-9858)
+
+- Added shared Hindsight model groups for the `write`, `summarize`, and `search` roles.
+- Added the server adapter and routes, with persistence in instance settings and no server restart required for reads and writes.
+- Integrated the groups into the model providers screen with mapping, suggested models, save feedback, and API limitation details.
+- Hot application inside a running Hindsight container remains dependent on OPE-9469.
+- The UI does not edit secrets or environment variables; selected models must be available through LiteLLM or configured providers.
+- Changing the search embedding model may require reindexing existing memory stores.
+
+### Wake storm circuit breaker (1.6.7 WAKE-STORM-GUARD)
+
+- Repeated automatic wakes from the same source for one agent are bounded by a sliding window circuit breaker (`MYRMIDON_WAKE_STORM_LIMIT`, `MYRMIDON_WAKE_STORM_WINDOW_MS`). Exceeding the limit trips the source, pauses it for the window duration, and records `heartbeat.wake_storm_guard_tripped`.
+
+### Owner active channel: reports follow the owner between portal and Telegram (1.7-ACTIVE-CHANNEL)
+
+- The board now marks the owner's last activity per channel — a portal
+  session request touches `web`, an inbound Telegram DM message touches
+  `telegram` — and answers `GET /api/myrmidon/owner/active-channel` with the
+  channel the owner is active in, the last touches and the inactivity
+  threshold with the source of its value.
+- Report cards (questions and confirmations from ordinary tasks) go to the
+  channel the owner is using: Telegram while they are active there, board-only
+  while they are active on the board, and the standing U2 Telegram binding
+  when neither channel is recent. The threshold is an instance setting,
+  changed from Instance → General without a restart.
+- The shell's "Web · now" / "Owner · Web" literals are gone: the rail footer
+  and the phone header show the real active channel, refreshed without a
+  reload.
+- New table `myrmidon_owner_activity` (one row per user and channel), the
+  shared contract `myrmidon-owner-active-channel.ts`, and guides
+  `docs/myrmidon/guides/owner-active-channel.md` / `.ru.md`.
+
+### Board update policy: maintenance window, mode, canary (1.7-AUTO-UPDATE-B)
+
+The board update now has a policy the deploy scheduler executes: the maintenance
+window (days/hours), the update mode (manual, or automatic by the release tag
+after a human approval) and the fleet canary (a share of the bots first, the rest
+only when that share is healthy). The policy lives in `instance_settings.general`
+under `myrmidonAutoUpdate`, is read on every tick (runtime change, no restart) and
+shows where each value comes from — the interface or a forced env override.
+
+A verified deploy whose window is shut waits in the new `waiting_window` status:
+nothing touches the host, the job names the moment the window opens, and it is
+still cancellable. When the window opens the scheduler resumes the same job. A
+deploy of the fleet is not one wave: the board switch runs first, then the canary
+batch, and only a healthy batch lets the rest follow (new `fleet_canary` phase);
+a failed batch ends the update as `canary_failed` with the fleet left on the
+previous image.
+
+The policy is edited in the current interface (Instance → General, "Product
+updates"): `GET`/`PATCH /api/myrmidon/auto-update` (read — board, write — instance
+admin) and `POST`/`DELETE /api/myrmidon/auto-update/approvals[/:tag]` for
+approving and withdrawing a release. In automatic mode the tick starts an approved
+release inside the window without a click and claims the approval, so it never
+starts twice; the journal says `auto_started` for it.
+
+### The spend limits screen (1.7 BUDGET-CONFIG D)
+
+- Company settings → Budgets is where the owner reads and edits the spend
+  limits of the hierarchy: nest (the whole company and each project) → caste →
+  foraging → task, one row per level with its amount, period, mode and the
+  spend of the period against the limit (`$600.00 / $500.00 (120% used)`,
+  marked when the limit is crossed). Editing is in place — change the amount,
+  the period or the mode and press Save on that row; a row without a limit is
+  created right there, and a stored one can be removed (its history stays).
+- The switch at the top is the global "signal only" mode; the screen shows the
+  effective value **and where it comes from** (default / saved / forced by the
+  server environment, in which case the switch is locked). Everything writes
+  straight to the running API: no restart, no page reload — the row, its spend
+  and the journal entry refresh from the server.
+- The bottom table is the change journal: who, when, what (created / updated /
+  deleted), which level and value, and the amount move. Guide:
+  [guides/budget-limits-ui.md](guides/budget-limits-ui.md).
+
+### Queue admission enforces budget limits (1.7-BUDGET-CONFIG-ADMISSION)
+
+- Hierarchy spend limits (`budget_limits`) now take effect on run admission in the queue.
+- `getInvocationBlock` checks effective limits (issue -> foraging -> caste -> project nest -> company nest) against spend from `litellm_cost_events` and sweep state.
+- Only hard, active, over-budget limits block runs; soft limits and default signal-only mode do not refuse admission.
+- Raising a limit via API or UI takes effect immediately without restart.
+
+### COLLECT-FRAGMENTS: support line-number-prefixed table rows in SETTINGS replacements (OPE-10778)
+
+- `scripts/myrmidon/release/collect-fragments.mjs` recognizes rows with line number prefixes (e.g. `240i|`) as table rows, allowing replacement of upstream line-prefix artifacts via `settings-ru-replace`.
+
+### Endpoint costs/by-issue for expensive tasks (1.7-COSTS-BY-ISSUE)
+
+- New endpoint `GET /api/companies/:companyId/costs/by-issue?from&to&limit` returning top expensive tasks ordered by `costCents` descending.
+- Grouping `cost_events` by `issue_id`, distinct `heartbeat_run_id` as `runs`, joining `issues` for `identifier` and `title`.
+- Default `limit=20`, maximum `100` (`>100` returns HTTP 400).
+
+### Guardrail enforcement modes, settings, and journal (1.7-GRD-MODES)
+
+- Configurable enforcement modes (`flag`, `mask`, `block`) for all guardrail rule categories (`secret`, `pii`, `injection`).
+- Precedence hierarchy: environment force override (`MYRMIDON_GUARDRAILS_MODE_FORCE`) > per-agent override > caste override > company setting > default `flag`.
+- Effective resolution returns mode and resolution source (`env`, `agent`, `caste`, `company`, `default`).
+- Hot configuration readback and persistence in `instance_settings.general.guardrailModes` without server restart.
+- Run-output enforcement applies mode before visible publication; `block` safely withholds output and provides a safe refusal message with zero leakage.
+- Queued-input injection protection enforces configured modes on queue updates, safely refusing injection when configured to block.
+- Safety bounds preserved: 262,144-character scan bound, 20-event write cap, shape-redacted and clamped snippets.
+- Settings screen in Company Settings → Guardrails (`/company/settings/guardrails`) with company, caste, and agent controls.
+- Event firing journal with filtering by rule kind, severity, surface, and run ID.
+- Complete English and Russian localization.
+
+### Knowledge module part L-4: POST-TASK-REFLECT lesson distillation (KNOWLEDGE-2.0 L-4)
+
+- New `server/src/myrmidon/lesson-distill/`: the lessons agents retained in
+  hindsight over the last 24 hours become knowledge suggestions. Units typed
+  `lesson` (fact type, or the `lesson` tag on an untyped unit) are collected
+  from every agent bank of the company — the bank resolution is the memory
+  card's own rule (agent-card `adapterConfig`, else the plugin config) —
+  grouped by normalized text, and a lesson seen **≥ 2 times** inside the
+  window becomes one pending suggestion marked
+  `[lesson-distill:regulation_candidate]` with `sourceKind: "run"` and the
+  evidence (repeats + memory ids) in the rationale. A single mention stays in
+  the bank: one mention is not yet a rule. The distiller never writes a page —
+  the curator cast decides (§4.5).
+- The pass is idempotent: a still-pending twin from a previous pass is
+  refreshed (newer evidence) instead of duplicated; every company tick leaves
+  one `knowledge.lesson_distill.pass` journal line with the counters and the
+  window. Caps by construction: at most 10 suggestions and 500 raw lessons
+  per pass, 200 per bank.
+- The sweep (`startup.ts`, wired from `server/src/index.ts`) is a no-op until
+  `MYRMIDON_LESSON_DISTILL_ENABLED=1`; defaults: hourly tick, 24 h window,
+  threshold 2. Optional env: `MYRMIDON_LESSON_DISTILL_PERIOD_MINUTES`,
+  `MYRMIDON_LESSON_DISTILL_WINDOW_HOURS`,
+  `MYRMIDON_LESSON_DISTILL_REPEAT_THRESHOLD`, and the memory service address
+  `MYRMIDON_MEMORY_BASE_URL` / `MYRMIDON_MEMORY_API_KEY` (the stored memory
+  card settings are used when the env is absent).
+- Tests: `lesson-distill.myrmidon.test.ts` (the pure domain: window math,
+  lesson typing, grouping, the ≥2 rule) and
+  `lesson-distill-pass.db.myrmidon.test.ts` over embedded Postgres — two
+  agents' identical lessons become one marked pending suggestion plus the
+  journal line; a single mention yields nothing; a repeat outside the window
+  does not count; a second pass refreshes instead of duplicating.
+
+### REDACT: Sensitive data masking, entity detection, and guardrails (1.7-REDACT)
+
+- Added standalone `myrmidon-redact` module in `tools/redact`.
+- Implemented offline regex and checksum recognizers for INN, KPP, OGRN/OGRNIP, OKPO, bank accounts, BIC, bank cards (Luhn), SNILS, Russian passport, and secrets (API keys, tokens, passwords).
+- Implemented `RedactEngine` supporting flag-only, irreversible masking, and reversible masking with TTL substitution store restoring text byte-for-byte.
+- Added HTTP service endpoints `/healthz`, `/redact`, `/restore`, and `/scan`.
+- Added MCP server exposing `redact_text`, `restore_text`, and `scan_text`.
+- Added LiteLLM guardrail adapter with score-based gating avoiding binary presence blocking.
+- Added CI workflow `.github/workflows/myrmidon-redact.yml` and container build artifacts.
+- Added synthetic benchmark suite verifying recall >= 0.95, false positive rate <= 0.02, and latency < 150ms on 4 KiB payload.
+- Added documentation in `docs/myrmidon/redact.md` and `docs/myrmidon/redact.ru.md`.
+
+### Gate the vendor name in the built interface and the server answers (REBRAND-F)
+
+- The rebrand keeps the vendor name only in the LICENSE, the third-party notices and the "based on ... (MIT)" line of About. The new gate `scripts/myrmidon/vendor-name/check-vendor-name.mjs` scans the built UI bundle (`ui/dist`) and the recorded response bodies of the main endpoints and counts the visible vendor name; identifier spellings (`@paperclipai/*`, `PAPERCLIP_*`, API paths, storage keys, headers) are reported but not gated for one release. Modes: `ratchet` (the visible count may not grow above the baseline) and `strict` (no occurrence outside the exceptions); CI fails a build that adds a new visible mention. Mode and baseline are editable on Instance -> General without a restart; `MYRMIDON_VENDOR_NAME_CHECK_MODE` / `MYRMIDON_VENDOR_NAME_CHECK_BASELINE` remain forced overrides (both are documented in docs/myrmidon/SETTINGS.md rows below).
+
+### UI 2.0 agents fleet screen (OPE-8576)
+
+- Added the company-scoped `agents` route with a scrollable `reportsTo` tree, canonical agent statuses, bounded live-run data, empty state, and direct agent-card links.
+
+### 1.7 UI2 — swarm-claim settings in Runs & queue (OPE-10133)
+
+The UI 2.0 Settings → Runs & queue screen now includes the swarm-claim
+controls: the master switch, task lease TTL, and per-agent task limit. Each
+control shows whether its effective value comes from saved settings, an
+environment override, or the built-in default; environment-pinned values are
+disabled. Queue counters remain live, and saves apply immediately without a
+restart. The legacy pheromone display, cooldown window, and change log remain
+in the existing panel.
+
+How to check: with `enableMyrmidonUi2` enabled, open
+`/company/settings/runs-queue`; configure and save the three controls, verify
+source badges and live queue counters, and confirm environment-pinned controls
+are disabled. See `Ui2SwarmClaimBlock.myrmidon.test.tsx` for mocked API tests.
+
+### The settings panel shows the signal the admission decides on (1.6.5 RUN-ADMISSION, rc.3, part B)
+
+- The «Runs & queue» settings (both panels: Settings → Runtime limits and
+  ui2 → Settings → Runs & queue) now lead the live host line with the signal
+  the gate decides on: the CPU busy percent (the non-idle share of all cores
+  from `/proc/stat`) with its threshold and verdict, and — when the operator
+  set the PSI ceiling — the PSI cpu `some avg10` pressure next to it. The
+  load average follows as an explicitly auxiliary reading («Auxiliary: load
+  average …»). A gate that still decides on load average (a settings row
+  saved before rc.3) keeps the old load-average line.
+- Two new editable limits: `maxHostCpuBusyPercent` (default 90, absolute
+  percent of all cores) and `maxHostCpuPsiSomeAvg10` (off unless set); the
+  legacy `maxHostLoadPercentPerCore` stays editable and is marked deprecated
+  in the label and hint. The host state line moved from the legacy field to
+  the busy-ceiling field, next to the ceiling it describes. An unmeasured
+  first sample window and an unreadable counter render honestly («busy % not
+  measured yet», «the host load cannot be read, so the ceiling is inactive:
+  …») instead of invented numbers.
+- Both CPU keys are typed members of `RunLimits`/`RunLimitsPatch` since part
+  A, but are not `RunLimitKey`s yet (their source map arrives with the shared
+  key promotion): the panels carry them as string literals and fall back to
+  the «Default» source label for them.
+
+### Agent action audit log exports as JSONL with pagination (1.6.6 AUDIT-TRAIL)
+
+- `GET /api/companies/{companyId}/audit/agent-actions.jsonl` exports the agent
+  action audit feed (comments, status transitions, assignments) as
+  newline-delimited JSON: one JSON object per line, with the same record shape
+  the read endpoint returns.
+- Filters match the read endpoint: agent, actor, run, entity, action and the
+  `from`/`to` period. The 200-row ceiling is unchanged.
+- Unlike the CSV export, the JSONL export honours the caller's `cursor` and
+  `limit`, so a long audit tail is fetched page by page. The cursor for the next
+  page arrives in the `X-Next-Cursor` header; `X-Audit-Row-Count` carries the
+  number of lines in the response.
+- The endpoint requires the same `audit:view_agent_actions` permission and
+  records its own `audit.exported` activity row, now with `format: "jsonl"`.
+
+### CONNECTORS D1: the bridge touch points of the Telegram channel go through the connector adapter (1.6.6)
+
+- The bridge of the Telegram channel reads its themes from one seam,
+  `server/src/myrmidon/channel-connectors/bridge/`: the addressing of `@alias`
+  turns, the cross-channel context, the links to board tasks, the conversation
+  identity, the bridged-DM settings, the topic inbound, the voice intake and the
+  bridge locale. This first batch converts 26 touch points of the call map
+  (OPE-6629) — the most isolated ones; the core no longer reaches those bridge
+  modules directly.
+- The seam is a deployment switch. With `MYRMIDON_CHANNEL_CONNECTOR_BRIDGE`
+  unset (the default) every theme is the bridge module itself, so the board
+  behaves byte for byte as before. With the switch on a registered channel
+  connector serves the themes it declares, and every symbol it does not serve
+  stays with the bridge module — a half-finished connector cannot break a theme
+  (fail-open, the rule of the connector design).
+- Nothing changes on the running board: no connector is registered yet and the
+  switch is off.
+
+### CONNECTORS D3: the last third of the Telegram bridge touch points goes through the connector adapter (1.6.6)
+
+- The bridge seam `server/src/myrmidon/channel-connectors/bridge/` now also
+  serves the last third of the call map (OPE-6629, points 53-77): the Telegram
+  helper modules the core reaches (upload projection, ephemeral callbacks, media
+  intake, rich intake), the DM command menus and menu locale, and the notify
+  track (jobs entry, proactivity sweep, the two instance-settings preservation
+  keys). The core no longer imports any of these bridge modules directly.
+- Every legacy module that lost its last core importer now carries a
+  deprecation note: with the bridge flag off the module is still the code that
+  runs (fail-open), but new importers must go through the seam, and deleting
+  the direct path is the follow-up step after the channel connector ships. The
+  code itself is not removed in this change.
+- Two contract values stay bound to the legacy module even when a connector
+  serves the theme, because stored data carries them: the private-action notice
+  text `TELEGRAM_PRIVATE_ACTION_UNAVAILABLE` (already-written rows compare
+  against it) and the canonical command list `TELEGRAM_DM_COMMANDS` (its copy
+  hashes into the menu-registration version).
+- Point 70 of the map — the `packages/shared` re-export of the telegramNotify
+  settings contract — intentionally stays out of the seam: it is a data
+  contract (types and validators the board UI reads too), not a bridge call a
+  connector can serve.
+- Nothing changes on the running board: no connector is registered yet, the
+  switch is off, and the flag-off behavior is byte for byte the previous code.
+
+### CONNECTORS G: the bridge returns to the direct path when the adapter does not answer (1.6.6)
+
+- The seam of the bridge now wraps every symbol a channel connector serves with
+  the fallback chain
+  (`server/src/myrmidon/channel-connectors/bridge/fallback.ts`). The adapter
+  answers — the core gets its value and the bridge module does not run (no double
+  delivery). The adapter throws, rejects or runs out of time — one warn line, one
+  `myrmidon_adapter_fallback_total{reason="error"|"timeout"}` sample, and the
+  bridge module answers exactly once, so the Telegram bridge keeps working while
+  the connector is down.
+- With the switch off (the default) the seam hands the bridge module itself over:
+  the adapter is not touched and the board behaves byte for byte as before.
+- New setting `MYRMIDON_CHANNEL_CONNECTOR_BRIDGE_TIMEOUT_MS` (default 15000 ms)
+  bounds one adapter call; a value that is not a positive number keeps the
+  default. The counter is part of the board's `/metrics` scrape.
+
+### Pipelines in instance experimental settings (1.6.6 SETTINGS-UI)
+
+- Instance admins can switch Pipelines in Settings > Instance > Experimental. The existing GET/PATCH endpoint stores the flag; the sidebar and pipeline route gate read it. A cloud-managed key stays visible but locked.
+- No control is added for workspace recovery or sandbox transport kill switches; these remain operator decisions described below.
+
+### CONNECTORS I: the inbound event of a chat endpoint read through the connector (1.6.6)
+
+- The vendor webhook path reads an inbound transport event through the channel
+  connector when one is registered for the endpoint's provider, and through the
+  vendor path when none is. The switch of the step is the registry: no connector
+  registered — nothing changes for the running board.
+- One update never reaches the queue twice: the connector answers `duplicate`
+  for a repeated `externalId`, and the read stops at the seam.
+- New counter `myrmidon_chat_ingress_total{path="adapter"|"direct"}` tells the
+  two readings apart on the metrics scrape.
+- Our own failures — an unreadable body, a connector that throws — leave the
+  event to the vendor path (fail-open, journaled). A channel never goes silent
+  because of us.
+
+### MEDIA-ACL: scoped media-tool token delivery (MEDIA-ACL)
+
+- Adds an operator-controlled, comma-separated allowlist for binding `MEDIA_TOOLS_TOKEN` into selected Hermes bot environments during the media-tools rollout.
+- The allowlist is empty by default; each enabled agent still requires an authorized secret reference, and token values are not passed to adapter environment variables.
+- The shared ACL registry is exported through the board compose volume and read-only by the media facade; existing entries are preserved when the generated fleet is empty.
+
+### Manage remaining inbox and agent access policies in settings (OPE-11248)
+
+- Company member access now exposes the existing administrator-only inbox agent policy endpoint; agent trust settings expose visibility, assignment, and protected-agent assignment blocks. Blocking or unblocking assignments requires explicit confirmation. Existing trust preset and unrelated permissions remain intact.
+
+### Prevent completing an issue before its linked PR is merged (OPE-8289)
+
+- An issue linked to pull-request work products cannot transition to `done` until every linked PR is verified merged. Open, draft, closed-unmerged, invalid-reference, and provider-unavailable states return the stable `issue_done_pull_request_gate` conflict with a retryable message and PR URL. A closed PR is accepted only when `metadata.replacementPullRequestUrl` names a valid GitHub PR and the existing company-scoped provider resolver verifies that replacement is merged. Freeform comments and asserted metadata do not prove delivery.
+- Provider lookups happen before the status transaction; the service then compares the linked work-product snapshot before applying the change. If the work product changed while the lookup was in flight, retry completion. Callers that supply an external transaction cannot safely make network requests and fail closed unless the stored work-product state already proves merged. Refresh/sync linked PR work-product state, then retry. Cancellation remains unchanged.
+- Post-deploy audit query: run the same query before and after rollout. It deduplicates PR identities and reports open PRs linked to any done/cancelled issue; historical counts are not a current baseline.
+
+```sql
+WITH open_prs AS (
+  SELECT DISTINCT
+    COALESCE(wp.metadata->>'repo', wp.url) AS pr_key,
+    wp.metadata->>'number' AS pr_number
+  FROM issue_work_products wp
+  WHERE wp.type = 'pull_request'
+    AND wp.status IN ('open', 'draft', 'ready_for_review', 'approved', 'changes_requested')
+),
+affected AS (
+  SELECT p.pr_key, p.pr_number
+  FROM open_prs p
+  WHERE EXISTS (
+    SELECT 1
+    FROM issue_work_products wp
+    JOIN issues i ON i.id = wp.issue_id AND i.company_id = wp.company_id
+    WHERE wp.type = 'pull_request'
+      AND COALESCE(wp.metadata->>'repo', wp.url) = p.pr_key
+      AND wp.metadata->>'number' IS NOT DISTINCT FROM p.pr_number
+      AND i.status IN ('done', 'cancelled')
+  )
+)
+SELECT pr_key, pr_number FROM affected ORDER BY pr_key, pr_number;
+```
+
+### Access hub: ssh failure notes no longer echo command details (SEC1)
+
+A failed ssh operation of the Access hub (deploy/revoke/dry-run of a key on
+a fleet host) now reports only `ssh command timed out` or
+`ssh command failed (exit <code>)` in the API response and the journal —
+never the host address, the login, the admin key file path or the remote
+command. Deploy and dry-run of a secret whose stored public key half is
+missing or unparseable now refuse up front with `not_deployed` and the note
+`the secret has no parseable public key half` instead of writing a useless
+`authorized_keys` line that reported `deployed`. The ssh operations contract
+is documented in the Access hub guide.
+
+### ADM archive migration and REST context hook
+
+- Add deterministic migration reports, source provenance, secret removal, and guarded draft import.
+- Add bounded REST context delivery with session deduplication and byte metrics.
+- See [the operator guide](guides/adm-knowledge-migration.md) for dry-run, apply, environment variables, and rollback. Production installation is a separate operator action.
+
+### Add the built-in instance administrator (ADMIN-ASSISTANT)
+
+- Register the instance administrator as a first-class built-in agent and route routine or complex work through configured LiteLLM models with reserve fallback.
+
+### An agent in "контейнер не поднят" gets its bot container started automatically (1.6.6 AUTO-RESUME)
+
+- When the gateway connect retries of a run ran out, the board marks the agent
+  `error` with the reason "контейнер не поднят". Auto-resume used to skip that
+  reason (`container_not_started`) until an operator started the container; on
+  07.11 an idle-stopped container left adm-devops in error for 4.5 hours.
+- The sweep now starts the bot container first, through the board's own start
+  path (`IdleStopService.ensureStartedAndHealthy`, the call `claimQueuedRun`
+  uses for an idle-stopped container: the driver's start, then a check that the
+  container is running and healthy). A healthy container is followed by the
+  ordinary resume of the agent.
+- A start that fails is retried no sooner than 15 minutes after the previous
+  attempt, 4 attempts in all (activity row
+  `agent.auto_resume_container_start_failed` for each). After the fourth the
+  board gives up once: `agent.auto_resume_exhausted` and the critical
+  `agent_error_alert` card, as for any other give-up, and the agent is skipped
+  until an operator acts. Each attempt is written to the state
+  (`containerStartFailures`) before the start, so a crash or an overlapping
+  pass cannot repeat it.
+- A resume that follows a healthy start counts in the ordinary streak and its
+  cap (3 within the failure window), so a container that starts and still
+  refuses the gateway cannot loop for ever. Every other error reason keeps the
+  old behaviour. A starter that is absent (no IDLE-STOP service) keeps the old
+  skip.
+
+### Quota errors take the model-unavailable path; auto-resume re-arms only on operator action (OPE-11947)
+
+- The Hermes adapters (gateway and local) now mark a run `model_unavailable`
+  whenever the provider's overload, quota or maintenance text came back as the
+  turn's content (`provider_error_as_content`), not only for Hermes' own "No
+  reply" notice. Such a run is retried by the model-unavailable policy
+  (30 min, 1 h ... 6 h, five attempts) instead of the 30 second transient pair.
+  The replay evidence (`executionRecovery`) is unchanged.
+- An agent whose last finished run is model-unavailable is no longer resumed
+  on the 1/5/15 minute backoff: a resume wakes every task the agent is
+  stranded on, and each new run failed on the same quota again. It returns on
+  the long model-unavailable schedule counted from the end of that run: 30 min,
+  1 h, 2 h, 4 h, then every 6 h (skip reason `model_unavailable_wait` while it
+  waits). These resumes do not count towards the attempt cap and never give up,
+  so an agent whose quota ran out comes back by itself no later than 6 hours
+  after the quota resets. The series counter (`modelUnavailableResumes`) lives
+  in the same state and is dropped when the last run is no longer
+  model-unavailable; then the ordinary backoff and cap apply again.
+- After auto-resume gives up on an agent (`agent.auto_resume_exhausted`), only
+  an operator action re-arms it: an `agent.resumed`, `agent.updated` or
+  `agent.error_cleared` activity row written by a user for that agent after the
+  give-up. A change of `agents.updated_at` alone (a run, a status change) used
+  to re-arm it a few minutes later, so the give-up never held.
+
+### A task can no longer enter `blocked` without a reason (422 `blocked_requires_reason`)
+
+- The issue service update, the single point every status change passes through, refuses a
+  transition into `blocked` unless, after the change, the task has an open blocker, a
+  `blockerMetadata.blockReason`, or an `unblockDescriptor` with an owner and an action. The
+  answer is 422 with `details.code = blocked_requires_reason`. Agents, the board and the system
+  paths obey the same rule. Already blocked tasks are not re-validated.
+- System paths that block a task with no open blocker now name the reason (a recovery liveness
+  descriptor): the stranded-assigned recovery disposition and the raw native failure projection.
+- When the last open blocker closes (`done`) and nothing else holds the dependent (no
+  `blockReason`, no descriptor, an executor exists), it returns to `todo` in the same
+  transaction; the existing dependency wake-up runs after commit.
+- A `cancelled` blocker now counts as resolved everywhere, the same as `done` (ADM decision 24.10): one
+  source of truth `isBlockerResolved` / `blockerOpenSql` / `blockerOpenCondition` in
+  `server/src/myrmidon/blocker-resolved.ts` serves dependency readiness, swarm-claim queue and matcher, idle pickup,
+  plugin wake checks, blocker attention and the liveness check for non-blocked sources. Idle pickup therefore
+  wakes tasks whose only blockers are cancelled; the workspace sync-back barrier still applies to `done` blockers only.
+- `scripts/myrmidon/unblock-reasonless.mjs` returns the existing reasonless blocked tasks to
+  `todo` for their executor (dry-run by default, `--apply`, snapshot first, batches of 10, no wake-ups).
+
+### Traceable run cancellations and cached GitHub App tokens (OPE-8543)
+
+- Every run cancellation logs `heartbeat run cancellation requested` with `runId`, `agentId`, `correlationId`, the source (`code`, endpoint, actor) and the reason. The same provenance is stored in `resultJson.executionCancellation` and forwarded to the Hermes gateway as `X-Paperclip-Correlation-Id` / `X-Paperclip-Cancellation-*` headers; the Hermes adapter logs the correlation id and sender when it stops a gateway run.
+- `company_secrets.last_resolved_at` is updated at most once per five minutes per secret instead of on every resolution. GitHub App installation tokens are cached until five minutes before expiry (`myrmidon.github_app.issued` is expected to drop to about one per installation per hour).
+
+### Licenses screen: request, install and state of closed-module licenses (LICENSING)
+
+- New screen Settings → Instance → Licenses (instance admins only). It shows the
+  installation id, a one-click "Copy request" (`MYRQ1.…`, byte-identical to the
+  modules' own `build_request`, naming the closed modules installed into this
+  board), the state of every closed module's license (valid until a date /
+  expiring / expired / not for this installation / not included / no license /
+  invalid signature) and an install form: paste the `MYR1.…` line or load
+  `license.key`.
+- The board verifies the license with the embedded vendor public key exactly as
+  the modules do, refuses one that no module would accept, and writes it in
+  place to the file the modules read (`MYR_LICENSE_PATH`, default
+  `/etc/myrmidon-license/license.key`). Several trusted public keys and a `kid`
+  field are supported for key rotation; licenses without `kid` keep verifying.
+- A banner in the common layout tells instance admins when an installed closed
+  module has no working license and links to the screen.
+- The installer mounts the host license directory into the board read-write and
+  sets `MYR_LICENSE_PATH`, so the adapter inside the board and the modules on the
+  host read the same file. See `docs/myrmidon/guides/licensing.md`.
+- The board no longer issues licenses: the issue form, `POST /api/licensing/issue`,
+  `POST /api/licensing/parse-request`, `GET /api/licensing/issued` and the
+  variables `MYRMIDON_LICENSE_ISSUER_KEY_FILE` / `MYRMIDON_LICENSE_JOURNAL_FILE`
+  are removed; the core never loads a private key. Issuing is the vendor's
+  closed module.
+
+### Plugins see whether the user is an instance admin (PLUGIN-INSTANCE-ADMIN)
+
+- The host-verified actor of a plugin action (`context.actor`) now carries
+  `isInstanceAdmin` (true only for a board user with the instance admin role),
+  and the UI host context of plugin pages and slots carries `isInstanceAdmin`
+  for rendering. A plugin can restrict an action to the instance admin without
+  keeping its own user list. The SDK test harness accepts
+  `actor.isInstanceAdmin`. Data calls carry no actor, as before.
+
+### Pending interactions expire when the issue closes (CLOSED-ISSUE-INTERACTIONS, #2235)
+
+- When an issue transitions to a terminal status (`done` or `cancelled`) — through the HTTP routes or any direct service-level status update — every still-pending issue-thread interaction (`request_confirmation`, `ask_user_questions`, `suggest_tasks`, `request_item_verdicts`, …) moves `pending` → `expired` with result outcome `issue_closed` and `expirationReason: "issue_closed"`. `connection_intent` cards keep outcome `expired` and record the same `expirationReason`. Linked tool actions and secret proposals are revoked or expired in the same transaction; `resolvedAt` is stamped.
+- The transition is idempotent: repeated terminal transitions and concurrent resolutions do not double-write, and a later resolve attempt on the expired card returns `409 interaction_issue_closed` instead of acting on a closed issue.
+- Migration `0459_expire_pending_interactions_on_closed_issues` performed the one-time catch-up: pre-existing pending rows on issues already in a terminal status were expired in the same shape.
+- Docs: the lifecycle is specified in `doc/execution-semantics.md` (§10 Issue-thread interaction resolution) and its Russian version, the API surface in `docs/api/issues.md`, and the agent guidance in `docs/guides/agent-developer/comments-and-communication.md`.
+
+### Input-token economy for bots: stale wake messages, stale tool results, unused tool schemas (CONTEXT-ECONOMY A/B, TOOL-DIET D)
+
+- **A. Superseded wake messages** (off by default since `token-burn-cache-friendly`: a rewrite of an earlier message
+  breaks the provider's prompt cache; `context_economy.stale_wakes: true` switches it on). The bot runtime (patch `16-context-economy`) then sends every
+  wake message of a session except the newest as a short note (run, issue, wake reason) instead of
+  the whole task package. Only the per-call request copy changes; the transcript, `state.db` and
+  compaction input are untouched. `HERMES_KEEP_STALE_WAKES=1` in the bot's env restores the old request
+  byte for byte.
+- **B. Stale tool results** (off by default since `token-burn-cache-friendly`, for the same reason; `context_economy.stale_tool_results: true`
+  switches it on; `skill_view` and reads of skill files are never replaced). A tool result of at least 8000 characters that lies below a
+  boundary (moving in steps of 8 messages, the last 8 messages are never touched) is sent as a note with the
+  tool, its argument summary, the size, a short head and tail and a `ref`. The new `read_stale_tool_result`
+  tool returns the original for the ref (in windows for long results). Untrusted external text is never quoted into
+  a note. `HERMES_KEEP_STALE_TOOL_RESULTS=1` restores the old request and removes the tool from the
+  schema; `HERMES_STALE_TOOL_MIN_CHARS`, `HERMES_STALE_TOOL_KEEP_MESSAGES`, `HERMES_STALE_TOOL_STEP`
+  and `HERMES_STALE_TOOL_EXEMPT` (comma-separated tool names never replaced) tune it. The runtime logs
+  `context-economy: session=… stale_wakes=… stale_tool_results=… saved_chars=…` whenever the counts change.
+- **D. Unused tool schemas.** Patch `17-disabled-tools-by-name` adds `agent.disabled_tools` (single tools,
+  subtracted after the toolsets), and the profile compiler writes it: the instance list
+  `MYRMIDON_BOT_DISABLED_TOOLS` (default: the five `browser_vault_*` tools and `vision_analyze`,
+  about 1.2k tokens per call), replaced by the card's own `adapterConfig.disabledTools` when present.
+  A card with its own vision model keeps `vision_analyze`. `MYRMIDON_BOT_DISABLED_TOOLS=none` restores the
+  previous `config.yaml`. A changed `config.yaml` restarts the bot container.
+
+### Continuation dedupe counters are exposed on the metrics scrape
+
+- The `/metrics` endpoint exposes `myrmidon_continuation_created_total` for continuation keys claimed
+  for the first time and `myrmidon_continuation_deduped_total` for claims suppressed because their
+  key was already claimed.
+- These counters are process-local and reset when a process restarts. Each sample
+  carries the existing `role` label.
+- Continuation keys are not metric labels. The scrape exposes no key values or
+  per-key series. This avoids unbounded cardinality and identifier disclosure.
+- The `metrics-scrape-failing` runbook documents how to interpret the counters.
+
+### A continuation wake carries a summary, not the task history three times (WAKE-HISTORY)
+
+- The structured wake payload JSON that gateway adapters put into the prompt no longer repeats the
+  execution continuation: `executionContinuation.messages`, `resumeDelta.messages`, the completed
+  work and the other evidence stay in the rendered "Current request and continuation context"
+  section only. The JSON keeps the envelope shape and cursors and names what it left out in
+  `omittedFromJson`. The JSON is capped at 12000 characters; over the cap the largest cappable keys
+  are emptied and listed in `jsonTruncation`.
+- New card setting `wakeHistory` for the `hermes_gateway` adapter (`auto` | `summary` | `recent` |
+  `full`). `auto` (default) sends the summary only when `sessionKeyStrategy` is `run` or `none`:
+  the previous run, its final status, the completed work (2000 characters at most), the open
+  interactions and no earlier messages. Every other card gets the newest 8 messages once, each cut
+  to 1000 characters (8000 in total); the comments the run was woken for and the latest human
+  request stay.
+- The continuation envelope gets `previousRun` (`runId`, `status`).
+
+### Continuation wakes only for actionable assigned issues, with a real attempt cap (OPE-11948)
+
+- An automatic `issue_continuation_needed` wake is now admitted only for an issue in `todo` or `in_progress` that is assigned to the woken agent. Issues in `backlog`, `blocked`, `in_review`, `done` and `cancelled`, and issues assigned to someone else, get no continuation wake. A continuation that is already queued is cancelled at dispatch when the issue is no longer `todo` or `in_progress`.
+- The continuation loop is now bounded by a real counter. It counts the succeeded continuation runs of one agent on one issue since the latest external input. External input is a comment or a movement by a user or by a different agent, a resolved blocker, a PR or CI sync event. The agent's own comments and updates and system bookkeeping no longer reset it. After 3 such runs no further continuation is enqueued, and the issue is moved to `blocked` with a system comment until an external event arrives.
+- Before the change, the agent's own activity counted as progress and kept `continuation_attempt` at 0, so neither the attempt limit nor the rewake throttle stopped the loop: in one day about 22% of engineer wakes were continuation wakes for parked issues.
+
+### Corpus indexing sends embeddings in batches with a timeout (1.6.6 CORPUS-2.0)
+
+- The embedder of the corpus module no longer sends all chunks of a document in one
+  request. It sends them in sequential batches of 64 texts and keeps the order of the
+  vectors. Cloud embedding endpoints cap the inputs per request and answer a very large
+  request slowly, so a long document (thousands of chunks) failed to index before.
+- Every embedding request now has a timeout of 120 seconds. The secret that holds the
+  embedder key is still resolved once per call, not once per batch. A failed batch fails
+  the document as before, and the parse worker retries it. Search sends one text and is
+  otherwise unchanged.
+
+### Knowledge corpus in code: hybrid search index and document parser client (CORPUS-2.0 step 4)
+
+- `packages/corpus` gains the search half of the module. `createPostgresSearchIndex`
+  implements the `SearchIndex` port as the pilot measured it: a vector ranking over the HNSW
+  index with `ef_search = 64` on L2-normalized 1024-dimension embeddings, a full-text ranking
+  over the generated `fts` column with its `pg_trgm` indexed fallback, both scoped by company
+  and dataset and merged by reciprocal rank fusion (`k0 = 60`, `k_candidates = 100`). Every
+  hit carries `score`, `chunk`, `document` and both source ranks; the fused order is
+  deterministic. Dataset and `ready` filtering join `corpus_documents`, where part A put them.
+- Clusters without pgvector stay usable rather than broken: the package migrations create the
+  full-text objects everywhere but the vector objects (the `embedding` column, its HNSW index)
+  only where the extension exists, so a search that carries an embedding there fails with the
+  module's own `CorpusVectorSearchUnavailableError` — naming the missing migration and keeping
+  the driver error as `pgError` — while a search without an embedding still answers from the
+  full-text ranking. A raw "undefined column" from the driver no longer reaches the worker. Fresh
+  installations and the production cluster already carry the extension, so this path covers installs
+  that are upgraded in place.
+- Document ingestion behind the ports of part A: the sliding-window chunker (300–1500
+  characters, 150 characters of overlap, boundaries on line breaks, configurable), batch
+  embedding through the module `Embedder` port, and one atomic `replaceDocumentChunks` call at
+  the end, so a gateway failure leaves a document the chunks it already had instead of half of
+  a new set. The failure carries a retryable/permanent flag.
+- `createHttpDocumentParser` implements the `DocumentParser` port on top of the HTTP client
+  (submit, poll, timeouts, retries): the service's pages become parsed blocks in reading
+  order, a plain-text answer becomes a single block, and failures are thrown as a typed
+  `DocumentParserError` with `retryable` set — the flag the worker needs to record a failed job
+  and let the queue retry it, instead of losing the worker. The richer client surface
+  (submit/poll/outcome) stays exported, and the wire contract is written down in
+  `src/parser/README.md`.
+- Tests: fusion, vector helpers, chunker boundaries and `chunk_id` idempotency, the ingestion
+  pipeline against the `Embedder` port, both parser surfaces against a mock HTTP server (bytes
+  and source-URI submissions, retries, a refused and a failed job, an unreachable service), and
+  an integration test for the search path that takes its database from the first source that works —
+  the stand named by `CORPUS_TEST_PGVECTOR_DSN`, else the embedded PostgreSQL 18 cluster with
+  pgvector staged into it by the package shim — and skips with a printed reason when neither is
+  usable. The search SQL itself is unit-tested through a recording SQL executor, so the ordinary
+  run needs no database, and the probe tables the integration suite creates are described by
+  `src/search/probe-schema.ts`: a database-free guard (`probe-schema.myrmidon.test.ts`) asserts
+  that every column the search SQL reads exists in that schema, because a probe table that has
+  drifted from the query surface would otherwise only surface as a red lane on the first host that
+  can run the suite.
+- The vector integration suite can now actually run on CI, where it silently skipped before: the
+  embedded-cluster shim unpacked the pgvector package with `tar -J`, while the embedded-postgres
+  helper had prepended its own native lib directory to `LD_LIBRARY_PATH` — that directory carries an
+  older `liblzma.so.5`, so the system `xz` refused to start (`version `XZ_5.4' not found`) and `tar`
+  exited non-zero. The shim now hands `ar` and `tar` an environment with the loader paths removed
+  (the treatment the repo's rootless runner already gives `dpkg-deb`), reads the payload member from
+  `ar t` instead of assuming `data.tar.xz`, and reports a failed command together with its `stderr`,
+  which is where `xz` and `tar` say what went wrong. Database-free tests pin those decisions
+  (`test-pgvector.myrmidon.test.ts`), so the extension installs wherever a system `xz` exists.
+- The integration stand now mirrors the migration's indexes, not only its columns. The search SQL joins
+  chunks to documents by `document_id` and narrows documents by `(dataset_id, status)`, and a probe
+  build without those btree indexes made the planner answer with a nested loop that scanned every
+  chunk per document: CI measured a 789 ms plan on a 2000-chunk stand with `Rows Removed by Join
+  Filter: 4000000`, a shape production never picks and a latency that described the stand rather than
+  the product. The probe schema now creates the four btree indexes of the migration's tables, a
+  database-free guard fails if any of them goes missing or stops covering the joined and filtered
+  columns, and the plan test fails if that join explosion comes back.
+- This is the code half of the corpus step; wiring the module to routes, settings and the UI
+  follows in the later parts of CORPUS-2.0.
+
+### Corpus shadow mode behind the `corpus.shadow` flag (1.6.6 CORPUS, part A)
+
+- A new instance behavior flag `corpus.shadow` (off by default) compares the
+  knowledge-corpus module against RAGFlow without touching bot answers: every
+  remote-MCP search call that completes normally gets a fire-and-forget shadow
+  leg, and the bot still receives the RAGFlow result exactly as before.
+- Each shadow call writes one row into the new `corpus_shadow_log` table
+  (migration 0409): bot, dataset, query, the chunk ids and latency of both
+  legs, and — for the module leg only — the error text. Module failures never
+  surface to the bot.
+- The `GET /metrics` endpoint now exposes p50/p95 of both legs
+  (`myrmidon_corpus_shadow_ragflow_latency_seconds`,
+  `myrmidon_corpus_shadow_module_latency_seconds`) read from the shadow log
+  inside the scrape window; with the flag off the families render without
+  samples.
+
+### Corpus shadow search follows RAGFlow dataset ids (1.6.6 CORPUS, part A)
+
+- The shadow hook now reads the `dataset_ids` argument of the live RAGFlow
+  retrieval tool (an array of RAGFlow dataset ids; the first one is used), so
+  `corpus_shadow_log.dataset` is no longer empty for those calls.
+- The module leg finds the dataset by its id, by its exact name, or by a
+  RAGFlow dataset id: the RAGFlow importer names datasets
+  `RAGFlow: <name> [<id>]`, and a name that ends with `[<id>]` matches. A
+  missing or ambiguous dataset is still recorded in `module_error`, and the
+  search stays inside the company of the bot.
+
+### Corpus keeps non-ASCII file names intact on upload (1.6.6 CORPUS-2.0)
+
+- The corpus upload route now reads the file name of a multipart upload as UTF-8.
+  Browsers and HTTP clients send the name as raw UTF-8 bytes, but the multipart
+  parser read it as latin1 by default. A Cyrillic name such as `Руководство.pdf`
+  was saved as unreadable text in the document title, in the API answers and in the
+  audit log. New uploads keep their name.
+- Documents uploaded before this fix keep the garbled title. Delete such a document
+  and upload it again to get the correct name.
+
+### Deploy precheck counts incoming release images and DB dump reserve (OPE-7723)
+
+- `deploy_disk_precheck` now adds the registry size of every release image that
+  is not present locally (resolved through the linux/amd64 platform manifest of
+  an OCI image index) to the required free space before pulling anything or
+  entering the maintenance window; a deploy that cannot fit is refused before
+  the first pull with cleanup candidates printed.
+- New setting `MYRMIDON_DEPLOY_DB_DUMP_RESERVE_GB` (default 5) reserves space
+  for the predeploy database copy. The reserve applies only to full deploys
+  that declare `MYRMIDON_DEPLOY_IMAGE_REFS`; `bot-image-rollout.sh` and
+  `rollout-component.sh` keep the plain `MYRMIDON_DEPLOY_MIN_FREE_GB` threshold.
+- The precheck fails closed when an image size cannot be determined from the
+  registry; in `--dry-run` it warns and continues instead (a dry run refuses
+  nothing).
+- Unknown free space on `/var/lib/docker` continues a dry run with a warning;
+  a real deploy is still refused.
+
+### Deploy image retention keeps the current release plus N previous (DEPLOY-HYGIENE, OPE-5107)
+
+- `deploy_image_retention` (deploy.sh step 11, bot-image-rollout.sh step 6b) counted its `MYRMIDON_DEPLOY_IMAGE_KEEP` window over the images no container uses and kept the first `keep + 1` of them. The release a container runs never entered that window, so for the bot images (`myrmidon-hermes`, `-hermes-dev`, `-hermes-node`: pulled by digest, no tags) the window kept two superseded generations on top of the running one. On the production host four generations of each bot image piled up (2.9 + 1.6 + 1.2 GB per generation); the rc.41 and rc.42 deploys logged «0 image(s) removed» and the disk fell to 8% free.
+- The window now matches the setting: the current release plus `MYRMIDON_DEPLOY_IMAGE_KEEP` previous ones, per repository. The newest image a container uses is the current release and stays; images newer than it (just pulled, not started yet) always stay and are not counted; after the current release at most `keep` unused images stay, every older unused image is removed. A repository with no used image keeps the `keep + 1` newest as before. An image any container uses is still never removed.
+- The summary line now also names how many newer-than-running images were kept.
+
+### Devflow queue health derivations and thresholds
+
+Deployment environment overrides for devflow queue health metrics:
+- `MYRMIDON_DEVFLOW_ENGINEER_IDLE_MS`
+- `MYRMIDON_DEVFLOW_REVIEW_QUEUE_MS`
+- `MYRMIDON_DEVFLOW_RED_CI_MS`
+- `MYRMIDON_DEVFLOW_APPROVED_NOT_MERGED_MS`
+- `MYRMIDON_DEVFLOW_NO_MERGES_MS`
+
+### BOT-TUNING-C — per-model effort validation and safe default
+
+- Document per-model validation of the agent-card Thinking effort field and the model-safe default used when the field is empty.
+- GLM models via DashScope accept `low`, `high`, and `max`; empty effort resolves to `high` instead of Hermes' incompatible global `medium`.
+
+### Engineer idle and unblocked task metrics in /metrics
+
+- The `/metrics` endpoint exposes `myrmidon_engineers_live` (count of live, unpaused engineer agents).
+- The `/metrics` endpoint exposes `myrmidon_engineers_idle` (count of live engineer agents without a heartbeat run in the idle window, default 60 minutes, configurable via `?idle_window=`).
+- The `/metrics` endpoint exposes `myrmidon_todo_unblocked_tasks` (count of todo issues without user assignment and without open blocking relations).
+
+### Browser extension package built in CI (CLIENT-1-PKG)
+
+- A new workflow builds `extension/` into `dist-extension/`, checks that every file the manifest names is in the build, and zips it. Pull requests and pushes to `main` get the zip as a workflow artifact; a tag `extension-v<manifest version>` also publishes it as a GitHub Release with a SHA-256 file.
+
+### Release drain no longer leaves sibling issues locked or blocked (1.6.6)
+
+- A sibling issue released by a finished run now keeps the execution lease only while it has a deferred wake to drain; otherwise the lease is handed back and the primary issue is drained as before.
+- A release gated on a blocked primary issue reports the block again instead of reporting the sibling as released.
+
+### Fleet control of bots on remote sites works on a split board (OPE-12032)
+
+- On a board running `processes.mode = split`, `POST /api/myrmidon/fleet/bots/:key/restart`, `…/stop`
+  and `GET …/logs` for a bot on a registered, healthy site answered `502 … has no active mTLS client
+  transport; register valid certificate, key, and CA`. The site mTLS client manager is built by
+  `startBotContainers`, which only the worker runs, so an api process had no manager (and no
+  bot-container runtime) even with `MYRMIDON_SITE_HEALTH=1`.
+- The api process now forwards the fleet control routes of bots and sites to the worker through the
+  single-route proxy (the `bot_container` group): `/api/myrmidon/fleet/bots/:key/(restart|stop|logs)`,
+  `/api/myrmidon/fleet/sites/overview`, `/api/myrmidon/fleet/sites/:name[/bots|/drain|/resume]` and
+  `/api/fleet/bots/:key/(move|logs)`. The worker holds the one client manager and reaches the site's
+  fleetd through its mutual-TLS transport. The registry list `GET /api/myrmidon/fleet/sites`, the
+  enroll/list/delete routes of `/api/companies/:id/fleet/sites` and the console routes stay with the
+  api process (database only).
+- Unchanged: with the `singletonProxy` setting off, or on a single-process board, the process that
+  serves the route answers from its own manager, and without one the answer is still the clear 502
+  naming the site.
+
+### fleetd: optional centralized-memory client boundary (1.6.6)
+
+- `tools/fleetd` gains an isolated HTTP client for the centralized memory
+  service, configured by an optional `memory` block in the fleetd JSON
+  configuration (`enabled`, `url`, `token`, `bank`, `timeoutMs`). Disabled by
+  default: without the block, the new `/v1/memory/recall` and `/v1/memory/retain`
+  routes answer `503 centralized_memory_disabled` and no outbound traffic
+  happens.
+- The boundary speaks only HTTP(S) to the configured URL — no `/host` mount,
+  no docker.sock, no host filesystem paths. A non-http(s) URL, an embedded
+  credential, or a missing bank fails `--check-config` validation instead of
+  starting.
+- Upstream failures surface as explicit errors (`memory upstream returned HTTP
+  <code>`, `memory upstream unavailable`), never as panics or silent
+  degradation; responses are size-capped and every request carries a timeout.
+
+### fleetd: mutual-TLS listener for the site API (1.6.6)
+
+- `tools/fleetd` serves the `/v1` API over TLS and requires a client
+  certificate signed by the site CA (`tls.RequireAndVerifyClientCert`, TLS 1.2+).
+  New optional JSON config keys: `siteCA`, `serverCert`, `serverKey` (absolute
+  paths). A partial set or a relative path fails `--check-config`; starting the
+  server without all three is refused. `--check-config` without the TLS block
+  stays valid, so existing smoke-test configs keep working.
+- The bearer token check stays on top of mTLS. TLS setup errors never include
+  key material. This is the listener part of site-agent v1; the Docker backend
+  operations are delivered separately.
+
+### Code issues are assigned to engineers only (GATE-CODE-ASSIGN)
+
+Creating an issue, or changing its assignee, now refuses (422 `issue_requires_engineer`) an assignment of a code issue to an agent whose role is not `engineer`. An issue counts as code when it carries the `needs-engineer` label, routes to the engineer caste, or needs a live checkout (`skill_test` harness, `operator_branch`/`reuse_existing` workspace preference); nothing is inferred from the title or description, and an unreadable signal never blocks (fail-open). Whoever already holds the issue can still change its status. Humans can still be assigned, and issues in review or finished can be held by a reviewer. When the workspace of an engineer issue cannot be prepared, the issue returns to the queue through the regular issue update and a free engineer picks it up without a lead.
+
+### GitHub broker explains "no repository" instead of looking like "no access"
+
+- Run engineers saw `gh auth status` or `gh api user` fail as unauthenticated when run outside
+  a clone and concluded they had no GitHub access, although the broker issues tokens normally.
+  The broker only mints a token once the target `owner/repo` is known, and otherwise answered a
+  bare `absent`.
+- The broker now infers the repository from the task: its own workspace, then the project's
+  primary workspace (a single distinct github.com repository). If none is known it still
+  answers `absent`, now with `reasonCode: "repository_required"` and `availableRepositories`,
+  the repository patterns of the PAT and App entries that serve the calling agent (at most 50;
+  configuration only, never secrets). Nothing is minted or read from the secret store without a
+  repository.
+- The `gh` wrapper in the bot image also takes the repository from the `repos/OWNER/REPO`
+  endpoint of `gh api`, says in plain words "GitHub access is available, pass -R owner/repo,
+  set GH_REPO or work inside a clone" (with the allowed repositories), explains a plain `absent`,
+  and `gh auth status` reports the broker's state (identity, repository, never the token)
+  instead of "not logged in".
+
+### Idle pickup no longer wakes an agent over its daily cap on every tick (IDLE-PICKUP-DAILY-CAP, OPE-11947)
+
+- The per-day heartbeat cap gate (`heartbeat.daily_run_limit`, `heartbeat.daily_cost_limit`) does not hold a wake: it writes a `skipped` row to `agent_wakeup_requests` and returns nothing. Idle pickup offered every ready `todo`/`in_progress` task of an agent on every pass and relied on that gate, so an agent that had used up its `maxDailyRuns` collected one rejected wake per task per pass until midnight UTC: 4 179 rows in 6 hours on the production board (adm-infra 3 277, adm 815, adm-observability 86), 13 591 in 3 days. No run and no tokens were spent, but the table, the feed and the attention-card query filled up.
+- Idle pickup now asks the cap gate's own verdict once per agent per pass (the same `getHeartbeatDailyCapBlock` over the agent's own policy, so the run count and the failed-before-model exclusion are not counted a second time). The first attempt of the day still reaches the gate and leaves its one receipt row, which is what the «agent exhausted its daily run limit» attention card is built from. From then on the agent is skipped before any per-task lookup and without a write: at most one row per agent per cap per day. A changed limit counts as a new cap and leaves its own receipt. When the cap lookup fails, the pass behaves as before and the gate decides.
+- The pass result gains `dailyCapSkipped` (agents left alone because of a cap, once per agent per pass).
+
+### One-command installer opens the board by IP (OPE-5584)
+
+- The installer now names the addresses of the machine (host names and global
+  IPv4 addresses) in the board allow-list (`MYRMIDON_ALLOWED_HOSTNAMES` in
+  `deploy.env`, passed to the board as `PAPERCLIP_ALLOWED_HOSTNAMES`). Before,
+  the private hostname guard answered 403 to a request by the machine's own IP.
+- The address printed at the end and used as the default public URL is the
+  first IPv4 of the host instead of `hostname -f`, which resolves only where
+  DNS knows the name. `MYRMIDON_ALLOWED_HOSTS` (comma-separated) overrides the
+  detected list.
+
+### ONE-COMMAND-INSTALL: installer fixes since 1.6.5 (CPU baseline, dockergate wiring, built-in help)
+
+The 1.6.5 entry describes the first installer. The installer in this release also does the following:
+
+- It reads the CPU feature flags and refuses a processor below the x86-64-v2 baseline (SSE4.2, POPCNT, CMPXCHG16B) before touching the machine: the board image carries native code built for that baseline and dies minutes after start on anything older (`MYRMIDON_INSTALL_CPUINFO` overrides the source of the flags).
+- The dockergate service is wired the way a working deployment needs it: it joins the group that owns the docker socket (the GID is read from the socket, kept in `deploy.env` as `MYRMIDON_DOCKER_GID` and passed through `group_add`), shares the host PID namespace (`pid: host`) so its `/proc` lookup of the board's main process resolves, and its configuration file is written `0640` for the image's unprivileged user instead of a root-only `0600`.
+- The documented form pipes the script into `bash`, so the script carries its own manual: `--help` prints the command, every option and the update promise, and an option missing its value is named in plain language instead of dying with a bare shell error.
+- A release manifest that names no board image digest is refused.
+- Tests (`scripts/myrmidon/install/install.test.mjs`) additionally cover the manifest without a board digest, a CPU below the baseline refused before the machine is touched, and `--help` plus a missing option value when the script is piped to bash.
+
+### The issue list honours the `page` parameter (`GET /api/companies/:companyId/issues`)
+
+- The endpoint parsed only `offset`; `page=N` was ignored without an error, so a client (or an agent) that iterated
+  `page=1, 2, …` received the first page again and again and could loop until it ran out of memory.
+- `page` is now read as `offset = (page - 1) * limit`. It must be a positive integer (`/^[1-9]\d*$/`); `page=0`, a
+  negative or a non-numeric value answers HTTP 400. An explicit `offset` still takes priority over `page`.
+- The agent skill (`skills/myrmidon/SKILL.md`, `references/api-reference.md`) now describes direct lookup
+  (`GET /api/issues/OPE-N`) and `limit` + `offset` pagination.
+
+### K8S-EXPANSION: orchestrator-managed k3s agent body
+
+- Adds the 1.7 design contract for stateful agents on k3s hosted by Proxmox VMs.
+  The Myrmidon orchestrator is the sole lifecycle and survivability authority:
+  it owns wake, drain, hibernation, recovery, generations, fencing, and queue
+  admission. Zabbix is diagnostic-only and cannot mutate lifecycle state; a
+  future NATS path is an event transport, not a second source of truth. The
+  design defines durable state, second-site recovery boundaries, failure drills,
+  security boundaries, and staged acceptance criteria without claiming an
+  unmeasured HA guarantee.
+
+### Knowledge module part L-8: nightly deterministic Git export (KNOWLEDGE-2.0 L-8)
+
+- New `server/src/myrmidon/knowledge/git-export*.ts`: the knowledge tree is
+  exported once per interval (24 h by default) into a branch of a Git
+  repository as Markdown, one file per page. The same set of pages always
+  yields the same bytes, so an unchanged tree makes no commit; a deleted page
+  disappears from the branch. The `life` section never leaves the database.
+  Each company lives in its own `<companyId>/` directory of the shared
+  repository; one company never deletes another's pages. Errors from git are
+  logged with credentials in URLs removed.
+- The job is a no-op until `MYRMIDON_KNOWLEDGE_EXPORT_REPO` is set; branch and
+  interval are tuned by `MYRMIDON_KNOWLEDGE_EXPORT_BRANCH` and
+  `MYRMIDON_KNOWLEDGE_EXPORT_INTERVAL_HOURS`.
+- Restores #1297 (reverted by #1420/#1423) together with the registry rows for
+  the three variables and the updated file list in the module hygiene test.
+
+### Knowledge-note gate for system changes
+
+- System-significant issue changes now require a valid `Вики: slug@rev` reference when moving to `done` or approving review.
+- The gate is warning-only for the first three days after 2026-10-31, then returns `knowledge_note_required` when the reference is absent or invalid.
+
+### Knowledge-on-change telemetry on the metrics scrape
+
+- `GET /metrics` answers two more families: `myrmidon_knowledge_on_change_share` (gauge) and `myrmidon_knowledge_revision_delay_seconds` (summary, quantile 0.5/0.95).
+- `myrmidon_knowledge_on_change_share` is the share of tasks closed in the last 7 days that have a merged pull-request work product (a system change) and a knowledge revision citing the task (`knowledge_sources` kind=`task`, ref=`issues.identifier`). Tasks closed without a merged PR stay out of the denominator; tasks closed with a merged PR but without a wiki revision count in the denominator only.
+- `myrmidon_knowledge_revision_delay_seconds` is the delay from a merged pull-request work product (`issue_work_products` type=`pull_request`, status=`merged`) to a knowledge revision citing that PR (`knowledge_sources` kind=`pr`, matched by `externalId` or `url`). Both quantiles are linear-interpolated percentiles over the non-negative samples.
+- Both families are collected by the existing guarded collector; a failed DB read never kills the scrape and renders HELP/TYPE without samples. `METRIC_FAMILIES` names both families so the selfcheck on a broken DB lists them. Each sample carries the existing `role` label.
+- The metrics-scrape-failing runbook documents how to interpret the new families.
+
+### Knowledge screen in the current interface
+
+- After the wiki plugin was retired, the side menu of the current interface lost its wiki
+  entry and the module's reader existed only in UI2. The current interface now has a
+  "Knowledge" menu item and the screens `/:companyPrefix/wiki` and
+  `/:companyPrefix/wiki/:spaceKey/:slug`: page tree, search (full-text and semantic), the page
+  with its sources, backlinks and revisions.
+- The screen reuses the UI2 reader and reads the knowledge module through the existing REST
+  facade (`/api/myrmidon/companies/:id/knowledge/*`: items, search, backlinks). Backlinks are
+  now actually loaded and shown as links to the linking pages.
+
+### The licensing screen honours the vendor's signed deny-list of revoked licenses
+
+- A license may now carry an optional signed `id`; licenses without it verify as before.
+- If a file `license.deny.json` signed by a trusted issuer key lists a license's `id`,
+  `instance_id` or `kid`, the module status shows it as invalid with reason `revoked`.
+  The file lives next to `license.key` (override `MYR_LICENSE_DENY_PATH`), is re-read on every
+  request, and an absent, broken or foreign-signed file revokes nobody (a warning is logged).
+  A list with a `serial` lower than the highest one seen is rejected; the highest serial is kept
+  next to the license (`MYR_LICENSE_DENY_STATE_PATH`).
+- `license.deny.state` records the highest observed serial; `license.deny.accepted` stores the complete signed envelope of the latest accepted list. On rollback, the board ignores the older incoming list and keeps applying the accepted cache. If that cache is absent, the check fails closed with reason `denylist_rollback_no_cache` and logs a warning. Damaged or unverifiable incoming lists are ignored and do not replace accepted state. Back up and restore both state files with the license directory; monitor logs for `denylist_rollback_no_cache`.
+- Added `POST /api/licensing/deny-list` endpoint for atomic delivery and saving of the signed deny-list.
+
+### Image licenses note: primary-text assessment of the SDK/libvips dependencies (LICENSES-NOTE)
+
+- New `docs/myrmidon/licenses.md` and `docs/myrmidon/licenses.ru.md`: what the
+  primary license texts (npm tarballs, Anthropic Commercial Terms, Cursor ToS,
+  LGPL-3.0) permit or forbid for redistributing `@anthropic-ai/claude-agent-sdk`,
+  `@cursor/sdk`, `@img/sharp-libvips-*` and the globally installed
+  `@anthropic-ai/claude-code` inside the published MIT image; options
+  keep/opt-in/exclude and one recommendation (B: opt-in target for the
+  proprietary SDKs, keep libvips with a notice). Research note for the
+  maintainer, not legal advice; no code or license policy changed.
+
+### Installation id for closed-module licensing (LICENSING)
+
+- `GET /api/licensing/install-id` (instance admins only) returns the
+  installation id (`myr-` + 20 hex of `sha256(machine-id)`, the same algorithm
+  the closed connector modules use). The board does not issue licenses: issuing
+  is the vendor's closed module. See `docs/myrmidon/guides/licensing.md`.
+
+### One installation id, owned by the board (OPE-8836)
+
+- The installation id is now stored in the board database (table
+  `myrmidon_install_identity`, migration `0404_install_identity`) and never
+  changes. On the first start it is `MYR_LICENSE_INSTANCE_ID` if set, else
+  `myr-` + 20 hex of `sha256(machine-id)` (the same formula as before, so
+  licenses already issued stay valid), else `myr-` + 20 hex of a random UUID.
+  A later change of the machine id or of the variable does not touch it.
+- `GET /api/licensing/install-id`, the Licenses screen and the license check
+  read the id only from the database; none of them reads the machine id.
+- At start the board writes the id to the file `instance-id` in the license
+  directory (`dirname(MYR_LICENSE_PATH)`, default `/etc/myrmidon-license`) for
+  the closed modules: atomically, mode 0644. If the directory is not writable
+  the board logs a warning and starts anyway.
+- A license issued for another installation now says so with both ids: the one
+  the license was issued for and the id of this board, on the screen and in the
+  API (`licenseInstanceId`, `boardInstanceId`, `message`).
+- `MYR_LICENSE_STATE_DIR` is no longer used by the board.
+- `deploy.sh` and `install.sh` check the license directory before changing
+  anything (also in `--dry-run`): an `issuer` subdirectory, `*.pem` or
+  `*ed25519*` files in it, or a compose issuer mount inside it stop the run with
+  a message to move the issuing key to `/etc/myrmidon-license-issuer`. The
+  directory is mounted into the module containers.
+
+### LiteLLM workers card: planned restart instead of gunicorn signals, real `current` and working metrics (OPE-8899)
+
+- The gateway runs as `litellm --num_workers N`, not under gunicorn, so the TTIN/TTOU
+  signals never applied. `apply.path` is now `restart`: `PUT .../litellm/workers` stores the
+  target, runs the instance's restart command (`MYRMIDON_LITELLM_WORKERS_RESTART_COMMAND`,
+  `{workers}` is the target) and then reads the pool size back; `applied` is true only when
+  it equals the target. Nothing is restarted unless the command is configured, and a pool
+  already at its measured target is not restarted. The card warns that requests are briefly
+  dropped before the operator confirms. `MYRMIDON_LITELLM_WORKERS_SIGNAL_COMMAND` and
+  `MYRMIDON_LITELLM_WORKERS_CONTAINER` are removed.
+- `current` is no longer null on such a gateway: it is taken from the gateway's own pool
+  gauge or, when the exposition names none (Prometheus in multiprocess mode), from the
+  `--num_workers` of the gateway unit file (`MYRMIDON_LITELLM_WORKERS_UNIT_FILE`, read-only,
+  `currentSource: launch_line`).
+- Metrics read `reachable=false` with HTTP 401 because the board sent the secret NAME as the
+  bearer token and asked for `/metrics`, which the gateway redirects. The key is now resolved
+  from the company secret store (the cost-reader secret, else the admin one) and the request
+  goes to `/metrics/`.
+
+### `myrmidon:migrate` accepts Paperclip releases v2026.1001.0, v2026.1005.0 and v2026.1012.0 (MIGRATE-D)
+
+- The source can now be any of the Paperclip releases `v2026.916.1`, `v2026.1001.0`, `v2026.1005.0` or
+  `v2026.1012.0`. The release is recognised by the exact hashes of the applied migrations and is
+  named in the dry-run report (`source.vendorRelease`). Truncated, extended and foreign
+  histories are still refused before any write, now with the list of supported releases.
+- Data of Paperclip features that Myrmidon does not have (tables and columns added after
+  `v2026.916.1`, such as browser-use runs or MCP OAuth clients) is no longer an error. The dry run
+  lists it as `vendorOnlyData`: table or column, rows that hold data, release. When any of it
+  holds data a real run stops before the first write unless `--accept-vendor-only-data` is given;
+  that data is not transferred. Empty ones are left out and reported. Other schema differences
+  stay errors. A value that does not fit a narrower target column (`assets.byte_size`, `bigint` to
+  `integer`) is refused before rows are copied.
+- Adding the next Paperclip release is one command (`scripts/myrmidon/vendor-release-add.mjs <tag>`),
+  and a daily workflow fails when a new Paperclip release is published that is not in the list.
+
+### CLI: `myrmidon:migrate` moves a Paperclip v2026.916.1 instance into a clean Myrmidon target (MIGRATE-A)
+
+- New command `paperclipai myrmidon:migrate`: `--dry-run` prints a full JSON inventory (tables, row counts, content digests, secret carriers, file manifest, exclusions) and writes nothing; without `--dry-run` it transfers the database, the storage files and the secrets.
+- Source is a PostgreSQL URL (read-only snapshot) or a plain `pg_dump` file restored into an empty scratch database. The source is supported only when its applied migration hashes equal the pinned vendor chain of release v2026.916.1 exactly; any other history is rejected before the target is touched.
+- Secrets stored as `local_encrypted_v1` envelopes anywhere in a JSON column are decrypted with the source key and encrypted with the target key through the existing provider; the run fails closed on a wrong key, on a carrier in a text column, and verifies the target decryption (the old key must not open the target).
+- The target must be an empty dedicated database and an empty directory. A lock and a durable journal in `--state-dir` make a rerun idempotent and a failed run resumable without duplicates; `--rollback` removes only what the run created.
+- The server package now exports `secrets/local-encrypted-provider` so the CLI reuses the provider instead of copying the cipher.
+
+### Guide: migrating from Paperclip to Myrmidon (MIGRATE-C)
+
+- New user guide `docs/myrmidon/migration-from-paperclip.md`: supported source release, prerequisites, backup, dry run, transfer from a database URL or a pg_dump file, verification, cutover limits, and rollback — written against the actual behavior of `paperclipai myrmidon:migrate`. Russian version: `migration-from-paperclip.ru.md`.
+
+### Migration guide: plain-language introduction and where source-only data goes (MIGRATE-D4)
+
+- The guide for `myrmidon:migrate` now opens with what the command does, that the source is never changed and the command writes only to the empty target it creates, and when it stops. It also explains that data of Paperclip features that Myrmidon lacks is not copied into the database but listed in the report under `vendorOnlyData`. Russian version: `migration-from-paperclip.ru.md`.
+
+### Restore monitor after recovery unblock (MON-RESTORE)
+- Restore monitors cleared by recovery blocking and publish clear notices.
+
+### Fleet dashboard: Zabbix 7.4 client, additive settings PATCH, host mapping (1.6.6 MONITORING C)
+
+- The Zabbix client now sends the token as `Authorization: Bearer` (never in the JSON-RPC `auth` body), and `apiinfo.version` selfcheck calls go out without auth headers — compatible with Zabbix 7.4, the `zbx-auth-shim` proxy is no longer needed.
+- Dashboard item keys fall back per source in order: memory `vm.memory.utilization` → `vm.memory.util`, disk `vfs.fs.size[/,pused]` → `vfs.fs.dependent.size[/,pused]` — Zabbix 7.4 «Linux active» hosts show CPU, memory and disk instead of CPU-only.
+- `PATCH /api/myrmidon/monitoring` is additive: omitted fields keep their stored values (patching `zabbixUrl` no longer nulls `vmUrl`); an explicit `null` still clears.
+- New setting `zabbixHostMapping` (`{}` default) maps a VictoriaMetrics `instance` label (bare host or `host:port`) to a Zabbix host technical/visible name, merging both sources into one host card (no more the same host twice); merged cards keep the VM metrics and fill CPU/memory/swap/disk gaps from Zabbix, and the build-VPS fleet rollup still resolves through the mapping.
+
+### Multi-agent addressing in the bridged Telegram chat (TG-MULTI-AGENT)
+
+- A matching `@<token>` mention identifies the addressed agent. The `/to`
+  command stores the selected addressee, shown by `/who` and `/agents`, but
+  ordinary messages without a matching mention continue to the endpoint's
+  assigned agent. No new setting: the addressing rides the X8b bridge (see
+  [telegram-alias-addressing](../guides/telegram-alias-addressing.md)).
+
+### Debates per caste and the «Discuss» button on a caste's task (DEBATE-ASYM B)
+
+- Every caste now has its own debate configuration, on top of the instance
+  level part A introduced: whether debates run for the caste at all, the model
+  of each role, extra guidance per role, the rounds (at most three) and the
+  token ceiling. The entry is stored inside the same
+  `instance_settings.general.debate` value, under `castes.<key>`, pinned to its
+  company — so there is no migration, no restart (it is read at run time), and
+  an entry written for another company is inert instead of silently driving a
+  same-named caste elsewhere. A caste with no entry of its own inherits the
+  instance configuration and is **on**; the switch exists to take a caste out
+  of the spend.
+- The screen is Instance → General → Asymmetric debates → **Debates per caste**
+  (the instance roles stay above it); the API is
+  `GET`/`PATCH /api/myrmidon/companies/:companyId/debates/castes/:casteKey/settings`
+  (board reads, instance admin writes, every save audited as
+  `debate.caste_settings.saved`). Both the switch and the configuration show
+  where their value comes from (*set for this caste* / *inherited from the
+  instance level*), and a save applies to the next debate with no restart.
+- The cross-family rule is re-checked on the **merged** configuration: a caste
+  that overrides only the critic cannot slip a same-family judge past it, and
+  nothing is stored when the result cannot run. A caste's guidance per role is
+  appended to the built-in pole prompt — the critic keeps its adversarial pole
+  and its missed-error penalty; a caste narrows where a role looks, it does not
+  change the nature of the dispute.
+- A debate can be started **from the task of a caste**: every row of a role
+  queue on the swarm supervisor page (`/swarm-claim`) carries a **Discuss**
+  button, which runs one debate for that task with the row's caste
+  (`POST …/debates/issues/:issueId/run` with `{ casteKey }`) and shows the
+  judge's verdict, how the debate stopped, the rounds, tokens and cost, the
+  caste and which roles used custom guidance, and the name of the result
+  document. The transcript, the roles and the cost still land on the task as
+  the `debate-result` document and as task-level cost events, so BUDGET-CONFIG
+  counts a debate like any other work. A switched-off caste refuses the run with
+  `422 debate_caste_disabled` and the screen says where the switch lives; a task
+  that is not routed to a caste keeps part A's instance-level behaviour.
+- Pilot: the marketing caste. Check the engine is configured (three families),
+  pick *marketing* in *Debates per caste*, set its models/rounds/ceiling and —
+  if the caste needs it — its own guidance per role, then press **Discuss** on a
+  marketing task in the role queue. Guide:
+  `docs/myrmidon/guides/debate-asym-castes.md` (RU:
+  `debate-asym-castes.ru.md`).
+
+### Foraging → knowledge proposals (KNOWLEDGE-2.0 L-5)
+
+- A foraging finding no longer becomes a skill candidate directly. The
+  foraging candidate port now routes to KNOWLEDGE first: every finding with a
+  diff becomes exactly one `pending` knowledge suggestion (a proposal). The
+  suggestion id is what lands in `foraging_findings.candidate_ref` — the
+  candidate_ref of a foraged finding is the proposal itself. If the knowledge
+  module cannot be constructed the previous skill-lifecycle port stays as the
+  fallback; the null port (findings stay `unverified`) is still the last
+  resort. No auto-accept, ever: the suggestion waits for a human decision on
+  the suggestions review surface.
+- Provenance is explicit: the suggestion row carries `trust=external` (the
+  only source of a foraged claim is a foreign url) and the url as
+  `source_ref` with `source_kind=url`. The column is new
+  (`knowledge_suggestions.trust`, migration 0315, nullable — existing rows
+  stay null = internal provenance).
+- The foreign text never enters knowledge. The captured page text is
+  quarantined as a document of the `foraging-inbox` corpus dataset (created
+  per company on first finding; one document per finding, the raw lines in
+  `metadata.markdown`, capped at 64 KiB, metadata carries
+  `{role, skillKey, sourceId}`). Knowledge receives only our own retelling:
+  a single-line body (summary + up to six added/removed lines joined by `|`)
+  that cites the url. Quarantine first, proposal second — when the
+  quarantine fails, no proposal is created (fail closed); when only the
+  proposal fails, the quarantine document is kept and the finding stays
+  `unverified`.
+- The pass itself stays idle-only: this release also ports FORAGING-IDLE-GATE
+  (1.6.3, OPE-4142) onto the 1.7 line — the per-role idle check (queue empty
+  + a free agent of the role) gates every pass, `GET`/`PATCH
+  /api/myrmidon/foraging/idle-gate` and Instance → General → "Foraging idle
+  gate" are unchanged, `MYRMIDON_FORAGING_IDLE_GATE_ENABLED` is the forced
+  environment override.
+
+### GUARDRAILS false-positive eval on the reference corpus as a CI check (1.7-GRD-CI)
+
+- The 1.6.1 reference corpus now drives a CI gate: a pure harness
+  (`server/src/myrmidon/guardrails/eval/evaluate.ts`) runs every registered
+  rule over every labelled case and reports, per rule, support, TP/FP/FN,
+  false blocks (a rule firing on a clean fixture), precision and recall.
+  The blocking number is false blocks — target 0; any false block turns the
+  check red, so a blocking mode can never be shipped blind.
+- Rules: `injection` (wake-queue heuristic at the shipped default threshold)
+  is active; `secret`/`pii` (the part-A output detectors) load optionally —
+  while the part-A module is not on main the rules report
+  `pending-base-layer` (coverage listed, not gating) and activate
+  automatically once it merges, with no change to this code.
+- The per-rule report is a committed, generated artifact
+  (`report.json` / `report.md` next to the harness). CI recomputes it and
+  fails on any drift: a detector or corpus change that moves false positives
+  or misses cannot merge without the artifact diff showing it. Regenerate
+  deliberately with `pnpm --filter @paperclipai/server exec tsx
+  ../scripts/myrmidon/guardrails-eval/refresh.ts` — it refuses to write when
+  the eval is red.
+- Recall is measured and published, not gated: the committed report names
+  every injection case the heuristic currently misses (6/20 flagged at the
+  default threshold) — the evidence base for the guardrail-modes track that
+  decides per-rule blocking.
+- No runtime settings: the eval is CI-only, measuring the shipped defaults.
+
+### Users under the administrator's control (USERS-ADMIN-UI part A, server)
+- An instance administrator can create board users directly (1.7 USERS-ADMIN-UI A):
+  `POST /api/myrmidon/users-admin-a/users` with a login and either a
+  password or a one-time password-set link, and a role
+  (`instance_admin` or `member`). A user created without an email gets the
+  synthetic address `<login>@myr.local` and signs in with the login through
+  the new `POST /api/auth/sign-in/username`.
+- Blocking (`PATCH /users/:id {blocked}`) closes every live session of the
+  user immediately and refuses new sign-ins on every Better Auth path
+  (`403 USER_BLOCKED`); unblocking restores access.
+- A password reset (`PATCH /users/:id {resetPassword}`) revokes outstanding
+  tokens and returns a fresh one-time link; the user picks the new password
+  through it (the token is sha256-hashed at rest and dies on first use).
+- Self-registration is off by default: `POST /api/auth/sign-up/email`
+  answers `403 SELF_SIGN_UP_DISABLED` until the instance enables it
+  (`GET/PATCH /api/myrmidon/users-admin-a/self-sign-up`,
+  `MYRMIDON_AUTH_SELF_SIGN_UP` as the forced env override). The gate reads
+  the setting live, so flipping it needs no restart.
+- Every mutation is audit-logged (`instance.user.created/blocked/unblocked/
+  password_reset/password_set`) with who, whom, the role granted and the
+  block reason. New table `user_password_set_tokens` (migration 0298); the
+  block list lives in `instance_settings.general.myrmidonAuthBlockedUsers`.
+
+### SWARM: agent list query filters q, status, role, reportsTo (OPE-10129)
+
+- `GET /companies/:companyId/agents` now supports query filters `q`, `status`, `role`, and `reportsTo`.
+- `q` matches against agent name, role, or title (case-insensitive substring match).
+- `status` accepts a single status or a comma-separated list of agent statuses.
+- `role` performs exact role matching.
+- `reportsTo` accepts an agent ID or `none` for root agents (`reportsTo == null`).
+- Filters combine via AND logic and are applied after actor permission filtering (`filterAgentsForActor`).
+- Unsupported query parameters continue to return HTTP 400 with the list of unsupported parameters.
+- ETag generation (`svc.listSummariesVersionKey`) includes normalized filters so filtered queries and unfiltered queries produce distinct version keys.
+- UI client `agentsApi.list` accepts optional `AgentListFilters` parameter without changing parameterless calls.
+
+### Complete busy-agent profile updates (L6-PROFILE-UPDATE-STARVATION)
+
+- Maintenance drain completion waits for owned interrupted runs to finish teardown before promoting retries.
+- The stuck-window backstop applies only to agent-scoped `entering` windows and closes them through the normal exit path (queue wake, exit hook).
+- Agent status exposes pending profile-update time while an agent-scoped maintenance window is open.
+
+### `myr-ws open` safely recovers standalone legacy clones (PR #1427)
+
+- `myr-ws open <KEY> <REPO>` can adopt a legacy standalone Git clone at the task path after verifying that it is a real standalone copy, has a recognizable GitHub origin, and matches the requested repository. An unrelated directory, linked worktree, or repository mismatch is refused without being adopted.
+- The original clone is always moved to `<path>.legacy-<KEY>` and retained there, whether or not it is clean; `myr-ws open` refuses if that path already exists. If the copy has a `HEAD` and uncommitted changes, the command saves its current commit at `refs/myr-ws/recovery/<KEY>` inside the legacy copy and saves tracked and untracked working-tree changes in a Git stash named `myr-ws recovery <KEY>`; a clean copy gets neither. If the copy has no `HEAD`, the stash cannot be created and `myr-ws open` fails with "could not preserve legacy working tree". If preserving the worktree fails or cannot be verified, the command stops before moving the original clone, though a recovery ref may already have been created. When the copy had a `HEAD`, the JSON result reports `recoveryRef` as `refs/heads/myr-ws/recovery/<KEY>` in the base repository; that branch is created only if the copy's commit differs from the new worktree's `HEAD`, so the field may name a branch that does not exist.
+- If preserving the worktree fails or cannot be verified, `myr-ws open` stops and leaves the original copy in place. If creating the replacement worktree fails, it restores the original clone path. Running `myr-ws open` again reuses the registered managed worktree.
+- An unregistered linked worktree already at the task path is adopted into the registry and reused; this supports recovery after registry loss without converting the worktree.
+
+### `myr-ws`: one task can hold copies of two repositories (OPE-8946)
+
+- `myr-ws open KEY owner/repo` no longer fails with "already open for ..." when the task already
+  holds a copy of another repository: the second copy is opened next to the first as
+  `/workspace/KEY.<repo-name>` (branch `bot/KEY` in its own base). Opening the same repository
+  again returns its copy (`reused`).
+- `myr-ws close KEY` closes every copy of the task (the first dirty or unpushed copy stops it
+  with exit 7 as before); `myr-ws close KEY owner/repo` closes one. `myr-ws restore KEY owner/repo`
+  picks the archive of that repository; `list` already shows every copy.
+
+### A failed `myr-ws open` no longer turns the agent to error (OPE-8946)
+
+- Any failure to open the task copy for a run (exit code outside 3/4/5, timeout, no path in the output) now
+  starts the run in `/scratch` with a `run.workspace_fallback` warning, like the quota refusals. Before, it
+  failed the run, and repeated failed runs put the agent in `error` status.
+
+### `myr-ws open` repairs a copy a run left half-way; `--branch` / `--repository`; the task's PR picks the workspace (MYR-WS-RECOVER)
+
+- A reused task copy is no longer returned as it is. `myr-ws open` first looks for a merge, rebase,
+  cherry-pick, revert or `git am` in progress, unresolved index stages, a detached head and a branch
+  other than the registry (or `--branch`) names. Found: the whole state (HEAD, the index with the
+  conflicts as files, the working tree, untracked files) is saved as a commit in
+  `refs/myr-ws/recovery/<KEY>` (`-2`, `-3`, ... when taken), then the operation is aborted
+  (`merge --abort`, `rebase --abort`, ...). If that does not clean the copy, the worktree is recreated
+  on the same branch. Local changes that block a branch switch go to the stash. The answer says what was
+  done: `recovered: [{problem, action, detail}]` and `recoveryRef` in `--json`, one line on stderr
+  otherwise. A branch the bot moved the copy to on its own is adopted into the registry (nothing on disk
+  changes); a worktree whose git directory is gone is moved aside and replaced.
+- `myr-ws open KEY owner/repo --branch <name>` opens (or moves the copy to) that branch, taken from its
+  remote state, instead of `bot/<KEY>`; `--repository owner/repo` is the named form of the positional.
+- The hermes gateway adapter takes the repository and the head branch of the task's own pull request
+  work product (`context.paperclipPullRequest`, filled by the server per run), and uses the project's
+  repository only as a fallback, then the instance default. A PR of another repository than the
+  project's (OPE-7967, PR #82 of `myrmidon-deploy`) no longer fails every run with "already open for ...".
+- A run interrupted mid-merge (maintenance drain, kill) is repaired by botd: when no run is going or
+  possibly going, each pass calls the new `myr-ws repair [KEY]`, which applies the same recovery to
+  copies with no process working inside them.
+
+### Add a pinned omp agent runtime image (OPE-7290)
+
+- Add a CI-published, non-root omp runtime image with Bun 1.4.3 and `@oh-my-pi/pi-coding-agent` 18.9.2 matching the adapter version in Part A. The image smoke-checks `omp --version`, `bun --version`, `command -v omp`, `omp --help`, and `omp models ls` without contacting a model provider, and validates adapter execution alignment.
+
+### Transactional outbox for governed secret-proposal resolution (OPE-10061 / OPE-3061 / OPE-3078)
+
+- Governed approval and rejection via `markProposalInteractionResolution` writes an interaction continuation outbox intent inside the resolution transaction for `continuation_policy wake_assignee` and `wake_assignee_on_accept`.
+- Guaranteed delivery via periodic outbox sweep on direct enqueue failure.
+- Deterministic idempotency key (`interaction:<interactionId>:<status>`) for `secret_proposal_resolved` to prevent duplicate wakeups and double launches.
+- Continuation policies outside resolution scope (`none`, or `wake_assignee_on_accept` on reject) skip outbox recording and wakeup dispatch.
+
+### Pipeline liveness metrics and alerts in DEVFLOW health (OPE-10075)
+
+- Added persisted, observable liveness and age metrics and actionable alerts to DEVFLOW health monitoring for three pipeline stages:
+  - **Approval-to-PR-marker step** (`staleMarkerMs`): emits an alert when an APPROVE review verdict exists on an open PR but the `review-approved` marker is missing or stale.
+  - **Auto-merge step** (`stalledMergeMs`): emits an alert when an approved PR remains unmerged beyond the configured threshold.
+  - **Review router queue** (`stalledRouterMs`): emits an alert when an issue in `in_review` needing a reviewer remains unrouted beyond the configured threshold.
+- Automatic recovery: all alerts clear automatically when progress is made (marker applied, PR merged/closed, reviewer assigned, or review verdict changed).
+- Configurable thresholds via `instance_settings.general.devflowHealth` and environment variable overrides (`MYRMIDON_DEVFLOW_STALE_MARKER_MS` / `MYRMIDON_DEVFLOW_APPROVAL_MARKER_MS`, `MYRMIDON_DEVFLOW_STALLED_MERGE_MS` / `MYRMIDON_DEVFLOW_AUTO_MERGE_MS`, `MYRMIDON_DEVFLOW_STALLED_ROUTER_MS` / `MYRMIDON_DEVFLOW_REVIEW_ROUTER_MS`).
+
+### DEVFLOW: behavior-level integration tests for PR approval and pipeline liveness (OPE-10076)
+
+- Added comprehensive behavior-level integration tests covering the complete DEVFLOW lifecycle in `server/src/__tests__/devflow-lifecycle.integration.test.ts`.
+- Validated native APPROVE propagation, non-approval guards, idempotency, pipeline liveness alerts (`staleMarkerMs`, `stalledMergeMs`, `stalledRouterMs`), and automatic recovery.
+
+### Hot delivery of company skills without container restart (OPE-10086)
+
+- Skill files (`hermes/skills/paperclip-managed/**`) are now classified as files-class changes (`filesHash`) rather than restart-class (`restartHash`).
+- Modifying, adding, or removing company skills applies to the running bot container via live profile write without restarting the container or entering maintenance mode.
+- In-progress runs are not interrupted by skill updates, and subsequent runs receive the updated skills per run.
+
+### Alibaba image connector is covered by the closed-module license gate (LICENSING)
+
+- The board now lists `alibaba-image` as a known closed module.
+- Installed `myrmidon.alibaba-image` plugins appear in the license status and request.
+- The existing Ed25519 verifier applies installation, expiry, module, and feature checks.
+- Missing, invalid, expired, tampered, foreign, or ungranted licenses remain fail-closed.
+- No private signing key is shipped to the board.
+
+### PREDEPLOY-IO throttles the throwaway database copy at the Docker data device
+
+- `predeploy-board-check.sh` applies `--device-read-bps` and
+  `--device-write-bps` to the throwaway Postgres container. The default is
+  30,000,000 bytes/s (30 MB/s), configurable with
+  `MYRMIDON_PREDEPLOY_IO_RATE`; restore, `ANALYZE`, readiness probes and other
+  `docker exec` work run inside that throttled container.
+- The backing device comes from `MYRMIDON_PREDEPLOY_IO_DEVICE` when set;
+  otherwise the script resolves the device carrying DockerRootDir with
+  `findmnt` and fails closed if it cannot identify one.
+- Dry-run output shows the effective device and limits; fake-Docker tests assert
+  both Docker flags.
+
+### The merge controller ignores a skipped `CI result` run when it picks the latest run (OPE-10461)
+
+- On `main` the `CI result` job is skipped on a label event (except `full-ci`), so its `skipped` run is newer than the
+  real one. `scripts/myrmidon/review-approve-label.mjs` took the newest `CI result` check run by `started_at`, saw
+  `skipped` instead of `success`, and neither set the label nor enabled auto-merge (`ci-skipped`): approved pull
+  requests did not merge on their own.
+- New pure function `selectCiResultConclusion`: runs are taken from the newest to the oldest (`started_at`, then
+  id); a completed `skipped` run is passed over and the first other one decides; a running one (`queued` /
+  `in_progress`) answers with its status, that is pending; only `skipped` runs give pending; no runs give `missing`;
+  `cancelled`, `timed_out`, `neutral` and the like are never read as `success`.
+- The GitHub port's `ciConclusion` reads all check runs (`check_name=CI result`, `filter=all`, pages of 100), as
+  the board-side merge reader already does. The board-side reader already skipped `skipped`; its code is unchanged,
+  a regression test was added.
+
+### LiteLLM v1.104.1 overlay restores streaming cost accounting
+
+- Added the operator runbook [`guides/litellm-streaming-cost-overlay.md`](guides/litellm-streaming-cost-overlay.md) and its Russian version. It documents the pinned `ghcr.io/berriai/litellm:v1.104.1` overlay, planned restart, live smoke checks, rollback, and the decision not to backfill historical rows.
+- The verification procedure requires all seven overlay tests and checks that `LiteLLM_SpendLogs.spend` matches the configured token-price calculation.
+
+### Corpus reports clear error when embedder is not configured (1.6.7 CORPUS)
+
+- Uploading documents and executing semantic searches in a company without an embedder
+  (missing secret `MYRMIDON_CORPUS_EMBEDDER_API_KEY` and no `embedderBaseUrl`) now rejects
+  with HTTP 422 `corpus_embedder_not_configured` accompanied by a actionable hint.
+- Uploaded documents without an available embedder are marked with status `failed` and
+  record `corpus_embedder_not_configured` as their failure reason.
+
+### Review routing: timer-based reassignment of stalled green-CI reviews (OPE-10731)
+
+- Stalled reviews on tasks with green CI (`head.ci === "green"`) and no verdict (`head.reviewDecision === null`) are now reassigned to another eligible reviewer of the same caste after `reassignAfterMinutes` minutes.
+- Reassignment prioritizes idle agents (`status === "idle"`, zero active runs, or zero load) before least-loaded agents; the author, the executor, and reviewers who previously lapsed or had the task are excluded.
+- The `reassignAfterMinutes` setting is configurable in `instance_settings.general.reviewRouting` (Company Settings → Review routing) with range 0–129600 minutes (0 disables minute-based reassignment), taking precedence over `reassignAfterHours`.
+
+### Codex OAuth lifecycle for pool accounts, limit windows (5h/7d), and K-12 tariff handling (OPE-10810)
+
+- Implemented Codex OAuth lifecycle (`oauthBegin`, `oauthStatus`, `oauthComplete`, `oauthRefresh`) for subscription pool providers.
+- Strict secret-store isolation for OAuth tokens (`modelProviderAccountSecretName`) — credentials are never returned over plain API responses or exposed to UI clients.
+- Added subscription plan support (Plus, Pro, K-12): K-12 tariff accounts (disabled per ADM 05.11 directive) are marked disabled (`isDisabled: true`), excluded from live pool rotation and active counts.
+- Enforced 5-hour rolling primary and weekly secondary quota window tracking with automated limit exhaustion detection (`p_used`/`p_reset_at`).
+- UI enhancements in ModelProvidersScreen: Codex OAuth login trigger and authorization modal, channel plan badges, disabled state indication, and token refresh action.
+- Added and updated tests:
+  - `server/src/myrmidon/model-providers/codex-oauth-pool.myrmidon.test.ts`: verified `isK12Plan`, secret name derivation under `modelProviderAccountSecretName`, pool channel mapping with 5h/7d windows (`p_used`/`p_reset_at`), disabled account status for K-12, ignoring disabled accounts in signal evaluation, and full Codex OAuth lifecycle (`oauthBegin`, `oauthStatus`, `oauthComplete`, `oauthRefresh`).
+  - `ui/src/components/myrmidon/model-providers/ModelProvidersScreen.myrmidon.test.tsx`: verified Plus, Pro, K-12 badges, disabled counter and status rendering, and OAuth modal flow.
+  - `server/src/myrmidon/model-providers/signals.ts`: verified signal evaluation ignores disabled accounts.
+
+### Agent Settings: sandbox controls for local adapters, Hindsight fields for Hermes, a secret picker for the OpenClaw device token (OPE-11247)
+
+- Claude, Codex and Hermes local adapters get Bubblewrap filesystem and network controls in the agent card. Network
+  allowlist entries are validated, and Bubblewrap is limited to the supported CLI engines.
+- Hermes agent cards get the Hindsight bank, tags, mission, recall budget, memory mode, auto-retain and observation
+  scopes in Advanced settings; the bot profile consumes them (`server/src/myrmidon/bot-containers/profile-input.ts`).
+  The plugin's own recall policy stays plugin-wide (`doc/architecture/memory-layers.md` explains the boundary).
+- The OpenClaw device token is bound through a company secret reference (a picker in the card). A raw token is
+  rejected at the persistence boundary and secret references are resolved at runtime.
+- Internal probe timeout fields are excluded from editing: they are diagnostics, not operator adapter settings.
+
+### A run over the agent's daily run limit is deferred to the window reset instead of being cancelled (OPE-11718)
+
+- A queued run refused by the admission gate under `heartbeat.daily_run_limit` used to become `cancelled`, which is
+  final: the task waited for the next external event. The same run now goes `queued` → `scheduled_retry`
+  (`deferQueuedRunForHeartbeatDailyRunLimit` in `heartbeat.ts`):
+  - `scheduled_retry_at` is the end of the day window the gate counted (the `windowEnd` of its verdict, midnight UTC)
+    plus a random jitter of 0–5 minutes (`server/src/myrmidon/daily-run-limit-deferral.ts`; a `NaN` from the
+    randomness source gives jitter 0), so the burst after midnight is spread out.
+  - The existing due-retry sweep (`promoteDueScheduledRetries`, 50 per pass, earliest first) puts the run back in
+    the queue; the gate checks the limit again when the run starts. A repeated refusal defers the same row (counter
+    `contextSnapshot.dailyRunLimitDeferral`); no second run is created.
+  - `scheduled_retry_reason` and `scheduled_retry_attempt` of the run are not changed: the execution failure count,
+    the `workspace_busy` ladder and the promote/claim gates depend on them. The deferral is marked only in the run
+    context. The wake stays `queued` and is served at the start after the reset.
+- Still cancelled with a visible reason: a zero limit (the reset would not free a slot), the daily cost limit, and a
+  user's manual wake (`payload.manualUserWake`).
+
+### Review routing: the board merges an approved pull request once its head is green; conflicts go back for a rebase (OPE-11767)
+
+- A task whose board review stage is approved and whose open pull request is green and mergeable on the approved head is now merged by the board itself through the shared GitHub App identity (squash, the repository's convention). It fires when a review is approved, when a CI run completes, and on the periodic review-routing pass as the safety net; the pass merges at most `boardMerge.maxMergesPerPass` pull requests. Before this, a PR approved while CI was still running was merged by nobody once CI turned green: the steward lane only creates a human "Merge PR" task (and its GitHub resolver finds no token on the release board), and the host script that covered the gap was removed.
+- The merge is bound to the exact approved head: the approving verdict must name the current head (a full or abbreviated sha anywhere in the verdict — the reviewers' `APPROVE PR #N <sha>` is now read; before only the spelling `head <sha>` was, which left the GitHub approval marker unset on PR #2449 and #2467), the required check `CI result` must be `success` on that head (latest run per name; cancelled, skipped and stale runs are not a verdict), the base must be `main` (or a configured release base) and GitHub must report the PR mergeable. The merge call carries the approved sha, so a head that moved is refused by GitHub itself (409). A branch that is merely behind main is merged as it is: the board never calls `update-branch` after an approval, because it would move the head and void the approval.
+- A conflict with the base after the approval — or a head behind a base that the repository requires to be up to date — returns the task to its implementer once (status `in_progress`, changes requested) with a system comment "конфликт с main после одобрения — нужен rebase", and wakes the implementer. Before, such a task stayed in `in_review` forever.
+- A PR blocked only by the missing `review-approved` marker (the hot-files gate) gets the marker from the board and is merged on the next look.
+- The behavior is the new `boardMerge` block of `instance_settings.general.reviewRouting`, ON by default; `boardMerge.enabled = false` restores the previous behavior exactly. A settings screen that does not know the block keeps the stored value on save.
+
+### LiteLLM fallback chains are validated on save, and a live dead end raises a board signal (OPE-11777)
+
+- Before the LiteLLM configuration is written, empty fallback groups and unknown providers are rejected
+  (`server/src/myrmidon/litellm-sync/config-client.ts`); the existing checks for cycles, models and provider
+  diversity stay in force.
+- Failed spend-log rows that carry attempted fallbacks are parsed (`litellm-costs.ts`), and the fallback signal sweep
+  (`litellm-fallback-signal/sweep.ts`, `attention.ts`) raises a high-severity board attention signal for an
+  attributed dead end. Tests cover validation, the parser, the sweep and the attention feed.
+
+### HERMES-GATEWAY-CLOSE: the board frees the gateway slot of every run it finishes (OPE-11889)
+
+- A `hermes_gateway` run keeps a slot in the bot gateway's `max_concurrent_runs`
+  until the remote run ends. Before, the board stopped the remote run only when an
+  operator cancelled an unsupervised run, so runs the board ended any other way
+  (the execution-control deadline, a stale or `process_lost` reap, an adapter
+  failure that left the remote run alive) held their slot until the gateway's own
+  timeout, and bots answered `Too many concurrent runs (max 8)`.
+- Now every terminal status (`succeeded`, `failed`, `timed_out`, `cancelled`,
+  `interrupted`) closes the remote run: the central status writers and the
+  execution-control reconciliation do it at once, and a periodic sweep
+  (every 60 s, runs changed within the last 2 h) covers every other writer and a
+  crash between the terminal write and the close. The board probes
+  `GET /v1/runs/{id}` first and sends `POST /v1/runs/{id}/stop` only to a run
+  that is still live, so a run the gateway already finished costs one GET.
+- Once per run: the close is claimed under the run row lock and recorded as run
+  events `gateway_remote_close_requested` / `_done` / `_failed`. Each carries who
+  closed the run and why (an operator's cancellation provenance, or
+  `board_timeout` / `board_stale` / `board_cancelled` / `terminal_completion`
+  with the run's correlation id); the same provenance goes to the gateway as
+  `x-paperclip-*` headers. A failed or unreachable close is retried at most 3
+  times, at least 5 minutes apart.
+- A retry of the run is not affected: only the remote run is stopped, never the
+  Hermes session, so the retry continues the same conversation, and a closed run
+  is never re-closed or re-dispatched.
+- Fix: a cancellation reason with non-Latin-1 text (for example Russian) made
+  `fetch` throw while building the `x-paperclip-cancellation-reason` header, so
+  the best-effort stop never reached the gateway. Header values are now
+  percent-encoded when needed, single-line and bounded.
+- To verify, let a gateway run outlive its board run (for example fail it on the
+  execution-control deadline) and check that the run's events hold
+  `gateway_remote_close_done` and that the gateway no longer lists the run as live.
+
+### Invite credentials and secret path segments are redacted in the board API log (OPE-11891)
+
+- Invite tokens in URL paths (`/invites/:token`, `/invite/:token`), in route params, request bodies and error context
+  are redacted in the board's HTTP log (`server/src/middleware/redact-sensitive.ts`, `logger.ts`).
+- Every invite route (`/api/invites/:token` and the rest) is marked secret-sensitive whatever the HTTP method
+  (`http-log-policy.ts`), so no raw token reaches the log in the `ok`, 400, 404 and 500 cases. Behavior tests cover
+  all four.
+
+### Bots get the board key and URL inside `execute_code` (OPE-11947)
+
+- hermes' `execute_code` strips every environment variable containing KEY or TOKEN from the core except those listed
+  in `terminal.env_passthrough` of `config.yaml`. The profile the board compiled set only `terminal: { cwd }`, so
+  `PAPERCLIP_API_KEY` / `PAPERCLIP_API_URL` were missing in the code tool, the skill told Python code to read them
+  from the environment, and the requests went out without a key (401). Some agents worked around it by reading the
+  bot's `.env` file, which put the secret into the session history.
+- `profile-compiler.ts` now writes `terminal.env_passthrough: [PAPERCLIP_API_KEY, PAPERCLIP_API_URL]` (the bot's
+  own permanent key, already in the terminal environment; not a provider key, hermes does not block it).
+- The skill `auth-and-run-context.md` says: no key in `execute_code` means use the terminal; do not read `.env`;
+  do not retry a 401.
+- The change alters `config.yaml`, hence the profile hash: bot containers are recreated by the regular maintenance
+  window (template update).
+
+### Bot LLM requests carry a stable conversation key (TOKEN-BURN F, OPE-11966)
+
+The pool of ChatGPT accounts behind the LLM gateway caches a prompt only when the requests of one conversation
+carry one stable key. Hermes sent none, so the pool saw a new session id (the call id) on every request and its
+cache hit only 25-47% of the input.
+
+- **Header.** The bot profile (`hermes/config.yaml`) now has a `providers.myrmidon-gateway` entry for the instance
+  LLM gateway endpoint (the URL of `model.base_url`) with Hermes' vendor option
+  `session_affinity_header: x-litellm-session-id`. Hermes puts the conversation key in that header on every request
+  to the endpoint: the conversation root (stable across compaction rotation), else the Hermes session id, which is
+  the board's session key of the run (`paperclip:company:<id>:agent:<id>:issue:<id>`, with the generation suffix
+  when the board raises it). The gateway forwards the header to the pool for `chatgpt-pool/*` models only, where it
+  becomes the ChatGPT `session_id`. For every other model the header is read by the gateway only (it groups traces).
+- **Body.** The chat-completions body of such a request also carries `prompt_cache_key` (bot-runtime patch `28`): the
+  header's own value, bounded to 64 characters the way every key is (a longer id becomes `pck_` plus a hash of
+  it). A key pinned by the caller stays; an endpoint without the option, and api.openai.com, are unchanged.
+- **Rollout.** The profile change is part of every gateway bot's `config.yaml`, so each bot restarts its gateway once
+  when the board applies the new profile; the body key arrives with the new bot runtime image.
+- **To verify.** In the pool's statistics (`stats/usage.db`, table `req`) requests after the rollout have
+  `session_hash` and `cache_key_hash` set and `cached_tokens` rising; compare the share `sum(cached_tokens) /
+  sum(in_tok)` against the period before. A bot's `config.yaml` holds the `providers:` block; a request to the
+  gateway shows the `x-litellm-session-id` header.
+
+### Corpus search across datasets: one global ranking, dataset names accepted, a longer parse sweep interval (OPE-11988)
+
+- An unscoped `corpus_search` MCP call took the best `topK` per dataset group and cut the merged list without
+  re-ranking, so high-scoring chunks of datasets processed later in the loop were lost. The search index
+  (`packages/corpus`, `ports.ts`, `search/hybrid-search-index.ts`) now takes `datasetIds?: string[]` and runs one SQL
+  query (`$3::uuid[] is null or d.dataset_id = any($3::uuid[])`) with a single global reciprocal-rank-fusion ranking.
+- `corpus_search` also accepts dataset **names**, not only ids: `server/src/myrmidon/corpus/adapters.ts` maps names to
+  ids through a dataset map (before, a name matched nothing and the call silently returned 0 hits).
+- The parse sweep interval of the corpus worker (`server/src/myrmidon/corpus/worker.ts`) is raised to 150 s, so the
+  sweep no longer collides with the parser on large documents.
+- `corpus_list_datasets` returns its structured content as an object `{ datasets: [...] }` (fixed in #2491), as MCP
+  clients require.
+
+### Corpus: documents by address, refreshed on a schedule (1.6.6 CORPUS, OPE-12000)
+
+- New `POST /api/myrmidon/companies/:companyId/corpus/datasets/:datasetId/documents/url` with
+  `{url, refreshIntervalHours?, name?}` adds a document by address. The board downloads the page
+  (http/https on port 80 or 443 only, 30 s deadline, the same `maxDocumentBytes` ceiling as an upload, enforced
+  on the decoded stream), stores it as an ordinary document on the road an upload takes (BlobStore, parse job,
+  audit action `myrmidon.corpus.document_uploaded` with `sourceUrl`), and answers `202 {document, job}`. The
+  document remembers `sourceUrl`, `refreshIntervalHours` (168 hours unless given; 1 to 8760), `contentHash`
+  (SHA-256) and `lastFetchedAt`; they appear on every document the corpus API returns, together with
+  `sourceError`. The same address in one dataset is refused with `409 source_url_exists`, also when two
+  requests for it arrive at the same time (one document is made).
+- The download goes through the board's guarded transport (the one outbound MCP and OAuth calls use): the host
+  name is resolved once, every address must be public, the socket is dialled at an approved address, and the
+  peer address is checked again before a request byte is written, so a rebinding name server gets nothing.
+  Loopback, private, link-local and cloud-metadata addresses, `localhost`, other ports, `file:`/`ftp:` addresses
+  and addresses with a user name or password are refused with `422 source_url_blocked` / `source_url_invalid`
+  before any document is created. Redirects are followed by the board itself, up to 5, each hop through the
+  whole guard again. A failed download is answered with a fixed text (`502 source_fetch_failed`): what the
+  socket or the resolver said goes to the log only. All downloads of the board (the hourly sweep, a manual
+  refresh, an add by address) share one limit of 4 at a time.
+- Documents added by address are kept current by the product: once an hour (on the scheduler tick, behind the
+  corpus switch, a no-op while the module is off) the board fetches the ones whose interval has passed. The same
+  hash only moves `lastFetchedAt`, except for a `failed` document, which is parsed again from the bytes it
+  holds. A new hash stores the new bytes and queues a new parse job (the document goes back to `queued`; the
+  parse of the new version replaces the old chunks, and the old bytes are removed once the new version is
+  `ready`). A failed download leaves the stored version untouched and records a short code in `sourceError`;
+  a document still being parsed is skipped. A replaced document is audited as `myrmidon.corpus.document_refreshed`.
+- New `POST /api/myrmidon/companies/:companyId/corpus/datasets/:datasetId/refresh-urls`: starts fetching every
+  URL-sourced document of the dataset now, whatever its interval, and answers `202 {datasetId, started, documents}`
+  at once. The run goes on in the background, one at a time per dataset (`409 refresh_in_progress`), with a pause of
+  60 s after the end of a run (`429 refresh_too_soon`, with `Retry-After`). The start is audited as
+  `myrmidon.corpus.refresh_started`, the end, with the counters `{checked, unchanged, updated, skipped, failed,
+  failures[]}`, as `myrmidon.corpus.refresh_completed`.
+- No migration: `source_uri` and `content_hash` of `corpus_documents` already exist, and the interval and fetch
+  bookkeeping live in its `metadata` (a document counts as "by address" only when it carries the interval, so the
+  RAGFlow importer's provenance in `source_uri` is never fetched). Both new routes need the same company access as an upload.
+
+### Run guard: wider read-only limits for code roles, and one automatic retry after a read-only stop (OPE-12004)
+
+- The default limits of the stops `no_progress_exploration` (consecutive read-only tool calls without a write) and
+  `repeated_tool_call` (the same read-only call repeated since the last write) now depend on the agent's role:
+  **100 and 5** for the code roles (`engineer`, `reviewer`, `lead`, `architect`), **40 and 3** for every other role
+  (as before). `heartbeat.ts` passes `agent.role` to `resolveRunGuardOptions`. Values set on the agent card, in the
+  team settings or in `MYRMIDON_RUN_GUARD_NO_PROGRESS_LIMIT` / `MYRMIDON_RUN_GUARD_REPEATED_TOOL_CALL_LIMIT` still
+  win over the role default. Engineers can now read about 100 files while exploring a codebase without a false stop.
+- A run stopped with `no_progress_exploration` is continued once in a follow-up run (before, every guard stop was
+  final). The follow-up carries the instruction (`livenessContinuationInstruction`) to move on to a write (a code
+  change, a test, a commit) or to describe the blocker in a comment.
+
+### Pull-request work products with an empty `url` / `externalId` are readable again (OPE-12024)
+
+- Records of `issue_work_products` of type `pull_request` could have an empty `url` and `external_id` while the
+  repository and the number lived only in `metadata` (`{repository, number, …}` or `{repo, number, …}`). The board
+  reads CI by `url` / `external_id`, so it answered "CI state=unknown (`pull_request_reference_unreadable`)", and the
+  review decision engine rejected the reviewer's verdict with HTTP 422 although CI was green.
+- `loadIssuePullRequestTarget` (`review-stage-recovery/github-ci.ts`) falls back to `metadata.repository` (or
+  `metadata.repo`) with `metadata.number`, and to `metadata.url` for the pull request URL, when the top-level `url`
+  is empty.
+- `createForIssue` (`services/work-products.ts`): for a `pull_request` work product of provider `github`, `url` and
+  `externalId` are derived from the metadata when absent; it answers 422 when neither the fields nor the metadata
+  carry enough information.
+- Migration `0462_pull_request_work_product_url_backfill` fills `url` and `external_id` from the metadata of the
+  existing rows where they are empty.
+
+### `corpus_search` returns the document title as `document.name`, not its UUID (OPE-12028)
+
+- Bots cited sources as "document.name: 37c94457-…" (a UUID) instead of the book title. The wrapper had to fetch the
+  name with a separate `corpus_get_document`, and that call failed with "corpus blob: empty key" when asked for
+  `include_text: true`.
+- `createCorpusMcpProvider` (`server/src/myrmidon/corpus/adapters.ts`): after the index hits, `search` asks the store
+  for the unique `documentId`s in one batch and fills `document.name` with the real name of the document
+  (`corpus_documents.title`); a document that is not found falls back to its `documentId`.
+- `getDocument`: `includeText` is guarded against an empty `blobRef`; a document without a blob returns `text: null`
+  instead of the "corpus blob: empty key" error.
+
+### Corpus: big books parse to the end, abandoned parses are cancelled, failed documents can be parsed again (1.6.6 CORPUS, OPE-12029)
+
+- The time limit of a parse (`parserTimeoutMs`) is now the time a job RUNS WITHOUT PROGRESS in the parse
+  service, not the time since the submission. The clock starts when the service starts the job and starts
+  over every time the number of pages done grows, so a scanned book of 300 pages (about 25 minutes of OCR)
+  is no longer failed and re-parsed from page 1 three times at a limit of 10 minutes, while a job that stops
+  is still given up on. Waiting in the service's queue behind other documents no longer uses the limit up
+  (it is bounded separately, 4 hours, and a hard ceiling of 6 hours stops a run that never ends). The
+  ceiling of the setting (settings screen, `PATCH /api/myrmidon/corpus/settings`,
+  `MYRMIDON_CORPUS_PARSER_TIMEOUT_MS`) is raised from 10 minutes to 2 hours.
+- When an attempt gives up on a job (timeout, broken poll, abort) the module cancels the job in the parse
+  service with `DELETE /v1/parse/{jobId}` instead of leaving it to run, so a retry no longer queues behind a
+  dead copy of the same document. If another client has submitted the same document and still waits for
+  the job, the parse service keeps it running. A parse service that does not know the endpoint is tolerated.
+- The parse pass no longer claims more jobs than `parseConcurrency` allows across passes. A pass lasts as long as
+  its slowest parse while the scheduler starts a new one every 150 s, so each new pass used to claim another
+  `parseConcurrency` documents on top of the running ones and flood the parser.
+- New `POST /api/myrmidon/companies/:companyId/corpus/documents/:documentId/reparse`: parses a `failed`
+  document again from the bytes already stored (no delete and re-upload). The document goes back to `queued`
+  with its error cleared and its job starts over with no attempts used; the answer is `202 {document, job}`,
+  the audit action is `myrmidon.corpus.document_reparsed`. A document that is not `failed` (`409
+  document_not_failed`) or has no stored bytes (`409 document_has_no_stored_bytes`) is refused.
+
+### Bot runtime: a lost connection to the model gateway no longer moves a run to the fallback model (TOKEN-BURN-G)
+
+A bot reaches every model through one gateway. When the gateway restarted (about 75 s), the bot's primary model
+failed with `APIConnectionError`, hermes switched the run to the fallback chain of the agent card after the second
+failure and kept the run there until it ended - the primary comes back only at the start of the next turn - so a
+restart of about a minute moved the rest of a run onto a paid model, although the fallback sat behind the same gateway.
+Patch `29` of the bot runtime (`docker/bot-runtime/patches/`) changes this in one place, the error path of the model call:
+
+- **A gateway that is not answering is ridden out on the primary.** An error with no HTTP answer at all (connection
+  refused or reset, connect timeout, `APIConnectionError`), or a 502/503/504 whose text names no model and no provider,
+  is retried against the primary with the usual growing pause for up to `HERMES_GATEWAY_OUTAGE_BUDGET_S` seconds
+  (default 180) before the fallback chain is tried. For that time the retry limit of the call is lifted and the last
+  pause is cut to the budget that is left. After the budget the behaviour is the old one: the fallback chain, then the
+  recovery ladder. Nothing is held when the agent has no fallback.
+- **An error of a model or a provider still goes to the fallback as before.** 429 and quota, `model not found`,
+  `no healthy deployments`, an overloaded provider, a read timeout of a slow model, authentication errors.
+- **A run on a fallback goes back to the primary.** Every `HERMES_FALLBACK_PROBE_EVERY` model calls (default 10) the
+  run tries the primary again and stays on it when the call succeeds; a probe that fails walks the fallback chain
+  again through the ordinary error path, and the primary's rate-limit cooldown still gates the probe.
+- `0` in either variable gives the upstream behaviour back.
+- To verify, stop the model gateway for about a minute while a bot run is working: the run's log shows
+  `Model gateway unreachable ... retrying the primary model` and no `switching to fallback provider`, and the run finishes on
+  its own model.
+
+### Corpus: a board restart no longer strands a document in `parsing`, and a shutdown no longer waits for a whole book (1.6.6 CORPUS, OPE-12057)
+
+- When the board restarted in the middle of a parse, the job stayed `running` and the document `parsing`
+  for good: the parse queue only claims `pending` jobs and nothing took a `running` one back. Now the
+  first pass of the parse worker after a start settles every job left `running` by the previous process,
+  before it claims anything: the job goes back to `pending` (due at once, no backoff) and its document to
+  `queued`, with the reason ("the board stopped or restarted while the document was being parsed") kept
+  on both. The attempt the claim counted stays counted, so a document that takes the board down every
+  time (out of memory on a huge scan) runs out of attempts and ends `failed` with that reason, instead of
+  restarting the board in a loop; a failed document can be parsed again with the reparse request. A
+  document that had already reached `ready` before the process died is settled as done, not parsed twice.
+  Jobs of the running process are never touched: the settling happens once per worker, before its first
+  claim, and a process has exactly one worker. A job whose settling fails (database down) is retried on the
+  next pass, and nothing is claimed until it works.
+- A board shutdown used to wait, without a limit, for the whole parse pass to end - a scanned book takes the
+  better part of an hour. The parse worker is no longer part of that wait. On a shutdown signal it stops
+  claiming, lets the parses in flight finish for a grace period (30 s by default, `MYRMIDON_CORPUS_SHUTDOWN_GRACE_MS`,
+  0 to 600000 ms), then aborts them: the parser client ends the call without retries and cancels the job
+  in the parse service (`DELETE /v1/parse/{jobId}`), the corpus job goes back to the queue with its attempt
+  refunded (a deploy does not use up `maxParseAttempts`) and the document to `queued`. After the abort the
+  shutdown waits at most 10 s more; a parse that still does not answer is left `running` and the next
+  start settles it as above. The shutdown is therefore bounded by the grace period plus 10 s.
+- The parser client reports an aborted call as its own error kind, `aborted`, and does not retry it.
+
+### Bot runtime: state.db is compacted by its share of free pages, and its temporary copy goes to the bot's volume (1.6.6 BOT-DISK)
+
+The `state.db` of a bot never shrank. On the fleet 15.6 GB of 39.9 GB of the 65 databases were free pages (56% of the
+largest, 3.4 GB), and none of them had ever been vacuumed. Hermes vacuums only in a pass whose own prune deleted a
+session, and the bot runtime deletes old sessions through the API when a container starts, before hermes' first
+maintenance tick, so the tick's prune never found anything. Patch `30` of the bot runtime
+(`docker/bot-runtime/patches/`) and the entrypoint change this:
+
+- **The VACUUM runs on the share of free pages.** When more than 25% of the pages are free
+  (`AUTO_VACUUM_MIN_FREELIST_RATIO`) and `sessions.min_vacuum_interval_days` (default 30) have passed since the last
+  one, the maintenance pass vacuums whether or not it pruned anything. `sessions.vacuum_after_prune: false` still
+  turns it off.
+- **It waits for room and for a quiet moment.** No VACUUM starts while another process holds the store, while a
+  session turn lease is held in the store, while the gateway is running a turn (messaging platforms and API-server
+  runs), when the volume has less than twice the live data free, or when SQLite's temp directory is RAM. It then
+  tries again on the next housekeeping tick (hourly), not after another 24 hours. The reason is logged and returned
+  as `vacuum_skipped`; a finished VACUUM logs the size before and after.
+- **The temporary copy is not charged to the container's memory.** SQLite writes the copy of the live data (about
+  1.5 GB for the largest database) to `/tmp`, which in the bot container is tmpfs. The entrypoint now exports
+  `SQLITE_TMPDIR=$HERMES_HOME/.sqlite-tmp`, a directory on the bot's volume.
+- The first passes after the rollout vacuum the databases that have waited so far: the 19 databases above 25% free
+  are the ones that shrink. Each gateway decides for itself at its own hourly tick, roughly an hour after it started,
+  so the starts follow the sequential restarts of the rollout; there is no fleet-wide limit on simultaneous VACUUMs.
+  A bot that is never idle waits for a quiet moment.
+- To verify, find `state.db VACUUM: ... MB -> ... MB` in a bot's gateway log, and `state_meta.last_vacuum` in its
+  `state.db`.
+
+### Heartbeat: an old exhausted connect retry no longer flips a healthy agent to error (1.6.6 OPE-12150)
+
+The stranded-issue sweep re-schedules the last run of an `in_progress` issue on every pass. When that run had used up its `container_not_started` retry budget, every pass wrote `status=error`, «контейнер не поднят» on the agent, even though its container was healthy and later runs of the agent had succeeded (prod 07.11: adm-devops returned to error 15–60 s after every clear). The exhausted budget now marks the agent only when no run of this agent succeeded after the exhausted one. A status patch that moves an agent out of `error` also clears `errorReason`.
+
+### Bot containers: the image switch waits for an interrupted run to finalise (1.6.6 OPE-12150)
+
+The bot container reconciler polled only 30 s past the maintenance drain deadline. R3 interrupts a busy run at the deadline, and a hermes gateway run took about 50 s to finalise, so every busy bot's switch to the release image failed seconds before the interrupt landed, the window closed and the retried run started on the old image again (prod 07.11, rc.46: 9 bots). The grace past the deadline is now 120 s.
+
+### fleetd: a fleet site pulls a release image it does not have yet (1.6.6 OPE-12194)
+
+The bot image rollout pre-pulls release images only on the hosts it reaches by ssh (`MYRMIDON_BOT_IMAGE_ROLLOUT_FLEET_HOSTS`). A fleet site registered on the board got its first container of a new release image refused with Docker 404 «No such image», and its bot never switched (prod 07.11: work-qa on myr-vm1). On that 404, fleetd now pulls the allowlisted image (no registry auth: the release bot images are public) and retries the create. The pull is detached from the board request, so a board call that gives up waiting does not abort it, and a failed pull is reported in the create error.
+
+### Review stage: a reviewer run interrupted by maintenance no longer blocks the stage (1.6.6 OPE-12201)
+
+The maintenance drain of a deploy interrupts running reviewer runs (`myrmidon_maintenance_interrupted`). The review-stage recovery counted them as failed reviewer attempts, and after two of them moved the stage to `blocked` («retried the pending execution-review participant twice…»), although the review was fine (prod 07.11, rc.46: OPE-12058, OPE-12091). Such a run now re-wakes the reviewer without spending the decision budget; the activity row has kind `maintenance_retry`, which the budget counter ignores.
+
+### Recovery: a lead's engineer subtasks are no longer handed back to the lead (1.6.6 OPE-12220)
+
+The orphan-blocker reconcile assigns a blocking issue without an assignee back to the agent that created it. A lead slicing an epic creates its engineer subtasks unassigned so that the caste matcher hands them to engineers, but the reconcile gave them to the lead, and the leads wrote the code (prod 07.11: 11 subtasks on adm-dev-lead and adm-dev-lead-3). An issue with a caste is now assigned back only to a creator of that caste; otherwise it stays unassigned for the caste matcher.
+
+### Byte ceiling on the serialized continuation envelope (OPE-2321)
+
+- Kernel `MAX_ARG_STRLEN` (131072 bytes) limits the byte size of each argv/env string, but continuation character budgets count UTF-16 code units. Non-ASCII task history (e.g. Cyrillic comments) could exceed the kernel limit and crash local agent runs with `spawn E2BIG`.
+- Adds `MYRMIDON_CONTINUATION_ENVELOPE_BYTES` (default 98304 = 96 KiB, 0 disables): a final byte pass in `limitExecutionContinuationHistory` bounds `Buffer.byteLength(JSON.stringify(envelope))` while preserving origin comments, latest user requests, and resume deltas.
+
+### Wake diagnostics report real engine reasons instead of `other` (OPE-2769)
+
+- `GET /api/issues/{id}/diagnostics/wakes` no longer masks wake reasons the
+  engine itself writes as `reason=other`: the whitelist now covers every
+  reason written by the wake engine and its enqueue sites, including
+  `execution_reconciliation_required` and
+  `resurrection_execution_reconciliation_required`, which previously showed as
+  `reason=other failureClass=failed` on issues with an execution hold.
+- A static guard test re-derives the written reasons from the enqueue sites
+  and fails when a new reason reaches `agent_wakeup_requests` without being
+  added to the whitelist.
+
+### Browser bridge: `browser.sign` through a local signing helper (OPE-3383)
+
+- The Chrome/Edge extension implements `browser.sign` and declares the `sign` capability and the `nativeMessaging` permission. It fetches the document in the page session, passes the bytes to the local signing helper over native messaging and reports only the status and the document digest; the key, the PIN and the signature never reach the gateway.
+- Auto and manual signing are kept: the gateway now tells the extension the panel's decision in the `confirmation` param of every `browser.sign` step (`human` waits for a person on the PC), whatever the bot sent.
+- The native messaging host name is `com.myrmidon.sign_helper` (Chrome rejects hyphens in host names).
+- New CI workflow for `extension/`: typecheck, tests, build.
+
+### Live API process scaling and split deploy (PROCS-3)
+
+- The process supervisor applies `apiCount` changes without a container restart.
+  It scales the API children up and down through the readiness gate and drains
+  children before removing them from service.
+- A split deployment keeps the worker alive while API children start, and
+  returns to the worker listener when the child set cannot stay available.
+- The supervisor keeps the child IPC lifecycle and hot-restart handoff in one
+  place, so a child restart does not create a second scheduler or lose the
+  worker's control of the deployment.
+
+### HERMES-RUN-REATTACH: gateway runs survive a board restart
+
+- Before orphaned runs are reaped, the reattach sweep uses the gateway run ID
+  saved with the heartbeat run to resume an in-flight `hermes_gateway` run.
+  Its result remains visible on the board rather than being lost or restarted.
+- Gateway HTTP 429 means busy, not a terminal failure: `transient_upstream`
+  keeps the agent idle for a bounded retry, honoring `Retry-After` for up to
+  eight attempts within one hour. Cancelling the board run sends
+  `POST /v1/runs/{id}/stop` to the gateway.
+- To verify, restart the board while a gateway run is active; confirm the run
+  completes and its result is visible on the board.
+
+### Run queue position, wait reason and priority settings in the UI (OPE-5525, RUN-PRIORITY B)
+
+- `ui/src/components/myrmidon/runQueueApi.ts` — client for the part A
+  (OPE-5526) endpoints: `GET /api/myrmidon/run-queue/position?runId=…` (rank
+  in the waiting queue + wait reason), `GET/PATCH
+  /api/myrmidon/run-queue/priority` (role weights, current-release line and
+  bonus, aging step and cap). Every read answers `null` on 404/405 — before
+  part A deploys the UI shows no position instead of inventing one.
+- `ui/src/components/myrmidon/RunQueueWaitLine.tsx` — the line under a queued
+  run's chat card: "Queue position 3 of 12, waiting: the host CPU ceiling is
+  closed". Metadata the comment already carries (part A publishes it) wins
+  per field; the position endpoint fills the gaps and is re-asked every 30 s
+  while the rank is unknown. Renders nothing when neither source answers.
+- `ui/src/components/IssueChatThread.tsx` — mounts the wait line under the
+  queued run card (the same card that already shows the "Queued" badge).
+- `ui/src/components/myrmidon/RunQueuePrioritySettingsPanel.tsx` and
+  `ui/src/pages/InstanceGeneralSettings.tsx` — the queue-priority section of
+  Instance → General, on the runtime-limits pattern: five role weights
+  (review, release, lead, engineer, docs), the current-release line, its
+  bonus, the aging step and cap; per-field source tags (saved here / server
+  environment / default); whole-number validation; saving applies on the next
+  admission pass without a server restart. When the endpoint is not served
+  yet the panel says so instead of pretending to save.
+- `ui/src/i18n/myrmidon-locales/{en,ru}.json` — the `runQueue` catalog (en+ru,
+  parity-checked).
+- Tests: `runQueueApi.myrmidon.test.ts`,
+  `RunQueuePrioritySettingsPanel.myrmidon.test.tsx`,
+  `RunQueueWaitLine.myrmidon.test.tsx`.
+
+### Enforce brand release audit gate in CI (OPE-5794)
+
+- Integrated `Brand release audit (DEBRAND gate)` step in `.github/workflows/myrmidon-ci.yml` checks job to enforce `brand-release-audit.mjs --gate` and `docs-branding-guard.mjs`.
+- Added `check:brand` script in `package.json`.
+
+### Browser preferences move to the Myrmidon namespace (DEBRAND-c)
+
+- Browser storage now writes `myrmidon.*` and `myrmidon:*` keys. Startup migrates existing `paperclip.*` and `paperclip:*` local and session storage lazily without discarding a current Myrmidon value. The synchronous theme bootstrap migrates the selected theme before the first paint.
+
+### Documentation for devbuild in bot containers (OPE-6760)
+
+- Documented `DEVBUILD_SSH_KEY_DATA`, `MYRMIDON_DEVBUILD_CHECK`, and `MYRMIDON_LOCAL_NODE_HEAP_MB` in bot-runtime README.
+- Added Russian translations for devbuild settings in `SETTINGS.ru.md`.
+
+### OPE-6799 replay-block triage
+
+A settled execution-reconciliation replay block is now visible in the attention feed as a high-severity `replay_blocked` card. The card identifies the responsible lead when the assignee reports to one, otherwise the company's default board operator, and carries a 24-hour triage deadline. It is computed from the live blocked hold and disappears when the hold is cleared.
+
+Changing an issue's executor clears the previous executor's settled replay hold in the same transaction, records the reassignment reason in activity, and replans the new executor's parked wake.
+
+### A task the dispatcher returns to the queue keeps its status (REQUEUE-HOLD)
+
+- A task whose stopped run gets reconciled no longer loses the status the
+  dispatcher set: `settleUnrecoverableExecutions` projected the failed run onto
+  `blocked` even when the board had already moved the task back to `todo`, so
+  the queue refill was silently reverted within minutes while `blockedBy`
+  stayed empty and no run existed for the task.
+- The reconciliation now keeps the ready-queue status (`todo`/`backlog`),
+  records the same settled hold (`evidence.automaticRecovery.replay =
+  "blocked"`, so nothing is replayed and wake admission is unchanged) and
+  clears the dead run's pointers.
+- Tasks being worked on (`in_progress`, `in_review`, …) keep the previous
+  behaviour and still project to `blocked`; the Agent Chat branch is untouched.
+- The settled hold is released exactly where it was released before — an
+  explicitly authorized wake (L2) or a board person — and a board person now
+  releases it by moving the held task into a working status from any other
+  status (`blocked -> todo` is no longer the only move that counts).
+
+### CONNECTORS C: the chat-provider-telegram connector (installation flag only, no traffic switch) (1.6.6)
+
+- New `server/src/myrmidon/channel-connectors/telegram.ts`: the Telegram
+  connector over the S1 contract — lifecycle (`start`/`stop`/`status` read the
+  vendor row without rewriting it), links (the conversation key is exactly the
+  vendor's `telegram:<chat>` / `telegram:<chat>:<topic>`, so already-linked
+  conversations stay the same conversations), inbound
+  (`normalize`/`admit`/`intakeMedia`), outbound (`plan`/`send`), the provider's
+  own media limits (1024 caption, 50 MB file) and two settings keys resolved
+  env → default.
+- The outbound plan reuses the vendor splitter
+  (`splitTelegramPublicationText`), so the parts a connector send would deliver
+  are the parts the direct integration delivers today — no second copy of the
+  4,096-unit rule.
+- Installation is one flag: `MYRMIDON_TELEGRAM_CHAT_PROVIDER` (off by default).
+  Off — `installTelegramChannelConnector` registers nothing and the hub answers
+  pass-through for `telegram`; on — the registry holds the factory. No vendor
+  file is edited, the hub is not wired into the message lanes and the lifecycle
+  is not called from anywhere in this step: the live board sends and receives
+  Telegram exactly as before. Traffic switches in the later bridge step (the
+  77-point map of OPE-6629), not here.
+- The group gate stays shut without a configured bot: with the flag on but
+  `MYRMIDON_TELEGRAM_BOT_USERNAME` unset, private chats are admitted and group
+  turns are refused `not-addressed`.
+- `telegram.myrmidon.test.ts` pins the flag semantics (unset/off/typo never
+  installs), the contract shape against `CHANNEL_CONNECTOR_AREAS`, the key
+  equality with the vendor, the admission gate, the media limits, the plan and
+  part-by-part send through a fixture transport.
+
+### A run that finished without work no longer wakes its own task in a loop (IDLE-PICKUP-QUIET)
+
+- The idle-pickup suppression after a successful run on the same task now holds
+  for two hours instead of fifteen minutes
+  (`MYRMIDON_IDLE_PICKUP_RECENT_SUCCESS_WINDOW_MS`). A run that ends without
+  touching its task (no disposition, no comment) used to leave the task wakeable
+  again a quarter of an hour later: the sweep woke it, that run ended the same
+  way, and the pair repeated every 15–20 minutes with no new input on the board —
+  four idle wakes on one task inside an hour, each one a fresh checkout plus a
+  run.
+- The window stays silent only while the task does: a comment written after that
+  run ended, by anyone other than the run itself, reopens the task for idle
+  pickup at once. A comment the run wrote itself (its closing report, matched by
+  `created_by_run_id`) and a deleted comment do not.
+- The newest success per task decides, and the trigger points are unchanged (the
+  periodic sweep and the pass right after `releaseIssueExecutionAndPromote`), so
+  both of them keep quiet.
+
+### Run queue position and wait reason in the run card (RUN-PRIORITY)
+
+A queued run card shows its queue position and why it is waiting, such as a higher-priority run or a per-agent concurrency limit. The queue position and wait reason are provided by the run queue API and displayed alongside the run state.
+
+### ChatGPT/Codex model provider pool accounts registry, limit windows, and operator attention signals (OPE-7198)
+
+- Registered model provider connector extension point with dynamic provider type availability (`registerModelProviderConnector`, `isModelProviderTypeAvailable`).
+- Multi-provider account isolation and limit window tracking (5-hour and 7-day windows) with automated reset timestamp computation.
+- Background sweeper (`MYRMIDON_POOL_SWEEP_INTERVAL_SEC`) and attention feed snapshot integration for automatic pool account synchronization and operator attention alerts.
+- Plugin lifecycle bridge synchronizing dynamic connector availability with plugin status changes.
+
+### Plugin provider model lifecycle synchronization (OPE-7251)
+
+- Plugins can declare provider models in validated manifests. Lifecycle synchronization registers models with LiteLLM, updates agent key allow-lists, and exposes the company-scoped model catalog to the selector without a board restart.
+- Disable/uninstall removes only models owned by that plugin; missing company credentials fail closed and cleanup is covered by regression tests.
+- The private subscription-backed ChatGPT pool, periodic subscription discovery, and live isolated LiteLLM/first-call verification remain outside this change and are not claimed as complete.
+
+### Automatic task taking is project-scoped (PROJECT-SCOPED-CLAIM)
+
+- The swarm matcher (a ready task, a free agent, the periodic pass), the claim
+  API's role queue now hand a task that belongs to a project
+  only to a member of that project: its lead, an agent with a joined
+  `project_memberships` row, or an agent nested in it (`agent_nests`). A task without a project stays open to the
+  company, and a task already assigned to an agent (by hand) is never gated, and idle pickup, which only works assigned tasks, is not project-scoped.
+- `GET /companies/:id/agents` carries an optional `projectIds` per agent (lead
+  projects plus joined memberships), so the board UI can filter the roster by
+  project on the client.
+- Child tasks already inherit the parent's project when none is given
+  (`createChild`, and the issue create route); this change leaves that as is.
+
+### Remote sites T1 registry, mTLS routing driver, and startup wiring (OPE-7648)
+
+- Added `myrmidon_fleet_sites`, `myrmidon_fleet_affinity`, and `myrmidon_fleet_moves` database schemas and migrations `0403` and `0405`.
+- Implemented `site-registry.ts` with environment bootstrap (`MYRMIDON_FLEET_HOSTS`), site CRUD, affinity CRUD, and `FleetClientManager` with mTLS agent caching, client certificate and private key resolution.
+- Wrapped local driver into `fleetRoutingDriver` at startup, routing by bot card container host, with hot-reload of the clients (registry version or 30 s TTL), no silent local fallback when the agent read fails, and secret-value fingerprints.
+
+### Fleetd remote site driver hardening
+
+- Align remote-site contract fixtures with HTTPS-only fleet gateway URLs and
+  require a token-secret reference in named fleet host fixtures.
+- Keep fleet gateway placement HTTPS-only and document the fleetd environment
+  settings through the release fragment.
+
+### REMOTE-SITES-T5: site scheduler and bot move between sites (OPE-7652)
+
+- New `site-scheduler` lane (30 s), off by default (`MYRMIDON_SITE_SCHEDULER=1` with `MYRMIDON_BOT_CONTAINERS` on). It reads the site registry and the affinity rules and moves a bot whose affinity site differs from the one it runs on, one move at a time, with the move state machine below (never by rewriting `container.host` alone). A bot whose affinity site is full stays where it is, is marked `placementStatus: pending_placement` on its card and logged as a warning, never silently placed locally. Capacity-only verdicts and pinned bots cause no action. Preemption (low priority by a critical bot) needs `MYRMIDON_SITE_SCHEDULER_PREEMPTION=1`.
+- New `POST /fleet/bots/:key/move` (and `GET` for the latest move) runs a persisted state machine (stop, snapshot, restore, host, reconcile, apiBaseUrl, quarantine) with a phase log. The bot key is the agent id; the caller needs access to the bot's company. The agent's maintenance window is held for the whole move, the per-bot lock keeps the reconcile sweep out, and a failure rolls the bot back to the source site. The source datadir is only set aside at the end (`.quarantined-*`), never deleted.
+- fleetd gains `snapshot`, `restore` and `quarantine` handlers. The archive is a tar inside a zstd frame (raw blocks: not compressed yet) ending with a manifest (entries, bytes, SHA-256) that restore verifies; a snapshot that breaks off aborts the response and restore refuses an archive without a matching manifest. Restore unpacks beside the datadir and swaps it in, keeping the replaced one as `.replaced-<bot>-<time>`; hard links are archived as separate files.
+- A move needs the site's token as a company secret (`MYRMIDON_FLEET_HOSTS` entry `tokenSecret`, or `token_secret` in `myrmidon_fleet_sites`). Moving to or from the board host needs its site-agent: `MYRMIDON_LOCAL_SITE_AGENT_URL` and `MYRMIDON_LOCAL_SITE_AGENT_TOKEN_SECRET`. Sites and affinity rules are rows in `myrmidon_fleet_sites` and `myrmidon_fleet_affinity` (no admin routes yet). The migration adds `myrmidon_fleet_sites`, `myrmidon_fleet_affinity` and `myrmidon_fleet_moves`.
+
+### Work-memory of an execution site is replicated to the board (1.6.6)
+
+- The memory of a remote site stays on the site (its own hindsight): its bots recall and retain
+  there and do not depend on the link to the board. The board keeps a replica of it in the
+  `fleet-work-replica` bank.
+- New lane `myrmidon-memory-sync`: once a night (after `MYRMIDON_FLEET_MEMORY_SYNC_HOUR_UTC`, 20 by
+  default) the board asks the site-agent for the bank export (`POST /v1/memory/export`) and merges
+  it into the replica bank (`transfer/import`, `mode=merge`, `document_conflict=skip`, so a
+  repeated or resumed sync never duplicates a document). A failed attempt is retried on every
+  tick (every 15 minutes) until one succeeds.
+- Every attempt is a row of the new table `myrmidon_fleet_memory_syncs` (migration 0416): site,
+  kind (`nightly`, `forced`, `manual`), status, archive size, imported/skipped documents, error.
+- A live bot move runs a forced sync right after the source container is stopped. It is bounded
+  (5 minutes) and best effort: a failure is journaled and the move goes on.
+- Opt-in: `MYRMIDON_FLEET_MEMORY_SYNC=1` and `MYRMIDON_FLEET_MEMORY_HINDSIGHT_URL`
+  (`MYRMIDON_FLEET_MEMORY_HINDSIGHT_TOKEN`, `MYRMIDON_FLEET_MEMORY_REPLICA_BANK` are optional).
+  The lane runs inside the site-health lane (`MYRMIDON_SITE_HEALTH=1`).
+
+### Site memory has a canonical compose (1.6.6)
+
+- `docker/site-memory/docker-compose.yml` defines `hs-pg` (pgvector) and `hindsight-work` as one
+  managed service of an execution site: loopback port only, digest-pinned images through
+  variables with no default, limits on memory and pids, secrets only in profile files
+  next to the compose. Operator guide section 4.5 (EN and RU) describes the bring-up, the fleetd
+  `memory` settings and the nightly sync with its journal.
+- The degradation scenario is covered by a test: with the link down for five minutes the site's
+  bots recall and retain locally, the board's hindsight is not asked, and after the link returns
+  the replica catches up without a duplicate document, also after an import that broke off.
+- The production import of `fleet-work` / `work` (P5) is a separate manual step in the owner's
+  window and never runs automatically at startup. Order: bring up the compose, run the import,
+  then set `MYRMIDON_FLEET_MEMORY_SYNC=1`.
+
+### Fleet screen manages execution sites (1.6.6, REMOTE-SITES-T8)
+
+- New board API for the fleet screen: `GET /api/myrmidon/fleet/sites/overview?companyId=` (status, last answer, capacity used/total for CPU, memory and bots, bot count, drift count, the end of the board's client key for the site), `GET /api/myrmidon/fleet/sites/:name/bots` (each bot: container state, image, template drift fields, gateway address), `PATCH /api/myrmidon/fleet/sites/:name` (labels, capacity, address), `POST /api/myrmidon/fleet/sites/:name/drain` and `/resume`, `POST /api/myrmidon/fleet/bots/:key/restart` and `/stop`, and `GET /api/myrmidon/fleet/bots/:key/logs?tail=` (the container log through the site-agent, 1 to 500 lines). Reading is open to company members; changes are for the company owner/admin or the instance admin. The earlier `GET /api/myrmidon/fleet/sites` badge feed and the move and enroll routes are unchanged.
+- The key lifetime is visible and enforced. Enrolling a site now stores the end of the client certificate's validity (`clientCertNotAfter`) and refuses an already expired certificate. While the key of a site is expired the board refuses to restart or stop its bots, read their logs or resume the site (409, and a warning in the server log), and the screen shows the expired key as an alert; a key that expires within 14 days is marked on the screen. The lifetime is re-read from the client certificate secret on every call, so rotating the secret lifts the block at once without editing the site; the alert is logged once when the state changes, not on every poll.
+- An operator's drain is the operator's: pressing Drain on a site the monitor drained automatically makes the drain manual, so the `autoResume` label never lifts it. Resume is for a draining site only; a quarantined site stays fenced.
+- The fleet screen (current UI: company settings, next to the server console; UI2: the Servers screen) lists the sites with capacity, drift and key lifetime, opens the bots of a site, restarts, stops (with a confirmation), moves a bot to another site or the board host, shows its log, drains and resumes a site, and adds a site by a form. The form takes the names of the company secrets for the token and the client certificate, never their values. Issuing the client certificate itself is still an operator step of the site PKI (operator guide, section 4); the board reads its lifetime from the secret.
+- Restart and stop act on the container at once; they do not wait for the bot's runs to finish.
+
+### DEVFLOW health: document the alias environment overrides (OPE-10075)
+
+- The pipeline liveness thresholds also accept alias environment names, classified here so the env-coverage guard stays green:
+  - `MYRMIDON_DEVFLOW_APPROVAL_MARKER_MS`: alias of `MYRMIDON_DEVFLOW_STALE_MARKER_MS` (`staleMarkerMs` / `approvalMarkerMs`).
+  - `MYRMIDON_DEVFLOW_AUTO_MERGE_MS`: alias of `MYRMIDON_DEVFLOW_STALLED_MERGE_MS` (`stalledMergeMs` / `autoMergeMs`).
+  - `MYRMIDON_DEVFLOW_REVIEW_ROUTER_MS`: alias of `MYRMIDON_DEVFLOW_STALLED_ROUTER_MS` (`stalledRouterMs` / `reviewRouterMs`).
+
+### Browser and runtime temp path trace (OPE-7738)
+
+- Document confirmed product-owned run temp writers, Google AI and ChatGPT login-profile lifecycles, and completed runtime trace (OPE-7744/OPE-8747): no active production writers for `chr-p*` or `native-*` (historical residue on tmpfs); no product code changes required.
+
+### /tmp hygiene policy and host janitor for temporary profiles (OPE-7773)
+
+- Routed agent Chromium browser profiles into a run-scoped scratch directory (`$PAPERCLIP_SCRATCH_DIR/run-dir`), cleaned up automatically upon heartbeat run termination.
+- Added automated trap cleanup for `install.sh` temporary release manifests and registered test sandbox cleanup in `install.test.mjs`.
+- Introduced host-level `tmp-janitor.sh` with systemd service and timer units to prune orphaned `chr-*`, `native-*`, `mdep-*`, and `myrmidon-install-test-*` directories older than TTL with positive integer validation, recursive open-file activity detection (`lsof` and `/proc`), fail-closed safety, and protection for live profiles (e.g., `claude-1002`).
+- Documented `/tmp` `size=8G` tmpfs fstab configuration to prevent unbounded host memory usage.
+
+### Quarantine ownership on issue creation (QUARANTINE-OWNERSHIP)
+
+- Resolve and persist the responsible promotion owner for low-trust issue and child creation. Require an owner only when agent output is actually quarantined; ordinary agent-created issues remain unaffected. Bulk child creation validates ownership before persistence.
+
+### IDLE-STOP board controls (OPE-7898)
+
+- Enable idle container stopping by default, with live instance settings for the idle threshold and health timeout.
+- Add per-agent On demand and Always on modes (agent card, plus a bot list with mass change under Instance settings), container state, and last stop/start times that survive a server restart.
+
+### Agent list and live-run validators follow the authorized response
+
+- The company agent list checks company authorization and filters rows by agent-read access before response construction. Its ETag includes the authorized scope, configuration-redaction decision, and visible response rows.
+- The live-runs endpoint checks telemetry access and redacts run data before deriving its ETag; authorization context and redacted rows are part of the response variant.
+- The Agents pages refresh live-run data every 60 seconds (previously 15 seconds).
+- Validation: route regressions exercise the same `If-None-Match` across changed agent visibility and run redaction. Validators intentionally over-invalidate when authorization or redaction context changes.
+
+### Blocked issue monitors wake on schedule (OPE-7932)
+
+Scheduled issue monitors now wake their assignee for `blocked` tasks as well as active/review tasks. Terminal tasks clear schedules; overdue schedules surface as `issue_monitor_overdue` in the operator Attention feed. Every skipped monitor is journaled with its reason, and existing terminal-task schedules are cleared by migration.
+
+### DEBRAND 1.6.6: release brand audit and root-docs cleanup (OPE-8127)
+
+- New release audit `scripts/myrmidon/brand-release-audit.mjs` scans everything
+  the release ships that `docs-branding-guard.mjs` did not cover: the root
+  `README.md`/`README.ru.md`, `CONTRIBUTING.md`, `ROADMAP.md`, `DESIGN.md`,
+  `AGENTS.md`, `CLAUDE.md` plus all of `docs/`. Report mode always exits 0 and
+  prints the exact count and paths of non-allowlisted old-brand mentions;
+  `--gate` fails on any finding (for a release-workflow maintainer commit).
+- The allowlist is exact substrings with categories (vendor identifiers, legal
+  attribution, compatibility identifiers, external vendor services, historical
+  records, provenance prose) — never a file glob. The fixture tests pin this:
+  a glob-like entry fails the suite, and a compatibility identifier on the same
+  line does not mask a product mention next to it.
+- Root docs cleaned: product prose in `CONTRIBUTING.md`, `ROADMAP.md`,
+  `DESIGN.md`, `AGENTS.md` now says Myrmidon (46 findings at audit time → 0
+  non-allowlisted). License attribution lines in the READMEs and vendor
+  identifiers (`@paperclipai/*`, `PAPERCLIP_*`, CLI `paperclipai`, the
+  `paperclip` skill path and API name) are untouched.
+- Read-only release check instruction:
+  `docs/myrmidon/guides/brand-release-check.md` (EN, with an RU summary) —
+  how to audit UI copy, bot/log texts, and API answers by hand before a tag,
+  without touching runtime or configuration.
+- Fixture tests: `scripts/myrmidon/brand-release-audit.test.mjs`
+  (7 cases: forbidden mention fails the gate; legal attribution green; hidden
+  compatibility boundary green; same-line identifier does not mask prose;
+  report mode exits 0 with findings; no glob-like allowlist entry; UI/log
+  lines never allowlisted wholesale). Runs under the existing
+  "Script tests (node:test under scripts/myrmidon)" CI step.
+
+### Remote execution sites: site-agent contract and operator guide
+
+Added the remote-site contract (health, lease claim, bot status, error discipline) with parsers and tests, an operator rollout guide, and `GET /v1/health` in fleetd (version, configurable `siteId` and `epoch`, live egress timestamp). Existing fleetd configs keep working: `siteId` defaults to `fleetd-local`, `epoch` to 1.
+
+### Remote execution sites: a wiki page for the site-agent contract and the operator guide (OPE-8142)
+
+- New wiki page pair `docs/wiki/Remote-execution-sites.md` +
+  `Remote-execution-sites.ru.md` (linked from `docs/wiki/Home.md` and
+  `Home.ru.md`): the one-way management plane (board → site over
+  IPsec/WireGuard), the 13-route site-agent API of `fleetd`, the five site
+  health states with epoch lease fencing, the secret-safe error reason
+  codes, and the rollout runbook — canary migration, rollback without
+  deleting data volumes; the deployment step now covers the configured
+  `siteId`/`epoch` identity in `fleetd.json` (commit 5867fb21a of the
+  upstream PR).
+- The page condenses the authoritative operator guide
+  `docs/myrmidon/guides/remote-execution-sites.md` (EN/RU) and
+  `docs/myrmidon/fleetd-vmexec.md` (EN/RU) delivered with the remote
+  execution sites feature.
+
+### Stranded deferred wakes are advanced or closed (1.6.6)
+
+- A periodic reconcile pass now cancels deferred wakes of done or cancelled tasks whose lock is free.
+- The same pass hands the queue of an open task with a free lock to the ordinary release drain, including wakes without comment ids and wakes queued after an acknowledged operator Stop.
+- Tasks under an effective "do not replay" hold keep waiting and advance in the first pass after the hold is lifted.
+- The first pass after deploy also cleans up the records left behind earlier; the pass is idempotent.
+
+### WAKE-STALL C release drain (1.6.6)
+
+- Release now hands one additional issue released by the same run to the existing bounded deferred-wake drain.
+- Deferred wakes for terminal issues are cancelled during release cleanup.
+
+### DONE-GATE: protect pull-request work products from premature completion (1.6.6)
+
+- Server-side completion now verifies every pull-request work product before allowing an issue to become `done`.
+- Open or unknown provider state fails closed; a closed, unmerged pull request requires an explicit valid replacement reference.
+- Verified merges are accepted, and task-PR synchronization persists verified merge state before completing an issue in its transaction.
+
+### Swarm matcher reads real executor load, capacity, pause and quota
+
+- The matcher now counts the open tasks an executor carries: assigned `todo` (reserved) and
+  `in_progress` tasks plus live leases, a task once. Before, only live leases and the idle flag
+  counted, so an executor with seven open tasks looked free.
+- The ceiling (`maxActiveTasks`, caste override first) applies to that load. A full executor takes
+  nothing and the task stays in the queue. Among eligible executors the least loaded one is
+  preferred; a full tie still goes to the smallest id.
+- The capacity check is atomic: it runs inside the claim transaction under a per-executor advisory
+  lock, so two concurrent passes cannot push an executor over the ceiling.
+- Paused executors (`status = paused` or `paused_at` set) are skipped until resumed. Executors held by
+  a recorded provider quota failure (`error_code = provider_quota`, the "Individual quota" text on a
+  run or a wake request, or `providerQuotaRetryNotBefore`) are skipped until the recorded reset, or
+  for one hour when none was recorded; a succeeded run after the failure lifts the hold. Other
+  transient failures never hold an executor. A fresh heartbeat does not re-admit either case.
+
+### GUARDRAILS injection configuration in Company Settings (OPE-8319)
+
+- Company Settings → Guardrails now stores `guardrailModes.injectionConfig` (`enabled`, `scoreThreshold`) and shows the effective values and provenance. Runtime precedence is environment override > UI setting > default, including explicit environment `false`; legacy mode overrides are preserved. The score threshold is constrained to 0..1 (UI step 0.05); the default is 0.6.
+
+### DEFERRED-WAKE-LEAK: close deferred wakes with terminal issues (OPE-8490)
+
+- Deferred issue-execution wakeups are cancelled when an issue transitions to `done` or `cancelled`, including status-decision-driven transitions.
+- A queued comment interrupt that is skipped because its issue is already terminal closes its source deferred wake, preventing repeated wake creation.
+
+### Adapter environment failures release execution tasks (OPE-8598)
+
+- Execution recovery classifies structured adapter license/pool failures as executor health, clears the execution assignment and pointers, and returns the task to the unassigned `todo` queue for swarm claim instead of creating a task-level block without blocker metadata.
+- Classification covers Antigravity error codes (including `antigravity_not_licensed` and `antigravity_pool_unavailable`), known adapter error families, and bounded diagnostics including the Russian production messages. Unrelated mentions of `LICENSE` in log excerpts do not trigger release.
+- Tests cover the production failure signatures, false-positive protection, release semantics, and task re-availability.
+
+### Assessment: heartbeat preflight budget caps are already covered (OPE-8647)
+
+- Evaluated upstream PR [#8347](https://github.com/paperclipai/paperclip/pull/8347),
+  merged 2026-06-20 as commit `631b7806ed92c43bd6b5666ad8b1406635d1ab18`.
+- Upstream adds per-agent daily run and spend caps checked before enqueue and
+  again at claim, clean cancellation of capped queued runs with issue-lock release
+  and deferred-wake promotion, plus opt-in skipping of timer wakes without work.
+- Myrmidon already has those core behaviors: admission cap checks, a claim-time
+  cap recheck, safe cancellation, skipped wake metadata, per-agent/global idle
+  timer skipping, and additional idle-work checks for pending interactions and
+  assigned review participation. No behavior or settings change is recommended.
+- Do not cherry-pick or establish automatic synchronization. Use upstream #8347
+  as a regression checklist; open a separate implementation issue only if review
+  finds a concrete missing execution path.
+
+### User administration audit log and role management (OPE-8648)
+- Added `GET /api/myrmidon/users-admin-a/audit` for user-management audit records with actor/target enrichment and filters by target user, actor, action, and limit.
+- Added instance-admin/member role changes with `instance.user.role_changed` audit details and safeguards against self-demotion and demoting the last instance administrator.
+- Added Users and Audit Log tabs to the Users administration screen, with role controls and audit filters.
+- Added integration coverage for audit events, role management, filtering, and deduplication.
+
+### Closed self-registration by default (OPE-8649)
+- Self-registration without an invitation is rejected unless explicitly enabled.
+- Configure `MYRMIDON_AUTH_DISABLE_SIGN_UP=false` to allow public credential sign-up; the default is closed.
+
+### Telegram notifications for auto-update lifecycle events (OPE-8656)
+
+- Owner notifications via Telegram on update lifecycle events: canary start, rollout success, auto-rollback with reason, and waiting for maintenance window.
+- Delivery routed through active owner-delivery channel if present, otherwise direct Telegram chat/topic fallback.
+- Added `telegramNotify.updates` configuration (`enabled`, `chatId`, `topicId`), disabled by default.
+
+### The pull-request resolver reads private repositories through the shared GitHub identity (OPE-8756)
+
+- `server/src/services/github-external-object-provider.ts`: the token provider
+  now depends on the repository, `(companyId, repository)`. Order: a company
+  secret by name; otherwise the single GitHub App of the shared identity whose
+  `allowedRepos` matches the repository — a read-only installation token
+  (`contents: read`, `pull_requests: read`, metadata), cached by
+  `mintGitHubAppInstallationToken`; otherwise anonymous, as before. Two Apps
+  matching one repository fail closed (no token). Secrets are read as the
+  system consumer `github-external-object-resolver`; neither the token nor the
+  key reaches a log or a response.
+- Before, a private repository such as `myrmidon-deploy` was read anonymously,
+  GitHub answered 404, and `issue_done_pull_request_gate` kept tasks with
+  merged PRs blocked with the misleading "until the PR is merged".
+- `PullRequestMergeDetails.access = "denied"` marks a PR the board cannot read
+  for lack of rights (404 / 401 / 403 / unusable credentials). The gate then
+  answers "Не удаётся прочитать PR <url>: у доски нет доступа к репозиторию
+  <owner/repo> (настройте GitHub App/PAT)" with
+  `reason: "repository_access_unavailable"`; other unknown states keep the old
+  message.
+
+### Users screen works: create, block, reset password with a one-time link (OPE-8985)
+- The server half of the "Users" screen is in: `GET/POST /api/myrmidon/users-admin-a/users`
+  and `PATCH /api/myrmidon/users-admin-a/users/:userId` (`{blocked}`, `{resetPassword: true}`
+  returning `{passwordSetLink}`). Instance administrator only; anyone else gets 403.
+- A user is created with a login, a name, a role and an optional temporary password. Without a
+  password the answer carries a one-time link. The account address is `<login>@myr.local`; the
+  user signs in on the normal form with it.
+- The link opens the public page `/password-set/<token>`, where the user sets a password
+  (`POST /api/myrmidon/users-admin-a/password-set`). It works once and for 24 hours; the
+  database keeps only the sha256 of the token; a newer reset revokes the older link; setting
+  a password closes the user's other sessions.
+- Blocking closes the user's sessions and refuses any new sign-in (`403 USER_BLOCKED`).
+- Every action is written to the activity log (`instance.user.*`). Self-registration is not
+  changed. Migration 0412 (`user_password_set_tokens`, `user_blocks`).
+
+### Execution sites are registered through the board API (1.6.6)
+
+- New board-operator routes `GET/POST /api/companies/:companyId/fleet/sites` and
+  `DELETE /api/companies/:companyId/fleet/sites/:name` enroll a site into
+  `myrmidon_fleet_sites` without database edits. The request carries an `https://`
+  fleetd address, the site CA (PEM, its fingerprint is stored), the names of company
+  secrets for the bearer token and the client certificate and key, capacity and the
+  gateway port range. POST and DELETE are for company owner/admin or instance admin only; DELETE answers `204`, or `409` while bots still sit on the site. The stored CA is pinned by fingerprint and the client certificate must be signed by it. Secret values never pass through the route; named secrets must
+  exist, a name collision answers `409`.
+- Operator guide section 4 (EN and RU) now matches the code: site PKI issuing steps,
+  the real `fleetd.json` keys (`images`, `siteCA`, `serverCert`, `serverKey`,
+  `gatewayPortStart`, `gatewayPortEnd`, `volumeRoot`) and mTLS health checks.
+
+### Review escalation goes to a senior agent, never to a human (OPE-9031)
+
+- When review rounds run out and the task has no `reviewEscalationPolicy`, the
+  stage now passes to an agent: the current reviewer's manager (`reports_to`)
+  and upward, then the project lead, then `adm`. The reviewer, the executor and
+  paused or terminated agents are skipped. With nobody eligible a recovery card
+  is raised instead. Tasks with a configured policy behave as before.
+- One-time migration `scripts/myrmidon/escalate-human-reviews-to-agents.mjs`
+  (`--dry-run` / `--apply`) moves stages already escalated to a user.
+
+### Shared scoped secret-ref resolver for instance settings
+
+- Instance-level settings can now take their value from a secret reference instead of a process
+  environment variable. The reference is a binding on an existing secret; the value is resolved
+  server-side through the secrets service, only for the consumers a setting names, and is masked
+  in logs. An emergency environment variable still wins when it is set.
+- New instance-admin API under `/api/instance/secret-settings`: list status, set or clear the
+  reference, and a dry-run migration plan that reports presence flags and never values.
+- The E2 secret coverage matrix records the disposition of the secret-provider names: credentials
+  that open the store (AWS keys, master key) stay environment-only; region, endpoint, prefix and
+  similar names are not secrets.
+- Settings, General (and Settings, System in the new UI) lists these settings with a secret picker
+  and a remove button, plus a dry-run migration check. The migration endpoint applies nothing
+  unless the request says `apply: true`; it never returns a value.
+
+### Tool OAuth client secrets can come from a secret reference
+
+- The instance-wide and per-provider OAuth client secret of tool connections can now be bound
+  to a stored secret instead of a process environment variable. The value is resolved on the
+  server only, masked in logs, and an emergency environment variable still takes priority.
+- The MCP gateway token rate-limit settings and the token broker allowed hosts are recorded as
+  plain operator configuration, not secrets.
+
+### Cloud connector OAuth client secrets can come from a secret reference
+
+- The OAuth client secret of the OneDrive, Google Drive and Yandex Disk connectors can now be
+  bound to a stored secret instead of a process environment variable. The value is resolved on
+  the server at connect and refresh time only, masked in logs, and an emergency environment
+  variable still takes priority.
+- The connector's identity keys stay environment-only, and the Cloud runtime identity key set
+  (public keys) is recorded as plain configuration.
+
+### Application module credentials can use secret references
+
+- The stack release check GitHub token, the tracing ClickHouse password and the browser screen-console token can now be taken from a bound secret reference instead of a process environment variable. The value is resolved on the server only, per use, so a changed or revoked reference applies without a restart. An emergency environment variable still wins when set.
+
+### Telemetry export token can use a secret reference
+
+- The feedback/telemetry export token can now be taken from a bound secret reference instead of a process environment variable. The value is resolved on the server only, per use, and an emergency environment variable still wins when set.
+- Credentials the board needs before it can reach the secret store (session and agent token signing, workspace handoff, tenant and health tokens) stay environment-only by design; the E2 coverage matrix records the reason for each.
+
+### A successful run without a final status no longer sends the issue to board users
+
+- Before: when a run succeeded but left the issue without a status, and the issue had a monitor,
+  execution state or execution policy (or the assignee had no manager), the issue went to
+  `blocked` with no blocker and no metadata, and a "needs a disposition" card was addressed to
+  board users. Agents did not pick such issues up and parent tasks stayed stuck.
+- Now the escalation target is chosen by the same chain as review escalation: the assignee's
+  `reports_to` upward, then the project lead, then the agent `adm`. A board user is the
+  target only if the whole chain is empty.
+- Issue without a workflow: handed to that agent as the `in_review` reviewer (previously only
+  the direct manager).
+- Issue with a monitor, execution state or policy: not taken over, the assignee and the
+  workflow stay as they are. The issue becomes `blocked` with full `blockerMetadata`
+  (reason, owner agent, next check) and an agent-owned `unblockDescriptor`; the owner gets one
+  wake with an idempotency key tied to the source run.
+- A paused assignee is handled as before. The retry wake and the direct-manager handoff are
+  unchanged.
+- Open PR with pending CI: transitions to a standard `external_service` monitor on CI (`serviceName: "CI"`, `scheduledBy: "assignee"`) with `nextCheckAt`, preserving `in_progress` and keeping the assignee. The check verifies the exact PR head matching the comment/run and validates that GitHub checks are not already completed.
+- Data fix for issues already stuck: `scripts/myrmidon/escalate-stranded-disposition.mjs`
+  (dry-run by default, `--apply` to write; it does not wake owners).
+
+### Stale-block watchdog: live events publish after commit, locked recheck stays on the transaction
+
+- The activity events written when the watchdog lifts a dead block are now published only after
+  the transaction commits, so a rollback can no longer leave the UI with an event that never
+  happened.
+- The recovery-liveness check made under the issue lock now reads through the same transaction
+  connection instead of taking a second one.
+
+### Per-row secret migration apply
+
+- Applying the secret-ref migration is now independent per setting: a failure on one row no longer
+  loses the rows already bound or their audit entries. Each row is audited right after it is bound;
+  if the audit or the binding fails, that row is rolled back (binding cleared, newly created secret
+  deleted) and reported as an error with a code, never with a value.
+- Re-running the migration after a reference was cleared reuses the secret created earlier for the
+  same setting. A secret that holds the migration name but belongs to something else is reported as
+  a conflict and left untouched.
+
+### Per-provider tool OAuth client secrets are listed in settings
+
+- The instance secret settings list now also includes one `tool-oauth.<provider>.client-secret`
+  entry for each provider found in connected tool connections that sign in with OAuth. They appear
+  in the same panel as the other secret references (current and new interface), so a reference can
+  be chosen for each provider without the API. The list never returns a secret value.
+
+### Transactional recovery issue factory (OPE-9139)
+
+- Add ensureRecoveryIssue to the recovery action service: concurrent active dedupe keys share one recovery issue, action and blocker edge, with owner/SLA and wake policy persisted atomically.
+- Emit committed created/deduped outcomes through the injected metrics port; reject incomplete requests before writes.
+- Handle both active dedupe-key and fingerprint uniqueness conflicts atomically, including legacy actions with no dedupe key; repeated concurrent requests reuse the committed recovery without PostgreSQL 23505.
+- Add PostgreSQL coverage for concurrency, rollback and owner variants; CI fails rather than skipping when PostgreSQL is unavailable. Registration and owner resolution remain separate integrations.
+
+### Task/PR status synchronization (OPE-9406)
+
+- Run task/PR synchronization on a dedicated scheduler-leader timer rather than the heartbeat tick.
+- Reconcile PR work products for non-terminal tasks and perform a periodic closed-task reconciliation; stop timers during graceful shutdown.
+
+### Review routing: author model separation and immediate transition assignment (OPE-9460)
+
+When an issue enters `in_review` without an active review participant, Myrmidon now immediately evaluates review routing within the transition transaction to assign the least-loaded eligible reviewer agent. The candidate filter excludes agents whose model matches the author's model (`createdByAgentId`), ensuring diverse model evaluation across implementation and review. When no candidate with a distinct model is available, an immediate `no_reviewer` attention signal is raised.
+
+### Production capacity dashboard metrics producer (OPE-9565)
+
+- Implements the authoritative production producer for the five capacity metrics specified in OPE-9564:
+  - `myrmidon_readiness_ratio` (gauge: ready issues / open issues; 0 when open is 0; unavailable if eligibility cannot be resolved)
+  - `myrmidon_queue_age_seconds` (gauge: max elapsed seconds since continuous eligibility `readySince`; 0 when ready queue is empty; unavailable if `readySince` is missing)
+  - `myrmidon_project_share{project="..."}` (gauge: share of active claim/run slots per project; 0 when total active slots is 0; sum is 1.0 when active slots > 0; unassigned issues labeled `"unassigned"`)
+  - `myrmidon_starvation_total` (counter: ready episodes continuously unclaimed for >= `policy.starvation.afterMin`; exactly one increment per episode crossing threshold; re-scrapes do not increment)
+  - `myrmidon_claim_rejection_total{reason="..."}` (counter: authoritative final claim rejection events with bounded closed vocabulary; attemptId deduplication prevents double-counting on HTTP replay)
+- Injects the production producer by default into `GET /metrics` (`myrmidonMetricsApp` / `myrmidonMetricsRoutes`) while retaining test injection seams.
+- Missing sources and unreachable eligibility are represented as unavailable (`null`), suppressing exposition without emitting fake zeroes.
+- OPE-9204 (canary / production dashboard readiness) requires this production producer as an explicit prerequisite.
+
+#### Rollout and Production Readiness
+- Rolled out as part of Myrmidon 1.6.6 with no schema migrations required.
+- The producer reads from existing tables (`companies`, `issues`, `agents`, `issueClaims`, `heartbeatRuns`, `instanceSettings`).
+- Single company-scoped snapshot per scrape; multi-tenant instances evaluate company-scoped context cleanly.
+- OPE-9204 can now proceed with production dashboard integration and canary verification against live `/metrics` scrapes.
+
+#### Reset and Unavailable Semantics
+- `starvation_total` and `claim_rejection_total` are monotonically increasing process-local counters accumulated since producer start.
+- Counters reset only upon process restart or explicit reset. Use Prometheus `rate()` or `increase()` for rate calculations over time windows.
+- When `policy.enabled = false`, no new starvation events are registered.
+- When an underlying data source or eligibility check is unavailable, the corresponding metrics evaluate to `null` and samples are omitted from exposition; fake zeroes are strictly prohibited.
+
+### Knowledge proposals in unified inbox and review routing (OPE-9639, KNOWLEDGE-2.0 L-1.1)
+
+- Pending knowledge suggestions appear in the unified inbox (Streamlined UI and legacy Inbox) with `kind: "knowledge"`.
+- Added the "Knowledge" category filter in the inbox filter popover with persistent selection and search.
+- Selecting a knowledge inbox item routes to `/knowledge/review` for proposal inspection and disposition.
+
+### Reviewer context isolation prototype (OPE-9655)
+
+Add an opt-in Linux launcher with a fresh HOME and workspace, explicit task/diff
+handoff and Landlock confinement. A real subprocess canary test verifies that
+executor files, symlink aliases and session history cannot be read, including
+from children. Production gateway behavior is unchanged.
+
+### DEVFLOW: continuation after development review (OPE-9677)
+
+- When an engineer hands an issue to review, automatically assign their next ready issue from the same development project; if none is eligible, signal the project lead.
+- The run release path recognizes an author's issue in `in_review` via `executionState.returnAssignee` in an explicitly enabled development project and invokes the existing swarm matcher with an exact `projectId` scope.
+- Configured via `MYRMIDON_DEV_PROCESS_PROJECT_IDS` (comma-separated project UUIDs; unset/empty leaves behavior disabled).
+- When no eligible task is available in the project, the lead receives a `dev_project_queue_empty` wake signal.
+
+### Reason refs on internal blocked paths (1.6.1 STALE-BLOCK follow-up)
+
+- The service paths that enter `blocked` without going through the public
+  PATCH route — native-failure reconciliation, the native finalizer's
+  ambiguous-state block, recovery escalation of stranded and disposition-repair
+  issues, the native blocked-wait repair, the unrunnable-workspace dispatch
+  block, and the LLM Wiki maintainer blocks — now write the part A reason
+  contract (`unblockDescriptor.reasonRef`) too. Recovery-driven paths cite the
+  event key `recovery.liveness:<issueId>`; the stale-block sweep resolves that
+  key against the live `issue_recovery_actions` rows, so a recovery block whose
+  incident is explicitly resolved or cancelled is swept instead of staying an
+  unknown, never-swept reason.
+- The sweep's event reader is wired in the server entry
+  (`createRecoveryLivenessEventReader`); any other event key keeps the
+  documented still-set default, so an unwired gate never silently unblocks a
+  task. The plugin SDK `issues.update` patch gained the additive
+  `unblockDescriptor` field so plugins can carry the same contract.
+
+### Owner-DM delivery journal (1.6.5 OWNER-DM-FILTER, part C)
+
+- New instance-admin endpoint `GET /api/myrmidon/owner-delivery/publications?since=<iso>`
+  lists chat publications that reached owner Telegram DM conversations in the
+  window, each labeled `owner_decision` or `operational` with a machine-readable
+  reason. The classification derives from the card's interaction row
+  (`effectiveResolverPolicy` / `addresseeUserId` against the task owner), joined
+  through `payload->>'interactionId'` — nothing new is stored and no migration
+  ships.
+- This is the observable surface behind the acceptance criterion "no operational
+  cards in the owner's DM within a day of rollout": after the part-A filter
+  ships, an `operational` entry can only come from a publication row created
+  before the rollout; a fresh one is the alarm.
+
+### Reference database fixtures and CI matrix for all supported vendor releases (MIGRATE-D3)
+
+- Synthetic database fixtures and verification suites are generated for all supported Paperclip releases (`v2026.916.0`, `v2026.916.1`, `v2026.1001.0`, `v2026.1005.0`, `v2026.1012.0`) in `tests/fixtures/paperclip-migration/`.
+- Each release includes schema DDL derived from vendor migration tags, non-empty core entity seeds (company, projects, issues, comments, documents, agents, skills, secrets, attachments), and vendor-specific tables populated for releases 1001.0+ (`chat_github_reviews`, `browser_use_runs`, `mcp_oauth_tokens`).
+- `myrmidon:migrate` CLI adds `--accept-unknown-source-objects` as a documented alias for `--accept-vendor-only-data`, reporting skipped vendor-only source data in dry-run and execution summaries.
+- Verification script `scripts/myrmidon/paperclip-migration-verify.mjs` validates schema compatibility, full dry-run gap reports, entity counts, attachment transfers, secret re-encryption, source DB immutability, and transactional rollback.
+- GitHub Actions CI workflow `myrmidon-paperclip-migration.yml` runs a matrix across all five releases with `fail-fast: false`, ensuring independent per-release test reporting.
+
+### UI of plugins built against `@paperclipai/plugin-sdk` loads again
+
+- After the debranding, the host only substituted `@myrmidon/plugin-sdk/ui` and
+  `/ui/hooks` in plugin UI bundles. Plugins built with `@paperclipai/plugin-sdk/ui` kept
+  as an external import (Google AI, ChatGPT, Antigravity, license issuing, LLM Wiki and
+  third-party ecosystem plugins) failed to load their sidebar UI. The legacy
+  names are substituted with the same shim again, in both quote styles.
+
+### Pool-chat server boundary (OPE-8207)
+
+- Adds authenticated module-scoped capabilities, submit, and request-status routes with bounded request validation, scoped idempotency, durable request/attempt/reservation records, account-selection policy, and fail-closed provider dispatch.
+- A replay returns its existing durable request without repeating provider I/O. A request that may have reached a provider remains `uncertain`; provider exceptions are reduced to a stable redacted code. Missing provider transport configuration fails closed and releases the reservation.
+- Quota is enforced per account in tokens. Each new request reserves an upper bound (estimated input at 4 characters per token plus the requested output ceiling) under a per-module advisory lock, so concurrent submits cannot overshoot `quotaUnits`; the check reads live usage from the ledger (reserved or settled units of dispatching, sent and uncertain attempts) added to the configured `usedUnits` baseline. Settlement replaces the reservation with actual usage; failed no-send attempts release it. The cap is a lifetime budget: the operator resets it by raising `quotaUnits` or lowering `usedUnits`. Automatic recovery of requests stuck in `uncertain` is not included: they keep their reservation until an operator resolves them.
+- Disabled by default (`MYRMIDON_POOL_CHAT_ENABLED`). Live pool validation is operator-only and was not run.
+
+### A monitor that waits for a pull request no longer starts a model run just to look at it (PR-WAIT-MONITOR)
+
+- A due issue monitor whose service name or notes say it waits for CI or a pull request
+  (`CI`, `github_actions_ci`, "waiting for CI to finish", ...) is now evaluated by the board
+  from rows it already has: the pull request work products (status, review state, the
+  `activeCi` / `lastCompletedCi` marks written by GitHub connection events) and the end of the
+  agent's last run on the task. No GitHub call is made.
+- Nothing new since the agent last looked: the agent stays asleep and the monitor is re-armed
+  with a doubling interval (10, 20, 40 minutes, capped at 60); the check is logged as
+  `issue.monitor_deferred` with reason `pr_wait_unchanged`. The agent's own `timeoutAt` is
+  never postponed.
+- News (CI completed, review submitted, merge conflict, pull request merged or closed) wakes
+  the agent as before, with the observed change in the wake payload and context
+  (`observedChange`, `observedChangeSummary`). When the board holds no CI data for the pull
+  request and has seen nothing for 30 minutes, the agent is woken once with a `no_signal`
+  note, so a finished CI is never left unnoticed.
+- A run woken by a monitor no longer re-arms the "GitHub CI pending monitor" from its own
+  context: that context carries the monitor's note ("CI pending"), which the successful-run
+  handoff read as proof that CI was still pending, so the monitor re-armed itself after every
+  run (one task reached 57 attempts). The agent's last comment and the recorded CI marks
+  still count.
+- A due monitor on a task that is no longer an active agent task (backlog, todo, done,
+  cancelled, or not assigned to an agent) is cleared instead of left armed.
+- A person triggering a monitor by hand, review-recovery monitors and monitors that do not
+  wait for a pull request behave as before.
+
+### 1.6.6 — BOARD-PROCESSES part A: the process role and the background-work gates (PROCS-1.1)
+
+- The board can now be started as one process (`all`, the default and today's
+  behaviour) or split between a scheduler process (`worker`) and HTTP-only
+  processes (`api`): `PAPERCLIP_PROCESS_ROLE=api` starts without a single
+  background timer — no heartbeat scheduler, no reconciliation sweeps, no
+  plugin workers, no backups — serves the board on `0.0.0.0:3100` with
+  `reusePort` so several api processes share the port, and waits for the
+  migration-owning process instead of migrating the database itself. The
+  `worker` process runs every timer and additionally serves the board app on
+  the internal loopback `127.0.0.1:3101`.
+- Every gate on background work reads one place — `processRole()` in
+  `server/src/services/process-role.ts` (env `PAPERCLIP_PROCESS_ROLE` in
+  `all|worker|api`) — instead of a scattering of `if` checks; `all` is
+  byte-for-byte today's behaviour, and an unknown value falls back to `all`
+  with a warning at startup.
+
+### Process supervisor — fork, reusePort, IPC ready/drain, backoff, emergency return to single (PROCS-1.2, OPE-6425)
+
+- `server/src/myrmidon/processes/supervisor.ts` — the worker's child-process
+  supervisor: forks `server/dist/index.js` with the same execArgv (including
+  `--import tsx/loader`), `PAPERCLIP_PROCESS_ROLE=api`,
+  `PAPERCLIP_PARENT_BOOT_ID`, and a per-child `--max-old-space-size` (api
+  1 GiB); restarts a crashed child on a 1 s → 30 s backoff; when no live api
+  child remains for 15 s the worker re-opens :3100 itself (emergency return
+  to single) and logs the attention signal.
+- `server/src/myrmidon/processes/child.ts` — the api child's side of the IPC
+  contract: `ready` after `listening` + `SELECT 1`; `drain` runs
+  `server.close()` + `closeIdleConnections()`, closes live-events websocket
+  clients with 1012, and exits after the 30 s grace via
+  `closeAllConnections()`.
+- `server/src/index.ts` — the worker's public listener is supervisor-managed:
+  single→split forks the children and closes the worker's :3100 once all
+  report ready; split→single re-opens :3100 (reusePort while children still
+  hold it) and drains them one by one; the worker's shutdown stops the
+  supervisor first. The api role skips the heartbeat/sweep scheduler block and
+  gets a smaller database pool (6 connections).
+- `server/src/myrmidon/processes/service.ts` — `PATCH
+  /api/myrmidon/processes` now applies live through the supervisor (design
+  OPE-5394 §7.2), no container restart; `PAPERCLIP_PROCESS_MODE=single` still
+  wins over the database at boot.
+- `packages/shared/src/myrmidon-processes.ts` —
+  `PROCESSES_SUPERVISOR_IMPLEMENTED` flipped to true; a stored `split` is in
+  effect instead of reported unsupported.
+- `server/src/myrmidon/processes/supervisor.myrmidon.test.ts` — unit tests:
+  single inertness, single→split with readiness gate, apiCount up/down with
+  IPC drain, split→single, the backoff ladder, the emergency fallback, and
+  shutdown.
+
+### PROCS-T1.5: process-role orchestrator — the board launch map and config (api N + worker M)
+
+- New `server/src/myrmidon/process-orchestrator/` — the single place the
+  split board's launch map is computed. `config.ts` turns the env into a
+  `ProcessMap` (design §2, §7.1): `single` mode returns exactly today's one
+  `all` process with no overlays — byte-for-byte vendor behavior; `split`
+  mode returns M worker entries + N api entries, workers first. Ports: api
+  child i binds `PORT + i*MYRMIDON_API_PORT_STRIDE` (client entry stays
+  `PORT`); worker i binds loopback `MYRMIDON_WORKER_PORT + i` (defaults to
+  `PORT+4`, clear of the PROCS-1.1 single-worker slot 3101 the future
+  proxy dials). Queues: the four execution-control sweeps split
+  round-robin across workers (4/3/3/3 for M=1..4), each worker gets its
+  slice written into its own `MYRMIDON_WORKER_QUEUES`; api entries own no
+  queue. Every junk value is a hard `ProcessConfigError` before anything
+  spawns — counts outside 1..4/1..2, ports outside 1024..65535, unknown
+  queue names, an api/worker port-block collision, and the stride=0
+  shared-port shape (which waits for PROCS-1.2's `reusePort`).
+- New `launcher.ts` — the pure half of the spawner: `buildLaunchPlan`
+  maps a `ProcessMap` to ordered spawn specs (`command`/`args`/`cwd`/`env`
+  overlay/`healthUrl`), stamps every child with
+  `PAPERCLIP_PARENT_BOOT_ID`, and spawns nothing itself. The env overlay
+  carries the PROCS-1.1 role contract (`PAPERCLIP_PROCESS_ROLE`,
+  `MYRMIDON_PROCESS_INDEX`) so a split child gates its background timers
+  exactly as the role-gates PR specifies.
+- New `scripts/procs-dev.ts` + `pnpm dev:procs` — the ticket's one-command
+  dev stand: `MYRMIDON_API_PROCESSES=2 MYRMIDON_WORKER_PROCESSES=2 pnpm
+  dev:procs` prints the launch card, prepares the same dists `pnpm dev`
+  does (plugin sdk, ui), then spawns workers first and probes each child's
+  `/api/health` before the next entry; Ctrl-C (or any child dying) stops
+  the whole stand. No restart policy — that is PROCS-1.2. `--dry-run`
+  prints the card only; a split without `DATABASE_URL` is refused with an
+  explanation (embedded Postgres bootstraps one data dir per instance).
+- `server/src/myrmidon/process-orchestrator/process-orchestrator.test.ts`
+  pins all of it (17 tests): `single` stays a no-op card, the N=2+M=2
+  acceptance map (ports 3100/3101 + 3104/3105, queue split 4/3, per-child
+  role env), every error shape, and the plan mirroring the card.
+
+### Single routes are proxied from the api processes to the worker (split mode)
+
+- In the multi-process board (`api` processes + `worker`), an api process forwards the routes
+  whose state lives only in the worker to its loopback listener (`127.0.0.1:3101`, or
+  `MYRMIDON_WORKER_HOST` / `MYRMIDON_WORKER_PORT` from the launch map): the attention feed
+  (`GET /api/companies/:id/attention`), the plugin host (`/api/plugins/**`), the bot-container
+  control (`/api/myrmidon/agents/:id/bot-container/**`) and the workspace-runtime control
+  (`POST …/runtime-services|runtime-commands/:action` of projects and execution workspaces).
+- Authorization is transparent: the request goes through unchanged (credentials, cookies, origin,
+  body) and the worker resolves the actor itself; its answer is streamed back as is. A worker that
+  does not answer yields `503` with `Retry-After`, never a local answer.
+- The existing `Processes` setting `singletonProxy` (default on) switches it, no restart; off means
+  the api process serves these routes itself. The single-process board and the worker never proxy.
+- New metric `myrmidon_board_singleton_proxy_total{role,route,outcome}` (`proxied` / `unavailable`).
+
+### Standalone worker entry (`pnpm --filter @myrmidon/server worker`)
+
+- A dedicated launch point for the `worker` process role: `node dist/worker.js` boots the
+  same board runtime as `index.ts` with `MYRMIDON_PROCESS_ROLE=worker` (set by the entry when
+  unset, kept when already `worker`, refused for any other role). The role profile, the
+  supervisor, the process registry and the `/internal/ready` + `/healthz` routes are the
+  ones already shipped; the entry adds none of them a second time.
+- The default launch (`node dist/index.js`, one process) is unchanged.
+
+### Provider tool-call compatibility probe uses a model the provider really lists
+
+- The probe no longer assumes `gpt-4o-mini`: it takes the first model from the provider's
+  `/models` answer (or an explicit probe model). A provider with an empty model list gets a
+  clear "provider_no_models" error instead of a false pass or a 404 for a missing model.
+- The stored and returned `toolCallCheckError` is now a short `code: description`
+  (`provider_http_<status>`, `no_tool_call`, `provider_unreachable`, `probe_failed`); the raw
+  exception text, provider response body and headers are never kept or logged.
+
+### Server and CLI texts renamed to Myrmidon (REBRAND B, OPE-4155)
+
+- User-visible text in the server and the CLI names the product Myrmidon:
+  CLI `--help` and banner, onboarding/doctor/service/update messages, CLI
+  HTTP client errors, OpenAPI summaries and descriptions, API error
+  messages, onboarding documents for external agents, outgoing request
+  user agents, the Node version warning, and the org-chart SVG wordmark.
+  Details: [guides/rebrand-b-server-texts.md](guides/rebrand-b-server-texts.md).
+- New guard tests keep the surfaces free of the vendor name:
+  `cli/src/__tests__/cli-product.myrmidon.test.ts` and
+  `server/src/__tests__/server-user-text.myrmidon.test.ts`.
+- Identifiers are untouched for compatibility: the `paperclipai` package and
+  bin, `PAPERCLIP_*` env vars, `X-Paperclip-*` headers, `@paperclipai/*`
+  packages, `~/.paperclip` paths, MCP server names, the `/paperclip` Discord
+  command, and frozen pre-rename snapshots.
+
+### Bots read the board key and address as MYRMIDON_API_KEY / MYRMIDON_API_URL (REBRAND-ENV)
+
+- The `execute_code` pass-through list in the bot profile (`terminal.env_passthrough`) now carries `MYRMIDON_API_KEY` and `MYRMIDON_API_URL` ahead of the legacy `PAPERCLIP_API_KEY` / `PAPERCLIP_API_URL`; the `hermes/.env` of the bot already holds both pairs with the same values. The bot skill (`auth-and-run-context.md`) names `MYRMIDON_*` as the variables to read and `PAPERCLIP_*` as the deprecated alias.
+- The bot disk agent `botd` (desired-state poll and disk report) reads `MYRMIDON_API_URL` / `MYRMIDON_API_KEY` first and falls back to `PAPERCLIP_API_URL` / `PAPERCLIP_API_KEY` when the canonical one is missing or empty, so a bot image older than the board keeps working. The key is redacted from reasons and logs under either name; the "not set" reasons now name the `MYRMIDON_*` variable.
+
+### Bot-container reconciler journal records identify the applied profile and trigger
+
+- Apply records now include `appliedFilesHash` and, when set by the compiled profile, `appliedMaxConcurrentRuns`, alongside the existing `restartHash`.
+- The `trigger` field records `<state>:<drift|nodrift>:<changeClass>` (for example, `running:nodrift:restart`); newly created containers use `missing:new`.
+- Records for updates deferred by a maintenance window include `maintenanceReason` with the window's reason. These fields improve journal diagnostics only; reconciliation behavior is unchanged.
+
+### Add redaction modes (OPE-8659)
+- Added reversible, irreversible, and flag-only redaction modes with expiring database-backed substitutions and a restore endpoint.
+
+### Release: a notes section over GitHub's limit is published condensed
+
+A release whose notes exceed GitHub's 125000-character release-body limit (1.6.6 carries 172 entries) is no longer refused at publish: the body lists the entry headings and points at the full section in `docs/myrmidon/CHANGELOG.md` / `CHANGELOG.ru.md` at the tag. A body still over the limit after condensing is refused as before.
+
+### Release publish: the tag-CI gate wait budget doubled to 80 min (RELEASE-GATE-POLL-BUDGET)
+
+The publish step of a release tag waits for the tag's own CI run
+(`myrmidon-ci-tag.yml`) up to `POLL_SECONDS × POLL_MAX`. A tag push starts
+nine workflows at once, and under the hosted-runner queue the rc.13 tag CI
+took ~50 minutes while the budget was 20 s × 120 = 40 minutes — the publish
+died at the timeout with an empty verdict eleven minutes before the green
+run landed, leaving the tag without its GitHub Release (the rc.13 publish
+blocker). The publish job now sets `MYRMIDON_RELEASE_POLL_MAX: "240"`
+(20 s × 240 = 80 min, inside the job's 90-minute timeout; the wait still
+exits early once the run completes), and a regression test pins the
+«the run completes only after more than the old 120 polls» scenario.
+
+### Atomic review admission (REVIEW-ADMISSION)
+
+Entering `in_review` and changing the assigned reviewer now use the issue-update transaction to persist a durable reviewer wake request. Execution-stage review wake requests are persisted through the same transaction path.
+
+### Review escalation after the round limit goes to technical reviewers, never to the issue owner (OPE-8327)
+
+- When a review stage exhausts its rounds, `reviewEscalationPolicy` (roles `lead` → `architect` → `secondary_reviewer`, `policyRevision`, `fallbackQueue`) picks the next technical agent; candidates outside the issue project or caste, or equal to the issue owner/creator, are skipped. The escalated reviewer holds the stage across unrelated updates until they decide.
+- The transition is persisted (`reviewCycleId`, `escalationPolicyRevision`, `escalationReason=review_round_limit`, from/to participants). If no technical reviewer exists, the issue stays in review and one recovery interaction is raised, deduplicated by `(issue, reviewCycleId, policyRevision)`.
+- Progression is by round: an escalated reviewer gets a fresh round budget and, on exhausting it, the stage moves to the next role; the exhausted actor is never reselected.
+- Metric `review_escalation_to_user_owner` is emitted whenever an escalation reaches the human owner: the legacy policy-less hand-off and the recovery card (addressed to the owner). With technical reviewers available the value is 0.
+
+### A review task with a live review participant is no longer escalated to board-only blocked (REVIEW-PARTICIPANT-LIVE-SKIP)
+
+- The stranded-assigned-work reconciliation no longer moves an `in_review` task into board-only `blocked` while the typed review participant of the execution-review stage has a live run — a run in an execution status on **any** issue of the company, not only the task being reconciled.
+- Before the escalation branch (policy `board_escalation_no_takeover_v1`) runs, the new helper `getLatestLiveRunForAgent` looks up the participant's latest live run across the company; a found live run skips both the board escalation and the participant's adapter-failure classification. The task keeps waiting for its live participant instead of receiving a board card.
+- Shipped earlier (merge of the fix predates the 1.6.5 cut); this entry closes the missing changelog record. See DIVERGENCE.md, `REVIEW-PARTICIPANT-LIVE-SKIP`.
+
+### A review return on the same pull request head, or only on infrastructure checks, no longer wakes the executor (REVIEW-RETURN-GUARD, OPE-11970)
+
+- One engineer bot was woken 199 times in four days with `execution_changes_requested` (520M input tokens, almost all on
+  four tasks). The reviewer returned the task because CI of the pull request head was red only on flaky or infrastructure
+  checks, or returned it again on the same head; the executor had no commit to make, resubmitted, and the loop went on.
+- The execution state now remembers the head of the pull request at the last return (`lastChangesRequestedHeadSha`).
+  When an agent reviewer returns the task on that same head again, with no new commit in between, the decision is recorded
+  as before and the executor stays assigned, but it is not woken. A system note says so in the task thread, and the
+  activity row `issue.review_return_wake_suppressed` is written.
+- When the decision comment reports only CI (it mentions CI and cites no file, line or code block) and every check that
+  failed on the head is on the infrastructure list (`CI result` failing alone is its own queue-latency gate, `main-green`
+  fails while main is red), the executor is not woken either, and the activity row `issue.ci_infra_retry_needed` tells
+  the release tooling to re-run the failed jobs. The list is `MYRMIDON_REVIEW_INFRA_CHECK_NAMES`.
+- The executor is still woken by a new CI result on the head (`ci_completed`), by a comment and by a new head. A human
+  reviewer is never held back. Anything the guard cannot read (GitHub error, unknown head, a lane of the code failed)
+  keeps the old behaviour.
+- Reviewer rules (skill `engineering-discipline`): a verdict is about the code; wait while CI runs; re-run the failed jobs
+  once when CI is red only on known flaky or infrastructure checks; never repeat REQUEST CHANGES on the same head without
+  new findings in the code.
+
+### An exhausted review wake series is escalated once and re-armed after 6 hours (REVIEW-ROUTING, OPE-11947)
+
+- The review routing sweep wakes the reviewer of a stage on a bounded backoff (`REVIEW_WAKE_MAX_ATTEMPTS`, 6 attempts, each one recorded in the activity log with its `attempt` number). When the model pools were empty all six attempts burned at once; after that every pass (once a minute) wrote a new `issue.review_routing.wake_escalation_required` row for the stage (7 202 rows in a day on the production board) and never woke the reviewer again, so the stage stayed stuck until someone replayed the wake by hand.
+- The escalation is now written once per exhausted series: a `wake_escalation_required` row of the same task, reviewer and stage that is newer than the last wake means the series was already escalated, and the warning is not repeated either.
+- A series exhausted for at least `REVIEW_WAKE_REARM_AFTER_MS` (6 hours since its last attempt) is re-armed: the next wake is recorded with `attempt` 1 and the backoff counts from the start of the new series. A stage stuck behind an unavailable model comes back on its own within 6 hours instead of never; the earlier escalation stays in the log as a fact. The backoff inside a series, the one-wake-per-pass limit and the cancelled-run anchor are unchanged.
+
+### A call-limit stop of a run that made changes continues the work instead of blocking the task (RUN-GUARD-CONTINUE)
+
+- `model_call_limit` (150 model calls) also trips on productive work: runs that patched and wrote files
+  were stopped and their tasks went to `blocked` with "give the assignee a new input". The run guard now
+  counts the calls that change something (`writeCalls` in `RunGuard.stats()`, stored with the run next to
+  `runGuardStats`): every tool call that is not read-only, the same classification as the exploration check.
+- When a run stops with `model_call_limit` and `writeCalls > 0`, the task is not blocked and no "new input"
+  comment is written. The work continues in a follow-up run, the way it continues after a max-turn stop (retry
+  reason `max_turns_continuation`), within the same ceiling (`heartbeat.maxTurnContinuation.maxAttempts`,
+  default 2, counted along the chain of follow-ups). When the ceiling is spent, the continuation policy is
+  off, or the task is no longer `in_progress` with the same assignee, the stop is final as before: `blocked`
+  plus the comment.
+- Unchanged: `model_call_limit` with no changing call, and every other reason (`no_progress_exploration`,
+  `repeated_tool_call`, `tool_retry_loop`, `idle_timeout`) stay final: no retry, `blocked`, comment. Adapters
+  that do not feed tool starts to the guard report `writeCalls: 0` and keep the old behaviour.
+
+### Call-limit continuations get their own ceiling, and a final guard stop wakes the manager (RUN-GUARD-CONTINUE, RUN-GUARD-ESCALATE)
+
+- A run the run guard stopped at `model_call_limit` after it made changes (`writeCalls > 0`) is continued, as
+  before, in a follow-up run. Those continuations no longer spend the max-turn ceiling
+  (`heartbeat.maxTurnContinuation.maxAttempts`, default 2): three runs in a row of 150 calls and 16–27 writes
+  each used to end with the task in `blocked` ("no automatic retry"). They have their own ceiling,
+  `heartbeat.runGuardContinuation.maxAttempts` in the agent runtime config: default 6, at most 20, counted
+  along the chain of call-limit continuations only (the count travels in the run context as
+  `runGuardContinuationAttempts`). A max-turn stop later in the same chain still has its whole ceiling.
+  `heartbeat.runGuardContinuation.enabled: false` or `maxAttempts: 0` makes the call-limit stop final again;
+  `heartbeat.maxTurnContinuation.enabled: false` still does too.
+- The stop is final, and the task goes to `blocked` with the "new input is needed" comment, when the last run
+  made no change (`writeCalls` 0), when the own ceiling is spent, or for any other guard reason.
+- A final guard stop now wakes the assignee's manager (`agents.reports_to`; without a usable one, the agent
+  named `adm`; without that, nobody) with the wake reason `run_guard_stop_needs_input`. The wake carries the
+  issue id and the stop text in its payload, leaves the assignee and the status as the escalation set them,
+  and is sent once per block episode: while the task has not left `blocked` since the previous wake (no
+  `issue.updated` activity moving the status away from `blocked` after it), there is no second one; once the
+  manager put the task back and it stops anew, he is woken again at once. If the assignee is `adm` itself,
+  nobody is woken. Both
+  places that block a guard-stopped task send it: the stop handling in `heartbeat.ts` and the stranded-issue
+  sweep. The bot skill (`skills/myrmidon/references/heartbeat-procedure.md`) tells the manager what to do: read
+  the last run, put the point of the fix into the description or split the task into 1–2 hour subtasks, and
+  return it to `todo` in one `PATCH`. The queued-run staleness check (`modules/run-dispatch`) lets this wake
+  start although the manager is not the assignee, bound to the exact automation source and wake reason, to
+  the issue being `blocked`, and to the run's agent being the assignee's `reports_to` or `adm`; any other
+  agent, or a task that has moved on, is cancelled as before.
+
+### Run guard stops read-only loops and repeated calls; no automatic retry after a guard stop (RUN-GUARD-LOOPS)
+
+- The run guard has two new stop reasons. `no_progress_exploration`: 40 consecutive read-only
+  tool calls (`search_files`, `read_file`, `skill_view`, `read_stale_tool_result`, and terminal
+  commands made only of `sed`/`grep`/`rg`/`cat`/`ls`/`find`/`head`/`tail`/`wc`/`git log|show|diff|status`)
+  with no write in between. `repeated_tool_call`: the same read-only call (same tool, same argument)
+  for the 3rd time since the last write. Any other tool call, any other terminal command and any
+  redirection into a file counts as a write and resets both counters. The hermes gateway adapter
+  feeds the guard from `tool.started`; other adapters are unchanged.
+- Both limits are configurable like the other guard limits (agent card `runGuard`, team liveness
+  `runGuard`, environment) and `0` switches the check off.
+- A run stopped by the guard (any of the five reasons) is no longer retried automatically. The
+  five reasons are permanent failures in the run retry taxonomy, the bounded retry scheduler and the
+  stranded-recovery enqueue refuse such a run, and when the run ends the assignee's issue goes to
+  `blocked` with a comment that says why the run was stopped and that a new input is needed.
+  Maintenance interruptions and transport failures keep their retry paths.
+
+### Run-limits guide: the load view with the memory snapshot (1.6.5 C0-ui docs)
+
+- [guides/run-limits.md](../guides/run-limits.md) gained a "The load view"
+  section: the `memory` block of `GET /api/myrmidon/runtime-limits` (the
+  host's available/total memory and the server container's cgroup v2 usage,
+  each side `null` when unreadable), next to the queue and host-load
+  snapshots, and the line both run settings panels show for it.
+
+### Automatic retry of a failed run is one policy: failure class, exponential backoff, attempt limit, counter in the UI (1.6.6 RUN-RETRY-POLICY)
+
+- A failed run is now classified before it is queued again. The classification
+is `transient`, `permanent` or `unknown`, and it decides whether a retry is
+queued at all: a transient failure is worth another attempt, a permanent one is
+never retried automatically, an unclassified one keeps the historical
+single-attempt treatment (the board has no evidence that repeating it would
+help).
+- The transient/permanent taxonomy and the attempt ceilings moved into one
+module, `server/src/myrmidon/run-retry-policy`, which is now the only place that
+answers those questions. The list of codes is unchanged: the six transient codes
+(`adapter_failed`, `codex_transient_upstream`, `codex_harness_crash`,
+`claude_transient_upstream`, `provider_quota`, `timeout`) and the eighteen
+permanent ones (`setup_failed`, the five `workspace_git_scan_*` codes, the
+`low_trust_*` family, `budget_*`, `issue_*`, `agent_not_invokable`,
+`agent_not_found`, `adapter_engine_unavailable`) earn exactly the same verdict
+they earned before, and the defaults reproduce the numbers the paths used
+(bounded retry: 3 attempts; unclassified: 1; backoff base: 60 s, factor 2).
+- The adapter's own verdict is consulted as one more signal: a run whose
+persisted `errorFamily` is `transient_upstream` or `provider_quota` is treated
+as transient even when its error code is generic, and one whose family is
+`permanent_config_error`, `model_refusal`, `refresh_token_reused` or
+`refresh_token_invalidated` is permanent — no repeated attempt against a
+configuration or credential problem that cannot heal by itself.
+- The backoff is exponential and censored: `base · multiplier^(attempt − 1)`,
+capped by a ceiling, optionally jittered symmetrically, never below one second.
+An operator can now reach the ceiling (`MYRMIDON_RUN_RETRY_MAX_DELAY_SEC`) and
+the jitter (`MYRMIDON_RUN_RETRY_JITTER_PERCENT`) without a code change; with the
+defaults the schedule is bit-for-bit the one the board produced before.
+- The board shows the counter: the scheduled-retry card and the task properties
+render "Attempt 2 of 3 · Transient failure" — how many attempts the scheduler
+allowed and what kind of failure is behind the retry. A retry queued before this
+change (no snapshot in the run context) keeps the bare "Attempt 2".
+- This is not the stall path: RUN-STALL/F-26 interrupts a run that is still
+*running* without progress. This policy is about a run that already *failed* and
+about the retry the board queues for it, and it never touches a live run.
+
+### Live runs execution phase metrics and reconnecting watchdog
+
+- The `/metrics` endpoint exposes `myrmidon_runs_execution_phase{phase="working|reconnecting|finishing|retry_scheduled|recovery_needed|..."}` showing count of live runs by projection phase. Phases are computed using the standard `executionProjectionsForRuns` service.
+- The `/metrics` endpoint exposes `myrmidon_runs_reconnecting_oldest_seconds` showing the duration in seconds of the oldest run currently hanging in `reconnecting`.
+- An in-product monitoring watchdog checks live runs periodically: when >= 3 runs are in `reconnecting` for longer than 5 minutes OR > 50% of live runs are in `reconnecting`, an alert is raised in the board's alert recovery channel listing affected run IDs.
+- Runbook `docs/myrmidon/runbooks/runs-reconnecting.md` documents diagnostic and remediation steps.
+
+### Secret proposals can rotate an existing secret (SECRET-PROPOSAL-ROTATE)
+
+- A `kind=secret` agent proposal now accepts `rotateSecretId`. On approval the
+  proposed value becomes a new version of that secret (compare-and-set on the
+  active version), and `@latest` bindings pick it up; rotation never renames
+  the secret. The approve dialog shows the target, fingerprint and status.
+- A proposal whose name is already taken now fails with `409` at creation (and
+  at approval for old pending proposals) instead of becoming an unapprovable
+  dead end.
+- A `kind=binding` proposal may retarget a path that already holds a company
+  secret reference (only the secret part is compared); plain values and
+  user-secret bindings still require an exact match.
+- Migration `0407_secret_proposal_rotation_target` adds the nullable column
+  `company_secret_proposals.rotation_target_secret_id` with a foreign key.
+
+### Processes apply committed instance settings across processes (SETTINGS-APPLIERS)
+
+- A successful PATCH commits the settings document under the row lock, then publishes `settings_changed` with the changed keys. Each process treats the event as an invalidation hint and re-reads the committed row before applying local effects; it never applies request-body values from the event.
+- The applier registry handles `runLimits`, `teamLiveness`, `myrmidonMaintenance`, and `processes`. Applies run one at a time per process in arrival order, and periodic sweeps remain the fallback for processes that were offline or temporarily disconnected.
+- `taskDrain` is stored in `instance_settings.general`; each process re-reads the committed row through the registry before updating its local drain state.
+
+### Correct the attention feed cache TTL default in the settings docs
+
+- The English and Russian settings guides now show the current default of 60 seconds, not 45 seconds. The runtime default does not change.
+- Correct the SETTINGS-UI C-4 row in the Russian settings registry to 60 seconds when the release collects this fragment.
+
+### Compact Myrmidon skill core, details on demand (OPE-11947)
+
+- The bot-facing `myrmidon` skill is loaded into the context of every agent run, and it was 62,839 bytes (12.4% of all request characters measured over 28,128 requests of 21 bots). `skills/myrmidon/SKILL.md` is now a compact core of under 10,000 characters: identity and run-audit header, the heartbeat procedure, the final-disposition contract (statuses, real review and waiting paths, verified writes), comment and handoff rules, the critical rules, the most used API calls, and an index that names the reference file for each situation.
+- Everything else moved verbatim into topical files under `skills/myrmidon/references/` (`auth-and-run-context`, `chat-turns`, `heartbeat-procedure`, `disposition-and-monitors`, `tasks-blockers-approvals`, `interactions-and-decisions`, `topic-pointers`, `secrets`, `critical-rules`, `comments-and-planning`, `hot-routes-and-search`). The original text of every section is preserved verbatim there; the core carries only condensed summaries.
+- New rules in the core: load the skill once per run and never re-open it after context compaction; never print full board JSON (select fields with `jq`, bound lists with `limit`/`view=compact`, use `Prefer: return=minimal` on `PATCH`).
+- The runner capability inventory (`packages/paperclip-runner`) now lists the relocated reference files as skill sources and its generated baselines are regenerated (163 skill and reference headings, 164 in the generated contract).
+
+### SKILLS-UI part A: skills from agentskills.io sites, verified by digest (SKILLS-UI-A)
+
+- New server route `POST /api/companies/:companyId/skills/discover` with body
+  `{ source }`: give it a bare vendor site (for example `https://kie.ai`) and it
+  reads the published discovery index
+  (`/.well-known/agent-skills/index.json`, HTTPS only, 15 s timeout, 2 MB cap)
+  and answers `{ skills: [{ name, description, digest, url }] }` with absolute
+  archive URLs. A site that does not publish the index, an unreachable host, or
+  a malformed index each produce a clear 422 with a stable code. The route runs
+  the same skill-import policy gate and activity log as the existing import.
+- `POST /api/companies/:companyId/skills/import` now accepts
+  `{ source, skillName }` for those sites. The server downloads the selected
+  tar.gz (20 MB cap), verifies its SHA-256 against the digest the index
+  advertises (a mismatch rejects the import with 422 and writes nothing), then
+  unpacks it with a hardened reader that refuses absolute paths, `..` traversal,
+  symlink and hardlink entries, and oversized expansion. The SKILL.md and the
+  skill's files are stored under the company managed-skills root as a new
+  `well_known` source; skills.sh-style sources keep their old behavior.
+- Re-import is update: the same digest changes nothing, a new digest stores the
+  new files and records a new skill version labeled with the short hash.
+- Each imported external skill now carries `requiredEnv` in its metadata, and
+  `GET /api/companies/:companyId/skills/:id` returns it as `requiredEnv:
+  string[]`: environment names read from the SKILL.md text by pattern
+  (`*_KEY`, `*_TOKEN`, `*_SECRET`, `*_PASSWORD`, explicit `os.environ` /
+  `process.env` / `$VAR` references). It is advisory metadata for the
+  key-provisioning UI (part B), never a credential.
+
+### A scheduled retry is counted stale from its due time, not from its creation (STALE-QUEUED-AGE-FROM-DUE, OPE-11947)
+
+- A scheduled retry (`scheduled_retry`) is created right after the failure it answers and enters the queue (`queued`) only when `scheduled_retry_at` falls due. The stale-queued-run sweep (`queuedRunStaleAfterSec`, 30 min by default) measured age from `created_at`, so a retry with a delay longer than the threshold (model-unavailable waits: 30 min, 1 h, 2 h, 4 h, 6 h) was cancelled as `queued_run_stale_timeout` the instant it was promoted, and the sweep then woke the agent with a fresh run on the same task at attempt 0. The long schedule never advanced: every task of an agent over quota was retried every ~30 minutes forever.
+- A queued run that carries a `scheduled_retry_at` already in the past is now measured from that time; any other queued run, and a run whose `scheduled_retry_at` is still in the future, is measured from `created_at` as before. The same measure is used by the sweep's selection (`heartbeat.ts`) and by the guard inside `cancelStaleQueuedRun` (run-dispatch Postgres adapter), so a race between the two cannot cancel a fresh retry. A retry that has really stood in the queue past the threshold since it fell due is still cancelled.
+
+### SWARM claim expiry provenance (1.6.6)
+
+- Swarm claims now record whether they came from automatic matching or checkout. Expiry clears an assignee only for a released automatic-match claim that is still the current lease; legacy rows with unknown provenance remain assigned. Added a nullable migration and embedded regression coverage for unknown provenance.
+
+### Adapters: add omp-local adapter for Oh My Pi runtime (OMP-LOCAL)
+
+- Added independent local adapter `omp-local` (`adapterType: "omp_local"`, package `@paperclipai/adapter-omp-local`) for the Oh My Pi (`omp`) runtime, pinned to `@oh-my-pi/pi-coding-agent@18.9.2`.
+- Implemented first-turn isolated session allocation in `~/.omp/paperclips/<companyId>/<agentId>` and turn resumption via session header validation without altering `pi-local` behavior.
+- Supported custom model providers via deterministic `models.yml` generation from `PAPERCLIP_OMP_PROVIDERS` (falling back to `PAPERCLIP_PI_PROVIDERS`) and `omp models ls` model discovery.
+- Materialized runtime skills into managed skills directories without `--skill` CLI flags, including remote execution staging under `<agentConfig>/skills`.
+- Added allowlisted model provider credential environment variables (`OPENAI_API_KEY`, `OPENROUTER_API_KEY`, `ANTHROPIC_API_KEY`, `XAI_API_KEY`) for `omp_local` runs.
+- Registered adapter across server, CLI, and UI registries with full capability declarations and environment diagnostic probes.
+
+### Owner Telegram questions as plain text (U2)
+
+- Deliver owner-only Telegram question and safe confirmation publications as readable text without inline buttons. Preserve option descriptions and the durable interaction publication contract. A question too long for one Telegram message, or a confirmation that cannot be shown as text, is replaced by a short "answer on the board" notice with the task link (and a log warning) instead of being dropped.
+
+### Owner Telegram producer modes (U2)
+
+- Preserve the configured owner-DM audience modes: `via_bot` produces no owner-DM publication, `owner_decisions_only` publishes human decisions, and `all` includes agent-addressed and operational interactions. Every eligible owner-only Telegram publication remains plain text without buttons; task-bound vendor routes are unchanged. The default mode is unchanged.
+- The plain-text producer path, renderer, and Telegram no-keyboard payload contract are implemented and exercised by the merged baseline change in PR #1573 (`88442ae96`). This PR covers the owner-DM audience modes and their regression tests.
+
+### Owner text answer in Telegram closes the question (U2)
+
+- The owner's text message in the standing Telegram chat with the bot now closes the owner decision the bot explained there, attributed to the owner, and the task's agent is woken with the answer. A reply to a bot message is bound to the decisions that exact message explained; without a reply one open decision closes, and with several the bot asks which one. A reply to a message that explains nothing closes nothing.
+
+### Telegram pool bridge for ChatGPT and Gemini (OPE-8077)
+
+- Adds Telegram bridge support for ChatGPT and Google AI / Gemini pool modules using the pool-chat adapter.
+- Configurable per module: allowed chat ID, model, bot token reference, and pool endpoint. Default disabled (`enabled: false`); operator-controlled activation.
+- Strictly enforces chat allowlist: messages from unauthorized chats or strangers are refused without calling pool-chat and without debiting quota.
+- Incoming Telegram updates are deduplicated: repeated deliveries of the same `update_id` return the existing result without repeating upstream provider I/O or charging quota again.
+- Long answers exceeding Telegram's 4096 character limit are cleanly split into sequential parts and delivered via the outbox.
+- History isolation prevents conversations from ChatGPT and Gemini from crossing, and prevents Telegram chats from intersecting with web-chat.
+- Token redaction ensures bot tokens and API keys are never exposed in error responses, logs, or status payloads.
+- Includes ChannelSettingsPanel UI integration, operator live acceptance runbook, and automated test coverage for redaction, allowlist, update deduplication, long answer chunking, and both pool modules.
+
+### Bot input tokens: keep the provider prompt cache, bound what is new (TOKEN-BURN)
+
+Quotas are consumed by fresh (uncached) input and by output, and a provider cache hits only on a byte-identical
+prefix, so rewriting a message that was already sent turns the rest of the context into fresh input. The bot
+runtime (patches `16`, `25`, `26`, `27`) now bounds what is new and what is rebuilt, and rewrites nothing
+in the middle of a session. Every setting is a key of the `context_economy:` block of the bot's `config.yaml`
+(environment `HERMES_CONTEXT_ECONOMY_<KEY>` overrides it).
+
+- **Not rewritten any more.** Superseded wake messages (A) and stale tool results (B) are no longer replaced in the
+  request by default (`stale_wakes`, `stale_tool_results`: `false`). Measure A had also gone dead at the product
+  rename (it recognised only the identity head from before the rename); it now recognises both heads, and a build
+  check ties the patch to the adapter's wording. `skill_view` results and reads of skill files are never replaced
+  when B is on.
+- **New huge results are cut once, when they are produced.** A tool result of more than `tool_result_max_chars`
+  (16000) is stored and sent as its first 8000 and last 4000 characters plus a marker with the path of the spill file
+  holding the whole text and how to read the middle (`read_file` offset, byte offsets, or a filtered re-run).
+  `read_file` stays pinned by upstream, `skill_view` is exempt (`tool_result_exempt`).
+- **The compaction is cheaper and keeps the cached prefix.** The summary is asked for at most
+  `compaction_summary_max_chars` (8000) characters with `compaction_summary_max_tokens` (6144) as the call's output
+  limit; a summary that stopped on the output limit is kept (cut at a line end) instead of failing the compression;
+  board wake packages are not quoted into the summarizer input or the verbatim user messages; the anchor index and
+  the verbatim user messages are bounded; the system prompt and the tool schemas are not rebuilt at a compaction
+  (`compaction_keep_prefix`), so the prefix after it is the prefix before it.
+
+### An agent no longer wakes itself with its own PATCH or comment-time bookkeeping (TOKEN-BURN-H, OPE-12049)
+
+- On 07.11 the `adm` bot spent ten empty runs an hour on itself: each run released its task, assigned it back to
+  itself and got "Wake from own PATCH (issue_assigned)"; the server then echoed the run's final text as a comment after
+  the run closed, and the next `swarm_matched` wake read that comment as new input from the "previous round".
+- `PATCH /issues/:id` no longer queues the two task-state wakes (`issue_assigned` after an assignee change,
+  `issue_status_changed` out of backlog/blocked/closed) when the PATCH is made by the assignee itself from its own run
+  on this very task. The skip is narrow: the actor is the assignee and its authenticated run's `issueId` is this task.
+  An agent working from a run on another task, a user, a system actor or another agent still wakes the assignee exactly
+  as before; comment and mention wakes already had their own self guards. The shared assignment service
+  (`queueIssueAssignmentWakeup`: create, child_create, accepted-plan decomposition, status cards, summary slots) does
+  not skip: an agent legitimately creates tasks for itself and each needs its run.
+- The rewake throttle (`swarm_matched`, `idle_pickup`, ...) no longer counts the woken agent's own activity as "new
+  input since the last run", and no longer counts a run's own bookkeeping (task release, assignment back to itself, the
+  `run_presentation_resolver` echo of the final text) as issue progress. A real comment, a status change, a hand-off to
+  another agent, a document or a work product still count.
+
+### Per-role default tool lists: unused tool schemas leave the bot's request (TOOL-DIET-ROLES, OPE-11947)
+
+- Every tool schema is sent on every model call. In a sample of 28k real requests of 21 bots, tools that were called
+  less than 0.5 times per 100 requests still made up 5.5% of all request characters (engineers 6.4%, bbq bots 8.2%).
+- The fleet list `MYRMIDON_BOT_DISABLED_TOOLS` now also holds `clarify` (the bots run behind the Hermes API server, which
+  wires no clarify callback, so the tool only ever answers "not available") and `skill_manage` (unused; while it is
+  present Hermes also adds its prompt guidance and forks a background skill review after every ten tool iterations).
+- New role defaults on top of it, resolved from the agent's role (caste key) and card, never from the bot's name:
+  roles `engineer`, `reviewer` and `release` (instance-configurable) lose the built-in `memory` tool and the Hindsight
+  tools (the `memory` toolset is written to `agent.disabled_toolsets`; owner decision 26.10), the web tools, the browser
+  tools and the image/media tools; every other role loses the browser and image/media tools.
+- A card is never overridden against its will: a group stays when the card lists its toolset in `toolsets`
+  (`memory`, `web`, `browser`, `browser-use`, `browser-cdp`, `image_gen`, ...); the new card key `keepTools` re-enables a
+  group or a single tool (`["memory", "skill_manage"]`); the card's own `disabledTools` list still replaces every
+  default list.
+- A changed `config.yaml` restarts the bot container.
+
+### Compatibility assessment for Paperclip v2026.1001.0 ideas (1.6.6 planning)
+
+- The five proposed upstream directions were checked against the Myrmidon tree and the
+  current release work. The result is a staged adoption plan, not a blind vendor merge:
+  - task handoff (upstream #13686) is compatible in principle, but must use the
+    Myrmidon CAS handoff contract and preserve existing replay holds, wake guards and
+    rollback recovery;
+  - atomic native reviewer admission (upstream #13581) is not a direct port because
+    Myrmidon already has review-path recovery, execution participants and interaction
+    gates. It needs a separate adapter that claims the reviewer run, wake and issue
+    lock together, while leaving child ownership unchanged;
+  - queued Wait / Steer / Interrupt responses (upstream #13539) are compatible and
+    already landed in the server and UI. Interaction receipts remain immutable and do
+    not coalesce with comments or other card responses;
+  - the channel-connector direction (upstream #13638) is compatible as an incremental
+    migration. The connector contract, registry and hub land first, followed by
+    observe-mode wiring and one Telegram topic at a time. The vendor chat service
+    remains the fallback until each topic is proven;
+  - one Myrmidon plugin registration is compatible with the route surface, but must
+    preserve the existing mount order and keep pre-auth mounts and startup schedulers
+    outside the registry. Connector fail-closed behavior is retained separately.
+- The assessment found no schema migration or setting change required by this planning
+  step. It records sequencing and compatibility constraints for the implementation PRs.
+
+### Wake keys `pause_resume` and stranded auto-policy retry are now unique in the database
+
+- Two racing resumes of a paused agent, or two stale-run sweeps reaching the same stranded
+  issue, could each insert a wake with the same idempotency key and start a duplicate run.
+  Migration `0401_wakeup_key_partial_unique_indexes` adds partial unique indexes on
+  `(company_id, idempotency_key)` for `pause_resume:%` and
+  `myrmidon.stranded_autopolicy_retry:%` wakes; terminal wakes (`skipped`, `failed`,
+  `cancelled`) stay outside the predicate.
+- The migration first repairs duplicates a live board already holds: the most meaningful
+  run-backed wake keeps the key, run-backed or running duplicates are re-keyed with audit
+  metadata and keep their status, and only duplicates that never acquired a run are
+  marked `skipped`. Running work is never cancelled.
 
 ### Merge queue: CI checks the candidate commit on top of fresh main (MERGE-QUEUE)
 
@@ -442,27 +4503,6 @@ version file to edit. Base Paperclip version is in the image label
 - A guard without the version keeps the previous behaviour, so every existing
   guard site stays unaffected.
 
-### A fair queue for the global run cap, and the wait reason on the run itself (1.6.5 RUN-FAIRNESS, part 1)
-
-- While the global concurrency ceiling is busy, a freed slot now goes to the
-  longest-waiting queued run, not to the agent the sweep happens to visit
-  first. The queued-run sweep visits the agents in the order of each agent's
-  OLDEST queued run (the queue read is already ordered by run creation), and
-  a per-agent share gate (`maxPerAgentStartSharePercent`, default 15) holds an
-  agent that already took its share of the starts of the sliding 10-minute
-  window while runs of other agents wait. A lone queue is never throttled by
-  the share, and a queue shorter than one full share step lets everyone
-  through.
-- A run that stays queued because of an admission gate now says why: the
-  queue pass writes `waitReason` into the run's `contextSnapshot` —
-  `global_cap`, `start_ramp`, `memory`, `host_memory`, `host_cpu`,
-  `agent_fair_share` or `agent_concurrency` (the per-agent ceiling is full) —
-  and removes it on the claim that starts the run.
-- The run admission reports the gate that closed the last reservation
-  (`lastDenialReason`), so the sweep writes the reason of the gate that
-  actually held the runs back, and counts the starts of the window by agent
-  (`agentStartShare`) for the share gate.
-
 ### Channel allowlist — who may write to the bots (CA-A, OPE-4949)
 
 - New general-channel-layer mechanism, not Telegram code: the board keeps a
@@ -596,55 +4636,6 @@ version file to edit. Base Paperclip version is in the image label
 - With the module switched off the screen says so and offers no parsing,
   embedding or search; a server that does not serve the corpus routes at all
   shows the screen as unavailable.
-
-### PREDEPLOY-DB-CHECK: the board image is proven on a copy of the production database before the window; the components roll out before the board; rollback without a live board
-
-- `scripts/myrmidon/deploy/predeploy-board-check.sh` (new) — before the
-  maintenance window the predeploy dump is restored into a throwaway Postgres
-  and the new board image is started next to the NEW dockergate of the same
-  release, on its own docker network (no bot container, no production
-  dockergate). The check waits for `/api/health` `status: ok` with the version
-  and commit of the image and then walks the attention list and the main company
-  routes; any failure stops the deploy BEFORE the window with nothing on
-  production changed. The 05.10 incident it exists for: the 1.6.3 board started
-  fine against the empty CI database and crashed on production DATA (an
-  attention card whose key was not a uuid) inside the window.
-- `scripts/myrmidon/deploy/deploy.sh` — step 3b runs that check before the
-  deploy window marker; the changed release COMPONENTS now roll out inside the
-  window BEFORE the board is switched (DOCKERGATE-FIRST), so the board is
-  verified against the new dockergate and not the running one (the 1.6.3 board
-  never became `ok` against the old dockergate: `route_not_allowed`, and
-  dockergate rolled out only after the board check); the all-or-nothing rollback
-  rolls the board back only when its image line was actually written.
-- `scripts/myrmidon/deploy/rollback.sh` — ROLLBACK-WITHOUT-BOARD: entering and
-  leaving maintenance no longer requires the board API to answer. A rollback
-  usually runs BECAUSE the board is down; a failed enter/exit is logged loudly
-  and the rollback continues, the image switch and the health check still decide.
-- `scripts/myrmidon/deploy/lib.sh` — `maintenance_enter` reports an enter that
-  did not happen (api: the POST did not answer; hook: the command failed)
-  instead of logging `entered` over a failed POST.
-- `scripts/myrmidon/deploy/deploy.env.example` — the new `MYRMIDON_PREDEPLOY_*`
-  settings; the check is on by default.
-- Tests: `scripts/myrmidon/deploy/predeploy-board-check.test.mjs` (new) walks
-  the whole throwaway stack against fake `docker`/`curl`; the deploy,
-  release-gate, bot-image-rollout, deploy-from-job and tracing harnesses grew
-  the pre-window check, the component-before-board order, the board-less
-  rollback and the copy-teardown cases.
-
-### 1.6.5 STACK-UPDATES: optional GitHub token for the stack release check (OPE-5564)
-
-- `MYRMIDON_STACK_GITHUB_TOKEN` (secret class): an optional read-only GitHub
-  token (fine-grained PAT with public-repo read, no scopes needed) for the
-  scheduled and manual stack release check. When set, every api.github.com
-  request of the check (release/tag lists and the compare API — one shared
-  JSON port) carries `authorization: Bearer <token>`.
-- Anonymous behaviour is the default: unset or blank env → no authorization
-  header, the 60 requests/hour per egress IP budget. A valid token lifts the
-  budget to 5000 requests/hour.
-- An invalid or revoked token is ordinary data: GitHub answers 401/403 and the
-  status is recorded per component as an HTTP error, the previous cache is
-  kept — exactly like any other HTTP status. The value is never logged and
-  never returned by any route.
 
 ### Fleet dashboard data from VictoriaMetrics + Zabbix (1.6.6 MONITORING C)
 
@@ -914,7 +4905,6 @@ version file to edit. Base Paperclip version is in the image label
   failed, so a stopped bridge is visible on the page even when the registry
   cannot be read; a failed read of the bridge settings is shown inside the
   block and does not take the registry down with it.
-
 
 ## 1.6.5
 
@@ -2338,14 +6328,13 @@ and dockergate.md.
   write-only over the API, secret values are never returned. See
   [SETTINGS.md](SETTINGS.md), the VOICE-STT section.
 
-
 ### Central session history for gateway bots (MEMORY-CENTRAL-B)
 
 - With `MYRMIDON_BOT_CENTRAL_HISTORY=1` (off by default) the Hermes gateway
   adapter saves the final output of every completed run as a session-turn record
   in the bot's own hindsight bank (documents keyed by the session key, tag
   `myrmidon-session-history`) and on the next wake of the same session restores
-  the last turns (default 20, card field `centralHistoryMaxTurns`) into the wake
+  the last turns (default 10, card field `centralHistoryMaxTurns`) into the wake
   input under a visible "restored conversation history" header. Recreating the
   container volume no longer loses the history.
 - Store address, bank and key resolve in order (first hit wins): card fields
@@ -5279,7 +9268,7 @@ canary-overlapped pass 2 (was 6).
   `backup_ro`); the throwaway Postgres of the check does not have them and
   `pg_restore` aborted with `role "backup_ro" does not exist`, so the check
   died on the restore step of every such dump before the board was ever
-  started (OPE-4875, vm-core 06.10).
+  started (OPE-4875, 06.10).
 - The check proves the board reads the production DATA on the copy, not the
   production grants model, so skipping ownership and ACL statements is the
   correct default. An operator who wants the grants modelled on the copy

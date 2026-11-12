@@ -7,7 +7,7 @@ import { execFileSync, spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 
 // ARCH-GUARD: self-test of the invariants gate. Each invariant
-// (INV-10..INV-13) has a RED side: a sandboxed repo snapshot in which the
+// (INV-10..INV-14) has a RED side: a sandboxed repo snapshot in which the
 // invariant is violated and the gate MUST fail. The green side is the real
 // checkout (checked once per suite run through the sandbox copy of a clean
 // main — here: a synthetic minimal-clean snapshot passes).
@@ -18,6 +18,7 @@ import {
   checkSingleQueueOrder,
   checkNoPilot,
   checkMigrations,
+  checkDecisionLayerPurity,
   TEST_HOOKS,
 } from "./arch-invariants-gate.mjs";
 
@@ -49,6 +50,27 @@ function migrationsFs(journalTags, sqlFiles) {
 const BASELINE = {
   numbers: [1, 3, 4],
 };
+
+describe("INV-14: decision layer has no I/O imports", () => {
+  it("clean decision module passes", () => {
+    const dir = sandbox({
+      "server/src/modules/run-dispatch/domain/decision.ts":
+        "export function decide(input: { ready: boolean }) { return input.ready ? { action: \"run\" } : { action: \"wait\" }; }\n",
+    });
+    assert.deepEqual(checkDecisionLayerPurity(dir), []);
+  });
+
+  it("RED: database and adapter imports fail", () => {
+    const dir = sandbox({
+      "server/src/modules/run-dispatch/domain/decision.ts":
+        'import { db } from "@myrmidon/db";\nimport { save } from "../adapters/postgres.js";\nexport const decide = () => ({ db, save });\n',
+    });
+    const findings = checkDecisionLayerPurity(dir);
+    assert.equal(findings.length, 2);
+    assert.match(findings[0], /INV-14/);
+    assert.match(findings[1], /INV-14/);
+  });
+});
 
 describe("INV-10: no automatic wake without a task", () => {
   it("clean call sites pass", () => {
@@ -272,6 +294,48 @@ describe("INV-13: migration numbering", () => {
       );
       const findings = checkMigrations(dir);
       assert.ok(findings.some((f) => /duplicate migration number 0002/.test(f)));
+    } finally {
+      TEST_HOOKS.migrationBaselineOverride = null;
+    }
+  });
+
+  it("RED: duplicate journal idx fails", () => {
+    TEST_HOOKS.migrationBaselineOverride = "none";
+    try {
+      const files = {};
+      const dir = "packages/db/src/migrations";
+      files[`${dir}/0401_a.sql`] = "-- migration\n";
+      files[`${dir}/0402_b.sql`] = "-- migration\n";
+      files[`${dir}/meta/_journal.json`] = JSON.stringify({
+        entries: [
+          { idx: 401, tag: "0401_a" },
+          { idx: 401, tag: "0402_b" },
+        ],
+      });
+      const dirSandbox = sandbox(files);
+      const findings = checkMigrations(dirSandbox);
+      assert.ok(findings.some((f) => /duplicate journal idx 401/.test(f)));
+    } finally {
+      TEST_HOOKS.migrationBaselineOverride = null;
+    }
+  });
+
+  it("RED: mismatched journal idx and tag fails", () => {
+    TEST_HOOKS.migrationBaselineOverride = "none";
+    try {
+      const files = {};
+      const dir = "packages/db/src/migrations";
+      files[`${dir}/0401_a.sql`] = "-- migration\n";
+      files[`${dir}/0402_b.sql`] = "-- migration\n";
+      files[`${dir}/meta/_journal.json`] = JSON.stringify({
+        entries: [
+          { idx: 401, tag: "0401_a" },
+          { idx: 405, tag: "0402_b" },
+        ],
+      });
+      const dirSandbox = sandbox(files);
+      const findings = checkMigrations(dirSandbox);
+      assert.ok(findings.some((f) => /idx 405 does not match tag 0402_b/.test(f)));
     } finally {
       TEST_HOOKS.migrationBaselineOverride = null;
     }

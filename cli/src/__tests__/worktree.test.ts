@@ -2,11 +2,9 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { execFileSync } from "node:child_process";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { createServer } from "node:net";
 import { eq } from "drizzle-orm";
-import { drizzle } from "drizzle-orm/postgres-js";
-import { migrate } from "drizzle-orm/postgres-js/migrator";
 import { afterEach, describe, expect, it, onTestFinished, vi } from "vitest";
 import {
   agents,
@@ -562,7 +560,7 @@ describe("worktree helpers", () => {
       availableMigrations: ["0001_initial.sql", "0002_current.sql"],
       appliedMigrations: ["0001_initial.sql", "0003_unknown.sql"],
       journalEntryCount: 3,
-    }, "sourcePrefix")).toThrow("Migration journal is not a prefix of this Myrmidon checkout's migration journal.");
+    }, "sourcePrefix")).toThrow("Migration journal is not a prefix of this Myrmidon checkout");
   });
 
   it("accepts a current source whose migration application order differs from filename order", () => {
@@ -1661,14 +1659,41 @@ describe("worktree helpers", () => {
       const migrationsRoot = new URL("../../../packages/db/src/migrations/", import.meta.url);
       const journal = JSON.parse(fs.readFileSync(new URL("meta/_journal.json", migrationsRoot), "utf8"));
       const priorEntries = journal.entries.slice(0, -1);
-      const priorMigrations = path.join(tempRoot, "prior-migrations");
-      fs.mkdirSync(path.join(priorMigrations, "meta"), { recursive: true });
-      fs.writeFileSync(path.join(priorMigrations, "meta", "_journal.json"), JSON.stringify({ ...journal, entries: priorEntries }));
-      for (const entry of priorEntries) {
-        fs.copyFileSync(new URL(`${entry.tag}.sql`, migrationsRoot), path.join(priorMigrations, `${entry.tag}.sql`));
-      }
       const sourceDbClient = createDb(sourceDb.connectionString);
-      await migrate(drizzle(sourceDbClient.$client), { migrationsFolder: priorMigrations });
+      await sourceDbClient.$client.unsafe(`CREATE SCHEMA IF NOT EXISTS "drizzle"`);
+      await sourceDbClient.$client.unsafe(
+        `CREATE TABLE IF NOT EXISTS "drizzle"."__drizzle_migrations" (id SERIAL PRIMARY KEY, hash text NOT NULL, created_at bigint)`,
+      );
+      for (const entry of priorEntries) {
+        const migrationSql = fs.readFileSync(new URL(`${entry.tag}.sql`, migrationsRoot), "utf8");
+        const hash = createHash("sha256").update(migrationSql).digest("hex");
+        const statements = migrationSql
+          .split("--> statement-breakpoint")
+          .map((statement) => statement.trim())
+          .filter((statement) => statement.length > 0);
+        const requiresNonTransactional = statements.some((statement) =>
+          /^CREATE\s+(?:UNIQUE\s+)?INDEX\s+CONCURRENTLY\b/i.test(
+            statement.replace(/^\s*--.*$/gm, "").trim(),
+          ),
+        );
+        if (requiresNonTransactional) {
+          for (const statement of statements) {
+            await sourceDbClient.$client.unsafe(statement);
+          }
+          await sourceDbClient.$client.unsafe(
+            `INSERT INTO "drizzle"."__drizzle_migrations" ("hash", "created_at") VALUES ('${hash}', ${entry.when})`,
+          );
+        } else {
+          await sourceDbClient.$client.begin(async (tx) => {
+            for (const statement of statements) {
+              await tx.unsafe(statement);
+            }
+            await tx.unsafe(
+              `INSERT INTO "drizzle"."__drizzle_migrations" ("hash", "created_at") VALUES ('${hash}', ${entry.when})`,
+            );
+          });
+        }
+      }
       await seedValidWorktreeSource(sourceDb.connectionString);
       await sourceDbClient.$client.unsafe(`
         WITH pair AS (
@@ -2035,7 +2060,7 @@ describe("worktree helpers", () => {
         resolveWorktreeReseedTargetPaths({
           configPath,
           rootPath: worktreeRoot,
-        })).toThrow("does not look like a worktree-local Paperclip instance");
+        })).toThrow("does not look like a worktree-local Myrmidon instance");
     } finally {
       fs.rmSync(tempRoot, { recursive: true, force: true });
     }

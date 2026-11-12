@@ -21,9 +21,11 @@ import {
   formatPerMillion,
   isNotEnabledError,
   litellmCostsKey,
+  litellmKeyUsageKey,
   litellmModelsKey,
   litellmCostsApi,
   type LitellmCostRow,
+  type LitellmKeyUsageRow,
   type LitellmModelView,
 } from "./litellmCostsApi";
 
@@ -78,6 +80,119 @@ export function groupByAgent(rows: LitellmCostRow[], agentNames: Map<string, str
     group.runs.sort((a, b) => b.costCents - a.costCents || a.occurredAt.localeCompare(b.occurredAt));
   }
   return groups.sort((a, b) => b.costCents - a.costCents);
+}
+
+/** Key budget rows, the keys closest to (or over) their cap first, then by 24 h spend. */
+export function sortKeyUsageRows(rows: LitellmKeyUsageRow[]): LitellmKeyUsageRow[] {
+  return [...rows].sort(
+    (a, b) =>
+      (b.utilizationPercent ?? -1) - (a.utilizationPercent ?? -1) ||
+      (b.dailyCents ?? 0) - (a.dailyCents ?? 0) ||
+      (a.agentName ?? a.agentId).localeCompare(b.agentName ?? b.agentId),
+  );
+}
+
+/** Text colour of the gateway-spend cell: red over the cap, amber from 80%. */
+export function keyUsageStatusClass(status: LitellmKeyUsageRow["status"]): string {
+  if (status === "exhausted") return "font-medium text-destructive";
+  if (status === "near_cap") return "font-medium text-amber-600";
+  return "";
+}
+
+function GatewayKeyUsageCard({ companyId }: { companyId: string }) {
+  const { t } = useTranslation();
+  const locale = i18n.language === "ru" ? "ru-RU" : "en-US";
+  const { data, isLoading, error } = useQuery({
+    queryKey: litellmKeyUsageKey(companyId),
+    queryFn: () => litellmCostsApi.keyUsage(companyId),
+    staleTime: 60_000,
+  });
+  const rows = useMemo(() => sortKeyUsageRows(data?.rows ?? []), [data]);
+  const dash = "—";
+
+  return (
+    <Card>
+      <CardHeader className="px-5 pt-5 pb-2">
+        <CardTitle className="text-base">{t("area.costs-budgets-2.gateway-costs-tab.keyUsageCard.title")}</CardTitle>
+        <CardDescription>{t("area.costs-budgets-2.gateway-costs-tab.keyUsageCard.description")}</CardDescription>
+      </CardHeader>
+      <CardContent className="space-y-2 px-5 pb-5 pt-2">
+        {error ? (
+          <p className="text-sm text-destructive">
+            {isNotEnabledError(error) ? t("area.costs-budgets-2.gateway-costs-tab.notEnabled") : (error as Error).message}
+          </p>
+        ) : isLoading ? (
+          <p className="text-sm text-muted-foreground">{t("area.costs-budgets-2.gateway-costs-tab.keyUsageCard.loading")}</p>
+        ) : rows.length === 0 ? (
+          <p className="text-sm text-muted-foreground">{t("area.costs-budgets-2.gateway-costs-tab.keyUsageCard.empty")}</p>
+        ) : (
+          <>
+            {data && !data.gatewayAvailable ? (
+              <p className="text-sm text-amber-600" data-testid="key-usage-gateway-unavailable">
+                {t("area.costs-budgets-2.gateway-costs-tab.keyUsageCard.gatewayUnavailable")}
+              </p>
+            ) : null}
+            {data && !data.ledgerAvailable ? (
+              <p className="text-sm text-amber-600" data-testid="key-usage-ledger-unavailable">
+                {t("area.costs-budgets-2.gateway-costs-tab.keyUsageCard.ledgerUnavailable")}
+              </p>
+            ) : null}
+            <div className="overflow-x-auto">
+              <table className="w-full text-sm">
+                <thead>
+                  <tr className="border-b border-border text-left text-xs text-muted-foreground">
+                    <th className="py-2 pr-4 font-medium">{t("area.costs-budgets-2.gateway-costs-tab.keyUsageCard.columns.agent")}</th>
+                    <th className="py-2 pr-4 text-right font-medium">{t("area.costs-budgets-2.gateway-costs-tab.keyUsageCard.columns.cap")}</th>
+                    <th className="py-2 pr-4 text-right font-medium">{t("area.costs-budgets-2.gateway-costs-tab.keyUsageCard.columns.spent")}</th>
+                    <th className="py-2 pr-4 text-right font-medium">{t("area.costs-budgets-2.gateway-costs-tab.keyUsageCard.columns.day")}</th>
+                    <th className="py-2 pr-4 text-right font-medium">{t("area.costs-budgets-2.gateway-costs-tab.keyUsageCard.columns.week")}</th>
+                    <th className="py-2 text-right font-medium">
+                      <span title={t("area.costs-budgets-2.gateway-costs-tab.keyUsageCard.noPriceHint")}>
+                        {t("area.costs-budgets-2.gateway-costs-tab.keyUsageCard.columns.noPrice")}
+                      </span>
+                    </th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {rows.map((row) => (
+                    <tr
+                      key={row.agentId}
+                      data-testid={`key-usage-${row.agentId}`}
+                      className="border-b border-border last:border-b-0"
+                    >
+                      <td className="py-2 pr-4">{row.agentName ?? row.agentId.slice(0, 8)}</td>
+                      <td className="py-2 pr-4 text-right tabular-nums">
+                        {row.capUsd != null
+                          ? formatCents(row.capUsd * 100, locale)
+                          : row.gatewaySpendUsd != null
+                            ? t("area.costs-budgets-2.gateway-costs-tab.keyUsageCard.noCap")
+                            : dash}
+                      </td>
+                      <td className={`py-2 pr-4 text-right tabular-nums ${keyUsageStatusClass(row.status)}`}>
+                        {row.gatewaySpendUsd != null ? formatCents(row.gatewaySpendUsd * 100, locale) : dash}
+                        {row.utilizationPercent != null
+                          ? ` · ${t("area.costs-budgets-2.gateway-costs-tab.keyUsageCard.percentOfCap", { percent: row.utilizationPercent.toFixed(1) })}`
+                          : ""}
+                      </td>
+                      <td className="py-2 pr-4 text-right tabular-nums">
+                        {row.dailyCents != null ? formatCents(row.dailyCents, locale) : dash}
+                      </td>
+                      <td className="py-2 pr-4 text-right tabular-nums">
+                        {row.weeklyCents != null ? formatCents(row.weeklyCents, locale) : dash}
+                      </td>
+                      <td className={`py-2 text-right tabular-nums ${row.zeroCostEvents ? "text-amber-600" : ""}`}>
+                        {row.zeroCostEvents ? row.zeroCostEvents : dash}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </>
+        )}
+      </CardContent>
+    </Card>
+  );
 }
 
 function GatewayAgentsCard({ companyId, from, to }: { companyId: string; from?: string; to?: string }) {
@@ -231,9 +346,12 @@ function GatewayModelRow({ model }: { model: LitellmModelView }) {
 /** The whole "Gateway" tab. */
 export function GatewayCostsTab({ companyId, from, to }: { companyId: string; from?: string; to?: string }) {
   return (
-    <div className="grid gap-4 xl:grid-cols-(--gtc-31)">
-      <GatewayAgentsCard companyId={companyId} from={from} to={to} />
-      <GatewayModelsCard companyId={companyId} />
+    <div className="space-y-4">
+      <GatewayKeyUsageCard companyId={companyId} />
+      <div className="grid gap-4 xl:grid-cols-(--gtc-31)">
+        <GatewayAgentsCard companyId={companyId} from={from} to={to} />
+        <GatewayModelsCard companyId={companyId} />
+      </div>
     </div>
   );
 }

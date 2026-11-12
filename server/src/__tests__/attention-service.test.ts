@@ -34,6 +34,9 @@ import {
   joinRequests,
   projects,
   projectWorkspaces,
+  toolMcpGateways,
+  toolMcpGatewayTokens,
+  toolProfiles,
 } from "@myrmidon/db";
 import {
   getEmbeddedPostgresTestSupport,
@@ -41,7 +44,7 @@ import {
 } from "./helpers/embedded-postgres.js";
 import { errorHandler } from "../middleware/index.js";
 import { attentionRoutes } from "../routes/attention.js";
-import { attentionService } from "../services/attention.js";
+import { attentionService, listRoleModelDownSince } from "../services/attention.js";
 import { listAttentionExhaustedRuns } from "../services/attention-exhausted-runs.js";
 import { agentService } from "../services/agents.js";
 import { ingestCloneReport, resetCloneHygieneStateForTests } from "../myrmidon/bot-containers/clone-hygiene.js";
@@ -99,6 +102,9 @@ describeEmbeddedPostgres("attention service", () => {
     await db.delete(projectWorkspaces);
     await db.delete(projects);
     await db.delete(agents);
+    await db.delete(toolMcpGatewayTokens);
+    await db.delete(toolMcpGateways);
+    await db.delete(toolProfiles);
     await db.delete(companies);
     resetCloneHygieneStateForTests();
   });
@@ -773,7 +779,7 @@ describeEmbeddedPostgres("attention service", () => {
 
     const feed = await attentionService(db, TEST_SERVICE_OPTS).list(companyId, { userId: "board-user" });
 
-    expect(feed.totalCount).toBe(12);
+    expect(feed.totalCount).toBe(13);
     expect(feed.countsBySourceKind).toMatchObject({
       approval: 1,
       issue_thread_interaction: 1,
@@ -786,6 +792,7 @@ describeEmbeddedPostgres("attention service", () => {
       budget_alert: 2,
       agent_error_alert: 1,
       replay_blocked: 1,
+      execution_hold: 1,
     });
     const replayCard = feed.items.find((item) => item.sourceKind === "replay_blocked");
     expect(replayCard).toMatchObject({
@@ -795,6 +802,14 @@ describeEmbeddedPostgres("attention service", () => {
       whyNow: expect.stringContaining("board operator"),
     });
     expect(replayCard?.subject.metadata?.dueAt).toBe("2026-07-10T12:00:00.000Z");
+    const executionHoldCard = feed.items.find((item) => item.sourceKind === "execution_hold");
+    expect(executionHoldCard).toMatchObject({
+      sourceKind: "execution_hold",
+      subject: expect.objectContaining({
+        kind: "company",
+        metadata: { heldCount: 1 },
+      }),
+    });
     expect(feed.items.map((item) => item.sourceKind)).toEqual(expect.arrayContaining([
       "approval",
       "issue_thread_interaction",
@@ -805,6 +820,7 @@ describeEmbeddedPostgres("attention service", () => {
       "failed_run",
       "budget_alert",
       "agent_error_alert",
+      "execution_hold",
     ]));
     for (const item of feed.items) {
       expect(item.dedupKey).toBeTruthy();
@@ -2319,5 +2335,550 @@ describeEmbeddedPostgres("attention service", () => {
       expect(byKey.get(key)).toMatchObject({ shelf: true, retentionDays: 30, archivedAt: null });
     }
     expect(byKey.get(`approval:${queueApprovalId}`)).toMatchObject({ shelf: true, retentionDays: 10 });
+  });
+
+  // myrmidon(OPE-12517): MCP gateway token expiry cards. Seed helper writes the
+  // full tool_profiles → tool_mcp_gateways → tool_mcp_gateway_tokens chain the
+  // feed query joins, plus a second company for isolation checks.
+  async function seedGatewayToken(input: {
+    companyId: string;
+    name: string;
+    expiresAt: Date | null;
+    lastUsedAt?: Date | null;
+    revokedAt?: Date | null;
+    tokenHash?: string;
+    tokenPrefix?: string;
+  }) {
+    const [profile] = await db.insert(toolProfiles).values({
+      companyId: input.companyId,
+      profileKey: `atn-gw-${randomUUID().slice(0, 8)}`,
+      name: `ATN gateway profile ${randomUUID().slice(0, 6)}`,
+      defaultAction: "deny",
+    }).returning();
+    const [gateway] = await db.insert(toolMcpGateways).values({
+      companyId: input.companyId,
+      name: `Gateway ${randomUUID().slice(0, 8)}`,
+      slug: `gw-${randomUUID().slice(0, 8)}`,
+      profileId: profile!.id,
+      status: "active",
+    }).returning();
+    const [token] = await db.insert(toolMcpGatewayTokens).values({
+      companyId: input.companyId,
+      gatewayId: gateway!.id,
+      name: input.name,
+      tokenPrefix: input.tokenPrefix ?? `pfx_${randomUUID().slice(0, 6)}`,
+      tokenHash: input.tokenHash ?? randomUUID().replace(/-/g, "").padEnd(64, "0"),
+      expiresAt: input.expiresAt,
+      lastUsedAt: input.lastUsedAt ?? null,
+      revokedAt: input.revokedAt ?? null,
+    }).returning();
+    return { profile, gateway, token };
+  }
+
+  describe("mcp gateway token expiry", () => {
+    it("emits rotation cards for tokens expiring at exactly the 14-day boundary", async () => {
+      const { companyId, prefix } = await seedCompany("GTB");
+      const now = Date.now();
+      const { token, gateway } = await seedGatewayToken({
+        companyId,
+        name: "boundary-token",
+        expiresAt: new Date(now + 14 * 24 * 60 * 60 * 1000),
+        lastUsedAt: new Date(now - 60_000),
+      });
+
+      const feed = await attentionService(db, { now: () => now, feedCacheTtlMs: 0 }).list(companyId, { limit: 100 });
+      const card = feed.items.find((item) => item.sourceKind === "mcp_gateway_token_expiring");
+      expect(card).toBeTruthy();
+      expect(card!.subject.id).toBe(token!.id);
+      expect(card!.subject.title).toContain("boundary-token");
+      expect(card!.subject.metadata).toMatchObject({
+        tokenId: token!.id,
+        gatewayId: gateway!.id,
+        gatewayName: gateway!.name,
+        isExpired: false,
+        isUnused: false,
+        recommendedAction: "rotate",
+      });
+      expect(card!.whyNow).toContain("expires on");
+      expect(card!.decisionVerbs.map((verb) => verb.id)).toContain("rotate");
+    });
+
+    it("excludes a token expiring at 14 days + 1 ms", async () => {
+      const { companyId } = await seedCompany("GTC");
+      const now = Date.now();
+      await seedGatewayToken({
+        companyId,
+        name: "just-outside",
+        expiresAt: new Date(now + 14 * 24 * 60 * 60 * 1000 + 1),
+        lastUsedAt: new Date(now - 60_000),
+      });
+
+      const feed = await attentionService(db, { now: () => now, feedCacheTtlMs: 0 }).list(companyId, { limit: 100 });
+      expect(feed.items.filter((item) => item.sourceKind === "mcp_gateway_token_expiring")).toEqual([]);
+    });
+
+    it("marks an expired used token as expired with a rotate action", async () => {
+      const { companyId, prefix } = await seedCompany("GTD");
+      const now = Date.now();
+      const { token } = await seedGatewayToken({
+        companyId,
+        name: "expired-used",
+        expiresAt: new Date(now - 3_600_000),
+        lastUsedAt: new Date(now - 7_200_000),
+      });
+
+      const feed = await attentionService(db, { now: () => now, feedCacheTtlMs: 0 }).list(companyId, { limit: 100 });
+      const card = feed.items.find((item) => item.sourceKind === "mcp_gateway_token_expiring");
+      expect(card).toBeTruthy();
+      expect(card!.subject.id).toBe(token!.id);
+      expect(card!.subject.metadata).toMatchObject({ isExpired: true, isUnused: false, recommendedAction: "rotate" });
+      expect(card!.subject.status).toBe("expired");
+      expect(card!.whyNow).toContain("expired on");
+      expect(card!.whyNow.toLowerCase()).not.toContain("never used");
+    });
+
+    it("recommends revoke (never auto) for an expired never-used token", async () => {
+      const { companyId, prefix } = await seedCompany("GTE");
+      const now = Date.now();
+      const { token } = await seedGatewayToken({
+        companyId,
+        name: "expired-unused",
+        expiresAt: new Date(now - 3_600_000),
+        lastUsedAt: null,
+      });
+
+      const feed = await attentionService(db, { now: () => now, feedCacheTtlMs: 0 }).list(companyId, { limit: 100 });
+      const card = feed.items.find((item) => item.sourceKind === "mcp_gateway_token_expiring");
+      expect(card).toBeTruthy();
+      expect(card!.subject.id).toBe(token!.id);
+      expect(card!.subject.metadata).toMatchObject({ isExpired: true, isUnused: true, recommendedAction: "revoke" });
+      expect(card!.whyNow).toContain("never used");
+      expect(card!.decisionVerbs.map((verb) => verb.id)).toContain("revoke");
+    });
+
+    it("excludes revoked tokens and null-expiresAt tokens", async () => {
+      const { companyId } = await seedCompany("GTF");
+      const now = Date.now();
+      await seedGatewayToken({
+        companyId,
+        name: "revoked-expiring",
+        expiresAt: new Date(now + 1_000),
+        revokedAt: new Date(now - 1_000),
+      });
+      await seedGatewayToken({
+        companyId,
+        name: "never-expires",
+        expiresAt: null,
+        lastUsedAt: new Date(now - 60_000),
+      });
+
+      const feed = await attentionService(db, { now: () => now, feedCacheTtlMs: 0 }).list(companyId, { limit: 100 });
+      const cards = feed.items.filter((item) => item.sourceKind === "mcp_gateway_token_expiring");
+      expect(cards).toEqual([]);
+    });
+
+    it("deduplicates repeated feed reads by token id", async () => {
+      const { companyId } = await seedCompany("GTG");
+      const now = Date.now();
+      await seedGatewayToken({
+        companyId,
+        name: "dup-check",
+        expiresAt: new Date(now + 86_400_000),
+        lastUsedAt: new Date(now - 60_000),
+      });
+
+      const first = await attentionService(db, { now: () => now, feedCacheTtlMs: 0 }).list(companyId, { limit: 100 });
+      const second = await attentionService(db, { now: () => now, feedCacheTtlMs: 0 }).list(companyId, { limit: 100 });
+      const firstCards = first.items.filter((item) => item.sourceKind === "mcp_gateway_token_expiring");
+      const secondCards = second.items.filter((item) => item.sourceKind === "mcp_gateway_token_expiring");
+      expect(firstCards).toHaveLength(1);
+      expect(secondCards).toHaveLength(1);
+      expect(secondCards[0]!.dedupKey).toBe(firstCards[0]!.dedupKey);
+      const ids = new Set(second.items.filter((i) => i.sourceKind === "mcp_gateway_token_expiring").map((i) => i.dedupKey));
+      expect(ids.size).toBe(1);
+    });
+
+    it("keeps cards company-isolated", async () => {
+      const now = Date.now();
+      const alpha = await seedCompany("GTA");
+      const beta = await seedCompany("GTZ");
+      await seedGatewayToken({
+        companyId: alpha.companyId,
+        name: "alpha-token",
+        expiresAt: new Date(now + 86_400_000),
+        lastUsedAt: new Date(now - 60_000),
+      });
+      await seedGatewayToken({
+        companyId: beta.companyId,
+        name: "beta-token",
+        expiresAt: new Date(now + 2 * 86_400_000),
+        lastUsedAt: new Date(now - 60_000),
+      });
+
+      const alphaFeed = await attentionService(db, { now: () => now, feedCacheTtlMs: 0 }).list(alpha.companyId, { limit: 100 });
+      const alphaNames = alphaFeed.items
+        .filter((item) => item.sourceKind === "mcp_gateway_token_expiring")
+        .map((item) => item.subject.metadata?.tokenName);
+      expect(alphaNames).toEqual(["alpha-token"]);
+
+      const betaFeed = await attentionService(db, { now: () => now, feedCacheTtlMs: 0 }).list(beta.companyId, { limit: 100 });
+      const betaNames = betaFeed.items
+        .filter((item) => item.sourceKind === "mcp_gateway_token_expiring")
+        .map((item) => item.subject.metadata?.tokenName);
+      expect(betaNames).toEqual(["beta-token"]);
+    });
+
+    it("never leaks tokenHash or tokenPrefix in card payloads", async () => {
+      const { companyId } = await seedCompany("GTH");
+      const now = Date.now();
+      const tokenHash = `secret-hash-${randomUUID().replace(/-/g, "")}`;
+      const tokenPrefix = `secret-pfx-${randomUUID().slice(0, 8)}`;
+      const { gateway, token } = await seedGatewayToken({
+        companyId,
+        name: "leak-check",
+        expiresAt: new Date(now + 86_400_000),
+        lastUsedAt: new Date(now - 60_000),
+        tokenHash,
+        tokenPrefix,
+      });
+      expect(token!.tokenPrefix).toBe(tokenPrefix);
+
+      const feed = await attentionService(db, { now: () => now, feedCacheTtlMs: 0 }).list(companyId, { limit: 100 });
+      const card = feed.items.find((item) => item.sourceKind === "mcp_gateway_token_expiring");
+      expect(card).toBeTruthy();
+      const serialized = JSON.stringify(feed.items);
+      expect(serialized).not.toContain(tokenHash);
+      expect(serialized).not.toContain(tokenPrefix);
+      expect(serialized).not.toContain(token!.tokenHash);
+      expect(card!.subject.metadata && Object.keys(card!.subject.metadata)).toEqual(
+        expect.not.arrayContaining(["tokenHash", "tokenPrefix"]),
+      );
+    });
+
+    it("drops the card once the token is revoked", async () => {
+      const { companyId } = await seedCompany("GTI");
+      const now = Date.now();
+      const seeded = await seedGatewayToken({
+        companyId,
+        name: "rotate-then-revoke",
+        expiresAt: new Date(now + 86_400_000),
+        lastUsedAt: new Date(now - 60_000),
+      });
+
+      const before = await attentionService(db, { now: () => now, feedCacheTtlMs: 0 }).list(companyId, { limit: 100 });
+      expect(before.items.filter((item) => item.sourceKind === "mcp_gateway_token_expiring")).toHaveLength(1);
+
+      await db
+        .update(toolMcpGatewayTokens)
+        .set({ revokedAt: new Date(now + 60_000) })
+        .where(eq(toolMcpGatewayTokens.id, seeded.token!.id));
+
+      const after = await attentionService(db, { now: () => now, feedCacheTtlMs: 0 }).list(companyId, { limit: 100 });
+      expect(after.items.filter((item) => item.sourceKind === "mcp_gateway_token_expiring")).toEqual([]);
+    });
+  });
+
+  // myrmidon(1.6.8 OPE-12709): ROLE-MODEL-DOWN + provider "no credits".
+  describe("role model down and provider no credits", () => {
+    const NOW = Date.parse("2026-11-11T12:00:00.000Z");
+
+    function finishedAt(minutesAgo: number) {
+      return new Date(NOW - minutesAgo * 60_000);
+    }
+
+    async function seedRoleAgent(input: { companyId: string; name: string; role: string }) {
+      const agentId = randomUUID();
+      await db.insert(agents).values({
+        id: agentId,
+        companyId: input.companyId,
+        name: input.name,
+        role: input.role,
+        status: "idle",
+        adapterType: "codex_local",
+        adapterConfig: {},
+        runtimeConfig: {},
+        permissions: {},
+      });
+      return agentId;
+    }
+
+    async function seedRun(input: {
+      companyId: string;
+      agentId: string;
+      status: "succeeded" | "failed" | "timed_out";
+      error?: string | null;
+      providerModelGroup?: string;
+      resultJson?: Record<string, unknown>;
+      finishedMinutesAgo: number;
+    }) {
+      await db.insert(heartbeatRuns).values({
+        companyId: input.companyId,
+        agentId: input.agentId,
+        invocationSource: "automation",
+        status: input.status,
+        error: input.error ?? null,
+        resultJson: {
+          ...(input.providerModelGroup ? { providerModelGroup: input.providerModelGroup } : {}),
+          ...(input.resultJson ?? {}),
+        },
+        createdAt: finishedAt(input.finishedMinutesAgo),
+        updatedAt: finishedAt(input.finishedMinutesAgo),
+        finishedAt: finishedAt(input.finishedMinutesAgo),
+      });
+    }
+
+    async function seedFailingRole(input: {
+      companyId: string;
+      role: string;
+      name: string;
+      runs: number;
+      error?: string | null;
+      providerModelGroup?: string;
+    }) {
+      const agentId = await seedRoleAgent({ companyId: input.companyId, name: input.name, role: input.role });
+      for (let i = 0; i < input.runs; i += 1) {
+        await seedRun({
+          companyId: input.companyId,
+          agentId,
+          status: "failed",
+          error: input.error ?? "model_unavailable: provider overload",
+          providerModelGroup: input.providerModelGroup,
+          finishedMinutesAgo: 5 + i,
+        });
+      }
+      return agentId;
+    }
+
+    async function feed(companyId: string) {
+      return attentionService(db, { now: () => NOW, feedCacheTtlMs: 0 }).list(companyId, { limit: 100 });
+    }
+
+    it("raises one role_model_down card after 5 failed role runs within 30 min", async () => {
+      const { companyId } = await seedCompany("RMA");
+      await seedFailingRole({ companyId, role: "reviewer", name: "Reviewer A", runs: 5, providerModelGroup: "chatgpt-pool/gpt-6-luna" });
+
+      const items = (await feed(companyId)).items.filter((item) => item.sourceKind === "role_model_down");
+      expect(items).toHaveLength(1);
+      expect(items[0]!.dedupKey).toBe("role_model_down:reviewer");
+      expect(items[0]!.severity).toBe("critical");
+      expect(items[0]!.subject.metadata).toMatchObject({ role: "reviewer", finishedRuns: 5, succeededRuns: 0 });
+      expect(items[0]!.whyNow).toContain("chatgpt-pool/gpt-6-luna");
+      expect(items[0]!.whyNow).toContain("model_unavailable");
+    });
+
+    it("does not duplicate the card on a 6th failed run and clears it after a success", async () => {
+      const { companyId } = await seedCompany("RMB");
+      const agentId = await seedFailingRole({ companyId, role: "lead", name: "Lead A", runs: 6, providerModelGroup: "chatgpt-pool/gpt-6-luna" });
+
+      const during = (await feed(companyId)).items.filter((item) => item.sourceKind === "role_model_down");
+      expect(during).toHaveLength(1);
+      expect(during[0]!.dedupKey).toBe("role_model_down:lead");
+
+      await seedRun({ companyId, agentId, status: "succeeded", finishedMinutesAgo: 1 });
+      const after = (await feed(companyId)).items.filter((item) => item.sourceKind === "role_model_down");
+      expect(after).toEqual([]);
+    });
+
+    it("does not raise the card below 5 finished runs, outside the window, or when a run succeeded", async () => {
+      const { companyId } = await seedCompany("RMC");
+
+      // 4 failed runs — below the floor.
+      await seedFailingRole({ companyId, role: "engineer", name: "Eng A", runs: 4 });
+      // 5 failures older than the 30 min window.
+      const staleAgent = await seedRoleAgent({ companyId, name: "QA old", role: "qa" });
+      for (let i = 0; i < 5; i += 1) {
+        await seedRun({
+          companyId,
+          agentId: staleAgent,
+          status: "failed",
+          error: "model_unavailable",
+          finishedMinutesAgo: 45 + i,
+        });
+      }
+      // 5 finished but one succeeded — not a total outage.
+      const mixedAgent = await seedRoleAgent({ companyId, name: "QA mixed", role: "lead" });
+      for (let i = 0; i < 4; i += 1) {
+        await seedRun({ companyId, agentId: mixedAgent, status: "failed", error: "model_unavailable", finishedMinutesAgo: 6 + i });
+      }
+      await seedRun({ companyId, agentId: mixedAgent, status: "succeeded", finishedMinutesAgo: 5 });
+
+      // cancelled runs never count toward the floor.
+      const cancelledAgent = await seedRoleAgent({ companyId, name: "QA cancelled", role: "reviewer" });
+      for (let i = 0; i < 5; i += 1) {
+        await db.insert(heartbeatRuns).values({
+          companyId,
+          agentId: cancelledAgent,
+          invocationSource: "automation",
+          status: "cancelled",
+          createdAt: finishedAt(6 + i),
+          updatedAt: finishedAt(6 + i),
+          finishedAt: finishedAt(6 + i),
+        });
+      }
+
+      const items = (await feed(companyId)).items.filter((item) => item.sourceKind === "role_model_down");
+      expect(items).toEqual([]);
+    });
+
+    it("counts runs across channels of one role together toward the threshold", async () => {
+      const { companyId } = await seedCompany("RMD");
+      const agentId = await seedRoleAgent({ companyId, name: "Reviewer multi", role: "reviewer" });
+      for (let i = 0; i < 3; i += 1) {
+        await seedRun({ companyId, agentId, status: "failed", error: "model_unavailable", providerModelGroup: "chatgpt-pool/gpt-6-luna", finishedMinutesAgo: 6 + i });
+      }
+      for (let i = 0; i < 2; i += 1) {
+        await seedRun({ companyId, agentId, status: "failed", error: "402 Credits insufficient", providerModelGroup: "kie-gpt-6-luna", finishedMinutesAgo: 3 + i });
+      }
+
+      const items = (await feed(companyId)).items;
+      const down = items.filter((item) => item.sourceKind === "role_model_down");
+      expect(down).toHaveLength(1);
+      expect(down[0]!.subject.metadata).toMatchObject({ role: "reviewer", finishedRuns: 5, modelGroup: "chatgpt-pool/gpt-6-luna" });
+    });
+
+    it("raises an independent provider_no_credits card per channel, alongside a down role", async () => {
+      const { companyId } = await seedCompany("RME");
+      // 5 failed runs on channel A (role down) + one 402 on channel B: both cards.
+      await seedFailingRole({ companyId, role: "reviewer", name: "Reviewer nc", runs: 5, error: "Provider returned an overload or quota error as successful response content", providerModelGroup: "chatgpt-pool/gpt-6-luna" });
+      const fallbackAgent = await seedRoleAgent({ companyId, name: "Reviewer fb", role: "reviewer" });
+      await seedRun({ companyId, agentId: fallbackAgent, status: "failed", error: "LiteLLM: 402 Credits insufficient for kie-gpt-6.1-terra", providerModelGroup: "kie-gpt-6-luna", finishedMinutesAgo: 4 });
+
+      const items = (await feed(companyId)).items;
+      const down = items.filter((item) => item.sourceKind === "role_model_down");
+      const noCredits = items.filter((item) => item.sourceKind === "provider_no_credits");
+      expect(down).toHaveLength(1);
+      expect(noCredits).toHaveLength(1);
+      expect(noCredits[0]!.dedupKey).toBe("provider_no_credits:kie-gpt-6-luna");
+      expect(noCredits[0]!.subject.title).toContain("kie-gpt-6-luna");
+      expect(noCredits[0]!.whyNow).toContain("no credits");
+    });
+
+    it("emits a single provider_no_credits card per channel across roles and repeats", async () => {
+      const { companyId } = await seedCompany("RMF");
+      const agentA = await seedRoleAgent({ companyId, name: "Eng credits", role: "engineer" });
+      const agentB = await seedRoleAgent({ companyId, name: "QA credits", role: "qa" });
+      await seedRun({ companyId, agentId: agentA, status: "failed", error: "402 insufficient_quota", providerModelGroup: "kie-gpt-6.1-terra", finishedMinutesAgo: 8 });
+      await seedRun({ companyId, agentId: agentB, status: "timed_out", error: "LiteLLM: Credits insufficient (402)", providerModelGroup: "kie-gpt-6.1-terra", finishedMinutesAgo: 2 });
+      // A healthy channel with a non-credits failure must not raise the card.
+      await seedRun({ companyId, agentId: agentA, status: "failed", error: "adapter failed", providerModelGroup: "chatgpt-pool/gpt-6-luna", finishedMinutesAgo: 3 });
+
+      const noCredits = (await feed(companyId)).items.filter((item) => item.sourceKind === "provider_no_credits");
+      expect(noCredits).toHaveLength(1);
+      expect(noCredits[0]!.dedupKey).toBe("provider_no_credits:kie-gpt-6.1-terra");
+    });
+
+    it("does not raise role_model_down when the role's failures are ordinary adapter errors", async () => {
+      const { companyId } = await seedCompany("RMG");
+      // 6 finished, 0 succeeded, but every failure is an ordinary
+      // adapter/process error with no provider-refusal marker: the operator
+      // critical card must stay silent.
+      await seedFailingRole({
+        companyId,
+        role: "engineer",
+        name: "Eng ordinary",
+        runs: 6,
+        error: "adapter failed: exit code 1",
+        providerModelGroup: "chatgpt-pool/gpt-6-luna",
+      });
+
+      const items = (await feed(companyId)).items.filter((item) => item.sourceKind === "role_model_down");
+      expect(items).toEqual([]);
+    });
+
+    it("raises role_model_down from the adapter resultJson marker alone", async () => {
+      const { companyId } = await seedCompany("RMH");
+      const agentId = await seedRoleAgent({ companyId, name: "Reviewer json", role: "reviewer" });
+      // The adapter marks a provider error returned as successful content;
+      // the error column carries no provider marker at all.
+      for (let i = 0; i < 5; i += 1) {
+        await seedRun({
+          companyId,
+          agentId,
+          status: "failed",
+          error: "Provider returned an overload or quota error as successful response content",
+          providerModelGroup: "chatgpt-pool/gpt-6-luna",
+          resultJson: { provider_error_as_content: true },
+          finishedMinutesAgo: 6 + i,
+        });
+      }
+
+      const items = (await feed(companyId)).items.filter((item) => item.sourceKind === "role_model_down");
+      expect(items).toHaveLength(1);
+      expect(items[0]!.dedupKey).toBe("role_model_down:reviewer");
+      expect(items[0]!.subject.metadata).toMatchObject({ role: "reviewer", finishedRuns: 5, refusedRuns: 5, succeededRuns: 0 });
+      expect(items[0]!.whyNow).toContain("chatgpt-pool/gpt-6-luna");
+    });
+
+    it("stays silent when refusals are below the floor even with enough finished runs", async () => {
+      const { companyId } = await seedCompany("RMI");
+      const agentId = await seedRoleAgent({ companyId, name: "Lead mixed", role: "lead" });
+      // 6 finished, 0 succeeded, but only 2 are model refusals: below the
+      // refusal floor -> no operator-critical card.
+      await seedRun({ companyId, agentId, status: "failed", error: "model_unavailable: overload", providerModelGroup: "chatgpt-pool/gpt-6-luna", finishedMinutesAgo: 10 });
+      await seedRun({ companyId, agentId, status: "failed", error: "model_unavailable: overload", providerModelGroup: "chatgpt-pool/gpt-6-luna", finishedMinutesAgo: 9 });
+      for (let i = 0; i < 4; i += 1) {
+        await seedRun({ companyId, agentId, status: "failed", error: "adapter failed: exit code 1", providerModelGroup: "chatgpt-pool/gpt-6-luna", finishedMinutesAgo: 8 - i });
+      }
+
+      const items = (await feed(companyId)).items.filter((item) => item.sourceKind === "role_model_down");
+      expect(items).toEqual([]);
+    });
+
+    it("matches 402 and 429 as whole numbers, not inside ids, ports or durations", async () => {
+      const { companyId } = await seedCompany("RMJ");
+      const agentId = await seedRoleAgent({ companyId, name: "Eng ids", role: "engineer" });
+      for (let i = 0; i < 6; i += 1) {
+        await seedRun({
+          companyId,
+          agentId,
+          status: "failed",
+          error: "run 5a3c402b-91f0 exited with code 1 after 14290 ms (OPE-12402, port 4290)",
+          providerModelGroup: "kie-gpt-6.1-terra",
+          finishedMinutesAgo: 5 + i,
+        });
+      }
+
+      const items = (await feed(companyId)).items;
+      expect(items.filter((item) => item.sourceKind === "provider_no_credits")).toEqual([]);
+      expect(items.filter((item) => item.sourceKind === "role_model_down")).toEqual([]);
+    });
+
+    // myrmidon(1.6.8 OPE-12709): "model unavailable since HH:MM" mark on agents.
+    it("reports the first refusal time for a role with an active role_model_down signal", async () => {
+      const { companyId } = await seedCompany("RMK");
+      // 6 refusals finished 5..10 min ago: the earliest one is 10 min ago.
+      await seedFailingRole({ companyId, role: "reviewer", name: "Reviewer since", runs: 6, providerModelGroup: "chatgpt-pool/gpt-6-luna" });
+
+      const since = await listRoleModelDownSince(db, companyId, NOW);
+      expect(since.size).toBe(1);
+      expect(since.get("reviewer")).toBe(finishedAt(10).toISOString());
+    });
+
+    it("drops the mark after the role's first successful run", async () => {
+      const { companyId } = await seedCompany("RML");
+      const agentId = await seedFailingRole({ companyId, role: "lead", name: "Lead since", runs: 5 });
+      expect((await listRoleModelDownSince(db, companyId, NOW)).has("lead")).toBe(true);
+
+      await seedRun({ companyId, agentId, status: "succeeded", finishedMinutesAgo: 1 });
+      expect((await listRoleModelDownSince(db, companyId, NOW)).has("lead")).toBe(false);
+    });
+
+    it("marks only the down role, not agents of other roles", async () => {
+      const { companyId } = await seedCompany("RMM");
+      await seedFailingRole({ companyId, role: "reviewer", name: "Reviewer down", runs: 5 });
+      const healthy = await seedRoleAgent({ companyId, name: "Engineer ok", role: "engineer" });
+      await seedRun({ companyId, agentId: healthy, status: "succeeded", finishedMinutesAgo: 2 });
+
+      const since = await listRoleModelDownSince(db, companyId, NOW);
+      expect([...since.keys()]).toEqual(["reviewer"]);
+      expect(since.has("engineer")).toBe(false);
+    });
+
+    it("does not mark a role whose failures are ordinary adapter errors", async () => {
+      const { companyId } = await seedCompany("RMN");
+      await seedFailingRole({ companyId, role: "qa", name: "QA ordinary", runs: 6, error: "adapter failed: exit code 1" });
+
+      expect((await listRoleModelDownSince(db, companyId, NOW)).size).toBe(0);
+    });
   });
 });

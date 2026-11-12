@@ -39,10 +39,15 @@ var allowedTable = []allowedEntry{
 	{ID: A7, Method: "POST", Template: "containers/{name}/wait?condition=not-running", Suffixes: []string{".helper"}},
 	{ID: A8, Method: "GET", Template: "containers/{name}/logs?stdout=true&stderr=true&tail=20", Suffixes: []string{".helper"}},
 	{ID: A9, Method: "DELETE", Template: "containers/{name}?force=true&v=true", Suffixes: []string{"", ".next", ".helper"}},
+	// A22 (OPE-12654): the decommission delete of the main container, a variant
+	// of A9 the way A17 is a variant of A10.
+	{ID: A22, Method: "DELETE", Template: "containers/{name}" + decommissionTail, Suffixes: []string{""}},
 	{ID: A10, Method: "POST", Template: "containers/{name}/stop?t=30", Suffixes: []string{""}},
 	{ID: A17, Method: "POST", Template: "containers/{name}/stop?t=30&myrmidon-idle=true", Suffixes: []string{""}},
 	{ID: A11, Method: "POST", Template: "containers/{name}/restart?t=30", Suffixes: []string{""}},
 	{ID: A18, Method: "POST", Template: "containers/{name}/update", Suffixes: []string{""}},
+	{ID: A20, Method: "PUT", Template: "containers/{name}/config/update", Suffixes: []string{""}},
+	{ID: A21, Method: "GET", Template: "containers/{name}/config/limits", Suffixes: []string{""}},
 	{ID: A12, Method: "POST", Template: "containers/{name}/rename?name={mainName}", Suffixes: []string{".next"}},
 	{ID: A13, Method: "GET", Template: "containers/{name}/archive?" + cloneReportQuery, Suffixes: []string{""}},
 	{ID: A13, Method: "GET", Template: "containers/{name}/archive?" + LegacyCloneReportQuery, Suffixes: []string{""}},
@@ -52,6 +57,8 @@ var allowedTable = []allowedEntry{
 	{ID: A16, Method: "GET", Template: "containers/{name}/archive?" + LegacySkillsReadQuery, Suffixes: []string{""}},
 	// A14: the partition and the project quotas; not a Docker call, so no API prefix.
 	{ID: A14, Method: "GET", Template: strings.TrimPrefix(DiskTarget, "/"), NoPrefix: true},
+	// A19: OOM events transport (OPE-9934); not a Docker call, so no API prefix.
+	{ID: A19, Method: "GET", Template: strings.TrimPrefix(EventsOomTarget, "/"), NoPrefix: true},
 }
 
 const fixtureRelPath = "../../contract/allowed-routes.json"
@@ -129,7 +136,7 @@ func TestAllowedTableMatchesParse(t *testing.T) {
 			}
 		}
 	}
-	for _, id := range []string{A1, A2, A3, A4, A5, A6, A7, A8, A9, A10, A11, A12, A13, A14, A16} {
+	for _, id := range []string{A1, A2, A3, A4, A5, A6, A7, A8, A9, A10, A11, A12, A13, A14, A16, A19, A20, A21, A22} {
 		if !seen[id] {
 			t.Errorf("route %s is not in the allowed table", id)
 		}

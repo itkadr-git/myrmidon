@@ -7,6 +7,7 @@ import {
   budgetPolicies,
   companies,
   costEvents,
+  issues,
   projects,
 } from "@myrmidon/db";
 import type {
@@ -21,9 +22,12 @@ import type {
   BudgetScopeType,
   BudgetThresholdType,
   BudgetWindowKind,
+  TokenBudgetSignal,
 } from "@myrmidon/shared";
+import { buildTokenBudgetSignal } from "@myrmidon/shared";
 import { notFound, unprocessable } from "../errors.js";
 import { logActivity } from "./activity-log.js";
+import type { BudgetLimitAdmissionBlock } from "../myrmidon/budget-limits/admission.js";
 
 type ScopeRecord = {
   companyId: string;
@@ -78,6 +82,18 @@ export type BudgetServiceHooks = {
     amountLimit: number;
     amountObserved: number;
   }) => Promise<void>;
+  // myrmidon(1.7-BUDGET-CONFIG): the hierarchy spend limits of A
+  // (`budget_limits` rows) on run admission — the queue-side leg of the
+  // "a limit change acts in the queue within a minute" acceptance. Resolved
+  // fresh on every admission (no restart), gated by the global signal-only
+  // flag and the limit row's own hard/soft mode; only a hard, active, over
+  // limit refuses. An absent hook keeps the vendor behaviour (never blocks),
+  // so a caller without myrmidon wiring is unchanged.
+  resolveBudgetLimitAdmissionBlock?: (input: {
+    companyId: string;
+    agentId: string;
+    context?: { issueId?: string | null; projectId?: string | null };
+  }) => Promise<BudgetLimitAdmissionBlock | null>;
 };
 
 function currentUtcMonthWindow(now = new Date()) {
@@ -115,6 +131,18 @@ function normalizeScopeName(scopeType: BudgetScopeType, name: string) {
 }
 
 async function resolveScopeRecord(db: Db, scopeType: BudgetScopeType, scopeId: string): Promise<ScopeRecord> {
+  // myrmidon(1.7 TOKEN-BUDGET-SIGNAL): the issue scope — a lookup only (the
+  // title for the card); issues cannot pause so the paused flags are constant.
+  if (scopeType === "issue") {
+    const row = await db
+      .select({ companyId: issues.companyId, title: issues.title })
+      .from(issues)
+      .where(eq(issues.id, scopeId))
+      .then((rows) => rows[0] ?? null);
+    if (!row) throw notFound("Issue not found");
+    return issueScopeRecord(row.companyId, scopeId, row.title);
+  }
+
   if (scopeType === "company") {
     const row = await db
       .select({
@@ -200,6 +228,27 @@ async function computeObservedAmount(
   return Number(row?.total ?? 0);
 }
 
+// myrmidon(1.7 TOKEN-BUDGET-SIGNAL, OPE-12232): the observed token spend of
+// one issue — input + cached-input + output across the issue's cost events
+// (the same three columns the issue cost-summary shows). Token policies are
+// read-only signals, so this is only ever called from the read path.
+async function computeObservedIssueTokens(db: Db, companyId: string, issueId: string) {
+  const [row] = await db
+    .select({
+      total: sql<number>`coalesce(sum(${costEvents.inputTokens} + ${costEvents.cachedInputTokens} + ${costEvents.outputTokens}), 0)::double precision`,
+    })
+    .from(costEvents)
+    .where(and(eq(costEvents.companyId, companyId), eq(costEvents.issueId, issueId)));
+  return Number(row?.total ?? 0);
+}
+
+// myrmidon(1.7 TOKEN-BUDGET-SIGNAL): the issue scope record — issues never
+// pause, so `paused` is structurally false and the money scope machinery
+// (companies/agents/projects tables) does not apply.
+function issueScopeRecord(companyId: string, issueId: string, title: string): ScopeRecord {
+  return { companyId, name: title, paused: false, pauseReason: null };
+}
+
 function buildApprovalPayload(input: {
   policy: PolicyRow;
   scopeName: string;
@@ -253,11 +302,13 @@ async function batchResolveScopeRecords(
   const companyIds = new Set<string>();
   const agentIds = new Set<string>();
   const projectIds = new Set<string>();
+  const issueIds = new Set<string>();
 
   for (const s of scopes) {
     if (s.scopeType === "company") companyIds.add(s.scopeId);
     else if (s.scopeType === "agent") agentIds.add(s.scopeId);
     else if (s.scopeType === "project") projectIds.add(s.scopeId);
+    else if (s.scopeType === "issue") issueIds.add(s.scopeId);
   }
 
   const queries: Promise<void>[] = [];
@@ -332,6 +383,22 @@ async function batchResolveScopeRecords(
               paused: Boolean(row.pausedAt),
               pauseReason: (row.pauseReason as ScopeRecord["pauseReason"]) ?? null,
             });
+          }
+        }),
+    );
+  }
+
+  if (issueIds.size > 0) {
+    queries.push(
+      db
+        .select({ id: issues.id, companyId: issues.companyId, title: issues.title })
+        .from(issues)
+        .where(inArray(issues.id, Array.from(issueIds)))
+        .then((rows) => {
+          for (const row of rows) {
+            // myrmidon(1.7 TOKEN-BUDGET-SIGNAL): issue scopes never pause —
+            // the constants keep overview renderers uniform.
+            map.set(`issue:${row.id}`, issueScopeRecord(row.companyId, row.id, row.title));
           }
         }),
     );
@@ -638,7 +705,9 @@ export function budgetService(db: Db, hooks: BudgetServiceHooks = {}) {
     const observedAmount =
       precomputed?.observedAmount !== undefined
         ? precomputed.observedAmount
-        : await computeObservedAmount(db, policy);
+        : policy.metric === "issue_tokens"
+          ? await computeObservedIssueTokens(db, policy.companyId, policy.scopeId)
+          : await computeObservedAmount(db, policy);
     const { start, end } = resolveWindow(policy.windowKind as BudgetWindowKind);
     const amount = policy.isActive ? policy.amount : 0;
     const utilizationPercent =
@@ -848,7 +917,13 @@ export function budgetService(db: Db, hooks: BudgetServiceHooks = {}) {
       }
 
       const metric = input.metric ?? "billed_cents";
-      const windowKind = input.windowKind ?? (input.scopeType === "project" ? "lifetime" : "calendar_month_utc");
+      if ((metric === "issue_tokens") !== (input.scopeType === "issue")) {
+        throw unprocessable("Issue token budgets must use issue scope and issue_tokens metric");
+      }
+      const windowKind = input.windowKind ?? (input.scopeType === "project" || metric === "issue_tokens" ? "lifetime" : "calendar_month_utc");
+      if (metric === "issue_tokens" && windowKind !== "lifetime") {
+        throw unprocessable("Issue token budgets must use a lifetime window");
+      }
       const amount = Math.max(0, Math.floor(input.amount));
       const nextIsActive = amount > 0 && (input.isActive ?? true);
       const existing = await db
@@ -918,6 +993,20 @@ export function budgetService(db: Db, hooks: BudgetServiceHooks = {}) {
             updatedAt: now,
           })
           .where(eq(agents.id, input.scopeId));
+      }
+
+      if (metric === "issue_tokens") {
+        const observedTokens = await computeObservedIssueTokens(db, companyId, input.scopeId);
+        await logActivity(db, {
+          companyId,
+          actorType: "user",
+          actorId: actorUserId ?? "board",
+          action: "budget.policy_upserted",
+          entityType: "budget_policy",
+          entityId: row.id,
+          details: { scopeType: "issue", scopeId: row.scopeId, metric, amount: row.amount, windowKind },
+        });
+        return buildPolicySummary(row, { scope, observedAmount: observedTokens });
       }
 
       if (amount > 0) {
@@ -1043,7 +1132,48 @@ export function budgetService(db: Db, hooks: BudgetServiceHooks = {}) {
       };
     },
 
+    // myrmidon(1.7 TOKEN-BUDGET-SIGNAL, OPE-12232): the read path of the
+    // issue token budget. Pure signal: computes level/utilization from the
+    // issue's token ledger; never writes, never pauses, never creates
+    // incidents or approvals, and is not consulted on run admission — the
+    // hard money stop keeps that role. Returns null when the issue has no
+    // active token budget (the UI renders nothing instead of a zero badge).
+    getTokenBudgetSignal: async (
+      companyId: string,
+      issueId: string,
+    ): Promise<TokenBudgetSignal | null> => {
+      const policyRows = await db
+        .select()
+        .from(budgetPolicies)
+        .where(
+          and(
+            eq(budgetPolicies.companyId, companyId),
+            eq(budgetPolicies.scopeType, "issue"),
+            eq(budgetPolicies.scopeId, issueId),
+            eq(budgetPolicies.metric, "issue_tokens"),
+            eq(budgetPolicies.isActive, true),
+          ),
+        )
+        .limit(1)
+        .then((rows) => rows[0] ?? null);
+      if (!policyRows || policyRows.amount <= 0) return null;
+
+      const observedTokens = await computeObservedIssueTokens(db, companyId, issueId);
+      return buildTokenBudgetSignal({
+        policyId: policyRows.id,
+        scopeId: issueId,
+        amountTokens: policyRows.amount,
+        observedTokens,
+        warnPercent: policyRows.warnPercent,
+      });
+    },
+
     evaluateCostEvent: async (event: typeof costEvents.$inferSelect) => {
+      // myrmidon(1.7 TOKEN-BUDGET-SIGNAL): the scope list keeps the money
+      // scopes only. Issue-scoped token policies are signals — they are never
+      // evaluated here (no incidents, no pauses), the card reads them on
+      // demand via getTokenBudgetSignal. The per-policy metric guard below
+      // stays as belt-and-braces for the money metric.
       const candidatePolicies = await db
         .select()
         .from(budgetPolicies)
@@ -1056,6 +1186,7 @@ export function budgetService(db: Db, hooks: BudgetServiceHooks = {}) {
         );
 
       const relevantPolicies = candidatePolicies.filter((policy) => {
+        if (policy.metric !== "billed_cents") return false;
         if (policy.scopeType === "company") return policy.scopeId === event.companyId;
         if (policy.scopeType === "agent") return policy.scopeId === event.agentId;
         if (policy.scopeType === "project") return Boolean(event.projectId) && policy.scopeId === event.projectId;
@@ -1181,6 +1312,23 @@ export function budgetService(db: Db, hooks: BudgetServiceHooks = {}) {
         .where(eq(agents.id, agentId))
         .then((rows) => rows[0] ?? null);
       if (!agent || agent.companyId !== companyId) throw notFound("Agent not found");
+
+      // myrmidon(1.7-BUDGET-CONFIG): the hierarchy limits of A refuse first —
+      // the deepest level wins (issue → foraging → caste → project nest →
+      // company nest), resolved fresh from `budget_limits` on every admission.
+      // The hook is optional wiring: absent means no hierarchy limits apply
+      // (vendor behaviour, e.g. in unwired unit tests of this service).
+      const limitBlock = hooks.resolveBudgetLimitAdmissionBlock
+        ? await hooks.resolveBudgetLimitAdmissionBlock({ companyId, agentId, context })
+        : null;
+      if (limitBlock) {
+        return {
+          scopeType: limitBlock.scopeType,
+          scopeId: limitBlock.scopeId,
+          scopeName: limitBlock.scopeRef ?? limitBlock.scopeId,
+          reason: limitBlock.reason,
+        };
+      }
 
       const company = await db
         .select({

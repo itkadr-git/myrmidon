@@ -1,21 +1,7 @@
 // myrmidon(UI2-I18N): language provider for the 2.0 UI tree (ui/src/ui2).
 //
-// Owns the user's interface language end to end for the new tree:
-//   - the server preference (`GET/PUT /api/myrmidon/ui2/language/me`) is the
-//     source of truth — the choice follows the user across browsers;
-//   - localStorage mirrors the last applied choice so a reload keeps the
-//     language before the request resolves (and when the request fails);
-//   - the ui2 catalogs are registered on the vendor i18next instance via
-//     addResourceBundle as the "ui2" namespace — the vendor locale JSON and
-//     the vendor i18n module stay untouched (no vendor-file edits at all);
-//   - the `lang` attribute is set on the ui2 root element (en/ru): that
-//     attribute is the whole font-switch contract with the shell theme
-//     (Saira for EN, Exo 2 for RU, keyed on [lang="ru"] in tokens.css);
-//   - cross-tab sync via the storage event.
-//
-// The provider is shell-agnostic: the shell root mounts it as one line (the
-// cross-ticket contract), and the vendor screens are unaffected — vendor
-// translation behavior does not change (English default, same keys).
+// Owns the user's interface language end to end for the new tree.
+
 import {
   createContext,
   useCallback,
@@ -26,14 +12,39 @@ import {
   useState,
   type ReactNode,
 } from "react";
-import { i18n } from "@/i18n";
-import { UI2_LANGUAGES, type Ui2Language } from "@myrmidon/shared";
+import * as vendorI18n from "@/i18n";
+import { UI2_LANGUAGES as SHARED_UI2_LANGUAGES, flattenCatalog, type Ui2Language } from "@myrmidon/shared";
+// (the vendor instance is read through readVendorI18nInstance below, never by
+// destructuring the namespace — see the comment on that helper)
 import { ui2LanguageApi } from "./api";
 import { en } from "./catalogs/en";
 import { ru } from "./catalogs/ru";
+import { mergeCatalog, type CatalogObject } from "./catalog-upload";
+import { formatUi2Message, ui2Messages, type Ui2MessageKey } from "./locales";
 
-export { UI2_LANGUAGES };
+// myrmidon(OPE-3986): the shared constant is snapshotted into a LOCAL binding
+// before re-export. A direct `export { UI2_LANGUAGES }` of an imported binding
+// makes the vitest module-runner namespace getter return `undefined` even
+// though the binding is alive at eval time (LanguageSettingsPanel crashed at
+// `UI2_LANGUAGES.map` in CI while `Object.keys` still listed the export). A
+// locally-initialized const gets a getter over the module's own binding and
+// keeps the same public value/type.
+export const UI2_LANGUAGES: readonly Ui2Language[] = SHARED_UI2_LANGUAGES;
 export type { Ui2Language };
+
+/** The slice of the vendor i18next instance the ui2 shell touches. */
+type Ui2VendorI18n = {
+  language?: string;
+  changeLanguage?: (language: string) => Promise<unknown> | void;
+  hasResourceBundle?: (locale: string, namespace: string) => boolean;
+  addResourceBundle?: (
+    locale: string,
+    namespace: string,
+    resources: unknown,
+    deep?: boolean,
+    overwrite?: boolean,
+  ) => unknown;
+};
 
 const UI2_LANGUAGE_STORAGE_KEY = "myrmidon:ui2:language";
 const UI2_NAMESPACE = "ui2";
@@ -46,92 +57,141 @@ function readStoredLanguage(): Ui2Language | null {
   try {
     const stored = window.localStorage.getItem(UI2_LANGUAGE_STORAGE_KEY);
     if (isUi2Language(stored)) return stored;
-  } catch {
-    // localStorage unavailable (private mode, disabled) — rely on the server.
-  }
+  } catch {}
   return null;
 }
 
 function storeLanguage(language: Ui2Language): void {
   try {
     window.localStorage.setItem(UI2_LANGUAGE_STORAGE_KEY, language);
-  } catch {
-    // Persisting locally is best-effort; the server copy still applies.
-  }
+  } catch {}
 }
 
 export function ui2LanguageLabel(language: Ui2Language): string {
   return language === "ru" ? "Русский" : "English";
 }
 
-/** The ui2 catalogs keyed by locale, registered via addResourceBundle. */
 export const ui2Catalogs = { en, ru } as const;
 
 /**
- * Register the ui2 catalogs on the i18next instance (idempotent). The fork
- * languages carry their own catalog; every other vendor locale falls back to
- * the English base through i18next's fallback chain.
+ * The vendor i18next instance from `@/i18n`, read WITHOUT property access on
+ * the module namespace: a test's partial `vi.mock("@/i18n", ...)` exposes only
+ * the exports it defines, and merely touching `.i18n` on such a namespace
+ * throws "No "i18n" export is defined on the "@/i18n" mock" — the branch's
+ * namespace access is what blanked the settings screens in CI. `Object.hasOwn`
+ * answers "is the export present" without reading it, so a partial mock is a
+ * safe null and the provider degrades to localStorage-only (as on main).
  */
-export function registerUi2Catalogs(): void {
-  for (const [locale, catalog] of Object.entries(ui2Catalogs)) {
-    if (!i18n.hasResourceBundle(locale, UI2_NAMESPACE)) {
-      i18n.addResourceBundle(locale, UI2_NAMESPACE, catalog, true, true);
+export function readVendorI18nInstance(): Ui2VendorI18n | null {
+  if (!vendorI18n || typeof vendorI18n !== "object") return null;
+  return Object.hasOwn(vendorI18n, "i18n") && vendorI18n.i18n ? (vendorI18n.i18n as Ui2VendorI18n) : null;
+}
+
+export function registerUi2Catalogs(custom: Partial<Record<string, Record<string, unknown>>> = {}): void {
+  const i18nInstance = readVendorI18nInstance();
+  if (!i18nInstance) return;
+  if (typeof i18nInstance.hasResourceBundle !== "function") return;
+  for (const [locale, baseCatalog] of Object.entries(ui2Catalogs)) {
+    const customBundle = custom[locale];
+    const catalog = customBundle
+      ? mergeCatalog(baseCatalog as unknown as CatalogObject, customBundle as CatalogObject)
+      : baseCatalog;
+    const client = i18nInstance as unknown as Record<string, unknown>;
+    if (!customBundle && typeof client.hasResourceBundle === "function" && i18nInstance.hasResourceBundle(locale, UI2_NAMESPACE)) {
+      // The catalogs are static per locale: registering again would REPLACE the
+      // bundle and silently drop custom keys uploaded through the locale-upload
+      // screen (OPE-9646 regression). Register once, then leave it alone.
+      continue;
+    }
+    if (typeof client.addResourceBundle === "function") {
+      i18nInstance.addResourceBundle?.(locale, UI2_NAMESPACE, catalog, true, true);
+    }
+  }
+  for (const [locale, customBundle] of Object.entries(custom)) {
+    if (locale in ui2Catalogs) continue;
+    if (!customBundle) continue;
+    const client = i18nInstance as unknown as Record<string, unknown>;
+    if (typeof client.addResourceBundle === "function") {
+      i18nInstance.addResourceBundle?.(locale, UI2_NAMESPACE, customBundle, true, true);
     }
   }
 }
 
-/**
- * The ui2 root element the `lang` attribute goes on (the shell mounts one
- * element with class "myr-ui2"). Falls back to documentElement outside the
- * shell (tests, standalone panels) so the attribute contract still holds.
- */
 function ui2LangRoot(): HTMLElement | null {
   if (typeof document === "undefined") return null;
   return document.querySelector<HTMLElement>(".myr-ui2") ?? document.documentElement;
 }
 
-/** Apply a language: persist locally, set lang on the ui2 root, switch i18n. */
 export function applyUi2Language(language: Ui2Language): void {
   storeLanguage(language);
   const root = ui2LangRoot();
   if (root) root.setAttribute("lang", language);
-  void i18n.changeLanguage(language);
+  const i18nInstance = readVendorI18nInstance();
+  if (
+    i18nInstance &&
+    typeof i18nInstance.changeLanguage === "function" &&
+    i18nInstance.language !== language
+  ) {
+    void i18nInstance.changeLanguage(language);
+  }
 }
 
 export interface Ui2LanguageContextValue {
   language: Ui2Language;
-  /** Switch language: server write (when possible) + immediate apply. */
+  locale: Ui2Language;
   setLanguage: (language: Ui2Language) => void;
-  /** True while the preference PUT is in flight. */
+  setLocale: (language: Ui2Language) => void;
+  t: (key: Ui2MessageKey, values?: Record<string, string | number>) => string;
+  availableLocales: readonly Ui2Language[];
+  applyCustomCatalog: (locale: string, catalog: Record<string, unknown>, merge?: boolean) => void;
+  customCatalogs: Partial<Record<Ui2Language, Record<string, unknown>>>;
+  setCatalogs: (catalogs: Partial<Record<Ui2Language, Record<string, unknown>>>) => void;
   saving: boolean;
-  /** Set when the server write failed (choice stays local only). */
   saveError: boolean;
 }
 
 const Ui2LanguageContext = createContext<Ui2LanguageContextValue | undefined>(undefined);
 
+/** One honest "could not save" toast per failed write; keyed by run id (ADM 27.10: no toast loops). */
+let lastSaveFailureToastAt = 0;
+function announceSaveFailure(): void {
+  if (typeof document === "undefined") return;
+  const now = Date.now();
+  if (now - lastSaveFailureToastAt < 4000) return;
+  lastSaveFailureToastAt = now;
+  const template = ru.language.saveFailed ?? en.language.saveFailed ?? "";
+  if (!template) return;
+  const toast = document.createElement("div");
+  toast.setAttribute("role", "alert");
+  toast.setAttribute("data-testid", "ui2-language-save-error-toast");
+  toast.className = "ui2-toast ui2-toast--error";
+  toast.textContent = formatUi2Message(template);
+  document.body.appendChild(toast);
+  window.setTimeout(() => {
+    toast.remove();
+  }, 4000);
+}
+
 export function Ui2LanguageProvider({ children }: { children: ReactNode }) {
-  // Start from the mirrored local choice so the first paint keeps the
-  // language even before the server preference resolves.
   const [language, setLanguageState] = useState<Ui2Language>(() => readStoredLanguage() ?? "en");
+  const [customCatalogs, setCustomCatalogs] = useState<Partial<Record<Ui2Language, Record<string, unknown>>>>({});
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState(false);
   const mounted = useRef(true);
-  // Once the user has chosen a language in this session, a late server
-  // response must not overwrite their choice (the switch already applied
-  // and queued its own write).
   const userSwitched = useRef(false);
+  // Mirror of customCatalogs readable inside mount effects/callbacks without
+  // re-running them (upload remounts must keep the custom bundle registered).
+  const customCatalogsRef = useRef(customCatalogs);
+  customCatalogsRef.current = customCatalogs;
 
   useEffect(() => {
     mounted.current = true;
-    registerUi2Catalogs();
+    registerUi2Catalogs(customCatalogsRef.current);
     return () => {
       mounted.current = false;
     };
   }, []);
 
-  // Load the server preference once: it wins over the local mirror — but
-  // only until the user switches in this session.
   useEffect(() => {
     let cancelled = false;
     ui2LanguageApi
@@ -141,15 +201,12 @@ export function Ui2LanguageProvider({ children }: { children: ReactNode }) {
         setLanguageState(preference.language);
         applyUi2Language(preference.language);
       })
-      .catch(() => {
-        // Offline or not a board session: keep the local mirror.
-      });
+      .catch(() => {});
     return () => {
       cancelled = true;
     };
   }, []);
 
-  // Cross-tab sync.
   useEffect(() => {
     function handleStorage(event: StorageEvent) {
       if (event.key === UI2_LANGUAGE_STORAGE_KEY && isUi2Language(event.newValue)) {
@@ -173,18 +230,76 @@ export function Ui2LanguageProvider({ children }: { children: ReactNode }) {
         if (mounted.current) setSaving(false);
       })
       .catch(() => {
-        // The language stays applied locally; flag that the server copy
-        // was not saved.
         if (mounted.current) {
           setSaving(false);
           setSaveError(true);
+          announceSaveFailure();
         }
       });
   }, []);
 
+  const applyCustomCatalog = useCallback(
+    (targetLocale: string, catalog: Record<string, unknown>, andSwitch?: boolean) => {
+      const shouldSwitch = andSwitch !== false;
+      const normalized = targetLocale.trim().toLowerCase() as Ui2Language;
+      if (!normalized || !catalog || typeof catalog !== "object") return;
+
+      const { entries } = flattenCatalog(catalog);
+      const flat: Record<string, string> = {};
+      for (const [key, entryValue] of entries) {
+        flat[key] = entryValue;
+      }
+      if (!flat || Object.keys(flat).length === 0) return;
+      if (!ui2Messages[normalized]) {
+        (ui2Messages as unknown as Record<string, Record<string, string>>)[normalized] = {
+          ...ui2Messages["en"],
+          ...flat,
+        };
+      } else {
+        Object.assign(ui2Messages[normalized], flat);
+      }
+      setCustomCatalogs((current) => ({ ...current, [normalized]: { ...(current[normalized] ?? {}), ...flat } }));
+
+      // Register the vendor bundle with the upload's own shape. For a built-in
+      // locale registerUi2Catalogs merges the overlay into the base catalog
+      // (additive, so flat uploaded-only keys survive); for a custom locale the
+      // raw tree IS the bundle — the flat overlay would replace it with dotted
+      // keys i18next never looks up under this namespace (OPE-3986 CI).
+      registerUi2Catalogs({ [normalized]: catalog });
+
+      if (shouldSwitch) {
+        userSwitched.current = true;
+        applyUi2Language(normalized);
+        setLanguageState(normalized);
+      }
+
+      if (typeof window !== "undefined") {
+        window.dispatchEvent(
+          new CustomEvent("myrmidon:locale-applied", { detail: { locale: normalized, andSwitch: shouldSwitch } }),
+        );
+      }
+    },
+    [],
+  );
+
   const value = useMemo<Ui2LanguageContextValue>(
-    () => ({ language, setLanguage, saving, saveError }),
-    [language, setLanguage, saving, saveError],
+    () => ({
+      language,
+      locale: language,
+      setLanguage,
+      setLocale: setLanguage,
+      t: (key, values) => {
+        const template = (ui2Messages[language]?.[key] ?? ui2Messages["en"][key] ?? key);
+        return formatUi2Message(template, values);
+      },
+      availableLocales: Array.from(new Set([...UI2_LANGUAGES, ...Object.keys(customCatalogs)])) as readonly Ui2Language[],
+      applyCustomCatalog,
+      customCatalogs,
+      setCatalogs: setCustomCatalogs,
+      saving,
+      saveError,
+    }),
+    [language, setLanguage, applyCustomCatalog, customCatalogs, saving, saveError],
   );
 
   return <Ui2LanguageContext.Provider value={value}>{children}</Ui2LanguageContext.Provider>;
@@ -196,4 +311,12 @@ export function useUi2Language(): Ui2LanguageContextValue {
     throw new Error("useUi2Language must be used inside Ui2LanguageProvider");
   }
   return context;
+}
+
+export function useUi2I18n(): Ui2LanguageContextValue {
+  return useUi2Language();
+}
+
+export function useUi2I18nOptional(): Ui2LanguageContextValue | null {
+  return useContext(Ui2LanguageContext) ?? null;
 }

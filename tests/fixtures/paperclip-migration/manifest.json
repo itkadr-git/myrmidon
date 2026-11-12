@@ -1,10 +1,10 @@
 {
   "version": "1.0.0",
   "vendorRelease": {
-    "tag": "v2026.1012.0",
-    "sha": "bba6a45f0d364cfd962ac59b3bdf2426a8222adb",
-    "lastMigration": "0305_chubby_vin_gonzales",
-    "migrationCount": 304
+    "tag": "v2026.1106.0",
+    "sha": "d69631b01b9c658f80bf8bed389863dce82643e1",
+    "lastMigration": "0374_rare_wolfpack",
+    "migrationCount": 373
   },
   "entityCounts": {
     "companies": 1,
@@ -16,13 +16,16 @@
     "agents": 2,
     "instance_settings": 1,
     "company_skills": 2,
+    "tool_applications": 2,
     "tool_connections": 2,
     "connection_grants": 1,
     "heartbeat_runs": 2,
     "company_secrets": 2,
     "company_secret_versions": 2,
     "assets": 2,
-    "issue_attachments": 2
+    "issue_attachments": 2,
+    "chat_endpoints": 1,
+    "user": 1
   },
   "vendorGapCounts": {
     "chat_github_reviews": 1,
@@ -30,7 +33,8 @@
     "browser_use_sessions": 1,
     "mcp_oauth_tokens": 1,
     "mcp_oauth_grants": 1,
-    "mcp_oauth_clients": 1
+    "mcp_oauth_clients": 1,
+    "resource_lifecycle_events": 10
   },
   "spotChecks": {
     "company": {

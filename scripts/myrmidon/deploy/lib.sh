@@ -27,6 +27,12 @@ log_script_version() {
   printf 'deploy scripts at %s\n' "${describe:-unknown}" >&2
 }
 
+script_version_string() {
+  local clone
+  clone="$(git -C "$MYR_SCRIPT_DIR" rev-parse --show-toplevel 2>/dev/null)" || clone=""
+  GIT_CONFIG_NOSYSTEM=1 git -C "${clone:-$MYR_SCRIPT_DIR}" describe --tags --always 2>/dev/null || echo "unknown"
+}
+
 # Runs a command, or prints it in dry-run mode.
 run() {
   if [[ "${DRY_RUN:-0}" == "1" ]]; then
@@ -136,6 +142,30 @@ parse_digest_arg() {
   fi
 }
 
+# Runs git in a clone as the clone's owner. deploy.sh is normally invoked
+# through sudo, but the clone belongs to the operator. Git writes refs and
+# objects during fetch; running it as root leaves those files unwritable by the
+# operator on the next release. A missing .git is kept as a plain git call so
+# the existing diagnostics for an invalid clone remain useful.
+git_in_clone_as_owner() {
+  local clone="$1"
+  shift
+  local owner_uid
+  if [[ "${EUID:-$(id -u)}" != 0 ]] || ! owner_uid="$(stat -c '%u' "$clone/.git" 2>/dev/null)" || [[ "$owner_uid" == 0 ]]; then
+    with_timeout git -C "$clone" "$@"
+    return
+  fi
+  command -v sudo >/dev/null 2>&1 || {
+    CI_CHECK_REASON="cannot check commit: the scripts clone is owned by uid $owner_uid, but sudo is not installed"
+    return 1
+  }
+  if command -v timeout >/dev/null 2>&1; then
+    sudo -u "#$owner_uid" -- timeout "$MYR_NET_TIMEOUT_SEC" git -C "$clone" "$@"
+  else
+    sudo -u "#$owner_uid" -- git -C "$clone" "$@"
+  fi
+}
+
 # Checks that a commit is on origin/main or carries a release tag
 # myr-v<x>.<y>.<z> (RC-VERSIONS: or the candidate myr-v<x>.<y>.<z>-rc.<n>),
 # using the git clone that holds these scripts. Sets CI_CHECK_REASON and
@@ -147,22 +177,22 @@ commit_is_reviewed() {
     CI_CHECK_REASON="git is not installed, so commit ${rev:0:12} cannot be checked against main; run the script from a git clone of itkadr-git/myrmidon"
     return 1
   fi
-  if ! clone="$(git -C "$MYR_SCRIPT_DIR" rev-parse --show-toplevel 2>/dev/null)" || [[ -z "$clone" ]]; then
+  if ! clone="$(git_in_clone_as_owner "$MYR_SCRIPT_DIR" rev-parse --show-toplevel 2>/dev/null)" || [[ -z "$clone" ]]; then
     CI_CHECK_REASON="the deploy scripts are not inside a git clone, so commit ${rev:0:12} cannot be checked against main; run them from a clone of itkadr-git/myrmidon"
     return 1
   fi
-  if ! url="$(git -C "$clone" remote get-url origin 2>/dev/null)" || [[ ! "$url" =~ $MYR_CI_ORIGIN_RE ]]; then
+  if ! url="$(git_in_clone_as_owner "$clone" remote get-url origin 2>/dev/null)" || [[ ! "$url" =~ $MYR_CI_ORIGIN_RE ]]; then
     CI_CHECK_REASON="remote 'origin' of the clone does not point to github.com/itkadr-git/myrmidon, so main cannot be trusted"
     return 1
   fi
-  if ! GIT_TERMINAL_PROMPT=0 with_timeout git -C "$clone" fetch --quiet --no-tags origin '+refs/heads/main:refs/remotes/origin/main' >/dev/null 2>&1; then
+  if ! GIT_TERMINAL_PROMPT=0 git_in_clone_as_owner "$clone" fetch --quiet --no-tags origin '+refs/heads/main:refs/remotes/origin/main' >/dev/null 2>&1; then
     CI_CHECK_REASON="git fetch origin main failed (no network or no access?), so commit ${rev:0:12} cannot be checked against main"
     return 1
   fi
-  if git -C "$clone" merge-base --is-ancestor "$rev" refs/remotes/origin/main >/dev/null 2>&1; then
+  if git_in_clone_as_owner "$clone" merge-base --is-ancestor "$rev" refs/remotes/origin/main >/dev/null 2>&1; then
     return 0
   fi
-  if ! tags="$(GIT_TERMINAL_PROMPT=0 with_timeout git -C "$clone" ls-remote --tags origin 'refs/tags/myr-v*' 2>/dev/null)"; then
+  if ! tags="$(GIT_TERMINAL_PROMPT=0 git_in_clone_as_owner "$clone" ls-remote --tags origin 'refs/tags/myr-v*' 2>/dev/null)"; then
     CI_CHECK_REASON="commit ${rev:0:12} is not on origin/main and the release tags of origin could not be read"
     return 1
   fi
@@ -384,13 +414,29 @@ load_config() {
   : "${COMPOSE_SERVICE:?COMPOSE_SERVICE is required}"
   : "${COMPOSE_FILES:=docker-compose.yml}"
   : "${COMPOSE_OVERRIDE_FILE:=docker-compose.myrmidon-image.yml}"
+  # myrmidon(COMPOSE-SET-ANCHOR): the declared compose set of the board is
+  # kept in a machine-readable anchor block (one fragment per line between
+  # board-mount-set:begin/end markers); a watchdog compares it with the live
+  # container label. Empty settings disable the sync step below.
+  : "${MYRMIDON_COMPOSE_SET_ANCHOR_FILE:=}"
+  : "${MYRMIDON_COMPOSE_SET_ANCHOR_GIT:=}"
+  : "${MYRMIDON_COMPOSE_SET_LABEL_SOURCE:=}"
   : "${HEALTH_URL:?HEALTH_URL is required}"
+  # BOARD-LIVENESS (OPE-12211): optional liveness URL next to HEALTH_URL.
+  # Empty derives it from HEALTH_URL (…/api/health -> …/api/liveness); when
+  # HEALTH_URL does not end in /health the liveness checks are skipped.
+  : "${LIVENESS_URL:=}"
+  if [[ -z "$LIVENESS_URL" && "$HEALTH_URL" == */health ]]; then
+    LIVENESS_URL="${HEALTH_URL%/health}/liveness"
+  fi
   : "${HEALTH_TIMEOUT_SEC:=300}"
   : "${HEALTH_TOKEN_FILE:=}"
   : "${STATE_DIR:=$COMPOSE_DIR/.myrmidon-deploy}"
   : "${DUMP_DIR:=$STATE_DIR/dumps}"
   : "${DUMP_COMMAND:=}"
   : "${DUMP_MIN_BYTES:=1}"
+  # PREDEPLOY-RETENTION: only validated dumps are eligible for cleanup.
+  : "${DUMP_KEEP:=3}"
   : "${RESTORE_COMMAND:=}"
   : "${MAINTENANCE_MODE:=pause}"
   : "${MAINTENANCE_API_URL:=}"
@@ -411,6 +457,8 @@ load_config() {
   : "${RUNS_WAIT_TIMEOUT_SEC:=1800}"
   : "${ALLOW_UNKNOWN_RUNS:=0}"
   : "${POLL_INTERVAL_SEC:=5}"
+  : "${MYRMIDON_DEPLOY_LOCK_FILE:=}"
+  : "${MYRMIDON_DEPLOY_LOCK_WAIT_SEC:=0}"
   # PREDEPLOY-DB-CHECK (the 05.10 incident): before the maintenance window the
   # new board image must come up on a COPY of the production database (the
   # predeploy dump) with the new dockergate, on its own network, and answer the
@@ -446,8 +494,14 @@ load_config() {
   # releases are removed (deploy_image_retention; the running and the
   # just-deployed images are always kept).
   : "${MYRMIDON_DEPLOY_MIN_FREE_GB:=15}"
+  : "${MYRMIDON_DEPLOY_DB_DUMP_RESERVE_GB:=5}"
   : "${MYRMIDON_DEPLOY_IMAGE_KEEP:=1}"
   : "${MYRMIDON_DEPLOY_IMAGE_REPOS:=$MYRMIDON_IMAGE,ghcr.io/itkadr-git/myrmidon-dockergate,ghcr.io/itkadr-git/myrmidon-fleetd,ghcr.io/itkadr-git/myrmidon-hermes,ghcr.io/itkadr-git/myrmidon-hermes-dev,ghcr.io/itkadr-git/myrmidon-hermes-node}"
+  # myrmidon(IMAGE-GC, OPE-12696): after a healthy deploy every image of these
+  # repository globs that NO container uses is removed and the build cache is
+  # pruned (deploy_image_gc). Rollback images stay in GHCR.
+  : "${MYRMIDON_DEPLOY_IMAGE_GC:=1}"
+  : "${MYRMIDON_DEPLOY_IMAGE_GC_REPOS:=ghcr.io/itkadr-git/myrmidon*,ghcr.io/itkadr-git/agent-runtime*}"
   # DB-TUNING (OPE-5009): the PostgreSQL settings from the database audit
   # (OPE-4270) are applied DECLARATIVELY by the deploy — the values live in
   # scripts/myrmidon/deploy/db-tuning.sql, the reset in db-tuning-rollback.sql,
@@ -482,6 +536,10 @@ load_config() {
 
 compose() {
   local args=(compose --project-directory "$COMPOSE_DIR")
+  # Keep the historical Compose project when unset: a project-name change also
+  # changes volume/network identities. The rc.17 runbook sets this explicitly
+  # only after data has been migrated/reattached safely.
+  [[ -n "${COMPOSE_PROJECT_NAME:-}" ]] && args+=(--project-name "$COMPOSE_PROJECT_NAME")
   local f
   IFS=':' read -r -a _files <<<"$COMPOSE_FILES"
   for f in "${_files[@]}"; do args+=(-f "$COMPOSE_DIR/$f"); done
@@ -733,6 +791,15 @@ wait_for_maintenance_off() {
 # degraded; 0 on a clean check.
 post_deploy_fleet_check() {
   local started_at="$1" rc=0
+  local run_count="${MYRMIDON_DEPLOY_POSTCHECK_RUNS:-5}"
+  local timeout_sec="${MYRMIDON_DEPLOY_POSTCHECK_RUNS_TIMEOUT_SEC:-600}"
+  local interval_sec="${MYRMIDON_DEPLOY_POSTCHECK_RUNS_INTERVAL_SEC:-10}"
+  if [[ "$run_count" == "0" ]]; then
+    :
+  elif [[ ! "$run_count" =~ ^[1-9][0-9]*$ || ! "$timeout_sec" =~ ^[1-9][0-9]*$ || ! "$interval_sec" =~ ^[1-9][0-9]*$ ]]; then
+    log "degraded: invalid MYRMIDON_DEPLOY_POSTCHECK_RUNS settings"
+    return 1
+  fi
   if [[ -z "${BOARD_API_URL:-}" || -z "${BOARD_COMPANY_ID:-}" ]]; then
     log "post-deploy check: BOARD_API_URL/BOARD_COMPANY_ID not set; skipping the fleet check (set them in the deploy env to enable)"
     return 0
@@ -765,6 +832,46 @@ post_deploy_fleet_check() {
     log "post-deploy check: maintenance window still '$mstate' after exit"
     log "degraded: maintenance window did not retire after exit"
     rc=1
+  fi
+  # Observe the first N terminal gateway runs created since deployment.
+  if [[ "${MYRMIDON_DEPLOY_POSTCHECK_RUNS:-5}" != "0" ]]; then
+    local deadline=$((SECONDS + timeout_sec)) runs successes failures failed_codes
+    log "post-deploy check: waiting up to ${timeout_sec}s for ${run_count} completed hermes_gateway run(s)"
+    while :; do
+      runs="$(curl -fsS --max-time 30 "${auth[@]}" \
+        "$BOARD_API_URL/companies/$BOARD_COMPANY_ID/heartbeat-runs?limit=1000" 2>/dev/null)" || runs=""
+      if [[ -z "$runs" ]]; then
+        log "post-deploy check: heartbeat run list unreadable"
+        log "degraded: heartbeat run list unreadable after deploy"
+        rc=1
+        break
+      fi
+      read -r successes failures failed_codes < <(jq -r --arg since "$started_at" --argjson n "$run_count" '
+        [.[] | select(.adapterType == "hermes_gateway" and (.createdAt // .startedAt // "") >= $since and (.status == "succeeded" or .status == "failed"))] | sort_by(.finishedAt // .updatedAt // .createdAt) | .[:$n] |
+        ([.[] | select(.status == "succeeded")] | length),
+        ([.[] | select(.status == "failed")] | length),
+        ([.[] | select(.status == "failed") | (.errorCode // "unknown")] | unique | join("," ) // "none")
+      ' <<<"$runs" 2>/dev/null | paste -sd ' ' -)
+      successes="${successes:-0}"; failures="${failures:-0}"; failed_codes="${failed_codes:-none}"
+      local observed=$((successes + failures))
+      if ((observed >= run_count)); then
+        if ((successes == 0 && failures >= run_count)); then
+          log "post-deploy check: $failures/$run_count completed hermes_gateway runs failed (error codes: $failed_codes)"
+          log "degraded: no successful hermes_gateway runs among the first $run_count completed runs (error codes: $failed_codes)"
+          rc=1
+        else
+          log "post-deploy check: $successes successful, $failures failed of first $run_count completed hermes_gateway runs"
+        fi
+        break
+      fi
+      if ((SECONDS >= deadline)); then
+        log "post-deploy check: only $observed/$run_count completed hermes_gateway runs within ${timeout_sec}s"
+        log "degraded: insufficient completed hermes_gateway runs after deploy"
+        rc=1
+        break
+      fi
+      sleep "$interval_sec"
+    done
   fi
   if ((rc == 0)); then
     log "post-deploy check: no blocked issues in the deploy window, maintenance retired"
@@ -832,11 +939,268 @@ take_dump() {
   fi
   log "dump: ok ($size bytes)"
   LAST_DUMP_FILE="$file"
+  prune_dumps
+}
+
+# Keep the newest validated dumps only. A listing or deletion error aborts deploy.
+prune_dumps() {
+  [[ -d "$DUMP_DIR" ]] || die "dump directory does not exist: $DUMP_DIR"
+  local -a dumps=() ordered=()
+  local path find_status listing_error
+  listing_error="${DUMP_DIR%/}/.predeploy-retention-listing-error.$$"
+  rm -f -- "$listing_error" || die "cannot prepare predeploy dump listing in $DUMP_DIR"
+  mapfile -d '' -t dumps < <(
+    find "$DUMP_DIR" -maxdepth 1 -type f -name 'myrmidon-*.dump' -printf '%T@ %p\0' || touch "$listing_error"
+  )
+  find_status=0
+  [[ ! -e "$listing_error" ]] || find_status=1
+  if ((find_status == 0)) && ((${#dumps[@]})); then
+    mapfile -t ordered < <(printf '%s\n' "${dumps[@]}" | sort -nr)
+    ((${#ordered[@]} == ${#dumps[@]})) || find_status=1
+  fi
+  rm -f -- "$listing_error" || die "cannot finalize predeploy dump listing in $DUMP_DIR"
+  ((find_status == 0)) || die "cannot list predeploy dumps in $DUMP_DIR; refusing retention cleanup"
+  (( ${#ordered[@]} > DUMP_KEEP )) || return 0
+  for path in "${ordered[@]:DUMP_KEEP}"; do
+    path="${path#* }"
+    [[ -n "$path" && -f "$path" ]] || die "invalid predeploy dump candidate during retention cleanup; refusing further cleanup"
+    rm -- "$path" || die "cannot remove old predeploy dump $path; refusing deploy"
+    log "dump retention: removed $path"
+  done
 }
 
 record_history() {
   mkdir -p "$STATE_DIR"
   printf '%s %s %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$1" "$2" >>"$HISTORY_FILE"
+}
+
+# --- COMPOSE-SET-ANCHOR (the 07.10 drift) -------------------------------------
+# myrmidon(COMPOSE-SET-ANCHOR): a release deploy can itself change the set of
+# compose files the board runs from (COMPOSE_FILES, the board image override
+# and the component override files written by this deploy). Installations keep
+# the declared set in a machine-readable anchor block — a file that lists one
+# compose fragment per line between `board-mount-set:begin`/`board-mount-set:end`
+# markers — and a watchdog compares that list against the live container's
+# com.docker.compose.project.config_files label. When the deploy changes the
+# set and the anchor is not updated in the same deploy, the watchdog drifts on
+# the next run and an operator has to register the change by hand after the
+# fact (the 07.10 incident).
+#
+# sync_compose_set_anchor() closes that gap: after the board container was
+# (re)created it reads the LIVE label of the container this deploy manages,
+# compares it (by basename, the way the watchdog compares) with the fragment
+# list in the anchor block, and when they differ rewrites the block and commits
+# the anchor file with one commit whose message names the deploy reference.
+# The production checklist also carries a human-readable snapshot in §1 (the
+# `## §1. Набор docker-compose файлов` heading with its Markdown list); when
+# that known heading follows the block, its list is rebuilt from the same live
+# label — the whole snapshot (machine-readable block and prose) moves in the
+# one commit, and every other line of the file stays byte-for-byte intact.
+#
+# Settings (all optional, see deploy.env.example; empty = the step is skipped
+# with a log line, so an installation without an anchor still deploys):
+#   MYRMIDON_COMPOSE_SET_ANCHOR_FILE  the file carrying the begin/end block
+#   MYRMIDON_COMPOSE_SET_ANCHOR_GIT   the git repository of that file
+#                                     (the commit lands there; may equal
+#                                     ANCHOR_FILE's parent repo)
+#   MYRMIDON_COMPOSE_SET_LABEL_SOURCE an optional shell command that prints
+#                                     the live config_files label (overrides
+#                                     the docker inspect of the local daemon,
+#                                     so the step is testable on a stand)
+#
+# The function never fails the deploy: a healthy board outranks a drifted
+# anchor, and the watchdog still catches the residue on its next run (the
+# anchor block's format and the watchdog itself are not touched here).
+# Returns 0 always; the outcome is logged and, when something was rewritten,
+# ANCHOR_SYNC_COMMIT holds the commit sha.
+sync_compose_set_anchor() {
+  ANCHOR_SYNC_COMMIT=""
+  ANCHOR_SYNC_ACTION="skipped"
+  if [[ -z "$MYRMIDON_COMPOSE_SET_ANCHOR_FILE" ]]; then
+    log "COMPOSE-SET-ANCHOR: skipped (MYRMIDON_COMPOSE_SET_ANCHOR_FILE is empty; the declared compose set is not managed by this deploy)"
+    return 0
+  fi
+  local anchor_file="$MYRMIDON_COMPOSE_SET_ANCHOR_FILE"
+  if [[ ! -f "$anchor_file" ]]; then
+    log "WARNING: COMPOSE-SET-ANCHOR: the anchor file does not exist: $anchor_file (nothing was rewritten; check the setting)"
+    return 0
+  fi
+  local label_raw
+  if [[ -n "$MYRMIDON_COMPOSE_SET_LABEL_SOURCE" ]]; then
+    label_raw="$(bash -c "$MYRMIDON_COMPOSE_SET_LABEL_SOURCE" 2>/dev/null || true)"
+  else
+    # The board container this deploy manages, by the labels compose puts on it
+    # (the same lookup board_running_image() uses; works even when the compose
+    # files do not validate).
+    local board_id
+    board_id="$(docker ps -a -q \
+      --filter "label=com.docker.compose.service=$COMPOSE_SERVICE" \
+      --filter "label=com.docker.compose.project.working_dir=$COMPOSE_DIR" 2>/dev/null | head -n1)" || board_id=""
+    if [[ -z "$board_id" ]]; then
+      log "WARNING: COMPOSE-SET-ANCHOR: no container of service $COMPOSE_SERVICE in project $COMPOSE_DIR (the container may not exist yet); the anchor was not re-checked"
+      return 0
+    fi
+    label_raw="$(docker inspect -f '{{index .Config.Labels "com.docker.compose.project.config_files"}}' "$board_id" 2>/dev/null || true)"
+  fi
+  if [[ -z "$label_raw" ]]; then
+    log "WARNING: COMPOSE-SET-ANCHOR: no live config_files label on the board container; the anchor was not re-checked"
+    return 0
+  fi
+  # Compare by basename, the way the watchdog does: the anchor names fragments
+  # relative to a project directory, the label carries absolute paths.
+  local label_basenames anchor_basenames
+  label_basenames="$(printf '%s\n' "$label_raw" | tr ',' '\n' | sed 's#.*/##; s/^[[:space:]]*//; s/[[:space:]]*$//' | sed '/^$/d' | sort -u)"
+  # grep exits 1 when the block has no fragment line: that is the "no readable
+  # block" case handled below, not an error under set -e / pipefail.
+  anchor_basenames="$(sed -n '/board-mount-set:begin/,/board-mount-set:end/p' "$anchor_file" | { grep -oE '^[[:space:]]*[A-Za-z0-9._/-]+\.ya?ml[[:space:]]*$' || true; } | sed 's#^.*/##; s/^[[:space:]]*//; s/[[:space:]]*$//' | sort -u)"
+  if [[ -z "$anchor_basenames" ]]; then
+    log "WARNING: COMPOSE-SET-ANCHOR: no readable board-mount-set block in $anchor_file (the block format is the watchdog's contract and is not created here); the anchor was not re-checked"
+    return 0
+  fi
+  if ! grep -q 'board-mount-set:end' "$anchor_file"; then
+    log "WARNING: COMPOSE-SET-ANCHOR: the board-mount-set block in $anchor_file has no end marker; nothing was rewritten"
+    return 0
+  fi
+  if [[ "$anchor_basenames" == "$label_basenames" ]]; then
+    ANCHOR_SYNC_ACTION="match"
+    log "COMPOSE-SET-ANCHOR: the anchor matches the live set ($(printf '%s' "$label_basenames" | grep -c . || true) fragments)"
+    return 0
+  fi
+  # Diverged: rewrite the block from the live label, keeping one fragment per
+  # line between the markers exactly as the format expects. The live label
+  # carries absolute paths; the block keeps them verbatim (the watchdog's
+  # parser accepts paths, and the project directory is the label's own).
+  local tmp printed=0 anchor_dir in_block=0 indent="" prose_written=0 prose_indent=""
+  # The production checklist also carries a human-readable snapshot in §1.
+  # When that known heading is present, keep its Markdown list synchronized
+  # with the same live label; unrelated prose remains byte-for-byte intact.
+  emit_prose_snapshot() {
+    local frag
+    while IFS= read -r frag; do
+      [[ -z "$frag" ]] && continue
+      frag="${frag##*/}"
+      # shellcheck disable=SC2016  # the format string stays literal; values are passed as arguments
+      printf '%s- `%s`\n' "$prose_indent" "$frag"
+    done < <(printf '%s\n' "$label_raw" | tr ',' '\n' | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')
+  }
+  # The §1 prose snapshot is detected on the ORIGINAL file before the rewrite:
+  # the production layout puts the exact `## §1.` heading before the block and
+  # the Markdown fragment list directly above it (blank/fence lines between the
+  # list and the block are allowed). Only that adjacent list is the snapshot —
+  # any other Markdown list in the file is not ours to touch. Without the exact
+  # heading or the adjacent list the prose is left byte-for-byte alone.
+  local prose_start=0 prose_end=0
+  local begin_no heading_no i l
+  # grep exits 1 on no match (a checklist without the §1 heading is the normal
+  # shape too); under the caller's pipefail that must not kill the deploy.
+  begin_no="$(grep -n 'board-mount-set:begin' "$anchor_file" 2>/dev/null | head -n1 | cut -d: -f1 || true)"
+  heading_no="$(grep -nF -- '## §1. Набор docker-compose файлов' "$anchor_file" 2>/dev/null | head -n1 | cut -d: -f1 || true)"
+  if [[ -n "$begin_no" && -n "$heading_no" ]] && (( heading_no < begin_no )); then
+    # walk up from the block over blank/fence lines to the closest list item,
+    # then over the whole run of list items to the FIRST one
+    i=$(( begin_no - 1 ))
+    l=""
+    while (( i > heading_no )); do
+      l="$(sed -n "${i}p" "$anchor_file")"
+      if [[ -z "${l//[[:space:]]/}" || "$l" == *'```'* ]]; then
+        i=$(( i - 1 ))
+        continue
+      fi
+      break
+    done
+    if [[ "$l" =~ ^([[:space:]]*)-[[:space:]]+\` ]]; then
+      prose_end="$i"
+      prose_indent="${BASH_REMATCH[1]}"
+      prose_start="$i"
+      while (( prose_start - 1 > heading_no )) \
+        && [[ "$(sed -n "$(( prose_start - 1 ))p" "$anchor_file")" =~ ^[[:space:]]*-[[:space:]]+\` ]]; do
+        prose_start=$(( prose_start - 1 ))
+      done
+    fi
+  fi
+  # the previous set, read BEFORE the file is replaced (for the log line below)
+  local anchor_had
+  anchor_had="$(sed -n '/board-mount-set:begin/,/board-mount-set:end/p' "$anchor_file" | { grep -oE '^[[:space:]]*[A-Za-z0-9._/-]+\.ya?ml[[:space:]]*$' || true; } | sed 's#^.*/##; s/^[[:space:]]*//; s/[[:space:]]*$//' | tr '\n' ' ')"
+  anchor_dir="$(dirname "$anchor_file")"
+  tmp="$(mktemp "$anchor_file.XXXXXX")"
+  local file_line=0
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    file_line=$(( file_line + 1 ))
+    if [[ "$line" == *board-mount-set:begin* ]]; then
+      printf '%s\n' "$line" >>"$tmp"
+      indent=""
+      if [[ "$line" =~ ^([[:space:]]+) ]]; then
+        indent="${BASH_REMATCH[1]}"
+      fi
+      # Write fragments relative to the anchor file's own directory when they
+      # live under it (the anchor's own style, and the watchdog resolves
+      # relative names against its project dir); absolute otherwise. The
+      # watchdog's parser accepts both shapes.
+      printf '%s\n' "$label_raw" | tr ',' '\n' | sed 's/^[[:space:]]*//; s/[[:space:]]*$//' | sed '/^$/d' \
+        | while IFS= read -r frag; do
+            case "$frag" in
+              "$anchor_dir"/*) printf '%s%s\n' "$indent" "${frag#"$anchor_dir"/}" ;;
+              *) printf '%s%s\n' "$indent" "$frag" ;;
+            esac
+          done >>"$tmp"
+      printed=1
+      in_block=1
+      continue
+    fi
+    if [[ "$in_block" == "1" ]]; then
+      # the old fragment lines of the block are dropped; the end marker closes it
+      if [[ "$line" == *board-mount-set:end* ]]; then
+        printf '%s\n' "$line" >>"$tmp"
+        in_block=0
+      fi
+      continue
+    fi
+    if [[ "$prose_written" == "0" && "$prose_start" != "0" && "$file_line" == "$prose_start" ]]; then
+      emit_prose_snapshot >>"$tmp"
+      prose_written=1
+      continue
+    fi
+    printf '%s\n' "$line" >>"$tmp"
+  done <"$anchor_file"
+  if [[ "$printed" != "1" ]]; then
+    rm -f "$tmp"
+    log "WARNING: COMPOSE-SET-ANCHOR: no board-mount-set:begin marker in $anchor_file; nothing was rewritten"
+    return 0
+  fi
+  # Replace atomically, keep owner and mode (a config write rule).
+  local mode owner
+  mode="$(stat -c '%a' "$anchor_file" 2>/dev/null || printf '644')"
+  owner="$(stat -c '%u:%g' "$anchor_file" 2>/dev/null || printf '')"
+  mv -f "$tmp" "$anchor_file"
+  chmod "$mode" "$anchor_file"
+  if [[ -n "$owner" ]]; then
+    chown "$owner" "$anchor_file" 2>/dev/null || true
+  fi
+  ANCHOR_SYNC_ACTION="rewritten"
+  log "COMPOSE-SET-ANCHOR: the live set differs from the anchor; the block was rewritten from the live label:"
+  # shown in the file's / the label's own order (the comparison above is sorted)
+  log "  anchor had: $anchor_had"
+  log "  live label: $(printf '%s\n' "$label_raw" | tr ',' '\n' | sed 's#.*/##; s/^[[:space:]]*//; s/[[:space:]]*$//' | sed '/^$/d' | tr '\n' ' ')"
+  if [[ "$prose_written" == "1" ]]; then
+    log "  §1 prose snapshot: the fragment list follows the same live set"
+  fi
+  # One commit naming the deploy, when the anchor lives in a git repository.
+  if command -v git >/dev/null 2>&1 && [[ -n "$MYRMIDON_COMPOSE_SET_ANCHOR_GIT" && -d "$MYRMIDON_COMPOSE_SET_ANCHOR_GIT/.git" ]]; then
+    local rel msg
+    rel="$(realpath --relative-to="$MYRMIDON_COMPOSE_SET_ANCHOR_GIT" "$anchor_file" 2>/dev/null || printf '%s' "$anchor_file")"
+    msg="chore(deploy): sync board-mount-set anchor to the live compose set (deploy $MYRMIDON_IMAGE@${digest:-<unknown>})"
+    if git -C "$MYRMIDON_COMPOSE_SET_ANCHOR_GIT" add -- "$rel" >/dev/null 2>&1 \
+      && ANCHOR_SYNC_COMMIT="$(git -C "$MYRMIDON_COMPOSE_SET_ANCHOR_GIT" commit -m "$msg" -- "$rel" 2>/dev/null \
+        && git -C "$MYRMIDON_COMPOSE_SET_ANCHOR_GIT" rev-parse --short HEAD 2>/dev/null)"; then
+      log "COMPOSE-SET-ANCHOR: committed $rel as $ANCHOR_SYNC_COMMIT in $MYRMIDON_COMPOSE_SET_ANCHOR_GIT"
+    else
+      ANCHOR_SYNC_COMMIT=""
+      log "WARNING: COMPOSE-SET-ANCHOR: the git commit of $rel failed (the file is rewritten; commit it by hand)"
+    fi
+  else
+    log "WARNING: COMPOSE-SET-ANCHOR: MYRMIDON_COMPOSE_SET_ANCHOR_GIT is not a git repository; the file is rewritten, commit it by hand"
+  fi
+  return 0
 }
 
 # --- DB-TUNING (OPE-5009): the PostgreSQL settings of the audit, declaratively
@@ -1363,6 +1727,9 @@ component_host_file_exists() {
 # exist on the host (a remote host has no board override) is left out.
 component_host_compose() {
   local args=(compose --project-directory "$COMPOSE_DIR")
+  # Same pinning contract as compose(): explicit COMPOSE_PROJECT_NAME wins,
+  # unset keeps the directory-derived project the host already runs.
+  [[ -n "${COMPOSE_PROJECT_NAME:-}" ]] && args+=(--project-name "$COMPOSE_PROJECT_NAME")
   local f
   IFS=':' read -r -a _ch_files <<<"$COMPOSE_FILES"
   for f in "${_ch_files[@]}"; do args+=(-f "$COMPOSE_DIR/$f"); done
@@ -1680,47 +2047,118 @@ docker_free_gb() {
   printf '%s\n' $((kb / 1024 / 1024))
 }
 
-# Refuses the deploy BEFORE the first image pull and the dump when the
-# filesystem of /var/lib/docker has less than MYRMIDON_DEPLOY_MIN_FREE_GB
-# gibibytes free (default 15; the board image alone is about 7 GB, the bot
-# images several more). The refusal names the requirement, the current value
-# and the candidates for cleanup, and runs before anything was changed.
-# A threshold of 0 switches the check off. In a dry run the check is reported
-# with the current value and the plan continues.
+# Refuses before the first image pull, database dump, or maintenance window.
+# Image references are immutable digests; Buildx reads registry layer sizes
+# without downloading image layers. The configured DB reserve covers the dump.
+registry_image_size_bytes_raw() {
+  local image_ref="$1" manifest selected_digest
+  # --raw prints the registry manifest itself. buildx 0.37 renders --format '{{json .Manifest}}'
+  # as a descriptor (digest, size) without layers, which failed every deploy of a
+  # missing image with "cannot determine registry layer sizes" (rc.31, 03.11).
+  manifest="$(with_timeout docker buildx imagetools inspect "$image_ref" --raw 2>/dev/null)" || return 1
+  if jq -e 'type == "object" and (.manifests | type == "array")' >/dev/null 2>&1 <<<"$manifest"; then
+    selected_digest="$(jq -er '[.manifests[] | select(.platform.os == "linux" and .platform.architecture == "amd64" and (.digest | type == "string"))] | first | .digest' <<<"$manifest" 2>/dev/null)" || return 1
+    manifest="$(with_timeout docker buildx imagetools inspect "${image_ref%%@*}@${selected_digest}" --raw 2>/dev/null)" || return 1
+  fi
+  jq -er 'if type == "object" and (.layers | type) == "array" and all(.layers[]; (.size | type) == "number") and ((.config.size // 0) | type) == "number" then ((.config.size // 0) + ([ .layers[].size ] | add // 0)) else error("invalid registry layer sizes") end' <<<"$manifest"
+}
+
+registry_image_size_bytes_format() {
+  local image_ref="$1" manifest selected_digest
+  manifest="$(with_timeout docker buildx imagetools inspect "$image_ref" --format '{{json .Manifest}}' 2>/dev/null)" || return 1
+  if jq -e 'type == "object" and (.Layers | type == "array")' >/dev/null 2>&1 <<<"$manifest"; then
+    jq -er 'if all(.Layers[]; (.size | type) == "number") then [.Layers[].size] | add // 0 else error("invalid layer sizes") end' <<<"$manifest"
+    return
+  fi
+  selected_digest="$(jq -er '[.manifests[]? | select(.platform.os == "linux" and .platform.architecture == "amd64" and (.digest | type == "string"))] | first | .digest' <<<"$manifest" 2>/dev/null)" || return 1
+  manifest="$(with_timeout docker buildx imagetools inspect "${image_ref%%@*}@${selected_digest}" --format '{{json .}}' 2>/dev/null)" || return 1
+  jq -er '(.Manifest // .) as $m | if ($m.Layers | type) == "array" and ($m.Config.size | type) == "number" and all($m.Layers[]; (.size | type) == "number") then ($m.Config.size + ([ $m.Layers[].size ] | add // 0)) else error("invalid platform manifest sizes") end' <<<"$manifest"
+}
+
+registry_image_size_bytes() {
+  # buildx 0.37 renders --format '{{json .Manifest}}' without layers; the raw registry manifest is
+  # read first and the older --format path stays as the fallback (older buildx, test doubles).
+  registry_image_size_bytes_raw "$1" 2>/dev/null || registry_image_size_bytes_format "$1"
+}
+
 deploy_disk_precheck() {
-  local where="$1" min_gb="${MYRMIDON_DEPLOY_MIN_FREE_GB:-15}" free
+  local where="$1" min_gb="${MYRMIDON_DEPLOY_MIN_FREE_GB:-15}" free_kb required_kb image_ref image_size
+  local -a image_refs=()
+  # shellcheck disable=SC2153  # Set by deploy.sh before the precheck.
+  if declare -p MYRMIDON_DEPLOY_IMAGE_REFS >/dev/null 2>&1; then image_refs=("${MYRMIDON_DEPLOY_IMAGE_REFS[@]}"); fi
   [[ "$min_gb" =~ ^[0-9]+$ ]] || die "MYRMIDON_DEPLOY_MIN_FREE_GB must be a non-negative integer (got '$min_gb')"
-  free="$(docker_free_gb)" || free=""
+  [[ "${MYRMIDON_DEPLOY_DB_DUMP_RESERVE_GB:-5}" =~ ^[0-9]+$ ]] || die "MYRMIDON_DEPLOY_DB_DUMP_RESERVE_GB must be a non-negative integer"
+  free_kb="$(df -Pk /var/lib/docker 2>/dev/null | awk 'NR==2 {print $4}')" || free_kb=""
   if ((min_gb == 0)); then
-    log "disk precheck ($where): MYRMIDON_DEPLOY_MIN_FREE_GB=0, the check is off (free: ${free:-unknown} GiB)"
+    log "disk precheck ($where): MYRMIDON_DEPLOY_MIN_FREE_GB=0, the check is off"
     return 0
   fi
+  if ! [[ "$free_kb" =~ ^[0-9]+$ ]]; then
+    if [[ "${DRY_RUN:-0}" == "1" ]]; then
+      log "WARNING: disk precheck ($where): cannot determine free space on /var/lib/docker; continuing dry run without the check"
+      return 0
+    fi
+    die "cannot determine free space on /var/lib/docker; refusing deploy before pull, dump, or maintenance"
+  fi
+  # The DB dump reserve applies only to callers that declare release image refs
+  # (deploy.sh). bot-image-rollout.sh and rollout-component.sh call the precheck
+  # without MYRMIDON_DEPLOY_IMAGE_REFS and must keep the plain min-free
+  # threshold: no dump happens there and no image size is added.
+  local reserve_gb=0
+  if ((${#image_refs[@]} > 0)); then reserve_gb="${MYRMIDON_DEPLOY_DB_DUMP_RESERVE_GB:-5}"; fi
+  required_kb=$(( (min_gb + reserve_gb) * 1024 * 1024 ))
+  for image_ref in "${image_refs[@]}"; do
+    [[ -n "$image_ref" ]] || continue
+    [[ "$image_ref" == *@sha256:* ]] || die "disk precheck requires immutable image digest: $image_ref"
+    if docker image inspect "$image_ref" >/dev/null 2>&1 || docker image inspect "${image_ref#*@}" >/dev/null 2>&1; then
+      # The digest is already local (under this ref or a bare digest): the pull
+      # reuses the local layers, so no additional layer space is required.
+      log "disk precheck: image already local, no additional layer space: $image_ref"
+      continue
+    fi
+    image_size="$(registry_image_size_bytes "$image_ref")" || { [[ "${DRY_RUN:-0}" == "1" ]] && { log "WARNING: disk precheck: cannot determine registry image size for $image_ref; continuing dry run without image estimate"; continue; }; die "cannot determine registry layer sizes for $image_ref; refusing deploy before pull, dump, or maintenance"; }
+    required_kb=$((required_kb + (image_size + 1023) / 1024))
+  done
   if [[ "$DRY_RUN" == "1" ]]; then
-    log "disk precheck ($where): dry run, nothing refused; the real run needs ${min_gb} GiB free on the filesystem of /var/lib/docker (now: ${free:-unknown} GiB)"
+    log "disk precheck ($where): dry run; requires $(( (required_kb + 1048575) / 1048576 )) GiB including image layers and DB dump reserve (free: $((free_kb / 1048576)) GiB)"
     return 0
   fi
-  [[ -n "$free" ]] || { log "disk precheck ($where): cannot read the free space of /var/lib/docker; continuing (df gave no answer)"; return 0; }
-  if ((free < min_gb)); then
-    log "disk precheck ($where): ${free} GiB free on the filesystem of /var/lib/docker, less than the required ${min_gb} GiB (MYRMIDON_DEPLOY_MIN_FREE_GB)"
-    log "disk precheck: the deploy is NOT started: no image was pulled, no dump was taken, nothing was changed"
-    log "disk precheck: candidates for cleanup (docker system df): the component images of past releases (docker image ls ghcr.io/itkadr-git/myrmidon), orphaned volumes of past predeploy checks (docker volume ls -f name=myr-predeploy-dbvol-), build cache"
+  if ((free_kb < required_kb)); then
+    log "disk precheck ($where): $((free_kb / 1048576)) GiB free; requires $(( (required_kb + 1048575) / 1048576 )) GiB including image layers and DB dump reserve"
+    log "disk precheck: refusing before pull, DB dump, or maintenance; cleanup candidates: obsolete release images (docker image ls ghcr.io/itkadr-git/myrmidon*), build cache, orphaned predeploy DB volumes"
     docker system df 2>/dev/null >&2 || true
-    die "not enough free disk space for the deploy: ${free} GiB < ${min_gb} GiB; free space (see the candidates above) or lower MYRMIDON_DEPLOY_MIN_FREE_GB"
+    die "not enough disk space for deploy: free $((free_kb / 1048576)) GiB, required $(( (required_kb + 1048575) / 1048576 )) GiB"
   fi
-  log "disk precheck ($where): ${free} GiB free on the filesystem of /var/lib/docker (>= ${min_gb} GiB required)"
+  log "disk precheck ($where): $((free_kb / 1048576)) GiB free; requires $(( (required_kb + 1048575) / 1048576 )) GiB including image layers and DB dump reserve"
 }
 
 # Removes the local images of the deploy's component repositories that are
 # older than MYRMIDON_DEPLOY_IMAGE_KEEP previous releases (default 1: the
 # current release plus the one before it, kept for a rollback). Order is the
-# image creation date (docker image ls). An image used by ANY container
-# (running or stopped) is never removed: it is skipped with a log line.
-# <none> tags left by a removed image are taken with it. A keep of 0 switches
-# the cleanup off. A failure here must never fail a finished deploy: the
-# caller warns and moves on.
+# image creation date (docker image ls), newest first. An image used by ANY
+# container (running or stopped) is never removed: it is skipped with a log
+# line. <none> tags left by a removed image are taken with it. A keep of 0
+# switches the cleanup off. A failure here must never fail a finished deploy:
+# the caller warns and moves on.
+#
+# The window per repository is "the current release plus N previous":
+#   - the NEWEST image a container uses is the current release; it stays;
+#   - images newer than it (just pulled, not started yet) always stay and do
+#     not count against the window;
+#   - after it at most N unused images stay (the previous releases), every
+#     older unused image is removed; other used images stay and do not count;
+#   - a repository without any used image has no current release to anchor
+#     on: the N+1 newest stay (the newest one is the release being deployed).
+# Counting the unused images after the current release (not N+1 of them) is
+# what keeps the bot images (hermes, hermes-dev, hermes-node: pulled by digest,
+# no tags) from piling up. Their current release is used by the bot containers
+# and was never in the window, so the old rule "N+1 unused" kept two superseded
+# generations on top of it: 4 generations of each bot image (2.9 + 1.6 + 1.2 GB
+# per generation) on the 06.11 incident; the rc.41 and rc.42 deploys logged
+# "0 image(s) removed" and the disk fell to 8% free.
 deploy_image_retention() {
   local keep="${MYRMIDON_DEPLOY_IMAGE_KEEP:-1}" repos="${MYRMIDON_DEPLOY_IMAGE_REPOS:-}"
-  local repo entry id created tag kept entries
+  local repo entry id created tag kept entries budget newer fresh=0
   [[ "$keep" =~ ^[0-9]+$ ]] || { log "image retention: MYRMIDON_DEPLOY_IMAGE_KEEP must be a non-negative integer (got '$keep'); the cleanup is skipped"; return 1; }
   if ((keep == 0)); then
     log "image retention: MYRMIDON_DEPLOY_IMAGE_KEEP=0, the cleanup is off"
@@ -1740,9 +2178,24 @@ done | sed 's/^sha256://' | sort -u)" || used_ids=""
     entries="$(docker image ls "$repo" --no-trunc --format '{{.CreatedAt}}{{"\t"}}{{.ID}}{{"\t"}}{{.Tag}}' 2>/dev/null \
       | sort -t"$(printf '\t')" -k1,1r)" || entries=""
     [[ -n "$entries" ]] || continue
-    # The keep window counts only images the cleanup may touch: an image a
-    # container uses is never removed, so it must not eat the budget of
-    # releases the operator still needs for a rollback.
+    # The window is anchored on the current release: the newest image a
+    # container uses. Newer images (pulled, not started yet) are never
+    # removed and do not count; after the current release at most `keep`
+    # unused images stay. Used images never eat the budget of the releases the
+    # operator still needs for a rollback. With no used image at all there is
+    # no anchor: the keep+1 newest stay.
+    newer=0
+    budget=$((keep + 1))
+    while IFS= read -r entry; do
+      [[ -n "$entry" ]] || continue
+      id="$(printf '%s' "$entry" | cut -f2)"
+      [[ -n "$id" ]] || continue
+      if grep -qx "${id#sha256:}" <<<"$used_ids"; then
+        newer=1
+        budget=$keep
+        break
+      fi
+    done <<<"$entries"
     kept=0
     while IFS= read -r entry; do
       [[ -n "$entry" ]] || continue
@@ -1753,9 +2206,14 @@ done | sed 's/^sha256://' | sort -u)" || used_ids=""
       if grep -qx "${id#sha256:}" <<<"$used_ids"; then
         log "image retention: $repo image ${id#sha256:} (created $created) is used by a container: skipped"
         skipped=$((skipped + 1))
+        newer=0
         continue
       fi
-      if ((kept < keep + 1)); then
+      if ((newer)); then
+        fresh=$((fresh + 1))
+        continue
+      fi
+      if ((kept < budget)); then
         kept=$((kept + 1))
         continue
       fi
@@ -1768,5 +2226,159 @@ done | sed 's/^sha256://' | sort -u)" || used_ids=""
       removed=$((removed + 1))
     done <<<"$entries"
   done
-  log "image retention: $removed image(s) removed, $skipped in use and kept (keep $keep previous release(s) per repository)"
+  log "image retention: $removed image(s) removed, $skipped in use and kept, $fresh newer than the running release kept (keep $keep previous release(s) per repository)"
+}
+
+# IMAGE-GC (OPE-12696): after a successful deploy sweep every image of the
+# repository globs in MYRMIDON_DEPLOY_IMAGE_GC_REPOS that NO container uses —
+# including exited and `created` ones (`docker ps -a` is authoritative) — and
+# prune the build cache. Foreign images (hindsight, langfuse, grafana…) are
+# never touched. Set MYRMIDON_DEPLOY_IMAGE_GC=0 to switch the sweep off.
+# Callers run it only after a fully successful deploy, so a failed deploy
+# never deletes anything; failures inside the sweep are logged, not fatal.
+deploy_image_gc() {
+  local enabled="${MYRMIDON_DEPLOY_IMAGE_GC:-1}"
+  if [[ "$enabled" != "1" ]]; then
+    log "image gc: disabled (MYRMIDON_DEPLOY_IMAGE_GC=$enabled)"
+    return 0
+  fi
+  local -A seen=()
+  local id repo glob size freed=0 removed=0 skipped=0 failed=0 matched
+  local -a globs=()
+  IFS=',' read -ra globs <<<"${MYRMIDON_DEPLOY_IMAGE_GC_REPOS:-}"
+  # `docker image ls` prints one line per tag; dedupe image ids so a
+  # multi-tag image is checked, counted and removed exactly once.
+  while IFS=$'\t' read -r repo id; do
+    [[ -n "$repo" && -n "$id" ]] || continue
+    [[ -z "${seen[$id]:-}" ]] || continue
+    matched=""
+    for glob in "${globs[@]}"; do
+      # shellcheck disable=SC2254 # the glob list is operator-controlled
+      case "$repo" in
+        $glob) matched="$glob"; break ;;
+      esac
+    done
+    [[ -n "$matched" ]] || continue
+    seen[$id]=1
+    if [[ -n "$(docker ps -a -q --filter "ancestor=$id" 2>/dev/null)" ]]; then
+      skipped=$((skipped + 1))
+      continue
+    fi
+    size="$(docker image inspect "$id" --format '{{.Size}}' 2>/dev/null || true)"
+    [[ "$size" =~ ^[0-9]+$ ]] || size=0
+    if docker image rm "$id" >/dev/null 2>&1; then
+      removed=$((removed + 1))
+      freed=$((freed + size))
+      log "image gc: removed $repo image ${id#sha256:} (no container uses it; freed $size bytes)"
+    else
+      failed=$((failed + 1))
+      log "image gc: WARNING: failed to remove $repo image ${id#sha256:}"
+    fi
+  done < <(docker image ls --format '{{.Repository}}\t{{.ID}}' 2>/dev/null)
+  if ((removed > 0)); then
+    # Layer blobs of the removed images may still sit in the build cache.
+    docker builder prune -af >/dev/null 2>&1 \
+      || log "image gc: WARNING: docker builder prune failed (cache kept)"
+  fi
+  log "image gc: $removed image(s) removed, $skipped in use kept, $failed failed, $freed bytes freed"
+}
+
+MYR_DEPLOY_LOCK_FILE=""
+MYR_DEPLOY_LOCK_DIR_CREATED=""
+
+release_deploy_lock() {
+  # NOTE: no `local` here — the function runs as the EXIT trap after
+  # acquire_deploy_lock has returned, so any `local` would die with
+  # "unbound variable" under set -u on bash 5.2 (CI printed
+  # "deploy.sh: line 1: lock_file: unbound variable" for every test).
+  sig="${1:-EXIT}"
+  trap - EXIT INT TERM
+  if [[ -n "${MYR_DEPLOY_LOCK_FILE:-}" && -f "$MYR_DEPLOY_LOCK_FILE" ]]; then
+    flock -u 200 2>/dev/null || true
+    exec 200>&- 2>/dev/null || true
+    rm -f "$MYR_DEPLOY_LOCK_FILE" 2>/dev/null || true
+  fi
+  if [[ -n "${MYR_DEPLOY_LOCK_DIR_CREATED:-}" && -d "$MYR_DEPLOY_LOCK_DIR_CREATED" ]]; then
+    rmdir "$MYR_DEPLOY_LOCK_DIR_CREATED" 2>/dev/null || true
+  fi
+  if [[ "$sig" == "INT" ]]; then
+    kill -INT $$
+  elif [[ "$sig" == "TERM" ]]; then
+    kill -TERM $$
+  fi
+}
+
+# Acquire exclusive deploy lock. Usage: acquire_deploy_lock
+acquire_deploy_lock() {
+  local lock_file="$1"
+  local wait_sec="$2"
+  local dry_run="$3"
+  local state_dir="$4"
+
+  if ! [[ "$wait_sec" =~ ^[0-9]+$ ]]; then
+    wait_sec=0
+  fi
+
+  if [[ -z "$lock_file" ]]; then
+    if [[ -n "$state_dir" ]]; then
+      lock_file="$state_dir/deploy.lock"
+    else
+      lock_file="/var/lib/myrmidon/deploy/deploy.lock"
+    fi
+  fi
+
+  if [[ "$dry_run" == "1" ]]; then
+    if [[ -f "$lock_file" ]]; then
+      if ! ( exec 200<"$lock_file" && flock -n 200 ); then
+        local holder_pid="" holder_started="" holder_version=""
+        if [[ -s "$lock_file" ]]; then
+          read -r holder_pid holder_started holder_version < "$lock_file" 2>/dev/null || true
+        fi
+        log "WARNING: another deploy is currently running (lock file $lock_file is locked by PID: ${holder_pid:-unknown}, started: ${holder_started:-unknown}, version: ${holder_version:-unknown})"
+      fi
+    fi
+    return 0
+  fi
+
+  local dir
+  dir="$(dirname "$lock_file")"
+  if [[ ! -d "$dir" ]]; then
+    MYR_DEPLOY_LOCK_DIR_CREATED="$dir"
+    mkdir -p "$dir"
+  fi
+
+  exec 200<>"$lock_file"
+
+  if (( wait_sec > 0 )); then
+    log "waiting up to ${wait_sec}s for deploy lock (${lock_file})..."
+    if ! flock -w "$wait_sec" 200; then
+      local holder_pid="" holder_started="" holder_version=""
+      if [[ -s "$lock_file" ]]; then
+        read -r holder_pid holder_started holder_version < "$lock_file" 2>/dev/null || true
+      fi
+      log "ERROR: deploy lock $lock_file is held by another process (PID: ${holder_pid:-unknown}, started: ${holder_started:-unknown}, version: ${holder_version:-unknown}) after waiting ${wait_sec}s"
+      if [[ -n "${MYR_DEPLOY_LOCK_DIR_CREATED:-}" && -d "$MYR_DEPLOY_LOCK_DIR_CREATED" ]]; then
+        rmdir "$MYR_DEPLOY_LOCK_DIR_CREATED" 2>/dev/null || true
+      fi
+      exit 42
+    fi
+  else
+    if ! flock -n 200; then
+      local holder_pid="" holder_started="" holder_version=""
+      if [[ -s "$lock_file" ]]; then
+        read -r holder_pid holder_started holder_version < "$lock_file" 2>/dev/null || true
+      fi
+      log "ERROR: another deploy is already running (lock file $lock_file is locked by PID: ${holder_pid:-unknown}, started: ${holder_started:-unknown}, version: ${holder_version:-unknown})"
+      if [[ -n "${MYR_DEPLOY_LOCK_DIR_CREATED:-}" && -d "$MYR_DEPLOY_LOCK_DIR_CREATED" ]]; then
+        rmdir "$MYR_DEPLOY_LOCK_DIR_CREATED" 2>/dev/null || true
+      fi
+      exit 42
+    fi
+  fi
+
+  printf '%s %s %s\n' "$$" "$(date -u +'%Y-%m-%dT%H:%M:%SZ')" "$(script_version_string)" > "$lock_file"
+  MYR_DEPLOY_LOCK_FILE="$lock_file"
+  trap release_deploy_lock EXIT
+  trap 'release_deploy_lock INT' INT
+  trap 'release_deploy_lock TERM' TERM
 }

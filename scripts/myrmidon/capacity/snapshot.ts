@@ -1,0 +1,420 @@
+import * as fs from "node:fs/promises";
+import * as path from "node:path";
+
+/**
+ * Read-only SQL extraction queries for 1.6.6 simulation fixture (OPE-8312 §5.12).
+ *
+ * Provenance & Verification:
+ * - Source: Production DB export by ADM on 2026-10-31 ~08:00 UTC (document relations-export)
+ * - UTC Cutoff / capturedAt: 2026-10-31T08:00:00.000Z
+ * - Scope: release "1.6.6", companyId "2870b911-483a-4091-9f15-183841811143"
+ * - Issue counts: 276 open issues (status in backlog, todo, in_progress, in_review, blocked)
+ * - Relations count: 94 blocking relations (type "blocks", both endpoints within snapshot issues)
+ * - Ready count: 100 ready issues (open issues not blocked by unresolved dependencies)
+ * - Excluded fields: title, description, body, comment, comments, notes, secrets, tokens
+ */
+export const STRUCTURAL_SNAPSHOT_SQL_QUERY = `
+-- 1. Extract structural issues (excluding title, description, comments, notes, secrets)
+SELECT
+  id,
+  identifier,
+  company_id,
+  project_id,
+  parent_id,
+  status,
+  priority,
+  caste_key,
+  pheromone_strength,
+  assignee_agent_id,
+  assignee_user_id,
+  execution_locked_at,
+  created_at,
+  updated_at
+FROM issues
+WHERE company_id = '2870b911-483a-4091-9f15-183841811143'
+  AND status IN ('backlog', 'todo', 'in_progress', 'in_review', 'blocked')
+  AND created_at <= '2026-10-25T16:00:00.000Z'
+ORDER BY identifier ASC;
+
+-- 2. Extract structural blocking relations
+SELECT
+  r.id,
+  r.company_id,
+  r.issue_id,
+  r.related_issue_id,
+  r.type,
+  r.created_at
+FROM issue_relations r
+JOIN issues i ON i.id = r.issue_id
+WHERE r.company_id = '2870b911-483a-4091-9f15-183841811143'
+  AND r.type = 'blocks'
+  AND r.created_at <= '2026-10-25T16:00:00.000Z'
+ORDER BY r.issue_id ASC, r.related_issue_id ASC;
+`.trim();
+
+export interface StructuralIssueSnapshot {
+  id: string;
+  identifier: string;
+  companyId: string;
+  projectId: string | null;
+  parentId: string | null;
+  status: "backlog" | "todo" | "in_progress" | "in_review" | "blocked" | "done" | "cancelled";
+  priority: "critical" | "high" | "medium" | "low";
+  casteKey: string | null;
+  pheromoneStrength: number;
+  assigneeAgentId: string | null;
+  assigneeUserId: string | null;
+  executionLockedAt: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface StructuralIssueRelationSnapshot {
+  id: string;
+  companyId: string;
+  issueId: string;
+  relatedIssueId: string;
+  type: "blocks";
+  createdAt: string;
+}
+
+export interface CapacityPolicySnapshot {
+  version: 1;
+  capturedAt: string;
+  scope: {
+    release: string;
+    companyId: string;
+  };
+  metrics: {
+    totalOpenIssues: number;
+    readyIssuesCount: number;
+  };
+  issues: StructuralIssueSnapshot[];
+  issueRelations: StructuralIssueRelationSnapshot[];
+}
+
+export const FORBIDDEN_CONTENT_KEYS = new Set([
+  "title",
+  "description",
+  "body",
+  "text",
+  "comment",
+  "comments",
+  "notes",
+  "summary",
+  "secret",
+  "password",
+  "token",
+  "raw",
+]);
+
+export const VALID_STATUSES = new Set([
+  "backlog",
+  "todo",
+  "in_progress",
+  "in_review",
+  "blocked",
+  "done",
+  "cancelled",
+]);
+
+export const VALID_PRIORITIES = new Set([
+  "critical",
+  "high",
+  "medium",
+  "low",
+]);
+
+const UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+const IDENTIFIER_REGEX = /^[A-Z0-9]+-\d+$/;
+
+function isValidUuid(val: unknown): val is string {
+  return typeof val === "string" && UUID_REGEX.test(val);
+}
+
+function isValidIsoDate(val: unknown): val is string {
+  if (typeof val !== "string") return false;
+  const d = new Date(val);
+  return !isNaN(d.getTime());
+}
+
+export function isIssueReadyForClaim(
+  issue: StructuralIssueSnapshot,
+  relationsByBlockedIssueId: Map<string, StructuralIssueRelationSnapshot[]>,
+  issuesById: Map<string, StructuralIssueSnapshot>,
+): boolean {
+  if (issue.status !== "todo") return false;
+  if (issue.assigneeAgentId !== null || issue.assigneeUserId !== null) return false;
+  if (issue.executionLockedAt !== null) return false;
+  if (!issue.projectId && !issue.casteKey) return false;
+
+  const blockers = relationsByBlockedIssueId.get(issue.id) ?? [];
+  for (const rel of blockers) {
+    if (rel.type !== "blocks") continue;
+    const blocker = issuesById.get(rel.issueId);
+    if (blocker && blocker.status !== "done" && blocker.status !== "cancelled") {
+      return false;
+    }
+  }
+
+  return true;
+}
+
+export function calculateReadyIssuesCount(
+  issues: StructuralIssueSnapshot[],
+  relations: StructuralIssueRelationSnapshot[],
+): number {
+  const issuesById = new Map<string, StructuralIssueSnapshot>();
+  for (const issue of issues) {
+    issuesById.set(issue.id, issue);
+  }
+
+  const relationsByBlockedIssueId = new Map<string, StructuralIssueRelationSnapshot[]>();
+  for (const rel of relations) {
+    const list = relationsByBlockedIssueId.get(rel.relatedIssueId) ?? [];
+    list.push(rel);
+    relationsByBlockedIssueId.set(rel.relatedIssueId, list);
+  }
+
+  let count = 0;
+  for (const issue of issues) {
+    if (isIssueReadyForClaim(issue, relationsByBlockedIssueId, issuesById)) {
+      count++;
+    }
+  }
+  return count;
+}
+
+export function validateSnapshot(data: unknown): CapacityPolicySnapshot {
+  if (!data || typeof data !== "object") {
+    throw new Error("Snapshot must be an object");
+  }
+
+  const obj = data as Record<string, unknown>;
+  if (obj.version !== 1) {
+    throw new Error(`Invalid snapshot version (${String(obj.version)}): version must be 1`);
+  }
+
+  if (!isValidIsoDate(obj.capturedAt)) {
+    throw new Error(`Invalid capturedAt timestamp: ${String(obj.capturedAt)}`);
+  }
+
+  if (!obj.scope || typeof obj.scope !== "object") {
+    throw new Error("Missing or invalid scope: scope must be an object");
+  }
+  const scope = obj.scope as Record<string, unknown>;
+  if (typeof scope.release !== "string" || !scope.release.trim()) {
+    throw new Error("Invalid scope.release: scope.release must be a non-empty string");
+  }
+  if (!isValidUuid(scope.companyId)) {
+    throw new Error(`Invalid scope.companyId (${String(scope.companyId)}): scope.companyId must be a valid UUID`);
+  }
+
+  if (!obj.metrics || typeof obj.metrics !== "object") {
+    throw new Error("Missing or invalid metrics object");
+  }
+  const metrics = obj.metrics as Record<string, unknown>;
+  if (typeof metrics.totalOpenIssues !== "number" || metrics.totalOpenIssues < 0) {
+    throw new Error("Invalid metrics.totalOpenIssues");
+  }
+  if (typeof metrics.readyIssuesCount !== "number" || metrics.readyIssuesCount < 0) {
+    throw new Error("Invalid metrics.readyIssuesCount");
+  }
+
+  if (!Array.isArray(obj.issues) || !Array.isArray(obj.issueRelations)) {
+    throw new Error("Snapshot must contain issues and issueRelations arrays");
+  }
+
+  const issueIds = new Set<string>();
+
+  for (const issue of obj.issues) {
+    if (!issue || typeof issue !== "object") {
+      throw new Error("Invalid issue in snapshot");
+    }
+    for (const key of Object.keys(issue)) {
+      if (FORBIDDEN_CONTENT_KEYS.has(key.toLowerCase())) {
+        throw new Error(`Forbidden text/secret field "${key}" found in issue snapshot`);
+      }
+    }
+    const item = issue as Record<string, unknown>;
+
+    if (!isValidUuid(item.id)) {
+      throw new Error(`Invalid issue id (${String(item.id)}): must be a valid UUID`);
+    }
+    issueIds.add(item.id as string);
+
+    if (typeof item.identifier !== "string" || !IDENTIFIER_REGEX.test(item.identifier)) {
+      throw new Error(`Invalid issue identifier (${String(item.identifier)}): must be a valid identifier`);
+    }
+
+    if (!isValidUuid(item.companyId)) {
+      throw new Error(`Invalid issue companyId (${String(item.companyId)}): must be a valid UUID`);
+    }
+
+    if (item.projectId !== null && !isValidUuid(item.projectId)) {
+      throw new Error(`Invalid issue projectId (${String(item.projectId)}): must be a valid UUID`);
+    }
+
+    if (item.parentId !== null && !isValidUuid(item.parentId)) {
+      throw new Error(`Invalid issue parentId (${String(item.parentId)}): must be a valid UUID`);
+    }
+
+    if (typeof item.status !== "string" || !VALID_STATUSES.has(item.status)) {
+      throw new Error(`Invalid issue status (${String(item.status)}): must be a valid status`);
+    }
+
+    if (typeof item.priority !== "string" || !VALID_PRIORITIES.has(item.priority)) {
+      throw new Error(`Invalid issue priority (${String(item.priority)}): must be a valid priority`);
+    }
+
+    if (item.casteKey !== null && typeof item.casteKey !== "string") {
+      throw new Error(`Invalid issue casteKey: ${String(item.casteKey)}`);
+    }
+
+    if (
+      typeof item.pheromoneStrength !== "number" ||
+      !Number.isInteger(item.pheromoneStrength) ||
+      item.pheromoneStrength < 0
+    ) {
+      throw new Error(`Invalid issue pheromoneStrength: ${String(item.pheromoneStrength)}`);
+    }
+
+    if (item.assigneeAgentId !== null && !isValidUuid(item.assigneeAgentId)) {
+      throw new Error(`Invalid issue assigneeAgentId: ${String(item.assigneeAgentId)}`);
+    }
+
+    if (item.assigneeUserId !== null && typeof item.assigneeUserId !== "string") {
+      throw new Error(`Invalid issue assigneeUserId: ${String(item.assigneeUserId)}`);
+    }
+
+    if (item.executionLockedAt !== null && !isValidIsoDate(item.executionLockedAt)) {
+      throw new Error(`Invalid issue executionLockedAt: ${String(item.executionLockedAt)}`);
+    }
+
+    if (!isValidIsoDate(item.createdAt)) {
+      throw new Error(`Invalid issue createdAt: ${String(item.createdAt)}`);
+    }
+
+    if (!isValidIsoDate(item.updatedAt)) {
+      throw new Error(`Invalid issue updatedAt: ${String(item.updatedAt)}`);
+    }
+  }
+
+  for (const rel of obj.issueRelations) {
+    if (!rel || typeof rel !== "object") {
+      throw new Error("Invalid issueRelation in snapshot");
+    }
+    for (const key of Object.keys(rel)) {
+      if (FORBIDDEN_CONTENT_KEYS.has(key.toLowerCase())) {
+        throw new Error(`Forbidden text/secret field "${key}" found in relation snapshot`);
+      }
+    }
+    const item = rel as Record<string, unknown>;
+
+    if (!isValidUuid(item.id)) {
+      throw new Error(`Invalid relation id (${String(item.id)}): must be a valid UUID`);
+    }
+    if (!isValidUuid(item.companyId)) {
+      throw new Error(`Invalid relation companyId (${String(item.companyId)}): must be a valid UUID`);
+    }
+    if (!isValidUuid(item.issueId)) {
+      throw new Error(`Invalid relation issueId (${String(item.issueId)}): must be a valid UUID`);
+    }
+    if (!isValidUuid(item.relatedIssueId)) {
+      throw new Error(`Invalid relation relatedIssueId (${String(item.relatedIssueId)}): must be a valid UUID`);
+    }
+    if (item.type !== "blocks") {
+      throw new Error(`Invalid relation type (${String(item.type)}): type must be "blocks"`);
+    }
+    if (!isValidIsoDate(item.createdAt)) {
+      throw new Error(`Invalid relation createdAt: ${String(item.createdAt)}`);
+    }
+  }
+
+  if (metrics.totalOpenIssues !== obj.issues.length) {
+    throw new Error(
+      `metrics.totalOpenIssues (${metrics.totalOpenIssues}) does not match issues.length (${obj.issues.length})`,
+    );
+  }
+
+  const typedSnapshot = data as CapacityPolicySnapshot;
+  const actualReadyCount = calculateReadyIssuesCount(typedSnapshot.issues, typedSnapshot.issueRelations);
+  if (metrics.readyIssuesCount !== actualReadyCount) {
+    throw new Error(
+      `metrics.readyIssuesCount (${metrics.readyIssuesCount}) does not match calculated ready count (${actualReadyCount})`,
+    );
+  }
+
+  return typedSnapshot;
+}
+
+export function serializeDeterministicSnapshot(snapshot: CapacityPolicySnapshot): string {
+  const sortedIssues = [...snapshot.issues].sort((a, b) => {
+    const numA = parseInt(a.identifier.replace(/\D/g, ""), 10) || 0;
+    const numB = parseInt(b.identifier.replace(/\D/g, ""), 10) || 0;
+    if (numA !== numB) return numA - numB;
+    return a.id.localeCompare(b.id);
+  });
+
+  const sortedRelations = [...snapshot.issueRelations].sort((a, b) => {
+    if (a.issueId !== b.issueId) return a.issueId.localeCompare(b.issueId);
+    if (a.relatedIssueId !== b.relatedIssueId) return a.relatedIssueId.localeCompare(b.relatedIssueId);
+    return a.id.localeCompare(b.id);
+  });
+
+  const normalized: CapacityPolicySnapshot = {
+    version: 1,
+    capturedAt: snapshot.capturedAt,
+    scope: {
+      release: snapshot.scope.release,
+      companyId: snapshot.scope.companyId,
+    },
+    metrics: {
+      totalOpenIssues: sortedIssues.length,
+      readyIssuesCount: calculateReadyIssuesCount(sortedIssues, sortedRelations),
+    },
+    issues: sortedIssues.map((issue) => ({
+      id: issue.id,
+      identifier: issue.identifier,
+      companyId: issue.companyId,
+      projectId: issue.projectId,
+      parentId: issue.parentId,
+      status: issue.status,
+      priority: issue.priority,
+      casteKey: issue.casteKey,
+      pheromoneStrength: issue.pheromoneStrength,
+      assigneeAgentId: issue.assigneeAgentId,
+      assigneeUserId: issue.assigneeUserId,
+      executionLockedAt: issue.executionLockedAt,
+      createdAt: issue.createdAt,
+      updatedAt: issue.updatedAt,
+    })),
+    issueRelations: sortedRelations.map((rel) => ({
+      id: rel.id,
+      companyId: rel.companyId,
+      issueId: rel.issueId,
+      relatedIssueId: rel.relatedIssueId,
+      type: rel.type,
+      createdAt: rel.createdAt,
+    })),
+  };
+
+  return JSON.stringify(normalized, null, 2) + "\n";
+}
+
+export async function exportStructuralSnapshotFromFile(
+  inputPath: string,
+  outputPath?: string,
+): Promise<CapacityPolicySnapshot> {
+  const raw = await fs.readFile(inputPath, "utf-8");
+  const parsed = JSON.parse(raw);
+  const validated = validateSnapshot(parsed);
+  const serialized = serializeDeterministicSnapshot(validated);
+
+  if (outputPath) {
+    await fs.mkdir(path.dirname(outputPath), { recursive: true });
+    await fs.writeFile(outputPath, serialized, "utf-8");
+  }
+
+  return JSON.parse(serialized) as CapacityPolicySnapshot;
+}

@@ -1,0 +1,71 @@
+name: Myrmidon docs reminder
+
+# DOCS-WRITER-RULES (OPE-12243, slice A2 of OPE-12135): when a pull request
+# changes the API/schema/generated capability surface but ships no change
+# fragment (docs/myrmidon/changes/) and no skill-reference update
+# (skills/myrmidon/references/), post exactly ONE informational comment asking
+# the author to check whether both need the same change.
+#
+# The reminder never fails CI: the script has no failure path — no exit 1 on
+# the verdict, GitHub API errors are logged and swallowed (exit 0). This is a
+# hint, not a gate: fragments become mandatory only at the release cut
+# (scripts/myrmidon/release/collect-fragments.mjs) and hand edits of the
+# shared registry documents are refused by
+# scripts/myrmidon/ci/change-fragments-gate.mjs — this workflow checks
+# nothing itself and only reads the diff.
+#
+# `synchronize` re-runs on every push; the marker <!-- docs-reminder --> makes
+# the reminder one-shot per PR (existing reminder comment is detected and
+# skipped), so repeated pushes never duplicate the comment.
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+permissions:
+  contents: read
+  pull-requests: write
+
+concurrency:
+  group: myrmidon-docs-reminder-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  docs-reminder:
+    name: Docs reminder (non-blocking)
+    # Light gate: own pool (vars.CI_RUNNER_LIGHT, same as `pr-text`), the
+    # GitHub-hosted queue is hours long.
+    runs-on: ${{ fromJSON(vars.CI_RUNNER_LIGHT || vars.MYR_RUNNER_LIGHT || vars.MYR_RUNNER || '"vps-ci"') }}
+    timeout-minutes: 5
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Compute merge-base SHAs
+        id: shas
+        run: |
+          set -euo pipefail
+          BASE_SHA="$(git merge-base "origin/${{ github.event.pull_request.base.ref }}" "${{ github.event.pull_request.head.sha }}")"
+          HEAD_SHA="${{ github.event.pull_request.head.sha }}"
+          echo "BASE_SHA=$BASE_SHA" >> "$GITHUB_OUTPUT"
+          echo "HEAD_SHA=$HEAD_SHA" >> "$GITHUB_OUTPUT"
+
+      - name: Setup Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version: 24
+          package-manager-cache: false
+
+      - name: Docs reminder (never fails)
+        continue-on-error: true
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          GITHUB_API_URL: ${{ github.api_url }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          BASE_SHA: ${{ steps.shas.outputs.BASE_SHA }}
+          HEAD_SHA: ${{ steps.shas.outputs.HEAD_SHA }}
+        run: node scripts/myrmidon/ci/docs-reminder.mjs

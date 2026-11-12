@@ -29,10 +29,29 @@ export const BUILTIN_MODEL_PROVIDER_TYPES = [
 ] as const;
 export type BuiltinModelProviderType = (typeof BUILTIN_MODEL_PROVIDER_TYPES)[number];
 
-/** Statically known provider kinds for type safety. */
+export const POOL_MODEL_PROVIDER_TYPES = [
+  "chatgpt-pool",
+  "antigravity-pool",
+  "google-ai-pool",
+] as const;
+
+/** Providers whose connector exposes per-account quota windows. */
+export type PoolModelProviderType = (typeof POOL_MODEL_PROVIDER_TYPES)[number];
+
+/**
+ * True for the subscription-pool provider types. A pool lives on its own
+ * gateway deployments (its router or proxy), so the board never registers,
+ * updates or deletes gateway deployments for it: it manages which models are
+ * visible, the fallback order and the agent key lists, not the deployments.
+ */
+export function isPoolModelProviderType(type: string | null | undefined): type is PoolModelProviderType {
+  return typeof type === "string" && (POOL_MODEL_PROVIDER_TYPES as readonly string[]).includes(type);
+}
+
+/** Statically known provider types for type safety. */
 export const MODEL_PROVIDER_TYPES = [
   ...BUILTIN_MODEL_PROVIDER_TYPES,
-  "chatgpt-pool",
+  ...POOL_MODEL_PROVIDER_TYPES,
 ] as const;
 export type ModelProviderType = (typeof MODEL_PROVIDER_TYPES)[number];
 
@@ -56,26 +75,43 @@ export interface ModelProviderConnectorRegistration {
   supportsChannels?: boolean;
 }
 
+// Keep one registration per plugin/type pair so two plugins can contribute the
+// same connector type without one plugin deleting the other's registration.
 const registeredModelProviderConnectors = new Map<string, ModelProviderConnectorRegistration>();
 
+function connectorRegistrationKey(reg: Pick<ModelProviderConnectorRegistration, "type" | "pluginKey">): string {
+  return `${reg.type}\0${reg.pluginKey ?? ""}`;
+}
+
 export function registerModelProviderConnector(reg: ModelProviderConnectorRegistration): void {
-  registeredModelProviderConnectors.set(reg.type, reg);
+  registeredModelProviderConnectors.set(connectorRegistrationKey(reg), reg);
 }
 
 export function unregisterModelProviderConnector(type: string): void {
-  registeredModelProviderConnectors.delete(type);
+  for (const [key, reg] of registeredModelProviderConnectors) {
+    if (reg.type === type) registeredModelProviderConnectors.delete(key);
+  }
+}
+
+/** Remove only the connector registration owned by one plugin. */
+export function unregisterModelProviderConnectorForPlugin(type: string, pluginKey: string): void {
+  registeredModelProviderConnectors.delete(`${type}\0${pluginKey}`);
 }
 
 export function unregisterModelProviderConnectorsByPlugin(pluginKey: string): void {
-  for (const [type, reg] of registeredModelProviderConnectors.entries()) {
+  for (const [key, reg] of registeredModelProviderConnectors.entries()) {
     if (reg.pluginKey === pluginKey) {
-      registeredModelProviderConnectors.delete(type);
+      registeredModelProviderConnectors.delete(key);
     }
   }
 }
 
 export function getModelProviderConnector(type: string): ModelProviderConnectorRegistration | null {
-  return registeredModelProviderConnectors.get(type) ?? null;
+  let match: ModelProviderConnectorRegistration | null = null;
+  for (const reg of registeredModelProviderConnectors.values()) {
+    if (reg.type === type) match = reg;
+  }
+  return match;
 }
 
 export function clearModelProviderConnectors(): void {
@@ -84,7 +120,10 @@ export function clearModelProviderConnectors(): void {
 
 /** Lists provider types currently available (built-in + active registered connectors). */
 export function listAvailableModelProviderTypes(): string[] {
-  return [...BUILTIN_MODEL_PROVIDER_TYPES, ...registeredModelProviderConnectors.keys()];
+  return [...new Set([
+    ...BUILTIN_MODEL_PROVIDER_TYPES,
+    ...[...registeredModelProviderConnectors.values()].map((reg) => reg.type),
+  ])];
 }
 
 export function isModelProviderTypeAvailable(type: string): boolean {
@@ -101,6 +140,26 @@ export const DEFAULT_CHATGPT_POOL_MODELS = [
   "gpt-5.6-luna",
 ] as const;
 
+/**
+ * Default models for the closed antigravity-pool connector. Each id is the
+ * name of the gateway model group, so it carries no provider-type prefix.
+ */
+export const DEFAULT_ANTIGRAVITY_POOL_MODELS = [
+  "antigravity/gemini-3.8-flash-high",
+  "antigravity/gemini-3.8-flash-medium",
+  "antigravity/gemini-3.8-flash-low",
+  "antigravity/gemini-3.5-flash-lite",
+] as const;
+
+/**
+ * The gateway model-group name of one pool model. ChatGPT pool groups are
+ * `chatgpt-pool/<model>`; the model ids of the other pools already are group
+ * names (for example `antigravity/gemini-3.8-flash-high`) and stay as they are.
+ */
+export function poolModelLitellmName(type: string, modelName: string): string {
+  return type === "chatgpt-pool" ? `chatgpt-pool/${modelName}` : modelName;
+}
+
 /** The models-list path every supported provider speaks (OpenAI-compatible). */
 export const MODEL_PROVIDER_MODELS_PATH = "/models";
 
@@ -115,13 +174,55 @@ export type PoolAccountState =
   | "banned"
   | "login_pending"
   | "login_expired"
-  | "not_logged_in";
+  | "not_logged_in"
+  | "disabled";
+
+/** Known subscription pool account plans (OPE-10810). */
+export const POOL_ACCOUNT_PLANS = ["plus", "pro", "k-12", "k12", "team", "free"] as const;
+export type PoolAccountPlan = (typeof POOL_ACCOUNT_PLANS)[number] | string;
+
+/**
+ * Returns true if the plan represents a K-12 tariff account.
+ * Under ADM 05.11 directive, 31 K-12 accounts are disabled / excluded from pool rotation.
+ */
+export function isK12Plan(plan?: string | null): boolean {
+  if (!plan) return false;
+  const p = plan.trim().toLowerCase();
+  return p === "k-12" || p === "k12";
+}
+
+/** Default rolling quota window durations for Codex / ChatGPT subscription accounts. */
+export const CODEX_PRIMARY_WINDOW_MIN = 300; // 5 hours (300 minutes)
+export const CODEX_SECONDARY_WINDOW_MIN = 10080; // 1 week (7 days = 10080 minutes)
+
+export function normalizePoolAccountPlan(plan?: string | null): PoolAccountPlan {
+  if (!plan) return "plus";
+  const trimmed = plan.trim().toLowerCase();
+  if (trimmed === "pro") return "pro";
+  if (trimmed === "k12" || trimmed === "k-12") return "k12";
+  if (trimmed === "plus") return "plus";
+  return trimmed;
+}
+
+export function formatPoolAccountPlanLabel(plan?: string | null): string {
+  const normalized = normalizePoolAccountPlan(plan);
+  switch (normalized) {
+    case "pro":
+      return "Pro";
+    case "k12":
+      return "K-12";
+    case "plus":
+    default:
+      return "Plus";
+  }
+}
 
 /** A quota window on a subscription account (e.g. 5-hour rolling or weekly). */
 export interface PoolAccountLimitWindow {
   usedPct: number | null;
   windowMin: number | null;
   resetsAt: number | null;
+  limitReached?: boolean;
 }
 
 /** Usage metrics observed on a subscription account. */
@@ -138,7 +239,7 @@ export interface PoolAccountUsage {
   recentErrors?: Array<{ at: number; status: number; message: string }>;
 }
 
-/** One account in the provider's channel registry (OPE-7189 ч.A). */
+/** One account in the provider's channel registry (OPE-7189 ч.A / OPE-10810). */
 export interface PoolAccountChannelView {
   n: number;
   label: string;
@@ -146,6 +247,7 @@ export interface PoolAccountChannelView {
   state: PoolAccountState | string;
   stateRu?: string;
   plan?: string | null;
+  models?: string[];
   limitedUntil: number | null;
   lastOk: number | null;
   windows: {
@@ -155,6 +257,10 @@ export interface PoolAccountChannelView {
   usage?: PoolAccountUsage;
   isBanned: boolean;
   isExhausted: boolean;
+  isDisabled?: boolean;
+  isExcluded?: boolean;
+  oauthState?: PoolAccountOAuthState;
+  oauthExpiresAt?: number | null;
   error?: string | null;
 }
 
@@ -165,6 +271,7 @@ export interface PoolAccountRoleSignal {
   accountNumber: number;
   label: string;
   kind: "banned" | "exhausted";
+  signalKind?: "banned" | "exhausted";
   severity: "critical" | "high" | "medium";
   title: string;
   whyNow: string;
@@ -179,7 +286,62 @@ export interface ModelProviderChannelsView {
   providerType: ModelProviderType;
   channels: PoolAccountChannelView[];
   signals: PoolAccountRoleSignal[];
+  summary?: {
+    total: number;
+    live: number;
+    exhausted: number;
+    banned: number;
+    error: number;
+    disabled?: number;
+    /** Reset timestamp of the pool itself when the connector reports one. */
+    nextResetAt: number | null;
+    /** Pool-reported reset info: ISO string from the connector, passthrough. */
+    nextResetText: string | null;
+  };
 }
+
+/** Known Codex / ChatGPT subscription pool account OAuth states (OPE-10810). */
+export const POOL_ACCOUNT_OAUTH_STATES = [
+  "idle",
+  "authorizing",
+  "active",
+  "expired",
+  "error",
+] as const;
+export type PoolAccountOAuthState = (typeof POOL_ACCOUNT_OAUTH_STATES)[number];
+
+export interface PoolAccountOAuthBeginResult {
+  accountNumber: number;
+  userCode: string;
+  verificationUri: string;
+  expiresInSec: number;
+  intervalSec: number;
+}
+
+export interface PoolAccountOAuthStatusResult {
+  accountNumber: number;
+  status: "pending" | "success" | "expired" | "failed";
+  error?: string | null;
+}
+
+export const poolAccountOAuthBeginSchema = z.object({
+  accountNumber: z.number().int().positive().optional(),
+  label: z.string().trim().max(160).optional(),
+  plan: z.string().trim().max(64).optional(),
+});
+export type PoolAccountOAuthBeginInput = z.infer<typeof poolAccountOAuthBeginSchema>;
+
+export const poolAccountOAuthCompleteSchema = z.object({
+  accountNumber: z.number().int().positive(),
+  code: z.string().optional(),
+  token: z.string().optional(),
+});
+export type PoolAccountOAuthCompleteInput = z.infer<typeof poolAccountOAuthCompleteSchema>;
+
+export const poolAccountOAuthRefreshSchema = z.object({
+  accountNumber: z.number().int().positive(),
+});
+export type PoolAccountOAuthRefreshInput = z.infer<typeof poolAccountOAuthRefreshSchema>;
 
 /**
  * The secret-store name that carries one provider's credential.
@@ -191,6 +353,14 @@ export interface ModelProviderChannelsView {
 export function modelProviderSecretName(providerId: string): string {
   const id = providerId.trim().toLowerCase().replace(/[^a-z0-9._-]+/g, "-");
   return `${MODEL_PROVIDER_SECRET_PREFIX}${id}`;
+}
+
+/**
+ * The secret-store name that carries one pool account's OAuth credentials (OPE-10810).
+ * Secrets are strictly isolated and never exposed over plain API responses.
+ */
+export function modelProviderAccountSecretName(providerId: string, accountNumber: number): string {
+  return `${modelProviderSecretName(providerId)}/accounts/${accountNumber}`;
 }
 
 /** Whether a secret name is one this feature manages. */
@@ -209,6 +379,14 @@ export const createModelProviderSchema = z
     expiresAt: z.string().datetime().optional().nullable(),
     packageName: z.string().trim().max(160).optional().nullable(),
     rpmLimit: z.number().int().positive().optional().nullable(),
+    /**
+     * Optional LiteLLM model names by the provider's own model name
+     * (`{"kimi-for-coding": "kimi/kimi-for-coding"}`). A model without an entry
+     * keeps the default `<type>/<model name>`.
+     */
+    litellmModelNames: z
+      .record(z.string().trim().min(1).max(512), z.string().trim().min(1).max(512))
+      .optional(),
   })
   .superRefine((value, ctx) => {
     if (value.type === "openai-compatible" && !value.baseUrl) {
@@ -233,7 +411,12 @@ export const patchModelProviderSchema = z.object({
 });
 export type PatchModelProviderInput = z.infer<typeof patchModelProviderSchema>;
 
-/** POST /providers/{id}/models body: the per-model enable/disable switches. */
+/**
+ * POST /providers/{id}/models body: the per-model switches. `litellmModelName`
+ * renames the model in the gateway registry (default `<type>/<model name>`); the
+ * model must be disabled while it is renamed, so the gateway never keeps a
+ * registration under a name the board no longer knows.
+ */
 export const setModelProviderModelsSchema = z.object({
   models: z
     .array(
@@ -241,8 +424,39 @@ export const setModelProviderModelsSchema = z.object({
         modelName: z.string().trim().min(1).max(512),
         enabled: z.boolean().optional(),
         free: z.boolean().optional(),
+        litellmModelName: z.string().trim().min(1).max(512).optional(),
       }),
     )
     .max(500),
 });
 export type SetModelProviderModelsInput = z.infer<typeof setModelProviderModelsSchema>;
+
+/** POST /providers/{id}/channels body: add an account to the provider pool. */
+export const addPoolAccountSchema = z.object({
+  label: z.string().trim().min(1).max(128),
+  plan: z.string().trim().max(64).optional().default("plus"),
+  email: z.string().trim().email().max(256).optional().nullable(),
+  accessToken: z.string().trim().max(4096).optional(),
+  refreshToken: z.string().trim().max(4096).optional(),
+  expiresAt: z.number().int().optional(),
+  models: z.array(z.string().trim()).optional(),
+});
+export type AddPoolAccountInput = z.infer<typeof addPoolAccountSchema>;
+
+/** POST /providers/{id}/oauth/start body: initiate Codex OAuth flow. */
+export const startCodexOAuthSchema = z.object({
+  plan: z.string().trim().max(64).optional().default("plus"),
+  label: z.string().trim().max(128).optional(),
+});
+export type StartCodexOAuthInput = z.infer<typeof startCodexOAuthSchema>;
+
+/** POST /providers/{id}/oauth/complete body: complete Codex OAuth flow. */
+export const completeCodexOAuthSchema = z.object({
+  state: z.string().trim().min(1).max(256).optional(),
+  code: z.string().trim().min(1).max(2048).optional(),
+  label: z.string().trim().max(128).optional(),
+  plan: z.string().trim().max(64).optional(),
+  email: z.string().trim().email().max(256).optional().nullable(),
+  tokens: z.record(z.string(), z.unknown()).optional(),
+});
+export type CompleteCodexOAuthInput = z.infer<typeof completeCodexOAuthSchema>;

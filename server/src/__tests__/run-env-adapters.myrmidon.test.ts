@@ -159,6 +159,9 @@ describe("myrmidon(S2) adapter runs do not inherit server secrets", () => {
       expect(agentRun.names).toContain("OPENAI_API_KEY");
       expect(agentRun.names).toContain("PAPERCLIP_RUN_ID");
       expect(agentRun.names).toContain("PAPERCLIP_API_KEY");
+      // myrmidon(REBRAND-C): canonical MYRMIDON_* names ship alongside.
+      expect(agentRun.names).toContain("MYRMIDON_RUN_ID");
+      expect(agentRun.names).toContain("MYRMIDON_API_KEY");
     });
 
     it(`${testCase.label}: inheritProcessEnv restores the server environment`, async () => {

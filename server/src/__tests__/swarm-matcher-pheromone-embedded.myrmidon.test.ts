@@ -20,7 +20,7 @@
 // Neutral data only: company-a, agent-a, agent-b.
 
 import { randomUUID } from "node:crypto";
-import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import {
   activityLog,
   agentCastes,
@@ -45,11 +45,15 @@ import {
 } from "./helpers/embedded-postgres.js";
 import { isIssueCoolingDown, readSwarmSettings } from "../myrmidon/wake-task-guard.js";
 import {
+  invalidateLastRunRowsCache,
   listIdleRolePairs,
   matchAgent,
   matchCompany,
   type SwarmMatcherDeps,
 } from "../myrmidon/swarm-claim/matcher.js";
+import {
+  invalidateFailedRunsCache,
+} from "../myrmidon/swarm-claim/effective-pheromone.js";
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
@@ -244,27 +248,32 @@ describeEmbeddedPostgres("matcher × pheromone order, caste routing and cooling"
   });
 
   // (b) ----------------------------------------------------------------------
-  it("never hands a task routed to another caste to an agent of this caste", async () => {
+  it("hands an unstaffed caste's tasks to the default role instead of starving (OPE-12846)", async () => {
     const companyId = await seedCompany();
     const engineer = await seedAgent(companyId, "agent-a", "engineer");
     const [nest] = await db
       .insert(projects)
-      .values({ companyId, name: "review nest", defaultCasteKey: "reviewer" })
+      .values({ companyId, name: "review nest", defaultCasteKey: "reviewer", leadAgentId: engineer })
       .returning();
     const ownCaste = await seedTask(companyId, { identifier: "TASK-REVIEW", casteKey: "reviewer", pheromoneStrength: 90 });
     const nestDefault = await seedTask(companyId, { identifier: "TASK-NEST", projectId: nest!.id, pheromoneStrength: 90 });
 
-    expect(await matchAgent(matcherDeps(), engineer)).toBeNull();
+    // No reviewer agents: the reviewer caste is unstaffed, its tasks fall to
+    // the default role (the free engineer) instead of starving forever. The
+    // default capacity lets the engineer take both across the two passes
+    // (matchAgent, then matchCompany). The staffed-caste exclusivity — a
+    // reviewer present keeps the reviewer tasks out of the engineer queue —
+    // stays covered by routing-unstaffed-caste.myrmidon.test.ts and the
+    // staffed one-caste read of pheromone-sql.myrmidon.test.ts.
+    const first = await matchAgent(matcherDeps(), engineer);
+    expect(first?.role).toBe("engineer");
+    expect([ownCaste, nestDefault]).toContain(first?.issueId);
     const pass = await matchCompany(matcherDeps(), companyId);
-    expect(pass.pairs).toEqual([]);
-    expect(await assigneeOf(ownCaste)).toBeNull();
-    expect(await assigneeOf(nestDefault)).toBeNull();
-
-    // Control: an agent of the caste the tasks are routed to takes them.
-    const reviewer = await seedAgent(companyId, "agent-b", "reviewer");
-    const taken = await matchAgent(matcherDeps(), reviewer);
-    expect([ownCaste, nestDefault]).toContain(taken?.issueId);
-    expect(await assigneeOf(taken!.issueId)).toBe(reviewer);
+    expect(pass.pairs.map((pair) => pair.role)).toEqual(["engineer"]);
+    expect([ownCaste, nestDefault]).toContain(pass.pairs[0]?.issueId);
+    expect(pass.pairs[0]?.issueId).not.toBe(first?.issueId);
+    expect(await assigneeOf(first!.issueId)).toBe(engineer);
+    expect(await assigneeOf(pass.pairs[0]!.issueId)).toBe(engineer);
   });
 
   // (c) ----------------------------------------------------------------------
@@ -476,5 +485,42 @@ describeEmbeddedPostgres("matcher × pheromone order, caste routing and cooling"
     const top = pairs.find((pair) => pair.role === "engineer")?.queue[0]?.issueId;
     const result = await matchCompany(matcherDeps({ settings }), companyId);
     expect(result.pairs.map((pair) => pair.issueId)).toEqual([top]);
+  });
+
+  it("N matcher passes within 60s compute failed runs only once", async () => {
+    const companyId = await seedCompany();
+    const agentId = await seedAgent(companyId);
+    const taskId = await seedTask(companyId, { identifier: "T-CACHE", priority: "medium", pheromoneStrength: 20 });
+    await seedFinishedRun(companyId, agentId, taskId, { status: "failed", finishedAt: new Date(NOW.getTime() - HOUR) });
+
+    invalidateFailedRunsCache(companyId);
+    invalidateLastRunRowsCache(companyId);
+
+    const spy = vi.spyOn(db, "execute");
+    try {
+      // 5 calls within 60s
+      for (let i = 0; i < 5; i++) {
+        await listIdleRolePairs(db, companyId, {
+          order: { p0Preemption: false, dynamics: DEFAULT_PHEROMONE_DYNAMICS, now: NOW },
+        });
+      }
+      expect(spy).toHaveBeenCalledTimes(1);
+
+      // Beyond 60s TTL
+      const later = new Date(NOW.getTime() + 61_000);
+      await listIdleRolePairs(db, companyId, {
+        order: { p0Preemption: false, dynamics: DEFAULT_PHEROMONE_DYNAMICS, now: later },
+      });
+      expect(spy).toHaveBeenCalledTimes(2);
+
+      // Invalidation on failure
+      invalidateFailedRunsCache(companyId);
+      await listIdleRolePairs(db, companyId, {
+        order: { p0Preemption: false, dynamics: DEFAULT_PHEROMONE_DYNAMICS, now: later },
+      });
+      expect(spy).toHaveBeenCalledTimes(3);
+    } finally {
+      spy.mockRestore();
+    }
   });
 });

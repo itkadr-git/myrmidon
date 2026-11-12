@@ -59,7 +59,9 @@ Turning the cache off works the same way in reverse.
    another directory, as on the
    production host, the SOURCE directory is the one to give away) and give them to the bot user (uid and gid
    10001 in the bot image); Docker would otherwise create a missing one as root
-   and the bot could not write to it:
+   and the bot could not write to it. The cache root must be on the SAME filesystem
+   as the bot volumes (outside `MYRMIDON_BOT_VOLUME_ROOT`), not on the root disk:
+   a reflink works inside one filesystem only (OPE-12869).
 
    ```sh
    install -d -o 10001 -g 10001 /srv/package-cache/{pnpm,pnpm-store,uv,go-mod,go-build,gradle}
@@ -267,12 +269,17 @@ no supported contract is refused before anything is created.
 pnpm keeps one content-addressed store and links each project's `node_modules`
 to it with hard links. With the bot's tree one mount, the store sits inside it:
 
-- **Store**: `/workspace/.pnpm-store` by default (setting `pnpmStoreDir`; any
-  path under `/workspace`, `/data`, `/scratch` or `/bot`), set as
-  `npm_config_store_dir` in the image, in the entrypoint's self-check and in the
-  profile's `.env` (for bots with the shared cache) from the same setting. The
-  lifecycle sweep never treats the store as a draft. A store outside the single
-  mount is refused by the settings API.
+- **Store** (OPE-12869): `/cache/pnpm-store` by default — ONE store for all bots,
+  the host directory `<sharedPackageCachePath>/pnpm-store` bound read-write (setting
+  `pnpmStoreDir`; a path under `/workspace`, `/data`, `/scratch` or `/bot` is a
+  store per bot and draws a warning), set as `npm_config_store_dir` in the profile's
+  `.env` (for bots with the shared cache; the image's own default stays
+  `/workspace/.pnpm-store` for a bot without the cache bind). The cache root has to
+  be on the same XFS filesystem as the bot volumes: `pnpm install` imports by
+  reflink (`clone`), and on one filesystem every bot's `node_modules` shares the
+  store's blocks, so the store costs ~3 GB once, not per bot. OPE-12720 had moved
+  the store into each bot's tree (2.4-2.6 GB per bot) and is reverted for the store
+  path; its pnpm wrapper purge flag stays.
 - **Import method**: `package-import-method=hardlink` (setting
   `pnpmImportMethod`, default `hardlink`; `clone-or-copy` and `copy` are explicit
   opt-outs). `hardlink` makes pnpm try only hard links. It does **not** make a
@@ -378,6 +385,24 @@ Existing clones keep their copied `node_modules` until they are reinstalled
 (`rm -rf node_modules && pnpm install`) or reaped by the lifecycle; the store they
 link into is the one at `pnpmStoreDir`, which is created on first use. Roll back
 by deploying the previous image and dockergate (the host layout is the same).
+
+**Rollout of the shared store (OPE-12869).** Create `<packageCacheRoot>/pnpm-store`
+(owner 10001:10001) on the bot-volume filesystem, deploy dockergate together with or
+before the board (the old dockergate refuses the `pnpm-store` bind with
+`mount_source_not_allowed`), then the board. The board writes
+`npm_config_store_dir=/cache/pnpm-store` into every bot's profile on its next pass
+(a stored `/workspace/.pnpm-store` setting reads as that default). Clones installed
+under the per-bot store have the old `storeDir` in `node_modules/.modules.yaml`;
+the first `pnpm install` there purges `node_modules` and installs again from the
+shared store (the bot image's pnpm wrapper injects
+`--config.confirm-modules-purge=false`, since pnpm 10 aborts the purge without a
+TTY). The per-bot `workspace/.pnpm-store` directories are then unused and can be
+removed to return the space.
+
+**Verifying the link.** `du -xs node_modules` proves nothing: it counts a linked
+file in full. Compare `df` of the bot partition before and after a fresh
+`pnpm install` in a new clone: the delta is the size of the packages that were
+new to the store, not the ~3 GB of a full `node_modules`.
 
 ### Isolation scope: who shares a disk
 
@@ -564,12 +589,37 @@ its default:
 | `sharedPackageCachePath` | unset | The shared cache directory (above) |
 | `gitMirrorRepos` | `[]` | `owner/repo` names to mirror; empty: no mirrors and no `/cache/git` mount. Needs `sharedPackageCachePath` |
 | `gitMirrorRefreshMs` | `900000` (15 min) | How often each mirror is fetched, 1 min to 24 h |
-| `pnpmStoreDir` | `/workspace/.pnpm-store` | The pnpm store, a path under `/workspace`, `/data`, `/scratch` or `/bot` (above) |
+| `pnpmStoreDir` | `/cache/pnpm-store` | The pnpm store: the shared mount, or a path under `/workspace`, `/data`, `/scratch` or `/bot` (a store per bot, with a warning) (above) |
 | `pnpmImportMethod` | `hardlink` | `hardlink`, `clone-or-copy` or `copy` (above) |
 | `uvCacheDir` | `/cache/uv` | The shared uv cache; a path under `<sharedPackageCachePath>` by contract, a bot-tree path with a warning (Shared uv cache above) |
 | `uvLinkMode` | `clone` | `UV_LINK_MODE`: `clone`, `hardlink` or `copy`; `symlink` is refused (Shared uv cache above) |
-| `sharedCacheRoles` | `engineer`, `reviewer`, `devops`, `release`, `qa` | Roles whose bots get the cache and mirror mounts; other bots get none and are not recreated when the cache is enabled |
+| `sharedCacheRoles` | `engineer`, `lead`, `reviewer`, `devops`, `release`, `qa` | Roles whose bots get the cache and mirror mounts; `lead` joined the coding roles (OPE-12384). Other bots get none and are not recreated when the cache is enabled |
 | `idleTtlMs`, `enabled` | 6 h, on | The draft lifecycle of BOT-DISK A, which the clone hygiene follows |
+
+## Bot cache lifecycle and pressure cleanup (1.6.6 BOT-DISK-H)
+
+`general.botDisk` also controls the botd maintenance pass. The defaults are applied when a field is absent, so existing instances do not need a settings migration or a rollout-time edit:
+
+| Key | Default | Meaning |
+|---|---:|---|
+| `npmCacheTtlHours` | `48` | Maximum mtime age for npm `_cacache` entries/root shards (`_npx` package entries use `npxTtlHours`) |
+| `uvCacheTtlHours` | `168` (7 days) | Age used for uv cache maintenance |
+| `terminalOutputTtlHours` | `24` | Maximum mtime age for `cache/terminal-output` entries |
+| `scratchTtlHours` | existing default | Maximum mtime age for scratch files; evaluated on every maintenance pass |
+| `sessionRetentionDays` | existing default | Retention for bot session data |
+| `npxTtlHours` | `24` | Maximum mtime age for `hermes/.npm/_npx/<hash>` entries (env `MYRMIDON_BOTD_NPX_TTL_HOURS`) |
+| `npmNpxQuotaBytes` | `536870912` (512 MiB) | Byte quota of `hermes/.npm/_npx` per bot; past it the entries written longest ago are removed first (env `MYRMIDON_BOTD_NPM_NPX_QUOTA_BYTES`) |
+| `cargoTargetQuotaBytes` | `2147483648` (2 GiB) | Byte quota of the per-bot cargo target dir `hermes/.cache/cargo-target` (the image's `CARGO_TARGET_DIR`); past it whole profile dirs (`debug`, `release`, `<triple>`) are removed, least recently written first (env `MYRMIDON_BOTD_CARGO_TARGET_QUOTA_BYTES`) |
+
+The cleanup is mtime-based and never removes a path that is open or contains an open file descriptor or current working directory. Open-path protection is prefix-based: an open descendant protects its whole cache entry. npm `_npx/<hash>` directories and npm content/index shards are removed as whole entries; files are never deleted one by one inside those trees. uv is maintained with `uv cache prune`; under hard pressure botd may use `uv cache clean` rather than walking the cache. A failed or skipped cleanup is reported in the botd maintenance log with the reason and bytes reclaimed.
+
+**Byte quotas for `_npx` and the cargo target dir (OPE-12110).** An `npx` run of a vendor CLI can pull a whole package tree into `_npx/<hash>` (2.2 GB in 45 minutes on one bot), and a Rust `target/` inside a task tree reached 2.4 GB. The image therefore sets `CARGO_TARGET_DIR=/data/hermes/.cache/cargo-target` (a directory cargo creates on first use; a bot that never builds Rust has none), and botd bounds both directories with the quotas above, with the same rules as the age pass: whole entries only, never a path that is open or holds an open file descriptor or working directory, mtime-based. After the age pass, if the entries that remain still exceed the quota, they are removed oldest-first by their newest mtime until the total fits. An entry written within the last 15 minutes is never removed by a quota pass (an install or a build may still be going), so the quota can stay exceeded for one pass. The `_npx` and cargo units are the immediate children of their root; a removed cargo profile dir costs a rebuild and nothing else. The board's desired state does not carry these keys today, so they are set with the environment variable of the botd process; a `grace` value, if the board ever sends one, wins over the environment, and zero or absent means the default. The botd log reports an eviction as `botd hygiene: npx quota <bytes> bytes exceeded, evicted N entries oldest-first, kept <bytes> bytes` and `botd hygiene: cargo target quota ...`.
+
+When disk pressure is `soft` or `hard`, botd schedules a local-only pressure cleanup outside the normal cadence. This pass does not poll desired state or send a disk report early: those remain bounded by their normal report cadence. Pressure passes have a floor of 60 seconds and back off when a pass frees no bytes, so a failing board cannot turn pressure into a request storm.
+
+The git-base maintenance pass is also guarded. `git repack -A -d` runs at low priority (`nice -n 19`, `ionice -c 3` when available, `pack.threads=1`), only during the idle gate, and one repository at a time under a fleet-wide lock. It is skipped at `hard` pressure. A successful repack is followed by `git prune --expire=2.weeks`, and the botd log records the repository plus before/after size. The lock prevents all bots from repacking concurrently and stale lock state is safely recoverable.
+
+**Rollout and reporting.** No production setting change is required for the defaults. After rollout, operators should inspect botd maintenance reports for `pressure`, `reclaimedBytes`, skipped-open entries, uv command results, and repack before/after sizes. If a cache entry is in use, leave it in place and investigate the owning process rather than deleting it manually. The board's disk acceptance check is that stale npm entries are gone while fresh and open entries remain.
 
 ## Enabling git mirrors (operator steps)
 

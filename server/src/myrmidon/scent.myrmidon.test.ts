@@ -20,8 +20,14 @@
 //     on the next tick;
 //  8. the settings reader: defaults, stored override, env kill switch.
 
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterAll, afterEach, beforeEach, beforeAll, describe, expect, it, vi } from "vitest";
+import express from "express";
+import request from "supertest";
+import type { Db } from "@myrmidon/db";
 import { PgDialect } from "drizzle-orm/pg-core";
+import type { ScentQueuePorts } from "./scent/queue.js";
+import { myrmidonScentRoutes } from "./scent/routes.js";
+import { errorHandler } from "../middleware/index.js";
 import {
   DEFAULT_SCENT_SETTINGS,
   defaultStrengthForPriority,
@@ -39,12 +45,37 @@ import type {
   AgentScentClassificationResult,
   ScentGateway,
 } from "./scent/gateway.js";
+import {
+  classifyIssueScent,
+  normalizeScentBaseUrl,
+} from "./scent/gateway.js";
+import { scentMetrics } from "./scent/metrics.js";
+import { checkScentHealth } from "./scent/health.js";
 import { deriveScentAuto, isUnclassifiableIssue } from "./scent/create-hook.js";
 import { canSpendCall, createScentService } from "./scent/service.js";
-import { SCENT_QUEUE_TICK_MS, startScentQueue } from "./scent/queue.js";
+import { runScentQueueTick, SCENT_QUEUE_TICK_MS, startScentQueue } from "./scent/queue.js";
 import { issueScentResponseFormat, parseIssueScentContent } from "./scent/gateway.js";
 
 const CASTES = ["engineer", "designer", "marketer"];
+const COMPANY_ID = "00000000-0000-4000-8000-000000000001";
+
+function makeScentStatusApp(db: Db, ports: ScentQueuePorts) {
+  const app = express();
+  app.use((req, _res, next) => {
+    req.actor = {
+      type: "board",
+      source: "local_implicit",
+      userId: "user-a",
+      companyIds: [COMPANY_ID],
+      memberships: [{ companyId: COMPANY_ID, membershipRole: "owner", status: "active" }],
+      isInstanceAdmin: true,
+    };
+    next();
+  });
+  app.use("/api", myrmidonScentRoutes(db, ports));
+  app.use(errorHandler);
+  return app;
+}
 
 const CSS_SCENT: IssueScent = {
   tags: ["css", "button", "ui"],
@@ -477,5 +508,492 @@ describe("startScentQueue: no re-entrant ticks", () => {
     stop();
     await vi.advanceTimersByTimeAsync(SCENT_QUEUE_TICK_MS * 3);
     expect(started).toBe(2);
+  });
+});
+
+// Queue diagnostics use their injected activity-log port.
+
+describe("scent queue: unconfigured contour is visible in the activity log", () => {
+  let previousScentBaseUrl: string | undefined;
+  let previousEvalsBaseUrl: string | undefined;
+
+  beforeEach(() => {
+    previousScentBaseUrl = process.env.MYRMIDON_SCENT_BASE_URL;
+    previousEvalsBaseUrl = process.env.MYRMIDON_EVALS_BASE_URL;
+    // A contour configured via env would skip the park gate entirely and
+    // crash the stub db deeper in the tick — force the empty-contour world.
+    delete process.env.MYRMIDON_SCENT_BASE_URL;
+    delete process.env.MYRMIDON_EVALS_BASE_URL;
+  });
+
+  afterEach(() => {
+    if (previousScentBaseUrl === undefined) delete process.env.MYRMIDON_SCENT_BASE_URL;
+    else process.env.MYRMIDON_SCENT_BASE_URL = previousScentBaseUrl;
+    if (previousEvalsBaseUrl === undefined) delete process.env.MYRMIDON_EVALS_BASE_URL;
+    else process.env.MYRMIDON_EVALS_BASE_URL = previousEvalsBaseUrl;
+  });
+
+  it("journals swarm.scent_contour_unconfigured when the contour is empty", async () => {
+    // The scenario of the 1.6.5 acceptance: enabled=true, a pending backlog,
+    // and a completely empty contour (no base URL, no key). The queue parked
+    // silently for a day; the journal entry is the fix's observable.
+    const db = {
+      execute: async () => [{ n: 0 }], // return a Drizzle-style thenable for the throttle query
+    };
+    const logActivity = vi.fn(async (_db: unknown, _entry: unknown) => undefined);
+    await runScentQueueTick(db as never, {
+      getGeneral: async () => ({ swarm: { scent: { enabled: true } } }),
+      listCompanyIds: async () => ["c1"],
+      resolveSecret: async () => null,
+      logActivity,
+    });
+    expect(logActivity).toHaveBeenCalledTimes(1);
+    const entry = (logActivity.mock.calls[0] as unknown[])[1] as { action: string; details: Record<string, unknown> };
+    expect(entry.action).toBe("swarm.scent_contour_unconfigured");
+    expect(entry.details).toEqual({ baseUrlConfigured: false, keyConfigured: false });
+  });
+
+  it("stays silent when an entry already exists within the hour (throttle)", async () => {
+    const db = {
+      execute: async () => [{ n: 1 }], // return a Drizzle-style thenable for the throttle query
+    };
+    const logActivity = vi.fn(async (_db: unknown, _entry: unknown) => undefined);
+    await runScentQueueTick(db as never, {
+      getGeneral: async () => ({ swarm: { scent: { enabled: true } } }),
+      listCompanyIds: async () => ["c1"],
+      resolveSecret: async () => null,
+      logActivity,
+    });
+    expect(logActivity).not.toHaveBeenCalled();
+  });
+
+  function makeStubDb(): Db {
+    const queryBuilder = {
+      from: () => queryBuilder,
+      where: () => queryBuilder,
+      orderBy: () => queryBuilder,
+      limit: () => queryBuilder,
+      then: (onfulfilled?: (val: unknown[]) => unknown) => Promise.resolve([]).then(onfulfilled),
+    };
+    return {
+      execute: async () => [{ n: 0 }],
+      select: () => queryBuilder,
+      insert: () => ({
+        values: () => ({
+          onConflictDoNothing: async () => [],
+        }),
+      }),
+    } as unknown as Db;
+  }
+
+  it("reports contour, base URL, and key configuration from the status route", async () => {
+    const db = makeStubDb();
+    const resolveSecret = vi.fn(async () => "secret-value");
+    const ports: ScentQueuePorts = {
+      getGeneral: async () => ({ swarm: { scent: { enabled: true } } }),
+      listCastes: async () => CASTES.map((key) => ({ key })),
+      listMarkupQueue: async () => ({ issueIds: [], agentIds: [], totalPending: 0 }),
+      resolveSecret,
+      listCompanyIds: async () => [COMPANY_ID],
+    };
+    const envSnapshot = new Map(
+      ["MYRMIDON_SCENT_BASE_URL", "MYRMIDON_EVALS_BASE_URL", "MYRMIDON_EVALS_API_KEY"].map(
+        (name) => [name, process.env[name]],
+      ),
+    );
+    try {
+      process.env.MYRMIDON_SCENT_BASE_URL = "https://scent.example.test";
+      process.env.MYRMIDON_EVALS_API_KEY = "secret-value";
+      const response = await request(makeScentStatusApp(db, ports)).get(
+        `/api/myrmidon/companies/${COMPANY_ID}/swarm/scent/status`,
+      );
+      expect(response.status).toBe(200);
+      expect(response.body).toMatchObject({
+        contourConfigured: true,
+        baseUrlConfigured: true,
+        keyConfigured: true,
+      });
+      expect(resolveSecret).toHaveBeenCalledTimes(1);
+    } finally {
+      for (const [name, value] of envSnapshot) {
+        if (value === undefined) delete process.env[name];
+        else process.env[name] = value;
+      }
+    }
+  });
+
+  it("reports keyConfigured: false without 500 when secret resolution throws", async () => {
+    const db = makeStubDb();
+    const ports: ScentQueuePorts = {
+      getGeneral: async () => ({ swarm: { scent: { enabled: true } } }),
+      listCastes: async () => CASTES.map((key) => ({ key })),
+      listMarkupQueue: async () => ({ issueIds: [], agentIds: [], totalPending: 0 }),
+      resolveSecret: vi.fn(async () => {
+        throw new Error("corrupt cipher / KMS failure");
+      }),
+      listCompanyIds: async () => [COMPANY_ID],
+    };
+    const envSnapshot = new Map(
+      ["MYRMIDON_SCENT_BASE_URL", "MYRMIDON_EVALS_BASE_URL", "MYRMIDON_EVALS_API_KEY"].map(
+        (name) => [name, process.env[name]],
+      ),
+    );
+    try {
+      process.env.MYRMIDON_SCENT_BASE_URL = "https://scent.example.test";
+      delete process.env.MYRMIDON_EVALS_API_KEY;
+      const response = await request(makeScentStatusApp(db, ports)).get(
+        `/api/myrmidon/companies/${COMPANY_ID}/swarm/scent/status`,
+      );
+      expect(response.status).toBe(200);
+      expect(response.body).toMatchObject({
+        contourConfigured: false,
+        baseUrlConfigured: true,
+        keyConfigured: false,
+      });
+    } finally {
+      for (const [name, value] of envSnapshot) {
+        if (value === undefined) delete process.env[name];
+        else process.env[name] = value;
+      }
+    }
+  });
+});
+
+describe("myrmidon(1.6.6 OPE-9996): Scent gateway baseUrl normalization", () => {
+  it("normalizes baseUrl by stripping trailing /v1 and slashes", () => {
+    expect(normalizeScentBaseUrl("http://192.0.2.1:4000/v1")).toBe("http://192.0.2.1:4000");
+    expect(normalizeScentBaseUrl("http://192.0.2.1:4000/v1/")).toBe("http://192.0.2.1:4000");
+    expect(normalizeScentBaseUrl("http://192.0.2.1:4000/v1///")).toBe("http://192.0.2.1:4000");
+    expect(normalizeScentBaseUrl("http://192.0.2.1:4000")).toBe("http://192.0.2.1:4000");
+    expect(normalizeScentBaseUrl("http://192.0.2.1:4000/")).toBe("http://192.0.2.1:4000");
+  });
+
+  it("calls fetch with correct /v1/chat/completions without duplicating /v1", async () => {
+    const fetchedUrls: string[] = [];
+    const mockFetch = (async (url: string | URL | Request) => {
+      fetchedUrls.push(String(url));
+      return {
+        ok: true,
+        json: async () => ({
+          choices: [
+            {
+              message: {
+                content: JSON.stringify({
+                  tags: ["fix"],
+                  casteProbs: { engineer: 0.9 },
+                  complexity: { coordination: 0.1, uncertainty: 0.1, consequences: 0.1 },
+                }),
+              },
+            },
+          ],
+            usage: { prompt_tokens: 10, completion_tokens: 15 },
+          }),
+        };
+      }) as unknown as typeof fetch;
+
+    const result = await classifyIssueScent(
+      {
+        fetch: mockFetch,
+        baseUrl: "http://192.0.2.1:4000/v1",
+        apiKey: "test-key",
+      },
+      {
+        model: "test-model",
+        title: "Test bug",
+        description: "Fix problem",
+        casteKeys: ["engineer"],
+        timeoutSec: 5,
+      },
+    );
+
+    expect(result.scent).not.toBeNull();
+    expect(result.scent?.tags).toEqual(["fix"]);
+    expect(fetchedUrls[0]).toBe("http://192.0.2.1:4000/v1/chat/completions");
+  });
+});
+
+describe("myrmidon(1.6.6 OPE-9996): Scent status and failure alarm", () => {
+  beforeEach(() => {
+    scentMetrics.reset();
+  });
+
+  it("reports lastSuccessAt and successRateHour accurately", async () => {
+    const lastSuccess = new Date("2026-10-30T10:00:00Z");
+    const health = await checkScentHealth(
+      {} as never,
+      "c1",
+      {
+        getHourlyStats: async () => ({
+          lastSuccessAt: lastSuccess,
+          attemptsLastHour: 20,
+          successesLastHour: 15,
+        }),
+      },
+    );
+
+    expect(health.lastSuccessAt).toBe(lastSuccess.toISOString());
+    expect(health.attemptsLastHour).toBe(20);
+    expect(health.successesLastHour).toBe(15);
+    expect(health.successRateHour).toBe(0.75);
+    expect(health.alarm).toBe(false);
+    expect(scentMetrics.isAlarm()).toBe(false);
+  });
+
+  it("triggers alarm and logs activity when >= 10 attempts and 0 successes in the last hour", async () => {
+    const loggedEntries: Array<{ action: string; details: unknown }> = [];
+    const db = {
+      execute: async () => [{ n: 0 }],
+    };
+    const health = await checkScentHealth(
+      db as never,
+      "c1",
+      {
+        getHourlyStats: async () => ({
+          lastSuccessAt: null,
+          attemptsLastHour: 12,
+          successesLastHour: 0,
+        }),
+        logActivity: async (_d, entry) => {
+          loggedEntries.push({ action: entry.action, details: entry.details });
+        },
+      },
+    );
+
+    expect(health.alarm).toBe(true);
+    expect(health.attemptsLastHour).toBe(12);
+    expect(health.successesLastHour).toBe(0);
+    expect(health.successRateHour).toBe(0);
+    expect(scentMetrics.isAlarm()).toBe(true);
+
+    expect(loggedEntries).toHaveLength(1);
+    expect(loggedEntries[0].action).toBe("swarm.scent_classifier_dead");
+    expect((loggedEntries[0].details as { alarm: boolean }).alarm).toBe(true);
+  });
+
+  it("does not trigger alarm when fewer than 10 attempts have been made", async () => {
+    const loggedEntries: unknown[] = [];
+    const db = {
+      execute: async () => [{ n: 0 }],
+    };
+    const health = await checkScentHealth(
+      db as never,
+      "c1",
+      {
+        getHourlyStats: async () => ({
+          lastSuccessAt: null,
+          attemptsLastHour: 9,
+          successesLastHour: 0,
+        }),
+        logActivity: async (_d, entry) => {
+          loggedEntries.push(entry);
+        },
+      },
+    );
+
+    expect(health.alarm).toBe(false);
+    expect(scentMetrics.isAlarm()).toBe(false);
+    expect(loggedEntries).toHaveLength(0);
+  });
+});
+
+// --- 10. myrmidon(1.6.8 SCENT-AUTHZ OPE-12698): board-only refresh routes ----
+//
+// The two refresh routes previously let ANY company agent key through and
+// returned the RAW DB row (adapter_config, title, description …). The fix:
+// board-only access (403 for agent keys BEFORE any db/gateway work — the fake
+// gateway must see zero calls) plus an explicit response field allowlist.
+// These tests need real rows to prove the leak is closed, so they run against
+// an embedded Postgres like the other route acceptance tests.
+
+import { createDb, activityLog, agents, companies, issues } from "@myrmidon/db";
+import {
+  getEmbeddedPostgresTestSupport,
+  startEmbeddedPostgresTestDatabase,
+  type EmbeddedPostgresTestDatabase,
+} from "../__tests__/helpers/embedded-postgres.js";
+
+const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
+const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
+
+if (!embeddedPostgresSupport.supported) {
+  console.warn(
+    `Skipping embedded Postgres scent-authz tests on this host: ${
+      embeddedPostgresSupport.reason ?? "unsupported environment"
+    }`,
+  );
+}
+
+describeEmbeddedPostgres("myrmidon(1.6.8 SCENT-AUTHZ OPE-12698): scent refresh board-only + allowlisted response", () => {
+  const AGENT_ID = "00000000-0000-4000-8000-000000000002";
+  const ISSUE_ID = "00000000-0000-4000-8000-000000000003";
+  const ADAPTER_CONFIG_MARKER = { env: { TOKEN: { type: "plain", value: "sk-secret-marker" } } };
+  let db!: Db;
+  let tempDb: EmbeddedPostgresTestDatabase | null = null;
+
+  beforeAll(async () => {
+    tempDb = await startEmbeddedPostgresTestDatabase("myrmidon-scent-authz-");
+    db = createDb(tempDb.connectionString);
+  }, 20_000);
+
+  afterEach(async () => {
+    await db.delete(activityLog);
+    await db.delete(issues);
+    await db.delete(agents);
+    await db.delete(companies);
+  });
+
+  afterAll(async () => {
+    await tempDb?.cleanup();
+  });
+
+  async function seedCompanyData() {
+    await db.insert(companies).values({ id: COMPANY_ID, name: "Scent Authz Co" });
+    await db.insert(agents).values({
+      id: AGENT_ID,
+      companyId: COMPANY_ID,
+      name: "scent-agent",
+      capabilities: "Triage of incoming bugs and routing",
+      adapterConfig: ADAPTER_CONFIG_MARKER,
+      runtimeConfig: { model: "gpt-x" },
+      metadata: { internalNote: "do-not-leak" },
+      scentTags: [],
+    });
+    await db.insert(issues).values({
+      id: ISSUE_ID,
+      companyId: COMPANY_ID,
+      title: "Fix the login button",
+      description: "The login button ignores clicks on Safari.",
+      status: "todo",
+      assigneeAgentId: AGENT_ID,
+    });
+  }
+
+  function boardActor() {
+    return {
+      type: "board",
+      source: "local_implicit",
+      userId: "user-a",
+      companyIds: [COMPANY_ID],
+      memberships: [{ companyId: COMPANY_ID, membershipRole: "owner", status: "active" }],
+      isInstanceAdmin: true,
+    } as Express.Request["actor"];
+  }
+
+  function agentActor() {
+    return {
+      type: "agent",
+      agentId: AGENT_ID,
+      companyId: COMPANY_ID,
+      source: "agent_key",
+    } as Express.Request["actor"];
+  }
+
+  function makeScentApp(db: Db, ports: ScentQueuePorts, actor: Express.Request["actor"]) {
+    const app = express();
+    app.use(express.json());
+    app.use((req, _res, next) => {
+      req.actor = actor;
+      next();
+    });
+    app.use("/api", myrmidonScentRoutes(db, ports));
+    app.use(errorHandler);
+    return app;
+  }
+
+  function fakeGatewayResponse(content: unknown): typeof fetch {
+    const stub: typeof fetch = (_input, _init) =>
+      Promise.resolve(new Response(JSON.stringify({
+        choices: [{ message: { content: JSON.stringify(content) } }],
+        usage: { prompt_tokens: 10, completion_tokens: 5 },
+      }), { status: 200 }));
+    return stub;
+  }
+
+  function portsWithFakeGateway() {
+    return {
+      getGeneral: async () => ({ swarm: { scent: { enabled: true } } }),
+      resolveSecret: async () => null,
+      listCastes: async () => CASTES.map((key) => ({ key })),
+      fetch: fakeGatewayResponse(CSS_SCENT),
+    };
+  }
+
+  it("rejects an agent key on the issue refresh with 403 BEFORE any db or gateway work", async () => {
+    await seedCompanyData();
+    const fetchSpy = vi.fn(portsWithFakeGateway().fetch);
+    const app = makeScentApp(db, { ...portsWithFakeGateway(), fetch: fetchSpy }, agentActor());
+
+    const res = await request(app)
+      .post(`/api/myrmidon/companies/${COMPANY_ID}/issues/${ISSUE_ID}/scent/refresh`);
+
+    expect(res.status).toBe(403);
+    expect(res.body.error).toBe("Board access required");
+    expect(fetchSpy).not.toHaveBeenCalled();
+    // No ledger entry either: the route never reached the classification path.
+    const ledger = await db.select().from(activityLog);
+    expect(ledger).toHaveLength(0);
+  });
+
+  it("rejects an agent key on the agent refresh with 403 BEFORE any db or gateway work", async () => {
+    await seedCompanyData();
+    const fetchSpy = vi.fn(portsWithFakeGateway().fetch);
+    const app = makeScentApp(db, { ...portsWithFakeGateway(), fetch: fetchSpy }, agentActor());
+
+    const res = await request(app)
+      .post(`/api/myrmidon/companies/${COMPANY_ID}/agents/${AGENT_ID}/scent/refresh`);
+
+    expect(res.status).toBe(403);
+    expect(res.body.error).toBe("Board access required");
+    expect(fetchSpy).not.toHaveBeenCalled();
+    const ledger = await db.select().from(activityLog);
+    expect(ledger).toHaveLength(0);
+  });
+
+  it("board issue refresh returns 200 with exactly the allowlisted issue fields", async () => {
+    await seedCompanyData();
+    const app = makeScentApp(db, portsWithFakeGateway(), boardActor());
+
+    const res = await request(app)
+      .post(`/api/myrmidon/companies/${COMPANY_ID}/issues/${ISSUE_ID}/scent/refresh`);
+
+    expect(res.status).toBe(200);
+    expect(Object.keys(res.body).sort()).toEqual(["issue"]);
+    expect(Object.keys(res.body.issue).sort()).toEqual([
+      "casteKey",
+      "casteSource",
+      "id",
+      "pheromoneStrength",
+      "scent",
+    ]);
+    // The classification actually ran and its scent is what comes back —
+    // not a raw row echo: no title/description/assigneeAgentId.
+    expect(res.body.issue.scent).toEqual(CSS_SCENT);
+    expect(res.body.issue.title).toBeUndefined();
+    expect(res.body.issue.description).toBeUndefined();
+    expect(res.body.issue.assigneeAgentId).toBeUndefined();
+  });
+
+  it("board agent refresh returns 200 with exactly the allowlisted agent fields", async () => {
+    await seedCompanyData();
+    const app = makeScentApp(db, {
+      ...portsWithFakeGateway(),
+      fetch: fakeGatewayResponse({ tags: ["triage"] }),
+    }, boardActor());
+    const res = await request(app)
+      .post(`/api/myrmidon/companies/${COMPANY_ID}/agents/${AGENT_ID}/scent/refresh`);
+
+    expect(res.status).toBe(200);
+    expect(Object.keys(res.body).sort()).toEqual(["agent"]);
+    expect(Object.keys(res.body.agent).sort()).toEqual([
+      "id",
+      "modelTier",
+      "scentClassifiedAt",
+      "scentTags",
+    ]);
+    // adapterConfig/runtimeConfig/metadata never leave the server.
+    expect(res.body.agent.adapterConfig).toBeUndefined();
+    expect(res.body.agent.runtimeConfig).toBeUndefined();
+    expect(res.body.agent.metadata).toBeUndefined();
+    expect(res.body.agent.scentTags).toEqual(["triage"]);
   });
 });

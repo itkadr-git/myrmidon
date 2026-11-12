@@ -43,7 +43,15 @@
     "idsSummary": "Agent ids",
     "summary": "Maintenance windows: {{count}} across {{rows}} kind(s), {{state}}",
     "row": "{{scope}} ({{state}}) since {{since}}: {{reason}} — windows: {{count}}, queued wakeups: {{queued}}.",
-    "endsBy": "ends by {{time}}"
+    "endsBy": "ends by {{time}}",
+    "scopedBotContainer": "Updating bot container for {{name}} (~1 min), the rest of the board is working",
+    "scopedBotContainerPrefix": "Updating bot container for ",
+    "scopedRestOfBoardWorking": " (~1 min), the rest of the board is working",
+    "scopedBotGeneral": "Maintenance for bot {{name}} (~1 min), the rest of the board is working",
+    "scopedBotGeneralPrefix": "Maintenance for bot ",
+    "scopedBotContainersPlural": "Updating bot containers ({{count}}) (~1 min), the rest of the board is working",
+    "scopedBotsGeneralPlural": "Maintenance for bots ({{count}}) (~1 min), the rest of the board is working",
+    "scopedDepartment": "Maintenance for project (~1 min), the rest of the board is working"
   },
   "about": {
     "title": "About Myrmidon",
@@ -64,6 +72,13 @@
   },
   "sidebar": {
     "version": "Myrmidon {{version}}"
+  },
+  "uiSwitch": {
+    "label": "Interface",
+    "new": "New",
+    "legacy": "Previous",
+    "instanceDefault": "Follow instance setting",
+    "switchTo": "Switch interface version"
   },
   "ui2": {
     "nav": {
@@ -106,7 +121,6 @@
       "badge": "{{count}} decisions waiting"
     },
     "owner": "Owner",
-    "ownerChannel": "Web · now",
     "commander": {
       "aria": "Tell the Commander (Ctrl K)",
       "placeholder": "Tell the Commander…",
@@ -117,17 +131,20 @@
       "status": "Owner · Web"
     },
     "screens": {
+      "commander": "Command Center",
       "decisions": "Decisions",
       "costs": "Costs",
       "agentOverview": "Agent overview",
       "runsQueue": "Runs and queue",
       "system": "System",
       "language": "Language",
+      "channels": "Channels",
       "placeholderTitle": "Not in this wave yet",
       "placeholderBody": "This screen is part of the UI 2.0 rollout plan and lands with its wave. The current data lives on the existing screen; this placeholder exists so the 2.0 frame and routing are real from day one.",
       "placeholderLegacyLink": "Continue to the current screen",
       "knowledge": "Knowledge",
-      "regulations": "Regulations"
+      "regulations": "Regulations",
+      "more": "More"
     },
     "settings": {
       "navLabel": "Settings navigation",
@@ -140,7 +157,16 @@
       "autonomy": "Autonomy",
       "guards": "Guardrails",
       "castes": "Castes and models",
-      "system": "System"
+      "system": "System",
+      "language": "Language",
+      "channels": "Channels"
+    },
+    "shell": {
+      "activeChannel": {
+        "web": "Active · Web",
+        "telegram": "Active · Telegram",
+        "none": "Active · not seen recently"
+      }
     }
   },
   "connectorPanel": {
@@ -254,7 +280,8 @@
       "container-labels": "Container labels",
       "env": "Environment override",
       "manual": "Operator set",
-      "none": "Not visible from the board"
+      "none": "Not visible from the board",
+      "http-version": "HTTP version endpoint"
     },
     "schedule": "Schedule update",
     "dialog": {
@@ -267,7 +294,8 @@
       "cancel": "Cancel",
       "created": "Draft task created: {{identifier}}",
       "failed": "The task could not be created: {{message}}"
-    }
+    },
+    "stale": "périmé {{hours}}h"
   },
   "autonomy": {
     "title": "Autonomy matrix",
@@ -396,7 +424,21 @@
       "state": "State",
       "window5h": "5h Limit Window",
       "window7d": "7d Limit Window",
-      "lastOk": "Last OK"
+      "lastOk": "Last OK",
+      "lastError": "Last error",
+      "resetIn": "Resets in"
+    },
+    "litellmChannels": {
+      "title": "LiteLLM Model Groups & Channels",
+      "description": "Model groups and routed provider channels configured in LiteLLM.",
+      "loading": "Loading model groups and channels...",
+      "empty": "No LiteLLM model groups or channels found.",
+      "error": "Failed to load LiteLLM channels: {{error}}",
+      "group": "Group",
+      "provider": "Provider",
+      "providerModel": "Provider Model",
+      "order": "Order",
+      "weight": "Weight"
     }
   },
   "castes": {
@@ -541,7 +583,13 @@
     "maxDuration": "Max duration, seconds",
     "maxDurationHint": "Longer recordings are rejected with audio_too_long.",
     "save": "Save settings",
-    "saving": "Saving..."
+    "saving": "Saving...",
+    "baseUrl": "Operator STT endpoint URL",
+    "baseUrlHint": "Only an operator-managed HTTP(S) endpoint; leave blank to inherit the instance default.",
+    "keySecret": "DashScope key (company secret)",
+    "deepgramKeySecret": "Deepgram key (company secret)",
+    "keepSecret": "Keep current secret selection",
+    "noSecret": "No secret selected"
   },
   "nests": {
     "title": "Nests",

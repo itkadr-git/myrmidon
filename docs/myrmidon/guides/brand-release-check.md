@@ -1,6 +1,6 @@
 # Brand release check (read-only, before the tag)
 
-> DEBRAND 1.6.6 (OPE-8127). Краткая русская версия — в конце файла.
+> DEBRAND 1.6.6 (OPE-8127).
 
 This is the manual, read-only pass over UI copy, bot/log texts and API
 answers that the file-based guards cannot see. Run it before cutting a
@@ -11,15 +11,19 @@ flows, do not edit runtime or configuration.
 
 ```bash
 node scripts/myrmidon/docs-branding-guard.mjs        # docs/ — must be clean
-node scripts/myrmidon/brand-release-audit.mjs        # root + docs/ — report mode
+node scripts/myrmidon/brand-release-audit.mjs        # root + docs/ + package.json — report mode
 node scripts/myrmidon/brand-release-audit.mjs --gate # same, fails on findings
+node scripts/myrmidon/brand-release-audit.mjs --package-json-only --gate # package.json repository/homepage/bugs only
 node --test scripts/myrmidon/brand-release-audit.test.mjs
 ```
 
 Report mode prints the exact count and paths of non-allowlisted old-brand
 mentions. A non-zero total is honest output: it means a parallel DEBRAND part
 has not landed yet — record the number in the release report instead of
-trimming the allowlist.
+trimming the allowlist. The audit also reports package.json manifests whose
+`repository`/`homepage`/`bugs` still point at the vendored repo
+(`https://github.com/paperclipai/paperclip`); these must be
+`https://github.com/itkadr-git/myrmidon` (OPE-9316).
 
 ## 2. UI copy (read-only browser pass)
 
@@ -69,15 +73,3 @@ In the release report state: gate output (count + paths), which control
 points were checked by hand, and any residual finding with its path/category
 and the epic that owns it. A red whole-repo audit before the parallel parts
 land is an expected, reportable state — not a release blocker for this gate.
-
----
-
-## Кратко (RU)
-
-Read-only проверка перед тегом: (1) оба сторожа зелёные или их вывод записан
-в отчёт с числом и путями; (2) в UI везде Myrmidon, кроме строки атрибуции
-«Based on Paperclip (MIT)»; (3) живые статусы прогонов, ответы API и новые
-строки логов — без старого бренда (старое тело recovery-уведомления —
-легаси-алиас, его приём от старых инстансов нормален); (4) юридическая
-атрибуция и машинные идентификаторы — не дефект; (5) результат — в отчёт
-релиза с количеством/путями остатков и владельцем каждого.

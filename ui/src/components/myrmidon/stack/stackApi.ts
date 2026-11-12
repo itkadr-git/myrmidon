@@ -20,6 +20,7 @@ export const STACK_LOCAL_PROBES = [
   "health-commit",
   "docker-image",
   "container-labels",
+  "http-version",
   "env",
   "manual",
   "none",
@@ -43,6 +44,8 @@ export interface StackUpstreamState {
   behindBy: number | null;
   notes: StackReleaseNotes | null;
   error: string | null;
+  /** When the upstream data was last successfully fetched (null while fresh). */
+  staleSince: string | null;
 }
 
 export interface StackPatchEntry {
@@ -69,6 +72,13 @@ export interface StackComponentState {
   patches: StackPatchEntry[];
 }
 
+export interface StackVulnerability {
+  id: string;
+  severity: string;
+  cveId?: string | null;
+  summary?: string | null;
+}
+
 export interface StackSnapshot {
   version: 1;
   name: string;
@@ -79,6 +89,7 @@ export interface StackSnapshot {
   local: StackComponentState;
   upstreamState?: StackUpstreamState;
   patchClosed?: StackPatchClosed;
+  vulnerabilities?: StackVulnerability[];
 }
 
 export interface StackDocument {

@@ -5,7 +5,7 @@
 // The owner can turn "board errors" into a message to a Telegram
 // chat/topic. The error feed is computed on the fly from the attention
 // desk (no new table, no migration): the closed error-kind set is
-// `failed_run`, `agent_error_alert`, `budget_alert`. Each card passes a
+// `failed_run`, `agent_error_alert`, `budget_alert`, `litellm_budget`. Each card passes a
 // severity threshold (`minSeverity`) and a fixed per-hour rate limit
 // (`maxPerHour` — over the limit, DROP, never a queue). Off by default:
 // with the settings absent or disabled, nothing is read, filtered or sent.
@@ -53,6 +53,11 @@ export const ERROR_CHANNEL_SOURCE_KINDS = [
   "failed_run",
   "agent_error_alert",
   "budget_alert",
+  "litellm_budget",
+  // myrmidon(1.6.8 OPE-12709): a whole role's model channels are down, or a
+  // provider channel has no credits — operator-level stops, same channel.
+  "role_model_down",
+  "provider_no_credits",
 ] as const;
 
 export type ErrorChannelSourceKind = (typeof ERROR_CHANNEL_SOURCE_KINDS)[number];
@@ -101,8 +106,27 @@ export function filterErrorChannelCard(
 /** Publication idempotency prefix: one row per attention card, ever. */
 export const ERROR_CHANNEL_PUBLICATION_PREFIX = "notify:errors:";
 
-export function errorChannelPublicationKey(input: Pick<AttentionItem, "companyId" | "dedupKey">): string {
-  return `${ERROR_CHANNEL_PUBLICATION_PREFIX}${input.companyId}:${input.dedupKey}`;
+/**
+ * Kinds whose card keeps one stable dedupKey for as long as the condition lasts
+ * (the role stays down, the channel stays out of credits) and comes back with
+ * the same key on a later outage. "One row per card, ever" would deliver the
+ * first outage and stay silent on every later one, so these kinds are staged
+ * at most once per hour per dedupKey: the publication key carries the hour
+ * bucket. A role that stays down is re-sent once an hour; the card leaves the
+ * feed on the role's first successful run.
+ */
+const HOURLY_DEDUP_SOURCE_KINDS: ReadonlySet<string> = new Set(["role_model_down", "provider_no_credits"]);
+const HOUR_MS = 60 * 60 * 1000;
+
+export function errorChannelPublicationKey(
+  input: Pick<AttentionItem, "companyId" | "dedupKey"> & Partial<Pick<AttentionItem, "sourceKind">>,
+  now: Date = new Date(),
+): string {
+  const key = `${ERROR_CHANNEL_PUBLICATION_PREFIX}${input.companyId}:${input.dedupKey}`;
+  if (input.sourceKind && HOURLY_DEDUP_SOURCE_KINDS.has(input.sourceKind)) {
+    return `${key}:h${Math.floor(now.getTime() / HOUR_MS)}`;
+  }
+  return key;
 }
 
 /** Max characters of one card's message text that reach Telegram. */
@@ -117,6 +141,22 @@ export function errorChannelCardText(
   item: Pick<AttentionItem, "sourceKind" | "severity" | "subject" | "whyNow">,
 ): string {
   const title = item.subject.title ?? item.subject.id;
+  // myrmidon(1.6.8 OPE-12709): the ROLE-MODEL-DOWN card names the role, the
+  // model group and the finished/failed counts in the subject metadata — a
+  // Telegram line that reads like a fact, not like a code pointer.
+  if (item.sourceKind === "role_model_down" || item.sourceKind === "provider_no_credits") {
+    const meta = item.subject.metadata ?? {};
+    const parts: string[] = [];
+    if (typeof meta.role === "string") parts.push(`role=${meta.role}`);
+    if (typeof meta.modelGroup === "string") parts.push(`model=${meta.modelGroup}`);
+    if (typeof meta.channel === "string") parts.push(`channel=${meta.channel}`);
+    if (typeof meta.finishedRuns === "number") parts.push(`finished=${meta.finishedRuns}`);
+    const detail = parts.length > 0 ? ` (${parts.join(", ")})` : "";
+    const line = `[${item.severity}] ${title}${detail}: ${item.whyNow}`;
+    return line.length > ERROR_CHANNEL_TEXT_MAX
+      ? `${line.slice(0, ERROR_CHANNEL_TEXT_MAX - 1)}…`
+      : line;
+  }
   const line = `[${item.severity}] ${title}: ${item.whyNow}`;
   return line.length > ERROR_CHANNEL_TEXT_MAX
     ? `${line.slice(0, ERROR_CHANNEL_TEXT_MAX - 1)}…`
@@ -301,6 +341,8 @@ export interface ErrorChannelSweepDeps {
   stage?: typeof stageErrorChannelPublication;
   /** Rate limiter; production keeps ONE instance for the process lifetime (see createTgNotifySweepRunner). */
   limiter?: HourlyRateLimiter;
+  /** Clock seam for the hourly publication key; production uses the wall clock. */
+  now?: () => Date;
 }
 
 /**
@@ -343,7 +385,7 @@ export async function sweepErrorChannel(
       endpointId: target.endpointId,
       conversationId: target.conversationId,
       issueId: target.issueId,
-      idempotencyKey: errorChannelPublicationKey(item),
+      idempotencyKey: errorChannelPublicationKey(item, deps.now?.() ?? new Date()),
       text: errorChannelCardText(item),
     });
     if (staged) {

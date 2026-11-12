@@ -14,12 +14,13 @@ import (
 )
 
 type dockerClient struct {
-	socket        string
-	api           string
-	volumeRoot    string
-	network       string
-	images        []string
-	gatewayBindIP string
+	socket         string
+	api            string
+	volumeRoot     string
+	network        string
+	images         []string
+	gatewayBindIP  string
+	boardExtraHost string
 }
 
 const dockerAPIVersion = "v1.41"
@@ -29,7 +30,7 @@ func newDockerClient(c *config) *dockerClient {
 	if api == "" {
 		api = strings.TrimPrefix(dockerAPIVersion, "v")
 	}
-	return &dockerClient{socket: c.Upstream, api: api, volumeRoot: c.VolumeRoot, network: c.Network, images: c.Images, gatewayBindIP: c.GatewayBindIP}
+	return &dockerClient{socket: c.Upstream, api: api, volumeRoot: c.VolumeRoot, network: c.Network, images: c.Images, gatewayBindIP: c.GatewayBindIP, boardExtraHost: c.BoardExtraHost}
 }
 func (d *dockerClient) prefix() string { return "v" + d.api }
 func (d *dockerClient) request(ctx context.Context, method, path string, body any, out any) error {
@@ -70,20 +71,18 @@ func (d *dockerClient) request(ctx context.Context, method, path string, body an
 }
 func (d *dockerClient) name(bot string) string { return "fleet-" + bot }
 func (d *dockerClient) allowedImage(image string) bool {
-	if len(d.images) == 0 {
-		return false
-	}
-	for _, v := range d.images {
-		if v == image {
-			return true
-		}
-	}
-	return false
+	return isImageAllowed(image, d.images)
 }
 
 // create makes the container. binds is the already validated list from
-// server.binds: the bot volume and read-only extra mounts; sp.Mounts is never
-// passed to Docker as is.
+// server.binds: the bot volume and the extra mounts (read-only, or read-write
+// inside a writable root); sp.Mounts is never passed to Docker as is.
+//
+// HostConfig is the same fixed template the local driver sends
+// (buildCreateContainerRequestBody in docker-driver.ts) and dockergate
+// accepts (policy/create.go): /tmp is a tmpfs, the init process is on, and the
+// restart policy is on-failure. MemorySwap equals Memory, so the memory limit
+// is also the limit with swap.
 func (d *dockerClient) create(ctx context.Context, sp spec, binds []string) error {
 	if !d.allowedImage(sp.Image) {
 		return fmt.Errorf("image_not_allowed")
@@ -96,26 +95,93 @@ func (d *dockerClient) create(ctx context.Context, sp spec, binds []string) erro
 		labels = map[string]string{}
 	}
 	labels["paperclip.botKey"] = sp.BotKey
-	host := map[string]any{"Memory": sp.MemoryMb * 1024 * 1024, "NanoCpus": int64(sp.Cpus * 1e9), "PidsLimit": sp.PidsLimit}
+	// A CPU limit that rounds to 0 NanoCpus is no limit at all for Docker.
+	nanoCpus := int64(sp.Cpus * 1e9)
+	if nanoCpus <= 0 {
+		return fmt.Errorf("spec_invalid")
+	}
+	memory := sp.MemoryMb * 1024 * 1024
+	host := map[string]any{"Memory": memory, "MemorySwap": memory, "NanoCpus": nanoCpus, "PidsLimit": sp.PidsLimit}
 	host["ReadonlyRootfs"] = true
 	host["CapDrop"] = []string{"ALL"}
 	host["SecurityOpt"] = []string{"no-new-privileges:true"}
+	host["Ulimits"] = []map[string]any{{"Name": "core", "Soft": 0, "Hard": 0}}
+	host["Tmpfs"] = map[string]string{"/tmp": ""}
+	host["Init"] = true
+	host["RestartPolicy"] = map[string]string{"Name": "on-failure"}
 	host["ShmSize"] = int64(64 * 1024 * 1024)
 	if d.network != "" {
 		host["NetworkMode"] = d.network
 	}
 	if sp.GatewayPort > 0 {
+		if strings.TrimSpace(d.gatewayBindIP) == "" {
+			return fmt.Errorf("gateway_bind_ip_required")
+		}
 		host["PortBindings"] = map[string][]map[string]string{"8642/tcp": {{"HostIp": d.gatewayBindIP, "HostPort": fmt.Sprint(sp.GatewayPort)}}}
 	}
-	if sp.BoardExtraHost != "" {
-		host["ExtraHosts"] = []string{sp.BoardExtraHost}
+	// The board address is the site's own setting, never the spec's.
+	if d.boardExtraHost != "" {
+		host["ExtraHosts"] = []string{d.boardExtraHost}
 	}
 	if len(binds) > 0 {
 		host["Binds"] = binds
 	}
 	body := map[string]any{"Image": sp.Image, "User": "10001", "Labels": labels, "HostConfig": host}
 	var out any
-	return d.request(ctx, http.MethodPost, "/"+d.prefix()+"/containers/create?name="+url.QueryEscape(d.name(sp.BotKey)), body, &out)
+	path := "/" + d.prefix() + "/containers/create?name=" + url.QueryEscape(d.name(sp.BotKey))
+	err := d.request(ctx, http.MethodPost, path, body, &out)
+	if err != nil && strings.Contains(err.Error(), "No such image") {
+		// myrmidon(OPE-12194): the bot image rollout pre-pulls release images
+		// only on the hosts it reaches by ssh; a fleet site got its first
+		// container of a new release image refused with 404 (prod 07.11:
+		// work-qa on myr-vm1 never switched). The image is allowlisted above.
+		if perr := d.pull(ctx, sp.Image); perr != nil {
+			return fmt.Errorf("%v (pull: %v)", err, perr)
+		}
+		return d.request(ctx, http.MethodPost, path, body, &out)
+	}
+	return err
+}
+
+// pull fetches an image the daemon does not have. No registry auth is sent:
+// the release bot images are public packages. The pull is detached from the
+// caller's context, so a board request that gives up waiting does not abort
+// it; the next apply then finds the image. The Engine answers 200 and streams
+// progress, reporting a failed pull as an {"error": ...} line, so the stream
+// is read to its end.
+func (d *dockerClient) pull(ctx context.Context, image string) error {
+	pctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 15*time.Minute)
+	defer cancel()
+	req, err := http.NewRequestWithContext(pctx, http.MethodPost, "http://docker/"+d.prefix()+"/images/create?fromImage="+url.QueryEscape(image), nil)
+	if err != nil {
+		return err
+	}
+	tr := &http.Transport{DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
+		return net.DialTimeout("unix", d.socket, 5*time.Second)
+	}}
+	resp, err := (&http.Client{Transport: tr}).Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		b, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+		return fmt.Errorf("docker pull %s: %s", resp.Status, string(b))
+	}
+	dec := json.NewDecoder(resp.Body)
+	for {
+		var m struct {
+			Error string `json:"error"`
+		}
+		if err := dec.Decode(&m); err == io.EOF {
+			return nil
+		} else if err != nil {
+			return err
+		}
+		if m.Error != "" {
+			return fmt.Errorf("docker pull: %s", m.Error)
+		}
+	}
 }
 func (d *dockerClient) action(ctx context.Context, bot, action string) error {
 	if action == "restart" {
@@ -146,6 +212,14 @@ func (d *dockerClient) status(ctx context.Context, bot string) (botStatus, error
 		return botStatus{}, err
 	}
 	state := x.State.Status
+	// OPE-12663: the board's state model has no docker-specific values — any
+	// non-running container (created, exited, dead) is "stopped", the same
+	// mapping the local docker driver does (botStateFromInspect). Without it
+	// the reconciler would not recognize an idle-stopped (exited) container
+	// as stopped and would treat the idle-stop mark as lost.
+	if state != "running" {
+		state = "stopped"
+	}
 	return botStatus{BotKey: bot, State: state, Image: x.Config.Image}, nil
 }
 func (d *dockerClient) logs(ctx context.Context, bot string) (string, error) {

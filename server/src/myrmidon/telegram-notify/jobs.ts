@@ -1,12 +1,8 @@
 // server/src/myrmidon/telegram-notify/jobs.ts
 //
-// myrmidon(1.6.1-TG-NOTIFY-B): the periodic digest and escalation jobs of the
-// Telegram notify track. Both jobs read the owner settings through the
-// contract of part A (the `telegramNotify` area of instance settings); part A
-// is not merged yet, so this module never reads the vendor instance-settings
-// row itself: the runtime-changeable settings arrive through the injected
-// `readSettings` port, and until part A merges the default wiring returns the
-// fixed all-off defaults. Nothing is sent unless `digest.enabled` /
+// myrmidon(TG-NOTIFY-B): the periodic digest and escalation jobs of the
+// Telegram notify track. Settings are read from the company-scoped persisted
+// contract on every pass; until explicitly enabled, both jobs stay off.
 // `escalations.enabled` is explicitly true — the release criterion: with the
 // defaults the owner receives only replies to his own messages and U2
 // decision cards.
@@ -42,6 +38,21 @@ import { projectSafeChatPublication } from "../../services/chat-publication-proj
 import { readTelegramNotifyDocument, mutateTelegramNotifyDocument } from "./store.js";
 import type { TelegramNotifySettings } from "./settings.js";
 import { backgroundInterval } from "../monitoring/board-load/lanes.js"; // myrmidon(1.6.6 OPE-9058)
+
+/** Convert the route contract's opaque topic identifiers to Telegram numeric IDs. */
+function toJobSettings(settings: import("@myrmidon/shared").TelegramNotifySettings): TelegramNotifySettings {
+  const topicId = (value: string | null): number | null => {
+    if (value === null) return null;
+    const parsed = Number(value);
+    return Number.isSafeInteger(parsed) && parsed >= 0 ? parsed : null;
+  };
+  return {
+    ...settings,
+    digest: { ...settings.digest, topicId: topicId(settings.digest.topicId) },
+    errors: { ...settings.errors, minSeverity: settings.errors.minSeverity === "warn" ? "warning" : "error", topicId: topicId(settings.errors.topicId) },
+    escalations: { ...settings.escalations, topicId: topicId(settings.escalations.topicId) },
+  };
+}
 
 /** The sweep period: how often the job checks whether the digest time or the
  *  escalation threshold has arrived. One shared interval for both jobs. */
@@ -79,8 +90,7 @@ export interface TelegramNotifyJobPorts {
     idempotencyKey: string;
     text: string;
   }): Promise<{ inserted: boolean }>;
-  /** The settings contract of part A. Until part A merges, the default
-   *  wiring returns the fixed all-off document (nothing is ever sent). */
+  /** The company-scoped settings document, re-read every pass. */
   readSettings(companyId: string): Promise<TelegramNotifySettings>;
   /** Owner settings are runtime-changeable; the digest job consults them on
    *  every pass rather than at startup. */
@@ -103,6 +113,8 @@ export interface AttentionSnapshotItem {
   title: string | null;
   issueId: string | null;
   queues: string[];
+  /** The card's why-now sentence (stack lag details for the digest line). */
+  whyNow?: string | null;
 }
 
 /** The mapped digest section: a heading and its entry lines. */
@@ -131,8 +143,10 @@ function sectionsForSourceKind(sourceKind: string): DigestSection[] {
     case "review":
     case "failed_run":
     case "agent_error_alert":
+    case "stack_update":
       return ["blocked"];
     case "budget_alert":
+    case "litellm_budget":
       return ["spend", "needs_decision"];
     default:
       return [];
@@ -156,14 +170,17 @@ export function buildDigestSections(input: {
   for (const item of input.snapshot.items) {
     const target = sectionsForSourceKind(item.sourceKind);
     const label = item.title ?? item.issueId ?? item.sourceKind;
-    const line = `- ${label}`;
+    // STACK-WATCH-LIVE: stack_update lines carry the lag detail (whyNow) so
+    // the owner sees the version delta, not just the component name.
+    const detail = item.sourceKind === "stack_update" && item.whyNow ? ` — ${item.whyNow}` : "";
+    const line = `- ${label}${detail}`;
     if (target.includes("needs_decision") && selected.includes("needs_decision")) {
       needsDecision.push(line);
     }
     if (target.includes("blocked") && selected.includes("blocked")) {
       blocked.push(line);
     }
-    if (item.sourceKind === "budget_alert" && selected.includes("spend")) {
+    if ((item.sourceKind === "budget_alert" || item.sourceKind === "litellm_budget") && selected.includes("spend")) {
       spend.push(line);
     }
   }
@@ -284,7 +301,7 @@ export async function runDigestForCompany(
  *  set, selects the forum-topic thread inside that chat. */
 export async function resolveTargetConversation(
   db: Db,
-  input: { companyId: string; chatId: string | null; topicId: number | null },
+  input: { companyId: string; chatId: string | null; topicId: number | string | null },
 ): Promise<{ endpointId: string; conversationId: string; issueId: string; threadId: string } | null> {
   if (input.chatId === null || input.chatId.trim() === "") return null;
   const chat = input.chatId.trim();
@@ -313,7 +330,7 @@ export async function resolveTargetConversation(
       inArray(chatConversations.state, ["active", "waiting"]),
     ))
     .orderBy(sql`${chatConversations.sessionGeneration} desc`);
-  const withTopic = input.topicId !== null && input.topicId !== undefined;
+  const withTopic = input.topicId !== null && input.topicId !== undefined && String(input.topicId).trim() !== "";
   const wantedThreadIds = withTopic
     ? [`telegram:${chat}:${input.topicId}`]
     : [`telegram:${chat}`, `telegram:${chat}:${input.topicId ?? ""}`];
@@ -454,6 +471,7 @@ export function telegramNotifyJobPorts(db: Db): TelegramNotifyJobPorts {
           title: item.subject.title,
           issueId: item.relatedIssue?.id ?? item.subject.id,
           queues: item.queues.map((queue) => queue.key),
+          whyNow: item.whyNow ?? null,
         })),
       };
     },
@@ -477,11 +495,10 @@ export function telegramNotifyJobPorts(db: Db): TelegramNotifyJobPorts {
         .returning({ id: (await import("@myrmidon/db")).chatPublications.id });
       return { inserted: rows.length > 0 };
     },
-    // Part A is not merged: the settings contract answers the fixed
-    // all-off document, so both jobs stay off. Part A replaces this port.
-    async readSettings() {
-      const { defaultTelegramNotifySettings } = await import("./settings.js");
-      return defaultTelegramNotifySettings();
+    async readSettings(companyId) {
+      const { readTelegramNotifySettingsDocument } = await import("./settings-store.js");
+      const document = await readTelegramNotifySettingsDocument(db, companyId);
+      return toJobSettings(document.settings);
     },
     now: () => new Date(),
     log: logger,

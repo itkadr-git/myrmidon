@@ -11,7 +11,7 @@
 // helper) about what a task ranks with.
 
 import { sql, type SQL } from "drizzle-orm";
-import { issues } from "@myrmidon/db";
+import { issues, type Db } from "@myrmidon/db";
 import { DEFAULT_PHEROMONE_DYNAMICS, type PheromoneDynamicsSettings } from "@myrmidon/shared";
 
 /**
@@ -81,7 +81,17 @@ export const FAILED_RUNS_ALIAS = "fr";
  * Not covered: a blocker closed by the system (no person/agent row) — the
  * penalty then stays until the next edit or comment.
  */
-export function failedRunsDerivedSql(companyId: string, now: Date = new Date()): SQL {
+/** A validated integer literal: the dynamics are settings, never user text. */
+function intLiteral(value: number, fallback = 0): SQL {
+  const n = Number.isFinite(value) ? Math.max(0, Math.floor(value)) : fallback;
+  return sql.raw(String(n));
+}
+
+/**
+ * The inner SELECT for failed runs per issue within the failure window,
+ * excluding runs superseded by later comments or human activity.
+ */
+export function failedRunsSelectSql(companyId: string, now: Date = new Date()): SQL {
   const bookkeeping = sql.join(
     NON_CHANGE_ISSUE_ACTIONS.map((action) => sql`${action}`),
     sql`, `,
@@ -91,7 +101,7 @@ export function failedRunsDerivedSql(companyId: string, now: Date = new Date()):
     sql`, `,
   );
   const windowStart = new Date(now.getTime() - PHEROMONE_FAILURE_WINDOW_DAYS * 86_400_000).toISOString();
-  return sql`(
+  return sql`
     select hr.issue_uuid, count(*)::int as failed_runs
     from (
       select
@@ -129,7 +139,138 @@ export function failedRunsDerivedSql(companyId: string, now: Date = new Date()):
           and al.action not in (${bookkeeping})
       )
     group by hr.issue_uuid
-  ) ${sql.raw(FAILED_RUNS_ALIAS)}`;
+  `;
+}
+
+/**
+ * Renders an in-memory map of { issue_uuid -> failed_runs } as a constant VALUES
+ * table (or an empty subquery if the map has no entries) aliased as `fr(issue_uuid, failed_runs)`.
+ * Used to avoid running heavy derived table queries repeatedly across role candidate reads.
+ */
+export function failedRunsValuesSql(failedRunsMap: ReadonlyMap<string, number>): SQL {
+  const tuples: SQL[] = [];
+  for (const [issueId, count] of failedRunsMap.entries()) {
+    if (!/^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/.test(issueId)) {
+      continue;
+    }
+    tuples.push(sql`(${issueId}::uuid, ${intLiteral(count)}::int)`);
+  }
+  if (tuples.length === 0) {
+    return sql`(select null::uuid as issue_uuid, null::int as failed_runs where false) ${sql.raw(FAILED_RUNS_ALIAS)}`;
+  }
+  return sql`(values ${sql.join(tuples, sql`, `)}) ${sql.raw(FAILED_RUNS_ALIAS)}(issue_uuid, failed_runs)`;
+}
+
+export function failedRunsDerivedSql(
+  companyId: string,
+  now: Date = new Date(),
+  failedRunsMap?: ReadonlyMap<string, number>,
+): SQL {
+  if (failedRunsMap !== undefined) {
+    return failedRunsValuesSql(failedRunsMap);
+  }
+  return sql`(${failedRunsSelectSql(companyId, now)}) ${sql.raw(FAILED_RUNS_ALIAS)}`;
+}
+
+/**
+ * Queries the failed runs count per task for a company directly.
+ */
+export async function queryFailedRunsMap(
+  db: Db,
+  companyId: string,
+  now: Date = new Date(),
+): Promise<Map<string, number>> {
+  const result = await db.execute<{ issue_uuid: string; failed_runs: number | string }>(
+    failedRunsSelectSql(companyId, now),
+  );
+  const rows = (Array.isArray(result)
+    ? result
+    : (result as { rows?: unknown[] }).rows ?? []) as {
+    issue_uuid?: unknown;
+    failed_runs?: unknown;
+  }[];
+  const map = new Map<string, number>();
+  for (const row of rows) {
+    if (row && typeof row.issue_uuid === "string") {
+      map.set(row.issue_uuid, Number(row.failed_runs) || 0);
+    }
+  }
+  return map;
+}
+
+export const DEFAULT_FAILED_RUNS_CACHE_TTL_MS = 60_000;
+
+interface FailedRunsCacheEntry {
+  expiresAt: number;
+  map: ReadonlyMap<string, number>;
+}
+
+const failedRunsCache = new Map<string, FailedRunsCacheEntry>();
+const failedRunsInFlight = new Map<string, Promise<ReadonlyMap<string, number>>>();
+const failedRunsGeneration = new Map<string, number>();
+
+function generationOf(companyId: string): number {
+  return failedRunsGeneration.get(companyId) ?? 0;
+}
+
+export function clearFailedRunsCache(companyId?: string): void {
+  if (companyId) {
+    failedRunsGeneration.set(companyId, generationOf(companyId) + 1);
+    failedRunsCache.delete(companyId);
+    failedRunsInFlight.delete(companyId);
+  } else {
+    for (const key of new Set([...failedRunsCache.keys(), ...failedRunsInFlight.keys(), ...failedRunsGeneration.keys()])) {
+      failedRunsGeneration.set(key, generationOf(key) + 1);
+    }
+    failedRunsCache.clear();
+    failedRunsInFlight.clear();
+  }
+}
+
+export const invalidateFailedRunsCache = clearFailedRunsCache;
+
+/**
+ * Retrieves the cached failed-runs map for a company, querying at most once per 60 seconds.
+ * Coalesces concurrent in-flight queries to prevent thundering herd.
+ */
+export async function getCachedFailedRunsMap(
+  db: Db,
+  companyId: string,
+  now: Date = new Date(),
+  ttlMs = DEFAULT_FAILED_RUNS_CACHE_TTL_MS,
+): Promise<ReadonlyMap<string, number>> {
+  const nowMs = now.getTime();
+  const cached = failedRunsCache.get(companyId);
+  if (cached && cached.expiresAt > nowMs) {
+    return cached.map;
+  }
+
+  const existingInFlight = failedRunsInFlight.get(companyId);
+  if (existingInFlight) {
+    return existingInFlight;
+  }
+
+  const generation = generationOf(companyId);
+  let promise!: Promise<ReadonlyMap<string, number>>;
+  promise = (async () => {
+    try {
+      const map = await queryFailedRunsMap(db, companyId, now);
+      if (generationOf(companyId) === generation) {
+        failedRunsCache.set(companyId, {
+          expiresAt: nowMs + Math.min(ttlMs, DEFAULT_FAILED_RUNS_CACHE_TTL_MS),
+          map,
+        });
+      }
+      return map;
+    } finally {
+      if (failedRunsInFlight.get(companyId) === promise) {
+        failedRunsInFlight.delete(companyId);
+      }
+    }
+  })();
+
+  failedRunsInFlight.set(companyId, promise);
+  return promise;
 }
 
 /** The ON clause of the join, over the drizzle `issues` table. */
@@ -149,12 +290,6 @@ export function failedRunsJoinOnRawSql(issueAlias: string): SQL {
  */
 export function failedRunsSinceLastChangeSql(): SQL<number> {
   return sql<number>`coalesce(${sql.raw(FAILED_RUNS_ALIAS)}.failed_runs, 0)`;
-}
-
-/** A validated integer literal: the dynamics are settings, never user text. */
-function intLiteral(value: number, fallback = 0): SQL {
-  const n = Number.isFinite(value) ? Math.max(0, Math.floor(value)) : fallback;
-  return sql.raw(String(n));
 }
 
 /**
