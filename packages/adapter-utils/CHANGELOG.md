@@ -5,6 +5,7 @@
 ### Patch Changes
 
 - Allow the Paperclip host to route adapter sandbox-sync full-tree Git enumeration through its process-wide bounded scheduler.
+- Reject SSH workspace restores when local tar is terminated by a signal, preserving the existing workspace and cleaning the staging directory.
 
 ## 0.3.1
 

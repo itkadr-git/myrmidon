@@ -1500,8 +1500,14 @@ export async function syncDirectoryFromSsh(input: {
           reject(new Error(sshStderr.trim() || `ssh exited with code ${sshExitCode ?? -1}`));
           return;
         }
-        if ((tarExitCode ?? 0) !== 0) {
-          reject(new Error(tarStderr.trim() || `tar exited with code ${tarExitCode ?? -1}`));
+        if (tarExitCode === null) {
+          reject(new Error(
+            tarStderr.trim() || "tar exited from a signal: the archive is incomplete",
+          ));
+          return;
+        }
+        if (tarExitCode !== 0) {
+          reject(new Error(tarStderr.trim() || `tar exited with code ${tarExitCode}`));
           return;
         }
         resolve();
@@ -1521,6 +1527,14 @@ export async function syncDirectoryFromSsh(input: {
       } else {
         ssh.stdout?.pipe(tar.stdin ?? null);
       }
+      ssh.stdout?.on("error", (error) => {
+        if ((error as NodeJS.ErrnoException).code === "EPIPE") return;
+        fail(error);
+      });
+      tar.stdin?.on("error", (error) => {
+        if ((error as NodeJS.ErrnoException).code === "EPIPE") return;
+        fail(error);
+      });
       ssh.stderr?.on("data", (chunk) => {
         sshStderr += String(chunk);
       });
