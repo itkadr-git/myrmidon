@@ -33,8 +33,8 @@
 #   DOCKER="sudo docker" hindsight-recall-gate.sh sizes ...
 #
 # EXIT: 0 = ok / no regression; 1 = usage error, sizes failure, or recall
-# regression (error or empty result on any query, or a query file that still
-# holds the <fill: ...> placeholders).
+# regression (error or empty result on any query, a baseline hit-count drop, or
+# a query file that still holds the <fill: ...> placeholders).
 
 set -euo pipefail
 
@@ -104,6 +104,7 @@ cmd_recall() {
   [[ -n "$BANK" ]] || die "recall: --bank is required (the hindsight bank to replay against, e.g. adm)" 1
   [[ -f "$QUERIES_FILE" ]] || die "recall: queries file not found: $QUERIES_FILE" 1
   # The key goes through the environment, not argv (visible in ps).
+  # The baseline is optional; without it this run is a snapshot for the first comparison.
   HINDSIGHT_GATE_KEY="$API_KEY" python3 - "$API_URL" "$BANK" "$QUERIES_FILE" "$BASELINE_FILE" "$OUT_FILE" <<'PY'
 import hashlib, json, os, sys, urllib.parse, urllib.request
 
