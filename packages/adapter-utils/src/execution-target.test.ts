@@ -326,6 +326,8 @@ describe("runAdapterExecutionTargetProcess", () => {
       await runAdapterExecutionTargetProcess("run-clean-exit", sshTarget, "agent-cli", [], {
         cwd: "/tmp/local",
         env: {},
+        timeoutSec: 5,
+        graceSec: 1,
         onLog: async () => {},
         onRemoteRunStop,
       });
@@ -346,6 +348,8 @@ describe("runAdapterExecutionTargetProcess", () => {
       await runAdapterExecutionTargetProcess("run-cancelled", sshTarget, "agent-cli", [], {
         cwd: "/tmp/local",
         env: {},
+        timeoutSec: 5,
+        graceSec: 1,
         onLog: async (stream, chunk) => {
           logs.push({ stream, chunk });
         },
@@ -374,6 +378,8 @@ describe("runAdapterExecutionTargetProcess", () => {
       await runAdapterExecutionTargetProcess("run-timed-out", sshTarget, "agent-cli", [], {
         cwd: "/tmp/local",
         env: {},
+        timeoutSec: 5,
+        graceSec: 1,
         onLog: async () => {},
       });
 
@@ -392,6 +398,8 @@ describe("runAdapterExecutionTargetProcess", () => {
       await runAdapterExecutionTargetProcess("run-aborted", sshTarget, "agent-cli", [], {
         cwd: "/tmp/local",
         env: {},
+        timeoutSec: 5,
+        graceSec: 1,
         onLog: async () => {},
         signal: controller.signal,
       });
@@ -413,6 +421,8 @@ describe("runAdapterExecutionTargetProcess", () => {
       const result = await runAdapterExecutionTargetProcess("run-survivor", sshTarget, "agent-cli", [], {
         cwd: "/tmp/local",
         env: {},
+        timeoutSec: 5,
+        graceSec: 1,
         onLog: async (stream, chunk) => {
           logs.push({ stream, chunk });
         },
@@ -436,6 +446,8 @@ describe("runAdapterExecutionTargetProcess", () => {
       const result = await runAdapterExecutionTargetProcess("run-unreachable", sshTarget, "agent-cli", [], {
         cwd: "/tmp/local",
         env: {},
+        timeoutSec: 5,
+        graceSec: 1,
         onLog: async () => {},
         onRemoteRunStop,
       });
