@@ -709,6 +709,7 @@ import {
   resolveEffectiveWorkspaceStrategyType,
   resolveExecutionWorkspaceEnvironmentId,
   resolveExecutionWorkspaceMode,
+  resolveRunExecutionWorkspaceMode,
   resolveSharedWorkspaceConcurrency,
   selectEnvironmentExecutionWorkspaceSettings,
   WORKSPACE_WORKTREE_REQUIRES_PROJECT_CODE,
@@ -2939,25 +2940,6 @@ export async function preflightLowTrustWorkspaceIsolation(input: {
   });
 
   return selectedEnvironmentDriver ?? null;
-}
-
-/**
- * OPE-12881 (REVIEW-NO-CLONE): pick the effective execution workspace mode for
- * a run. A developer reviewer run is forced to `agent_default` so no git
- * worktree / clone is materialized on the bot volume — the reviewer verdict is
- * produced from the PR diff (`gh pr diff`), not a full checkout. Engineers and
- * all other agents keep the resolved mode.
- */
-export function resolveRunExecutionWorkspaceMode(input: {
-  isReviewerRun: boolean;
-  trustPresetKind: string;
-  resolvedMode: string;
-}): string {
-  if (input.isReviewerRun) return "agent_default";
-  return input.trustPresetKind === "low_trust_review" &&
-    input.resolvedMode === "shared_workspace"
-    ? "isolated_workspace"
-    : input.resolvedMode;
 }
 
 export async function resolveWorkspaceAfterLowTrustPreflight<

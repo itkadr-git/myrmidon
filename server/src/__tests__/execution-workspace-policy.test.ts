@@ -17,10 +17,10 @@ import {
   resolveExecutionWorkspaceEnvironmentId,
   resolvePinnedIssueWorkspaceStrategyType,
   resolveExecutionWorkspaceMode,
+  resolveRunExecutionWorkspaceMode,
   resolveSharedWorkspaceConcurrency,
   selectEnvironmentExecutionWorkspaceSettings,
 } from "../services/execution-workspace-policy.ts";
-import { resolveRunExecutionWorkspaceMode } from "../services/heartbeat.ts";
 
 describe("execution workspace policy helpers", () => {
   it("defaults new issue settings from enabled project policy", () => {
