@@ -10,6 +10,7 @@ import {
   listTurnCheckpoints,
   restoreTurnCheckpoint,
   TURN_CHECKPOINT_BUSY_CODE,
+  TURN_CHECKPOINT_DIRTY_CODE,
   TURN_CHECKPOINT_MISSING_CODE,
   TurnCheckpointError,
   DEFAULT_TURN_CHECKPOINT_RETENTION,
@@ -69,18 +70,17 @@ describe("per-turn checkpoints (OPE-12738)", () => {
   });
 
   it("restores to a previous turn and a relaunch produces an identical diff", async () => {
-    // turn 1 state
+    // turn 1 committed state (clean index/worktree)
     await fs.writeFile(path.join(repoRoot, "file.txt"), "turn-1\n");
     git(repoRoot, ["add", "-A"]);
+    git(repoRoot, ["commit", "-m", "turn 1"]);
     const turn1 = await createTurnCheckpoint({ worktreePath: repoRoot, runId: RUN_ID, turnNumber: 1 });
 
-    // turn 2 state
+    // turn 2 committed state (clean index/worktree)
     await fs.writeFile(path.join(repoRoot, "file.txt"), "turn-1\nturn-2\n");
     git(repoRoot, ["add", "-A"]);
+    git(repoRoot, ["commit", "-m", "turn 2"]);
     await createTurnCheckpoint({ worktreePath: repoRoot, runId: RUN_ID, turnNumber: 2 });
-
-    // crash mid-turn 3: half-written edits land in the worktree
-    await fs.writeFile(path.join(repoRoot, "file.txt"), "half-written garbage\n");
 
     // the original turn1→turn2 introspection diff, captured before the crash
     const originalDiff = await diffTurnCheckpoints({
@@ -91,7 +91,7 @@ describe("per-turn checkpoints (OPE-12738)", () => {
     });
     expect(originalDiff.patch).toContain("+turn-2");
 
-    // restore to turn 1's checkpoint via the service (no contention in this test)
+    // restore to turn 1's checkpoint via the service (no contention, clean tree)
     const restoreResult = await restoreTurnCheckpoint({
       db: emptyDb() as never,
       companyId: "00000000-0000-4000-8000-000000000000",
@@ -103,13 +103,10 @@ describe("per-turn checkpoints (OPE-12738)", () => {
 
     // worktree content is now exactly the turn-1 snapshot
     expect(await fs.readFile(path.join(repoRoot, "file.txt"), "utf8")).toBe("turn-1\n");
-    // index+worktree match the snapshot tree exactly (vs HEAD only file.txt is a staged new file)
-    const statusAfter = git(repoRoot, ["status", "--porcelain"]);
-    expect(statusAfter.trim()).toBe("A  file.txt");
     expect(git(repoRoot, ["diff", turn1.commitSha, "--stat"])).toBe("");
 
     // a relaunched turn from the restored state produces an identical diff:
-    // redo turn-2's edit exactly and diff turn1 -> new snapshot
+    // re-run turn-2's edit and diff turn1 -> new snapshot
     await fs.writeFile(path.join(repoRoot, "file.txt"), "turn-1\nturn-2\n");
     git(repoRoot, ["add", "-A"]);
     const turn2prime = await createTurnCheckpoint({ worktreePath: repoRoot, runId: RUN_ID, turnNumber: 2 });
@@ -125,6 +122,30 @@ describe("per-turn checkpoints (OPE-12738)", () => {
     expect(relaunchDiff.patch).toContain("+turn-2");
     expect(relaunchDiff.patch).not.toContain("garbage");
     expect(relaunchDiff.patch).toBe(originalDiff.patch.replace(/\n$/, ""));
+  });
+
+  it("refuses restore when tracked files have uncommitted edits without overwriting them", async () => {
+    await fs.writeFile(path.join(repoRoot, "file.txt"), "turn-1\n");
+    git(repoRoot, ["add", "-A"]);
+    git(repoRoot, ["commit", "-m", "turn 1"]);
+    await createTurnCheckpoint({ worktreePath: repoRoot, runId: RUN_ID, turnNumber: 1 });
+
+    // Foreign uncommitted tracked edit arrives after checkpoint
+    await fs.writeFile(path.join(repoRoot, "file.txt"), "foreign uncommitted edit\n");
+
+    await expect(restoreTurnCheckpoint({
+      db: emptyDb() as never,
+      companyId: "00000000-0000-4000-8000-000000000000",
+      worktreePath: repoRoot,
+      runId: RUN_ID,
+      targetTurnNumber: 1,
+    })).rejects.toMatchObject({
+      name: "TurnCheckpointError",
+      code: TURN_CHECKPOINT_DIRTY_CODE,
+    });
+
+    // Foreign edit must survive intact
+    expect(await fs.readFile(path.join(repoRoot, "file.txt"), "utf8")).toBe("foreign uncommitted edit\n");
   });
 
   it("untracked foreign files survive the restore", async () => {

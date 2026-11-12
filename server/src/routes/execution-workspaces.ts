@@ -70,6 +70,7 @@ import {
   listTurnCheckpoints,
   restoreTurnCheckpoint,
   TURN_CHECKPOINT_BUSY_CODE,
+  TURN_CHECKPOINT_DIRTY_CODE,
   TURN_CHECKPOINT_MISSING_CODE,
   TurnCheckpointError,
 } from "../services/workspace-turn-checkpoints.js";
@@ -80,7 +81,9 @@ function handleTurnCheckpointError(res: Response, err: unknown) {
       ? 409
       : err.code === TURN_CHECKPOINT_MISSING_CODE
         ? 404
-        : 422;
+        : err.code === TURN_CHECKPOINT_DIRTY_CODE
+          ? 409
+          : 422;
     res.status(status).json({ error: err.message, code: err.code, details: err.details });
     return;
   }

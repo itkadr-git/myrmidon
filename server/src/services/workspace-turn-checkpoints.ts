@@ -24,6 +24,7 @@ export const TURN_CHECKPOINT_REF_PREFIX = "refs/myrmidon/turns";
 export const DEFAULT_TURN_CHECKPOINT_RETENTION = 10;
 
 export const TURN_CHECKPOINT_BUSY_CODE = "worktree_busy_by_active_run";
+export const TURN_CHECKPOINT_DIRTY_CODE = "worktree_has_uncommitted_edits";
 export const TURN_CHECKPOINT_MISSING_CODE = "turn_checkpoint_missing";
 
 export type TurnCheckpointRef = {
@@ -376,9 +377,22 @@ export async function restoreTurnCheckpoint(input: {
     );
   }
 
+  const trackedStatus = await runGit(["status", "--porcelain=v1", "--untracked-files=no"], input.worktreePath);
+  const trackedEdits = trackedStatus
+    .split("\n")
+    .map((line) => line.trimEnd())
+    .filter(Boolean);
+  if (trackedEdits.length > 0) {
+    throw new TurnCheckpointError(
+      TURN_CHECKPOINT_DIRTY_CODE,
+      "restore refused: worktree has uncommitted tracked edits; refusing to overwrite foreign changes",
+      { paths: trackedEdits.slice(0, 20), truncated: trackedEdits.length > 20 },
+    );
+  }
+
   const refBefore = await runGit(["symbolic-ref", "--quiet", "--short", "HEAD"], input.worktreePath).catch(() => null);
-  // Rewind tracked working files + index to the snapshot tree. Foreign edits
-  // (untracked files) survive; the branch ref never moves.
+  // Rewind tracked working files + index to the snapshot tree. Untracked files
+  // are intentionally preserved; the branch ref never moves.
   await runGit(["read-tree", "--reset", "-u", commitSha], input.worktreePath);
   return {
     runId: input.runId,
