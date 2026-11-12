@@ -110,6 +110,68 @@ describe("docker/bot-runtime/build-wrappers/pnpm behaviour", () => {
     assert.equal(matches.length, 1, r.stderr);
   });
 
+  // Option values must not be mistaken for the subcommand (pnpm 10 aborts the
+  // purge without a TTY when the flag is missing).
+  it("--dir <path> install carries the purge flag", () => {
+    const r = runWrapper(["--dir", "/workspace/project", "install"]);
+    assert.equal(r.status, 1, "heavy lane without the devbuild gateway must refuse");
+    assert.match(r.stderr, /Refused: pnpm --config\.confirm-modules-purge=false --dir \/workspace\/project install/);
+  });
+
+  it("--filter <name> install carries the purge flag", () => {
+    const r = runWrapper(["--filter", "foo", "install"]);
+    assert.equal(r.status, 1);
+    assert.match(r.stderr, /Refused: pnpm --config\.confirm-modules-purge=false --filter foo install/);
+  });
+
+  it("-C <dir> add carries the purge flag", () => {
+    const r = runWrapper(["-C", "dir", "add", "x"]);
+    assert.equal(r.status, 1);
+    assert.match(r.stderr, /Refused: pnpm --config\.confirm-modules-purge=false -C dir add x/);
+  });
+
+  it("--dir=<path> install (single-element form) carries the purge flag", () => {
+    const r = runWrapper(["--dir=/x", "install"]);
+    assert.equal(r.status, 1);
+    assert.match(r.stderr, /Refused: pnpm --config\.confirm-modules-purge=false --dir=\/x install/);
+  });
+
+  it("option with value and the flag already present is not duplicated", () => {
+    const r = runWrapper(["--dir", "/x", "--config.confirm-modules-purge=false", "install"]);
+    assert.equal(r.status, 1);
+    const refused = r.stderr.split("\n").find((l) => l.startsWith("Refused:")) || "";
+    const matches = refused.match(/--config\.confirm-modules-purge=false/g) || [];
+    assert.equal(matches.length, 1, r.stderr);
+  });
+
+  it("-- ends option parsing: the next element is the subcommand", () => {
+    const r = runWrapper(["--", "install"]);
+    assert.equal(r.status, 1);
+    assert.match(r.stderr, /Refused: pnpm --config\.confirm-modules-purge=false -- install/);
+  });
+
+  it("no subcommand (options only) is not flagged", () => {
+    // (isLight is unchanged and still refuses this shape; only the purge
+    // injection is under test here.)
+    const r = runWrapper(["--dir", "/x"]);
+    assert.ok(!r.stderr.includes("--config.confirm-modules-purge=false"), r.stderr);
+    assert.match(r.stderr, /Refused: pnpm --dir \/x/);
+  });
+
+  it("a non-purge subcommand after an option value is not flagged", () => {
+    const r = runWrapper(["--dir", "/x", "config", "get", "store-dir"]);
+    // isLight still sees the option value as first non-flag and refuses; either
+    // way the purge flag must not be injected for `config`.
+    const text = r.status === 0 ? fs.readFileSync(stubLog, "utf8") : r.stderr;
+    assert.ok(!text.includes("--config.confirm-modules-purge=false"), text);
+  });
+
+  it("an option value named like a purge subcommand is not taken as the subcommand", () => {
+    const r = runWrapper(["--filter", "install", "config", "get", "x"]);
+    const text = r.status === 0 ? fs.readFileSync(stubLog, "utf8") : r.stderr;
+    assert.ok(!text.includes("--config.confirm-modules-purge=false"), text);
+  });
+
   it("--version is not flagged", () => {
     const r = runWrapper(["--version"]);
     assert.equal(r.status, 0, r.stderr);
