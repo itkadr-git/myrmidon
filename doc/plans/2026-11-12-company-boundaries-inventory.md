@@ -34,10 +34,12 @@ Rules:
    section cannot be covered because unknown paths resolve to no section
    definition (`sectionForPath` returns `undefined`) and unknown payload shapes
    fall back to `error`.
-3. For covered sections the report lists the concrete missing owner/dependency
-   attribution fields (`missingAttribution`), section-defined only, with no
-   sensitive values: ids, payloads, and contents are never included — counts
-   only.
+3. For covered sections the report computes the concrete missing owner/dependency
+   attribution fields (`missingAttribution`) from the observed response rows:
+   a declared field is listed as missing when at least one returned row lacks
+   it; an empty payload observed no rows, so all declared fields are reported.
+   Only field names are reported — ids, values, payloads, and contents are
+   never included — counts only.
 
 ## Sections
 

@@ -31,6 +31,23 @@ function stateFor(response, payload) {
 }
 
 /**
+ * Attribution fields are reported from observed rows only: a declared field is
+ * missing when at least one returned row lacks it (absent key, null, or
+ * undefined). Field names only — row contents never enter the report.
+ */
+function missingAttribution(attribution, rows) {
+  if (!rows || !rows.length) return [...attribution];
+  const missing = new Set();
+  for (const row of rows) {
+    for (const field of attribution) {
+      const hasField = row !== null && typeof row === "object" && row[field] !== undefined && row[field] !== null;
+      if (!hasField) missing.add(field);
+    }
+  }
+  return attribution.filter((field) => missing.has(field));
+}
+
+/**
  * @param {{fetch: (path: string) => Promise<{status:number,ok:boolean,json?:()=>Promise<unknown>}>}} transport
  * @returns {Promise<{sections: Array<object>, summary: object}>}
  */
@@ -51,7 +68,7 @@ export async function collectInventory(transport) {
       state,
       covered: state === "data" || state === "empty",
       count: state === "data" ? payload.length : 0,
-      missingAttribution: state === "data" || state === "empty" ? [...definition.attribution] : [],
+      missingAttribution: state === "data" || state === "empty" ? missingAttribution(definition.attribution, payload) : [],
     });
   }
   const counts = Object.fromEntries(["data", "empty", "denied", "not-found", "error"].map((state) => [state, sections.filter((s) => s.state === state).length]));
