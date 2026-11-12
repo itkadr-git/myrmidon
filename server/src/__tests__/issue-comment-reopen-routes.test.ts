@@ -100,6 +100,9 @@ const mockInstanceSettingsService = vi.hoisted(() => ({
       feedbackDataSharingPreference: "prompt",
     },
   })),
+  // myrmidon(OPE-12683): the review-participant eligibility gate reads
+  // general.reviewRouting through getGeneral(); an absent key means defaults.
+  getGeneral: vi.fn(async () => ({})),
   listCompanyIds: vi.fn(async () => ["company-1"]),
 }));
 const mockRoutineService = vi.hoisted(() => ({
@@ -374,6 +377,8 @@ describe.sequential("issue comment reopen routes", () => {
     mockFeedbackService.listIssueVotesForUser.mockReset();
     mockFeedbackService.saveIssueVote.mockReset();
     mockInstanceSettingsService.get.mockReset();
+    mockInstanceSettingsService.getGeneral.mockReset();
+    mockInstanceSettingsService.getGeneral.mockResolvedValue({});
     mockInstanceSettingsService.listCompanyIds.mockReset();
     mockRoutineService.syncRunStatusForIssue.mockReset();
     mockIssueThreadInteractionService.listForIssue.mockReset();
@@ -4024,6 +4029,20 @@ describe.sequential("issue comment reopen routes", () => {
         ...patch,
         updatedAt: new Date(),
       }),
+    );
+    // myrmidon(OPE-12683): the review-participant eligibility gate resolves the
+    // review participant; this suite's reviewer must be an eligible teammate.
+    mockAgentService.getById.mockImplementation(
+      async (agentId: string) =>
+        agentId === "33333333-3333-4333-8333-333333333333"
+          ? {
+              id: agentId,
+              companyId: "company-1",
+              name: "reviewer-one",
+              role: "reviewer",
+              metadata: {},
+            }
+          : null,
     );
 
     const res = await request(
