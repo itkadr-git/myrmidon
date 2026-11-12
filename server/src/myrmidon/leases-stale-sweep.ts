@@ -249,7 +249,7 @@ export function createStaleActiveLeaseSweep(deps: StaleActiveLeaseSweepDeps) {
         );
         await deps
           .raiseOperatorAttention?.({
-            lease: released?.lease ?? lease,
+            lease,
             run: { id: row.run.id },
             issueRef: row.issueRef,
           })
@@ -260,7 +260,7 @@ export function createStaleActiveLeaseSweep(deps: StaleActiveLeaseSweepDeps) {
               "could not raise the stale lease teardown attention card",
             );
           });
-        await deps.afterRelease?.(released?.lease ?? lease);
+        await deps.afterRelease?.(lease);
         continue;
       }
 
@@ -309,7 +309,7 @@ export function createStaleActiveLeaseSweep(deps: StaleActiveLeaseSweepDeps) {
             },
             "stale lease teardown cap reached; lease released with failed cleanup",
           );
-          const cappedLease = released?.lease ?? lease;
+          const cappedLease = lease;
           await deps
             .raiseOperatorAttention?.({
               lease: cappedLease,
