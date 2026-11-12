@@ -253,7 +253,7 @@ describeEmbeddedPostgres("matcher × pheromone order, caste routing and cooling"
     const engineer = await seedAgent(companyId, "agent-a", "engineer");
     const [nest] = await db
       .insert(projects)
-      .values({ companyId, name: "review nest", defaultCasteKey: "reviewer" })
+      .values({ companyId, name: "review nest", defaultCasteKey: "reviewer", leadAgentId: engineer })
       .returning();
     const ownCaste = await seedTask(companyId, { identifier: "TASK-REVIEW", casteKey: "reviewer", pheromoneStrength: 90 });
     const nestDefault = await seedTask(companyId, { identifier: "TASK-NEST", projectId: nest!.id, pheromoneStrength: 90 });

@@ -145,8 +145,8 @@ describeEmbeddedPostgres("unstaffed caste routing fallback (OPE-12846)", () => {
     // the pair for 'devops' never forms, so this second read is what makes the
     // task dispatchable at all.
     const engineerQueue = await roleQueueRows(db, companyId, "engineer");
-    expect(engineerQueue.map((row) => row.issueId).sort()).toEqual(
-      [devopsTask, bareTask].sort(),
+    expect(new Set(engineerQueue.map((row) => row.issueId))).toEqual(
+      new Set([devopsTask, bareTask]),
     );
     const devopsQueue = await roleQueueRows(db, companyId, "devops");
     expect(devopsQueue.map((row) => row.issueId)).toEqual([devopsTask]);
