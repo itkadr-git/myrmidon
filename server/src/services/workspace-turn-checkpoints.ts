@@ -377,21 +377,31 @@ export async function restoreTurnCheckpoint(input: {
     );
   }
 
-  // A clean checkpoint may legitimately have staged tracked files (the turn
-  // snapshot reads the worktree into its temporary index without committing
-  // them). Refuse only when the current tracked tree differs from the target
-  // checkpoint; this preserves foreign edits while allowing an exact replay.
-  const trackedDiff = await runGit(["diff", "--name-status", commitSha, "--"], input.worktreePath);
-  const trackedEdits = trackedDiff
+  // Uncommitted tracked state (staged or worktree edits vs HEAD) is foreign
+  // work the rewind must not lose — EXCEPT when it already equals the target
+  // checkpoint: a clean checkpoint legitimately carries its turn's durable
+  // edits as staged-but-uncommitted state (the snapshot reads the worktree
+  // into a temporary index without committing), so restoring onto an identical
+  // stale copy is a safe no-op. Committed turn history between HEAD and the
+  // target needs no protection: it stays reachable at HEAD, and rewinding it
+  // is exactly what restore is for. Untracked files are preserved and never
+  // count as tracked edits.
+  const statusLines = (await runGit(["status", "--porcelain", "--untracked-files=no"], input.worktreePath))
     .split("\n")
     .map((line) => line.trimEnd())
     .filter(Boolean);
-  if (trackedEdits.length > 0) {
-    throw new TurnCheckpointError(
-      TURN_CHECKPOINT_DIRTY_CODE,
-      "restore refused: worktree has uncommitted tracked edits; refusing to overwrite foreign changes",
-      { paths: trackedEdits.slice(0, 20), truncated: trackedEdits.length > 20 },
-    );
+  if (statusLines.length > 0) {
+    const targetDiff = (await runGit(["diff", "--name-status", commitSha, "--"], input.worktreePath))
+      .split("\n")
+      .map((line) => line.trimEnd())
+      .filter(Boolean);
+    if (targetDiff.length > 0) {
+      throw new TurnCheckpointError(
+        TURN_CHECKPOINT_DIRTY_CODE,
+        "restore refused: uncommitted tracked state differs from the target checkpoint; refusing to overwrite it",
+        { paths: targetDiff.slice(0, 20), truncated: targetDiff.length > 20 },
+      );
+    }
   }
 
   const refBefore = await runGit(["symbolic-ref", "--quiet", "--short", "HEAD"], input.worktreePath).catch(() => null);

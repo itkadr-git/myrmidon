@@ -148,10 +148,15 @@ describe("per-turn checkpoints (OPE-12738)", () => {
     expect(await fs.readFile(path.join(repoRoot, "file.txt"), "utf8")).toBe("foreign uncommitted edit\n");
   });
 
-  it("untracked foreign files survive the restore", async () => {
+  it("staged tracked state identical to the target checkpoint survives the restore as a no-op", async () => {
+    // A clean checkpoint legitimately carries its turn's durable edits as
+    // staged-but-uncommitted state (the snapshot reads the worktree into a
+    // temporary index without committing); restoring onto a stale identical
+    // copy of that state must not refuse.
     await fs.writeFile(path.join(repoRoot, "tracked.txt"), "one\n");
     git(repoRoot, ["add", "-A"]);
     await createTurnCheckpoint({ worktreePath: repoRoot, runId: RUN_ID, turnNumber: 1 });
+    expect(git(repoRoot, ["status", "--porcelain"])).toContain("A  tracked.txt");
     await fs.writeFile(path.join(repoRoot, "foreign.txt"), "not mine\n");
     const result = await restoreTurnCheckpoint({
       db: emptyDb() as never,
@@ -163,6 +168,31 @@ describe("per-turn checkpoints (OPE-12738)", () => {
     void result;
     expect(await fs.readFile(path.join(repoRoot, "foreign.txt"), "utf8")).toBe("not mine\n");
     expect(await fs.readFile(path.join(repoRoot, "tracked.txt"), "utf8")).toBe("one\n");
+    expect(git(repoRoot, ["diff", "--name-status", "HEAD", "--"])).toBe("");
+  });
+
+  it("refuses restore when uncommitted tracked state diverges from the target checkpoint", async () => {
+    await fs.writeFile(path.join(repoRoot, "tracked.txt"), "one\n");
+    git(repoRoot, ["add", "-A"]);
+    await createTurnCheckpoint({ worktreePath: repoRoot, runId: RUN_ID, turnNumber: 1 });
+
+    // Foreign staged edit arrives after checkpoint and diverges from the target tree
+    await fs.writeFile(path.join(repoRoot, "tracked.txt"), "foreign staged edit\n");
+    git(repoRoot, ["add", "-A"]);
+
+    await expect(restoreTurnCheckpoint({
+      db: emptyDb() as never,
+      companyId: "00000000-0000-4000-8000-000000000000",
+      worktreePath: repoRoot,
+      runId: RUN_ID,
+      targetTurnNumber: 1,
+    })).rejects.toMatchObject({
+      name: "TurnCheckpointError",
+      code: TURN_CHECKPOINT_DIRTY_CODE,
+    });
+
+    // Divergent foreign state must survive intact
+    expect(await fs.readFile(path.join(repoRoot, "tracked.txt"), "utf8")).toBe("foreign staged edit\n");
   });
 
   it("GC: on the N+1th snapshot the oldest is pruned and the ref count stays capped", async () => {
