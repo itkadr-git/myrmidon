@@ -67898,17 +67898,28 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
           );
           expect(lane.requests).toHaveLength(1);
           expect(lane.requests[0]!.method.endsWith("Draft")).toBe(false);
+          // Wait until the failed maintenance action's durable retryAt is due
+          // (read-only polling; do not drive processPendingDeliveries in a loop:
+          // every premature sweep re-fails the attempt and pushes retryAt out).
           await vi.waitFor(
             async () => {
-              await lane.context.service.processPendingDeliveries();
-              expect(
-                lane.maintenanceRequests.filter(
-                  ({ method }) => method === "setWebhook",
-                ),
-              ).toHaveLength(1);
+              const [pending] = await db
+                .select({ result: chatActions.result })
+                .from(chatActions)
+                .where(eq(chatActions.id, action!.id));
+              expect(pending?.result?.retryAt ?? "").not.toBe("");
+              expect(pending!.result!.retryAt! <= new Date().toISOString()).toBe(
+                true,
+              );
             },
-            { timeout: 20_000, interval: 250 },
+            { timeout: 20_000, interval: 100 },
           );
+          await lane.context.service.processPendingDeliveries();
+          expect(
+            lane.maintenanceRequests.filter(
+              ({ method }) => method === "setWebhook",
+            ),
+          ).toHaveLength(1);
           await lane.restart();
           lane.setSubscriptionInfo({
             allowed_updates: ["message", "chat_member"],
