@@ -41,9 +41,9 @@
     "Динамически собираемые имена не перечисляются поимённо, а описаны шаблонами в dynamic_patterns (префикс, допустимый набор значений, класс, источник); скрипт проверки находит в коде все динамические сборки имён и требует шаблон на каждую. Фактический набор имён в рантайме (по ботам/провайдерам экземпляра) определяется данными экземпляра и этим реестром не фиксируется."
   ],
   "counts": {
-    "unique_names": 908,
+    "unique_names": 909,
     "secret": 108,
-    "infra": 374,
+    "infra": 375,
     "product": 426
   },
   "entries": [
@@ -3337,6 +3337,22 @@
       "secret_ref_or_instance_setup": "не секрет; задаётся при установке экземпляра (env юнита/compose); отдельной настройки в UI нет",
       "ticket_or_pr": "не требуется",
       "decision": "оставить в env установки (решение аудита 08.10); пересмотр владельцем при необходимости"
+    },
+    {
+      "name": "MYRMIDON_BRIDGE_QUEUE_POLL_IDLE_MS",
+      "aliases": [],
+      "in_main_code": true,
+      "in_audit_20261008": false,
+      "in_settings_md": true,
+      "consumer": "packages/adapter-utils/src/execution-target.ts:4859",
+      "audit_reason": "deployment / runtime plumbing or security rate-limit (operator-only, set at install)",
+      "classification": "infra",
+      "class_basis": "name-rule",
+      "scope": "host",
+      "ui_or_store": "UI нет и не планируется (настройка установки/окружения)",
+      "secret_ref_or_instance_setup": "не секрет; задаётся при установке экземпляра (env юнита/compose); отдельной настройки в UI нет",
+      "ticket_or_pr": "OPE-12727",
+      "decision": "оставить в env установки; пересмотр владельцем при необходимости"
     },
     {
       "name": "MYRMIDON_BRIDGE_RESPONSE_TIMEOUT_MS",
