@@ -5,8 +5,7 @@ import { loadDefaultAgentInstructionsBundle } from "./default-agent-instructions
 // Exact protocol and path/skill identifiers are not platform branding.
 const allowedTokens = [
   "X-Paperclip-Run-Id",
-  "paperclip-create-agent",
-  "skills/paperclip/scripts/paperclip-upload-artifact.sh",
+  "paperclip-upload-artifact.sh",
 ];
 
 function bareLegacyMentions(content: string) {
