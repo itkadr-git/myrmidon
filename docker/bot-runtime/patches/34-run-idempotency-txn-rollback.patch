@@ -1,7 +1,8 @@
 diff --git a/gateway/platforms/api_server_run_idempotency.py b/gateway/platforms/api_server_run_idempotency.py
+index 23a586b..6df8385 100644
 --- a/gateway/platforms/api_server_run_idempotency.py
 +++ b/gateway/platforms/api_server_run_idempotency.py
-@@ -119,15 +119,48 @@
+@@ -123,15 +123,48 @@ class RunIdempotencyStore:
              except OSError:
                  logger.debug("Failed to restrict run idempotency store permissions", exc_info=True)
  
@@ -50,8 +51,8 @@ diff --git a/gateway/platforms/api_server_run_idempotency.py b/gateway/platforms
 +                self._safe_rollback_locked()
                  raise
  
-     def reserve(self, scope: str, key: str, fingerprint: str, run_id: str, status: Dict[str, Any], *,
-@@ -191,8 +224,7 @@
+     def reserve(self, scope: str, key: str, fingerprint: str, run_id: str, status: dict[str, Any], *,
+@@ -220,8 +253,7 @@ class RunIdempotencyStore:
          retention_until = max(0.0, float(retention_until or 0))
          with self._lock:
              if retention_until:
@@ -61,7 +62,7 @@ diff --git a/gateway/platforms/api_server_run_idempotency.py b/gateway/platforms
              row = self._conn.execute(
                  "SELECT status_json, owner_pid, owner_started, updated_at "
                  "FROM run_idempotency WHERE scope=? AND run_id=?",
-@@ -207,8 +239,7 @@
+@@ -236,8 +268,7 @@ class RunIdempotencyStore:
          if not checked_until:
              return False
          with self._lock:
@@ -71,9 +72,9 @@ diff --git a/gateway/platforms/api_server_run_idempotency.py b/gateway/platforms
          return changed == 1
  
      def owns_run(self, scope: str, run_id: str) -> bool:
-@@ -219,10 +250,9 @@
+@@ -248,10 +279,9 @@ class RunIdempotencyStore:
  
-     def update_status(self, run_id: str, status: Dict[str, Any]) -> None:
+     def update_status(self, run_id: str, status: dict[str, Any]) -> None:
          with self._lock:
 -            self._conn.execute(
 +            self._write_locked(
@@ -81,5 +82,5 @@ diff --git a/gateway/platforms/api_server_run_idempotency.py b/gateway/platforms
                  (_encode_status(status), time.time(), run_id))
 -            self._conn.commit()
  
-     def close(self) -> None:
-         with self._lock:
+     def forget(self, scope: str, key: str) -> None:
+         """Release a reservation whose run was refused before it existed."""

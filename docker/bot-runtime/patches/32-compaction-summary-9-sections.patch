@@ -1,135 +1,186 @@
 diff --git a/agent/context_compressor.py b/agent/context_compressor.py
-index c4d7753..eff3d01 100644
+index 7a30059903..9e00603a18 100644
 --- a/agent/context_compressor.py
 +++ b/agent/context_compressor.py
-@@ -245,7 +245,8 @@ def _exc_status_code(exc: Exception) -> Any:
+@@ -253,7 +253,9 @@ def _exc_status_code(exc: Exception) -> Any:
      return getattr(exc, "status_code", None) or getattr(getattr(exc, "response", None), "status_code", None)
  
  
 -HISTORICAL_TASK_HEADING = "## Historical Task Snapshot"
-+# myrmidon(G1): 9-section context compaction summary heading
++# myrmidon(G1): the compaction summary uses the OpenHands 9-section scheme; the first
++# section carries the user context (who asked, what was asked).
 +HISTORICAL_TASK_HEADING = "## USER_CONTEXT"
  
  
  SUMMARY_PREFIX = (
-@@ -1168,10 +1169,30 @@ _PATH_MENTION_RE = re.compile(r"(?:/|~/?|[A-Za-z]:\\)[^\s`'\")\]}<>]+")
- _MEDIA_DIRECTIVE_RE = re.compile(r"MEDIA:\S+")
- # Pre-#44454 alias. A summarizer that still emits it must be replaced, not prepended.
- _LEGACY_ACTIVE_TASK_HEADING = "## Active Task"
--_TASK_SNAPSHOT_HEADINGS = (HISTORICAL_TASK_HEADING, _LEGACY_ACTIVE_TASK_HEADING)
-+# myrmidon(G1): preserve legacy headings for remediation parsers
-+_LEGACY_HISTORICAL_TASK_HEADING = "## Historical Task Snapshot"
-+_TASK_SNAPSHOT_HEADINGS = (HISTORICAL_TASK_HEADING, _LEGACY_HISTORICAL_TASK_HEADING, _LEGACY_ACTIVE_TASK_HEADING)
- _HISTORICAL_TASK_SECTION_RE = re.compile(
-     rf"(?ms)^(?:{'|'.join(re.escape(heading) for heading in _TASK_SNAPSHOT_HEADINGS)})\s*\n.*?(?=^## |\Z)"
- )
-+# myrmidon(G1): task and PR tracking patterns for fallback summary extraction
-+_TASK_TRACKING_MENTION_RE = re.compile(
-+    r"\b[A-Z]{2,10}-\d+\b|(?i:\b(?:PR|pull\s+request)\s*#?\s*\d+\b)|#\d+\b"
+@@ -822,6 +824,20 @@ def _next_timeout_cooldown(compressor: Any, counter: str = "_consecutive_timeout
+     return _TIMEOUT_COOLDOWN_LADDER[min(n, len(_TIMEOUT_COOLDOWN_LADDER)) - 1]
+ 
+ 
++# myrmidon(G1): size caps for the summary and its mechanical sections, wake notes, truncated-summary
++# handling; settings and defaults live in agent/context_economy.py (config.yaml: context_economy).
++from agent.context_economy import (  # noqa: E402
++    accept_truncated_summary,
++    cap_summary_text,
++    capped_summary_tokens,
++    lean_anchor_budget,
++    lean_user_message_limits,
++    stub_superseded_wakes,
++    summary_cap_active,
++    summary_cap_instruction,
++    wake_note_for_summary,
 +)
-+_TASK_TRACKING_EXCLUDE = frozenset({
-+    "UTF-8", "UTF-16", "UTF-32", "SHA-1", "SHA-256", "SHA-512",
-+    "MD-5", "ISO-8601", "BASE-64", "HTTP-1", "HTTP-2", "HTTP-3",
-+})
 +
+ _MIN_SUMMARY_TOKENS = 2000
+ _SUMMARY_RATIO = 0.20
+ # Summaries above ~10K tokens are themselves a context-pressure source.
+@@ -956,13 +972,16 @@ def _build_verbatim_user_section(turns: list[dict[str, Any]]) -> str:
+     """Compacted region's REAL user messages verbatim, newest-first under a char budget (straddler truncated); "" if none."""
+     collected: list[str] = []
+     used = 0
++    budget_chars, message_chars = lean_user_message_limits(  # myrmidon(G1)
++        _LEAN_USER_MESSAGES_BUDGET_CHARS, _LEAN_USER_MESSAGE_MAX_CHARS)
+     for msg in reversed(turns):
+         if msg.get("role") != "user":
+             continue
+         content = _typed_user_text(_content_text_for_contains(msg.get("content")))
+         if _synthetic_user_row(content):
+             continue
+-        remaining = _LEAN_USER_MESSAGES_BUDGET_CHARS - used
++        content = wake_note_for_summary(content)  # myrmidon(G1): board wake packages are not quoted
++        remaining = budget_chars - used
+         if remaining <= 0:
+             break
+         text = content.strip()
+@@ -1062,7 +1081,7 @@ def _build_anchor_index(turns: list[dict[str, Any]]) -> str:
+             continue
+         ranked = sorted(counts, key=lambda v: (-counts[v], -last_seen[v]))[:cap]
+         line = f"{label}: " + ", ".join(f"{v}(x{counts[v]})" if counts[v] > 1 else v for v in ranked)
+-        if used + len(line) > _LEAN_ANCHOR_BUDGET_CHARS:
++        if used + len(line) > lean_anchor_budget(_LEAN_ANCHOR_BUDGET_CHARS):  # myrmidon(G1)
+             break
+         sections.append(line)
+         used += len(line)
+@@ -3384,7 +3403,8 @@ class ContextCompressor(
+         """Scale the summary token budget with content size and context window."""
+         content_tokens = estimate_messages_tokens_rough(turns_to_summarize)
+         budget = int(content_tokens * _SUMMARY_RATIO)
+-        return max(_MIN_SUMMARY_TOKENS, min(budget, self.max_summary_tokens))
++        budget = max(_MIN_SUMMARY_TOKENS, min(budget, self.max_summary_tokens))
++        return capped_summary_tokens(budget)  # myrmidon(G1)
+ 
+     # Summarizer-input limits: the budget is the summary model's window, not the main model's.
+     _CONTENT_MAX = 6000       # total chars per message body
+@@ -3409,29 +3429,66 @@ class ContextCompressor(
+         return f"  {fn.get('name', '?')}({args})"
+ 
+     def _serialize_records_for_summary(self, turns: list[dict[str, Any]]) -> list[str]:
+-        """Serialize turns into a list of labeled, redacted records for the summarizer."""
++        """Serialize turns into records; each assistant tool call plus its tool results is ONE atomic record.
++        myrmidon(G1): compaction sampling never cuts between a call and its results — a lone
++        result (or a lone call) in the summary prompt loses the pairing the summary needs.
++        """
+         # Lazy import: agent_runtime_helpers pulls heavy transitive imports.
+         from agent.agent_runtime_helpers import strip_think_blocks
+-        parts = []
+-        for msg in turns:
+-            role = msg.get("role", "unknown")
++        from agent.message_sanitization import tool_result_id_variants
 +
-+def _collect_task_tracking_mentions(text: str, task_tracking: list[str], *, limit: int = 12) -> None:
-+    if not text:
-+        return
-+    for match in _TASK_TRACKING_MENTION_RE.findall(text):
-+        token = match.strip().rstrip(".,:;")
-+        if token.upper() in _TASK_TRACKING_EXCLUDE:
-+            continue
-+        _dedupe_append(task_tracking, token, limit=limit)
++        def process_content(msg: dict[str, Any], role: str) -> str:
+             content = msg.get("content")
+             if isinstance(content, list):
+                 content = "\n".join(_summary_part_text(part) for part in content if isinstance(part, (dict, str)))
+             content = _redact_compaction_text(content or "")
+             content = _MEDIA_DIRECTIVE_RE.sub("[media attachment]", content)
+-            # Strip inline <think>-style blocks: scratch work wastes summarizer context and risks being kept as fact.
+             if role == "assistant" and content:
+                 content = strip_think_blocks(None, content)
+             if len(content) > self._CONTENT_MAX:
+                 content = elide_middle(content, self._CONTENT_HEAD, self._CONTENT_TAIL)
++            if role == "assistant" and msg.get("tool_calls", []):
++                content += "\n[Tool calls:\n" + "\n".join(map(self._render_tool_call_for_summary, msg["tool_calls"])) + "\n]"
++            return content
++
++        # Index results by every accepted spelling of their pairing id instead of relying on
++        # adjacency (providers may interleave other messages between a call and its result).
++        results_by_id: dict[str, list[int]] = {}
++        for result_index, msg in enumerate(turns):
++            if msg.get("role") != "tool":
++                continue
++            for result_id in tool_result_id_variants(msg.get("tool_call_id", "")):
++                results_by_id.setdefault(result_id, []).append(result_index)
++
++        records: list[str] = []
++        consumed_results: set[int] = set()
++        for index, msg in enumerate(turns):
++            role = msg.get("role", "unknown")
+             if role == "tool":
+-                parts.append(f"[TOOL RESULT {msg.get('tool_call_id', '')}]: {content}")
++                # Every result is emitted inside its call's atomic group above; an orphan
++                # result (no matching call) is omitted: pre-call sanitization already drops
++                # these from the live transcript, so the summarizer omits them here too
++                # instead of emitting a result-only record.
+                 continue
+             if role == "assistant" and msg.get("tool_calls", []):
+-                content += "\n[Tool calls:\n" + "\n".join(map(self._render_tool_call_for_summary, msg["tool_calls"])) + "\n]"
+-            parts.append(f"[{role.upper()}]: {content}")
+-        return parts
++                content = process_content(msg, role)
++                group_parts = [f"[ASSISTANT]: {content}"]
++                for tc in msg["tool_calls"]:
++                    matched: set[int] = set()
++                    for call_id in self._tool_call_id_variants(tc):
++                        matched.update(results_by_id.get(call_id, ()))
++                    for result_index in sorted(matched):
++                        if result_index in consumed_results:
++                            continue
++                        result = turns[result_index]
++                        group_parts.append(
++                            f"[TOOL RESULT {result.get('tool_call_id', '')}]: {process_content(result, 'tool')}"
++                        )
++                        consumed_results.add(result_index)
++                records.append("\n\n".join(group_parts))
++                continue
++            records.append(f"[{role.upper()}]: {process_content(msg, role)}")
++        return records
  
- 
- def _redact_compaction_text(text: Any) -> str:
-@@ -1938,12 +1959,16 @@ _SECTION_INSTRUCTIONS: Dict[bool, Dict[str, str]] = {
-             "Write the summary in the same language the user was using in the "
-             "conversation — do not translate or switch to English. "
-         ),
--        "historical_task": """[THE SINGLE MOST IMPORTANT FIELD. Capture the user's most recent unfulfilled
--input verbatim — the exact words they used. This includes:
-+        "historical_task": """[THE SINGLE MOST IMPORTANT FIELD. Who asked, what was asked, and the user's most recent unfulfilled
-+input verbatim — the exact words they used, along with explicit user preferences and constraints.
-+This includes:
- - Explicit task assignments ("<specific user task>")
- - Questions awaiting an answer ("<specific user question>")
- - Decisions awaiting input ("<option A or B?>")
- - Ongoing discussions where the assistant owes the next substantive reply
-+Any security or safety constraint the user stated (files/data to avoid, operations that must not be
-+performed, credential-handling rules) MUST be quoted VERBATIM here so it continues to apply after
-+compaction — never paraphrase those.
- A conversation where the user just asked a question IS an active task — the
- task is "answer that question with full context". Do NOT write "None" merely
- because the user did not issue an imperative command; reserve "None" for the
-@@ -3369,6 +3394,9 @@ class ContextCompressor(SummaryDispatchMixin, MicroCompactionMixin, ContextEngin
-         relevant_files: list[str] = []
-         blockers: list[str] = []
-         last_dropped_turns: list[str] = []
-+        task_tracking: list[str] = []
-+        if getattr(self, "_previous_summary", None):
-+            _collect_task_tracking_mentions(self._previous_summary, task_tracking)
-         call_id_to_tool: dict[str, tuple[str, str]] = {}
-         for msg in turns_to_summarize:
-             if msg.get("role") != "assistant":
-@@ -3385,10 +3413,12 @@ class ContextCompressor(SummaryDispatchMixin, MicroCompactionMixin, ContextEngin
-                     except Exception:
-                         parsed = args
-                     _collect_paths_from_jsonish(parsed, relevant_files)
-+                    _collect_task_tracking_mentions(args, task_tracking)
-         for msg in turns_to_summarize:
-             role = msg.get("role", "unknown")
-             text = _compact_fallback_turn(msg.get("content"))
-             _collect_path_mentions(text, relevant_files)
-+            _collect_task_tracking_mentions(text, task_tracking)
-             synthetic_user = role == "user" and self._is_synthetic_compression_user_turn(msg)
-             tool_names = [_extract_tool_call_name_and_args(tc)[0] for tc in (msg.get("tool_calls") or [])] if role == "assistant" else []
-             turn_text = text
-@@ -3419,6 +3449,7 @@ class ContextCompressor(SummaryDispatchMixin, MicroCompactionMixin, ContextEngin
-             "relevant_files": relevant_files,
-             "blockers": blockers,
-             "last_dropped_turns": last_dropped_turns,
-+            "task_tracking": task_tracking,
-         }
- 
-     def _build_static_fallback_summary(
-@@ -3446,35 +3477,37 @@ class ContextCompressor(SummaryDispatchMixin, MicroCompactionMixin, ContextEngin
-         reason_text = f" Summary failure reason: {reason}." if reason else ""
+     def _serialize_for_summary(self, turns: list[dict[str, Any]]) -> str:
+         """Serialize turns into labeled, redacted text for the summarizer."""
+@@ -3522,33 +3579,30 @@ class ContextCompressor(
          body = f"""{HISTORICAL_TASK_HEADING}
  {active_task}
--
+ 
 -## Goal
++## TASK_TRACKING
  Recovered from a deterministic fallback because the LLM context summarizer was unavailable. Continue from the protected recent messages after this summary and use current file/system state for exact details.{previous_summary_note}
  
 -## Constraints & Preferences
 -- This fallback was generated locally without an LLM summary call.
 -- Secrets and credentials were redacted before preservation.
 -- The summary may be incomplete; prefer verifying current files, git state, processes, and test results instead of assuming omitted details.
-+## TASK_TRACKING
-+{_bullets(anchors["task_tracking"], limit=12)}
++## PENDING
++{_bullets(anchors["blockers"], limit=5)}
  
 -## Completed Actions
 +## COMPLETED
  {chr(10).join(completed) if completed else "None recoverable from compacted turns."}
  
 -## Active State
--Unknown from deterministic fallback. Inspect current repository/session state if needed.
-+## PENDING
-+{_bullets(anchors["last_dropped_turns"], limit=8)}
++## CURRENT_STATE
+ Unknown from deterministic fallback. Inspect current repository/session state if needed.
  
 -## Blocked
-+## CURRENT_STATE
-+Unknown from deterministic fallback. Inspect current repository/session state if needed.
- {_bullets(anchors["blockers"], limit=5)}
+-{_bullets(anchors["blockers"], limit=5)}
++## CODE_STATE
++- This fallback was generated locally without an LLM summary call.
++- Secrets and credentials were redacted before preservation.
++{_bullets(anchors["relevant_files"], limit=12)}
  
 -## Key Decisions
 -None recoverable from deterministic fallback.
-+## CODE_STATE
-+{_bullets(anchors["relevant_files"], limit=12)}
-+
 +## TESTS
-+Recovered fallback; inspect test execution logs.
++Not run by the fallback; prefer verifying current test results instead of assuming omitted details.
  
 -## Resolved Questions
 +## CHANGES
@@ -137,90 +188,224 @@ index c4d7753..eff3d01 100644
  
 -## Relevant Files
 -{_bullets(anchors["relevant_files"], limit=12)}
-+## VERSION_CONTROL_STATUS
-+- Branch, commits, PR status: Inspect current git and PR state.
- 
+-
 -## Last Dropped Turns
--{_bullets(anchors["last_dropped_turns"], limit=8)}
-+## Constraints & Preferences
-+- This fallback was generated locally without an LLM summary call.
-+- Secrets and credentials were redacted before preservation.
-+- The summary may be incomplete; prefer verifying current files, git state, processes, and test results instead of assuming omitted details.
++## VERSION_CONTROL_STATUS
+ {_bullets(anchors["last_dropped_turns"], limit=8)}
  
  ## Critical Context
- Summary generation was unavailable, so this is a best-effort deterministic fallback for {len(turns_to_summarize)} compacted message(s).{reason_text}"""
-@@ -3951,7 +3984,7 @@ PREVIOUS SUMMARY:
+@@ -3612,14 +3666,65 @@ Summary generation was unavailable, so this is a best-effort deterministic fallb
+ 
+     @classmethod
+     def _bound_oversized_record(cls, record: str, limit: int) -> str:
+-        """Bound an oversized record with an explicit intra-record truncation marker."""
++        """Bound an oversized record with an explicit intra-record truncation marker.
++        myrmidon(G1): retain BOTH the tool calls and the tool results when bounding an
++        atomic group — truncating the call side alone would leave results without context,
++        and losing results loses what actually happened.
++        """
+         if len(record) <= limit:
+             return record
+         marker_reserve = len(_elision_marker(omitted=len(record), total=len(record)))
+         if limit <= marker_reserve:
+             return record[:limit]
+-        head_len = (limit - marker_reserve) // 2
+-        return elide_middle(record, head_len, limit - marker_reserve - head_len)
++        first_res = record.find("\n\n[TOOL RESULT ")
++        if first_res == -1 or not record.startswith("[ASSISTANT]:"):
++            head_len = (limit - marker_reserve) // 2
++            return elide_middle(record, head_len, limit - marker_reserve - head_len)
++        call_part = record[:first_res]
++        results_part = record[first_res + 2:]
++        remaining = limit - marker_reserve
++
++        if len(call_part) <= remaining // 2:
++            call_budget = len(call_part)
++            res_budget = remaining - call_budget
++        elif len(results_part) <= remaining // 2:
++            res_budget = len(results_part)
++            call_budget = remaining - res_budget
++        else:
++            call_budget = remaining // 2
++            res_budget = remaining - call_budget
++
++        # Split the call side into prose and the [Tool calls: ...] block; the block is the
++        # part the pairing needs, so it is kept whole and the prose is elided around it.
++        tc_start = call_part.rfind("\n[Tool calls:\n")
++        if tc_start == -1:
++            kept_call = elide_middle(call_part, call_budget // 2, call_budget - call_budget // 2) if len(call_part) > call_budget else call_part
++        else:
++            tc_text = call_part[tc_start:]
++            prose_part = call_part[:tc_start]
++            if len(call_part) <= call_budget:
++                kept_call = call_part
++            elif len(tc_text) >= call_budget:
++                kept_call = elide_middle(tc_text, call_budget // 2, call_budget - call_budget // 2)
++            else:
++                avail_prose = max(call_budget - len(tc_text), 0)
++                kept_call = (elide_middle(prose_part, avail_prose // 2, avail_prose - avail_prose // 2)
++                             if len(prose_part) > avail_prose else prose_part) + tc_text
++
++        # Keep each result's head and tail (the result id lives in the head, the outcome
++        # usually in the tail) and elide the middle of over-budget results.
++        per_result = max(res_budget // max(len(results_part.split("\n\n[TOOL RESULT ")), 1), 200)
++        kept_results = []
++        for res in results_part.split("\n\n[TOOL RESULT "):
++            if not res:
++                continue
++            res_text = "[TOOL RESULT " + res
++            if len(res_text) > per_result:
++                res_text = elide_middle(res_text, per_result // 2, per_result - per_result // 2)
++            kept_results.append(res_text)
++        kept_results_text = "\n\n".join(kept_results)
++        marker = _elision_marker(omitted=len(record), total=len(record))
++        return kept_call + "\n" + marker + "\n" + kept_results_text
+ 
+     def _record_summary_input_coverage(self, coverage: dict[str, int]) -> None:
+         """Expose lean sampling coverage without including transcript content in telemetry."""
+@@ -3862,12 +3967,26 @@ Summary generation was unavailable, so this is a best-effort deterministic fallb
+         # tail of the merge and feed the cut-off text into every later micro-compact pass. Leave the
+         # exchange unabsorbed instead; a later pass retries it. (Same class as _generate_summary's guard;
+         # pi#7048.)
+-        if _response_finish_reason(response) == "length":
++        # myrmidon(G1): a summary that stopped on the output limit is kept (cut at a line end, marked)
++        # instead of failing the compression: an aborted compression leaves the session growing and every
++        # later request re-sends all of it, which costs far more than a summary missing its last lines.
++        _length_stop = _response_finish_reason(response) == "length"
++        if _length_stop and not accept_truncated_summary():
+             raise RuntimeError(
+                 f"Context compression summary was truncated ({_TRUNCATED_SUMMARY_MARKER}): generation hit the output "
+                 f"token cap and the summary is incomplete {where}"
+             )
+-        return content
++        if _length_stop:
++            logger.warning(
++                "Context compression summary stopped on the output limit; keeping the partial text (%d chars) %s",
++                len(content), where,
++            )
++        if _length_stop or summary_cap_active():
++            # Inline <think> blocks must not eat the character budget or be cut in half.
++            from agent.agent_runtime_helpers import strip_think_blocks
++
++            content = strip_think_blocks(None, content).strip() or content
++        return cap_summary_text(content, length_stop=_length_stop)
+ 
+     def _generate_summary(
+         self, turns_to_summarize: list[dict[str, Any]], focus_topic: Optional[str] = None,
+@@ -3890,6 +4009,8 @@ Summary generation was unavailable, so this is a best-effort deterministic fallb
+             focus_topic = _redact_compaction_text(focus_topic)
+         if self._previous_summary:
+             self._previous_summary = _redact_compaction_text(self._previous_summary)
++        # myrmidon(G1): a wake package that a later wake in the same input supersedes is not summarized.
++        turns_to_summarize = stub_superseded_wakes(turns_to_summarize)
+         summary_budget = self._compute_summary_budget(turns_to_summarize)
+         # Ghost-skill defense: LLMs paraphrase [SKILL_PRUNED] markers away; collect the names
+         # deterministically BEFORE the call (from the turn LIST, not the bounded text), re-inject after.
+@@ -3962,7 +4083,10 @@ Summary generation was unavailable, so this is a best-effort deterministic fallb
+             "not preserve their values."
+         )
+         # Lean mode folds the session log into this SAME single request (one aux call).
+-        _session_log_section = _LEAN_SESSION_LOG_SECTION if getattr(self, "tail_mode", "lean") == "lean" else ""
++        _session_log_section = (  # myrmidon(G1): the detailed log would break the character cap
++            _LEAN_SESSION_LOG_SECTION
++            if getattr(self, "tail_mode", "lean") == "lean" and not summary_cap_active() else ""
++        )
+         _template_sections = self._summary_template_sections(_section, summary_budget, _session_log_section)
+         if self._previous_summary:
+             # Iterative update. Bound the previous summary too: a rehydrated handoff can be huge.
+@@ -3977,7 +4101,7 @@ PREVIOUS SUMMARY:
  NEW TURNS TO INCORPORATE:
  {content_to_summarize}{_memory_section}
  
 -Update the summary using this exact structure. PRESERVE all existing information that is still relevant. ADD new completed actions to the numbered list (continue numbering). Move items from "In Progress" to "Completed Actions" when done. Move answered questions to "Resolved Questions". Update "Active State" to reflect current state. Remove information only if it is clearly obsolete. CRITICAL: Update "{HISTORICAL_TASK_HEADING}" to reflect the user's most recent unfulfilled input — this includes any question, decision request, or discussion turn that the assistant has not yet answered. Only write "None" if the last exchange was fully resolved.
-+Update the summary using this exact structure. PRESERVE all existing information that is still relevant. ADD new completed actions to COMPLETED. Move finished items from PENDING to COMPLETED. Update CURRENT_STATE, CODE_STATE, TESTS, CHANGES, and VERSION_CONTROL_STATUS to reflect current state. Remove information only if it is clearly obsolete. CRITICAL: Update "{HISTORICAL_TASK_HEADING}" to reflect the user's most recent unfulfilled input and explicit constraints verbatim — this includes any question, decision request, or discussion turn that the assistant has not yet answered. Only write "None" if the last exchange was fully resolved.
++Update the summary using this exact structure (USER_CONTEXT, TASK_TRACKING, PENDING, COMPLETED, CURRENT_STATE, CODE_STATE, TESTS, CHANGES, VERSION_CONTROL_STATUS). PRESERVE all existing information that is still relevant. ADD new completed actions to COMPLETED (continue numbering). Move finished items out of PENDING. Update CURRENT_STATE to reflect current state. Remove information only if it is clearly obsolete. CRITICAL: Update "{HISTORICAL_TASK_HEADING}" to reflect the user's most recent unfulfilled input — this includes any question, decision request, or discussion turn that the assistant has not yet answered. Only write "None" if the last exchange was fully resolved.
  
  {_template_sections}"""
          else:
-@@ -3997,14 +4030,11 @@ This compaction should PRIORITISE preserving all information related to the focu
+@@ -4018,18 +4142,22 @@ This compaction should PRIORITISE preserving all information related to the focu
+ 
+     @classmethod
+     def _summary_template_sections(cls, _section: dict[str, str], summary_budget: int, _session_log_section: str) -> str:
+-        """The ``## ...`` section template shared by the fresh and iterative-update prompts."""
++        """The ``## ...`` section template shared by the fresh and iterative-update prompts.
++        myrmidon(G1): structured 9-section OpenHands scheme (USER_CONTEXT, TASK_TRACKING,
++        COMPLETED, PENDING, CURRENT_STATE, CODE_STATE, TESTS, CHANGES,
++        VERSION_CONTROL_STATUS); upstream's per-section instruction text is kept where a
++        section carries one."""
+         _temporal_anchoring_rule = cls._temporal_anchoring_rule()
          return f"""{HISTORICAL_TASK_HEADING}
  {_section["historical_task"]}
  
 -## Goal
 -{_section["goal"]}
 +## TASK_TRACKING
-+[Exact task and ticket identifiers (e.g. OPE-..., issue keys), PR numbers (e.g. PR #...), and tracking IDs — copy verbatim from conversation or tools; do NOT paraphrase, omit, or renumber.]
++[What the user is trying to accomplish overall, then the concrete next step:{chr(10)}{_section["goal"]}]
  
 -## Constraints & Preferences
 -{_section["constraints"]}
--
++## PENDING
++[Any blockers, errors, or issues not yet resolved. Include exact error messages.{chr(10)}{_section["resolved_questions"]}]
+ 
 -## Completed Actions
--[Numbered list of concrete actions taken — include tool used, target, and outcome.
 +## COMPLETED
-+[Numbered list of concrete actions taken and finished goals — include tool used, target, and outcome.
+ [Numbered list of concrete actions taken — include tool used, target, and outcome.
  Format each as: N. ACTION target — outcome [tool: name]
  Example:
- 1. READ config.py:45 — found `==` should be `!=` [tool: read_file]
-@@ -4012,30 +4042,27 @@ Example:
+@@ -4038,33 +4166,29 @@ Example:
  3. TEST `pytest tests/` — 3/50 failed: test_parse, test_validate, test_edge [tool: terminal]
  Be specific with file paths, commands, line numbers, and results.]
  
 -## Active State
--[Current working state — include:
--- Working directory and branch (if applicable)
++## CURRENT_STATE
+ [Current working state — include:
+ - Working directory and branch (if applicable)
 -- Modified/created files with brief note on each
 -- Test status (X/Y passing)
--- Any running processes or servers
--- Environment details that matter]
-+## PENDING
-+[Open tasks, remaining items, pending questions, next actions to execute, and unfulfilled objectives.]
+ - Any running processes or servers
+ - Environment details that matter]
  
 -## Blocked
 -[Any blockers, errors, or issues not yet resolved. Include exact error messages.]
-+## CURRENT_STATE
-+[Current working state — include:
-+- Active working mode, running processes, servers
-+- Blockers, errors, or issues not yet resolved (include exact error messages)
-+- Important technical decisions and WHY they were made
-+- Resolved errors and how they were fixed]
- 
+-
 -## Key Decisions
 -[Important technical decisions and WHY they were made]
 +## CODE_STATE
-+[Current repository and directory layout, relevant files read, modified, or created with brief note on each, and code structure.]
++[Important technical decisions and WHY they were made. Files read, modified, or created —
++with brief note on each.]
  
 -## Errors & Fixes
 -[Errors hit during the compacted turns and how each was resolved — include the
 -exact error text. Pay special attention to corrections the USER gave; quote
 -the user's correction and record what changed as a result.]
 +## TESTS
-+[What test suites or verification commands were run, exact test status (e.g. X/Y passing, failed, skipped), and results.]
++[Test status (X/Y passing) and which tests cover the changed behaviour.]
  
 -## Resolved Questions
 -{_section["resolved_questions"]}
 +## CHANGES
-+[Specific list of code, file, and configuration changes made — describe exactly what changed.]
++[Important technical decisions and WHY they were made; user preferences and constraints.
++Any security or safety constraint the user stated (files/data to avoid, operations that must not be
++performed, credential-handling rules) MUST be quoted VERBATIM here so it continues to apply after
++compaction — never paraphrase those.]
  
 -## Relevant Files
 -[Files read, modified, or created — with brief note on each]
+-
+-## Critical Context
+-[Any specific values, error messages, configuration details, or data that would be lost without explicit preservation. NEVER include API keys, tokens, passwords, or credentials — write [REDACTED] instead.]{UNVERIFIED_HYPOTHESES_SECTION}{_session_log_section}
 +## VERSION_CONTROL_STATUS
-+[Current git branch, commit SHAs, PR status (number, URL, draft/ready), and merge/conflict state.]
++[Any specific values, error messages, configuration details, or data that would be lost without
++explicit preservation. NEVER include API keys, tokens, passwords, or credentials — write
++[REDACTED] instead.]{UNVERIFIED_HYPOTHESES_SECTION}{_session_log_section}
  
- ## Critical Context
- [Any specific values, error messages, configuration details, or data that would be lost without explicit preservation. NEVER include API keys, tokens, passwords, or credentials — write [REDACTED] instead.]{_session_log_section}
+ {_PRUNED_SKILLS_SECTION_HEADING}
+ [If any [SKILL_PRUNED: ...reload with skill_view(...)] markers appear in the input,
+@@ -4072,7 +4196,7 @@ repeat each one verbatim here — copy the exact text, do NOT paraphrase, summar
+ or describe them. These markers tell the agent which skills must be reloaded before
+ use. If none appear, omit this section entirely.]
+ 
+-Target ~{summary_budget + (_LEAN_SESSION_LOG_BUDGET_TOKENS if _session_log_section else 0)} tokens. Be CONCRETE — include file paths, command outputs, error messages, line numbers, and specific values. Avoid vague descriptions like "made some changes" — say exactly what changed.
++Target ~{summary_budget + (_LEAN_SESSION_LOG_BUDGET_TOKENS if _session_log_section else 0)} tokens.{summary_cap_instruction()} Be CONCRETE — include file paths, command outputs, error messages, line numbers, and specific values. Avoid vague descriptions like "made some changes" — say exactly what changed.
+ {_temporal_anchoring_rule}
+ Write only the summary body. Do not include any preamble or prefix."""
+ 

@@ -26,7 +26,7 @@ const REGISTRY = path.join(HERE, "deltas.json");
 
 export const HINDSIGHT_CATALOG = "plugin-catalog/hindsight.yaml";
 
-/** Stable release tags only: vYYYY.M.D, no -canary/-beta/-rc suffixes. */
+/** Stable release tags only, as constrained by deltas.json: legacy vYYYY.M.D or v0.x.y; no -canary/-beta/-rc suffixes. */
 export function stableTags(stdout, pattern) {
   const re = new RegExp(pattern);
   const tags = new Set();

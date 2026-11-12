@@ -33,7 +33,7 @@ it("pins the async writer-acquire scanner fail-closed patch", () => {
 // instructions only, not comment prose explaining that absence.
 // The Node.js variant is a separate final stage (`runtime-node`, checked below);
 // the default image, i.e. everything before it, must stay node-free.
-const variantStart = dockerfile.indexOf("FROM python:3.13-slim AS node_dist");
+const variantStart = dockerfile.indexOf("FROM python:3.14-slim AS node_dist");
 assert.ok(variantStart > 0, "Dockerfile must define the node_dist stage of the Node.js variant");
 // The development variant (runtime-dev) is a third final stage. The Node.js
 // variant test must stop before it: the dev stage legitimately runs as root
@@ -41,11 +41,11 @@ assert.ok(variantStart > 0, "Dockerfile must define the node_dist stage of the N
 // (myrmidon 1.6.5 BOT-DISK-H: the `node24_dist` helper stage now sits before `runtime`,
 // because the workspace mechanism of every variant runs on it; the dev-only helper
 // stages start at `go_dist`.)
-const devVariantStart = dockerfile.indexOf("FROM python:3.13-slim AS go_dist");
+const devVariantStart = dockerfile.indexOf("FROM python:3.14-slim AS go_dist");
 assert.ok(devVariantStart > 0, "Dockerfile must define the go_dist stage of the development variant");
 assert.ok(devVariantStart > variantStart, "the development variant must follow the Node.js variant stages");
-const node24StageStart = dockerfile.indexOf("FROM python:3.13-slim AS node24_dist");
-const runtimeStageStart = dockerfile.indexOf("FROM python:3.13-slim AS runtime\n");
+const node24StageStart = dockerfile.indexOf("FROM python:3.14-slim AS node24_dist");
+const runtimeStageStart = dockerfile.indexOf("FROM python:3.14-slim AS runtime\n");
 assert.ok(node24StageStart > 0 && node24StageStart < runtimeStageStart, "Dockerfile must define the node24_dist stage before the runtime stage");
 const node24Stage = dockerfile.slice(node24StageStart, runtimeStageStart);
 const dockerfileInstructions = dockerfile
@@ -129,8 +129,8 @@ describe("docker/bot-runtime/Dockerfile", () => {
     // the workspace mechanism (git wrapper, myr-ws, botd); it must return to the contract
     // user before it ends. The Node.js variant stage never uses root.
     const runtimeStage = beforeDevVariant.slice(
-      beforeDevVariant.indexOf("FROM python:3.13-slim AS runtime\n"),
-      beforeDevVariant.indexOf("FROM python:3.13-slim AS node_dist"),
+      beforeDevVariant.indexOf("FROM python:3.14-slim AS runtime\n"),
+      beforeDevVariant.indexOf("FROM python:3.14-slim AS node_dist"),
     );
     assert.ok(runtimeStage.length > 0, "expected the runtime stage");
     assert.ok(runtimeStage.lastIndexOf("USER 10001:10001") > runtimeStage.lastIndexOf("USER root"), "the runtime stage must return to the contract user after root");
@@ -216,9 +216,9 @@ describe("docker/bot-runtime/Dockerfile", () => {
     assert.match(dockerfile, /--extra mcp\b/);
     // The provider is not a python extra any more: the builder clones the exact commit the
     // bundled catalog entry names, verifies it, and the plugin's own declared dependencies
-    // are installed through hermes' plugin installer (never a bare `uv pip install`).
+    // are installed through pm's workspace-member sync (never a bare `uv pip install`).
     assert.match(dockerfile, /plugin-catalog\/hindsight\.yaml/);
-    assert.match(dockerfile, /install_for_plugin_dir/);
+    assert.match(dockerfile, /lock_and_sync/);
     assert.match(dockerfile, /git -C \/tmp\/hindsight-plugin rev-parse HEAD/);
     // And actually checked, not just requested.
     assert.match(dockerfile, /import aiohttp, mcp, hindsight_client/);
@@ -229,10 +229,11 @@ describe("docker/bot-runtime/Dockerfile", () => {
     assert.match(entrypoint, /ln -s "\$\{catalog_dir\}\/hindsight"/);
   });
 
-  it("overrides aiohttp, httpx2 and certifi with their patched versions after the sync, and fails the build below them (OPE-12760)", () => {
-    // The lockfile of the pinned hermes (v2026.9.24, 0.21.5) resolves aiohttp 3.14.3,
-    // httpx2 2.7.0 and certifi 2026.5.20, which carry known advisories. Exact pins go over
-    // the synced venv; drop this step when the pinned hermes is >= 0.22.5.
+  it("overrides aiohttp, httpx2 and certifi with their pinned versions after the sync, and fails the build below them (OPE-12760)", () => {
+    // The v0.23.1 uv.lock already carries aiohttp 3.14.5, httpx2 2.15.1 and certifi
+    // 2026.10.19, so the exact-pin install is a no-op verification pass; the build-time
+    // check still fails the image if a future hermes bump regresses any of the three
+    // below the floors OPE-12760 set (drop both when upstream enforces them).
     const joined = dockerfileInstructions.replace(/\\\n\s*/g, " ");
     const install = joined.match(/^RUN uv pip install --python \/opt\/hermes-src\/\.venv\/bin\/python (.*)$/m);
     assert.ok(install, "expected a `uv pip install --python /opt/hermes-src/.venv/bin/python ...` override step");
@@ -244,17 +245,17 @@ describe("docker/bot-runtime/Dockerfile", () => {
     assert.match(check[1], /'httpx2': '2\.12\.0'/);
     assert.match(check[1], /'certifi': '2026\.10\.19'/);
     assert.match(check[1], /sys\.exit\(/);
-    // Order: after the sync, and after the Hindsight plugin installer (it resolves under hermes'
-    // core constraints from pyproject.toml, aiohttp==3.14.3, and would put aiohttp back if it ran
-    // later), check right after the install, all inside the builder stage.
+    // Order: after the uv sync, after the Hindsight plugin workspace-member sync
+    // (`lock_and_sync` — v0.23.1 removed hermes_cli.plugin_python_deps, the plugin is a
+    // uv workspace member now), check right after the install, all in the builder stage.
     const syncIdx = joined.indexOf("uv sync --frozen");
-    const pluginIdx = joined.indexOf("install_for_plugin_dir");
+    const pluginIdx = joined.indexOf("lock_and_sync");
     const installIdx = joined.indexOf(install[0]);
     const checkIdx = joined.indexOf(check[0]);
-    const runtimeIdx = joined.indexOf("FROM python:3.13-slim AS runtime");
+    const runtimeIdx = joined.indexOf("FROM python:3.14-slim AS runtime");
     assert.ok(syncIdx > 0, "expected uv sync --frozen in the builder stage");
-    assert.ok(pluginIdx > syncIdx, "expected the plugin installer after uv sync");
-    assert.ok(installIdx > pluginIdx, "expected the override after the plugin installer, which would otherwise reinstall aiohttp 3.14.3");
+    assert.ok(pluginIdx > syncIdx, "expected the plugin workspace sync after uv sync");
+    assert.ok(installIdx > pluginIdx, "expected the override after the plugin workspace sync, which would otherwise re-resolve aiohttp");
     assert.ok(checkIdx > installIdx, "expected the version check after the override");
     assert.ok(runtimeIdx > checkIdx, "expected the override and its check before the runtime stage");
   });
@@ -280,7 +281,7 @@ describe("docker/bot-runtime/Dockerfile", () => {
     // the runtime stage copies the tree.
     const syncIdx = dockerfileInstructions.indexOf("uv sync --frozen");
     const smokeIdx = dockerfileInstructions.indexOf(smoke[0]);
-    const runtimeIdx = dockerfileInstructions.indexOf("FROM python:3.13-slim AS runtime");
+    const runtimeIdx = dockerfileInstructions.indexOf("FROM python:3.14-slim AS runtime");
     assert.ok(syncIdx > 0 && smokeIdx > syncIdx, "expected the import smoke after uv sync");
     assert.ok(runtimeIdx > smokeIdx, "expected the import smoke in the builder stage");
   });
@@ -313,13 +314,13 @@ describe("docker/bot-runtime/Dockerfile", () => {
     assert.match(dockerfile, /^COPY tests\/ \/tmp\/patch-tests\/$/m);
     const syncIdx = dockerfileInstructions.indexOf("uv sync --frozen");
     const runIdx = dockerfileInstructions.indexOf(run[0]);
-    const runtimeIdx = dockerfileInstructions.indexOf("FROM python:3.13-slim AS runtime");
+    const runtimeIdx = dockerfileInstructions.indexOf("FROM python:3.14-slim AS runtime");
     assert.ok(runIdx > syncIdx, "expected the regression run after uv sync");
     assert.ok(runtimeIdx > runIdx, "expected the regression run in the builder stage");
     // The builder stage's test copy must not reach the runtime image. Index into the raw
     // Dockerfile here: the instruction list above has its comment lines stripped, so its
     // offsets do not address the file it came from.
-    assert.doesNotMatch(dockerfile.slice(dockerfile.indexOf("FROM python:3.13-slim AS runtime")), /patch-tests/);
+    assert.doesNotMatch(dockerfile.slice(dockerfile.indexOf("FROM python:3.14-slim AS runtime")), /patch-tests/);
   });
 
   it("rejects undefined names in patched modules like missing SessionStore in run_startup.py (#1381, OPE-10755)", () => {
@@ -344,7 +345,7 @@ describe("docker/bot-runtime/Dockerfile", () => {
   });
 
   it("ships uv in the runtime stage too, so a still-permitted lazy install (an opt-in backend) actually works", () => {
-    const runtimeStage = dockerfile.slice(dockerfile.indexOf("FROM python:3.13-slim AS runtime"));
+    const runtimeStage = dockerfile.slice(dockerfile.indexOf("FROM python:3.14-slim AS runtime"));
     assert.match(runtimeStage, /^COPY --chmod=0755 --from=uv_bin \/usr\/local\/bin\/uv \/usr\/local\/bin\/uvx/m);
   });
 
@@ -356,13 +357,13 @@ describe("docker/bot-runtime/Dockerfile", () => {
   });
 
   it("keeps Cargo build output in the durable per-agent cache, not a workspace", () => {
-    const runtimeStage = dockerfile.slice(dockerfile.indexOf("FROM python:3.13-slim AS runtime"));
+    const runtimeStage = dockerfile.slice(dockerfile.indexOf("FROM python:3.14-slim AS runtime"));
     assert.match(runtimeStage, /^\s*CARGO_TARGET_DIR=\/data\/hermes\/\.cache\/cargo-target(?:\s|$)/m);
     assert.doesNotMatch(runtimeStage, /^\s*CARGO_TARGET_DIR=\/(?:workspace|scratch)(?:\/|\s|$)/m);
   });
 
   it("strips the clone's .git history before the runtime stage copies /opt/hermes-src", () => {
-    const builderStageEnd = dockerfile.indexOf("FROM python:3.13-slim AS runtime");
+    const builderStageEnd = dockerfile.indexOf("FROM python:3.14-slim AS runtime");
     assert.ok(builderStageEnd > 0, "expected a runtime stage after the builder stage");
     // The removal must happen in the builder stage (i.e. before this index),
     // strictly before the runtime stage's COPY --from=builder picks the
@@ -383,7 +384,8 @@ describe("docker/bot-runtime/patches/", () => {
     const patchesDir = path.join(IMAGE_DIR, "patches");
     const files = fs.readdirSync(patchesDir).filter((f) => f.endsWith(".patch"));
     assert.ok(files.some((f) => f.includes("secret")), "expected a session-snapshot secret-redaction patch");
-    assert.ok(files.some((f) => f.includes("state-read")), "expected a state-read retry patch");
+    // state-read retry (04) dropped at v0.23.1: upstream carries `_read_retrying_ioerr`.
+    assert.ok(!files.some((f) => f.includes("state-read")), "no state-read patch may remain: upstream carries it");
     assert.ok(files.some((f) => f.includes("gateway-executor")), "expected a gateway executor pool patch");
     assert.ok(files.some((f) => f.includes("fd-probe")), "expected a state-db descriptor-probe patch");
     // The two hindsight patches are gone on purpose: v2026.9.24 removed the in-tree provider
@@ -447,39 +449,20 @@ describe("docker/bot-runtime/patches/", () => {
     }
   });
 
-  it("retries a state-database read that finds the database locked, with fixed bounds", () => {
-    // Two concurrent runs of one agent (a writer and a session-history reader) made the
-    // reader fail with "database is locked": the read path replayed only "disk I/O error".
-    const patch = fs.readFileSync(
-      path.join(IMAGE_DIR, "patches/04-state-read-retry-when-locked.patch"),
-      "utf8",
-    );
-    assert.match(patch, /^\+\+\+ b\/hermes_state\.py$/m);
-    assert.match(patch, /^\+_READ_LOCKED_MARKERS = \("database is locked", "database is busy"\)$/m);
-    assert.match(patch, /^\+_READ_LOCKED_RETRY_ATTEMPTS = 15$/m);
-    assert.match(patch, /^\+_READ_LOCKED_RETRY_CAP_S = 1\.0$/m);
-    // The wait is jittered and bounded, the disk-I/O-error budget is untouched, and any
-    // other OperationalError is still raised at once.
-    assert.match(patch, /^\+.*\(0\.5 \+ random\.random\(\)\)/m);
-    assert.match(patch, /^\+.*_DISK_IO_ERROR_MARKER not in err/m);
-    assert.match(patch, /^\+.*raise$/m);
-    // No new environment knobs: every such variable would need its own documented setting.
-    assert.doesNotMatch(patch, /^\+.*os\.environ/m);
-  });
-
   it("sizes the gateway's default executor pool, overridable by one documented variable", () => {
     // With the stock asyncio pool every live run holds one worker for its whole life, so
-    // create calls on the board's hermes_gateway adapter timed out behind them.
+    // create calls on the board's hermes_gateway adapter timed out behind them. At v0.23.1
+    // the sizing lives in _start_gateway_runtime (gateway/run_bootstrap.py), right after
+    // HERMES_EXEC_ASK is defaulted — still before anything queues onto the stock pool.
     const patch = fs.readFileSync(
       path.join(IMAGE_DIR, "patches/05-gateway-executor-pool.patch"),
       "utf8",
     );
-    assert.match(patch, /^\+\+\+ b\/gateway\/run\.py$/m);
+    assert.match(patch, /^\+\+\+ b\/gateway\/run_bootstrap\.py$/m);
+    assert.match(patch, /HERMES_EXEC_ASK/, "sizing must sit beside the exec-ask default in run_bootstrap");
     assert.match(patch, /^\+.*set_default_executor\(/m);
     assert.match(patch, /^\+.*max_workers=int\(os\.environ\.get\("HERMES_GATEWAY_EXECUTOR_WORKERS", "64"\)\)/m);
-    // It must be the first thing start_gateway does — anything before it could already have
-    // queued work onto the stock pool.
-    assert.match(patch, /^@@ -\d+,\d+ \+5796,\d+ @@/m);
+    assert.match(patch, /myrmidon\(G1\)/);
   });
 
   it("documents every patch in patches/README.md and closes the reference-checkout gap", () => {
@@ -520,7 +503,7 @@ describe("docker/bot-runtime/patches/", () => {
     // the first variant stage) ships no npm and no browser.
     // The main image carries Node 24 only for the workspace mechanism (/opt/node24, from the
     // node24_dist helper stage, which is excluded here): no npm, no browser.
-    const mainImageInstructions = dockerfileInstructions.slice(dockerfileInstructions.indexOf("FROM python:3.13-slim AS runtime"));
+    const mainImageInstructions = dockerfileInstructions.slice(dockerfileInstructions.indexOf("FROM python:3.14-slim AS runtime"));
     assert.ok(mainImageInstructions.length > 0, "expected the runtime stage in the main image");
     assert.doesNotMatch(mainImageInstructions, /chromium|playwright|agent-browser|nodejs|\bnpm\b|\bnpx\b/i);
     const variants = dockerfile.slice(variantStart).split("\n").filter((l) => !l.trim().startsWith("#")).join("\n");
@@ -771,8 +754,8 @@ describe("myrmidon-bot-image.yml", () => {
     // myrmidon(1.6.5 BOT-DISK-H, D9): the mechanism lives in the base `runtime` stage, so
     // runtime-node and runtime-dev inherit it; the dev stage must not repeat it.
     const devStage = flat.slice(
-      flat.indexOf("FROM python:3.13-slim AS runtime\n"),
-      flat.indexOf("FROM python:3.13-slim AS node_dist"),
+      flat.indexOf("FROM python:3.14-slim AS runtime\n"),
+      flat.indexOf("FROM python:3.14-slim AS node_dist"),
     );
     const devOnlyStage = flat.slice(flat.indexOf("FROM runtime AS runtime-dev"));
 

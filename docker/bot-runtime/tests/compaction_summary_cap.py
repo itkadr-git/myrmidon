@@ -1,19 +1,21 @@
 #!/usr/bin/env python3
-"""Behaviour regression for 26-compaction-summary-cap.patch and 27-compaction-keep-prefix.patch.
+"""Behaviour regression for 32-compaction-summary-9-sections.patch and 27-compaction-keep-prefix.patch
+(patch 26 dropped at v0.23.1: upstream carries the summary-size cap itself, in agent/context_economy.py,
+but deliberately sends no max_tokens wire cap on the summary call).
 
 A compaction already breaks the provider's prompt cache, so everything that makes it small and keeps
 the part in front of the messages unchanged is free:
 
-* the summarizer is asked for at most context_economy.compaction_summary_max_chars (default 8000)
-  characters: the token target is capped, the "detailed session log" section is not requested, the prompt
-  says so, the call carries compaction_summary_max_tokens as its output limit, and the text that comes
-  back is held to the cap at a line end;
+* the summarizer's token target is held to context_economy.compaction_summary_max_chars (default 8000)
+  characters (capped_summary_tokens, upstream since v0.23.1), the size instruction names the character
+  cap, and the text that comes back is held to the cap at a line end;
 * a summary that stopped on the output limit (finish_reason=length) is kept - cut at a line end and
   marked - instead of failing the compression (compaction_accept_truncated=0 gives the failure back);
 * the mechanical sections appended to the summary are bounded (anchor index, verbatim user messages) and
   board wake packages are not quoted into them;
-* the system prompt and the tool schemas are not rebuilt at the compaction (compaction_keep_prefix), so
-  what the provider cached in front of the messages is still the prefix after it.
+* the system prompt and the tool schemas are not rebuilt at the compaction (compaction_keep_prefix, the
+  27 patch, in agent/conversation_compression.py), so what the provider cached in front of the messages
+  is still the prefix after it.
 
     python3 tests/compaction_summary_cap.py [hermes-checkout-dir]
 """
@@ -85,21 +87,19 @@ def main(argv):
 
     # ---- the prompt -----------------------------------------------------------------------------
     sections = cc.ContextCompressor._summary_template_sections(cc._SECTION_INSTRUCTIONS[True], 2000, "")
-    check("prompt: the size target names the character limit", "Target ~2000 tokens." in sections
-          and "HARD LIMIT" in sections and "8000 characters" in sections)
+    check("prompt: the size target carries the character-cap instruction",
+          "Target ~2000 tokens." in sections and ce.summary_cap_instruction() in sections)
     fake = SimpleNamespace(
         _previous_summary=None, tail_mode="lean",
         _summary_template_sections=cc.ContextCompressor._summary_template_sections,
         _bound_summary_input=cc.ContextCompressor._bound_summary_input,
     )
     prompt = cc.ContextCompressor._build_summary_prompt(fake, "TURNS", 2000, None, "", True)
-    check("prompt: no detailed session log is requested under the cap", "Detailed Session Log" not in prompt
-          and "HARD LIMIT" in prompt)
+    check("prompt: the cap instruction is in the assembled prompt", ce.summary_cap_instruction() in prompt)
     os.environ[cap_env] = "0"
     sections_off = cc.ContextCompressor._summary_template_sections(cc._SECTION_INSTRUCTIONS[True], 2000, "")
-    prompt_off = cc.ContextCompressor._build_summary_prompt(fake, "TURNS", 2000, None, "", True)
-    check("prompt: cap 0 gives the upstream prompt back", "HARD LIMIT" not in sections_off
-          and "Target ~2000 tokens. Be CONCRETE" in sections_off and "Detailed Session Log" in prompt_off)
+    check("prompt: cap 0 drops the cap instruction", ce.summary_cap_instruction() == ""
+          and "Target ~2000 tokens." in sections_off)
     os.environ.pop(cap_env)
 
     # ---- the summarizer call --------------------------------------------------------------------
@@ -125,7 +125,7 @@ def main(argv):
 
     try:
         out = call()
-        check("call: the output limit is sent", captured.get("max_tokens") == 6144)
+        check("call: no max_tokens wire cap is sent (upstream v0.23.1 policy)", "max_tokens" not in captured)
         check("call: a long summary is held to the cap at a line end",
               len(out) <= 8000 and out.endswith("recover details with session_search]") and out.startswith("## Goal\n- item 0:")
               and "\n- item" in out[-200:])
@@ -157,7 +157,7 @@ def main(argv):
         os.environ[cap_env] = "0"
         state.update(finish="stop", text=body)
         out = call()
-        check("call: cap 0 sends no output limit and keeps the whole text", "max_tokens" not in captured and out == body.strip())
+        check("call: cap 0 keeps the whole text", out == body.strip())
         os.environ.pop(cap_env)
     finally:
         cc.call_llm = real_call_llm

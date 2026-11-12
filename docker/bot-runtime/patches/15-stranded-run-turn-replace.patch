@@ -1,8 +1,8 @@
 diff --git a/agent/session_persistence.py b/agent/session_persistence.py
-index 23f2d15..2228e41 100644
+index 76237a3407..1cfb4eaacb 100644
 --- a/agent/session_persistence.py
 +++ b/agent/session_persistence.py
-@@ -165,6 +165,78 @@ def adopt_unanswered_turn(history: List[Dict[str, Any]], query: Any, agent: Any)
+@@ -187,6 +187,78 @@ def adopt_unanswered_turn(history: list[dict[str, Any]], query: Any, agent: Any)
      return True
  
  
@@ -82,18 +82,16 @@ index 23f2d15..2228e41 100644
  
  def _db_flush_seed_ids(agent) -> set:
 diff --git a/gateway/platforms/api_server_runs.py b/gateway/platforms/api_server_runs.py
-index fc389b3..b15e667 100644
+index 119819145b..9e5685fc05 100644
 --- a/gateway/platforms/api_server_runs.py
 +++ b/gateway/platforms/api_server_runs.py
-@@ -774,6 +774,12 @@ def _run_agent_sync(self, run: _RunLaunch, agent, approval_notify, *, _api_serve
-             _api_server._publish_turn_process_ownership(agent, effective_task_id)
-             # Passed only when set: a human turn keeps today's call shape.
+@@ -1162,7 +1162,10 @@ def _run_agent_sync(self, run: _RunLaunch, agent, approval_notify, *, _api_serve
              author_kwargs = {"turn_author": run.turn_author} if run.turn_author is not None else {}
-+            if run.session_history_delivery:
-+                # myrmidon(G1): history came from the session store; a prompt stranded there by a failed
+             if run.session_history_delivery:
+                 # myrmidon(G1): history came from the session store; a prompt stranded there by a failed
 +                # run is superseded by this run's prompt instead of piling up one user row per retry.
 +                from agent.session_persistence import replace_stranded_run_turn
-+
+ 
 +                replace_stranded_run_turn(run.conversation_history, run.user_message, agent)
              r = agent.run_conversation(
                  user_message=run.user_message, conversation_history=run.conversation_history,

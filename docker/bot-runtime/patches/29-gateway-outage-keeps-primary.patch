@@ -1,29 +1,6 @@
-diff --git a/agent/conversation_loop.py b/agent/conversation_loop.py
-index fb79d62..48ceb3f 100644
---- a/agent/conversation_loop.py
-+++ b/agent/conversation_loop.py
-@@ -17,6 +17,7 @@ from typing import Any, Dict, List, Optional
- 
- from agent.codex_responses_adapter import _summarize_user_message_for_log
- from agent.fast_mode import begin_turn as begin_fast_mode_turn
-+from agent.gateway_outage import probe_primary_runtime
- from agent.message_metadata import append_message
- from agent.message_sanitization import _repair_tool_call_arguments, _sanitize_surrogates
- from agent.model_metadata import MINIMUM_CONTEXT_LENGTH, _estimate_tools_tokens_rough
-@@ -1546,6 +1547,10 @@ def _run_conversation_turn(
-     while (s.api_call_count < agent.max_iterations and agent.iteration_budget.remaining > 0) or agent._budget_grace_call:
-         if _run_phase(begin_iteration, agent, s).action == "break":
-             break
-+        # myrmidon(G1): on a fallback, go back to the primary every few model calls; a probe that
-+        # fails walks the fallback chain again through the ordinary error path.
-+        if probe_primary_runtime(agent):
-+            s.active_system_prompt = _sync_failover_system_message(agent, None, s.active_system_prompt)
-         _run_phase(prepare_iteration, agent, s)
-         _run_phase(assemble_api_request, agent, s)
-         _pg = _run_phase(run_preflight_gate, agent, s)
 diff --git a/agent/gateway_outage.py b/agent/gateway_outage.py
 new file mode 100644
-index 0000000..9f95240
+index 0000000000..9f952405ae
 --- /dev/null
 +++ b/agent/gateway_outage.py
 @@ -0,0 +1,193 @@
@@ -220,19 +197,45 @@ index 0000000..9f95240
 +    if restored:
 +        logger.info("Fallback active for %d calls: trying the primary model again", calls)
 +    return restored
+diff --git a/agent/conversation_loop.py b/agent/conversation_loop.py
+index 877803ba93..362dfe7300 100644
+--- a/agent/conversation_loop.py
++++ b/agent/conversation_loop.py
+@@ -18,7 +18,8 @@ from typing import Any, Dict, List, Optional
+ from agent.agent_runtime_helpers_placeholders import hidden_interrupt_placeholder_row
+ from agent.codex_responses_adapter import _summarize_user_message_for_log
+ from agent.fast_mode import begin_turn as begin_fast_mode_turn
+-from agent.message_metadata import append_message, without_persistence_fields
++from agent.gateway_outage import probe_primary_runtime
++from agent.message_metadata import append_message
+ from agent.message_sanitization import _repair_tool_call_arguments, _sanitize_surrogates
+ from agent.model_metadata import MINIMUM_CONTEXT_LENGTH, _estimate_tools_tokens_rough
+ from agent.process_bootstrap import _install_safe_stdio
+@@ -1753,6 +1754,10 @@ def _run_conversation_turn(
+     ):
+         if _run_phase(begin_iteration, agent, s).action == "break":
+             break
++        # myrmidon(G1): on a fallback, go back to the primary every few model calls; a probe that
++        # fails walks the fallback chain again through the ordinary error path.
++        if probe_primary_runtime(agent):
++            s.active_system_prompt = _sync_failover_system_message(agent, None, s.active_system_prompt)
+         _run_phase(prepare_iteration, agent, s)
+         _run_phase(assemble_api_request, agent, s)
+         _pg = _run_phase(run_preflight_gate, agent, s)
 diff --git a/agent/turn_api_error.py b/agent/turn_api_error.py
-index 376098d..22b66aa 100644
+index 6c235d2b5f..03b27bf890 100644
 --- a/agent/turn_api_error.py
 +++ b/agent/turn_api_error.py
-@@ -16,6 +16,7 @@ import time
- from typing import Any, Dict, Optional
+@@ -17,7 +17,7 @@ from typing import Any, Dict, Optional
  
+ from agent.api_error_summary import is_provider_stream_parse_error
  from agent.error_classifier import RETRYABLE_CLIENT_REASONS, FailoverReason, classify_api_error
+-from agent.route_verdicts import route_visit
 +from agent.gateway_outage import outage_wait_cap
  from agent.turn_overflow import recover_from_overflow
  from agent.turn_recovery import (
-     _NONRETRYABLE_LABELS, abort_turn_on_interrupt, compute_error_backoff, interruptible_backoff_sleep,
-@@ -391,7 +392,7 @@ def settle_unrecovered_error(
+     _NONRETRYABLE_LABELS, abort_turn_on_interrupt, compute_error_backoff, free_tier_cooldown_ends_turn,
+@@ -420,7 +420,7 @@ def settle_unrecovered_error(
      wait_time = compute_error_backoff(
          agent, api_error, retry_count=retry_count, max_retries=max_retries,
          is_rate_limited=is_rate_limited, is_zai_coding_overload=_is_zai_coding_overload,
@@ -242,7 +245,7 @@ index 376098d..22b66aa 100644
      # Same preserve-redirect rule as the invalid-response wait: a steering correction
      # must survive backoff, not die as "Operation interrupted".
 diff --git a/agent/turn_recovery.py b/agent/turn_recovery.py
-index d757a74..4ca8dce 100644
+index 9c0cc753f8..639651d69a 100644
 --- a/agent/turn_recovery.py
 +++ b/agent/turn_recovery.py
 @@ -19,6 +19,7 @@ from typing import Any, Dict, List, Optional, Tuple
@@ -253,7 +256,7 @@ index d757a74..4ca8dce 100644
  from agent.model_metadata import is_output_cap_error, parse_available_output_tokens_from_error
  from agent.retry_utils import is_zai_coding_overload_error, zai_coding_overload_retry_ceiling
  from agent.error_classifier import FailoverReason, classify_api_error
-@@ -1331,7 +1332,7 @@ def reset_hint(api_error: Exception) -> str:
+@@ -1462,7 +1463,7 @@ def reset_hint(api_error: Exception) -> str:
  
  def compute_error_backoff(
      agent: Any, api_error: Exception, *, retry_count: int, max_retries: int, is_rate_limited: bool,
@@ -261,8 +264,8 @@ index d757a74..4ca8dce 100644
 +    is_zai_coding_overload: bool, base_url: Any, model: Any, wait_cap: Optional[float] = None,
  ) -> float:
      """Pick the wait before the next API retry and announce it. Retry-After wins for
-     rate limits and any other retryable error (capped at 600s: Anthropic Tier 1 buckets
-@@ -1374,6 +1375,9 @@ def compute_error_backoff(
+     rate limits and any other retryable error (capped at ``RETRY_AFTER_CAP_S``); otherwise
+@@ -1491,6 +1492,9 @@ def compute_error_backoff(
          wait_time, _backoff_policy = adaptive_rate_limit_backoff(
              retry_count, base_url=str(base_url), model=model, error=api_error, default_wait=wait_time,
          )
@@ -270,9 +273,9 @@ index d757a74..4ca8dce 100644
 +    if wait_cap is not None:
 +        wait_time = min(wait_time, wait_cap)
      _reset = reset_hint(api_error) if _adaptive else ""
-     _wait_reason = "Provider overloaded" if is_zai_coding_overload and not is_rate_limited else "Rate limited"
-     if _adaptive:
-@@ -1823,10 +1827,17 @@ def route_classified_error(
+     _free_busy = is_rate_limited and on_free_model(agent, base_url)
+     _wait_reason = ("The free model is busy" if _free_busy
+@@ -1915,10 +1919,17 @@ def route_classified_error(
      _is_zai_coding_overload = is_zai_coding_overload_error(base_url=str(base_url), model=model, error=api_error)
      if _is_zai_coding_overload:
          max_retries = max(max_retries, zai_coding_overload_retry_ceiling())
@@ -286,13 +289,13 @@ index d757a74..4ca8dce 100644
      _should_fallback = (
          (is_rate_limited and _wrapped_output_cap_budget is None)
          or (_is_transport_failure and retry_count >= 2)
--    )
+-    ) and not (getattr(classified, "error_context", None) or {}).get("usage_window")  # never switch models on a plan limit
 +    ) and not _gateway_outage
      if _should_fallback and agent._fallback_index < len(agent._fallback_chain):
          # No eager fallback while credential pool rotation may recover. Exception: an
          # upstream-aggregator 429 — the pool can't help, always fall back.
 diff --git a/agent/turn_retry_state.py b/agent/turn_retry_state.py
-index f5f2925..6d2418a 100644
+index b2f96489ac..9625bf6097 100644
 --- a/agent/turn_retry_state.py
 +++ b/agent/turn_retry_state.py
 @@ -4,6 +4,7 @@ Dependency-free so it imports without a cycle."""
@@ -303,7 +306,7 @@ index f5f2925..6d2418a 100644
  
  
  @dataclass
-@@ -46,6 +47,13 @@ class TurnRetryState:
+@@ -50,6 +51,13 @@ class TurnRetryState:
      auth_failover_attempted: bool = False
      # Post-exhaustion auto-recovery cycles spent on this API call (agent.auto_recovery_cycles caps it).
      auto_recovery_cycles_used: int = 0

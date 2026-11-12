@@ -721,7 +721,7 @@ describe("botd hygiene: cargo target quota (OPE-12110)", () => {
 
 describe("botd hygiene: CARGO_TARGET_DIR points outside the working trees (OPE-12110)", () => {
   const dockerfile = fs.readFileSync(new URL("../../../docker/bot-runtime/Dockerfile", import.meta.url), "utf8");
-  const runtimeStage = dockerfile.slice(dockerfile.indexOf("FROM python:3.13-slim AS runtime"));
+  const runtimeStage = dockerfile.slice(dockerfile.indexOf("FROM python:3.14-slim AS runtime"));
   const envValue = /^\s*CARGO_TARGET_DIR=(\S+)/m.exec(runtimeStage)?.[1];
 
   it("the runtime image sets CARGO_TARGET_DIR, so cargo never creates target/ in a checkout", () => {

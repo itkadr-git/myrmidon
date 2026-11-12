@@ -25,23 +25,23 @@ Docker socket, no host mounts, and no media tools. (The optional Node.js variant
   asserts that `/opt/hermes-src/.venv/bin/python` resolves outside `/root`
   and imports `hermes_state`.
 - `hermes-agent`, pinned to a git tag (`HERMES_VERSION`/`HERMES_GIT_REF`
-  build args, default `0.21.5` / `v2026.9.24`), installed **editable** from
+  build args, default `0.23.1` / `v0.23.1`), installed **editable** from
   a clean clone of the author's repository `https://github.com/NousResearch/hermes-agent`
   at the pinned commit (`HERMES_GIT_SHA`); our own hermes changes live in
   `docker/bot-runtime/patches/` in this repository — see
-  "Why editable, not pip install" below. hermes tags releases by date
-  (`vYYYY.M.D`); `v2026.9.24` is the tag we confirmed (via the GitHub API
-  and `git ls-remote --tags`, checking `pyproject.toml` on every recent
-  release tag) actually carries `version = "0.21.5"` — the two numbers do not
-  share a scheme, so a future version bump needs the same lookup, not an
-  assumed `v<version>`.
+  "Why editable, not pip install" below. hermes used to tag releases by
+  date (`vYYYY.M.D`) with a separate `version` number in `pyproject.toml`;
+  from v0.22.0 the release tags are semver (`v0.x.y`) and carry the version
+  in the annotated tag object's JSON body (`pyproject.toml` keeps a
+  placeholder `version = "0.0.0"`), so the build's version check parses the
+  tag object, not `pyproject.toml`.
 - `aiohttp`, pinned to the exact version hermes' own optional extras use at
-  this release (`HERMES_AIOHTTP_VERSION`, default `3.14.3`).
+  this release (`HERMES_AIOHTTP_VERSION`, default `3.14.5`).
   `gateway/platforms/api_server.py` is built on `aiohttp.web`, but aiohttp
   is not one of hermes' core dependencies — most of the extras that pull it
   in also pull in `python-telegram-bot`/`discord.py`/`slack-bolt`, which
   this image does not need. `pyproject.toml`'s `sms` extra resolves to
-  exactly `aiohttp==3.14.3` and nothing else, so the build installs through
+  exactly `aiohttp==3.14.5` and nothing else, so the build installs through
   `uv sync --frozen --extra sms --extra mcp` — the same
   hash-verified `uv.lock` path every other dependency in this image goes
   through, rather than a separate unlocked `uv pip install aiohttp==...`
@@ -80,7 +80,7 @@ Docker socket, no host mounts, and no media tools. (The optional Node.js variant
   `docs/myrmidon/hermes-deltas.md` for the delta list and its upstream
   offers).
 - Bundled skills (`skills/` in the hermes source tree — 14 categories at
-  `0.21.5`/`v2026.9.24`), read-only. They are **not** shipped via PyPI package-data
+  `0.23.1`/`v0.23.1`), read-only. They are **not** shipped via PyPI package-data
   (hermes' `pyproject.toml` package-data list does not include `skills/**`
   at all — see "Why editable, not pip install"); the editable install
   keeps the full source tree in the image, which is what
@@ -413,14 +413,16 @@ runtime by `hermes_cli/plugin_catalog.py`.
 ## Patches
 
 `patches/*.patch` are applied (`git apply`) against the cloned tag before
-`uv sync`. Three are carried at `v2026.9.24`: a session-snapshot secret
-redaction (02), a bounded retry of state-database reads that find the database
-locked (04), and the gateway's asyncio default-executor pool size (05). The two
-hindsight patches this image used to carry (01, 03) are gone: 0.21.5 removed
-the provider from the hermes tree, the catalog plugin already carries the
+`uv sync`. At `v0.23.1` the image carries 24 patches (the numbered files in
+`patches/`; `patches/README.md` is the deciding list). The two hindsight
+patches this image used to carry (01, 03) are gone: 0.21.5 removed the
+provider from the hermes tree, the catalog plugin already carries the
 `retain_async` fix, and what it does not carry yet is tracked as its own delta
-with an upstream offer — see `patches/README.md`,
-`docs/myrmidon/hermes-deltas.md` and `scripts/myrmidon/hermes-upstream/`.
+with an upstream offer. The v0.23.1 rebase dropped seven more patches as
+upstream parity (04, 18, 21, 23, 26, 29, 31 — see the "Dropped at the
+v0.23.1 rebase" section of `patches/README.md`) — see `patches/README.md`,
+`docs/myrmidon/hermes-deltas.md` and `scripts/myrmidon/hermes-upstream/` for
+the deciding lists.
 
 A reference checkout carries further local modifications. A plain tree diff of
 it against the pinned tag (no repository history is needed) gives a closed

@@ -1,5 +1,5 @@
 diff --git a/tools/delegation_live_log.py b/tools/delegation_live_log.py
-index bd3e9d0c19..bfe475e8a7 100644
+index 2e510b058e..ca0e77e7a5 100644
 --- a/tools/delegation_live_log.py
 +++ b/tools/delegation_live_log.py
 @@ -12,11 +12,14 @@ from __future__ import annotations
