@@ -612,7 +612,7 @@
       "probe": {
         "source": "hermes",
         "path": "gateway/platforms/api_server_run_idempotency.py",
-        "upstreamMarker": "in_transaction|_write_locked|rollback\\(\\)[\\s\\S]*def update_status"
+        "upstreamMarker": "in_transaction|_write_locked|def update_status[\\s\\S]*rollback\\(\\)"
       }
     }
   ]

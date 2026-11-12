@@ -71,10 +71,22 @@ def main(argv):
                 failures.append(f"{name}: lookup after the failure raised {exc}")
             store._conn = real
             store.close()
+        # A transaction left open on the connection (by any path) is rolled back before the
+        # next BEGIN IMMEDIATE instead of failing it.
+        store = store_cls(str(Path(tmp, "left-open.db")))
+        store.reserve("scope", "key-1", "fp", "run-1", {"status": "running"})
+        store._conn.execute("UPDATE run_idempotency SET updated_at = updated_at")
+        try:
+            outcome, _ = store.lookup("scope", "key-1", "fp")
+            if outcome != "reused":
+                failures.append(f"left-open: lookup returned {outcome!r}")
+        except sqlite3.OperationalError as exc:
+            failures.append(f"left-open: lookup raised {exc}")
+        store.close()
     if failures:
         print("run idempotency transaction regression FAILED:\n- " + "\n- ".join(failures))
         return 1
-    print("run idempotency transaction regression: ok (3 write paths)")
+    print("run idempotency transaction regression: ok (3 write paths + a transaction left open)")
     return 0
 
 
