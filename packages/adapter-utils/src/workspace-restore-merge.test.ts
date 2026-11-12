@@ -123,9 +123,15 @@ describe("workspace restore merge", () => {
     }
     const baseline = await captureDirectorySnapshot(targetDir, { exclude: [] });
 
+    // The source carries the full tree minus file-0003, so exactly one path
+    // is a deletion candidate and two paths are changed copies.
+    for (let index = 0; index < FILE_COUNT; index += 1) {
+      const name = `file-${String(index).padStart(4, "0")}.txt`;
+      if (index === 3) continue;
+      await writeFile(path.join(sourceDir, name), `content ${index}\n`, "utf8");
+    }
     await writeFile(path.join(sourceDir, "file-0001.txt"), "changed one\n", "utf8");
     await writeFile(path.join(sourceDir, "file-0002.txt"), "changed two\n", "utf8");
-    // file-0003.txt is deleted from the source → must be removed from target.
 
     // Count the filesystem reads the merge performs on target paths. The
     // point-check of a deleted path costs one `lstat` on that path; the
@@ -191,10 +197,13 @@ describe("workspace restore merge", () => {
     await mkdir(sourceBDir, { recursive: true });
 
     // Seed the target so the two merges have disjoint real work and both must
-    // succeed while contending on the same merge lock.
+    // succeed while contending on the same merge lock. Each source carries the
+    // shared baseline file unchanged, so neither merge treats it as deleted.
     await writeFile(path.join(targetDir, "shared.txt"), "baseline\n", "utf8");
     const baseline = await captureDirectorySnapshot(targetDir, { exclude: [] });
 
+    await writeFile(path.join(sourceADir, "shared.txt"), "baseline\n", "utf8");
+    await writeFile(path.join(sourceBDir, "shared.txt"), "baseline\n", "utf8");
     await writeFile(path.join(sourceADir, "a-only.txt"), "from A\n", "utf8");
     await writeFile(path.join(sourceBDir, "b-only.txt"), "from B\n", "utf8");
 
@@ -296,6 +305,28 @@ describe("workspace restore merge", () => {
       previousInstanceId = process.env.PAPERCLIP_INSTANCE_ID;
       process.env.PAPERCLIP_HOME = homeDir;
       process.env.PAPERCLIP_INSTANCE_ID = instanceId;
+    }
+
+    // Returns true once `promise` has settled (resolved or rejected), polling
+    // every 25 ms for at most `maxMs` of real time. Lets a test assert "still
+    // pending" without depending on the retry loop's sleep cadence under a
+    // starved event loop. Uses `performance.now()` because the lock-wait test
+    // mocks `Date.now()`.
+    async function waitForSettled(promise: Promise<unknown>, maxMs: number): Promise<boolean> {
+      let settled = false;
+      void promise.then(
+        () => {
+          settled = true;
+        },
+        () => {
+          settled = true;
+        },
+      );
+      const startedAt = performance.now();
+      while (!settled && performance.now() - startedAt < maxMs) {
+        await new Promise((resolve) => setTimeout(resolve, 25));
+      }
+      return settled;
     }
 
     afterEach(() => {
@@ -548,32 +579,28 @@ describe("workspace restore merge", () => {
 
       try {
         const attempt = withDirectoryMergeLock(targetDir, async () => "acquired");
+        void attempt.catch(() => {
+          /* observed via `settled` below; avoid unhandled-rejection noise */
+        });
+
         // 35 s of waiting must NOT time out (the old LOCK_STALE_MS wait did).
+        // Poll instead of sleeping a fixed interval so a starved CI event loop
+        // cannot flake the assertion.
         elapsedMs = 35_000;
-        await new Promise((resolve) => setTimeout(resolve, 300));
-        let settled = false;
-        void attempt.then(
-          () => {
-            settled = true;
-          },
-          () => {
-            settled = true;
-          },
-        );
-        await new Promise((resolve) => setTimeout(resolve, 0));
-        expect(settled).toBe(false);
+        const settledBeforeDeadline = await waitForSettled(attempt, 1_000);
+        expect(settledBeforeDeadline).toBe(false);
 
         // Past the 10 minute wait deadline the acquirer must throw the stable
-        // lock-timeout code.
+        // lock-timeout code. The retry loop notices the bumped clock on its
+        // next iteration, so poll for the rejection instead of sleeping.
         elapsedMs = 10 * 60 * 1000 + 1_000;
-        await new Promise((resolve) => setTimeout(resolve, 300));
         await expect(attempt).rejects.toMatchObject({
           code: WORKSPACE_RESTORE_LOCK_TIMEOUT_CODE,
         });
       } finally {
         dateNowSpy.mockRestore();
       }
-    });
+    }, 20_000);
 
     it("removes a lock whose owner pid is dead instead of waiting out the stale threshold", async () => {
       const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-restore-merge-"));
