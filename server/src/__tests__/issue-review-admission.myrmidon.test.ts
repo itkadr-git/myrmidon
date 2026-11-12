@@ -152,6 +152,35 @@ describeEmbeddedPostgres("myrmidon review admission atomic wake persistence", ()
     expect(readReviewRoutingSignals(companyId).filter((signal) => signal.issueId === issueId)).toHaveLength(0);
   });
 
+  it("raises no_reviewer when only an out-of-group reviewer has capacity", async () => {
+    const { companyId, actor } = await seedCompanyWithBoardAccess(ctx.db, "Review admission group isolation");
+    resetReviewRoutingSignals();
+    const authorAgentId = randomUUID();
+    await ctx.db.insert(agents).values({
+      id: authorAgentId,
+      companyId,
+      name: "adm-dev-eng-1",
+      metadata: { telegramGroup: "adm" },
+      role: "engineer",
+      status: "idle",
+      adapterType: "codex_local",
+      adapterConfig: {}, runtimeConfig: {}, permissions: {},
+    });
+    await ctx.db.insert(agents).values({
+      id: randomUUID(), companyId, name: "bbq-review-1", metadata: { telegramGroup: "bbq" },
+      role: "reviewer", status: "idle", adapterType: "codex_local",
+      adapterConfig: {}, runtimeConfig: {}, permissions: {},
+    });
+    const issueId = randomUUID();
+    await ctx.db.insert(issues).values({
+      id: issueId, companyId, title: "Out-of-group reviewer regression", status: "todo",
+      priority: "medium", createdByAgentId: authorAgentId,
+    });
+    const response = await request(routeApp(ctx.db, actor, issueRoutes))
+      .patch(`/api/issues/${issueId}`).send({ status: "in_review" });
+    expect(response.status).toBe(200);
+    expect(readReviewRoutingSignals(companyId).filter((signal) => signal.issueId === issueId)).toHaveLength(1);
+  });
   it("defers reviewer admission while exact PR-head CI is pending", async () => {
     const { companyId, actor } = await seedCompanyWithBoardAccess(ctx.db, "Review admission waits for exact-head CI");
     const reviewerAgentId = randomUUID();
