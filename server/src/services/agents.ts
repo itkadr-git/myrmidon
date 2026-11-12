@@ -1417,7 +1417,10 @@ export function agentService(
         try {
           await issueThreadInteractionService(tx as unknown as Db)
             .cancelPendingForDeletedAddressee(existing.companyId, id);
-          await tx.update(agents).set({ reportsTo: null }).where(eq(agents.reportsTo, id));
+          await tx
+            .update(agents)
+            .set({ reportsTo: null, updatedAt: new Date() })
+            .where(eq(agents.reportsTo, id));
           await tx
             .update(issues)
             .set({ assigneeAgentId: null, createdByAgentId: null })
