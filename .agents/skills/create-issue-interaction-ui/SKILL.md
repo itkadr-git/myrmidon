@@ -32,7 +32,7 @@ Do NOT install this on production Paperclip agents. This guide is for repository
 
 - Adding fields to an existing interaction kind that does not need a new
   payload schema. Patch the existing validators/UI in place instead.
-- Changing how Paperclip agents *call* interactions. Update `skills/paperclip`
+- Changing how Paperclip agents *call* interactions. Update `skills/myrmidon`
   or `references/api-reference.md`; that is agent guidance, not card work.
 - Building a non-thread UI (issue detail sidebar, project board widget, etc.).
   Those have their own component conventions.
@@ -46,7 +46,7 @@ Every issue-thread interaction has four moving parts:
 | Shared       | Kind constant, payload/result interfaces, Zod validators, exported types, shared-test coverage.    |
 | Server       | Service create/accept/reject/respond, staleness, supersede, idempotency, activity log, wake send. |
 | UI           | Card pending/resolved/stale states, fixtures, Storybook, issue-thread/IssueDetail wiring.         |
-| Helpers/Docs | CLI command, MCP tool, plugin SDK type+host+testing path, `skills/paperclip` guidance.            |
+| Helpers/Docs | CLI command, MCP tool, plugin SDK type+host+testing path, `skills/myrmidon` guidance.            |
 
 The four existing kinds are the canonical prior art. Pick the closest one and
 copy its plumbing rather than inventing parallel mechanics:
@@ -207,9 +207,9 @@ hand-writing JSON. Touch:
 
 Touch:
 
-- `skills/paperclip/SKILL.md` — add a row to the interaction-kinds table:
+- `skills/myrmidon/SKILL.md` — add a row to the interaction-kinds table:
   *when to use*, *when not to use*, plus a copyable payload example.
-- `skills/paperclip/references/api-reference.md` — full payload and result
+- `skills/myrmidon/references/api-reference.md` — full payload and result
   schemas, validation limits, create/respond bodies, error codes.
 
 The skills text is read by the runtime agents. Keep it concise — differentiate
@@ -253,7 +253,7 @@ If UI vitest fails with `act is not a function`, the shell is running with
 - [ ] Fixtures and Storybook entries exist for the new kind.
 - [ ] CLI, MCP, and plugin SDK helpers all accept the new payload shape and
       have test coverage.
-- [ ] `skills/paperclip/SKILL.md` and `references/api-reference.md` updated.
+- [ ] `skills/myrmidon/SKILL.md` and `references/api-reference.md` updated.
 - [ ] Focused test set above is green; CI gates pass.
 
 ## Anti-patterns observed in review
