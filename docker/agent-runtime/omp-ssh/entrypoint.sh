@@ -55,16 +55,21 @@ export npm_config_package_import_method=clone-or-copy
 PROFILE
 chmod 0644 /etc/profile.d/omp-runner-pnpm.sh
 
-# The shared pnpm METADATA cache (cache-dir: registry metadata, never the store;
-# npm keeps its own ~/.npm, whose variable is npm_config_cache): written only
-# when the compose file mounts /cache/pnpm and uid 1000 owns it. The mount is
-# the runners' own directory (<cache>/pnpm-omp on the host). The hermes bots
-# share <cache>/pnpm as uid 10001, and their prepare step re-owns it, so this
-# script never chowns a directory that belongs to somebody else: it fixes only
-# a root-owned one (docker creates a missing bind source as root), and a
-# directory of another uid is reported and left alone, with npm and pnpm on
-# their default per-runner cache. The file is removed first: /etc/profile.d
-# lives in the container layer, which survives a plain restart.
+# The shared download cache of the package managers (registry metadata for
+# pnpm, npm's tarball/_cacache cache for npm; never the pnpm store): written
+# only when the compose file mounts /cache/pnpm and uid 1000 owns it. npm and
+# pnpm read different variables — pnpm the cache-dir (npm_config_cache_dir,
+# it ignores npm_config_cache), npm the cache (npm_config_cache, which warns
+# about the unknown cache_dir but works) — so the shared directory is exported
+# under both names, and both tools' downloads land on the same shared mount
+# instead of a per-runner ~/.npm. The mount is the runners' own directory
+# (<cache>/pnpm-omp on the host). The hermes bots share <cache>/pnpm as uid
+# 10001, and their prepare step re-owns it, so this script never chowns a
+# directory that belongs to somebody else: it fixes only a root-owned one
+# (docker creates a missing bind source as root), and a directory of another
+# uid is reported and left alone, with npm and pnpm on their default
+# per-runner cache. The file is removed first: /etc/profile.d lives in the
+# container layer, which survives a plain restart.
 rm -f /etc/profile.d/omp-runner-cache.sh
 if [ -d /cache/pnpm ]; then
   cache_uid=$(stat -c %u /cache/pnpm)
@@ -74,12 +79,14 @@ if [ -d /cache/pnpm ]; then
   fi
   if [ "$cache_uid" = 1000 ]; then
     cat > /etc/profile.d/omp-runner-cache.sh <<'PROFILE'
-# Written by the omp-runner entrypoint (OPE-12722): the runners' shared pnpm
-# metadata cache on the bot data disk (pnpm reads npm_config_cache_dir).
+# Written by the omp-runner entrypoint (OPE-12722): the runners' shared
+# download cache on the bot data disk. pnpm reads it as cache-dir
+# (npm_config_cache_dir); npm reads it as cache (npm_config_cache).
 export npm_config_cache_dir=/cache/pnpm
+export npm_config_cache=/cache/pnpm
 PROFILE
     chmod 0644 /etc/profile.d/omp-runner-cache.sh
-    echo "omp-runner: pnpm metadata cache at /cache/pnpm"
+    echo "omp-runner: shared package download cache at /cache/pnpm"
   else
     echo "omp-runner: WARNING /cache/pnpm is owned by uid $cache_uid, not 1000; not used. Mount a directory of the runners' own (<cache>/pnpm-omp), not the bots' <cache>/pnpm" >&2
   fi

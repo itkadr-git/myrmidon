@@ -27,7 +27,10 @@
   Dockerfile ENV: sshd does not pass container environment variables to SSH
   sessions (`PermitUserEnvironment no`), so ENV never reached board-spawned
   commands. `omp-runner-cache.sh` sets `npm_config_cache_dir=/cache/pnpm`
-  (pnpm's metadata cache; only when uid 1000 owns the mount, a root-owned mount
+  (pnpm's metadata cache) and `npm_config_cache=/cache/pnpm` (npm's tarball and
+  `_cacache` download cache; the two tools read different variables, and
+  exporting both puts npm's downloads on the shared mount instead of a
+  per-runner `~/.npm`; only when uid 1000 owns the mount, a root-owned mount
   is fixed, any other owner is left alone with a warning);
   `omp-runner-pnpm.sh` sets
   `npm_config_store_dir=/workspace/.paperclip-runtime/pnpm-store` and
@@ -74,9 +77,12 @@
   Dockerfile: sshd не передаёт переменные окружения контейнера в SSH-сессии
   (`PermitUserEnvironment no`), поэтому ENV до команд, запущенных доской, не
   доходил. `omp-runner-cache.sh` задаёт `npm_config_cache_dir=/cache/pnpm`
-  (кеш метаданных pnpm; только когда монтирование принадлежит uid 1000, каталог
-  от root исправляется, у любого другого владельца — предупреждение, каталог не
-  трогается); `omp-runner-pnpm.sh` задаёт
+  (кеш метаданных pnpm) и `npm_config_cache=/cache/pnpm` (кеш загрузок npm —
+  тарболы и `_cacache`; инструменты читают разные переменные, и экспорт обоих
+  уводит загрузки npm с раздельного `~/.npm` на общее монтирование; только
+  когда монтирование принадлежит uid 1000, каталог от root исправляется, у
+  любого другого владельца — предупреждение, каталог не трогается);
+  `omp-runner-pnpm.sh` задаёт
   `npm_config_store_dir=/workspace/.paperclip-runtime/pnpm-store` и
   `npm_config_package_import_method=clone-or-copy`. Хранилище pnpm остаётся в
   томе workspace, одно на исполнителя, — рефлинк/жёсткая ссылка не проходит через

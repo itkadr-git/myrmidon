@@ -156,14 +156,16 @@ docker creates a missing bind source as root.
   deliberately not `<OMP_RUNNER_CACHE_DIR>/pnpm`: the hermes bots (uid 10001)
   mount that one and their prepare step re-owns it, so a runner that chowned it
   would flip the owner back and forth and break one side. The entrypoint writes
-  `/etc/profile.d/omp-runner-cache.sh` with `npm_config_cache_dir=/cache/pnpm`
-  (sshd does not pass container environment variables to logins, and profile.d
-  is what every board-spawned SSH command and agent shell sources) when uid 1000
-  owns the mount. It fixes only a root-owned directory (docker created it) and
-  never chowns one of another uid: it logs a warning and leaves the default
-  cache. `cache-dir` is **pnpm's** metadata cache (registry metadata, not the
-  packages, which go to the store); npm's own cache setting is `cache` and is
-  not changed, npm keeps `~/.npm`.
+  `/etc/profile.d/omp-runner-cache.sh` with both
+  `npm_config_cache_dir=/cache/pnpm` (pnpm's metadata cache) and
+  `npm_config_cache=/cache/pnpm` (npm's tarball and `_cacache` download cache;
+  pnpm and npm read different names — pnpm `cache-dir`, npm `cache` — so the
+  shared directory is exported under both and both tools' downloads land on
+  the shared mount instead of per-runner `~/.npm`) when uid 1000 owns the
+  mount (sshd does not pass container environment variables to logins, and
+  profile.d is what every board-spawned SSH command and agent shell sources).
+  It fixes only a root-owned directory (docker created it) and never chowns one
+  of another uid: it logs a warning and leaves the default caches.
 
 The pnpm **store** is on neither mount. The entrypoint writes
 `/etc/profile.d/omp-runner-pnpm.sh` with
@@ -244,11 +246,12 @@ progress (a recreate stops sshd and any run on it):
    The `workspace`, `home` and `hostkeys` volumes are kept, so the pinned host
    key is unchanged and the board's SSH environment needs no edit.
 5. Check: `docker logs <runner-name> 2>&1 | grep omp-runner:` shows
-   `pnpm metadata cache at /cache/pnpm` and `git mirrors at /cache/git: N repositories`
+   `shared package download cache at /cache/pnpm` and
+   `git mirrors at /cache/git: N repositories`
    (and no `WARNING /cache/pnpm is owned by uid`);
-   `docker exec -u paperclip <runner-name> sh -c '. /etc/profile; command -v git; echo $npm_config_store_dir; echo $npm_config_cache_dir'`
+   `docker exec -u paperclip <runner-name> sh -c '. /etc/profile; command -v git; echo $npm_config_store_dir; echo $npm_config_cache_dir; echo $npm_config_cache'`
    prints `/usr/local/bin/git`, `/workspace/.paperclip-runtime/pnpm-store` and
-   `/cache/pnpm`.
+   `/cache/pnpm` twice.
 
 The pnpm store of the runner starts empty and fills on the first install.
 

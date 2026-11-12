@@ -108,15 +108,18 @@ docker создаёт от root.
   намеренно не `<OMP_RUNNER_CACHE_DIR>/pnpm`: его монтируют боты hermes
   (uid 10001), и их подготовительный шаг возвращает ему владельца 10001, так что
   исполнитель, сделав chown, перебивал бы владельца туда-сюда и ломал одну из
-  сторон. Entrypoint пишет `/etc/profile.d/omp-runner-cache.sh` со строкой
-  `npm_config_cache_dir=/cache/pnpm`, когда монтирование принадлежит uid 1000
-  (sshd не передаёт переменные окружения контейнера в сессии, а profile.d читает
-  каждая команда, запущенная доской по SSH, и каждая оболочка агента). Он
-  исправляет владельца только у каталога от root (его создал docker) и никогда не
-  делает chown каталога другого uid: пишет предупреждение и оставляет кеш по
-  умолчанию. `cache-dir` — это кеш метаданных **pnpm** (метаданные реестра, не
-  сами пакеты: они идут в хранилище); собственная настройка кеша npm называется
-  `cache`, её образ не меняет, npm держит `~/.npm`.
+  сторон. Entrypoint пишет `/etc/profile.d/omp-runner-cache.sh` со строками
+  `npm_config_cache_dir=/cache/pnpm` (кеш метаданных pnpm) и
+  `npm_config_cache=/cache/pnpm` (кеш загрузок npm — тарболы и `_cacache`;
+  pnpm и npm читают разные имена — pnpm `cache-dir`, npm `cache`, — поэтому
+  общий каталог экспортируется под обоими именами, и загрузки обоих
+  инструментов попадают на общее монтирование вместо раздельного `~/.npm` у
+  каждого исполнителя), когда монтирование принадлежит uid 1000 (sshd не
+  передаёт переменные окружения контейнера в сессии, а profile.d читает каждая
+  команда, запущенная доской по SSH, и каждая оболочка агента). Он исправляет
+  владельца только у каталога от root (его создал docker) и никогда не делает
+  chown каталога другого uid: пишет предупреждение и оставляет кеши по
+  умолчанию.
 
 Хранилище pnpm (**store**) лежит ни там, ни там. Entrypoint пишет
 `/etc/profile.d/omp-runner-pnpm.sh` со строками
@@ -199,11 +202,12 @@ docker создаёт от root.
    Тома `workspace`, `home` и `hostkeys` сохраняются, так что закреплённый ключ
    хоста не меняется и SSH-окружение на доске править не нужно.
 5. Проверить: `docker logs <имя> 2>&1 | grep omp-runner:` показывает
-   `pnpm metadata cache at /cache/pnpm` и `git mirrors at /cache/git: N repositories`
+   `shared package download cache at /cache/pnpm` и
+   `git mirrors at /cache/git: N repositories`
    (и нет `WARNING /cache/pnpm is owned by uid`);
-   `docker exec -u paperclip <имя> sh -c '. /etc/profile; command -v git; echo $npm_config_store_dir; echo $npm_config_cache_dir'`
+   `docker exec -u paperclip <имя> sh -c '. /etc/profile; command -v git; echo $npm_config_store_dir; echo $npm_config_cache_dir; echo $npm_config_cache'`
    печатает `/usr/local/bin/git`, `/workspace/.paperclip-runtime/pnpm-store` и
-   `/cache/pnpm`.
+   `/cache/pnpm` дважды.
 
 Хранилище pnpm исполнителя начинается пустым и наполняется при первой установке.
 

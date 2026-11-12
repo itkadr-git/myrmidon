@@ -176,6 +176,11 @@ describe("omp SSH runner shared cache (OPE-12722)", () => {
     assert.doesNotMatch(entrypoint, /fail loudly/i);
     assert.match(entrypoint, /if \[ -d \/cache\/pnpm \]/);
     assert.match(entrypoint, /export npm_config_cache_dir=\/cache\/pnpm/);
+    // npm's own cache variable points at the same shared directory: npm reads
+    // `cache`, not pnpm's `cache-dir`, and its downloads would otherwise stay
+    // in a per-runner ~/.npm (review criterion 2)
+    assert.match(entrypoint, /^export npm_config_cache=\/cache\/pnpm$/m);
+    assert.match(entrypoint, /npm reads it as cache/);
     // /cache/pnpm is chowned only while root owns it: a directory of another uid is never re-owned
     assert.match(entrypoint, /if \[ "\$cache_uid" = 0 \]; then\s+chown 1000:1000 \/cache\/pnpm/);
     assert.equal(entrypoint.match(/^\s*chown [^\n]*\/cache\/pnpm/gm)?.length, 1);
@@ -198,9 +203,11 @@ describe("omp SSH runner shared cache (OPE-12722)", () => {
       assert.match(doc, /df --output=used -B1M/);
       assert.doesNotMatch(doc, /du -xs/);
     }
-    // npm's own setting is `cache`, not `cache_dir`: the docs name pnpm's metadata cache, not npm's
-    assert.match(readme, /`cache-dir` is \*\*pnpm's\*\* metadata cache/);
-    assert.doesNotMatch(readme, /npm and pnpm keep their registry download cache/);
+    // both tools' variables are documented: npm reads `cache`, pnpm `cache-dir`
+    assert.match(readme, /npm_config_cache=\/cache\/pnpm/);
+    assert.match(readmeRu, /npm_config_cache=\/cache\/pnpm/);
+    assert.match(readme, /shared package download cache at \/cache\/pnpm/);
+    assert.match(readmeRu, /shared package download cache at \/cache\/pnpm/);
     assert.match(readme, /### Updating a runner that already runs/);
     assert.match(readmeRu, /### Обновление работающего исполнителя/);
   });
