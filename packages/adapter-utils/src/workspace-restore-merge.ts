@@ -452,6 +452,43 @@ export async function captureDirectorySnapshot(
   };
 }
 
+// myrmidon(OPE-12793): `walkDirectory` skips an excluded directory without
+// descending, so a path is out of scope when it or any ancestor is excluded.
+function isExcludedOrUnderExcluded(relative: string, exclude: readonly string[]): boolean {
+  if (exclude.length === 0) return false;
+  const parts = relative.split("/");
+  let prefix = "";
+  for (const part of parts) {
+    prefix = prefix ? `${prefix}/${part}` : part;
+    if (shouldExcludePath(prefix, exclude)) return true;
+  }
+  return false;
+}
+
+// myrmidon(OPE-12793): every ancestor of `relative` must be a real directory.
+// A point lookup follows intermediate symlinks; the old walk never entered one,
+// so a path behind a symlink swapped in by the target was never deleted.
+async function parentChainIsPlain(
+  root: string,
+  relative: string,
+  cache: Map<string, boolean>,
+): Promise<boolean> {
+  const parts = relative.split("/");
+  parts.pop();
+  let prefix = "";
+  for (const part of parts) {
+    prefix = prefix ? `${prefix}/${part}` : part;
+    let plain = cache.get(prefix);
+    if (plain === undefined) {
+      const stats = await fs.lstat(path.join(root, prefix)).catch(() => null);
+      plain = !!stats && stats.isDirectory();
+      cache.set(prefix, plain);
+    }
+    if (!plain) return false;
+  }
+  return true;
+}
+
 export async function mergeDirectoryWithBaseline(input: {
   baseline: DirectorySnapshot;
   sourceDir: string;
@@ -466,11 +503,19 @@ export async function mergeDirectoryWithBaseline(input: {
     // instead of capturing a full sha256 snapshot of the target under the
     // lock: the merge no longer walks ~27k target files while other restores
     // wait on the lock. (OPE-12793)
+    // myrmidon(OPE-12793): the full walk this replaces honoured
+    // `baseline.exclude`, so an excluded path (or anything under an excluded
+    // directory, e.g. a nested repository's `.git`) was never a deletion
+    // candidate; the point check must keep that. It also never descended into a
+    // symlinked directory, so every ancestor must still be a real directory.
+    const plainParents = new Map<string, boolean>();
     const deletedLeafEntries = [...input.baseline.entries.entries()]
       .filter(([relative, entry]) => entry.kind !== "dir" && !source.entries.has(relative))
       .sort(([left], [right]) => right.length - left.length);
 
     for (const [relative, baselineEntry] of deletedLeafEntries) {
+      if (isExcludedOrUnderExcluded(relative, input.baseline.exclude)) continue;
+      if (!(await parentChainIsPlain(canonicalTargetDir, relative, plainParents))) continue;
       if (!(await directoryEntryMatchesBaseline(canonicalTargetDir, relative, baselineEntry))) continue;
       await fs.rm(path.join(canonicalTargetDir, relative), { recursive: true, force: true }).catch(() => undefined);
     }

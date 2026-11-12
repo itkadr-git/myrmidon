@@ -217,6 +217,64 @@ describe("workspace restore merge", () => {
     await expect(readFile(path.join(targetDir, "shared.txt"), "utf8")).resolves.toBe("baseline\n");
   });
 
+  it("never deletes a baseline entry that the baseline excludes from the source walk", async () => {
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-restore-merge-"));
+    cleanupDirs.push(rootDir);
+
+    const targetDir = path.join(rootDir, "target");
+    const sourceDir = path.join(rootDir, "source");
+    await mkdir(path.join(targetDir, "repo", ".git"), { recursive: true });
+    await mkdir(sourceDir, { recursive: true });
+    await writeFile(path.join(targetDir, "repo", ".git", "HEAD"), "ref: refs/heads/main\n", "utf8");
+    await writeFile(path.join(targetDir, "keep.txt"), "kept\n", "utf8");
+    await writeFile(path.join(targetDir, "host-config.txt"), "host only\n", "utf8");
+    await writeFile(path.join(targetDir, "gone.txt"), "removed remotely\n", "utf8");
+
+    // The baseline records every entry (it was captured with a wider view than
+    // the exclusion now applied), while the exclusion keeps the source walk
+    // from seeing `.git` and `host-config.txt`. They are absent from the source
+    // only because they are excluded, not because the run deleted them.
+    const baseline = await captureDirectorySnapshot(targetDir, { exclude: [] });
+    baseline.exclude = ["*/.git", "*/.git/*", "host-config.txt"];
+    await writeFile(path.join(sourceDir, "keep.txt"), "kept\n", "utf8");
+    await mkdir(path.join(sourceDir, "repo"), { recursive: true });
+
+    await mergeDirectoryWithBaseline({ baseline, sourceDir, targetDir });
+
+    await expect(readFile(path.join(targetDir, "repo", ".git", "HEAD"), "utf8")).resolves.toBe("ref: refs/heads/main\n");
+    await expect(readFile(path.join(targetDir, "host-config.txt"), "utf8")).resolves.toBe("host only\n");
+    await expect(readFile(path.join(targetDir, "keep.txt"), "utf8")).resolves.toBe("kept\n");
+    // A genuinely deleted, non-excluded path is still removed.
+    await expect(stat(path.join(targetDir, "gone.txt"))).rejects.toThrow();
+  });
+
+  it.skipIf(process.platform === "win32")(
+    "does not delete through a directory the target has swapped for a symlink",
+    async () => {
+      const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-restore-merge-"));
+      cleanupDirs.push(rootDir);
+
+      const targetDir = path.join(rootDir, "target");
+      const sourceDir = path.join(rootDir, "source");
+      const outsideDir = path.join(rootDir, "outside");
+      await mkdir(path.join(targetDir, "sub"), { recursive: true });
+      await mkdir(sourceDir, { recursive: true });
+      await mkdir(outsideDir, { recursive: true });
+      await writeFile(path.join(targetDir, "sub", "data.txt"), "same\n", "utf8");
+      const baseline = await captureDirectorySnapshot(targetDir, { exclude: [] });
+
+      // The target swaps `sub` for a symlink to a directory that holds an
+      // identical file; the source no longer has `sub/data.txt`.
+      await writeFile(path.join(outsideDir, "data.txt"), "same\n", "utf8");
+      await rm(path.join(targetDir, "sub"), { recursive: true, force: true });
+      await symlink(outsideDir, path.join(targetDir, "sub"));
+
+      await mergeDirectoryWithBaseline({ baseline, sourceDir, targetDir });
+
+      await expect(readFile(path.join(outsideDir, "data.txt"), "utf8")).resolves.toBe("same\n");
+    },
+  );
+
   it("ignores non-file entries when capturing snapshots", async () => {
     if (process.platform === "win32") return;
 
@@ -569,30 +627,37 @@ describe("workspace restore merge", () => {
 
       // Fake the clock instead of the timers: the retry loop's real 50 ms
       // setTimeout sleeps stay real (cheap), while `Date.now()` reports a
-      // caller-controlled elapsed time. The first call — the deadline
-      // computation — sees the real now; every later call sees realNow +
-      // `elapsedMs`, which the test bumps past 35 s and then past the 10
-      // minute wait deadline.
+      // caller-controlled elapsed time. The wait deadline is computed from the
+      // first `Date.now()` call inside the acquirer, which happens after the
+      // async realpath/lock-root steps, so the clock must stay at zero until the
+      // acquirer has read it; only then is it moved past 35 s and past the
+      // 10 minute wait deadline. (OPE-12793)
       const realNow = Date.now();
       let elapsedMs = 0;
-      const dateNowSpy = vi.spyOn(Date, "now").mockImplementation(() => realNow + elapsedMs);
+      let clockReads = 0;
+      const dateNowSpy = vi.spyOn(Date, "now").mockImplementation(() => {
+        clockReads += 1;
+        return realNow + elapsedMs;
+      });
 
       try {
         const attempt = withDirectoryMergeLock(targetDir, async () => "acquired");
         void attempt.catch(() => {
-          /* observed via `settled` below; avoid unhandled-rejection noise */
+          /* observed below; avoid unhandled-rejection noise */
         });
 
+        const startedAt = performance.now();
+        while (clockReads === 0 && performance.now() - startedAt < 5_000) {
+          await new Promise((resolve) => setTimeout(resolve, 10));
+        }
+        expect(clockReads).toBeGreaterThan(0);
+
         // 35 s of waiting must NOT time out (the old LOCK_STALE_MS wait did).
-        // Poll instead of sleeping a fixed interval so a starved CI event loop
-        // cannot flake the assertion.
         elapsedMs = 35_000;
-        const settledBeforeDeadline = await waitForSettled(attempt, 1_000);
-        expect(settledBeforeDeadline).toBe(false);
+        expect(await waitForSettled(attempt, 500)).toBe(false);
 
         // Past the 10 minute wait deadline the acquirer must throw the stable
-        // lock-timeout code. The retry loop notices the bumped clock on its
-        // next iteration, so poll for the rejection instead of sleeping.
+        // lock-timeout code on its next loop iteration.
         elapsedMs = 10 * 60 * 1000 + 1_000;
         await expect(attempt).rejects.toMatchObject({
           code: WORKSPACE_RESTORE_LOCK_TIMEOUT_CODE,
