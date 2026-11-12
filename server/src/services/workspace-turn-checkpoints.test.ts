@@ -165,10 +165,14 @@ describe("per-turn checkpoints (OPE-12738)", () => {
       runId: RUN_ID,
       targetTurnNumber: 1,
     });
-    void result;
     expect(await fs.readFile(path.join(repoRoot, "foreign.txt"), "utf8")).toBe("not mine\n");
     expect(await fs.readFile(path.join(repoRoot, "tracked.txt"), "utf8")).toBe("one\n");
-    expect(git(repoRoot, ["diff", "--name-status", "HEAD", "--"])).toBe("");
+    // The restore contract is "tracked worktree equals the target checkpoint
+    // tree", not "equals HEAD": HEAD never moves during a restore, and here
+    // tracked.txt lives in the checkpoint but not in HEAD, so git diff vs HEAD
+    // legitimately still reports the staged file. Verify against the
+    // checkpoint tree instead (same invariant as the relaunch test above).
+    expect(git(repoRoot, ["diff", "--name-status", `${result.commitSha}`, "--"])).toBe("");
   });
 
   it("refuses restore when uncommitted tracked state diverges from the target checkpoint", async () => {
