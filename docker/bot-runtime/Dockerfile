@@ -213,7 +213,7 @@ RUN set -eu; \
     export PYTHONPATH=/opt/hermes-src \
            HERMES_HOME=/opt/hermes-plugin-deps \
            HERMES_RUNTIME_DIR=/opt/pm-tools; \
-    mkdir -p /opt/pm-tools /tmp/pm-gen; \
+    mkdir -p /opt/pm-tools; \
     .venv/bin/python -c 'from pm import ensure; ensure("uv", explicit=True)'; \
     cp .venv/lib/python3.14/site-packages/__editable___hermes_agent_0_0_0_finder.py \
        .venv/lib/python3.14/site-packages/__editable__.hermes_agent-0.0.0.pth /tmp/; \
