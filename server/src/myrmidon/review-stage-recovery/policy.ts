@@ -51,9 +51,11 @@ export const REVIEW_DECISION_RECOVERY_INSTRUCTION =
   "If you cannot decide, mark the issue blocked with the exact unblock action.";
 
 export const REVIEW_CI_WAIT_RECOVERY_INSTRUCTION =
-  "The board waited for CI on the pull request head. Check the current CI result of the head commit, then submit " +
-  "the review decision now: PATCH status=in_progress with a comment to return it, or status=done with a comment to " +
-  "approve it. If CI is still running, end the run without a decision; the board checks CI again.";
+  "The board waited for CI on the pull request head. Do not wait for CI to decide: the merge gate " +
+  "checks the `CI result` of the head independently, so review the diff and submit the review decision " +
+  "now — PATCH status=in_progress with a comment to return it, or status=done with a comment to " +
+  "approve it. If (and only if) the diff itself is unreadable, end the run without a decision; the " +
+  "board checks the pull request again.";
 
 /**
  * Name of the aggregate check of the Myrmidon CI workflow (`ci-result` job of
@@ -87,6 +89,25 @@ export function reviewAdmissionDedupKey(input: {
   return headSha
     ? `${REVIEW_ADMISSION_KEY_PREFIX}${input.issueId}:${headSha}`
     : `${REVIEW_ADMISSION_KEY_PREFIX}${input.issueId}:${input.agentId}`;
+}
+
+/**
+ * myrmidon(OPE-12859): does the stored review verdict already cover this PR
+ * head? A verdict with a head SHA counts only for the same head; a verdict
+ * without one (older records) counts for any head of the same review stage.
+ * When it returns true the review itself is done — only the merge-time
+ * `CI result` gate is still pending — so the board must not re-wake the
+ * reviewer while CI is running.
+ */
+export function reviewVerdictCoversHead(
+  verdict: { headSha?: string | null } | null | undefined,
+  headSha: string | null | undefined,
+): boolean {
+  if (!verdict) return false;
+  const verdictHead = typeof verdict.headSha === "string" ? verdict.headSha.trim().toLowerCase() : "";
+  if (!verdictHead) return true;
+  const currentHead = typeof headSha === "string" ? headSha.trim().toLowerCase() : "";
+  return Boolean(currentHead) && verdictHead === currentHead;
 }
 
 /** CI on the head of the issue's open pull request, as far as the board can read it. */
