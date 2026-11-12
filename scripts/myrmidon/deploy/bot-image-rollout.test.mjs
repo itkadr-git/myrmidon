@@ -946,7 +946,7 @@ describe("bot-image-rollout.sh: tracking vs pinned cards, batches, paused or idl
     assert.equal(code, 0, out);
     assert.match(out, /batch 1\/2: 5 bot\(s\)/);
     assert.match(out, /batch 2\/2: 2 bot\(s\)/);
-    assert.match(out, /batch 1\/2 done: 5 switched, 0 failed, 0 deferred \(progress 5\/7\)/);
+    assert.match(out, /batch 1\/2 done: 5 switched, 0 already, 0 failed, 0 deferred \(progress 5\/7\)/);
     assert.match(out, /batch 2\/2 done: 2 switched/);
     assert.deepEqual([summary(sb).batches, summary(sb).switched, summary(sb).failed], [2, 7, 0]);
     // a batch size above the cap is clamped to 5
@@ -993,7 +993,7 @@ describe("bot-image-rollout.sh: tracking vs pinned cards, batches, paused or idl
     });
     const { code, out } = run(sb, "bot-image-rollout.sh", ARGS);
     assert.equal(code, 0, out);
-    assert.match(out, /batch 1\/1 done: 1 switched, 0 failed, 1 deferred/);
+    assert.match(out, /batch 1\/1 done: 1 switched, 0 already, 0 failed, 1 deferred/);
     assert.equal(cardImage(sb, uuid(1)), `${BOT}@${HERMES}`);
     assert.match(out, /no rollout retry pass/);
     assert.doesNotMatch(out, /tail pass:/);
@@ -1243,7 +1243,7 @@ describe("bot-image-rollout.sh: verification against the fact, --retry-deferred 
     // The table names the bot, its card image, the running container's image.
     assert.match(out, new RegExp(`${DEV}.*${DEV_NEW}.*evil/img@sha256:deadbeef.*mismatch`));
     const s = rolloutSummary(sb);
-    assert.deepEqual(s.verification, { switched: 1, deferred: 0, mismatch: 1, failed: 0 });
+    assert.deepEqual(s.verification, { switched: 1, already: 0, deferred: 0, mismatch: 1, failed: 0 });
     // The superseded images stay allowed while the fleet disagrees.
     assert.ok(dockergateConfig(sb).images.includes(DEV_OLD), "old digests kept on mismatch");
   });
@@ -1264,7 +1264,7 @@ describe("bot-image-rollout.sh: verification against the fact, --retry-deferred 
     assert.match(out, /WARNING: 1 bot\(s\) stayed deferred/);
     assert.doesNotMatch(out, /--retry-deferred/);
     const s = rolloutSummary(sb);
-    assert.deepEqual(s.verification, { switched: 1, deferred: 1, mismatch: 0, failed: 0 });
+    assert.deepEqual(s.verification, { switched: 1, already: 0, deferred: 1, mismatch: 0, failed: 0 });
     assert.equal(s.deferredBots.length, 1);
     assert.equal(s.deferredBots[0].id, DEV);
     assert.equal(s.deferredBots[0].image, DEV_OLD);
@@ -1342,7 +1342,7 @@ describe("bot-image-rollout.sh: verification against the fact, --retry-deferred 
     });
     const { code, out } = run(sb, "bot-image-rollout.sh", ARGS);
     assert.equal(code, 1, out);
-    assert.deepEqual(rolloutSummary(sb).verification, { switched: 0, deferred: 0, mismatch: 1, failed: 0 });
+    assert.deepEqual(rolloutSummary(sb).verification, { switched: 0, already: 0, deferred: 0, mismatch: 1, failed: 0 });
   });
 
   it("failed bots: DEGRADED with the failed count in the summary", () => {
@@ -1353,5 +1353,32 @@ describe("bot-image-rollout.sh: verification against the fact, --retry-deferred 
     const s = rolloutSummary(sb);
     assert.equal(s.verification.failed, 2);
     assert.equal(s.verification.mismatch, 0);
+  });
+
+  it("a re-roll skips bots already on the release image: no PATCH, no apply, counted as already (OPE-12904)", () => {
+    // Both bots converged by the first run: cards PATCHed to the release
+    // images, containers report the same. Re-running the rollout must not
+    // recreate their containers.
+    const sb = sandbox({
+      agents: [
+        { id: DEV, image: DEV_NEW },
+        { id: PLAIN, image: PLAIN_NEW },
+      ],
+      dockergateConfig: { images: [DEV_NEW, PLAIN_NEW] },
+    });
+    const { code, out } = run(sb, "bot-image-rollout.sh", ARGS);
+    assert.equal(code, 0, out);
+    assert.match(out, new RegExp(`${DEV}.*already`));
+    assert.match(out, /verification summary: 0 switched, 2 already, 0 deferred\(running\), 0 mismatch, 0 failed/);
+    assert.doesNotMatch(calls(sb), /-X PATCH/);
+    assert.doesNotMatch(calls(sb), /bot-container\/apply/);
+    assert.doesNotMatch(calls(sb), new RegExp(`agents/${DEV}/bot-container`));
+    assert.doesNotMatch(calls(sb), new RegExp(`agents/${PLAIN}/bot-container`));
+    const s = rolloutSummary(sb);
+    assert.equal(s.already, 2);
+    assert.equal(s.switched, 0);
+    assert.deepEqual(s.verification, { switched: 0, already: 2, deferred: 0, mismatch: 0, failed: 0 });
+    assert.deepEqual(s.switchedBots, [DEV, PLAIN]);
+    assert.match(journal(sb), new RegExp(`agent ${DEV} already on .*: skipped`));
   });
 });

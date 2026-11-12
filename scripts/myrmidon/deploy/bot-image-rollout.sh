@@ -38,19 +38,23 @@
 #      agents list carries no adapterConfig — PERF-DIET-G).
 #   5. Switch the bot cards to the release image, one bot at a time (canary
 #      first when --canary names one): PATCH the card's
-#      adapterConfig.container.image. A bot with running work is deferred after
-#      its desired-state card is updated; the server reconciler owns the scoped
-#      R3 pause, drain, and container replacement. The rollout never waits for
-#      or force-applies a busy bot.
+#      adapterConfig.container.image. A bot whose card already names the
+#      release image AND whose running container runs it (OPE-12904) is
+#      skipped as "already": no PATCH, no apply — a re-roll must not
+#      recreate converged containers or delay a busy bot's work. A bot with
+#      running work is deferred after its desired-state card is updated; the
+#      server reconciler owns the scoped R3 pause, drain, and container
+#      replacement. The rollout never waits for or force-applies a busy bot.
 #   5b. F-04 verification (1.6.5): after the batches, compare FACT for every
 #      tracking bot — the card's image (adapterConfig.container.image from
 #      the board API) against the running container's image
 #      (bot-container/status, the same board call the async apply confirm
 #      already reads; the board answers it from docker inspect on the deploy
 #      host, so no new docker transport is introduced here). Print a
-#      per-bot table and the summary switched / deferred(running) / mismatch
-#      / failed. DEGRADED (exit 1) only when mismatch > 0 or failed > 0; a
-#      deferred bot is not a failure — the reconciler applies it in R3.
+#      per-bot table and the summary switched / already / deferred(running) /
+#      mismatch / failed. DEGRADED (exit 1) only when mismatch > 0 or
+#      failed > 0; a deferred bot is not a failure — the reconciler applies
+#      it in R3.
 #   5c. --retry-deferred [--wait-sec N]: compatibility mode for a prior
 #       rollout summary; it rechecks desired cards and leaves application to
 #       the server reconciler. It does not perform a retry sweep.
@@ -761,7 +765,8 @@ revert_card() {
   fi
 }
 
-# Returns 0 switched, 2 deferred (retry), 1 failed.
+# Returns 0 switched, 2 deferred (retry), 1 failed, 3 already (the bot is
+# already on the release image: nothing to do).
 # $2 == "force" drops the paused/idle status gate: the apply below goes to the
 # reconciler as-is, and its pause-and-apply path opens the maintenance window
 # and drains the in-flight run to its end (a run is never interrupted). The
@@ -783,6 +788,17 @@ switch_one_bot() {
   # the old image made a busy bot invisible to reconciliation forever.
   # $2 is retained for compatibility with the old caller interface; busy bots
   # are never force-applied by this rollout.
+  # OPE-12904: a bot whose card already names the release image AND whose
+  # running container runs it (the same fact comparison the 5b verification
+  # makes) is converged: skip it without a PATCH and without an apply —
+  # re-applying recreated a healthy container and delayed a busy bot's work.
+  # A card on the release image over a stale container is NOT skipped: the
+  # apply below is what finishes a bot a previous rollout left deferred.
+  if [[ -n "$target" ]] && container_on_image "$id" "$target"; then
+    bot_log "bot $id already on the release image ($current): skipped"
+    journal "agent $id already on $target: skipped"
+    return 3
+  fi
   local apply_attempt=1
   while :; do
     if is_release_ref "$current" || [[ -n "$prev_block" ]]; then
@@ -931,8 +947,10 @@ switch_one_bot() {
 }
 
 # Records how this pass ended for the bot, then passes the switch_one_bot
-# return code through (0 switched, 2 deferred, 1 failed) — the verification
-# table and the summary classify the bot by this state plus the container fact.
+# return code through (0 switched, 2 deferred, 1 failed, 3 already) — the
+# verification table and the summary classify the bot by this state plus the
+# container fact. The "already" code becomes its own BOT_STATE: verify_fleet
+# re-checks the fact and reports the bot as already, not switched.
 switch_bot_recorded() {
   # $2 (optional) is the force flag of switch_one_bot: the tail and force
   # stages forward it, so a bot that cannot move is recorded failed (DEGRADED),
@@ -942,6 +960,7 @@ switch_bot_recorded() {
   case "$rc" in
     0) BOT_STATE["$id"]="switched" ;;
     2) BOT_STATE["$id"]="deferred" ;;
+    3) BOT_STATE["$id"]="already" ;;
     *) BOT_STATE["$id"]="failed" ;;
   esac
   return "$rc"
@@ -955,6 +974,9 @@ switch_bot_recorded() {
 # this pass is classified by the FACT of card image vs container image:
 #   switched             the card names the release image and the running
 #                        container reports the same image (fact confirms);
+#   already             the bot was already on the release image when this
+#                        pass found it: skipped without a PATCH or apply
+#                        (OPE-12904); the fact re-check below confirms it;
 #   deferred(running)    a bot the batches left deferred: its container is
 #                        not up or still runs the pre-rollout image, nothing
 #                        disagrees — the periodic sweep finishes it; NOT a
@@ -980,6 +1002,7 @@ container_fact() {
 VERIFY_ROWS=()
 DEFERRED_ROWS=()
 v_switched=0
+v_already=0
 v_deferred=0
 v_mismatch=0
 v_failed=0
@@ -988,7 +1011,7 @@ verify_fleet() {
   VERIFY_ROWS=("id|card image|container image|state|verdict")
   DEFERRED_ROWS=()
   SWITCHED_BOTS=()
-  v_switched=0 v_deferred=0 v_mismatch=0 v_failed=0
+  v_switched=0 v_already=0 v_deferred=0 v_mismatch=0 v_failed=0
   for id in "$@"; do
     [[ -n "$id" ]] || continue
     card="$(card_image "$id" || true)"
@@ -1002,6 +1025,15 @@ verify_fleet() {
       # The main cycle failed on this bot (PATCH/apply error): the run stays
       # DEGRADED even if the cards happen to agree — the operator must see it.
       verdict="failed"
+    elif [[ "$state" == "already" ]]; then
+      # OPE-12904: the pass skipped the bot because card and container were
+      # both on the release image. The fact is re-checked here: it must still
+      # confirm (a skipped bot the container left behind is a mismatch).
+      if [[ -n "$target" && "$card" == "$target" && "$cimage" == "$target" && ( "$cstate" == "running" || ( "$cstate" == "stopped" && "$cidle" == "true" ) ) ]]; then
+        verdict="already"
+      else
+        verdict="mismatch"
+      fi
     elif [[ -n "$target" && "$card" == "$target" && "$cimage" == "$target" && ( "$cstate" == "running" || ( "$cstate" == "stopped" && "$cidle" == "true" ) ) ]]; then
       # The fact confirms the switch — even for a bot the main cycle only
       # deferred (the sweep or a late apply finished it).
@@ -1036,6 +1068,7 @@ verify_fleet() {
         DEFERRED_ROWS+=("$id|${orig//|/}|${target//|/}|${dreason//|/}")
         ;;
       mismatch) v_mismatch=$((v_mismatch + 1)) ;;
+      already) v_already=$((v_already + 1)); SWITCHED_BOTS+=("$id") ;;
       *) v_failed=$((v_failed + 1)) ;;
     esac
     BOT_STATE["$id"]="$verdict"
@@ -1052,7 +1085,7 @@ verify_fleet() {
         print line
       }
     }' >&2
-  bot_log "verification summary: $v_switched switched, $v_deferred deferred(running), $v_mismatch mismatch, $v_failed failed"
+  bot_log "verification summary: $v_switched switched, $v_already already, $v_deferred deferred(running), $v_mismatch mismatch, $v_failed failed"
 }
 
 # The verification block written to the summary, and the deferred-bot records
@@ -1064,8 +1097,8 @@ collect_verdict() {
   SWITCHED_JSON="$(printf '%s\n' "${SWITCHED_BOTS[@]:-}" | jq -Rn '[inputs | select(length > 0)]')"
   DEFERRED_JSON="$(printf '%s\n' "${DEFERRED_ROWS[@]}" | jq -Rn \
     '[inputs | select(length > 0) | split("|") | {id: .[0], image: .[1], target: .[2], reason: (.[3:] | join("|"))}]')"
-  VERIF_JSON="$(jq -cn --argjson s "$v_switched" --argjson d "$v_deferred" --argjson m "$v_mismatch" --argjson f "$v_failed" \
-    '{switched: $s, deferred: $d, mismatch: $m, failed: $f}')"
+  VERIF_JSON="$(jq -cn --argjson s "$v_switched" --argjson a "$v_already" --argjson d "$v_deferred" --argjson m "$v_mismatch" --argjson f "$v_failed" \
+    '{switched: $s, already: $a, deferred: $d, mismatch: $m, failed: $f}')"
 }
 
 # Classify every container bot: tracking (to switch), pinned (left alone, listed
@@ -1125,6 +1158,7 @@ batches=$(((total + MYR_BOT_BATCH - 1) / MYR_BOT_BATCH))
 bot_log "cards: $total tracking the release, $pinned pinned (left alone, listed above), $not_applicable not applicable (left alone, listed above); $batches batch(es) of at most $MYR_BOT_BATCH"
 failed=0
 switched=0
+already=0
 stayed_deferred=0
 deferred_tail=()
 declare -A deferred_reasons=()
@@ -1158,7 +1192,7 @@ for ((start = 0; start < total; start += MYR_BOT_BATCH)); do
   batch_no=$((batch_no + 1))
   batch=("${TRACKING_BOTS[@]:start:MYR_BOT_BATCH}")
   bot_log "batch $batch_no/$batches: ${#batch[@]} bot(s)"
-  b_switched=0 b_failed=0 b_deferred=0
+  b_switched=0 b_already=0 b_failed=0 b_deferred=0
   for id in "${batch[@]}"; do
     rc=0
     DEFERRED_REASON=""
@@ -1170,13 +1204,15 @@ for ((start = 0; start < total; start += MYR_BOT_BATCH)); do
         deferred_reasons["$id"]="${DEFERRED_REASON:-deferred}"
         b_deferred=$((b_deferred + 1))
         ;;
+      3) b_already=$((b_already + 1)) ;;
       *) b_failed=$((b_failed + 1)); bot_log "FAILED: bot $id did not switch" ;;
     esac
   done
   switched=$((switched + b_switched))
+  already=$((already + b_already))
   failed=$((failed + b_failed))
-  bot_log "batch $batch_no/$batches done: $b_switched switched, $b_failed failed, $b_deferred deferred (progress $switched/$total)"
-  journal "batch $batch_no/$batches: $b_switched switched, $b_failed failed, $b_deferred deferred"
+  bot_log "batch $batch_no/$batches done: $b_switched switched, $b_already already, $b_failed failed, $b_deferred deferred (progress $switched/$total)"
+  journal "batch $batch_no/$batches: $b_switched switched, $b_already already, $b_failed failed, $b_deferred deferred"
   done
 fi
 
@@ -1212,12 +1248,12 @@ finalize_rollout() {
   pinned_json="$(printf '%s\n' "${PINNED_LIST[@]}" | jq -Rn '[inputs | select(length > 0) | split("|") | {id: .[0], image: (.[1:] | join("|"))}]')"
   na_json="$(printf '%s\n' "${NA_LIST[@]}" | jq -Rn '[inputs | select(length > 0) | split("|") | {id: .[0], reason: (.[1:] | join("|"))}]')"
   jq -cn --arg release "$resolution $res_ref" --argjson tracking "${#pass[@]}" \
-    --argjson switched "$v_switched" --argjson deferred "$v_deferred" --argjson mismatch "$v_mismatch" \
+    --argjson switched "$v_switched" --argjson already "$v_already" --argjson deferred "$v_deferred" --argjson mismatch "$v_mismatch" \
     --argjson failed "$v_failed" --argjson verification "$VERIF_JSON" --argjson deferredBots "$DEFERRED_JSON" \
     --argjson pinned "$pinned" --argjson batches "$batches" \
     --argjson notApplicable "$not_applicable" --argjson pinnedBots "$pinned_json" --argjson notApplicableBots "$na_json" \
     --argjson switchedBots "$SWITCHED_JSON" \
-    '{release: $release, tracking: $tracking, switched: $switched, deferred: $deferred, mismatch: $mismatch,
+    '{release: $release, tracking: $tracking, switched: $switched, already: $already, deferred: $deferred, mismatch: $mismatch,
       failed: $failed, verification: $verification, deferredBots: $deferredBots, pinned: $pinned,
       notApplicable: $notApplicable, pinnedBots: $pinnedBots, notApplicableBots: $notApplicableBots, batches: $batches,
       switchedBots: $switchedBots}' \
@@ -1263,8 +1299,8 @@ finalize_rollout() {
     bot_log "  Check bot-container/status for convergence; no periodic sweep is required."
   fi
 
-  bot_log "bot image rollout complete: $v_switched bot(s) on the release images, journal $MYR_BOT_ROLLOUT_LOG"
-  journal "rollout complete: $v_switched bot(s) on the release images ($resolution $res_ref)"
+  bot_log "bot image rollout complete: $v_switched bot(s) switched, $v_already already on the release images, journal $MYR_BOT_ROLLOUT_LOG"
+  journal "rollout complete: $v_switched bot(s) switched, $v_already already ($resolution $res_ref)"
 
   # DEPLOY-HYGIENE (OPE-5107): the bots moved to the release images — free the
   # disk of the superseded ones (older than MYRMIDON_DEPLOY_IMAGE_KEEP previous
