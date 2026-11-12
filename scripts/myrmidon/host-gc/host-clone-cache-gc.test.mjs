@@ -31,6 +31,7 @@ const {
   planBotDataGc,
   scanSshRunCopies,
   pruneSshRunCopies,
+  UsageError,
   scanRunnerTaskFolders,
   issueIdentifierFromRunnerFolderName,
 } = await import(
