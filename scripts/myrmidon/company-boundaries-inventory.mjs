@@ -95,8 +95,43 @@ export function inventoryReportHash(report) {
   return createHash("sha256").update(JSON.stringify(normalizeInventoryReport(report))).digest("hex");
 }
 
+/** Marker substituted for every secret-shaped string found in rendered output. */
+const INVENTORY_REDACTED = "[REDACTED]";
+
+/**
+ * Secret-shape matchers applied at render time as defense in depth: the probe
+ * structurally never copies payload values into the report, so these patterns
+ * only fire on values that a future regression injects into output fields.
+ * Covers board key prefixes (pcp_*), common token prefixes, and bearer headers.
+ */
+const INVENTORY_SECRET_PATTERNS = Object.freeze([
+  /pcp_[A-Za-z0-9_-]{8,}/g,
+  /sk-[A-Za-z0-9_-]{16,}/g,
+  /ghp_[A-Za-z0-9]{20,}/g,
+  /AKIA[0-9A-Z]{16}/g,
+  /Bearer\s+[A-Za-z0-9._~+/=-]{16,}/gi,
+]);
+
+function redactInventoryText(text) {
+  let redacted = text;
+  for (const pattern of INVENTORY_SECRET_PATTERNS) {
+    redacted = redacted.replace(pattern, INVENTORY_REDACTED);
+  }
+  return redacted;
+}
+
+function redactInventoryDeep(value) {
+  if (typeof value === "string") return redactInventoryText(value);
+  if (Array.isArray(value)) return value.map(redactInventoryDeep);
+  if (value && typeof value === "object") {
+    return Object.fromEntries(Object.entries(value).map(([key, entry]) => [key, redactInventoryDeep(entry)]));
+  }
+  return value;
+}
+
+/** JSON rendering of the inventory summary; secret-shaped values are masked before serialization. */
 export function renderInventory(report) {
-  return JSON.stringify(normalizeInventoryReport(report));
+  return JSON.stringify(redactInventoryDeep(normalizeInventoryReport(report)));
 }
 
 export function sectionForPath(path) {
