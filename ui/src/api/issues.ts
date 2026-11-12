@@ -34,6 +34,7 @@ import type {
   ReleaseIssueTreeHoldResponse,
   UpsertIssueWatchdog,
   UpsertIssueDocument,
+  TokenBudgetSignal,
 } from "@myrmidon/shared";
 import { api, ApiError, type RequestOptions } from "./client";
 import { CommentSubmissionUnknownError } from "../lib/comment-submit-result";
@@ -499,6 +500,11 @@ export const issuesApi = {
     const qs = options.excludeRoot ? "?excludeRoot=true" : "";
     return api.get<IssueCostSummary>(`/issues/${id}/cost-summary${qs}`);
   },
+  // myrmidon(1.7 TOKEN-BUDGET-SIGNAL, OPE-12232): the read-only soft signal of
+  // the issue's token budget (info/warn; never pauses or blocks). Null when
+  // the issue has no active token-budget policy.
+  getTokenBudgetSignal: (id: string) =>
+    api.get<TokenBudgetSignal | null>(`/issues/${id}/token-budget-signal`),
   listFeedbackTraces: (
     id: string,
     filters?: Record<string, string | boolean | undefined>,

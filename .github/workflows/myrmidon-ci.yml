@@ -954,9 +954,17 @@ jobs:
           node --test scripts/myrmidon/ci/check-deployed-migrations.test.mjs
 
   ci-result:
-    # Single stable name for the ruleset. Lanes the plan did not need are
-    # skipped; any failure, or a skip without a successful plan, fails it.
-    name: CI result
+    # Single stable check name for the ruleset on real runs; a label-noop run
+    # (a `labeled` event with any label other than `full-ci`) must NOT create
+    # a check named `CI result` at all — GitHub rulesets read a `skipped`
+    # required check as satisfied, so a noop `skipped` run would wave the PR
+    # through auto-merge without any tests on the head (OPE-12841: PR #2965
+    # merged on a cancelled run's head). A dynamic `name:` publishes no
+    # `CI result` check on a noop run; the `!cancelled()` gate stays so a real
+    # run whose `plan` failed still fails the summary (re-gating on
+    # `needs.plan.result` would publish a satisfying `skipped` check on a red
+    # plan — the same defect class).
+    name: ${{ (github.event_name != 'pull_request' || github.event.action != 'labeled' || github.event.label.name == 'full-ci') && 'CI result' || 'CI result (label noop)' }}
     if: ${{ !cancelled() && (github.event_name != 'pull_request' || github.event.action != 'labeled' || github.event.label.name == 'full-ci') }}
     needs: [plan, migration-guard, typecheck, tests-affected, tests, tests-other, checks, dockergate, plugin-readiness, deployed-migrations]
     runs-on: ${{ fromJSON(vars.CI_RUNNER_LIGHT || vars.MYR_RUNNER_LIGHT || '"vps-ci"') }}

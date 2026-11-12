@@ -1,103 +1,220 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { collectInventory, INVENTORY_SECTIONS, renderInventory, sectionForPath } from "./company-boundaries-inventory.mjs";
+import {
+  collectInventory,
+  INVENTORY_METHOD,
+  INVENTORY_SECTIONS,
+  inventoryReportHash,
+  normalizeInventoryReport,
+  renderInventory,
+  sectionForPath,
+} from "./company-boundaries-inventory.mjs";
 
-function makeResponse(status, body) {
+/** Method-counting, path-recording mock transport. Rejects any non-GET method up front. */
+function makeGetOnlyTransport(respond) {
+  const methods = [];
+  const seenPaths = [];
   return {
-    status,
-    ok: status >= 200 && status < 300,
-    json: async () => (body === undefined ? {} : body),
+    methods,
+    seenPaths,
+    request({ method, path }) {
+      methods.push(method);
+      seenPaths.push(path);
+      if (method !== INVENTORY_METHOD) {
+        return Promise.reject(new Error(`unexpected non-GET method: ${method} ${path}`));
+      }
+      return Promise.resolve(respond({ method, path, calls: methods.length }));
+    },
   };
 }
 
-test("success with data rows marks covered with counts", async () => {
-  let calls = 0;
-  const report = await collectInventory({
-    fetch: async (path) => {
-      calls += 1;
-      const section = sectionForPath(path);
-      const row = Object.fromEntries(section.attribution.map((field) => [field, `present-${field}`]));
-      return makeResponse(200, { items: [{ id: "a", ...row }] });
-    },
+/** Stable fixture: a deterministic per-section scripted GET response table. */
+function stableFixtureResponse(path) {
+  const fixtures = {
+    "/agents": { status: 200, body: { items: [{ id: "agent-1", ownerCompanyId: "c1" }] } },
+    "/issues": { status: 200, body: [{ id: "issue-1", ownerCompanyId: "c1" }] },
+    "/projects-documents": { status: 200, body: [] },
+    "/skills-policies": { status: 403 },
+    "/secrets-bindings": { status: 404 },
+    "/connections-tools": { status: 200, body: { items: [{ id: "conn-1" }] } },
+    "/budgets-costs": { status: 200, body: { items: [] } },
+    "/memory-knowledge-sessions": { status: 200, body: { unexpectedShape: true } },
+    "/chat-exchange-wake": { status: 503 },
+    "/audit-approvals": { status: 200, body: { items: [{ id: "audit-1" }, { id: "audit-2" }] } },
+  };
+  const fixture = fixtures[path];
+  assert.ok(fixture, `fixture missing for path ${path}`);
+  return {
+    status: fixture.status,
+    ok: fixture.status >= 200 && fixture.status < 300,
+    json: async () => (fixture.body === undefined ? {} : fixture.body),
+  };
+}
+
+function makeStableFixtureTransport() {
+  return makeGetOnlyTransport(({ path }) => stableFixtureResponse(path));
+}
+
+test("probe issues exactly one GET per section and never a write method", async () => {
+  const transport = makeGetOnlyTransport(({ path }) => {
+    if (path === "/agents") {
+      return { status: 200, ok: true, json: async () => ({ items: [{ id: "a" }] }) };
+    }
+    return { status: 403, ok: false };
   });
+  const report = await collectInventory(transport);
+
+  assert.equal(transport.methods.length, INVENTORY_SECTIONS.length);
+  assert.ok(transport.methods.every((method) => method === "GET"));
+  assert.deepEqual(transport.seenPaths, INVENTORY_SECTIONS.map((section) => section.path));
   assert.equal(report.summary.total, INVENTORY_SECTIONS.length);
-  assert.equal(report.summary.covered, INVENTORY_SECTIONS.length);
-  assert.equal(report.summary.counts.data, INVENTORY_SECTIONS.length);
+  assert.equal(report.summary.covered, 1);
+});
+
+test("write methods are a contract violation the transport refuses", async () => {
+  const transport = makeGetOnlyTransport(() => {
+    throw new Error("fixture must never be asked to write");
+  });
+  await assert.rejects(
+    transport.request({ method: "POST", path: "/agents" }),
+    /unexpected non-GET method/,
+  );
+  await assert.rejects(
+    transport.request({ method: "PUT", path: "/issues" }),
+    /unexpected non-GET method/,
+  );
+  await assert.rejects(
+    transport.request({ method: "DELETE", path: "/budgets-costs" }),
+    /unexpected non-GET method/,
+  );
+});
+
+test("two consecutive probe runs on the same stable fixture produce the same normalized summary and hash", async () => {
+  const first = await collectInventory(makeStableFixtureTransport());
+  const second = await collectInventory(makeStableFixtureTransport());
+
+  assert.deepEqual(first.summary, second.summary);
+  assert.deepEqual(first.sections, second.sections);
+  assert.deepEqual(normalizeInventoryReport(first), normalizeInventoryReport(second));
+  assert.equal(inventoryReportHash(first), inventoryReportHash(second));
+  assert.match(inventoryReportHash(first), /^[0-9a-f]{64}$/);
+
+  // Deterministic ordering: normalization sorts object keys, so an equivalently
+  // re-keyed report still normalizes and hashes identically.
+  const reordered = {
+    summary: { counts: second.summary.counts, covered: second.summary.covered, total: second.summary.total },
+    sections: second.sections.map(({ path, ...rest }) => ({ ...rest, path })),
+  };
+  assert.deepEqual(normalizeInventoryReport(reordered), normalizeInventoryReport(second));
+  assert.equal(inventoryReportHash(reordered), inventoryReportHash(second));
+
+  assert.equal(JSON.parse(renderInventory(first)).summary.total, INVENTORY_SECTIONS.length);
+});
+
+test("stable fixture resolves each section to its expected state and count", async () => {
+  const report = await collectInventory(makeStableFixtureTransport());
+  const byKey = Object.fromEntries(report.sections.map((section) => [section.key, section]));
+
+  assert.equal(byKey.agents.state, "data");
+  assert.equal(byKey.agents.count, 1);
+  assert.equal(byKey["projects-documents"].state, "empty");
+  assert.equal(byKey["connections-tools"].state, "data");
+  assert.equal(byKey["budgets-costs"].state, "empty");
+  assert.equal(byKey["audit-approvals"].state, "data");
+  assert.equal(byKey["audit-approvals"].count, 2);
+  assert.equal(byKey["skills-policies"].state, "denied");
+  assert.equal(byKey["secrets-bindings"].state, "not-found");
+  assert.equal(byKey["memory-knowledge-sessions"].state, "error");
+  assert.equal(byKey["chat-exchange-wake"].state, "error");
+
+  assert.deepEqual(report.summary, {
+    total: 10,
+    covered: 6,
+    counts: { data: 4, empty: 2, denied: 1, "not-found": 1, error: 2 },
+  });
+  // missingAttribution is computed from the observed fixture rows, not copied
+  // from the section registry: a declared field is listed only when at least
+  // one returned row lacks it.
+  assert.deepEqual(byKey.agents.missingAttribution, []);
+  assert.deepEqual(byKey.issues.missingAttribution, ["dependency"]);
+  assert.deepEqual(byKey["projects-documents"].missingAttribution, ["ownerCompanyId"]);
+  assert.deepEqual(byKey["connections-tools"].missingAttribution, ["ownerCompanyId", "dependency"]);
+  assert.deepEqual(byKey["budgets-costs"].missingAttribution, ["ownerCompanyId"]);
+  assert.deepEqual(byKey["audit-approvals"].missingAttribution, ["ownerCompanyId", "dependency"]);
   for (const section of report.sections) {
-    assert.equal(section.state, "data");
-    assert.equal(section.count, 1);
+    const definition = sectionForPath(section.path);
+    assert.ok(definition, `no registry entry for ${section.path}`);
+    if (!section.covered) {
+      assert.deepEqual(section.missingAttribution, []);
+    }
+  }
+});
+
+test("a failed GET stays an error-state coverage failure and is never reported as empty", async () => {
+  let index = 0;
+  const transport = makeGetOnlyTransport(() => {
+    index += 1;
+    if (index === 1) {
+      // Network-level failure: the fetch itself rejects.
+      return Promise.reject(new Error("transport failure"));
+    }
+    if (index === 2) {
+      // Non-2xx response.
+      return { status: 500, ok: false };
+    }
+    // 2xx but malformed payload that yields no listable items.
+    return { status: 200, ok: true, json: async () => ({ unexpected: true }) };
+  });
+  const report = await collectInventory(transport);
+
+  assert.equal(report.sections[0].state, "error");
+  assert.equal(report.sections[1].state, "error");
+  assert.equal(report.sections[2].state, "error");
+  for (const section of report.sections.slice(0, 3)) {
+    assert.equal(section.covered, false);
+    assert.equal(section.count, 0);
+    assert.notEqual(section.state, "empty");
     assert.deepEqual(section.missingAttribution, []);
   }
-  assert.equal(calls, INVENTORY_SECTIONS.length);
+  assert.equal(report.summary.counts.error, INVENTORY_SECTIONS.length);
+  assert.equal(report.summary.counts.empty, 0);
+  assert.equal(report.summary.covered, 0);
+});
+
+test("empty payloads stay covered and remain distinct from denied and not-found", async () => {
+  const report = await collectInventory(makeGetOnlyTransport(() => ({ status: 200, ok: true, json: async () => [] })));
+  assert.equal(report.summary.counts.empty, INVENTORY_SECTIONS.length);
+  assert.equal(report.summary.covered, INVENTORY_SECTIONS.length);
+  assert.equal(report.summary.counts.denied, 0);
+  assert.equal(report.summary.counts["not-found"], 0);
+  // An empty payload observed no rows, so every declared field is reported missing.
+  for (const section of report.sections) {
+    assert.deepEqual(section.missingAttribution, sectionForPath(section.path).attribution);
+  }
 });
 
 test("missing attribution fields are computed from observed rows", async () => {
-  const report = await collectInventory({
-    fetch: async (path) => {
-      if (path === "/agents") return makeResponse(200, { items: [{ id: "a1", ownerCompanyId: "c1" }, { id: "a2" }] });
-      if (path === "/issues") return makeResponse(200, { items: [{ id: "i1", ownerCompanyId: "c1", dependency: "dep-1" }] });
-      if (path === "/projects-documents") return makeResponse(200, { items: [{ id: "p1", ownerCompanyId: null }] });
-      if (path === "/skills-policies") return makeResponse(200, { items: [{ id: "s1", dependency: "d1" }] });
-      return makeResponse(200, []);
-    },
-  });
+  const report = await collectInventory(
+    makeGetOnlyTransport(({ path }) => {
+      if (path === "/agents") return { status: 200, ok: true, json: async () => ({ items: [{ id: "a1", ownerCompanyId: "c1" }, { id: "a2" }] }) };
+      if (path === "/issues") return { status: 200, ok: true, json: async () => [{ id: "i1", ownerCompanyId: "c1", dependency: "dep-1" }] };
+      if (path === "/projects-documents") return { status: 200, ok: true, json: async () => ({ items: [{ id: "p1", ownerCompanyId: null }] }) };
+      if (path === "/skills-policies") return { status: 200, ok: true, json: async () => ({ items: [{ id: "s1", dependency: "d1" }] }) };
+      return { status: 200, ok: true, json: async () => [] };
+    }),
+  );
   const byKey = Object.fromEntries(report.sections.map((section) => [section.key, section]));
+
+  assert.equal(byKey.agents.state, "data");
   assert.deepEqual(byKey.agents.missingAttribution, ["ownerCompanyId"]);
   assert.deepEqual(byKey.issues.missingAttribution, []);
   assert.deepEqual(byKey["projects-documents"].missingAttribution, ["ownerCompanyId"]);
   assert.deepEqual(byKey["skills-policies"].missingAttribution, ["ownerCompanyId"]);
-  assert.deepEqual(byKey["budgets-costs"].missingAttribution, ["ownerCompanyId"]);
+
   const rendered = renderInventory(report);
   assert.ok(!rendered.includes("c1"));
   assert.ok(!rendered.includes("dep-1"));
   assert.ok(!rendered.includes("a1"));
-});
-
-test("success with an empty payload is covered and distinct from denied", async () => {
-  const report = await collectInventory({ fetch: async () => makeResponse(200, []) });
-  assert.equal(report.summary.counts.empty, INVENTORY_SECTIONS.length);
-  assert.equal(report.summary.covered, INVENTORY_SECTIONS.length);
-  for (const section of report.sections) {
-    assert.deepEqual(section.missingAttribution, sectionForPath(`/${section.key}`).attribution);
-  }
-});
-
-test("403 and 404 map to denied and not-found without coverage", async () => {
-  let index = 0;
-  const report = await collectInventory({ fetch: async () => (index++ % 2 === 0 ? makeResponse(403) : makeResponse(404)) });
-  assert.equal(report.summary.counts.denied, 5);
-  assert.equal(report.summary.counts["not-found"], 5);
-  assert.equal(report.summary.covered, 0);
-  for (const section of report.sections) {
-    assert.equal(section.covered, false);
-    assert.deepEqual(section.missingAttribution, []);
-  }
-});
-
-test("malformed or ignored payloads are not covered", async () => {
-  let index = 0;
-  const report = await collectInventory({
-    fetch: async () => {
-      index += 1;
-      if (index === 1) return makeResponse(200, { unexpected: true });
-      if (index === 2) return makeResponse(500);
-      throw new Error("transport failure");
-    },
-  });
-  assert.equal(report.sections[0].state, "error");
-  assert.equal(report.sections[1].state, "error");
-  assert.equal(report.sections[2].state, "error");
-  assert.equal(report.summary.counts.error, INVENTORY_SECTIONS.length);
-  assert.equal(report.summary.covered, 0);
-});
-
-test("summary is repeatable for the same transport", async () => {
-  const fetch = async (path) => (path === "/issues" ? makeResponse(200, { items: [{}] }) : makeResponse(403));
-  const first = await collectInventory({ fetch });
-  const second = await collectInventory({ fetch });
-  assert.deepEqual(first.summary, second.summary);
-  assert.deepEqual(first.sections, second.sections);
-  assert.equal(JSON.parse(renderInventory(first)).summary.total, INVENTORY_SECTIONS.length);
 });
 
 test("unknown sections are absent from the registry and cannot be covered", () => {

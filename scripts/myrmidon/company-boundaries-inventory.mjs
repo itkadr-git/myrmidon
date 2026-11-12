@@ -1,7 +1,13 @@
 #!/usr/bin/env node
-/** Read-only company-boundaries coverage inventory.
- * Transport is injected so this report never performs writes and is deterministic.
+/** Read-only company-boundaries inventory probe.
+ *
+ * The HTTP transport is injected by the caller: this module never opens
+ * connections and never performs writes. Every request the probe issues is
+ * a GET; a transport that observes any other method is a contract violation
+ * and must fail the probe (see company-boundaries-inventory.test.mjs).
  */
+
+import { createHash } from "node:crypto";
 
 export const INVENTORY_SECTIONS = Object.freeze([
   { key: "agents", path: "/agents", attribution: ["ownerCompanyId"] },
@@ -17,6 +23,8 @@ export const INVENTORY_SECTIONS = Object.freeze([
 ]);
 
 const SECTION_BY_PATH = new Map(INVENTORY_SECTIONS.map((section) => [section.path, section]));
+
+export const INVENTORY_METHOD = "GET";
 
 function safePayload(body) {
   return Array.isArray(body) ? body : body && Array.isArray(body.items) ? body.items : null;
@@ -48,7 +56,8 @@ function missingAttribution(attribution, rows) {
 }
 
 /**
- * @param {{fetch: (path: string) => Promise<{status:number,ok:boolean,json?:()=>Promise<unknown>}>}} transport
+ * Run the read-only inventory probe against an injected transport.
+ * @param {{request: (opts: {method: string, path: string}) => Promise<{status:number, ok:boolean, json?:() => Promise<unknown>}>}} transport
  * @returns {Promise<{sections: Array<object>, summary: object}>}
  */
 export async function collectInventory(transport) {
@@ -57,7 +66,7 @@ export async function collectInventory(transport) {
     let response;
     let payload = null;
     try {
-      response = await transport.fetch(definition.path);
+      response = await transport.request({ method: INVENTORY_METHOD, path: definition.path });
       if (response?.ok && typeof response.json === "function") payload = safePayload(await response.json());
     } catch {
       response = null;
@@ -65,21 +74,46 @@ export async function collectInventory(transport) {
     const state = stateFor(response, payload);
     sections.push({
       key: definition.key,
+      path: definition.path,
       state,
       covered: state === "data" || state === "empty",
       count: state === "data" ? payload.length : 0,
       missingAttribution: state === "data" || state === "empty" ? missingAttribution(definition.attribution, payload) : [],
     });
   }
-  const counts = Object.fromEntries(["data", "empty", "denied", "not-found", "error"].map((state) => [state, sections.filter((s) => s.state === state).length]));
+  const counts = Object.fromEntries(
+    ["data", "empty", "denied", "not-found", "error"].map((state) => [state, sections.filter((s) => s.state === state).length]),
+  );
   return {
     sections,
     summary: { total: sections.length, covered: sections.filter((s) => s.covered).length, counts },
   };
 }
 
+function canonicalize(value) {
+  if (Array.isArray(value)) return value.map(canonicalize);
+  if (value && typeof value === "object") {
+    return Object.fromEntries(
+      Object.keys(value)
+        .sort()
+        .map((key) => [key, canonicalize(value[key])]),
+    );
+  }
+  return value;
+}
+
+/** Deterministic normalized form of a probe report (sorted object keys, section order preserved). */
+export function normalizeInventoryReport(report) {
+  return canonicalize({ sections: report.sections, summary: report.summary });
+}
+
+/** Stable sha256 over the normalized report; equal runs on the same fixture produce equal hashes. */
+export function inventoryReportHash(report) {
+  return createHash("sha256").update(JSON.stringify(normalizeInventoryReport(report))).digest("hex");
+}
+
 export function renderInventory(report) {
-  return JSON.stringify(report);
+  return JSON.stringify(normalizeInventoryReport(report));
 }
 
 export function sectionForPath(path) {
@@ -87,6 +121,6 @@ export function sectionForPath(path) {
 }
 
 if (import.meta.url === `file://${process.argv[1]}`) {
-  console.error("This module requires an injected read-only transport; no live calls are performed.");
+  console.error("This module requires an injected read-only GET transport; no live calls are performed.");
   process.exitCode = 2;
 }
