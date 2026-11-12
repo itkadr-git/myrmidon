@@ -8,7 +8,12 @@
 //   fast - typecheck, build and the tests selected below.
 //   full - every test lane (the same as a push to main).
 
+import fs from "node:fs";
 import path from "node:path";
+
+// Root used to read module sources for the export-change graph (OPE-12838);
+// tests point it at a fixture tree via MYRMIDON_REPO_ROOT.
+const exportGraphRoot = process.env.MYRMIDON_REPO_ROOT ?? process.cwd();
 
 // Changing any of these can affect tests anywhere, so they force the full tier.
 export const FULL_TRIGGERS = [
@@ -291,24 +296,225 @@ export function classifyChanges(
   }
   if (reasons.size > 0) return { tier: "full", reasons: [...reasons] };
 
+  // Contract/export protection (OPE-10709, narrowed by OPE-12838): a PR that
+  // touches an exported interface runs the tests its change reaches, not the
+  // whole suite. Follow imports from the changed export files to the test
+  // files that reach them and select those tests. The full tier remains only
+  // when the planner cannot prove safety: a TEST imports a workspace-named
+  // specifier that resolves to no workspace file (its dependence on the
+  // change is unknown), or the graph root is unusable so the planner has
+  // nothing to walk. Unresolved specifiers in non-test sources are runtime
+  // wiring (dynamic assembly, env-dependent paths): their edges end there,
+  // and the full run on main covers them.
   const exportChangedFiles = exportChanges ?? detectExportOrTypeChangesFromDiff(diffText);
   if (exportChangedFiles.length > 0) {
-    const used = exportChangedFiles.filter((f) => isModuleUsedByTests(f, packages, testFiles, rootModules));
-    if (used.length > 0) {
+    const usedByUnknown = !packages || !testFiles || testFiles.length === 0;
+    if (usedByUnknown) {
+      // Old behaviour (OPE-10709): without the data to prove which tests reach
+      // the change, keep the whole suite.
       return {
         tier: "full",
         keepFull: true,
-        reasons: used.map(
-          (f) => `PR changes exported interface, type, or signature in ${f} used by tests: running full server test suite`,
-        ),
+        reasons: [
+          `PR changes exported interface, type, or signature in ${exportChangedFiles[0]} used by tests: running full server test suite`,
+        ],
       };
     }
+    const graph = buildImportGraph(testFiles, packages, rootModules);
+    if (graph === null) {
+      return {
+        tier: "full",
+        keepFull: true,
+        reasons: [
+          `PR changes exported interface, type, or signature in ${exportChangedFiles[0]}: ` +
+            "a test imports a workspace module the planner cannot resolve: running full server test suite",
+        ],
+      };
+    }
+    const selection = selectExportTests(exportChangedFiles, graph, packages);
+    if (selection.files.length > 0) {
+      return {
+        tier: "fast",
+        keepFull: false,
+        reasons: selection.reasons,
+        selection: { wholePackages: [], files: selection.files },
+      };
+    }
+    // No test reaches the changed export file: the change is runtime-only
+    // territory the selected tests cannot cover, so the full suite stays.
+    return {
+      tier: "full",
+      keepFull: true,
+      reasons: [
+        `PR changes exported interface, type, or signature in ${exportChangedFiles[0]} used by tests: running full server test suite`,
+      ],
+    };
   }
 
   if (files.every((file) => LIGHT.some((pattern) => pattern.test(file)))) {
     return { tier: "docs", reasons: ["only Myrmidon docs and scripts"] };
   }
   return { tier: "fast", reasons: ["affected tests only"] };
+}
+
+// ------------------------------------------------- export-change selection
+
+/** Module path of a repo-relative file: extension stripped, /index kept. */
+function modulePathOf(file) {
+  return file.replace(/\.(?:d\.ts|tsx?|mts|cts|mjs|cjs|jsx?)$/, "");
+}
+
+/** Repo-relative files a stripped module path may live in, best first. */
+function moduleFiles(modulePath) {
+  const files = [".ts", ".tsx", ".mts", ".cts", ".mjs", ".cjs", ".js", ".jsx"].map((ext) => modulePath + ext);
+  files.push(`${modulePath}/index.ts`, `${modulePath}/index.tsx`, `${modulePath}/index.mjs`, `${modulePath}/index.js`, modulePath);
+  return files;
+}
+
+function readModuleSource(modulePath) {
+  for (const candidate of moduleFiles(modulePath)) {
+    try {
+      return fs.readFileSync(path.join(exportGraphRoot, candidate), "utf8");
+    } catch {
+      // The last candidate is the bare module path itself: when even that is
+      // unreadable the module has no readable source on disk.
+      if (candidate === modulePath) return null;
+    }
+  }
+  return null;
+}
+
+function testSource(testFiles, modulePath) {
+  return testFiles.find((t) => modulePathOf(t.file) === modulePath)?.source ?? null;
+}
+
+/**
+ * Restores the /index suffix for a graph node when the module is a directory
+ * index: the changed-file module path keeps /index, so both ends of an edge
+ * must match.
+ */
+function restoreIndex(modulePath) {
+  return fs.existsSync(path.join(exportGraphRoot, `${modulePath}/index.ts`)) ||
+    fs.existsSync(path.join(exportGraphRoot, `${modulePath}/index.tsx`)) ||
+    fs.existsSync(path.join(exportGraphRoot, `${modulePath}/index.mjs`))
+    ? `${modulePath}/index`
+    : modulePath;
+}
+
+/**
+ * Workspace import graph for the export-change branch (OPE-12838).
+ *
+ * Nodes are stripped module paths; `edges` maps one to the workspace modules
+ * it imports, `tests` maps a test module path to the test file. Test sources
+ * come from `testFiles`, server entry points from `rootModules`, everything
+ * else is read from the repository through `readModuleSource`. Relative
+ * specifiers resolve within the node's own directory; bare specifiers resolve
+ * through the target package's `exports` (importTarget). A bare specifier
+ * that names a workspace package but matches no export returns null there:
+ * for a TEST that is an unprovable dependence (the caller keeps the full
+ * tier); for a source it is runtime wiring and just ends the node's edges.
+ * The graph is walked lazily from tests and roots, so only modules reachable
+ * from tests are read.
+ */
+export function buildImportGraph(testFiles, packages, rootModules = null) {
+  const packagesByName = new Map(packages.map((pkg) => [pkg.name, pkg]));
+  const edges = new Map();
+  const tests = new Map();
+  const roots = new Map((rootModules ?? []).map((root) => [modulePathOf(root.file), root.source]));
+  let unresolvedTest = false;
+
+  // Bare-specifier resolution with three outcomes (importTarget cannot tell
+  // them apart): undefined — external package, no workspace edge; string —
+  // resolved workspace module; null — workspace-named but no export covers the
+  // subpath (unknown dependence for tests, dead end for sources). Self-package
+  // imports resolve through the module's own package exports, which
+  // importTarget refuses to do.
+  const resolveBare = (spec, modulePath) => {
+    const parts = spec.split("/");
+    const name = spec.startsWith("@") ? parts.slice(0, 2).join("/") : parts[0];
+    const pkg = packagesByName.get(name);
+    if (!pkg) return undefined;
+    const rest = parts.slice(spec.startsWith("@") ? 2 : 1).join("/");
+    const owner = ownerOf(modulePath, packages) ?? pkg;
+    const file = resolveExport(owner, rest ? `./${rest}` : ".");
+    return file ? restoreIndex(modulePathOf(file)) : null;
+  };
+
+  const resolveSpec = (spec, modulePath) => {
+    if (spec.startsWith(".")) {
+      return restoreIndex(modulePathOf(path.posix.normalize(path.posix.join(path.posix.dirname(modulePath), spec))));
+    }
+    for (const alias of PACKAGE_ALIASES[ownerOf(modulePath, packages)?.name] ?? []) {
+      if (spec.startsWith(alias.prefix)) {
+        return restoreIndex(modulePathOf(path.posix.join(ownerOf(modulePath, packages).dir, alias.dir, spec.slice(alias.prefix.length))));
+      }
+    }
+    return resolveBare(spec, modulePath);
+  };
+
+  const visit = (modulePath, isTest) => {
+    if (edges.has(modulePath)) return;
+    edges.set(modulePath, []);
+    const source = (isTest ? testSource(testFiles, modulePath) : roots.get(modulePath)) ?? readModuleSource(modulePath);
+    if (source === null) return;
+    for (const spec of importSpecifiers(source)) {
+      const target = resolveSpec(spec, modulePath);
+      if (target === undefined) continue;
+      if (target === null) {
+        if (isTest) unresolvedTest = true;
+        continue;
+      }
+      edges.get(modulePath).push(target);
+      visit(target, false);
+    }
+  };
+
+  for (const { file } of testFiles) tests.set(modulePathOf(file), file);
+  for (const modulePath of tests.keys()) visit(modulePath, true);
+  for (const modulePath of roots.keys()) visit(modulePath, false);
+  return unresolvedTest ? null : { edges, tests };
+}
+
+/**
+ * Selects the test files whose module closure reaches any changed export
+ * file, grouped by owning package, plus one reason per changed file.
+ */
+export function selectExportTests(changedFiles, graph, packages) {
+  // graph.edges point module -> imported module; invert them so the walk from
+  // a changed file follows its importers instead of its own imports.
+  const importers = new Map();
+  for (const [modulePath, targets] of graph.edges) {
+    for (const target of targets) {
+      let list = importers.get(target);
+      if (!list) importers.set(target, (list = []));
+      list.push(modulePath);
+    }
+  }
+  const reached = new Set();
+  const stack = [...changedFiles];
+  while (stack.length > 0) {
+    const modulePath = modulePathOf(stack.pop());
+    if (reached.has(modulePath)) continue;
+    reached.add(modulePath);
+    for (const target of importers.get(modulePath) ?? []) {
+      if (!reached.has(target)) stack.push(target);
+    }
+  }
+  const byPackage = new Map();
+  for (const [modulePath, file] of graph.tests) {
+    if (!reached.has(modulePath)) continue;
+    const pkg = ownerOf(file, packages);
+    if (!pkg) continue;
+    if (!byPackage.has(pkg.name)) byPackage.set(pkg.name, new Set());
+    byPackage.get(pkg.name).add(file);
+  }
+  const files = [...byPackage.entries()]
+    .map(([name, set]) => ({ package: name, files: [...set].sort() }))
+    .sort((a, b) => a.package.localeCompare(b.package));
+  const reasons = changedFiles.map(
+    (f) => `PR changes exported interface, type, or signature in ${f}: running the tests that reach it`,
+  );
+  return { files, reasons };
 }
 
 const IMPORT_SPECIFIER = /(?:\bfrom\s*|\bimport\s*\(\s*|\bimport\s+|\bvi\.(?:mock|doMock|importActual)\s*\(\s*|\brequire\s*\(\s*)["'`]([^"'`]+)["'`]/g;

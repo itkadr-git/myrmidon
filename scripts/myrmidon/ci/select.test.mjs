@@ -2,13 +2,14 @@ import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import {
   applyReleaseFast,
+  buildImportGraph,
   classifyChanges,
   detectExportOrTypeChangesFromDiff,
   importSpecifiers,
-  isModuleUsedByTests,
   lightLogLines,
   resolveExport,
   selectDirectTests,
+  selectExportTests,
   selectTests,
   MAX_FAST_FILES_PER_PACKAGE,
   SHARED_GUARD_TESTS,
@@ -602,18 +603,23 @@ diff --git a/docs/README.md b/docs/README.md
   });
 });
 
-describe("OPE-10709: regression protection for export/type changes (#2296 and #1949)", () => {
-  const pkgs = [{ name: "@myrmidon/server", dir: "server" }];
+describe("OPE-12838: export changes select the tests that reach them (was OPE-10709 blanket full)", () => {
+  const pkgs = [
+    { name: "@myrmidon/server", dir: "server" },
+    { name: "@myrmidon/shared", dir: "packages/shared", exports: { ".": "./src/index.ts", "./*": "./src/*.ts" } },
+  ];
   const t = (file, source = "") => ({ file, source });
-
-  it("escalates #2296 (data-retention/index.ts export change) to full tier and keeps it full", () => {
-    const diff = `
-diff --git a/server/src/myrmidon/data-retention/index.ts b/server/src/myrmidon/data-retention/index.ts
---- a/server/src/myrmidon/data-retention/index.ts
-+++ b/server/src/myrmidon/data-retention/index.ts
+  const exportDiff = (file, addedLine) =>
+    `diff --git a/${file} b/${file}
+--- a/${file}
++++ b/${file}
 @@ -10,2 +10,3 @@
-+export { createClosedTaskGitBundleCleanup } from "./git-bundle-cleanup.js";
++${addedLine}
 `;
+
+  it("selects the transitive test for #2296 (data-retention/index.ts export change) instead of full", () => {
+    // server-startup-feedback-export.test.ts -> ../index.js -> ./myrmidon/data-retention/index.js (rootModules)
+    const diff = exportDiff("server/src/myrmidon/data-retention/index.ts", "export { createClosedTaskGitBundleCleanup } from './git-bundle-cleanup.js';");
     const changed = ["server/src/myrmidon/data-retention/index.ts"];
     const rootModules = [
       {
@@ -626,40 +632,103 @@ diff --git a/server/src/myrmidon/data-retention/index.ts b/server/src/myrmidon/d
     ];
 
     const plan = classifyChanges(changed, { diffText: diff, packages: pkgs, testFiles: tests, rootModules });
-    assert.equal(plan.tier, "full");
-    assert.equal(plan.keepFull, true);
+    assert.equal(plan.tier, "fast");
+    assert.equal(plan.keepFull, false);
     assert.match(plan.reasons[0], /PR changes exported interface, type, or signature/);
+    assert.deepEqual(plan.selection, {
+      wholePackages: [],
+      files: [{ package: "@myrmidon/server", files: ["server/src/__tests__/server-startup-feedback-export.test.ts"] }],
+    });
 
-    // Verify applyReleaseFast does NOT lower it even with prLight and releaseFast
-    const finalized = applyReleaseFast(plan, null, { releaseFast: true, prLight: true });
-    assert.equal(finalized.tier, "full");
+    // pr-light/release-fast keep the export-driven selection
+    const finalized = applyReleaseFast(plan, plan.selection, { releaseFast: true, prLight: true });
+    assert.equal(finalized.tier, "fast");
+    assert.deepEqual(finalized.selection, plan.selection);
   });
 
-  it("escalates #1949 (metrics.ts interface change) to full tier and keeps it full", () => {
-    const diff = `
-diff --git a/server/src/myrmidon/monitoring/metrics/metrics.ts b/server/src/myrmidon/monitoring/metrics/metrics.ts
---- a/server/src/myrmidon/monitoring/metrics/metrics.ts
-+++ b/server/src/myrmidon/monitoring/metrics/metrics.ts
-@@ -20,2 +20,3 @@ export interface MetricsSnapshotFields {
-+  emptyRunsByAgent: Record<string, number>;
- }
-`;
+  it("selects the direct type-import test for #1949 (metrics.ts interface change)", () => {
+    const diff = exportDiff("server/src/myrmidon/monitoring/metrics/metrics.ts", "  emptyRunsByAgent: Record<string, number>;");
+    // Note: the diff hunk also needs the interface context to count; the + line inside an interface body counts.
+    const diffWithInterface = diff.replace(
+      "@@ -10,2 +10,3 @@",
+      "@@ -20,2 +20,3 @@ export interface MetricsSnapshotFields {",
+    );
     const changed = ["server/src/myrmidon/monitoring/metrics/metrics.ts"];
     const tests = [
       t("server/src/__tests__/gateway-cooldown-failed-before-model.test.ts", 'import type { MetricsSnapshotFields } from "../myrmidon/monitoring/metrics/metrics.js";'),
     ];
 
+    const plan = classifyChanges(changed, { diffText: diffWithInterface, packages: pkgs, testFiles: tests });
+    assert.equal(plan.tier, "fast");
+    assert.deepEqual(plan.selection, {
+      wholePackages: [],
+      files: [{ package: "@myrmidon/server", files: ["server/src/__tests__/gateway-cooldown-failed-before-model.test.ts"] }],
+    });
+  });
+
+  it("keeps full when a test imports a workspace specifier the planner cannot resolve", () => {
+    // Not packages/shared: FULL_TRIGGERS escalate the shared package itself
+    // before this branch runs.
+    const diff = exportDiff("server/src/contract.ts", "export interface Widget { id: string }");
+    const changed = ["server/src/contract.ts"];
+    // server's exports cover only "." and "./secrets/local-encrypted-provider",
+    // so this subpath cannot resolve through them.
+    const tests = [t("server/src/__tests__/mystery.test.ts", 'import { Widget } from "@myrmidon/server/nonexistent";')];
+
+    const plan = classifyChanges(changed, { diffText: diff, packages: pkgs, testFiles: tests });
+    assert.equal(plan.tier, "full");
+    assert.equal(plan.keepFull, true);
+    assert.match(plan.reasons[0], /a test imports a workspace module the planner cannot resolve/);
+  });
+
+  it("keeps full when the changed export file is reached by no test (uncovered change)", () => {
+    const diff = exportDiff("server/src/never-imported.ts", "export interface Orphan { id: string }");
+    const changed = ["server/src/never-imported.ts"];
+    const tests = [t("server/src/__tests__/unrelated.test.ts", 'import { startServer } from "../index.js";')];
+
     const plan = classifyChanges(changed, { diffText: diff, packages: pkgs, testFiles: tests });
     assert.equal(plan.tier, "full");
     assert.equal(plan.keepFull, true);
     assert.match(plan.reasons[0], /PR changes exported interface, type, or signature/);
-
-    // Verify applyReleaseFast does NOT lower it
-    const finalized = applyReleaseFast(plan, null, { releaseFast: true, prLight: true });
-    assert.equal(finalized.tier, "full");
   });
 
-  it("includes server-startup-feedback-export.test.ts in SHARED_GUARD_TESTS", () => {
-    assert.ok(SHARED_GUARD_TESTS.includes("server/src/__tests__/server-startup-feedback-export.test.ts"));
+  it("keeps full when no test files are known (missing data, old behaviour)", () => {
+    const diff = exportDiff("server/src/something.ts", "export interface Thing { id: string }");
+    const plan = classifyChanges(["server/src/something.ts"], { diffText: diff, packages: pkgs, testFiles: [] });
+    assert.equal(plan.tier, "full");
+    assert.equal(plan.keepFull, true);
+    assert.match(plan.reasons[0], /used by tests: running full server test suite/);
+  });
+
+  it("ignores external bare specifiers in tests (node:fs does not keep full)", () => {
+    const graph = buildImportGraph(
+      [t("server/src/__tests__/x.test.ts", 'import fs from "node:fs";')],
+      pkgs,
+      null,
+    );
+    assert.notEqual(graph, null);
+    const sel = selectExportTests(["packages/shared/src/contract.ts"], graph, pkgs);
+    assert.deepEqual(sel.files, []);
+  });
+
+  it("treats an unresolvable workspace specifier in a non-test source as runtime wiring, not full", () => {
+    const graph = buildImportGraph(
+      [t("server/src/__tests__/x.test.ts", 'import "./util.js";')],
+      pkgs,
+      [{ file: "server/src/index.ts", source: 'import "@myrmidon/shared/nonexistent";' }],
+    );
+    assert.notEqual(graph, null);
+    assert.deepEqual(graph.edges.get("server/src/index"), []);
+  });
+
+  it("stops tracing at unreadable sources instead of failing the plan", () => {
+    const graph = buildImportGraph(
+      [t("server/src/__tests__/x.test.ts", 'import "../index.js";')],
+      pkgs,
+      [{ file: "server/src/index.ts", source: 'import "./does/not/exist.js";' }],
+    );
+    assert.notEqual(graph, null);
+    assert.ok(graph.edges.has("server/src/index"));
+    assert.deepEqual(graph.edges.get("server/src/does/not/exist"), []);
   });
 });
