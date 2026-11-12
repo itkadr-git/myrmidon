@@ -4752,6 +4752,43 @@ export function recoveryService(
     return Boolean(queued);
   }
 
+  async function resolveReviewStageBlockedAssignee(
+    issue: typeof issues.$inferSelect,
+    recoveryCause: StrandedRecoveryCause,
+  ): Promise<string | null> {
+    if (recoveryCause !== EXECUTION_REVIEW_PARTICIPANT_RECOVERY_REASON) {
+      return null;
+    }
+    if (issue.conversationAgentId) return null;
+    const state = parseIssueExecutionState(issue.executionState);
+    if (
+      !state ||
+      state.currentStageType !== "review" ||
+      state.status !== "pending"
+    ) {
+      return null;
+    }
+    if (
+      state.returnAssignee?.type !== "agent" ||
+      !state.returnAssignee.agentId
+    ) {
+      return null;
+    }
+    if (state.returnAssignee.agentId === issue.assigneeAgentId) {
+      return null;
+    }
+    const target = await getAgent(state.returnAssignee.agentId);
+    if (
+      !target ||
+      target.companyId !== issue.companyId ||
+      target.status === "terminated" ||
+      target.status === "pending_approval"
+    ) {
+      return null;
+    }
+    return target.id;
+  }
+
   async function escalateStrandedAssignedIssue(input: {
     issue: typeof issues.$inferSelect;
     previousStatus: StrandedPreviousStatus;
@@ -5727,9 +5764,23 @@ export function recoveryService(
       }
       return input.issue;
     }
+    // myrmidon(OPE-12896): when a stalled review stage sends an engineer's
+    // task to `blocked`, the execution state still names the author as
+    // `returnAssignee`. Blocking with the reviewer still in the assignee
+    // seat strands the issue on a non-coding owner: the reviewer spins
+    // empty continuation runs and the `issue_requires_engineer` gate then
+    // rejects every `in_progress` hand-back. Return the issue to the
+    // recorded return assignee as part of the same blocked update.
+    const reviewStageBlockedAssignee = await resolveReviewStageBlockedAssignee(
+      input.issue,
+      recoveryCause,
+    );
     const updated = await issuesSvc.update(input.issue.id, {
       status: "blocked",
       blockedByIssueIds: blockerIds,
+      ...(reviewStageBlockedAssignee
+        ? { assigneeAgentId: reviewStageBlockedAssignee, assigneeUserId: null }
+        : {}),
       // myrmidon(BLOCKED-REASON): without an open blocker the board-owned
       // recovery action is the reason; name it so the block is never reasonless.
       ...(blockerIds.length === 0 && !successfulRunDisposition
@@ -5743,9 +5794,12 @@ export function recoveryService(
     });
     if (!updated) return null;
     if (isProviderQuotaWait) return updated;
+    // myrmidon(OPE-12896): the deliberate return-assignee hand-back is the
+    // intended outcome, not a concurrent owner change; do not log it as one.
     const sourceAssigneePreserved =
-      updated.assigneeAgentId === input.issue.assigneeAgentId &&
-      updated.assigneeUserId === input.issue.assigneeUserId;
+      reviewStageBlockedAssignee != null ||
+      (updated.assigneeAgentId === input.issue.assigneeAgentId &&
+        updated.assigneeUserId === input.issue.assigneeUserId);
 
     const recoveryOwner = recoveryAction.ownerAgentId
       ? await getAgent(recoveryAction.ownerAgentId)
