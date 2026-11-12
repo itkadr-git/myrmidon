@@ -278,6 +278,18 @@ export function costRoutes(
     res.json(summary);
   });
 
+  // myrmidon(1.7 TOKEN-BUDGET-SIGNAL, OPE-12232): the soft token-budget signal
+  // of one issue. Read-only: it never pauses, never sets a pauseReason and is
+  // never consulted on run admission — the money hard-stop keeps that role.
+  router.get("/issues/:id/token-budget-signal", async (req, res) => {
+    const rawId = req.params.id as string;
+    const issue = await getAccessibleResource(req, res, resolveIssueByRef(rawId), "Issue not found");
+    if (!issue) return;
+    if (!(await assertIssueCostReadAllowed(req, res, issue))) return;
+    const signal = await budgets.getTokenBudgetSignal(issue.companyId, issue.id);
+    res.json(signal);
+  });
+
   router.get("/companies/:companyId/costs/by-agent", async (req, res) => {
     const companyId = req.params.companyId as string;
     assertCompanyAccess(req, companyId);
