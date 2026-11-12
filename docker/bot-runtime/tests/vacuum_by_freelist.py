@@ -235,6 +235,43 @@ def main() -> None:
     check("a caller with no objection lets it run", result.get("vacuumed") is True, str(result))
     db.close()
 
+    # --- 6b. size-based growth trigger (OPE-12883) -----------------------------------------------------------
+    # A DB whose freelist is small (steady-state, pages reused in place) but whose file has
+    # doubled since the last VACUUM must be vacuumed: the high-water mark means a large
+    # fraction of the file is dead space that the freelist never shows.
+    db = fresh_db(share=0.05)  # 5% free pages: way below the 25% threshold
+    ratio = db._freelist_ratio()
+    # Simulate: last VACUUM left the file at half its current size.
+    current_size = db.logical_size_bytes()
+    db.set_meta("last_vacuum_size_bytes", str(current_size // 2))
+    db.set_meta("last_vacuum", str(time.time() - 8 * 86400))  # 8 days ago, past the 7-day throttle
+    result = maint(db, min_vacuum_interval_days=7)
+    check("a file that doubled since the last VACUUM is vacuumed even at 5% free",
+          ratio is not None and ratio < 0.25 and result.get("vacuumed") is True, str(result))
+    check("last_vacuum_size_bytes is refreshed after the VACUUM",
+          db.get_meta("last_vacuum_size_bytes") is not None
+          and int(db.get_meta("last_vacuum_size_bytes")) <= db.logical_size_bytes())
+    db.close()
+
+    # A file that grew less than the trigger is left alone even when the interval passed.
+    db = fresh_db(share=0.05)
+    current_size = db.logical_size_bytes()
+    db.set_meta("last_vacuum_size_bytes", str(int(current_size * 0.9)))  # only 11% growth
+    db.set_meta("last_vacuum", str(time.time() - 8 * 86400))
+    result = maint(db, min_vacuum_interval_days=7)
+    check("a file that grew only 11% since the last VACUUM is left alone",
+          result.get("vacuumed") is False and "vacuum_skipped" not in result, str(result))
+    db.close()
+
+    # No recorded baseline: the freelist ratio is the only signal (existing behavior).
+    db = fresh_db(share=0.05)
+    db._write_sql("DELETE FROM state_meta WHERE key = 'last_vacuum_size_bytes'")
+    db.set_meta("last_vacuum", str(time.time() - 8 * 86400))
+    result = maint(db, min_vacuum_interval_days=7)
+    check("no size baseline: the freelist ratio decides (small freelist, no VACUUM)",
+          result.get("vacuumed") is False, str(result))
+    db.close()
+
     # --- 7. the gateway: wiring and the busy check ---------------------------------------------------------
     import gateway.run as gateway_run
 

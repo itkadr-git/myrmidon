@@ -340,9 +340,10 @@ RUN PYTHONDONTWRITEBYTECODE=1 /opt/hermes-src/.venv/bin/python /tmp/patch-tests/
 # fallback, model/provider errors still move it at once, and a run on a fallback tries the primary again
 # every few model calls.
 RUN PYTHONDONTWRITEBYTECODE=1 /opt/hermes-src/.venv/bin/python /tmp/patch-tests/gateway_outage_fallback.py /opt/hermes-src
-# myrmidon(G1): behaviour regression for 30-vacuum-by-freelist.patch: the automatic state.db VACUUM runs on the
-# freelist share alone (no prune of the same pass needed), and waits for room (twice the live data free on the
-# volume, a temp directory that is not RAM), for a store and a gateway without a running turn, and for
+# myrmidon(G1 + OPE-12883): behaviour regression for 30-vacuum-by-freelist.patch: the automatic state.db
+# VACUUM runs on the freelist share alone (no prune of the same pass needed) OR on size growth since the
+# last VACUUM (high-water mark), and waits for room (twice the live data free on the volume, a temp
+# directory that is not RAM), for a store and a gateway without a running turn, and for
 # min_vacuum_interval_days.
 RUN PYTHONDONTWRITEBYTECODE=1 /opt/hermes-src/.venv/bin/python /tmp/patch-tests/vacuum_by_freelist.py /opt/hermes-src
 # myrmidon(G1): behaviour regression for 32-compaction-summary-9-sections.patch:
