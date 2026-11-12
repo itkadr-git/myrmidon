@@ -68,6 +68,17 @@ const (
 	A18 = "A18"
 )
 
+// A22 is the decommission delete of a bot's main container (OPE-12654):
+// DELETE containers/myrmidon-bot-<K>?force=true&v=true&myrmidon-decommission=true.
+// It is a variant of A9 for the main container only, the way A17 is a variant
+// of A10: the agent left the bot runtime (another adapter, or terminated), so
+// the main container goes without a `.next` replacement, and the gate drops the
+// bot's quota project and its data directory with it.
+const A22 = "A22"
+
+// decommissionTail is the query of A22: the query of A9 plus the fixed flag.
+const decommissionTail = "?force=true&v=true&myrmidon-decommission=true"
+
 // skillsReadQuery is the skills directory the gate serves for A16, in the same
 // literal-encoded form the marker and clone-report queries use.
 const skillsReadQuery = "path=%2Fbot%2Fhermes%2Fskills"
@@ -385,6 +396,13 @@ func Parse(method, target string, images Images) (*Route, *deny.Error) {
 			return nil, notAllowed()
 		}
 		r.ID = A9
+	case decommissionTail:
+		// myrmidon(OPE-12654): the decommission delete exists for the main
+		// container only; a .next or a helper is deleted through A9.
+		if method != "DELETE" || suffix != SuffixMain {
+			return nil, notAllowed()
+		}
+		r.ID = A22
 	case "/json":
 		if method != "GET" || suffix != SuffixMain {
 			return nil, notAllowed()

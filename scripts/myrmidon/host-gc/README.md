@@ -18,6 +18,7 @@ Host-side garbage collector for bot task clones and build caches on `vm-core` an
 | Task clone (done/cancelled) | > 24 h | `git status` clean **and** all commits pushed **and** no stash **and** no alternates |
 | Task clone (unsafe) | > 24 h | Archive to `.gc-archive/` first, then remove |
 | Active checkout/worktree | — | Never touched |
+| Bot data directory (`/srv/myrmidon-bots/<bot-uuid>`, OPE-12654) | > 24 h | No `myrmidon-bot-<key>` container of any state **and** the board lists no `hermes_gateway` card for the agent (moved away, terminated or deleted) **and** no heartbeat run of the agent is `running` **and** no git worktree under `workspace/` holds unpushed work (uncommitted edits, stash, an operation in progress, commits on no remote). The quota project entries (`/etc/projid`, `/etc/projects`) are cleared after the removal |
 | Build cache | > 72 h | LRU eviction by mtime |
 | Bot scratch item | > 12 h (env configurable) | All tree mtimes > threshold; ignore `gh-cli-cache`; skip if open by running process |
 | `state.db`, `session`, `auth`, `credential`, `.git` | — | Never deleted |
@@ -102,6 +103,23 @@ sudo rm /usr/local/bin/devbuild-v2-gc.sh
 Task clones are eligible only when the Paperclip board reports `done` or `cancelled`, in addition to the TTL and git safety checks. Set `BOARD_API_URL` to the board base URL reachable from the host (for example, the host-published board URL); the collector requests `GET /api/issues/{identifier}` and sends `PAPERCLIP_API_KEY` as a bearer token when present. A missing/unreachable board, non-2xx response, or malformed issue is fail-closed and journaled as `clone-skipped`.
 
 The default remains dry-run. Do not enable `--apply` in the timer or service until this change has been reviewed and approved by the owner.
+
+## Bot data directories of decommissioned bots (OPE-12654)
+
+The dockergate decommission route (A22) deletes the containers of a bot whose agent left the
+bot runtime, but not its data directory: the gate runs as uid 65532 and holds the volume root
+read-only. The gate logs `bot_data_left_for_host_gc` and leaves the directory to this pass.
+A directory named by a lowercase UUID bot key is removed by `--apply` only when every guard
+says go: older than 24 h, no `myrmidon-bot-<key>` container of any state (`docker ps -a`,
+label `myrmidon.bot`), the board reports the agent as moved away from `hermes_gateway`,
+terminated or deleted (`GET /api/agents/{id}`), no heartbeat run of the agent is `running`,
+and no git worktree under `workspace/` holds unpushed work. `.next` and `.helper` directories
+are not worktrees and are never touched. A held directory is journalled with the reason
+(`bot-data-held-unpushed`, `bot-data-board-unavailable`, `bot-data:retention`,
+`bot-data:container-exists`, `bot-data:agent-on-hermes-gateway`,
+`bot-data:agent-has-running-run`); an unreachable docker daemon or board skips the whole
+section (fail-closed). After a removal the pass clears the bot's XFS quota project entries
+(`/etc/projid`, `/etc/projects`, the `xfs_quota` limits) best-effort.
 
 ## Tests
 

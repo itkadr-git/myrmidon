@@ -490,7 +490,9 @@ export function costRoutes(
     if (!(await assertCompanyCostReadAllowed(req, res, companyId))) return;
     const range = parseCostDateRange(req.query);
     const limit = parseIssueCostLimit(req.query);
-    const rows = await costs.byIssue(companyId, range, limit);
+    const rows = await costs.byIssue(companyId, range, limit, {
+      excludePrivate: req.actor.type === "agent",
+    });
     res.json(rows);
   });
 

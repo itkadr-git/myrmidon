@@ -436,6 +436,10 @@ const en = {
   "ui2.settings.system.fine.action": "Actions",
   "ui2.settings.system.fine.save": "Save",
   "ui2.settings.system.fine.saving": "Saving…",
+  "ui2.settings.system.fine.reset": "Reset to env/default",
+  "ui2.settings.system.fine.resetConfirm": "Confirm reset",
+  "ui2.settings.system.fine.resetting": "Resetting…",
+  "ui2.settings.system.fine.cancelReset": "Cancel",
   "ui2.settings.system.fine.readOnlyType": "Read-only",
   // myrmidon(OPE-12613): DB-SIZE retention panel — "Database storage" on the System screen.
   "ui2.settings.system.retention.title": "Database storage",
@@ -1219,6 +1223,10 @@ const ru: Record<Ui2MessageKey, string> = {
   "ui2.settings.system.fine.action": "Действия",
   "ui2.settings.system.fine.save": "Сохранить",
   "ui2.settings.system.fine.saving": "Сохранение…",
+  "ui2.settings.system.fine.reset": "Сбросить к env/умолчанию",
+  "ui2.settings.system.fine.resetConfirm": "Подтвердить сброс",
+  "ui2.settings.system.fine.resetting": "Сброс…",
+  "ui2.settings.system.fine.cancelReset": "Отмена",
   "ui2.settings.system.fine.readOnlyType": "Только чтение",
   // myrmidon(OPE-12613): панель «Хранение данных базы» на экране Система.
   "ui2.settings.system.retention.title": "Хранение данных базы",

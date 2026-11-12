@@ -1,4 +1,4 @@
-import { and, desc, eq, gte, inArray, isNotNull, isNull, lt, lte, or, sql } from "drizzle-orm";
+import { and, desc, eq, gte, inArray, isNotNull, isNull, lt, lte, notExists, or, sql } from "drizzle-orm";
 import { z } from "zod";
 import type { Db } from "@myrmidon/db";
 import { activityLog, heartbeatRuns, issueComments, issueDocuments, issues } from "@myrmidon/db";
@@ -20,6 +20,8 @@ export interface AgentActionAuditFilters {
   to?: Date;
   cursor?: string;
   limit: number;
+  /** myrmidon(1.7 PRIVATE-TASKS F3): hide rows that describe private issues. */
+  excludePrivate?: boolean;
 }
 
 type CursorValue = { createdAt: string; id: string };
@@ -73,6 +75,43 @@ export function agentActionAuditService(db: Db) {
       if (filters.actorType) conditions.push(eq(activityLog.actorType, filters.actorType));
       if (filters.from) conditions.push(gte(activityLog.createdAt, filters.from));
       if (filters.to) conditions.push(lte(activityLog.createdAt, filters.to));
+      // myrmidon(1.7 PRIVATE-TASKS F3): private-issue rows must be excluded in
+      // SQL, not after the limit slice — a post-filter would return short pages
+      // and break the nextCursor walk. Issue rows drop when the issue itself is
+      // private; comment and document rows drop when their parent issue is
+      // private. Explicit entityType/entityId filters cannot bypass this: an
+      // agent passing entityId of a private issue (or of one of its comments)
+      // gets an empty page.
+      if (filters.excludePrivate) {
+        // uuid::text comparisons keep non-uuid entityId values from raising
+        // cast errors the way `text::uuid` would.
+        conditions.push(notExists(
+          db.select({ one: sql`1` }).from(issues).where(and(
+            eq(activityLog.entityType, "issue"),
+            sql`${issues.id}::text = ${activityLog.entityId}`,
+            eq(issues.isPrivate, true),
+          )),
+        ));
+        conditions.push(notExists(
+          db.select({ one: sql`1` }).from(issueComments).innerJoin(issues, eq(issues.id, issueComments.issueId)).where(and(
+            eq(activityLog.entityType, "issue_comment"),
+            sql`${issueComments.id}::text = ${activityLog.entityId}`,
+            eq(issues.isPrivate, true),
+          )),
+        ));
+        conditions.push(notExists(
+          db.select({ one: sql`1` }).from(issueDocuments).innerJoin(issues, eq(issues.id, issueDocuments.issueId)).where(and(
+            eq(activityLog.entityType, "issue_document"),
+            // entityId may carry either the issueDocuments id or the linked
+            // documents.documentId (same convention as the enrichment query).
+            or(
+              sql`${issueDocuments.id}::text = ${activityLog.entityId}`,
+              sql`${issueDocuments.documentId}::text = ${activityLog.entityId}`,
+            ),
+            eq(issues.isPrivate, true),
+          )),
+        ));
+      }
       if (cursor) {
         conditions.push(or(
           sql<boolean>`${activityLog.createdAt} < ${cursor.createdAt}::timestamptz`,

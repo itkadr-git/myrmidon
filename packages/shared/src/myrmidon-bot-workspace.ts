@@ -458,9 +458,15 @@ export type WsDiskProject = z.infer<typeof wsDiskProjectSchema>;
 /**
  * Answer of dockergate `GET /myrmidon/disk` (route id A14). `projects` is empty
  * and `quotaEnabled` false when the bot partition is mounted without prjquota.
+ *
+ * myrmidon(1.6.8 OPE-12697): `root` is the statfs of the host root filesystem
+ * (`/`), read-only, reported by dockergate since 1.6.8. Optional and absent
+ * when the gate predates the field or the root cannot be read — the bot
+ * partition answer and this schema keep working unchanged.
  */
 export const wsDiskApiResponseSchema = z.object({
   partition: wsDiskPartitionSchema,
+  root: wsDiskPartitionSchema.nullable().optional(),
   projects: z.array(wsDiskProjectSchema),
   /** Used bytes not attributable to any project. */
   other: z.object({ usedBytes: z.number().int().nonnegative() }),

@@ -113,6 +113,7 @@ import {
   myrmidonPauseGuardRoutes,
   myrmidonRunPriorityRoutes,
   myrmidonBudgetEnforcementRoutes,
+  nestRedactRoutes,
   myrmidonBehaviorSettingsRoutes,
   myrmidonTelegramDmProgressRoutes,
   myrmidonBridgeLanguageRoutes,
@@ -1263,6 +1264,7 @@ export async function createApp(
   api.use(myrmidonCorpusRoutes(db, { ports: resolveCorpusPorts })); // myrmidon(1.6.6 CORPUS-2.0 ч.C): corpus datasets/documents/search + module settings
   api.use(myrmidonProcessesRouter(db as any, opts.processSupervisor ?? null, opts.processBus ?? null)); // myrmidon(PROCS-1.1/1.2): GET/PATCH /api/myrmidon/processes, applied without a restart; myrmidon(OPE-10011): the save reaches the worker's supervisor over the bus
   api.use(myrmidonBudgetEnforcementRoutes(db)); // myrmidon(1.7-BUDGET-CONFIG-B)
+  api.use(nestRedactRoutes(db)); // myrmidon(1.7-REDACT): GET/PATCH per-nest redaction dictionaries and rules (OPE-8660)
   api.use(myrmidonBehaviorSettingsRoutes(db)); // myrmidon(SETTINGS-CORE): unified behavior settings, UI→env→default without restart
   api.use(myrmidonTelegramDmProgressRoutes(db)); // myrmidon(DM-PROGRESS): live progress steps of the Telegram DM status
   api.use(myrmidonChannelSettingsRoutes(db)); // myrmidon(1.7-SETTINGS-TO-UI): GET/PATCH /api/myrmidon/channel-settings

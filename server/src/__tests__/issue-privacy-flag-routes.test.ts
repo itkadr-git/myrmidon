@@ -428,5 +428,21 @@ describeEmbeddedPostgres("issue privacy flag routes (1.7 PRIVATE-TASKS)", () => 
     expect((await request(app).get(`/api/issues/${privateIssueId}/activity`).set("Authorization", `Bearer ${fixture.agentToken}`)).status).toBe(404);
     expect((await request(app).get(`/api/issues/${privateIssueId}/costs`).set("Authorization", `Bearer ${fixture.agentToken}`)).status).toBe(404);
     expect((await request(app).get(`/api/issues/${privateIssueId}/cases`).set("Authorization", `Bearer ${fixture.agentToken}`)).status).toBe(404);
+
+    // 8. Checkout (1.7 PRIVATE-TASKS part C): an agent key can never check out
+    // a private issue — 404, identical to every other agent read. Board
+    // checkout keeps the usual behavior.
+    const agentCheckoutRes = await request(app)
+      .post(`/api/issues/${privateIssueId}/checkout`)
+      .set("Authorization", `Bearer ${fixture.agentToken}`)
+      .send({ agentId: fixture.actorAgent.id, expectedStatuses: ["todo"] });
+    expect(agentCheckoutRes.status).toBe(404);
+
+    const boardCheckoutRes = await request(app)
+      .post(`/api/issues/${privateIssueId}/checkout`)
+      .set("Authorization", `Bearer ${fixture.boardToken}`)
+      .send({ agentId: fixture.actorAgent.id, expectedStatuses: ["todo"] });
+    expect(boardCheckoutRes.status).toBe(200);
+    expect(boardCheckoutRes.body.id).toBe(privateIssueId);
   });
 });

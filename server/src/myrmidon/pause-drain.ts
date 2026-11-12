@@ -259,6 +259,9 @@ export async function resumeAgentAfterPause(
           eq(issues.companyId, companyId),
           eq(issues.assigneeAgentId, agentId),
           inArray(issues.status, [...WAKEABLE_ISSUE_STATUSES]),
+          // 1.7 PRIVATE-TASKS part C: resuming a paused agent never wakes its
+          // private tasks; the board owns them until an operator unpublishes.
+          eq(issues.isPrivate, false),
         ),
       ),
     deps.db
