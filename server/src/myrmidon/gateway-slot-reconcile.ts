@@ -84,6 +84,30 @@ export interface ResolvedGatewayCredentials {
   headers?: Record<string, string> | string | null;
 }
 
+/**
+ * Sentinel passed to port calls when the reconcile pass already attempted
+ * `port.resolveCredentials` and it either returned `null` or threw. Distinct
+ * from `null`/`undefined` ("not attempted — legacy per-call fallback") so
+ * `probeRemoteGatewayRun` / `stopRemoteGatewayRun` do not re-run
+ * `resolveExecutionRunAdapterConfig` for every candidate in the pass (OPE-12890).
+ */
+export const GATEWAY_CREDENTIALS_UNAVAILABLE = { unavailable: true } as const;
+export type GatewayCredentialsUnavailable = typeof GATEWAY_CREDENTIALS_UNAVAILABLE;
+export type PassGatewayCredentials =
+  | ResolvedGatewayCredentials
+  | GatewayCredentialsUnavailable;
+
+export function isGatewayCredentialsUnavailable(
+  value: PassGatewayCredentials | null | undefined,
+): value is GatewayCredentialsUnavailable {
+  return (
+    value !== null &&
+    value !== undefined &&
+    "unavailable" in value &&
+    value.unavailable === true
+  );
+}
+
 export interface GatewaySlotReconcilePort {
   /** Resolves agent adapterConfig secrets once per pass so multiple probes do not re-audit. */
   resolveCredentials?: (input: {
@@ -103,7 +127,7 @@ export interface GatewaySlotReconcilePort {
     headers?: Record<string, string> | string | null;
     gatewayRunId: string;
     timeoutMs?: number;
-    resolvedCredentials?: ResolvedGatewayCredentials | null;
+    resolvedCredentials?: PassGatewayCredentials | null;
   }) => Promise<{
     state: "live" | "terminal" | "not_found" | "unreachable";
     status: string | null;
@@ -121,7 +145,7 @@ export interface GatewaySlotReconcilePort {
       source: { code: string; endpoint?: string; actor?: string };
       reason: string;
     };
-    resolvedCredentials?: ResolvedGatewayCredentials | null;
+    resolvedCredentials?: PassGatewayCredentials | null;
   }) => Promise<{ stopped: boolean }>;
 }
 
@@ -156,7 +180,7 @@ export interface GatewaySlotReconcileOptions {
    * pass (OPE-12890). When unset, the port's own resolveCredentials is used;
    * when that is missing too, each port call resolves on its own — the
    * pre-change behaviour. */
-  resolvedCredentials?: ResolvedGatewayCredentials | null;
+  resolvedCredentials?: PassGatewayCredentials | null;
 }
 
 /**
@@ -253,25 +277,27 @@ export async function reconcileGatewaySlotsFromRows(
   // service provides resolveCredentials, its result (an audit event per
   // secret) is produced once on the first probe/stop and handed to all
   // subsequent calls. When all candidates are already remembered as
-  // confirmed off-gateway, no secrets are resolved at all.
-  let resolvedCredentials = options.resolvedCredentials ?? null;
-  let attemptedResolve = false;
-  const getResolvedCredentials = async (): Promise<ResolvedGatewayCredentials | null> => {
+  // confirmed off-gateway, no secrets are resolved at all. If
+  // resolveCredentials returns null or throws, pass GATEWAY_CREDENTIALS_UNAVAILABLE
+  // so port calls do not repeat per-run secret resolution in the same pass.
+  let resolvedCredentials: PassGatewayCredentials | null = options.resolvedCredentials ?? null;
+  let attemptedResolve = options.resolvedCredentials != null;
+  const getResolvedCredentials = async (): Promise<PassGatewayCredentials | null> => {
     if (resolvedCredentials || attemptedResolve) return resolvedCredentials;
     attemptedResolve = true;
     if (port.resolveCredentials) {
       try {
-        resolvedCredentials = await port.resolveCredentials({
+        const resolved = await port.resolveCredentials({
           companyId: agent.companyId,
           agentId: agent.id,
           adapterConfig: agent.adapterConfig,
         });
+        resolvedCredentials = resolved ?? GATEWAY_CREDENTIALS_UNAVAILABLE;
       } catch (err) {
-        // Resolution failing once must not change the pass contract: the port
-        // calls fall back to their own (per-call) resolution.
+        resolvedCredentials = GATEWAY_CREDENTIALS_UNAVAILABLE;
         logger.warn(
           { err, agentId: agent.id },
-          "gateway slot reconcile: shared credential resolution failed; probes fall back to per-call resolution",
+          "gateway slot reconcile: shared credential resolution failed; skipping per-call secret resolution for this pass",
         );
       }
     }

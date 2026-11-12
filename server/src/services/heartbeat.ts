@@ -105,9 +105,10 @@ import { claimRunForSiteLost } from "../myrmidon/site-lost-claim.js"; // myrmido
 // still keeps alive — a leaked max_concurrent_runs slot otherwise answers the
 // next POST /v1/runs with 429 "Too many concurrent runs".
 import {
+  isGatewayCredentialsUnavailable,
   reconcileGatewaySlotsOnRunStart,
   type GatewaySlotReconcilePort,
-  type ResolvedGatewayCredentials,
+  type PassGatewayCredentials,
 } from "../myrmidon/gateway-slot-reconcile.js";
 import { legacyControllerBootId, legacyControllerClaim, renewLegacyControllerLease, hasLiveLegacyController, revokeExpiredLegacyController, watchLegacyControllerLease } from "./legacy-controller-lease.js";
 import { completeTerminatedRemoteNativeSessionCleanup } from "../vendor/paperclip-runner/index.js";
@@ -21753,14 +21754,20 @@ export function heartbeatService(
     };
     // myrmidon(OPE-12890): credentials resolved once by the caller (the slot
     // reconcile pass) are reused here — no second secret resolution, no
-    // second audit event per secret. Absent/null: resolve as before.
-    resolvedCredentials?: ResolvedGatewayCredentials | null;
+    // second audit event per secret. GATEWAY_CREDENTIALS_UNAVAILABLE means the
+    // pass already attempted resolution and it failed/returned null: do not
+    // repeat per-run secret resolution. Absent/null: resolve as before (legacy).
+    resolvedCredentials?: PassGatewayCredentials | null;
   }): Promise<{ stopped: boolean }> {
     const adapter = getServerAdapter("hermes_gateway");
     if (!adapter?.stopGatewayRunForBoard) return { stopped: false };
     const preResolved = input.resolvedCredentials ?? null;
     let resolvedConfig: Record<string, unknown>;
-    if (preResolved) {
+    if (isGatewayCredentialsUnavailable(preResolved)) {
+      // The reconcile pass already attempted credential resolution and found none:
+      // do not repeat resolveExecutionRunAdapterConfig (avoids per-run secret audit).
+      resolvedConfig = input.adapterConfig ?? {};
+    } else if (preResolved) {
       resolvedConfig = {
         apiBaseUrl: preResolved.baseUrl,
         apiKey: preResolved.apiKey,
@@ -21946,7 +21953,9 @@ export function heartbeatService(
     // myrmidon(OPE-12890): credentials the caller (a slot reconcile pass)
     // already resolved for this agent — reused for every probe of the pass so
     // the agent's secrets (and their audit events) resolve once, not per run.
-    resolvedCredentials?: ResolvedGatewayCredentials | null;
+    // GATEWAY_CREDENTIALS_UNAVAILABLE means the pass already attempted
+    // resolution and it failed/returned null: do not repeat per-run resolution.
+    resolvedCredentials?: PassGatewayCredentials | null;
   }): Promise<{
     state: "live" | "terminal" | "not_found" | "unreachable";
     status: string | null;
@@ -21965,7 +21974,10 @@ export function heartbeatService(
     let headers = input.headers;
     const rawConfig = parseObject(input.adapterConfig);
     const preResolved = input.resolvedCredentials ?? null;
-    if (preResolved) {
+    if (isGatewayCredentialsUnavailable(preResolved)) {
+      // The reconcile pass already attempted credential resolution and found none:
+      // do not repeat resolveExecutionRunAdapterConfig (avoids per-run secret audit).
+    } else if (preResolved) {
       baseUrl = preResolved.baseUrl;
       apiKey = preResolved.apiKey;
       if (preResolved.headers) headers = preResolved.headers;

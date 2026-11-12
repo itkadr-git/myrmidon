@@ -387,7 +387,7 @@ describe("myrmidon(GATEWAY-SLOT-RECONCILE) gateway slot reconcile on run start",
     resetGatewaySlotProbeMemoryForTest();
   });
 
-  it("a resolution failure does not break the pass: probes fall back to per-call resolution", async () => {
+  it("does not repeat per-run resolution after a shared resolution failure", async () => {
     resetGatewaySlotProbeMemoryForTest();
     const probes: string[] = [];
     let resolveCalls = 0;
@@ -397,7 +397,7 @@ describe("myrmidon(GATEWAY-SLOT-RECONCILE) gateway slot reconcile on run start",
         throw new Error("secrets unavailable");
       },
       probeGatewayRun: async ({ gatewayRunId, resolvedCredentials }) => {
-        probes.push(`${gatewayRunId}:${resolvedCredentials ? "shared" : "own"}`);
+        probes.push(`${gatewayRunId}:${resolvedCredentials && "unavailable" in resolvedCredentials ? "unavailable" : "own"}`);
         return { state: "not_found", status: null };
       },
       stopGatewayRunForBoard: async () => ({ stopped: true }),
@@ -413,7 +413,37 @@ describe("myrmidon(GATEWAY-SLOT-RECONCILE) gateway slot reconcile on run start",
     );
     expect(resolveCalls).toBe(1); // attempted once, contained
     expect(result.notFound).toBe(2);
-    expect(probes).toEqual(["gw-a:own", "gw-b:own"]); // per-call fallback, no crash
+    expect(probes).toEqual(["gw-a:unavailable", "gw-b:unavailable"]);
+    resetGatewaySlotProbeMemoryForTest();
+  });
+
+  it("does not repeat per-run resolution when shared resolution returns null", async () => {
+    resetGatewaySlotProbeMemoryForTest();
+    const probes: string[] = [];
+    let resolveCalls = 0;
+    const port: GatewaySlotReconcilePort = {
+      resolveCredentials: async () => {
+        resolveCalls += 1;
+        return null;
+      },
+      probeGatewayRun: async ({ gatewayRunId, resolvedCredentials }) => {
+        probes.push(`${gatewayRunId}:${resolvedCredentials && "unavailable" in resolvedCredentials ? "unavailable" : "own"}`);
+        return { state: "unreachable", status: null };
+      },
+      stopGatewayRunForBoard: async () => ({ stopped: true }),
+    };
+    const result = await reconcileGatewaySlotsFromRows(
+      agent,
+      [
+        { id: "run-a", status: "succeeded", externalRunId: "gw-a" },
+        { id: "run-b", status: "succeeded", externalRunId: "gw-b" },
+      ],
+      port,
+      { quiet: true },
+    );
+    expect(resolveCalls).toBe(1);
+    expect(result.unreachable).toBe(2);
+    expect(probes).toEqual(["gw-a:unavailable", "gw-b:unavailable"]);
     resetGatewaySlotProbeMemoryForTest();
   });
 });
