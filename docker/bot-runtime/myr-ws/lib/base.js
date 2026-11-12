@@ -120,6 +120,58 @@ function fetchBase(env, dir) {
   fs.writeFileSync(path.join(dir, FETCH_STAMP), `${Date.now()}\n`);
 }
 
+// myrmidon(1.6.7 BOT-DISK OPE-12489): the board keeps the shared mirror at
+// /cache/git fresh (server git-mirror.ts, host path /srv/myrmidon-cache/git).
+// When a mirror covers this repo the per-bot base only needs its
+// refs/remotes/origin/* updated; `git fetch --prune <mirror>` does that with
+// the local transport — no network, and no objects are copied because every
+// object reachable from the mirror refs already lives in the mirror (the
+// base borrows them through objects/info/alternates). This is the
+// "stop per-bot refresh" half of the git-base migration: N bots no longer
+// each fetch the whole history from GitHub on their own 15-minute throttle.
+const MIRROR_STAMP = "myrmidon-fetched-at";
+// A mirror whose own refresh stamp is older than this is not trusted as the
+// only ref source; fall back to a real origin fetch so a stuck board mirror
+// cannot freeze every bot at stale refs.
+const MIRROR_MAX_STALE_MS = 48 * 60 * 60 * 1000;
+
+function mirrorStampMs(mirrorDir) {
+  try {
+    return fs.statSync(path.join(mirrorDir, MIRROR_STAMP)).mtimeMs;
+  } catch {
+    return 0;
+  }
+}
+
+/**
+ * Update refs/remotes/origin/* of the base from the shared mirror.
+ * Returns true when the mirror was fresh enough to serve as the ref source.
+ * Throws MyrWsError (exit 5) only when a fetch was attempted and failed;
+ * a missing/stale mirror returns false so the caller falls back to origin.
+ */
+function fetchRefsFromMirror(env, dir, mirrorDir, now = Date.now()) {
+  const stamp = mirrorStampMs(mirrorDir);
+  if (stamp <= 0 || now - stamp > MIRROR_MAX_STALE_MS) return false;
+  // Explicit refspec: a bare repo's fetch without one also resolves the
+  // remote's HEAD symref, which can dangle on a mirror whose default branch
+  // differs from the repo's initial branch ("fatal: couldn't find remote
+  // ref HEAD", exit 128) and would silently degrade every refresh to an
+  // origin fetch.
+  const r = runGit(env, dir, [
+    "fetch",
+    "--prune",
+    "--no-tags",
+    mirrorDir,
+    `${L.WS_GIT_BASE_REFSPEC}`,
+  ]);
+  if (r.error || r.status !== 0) {
+    const why = (r.error && r.error.message) || String(r.stderr || "").trim().split("\n").slice(-3).join(" | ");
+    throw new MyrWsError(EXIT.network, `mirror fetch failed: ${why}`);
+  }
+  fs.writeFileSync(path.join(dir, FETCH_STAMP), `${Date.now()}\n`);
+  return true;
+}
+
 function lastFetchMs(dir) {
   try {
     return fs.statSync(path.join(dir, FETCH_STAMP)).mtimeMs;
@@ -349,14 +401,35 @@ function ensureBase(repoInput, opts = {}) {
   const sec = refreshSec(env);
   const stale = !fetched && (sec === 0 || now - lastFetchMs(dir) >= sec * 1000);
   if (stale) {
-    try {
-      fetchBase(env, dir);
-      fetched = true;
-    } catch (e) {
-      throw e;
+    // OPE-12489: with a fresh shared mirror, sync refs locally instead of
+    // hitting origin (GitHub). A missing/stale/mirrorless repo falls through
+    // to the regular network fetch. Mirror-fetch failures must not wedge the
+    // base: on error we degrade to the origin fetch like a pre-migration bot.
+    const mirror = findMirror(parsed, env);
+    let syncedFromMirror = false;
+    if (mirror) {
+      try {
+        syncedFromMirror = fetchRefsFromMirror(env, dir, mirror, now);
+      } catch {
+        syncedFromMirror = false;
+      }
     }
+    if (!syncedFromMirror) {
+      fetchBase(env, dir);
+    }
+    fetched = true;
   }
   return { path: dir, repo: parsed.slug, created, fetched };
 }
 
-module.exports = { ensureBase, listBases, findMirror, syncMirrorAlternates, REPACK_MIGRATED_MARKER, MyrWsError, EXIT, FETCH_STAMP };
+module.exports = {
+  ensureBase,
+  listBases,
+  findMirror,
+  syncMirrorAlternates,
+  fetchRefsFromMirror,
+  REPACK_MIGRATED_MARKER,
+  MyrWsError,
+  EXIT,
+  FETCH_STAMP,
+};

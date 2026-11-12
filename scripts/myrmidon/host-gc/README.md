@@ -139,6 +139,7 @@ section (fail-closed). After a removal the pass clears the bot's XFS quota proje
 node --test scripts/myrmidon/host-gc/host-clone-cache-gc.test.mjs
 ```
 
+
 ## SSH runner run copies (OPE-12722)
 
 An SSH runner (the container an `omp_local` agent runs in) keeps one copy of the workspace
@@ -184,3 +185,59 @@ What the pass does:
 - A runner root that does not exist is journaled as `run-copy-root-missing`; an unreadable root
   or runner directory as `run-copy-scan-failed` (root, runner, error). Neither stops the rest of
   the pass or the other passes of the same `--apply`.
+
+## git-base pack GC (OPE-12489)
+
+`host-git-base-pack-gc.mjs` removes per-bot `git-base` packs that are fully
+covered by the fleet mirror (`/srv/myrmidon-cache/git`). After the alternates
+migration every per-bot base borrows objects from the mirror, so its own packs
+are redundant; the bot-side idle migration clears them two repos per pass,
+which cannot drain a fleet-wide backlog. This script sweeps the whole tree in
+one run with the same verification (`verify-pack` listing vs mirror
+`cat-file --batch-check`, logic imported from
+`docker/bot-runtime/botd/lib/git-migration.js`).
+
+Safety: dry-run by default; only repos whose `objects/info/alternates`
+resolves inside the mirror root are touched; every pack is hardlink-backed-up
+into `<bots-root>/.git-base-pack-backup/<ts>/` before removal (zero extra
+disk while originals exist; rollback = copy back). Journal events are
+`git-base-dry-run` / `git-base-packs-removed` / `git-base-skipped` /
+`git-base-backup-failed` / `git-base-remove-failed` in the same JSONL journal.
+
+### Production invocation
+
+The scheduler (`host-clone-cache-gc.mjs`) spawns the pack-gc script
+automatically after every pass (both dry-run and apply) when
+`--git-base-pack-gc` is enabled (default). Use `--no-git-base-pack-gc` to
+skip it. The child inherits `--bots-root` and `--journal` from the parent,
+so both scripts write to the same JSONL journal. The parent's lock is not
+passed to the child (it already runs inside the parent's critical section);
+the child uses its own lock to guard against concurrent manual runs. The
+systemd timer/service needs no extra unit — the pack-gc runs as part of the
+standard `myrmidon-host-gc.service` invocation.
+
+```bash
+# Plan only (includes pack-gc dry-run)
+node scripts/myrmidon/host-gc/host-clone-cache-gc.mjs --dry-run
+
+# Execute (includes pack-gc apply)
+node scripts/myrmidon/host-gc/host-clone-cache-gc.mjs --apply
+
+# Skip pack-gc
+node scripts/myrmidon/host-gc/host-clone-cache-gc.mjs --apply --no-git-base-pack-gc
+```
+
+Manual standalone usage (for emergency or debugging):
+
+```bash
+# Plan only
+node scripts/myrmidon/host-gc/host-git-base-pack-gc.mjs --dry-run
+
+# Execute (ADM, on vm-core; verify the dry-run plan first)
+node scripts/myrmidon/host-gc/host-git-base-pack-gc.mjs --apply
+
+# After a verified good run, drop the backup to actually reclaim space:
+rm -rf /srv/myrmidon-bots/.git-base-pack-backup/<ts>
+```
+
+Tests: `node --test scripts/myrmidon/host-gc/host-git-base-pack-gc.test.mjs` 
