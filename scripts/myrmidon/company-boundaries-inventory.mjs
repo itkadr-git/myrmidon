@@ -59,6 +59,12 @@ const OWNER_FIELD = "ownerCompanyId";
 const DEPENDENCY_FIELD = "dependency";
 const DEPENDENCY_REF_KEYS = Object.freeze(["type", "id", "companyId"]);
 
+/**
+ * Attribution outcomes are deliberately distinct:
+ * - `unknown` — the object declares no owner/dependency fields at all; attribution is impossible.
+ * - `unresolved` — attribution fields are declared but could not be exactly verified (reason stated).
+ * These are different facts: collapsing them would turn "no link exists" into "we could not check".
+ */
 /** Reasons an object's owner attribution cannot be exactly stated. */
 export const OWNER_ATTRIBUTION_REASONS = Object.freeze({
   noFields: "no-owner-dependency-fields",
