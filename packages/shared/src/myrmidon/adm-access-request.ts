@@ -27,6 +27,8 @@ export const admResourceTypes = [
   "tool",
 ] as const;
 
+export type AdmResourceType = (typeof admResourceTypes)[number];
+
 /** Actions a company may request. Closed list — anything else is denied by schema. */
 export const admAccessActions = [
   "read_metadata",
@@ -35,6 +37,8 @@ export const admAccessActions = [
   "query_aggregate",
   "bounds",
 ] as const;
+
+export type AdmAccessAction = (typeof admAccessActions)[number];
 
 /** Request lifecycle states. `expired` is computed at decision time, never stored directly. */
 export const admRequestStatuses = [
@@ -46,6 +50,21 @@ export const admRequestStatuses = [
 ] as const;
 
 export type AdmRequestStatus = (typeof admRequestStatuses)[number];
+
+export interface RedactedAdmRequest {
+  requestId: string;
+  sourceCompanyId: string;
+  targetCompanyId: string;
+  resourceType: string;
+  resourceRef: string;
+  action: string;
+  status: string;
+  scopeHash: string;
+  justification: string;
+  createdAt: string;
+  decidedAt: string | null;
+  expiresAt: string | null;
+}
 
 /**
  * Allowlist for `requestedScope`. ADR-0052: "raw tokens, secret values and
@@ -297,7 +316,7 @@ export function createAdmCapabilityToken(input: {
 
 export function verifyAdmCapabilityToken(
   token: string,
-  expected: {
+  expected?: {
     requestId: string;
     sourceCompanyId: string;
     targetCompanyId: string;
@@ -317,9 +336,10 @@ export function verifyAdmCapabilityToken(
   const targetCompanyId = typeof claims.targetCompanyId === "string" ? claims.targetCompanyId : null;
   if (!requestId || !sourceCompanyId || !targetCompanyId) return null;
   if (
-    requestId !== expected.requestId
-    || sourceCompanyId !== expected.sourceCompanyId
-    || targetCompanyId !== expected.targetCompanyId
+    expected
+    && (expected.requestId !== requestId
+      || expected.sourceCompanyId !== sourceCompanyId
+      || expected.targetCompanyId !== targetCompanyId)
   ) {
     return null;
   }
@@ -357,7 +377,7 @@ export function redactedAdmRequestProjection(input: {
   createdAt: Date | string;
   decidedAt: Date | string | null;
   expiresAt: Date | string | null;
-}): Record<string, unknown> {
+}): RedactedAdmRequest {
   return {
     requestId: input.requestId,
     sourceCompanyId: input.sourceCompanyId,
