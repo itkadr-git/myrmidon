@@ -743,11 +743,24 @@ export function buildStrandedDispositionBlockedPatch(input: {
   issueId: string;
   ownerAgentId: string;
   now?: Date;
-}): { status: "blocked"; blockerMetadata: IssueBlockerMetadata; unblockDescriptor: IssueUnblockDescriptor } {
+}): {
+  status: "blocked";
+  assigneeAgentId: null;
+  assigneeUserId: null;
+  blockerMetadata: IssueBlockerMetadata;
+  unblockDescriptor: IssueUnblockDescriptor;
+} {
   const now = input.now ?? new Date();
   const timeoutAt = new Date(now.getTime() + STRANDED_DISPOSITION_TIMEOUT_MS).toISOString();
   return {
     status: "blocked",
+    // Transfer the executable assignment with the recovery handoff. Keeping
+    // the stranded executor assigned makes the lead's subsequent checkout
+    // fail the normal assignee guard with a 409, leaving the issue blocked
+    // forever even though the execution lock itself was cleared by the status
+    // transition. The blocker owner is the next actor that may claim it.
+    assigneeAgentId: null,
+    assigneeUserId: null,
     blockerMetadata: {
       blockReason: "recovery",
       owner: { agentId: input.ownerAgentId },
