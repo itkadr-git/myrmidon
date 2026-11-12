@@ -152,13 +152,6 @@ type ExecutionState = {
   /** The single RunGuard correction queued for this gateway run. */
   runGuardHintSent: { reason: "repeated_tool_call" | "model_call_limit" } | null;
   runGuardHintStopEmitted: boolean;
-  /**
-   * myrmidon(OPE-12799): the wrap-up message ("N calls left: commit, push, write
-   * where you are") was steered. Kept apart from runGuardHintSent: it is not a
-   * correction, is sent whether or not one was, and is not the hint-before-stop
-   * that resultJson.runGuardHint measures.
-   */
-  runGuardWrapUpHintSent: boolean;
 };
 
 type TextRedactor = (value: string) => string;
@@ -958,7 +951,6 @@ function createExecutionState(runId: string): ExecutionState {
     toolFailureRepeat: createToolFailureRepeatTracker(),
     runGuardHintSent: null,
     runGuardHintStopEmitted: false,
-    runGuardWrapUpHintSent: false,
   };
 }
 
@@ -1102,19 +1094,7 @@ export function buildRunGuardHintMessage(hint: {
   tool?: string;
   repeatCount?: number;
   modelCalls?: number;
-  remaining?: number;
 }): string {
-  // myrmidon(OPE-12799): the wrap-up message, sent while the run still has calls
-  // left. The next run starts in a fresh session and sees only what is pushed and
-  // what is written on the task, so the agent is told to put its work there.
-  if (hint.reason === "model_call_limit" && typeof hint.remaining === "number" && hint.remaining > 0) {
-    return (
-      `Защита: до остановки прогона осталось ${hint.remaining} вызовов модели. ` +
-      "Сохрани сделанное сейчас: закоммить и запушь изменения в ветку задачи, затем напиши комментарий в задаче — " +
-      "что сделано, что осталось и с чего продолжить. Следующий прогон начнётся с чистой сессии и увидит только " +
-      "запушенные коммиты и этот комментарий. Если задача закончена — заверши её как обычно."
-    );
-  }
   if (hint.reason === "repeated_tool_call") {
     const tool = hint.tool ?? "инструмент";
     const count = hint.repeatCount ?? 3;
@@ -1134,7 +1114,6 @@ async function sendRunGuardHint(input: {
     tool?: string;
     repeatCount?: number;
     modelCalls?: number;
-    remaining?: number;
   };
 }): Promise<void> {
   const message = buildRunGuardHintMessage(input.hint);
@@ -1212,14 +1191,7 @@ async function observeModelTurn(input: {
   const alreadyStopped = ctx.runGuard.stopped;
   const decision = ctx.runGuard.modelCall();
   if (decision.stop && !alreadyStopped) await ctx.onRunGuardStop?.(decision.reason!);
-  else if (!decision.stop && decision.hint && typeof decision.hint.remaining === "number") {
-    // myrmidon(OPE-12799): the wrap-up message before the call limit; see
-    // ExecutionState.runGuardWrapUpHintSent.
-    if (!state.runGuardWrapUpHintSent) {
-      state.runGuardWrapUpHintSent = true;
-      await sendRunGuardHint({ ...input, hint: decision.hint });
-    }
-  } else if (!decision.stop && decision.hint && !state.runGuardHintSent) {
+  else if (!decision.stop && decision.hint && !state.runGuardHintSent) {
     state.runGuardHintSent = { reason: decision.hint.reason };
     await sendRunGuardHint({ ...input, hint: decision.hint });
   }
