@@ -2,10 +2,13 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import {
   collectInventory,
+  formatOwnerAttribution,
   INVENTORY_METHOD,
   INVENTORY_SECTIONS,
   inventoryReportHash,
+  isUnresolvedAttribution,
   normalizeInventoryReport,
+  OWNER_ATTRIBUTION_REASONS,
   renderInventory,
   sectionForPath,
 } from "./company-boundaries-inventory.mjs";
@@ -220,4 +223,126 @@ test("missing attribution fields are computed from observed rows", async () => {
 test("unknown sections are absent from the registry and cannot be covered", () => {
   assert.equal(sectionForPath("/not-a-section"), undefined);
   assert.ok(INVENTORY_SECTIONS.every((section) => sectionForPath(section.path)));
+});
+
+/* --- Owner attribution formatter: unresolved vs unknown (OPE-12910) --- */
+
+/**
+ * Fixture rows with secret-shaped payload values: the formatter must never
+ * serialize anything beyond exact safe identifiers.
+ */
+const OPE_12910_KNOWN_FIXTURE = [
+  { id: "obj-known", ownerCompanyId: "c1", secretToken: "pcp_SUPER_SECRET_VALUE", webhookUrl: "https://hooks.internal/never-leak" },
+];
+
+const OPE_12910_MISSING_FIXTURE = [
+  { id: "obj-no-fields" }, // no owner, no dependency field at all
+  "not-an-object", // not even an object
+];
+
+const OPE_12910_UNRESOLVED_FIXTURE = [
+  { id: "obj-unresolved-owner", ownerCompanyId: "ghost-company" },
+  { id: "obj-nonstring-owner", ownerCompanyId: { leaked: "value" } },
+  { id: "obj-blank-owner", ownerCompanyId: "   " },
+  { id: "obj-bad-dep", dependency: { junk: "payload" } },
+  { id: "obj-partial-dep", dependency: { type: "issue" } },
+  { id: "obj-null-dep", dependency: null },
+];
+
+test("an object without owner or dependency fields is unknown, not unresolved", () => {
+  const { rows, summary } = formatOwnerAttribution(OPE_12910_MISSING_FIXTURE);
+
+  const noFields = rows.find((row) => row.entityRef !== null);
+  assert.ok(noFields, "the object fixture must produce an entity row");
+  assert.equal(noFields.attribution, "unknown");
+  assert.equal(noFields.reason, OWNER_ATTRIBUTION_REASONS.noFields);
+  assert.equal(noFields.ownerCompanyId, null);
+  assert.ok(isUnresolvedAttribution(noFields.attribution));
+
+  const nonObject = rows.find((row) => row.entityRef === null);
+  assert.equal(nonObject.attribution, "unknown");
+  assert.equal(nonObject.reason, OWNER_ATTRIBUTION_REASONS.noFields);
+
+  assert.equal(summary.unknown, 2);
+  assert.equal(summary.unresolved, 0);
+  assert.equal(summary.noOwnerDependencyFields, 2);
+});
+
+test("present but unverifiable fields stay unresolved with an exact safe reason", () => {
+  const { rows, summary } = formatOwnerAttribution(OPE_12910_UNRESOLVED_FIXTURE, { currentCompanyId: "c1", knownCompanyIds: ["c1"] });
+  const byReason = Object.groupBy(rows, (row) => row.reason);
+
+  const unknownCompany = byReason[OWNER_ATTRIBUTION_REASONS.ownerCompanyUnknown][0];
+  assert.equal(unknownCompany.attribution, "unresolved");
+  assert.equal(unknownCompany.ownerCompanyId, null, "unresolved owner must never fold into a real company id");
+  assert.match(unknownCompany.ownerRefHash, /^[0-9a-f]{12}$/);
+
+  assert.equal(byReason[OWNER_ATTRIBUTION_REASONS.ownerRefNotString][0].attribution, "unresolved");
+  // Reason precedence is owner-first: obj-bad-dep has no owner field AND a
+  // junk dependency ref, so it reports the dependency cause; the other
+  // missing-owner rows keep the owner cause.
+  const depCauseRow = byReason[OWNER_ATTRIBUTION_REASONS.dependencyRefInvalid]?.[0];
+  assert.ok(depCauseRow, "bad dependency ref must surface the dependency cause");
+  assert.equal(depCauseRow.attribution, "unresolved");
+
+  const rendered = JSON.stringify(rows);
+  assert.ok(!rendered.includes("leaked"), "non-string owner payload must not leak");
+  assert.ok(!rendered.includes("junk"), "dependency junk payload must not leak");
+  assert.equal(summary.unresolved, OPE_12910_UNRESOLVED_FIXTURE.length);
+  assert.equal(summary.resolved, 0);
+  for (const row of rows) assert.ok(isUnresolvedAttribution(row.attribution));
+});
+
+test("present verifiable fields resolve to exact safe identifiers only", () => {
+  const owner = formatOwnerAttribution(OPE_12910_KNOWN_FIXTURE, { currentCompanyId: "c1", knownCompanyIds: ["c1"] });
+  assert.equal(owner.rows[0].attribution, "resolved");
+  assert.equal(owner.rows[0].ownerCompanyId, "c1");
+  assert.equal(owner.rows[0].dependency, null);
+  assert.ok(!isUnresolvedAttribution(owner.rows[0].attribution));
+
+  const dependency = formatOwnerAttribution(
+    [{ id: "obj-dep", dependency: { type: "issue", id: "issue-77", companyId: "c2" }, title: "payload", secretToken: "pcp_SUPER_SECRET_VALUE" }],
+    { currentCompanyId: "c1" },
+  );
+  const depRow = dependency.rows[0];
+  assert.equal(depRow.dependencyStatus, "cross-company");
+  assert.deepEqual(depRow.dependency, { type: "issue", id: "issue-77", companyId: "c2" });
+
+  const rendered = JSON.stringify(owner.rows) + JSON.stringify(dependency.rows);
+  assert.ok(rendered.includes("issue-77"));
+  assert.ok(!rendered.includes("pcp_SUPER_SECRET_VALUE"), "secret token must never enter the output");
+  assert.ok(!rendered.includes("never-leak"), "webhook url must never enter the output");
+  assert.ok(!rendered.includes("payload"), "unrelated payload fields must never enter the output");
+});
+
+test("formatter output is deterministic regardless of input order", () => {
+  const entities = [...OPE_12910_KNOWN_FIXTURE, ...OPE_12910_MISSING_FIXTURE, ...OPE_12910_UNRESOLVED_FIXTURE];
+  const first = formatOwnerAttribution(entities, { currentCompanyId: "c1", knownCompanyIds: ["c1"] });
+  const reversed = formatOwnerAttribution([...entities].reverse(), { currentCompanyId: "c1", knownCompanyIds: ["c1"] });
+  assert.deepEqual(first, reversed);
+});
+
+test("same-company dependency links stay distinct from unknown company context", () => {
+  const rows = formatOwnerAttribution([{ id: "obj-same", dependency: { type: "issue", id: "issue-88", companyId: "c1" } }], { currentCompanyId: "c1" }).rows;
+  assert.equal(rows[0].dependencyStatus, "same-company");
+  assert.equal(rows[0].attribution, "resolved");
+
+  const noContext = formatOwnerAttribution([{ id: "obj-same", dependency: { type: "issue", id: "issue-88", companyId: "c1" } }]).rows;
+  assert.equal(noContext[0].attribution, "unresolved");
+  assert.equal(noContext[0].reason, OWNER_ATTRIBUTION_REASONS.currentCompanyUnknown);
+  assert.deepEqual(noContext[0].dependency, { type: "issue", id: "issue-88", companyId: "c1" });
+});
+
+test("formatter output integrates with the report hash pipeline without leaking secrets", () => {
+  const report = {
+    sections: [],
+    summary: { total: 0, covered: 0, counts: { data: 0, empty: 0, denied: 0, "not-found": 0, error: 0 } },
+    attribution: formatOwnerAttribution(OPE_12910_KNOWN_FIXTURE, { currentCompanyId: "c1", knownCompanyIds: ["c1"] }).rows,
+  };
+  const rendered = renderInventory(report);
+  assert.ok(rendered.includes("c1"));
+  assert.ok(!rendered.includes("pcp_SUPER_SECRET_VALUE"));
+  assert.ok(!rendered.includes("never-leak"));
+  assert.equal(inventoryReportHash(report), inventoryReportHash(normalizeInventoryReport(report)));
+  assert.match(inventoryReportHash(report), /^[0-9a-f]{64}$/);
 });
