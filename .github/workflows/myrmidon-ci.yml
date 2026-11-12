@@ -310,6 +310,19 @@ jobs:
         if: ${{ !cancelled() && steps.install.outcome == 'success' && needs.plan.outputs.tier == 'full' }}
         run: pnpm build
 
+      # Prod-runtime contract (OPE-12187 Ч1): after the full workspace build,
+      # substitute the server closure's package entry fields to dist and audit
+      # that the compiled server tree resolves without any src/.ts target. The
+      # apply rewrites package.json files in the runner workspace (restorable
+      # with prod-runtime-exports restore); the audit skips the vendored
+      # runner tree, which the image build stages from its own cargo build.
+      - name: Prod-runtime exports and dist resolution audit
+        if: ${{ !cancelled() && steps.install.outcome == 'success' && needs.plan.outputs.tier == 'full' }}
+        run: |
+          set -euo pipefail
+          node scripts/myrmidon/prod-runtime-exports.mjs apply --entry @myrmidon/server
+          node scripts/myrmidon/check-prod-runtime-resolution.mjs --dist server/dist --skip-vendor-runner
+
       - name: Build (runner TypeScript only, no Rust release binary)
         if: ${{ !cancelled() && steps.install.outcome == 'success' && needs.plan.outputs.tier == 'fast' }}
         run: |
