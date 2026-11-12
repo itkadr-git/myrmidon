@@ -21,6 +21,16 @@ import {
   type RuntimeProgressSink,
 } from "./runtime-progress.js";
 import { readProductEnv } from "@myrmidon/shared/env-alias"; // myrmidon(REBRAND-C)
+import {
+  dropTrackedSshWorkspaceExcludeNames,
+  resolveSshWorkspaceExcludeNames,
+  sshWorkspaceExcludePatterns,
+} from "./ssh-workspace-excludes.js"; // myrmidon(OPE-12809)
+import {
+  SSH_TRANSFER_ABORT_KILL_DELAY_MS,
+  SshOperationAbortedError,
+  throwIfSshAborted,
+} from "./ssh-abort.js"; // myrmidon(OPE-12801)
 
 export interface SshConnectionConfig {
   host: string;
@@ -454,6 +464,35 @@ async function createSshAuthArgs(
     args: sshArgs,
     cleanup: async () => {
       await Promise.all(tempFiles.map((cleanup) => cleanup()));
+    },
+  };
+}
+
+// myrmidon(OPE-12801): ties the run's cancellation to the local processes of
+// one transfer. TERM first, KILL after SSH_TRANSFER_ABORT_KILL_DELAY_MS; the
+// caller detaches once both processes have exited.
+function watchSshTransferAbort(
+  signal: AbortSignal | undefined,
+  children: Array<{ kill: (signal?: NodeJS.Signals | number) => boolean }>,
+): { aborted: () => boolean; detach: () => void } {
+  let aborted = false;
+  let killTimer: NodeJS.Timeout | null = null;
+  const onAbort = () => {
+    if (aborted) return;
+    aborted = true;
+    for (const child of children) child.kill("SIGTERM");
+    killTimer = setTimeout(() => {
+      for (const child of children) child.kill("SIGKILL");
+    }, SSH_TRANSFER_ABORT_KILL_DELAY_MS);
+  };
+  if (signal?.aborted) onAbort();
+  else signal?.addEventListener("abort", onAbort, { once: true });
+  return {
+    aborted: () => aborted,
+    detach: () => {
+      signal?.removeEventListener("abort", onAbort);
+      if (killTimer) clearTimeout(killTimer);
+      killTimer = null;
     },
   };
 }
@@ -1462,7 +1501,10 @@ export async function syncDirectoryToSsh(input: {
   followSymlinks?: boolean;
   onProgress?: RuntimeProgressSink;
   progressLabel?: string;
+  /** myrmidon(OPE-12801): run cancellation; stops the local tar and ssh. */
+  signal?: AbortSignal;
 }): Promise<void> {
+  throwIfSshAborted(input.signal, "Workspace upload");
   const auth = await createSshAuthArgs(input.spec);
   const sshArgs = [
     ...auth.args,
@@ -1518,12 +1560,21 @@ export async function syncDirectoryToSsh(input: {
     let tarStoppedAfterSshExit = false;
     let tarExitCode: number | null = null;
     let sshExitCode: number | null = null;
+    // myrmidon(OPE-12801): on cancellation both processes get TERM, then KILL;
+    // the transfer settles only after both have exited. The remote `tar -xf -`
+    // ends by itself when its input closes.
+    const abortWatch = watchSshTransferAbort(input.signal, [tar, ssh]);
 
     const maybeFinish = () => {
       if (settled || !tarExited || !sshExited) {
         return;
       }
       settled = true;
+      abortWatch.detach();
+      if (abortWatch.aborted()) {
+        reject(new SshOperationAbortedError("Workspace upload"));
+        return;
+      }
       if (!tarStoppedAfterSshExit && (tarExitCode ?? 0) !== 0) {
         reject(new Error(tarStderrTail.text().trim() || `tar exited with code ${tarExitCode ?? -1}`));
         return;
@@ -1544,6 +1595,7 @@ export async function syncDirectoryToSsh(input: {
         return;
       }
       settled = true;
+      abortWatch.detach();
       tar.kill("SIGTERM");
       ssh.kill("SIGTERM");
       reject(error);
@@ -1604,7 +1656,10 @@ export async function syncDirectoryFromSsh(input: {
   preserveLocalEntries?: string[];
   onProgress?: RuntimeProgressSink;
   progressLabel?: string;
+  /** myrmidon(OPE-12801): run cancellation; stops the local ssh and tar. */
+  signal?: AbortSignal;
 }): Promise<void> {
+  throwIfSshAborted(input.signal, "Workspace download");
   await pruneStaleSshSyncBackDirs();
   const auth = await createSshAuthArgs(input.spec);
   const remoteTarScript = [
@@ -1665,10 +1720,18 @@ export async function syncDirectoryFromSsh(input: {
       let sshStoppedAfterTarFailure = false;
       let sshExitCode: number | null = null;
       let tarExitCode: number | null = null;
+      // myrmidon(OPE-12801): the remote `tar -cf -` ends on a closed pipe when
+      // the local ssh goes away; nothing was applied to the local workspace yet.
+      const abortWatch = watchSshTransferAbort(input.signal, [ssh, tar]);
 
       const maybeFinish = () => {
         if (settled || !sshExited || !tarExited) return;
         settled = true;
+        abortWatch.detach();
+        if (abortWatch.aborted()) {
+          reject(new SshOperationAbortedError("Workspace download"));
+          return;
+        }
         // ssh answers our SIGTERM with exit code 255; that must not hide why tar failed.
         if (!sshStoppedAfterTarFailure && (sshExitCode ?? 0) !== 0) {
           reject(new Error(sshStderrTail.text().trim() || `ssh exited with code ${sshExitCode ?? -1}`));
@@ -1684,6 +1747,7 @@ export async function syncDirectoryFromSsh(input: {
       const fail = (error: Error) => {
         if (settled) return;
         settled = true;
+        abortWatch.detach();
         ssh.kill("SIGTERM");
         tar.kill("SIGTERM");
         reject(error);
@@ -1738,16 +1802,70 @@ export async function syncDirectoryFromSsh(input: {
   }
 }
 
+// myrmidon(OPE-12809): resolves the reproducible directories the workspace
+// transfer skips (ssh-workspace-excludes.ts holds the list and the setting).
+// In a git workspace a name that git tracks files under stays in the transfer.
+// When the tracked file list cannot be read nothing is skipped: losing an
+// agent's edit is worse than a slow transfer.
+async function resolveSshWorkspaceTransferExcludes(input: {
+  localDir: string;
+  gitBacked: boolean;
+  extraExclude?: string[];
+  onProgress?: RuntimeProgressSink;
+}): Promise<string[]> {
+  let names = resolveSshWorkspaceExcludeNames();
+  if (input.gitBacked && names.length > 0) {
+    try {
+      const tracked = await runLocalGit(input.localDir, ["ls-files", "-z"], {
+        timeout: 60_000,
+        maxBuffer: 256 * 1024 * 1024,
+      });
+      names = dropTrackedSshWorkspaceExcludeNames(names, tracked.stdout.split("\0"));
+    } catch (error) {
+      names = [];
+      await Promise.resolve(
+        input.onProgress?.(
+          `[paperclip] Workspace sync: could not list tracked files, nothing is skipped. ${String(error).slice(0, 200)}\n`,
+        ),
+      ).catch(() => undefined);
+    }
+  }
+  if (names.length > 0) {
+    await Promise.resolve(
+      input.onProgress?.(`[paperclip] Workspace sync skips reproducible directories: ${names.join(", ")}\n`),
+    ).catch(() => undefined);
+  }
+  return [...new Set([...sshWorkspaceExcludePatterns(names), ...(input.extraExclude ?? [])])];
+}
+
 export async function prepareWorkspaceForSshExecution(input: {
   spec: SshRemoteExecutionSpec;
   localDir: string;
   remoteDir?: string;
+  /** Extra exclude patterns of the caller, added to the reproducible directories. */
+  exclude?: string[];
   onProgress?: RuntimeProgressSink;
-}): Promise<{ gitBacked: boolean }> {
+  /**
+   * myrmidon(OPE-12801): run cancellation. The tar transfer is stopped in
+   * flight; the git history import is not interrupted, the signal is checked
+   * before and after it.
+   */
+  signal?: AbortSignal;
+}): Promise<{ gitBacked: boolean; workspaceExclude: string[] }> {
   const remoteDir = input.remoteDir ?? input.spec.remoteCwd;
+  throwIfSshAborted(input.signal, "Workspace preparation");
   const gitSnapshot = await readLocalGitWorkspaceSnapshot(input.localDir);
+  // myrmidon(OPE-12809): the same patterns go to the upload here and, through
+  // the returned workspaceExclude, to the baseline snapshot and the restore.
+  const workspaceExclude = await resolveSshWorkspaceTransferExcludes({
+    localDir: input.localDir,
+    gitBacked: gitSnapshot !== null,
+    extraExclude: input.exclude,
+    onProgress: input.onProgress,
+  });
 
   if (gitSnapshot) {
+    throwIfSshAborted(input.signal, "Workspace preparation");
     await importGitWorkspaceToSsh({
       spec: input.spec,
       localDir: input.localDir,
@@ -1759,18 +1877,21 @@ export async function prepareWorkspaceForSshExecution(input: {
       spec: input.spec,
       localDir: input.localDir,
       remoteDir,
-      exclude: [".git", ".paperclip-runtime"],
+      exclude: [".git", ".paperclip-runtime", ...workspaceExclude],
       onProgress: input.onProgress,
       progressLabel: "workspace",
+      signal: input.signal,
     });
+    throwIfSshAborted(input.signal, "Workspace preparation");
     await removeDeletedPathsOnSsh({
       spec: input.spec,
       remoteDir,
       deletedPaths: gitSnapshot.deletedPaths,
     });
-    return { gitBacked: true };
+    return { gitBacked: true, workspaceExclude };
   }
 
+  throwIfSshAborted(input.signal, "Workspace preparation");
   await clearRemoteDirectory({
     spec: input.spec,
     remoteDir,
@@ -1780,11 +1901,12 @@ export async function prepareWorkspaceForSshExecution(input: {
     spec: input.spec,
     localDir: input.localDir,
     remoteDir,
-    exclude: [".paperclip-runtime"],
+    exclude: [".paperclip-runtime", ...workspaceExclude],
     onProgress: input.onProgress,
     progressLabel: "workspace",
+    signal: input.signal,
   });
-  return { gitBacked: false };
+  return { gitBacked: false, workspaceExclude };
 }
 
 export async function restoreWorkspaceFromSshExecution(input: {

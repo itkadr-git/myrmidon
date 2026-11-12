@@ -280,9 +280,169 @@ describe("runAdapterExecutionTargetProcess", () => {
       expect.objectContaining({
         env: {
           SAFE_VALUE: "visible",
+          // myrmidon(OPE-12801): the run id travels with the remote command
+          MYRMIDON_REMOTE_RUN_TAG: "run-ssh-process",
         },
       }),
     );
+  });
+
+  // myrmidon(OPE-12801)
+  describe("stopping the run's processes on the SSH environment", () => {
+    const sshTarget = {
+      kind: "remote" as const,
+      transport: "ssh" as const,
+      remoteCwd: "/srv/paperclip/workspace",
+      spec: {
+        host: "ssh.example.test",
+        port: 22,
+        username: "ssh-user",
+        remoteCwd: "/srv/paperclip/workspace",
+        remoteWorkspacePath: "/srv/paperclip/workspace",
+        privateKey: null,
+        knownHosts: null,
+        strictHostKeyChecking: true,
+      },
+    };
+
+    function mockProcessResult(overrides: { exitCode?: number | null; signal?: string | null; timedOut?: boolean }) {
+      return vi.spyOn(serverUtils, "runChildProcess").mockResolvedValue({
+        exitCode: 0,
+        signal: null,
+        timedOut: false,
+        stdout: "",
+        stderr: "",
+        pid: null,
+        startedAt: new Date().toISOString(),
+        ...overrides,
+      });
+    }
+
+    it("leaves the SSH environment alone when the remote command ended by itself", async () => {
+      mockProcessResult({ exitCode: 1 });
+      const runSshCommandSpy = vi.spyOn(ssh, "runSshCommand").mockResolvedValue({ stdout: "", stderr: "" });
+      const onRemoteRunStop = vi.fn();
+
+      await runAdapterExecutionTargetProcess("run-clean-exit", sshTarget, "agent-cli", [], {
+        cwd: "/tmp/local",
+        env: {},
+        onLog: async () => {},
+        onRemoteRunStop,
+      });
+
+      expect(runSshCommandSpy).not.toHaveBeenCalled();
+      expect(onRemoteRunStop).not.toHaveBeenCalled();
+    });
+
+    it("stops the run's remote processes when the local ssh client was killed by a cancellation", async () => {
+      mockProcessResult({ exitCode: null, signal: "SIGTERM" });
+      const runSshCommandSpy = vi.spyOn(ssh, "runSshCommand").mockResolvedValue({
+        stdout: "myrmidon_remote_stop found=3 survivors=0 forced=0 pids=\n",
+        stderr: "",
+      });
+      const onRemoteRunStop = vi.fn();
+      const logs: Array<{ stream: string; chunk: string }> = [];
+
+      await runAdapterExecutionTargetProcess("run-cancelled", sshTarget, "agent-cli", [], {
+        cwd: "/tmp/local",
+        env: {},
+        onLog: async (stream, chunk) => {
+          logs.push({ stream, chunk });
+        },
+        onRemoteRunStop,
+      });
+
+      expect(runSshCommandSpy).toHaveBeenCalledTimes(1);
+      const [spec, script] = runSshCommandSpy.mock.calls[0];
+      expect(spec).toBe(sshTarget.spec);
+      expect(script).toContain("MYRMIDON_REMOTE_RUN_TAG=run-cancelled");
+      expect(script).toContain("kill -TERM");
+      expect(script).toContain("kill -KILL");
+      expect(onRemoteRunStop).toHaveBeenCalledWith(expect.objectContaining({ ok: true, found: 3, survivors: 0 }));
+      expect(logs).toEqual([
+        { stream: "stdout", chunk: "[paperclip] Stopped 3 process(es) of the run on the SSH environment\n" },
+      ]);
+    });
+
+    it("stops the run's remote processes after the adapter timeout", async () => {
+      mockProcessResult({ exitCode: null, signal: null, timedOut: true });
+      const runSshCommandSpy = vi.spyOn(ssh, "runSshCommand").mockResolvedValue({
+        stdout: "myrmidon_remote_stop found=1 survivors=0 forced=1 pids=\n",
+        stderr: "",
+      });
+
+      await runAdapterExecutionTargetProcess("run-timed-out", sshTarget, "agent-cli", [], {
+        cwd: "/tmp/local",
+        env: {},
+        onLog: async () => {},
+      });
+
+      expect(runSshCommandSpy).toHaveBeenCalledTimes(1);
+    });
+
+    it("stops the run's remote processes when the run was cancelled although the client exited cleanly", async () => {
+      mockProcessResult({ exitCode: 0 });
+      const runSshCommandSpy = vi.spyOn(ssh, "runSshCommand").mockResolvedValue({
+        stdout: "myrmidon_remote_stop found=0 survivors=0 forced=0 pids=\n",
+        stderr: "",
+      });
+      const controller = new AbortController();
+      controller.abort();
+
+      await runAdapterExecutionTargetProcess("run-aborted", sshTarget, "agent-cli", [], {
+        cwd: "/tmp/local",
+        env: {},
+        onLog: async () => {},
+        signal: controller.signal,
+      });
+
+      expect(runSshCommandSpy).toHaveBeenCalledTimes(1);
+    });
+
+    it("reports a process that survived the stop and returns the run's result anyway", async () => {
+      mockProcessResult({ exitCode: null, signal: "SIGKILL" });
+      vi.spyOn(ssh, "runSshCommand").mockResolvedValue({
+        stdout: "myrmidon_remote_stop found=2 survivors=1 forced=1 pids=4242\n",
+        stderr: "",
+      });
+      const onRemoteRunStop = vi.fn(async () => {
+        throw new Error("event store is down");
+      });
+      const logs: Array<{ stream: string; chunk: string }> = [];
+
+      const result = await runAdapterExecutionTargetProcess("run-survivor", sshTarget, "agent-cli", [], {
+        cwd: "/tmp/local",
+        env: {},
+        onLog: async (stream, chunk) => {
+          logs.push({ stream, chunk });
+        },
+        onRemoteRunStop,
+      });
+
+      expect(result.signal).toBe("SIGKILL");
+      expect(onRemoteRunStop).toHaveBeenCalledWith(
+        expect.objectContaining({ ok: false, survivors: 1, survivorPids: [4242] }),
+      );
+      expect(logs).toHaveLength(1);
+      expect(logs[0].stream).toBe("stderr");
+      expect(logs[0].chunk).toContain("4242");
+    });
+
+    it("reports an unreachable SSH environment instead of failing the run's result", async () => {
+      mockProcessResult({ exitCode: null, signal: "SIGTERM" });
+      vi.spyOn(ssh, "runSshCommand").mockRejectedValue(new Error("ssh: connect to host ssh.example.test port 22: timed out"));
+      const onRemoteRunStop = vi.fn();
+
+      const result = await runAdapterExecutionTargetProcess("run-unreachable", sshTarget, "agent-cli", [], {
+        cwd: "/tmp/local",
+        env: {},
+        onLog: async () => {},
+        onRemoteRunStop,
+      });
+
+      expect(result.signal).toBe("SIGTERM");
+      expect(onRemoteRunStop).toHaveBeenCalledWith(expect.objectContaining({ ok: false, error: expect.any(String) }));
+    });
   });
 });
 
