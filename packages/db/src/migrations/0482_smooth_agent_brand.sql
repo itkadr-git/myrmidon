@@ -1,0 +1,2 @@
+ALTER TABLE "billing_events" ADD COLUMN "body_sha256" text;--> statement-breakpoint
+CREATE UNIQUE INDEX "billing_events_company_body_sha256_uq" ON "billing_events" USING btree ("company_id","body_sha256") WHERE "billing_events"."body_sha256" is not null;
