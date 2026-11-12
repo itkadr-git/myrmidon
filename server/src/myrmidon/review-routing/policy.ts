@@ -154,8 +154,18 @@ export function isEscalatedReviewStage(issue: RoutingIssue): boolean {
   return false;
 }
 
-/** The agent whose group anchors the reviewer pool: the assignee engineer, else the task author. */
+/**
+ * The agent whose group anchors the reviewer pool: the assignee engineer, else
+ * the task author. While an agent review is pending the assignee is the
+ * reviewer, not the engineer, so the anchor is the agent the review returns to
+ * (else the author); the reviewer is the last resort. Anchoring on the
+ * reviewer would keep a misrouted review inside the wrong group.
+ */
 export function issueAnchorAgentId(issue: RoutingIssue): string | null {
+  const pending = readPendingAgentReview(issue);
+  if (pending) {
+    return pending.returnAssigneeAgentId ?? issue.createdByAgentId ?? issue.assigneeAgentId ?? null;
+  }
   return issue.assigneeAgentId ?? issue.createdByAgentId ?? null;
 }
 
@@ -171,6 +181,24 @@ export function resolveAgentGroupKey(agent?: { name?: string | null; metadata?: 
   if (prefix.startsWith("bbq")) return "bbq";
   if (prefix.startsWith("work")) return "work";
   return prefix;
+}
+
+/**
+ * myrmidon(OPE-12683): the reviewers that may take a task of agent group
+ * `groupKey`. A reviewer switched out of the automatic-work queue
+ * (`swarmQueueEligible === false`) never qualifies. A reviewer of another group
+ * never qualifies either, and an empty own group is NOT a reason to widen the
+ * pool: the result is then empty. An empty `groupKey` means the task has no
+ * known group (no anchor agent), so only the queue flag filters.
+ */
+export function ownGroupReviewerPool<
+  T extends { name?: string | null; metadata?: unknown; swarmQueueEligible?: boolean },
+>(candidates: readonly T[], groupKey: string): T[] {
+  return candidates.filter((candidate) => {
+    if (candidate.swarmQueueEligible === false) return false;
+    if (asRecord(candidate.metadata)?.[SWARM_QUEUE_ELIGIBILITY_METADATA_KEY] === false) return false;
+    return !groupKey || resolveAgentGroupKey(candidate) === groupKey;
+  });
 }
 
 /** Agent ids that must never review this task: its author, its assignee, returnAssignee, and `extra`. */

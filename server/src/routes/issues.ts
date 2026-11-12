@@ -33,10 +33,13 @@ import {
   buildReviewRoutingAssignPatch,
   evaluateReviewerAvailability,
   excludedReviewerIds,
+  issueAnchorAgentId,
   issueNeedsReviewer,
+  ownGroupReviewerPool,
   pickReviewer,
   policyHasReviewerParticipant,
   readPendingAgentReview,
+  resolveAgentGroupKey,
   type ReviewerCandidate,
   type RoutingIssue,
 } from "../myrmidon/review-routing/policy.js";
@@ -239,6 +242,7 @@ import {
   type IssueWriteDenialCode,
   type IssueWriteDenialContext,
   validateIdeasProjectConstraints,
+  SWARM_QUEUE_ELIGIBILITY_METADATA_KEY,
   checkIdeasWeeklySLA,
   isIdeasProjectName,
 } from "@myrmidon/shared";
@@ -5308,6 +5312,134 @@ export function issueRoutes(
     });
   }
 
+  // myrmidon(OPE-12683): a task may not leave its project team at the
+  // in_review hand-off. Refuse out-of-team or queue-ineligible reviewer
+  // stage participants — and an explicit reviewer/lead `assigneeAgentId`,
+  // which the disposition gate itself accepts as a review hand-off — on the
+  // transition into review, before any state is written, with the list of
+  // teammates that would be accepted instead. The same rule holds for a
+  // reviewer change while the issue is already in review: a participant the
+  // request adds, or a reassignment to a participant, is checked; a reviewer
+  // the issue already holds is left alone so an unrelated update never fails.
+  async function assertReviewParticipantEligibility(input: {
+    existing: IssueRouteSnapshot;
+    updateFields: Record<string, unknown>;
+  }) {
+    const nextStatus = typeof input.updateFields.status === "string"
+      ? input.updateFields.status
+      : input.existing.status;
+    if (nextStatus !== "in_review" || isConversation(input.existing)) {
+      return;
+    }
+    const wasInReview = input.existing.status === "in_review";
+    const agentParticipantIds = (
+      candidatePolicy: ReturnType<typeof safeNormalizeIssueExecutionPolicy>,
+    ) =>
+      new Set(
+        (candidatePolicy?.stages ?? []).flatMap((stage) =>
+          stage.type === "review" || stage.type === "approval"
+            ? stage.participants.flatMap((participant) =>
+              participant.type === "agent" && participant.agentId ? [participant.agentId] : [],
+            )
+            : [],
+        ),
+      );
+    const existingPolicy = safeNormalizeIssueExecutionPolicy(input.existing.executionPolicy ?? null);
+    const nextPolicy = input.updateFields.executionPolicy !== undefined
+      ? safeNormalizeIssueExecutionPolicy(input.updateFields.executionPolicy ?? null)
+      : existingPolicy;
+    const nextParticipantIds = agentParticipantIds(nextPolicy);
+    const nextAssigneeAgentId =
+      input.updateFields.assigneeAgentId === undefined
+        ? input.existing.assigneeAgentId
+        : input.updateFields.assigneeAgentId;
+    const participantIds = new Set<string>();
+    if (!wasInReview) {
+      for (const participantId of nextParticipantIds) participantIds.add(participantId);
+      // myrmidon(OPE-12683): an explicit reviewer/lead `assigneeAgentId` on the
+      // transition is itself a review hand-off (the disposition gate treats it
+      // as one), so it faces the same teammate-eligibility rule as a stage
+      // participant. A plain engineer reassignment is not a review hand-off.
+      if (typeof nextAssigneeAgentId === "string" && nextAssigneeAgentId.length > 0) {
+        const assigneeRole = (await agentsSvc.getById(nextAssigneeAgentId))?.role ?? "";
+        if (["reviewer", "lead"].includes(assigneeRole)) {
+          participantIds.add(nextAssigneeAgentId);
+        }
+      }
+    } else {
+      // myrmidon(OPE-12683): an issue already in review changes its reviewer
+      // by adding a participant to the policy, or by reassigning to one. A
+      // reassignment to a non-participant dissolves the review (the vendor
+      // transition) and hands the task to an engineer: not a reviewer change.
+      const previousParticipantIds = agentParticipantIds(existingPolicy);
+      for (const participantId of nextParticipantIds) {
+        if (!previousParticipantIds.has(participantId)) participantIds.add(participantId);
+      }
+      if (
+        typeof nextAssigneeAgentId === "string" &&
+        nextAssigneeAgentId.length > 0 &&
+        nextAssigneeAgentId !== input.existing.assigneeAgentId &&
+        nextParticipantIds.has(nextAssigneeAgentId)
+      ) {
+        participantIds.add(nextAssigneeAgentId);
+      }
+    }
+    if (participantIds.size === 0) return;
+
+    const anchorId = issueAnchorAgentId(input.existing);
+    const [anchorAgent, routingSettings] = await Promise.all([
+      anchorId ? agentsSvc.getById(anchorId) : Promise.resolve(null),
+      readReviewRoutingSettings(instanceSettings),
+    ]);
+    const anchorGroup = resolveAgentGroupKey(anchorAgent ?? undefined);
+    // myrmidon(OPE-12683): participants are deduped, so each id loads once.
+    const rejected: Array<{ agentId: string; reason: string }> = [];
+    for (const participantId of participantIds) {
+      const agent = await agentsSvc.getById(participantId);
+      if (!agent) {
+        rejected.push({ agentId: participantId, reason: "not_found" });
+        continue;
+      }
+      if (agent.metadata?.[SWARM_QUEUE_ELIGIBILITY_METADATA_KEY] === false) {
+        rejected.push({ agentId: participantId, reason: "swarm_queue_ineligible" });
+        continue;
+      }
+      if (anchorGroup && resolveAgentGroupKey(agent) !== anchorGroup) {
+        rejected.push({ agentId: participantId, reason: "outside_issue_group" });
+      }
+    }
+    if (rejected.length === 0) return;
+
+    let eligibleReviewers: Array<{ id: string; name?: string | null; role?: string }> = [];
+    try {
+      const routingStore = createPgReviewRoutingStore(db);
+      const [reviewerRows, loads] = await Promise.all([
+        routingStore.listReviewerAgents(input.existing.companyId, routingSettings.reviewerRoles ?? []),
+        routingStore.loadByAgent(input.existing.companyId),
+      ]);
+      const eligible = reviewerRows
+        .filter((row) =>
+          row.swarmQueueEligible !== false &&
+          row.metadata?.[SWARM_QUEUE_ELIGIBILITY_METADATA_KEY] !== false &&
+          !rejected.some((entry) => entry.agentId === row.id) &&
+          (!anchorGroup || resolveAgentGroupKey(row) === anchorGroup))
+        .sort((a, b) => (loads.get(a.id) ?? 0) - (loads.get(b.id) ?? 0) || a.id.localeCompare(b.id))
+        .slice(0, 5);
+      eligibleReviewers = eligible.map((row) => ({ id: row.id, name: row.name, role: row.role }));
+    } catch {
+      // Advisory only: the 422 stands even when the eligible list cannot be built.
+    }
+
+    throw unprocessable(
+      "Review participants must be invokable teammates of the issue's project team with swarm queue eligibility",
+      {
+        code: "invalid_review_participant",
+        rejected,
+        eligibleReviewers,
+      },
+    );
+  }
+
   async function logExpiredRequestConfirmations(input: {
     issue: { id: string; companyId: string; identifier?: string | null };
     interactions: Array<{
@@ -8864,6 +8996,7 @@ export function issueRoutes(
       afterId: req.query.afterId as string | undefined,
       sortDir: sortDir === "asc" || sortDir === "desc" ? sortDir : undefined,
       excludePrivate: req.actor.type === "agent",
+      maskPrivate: req.actor.type === "agent",
       updatedSince: rawUpdatedSince,
     };
     const requestKey = issueListRequestKey({
@@ -9097,6 +9230,7 @@ export function issueRoutes(
       hasPlanDocument,
       q: req.query.q as string | undefined,
       excludePrivate: req.actor.type === "agent",
+      maskPrivate: req.actor.type === "agent",
     } as const;
 
     if (!(await actorCanReadCompanyScope(req, companyId))) {
@@ -9412,12 +9546,16 @@ export function issueRoutes(
       activeRecoveryAction,
     ] = await Promise.all([
       resolveIssueProjectAndGoal(issue),
-      svc.getAncestors(issue.id),
+      svc.getAncestors(issue.id, { maskPrivate: req.actor.type === "agent" }),
       svc.getCommentCursor(issue.id),
       wakeCommentId ? svc.getComment(wakeCommentId) : null,
-      svc.getRelationSummaries(issue.id),
+      svc.getRelationSummaries(issue.id, {
+        maskPrivate: req.actor.type === "agent",
+      }),
       svc
-        .listBlockerAttention(issue.companyId, [issue])
+        .listBlockerAttention(issue.companyId, [issue], db, {
+          maskPrivate: req.actor.type === "agent",
+        })
         .then((map) => map.get(issue.id) ?? null),
       svc
         .listReviewAttention(issue.companyId, [issue])
@@ -9608,7 +9746,9 @@ export function issueRoutes(
     if (!issue) return;
     if (!(await assertIssueReadAllowed(req, res, issue))) return;
 
-    const diagnostic = await svc.getBlockerDiagnostics(issue.id);
+    const diagnostic = await svc.getBlockerDiagnostics(issue.id, undefined, {
+      maskPrivate: req.actor.type === "agent",
+    });
     const visibleBlockers = await filterIssuesForActor(
       req,
       diagnostic.blockers,
@@ -9651,7 +9791,9 @@ export function issueRoutes(
     const [wakeDiagnostic, blockerDiagnostic, includeInternalIds] =
       await Promise.all([
         svc.getWakeDiagnostics(issue.id),
-        svc.getBlockerDiagnostics(issue.id),
+        svc.getBlockerDiagnostics(issue.id, undefined, {
+          maskPrivate: req.actor.type === "agent",
+        }),
         actorCanReadCompanyScope(req, issue.companyId),
       ]);
     const visibleBlockers = await filterIssuesForActor(
@@ -9703,7 +9845,9 @@ export function issueRoutes(
     if (!(await assertIssueReadAllowed(req, res, issue))) return;
 
     const [diagnostic, includeInternalIds] = await Promise.all([
-      svc.getSubtreeDiagnostics(issue.id),
+      svc.getSubtreeDiagnostics(issue.id, {
+        maskPrivate: req.actor.type === "agent",
+      }),
       actorCanReadCompanyScope(req, issue.companyId),
     ]);
     const allBlockers = [...diagnostic.blockersByIssueId.values()].flat();
@@ -9778,12 +9922,16 @@ export function issueRoutes(
       externalChannelBinding,
     ] = await Promise.all([
       resolveIssueProjectAndGoal(issue),
-      svc.getAncestors(issue.id),
+      svc.getAncestors(issue.id, { maskPrivate: req.actor.type === "agent" }),
       svc.findMentionedProjectIds(issue.id, { includeCommentBodies: false }),
       documentsSvc.getIssueDocumentPayload(issue),
-      svc.getRelationSummaries(issue.id),
+      svc.getRelationSummaries(issue.id, {
+        maskPrivate: req.actor.type === "agent",
+      }),
       svc
-        .listBlockerAttention(issue.companyId, [issue])
+        .listBlockerAttention(issue.companyId, [issue], db, {
+          maskPrivate: req.actor.type === "agent",
+        })
         .then((map) => map.get(issue.id) ?? null),
       svc
         .listReviewAttention(issue.companyId, [issue])
@@ -15160,6 +15308,9 @@ export function issueRoutes(
         existing.status !== "in_review" && updateFields.status === "in_review";
       const persistReviewActivityTransactionally =
         enteringReviewRequested || Boolean(reviewInteractionId);
+      // myrmidon(OPE-12683): refuse ineligible reviewers before any gate or
+      // state write; runs for every actor on the transition into review.
+      await assertReviewParticipantEligibility({ existing, updateFields });
       let selfCheckGateBypassPatch: Record<string, unknown> | null = null;
       if (
         enteringReviewRequested &&
@@ -16146,8 +16297,20 @@ export function issueRoutes(
                     ...candidate,
                     load: loads.get(candidate.id) ?? 0,
                   }));
+                  // myrmidon(OPE-12683): only queue-eligible reviewers of the
+                  // issue's own project team — the anchor's group (name prefix
+                  // or telegramGroup) — qualify. There is no fallback to the
+                  // whole pool: with no teammate in capacity nobody is picked
+                  // here, and the sweep raises the no-reviewer signal. Shares
+                  // `ownGroupReviewerPool` with the sweep's pools.
+                  const anchorId = issueAnchorAgentId(routingIssue);
+                  const anchorRow = anchorId
+                    ? candidateRows.find((candidate) => candidate.id === anchorId)
+                      ?? await txReviewRoutingStore.getAgent(routingIssue.companyId, anchorId)
+                    : null;
+                  const anchorGroup = resolveAgentGroupKey(anchorRow ?? undefined);
                   const reviewer = pickReviewer({
-                    candidates,
+                    candidates: ownGroupReviewerPool(candidates, anchorGroup),
                     excluded: excludedReviewerIds(routingIssue),
                     maxLoad: settings.maxLoadPerReviewer,
                     authorModel,
@@ -18158,12 +18321,32 @@ export function issueRoutes(
                 routingStore.listReviewerAgents(issue.companyId, reviewRoutingSettings.reviewerRoles),
                 routingStore.loadByAgent(issue.companyId),
               ]);
+              // myrmidon(OPE-12780): availability mirrors the pick gates — only
+              // queue-eligible reviewers of the issue's own group count, so an
+              // empty own team signals instead of staying silent because some
+              // other team's reviewer has capacity.
+              const signalAnchorId = issueAnchorAgentId(reviewerSignalIssue!);
+              const signalAnchorRow = signalAnchorId
+                ? await routingStore.getAgent(issue.companyId, signalAnchorId)
+                : null;
+              const signalAnchorGroup = resolveAgentGroupKey(signalAnchorRow ?? undefined);
               const authorModel = reviewerSignalIssue?.createdByAgentId
                 ? await routingStore.getAgentModel?.(issue.companyId, reviewerSignalIssue.createdByAgentId) ?? null
                 : null;
               unavailable =
                 evaluateReviewerAvailability({
-                  reviewers: reviewerRows.map((agent) => ({ id: agent.id, role: agent.role, invokable: agent.invokable ?? true, model: agent.model })),
+                  reviewers: ownGroupReviewerPool(
+                    reviewerRows.map((agent) => ({
+                      id: agent.id,
+                      name: agent.name,
+                      role: agent.role,
+                      metadata: agent.metadata,
+                      swarmQueueEligible: agent.swarmQueueEligible,
+                      invokable: agent.invokable ?? true,
+                      model: agent.model,
+                    })),
+                    signalAnchorGroup,
+                  ),
                   loadByAgent,
                   issue: reviewerSignalIssue!,
                   maxLoad: reviewRoutingSettings.maxLoadPerReviewer,

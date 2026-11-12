@@ -26,9 +26,11 @@ vi.mock("./ssh.js", () => ({
 }));
 
 import {
-  buildRemoteRunWorkspaceCleanupCommand,
+  buildRemoteRunDirectoryRemoveCommand,
   buildStaleRemoteRunsPruneCommand,
   prepareRemoteManagedRuntime,
+  type PreparedRemoteManagedRuntime,
+  type RemoteManagedRuntimeAsset,
 } from "./remote-managed-runtime.js";
 import { resolveReferencedSourceIgnore } from "./sandbox-managed-runtime.js";
 import { setExpensiveWorkspaceGitExecutor } from "./git-workspace-sync.js";
@@ -328,7 +330,7 @@ describe("remote managed runtime", () => {
   });
 });
 
-describe("remote managed runtime: run directory cleanup (OPE-12633)", () => {
+describe("remote managed runtime: run directory cleanup (OPE-12633, OPE-12664)", () => {
   const cleanupDirs: string[] = [];
   const spec = {
     host: "127.0.0.1",
@@ -349,7 +351,7 @@ describe("remote managed runtime: run directory cleanup (OPE-12633)", () => {
     }
   });
 
-  async function prepareSynced(runId: string) {
+  async function prepareSynced(runId: string, assets?: RemoteManagedRuntimeAsset[]) {
     const rootDir = await mkdtemp(path.join(os.tmpdir(), "myrmidon-remote-run-cleanup-"));
     cleanupDirs.push(rootDir);
     const workspaceDir = path.join(rootDir, "workspace");
@@ -360,12 +362,38 @@ describe("remote managed runtime: run directory cleanup (OPE-12633)", () => {
       runId,
       adapterKey: "omp",
       workspaceLocalDir: workspaceDir,
+      assets,
     });
   }
 
   const sshCommands = () => runSshCommand.mock.calls.map((call) => (call as unknown[])[1]);
+  const isRemoveCommand = (command: unknown) => String(command).includes("rm -rf -- ");
+  const removeCommands = () => sshCommands().filter(isRemoveCommand);
+  // The pid file of the file bridge below a run's runtime root.
+  const bridgePidFile = (runId: string) =>
+    `/workspace/.paperclip-runtime/runs/${runId}/workspace/.paperclip-runtime/omp/paperclip-bridge/queue/server.pid`;
+  const removeCommand = (runId: string) =>
+    buildRemoteRunDirectoryRemoveCommand("/workspace", runId, bridgePidFile(runId));
 
-  it("prunes stale run directories before a synced run and removes the run's workspace copy after the restore", async () => {
+  // The adapters call `restoreWorkspace` from the `finally` of their execute, so
+  // a run that failed or was cancelled reaches it exactly like a successful one.
+  async function runLikeAnAdapter(prepared: PreparedRemoteManagedRuntime, execute: () => Promise<void>) {
+    try {
+      await execute();
+    } finally {
+      await prepared.restoreWorkspace();
+    }
+  }
+
+  function expectRemovalAfterRestore() {
+    const removeIndex = sshCommands().findIndex(isRemoveCommand);
+    expect(removeIndex).toBeGreaterThanOrEqual(0);
+    expect(restoreWorkspaceFromSshExecution.mock.invocationCallOrder[0]).toBeLessThan(
+      runSshCommand.mock.invocationCallOrder[removeIndex],
+    );
+  }
+
+  it("prunes stale run directories before a synced run and removes the run's directory after the restore", async () => {
     const prepared = await prepareSynced("run-cleanup");
     expect(prepared.workspaceRemoteDir).toBe("/workspace/.paperclip-runtime/runs/run-cleanup/workspace");
     expect(sshCommands()).toEqual([buildStaleRemoteRunsPruneCommand("/workspace")]);
@@ -375,25 +403,160 @@ describe("remote managed runtime: run directory cleanup (OPE-12633)", () => {
     expect(restoreWorkspaceFromSshExecution).toHaveBeenCalledTimes(1);
     expect(sshCommands()).toEqual([
       buildStaleRemoteRunsPruneCommand("/workspace"),
-      buildRemoteRunWorkspaceCleanupCommand("/workspace/.paperclip-runtime/runs/run-cleanup/workspace"),
+      removeCommand("run-cleanup"),
     ]);
+    expectRemovalAfterRestore();
   });
 
-  it("keeps the runtime directory and quotes the paths", () => {
-    expect(buildRemoteRunWorkspaceCleanupCommand("/workspace/.paperclip-runtime/runs/r1/workspace")).toBe(
-      "find '/workspace/.paperclip-runtime/runs/r1/workspace' -mindepth 1 -maxdepth 1 ! -name .paperclip-runtime -exec rm -rf {} +",
+  it("builds a removal command for one run directory, stopping the bridge first, and quotes the paths", () => {
+    expect(buildRemoteRunDirectoryRemoveCommand("/workspace", "r1")).toBe(
+      "if [ -d '/workspace/.paperclip-runtime/runs/r1' ]; then rm -rf -- '/workspace/.paperclip-runtime/runs/r1'; fi",
+    );
+    expect(
+      buildRemoteRunDirectoryRemoveCommand(
+        "/work space",
+        "r1",
+        "/work space/.paperclip-runtime/runs/r1/workspace/.paperclip-runtime/omp/paperclip-bridge/queue/server.pid",
+      ),
+    ).toBe(
+      "if [ -d '/work space/.paperclip-runtime/runs/r1' ]; then " +
+        "p=$(cat '/work space/.paperclip-runtime/runs/r1/workspace/.paperclip-runtime/omp/paperclip-bridge/queue/server.pid' 2>/dev/null); " +
+        '[ "$p" -gt 1 ] 2>/dev/null && kill "$p" 2>/dev/null; ' +
+        "rm -rf -- '/work space/.paperclip-runtime/runs/r1'; fi",
     );
     expect(buildStaleRemoteRunsPruneCommand("/work space")).toBe(
       "if [ -d '/work space/.paperclip-runtime/runs' ]; then find '/work space/.paperclip-runtime/runs' -mindepth 1 -maxdepth 1 -type d -mmin +240 -exec rm -rf {} +; fi",
     );
   });
 
-  it("leaves the remote copy in place when the restore fails, so the run's work is not lost", async () => {
+  it("refuses a run id that is not a single path segment, so the command can never reach another run's directory", () => {
+    for (const unsafe of ["", ".", "..", "a/b", "../other-run", "/abs", "a\\b", "a\0b"]) {
+      expect(() => buildRemoteRunDirectoryRemoveCommand("/workspace", unsafe)).toThrow(/single path segment/);
+    }
+  });
+
+  it("removes the run directory after a failed execute, not only after a successful run", async () => {
+    const prepared = await prepareSynced("run-failed");
+
+    await expect(
+      runLikeAnAdapter(prepared, async () => {
+        throw new Error("omp exited with code 1");
+      }),
+    ).rejects.toThrow("omp exited with code 1");
+
+    expect(restoreWorkspaceFromSshExecution).toHaveBeenCalledTimes(1);
+    expect(removeCommands()).toEqual([removeCommand("run-failed")]);
+    expectRemovalAfterRestore();
+  });
+
+  it("removes the run directory after an aborted (cancelled) run", async () => {
+    const prepared = await prepareSynced("run-aborted");
+    const controller = new AbortController();
+    const run = runLikeAnAdapter(
+      prepared,
+      () =>
+        new Promise<void>((_resolve, reject) => {
+          controller.signal.addEventListener("abort", () => reject(controller.signal.reason), { once: true });
+        }),
+    );
+
+    controller.abort(new Error("run cancelled"));
+
+    await expect(run).rejects.toThrow("run cancelled");
+    expect(removeCommands()).toEqual([removeCommand("run-aborted")]);
+    expectRemovalAfterRestore();
+  });
+
+  it("removes the run directory when the restore fails, and the restore error still reaches the caller", async () => {
     const prepared = await prepareSynced("run-restore-fails");
     restoreWorkspaceFromSshExecution.mockRejectedValueOnce(new Error("ssh export failed"));
 
     await expect(prepared.restoreWorkspace()).rejects.toThrow("ssh export failed");
-    expect(sshCommands()).toEqual([buildStaleRemoteRunsPruneCommand("/workspace")]);
+
+    expect(sshCommands()).toEqual([
+      buildStaleRemoteRunsPruneCommand("/workspace"),
+      removeCommand("run-restore-fails"),
+    ]);
+    expectRemovalAfterRestore();
+  });
+
+  it("removes the run directory when the restore itself is aborted", async () => {
+    const prepared = await prepareSynced("run-restore-aborted");
+    restoreWorkspaceFromSshExecution.mockRejectedValueOnce(
+      Object.assign(new Error("The operation was aborted"), { name: "AbortError" }),
+    );
+
+    await expect(prepared.restoreWorkspace()).rejects.toThrow("The operation was aborted");
+
+    expect(removeCommands()).toEqual([removeCommand("run-restore-aborted")]);
+    expectRemovalAfterRestore();
+  });
+
+  it("removes the run directory when an asset restore fails", async () => {
+    const prepared = await prepareSynced("run-asset-restore-fails", [
+      {
+        key: "agentConfig",
+        localDir: os.tmpdir(),
+        restore: async () => {
+          throw new Error("asset restore failed");
+        },
+      },
+    ]);
+
+    await expect(prepared.restoreWorkspace()).rejects.toThrow("asset restore failed");
+
+    expect(removeCommands()).toEqual([removeCommand("run-asset-restore-fails")]);
+    expectRemovalAfterRestore();
+  });
+
+  it("removes only this run's directory, never another run's", async () => {
+    const first = await prepareSynced("run-one");
+    await prepareSynced("run-two");
+    restoreWorkspaceFromSshExecution.mockRejectedValueOnce(new Error("ssh export failed"));
+
+    await expect(first.restoreWorkspace()).rejects.toThrow("ssh export failed");
+
+    expect(removeCommands()).toEqual([removeCommand("run-one")]);
+    expect(removeCommands().join("\n")).not.toContain("run-two");
+    // The command names the run's own directory, not the shared `runs` directory.
+    expect(String(removeCommands()[0])).toContain("rm -rf -- '/workspace/.paperclip-runtime/runs/run-one'");
+  });
+
+  it("does not remove anything for a run id that is not a single path segment", async () => {
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    try {
+      const prepared = await prepareSynced("..");
+      await prepared.restoreWorkspace();
+
+      expect(removeCommands()).toEqual([]);
+      expect(warnSpy.mock.calls.map((call) => call.join(" ")).join("\n")).toContain("remove the run directory");
+    } finally {
+      warnSpy.mockRestore();
+    }
+  });
+
+  it("removes the copy of a run whose workspace upload fails, since no restore will follow", async () => {
+    prepareWorkspaceForSshExecution.mockRejectedValueOnce(new Error("ssh upload failed"));
+
+    await expect(prepareSynced("run-upload-fails")).rejects.toThrow("ssh upload failed");
+
+    expect(restoreWorkspaceFromSshExecution).not.toHaveBeenCalled();
+    expect(sshCommands()).toEqual([
+      buildStaleRemoteRunsPruneCommand("/workspace"),
+      removeCommand("run-upload-fails"),
+    ]);
+  });
+
+  it("removes the copy of a run whose asset staging fails, after restoring the workspace", async () => {
+    syncDirectoryToSsh.mockRejectedValueOnce(new Error("asset transfer failed"));
+
+    await expect(
+      prepareSynced("run-asset-fails", [{ key: "agentConfig", localDir: os.tmpdir() }]),
+    ).rejects.toThrow("asset transfer failed");
+
+    expect(restoreWorkspaceFromSshExecution).toHaveBeenCalledTimes(1);
+    expect(removeCommands()).toEqual([removeCommand("run-asset-fails")]);
+    expectRemovalAfterRestore();
   });
 
   it("does not fail the run when a cleanup command fails", async () => {
@@ -403,6 +566,22 @@ describe("remote managed runtime: run directory cleanup (OPE-12633)", () => {
 
     await expect(prepared.restoreWorkspace()).resolves.toBeUndefined();
     expect(sshCommands()).toHaveLength(2);
+  });
+
+  it("logs a failed removal and still rethrows the restore error, not the removal error", async () => {
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    try {
+      const prepared = await prepareSynced("run-both-fail");
+      restoreWorkspaceFromSshExecution.mockRejectedValueOnce(new Error("ssh export failed"));
+      runSshCommand.mockRejectedValueOnce(new Error("rm refused"));
+
+      await expect(prepared.restoreWorkspace()).rejects.toThrow("ssh export failed");
+
+      expect(removeCommands()).toEqual([removeCommand("run-both-fail")]);
+      expect(warnSpy.mock.calls.map((call) => call.join(" ")).join("\n")).toContain("rm refused");
+    } finally {
+      warnSpy.mockRestore();
+    }
   });
 
   it("runs no cleanup for an in-place (unsynced) workspace", async () => {
@@ -416,6 +595,33 @@ describe("remote managed runtime: run directory cleanup (OPE-12633)", () => {
       syncWorkspace: false,
     });
     await prepared.restoreWorkspace();
+    expect(sshCommands()).toEqual([]);
+  });
+
+  it("runs no cleanup for an in-place (unsynced) workspace, even when the restore fails", async () => {
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "myrmidon-remote-run-in-place-fails-"));
+    cleanupDirs.push(rootDir);
+    const prepared = await prepareRemoteManagedRuntime({
+      spec,
+      runId: "run-in-place-fails",
+      adapterKey: "omp",
+      workspaceLocalDir: rootDir,
+      workspaceRemoteDir: "/app",
+      syncWorkspace: false,
+      assets: [
+        {
+          key: "home",
+          localDir: rootDir,
+          restore: async () => {
+            throw new Error("asset restore failed");
+          },
+        },
+      ],
+    });
+
+    await expect(prepared.restoreWorkspace()).rejects.toThrow("asset restore failed");
+
+    expect(restoreWorkspaceFromSshExecution).not.toHaveBeenCalled();
     expect(sshCommands()).toEqual([]);
   });
 });

@@ -123,6 +123,7 @@ describeEmbeddedPostgres("review stage recovery (route level)", () => {
         companyId,
         name: name!,
         role: "engineer",
+        metadata: { telegramGroup: "dev" },
         status: "active",
         adapterType: "codex_local",
         adapterConfig: {},
