@@ -5,6 +5,9 @@ import {
   INVENTORY_METHOD,
   INVENTORY_SECTIONS,
   inventoryReportHash,
+  isUnresolvedDependencyStatus,
+  formatCrossCompanyDependency,
+  formatInventoryDependencies,
   normalizeInventoryReport,
   renderInventory,
   sectionForPath,
@@ -319,4 +322,120 @@ test("missing attribution fields are computed from observed rows", async () => {
 test("unknown sections are absent from the registry and cannot be covered", () => {
   assert.equal(sectionForPath("/not-a-section"), undefined);
   assert.ok(INVENTORY_SECTIONS.every((section) => sectionForPath(section.path)));
+});
+
+/* --- Cross-company dependency visibility (OPE-12905) --- */
+
+/**
+ * Fixture A: supported inventory objects that DO carry an explicit
+ * cross-company dependency reference (issue → issue in another company).
+ * Payload values include secret-shaped strings to prove they never leak.
+ */
+const CROSS_COMPANY_FIXTURE = [
+  {
+    id: "issue-9",
+    ownerCompanyId: "c1",
+    dependency: { type: "issue", id: "issue-77", companyId: "c2" },
+    title: "payload must not be copied",
+    secretToken: "pcp_SUPER_SECRET_VALUE",
+    webhookUrl: "https://hooks.internal/never-leak",
+  },
+  {
+    id: "issue-10",
+    ownerCompanyId: "c1",
+    dependency: { type: "issue", id: "issue-88", companyId: "c1" },
+  },
+];
+
+/** Fixture B: same objects but with no reference, or an unresolvable one. */
+const UNRESOLVED_FIXTURE = [
+  { id: "issue-11", ownerCompanyId: "c1" },
+  { id: "issue-12", ownerCompanyId: "c1", dependency: { unresolved: true } },
+  { id: "issue-13", ownerCompanyId: "c1", dependency: { type: "issue" } },
+  { id: "issue-14", ownerCompanyId: "c1", dependency: null },
+  "not-an-object",
+];
+
+test("explicit cross-company reference shows the link type and identifier without payload values", () => {
+  const formatted = formatInventoryDependencies(CROSS_COMPANY_FIXTURE, { currentCompanyId: "c1" });
+
+  const cross = formatted.find((d) => d.objectId === "issue-9");
+  assert.ok(cross, "fixture A must produce the cross-company object");
+  assert.equal(cross.status, "cross-company");
+  assert.deepEqual(cross.dependency, { type: "issue", id: "issue-77", companyId: "c2" });
+  assert.equal(cross.ownerCompanyId, "c1");
+  assert.ok(isUnresolvedDependencyStatus(cross.status) === false);
+  assert.notEqual(cross.status, "unknown");
+
+  const same = formatted.find((d) => d.objectId === "issue-10");
+  assert.ok(same, "fixture A must produce the same-company object");
+  assert.equal(same.status, "same-company");
+  assert.deepEqual(same.dependency, { type: "issue", id: "issue-88", companyId: "c1" });
+
+  // Dependency identity is present; payload-only fields (title, secrets, urls) are not.
+  const rendered = JSON.stringify(formatted);
+  assert.ok(rendered.includes("issue-77"));
+  assert.ok(rendered.includes("c2"));
+  assert.ok(!rendered.includes("pcp_SUPER_SECRET_VALUE"));
+  assert.ok(!rendered.includes("never-leak"));
+  assert.ok(!rendered.includes("title"));
+});
+
+test("missing or unresolvable references stay unknown/unresolved and never fold into no-links", () => {
+  const formatted = formatInventoryDependencies(UNRESOLVED_FIXTURE, { currentCompanyId: "c1" });
+  const byId = Object.fromEntries(formatted.filter((d) => d.objectId).map((d) => [d.objectId, d]));
+
+  // No reference at all → status unknown, dependency null — visibly not "no links".
+  assert.equal(byId["issue-11"].status, "unknown");
+  assert.equal(byId["issue-11"].dependency, null);
+  assert.ok(isUnresolvedDependencyStatus(byId["issue-11"].status));
+
+  // dependency.unresolved=true → status unresolved.
+  assert.equal(byId["issue-12"].status, "unresolved");
+  assert.equal(byId["issue-12"].dependency, null);
+  assert.ok(isUnresolvedDependencyStatus(byId["issue-12"].status));
+
+  // Reference present but missing type/id/companyId → unresolved with partial hint.
+  assert.equal(byId["issue-13"].status, "unresolved");
+  assert.deepEqual(byId["issue-13"].dependency, { type: "issue", id: null, companyId: null });
+  assert.ok(isUnresolvedDependencyStatus(byId["issue-13"].status));
+
+  // dependency explicitly null → unresolved (field present but unresolvable).
+  assert.equal(byId["issue-14"].status, "unresolved");
+  assert.ok(isUnresolvedDependencyStatus(byId["issue-14"].status));
+
+  // Non-object entries produce no link identity at all (status unknown, nothing resolvable).
+  assert.equal(formatted.filter((d) => d.objectId === null).length, 1);
+  assert.equal(formatted.find((d) => d.objectId === null).status, "unknown");
+  assert.equal(formatted.find((d) => d.objectId === null).dependency, null);
+
+  for (const entry of formatted) {
+    assert.ok(["unknown", "unresolved", "same-company", "cross-company"].includes(entry.status));
+  }
+});
+
+test("formatter output is deterministic and secret-free across repeated runs and hashed reports", async () => {
+  const transport = makeGetOnlyTransport(({ path }) => {
+    if (path === "/issues") {
+      return { status: 200, ok: true, json: async () => CROSS_COMPANY_FIXTURE };
+    }
+    return { status: 403, ok: false };
+  });
+  const report = await collectInventory(transport);
+  const rendered = renderInventory(report);
+
+  // The probe report itself stays secret-free and deterministic.
+  assert.ok(!rendered.includes("pcp_SUPER_SECRET_VALUE"));
+  assert.ok(!rendered.includes("never-leak"));
+  assert.equal(inventoryReportHash(report), inventoryReportHash(await collectInventory(transport)));
+
+  const first = formatInventoryDependencies(CROSS_COMPANY_FIXTURE, { currentCompanyId: "c1" });
+  const second = formatInventoryDependencies([...CROSS_COMPANY_FIXTURE].reverse(), { currentCompanyId: "c1" });
+  assert.deepEqual(first, second); // input order does not change the sorted report
+  assert.equal(inventoryReportHash({ sections: [], summary: {}, dependencies: first }), inventoryReportHash({ sections: [], summary: {}, dependencies: second }));
+
+  // Normalize keeps the dependencies block only when provided (back-compat).
+  assert.deepEqual(normalizeInventoryReport({ sections: [], summary: {} }), { sections: [], summary: {} });
+  const withDeps = normalizeInventoryReport({ sections: [], summary: {}, dependencies: first });
+  assert.deepEqual(withDeps.dependencies, first);
 });
