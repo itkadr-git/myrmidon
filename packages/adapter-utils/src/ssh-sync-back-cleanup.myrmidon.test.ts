@@ -28,10 +28,17 @@ case "$FAKE_SSH_MODE" in
     echo "Connection reset by peer" >&2
     exit 255 ;;
   serve-term255)
-    # Like the real ssh client: SIGTERM ends it with exit code 255, not by signal.
+    # Like the real ssh client: SIGTERM ends it with exit code 255, not by
+    # signal. The trap is installed before the background tar starts, so a
+    # SIGTERM that arrives while the shell is still starting up still runs the
+    # handler instead of killing the shell by default action and leaving the
+    # background tar holding ssh's stdout forever. The pid variable starts
+    # empty, so the tiny window before it is filled is safe too: an empty kill
+    # is a no-op.
+    child=
+    trap 'kill "$child" 2>/dev/null; echo "Killed by signal 15." >&2; exit 255' TERM
     tar -cf - -C "$FAKE_SSH_SOURCE_DIR" . &
     child=$!
-    trap 'kill "$child" 2>/dev/null; echo "Killed by signal 15." >&2; exit 255' TERM
     wait "$child" ;;
   hold)
     # Serves the stream, then stays connected until the test creates the release file.
