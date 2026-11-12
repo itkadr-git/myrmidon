@@ -292,6 +292,11 @@ import {
   resolveChatPublicationSchema,
   replaceChatEndpointResourcesSchema,
   updateChatEndpointSchema,
+  admAccessRequestScopeSchema,
+  createAdmAccessRequestSchema,
+  decideAdmAccessRequestSchema,
+  executeAdmCapabilitySchema,
+  revokeAdmAccessRequestSchema,
   blockerGraphRootsResponseSchema,
   validateMaintenanceWindowCronRequestSchema,
   checkUpdatesRequestSchema,
@@ -1318,6 +1323,7 @@ const BOARD_ONLY_PREFIXES = [
 ];
 
 const BOARD_ONLY_OPERATIONS = new Set([
+  "POST /api/adm/access-requests/{id}/decide",
   "GET /api/companies/{companyId}/ai-connections",
   "POST /api/companies/{companyId}/ai-connections",
   "POST /api/companies/{companyId}/ai-connections/local",
@@ -1530,6 +1536,7 @@ const INSTANCE_ADMIN_OPERATIONS = new Set([
 ]);
 
 const CREATED_OPERATIONS = new Set([
+  "POST /api/companies/{companyId}/adm/access-requests",
   "POST /api/adapters/install",
   "POST /api/chat-endpoints/{endpointId}/setup-secret",
   "POST /api/companies/{companyId}/agent-hires",
@@ -1744,6 +1751,16 @@ function applyDocumentFixups(document: any): any {
         if (!responses["403"]) {
           responses["403"] = FORBIDDEN_RESPONSE;
         }
+      }
+      if (key === "POST /api/adm/access-requests/{id}/decide") {
+        // myrmidon(1.7 COMPANY-BOUNDARIES, ADR-0052): only ADM control-plane
+        // company operators decide access requests; agent keys are rejected
+        // outright by the route handler, an instance admin on the board is
+        // the documented fallback actor.
+        operation["x-paperclip-authorization"] = {
+          actor: "board",
+          unscoped: { actor: "board", instanceAdmin: true },
+        };
       }
       if (CREATED_OPERATIONS.has(key)) {
         applyOperationStatusOverride(operation, "200", "201");
@@ -9900,6 +9917,53 @@ registry.registerPath({
 });
 
 // ─── Current route coverage ─────────────────────────────────────────────────
+
+// myrmidon(1.7 COMPANY-BOUNDARIES, ADR-0052 / OPE-12766): the ADM access
+// request gateway. The decide route is reachable only by ADM control-plane
+// company operators (or an instance admin); agent keys never act as ADM
+// operators, so it is documented board-only with an unscoped instance-admin
+// alternative. Every route denies cross-company access by default.
+registerCurrentRoute({
+  method: "post",
+  path: "/api/companies/{companyId}/adm/access-requests",
+  tags: ["approvals"], summary: "Create an ADM access request (dedupes by idempotency key; targets the ADM control-plane company)",
+  body: createAdmAccessRequestSchema,
+  responses: { 200: r.ok(), 201: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden },
+});
+registerCurrentRoute({
+  method: "get",
+  path: "/api/companies/{companyId}/adm/access-requests",
+  tags: ["approvals"], summary: "List the company's ADM access requests (redacted)",
+  responses: { 200: r.ok(), 401: r.unauthorized, 403: r.forbidden },
+});
+registerCurrentRoute({
+  method: "get",
+  path: "/api/adm/access-requests/{id}",
+  tags: ["approvals"], summary: "Get one ADM access request (source/target company members only; unknown and forbidden ids answer identically)",
+  responses: { 200: r.ok(), 401: r.unauthorized, 403: r.forbidden, 404: r.notFound },
+});
+registerCurrentRoute({
+  method: "post",
+  path: "/api/adm/access-requests/{id}/decide",
+  tags: ["approvals"], summary: "Approve or deny an ADM access request (ADM control-plane company operators only)",
+  body: decideAdmAccessRequestSchema,
+  responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden, 404: r.notFound, 409: r.conflict },
+});
+registerCurrentRoute({
+  method: "post",
+  path: "/api/companies/{companyId}/adm/access-requests/{id}/revoke",
+  tags: ["approvals"], summary: "Revoke an ADM access request (source/target company members; idempotent on already-revoked)",
+  body: revokeAdmAccessRequestSchema,
+  responses: { 200: r.ok(), 401: r.unauthorized, 403: r.forbidden, 404: r.notFound },
+});
+registerCurrentRoute({
+  method: "post",
+  path: "/api/companies/{companyId}/adm/capability/execute",
+  tags: ["approvals"], summary: "Execute an approved ADM capability by token (audience-bound to the source company)",
+  body: executeAdmCapabilitySchema,
+  responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden },
+});
+
 
 registerCurrentRoute({
   method: "get",
