@@ -179,6 +179,38 @@ describe("myrmidon(FLEETD-VMEXEC) fleetd driver — the HTTP contract", () => {
     }
   });
 
+  // myrmidon(OPE-12663): IDLE-STOP stops an idle fleetd bot through its own
+  // route; fleetd records the idle-stopped mark on its host so the reconciler
+  // leaves the container down until the next wake (the local driver's A17
+  // contract over the wire).
+  it("stopIdle POSTs the dedicated stopIdle route without a body", async () => {
+    const { server, config, calls } = await fakeServer((_call, res) => res.end("{}"));
+    try {
+      const driver = fleetdBotContainerDriver(config);
+      await driver.stopIdle!("bot-a");
+      expect(calls).toHaveLength(1);
+      expect(`${calls[0]!.method} ${calls[0]!.path}`).toBe("POST /v1/bots/bot-a/stopIdle");
+      expect(calls[0]!.body).toBeUndefined();
+    } finally {
+      server.close();
+    }
+  });
+
+  it("status exposes the idleStopped mark reported by fleetd", async () => {
+    const { server, config } = await fakeServer((_call, res) => {
+      res.setHeader("Content-Type", "application/json");
+      res.end(JSON.stringify({ botKey: "bot-a", state: "stopped", idleStopped: true, restartHash: "r1", filesHash: "f1" }));
+    });
+    try {
+      const driver = fleetdBotContainerDriver(config);
+      const status = await driver.status("bot-a");
+      expect(status.state).toBe("stopped");
+      expect(status.idleStopped).toBe(true);
+    } finally {
+      server.close();
+    }
+  });
+
   // myrmidon(OPE-12477): cleanup removes the container and the bot's host data
   // through fleetd; the driver must surface failures, never swallow them. The
   // 404-means-absent idempotency lives in the fleetd daemon (Go test), so the
