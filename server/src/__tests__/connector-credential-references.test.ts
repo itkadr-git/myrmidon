@@ -38,7 +38,7 @@ describeDb("connector credential references", () => {
       const connection = await service.createConnection(company!.id, {
         applicationName: "Private connector", name: "Private connector",
         transport: "mcp_remote", authKind: "api_key",
-        config: { url: "https://connector.example.test/mcp" },
+        config: { url: "https://93.184.216.34/mcp" },
         credentialSecretRefs: [{ secretId: secret.id, configPath: "credentials.apiKey", label: "API key" }],
       });
       const raw = await db.select().from(toolConnections).where(eq(toolConnections.id, connection.id));
