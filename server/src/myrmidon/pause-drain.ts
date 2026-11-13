@@ -196,6 +196,7 @@ export interface ResumeAgentAfterPauseDeps {
       idempotencyKey?: string;
       requestedByActorType?: "system";
       requestedByActorId?: string;
+      resumedByUserId?: string;
       contextSnapshot?: Record<string, unknown>;
     },
   ) => Promise<unknown>;
@@ -204,6 +205,17 @@ export interface ResumeAgentAfterPauseDeps {
    * the real timer; absent, the real one is used.
    */
   sleepMs?: (ms: number) => Promise<void>;
+}
+
+export interface ResumeAgentAfterPauseOptions {
+  /**
+   * myrmidon(RESUME-AFTER-CANCEL): the board user who lifted the pause. It is
+   * passed to the wake as `resumedByUserId`, a marker only the settled-hold
+   * check reads (heartbeat.ts): the wake itself stays a system wake, with none
+   * of the bypasses a user-requested wake gets, and passes a hold only when the
+   * run that holds it was cancelled. Absent, nothing changes.
+   */
+  operatorUserId?: string | null;
 }
 
 export interface ResumeAgentAfterPauseResult {
@@ -239,6 +251,7 @@ export interface ResumeAgentAfterPauseResult {
 export async function resumeAgentAfterPause(
   deps: ResumeAgentAfterPauseDeps,
   agentId: string,
+  options: ResumeAgentAfterPauseOptions = {},
 ): Promise<ResumeAgentAfterPauseResult> {
   const agent = await deps.db
     .select({ companyId: agents.companyId })
@@ -247,6 +260,7 @@ export async function resumeAgentAfterPause(
     .then((rows) => rows[0] ?? null);
   if (!agent) return { queuedRunsPromoted: 0, strandedIssuesWoken: 0 };
   const companyId = agent.companyId;
+  const operatorUserId = options.operatorUserId?.trim() || null;
 
   const promoted = await deps.startNextQueuedRunForAgent(agentId);
 
@@ -336,6 +350,7 @@ export async function resumeAgentAfterPause(
           idempotencyKey,
           requestedByActorType: "system",
           requestedByActorId: "pause_resume",
+          ...(operatorUserId ? { resumedByUserId: operatorUserId } : {}),
           contextSnapshot: {
             issueId: issue.id,
             taskKey: issue.id,
