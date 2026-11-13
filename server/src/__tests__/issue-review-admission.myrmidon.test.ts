@@ -181,6 +181,47 @@ describeEmbeddedPostgres("myrmidon review admission atomic wake persistence", ()
     expect(response.status).toBe(200);
     expect(readReviewRoutingSignals(companyId).filter((signal) => signal.issueId === issueId)).toHaveLength(1);
   });
+  // myrmidon(REVIEW-APPROVAL-RECORDED): the immediate review routing writes the
+  // stage into the stored policy; arming the admission monitor afterwards must
+  // keep that stage (it was rebuilt from the pre-routing policy and erased it,
+  // so the reviewer's approval hit the `done` gate with HTTP 409).
+  it("keeps the routed review stage in the policy when the admission monitor is armed (CI pending)", async () => {
+    const { companyId, actor } = await seedCompanyWithBoardAccess(ctx.db, "Review routing keeps stage");
+    const authorAgentId = randomUUID();
+    const reviewerAgentId = randomUUID();
+    await ctx.db.insert(agents).values({
+      id: authorAgentId, companyId, name: "adm-dev-eng-1", metadata: { telegramGroup: "adm" },
+      role: "engineer", status: "idle", adapterType: "codex_local",
+      adapterConfig: {}, runtimeConfig: {}, permissions: {},
+    });
+    await ctx.db.insert(agents).values({
+      id: reviewerAgentId, companyId, name: "adm-dev-review-1", metadata: { telegramGroup: "adm" },
+      role: "reviewer", status: "idle", adapterType: "codex_local",
+      adapterConfig: {}, runtimeConfig: {}, permissions: {},
+    });
+    const issueId = randomUUID();
+    await ctx.db.insert(issues).values({
+      id: issueId, companyId, title: "Routed stage must survive the admission monitor", status: "backlog",
+      priority: "medium", assigneeAgentId: authorAgentId, createdByAgentId: authorAgentId,
+    });
+    const routes = (db: any, storage: any) => issueRoutes(db, storage, {
+      resolveReviewPullRequestCi: async () => ({
+        state: "pending", pullRequestUrl: "https://github.com/acme/app/pull/7", headSha: "head-abc",
+      }),
+      resolveReviewHeadFailedChecks: async () => ({ state: "ok", headSha: "head-abc", failed: [] }),
+    });
+    const response = await request(routeApp(ctx.db, actor, routes as any))
+      .patch(`/api/issues/${issueId}`)
+      .send({ status: "in_review" });
+    expect(response.status).toBe(200);
+    const [issue] = await ctx.db.select().from(issues).where(eq(issues.id, issueId));
+    expect(issue?.status).toBe("in_review");
+    const state = issue?.executionState as { status?: string; currentStageId?: string; currentParticipant?: { agentId?: string } } | null;
+    expect(state).toMatchObject({ status: "pending", currentParticipant: { agentId: reviewerAgentId } });
+    const stages = ((issue?.executionPolicy as { stages?: Array<{ id: string }> } | null)?.stages) ?? [];
+    expect(stages.map((stage) => stage.id)).toContain(state?.currentStageId);
+  });
+
   it("defers reviewer admission while exact PR-head CI is pending", async () => {
     const { companyId, actor } = await seedCompanyWithBoardAccess(ctx.db, "Review admission waits for exact-head CI");
     const reviewerAgentId = randomUUID();

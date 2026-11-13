@@ -16622,8 +16622,12 @@ export function issueRoutes(
                         });
                       }
                     }
+                    // myrmidon(REVIEW-APPROVAL-RECORDED): the base of the monitor policy is
+                    // the policy as persisted AFTER the update and the immediate review
+                    // routing (`updated`); `existing` predates the stage the routing just
+                    // wrote, and building the monitor on it erased `stages`.
                     const previousPolicy = normalizeIssueExecutionPolicy(
-                      (updateFields.executionPolicy ?? existing.executionPolicy) as any,
+                      (updateFields.executionPolicy ?? updated.executionPolicy ?? existing.executionPolicy) as any,
                     );
                     const monitor = {
                       nextCheckAt: new Date(Date.now() + REVIEW_CI_WAIT_INTERVAL_MS).toISOString(),
@@ -16714,7 +16718,7 @@ export function issueRoutes(
                   admitReviewer = false;
                   reviewerAdmissionDeferred = true;
                   const previousPolicy = normalizeIssueExecutionPolicy(
-                    (updateFields.executionPolicy ?? existing.executionPolicy) as any,
+                    (updateFields.executionPolicy ?? updated.executionPolicy ?? existing.executionPolicy) as any,
                   );
                   const monitor = {
                     nextCheckAt: new Date(Date.now() + REVIEW_CI_WAIT_INTERVAL_MS).toISOString(),
