@@ -20,6 +20,17 @@
 // bounded time (the safety wake: CI data may simply be missing). Otherwise the
 // monitor is re-armed with a growing interval, capped, and the agent sleeps.
 //
+// myrmidon(EMPTY-RUNS-4): "no signal at all" means exactly that - the board
+// holds no check data for the pull request. Once CI of the current head has
+// finished and the agent has seen the result, the board does hold the data:
+// what is left to wait for is a review or a merge, and both reach the work
+// product without the agent (GitHub events, the task-pr-sync sweep). The
+// 30-minute safety wake used to fire in that state too, so every "wait for the
+// merge" monitor woke its agent every half hour to answer "still open" (one
+// task reached 36 such runs, another 59). That state is now `settled`: the
+// monitor re-arms silently and the agent is woken for the next recorded change,
+// at its own deadline, or after a long quiet period as the last backstop.
+//
 // No database access and no network here: the caller reads the rows and packs
 // them into `PrWaitEvaluationInput`.
 
@@ -34,6 +45,15 @@ export const PR_WAIT_MAX_INTERVAL_MS = 60 * 60_000;
  * left unnoticed.
  */
 export const PR_WAIT_NO_SIGNAL_WAKE_AFTER_MS = 30 * 60_000;
+/**
+ * myrmidon(EMPTY-RUNS-4): the backstop of the `settled` state - CI of the
+ * current head finished, the agent saw it, nothing is running. A review, a
+ * merge, a conflict or a new CI run are recorded by the board and wake the
+ * agent as news; the agent's own `timeoutAt` / `maxAttempts` end the wait
+ * earlier. This period only keeps a task from sleeping forever when the
+ * board's view of the pull request went stale.
+ */
+export const PR_WAIT_SETTLED_WAKE_AFTER_MS = 6 * 3_600_000;
 /** An `activeCi` older than this was never closed by a completion event: it proves nothing. */
 export const PR_WAIT_ACTIVE_CI_STALE_MS = 6 * 3_600_000;
 
@@ -96,11 +116,18 @@ export interface PrWaitObservedChange {
   quietForMs: number | null;
 }
 
+/**
+ * What the board knows about CI of the waited pull requests when nothing is
+ * news: `pending` - a run is in flight; `settled` - CI of the current head
+ * finished and the agent has seen it; `unknown` - no check data at all.
+ */
+export type PrWaitCiState = "pending" | "settled" | "unknown";
+
 export type PrWaitDecision =
   | { action: "not_applicable"; reason: "not_a_pr_wait_monitor" | "no_pull_request" | "no_reference_point" }
   | {
       action: "defer";
-      ciState: "pending" | "unknown";
+      ciState: PrWaitCiState;
       nextCheckAt: Date;
       delayMs: number;
     }
@@ -180,6 +207,30 @@ function pullRequestRef(product: PrWaitProductFact, metadata: Record<string, unk
   return readString(product.url);
 }
 
+const PULL_REQUEST_URL_PATTERN = /github\.com\/([A-Za-z0-9_.-]+)\/([A-Za-z0-9_.-]+)\/pull\/([1-9][0-9]*)/i;
+
+/**
+ * `owner/repo#number` of the pull request a work product stands for. One pull
+ * request often has several rows on a task (the ones the agent registered and
+ * the one the board linked from the GitHub event), and only the rows GitHub
+ * events can match carry the CI marks and a current head: the rows are judged
+ * as one pull request, by the row that carries the finished CI of its own head.
+ */
+function pullRequestKey(product: PrWaitProductFact, metadata: Record<string, unknown>): string | null {
+  const match = PULL_REQUEST_URL_PATTERN.exec(readString(product.url) ?? "");
+  if (match) return `${match[1]}/${match[2]}#${match[3]}`.toLowerCase();
+  const repository = readString(metadata.repository) ?? readString(metadata.repo);
+  const number = typeof metadata.number === "number" ? metadata.number : null;
+  return repository && number !== null ? `${repository}#${number}`.toLowerCase() : null;
+}
+
+/** CI of a head that the board recorded as finished. */
+interface PrWaitFinishedCi {
+  pullRequest: string | null;
+  headSha: string | null;
+  conclusion: string;
+}
+
 function isTerminalProduct(product: PrWaitProductFact, metadata: Record<string, unknown>): "merged" | "closed" | null {
   const state = readString(metadata.state)?.toLowerCase() ?? null;
   if (product.status === "merged" || state === "merged" || metadata.merged === true) return "merged";
@@ -198,6 +249,8 @@ function readProducts(products: readonly PrWaitProductFact[], now: Date) {
   const signals: PrWaitSignal[] = [];
   let pullRequests = 0;
   let ciPending = false;
+  // Per open pull request: the finished CI one of its rows carries, if any.
+  const open = new Map<string, PrWaitFinishedCi | null>();
   for (const product of products) {
     if (product.type !== "pull_request" || product.provider !== "github" || product.status === "archived") continue;
     pullRequests += 1;
@@ -222,14 +275,20 @@ function readProducts(products: readonly PrWaitProductFact[], now: Date) {
       signals.push({ kind: "merge_conflict", pullRequest, headSha: head, conclusion: null, at: updatedAt });
     }
 
+    // A row whose pull request cannot be named stands for a pull request of its own.
+    const key = pullRequestKey(product, metadata) ?? `row:${pullRequests}`;
+    if (!open.has(key)) open.set(key, null);
+
     const completed = asRecord(metadata.lastCompletedCi);
     const completedHead = readString(completed?.headSha);
     const conclusion = readString(completed?.conclusion);
     if (completed && conclusion && sameHead(completedHead, head)) {
+      const finishedHead = completedHead?.toLowerCase() ?? head;
+      if (!open.get(key)) open.set(key, { pullRequest, headSha: finishedHead, conclusion });
       signals.push({
         kind: "ci_completed",
         pullRequest,
-        headSha: completedHead?.toLowerCase() ?? head,
+        headSha: finishedHead,
         conclusion,
         at: toDate(completed.completedAt)?.toISOString() ?? updatedAt,
       });
@@ -251,7 +310,21 @@ function readProducts(products: readonly PrWaitProductFact[], now: Date) {
       if (!observedAt || now.getTime() - observedAt.getTime() < PR_WAIT_ACTIVE_CI_STALE_MS) ciPending = true;
     }
   }
-  return { signals, pullRequests, ciPending };
+  // Settled: every open pull request of the task carries a finished CI of its
+  // head. One pull request without check data keeps the whole wait `unknown` -
+  // its CI may be running unseen.
+  const finished: PrWaitFinishedCi[] = [];
+  for (const ci of open.values()) {
+    if (ci) finished.push(ci);
+  }
+  const ciSettled = open.size > 0 && finished.length === open.size ? finished : null;
+  return { signals, pullRequests, ciPending, ciSettled };
+}
+
+function describeFinishedCi(ci: PrWaitFinishedCi): string {
+  const target = ci.pullRequest ?? "pull request";
+  const head = ci.headSha ? ` (head ${ci.headSha.slice(0, 8)})` : "";
+  return `${target}${head}: ${ci.conclusion}`;
 }
 
 function describeSignal(signal: PrWaitSignal): string {
@@ -275,15 +348,21 @@ function nextCheckFor(input: {
   now: Date;
   agentLastLookAt: Date | null;
   timeoutAt: string | null | undefined;
-  ciState: "pending" | "unknown";
+  ciState: PrWaitCiState;
 }): { nextCheckAt: Date; delayMs: number } {
   const { now } = input;
   const quietMs = input.agentLastLookAt ? Math.max(0, now.getTime() - input.agentLastLookAt.getTime()) : 0;
   // The silent interval doubles with the quiet time: 10, 20, 40, 60 min.
   let delayMs = Math.min(PR_WAIT_MAX_INTERVAL_MS, Math.max(PR_WAIT_MIN_INTERVAL_MS, quietMs));
-  if (input.ciState === "unknown" && input.agentLastLookAt) {
+  const safetyWakeAfterMs =
+    input.ciState === "unknown"
+      ? PR_WAIT_NO_SIGNAL_WAKE_AFTER_MS
+      : input.ciState === "settled"
+        ? PR_WAIT_SETTLED_WAKE_AFTER_MS
+        : null;
+  if (safetyWakeAfterMs !== null && input.agentLastLookAt) {
     // Land the safety wake on its threshold instead of overshooting it.
-    const untilWake = input.agentLastLookAt.getTime() + PR_WAIT_NO_SIGNAL_WAKE_AFTER_MS - now.getTime();
+    const untilWake = input.agentLastLookAt.getTime() + safetyWakeAfterMs - now.getTime();
     if (untilWake > 60_000) delayMs = Math.min(delayMs, untilWake);
   }
   let nextMs = now.getTime() + delayMs;
@@ -301,7 +380,7 @@ function nextCheckFor(input: {
  */
 export function evaluatePrWaitMonitor(input: PrWaitEvaluationInput): PrWaitDecision {
   if (!isPrWaitMonitor(input.monitor)) return { action: "not_applicable", reason: "not_a_pr_wait_monitor" };
-  const { signals, pullRequests, ciPending } = readProducts(input.products, input.now);
+  const { signals, pullRequests, ciPending, ciSettled } = readProducts(input.products, input.now);
   if (pullRequests === 0) return { action: "not_applicable", reason: "no_pull_request" };
 
   const lastLook = input.agentLastLookAt;
@@ -327,12 +406,37 @@ export function evaluatePrWaitMonitor(input: PrWaitEvaluationInput): PrWaitDecis
     return { action: "defer", ciState: "pending", ...nextCheckFor({ ...input, timeoutAt: input.monitor.timeoutAt, ciState: "pending" }) };
   }
 
-  // No CI data and no news. Without a reference point the board cannot judge
-  // how long the world has been quiet: keep the plain behaviour.
+  // No news and nothing running. Without a reference point the board cannot
+  // judge how long the world has been quiet: keep the plain behaviour.
   if (!lastLook) return { action: "not_applicable", reason: "no_reference_point" };
   const quietForMs = Math.max(0, input.now.getTime() - lastLook.getTime());
+  const minutes = Math.round(quietForMs / 60_000);
+
+  // myrmidon(EMPTY-RUNS-4): CI of the current head finished and the agent has
+  // seen it. The rest of the wait (review, merge) is recorded by the board, so
+  // the 30-minute safety wake does not apply: only the long backstop does.
+  if (ciSettled) {
+    if (quietForMs >= PR_WAIT_SETTLED_WAKE_AFTER_MS) {
+      return {
+        action: "wake",
+        change: {
+          kind: "no_signal",
+          summary:
+            `No change in the pull request state was recorded by the board for ${minutes} min. ` +
+            `CI had already finished when you last looked (${ciSettled.map(describeFinishedCi).join("; ")}); ` +
+            "no review, merge, conflict or new CI run was recorded since. Verify the review and merge state once, " +
+            "then act or re-arm the monitor.",
+          signals: [],
+          observedAt: input.now.toISOString(),
+          quietForMs,
+        },
+      };
+    }
+    return { action: "defer", ciState: "settled", ...nextCheckFor({ ...input, timeoutAt: input.monitor.timeoutAt, ciState: "settled" }) };
+  }
+
+  // No CI data and no news: the board cannot tell "still running" from "finished".
   if (quietForMs >= PR_WAIT_NO_SIGNAL_WAKE_AFTER_MS) {
-    const minutes = Math.round(quietForMs / 60_000);
     return {
       action: "wake",
       change: {

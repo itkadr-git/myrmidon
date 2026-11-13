@@ -287,6 +287,31 @@ describeEmbeddedPostgres("issue monitor that waits for a pull request", () => {
     expect(issue.monitorNextCheckAt?.getTime()).toBeGreaterThan(TICK_AT.getTime());
   });
 
+  // myrmidon(EMPTY-RUNS-4): the wait for a review or a merge. CI of the head
+  // finished and the agent saw it an hour ago; the 30-minute "no signal" wake of
+  // a pull request without check data must not start a run here.
+  it("keeps the agent asleep past the 30-minute safety period once CI of the head finished and the agent saw it", async () => {
+    const { issueId } = await seed({
+      monitor: { serviceName: "GitHub PR merge", notes: "Merge-watch: close the task once PR #7 is merged" },
+      agentLastRunFinishedAt: at("11:31"),
+      pullRequestMetadata: { lastCompletedCi: { conclusion: "success", headSha: HEAD, completedAt: at("11:20").toISOString() } },
+    });
+
+    const result = await heartbeatService(db).tickTimers(TICK_AT);
+
+    expect(result.enqueued).toBe(0);
+    expect(await db.select().from(agentWakeupRequests)).toHaveLength(0);
+    const [issue] = await db.select().from(issues).where(eq(issues.id, issueId));
+    // The agent last looked 60 minutes ago: the silent interval is at its 60-minute cap.
+    expect(issue.monitorNextCheckAt?.toISOString()).toBe("2026-04-11T13:31:00.000Z");
+    expect(issue.monitorAttemptCount).toBe(1);
+    expect(issue.monitorWakeRequestedAt).toBeNull();
+    expect(issue.monitorLastTriggeredAt).toBeNull();
+    const deferred = (await activityOf(issueId)).filter((row) => row.action === "issue.monitor_deferred");
+    expect(deferred).toHaveLength(1);
+    expect(deferred[0]?.details).toMatchObject({ reason: "pr_wait_unchanged", ciState: "settled", attemptCount: 1 });
+  });
+
   it("wakes the agent when CI completed after it last looked and hands over the change", async () => {
     const { issueId, agentId } = await seed({
       agentLastRunFinishedAt: at("12:21"),
