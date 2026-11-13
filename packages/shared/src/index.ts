@@ -2916,7 +2916,6 @@ export { parallelHelpersSettingsSchema, patchParallelHelpersSettingsSchema } fro
 // team-liveness behaviours, shared by the three behaviour modules, the settings page
 // and the settings validator.
 export * from "./myrmidon-team-liveness.js";
-export * from "./myrmidon-agent-liveness.js";
 // myrmidon(BOT-LSP-DEFAULTS): language-server mode per role/card, shared by the profile
 // compiler, the agent card and the settings page.
 export * from "./myrmidon-bot-lsp.js";
