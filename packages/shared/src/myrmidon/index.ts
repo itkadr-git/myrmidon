@@ -11,6 +11,7 @@ export * from "../myrmidon-agent-exchange-feed.js";
 export * from "../myrmidon-agent-exchange.js";
 export * from "../myrmidon-agent-memory.js";
 export * from "../myrmidon-agent-nests.js";
+export * from "../myrmidon-agent-recovery-journal.js";
 export * from "../myrmidon-agent-tool-permissions.js";
 export * from "../myrmidon-alert-recovery.js";
 export * from "../myrmidon-architect-data.js";

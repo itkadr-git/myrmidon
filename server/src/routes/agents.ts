@@ -84,6 +84,9 @@ import {
 } from "../services/company-base-skill-keys.js";
 import { readCompanyBaseSkillKeysPort } from "../services/company-base-skill-keys-port.js";
 import { validate } from "../middleware/validate.js";
+// myrmidon(1.8 AGENT-LIVENESS C2, OPE-13023): the agent recovery journal route.
+import { recoveryJournalQuerySchema } from "@myrmidon/shared";
+import { listAgentRecoveryJournal } from "../services/agent-recovery-journal.js";
 import { agentInstructionsBundleMode } from "../services/agent-instructions.js";
 import {
   filterAgentListItems,
@@ -4703,6 +4706,27 @@ function getActorIdentityPart(req: Request): string {
 
     const state = await heartbeat.getRuntimeState(id);
     res.json(state);
+  });
+
+  // myrmidon(1.8 AGENT-LIVENESS C2, OPE-13023): the agent's recovery journal —
+  // the append-only record of observed liveness steps (probes, queue-without-run,
+  // retries, resurrections) with dedup and exclusion-window suppression. Board
+  // read; keyset pagination by `before` (created_at of the last entry).
+  router.get("/agents/:id/recovery-journal", async (req, res) => {
+    assertBoard(req);
+    const id = req.params.id as string;
+    const agent = await getAccessibleResource(req, res, svc.getById(id), "Agent not found");
+    if (!agent) return;
+    await assertBoardCanManageAgentsForCompany(req, agent.companyId);
+
+    const query = recoveryJournalQuerySchema.parse(req.query);
+    const { entries, nextBefore } = await listAgentRecoveryJournal(db, {
+      companyId: agent.companyId,
+      agentId: id,
+      limit: query.limit,
+      before: query.before ? new Date(query.before) : undefined,
+    });
+    res.json({ entries, nextBefore });
   });
 
   router.get("/agents/:id/task-sessions", async (req, res) => {
