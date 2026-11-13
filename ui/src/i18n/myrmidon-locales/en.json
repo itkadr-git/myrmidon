@@ -1962,5 +1962,24 @@
       "exhaustedTitle": "Codex/ChatGPT account #{{n}} ({{label}}) quota exhausted",
       "exhaustedWhy": "Account #{{n}} ({{label}}) reached 100% quota and was removed from rotation until the window reset."
     }
+  },
+  "castes": {
+    "modelEval": {
+      "sectionTitle": "Role benchmark model results",
+      "casteLabel": "Caste",
+      "loading": "Loading model benchmark results...",
+      "empty": "No model benchmark results for this caste yet.",
+      "columnModel": "Model",
+      "columnScore": "Score",
+      "columnCurrent": "Current",
+      "columnBest": "Best",
+      "freeBadge": "free",
+      "disabledBadge": "disabled",
+      "isCurrent": "Current",
+      "bestMark": "★ Best free",
+      "confirm": "Set {{model}} as default",
+      "confirming": "Updating default model...",
+      "decline": "Keep current model"
+    }
   }
 }
