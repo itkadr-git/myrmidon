@@ -985,9 +985,9 @@ RELEASE_AUDIT_FILE=""
 record_release_event() {
   local event="$1" job_id="${2:-}" digest="${3:-}" status="${4:-}" detail="${5:-}" \
     at event_id tmp
-  : "${RELEASE_AUDIT_FILE:=${STATE_DIR:-}/release-events.jsonl}"
-  [[ -n "$RELEASE_AUDIT_FILE" ]] || return 0
-  mkdir -p "$(dirname "$RELEASE_AUDIT_FILE")"
+  : "${RELEASE_AUDIT_FILE:=${STATE_DIR:+$STATE_DIR/release-events.jsonl}}"
+  [[ -n "$RELEASE_AUDIT_FILE" ]] || return 1
+  mkdir -p "$(dirname "$RELEASE_AUDIT_FILE")" || return 1
   at="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
   # Keep repeated retries distinct even when they happen in the same second.
   event_id="${job_id:-standalone}:$event:$at:$$:${RANDOM}"
@@ -1001,7 +1001,11 @@ record_release_event() {
   fi
   # Append one complete JSON object atomically enough for readers: the temp
   # contains exactly one line and is moved only after jq has succeeded.
-  cat "$tmp" >>"$RELEASE_AUDIT_FILE" && rm -f "$tmp"
+  if ! cat "$tmp" >>"$RELEASE_AUDIT_FILE"; then
+    rm -f "$tmp"
+    return 1
+  fi
+  rm -f "$tmp"
 }
 
 # --- COMPOSE-SET-ANCHOR (the 07.10 drift) -------------------------------------

@@ -57,4 +57,14 @@ describe("release audit journal", () => {
     assert.equal(events[2].detail, "safe continuation retry");
     assert.notEqual(events[0].eventId, events[2].eventId);
   });
+
+  it("fails when the audit file cannot be written", () => {
+    const stateDir = fs.mkdtempSync(path.join(os.tmpdir(), "myrmidon-release-audit-"));
+    const auditFile = path.join(stateDir, "release-events.jsonl");
+    fs.mkdirSync(auditFile);
+    const result = runAudit(stateDir, [
+      ["deploy.intent", "job-fail", "sha256:abc", "planned", "executor accepted"],
+    ]);
+    assert.notEqual(result.status, 0);
+  });
 });

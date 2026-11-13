@@ -119,8 +119,12 @@ run_deploy() { # run_deploy <jobId> <digest>
   # RELEASE-STAGE: persist intent before touching the maintenance window or
   # invoking deploy.sh. If the process dies afterwards, the host journal still
   # explains why a continuation is safe and what digest was intended.
-  record_release_event "deploy.intent" "$job" "$digest" "planned" "host executor accepted the release job" \
-    || log "WARNING: release audit: could not record deploy intent for $job"
+  # Fail-closed (OPE-13004): refuse to proceed if the intent cannot be recorded.
+  if ! record_release_event "deploy.intent" "$job" "$digest" "planned" "host executor accepted the release job"; then
+    log "ERROR: release audit: could not record deploy intent for $job; refusing to proceed"
+    report "$job" error "failed to record deploy intent in release audit journal"
+    return 1
+  fi
   report "$job" claimed "host executor picked the job"
   # The window must be fully on before the image switch: same rule as the UI.
   local waited=0 state

@@ -449,4 +449,23 @@ esac
     );
     assert.ok(!(result.stdout || "").includes("deploy scripts at"), result.stdout);
   });
+
+  it("reports error and halts before switching when recording deploy intent fails", () => {
+    const sb = sandbox({ job: { id: JOB_ID, status: "maintenance_on", digest: NEW } });
+    const auditFile = path.join(sb.dir, "state", "release-events.jsonl");
+    fs.mkdirSync(path.join(sb.dir, "state"), { recursive: true });
+    // Directory blocks writing to the audit file, failing record_release_event
+    fs.mkdirSync(auditFile);
+    const { code, out } = run(sb, ["--once"]);
+    assert.equal(code, 0, out);
+    assert.match(out, /could not record deploy intent/);
+    const r = report(sb);
+    assert.equal(r.jobId, JOB_ID);
+    assert.equal(r.phase, "error");
+    assert.match(r.detail, /failed to record deploy intent/);
+    // Fail-closed verification: deploy.sh was never executed, no image pull or switch
+    assert.doesNotMatch(calls(sb), /docker pull/);
+    assert.doesNotMatch(calls(sb), /docker compose/);
+    assert.match(read(sb.override), new RegExp(`image: ${CI_IMAGE}@${OLD}`));
+  });
 });
