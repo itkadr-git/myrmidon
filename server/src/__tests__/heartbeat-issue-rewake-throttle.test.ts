@@ -244,14 +244,22 @@ describeEmbeddedPostgres("heartbeat issue rewake throttle", () => {
     for (let i = 0; i < 6; i += 1) {
       await seedTerminalRun({ companyId, agentId, issueId, finishedSecondsAgo: 60 - i * 5 });
     }
+    // The freeze is set the way the neighbouring tests set it: an assignment-source
+    // continuation poll after six no-progress runs.
+    const poll = () => heartbeat.wakeup(agentId, {
+      source: "assignment", triggerDetail: "system", reason: "issue_continuation_needed",
+      payload: { issueId }, contextSnapshot: { issueId, wakeReason: "issue_continuation_needed" },
+      requestedByActorType: "system", requestedByActorId: "test",
+    });
+    // The wake under test is shaped as pause-drain.ts issues it.
     const wake = (reason: string, extra: Record<string, unknown> = {}) => heartbeat.wakeup(agentId, {
       source: "automation", triggerDetail: "system", reason,
-      payload: { issueId }, contextSnapshot: { issueId, wakeReason: reason },
+      payload: { issueId }, contextSnapshot: { issueId, taskKey: issueId, resumeIntent: true },
       requestedByActorType: "system", requestedByActorId: "pause_resume", ...extra,
     });
-    expect(await wake("issue_continuation_needed")).toBeNull();
+    expect(await poll()).toBeNull();
     const [frozen] = await db.select({ blocker: issues.blockerMetadata }).from(issues).where(eq(issues.id, issueId));
-    expect(frozen?.blocker?.issueRewakeFreeze).toMatchObject({ agentId });
+    expect(frozen?.blocker?.issueRewakeFreeze).toMatchObject({ agentId, noProgressStreak: 6 });
 
     expect(await wake("pause_resume", { resumedByUserId: "board-user" })).toBeNull();
     const [stillFrozen] = await db.select({ blocker: issues.blockerMetadata }).from(issues).where(eq(issues.id, issueId));
