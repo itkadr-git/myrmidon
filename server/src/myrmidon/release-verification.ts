@@ -90,8 +90,12 @@ export interface ReleaseVerificationOptions {
   /** GitHub host override (enterprise), forwarded to the membership check. */
   host?: string;
   /**
-   * Explicit release refs to consult (resolved tags/branches). When omitted,
-   * the membership contract falls back to its own default candidates.
+   * Explicit release refs to consult (resolved tags/branches). Retained for
+   * contract compatibility; membership is actually checked against the single
+   * resolved ref that corresponds to `deployedVersion` (see `resolvedRefs`),
+   * so a candidate must be present in the exact deployed ref, not merely in
+   * any release-line ref. When omitted, the membership contract falls back to
+   * its own default candidates.
    */
   refs?: readonly ReleaseRef[];
   /**
@@ -304,6 +308,29 @@ export async function verifyReleaseComposition(
     }
   }
 
+  // Review finding (PR #3093, round 4): the deployed version is validated
+  // against the full resolved ref set above, but membership must be checked
+  // against the EXACT ref the deployed version corresponds to — not against
+  // every release-line ref. Checking against all refs lets a candidate whose
+  // SHA exists only in a later tag (e.g. myr-v1.8.1) count as present while
+  // the deployed version is an older tag (e.g. myr-v1.8.0), confirming a
+  // release whose deployed build omits that candidate. An exact ref match
+  // wins; a git-describe string ("v1.6.8-15-g4c55f0d") is anchored at the
+  // longest resolved ref it starts with.
+  const deployedRef = (() => {
+    const deployed = options.deployedVersion!;
+    const exact = options.resolvedRefs.find((ref) => deployed === ref.ref);
+    if (exact) return exact;
+    const anchored = options.resolvedRefs
+      .filter((ref) => deployed.startsWith(`${ref.ref}-`))
+      .sort((a, b) => b.ref.length - a.ref.length);
+    return anchored[0] ?? null;
+  })();
+  // deployedRef is always found: the mismatch guard above returns early when
+  // no resolved ref matches the deployed version. The guard satisfies the
+  // compiler; keep a defensive fallback anyway.
+  const membershipRefs: readonly ReleaseRef[] = deployedRef ? [deployedRef] : (options.resolvedRefs ?? []);
+
   // A candidate whose work product lacks repository metadata can never be
   // placed on the deployed release: without a repo we cannot even resolve
   // release refs for it. This is a data gap in the candidate set, not a
@@ -367,7 +394,7 @@ export async function verifyReleaseComposition(
       repository: member.repository,
       sha: member.mergeCommitSha,
       releasePrefix: options.releasePrefix,
-      refs: options.refs,
+      refs: membershipRefs,
       token: options.token ?? null,
       host: options.host,
       fetchImpl: options.fetchImpl,
