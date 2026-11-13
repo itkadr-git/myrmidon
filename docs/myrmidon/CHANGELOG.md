@@ -12,6 +12,14 @@ version file to edit. Base Paperclip version is in the image label
 
 ## 1.6.9
 
+### A run queued while its agent was paused is not cancelled as stale right after the resume (RESUME-QUEUE-AGE)
+
+- Runs that stood in the queue while their agent was paused (waiting for a slot, `execution_changes_requested`) were cancelled by the queue-age sweep (`queued_run_stale_timeout`) in the second the pause was lifted: the pause counted as waiting time, the first resumed run had not reached `running` yet, so the slot-wait protection saw nothing. The replacement wake lost the original wake reason.
+- Resuming an agent now stamps its queued runs with `queueWaitResumedAtMs` (epoch milliseconds; a value that does not fit is ignored, never an error); the wait of such a run counts from the resume (later of the stamp, the creation time or the retry due time), in the sweep's selection and in the cancellation check.
+- The service keys the sweep writes onto a queued run (wait reason and detail, queue position and length) are now merged on the database side, so they cannot erase the stamp. A failed stamp is logged as a warning and does not stop the queue from being promoted.
+- Known limits: runs that waited while the board was down or in a maintenance window longer than the threshold, and the pause of a whole company, do not get the stamp.
+- Unchanged: a run whose slot stays free longer than the threshold after the resume is still cancelled; other reasons (task closed, assignee changed) and the pause protection of RESUME-AFTER-CANCEL are untouched.
+
 ### An agent card edit no longer recreates the bot container under a running run (BOT-PROFILE-NO-RUN-INTERRUPT)
 
 - A change that has to stop a bot gateway (restart-class profile change, image or resource drift) used to open a maintenance window, wait for the agent's run to drain and, at the drain deadline, interrupt it ("Interrupted by maintenance mode" / "Gateway shutdown interrupted the run."). The reconciler now looks at the agent's live runs first: with a run in flight the pass returns `deferred` without opening a window, and the existing deferred-rollout watcher (`myrmidonBotRolloutDeferred`) applies it after the run ended. The check is repeated under the window to close the race with a run admitted in between.
