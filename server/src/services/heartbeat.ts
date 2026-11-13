@@ -22941,12 +22941,6 @@ export function heartbeatService(
     running: number;
   };
 
-  function omitQueuedRunWaitDetail(context: Record<string, unknown>) {
-    if (context.waitDetail === undefined) return context;
-    const { waitDetail: _dropped, ...rest } = context;
-    return rest;
-  }
-
   async function writeQueuedRunWaitReason(
     runIds: ReadonlyArray<string>,
     waitReason: QueuedRunWaitReason,
@@ -22971,14 +22965,18 @@ export function heartbeatService(
       ) {
         continue;
       }
-      const next = waitDetail === undefined
-        // myrmidon(1.6.7 RUN-LIMITS): the detail belongs to the concurrency
-        // hold alone — any other reason (or a rewrite without numbers) drops it.
-        ? omitQueuedRunWaitDetail(context)
-        : { ...context, waitDetail: { ...waitDetail } };
+      // myrmidon(RESUME-QUEUE-AGE): merged on the database side, only the keys of
+      // this write; rewriting the object read above would erase a key (the resume
+      // stamp) written in between.
+      // myrmidon(1.6.7 RUN-LIMITS): the detail belongs to the concurrency
+      // hold alone — any other reason (or a rewrite without numbers) drops it.
+      const base = sql`(case when jsonb_typeof(${heartbeatRuns.contextSnapshot}) = 'object' then ${heartbeatRuns.contextSnapshot} else '{}'::jsonb end)`;
+      const merged = waitDetail === undefined
+        ? sql`(${base} - 'waitDetail') || jsonb_build_object('waitReason', ${waitReason}::text)`
+        : sql`${base} || jsonb_build_object('waitReason', ${waitReason}::text, 'waitDetail', ${JSON.stringify({ ...waitDetail })}::jsonb)`;
       await db
         .update(heartbeatRuns)
-        .set({ contextSnapshot: { ...next, waitReason }, updatedAt: at })
+        .set({ contextSnapshot: merged, updatedAt: at })
         .where(and(eq(heartbeatRuns.id, row.id), eq(heartbeatRuns.status, "queued")));
     }
   }
@@ -23001,16 +22999,12 @@ export function heartbeatService(
       ) {
         continue;
       }
-      const {
-        waitReason: _clearedReason,
-        queuePosition: _clearedPosition,
-        queueLength: _clearedLength,
-        waitDetail: _clearedDetail,
-        ...rest
-      } = context;
+      // myrmidon(RESUME-QUEUE-AGE): drop only these keys on the database side.
       await db
         .update(heartbeatRuns)
-        .set({ contextSnapshot: rest })
+        .set({
+          contextSnapshot: sql`(case when jsonb_typeof(${heartbeatRuns.contextSnapshot}) = 'object' then ${heartbeatRuns.contextSnapshot} else '{}'::jsonb end) - 'waitReason' - 'queuePosition' - 'queueLength' - 'waitDetail'`,
+        })
         .where(eq(heartbeatRuns.id, row.id));
     }
   }
@@ -23040,7 +23034,11 @@ export function heartbeatService(
       if (context.queuePosition === position && context.queueLength === queueLength) continue;
       await db
         .update(heartbeatRuns)
-        .set({ contextSnapshot: { ...context, queuePosition: position, queueLength }, updatedAt: at })
+        // myrmidon(RESUME-QUEUE-AGE): merged on the database side, only these keys.
+        .set({
+          contextSnapshot: sql`(case when jsonb_typeof(${heartbeatRuns.contextSnapshot}) = 'object' then ${heartbeatRuns.contextSnapshot} else '{}'::jsonb end) || jsonb_build_object('queuePosition', ${position}::int, 'queueLength', ${queueLength}::int)`,
+          updatedAt: at,
+        })
         .where(and(eq(heartbeatRuns.id, row.id), eq(heartbeatRuns.status, "queued")));
     }
   }
