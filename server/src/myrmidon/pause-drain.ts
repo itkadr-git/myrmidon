@@ -270,18 +270,25 @@ export async function resumeAgentAfterPause(
   // and the slot-wait protection had nothing to see (14.11, two runs of 63 and
   // 51 minutes, replacements lost the original wake reason). One statement per
   // resume; the key is read by queuedRunWaitingSince and its SQL twin.
-  await deps.db
-    .update(heartbeatRuns)
-    .set({
-      contextSnapshot: sql`coalesce(${heartbeatRuns.contextSnapshot}, '{}'::jsonb) || jsonb_build_object(${QUEUE_WAIT_RESUMED_AT_KEY}::text, ${new Date().toISOString()}::text)`,
-    })
-    .where(
-      and(
-        eq(heartbeatRuns.companyId, companyId),
-        eq(heartbeatRuns.agentId, agentId),
-        eq(heartbeatRuns.status, "queued"),
-      ),
-    );
+  // A failed stamp must not stop the queue from being promoted: it is logged and
+  // the resume goes on (the runs then keep the old age rule).
+  try {
+    await deps.db
+      .update(heartbeatRuns)
+      .set({
+        // merged on the database side: only this key is written
+        contextSnapshot: sql`(case when jsonb_typeof(${heartbeatRuns.contextSnapshot}) = 'object' then ${heartbeatRuns.contextSnapshot} else '{}'::jsonb end) || jsonb_build_object(${QUEUE_WAIT_RESUMED_AT_KEY}::text, ${Date.now()}::bigint)`,
+      })
+      .where(
+        and(
+          eq(heartbeatRuns.companyId, companyId),
+          eq(heartbeatRuns.agentId, agentId),
+          eq(heartbeatRuns.status, "queued"),
+        ),
+      );
+  } catch (err) {
+    logger.warn({ err, agentId }, "pause-resume: could not stamp the queued runs with the resume time");
+  }
 
   const promoted = await deps.startNextQueuedRunForAgent(agentId);
 

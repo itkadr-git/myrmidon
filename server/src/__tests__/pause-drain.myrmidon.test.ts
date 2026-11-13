@@ -220,7 +220,7 @@ describeEmbeddedPostgres("resumeAgentAfterPause (L3)", () => {
     const deps = fakeDeps({
       startNextQueuedRunForAgent: async () => {
         const [row] = await db.select({ snapshot: heartbeatRuns.contextSnapshot }).from(heartbeatRuns).where(eq(heartbeatRuns.id, queued));
-        stampAtPromotion.push((row?.snapshot as Record<string, unknown>)?.queueWaitResumedAt);
+        stampAtPromotion.push((row?.snapshot as Record<string, unknown>)?.queueWaitResumedAtMs);
         return [];
       },
     });
@@ -228,14 +228,32 @@ describeEmbeddedPostgres("resumeAgentAfterPause (L3)", () => {
 
     await resumeAgentAfterPause(deps, agentId);
 
-    expect(typeof stampAtPromotion[0]).toBe("string");
-    const stamp = new Date(stampAtPromotion[0] as string).getTime();
-    expect(stamp).toBeGreaterThanOrEqual(before - 1000);
+    expect(typeof stampAtPromotion[0]).toBe("number");
+    expect(Number.isSafeInteger(stampAtPromotion[0])).toBe(true);
+    expect(stampAtPromotion[0] as number).toBeGreaterThanOrEqual(before - 1000);
     const snapshots = await db.select({ id: heartbeatRuns.id, snapshot: heartbeatRuns.contextSnapshot }).from(heartbeatRuns);
     const byId = new Map(snapshots.map((row) => [row.id, row.snapshot as Record<string, unknown>]));
     expect(byId.get(queued)?.issueId).toBe(issueId);
-    expect(byId.get(running)).not.toHaveProperty("queueWaitResumedAt");
-    expect(byId.get(otherQueued)).not.toHaveProperty("queueWaitResumedAt");
+    expect(byId.get(running)).not.toHaveProperty("queueWaitResumedAtMs");
+    expect(byId.get(otherQueued)).not.toHaveProperty("queueWaitResumedAtMs");
+  });
+
+  // myrmidon(RESUME-QUEUE-AGE): a failed stamp is logged and does not stop the resume.
+  it("still promotes the queue and wakes issues when the stamp update fails, and logs a warning", async () => {
+    const { companyId, agentId } = await seedAgent();
+    const issueId = await seedIssue({ companyId, agentId, status: "in_progress" });
+    const deps = fakeDeps({ startNextQueuedRunForAgent: async () => [{ id: "run-1" }] });
+    const failingDb = Object.assign(Object.create(db), {
+      update: () => { throw new Error("stamp failed"); },
+    });
+    const warn = vi.mocked(logger.warn);
+
+    const result = await resumeAgentAfterPause({ ...deps, db: failingDb }, agentId);
+
+    expect(result.queuedRunsPromoted).toBe(1);
+    expect(result.strandedIssuesWoken).toBe(1);
+    expect(deps.enqueueWakeup).toHaveBeenCalledWith(agentId, expect.objectContaining({ contextSnapshot: expect.objectContaining({ issueId }) }));
+    expect(warn).toHaveBeenCalledWith(expect.objectContaining({ agentId }), expect.stringContaining("stamp"));
   });
 
   it("ignores issues outside todo/in_progress", async () => {
