@@ -106,8 +106,6 @@ version file to edit. Base Paperclip version is in the image label
   HttpError (plain words only, at most 120 characters), so the cause of a repeated 422 reads from the log. Messages of
   other errors are still not logged.
 
-## 1.6.9
-
 ### A run that waited for its own agent's slot starts when the slot frees instead of expiring by age (EMPTY-RUNS-6B)
 
 - EMPTY-RUNS-6 spared a queued run that waits for its own agent's concurrency slot
@@ -121,14 +119,10 @@ version file to edit. Base Paperclip version is in the image label
   before. While the agent has a `running` run nothing changes. Reassignment, task closure and the other
   task-state checks still cancel the run.
 
-## 1.6.9
-
 ### Gateway slot reconcile ends its pass at the first unreachable probe (OPE-12984)
 
 - When the gateway was down, the `gateway-slot-reconcile` pass probed all of up to 64 finished runs one after another, one timeout per run, and the start of a run waited for all of them (OPE-12964).
 - The first `unreachable` answer now ends the pass; `unreachable` is counted once. The memory of runs confirmed closed (OPE-12890) is unchanged, and an unreachable answer is not remembered, so the next pass tries again.
-
-## 1.6.9
 
 ### A CI delivery is handled by the final result of the head; a failed result does not return a task while main is red (EMPTY-RUNS-3)
 
