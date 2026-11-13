@@ -77,7 +77,6 @@ function fail(message: string): never {
   throw new Error(`Invalid connector config: ${message}`);
 }
 
-
 function validateEndpoint(value: string, label: string): URL {
   let url: URL;
   try {
