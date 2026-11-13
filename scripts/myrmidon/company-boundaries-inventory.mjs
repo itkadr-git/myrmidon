@@ -57,11 +57,17 @@ function missingAttribution(attribution, rows) {
 
 /**
  * Run the read-only inventory probe against an injected transport.
+ * Sections whose registry contract names a `dependency` attribution also feed
+ * the allowlisted cross-company dependency view: every listed object keeps a
+ * visible row (`report.dependencies`), failed sections contribute none, and a
+ * report with no collected objects carries no `dependencies` key at all.
  * @param {{request: (opts: {method: string, path: string}) => Promise<{status:number, ok:boolean, json?:() => Promise<unknown>}>}} transport
- * @returns {Promise<{sections: Array<object>, summary: object}>}
+ * @param {{currentCompanyId?: string | null}} [options]
+ * @returns {Promise<{sections: Array<object>, summary: object, dependencies?: Array<object>}>}
  */
-export async function collectInventory(transport) {
+export async function collectInventory(transport, { currentCompanyId = null } = {}) {
   const sections = [];
+  const dependencies = [];
   for (const definition of INVENTORY_SECTIONS) {
     let response;
     let payload = null;
@@ -72,22 +78,33 @@ export async function collectInventory(transport) {
       response = null;
     }
     const state = stateFor(response, payload);
-    sections.push({
+    const covered = state === "data" || state === "empty";
+    const section = {
       key: definition.key,
       path: definition.path,
       state,
-      covered: state === "data" || state === "empty",
+      covered,
       count: state === "data" ? payload.length : 0,
       missingAttribution: state === "data" || state === "empty" ? missingAttribution(definition.attribution, payload) : [],
-    });
+    };
+    sections.push(section);
+    if (covered && definition.attribution.includes("dependency")) {
+      for (const row of formatInventoryDependencies(payload, { currentCompanyId })) {
+        dependencies.push({ section: section.key, ...row });
+      }
+    }
   }
   const counts = Object.fromEntries(
     ["data", "empty", "denied", "not-found", "error"].map((state) => [state, sections.filter((s) => s.state === state).length]),
   );
-  return {
+  const report = {
     sections,
     summary: { total: sections.length, covered: sections.filter((s) => s.covered).length, counts },
   };
+  if (dependencies.length > 0) {
+    report.dependencies = dependencies;
+  }
+  return report;
 }
 
 function canonicalize(value) {
