@@ -29,7 +29,11 @@ export type ReleaseVerificationVerdict = "confirmed" | "failed";
 export interface ReleaseCandidateMember {
   /** Stable identifier used in reasons, e.g. issue key "OPE-13014" or PR slug. */
   id: string;
-  /** Repository slug "owner/repo". */
+  /**
+   * Repository slug "owner/repo". Empty string means the work product has no
+   * usable repo metadata — the member cannot be verified and must fail the
+   * release with `member_metadata_incomplete`, never be silently dropped.
+   */
   repository: string;
   /** Merge commit SHA to test against the deployed release refs. */
   mergeCommitSha: string | null;
@@ -56,6 +60,7 @@ export type ReleaseFailureReason =
   | "empty_candidate_set"
   | "deployed_version_unknown"
   | "deployed_version_mismatch"
+  | "member_metadata_incomplete"
   | "member_sha_missing"
   | "member_not_merged"
   | "member_membership_unknown"
@@ -159,8 +164,14 @@ export function composeReleaseVerdict(memberships: readonly ReleaseMembershipVer
  * Build the full release candidate set from an issue's pull_request work
  * products. Every pull_request work product is a candidate — merged or not —
  * so the verification sees the complete set and an unmerged candidate fails
- * the release instead of silently shrinking the proven list. Entries that are
- * not pull_request work products are ignored (they carry no merge commit).
+ * the release instead of silently shrinking the proven list.
+ *
+ * Review finding (PR #3093): a pull_request work product with incomplete
+ * metadata (no `repo`) must NOT be dropped. Dropping it would let an
+ * incomplete candidate list shrink toward empty and be reported as
+ * `empty_candidate_set`, hiding the real gap. Instead it is kept as a member
+ * with an empty repository so the verification fails closed with
+ * `member_metadata_incomplete` and names the affected entry.
  */
 export function buildReleaseCandidateMembers(
   workProducts: readonly {
@@ -176,13 +187,37 @@ export function buildReleaseCandidateMembers(
     const repo = typeof metadata.repo === "string" ? metadata.repo : "";
     const number = typeof metadata.number === "number" ? metadata.number : null;
     const mergeCommitSha = typeof metadata.mergeCommitSha === "string" ? metadata.mergeCommitSha : null;
-    if (!repo) continue;
     members.push({
       id: number !== null ? `PR#${number}` : "PR#?",
       repository: repo,
       mergeCommitSha,
       merged: product.status === "merged",
     });
+  }
+  return members;
+}
+
+/**
+ * Aggregate the release candidate set across ALL issues of the release.
+ *
+ * Review finding (PR #3093): the VERIFY-ON-PROD route used to build the
+ * candidate set from a single issue's work products, so a release could be
+ * confirmed on a partial list whenever sibling release issues were skipped.
+ * This helper takes the pull_request work products of every candidate issue
+ * (grouped by issue) and returns the full, undropped member set — including
+ * unmerged candidates and entries with incomplete metadata, both of which
+ * the verification fails closed on.
+ */
+export function aggregateReleaseCandidates(
+  workProductsByIssue: ReadonlyMap<string, readonly { type: string; status: string; metadata?: unknown }[]>,
+): ReleaseCandidateMember[] {
+  const members: ReleaseCandidateMember[] = [];
+  for (const [issueId, workProducts] of workProductsByIssue) {
+    for (const member of buildReleaseCandidateMembers(workProducts)) {
+      // Prefix the member id with the owning issue so a persisted result
+      // names which release issue the unproven candidate belongs to.
+      members.push({ ...member, id: `${issueId}:${member.id}` });
+    }
   }
   return members;
 }
@@ -267,6 +302,35 @@ export async function verifyReleaseComposition(
         checkedAt,
       };
     }
+  }
+
+  // A candidate whose work product lacks repository metadata can never be
+  // placed on the deployed release: without a repo we cannot even resolve
+  // release refs for it. This is a data gap in the candidate set, not a
+  // membership question — fail closed and name the entry so the incomplete
+  // list cannot masquerade as an empty or smaller proven set.
+  const metadataIncomplete = members.filter((m) => !m.repository);
+  if (metadataIncomplete.length > 0) {
+    const names = metadataIncomplete.map((m) => m.id).join(", ");
+    const verified: MemberVerification[] = members.map((m) => ({
+      id: m.id,
+      repository: m.repository,
+      mergeCommitSha: m.mergeCommitSha ?? null,
+      membership: "unknown" as const,
+      releaseRefs: [],
+    }));
+    return {
+      verdict: "failed",
+      reason:
+        `У ${metadataIncomplete.length} кандидатов выпуска нет метаданных репозитория ` +
+        `(${names}); состав не доказан.`,
+      failureReason: "member_metadata_incomplete",
+      releasePrefix: options.releasePrefix,
+      deployedVersion: options.deployedVersion ?? null,
+      members: verified,
+      allMembersPresent: false,
+      checkedAt,
+    };
   }
 
   const emptyGuard = composeReleaseVerdict([]);

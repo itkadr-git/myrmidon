@@ -145,7 +145,7 @@ import { createPullRequestCiResolver, withCiResolveDeadline } from "../services/
 import { createPullRequestMergeDetailsResolver } from "../services/github-pull-request-merge.js";
 import { resolveGitHubRepositoryToken } from "../services/github-external-object-provider.js";
 import { checkCommitMembership, normaliseReleasePrefix, resolveReleaseRefs, routePullRequestVerdict } from "../myrmidon/release-membership.js";
-import { verifyReleaseComposition, buildReleaseCandidateMembers } from "../myrmidon/release-verification.js";
+import { verifyReleaseComposition, aggregateReleaseCandidates } from "../myrmidon/release-verification.js";
 import { readBuildVersion } from "../build-version.js";
 import {
   companies,
@@ -10276,7 +10276,6 @@ export function issueRoutes(
 
     try {
       const refresh = req.query.refreshPullRequests === "true";
-      const workProducts = await workProductsSvc.listForIssue(issue.id, { refreshPullRequests: refresh });
       const labelRows = await db
         .select({ name: labels.name })
         .from(issueLabels)
@@ -10287,11 +10286,6 @@ export function issueRoutes(
         .find((prefix): prefix is string => prefix !== null) ?? null;
 
       const deployedVersion = readBuildVersion();
-      // The candidate set is the FULL set of pull_request work products —
-      // merged or not. Filtering to merged only would let an unmerged
-      // candidate vanish and the remaining incomplete list be confirmed.
-      const members = buildReleaseCandidateMembers(workProducts);
-
       // Without a release label we cannot name the release line to verify
       // against; fail closed instead of guessing.
       if (!releasePrefix) {
@@ -10306,9 +10300,42 @@ export function issueRoutes(
         return res.status(409).json({ issueId: issue.id, releaseLabel: null, deployedVersion, verdict: "failed", failureReason: "release_label_missing", reason: "На задаче нет релизной метки; состав выпуска не проверяем." });
       }
 
+      // The candidate set is the FULL set of pull_request work products across
+      // EVERY issue of this release (all issues carrying the same release
+      // label), merged or not. Review finding (PR #3093): restricting the set
+      // to the single issue's work products would let a release be confirmed
+      // on a partial list whenever sibling release issues were skipped.
+      const releaseLabelRows = await db
+        .select({ id: labels.id, name: labels.name })
+        .from(labels)
+        .where(eq(labels.companyId, issue.companyId));
+      const releaseLabelIds = releaseLabelRows
+        .filter((row) => normaliseReleasePrefix(row.name) === releasePrefix)
+        .map((row) => row.id);
+      const candidateIssueRows = releaseLabelIds.length
+        ? await db
+            .select({ issueId: issueLabels.issueId })
+            .from(issueLabels)
+            .where(inArray(issueLabels.labelId, releaseLabelIds))
+        : [];
+      const candidateIssueIds = [...new Set(candidateIssueRows.map((row) => row.issueId))];
+
+      // Include the current issue even if its label row was missed, so the
+      // route always verifies at least the issue it was called on.
+      if (!candidateIssueIds.includes(issue.id)) candidateIssueIds.push(issue.id);
+
+      const memberWorkProducts = new Map<string, Awaited<ReturnType<typeof workProductsSvc.listForIssue>>>();
+      for (const candidateIssueId of candidateIssueIds) {
+        const products = await workProductsSvc.listForIssue(candidateIssueId, { refreshPullRequests: refresh });
+        memberWorkProducts.set(candidateIssueId, products);
+      }
+      const members = aggregateReleaseCandidates(memberWorkProducts);
+
       // Resolve the actual release refs from the repository so the deployed
       // version can be validated against them (not just the prefix defaults).
-      const firstRepo = members[0]?.repository ?? null;
+      // Members with incomplete metadata (no repo) are surfaced by the
+      // verification itself; here we just pick the first usable repo.
+      const firstRepo = members.find((m) => m.repository)?.repository ?? null;
       const token = firstRepo ? await resolveGitHubRepositoryToken(db, issue.companyId, firstRepo) : null;
       const resolvedRefs = firstRepo
         ? await resolveReleaseRefs({ repository: firstRepo, releasePrefix, token })
@@ -10330,6 +10357,7 @@ export function issueRoutes(
         `VERIFY-ON-PROD release composition check: ${result.verdict}`,
         ``,
         `- Release label: ${releasePrefix ?? "none"}`,
+        `- Candidate issues scanned: ${candidateIssueIds.length}`,
         `- Deployed version: ${result.deployedVersion ?? "not set"}`,
         `- Reason: ${result.reason}`,
         `- Checked at: ${result.checkedAt}`,
@@ -10337,7 +10365,7 @@ export function issueRoutes(
       ].join("\n");
 
       await svc.addComment(issue.id, body, {}, { authorType: "system" });
-      return res.json({ issueId: issue.id, releaseLabel: releasePrefix, deployedVersion: result.deployedVersion, verdict: result.verdict, failureReason: result.failureReason, reason: result.reason, checkedAt: result.checkedAt, members: result.members });
+      return res.json({ issueId: issue.id, releaseLabel: releasePrefix, candidateIssueIds, deployedVersion: result.deployedVersion, verdict: result.verdict, failureReason: result.failureReason, reason: result.reason, checkedAt: result.checkedAt, members: result.members });
     } catch (err) {
       return res.status(500).json({
         error: err instanceof Error ? err.message : "Failed to verify release composition",

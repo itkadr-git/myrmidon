@@ -4101,12 +4101,12 @@ registry.registerPath({
   method: "post",
   path: "/api/issues/{id}/release-verify",
   tags: ["issues"],
-  summary: "Verify the deployed release composition against the issue's pull request work products and persist the verdict",
+  summary: "Verify the deployed release composition against the pull request work products of EVERY issue carrying the release label and persist the verdict",
   request: {
     params: z.object({ id: z.string() }),
     query: z.object({ refreshPullRequests: z.enum(["true"]).optional() }),
   },
-  responses: { 200: r.ok(), 401: r.unauthorized, 403: r.forbidden, 404: r.notFound, 500: r.serverError },
+  responses: { 200: r.ok(), 401: r.unauthorized, 403: r.forbidden, 404: r.notFound, 409: r.conflict, 500: r.serverError },
 });
 
 registry.registerPath({
