@@ -147,6 +147,8 @@ import { resolveProcessesSettings } from "@myrmidon/shared";
 import { createIdempotentShutdown } from "./shutdown-once.js"; // myrmidon(OPE-9107)
 import { singletonProxyOptionsFor } from "./myrmidon/singleton-proxy/index.js"; // myrmidon(1.6.6 PROCS-1.5 / OPE-5412)
 import { startBehaviorSettings } from "./myrmidon/behavior-settings/index.js"; // myrmidon(SETTINGS-CORE)
+import { createCiReturnFactsResolver } from "./myrmidon/review-return-guard/ci-failure-return-facts.js"; // myrmidon(EMPTY-RUNS-3)
+import { readCiFinalOnlyEnabled } from "./myrmidon/review-return-guard/ci-failure-return.js"; // myrmidon(EMPTY-RUNS-3)
 // myrmidon(PAUSE-GUARD): resumes operator pauses left older than a threshold
 import { createPauseGuardSweepFromHeartbeat } from "./myrmidon/pause-guard/index.js";
 import { startRunPriority } from "./myrmidon/run-priority/index.js"; // myrmidon(1.6.5 RUN-PRIORITY A)
@@ -2251,9 +2253,35 @@ async function startServerWithDatabaseTeardown(
         logger.error({ err }, "auto-resume sweep failed");
       }));
   };
+  // myrmidon(EMPTY-RUNS-3): the App webhook is served by the api processes, and
+  // an api process has no background heartbeat: `backgroundHeartbeat` is a stub
+  // there, so every wake the event service asked for was dropped without a
+  // trace (returns from review were written, the `ci_completed` wake never
+  // reached the queue). An api process enqueues the wake the way the worker's
+  // own heartbeat is built above — the role gate (it executes nothing itself)
+  // and the process bus that announces the queued run to the worker. The
+  // service is built on the first wake, not at start: an api process still
+  // creates no heartbeat service while it only serves the board.
+  // The real wake goes together with the handling by the final result only:
+  // with that switched off every finished job would wake an agent.
+  let githubEventsApiHeartbeat: ReturnType<typeof heartbeatService> | null = null;
+  const githubEventsWakeup: ReturnType<typeof heartbeatService>["wakeup"] = processRoleProfile.role === "api"
+    ? (agentId, opts) => {
+        if (!readCiFinalOnlyEnabled()) return backgroundHeartbeat.wakeup(agentId, opts);
+        githubEventsApiHeartbeat ??= heartbeatService(db as any, {
+          pluginWorkerManager,
+          executesRuns: false,
+          processBus,
+        });
+        return githubEventsApiHeartbeat.wakeup(agentId, opts);
+      }
+    : backgroundHeartbeat.wakeup;
   const githubConnectionEvents = githubConnectionEventService(db as any, {
-    wakeup: backgroundHeartbeat.wakeup,
-    assignmentWakeup: backgroundHeartbeat.wakeup,
+    wakeup: githubEventsWakeup,
+    assignmentWakeup: githubEventsWakeup,
+    // myrmidon(EMPTY-RUNS-3): one finished job is not a finished CI — a delivery
+    // is handled by the final result of the head, read from GitHub when needed.
+    resolveCiReturnFacts: createCiReturnFactsResolver({ db: db as any }),
   });
   // myrmidon(GITHUB-APP-WEBHOOK): the public App-webhook route (mounted in
   // createApp, before this exists) ingests through this very instance.
