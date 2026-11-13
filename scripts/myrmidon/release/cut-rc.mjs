@@ -360,11 +360,16 @@ export function ciStatusForCommit(root, { repo = GITHUB_REPO, branch, sha, env }
         reason: `CI still running for ${sha}: ${inProgress.map((r) => r.workflowName).join(", ")}`,
       };
     }
-    const failed = commitRuns.filter((r) => r.conclusion && r.conclusion !== "success" && r.conclusion !== "skipped" && r.conclusion !== "neutral");
+    // Fail closed: every completed run must carry an explicitly allowed
+    // successful conclusion. A completed run with a missing/empty/unknown
+    // conclusion is unverifiable, not green — it refuses the cut (OPE-12888
+    // review: `r.conclusion && ...` used to treat such runs as success).
+    const allowedConclusions = new Set(["success", "skipped", "neutral"]);
+    const failed = commitRuns.filter((r) => !allowedConclusions.has(r.conclusion));
     if (failed.length > 0) {
       return {
         ok: false,
-        reason: `CI failed for ${sha}: ${failed.map((r) => `${r.workflowName}=${r.conclusion}`).join(", ")}`,
+        reason: `CI not confirmed green for ${sha}: ${failed.map((r) => `${r.workflowName}=${r.conclusion || "(no conclusion)"}`).join(", ")}`,
       };
     }
     return { ok: true };

@@ -505,6 +505,49 @@ test("ciStatusForCommit is green only when every run for the sha succeeded", () 
   assert.deepEqual(res, { ok: true });
 });
 
+test("ciStatusForCommit refuses a completed run with a missing conclusion (fail closed)", () => {
+  const sha = "2".repeat(40);
+  for (const conclusion of [null, "", undefined, "timed_out"]) {
+    const runs = JSON.stringify([
+      { databaseId: 1, headSha: sha, status: "completed", conclusion, workflowName: "CI", event: "push" },
+    ]);
+    const bin = ghShim(null, `#!/bin/sh\nif [ "$1" = "--version" ]; then echo "gh 2.0"; exit 0; fi\necho '${runs}'\n`);
+    const res = ciStatusForCommit(null, {
+      repo: "itkadr-git/myrmidon", branch: "main", sha,
+      env: { PATH: `${bin}:/usr/bin:/bin` },
+    });
+    assert.equal(res.ok, false, `conclusion=${JSON.stringify(conclusion)} must not count as green`);
+    assert.match(res.reason, /CI not confirmed green/);
+  }
+});
+
+test("run: completed run with no conclusion refuses without creating the tag", async () => {
+  const run = await importRun();
+  const root = makeRepo();
+  const sha = runGit(root, ["rev-parse", "main"]);
+  const runs = JSON.stringify([
+    { databaseId: 1, headSha: sha, status: "completed", conclusion: null, workflowName: "CI", event: "push" },
+  ]);
+  const board = fakeBoard({ labels: [LABEL_17], issues: CLEAN_ISSUES, workProductsByIssue: { i1: [], i2: [] } });
+  const bin = ghShim(root, `#!/bin/sh\nif [ "$1" = "--version" ]; then echo "gh 2.0"; exit 0; fi\necho '${runs}'\n`);
+  const errors = [];
+  const code = await run(
+    { version: "1.7.0", rc: "25", root, boardLabel: "1.7" },
+    {
+      api: API, fetchBoard: board.fetchBoard, log: () => {}, err: (m) => errors.push(m), root,
+      // no ciStatus injection: the real production CI path runs
+      env: { PATH: `${bin}:/usr/bin:/bin` },
+    },
+  );
+  assert.equal(code, 1);
+  const text = errors.join("\n");
+  assert.match(text, /RELEASE-CUT REFUSED/);
+  assert.match(text, /CI not confirmed green/);
+  assert.match(text, /\(no conclusion\)/);
+  assert.match(text, /Not bypassable/);
+  assert.equal(runGit(root, ["tag", "-l", "myr-v1.7.0-rc.25"]), "");
+});
+
 test("run: clean board + real gh with no CI data -> hard refusal, no tag", async () => {
   const run = await importRun();
   const root = makeRepo();
