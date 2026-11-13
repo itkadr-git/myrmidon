@@ -3,6 +3,7 @@ import request from "supertest";
 import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { HttpError } from "../errors.js";
 import { clearReviewWakesQuotas } from "../myrmidon/review-stage-recovery/review-wakes-quota.js";
+import { REVIEW_CI_WAIT_MONITOR_SERVICE_NAME } from "../myrmidon/review-stage-recovery/policy.js";
 
 const mockIssueService = vi.hoisted(() => ({
   getById: vi.fn(),
@@ -4438,6 +4439,255 @@ describe.sequential("issue comment reopen routes", () => {
         if (previous === undefined) delete process.env.MYRMIDON_REVIEW_RETURN_GUARD_ENABLED;
         else process.env.MYRMIDON_REVIEW_RETURN_GUARD_ENABLED = previous;
       }
+    });
+  });
+
+  // myrmidon(EMPTY-RUNS-2): the hand-off to review goes through the green-CI
+  // admission gate, but the executor's closing comment, posted as a separate
+  // request seconds later, woke the reviewer past it (12-13.11.2026: 111 of
+  // 136 reviewer comment wakes came from an engineer's comment). While the
+  // board's "Review CI wait" monitor is armed and the head is not admitted,
+  // that comment no longer wakes the reviewer; everything else wakes as before.
+  describe("review comment wake gate", () => {
+    const ISSUE_ID = "11111111-1111-4111-8111-111111111111";
+    const ENGINEER_ID = "22222222-2222-4222-8222-222222222222";
+    const REVIEWER_ID = "33333333-3333-4333-8333-333333333333";
+    const LEAD_ID = "44444444-4444-4444-8444-444444444444";
+    const HEAD = "c".repeat(40);
+    const PR_URL = "https://github.com/acme/app/pull/7";
+    const DEFERRED_ACTION = "issue.review_comment_wake_deferred";
+
+    /** A task handed over to review whose reviewer wake the gate deferred: the CI wait monitor is armed. */
+    async function waitingReviewIssue(overrides: Record<string, unknown> = {}) {
+      const policy = await normalizePolicy({
+        stages: [
+          {
+            id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+            type: "review",
+            participants: [{ type: "agent", agentId: REVIEWER_ID }],
+          },
+        ],
+      })!;
+      return {
+        ...makeIssue("todo"),
+        status: "in_review",
+        priority: "medium",
+        assigneeAgentId: REVIEWER_ID,
+        executionPolicy: {
+          ...policy,
+          monitor: {
+            nextCheckAt: "2026-11-13T07:40:20.000Z",
+            notes: `Review waits for CI on the head of ${PR_URL} (${HEAD.slice(0, 12)}); CI state=pending.`,
+            scheduledBy: "assignee",
+            kind: "external_service",
+            serviceName: REVIEW_CI_WAIT_MONITOR_SERVICE_NAME,
+            externalRef: PR_URL,
+            timeoutAt: null,
+            maxAttempts: null,
+            recoveryPolicy: "wake_owner",
+          },
+        },
+        monitorNextCheckAt: new Date("2026-11-13T07:40:20.000Z"),
+        executionState: {
+          status: "pending",
+          currentStageId: policy.stages[0].id,
+          currentStageIndex: 0,
+          currentStageType: "review",
+          currentParticipant: { type: "agent", agentId: REVIEWER_ID },
+          returnAssignee: { type: "agent", agentId: ENGINEER_ID },
+          completedStageIds: [],
+          lastDecisionId: null,
+          lastDecisionOutcome: null,
+        },
+        ...overrides,
+      };
+    }
+
+    function ciOptions(ci: Record<string, unknown>) {
+      const resolveReviewPullRequestCi = vi.fn(async () => ({
+        pullRequestUrl: PR_URL,
+        headSha: HEAD,
+        ...ci,
+      }));
+      const resolveReviewHeadFailedChecks = vi.fn(async () => ({
+        state: "ok" as const,
+        headSha: HEAD,
+        pullRequestUrl: PR_URL,
+        failed: [] as string[],
+      }));
+      return {
+        resolveReviewPullRequestCi,
+        resolveReviewHeadFailedChecks,
+        options: { resolveReviewPullRequestCi, resolveReviewHeadFailedChecks },
+      };
+    }
+
+    const engineerActor = () => agentActor(ENGINEER_ID);
+
+    async function postComment(
+      issue: Awaited<ReturnType<typeof waitingReviewIssue>>,
+      actor: Record<string, unknown> | undefined,
+      options: Record<string, unknown>,
+    ) {
+      mockIssueService.getById.mockResolvedValue(issue);
+      return request(await installActor(createApp(), actor, options))
+        .post(`/api/issues/${ISSUE_ID}/comments`)
+        .send({ body: "PR is up, handing the task over to review" });
+    }
+
+    /** The wake work runs detached from the response; let it finish before a "never woken" assertion. */
+    async function settleDetachedWork() {
+      // The mention lookup runs right after the assignee wake decision.
+      await vi.waitFor(() => expect(mockIssueService.findMentionedAgents).toHaveBeenCalled());
+      await new Promise((resolve) => setTimeout(resolve, 60));
+    }
+
+    const reviewerCommentWakes = () =>
+      (mockHeartbeatService.wakeup.mock.calls as unknown as Array<[string, { reason?: string } | undefined]>).filter(
+        ([agentId, wake]) => agentId === REVIEWER_ID && wake?.reason === "issue_commented",
+      );
+
+    const heldWakeRecords = () =>
+      (mockLogActivity.mock.calls as unknown as Array<[unknown, { action?: string } | undefined]>).filter(
+        ([, entry]) => entry?.action === DEFERRED_ACTION,
+      );
+
+    const expectReviewerWokenByComment = () =>
+      waitForWakeup(() =>
+        expect(mockHeartbeatService.wakeup).toHaveBeenCalledWith(
+          REVIEWER_ID,
+          expect.objectContaining({
+            reason: "issue_commented",
+            payload: expect.objectContaining({ issueId: ISSUE_ID, commentId: "comment-1", mutation: "comment" }),
+          }),
+        ),
+      );
+
+    it.each([
+      ["the head CI is still running", { state: "pending" }, "wait_for_ci"],
+      ["the head CI cannot be read", { state: "unknown", headSha: null, reason: "pull:http_403" }, "wait_for_ci"],
+      ["the finished head is red", { state: "complete", finalCheckConclusion: "failure" }, "wait_red"],
+    ] as const)(
+      "does not wake the reviewer for the executor's comment while %s",
+      async (_name, ci, admission) => {
+        const { options, resolveReviewPullRequestCi } = ciOptions(ci);
+
+        const res = await postComment(await waitingReviewIssue(), engineerActor(), options);
+
+        expect(res.status).toBe(201);
+        // The comment itself is written exactly as before.
+        expect(mockIssueService.addComment).toHaveBeenCalledTimes(1);
+        await settleDetachedWork();
+        expect(reviewerCommentWakes()).toEqual([]);
+        expect(mockHeartbeatService.wakeup).not.toHaveBeenCalledWith(REVIEWER_ID, expect.anything());
+        expect(resolveReviewPullRequestCi).toHaveBeenCalledWith({ companyId: "company-1", issueId: ISSUE_ID });
+        expect(mockLogActivity).toHaveBeenCalledWith(
+          expect.anything(),
+          expect.objectContaining({
+            action: DEFERRED_ACTION,
+            actorType: "system",
+            entityType: "issue",
+            entityId: ISSUE_ID,
+            runId: null,
+            details: expect.objectContaining({
+              commentId: "comment-1",
+              reviewerAgentId: REVIEWER_ID,
+              executorAgentId: ENGINEER_ID,
+              admission,
+            }),
+          }),
+        );
+      },
+    );
+
+    it("wakes the reviewer for the executor's comment when the head is already green", async () => {
+      const { options, resolveReviewPullRequestCi } = ciOptions({
+        state: "complete",
+        finalCheckConclusion: "success",
+      });
+
+      const res = await postComment(await waitingReviewIssue(), engineerActor(), options);
+
+      expect(res.status).toBe(201);
+      await expectReviewerWokenByComment();
+      expect(resolveReviewPullRequestCi).toHaveBeenCalledTimes(1);
+      expect(heldWakeRecords()).toEqual([]);
+    });
+
+    it("wakes the reviewer of a critical task without reading CI", async () => {
+      const { options, resolveReviewPullRequestCi } = ciOptions({ state: "pending" });
+
+      const res = await postComment(await waitingReviewIssue({ priority: "critical" }), engineerActor(), options);
+
+      expect(res.status).toBe(201);
+      await expectReviewerWokenByComment();
+      expect(resolveReviewPullRequestCi).not.toHaveBeenCalled();
+      expect(heldWakeRecords()).toEqual([]);
+    });
+
+    it("wakes the reviewer when no Review CI wait monitor is armed (the reviewer was already admitted)", async () => {
+      const { options, resolveReviewPullRequestCi } = ciOptions({ state: "pending" });
+      const armed = await waitingReviewIssue();
+      const { monitor: _monitor, ...policyWithoutMonitor } = armed.executionPolicy;
+      const admitted = { ...armed, executionPolicy: policyWithoutMonitor, monitorNextCheckAt: null };
+
+      const res = await postComment(admitted as typeof armed, engineerActor(), options);
+
+      expect(res.status).toBe(201);
+      await expectReviewerWokenByComment();
+      expect(resolveReviewPullRequestCi).not.toHaveBeenCalled();
+      expect(heldWakeRecords()).toEqual([]);
+    });
+
+    it("wakes the reviewer for a board user's comment while CI is pending", async () => {
+      const { options, resolveReviewPullRequestCi } = ciOptions({ state: "pending" });
+
+      const res = await postComment(await waitingReviewIssue(), undefined, options);
+
+      expect(res.status).toBe(201);
+      await waitForWakeup(() =>
+        expect(mockHeartbeatService.wakeup).toHaveBeenCalledWith(
+          REVIEWER_ID,
+          expect.objectContaining({ reason: "issue_commented", requestedByActorType: "user" }),
+        ),
+      );
+      expect(resolveReviewPullRequestCi).not.toHaveBeenCalled();
+      expect(heldWakeRecords()).toEqual([]);
+    });
+
+    it("wakes the reviewer for a comment of an agent that is not the executor while CI is pending", async () => {
+      const { options, resolveReviewPullRequestCi } = ciOptions({ state: "pending" });
+
+      const res = await postComment(await waitingReviewIssue(), agentActor(LEAD_ID), options);
+
+      expect(res.status).toBe(201);
+      await waitForWakeup(() =>
+        expect(mockHeartbeatService.wakeup).toHaveBeenCalledWith(
+          REVIEWER_ID,
+          expect.objectContaining({
+            reason: "issue_commented",
+            requestedByActorType: "agent",
+            requestedByActorId: LEAD_ID,
+          }),
+        ),
+      );
+      expect(resolveReviewPullRequestCi).not.toHaveBeenCalled();
+      expect(heldWakeRecords()).toEqual([]);
+    });
+
+    it("wakes the reviewer as before when the CI read throws", async () => {
+      const resolveReviewPullRequestCi = vi.fn(async () => {
+        throw new Error("github read exploded");
+      });
+
+      const res = await postComment(await waitingReviewIssue(), engineerActor(), {
+        resolveReviewPullRequestCi,
+      });
+
+      expect(res.status).toBe(201);
+      await expectReviewerWokenByComment();
+      expect(resolveReviewPullRequestCi).toHaveBeenCalledTimes(1);
+      expect(heldWakeRecords()).toEqual([]);
     });
   });
 
