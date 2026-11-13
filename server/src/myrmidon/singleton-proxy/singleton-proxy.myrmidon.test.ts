@@ -53,6 +53,21 @@ describe("singletonRouteGroup", () => {
     expect(singletonRouteGroup("POST", `/api/myrmidon/fleet/bots/${key}/move`)).toBe("bot_container");
   });
 
+  it("forwards the stack registry probes (OPE-12957: dockergate admits only the main process)", () => {
+    expect(singletonRouteGroup("POST", "/myrmidon/stack/refresh")).toBe("bot_container");
+    expect(singletonRouteGroup("POST", "/myrmidon/stack/check")).toBe("bot_container");
+    expect(singletonRouteGroup("POST", "/myrmidon/stack/refresh/")).toBe("bot_container");
+  });
+
+  it("keeps the stack registry read and look-alike paths with the api process", () => {
+    expect(singletonRouteGroup("GET", "/myrmidon/stack")).toBeNull();
+    expect(singletonRouteGroup("GET", "/myrmidon/stack/refresh")).toBeNull();
+    expect(singletonRouteGroup("GET", "/myrmidon/stack/check")).toBeNull();
+    expect(singletonRouteGroup("POST", "/myrmidon/stack")).toBeNull();
+    expect(singletonRouteGroup("POST", "/myrmidon/stack/refreshx")).toBeNull();
+    expect(singletonRouteGroup("POST", "/myrmidon/stack/refresh/extra")).toBeNull();
+  });
+
   it("keeps the database-only fleet routes with the api process", () => {
     expect(singletonRouteGroup("GET", "/myrmidon/fleet/sites")).toBeNull();
     expect(singletonRouteGroup("GET", "/myrmidon/fleet/servers")).toBeNull();
