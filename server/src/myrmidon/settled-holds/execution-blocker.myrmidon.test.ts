@@ -136,11 +136,11 @@ describeEmbeddedPostgres("getExecutionBlocker explicitWake (L2)", () => {
 
     expect(await getExecutionBlocker(db, companyId, issueId)).not.toBeNull();
     expect(await getExecutionBlocker(db, companyId, issueId, { explicitWake: bypassesSettledHold({
-      source: "automation", triggerDetail: "system", reason: "pause_resume", requestedByActorType: "user", requestedByActorId: "user-op",
-    }) as boolean })).toBeNull();
+      source: "automation", triggerDetail: "system", reason: "pause_resume", requestedByActorType: "user",
+    }) })).toBeNull();
     expect(await getExecutionBlocker(db, companyId, issueId, { explicitWake: bypassesSettledHold({
       source: "automation", triggerDetail: "system", reason: "pause_resume", requestedByActorType: "system",
-    }) as boolean })).not.toBeNull();
+    }) })).not.toBeNull();
 
     const live = await seed("running");
     await seedAction({ companyId: live.companyId, issueId: live.issueId, runId: live.runId, status: "resolved", replay: "blocked" });
