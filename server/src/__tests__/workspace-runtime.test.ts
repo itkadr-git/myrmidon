@@ -7330,13 +7330,27 @@ describeEmbeddedPostgres("workspace runtime service control persistence", () => 
     const fixture = await createRuntimeFixture();
     const cleanupRuntimeHome = await createRuntimeHome();
     const workspace = fixture.workspaces[0]!;
-    const basePort = await findFreePort();
+    // Occupy the preferred port with THIS test's own listener: bind port 0 and take
+    // the assigned port from server.address(), so there is no find-then-bind gap. A
+    // released findFreePort() port can be re-taken by an unrelated process on a
+    // loaded runner (or the scan can stop early on excluded/reserved ports), and
+    // then the exhausted-conflict never carries `port: basePort`. Holding this
+    // listener keeps the port deterministically occupied; closing it before the
+    // start attempt would reintroduce the race.
+    const portBlocker = await listenOnPort(0);
+    const blockerAddress = portBlocker.address();
+    const basePort =
+      typeof blockerAddress === "object" && blockerAddress ? blockerAddress.port : null;
+    if (!basePort) {
+      await closeNetServer(portBlocker);
+      throw new Error("Failed to determine the occupied allocated port");
+    }
+
     const fakeBin = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-runtime-no-lsof-"));
     const fakeLsof = path.join(fakeBin, "lsof");
     const previousPath = process.env.PATH;
     await fs.writeFile(fakeLsof, "#!/bin/sh\nexit 1\n", { mode: 0o755 });
     process.env.PATH = `${fakeBin}${path.delimiter}${previousPath ?? ""}`;
-
     try {
       await expect(startRuntimeServicesForWorkspaceControl({
         db,
@@ -7354,6 +7368,7 @@ describeEmbeddedPostgres("workspace runtime service control persistence", () => 
           attemptedPortCount: WORKSPACE_RUNTIME_PORT_ALLOCATION_ATTEMPTS,
         },
       });
+      expect(portBlocker.listening).toBe(true);
     } finally {
       if (previousPath === undefined) delete process.env.PATH;
       else process.env.PATH = previousPath;
@@ -7365,6 +7380,11 @@ describeEmbeddedPostgres("workspace runtime service control persistence", () => 
       await fs.rm(fakeBin, { recursive: true, force: true });
       await cleanupRuntimeHome();
       await fixture.cleanup();
+      portBlocker.close();
+      await new Promise<void>((resolve, reject) => {
+        portBlocker.once("close", resolve);
+        portBlocker.once("error", reject);
+      });
     }
   }, 20_000);
 
