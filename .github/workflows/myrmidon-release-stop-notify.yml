@@ -1,0 +1,42 @@
+name: Myrmidon release stop notification
+
+# RELEASE-STOP-NOTIFY (OPE-13006): workflow_run is the authoritative stop
+# event. It runs after every completed Myrmidon release publish workflow whose
+# conclusion is not success, so a failure in the publish or freeze stage is
+# recorded even when the failed job's own final step cannot execute.
+on:
+  workflow_run:
+    workflows: ["Myrmidon release publish"]
+    types: [completed]
+
+permissions: {}
+
+jobs:
+  notify:
+    name: notify responsible
+    if: ${{ github.repository == 'itkadr-git/myrmidon' && github.event.workflow_run.conclusion != 'success' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      - name: Checkout the release workflow source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          persist-credentials: false
+
+      - name: Notify the responsible of the stopped release
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          RELEASE_TAG: ${{ github.event.workflow_run.head_branch }}
+          RELEASE_STEP: release workflow
+          RELEASE_STOP_REASON: release workflow concluded with ${{ github.event.workflow_run.conclusion }} (run ${{ github.event.workflow_run.id }})
+          RELEASE_STOP_EVENT_ID: ${{ github.event.workflow_run.id }}
+          RELEASE_STEP_URL: ${{ github.event.workflow_run.html_url }}
+          RELEASE_RESPONSIBLE_LOGIN: ${{ vars.RELEASE_RESPONSIBLE_LOGIN }}
+        run: |
+          set -euo pipefail
+          ./scripts/myrmidon/release/release-stop-notify.sh
