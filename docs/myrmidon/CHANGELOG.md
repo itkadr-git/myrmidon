@@ -12,6 +12,39 @@ version file to edit. Base Paperclip version is in the image label
 
 ## 1.6.7
 
+### Bots of agents that left the bot runtime are decommissioned (OPE-12654)
+
+- An agent whose card moved from `hermes_gateway` to another adapter, or that was terminated,
+  dropped out of every bot-container listing: its container kept running and its data
+  directory stayed forever. The reconcile sweep now finds such bots every 10 minutes (from the
+  card or its config history) and decommissions them: the container is stopped and deleted,
+  with its leftovers.
+- A bot is held, not removed, while its agent has a running heartbeat run, while its
+  clone-hygiene report shows unpushed work (dirty tree, stash, operation in progress, commits on
+  no remote), or when it is running without a usable report; the board log names the reason
+  once (`bot_decommission_held`).
+- dockergate: new route A22 `DELETE containers/myrmidon-bot-<K>?force=true&v=true&myrmidon-decommission=true`
+  for the stopped main container only. Stopped leftovers (`.next`, helper) go first, then the
+  main container without a replacement. The gate runs as uid 65532 with the volume root
+  read-only, so it does not remove `<volumeRoot>/<K>`: it logs `bot_data_left_for_host_gc`,
+  and the quota project waits too (`disk_project_still_has_directory`,
+  `quota_left_for_host_gc`).
+- The host GC pass (`scripts/myrmidon/host-gc/host-clone-cache-gc.mjs`) removes the data
+  directory instead: 24 h after the bot's last change, and only when no `myrmidon-bot-<key>`
+  container of any state remains, the board lists no `hermes_gateway` card for the agent (it
+  moved away, was terminated or deleted), no heartbeat run of the agent is `running`, and no
+  git worktree under the directory holds unpushed work (uncommitted edits, stash, an
+  operation in progress, commits on no remote). `.next` and `.helper` directories are not
+  worktrees and are not touched. After the removal the pass clears the quota project's
+  `/etc/projid` and `/etc/projects` entries and its limits. An unreachable docker daemon or
+  board keeps the directories (fail-closed); a directory with unpushed work is held and
+  journalled loudly (`bot-data-held-unpushed`).
+- Terminating or deleting an agent decommissions its bot through the same route (the old
+  cleanup's delete was always refused by the gate); a bot on a fleetd site still goes through
+  the site's cleanup.
+
+## 1.6.7
+
 ### GitHub App disabled-webhook attention card and addressable silence alarms (1.6.8 OPE-12868)
 
 - Added the `github_app_webhook_disabled` critical operator attention card: when `POST /api/myrmidon/companies/:companyId/github-shared-identity/apps/:entryId/webhook-sync` gets HTTP 404 from GitHub on the hook-config `PATCH` (meaning **Settings → Developer settings → GitHub Apps → Webhook → Active** is off on GitHub), the server latches a process-local signal (`companyId`, `entryId`, `appId`, `webhookHost`, timestamps — no secrets) and clears it automatically once a later `webhook-sync` succeeds.
