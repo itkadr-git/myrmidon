@@ -13099,7 +13099,7 @@ export function heartbeatService(
           details: {
             identifier: row.identifier,
             lastTriggeredAt: lastTriggeredAt.toISOString(),
-            timeoutAt: timeoutAt.toISOString(),
+            timeoutAt: timeoutAt?.toISOString() ?? null,
             attemptCount: row.monitorAttemptCount ?? 0,
             notes: row.monitorNotes ?? null,
             serviceName: state?.serviceName ?? null,
