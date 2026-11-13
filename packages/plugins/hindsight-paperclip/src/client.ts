@@ -152,9 +152,8 @@ export class HindsightClient {
     const items = Array.isArray(raw.items) ? raw.items : [];
     return {
       items: items
-        .filter((item): item is BankDocumentItem => item !== null && typeof item === "object")
-        .map((item) => {
-          const record = item as Record<string, unknown>;
+        .filter((item): item is Record<string, unknown> => item !== null && typeof item === "object")
+        .map((record) => {
           const snake = (key: string): unknown => record[key];
           return {
             id: typeof record["id"] === "string" ? record["id"] : String(record["id"] ?? ""),
@@ -190,9 +189,8 @@ export class HindsightClient {
     const items = Array.isArray(raw.items) ? raw.items : [];
     return {
       items: items
-        .filter((item): item is BankMentalModelItem => item !== null && typeof item === "object")
-        .map((item) => {
-          const record = item as Record<string, unknown>;
+        .filter((item): item is Record<string, unknown> => item !== null && typeof item === "object")
+        .map((record) => {
           return {
             id: typeof record["id"] === "string" ? record["id"] : String(record["id"] ?? ""),
             name: typeof record["name"] === "string" ? record["name"] : String(record["name"] ?? ""),
