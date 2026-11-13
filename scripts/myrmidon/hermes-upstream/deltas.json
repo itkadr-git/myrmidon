@@ -631,6 +631,23 @@
         "path": "tools/skills_tool.py",
         "upstreamMarker": "qualified alias|parent\\.parent\\.name == namespace"
       }
+    },
+    {
+      "id": "36-content-filter-retry",
+      "kind": "patch",
+      "patch": "docker/bot-runtime/patches/36-content-filter-retry.patch",
+      "files": [
+        "agent/turn_truncation.py"
+      ],
+      "reason": "An HTTP-200 reply with finish_reason content_filter ended the turn at once; the provider's filter cut a harmless reply of a long session mid-word and the whole run failed. The same call is now re-issued up to twice per turn before the refusal falls through to the fallback chain and the terminal content_policy_blocked result.",
+      "dropCondition": "Upstream re-issues a content-filtered reply before failing the turn.",
+      "offer": null,
+      "offerNote": "Not offered yet.",
+      "probe": {
+        "source": "hermes",
+        "path": "agent/turn_truncation.py",
+        "upstreamMarker": "_CONTENT_FILTER_RETRIES|content_filter_retries"
+      }
     }
   ]
 }
