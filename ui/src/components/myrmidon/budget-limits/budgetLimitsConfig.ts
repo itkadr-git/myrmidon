@@ -25,6 +25,31 @@ import {
 /** UI sanity bound for one amount, mirroring the API schema (1_000_000_000 cents). */
 export const BUDGET_LIMIT_AMOUNT_MAX_CENTS = 1_000_000_000;
 
+/** Growth percentage threshold above which raising an existing positive limit requires confirmation. */
+export const BUDGET_LIMIT_GROWTH_CONFIRM_PERCENT = 10;
+
+/**
+ * Percentage growth from `previousCents` to `nextCents`, rounded to two decimal places.
+ * Returns null when there is no positive prior limit or when the amount does not grow.
+ */
+export function limitGrowthPercent(
+  previousCents: number | null | undefined,
+  nextCents: number,
+): number | null {
+  if (
+    typeof previousCents !== "number" ||
+    !Number.isFinite(previousCents) ||
+    previousCents <= 0 ||
+    typeof nextCents !== "number" ||
+    !Number.isFinite(nextCents) ||
+    nextCents <= previousCents
+  ) {
+    return null;
+  }
+  const percent = ((nextCents - previousCents) / previousCents) * 100;
+  return Math.round(percent * 100) / 100;
+}
+
 /** The rows the usage endpoint can answer for; a stored row without usage reads as 0. */
 export interface BudgetLimitNode {
   /** Stable identity of the row: `level:ref`, also the react key and the draft key. */
