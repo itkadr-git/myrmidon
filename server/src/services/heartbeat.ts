@@ -1063,10 +1063,10 @@ import { readBudgetEnforcement } from "../myrmidon/budget-enforcement/settings.j
 import { evaluateBudgetLimitAdmission } from "../myrmidon/budget-limits/admission.js"; // myrmidon(1.7-BUDGET-CONFIG)
 import { deferredWakeFreshSince, deferredWakeRevisitCutoff } from "../myrmidon/deferred-wake-revisit.js"; // myrmidon(OPE-12807)
 import { guardrailsOnRunOutput } from "../myrmidon/guardrails/run-output.js"; // myrmidon(1.6-GRD)
-// myrmidon(1.8 HIBERNATE, OPE-12961): one single-flight guard per server
-// process; see wakeup-single-flight.ts. Two enqueues of the same wake racing
-// before either run is registered collapse into one promise, so an
-// idle-stopped agent's container is not cold-started twice for one task.
+// myrmidon(1.8 HIBERNATE, OPE-12961): single-flight guard for assignment
+// wakes; see wakeup-single-flight.ts. Two enqueues of the same assignment
+// wake racing before either run is registered collapse into one promise, so
+// an idle-stopped agent's container is not cold-started twice for one task.
 import {
   WakeupSingleFlight,
   wakeupSingleFlightKey,
@@ -1076,8 +1076,6 @@ import {
   type BudgetSignalOnlyInput,
   type BudgetSignalOnlyPorts,
 } from "../myrmidon/budget-enforcement/signal.js";
-
-const wakeupSingleFlight = new WakeupSingleFlight();
 
 const MAX_LIVE_LOG_CHUNK_BYTES = 8 * 1024;
 const MAX_PERSISTED_LOG_CHUNK_CHARS = 64 * 1024;
@@ -10181,6 +10179,12 @@ export function heartbeatService(
   const instanceSettings = instanceSettingsService(db);
   // myrmidon(WAKE-GUARD): one cache per server process; see wake-guard.ts.
   const taskPrSyncWakeGuard = createTaskPrSyncWakeGuard();
+  // myrmidon(1.8 HIBERNATE, OPE-12961): one single-flight guard per heartbeat
+  // service instance; see wakeup-single-flight.ts. It scopes automated
+  // assignment wakes only (see trackWakeup below), so a duplicate enqueue of
+  // the same assignment wake collapses onto the in-flight promise instead of
+  // cold-starting an idle-stopped agent's container twice.
+  const wakeupSingleFlight = new WakeupSingleFlight();
   const getCurrentUserRedactionOptions = async () => ({
     enabled: (await instanceSettings.getGeneral()).censorUsernameInLogs,
   });
@@ -24894,35 +24898,48 @@ export function heartbeatService(
     return { created: true };
   }
 
-  // myrmidon(1.8 HIBERNATE, OPE-12961): the public wakeup entry point keeps a
-  // single-flight guard per key while a wake promise is in flight. Every
-  // assignment/enqueue caller (queueIssueAssignmentWakeup on create/child/
-  // decomposition, the PATCH wake merge, chat/interaction wakes) funnels
-  // through trackWakeup (heartbeat.wakeup), so two enqueues of the same wake
-  // racing before either run is registered collapse into one promise: the
-  // loser reuses the winner's promise, the task stays in the queue, and no
-  // duplicate wake/run row is created for an agent whose container may be
-  // idle-stopped (each duplicate would otherwise pay a cold container start).
-  // The winner is still registered in activeWakeupPromises so
-  // drainActiveRunExecutions can await it; the guard entry clears when the
-  // promise settles, so a later legitimate re-wake with the same key passes.
+  // myrmidon(1.8 HIBERNATE, OPE-12961): single-flight collapse applies to
+  // automated task-assignment wakes only (queueIssueAssignmentWakeup on
+  // create/child/decomposition and the direct assignment wake sites — all
+  // `source: "assignment"`, `triggerDetail: "system"`). Two enqueues of the
+  // same assignment wake racing before either run is registered collapse into
+  // one promise: the loser reuses the winner's promise, the task stays in the
+  // queue, and no duplicate wake/run row is created for an agent whose
+  // container may be idle-stopped (each duplicate would otherwise pay a cold
+  // container start). The winner is still registered in
+  // activeWakeupPromises so drainActiveRunExecutions can await it; the guard
+  // entry clears when the promise settles, so a later legitimate re-wake with
+  // the same key passes.
+  // Every other wake source keeps the plain enqueue path: continuation
+  // dedupe, retry/cleanup admission and the automation gates each run their
+  // own per-call database admission and must return their own verdict
+  // (admitted run or null with a skipped receipt) to every caller, and manual
+  // user wakes are never collapsed into an automatic one.
   function trackWakeup(
     agentId: string,
     opts: WakeupOptions = {},
   ): ReturnType<typeof enqueueWakeup> {
-    return wakeupSingleFlight.run(
-      wakeupSingleFlightKey(agentId, opts),
-      () => {
-        const promise = enqueueWakeup(agentId, opts);
-        activeWakeupPromises.add(promise);
-        void promise
-          .catch(() => {})
-          .finally(() => {
-            activeWakeupPromises.delete(promise);
-          });
-        return promise;
-      },
-    ) as ReturnType<typeof enqueueWakeup>;
+    const start = () => {
+      const promise = enqueueWakeup(agentId, opts);
+      activeWakeupPromises.add(promise);
+      void promise
+        .catch(() => {})
+        .finally(() => {
+          activeWakeupPromises.delete(promise);
+        });
+      return promise;
+    };
+    if (
+      opts.source === "assignment" &&
+      opts.triggerDetail === "system" &&
+      !opts.manualUserWake
+    ) {
+      return wakeupSingleFlight.run(
+        wakeupSingleFlightKey(agentId, opts),
+        start,
+      ) as ReturnType<typeof enqueueWakeup>;
+    }
+    return start();
   }
 
   async function executeRun(
