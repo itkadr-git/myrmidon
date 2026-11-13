@@ -29638,6 +29638,36 @@ export function heartbeatService(
                     paperclipCancellation: executionControl.cancellation,
                     runGuard,
                     onRunGuardStop: async (reason) => stopForRunGuard(reason),
+                    // myrmidon(OMP-RUN-GUARD-3): the session the CLI created is
+                    // stored at once, so a run that ends without a result is
+                    // retried in it (see AdapterExecutionContext.onSessionCreated).
+                    onSessionCreated: async (reported) => {
+                      if (!taskKey) return;
+                      const reportedParams = normalizeSessionParams(
+                        sessionCodec.serialize(normalizeSessionParams(reported.sessionParams) ?? null),
+                      );
+                      if (!reportedParams) return;
+                      const params = attachPaperclipSessionMetadataToSessionParams(
+                        reportedParams,
+                        configuredModel,
+                        sessionConfigMetadata,
+                      );
+                      const displayId = truncateDisplayId(
+                        readNonEmptyString(reported.sessionDisplayId) ?? readNonEmptyString(reportedParams.sessionId),
+                      );
+                      if (!params || !displayId) return;
+                      await upsertTaskSession({
+                        companyId: agent.companyId,
+                        agentId: agent.id,
+                        adapterType: agent.adapterType,
+                        taskKey,
+                        sessionParamsJson: params,
+                        sessionDisplayId: displayId,
+                        lastRunId: run.id,
+                        lastError: null,
+                      });
+                      goalCheckpointSession.current = { params, displayId };
+                    },
                     executionContinuation: executionContinuation ?? null,
                     runtimeCommandSpec:
                       adapter.getRuntimeCommandSpec?.(runtimeConfig) ?? null,

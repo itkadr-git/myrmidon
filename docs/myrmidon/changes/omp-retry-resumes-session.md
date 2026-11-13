@@ -1,0 +1,21 @@
+## changelog-en
+
+### A retry of an omp_local SSH run continues the session of the run it replaces (1.6.8 OMP-RUN-GUARD-3)
+
+- On 13.11.2026 none of 133 omp runs was started with `--session`: every retry after an interrupted run (a rollout alone cost 64 sessions, 305M z.ai tokens) started from scratch. Two causes on SSH environments, both fixed: the session files lived in the run's own directory on the runner, which is removed when the run ends, and the saved session was matched against the run's own workspace copy (`.paperclip-runtime/runs/<runId>/workspace`) and the run's own `remoteCwd`, which differ in every run.
+- Sessions of SSH runs now live in `<remote workspace>/.paperclip-runtime/omp-sessions/<company>/<agent>/<task>` (one directory per task), outside the directory the cleanup removes; files older than 14 days are pruned when a run starts. A saved session is matched by the workspace and the SSH environment, not by the run's copy, and is continued only when its file lies in the directory of this agent and this task. Before it is resumed, its header cwd is pointed at the new run's copy and read back; if that fails or the file is missing on the runner, the run starts a fresh session as before.
+- A new optional adapter hook `onSessionCreated` lets the adapter report the session as soon as omp has written it (after the first model turn). The board stores it as the task's session, so a run that ends without a result (board restart, lost process, cancellation) is retried in it. The final result of a run still replaces it.
+- A run stopped by the run guard (for example at the model call limit) drops the task's session (`clearSession`): the follow-up run starts a fresh session instead of continuing one that is full to the limit.
+- The skill descriptions omp compresses with an auxiliary model (one small call per skill, every run) are now kept between runs: `skill-descriptions.db` of an SSH run's agent directory is a link to a file in `<remote workspace>/.paperclip-runtime/omp-skill-cache/<company>/<agent>`. A failure to set the link is logged and costs only the cache. Local runs are unchanged.
+- Other adapter types and the sandbox lanes are unchanged.
+
+## changelog-ru
+
+### Повтор SSH-прогона omp_local продолжает сеанс заменяемого прогона (1.6.8 OMP-RUN-GUARD-3)
+
+- 13.11.2026 ни один из 133 запусков omp не стартовал с `--session`: каждый повтор после оборванного прогона начинался с нуля (один только выкат стоил 64 сеансов, 305 млн токенов z.ai). На SSH-средах две причины, обе устранены: файлы сеансов лежали в каталоге самого прогона на раннере, который удаляется по окончании прогона, а сохранённый сеанс сверялся с рабочей копией прогона (`.paperclip-runtime/runs/<runId>/workspace`) и его собственным `remoteCwd`, которые в каждом прогоне разные.
+- Сеансы SSH-прогонов теперь лежат в `<удалённая рабочая область>/.paperclip-runtime/omp-sessions/<компания>/<агент>/<задача>` (по каталогу на задачу), вне каталога, который удаляет уборка; файлы старше 14 дней удаляются при старте прогона. Сохранённый сеанс сверяется по рабочей области и SSH-среде, а не по копии прогона, и продолжается только если его файл лежит в каталоге этого агента и этой задачи. Перед продолжением cwd в заголовке сеанса переписывается на копию нового прогона и проверяется чтением; если не вышло или файла нет на раннере, прогон начинает новый сеанс, как раньше.
+- Новый необязательный хук адаптера `onSessionCreated` позволяет сообщить сеанс, как только omp его записал (после первого хода модели). Доска сохраняет его как сеанс задачи, поэтому прогон, закончившийся без результата (перезапуск доски, потеря процесса, отмена), повторяется в нём. Итог прогона по-прежнему заменяет его.
+- Прогон, остановленный сторожем прогона (например, по пределу вызовов модели), сбрасывает сеанс задачи (`clearSession`): следующий прогон начинает новый сеанс, а не продолжает раздутый до предела.
+- Описания навыков, которые omp сжимает вспомогательной моделью (по вызову на навык на каждом прогоне), теперь сохраняются между прогонами: `skill-descriptions.db` в каталоге агента SSH-прогона — ссылка на файл в `<удалённая рабочая область>/.paperclip-runtime/omp-skill-cache/<компания>/<агент>`. Ошибка создания ссылки пишется в журнал и стоит только кэша. Локальные прогоны не менялись.
+- Другие типы адаптеров и песочницы не менялись.
