@@ -248,6 +248,8 @@ Deep-dive guides from [`docs/myrmidon/guides`](https://github.com/itkadr-git/myr
 
 - [Workspace cleanup after merge](Workspace-cleanup)
 
+- [Workspace turn checkpoints](Workspace-turn-checkpoints)
+
 - [Database backup retention](Backup-retention)
 
 - [Automatic rollback by health after a deploy](Deploy-auto-rollback)

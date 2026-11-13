@@ -1,6 +1,8 @@
 import { readVerifiedRemoteWorkspaceFile } from "./remote-deliverable-file.js";
 import { buildNativeFailureBlockedPatch } from "../../myrmidon/native-failure-block.js";
 import { copyBackCodexAuth } from "@myrmidon/adapter-codex-local/server";
+import { createTurnCheckpoint, listTurnCheckpoints, type CreateTurnCheckpointResult } from "../workspace-turn-checkpoints.js";
+import { logger } from "../../middleware/logger.js";
 import { nativeCompletionFeedback } from "./native-completion-feedback.js";
 import { hasAcknowledgedNativeStopIntent } from "../acknowledged-native-stop.js";
 import { stoppedCodexTurnIsTextOnly } from "./stopped-codex-turn.js";
@@ -1371,6 +1373,43 @@ function nativeSessionKey(execution: NativeExecutionInput): string {
     execution.session.normalizedSessionId ??
     `session-${execution.binding.runId}`
   );
+}
+
+/**
+ * OPE-12738: snapshot the working worktree after each completed turn as a
+ * hidden git ref (refs/myrmidon/turns/<runId>/<turnN>). Fail-open: a
+ * checkpoint is best-effort observability plumbing and must never fail the
+ * run — non-git or remote workspaces simply log a warning.
+ *
+ * Turn numbers are derived from the existing refs of this run (max + 1), so
+ * they stay monotonic even when the provider session restarts mid-run.
+ */
+async function recordTurnCheckpointForCompletedTurn(input: {
+  db: Db;
+  binding: Pick<NativeExecutionInput["binding"], "companyId" | "runId" | "executionWorkspaceId">;
+  workspaceCwd: string | null;
+}): Promise<CreateTurnCheckpointResult | null> {
+  if (!input.workspaceCwd) return null;
+  try {
+    const existing = await listTurnCheckpoints({ worktreePath: input.workspaceCwd, runId: input.binding.runId });
+    const nextTurnNumber = existing.length > 0 ? existing[existing.length - 1].turnNumber + 1 : 1;
+    return await createTurnCheckpoint({
+      worktreePath: input.workspaceCwd,
+      runId: input.binding.runId,
+      turnNumber: nextTurnNumber,
+    });
+  } catch (err) {
+    logger.warn(
+      {
+        err,
+        runId: input.binding.runId,
+        executionWorkspaceId: input.binding.executionWorkspaceId,
+        workspaceCwd: input.workspaceCwd,
+      },
+      "turn checkpoint snapshot failed (fail-open)",
+    );
+    return null;
+  }
 }
 
 function nativeSessionWorkspaceScope(execution: NativeExecutionInput) {
@@ -7541,6 +7580,26 @@ async function executePaperclipNativeSessionWithinScope(
             endedAtMs: milestoneAtMs,
             outcome,
           });
+          if (event.eventType === "turn.completed") {
+            const checkpoint = await recordTurnCheckpointForCompletedTurn({
+              db: input.db,
+              binding: input.execution.binding,
+              workspaceCwd: input.execution.workspace?.cwd ?? null,
+            });
+            if (checkpoint && input.onLog) {
+              await input.onLog(
+                "stdout",
+                `${JSON.stringify({
+                  type: "paperclip.turn_checkpoint.created",
+                  runId: input.execution.binding.runId,
+                  turnNumber: checkpoint.turnNumber,
+                  ref: checkpoint.ref,
+                  commitSha: checkpoint.commitSha,
+                  prunedRefs: checkpoint.prunedRefs,
+                })}\n`,
+              );
+            }
+          }
           taskSettleScope = trace.start("task.settle", {
             parentName: "task.run",
             startedAtMs: milestoneAtMs,

@@ -75,6 +75,7 @@ Myrmidon — система управления компаниями из ИИ-
 | [guides/run-stall.md](guides/run-stall.md) | Обнаружение зависших прогонов: что считается прогрессом, прерывание `run_stalled`, возврат задачи в `todo`, настройки |
 | [guides/stale-block.md](guides/stale-block.md) | Гард причины-ссылки при переходе в blocked (STALE-BLOCK A) и сторож мёртвых блоков (часть B): какие причины мертвы, снятие блока с системным комментарием, карточка `stale_block` в attention-фиде, настройки |
 | [guides/workspace-cleanup.md](guides/workspace-cleanup.md) | Очистка рабочих копий после слияния и сигнал о застрявшей копии |
+| [guides/workspace-turn-checkpoints.md](guides/workspace-turn-checkpoints.md) | Чекпоинты turn'ов рабочего worktree (1.7 CHECKPOINT-PER-TURN): скрытые refs `refs/myrmidon/turns/<runId>/<turnN>`, удержание 10 снимков, эндпоинты list/diff/restore, защита чужих правок и активных прогонов |
 | [guides/telegram-bridge-locale.md](guides/telegram-bridge-locale.md) | Тексты Telegram-моста по языку пользователя: выбор, принуждение env, источник значения на экране «Язык» (TG-LOCALE) |
 | [guides/cloud-files-connector.md](guides/cloud-files-connector.md) | Коннектор Microsoft 365 для ботов-контейнеров: настройка и журнал |
 | [guides/maintenance-banner.md](guides/maintenance-banner.md) | Как баннер обслуживания группирует окна агентов |
