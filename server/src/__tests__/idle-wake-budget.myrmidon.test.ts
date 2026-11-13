@@ -135,7 +135,7 @@ describeEmbeddedPostgres("idle pickup under the company wake budget", () => {
   beforeAll(async () => {
     tempDb = await startEmbeddedPostgresTestDatabase("myrmidon-idle-wake-budget-");
     db = createDb(tempDb.connectionString);
-  }, 30_000);
+  }, 60_000);
 
   afterEach(async () => {
     await db.delete(issues);

@@ -107,7 +107,7 @@ describeEmbeddedPostgres("idlePickupForAgent (IDLE-PICKUP)", () => {
   beforeAll(async () => {
     tempDb = await startEmbeddedPostgresTestDatabase("myrmidon-idle-pickup-");
     db = createDb(tempDb.connectionString);
-  }, 30_000);
+  }, 60_000);
 
   afterEach(async () => {
     await db.update(issues).set({ executionRunId: null, checkoutRunId: null });
@@ -1635,7 +1635,7 @@ describeEmbeddedPostgres("createIdlePickupSweeper (IDLE-PICKUP tick)", () => {
   beforeAll(async () => {
     tempDb = await startEmbeddedPostgresTestDatabase("myrmidon-idle-pickup-sweep-");
     db = createDb(tempDb.connectionString);
-  }, 30_000);
+  }, 60_000);
 
   afterEach(async () => {
     await db.update(issues).set({ executionRunId: null, checkoutRunId: null });

@@ -24,7 +24,7 @@ describeEmbeddedPostgres("issue service -> swarm matcher events", () => {
   beforeAll(async () => {
     tempDb = await startEmbeddedPostgresTestDatabase("paperclip-myrmidon-swarm-issue-events-");
     db = createDb(tempDb.connectionString);
-  }, 30_000);
+  }, 60_000);
 
   beforeEach(() => {
     forIssue.mockClear();

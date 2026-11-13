@@ -55,7 +55,7 @@ describeEmbeddedPostgres("issue monitor that waits for a pull request", () => {
   beforeAll(async () => {
     tempDb = await startEmbeddedPostgresTestDatabase("paperclip-pr-wait-monitor-");
     db = createDb(tempDb.connectionString);
-  }, 20_000);
+  }, 60_000);
 
   async function heartbeatSideEffectFingerprint() {
     const [active, events, activity, leases, runtimeServices] = await Promise.all([

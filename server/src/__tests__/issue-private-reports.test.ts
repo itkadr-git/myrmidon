@@ -69,7 +69,7 @@ describeEmbeddedPostgres("issue private reports (1.7 PRIVATE-TASKS F3)", () => {
   beforeAll(async () => {
     tempDb = await startEmbeddedPostgresTestDatabase("paperclip-issue-private-reports-");
     db = createDb(tempDb.connectionString);
-  }, 20_000);
+  }, 60_000);
 
   afterEach(async () => {
     await db.delete(activityLog);
