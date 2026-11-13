@@ -1262,7 +1262,10 @@ export function agentRoutes(
       if (!id || !companyId) return Promise.resolve({ allowed: false });
       return decideAgentRead(req, { id, companyId });
     }));
-    return rows.filter((_, index) => decisions[index]?.allowed);
+    return rows
+      .map((row, index) => ({ row, decision: decisions[index] }))
+      .filter(({ decision }) => decision?.allowed)
+      .map(({ row }) => row);
   }
 
   /**
@@ -4281,13 +4284,19 @@ function getActorIdentityPart(req: Request): string {
       return;
     }
     const canReadConfigs = await actorCanReadConfigurationsForCompany(req, companyId);
+    const actorMemberships = Array.isArray(req.actor.onBehalfOfMemberships)
+      ? req.actor.onBehalfOfMemberships.map((membership) => ({ companyId: membership.companyId, status: membership.status, membershipRole: membership.membershipRole }))
+      : null;
+    // Authorize/filter before considering a conditional response: access grants
+    // can change independently of the agent and membership rows, so the
+    // authorized result set travels inside the validator key.
+    const result = await filterAgentsForActor(req, await svc.listSummaries(companyId));
     const actorShape = JSON.stringify([
       getActorIdentityPart(req),
       req.actor.type === "board" ? req.actor.companyIds ?? [] : req.actor.companyId,
-      Array.isArray(req.actor.onBehalfOfMemberships)
-        ? req.actor.onBehalfOfMemberships.map((membership) => ({ companyId: membership.companyId, status: membership.status, membershipRole: membership.membershipRole }))
-        : null,
+      actorMemberships,
       canReadConfigs,
+      result.map((agent) => agent.id),
     ]);
 
     const filters: AgentListFilters = {
@@ -4300,8 +4309,6 @@ function getActorIdentityPart(req: Request): string {
     };
     const normalizedFilters = normalizeAgentListFilters(filters);
 
-    // Compute the validator before the response query so a matching ETag
-    // avoids hydrating and filtering the full agent list.
     // myrmidon(1.6.8 OPE-12709): the "model unavailable since" mark is derived
     // from runs, not from agent rows, so it joins the validator — otherwise a
     // 304 would keep a stale mark on screen.
@@ -4313,12 +4320,11 @@ function getActorIdentityPart(req: Request): string {
       ? await svc.listSummariesVersionKey(companyId, listShape, JSON.stringify(normalizedFilters))
       : await svc.listSummariesVersionKey(companyId, listShape);
     if (notModifiedOrSetEtag(req, res, vk)) return;
-    const sourceRows = (await svc.listSummaries(companyId)).map((row) => {
+    const stampedRows = result.map((row) => {
       const since = roleModelDown.get(row.role);
       return since ? { ...row, roleModelDownSince: since } : row;
     });
-    const result = await filterAgentsForActor(req, sourceRows);
-    const filteredRows = normalizedFilters ? filterAgentListItems(result, normalizedFilters) : result;
+    const filteredRows = normalizedFilters ? filterAgentListItems(stampedRows, normalizedFilters) : stampedRows;
     const responseRows = canReadConfigs
       ? filteredRows
       : filteredRows.map((agent) => redactAgentListItemForRestrictedView(agent));

@@ -68,6 +68,15 @@ export interface RoleQueueRow {
  * names no caste anywhere (rows written before the migration), exactly as the
  * JS twin does. Without a caste and without a role label the task belongs to
  * the company default role.
+ *
+ * myrmidon(OPE-12846 IDLE-DISPATCH): a caste with no agents of its own would
+ * hold its tasks hostage — the matcher builds pools from `agents.role`, so an
+ * unstaffed caste never forms a pair and its ready tasks starve (12 devops
+ * tasks rotted for a week over two idle engineers). When the task's caste has
+ * no non-terminated agent in the company, the task routes to the default
+ * unassigned role instead, next to the caste-less tasks. A caste that has
+ * agents keeps its exclusive claim — dispatch honors the operator's staffing
+ * (a paused agent still staffs its caste; pausing is an operator decision).
  */
 export function unassignedTaskRoutedToRole(role: string) {
   const wantedKey = role.trim().toLowerCase();
@@ -111,7 +120,19 @@ export function unassignedTaskRoutedToRole(role: string) {
   return sql`(case
     when ${isPoolAlert} then ${wantedKey} = 'operator'
     when ${engineerRequired} then ${wantedKey} = 'engineer'
-    when ${effectiveCaste} is not null then ${effectiveCaste} = ${wantedKey}
+    when ${effectiveCaste} is not null then (
+      ${effectiveCaste} = ${wantedKey}
+      or (
+        ${wantedKey} = ${SWARM_DEFAULT_UNASSIGNED_ROLE}
+        and not exists (
+          select 1
+          from agents a
+          where a.company_id = ${issues.companyId}
+            and a.role = ${effectiveCaste}
+            and a.status <> 'terminated'
+        )
+      )
+    )
     else ${labelRoute}
   end)`;
 }

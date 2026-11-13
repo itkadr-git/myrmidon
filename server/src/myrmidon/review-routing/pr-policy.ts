@@ -262,6 +262,62 @@ export interface BoardMergeFacts {
 /** One required check on the head: the verdict of its LATEST run. */
 export type RequiredCheckVerdict = "success" | "pending" | "failed";
 
+export const BOARD_MERGE_FULL_CI_LABEL = "full-ci";
+
+export const BOARD_MERGE_FULL_CI_PATH_PREFIXES: readonly string[] = [
+  "server/src/",
+  "packages/paperclip-runner/",
+];
+
+/**
+ * myrmidon(OPE-12551): the full tier of myrmidon-ci.yml runs these six server
+ * shards; the merge gate must demand exactly these names. Checking only
+ * `tests (server 1/6)` lets a PR whose failure hides in shard 2–6 merge on a
+ * green first shard — the defect this issue fixes.
+ */
+export const BOARD_MERGE_FULL_CI_SERVER_SHARD_CHECKS: readonly string[] = [
+  "tests (server 1/6)",
+  "tests (server 2/6)",
+  "tests (server 3/6)",
+  "tests (server 4/6)",
+  "tests (server 5/6)",
+  "tests (server 6/6)",
+];
+
+/** Everything the full tier adds on top of the default checks for a full-ci pull. */
+export const BOARD_MERGE_FULL_CI_CHECKS: readonly string[] = [
+  ...BOARD_MERGE_FULL_CI_SERVER_SHARD_CHECKS,
+  "tests (other + runner)",
+];
+
+export function pullRequiresFullCi(files: readonly string[]): boolean {
+  return files.some((file) =>
+    BOARD_MERGE_FULL_CI_PATH_PREFIXES.some((prefix) => file.startsWith(prefix)),
+  );
+}
+
+export function requiredChecksForPull(input: {
+  defaultChecks: readonly string[];
+  files?: readonly string[] | null;
+  labels?: readonly string[];
+}): readonly string[] {
+  const checks = new Set(input.defaultChecks);
+  const requiresFull =
+    (input.files && pullRequiresFullCi(input.files)) ||
+    (input.labels && input.labels.includes(BOARD_MERGE_FULL_CI_LABEL));
+  if (requiresFull) {
+    // myrmidon(OPE-12551): the full tier runs every server shard — a PR whose
+    // failure hides in shard 2–6 must not merge on a green shard 1.
+    if (!input.files || input.files.some((f) => f.startsWith("server/src/"))) {
+      for (const name of BOARD_MERGE_FULL_CI_SERVER_SHARD_CHECKS) checks.add(name);
+    }
+    if (!input.files || input.files.some((f) => f.startsWith("packages/paperclip-runner/"))) {
+      checks.add("tests (other + runner)");
+    }
+  }
+  return [...checks];
+}
+
 export type BoardMergeSkipReason = "closed" | "draft" | "no_head" | "base_not_allowed" | "head_not_approved";
 export type BoardMergeWaitReason = "mergeability_unknown" | "ci_pending" | "ci_failed" | "blocked";
 export type BoardMergeReturnReason = "conflict" | "behind" | "head_moved";
@@ -270,10 +326,11 @@ export type BoardMergeDecision =
   | { kind: "skip"; reason: BoardMergeSkipReason }
   | { kind: "return"; reason: BoardMergeReturnReason }
   | { kind: "wait"; reason: BoardMergeWaitReason }
+  | { kind: "read_files" }
   /** Everything but the required checks is settled: read them (one GitHub request per check). */
   | { kind: "read_checks" }
-  /** Blocked only by the missing review marker (the hot-files gate): put it, then wait. */
-  | { kind: "label" }
+  /** Blocked only by the missing review marker (the hot-files gate) or full-ci label: put it, then wait. */
+  | { kind: "label"; label?: string }
   | { kind: "merge" };
 
 /** Merge states GitHub reports for a PR it will merge as it is. */
@@ -300,6 +357,7 @@ export function decideBoardMerge(input: {
   checks: Readonly<Record<string, RequiredCheckVerdict>> | null;
   requiredChecks: readonly string[];
   approvedLabel?: string;
+  files?: readonly string[] | null;
 }): BoardMergeDecision {
   const { facts } = input;
   if (!facts.open) return { kind: "skip", reason: "closed" };
@@ -319,6 +377,12 @@ export function decideBoardMerge(input: {
   if (facts.mergeableState === "behind") return { kind: "return", reason: "behind" };
   if (facts.mergeable === null || facts.mergeableState === null || facts.mergeableState === "unknown") {
     return { kind: "wait", reason: "mergeability_unknown" };
+  }
+
+  // myrmidon(OPE-12551): PRs touching server/src or runner require the full-ci label.
+  const requiresFullCi = input.files ? pullRequiresFullCi(input.files) : false;
+  if (requiresFullCi && !facts.labels.includes(BOARD_MERGE_FULL_CI_LABEL)) {
+    return { kind: "label", label: BOARD_MERGE_FULL_CI_LABEL };
   }
 
   if (input.checks === null) return { kind: "read_checks" };

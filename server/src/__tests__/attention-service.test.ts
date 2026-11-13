@@ -20,6 +20,7 @@ import {
   decisionTriage,
   decisionTriageEvents,
   documents,
+  externalObjects,
   heartbeatRunEvents,
   heartbeatRuns,
   inboxDismissals,
@@ -30,6 +31,7 @@ import {
   issueRecoveryActions,
   issueRelations,
   issueThreadInteractions,
+  issueWorkProducts,
   issues,
   joinRequests,
   projects,
@@ -86,6 +88,8 @@ describeEmbeddedPostgres("attention service", () => {
     await db.delete(issueApprovals);
     await db.delete(issueAttachments);
     await db.delete(issueDocuments);
+    await db.delete(issueWorkProducts);
+    await db.delete(externalObjects);
     await db.delete(heartbeatRunEvents);
     await db.delete(heartbeatRuns);
     await db.delete(budgetIncidents);
@@ -2880,5 +2884,82 @@ describeEmbeddedPostgres("attention service", () => {
 
       expect((await listRoleModelDownSince(db, companyId, NOW)).size).toBe(0);
     });
+  });
+
+  // myrmidon(OPE-12879): a done task whose pull request is still open hides
+  // real release readiness — surfaced as one attention card per task.
+  it("raises a done_pr_not_merged card for a done task with a linked open PR and for an unlinked one", async () => {
+    const { companyId } = await seedCompany("DPR");
+
+    const linkedId = await insertIssue({
+      companyId, identifier: "DPR-1", title: "Linked PR done", status: "done",
+    });
+    await db.insert(issueWorkProducts).values({
+      id: randomUUID(),
+      companyId,
+      issueId: linkedId,
+      type: "pull_request",
+      provider: "github",
+      status: "open",
+      url: "https://github.com/itkadr-git/myrmidon/pull/2912",
+      title: "PR 2912",
+    });
+
+    const unlinkedId = await insertIssue({
+      companyId, identifier: "DPR-2", title: "Unlinked PR done", status: "done",
+    });
+    await db.insert(externalObjects).values({
+      id: randomUUID(),
+      companyId,
+      providerKey: "github",
+      objectType: "pull_request",
+      externalId: "itkadr-git/myrmidon#pull/2931",
+      sanitizedCanonicalUrl: "https://github.com/itkadr-git/myrmidon/pull/2931",
+      isTerminal: false,
+      data: {
+        number: 2931,
+        headRef: "bot/DPR-2",
+        title: "DPR-2 fix",
+        url: "https://github.com/itkadr-git/myrmidon/pull/2931",
+      },
+    });
+
+    // A done task whose PR is merged must NOT raise a card.
+    const mergedId = await insertIssue({
+      companyId, identifier: "DPR-3", title: "Merged PR done", status: "done",
+    });
+    await db.insert(issueWorkProducts).values({
+      id: randomUUID(),
+      companyId,
+      issueId: mergedId,
+      type: "pull_request",
+      provider: "github",
+      status: "merged",
+      url: "https://github.com/itkadr-git/myrmidon/pull/2999",
+      title: "PR 2999",
+    });
+
+    // A task of another company with an open PR must NOT leak into this feed.
+    const other = await seedCompany("OTH");
+    const otherId = await insertIssue({
+      companyId: other.companyId, identifier: "OTH-1", title: "Other company", status: "done",
+    });
+    await db.insert(issueWorkProducts).values({
+      id: randomUUID(),
+      companyId: other.companyId,
+      issueId: otherId,
+      type: "pull_request",
+      provider: "github",
+      status: "open",
+      url: "https://github.com/itkadr-git/myrmidon/pull/3000",
+      title: "PR 3000",
+    });
+
+    const feed = await attentionService(db, TEST_SERVICE_OPTS).list(companyId, { userId: "board-user" });
+    const cards = feed.items.filter((item) => item.sourceKind === "done_pr_not_merged");
+    expect(cards).toHaveLength(2);
+    const bySubject = new Map(cards.map((card) => [card.subject.id, card]));
+    expect(bySubject.get(linkedId)?.whyNow).toContain("pull/2912");
+    expect(bySubject.get(unlinkedId)?.whyNow).toContain("pull/2931");
   });
 });

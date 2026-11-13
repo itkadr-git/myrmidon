@@ -195,14 +195,14 @@ mismatch fails the build, the same rule the Node.js variant states above.
 **Where things write.** The root filesystem is read-only at run time and the bot's writable
 directories are exactly its single `/bot` mount (BOT-DISK-D), so:
 
-- the pnpm store defaults to `/workspace/.pnpm-store` via `npm_config_store_dir` (OPE-12720; the
-  shared `/cache/pnpm-store` of 1.6.5-1.6.7 sat on the root disk and is retired), on the same
-  mount as the clones (`/workspace` is a link into `/bot`), because pnpm imports `node_modules`
-  from its store by links and a link cannot cross a mount (a store outside the bot's mount made
-  pnpm copy every package into every clone). It is not `/bot/.pnpm-store`: the `/bot` root is
-  root-owned (0711), the bot user cannot create entries in it.
-  `npm_config_package_import_method=clone` is set too; pnpm still copies silently when the
-  kernel refuses a reflink, so `pnpm-hardlink-check.sh` proves the link from `/data/hermes`,
+- the pnpm store is the shared `/cache/pnpm-store` mount (OPE-12869) when the board's
+  profile carries `npm_config_store_dir` (bots with the shared package cache); the image's own
+  default `/workspace/.pnpm-store` applies to a bot without that mount. The shared store works
+  because it sits on the same XFS filesystem as the bot volumes: pnpm imports `node_modules`
+  by reflink (`npm_config_package_import_method=clone`), one physical copy for all bots; a hard
+  link cannot cross a mount, and a store on another filesystem (the root disk of 1.6.5) made
+  pnpm copy every package into every clone. pnpm still copies silently when the kernel refuses
+  a reflink, so `pnpm-hardlink-check.sh` proves the link from `/data/hermes`,
   `/workspace` and `/scratch` at build time and `entrypoint.sh` repeats the check at every start
   (`/data/hermes/.myrmidon/hardlink-check.json`, shown on the board). `/cache/pnpm` is a download
   cache only, never the store; the paths and the method are the `pnpmStoreDir` and

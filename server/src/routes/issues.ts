@@ -5938,15 +5938,32 @@ export function issueRoutes(
 
   async function filterIssuesForActor<
     T extends Parameters<typeof decideIssueAccess>[1] & { isPrivate?: boolean | null },
-  >(req: Request, rows: T[]) {
-    const visibleRows =
-      req.actor.type === "agent"
-        ? rows.filter((issue) => !issue.isPrivate)
-        : rows;
+  >(
+    req: Request,
+    rows: T[],
+    opts: { keepMaskedStubs?: boolean } = {},
+  ) {
+    // The agent private-issue gate in access.decide denies issue:read for
+    // any row whose base issue is private (1.7 PRIVATE-TASKS E1). Rows that
+    // diagnostics services already masked into stubs (title "Private task",
+    // raw fields nulled, isPrivate stripped) carry no private content; their
+    // issue:read decision fails with deny_private_issue only because the
+    // base row is private. Callers that mask for agents keep those stubs
+    // visible (F4); raw private rows stay dropped everywhere else.
     const decisions = await Promise.all(
-      visibleRows.map((issue) => decideIssueAccess(req, issue, "issue:read")),
+      rows.map((issue) => decideIssueAccess(req, issue, "issue:read")),
     );
-    return visibleRows.filter((_, index) => decisions[index]?.allowed);
+    return rows.filter((row, index) => {
+      const decision = decisions[index];
+      if (decision?.allowed) return true;
+      // A masked stub never carries an isPrivate key; a raw private row
+      // does, so the second condition keeps stub-only survival.
+      return Boolean(
+        opts.keepMaskedStubs &&
+          decision?.reason === "deny_private_issue" &&
+          !row.isPrivate,
+      );
+    });
   }
 
   async function actorCanReadCompanyScope(req: Request, companyId: string) {
@@ -9759,6 +9776,7 @@ export function issueRoutes(
     const visibleBlockers = await filterIssuesForActor(
       req,
       diagnostic.blockers,
+      { keepMaskedStubs: req.actor.type === "agent" },
     );
     const response = buildIssueBlockerDiagnosticsResponse({
       issue,
@@ -9806,6 +9824,7 @@ export function issueRoutes(
     const visibleBlockers = await filterIssuesForActor(
       req,
       blockerDiagnostic.blockers,
+      { keepMaskedStubs: req.actor.type === "agent" },
     );
     const blockerResponse = buildIssueBlockerDiagnosticsResponse({
       issue,
@@ -9859,8 +9878,12 @@ export function issueRoutes(
     ]);
     const allBlockers = [...diagnostic.blockersByIssueId.values()].flat();
     const [visibleNodes, visibleBlockers] = await Promise.all([
-      filterIssuesForActor(req, diagnostic.nodes),
-      filterIssuesForActor(req, allBlockers),
+      filterIssuesForActor(req, diagnostic.nodes, {
+        keepMaskedStubs: req.actor.type === "agent",
+      }),
+      filterIssuesForActor(req, allBlockers, {
+        keepMaskedStubs: req.actor.type === "agent",
+      }),
     ]);
     const response = buildIssueSubtreeDiagnosticsResponse({
       issue,
@@ -14920,6 +14943,10 @@ export function issueRoutes(
           db,
           existing.companyId,
           existing.id,
+          async (companyId, repository) => {
+            const { createGitHubPrHeadResolver } = await import("../myrmidon/review-routing/github.js");
+            return createGitHubPrHeadResolver({ db }).listOpenPullRequests({ companyId, repository });
+          },
         );
         if (openPullRequest) {
           delete updateFields.status;
@@ -21362,6 +21389,10 @@ export function issueRoutes(
                 db,
                 currentIssue.companyId,
                 currentIssue.id,
+                async (companyId, repository) => {
+                  const { createGitHubPrHeadResolver } = await import("../myrmidon/review-routing/github.js");
+                  return createGitHubPrHeadResolver({ db }).listOpenPullRequests({ companyId, repository });
+                },
               )
             : null;
         const updatePatch = {

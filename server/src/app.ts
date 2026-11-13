@@ -80,6 +80,8 @@ import { onboardingSeedRoutes } from "./routes/onboarding-seed.js";
 import { serverOnboardingRoutes } from "./routes/servers.js";
 import { boardChatRoutes } from "./routes/board-chat.js";
 import { approvalRoutes } from "./routes/approvals.js";
+import { admAccessRequestRoutes } from "./routes/adm-access-requests.js";
+import { createAdmCapabilityToolExecutor } from "./services/adm-capability-tool-executor.js";
 import { secretRoutes } from "./routes/secrets.js";
 import { toolAccessRoutes } from "./routes/tool-access.js";
 import {
@@ -1214,6 +1216,9 @@ export async function createApp(
   api.use(serverOnboardingRoutes(db)); // myrmidon(SERVER-ONBOARD): SSH dry-run probe
   api.use(boardChatRoutes(db, { deploymentMode: opts.deploymentMode }));
   api.use(approvalRoutes(db, { pluginWorkerManager: workerManager }));
+  api.use(admAccessRequestRoutes(db, {
+    capabilityExecutor: createAdmCapabilityToolExecutor(db, () => app.locals.toolGateway),
+  })); // myrmidon(1.7 COMPANY-BOUNDARIES, OPE-12766)
   api.use(secretRoutes(db));
   api.use(managedAgentProfileRoutes(db));
   api.use(remoteAgentProfileRoutes(db));

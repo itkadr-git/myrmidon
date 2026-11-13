@@ -32,6 +32,12 @@ export type ToolFailureRepeatTracker = {
     failed: boolean,
     errorText: string | null,
   ): { count: number; preview: string } | null;
+  /**
+   * myrmidon(OPE-12878): drop the current failure streak without recording a
+   * success — the guard has just steered its one hint and the next failures
+   * must build a fresh streak before the stop fires.
+   */
+  resetStreak(): void;
 };
 
 export function createToolFailureRepeatTracker(): ToolFailureRepeatTracker {
@@ -76,6 +82,9 @@ export function createToolFailureRepeatTracker(): ToolFailureRepeatTracker {
       }
       last = { toolName, preview, errorText, count: 1, completedSeq: seq };
       return null;
+    },
+    resetStreak() {
+      last = null;
     },
   };
 }

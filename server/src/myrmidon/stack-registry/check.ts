@@ -287,6 +287,7 @@ export async function checkStackReleases(db: Db, options: StackCheckOptions = {}
     ? (stored.components.length > 0 ? stored : seedStackDocument())
     : await collectStackLocal({
       ...(options.collect ?? {}),
+      db,
       now: options.now,
       previous: stored.components.length > 0 ? stored : undefined,
     });

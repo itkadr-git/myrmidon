@@ -21,7 +21,11 @@ import {
   type BoardMerger,
 } from "./board-merge.js";
 import type { BoardMergeClient, BoardMergeOutcome } from "./github-board-merge.js";
-import type { BoardMergeFacts, RequiredCheckVerdict } from "./pr-policy.js";
+import {
+  BOARD_MERGE_FULL_CI_SERVER_SHARD_CHECKS,
+  type BoardMergeFacts,
+  type RequiredCheckVerdict,
+} from "./pr-policy.js";
 import type { ApprovedPrIssueRow, ReturnedApprovedPr } from "./store.js";
 
 const COMPANY = "company-1";
@@ -67,6 +71,7 @@ interface PullState {
   facts: BoardMergeFacts;
   checks: RequiredCheckVerdict;
   mergeOutcome?: BoardMergeOutcome;
+  files?: readonly string[];
 }
 
 function setup(
@@ -80,6 +85,7 @@ function setup(
   const returnedIssues: string[] = [];
   const calls = {
     readPull: [] as number[],
+    readPullFiles: [] as number[],
     readChecks: [] as Array<{ number: number; names: readonly string[] }>,
     label: [] as number[],
     merge: [] as Array<{ number: number; headSha: string; method: string }>,
@@ -96,6 +102,11 @@ function setup(
       const state = pulls[number];
       return state ? { ok: true, facts: { ...state.facts } } : { ok: false, reason: "http_404" };
     },
+    readPullFiles: async ({ number }) => {
+      calls.readPullFiles.push(number);
+      const state = pulls[number];
+      return { ok: true, files: state?.files ?? [] };
+    },
     readChecks: async ({ names, headSha }) => {
       const number = Number(Object.keys(pulls).find((key) => pulls[Number(key)]!.facts.headSha === headSha));
       calls.readChecks.push({ number, names });
@@ -103,10 +114,10 @@ function setup(
       if (!state) return { ok: false, reason: "http_404" };
       return { ok: true, checks: Object.fromEntries(names.map((name) => [name, state.checks])) };
     },
-    addApprovedLabel: async ({ number }) => {
+    addApprovedLabel: async ({ number, label }) => {
       calls.label.push(number);
       const state = pulls[number]!;
-      state.facts = { ...state.facts, labels: [...state.facts.labels, "review-approved"] };
+      state.facts = { ...state.facts, labels: [...state.facts.labels, label ?? "review-approved"] };
       return true;
     },
     merge: async ({ number, headSha, method }) => {
@@ -463,5 +474,45 @@ describe("board merge: GitHub trouble never guesses", () => {
     });
     const result = await failing.sweepCompany(COMPANY, t.settings, at(0));
     expect(result).toMatchObject({ merged: 1, failed: 0 });
+  });
+
+  it("applies full-ci label and requires full shard checks for PRs touching server/src", async () => {
+    const t = setup([approved(70)], {
+      70: {
+        facts: facts(),
+        checks: "success",
+        files: ["server/src/myrmidon/review-routing/board-merge.ts"],
+      },
+    });
+    const first = await t.merger.sweepCompany(COMPANY, t.settings, at(0));
+    expect(first).toMatchObject({ labeled: 1, merged: 0 });
+    expect(t.calls.label).toEqual([70]);
+    expect(t.calls.merge).toEqual([]);
+
+    // Next pass after cooldown: label is present, checks are read with the
+    // full six-shard set (OPE-12551: only shard 1 was required before, so a PR
+    // failing shard 2-6 merged on a green shard 1).
+    const second = await t.merger.sweepCompany(COMPANY, t.settings, at(10 * 60_000));
+    expect(second).toMatchObject({ merged: 1 });
+    expect(t.calls.readChecks).toEqual([
+      { number: 70, names: ["CI result", ...BOARD_MERGE_FULL_CI_SERVER_SHARD_CHECKS] },
+    ]);
+  });
+
+  it("waits when one of the six server shards fails instead of merging", async () => {
+    const t = setup([approved(71)], {
+      71: {
+        facts: { ...facts(), labels: ["full-ci"] },
+        checks: "failed",
+        files: ["server/src/myrmidon/review-routing/board-merge.ts"],
+      },
+    });
+    const result = await t.merger.sweepCompany(COMPANY, t.settings, at(0));
+    expect(result).toMatchObject({ merged: 0, waiting: 1 });
+    expect(t.calls.label).toEqual([]);
+    expect(t.calls.merge).toEqual([]);
+    expect(t.calls.readChecks).toEqual([
+      { number: 71, names: ["CI result", ...BOARD_MERGE_FULL_CI_SERVER_SHARD_CHECKS] },
+    ]);
   });
 });

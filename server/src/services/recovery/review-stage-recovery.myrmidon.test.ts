@@ -374,6 +374,10 @@ describeEmbeddedPostgres("escalateStrandedAssignedIssue: stalled execution revie
     expect(wakes).toHaveLength(0);
     const issue = await readIssue(seeded.issueId);
     expect(issue.status).toBe("blocked");
+    // myrmidon(OPE-12896): the block returns the issue to the engineer-author,
+    // not to the stalled reviewer.
+    expect(issue.assigneeAgentId).toBe(seeded.engineerAgentId);
+    expect(issue.assigneeUserId).toBeNull();
     expect(issue.executionState).toMatchObject({
       status: "pending",
       currentStageId: seeded.stageId,
@@ -388,6 +392,30 @@ describeEmbeddedPostgres("escalateStrandedAssignedIssue: stalled execution revie
     expect(escalation.map((row) => (row.details as Record<string, unknown>).source)).toContain(
       "recovery.reconcile_execution_review_participant",
     );
+  });
+
+  // myrmidon(OPE-12896): a stalled review stage must not strand the engineer's
+  // task on the reviewer. The blocked transition hands the issue back to the
+  // recorded return assignee and leaves the reviewer without a wake.
+  it("returns the issue to the engineer-author when the review stage is blocked (OPE-12896)", async () => {
+    const seeded = await seed({ reviewerStatus: "paused" });
+    const { service, wakes } = createService({ state: "pending", pullRequestUrl: PR_URL, headSha: "abc123" });
+
+    const result = await escalate(service, seeded);
+
+    expect(result).toBeTruthy();
+    expect(wakes).toHaveLength(0);
+    const issue = await readIssue(seeded.issueId);
+    expect(issue.status).toBe("blocked");
+    expect(issue.assigneeAgentId).toBe(seeded.engineerAgentId);
+    expect(issue.assigneeAgentId).not.toBe(seeded.reviewerAgentId);
+    expect(issue.assigneeUserId).toBeNull();
+    expect(issue.executionState).toMatchObject({
+      status: "pending",
+      currentStageType: "review",
+      currentParticipant: { type: "agent", agentId: seeded.reviewerAgentId },
+      returnAssignee: { type: "agent", agentId: seeded.engineerAgentId },
+    });
   });
 
   it("still escalates at once when the reviewer cannot be invoked", async () => {

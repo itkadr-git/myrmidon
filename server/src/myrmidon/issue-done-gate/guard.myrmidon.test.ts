@@ -6,6 +6,7 @@ import {
   inspectIssueDonePullRequests,
   ISSUE_DONE_PULL_REQUEST_GATE,
 } from "./guard.js";
+import { findApprovalPendingMergePullRequest, type LiveOpenPullRequestLookup } from "../review-stage-recovery/pre-merge-approval.js";
 
 const issueId = "issue-1";
 const companyId = "company-1";
@@ -339,5 +340,160 @@ describe("issue done pull-request gate", () => {
     expect(() => assertStoredIssueDonePullRequestsSettled([unreachablePr])).toThrowError(
       /Cannot mark this task done: PR .* was merged into bot\/OPE-9262, but its merge commit is not reachable from main or rel\/\*/,
     );
+  });
+
+  // myrmidon(OPE-12879): the six 12.11 closings had NO stored facts at all —
+  // no work product, no external object, no matching verdict comment. The
+  // gate must ask GitHub live (branch bot/<KEY> or the identifier in the PR
+  // title) and refuse done with the live PR link.
+  function queueDb(answers: unknown[][]) {
+    let call = 0;
+    const where = vi.fn(async () => answers[Math.min(call++, answers.length - 1)] ?? []);
+    const from = vi.fn(() => ({ where }));
+    const select = vi.fn(() => ({ from }));
+    return { select } as never;
+  }
+
+  it("blocks done when the open PR was never linked but GitHub shows it on bot/<KEY> (OPE-12879)", async () => {
+    // Query order: guard products; findApproval (issue products, identifier,
+    // company products, external objects, comments, repo external, repo products).
+    const db = queueDb([
+      [],
+      [],
+      [{ identifier: "OPE-12879" }],
+      [],
+      [],
+      [],
+      [{ data: { owner: "itkadr-git", repo: "myrmidon" } }],
+      [],
+    ]);
+    const liveLookup: LiveOpenPullRequestLookup = async (_companyId, repository) =>
+      repository === "itkadr-git/myrmidon"
+        ? [{
+            number: 2992,
+            headSha: "cafe1234",
+            draft: false,
+            title: "OPE-12859 fix",
+            url: "https://github.com/itkadr-git/myrmidon/pull/2992",
+            authorLogin: "bot",
+            baseRef: "main",
+            headRef: "bot/OPE-12879",
+          }]
+        : [];
+    const snapshot = await inspectIssueDonePullRequests(db, companyId, issueId, resolver({}), liveLookup);
+    expect(() => assertIssueDonePullRequestsSettled(snapshot)).toThrowError(
+      /Cannot mark this task done until .*pull\/2992.* is merged/,
+    );
+  });
+
+  it("allows done when the live GitHub lane answers nothing (OPE-12879)", async () => {
+    const db = queueDb([
+      [],
+      [],
+      [{ identifier: "OPE-12879" }],
+      [],
+      [],
+      [],
+      [],
+      [],
+    ]);
+    const liveLookup: LiveOpenPullRequestLookup = async () => [];
+    const snapshot = await inspectIssueDonePullRequests(db, companyId, issueId, resolver({}), liveLookup);
+    expect(() => assertIssueDonePullRequestsSettled(snapshot)).not.toThrow();
+  });
+
+  it("allows done when the live GitHub lane fails: no invented blockers (OPE-12879)", async () => {
+    const db = queueDb([
+      [],
+      [],
+      [{ identifier: "OPE-12879" }],
+      [],
+      [],
+      [],
+      [],
+      [],
+    ]);
+    const liveLookup: LiveOpenPullRequestLookup = async () => {
+      throw new Error("github down");
+    };
+    const snapshot = await inspectIssueDonePullRequests(db, companyId, issueId, resolver({}), liveLookup);
+    expect(() => assertIssueDonePullRequestsSettled(snapshot)).not.toThrow();
+  });
+
+  it("does not duplicate a stored hit found again by the live lane; live merged state wins (OPE-12879)", async () => {
+    const stored = product({ id: "wp-linked", number: 3001, status: "open" });
+    // q1: guard products (open) -> findApproval must NOT run? some(merged)=false so it runs;
+    // q2 returns the same open product -> findApproval returns it -> dedupe keeps one entry.
+    const db = queueDb([[stored]]);
+    const liveLookup: LiveOpenPullRequestLookup = async () => [
+      {
+        number: 3001,
+        headSha: "beef1234",
+        draft: false,
+        title: "linked pr",
+        url: "https://github.com/acme/project/pull/3001",
+        authorLogin: "bot",
+        baseRef: "main",
+        headRef: "bot/OPE-12879",
+      },
+    ];
+    const snapshot = await inspectIssueDonePullRequests(db, companyId, issueId, resolver({ 3001: "merged" }), liveLookup);
+    expect(snapshot).toHaveLength(1);
+    expect(() => assertIssueDonePullRequestsSettled(snapshot)).not.toThrow();
+  });
+
+  // Recovery / external-transaction done path (services/issues.ts): the caller
+  // cannot resolve live provider facts inside a foreign transaction, so it
+  // validates stored products with assertStoredIssueDonePullRequestsSettled and
+  // extends the set with whatever findApprovalPendingMergePullRequest returns.
+  it("recovery path refuses done when stored facts are empty but an unlinked open PR exists (OPE-12879)", async () => {
+    // findApprovalPendingMergePullRequest query order: issue products, issue
+    // row (identifier), company products, external objects, comments, then the
+    // company-repository list (external objects, products) for the live lane.
+    const db = queueDb([
+      [],                                                    // issue products
+      [{ identifier: "OPE-12879" }],                         // issue row
+      [],                                                    // company products
+      [],                                                    // external objects
+      [],                                                    // comments
+      [{ data: { owner: "itkadr-git", repo: "myrmidon" } }], // repo list: external objects
+      [],                                                    // repo list: products
+    ]);
+    const liveLookup: LiveOpenPullRequestLookup = async (_companyId, repository) =>
+      repository === "itkadr-git/myrmidon"
+        ? [{
+            number: 2936,
+            headSha: "feed1234",
+            draft: false,
+            title: "OPE-12720 fix",
+            url: "https://github.com/itkadr-git/myrmidon/pull/2936",
+            authorLogin: "bot",
+            baseRef: "main",
+            headRef: "bot/OPE-12879",
+          }]
+        : [];
+    const unlinkedOpen = await findApprovalPendingMergePullRequest(db, companyId, issueId, liveLookup);
+    expect(unlinkedOpen?.url).toBe("https://github.com/itkadr-git/myrmidon/pull/2936");
+    // Exactly the composition services/issues.ts validates on the recovery path:
+    expect(() => assertStoredIssueDonePullRequestsSettled([
+      {
+        id: unlinkedOpen!.id,
+        companyId,
+        type: "pull_request" as const,
+        status: "open" as const,
+        url: unlinkedOpen!.url,
+        metadata: null,
+      },
+    ])).toThrowError(/Cannot mark this task done until .*pull\/2936.* is merged/);
+  });
+
+  it("recovery path allows done when the live lane proves no open PR (OPE-12879)", async () => {
+    const db = queueDb([
+      [], [], [{ identifier: "OPE-12879" }], [], [], [], [],
+    ]);
+    const liveLookup: LiveOpenPullRequestLookup = async () => [];
+    const unlinkedOpen = await findApprovalPendingMergePullRequest(db, companyId, issueId, liveLookup);
+    expect(unlinkedOpen).toBeNull();
+    expect(() => assertStoredIssueDonePullRequestsSettled([])).not.toThrow();
   });
 });

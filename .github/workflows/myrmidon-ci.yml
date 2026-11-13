@@ -310,6 +310,19 @@ jobs:
         if: ${{ !cancelled() && steps.install.outcome == 'success' && needs.plan.outputs.tier == 'full' }}
         run: pnpm build
 
+      # Prod-runtime contract (OPE-12187 Ч1): after the full workspace build,
+      # substitute the server closure's package entry fields to dist and audit
+      # that the compiled server tree resolves without any src/.ts target. The
+      # apply rewrites package.json files in the runner workspace (restorable
+      # with prod-runtime-exports restore); the audit skips the vendored
+      # runner tree, which the image build stages from its own cargo build.
+      - name: Prod-runtime exports and dist resolution audit
+        if: ${{ !cancelled() && steps.install.outcome == 'success' && needs.plan.outputs.tier == 'full' }}
+        run: |
+          set -euo pipefail
+          node scripts/myrmidon/prod-runtime-exports.mjs apply --entry @myrmidon/server
+          node scripts/myrmidon/check-prod-runtime-resolution.mjs --dist server/dist --skip-vendor-runner
+
       - name: Build (runner TypeScript only, no Rust release binary)
         if: ${{ !cancelled() && steps.install.outcome == 'success' && needs.plan.outputs.tier == 'fast' }}
         run: |
@@ -672,20 +685,44 @@ jobs:
       - name: PR text - publish scan (title and body)
         if: ${{ !cancelled() && github.event_name == 'pull_request' }}
         env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
           PR_TITLE: ${{ github.event.pull_request.title }}
           PR_BODY: ${{ github.event.pull_request.body }}
           MYRMIDON_FORBIDDEN_PATTERNS: ${{ secrets.MYRMIDON_FORBIDDEN_PATTERNS }}
         run: |
           set -euo pipefail
+          # Read the current title and body, so a re-run sees an edited description.
+          # If the API call fails, keep the values of the triggering event: the scan is not weakened.
+          if live="$(gh api "repos/$GITHUB_REPOSITORY/pulls/$PR_NUMBER" 2>/dev/null)" \
+            && t="$(printf '%s' "$live" | jq -r '.title // ""')" \
+            && b="$(printf '%s' "$live" | jq -r '.body // ""')"; then
+            PR_TITLE="$t"
+            PR_BODY="$b"
+          else
+            echo "::warning::Could not read the current PR text from the API. Scanning the text of the triggering event."
+          fi
           printf '%s\n%s\n' "$PR_TITLE" "$PR_BODY" | node scripts/myrmidon/publish-scan.mjs
 
       - name: PR text - AI signatures (title and body)
         if: ${{ !cancelled() && github.event_name == 'pull_request' }}
         env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
           PR_TITLE: ${{ github.event.pull_request.title }}
           PR_BODY: ${{ github.event.pull_request.body }}
         run: |
           set -euo pipefail
+          # Read the current title and body, so a re-run sees an edited description.
+          # If the API call fails, keep the values of the triggering event: the scan is not weakened.
+          if live="$(gh api "repos/$GITHUB_REPOSITORY/pulls/$PR_NUMBER" 2>/dev/null)" \
+            && t="$(printf '%s' "$live" | jq -r '.title // ""')" \
+            && b="$(printf '%s' "$live" | jq -r '.body // ""')"; then
+            PR_TITLE="$t"
+            PR_BODY="$b"
+          else
+            echo "::warning::Could not read the current PR text from the API. Scanning the text of the triggering event."
+          fi
           printf '%s\n%s\n' "$PR_TITLE" "$PR_BODY" | node scripts/myrmidon/ai-signature-scan.mjs
 
       - name: Internal addresses (private networks)
