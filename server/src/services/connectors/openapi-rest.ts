@@ -43,6 +43,9 @@ export interface OpenApiRestTransportRequest {
 }
 
 export interface OpenApiRestTransportResponse {
+  readonly status: number;
+  /** Response headers; optional — callers without header access may omit. */
+  readonly headers?: Readonly<Record<string, string>>;
   readonly text: () => Promise<string>;
 }
 
