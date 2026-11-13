@@ -184,6 +184,34 @@ When authoring migrations or one-time backfills:
 - Split schema changes, index creation, and data backfill into separate phases so each step has clear locking and rollback behavior.
 - Treat the `check:migrations` CI gate as the enforcement backstop for these rules. If it flags a migration, rewrite the migration or add a suppression comment with the indexed predicate, batch bound, and reason the remaining scan is safe.
 
+## Unused-index lifecycle (DB-AUDIT: OPE-12580 / OPE-13055 / OPE-12979)
+
+Indexes with `pg_stat_user_indexes.idx_scan = 0` are handled by a recurring
+audit cycle. Each release audit (`docs/myrmidon/releases/<version>-db-audit.md`)
+reports the share and total bytes of unused indexes; the gate thresholds are
+share ≤ 20 % and bytes ≤ 512 MiB.
+
+Lifecycle for a flagged index:
+
+1. **Classify** it in `doc/myrmidon/UNUSED-INDEXES-AUDIT.md` (the full
+   classification register): primary key, unique constraint, foreign-key
+   covering, rare admin/retention query, plan-analysis exception, or
+   verifiably dead weight.
+2. **Drop** only indexes with zero code references across `server/src` and
+   `packages/` (drizzle and raw-SQL query shapes), with the justification
+   recorded in the migration header and the register. Precedents: migration
+   `0477_drop_unused_indexes.sql` (OPE-12580, ~527 MiB) and
+   `0483_drop_more_unused_indexes.sql` (OPE-13055, `secret_access_events`
+   write-cost indexes).
+3. **Document** every index that stays unused as a justified exception in the
+   register — the acceptance rule allows an unused share above 20 % only when
+   each remaining index has a documented reason. Plan-dependent candidates
+   (expression indexes, trigram/search/vector) require a live
+   `EXPLAIN (ANALYZE, BUFFERS)` on production volumes before any drop.
+4. **Re-measure** after the release rollout: the control query (share and
+   bytes of `idx_scan = 0` indexes) lives in the register, and the follow-up
+   measurement is owned by the parent audit task (currently OPE-12979).
+
 ## Migration snapshots
 
 `drizzle-kit generate` diffs `packages/db/src/schema/` against the newest snapshot in `packages/db/src/migrations/meta/`. That snapshot must describe the schema that every migration produces when they run in order. A snapshot that drifts from the schema makes the *next* migration wrong, because `generate` folds the drift into it. The drift can add a column that an earlier migration already created, which makes that migration fail on a fresh database. It can also drop a column that the schema still uses.
