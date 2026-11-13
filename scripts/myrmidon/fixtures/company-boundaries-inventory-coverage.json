@@ -1,0 +1,40 @@
+{
+  "schema": "company-boundaries-inventory-coverage/v1",
+  "report": "doc/plans/2026-11-12-company-boundaries-inventory.md",
+  "companyId": "2870b911-483a-4091-9f15-183841811143",
+  "measuredAt": "2026-11-12",
+  "method": "read-only GET probe (dry-run); secret values never requested; token via --key-env",
+  "states": ["covered", "partial", "unavailable"],
+  "sections": [
+    { "id": "agents", "source": "GET /agents", "state": "covered", "evidence": "81 agents with agent key" },
+    { "id": "org", "source": "вывод из `/agents` (`reportsTo`)", "state": "partial", "evidence": "no dedicated org-tree export; tree derived from agent records" },
+    { "id": "projects", "source": "GET /projects", "state": "covered", "evidence": "12 projects" },
+    { "id": "issues", "source": "GET /issues?view=compact (paginated limit=500&offset)", "state": "partial", "evidence": "compact view with cap; full descriptions/comments not exported" },
+    { "id": "agentConfigurations", "source": "GET /agent-configurations", "state": "unavailable", "evidence": "redacted metadata depends on board scope; per-agent instructions not materialized" },
+    { "id": "agentSkillsAndInstructions", "source": "GET /agent-skills-and-instructions", "state": "unavailable", "evidence": "bulk-export surface unavailable (no route/scope)" },
+    { "id": "memory", "source": "GET /memory + per-agent GET /api/myrmidon/agents/:id/memory (status-only, OPE-12862)", "state": "partial", "evidence": "company-level /memory unavailable; per-agent status-only probe gives covered-empty/covered-nonempty/unavailable, content never read" },
+    { "id": "skills", "source": "GET /skills", "state": "covered", "evidence": "127 skills" },
+    { "id": "skillFolders", "source": "GET /folders?kind=skill", "state": "covered", "evidence": "9 folders, 106 unfiled" },
+    { "id": "routineFolders", "source": "GET /folders?kind=routine", "state": "covered", "evidence": "0 folders, 30 unfiled" },
+    { "id": "routines", "source": "GET /routines", "state": "covered", "evidence": "30 (17 active, 9 paused, 4 archived)" },
+    { "id": "goals", "source": "GET /goals", "state": "covered", "evidence": "0 (empty, confirmed)" },
+    { "id": "cases", "source": "GET /cases", "state": "covered", "evidence": "0 (empty, confirmed)" },
+    { "id": "secretsCatalog", "source": "GET /secrets/catalog", "state": "covered", "evidence": "454 active entries; metadata only, values never requested" },
+    { "id": "secretProviderConfigs", "source": "GET /secret-provider-configs", "state": "unavailable", "evidence": "board-only (403 with agent key)" },
+    { "id": "secretBindings", "source": "GET /secret-bindings", "state": "unavailable", "evidence": "404 - no REST route (company_secret_bindings lives in DB/export only)" },
+    { "id": "budgetsOverview", "source": "GET /budgets/overview", "state": "covered", "evidence": "39 policies" },
+    { "id": "costsSummary", "source": "GET /costs/summary", "state": "covered", "evidence": "spend $9,945.63 / forecast $11,929.23" },
+    { "id": "aiConnections", "source": "GET /ai-connections", "state": "unavailable", "evidence": "403 board_access_required" },
+    { "id": "chatEndpoints", "source": "GET /chat-endpoints", "state": "unavailable", "evidence": "403 board_access_required" },
+    { "id": "exportFidelity", "source": "GET /export/fidelity", "state": "unavailable", "evidence": "403 board_access_required" }
+  ],
+  "ownerAttribution": {
+    "rule": "owner only from explicit metadata.forkedByAgentId, then metadata.forkedByUserId; authorName and external metadata.owner are provenance, never ownership",
+    "unknowns": [
+      "agents: Wiki Maintainer (root, not a lead role) -> owner unknown",
+      "agents: Персональный бот: ключ модели (root, not a lead role) -> owner unknown",
+      "skills: bundled system folders -> owner unknown at domain level (company attribution only)",
+      "unavailable: секции со state unavailable не имеют атрибуции владельца в этом отчёте (данные не получены), это unknown, а не «без владельца»"
+    ]
+  }
+}
