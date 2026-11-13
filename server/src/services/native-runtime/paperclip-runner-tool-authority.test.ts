@@ -781,9 +781,16 @@ describe("PaperclipRunnerToolAuthority", () => {
       disposition: "applied",
       task: { assigneeActorId: targetAgentId, assigneeAgentName: "Target agent" },
     });
-    expect(wakes).toHaveLength(1);
+    expect(wakes).toHaveLength(2);
     expect(wakes[0]).toMatchObject({
       agentId,
+      options: {
+        reason: "issue_assigned",
+        payload: { parentIssueId: issueId },
+      },
+    });
+    expect(wakes[1]).toMatchObject({
+      agentId: targetAgentId,
       options: {
         reason: "issue_assigned",
         payload: { parentIssueId: issueId },
@@ -846,7 +853,7 @@ describe("PaperclipRunnerToolAuthority", () => {
       task: { parentId: issueId, status: "todo", assigneeActorId: agentId },
       scheduledWakeIds: [expect.any(String)],
     });
-    expect(wakes).toHaveLength(2);
+    expect(wakes).toHaveLength(3);
 
     const nextRunId = "00000000-0000-4000-8000-000000000106";
     await db
@@ -972,7 +979,7 @@ describe("PaperclipRunnerToolAuthority", () => {
     expect(retryWakes).toHaveLength(0);
     expect(
       await db.select().from(issues).where(eq(issues.parentId, issueId)),
-    ).toHaveLength(3);
+    ).toHaveLength(4);
   });
 
   it("rejects mutations after reassignment, run replacement, or terminalization", async () => {
