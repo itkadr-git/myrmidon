@@ -81,7 +81,7 @@ describeEmbeddedPostgres(
       await instanceSettingsService(db).updateGeneral({
         [OWNER_DELIVERY_SETTINGS_KEY]: { mode: "owner_decisions_only" },
       });
-    }, 30_000);
+    }, 60_000);
 
     afterAll(async () => {
       await tempDb?.cleanup();

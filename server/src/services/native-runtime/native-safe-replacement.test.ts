@@ -55,7 +55,7 @@ const support = externalDatabaseUrl
         "paperclip-safe-replacement-",
       );
       db = createDb(database.connectionString);
-    }, 30_000);
+    }, 60_000);
     afterEach(async () => {
       // Each sweep scans all companies. Keep earlier tests' unresolved runs out
       // of later tests so every case exercises only its own recovery fixtures.

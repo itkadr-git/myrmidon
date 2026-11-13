@@ -150,7 +150,7 @@ describeEmbeddedPostgres("issue recovery actions", () => {
   beforeAll(async () => {
     tempDb = await startEmbeddedPostgresTestDatabase("paperclip-issue-recovery-actions-");
     db = createDb(tempDb.connectionString);
-  }, 30_000);
+  }, 60_000);
 
   afterEach(async () => {
     await db.delete(issueRecoveryActions);

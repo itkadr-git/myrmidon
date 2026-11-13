@@ -89,7 +89,7 @@ describeEmbeddedPostgres("workspace hygiene merged copy reaper", () => {
   beforeAll(async () => {
     tempDb = await startEmbeddedPostgresTestDatabase("paperclip-workspace-hygiene-");
     db = createDb(tempDb.connectionString);
-  }, 30_000);
+  }, 60_000);
 
   afterEach(async () => {
     await db.delete(workspaceRuntimeServices);

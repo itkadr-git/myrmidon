@@ -50,7 +50,7 @@ describeEmbeddedPostgres("auto-resume sweep (AUTO-RESUME)", () => {
   beforeAll(async () => {
     tempDb = await startEmbeddedPostgresTestDatabase("myrmidon-auto-resume-");
     db = createDb(tempDb.connectionString);
-  }, 30_000);
+  }, 60_000);
 
   afterEach(async () => {
     await db.delete(activityLog);

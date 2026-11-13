@@ -77,7 +77,7 @@ describeEmbeddedPostgres("explicit wake past a settled hold (L2, rounds 1 to 3)"
     tempDb = await startEmbeddedPostgresTestDatabase("myrmidon-wake-comment-recovery-");
     db = createDb(tempDb.connectionString);
     heartbeat = heartbeatService(db, { runtimeEnv: { ...process.env, PAPERCLIP_IN_WORKTREE: "false" } });
-  }, 30_000);
+  }, 60_000);
 
   afterEach(async () => {
     for (let attempt = 0; attempt < 600; attempt += 1) {

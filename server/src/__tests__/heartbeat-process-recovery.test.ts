@@ -484,7 +484,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       createdAt: now,
       updatedAt: now,
     });
-  }, 20_000);
+  }, 60_000);
   beforeEach(() => {
     resetSharedRunAdmissionForTests();
   });

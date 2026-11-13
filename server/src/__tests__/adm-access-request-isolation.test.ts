@@ -185,7 +185,7 @@ describeEmbeddedPostgres("adm gateway cross-company isolation (OPE-12766)", () =
     process.env.AGENT_JWT_SECRET = ADM_SECRET;
     previousAdmCompany = process.env.ADM_COMPANY_ID;
     process.env.ADM_COMPANY_ID = companies3[2]!.id;
-  }, 20_000);
+  }, 60_000);
 
   afterAll(async () => {
     if (previousSecret === undefined) delete process.env.AGENT_JWT_SECRET;

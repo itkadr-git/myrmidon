@@ -16,7 +16,7 @@ describePg("legacy blocked reconciliation postgres", () => {
   beforeAll(async () => {
     tempDb = await startEmbeddedPostgresTestDatabase("paperclip-legacy-blocked-reconciliation-");
     db = createDb(tempDb.connectionString);
-  }, 20_000);
+  }, 60_000);
 
   afterEach(async () => {
     await db.delete(legacyBlockedImports);

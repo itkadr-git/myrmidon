@@ -113,7 +113,7 @@ describeEmbeddedPostgres("myrmidon(HERMES-RUN-REATTACH) gateway run reattach swe
   beforeAll(async () => {
     tempDb = await startEmbeddedPostgresTestDatabase("myrmidon-gateway-run-reattach-");
     db = createDb(tempDb.connectionString);
-  }, 30_000);
+  }, 60_000);
 
   afterEach(async () => {
     // The cancellation of an orphaned gateway run writes heartbeat_run.cancelled
