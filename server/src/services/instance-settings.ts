@@ -403,6 +403,7 @@ export function normalizeGeneralSettings(raw: unknown): InstanceGeneralSettings 
       // every general write (they are edited on their own settings page). Without
       // this line the vendor write path silently drops the key and the settings
       // could only ever come from the environment.
+      ...(parsed.data.agentLiveness ? { agentLiveness: parsed.data.agentLiveness } : {}),
       ...(parsed.data.teamLiveness ? { teamLiveness: parsed.data.teamLiveness } : {}),
       // myrmidon(CA-A): the stored channel settings document (general.channelSettings,
       // incl. the channel access mode) survives every general write. Without this

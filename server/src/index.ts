@@ -1155,6 +1155,7 @@ async function startServerWithDatabaseTeardown(
     db: db as any,
     processSupervisor: null as ProcessSupervisor | null,
     applyTeamLiveness: undefined as (() => Promise<void>) | undefined,
+    applyAgentLiveness: undefined as (() => Promise<void>) | undefined,
   };
   if (processBus) {
     registerSettingsAppliers(processBus, settingsApplierDeps);
@@ -1244,6 +1245,9 @@ async function startServerWithDatabaseTeardown(
   settingsApplierDeps.processSupervisor = processSupervisor;
   settingsApplierDeps.applyTeamLiveness = async () => {
     await heartbeat?.applyTeamLiveness();
+  };
+  settingsApplierDeps.applyAgentLiveness = async () => {
+    await heartbeat?.applyAgentLiveness?.();
   };
   if (processSupervisor) {
     logger.info("myrmidon(PROCS-1.2): process supervisor wired on the worker");
