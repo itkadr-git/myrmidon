@@ -1432,7 +1432,7 @@ describe("omp local execution", () => {
         run.controller.abort(new Error(reason));
       });
       const turnStart = `${JSON.stringify({ type: "turn_start" })}\n`;
-      const kill = vi.fn(() => true);
+      const kill = vi.fn((_signal?: string) => true);
       vi.useFakeTimers();
       try {
         runAdapterExecutionTargetProcess.mockImplementationOnce(async (runId, _target, _command, _args, options) => {
