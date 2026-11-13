@@ -231,6 +231,19 @@ export function errorHandler(
             ...(Array.isArray(responseDetails?.violations)
               ? { violations: responseDetails.violations }
               : {}),
+            // myrmidon(1.8 RELEASE-STAGE): the structured release denials —
+            // the incomplete gate keys of a publication refusal and the
+            // role/action of an authority refusal — are renderable facts the
+            // clients and tests read at the top level.
+            ...(Array.isArray(responseDetails?.incomplete)
+              ? { incomplete: responseDetails.incomplete }
+              : {}),
+            ...(typeof responseDetails?.role === "string"
+              ? { role: responseDetails.role }
+              : {}),
+            ...(typeof responseDetails?.action === "string"
+              ? { action: responseDetails.action }
+              : {}),
             ...(!redactedSkillPolicyDenial &&
             !workspaceRepairPreconditionFailure &&
             responseDetailsValue
