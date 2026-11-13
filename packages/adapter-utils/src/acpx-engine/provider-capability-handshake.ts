@@ -33,6 +33,7 @@
 // sidecar contract (`paperclip-runner`) has its own qualified-profile
 // handshake and is out of scope here.
 // ---------------------------------------------------------------------------
+import { createHash } from "node:crypto";
 
 /** Schema discriminator of the task envelope this module validates. */
 export const EXTERNAL_AGENT_TASK_SCHEMA = "paperclip.external_agent_task.v1" as const;
@@ -263,19 +264,22 @@ function readOptionalString(value: unknown): string | null {
 // Envelope validation
 // ---------------------------------------------------------------------------
 
+function isExternalAgentProvider(value: string): value is ExternalAgentProvider {
+  return (EXTERNAL_AGENT_PROVIDERS as readonly string[]).includes(value);
+}
+
 function validateProvider(value: unknown, path: string): ExternalAgentHandshakeIssue | ExternalAgentProvider {
-  const provider = readNonEmptyString(value);
-  if (provider === null) {
+  if (typeof value !== "string") {
     return issue("envelope_invalid", path, "provider must be a non-empty string");
   }
-  if (!(EXTERNAL_AGENT_PROVIDERS as readonly string[]).includes(provider)) {
+  if (!isExternalAgentProvider(value)) {
     return issue(
       "provider_unsupported",
       path,
-      `provider ${JSON.stringify(provider)} is not a supported external agent; supported: ${EXTERNAL_AGENT_PROVIDERS.join(", ")}`,
+      `provider ${JSON.stringify(value)} is not a supported external agent; supported: ${EXTERNAL_AGENT_PROVIDERS.join(", ")}`,
     );
   }
-  return provider;
+  return value;
 }
 
 function validateCapabilities(
@@ -433,8 +437,13 @@ export function validateExternalAgentTask(value: unknown): ExternalAgentHandshak
     issues.push(issue("envelope_invalid", "/cwd", "cwd must be a non-empty string"));
   }
 
-  const capabilities = validateCapabilities(envelope.capabilities);
-  if ("issues" in capabilities) issues.push(...capabilities.issues);
+  let requestedCapabilities: ReadonlyMap<ExternalAgentCapabilityKey, boolean> | null = null;
+  const capabilityCheck = validateCapabilities(envelope.capabilities);
+  if ("issues" in capabilityCheck) {
+    issues.push(...capabilityCheck.issues);
+  } else {
+    requestedCapabilities = capabilityCheck.capabilities;
+  }
 
   // model/workMode are optional strings when present.
   for (const [key, reader] of [
@@ -458,7 +467,10 @@ export function validateExternalAgentTask(value: unknown): ExternalAgentHandshak
   }
 
   // Capability negotiation runs only on an otherwise-valid envelope.
-  const negotiation = matchCapabilities(provider, capabilities.capabilities);
+  if (requestedCapabilities === null) {
+    return { ok: false, task: null, issues: [issue("envelope_invalid", "/capabilities", "capabilities are invalid")] };
+  }
+  const negotiation = matchCapabilities(provider, requestedCapabilities);
   if (negotiation.length > 0) return { ok: false, task: null, issues: negotiation };
 
   return {

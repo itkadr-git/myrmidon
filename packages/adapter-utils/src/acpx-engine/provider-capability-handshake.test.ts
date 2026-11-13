@@ -347,7 +347,7 @@ describe("external-agent result envelope", () => {
   });
 
   it("rejects an unsupported provider in the result envelope", () => {
-    const outcome = validateExternalAgentResult({ ...validResult("kimi") });
+    const outcome = validateExternalAgentResult({ ...validResult(), provider: "kimi" });
     expect(outcome.ok).toBe(false);
     if (!outcome.ok) {
       expect(outcome.issues.map((i) => i.code)).toContain("provider_unsupported");
