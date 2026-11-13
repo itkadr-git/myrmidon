@@ -5510,7 +5510,7 @@ export function recoveryService(
             if (!current) return { outcome: "skipped" as const };
             if (
               current.status === "blocked" &&
-              current.assigneeAgentId === input.issue.assigneeAgentId &&
+              current.assigneeAgentId === null &&
               (current.blockerMetadata?.owner as { agentId?: string } | undefined)?.agentId === ownerAgentId
             ) {
               return { outcome: "already_applied" as const, issue: current };

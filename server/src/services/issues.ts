@@ -2053,6 +2053,34 @@ function sameRunLock(checkoutRunId: string | null, actorRunId: string | null) {
   return checkoutRunId == null;
 }
 
+/**
+ * myrmidon(OPE-12887): the stranded auto-policy's `disposition_blocked`
+ * handoff — the issue carries its own execution workflow, so the assignee
+ * stays and a `blocked` row with complete recovery metadata and the nearest
+ * lead as the blocker owner is written (`buildStrandedDispositionBlockedPatch`
+ * in `../myrmidon/stranded-autopolicy.ts`).
+ *
+ * That blocked row is a *recovery ownership* transfer to the lead, not a real
+ * pause: the lead is expected to act on the wake and the issue must be
+ * checkout-able by them (its `expectedStatuses` include `blocked`). Before
+ * this recognition, the lead's checkout hit the normal assignee guard — the
+ * stranded executor is still `assigneeAgentId` — and surfaced as an
+ * ownerless 409 ("another agent owns <task>"), leaving the recovery
+ * ownership stranded: the executor is not woken, the lead cannot take the
+ * issue, the operator must intervene manually.
+ */
+function isRecoveryDispositionBlocked(issue: {
+  status: string | null;
+  blockerMetadata: unknown;
+  unblockDescriptor: unknown;
+}): boolean {
+  if (issue.status !== "blocked") return false;
+  const metadata = issue.blockerMetadata as { blockReason?: unknown; owner?: unknown } | null | undefined;
+  if (metadata?.blockReason !== "recovery") return false;
+  const owner = metadata.owner as { agentId?: unknown } | null | undefined;
+  return typeof owner?.agentId === "string" && owner.agentId.length > 0 && issue.unblockDescriptor != null;
+}
+
 export const TERMINAL_HEARTBEAT_RUN_STATUSES = new Set([
   "succeeded",
   "interrupted",
@@ -12206,6 +12234,11 @@ export function issueService(db: Db) {
           assigneeAgentId: issues.assigneeAgentId,
           startedAt: issues.startedAt,
           executionState: issues.executionState,
+          // myrmidon(OPE-12887): recognize the stranded-run recovery handoff so
+          // the blocker owner's checkout can claim the issue without hitting
+          // the normal assignee guard (409 deadlock fix).
+          blockerMetadata: issues.blockerMetadata,
+          unblockDescriptor: issues.unblockDescriptor,
         })
         .from(issues)
         .where(eq(issues.id, id))
@@ -12214,6 +12247,15 @@ export function issueService(db: Db) {
       await assertAssignableAgent(db, issueRow.companyId, agentId, {
         kind: "work",
       });
+
+      // myrmidon(OPE-12887): a `blocked` disposition handoff carries recovery
+      // metadata naming the nearest lead as blocker owner; when that owner
+      // checks out, the stale executor assignment must not hold the issue
+      // hostage behind the normal assignee guard.
+      const isRecoveryBlockerOwner =
+        isRecoveryDispositionBlocked(issueRow) &&
+        (issueRow.blockerMetadata as { owner?: { agentId?: unknown } }).owner
+          ?.agentId === agentId;
 
       const parsedExecutionState = parseIssueExecutionState(issueRow.executionState);
       const isReviewStage =
@@ -12320,6 +12362,10 @@ export function issueService(db: Db) {
         stageState?.currentParticipant?.type === "agent" &&
         stageState?.currentParticipant?.agentId === agentId;
       const nextStatus = keepInReview ? "in_review" : "in_progress";
+      // myrmidon(OPE-12887): taking over a recovery handoff consumes its
+      // blocked state — the same fields `issuesSvc.update` clears when a row
+      // leaves `blocked` — so the stale recovery metadata cannot survive the
+      // transition back to in_progress.
       const updated = await db
         .update(issues)
         .set({
@@ -12330,12 +12376,28 @@ export function issueService(db: Db) {
           status: nextStatus,
           startedAt: issueRow.startedAt ?? now,
           updatedAt: now,
+          ...(issueRow.status === "blocked"
+            ? {
+                blockerMetadata: null,
+                unblockDescriptor: null,
+                blockedTransitionAt: null,
+                blockedOwnerNotifiedAt: null,
+              }
+            : {}),
         })
         .where(
           and(
             eq(issues.id, id),
             inArray(issues.status, expectedStatuses),
-            or(isNull(issues.assigneeAgentId), sameRunAssigneeCondition),
+            // myrmidon(OPE-12887): the blocker owner may claim a recovery
+            // handoff regardless of the (stale) executor assignment; pinning
+            // status=blocked keeps the bypass from racing a concurrent
+            // reassignment.
+            or(
+              isNull(issues.assigneeAgentId),
+              sameRunAssigneeCondition,
+              ...(isRecoveryBlockerOwner ? [eq(issues.status, "blocked")] : []),
+            ),
             executionLockCondition,
           ),
         )
