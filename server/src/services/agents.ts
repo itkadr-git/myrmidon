@@ -190,6 +190,10 @@ interface AgentShortnameCollisionOptions {
   excludeAgentId?: string | null;
 }
 
+interface AgentNameCollisionOptions {
+  excludeAgentId?: string | null;
+}
+
 function isPlainRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
@@ -352,6 +356,17 @@ function configPatchFromSnapshot(snapshot: unknown): Partial<typeof agents.$infe
     budgetMonthlyCents: Math.max(0, Math.floor(snapshot.budgetMonthlyCents)),
     metadata: isPlainRecord(snapshot.metadata) || snapshot.metadata === null ? snapshot.metadata : null,
   };
+}
+
+export function hasAgentNameCollision(
+  candidateName: string,
+  existingAgents: AgentShortnameRow[],
+  options?: AgentNameCollisionOptions,
+): boolean {
+  const normalizedCandidateName = candidateName.toLowerCase();
+  return existingAgents.some((agent) =>
+    agent.id !== options?.excludeAgentId && agent.name.toLowerCase() === normalizedCandidateName,
+  );
 }
 
 export function hasAgentShortnameCollision(
@@ -714,9 +729,6 @@ export function agentService(
     candidateName: string,
     options?: AgentShortnameCollisionOptions,
   ) {
-    const candidateShortname = normalizeAgentUrlKey(candidateName);
-    if (!candidateShortname) return;
-
     const existingAgents = await db
       .select({
         id: agents.id,
@@ -726,10 +738,11 @@ export function agentService(
       .from(agents)
       .where(eq(agents.companyId, companyId));
 
-    const hasCollision = hasAgentShortnameCollision(candidateName, existingAgents, options);
+    const hasCollision = hasAgentNameCollision(candidateName, existingAgents, options);
     if (hasCollision) {
       throw conflict(
-        `Agent shortname '${candidateShortname}' is already in use in this company`,
+        `Agent name '${candidateName}' is already in use in this company (case-insensitive)`,
+        { code: "agent_name_conflict" },
       );
     }
   }
@@ -977,11 +990,7 @@ export function agentService(
     }
 
     if (data.name !== undefined) {
-      const previousShortname = normalizeAgentUrlKey(existing.name);
-      const nextShortname = normalizeAgentUrlKey(data.name);
-      if (previousShortname !== nextShortname) {
-        await assertCompanyShortnameAvailable(existing.companyId, data.name, { excludeAgentId: id });
-      }
+      await assertCompanyShortnameAvailable(existing.companyId, data.name, { excludeAgentId: id });
     }
 
     if (Object.prototype.hasOwnProperty.call(data, "metadata")) {
@@ -1153,11 +1162,7 @@ export function agentService(
         throw err;
       }
 
-      const existingAgents = await db
-        .select({ id: agents.id, name: agents.name, status: agents.status })
-        .from(agents)
-        .where(eq(agents.companyId, companyId));
-      const uniqueName = deduplicateAgentName(data.name, existingAgents);
+      await assertCompanyShortnameAvailable(companyId, data.name);
 
       const role = data.role ?? "general";
       const normalizedPermissions = normalizeAgentPermissions(data.permissions, { context: "create" });
@@ -1200,7 +1205,6 @@ export function agentService(
           .insert(agents)
           .values({
             ...data,
-            name: uniqueName,
             companyId,
             role,
             adapterType,
