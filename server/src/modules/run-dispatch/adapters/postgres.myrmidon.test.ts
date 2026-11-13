@@ -456,6 +456,104 @@ describeEmbeddedPostgres("run-dispatch: pending interaction addressee wake (P2)"
     });
   });
 
+  // myrmidon(EMPTY-RUNS-6B): the slot of the agent frees, and the run that waited
+  // for it must start (with its own wake reason), not be expired in that second.
+  describe("a run that waited for its agent's slot is not expired when the slot frees (EMPTY-RUNS-6B)", () => {
+    const MIN = 60 * 1000;
+    const staleAfterMs = 30 * MIN;
+    const ownSlotWait = { waitReason: "agent_concurrency", waitDetail: { limit: 1, running: 0 } };
+
+    /** Waiting runs created 40 min ago; the agent's other run ended `finishedAgoMs` before now (null: none). */
+    async function seedAfterSlotFreed(input: {
+      finishedAgoMs: number | null;
+      waiting?: number;
+      waitContext?: Record<string, unknown>;
+      other?: { agent?: "same" | "other"; started?: boolean };
+    }) {
+      const { companyId, assigneeId, reviewerId, issueId } = await seed();
+      const now = new Date();
+      const runIds: string[] = [];
+      for (let i = 0; i < (input.waiting ?? 1); i += 1) {
+        runIds.push(await seedRun({
+          companyId,
+          agentId: assigneeId,
+          contextSnapshot: { issueId, wakeReason: "ci_completed", ...(input.waitContext ?? ownSlotWait) },
+          createdAt: new Date(now.getTime() - 40 * MIN),
+        }));
+      }
+      if (input.finishedAgoMs !== null) {
+        const startedAt = new Date(now.getTime() - 60 * MIN);
+        const started = input.other?.started ?? true;
+        await db.insert(heartbeatRuns).values({
+          id: randomUUID(),
+          companyId,
+          agentId: input.other?.agent === "other" ? reviewerId : assigneeId,
+          invocationSource: "automation",
+          status: started ? "succeeded" : "cancelled",
+          contextSnapshot: {},
+          createdAt: startedAt,
+          startedAt: started ? startedAt : null,
+          finishedAt: new Date(now.getTime() - input.finishedAgoMs),
+        });
+      }
+      return { companyId, runIds, now };
+    }
+
+    const expire = (companyId: string, runId: string, now: Date) =>
+      createPostgresRunDispatchAdapter(db).cancelStaleQueuedRun({
+        runId, companyId, expectedStatus: "queued", staleAfterMs, now,
+      });
+
+    it("keeps a run waited 40 minutes behind a run that finished a second ago", async () => {
+      const { companyId, runIds, now } = await seedAfterSlotFreed({ finishedAgoMs: 1000 });
+      expect((await expire(companyId, runIds[0]!, now)).outcome).toBe("not_stale");
+      expect(await runStatus(runIds[0]!)).toMatchObject({ status: "queued", errorCode: null });
+    });
+
+    it("expires it as before when the slot has been free for longer than the threshold", async () => {
+      const { companyId, runIds, now } = await seedAfterSlotFreed({ finishedAgoMs: 35 * MIN });
+      expect(await expire(companyId, runIds[0]!, now))
+        .toMatchObject({ outcome: "cancelled", errorCode: "queued_run_stale_timeout" });
+    });
+
+    it("keeps every one of two waiting runs older than the threshold when the slot just freed", async () => {
+      const { companyId, runIds, now } = await seedAfterSlotFreed({ finishedAgoMs: 1000, waiting: 2 });
+      for (const runId of runIds) {
+        expect((await expire(companyId, runId, now)).outcome).toBe("not_stale");
+        expect(await runStatus(runId)).toMatchObject({ status: "queued", errorCode: null });
+      }
+    });
+
+    it("a run cancelled in the queue (never started) does not refresh the protection", async () => {
+      const { companyId, runIds, now } = await seedAfterSlotFreed({ finishedAgoMs: 1000, other: { started: false } });
+      expect(await expire(companyId, runIds[0]!, now))
+        .toMatchObject({ outcome: "cancelled", errorCode: "queued_run_stale_timeout" });
+    });
+
+    it("a run that ended before the wait began does not protect it", async () => {
+      // waiting since 40 min ago, the other run ended 45 min ago (threshold 35 min)
+      const { companyId, runIds, now } = await seedAfterSlotFreed({ finishedAgoMs: 45 * MIN });
+      expect(await createPostgresRunDispatchAdapter(db).cancelStaleQueuedRun({
+        runId: runIds[0]!, companyId, expectedStatus: "queued", staleAfterMs: 35 * MIN, now,
+      })).toMatchObject({ outcome: "cancelled", errorCode: "queued_run_stale_timeout" });
+    });
+
+    it("a run of another agent that just finished does not protect it", async () => {
+      const { companyId, runIds, now } = await seedAfterSlotFreed({ finishedAgoMs: 1000, other: { agent: "other" } });
+      expect(await expire(companyId, runIds[0]!, now))
+        .toMatchObject({ outcome: "cancelled", errorCode: "queued_run_stale_timeout" });
+    });
+
+    it("does not extend the wait of a run the sweep named for another reason", async () => {
+      const { companyId, runIds, now } = await seedAfterSlotFreed({
+        finishedAgoMs: 1000,
+        waitContext: { waitReason: "maintenance" },
+      });
+      expect(await expire(companyId, runIds[0]!, now))
+        .toMatchObject({ outcome: "cancelled", errorCode: "queued_run_stale_timeout" });
+    });
+  });
+
   it("does not let another agent borrow the addressee wake context", async () => {
     const { companyId, assigneeId, issueId, interactionId } = await seed();
     const outsiderId = randomUUID();

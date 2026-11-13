@@ -1,6 +1,6 @@
 import { hasConversationContinuationPolicy } from "../../../services/conversation-continuation.js";
 import { getExecutionBlocker } from "../../../services/execution-blocker.js";
-import { and, asc, eq, gte, inArray, lte, or, sql } from "drizzle-orm";
+import { and, asc, eq, gt, gte, inArray, isNotNull, lte, ne, or, sql } from "drizzle-orm";
 import type { Db } from "@myrmidon/db";
 import {
   agentWakeupRequests,
@@ -1177,7 +1177,21 @@ export function createPostgresRunDispatchAdapter(
   // two slots; 46 of 50 expiries in 72 h carried this wait reason). A named
   // ceiling without a running run behind it is a lost start, not a queue, and
   // expires as before.
-  async function queuedRunWaitsForOwnAgentSlot(tx: Db, run: HeartbeatRun): Promise<boolean> {
+  //
+  // myrmidon(EMPTY-RUNS-6B): the same holds for the moment the slot frees. The
+  // sweep that expires by age runs before the start sweep, so a run that waited
+  // behind a run that has just finished was cancelled in the second the slot
+  // opened (no run running any more) and a replacement with another wake reason
+  // started instead. A wait for the agent's own slot is therefore counted from
+  // the end of the agent's last started run when that is later than the start of
+  // the wait: a slot freed just now leaves the age near zero, a slot free for the
+  // whole threshold without the run starting is a lost start and expires.
+  async function queuedRunWaitsForOwnAgentSlot(
+    tx: Db,
+    run: HeartbeatRun,
+    now: Date,
+    staleAfterMs: number,
+  ): Promise<boolean> {
     const waitReason = readNonEmptyString(parseObject(run.contextSnapshot).waitReason);
     if (waitReason !== QUEUED_RUN_OWN_SLOT_WAIT_REASON) return false;
     const running = await tx
@@ -1191,7 +1205,31 @@ export function createPostgresRunDispatchAdapter(
         ),
       )
       .limit(1);
-    return running.length > 0;
+    if (running.length > 0) return true;
+    // Only a run that really held a slot counts (`started_at is not null`): a run
+    // cancelled in the queue gets `finished_at = now` too and must not refresh
+    // the protection. The `started_at` lower bound lets the index
+    // (company_id, agent_id, started_at) serve the lookup; a run does not last
+    // longer than a day, so a run that ended inside the window started within
+    // a day before the window began. One row, no aggregate over the history.
+    const waitingSince = queuedRunWaitingSince(run, now);
+    const freedAfter = new Date(Math.max(waitingSince.getTime(), now.getTime() - staleAfterMs));
+    const startedAfter = new Date(freedAfter.getTime() - 24 * 60 * 60 * 1000);
+    const freed = await tx
+      .select({ id: heartbeatRuns.id })
+      .from(heartbeatRuns)
+      .where(
+        and(
+          eq(heartbeatRuns.companyId, run.companyId),
+          eq(heartbeatRuns.agentId, run.agentId),
+          ne(heartbeatRuns.id, run.id),
+          isNotNull(heartbeatRuns.startedAt),
+          gte(heartbeatRuns.startedAt, startedAfter),
+          gt(heartbeatRuns.finishedAt, freedAfter),
+        ),
+      )
+      .limit(1);
+    return freed.length > 0;
   }
 
   async function cancelStaleQueuedRun(
@@ -1209,7 +1247,7 @@ export function createPostgresRunDispatchAdapter(
         staleAgeMs >= input.staleAfterMs &&
         // myrmidon(EMPTY-RUNS-6): a run that stands in its own agent's queue is
         // not expired by age; the task-state checks below still apply to it.
-        !(await queuedRunWaitsForOwnAgentSlot(tx, run))
+        !(await queuedRunWaitsForOwnAgentSlot(tx, run, input.now, input.staleAfterMs))
       ) {
         return cancelStaleRunInTx(
           tx,
