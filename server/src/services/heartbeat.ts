@@ -8,9 +8,11 @@ import {
 } from "../myrmidon/tokens-trace/index.js";
 // myrmidon(OPE-10045): the CI-wait monitor of a pending review wakes the stage participant.
 import {
+  REVIEW_CI_WAIT_INTERVAL_MS,
   REVIEW_CI_WAIT_MONITOR_SERVICE_NAME,
   REVIEW_CI_WAIT_RECOVERY_INSTRUCTION,
   REVIEW_ADMISSION_KEY_PREFIX,
+  decideReviewCiWaitTick,
   reviewAdmissionDedupKey,
 } from "../myrmidon/review-stage-recovery/policy.js";
 import { isPendingCiForOpenPr } from "../myrmidon/stranded-autopolicy.js";
@@ -570,8 +572,8 @@ import {
   ISSUE_REWAKE_LOOKBACK_MS,
   ISSUE_REWAKE_RUN_SAMPLE_LIMIT,
   ISSUE_REWAKE_FREEZE_THRESHOLD,
+  collectRunIdsWithIssueProgress,
   evaluateIssueRewakeThrottle,
-  isIssueProgressActivity,
   isThrottleCandidateIssueRewake,
 } from "./issue-rewake-throttle.js";
 
@@ -12535,15 +12537,53 @@ export function heartbeatService(
         // asleep until the final check is terminal; the next monitor tick is
         // the single transition wake.
         if (isReviewCiWaitMonitor) {
-          const { createReviewPullRequestCiResolver } = await import(
+          const { createReviewPullRequestCiResolver, createReviewHeadFailedChecksResolver } = await import(
             "../myrmidon/review-stage-recovery/github-ci.js"
           );
           const ci = await createReviewPullRequestCiResolver({ db })({
             companyId: claimed.companyId,
             issueId: claimed.id,
           });
-          if (ci.state === "pending" || ci.state === "unknown") {
-            const backoffMs = Math.min(10 * 60_000, 30_000 * Math.pow(2, Math.min(nextAttemptCount - 1, 4)));
+          // myrmidon(EMPTY-RUNS-2B): the tick applies the green-head rule of
+          // the hand-off (OPE-12176). A finished red head used to wake the
+          // reviewer ten minutes after the hand-off had refused to; now it
+          // keeps waiting, bounded by the CI-wait budget of a review stage
+          // (`decideReviewCiWaitTick`). The head verdict is read exactly as on
+          // the hand-off: the final check first, the failed-checks list only
+          // when the final check carries no verdict of its own.
+          const reviewIssueCritical = claimed.priority === "critical";
+          let reviewHeadFinalCheck: "green" | "red" | "unknown" = "unknown";
+          if (ci.state === "complete" && !reviewIssueCritical) {
+            if (ci.finalCheckConclusion === "failure") {
+              reviewHeadFinalCheck = "red";
+            } else if (ci.finalCheckConclusion === "success") {
+              reviewHeadFinalCheck = "green";
+            } else {
+              const headFailed = await createReviewHeadFailedChecksResolver({ db })({
+                companyId: claimed.companyId,
+                issueId: claimed.id,
+                headSha: ci.headSha ?? "",
+              });
+              reviewHeadFinalCheck =
+                headFailed.state === "ok" && headFailed.headSha === ci.headSha && headFailed.failed.length > 0
+                  ? "red"
+                  : "green";
+            }
+          }
+          const reviewCiWaitTick = decideReviewCiWaitTick({
+            ci: ci.state,
+            headFinalCheck: reviewHeadFinalCheck,
+            critical: reviewIssueCritical,
+            attempt: nextAttemptCount,
+          });
+          if (reviewCiWaitTick !== "wake") {
+            const deferReason = reviewCiWaitTick === "wait_red" ? "review_head_red" : "review_ci_pending";
+            // CI that is still running is polled with the short growing step;
+            // a red head changes only with a re-run or a new head, so it is
+            // re-read at the plain CI-wait interval.
+            const backoffMs = reviewCiWaitTick === "wait_red"
+              ? REVIEW_CI_WAIT_INTERVAL_MS
+              : Math.min(10 * 60_000, 30_000 * Math.pow(2, Math.min(nextAttemptCount - 1, 4)));
             const nextCheckAt = new Date(input.now.getTime() + backoffMs);
             await db.update(issues).set({
               monitorNextCheckAt: nextCheckAt,
@@ -12562,7 +12602,7 @@ export function heartbeatService(
               entityId: claimed.id,
               details: {
                 identifier: claimed.identifier,
-                reason: "review_ci_pending",
+                reason: deferReason,
                 ciState: ci.state,
                 ciReason: ci.reason ?? null,
                 headSha: ci.headSha,
@@ -12570,7 +12610,7 @@ export function heartbeatService(
                 attemptCount: nextAttemptCount,
               },
             });
-            return { outcome: "skipped" as const, reason: "review_ci_pending" };
+            return { outcome: "skipped" as const, reason: deferReason };
           }
         }
         const prProducts = await db.select().from(issueWorkProducts)
@@ -34833,8 +34873,13 @@ export function heartbeatService(
                 );
               // myrmidon(1.6.6 OPE-12049): a run's own bookkeeping (release,
               // assign to itself, the echo of its final text) is not progress.
-              const progressRows = progressActivityRows.filter((row) =>
-                isIssueProgressActivity(row, agentId),
+              // myrmidon(EMPTY-RUNS-1): neither is handing the task back to
+              // the queue (`in_progress -> todo`) with the note it is parked
+              // with; the rule needs the rows of the whole run, so the read
+              // lives in `collectRunIdsWithIssueProgress`.
+              const runIdsWithIssueProgress = collectRunIdsWithIssueProgress(
+                progressActivityRows,
+                () => agentId,
               );
               const lastRunFinishedAt =
                 recentTerminalRuns[0]?.finishedAt ?? null;
@@ -34871,11 +34916,7 @@ export function heartbeatService(
                 now: throttleNow,
                 freezeThreshold,
                 recentTerminalRuns,
-                runIdsWithIssueProgress: new Set(
-                  progressRows
-                    .map((row) => row.runId)
-                    .filter((runId): runId is string => Boolean(runId)),
-                ),
+                runIdsWithIssueProgress,
                 // For an agent comment wake, the query excludes agent-authored
                 // activity while preserving genuinely new user/system input.
                 // Presentation/author metadata therefore cannot smuggle human

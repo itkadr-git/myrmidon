@@ -8,6 +8,7 @@ import {
   isMaintenanceInterruptedRun,
   decideStalledReviewRecovery,
   decideReviewAdmission,
+  decideReviewCiWaitTick,
   pullRequestHeadCiStateFromAllChecks,
   pullRequestHeadCiStateFromChecks,
   pullRequestHeadFinalCheckConclusion,
@@ -356,6 +357,53 @@ describe("decideReviewAdmission (OPE-12176)", () => {
 
   it("admits a critical issue's reviewer even when the exact head CI is red", () => {
     expect(decideReviewAdmission({ ci: "complete", headFinalCheck: "red", critical: true })).toBe("admit");
+  });
+});
+
+// myrmidon(EMPTY-RUNS-2B): the tick of the "Review CI wait" monitor applies the
+// green-head rule of the hand-off. A finished red head used to wake the
+// reviewer ten minutes after the hand-off had refused to.
+describe("decideReviewCiWaitTick (EMPTY-RUNS-2B)", () => {
+  const tick = (
+    ci: Parameters<typeof decideReviewCiWaitTick>[0]["ci"],
+    headFinalCheck: "green" | "red" | "unknown",
+    overrides: { critical?: boolean; attempt?: number } = {},
+  ) =>
+    decideReviewCiWaitTick({
+      ci,
+      headFinalCheck,
+      critical: overrides.critical ?? false,
+      attempt: overrides.attempt ?? 1,
+    });
+
+  it("keeps the reviewer asleep while the finished head is red", () => {
+    expect(tick("complete", "red")).toBe("wait_red");
+    expect(tick("complete", "red", { attempt: REVIEW_CI_WAIT_MAX_ATTEMPTS })).toBe("wait_red");
+  });
+
+  it("wakes the reviewer on a red head once the CI-wait budget of the stage is spent", () => {
+    expect(tick("complete", "red", { attempt: REVIEW_CI_WAIT_MAX_ATTEMPTS + 1 })).toBe("wake");
+  });
+
+  it("wakes the reviewer when the finished head is green, as before", () => {
+    expect(tick("complete", "green")).toBe("wake");
+  });
+
+  it("keeps waiting while CI runs or cannot be read, at any attempt, as before", () => {
+    expect(tick("pending", "unknown")).toBe("wait_for_ci");
+    expect(tick("unknown", "unknown")).toBe("wait_for_ci");
+    expect(tick("pending", "unknown", { attempt: REVIEW_CI_WAIT_MAX_ATTEMPTS + 5 })).toBe("wait_for_ci");
+    expect(tick("pending", "unknown", { critical: true })).toBe("wait_for_ci");
+  });
+
+  it("wakes the reviewer of a critical issue on a finished head whatever its colour", () => {
+    expect(tick("complete", "red", { critical: true })).toBe("wake");
+    expect(tick("complete", "unknown", { critical: true })).toBe("wake");
+  });
+
+  it("wakes the reviewer when there is no pull request or no hosted CI to wait for, as before", () => {
+    expect(tick("no_pull_request", "unknown")).toBe("wake");
+    expect(tick("not_configured", "unknown")).toBe("wake");
   });
 });
 
