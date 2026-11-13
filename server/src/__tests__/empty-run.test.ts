@@ -1,4 +1,61 @@
-import { describe, expect, it, vi } from "vitest";
+import { randomUUID } from "node:crypto";
+import { desc, eq, sql } from "drizzle-orm";
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
+import {
+  activityLog,
+  agentRuntimeState,
+  agentWakeupRequests,
+  agents,
+  companies,
+  companySkills,
+  createDb,
+  environmentLeases,
+  environments,
+  executionWorkspaces,
+  heartbeatRunEvents,
+  heartbeatRuns,
+  instanceSettings,
+  issueComments,
+  issues,
+  type Db,
+} from "@myrmidon/db";
+import {
+  getEmbeddedPostgresTestSupport,
+  startEmbeddedPostgresTestDatabase,
+  type EmbeddedPostgresTestDatabase,
+} from "./helpers/embedded-postgres.js";
+import { drainHeartbeatRunsToQuiescence } from "./helpers/drain-heartbeat-runs.js";
+import { heartbeatService } from "../services/heartbeat.ts";
+import { runningProcesses } from "../adapters/index.ts";
+import type * as adaptersModule from "../adapters/index.ts";
+
+// The settlement path must run through the real dispatch/settlement pipeline
+// without invoking the real codex_local adapter (which needs a local agent
+// JWT). The stub returns an empty summary, so the run settles as
+// `empty_response` and the empty-run streak escalation sees the same input a
+// genuinely empty agent answer produces.
+const mockAdapterExecute = vi.hoisted(() =>
+  vi.fn(async () => ({
+    exitCode: 0,
+    signal: null,
+    timedOut: false,
+    errorMessage: null,
+    summary: "",
+    provider: "test",
+    model: "test-model",
+  })),
+);
+
+vi.mock("../adapters/index.ts", async () => {
+  const actual = await vi.importActual<typeof adaptersModule>("../adapters/index.ts");
+  return {
+    ...actual,
+    getServerAdapter: vi.fn(() => ({
+      supportsLocalAgentJwt: false,
+      execute: mockAdapterExecute,
+    })),
+  };
+});
 import {
   classifyEmptyRun,
   evaluateCompletionGate,
@@ -11,8 +68,14 @@ import {
   AUTOPAUSE_EMPTY_STREAK_EVENT,
   MAX_REPEATED_TOOL_ERRORS,
 } from "../services/empty-run.js";
-import type { Db } from "@myrmidon/db";
 import * as heartbeatEvents from "../services/heartbeat-run-events.js";
+
+/**
+ * Instance contract of the heartbeat service factory, named here because the
+ * owning module (`server/src/services/heartbeat.ts`) does not export one yet.
+ * Once the service exports `HeartbeatService`, import that instead.
+ */
+type HeartbeatServiceInstance = ReturnType<typeof heartbeatService>;
 
 /** Mock of the drizzle select chain the streak check walks; structural cast. */
 const historyMockDb = (
@@ -530,5 +593,296 @@ describe("1.7 AGENT-RUNTIME: Stop conditions and empty runs (OPE-10096)", () => 
       expect(report.summary.targetReductionPercent).toBe(30);
       expect(report.summary.reductionTargetMet).toBe(true);
     });
+  });
+});
+
+// OPE-12941 (review): exercise the real settlement path
+// (executeRun → handleSuccessfulRunHandoff → checkAndHandleEmptyRunEscalation →
+// agent_wakeup_requests receipt) over an embedded Postgres, so the persisted
+// skipped receipt — status `skipped`, reason `empty_run_streak`, run link —
+// is proven against the actual DB write, not the mocked helper chain.
+const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
+const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
+
+if (!embeddedPostgresSupport.supported) {
+  console.warn(
+    `Skipping embedded Postgres empty-run schedule-path tests on this host: ${embeddedPostgresSupport.reason ?? "unsupported environment"}`,
+  );
+}
+
+describeEmbeddedPostgres("empty-run escalation through the schedule settlement path", () => {
+  let db!: Db;
+  let heartbeat!: HeartbeatServiceInstance;
+  let tempDb: EmbeddedPostgresTestDatabase | null = null;
+
+  beforeAll(async () => {
+    tempDb = await startEmbeddedPostgresTestDatabase("paperclip-empty-run-schedule-path-");
+    db = createDb(tempDb.connectionString);
+    heartbeat = heartbeatService(db);
+  }, 60_000);
+
+  afterEach(async () => {
+    runningProcesses.clear();
+    // Post-run bookkeeping can still write for a moment after a run reaches a
+    // terminal status, so a single delete sweep can hit a foreign-key violation
+    // when a late insert lands between two deletes. Retry the sweep, pacing with
+    // the drain's own awaitable signal (it returns once no run or wakeup is
+    // in flight) instead of a wall-clock sleep.
+    await drainHeartbeatRunsToQuiescence(db, heartbeat);
+    for (let attempt = 0; ; attempt += 1) {
+      try {
+        await db.delete(environmentLeases);
+        await db.delete(issueComments);
+        await db.delete(issues);
+        await db.delete(heartbeatRunEvents);
+        await db.delete(activityLog);
+        await db.delete(heartbeatRuns);
+        await db.delete(agentWakeupRequests);
+        await db.delete(agentRuntimeState);
+        await db.delete(instanceSettings);
+        await db.delete(companySkills);
+        await db.delete(agents);
+        await db.delete(environments);
+        await db.delete(executionWorkspaces);
+        await db.delete(companies);
+        break;
+      } catch (error) {
+        if (attempt >= 4) throw error;
+        await drainHeartbeatRunsToQuiescence(db, heartbeat);
+      }
+    }
+  });
+
+  afterAll(async () => {
+    await tempDb?.cleanup();
+  });
+
+  async function seedCompanyAgentIssue() {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const issueId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+      defaultResponsibleUserId: "responsible-user",
+    });
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "CodexCoder",
+      role: "engineer",
+      status: "active",
+      adapterType: "codex_local",
+      adapterConfig: {
+        teamLiveness: { idlePickup: false },
+      },
+      runtimeConfig: {
+        heartbeat: {
+          // A timer-sourced scheduler wake is admitted only when the agent's
+          // heartbeat policy is enabled (parseHeartbeatPolicy defaults it to
+          // false), so the settlement path test opts the agent into the timer.
+          enabled: true,
+          wakeOnDemand: true,
+          maxConcurrentRuns: 1,
+        },
+      },
+      permissions: {},
+    });
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Empty-run streak schedule path",
+      status: "in_progress",
+      priority: "medium",
+      assigneeAgentId: agentId,
+      responsibleUserId: "responsible-user",
+    });
+
+    return { companyId, agentId, issueId };
+  }
+
+  async function seedTerminalRun(input: {
+    companyId: string;
+    agentId: string;
+    issueId: string;
+    status?: string;
+    livenessState?: string;
+    livenessReason?: string;
+    finishedSecondsAgo: number;
+  }) {
+    const runId = randomUUID();
+    const finishedAt = new Date(Date.now() - input.finishedSecondsAgo * 1000);
+    const startedAt = new Date(finishedAt.getTime() - 5_000);
+    await db.insert(heartbeatRuns).values({
+      id: runId,
+      companyId: input.companyId,
+      agentId: input.agentId,
+      invocationSource: "automation",
+      status: input.status ?? "succeeded",
+      responsibleUserId: "responsible-user",
+      createdAt: startedAt,
+      startedAt,
+      finishedAt,
+      livenessState: input.livenessState ?? null,
+      livenessReason: input.livenessReason ?? null,
+      contextSnapshot: { issueId: input.issueId, wakeReason: "heartbeat_timer" },
+    });
+    return runId;
+  }
+
+  async function latestSkippedWakeup(agentId: string) {
+    return db
+      .select({
+        status: agentWakeupRequests.status,
+        reason: agentWakeupRequests.reason,
+        runId: agentWakeupRequests.runId,
+        payload: agentWakeupRequests.payload,
+        requestedAt: agentWakeupRequests.requestedAt,
+      })
+      .from(agentWakeupRequests)
+      .where(
+        sql`${agentWakeupRequests.agentId} = ${agentId} and ${agentWakeupRequests.status} = 'skipped' and ${agentWakeupRequests.reason} = 'empty_run_streak'`,
+      )
+      .orderBy(desc(agentWakeupRequests.requestedAt))
+      .limit(1)
+      .then((rows) => rows[0] ?? null);
+  }
+
+  it("persists a skipped empty_run_streak receipt linked to the settled run when a timer-triggered empty run reaches the threshold", async () => {
+    const { companyId, agentId, issueId } = await seedCompanyAgentIssue();
+
+    // Streak history: the threshold is 5, so 4 seeded empty terminal runs plus
+    // the run under settlement complete the streak on the real schedule path.
+    for (let i = 4; i >= 1; i -= 1) {
+      await seedTerminalRun({
+        companyId,
+        agentId,
+        issueId,
+        livenessState: "empty_response",
+        livenessReason: "Run succeeded without useful output",
+        finishedSecondsAgo: i * 10,
+      });
+    }
+
+    const wake = await heartbeat.wakeup(agentId, {
+      source: "timer",
+      triggerDetail: "system",
+      reason: "heartbeat_timer",
+      contextSnapshot: {
+        source: "scheduler",
+        reason: "interval_elapsed",
+        issueId,
+      },
+      requestedByActorType: "system",
+      requestedByActorId: "heartbeat_scheduler",
+    });
+    expect(wake).not.toBeNull();
+    await drainHeartbeatRunsToQuiescence(db, heartbeat);
+    // TEMP-DEBUG
+    const debugRuns = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.agentId, agentId));
+    console.warn("TEMP-DEBUG runs:", JSON.stringify(debugRuns.map((r) => ({ id: r.id, status: r.status, livenessState: r.livenessState, livenessReason: r.livenessReason, issueCommentStatus: r.issueCommentStatus, errorCode: r.errorCode, continuationAttempt: r.continuationAttempt, contextSnapshot: r.contextSnapshot }))));
+    const debugWakes = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.agentId, agentId));
+    console.warn("TEMP-DEBUG wakes:", JSON.stringify(debugWakes.map((w) => ({ id: w.id, status: w.status, reason: w.reason, runId: w.runId, payload: w.payload }))));
+    const debugComments = await db.select({ body: issueComments.body, runId: issueComments.createdByRunId }).from(issueComments).where(eq(issueComments.issueId, issueId));
+    console.warn("TEMP-DEBUG comments:", JSON.stringify(debugComments));
+    const debugSettings = await db.select().from(instanceSettings);
+    console.warn("TEMP-DEBUG settings:", JSON.stringify(debugSettings));
+
+    const receipt = await latestSkippedWakeup(agentId);
+    expect(receipt).not.toBeNull();
+    expect(receipt?.status).toBe("skipped");
+    expect(receipt?.reason).toBe("empty_run_streak");
+    // The receipt must link to the actual settled run so the per-run SKIPPED
+    // reason is traceable without correlating timestamps.
+    const settledRuns = await db
+      .select({ id: heartbeatRuns.id, livenessState: heartbeatRuns.livenessState })
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.agentId, agentId));
+    expect(settledRuns.some((run) => run.id === receipt?.runId)).toBe(true);
+    expect(settledRuns.find((run) => run.id === receipt?.runId)?.livenessState).toBe("empty_response");
+    const heartbeatSkip = (receipt?.payload as Record<string, unknown> | null)?.heartbeatSkip as
+      | Record<string, unknown>
+      | undefined;
+    expect(heartbeatSkip?.reason).toBe("empty_run_streak");
+    expect(heartbeatSkip?.streak).toBe(5);
+    expect(heartbeatSkip?.threshold).toBe(5);
+    expect(heartbeatSkip?.lastRunId).toBe(receipt?.runId);
+    // The streak signal is also visible on the settled run's log.
+    const streakEvents = await db
+      .select({ eventType: heartbeatRunEvents.eventType, payload: heartbeatRunEvents.payload })
+      .from(heartbeatRunEvents)
+      .where(sql`${heartbeatRunEvents.runId} = ${receipt?.runId} and ${heartbeatRunEvents.eventType} = ${AUTOPAUSE_EMPTY_STREAK_EVENT}`);
+    expect(streakEvents).toHaveLength(1);
+    expect(streakEvents[0]?.payload).toMatchObject({ reason: "empty_run_streak", streak: 5, threshold: 5 });
+    // The empty run itself must not have been re-labelled as a productive handoff:
+    // no corrective FINISH_SUCCESSFUL_RUN_HANDOFF wake may exist for it.
+    const handoffWakes = await db
+      .select({ count: sql<number>`count(*)::int` })
+      .from(agentWakeupRequests)
+      .where(
+        sql`${agentWakeupRequests.agentId} = ${agentId} and ${agentWakeupRequests.payload} ->> 'sourceRunId' = ${receipt?.runId}`,
+      );
+    expect(handoffWakes[0]?.count ?? 0).toBe(0);
+  });
+
+  it("starts a fresh streak when a productive run sits between the two empty-run stretches on the schedule path", async () => {
+    const { companyId, agentId, issueId } = await seedCompanyAgentIssue();
+
+    // Newest 3 empty runs; the productive run breaks the streak; 5 older empty
+    // runs predate it and must never be inherited (streak restarts at 1).
+    for (let i = 4; i >= 2; i -= 1) {
+      await seedTerminalRun({
+        companyId,
+        agentId,
+        issueId,
+        livenessState: "empty_response",
+        livenessReason: "Run succeeded without useful output",
+        finishedSecondsAgo: i * 10,
+      });
+    }
+    await seedTerminalRun({
+      companyId,
+      agentId,
+      issueId,
+      livenessState: "advanced",
+      livenessReason: "Run produced concrete action evidence: 1 activity event(s)",
+      finishedSecondsAgo: 20,
+    });
+    for (let i = 5; i <= 9; i += 1) {
+      await seedTerminalRun({
+        companyId,
+        agentId,
+        issueId,
+        livenessState: "empty_response",
+        livenessReason: "Run succeeded without useful output",
+        finishedSecondsAgo: i * 10,
+      });
+    }
+
+    const wake = await heartbeat.wakeup(agentId, {
+      source: "timer",
+      triggerDetail: "system",
+      reason: "heartbeat_timer",
+      contextSnapshot: {
+        source: "scheduler",
+        reason: "interval_elapsed",
+        issueId,
+      },
+      requestedByActorType: "system",
+      requestedByActorId: "heartbeat_scheduler",
+    });
+    expect(wake).not.toBeNull();
+    await drainHeartbeatRunsToQuiescence(db, heartbeat);
+
+    const receipt = await latestSkippedWakeup(agentId);
+    expect(receipt).toBeNull();
+    const streakEvents = await db
+      .select({ count: sql<number>`count(*)::int` })
+      .from(heartbeatRunEvents)
+      .where(sql`${heartbeatRunEvents.eventType} = ${AUTOPAUSE_EMPTY_STREAK_EVENT}`);
+    expect(streakEvents[0]?.count ?? 0).toBe(0);
   });
 });
