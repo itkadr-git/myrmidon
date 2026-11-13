@@ -67,7 +67,7 @@ describePg("issueService blocked-reason guard", () => {
         "updated_at" timestamptz NOT NULL DEFAULT now()
       );
     `));
-  }, 20_000);
+  }, 60_000);
 
   afterEach(async () => {
     await db.delete(issueRelations);

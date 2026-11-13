@@ -57,7 +57,7 @@ describeEmbeddedPostgres("attention feed cache: stale-while-revalidate", () => {
       selectCount += 1;
       return original(...args);
     };
-  }, 30_000);
+  }, 60_000);
 
   afterEach(async () => {
     vi.useRealTimers();

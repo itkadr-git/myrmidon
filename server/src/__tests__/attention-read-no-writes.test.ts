@@ -69,7 +69,7 @@ describeEmbeddedPostgres("attention feed read path: no decision-retention writes
       updatedTables.push(args[0]);
       return originalUpdate(...args);
     };
-  }, 30_000);
+  }, 60_000);
 
   afterEach(async () => {
     insertedTables = [];

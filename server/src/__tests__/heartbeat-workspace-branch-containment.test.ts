@@ -882,7 +882,7 @@ describeEmbeddedPostgres("heartbeat workspace branch containment", () => {
     process.env.MYRMIDON_IDLE_PICKUP_ENABLED = "false";
     tempDb = await startEmbeddedPostgresTestDatabase("paperclip-branch-containment-");
     db = createDb(tempDb.connectionString);
-  }, 20_000);
+  }, 60_000);
 
   afterEach(async () => {
     // Await every in-flight background heartbeat run to quiescence before the

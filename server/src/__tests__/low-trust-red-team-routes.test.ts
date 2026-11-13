@@ -873,7 +873,7 @@ describeEmbeddedPostgres(
         "paperclip-low-trust-red-team-routes-",
       );
       db = createDb(tempDb.connectionString);
-    }, 20_000);
+    }, 60_000);
 
     afterEach(async () => {
       // Await every in-flight background heartbeat run to quiescence before the

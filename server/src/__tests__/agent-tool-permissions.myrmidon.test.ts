@@ -81,7 +81,7 @@ describeEmbeddedPostgres("myrmidon(S6) agent tool permission enforcement", () =>
   beforeAll(async () => {
     tempDb = await startEmbeddedPostgresTestDatabase("paperclip-agent-tool-permissions-");
     db = createDb(tempDb.connectionString);
-  }, 20_000);
+  }, 60_000);
 
   afterAll(async () => {
     await tempDb?.cleanup();

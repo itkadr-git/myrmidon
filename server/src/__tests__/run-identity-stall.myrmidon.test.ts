@@ -14,7 +14,7 @@ const support = await getEmbeddedPostgresTestSupport();
   beforeAll(async () => {
     database = await startEmbeddedPostgresTestDatabase("paperclip-run-identity-stall-");
     db = createDb(database.connectionString);
-  }, 30_000);
+  }, 60_000);
   afterAll(async () => { await database?.cleanup(); }, 60_000);
 
   async function seed(run: { status: string; errorCode: string | null; finishedAt: Date | null }) {

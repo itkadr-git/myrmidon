@@ -37,7 +37,7 @@ describeEmbeddedPostgres("run claim meets the vendor hold check (L2, round 2)", 
   beforeAll(async () => {
     tempDb = await startEmbeddedPostgresTestDatabase("myrmidon-wake-claim-decision-");
     db = createDb(tempDb.connectionString);
-  }, 30_000);
+  }, 60_000);
 
   afterEach(async () => {
     await db.delete(activityLog);

@@ -45,7 +45,7 @@ describePg("native failure blocked patch against the real chain", () => {
         "created_at" timestamptz NOT NULL DEFAULT now(), "updated_at" timestamptz NOT NULL DEFAULT now()
       );
     `));
-  }, 20_000);
+  }, 60_000);
 
   afterEach(async () => {
     await db.delete(issueRelations);

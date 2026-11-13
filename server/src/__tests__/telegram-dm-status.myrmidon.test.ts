@@ -270,7 +270,7 @@ describeEmbeddedPostgres("Telegram DM run status (U1)", () => {
       );
       db = createDb(tempDb.connectionString);
     }
-  }, 30_000);
+  }, 60_000);
 
   afterAll(async () => {
     await tempDb?.cleanup();

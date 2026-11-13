@@ -37,7 +37,7 @@ describeEmbeddedPostgres("resumeAgentAfterPause (L3)", () => {
   beforeAll(async () => {
     tempDb = await startEmbeddedPostgresTestDatabase("paperclip-myrmidon-pause-drain-");
     db = createDb(tempDb.connectionString);
-  }, 30_000);
+  }, 60_000);
 
   beforeEach(() => {
     vi.mocked(logger.warn).mockClear();
