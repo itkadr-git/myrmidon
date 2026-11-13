@@ -7,6 +7,7 @@ import {
   storedAgentLivenessSettingsSchema,
   AGENT_LIVENESS_SETTINGS_KEY,
   type AgentLivenessSettings,
+  type AgentLivenessSettingsPatch,
 } from "./myrmidon-agent-liveness.js";
 import { instanceGeneralSettingsSchema } from "./validators/instance.js";
 import type { InstanceGeneralSettings } from "./types/instance.js";
@@ -82,7 +83,7 @@ describe("agent liveness defaults", () => {
     // Compile-time guard: the hand-written interface and the validator must
     // agree on agentLiveness, or this assignment stops type-checking.
     const view: InstanceGeneralSettings = parsed.success ? parsed.data : ({} as InstanceGeneralSettings);
-    const typed: AgentLivenessSettings | undefined = view.agentLiveness;
+    const typed: AgentLivenessSettingsPatch | undefined = view.agentLiveness;
     expect(typed?.enabled).toBe(true);
     expect(typed?.engineerQueueThreshold).toBe(5);
     expect(instanceGeneralSettingsSchema.safeParse({}).success).toBe(true);
