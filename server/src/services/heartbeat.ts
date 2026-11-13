@@ -9414,6 +9414,12 @@ export function buildPaperclipTaskMarkdown(input: {
             lines.push(`    - ${job.name}: ${job.conclusion} (${job.url})`);
           }
         }
+        if (ci.cancelledJobs && ci.cancelledJobs.length > 0) {
+          lines.push("  - Cancelled jobs (cancelled, not a test failure; no newer run of the check exists):");
+          for (const job of ci.cancelledJobs) {
+            lines.push(`    - ${job.name}: ${job.conclusion} (${job.url})`);
+          }
+        }
         if (ci.optionalFailedJobs && ci.optionalFailedJobs.length > 0) {
           lines.push("  - Optional failed jobs (не влияет на вердикт):");
           for (const job of ci.optionalFailedJobs) {
