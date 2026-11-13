@@ -362,7 +362,7 @@ func TestAllow_A9_RecreateWithFailingRemoveLogsErrorWithCause(t *testing.T) {
 type failingRemoveStub struct{ err error }
 
 func (f *failingRemoveStub) Ensure(context.Context, string) (int, error) { return 0, nil }
-func (f *failingRemoveStub) Remove(context.Context, string) error         { return f.err }
+func (f *failingRemoveStub) Remove(context.Context, string) error        { return f.err }
 func (f *failingRemoveStub) Put(context.Context, string, int64) (disk.Result, error) {
 	return disk.Result{}, nil
 }
