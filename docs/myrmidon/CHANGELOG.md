@@ -125,11 +125,6 @@ version file to edit. Base Paperclip version is in the image label
 - The failure warning now carries the class of the exception and its HTTP status (`errorName`, `errorStatus`), and
   still nothing of its message, code, cause or stack.
 
-### Gateway slot reconcile ends its pass at the first unreachable probe (OPE-12984)
-
-- When the gateway was down, the `gateway-slot-reconcile` pass probed all of up to 64 finished runs one after another, one timeout per run, and the start of a run waited for all of them (OPE-12964).
-- The first `unreachable` answer now ends the pass; `unreachable` is counted once. The memory of runs confirmed closed (OPE-12890) is unchanged, and an unreachable answer is not remembered, so the next pass tries again.
-
 ## 1.6.8
 
 ### The omp SSH runner's /tmp moves to the data disk and is pruned (OPE-12966)
