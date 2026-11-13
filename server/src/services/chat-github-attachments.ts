@@ -271,6 +271,8 @@ export function rehydrateGitHubPublicAttachment(
   return attachment;
 }
 
+/** JSDOM loads lazily here on purpose: a static import puts its module graph
+ * on every board boot; only canonical-comment parsing needs it. */
 /** Parse references only; network I/O happens later, after Paperclip's admission fence. */
 export function githubPublicAttachmentsFromMessage(
   message: Message,

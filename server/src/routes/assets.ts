@@ -1,6 +1,5 @@
 import { Router, type Request, type Response } from "express";
 import multer from "multer";
-import createDOMPurify from "dompurify";
 import type { JSDOM } from "jsdom";
 import type { Db } from "@myrmidon/db";
 import { ASSET_NAMESPACE_RULE, createAssetImageMetadataSchema } from "@myrmidon/shared";
@@ -27,7 +26,12 @@ async function sanitizeSvgBuffer(input: Buffer): Promise<Buffer | null> {
   const raw = input.toString("utf8").trim();
   if (!raw) return null;
 
-  const { JSDOM } = await import("jsdom");
+  // myrmidon(1.7 BOARD-START): the sanitizer's jsdom + dompurify modules are
+  // intentionally loaded per SVG upload; static imports add them to boot.
+  const [{ default: createDOMPurify }, { JSDOM }] = await Promise.all([
+    import("dompurify"),
+    import("jsdom"),
+  ]);
   const baseDom = new JSDOM("");
   const domPurify = createDOMPurify(
     baseDom.window as unknown as Parameters<typeof createDOMPurify>[0],

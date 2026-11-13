@@ -4,8 +4,8 @@ import { validateAnnouncementAnimation } from "../services/announcement-animatio
 describe("announcement animation documents", () => {
   it("preserves CSS keyframes and visual HTML/SVG", async () => {
     const html = "<html><head><style>@keyframes pulse{to{opacity:.5}}.dot{animation:pulse 2s infinite}</style></head><body><div class='dot'><svg viewBox='0 0 10 10'><circle cx='5' cy='5' r='3'/></svg></div></body></html>";
-    expect(await validateAnnouncementAnimation(Buffer.from(html))).toContain("@keyframes pulse");
-    expect(await validateAnnouncementAnimation(Buffer.from(html))).toContain('viewBox="0 0 10 10"');
+    await expect(validateAnnouncementAnimation(Buffer.from(html))).resolves.toContain("@keyframes pulse");
+    await expect(validateAnnouncementAnimation(Buffer.from(html))).resolves.toContain('viewBox="0 0 10 10"');
   });
   it.each([
     "<script>fetch('/api/companies')</script>", "<div onclick='alert(1)'>Click</div>",
