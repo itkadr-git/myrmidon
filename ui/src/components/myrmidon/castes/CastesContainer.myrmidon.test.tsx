@@ -20,9 +20,14 @@ const apiMock = vi.hoisted(() => ({
   remove: vi.fn(),
 }));
 
+const evalApiMock = vi.hoisted(() => ({
+  view: vi.fn(),
+}));
+
 vi.mock("./castesApi", async (importOriginal) => ({
   ...(await importOriginal<typeof import("./castesApi")>()),
   castesApi: apiMock,
+  casteModelEvalApi: evalApiMock,
 }));
 
 vi.mock("@/context/CompanyContext", () => ({
@@ -96,6 +101,7 @@ beforeEach(() => {
   apiMock.add.mockReset();
   apiMock.update.mockReset();
   apiMock.remove.mockReset().mockResolvedValue({ ok: true });
+  evalApiMock.view.mockReset().mockRejectedValue(new Error("No eval"));
 });
 
 afterEach(() => {
@@ -271,5 +277,88 @@ describe("myrmidon(1.6.1 CUSTOM-CASTES C) container", () => {
     // ("Caste in use") — the i18n key resolves through the real translator.
     expect(error?.textContent).toContain("in use");
     expect(error?.textContent).not.toBe("Caste in use");
+  });
+
+  describe("myrmidon(1.8 CASTE-MODEL-EVAL OPE-12948) container tier", () => {
+    const EVAL_DATA = {
+      results: [
+        { model: "qwen-plus", score: 85, free: true, enabled: true },
+        { model: "deepseek-chat", score: 79, free: true, enabled: true },
+        { model: "gpt-4o", score: 95, free: false, enabled: true },
+      ],
+      suggestedModel: "qwen-plus",
+    };
+
+    it("renders the model-eval section when comparisons exist and highlights the best free enabled model", async () => {
+      evalApiMock.view.mockImplementation(async (_cid: string, key: string) => {
+        if (key === "engineer") return EVAL_DATA;
+        throw new Error("No eval for this caste");
+      });
+      await renderScreen();
+
+      // Section 3 is mounted
+      expect(
+        container.querySelector('[data-testid="myrmidon-castes-model-eval"]'),
+      ).not.toBeNull();
+      // Table renders for engineer with the 3 rows
+      expect(
+        container.querySelector('[data-testid="myrmidon-castes-model-eval-table-engineer"]'),
+      ).not.toBeNull();
+      expect(
+        container.querySelector('[data-testid="myrmidon-castes-model-eval-row-engineer-qwen-plus"]'),
+      ).not.toBeNull();
+      // Best free enabled model is marked
+      expect(
+        container.querySelector('[data-testid="myrmidon-castes-model-eval-best-engineer-qwen-plus"]'),
+      ).not.toBeNull();
+      // Higher-scoring paid model is NOT marked as best free
+      expect(
+        container.querySelector('[data-testid="myrmidon-castes-model-eval-best-engineer-gpt-4o"]'),
+      ).toBeNull();
+    });
+
+    it("when the owner declines the choice, castesApi.update is not called", async () => {
+      evalApiMock.view.mockImplementation(async (_cid: string, key: string) => {
+        if (key === "engineer") return EVAL_DATA;
+        throw new Error("No eval");
+      });
+      await renderScreen();
+
+      await click('[data-testid="myrmidon-castes-model-eval-decline-engineer"]');
+      await settle();
+
+      expect(apiMock.update).not.toHaveBeenCalled();
+      // Decision buttons dismissed locally
+      expect(
+        container.querySelector('[data-testid="myrmidon-castes-model-eval-decide-engineer"]'),
+      ).toBeNull();
+    });
+
+    it("when the owner confirms the choice, castesApi.update is called and the interface displays the new defaultModel from the response", async () => {
+      evalApiMock.view.mockImplementation(async (_cid: string, key: string) => {
+        if (key === "engineer") return EVAL_DATA;
+        throw new Error("No eval");
+      });
+      const updatedEngineer = {
+        ...seedCastes().find((c) => c.key === "engineer")!,
+        defaultModel: "qwen-plus",
+      };
+      apiMock.update.mockResolvedValueOnce({ caste: updatedEngineer });
+
+      await renderScreen();
+
+      await click('[data-testid="myrmidon-castes-model-eval-confirm-engineer"]');
+      await settle();
+
+      expect(apiMock.update).toHaveBeenCalledWith(COMPANY_ID, "engineer", {
+        defaultModel: "qwen-plus",
+      });
+      // The current-model column in the eval table now reflects the model from the PATCH response
+      expect(
+        container.querySelector(
+          '[data-testid="myrmidon-castes-model-eval-current-engineer-qwen-plus"]',
+        ),
+      ).not.toBeNull();
+    });
   });
 });
