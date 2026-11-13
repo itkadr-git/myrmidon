@@ -8,6 +8,7 @@ Host-side garbage collector for bot task clones and build caches on `vm-core` an
 |------|------|------|
 | vm-core | `/srv/myrmidon-bots/*` | Bot workspaces (git clones) |
 | vm-core | `<runner root>/<runner>/workspace/.paperclip-runtime/runs/<runId>` | SSH runner run copies (OPE-12722); only when a runner root is configured, see below |
+| vm-core | `<runner root>/<runner>/tmp/*` | SSH runner `/tmp` entries (OPE-12966); only when a runner root is configured, see below |
 | vm-core | `<runner root>/<runner>/{workspace,home}/OPE-<n>[-wt]`, `wt-ope<n>` | SSH runner task folders (OPE-12855); only when a runner root is configured, see below |
 | myr-dev-build | `/srv/devbuild/*` | Build copies per agent/task |
 | myr-dev-build | `/srv/devcache/*` | Build caches (git-wt, pnpm, etc.) |
@@ -196,3 +197,30 @@ configured (`--runner-root` / `HOST_GC_RUNNER_ROOTS`), per the same host matrix.
   containment violation); a missing root is journaled as `runner-folder-root-missing`, an
   unreadable root or runner as `runner-folder-scan-failed`. Neither stops the rest of the
   pass. `runnerTaskFoldersRemoved` in `apply-complete` counts the folders actually removed.
+
+## SSH runner /tmp (OPE-12966)
+
+The omp SSH runner's `/tmp` is a bind volume on the data disk, `<runner>/tmp`
+(`docker/agent-runtime/omp-ssh/compose.yml`), instead of the container's write layer on the
+host's root disk. Tests and task tooling write gigabytes there (15.8 GB in two days on 13.11,
+a host disk alarm) and nothing removed them.
+
+The pass shares the gate of the run-copy pass: it runs only when a runner root is configured
+(`--runner-root` / `HOST_GC_RUNNER_ROOTS`; the repo unit `systemd/myrmidon-host-gc.service`
+sets it, so a host that installs the unit gets the pass on `--apply` without further
+configuration). What it does:
+
+- The candidates are the top-level entries (files and directories) of `<runner>/tmp`. An
+  entry is removed when nothing inside it has changed for `--runner-tmp-ttl` hours (default
+  24; a finite number of at least 3): the age is the newest mtime of the entry and everything
+  under it, so a directory in which something was written within the TTL stays whole.
+- `<runner>` and `tmp` must be real directories (a symlink is skipped). A symlink is never
+  followed: a top-level symlink is kept (`runner-tmp-skipped`, reason `symlink`), one inside an
+  entry is removed as a link, never through. An entry that is, or contains, a mount of another
+  filesystem is kept (`other-filesystem`). `tmp` itself is never removed. Each removal is
+  guarded against the runner root, as for the run copies (`runner-tmp-remove-failed`).
+- `--dry-run` lists the entries to remove in `plan.runnerTmp` and removes nothing.
+  `runner-tmp-removed` carries `runner`, `ageHours` and `sizeBytes` (apparent size);
+  `runnerTmpRemoved` in `apply-complete` and in the printed JSON counts the entries removed.
+- A missing root is journaled as `runner-tmp-root-missing`, an unreadable root, runner or
+  entry as `runner-tmp-scan-failed` (the entry is kept). Neither stops the rest of the pass.
