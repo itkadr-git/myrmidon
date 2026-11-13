@@ -3456,7 +3456,7 @@ registry.registerPath({
   responses: {
     200: r.ok(
       z.object({
-        entries: z.array(z.record(z.unknown())),
+        entries: z.array(z.record(z.string(), z.unknown())),
         nextBefore: z.string().datetime().nullable(),
       }),
     ),
