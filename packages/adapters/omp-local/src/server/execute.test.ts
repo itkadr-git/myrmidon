@@ -98,7 +98,9 @@ const {
   ),
   // myrmidon(OPE-13018): records adapter-side directory ensures on SSH targets
   // without opening a real ssh connection.
-  ensureAdapterExecutionTargetDirectoryMock: vi.fn(async () => undefined),
+  ensureAdapterExecutionTargetDirectoryMock: vi.fn(
+    async (..._args: ReadonlyArray<unknown>) => undefined,
+  ),
 }));
 
 vi.mock("./models.js", async (importOriginal) => {
