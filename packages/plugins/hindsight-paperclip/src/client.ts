@@ -128,10 +128,10 @@ export class HindsightClient {
 
     let timer: ReturnType<typeof setTimeout> | undefined;
     if (effectiveTimeout <= 0) {
-      controller.abort(createTimeoutError("The operation timed out"));
+      controller.abort(createAbortError("The operation was aborted"));
     } else if (effectiveTimeout < Infinity) {
       timer = setTimeout(() => {
-        controller.abort(createTimeoutError("The operation timed out"));
+        controller.abort(createAbortError("The operation was aborted"));
       }, effectiveTimeout);
     }
 
@@ -154,6 +154,9 @@ export class HindsightClient {
         body: body !== undefined ? JSON.stringify(body) : undefined,
         signal: controller.signal,
       });
+      if (fetchPromise && typeof fetchPromise.catch === "function") {
+        fetchPromise.catch(() => {});
+      }
 
       const abortPromise = new Promise<never>((_, reject) => {
         if (controller.signal.aborted) {
@@ -173,6 +176,9 @@ export class HindsightClient {
       }
 
       const jsonPromise = response.json();
+      if (jsonPromise && typeof jsonPromise.catch === "function") {
+        jsonPromise.catch(() => {});
+      }
       return await Promise.race([jsonPromise, abortPromise]);
     } finally {
       if (timer !== undefined) {

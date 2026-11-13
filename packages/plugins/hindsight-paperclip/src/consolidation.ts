@@ -3,7 +3,7 @@ import type {
   BankMentalModelsPage,
   HindsightClient,
 } from "./client.js";
-import { createTimeoutError, createAbortError } from "./client.js";
+import { createAbortError } from "./client.js";
 
 /**
  * Nightly, additive consolidation pass over an existing Hindsight bank.
@@ -155,7 +155,7 @@ export async function runConsolidationPass(
   let passTimer: ReturnType<typeof setTimeout> | undefined;
   if (options.timeBudgetMs > 0 && options.timeBudgetMs < Infinity) {
     passTimer = setTimeout(() => {
-      passController.abort(createTimeoutError("Pass budget exceeded"));
+      passController.abort(createAbortError("Pass budget exceeded"));
     }, options.timeBudgetMs);
   }
 
