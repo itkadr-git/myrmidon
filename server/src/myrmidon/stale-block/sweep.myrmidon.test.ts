@@ -385,7 +385,10 @@ describeEmbeddedPostgres("stale block sweep", () => {
 
     const result = await sweep.sweep();
 
-    expect(result).toMatchObject({ scanned: 1, unblocked: 0, skippedLive: 1, failed: 0 });
+    // The blocker of this case is itself a bare block (status blocked, no reason), as on prod: the same pass
+    // scans it too and releases it. It stays an open blocker either way, so the task it holds is counted
+    // as live and is left blocked, whichever of the two the pass reaches first.
+    expect(result).toMatchObject({ scanned: 2, unblocked: 1, skippedLive: 1, failed: 0 });
     const [issue] = await db.select().from(issues).where(eq(issues.id, seeded.issueId));
     expect(issue!.status).toBe("blocked");
   });
