@@ -19,6 +19,17 @@
 #                      the release tag to publish (the workflow passes the
 #                      pushed tag, or the tag input of a workflow_dispatch
 #                      re-run; the tag must already exist on origin)
+#   --require-verification
+#                      VERIFY-ON-PROD gate (OPE-13017): refuse to publish
+#                      unless --verification-result names a JSON file with a
+#                      confirmed verdict whose deployedVersion equals the
+#                      tag's commit SHA.  The file is the JSON response of
+#                      POST /issues/:id/release-verify (OPE-13014).
+#   --verification-result <file>
+#                      the verification verdict JSON (see above).  Without
+#                      --require-verification the file is accepted but not
+#                      enforced (the gate is opt-in while the release
+#                      pipeline wires the verification step to the publish).
 #
 # Fail-closed and idempotent:
 #   1. Resolve the tag's commit (annotated tags dereferenced).
@@ -63,17 +74,19 @@
 set -euo pipefail
 
 usage() {
-  sed -n '2,58p' "$0"
+  sed -n '2,68p' "$0"
   exit 0
 }
 
 die() { printf '[myrmidon-release-publish] ERROR: %s\n' "$*" >&2; exit 1; }
 log() { printf '[myrmidon-release-publish] %s\n' "$*" >&2; }
 
-tag=""
+tag="" verification_file="" require_verification=0
 while (($#)); do
   case "$1" in
     --tag) tag="$2"; shift 2 ;;
+    --verification-result) verification_file="$2"; shift 2 ;;
+    --require-verification) require_verification=1; shift ;;
     -h|--help) usage ;;
     *) die "unknown argument: $1" ;;
   esac
@@ -125,6 +138,58 @@ if ((prerelease == 0)); then
   log "gate: database audit report $db_audit_report present"
 else
   log "gate: rc tag — the database audit report is required only for the final tag (checked: $db_audit_report)"
+fi
+
+# -------------------------------------- 1c. release verification gate ---------
+# VERIFY-ON-PROD (OPE-13014 → OPE-13017): a publish binds to the immutable
+# verified candidate — the release is published only when the board-side
+# verification (POST /issues/:id/release-verify) has confirmed the deployed
+# version for the exact commit SHA this tag dereferences to.  The verification
+# result travels as a JSON file produced by the verification step (the board
+# CI or an operator); the publish script never calls the board itself — the
+# file is the contract.
+#
+# The gate is opt-in via --require-verification so the current tag-push flow
+# keeps working while the release pipeline wires the verification step to the
+# publish.  Once wired, the workflow passes --require-verification and the
+# file; a missing file, a failed verdict, or a SHA mismatch refuses the
+# publish loudly.
+verification_section=""
+if ((require_verification)); then
+  [[ -n "$verification_file" ]] \
+    || die "--require-verification needs --verification-result <file> (the JSON verdict of POST /issues/:id/release-verify)"
+  [[ -f "$verification_file" ]] \
+    || die "verification result file $verification_file does not exist — NOT publishing. Run the release verification (POST /issues/:id/release-verify) first and pass its JSON response."
+  verification_json="$(cat "$verification_file")"
+  verification_verdict="$(jq -r '.verdict // "missing"' <<<"$verification_json")"
+  verification_deployed="$(jq -r '.deployedVersion // "missing"' <<<"$verification_json")"
+  verification_checked_at="$(jq -r '.checkedAt // "missing"' <<<"$verification_json")"
+  verification_issue_id="$(jq -r '.issueId // "unknown"' <<<"$verification_json")"
+
+  [[ "$verification_verdict" == "confirmed" ]] \
+    || die "release verification verdict is '$verification_verdict' (not 'confirmed') — NOT publishing $tag. Reason: $(jq -r '.reason // "unknown"' <<<"$verification_json")"
+  # The immutable bind: the deployed version must equal the commit this tag
+  # points at.  A verification for any other SHA (an older deploy, a different
+  # candidate) must not satisfy the gate.
+  [[ "$verification_deployed" == "$sha" ]] \
+    || die "release verification deployedVersion '$verification_deployed' does not match the tag commit '$sha' — NOT publishing $tag. The verification must be re-run against this exact commit."
+
+  log "gate: release verification confirmed for $sha (checked at $verification_checked_at, issue $verification_issue_id)"
+  verification_section=$(cat <<EOF
+
+## Release verification
+
+Verified on the production board before publication.
+
+- Commit: \`$sha\`
+- Verdict: confirmed
+- Checked at: $verification_checked_at
+- Board issue: $verification_issue_id
+EOF
+)
+elif [[ -n "$verification_file" ]]; then
+  [[ -f "$verification_file" ]] || die "verification result file $verification_file does not exist"
+  log "gate: verification result provided without --require-verification — publishing without the gate (pass --require-verification to enforce it)"
 fi
 
 # ------------------------------------------------------------- 2. CI gate ----
@@ -347,6 +412,14 @@ else
   log "vendor-share metric not computed — the notes say «не посчитано»"
 fi
 notes_vendor_section "$vendor_line" >> release-body.md
+
+# VERIFY-ON-PROD (OPE-13017): the release body carries the verification
+# signature when the gate ran — the immutable link between the published
+# release and the board-side verification of its commit.
+if [[ -n "$verification_section" ]]; then
+  printf '%s\n' "$verification_section" >> release-body.md
+  log "release body carries the verification signature for $sha"
+fi
 
 # -------------------------------------------------------- 4. publish --------
 # RC-VERSIONS: a publish NEVER touches the `latest` marker — that is the

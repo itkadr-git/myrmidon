@@ -222,8 +222,8 @@ const run = (sha, pathOfWf, conclusion, status = "completed", headBranch = "myr-
   head_sha: sha, path: pathOfWf, status, conclusion, head_branch: headBranch,
 });
 
-function runScript(sb, tag, { extraEnv = {} } = {}) {
-  const result = spawnSync("bash", [SCRIPT, "--tag", tag], {
+function runScript(sb, tag, { extraEnv = {}, args = [] } = {}) {
+  const result = spawnSync("bash", [SCRIPT, "--tag", tag, ...args], {
     cwd: sb.dir,
     env: {
       ...process.env,
@@ -1173,6 +1173,106 @@ describe("release manifest (release-components.json)", () => {
     assert.equal(manifest.version, "1.6.0");
     assert.deepEqual(Object.keys(manifest.components).sort(), ["board", "dockergate", "fleetd", "hermes"]);
     assert.match(manifest.components.dockergate.digest, /^sha256:/);
+  });
+});
+
+// VERIFY-ON-PROD (OPE-13017): the publish gate binds the release to the
+// immutable verified candidate.  The verification JSON is the response of
+// POST /issues/:id/release-verify (OPE-13014); the gate is opt-in via
+// --require-verification so the tag-push flow keeps working while the
+// pipeline wires verification to publish.
+describe("publish-github-release.sh: the release verification gate (OPE-13017)", () => {
+  const verificationFile = (sb, { verdict = "confirmed", deployedVersion = COMMIT, checkedAt = "2026-11-13T16:00:00Z", issueId = "5f38f2aa-381b-476c-97a8-d8ba190c099b", reason = "all members present" } = {}) => {
+    const file = path.join(sb.dir, "verification.json");
+    fs.writeFileSync(file, JSON.stringify({ verdict, deployedVersion, checkedAt, issueId, reason }));
+    return file;
+  };
+
+  it("publishes with the verification signature when the gate passes (confirmed, matching SHA)", () => {
+    const sb = sandbox({ runs: GREEN_RUNS });
+    const vf = verificationFile(sb);
+    const { code, out } = runScript(sb, "myr-v1.6.0", { extraEnv: {
+      MYRMIDON_RELEASE_VERIFICATION_RESULT: vf,
+    }, args: ["--require-verification", "--verification-result", vf] });
+    assert.equal(code, 0, out);
+    assert.match(out, /gate: release verification confirmed/);
+    const mut = mutations(sb);
+    assert.match(mut, /create tag=myr-v1\.6\.0/);
+    assert.match(mut, /## Release verification/);
+    assert.match(mut, /Commit: `c78a6c9fde4992a98e5e76d3fd556e33bb87935a`/);
+    assert.match(mut, /Verdict: confirmed/);
+    assert.match(mut, /Checked at: 2026-11-13T16:00:00Z/);
+  });
+
+  it("refuses to publish without --verification-result when --require-verification is set", () => {
+    const sb = sandbox({ runs: GREEN_RUNS });
+    const { code, out } = runScript(sb, "myr-v1.6.0", { args: ["--require-verification"] });
+    assert.notEqual(code, 0, out);
+    assert.match(out, /--require-verification needs --verification-result/);
+    assert.equal(mutations(sb), "");
+  });
+
+  it("refuses to publish when the verification file does not exist", () => {
+    const sb = sandbox({ runs: GREEN_RUNS });
+    const missing = path.join(sb.dir, "no-such-file.json");
+    const { code, out } = runScript(sb, "myr-v1.6.0", { args: ["--require-verification", "--verification-result", missing] });
+    assert.notEqual(code, 0, out);
+    assert.match(out, /does not exist.*NOT publishing/);
+    assert.equal(mutations(sb), "");
+  });
+
+  it("refuses to publish when the verification verdict is not 'confirmed'", () => {
+    const sb = sandbox({ runs: GREEN_RUNS });
+    const vf = verificationFile(sb, { verdict: "failed", reason: "member_missing_from_release" });
+    const { code, out } = runScript(sb, "myr-v1.6.0", { args: ["--require-verification", "--verification-result", vf] });
+    assert.notEqual(code, 0, out);
+    assert.match(out, /verdict is 'failed'.*NOT publishing/);
+    assert.match(out, /member_missing_from_release/);
+    assert.equal(mutations(sb), "");
+  });
+
+  it("refuses to publish when the verification deployedVersion does not match the tag commit (different SHA)", () => {
+    const sb = sandbox({ runs: GREEN_RUNS });
+    const otherSha = "deadbeefcafebabe0123456789abcdef01234567";
+    const vf = verificationFile(sb, { deployedVersion: otherSha });
+    const { code, out } = runScript(sb, "myr-v1.6.0", { args: ["--require-verification", "--verification-result", vf] });
+    assert.notEqual(code, 0, out);
+    assert.match(out, /deployedVersion 'deadbeefcafebabe0123456789abcdef01234567' does not match the tag commit 'c78a6c9fde4992a98e5e76d3fd556e33bb87935a'/);
+    assert.match(out, /NOT publishing/);
+    assert.equal(mutations(sb), "");
+  });
+
+  it("publishes without the gate when --verification-result is given without --require-verification (backward compat)", () => {
+    const sb = sandbox({ runs: GREEN_RUNS });
+    const vf = verificationFile(sb);
+    const { code, out } = runScript(sb, "myr-v1.6.0", { args: ["--verification-result", vf] });
+    assert.equal(code, 0, out);
+    assert.match(out, /publishing without the gate/);
+    const mut = mutations(sb);
+    assert.match(mut, /create tag=myr-v1\.6\.0/);
+    // no verification section in the body without the gate
+    assert.doesNotMatch(mut, /## Release verification/);
+  });
+
+  it("publishes as before when neither flag is given (the tag-push default)", () => {
+    const sb = sandbox({ runs: GREEN_RUNS });
+    const { code, out } = runScript(sb, "myr-v1.6.0");
+    assert.equal(code, 0, out);
+    const mut = mutations(sb);
+    assert.match(mut, /create tag=myr-v1\.6\.0/);
+    assert.doesNotMatch(mut, /## Release verification/);
+  });
+
+  it("the verification section carries the immutable SHA bind in the release body", () => {
+    const sb = sandbox({ runs: GREEN_RUNS });
+    const vf = verificationFile(sb);
+    const { code, out } = runScript(sb, "myr-v1.6.0", { args: ["--require-verification", "--verification-result", vf] });
+    assert.equal(code, 0, out);
+    const mut = mutations(sb);
+    // the body contains the exact commit SHA as the verification anchor
+    assert.match(mut, /Commit: `c78a6c9fde4992a98e5e76d3fd556e33bb87935a`/);
+    // and a board issue reference for traceability
+    assert.match(mut, /Board issue: 5f38f2aa-381b-476c-97a8-d8ba190c099b/);
   });
 });
 
