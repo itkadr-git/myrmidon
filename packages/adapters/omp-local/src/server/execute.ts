@@ -125,8 +125,60 @@ function resolveIsolatedSessionDir(companyId: string, agentId: string): string {
   return path.join(os.homedir(), ".omp", "paperclips", companyId, agentId);
 }
 
-function resolveRemoteIsolatedSessionDir(runtimeRootDir: string, companyId: string, agentId: string): string {
-  return path.posix.join(runtimeRootDir, "sessions", companyId, agentId);
+// myrmidon(OMP-RUN-GUARD-3): the sessions of an SSH run used to live in the run's
+// own directory (<runtimeRootDir>/sessions/...), which is removed when the run
+// ends, so no session ever outlived its run and a retry always started from
+// scratch. They live next to the runs directory now, outside what the cleanup
+// removes. Files older than OMP_REMOTE_SESSION_RETENTION_DAYS are pruned when a
+// run starts.
+export const OMP_REMOTE_SESSION_RETENTION_DAYS = 14;
+
+function resolveRemoteSessionRoot(workspaceBaseDir: string): string {
+  return path.posix.join(workspaceBaseDir, ".paperclip-runtime", "omp-sessions");
+}
+
+function resolveRemoteIsolatedSessionDir(workspaceBaseDir: string, companyId: string, agentId: string): string {
+  return path.posix.join(resolveRemoteSessionRoot(workspaceBaseDir), companyId, agentId);
+}
+
+const SAFE_REMOTE_CWD = /^[A-Za-z0-9_@.:/+-]+$/;
+
+/**
+ * Points the saved session's header at the cwd of this run. omp reads the cwd
+ * of a resumed session from its header; the file is the earlier run's, whose
+ * workspace copy is gone. The change is verified by reading the header back.
+ * Returns false when the session cannot be used in this run.
+ */
+async function rewriteRemoteSessionCwd(input: {
+  runId: string;
+  sessionPath: string;
+  savedCwd: string;
+  newCwd: string;
+  executionTarget: ReturnType<typeof readAdapterExecutionTarget>;
+  cwd: string;
+  env: Record<string, string>;
+  timeoutSec: number;
+  graceSec: number;
+}): Promise<boolean> {
+  if (!SAFE_REMOTE_CWD.test(input.savedCwd) || !SAFE_REMOTE_CWD.test(input.newCwd)) return false;
+  try {
+    const written = await runAdapterExecutionTargetShellCommand(
+      input.runId,
+      input.executionTarget,
+      `sed -i -e '1,${SESSION_HEADER_SCAN_LINE_COUNT}s#"cwd":"${input.savedCwd}"#"cwd":"${input.newCwd}"#' ${shellQuote(input.sessionPath)}`,
+      {
+        cwd: input.cwd,
+        env: input.env,
+        timeoutSec: input.timeoutSec > 0 ? Math.min(input.timeoutSec, 15) : 15,
+        graceSec: input.graceSec,
+      },
+    );
+    if (written.timedOut || (written.exitCode ?? 0) !== 0) return false;
+  } catch {
+    return false;
+  }
+  const readBack = await readSavedSessionCwd(input);
+  return readBack !== null && path.posix.normalize(readBack) === path.posix.normalize(input.newCwd);
 }
 
 async function ensureOmpSkillsInjected(
@@ -201,7 +253,19 @@ function normalizeExecutionCwd(candidate: string, remote: boolean): string {
   return remote ? path.posix.normalize(candidate) : path.resolve(candidate);
 }
 
+// myrmidon(OMP-RUN-GUARD-3): an SSH run works in its own copy of the workspace,
+// <base>/.paperclip-runtime/runs/<runId>/workspace, so the cwd of a session
+// saved by an earlier run differs from the cwd of the next run in the run id
+// only. The session belongs to the workspace, not to the run: both cwds are
+// compared by the workspace they are a copy of.
+const REMOTE_RUN_CWD_PATTERN = /\/\.paperclip-runtime\/runs\/[^/]+\/workspace(?=\/|$)/;
+
+export function remoteWorkspaceIdentity(cwd: string): string {
+  return path.posix.normalize(cwd).replace(REMOTE_RUN_CWD_PATTERN, "");
+}
+
 function executionCwdsMatch(saved: string, current: string, remote: boolean): boolean {
+  if (remote) return remoteWorkspaceIdentity(saved) === remoteWorkspaceIdentity(current);
   return normalizeExecutionCwd(saved, remote) === normalizeExecutionCwd(current, remote);
 }
 
@@ -374,6 +438,11 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   const effectiveWorkspaceCwd = useConfiguredInsteadOfAgentHome ? "" : workspaceCwd;
   const cwd = effectiveWorkspaceCwd || configuredCwd || process.cwd();
   let effectiveExecutionCwd = adapterExecutionTargetRemoteCwd(executionTarget, cwd);
+  // myrmidon(OMP-RUN-GUARD-3): the workspace the SSH runs are copies of.
+  const remoteWorkspaceBaseDir = effectiveExecutionCwd;
+  // Only SSH environments keep the sessions outside the run's directory; the
+  // sandbox lanes keep their layout.
+  const stableRemoteSessions = executionTarget?.kind === "remote" && executionTarget.transport === "ssh";
   await ensureAbsoluteDirectory(cwd, { createIfMissing: true });
 
   const isolatedSessionDir = executionTargetIsRemote
@@ -779,7 +848,9 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     }
 
     const effectiveSessionDir = executionTargetIsRemote && remoteRuntimeRootDir
-      ? resolveRemoteIsolatedSessionDir(remoteRuntimeRootDir, agent.companyId, agent.id)
+      ? stableRemoteSessions
+        ? resolveRemoteIsolatedSessionDir(remoteWorkspaceBaseDir, agent.companyId, agent.id)
+        : path.posix.join(remoteRuntimeRootDir, "sessions", agent.companyId, agent.id)
       : isolatedSessionDir;
 
     if (executionTargetIsRemote && remoteRuntimeRootDir) {
@@ -789,6 +860,15 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         timeoutSec: 15,
         createIfMissing: true,
       });
+      // myrmidon(OMP-RUN-GUARD-3): the sessions outlive their runs, so old ones are pruned here.
+      if (stableRemoteSessions) {
+        await runAdapterExecutionTargetShellCommand(
+          runId,
+          executionTarget,
+          `find ${shellQuote(resolveRemoteSessionRoot(remoteWorkspaceBaseDir))} -type f -name '*.jsonl' -mtime +${OMP_REMOTE_SESSION_RETENTION_DAYS} -delete 2>/dev/null || true`,
+          { cwd, env, timeoutSec: 30, graceSec },
+        ).catch(() => undefined);
+      }
     }
 
     // myrmidon(OMP-RUN-GUARD): the steer file lives next to the agent's sessions
@@ -818,6 +898,11 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     }
 
     const runtimeExecutionTarget = overrideAdapterExecutionTargetRemoteCwd(executionTarget, effectiveExecutionCwd);
+    // myrmidon(OMP-RUN-GUARD-3): the identity a saved SSH session is matched by. The
+    // target of the run carries the run's own workspace copy as its remoteCwd,
+    // which differs in every run, so no saved session ever matched the next
+    // run's target. The session is tied to the environment itself.
+    const sessionIdentityTarget = stableRemoteSessions ? executionTarget : runtimeExecutionTarget;
     if (executionTargetIsRemote && adapterExecutionTargetUsesPaperclipBridge(runtimeExecutionTarget)) {
       paperclipBridge = await startAdapterExecutionTargetPaperclipBridge({
         runId,
@@ -849,7 +934,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     const runtimeSessionId = asString(runtimeSessionParams.sessionId, runtime.sessionId ?? "");
     const runtimeSessionCwd = asString(runtimeSessionParams.cwd, "");
     const runtimeRemoteExecution = parseObject(runtimeSessionParams.remoteExecution);
-    const sessionTargetMatches = adapterExecutionTargetSessionMatches(runtimeRemoteExecution, runtimeExecutionTarget);
+    const sessionTargetMatches = adapterExecutionTargetSessionMatches(runtimeRemoteExecution, sessionIdentityTarget);
     const sessionParamsCwdMatches =
       runtimeSessionCwd.length === 0 ||
       executionCwdsMatch(runtimeSessionCwd, effectiveExecutionCwd, executionTargetIsRemote);
@@ -859,9 +944,11 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     const isolatedLocalTree = "/.omp/paperclips/";
     const agentLocalSegment = `/.omp/paperclips/${agent.companyId}/${agent.id}`;
     const remoteSessionBase = remoteRuntimeRootDir
-      ? path.posix.join(remoteRuntimeRootDir, "sessions")
+      ? stableRemoteSessions
+        ? resolveRemoteSessionRoot(remoteWorkspaceBaseDir)
+        : path.posix.join(remoteRuntimeRootDir, "sessions")
       : null;
-    const agentRemoteSegment = `/sessions/${agent.companyId}/${agent.id}`;
+    const agentRemoteSegment = `${stableRemoteSessions ? "/omp-sessions" : "/sessions"}/${agent.companyId}/${agent.id}`;
     const sessionBelongsToOtherAgent =
       (normalizedSessionPath.includes(isolatedLocalTree) &&
         !normalizedSessionPath.includes(agentLocalSegment)) ||
@@ -889,12 +976,40 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       (savedSessionCwd !== null &&
         executionCwdsMatch(savedSessionCwd, effectiveExecutionCwd, executionTargetIsRemote));
 
-    const canResumeSession =
+    let canResumeSession =
       runtimeSessionId.length > 0 &&
       sessionBelongsToAgent &&
       sessionTargetMatches &&
       sessionParamsCwdMatches &&
       sessionHeaderCwdMatches;
+
+    // myrmidon(OMP-RUN-GUARD-3): the saved session was written in an earlier run's
+    // copy of the workspace; its header is pointed at this run's copy. When that
+    // cannot be done and verified, the run starts a fresh session as before.
+    if (
+      canResumeSession &&
+      executionTargetIsRemote &&
+      savedSessionCwd !== null &&
+      path.posix.normalize(savedSessionCwd) !== path.posix.normalize(effectiveExecutionCwd)
+    ) {
+      canResumeSession = await rewriteRemoteSessionCwd({
+        runId,
+        sessionPath: runtimeSessionId,
+        savedCwd: savedSessionCwd,
+        newCwd: effectiveExecutionCwd,
+        executionTarget: runtimeExecutionTarget ?? null,
+        cwd,
+        env,
+        timeoutSec,
+        graceSec,
+      });
+      if (!canResumeSession) {
+        await onLog(
+          "stdout",
+          `[paperclip] OMP session "${runtimeSessionId}" could not be moved to "${effectiveExecutionCwd}"; starting a fresh session.\n`,
+        );
+      }
+    }
 
     if (runtimeSessionId && !canResumeSession) {
       const staleSessionCwdNote =
@@ -1123,6 +1238,52 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       ? createOmpRunGuardFeed({ guard: runGuard, onStop: stopOmpForRunGuard, onHint: sendRunGuardHint })
       : null;
 
+    const buildSessionParams = (sessionId: string) => ({
+      sessionId,
+      cwd: effectiveExecutionCwd,
+      ...(workspaceId ? { workspaceId } : {}),
+      ...(workspaceRepoUrl ? { repoUrl: workspaceRepoUrl } : {}),
+      ...(workspaceRepoRef ? { repoRef: workspaceRepoRef } : {}),
+      ...(executionTargetIsRemote
+        ? {
+            remoteExecution: adapterExecutionTargetSessionIdentity(sessionIdentityTarget),
+          }
+        : {}),
+    });
+
+    // myrmidon(OMP-RUN-GUARD-3): the session file of a fresh session is reported to
+    // the board while the run is going, once omp has written it (it does so after
+    // the first model turn). A run that ends without a result (the board was
+    // restarted, the process was lost, the run was cancelled) is then retried in
+    // this session instead of from scratch. The final result replaces it.
+    let sessionReported = false;
+    let sessionReportBusy = false;
+    let sessionReportAttempts = 0;
+    const reportSessionEarly = async (): Promise<void> => {
+      if (!ctx.onSessionCreated || sessionReported || sessionReportBusy || sessionReportAttempts >= 6) return;
+      sessionReportBusy = true;
+      sessionReportAttempts += 1;
+      try {
+        const sessionPath = await findNewlyCreatedSessionFile({
+          runId,
+          sessionDir: effectiveSessionDir,
+          executionTarget: runtimeExecutionTarget ?? null,
+          cwd,
+          env: executionTargetIsRemote ? env : runtimeEnv,
+          timeoutSec,
+          graceSec,
+          existingSessionFiles: preRunSessionFiles,
+        });
+        if (!sessionPath) return;
+        await ctx.onSessionCreated({ sessionParams: buildSessionParams(sessionPath), sessionDisplayId: sessionPath });
+        sessionReported = true;
+      } catch {
+        // Advisory: the final result still carries the session.
+      } finally {
+        sessionReportBusy = false;
+      }
+    };
+
     const runAttempt = async (sessionToResume: string | null) => {
       const args = buildArgs(sessionToResume);
       if (onMeta) {
@@ -1155,6 +1316,8 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
             await onLog(stream, line + "\n");
             // myrmidon(OMP-RUN-GUARD): every complete event line goes to the guard.
             if (runGuardFeed) await runGuardFeed.observeLine(line);
+            // myrmidon(OMP-RUN-GUARD-3): omp has written the session file by the end of its first turn.
+            if (!sessionToResume && !sessionReported && line.includes('"turn_end"')) await reportSessionEarly();
           }
         }
       };
@@ -1268,20 +1431,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       }
 
       const resolvedSessionId = clearSessionOnMissingSession ? null : finalSessionPath;
-      const resolvedSessionParams = resolvedSessionId
-        ? {
-            sessionId: resolvedSessionId,
-            cwd: effectiveExecutionCwd,
-            ...(workspaceId ? { workspaceId } : {}),
-            ...(workspaceRepoUrl ? { repoUrl: workspaceRepoUrl } : {}),
-            ...(workspaceRepoRef ? { repoRef: workspaceRepoRef } : {}),
-            ...(executionTargetIsRemote
-              ? {
-                  remoteExecution: adapterExecutionTargetSessionIdentity(runtimeExecutionTarget),
-                }
-              : {}),
-          }
-        : null;
+      const resolvedSessionParams = resolvedSessionId ? buildSessionParams(resolvedSessionId) : null;
 
       const stderrLine = firstNonEmptyLine(attempt.proc.stderr);
       const rawExitCode = attempt.proc.exitCode;

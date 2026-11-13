@@ -1650,6 +1650,175 @@ describe("omp local execution", () => {
     });
   });
 
+  // myrmidon(OMP-RUN-GUARD-3): a retry continues the session of the run it replaces.
+  describe("session continuity of an SSH run", () => {
+    const BASE = "/remote/workspace";
+    const SESSION_ROOT = `${BASE}/.paperclip-runtime/omp-sessions/company-1/agent-1`;
+    const OLD_CWD = `${BASE}/.paperclip-runtime/runs/run-old/workspace`;
+    const NEW_CWD = `${BASE}/.paperclip-runtime/runs/run-session/workspace`;
+    const SESSION_FILE = `${SESSION_ROOT}/2026-11-13_abc.jsonl`;
+    const sshTarget = {
+      kind: "remote" as const,
+      transport: "ssh" as const,
+      remoteCwd: BASE,
+      spec: {
+        host: "ssh.example.test",
+        port: 22,
+        username: "ssh-user",
+        remoteCwd: BASE,
+        remoteWorkspacePath: BASE,
+        privateKey: null,
+        knownHosts: null,
+        strictHostKeyChecking: true,
+      },
+    };
+    const shellOk = (stdout = "") => ({ exitCode: 0, signal: null, timedOut: false, stdout, stderr: "" });
+    const defaultShell = async () => shellOk();
+
+    async function makeRun(runId: string, sessionParams: Record<string, unknown> | null) {
+      const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-omp-ssh-session-"));
+      cleanupDirs.push(rootDir);
+      const workspaceDir = path.join(rootDir, "workspace");
+      await mkdir(workspaceDir, { recursive: true });
+      prepareAdapterExecutionTargetRuntime.mockImplementationOnce(async () => ({
+        workspaceRemoteDir: NEW_CWD,
+        runtimeRootDir: `${NEW_CWD}/.paperclip-runtime/omp`,
+        assetDirs: {
+          skills: `${NEW_CWD}/.paperclip-runtime/omp/skills`,
+          agentConfig: `${NEW_CWD}/.paperclip-runtime/omp/agentConfig`,
+        },
+        restoreWorkspace: vi.fn(async () => undefined),
+      }));
+      return {
+        runId,
+        authToken: "test-host-api-token",
+        executionTarget: sshTarget,
+        agent: { id: "agent-1", companyId: "company-1", name: "OMP Builder", adapterType: "omp_local", adapterConfig: {} },
+        runtime: {
+          sessionId: sessionParams ? String(sessionParams.sessionId) : null,
+          sessionParams,
+          sessionDisplayId: null,
+          taskKey: null,
+        },
+        config: { command: "omp", model: "openai/gpt-4o" },
+        context: { paperclipWorkspace: { cwd: workspaceDir, source: "project_primary" } },
+        onLog: async () => {},
+      };
+    }
+
+    const savedParams = {
+      sessionId: SESSION_FILE,
+      cwd: OLD_CWD,
+      remoteExecution: { transport: "ssh", host: "ssh.example.test", port: 22, username: "ssh-user", remoteCwd: BASE },
+    };
+
+    it("keeps the sessions of an SSH run outside the run's directory", async () => {
+      const input = await makeRun("run-session", null);
+
+      await execute(input);
+
+      const args = runAdapterExecutionTargetProcess.mock.calls[0]?.[3] ?? [];
+      expect(args[args.indexOf("--session-dir") + 1]).toBe(SESSION_ROOT);
+      expect(args).not.toContain("--session");
+      // Sessions of earlier runs are pruned by age, only below the sessions root.
+      const prune = runAdapterExecutionTargetShellCommand.mock.calls
+        .map((call) => String(call[2] ?? ""))
+        .find((command) => command.startsWith("find "));
+      expect(prune).toContain(`'${BASE}/.paperclip-runtime/omp-sessions'`);
+      expect(prune).toContain("-mtime +14 -delete");
+    });
+
+    it("resumes the session of an earlier run after pointing its header at this run's workspace copy", async () => {
+      const input = await makeRun("run-session", savedParams);
+      let headerCwd = OLD_CWD;
+      const commands: string[] = [];
+      runAdapterExecutionTargetShellCommand.mockImplementation(async (_runId, _target, command) => {
+        const text = String(command ?? "");
+        commands.push(text);
+        if (text.includes("sed -i")) {
+          headerCwd = NEW_CWD;
+          return shellOk();
+        }
+        if (text.includes("head -n")) return shellOk(`${JSON.stringify({ type: "session", id: "abc", cwd: headerCwd })}\n`);
+        return shellOk();
+      });
+      try {
+        await execute(input);
+      } finally {
+        runAdapterExecutionTargetShellCommand.mockImplementation(defaultShell);
+      }
+
+      const args = runAdapterExecutionTargetProcess.mock.calls[0]?.[3] ?? [];
+      expect(args[args.indexOf("--session") + 1]).toBe(SESSION_FILE);
+      const rewrite = commands.find((command) => command.includes("sed -i"));
+      expect(rewrite).toContain(`"cwd":"${OLD_CWD}"#"cwd":"${NEW_CWD}"`);
+      expect(rewrite).toContain(`'${SESSION_FILE}'`);
+    });
+
+    it("starts a fresh session when the header cannot be moved to this run's workspace copy", async () => {
+      const input = await makeRun("run-session", savedParams);
+      runAdapterExecutionTargetShellCommand.mockImplementation(async (_runId, _target, command) => {
+        const text = String(command ?? "");
+        if (text.includes("sed -i")) return { ...shellOk(), exitCode: 1 };
+        if (text.includes("head -n")) return shellOk(`${JSON.stringify({ type: "session", id: "abc", cwd: OLD_CWD })}\n`);
+        return shellOk();
+      });
+      try {
+        await execute(input);
+      } finally {
+        runAdapterExecutionTargetShellCommand.mockImplementation(defaultShell);
+      }
+
+      const args = runAdapterExecutionTargetProcess.mock.calls[0]?.[3] ?? [];
+      expect(args).not.toContain("--session");
+      expect(args[args.indexOf("--session-dir") + 1]).toBe(SESSION_ROOT);
+    });
+
+    it("does not resume a session that is missing on the runner", async () => {
+      const input = await makeRun("run-session", savedParams);
+      // The default shell mock prints no header: the file is not there.
+
+      await execute(input);
+
+      const args = runAdapterExecutionTargetProcess.mock.calls[0]?.[3] ?? [];
+      expect(args).not.toContain("--session");
+    });
+
+    it("reports the session to the board when omp has written it, before the run ends", async () => {
+      const input = await makeRun("run-session", null);
+      const onSessionCreated = vi.fn(async () => undefined);
+      let listed = 0;
+      runAdapterExecutionTargetShellCommand.mockImplementation(async (_runId, _target, command) => {
+        const text = String(command ?? "");
+        if (text.includes("ls -1t")) {
+          listed += 1;
+          // Empty before the run starts and after the first turn the file is there.
+          return shellOk(listed >= 2 ? `${SESSION_FILE}\n` : "");
+        }
+        return shellOk();
+      });
+      runAdapterExecutionTargetProcess.mockImplementationOnce(async (_runId, _target, _command, _args, options) => {
+        const onLog = options?.onLog as (stream: "stdout" | "stderr", chunk: string) => Promise<void>;
+        await onLog("stdout", `${JSON.stringify({ type: "turn_start" })}\n`);
+        expect(onSessionCreated).not.toHaveBeenCalled();
+        await onLog("stdout", `${JSON.stringify({ type: "turn_end", message: { role: "assistant", content: "x" }, toolResults: [] })}\n`);
+        // The board has the session while omp is still running.
+        expect(onSessionCreated).toHaveBeenCalledTimes(1);
+        return { exitCode: null, signal: "SIGTERM", timedOut: false, stdout: "", stderr: "", pid: 1, startedAt: new Date().toISOString() };
+      });
+      try {
+        await execute({ ...input, onSessionCreated });
+      } finally {
+        runAdapterExecutionTargetShellCommand.mockImplementation(defaultShell);
+      }
+
+      expect(onSessionCreated).toHaveBeenCalledWith({
+        sessionParams: expect.objectContaining({ sessionId: SESSION_FILE, cwd: NEW_CWD }),
+        sessionDisplayId: SESSION_FILE,
+      });
+    });
+  });
+
   it("passes workspaceSyncMode: \"full\" by default and \"git_checkout\" when configured", async () => {
     const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-omp-workspace-sync-"));
     cleanupDirs.push(rootDir);

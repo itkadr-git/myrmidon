@@ -292,6 +292,19 @@ export interface AdapterExecutionContext {
   onDispatch?: () => void;
   onSpawn?: (meta: { pid: number; processGroupId: number | null; startedAt: string }) => Promise<void>;
   /**
+   * myrmidon(OMP-RUN-GUARD-3): an adapter whose CLI creates its resumable
+   * session while the run is going reports it here as soon as it exists, not
+   * only in the final result. The host stores it as the task's session, so a
+   * run that ends without a result (the board restarted, the process was
+   * lost, the run was cancelled) is retried in the same session. The final
+   * result still replaces it. Optional: adapters that never call it behave as
+   * before.
+   */
+  onSessionCreated?: (session: {
+    sessionParams: Record<string, unknown>;
+    sessionDisplayId?: string | null;
+  }) => Promise<void>;
+  /**
    * myrmidon(HERMES-RUN-REATTACH): remote adapters report the provider-side run
    * id as soon as the provider admits the run (immediately after the create
    * response), not only in the final result. The host persists it on the
