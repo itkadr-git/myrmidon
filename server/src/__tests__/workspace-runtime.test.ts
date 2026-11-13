@@ -7330,20 +7330,27 @@ describeEmbeddedPostgres("workspace runtime service control persistence", () => 
     const fixture = await createRuntimeFixture();
     const cleanupRuntimeHome = await createRuntimeHome();
     const workspace = fixture.workspaces[0]!;
-    // Occupy the preferred port with THIS test's own listener instead of trusting a
-    // released findFreePort() port: on a loaded runner the freed port can be re-taken
-    // by an unrelated process (or the scan can stop early on excluded/reserved ports),
-    // and then the exhausted-conflict never carries `port: basePort`. Holding the
-    // listener keeps the port deterministically occupied; closing it before the start
-    // attempt would reintroduce the race.
-    const basePort = await findFreePort();
-    const portBlocker = await listenOnPort(basePort);
+    // Occupy the preferred port with THIS test's own listener: bind port 0 and take
+    // the assigned port from server.address(), so there is no find-then-bind gap. A
+    // released findFreePort() port can be re-taken by an unrelated process on a
+    // loaded runner (or the scan can stop early on excluded/reserved ports), and
+    // then the exhausted-conflict never carries `port: basePort`. Holding this
+    // listener keeps the port deterministically occupied; closing it before the
+    // start attempt would reintroduce the race.
+    const portBlocker = await listenOnPort(0);
+    const blockerAddress = portBlocker.address();
+    const basePort =
+      typeof blockerAddress === "object" && blockerAddress ? blockerAddress.port : null;
+    if (!basePort) {
+      await closeNetServer(portBlocker);
+      throw new Error("Failed to determine the occupied allocated port");
+    }
+
     const fakeBin = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-runtime-no-lsof-"));
     const fakeLsof = path.join(fakeBin, "lsof");
     const previousPath = process.env.PATH;
     await fs.writeFile(fakeLsof, "#!/bin/sh\nexit 1\n", { mode: 0o755 });
     process.env.PATH = `${fakeBin}${path.delimiter}${previousPath ?? ""}`;
-
     try {
       await expect(startRuntimeServicesForWorkspaceControl({
         db,
