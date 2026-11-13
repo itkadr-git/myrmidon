@@ -875,6 +875,7 @@ fi
 # board-affecting step runs (the maintenance enter below). Issues blocked after
 # this moment are the failure signature the post-deploy check looks for.
 deploy_started_at="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+step_begin "board-rollout" "ref=$ref digest=${digest:0:19}"
 
 log "4/8 enter maintenance"
 # ROLLBACK-WITHOUT-BOARD's counterpart: maintenance_enter now reports an enter
@@ -1034,6 +1035,7 @@ if ((need_window)); then
     log "deployed $ref (previous: ${previous:-<none>}, dump: <skipped>, URGENT: $urgent_reason, rollback: VM nightly backup)"
   else
     log "deployed $ref (previous: ${previous:-<none>}, dump: ${LAST_DUMP_FILE:-<none>})"
+  step_end_ok "board deployed"
   fi
 fi
 
