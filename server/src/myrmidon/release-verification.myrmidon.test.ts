@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  aggregateReleaseCandidates,
   buildReleaseCandidateMembers,
   composeReleaseVerdict,
   verifyReleaseComposition,
@@ -402,6 +403,81 @@ describe("verifyReleaseComposition", () => {
     expect(unmerged?.membership).toBe("unknown");
     expect(unmerged?.mergeCommitSha).toBeNull();
   });
+
+  it("fails closed with member_metadata_incomplete when a candidate has no repository metadata", async () => {
+    // Review finding (PR #3093): a pull_request work product without
+    // metadata.repo used to be dropped by the builder, so a release whose
+    // only candidate had incomplete metadata was reported as
+    // empty_candidate_set — a generic message that hid the real gap. The
+    // member must stay in the set and fail the release with a named reason,
+    // even when every other signal would resolve as present.
+    const calls: string[] = [];
+    const result = await verifyReleaseComposition({
+      releasePrefix: "1.6",
+      deployedVersion: "myr-v1.6.8",
+      members: [member("OPE-1", SHA_A, true), { ...member("OPE-2", SHA_B, true), repository: "" }],
+      resolvedRefs: [{ ref: "myr-v1.6.8", kind: "tag" }],
+      fetchImpl: compareFake(["myr-v1.6.8"], [], calls),
+      now: NOW,
+    });
+    expect(result.verdict).toBe("failed");
+    expect(result.failureReason).toBe("member_metadata_incomplete");
+    expect(result.reason).toContain("OPE-2");
+    expect(result.allMembersPresent).toBe(false);
+    // Every member is listed, including the one with incomplete metadata,
+    // so the persisted result shows the full unproven candidate set.
+    expect(result.members).toHaveLength(2);
+    const broken = result.members.find((m) => m.id === "OPE-2");
+    expect(broken?.membership).toBe("unknown");
+    expect(broken?.repository).toBe("");
+    // No membership fetch is attempted for the broken member: without a repo
+    // there is nothing to compare against.
+    const brokenCalls = calls.filter((c) => c.includes(SHA_B));
+    expect(brokenCalls).toHaveLength(0);
+  });
+
+  it("fails closed with member_metadata_incomplete when the ONLY candidate has no repository metadata", async () => {
+    // The extreme case of the same hole: with the entry dropped the release
+    // used to be reported as empty_candidate_set; now it is a named
+    // metadata gap, not a generic empty-set message.
+    const result = await verifyReleaseComposition({
+      releasePrefix: "1.6",
+      deployedVersion: "myr-v1.6.8",
+      members: [{ ...member("OPE-9", SHA_A, true), repository: "" }],
+      resolvedRefs: [{ ref: "myr-v1.6.8", kind: "tag" }],
+      fetchImpl: compareFake(["myr-v1.6.8"], [], []),
+      now: NOW,
+    });
+    expect(result.verdict).toBe("failed");
+    expect(result.failureReason).toBe("member_metadata_incomplete");
+    expect(result.failureReason).not.toBe("empty_candidate_set");
+    expect(result.reason).toContain("OPE-9");
+  });
+
+  it("verifies the FULL release candidate set: one unmerged sibling fails the release even when the rest resolve", async () => {
+    // Review finding (PR #3093): the route used to build the candidate set
+    // from a single issue's work products. This scenario models the fixed
+    // contract directly — the caller passes the aggregated full set — and
+    // asserts the release fails while naming the unmerged sibling.
+    const calls: string[] = [];
+    const result = await verifyReleaseComposition({
+      releasePrefix: "1.8",
+      deployedVersion: "myr-v1.8.0",
+      members: [
+        member("OPE-A", SHA_A, true),
+        member("OPE-B", SHA_B, true),
+        member("OPE-C", SHA_C, false),
+      ],
+      resolvedRefs: [{ ref: "myr-v1.8.0", kind: "tag" }],
+      fetchImpl: compareFake(["myr-v1.8.0"], [], calls),
+      now: NOW,
+    });
+    expect(result.verdict).toBe("failed");
+    expect(result.failureReason).toBe("member_not_merged");
+    expect(result.reason).toContain("OPE-C");
+    // All three candidates are visible in the persisted result.
+    expect(result.members).toHaveLength(3);
+  });
 });
 
 describe("buildReleaseCandidateMembers", () => {
@@ -436,10 +512,88 @@ describe("buildReleaseCandidateMembers", () => {
     expect(members[0].id).toBe("PR#7");
   });
 
-  it("skips pull_request entries without a repository", () => {
+  it("keeps pull_request entries without a repository as unverifiable members", () => {
+    // Review finding (PR #3093): dropping the entry would let an incomplete
+    // candidate list shrink and be reported as empty_candidate_set, hiding
+    // the real gap. It must stay visible so the verification fails closed
+    // with member_metadata_incomplete and names it.
     const members = buildReleaseCandidateMembers([
       wp("pull_request", "merged", { number: 5, mergeCommitSha: SHA_A }),
     ]);
-    expect(members).toHaveLength(0);
+    expect(members).toHaveLength(1);
+    expect(members[0]).toMatchObject({ id: "PR#5", repository: "", merged: true, mergeCommitSha: SHA_A });
+  });
+});
+
+describe("aggregateReleaseCandidates", () => {
+  // End-to-end path of the VERIFY-ON-PROD route candidate-set assembly
+  // (review finding PR #3093): the set must span EVERY issue of the release,
+  // must keep unmerged siblings, and must keep entries with incomplete
+  // metadata — so the verification fails closed on the full release instead
+  // of confirming a partial list.
+  const wp = (
+    type: string,
+    status: string,
+    metadata: Record<string, unknown>,
+  ): { type: string; status: string; metadata: Record<string, unknown> } => ({
+    type,
+    status,
+    metadata,
+  });
+
+  it("collects pull_request candidates from every release issue, prefixing the owning issue", () => {
+    const byIssue = new Map([
+      ["OPE-1", [wp("pull_request", "merged", { repo: REPO, number: 1, mergeCommitSha: SHA_A })]],
+      ["OPE-2", [
+        wp("pull_request", "merged", { repo: REPO, number: 2, mergeCommitSha: SHA_B }),
+        wp("preview_url", "running", { url: "https://example.test" }),
+      ]],
+    ]);
+    const members = aggregateReleaseCandidates(byIssue);
+    expect(members).toHaveLength(2);
+    expect(members[0]).toMatchObject({ id: "OPE-1:PR#1", merged: true });
+    expect(members[1]).toMatchObject({ id: "OPE-2:PR#2", merged: true });
+  });
+
+  it("keeps an unmerged sibling in the aggregated set so it fails the release", async () => {
+    const byIssue = new Map([
+      ["OPE-1", [wp("pull_request", "merged", { repo: REPO, number: 1, mergeCommitSha: SHA_A })]],
+      ["OPE-2", [wp("pull_request", "open", { repo: REPO, number: 2, mergeCommitSha: SHA_B })]],
+    ]);
+    const members = aggregateReleaseCandidates(byIssue);
+    expect(members).toHaveLength(2);
+
+    const result = await verifyReleaseComposition({
+      releasePrefix: "1.8",
+      deployedVersion: "myr-v1.8.0",
+      members,
+      resolvedRefs: [{ ref: "myr-v1.8.0", kind: "tag" }],
+      fetchImpl: compareFake(["myr-v1.8.0"], [], []),
+      now: NOW,
+    });
+    expect(result.verdict).toBe("failed");
+    expect(result.failureReason).toBe("member_not_merged");
+    expect(result.reason).toContain("OPE-2:PR#2");
+  });
+
+  it("keeps incomplete-metadata entries from any release issue in the aggregated set", async () => {
+    const byIssue = new Map([
+      ["OPE-1", [wp("pull_request", "merged", { repo: REPO, number: 1, mergeCommitSha: SHA_A })]],
+      ["OPE-2", [wp("pull_request", "merged", { number: 3, mergeCommitSha: SHA_C })]],
+    ]);
+    const members = aggregateReleaseCandidates(byIssue);
+    expect(members).toHaveLength(2);
+
+    const result = await verifyReleaseComposition({
+      releasePrefix: "1.8",
+      deployedVersion: "myr-v1.8.0",
+      members,
+      resolvedRefs: [{ ref: "myr-v1.8.0", kind: "tag" }],
+      fetchImpl: compareFake(["myr-v1.8.0"], [], []),
+      now: NOW,
+    });
+    expect(result.verdict).toBe("failed");
+    expect(result.failureReason).toBe("member_metadata_incomplete");
+    expect(result.reason).toContain("OPE-2:PR#3");
   });
 });
