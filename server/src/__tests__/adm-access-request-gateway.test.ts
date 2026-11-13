@@ -15,7 +15,7 @@ import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } fro
 import { admAccessRequestRoutes } from "../routes/adm-access-requests.js";
 import { errorHandler } from "../middleware/index.js";
 import { admAccessRequestService, type AdmCapabilityExecutor } from "../services/adm-access-request.js";
-import { admScopeHash, createAdmCapabilityToken } from "@myrmidon/shared";
+import { admScopeHash, createAdmCapabilityToken } from "@myrmidon/shared/adm-access-request-crypto";
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;

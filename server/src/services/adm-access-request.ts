@@ -3,10 +3,7 @@ import type { Db } from "@myrmidon/db";
 import { approvals, budgetPolicies, companySecrets, companySkills, issues, knowledgeItems, projects, toolConnections } from "@myrmidon/db";
 import {
   ADM_ACCESS_REQUEST_TYPE,
-  admScopeHash,
-  createAdmCapabilityToken,
   redactedAdmRequestProjection,
-  verifyAdmCapabilityToken,
   admAccessActions,
   type AdmAccessAction,
   type AdmCapabilityClaims,
@@ -18,6 +15,7 @@ import {
   type RevokeAdmAccessRequestInput,
   type RedactedAdmRequest,
 } from "@myrmidon/shared";
+import { admScopeHash, createAdmCapabilityToken, verifyAdmCapabilityToken } from "@myrmidon/shared/adm-access-request-crypto";
 import { badRequest, conflict, forbidden, notFound } from "../errors.js";
 import { logActivity } from "./activity-log.js";
 

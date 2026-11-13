@@ -22,7 +22,7 @@ import { inArray } from "drizzle-orm";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
 import { admAccessRequestRoutes } from "../routes/adm-access-requests.js";
 import { errorHandler } from "../middleware/index.js";
-import { admScopeHash, createAdmCapabilityToken } from "@myrmidon/shared";
+import { admScopeHash, createAdmCapabilityToken } from "@myrmidon/shared/adm-access-request-crypto";
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
