@@ -12,6 +12,24 @@ version file to edit. Base Paperclip version is in the image label
 
 ## 1.6.7
 
+### The omp SSH runner's /tmp moves to the data disk and is pruned (OPE-12966)
+
+- The SSH runner compose template (`docker/agent-runtime/omp-ssh/compose.yml`) now binds
+  `${OMP_RUNNER_DATA_DIR}/tmp` at `/tmp`. Until now the runner's `/tmp` stayed in the
+  container's write layer on the host's root disk: tests and task tooling wrote gigabytes
+  there (15.8 GB in two days) and nothing removed them. Create `tmp/` with mode `1777` next
+  to `workspace/`, `home/` and `hostkeys/` before the first start; a running runner needs
+  the volume added to its compose file and a recreate.
+- The host GC (`scripts/myrmidon/host-gc/host-clone-cache-gc.mjs`) removes top-level entries of
+  `<runner root>/<runner>/tmp` that nothing inside has changed in for 24 hours
+  (`--runner-tmp-ttl`, at least 3). It runs only when a runner root is configured
+  (`--runner-root` / `HOST_GC_RUNNER_ROOTS`, set by the repo's systemd unit), never follows a
+  symlink or leaves the filesystem, and never removes `tmp` itself. Journal events
+  `runner-tmp-removed`, `runner-tmp-remove-failed`, `runner-tmp-skipped`,
+  `runner-tmp-scan-failed`; the counter `runnerTmpRemoved`.
+
+## 1.6.7
+
 ### Bots of agents that left the bot runtime are decommissioned (OPE-12654)
 
 - An agent whose card moved from `hermes_gateway` to another adapter, or that was terminated,
