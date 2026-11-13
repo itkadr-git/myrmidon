@@ -576,6 +576,8 @@ export interface InstanceGeneralSettings {
    * field (packages/shared/src/validators/instance.ts).
    */
   vendorNameCheck?: StoredVendorNameCheckSettings;
+  /** Owner active-channel inactivity threshold. */
+  ownerActiveChannel?: OwnerActiveChannelSettings;
   /**
    * myrmidon(AGENT-LIVENESS-D1): instance-wide liveness thresholds, stored as
    * a partial patch (absent keys keep the defaults of

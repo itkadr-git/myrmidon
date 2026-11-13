@@ -190,7 +190,7 @@ import { tryClaimContinuationKey, releaseContinuationKey } from "./continuation-
 // settings against the environment, plus the per-agent card switch, so the three
 // automatic behaviours obey the settings page without a restart.
 import { myrmidonTeamLivenessReader } from "../myrmidon/team-liveness/index.js";
-import { resolveAgentLivenessSettings } from "@myrmidon/shared"; // myrmidon(AGENT-LIVENESS-D1)
+import { resolveAgentTeamLiveness, resolveAgentLivenessSettings } from "@myrmidon/shared"; // myrmidon(AGENT-LIVENESS-D1)
 import {
   classifyProviderGarbageOutcome,
   detectProviderGarbageGroups,
