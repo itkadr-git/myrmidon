@@ -7,14 +7,46 @@ vi.mock("../myrmidon/maintenance/store.js", () => ({ readMaintenanceDocument }))
 const companyId = "11111111-1111-4111-8111-111111111111";
 const agentId = "22222222-2222-4222-8222-222222222222";
 
+function findDate(obj: unknown, seen = new Set<unknown>()): Date | null {
+  if (!obj || typeof obj !== "object") return null;
+  if (obj instanceof Date) return obj;
+  if (seen.has(obj)) return null;
+  seen.add(obj);
+  if ("value" in obj && (obj as { value?: unknown }).value instanceof Date) {
+    return (obj as { value: Date }).value;
+  }
+  for (const key of Object.getOwnPropertyNames(obj)) {
+    try {
+      const found = findDate((obj as Record<string, unknown>)[key], seen);
+      if (found) return found;
+    } catch {
+      // ignore
+    }
+  }
+  return null;
+}
+
 function fakeDb() {
   let rows: Array<Record<string, unknown>> = [];
   const tx = {
     select: vi.fn(() => ({
       from: vi.fn(() => ({
-        where: vi.fn(() => ({
+        where: vi.fn((clause?: unknown) => ({
           orderBy: vi.fn(() => ({
-            limit: vi.fn(async () => rows.filter((row) => row.dedupKey === "agent-recovery:test")),
+            limit: vi.fn(async () => {
+              const since = findDate(clause);
+              return rows.filter((row) => {
+                if (row.dedupKey !== "agent-recovery:test") return false;
+                if (since && row.createdAt) {
+                  const rowTime =
+                    row.createdAt instanceof Date
+                      ? row.createdAt.getTime()
+                      : new Date(row.createdAt as string).getTime();
+                  return rowTime >= since.getTime();
+                }
+                return true;
+              });
+            }),
           })),
           then: (resolve: (value: unknown[]) => unknown) =>
             Promise.resolve(resolve([{ id: agentId, reportsTo: null }])),
