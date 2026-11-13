@@ -558,6 +558,7 @@ import {
 } from "./run-liveness.js";
 import { tryClaimContinuationKeyInTransaction } from "./continuation-dedupe.js";
 import {
+  MAX_CONSECUTIVE_EMPTY_RUNS,
   classifyEmptyRun,
   evaluateCompletionGate,
   checkAndHandleEmptyRunEscalation,
@@ -584,6 +585,20 @@ async function getCachedFreezeThreshold(settings: { getGeneral: () => Promise<{ 
   const general = await settings.getGeneral().catch(() => null);
   const value = general?.issueRewakeFreezeThreshold ?? ISSUE_REWAKE_FREEZE_THRESHOLD;
   cachedFreezeThreshold = { value, expiresAt: now + 30_000 };
+  return value;
+}
+
+// myrmidon(1.8 AUTOPAUSE): cached read of the configurable empty-run streak
+// threshold, same 30 s pattern as the freeze threshold above.
+let cachedEmptyRunStreakThreshold: { value: number; expiresAt: number } | null = null;
+async function getCachedEmptyRunStreakThreshold(settings: { getGeneral: () => Promise<{ emptyRunStreakThreshold?: number | null }> }): Promise<number> {
+  const now = Date.now();
+  if (cachedEmptyRunStreakThreshold && cachedEmptyRunStreakThreshold.expiresAt > now) {
+    return cachedEmptyRunStreakThreshold.value;
+  }
+  const general = await settings.getGeneral().catch(() => null);
+  const value = general?.emptyRunStreakThreshold ?? MAX_CONSECUTIVE_EMPTY_RUNS;
+  cachedEmptyRunStreakThreshold = { value, expiresAt: now + 30_000 };
   return value;
 }
 // myrmidon(WAKE-GUARD): admission-side half of TASK-PR-SYNC — skips a run for a
@@ -15050,6 +15065,7 @@ export function heartbeatService(
           runId: run.id,
         });
       }
+      const emptyRunThreshold = await getCachedEmptyRunStreakThreshold(instanceSettings);
       const escalation = await checkAndHandleEmptyRunEscalation(db, {
         companyId: issue.companyId,
         issueId: issue.id,
@@ -15057,7 +15073,29 @@ export function heartbeatService(
         runId: run.id,
         classification: emptyClassification,
         gateResult,
+        threshold: emptyRunThreshold,
       });
+
+      // myrmidon(1.8 AUTOPAUSE): record the threshold event as a SKIPPED signal
+      // only. This receipt does not cancel the successful-run handoff below.
+      if (escalation.skippedSignal) {
+        const now = new Date();
+        await db.insert(agentWakeupRequests).values({
+          companyId: issue.companyId,
+          agentId: run.agentId,
+          source: "automation",
+          triggerDetail: "system",
+          reason: escalation.skippedSignal.reason,
+          payload: {
+            issueId: issue.id,
+            heartbeatSkip: { ...escalation.skippedSignal },
+          },
+          status: "skipped",
+          requestedByActorType: "system",
+          requestedByActorId: "heartbeat",
+          finishedAt: now,
+        });
+      }
 
       if (escalation.escalated || !escalation.shouldRewake) {
         if (isSuccessfulRunHandoffValidPathSkip(decision)) {
