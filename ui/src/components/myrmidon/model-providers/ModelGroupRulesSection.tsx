@@ -16,6 +16,7 @@ import {
   RUN_STEP_CLASSES,
   type CompanyModelGroupRule,
   type CompanyModelGroupRulesView,
+  type RunStepClass,
 } from "@myrmidon/shared";
 import { modelGroupRulesApi, modelGroupRulesQueryKey } from "./modelGroupRulesApi";
 import { sanitizeErrorMessage } from "./ModelProvidersScreen";
@@ -79,13 +80,14 @@ export function ModelGroupRulesSection({ companyId }: { companyId: string }) {
     })),
   ];
 
-  const update = (scope: string | null, stepClass: string, modelGroup: string) => {
+  const update = (scope: string | null, stepClass: RunStepClass, modelGroup: string) => {
     setSaved(false);
     setRules((current) => {
       const without = current.filter(
         (rule) => !(rule.casteKey === scope && rule.stepClass === stepClass),
       );
-      return modelGroup ? [...without, { stepClass, modelGroup, casteKey: scope }] : without;
+      const addition: CompanyModelGroupRule = { stepClass, modelGroup, casteKey: scope };
+      return modelGroup ? [...without, addition] : without;
     });
   };
 

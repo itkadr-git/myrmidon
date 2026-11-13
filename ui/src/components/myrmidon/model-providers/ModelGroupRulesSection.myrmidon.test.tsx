@@ -44,6 +44,7 @@ const COMPANY_ID = "company-1";
 
 function getResponse(overrides: Partial<CompanyModelGroupRulesView> = {}): CompanyModelGroupRulesView {
   return {
+    companyId: COMPANY_ID,
     rules: [],
     availableGroups: ["strong", "economy"],
     ...overrides,
@@ -105,7 +106,11 @@ describe("myrmidon(1.8 MODEL-BY-STEP, OPE-12997) model group rules editor", () =
 
   it("saves the whole table as one PUT body", async () => {
     mockedSave.mockResolvedValue(
-      getResponse({ rules: [{ stepClass: "review", modelGroup: "strong", casteKey: null }] }),
+      getResponse({
+        rules: [
+          { stepClass: "review", modelGroup: "strong", casteKey: null, updatedAt: "2026-01-01T00:00:00.000Z" },
+        ],
+      }),
     );
     render();
     await settle();

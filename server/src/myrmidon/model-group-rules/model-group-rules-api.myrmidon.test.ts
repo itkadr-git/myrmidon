@@ -9,9 +9,10 @@
 import express from "express";
 import request from "supertest";
 import { describe, expect, it } from "vitest";
-import { resolveModelGroupForStep } from "@myrmidon/shared";
+import { resolveModelGroupForStep, type CompanyModelGroupRule } from "@myrmidon/shared";
 import { errorHandler } from "../../middleware/index.js";
 import { modelGroupRulesRoutes, type ModelGroupCatalogPort } from "./routes.js";
+import type { ModelGroupRuleRow, ModelGroupRulesStore } from "./store.js";
 
 const COMPANY_ID = "22222222-2222-4222-8222-222222222222";
 const OTHER_COMPANY = "33333333-3333-4333-8333-333333333333";
@@ -37,9 +38,9 @@ function catalog(groups: string[] = ["strong", "economy"], down = false): ModelG
 
 function app(actor: unknown, groups?: string[], down = false) {
   const cat = catalog(groups, down);
-  const saved: Array<{ companyId: string; rules: unknown[] }> = [];
+  const saved: Array<{ companyId: string; rules: ModelGroupRuleRow[] }> = [];
   const activity: Array<{ action: string; companyId: string }> = [];
-  const store = {
+  const store: ModelGroupRulesStore = {
     async list(companyId: string) {
       return saved.find((s) => s.companyId === companyId)?.rules ?? [];
     },
@@ -48,10 +49,15 @@ function app(actor: unknown, groups?: string[], down = false) {
     },
     async replaceAll(
       companyId: string,
-      rules: Array<{ casteKey: string | null; stepClass: string; modelGroup: string }>,
+      rules: readonly CompanyModelGroupRule[],
     ) {
       saved.splice(0);
-      const rows = rules.map((rule, i) => ({ ...rule, updatedAt: `2026-01-0${i + 1}T00:00:00.000Z` }));
+      const rows: ModelGroupRuleRow[] = rules.map((rule, i) => ({
+        casteKey: rule.casteKey ?? null,
+        stepClass: rule.stepClass,
+        modelGroup: rule.modelGroup,
+        updatedAt: `2026-01-0${i + 1}T00:00:00.000Z`,
+      }));
       saved.push({ companyId, rules: rows });
       return rows;
     },
@@ -180,9 +186,9 @@ describe("myrmidon(1.8 MODEL-BY-STEP) routes: validation", () => {
 
 describe("myrmidon(1.8 MODEL-BY-STEP) precedence — caste over company", () => {
   it("resolving through the shared rule: the caste rule wins, others fall back", () => {
-    const rules = [
-      { stepClass: "review", modelGroup: "company-strong", casteKey: null, updatedAt: "2026-01-01T00:00:00.000Z" },
-      { stepClass: "review", modelGroup: "reviewer-best", casteKey: "reviewer", updatedAt: "2026-01-02T00:00:00.000Z" },
+    const rules: CompanyModelGroupRule[] = [
+      { stepClass: "review", modelGroup: "company-strong", casteKey: null },
+      { stepClass: "review", modelGroup: "reviewer-best", casteKey: "reviewer" },
     ];
     expect(resolveModelGroupForStep(rules, "review", "reviewer")).toBe("reviewer-best");
     expect(resolveModelGroupForStep(rules, "review", "engineer")).toBe("company-strong");

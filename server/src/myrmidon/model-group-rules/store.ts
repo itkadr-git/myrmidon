@@ -14,7 +14,7 @@
 // validated against the same company's `agent_castes` before any write, so a
 // company can never rule another company's castes.
 
-import { asc, eq } from "drizzle-orm";
+import { and, asc, eq } from "drizzle-orm";
 import { agentCastes, companyModelGroupRules, type Db } from "@myrmidon/db";
 import type { CompanyModelGroupRule, CompanyModelGroupRuleView } from "@myrmidon/shared";
 

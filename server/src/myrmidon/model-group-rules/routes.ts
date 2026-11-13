@@ -25,9 +25,12 @@ import { Router } from "express";
 import {
   saveCompanyModelGroupRulesSchema,
   MODEL_GROUP_RULES_UPDATED_ACTION,
+  ruleScopeKey,
   unknownModelGroupsInRules,
+  type CompanyModelGroupRule,
   type CompanyModelGroupRuleView,
   type CompanyModelGroupRulesView,
+  type SaveCompanyModelGroupRulesInput,
 } from "@myrmidon/shared";
 import type { Db } from "@myrmidon/db";
 import { badRequest } from "../../errors.js";
@@ -77,10 +80,11 @@ export function modelGroupRulesRoutes(db: Db, deps: ModelGroupRulesRoutesDeps): 
       const companyId = req.params.companyId as string;
       assertCompanyAccess(req, companyId);
       assertBoard(req);
-      const rules = req.body.rules;
+      // `validate` already parsed the body: this is the schema-checked input.
+      const rules = (req.body as SaveCompanyModelGroupRulesInput).rules;
       const scopeKeys = new Set<string>();
       for (const rule of rules) {
-        const key = `${rule.casteKey ?? ""}\u0000${rule.stepClass}`;
+        const key = ruleScopeKey(rule);
         if (scopeKeys.has(key)) {
           throw badRequest(
             `duplicate rule for step class "${rule.stepClass}" in the same scope`,
@@ -102,10 +106,10 @@ export function modelGroupRulesRoutes(db: Db, deps: ModelGroupRulesRoutesDeps): 
           { code: "model_group_unknown" },
         );
       }
-      const casteKeys = [
+      const casteKeys: string[] = [
         ...new Set(
           rules
-            .map((rule) => rule.casteKey)
+            .map((rule: CompanyModelGroupRule) => rule.casteKey)
             .filter((key): key is string => Boolean(key)),
         ),
       ];

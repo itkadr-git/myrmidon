@@ -205,6 +205,7 @@
   "api.use(\n    pluginRoutes(\n      db,\n      loader,\n      { scheduler, jobStore },\n      { workerManager },\n      { toolDispatcher },\n      { workerManager, providerModelSync: createPluginProviderModelSync(db) },\n      { toolGateway },\n    ),\n  )",
   "api.use(\n    adapterRoutes({\n      getNativeRunnerEnabled: async () =>\n        (await instanceSettingsService(db).getExperimental())\n          .enableNativeRunner === true,\n    }),\n  )",
   "api.use(myrmidonCasteRoutes(db))",
+  "api.use(myrmidonModelGroupRulesRoutes(db))",
   "api.use(myrmidonGuardrailsRoutes(db))",
   "api.use(\n    accessRoutes(db, {\n      deploymentMode: opts.deploymentMode,\n      deploymentExposure: opts.deploymentExposure,\n      bindHost: opts.bindHost,\n      allowedHostnames: opts.allowedHostnames,\n      authPublicBaseUrl: opts.authPublicBaseUrl,\n    }),\n  )"
 ]
