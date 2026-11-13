@@ -213,7 +213,7 @@ export class HindsightClient {
    */
   async triggerConsolidation(bankId: string): Promise<ConsolidationTriggerResult> {
     const path = `/v1/default/banks/${encodeURIComponent(bankId)}/consolidate`;
-    const response = (await this.request("POST", path, {})) as { operation_id?: unknown; deduplicated?: unknown };
+    const response = (await this.request("POST", path, { deduplicated: true })) as { operation_id?: unknown; deduplicated?: unknown };
     const operationId = typeof response?.["operation_id"] === "string" ? response["operation_id"] : "";
     if (!operationId) throw new Error(`consolidate returned no operation_id for bank ${bankId}`);
     return { operationId, deduplicated: response["deduplicated"] === true };
