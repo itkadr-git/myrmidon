@@ -61,6 +61,32 @@ export interface AsyncOperationTicket {
   status?: string;
 }
 
+/** Per-request tuning: override timeout or link an external AbortSignal. */
+export interface RequestOptions {
+  /** Maximum time (ms) to wait for this request. Overrides client default. */
+  timeoutMs?: number;
+  /** Caller-supplied abort signal. */
+  signal?: AbortSignal;
+}
+
+export function createTimeoutError(message = "The operation timed out"): Error {
+  if (typeof DOMException !== "undefined") {
+    return new DOMException(message, "TimeoutError");
+  }
+  const err = new Error(message);
+  err.name = "TimeoutError";
+  return err;
+}
+
+export function createAbortError(message = "The operation was aborted"): Error {
+  if (typeof DOMException !== "undefined") {
+    return new DOMException(message, "AbortError");
+  }
+  const err = new Error(message);
+  err.name = "AbortError";
+  return err;
+}
+
 export const DEFAULT_TIMEOUT_MS = 60_000;
 
 export class HindsightClient {
@@ -89,23 +115,72 @@ export class HindsightClient {
     return headers;
   }
 
-  private async request(method: string, path: string, body?: unknown): Promise<unknown> {
+  private async request(
+    method: string,
+    path: string,
+    body?: unknown,
+    options?: RequestOptions,
+  ): Promise<unknown> {
     const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), this.timeoutMs);
+    const effectiveTimeout = options?.timeoutMs !== undefined
+      ? options.timeoutMs
+      : this.timeoutMs;
+
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    if (effectiveTimeout <= 0) {
+      controller.abort(createTimeoutError("The operation timed out"));
+    } else if (effectiveTimeout < Infinity) {
+      timer = setTimeout(() => {
+        controller.abort(createTimeoutError("The operation timed out"));
+      }, effectiveTimeout);
+    }
+
+    const onCallerAbort = () => {
+      controller.abort(options?.signal?.reason ?? createAbortError("The operation was aborted"));
+    };
+
+    if (options?.signal) {
+      if (options.signal.aborted) {
+        controller.abort(options.signal.reason ?? createAbortError("The operation was aborted"));
+      } else {
+        options.signal.addEventListener("abort", onCallerAbort, { once: true });
+      }
+    }
+
     try {
-      const response = await this.fetchImpl(`${this.baseUrl}${path}`, {
+      const fetchPromise = this.fetchImpl(`${this.baseUrl}${path}`, {
         method,
         headers: this.headers(),
         body: body !== undefined ? JSON.stringify(body) : undefined,
         signal: controller.signal,
       });
+
+      const abortPromise = new Promise<never>((_, reject) => {
+        if (controller.signal.aborted) {
+          reject(controller.signal.reason ?? createAbortError("The operation was aborted"));
+          return;
+        }
+        controller.signal.addEventListener("abort", () => {
+          reject(controller.signal.reason ?? createAbortError("The operation was aborted"));
+        }, { once: true });
+      });
+
+      const response = await Promise.race([fetchPromise, abortPromise]);
+
       if (!response.ok) {
         const text = await response.text().catch(() => "");
         throw new Error(`HTTP ${response.status} from ${path}: ${text}`);
       }
-      return await response.json();
+
+      const jsonPromise = response.json();
+      return await Promise.race([jsonPromise, abortPromise]);
     } finally {
-      clearTimeout(timer);
+      if (timer !== undefined) {
+        clearTimeout(timer);
+      }
+      if (options?.signal) {
+        options.signal.removeEventListener("abort", onCallerAbort);
+      }
     }
   }
 
@@ -113,13 +188,14 @@ export class HindsightClient {
     bankId: string,
     query: string,
     budget: string = "mid",
+    options?: RequestOptions,
   ): Promise<{ results: Array<{ text: string }> }> {
     const path = `/v1/default/banks/${encodeURIComponent(bankId)}/memories/recall`;
     const response = await this.request("POST", path, {
       query,
       budget,
       max_tokens: 1024,
-    });
+    }, options);
     return (response ?? { results: [] }) as { results: Array<{ text: string }> };
   }
 
@@ -128,6 +204,7 @@ export class HindsightClient {
     content: string,
     documentId: string | undefined,
     metadata: RetainMetadata | undefined,
+    options?: RequestOptions,
   ): Promise<void> {
     const path = `/v1/default/banks/${encodeURIComponent(bankId)}/memories`;
     const item: Record<string, unknown> = {
@@ -136,7 +213,7 @@ export class HindsightClient {
     };
     if (documentId) item["document_id"] = documentId;
     if (metadata) item["metadata"] = metadata;
-    await this.request("POST", path, { items: [item], async: true });
+    await this.request("POST", path, { items: [item], async: true }, options);
   }
 
   /** One bounded page of the bank's stored documents. */
@@ -144,10 +221,11 @@ export class HindsightClient {
     bankId: string,
     limit: number,
     offset: number,
+    options?: RequestOptions,
   ): Promise<BankDocumentsPage> {
     const path = `/v1/default/banks/${encodeURIComponent(bankId)}/documents`
       + `?limit=${encodeURIComponent(String(limit))}&offset=${encodeURIComponent(String(offset))}`;
-    const response = (await this.request("GET", path)) ?? {};
+    const response = (await this.request("GET", path, undefined, options)) ?? {};
     const raw = response as { items?: unknown; total?: unknown; limit?: unknown; offset?: unknown };
     const items = Array.isArray(raw.items) ? raw.items : [];
     return {
@@ -181,10 +259,11 @@ export class HindsightClient {
     bankId: string,
     limit: number,
     offset: number,
+    options?: RequestOptions,
   ): Promise<BankMentalModelsPage> {
     const path = `/v1/default/banks/${encodeURIComponent(bankId)}/mental-models`
       + `?limit=${encodeURIComponent(String(limit))}&offset=${encodeURIComponent(String(offset))}`;
-    const response = (await this.request("GET", path)) ?? {};
+    const response = (await this.request("GET", path, undefined, options)) ?? {};
     const raw = response as { items?: unknown; total?: unknown; limit?: unknown; offset?: unknown };
     const items = Array.isArray(raw.items) ? raw.items : [];
     return {
@@ -209,19 +288,26 @@ export class HindsightClient {
    * Trigger the bank's consolidation. Hindsight deduplicates: when an
    * equivalent operation is already pending, it is reused (`deduplicated`).
    */
-  async triggerConsolidation(bankId: string): Promise<ConsolidationTriggerResult> {
+  async triggerConsolidation(
+    bankId: string,
+    options?: RequestOptions,
+  ): Promise<ConsolidationTriggerResult> {
     const path = `/v1/default/banks/${encodeURIComponent(bankId)}/consolidate`;
-    const response = (await this.request("POST", path, { deduplicated: true })) as { operation_id?: unknown; deduplicated?: unknown };
+    const response = (await this.request("POST", path, { deduplicated: true }, options)) as { operation_id?: unknown; deduplicated?: unknown };
     const operationId = typeof response?.["operation_id"] === "string" ? response["operation_id"] : "";
     if (!operationId) throw new Error(`consolidate returned no operation_id for bank ${bankId}`);
     return { operationId, deduplicated: response["deduplicated"] === true };
   }
 
   /** Ask Hindsight to refresh one mental model (async operation). */
-  async refreshMentalModel(bankId: string, mentalModelId: string): Promise<AsyncOperationTicket> {
+  async refreshMentalModel(
+    bankId: string,
+    mentalModelId: string,
+    options?: RequestOptions,
+  ): Promise<AsyncOperationTicket> {
     const path = `/v1/default/banks/${encodeURIComponent(bankId)}/mental-models`
       + `/${encodeURIComponent(mentalModelId)}/refresh`;
-    const response = (await this.request("POST", path, {})) as { operation_id?: unknown; status?: unknown };
+    const response = (await this.request("POST", path, {}, options)) as { operation_id?: unknown; status?: unknown };
     const operationId = typeof response?.["operation_id"] === "string" ? response["operation_id"] : "";
     if (!operationId) throw new Error(`refresh returned no operation_id for model ${mentalModelId}`);
     return {

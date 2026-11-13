@@ -1,7 +1,9 @@
 import type {
+  BankDocumentsPage,
   BankMentalModelsPage,
   HindsightClient,
 } from "./client.js";
+import { createTimeoutError, createAbortError } from "./client.js";
 
 /**
  * Nightly, additive consolidation pass over an existing Hindsight bank.
@@ -44,6 +46,8 @@ export interface ConsolidationPassOptions {
   maxModelRefreshes?: number;
   /** Monotonic clock (ms). Injectable for tests; defaults to Date.now. */
   now?: () => number;
+  /** Optional cancellation signal for the entire pass. */
+  signal?: AbortSignal;
 }
 
 /** Resumable position of a pass, persisted by the caller between runs. */
@@ -76,6 +80,19 @@ export interface ConsolidationPassResult {
 
 interface Clock {
   (): number;
+}
+
+export function isAbortError(err: unknown): boolean {
+  if (!err) return false;
+  if (err instanceof Error) {
+    if (err.name === "AbortError" || err.name === "TimeoutError") return true;
+    if (err.message && /aborted|timed?\s*out|budget exceeded/i.test(err.message)) return true;
+  }
+  if (typeof err === "object" && "name" in err) {
+    const name = String((err as { name?: unknown }).name);
+    if (name === "AbortError" || name === "TimeoutError") return true;
+  }
+  return false;
 }
 
 /**
@@ -123,92 +140,168 @@ export async function runConsolidationPass(
     finishedAtMs: 0,
   };
 
-  let walkOffset = checkpoint.documentOffset;
-
-  // Phase 1 — the bounded document walk. Every page is a bounded list call;
-  // records are only read, so repeats can lose nothing and create nothing.
-  while ((nowMs = clock()) < deadline) {
-    const page = await client.listDocuments(options.bankId, pageSize, walkOffset);
-    const reachedEnd = walkOffset + page.items.length >= page.total;
-    walkOffset += page.items.length;
-    result.documentsProcessed += page.items.length;
-    checkpoint.documentOffset = walkOffset;
-    checkpoint.documentTotal = page.total;
-    if (reachedEnd) {
-      result.completed = true;
-      break;
+  const passController = new AbortController();
+  const onCallerAbort = () => {
+    passController.abort(options.signal?.reason ?? createAbortError("Pass aborted by caller"));
+  };
+  if (options.signal) {
+    if (options.signal.aborted) {
+      passController.abort(options.signal.reason ?? createAbortError("Pass aborted by caller"));
+    } else {
+      options.signal.addEventListener("abort", onCallerAbort, { once: true });
     }
-    // An empty page with items left is a stalled list; stop instead of
-    // spinning to the budget with no progress.
-    if (page.items.length === 0) break;
   }
 
-  // The loop condition (or the break above) already observed the clock;
-  // after a break the time has not been re-checked since the last page,
-  // so one observation covers both paths without extra reads.
-  if (nowMs >= deadline || (nowMs = clock()) >= deadline) {
-    result.finishedAtMs = nowMs;
-    return result;
+  let passTimer: ReturnType<typeof setTimeout> | undefined;
+  if (options.timeBudgetMs > 0 && options.timeBudgetMs < Infinity) {
+    passTimer = setTimeout(() => {
+      passController.abort(createTimeoutError("Pass budget exceeded"));
+    }, options.timeBudgetMs);
   }
 
-  // Phase 2 — one consolidation trigger for the whole bank. Hindsight
-  // deduplicates pending operations, so nightly repeats stay idempotent.
   try {
-    const consolidation = await client.triggerConsolidation(options.bankId);
-    result.consolidationsTriggered = 1;
-    result.consolidationDeduplicated = consolidation.deduplicated;
-  } catch {
-    // Consolidation is best-effort: a failed trigger does not undo the walk
-    // and the checkpoint stays valid for the next pass.
-    result.consolidationsTriggered = 0;
-  }
+    let walkOffset = checkpoint.documentOffset;
 
-  if ((nowMs = clock()) >= deadline) {
-    result.finishedAtMs = nowMs;
-    return result;
-  }
-
-  // Phase 3 — refresh only what the server flags stale. `is_stale` is
-  // computed by Hindsight from the model's own scope, so a second pass
-  // observes fresh models and skips them: no duplicate refreshes.
-  const models = await listMentalModelsWithinBudget(client, options.bankId, modelPageSize, clock, deadline);
-  if (models !== null) {
-    for (const model of models.items) {
-      if (result.modelsRefreshed >= maxModelRefreshes) break;
-      if ((nowMs = clock()) >= deadline) break;
-      if (model.isStale !== true) {
-        result.modelsSkippedFresh += 1;
-        continue;
-      }
+    // Phase 1 — the bounded document walk. Every page is a bounded list call;
+    // records are only read, so repeats can lose nothing and create nothing.
+    while ((nowMs = clock()) < deadline && !passController.signal.aborted) {
+      const remainingMs = Math.max(0, deadline - nowMs);
+      let page: BankDocumentsPage;
       try {
-        await client.refreshMentalModel(options.bankId, model.id);
-        result.modelsRefreshed += 1;
-      } catch {
-        // A failed refresh is skipped, not fatal: the model stays flagged
-        // stale server-side and the next pass will pick it up again.
+        page = await client.listDocuments(options.bankId, pageSize, walkOffset, {
+          timeoutMs: remainingMs,
+          signal: passController.signal,
+        });
+      } catch (err) {
+        if (passController.signal.aborted || (nowMs = clock()) >= deadline || isAbortError(err)) {
+          if (nowMs < deadline) nowMs = deadline;
+          break;
+        }
+        throw err;
+      }
+      const reachedEnd = walkOffset + page.items.length >= page.total;
+      walkOffset += page.items.length;
+      result.documentsProcessed += page.items.length;
+      checkpoint.documentOffset = walkOffset;
+      checkpoint.documentTotal = page.total;
+      if (reachedEnd) {
+        result.completed = true;
+        break;
+      }
+      // An empty page with items left is a stalled list; stop instead of
+      // spinning to the budget with no progress.
+      if (page.items.length === 0) break;
+    }
+
+    // The loop condition (or the break above) already observed the clock;
+    // after a break the time has not been re-checked since the last page,
+    // so one observation covers both paths without extra reads.
+    if (passController.signal.aborted || nowMs >= deadline || (nowMs = clock()) >= deadline) {
+      if (passController.signal.aborted && nowMs < deadline) nowMs = deadline;
+      result.finishedAtMs = nowMs;
+      return result;
+    }
+
+    // Phase 2 — one consolidation trigger for the whole bank. Hindsight
+    // deduplicates pending operations, so nightly repeats stay idempotent.
+    const remainingMsForConsolidate = Math.max(0, deadline - nowMs);
+    try {
+      const consolidation = await client.triggerConsolidation(options.bankId, {
+        timeoutMs: remainingMsForConsolidate,
+        signal: passController.signal,
+      });
+      result.consolidationsTriggered = 1;
+      result.consolidationDeduplicated = consolidation.deduplicated;
+    } catch (err) {
+      if (passController.signal.aborted || (nowMs = clock()) >= deadline || isAbortError(err)) {
+        if (nowMs < deadline) nowMs = deadline;
+        result.finishedAtMs = nowMs;
+        return result;
+      }
+      // Consolidation is best-effort: a failed trigger does not undo the walk
+      // and the checkpoint stays valid for the next pass.
+      result.consolidationsTriggered = 0;
+    }
+
+    if (passController.signal.aborted || (nowMs = clock()) >= deadline) {
+      if (passController.signal.aborted && nowMs < deadline) nowMs = deadline;
+      result.finishedAtMs = nowMs;
+      return result;
+    }
+
+    // Phase 3 — refresh only what the server flags stale. `is_stale` is
+    // computed by Hindsight from the model's own scope, so a second pass
+    // observes fresh models and skips them: no duplicate refreshes.
+    const models = await listMentalModelsWithinBudget(
+      client,
+      options.bankId,
+      modelPageSize,
+      clock,
+      deadline,
+      passController.signal,
+    );
+    if (models !== null) {
+      for (const model of models.items) {
+        if (result.modelsRefreshed >= maxModelRefreshes) break;
+        if (passController.signal.aborted || (nowMs = clock()) >= deadline) break;
+        if (model.isStale !== true) {
+          result.modelsSkippedFresh += 1;
+          continue;
+        }
+        const remainingMsForRefresh = Math.max(0, deadline - nowMs);
+        try {
+          await client.refreshMentalModel(options.bankId, model.id, {
+            timeoutMs: remainingMsForRefresh,
+            signal: passController.signal,
+          });
+          result.modelsRefreshed += 1;
+        } catch (err) {
+          if (passController.signal.aborted || (nowMs = clock()) >= deadline || isAbortError(err)) {
+            if (nowMs < deadline) nowMs = deadline;
+            break;
+          }
+          // A failed refresh is skipped, not fatal: the model stays flagged
+          // stale server-side and the next pass will pick it up again.
+        }
       }
     }
-  }
 
-  // If the loop above stopped on an expired budget, nowMs is that exact
-  // observation; otherwise take the actual end-of-pass time.
-  result.finishedAtMs = nowMs >= deadline ? nowMs : clock();
-  return result;
+    // If the loop above stopped on an expired budget, nowMs is that exact
+    // observation; otherwise take the actual end-of-pass time.
+    if (passController.signal.aborted && nowMs < deadline) {
+      nowMs = deadline;
+    }
+    result.finishedAtMs = nowMs >= deadline ? nowMs : clock();
+    return result;
+  } finally {
+    if (passTimer !== undefined) {
+      clearTimeout(passTimer);
+    }
+    if (options.signal) {
+      options.signal.removeEventListener("abort", onCallerAbort);
+    }
+  }
 }
 
-/** Scan mental models in bounded pages; null means the scan never started. */
+/** Scan mental models in bounded pages; null means the scan never started or was aborted. */
 async function listMentalModelsWithinBudget(
   client: HindsightClient,
   bankId: string,
   pageSize: number,
   clock: Clock,
   deadline: number,
+  signal?: AbortSignal,
 ): Promise<BankMentalModelsPage | null> {
   const collected: BankMentalModelsPage = { items: [], total: 0, limit: pageSize, offset: 0 };
   let offset = 0;
   try {
-    while (clock() < deadline) {
-      const page = await client.listMentalModels(bankId, pageSize, offset);
+    let nowMs: number;
+    while (!signal?.aborted && (nowMs = clock()) < deadline) {
+      const remainingMs = Math.max(0, deadline - nowMs);
+      const page = await client.listMentalModels(bankId, pageSize, offset, {
+        timeoutMs: remainingMs,
+        signal,
+      });
       collected.items.push(...page.items);
       collected.total = page.total;
       collected.offset = offset;

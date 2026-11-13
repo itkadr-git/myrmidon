@@ -335,4 +335,171 @@ describe("consolidation pass", () => {
     assert.equal(result.consolidationsTriggered, 0);
     assert.deepEqual(result.checkpoint, { documentOffset: 2, documentTotal: 2 });
   });
+
+  it("stops mid-walk and returns saved checkpoint with exact counters when an HTTP listDocuments call hangs", async () => {
+    const hindsight = mockHindsight({ documents: 5, models: [] });
+    const realFetch = hindsight.fetch;
+
+    // Page 1 (offset 0, limit 2) succeeds normally.
+    // Page 2 (offset 2, limit 2) hangs indefinitely until aborted.
+    hindsight.fetch = async (url, init) => {
+      if (url.includes("offset=2")) {
+        return new Promise<Response>((_, reject) => {
+          if (init?.signal?.aborted) {
+            reject(new DOMException("The operation was aborted", "AbortError"));
+            return;
+          }
+          init?.signal?.addEventListener("abort", () => {
+            reject(new DOMException("The operation was aborted", "AbortError"));
+          });
+        });
+      }
+      return realFetch(url, init);
+    };
+
+    const started = Date.now();
+    const result = await runConsolidationPass(client(hindsight), {
+      bankId: BANK,
+      timeBudgetMs: 50,
+      pageSize: 2,
+    });
+    const elapsed = Date.now() - started;
+
+    assert.ok(elapsed >= 35 && elapsed < 2000, `Elapsed ${elapsed}ms was not within budget`);
+    assert.equal(result.completed, false);
+    assert.equal(result.documentsProcessed, 2);
+    assert.deepEqual(result.checkpoint, { documentOffset: 2, documentTotal: 5 });
+    assert.equal(result.consolidationsTriggered, 0);
+    assert.equal(result.modelsRefreshed, 0);
+    assert.ok(result.finishedAtMs >= started + 40);
+  });
+
+  it("aborts hanging triggerConsolidation within time budget and preserves checkpoint of completed walk", async () => {
+    const hindsight = mockHindsight({ documents: 2, models: [{ id: "m1", is_stale: true }] });
+    const realFetch = hindsight.fetch;
+
+    // Document walk succeeds, but POST /consolidate hangs indefinitely until aborted.
+    hindsight.fetch = async (url, init) => {
+      const path = url.slice(API_URL.length);
+      if ((init?.method ?? "GET") === "POST" && path.endsWith("/consolidate")) {
+        return new Promise<Response>((_, reject) => {
+          if (init?.signal?.aborted) {
+            reject(new DOMException("The operation was aborted", "AbortError"));
+            return;
+          }
+          init?.signal?.addEventListener("abort", () => {
+            reject(new DOMException("The operation was aborted", "AbortError"));
+          });
+        });
+      }
+      return realFetch(url, init);
+    };
+
+    const started = Date.now();
+    const result = await runConsolidationPass(client(hindsight), {
+      bankId: BANK,
+      timeBudgetMs: 50,
+      pageSize: 2,
+    });
+    const elapsed = Date.now() - started;
+
+    assert.ok(elapsed >= 35 && elapsed < 2000, `Elapsed ${elapsed}ms was not within budget`);
+    assert.equal(result.completed, true);
+    assert.equal(result.documentsProcessed, 2);
+    assert.deepEqual(result.checkpoint, { documentOffset: 2, documentTotal: 2 });
+    assert.equal(result.consolidationsTriggered, 0);
+    assert.equal(result.modelsRefreshed, 0);
+    assert.ok(result.finishedAtMs >= started + 40);
+  });
+
+  it("aborts hanging refreshMentalModel within time budget and preserves earlier refreshed models", async () => {
+    const hindsight = mockHindsight({
+      documents: 1,
+      models: [
+        { id: "model-1", is_stale: true },
+        { id: "model-2", is_stale: true },
+      ],
+    });
+    const realFetch = hindsight.fetch;
+
+    // First model refreshes, second model refresh hangs indefinitely until aborted.
+    hindsight.fetch = async (url, init) => {
+      const path = url.slice(API_URL.length);
+      if ((init?.method ?? "GET") === "POST" && path.includes("model-2/refresh")) {
+        return new Promise<Response>((_, reject) => {
+          if (init?.signal?.aborted) {
+            reject(new DOMException("The operation was aborted", "AbortError"));
+            return;
+          }
+          init?.signal?.addEventListener("abort", () => {
+            reject(new DOMException("The operation was aborted", "AbortError"));
+          });
+        });
+      }
+      return realFetch(url, init);
+    };
+
+    const started = Date.now();
+    const result = await runConsolidationPass(client(hindsight), {
+      bankId: BANK,
+      timeBudgetMs: 50,
+      pageSize: 2,
+    });
+    const elapsed = Date.now() - started;
+
+    assert.ok(elapsed >= 35 && elapsed < 2000, `Elapsed ${elapsed}ms was not within budget`);
+    assert.equal(result.completed, true);
+    assert.equal(result.documentsProcessed, 1);
+    assert.equal(result.consolidationsTriggered, 1);
+    assert.equal(result.modelsRefreshed, 1);
+    assert.equal(hindsight.models.find((m) => m.id === "model-1")!.refreshes, 1);
+    assert.equal(hindsight.models.find((m) => m.id === "model-2")!.refreshes, 0);
+    assert.ok(result.finishedAtMs >= started + 40);
+  });
+
+  it("aborts hanging transport even if fetch completely ignores signal via Promise.race", async () => {
+    const hindsight = mockHindsight({ documents: 5, models: [] });
+    // This mock fetch returns an unresolving promise that never checks signal
+    hindsight.fetch = () => new Promise<Response>(() => {});
+
+    const started = Date.now();
+    const result = await runConsolidationPass(client(hindsight), {
+      bankId: BANK,
+      timeBudgetMs: 50,
+      pageSize: 2,
+    });
+    const elapsed = Date.now() - started;
+
+    assert.ok(elapsed >= 35 && elapsed < 2000, `Elapsed ${elapsed}ms was not within budget`);
+    assert.equal(result.completed, false);
+    assert.equal(result.documentsProcessed, 0);
+    assert.deepEqual(result.checkpoint, { documentOffset: 0, documentTotal: null });
+    assert.equal(result.consolidationsTriggered, 0);
+    assert.equal(result.modelsRefreshed, 0);
+  });
+
+  it("terminates early when caller abort signal fires", async () => {
+    const hindsight = mockHindsight({ documents: 10, models: [] });
+    const controller = new AbortController();
+
+    const realFetch = hindsight.fetch;
+    hindsight.fetch = async (url, init) => {
+      // Abort caller signal on second page
+      if (url.includes("offset=2")) {
+        controller.abort();
+      }
+      return realFetch(url, init);
+    };
+
+    const result = await runConsolidationPass(client(hindsight), {
+      bankId: BANK,
+      timeBudgetMs: 10_000,
+      pageSize: 2,
+      signal: controller.signal,
+    });
+
+    assert.equal(result.completed, false);
+    assert.equal(result.documentsProcessed, 2);
+    assert.deepEqual(result.checkpoint, { documentOffset: 2, documentTotal: 10 });
+  });
 });
