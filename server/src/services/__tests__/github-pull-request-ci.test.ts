@@ -360,6 +360,11 @@ describe("summarizeCheckRuns", () => {
     expect(summary.totalRuns).toBe(2);
   });
 
+  // Since CI-SNAPSHOT-CANCELLED the rule is "the last COMPLETED record that carries a
+  // verdict represents the check": the later success of a re-run replaces the older
+  // failure (this test used to pin the older failure as red, OPE-12624). What still
+  // protects against a false green: a later `skipped`/`neutral`/`cancelled` record
+  // never displaces an earlier verdict (see the tests below).
   it("an older failure of a check is superseded by its newer success: SUCCESS (CI-SNAPSHOT-CANCELLED)", () => {
     const runs: PullRequestCiJob[] = [
       {
@@ -587,30 +592,84 @@ describe("summarizeCheckRuns", () => {
       expect(summary.totalRuns).toBe(3);
     });
 
-    it("a successful CI result outweighs a leftover cancelled check that has no same-named replacement", () => {
+    it("a successful CI result absorbs a cancelled required check only of its own workflow run", () => {
       const runs: PullRequestCiJob[] = [
-      {
-        id: 521,
-        name: "tests (affected)",
-        status: "completed",
-        conclusion: "cancelled",
-        url: "https://github.com/itkadr-git/myrmidon/actions/runs/521",
-        startedAt: "2026-11-14T01:00:00Z",
-        completedAt: "2026-11-14T01:05:00Z",
-      },
-      {
-        id: 522,
-        name: "CI result",
-        status: "completed",
-        conclusion: "success",
-        url: "https://github.com/itkadr-git/myrmidon/actions/runs/522",
-        startedAt: "2026-11-14T01:06:00Z",
-        completedAt: "2026-11-14T01:30:00Z",
-      },
+        { id: 521, name: "tests (affected)", status: "completed", conclusion: "cancelled", url: "https://github.com/itkadr-git/myrmidon/actions/runs/900/job/521", startedAt: "2026-11-14T01:00:00Z", completedAt: "2026-11-14T01:00:00Z" },
+        { id: 522, name: "CI result", status: "completed", conclusion: "success", url: "https://github.com/itkadr-git/myrmidon/actions/runs/900/job/522", startedAt: "2026-11-14T01:06:00Z", completedAt: "2026-11-14T01:06:00Z" },
       ];
       const summary = summarizeCheckRuns(runs, { requiredChecks: ["CI result", "tests (affected)"] });
       expect(summary.conclusion).toBe("success");
       expect(summary.failedJobs).toEqual([]);
+      expect(summary.cancelledJobs).toEqual([]);
+    });
+
+    it("CI result success + cancelled required hot files review of another run or unknown run is NOT success", () => {
+      for (const reviewUrl of [
+        "https://github.com/itkadr-git/myrmidon/actions/runs/901/job/1",
+        "https://github.com/itkadr-git/myrmidon/runs/77",
+      ]) {
+        const runs: PullRequestCiJob[] = [
+        { id: 531, name: "CI result", status: "completed", conclusion: "success", url: "https://github.com/itkadr-git/myrmidon/actions/runs/900/job/531", startedAt: "2026-11-14T01:06:00Z", completedAt: "2026-11-14T01:06:00Z" },
+          { id: 532, name: "hot files review", status: "completed", conclusion: "cancelled", url: reviewUrl, startedAt: "2026-11-14T01:06:00Z", completedAt: "2026-11-14T01:07:00Z" },
+        ];
+        const summary = summarizeCheckRuns(runs);
+        expect(summary.conclusion).toBe("cancelled");
+        expect(summary.cancelledJobs?.map((j) => j.name)).toEqual(["hot files review"]);
+      }
+    });
+
+    it("a later skipped record does not displace an earlier failure of the same check: FAILURE", () => {
+      const runs: PullRequestCiJob[] = [
+        { id: 541, name: "CI result", status: "completed", conclusion: "failure", url: "https://github.com/itkadr-git/myrmidon/actions/runs/910/job/541", startedAt: "2026-11-14T10:00:00Z", completedAt: "2026-11-14T10:00:00Z" },
+        { id: 542, name: "CI result", status: "completed", conclusion: "skipped", url: "https://github.com/itkadr-git/myrmidon/actions/runs/911/job/542", startedAt: "2026-11-14T10:05:00Z", completedAt: "2026-11-14T10:05:00Z" },
+      ];
+      const summary = summarizeCheckRuns(runs);
+      expect(summary.conclusion).toBe("failure");
+      expect(summary.failedJobs.map((j) => j.id)).toEqual([541]);
+    });
+
+    it("a later cancelled record without replacement does not hide an earlier failure: FAILURE", () => {
+      const runs: PullRequestCiJob[] = [
+        { id: 551, name: "CI result", status: "completed", conclusion: "failure", url: "https://github.com/itkadr-git/myrmidon/actions/runs/920/job/551", startedAt: "2026-11-14T10:00:00Z", completedAt: "2026-11-14T10:00:00Z" },
+        { id: 552, name: "CI result", status: "completed", conclusion: "cancelled", url: "https://github.com/itkadr-git/myrmidon/actions/runs/921/job/552", startedAt: "2026-11-14T10:05:00Z", completedAt: "2026-11-14T10:05:00Z" },
+      ];
+      const summary = summarizeCheckRuns(runs);
+      expect(summary.conclusion).toBe("failure");
+      expect(summary.failedJobs.map((j) => j.id)).toEqual([551]);
+      expect(summary.cancelledJobs).toEqual([]);
+    });
+
+    it("a head with only skipped / neutral records of a check behaves as before (latest of them, success)", () => {
+      const runs: PullRequestCiJob[] = [
+        { id: 561, name: "lint", status: "completed", conclusion: "skipped", url: "https://github.com/itkadr-git/myrmidon/actions/runs/930/job/561", startedAt: "2026-11-14T10:00:00Z", completedAt: "2026-11-14T10:00:00Z" },
+        { id: 562, name: "lint", status: "completed", conclusion: "neutral", url: "https://github.com/itkadr-git/myrmidon/actions/runs/931/job/562", startedAt: "2026-11-14T10:05:00Z", completedAt: "2026-11-14T10:05:00Z" },
+      ];
+      const summary = summarizeCheckRuns(runs);
+      expect(summary.conclusion).toBe("success");
+      expect(summary.totalRuns).toBe(1);
+      expect(summary.failedJobs).toEqual([]);
+    });
+
+    it("a skipped record of another run replaces an older cancelled one; a skipped gate of the same run does not", () => {
+      const other: PullRequestCiJob[] = [
+        { id: 571, name: "hot files review", status: "completed", conclusion: "cancelled", url: "https://github.com/itkadr-git/myrmidon/actions/runs/940/job/571", startedAt: "2026-11-14T10:00:00Z", completedAt: "2026-11-14T10:00:00Z" },
+        { id: 572, name: "hot files review", status: "completed", conclusion: "skipped", url: "https://github.com/itkadr-git/myrmidon/actions/runs/941/job/572", startedAt: "2026-11-14T10:05:00Z", completedAt: "2026-11-14T10:05:00Z" },
+      ];
+      expect(summarizeCheckRuns(other).conclusion).toBe("success");
+      const same: PullRequestCiJob[] = [
+        { id: 581, name: "CI result", status: "completed", conclusion: "cancelled", url: "https://github.com/itkadr-git/myrmidon/actions/runs/950/job/581", startedAt: "2026-11-14T10:00:00Z", completedAt: "2026-11-14T10:00:00Z" },
+        { id: 582, name: "CI result", status: "completed", conclusion: "skipped", url: "https://github.com/itkadr-git/myrmidon/actions/runs/950/job/582", startedAt: "2026-11-14T10:05:00Z", completedAt: "2026-11-14T10:05:00Z" },
+      ];
+      expect(summarizeCheckRuns(same).conclusion).toBe("cancelled");
+    });
+
+    it("the choice of the latest record does not depend on input order; a record without time is the newest", () => {
+      const runs: PullRequestCiJob[] = [
+        { id: 592, name: "CI result", status: "completed", conclusion: "success", url: "https://github.com/itkadr-git/myrmidon/actions/runs/961/job/592", startedAt: "2026-11-14T10:05:00Z", completedAt: "2026-11-14T10:05:00Z" },
+        { id: 593, name: "CI result", status: "queued", conclusion: null, url: "", startedAt: null, completedAt: null },
+      ];
+      expect(summarizeCheckRuns(runs).conclusion).toBe("pending");
+      expect(summarizeCheckRuns([...runs].reverse()).conclusion).toBe("pending");
     });
 
     it("(b) a head with only a cancelled run is neither failure nor success", () => {
