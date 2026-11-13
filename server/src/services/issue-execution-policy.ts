@@ -888,6 +888,50 @@ function canAutoSkipPendingStage(input: {
     input.stage.participants.every((participant) => principalsEqual(participant, input.returnAssignee));
 }
 
+/**
+ * myrmidon(REVIEW-APPROVAL-RECORDED): a pending review stage whose definition
+ * is missing from the policy (the policy lost its stages, or the whole policy
+ * is gone, e.g. a monitor was armed on a stale copy of it) still has a
+ * participant who owes a decision. Their approval (`done` with a comment) is
+ * recorded against the stored stage instead of clearing the state and leaving
+ * `done` to the PR gate (HTTP 409, OPE-13059/OPE-13061).
+ */
+function approveOrphanedPendingReviewStage(
+  input: TransitionInput,
+  existingState: IssueExecutionState,
+  actor: IssueExecutionStagePrincipal | null,
+): TransitionResult | null {
+  if (
+    input.requestedStatus !== "done" ||
+    existingState.status !== PENDING_STATUS ||
+    existingState.currentStageType !== "review" ||
+    !existingState.currentStageId ||
+    !existingState.currentParticipant ||
+    !principalsEqual(existingState.currentParticipant, actor)
+  ) {
+    return null;
+  }
+  if (!input.commentBody?.trim()) {
+    throw unprocessable(`Approving a review or approval stage requires a comment. ${STAGE_DECISION_COMMENT_HINT}`);
+  }
+  return {
+    patch: {
+      executionState: buildCompletedState(existingState, {
+        id: existingState.currentStageId,
+        type: "review",
+        approvalsNeeded: 1,
+        participants: [existingState.currentParticipant],
+      } as IssueExecutionStage),
+    },
+    decision: {
+      stageId: existingState.currentStageId,
+      stageType: "review",
+      outcome: "approved",
+      body: input.commentBody.trim(),
+    },
+  };
+}
+
 function applyIssueExecutionStageTransition(input: TransitionInput): TransitionResult {
   const patch: Record<string, unknown> = {};
   const existingState = parseIssueExecutionState(input.issue.executionState);
@@ -905,6 +949,8 @@ function applyIssueExecutionStageTransition(input: TransitionInput): TransitionR
 
   if (!input.policy) {
     if (existingState) {
+      const orphanApproval = approveOrphanedPendingReviewStage(input, existingState, actor);
+      if (orphanApproval) return orphanApproval;
       patch.executionState = null;
       if (input.issue.status === "in_review") {
         patch.status = requestedStatus ?? "in_progress";
@@ -959,6 +1005,8 @@ function applyIssueExecutionStageTransition(input: TransitionInput): TransitionR
         restartPreferredParticipant: existingState.currentParticipant ?? null,
       });
     }
+    const orphanApproval = approveOrphanedPendingReviewStage(input, existingState, actor);
+    if (orphanApproval) return orphanApproval;
     clearExecutionStatePatch({
       patch,
       issueStatus: input.issue.status,
