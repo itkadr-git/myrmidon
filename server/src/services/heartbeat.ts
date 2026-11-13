@@ -33,6 +33,11 @@ import {
   type GatewayRemoteCloseResult,
   type GatewayRemoteCloseTrigger,
 } from "../myrmidon/gateway-run-close.js";
+import {
+  AGENT_LIVENESS_PROBE_TIMEOUT_MS,
+  sweepAgentLivenessProbes,
+} from "../myrmidon/agent-liveness/probe-sweep.js";
+import { guardedRemoteHttpFetch } from "../services/remote-http-fetch.js";
 import { createInstanceSecretSettingService } from "../myrmidon/secret-settings/wiring.js";
 import { resolveRunnerAcpxCodexAuthEnv } from "../myrmidon/secret-settings/runner-environment.js";
 import { readQueuedInteractionResponse } from "../myrmidon/upstream-steer/queued-interaction-response.js";
@@ -24072,6 +24077,13 @@ export function heartbeatService(
     result: AdapterExecutionResult,
     session: { legacySessionId: string | null },
     normalizedUsage?: UsageTotals | null,
+    // myrmidon(OPE-13021): the main finalize path passes probe=true — a
+    // returned adapter result proves the runtime answered at the protocol
+    // level (a dead gateway throws and lands on the failure path, which
+    // passes no probe option). The stamp records "process reachable at run
+    // finalize"; "unreachable" between runs is stamped by the dedicated
+    // prober (verticals B/C), not here.
+    options: { probe?: boolean } = {},
   ) {
     await ensureRuntimeState(agent);
     const usage = normalizedUsage ?? normalizeUsageTotals(result.usage);
@@ -24083,6 +24095,21 @@ export function heartbeatService(
     const additionalCostCents = normalizeBilledCostCents(billedCostUsd, billingType);
     const hasTokenUsage =
       inputTokens > 0 || outputTokens > 0 || cachedInputTokens > 0;
+    // myrmidon(OPE-13021): a positive model-response sign — tokens spent, the
+    // adapter reporting that a model response started, or a billed model call
+    // — is the "the agent actually answered on the model" signal that
+    // lastResponseAt records.
+    const hasModelResponseSign =
+      hasTokenUsage ||
+      additionalCostCents > 0 ||
+      result.failedBeforeModel === false;
+    const responseAt = hasModelResponseSign ? new Date() : null;
+    // myrmidon(OPE-13021): the process probe stamp. Written only when the
+    // caller proves reachability (options.probe); never written from the
+    // adapter-failure path, whose result carries no reachability evidence.
+    const probeStamp = options.probe
+      ? { lastProbeAt: new Date(), lastProbeOutcome: "ok" as const }
+      : {};
     const costStatus = resolveLedgerCostStatus({
       costUsd: billedCostUsd,
       inputTokens,
@@ -24105,6 +24132,8 @@ export function heartbeatService(
         lastRunId: run.id,
         lastRunStatus: run.status,
         lastError: run.error ?? null,
+        ...(responseAt ? { lastResponseAt: responseAt } : {}),
+        ...probeStamp,
         totalInputTokens: sql`${agentRuntimeState.totalInputTokens} + ${inputTokens}`,
         totalOutputTokens: sql`${agentRuntimeState.totalOutputTokens} + ${outputTokens}`,
         totalCachedInputTokens: sql`${agentRuntimeState.totalCachedInputTokens} + ${cachedInputTokens}`,
@@ -30845,6 +30874,9 @@ export function heartbeatService(
               legacySessionId: nextSessionState.legacySessionId,
             },
             normalizedUsage,
+            // myrmidon(OPE-13021): a returned result proves the runtime was
+            // reachable when the run finalized — probe the liveness stamp.
+            { probe: true },
           );
           if (taskKey) {
             if (
@@ -37331,6 +37363,26 @@ export function heartbeatService(
         },
         opts,
       ),
+
+    // myrmidon(1.8 AGENT-LIVENESS A1, OPE-13021): one probe pass over the
+    // probeable agents (hermes_gateway / http): GET the runtime health
+    // endpoint, stamp lastProbeAt/lastProbeOutcome. The transport is the
+    // shared DNS-pinned guarded fetch; URL selection + plain-http rules live
+    // in myrmidon/agent-liveness/probe-sweep.ts and match the adapter's own
+    // testEnvironment (bot containers and loopback may stay plain http).
+    sweepAgentLivenessProbes: (opts?: { limit?: number; now?: Date }) =>
+      sweepAgentLivenessProbes(db, {
+        probe: async ({ url }) => {
+          const response = await guardedRemoteHttpFetch(
+            url,
+            { method: "GET", redirect: "manual", signal: AbortSignal.timeout(AGENT_LIVENESS_PROBE_TIMEOUT_MS) },
+            { allowPrivateNetwork: true },
+          );
+          // Drain the body so the socket returns to the pool.
+          await response.arrayBuffer().catch(() => undefined);
+          return { status: response.status };
+        },
+      }, opts),
 
     // myrmidon(1.6.6 REMOTE-SITES-T4): finalize one run of a lost execution site as
     // failed(site_lost) and queue its bounded retry, see myrmidon/site-lost-claim.ts. Only a run
