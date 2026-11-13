@@ -12,7 +12,12 @@
 // `external-objects-server.ts` convention. Not exported from the root barrel.
 
 import { createHash, createHmac, timingSafeEqual } from "node:crypto";
-import { canonicalJson, type AdmCapabilityClaims } from "./myrmidon/adm-access-request.js";
+import { canonicalJson } from "./myrmidon/adm-access-request.js";
+
+// Type-only: re-exported for server consumers that resolve both the runtime
+// helpers and the claims contract from this server subpath. Type imports are
+// erased at compile time, so this stays out of the browser import graph.
+export type { AdmCapabilityClaims } from "./myrmidon/adm-access-request.js";
 
 const CAPABILITY_TTL_FLOOR_SECONDS = 60;
 const CAPABILITY_TTL_CEILING_SECONDS = 30 * 24 * 60 * 60;
