@@ -236,6 +236,28 @@ describeEmbeddedPostgres("heartbeat issue rewake throttle", () => {
     expect(thawedIssue?.blocker?.issueRewakeFreeze).toBeFalsy();
   });
 
+  // myrmidon(RESUME-AFTER-CANCEL): the resume of an operator's pause carries the
+  // user only as a marker for the settled-hold check; it is a system wake and
+  // does not thaw a rewake freeze.
+  it("does not thaw a frozen issue on the pause_resume wake of an operator", async () => {
+    const { companyId, agentId, issueId } = await seedCompanyAgentIssue();
+    for (let i = 0; i < 6; i += 1) {
+      await seedTerminalRun({ companyId, agentId, issueId, finishedSecondsAgo: 60 - i * 5 });
+    }
+    const wake = (reason: string, extra: Record<string, unknown> = {}) => heartbeat.wakeup(agentId, {
+      source: "automation", triggerDetail: "system", reason,
+      payload: { issueId }, contextSnapshot: { issueId, wakeReason: reason },
+      requestedByActorType: "system", requestedByActorId: "pause_resume", ...extra,
+    });
+    expect(await wake("issue_continuation_needed")).toBeNull();
+    const [frozen] = await db.select({ blocker: issues.blockerMetadata }).from(issues).where(eq(issues.id, issueId));
+    expect(frozen?.blocker?.issueRewakeFreeze).toMatchObject({ agentId });
+
+    expect(await wake("pause_resume", { resumedByUserId: "board-user" })).toBeNull();
+    const [stillFrozen] = await db.select({ blocker: issues.blockerMetadata }).from(issues).where(eq(issues.id, issueId));
+    expect(stillFrozen?.blocker?.issueRewakeFreeze).toBeTruthy();
+  });
+
   it("admits a PR sync event after a freeze", async () => {
     const { companyId, agentId, issueId } = await seedCompanyAgentIssue();
     for (let i = 0; i < 6; i += 1) {

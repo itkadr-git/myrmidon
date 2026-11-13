@@ -99,10 +99,9 @@ describe("isExplicitWake", () => {
     expect(isExplicitWake({ source: "automation", triggerDetail: "system", reason: "issue_commented", commentId: "c1", requestedByActorType: "user" })).toBe(false);
   });
 
-  // myrmidon(RESUME-AFTER-CANCEL): the operator lifting a pause is explicit;
-  // the same wake without a user requester (system) is not.
-  it("treats a pause_resume wake requested by a user as explicit, and by the system as not", () => {
-    expect(isExplicitWake({ source: "automation", triggerDetail: "system", reason: "pause_resume", requestedByActorType: "user" })).toBe(true);
+  // myrmidon(RESUME-AFTER-CANCEL): pause_resume is not an explicit reason by
+  // itself; heartbeat.ts passes its own marker (resumedByUserId) to the hold check.
+  it("does not treat a pause_resume wake as explicit, whoever requested it", () => {
     expect(isExplicitWake({ source: "automation", triggerDetail: "system", reason: "pause_resume", requestedByActorType: "system" })).toBe(false);
   });
 });

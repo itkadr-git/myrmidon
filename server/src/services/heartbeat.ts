@@ -4238,6 +4238,12 @@ export interface WakeupOptions {
   eventRevision?: string | null;
   /** Set only by authenticated board wake routes; never copied from caller payloads. */
   manualUserWake?: boolean;
+  /**
+   * myrmidon(RESUME-AFTER-CANCEL): set only by the resume of an operator's pause
+   * (myrmidon/pause-drain.ts) on a `pause_resume` system wake: the user who
+   * lifted the pause. Read only by the settled-hold check, never a requester.
+   */
+  resumedByUserId?: string;
   /** Internal resume of a queue with persisted board interruption intent. */
   queuedCommentInterruptId?: string;
   /** Internal delivery of an existing undelivered user comment. */
@@ -23724,7 +23730,11 @@ export function heartbeatService(
         // myrmidon(OPE-11947): a promoted scheduled retry is stale counted from its
         // due time (`scheduled_retry_at`), not from `created_at`: it is created at
         // the failure and queued hours later, and must not be cancelled on arrival.
-        .from(heartbeatRuns).where(and(eq(heartbeatRuns.status, "queued"), queuedRunWaitedAtLeastSql(new Date(), staleAfterMs), executionCutoff ? gte(heartbeatRuns.createdAt, executionCutoff) : undefined))
+        // myrmidon(RESUME-AFTER-CANCEL): the runs of a paused agent wait for the resume
+        // (cancelStaleQueuedRun does not expire them), so they are left out of the
+        // 200-row page here, otherwise a mass pause fills it with runs that stay.
+        .from(heartbeatRuns).innerJoin(agents, eq(agents.id, heartbeatRuns.agentId))
+        .where(and(eq(heartbeatRuns.status, "queued"), ne(agents.status, "paused"), queuedRunWaitedAtLeastSql(new Date(), staleAfterMs), executionCutoff ? gte(heartbeatRuns.createdAt, executionCutoff) : undefined))
         .orderBy(asc(heartbeatRuns.createdAt)).limit(200);
       return staleRuns.map((row) => ({
         id: row.id, agentId: row.agentId, companyId: row.companyId, createdAt: row.createdAt,
@@ -33539,17 +33549,24 @@ export function heartbeatService(
                   requestedByActorId: opts.requestedByActorId,
                 })
               : false;
+          // myrmidon(RESUME-AFTER-CANCEL): the resume of an operator's pause
+          // (myrmidon/pause-drain.ts) stays a system wake; the user who lifted the
+          // pause is carried as `resumedByUserId`, and only this hold check reads
+          // it: the wake passes a hold only when the run holding it was cancelled.
+          const resumedByOperator = reason === "pause_resume" && opts.requestedByActorType === "system" &&
+            source === "automation" && Boolean(opts.resumedByUserId);
           const wakeBypassesSettledHold = (bypassesSettledHold({
             source, triggerDetail, reason, commentId: candidateCommentId,
             requestedByActorType: opts.requestedByActorType ?? null,
             userCommentMentionsWokenAgent: userCommentMentionsWokenAgentFlag,
-          }) || chatOwnerMessage) && Boolean(opts.requestedByActorId);
+          }) || chatOwnerMessage || resumedByOperator) && Boolean(opts.requestedByActorId);
           const executionBlocker = await getExecutionBlocker(
             tx as unknown as Db, issue.companyId, issue.id,
             { conversationResetCommentId: opts.requestedByActorType === "user" ? candidateCommentId : null,
               // myrmidon(L2): an explicitly authorized wake ignores a settled
               // "do not replay" hold.
-              explicitWake: wakeBypassesSettledHold },
+              explicitWake: wakeBypassesSettledHold,
+              cancelledRunOnly: resumedByOperator },
           );
           // Prove eligibility without retiring the hold. Later gates can still
           // decline this wake; hold retirement and successor creation stay atomic.
@@ -35141,7 +35158,9 @@ export function heartbeatService(
             await supersedeExplicitWakeSettledHold({
               db: tx as unknown as Db, companyId: issue.companyId, issueId: issue.id,
               successorRunId: explicitContinuationRunId,
-              requestedByActorType: "user", requestedByActorId: opts.requestedByActorId,
+              requestedByActorType: "user",
+              requestedByActorId: resumedByOperator ? opts.resumedByUserId! : opts.requestedByActorId,
+              cancelledRunOnly: resumedByOperator,
             });
           }
 

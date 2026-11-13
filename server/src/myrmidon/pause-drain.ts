@@ -194,8 +194,9 @@ export interface ResumeAgentAfterPauseDeps {
       triggerDetail?: "system";
       reason?: string;
       idempotencyKey?: string;
-      requestedByActorType?: "system" | "user";
+      requestedByActorType?: "system";
       requestedByActorId?: string;
+      resumedByUserId?: string;
       contextSnapshot?: Record<string, unknown>;
     },
   ) => Promise<unknown>;
@@ -208,12 +209,11 @@ export interface ResumeAgentAfterPauseDeps {
 
 export interface ResumeAgentAfterPauseOptions {
   /**
-   * myrmidon(RESUME-AFTER-CANCEL): the board user who lifted the pause. Lifting
-   * a pause is an explicit operator action, so the wakes it issues are
-   * attributed to that user and count as an explicit wake
-   * (settled-holds/wake-classification.ts), the same as a manual wake: a
-   * settled "do not replay" hold left by an operator cancel no longer parks them.
-   * Absent (no identifiable user), the wake stays a system wake, as before.
+   * myrmidon(RESUME-AFTER-CANCEL): the board user who lifted the pause. It is
+   * passed to the wake as `resumedByUserId`, a marker only the settled-hold
+   * check reads (heartbeat.ts): the wake itself stays a system wake, with none
+   * of the bypasses a user-requested wake gets, and passes a hold only when the
+   * run that holds it was cancelled. Absent, nothing changes.
    */
   operatorUserId?: string | null;
 }
@@ -348,8 +348,9 @@ export async function resumeAgentAfterPause(
           triggerDetail: "system",
           reason: "pause_resume",
           idempotencyKey,
-          requestedByActorType: operatorUserId ? "user" : "system",
-          requestedByActorId: operatorUserId ?? "pause_resume",
+          requestedByActorType: "system",
+          requestedByActorId: "pause_resume",
+          ...(operatorUserId ? { resumedByUserId: operatorUserId } : {}),
           contextSnapshot: {
             issueId: issue.id,
             taskKey: issue.id,

@@ -180,22 +180,26 @@ describeEmbeddedPostgres("resumeAgentAfterPause (L3)", () => {
 
   // myrmidon(RESUME-AFTER-CANCEL): lifting the pause is the operator's explicit
   // act, so the wake it issues is attributed to that user.
-  it("attributes the resume wakes to the operator who lifted the pause", async () => {
+  it("carries the operator who lifted the pause as a marker, and keeps the wake a system wake", async () => {
     const { companyId, agentId } = await seedAgent();
     const issueId = await seedIssue({ companyId, agentId, status: "in_progress" });
     const deps = fakeDeps();
 
     await resumeAgentAfterPause(deps, agentId, { operatorUserId: "user-op" });
+    await resumeAgentAfterPause(deps, agentId);
 
     expect(deps.enqueueWakeup).toHaveBeenCalledWith(
       agentId,
       expect.objectContaining({
         reason: "pause_resume",
-        requestedByActorType: "user",
-        requestedByActorId: "user-op",
+        requestedByActorType: "system",
+        requestedByActorId: "pause_resume",
+        resumedByUserId: "user-op",
         contextSnapshot: expect.objectContaining({ issueId }),
       }),
     );
+    // Without an identifiable user the marker is absent.
+    expect(deps.enqueueWakeup.mock.calls[1]![1]).not.toHaveProperty("resumedByUserId");
   });
 
   it("ignores issues outside todo/in_progress", async () => {

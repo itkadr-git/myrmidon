@@ -47,13 +47,17 @@ export async function explicitWakeBypassesSettledHold(
   db: Db,
   companyId: string,
   action: RecoveryAction,
+  options: { cancelledRunOnly?: boolean } = {},
 ): Promise<boolean> {
   if (action.status !== "resolved" && action.status !== "cancelled") return false;
   const automaticRecovery = (action.evidence.automaticRecovery ?? {}) as Record<string, unknown>;
   if (automaticRecovery.replay !== "blocked") return false;
 
   const parsedRunId = z.string().guid().safeParse(action.evidence.runId ?? action.evidence.sourceRunId);
-  if (!parsedRunId.success) return true;
+  // myrmidon(RESUME-AFTER-CANCEL): the resume of an operator's pause passes only
+  // a hold whose named run was cancelled (operator cancel, queue removal); a hold
+  // that names no run, a purged run, or a failed/timed_out/interrupted run stays.
+  if (!parsedRunId.success) return !options.cancelledRunOnly;
   const runId = parsedRunId.data;
 
   const [run] = await db
@@ -63,7 +67,8 @@ export async function explicitWakeBypassesSettledHold(
     .limit(1);
   // The referenced run row is gone (purged historical data): nothing left
   // to verify.
-  if (!run) return true;
+  if (!run) return !options.cancelledRunOnly;
+  if (options.cancelledRunOnly && run.status !== "cancelled") return false;
   if (!TERMINAL_RUN_STATUSES.has(run.status)) return false;
 
   const [coordinator] = await db
