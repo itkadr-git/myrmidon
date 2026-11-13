@@ -412,6 +412,42 @@ describeEmbeddedPostgres("stale block sweep", () => {
     expect(issue!.status).toBe("in_progress");
   });
 
+  it("STALE-BLOCK-UNASSIGNED: a task with a dead blocker and no assignee goes to todo and the dead edge is removed", async () => {
+    const seeded = await seed({ blockerStatus: "done", withRelation: true });
+    await db
+      .update(issues)
+      .set({ assigneeAgentId: null, assigneeUserId: null })
+      .where(eq(issues.id, seeded.issueId));
+    const { sweep } = sweepWith();
+
+    const result = await sweep.sweep();
+
+    expect(result).toMatchObject({ scanned: 1, unblocked: 1, skippedLive: 0, failed: 0 });
+    const [issue] = await db.select().from(issues).where(eq(issues.id, seeded.issueId));
+    expect(issue!.status).toBe("todo");
+    expect(issue!.assigneeAgentId).toBeNull();
+    expect(issue!.assigneeUserId).toBeNull();
+    const edges = await db.select().from(issueRelations).where(eq(issueRelations.relatedIssueId, seeded.issueId));
+    expect(edges).toHaveLength(0);
+    const comments = await db.select().from(issueComments).where(eq(issueComments.issueId, seeded.issueId));
+    expect(comments).toHaveLength(1);
+    expect(comments[0]!.body).toContain("returned to todo without assignee");
+  });
+
+  it("STALE-BLOCK-UNASSIGNED: a task with a dead blocker and an assignee still goes to in_progress", async () => {
+    const seeded = await seed({ blockerStatus: "done", withRelation: true });
+    const { sweep } = sweepWith();
+
+    const result = await sweep.sweep();
+
+    expect(result).toMatchObject({ scanned: 1, unblocked: 1, failed: 0 });
+    const [issue] = await db.select().from(issues).where(eq(issues.id, seeded.issueId));
+    expect(issue!.status).toBe("in_progress");
+    expect(issue!.assigneeAgentId).toBe(seeded.agentId);
+    const edges = await db.select().from(issueRelations).where(eq(issueRelations.relatedIssueId, seeded.issueId));
+    expect(edges).toHaveLength(0);
+  });
+
   it("T4: unblocks a blocked task with no reasons (reasons.length === 0) to todo without assignee", async () => {
     const seeded = await seed({
       blockerStatus: undefined,
@@ -755,27 +791,28 @@ describeEmbeddedPostgres("stale block sweep", () => {
 describe("describeStaleBlockSweepFailure", () => {
   it("names an update the issue service refused", () => {
     expect(describeStaleBlockSweepFailure(unprocessable("Issue is blocked by unresolved blockers", { secret: "s3cr3t" })))
-      .toEqual({ errorName: "HttpError", errorStatus: 422 });
-    expect(describeStaleBlockSweepFailure(new HttpError(409, "conflict"))).toEqual({ errorName: "HttpError", errorStatus: 409 });
+      .toEqual({ errorName: "HttpError", errorStatus: 422, errorMessage: "Issue is blocked by unresolved blockers" });
+    expect(describeStaleBlockSweepFailure(new HttpError(409, "conflict"))).toEqual({ errorName: "HttpError", errorStatus: 409, errorMessage: "conflict" });
+    expect(describeStaleBlockSweepFailure(unprocessable("token=s3cr3t{x}"))).toMatchObject({ errorStatus: 422, errorMessage: null });
   });
 
   it("names the class of any other error and never copies its text", () => {
     const described = describeStaleBlockSweepFailure(new TypeError("token=s3cr3t in the message"));
-    expect(described).toEqual({ errorName: "TypeError", errorStatus: null });
+    expect(described).toEqual({ errorName: "TypeError", errorStatus: null, errorMessage: null });
     expect(JSON.stringify(described)).not.toContain("s3cr3t");
   });
 
   it("drops a status outside the HTTP error range and a status that is not a number", () => {
-    expect(describeStaleBlockSweepFailure(Object.assign(new Error("x"), { status: 200 }))).toEqual({ errorName: "Error", errorStatus: null });
-    expect(describeStaleBlockSweepFailure(Object.assign(new Error("x"), { status: "422" }))).toEqual({ errorName: "Error", errorStatus: null });
-    expect(describeStaleBlockSweepFailure(Object.assign(new Error("x"), { status: 422.5 }))).toEqual({ errorName: "Error", errorStatus: null });
+    expect(describeStaleBlockSweepFailure(Object.assign(new Error("x"), { status: 200 }))).toEqual({ errorName: "Error", errorStatus: null, errorMessage: null });
+    expect(describeStaleBlockSweepFailure(Object.assign(new Error("x"), { status: "422" }))).toEqual({ errorName: "Error", errorStatus: null, errorMessage: null });
+    expect(describeStaleBlockSweepFailure(Object.assign(new Error("x"), { status: 422.5 }))).toEqual({ errorName: "Error", errorStatus: null, errorMessage: null });
   });
 
   it("drops a class name that is not a plain identifier and reads nothing from a non-object", () => {
     const odd = Object.create({ constructor: { name: "token s3cr3t" } });
-    expect(describeStaleBlockSweepFailure(odd)).toEqual({ errorName: null, errorStatus: null });
-    expect(describeStaleBlockSweepFailure("boom")).toEqual({ errorName: null, errorStatus: null });
-    expect(describeStaleBlockSweepFailure(null)).toEqual({ errorName: null, errorStatus: null });
-    expect(describeStaleBlockSweepFailure(undefined)).toEqual({ errorName: null, errorStatus: null });
+    expect(describeStaleBlockSweepFailure(odd)).toEqual({ errorName: null, errorStatus: null, errorMessage: null });
+    expect(describeStaleBlockSweepFailure("boom")).toEqual({ errorName: null, errorStatus: null, errorMessage: null });
+    expect(describeStaleBlockSweepFailure(null)).toEqual({ errorName: null, errorStatus: null, errorMessage: null });
+    expect(describeStaleBlockSweepFailure(undefined)).toEqual({ errorName: null, errorStatus: null, errorMessage: null });
   });
 });
