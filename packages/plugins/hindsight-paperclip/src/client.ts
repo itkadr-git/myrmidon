@@ -12,6 +12,55 @@ export interface RetainMetadata {
   [key: string]: unknown;
 }
 
+/** One entry of `GET /banks/{id}/documents` (ListDocumentsResponse items). */
+export interface BankDocumentItem {
+  id: string;
+  contentHash?: string | null;
+  textLength?: number;
+  memoryUnitCount?: number;
+  tags?: string[];
+  createdAt?: string;
+  updatedAt?: string;
+}
+
+/** One page of the bank's document list. */
+export interface BankDocumentsPage {
+  items: BankDocumentItem[];
+  total: number;
+  limit: number;
+  offset: number;
+}
+
+/** One entry of `GET /banks/{id}/mental-models`. */
+export interface BankMentalModelItem {
+  id: string;
+  name: string;
+  /** Server-computed: in-scope memories were written since the last refresh. */
+  isStale?: boolean | null;
+  lastRefreshedAt?: string | null;
+}
+
+/** One page of the bank's mental-model list. */
+export interface BankMentalModelsPage {
+  items: BankMentalModelItem[];
+  total: number;
+  limit: number;
+  offset: number;
+}
+
+/** `POST /banks/{id}/consolidate` — the server deduplicates pending operations. */
+export interface ConsolidationTriggerResult {
+  operationId: string;
+  /** True when an equivalent consolidation was already pending and was reused. */
+  deduplicated: boolean;
+}
+
+/** Submit receipt of an async operation (`consolidate`, model refresh). */
+export interface AsyncOperationTicket {
+  operationId: string;
+  status?: string;
+}
+
 export const DEFAULT_TIMEOUT_MS = 60_000;
 
 export class HindsightClient {
@@ -88,6 +137,99 @@ export class HindsightClient {
     if (documentId) item["document_id"] = documentId;
     if (metadata) item["metadata"] = metadata;
     await this.request("POST", path, { items: [item], async: true });
+  }
+
+  /** One bounded page of the bank's stored documents. */
+  async listDocuments(
+    bankId: string,
+    limit: number,
+    offset: number,
+  ): Promise<BankDocumentsPage> {
+    const path = `/v1/default/banks/${encodeURIComponent(bankId)}/documents`
+      + `?limit=${encodeURIComponent(String(limit))}&offset=${encodeURIComponent(String(offset))}`;
+    const response = (await this.request("GET", path)) ?? {};
+    const raw = response as { items?: unknown; total?: unknown; limit?: unknown; offset?: unknown };
+    const items = Array.isArray(raw.items) ? raw.items : [];
+    return {
+      items: items
+        .filter((item): item is BankDocumentItem => item !== null && typeof item === "object")
+        .map((item) => {
+          const record = item as Record<string, unknown>;
+          const snake = (key: string): unknown => record[key];
+          return {
+            id: typeof record["id"] === "string" ? record["id"] : String(record["id"] ?? ""),
+            contentHash: typeof record["content_hash"] === "string"
+              ? record["content_hash"]
+              : typeof snake("contentHash") === "string"
+                ? (snake("contentHash") as string)
+                : null,
+            textLength: typeof record["text_length"] === "number" ? record["text_length"] : undefined,
+            memoryUnitCount: typeof record["memory_unit_count"] === "number" ? record["memory_unit_count"] : undefined,
+            tags: Array.isArray(record["tags"]) ? (record["tags"] as string[]) : undefined,
+            createdAt: typeof record["created_at"] === "string" ? record["created_at"] : undefined,
+            updatedAt: typeof record["updated_at"] === "string" ? record["updated_at"] : undefined,
+          };
+        })
+        .filter((item) => item.id.length > 0),
+      total: typeof raw.total === "number" ? raw.total : items.length,
+      limit: typeof raw.limit === "number" ? raw.limit : limit,
+      offset: typeof raw.offset === "number" ? raw.offset : offset,
+    };
+  }
+
+  /** One bounded page of the bank's mental models (freshness flags included). */
+  async listMentalModels(
+    bankId: string,
+    limit: number,
+    offset: number,
+  ): Promise<BankMentalModelsPage> {
+    const path = `/v1/default/banks/${encodeURIComponent(bankId)}/mental-models`
+      + `?limit=${encodeURIComponent(String(limit))}&offset=${encodeURIComponent(String(offset))}`;
+    const response = (await this.request("GET", path)) ?? {};
+    const raw = response as { items?: unknown; total?: unknown; limit?: unknown; offset?: unknown };
+    const items = Array.isArray(raw.items) ? raw.items : [];
+    return {
+      items: items
+        .filter((item): item is BankMentalModelItem => item !== null && typeof item === "object")
+        .map((item) => {
+          const record = item as Record<string, unknown>;
+          return {
+            id: typeof record["id"] === "string" ? record["id"] : String(record["id"] ?? ""),
+            name: typeof record["name"] === "string" ? record["name"] : String(record["name"] ?? ""),
+            isStale: typeof record["is_stale"] === "boolean" ? record["is_stale"] : null,
+            lastRefreshedAt: typeof record["last_refreshed_at"] === "string" ? record["last_refreshed_at"] : null,
+          };
+        })
+        .filter((item) => item.id.length > 0),
+      total: typeof raw.total === "number" ? raw.total : items.length,
+      limit: typeof raw.limit === "number" ? raw.limit : limit,
+      offset: typeof raw.offset === "number" ? raw.offset : offset,
+    };
+  }
+
+  /**
+   * Trigger the bank's consolidation. Hindsight deduplicates: when an
+   * equivalent operation is already pending, it is reused (`deduplicated`).
+   */
+  async triggerConsolidation(bankId: string): Promise<ConsolidationTriggerResult> {
+    const path = `/v1/default/banks/${encodeURIComponent(bankId)}/consolidate`;
+    const response = (await this.request("POST", path, {})) as { operation_id?: unknown; deduplicated?: unknown };
+    const operationId = typeof response?.["operation_id"] === "string" ? response["operation_id"] : "";
+    if (!operationId) throw new Error(`consolidate returned no operation_id for bank ${bankId}`);
+    return { operationId, deduplicated: response["deduplicated"] === true };
+  }
+
+  /** Ask Hindsight to refresh one mental model (async operation). */
+  async refreshMentalModel(bankId: string, mentalModelId: string): Promise<AsyncOperationTicket> {
+    const path = `/v1/default/banks/${encodeURIComponent(bankId)}/mental-models`
+      + `/${encodeURIComponent(mentalModelId)}/refresh`;
+    const response = (await this.request("POST", path, {})) as { operation_id?: unknown; status?: unknown };
+    const operationId = typeof response?.["operation_id"] === "string" ? response["operation_id"] : "";
+    if (!operationId) throw new Error(`refresh returned no operation_id for model ${mentalModelId}`);
+    return {
+      operationId,
+      status: typeof response["status"] === "string" ? response["status"] : undefined,
+    };
   }
 
   async health(): Promise<boolean> {
