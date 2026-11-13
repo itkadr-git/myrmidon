@@ -516,14 +516,13 @@ func TestRemove_UnknownBotIsANoOp(t *testing.T) {
 }
 
 // A bot directory that cannot be inspected is a real failure, not the typed
-// refusal: with the volume root unreadable the Lstat of the bot directory
-// is denied.
+// refusal. chmod 0o000 does not stop root (CI runs as root), so fail the
+// stat via a missing volume root instead.
 func TestRemove_UninspectableDirectoryIsARealFailure(t *testing.T) {
 	q, _ := newQuota(t, stateOn)
-	if err := os.Chmod(q.VolumeRoot, 0o000); err != nil {
+	if err := os.RemoveAll(q.VolumeRoot); err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { os.Chmod(q.VolumeRoot, 0o700) })
 	err := q.Remove(context.Background(), qKeyA)
 	if err == nil || errors.Is(err, ErrBotDirStillExists) {
 		t.Fatalf("err %v, want a real failure", err)
