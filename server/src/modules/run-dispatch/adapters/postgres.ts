@@ -1232,6 +1232,22 @@ export function createPostgresRunDispatchAdapter(
     return freed.length > 0;
   }
 
+  // myrmidon(RESUME-AFTER-CANCEL): a queued run of an agent the operator has
+  // paused waits for the resume, not for a slot. The age sweep cancelled it and
+  // the replacement wake then failed with 409 "Agent is not invokable" (logged
+  // at error level; 13.11 23:35, three runs), so nothing was left to continue
+  // the task after the pause was lifted. Resuming the agent promotes its queued
+  // runs (myrmidon/pause-drain.ts), which start with their own wake reason. The
+  // task-state checks of the staleness decision still apply to such a run.
+  async function queuedRunWaitsForAgentResume(tx: Db, run: HeartbeatRun): Promise<boolean> {
+    const [agent] = await tx
+      .select({ status: agents.status })
+      .from(agents)
+      .where(and(eq(agents.companyId, run.companyId), eq(agents.id, run.agentId)))
+      .limit(1);
+    return agent?.status === "paused";
+  }
+
   async function cancelStaleQueuedRun(
     input: CancelStaleQueuedRunInput,
   ): Promise<CancelStaleQueuedRunOutcome> {
@@ -1247,7 +1263,8 @@ export function createPostgresRunDispatchAdapter(
         staleAgeMs >= input.staleAfterMs &&
         // myrmidon(EMPTY-RUNS-6): a run that stands in its own agent's queue is
         // not expired by age; the task-state checks below still apply to it.
-        !(await queuedRunWaitsForOwnAgentSlot(tx, run, input.now, input.staleAfterMs))
+        !(await queuedRunWaitsForOwnAgentSlot(tx, run, input.now, input.staleAfterMs)) &&
+        !(await queuedRunWaitsForAgentResume(tx, run))
       ) {
         return cancelStaleRunInTx(
           tx,

@@ -6109,7 +6109,11 @@ function getActorIdentityPart(req: Request): string {
     // wake it back up itself — queued runs and any assigned todo/in_progress
     // issue stranded without one. Best-effort: a wake failure must not fail
     // the resume response itself. Logic: myrmidon/pause-drain.ts.
-    await heartbeat.resumeAgentAfterPause(id).catch((err) => {
+    const resumeActor = getActorInfo(req);
+    await heartbeat.resumeAgentAfterPause(
+      id,
+      { operatorUserId: resumeActor.actorType === "user" ? resumeActor.actorId : null },
+    ).catch((err) => {
       logger.warn({ err, agentId: id }, "pause-resume wake failed after agent resume");
     });
 

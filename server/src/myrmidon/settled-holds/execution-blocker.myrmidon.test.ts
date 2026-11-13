@@ -124,6 +124,33 @@ describeEmbeddedPostgres("getExecutionBlocker explicitWake (L2)", () => {
     expect(await getExecutionBlocker(db, companyId, issueId, { explicitWake: true })).toBeNull();
   });
 
+  // myrmidon(RESUME-AFTER-CANCEL): the resume of an operator's pause passes a hold
+  // only when the run holding it was cancelled (cancelledRunOnly); the hold of a
+  // failed / timed_out / interrupted run, of a run that is gone, or of one that
+  // names no run, stays. A manual wake (no cancelledRunOnly) works as before.
+  it("lets the pause resume pass the hold of a cancelled run only", async () => {
+    const cancelled = await seed("cancelled");
+    await seedAction({ companyId: cancelled.companyId, issueId: cancelled.issueId, runId: cancelled.runId, status: "resolved", replay: "blocked" });
+    expect(await getExecutionBlocker(db, cancelled.companyId, cancelled.issueId)).not.toBeNull();
+    expect(await getExecutionBlocker(db, cancelled.companyId, cancelled.issueId, { explicitWake: true, cancelledRunOnly: true })).toBeNull();
+
+    for (const status of ["failed", "timed_out", "interrupted"]) {
+      const held = await seed(status);
+      await seedAction({ companyId: held.companyId, issueId: held.issueId, runId: held.runId, status: "resolved", replay: "blocked" });
+      expect(await getExecutionBlocker(db, held.companyId, held.issueId, { explicitWake: true, cancelledRunOnly: true })).not.toBeNull();
+      // The manual wake of an operator is unchanged.
+      expect(await getExecutionBlocker(db, held.companyId, held.issueId, { explicitWake: true })).toBeNull();
+    }
+
+    const unnamed = await seed("cancelled");
+    await seedAction({ companyId: unnamed.companyId, issueId: unnamed.issueId, status: "resolved", replay: "blocked" });
+    expect(await getExecutionBlocker(db, unnamed.companyId, unnamed.issueId, { explicitWake: true, cancelledRunOnly: true })).not.toBeNull();
+
+    const live = await seed("running");
+    await seedAction({ companyId: live.companyId, issueId: live.issueId, runId: live.runId, status: "resolved", replay: "blocked" });
+    expect(await getExecutionBlocker(db, live.companyId, live.issueId, { explicitWake: true, cancelledRunOnly: true })).not.toBeNull();
+  });
+
   it("keeps blocking an explicit wake while the named run's coordinator still holds an active lease", async () => {
     const { companyId, issueId, runId } = await seed();
     await seedAction({ companyId, issueId, runId, status: "resolved", replay: "blocked" });
