@@ -72,32 +72,32 @@ export const EXIT_USAGE = 2;
 // finding when the actor key lacks the gate (board scope, config-read grant,
 // CEO role) instead of failing the probe; required sections fail the run.
 export const SECTIONS = [
-  { id: "agents", kind: "get", path: "/agents" },
+  { id: "agents", kind: "get", path: "/agents", attribution: ["ownerCompanyId"] },
   { id: "org", kind: "get", path: "/org", optional: true },
   { id: "runtimeIdentity", kind: "get", path: "/api/agents/me", absolutePath: true, optional: true, note: "probes /api/agents/me: which actor identity ran the probe; profile memory follows the agent, not a company route" },
-  { id: "projects", kind: "get", path: "/projects" },
-  { id: "issues", kind: "issues", path: "/issues?view=compact", pageSize: 500 },
+  { id: "projects", kind: "get", path: "/projects", attribution: ["ownerCompanyId"] },
+  { id: "issues", kind: "issues", path: "/issues?view=compact", pageSize: 500, attribution: ["ownerCompanyId", "dependency"] },
   { id: "agentConfigurations", kind: "per-agent", path: "/api/agents/:agentId/configuration", optional: true, note: "server-redacted configuration rows (redactAgentConfiguration); probe keeps key names only" },
   { id: "agentSkills", kind: "per-agent", path: "/api/agents/:agentId/skills", optional: true, note: "AgentSkillSnapshot per agent; skill keys only, no skill content" },
   { id: "agentInstructions", kind: "per-agent", path: "/api/agents/:agentId/instructions-bundle", optional: true, note: "bundle metadata per agent (mode, entry file, file count); file contents are not fetched" },
-  { id: "skills", kind: "get", path: "/skills" },
+  { id: "skills", kind: "get", path: "/skills", attribution: ["ownerCompanyId", "dependency"] },
   { id: "skillAssignments", kind: "per-skill", path: "/companies/:companyId/skills/:skillId", optional: true, note: "per-skill usedByAgents (desired attachment map: which agents own which skill)" },
   { id: "skillFolders", kind: "get", path: "/folders?kind=skill", optional: true },
   { id: "routineFolders", kind: "get", path: "/folders?kind=routine", optional: true },
-  { id: "routines", kind: "get", path: "/routines" },
-  { id: "goals", kind: "get", path: "/goals" },
-  { id: "cases", kind: "get", path: "/cases" },
-  { id: "secretsCatalog", kind: "get", path: "/secrets/catalog", optional: true, note: "metadata catalog only: id/name/key/status; secret values never queried" },
+  { id: "routines", kind: "get", path: "/routines", attribution: ["ownerCompanyId"] },
+  { id: "goals", kind: "get", path: "/goals", optional: true, attribution: ["ownerCompanyId"] },
+  { id: "cases", kind: "get", path: "/cases", optional: true, attribution: ["ownerCompanyId"] },
+  { id: "secretsCatalog", kind: "get", path: "/secrets/catalog", optional: true, attribution: ["ownerCompanyId"], note: "metadata catalog only: id/name/key/status; secret values never queried" },
   { id: "secretProviderConfigs", kind: "get", path: "/secret-provider-configs", optional: true, note: "board-only route (assertBoard); provider credentials never requested" },
-  { id: "secretBindings", kind: "per-secret", path: "/api/secrets/:secretId/usage", optional: true, note: "binding references per secret via board-only /secrets/:id/usage; metadata fields only" },
-  { id: "budgetsOverview", kind: "get", path: "/budgets/overview", optional: true },
+  { id: "secretBindings", kind: "per-secret", path: "/api/secrets/:secretId/usage", optional: true, attribution: ["ownerCompanyId", "dependency"], note: "binding references per secret via board-only /secrets/:id/usage; metadata fields only" },
+  { id: "budgetsOverview", kind: "get", path: "/budgets/overview", optional: true, attribution: ["ownerCompanyId"] },
   { id: "costsSummary", kind: "get", path: "/costs/summary", optional: true },
   { id: "costsByAgent", kind: "get", path: "/costs/by-agent", optional: true, note: "per-agent spend attribution (which agents accrue cost); values are volatile" },
-  { id: "corpusDatasets", kind: "get", path: "/api/myrmidon/companies/:companyId/corpus/datasets", absolutePath: true, optional: true, note: "knowledge-corpus dataset list per company (id/name/description + documentCount/readyCount/failedCount/chunkCount); document bytes and parsed contents are never fetched" },
+  { id: "corpusDatasets", kind: "get", path: "/api/myrmidon/companies/:companyId/corpus/datasets", absolutePath: true, optional: true, attribution: ["ownerCompanyId"], note: "knowledge-corpus dataset list per company (id/name/description + documentCount/readyCount/failedCount/chunkCount); document bytes and parsed contents are never fetched" },
   { id: "corpusStats", kind: "get", path: "/api/myrmidon/companies/:companyId/corpus/stats", absolutePath: true, optional: true, note: "company corpus aggregate counters only (datasets/documents/ready/pending/failed/chunks/bytes); never includes document or chunk content" },
   { id: "agentMemory", kind: "per-agent", path: "/api/myrmidon/agents/:agentId/memory", optional: true, note: "per-agent memory-bank metadata via board-only route: enabled / bank.bankId / bank.source (agent-card|plugin-config) / reason; memory items, /memory/memories and /memory/export are never queried (export would write an audit row)" },
-  { id: "aiConnections", kind: "get", path: "/ai-connections", optional: true, note: "board-only route (assertBoard)" },
-  { id: "chatEndpoints", kind: "get", path: "/chat-endpoints", optional: true, note: "board-only route (assertBoard)" },
+  { id: "aiConnections", kind: "get", path: "/ai-connections", optional: true, attribution: ["ownerCompanyId", "dependency"], note: "board-only route (assertBoard)" },
+  { id: "chatEndpoints", kind: "get", path: "/chat-endpoints", optional: true, attribution: ["ownerCompanyId", "dependency"], note: "board-only route (assertBoard)" },
   { id: "exportFidelity", kind: "get", path: "/export/fidelity", optional: true, note: "CEO-or-board gate; counts-only report" },
 ];
 
@@ -776,6 +776,7 @@ export async function runProbe({ baseUrl, token, companyId }) {
     sections: {},
     findings: [],
   };
+  const dependencies = [];
   let agentIds = [];
   for (const section of SECTIONS) {
     try {
@@ -791,6 +792,20 @@ export async function runProbe({ baseUrl, token, companyId }) {
             : (report.sections.secretsCatalog?.keys ?? []).map((k) => k.id);
         const results = await fetchPerItem(section, ids, { baseUrl, token, companyId });
         report.sections[section.id] = summarizePerItemSection(section.id, results);
+        if (section.attribution) {
+          report.sections[section.id].attribution = [...section.attribution];
+          const allBindings = section.id === "secretBindings"
+            ? results.flatMap((r) => Array.isArray(r.payload?.bindings) ? r.payload.bindings : [])
+            : results.map((r) => r.payload).filter((p) => p && !p.__unavailable);
+          if (report.sections[section.id].available) {
+            report.sections[section.id].missingAttribution = missingAttribution(section.attribution, allBindings);
+          }
+          if (section.attribution.includes("dependency") && allBindings.length > 0) {
+            for (const row of formatInventoryDependencies(allBindings, { currentCompanyId: companyId })) {
+              dependencies.push({ section: section.id, ...row });
+            }
+          }
+        }
         continue;
       }
       const payload = await fetchSectionRows(section, { baseUrl, token, companyId });
@@ -799,6 +814,26 @@ export async function runProbe({ baseUrl, token, companyId }) {
         agentIds = payload.map((a) => a.id).filter(Boolean).sort();
       }
       report.sections[section.id] = summarizeSection(section.id, payload);
+      const rawRows = Array.isArray(payload)
+        ? payload
+        : Array.isArray(payload?.datasets)
+        ? payload.datasets
+        : Array.isArray(payload?.items)
+        ? payload.items
+        : Array.isArray(payload?.secrets)
+        ? payload.secrets
+        : [];
+      if (section.attribution) {
+        report.sections[section.id].attribution = [...section.attribution];
+        if (report.sections[section.id].available) {
+          report.sections[section.id].missingAttribution = missingAttribution(section.attribution, rawRows);
+        }
+      }
+      if (section.attribution?.includes("dependency") && rawRows.length > 0) {
+        for (const row of formatInventoryDependencies(rawRows, { currentCompanyId: companyId })) {
+          dependencies.push({ section: section.id, ...row });
+        }
+      }
     } catch (err) {
       if (section.optional) {
         report.sections[section.id] = { available: false, reason: `error: ${err.message}` };
@@ -809,8 +844,19 @@ export async function runProbe({ baseUrl, token, companyId }) {
   }
   // Defensive final pass: no secret-material key survives into the report.
   report.sections = redact(report.sections);
-  report.findings = collectFindings(report.sections);
-  report.reportSha256 = sha256Of({ sections: report.sections, findings: report.findings });
+  if (dependencies.length > 0) {
+    report.dependencies = dependencies.sort((a, b) => {
+      const ka = `${a.section}\0${a.objectId ?? ""}\0${a.status}\0${a.dependency?.type ?? ""}\0${a.dependency?.id ?? ""}\0${a.dependency?.companyId ?? ""}`;
+      const kb = `${b.section}\0${b.objectId ?? ""}\0${b.status}\0${b.dependency?.type ?? ""}\0${b.dependency?.id ?? ""}\0${b.dependency?.companyId ?? ""}`;
+      return ka < kb ? -1 : ka > kb ? 1 : 0;
+    });
+  }
+  report.findings = collectFindings(report.sections, { currentCompanyId: companyId, dependencies: report.dependencies });
+  report.reportSha256 = sha256Of({
+    sections: report.sections,
+    findings: report.findings,
+    ...(report.dependencies ? { dependencies: report.dependencies } : {}),
+  });
   return report;
 }
 
@@ -876,8 +922,9 @@ function summarizePerItemSection(id, results) {
 // Findings: cross-company risk signals and owner gaps
 // ---------------------------------------------------------------------------
 
-export function collectFindings(sections) {
+export function collectFindings(sections, options = {}) {
   const findings = [];
+  const collected = Array.isArray(options) ? options : (options?.dependencies ?? []);
   const agents = sections.agents ?? {};
   if (agents.available) {
     if (agents.reportsToMissingInCompany > 0) {
@@ -1197,12 +1244,15 @@ export function serializeAgentOwnership(entities, { knownCompanyIds } = {}) {
  * missing when at least one returned row lacks it (absent key, null, or
  * undefined). Field names only — row contents never enter the report.
  */
-function missingAttribution(attribution, rows) {
+export function missingAttribution(attribution, rows) {
   if (!rows || !rows.length) return [...attribution];
   const missing = new Set();
   for (const row of rows) {
     for (const field of attribution) {
-      const hasField = row !== null && typeof row === "object" && row[field] !== undefined && row[field] !== null;
+      const hasField = row !== null && typeof row === "object" && (
+        (row[field] !== undefined && row[field] !== null) ||
+        (field === "ownerCompanyId" && row.companyId !== undefined && row.companyId !== null)
+      );
       if (!hasField) missing.add(field);
     }
   }
@@ -1289,10 +1339,33 @@ function nonEmptyString(value) {
  */
 export function formatCrossCompanyDependency(item, { currentCompanyId = null } = {}) {
   const objectId = item && typeof item === "object" ? nonEmptyString(item.id) : null;
-  const ownerCompanyId = item && typeof item === "object" ? nonEmptyString(item.ownerCompanyId) : null;
+  const ownerCompanyId = item && typeof item === "object" ? nonEmptyString(item.ownerCompanyId ?? item.companyId) : null;
   const baseCompanyId = nonEmptyString(currentCompanyId) ?? ownerCompanyId;
 
-  if (!item || typeof item !== "object" || item.dependency === undefined) {
+  if (!item || typeof item !== "object") {
+    return canonicalize({
+      objectId,
+      ownerCompanyId,
+      status: "unknown",
+      dependency: null,
+    });
+  }
+
+  if (item.dependency === undefined) {
+    if (nonEmptyString(item.forkedFromCompanyId)) {
+      const forkedCompany = nonEmptyString(item.forkedFromCompanyId);
+      const isCross = baseCompanyId ? forkedCompany !== baseCompanyId : false;
+      return canonicalize({
+        objectId,
+        ownerCompanyId,
+        status: isCross ? "cross-company" : "same-company",
+        dependency: {
+          type: nonEmptyString(item.forkedFromSkillId) ? "skill" : "company",
+          id: nonEmptyString(item.forkedFromSkillId) ?? objectId ?? forkedCompany,
+          companyId: forkedCompany,
+        },
+      });
+    }
     return canonicalize({
       objectId,
       ownerCompanyId,

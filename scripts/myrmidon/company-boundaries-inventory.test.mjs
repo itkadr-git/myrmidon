@@ -541,6 +541,70 @@ describe("runProbe behavior (local HTTP stub)", () => {
     assert.equal(bundle.fileCount, 1);
   });
 
+  it("collects cross-company dependencies and owner attribution on real probe sections", async () => {
+    const probeServer = createServer((req, res) => {
+      const u = new URL(req.url, "http://127.0.0.1");
+      const json = (data) => {
+        res.writeHead(200, { "content-type": "application/json" });
+        res.end(JSON.stringify(data));
+      };
+      if (u.pathname === `/api/companies/${CID}/agents`) {
+        json([
+          { id: "a1", companyId: CID, name: "adm", role: "lead", reportsTo: null },
+          { id: "a2", companyId: CID, name: "eng", role: "engineer", reportsTo: "a1" },
+        ]);
+      } else if (u.pathname === `/api/companies/${CID}/projects`) {
+        json([{ id: "p1", name: "P", status: "active", leadAgentId: "a1", companyId: CID }]);
+      } else if (u.pathname === `/api/companies/${CID}/issues`) {
+        json([
+          { id: "iss-1", projectId: "p1", assigneeAgentId: "a1", status: "todo", ownerCompanyId: CID, dependency: { type: "issue", id: "adm-99", companyId: "comp-adm" } },
+          { id: "iss-2", projectId: "p1", assigneeAgentId: "a2", status: "todo", ownerCompanyId: CID, dependency: { type: "issue", id: "loc-1", companyId: CID } },
+        ]);
+      } else if (u.pathname === `/api/companies/${CID}/skills`) {
+        json([
+          { id: "sk-cross", key: "company/c1/forked", name: "forked", trustLevel: "markdown_only", sourceType: "catalog", sharingScope: "company", forkedFromCompanyId: "comp-adm", forkedFromSkillId: "sk-adm-base", attachedAgentCount: 1 },
+        ]);
+      } else if (u.pathname.startsWith(`/api/companies/${CID}/skills/`)) {
+        json({ id: "sk-cross", key: "k-sk-cross", usedByAgents: [{ id: "a1", name: "adm" }] });
+      } else if (u.pathname === `/api/companies/${CID}/routines`) {
+        json([{ id: "r1", title: "Daily", assigneeAgentId: "a1", status: "active", companyId: CID }]);
+      } else {
+        res.writeHead(404, { "content-type": "application/json" });
+        res.end(JSON.stringify({ error: "not found" }));
+      }
+    });
+
+    await new Promise((resolve) => probeServer.listen(0, resolve));
+    const probeUrl = `http://127.0.0.1:${probeServer.address().port}`;
+    try {
+      const report = await runProbe({ baseUrl: probeUrl, token: "test-token", companyId: CID });
+      assert.ok(Array.isArray(report.dependencies), "expected report.dependencies to be populated");
+      const crossIssue = report.dependencies.find((d) => d.objectId === "iss-1");
+      assert.ok(crossIssue, "iss-1 dependency row must be present");
+      assert.equal(crossIssue.status, "cross-company");
+      assert.equal(crossIssue.section, "issues");
+      assert.equal(crossIssue.ownerCompanyId, CID);
+      assert.deepEqual(crossIssue.dependency, { type: "issue", id: "adm-99", companyId: "comp-adm" });
+
+      const sameIssue = report.dependencies.find((d) => d.objectId === "iss-2");
+      assert.ok(sameIssue, "iss-2 dependency row must be present");
+      assert.equal(sameIssue.status, "same-company");
+
+      const forkedSkill = report.dependencies.find((d) => d.objectId === "sk-cross");
+      assert.ok(forkedSkill, "sk-cross dependency row must be present");
+      assert.equal(forkedSkill.status, "cross-company");
+      assert.equal(forkedSkill.section, "skills");
+      assert.deepEqual(forkedSkill.dependency, { type: "skill", id: "sk-adm-base", companyId: "comp-adm" });
+
+      assert.deepEqual(report.sections.agents.attribution, ["ownerCompanyId"]);
+      assert.deepEqual(report.sections.agents.missingAttribution, []);
+      assert.deepEqual(report.sections.issues.attribution, ["ownerCompanyId", "dependency"]);
+      assert.deepEqual(report.sections.issues.missingAttribution, []);
+    } finally {
+      await new Promise((resolve) => probeServer.close(resolve));
+    }
+  });
+
   it("is idempotent: two probes with stable data produce an empty diff", async () => {
     const r1 = await runProbe({ baseUrl, token: "stub-token", companyId: CID });
     const r2 = await runProbe({ baseUrl, token: "stub-token", companyId: CID });
