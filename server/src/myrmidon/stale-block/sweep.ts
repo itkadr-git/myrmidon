@@ -24,7 +24,7 @@ import {
 import { logger } from "../../middleware/logger.js";
 import { publishActivity, type ActivityPublication } from "../../services/activity-log.js";
 import type { IssuePostCommitAction } from "../../services/issues.js";
-import { readReasonRef } from "./reason.js";
+import { DEAD_BLOCKER_STATUSES, readReasonRef } from "./reason.js";
 import {
   collectStaleBlockReasons,
   describeStaleBlockReason,
@@ -385,8 +385,58 @@ async function judgeReasons(input: {
           : reason.dueAt,
     });
   }
+  // myrmidon(STALE-BLOCK-LIVE-EDGES): `reasonRef` wins as the cited reason
+  // (collectStaleBlockReasons), so with a reasonRef the blocked-by edges were
+  // never judged. A task whose cited reason died while one of its blockers is
+  // still open is not stale: the issue service refuses `in_progress` for it
+  // ("Issue is blocked by unresolved blockers"), so the unblock threw, the
+  // transaction rolled back and the pass logged "stale block sweep failed" for
+  // the same tasks on every tick (13.11: 14 tasks, about 50 warnings an hour). An
+  // open blocker on an edge the reasonRef does not cover is a live reason of
+  // its own; the task stays blocked and is woken through the ordinary
+  // `issue_blockers_resolved` path when that blocker closes. A blocker row
+  // that is gone holds nothing, exactly as the issue service reads it.
+  if (reasonRef) {
+    const covered = new Set(issueIds);
+    const uncovered = blockedByIssueIds.filter(
+      (blockerIssueId) => blockerIssueId !== "" && !covered.has(blockerIssueId),
+    );
+    if (uncovered.length > 0) {
+      const edgeStatuses = await blockerStatusMap(db, row.companyId, uncovered);
+      for (const blockerIssueId of uncovered) {
+        const status = edgeStatuses.get(blockerIssueId);
+        if (status !== undefined && !DEAD_BLOCKER_STATUSES.has(status)) liveCount += 1;
+      }
+    }
+  }
   void labelByIdentifier;
   return { reasons, dead, liveCount };
+}
+
+/**
+ * What may be logged about a failed unblock. The exception can carry a
+ * credential in its message, code, cause or stack, so none of those is logged:
+ * only the class name when it is a plain identifier, and the HTTP status when
+ * it is a number in the error range. That is enough to tell an update the
+ * issue service refused (HttpError 422) from a database or programming error
+ * without reading the payload; before this the warning said `sweep_failed`
+ * and nothing else, and the cause of a failure repeated on every tick could
+ * only be found by reading the code against the data.
+ */
+export function describeStaleBlockSweepFailure(err: unknown): {
+  errorName: string | null;
+  errorStatus: number | null;
+} {
+  if (err === null || typeof err !== "object") return { errorName: null, errorStatus: null };
+  const name = (err as { constructor?: { name?: unknown } }).constructor?.name;
+  const status = (err as { status?: unknown }).status;
+  return {
+    errorName: typeof name === "string" && /^[A-Za-z][A-Za-z0-9]{0,39}$/.test(name) ? name : null,
+    errorStatus:
+      typeof status === "number" && Number.isInteger(status) && status >= 400 && status <= 599
+        ? status
+        : null,
+  };
 }
 
 export function createStaleBlockSweep(deps: StaleBlockSweepDeps) {
@@ -624,14 +674,15 @@ export function createStaleBlockSweep(deps: StaleBlockSweepDeps) {
           result.skippedLive += 1;
           lastSweptAtByIssueId.set(row.id, at.getTime());
         }
-      } catch {
-        // Log a constant errorKind only: the exception can carry a credential
-        // in its message, code, cause or stack. The task stays blocked for a
-        // later tick.
+      } catch (err) {
+        // Log a constant errorKind plus the class name and HTTP status only
+        // (`describeStaleBlockSweepFailure`): the exception can carry a
+        // credential in its message, code, cause or stack. The task stays
+        // blocked for a later tick.
         result.failed += 1;
         lastSweptAtByIssueId.set(row.id, at.getTime());
         logger.warn(
-          { errorKind: "sweep_failed", issueId: row.id },
+          { errorKind: "sweep_failed", issueId: row.id, ...describeStaleBlockSweepFailure(err) },
           "stale block sweep failed for one task",
         );
       }
