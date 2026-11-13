@@ -1,7 +1,10 @@
 package main
 
 import (
+	"context"
+	"net"
 	"net/http"
+	"path/filepath"
 	"runtime"
 	"testing"
 	"time"
@@ -70,5 +73,46 @@ func TestDockerRoundTripsDoNotLeakGoroutinesOrHeap(t *testing.T) {
 	runtime.ReadMemStats(&after)
 	if grew := int64(after.HeapAlloc) - int64(base.HeapAlloc); grew > 20<<20 {
 		t.Fatalf("heap grew %d bytes over 1000 cycles (baseline %d, final %d), limit is 20 MiB", grew, base.HeapAlloc, after.HeapAlloc)
+	}
+}
+
+// TestDockerRequestTimesOutOnHungDaemon: the shared client has no Timeout, so
+// request() must bound the call itself (OPE-12923 regression).
+func TestDockerRequestTimesOutOnHungDaemon(t *testing.T) {
+	sockPath := filepath.Join(t.TempDir(), "d.sock")
+	ln, err := net.Listen("unix", sockPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan struct{})
+	t.Cleanup(func() {
+		close(done)
+		ln.Close()
+	})
+	go func() {
+		for {
+			c, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			go func() {
+				<-done
+				c.Close()
+			}()
+		}
+	}()
+	d := newDockerClient(&config{Upstream: sockPath})
+	d.requestTimeout = 200 * time.Millisecond
+	errc := make(chan error, 1)
+	go func() {
+		errc <- d.request(context.Background(), http.MethodGet, "/x", nil, nil)
+	}()
+	select {
+	case err := <-errc:
+		if err == nil {
+			t.Fatal("expected a timeout error from a hung daemon")
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("request did not time out: the timeout context is not applied to the request")
 	}
 }
