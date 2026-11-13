@@ -29,6 +29,15 @@
 // - Stopping is idempotent: the gateway's POST /v1/runs/{id}/stop on a run it
 //   already forgot answers 404, which the adapter surfaces as
 //   { stopped: false }. A repeated sweep converges without side effects.
+// - myrmidon(OPE-12964): runs the pass settled (probed terminal / not_found,
+//   or stopped) are remembered process-locally and never probed again within
+//   the lookback. Every probe re-resolved the agent's adapterConfig secrets
+//   and wrote one secret_access_events row per secret, and the same finished
+//   runs were re-probed on every pass: millions of audit rows a day plus up
+//   to 64 sequential gateway calls before each run start. A gateway run id is
+//   never resurrected, so the answer cannot change. unreachable, live with a
+//   refused stop, and thrown probes are NOT remembered; an unreachable probe
+//   also ends the pass, since the remaining rows would answer the same.
 // - Every probe/stop resolves the agent's adapterConfig secrets through the
 //   same resolution path as the board's own stop (stopRemoteGatewayRun), so a
 //   secret_ref apiKey works here too.
@@ -114,6 +123,8 @@ export interface GatewaySlotReconcileResult {
   /** Gateway runs still live whose board run is NOT terminal — board-owned,
    * never stopped (the reattach sweep supervises them). */
   skippedOwned: number;
+  /** Settled runs skipped without a probe (OPE-12964). */
+  skippedSettled?: number;
   /** Gateway already forgot the run: no slot is occupied. */
   notFound: number;
   /** Gateway unreachable (or credentials unresolvable): nothing changed. */
@@ -128,6 +139,33 @@ export interface GatewaySlotReconcileOptions {
   lookbackMs?: number;
   /** Skip the log when nothing was found (periodic noise control). */
   quiet?: boolean;
+  /** Settled-run memory (OPE-12964). Defaults to none for the pure core;
+   * sweepGatewaySlotsForAgent passes the process-local one. */
+  settled?: { has(runId: string): boolean; add(runId: string): void };
+  /** Clock override (tests). */
+  nowMs?: number;
+}
+
+/**
+ * myrmidon(OPE-12964): board run ids whose gateway run was confirmed off the
+ * gateway by this process (probed terminal/not_found, or stop accepted), with
+ * the time of confirmation. Process-local: a restart merely probes once more.
+ */
+const settledRunAtMs = new Map<string, number>();
+
+function pruneSettledRuns(nowMs: number, lookbackMs: number): void {
+  for (const [runId, at] of settledRunAtMs) {
+    if (nowMs - at > lookbackMs) settledRunAtMs.delete(runId);
+  }
+}
+
+function createSettledMemory(nowMs: number) {
+  return {
+    has: (runId: string) => settledRunAtMs.has(runId),
+    add: (runId: string) => {
+      settledRunAtMs.set(runId, nowMs);
+    },
+  };
 }
 
 /**
@@ -166,6 +204,10 @@ export async function reconcileGatewaySlotsFromRows(
     if (!terminal.includes(row.status)) continue;
     const gatewayRunId = row.externalRunId;
     if (!gatewayRunId) continue;
+    if (options.settled?.has(row.id)) {
+      result.skippedSettled = (result.skippedSettled ?? 0) + 1;
+      continue;
+    }
 
     let probe: Awaited<ReturnType<GatewaySlotReconcilePort["probeGatewayRun"]>>;
     try {
@@ -188,16 +230,19 @@ export async function reconcileGatewaySlotsFromRows(
 
     if (probe.state === "not_found") {
       result.notFound += 1;
+      options.settled?.add(row.id);
       continue;
     }
     if (probe.state === "terminal") {
       // The gateway finished the run on its own; the slot freed by itself.
+      options.settled?.add(row.id);
       continue;
     }
     if (probe.state === "unreachable") {
-      // Best-effort: an unreachable gateway must not block run starts.
+      // Best-effort: an unreachable gateway must not block run starts. The
+      // remaining rows would answer the same, so end the pass (OPE-12964).
       result.unreachable += 1;
-      continue;
+      break;
     }
 
     // probe.state === "live": the gateway still occupies a slot for a run the
@@ -222,6 +267,7 @@ export async function reconcileGatewaySlotsFromRows(
       if (stopped.stopped) {
         result.stopped += 1;
         result.stoppedRunIds.push({ runId: row.id, gatewayRunId });
+        options.settled?.add(row.id);
       } else {
         // The stop did not land (404 between probe and stop, auth, network):
         // nothing more to do now; the next pass re-verifies.
@@ -271,6 +317,8 @@ export async function sweepGatewaySlotsForAgent(
   options: GatewaySlotReconcileOptions = {},
 ): Promise<GatewaySlotReconcileResult> {
   const lookbackMs = options.lookbackMs ?? GATEWAY_SLOT_RECONCILE_LOOKBACK_MS;
+  const nowMs = options.nowMs ?? Date.now();
+  pruneSettledRuns(nowMs, lookbackMs);
 
   const [agentRow] = await db
     .select({
@@ -301,7 +349,7 @@ export async function sweepGatewaySlotsForAgent(
       ? (agentRow.adapterConfig as Record<string, unknown>)
       : {};
 
-  const cutoff = new Date(Date.now() - lookbackMs);
+  const cutoff = new Date(nowMs - lookbackMs);
   const rows = await db
     .select({
       id: heartbeatRuns.id,
@@ -326,7 +374,7 @@ export async function sweepGatewaySlotsForAgent(
     { id: agentRow.id, companyId: agentRow.companyId, adapterConfig },
     rows,
     port,
-    options,
+    { ...options, settled: options.settled ?? createSettledMemory(nowMs) },
   );
 }
 
@@ -400,4 +448,5 @@ export async function reconcileGatewaySlotsOnRunStart(
 export function resetGatewaySlotReconcileThrottleForTest(): void {
   lastSweepAtByAgent.clear();
   lastSweepResultByAgent.clear();
+  settledRunAtMs.clear();
 }

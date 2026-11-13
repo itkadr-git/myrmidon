@@ -6,6 +6,7 @@ import {
   reconcileGatewaySlotsFromRows,
   recordGatewaySlotSweep,
   reconcileGatewaySlotsOnRunStart,
+  sweepGatewaySlotsForAgent,
   resetGatewaySlotReconcileThrottleForTest,
   shouldReconcileGatewaySlotsForAgent,
   type GatewaySlotReconcilePort,
@@ -225,6 +226,104 @@ describe("myrmidon(GATEWAY-SLOT-RECONCILE) gateway slot reconcile on run start",
     const result = await reconcileGatewaySlotsFromRows(agent, rows, port, { quiet: true });
     expect(result.stopped).toBe(TERMINAL_BOARD_RUN_STATUSES.length);
     expect(stops).toHaveLength(TERMINAL_BOARD_RUN_STATUSES.length);
+  });
+});
+
+describe("myrmidon(OPE-12964) settled gateway runs are not probed again", () => {
+  const rows = [
+    { id: "run-a", status: "succeeded", externalRunId: "gw-a" },
+    { id: "run-b", status: "failed", externalRunId: "gw-b" },
+  ];
+
+  it("a second pass over the same finished runs does not call probeGatewayRun", async () => {
+    const settled = new Set<string>();
+    const { port, probes } = makePort({ probe: (id) => (id === "gw-a" ? "terminal" : "not_found") });
+    const first = await reconcileGatewaySlotsFromRows(agent, rows, port, { quiet: true, settled });
+    expect(probes).toEqual(["gw-a", "gw-b"]);
+    expect(first.probed).toBe(2);
+
+    const second = await reconcileGatewaySlotsFromRows(agent, rows, port, { quiet: true, settled });
+    expect(probes).toEqual(["gw-a", "gw-b"]); // no new probe
+    expect(second.scanned).toBe(2);
+    expect(second.probed).toBe(0);
+    expect(second.skippedSettled).toBe(2);
+  });
+
+  it("unreachable is not remembered: the run is probed again on the next pass", async () => {
+    const settled = new Set<string>();
+    const { port, probes } = makePort({ probe: () => "unreachable" });
+    await reconcileGatewaySlotsFromRows(agent, [rows[0]!], port, { quiet: true, settled });
+    await reconcileGatewaySlotsFromRows(agent, [rows[0]!], port, { quiet: true, settled });
+    expect(probes).toEqual(["gw-a", "gw-a"]);
+    expect(settled.has("run-a")).toBe(false);
+  });
+
+  it("the first unreachable probe ends the pass; the remaining rows are not probed", async () => {
+    const { port, probes } = makePort({ probe: () => "unreachable" });
+    const result = await reconcileGatewaySlotsFromRows(
+      agent,
+      [...rows, { id: "run-c", status: "cancelled", externalRunId: "gw-c" }],
+      port,
+      { quiet: true },
+    );
+    expect(probes).toEqual(["gw-a"]);
+    expect(result.scanned).toBe(3);
+    expect(result.unreachable).toBe(1);
+  });
+
+  it("a thrown probe is not remembered", async () => {
+    const settled = new Set<string>();
+    const { port, probes } = makePort({
+      probe: () => {
+        throw new Error("boom");
+      },
+    });
+    await reconcileGatewaySlotsFromRows(agent, [rows[0]!], port, { quiet: true, settled });
+    await reconcileGatewaySlotsFromRows(agent, [rows[0]!], port, { quiet: true, settled });
+    expect(probes).toEqual(["gw-a", "gw-a"]);
+  });
+
+  it("live with an accepted stop is remembered; live with a refused stop is probed again", async () => {
+    const accepted = new Set<string>();
+    const ok = makePort({ probe: () => "live", onStop: () => ({ stopped: true }) });
+    await reconcileGatewaySlotsFromRows(agent, [rows[0]!], ok.port, { quiet: true, settled: accepted });
+    await reconcileGatewaySlotsFromRows(agent, [rows[0]!], ok.port, { quiet: true, settled: accepted });
+    expect(ok.probes).toEqual(["gw-a"]);
+    expect(ok.stops).toEqual(["gw-a"]);
+
+    const refused = new Set<string>();
+    const no = makePort({ probe: () => "live", onStop: () => ({ stopped: false }) });
+    await reconcileGatewaySlotsFromRows(agent, [rows[0]!], no.port, { quiet: true, settled: refused });
+    await reconcileGatewaySlotsFromRows(agent, [rows[0]!], no.port, { quiet: true, settled: refused });
+    expect(no.probes).toEqual(["gw-a", "gw-a"]);
+    expect(refused.has("run-a")).toBe(false);
+  });
+
+  it("sweep keeps the memory process-locally and prunes entries older than the lookback", async () => {
+    resetGatewaySlotReconcileThrottleForTest();
+    let call = 0;
+    const db = {
+      select: () => {
+        const isAgentQuery = call++ % 2 === 0;
+        return {
+          from: () => ({
+            where: () => ({
+              limit: async () => [{ id: agent.id, companyId: agent.companyId, adapterType: "hermes_gateway", adapterConfig: {} }],
+              orderBy: () => ({ limit: async () => (isAgentQuery ? [] : rows) }),
+            }),
+          }),
+        };
+      },
+    } as never;
+    const { port, probes } = makePort({ probe: () => "not_found" });
+    const t0 = 5_000_000;
+    await sweepGatewaySlotsForAgent(db, port, { agentId: agent.id }, { quiet: true, lookbackMs: 1000, nowMs: t0 });
+    expect(probes).toEqual(["gw-a", "gw-b"]);
+    await sweepGatewaySlotsForAgent(db, port, { agentId: agent.id }, { quiet: true, lookbackMs: 1000, nowMs: t0 + 500 });
+    expect(probes).toEqual(["gw-a", "gw-b"]); // remembered
+    await sweepGatewaySlotsForAgent(db, port, { agentId: agent.id }, { quiet: true, lookbackMs: 1000, nowMs: t0 + 2000 });
+    expect(probes).toEqual(["gw-a", "gw-b", "gw-a", "gw-b"]); // pruned, probed again
+    resetGatewaySlotReconcileThrottleForTest();
   });
 });
 
