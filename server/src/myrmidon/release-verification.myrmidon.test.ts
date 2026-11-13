@@ -179,6 +179,41 @@ describe("verifyReleaseComposition", () => {
     expect(result.allMembersPresent).toBe(false);
   });
 
+  it("fails with deployed_version_unknown when deployedVersion is not supplied, even if member SHAs resolve", async () => {
+    // The deployed version guard runs before any membership checks, so no
+    // fetch calls are expected even when the fake would return "present".
+    const calls: string[] = [];
+    const result = await verifyReleaseComposition({
+      releasePrefix: "1.6",
+      deployedVersion: null,
+      members: [member("OPE-1", SHA_A), member("OPE-2", SHA_B)],
+      fetchImpl: compareFake(["myr-v1.6"], [], calls),
+      now: NOW,
+    });
+    expect(result.verdict).toBe("failed");
+    expect(result.failureReason).toBe("deployed_version_unknown");
+    expect(result.deployedVersion).toBeNull();
+    expect(result.members).toHaveLength(0);
+    expect(result.allMembersPresent).toBe(false);
+    // The version guard short-circuits before any membership check.
+    expect(calls).toHaveLength(0);
+  });
+
+  it("fails with deployed_version_unknown when deployedVersion is undefined", async () => {
+    const calls: string[] = [];
+    const result = await verifyReleaseComposition({
+      releasePrefix: "1.6",
+      members: [member("OPE-1", SHA_A)],
+      fetchImpl: compareFake(["myr-v1.6"], [], calls),
+      now: NOW,
+    });
+    expect(result.verdict).toBe("failed");
+    expect(result.failureReason).toBe("deployed_version_unknown");
+    expect(result.deployedVersion).toBeNull();
+    expect(result.allMembersPresent).toBe(false);
+    expect(calls).toHaveLength(0);
+  });
+
   it("checks every member against the release line, not just the first", async () => {
     const seen: string[] = [];
     await verifyReleaseComposition({
