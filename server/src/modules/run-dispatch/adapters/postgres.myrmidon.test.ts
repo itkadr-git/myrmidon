@@ -17,6 +17,7 @@ import {
 } from "../../../__tests__/helpers/embedded-postgres.js";
 import { createPostgresRunDispatchAdapter } from "./postgres.js";
 import { queuedRunWaitedAtLeastSql } from "./queued-run-age.js";
+import { queuedRunWaitingSince } from "../domain/queued-run-age.js";
 
 // P2: the wake of a pending interaction's addressee survives an assignee that is someone else.
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
@@ -338,6 +339,117 @@ describeEmbeddedPostgres("run-dispatch: pending interaction addressee wake (P2)"
         runId, companyId, expectedStatus: "queued", staleAfterMs, now,
       });
       expect(outcome).toMatchObject({ outcome: "cancelled", errorCode: "queued_run_stale_timeout" });
+    });
+  });
+
+  // myrmidon(RESUME-QUEUE-AGE): the pause of an agent is not time spent waiting for
+  // a start. The resume stamps the queued runs (`queueWaitResumedAt`) and the age
+  // counts from the stamp; both the sweep's selection (SQL) and the cancellation
+  // check (TS) read it.
+  describe("age of a run that stood in the queue during a pause (RESUME-QUEUE-AGE)", () => {
+    const MIN = 60 * 1000;
+    const staleAfterMs = 30 * MIN;
+
+    async function seedPausedQueueRun(input: { resumedMinAgo: number | null; waitReason?: string }) {
+      const { companyId, assigneeId, issueId } = await seed();
+      const now = new Date();
+      const runId = await seedRun({
+        companyId,
+        agentId: assigneeId,
+        contextSnapshot: {
+          issueId,
+          waitReason: input.waitReason ?? "agent_concurrency",
+          ...(input.resumedMinAgo === null
+            ? {}
+            : { queueWaitResumedAtMs: now.getTime() - input.resumedMinAgo * MIN }),
+        },
+        createdAt: new Date(now.getTime() - 63 * MIN),
+      });
+      return { companyId, agentId: assigneeId, runId, now };
+    }
+
+    async function listedAsStale(runId: string, now: Date) {
+      const rows = await db
+        .select({ id: heartbeatRuns.id })
+        .from(heartbeatRuns)
+        .where(and(eq(heartbeatRuns.id, runId), eq(heartbeatRuns.status, "queued"), queuedRunWaitedAtLeastSql(now, staleAfterMs)));
+      return rows.length === 1;
+    }
+
+    const cancel = (companyId: string, runId: string, now: Date) =>
+      createPostgresRunDispatchAdapter(db).cancelStaleQueuedRun({
+        runId, companyId, expectedStatus: "queued", staleAfterMs, now,
+      });
+
+    it("does not list or cancel a 63-minute-old run right after the resume, with no run of the agent running", async () => {
+      const { companyId, runId, now } = await seedPausedQueueRun({ resumedMinAgo: 0 });
+
+      expect(await listedAsStale(runId, now)).toBe(false);
+      expect((await cancel(companyId, runId, now)).outcome).toBe("not_stale");
+      expect(await runStatus(runId)).toMatchObject({ status: "queued", errorCode: null });
+    });
+
+    it("keeps a second run that waits for the slot of the agent's first resumed run", async () => {
+      const { companyId, agentId, runId, now } = await seedPausedQueueRun({ resumedMinAgo: 5 });
+      await db.insert(heartbeatRuns).values({
+        id: randomUUID(), companyId, agentId, invocationSource: "automation", status: "running",
+        contextSnapshot: {}, startedAt: new Date(now.getTime() - 5 * MIN),
+      });
+
+      expect(await listedAsStale(runId, now)).toBe(false);
+      expect((await cancel(companyId, runId, now)).outcome).toBe("not_stale");
+    });
+
+    it("still cancels a run whose slot has been free longer than the threshold since the resume", async () => {
+      const { companyId, runId, now } = await seedPausedQueueRun({ resumedMinAgo: 31 });
+
+      expect(await listedAsStale(runId, now)).toBe(true);
+      expect(await cancel(companyId, runId, now)).toMatchObject({ outcome: "cancelled", errorCode: "queued_run_stale_timeout" });
+    });
+
+    it("ignores a stamp that is in the future or is not a date", async () => {
+      const future = await seedPausedQueueRun({ resumedMinAgo: -10 });
+      expect(await listedAsStale(future.runId, future.now)).toBe(true);
+      const { companyId, assigneeId, issueId } = await seed();
+      const now = new Date();
+      const runId = await seedRun({
+        companyId, agentId: assigneeId, contextSnapshot: { issueId, queueWaitResumedAt: "not-a-date" },
+        createdAt: new Date(now.getTime() - 63 * MIN),
+      });
+      expect(await listedAsStale(runId, now)).toBe(true);
+      expect((await cancel(companyId, runId, now)).outcome).toBe("cancelled");
+    });
+    // The same table goes through the TS rule and the SQL twin: a value that does
+    // not fit is ignored (the run keeps its old age), never an error.
+    const now = new Date("2026-11-14T00:00:00.000Z");
+    const nowMs = now.getTime();
+    const table: Array<{ label: string; value: unknown; honoured: boolean }> = [
+      { label: "an epoch-ms integer a minute ago", value: nowMs - MIN, honoured: true },
+      { label: "exactly now", value: nowMs, honoured: true },
+      { label: "null", value: null, honoured: false },
+      { label: "a numeric string", value: String(nowMs - MIN), honoured: false },
+      { label: "an ISO string", value: "2026-02-30T00:00:00Z", honoured: false },
+      { label: "a negative number", value: -5, honoured: false },
+      { label: "a fraction", value: nowMs - MIN + 0.5, honoured: false },
+      { label: "in the future", value: nowMs + MIN, honoured: false },
+      { label: "too short (seconds)", value: Math.floor((nowMs - MIN) / 1000), honoured: false },
+      { label: "too long (15 digits)", value: 123_456_789_012_345, honoured: false },
+      { label: "absurdly long", value: 1e300, honoured: false },
+      { label: "a boolean", value: true, honoured: false },
+      { label: "an object", value: { ms: nowMs }, honoured: false },
+    ];
+
+    it.each(table)("$label: TS rule and SQL twin agree (honoured: $honoured)", async ({ value, honoured }) => {
+      const { companyId, assigneeId, issueId } = await seed();
+      const createdAt = new Date(nowMs - 63 * MIN);
+      const runId = await seedRun({
+        companyId, agentId: assigneeId, createdAt,
+        contextSnapshot: { issueId, waitReason: "agent_concurrency", queueWaitResumedAtMs: value },
+      });
+      const tsSince = queuedRunWaitingSince({ createdAt, contextSnapshot: { queueWaitResumedAtMs: value } }, now);
+      expect(tsSince.getTime() !== createdAt.getTime()).toBe(honoured);
+      // honoured: the wait is short, so the run is not listed; ignored: it is 63 minutes old
+      expect(await listedAsStale(runId, now)).toBe(!honoured);
     });
   });
 
