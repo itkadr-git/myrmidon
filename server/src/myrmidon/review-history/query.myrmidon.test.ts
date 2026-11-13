@@ -213,6 +213,49 @@ describe("extractReviewFeedback — safe 30-day extraction contract", () => {
       expect(feedback).not.toContain("dev-eng-25@itkadr.internal");
       expect(feedback).toContain("[REDACTED]");
     });
+
+    it("redacts key blobs, cloud/OpenAI key shapes, and authorization headers (OPE-12928 review)", () => {
+      // PEM private key and certificate blocks are assembled from parts so no
+      // single source literal trips the gitleaks PEM rules; same convention as
+      // above — the fixtures are fake, not credentials.
+      const pemKey = ["-----BEGIN " + "RSA PRIVATE KEY-----", "MIIEpAIBAAKCAQEA7fake", "-----END " + "RSA PRIVATE KEY-----"].join("\n");
+      const pemCert = ["-----BEGIN CERTIFICATE-----", "MIIDdzCCAl+gAwIBAgIEfake", "-----END CERTIFICATE-----"].join("\n");
+      const awsKey = ["AKIA", "TEST1234567890EXAMPLE"].join("").slice(0, 20); // AKIA + 16 chars
+      const openAiKey = ["sk-", "test_", "0123456789abcdef0123456789abcdef"].join("");
+      const sshPub = "ssh-ed25519 " + "AAAAC3NzaC1lZDI1NTE5".repeat(6);
+      const headerPart = ["ey", "JhbGciOi", "JIUzI1", "NiJ9"].join("");
+      const payloadPart = ["ey", "JzdWIiOi", "IxMjM0", "NTY3", "ODkw", "In0"].join("");
+      const sigPart = ["sig", "value", "1234", "56"].join("");
+      const jwtVal = `${headerPart}.${payloadPart}.${sigPart}`;
+      const bearerVal = ["sample_bearer_", "auth_token_9876543210"].join("");
+      const body = [
+        `Paste: ${pemKey}`,
+        `Cert chain: ${pemCert}`,
+        `aws id ${awsKey} leaked`,
+        `client key ${openAiKey} in the log`,
+        `deploy key: ${sshPub}`,
+        `Authorization: Bearer ${jwtVal}`,
+        `pass Bearer ${bearerVal} inline`,
+        "the deploy must keep working after these redactions",
+      ].join("\n");
+
+      const result = extractReviewFeedback([validSource({ body })], NOW);
+      expect(result).not.toBe(false);
+      if (result === false) throw new Error("unreachable");
+
+      const feedback = result[0]!.feedback;
+      expect(feedback).not.toContain("BEGIN " + "RSA PRIVATE KEY");
+      expect(feedback).not.toContain("BEGIN CERTIFICATE");
+      expect(feedback).not.toContain("MIIEpAIBAAKCAQEA7fake");
+      expect(feedback).not.toContain(awsKey);
+      expect(feedback).not.toContain(openAiKey);
+      expect(feedback).not.toContain(sshPub);
+      expect(feedback).not.toContain(jwtVal);
+      expect(feedback).not.toContain(bearerVal);
+      // The non-sensitive tail of the prose survives so the lesson is intact.
+      expect(feedback).toContain("the deploy must keep working after these redactions");
+      expect(feedback).toContain("[REDACTED]");
+    });
   });
 
   describe("structural validation and deterministic output", () => {

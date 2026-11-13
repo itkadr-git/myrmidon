@@ -114,13 +114,33 @@ export function extractReviewFeedback(
 
 /**
  * Strip common credential and PII forms from review prose. The allowlist
- * already excludes structured sensitive fields; this only guards the free
- * text. Redactions are replaced in place so the surrounding sentence (and its
- * lesson) survives.
+ * already excludes structured sensitive fields (author ids, run ids, metadata
+ * never cross the boundary); this only guards the free text. Redactions are
+ * replaced in place so the surrounding sentence (and its lesson) survives.
+ * Order matters: multi-line key/certificate blocks first, then structured key
+ * shapes, then labelled key/value forms, then emails.
  */
 function redactSensitiveText(body: string): string {
   return body
-    .replace(/\b(?:api[ _-]?key|token|password|secret)\s*[:=]\s*\S+/gi, "[REDACTED]")
+    // PEM private-key and certificate blocks. A block without its END marker
+    // (truncated paste) redacts to the end of the text: fail closed.
+    .replace(
+      /-----BEGIN [A-Z ]*(?:PRIVATE KEY|CERTIFICATE)[ -]*-----(?:[\s\S]*?-----END [A-Z ]*(?:PRIVATE KEY|CERTIFICATE)[ -]*-----|[\s\S]*$)/gi,
+      "[REDACTED]",
+    )
+    // OpenSSH/ECDSA public-key bodies: key type followed by a long base64 run.
+    .replace(/\b(?:ssh-(?:rsa|ed25519|dss)|ecdsa-sha2-nistp\d+)\s+[A-Za-z0-9+/]{80,}={0,2}(?=\s|$)/g, "[REDACTED]")
+    // AWS access-key ids and OpenAI-style key prefixes.
+    .replace(/\b(?:AKIA|ASIA)[0-9A-Z]{16}\b/g, "[REDACTED]")
+    .replace(/\bsk-[A-Za-z0-9_-]{20,}\b/g, "[REDACTED]")
+    // Labelled key/value forms, including headers like `Authorization: Bearer <val>`.
+    .replace(
+      /\b(?:authorization\s*:\s*bearer|api[ _-]?key|access[ _-]?key|client[ _-]?secret|authorization|bearer|token|password|secret)\s*[:=]?\s*\S+/gi,
+      "[REDACTED]",
+    )
+    // Bare `Bearer <token>` without a colon (inline in prose).
+    .replace(/\bBearer\s+[A-Za-z0-9\-_.=+/]{16,}/g, "[REDACTED]")
+    // Emails.
     .replace(/\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b/gi, "[REDACTED]")
     .trim();
 }
