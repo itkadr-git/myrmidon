@@ -391,15 +391,25 @@ export async function restoreTurnCheckpoint(input: {
     .map((line) => line.trimEnd())
     .filter(Boolean);
   if (statusLines.length > 0) {
-    const targetDiff = (await runGit(["diff", "--name-status", commitSha, "--"], input.worktreePath))
-      .split("\n")
-      .map((line) => line.trimEnd())
-      .filter(Boolean);
-    if (targetDiff.length > 0) {
+    // Both faces of the uncommitted state must equal the target checkpoint.
+    // `git diff <commit>` sees only the worktree, so a foreign staged version
+    // of a file (index diverged, worktree rewritten back to the checkpoint
+    // content) passes it — and the `read-tree --reset -u` below would then
+    // silently destroy that staged content. `--cached` covers the index, so
+    // divergence in either face refuses the restore.
+    const [worktreeDiff, indexDiff] = await Promise.all([
+      runGit(["diff", "--name-status", commitSha, "--"], input.worktreePath),
+      runGit(["diff", "--cached", "--name-status", commitSha, "--"], input.worktreePath),
+    ]);
+    const divergence = Array.from(new Set([
+      ...worktreeDiff.split("\n").map((line) => line.trimEnd()).filter(Boolean),
+      ...indexDiff.split("\n").map((line) => line.trimEnd()).filter(Boolean),
+    ]));
+    if (divergence.length > 0) {
       throw new TurnCheckpointError(
         TURN_CHECKPOINT_DIRTY_CODE,
-        "restore refused: uncommitted tracked state differs from the target checkpoint; refusing to overwrite it",
-        { paths: targetDiff.slice(0, 20), truncated: targetDiff.length > 20 },
+        "restore refused: uncommitted tracked state (worktree or index) differs from the target checkpoint; refusing to overwrite it",
+        { paths: divergence.slice(0, 20), truncated: divergence.length > 20 },
       );
     }
   }

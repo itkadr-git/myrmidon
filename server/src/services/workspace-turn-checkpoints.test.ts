@@ -199,6 +199,42 @@ describe("per-turn checkpoints (OPE-12738)", () => {
     expect(await fs.readFile(path.join(repoRoot, "tracked.txt"), "utf8")).toBe("foreign staged edit\n");
   });
 
+  it("refuses restore when index diverges even if worktree matches the target checkpoint", async () => {
+    // Turn 1 checkpoint carries tracked.txt = 'one\n'
+    await fs.writeFile(path.join(repoRoot, "tracked.txt"), "one\n");
+    git(repoRoot, ["add", "-A"]);
+    const turn1 = await createTurnCheckpoint({ worktreePath: repoRoot, runId: RUN_ID, turnNumber: 1 });
+
+    // Foreign agent or tool stages a different edit into the index
+    await fs.writeFile(path.join(repoRoot, "tracked.txt"), "foreign staged in index\n");
+    git(repoRoot, ["add", "-A"]);
+
+    // Worktree is then rewritten back to match the target checkpoint exactly
+    await fs.writeFile(path.join(repoRoot, "tracked.txt"), "one\n");
+
+    // Pre-condition: worktree matches target checkpoint, but index diverges
+    expect(git(repoRoot, ["diff", turn1.commitSha, "--"])).toBe("");
+    expect(git(repoRoot, ["diff", "--cached", turn1.commitSha, "--"])).not.toBe("");
+
+    // Restore must refuse rather than running read-tree --reset -u and wiping the index
+    await expect(restoreTurnCheckpoint({
+      db: emptyDb() as never,
+      companyId: "00000000-0000-4000-8000-000000000000",
+      worktreePath: repoRoot,
+      runId: RUN_ID,
+      targetTurnNumber: 1,
+    })).rejects.toMatchObject({
+      name: "TurnCheckpointError",
+      code: TURN_CHECKPOINT_DIRTY_CODE,
+    });
+
+    // Verification: staged foreign content in the index is not destroyed
+    expect(git(repoRoot, ["diff", "--cached", turn1.commitSha, "--"])).toContain("foreign staged in index");
+    // Restoring worktree from index restores the preserved foreign staged content
+    git(repoRoot, ["checkout", "--", "tracked.txt"]);
+    expect(await fs.readFile(path.join(repoRoot, "tracked.txt"), "utf8")).toBe("foreign staged in index\n");
+  });
+
   it("GC: on the N+1th snapshot the oldest is pruned and the ref count stays capped", async () => {
     const retention = 3;
     for (let turn = 1; turn <= retention + 2; turn += 1) {
