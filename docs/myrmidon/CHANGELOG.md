@@ -12,6 +12,13 @@ version file to edit. Base Paperclip version is in the image label
 
 ## 1.6.9
 
+### Gateway slot reconcile ends its pass at the first unreachable probe (OPE-12984)
+
+- When the gateway was down, the `gateway-slot-reconcile` pass probed all of up to 64 finished runs one after another, one timeout per run, and the start of a run waited for all of them (OPE-12964).
+- The first `unreachable` answer now ends the pass; `unreachable` is counted once. The memory of runs confirmed closed (OPE-12890) is unchanged, and an unreachable answer is not remembered, so the next pass tries again.
+
+## 1.6.9
+
 ### A CI delivery is handled by the final result of the head; a failed result does not return a task while main is red (EMPTY-RUNS-3)
 
 - The GitHub connection events treated every finished job, and every finished run of an auxiliary workflow, as a finished CI of the pull request: the monitor of the task was disarmed, its assignee was to be woken (`ci_completed`), and a task in review went back to its executor — all on the first job that ended. On 13.11, the first day the App delivered check events, that was 48 returns from review (45 of them on a single `check_run`); after main went red, 13 more, 6 of them on the very shards that were red on main; one such run made 139 model calls on 5.88M input tokens to answer "main is red, nothing to change". A task whose monitor had been disarmed by the first job was picked up minutes later by the stranded-task recovery: one such run cost 888K input tokens to report "4 jobs still running".
