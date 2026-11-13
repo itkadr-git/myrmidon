@@ -150,6 +150,23 @@ export async function verifyReleaseComposition(
   const checkedAt = now().toISOString();
   const members = options.members;
 
+  // A missing deployed version is a first-class failure: without it we cannot
+  // claim the release composition is proven, even if every member SHA happens
+  // to resolve against some ref. Fail closed with an explicit reason.
+  if (!options.deployedVersion) {
+    return {
+      verdict: "failed",
+      reason:
+        "Выкаченная версия не установлена: невозможно подтвердить состав выпуска.",
+      failureReason: "deployed_version_unknown",
+      releasePrefix: options.releasePrefix,
+      deployedVersion: null,
+      members: [],
+      allMembersPresent: false,
+      checkedAt,
+    };
+  }
+
   const emptyGuard = composeReleaseVerdict([]);
   if (members.length === 0) {
     return {
