@@ -20,6 +20,8 @@ import {
   readInputLimitHint,
   trimTextToChars,
 } from "@myrmidon/adapter-utils/input-limit";
+// myrmidon(RUN-GUARD-HINT): the hint text is shared with the omp adapter.
+import { buildRunGuardHintMessage, type RunGuardHintReason } from "@myrmidon/adapter-utils/run-guard-hint";
 import {
   asNumber,
   asString,
@@ -1098,47 +1100,9 @@ function popGuardToolArguments(state: ExecutionState, name: string): unknown {
 // agent dialog (POST /v1/runs/{id}/steer), using the epic's phrasing. The hint
 // fires exactly once per run (RunGuard refuses to hint the same reason twice
 // and state.runGuardHintSent blocks a second steer).
-/** myrmidon(OPE-12878): every hint-before-stop reason the gateway can steer.
- * `repeated_tool_call` / `model_call_limit` come from the RunGuard,
- * `repeated_tool_failure` from the same-call tool failure guard (OPE-12796). */
-export type RunGuardHintReason = "repeated_tool_call" | "model_call_limit" | "repeated_tool_failure";
-
-export function buildRunGuardHintMessage(hint: {
-  reason: RunGuardHintReason;
-  tool?: string;
-  repeatCount?: number;
-  modelCalls?: number;
-  remaining?: number;
-  /** myrmidon(OPE-12878): the failing call's preview and error text, set by
-   * the tool failure guard's hint. */
-  callPreview?: string;
-  errorText?: string | null;
-}): string {
-  // myrmidon(OPE-12799): the wrap-up message, sent while the run still has calls
-  // left. The next run starts in a fresh session and sees only what is pushed and
-  // what is written on the task, so the agent is told to put its work there.
-  if (hint.reason === "model_call_limit" && typeof hint.remaining === "number" && hint.remaining > 0) {
-    return (
-      `Защита: до остановки прогона осталось ${hint.remaining} вызовов модели. ` +
-      "Сохрани сделанное сейчас: закоммить и запушь изменения в ветку задачи, затем напиши комментарий в задаче — " +
-      "что сделано, что осталось и с чего продолжить. Следующий прогон начнётся с чистой сессии и увидит только " +
-      "запушенные коммиты и этот комментарий. Если задача закончена — заверши её как обычно."
-    );
-  }
-  if (hint.reason === "repeated_tool_call") {
-    const tool = hint.tool ?? "инструмент";
-    const count = hint.repeatCount ?? 3;
-    return `Защита: вызываешь ${tool} с теми же аргументами ${count}-й раз — смени подход: читай другое место или другим инструментом, переходи к правке по задаче`;
-  }
-  if (hint.reason === "repeated_tool_failure") {
-    const tool = hint.tool ?? "инструмент";
-    const count = hint.repeatCount ?? 3;
-    const call = hint.callPreview ? ` (${hint.callPreview})` : "";
-    const err = hint.errorText ? ` Ошибка: ${hint.errorText}.` : "";
-    return `Защита: ${tool}${call} упал с той же ошибкой ${count}-й раз подряд.${err} Смени подход: исправь причину сбоя, используй другой инструмент или путь — повтор того же вызова остановит прогон`;
-  }
-  return "Защита: лимит вызовов модели, записей не было — переходи к правке по месту из задачи или опиши блокер в комментарии";
-}
+// The text itself is in @myrmidon/adapter-utils/run-guard-hint, shared with the
+// omp adapter; it is re-exported here for the callers and tests of this module.
+export { buildRunGuardHintMessage, type RunGuardHintReason };
 
 async function sendRunGuardHint(input: {
   ctx: AdapterExecutionContext;
