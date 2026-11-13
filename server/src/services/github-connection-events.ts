@@ -39,6 +39,7 @@ import {
 import {
   CI_FINAL_CHECK_SEEN_METADATA_KEY,
   CI_RETURN_HOLD_METADATA_KEY,
+  CI_VERDICT_HANDLED_METADATA_KEY,
   buildCiReturnHoldNote,
   buildCiReturnNote,
   ciVerdictOfHead,
@@ -862,7 +863,13 @@ export function githubConnectionEventService(
       facts = await readHeadCheckRuns(resolveFacts, factsInput);
       if (facts) {
         markFinalCheckSeen = facts.hasFinalCheck;
-        verdict = ciVerdictOfHead(facts);
+        // myrmidon(EMPTY-RUNS-3B): the fallback "every check has finished" is for
+        // a head that has no `CI result` at all. A head that has one (finished,
+        // running, skipped or cancelled in a partial run) is decided by that
+        // check alone, whatever else GitHub shows finished.
+        verdict = facts.hasFinalCheck
+          ? (isCiVerdictConclusion(facts.finalCheckConclusion) ? facts.finalCheckConclusion : null)
+          : ciVerdictOfHead(facts);
       }
     }
 
@@ -980,11 +987,23 @@ export function githubConnectionEventService(
     // The final result of the current head. `final` tells a result recorded
     // here from the mark the old handling left for any finished job.
     const recorded = record(record(primary.metadata).lastCompletedCi);
-    const repeated = recorded.final === true && recorded.headSha === headSha && recorded.conclusion === verdict;
+    // myrmidon(EMPTY-RUNS-3B): the record above is cleared whenever a job of the
+    // head starts (a partial run, the re-run of a gate), and the next delivery
+    // of any kind then took the same result for a new one. The result a wake was
+    // sent for is also kept apart (`ciVerdictHandled`) and survives that; it is
+    // keyed by head and verdict only, so `check_run`, `check_suite` and
+    // `workflow_run` of one result wake once. A failed verdict is not kept: a
+    // red head returns the task each time it is delivered with the task in review.
+    const handled = rows
+      .map((row) => record(record(row.metadata)[CI_VERDICT_HANDLED_METADATA_KEY]))
+      .find((mark) => mark.headSha === headSha && mark.conclusion === verdict) ?? null;
+    const recordedRepeat = recorded.final === true && recorded.headSha === headSha && recorded.conclusion === verdict;
+    const repeated = recordedRepeat || (!isFailedCiConclusion(verdict) && handled !== null);
     // The same result of the same head was handled already: nothing is written
     // and nobody is woken a second time. A held head is still looked at.
-    if (repeated && !hold) return;
-    if (!repeated) {
+    // A result handled earlier whose record a started job cleared is written
+    // back, so the head does not look like it is still running; nobody is woken.
+    if (!recordedRepeat) {
       const seen = kind === "final_check" || markFinalCheckSeen;
       for (const row of rows) {
         await database.update(issueWorkProducts).set({
@@ -1000,17 +1019,23 @@ export function githubConnectionEventService(
               final: true,
             },
             ...(seen ? { [CI_FINAL_CHECK_SEEN_METADATA_KEY]: true } : {}),
+            // A failed result of the head ends the earlier green one: a later green
+            // result after a re-run is news again.
+            [CI_VERDICT_HANDLED_METADATA_KEY]: !isFailedCiConclusion(verdict)
+              ? { headSha, conclusion: verdict, at: currentTime.toISOString() }
+              : null,
           }),
           updatedAt: currentTime,
         }).where(eq(issueWorkProducts.id, row.id));
       }
       // myrmidon(OPE-11767): a green result may be the moment an approved pull
       // request becomes mergeable; the board's merge re-reads the checks itself.
-      if (verdict === "success") {
+      if (verdict === "success" && !repeated) {
         await sendOrDeferAction(afterCommit, companyId, "board merge notice", () =>
           notifyBoardMergeTrigger({ companyId, repository, number: pullRequestNumber, headSha, source: "ci_completed" }));
       }
     }
+    if (repeated && !hold) return;
     if (!assignmentWakeup || !issue || !issue.assigneeAgentId) return;
 
     let wakeAgentId = issue.assigneeAgentId;
@@ -1061,6 +1086,18 @@ export function githubConnectionEventService(
       }
     }
     if (repeated && !returned) return;
+    // myrmidon(EMPTY-RUNS-3B): the result of a task that is in review is news
+    // for the participant of its pending review stage, not for whoever is the
+    // assignee: another agent (or nobody, when the task has no stage) cannot
+    // decide anything and the run it would start is empty.
+    if (!returned && issue.status === "in_review") {
+      const state = parseIssueExecutionState(issue.executionState);
+      const participant = state?.status === "pending" && state.currentStageType === "review"
+        ? state.currentParticipant
+        : null;
+      if (!participant || participant.type !== "agent" || !participant.agentId) return;
+      wakeAgentId = participant.agentId;
+    }
     await finishWithWake(wakeAgentId, verdict, returned && Boolean(hold));
   }
 

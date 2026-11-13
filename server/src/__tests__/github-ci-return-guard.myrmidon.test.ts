@@ -368,6 +368,82 @@ describeEmbeddedPostgres.sequential("CI deliveries by the final result of the he
       expect(service.wakeup).toHaveBeenCalledTimes(1);
     });
 
+    // myrmidon(EMPTY-RUNS-3B)
+    it("does not take a partial run whose `CI result` was skipped for the result of the head", async () => {
+      const seeded = await seedTask();
+      // The head already has its result; a partial run (a label event) then runs
+      // its auxiliary jobs, and its `CI result` is skipped.
+      await db.update(issueWorkProducts).set({
+        metadata: {
+          repository: REPO, number: 123, activeCi: null,
+          lastCompletedCi: { headSha: HEAD, conclusion: "success", runId: "1", final: true },
+          ciVerdictHandled: { headSha: HEAD, conclusion: "success", at: "2026-09-04T05:21:00.000Z" },
+        },
+      }).where(eq(issueWorkProducts.issueId, seeded.issueId));
+      const skipped: CiReturnFacts = { state: "ok", failed: [], finished: true, hasFinalCheck: true, finalCheckConclusion: "skipped" };
+      const service = startService({ readHead: () => skipped });
+
+      await expect(service.deliver([
+        ciEvent(seeded, "check_suite", "success"),
+        ciEvent(seeded, "workflow_run", "success"),
+      ])).resolves.toMatchObject({ processed: 2, failed: 0 });
+
+      expect(service.wakeup).not.toHaveBeenCalled();
+      expect((await taskOf(seeded)).monitorNextCheckAt).not.toBeNull();
+      // And on a head without any record: a skipped `CI result` is not a result either.
+      const fresh = await seedTask();
+      await service.deliver([ciEvent(fresh, "check_suite", "success")]);
+      expect(service.wakeup).not.toHaveBeenCalled();
+      expect(await productMetadataOf(fresh)).not.toHaveProperty("lastCompletedCi");
+    });
+
+    it("wakes once for one result of one head, whatever kind of event carries it", async () => {
+      const seeded = await seedTask();
+      const service = startService({ readHead: () => GREEN_HEAD });
+
+      await service.deliver([ciEvent(seeded, "check_suite", "success")]);
+      expect(service.wakeup).toHaveBeenCalledTimes(1);
+      expect(await productMetadataOf(seeded)).toMatchObject({ ciVerdictHandled: { headSha: HEAD, conclusion: "success" } });
+
+      // A job of a partial run on the same head started and cleared the record of the result.
+      await db.update(issueWorkProducts).set({
+        metadata: {
+          repository: REPO, number: 123,
+          activeCi: { repository: REPO, number: 123, headSha: HEAD, runId: "9", status: "in_progress" },
+          lastCompletedCi: null,
+          ciVerdictHandled: { headSha: HEAD, conclusion: "success", at: "2026-09-04T12:00:10.000Z" },
+        },
+      }).where(eq(issueWorkProducts.issueId, seeded.issueId));
+
+      await service.deliver([ciEvent(seeded, "workflow_run", "success"), ciEvent(seeded, "check_suite", "success")]);
+      expect(service.wakeup).toHaveBeenCalledTimes(1);
+      // The head does not stay "running": the result is written back.
+      expect(await productMetadataOf(seeded)).toMatchObject({ activeCi: null, lastCompletedCi: { headSha: HEAD, conclusion: "success", final: true } });
+
+      // A new head is a new result.
+      const NEW_HEAD = "c".repeat(40);
+      await db.update(issueWorkProducts).set({ metadata: { repository: REPO, number: 123, headSha: NEW_HEAD } }).where(eq(issueWorkProducts.issueId, seeded.issueId));
+      await service.deliver([ciEvent(seeded, "workflow_run", "success", undefined, NEW_HEAD)]);
+      expect(service.wakeup).toHaveBeenCalledTimes(2);
+    });
+
+    // myrmidon(EMPTY-RUNS-3B): the result of a task in review is addressed to the stage participant.
+    it("wakes the participant of the review stage, not the assignee, for a task in review; nobody when there is no stage", async () => {
+      const seeded = await seedTask();
+      // The assignee is another agent than the participant of the pending review stage.
+      await db.update(issues).set({ assigneeAgentId: seeded.executorId }).where(eq(issues.id, seeded.issueId));
+      const service = startService({ readHead: () => GREEN_HEAD });
+
+      await service.deliver([ciEvent(seeded, "check_run", "success", "CI result")]);
+      expect(service.wakeup).toHaveBeenCalledTimes(1);
+      expect(service.wakeup).toHaveBeenCalledWith(seeded.reviewerId, expect.objectContaining({ reason: "ci_completed" }));
+
+      const noStage = await seedTask();
+      await db.update(issues).set({ executionState: null }).where(eq(issues.id, noStage.issueId));
+      await service.deliver([ciEvent(noStage, "check_run", "success", "CI result")]);
+      expect(service.wakeup).toHaveBeenCalledTimes(1);
+    });
+
     it.each([
       ["a parked task without a monitor", "todo", true, false],
       ["a blocked task without a monitor", "blocked", true, false],
