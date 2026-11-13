@@ -473,7 +473,7 @@ describe("summarizeCheckRuns", () => {
         const runs = [
           ...firstRunCancelled(),
           rec("tests (server 1/6)", "success", "2026-11-14T02:10:00Z", 200),
-          rec("tests (server 2/6)", "in_progress", "2026-11-14T02:10:00Z", 200, "in_progress"),
+          rec("tests (server 2/6)", null, "2026-11-14T02:10:00Z", 200, "in_progress"),
           ...otherWorkflows(),
         ];
         const summary = summarizeCheckRuns(runs);
