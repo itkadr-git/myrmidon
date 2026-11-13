@@ -235,6 +235,17 @@ process during the run, and `docker top <runner-name>` shows it. The run log
 names the SSH environment in its `Syncing workspace and OMP runtime assets to`
 line.
 
+Task folder naming (OPE-13018). The adapter (`omp_local`) — not the agent —
+names the per-task folder under the remote workspace path. It derives the name
+from the task identifier (`runtime.taskKey`, e.g. `OPE-12962`), creates
+`<remoteWorkspacePath>/<TASK-KEY>` on the runner before the run starts and
+exports it to the agent as `PAPERCLIP_TASK_FOLDER_NAME` (and the
+`MYRMIDON_TASK_FOLDER_NAME` alias). Runner-side tooling reads that variable and
+clones into the exact directory, so a mistyped key (`OPR-12962`) cannot
+produce a folder the host GC (`scripts/myrmidon/host-gc/host-clone-cache-gc.mjs`)
+does not recognize. When the caller-provided workspace path disagrees with the
+derived name, the adapter logs the derived folder it created.
+
 ### Updating a runner that already runs (shared cache rollout)
 
 A runner started before the shared cache has no cache mounts and none of its

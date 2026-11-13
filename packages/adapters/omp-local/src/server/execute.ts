@@ -318,6 +318,27 @@ async function listSessionFiles(input: {
   }
 }
 
+// myrmidon(OPE-13018): the per-task folder on an omp runner must be named by
+// the adapter from the task identifier, not by the agent's free-form clone
+// command — a mistyped key (OPR-12962 for OPE-12962) produces a folder the
+// host GC never recognizes. Only a strict `<PREFIX>-<number>` shape is
+// accepted; anything else yields null and the legacy behavior is kept.
+const TASK_WORKSPACE_FOLDER_PATTERN = /^[A-Z][A-Z0-9]*-\d+$/;
+
+export function deriveOmpTaskWorkspaceFolderName(input: {
+  taskKey?: string | null;
+  taskId?: string | null;
+  issueId?: string | null;
+}): string | null {
+  const candidates = [input.taskKey, input.taskId, input.issueId];
+  for (const candidate of candidates) {
+    if (typeof candidate !== "string") continue;
+    const trimmed = candidate.trim();
+    if (TASK_WORKSPACE_FOLDER_PATTERN.test(trimmed)) return trimmed;
+  }
+  return null;
+}
+
 async function findNewlyCreatedSessionFile(input: {
   runId: string;
   sessionDir: string;
@@ -396,6 +417,15 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     (typeof context.taskId === "string" && context.taskId.trim().length > 0 && context.taskId.trim()) ||
     (typeof context.issueId === "string" && context.issueId.trim().length > 0 && context.issueId.trim()) ||
     null;
+  // myrmidon(OPE-13018): the task folder on the runner is named here, by the
+  // adapter, from the task identifier — never from the caller-provided cwd
+  // basename (and never by the agent's clone command), so a mistyped key
+  // cannot produce an unrecognized folder that the host GC will not clean.
+  const taskWorkspaceFolderName = deriveOmpTaskWorkspaceFolderName({
+    taskKey: runtime.taskKey,
+    taskId: typeof context.taskId === "string" ? context.taskId : null,
+    issueId: typeof context.issueId === "string" ? context.issueId : null,
+  });
   const wakeReason =
     typeof context.wakeReason === "string" && context.wakeReason.trim().length > 0
       ? context.wakeReason.trim()
@@ -418,6 +448,11 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   const issueWorkMode = readPaperclipIssueWorkModeFromContext(context);
 
   if (wakeTaskId) writeProductEnv(env, "TASK_ID", wakeTaskId); // myrmidon(REBRAND-C)
+  if (taskWorkspaceFolderName) {
+    // myrmidon(OPE-13018): authoritative per-task folder name for runner-side
+    // tooling (myr-ws and friends); derived from the task identifier above.
+    writeProductEnv(env, "TASK_FOLDER_NAME", taskWorkspaceFolderName);
+  }
   if (issueWorkMode) writeProductEnv(env, "ISSUE_WORK_MODE", issueWorkMode); // myrmidon(REBRAND-C)
   if (wakeReason) writeProductEnv(env, "WAKE_REASON", wakeReason); // myrmidon(REBRAND-C)
   if (wakeCommentId) writeProductEnv(env, "WAKE_COMMENT_ID", wakeCommentId); // myrmidon(REBRAND-C)
@@ -783,12 +818,35 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       : isolatedSessionDir;
 
     if (executionTargetIsRemote && remoteRuntimeRootDir) {
+      // myrmidon(OPE-13018): the per-task folder on the runner is created by
+      // the adapter under the target's remote cwd, named from the task
+      // identifier — not taken from the caller-provided cwd. Runner-side
+      // tooling (myr-ws) reads PAPERCLIP_TASK_FOLDER_NAME and clones into this
+      // exact directory, so a mistyped key (OPR-12962) cannot reappear.
+      const remoteBaseCwd = adapterExecutionTargetRemoteCwd(executionTarget, cwd);
       await ensureAdapterExecutionTargetDirectory(runId, executionTarget, effectiveSessionDir, {
-        cwd,
+        cwd: remoteBaseCwd,
         env,
         timeoutSec: 15,
         createIfMissing: true,
       });
+      if (taskWorkspaceFolderName) {
+        const remoteTaskWorkspaceDir = path.posix.join(remoteBaseCwd, taskWorkspaceFolderName);
+        await ensureAdapterExecutionTargetDirectory(runId, executionTarget, remoteTaskWorkspaceDir, {
+          cwd: remoteBaseCwd,
+          env,
+          timeoutSec: 15,
+          createIfMissing: true,
+        });
+        const callerBase = path.basename(cwd);
+        if (callerBase !== taskWorkspaceFolderName) {
+          await onLog(
+            "stdout",
+            `[paperclip] Task workspace folder on the runner: ${remoteTaskWorkspaceDir} ` +
+              `(derived from the task identifier; caller-provided cwd basename was ${callerBase}).\n`,
+          );
+        }
+      }
     }
 
     // myrmidon(OMP-RUN-GUARD): the steer file lives next to the agent's sessions
