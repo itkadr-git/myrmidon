@@ -1,77 +1,69 @@
 diff --git a/agent/turn_truncation.py b/agent/turn_truncation.py
 --- a/agent/turn_truncation.py
 +++ b/agent/turn_truncation.py
-@@ -42,6 +42,15 @@
+@@ -42,6 +42,14 @@
      "chats are reset automatically)."
  )
  
-+# myrmidon(G1): how many times in a row the same model call is re-issued after an HTTP-200
++# myrmidon(G1): how many times one turn re-issues the same model call after an HTTP-200
 +# ``content_filter`` refusal before the refusal ends the turn. The refusal need not repeat for an
 +# unchanged long context (the filter cut a harmless reply mid-word), and the work done so far lives
-+# in the session, so a re-issue costs one model call, not the run. The streak restarts after a
-+# model call that was not refused. ``_CONTENT_FILTER_RETRIES_PER_TURN`` caps the re-issues of the
-+# whole turn, so an input that is blocked again and again cannot burn calls without end.
++# in the session, so a re-issue costs one model call, not the run. Not more than 2: a re-issue goes
++# through the turn's restart machinery, whose per-turn limit (``api_max_retries``, 3) is shared with
++# restarts onto the fallback chain; two re-issues fit in it when no other restart happened in the turn.
 +_CONTENT_FILTER_RETRIES = 2
-+_CONTENT_FILTER_RETRIES_PER_TURN = 8
 +
  _THINKING_EXHAUSTED = (
      "💭 Reasoning exhausted the output token budget — no visible response was produced.",
      "⚠️ **Thinking Budget Exhausted**\n\nThe model used all its output tokens on reasoning "
-@@ -623,8 +632,9 @@
+@@ -623,8 +631,9 @@
      api_request_id: Any, api_start_time: float, retry_count: int, max_retries: int,
  ) -> RefusalVerdict:
      """HTTP-200 refusal (``finish_reason`` ``content_filter`` / ``guardrail_intervened``).
 -    Deterministic for the unchanged prompt — never retried: one configured-fallback try,
 -    else surface the refusal (explanation may live only in the reasoning channel)."""
 +    myrmidon(G1): the same call is re-issued up to ``_CONTENT_FILTER_RETRIES``
-+    times in a row (at most ``_CONTENT_FILTER_RETRIES_PER_TURN`` per turn); then one configured-fallback try, else surface the refusal (explanation may
++    times per turn; then one configured-fallback try, else surface the refusal (explanation may
 +    live only in the reasoning channel)."""
      from agent.conversation_loop import _arm_fallback_restart, _content_policy_blocked_result
  
      _refusal_result = normalize_response_for_agent(agent, response)
-@@ -649,6 +659,38 @@
+@@ -649,6 +658,30 @@
      )
      stop_thinking_spinner(agent, thinking_spinner)
  
-+    # myrmidon(G1): re-issue the same call a bounded number of times first. A re-issue keeps the
-+    # call number (the restart refunds it), so a different number means the previous call was
-+    # answered and the streak starts again. A new ``turn_id`` starts from zero. Only a refusal that
-+    # outlasts the limits falls through to the fallback / terminal result below.
++    # myrmidon(G1): re-issue the same call a bounded number of times first; the count is kept per
++    # turn (a new ``turn_id`` starts from zero) and never exceeds ``max_retries - 1``, so the
++    # restart limit of the turn cannot be reached by the re-issues alone. Only a refusal that outlasts
++    # it falls through to the fallback / terminal result below.
 +    _cf_state = getattr(agent, "_content_filter_retries", None)
 +    if not isinstance(_cf_state, dict) or _cf_state.get("turn") != turn_id:
-+        _cf_state = {"turn": turn_id, "total": 0, "streak": 0, "call": api_call_count}
++        _cf_state = {"turn": turn_id, "used": 0}
 +        agent._content_filter_retries = _cf_state
-+    if _cf_state["call"] != api_call_count:
-+        _cf_state["call"] = api_call_count
-+        _cf_state["streak"] = 0
-+    if _cf_state["streak"] < _CONTENT_FILTER_RETRIES and _cf_state["total"] < _CONTENT_FILTER_RETRIES_PER_TURN:
-+        _cf_state["streak"] += 1
-+        _cf_state["total"] += 1
++    _cf_limit = min(_CONTENT_FILTER_RETRIES, max(int(max_retries) - 1, 0))
++    if _cf_state["used"] < _cf_limit:
++        _cf_state["used"] += 1
 +        logger.warning(
 +            "%sModel declined to respond (finish_reason=content_filter); re-issuing the call "
-+            "(%s of %s in a row, %s of %s in this turn). model=%s provider=%s refusal=%s",
-+            agent.log_prefix, _cf_state["streak"], _CONTENT_FILTER_RETRIES, _cf_state["total"],
-+            _CONTENT_FILTER_RETRIES_PER_TURN, agent.model, agent.provider,
++            "(%s of %s). model=%s provider=%s refusal=%s",
++            agent.log_prefix, _cf_state["used"], _cf_limit, agent.model, agent.provider,
 +            (_refusal_text[:200] + "...") if len(_refusal_text) > 200 else (_refusal_text or "(no text)"),
 +        )
 +        agent._emit_diagnostic_status(
 +            f"⚠️ Model declined to respond (safety refusal) — retrying "
-+            f"({_cf_state['streak']}/{_CONTENT_FILTER_RETRIES})..."
++            f"({_cf_state['used']}/{_cf_limit})..."
 +        )
 +        _retry.restart_with_rebuilt_messages = True
 +        return RefusalVerdict("break", None, active_system_prompt)
-+    if _cf_state["streak"] >= _CONTENT_FILTER_RETRIES:
-+        _cf_note = f" [content_filter repeated {_cf_state['streak']} times in a row after re-issued calls]"
-+    else:
-+        _cf_note = f" [content_filter re-issue ceiling of {_cf_state['total']} per run reached]"
 +
      if agent._has_pending_fallback():
          agent._buffer_diagnostic_status("⚠️ Model declined to respond (safety refusal) — trying fallback...")
      if agent._try_activate_fallback():
-@@ -675,5 +717,5 @@
+@@ -675,5 +708,6 @@
      agent._persist_session(messages, conversation_history)
      return RefusalVerdict("return", _content_policy_blocked_result(
          messages, api_call_count, final_response=_refusal_response,
 -        error_detail=_refusal_text or "model declined (content_filter)",
-+        error_detail=(_refusal_text or "model declined (content_filter)") + _cf_note,
++        error_detail=(_refusal_text or "model declined (content_filter)")
++        + (f" [content_filter repeated after {_cf_state['used']} re-issued calls]" if _cf_state["used"] else ""),
      ), active_system_prompt)

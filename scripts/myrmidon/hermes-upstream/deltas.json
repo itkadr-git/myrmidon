@@ -639,7 +639,7 @@
       "files": [
         "agent/turn_truncation.py"
       ],
-      "reason": "An HTTP-200 reply with finish_reason content_filter ended the turn at once; the provider's filter cut a harmless reply of a long session mid-word and the whole run failed. The same call is now re-issued first (at most 2 times in a row, 8 per turn) before the refusal falls through to the fallback chain and the terminal content_policy_blocked result.",
+      "reason": "An HTTP-200 reply with finish_reason content_filter ended the turn at once; the provider's filter cut a harmless reply of a long session mid-word and the whole run failed. The same call is now re-issued first (at most 2 times per turn) before the refusal falls through to the fallback chain and the terminal content_policy_blocked result.",
       "dropCondition": "Upstream re-issues a content-filtered reply before failing the turn.",
       "offer": null,
       "offerNote": "Not offered yet.",

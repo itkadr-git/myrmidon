@@ -2,11 +2,10 @@
 """Behaviour regression for 36-content-filter-retry.patch.
 
 An HTTP-200 reply with ``finish_reason == "content_filter"`` must not end the turn at once: the same
-model call is re-issued, at most twice in a row (a model call that was not refused restarts the count) and
-at most eight times per turn (the restart flag is armed and the loop is told to "break" into the
-rebuilt-message restart); only a refusal that outlasts these limits ends the turn with the typed
-``content_policy_blocked`` result. A new turn starts the counts from zero. The fallback chain is
-still used after the retries when one is configured.
+model call is re-issued, at most twice per turn in total (the restart flag is armed and the loop is told to
+"break" into the rebuilt-message restart); the third refusal of the turn, even with an answered call
+in between, ends the turn with the typed ``content_policy_blocked`` result. A new turn starts the count from
+zero. The fallback chain is still used after the re-issues when one is configured.
 
 ``handle_content_policy_refusal`` is the real function; the agent is a stub that records the calls.
 
@@ -71,45 +70,35 @@ def main() -> None:
         return verdict.action == "break" and verdict.result is None and retry.restart_with_rebuilt_messages is True
 
     limit = tt._CONTENT_FILTER_RETRIES
-    ceiling = tt._CONTENT_FILTER_RETRIES_PER_TURN
-    check("consecutive limit is 2", limit == 2, str(limit))
-    check("per-turn ceiling is 8", ceiling == 8, str(ceiling))
+    check("per-turn limit is 2", limit == 2, str(limit))
 
-    # ---- three refusals of the same call in a row end the turn with the typed result
+    # ---- two refusals of one call, then an answered call, then a third refusal: the turn ends
     agent = make_agent()
-    for i in range(limit):
+    for i, call in enumerate((1, 1)):
         retry = TurnRetryState()
-        verdict = refuse(agent, retry, call=1)
-        check(f"same call, refusal {i + 1}: re-issued", reissued(verdict, retry), verdict.action)
-        check(f"same call, refusal {i + 1}: session not persisted", not agent._persist_session.called)
+        verdict = refuse(agent, retry, call=call)
+        check(f"refusal {i + 1}: re-issued", reissued(verdict, retry), verdict.action)
+        check(f"refusal {i + 1}: session not persisted", not agent._persist_session.called)
+    # call 1 is answered, the loop goes on to call 2, which is refused again
     retry = TurnRetryState()
-    verdict = refuse(agent, retry, call=1)
-    check("third refusal in a row ends the turn", verdict.action == "return", verdict.action)
+    verdict = refuse(agent, retry, call=2)
+    check("third refusal of the turn ends it, a success in between does not reset the count", verdict.action == "return", verdict.action)
     result = verdict.result or {}
     check("terminal result is content_policy_blocked", result.get("failure_reason") == "content_policy_blocked", str(result.get("failure_reason")))
-    check("error says it repeated in a row", f"repeated {limit} times in a row" in str(result.get("error")), str(result.get("error")))
+    check("terminal result is failed", result.get("failed") is True and result.get("completed") is False)
+    check("error says it repeated after 2 re-issued calls", "repeated after 2 re-issued calls" in str(result.get("error")), str(result.get("error")))
     check("terminal restart not armed", retry.restart_with_rebuilt_messages is False)
     check("terminal result persists the session once", agent._persist_session.call_count == 1)
 
-    # ---- block, success, block, block, success: the turn goes on (a success changes the call number)
+    # ---- the re-issues never exceed the turn's restart limit minus one
     agent = make_agent()
-    ok = True
-    for call in (1, 2, 2, 3):  # refused call 1, answered; refused call 2 twice, answered; refused call 3
-        retry = TurnRetryState()
-        ok = ok and reissued(refuse(agent, retry, call=call), retry)
-    check("block, success, block, block, success, block never ends the turn", ok)
-    check("streak restarted after a success", agent._content_filter_retries["streak"] == 1, str(agent._content_filter_retries))
-
-    # ---- per-turn ceiling: eight re-issues across many calls, the ninth refusal ends the turn
-    agent = make_agent()
-    for n in range(1, ceiling + 1):
-        retry = TurnRetryState()
-        verdict = refuse(agent, retry, call=n)  # every call refused once, then answered
-        check(f"ceiling: re-issue {n} of {ceiling}", reissued(verdict, retry), verdict.action)
     retry = TurnRetryState()
-    verdict = refuse(agent, retry, call=ceiling + 1)
-    check("ninth re-issue in the turn ends it", verdict.action == "return", verdict.action)
-    check("error names the per-turn ceiling", "ceiling of 8 per run" in str((verdict.result or {}).get("error")), str((verdict.result or {}).get("error")))
+    verdict = tt.handle_content_policy_refusal(
+        agent, object(), retry, thinking_spinner=None, messages=[], api_messages=[], api_kwargs={},
+        active_system_prompt="sys", conversation_history=[], api_call_count=1, effective_task_id="task",
+        turn_id="turn-1", api_request_id="turn-1:api:1", api_start_time=0.0, retry_count=0, max_retries=1,
+    )
+    check("with a restart limit of 1 nothing is re-issued", verdict.action == "return", verdict.action)
 
     # ---- a new turn starts from zero
     retry = TurnRetryState()
