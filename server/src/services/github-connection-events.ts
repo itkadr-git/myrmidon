@@ -60,6 +60,7 @@ import {
   pullRequestWorkProductData,
 } from "../myrmidon/task-pr-sync/linking.js";
 import { workProductService } from "./work-products.js";
+import { lockObjectInTransaction, postgresErrorInfo, runTransactionWithRetry } from "./postgres-transaction-retry.js";
 
 type LeasedEvent = SealedConnectorEvents["events"][number];
 type GitHubBinding = {
@@ -361,6 +362,27 @@ function bindingRows(rows: Array<{
       providerTenant: grant.providerTenant!,
     }));
   });
+}
+
+/**
+ * The key that serializes the deliveries of one pull request, or null when the
+ * delivery names none (an installation event, a check run on no pull request).
+ */
+function githubPullRequestLockKey(companyId: string, payload: Record<string, unknown>): string | null {
+  const repository = stringValue(payload.repository);
+  const number = positiveInteger(payload.pullRequestNumber) ?? positiveInteger(payload.number);
+  if (!repository || !number) return null;
+  return `github-pr:${companyId}:${repository.toLowerCase()}#${number}`;
+}
+
+/**
+ * myrmidon(EMPTY-RUNS-3): `metadata || patch` evaluated by Postgres on the row
+ * as it is when the update gets the row lock, not an object put together from a
+ * copy read earlier: two writers of different keys keep each other's keys. A
+ * key with a null value is set to null, as the spread of an object did.
+ */
+function mergeWorkProductMetadata(patch: Record<string, unknown>) {
+  return sql`coalesce(${issueWorkProducts.metadata}, '{}'::jsonb) || ${JSON.stringify(patch)}::jsonb`;
 }
 
 function githubSnapshotUpdate(payload: Record<string, unknown>) {
@@ -762,6 +784,11 @@ export function githubConnectionEventService(
     const primary = rows[0];
     if (!primary) return;
     const rowIds = rows.map((row) => row.id);
+    // The rows of the pull request are locked in one order (by id) before any is
+    // written; the delivery's advisory lock keeps its own siblings out, this keeps
+    // out the other writers of these rows (the review-return mark, task sync).
+    await database.select({ id: issueWorkProducts.id }).from(issueWorkProducts)
+      .where(inArray(issueWorkProducts.id, rowIds)).orderBy(issueWorkProducts.id).for("update");
     const finalCheckSeen = rows.some((row) => record(row.metadata)[CI_FINAL_CHECK_SEEN_METADATA_KEY] === true);
 
     if (delivery.active) {
@@ -772,12 +799,11 @@ export function githubConnectionEventService(
         // gate, an auxiliary workflow — does not reopen it; the final check does.
         if (kind !== "final_check" && recorded.final === true && recorded.headSha === headSha) continue;
         await database.update(issueWorkProducts).set({
-          metadata: {
-            ...metadata,
+          metadata: mergeWorkProductMetadata({
             activeCi: { repository, number: pullRequestNumber, headSha, runId, status: delivery.status, observedAt: currentTime.toISOString() },
             lastCompletedCi: null,
             ...(kind === "final_check" ? { [CI_FINAL_CHECK_SEEN_METADATA_KEY]: true } : {}),
-          },
+          }),
           updatedAt: currentTime,
         }).where(eq(issueWorkProducts.id, row.id));
       }
@@ -940,8 +966,7 @@ export function githubConnectionEventService(
       const seen = kind === "final_check" || markFinalCheckSeen;
       for (const row of rows) {
         await database.update(issueWorkProducts).set({
-          metadata: {
-            ...record(row.metadata),
+          metadata: mergeWorkProductMetadata({
             activeCi: null,
             lastCompletedCi: {
               repository,
@@ -953,7 +978,7 @@ export function githubConnectionEventService(
               final: true,
             },
             ...(seen ? { [CI_FINAL_CHECK_SEEN_METADATA_KEY]: true } : {}),
-          },
+          }),
           updatedAt: currentTime,
         }).where(eq(issueWorkProducts.id, row.id));
       }
@@ -1073,8 +1098,7 @@ export function githubConnectionEventService(
         ?? (product.externalId ? Number(product.externalId.match(/#pull\/(\d+)$/)?.[1]) : null);
       if (productRepository?.toLowerCase() !== repository.toLowerCase() || productNumber !== pullRequestNumber) continue;
       await database.update(issueWorkProducts).set({
-        metadata: {
-          ...metadata,
+        metadata: mergeWorkProductMetadata({
           activeCi: active ? { repository, number: pullRequestNumber, headSha, runId, status, observedAt: currentTime.toISOString() } : null,
           ...(active ? { lastCompletedCi: null } : {
             lastCompletedCi: {
@@ -1086,7 +1110,7 @@ export function githubConnectionEventService(
               completedAt: currentTime.toISOString(),
             },
           }),
-        },
+        }),
         updatedAt: currentTime,
       }).where(eq(issueWorkProducts.id, product.id));
     }
@@ -1560,14 +1584,45 @@ export function githubConnectionEventService(
         }, postCommitPublications);
       };
       if (event.event === "pull_request" || event.event === "workflow_run" || event.event === "check_suite" || event.event === "check_run" || event.event === "installation" || event.event === "installation_repositories") {
-        await db.transaction(async (tx) => applyAndFinalize(tx as unknown as Db));
+        // myrmidon(EMPTY-RUNS-3): deliveries of one pull request (a dozen jobs
+        // finish within a second) used to take its work-product rows in their
+        // own order and killed each other with `deadlock detected` (40P01),
+        // the webhook answered 500 and the event was lost. They now run one
+        // after another (advisory lock of the pull request, taken first), and
+        // a transaction Postgres rolled back for a deadlock or a serialization
+        // failure runs again, a bounded number of times, from a clean slate.
+        const lockKey = githubPullRequestLockKey(companyId, normalizedEvent.payload);
+        await runTransactionWithRetry(async () => {
+          postCommitWakes.length = 0;
+          postCommitPublications.length = 0;
+          await db.transaction(async (tx) => {
+            if (lockKey) await lockObjectInTransaction(tx, lockKey);
+            await applyAndFinalize(tx as unknown as Db);
+          });
+        }, {
+          onRetry: ({ attempt, error }) => {
+            logger.warn({
+              companyId,
+              providerDeliveryId: event.id,
+              attempt,
+              pgCode: error.code,
+              pgMessage: error.message,
+            }, "GitHub delivery transaction rolled back by Postgres, running it again");
+          },
+        });
       } else {
         await applyAndFinalize(db);
       }
     } catch (error) {
       await db.update(connectionEventDeliveries).set({
         status: "failed",
-        lastError: error instanceof Error ? error.message.slice(0, 500) : "GitHub event processing failed",
+        // The wrapper of the query builder says only "Failed query"; the
+        // reason is the Postgres code and text behind it.
+        lastError: (() => {
+          const pg = postgresErrorInfo(error);
+          if (pg) return `postgres ${pg.code}: ${pg.message}`.slice(0, 500);
+          return error instanceof Error ? error.message.slice(0, 500) : "GitHub event processing failed";
+        })(),
         updatedAt: now(),
       }).where(and(
         eq(connectionEventDeliveries.companyId, companyId),

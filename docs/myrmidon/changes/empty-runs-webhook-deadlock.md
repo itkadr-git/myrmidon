@@ -1,0 +1,23 @@
+---
+divergence-section: Трек 5 — эксплуатация
+---
+
+## changelog-en
+
+### Deliveries of one GitHub pull request no longer kill each other with deadlocks; the reason of a failed query is logged (EMPTY-RUNS-3)
+
+- On 13.11 a dozen jobs of one pull request finished within a second. Their deliveries updated the work-product rows of the pull request in their own order, Postgres killed one of each pair (`ERROR: deadlock detected` on `update "issue_work_products" set "metadata"`, 15 times in an hour), `POST /api/myrmidon/github-app/webhook` answered 500 (14 times in the same seconds) and the event was lost.
+- Deliveries of one pull request now run one after another: the transaction of a delivery takes a transaction-level advisory lock of the pull request first, and locks the rows of the pull request in one order (by id) before it writes. A transaction that Postgres rolled back for a deadlock (40P01) or a serialization failure (40001) is run again, up to 4 runs in all, with a growing pause; the wakes and live events of a rolled-back run are dropped with it. The `metadata` of a work product is merged by Postgres on the row as it is at the moment of the write (`metadata || patch`), not written from an object put together from an earlier read, so a key written by another writer is kept.
+- The reason of a failed query is in the log now. The query builder wraps the driver's error and its text is the statement; the 500 line of the request log and the stored `lastError` of the delivery carry the Postgres code and text (`postgres 40P01: deadlock detected`), and the error context has a `db` object with the code, the text and the table (never the statement, its parameters or the row detail).
+
+## changelog-ru
+
+### Доставки одного PR GitHub больше не убивают друг друга взаимными блокировками; причина упавшего запроса пишется в журнал (EMPTY-RUNS-3)
+
+- 13.11 за секунду заканчивался десяток джобов одного PR. Их доставки обновляли строки work product этого PR в своём порядке, Postgres убивал одну из каждой пары (`ERROR: deadlock detected` на `update "issue_work_products" set "metadata"`, 15 раз за час), `POST /api/myrmidon/github-app/webhook` отвечал 500 (14 раз в те же секунды), и событие терялось.
+- Доставки одного PR теперь идут по очереди: транзакция доставки первым делом берёт advisory-блокировку PR на время транзакции и до записи блокирует строки PR в одном порядке (по id). Транзакция, которую Postgres откатил из-за взаимной блокировки (40P01) или сбоя сериализации (40001), выполняется заново, всего до 4 запусков с растущей паузой; побудки и события отката сбрасываются вместе с ним. `metadata` work product сливает сам Postgres по строке в момент записи (`metadata || patch`), а не пишется заранее собранный по прежнему чтению объект: ключ, записанный другим писателем, сохраняется.
+- Причина упавшего запроса теперь в журнале. Построитель запросов оборачивает ошибку драйвера, и её текст — это сам запрос; строка журнала запросов с 500 и сохранённый `lastError` доставки несут код и текст Postgres (`postgres 40P01: deadlock detected`), а контекст ошибки — объект `db` с кодом, текстом и таблицей (запрос, его параметры и подробности строки не попадают).
+
+## divergence
+
+| EMPTY-RUNS-3 (блокировки) | Доставки GitHub одного PR сериализуются: `processForCompany` берёт `pg_advisory_xact_lock` по ключу `github-pr:<company>:<repo>#<number>` в начале транзакции и повторяет транзакцию при 40P01/40001 (`runTransactionWithRetry`, до 4 запусков); `applyCiDeliveryByVerdict` блокирует строки PR по id; `metadata` пишется слиянием `metadata \|\| patch` в SQL (`mergeWorkProductMetadata`). Ошибка Postgres: код и текст в `lastError` доставки, в `errorContext.db` и в строке журнала запроса | Вендор, помечено `myrmidon(EMPTY-RUNS-3)`: `server/src/services/github-connection-events.ts`, `server/src/middleware/error-handler.ts`, `server/src/middleware/logger.ts`. Наш код: `server/src/services/postgres-transaction-retry.ts` | 13.11 за час 15 взаимных блокировок на `issue_work_products` и 14 ответов 500 вебхука; событие терялось, причина в журнале была пустой | `server/src/__tests__/github-ci-webhook-concurrency.myrmidon.test.ts`, `server/src/__tests__/postgres-transaction-retry.myrmidon.test.ts`, `server/src/__tests__/error-handler.test.ts` | Никогда — наше поведение. Если вендор сам сериализует доставки по PR, убрать блокировку и повтор, оставив причину Postgres в журнале | (этот PR) |

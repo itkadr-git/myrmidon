@@ -149,7 +149,12 @@ export function createHttpLogger(baseLogger: Logger) {
         err?.message ||
         (res as any).err?.message ||
         "unknown error";
-      return `${req.method} ${stripSecretBearingUrlParts(req.url ?? "")} ${res.statusCode} — ${errMsg}`;
+      // myrmidon(EMPTY-RUNS-3): the text of a failed query is the statement;
+      // the reason is the Postgres code and text the error handler found.
+      const dbReason = ctx?.error?.db
+        ? ` (postgres ${ctx.error.db.code}: ${ctx.error.db.message})`
+        : "";
+      return `${req.method} ${stripSecretBearingUrlParts(req.url ?? "")} ${res.statusCode} — ${errMsg}${dbReason}`;
     },
     customErrorObject(req, _res, _err, value) {
       // pino-http serializes res.err independently of customProps/errorContext.
