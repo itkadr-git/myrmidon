@@ -1,5 +1,9 @@
 // myrmidon(UPSTREAM-13539): resume/delivery path for queued interaction-card responses.
 import { blockerOpenSql } from "../myrmidon/blocker-resolved.js";
+import {
+  classifyRunStep,
+  classifyRunStepFromContextSnapshot,
+} from "../myrmidon/run-step-class.js";
 // myrmidon(1.6.7 TOKENS-TRACE / OPE-10727): per-call LLM token trace persistence
 import {
   inferFromRunUsage,
@@ -25385,6 +25389,14 @@ export function heartbeatService(
               "request_confirmation" &&
             readNonEmptyString(context.interactionStatus) === "accepted")
         : false;
+      // myrmidon(1.8 MODEL-BY-STEP, OPE-12996): one deterministic class per
+      // run start (review, acceptance, decomposition, background, execution),
+      // with the winning rule named for downstream model-by-step consumers.
+      const runStepClassification = issueContext && !isConversation(issueContext)
+        ? classifyRunStepFromContextSnapshot(context, issueContext.workMode)
+        : classifyRunStep({ source: readNonEmptyString(context.source) });
+      context.runStepClass = runStepClassification.stepClass;
+      context.runStepClassRule = runStepClassification.rule;
       const acceptedPlanWakeRoutingDecision = issueContext
         ? await resolveAcceptedPlanWakeRoutingDecision({
             db,
