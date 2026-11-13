@@ -1,0 +1,52 @@
+name: Myrmidon CI full label
+
+# CI-LABEL-NOOP-KEEPS-RESULT. The `full-ci` label starts a full run of
+# "Myrmidon CI" on the PR head. It is NOT a trigger of myrmidon-ci.yml: any
+# `labeled` run of that workflow becomes its newest run on the head, and GitHub
+# reads the required `CI result` from the newest run, so a label run without a
+# `CI result` left the green real run's check "expected" and blocked the merge.
+# This workflow has a different name and publishes no `CI result` / required
+# check; it only cancels the running "Myrmidon CI" run of the head (if any) and
+# re-runs it. Other labels (review-approved, needs-rebase, ...) skip the job.
+# The re-run keeps the old event payload; the `plan` step of myrmidon-ci.yml
+# reads the PR labels live and picks the full tier.
+
+on:
+  pull_request:
+    types: [labeled]
+
+permissions:
+  contents: read
+  actions: write
+  pull-requests: read
+
+concurrency:
+  # Never cancelled: a cancel+re-run sequence must finish.
+  group: myrmidon-ci-full-label-${{ github.event.pull_request.number }}
+  cancel-in-progress: false
+
+jobs:
+  rerun:
+    name: re-run Myrmidon CI as full
+    if: ${{ github.event.label.name == 'full-ci' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout script from the base branch
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+          sparse-checkout: scripts/myrmidon/ci/rerun-full-ci.mjs
+          sparse-checkout-cone-mode: false
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version: 24
+          package-manager-cache: false
+
+      - name: Cancel the running run and re-run it
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: node scripts/myrmidon/ci/rerun-full-ci.mjs
