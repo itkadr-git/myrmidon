@@ -133,7 +133,7 @@ import type { WakeupOptions } from "../services/heartbeat.js";
 import { createPullRequestCiResolver, withCiResolveDeadline } from "../services/github-pull-request-ci.js";
 import { createPullRequestMergeDetailsResolver } from "../services/github-pull-request-merge.js";
 import { resolveGitHubRepositoryToken } from "../services/github-external-object-provider.js";
-import { checkCommitMembership, normaliseReleasePrefix } from "../myrmidon/release-membership.js";
+import { checkCommitMembership, normaliseReleasePrefix, resolveReleaseRefs, routePullRequestVerdict } from "../myrmidon/release-membership.js";
 import {
   companies,
   activityLog,
@@ -9925,11 +9925,23 @@ export function issueRoutes(
           continue;
         }
         const token = await resolveGitHubRepositoryToken(db, issue.companyId, repo ?? "");
+        const refs = await resolveReleaseRefs({
+          repository: repo ?? "",
+          releasePrefix,
+          token,
+        });
         const membership = await checkCommitMembership({
           repository: repo ?? "",
           sha: mergeCommitSha,
           releasePrefix,
+          refs,
           token,
+        });
+        const verdict = routePullRequestVerdict({
+          merged,
+          releaseLabel: releasePrefix,
+          membershipVerdict: membership.verdict,
+          inDefaultBranch,
         });
         pullRequests.push({
           workProductId: product.id,
@@ -9939,11 +9951,7 @@ export function issueRoutes(
           state: product.status,
           mergeCommitSha,
           inDefaultBranch,
-          verdict: membership.verdict === "present"
-            ? "present"
-            : membership.verdict === "missing_from_release"
-              ? (inDefaultBranch ? "missing_from_release" : "unknown")
-              : "unknown",
+          verdict,
           releaseRefs: membership.releaseRefs.map((ref) => ref.ref),
         });
       }
