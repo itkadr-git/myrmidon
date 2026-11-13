@@ -29,6 +29,8 @@ type dockerClient struct {
 	// roll on myr-vm1, MemoryMax=512M).
 	transport *http.Transport
 	client    *http.Client
+	// requestTimeout bounds request() and logs(); a field so a test can shorten it.
+	requestTimeout time.Duration
 }
 
 const dockerAPIVersion = "v1.41"
@@ -48,7 +50,7 @@ func newDockerClient(c *config) *dockerClient {
 		// does not keep sockets and their goroutines alive forever.
 		IdleConnTimeout: time.Minute,
 	}
-	return &dockerClient{socket: c.Upstream, api: api, volumeRoot: c.VolumeRoot, network: c.Network, images: c.Images, gatewayBindIP: c.GatewayBindIP, boardExtraHost: c.BoardExtraHost, transport: tr, client: &http.Client{Transport: tr}}
+	return &dockerClient{socket: c.Upstream, api: api, volumeRoot: c.VolumeRoot, network: c.Network, images: c.Images, gatewayBindIP: c.GatewayBindIP, boardExtraHost: c.BoardExtraHost, transport: tr, client: &http.Client{Transport: tr}, requestTimeout: 30 * time.Second}
 }
 func (d *dockerClient) prefix() string { return "v" + d.api }
 func (d *dockerClient) request(ctx context.Context, method, path string, body any, out any) error {
@@ -60,6 +62,11 @@ func (d *dockerClient) request(ctx context.Context, method, path string, body an
 		}
 		rd = bytes.NewReader(b)
 	}
+	// The whole request is bounded by requestTimeout (30s), the old
+	// client.Timeout: the shared client has no Timeout of its own so the pull
+	// path can stream for 15m. The context must exist before the request is built.
+	ctx, cancel := context.WithTimeout(ctx, d.requestTimeout)
+	defer cancel()
 	req, err := http.NewRequestWithContext(ctx, method, "http://docker"+path, rd)
 	if err != nil {
 		return err
@@ -67,10 +74,6 @@ func (d *dockerClient) request(ctx context.Context, method, path string, body an
 	if body != nil {
 		req.Header.Set("Content-Type", "application/json")
 	}
-	// The whole request is bounded by 30s, the old client.Timeout: the shared
-	// client has no Timeout of its own so the pull path can stream for 15m.
-	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
-	defer cancel()
 	resp, err := d.client.Do(req)
 	if err != nil {
 		return err
@@ -238,13 +241,13 @@ func (d *dockerClient) status(ctx context.Context, bot string) (botStatus, error
 	return botStatus{BotKey: bot, State: state, Image: x.Config.Image}, nil
 }
 func (d *dockerClient) logs(ctx context.Context, bot string) (string, error) {
+	// requestTimeout (30s), the old client.Timeout; created before the request.
+	ctx, cancel := context.WithTimeout(ctx, d.requestTimeout)
+	defer cancel()
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "http://docker/"+d.prefix()+"/containers/"+url.PathEscape(d.name(bot))+"/logs?stdout=true&stderr=true&tail=200", nil)
 	if err != nil {
 		return "", err
 	}
-	// 30s, the old client.Timeout.
-	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
-	defer cancel()
 	resp, err := d.client.Do(req)
 	if err != nil {
 		return "", err
