@@ -322,6 +322,8 @@ export interface CollectStackLocalOptions {
    * refresh never wipes the scheduled release check.
    */
   previous?: StackDocument;
+  /** Env source of the operator bindings (MYRMIDON_STACK_IMAGE_<NAME>, OPE-12922); defaults to process.env. */
+  env?: NodeJS.ProcessEnv;
 }
 
 function carryPrevious(prev: StackSnapshot | undefined, snapshot: StackSnapshot): StackSnapshot {
@@ -348,6 +350,7 @@ export async function collectStackLocal(options: CollectStackLocalOptions = {}):
   const checkedAt = (options.now ?? (() => new Date()))().toISOString();
   const previous = options.previous;
   const images = options.images ?? dockerImagesPort(process.env[STACK_DOCKER_SOCKET_ENV]?.trim() || DEFAULT_STACK_DOCKER_SOCKET);
+  const env = options.env ?? process.env;
 
   const serverInfo = options.serverInfo ?? getServerInfoSnapshot();
   const boardGit = serverInfo.git;
