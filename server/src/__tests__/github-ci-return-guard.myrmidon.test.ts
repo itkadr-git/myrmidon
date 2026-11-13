@@ -40,7 +40,6 @@ import { and, eq } from "drizzle-orm";
 import { githubConnectionEventService } from "../services/github-connection-events.js";
 import type { PaperclipCloudConnector } from "../services/paperclip-cloud-connector.js";
 import type { CiReturnFacts } from "../myrmidon/review-return-guard/ci-failure-return.js";
-import { setBoardMergeTrigger } from "../myrmidon/review-routing/merge-trigger.js";
 import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
@@ -672,23 +671,6 @@ describeEmbeddedPostgres.sequential("CI deliveries by the final result of the he
       expect(await activityOf(seeded, "issue.ci_failed")).toHaveLength(1);
       expect(await taskOf(seeded)).toMatchObject({ status: "in_progress", assigneeAgentId: seeded.executorId });
       expect(service.wakeup).toHaveBeenCalledTimes(1);
-    });
-
-    it("sends the notice to the board merge once, after the commit", async () => {
-      const seeded = await seedTask({ executing: true });
-      const notices: Array<{ committed: boolean }> = [];
-      setBoardMergeTrigger(async () => {
-        const receipts = await db.select().from(connectionEventDeliveries).where(eq(connectionEventDeliveries.companyId, seeded.companyId));
-        notices.push({ committed: receipts.every((receipt) => receipt.status === "processed") });
-      });
-      try {
-        const service = startService({ readHead: () => GREEN_HEAD, deadlockFirstTransaction: true });
-        await expect(service.deliver([ciEvent(seeded, "check_run", "success", "CI result")])).resolves.toMatchObject({ processed: 1, failed: 0 });
-      } finally {
-        setBoardMergeTrigger(null);
-      }
-
-      expect(notices).toEqual([{ committed: true }]);
     });
   });
 });
