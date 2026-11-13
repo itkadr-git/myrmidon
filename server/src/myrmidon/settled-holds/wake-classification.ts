@@ -17,6 +17,10 @@ const EXPLICIT_WAKE_REASONS = new Set<string>([
   "issue_reopened_via_comment",
   "issue_assigned",
   "issue_tree_resumed",
+  // myrmidon(RESUME-AFTER-CANCEL): the operator lifting an agent's pause
+  // (myrmidon/pause-drain.ts, requested by that user). Without a user
+  // requester the actor gate below still rejects it.
+  "pause_resume",
 ]);
 
 /**

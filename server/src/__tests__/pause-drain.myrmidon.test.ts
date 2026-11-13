@@ -178,6 +178,26 @@ describeEmbeddedPostgres("resumeAgentAfterPause (L3)", () => {
     );
   });
 
+  // myrmidon(RESUME-AFTER-CANCEL): lifting the pause is the operator's explicit
+  // act, so the wake it issues is attributed to that user.
+  it("attributes the resume wakes to the operator who lifted the pause", async () => {
+    const { companyId, agentId } = await seedAgent();
+    const issueId = await seedIssue({ companyId, agentId, status: "in_progress" });
+    const deps = fakeDeps();
+
+    await resumeAgentAfterPause(deps, agentId, { operatorUserId: "user-op" });
+
+    expect(deps.enqueueWakeup).toHaveBeenCalledWith(
+      agentId,
+      expect.objectContaining({
+        reason: "pause_resume",
+        requestedByActorType: "user",
+        requestedByActorId: "user-op",
+        contextSnapshot: expect.objectContaining({ issueId }),
+      }),
+    );
+  });
+
   it("ignores issues outside todo/in_progress", async () => {
     const { companyId, agentId } = await seedAgent();
     await seedIssue({ companyId, agentId, status: "backlog" });

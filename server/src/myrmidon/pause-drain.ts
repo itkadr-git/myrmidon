@@ -194,7 +194,7 @@ export interface ResumeAgentAfterPauseDeps {
       triggerDetail?: "system";
       reason?: string;
       idempotencyKey?: string;
-      requestedByActorType?: "system";
+      requestedByActorType?: "system" | "user";
       requestedByActorId?: string;
       contextSnapshot?: Record<string, unknown>;
     },
@@ -204,6 +204,18 @@ export interface ResumeAgentAfterPauseDeps {
    * the real timer; absent, the real one is used.
    */
   sleepMs?: (ms: number) => Promise<void>;
+}
+
+export interface ResumeAgentAfterPauseOptions {
+  /**
+   * myrmidon(RESUME-AFTER-CANCEL): the board user who lifted the pause. Lifting
+   * a pause is an explicit operator action, so the wakes it issues are
+   * attributed to that user and count as an explicit wake
+   * (settled-holds/wake-classification.ts), the same as a manual wake: a
+   * settled "do not replay" hold left by an operator cancel no longer parks them.
+   * Absent (no identifiable user), the wake stays a system wake, as before.
+   */
+  operatorUserId?: string | null;
 }
 
 export interface ResumeAgentAfterPauseResult {
@@ -239,6 +251,7 @@ export interface ResumeAgentAfterPauseResult {
 export async function resumeAgentAfterPause(
   deps: ResumeAgentAfterPauseDeps,
   agentId: string,
+  options: ResumeAgentAfterPauseOptions = {},
 ): Promise<ResumeAgentAfterPauseResult> {
   const agent = await deps.db
     .select({ companyId: agents.companyId })
@@ -247,6 +260,7 @@ export async function resumeAgentAfterPause(
     .then((rows) => rows[0] ?? null);
   if (!agent) return { queuedRunsPromoted: 0, strandedIssuesWoken: 0 };
   const companyId = agent.companyId;
+  const operatorUserId = options.operatorUserId?.trim() || null;
 
   const promoted = await deps.startNextQueuedRunForAgent(agentId);
 
@@ -334,8 +348,8 @@ export async function resumeAgentAfterPause(
           triggerDetail: "system",
           reason: "pause_resume",
           idempotencyKey,
-          requestedByActorType: "system",
-          requestedByActorId: "pause_resume",
+          requestedByActorType: operatorUserId ? "user" : "system",
+          requestedByActorId: operatorUserId ?? "pause_resume",
           contextSnapshot: {
             issueId: issue.id,
             taskKey: issue.id,

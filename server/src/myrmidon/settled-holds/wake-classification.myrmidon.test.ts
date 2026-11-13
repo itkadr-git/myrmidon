@@ -98,4 +98,11 @@ describe("isExplicitWake", () => {
   it("does not treat a person's comment without the verified mention flag as explicit", () => {
     expect(isExplicitWake({ source: "automation", triggerDetail: "system", reason: "issue_commented", commentId: "c1", requestedByActorType: "user" })).toBe(false);
   });
+
+  // myrmidon(RESUME-AFTER-CANCEL): the operator lifting a pause is explicit;
+  // the same wake without a user requester (system) is not.
+  it("treats a pause_resume wake requested by a user as explicit, and by the system as not", () => {
+    expect(isExplicitWake({ source: "automation", triggerDetail: "system", reason: "pause_resume", requestedByActorType: "user" })).toBe(true);
+    expect(isExplicitWake({ source: "automation", triggerDetail: "system", reason: "pause_resume", requestedByActorType: "system" })).toBe(false);
+  });
 });
