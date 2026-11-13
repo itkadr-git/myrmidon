@@ -467,6 +467,11 @@ export function normalizeGeneralSettings(raw: unknown): InstanceGeneralSettings 
       ...(parsed.data.issueRewakeFreezeThreshold !== undefined
         ? { issueRewakeFreezeThreshold: parsed.data.issueRewakeFreezeThreshold }
         : {}),
+      // myrmidon(1.8 AUTOPAUSE): the empty-run streak threshold survives every
+      // general write, like the other whitelist fields above.
+      ...(parsed.data.emptyRunStreakThreshold !== undefined
+        ? { emptyRunStreakThreshold: parsed.data.emptyRunStreakThreshold }
+        : {}),
       // myrmidon(1.6.3 PLUGIN-ENTITLEMENT A): the stored verification public key
       // survives every general write (edited on its own settings block).
       ...(parsed.data.pluginEntitlementPublicKey ? { pluginEntitlementPublicKey: parsed.data.pluginEntitlementPublicKey } : {}),
