@@ -18,7 +18,7 @@ const { getByNameMock, removeMock, resolveSecretValueMock } = vi.hoisted(() => (
   resolveSecretValueMock: vi.fn(),
 }));
 
-vi.mock("../../../services/index.js", () => ({
+vi.mock("../../services/index.js", () => ({
   secretService: () => ({
     getByName: getByNameMock,
     remove: removeMock,
@@ -31,7 +31,7 @@ import {
   removeRunScopedGatewayKeyRef,
   type GatewayBotCard,
 } from "./bot-keys.js";
-import { resolveExecutionRunAdapterConfig } from "../../../services/heartbeat.js";
+import { resolveExecutionRunAdapterConfig } from "../../services/heartbeat.js";
 
 const COMPANY_ID = "11111111-1111-4111-8111-111111111111";
 const AGENT_ID = "22222222-2222-4222-8222-222222222222";
