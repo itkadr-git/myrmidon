@@ -1293,6 +1293,94 @@ describe("omp local execution", () => {
       expect(errors[0].payload).toMatchObject({ reason: "remote_run_stop_failed", survivors: 1, survivorPids: [4242] });
     });
 
+    // myrmidon(OMP-RUN-GUARD-2): the adapter stops the local ssh client itself.
+    function registerClient(runId: string) {
+      const kill = vi.fn(() => true);
+      runningProcesses.set(runId, {
+        child: { pid: 4242, exitCode: null, signalCode: null, kill } as never,
+        graceSec: 20,
+        processGroupId: null,
+      });
+      return kill;
+    }
+    const signalledResult = () => ({
+      exitCode: null,
+      signal: "SIGTERM",
+      timedOut: false,
+      stdout: "",
+      stderr: "",
+      pid: 4242,
+      startedAt: new Date().toISOString(),
+    });
+
+    it("signals the local ssh client when the run is cancelled while OMP is running", async () => {
+      const run = await makeSshRun("run-cancel-signals-client");
+      prepareAdapterExecutionTargetRuntime.mockImplementationOnce(async () => run.preparedRuntime);
+      let kill = vi.fn(() => true);
+      runAdapterExecutionTargetProcess.mockImplementationOnce(async (runId) => {
+        kill = registerClient(runId!);
+        try {
+          expect(kill).not.toHaveBeenCalled();
+          run.controller.abort(new Error("Cancelled before issue reassignment"));
+          // The board did not get to the process: the adapter signals it.
+          expect(kill).toHaveBeenCalledTimes(1);
+          expect(kill).toHaveBeenCalledWith("SIGTERM");
+        } finally {
+          runningProcesses.delete(runId!);
+        }
+        return signalledResult();
+      });
+
+      await execute(run.input);
+
+      expect(kill).toHaveBeenCalledTimes(1);
+    });
+
+    it("signals the local ssh client at its start when the run was cancelled before it was registered", async () => {
+      const run = await makeSshRun("run-cancel-before-client");
+      prepareAdapterExecutionTargetRuntime.mockImplementationOnce(async () => run.preparedRuntime);
+      const spawned = vi.fn(async () => undefined);
+      let kill = vi.fn(() => true);
+      runAdapterExecutionTargetProcess.mockImplementationOnce(async (runId, _target, _command, _args, options) => {
+        // The abort found no process to stop: the client is not registered yet.
+        run.controller.abort(new Error("Cancelled before issue reassignment"));
+        kill = registerClient(runId!);
+        try {
+          await (options?.onSpawn as (meta: Record<string, unknown>) => Promise<void>)({ pid: 4242, startedAt: "now" });
+          expect(kill).toHaveBeenCalledWith("SIGTERM");
+        } finally {
+          runningProcesses.delete(runId!);
+        }
+        return signalledResult();
+      });
+
+      await execute({ ...run.input, onSpawn: spawned });
+
+      expect(spawned).toHaveBeenCalledTimes(1);
+      expect(kill).toHaveBeenCalledTimes(1);
+    });
+
+    it("leaves the client of a run that is not cancelled alone", async () => {
+      const run = await makeSshRun("run-not-cancelled-client");
+      prepareAdapterExecutionTargetRuntime.mockImplementationOnce(async () => run.preparedRuntime);
+      let kill = vi.fn(() => true);
+      runAdapterExecutionTargetProcess.mockImplementationOnce(async (runId, _target, _command, _args, options) => {
+        kill = registerClient(runId!);
+        try {
+          await (options?.onSpawn as (meta: Record<string, unknown>) => Promise<void>)({ pid: 4242, startedAt: "now" });
+        } finally {
+          runningProcesses.delete(runId!);
+        }
+        return { ...signalledResult(), exitCode: 0, signal: null };
+      });
+
+      await execute(run.input);
+      // Aborting after the run ended does not signal anything either.
+      run.controller.abort(new Error("late"));
+
+      expect(kill).not.toHaveBeenCalled();
+    });
+
     it("restores the workspace of an SSH run that was not cancelled", async () => {
       const run = await makeSshRun("run-ssh-not-cancelled");
       prepareAdapterExecutionTargetRuntime.mockImplementationOnce(async () => run.preparedRuntime);
@@ -1332,6 +1420,57 @@ describe("omp local execution", () => {
       expect(run.onCancellationReady).not.toHaveBeenCalled();
       const prepareCall = prepareAdapterExecutionTargetRuntime.mock.calls[0]?.[0];
       expect(prepareCall?.signal).toBeUndefined();
+    });
+
+    // myrmidon(OMP-RUN-GUARD-2): both stops of the local ssh client go through one function.
+    it("signals the ssh client once when the run guard stops the run and the run is cancelled at the same time", async () => {
+      const run = await makeSshRun("run-guard-stop-and-cancel");
+      prepareAdapterExecutionTargetRuntime.mockImplementationOnce(async () => run.preparedRuntime);
+      const guard = new RunGuard();
+      // The board aborts the run's signal when the guard stops the run.
+      const onRunGuardStop = vi.fn(async (reason: RunGuardStopReason) => {
+        run.controller.abort(new Error(reason));
+      });
+      const turnStart = `${JSON.stringify({ type: "turn_start" })}\n`;
+      const kill = vi.fn(() => true);
+      vi.useFakeTimers();
+      try {
+        runAdapterExecutionTargetProcess.mockImplementationOnce(async (runId, _target, _command, _args, options) => {
+          runningProcesses.set(runId!, {
+            child: { pid: 4242, exitCode: null, signalCode: null, kill } as never,
+            graceSec: 20,
+            processGroupId: null,
+          });
+          try {
+            await (options?.onLog as (stream: "stdout", chunk: string) => Promise<void>)("stdout", turnStart.repeat(151));
+            expect(onRunGuardStop).toHaveBeenCalledTimes(1);
+            // The guard stop aborted the signal; the listener found the client already signalled.
+            expect(run.controller.signal.aborted).toBe(true);
+            expect(kill).toHaveBeenCalledTimes(1);
+            expect(kill).toHaveBeenCalledWith("SIGTERM");
+            // A cancellation of the board on top of it does not signal again.
+            run.controller.abort(new Error("Cancelled by the board"));
+            await (options?.onLog as (stream: "stdout", chunk: string) => Promise<void>)("stdout", turnStart);
+            expect(kill).toHaveBeenCalledTimes(1);
+            // One timer: SIGKILL follows once after the grace period if the client is still registered.
+            await vi.advanceTimersByTimeAsync(20_000);
+            expect(kill).toHaveBeenCalledTimes(2);
+            expect(kill).toHaveBeenLastCalledWith("SIGKILL");
+            await vi.advanceTimersByTimeAsync(60_000);
+            expect(kill).toHaveBeenCalledTimes(2);
+          } finally {
+            runningProcesses.delete(runId!);
+          }
+          return { exitCode: null, signal: "SIGTERM", timedOut: false, stdout: "", stderr: "", pid: 4242, startedAt: new Date().toISOString() };
+        });
+
+        await execute({ ...run.input, runGuard: guard, onRunGuardStop });
+      } finally {
+        vi.useRealTimers();
+      }
+
+      expect(onRunGuardStop).toHaveBeenCalledTimes(1);
+      expect(kill.mock.calls.filter(([signal]) => signal === "SIGTERM")).toHaveLength(1);
     });
   });
 
