@@ -3,7 +3,7 @@ import {
   pgTable,
   text,
   timestamp,
-  uniqueIndex,
+  unique,
   uuid,
 } from "drizzle-orm/pg-core";
 import { companies } from "./companies.js";
@@ -23,10 +23,12 @@ export const companyModelGroupRules = pgTable(
   },
   (table) => ({
     companyScopeIdx: index("company_model_group_rules_company_idx").on(table.companyId),
-    companyStepCasteUq: uniqueIndex("company_model_group_rules_scope_step_uq").on(
-      table.companyId,
-      table.casteKey,
-      table.stepClass,
-    ),
+    companyStepCasteUq: unique("company_model_group_rules_scope_step_uq")
+      .on(
+        table.companyId,
+        table.casteKey,
+        table.stepClass,
+      )
+      .nullsNotDistinct(),
   }),
 );

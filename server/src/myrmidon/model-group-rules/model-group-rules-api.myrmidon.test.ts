@@ -182,6 +182,40 @@ describe("myrmidon(1.8 MODEL-BY-STEP) routes: validation", () => {
     expect(get.body.availableGroups).toEqual(["strong", "economy"]);
     expect(get.body.rules).toEqual([]);
   });
+
+  it("acceptance criteria: valid rule saved by owner returns from GET for company, can be overridden by caste, without affecting other companies", async () => {
+    const { server, saved } = app(member, ["strong", "economy", "best"]);
+
+    // 1. Owner saves company-wide rule and a caste override for the company
+    const put = await request(server)
+      .put(base)
+      .send({
+        rules: [
+          { stepClass: "review", modelGroup: "strong", casteKey: null },
+          { stepClass: "review", modelGroup: "best", casteKey: "reviewer" },
+          { stepClass: "execution", modelGroup: "economy", casteKey: "engineer" },
+        ],
+      })
+      .expect(200);
+
+    expect(put.body.rules).toHaveLength(3);
+
+    // 2. GET returns the saved rules for this company
+    const get = await request(server).get(base).expect(200);
+    expect(get.body.companyId).toBe(COMPANY_ID);
+    expect(get.body.rules).toHaveLength(3);
+
+    // 3. Caste override takes precedence for the caste while company rule applies to others
+    expect(resolveModelGroupForStep(get.body.rules, "review", "reviewer")).toBe("best");
+    expect(resolveModelGroupForStep(get.body.rules, "review", "engineer")).toBe("strong");
+    expect(resolveModelGroupForStep(get.body.rules, "review", null)).toBe("strong");
+
+    // 4. Other company is isolated in store and denied access
+    expect(saved.every((entry) => entry.companyId === COMPANY_ID)).toBe(true);
+    const outsiderApp = app(outsider, ["strong", "economy", "best"]);
+    await request(outsiderApp.server).get(base).expect(403);
+    await request(outsiderApp.server).put(base).send({ rules: [] }).expect(403);
+  });
 });
 
 describe("myrmidon(1.8 MODEL-BY-STEP) precedence — caste over company", () => {

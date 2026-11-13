@@ -5,9 +5,9 @@ CREATE TABLE "company_model_group_rules" (
 	"model_group" text NOT NULL,
 	"caste_key" text,
 	"created_at" timestamp with time zone DEFAULT now() NOT NULL,
-	"updated_at" timestamp with time zone DEFAULT now() NOT NULL
+	"updated_at" timestamp with time zone DEFAULT now() NOT NULL,
+	CONSTRAINT "company_model_group_rules_scope_step_uq" UNIQUE NULLS NOT DISTINCT("company_id","caste_key","step_class")
 );
 --> statement-breakpoint
 ALTER TABLE "company_model_group_rules" ADD CONSTRAINT "company_model_group_rules_company_id_companies_id_fk" FOREIGN KEY ("company_id") REFERENCES "public"."companies"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
-CREATE INDEX "company_model_group_rules_company_idx" ON "company_model_group_rules" USING btree ("company_id");--> statement-breakpoint
-CREATE UNIQUE INDEX "company_model_group_rules_scope_step_uq" ON "company_model_group_rules" USING btree ("company_id","caste_key","step_class");
+CREATE INDEX "company_model_group_rules_company_idx" ON "company_model_group_rules" USING btree ("company_id");

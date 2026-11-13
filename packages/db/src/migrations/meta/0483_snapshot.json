@@ -1,5 +1,5 @@
 {
-  "id": "7552b2fb-ad8e-43bd-805b-e1973c4d2a2c",
+  "id": "58c36ec7-2dde-4bba-9485-730793f1535c",
   "prevId": "f0400aca-ad5b-4163-b1f5-5650da5f145c",
   "version": "7",
   "dialect": "postgresql",
@@ -10968,6 +10968,104 @@
       "checkConstraints": {},
       "isRLSEnabled": false
     },
+    "public.company_model_group_rules": {
+      "name": "company_model_group_rules",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true,
+          "default": "gen_random_uuid()"
+        },
+        "company_id": {
+          "name": "company_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "step_class": {
+          "name": "step_class",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "model_group": {
+          "name": "model_group",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "caste_key": {
+          "name": "caste_key",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "updated_at": {
+          "name": "updated_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {
+        "company_model_group_rules_company_idx": {
+          "name": "company_model_group_rules_company_idx",
+          "columns": [
+            {
+              "expression": "company_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "company_model_group_rules_company_id_companies_id_fk": {
+          "name": "company_model_group_rules_company_id_companies_id_fk",
+          "tableFrom": "company_model_group_rules",
+          "tableTo": "companies",
+          "columnsFrom": [
+            "company_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {
+        "company_model_group_rules_scope_step_uq": {
+          "name": "company_model_group_rules_scope_step_uq",
+          "nullsNotDistinct": true,
+          "columns": [
+            "company_id",
+            "caste_key",
+            "step_class"
+          ]
+        }
+      },
+      "policies": {},
+      "checkConstraints": {},
+      "isRLSEnabled": false
+    },
     "public.company_onboarding_seeds": {
       "name": "company_onboarding_seeds",
       "schema": "",
@@ -12449,12 +12547,6 @@
         },
         "last_rotated_at": {
           "name": "last_rotated_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "expires_at": {
-          "name": "expires_at",
           "type": "timestamp with time zone",
           "primaryKey": false,
           "notNull": false
