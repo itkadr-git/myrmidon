@@ -78,6 +78,8 @@ import { ensureOmpModelConfiguredAndAvailable } from "./models.js";
 import { resolveOmpSkillsHome } from "./skills.js";
 import { prepareOmpRuntimeConfig, writeOmpManagedSettings } from "./runtime-config.js";
 import { SANDBOX_INSTALL_COMMAND } from "../index.js";
+// myrmidon(OMP-RUN-GUARD-2): the adapter itself stops the run's local process on cancellation.
+import { runningProcesses, signalRunningProcess } from "@myrmidon/adapter-utils/server-utils";
 
 const __moduleDir = path.dirname(fileURLToPath(import.meta.url));
 
@@ -1004,6 +1006,29 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         }
       };
 
+      // myrmidon(OMP-RUN-GUARD-2): a cancelled SSH run must not leave OMP running.
+      // The server stops the local ssh client of a run it finds in
+      // runningProcesses, and the target runner then stops the processes on the
+      // runner (OPE-12801). Both depend on the board getting there first: a
+      // cancellation that arrives while the client is being started (the
+      // process is not registered yet) found nothing to stop, and the run went
+      // on for its whole timeout with the abort noticed only after it ended.
+      // The adapter therefore stops the client itself on the abort, and on its
+      // start when the abort came earlier. Signalling the client ends it with
+      // a signal, which is what makes the target stop the runner side.
+      let clientStopTimer: NodeJS.Timeout | null = null;
+      const stopLocalClientOnAbort = () => {
+        const running = runningProcesses.get(runId);
+        if (!running) return;
+        signalRunningProcess(running, "SIGTERM");
+        if (clientStopTimer) return;
+        clientStopTimer = setTimeout(() => {
+          if (runningProcesses.get(runId) === running) signalRunningProcess(running, "SIGKILL");
+        }, Math.max(1, graceSec) * 1000);
+        clientStopTimer.unref();
+      };
+      const abortSignal = sshCancellable ? ctx.signal : undefined;
+      abortSignal?.addEventListener("abort", stopLocalClientOnAbort, { once: true });
       const proc = await runAdapterExecutionTargetProcess(runId, runtimeExecutionTarget, command, args, {
         inheritProcessEnv: readInheritProcessEnvFlag(config),
         runEnvAdapterType: "omp_local",
@@ -1012,7 +1037,13 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         stdin: userPrompt,
         timeoutSec,
         graceSec,
-        onSpawn,
+        // An abort that came before the client was registered is applied here.
+        onSpawn: abortSignal
+          ? async (meta) => {
+              await onSpawn?.(meta);
+              if (abortSignal.aborted) stopLocalClientOnAbort();
+            }
+          : onSpawn,
         onRuntimeProgress: ctx.onRuntimeProgress,
         onLog: bufferedOnLog,
         runLogTail: paperclipBridge?.runLogTail,
@@ -1039,6 +1070,9 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
             },
           });
         },
+      }).finally(() => {
+        abortSignal?.removeEventListener("abort", stopLocalClientOnAbort);
+        if (clientStopTimer) clearTimeout(clientStopTimer);
       });
 
       if (stdoutBuffer) {
