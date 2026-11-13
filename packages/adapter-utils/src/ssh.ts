@@ -1559,16 +1559,14 @@ export async function syncDirectoryToSsh(input: {
         reject(new SshOperationAbortedError("Workspace upload"));
         return;
       }
-      if (!tarStoppedAfterSshExit && (tarExitCode ?? 0) !== 0) {
-        reject(new Error(tarStderrTail.text().trim() || `tar exited with code ${tarExitCode ?? -1}`));
+      if ((tarExitCode ?? 0) !== 0) {
+        const stderr = tarStderrTail.text().trim();
+        reject(new Error(`tar exited with code ${tarExitCode ?? -1}${stderr ? `: ${stderr}` : ""}`));
         return;
       }
       if ((sshExitCode ?? 0) !== 0) {
-        reject(new Error(sshStderrTail.text().trim() || `ssh exited with code ${sshExitCode ?? -1}`));
-        return;
-      }
-      if (tarStoppedAfterSshExit) {
-        reject(new Error(sshStderrTail.text().trim() || `ssh exited before tar finished (code ${sshExitCode ?? -1})`));
+        const stderr = sshStderrTail.text().trim();
+        reject(new Error(`ssh exited with code ${sshExitCode ?? -1}${stderr ? `: ${stderr}` : ""}`));
         return;
       }
       resolve();
@@ -1623,7 +1621,7 @@ export async function syncDirectoryToSsh(input: {
     ssh.on("close", (code) => {
       sshExited = true;
       sshExitCode = code;
-      if (!tarExited) {
+      if (!tarExited && (code ?? 0) !== 0) {
         tarStoppedAfterSshExit = true;
         stopChildren();
       }
