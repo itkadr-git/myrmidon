@@ -451,7 +451,10 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   if (taskWorkspaceFolderName) {
     // myrmidon(OPE-13018): authoritative per-task folder name for runner-side
     // tooling (myr-ws and friends); derived from the task identifier above.
-    writeProductEnv(env, "TASK_FOLDER_NAME", taskWorkspaceFolderName);
+    // This is a NEW variable (no legacy PAPERCLIP_* alias), so we write only
+    // the MYRMIDON_* spelling — unlike the REBRAND-C aliases above which use
+    // writeProductEnv to keep both spellings alive for one release.
+    env[`MYRMIDON_TASK_FOLDER_NAME`] = taskWorkspaceFolderName;
   }
   if (issueWorkMode) writeProductEnv(env, "ISSUE_WORK_MODE", issueWorkMode); // myrmidon(REBRAND-C)
   if (wakeReason) writeProductEnv(env, "WAKE_REASON", wakeReason); // myrmidon(REBRAND-C)

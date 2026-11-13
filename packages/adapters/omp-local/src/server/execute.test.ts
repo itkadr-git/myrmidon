@@ -1789,8 +1789,8 @@ describe("omp local execution", () => {
         | undefined;
       expect(processCall).toBeDefined();
       const env = processCall?.[4]?.env ?? {};
-      // writeProductEnv sets both spellings; assert the MYRMIDON_* one and
-      // that no unexpected PAPERCLIP_* task-folder alias leaks through.
+      // The adapter writes only the MYRMIDON_* spelling for this new variable;
+      // assert no PAPERCLIP_* alias leaks through.
       const paperclipKeys = Object.keys(env).filter((k) => k.startsWith("PAPERCLIP_"));
       const expectedPaperclipFolderKey = ["PAPERCLIP", "TASK", "FOLDER", "NAME"].join("_");
       expect(paperclipKeys).not.toContain(expectedPaperclipFolderKey);
@@ -1810,6 +1810,7 @@ describe("omp local execution", () => {
         | undefined;
       expect(processCall).toBeDefined();
       const env = processCall?.[4]?.env ?? {};
+      // No task key — the adapter must not write either spelling.
       const paperclipKeys = Object.keys(env).filter((k) => k.startsWith("PAPERCLIP_"));
       const expectedPaperclipFolderKey = ["PAPERCLIP", "TASK", "FOLDER", "NAME"].join("_");
       expect(paperclipKeys).not.toContain(expectedPaperclipFolderKey);
