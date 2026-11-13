@@ -132,6 +132,10 @@ import type { ChatChannelService } from "../services/chat-channels.js";
 import type { WakeupOptions } from "../services/heartbeat.js";
 import { createPullRequestCiResolver, withCiResolveDeadline } from "../services/github-pull-request-ci.js";
 import { createPullRequestMergeDetailsResolver } from "../services/github-pull-request-merge.js";
+import { resolveGitHubRepositoryToken } from "../services/github-external-object-provider.js";
+import { checkCommitMembership, normaliseReleasePrefix, resolveReleaseRefs, routePullRequestVerdict } from "../myrmidon/release-membership.js";
+import { verifyReleaseComposition, aggregateReleaseCandidates } from "../myrmidon/release-verification.js";
+import { readBuildVersion } from "../build-version.js";
 import {
   companies,
   activityLog,
@@ -152,6 +156,7 @@ import {
   issueRelations,
   issueRecoveryActions,
   issueThreadInteractions,
+  issueLabels,
   labels,
   issues as issueRows,
   issueWorkProducts,
@@ -9852,6 +9857,224 @@ export function issueRoutes(
     } catch (err) {
       return res.status(500).json({
         error: err instanceof Error ? err.message : "Failed to resolve CI status",
+      });
+    }
+  });
+
+  // VERIFY-ON-PROD (OPE-12994): for every pull_request work product of the
+  // issue, report whether its merge commit is reachable from the release refs
+  // (tags myr-v<prefix>* and branches rel/<prefix>*) of the issue's release
+  // label ("<major>.<minor>"). verdict "missing_from_release" marks a PR merged
+  // into the default branch that is absent from the release line — the gap the
+  // done gate does not see (it only proves delivery to main or rel/*).
+  router.get("/issues/:id/release-status", async (req, res) => {
+    const id = req.params.id as string;
+    const issue = await getAccessibleResource(
+      req,
+      res,
+      getIssueById(req, id),
+      "Issue not found",
+    );
+    if (!issue) return;
+    if (!(await assertIssueReadAllowed(req, res, issue))) return;
+
+    try {
+      const refresh = req.query.refreshPullRequests === "true";
+      const workProducts = await workProductsSvc.listForIssue(issue.id, { refreshPullRequests: refresh });
+      const labelRows = await db
+        .select({ name: labels.name })
+        .from(issueLabels)
+        .innerJoin(labels, eq(labels.id, issueLabels.labelId))
+        .where(eq(issueLabels.issueId, issue.id));
+      const releasePrefix = labelRows
+        .map((row) => normaliseReleasePrefix(row.name))
+        .find((prefix): prefix is string => prefix !== null) ?? null;
+      const pullRequests = [] as Array<{
+        workProductId: string;
+        repo: string | null;
+        number: number | null;
+        url: string | null;
+        state: string;
+        mergeCommitSha: string | null;
+        inDefaultBranch: boolean | null;
+        verdict: "present" | "missing_from_release" | "no_release_label" | "unknown";
+        releaseRefs: string[];
+      }>;
+      for (const product of workProducts) {
+        if (product.type !== "pull_request") continue;
+        const metadata = product.metadata ?? {};
+        const repo = typeof metadata.repo === "string" ? metadata.repo : null;
+        const number = typeof metadata.number === "number" ? metadata.number : null;
+        const mergeCommitSha = typeof metadata.mergeCommitSha === "string" ? metadata.mergeCommitSha : null;
+        const baseRef = typeof metadata.baseRef === "string" ? metadata.baseRef : null;
+        const defaultBranch = typeof metadata.defaultBranch === "string" ? metadata.defaultBranch : "main";
+        const merged = product.status === "merged";
+        const inDefaultBranch = merged
+          ? (!baseRef || baseRef === defaultBranch)
+          : null;
+        if (!merged || !releasePrefix) {
+          pullRequests.push({
+            workProductId: product.id,
+            repo,
+            number,
+            url: product.url,
+            state: product.status,
+            mergeCommitSha,
+            inDefaultBranch,
+            verdict: merged && !releasePrefix ? "no_release_label" : "unknown",
+            releaseRefs: [],
+          });
+          continue;
+        }
+        const token = await resolveGitHubRepositoryToken(db, issue.companyId, repo ?? "");
+        const refs = await resolveReleaseRefs({
+          repository: repo ?? "",
+          releasePrefix,
+          token,
+        });
+        const membership = await checkCommitMembership({
+          repository: repo ?? "",
+          sha: mergeCommitSha,
+          releasePrefix,
+          refs,
+          token,
+        });
+        const verdict = routePullRequestVerdict({
+          merged,
+          releaseLabel: releasePrefix,
+          membershipVerdict: membership.verdict,
+          inDefaultBranch,
+        });
+        pullRequests.push({
+          workProductId: product.id,
+          repo,
+          number,
+          url: product.url,
+          state: product.status,
+          mergeCommitSha,
+          inDefaultBranch,
+          verdict,
+          releaseRefs: membership.releaseRefs.map((ref) => ref.ref),
+        });
+      }
+      return res.json({ issueId: issue.id, releaseLabel: releasePrefix, pullRequests });
+    } catch (err) {
+      return res.status(500).json({
+        error: err instanceof Error ? err.message : "Failed to resolve release status",
+      });
+    }
+  });
+
+  // VERIFY-ON-PROD (OPE-13014): aggregate the full release candidate set from
+  // the issue's pull_request work products, verify the composition against the
+  // deployed version, and persist the verdict as a system comment. The release
+  // must not be treated as proven while this check is missing or failed.
+  router.post("/issues/:id/release-verify", async (req, res) => {
+    const id = req.params.id as string;
+    const issue = await getAccessibleResource(
+      req,
+      res,
+      getIssueById(req, id),
+      "Issue not found",
+    );
+    if (!issue) return;
+    if (!(await assertIssueReadAllowed(req, res, issue))) return;
+
+    try {
+      const refresh = req.query.refreshPullRequests === "true";
+      const labelRows = await db
+        .select({ name: labels.name })
+        .from(issueLabels)
+        .innerJoin(labels, eq(labels.id, issueLabels.labelId))
+        .where(eq(issueLabels.issueId, issue.id));
+      const releasePrefix = labelRows
+        .map((row) => normaliseReleasePrefix(row.name))
+        .find((prefix): prefix is string => prefix !== null) ?? null;
+
+      const deployedVersion = readBuildVersion();
+      // Without a release label we cannot name the release line to verify
+      // against; fail closed instead of guessing.
+      if (!releasePrefix) {
+        const body = [
+          `VERIFY-ON-PROD release composition check: failed`,
+          ``,
+          `- Release label: none`,
+          `- Deployed version: ${deployedVersion ?? "not set"}`,
+          `- Reason: На задаче нет релизной метки; состав выпуска не проверяем.`,
+        ].join("\n");
+        await svc.addComment(issue.id, body, {}, { authorType: "system" });
+        return res.status(409).json({ issueId: issue.id, releaseLabel: null, deployedVersion, verdict: "failed", failureReason: "release_label_missing", reason: "На задаче нет релизной метки; состав выпуска не проверяем." });
+      }
+
+      // The candidate set is the FULL set of pull_request work products across
+      // EVERY issue of this release (all issues carrying the same release
+      // label), merged or not. Review finding (PR #3093): restricting the set
+      // to the single issue's work products would let a release be confirmed
+      // on a partial list whenever sibling release issues were skipped.
+      const releaseLabelRows = await db
+        .select({ id: labels.id, name: labels.name })
+        .from(labels)
+        .where(eq(labels.companyId, issue.companyId));
+      const releaseLabelIds = releaseLabelRows
+        .filter((row) => normaliseReleasePrefix(row.name) === releasePrefix)
+        .map((row) => row.id);
+      const candidateIssueRows = releaseLabelIds.length
+        ? await db
+            .select({ issueId: issueLabels.issueId })
+            .from(issueLabels)
+            .where(inArray(issueLabels.labelId, releaseLabelIds))
+        : [];
+      const candidateIssueIds = [...new Set(candidateIssueRows.map((row) => row.issueId))];
+
+      // Include the current issue even if its label row was missed, so the
+      // route always verifies at least the issue it was called on.
+      if (!candidateIssueIds.includes(issue.id)) candidateIssueIds.push(issue.id);
+
+      const memberWorkProducts = new Map<string, Awaited<ReturnType<typeof workProductsSvc.listForIssue>>>();
+      for (const candidateIssueId of candidateIssueIds) {
+        const products = await workProductsSvc.listForIssue(candidateIssueId, { refreshPullRequests: refresh });
+        memberWorkProducts.set(candidateIssueId, products);
+      }
+      const members = aggregateReleaseCandidates(memberWorkProducts);
+
+      // Resolve the actual release refs from the repository so the deployed
+      // version can be validated against them (not just the prefix defaults).
+      // Members with incomplete metadata (no repo) are surfaced by the
+      // verification itself; here we just pick the first usable repo.
+      const firstRepo = members.find((m) => m.repository)?.repository ?? null;
+      const token = firstRepo ? await resolveGitHubRepositoryToken(db, issue.companyId, firstRepo) : null;
+      const resolvedRefs = firstRepo
+        ? await resolveReleaseRefs({ repository: firstRepo, releasePrefix, token })
+        : [];
+
+      const result = await verifyReleaseComposition({
+        releasePrefix,
+        deployedVersion,
+        members,
+        refs: resolvedRefs,
+        resolvedRefs,
+        token,
+      });
+
+      const memberLines = result.members.map(
+        (m) => `- ${m.id}: ${m.membership} (${m.releaseRefs.join(", ") || "no refs"})`,
+      );
+      const body = [
+        `VERIFY-ON-PROD release composition check: ${result.verdict}`,
+        ``,
+        `- Release label: ${releasePrefix ?? "none"}`,
+        `- Candidate issues scanned: ${candidateIssueIds.length}`,
+        `- Deployed version: ${result.deployedVersion ?? "not set"}`,
+        `- Reason: ${result.reason}`,
+        `- Checked at: ${result.checkedAt}`,
+        ...(memberLines.length ? [``, ...memberLines] : []),
+      ].join("\n");
+
+      await svc.addComment(issue.id, body, {}, { authorType: "system" });
+      return res.json({ issueId: issue.id, releaseLabel: releasePrefix, candidateIssueIds, deployedVersion: result.deployedVersion, verdict: result.verdict, failureReason: result.failureReason, reason: result.reason, checkedAt: result.checkedAt, members: result.members });
+    } catch (err) {
+      return res.status(500).json({
+        error: err instanceof Error ? err.message : "Failed to verify release composition",
       });
     }
   });
