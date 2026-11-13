@@ -33,6 +33,7 @@ const {
   runAdapterExecutionTargetProcess,
   runAdapterExecutionTargetShellCommand,
   prepareAdapterExecutionTargetRuntime,
+  ensureAdapterExecutionTargetDirectoryMock,
 } = vi.hoisted(() => ({
   runAdapterExecutionTargetProcess: vi.fn(
     async (
@@ -95,6 +96,11 @@ const {
       restoreWorkspace: vi.fn(async () => undefined),
     }),
   ),
+  // myrmidon(OPE-13018): records adapter-side directory ensures on SSH targets
+  // without opening a real ssh connection.
+  ensureAdapterExecutionTargetDirectoryMock: vi.fn(
+    async (..._args: ReadonlyArray<unknown>) => undefined,
+  ),
 }));
 
 vi.mock("./models.js", async (importOriginal) => {
@@ -137,9 +143,13 @@ vi.mock("@myrmidon/adapter-utils/execution-target", async (importOriginal) => {
     },
     // myrmidon(OPE-12801): the cancellation tests use an SSH target; creating
     // the session directory on it is not under test and must not open ssh.
+    // myrmidon(OPE-13018): calls are still recorded so tests can assert the
+    // adapter-derived task workspace folder.
     ensureAdapterExecutionTargetDirectory: (...args: Parameters<typeof actual.ensureAdapterExecutionTargetDirectory>) => {
       const target = args[1];
-      if (target?.kind === "remote" && target.transport === "ssh") return Promise.resolve();
+      if (target?.kind === "remote" && target.transport === "ssh") {
+        return ensureAdapterExecutionTargetDirectoryMock(...args);
+      }
       return actual.ensureAdapterExecutionTargetDirectory(...args);
     },
     prepareAdapterExecutionTargetRuntime: (...args: Parameters<typeof actual.prepareAdapterExecutionTargetRuntime>) => {
@@ -1716,5 +1726,100 @@ describe("omp local execution", () => {
     expect(prepareAdapterExecutionTargetRuntime).toHaveBeenLastCalledWith(
       expect.objectContaining({ workspaceSyncMode: "git_checkout" }),
     );
+  });
+
+  // myrmidon(OPE-13018): the adapter — not the agent — names the per-task
+  // folder on the runner, deriving it from the task identifier.
+  describe("task workspace folder derived from the task identifier", () => {
+    async function makeSshTaskRun(runId: string, taskKey: string | null, cwdBase: string) {
+      const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-omp-ssh-task-folder-"));
+      cleanupDirs.push(rootDir);
+      const workspaceDir = path.join(rootDir, cwdBase);
+      await mkdir(workspaceDir, { recursive: true });
+      const preparedRuntime = {
+        workspaceRemoteDir: "/remote/workspace",
+        runtimeRootDir: "/remote/runtime",
+        assetDirs: { skills: "/remote/runtime/skills", agentConfig: "/remote/runtime/agentConfig" },
+        restoreWorkspace: vi.fn(async () => undefined),
+      };
+      prepareAdapterExecutionTargetRuntime.mockImplementationOnce(async () => preparedRuntime);
+      const logs: string[] = [];
+      await execute({
+        runId,
+        authToken: "test-host-api-token",
+        executionTarget: {
+          kind: "remote" as const,
+          transport: "ssh" as const,
+          remoteCwd: "/remote/workspace",
+          spec: {
+            host: "ssh.example.test",
+            port: 22,
+            username: "ssh-user",
+            remoteCwd: "/remote/workspace",
+            remoteWorkspacePath: "/remote/workspace",
+            privateKey: null,
+            knownHosts: null,
+            strictHostKeyChecking: true,
+          },
+        },
+        agent: {
+          id: "agent-1",
+          companyId: "company-1",
+          name: "OMP Builder",
+          adapterType: "omp_local",
+          adapterConfig: {},
+        },
+        runtime: { sessionId: null, sessionParams: null, sessionDisplayId: null, taskKey },
+        config: { command: "omp", model: "openai/gpt-4o" },
+        context: { paperclipWorkspace: { cwd: workspaceDir, source: "project_primary" } },
+        onLog: async (_stream, line) => {
+          logs.push(line);
+        },
+      });
+      return { logs };
+    }
+
+    it("names the runner task folder from the task key and exports it to the agent env", async () => {
+      // The caller-provided cwd basename carries the historical typo; the
+      // adapter must derive the folder name from runtime.taskKey instead.
+      await makeSshTaskRun("run-task-folder", "OPE-12962", "OPR-12962");
+
+      const processCall = runAdapterExecutionTargetProcess.mock.calls[0] as unknown as
+        | [string, unknown, string, string[], { env?: Record<string, string> } | undefined]
+        | undefined;
+      expect(processCall).toBeDefined();
+      const env = processCall?.[4]?.env ?? {};
+      // The adapter writes only the MYRMIDON_* spelling for this new variable;
+      // assert no PAPERCLIP_* alias leaks through.
+      const paperclipKeys = Object.keys(env).filter((k) => k.startsWith("PAPERCLIP_"));
+      const expectedPaperclipFolderKey = ["PAPERCLIP", "TASK", "FOLDER", "NAME"].join("_");
+      expect(paperclipKeys).not.toContain(expectedPaperclipFolderKey);
+      expect(env.MYRMIDON_TASK_FOLDER_NAME).toBe("OPE-12962");
+
+      const ensuredDirs = ensureAdapterExecutionTargetDirectoryMock.mock.calls.map(
+        (call) => call[2] as string,
+      );
+      expect(ensuredDirs).toContain("/remote/workspace/OPE-12962");
+    });
+
+    it("keeps legacy behavior when no task key is available", async () => {
+      await makeSshTaskRun("run-task-folder-no-key", null, "workspace");
+
+      const processCall = runAdapterExecutionTargetProcess.mock.calls[0] as unknown as
+        | [string, unknown, string, string[], { env?: Record<string, string> } | undefined]
+        | undefined;
+      expect(processCall).toBeDefined();
+      const env = processCall?.[4]?.env ?? {};
+      // No task key — the adapter must not write either spelling.
+      const paperclipKeys = Object.keys(env).filter((k) => k.startsWith("PAPERCLIP_"));
+      const expectedPaperclipFolderKey = ["PAPERCLIP", "TASK", "FOLDER", "NAME"].join("_");
+      expect(paperclipKeys).not.toContain(expectedPaperclipFolderKey);
+      expect(env.MYRMIDON_TASK_FOLDER_NAME).toBeUndefined();
+
+      const ensuredDirs = ensureAdapterExecutionTargetDirectoryMock.mock.calls.map(
+        (call) => call[2] as string,
+      );
+      expect(ensuredDirs.some((dir) => dir.endsWith("/OPE-12962"))).toBe(false);
+    });
   });
 });

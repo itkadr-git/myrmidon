@@ -37,6 +37,7 @@ const {
   scanRunnerTmp,
   pruneRunnerNpmCaches,
   issueIdentifierFromRunnerFolderName,
+  scanRunnerUnrecognizedWorkspaceFolders,
 } = await import(
   path.join(ROOT, "scripts/myrmidon/host-gc/host-clone-cache-gc.mjs")
 );
@@ -1384,6 +1385,10 @@ describe("runner task folders", () => {
     const unpushed = makeTaskFolder(runners, "eng21", "OPE-9002", { ageHours: 30, ahead: true });
     const active = makeTaskFolder(runners, "eng21", "OPE-9003", { ageHours: 30 });
     const fresh = makeTaskFolder(runners, "eng21", "OPE-9004", { ageHours: 1 });
+    const typoDir = path.join(runners, "eng21", "workspace", "OPR-9001");
+    fs.mkdirSync(typoDir, { recursive: true });
+    const typoT = new Date(Date.now() - 30 * 60 * 60 * 1000);
+    fs.utimesSync(typoDir, typoT, typoT);
     const http = await import("node:http");
     const statuses = { "OPE-9001": "done", "OPE-9002": "done", "OPE-9003": "in_progress" };
     const fake = http.createServer((req, res) => {
@@ -1411,6 +1416,9 @@ describe("runner task folders", () => {
       const done = events.find((e) => e.event === "apply-complete");
       assert.equal(done.runnerTaskFoldersRemoved, 2);
       assert.equal(JSON.parse(res.stdout).runnerTaskFoldersRemoved, 2);
+      assert.equal(done.runnerUnrecognized, 1);
+      assert.ok(events.some((e) => e.event === "runner-unrecognized-workspace-folder" && e.name === "OPR-9001"));
+      assert.ok(fs.existsSync(typoDir), "typo folder must survive --apply (report-only)");
     } finally {
       fake.close();
     }
@@ -1427,6 +1435,10 @@ describe("runner task folders", () => {
   it("e2e: dry-run removes nothing and lists the plan", async () => {
     const runners = path.join(tmpDir, "runners");
     const clean = makeTaskFolder(runners, "eng21", "OPE-9201", { ageHours: 30 });
+    const typoDir = path.join(runners, "eng21", "workspace", "OPR-9201");
+    fs.mkdirSync(typoDir, { recursive: true });
+    const t = new Date(Date.now() - 30 * 60 * 60 * 1000);
+    fs.utimesSync(typoDir, t, t);
     const http = await import("node:http");
     const fake = http.createServer((req, res) => {
       res.writeHead(200, { "Content-Type": "application/json" });
@@ -1441,8 +1453,80 @@ describe("runner task folders", () => {
       assert.equal(events.find((e) => e.event === "dry-run").runnerTaskFolders, 1);
       const out = JSON.parse(res.stdout);
       assert.deepEqual(out.plan.runnerTaskFolders.map((i) => [i.path, i.action]), [[clean, "remove"]]);
+      assert.equal(out.plan.runnerUnrecognized.length, 1);
+      assert.equal(out.plan.runnerUnrecognized[0].name, "OPR-9201");
+      assert.equal(out.plan.runnerUnrecognized[0].action, "report");
+      assert.ok(events.some((e) => e.event === "runner-unrecognized-workspace-folder" && e.name === "OPR-9201"));
+      assert.ok(fs.existsSync(typoDir), "typo folder must survive the dry-run");
     } finally {
       fake.close();
     }
+  });
+});
+
+describe("runner unrecognized workspace folders (OPE-13018)", () => {
+  const HOUR = 60 * 60 * 1000;
+
+  const makeWorkspaceFolder = (runnersRoot, runner, name, { ageHours = 48 } = {}) => {
+    const dir = path.join(runnersRoot, runner, "workspace", name);
+    fs.mkdirSync(dir, { recursive: true });
+    const t = new Date(Date.now() - ageHours * HOUR);
+    fs.utimesSync(dir, t, t);
+    return dir;
+  };
+
+  it("reports an old folder with a typo'd name and never deletes it", () => {
+    const runners = path.join(tmpDir, "runners");
+    const typo = makeWorkspaceFolder(runners, "eng21", "OPR-12962", { ageHours: 48 });
+    const items = scanRunnerUnrecognizedWorkspaceFolders(runners, Date.now(), 24);
+    assert.deepEqual(items.map((i) => [i.path, i.action, i.reason]), [[typo, "report", "unrecognized-ttl"]]);
+    assert.ok(fs.existsSync(typo), "report-only: the folder must stay on disk");
+  });
+
+  it("does not report recognized task folders or the runtime directory", () => {
+    const runners = path.join(tmpDir, "runners");
+    makeWorkspaceFolder(runners, "eng21", "OPE-12962", { ageHours: 48 });
+    makeWorkspaceFolder(runners, "eng21", "OPE-12962-wt", { ageHours: 48 });
+    fs.mkdirSync(path.join(runners, "eng21", "workspace", ".paperclip-runtime"), { recursive: true });
+    const items = scanRunnerUnrecognizedWorkspaceFolders(runners, Date.now(), 24);
+    assert.deepEqual(items, []);
+  });
+
+  it("does not report a fresh unrecognized folder (the agent may still be in it)", () => {
+    const runners = path.join(tmpDir, "runners");
+    makeWorkspaceFolder(runners, "eng21", "scratch-pad", { ageHours: 1 });
+    const items = scanRunnerUnrecognizedWorkspaceFolders(runners, Date.now(), 24);
+    assert.deepEqual(items.map((i) => i.reason), ["unrecognized-fresh"]);
+  });
+
+  it("skips dot-directories and files", () => {
+    const runners = path.join(tmpDir, "runners");
+    fs.mkdirSync(path.join(runners, "eng21", "workspace", ".hidden"), { recursive: true });
+    fs.writeFileSync(path.join(runners, "eng21", "workspace", "notes.txt"), "x");
+    const items = scanRunnerUnrecognizedWorkspaceFolders(runners, Date.now(), 24);
+    assert.deepEqual(items, []);
+  });
+
+  it("a missing root and a file root are reported and yield nothing", () => {
+    const events = [];
+    const missing = path.join(tmpDir, "nope");
+    assert.deepEqual(scanRunnerUnrecognizedWorkspaceFolders(missing, Date.now(), 24, { onEvent: (e) => events.push(e) }), []);
+    const notDir = path.join(tmpDir, "file-root");
+    fs.writeFileSync(notDir, "x");
+    assert.deepEqual(scanRunnerUnrecognizedWorkspaceFolders(notDir, Date.now(), 24, { onEvent: (e) => events.push(e) }), []);
+    assert.deepEqual(events[0], { event: "runner-folder-root-missing", root: missing });
+    assert.equal(events[1].event, "runner-unrecognized-scan-failed");
+    assert.equal(events[1].root, notDir);
+    assert.match(events[1].error, /not a directory/);
+  });
+
+  it("a symlinked runner is skipped", () => {
+    const runners = path.join(tmpDir, "runners");
+    const outside = path.join(tmpDir, "outside");
+    makeWorkspaceFolder(outside, "victim", "OPR-1");
+    fs.mkdirSync(runners, { recursive: true });
+    fs.symlinkSync(path.join(outside, "victim"), path.join(runners, "eng8"));
+    const items = scanRunnerUnrecognizedWorkspaceFolders(runners, Date.now(), 24);
+    assert.deepEqual(items, []);
   });
 });
