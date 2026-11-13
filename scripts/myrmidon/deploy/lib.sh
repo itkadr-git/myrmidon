@@ -974,6 +974,36 @@ record_history() {
   printf '%s %s %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$1" "$2" >>"$HISTORY_FILE"
 }
 
+# RELEASE-STAGE (OPE-13004): append-only intent/result journal for actions that
+# cross the board/host boundary. Keep this separate from the human history log:
+# it is machine-readable and survives a failed executor invocation, so an
+# operator can safely resume from the last recorded result. The journal never
+# contains credentials or command lines. Resolved lazily so that sourcing this
+# file before load_config (the executor's own flow) cannot trip `set -u` on an
+# unset STATE_DIR.
+RELEASE_AUDIT_FILE=""
+record_release_event() {
+  local event="$1" job_id="${2:-}" digest="${3:-}" status="${4:-}" detail="${5:-}" \
+    at event_id tmp
+  : "${RELEASE_AUDIT_FILE:=${STATE_DIR:-}/release-events.jsonl}"
+  [[ -n "$RELEASE_AUDIT_FILE" ]] || return 0
+  mkdir -p "$(dirname "$RELEASE_AUDIT_FILE")"
+  at="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+  # Keep repeated retries distinct even when they happen in the same second.
+  event_id="${job_id:-standalone}:$event:$at:$$:${RANDOM}"
+  tmp="$(mktemp "$RELEASE_AUDIT_FILE.XXXXXX")" || return 1
+  if ! jq -cn --arg eventId "$event_id" --arg event "$event" --arg jobId "$job_id" \
+      --arg digest "$digest" --arg status "$status" --arg detail "$detail" --arg at "$at" \
+      '{eventId:$eventId,event:$event,jobId:(if $jobId=="" then null else $jobId end),digest:(if $digest=="" then null else $digest end),status:(if $status=="" then null else $status end),detail:(if $detail=="" then null else $detail end),at:$at}' \
+      >>"$tmp"; then
+    rm -f "$tmp"
+    return 1
+  fi
+  # Append one complete JSON object atomically enough for readers: the temp
+  # contains exactly one line and is moved only after jq has succeeded.
+  cat "$tmp" >>"$RELEASE_AUDIT_FILE" && rm -f "$tmp"
+}
+
 # --- COMPOSE-SET-ANCHOR (the 07.10 drift) -------------------------------------
 # myrmidon(COMPOSE-SET-ANCHOR): a release deploy can itself change the set of
 # compose files the board runs from (COMPOSE_FILES, the board image override
