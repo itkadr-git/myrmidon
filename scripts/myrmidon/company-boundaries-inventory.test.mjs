@@ -7,6 +7,10 @@ import {
   inventoryReportHash,
   normalizeInventoryReport,
   renderInventory,
+  SOURCE_LABEL_CREDENTIAL_REDACTED,
+  SOURCE_LABEL_REASONS,
+  formatInventorySourceLabel,
+  formatInventorySourceLabels,
   sectionForPath,
 } from "./company-boundaries-inventory.mjs";
 
@@ -319,4 +323,133 @@ test("missing attribution fields are computed from observed rows", async () => {
 test("unknown sections are absent from the registry and cannot be covered", () => {
   assert.equal(sectionForPath("/not-a-section"), undefined);
   assert.ok(INVENTORY_SECTIONS.every((section) => sectionForPath(section.path)));
+});
+
+/* --- Source attribution without credential leakage (OPE-12912) --- */
+
+/** Source fixture carrying registry-valid labels plus a credential sentinel. */
+const SOURCE_FIXTURE_WITH_SENTINEL = {
+  endpoint: "/secrets-bindings",
+  category: "secrets-bindings",
+  coverage: "data",
+  credential: "pcp_SENTINEL_CREDENTIAL_VALUE",
+  token: "Bearer pcp_SENTINEL_TOKEN_VALUE",
+};
+
+test("source with endpoint/category and credential sentinel shows safe labels and coverage, never the sentinel", () => {
+  const label = formatInventorySourceLabel(SOURCE_FIXTURE_WITH_SENTINEL);
+
+  // Useful attribution survives.
+  assert.equal(label.endpoint, "/secrets-bindings");
+  assert.equal(label.category, "secrets-bindings");
+  assert.equal(label.coverage, "data");
+  assert.equal(label.attribution, "resolved");
+  assert.equal(label.reason, null);
+
+  // Credential presence is marked, but every sentinel value is dropped.
+  assert.equal(label.credential, SOURCE_LABEL_CREDENTIAL_REDACTED);
+  const rendered = JSON.stringify(label);
+  assert.ok(!rendered.includes("pcp_SENTINEL_CREDENTIAL_VALUE"));
+  assert.ok(!rendered.includes("pcp_SENTINEL_TOKEN_VALUE"));
+});
+
+test("incomplete source stays unknown instead of inventing attribution", () => {
+  // Missing endpoint entirely.
+  const noEndpoint = formatInventorySourceLabel({ category: "agents", coverage: "data" });
+  assert.equal(noEndpoint.endpoint, null);
+  assert.equal(noEndpoint.attribution, "unknown");
+  assert.equal(noEndpoint.reason, SOURCE_LABEL_REASONS.unknownEndpoint);
+
+  // Endpoint not in the registry: the raw string never reaches the report.
+  const foreign = formatInventorySourceLabel({ endpoint: "/not-a-section", category: "agents", coverage: "data" });
+  assert.equal(foreign.endpoint, null);
+  assert.equal(foreign.attribution, "unknown");
+  assert.equal(foreign.reason, SOURCE_LABEL_REASONS.unknownEndpoint);
+  assert.ok(!JSON.stringify(foreign).includes("/not-a-section"));
+
+  // Known endpoint, wrong category: no fabricated pair.
+  const mismatch = formatInventorySourceLabel({ endpoint: "/agents", category: "issues", coverage: "data" });
+  assert.equal(mismatch.endpoint, "/agents");
+  assert.equal(mismatch.category, null);
+  assert.equal(mismatch.attribution, "unknown");
+  assert.equal(mismatch.reason, SOURCE_LABEL_REASONS.categoryEndpointMismatch);
+
+  // Category missing for a known endpoint.
+  const noCategory = formatInventorySourceLabel({ endpoint: "/agents", coverage: "empty" });
+  assert.equal(noCategory.category, null);
+  assert.equal(noCategory.attribution, "unknown");
+  assert.equal(noCategory.reason, SOURCE_LABEL_REASONS.unknownCategory);
+
+  // Endpoint/category fine but coverage missing or not a coverage state.
+  const noCoverage = formatInventorySourceLabel({ endpoint: "/agents", category: "agents" });
+  assert.equal(noCoverage.coverage, "unknown");
+  assert.equal(noCoverage.attribution, "unknown");
+  assert.equal(noCoverage.reason, SOURCE_LABEL_REASONS.coverageUnknown);
+  const badCoverage = formatInventorySourceLabel({ endpoint: "/agents", category: "agents", coverage: "probably-fine" });
+  assert.equal(badCoverage.coverage, "unknown");
+  assert.ok(!JSON.stringify(badCoverage).includes("probably-fine"));
+});
+
+test("credential presence is detected across common secret-shaped fields without copying values", () => {
+  const fields = ["credential", "credentials", "token", "apiKey", "secret", "password", "authorization"];
+  for (const field of fields) {
+    const label = formatInventorySourceLabel({
+      endpoint: "/agents",
+      category: "agents",
+      coverage: "data",
+      [field]: "pcp_SENTINEL_VALUE",
+    });
+    assert.equal(label.credential, SOURCE_LABEL_CREDENTIAL_REDACTED, `field ${field} must be marked`);
+    assert.ok(!JSON.stringify(label).includes("pcp_SENTINEL_VALUE"));
+  }
+  // Empty/absent credential fields are not marked.
+  const clean = formatInventorySourceLabel({
+    endpoint: "/agents",
+    category: "agents",
+    coverage: "data",
+    credential: "",
+    token: null,
+  });
+  assert.equal(clean.credential, null);
+});
+
+test("rendered report and hash keep sentinel values out and stay deterministic across runs", () => {
+  const sources = [
+    { ...SOURCE_FIXTURE_WITH_SENTINEL, endpoint: "/audit-approvals", category: "audit-approvals" },
+    SOURCE_FIXTURE_WITH_SENTINEL,
+    { endpoint: "/issues", category: "issues", coverage: "denied", apiKey: "pcp_SENTINEL_KEY" },
+    { endpoint: "/agents", coverage: "data", category: "agents" },
+    "not-an-object",
+  ];
+  const labels = formatInventorySourceLabels(sources);
+
+  // Deterministic ordering: input order does not change the output.
+  assert.deepEqual(labels, formatInventorySourceLabels([...sources].reverse()));
+  // Non-object entries and empty input produce no labels, never invented ones.
+  assert.equal(labels.filter((label) => label.endpoint === null && label.category === null).length, 1);
+  assert.deepEqual(formatInventorySourceLabels(undefined), []);
+  assert.deepEqual(formatInventorySourceLabels("nope"), []);
+
+  const rendered = renderInventory({ sections: [], summary: {}, sourceLabels: labels });
+  assert.ok(rendered.includes("/secrets-bindings"));
+  assert.ok(rendered.includes("secrets-bindings"));
+  assert.ok(rendered.includes("denied"));
+  for (const forbidden of ["pcp_SENTINEL_CREDENTIAL_VALUE", "pcp_SENTINEL_TOKEN_VALUE", "pcp_SENTINEL_KEY"]) {
+    assert.ok(!rendered.includes(forbidden), `${forbidden} must never be rendered`);
+  }
+  assert.equal(rendered.includes(SOURCE_LABEL_CREDENTIAL_REDACTED), true);
+
+  const hash = inventoryReportHash({ sections: [], summary: {}, sourceLabels: labels });
+  assert.match(hash, /^[0-9a-f]{64}$/);
+  assert.equal(hash, inventoryReportHash({ sections: [], summary: {}, sourceLabels: formatInventorySourceLabels([...sources].reverse()) }));
+});
+
+test("every registry section produces a resolved label for its canonical endpoint", () => {
+  for (const section of INVENTORY_SECTIONS) {
+    const label = formatInventorySourceLabel({ endpoint: section.path, category: section.key, coverage: "data" });
+    assert.equal(label.attribution, "resolved", `section ${section.key} must resolve`);
+    assert.equal(label.endpoint, section.path);
+    assert.equal(label.category, section.key);
+    assert.equal(label.credential, null);
+  }
 });
