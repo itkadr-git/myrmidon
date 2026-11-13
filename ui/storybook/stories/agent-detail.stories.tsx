@@ -49,6 +49,9 @@ const runtimeStateFixture: AgentRuntimeState = {
   totalCachedInputTokens: 733_401,
   totalCostCents: 12_940,
   lastError: null,
+  lastResponseAt: minutesAgo(3),
+  lastProbeAt: minutesAgo(3),
+  lastProbeOutcome: "ok",
   createdAt: minutesAgo(12_000),
   updatedAt: minutesAgo(3),
 };

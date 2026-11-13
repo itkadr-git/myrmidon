@@ -191,6 +191,10 @@ describeEmbeddedPostgres("runtime-state liveness stamps (OPE-13021)", () => {
     expect(queued).not.toBeNull();
     const finished = await waitForRunToFinish(heartbeat, queued!.id);
     expect((finished as { status?: string })?.status).toBe("succeeded");
+    // The run row flips terminal before the finalize epilogue writes the
+    // liveness stamps; drain the in-flight execution so the stamps are read
+    // after the epilogue, not while it is still running.
+    await heartbeat.drainActiveRunExecutions();
 
     const state = await readLivenessStamps(heartbeat, agentId);
     expect(state.lastProbeAt).not.toBeNull();
@@ -217,6 +221,7 @@ describeEmbeddedPostgres("runtime-state liveness stamps (OPE-13021)", () => {
     expect(queued).not.toBeNull();
     const finished = await waitForRunToFinish(heartbeat, queued!.id);
     expect((finished as { status?: string })?.status).toBe("failed");
+    await heartbeat.drainActiveRunExecutions();
 
     const state = await readLivenessStamps(heartbeat, agentId);
     // The adapter returned a result — the runtime answered at the protocol
@@ -245,6 +250,7 @@ describeEmbeddedPostgres("runtime-state liveness stamps (OPE-13021)", () => {
     expect(queued).not.toBeNull();
     const finished = await waitForRunToFinish(heartbeat, queued!.id);
     expect((finished as { status?: string })?.status).toBe("failed");
+    await heartbeat.drainActiveRunExecutions();
 
     const state = await readLivenessStamps(heartbeat, agentId);
     expect(state.lastProbeOutcome).toBe("ok");
@@ -259,6 +265,7 @@ describeEmbeddedPostgres("runtime-state liveness stamps (OPE-13021)", () => {
     expect(queued).not.toBeNull();
     const finished = await waitForRunToFinish(heartbeat, queued!.id);
     expect((finished as { status?: string })?.status).toBe("failed");
+    await heartbeat.drainActiveRunExecutions();
 
     const state = await readLivenessStamps(heartbeat, agentId);
     // The failure path writes no reachability evidence.
