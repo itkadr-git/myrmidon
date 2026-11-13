@@ -591,7 +591,7 @@ type PaperclipWakeExecutionPrincipal = {
 };
 
 type PaperclipWakeExecutionStage = {
-  wakeRole: "reviewer" | "approver" | "executor" | null;
+  wakeRole: "reviewer" | "approver" | "verifier" | "executor" | null;
   stageId: string | null;
   stageType: string | null;
   currentParticipant: PaperclipWakeExecutionPrincipal | null;
@@ -3051,12 +3051,15 @@ function renderPaperclipWakePromptBody(
     lines.push("");
     if (
       executionStage.wakeRole === "reviewer" ||
-      executionStage.wakeRole === "approver"
+      executionStage.wakeRole === "approver" ||
+      executionStage.wakeRole === "verifier"
     ) {
       lines.push(
         `You are waking as the active ${executionStage.wakeRole} for this issue.`,
         "Do not execute the task itself or continue executor work.",
-        "Review the issue and choose one of the allowed actions above.",
+        executionStage.wakeRole === "verifier"
+          ? "Verify the deployed result and, when approving, record the deploy version and the check method the verification ran with."
+          : "Review the issue and choose one of the allowed actions above.",
         "If you request changes, the workflow routes back to the stored return assignee.",
         "",
       );

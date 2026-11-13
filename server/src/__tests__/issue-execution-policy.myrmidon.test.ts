@@ -9,7 +9,11 @@ const ctoUserId = "cto-user";
 const boardUserId = "board-user";
 
 function makePolicy(
-  stages: Array<{ type: "review" | "approval"; participants: Array<{ type: "agent" | "user"; agentId?: string; userId?: string }> }>,
+  stages: Array<{
+    type: "review" | "approval" | "verify";
+    participants: Array<{ type: "agent" | "user"; agentId?: string; userId?: string }>;
+    requirements?: { deployVersion: boolean; checkMethod: boolean; skip?: boolean };
+  }>,
 ) {
   return normalizeIssueExecutionPolicy({ stages })!;
 }
@@ -2421,5 +2425,87 @@ describe("review round circuit breaker", () => {
 
     // It should return to coderAgentId, NOT leadAgentId!
     expect(result.patch.assigneeAgentId).toBe(coderAgentId);
+  });
+});
+
+describe("verify execution stages", () => {
+  const verifyPolicy = () => makePolicy([{
+    type: "verify",
+    participants: [{ type: "agent", agentId: qaAgentId }],
+    requirements: { deployVersion: true, checkMethod: true },
+  }]);
+
+  const pendingIssue = (policy: IssueExecutionPolicy, actorId = qaAgentId) => ({
+    status: "in_review",
+    assigneeAgentId: actorId,
+    assigneeUserId: null,
+    executionPolicy: policy,
+    executionState: {
+      status: "pending" as const,
+      currentStageId: policy.stages[0].id,
+      currentStageIndex: 0,
+      currentStageType: "verify" as const,
+      currentParticipant: { type: "agent" as const, agentId: actorId },
+      returnAssignee: { type: "agent" as const, agentId: coderAgentId },
+      completedStageIds: [],
+      lastDecisionId: null,
+      lastDecisionOutcome: null,
+    },
+  });
+
+  it("requires deploy version and check method evidence", () => {
+    const policy = verifyPolicy();
+    expect(() => applyIssueExecutionPolicyTransition({
+      issue: pendingIssue(policy), policy, requestedStatus: "done", requestedAssigneePatch: {},
+      actor: { agentId: qaAgentId }, commentBody: "Verification passed",
+    })).toThrow(/deploy version and check method/);
+  });
+
+  it("accepts evidence and completes the verify stage", () => {
+    const policy = verifyPolicy();
+    const result = applyIssueExecutionPolicyTransition({
+      issue: pendingIssue(policy), policy, requestedStatus: "done", requestedAssigneePatch: {},
+      actor: { agentId: qaAgentId }, commentBody: "deploy version: 2026.11.12\ncheck method: manual smoke on production",
+    });
+    expect(result.patch.executionState).toMatchObject({ status: "completed", completedStageIds: [policy.stages[0].id] });
+  });
+
+  it("returns a rejected verification to the executor", () => {
+    const policy = verifyPolicy();
+    const result = applyIssueExecutionPolicyTransition({
+      issue: pendingIssue(policy), policy, requestedStatus: "in_progress", requestedAssigneePatch: {},
+      actor: { agentId: qaAgentId }, commentBody: "Production check failed",
+    });
+    expect(result.patch).toMatchObject({ status: "in_progress", assigneeAgentId: coderAgentId });
+  });
+
+  it("can skip an explicitly configured verify stage when it only contains the executor", () => {
+    const policy = makePolicy([{
+      type: "verify", participants: [{ type: "agent", agentId: coderAgentId }],
+      requirements: { deployVersion: true, checkMethod: true, skip: true },
+    }]);
+    const result = applyIssueExecutionPolicyTransition({
+      issue: { status: "in_progress", assigneeAgentId: coderAgentId, assigneeUserId: null, executionPolicy: policy, executionState: null },
+      policy, requestedStatus: "done", requestedAssigneePatch: {}, actor: { agentId: coderAgentId }, commentBody: "done",
+    });
+    expect(result.patch.executionState).toMatchObject({ status: "completed", completedStageIds: [policy.stages[0].id] });
+  });
+  it("assigns a verifier different from the executor", () => {
+    const policy = verifyPolicy();
+    const result = applyIssueExecutionPolicyTransition({
+      issue: {
+        status: "in_progress",
+        assigneeAgentId: coderAgentId,
+        assigneeUserId: null,
+        executionPolicy: policy,
+        executionState: null,
+      },
+      policy,
+      requestedStatus: "done",
+      requestedAssigneePatch: {},
+      actor: { agentId: coderAgentId },
+      commentBody: "ready for verification",
+    });
+    expect(result.patch).toMatchObject({ status: "in_review", assigneeAgentId: qaAgentId });
   });
 });

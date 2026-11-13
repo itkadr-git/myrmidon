@@ -43,6 +43,7 @@ const ISSUE_DISPOSITION_REPAIR_RETRY_REASON = "issue_disposition_repair";
 const EXECUTION_REVIEW_PARTICIPANT_RECOVERY_WAKE_REASONS = new Set([
   "execution_review_requested",
   "execution_approval_requested",
+  "execution_verify_requested",
 ]);
 const HEARTBEAT_RUN_TERMINAL_STATUSES = new Set([
   "succeeded",

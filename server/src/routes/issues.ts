@@ -662,7 +662,7 @@ type ActivityExecutionParticipant = Pick<
   "type" | "agentId" | "userId"
 >;
 type ExecutionStageWakeContext = {
-  wakeRole: "reviewer" | "approver" | "executor" | "observer";
+  wakeRole: "reviewer" | "approver" | "verifier" | "executor" | "observer";
   stageId: string | null;
   stageType: ParsedExecutionState["currentStageType"];
   currentParticipant: ParsedExecutionState["currentParticipant"];
@@ -1596,6 +1596,7 @@ const ISSUE_WAKE_DIAGNOSTIC_KNOWN_REASONS = new Set([
   "execution_reconciliation_required",
   "execution_review_participant_recovery",
   "execution_review_requested",
+  "execution_verify_requested",
   "finish_successful_run_handoff",
   "queued_run_stale_timeout",
   "goal_control",
@@ -3217,13 +3218,19 @@ function buildExecutionStageWakeup(input: {
     const reason =
       nextState.currentStageType === "approval"
         ? "execution_approval_requested"
-        : isExecutionReviewParticipantRecovery
-          ? "execution_review_participant_recovery"
-          : "execution_review_requested";
+        : nextState.currentStageType === "verify"
+          ? "execution_verify_requested"
+          : isExecutionReviewParticipantRecovery
+            ? "execution_review_participant_recovery"
+            : "execution_review_requested";
     const executionStage = buildExecutionStageWakeContext({
       state: nextState,
       wakeRole:
-        nextState.currentStageType === "approval" ? "approver" : "reviewer",
+        nextState.currentStageType === "approval"
+          ? "approver"
+          : nextState.currentStageType === "verify"
+            ? "verifier"
+            : "reviewer",
       allowedActions: ["approve", "request_changes"],
     });
 
@@ -5505,7 +5512,7 @@ export function issueRoutes(
     ) =>
       new Set(
         (candidatePolicy?.stages ?? []).flatMap((stage) =>
-          stage.type === "review" || stage.type === "approval"
+          stage.type === "review" || stage.type === "approval" || stage.type === "verify"
             ? stage.participants.flatMap((participant) =>
               participant.type === "agent" && participant.agentId ? [participant.agentId] : [],
             )
@@ -14545,7 +14552,9 @@ export function issueRoutes(
       const stageReturnAssignee = stageState?.returnAssignee as Record<string, unknown> | null | undefined;
       const stageHandsBack =
         stageState?.status === "pending" &&
-        (stageState?.currentStageType === "review" || stageState?.currentStageType === "approval") &&
+        (stageState?.currentStageType === "review" ||
+          stageState?.currentStageType === "approval" ||
+          stageState?.currentStageType === "verify") &&
         normalizedAssigneeAgentId === undefined &&
         targetStatus === "in_progress" &&
         stageParticipant?.type === "agent" &&

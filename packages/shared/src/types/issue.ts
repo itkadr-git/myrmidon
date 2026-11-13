@@ -725,6 +725,20 @@ export interface IssueExecutionStage {
   type: IssueExecutionStageType;
   approvalsNeeded: 1;
   participants: IssueExecutionStageParticipant[];
+  /**
+   * OPE-12995 (VERIFY-ON-PROD): evidence required from a verify stage
+   * participant before its approve decision is accepted. Verify stages only.
+   */
+  requirements?: IssueExecutionStageRequirements | null;
+}
+
+export interface IssueExecutionStageRequirements {
+  /** Deploy version the verification ran against (non-empty text). */
+  deployVersion: boolean;
+  /** Check method used during verification (non-empty text). */
+  checkMethod: boolean;
+  /** Explicitly allow this verify stage to be skipped for non-code work. */
+  skip?: boolean;
 }
 
 export interface IssueExecutionMonitorPolicy {
