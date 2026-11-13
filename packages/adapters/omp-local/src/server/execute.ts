@@ -3,7 +3,12 @@ import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { writeProductEnv } from "@myrmidon/shared/env-alias"; // myrmidon(REBRAND-C)
-import { inferOpenAiCompatibleBiller, type AdapterExecutionContext, type AdapterExecutionResult } from "@myrmidon/adapter-utils";
+import {
+  inferOpenAiCompatibleBiller,
+  type AdapterExecutionContext,
+  type AdapterExecutionResult,
+  type RunGuardStopReason,
+} from "@myrmidon/adapter-utils";
 import {
   adapterExecutionTargetIsRemote,
   adapterExecutionTargetRemoteCwd,
@@ -50,6 +55,8 @@ import {
   isPaperclipRecoveryWakePayload,
   DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE,
   DEFAULT_PAPERCLIP_CONVERSATION_PROMPT_TEMPLATE,
+  runningProcesses,
+  signalRunningProcess,
 } from "@myrmidon/adapter-utils/server-utils";
 import { myrmidonInheritedProcessEnv, readInheritProcessEnvFlag } from "@myrmidon/adapter-utils/myrmidon-run-env";
 import {
@@ -68,6 +75,7 @@ import { shellQuote } from "@myrmidon/adapter-utils/ssh";
 import { isSshOperationAbortedError } from "@myrmidon/adapter-utils/ssh-abort"; // myrmidon(OPE-12801)
 import { describeSshRemoteRunStop } from "@myrmidon/adapter-utils/ssh-remote-run-stop"; // myrmidon(OPE-12801)
 import { PRODUCT_NAME } from "@myrmidon/adapter-utils";
+import { buildRunGuardHintMessage } from "@myrmidon/adapter-utils/run-guard-hint"; // myrmidon(OMP-RUN-GUARD)
 import {
   isOmpUnknownSessionError,
   OMP_TOOL_CALLS_REJECTED_ERROR_CODE,
@@ -77,6 +85,15 @@ import {
 import { ensureOmpModelConfiguredAndAvailable } from "./models.js";
 import { resolveOmpSkillsHome } from "./skills.js";
 import { prepareOmpRuntimeConfig, writeOmpManagedSettings } from "./runtime-config.js";
+import {
+  createOmpRunGuardFeed,
+  OMP_STEER_DIR,
+  OMP_STEER_EXTENSION_FILE,
+  OMP_STEER_FILE_ENV,
+  ompSteerFileName,
+  writeOmpSteerExtension,
+  type OmpRunGuardHint,
+} from "./run-guard.js";
 import { SANDBOX_INSTALL_COMMAND } from "../index.js";
 
 const __moduleDir = path.dirname(fileURLToPath(import.meta.url));
@@ -614,6 +631,17 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     let paperclipBridge: Awaited<ReturnType<typeof startAdapterExecutionTargetPaperclipBridge>> = null;
     let managedRemoteAgentConfigDir: string | null = null;
 
+    // myrmidon(OMP-RUN-GUARD): the run guard of the board (model call limit,
+    // wrap-up hint, read-only exploration and repeated-call stops) is fed from
+    // omp's event stream; see run-guard.ts. `steerExtensionPath` is the omp
+    // extension that hands the guard's hints to the running session and
+    // `steerFilePath` is the file the adapter leaves a hint in. Both stay null
+    // when they could not be set up: the guard then still counts and stops.
+    const runGuard = ctx.runGuard ?? null;
+    let steerExtensionPath: string | null = null;
+    let steerFilePath: string | null = null;
+    let guardStopReason: RunGuardStopReason | null = null;
+
     // myrmidon(OPE-12801): an SSH run opts into signal-based cancellation
     // before the workspace exchange. Without the opt-in the server only marked
     // the run cancelled: the exchange went on, OMP was started for a cancelled
@@ -665,6 +693,8 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
           await writeOmpManagedSettings(managedRemoteAgentConfigDir);
         }
         const effectiveAgentConfigDir = localAgentConfigDir || managedRemoteAgentConfigDir!;
+        // myrmidon(OMP-RUN-GUARD): the steer extension is uploaded with the agent config.
+        if (runGuard) await writeOmpSteerExtension(effectiveAgentConfigDir);
         const remoteSkillsStagingDir = path.join(effectiveAgentConfigDir, "skills");
         localSkillsDir = await buildOmpSkillsDir(config, remoteSkillsStagingDir, contextSkillEntries);
 
@@ -720,6 +750,9 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         if (preparedRemoteRuntime.assetDirs.agentConfig) {
           env.PI_CODING_AGENT_DIR = preparedRemoteRuntime.assetDirs.agentConfig;
           env.OMP_CODING_AGENT_DIR = preparedRemoteRuntime.assetDirs.agentConfig;
+          if (runGuard) {
+            steerExtensionPath = path.posix.join(preparedRemoteRuntime.assetDirs.agentConfig, OMP_STEER_EXTENSION_FILE);
+          }
         }
       } catch (error) {
         // myrmidon(OPE-12801): a cancelled exchange is the run's cancellation,
@@ -756,6 +789,32 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         timeoutSec: 15,
         createIfMissing: true,
       });
+    }
+
+    // myrmidon(OMP-RUN-GUARD): the steer file lives next to the agent's sessions
+    // (a directory the board owns on either side). A local run gets the
+    // extension there as well; a remote run got it with the agent config above.
+    if (runGuard && effectiveSessionDir) {
+      if (executionTargetIsRemote) {
+        if (steerExtensionPath) {
+          steerFilePath = path.posix.join(effectiveSessionDir, OMP_STEER_DIR, ompSteerFileName(runId));
+        }
+      } else {
+        const steerDir = path.join(effectiveSessionDir, OMP_STEER_DIR);
+        try {
+          steerExtensionPath = await writeOmpSteerExtension(steerDir);
+          steerFilePath = path.join(steerDir, ompSteerFileName(runId));
+        } catch (err) {
+          await onLog(
+            "stderr",
+            `[paperclip] Could not write the OMP steer extension into ${steerDir}: ${err instanceof Error ? err.message : String(err)}. Run guard hints will not reach OMP.\n`,
+          );
+        }
+      }
+    }
+    if (steerFilePath) {
+      env[OMP_STEER_FILE_ENV] = steerFilePath;
+      runtimeEnv[OMP_STEER_FILE_ENV] = steerFilePath;
     }
 
     const runtimeExecutionTarget = overrideAdapterExecutionTargetRemoteCwd(executionTarget, effectiveExecutionCwd);
@@ -966,9 +1025,103 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         args.push("--session-dir", effectiveSessionDir);
       }
 
+      // myrmidon(OMP-RUN-GUARD): the extension that delivers run guard hints.
+      if (steerExtensionPath && steerFilePath) args.push("--extension", steerExtensionPath);
+
       if (extraArgs.length > 0) args.push(...extraArgs);
       return args;
     };
+
+    // myrmidon(OMP-RUN-GUARD): what the adapter does with the guard's decisions.
+    //
+    // A hint is written into the steer file; the extension inside omp hands it
+    // to the session. The write is not awaited by the output stream (on SSH it
+    // is one more ssh call), only collected, so that it is over before the run's
+    // result is returned.
+    const pendingSteerWrites: Promise<void>[] = [];
+    const writeSteerFile = async (text: string): Promise<boolean> => {
+      const target = steerFilePath;
+      if (!target) return false;
+      // Written aside and renamed: the extension never reads half a message.
+      const staging = `${target}.tmp`;
+      if (!executionTargetIsRemote) {
+        await fs.writeFile(staging, text, "utf8");
+        await fs.rename(staging, target);
+        return true;
+      }
+      const written = await runAdapterExecutionTargetShellCommand(
+        runId,
+        runtimeExecutionTarget,
+        `mkdir -p ${shellQuote(path.posix.dirname(target))} && ` +
+          `printf '%s' ${shellQuote(text)} > ${shellQuote(staging)} && ` +
+          `mv ${shellQuote(staging)} ${shellQuote(target)}`,
+        { cwd, env: {}, timeoutSec: 15, graceSec },
+      );
+      return !written.timedOut && (written.exitCode ?? 0) === 0;
+    };
+    const sendRunGuardHint = (hint: OmpRunGuardHint): void => {
+      const label =
+        typeof hint.remaining === "number" ? `wrap-up, ${hint.remaining} model calls left` : hint.reason;
+      pendingSteerWrites.push(
+        (async () => {
+          try {
+            const delivered = await writeSteerFile(buildRunGuardHintMessage(hint));
+            await onLog(
+              delivered ? "stdout" : "stderr",
+              delivered
+                ? `[paperclip] Run guard hint left for OMP (${label}).\n`
+                : `[paperclip] Run guard hint was not delivered to OMP (${label}): the steer file is not available.\n`,
+            );
+          } catch (err) {
+            // The hint is advisory: a failed delivery must not fail the run.
+            await onLog(
+              "stderr",
+              `[paperclip] Run guard hint delivery to OMP failed (${label}): ${err instanceof Error ? err.message : String(err)}\n`,
+            ).catch(() => undefined);
+          }
+        })(),
+      );
+    };
+    // The guard stopped the run: the board is told (it records the reason and
+    // decides about the continuation run), then the process is stopped here.
+    // For an SSH run the process is the local ssh client; when it ends on a
+    // signal the run's processes on the runner are stopped as well
+    // (runAdapterExecutionTargetProcess, OPE-12801).
+    //
+    // myrmidon(OMP-RUN-GUARD-2): the one stop of the local process, shared by the
+    // guard stop and the cancellation listener. SIGTERM goes to a registered
+    // process once (a second caller finds it already signalled), SIGKILL follows
+    // after graceSec from one timer. Returns false when there is no local process.
+    let localStopOf: unknown = null;
+    let localStopTimer: NodeJS.Timeout | null = null;
+    const stopLocalOmp = (): boolean => {
+      const running = runningProcesses.get(runId);
+      if (!running) return false;
+      if (localStopOf === running) return true;
+      localStopOf = running;
+      signalRunningProcess(running, "SIGTERM");
+      if (localStopTimer) clearTimeout(localStopTimer);
+      localStopTimer = setTimeout(() => {
+        if (runningProcesses.get(runId) === running) signalRunningProcess(running, "SIGKILL");
+      }, Math.max(1, graceSec) * 1000);
+      localStopTimer.unref();
+      return true;
+    };
+    const stopOmpForRunGuard = async (reason: RunGuardStopReason): Promise<void> => {
+      guardStopReason ??= reason;
+      await onLog(
+        "stdout",
+        `[paperclip] Run guard stopped OMP: ${reason} (${runGuard?.stats().modelCalls ?? 0} model calls).\n`,
+      ).catch(() => undefined);
+      await ctx.onRunGuardStop?.(reason);
+      if (!stopLocalOmp()) {
+        // A sandbox run has no local process: its stop is the provider's.
+        await onLog("stderr", "[paperclip] Run guard stop: this run has no local OMP process to signal.\n").catch(() => undefined);
+      }
+    };
+    const runGuardFeed = runGuard
+      ? createOmpRunGuardFeed({ guard: runGuard, onStop: stopOmpForRunGuard, onHint: sendRunGuardHint })
+      : null;
 
     const runAttempt = async (sessionToResume: string | null) => {
       const args = buildArgs(sessionToResume);
@@ -1000,10 +1153,25 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         for (const line of lines) {
           if (line) {
             await onLog(stream, line + "\n");
+            // myrmidon(OMP-RUN-GUARD): every complete event line goes to the guard.
+            if (runGuardFeed) await runGuardFeed.observeLine(line);
           }
         }
       };
 
+      // myrmidon(OMP-RUN-GUARD-2): a cancelled SSH run must not leave OMP running.
+      // The server stops the local ssh client of a run it finds in
+      // runningProcesses, and the target runner then stops the processes on the
+      // runner (OPE-12801). Both depend on the board getting there first: a
+      // cancellation that arrives while the client is being started (the
+      // process is not registered yet) found nothing to stop, and the run went
+      // on for its whole timeout with the abort noticed only after it ended.
+      // The adapter therefore stops the client itself on the abort, and on its
+      // start when the abort came earlier. Signalling the client ends it with
+      // a signal, which is what makes the target stop the runner side.
+      const stopLocalClientOnAbort = () => void stopLocalOmp();
+      const abortSignal = sshCancellable ? ctx.signal : undefined;
+      abortSignal?.addEventListener("abort", stopLocalClientOnAbort, { once: true });
       const proc = await runAdapterExecutionTargetProcess(runId, runtimeExecutionTarget, command, args, {
         inheritProcessEnv: readInheritProcessEnvFlag(config),
         runEnvAdapterType: "omp_local",
@@ -1012,7 +1180,13 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         stdin: userPrompt,
         timeoutSec,
         graceSec,
-        onSpawn,
+        // An abort that came before the client was registered is applied here.
+        onSpawn: abortSignal
+          ? async (meta) => {
+              await onSpawn?.(meta);
+              if (abortSignal.aborted) stopLocalClientOnAbort();
+            }
+          : onSpawn,
         onRuntimeProgress: ctx.onRuntimeProgress,
         onLog: bufferedOnLog,
         runLogTail: paperclipBridge?.runLogTail,
@@ -1039,11 +1213,16 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
             },
           });
         },
+      }).finally(() => {
+        abortSignal?.removeEventListener("abort", stopLocalClientOnAbort);
+        if (localStopTimer) clearTimeout(localStopTimer);
+        localStopTimer = null;
       });
 
       if (stdoutBuffer) {
         await onLog("stdout", stdoutBuffer);
       }
+      await Promise.allSettled(pendingSteerWrites.splice(0)); // myrmidon(OMP-RUN-GUARD)
 
       return {
         proc,
@@ -1127,8 +1306,13 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         exitCode: effectiveExitCode,
         signal: attempt.proc.signal,
         timedOut: false,
-        errorMessage: (effectiveExitCode ?? 0) === 0 ? null : fallbackErrorMessage,
-        errorCode: attempt.proc.errorCode ?? (toolRejection ? OMP_TOOL_CALLS_REJECTED_ERROR_CODE : null),
+        // myrmidon(OMP-RUN-GUARD): a run the guard stopped ends on the signal
+        // the adapter sent; its error is the guard's reason, not that signal.
+        errorMessage: guardStopReason
+          ? `OMP was stopped by the run guard: ${guardStopReason}.`
+          : (effectiveExitCode ?? 0) === 0 ? null : fallbackErrorMessage,
+        errorCode:
+          guardStopReason ?? attempt.proc.errorCode ?? (toolRejection ? OMP_TOOL_CALLS_REJECTED_ERROR_CODE : null),
         usage: {
           inputTokens: attempt.parsed.usage.inputTokens,
           outputTokens: attempt.parsed.usage.outputTokens,
@@ -1182,6 +1366,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         canResumeSession &&
         initialFailed &&
         !(sshCancellable && ctx.signal?.aborted) && // myrmidon(OPE-12801): no retry for a cancelled run
+        !guardStopReason && // myrmidon(OMP-RUN-GUARD): nor for a run the guard stopped
         isOmpUnknownSessionError(initial.proc.stdout, initial.rawStderr)
       ) {
         await onLog(
@@ -1199,7 +1384,12 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       // restored. The restore takes minutes, the server waits 60s for a
       // cancelled adapter, and past that limit the watchdog does not return
       // the task to the queue.
-      const skipRestore = sshCancellable && ctx.signal?.aborted === true && restoreRemoteWorkspace !== null;
+      // myrmidon(OMP-RUN-GUARD): a run the guard stopped is not a cancellation,
+      // although the board aborts the signal for it too. Nobody waits 60s for
+      // it, and its work has to come back like the work of a run that hit the
+      // adapter timeout, so the workspace is restored.
+      const skipRestore =
+        sshCancellable && ctx.signal?.aborted === true && !guardStopReason && restoreRemoteWorkspace !== null;
       if (skipRestore) await noteWorkspaceNotRestored();
       await Promise.all([
         paperclipBridge?.stop(),
