@@ -1,0 +1,43 @@
+import { build } from "/workspace/OPE-12179/fresh-main/node_modules/.pnpm/esbuild@0.28.2/node_modules/esbuild/lib/main.js";
+const t0 = Date.now();
+try {
+  const res = await build({
+    entryPoints: ["server/dist/index.js"],
+    resolveExtensions: [".js", ".json", ".node"],
+    
+    bundle: true,
+    platform: "node",
+    target: "node20",
+    format: "esm",
+    outfile: "server/dist/bundle.mjs",
+    sourcemap: false,
+    logLevel: "warning",
+    tsconfig: undefined,
+    allowOverwrite: true,
+    external: [
+      "@opentelemetry/exporter-trace-otlp-*",
+      "@opentelemetry/sdk-node",
+      "@opentelemetry/auto-instrumentations-node",
+      "@opentelemetry/resources",
+      "@opentelemetry/semantic-conventions",
+      "@opentelemetry/*",
+      "@embedded-postgres/*",
+      "@myrmidon/paperclip-runner/*",
+      "vscode-jsonrpc*",
+      "pg-native",
+      "bun:sqlite",
+      "*.node",
+      "*.d.ts",
+      "*.d.ts.map",
+      "*.map",
+    ],
+  });
+  if (res.errors.length) {
+    console.error(res.errors.map(e => `${e.location?.file}:${e.location?.line} ${e.text}`).slice(0, 30).join("\n"));
+    process.exit(1);
+  }
+  console.log("bundled in", ((Date.now() - t0) / 1000).toFixed(1) + "s, warnings:", res.warnings.length);
+} catch (e) {
+  console.error("FAIL", e?.message?.slice(0, 500));
+  process.exit(1);
+}

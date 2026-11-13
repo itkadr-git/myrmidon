@@ -1,0 +1,35 @@
+{
+  "cmd": "MYRMIDON_BUILD_COMMIT=e593bdf93abce37c6bd899ffd2e92fe67434300f node server/dist/index.js",
+  "cwd": ".",
+  "port": 3199,
+  "timeoutSec": 120,
+  "envKeys": [
+    "PORT",
+    "HOST",
+    "MYRMIDON_DEPLOYMENT_MODE",
+    "MYRMIDON_DEPLOYMENT_EXPOSURE",
+    "SERVE_UI"
+  ],
+  "runs": [
+    {
+      "run": 1,
+      "seconds": 13.687,
+      "cold": true
+    },
+    {
+      "run": 2,
+      "seconds": 12.899,
+      "cold": false
+    },
+    {
+      "run": 3,
+      "seconds": 14.398,
+      "cold": false
+    }
+  ],
+  "summary": {
+    "minSeconds": 12.899,
+    "medianSeconds": 13.687,
+    "maxSeconds": 14.398
+  }
+}

@@ -36,3 +36,47 @@ PORT=3199 HOST=127.0.0.1 MYRMIDON_DEPLOYMENT_MODE=local_trusted MYRMIDON_DEPLOYM
   node scripts/myrmidon/measure-board-start.mjs --cwd . --cmd "node server/dist/index.js" --runs 3 --port 3199 --json
 # БЫЛО: --cmd "node --import ./server/node_modules/tsx/dist/loader.mjs server/dist/index.js"
 ```
+
+## Прод-верный ребейзлайн: дерево без .git + env-стэмпы (v4, 2026-11-13)
+
+Профиль v3 показал: ~1.7 с git-spawnSync — артефакт git-checkout замера, не прод.
+В прод-образе `.git` отсутствует, стэмпы приходят через env: `ARG PAPERCLIP_BUILD_COMMIT`
+(Dockerfile:151) → runtime ENV, код читает `MYRMIDON_BUILD_COMMIT`/`MYRMIDON_BUILD_VERSION`
+через `packages/shared/src/env-alias.ts` (`readProductEnv`), fallback — файлы
+`.paperclip-build-commit`/`.paperclip-build-version` в repo-root (build-commit.ts/build-version.ts).
+`server/scripts/write-build-stamp.mjs` пишет только instrumentation-стэмп `dist/build-info.json`.
+
+Методика v4: копия дерева без `.git` (`/workspace/OPE-12179/bench`), env
+`MYRMIDON_BUILD_COMMIT=e593bdf93…`, тот же харнесс, тот же PG-кластер.
+
+| Сторона | r1 | r2 | r3 | медиана |
+|---|---|---|---|---|
+| СТАЛО (bare, прод-стиль, без .git) | 13.687 | 12.899 | 14.398 | **13.687** |
+
+Медиана 13.687 с ≈ 1.25× против БЫЛО 16.409 с (v3, git-checkout): цель ≤2× по-прежнему
+не достигнута даже в прод-верных условиях.
+
+Профиль v4 (`node --cpu-prof`, bare, 35 с окно): entry→syncLink 0→8.1 с — граф модулей;
+самые тяжёлые: package_json_reader 2.0 с, компиляция 1.7 с, zod-init ~0.7 с; GC 2.9 с;
+git-спавны 0.9 с (readGitInfo 526 мс, resolveServerVersion 330 мс — даже фейл без `.git`
+стоит ~340 мс/вызов, в проде их цена та же). init+listen: 8.1→13.7 с.
+Вывод: главный рычаг — ленивый init-граф (follow-up #3085), далее — устранение ~0.9 с
+git-спавнов (выпекать стэмп в dist на сборке, не звать git на старте).
+
+### Попытка бандла (не завершена)
+esbuild-bundle `server/dist` → один `bundle.mjs` (57 МБ, format esm, externals:
+`@opentelemetry/*`, `@embedded-postgres/*`, `@myrmidon/paperclip-runner/*`, `vscode-jsonrpc*`,
+`*.node`, `*.map`) собирается за ~19 с. Старт падает: `@better-auth/core` статически
+импортирует `@opentelemetry/semantic-conventions`, а пакет `@opentelemetry/semantic-conventions`
+физически отсутствует в `node_modules` этого дерева (есть только `@opentelemetry/api` и
+transitive-копия внутри `.pnpm/@better-auth+core…`; pnpm-изоляция не даёт резолв из bundle.mjs).
+Для продолжения: либо добавить `@opentelemetry/semantic-conventions` в deps/установить,
+либо держать better-auth внешним (`external: ["better-auth", "@better-auth/*"]`).
+
+## Команды повтора (v4)
+```sh
+# дерево: копия repo без .git, dist собран (см. v3), стэмпы через env
+MYRMIDON_BUILD_COMMIT=$(git rev-parse HEAD) \
+PORT=3199 HOST=127.0.0.1 MYRMIDON_DEPLOYMENT_MODE=local_trusted MYRMIDON_DEPLOYMENT_EXPOSURE=private SERVE_UI=false \
+  node scripts/myrmidon/measure-board-start.mjs --cwd . --cmd "node server/dist/index.js" --runs 3 --port 3199 --json
+```
