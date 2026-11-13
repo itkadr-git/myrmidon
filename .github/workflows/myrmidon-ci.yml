@@ -391,6 +391,19 @@ jobs:
       - name: Build plugin SDK dependencies
         run: pnpm --filter @myrmidon/plugin-sdk ensure-build-deps
 
+      # The fast tier has no workspace build before this point (see the fast
+      # branch of "typecheck + build"), but the affected lane owns the prod-boot
+      # smoke: bare `node server/dist/index.js` needs a built dist whose package
+      # entry fields point at dist (prod-runtime-exports apply, the same step the
+      # full build and the image use before booting the bundle). Rust release
+      # binary stays out: build:typescript + server build do not need cargo.
+      - name: Build production server bundle for boot smoke
+        run: |
+          set -euo pipefail
+          pnpm --filter @myrmidon/paperclip-runner build:typescript
+          pnpm --filter @myrmidon/server build
+          node scripts/myrmidon/prod-runtime-exports.mjs apply --entry @myrmidon/server
+
       - name: Run affected tests
         run: node scripts/myrmidon/ci/affected-tests.mjs run --plan "$RUNNER_TEMP/plan.json"
 
