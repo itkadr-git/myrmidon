@@ -12,6 +12,51 @@ version file to edit. Base Paperclip version is in the image label
 
 ## 1.6.7
 
+### GitHub App disabled-webhook attention card and addressable silence alarms (1.6.8 OPE-12868)
+
+- Added the `github_app_webhook_disabled` critical operator attention card: when `POST /api/myrmidon/companies/:companyId/github-shared-identity/apps/:entryId/webhook-sync` gets HTTP 404 from GitHub on the hook-config `PATCH` (meaning **Settings → Developer settings → GitHub Apps → Webhook → Active** is off on GitHub), the server latches a process-local signal (`companyId`, `entryId`, `appId`, `webhookHost`, timestamps — no secrets) and clears it automatically once a later `webhook-sync` succeeds.
+- `githubConnectionEventService.sweepWatchdog` now mints the company `issueNumber` and `identifier` (`<prefix>-N`) in a transaction when creating a `github_events_silence` alarm issue, making the alarm addressable like any other task.
+
+### One shared pnpm store for all bots again, on the bots' filesystem (OPE-12869)
+
+- OPE-12720 moved the pnpm store into each bot's own tree (`/workspace/.pnpm-store`). On the
+  bots disk that cost 2.4-2.6 GB per bot, the bots volume ran out of space and the bot rollout
+  stopped. The store is back to ONE store for all bots: the host directory
+  `<sharedPackageCachePath>/pnpm-store` bound read-write at `/cache/pnpm-store`, the sixth pair
+  of the package cache mounts (dockergate's `PackageCacheMounts` and its prepare scripts list it
+  again). The default `pnpmStoreDir` is `/cache/pnpm-store`; a stored `/workspace/.pnpm-store`
+  reads as that default, and a path inside the bot's own tree stays allowed with a warning (a
+  store per bot).
+- Why this one shares: pnpm imports `node_modules` by reflink (`clone`), and a reflink works
+  between mount points of ONE filesystem. The 1.6.5 shared store sat on the root disk, another
+  filesystem than the bot volumes, so pnpm copied ~3 GB into every clone. The cache root must
+  now be on the same XFS filesystem as the bot volumes (outside `MYRMIDON_BOT_VOLUME_ROOT`), for
+  example `/srv/myrmidon-xfs/package-cache`: the store then costs one physical copy for all
+  bots. The board cannot see the host filesystems, so this is an operator requirement; the
+  start-time reflink self-check of the bot image (`hardlink-check.json`) reports a store on
+  another filesystem.
+- Operator steps: create `<packageCacheRoot>/pnpm-store` owned by 10001:10001 on the bots
+  filesystem, deploy dockergate together with or before the board (the old dockergate refuses
+  the `pnpm-store` bind with `mount_source_not_allowed`), then the board. Existing clones have
+  the per-bot `storeDir` in `node_modules/.modules.yaml`; the first `pnpm install` there purges
+  and reinstalls from the shared store (the pnpm wrapper's
+  `--config.confirm-modules-purge=false` from OPE-12720 stays: pnpm 10 aborts the purge without
+  a TTY otherwise). The per-bot `workspace/.pnpm-store` directories are unused afterwards and
+  can be removed.
+- The image's own default `npm_config_store_dir` stays `/workspace/.pnpm-store` (a bot without
+  the cache bind has no `/cache/pnpm-store`, and its root filesystem is read-only); the board's
+  profile `.env` overrides it for bots with the shared cache.
+- Tests: the bot-disk-cache, template, docker-driver and profile-compile suites and the
+  dockergate policy and contract fixtures are back to the six-pair list; a new case asserts that
+  two bots get the same store mount and the same store variable.
+
+### Stack registry can read host image versions through dockergate (OPE-12922)
+
+- dockergate has a new optional `inspectOnlyImages` config list: exact image refs (tag or digest) whose image inspect is allowed read-only, with the same labels-only answer. They are never allowed for container create; only `images` is.
+- The stack registry probe takes the exact refs of a docker-image component from `MYRMIDON_STACK_IMAGE_<NAME>` (for example `MYRMIDON_STACK_IMAGE_CLICKHOUSE`) instead of the tagless seed refs that resolved to `:latest` and answered 404. Unset keeps the old behaviour. Point `MYRMIDON_STACK_DOCKER_SOCKET` at the dockergate socket and list the same refs in `inspectOnlyImages`.
+
+## 1.6.7
+
 ### IDLE-STOP works for fleetd bots: stopIdle route, idle-stopped mark, one warning per process (OPE-12663)
 
 - fleetd gains `POST /v1/bots/<key>/stopIdle`: it stops the container and records an
