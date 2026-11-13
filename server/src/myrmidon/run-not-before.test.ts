@@ -48,6 +48,26 @@ describe("decideRunNotBefore", () => {
     expect(decision).toEqual({ hold: false, reason: "reached" });
   });
 
+  it("parses a date-only string as UTC midnight (a valid instant)", () => {
+    // ES date-only forms are defined as UTC midnight, so they parse to a
+    // real instant and the gate holds on them like any other future time.
+    const futureDecision = decideRunNotBefore({
+      contextSnapshot: { notBefore: "2026-11-14" },
+      now: NOW,
+    });
+    expect(futureDecision).toEqual({
+      hold: true,
+      notBefore: new Date("2026-11-14T00:00:00.000Z"),
+    });
+    // The past-midnight form of the same string is simply reached.
+    expect(
+      decideRunNotBefore({
+        contextSnapshot: { notBefore: "2026-11-13" },
+        now: NOW,
+      }),
+    ).toEqual({ hold: false, reason: "reached" });
+  });
+
   it.each([
     ["no key", {}],
     ["empty string", { notBefore: "" }],
@@ -64,7 +84,7 @@ describe("decideRunNotBefore", () => {
   it.each([
     ["garbage", "not-a-date"],
     ["NaN date", "2026-13-45T99:99:99Z"],
-    ["date-only string", "2026-11-13"],
+    ["out-of-range hour", "2026-11-13T25:00:00Z"],
   ])("never holds on an unparsable value (%s)", (_label, notBefore) => {
     expect(
       decideRunNotBefore({ contextSnapshot: { notBefore }, now: NOW }),
@@ -133,15 +153,20 @@ describe("splitRunsHeldByNotBefore", () => {
     });
   });
 
-  it("clamps a non-negative resweep delay for an instant in the past relative to now", () => {
-    // A run cannot be held with a past instant (decideRunNotBefore releases
-    // it), so a held set always lifts at or after `now`; the clamp only
-    // guards the sub-millisecond rounding at the exact boundary tick.
+  it("arms the resweep one tick before the earliest hold lift", () => {
+    // `now` sits 1 ms before the earliest boundary: the run at the boundary
+    // is still held (boundary = reached is exclusive in the hold direction)
+    // and the resweep delay is the 1 ms left until it lifts — not the later
+    // run's 5 s.
     const split = splitRunsHeldByNotBefore(
-      [run("a", "2026-11-13T12:00:00.000Z+00:00")],
-      { now: new Date("2026-11-13T11:59:59.500Z") },
+      [
+        run("a", "2026-11-13T12:00:00.000Z"),
+        run("d", "2026-11-13T12:00:05.000Z"),
+      ],
+      { now: new Date("2026-11-13T11:59:59.999Z") },
     );
-    expect(split.held.map((h) => h.runId)).toEqual(["a"]);
-    expect(split.resweepDelayMs).toBe(500);
+    expect(split.held.map((h) => h.runId)).toEqual(["a", "d"]);
+    expect(split.held[0]?.remainingMs).toBe(1);
+    expect(split.resweepDelayMs).toBe(1);
   });
 });
