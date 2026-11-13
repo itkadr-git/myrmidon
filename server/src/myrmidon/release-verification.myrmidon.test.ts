@@ -219,7 +219,9 @@ describe("verifyReleaseComposition", () => {
     const seen: string[] = [];
     await verifyReleaseComposition({
       releasePrefix: "1.6",
+      deployedVersion: "myr-v1.6.8",
       members: [member("OPE-1", SHA_A), member("OPE-2", SHA_B), member("OPE-3", SHA_C)],
+      resolvedRefs: [{ ref: "myr-v1.6.8", kind: "tag" }],
       fetchImpl: (input) => {
         seen.push(input);
         return Promise.resolve({
