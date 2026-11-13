@@ -10,6 +10,121 @@ version file to edit. Base Paperclip version is in the image label
 
 ## Unreleased
 
+## 1.6.9
+
+### A CI delivery is handled by the final result of the head; a failed result does not return a task while main is red (EMPTY-RUNS-3)
+
+- The GitHub connection events treated every finished job, and every finished run of an auxiliary workflow, as a finished CI of the pull request: the monitor of the task was disarmed, its assignee was to be woken (`ci_completed`), and a task in review went back to its executor — all on the first job that ended. On 13.11, the first day the App delivered check events, that was 48 returns from review (45 of them on a single `check_run`); after main went red, 13 more, 6 of them on the very shards that were red on main; one such run made 139 model calls on 5.88M input tokens to answer "main is red, nothing to change". A task whose monitor had been disarmed by the first job was picked up minutes later by the stranded-task recovery: one such run cost 888K input tokens to report "4 jobs still running".
+- Now only the delivery that carries the final result of the current head counts: the finished `CI result` check (a cancelled, skipped or stale one is not a result), or — for a pull request that has no such check — the moment GitHub shows every check finished. A job that ends changes nothing: the monitor stays armed, nobody is woken, `lastCompletedCi` is not written. The final result is recorded as `lastCompletedCi` of the pull request rows, announces a possible merge when green, disarms the monitor and wakes the assignee once per result; the same result delivered again wakes nobody, and a result of an older head decides nothing. A job that starts after the result of the head (the re-run of a gate, an auxiliary workflow) does not reopen it; the final check does. The wake goes to a task that is being worked on or reviewed, or whose agent armed a monitor; a parked task without a monitor and a closed task are not woken.
+- A task in a pending review stage goes back to its executor on a failed final result, with the failed checks named in the comment. A failed result with `main-green` red on the head is a failure on a red base branch: the task stays in review, the executor is not woken, a system note says why and the `ci_infra_retry_needed` row is written, once per head. When main is green again the "Main green gate" workflow re-runs `main-green` on open pull requests; that delivery brings the head back, and a head that is still red is returned to its executor with the instruction to re-run the failed jobs first. A head on which only `CI result` failed is held the same way as an infrastructure failure.
+- The wakes of a delivery really reach the queue now. The App webhook is served by the api processes, where the event service had been given a stub instead of a wake function: not one `ci_completed` wake was recorded for 54 returns from review. An api process now enqueues the wake through a heartbeat service of its own role (it executes nothing itself and announces the queued run to the worker over the process bus), and every wake of a delivery — `ci_completed`, the merge-conflict return, the merged-PR confirmation — is sent after the transaction of the delivery has committed: the admission of a wake locks the task row the delivery has just written, so a wake sent from inside the transaction would wait for its own caller.
+- The name of the check is kept in the stored record of a `check_run` delivery (`checkName`).
+- `MYRMIDON_GITHUB_CI_FINAL_ONLY_ENABLED=off` brings back the old handling (and, in an api process, the dropped wake); `MYRMIDON_REVIEW_RETURN_GUARD_ENABLED=off` removes the holds — every failed final result returns the task; `MYRMIDON_REVIEW_INFRA_CHECK_NAMES` without `main-green` removes the base-branch hold. When GitHub cannot be read a failed final result returns the task without the list of checks.
+
+### An agent no longer re-picks its own parked task every sweep (EMPTY-RUNS-1)
+
+- On 13.11 a third of all runs (258 of 780 in eight hours) were `swarm_matched` / `idle_pickup` pickups, and 217 of
+  them changed nothing: three service bots took their own `todo` tasks 176 times (ten tasks, about 40 M input tokens),
+  wrote "no new data, leaving it in todo" and handed the task back. Both guards that exist for this loop were blind to
+  it. The task cooling (`wake-task-guard`) trusts run liveness, and liveness marks a run "advanced" for any activity
+  row attributed to it, the board's own included (the checkout claim, the tool delivery, the echo of the final text):
+  500 of 539 succeeded runs without a result were "advanced", so the cooling never started. The rewake throttle read
+  the PATCH `in_progress -> todo` and the note next to it as issue-visible progress, so its no-progress streak never
+  started either.
+- The rewake throttle no longer counts a hand-back of the task to the queue as progress: an `issue.updated` that moves
+  the task `in_progress -> todo` and changes nothing but the execution lock and the assignment bookkeeping, and the
+  comment the same run leaves next to it. A run that hands the task back but leaves a document, a work product, a
+  sub-task, a blocker, a monitor, an interaction or a real field change still counts, and so does a comment of a run
+  that did not hand the task back. After two such runs the escalating pause starts, after six in the lookback window
+  the task is frozen and the lead is asked, as for every other no-progress streak.
+- The task cooling no longer takes "advanced" as proof for a task that sits in `todo`: an automatic run that left no
+  issue-visible progress there (the same read as the throttle's) is stale, so the task cools for 30 minutes, then 60,
+  120 and so on up to `general.swarm.cooldownCeilingHours`. The cooling list shows such tasks with the reason
+  `no_progress`. A user or another agent moving the task lifts the cooling as before; tasks in `in_progress`,
+  `in_review` or `blocked` are judged exactly as before.
+- Run liveness itself is not changed: it also drives continuations, the successful-run hand-off and stranded-task
+  recovery.
+
+### A monitor that waits for a review or a merge no longer wakes its agent every 30 minutes (EMPTY-RUNS-4)
+
+- A due issue monitor that waits for a pull request is judged by the board (PR-WAIT-MONITOR, OPE-11949). When nothing was news it had two states: CI is running, or the board holds no check data — and the second one wakes the agent with a `no_signal` note after 30 quiet minutes. A pull request whose CI had finished, with the result already seen by the agent, fell into that second state as well. So every "wait for the merge" monitor woke its agent each time it came due, only to answer "still open": 32 such `no_signal` runs of engineers in 19 hours on the release board, one task at its 36th monitor attempt and another at its 59th.
+- That state is now told apart as `settled`: CI of the current head finished, the agent has seen it, nothing is running. The monitor re-arms silently (`issue.monitor_deferred`, reason `pr_wait_unchanged`, `ciState: "settled"`) with the same growing interval, capped at 60 minutes.
+- The agent is still woken at once for news the board records — the pull request was merged or closed, a review was submitted, a merge conflict appeared, CI completed again — at its own `timeoutAt` / `maxAttempts`, and after 6 quiet hours as the last backstop, with a note that names the finished CI.
+- Several work product rows of one pull request (the ones an agent registered and the one the board linked from the GitHub event) are judged as one pull request, by the row that carries the finished CI of its head. A second pull request of the task without check data keeps the whole wait in the old 30-minute state.
+- Unchanged: a pull request the board holds no check data for is still woken after 30 minutes; a monitor that does not wait for a pull request is not touched.
+
+### A run waiting in its own agent's queue is no longer expired and the task is no longer frozen for it (EMPTY-RUNS-6)
+
+- A queued run older than `general.processes.queuedRunStaleAfterSec` (30 minutes) is cancelled with
+  `queued_run_stale_timeout` and the agent is woken for the task again. For a run that simply stood behind its own
+  agent's running runs this bought nothing: the wake queued the same run behind the same ceiling, and after the second
+  expiry the rewake throttle froze the task and told the lead that the agent "made 2 runs on the task without
+  progress" although no run of it had ever started. On 13.11 seven tasks were assigned to one engineer with two slots
+  at once; two high-priority tasks that block four others were frozen that way while the engineer was working. 46 of
+  the 50 expiries of the last 72 hours carried the wait reason `agent_concurrency`.
+- The age check now leaves such a run in the queue: the start sweep has named its wait `agent_concurrency` (the
+  agent's own concurrency ceiling is full) and the agent has a run in `running` at this moment. It starts when a slot
+  frees, as any queued run does. The task-state checks still apply to it: a reassigned or closed task cancels
+  the run as before.
+- Nothing else changes. A run with that wait reason but no running run behind it (a lost start), a run held for
+  another reason or for none, and a run behind another agent expire as before, and two expiries in a row still freeze
+  the task (OPE-12290).
+
+### The "Review CI wait" monitor no longer wakes the reviewer onto a red head (EMPTY-RUNS-2B)
+
+- The hand-off to review does not wake a reviewer while the pull request head is red (`wait_red`, OPE-12176) and arms the board's "Review CI wait" monitor instead. The tick of that monitor only asked whether CI was still running, so ten minutes later it woke the reviewer onto the same red head with "do not wait for CI, submit the decision now". When the head was red because main was red, the reviewer could only return the task and the executor then ran to find nothing to fix (13.11: one such executor run took 139 model calls and 5.9 M input tokens).
+- The tick now applies the admission rule of the hand-off. While CI runs or cannot be read the monitor is re-armed as before; while the finished head is red it is re-armed too (`issue.monitor_deferred` with the reason `review_head_red`, next check in ten minutes). A green head, a critical issue, a task without a pull request or without hosted CI wake the reviewer as before.
+- The wait on a red head is bounded by the CI-wait budget of a review stage (`REVIEW_CI_WAIT_MAX_ATTEMPTS`, 18 ticks of the monitor): past it the reviewer is woken as before, so a red head nobody fixes does not park the task for good.
+
+### The executor's comment does not wake the reviewer while the review stage waits for green CI (EMPTY-RUNS-2)
+
+- A hand-off to review goes through the green-CI admission gate: while the `CI result` of the pull request head is not green the reviewer is not woken, and the board arms its "Review CI wait" monitor, whose tick wakes the reviewer once the head CI is final. The comment path did not know about the gate: the executor's closing note, posted as a separate request seconds after the hand-off, woke the reviewer with `issue_commented` past it. The reviewer run found an unfinished CI, could not record a verdict and ended with one more comment. On the release board (12–13.11.2026) 111 of 136 reviewer comment wakes came from an engineer's comment, 89 of them while the monitor was armed.
+- Both comment paths (`POST /issues/:id/comments` and `PATCH /issues/:id` with a comment) now apply the same admission decision as the status change. The wake is held back only when all of this holds: the task is `in_review` with a pending review stage, the wake would go to the stage reviewer, the author is the agent that handed the task over, the "Review CI wait" monitor is armed, and the head is not admitted yet (CI pending or unreadable, or the head is red). The comment stays in the thread and the reviewer reads it when the monitor wakes it; the board writes an `issue.review_comment_wake_deferred` activity row.
+- Everything else wakes the reviewer as before: a person's comment, another agent's comment, an explicit resume, an @-mention, a critical task, a green head, and any comment after the reviewer was admitted (no armed monitor).
+- The gate ships enabled. `MYRMIDON_REVIEW_COMMENT_WAKE_GATE_ENABLED=off` turns it off: every comment then wakes the assignee exactly as before.
+
+### Deliveries of one GitHub pull request no longer kill each other with deadlocks; the reason of a failed query is logged (EMPTY-RUNS-3)
+
+- On 13.11 a dozen jobs of one pull request finished within a second. Their deliveries updated the work-product rows of the pull request in their own order, Postgres killed one of each pair (`ERROR: deadlock detected` on `update "issue_work_products" set "metadata"`, 15 times in an hour), `POST /api/myrmidon/github-app/webhook` answered 500 (14 times in the same seconds) and the event was lost.
+- Deliveries of one pull request now run one after another: the transaction of a delivery takes a transaction-level advisory lock of the pull request first, and locks the rows of the pull request in one order (by id) before it writes. A transaction that Postgres rolled back for a deadlock (40P01) or a serialization failure (40001) is run again, up to 4 runs in all, with a growing pause; the wakes and live events of a rolled-back run are dropped with it. The `metadata` of a work product is merged by Postgres on the row as it is at the moment of the write (`metadata || patch`), not written from an object put together from an earlier read, so a key written by another writer is kept.
+- The reason of a failed query is in the log now. The query builder wraps the driver's error and its text is the statement; the 500 line of the request log and the stored `lastError` of the delivery carry the Postgres code and text (`postgres 40P01: deadlock detected`), and the error context has a `db` object with the code, the text and the table (never the statement, its parameters or the row detail).
+- The writes of the CI return — the system comment, the `issue.ci_failed` and `issue.ci_infra_retry_needed` rows, the return of the task — go through the transaction of the delivery (a savepoint inside it), not through a connection of their own; a delivery rolled back by a deadlock and run again therefore writes them once, and the lock the delivery holds on the work-product rows is no longer waited on by a second connection that wants the task row. What must happen once — the activity publications and the notice to the board merge — is queued and sent after the commit; a failure of such an action is logged with its reason and does not fail the delivery.
+
+### Cancelling an omp_local SSH run no longer depends on the board reaching the process first (1.6.8 OMP-RUN-GUARD-2)
+
+- On 13.11.2026 two omp sessions kept running on the runner after their run was cancelled because of a task reassignment: 46 and 22 minutes, 337 model calls, 28.6M input tokens. OPE-12801 (#2980) made the SSH lane stop the runner's processes once the local ssh client ends on a signal; that part is a prerequisite and is unchanged.
+- What was still missing: the board stops the local ssh client only if the client is registered in `runningProcesses` at the moment of the cancellation. A cancellation that came while the client was being started found nothing to stop, and the adapter looked at the aborted signal only after the process ended on its own (up to `timeoutSec`, 3 hours).
+- The `omp_local` adapter now listens to the run's cancellation signal while OMP runs (SSH runs, which opt into signal cancellation) and signals the local client itself (SIGTERM, SIGKILL after `graceSec`); an abort that came before the client was registered is applied when it starts. The client ending on a signal makes the target stop OMP and its tools on the runner, as before.
+
+### Model call limit for omp_local runs (1.6.8 OMP-RUN-GUARD-1)
+
+- An `omp_local` run had no limit on model calls, only `timeoutSec` (3 hours). On 13.11.2026 omp sessions averaged 101 model calls (median 60, 90th percentile 239, maximum 494); 41% of all omp calls were made after the 100th call of a session and 27% after the 150th.
+- The adapter now feeds the board's run guard from omp's JSON event stream: every `turn_start` is one model call, every `tool_execution_start` is one tool call. The limit is the same as for hermes: 150 calls by default, overridden by the same settings (agent card `runGuard.modelCallLimit`, team liveness `runGuard`, `MYRMIDON_RUN_GUARD_MODEL_CALL_LIMIT`).
+- 15 model calls before the limit the agent gets the wrap-up message (commit, push, write a comment on the task). The adapter leaves it in a steer file and a small omp extension loaded with the run (`--extension`) hands it to the session at the next step boundary.
+- On the first call past the limit the adapter stops the omp process (SIGTERM, then SIGKILL after `graceSec`) and reports the stop to the board; the existing run-guard continuation (`run-guard-stop`) decides about the next run. The other guard stops (read-only exploration, repeated call, idle) now apply to omp runs as well.
+- The hint text moved from the hermes gateway adapter to `@myrmidon/adapter-utils/run-guard-hint`, so both adapters say the same thing.
+- A run the guard stopped over SSH restores its workspace like a run that hit the adapter timeout.
+
+### Fixed: remote runner workspace upload no longer fails with "ssh exited before tar finished" (OPE-13041)
+
+- The workspace upload to a remote runner (`syncDirectoryToSsh`, `packages/adapter-utils/src/ssh.ts`) piped local `tar` into `ssh`. When `ssh` closed with exit code 0 a moment before the local `tar` reported its exit, the transfer was stopped and reported as `ssh exited before tar finished (code 0)`, which failed the whole run although all data had been delivered.
+- The outcome is now decided by the exit codes of both processes. After `ssh` exits with code 0 the upload waits for `tar` (up to 10 s) and succeeds when `tar` exits with 0. A failing `tar` is reported with its stderr tail, a failing `ssh` with its own stderr tail or exit code. The transfer protocol and directory layout are unchanged.
+- Covered by `packages/adapter-utils/src/ssh-tar-finish-order.myrmidon.test.ts`.
+
+### The stale-block sweep no longer fails forever on a task with a dead cited reason and an open blocker (STALE-BLOCK-LIVE-EDGES)
+
+- On 13.11 the board logged "stale block sweep failed for one task" about 50 times an hour, for the same 14 blocked tasks on
+  every pass, with no cause in the log. Each of them had a cited reason (`unblockDescriptor.reasonRef`) that had died —
+  a passed date, a passed event deadline or a closed recovery incident — and at the same time a blocked-by edge to a
+  task that is still open. With a reasonRef the sweep never looked at the edges, judged the block dead and moved the
+  task to `in_progress`; the issue service refused ("Issue is blocked by unresolved blockers"), the transaction rolled
+  back and the next pass did the same.
+- The sweep now counts an open blocker on an edge the reasonRef does not cover as a live reason: the task stays
+  blocked, the pass reports it as `skippedLive`, and the task wakes through the ordinary `issue_blockers_resolved`
+  path when that blocker closes. A dead reasonRef whose blockers are all done or cancelled is unblocked as before.
+- The failure warning now carries the class of the exception and its HTTP status (`errorName`, `errorStatus`), and
+  still nothing of its message, code, cause or stack.
+
 ## 1.6.8
 
 ### The omp SSH runner's /tmp moves to the data disk and is pruned (OPE-12966)
