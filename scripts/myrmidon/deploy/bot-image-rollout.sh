@@ -674,8 +674,8 @@ if [[ -n "$bots" ]]; then
 else
   bot_log "no eligible bots on the board (company $BOARD_COMPANY_ID): nothing to enroll, nothing to switch"
 fi
-fi # phase != cards
 step_end_ok "config complete"
+fi # phase != cards
 
 if [[ "$phase" == "config" ]]; then
   bot_log "config phase complete: bot images allowed and bots enrolled in $MYR_BOT_DOCKERGATE_CONFIG"

@@ -116,6 +116,7 @@ case "$1" in
   fetch) ;;
   merge-base) exit 0 ;;
   ls-remote) cat "$SANDBOX/git-tags" ;;
+  diff) ;;
 esac
 `;
 
@@ -401,6 +402,16 @@ describe("deploy.sh: board-rollout step journal (RELEASE-STEPS)", () => {
     assert.doesNotMatch(log, /error|interrupted/);
   });
 
+  it("an urgent window deploy records board-rollout begin then ok", () => {
+    const sb = sandbox();
+    const { code, out } = run(sb, "deploy.sh", ["--digest", NEW, "--urgent", "hotfix"]);
+    assert.equal(code, 0, out);
+    const log = stepsLog(sb);
+    assert.match(log, / step-begin board-rollout /);
+    assert.match(log, / step-end board-rollout ok board deployed/);
+    assert.doesNotMatch(log, /error|interrupted/);
+  });
+
   it("a no-window deploy writes no board-rollout step", () => {
     const sb = sandbox();
     // Same digest as the running image: nothing to restart (need_window=0).
@@ -460,6 +471,18 @@ describe("bot-image-rollout.sh: bot-config and bot-cards step journal (RELEASE-S
     assert.match(log, / step-begin bot-cards /);
     assert.match(log, / step-end bot-cards ok /);
     assert.doesNotMatch(log, /bot-config/);
+  });
+
+  it("the all phase (standalone or no-window) records both bot-config and bot-cards", () => {
+    const sb = sandbox();
+    const { code, out } = run(sb, "bot-image-rollout.sh", ["--phase", "all", ...rolloutArgs]);
+    assert.equal(code, 0, out);
+    const log = stepsLog(sb);
+    assert.match(log, / step-begin bot-config /);
+    assert.match(log, / step-end bot-config ok config complete/);
+    assert.match(log, / step-begin bot-cards /);
+    assert.match(log, / step-end bot-cards ok /);
+    assert.doesNotMatch(log, /error|interrupted/);
   });
 
 });

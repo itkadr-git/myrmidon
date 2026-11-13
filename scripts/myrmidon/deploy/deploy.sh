@@ -1035,8 +1035,8 @@ if ((need_window)); then
     log "deployed $ref (previous: ${previous:-<none>}, dump: <skipped>, URGENT: $urgent_reason, rollback: VM nightly backup)"
   else
     log "deployed $ref (previous: ${previous:-<none>}, dump: ${LAST_DUMP_FILE:-<none>})"
-  step_end_ok "board deployed"
   fi
+  step_end_ok "board deployed"
 fi
 
 # COMPOSE-SET-ANCHOR (OPE-7010): synchronize after every deploy path, including
