@@ -27,6 +27,14 @@ case "$FAKE_SSH_MODE" in
     tar -cf - -C "$FAKE_SSH_SOURCE_DIR" . | head -c 20000
     echo "Connection reset by peer" >&2
     exit 255 ;;
+  truncated-slow-exit)
+    # Cuts the stream, closes stdout (tar sees EOF and fails at once), and only
+    # then reports the reset and exits: tar's 'close' arrives before ssh's.
+    tar -cf - -C "$FAKE_SSH_SOURCE_DIR" . | head -c 20000
+    exec 1>&-
+    sleep 0.4
+    echo "Connection reset by peer" >&2
+    exit 255 ;;
   serve-term255)
     # Like the real ssh client: SIGTERM ends it with exit code 255, not by signal.
     # The trap goes first: a SIGTERM that lands before it exists kills this shell
@@ -46,6 +54,10 @@ esac
 // Fails only the extracting side (`tar -xf -`); every other call reaches the
 // real tar, including the one the fake ssh uses to produce the stream.
 const FAKE_TAR_SCRIPT = `#!/bin/sh
+if [ "$FAKE_TAR_MODE" = "slow-extract" ] && [ "$1" = "-xf" ]; then
+  # Starts reading late, so ssh has already exited when tar fails on the cut stream.
+  sleep 0.4
+fi
 if [ "$FAKE_TAR_MODE" = "die-on-extract" ] && [ "$1" = "-xf" ]; then
   echo "tar: ./big.bin: Cannot write: No space left on device" >&2
   exit 2
@@ -144,6 +156,28 @@ describe.skipIf(process.platform === "win32")("syncDirectoryFromSsh staging dire
 
     expect(await leftoverStagingDirs()).toEqual([]);
   });
+
+  it("reports the ssh cause of a cut stream when ssh closes before tar", async () => {
+    setEnv("FAKE_SSH_MODE", "truncated");
+    setEnv("FAKE_TAR_MODE", "slow-extract");
+
+    await expect(syncDirectoryFromSsh({ spec, remoteDir: "/workspace", localDir })).rejects.toThrow(
+      "Connection reset by peer",
+    );
+
+    expect(await leftoverStagingDirs()).toEqual([]);
+  }, 20_000);
+
+  it("reports the ssh cause of a cut stream when tar closes before ssh", async () => {
+    // Before the fix this order made tar's "Unexpected EOF" the reported error.
+    setEnv("FAKE_SSH_MODE", "truncated-slow-exit");
+
+    await expect(syncDirectoryFromSsh({ spec, remoteDir: "/workspace", localDir })).rejects.toThrow(
+      "Connection reset by peer",
+    );
+
+    expect(await leftoverStagingDirs()).toEqual([]);
+  }, 20_000);
 
   it("settles and removes the staging directory when tar dies while ssh is still sending", async () => {
     // ssh blocks on a full pipe once nothing reads its output, so before the fix

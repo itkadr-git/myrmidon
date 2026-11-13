@@ -500,6 +500,14 @@ function tarExcludeArgs(exclude: string[] | undefined): string[] {
 // its exit after ssh already exited with code 0.
 const SSH_TAR_EXIT_GRACE_MS = 10_000;
 
+// myrmidon(SSH-SYNC-CUT-CAUSE): how long the restore (`ssh | tar -x`) gives ssh to
+// end on its own after the extracting tar failed. A stream cut by ssh fails both
+// processes ("Connection reset by peer" from ssh, "Unexpected EOF" from tar);
+// tar's failure is only the consequence, so ssh must get the chance to report the
+// cause whichever 'close' event arrives first. Only an ssh that is still running
+// after this time (blocked on a pipe nobody reads) is stopped and blamed on tar.
+const SSH_SYNC_BACK_TAR_FAILURE_GRACE_MS = 1_500;
+
 function tarSpawnEnv(): NodeJS.ProcessEnv {
   return {
     ...process.env,
@@ -1735,6 +1743,7 @@ export async function syncDirectoryFromSsh(input: {
       let sshExited = false;
       let tarExited = false;
       let sshStoppedAfterTarFailure = false;
+      let tarFailureGraceTimer: NodeJS.Timeout | null = null;
       let sshExitCode: number | null = null;
       let tarExitCode: number | null = null;
       // myrmidon(OPE-12801): the remote `tar -cf -` ends on a closed pipe when
@@ -1756,6 +1765,8 @@ export async function syncDirectoryFromSsh(input: {
           return;
         }
         // ssh answers our SIGTERM with exit code 255; that must not hide why tar failed.
+        // An ssh that ended by itself keeps its own diagnosis even when tar's
+        // 'close' came first (a cut stream fails both; tar's EOF is the effect).
         if (!sshStoppedAfterTarFailure && (sshExitCode ?? 0) !== 0) {
           reject(new Error(sshStderrTail.text().trim() || `ssh exited with code ${sshExitCode ?? -1}`));
           return;
@@ -1791,6 +1802,7 @@ export async function syncDirectoryFromSsh(input: {
       const fail = (error: Error) => {
         if (settled) return;
         settled = true;
+        if (tarFailureGraceTimer) clearTimeout(tarFailureGraceTimer);
         abortWatch.detach();
         stopChildren();
         reject(error);
@@ -1817,6 +1829,7 @@ export async function syncDirectoryFromSsh(input: {
       ssh.on("close", (code) => {
         sshExited = true;
         sshExitCode = code;
+        if (tarFailureGraceTimer) clearTimeout(tarFailureGraceTimer);
         sshStderrFlushed = true; // myrmidon(OPE-12914): stderr 'data' events precede 'close'
         maybeFinish();
       });
@@ -1830,8 +1843,15 @@ export async function syncDirectoryFromSsh(input: {
         // fires, and the restore hangs forever (OPE-12875). maybeFinish runs
         // once both closes arrive.
         if (code !== 0 && !sshExited) {
-          sshStoppedAfterTarFailure = true;
-          stopChildren();
+          // Give ssh a moment to end by itself first: if the stream was cut,
+          // ssh's own error is the cause and tar's is the effect.
+          tarFailureGraceTimer = setTimeout(() => {
+            tarFailureGraceTimer = null;
+            if (sshExited || settled) return;
+            sshStoppedAfterTarFailure = true;
+            stopChildren();
+          }, SSH_SYNC_BACK_TAR_FAILURE_GRACE_MS);
+          tarFailureGraceTimer.unref?.();
         }
         maybeFinish();
       });
