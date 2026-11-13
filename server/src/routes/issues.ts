@@ -77,6 +77,13 @@ import {
   reviewWakesQuotaForCompany,
   reviewWakesQuotaTickStarted,
 } from "../myrmidon/review-stage-recovery/review-wakes-quota.js";
+// myrmidon(EMPTY-RUNS-2): the comment wake path honours the green-CI review admission gate.
+import {
+  REVIEW_COMMENT_WAKE_DEFERRED_ACTION,
+  isExecutorCommentOnWaitingReview,
+  readReviewAdmissionDecision,
+  readReviewCommentWakeGateEnabled,
+} from "../myrmidon/review-stage-recovery/comment-wake-gate.js";
 import {
   buildReviewApprovalPendingMergeNotice,
   findApprovalPendingMergePullRequest,
@@ -3825,6 +3832,96 @@ export function issueRoutes(
       sourceRun?.companyId === comment.companyId &&
       sourceRun.agentId === assigneeAgentId
     );
+  };
+  // myrmidon(EMPTY-RUNS-2): the comment wake honours the green-CI review
+  // admission gate (OPE-12176). While the board's own "Review CI wait" monitor
+  // is armed for the task and the pull request head is not admitted yet, the
+  // executor's comment does not wake the reviewer: the monitor's tick owes that
+  // wake and the comment waits in the thread for it. The CI is read only for a
+  // comment that passed the structural check, so every other comment costs
+  // nothing. Anything the gate cannot decide means "wake": the old behaviour.
+  const executorCommentHeldForReviewCi = async (input: {
+    issue: {
+      id: string;
+      companyId: string;
+      identifier?: string | null;
+      status: string;
+      priority?: string | null;
+      executionState?: unknown;
+      executionPolicy?: unknown;
+      monitorNextCheckAt?: Date | string | null;
+    };
+    recipientAgentId: string;
+    actor: { actorType: "user" | "agent"; agentId: string | null };
+    commentId: string;
+    reopened: boolean;
+    resumeRequested: boolean;
+  }): Promise<boolean> => {
+    try {
+      // Cheap exits first: only an agent's comment on a task in review can be held.
+      if (input.issue.status !== "in_review" || input.actor.actorType !== "agent") return false;
+      // The kill switch (`MYRMIDON_REVIEW_COMMENT_WAKE_GATE_ENABLED`): off means
+      // the comment wakes the assignee as before the gate.
+      if (!readReviewCommentWakeGateEnabled()) return false;
+      if (
+        !isExecutorCommentOnWaitingReview({
+          issueStatus: input.issue.status,
+          executionState: parseIssueExecutionState(input.issue.executionState),
+          executionPolicy: input.issue.executionPolicy ?? null,
+          monitorNextCheckAt: input.issue.monitorNextCheckAt ?? null,
+          recipientAgentId: input.recipientAgentId,
+          authorType: input.actor.actorType,
+          authorAgentId: input.actor.agentId,
+          reopened: input.reopened,
+          resumeRequested: input.resumeRequested,
+        })
+      ) {
+        return false;
+      }
+      const admission = await readReviewAdmissionDecision({
+        companyId: input.issue.companyId,
+        issueId: input.issue.id,
+        critical: input.issue.priority === "critical",
+        resolveCi: opts.resolveReviewPullRequestCi ?? createReviewPullRequestCiResolver({ db }),
+        resolveHeadFailedChecks:
+          opts.resolveReviewHeadFailedChecks ?? createReviewHeadFailedChecksResolver({ db }),
+      });
+      if (admission === "admit") return false;
+      // The trace of a held wake. It carries no run id on purpose: it is the
+      // board's note, not an action of the executor's run. A failed write does
+      // not undo the decision: the monitor still owes the reviewer its wake.
+      try {
+        await logActivity(db, {
+          companyId: input.issue.companyId,
+          actorType: "system",
+          actorId: "review-admission",
+          agentId: null,
+          runId: null,
+          action: REVIEW_COMMENT_WAKE_DEFERRED_ACTION,
+          entityType: "issue",
+          entityId: input.issue.id,
+          details: {
+            identifier: input.issue.identifier ?? null,
+            commentId: input.commentId,
+            reviewerAgentId: input.recipientAgentId,
+            executorAgentId: input.actor.agentId,
+            admission,
+          },
+        });
+      } catch (err) {
+        logger.warn(
+          { err, issueId: input.issue.id, commentId: input.commentId },
+          "failed to record a comment wake held for the review CI wait",
+        );
+      }
+      return true;
+    } catch (err) {
+      logger.warn(
+        { err, issueId: input.issue.id, commentId: input.commentId },
+        "review comment wake gate could not decide; the comment wakes the assignee as before",
+      );
+      return false;
+    }
   };
   const enqueueStalledReviewDecisionWakeup =
     opts.stalledReviewDecisionEnqueueWakeup ?? heartbeat.wakeup;
@@ -18153,11 +18250,29 @@ export function issueRoutes(
               suppressesWake: isPromptBudgetSignalNotice(comment),
             });
 
-          if (
+          // myrmidon(EMPTY-RUNS-2): the executor's comment does not wake the
+          // reviewer while the review stage waits for green CI.
+          const commentHeldForReviewCi =
             assigneeId &&
             !assigneeChanged &&
             !goalCommentSteered &&
             shouldWakeAssigneeForComment
+              ? await executorCommentHeldForReviewCi({
+                  issue,
+                  recipientAgentId: assigneeId,
+                  actor,
+                  commentId: comment.id,
+                  reopened,
+                  resumeRequested: resumeRequested === true,
+                })
+              : false;
+
+          if (
+            assigneeId &&
+            !assigneeChanged &&
+            !goalCommentSteered &&
+            shouldWakeAssigneeForComment &&
+            !commentHeldForReviewCi
           ) {
             addWakeup(assigneeId, {
               source: "automation",
@@ -21893,7 +22008,25 @@ export function issueRoutes(
           // agent whose prompt is already over budget.
           suppressesWake: isPromptBudgetSignalNotice(comment),
         });
-        if (assigneeId && !goalCommentSteered && shouldWakeAssigneeForComment) {
+        // myrmidon(EMPTY-RUNS-2): the executor's comment does not wake the
+        // reviewer while the review stage waits for green CI.
+        const commentHeldForReviewCi =
+          assigneeId && !goalCommentSteered && shouldWakeAssigneeForComment
+            ? await executorCommentHeldForReviewCi({
+                issue: wakeIssueSnapshot,
+                recipientAgentId: assigneeId,
+                actor,
+                commentId: comment.id,
+                reopened,
+                resumeRequested: resumeRequested === true,
+              })
+            : false;
+        if (
+          assigneeId &&
+          !goalCommentSteered &&
+          shouldWakeAssigneeForComment &&
+          !commentHeldForReviewCi
+        ) {
           if (reopened) {
             addWakeup(assigneeId, {
               source: "automation",
