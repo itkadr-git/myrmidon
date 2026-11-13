@@ -1087,14 +1087,12 @@ export function githubConnectionEventService(
     }
     if (repeated && !returned) return;
     // myrmidon(EMPTY-RUNS-3B): the result of a task that is in review is news
-    // for the participant of its pending review stage, not for whoever is the
+    // for the participant of its pending stage (review or approval), not for whoever is the
     // assignee: another agent (or nobody, when the task has no stage) cannot
     // decide anything and the run it would start is empty.
     if (!returned && issue.status === "in_review") {
       const state = parseIssueExecutionState(issue.executionState);
-      const participant = state?.status === "pending" && state.currentStageType === "review"
-        ? state.currentParticipant
-        : null;
+      const participant = state?.status === "pending" ? state.currentParticipant : null;
       if (!participant || participant.type !== "agent" || !participant.agentId) return;
       wakeAgentId = participant.agentId;
     }

@@ -566,26 +566,13 @@ export function isReviewPendingWaitingForCi(params: {
 export async function reviewCiDefersIdlePickup(
   deps: Pick<IdlePickupDeps, "db" | "env" | "resolveReviewPullRequestCi" | "resolveReviewHeadFailedChecks">,
   agent: { id: string; companyId: string },
-  candidate: { id: string; priority: string | null; executionState: unknown; status?: string },
+  candidate: { id: string; priority: string | null; executionState: unknown },
 ): Promise<boolean> {
   if (!readReviewCommentWakeGateEnabled(deps.env ?? process.env)) return false;
   const es =
     candidate.executionState !== null && typeof candidate.executionState === "object"
       ? (candidate.executionState as Record<string, unknown>)
       : null;
-  // myrmidon(EMPTY-RUNS-2C): a task in review is picked up by the participant
-  // of its pending review stage only. A task without a stage, or with another
-  // agent as the participant, is no decision for this agent: the run is empty.
-  if (candidate.status === "in_review") {
-    const stagePending = es !== null && es.status === "pending" && es.currentStageType === "review";
-    const stageParticipant =
-      es !== null && es.currentParticipant !== null && typeof es.currentParticipant === "object"
-        ? (es.currentParticipant as Record<string, unknown>)
-        : null;
-    const noStage = es === null || typeof es.currentStageType !== "string";
-    if (noStage) return true;
-    if (stagePending && stageParticipant?.type === "agent" && stageParticipant.agentId !== agent.id) return true;
-  }
   if (!es || es.status !== "pending" || es.currentStageType !== "review") return false;
   const participant =
     es.currentParticipant !== null && typeof es.currentParticipant === "object"

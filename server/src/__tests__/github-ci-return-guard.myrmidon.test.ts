@@ -104,7 +104,7 @@ describeEmbeddedPostgres.sequential("CI deliveries by the final result of the he
     const connectionId = randomUUID();
     const grantId = randomUUID();
     const applicationId = randomUUID();
-    await db.insert(companies).values({ id: companyId, name: "Paperclip", issuePrefix: "GCR" });
+    await db.insert(companies).values({ id: companyId, name: "Paperclip", issuePrefix: `G${randomUUID().replace(/[^a-z]/g, "").slice(0, 5).toUpperCase().padEnd(5, "X")}` });
     await db.insert(agents).values({ id: executorId, companyId, name: "worker", role: "engineer" });
     await db.insert(agents).values({ id: reviewerId, companyId, name: "reviewer", role: "engineer" });
     await db.insert(issues).values({
