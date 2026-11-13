@@ -1,6 +1,7 @@
 package gate_test
 
 import (
+	"context"
 	"errors"
 	"io/fs"
 	"os"
@@ -28,12 +29,12 @@ const a22Tail = "?force=true&v=true&myrmidon-decommission=true"
 // a22Rig is a rig whose volume root is a temporary directory that holds the
 // bot's data directory, with a quota stub that keeps what it was asked and
 // refuses like the real Quota.Remove does while the directory still exists
-// (disk.ErrQuotaUnavailable stands in for its `bot directory still exists`):
-// the tests never reach the host's /etc/projid or xfs_quota.
+// (disk.ErrBotDirStillExists is its typed refusal): the tests never reach the
+// host's /etc/projid or xfs_quota.
 func a22Rig(t *testing.T) (*rig, *putStub, string) {
 	t.Helper()
 	volumeRoot := t.TempDir()
-	st := &putStub{err: disk.ErrQuotaUnavailable}
+	st := &putStub{err: disk.ErrBotDirStillExists}
 	r := newRig(t, withDisk(st), withConfig(func(c *config.Config) { c.VolumeRoot = volumeRoot }))
 	data := filepath.Join(volumeRoot, r.key())
 	for _, f := range []string{"hermes/sessions/s1.json", "workspace/repo/.git/HEAD", "scratch/tmp.txt"} {
@@ -289,4 +290,79 @@ func TestDeny_A9_MainWithoutReplacementStaysRefused(t *testing.T) {
 	r.seedMain("exited")
 	wantDeny(t, r.send("DELETE", r.target("", "?force=true&v=true"), nil, nil), deny.StatePrecondition)
 	a22WantUntouched(t, r, st, data, true)
+}
+
+// OPE-12959: the result of Disk.Remove after the A9 delete of the main
+// container is classified, not blanket-logged as an error. The recreate keeps
+// the bot's data directory, so Quota.Remove's typed refusal
+// (disk.ErrBotDirStillExists) is the expected case and lands as an info line,
+// never as disk_project_remove_failed.
+func TestAllow_A9_RecreateWithDataLeftLogsNoError(t *testing.T) {
+	r, st, data := a22Rig(t)
+	r.seedMain("exited")
+	r.seedNext("created")
+	res := r.send("DELETE", r.target("", "?force=true&v=true"), nil, nil)
+	wantStatus(t, res, 204)
+	r.lastDecision()
+	if got := quotaRemoved(st); !reflect.DeepEqual(got, []string{r.key()}) {
+		t.Errorf("quota projects asked: %v, want [%s]", got, r.key())
+	}
+	if !pathExists(t, data) {
+		t.Error("the bot data directory was removed")
+	}
+	if ev := a22Event(t, r, "disk_project_remove_failed"); ev != nil {
+		t.Errorf("disk_project_remove_failed logged: %+v", *ev)
+	}
+	if ev := a22Event(t, r, "disk_project_removed"); ev != nil {
+		t.Errorf("disk_project_removed logged: %+v", *ev)
+	}
+	ev := a22Event(t, r, "disk_project_still_has_directory")
+	if ev == nil || ev.Level != gate.LevelInfo || ev.BotKey != r.key() {
+		t.Errorf("disk_project_still_has_directory line: %+v", ev)
+	}
+}
+
+// The other side of OPE-12959: a real failure of the removal (here a stub
+// error standing in for an unreadable projects file) is logged as an error
+// and the cause is kept in Detail.
+func TestAllow_A9_RecreateWithFailingRemoveLogsErrorWithCause(t *testing.T) {
+	rig := newRig(t, withDisk(&failingRemoveStub{err: errors.New("disk: read /etc/projects: permission denied")}))
+	rig.seedMain("exited")
+	rig.seedNext("created")
+	res := rig.send("DELETE", rig.target("", "?force=true&v=true"), nil, nil)
+	wantStatus(t, res, 204)
+	rig.lastDecision()
+	var fail, still *gate.Line
+	for _, l := range rig.log.Lines(t) {
+		if l.Event == "disk_project_remove_failed" {
+			found := l
+			fail = &found
+		}
+		if l.Event == "disk_project_still_has_directory" {
+			found := l
+			still = &found
+		}
+	}
+	if still != nil {
+		t.Errorf("disk_project_still_has_directory logged: %+v", *still)
+	}
+	if fail == nil {
+		t.Fatal("no disk_project_remove_failed line")
+	}
+	if fail.Level != gate.LevelError || fail.BotKey != rig.key() || fail.Reason != "delete" {
+		t.Errorf("disk_project_remove_failed line: %+v", *fail)
+	}
+	if !strings.Contains(fail.Detail, "permission denied") {
+		t.Errorf("Detail %q has no cause", fail.Detail)
+	}
+}
+
+// failingRemoveStub refuses Remove like putStub, for the error case of the
+// A9 disk cleanup.
+type failingRemoveStub struct{ err error }
+
+func (f *failingRemoveStub) Ensure(context.Context, string) (int, error) { return 0, nil }
+func (f *failingRemoveStub) Remove(context.Context, string) error         { return f.err }
+func (f *failingRemoveStub) Put(context.Context, string, int64) (disk.Result, error) {
+	return disk.Result{}, nil
 }
