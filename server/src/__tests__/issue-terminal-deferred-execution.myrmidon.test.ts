@@ -68,7 +68,7 @@ describeEmbeddedPostgres("deferred wakeups on terminal issues (OPE-8490)", () =>
     heartbeat = heartbeatService(db, {
       runtimeEnv: { ...process.env, PAPERCLIP_IN_WORKTREE: "false" },
     });
-  }, 20_000);
+  }, 60_000);
 
   beforeEach(async () => {
     await db.insert(companies).values({

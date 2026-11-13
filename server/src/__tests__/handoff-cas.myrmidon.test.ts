@@ -52,7 +52,7 @@ describeEmbeddedPostgres("guarded CAS handoff on PATCH /api/issues/{id}", () => 
   beforeAll(async () => {
     tempDb = await startEmbeddedPostgresTestDatabase("myrmidon-handoff-cas-");
     db = createDb(tempDb.connectionString);
-  }, 20_000);
+  }, 60_000);
 
   afterEach(async () => {
     // myrmidon(HANDOFF-CAS): the PATCH route fires background work off-list

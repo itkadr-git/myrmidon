@@ -29,7 +29,7 @@ describeEmbeddedPostgres("run-dispatch: pending interaction addressee wake (P2)"
   beforeAll(async () => {
     tempDb = await startEmbeddedPostgresTestDatabase("paperclip-myrmidon-addressee-wake-");
     db = createDb(tempDb.connectionString);
-  }, 30_000);
+  }, 60_000);
 
   afterEach(async () => {
     await db.delete(activityLog);

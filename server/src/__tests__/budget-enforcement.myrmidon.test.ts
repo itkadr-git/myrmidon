@@ -101,7 +101,7 @@ describeEmbeddedPostgres("budget enforcement modes against the real service", ()
   beforeAll(async () => {
     tempDb = await startEmbeddedPostgresTestDatabase("paperclip-budget-enforcement-");
     db = createDb(tempDb.connectionString);
-  }, 20_000);
+  }, 60_000);
 
   afterEach(async () => {
     await db.delete(issueComments);
@@ -325,7 +325,7 @@ describeEmbeddedPostgres("budget enforcement settings service", () => {
   beforeAll(async () => {
     tempDb = await startEmbeddedPostgresTestDatabase("paperclip-budget-enforcement-svc-");
     db = createDb(tempDb.connectionString);
-  }, 20_000);
+  }, 60_000);
 
   afterEach(async () => {
     await db.delete(companies);

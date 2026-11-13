@@ -27,7 +27,7 @@ describeEmbeddedPostgres("legacy blocked apply postgres", () => {
   beforeAll(async () => {
     tempDb = await startEmbeddedPostgresTestDatabase("paperclip-legacy-blocked-apply-");
     db = createDb(tempDb.connectionString);
-  }, 20_000);
+  }, 60_000);
 
   afterEach(async () => {
     await db.delete(legacyBlockedImports);

@@ -52,7 +52,7 @@ describeEmbeddedPostgres("stuck triggered issue monitor sweep", () => {
   beforeAll(async () => {
     tempDb = await startEmbeddedPostgresTestDatabase("paperclip-issue-monitor-sweep-");
     db = createDb(tempDb.connectionString);
-  }, 20_000);
+  }, 60_000);
 
   async function cleanupRows() {
     // The ticks wake the assignee, and the woken runs execute in the background

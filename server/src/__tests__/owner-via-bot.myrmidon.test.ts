@@ -76,7 +76,7 @@ describeEmbeddedPostgres("owner decisions via the bot (1.6.5)", () => {
     process.env.PAPERCLIP_SECRETS_MASTER_KEY_FILE = path.join(secretsTmpDir, "master.key");
     tempDb = await startEmbeddedPostgresTestDatabase("paperclip-owner-via-bot-");
     db = createDb(tempDb.connectionString);
-  }, 30_000);
+  }, 60_000);
 
   afterAll(async () => {
     await tempDb?.cleanup();

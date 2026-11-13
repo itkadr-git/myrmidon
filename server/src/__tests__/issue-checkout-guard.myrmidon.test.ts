@@ -45,7 +45,7 @@ describeEmbeddedPostgres("issue checkout run-context gate and lock-owner status 
   beforeAll(async () => {
     tempDb = await startEmbeddedPostgresTestDatabase("myrmidon-issue-checkout-guard-");
     db = createDb(tempDb.connectionString);
-  }, 20_000);
+  }, 60_000);
 
   afterEach(async () => {
     // Checkout and comment routes start wakes in the background; let them finish

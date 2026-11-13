@@ -457,7 +457,7 @@ describeEmbedded("OPE-9476: production heartbeat daily cap exclusion for failedB
     heartbeat = heartbeatService(db, {
       runtimeEnv: { ...process.env, PAPERCLIP_IN_WORKTREE: "false" },
     });
-  }, 20_000);
+  }, 60_000);
 
   afterAll(async () => {
     await tempDb?.cleanup();

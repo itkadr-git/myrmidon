@@ -52,7 +52,7 @@ describeEmbeddedPostgres("corpus MCP endpoint over the settings row", () => {
   beforeAll(async () => {
     tempDb = await startEmbeddedPostgresTestDatabase("paperclip-corpus-mcp-");
     db = createDb(tempDb.connectionString);
-  }, 30_000);
+  }, 60_000);
 
   afterAll(async () => {
     await tempDb?.cleanup();

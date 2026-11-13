@@ -66,7 +66,7 @@ describeEmbeddedPostgres("execution hold: mention wake and confirm-continue (OPE
     tempDb = await startEmbeddedPostgresTestDatabase("myrmidon-execution-hold-mention-");
     db = createDb(tempDb.connectionString);
     heartbeat = heartbeatService(db, { runtimeEnv: { ...process.env, PAPERCLIP_IN_WORKTREE: "false" } });
-  }, 30_000);
+  }, 60_000);
 
   afterEach(async () => {
     for (let attempt = 0; attempt < 600; attempt += 1) {

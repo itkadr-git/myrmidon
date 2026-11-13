@@ -70,7 +70,7 @@ describeEmbeddedPostgres("heartbeat continuation wakes: status gate and real att
     tempDb = await startEmbeddedPostgresTestDatabase("paperclip-heartbeat-continuation-cap-");
     db = createDb(tempDb.connectionString);
     heartbeat = heartbeatService(db);
-  }, 20_000);
+  }, 60_000);
 
   afterEach(async () => {
     runningProcesses.clear();
