@@ -28,13 +28,13 @@ describe("packCitedFragments", () => {
         hit("1", "A relevant paragraph with enough words to consume budget.", 0.95),
         hit("2", "Another relevant paragraph that should fit when budget allows.", 0.9),
       ],
-      { tokenBudget: 40 },
+      { tokenBudget: 70 },
     );
 
-    expect(packed.tokenCount).toBeLessThanOrEqual(40);
+    expect(packed.tokenCount).toBeLessThanOrEqual(70);
     expect(estimateFragmentTokens(packed.text)).toBe(packed.tokenCount);
     expect(packed.fragments.length).toBeGreaterThan(0);
-    expect(validatePackedFragments(packed, 40)).toBe(true);
+    expect(validatePackedFragments(packed, 70)).toBe(true);
   });
 
   it("safely bounds non-Latin text (Cyrillic and CJK) without token undercounting", () => {

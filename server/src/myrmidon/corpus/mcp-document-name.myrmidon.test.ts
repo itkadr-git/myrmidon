@@ -260,7 +260,13 @@ describe("createCorpusMcpProvider: the search hot path does not count datasets (
 
     const result = await tools!.search({ query: "weber grill", datasets: ["no-such-dataset"], topK: 3, minScore: null, contextTokenBudget: 2000 });
 
-    expect(result).toEqual({ query: "weber grill", datasets: [], topK: 3, hits: [] });
+    expect(result).toEqual({
+      query: "weber grill",
+      datasets: [],
+      topK: 3,
+      hits: [],
+      context: { fragments: [], text: "", tokenCount: 0 },
+    });
     expect(spy.indexSearch).toHaveLength(0);
     expect(spy.listDatasets).toBe(0);
   });
@@ -280,6 +286,19 @@ describe("createCorpusMcpProvider: the search hot path does not count datasets (
         text: "Grill temperature and timing advice from Weber.",
         score: 0.95,
       }],
+      context: {
+        fragments: [{
+          chunkId: "chunk-1",
+          ordinal: 0,
+          text: "Grill temperature and timing advice from Weber.",
+          score: 0.95,
+          source: { id: DOCUMENT_ID, name: DOCUMENT_NAME, datasetId: DATASET_ID, datasetName: "bbq-craft", url: null },
+          citation: `[Source: ${DOCUMENT_NAME} (${DOCUMENT_ID}, chunk chunk-1)]`,
+          tokenCount: 50,
+        }],
+        text: `[Source: ${DOCUMENT_NAME} (${DOCUMENT_ID}, chunk chunk-1)]\nGrill temperature and timing advice from Weber.`,
+        tokenCount: 50,
+      },
     });
 
     const filtered = await tools!.search({ query: "weber grill", datasets: ["bbq-craft"], topK: 5, minScore: 0.99, contextTokenBudget: 2000 });
