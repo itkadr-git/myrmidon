@@ -145,6 +145,7 @@ export { chatReconcileMinimumSpacingMs, getChatReconcileFallbackIntervalMs, crea
 export { createChatReconciliationWorkGates } from "./chat-reconciliation/work-gates.js";
 export type { ChatReconciliationWorkGates } from "./chat-reconciliation/work-gates.js";
 export { myrmidonCasteRoutes } from "./castes/wiring.js";
+export { myrmidonModelGroupRulesRoutes } from "./model-group-rules/wiring.js"; // myrmidon(1.8 MODEL-BY-STEP, OPE-12997)
 export { myrmidonGuardrailsRoutes } from "./guardrails/index.js"; // myrmidon(1.6-GRD)
 export { goalJudgeRoutes, myrmidonGoalJudgeRoutes } from "./goal-judge/routes.js"; // myrmidon(1.7-GOAL-JUDGE)
 export { goalJudgeSettingsService } from "./goal-judge/settings.js"; // myrmidon(1.7-GOAL-JUDGE)

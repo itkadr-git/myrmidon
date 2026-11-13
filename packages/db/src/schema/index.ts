@@ -287,6 +287,8 @@ export {
 } from "./model_providers.js";
 // myrmidon(CUSTOM-CASTES): the company caste (agent role) directory.
 export { agentCastes } from "./agent_castes.js";
+// myrmidon(1.8 MODEL-BY-STEP, OPE-12997): company step-class → model-group rules.
+export { companyModelGroupRules } from "./company_model_group_rules.js";
 // myrmidon(CORPUS-A): corpus knowledge module tables.
 export {
   corpusDatasets,

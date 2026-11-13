@@ -246,6 +246,7 @@ import {
   createChatReconciliationWorkGates,
   type ChatReconciliationWorkGates,
   myrmidonCasteRoutes,
+  myrmidonModelGroupRulesRoutes,
   myrmidonGuardrailsRoutes,
   myrmidonInstalledLocalesRoutes,
   myrmidonVendorNameCheckRoutes,
@@ -1588,6 +1589,7 @@ export async function createApp(
     }),
   );
   api.use(myrmidonCasteRoutes(db)); // myrmidon(CUSTOM-CASTES): caste directory CRUD
+  api.use(myrmidonModelGroupRulesRoutes(db)); // myrmidon(1.8 MODEL-BY-STEP, OPE-12997)
   api.use(myrmidonGuardrailsRoutes(db)); // myrmidon(1.6-GRD): flag-only guardrail event journal (board-only read route)
   api.use(
     accessRoutes(db, {
