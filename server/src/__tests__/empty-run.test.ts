@@ -46,8 +46,8 @@ const mockAdapterExecute = vi.hoisted(() =>
   })),
 );
 
-vi.mock("../adapters/index.ts", async () => {
-  const actual = await vi.importActual<typeof adaptersModule>("../adapters/index.ts");
+vi.mock("../adapters/index.js", async () => {
+  const actual = await vi.importActual<typeof adaptersModule>("../adapters/index.js");
   return {
     ...actual,
     getServerAdapter: vi.fn(() => ({
