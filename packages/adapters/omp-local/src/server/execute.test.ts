@@ -151,7 +151,7 @@ vi.mock("@myrmidon/adapter-utils/execution-target", async (importOriginal) => {
   };
 });
 
-import { execute } from "./execute.js";
+import { buildSkillDescriptionsLinkCommand, execute } from "./execute.js";
 
 describe("omp local execution", () => {
   const cleanupDirs: string[] = [];
@@ -1653,7 +1653,7 @@ describe("omp local execution", () => {
   // myrmidon(OMP-RUN-GUARD-3): a retry continues the session of the run it replaces.
   describe("session continuity of an SSH run", () => {
     const BASE = "/remote/workspace";
-    const SESSION_ROOT = `${BASE}/.paperclip-runtime/omp-sessions/company-1/agent-1`;
+    const SESSION_ROOT = `${BASE}/.paperclip-runtime/omp-sessions/company-1/agent-1/task-1`;
     const OLD_CWD = `${BASE}/.paperclip-runtime/runs/run-old/workspace`;
     const NEW_CWD = `${BASE}/.paperclip-runtime/runs/run-session/workspace`;
     const SESSION_FILE = `${SESSION_ROOT}/2026-11-13_abc.jsonl`;
@@ -1701,7 +1701,7 @@ describe("omp local execution", () => {
           taskKey: null,
         },
         config: { command: "omp", model: "openai/gpt-4o" },
-        context: { paperclipWorkspace: { cwd: workspaceDir, source: "project_primary" } },
+        context: { taskId: "task-1", paperclipWorkspace: { cwd: workspaceDir, source: "project_primary" } },
         onLog: async () => {},
       };
     }
@@ -1772,6 +1772,107 @@ describe("omp local execution", () => {
       const args = runAdapterExecutionTargetProcess.mock.calls[0]?.[3] ?? [];
       expect(args).not.toContain("--session");
       expect(args[args.indexOf("--session-dir") + 1]).toBe(SESSION_ROOT);
+    });
+
+    it("does not resume a session of another task of the same agent", async () => {
+      const otherTaskFile = `${BASE}/.paperclip-runtime/omp-sessions/company-1/agent-1/task-2/2026-11-13_def.jsonl`;
+      const input = await makeRun("run-session", { ...savedParams, sessionId: otherTaskFile });
+      const commands: string[] = [];
+      // The header of the file is fine: the file itself is the wrong one.
+      runAdapterExecutionTargetShellCommand.mockImplementation(async (_runId, _target, command) => {
+        const text = String(command ?? "");
+        commands.push(text);
+        if (text.includes("head -n")) return shellOk(`${JSON.stringify({ type: "session", id: "def", cwd: OLD_CWD })}\n`);
+        return shellOk();
+      });
+      try {
+        await execute(input);
+      } finally {
+        runAdapterExecutionTargetShellCommand.mockImplementation(defaultShell);
+      }
+
+      const args = runAdapterExecutionTargetProcess.mock.calls[0]?.[3] ?? [];
+      expect(args).not.toContain("--session");
+      expect(args[args.indexOf("--session-dir") + 1]).toBe(SESSION_ROOT);
+      // The foreign file is not touched.
+      expect(commands.some((command) => command.includes(otherTaskFile) && command.includes("sed -i"))).toBe(false);
+    });
+
+    it("does not resume a session of another agent", async () => {
+      const otherAgentFile = `${BASE}/.paperclip-runtime/omp-sessions/company-1/agent-9/task-1/x.jsonl`;
+      const input = await makeRun("run-session", { ...savedParams, sessionId: otherAgentFile });
+      runAdapterExecutionTargetShellCommand.mockImplementation(async (_runId, _target, command) =>
+        String(command ?? "").includes("head -n")
+          ? shellOk(`${JSON.stringify({ type: "session", id: "x", cwd: OLD_CWD })}\n`)
+          : shellOk(),
+      );
+      try {
+        await execute(input);
+      } finally {
+        runAdapterExecutionTargetShellCommand.mockImplementation(defaultShell);
+      }
+
+      expect(runAdapterExecutionTargetProcess.mock.calls[0]?.[3] ?? []).not.toContain("--session");
+    });
+
+    it("links the agent's persistent skill description cache into the agent dir of the run", async () => {
+      const input = await makeRun("run-session", null);
+
+      await execute(input);
+
+      const AGENT_CONFIG = `${NEW_CWD}/.paperclip-runtime/omp/agentConfig`;
+      const CACHE = `${BASE}/.paperclip-runtime/omp-skill-cache/company-1/agent-1`;
+      const link = runAdapterExecutionTargetShellCommand.mock.calls
+        .map((call) => String(call[2] ?? ""))
+        .find((command) => command.includes("ln -sfn"));
+      expect(link).toBe(
+        `mkdir -p '${CACHE}' && ln -sfn '${CACHE}/skill-descriptions.db' '${AGENT_CONFIG}/skill-descriptions.db'`,
+      );
+      expect(buildSkillDescriptionsLinkCommand(AGENT_CONFIG, CACHE)).toBe(link);
+    });
+
+    it("runs on when the skill description cache cannot be linked", async () => {
+      const input = await makeRun("run-session", null);
+      runAdapterExecutionTargetShellCommand.mockImplementation(async (_runId, _target, command) => {
+        if (String(command ?? "").includes("ln -sfn")) throw new Error("ssh lost");
+        return shellOk();
+      });
+      try {
+        await execute(input);
+      } finally {
+        runAdapterExecutionTargetShellCommand.mockImplementation(defaultShell);
+      }
+
+      expect(runAdapterExecutionTargetProcess).toHaveBeenCalledTimes(1);
+    });
+
+    it("drops the task's session after the run guard stopped the run, so the next run starts a new one", async () => {
+      const input = await makeRun("run-session", null);
+      const guard = new RunGuard();
+      let listed = 0;
+      runAdapterExecutionTargetShellCommand.mockImplementation(async (_runId, _target, command) => {
+        if (String(command ?? "").includes("ls -1t")) {
+          listed += 1;
+          return shellOk(listed >= 2 ? `${SESSION_FILE}\n` : "");
+        }
+        return shellOk();
+      });
+      runAdapterExecutionTargetProcess.mockImplementationOnce(async (_runId, _target, _command, _args, options) => {
+        const onLog = options?.onLog as (stream: "stdout" | "stderr", chunk: string) => Promise<void>;
+        await onLog("stdout", `${JSON.stringify({ type: "turn_start" })}\n`.repeat(151));
+        return { exitCode: null, signal: "SIGTERM", timedOut: false, stdout: "", stderr: "", pid: 1, startedAt: new Date().toISOString() };
+      });
+      let result;
+      try {
+        result = await execute({ ...input, runGuard: guard, onRunGuardStop: async () => undefined });
+      } finally {
+        runAdapterExecutionTargetShellCommand.mockImplementation(defaultShell);
+      }
+
+      expect(result.errorCode).toBe("model_call_limit");
+      expect(result.clearSession).toBe(true);
+      expect(result.sessionId ?? null).toBeNull();
+      expect(result.sessionParams ?? null).toBeNull();
     });
 
     it("does not resume a session that is missing on the runner", async () => {

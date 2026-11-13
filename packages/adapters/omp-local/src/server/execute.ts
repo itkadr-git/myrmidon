@@ -137,8 +137,45 @@ function resolveRemoteSessionRoot(workspaceBaseDir: string): string {
   return path.posix.join(workspaceBaseDir, ".paperclip-runtime", "omp-sessions");
 }
 
-function resolveRemoteIsolatedSessionDir(workspaceBaseDir: string, companyId: string, agentId: string): string {
-  return path.posix.join(resolveRemoteSessionRoot(workspaceBaseDir), companyId, agentId);
+// A saved session may be continued only by the same agent working on the same
+// task. The agent's sessions are kept one directory per task, so the path of a
+// session itself says whose it is, and a session directory holds the files of
+// one task only (the new session of a run is found in it without a guess).
+export function remoteSessionTaskSegment(taskId: string | null | undefined): string {
+  const segment = (taskId ?? "").trim().replace(/[^A-Za-z0-9_-]/g, "_");
+  return segment.length > 0 ? segment.slice(0, 80) : "_no-task";
+}
+
+function resolveRemoteIsolatedSessionDir(
+  workspaceBaseDir: string,
+  companyId: string,
+  agentId: string,
+  taskId: string | null | undefined,
+): string {
+  return path.posix.join(
+    resolveRemoteSessionRoot(workspaceBaseDir),
+    companyId,
+    agentId,
+    remoteSessionTaskSegment(taskId),
+  );
+}
+
+// myrmidon(OMP-RUN-GUARD-3): omp keeps the compressed skill descriptions in
+// <agent dir>/skill-descriptions.db, and the agent dir of an SSH run is created
+// anew for each run, so every run paid for the compression again (one small
+// model call per skill). The file lives in a directory of the agent outside
+// the runs; the agent dir of the run gets a symbolic link to it. SQLite
+// resolves the link and puts its -wal/-shm files next to the real file.
+function resolveRemoteSkillCacheDir(workspaceBaseDir: string, companyId: string, agentId: string): string {
+  return path.posix.join(workspaceBaseDir, ".paperclip-runtime", "omp-skill-cache", companyId, agentId);
+}
+
+export const OMP_SKILL_DESCRIPTIONS_DB_FILE = "skill-descriptions.db";
+
+export function buildSkillDescriptionsLinkCommand(agentConfigDir: string, cacheDir: string): string {
+  const target = path.posix.join(cacheDir, OMP_SKILL_DESCRIPTIONS_DB_FILE);
+  const link = path.posix.join(agentConfigDir, OMP_SKILL_DESCRIPTIONS_DB_FILE);
+  return `mkdir -p ${shellQuote(cacheDir)} && ln -sfn ${shellQuote(target)} ${shellQuote(link)}`;
 }
 
 const SAFE_REMOTE_CWD = /^[A-Za-z0-9_@.:/+-]+$/;
@@ -849,7 +886,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
 
     const effectiveSessionDir = executionTargetIsRemote && remoteRuntimeRootDir
       ? stableRemoteSessions
-        ? resolveRemoteIsolatedSessionDir(remoteWorkspaceBaseDir, agent.companyId, agent.id)
+        ? resolveRemoteIsolatedSessionDir(remoteWorkspaceBaseDir, agent.companyId, agent.id, wakeTaskId)
         : path.posix.join(remoteRuntimeRootDir, "sessions", agent.companyId, agent.id)
       : isolatedSessionDir;
 
@@ -868,6 +905,26 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
           `find ${shellQuote(resolveRemoteSessionRoot(remoteWorkspaceBaseDir))} -type f -name '*.jsonl' -mtime +${OMP_REMOTE_SESSION_RETENTION_DAYS} -delete 2>/dev/null || true`,
           { cwd, env, timeoutSec: 30, graceSec },
         ).catch(() => undefined);
+        // myrmidon(OMP-RUN-GUARD-3): the skill description cache of the agent is
+        // linked into the run's agent dir. A failure costs the cache, not the run.
+        const runAgentConfigDir = env.PI_CODING_AGENT_DIR;
+        if (runAgentConfigDir) {
+          const linked = await runAdapterExecutionTargetShellCommand(
+            runId,
+            executionTarget,
+            buildSkillDescriptionsLinkCommand(
+              runAgentConfigDir,
+              resolveRemoteSkillCacheDir(remoteWorkspaceBaseDir, agent.companyId, agent.id),
+            ),
+            { cwd, env, timeoutSec: 15, graceSec },
+          ).catch(() => null);
+          if (!linked || linked.timedOut || (linked.exitCode ?? 0) !== 0) {
+            await onLog(
+              "stderr",
+              "[paperclip] The OMP skill description cache could not be linked; this run compresses the descriptions again.\n",
+            ).catch(() => undefined);
+          }
+        }
       }
     }
 
@@ -956,7 +1013,14 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         Boolean(remoteSessionBase && normalizedSessionPath.includes(remoteSessionBase)) &&
         !normalizedSessionPath.includes(agentRemoteSegment));
 
-    const sessionBelongsToAgent = runtimeSessionId.length > 0 && !sessionBelongsToOtherAgent;
+    // myrmidon(OMP-RUN-GUARD-3): an SSH session is continued only from this agent's
+    // directory of this task: the file lies directly in effectiveSessionDir.
+    const sessionOutsideTaskDir =
+      stableRemoteSessions &&
+      runtimeSessionId.length > 0 &&
+      path.posix.dirname(path.posix.normalize(normalizedSessionPath)) !== effectiveSessionDir;
+    const sessionBelongsToAgent =
+      runtimeSessionId.length > 0 && !sessionBelongsToOtherAgent && !sessionOutsideTaskDir;
 
     const savedSessionCwd =
       runtimeSessionId.length > 0 && sessionBelongsToAgent
@@ -1260,7 +1324,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     let sessionReportBusy = false;
     let sessionReportAttempts = 0;
     const reportSessionEarly = async (): Promise<void> => {
-      if (!ctx.onSessionCreated || sessionReported || sessionReportBusy || sessionReportAttempts >= 6) return;
+      if (!ctx.onSessionCreated || guardStopReason || sessionReported || sessionReportBusy || sessionReportAttempts >= 6) return;
       sessionReportBusy = true;
       sessionReportAttempts += 1;
       try {
@@ -1430,7 +1494,12 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         });
       }
 
-      const resolvedSessionId = clearSessionOnMissingSession ? null : finalSessionPath;
+      // myrmidon(OMP-RUN-GUARD-3): a session the guard stopped is not continued: it is
+      // full to the limit, and the follow-up run starts a fresh one (the board's
+      // own continuation hint tells it to pick the work up). clearSession is the
+      // adapter result's standard way to drop the task's session.
+      const clearForGuardStop = guardStopReason !== null;
+      const resolvedSessionId = clearSessionOnMissingSession || clearForGuardStop ? null : finalSessionPath;
       const resolvedSessionParams = resolvedSessionId ? buildSessionParams(resolvedSessionId) : null;
 
       const stderrLine = firstNonEmptyLine(attempt.proc.stderr);
@@ -1481,7 +1550,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
           stderr: attempt.proc.stderr,
         },
         summary: attempt.parsed.finalMessage ?? attempt.parsed.messages.join("\n\n").trim(),
-        clearSession: Boolean(clearSessionOnMissingSession),
+        clearSession: Boolean(clearSessionOnMissingSession) || clearForGuardStop,
       };
     };
 
