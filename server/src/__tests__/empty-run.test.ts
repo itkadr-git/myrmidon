@@ -234,6 +234,73 @@ describe("1.7 AGENT-RUNTIME: Stop conditions and empty runs (OPE-10096)", () => 
       expect(res.skippedSignal).toBeUndefined();
     });
 
+    it("reaches the maximum configured threshold (20) because the history window scales with the threshold (OPE-12941)", async () => {
+      const runEvents: RunEventInput[] = [];
+      const spy = vi
+        .spyOn(heartbeatEvents, "appendHeartbeatRunEvent")
+        .mockImplementation(async (_db, event) => {
+          runEvents.push(event);
+        });
+
+      // 19 previous empty runs + the current one = streak 20. With the old
+      // fixed `.limit(10)` window the counter could only ever reach 11, so
+      // thresholds 12..20 were unreachable.
+      const previousEmptyRuns = Array.from({ length: 19 }, (_, i) => ({
+        id: `run-prev-${i + 1}`,
+        livenessState: "empty_response",
+      }));
+      const res = await checkAndHandleEmptyRunEscalation(
+        historyMockDb(previousEmptyRuns),
+        {
+          companyId: "comp-1", issueId: "issue-1", agentId: "agent-1", runId: "run-20",
+          classification: { isEmpty: true, reason: "empty_response", description: "Empty" },
+          gateResult: { passed: false, gateMet: "none", reason: "Gate failed" },
+          threshold: 20,
+        },
+      );
+
+      expect(res.escalated).toBe(false);
+      expect(res.shouldRewake).toBe(true);
+      expect(res.consecutiveEmptyRuns).toBe(20);
+      expect(res.skippedSignal).toMatchObject({
+        reason: "empty_run_streak",
+        streak: 20,
+        threshold: 20,
+        lastRunId: "run-20",
+      });
+      expect(runEvents).toHaveLength(1);
+      spy.mockRestore();
+    });
+
+    it("starts a fresh streak when a productive run sits between two empty-run streaks (OPE-12941)", async () => {
+      // History newest-first: 3 empty runs, then one productive run, then an
+      // older empty streak. The productive run must truncate the count: the
+      // next empty run starts at streak 1 (current) + 3 (newest empty block),
+      // never inheriting the older streak of 5.
+      const res = await checkAndHandleEmptyRunEscalation(
+        historyMockDb([
+          { id: "run-empty-3", livenessState: "empty_response" },
+          { id: "run-empty-2", livenessState: "empty_response" },
+          { id: "run-empty-1", livenessState: "empty_response" },
+          { id: "run-productive", livenessState: "advanced" },
+          { id: "run-old-empty-5", livenessState: "empty_response" },
+          { id: "run-old-empty-4", livenessState: "empty_response" },
+          { id: "run-old-empty-3", livenessState: "empty_response" },
+          { id: "run-old-empty-2", livenessState: "empty_response" },
+          { id: "run-old-empty-1", livenessState: "empty_response" },
+        ]),
+        {
+          companyId: "comp-1", issueId: "issue-1", agentId: "agent-1", runId: "run-next",
+          classification: { isEmpty: true, reason: "empty_response", description: "Empty" },
+          gateResult: { passed: false, gateMet: "none", reason: "Gate failed" },
+          threshold: 20,
+        },
+      );
+
+      expect(res.consecutiveEmptyRuns).toBe(4);
+      expect(res.skippedSignal).toBeUndefined();
+    });
+
     it("emits a SKIPPED signal with reason after N consecutive empty runs (default threshold 5) without blocking the issue", async () => {
       const runEvents: RunEventInput[] = [];
       const spy = vi
