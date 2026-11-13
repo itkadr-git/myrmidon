@@ -34,6 +34,12 @@ const PROBE_SCHEMA = "backup_timeout_probe";
 const PROBE_TABLE = `${PROBE_SCHEMA}.timeout_rows`;
 const PROBE_EXCLUDED_TABLE = `${PROBE_SCHEMA}.probe_excluded`;
 const PROBE_ROWS = 1_000_000;
+// myrmidon(OPE-12551): CI runner disks sit right at the library's 6 GiB
+// free-space floor; the embedded cluster's own 1M-row probe table pushes the
+// runner under it mid-suite and backups abort before any statement timeout is
+// exercised (~6.02 GB free on the failing run). Dumps here are ~100 MB, so
+// lowering the floor for this suite does not mask real exhaustion.
+process.env.MYRMIDON_BACKUP_MIN_FREE_BYTES = String(64 * 1024 * 1024);
 // The database-level limit this suite fights with. The live stand ran 120 s;
 // 1 s reproduces the same 57014 class here with a 1M-row table.
 const DB_STATEMENT_TIMEOUT = "1s";

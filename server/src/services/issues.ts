@@ -11638,6 +11638,7 @@ export function issueService(db: Db) {
           // holding their transaction open; fail closed unless the stored facts
           // already prove every linked PR merged.
           const { assertStoredIssueDonePullRequestsSettled } = await import("../myrmidon/issue-done-gate/guard.js");
+          const { findApprovalPendingMergePullRequest } = await import("../myrmidon/review-stage-recovery/pre-merge-approval.js");
           const products = await tx.select({
             id: issueWorkProducts.id,
             companyId: issueWorkProducts.companyId,
@@ -11651,6 +11652,24 @@ export function issueService(db: Db) {
             eq(issueWorkProducts.type, "pull_request"),
           ));
           assertStoredIssueDonePullRequestsSettled(products);
+          const unlinkedOpen = await findApprovalPendingMergePullRequest(
+            tx as Db,
+            receiptExisting.companyId,
+            id,
+          );
+          if (unlinkedOpen) {
+            assertStoredIssueDonePullRequestsSettled([
+              ...products,
+              {
+                id: unlinkedOpen.id,
+                companyId: receiptExisting.companyId,
+                type: "pull_request",
+                status: "open",
+                url: unlinkedOpen.url,
+                metadata: null,
+              },
+            ]);
+          }
         }
         if (actorAgentId && patch.status === "done") {
           const [review] = await tx.select({ id: toolActionRequests.id }).from(toolActionRequests).where(and(eq(toolActionRequests.companyId, existing.companyId), eq(toolActionRequests.issueId, id), inArray(toolActionRequests.status, ["pending", "approved", "executing"]))).limit(1);

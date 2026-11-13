@@ -12,6 +12,7 @@ import {
   decisionTrainingExamples,
   decisionTriage,
   decisions,
+  externalObjects,
   heartbeatRuns,
   instanceSettings,
   inboxDismissals,
@@ -22,6 +23,7 @@ import {
   issueRecoveryActions,
   issueRelations,
   issueThreadInteractions,
+  issueWorkProducts,
   issues,
   joinRequests,
   documents,
@@ -64,6 +66,10 @@ import {
   issueService,
 } from "./issues.js";
 import { executionIssueCondition } from "./issue-visibility.js";
+// myrmidon(OPE-12879): the done-with-open-PR attention card matches PRs the same
+// way the done gate and review-stage recovery do.
+import { OPEN_PULL_REQUEST_WORK_PRODUCT_STATUSES } from "../myrmidon/review-stage-recovery/policy.js";
+import { extractPullRequestIssueIdentifier } from "../myrmidon/task-pr-sync/linking.js";
 import { parseIssueExecutionState } from "./issue-execution-policy.js";
 import { isProspectiveBlockedTransition } from "./routable-blocked.js";
 import { evaluateAgentInvokability, type AgentOrgRow } from "./agent-invokability.js";
@@ -273,6 +279,8 @@ const ATTENTION_SOURCE_KINDS: AttentionSourceKind[] = [
   // webhook switch is a GitHub-side setting no API can turn on, and while it
   // is off the board receives no GitHub events at all.
   "github_app_webhook_disabled",
+  // myrmidon(OPE-12879): one card per done task whose pull request is still open.
+  "done_pr_not_merged",
 ];
 
 const SEVERITY_RANK: Record<AttentionSeverity, number> = {
@@ -357,6 +365,9 @@ const SOURCE_RANK: Record<AttentionSourceKind, number> = {
   codex_pool_alert: 4,
   // myrmidon(OPE-7932): overdue monitors need operator visibility, below blockers.
   issue_monitor_overdue: 12,
+  // myrmidon(OPE-12879): a done task with an open PR hides real release state —
+  // surfaced right after blockers.
+  done_pr_not_merged: 2,
   // myrmidon(OPE-12517): an expiring/expired MCP gateway token is ops advice —
   // the gateway keeps serving until expiry, and the card's job is a rotation
   // heads-up, ranked with the other advisory notices.
@@ -2418,6 +2429,111 @@ async function buildAttentionFeedSnapshot(
           ...issueContext(subject),
           detail: genericDetail(`Monitor due ${nextCheckAt}; wake not recorded.`, []),
         }));
+      }
+
+      // myrmidon(OPE-12879): a done task with an attached open (unmerged) pull
+      // request hides real release readiness — the six 12.11 LOST-PR closings
+      // happened exactly through this hole. Stored facts only (no GitHub calls):
+      // linked work products in an open status, plus unlinked open PR external
+      // objects matched by branch `bot/<KEY>` or the issue identifier in the title.
+      const doneIssuesWithOpenPrs = await db
+        .select({
+          id: issues.id,
+          companyId: issues.companyId,
+          identifier: issues.identifier,
+          title: issues.title,
+          status: issues.status,
+          priority: issues.priority,
+          assigneeAgentId: issues.assigneeAgentId,
+          assigneeUserId: issues.assigneeUserId,
+          updatedAt: issues.updatedAt,
+          createdAt: issues.createdAt,
+        })
+        .from(issues)
+        .where(and(
+          eq(issues.companyId, companyId),
+          eq(issues.status, "done"),
+          executionIssueCondition(),
+        ));
+      if (doneIssuesWithOpenPrs.length > 0) {
+        const doneIssueIds = doneIssuesWithOpenPrs.map((issue) => issue.id);
+        const doneOpenProducts = await db
+          .select({
+            issueId: issueWorkProducts.issueId,
+            status: issueWorkProducts.status,
+            url: issueWorkProducts.url,
+            title: issueWorkProducts.title,
+            metadata: issueWorkProducts.metadata,
+            updatedAt: issueWorkProducts.updatedAt,
+          })
+          .from(issueWorkProducts)
+          .where(and(
+            eq(issueWorkProducts.companyId, companyId),
+            inArray(issueWorkProducts.issueId, doneIssueIds),
+            eq(issueWorkProducts.type, "pull_request"),
+          ));
+        const doneOpenExternals = await db
+          .select({
+            externalId: externalObjects.externalId,
+            url: externalObjects.sanitizedCanonicalUrl,
+            data: externalObjects.data,
+            updatedAt: externalObjects.updatedAt,
+          })
+          .from(externalObjects)
+          .where(and(
+            eq(externalObjects.companyId, companyId),
+            eq(externalObjects.providerKey, "github"),
+            eq(externalObjects.objectType, "pull_request"),
+            eq(externalObjects.isTerminal, false),
+          ));
+        const prLabelFor = (url: string | null, fallback: string): string => url ?? fallback;
+        for (const issue of doneIssuesWithOpenPrs) {
+          const linkedOpen = doneOpenProducts.find((p) =>
+            issue.id === p.issueId && OPEN_PULL_REQUEST_WORK_PRODUCT_STATUSES.has(p.status)
+          );
+          let prUrl: string | null = null;
+          let prLabel: string | null = null;
+          let prActivityAt: Date | null = null;
+          if (linkedOpen) {
+            prUrl = linkedOpen.url ?? null;
+            prLabel = prLabelFor(prUrl, "the linked pull request");
+            prActivityAt = linkedOpen.updatedAt ?? null;
+          } else {
+            const targetBranch = `bot/${issue.identifier}`;
+            const external = doneOpenExternals.find((p) => {
+              const data = p.data && typeof p.data === "object" && !Array.isArray(p.data)
+                ? p.data as Record<string, unknown>
+                : {};
+              const branch = typeof data.headRef === "string" ? data.headRef : "";
+              if (branch === targetBranch) return true;
+              return extractPullRequestIssueIdentifier({ headRef: data.headRef, title: data.title }) === issue.identifier;
+            });
+            if (external) {
+              prUrl = external.url ?? null;
+              prLabel = prLabelFor(prUrl, "an unlinked open pull request");
+              prActivityAt = external.updatedAt ?? null;
+            }
+          }
+          if (!prLabel) continue;
+          add(createItem({
+            companyId,
+            sourceKind: "done_pr_not_merged",
+            subject: issueSubject(prefix, issue),
+            whyNow: `Task is marked done, but ${prLabel} is not merged — the fix is not in main or on production.`,
+            decisionVerbs: decisionVerbs({ id: "inspect", label: "Inspect", description: "Inspect the task and its open pull request." }),
+            inlineResolvable: false,
+            entryRule: "a done issue has an open (unmerged) pull request",
+            exitRule: "the pull request is merged or closed, or the issue is reopened",
+            dedupKey: `done-pr-not-merged:${issue.id}`,
+            severity: "high",
+            activityAt: toIso(prActivityAt ?? issue.updatedAt),
+            createdAt: toIso(issue.createdAt),
+            updatedAt: toIso(issue.updatedAt),
+            relatedIssue: null,
+            ...issueContext(issue),
+            detail: genericDetail(`Open pull request: ${prUrl ?? "unknown"}.`, []),
+          }));
+        }
       }
 
       const reviewRows = await db

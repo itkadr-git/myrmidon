@@ -6,6 +6,7 @@ import {
   createPullRequestMergeDetailsResolver,
   extractGitHubPullRequestReferences,
 } from "../../services/github-pull-request-merge.js";
+import { findApprovalPendingMergePullRequest, type LiveOpenPullRequestLookup } from "../review-stage-recovery/pre-merge-approval.js";
 
 export const ISSUE_DONE_PULL_REQUEST_GATE = "issue_done_pull_request_gate";
 
@@ -84,6 +85,7 @@ export async function inspectIssueDonePullRequests(
   companyId: string,
   issueId: string,
   resolve = createPullRequestMergeDetailsResolver(db),
+  liveLookup?: LiveOpenPullRequestLookup,
 ) {
   const products = await db.select({
     id: issueWorkProducts.id,
@@ -97,6 +99,37 @@ export async function inspectIssueDonePullRequests(
     eq(issueWorkProducts.issueId, issueId),
     eq(issueWorkProducts.type, "pull_request"),
   ));
+  // myrmidon(OPE-12879): stored facts never saw the six 12.11 pull requests —
+  // the work products were empty and the verdict comment did not match the
+  // approval regex, so the gate passed vacuously. Fall back to a live GitHub
+  // lookup (review-routing resolver, branch `bot/<KEY>` or the identifier in
+  // the PR title) whenever no linked PR already proves the work merged; the
+  // lookup failure or an empty answer never manufactures a blocker.
+  const unlinkedOpenPullRequest = products.some((product) => product.status === "merged")
+    ? null
+    : await findApprovalPendingMergePullRequest(db, companyId, issueId, liveLookup ?? (async (lookupCompanyId, repository) => {
+        const { createGitHubPrHeadResolver } = await import("../review-routing/github.js");
+        return createGitHubPrHeadResolver({ db }).listOpenPullRequests({ companyId: lookupCompanyId, repository });
+      }));
+  if (unlinkedOpenPullRequest) {
+    // Deduplicate: a stored-facts hit can be the very product already linked
+    // to the issue; its live state (possibly merged) is resolved below from
+    // the linked row, and a synthetic duplicate would wrongly block done.
+    const knownIds = new Set(products.map((product) => product.id));
+    const knownUrls = new Set(products.map((product) => product.url ?? "").filter(Boolean));
+    const alreadyCovered = knownIds.has(unlinkedOpenPullRequest.id)
+      || Boolean(unlinkedOpenPullRequest.url && knownUrls.has(unlinkedOpenPullRequest.url));
+    if (!alreadyCovered) {
+      products.push({
+        id: unlinkedOpenPullRequest.id,
+        companyId,
+        type: "pull_request",
+        status: "open",
+        url: unlinkedOpenPullRequest.url,
+        metadata: { issueDoneGateUnlinked: true },
+      });
+    }
+  }
   const states = await Promise.all(products.map(async (product) => {
     if (product.status === "archived") return { product, state: "superseded" as const, url: product.url };
     const ref = reference(product);

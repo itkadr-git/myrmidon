@@ -78,6 +78,7 @@ async function createIssue(
     assigneeAgentId?: string | null;
     originKind?: string | null;
     originId?: string | null;
+    isPrivate?: boolean;
   } = {},
 ) {
   return db
@@ -93,6 +94,7 @@ async function createIssue(
       assigneeAgentId: input.assigneeAgentId ?? null,
       originKind: input.originKind ?? "manual",
       originId: input.originId ?? null,
+      isPrivate: input.isPrivate ?? false,
     })
     .returning()
     .then((rows) => rows[0]!);
@@ -603,6 +605,143 @@ describeEmbeddedPostgres("authorization service", () => {
         reason: "deny_company_boundary",
       });
     }
+  });
+
+  it("denies agents every issue channel on private issues and keeps parent-write influence denied", async () => {
+    const company = await createCompany(db, "PrivateIssueAgentDeny");
+    const actorAgent = await createAgent(db, company.id);
+    const ownerAgent = await createAgent(db, company.id);
+    const privateIssue = await createIssue(db, company.id, {
+      assigneeAgentId: ownerAgent.id,
+      isPrivate: true,
+    });
+    const publicIssue = await createIssue(db, company.id, {
+      assigneeAgentId: ownerAgent.id,
+    });
+    const actor = {
+      type: "agent" as const,
+      agentId: actorAgent.id,
+      companyId: company.id,
+      source: "agent_jwt" as const,
+    };
+    const authorization = authorizationService(db);
+
+    for (const action of ["issue:read", "issue:comment", "issue:mutate"] as const) {
+      await expect(authorization.decide({
+        actor,
+        action,
+        resource: {
+          type: "issue",
+          companyId: company.id,
+          issueId: privateIssue.id,
+          projectId: privateIssue.projectId,
+          assigneeAgentId: ownerAgent.id,
+          status: privateIssue.status,
+        },
+      })).resolves.toMatchObject({
+        allowed: false,
+        reason: "deny_private_issue",
+      });
+      await expect(authorization.decide({
+        actor,
+        action,
+        resource: {
+          type: "issue",
+          companyId: company.id,
+          issueId: publicIssue.id,
+          projectId: publicIssue.projectId,
+          assigneeAgentId: ownerAgent.id,
+          status: publicIssue.status,
+        },
+      })).resolves.toMatchObject({
+        allowed: true,
+      });
+    }
+  });
+
+  it("denies child-issue creation influence under a private parent for agents", async () => {
+    const company = await createCompany(db, "PrivateParentChildCreate");
+    const actorAgent = await createAgent(db, company.id);
+    const privateParent = await createIssue(db, company.id, { isPrivate: true });
+    const authorization = authorizationService(db);
+
+    await expect(authorization.decide({
+      actor: {
+        type: "agent",
+        agentId: actorAgent.id,
+        companyId: company.id,
+        source: "agent_jwt",
+      },
+      action: "issue:mutate",
+      resource: {
+        type: "issue",
+        companyId: company.id,
+        parentIssueId: privateParent.id,
+      },
+    })).resolves.toMatchObject({
+      allowed: false,
+      reason: "deny_private_issue",
+    });
+  });
+
+  it("keeps cross-company private issues on the company-boundary denial", async () => {
+    const sourceCompany = await createCompany(db, "PrivateCrossSource");
+    const targetCompany = await createCompany(db, "PrivateCrossTarget");
+    const actorAgent = await createAgent(db, sourceCompany.id);
+    const privateIssue = await createIssue(db, targetCompany.id, { isPrivate: true });
+    const authorization = authorizationService(db);
+
+    for (const action of ["issue:read", "issue:comment", "issue:mutate"] as const) {
+      await expect(authorization.decide({
+        actor: {
+          type: "agent",
+          agentId: actorAgent.id,
+          companyId: sourceCompany.id,
+          source: "agent_jwt",
+        },
+        action,
+        resource: {
+          type: "issue",
+          companyId: targetCompany.id,
+          issueId: privateIssue.id,
+        },
+      })).resolves.toMatchObject({
+        allowed: false,
+        reason: "deny_company_boundary",
+      });
+    }
+  });
+
+  it("keeps board users able to read private issues", async () => {
+    const company = await createCompany(db, "PrivateBoardRead");
+    const userId = await createUser(db);
+    await db.insert(companyMemberships).values({
+      companyId: company.id,
+      principalType: "user",
+      principalId: userId,
+      status: "active",
+      membershipRole: "operator",
+    });
+    const privateIssue = await createIssue(db, company.id, { isPrivate: true });
+    const authorization = authorizationService(db);
+
+    await expect(authorization.decide({
+      actor: {
+        type: "board",
+        userId,
+        companyIds: [company.id],
+        source: "session",
+      },
+      action: "issue:read",
+      resource: {
+        type: "issue",
+        companyId: company.id,
+        issueId: privateIssue.id,
+        projectId: privateIssue.projectId,
+      },
+    })).resolves.toMatchObject({
+      allowed: true,
+    });
   });
 
   it("allows simple-mode task assignment between same-company agents without explicit grants", async () => {

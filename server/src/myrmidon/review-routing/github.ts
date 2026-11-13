@@ -109,6 +109,7 @@ export interface OpenPullRequestSummary {
   url: string | null;
   authorLogin: string | null;
   baseRef: string | null;
+  headRef: string | null;
 }
 
 export interface PullRequestHeadResolver {
@@ -302,6 +303,7 @@ export function createGitHubPrHeadResolver(input: {
           url: asString(record.html_url),
           authorLogin: asString(asRecord(record.user)?.login),
           baseRef: asString(asRecord(record.base)?.ref),
+          headRef: asString(asRecord(record.head)?.ref),
         });
       }
       return out;

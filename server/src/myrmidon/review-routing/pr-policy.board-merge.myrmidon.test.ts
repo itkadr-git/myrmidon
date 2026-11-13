@@ -5,8 +5,13 @@ import { describe, expect, it } from "vitest";
 import {
   declaredReviewedHead,
   decideBoardMerge,
+  pullRequiresFullCi,
+  requiredChecksForPull,
   reviewedHeadMatches,
   verdictCoversHead,
+  BOARD_MERGE_FULL_CI_CHECKS,
+  BOARD_MERGE_FULL_CI_LABEL,
+  BOARD_MERGE_FULL_CI_SERVER_SHARD_CHECKS,
   type BoardMergeFacts,
   type RequiredCheckVerdict,
 } from "./pr-policy.js";
@@ -154,5 +159,134 @@ describe("the decision for one approved pull request", () => {
     expect(decide({ mergeableState: "blocked", labels: ["review-approved"] })).toEqual({ kind: "wait", reason: "blocked" });
     // A state the board does not know is not merged.
     expect(decide({ mergeableState: "mystery" })).toEqual({ kind: "wait", reason: "blocked" });
+  });
+
+  describe("full-ci requirements (OPE-12551)", () => {
+    it("identifies paths requiring full CI", () => {
+      expect(pullRequiresFullCi(["server/src/index.ts"])).toBe(true);
+      expect(pullRequiresFullCi(["packages/paperclip-runner/src/driver.ts"])).toBe(true);
+      expect(pullRequiresFullCi(["docs/readme.md", "packages/shared/src/index.ts"])).toBe(false);
+    });
+
+    it("the six shard names match the full tier of myrmidon-ci.yml exactly", () => {
+      expect(BOARD_MERGE_FULL_CI_SERVER_SHARD_CHECKS).toEqual([
+        "tests (server 1/6)",
+        "tests (server 2/6)",
+        "tests (server 3/6)",
+        "tests (server 4/6)",
+        "tests (server 5/6)",
+        "tests (server 6/6)",
+      ]);
+      expect(BOARD_MERGE_FULL_CI_CHECKS).toEqual([
+        ...BOARD_MERGE_FULL_CI_SERVER_SHARD_CHECKS,
+        "tests (other + runner)",
+      ]);
+    });
+
+    it("expands required checks to every server shard when server/src or runner files are touched", () => {
+      expect(
+        requiredChecksForPull({
+          defaultChecks: ["CI result"],
+          files: ["docs/readme.md"],
+        }),
+      ).toEqual(["CI result"]);
+
+      expect(
+        requiredChecksForPull({
+          defaultChecks: ["CI result"],
+          files: ["server/src/routes.ts"],
+        }),
+      ).toEqual(["CI result", ...BOARD_MERGE_FULL_CI_SERVER_SHARD_CHECKS]);
+
+      expect(
+        requiredChecksForPull({
+          defaultChecks: ["CI result"],
+          files: ["packages/paperclip-runner/src/index.ts"],
+        }),
+      ).toEqual(["CI result", "tests (other + runner)"]);
+
+      expect(
+        requiredChecksForPull({
+          defaultChecks: ["CI result"],
+          files: ["server/src/index.ts", "packages/paperclip-runner/src/index.ts"],
+        }),
+      ).toEqual(["CI result", ...BOARD_MERGE_FULL_CI_CHECKS]);
+
+      expect(
+        requiredChecksForPull({
+          defaultChecks: ["CI result"],
+          labels: [BOARD_MERGE_FULL_CI_LABEL],
+        }),
+      ).toEqual(["CI result", ...BOARD_MERGE_FULL_CI_CHECKS]);
+    });
+
+    it("demands full-ci label when server/src or runner files are touched without label", () => {
+      expect(
+        decideBoardMerge({
+          facts: facts(),
+          baseBranches: ["main"],
+          verdict: VERDICT,
+          checks: { "CI result": "success" },
+          requiredChecks: ["CI result"],
+          files: ["server/src/index.ts"],
+        }),
+      ).toEqual({ kind: "label", label: BOARD_MERGE_FULL_CI_LABEL });
+    });
+
+    it("waits while any of the six server shards is pending", () => {
+      expect(
+        decideBoardMerge({
+          facts: facts({ labels: [BOARD_MERGE_FULL_CI_LABEL] }),
+          baseBranches: ["main"],
+          verdict: VERDICT,
+          checks: {
+            "CI result": "success",
+            ...Object.fromEntries(BOARD_MERGE_FULL_CI_SERVER_SHARD_CHECKS.map((n) => [n, "success" as const])),
+            "tests (server 5/6)": "pending",
+          },
+          requiredChecks: ["CI result", ...BOARD_MERGE_FULL_CI_SERVER_SHARD_CHECKS],
+          files: ["server/src/index.ts"],
+        }),
+      ).toEqual({ kind: "wait", reason: "ci_pending" });
+    });
+
+    it("waits when a mid-shard fails even though shard 1 and the rest are green", () => {
+      // The reviewer's scenario: shard 2/6 red while the others are green — the PR must not merge.
+      expect(
+        decideBoardMerge({
+          facts: facts({ labels: [BOARD_MERGE_FULL_CI_LABEL] }),
+          baseBranches: ["main"],
+          verdict: VERDICT,
+          checks: {
+            "CI result": "success",
+            "tests (server 1/6)": "success",
+            "tests (server 2/6)": "failed",
+            "tests (server 3/6)": "success",
+            "tests (server 4/6)": "success",
+            "tests (server 5/6)": "success",
+            "tests (server 6/6)": "success",
+          },
+          requiredChecks: ["CI result", ...BOARD_MERGE_FULL_CI_SERVER_SHARD_CHECKS],
+          files: ["server/src/index.ts"],
+        }),
+      ).toEqual({ kind: "wait", reason: "ci_failed" });
+    });
+
+    it("merges only when the full check set succeeded", () => {
+      const checks: Record<string, RequiredCheckVerdict> = {
+        "CI result": "success",
+        ...Object.fromEntries(BOARD_MERGE_FULL_CI_CHECKS.map((n) => [n, "success" as const])),
+      };
+      expect(
+        decideBoardMerge({
+          facts: facts({ labels: [BOARD_MERGE_FULL_CI_LABEL] }),
+          baseBranches: ["main"],
+          verdict: VERDICT,
+          checks,
+          requiredChecks: ["CI result", ...BOARD_MERGE_FULL_CI_CHECKS],
+          files: ["server/src/index.ts"],
+        }),
+      ).toEqual({ kind: "merge" });
+    });
   });
 });
