@@ -570,8 +570,8 @@ import {
   ISSUE_REWAKE_LOOKBACK_MS,
   ISSUE_REWAKE_RUN_SAMPLE_LIMIT,
   ISSUE_REWAKE_FREEZE_THRESHOLD,
+  collectRunIdsWithIssueProgress,
   evaluateIssueRewakeThrottle,
-  isIssueProgressActivity,
   isThrottleCandidateIssueRewake,
 } from "./issue-rewake-throttle.js";
 
@@ -34806,8 +34806,13 @@ export function heartbeatService(
                 );
               // myrmidon(1.6.6 OPE-12049): a run's own bookkeeping (release,
               // assign to itself, the echo of its final text) is not progress.
-              const progressRows = progressActivityRows.filter((row) =>
-                isIssueProgressActivity(row, agentId),
+              // myrmidon(EMPTY-RUNS-1): neither is handing the task back to
+              // the queue (`in_progress -> todo`) with the note it is parked
+              // with; the rule needs the rows of the whole run, so the read
+              // lives in `collectRunIdsWithIssueProgress`.
+              const runIdsWithIssueProgress = collectRunIdsWithIssueProgress(
+                progressActivityRows,
+                () => agentId,
               );
               const lastRunFinishedAt =
                 recentTerminalRuns[0]?.finishedAt ?? null;
@@ -34844,11 +34849,7 @@ export function heartbeatService(
                 now: throttleNow,
                 freezeThreshold,
                 recentTerminalRuns,
-                runIdsWithIssueProgress: new Set(
-                  progressRows
-                    .map((row) => row.runId)
-                    .filter((runId): runId is string => Boolean(runId)),
-                ),
+                runIdsWithIssueProgress,
                 // For an agent comment wake, the query excludes agent-authored
                 // activity while preserving genuinely new user/system input.
                 // Presentation/author metadata therefore cannot smuggle human
