@@ -1548,6 +1548,18 @@ function applyIssueExecutionStageTransition(input: TransitionInput): TransitionR
     return { patch };
   }
 
+  // OPE-12995: Release task gate for done status without verification.
+  // A release task with code work products (e.g. pull requests) must pass through a verify stage,
+  // unless explicitly configured with skip: true in its verify stage requirements.
+  const hasVerifyStage = input.policy.stages.some((stage) => stage.type === "verify");
+  const isVerifySkipped = input.policy.stages.some((stage) => stage.type === "verify" && stage.requirements?.skip === true);
+  const isRelease = isReleaseTask(input.issue.title ?? null);
+  if (requestedStatus === "done" && isRelease && !hasVerifyStage && !isVerifySkipped) {
+    throw unprocessable(
+      "Cannot mark release task done without a verify execution stage. A release task requires an independent verification stage with deploy version and check method, or an explicit skip configuration.",
+    );
+  }
+
   let pendingStage =
     existingState?.status === CHANGES_REQUESTED_STATUS && currentStage
       ? currentStage

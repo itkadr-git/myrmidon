@@ -2508,4 +2508,51 @@ describe("verify execution stages", () => {
     });
     expect(result.patch).toMatchObject({ status: "in_review", assigneeAgentId: qaAgentId });
   });
+
+  it("rejects marking a release task done without a verify stage", () => {
+      const reviewPolicy = makePolicy([{
+        type: "review",
+        participants: [{ type: "agent", agentId: coderAgentId }],
+      }]);
+      expect(() => applyIssueExecutionPolicyTransition({
+        issue: {
+          title: "1.6.6 Feature release",
+          status: "in_progress",
+          assigneeAgentId: coderAgentId,
+          assigneeUserId: null,
+          executionPolicy: reviewPolicy,
+          executionState: null,
+        },
+        policy: reviewPolicy,
+        requestedStatus: "done",
+        requestedAssigneePatch: {},
+        actor: { agentId: coderAgentId },
+        commentBody: "all done",
+      })).toThrow(/Cannot mark release task done without a verify execution stage/);
+    });
+
+    it("allows marking a release task done when verify stage has skip requirement", () => {
+      const skippedVerifyPolicy = makePolicy([{
+        type: "verify",
+        participants: [{ type: "agent", agentId: coderAgentId }],
+        requirements: { skip: true },
+      }]);
+      const result = applyIssueExecutionPolicyTransition({
+        issue: {
+          title: "1.6.6 Documentation update",
+          status: "in_progress",
+          assigneeAgentId: coderAgentId,
+          assigneeUserId: null,
+          executionPolicy: skippedVerifyPolicy,
+          executionState: null,
+        },
+        policy: skippedVerifyPolicy,
+        requestedStatus: "done",
+        requestedAssigneePatch: {},
+        actor: { agentId: coderAgentId },
+        commentBody: "docs finished",
+      });
+      expect(result.patch.executionState).toMatchObject({ status: "completed" });
+    });
+  });
 });
