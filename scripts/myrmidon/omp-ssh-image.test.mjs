@@ -79,8 +79,10 @@ describe("omp SSH runner image", () => {
     assert.doesNotMatch(compose, /^\s+ports:/m);
     assert.doesNotMatch(compose, /docker\.sock/);
     assert.match(compose, /- workspace:\/workspace$/m);
+    assert.match(compose, /^\s+- tmp:\/tmp$/m);
     // the runner data never lands in /var/lib/docker on the root disk (10.11: +10 GB on the root in an hour)
-    for (const v of ["workspace", "home", "hostkeys"]) {
+    // OPE-12966: so does /tmp, where tests and task tooling write gigabytes
+    for (const v of ["workspace", "home", "hostkeys", "tmp"]) {
       assert.match(compose, new RegExp(`device: "\\$\\{OMP_RUNNER_DATA_DIR:\\?[^}]*\\}/${v}"`));
     }
   });

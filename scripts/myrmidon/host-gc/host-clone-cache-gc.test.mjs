@@ -34,6 +34,7 @@ const {
   UsageError,
   scanRunnerTaskFolders,
   scanRunnerNpmCaches,
+  scanRunnerTmp,
   pruneRunnerNpmCaches,
   issueIdentifierFromRunnerFolderName,
 } = await import(
@@ -339,6 +340,175 @@ describe("scratch-gc (BOT-DISK-SCRATCH)", () => {
 
 
 // --- Bot data GC of decommissioned bots (OPE-12654) ---
+
+// myrmidon(OPE-12966): the omp runner's /tmp lives on the data volume (`<runner>/tmp`); the
+// pass removes top-level entries nothing has changed in for the TTL.
+describe("runner /tmp (OPE-12966)", () => {
+  const HOUR = 60 * 60 * 1000;
+  const GC_SCRIPT = path.join(ROOT, "scripts/myrmidon/host-gc/host-clone-cache-gc.mjs");
+
+  const setAge = (p, ageHours) => {
+    const t = new Date(Date.now() - ageHours * HOUR);
+    fs.utimesSync(p, t, t);
+  };
+  // A file or a directory (with one file inside) in `<runners>/<runner>/tmp`, aged `ageHours`.
+  const makeTmpEntry = (runners, runner, name, { ageHours = 48, dir = false, innerAgeHours } = {}) => {
+    const base = path.join(runners, runner, "tmp");
+    fs.mkdirSync(base, { recursive: true });
+    const p = path.join(base, name);
+    if (dir) {
+      fs.mkdirSync(p);
+      const inner = path.join(p, "data.bin");
+      fs.writeFileSync(inner, "x".repeat(100));
+      setAge(inner, innerAgeHours ?? ageHours);
+    } else {
+      fs.writeFileSync(p, "x".repeat(100));
+    }
+    setAge(p, ageHours);
+    return p;
+  };
+  const plan = (runners, events = []) =>
+    Object.fromEntries(scanRunnerTmp(runners, Date.now(), 24, { onEvent: (e) => events.push(e) }).map((i) => [i.name, i]));
+
+  function runGc(flags) {
+    const botsRoot = path.join(tmpDir, "bots");
+    fs.mkdirSync(botsRoot, { recursive: true });
+    const journal = path.join(tmpDir, "gc.jsonl");
+    const env = { ...process.env, HOST_GC_RUNNER_ROOTS: "", PATH: process.env.PATH, PAPERCLIP_API_URL: "http://127.0.0.1:9" };
+    const res = subprocess.spawnSync(process.execPath, [
+      GC_SCRIPT, "--env", "/nonexistent", "--root", botsRoot,
+      "--journal", journal, "--lock", path.join(tmpDir, "gc.lock"), "--proc-dir", path.join(tmpDir, "proc"),
+      ...flags,
+    ], { encoding: "utf8", env, timeout: 60_000 });
+    const events = fs.existsSync(journal)
+      ? fs.readFileSync(journal, "utf8").trim().split("\n").map((l) => JSON.parse(l))
+      : [];
+    return { res, events };
+  }
+
+  it("plans an old entry for removal and keeps a young one", () => {
+    const runners = path.join(tmpDir, "runners");
+    makeTmpEntry(runners, "eng17", "old-file", { ageHours: 30 });
+    makeTmpEntry(runners, "eng17", "old-dir", { ageHours: 30, dir: true });
+    makeTmpEntry(runners, "eng17", "young-file", { ageHours: 1 });
+    const p = plan(runners);
+    assert.equal(p["old-file"].reason, "ttl");
+    assert.equal(p["old-dir"].reason, "ttl");
+    assert.equal(p["old-dir"].runnersRoot, runners);
+    assert.ok(p["old-dir"].sizeBytes > 0);
+    assert.equal(p["young-file"].reason, "fresh");
+  });
+
+  it("an old directory with a fresh file inside stays", () => {
+    const runners = path.join(tmpDir, "runners");
+    makeTmpEntry(runners, "eng17", "busy", { ageHours: 48, dir: true, innerAgeHours: 1 });
+    assert.equal(plan(runners).busy.reason, "fresh");
+  });
+
+  it("a symlink at the top level is never planned and its target is untouched", () => {
+    const runners = path.join(tmpDir, "runners");
+    const outside = path.join(tmpDir, "outside");
+    fs.mkdirSync(outside);
+    fs.writeFileSync(path.join(outside, "keep.txt"), "x");
+    setAge(path.join(outside, "keep.txt"), 100);
+    makeTmpEntry(runners, "eng17", "anchor", { ageHours: 1 });
+    const link = path.join(runners, "eng17", "tmp", "link");
+    fs.symlinkSync(outside, link);
+    const p = plan(runners);
+    assert.equal(p.link.reason, "symlink");
+    const { res } = runGc(["--apply", "--runner-root", runners]);
+    assert.equal(res.status, 0, res.stderr);
+    assert.equal(fs.existsSync(path.join(outside, "keep.txt")), true);
+    assert.equal(fs.lstatSync(link).isSymbolicLink(), true);
+  });
+
+  it("a symlink inside an entry is not followed: its target does not make the entry fresh and is not deleted", () => {
+    const runners = path.join(tmpDir, "runners");
+    const outside = path.join(tmpDir, "outside");
+    fs.mkdirSync(outside);
+    fs.writeFileSync(path.join(outside, "young.txt"), "x");
+    const entry = makeTmpEntry(runners, "eng17", "d", { ageHours: 48, dir: true });
+    fs.symlinkSync(outside, path.join(entry, "ln"));
+    const t = new Date(Date.now() - 48 * HOUR);
+    fs.lutimesSync(path.join(entry, "ln"), t, t);
+    fs.utimesSync(entry, t, t);
+    assert.equal(plan(runners).d.reason, "ttl");
+    const { res } = runGc(["--apply", "--runner-root", runners]);
+    assert.equal(res.status, 0, res.stderr);
+    assert.equal(fs.existsSync(entry), false);
+    assert.equal(fs.existsSync(path.join(outside, "young.txt")), true, "the link target must survive");
+  });
+
+  it("a runner whose tmp is a symlink is skipped", () => {
+    const runners = path.join(tmpDir, "runners");
+    const outside = path.join(tmpDir, "outside");
+    fs.mkdirSync(outside);
+    fs.writeFileSync(path.join(outside, "old.txt"), "x");
+    setAge(path.join(outside, "old.txt"), 100);
+    fs.mkdirSync(path.join(runners, "eng8"), { recursive: true });
+    fs.symlinkSync(outside, path.join(runners, "eng8", "tmp"));
+    assert.deepEqual(scanRunnerTmp(runners, Date.now(), 24), []);
+  });
+
+  it("a missing root and a file root are reported and yield nothing", () => {
+    const events = [];
+    const missing = path.join(tmpDir, "nope");
+    assert.deepEqual(scanRunnerTmp(missing, Date.now(), 24, { onEvent: (e) => events.push(e) }), []);
+    const notDir = path.join(tmpDir, "file-root");
+    fs.writeFileSync(notDir, "x");
+    assert.deepEqual(scanRunnerTmp(notDir, Date.now(), 24, { onEvent: (e) => events.push(e) }), []);
+    assert.deepEqual(events[0], { event: "runner-tmp-root-missing", root: missing });
+    assert.equal(events[1].event, "runner-tmp-scan-failed");
+    assert.match(events[1].error, /not a directory/);
+  });
+
+  it("--apply removes old entries, keeps young ones and tmp itself, and journals the counts", () => {
+    const runners = path.join(tmpDir, "runners");
+    const oldDir = makeTmpEntry(runners, "eng17", "old-dir", { ageHours: 30, dir: true });
+    const oldFile = makeTmpEntry(runners, "eng21", "old-file", { ageHours: 30 });
+    const young = makeTmpEntry(runners, "eng17", "young", { ageHours: 1 });
+    const { res, events } = runGc(["--apply", "--runner-root", runners]);
+    assert.equal(res.status, 0, res.stderr);
+    assert.equal(fs.existsSync(oldDir), false);
+    assert.equal(fs.existsSync(oldFile), false);
+    assert.equal(fs.existsSync(young), true);
+    assert.equal(fs.existsSync(path.join(runners, "eng21", "tmp")), true, "tmp itself stays");
+    const removed = events.find((e) => e.event === "runner-tmp-removed" && e.path === oldDir && e.runner === "eng17");
+    assert.ok(removed);
+    assert.ok(removed.sizeBytes > 0);
+    assert.equal(events.find((e) => e.event === "apply-complete").runnerTmpRemoved, 2);
+    assert.equal(JSON.parse(res.stdout).runnerTmpRemoved, 2);
+  });
+
+  it("--dry-run removes nothing and lists the plan", () => {
+    const runners = path.join(tmpDir, "runners");
+    const old = makeTmpEntry(runners, "eng17", "old-dir", { ageHours: 30, dir: true });
+    const { res, events } = runGc(["--dry-run", "--runner-root", runners]);
+    assert.equal(res.status, 0, res.stderr);
+    assert.equal(fs.existsSync(old), true);
+    assert.ok(!events.some((e) => e.event === "runner-tmp-removed"));
+    const out = JSON.parse(res.stdout);
+    assert.equal(out.plan.runnerTmp.length, 1);
+    assert.equal(out.plan.runnerTmp[0].path, old);
+  });
+
+  it("without a runner root the pass does not run", () => {
+    const runners = path.join(tmpDir, "runners");
+    const old = makeTmpEntry(runners, "eng17", "old-dir", { ageHours: 30, dir: true });
+    const { res, events } = runGc(["--apply"]);
+    assert.equal(res.status, 0, res.stderr);
+    assert.equal(fs.existsSync(old), true);
+    assert.equal(JSON.parse(res.stdout).runnerTmpRemoved, 0);
+    assert.ok(!events.some((e) => e.event.startsWith("runner-tmp-")));
+  });
+
+  it("parses --runner-tmp-ttl and refuses a value that is not finite or below 3 hours", () => {
+    assert.equal(parseArgs(["node", "gc"]).runnerTmpTtlHours, 24);
+    assert.equal(parseArgs(["node", "gc", "--runner-tmp-ttl", "12"]).runnerTmpTtlHours, 12);
+    assert.throws(() => parseArgs(["node", "gc", "--runner-tmp-ttl", "1"]), UsageError);
+    assert.throws(() => parseArgs(["node", "gc", "--runner-tmp-ttl", "abc"]), UsageError);
+  });
+});
 
 describe("agent decommission guard", () => {
   const response = (status, body) => ({ ok: status >= 200 && status < 300, status, json: async () => body });

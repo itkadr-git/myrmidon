@@ -8,10 +8,11 @@
 #   OMP_RUNNER_IMAGE            ghcr.io/itkadr-git/agent-runtime-omp-ssh@sha256:<digest>
 #   OMP_RUNNER_AUTHORIZED_KEYS  host path of the board's public key (read-only mount)
 #   OMP_RUNNER_NETWORK          docker network shared with the board container
-#   OMP_RUNNER_DATA_DIR         host directory for the runner's workspace, home and host key, on
-#                               the bot data disk (XFS), not the root disk: agents clone and build
-#                               repositories there, gigabytes per agent. It must hold the
-#                               subdirectories workspace/ (owned by 1000:1000), home/ and hostkeys/.
+#   OMP_RUNNER_DATA_DIR         host directory for the runner's workspace, home, /tmp and host key,
+#                               on the bot data disk (XFS), not the root disk: agents clone and
+#                               build repositories there, gigabytes per agent. It must hold the
+#                               subdirectories workspace/ (owned by 1000:1000), home/, hostkeys/
+#                               and tmp/ (mode 1777: the container's /tmp).
 # Optional variables:
 #   OMP_RUNNER_MEMORY, OMP_RUNNER_CPUS, OMP_RUNNER_PIDS. The defaults (4g, 1 CPU,
 #                               1024 processes) are those of an engineer bot container.
@@ -55,7 +56,7 @@
 #
 # No port is published: the board reaches the runner by container name on the
 # shared network. The host paths mounted are the board's public key
-# (read-only), the three data volumes under OMP_RUNNER_DATA_DIR and the two
+# (read-only), the four data volumes under OMP_RUNNER_DATA_DIR and the two
 # cache directories above. The cache is bound at /cache, outside /workspace, so
 # no host path sits inside the synchronized workspace (SANDBOX-REQUIREMENTS.md);
 # the docker socket is never mounted.
@@ -81,6 +82,10 @@ services:
       - ${OMP_RUNNER_CACHE_DIR:-${OMP_RUNNER_DATA_DIR:?set OMP_RUNNER_DATA_DIR}/cache}/git:/cache/git:ro
       - ${OMP_RUNNER_CACHE_DIR:-${OMP_RUNNER_DATA_DIR:?set OMP_RUNNER_DATA_DIR}/cache}/pnpm-omp:/cache/pnpm
       - hostkeys:/var/lib/omp-runner/hostkeys
+      # /tmp on the data disk: tests and task tooling write gigabytes there (15.8 GB in two days,
+      # OPE-12966), and a container's own /tmp sits in its write layer on the root disk.
+      # host-gc prunes entries older than 24 h (scripts/myrmidon/host-gc/README.md).
+      - tmp:/tmp
       - ${OMP_RUNNER_AUTHORIZED_KEYS:?set OMP_RUNNER_AUTHORIZED_KEYS}:/etc/ssh/omp-runner/authorized_keys:ro
 
 networks:
@@ -99,3 +104,6 @@ volumes:
   hostkeys:
     driver: local
     driver_opts: { type: none, o: bind, device: "${OMP_RUNNER_DATA_DIR:?set OMP_RUNNER_DATA_DIR}/hostkeys" }
+  tmp:
+    driver: local
+    driver_opts: { type: none, o: bind, device: "${OMP_RUNNER_DATA_DIR:?set OMP_RUNNER_DATA_DIR}/tmp" }
