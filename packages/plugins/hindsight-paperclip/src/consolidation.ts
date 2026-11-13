@@ -78,11 +78,6 @@ interface Clock {
   (): number;
 }
 
-/** True when no time is left for another bounded step. */
-function budgetExhausted(clock: Clock, deadline: number): boolean {
-  return clock() >= deadline;
-}
-
 /**
  * Run one bounded, additive consolidation pass over the bank.
  *
@@ -103,7 +98,11 @@ export async function runConsolidationPass(
     throw new Error("timeBudgetMs must be a positive number");
   }
   const clock: Clock = options.now ?? Date.now;
-  const startedAt = clock();
+  // One clock read per decision, kept in nowMs: the value a check observed
+  // is the value the result reports, so finishedAtMs is the exact moment
+  // the budget ran out rather than a later re-read of the clock.
+  let nowMs = clock();
+  const startedAt = nowMs;
   const deadline = startedAt + options.timeBudgetMs;
   const pageSize = normalizePageSize(options.pageSize, 50);
   const modelPageSize = normalizePageSize(options.modelPageSize, 50);
@@ -128,7 +127,7 @@ export async function runConsolidationPass(
 
   // Phase 1 — the bounded document walk. Every page is a bounded list call;
   // records are only read, so repeats can lose nothing and create nothing.
-  while (clock() < deadline) {
+  while ((nowMs = clock()) < deadline) {
     const page = await client.listDocuments(options.bankId, pageSize, walkOffset);
     const reachedEnd = walkOffset + page.items.length >= page.total;
     walkOffset += page.items.length;
@@ -144,8 +143,11 @@ export async function runConsolidationPass(
     if (page.items.length === 0) break;
   }
 
-  if (budgetExhausted(clock, deadline)) {
-    result.finishedAtMs = clock();
+  // The loop condition (or the break above) already observed the clock;
+  // after a break the time has not been re-checked since the last page,
+  // so one observation covers both paths without extra reads.
+  if (nowMs >= deadline || (nowMs = clock()) >= deadline) {
+    result.finishedAtMs = nowMs;
     return result;
   }
 
@@ -161,8 +163,8 @@ export async function runConsolidationPass(
     result.consolidationsTriggered = 0;
   }
 
-  if (budgetExhausted(clock, deadline)) {
-    result.finishedAtMs = clock();
+  if ((nowMs = clock()) >= deadline) {
+    result.finishedAtMs = nowMs;
     return result;
   }
 
@@ -172,7 +174,8 @@ export async function runConsolidationPass(
   const models = await listMentalModelsWithinBudget(client, options.bankId, modelPageSize, clock, deadline);
   if (models !== null) {
     for (const model of models.items) {
-      if (budgetExhausted(clock, deadline) || result.modelsRefreshed >= maxModelRefreshes) break;
+      if (result.modelsRefreshed >= maxModelRefreshes) break;
+      if ((nowMs = clock()) >= deadline) break;
       if (model.isStale !== true) {
         result.modelsSkippedFresh += 1;
         continue;
@@ -187,7 +190,9 @@ export async function runConsolidationPass(
     }
   }
 
-  result.finishedAtMs = clock();
+  // If the loop above stopped on an expired budget, nowMs is that exact
+  // observation; otherwise take the actual end-of-pass time.
+  result.finishedAtMs = nowMs >= deadline ? nowMs : clock();
   return result;
 }
 
