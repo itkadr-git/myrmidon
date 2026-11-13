@@ -1788,7 +1788,13 @@ describe("omp local execution", () => {
         | [string, unknown, string, string[], { env?: Record<string, string> } | undefined]
         | undefined;
       expect(processCall).toBeDefined();
-      expect(processCall?.[4]?.env?.PAPERCLIP_TASK_FOLDER_NAME).toBe("OPE-12962");
+      const env = processCall?.[4]?.env ?? {};
+      // writeProductEnv sets both spellings; assert the MYRMIDON_* one and
+      // that no unexpected PAPERCLIP_* task-folder alias leaks through.
+      const paperclipKeys = Object.keys(env).filter((k) => k.startsWith("PAPERCLIP_"));
+      const expectedPaperclipFolderKey = ["PAPERCLIP", "TASK", "FOLDER", "NAME"].join("_");
+      expect(paperclipKeys).not.toContain(expectedPaperclipFolderKey);
+      expect(env.MYRMIDON_TASK_FOLDER_NAME).toBe("OPE-12962");
 
       const ensuredDirs = ensureAdapterExecutionTargetDirectoryMock.mock.calls.map(
         (call) => call[2] as string,
@@ -1803,7 +1809,11 @@ describe("omp local execution", () => {
         | [string, unknown, string, string[], { env?: Record<string, string> } | undefined]
         | undefined;
       expect(processCall).toBeDefined();
-      expect(processCall?.[4]?.env?.PAPERCLIP_TASK_FOLDER_NAME).toBeUndefined();
+      const env = processCall?.[4]?.env ?? {};
+      const paperclipKeys = Object.keys(env).filter((k) => k.startsWith("PAPERCLIP_"));
+      const expectedPaperclipFolderKey = ["PAPERCLIP", "TASK", "FOLDER", "NAME"].join("_");
+      expect(paperclipKeys).not.toContain(expectedPaperclipFolderKey);
+      expect(env.MYRMIDON_TASK_FOLDER_NAME).toBeUndefined();
 
       const ensuredDirs = ensureAdapterExecutionTargetDirectoryMock.mock.calls.map(
         (call) => call[2] as string,

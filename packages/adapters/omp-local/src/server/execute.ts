@@ -821,7 +821,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       // myrmidon(OPE-13018): the per-task folder on the runner is created by
       // the adapter under the target's remote cwd, named from the task
       // identifier — not taken from the caller-provided cwd. Runner-side
-      // tooling (myr-ws) reads PAPERCLIP_TASK_FOLDER_NAME and clones into this
+      // tooling (myr-ws) reads MYRMIDON_TASK_FOLDER_NAME and clones into this
       // exact directory, so a mistyped key (OPR-12962) cannot reappear.
       const remoteBaseCwd = adapterExecutionTargetRemoteCwd(executionTarget, cwd);
       await ensureAdapterExecutionTargetDirectory(runId, executionTarget, effectiveSessionDir, {
