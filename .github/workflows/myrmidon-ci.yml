@@ -184,6 +184,11 @@ jobs:
             if [ "$EVENT" = "pull_request" ] && [ -n "${PR_NUMBER:-}" ]; then
               if live_labels="$(gh api "repos/$GITHUB_REPOSITORY/issues/$PR_NUMBER/labels" --paginate --jq '.[].name' 2>/dev/null)"; then
                 if printf '%s\n' "$live_labels" | grep -qx 'full-ci'; then FULL_LABEL=true; else FULL_LABEL=false; fi
+              elif [ "${GITHUB_RUN_ATTEMPT:-1}" -gt 1 ]; then
+                # A re-run has the OLD payload without the new label: falling back
+                # to it would silently run the fast tier instead of the full one.
+                echo "::error::re-run (attempt ${GITHUB_RUN_ATTEMPT}): could not read the PR labels live; refusing to use the stale event payload"
+                exit 1
               else
                 echo "::warning::could not read PR labels; using the event payload"
               fi

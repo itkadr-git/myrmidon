@@ -22,10 +22,26 @@ const execFileAsync = promisify(execFile);
 
 export const WORKFLOW_FILE = 'myrmidon-ci.yml';
 
-/** Newest pull_request run of the main workflow on `headSha`, or null. */
-export function pickRun(runs, headSha) {
+/**
+ * Does the run belong to THIS PR? Two PRs or branches (main, rel/*) can share a
+ * head sha, so the sha alone is not enough: the run must list the PR in
+ * `pull_requests` (same-repo PRs always do); when GitHub left the list empty,
+ * fall back to the head branch.
+ */
+export function runBelongsToPr(run, { prNumber, headRef }) {
+  const prs = Array.isArray(run.pull_requests) ? run.pull_requests : [];
+  if (prs.length > 0) return prs.some((pr) => Number(pr.number) === Number(prNumber));
+  return Boolean(headRef) && run.head_branch === headRef;
+}
+
+/** Newest pull_request run of this PR on `headSha`, or null. */
+export function pickRun(runs, headSha, pr = {}) {
   const own = (runs || []).filter(
-    (run) => run && run.head_sha === headSha && run.event === 'pull_request',
+    (run) =>
+      run &&
+      run.head_sha === headSha &&
+      run.event === 'pull_request' &&
+      runBelongsToPr(run, pr),
   );
   if (own.length === 0) return null;
   return own.reduce((best, run) =>
@@ -67,17 +83,20 @@ export async function rerunFullCi({
   waitRunMs = 120_000,
   cancelWaitMs = 300_000,
   stepMs = 5_000,
+  rerunAttempts = 5,
+  rerunPauseMs = 10_000,
   log = console.log,
 }) {
   const pr = await api([`repos/${repo}/pulls/${prNumber}`]);
   const headSha = pr.head.sha;
+  const prRef = { prNumber, headRef: pr.head.ref };
   const runsPath =
     `repos/${repo}/actions/workflows/${WORKFLOW_FILE}/runs` +
     `?event=pull_request&head_sha=${headSha}&per_page=50`;
 
   let run = null;
   for (let waited = 0; ; waited += stepMs) {
-    run = pickRun((await api([runsPath])).workflow_runs, headSha);
+    run = pickRun((await api([runsPath])).workflow_runs, headSha, prRef);
     if (run || waited >= waitRunMs) break;
     await sleepFn(stepMs);
   }
@@ -99,7 +118,34 @@ export async function rerunFullCi({
       await sleepFn(stepMs);
     }
   }
-  await api(['-X', 'POST', `repos/${repo}/actions/runs/${run.id}/rerun`]);
+  // A push after the label starts its own run (and cancels this one): do not
+  // re-run a run of a superseded head.
+  const current = await api([`repos/${repo}/pulls/${prNumber}`]);
+  if (current.head.sha !== headSha) {
+    log(`head moved ${headSha} -> ${current.head.sha}; the new push runs its own CI, no re-run`);
+    return { runId: run.id, headSha, cancelled: actions.cancel, skipped: 'head-moved' };
+  }
+  // Right after a cancel GitHub sometimes answers 403 "still running" although
+  // the run already reads `completed`: retry.
+  let lastError = null;
+  for (let attempt = 1; attempt <= rerunAttempts; attempt += 1) {
+    try {
+      await api(['-X', 'POST', `repos/${repo}/actions/runs/${run.id}/rerun`]);
+      lastError = null;
+      break;
+    } catch (error) {
+      lastError = error;
+      log(`re-run attempt ${attempt}/${rerunAttempts} failed: ${String(error.message).split('\n')[0]}`);
+      if (attempt < rerunAttempts) await sleepFn(rerunPauseMs);
+    }
+  }
+  if (lastError) {
+    throw new Error(
+      `re-run of run ${run.id} failed after ${rerunAttempts} attempts; the head ${headSha} of PR #${prNumber} ` +
+        `is left with a CANCELLED "Myrmidon CI" run (merge stays blocked). Fix: open run ${run.id} and press ` +
+        `"Re-run all jobs", or push to the branch. Last error: ${lastError.message}`,
+    );
+  }
   log(`re-run of ${run.id} requested (full tier by the live label)`);
   return { runId: run.id, headSha, cancelled: actions.cancel };
 }

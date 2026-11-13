@@ -15,6 +15,15 @@ SHA="${SHA:-${GITHUB_SHA:-}}"
 ACTION="${ACTION:-}"
 LABELS="${LABELS:-}"
 
+# A re-run (run_attempt > 1) keeps the ORIGINAL event payload: ACTION would still be
+# `synchronize` from the push that started the run, although nothing was pushed. The
+# `full-ci` label re-runs the run this way (rerun-full-ci.mjs); treating it as a push
+# would silently remove `review-approved`. Only a fresh run may drop the approval.
+if [[ "${GITHUB_RUN_ATTEMPT:-1}" -gt 1 ]]; then
+  echo "Перезапуск прогона (attempt ${GITHUB_RUN_ATTEMPT}): событие старое, метка review-approved не трогается."
+  ACTION=""
+fi
+
 report_status() {
   local state="$1"
   local desc="$2"

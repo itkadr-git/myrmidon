@@ -88,6 +88,8 @@ test('plan reads the PR labels live so a re-run (old payload) goes to the full t
   const content = await readFile(WORKFLOW, 'utf8');
   assert.match(content, /issues\/\$PR_NUMBER\/labels/);
   assert.match(content, /grep -qx 'full-ci'/);
+  // attempt > 1 with an API failure must fail the step, not fall back to the stale payload
+  assert.match(content, /GITHUB_RUN_ATTEMPT:-1\}" -gt 1 \]; then[\s\S]{0,400}exit 1/);
 });
 
 test('full-label workflow: labeled only, job gated on full-ci, can re-run runs, never cancelled itself', async () => {
@@ -97,4 +99,7 @@ test('full-label workflow: labeled only, job gated on full-ci, can re-run runs, 
   assert.match(content, /actions: write/);
   assert.match(content, /cancel-in-progress: false/);
   assert.match(content, /rerun-full-ci\.mjs/);
+  // the script runs with actions: write: it comes from the base commit, not the PR merge ref
+  assert.match(content, /ref: \$\{\{ github\.event\.pull_request\.base\.sha \}\}/);
+  assert.match(content, /pull-requests: read/);
 });

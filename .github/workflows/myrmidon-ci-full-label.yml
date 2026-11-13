@@ -32,9 +32,25 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
+      # The script runs with `actions: write`, so it is taken from the BASE
+      # commit of the PR, never from the PR merge ref (PR code must not run here).
       - name: Checkout script from the base branch
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
+          ref: ${{ github.event.pull_request.base.sha }}
+          persist-credentials: false
+          sparse-checkout: scripts/myrmidon/ci/rerun-full-ci.mjs
+          sparse-checkout-cone-mode: false
+
+      # Bootstrap only: while the base does not have the script yet (the PR that
+      # introduces it), take it from the PR head so that PR can verify itself.
+      # Once the script is on the base branch this step never runs.
+      - name: Checkout script from the PR head (bootstrap, script absent on base)
+        if: ${{ hashFiles('scripts/myrmidon/ci/rerun-full-ci.mjs') == '' }}
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          path: bootstrap
           persist-credentials: false
           sparse-checkout: scripts/myrmidon/ci/rerun-full-ci.mjs
           sparse-checkout-cone-mode: false
@@ -49,4 +65,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           REPO: ${{ github.repository }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
-        run: node scripts/myrmidon/ci/rerun-full-ci.mjs
+        run: |
+          script=scripts/myrmidon/ci/rerun-full-ci.mjs
+          [ -f "$script" ] || script="bootstrap/$script"
+          node "$script"

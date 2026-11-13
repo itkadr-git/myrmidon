@@ -11,7 +11,11 @@
 - The `full-ci` label is handled by the new `myrmidon-ci-full-label.yml`: it
   cancels the running `Myrmidon CI` run on the head and re-runs it as a full
   run (`scripts/myrmidon/ci/rerun-full-ci.mjs`). The `plan` step reads the PR
-  labels live, because a re-run keeps the old event payload.
+  labels live (an API failure in a re-run fails the step instead of using the
+  stale payload), because a re-run keeps the old event payload. The script is
+  taken from the PR base commit; the re-run is retried after a cancel and is
+  skipped when the head moved; the hot files check does not drop
+  `review-approved` in a re-run.
 - The OPE-12841 protection is kept by construction: no label run exists that
   could publish a passing `CI result` on a head without a green real run.
 
@@ -29,7 +33,10 @@
 - Метку `full-ci` обрабатывает новый `myrmidon-ci-full-label.yml`: он отменяет
   идущий прогон `Myrmidon CI` на голове и перезапускает его полным
   (`scripts/myrmidon/ci/rerun-full-ci.mjs`). Шаг `plan` читает метки PR живьём,
-  потому что перезапуск сохраняет старую полезную нагрузку события.
+  потому что перезапуск сохраняет старую полезную нагрузку события (ошибка API
+  при перезапуске валит шаг, а не берёт старые метки). Скрипт берётся с базового
+  коммита PR; перезапуск повторяется после отмены и пропускается, если голова
+  сдвинулась; проверка горячих файлов в перезапуске не снимает `review-approved`.
 - Защита OPE-12841 сохранена по построению: прогона по метке, который мог бы
   опубликовать успешную `CI result` на голове без зелёного настоящего прогона,
   больше нет.
