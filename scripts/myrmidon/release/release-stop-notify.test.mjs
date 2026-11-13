@@ -71,6 +71,10 @@ case "$sub" in
     done
     case "$verb" in
       create)
+        if [ -n "\${GH_LOCK_CREATE_INJECT_ISSUE:-}" ]; then
+          jq '. + [{number: 555, title: "release-stop: myr-v1.8.0 (111)", state: "open"}]' "$SANDBOX/issues.json" > "$SANDBOX/issues.json.tmp"
+          mv "$SANDBOX/issues.json.tmp" "$SANDBOX/issues.json"
+        fi
         if ! mkdir "$SANDBOX/label-$name.lock" 2>/dev/null; then
           echo "label with name \\"$name\\" already exists; use --force to update its color and description" >&2
           exit 1
@@ -333,6 +337,17 @@ describe("release-stop-notify.sh (fake gh)", () => {
     const matchingIssues = issues.filter((it) => it.title === "release-stop: myr-v1.8.0 (111)");
     assert.equal(matchingIssues.length, 1, `expected exactly 1 matching issue, got: ${JSON.stringify(issues)}`);
     assert.equal(matchingIssues[0].state, "open");
+  });
+
+  it("rescans after acquiring lock when another run created the issue and released the lock", () => {
+    const sb = makeSandbox();
+    const r = runScript(sb, { GH_LOCK_CREATE_INJECT_ISSUE: "y" });
+    assert.equal(r.status, 0, r.stderr);
+    assert.match(r.stdout, /stop=deduplicated issue=555 event=111/);
+    assert.ok(!fs.existsSync(path.join(sb.dir, "mutations.log")), "no issue create must happen when rescan finds an existing issue");
+    const issues = JSON.parse(fs.readFileSync(path.join(sb.dir, "issues.json"), "utf8"));
+    assert.equal(issues.length, 1);
+    assert.equal(issues[0].number, 555);
   });
 
   it("the workflow serializes notification retries per stop event (concurrency group)", () => {

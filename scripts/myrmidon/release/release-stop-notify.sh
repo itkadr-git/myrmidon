@@ -16,10 +16,13 @@
 #      lock by creating a unique repo label "release-stop-lock-<event id>".
 #      If another execution holds the lock, this runner waits and polls for the
 #      issue to be published, suppressing concurrent duplicate creation.
-#   3. Post-creation verification: if concurrent creations ever race past the
+#   3. Lock rescan: immediately upon acquiring the lock, the script rescans
+#      for existing entries to ensure no concurrent run created the issue
+#      and released the lock before this run acquired it.
+#   4. Post-creation verification: if concurrent creations ever race past the
 #      lock, any duplicate is immediately closed in favor of the canonical lowest
 #      issue number.
-#   4. Cleanup: the temporary lock label is released on exit.
+#   5. Cleanup: the temporary lock label is released on exit.
 #
 # Failure posture (fail closed): if the responsible login is missing, the
 # duplicate scan cannot complete, or the issue create fails, the script
@@ -131,6 +134,18 @@ while true; do
   acquire_rc=0
   acquire_lock || acquire_rc=$?
   if [[ "$acquire_rc" -eq 0 ]]; then
+    # Rescan after acquiring the lock to guarantee no prior run created the issue
+    # and released the lock before this run acquired it.
+    existing="$(scan_for_existing | head -1)" || {
+      release_lock
+      die "the duplicate scan failed; refusing to create a possibly-duplicate stop entry"
+    }
+    if [[ -n "$existing" ]]; then
+      log "stop entry already exists for event $event_id (issue #$existing) — deduplicated"
+      release_lock
+      printf 'stop=deduplicated issue=%s event=%s\n' "$existing" "$event_id"
+      exit 0
+    fi
     break
   elif [[ "$acquire_rc" -eq 2 ]]; then
     log "concurrent notification in progress for event $event_id; waiting for issue"
