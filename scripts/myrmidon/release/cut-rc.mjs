@@ -5,15 +5,21 @@
 // the 12.11 incident: rc.24 went out with 17 open release tasks and, later,
 // six closed tasks turned out to have unmerged PRs.
 //
-// One command checks, in order, then tags:
-//   1. board: every task with the release label is `done` (no open tasks);
-//   2. board: no task of the release carries an unmerged attached PR --
-//      including `done` tasks (a closed task with an open PR is the silent
-//      failure mode of the 12.11 incident);
-//   3. changelog: the version section exists in both CHANGELOGs (the same
+// Checks in order:
+//
+//   1. board: every release task is done (open task -> refusal);
+//   2. board: no attached PR in a blocking state (open/draft/closed-unmerged);
+//   3. composition: the release tasks' deliveries are on the candidate
+//      commit -- a done task must carry either a merged PR whose merge
+//      commit is an ancestor of the release commit (hard, not bypassable)
+//      or a commit on the branch whose subject mentions the task id (no-PR
+//      work; board-class, bypassable -- it can be stale board state); a
+//      release task merged on main but missing from the branch is a hard
+//      refusal item;
+//   4. changelog: the version section exists in both CHANGELOGs (the same
 //      assert collect-fragments.mjs --check makes, RELEASE-CUT-CHANGELOG);
-//   4. git: the tag is new and the commit is on the default branch;
-//   5. gh: the CI of the release commit is green.
+//   5. git: the tag is new and the commit is on the default branch;
+//   6. gh: the CI of the release commit is green.
 //
 // On any violation the script refuses with the full list. The only way past
 // a board violation is an explicit override:
@@ -49,6 +55,107 @@ const OPEN_STATUSES = new Set(["backlog", "todo", "in_progress", "in_review", "b
 // Work-product states of an attached PR that block the cut; `closed-unmerged`
 // is computed from state "closed" when the PR never merged.
 const PR_BLOCKING_STATES = new Set(["open", "draft", "closed-unmerged"]);
+
+// gh pr view fields of one attached PR. `mergeCommit` is null until GitHub
+// merges; `headRefName` and `title` name the branch when the merge commit is
+// missing from the local graph.
+function ghPrJson(repo, number, opts = {}) {
+  const out = execFileSync("gh", ["pr", "view", String(number), "--repo", repo, "--json",
+    "state,mergedAt,mergeCommit,headRefName,title"], {
+    encoding: "utf8",
+    ...(opts.env ? { env: opts.env } : {}),
+  });
+  return JSON.parse(out);
+}
+
+// True when any commit reachable from `branch` mentions `taskId` in its
+// subject. Matched case-insensitively as a whole token (ERE `(^|[^0-9])id`
+// `id([^0-9]|$)`): `OPE-100` must not match `OPE-10084`.
+export function commitWithTaskSubjectExists(root, taskId, branch, opts = {}) {
+  if (!taskId) return false;
+  const boundary = String(taskId).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const pattern = `(^|[^0-9A-Za-z-])${boundary}([^0-9A-Za-z-]|$)`;
+  try {
+    const out = execFileSync("git", ["-C", root, "log", "--grep", pattern, "-i",
+      "--extended-regexp", "--max-count=1", "--format=%H", branch], {
+      encoding: "utf8",
+      ...(opts.env ? { env: opts.env } : {}),
+    });
+    return out.trim() !== "";
+  } catch {
+    return false;
+  }
+}
+
+// Composition of one release task against the candidate commit (HEAD of the
+// checked-out release branch). Returns the list of violations (empty = the
+// task's work is on the release commit):
+//   - a done task with no merged PR and no commit mentioning its id;
+//   - a merged PR whose merge commit is not an ancestor of the release
+//     commit (main fix missing from the branch, or a branch-foreign PR);
+//   - an unresolvable merged PR (gh failure, no merge commit known) -- the
+//     delivery cannot be proven present, so it blocks.
+// `gh(repo, number)` and `listCommitsWithSubject(root, taskId, branch)` are
+// injectable for tests.
+export async function compositionViolationsOfIssue(
+  issue,
+  opts = {},
+) {
+  const { root, gh = ghPrJson, listCommitsWithSubject = commitWithTaskSubjectExists, repo = GITHUB_REPO, env } = opts;
+  const violations = [];
+
+  for (const wp of issue.workProducts || []) {
+    if ((wp.type || "") !== "pull_request") continue;
+    const status = String(wp.status || "").toLowerCase();
+    if (status !== "merged") continue;
+    const key = prKeyOf(wp);
+    const num = Number((wp.metadata || {}).number ?? (wp.metadata || {}).pullRequestNumber);
+    const prNum = Number.isFinite(num) && num > 0 ? `#${num}` : key;
+    let pr;
+    try {
+      pr = gh(repo, num, {});
+    } catch (err) {
+      violations.push(`${issue.identifier}: merged PR ${prNum} cannot be verified: ${err.message}`);
+      continue;
+    }
+    if (!pr || !pr.mergeCommit || !pr.mergeCommit.oid) {
+      violations.push(`${issue.identifier}: merged PR ${prNum} has no merge commit on record`);
+      continue;
+    }
+    if (!commitOnBranch(root, pr.mergeCommit.oid, "HEAD")) {
+      const head = pr.headRefName ? ` (branch ${pr.headRefName})` : "";
+      violations.push(
+        `${issue.identifier}: merged PR ${prNum} is missing from the release commit${head}`,
+      );
+    }
+  }
+  if (violations.length > 0) return violations;
+  // No delivery found through PRs: accept a plain commit on the branch whose
+  // subject mentions the task id (small fixes are sometimes pushed without a
+  // PR). Board-class: an override may dismiss it as stale metadata.
+  if (!(await listCommitsWithSubject(root, issue.identifier, "HEAD", { env }))) {
+    violations.push(
+      `${issue.identifier}: no delivery on the release commit (no merged PR, no commit mentioning ${issue.identifier})`,
+    );
+  }
+  return violations;
+}
+
+// Composition of the release: done tasks only (open/cancelled tasks already
+// refuse above; their composition is unknowable). Hard problems
+// (PR-merge-commit ancestry) go to `hard`, board-class ones to `soft`.
+export async function collectCompositionViolations(issues, opts = {}) {
+  const hard = [];
+  const soft = [];
+  for (const issue of issues) {
+    if (!DONE_STATUSES.has(issue.status)) continue;
+    for (const v of await compositionViolationsOfIssue(issue, opts)) {
+      if (v.includes("missing from the release commit")) hard.push(v);
+      else soft.push(v);
+    }
+  }
+  return { hard, soft };
+}
 
 function usage() {
   console.error(`usage:
@@ -238,6 +345,7 @@ export async function collectBoardViolations(api, issues, opts = {}, fetchBoard 
       );
     }
     if (opts.log) opts.log(`board: ${issue.identifier} checked`);
+    issue.workProducts = wps;
   }
   return { violations, openIssues };
 }
@@ -456,12 +564,26 @@ export async function run(args, deps = {}) {
     api, issues, { log }, fetchBoard,
   );
 
-  // Hard problems (changelog, git, CI) are never bypassable: an override is
-  // only for stale board state. A tag cut without the changelog section would
-  // fail the tag CI gate anyway (RELEASE-CUT-CHANGELOG), and a wrong commit
-  // cannot be argued away.
+  // Hard problems (changelog, git, composition-with-PR) are never
+  // bypassable: an override is only for stale board state. A tag cut without
+  // the changelog section would fail the tag CI gate anyway
+  // (RELEASE-CUT-CHANGELOG), a wrong commit cannot be argued away, and a
+  // merged PR absent from the release commit is a fact about the repository.
   const hardProblems = [];
   hardProblems.push(...changelogVersionOk(gitRoot, args.version).map((p) => `changelog: ${p}`));
+
+  // 3. composition: the deliveries of the done release tasks must be on the
+  // release commit. Hard: a merged PR's merge commit missing from the
+  // candidate ancestry. Soft (board-class, override may dismiss): a done
+  // task with no merged PR and no matching commit subject.
+  const composition = await collectCompositionViolations(issues, {
+    root: gitRoot,
+    gh: deps.prDetails || undefined,
+    listCommitsWithSubject: deps.commitWithTaskSubject || undefined,
+    env: deps.env,
+  });
+  hardProblems.push(...composition.hard.map((p) => `composition: ${p}`));
+
 
   // 4. git
   let sha = null;
@@ -494,9 +616,12 @@ export async function run(args, deps = {}) {
     }
   }
 
-  const overridable = boardViolations.length > 0 && hardProblems.length === 0 && !ciProblem;
+  const overridable = boardViolations.length + composition.soft.length > 0
+    && hardProblems.length === 0
+    && !ciProblem;
 
-  if (boardViolations.length === 0 && hardProblems.length === 0 && !ciProblem) {
+  if (boardViolations.length === 0 && composition.soft.length === 0
+    && hardProblems.length === 0 && !ciProblem) {
     if (args.dryRun) {
       log(`dry-run: all checks clean — would create ${tag} at ${sha ? sha.slice(0, 12) : "?"}`);
       return 0;
@@ -508,8 +633,11 @@ export async function run(args, deps = {}) {
   }
 
   // Board violations present: an override is the only path past them.
+  // Soft composition gaps ride the same override record: they are listed in
+  // the journal comment next to the board violations they belong to.
+  const overrideViolations = [...boardViolations, ...composition.soft.map((p) => `composition: ${p}`)];
   if (overridable && args.override && args.journal) {
-    const comment = buildOverrideComment({ tagName: tag, version: args.version, rc: args.rc, reason: args.override, violations: boardViolations, openIssues });
+    const comment = buildOverrideComment({ tagName: tag, version: args.version, rc: args.rc, reason: args.override, violations: overrideViolations, openIssues });
     log(`cut-rc: override requested — posting the record to ${args.journal}`);
     try {
       await postOverrideComment(api, args.journal, comment, fetchBoard);
@@ -529,11 +657,14 @@ export async function run(args, deps = {}) {
     return 0;
   }
 
-  err(formatRefusal({ tag, violations: [...boardViolations, ...hardProblems], ciProblem, overridable }));
+  err(formatRefusal({
+    tag,
+    violations: [...boardViolations, ...hardProblems, ...composition.soft.map((p) => `composition: ${p}`)],
+    ciProblem,
+    overridable,
+  }));
   return 1;
 }
-
-// --- entry -----------------------------------------------------------------
 
 export function mainSync(argv) {
   let args;

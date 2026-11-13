@@ -36,7 +36,8 @@ function makeRepo({ withChangelog = true, changelogVersion = "1.7.0" } = {}) {
   execFileSync("git", ["-C", root, "config", "user.name", "cut-rc test"]);
   fs.writeFileSync(path.join(root, "README.md"), "test repo\n");
   execFileSync("git", ["-C", root, "add", "."]);
-  execFileSync("git", ["-C", root, "commit", "-q", "-m", "init"]);
+  execFileSync("git", ["-C", root, "commit", "-q", "--allow-empty", "-m", "OPE-100: feature one (delivery)"]);
+  execFileSync("git", ["-C", root, "commit", "-q", "--allow-empty", "-m", "fix: OPE-101 feature two (delivery)"]);
   if (withChangelog) {
     const dir = path.join(root, "docs/myrmidon");
     fs.mkdirSync(dir, { recursive: true });
@@ -333,6 +334,106 @@ test("run: done task with unmerged PR refuses (exit 1)", async () => {
   );
   assert.equal(code, 1);
   assert.equal(runGit(root, ["tag", "-l", "myr-v1.7.0-rc.25"]), "");
+});
+
+test("run: merged PR whose merge commit is not on the branch refuses hard (composition)", async () => {
+  const run = await importRun();
+  const root = makeRepo();
+  // a main-side commit the branch does not contain (branch-foreign delivery)
+  runGit(root, ["checkout", "-q", "-b", "foreign"]);
+  fs.writeFileSync(path.join(root, "foreign.txt"), "f");
+  runGit(root, ["add", "."]);
+  runGit(root, ["commit", "-q", "-m", "OPE-100: landed elsewhere"]);
+  const foreign = runGit(root, ["rev-parse", "foreign"]);
+  runGit(root, ["checkout", "-q", "main"]);
+  const board = fakeBoard({
+    labels: [LABEL_17],
+    issues: [issue("i1", "OPE-100", "done"), issue("i2", "OPE-101", "done")],
+    workProductsByIssue: { i1: [{ type: "pull_request", status: "merged", title: "PR #3100: elsewhere", metadata: { number: 3100 } }], i2: [] },
+  });
+  const errors = [];
+  const code = await run(
+    { version: "1.7.0", rc: "25", root, boardLabel: "1.7" },
+    {
+      api: API, fetchBoard: board.fetchBoard, log: () => {}, err: (m) => errors.push(m), root,
+      ciStatus: () => ({ ok: true }),
+      prDetails: () => ({ mergeCommit: { oid: foreign }, headRefName: "foreign" }),
+    },
+  );
+  assert.equal(code, 1);
+  assert.equal(runGit(root, ["tag", "-l", "myr-v1.7.0-rc.25"]), "");
+  const text = errors.join("\n");
+  assert.match(text, /RELEASE-CUT REFUSED/);
+  assert.match(text, /OPE-100: merged PR #3100 is missing from the release commit \(branch foreign\)/);
+  // hard: not bypassable even with override + journal
+  const code2 = await run(
+    { version: "1.7.0", rc: "26", root, boardLabel: "1.7", override: "trust me", journal: "OPE-12408" },
+    {
+      api: API, fetchBoard: board.fetchBoard, log: () => {}, err: () => {}, root,
+      ciStatus: () => ({ ok: true }),
+      prDetails: () => ({ mergeCommit: { oid: foreign }, headRefName: "foreign" }),
+    },
+  );
+  assert.equal(code2, 1);
+  assert.equal(runGit(root, ["tag", "-l", "myr-v1.7.0-rc.26"]), "");
+});
+
+test("run: done task with no delivery anywhere refuses as overridable board-class gap", async () => {
+  const run = await importRun();
+  const root = makeRepo();
+  // a repo whose history has no OPE-300/OPE-301 deliveries
+  const board = fakeBoard({
+    labels: [LABEL_17],
+    issues: [issue("i1", "OPE-300", "done"), issue("i2", "OPE-301", "done")],
+    workProductsByIssue: { i1: [], i2: [] },
+  });
+  const errors = [];
+  const code = await run(
+    { version: "1.7.0", rc: "25", root, boardLabel: "1.7" },
+    { api: API, fetchBoard: board.fetchBoard, log: () => {}, err: (m) => errors.push(m), root, ciStatus: () => ({ ok: true }) },
+  );
+  assert.equal(code, 1);
+  assert.equal(runGit(root, ["tag", "-l", "myr-v1.7.0-rc.25"]), "");
+  const text = errors.join("\n");
+  assert.match(text, /OPE-300: no delivery on the release commit/);
+  assert.match(text, /OPE-301: no delivery on the release commit/);
+  assert.match(text, /--override/);
+});
+
+test("run: no-delivery gap + open task is overridable with journal (composition soft rides the override)", async () => {
+  const run = await importRun();
+  const root = makeRepo();
+  const journal = issue("j1", "OPE-12408", "in_progress", "1.7 release journal");
+  const boardAll = fakeBoard({
+    labels: [LABEL_17],
+    issues: [issue("i1", "OPE-300", "done"), issue("i2", "OPE-302", "todo", "stale open"), journal],
+    workProductsByIssue: { i1: [], i2: [], j1: [] },
+  });
+  const code = await run(
+    { version: "1.7.0", rc: "25", root, boardLabel: "1.7", override: "board is stale; rc.24 shipped", journal: "OPE-12408" },
+    { api: API, fetchBoard: boardAll.fetchBoard, log: () => {}, err: () => {}, root, ciStatus: () => ({ ok: true }) },
+  );
+  assert.equal(code, 0);
+  assert.equal(runGit(root, ["tag", "-l", "myr-v1.7.0-rc.25"]), "myr-v1.7.0-rc.25");
+  const body = boardAll.postedComments[0].body;
+  assert.match(body, /composition: OPE-300: no delivery on the release commit/);
+  assert.match(body, /OPE-302 "stale open" \[todo\]/);
+});
+
+test("run: done tasks delivered by commit subjects tag clean (composition pass)", async () => {
+  const run = await importRun();
+  const root = makeRepo();
+  const board = fakeBoard({
+    labels: [LABEL_17],
+    issues: [issue("i1", "OPE-100", "done"), issue("i2", "OPE-101", "done")],
+    workProductsByIssue: { i1: [], i2: [] },
+  });
+  const code = await run(
+    { version: "1.7.0", rc: "25", root, boardLabel: "1.7" },
+    { api: API, fetchBoard: board.fetchBoard, log: () => {}, err: () => {}, root, ciStatus: () => ({ ok: true }) },
+  );
+  assert.equal(code, 0);
+  assert.equal(runGit(root, ["tag", "-l", "myr-v1.7.0-rc.25"]), "myr-v1.7.0-rc.25");
 });
 
 test("run: everything clean -> tags the commit (exit 0)", async () => {
