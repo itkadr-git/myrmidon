@@ -21,6 +21,14 @@ type dockerClient struct {
 	images         []string
 	gatewayBindIP  string
 	boardExtraHost string
+	// transport is shared by every Docker API call (OPE-12923). A fresh
+	// http.Transport per call leaked its pooled keep-alive connection: the
+	// connection goroutines stay blocked forever with no IdleConnTimeout and
+	// the transport is kept live by them, so heap and goroutines grew until
+	// the OOM killer killed fleetd (~45 MB/h at rest, ~220 MB/h under a bot
+	// roll on myr-vm1, MemoryMax=512M).
+	transport *http.Transport
+	client    *http.Client
 }
 
 const dockerAPIVersion = "v1.41"
@@ -30,7 +38,17 @@ func newDockerClient(c *config) *dockerClient {
 	if api == "" {
 		api = strings.TrimPrefix(dockerAPIVersion, "v")
 	}
-	return &dockerClient{socket: c.Upstream, api: api, volumeRoot: c.VolumeRoot, network: c.Network, images: c.Images, gatewayBindIP: c.GatewayBindIP, boardExtraHost: c.BoardExtraHost}
+	tr := &http.Transport{
+		DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
+			return net.DialTimeout("unix", c.Upstream, 5*time.Second)
+		},
+		MaxIdleConns:        4,
+		MaxIdleConnsPerHost: 4,
+		// Idle docker connections are closed after a minute, so a quiet site
+		// does not keep sockets and their goroutines alive forever.
+		IdleConnTimeout: time.Minute,
+	}
+	return &dockerClient{socket: c.Upstream, api: api, volumeRoot: c.VolumeRoot, network: c.Network, images: c.Images, gatewayBindIP: c.GatewayBindIP, boardExtraHost: c.BoardExtraHost, transport: tr, client: &http.Client{Transport: tr}}
 }
 func (d *dockerClient) prefix() string { return "v" + d.api }
 func (d *dockerClient) request(ctx context.Context, method, path string, body any, out any) error {
@@ -49,10 +67,11 @@ func (d *dockerClient) request(ctx context.Context, method, path string, body an
 	if body != nil {
 		req.Header.Set("Content-Type", "application/json")
 	}
-	tr := &http.Transport{DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
-		return net.DialTimeout("unix", d.socket, 5*time.Second)
-	}}
-	resp, err := (&http.Client{Transport: tr, Timeout: 30 * time.Second}).Do(req)
+	// The whole request is bounded by 30s, the old client.Timeout: the shared
+	// client has no Timeout of its own so the pull path can stream for 15m.
+	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+	resp, err := d.client.Do(req)
 	if err != nil {
 		return err
 	}
@@ -156,10 +175,7 @@ func (d *dockerClient) pull(ctx context.Context, image string) error {
 	if err != nil {
 		return err
 	}
-	tr := &http.Transport{DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
-		return net.DialTimeout("unix", d.socket, 5*time.Second)
-	}}
-	resp, err := (&http.Client{Transport: tr}).Do(req)
+	resp, err := d.client.Do(req)
 	if err != nil {
 		return err
 	}
@@ -227,10 +243,10 @@ func (d *dockerClient) logs(ctx context.Context, bot string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	tr := &http.Transport{DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
-		return net.DialTimeout("unix", d.socket, 5*time.Second)
-	}}
-	resp, err := (&http.Client{Transport: tr, Timeout: 30 * time.Second}).Do(req)
+	// 30s, the old client.Timeout.
+	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+	resp, err := d.client.Do(req)
 	if err != nil {
 		return "", err
 	}
