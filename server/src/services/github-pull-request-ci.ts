@@ -217,8 +217,8 @@ export function summarizeCheckRuns(
   const totalRuns = effectiveRuns.length;
   const failedJobs: PullRequestFailedJob[] = [];
   const cancelledJobs: PullRequestFailedJob[] = [];
-  const cancelledRunIds = new Map<PullRequestFailedJob, string | null>();
-  const ciResultSuccessRunIds = new Set<string>();
+  const cancelledRecords = new Map<PullRequestFailedJob, PullRequestCiJob>();
+  let latestCiResultSuccess: PullRequestCiJob | null = null;
   let successfulRuns = 0;
   let inProgressCount = 0;
   let latestCompletedAt: string | null = null;
@@ -239,8 +239,7 @@ export function summarizeCheckRuns(
     if (conclusion === "success" || conclusion === "skipped" || conclusion === "neutral") {
       successfulRuns++;
       if (run.name.trim().toLowerCase() === "ci result" && conclusion === "success") {
-        const runId = workflowRunIdOf(run);
-        if (runId) ciResultSuccessRunIds.add(runId);
+        if (!latestCiResultSuccess || compareRuns(run, latestCiResultSuccess) > 0) latestCiResultSuccess = run;
       }
     } else if (conclusion === "cancelled") {
       // The latest record of this check is cancelled and nothing replaced it:
@@ -253,7 +252,7 @@ export function summarizeCheckRuns(
         completedAt: run.completedAt,
       };
       cancelledJobs.push(job);
-      cancelledRunIds.set(job, workflowRunIdOf(run));
+      cancelledRecords.set(job, run);
     } else {
       failedJobs.push({
         id: run.id,
@@ -265,12 +264,24 @@ export function summarizeCheckRuns(
     }
   }
 
-  // A successful `CI result` absorbs only the cancelled checks of its own
-  // workflow run (same run id). A cancelled check outside it - or one whose run
-  // cannot be told from the check data - keeps the summary `cancelled`.
+  // A completed successful `CI result` of the head means the run that produced
+  // it is the one that counts. A cancelled check is ignored (it belongs to a run
+  // that was replaced) when it is not newer than that `CI result` (same order key:
+  // time, then id), or - when run numbers are known - it belongs to the same
+  // workflow run, or to a run with a smaller number than the run of the `CI
+  // result`. This is what a `full-ci` label or a re-run leaves behind: orphan
+  // cancelled jobs of the replaced run with names the new run does not have.
+  // A cancelled record NEWER than the successful `CI result` (a later run was
+  // cancelled) still gives `cancelled`. Real failures are never affected.
   const absorbedCancelledJobs = cancelledJobs.filter((job) => {
-    const runId = cancelledRunIds.get(job);
-    return runId !== null && runId !== undefined && ciResultSuccessRunIds.has(runId);
+    const ci = latestCiResultSuccess as PullRequestCiJob | null;
+    const record = cancelledRecords.get(job);
+    if (!ci || !record) return false;
+    if (compareRuns(record, ci) <= 0) return true;
+    const cancelledRun = workflowRunIdOf(record);
+    const ciRun = workflowRunIdOf(ci);
+    if (cancelledRun === null || ciRun === null) return false;
+    return cancelledRun === ciRun || BigInt(cancelledRun) < BigInt(ciRun);
   });
   for (const job of absorbedCancelledJobs) cancelledJobs.splice(cancelledJobs.indexOf(job), 1);
 
@@ -295,7 +306,7 @@ export function summarizeCheckRuns(
   } else {
     status = "completed";
     conclusion = "success";
-    const ignored = absorbedCancelledJobs.length > 0 ? `, ${absorbedCancelledJobs.length} cancelled of the same run as a successful CI result ignored` : "";
+    const ignored = absorbedCancelledJobs.length > 0 ? `, ${absorbedCancelledJobs.length} cancelled of a replaced run ignored (a successful CI result is newer)` : "";
     summary = `success (${successfulRuns}/${totalRuns} passed${ignored})`;
   }
 
@@ -998,7 +1009,8 @@ export function createPullRequestCiResolver(
         runs,
       };
 
-      const ttlMs = result.status === "completed" || result.status === "not_configured" ? CI_CACHE_COMPLETED_TTL_MS : CI_CACHE_INCOMPLETE_TTL_MS;
+      // A `cancelled` summary is not a final verdict: a re-run on the same head may follow soon, keep it on the short TTL.
+      const ttlMs = (result.status === "completed" && result.conclusion !== "cancelled") || result.status === "not_configured" ? CI_CACHE_COMPLETED_TTL_MS : CI_CACHE_INCOMPLETE_TTL_MS;
       if (ciCache.size >= CI_CACHE_MAX_ENTRIES) {
         const oldestKey = ciCache.keys().next().value;
         if (oldestKey !== undefined) ciCache.delete(oldestKey);

@@ -414,6 +414,113 @@ describe("summarizeCheckRuns", () => {
   });
 
   describe("CI-SNAPSHOT-CANCELLED", () => {
+    describe("replaced run with orphan cancelled checks (full-ci label / re-run)", () => {
+      const EXPR =
+        "(github.event_name != 'pull_request' || github.event.action != 'labeled' || github.event.label.name == 'full-ci') && 'CI result' || 'CI result (label noop)'";
+      let nextId = 7000;
+      const rec = (
+        name: string,
+        conclusion: PullRequestCiJob["conclusion"],
+        start: string,
+        run: number,
+        status: PullRequestCiJob["status"] = "completed",
+      ): PullRequestCiJob => {
+        const id = nextId++;
+        return {
+          id,
+          name,
+          status,
+          conclusion,
+          url: `https://github.com/itkadr-git/myrmidon/actions/runs/${run}/job/${id}`,
+          startedAt: start,
+          completedAt: status === "completed" ? start : null,
+        };
+      };
+      const firstRunCancelled = (): PullRequestCiJob[] => [
+        rec("tests (affected)", "cancelled", "2026-11-14T02:00:00Z", 100),
+        rec("tests (${{ matrix.label }})", "cancelled", "2026-11-14T02:00:00Z", 100),
+        rec(EXPR, "cancelled", "2026-11-14T02:00:00Z", 100),
+        rec("report main status", "cancelled", "2026-11-14T02:00:00Z", 100),
+        rec("plugin readiness timing", "cancelled", "2026-11-14T02:00:00Z", 100),
+        rec("CI result", "cancelled", "2026-11-14T02:00:00Z", 100),
+      ];
+      const otherWorkflows = (): PullRequestCiJob[] => [
+        rec("hot files review", "skipped", "2026-11-14T02:10:00Z", 201),
+        rec("freeze", "success", "2026-11-14T02:10:00Z", 202),
+        rec("main-green", "success", "2026-11-14T02:10:00Z", 203),
+      ];
+
+      it("A: first run fully cancelled with orphan names, second run green with CI result success -> SUCCESS, nothing cancelled", () => {
+        const runs = [
+          ...firstRunCancelled(),
+          rec("tests (server 1/6)", "success", "2026-11-14T02:10:00Z", 200),
+          rec("tests (server 2/6)", "success", "2026-11-14T02:10:00Z", 200),
+          rec("plugin readiness timing", "success", "2026-11-14T02:10:00Z", 200),
+          rec("CI result", "success", "2026-11-14T02:30:00Z", 200),
+          ...otherWorkflows(),
+        ];
+        const summary = summarizeCheckRuns(runs);
+        expect(summary.conclusion).toBe("success");
+        expect(summary.status).toBe("completed");
+        expect(summary.cancelledJobs).toEqual([]);
+        expect(summary.failedJobs).toEqual([]);
+        expect(summary.summary.toLowerCase()).not.toContain("fail");
+        // same result with the records in reverse order
+        expect(summarizeCheckRuns([...runs].reverse()).conclusion).toBe("success");
+      });
+
+      it("A without a successful CI result (second run still running) -> pending", () => {
+        const runs = [
+          ...firstRunCancelled(),
+          rec("tests (server 1/6)", "success", "2026-11-14T02:10:00Z", 200),
+          rec("tests (server 2/6)", "in_progress", "2026-11-14T02:10:00Z", 200, "in_progress"),
+          ...otherWorkflows(),
+        ];
+        const summary = summarizeCheckRuns(runs);
+        expect(summary.conclusion).toBe("pending");
+        expect(summary.status).toBe("in_progress");
+      });
+
+      it("a cancellation NEWER than the successful CI result (a later run was cancelled) -> cancelled", () => {
+        const runs = [
+          rec("tests (server 1/6)", "success", "2026-11-14T02:10:00Z", 200),
+          rec("CI result", "success", "2026-11-14T02:30:00Z", 200),
+          rec("tests (rerun only)", "cancelled", "2026-11-14T03:00:00Z", 300),
+        ];
+        const summary = summarizeCheckRuns(runs);
+        expect(summary.conclusion).toBe("cancelled");
+        expect(summary.cancelledJobs?.map((j) => j.name)).toEqual(["tests (rerun only)"]);
+      });
+
+      it("D: a stray-label run with every job skipped after the green full run -> SUCCESS", () => {
+        const runs = [
+          rec("tests (server 1/6)", "success", "2026-11-14T02:10:00Z", 200),
+          rec("CI result", "success", "2026-11-14T02:30:00Z", 200),
+          ...otherWorkflows(),
+          rec("tests (server 1/6)", "skipped", "2026-11-14T03:00:00Z", 400),
+          rec("CI result", "skipped", "2026-11-14T03:00:00Z", 400),
+          rec("hot files review", "skipped", "2026-11-14T03:00:00Z", 401),
+        ];
+        const summary = summarizeCheckRuns(runs);
+        expect(summary.conclusion).toBe("success");
+        expect(summary.failedJobs).toEqual([]);
+        expect(summary.cancelledJobs).toEqual([]);
+      });
+
+      it("B: a real failure of the latest verdict stays FAILURE even with a successful CI result", () => {
+        const runs = [
+          ...firstRunCancelled(),
+          rec("tests (server 1/6)", "failure", "2026-11-14T02:10:00Z", 200),
+          rec("tests (server 2/6)", "timed_out", "2026-11-14T02:10:00Z", 200),
+          rec("CI result", "success", "2026-11-14T02:30:00Z", 200),
+        ];
+        const summary = summarizeCheckRuns(runs);
+        expect(summary.conclusion).toBe("failure");
+        expect(summary.failedJobs.map((j) => j.name)).toEqual(["tests (server 1/6)", "tests (server 2/6)"]);
+        expect(summary.cancelledJobs).toEqual([]);
+      });
+    });
+
     it("(a) a cancelled replaced run followed by a successful run of the same checks is SUCCESS and not in failedJobs", () => {
       const runs: PullRequestCiJob[] = [
       {
