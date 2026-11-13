@@ -241,3 +241,30 @@ describe("looksLikePendingInteractionAddresseeWake", () => {
     ).toBe(false);
   });
 });
+
+// myrmidon(RUN-SETUP-STALE-TASK)
+describe("decideQueuedRunStaleness: assignment wake of a task closed before the start", () => {
+  const assigned = { runAgentId: "agent-a", wakeReason: "issue_assigned", wakeCommentIdPresent: true };
+
+  it("cancels an issue_assigned run as terminal even though it carries the hand-off comment", () => {
+    for (const issueStatus of ["done", "cancelled"]) {
+      expect(decideQueuedRunStaleness(facts({ ...assigned, issueStatus }), NOW)).toMatchObject({
+        stale: true,
+        errorCode: "issue_terminal_status",
+      });
+    }
+  });
+
+  it("still lets a comment wake of a closed task start", () => {
+    expect(
+      decideQueuedRunStaleness(
+        facts({ ...assigned, wakeReason: "issue_commented", issueStatus: "done" }),
+        NOW,
+      ),
+    ).toEqual({ stale: false });
+  });
+
+  it("does not cancel an issue_assigned run of an open task", () => {
+    expect(decideQueuedRunStaleness(facts({ ...assigned }), NOW)).toEqual({ stale: false });
+  });
+});
