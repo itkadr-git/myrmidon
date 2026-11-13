@@ -446,10 +446,11 @@ describe("externalConnectorService enforcement (OPE-13026)", () => {
     const slowDispatcher: ConnectorDispatcher = async () => {
       dispatchCount += 1;
       await new Promise((r) => setTimeout(r, 20));
-      return { ok: true, output: { dispatched: true } };
+      return { ok: true, result: { dispatched: true } };
     };
 
-    const { svc } = setup();
+    const { store } = createMemoryStore();
+    const svc = externalConnectorService({} as never, { store, actionModeResolver: testActionModeResolver });
     await svc.putGrants(
       COMPANY_ID,
       {

@@ -8,6 +8,7 @@ import request from "supertest";
 import { describe, expect, it } from "vitest";
 import { errorHandler } from "../../middleware/index.js";
 import { externalConnectorsRoutes } from "./routes.js";
+import type { ConnectorActionMode } from "@myrmidon/shared";
 import { externalConnectorService, type ConnectorPolicyStore } from "./service.js";
 import type {
   ExternalConnectorGrantRow,
@@ -125,17 +126,25 @@ function createMemoryStore(): ConnectorPolicyStore {
   };
 }
 
-const actionModes: Record<string, string> = {
+const actionModes: Record<string, ConnectorActionMode> = {
   "task:read": "read",
   "task:write": "write",
   "task:purge": "confirm",
 };
 
-function app(actor: unknown, customDispatcher?: (req: unknown) => Promise<{ ok: boolean; [key: string]: unknown }>) {
-  const svc = externalConnectorService({} as never, {
-    store: createMemoryStore(),
-    actionModeResolver: (_c: string, a: string) => actionModes[a] ?? null,
-  });
+function app(
+  actor: unknown,
+  customDispatcher?: (req: unknown) => Promise<{ ok: boolean; [key: string]: unknown }>,
+  customStore?: ConnectorPolicyStore,
+  customSvc?: ReturnType<typeof externalConnectorService>,
+) {
+  const store = customStore ?? createMemoryStore();
+  const svc =
+    customSvc ??
+    externalConnectorService({} as never, {
+      store,
+      actionModeResolver: (_c: string, a: string) => actionModes[a] ?? null,
+    });
   const dispatched: unknown[] = [];
   const server = express();
   server.use(express.json());
@@ -157,7 +166,7 @@ function app(actor: unknown, customDispatcher?: (req: unknown) => Promise<{ ok: 
     }),
   );
   server.use(errorHandler);
-  return { server, svc, dispatched };
+  return { server, svc, dispatched, store };
 }
 
 const BASE = "/api/myrmidon/external-connectors";
@@ -252,8 +261,9 @@ describe("myrmidon(OPE-13026) external-connectors routes", () => {
     expect(res.body.journalEntry.reason).toBe("mode_denied_read_only");
     expect(a.dispatched).toHaveLength(0);
 
-    // Journal is queryable
-    await request(a.server)
+    // Journal is queryable by board operator
+    const adminApp = app(member, undefined, a.store);
+    await request(adminApp.server)
       .get(`${BASE}/journal?outcome=denied`)
       .expect(200)
       .then((r) => {
@@ -356,12 +366,13 @@ describe("myrmidon(OPE-13026) external-connectors routes", () => {
       .expect(202);
     expect(a.dispatched).toHaveLength(0);
 
-    const list = await request(a.server)
+    const adminApp = app(member, undefined, a.store);
+    const list = await request(adminApp.server)
       .get(`${BASE}/pending-approvals?status=pending&companyId=${COMPANY_ID}`)
       .expect(200);
     const approvalId = list.body.approvals[0].id;
 
-    await request(a.server)
+    await request(adminApp.server)
       .post(`${BASE}/pending-approvals/${approvalId}/resolve`)
       .send({ decision: "approved", resolvedBy: "user-operator" })
       .expect(200)
@@ -388,15 +399,16 @@ describe("myrmidon(OPE-13026) external-connectors routes", () => {
         payload: {},
       })
       .expect(202);
-    const list = await request(a.server).get(`${BASE}/pending-approvals`).expect(200);
+    const adminApp = app(member, undefined, a.store);
+    const list = await request(adminApp.server).get(`${BASE}/pending-approvals`).expect(200);
     const approvalId = list.body.approvals[0].id;
 
-    await request(a.server)
+    await request(adminApp.server)
       .post(`${BASE}/pending-approvals/${approvalId}/resolve`)
       .send({ decision: "rejected", resolvedBy: "user-operator" })
       .expect(200);
 
-    await request(a.server)
+    await request(adminApp.server)
       .post(`${BASE}/pending-approvals/${approvalId}/resolve`)
       .send({ decision: "approved", resolvedBy: "user-operator" })
       .expect(409);
@@ -425,15 +437,16 @@ describe("myrmidon(OPE-13026) external-connectors routes", () => {
         payload: {},
       })
       .expect(202);
-    const list = await request(a.server).get(`${BASE}/pending-approvals`).expect(200);
+    const adminApp = app(member, countingDispatcher, a.store);
+    const list = await request(adminApp.server).get(`${BASE}/pending-approvals`).expect(200);
     const approvalId = list.body.approvals[0].id;
 
     // Fire two concurrent resolution HTTP requests against the same pending approval
     const [res1, res2] = await Promise.all([
-      request(a.server)
+      request(adminApp.server)
         .post(`${BASE}/pending-approvals/${approvalId}/resolve`)
         .send({ decision: "approved", resolvedBy: "operator-1" }),
-      request(a.server)
+      request(adminApp.server)
         .post(`${BASE}/pending-approvals/${approvalId}/resolve`)
         .send({ decision: "approved", resolvedBy: "operator-2" }),
     ]);

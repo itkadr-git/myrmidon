@@ -162,6 +162,7 @@
   "api.use(myrmidonKnowledgeSettingsRoutes(db))",
   "api.use(myrmidonKnowledgeMcpRoutes(db))",
   "api.use(accessHubRoutes(db))",
+  "api.use(externalConnectorsRoutes(db))",
   "api.use(myrmidonBrowserBridgeRoutes(db))",
   "api.use(myrmidonOcrRoutes(db))",
   "api.use(myrmidonCorpusMcpRoutes(db))",
