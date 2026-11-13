@@ -120,6 +120,7 @@ function createRuntime(db: Db, options: HostDiskRuntimeOptions = {}): HostDiskRu
     resolveSettings: () => resolveSweepSettings(settingsPort, env),
     logActivity: (entry) => logActivity(db, entry),
     lastSignalAt: store.lastSignalAt,
+    listCompanyIds: () => settings.listCompanyIds(),
     logger,
     partitionClient,
     partitionRuntime,
