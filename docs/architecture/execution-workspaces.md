@@ -23,6 +23,10 @@ Two quota dimensions are supported: a per-workspace limit and an instance total.
 
 A failed sweep leaves the last successful measurement visible and must not silently claim that a workspace is healthy. Cleanup and quota enforcement are observable through activity records. Credentials and run prompts never belong in workspace measurement metadata.
 
+## Per-turn checkpoints
+
+Since release 1.7, every completed agent turn of a run leaves a snapshot of the working tree as a hidden git ref `refs/myrmidon/turns/<runId>/<turnN>` on the workspace worktree (retention: newest 10 per run). Restore rewinds the tracked files and the index to a previous turn's checkpoint while refusing foreign uncommitted edits and worktrees claimed by another active run; a turn→turn introspection diff is available. See the operator guide: [guides/workspace-turn-checkpoints.md](../myrmidon/guides/workspace-turn-checkpoints.md).
+
 ## Source map
 
 - `server/src/myrmidon/workspace-hygiene/` — limits, measurements, sweeps, and service endpoints.

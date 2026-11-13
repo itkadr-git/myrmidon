@@ -10,6 +10,35 @@ version file to edit. Base Paperclip version is in the image label
 
 ## Unreleased
 
+### Turn checkpoints of the working worktree (1.7 CHECKPOINT-PER-TURN, OPE-12738)
+
+- Every completed agent turn of a run leaves a snapshot of the working
+  execution-workspace tree as a hidden git ref
+  `refs/myrmidon/turns/<runId>/<turnN>` on the run's worktree. Retention keeps
+  the newest 10 refs per run; older ones are pruned oldest-first. The refs are
+  hidden plumbing: plain `git log`/`git branch` do not show them and they are
+  never pushed to remotes. Snapshotting is fail-open and never fails a run.
+- New endpoints on the execution workspace: `GET .../turn-checkpoints?runId=`
+  (list), `GET .../turn-checkpoints/diff?runId=&fromTurn=&toTurn=` (turn→turn
+  introspection diff), and board-only `POST .../turn-checkpoints/restore`
+  (`runtime:manage`). Restore rewinds the tracked working files and the index
+  to the checkpoint tree; untracked files and the checked-out branch stay
+  untouched.
+- Restore refuses before it mutates: with 409 `worktree_busy_by_active_run`
+  when another active run (`queued`/`running`) claims the worktree, and with
+  409 `worktree_has_uncommitted_edits` when uncommitted tracked state (the
+  worktree or the staged index) differs from the target checkpoint — a
+  foreign staged edit survives even when the worktree file was rewritten back
+  to the checkpoint content. Missing target ref is 404
+  `turn_checkpoint_missing`. The write is audited as
+  `execution_workspace.turn_checkpoint_restored`.
+- Docs: operator guide
+  [guides/workspace-turn-checkpoints.md](guides/workspace-turn-checkpoints.md)
+  (RU: [workspace-turn-checkpoints.ru.md](guides/workspace-turn-checkpoints.ru.md)),
+  wiki pages `Workspace-turn-checkpoints` (+ RU), links from
+  [architecture/execution-workspaces.md](../architecture/execution-workspaces.md)
+  and the guide tables.
+
 ## 1.6.7
 
 ### Corpus: the full-text ranking starts after the embedding again (1.6.7 CORPUS-LATENCY, OPE-12272)

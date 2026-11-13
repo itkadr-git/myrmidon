@@ -10,6 +10,35 @@
 
 ## Без выпуска
 
+### Чекпоинты turn'ов рабочего worktree (1.7 CHECKPOINT-PER-TURN, OPE-12738)
+
+- Каждый завершённый turn прогона оставляет снимок рабочего дерева
+  execution-workspace в виде скрытого git-ref
+  `refs/myrmidon/turns/<runId>/<turnN>` на worktree прогона. Удержание хранит
+  последние 10 refs на прогон; старые удаляются от старейших. Refs — скрытая
+  внутренняя механика: обычные `git log`/`git branch` их не показывают, в
+  remote они не пушатся. Снимок — fail-open и никогда не роняет прогон.
+- Новые эндпоинты execution workspace: `GET .../turn-checkpoints?runId=`
+  (список), `GET .../turn-checkpoints/diff?runId=&fromTurn=&toTurn=`
+  (интроспекция диффа turn→turn) и `POST .../turn-checkpoints/restore`
+  (только доска, `runtime:manage`). Restore откатывает отслеживаемые рабочие
+  файлы и индекс к дереву чекпоинта; неотслеживаемые файлы и текущая ветка
+  не затрагиваются.
+- Restore отказывает до мутаций: с 409 `worktree_busy_by_active_run`, когда
+  тот же worktree занимает другой активный прогон (`queued`/`running`), и с
+  409 `worktree_has_uncommitted_edits`, когда незакоммиченное отслеживаемое
+  состояние (worktree или staged-индекс) отличается от целевого чекпоинта —
+  чужая staged-правка выживает, даже если файл в worktree переписали назад к
+  содержимому чекпоинта. Отсутствующий целевой ref — 404
+  `turn_checkpoint_missing`. Действие аудируется как
+  `execution_workspace.turn_checkpoint_restored`.
+- Документация: руководство оператора
+  [guides/workspace-turn-checkpoints.ru.md](guides/workspace-turn-checkpoints.ru.md)
+  (EN: [workspace-turn-checkpoints.md](guides/workspace-turn-checkpoints.md)),
+  страницы wiki `Workspace-turn-checkpoints` (+ RU), ссылки из
+  [architecture/execution-workspaces.ru.md](../architecture/execution-workspaces.ru.md)
+  и таблиц руководств.
+
 ## 1.6.7
 
 ### Корпус: полнотекстовая часть снова стартует после эмбеддинга (1.6.7 CORPUS-LATENCY, OPE-12272)
