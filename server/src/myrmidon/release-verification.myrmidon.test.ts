@@ -232,4 +232,83 @@ describe("verifyReleaseComposition", () => {
     // 3 members × 2 default release refs = 6 calls.
     expect(seen).toHaveLength(6);
   });
+
+  it("fails with deployed_version_mismatch when deployedVersion is not among the resolved release refs", async () => {
+    // The deployed version must correspond to a real release ref; an arbitrary
+    // non-empty string must not let membership checks run and claim success.
+    const calls: string[] = [];
+    const result = await verifyReleaseComposition({
+      releasePrefix: "1.6",
+      deployedVersion: "myr-v1.6.99-fabricated",
+      members: [member("OPE-1", SHA_A)],
+      resolvedRefs: [
+        { ref: "myr-v1.6.8", kind: "tag" },
+        { ref: "rel/1.6-fixes", kind: "branch" },
+      ],
+      fetchImpl: compareFake(["myr-v1.6.8"], [], calls),
+      now: NOW,
+    });
+    expect(result.verdict).toBe("failed");
+    expect(result.failureReason).toBe("deployed_version_mismatch");
+    expect(result.reason).toMatch(/myr-v1\.6\.99-fabricated/);
+    expect(result.allMembersPresent).toBe(false);
+    // The mismatch guard short-circuits before any membership check.
+    expect(calls).toHaveLength(0);
+  });
+
+  it("confirms when deployedVersion matches a resolved release ref and all members are present", async () => {
+    const calls: string[] = [];
+    const result = await verifyReleaseComposition({
+      releasePrefix: "1.6",
+      deployedVersion: "myr-v1.6.8",
+      members: [member("OPE-1", SHA_A)],
+      resolvedRefs: [
+        { ref: "myr-v1.6.8", kind: "tag" },
+        { ref: "rel/1.6-fixes", kind: "branch" },
+      ],
+      refs: [{ ref: "myr-v1.6.8", kind: "tag" }],
+      fetchImpl: compareFake(["myr-v1.6.8"], [], calls),
+      now: NOW,
+    });
+    expect(result.verdict).toBe("confirmed");
+    expect(result.failureReason).toBeNull();
+    expect(result.allMembersPresent).toBe(true);
+    expect(calls.length).toBe(1);
+  });
+
+  it("confirms when deployedVersion is git-describe output anchored at a resolved ref", async () => {
+    // The build stamp is usually `git describe` ("v1.6.8-15-g4c55f0d"), not a
+    // bare tag; it must still count as matching the resolved release tag.
+    const calls: string[] = [];
+    const result = await verifyReleaseComposition({
+      releasePrefix: "1.6",
+      deployedVersion: "myr-v1.6.8-15-g4c55f0d",
+      members: [member("OPE-1", SHA_A)],
+      resolvedRefs: [
+        { ref: "myr-v1.6.8", kind: "tag" },
+        { ref: "rel/1.6-fixes", kind: "branch" },
+      ],
+      refs: [{ ref: "myr-v1.6.8", kind: "tag" }],
+      fetchImpl: compareFake(["myr-v1.6.8"], [], calls),
+      now: NOW,
+    });
+    expect(result.verdict).toBe("confirmed");
+    expect(result.failureReason).toBeNull();
+    expect(result.allMembersPresent).toBe(true);
+  });
+
+  it("skips the mismatch guard when resolvedRefs is empty (resolution unavailable)", async () => {
+    // When the repository ref listing could not be resolved, we cannot prove
+    // the deployed version is wrong — fall through to membership checks.
+    const result = await verifyReleaseComposition({
+      releasePrefix: "1.6",
+      deployedVersion: "myr-v1.6.8",
+      members: [member("OPE-1", SHA_A)],
+      resolvedRefs: [],
+      fetchImpl: compareFake(["myr-v1.6"], [], []),
+      now: NOW,
+    });
+    expect(result.verdict).toBe("confirmed");
+    expect(result.failureReason).toBeNull();
+  });
 });
