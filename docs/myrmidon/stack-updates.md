@@ -135,6 +135,7 @@ Both variables, their defaults and failure behavior are in [SETTINGS.md](SETTING
 | Variable | Default | Meaning |
 |---|---|---|
 | `MYRMIDON_STACK_DOCKER_SOCKET` | `/var/run/docker.sock` | The Docker unix socket for the local image probes; read on every refresh, no restart needed |
+| `MYRMIDON_STACK_IMAGE_<NAME>` | unset | Exact image refs (tag or digest, comma-separated) the local probe of the docker-image component `<NAME>` inspects (component name upper-cased, `-` becomes `_`: `MYRMIDON_STACK_IMAGE_CLICKHOUSE`, `MYRMIDON_STACK_IMAGE_HERMES_AGENT`, `MYRMIDON_STACK_IMAGE_BASE_IMAGES`). Refs are used untouched (no tag stripping); unset keeps the seed refs, inspected as `:latest`. Through dockergate the same refs must be listed in its `inspectOnlyImages` and `MYRMIDON_STACK_DOCKER_SOCKET` must point at the dockergate socket (`/run/myrmidon-dockergate/engine.sock`); read on every refresh |
 | `MYRMIDON_STACK_CHECK_INTERVAL_SEC` | unset (off) | The release-check sweep interval; off unless set, minimum 60 s |
 
 ## When the network is down
