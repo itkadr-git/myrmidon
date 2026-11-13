@@ -93,6 +93,11 @@ export interface ReleaseVerificationOptions {
    * Actual release refs resolved from the repository (tags/branches of the
    * release line). When supplied, the deployedVersion must match one of these
    * refs — otherwise the check fails with `deployed_version_mismatch`.
+   * When the caller supplies an empty array it means ref resolution ran but
+   * found nothing (or failed); the deployed version is then unproven and the
+   * check must fail closed with `deployed_version_unknown` instead of falling
+   * back to membership checks against default refs that may not match the
+   * real deployment.
    */
   resolvedRefs?: readonly ReleaseRef[];
   /** Injectable fetch for deterministic tests. */
@@ -219,7 +224,30 @@ export async function verifyReleaseComposition(
   // resolved tag ("v1.6.8"), so accept either an exact ref match or a describe
   // string anchored at the ref. An arbitrary non-empty string must not let the
   // membership check run against unrelated refs and claim success.
-  if (options.resolvedRefs && options.resolvedRefs.length > 0) {
+  //
+  // Fail closed whenever resolved refs are unavailable — whether the caller
+  // omitted the field or passed an explicit empty list. Without a proven
+  // mapping between the deployed version and real release refs we cannot
+  // confirm the release: falling through to membership checks against default
+  // prefix refs would let an unknown deployed version be confirmed whenever
+  // those defaults happen to resolve. The VERIFY-ON-PROD route always
+  // resolves refs from the repository before calling this function.
+  if (!options.resolvedRefs || options.resolvedRefs.length === 0) {
+    return {
+      verdict: "failed",
+      reason:
+        `Релизные refs не разрешены из репозитория; выкачанную версию ` +
+        `"${options.deployedVersion}" невозможно подтвердить как реальный ref ` +
+        `релиза ${options.releasePrefix}.`,
+      failureReason: "deployed_version_unknown",
+      releasePrefix: options.releasePrefix,
+      deployedVersion: options.deployedVersion ?? null,
+      members: [],
+      allMembersPresent: false,
+      checkedAt,
+    };
+  }
+  {
     const deployed = options.deployedVersion;
     const matches = options.resolvedRefs.some(
       (ref) => deployed === ref.ref || deployed.startsWith(`${ref.ref}-`),
