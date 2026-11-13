@@ -1,0 +1,70 @@
+diff --git a/agent/turn_truncation.py b/agent/turn_truncation.py
+--- a/agent/turn_truncation.py
++++ b/agent/turn_truncation.py
+@@ -42,6 +42,15 @@
+     "chats are reset automatically)."
+ )
+ 
++# myrmidon(G1): how many times one turn re-issues the same model call after an HTTP-200
++# ``content_filter`` refusal that the fallback chain could not take over (no fallback configured, or
++# all of them already used) before the refusal ends the turn. The refusal need not repeat for an
++# unchanged long context (the filter cut a harmless reply mid-word), and the work done so far lives
++# in the session, so a re-issue costs one model call, not the run. Not more than 2, and fewer when
++# fallbacks are configured: a re-issue goes through the turn's restart machinery, whose per-turn
++# limit (``api_max_retries``, 3) is shared with the restarts onto the fallback chain.
++_CONTENT_FILTER_RETRIES = 2
++
+ _THINKING_EXHAUSTED = (
+     "💭 Reasoning exhausted the output token budget — no visible response was produced.",
+     "⚠️ **Thinking Budget Exhausted**\n\nThe model used all its output tokens on reasoning "
+@@ -624,7 +633,9 @@
+ ) -> RefusalVerdict:
+     """HTTP-200 refusal (``finish_reason`` ``content_filter`` / ``guardrail_intervened``).
+     Deterministic for the unchanged prompt — never retried: one configured-fallback try,
+-    else surface the refusal (explanation may live only in the reasoning channel)."""
++    else surface the refusal (explanation may live only in the reasoning channel).
++    myrmidon(G1): where the refusal used to end the turn (no fallback left to take over), the same
++    call is first re-issued up to ``_CONTENT_FILTER_RETRIES`` times per turn."""
+     from agent.conversation_loop import _arm_fallback_restart, _content_policy_blocked_result
+ 
+     _refusal_result = normalize_response_for_agent(agent, response)
+@@ -655,6 +666,31 @@
+         active_system_prompt = _arm_fallback_restart(agent, api_messages, active_system_prompt, _retry)
+         return RefusalVerdict("break", None, active_system_prompt)
+ 
++    # myrmidon(G1): no fallback took over, so the refusal would end the turn here. Re-issue the same
++    # call first. The count is kept per turn (a new ``turn_id`` starts from zero) and leaves room in
++    # the turn's restart limit (``max_retries``) for the restarts onto every configured fallback
++    # (``_fallback_chain``, the list ``_has_pending_fallback`` reads), so the re-issues cannot reach it.
++    _cf_state = getattr(agent, "_content_filter_retries", None)
++    if not isinstance(_cf_state, dict) or _cf_state.get("turn") != turn_id:
++        _cf_state = {"turn": turn_id, "used": 0}
++        agent._content_filter_retries = _cf_state
++    _cf_chain = len(getattr(agent, "_fallback_chain", None) or [])
++    _cf_limit = max(0, min(_CONTENT_FILTER_RETRIES, int(max_retries) - 1 - _cf_chain))
++    if _cf_state["used"] < _cf_limit:
++        _cf_state["used"] += 1
++        logger.warning(
++            "%sModel declined to respond (finish_reason=content_filter); re-issuing the call "
++            "(%s of %s). model=%s provider=%s refusal=%s",
++            agent.log_prefix, _cf_state["used"], _cf_limit, agent.model, agent.provider,
++            (_refusal_text[:200] + "...") if len(_refusal_text) > 200 else (_refusal_text or "(no text)"),
++        )
++        agent._emit_diagnostic_status(
++            f"⚠️ Model declined to respond (safety refusal) — retrying "
++            f"({_cf_state['used']}/{_cf_limit})..."
++        )
++        _retry.restart_with_rebuilt_messages = True
++        return RefusalVerdict("break", None, active_system_prompt)
++
+     agent._flush_status_buffer()
+     _refusal_log = _refusal_text[:500] + "..." if len(_refusal_text) > 500 else _refusal_text
+     # native_stop_reason tells an Anthropic classifier refusal (``refusal``) from a Bedrock guardrail
+@@ -675,5 +711,6 @@
+     agent._persist_session(messages, conversation_history)
+     return RefusalVerdict("return", _content_policy_blocked_result(
+         messages, api_call_count, final_response=_refusal_response,
+-        error_detail=_refusal_text or "model declined (content_filter)",
++        error_detail=(_refusal_text or "model declined (content_filter)")
++        + (f" [content_filter repeated after {_cf_state['used']} re-issued calls]" if _cf_state["used"] else ""),
+     ), active_system_prompt)

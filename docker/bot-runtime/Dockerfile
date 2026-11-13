@@ -349,6 +349,10 @@ RUN PYTHONDONTWRITEBYTECODE=1 /opt/hermes-src/.venv/bin/python /tmp/patch-tests/
 # a failed commit in the run idempotency store must not leave the connection inside its
 # transaction (every later run request answered 500 until the gateway restarted).
 RUN PYTHONDONTWRITEBYTECODE=1 /opt/hermes-src/.venv/bin/python /tmp/patch-tests/run_idempotency_txn_rollback.py /opt/hermes-src
+# myrmidon(CONTENT-FILTER-RETRY): behaviour regression for 36-content-filter-retry.patch:
+# an HTTP-200 content_filter refusal re-issues the same model call (twice at most) in the same
+# turn before it ends the run.
+RUN PYTHONDONTWRITEBYTECODE=1 /opt/hermes-src/.venv/bin/python /tmp/patch-tests/content_filter_retry.py /opt/hermes-src
 # myrmidon(G1): names imported inside functions of the patched modules resolve too
 # (the import smoke above runs only top-level imports; a missing lazily imported name
 # broke every run of the 1.6.0 dev image while the build passed).
