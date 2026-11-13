@@ -143,6 +143,15 @@ export {
   type AgentWorkEligibility,
 } from "./agent-eligibility.js";
 export {
+  AGENT_ANSWER_FRESH_WINDOW_MS,
+  AGENT_PROBE_OUTCOMES,
+  deriveAgentProbeStatus,
+  isAgentResponseFresh,
+  type AgentDerivedStatus,
+  type AgentLivenessInput,
+  type AgentProbeOutcome,
+} from "./agent-liveness.js";
+export {
   computePipelineHealth,
   groupWarningsByStage,
   isPipelineTerminalStageKind,

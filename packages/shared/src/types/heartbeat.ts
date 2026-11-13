@@ -365,6 +365,9 @@ export interface AgentRuntimeState {
   totalCachedInputTokens: number;
   totalCostCents: number;
   lastError: string | null;
+  lastResponseAt: Date | null;
+  lastProbeAt: Date | null;
+  lastProbeOutcome: "ok" | "unreachable" | null;
   createdAt: Date;
   updatedAt: Date;
 }

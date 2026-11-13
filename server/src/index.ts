@@ -209,6 +209,8 @@ import { createDataRetentionScheduler } from "./myrmidon/data-retention/index.js
 import { createRunStallSweepFromHeartbeat, registerRunStallSweep, startRunStall } from "./myrmidon/run-stall/index.js"; // myrmidon(RUN-STALL)
 // myrmidon(HERMES-RUN-REATTACH): reattach live gateway runs after a board restart
 import { sweepGatewayRunReattach, GATEWAY_REATTACH_SWEEP_INTERVAL_MS } from "./myrmidon/gateway-run-reattach.js";
+// myrmidon(1.8 AGENT-LIVENESS A1, OPE-13021): periodic process probe of every probeable agent
+import { AGENT_LIVENESS_PROBE_SWEEP_INTERVAL_MS } from "./myrmidon/agent-liveness/probe-sweep.js";
 import { GATEWAY_REMOTE_CLOSE_SWEEP_INTERVAL_MS } from "./myrmidon/gateway-run-close.js";
 import { readHotRestartIntent } from "./services/hot-restart.js"; // myrmidon(T1.6): predecessor boot id for the startup reattach pass
 import { createTaskPrSyncScheduler, reconcileClosedIssuePullRequests, backfillPullRequestWorkProducts } from "./myrmidon/task-pr-sync/index.js"; // myrmidon(TASK-PR-SYNC)
@@ -1694,6 +1696,7 @@ async function startServerWithDatabaseTeardown(
   // instead of doubling up on candidates the startup sweep just scanned.
   let lastGatewayReattachSweepAtMs = 0;
   let lastGatewayRemoteCloseSweepAtMs = 0; // myrmidon(HERMES-GATEWAY-CLOSE, OPE-11889)
+  let lastAgentLivenessProbeSweepAtMs = 0; // myrmidon(AGENT-LIVENESS, OPE-13021)
   const heartbeatSchedulerInFlight = new Set<Promise<void>>();
   const trackHeartbeatSchedulerWork = (work: Promise<unknown>) => {
     let tracked: Promise<void>;
@@ -3106,6 +3109,20 @@ async function startServerWithDatabaseTeardown(
               const closed = await heartbeat.sweepTerminalGatewayRunCloses();
               if (closed.attempted > 0 || closed.failed > 0) {
                 logger.info({ ...closed }, "periodic terminal gateway run close pass complete");
+              }
+            })
+            // myrmidon(1.8 AGENT-LIVENESS A1, OPE-13021): the periodic process
+            // probe of every probeable agent (hermes_gateway / http): stamp
+            // lastProbeAt/lastProbeOutcome so the agents list can show an
+            // honest derived status instead of "spawned once, assumed alive".
+            .then(async () => {
+              if (Date.now() - lastAgentLivenessProbeSweepAtMs < AGENT_LIVENESS_PROBE_SWEEP_INTERVAL_MS) {
+                return;
+              }
+              lastAgentLivenessProbeSweepAtMs = Date.now();
+              const swept = await heartbeat.sweepAgentLivenessProbes();
+              if (swept.probed > 0) {
+                logger.info({ ...swept }, "periodic agent liveness probe pass complete");
               }
             })
             .catch((err) => {
