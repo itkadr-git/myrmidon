@@ -1,5 +1,8 @@
 import { describe, expect, it, vi } from "vitest";
-import { queueIssueAssignmentWakeup } from "./issue-assignment-wakeup.js";
+import {
+  queueIssueAssignmentWakeup,
+  type IssueAssignmentWakeupDeps,
+} from "./issue-assignment-wakeup.js";
 
 // myrmidon(1.8 HIBERNATE, OPE-12961): a ready assigned task goes through the
 // standard assignment wakeup; a not-ready task (backlog / closed / no
@@ -10,15 +13,18 @@ const readyIssue = {
   status: "todo",
 };
 
-function heartbeatWith(wakeup: ReturnType<typeof vi.fn>) {
-  return { heartbeat: { wakeup }, wakeup };
+type WakeupFn = IssueAssignmentWakeupDeps["wakeup"];
+
+function heartbeatWith(wakeup?: WakeupFn) {
+  const fn =
+    wakeup ??
+    vi.fn<WakeupFn>(async () => ({ id: "run-1" }));
+  return { heartbeat: { wakeup: fn }, wakeup: fn };
 }
 
 describe("queueIssueAssignmentWakeup (OPE-12961)", () => {
   it("wakes the assignee of a ready assigned task through the assignment path", async () => {
-    const { heartbeat, wakeup } = heartbeatWith(
-      vi.fn(async () => ({ id: "run-1" })),
-    );
+    const { heartbeat, wakeup } = heartbeatWith();
     await queueIssueAssignmentWakeup({
       heartbeat,
       issue: readyIssue,
@@ -40,9 +46,7 @@ describe("queueIssueAssignmentWakeup (OPE-12961)", () => {
     ["cancelled task", { ...readyIssue, status: "cancelled" }],
     ["task without assignee", { ...readyIssue, assigneeAgentId: null }],
   ])("does not wake for a not-ready task (%s)", async (_name, issue) => {
-    const { heartbeat, wakeup } = heartbeatWith(
-      vi.fn(async () => ({ id: "run-1" })),
-    );
+    const { heartbeat, wakeup } = heartbeatWith();
     await queueIssueAssignmentWakeup({
       heartbeat,
       issue,
