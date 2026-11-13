@@ -151,6 +151,15 @@ export const DEFAULT_SANDBOX_CALLBACK_BRIDGE_ROUTE_ALLOWLIST: readonly SandboxCa
   { method: "GET", path: /^\/api\/projects\/[^/]+$/ },
   { method: "GET", path: /^\/api\/goals\/[^/]+$/ },
 
+  // Run telemetry reads prescribed by ops runbooks (e.g. `runs-reconnecting`):
+  // the run list, one run's execution projection, and its log tail. GET-only;
+  // the server's `company_scope:read` authorization decides actor access, and
+  // `/metrics` itself stays out — its bearer token is scraper-scoped, not an
+  // agent key, so allowing it through the bridge only changes the failure mode.
+  { method: "GET", path: /^\/api\/companies\/[^/]+\/heartbeat-runs$/ },
+  { method: "GET", path: /^\/api\/heartbeat-runs\/[^/]+$/ },
+  { method: "GET", path: /^\/api\/heartbeat-runs\/[^/]+\/log$/ },
+
   // Task-bound email actions. Company, inbox ownership, task/run authority,
   // and action policies are enforced by the controller; mailbox setup stays denied.
   { method: "GET", path: /^\/api\/companies\/[^/]+\/email\/inboxes$/ },
