@@ -214,6 +214,7 @@ import { prepareManagedAiRuntime, assertManagedAiProjectAuth, stripAiAuthBinding
 import { listAdapterModels } from "../adapters/registry.js";
 import { resolveAdminAssistantAdapterConfig } from "../myrmidon/admin-assistant/router.js";
 import { readBuiltInAgentMarker } from "./built-in-agent-metadata.js";
+import { readGatewayKeySettings } from "@myrmidon/shared";
 import {
   aiConnectionBindingSchema,
   applyDeveloperRunIsolation,
