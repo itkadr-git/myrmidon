@@ -15367,6 +15367,10 @@ export function heartbeatService(
         await db.insert(agentWakeupRequests).values({
           companyId: issue.companyId,
           agentId: run.agentId,
+          // myrmidon(OPE-12941): link the skip receipt to the run whose
+          // settlement completed the streak so operators can trace the
+          // per-run SKIPPED reason without correlating timestamps.
+          runId: run.id,
           source: "automation",
           triggerDetail: "system",
           reason: escalation.skippedSignal.reason,
