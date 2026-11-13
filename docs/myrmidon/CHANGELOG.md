@@ -12,6 +12,102 @@ version file to edit. Base Paperclip version is in the image label
 
 ## 1.6.9
 
+### An agent card edit no longer recreates the bot container under a running run (BOT-PROFILE-NO-RUN-INTERRUPT)
+
+- A change that has to stop a bot gateway (restart-class profile change, image or resource drift) used to open a maintenance window, wait for the agent's run to drain and, at the drain deadline, interrupt it ("Interrupted by maintenance mode" / "Gateway shutdown interrupted the run."). The reconciler now looks at the agent's live runs first: with a run in flight the pass returns `deferred` without opening a window, and the existing deferred-rollout watcher (`myrmidonBotRolloutDeferred`) applies it after the run ended. The check is repeated under the window to close the race with a run admitted in between.
+- The watcher's busy gate now reads the run table; before it read the window view, which reports 0 for an agent with no window.
+- Who defers: the periodic pass (card edits, including a card image edit by `bot-image-rollout.sh`), "Apply now", key rotation and the chat command. Who still drains and applies as before: the image rollout wave, the canary and the rollback (`canary-index.ts`, `drainBusy: true`) - operator actions with their own step timeout, where a deferral would be retried forever. A record's clock (`firstDeferredAt`) now survives a change of its target image.
+- Only a record that waited past `MYRMIDON_BOT_ROLLOUT_DEFERRED_MAX_WAIT_SEC` (6 h by default) still drains and interrupts, so a bot that never frees up converges. An unhealthy gateway is recovered at once, not deferred.
+- `runtimeConfig.heartbeat.*` is read by the board only, except `maxConcurrentRuns`, which is written to the gateway's `config.yaml`; pinned by tests. A change of that one field is still a restart-class change, but it is now deferred under a running run.
+
+### Checks of a cancelled, superseded CI run no longer turn the board's CI summary red (CI-SNAPSHOT-CANCELLED)
+
+- The CI summary the board gives agents (`ciResult` / `pullRequestsCi`) now counts, for each check name, only its latest record on the head (latest start, then completion time, then larger id). The last completed record with a verdict represents the check; earlier records of it (cancelled by a replaced run, or failed before a re-run) no longer take part. This fixes a false FAILURE on pull requests where adding `full-ci` or a re-run replaced the running CI.
+- A check whose latest record is `cancelled` and has no replacement is reported as "cancelled, not a test failure": the overall conclusion is `cancelled` (neither `failure` nor `success`), the new `cancelledJobs` field lists it, and `failedJobs` is left for real `failure` / `timed_out` / `action_required`.
+- A later `skipped`, `neutral` or `cancelled` record never hides an earlier verdict (`success` / `failure` / ...) of the same check: a real failure stays FAILURE.
+- A successful `CI result` with no real failures gives `success` and absorbs only cancelled required checks of its own workflow run; other cancelled required checks keep the summary `cancelled`.
+
+### One content-filtered model reply no longer fails the whole run (CONTENT-FILTER-RETRY)
+
+- When the model provider answered a bot's call with `finish_reason: content_filter` (an HTTP 200 reply cut off by the provider's safety filter, even for harmless work text), the bot ended the run at once with `content_policy_blocked`, and the board restarted the task from the beginning. Over 7 days 58 engineer runs (675 minutes) failed this way, five of the last 72 hours' runs after more than 10 minutes of work. The bot now re-issues the same model call up to twice per run (the session and the work done so far are kept), but only where the run used to fail at once: bots with a configured fallback model still switch to it as before, and the re-issues leave room for those switches; a refusal that outlasts them ends the run as before, and the failure text says it repeated after the re-issued calls. Shipped as hermes patch 36; it takes effect when the bot image is rolled out.
+
+### A run that waited for its own agent's slot starts at slot release instead of being cancelled as stale (EMPTY-RUNS-6C)
+
+- EMPTY-RUNS-6 and 6B spared a queued run that waits for its own agent's concurrency slot from the age expiry,
+  but only while its wait reason was `agent_concurrency`. In the pass that frees the slot the start sweep takes
+  the heaviest waiting run and renames the wait of the other ready runs of the agent to `priority`; the age
+  sweep of the same second then cancelled them with `queued_run_stale_timeout` and queued replacements whose
+  wake reason was `queued_run_stale_timeout`, so the original reason (`pause_resume`,
+  `execution_changes_requested`) and context were lost.
+- Now `priority` counts as the same wait for the agent's own slot. Such a run is kept while the agent has a
+  `running` run and for the threshold after the end of any started run of the agent (succeeded, failed or
+  cancelled), and starts with its own wake reason and data. A run that does not start with a free slot for the
+  whole threshold, and every other cancellation reason (reassignment, closed task), are unchanged.
+
+### Reviewers are not woken on a non-final or already-seen CI result (EMPTY-RUNS-3B, EMPTY-RUNS-2C)
+
+- EMPTY-RUNS-3B: a CI delivery wakes the task only on the result of the current head. When a head has a `CI result` check, only a finished one that is not skipped, cancelled or stale counts; the "every check has finished" fallback is used only for a head that has no `CI result` at all. A partial run (a label event, an auxiliary workflow) whose `CI result` is skipped no longer produces a `ci_completed` wake.
+- EMPTY-RUNS-3B: one result of one head wakes once, whatever kind of event carries it (`check_run`, `check_suite`, `workflow_run`). The handled result is kept as `ciVerdictHandled` (head and verdict) on the pull request work product and is not cleared when a job of the head starts, as `lastCompletedCi` is; a failed result clears it, so a green result after a re-run is news again.
+- EMPTY-RUNS-2C: the idle pickup of a review participant reads the head CI as it is now and applies the same admission rule as the hand-off to review and the executor's comment: while the head CI is unfinished, unreadable or red the reviewer is not picked up (a critical issue is). A failed read wakes as before. Switch: `MYRMIDON_REVIEW_COMMENT_WAKE_GATE_ENABLED`.
+- EMPTY-RUNS-3B: the `ci_completed` wake for a task in review goes to the participant of its pending stage, not to the assignee; a task in review without a pending stage wakes nobody.
+
+### A task whose run the operator cancelled resumes when its agent is resumed (RESUME-AFTER-CANCEL)
+
+- After an operator cancelled runs and the board restarted, the board closed the recovery actions with a "do not replay" outcome, and lifting the agent's pause woke the tasks as system wakes: they were parked as `execution_reconciliation_required` and each task needed a manual wake.
+- Lifting a pause is an explicit operator action, but the wake it issues stays a system wake (no user-requester bypasses: rewake freeze, wake-storm guard, worktree cutoff, `agent.not_invokable` record). The user who lifted the pause travels as `resumedByUserId` on the wake options, and only the settled-hold check reads it: a `pause_resume` wake passes the hold, and then retires it, only when the run holding it is `cancelled` (operator cancel, queue removal).
+- Unchanged: a hold of a `failed` / `timed_out` / `interrupted` run (unknown outcome), a hold that names no run or a purged one, a run still running, automatic and system wakes and `retry_failed_run` stay held; the "do not replay" protection is not touched.
+- A queued run of an agent the operator has paused is no longer expired by the queue-age sweep (`queued_run_stale_timeout`): it waits for the resume, which promotes it with its own wake reason. Before, the sweep cancelled it and the replacement wake failed with 409 "Agent is not invokable", logged at error level, so nothing continued the task after the resume. The sweep's selection (`listStaleQueuedRuns`) also leaves the runs of paused agents out of its 200-row page, so a mass pause does not crowd out the expired runs of other agents.
+- Not changed here: the recovery action closed with outcome `blocked` while the task stays `in_progress`, and `recovery-actions/resolve` with `restored` answering 200 without effect.
+
+### The review stage participant's approval is recorded whichever wake started the run (REVIEW-APPROVAL-RECORDED)
+
+- On 14.11 (candidate 1.6.9-rc.2) the approval of a reviewer was refused with HTTP 409 (`issue_done_pull_request_gate`), the stage stayed
+  `pending` or fell to `idle`, and recovery blocked the task (OPE-13059, OPE-13061). Cause: when the PATCH to `in_review` routed a
+  reviewer immediately and then deferred the reviewer wake (CI wait or the per-tick wake quota), the admission monitor policy was built
+  from the policy as it was before the routing, so it overwrote the stored policy with `stages: []`. The stage in the execution state
+  no longer existed in the policy, the participant's `done` was not a decision and went straight to the PR gate. It did not depend on
+  the wake that started the run.
+- The monitor policy is now built on the policy as persisted after the update and the routing, so the routed stage survives.
+- The approval of the current participant of a pending review stage is also recorded when the policy has lost the stage (or the whole
+  policy): the stage completes with an approved decision, and with an open PR the task waits for the merge as usual. Tasks already
+  in that state need no manual repair.
+
+### The review stage participant sees the stage in the task context whatever woke the run (REVIEW-STAGE-IN-CONTEXT)
+
+- On 13-14.11 (candidate 1.6.9-rc.2) reviewers woken by CI, an idle pickup or an operator answered "executionStage=null, there
+  is no active participant" and refused to record the decision, although the stage was pending and they were its participant
+  (OPE-12886, OPE-12906, OPE-12941). `executionStage` was built only for the wakes of the stage itself
+  (`execution_review_requested` and similar); `GET /api/issues/:id/heartbeat-context` carried no stage at all.
+- The response now has a top-level `executionStage`, built by the same function as the stage wake context: stage id and type,
+  state, current participant, return assignee, last decision, allowed actions, plus `isCurrentParticipant` and a one-line
+  `youAre`. The current participant gets `wakeRole: "reviewer"` (`"approver"`) and the actions `approve` / `request_changes`;
+  the executor of a returned stage gets `"executor"`; any other caller gets `wakeRole: "observer"`, no actions and the text
+  "You are not a participant of the review stage". The field is `null` only when no stage is in flight.
+
+### A queued assignment run whose task was closed before it started is cancelled cleanly instead of failing setup (RUN-SETUP-STALE-TASK)
+
+- On 14.11 (candidate 1.6.9-rc.2) a run queued by `issue_assigned` waited for the agent's slot while the task was closed
+  and its PR merged. At start it failed with `setup_failed` / `continuation_task_ownership_changed` and an error-level log
+  line; 17 such failures in 7 days. The claim-time staleness check let it through because the assignment wake carries the
+  hand-off comment, and any wake with a comment bypassed the terminal-status check.
+- The comment bypass no longer applies to `issue_assigned` wakes: such a run on a `done`/`cancelled` task is cancelled at
+  claim with `issue_terminal_status` (info log, no `failed`). Comment wakes, resume intents and pending-card addressees
+  behave as before; genuine setup failures stay `failed` with an error log.
+
+### The stale-block sweep returns an unassigned task with a dead block to todo instead of failing on every pass (STALE-BLOCK-UNASSIGNED)
+
+- On 13.11 (candidate 1.6.9-rc.2) a task created straight in `blocked` with a closed blocker and no assignee made the sweep log
+  "stale block sweep failed for one task" (HttpError 422) on every pass and stay blocked for good. The block had a named
+  reason (the edge to the blocker), so the sweep chose `in_progress`, and the issue service refuses `in_progress` for a
+  task with neither an agent nor a user assignee ("in_progress issues require an assignee").
+- A task without an assignee now goes to `todo` (the dead edge is removed, the comment says "without assignee"). A task with
+  an assignee returns to `in_progress` as before; a bare block still goes to `todo`.
+- The failure warning now also carries `errorMessage`: the fixed refusal sentence of the issue service for a 4xx
+  HttpError (plain words only, at most 120 characters), so the cause of a repeated 422 reads from the log. Messages of
+  other errors are still not logged.
+
+## 1.6.9
+
 ### A run that waited for its own agent's slot starts when the slot frees instead of expiring by age (EMPTY-RUNS-6B)
 
 - EMPTY-RUNS-6 spared a queued run that waits for its own agent's concurrency slot
