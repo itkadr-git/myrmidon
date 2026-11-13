@@ -539,6 +539,27 @@ export function githubConnectionEventService(
     else await wake();
   }
 
+  /**
+   * myrmidon(EMPTY-RUNS-3): what must happen once, after the delivery commits —
+   * the activity publications and the merge notice of the board. A delivery run
+   * again after a rollback (40P01) clears the queue, so none of it is sent twice
+   * and nothing is sent for a transaction that did not commit. A failure is
+   * logged with its reason and does not stop the rest.
+   */
+  async function sendOrDeferAction(
+    afterCommit: DeliveryWakes | undefined,
+    companyId: string,
+    what: string,
+    action: () => unknown,
+  ) {
+    const run = async () => {
+      try { await action(); }
+      catch (error) { logger.warn({ err: error, companyId }, `${what} failed after commit`); }
+    };
+    if (afterCommit) afterCommit.push(run);
+    else await run();
+  }
+
   /** The interaction wake of the merged-PR sweep, deferred the same way. */
   function deferInteractionWakeup(afterCommit: DeliveryWakes | undefined): typeof options.wakeup {
     const send = options.wakeup;
@@ -591,7 +612,7 @@ export function githubConnectionEventService(
    * the executor, or null when the task is not in a pending review stage any
    * more.
    */
-  async function returnTaskFromReviewForFailedCi(input: {
+  async function returnTaskFromReviewForFailedCi(database: Db, afterCommit: DeliveryWakes | undefined, input: {
     companyId: string;
     issueId: string;
     event: LeasedEvent;
@@ -610,7 +631,9 @@ export function githubConnectionEventService(
       : "";
     const returned: { executorId: string | null } = { executorId: null };
     const publications: ActivityPublication[] = [];
-    await db.transaction(async (tx) => {
+    // The transaction of the delivery (a savepoint inside it): a rollback and a
+    // re-run of the delivery take the comment, the row and the return with them.
+    await database.transaction(async (tx) => {
       const [current] = await tx.select().from(issues).where(and(
         eq(issues.id, input.issueId), eq(issues.companyId, companyId),
       )).for("update");
@@ -646,8 +669,7 @@ export function githubConnectionEventService(
       returned.executorId = executorId;
     });
     for (const publication of publications) {
-      try { publishActivity(publication); }
-      catch (error) { logger.warn({ err: error, companyId }, "CI return activity publication failed after commit"); }
+      await sendOrDeferAction(afterCommit, companyId, "CI return activity publication", () => publishActivity(publication));
     }
     return returned.executorId;
   }
@@ -660,6 +682,7 @@ export function githubConnectionEventService(
    */
   async function recordCiReturnHold(
     database: Db,
+    afterCommit: DeliveryWakes | undefined,
     companyId: string,
     target: { issueId: string; identifier: string | null; productId: string; pullRequestUrl: string | null },
     input: {
@@ -683,7 +706,7 @@ export function githubConnectionEventService(
       updatedAt: heldAt,
     }).where(and(eq(issueWorkProducts.id, target.productId), eq(issueWorkProducts.companyId, companyId)));
     const publications: ActivityPublication[] = [];
-    await db.transaction(async (tx) => {
+    await database.transaction(async (tx) => {
       await tx.insert(issueComments).values({
         companyId,
         issueId: target.issueId,
@@ -708,8 +731,7 @@ export function githubConnectionEventService(
       }, publications);
     });
     for (const publication of publications) {
-      try { publishActivity(publication); }
-      catch (error) { logger.warn({ err: error, companyId }, "CI hold activity publication failed after commit"); }
+      await sendOrDeferAction(afterCommit, companyId, "CI hold activity publication", () => publishActivity(publication));
     }
   }
 
@@ -945,7 +967,7 @@ export function githubConnectionEventService(
         return;
       }
       if (decision.action !== "return") return;
-      const executorId = await returnTaskFromReviewForFailedCi({
+      const executorId = await returnTaskFromReviewForFailedCi(database, afterCommit, {
         companyId, issueId: issue.id, event, repository, pullRequestNumber, headSha, runId, htmlUrl,
         conclusion: "failure", failedChecks: decision.failedChecks, releasedHold: hold.reason,
       });
@@ -985,7 +1007,8 @@ export function githubConnectionEventService(
       // myrmidon(OPE-11767): a green result may be the moment an approved pull
       // request becomes mergeable; the board's merge re-reads the checks itself.
       if (verdict === "success") {
-        notifyBoardMergeTrigger({ companyId, repository, number: pullRequestNumber, headSha, source: "ci_completed" });
+        await sendOrDeferAction(afterCommit, companyId, "board merge notice", () =>
+          notifyBoardMergeTrigger({ companyId, repository, number: pullRequestNumber, headSha, source: "ci_completed" }));
       }
     }
     if (!assignmentWakeup || !issue || !issue.assigneeAgentId) return;
@@ -1000,7 +1023,7 @@ export function githubConnectionEventService(
       const decision = head ? decideCiFailureReturn({ head, infraCheckNames }) : null;
       if (decision && decision.action === "hold") {
         if (!hold) {
-          await recordCiReturnHold(database, companyId, {
+          await recordCiReturnHold(database, afterCommit, companyId, {
             issueId: issue.id,
             identifier: issue.identifier ?? null,
             productId: primary.id,
@@ -1024,7 +1047,7 @@ export function githubConnectionEventService(
         // A real failure of the head. The same holds when the check runs
         // cannot be read, or GitHub has not caught up with the delivery of the
         // final check yet: the delivery itself is the result.
-        const executorId = await returnTaskFromReviewForFailedCi({
+        const executorId = await returnTaskFromReviewForFailedCi(database, afterCommit, {
           companyId, issueId: issue.id, event, repository, pullRequestNumber, headSha, runId, htmlUrl,
           conclusion: verdict,
           failedChecks: decision && decision.action === "return" ? decision.failedChecks : null,
@@ -1119,7 +1142,8 @@ export function githubConnectionEventService(
     // pull request becomes mergeable; the board's merge re-reads the required
     // checks itself, so this only announces where to look.
     if (!active && conclusion === "success") {
-      notifyBoardMergeTrigger({ companyId, repository, number: pullRequestNumber, headSha, source: "ci_completed" });
+      await sendOrDeferAction(afterCommit, companyId, "board merge notice", () =>
+        notifyBoardMergeTrigger({ companyId, repository, number: pullRequestNumber, headSha, source: "ci_completed" }));
     }
 
     if (!options.assignmentWakeup || !conclusion || active) return;
@@ -1150,7 +1174,7 @@ export function githubConnectionEventService(
     if (["failure", "timed_out", "action_required", "startup_failure"].includes(conclusion)
       && (!expectedHead || expectedHead === headSha)) {
       const publications: ActivityPublication[] = [];
-      await db.transaction(async (tx) => {
+      await database.transaction(async (tx) => {
         const [current] = await tx.select().from(issues).where(and(
           eq(issues.id, matching.issue.id), eq(issues.companyId, companyId),
         )).for("update");
@@ -1185,8 +1209,7 @@ export function githubConnectionEventService(
         }, publications);
       });
       for (const publication of publications) {
-        try { publishActivity(publication); }
-        catch (error) { logger.warn({ err: error, companyId }, "CI return activity publication failed after commit"); }
+        await sendOrDeferAction(afterCommit, companyId, "CI return activity publication", () => publishActivity(publication));
       }
     }
 
