@@ -50,7 +50,7 @@ describe("resolveAgentProbeUrl", () => {
 
   it("rejects plain http to remote non-bot hosts without the escape hatch", () => {
     expect(resolveAgentProbeUrl(candidate("hermes_gateway", { apiBaseUrl: "http://evil.example.com:9119" }))).toBeNull();
-    expect(resolveAgentProbeUrl(candidate("http", { url: "http://10.0.0.5:3000" }))).toBeNull();
+    expect(resolveAgentProbeUrl(candidate("http", { url: "http://plain.example.com:3000" }))).toBeNull();
   });
 
   it("allows plain http to bot containers, loopback, and the explicit escape hatch", () => {
@@ -61,8 +61,8 @@ describe("resolveAgentProbeUrl", () => {
       "http://127.0.0.1:9119/api/health",
     );
     expect(
-      resolveAgentProbeUrl(candidate("http", { url: "http://10.0.0.5:3000", dangerouslyAllowInsecureRemoteHttp: true })),
-    ).toBe("http://10.0.0.5:3000/health");
+      resolveAgentProbeUrl(candidate("http", { url: "http://plain.example.com:3000", dangerouslyAllowInsecureRemoteHttp: true })),
+    ).toBe("http://plain.example.com:3000/health");
   });
 
   it("probes the http adapter's own configured url", () => {

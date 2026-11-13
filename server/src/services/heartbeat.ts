@@ -38303,7 +38303,10 @@ export function heartbeatService(
           const response = await guardedRemoteHttpFetch(
             url,
             { method: "GET", redirect: "manual", signal: AbortSignal.timeout(AGENT_LIVENESS_PROBE_TIMEOUT_MS) },
-            { allowPrivateNetwork: true },
+            {
+              allowPrivateNetwork: true,
+              error: (message) => new Error(message),
+            },
           );
           // Drain the body so the socket returns to the pool.
           await response.arrayBuffer().catch(() => undefined);
