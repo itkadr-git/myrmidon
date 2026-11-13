@@ -26,6 +26,8 @@ import {
   type ApiProcessHandle,
 } from "./helpers/api-process-harness.js";
 
+const TEST_BUILD_VERSION = "0.0.0-procs-test.1";
+
 type BoardProcessView = {
   bootId: string;
   role: string;
@@ -109,6 +111,9 @@ describeProcs("two api processes on one test database (PROCS-T1.5 skeleton)", ()
       baseDir,
       connectionString,
       role: "api",
+      // /api/health reports the release stamp baked into the image (OPE-12919);
+      // a source checkout has none and answers null, so stamp the children.
+      extraEnv: { MYRMIDON_BUILD_VERSION: TEST_BUILD_VERSION, PAPERCLIP_BUILD_VERSION: TEST_BUILD_VERSION },
     });
   }, 360_000);
 
@@ -176,7 +181,7 @@ describeProcs("two api processes on one test database (PROCS-T1.5 skeleton)", ()
         authReady: health.authReady,
       };
     });
-    expect(envelope[0]?.version).toBeTruthy();
+    expect(envelope[0]?.version).toBe(TEST_BUILD_VERSION);
     expect(new Set(envelope.map((entry) => JSON.stringify(entry))).size).toBe(1);
   }, 120_000);
 

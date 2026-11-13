@@ -6227,7 +6227,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       .where(eq(issueComments.issueId, issueId));
     expect(comments[0]?.body).toContain("automatic continuation attempt(s)");
     expect(comments[0]?.body).toContain(
-      "nearest lead or, when no lead exists, the board operator",
+      "escalated to the nearest lead (or, when no lead exists, the board operator)",
     );
     expect(comments[0]?.authorType).toBe("system");
     expect(comments[0]?.presentation).toMatchObject({

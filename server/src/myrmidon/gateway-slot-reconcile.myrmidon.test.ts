@@ -442,8 +442,34 @@ describe("myrmidon(GATEWAY-SLOT-RECONCILE) gateway slot reconcile on run start",
       { quiet: true },
     );
     expect(resolveCalls).toBe(1);
-    expect(result.unreachable).toBe(2);
-    expect(probes).toEqual(["gw-a:unavailable", "gw-b:unavailable"]);
+    // myrmidon(OPE-12964): the first unreachable answer ends the pass.
+    expect(result.unreachable).toBe(1);
+    expect(probes).toEqual(["gw-a:unavailable"]);
+    resetGatewaySlotProbeMemoryForTest();
+  });
+
+  it("stops probing the rest of the pass after the first unreachable answer (OPE-12964)", async () => {
+    resetGatewaySlotProbeMemoryForTest();
+    const { port, probes, stops } = makePort({
+      probe: (id) => (id === "gw-b" ? "unreachable" : "terminal"),
+    });
+    const result = await reconcileGatewaySlotsFromRows(
+      agent,
+      [
+        { id: "run-a", status: "succeeded", externalRunId: "gw-a" },
+        { id: "run-b", status: "succeeded", externalRunId: "gw-b" },
+        { id: "run-c", status: "succeeded", externalRunId: "gw-c" },
+        { id: "run-d", status: "succeeded", externalRunId: "gw-d" },
+      ],
+      port,
+      { quiet: true },
+    );
+    expect(probes).toEqual(["gw-a", "gw-b"]);
+    expect(stops).toEqual([]);
+    expect(result.scanned).toBe(4);
+    expect(result.unreachable).toBe(1);
+    expect(isGatewayRunConfirmedClosed(agent.id, "gw-a")).toBe(true);
+    expect(isGatewayRunConfirmedClosed(agent.id, "gw-b")).toBe(false);
     resetGatewaySlotProbeMemoryForTest();
   });
 });
