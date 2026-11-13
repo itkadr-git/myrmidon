@@ -33,7 +33,7 @@ describe("queueIssueAssignmentWakeup (OPE-12961)", () => {
       contextSource: "issue.create",
     });
     expect(wakeup).toHaveBeenCalledTimes(1);
-    const [agentId, opts] = wakeup.mock.calls[0] as [string, Record<string, unknown>];
+    const [agentId, opts] = vi.mocked(wakeup).mock.calls[0]!;
     expect(agentId).toBe("agent-1");
     expect(opts.source).toBe("assignment");
     expect(opts.reason).toBe("issue_assigned");
