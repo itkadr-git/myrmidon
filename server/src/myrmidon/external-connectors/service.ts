@@ -190,7 +190,7 @@ export interface ConnectorPolicyStore {
     status: "approved" | "rejected",
     resolvedBy: string,
     resolvedAt: Date,
-  ): Promise<ExternalConnectorPendingApprovalRow>;
+  ): Promise<ExternalConnectorPendingApprovalRow | null>;
   listPendingApprovals(companyId: string, status?: ConnectorPendingApprovalStatus): Promise<ExternalConnectorPendingApprovalRow[]>;
   queryJournal(
     companyId: string,
@@ -322,10 +322,11 @@ export function createDrizzleConnectorPolicyStore(db: Db): ConnectorPolicyStore 
           and(
             eq(externalConnectorPendingApprovals.companyId, companyId),
             eq(externalConnectorPendingApprovals.id, id),
+            eq(externalConnectorPendingApprovals.status, "pending"),
           ),
         )
         .returning();
-      return updated[0] as ExternalConnectorPendingApprovalRow;
+      return (updated[0] as ExternalConnectorPendingApprovalRow) ?? null;
     },
 
     async listPendingApprovals(companyId, status) {
@@ -718,6 +719,14 @@ export function externalConnectorService(db: Db, opts: ExternalConnectorServiceO
 
       const now = new Date();
       const updated = await store.resolvePendingApproval(companyId, approvalId, decision, resolvedBy, now);
+      if (!updated) {
+        const latest = await store.findPendingApproval(companyId, approvalId);
+        if (!latest) throw notFound("Pending approval not found");
+        throw conflict(`Approval is already resolved (${latest.status})`, {
+          code: "approval_already_resolved",
+          status: latest.status,
+        });
+      }
 
       if (decision === "rejected") {
         const journalRow = await store.insertInvocation({

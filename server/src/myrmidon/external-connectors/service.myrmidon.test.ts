@@ -100,13 +100,13 @@ function createMemoryStore(): {
     },
 
     async resolvePendingApproval(companyId, id, status, resolvedBy, resolvedAt) {
-      const found = approvals.find((a) => a.companyId === companyId && a.id === id);
-      if (!found) throw new Error("not found");
+      const found = approvals.find((a) => a.companyId === companyId && a.id === id && a.status === "pending");
+      if (!found) return null;
       found.status = status;
       found.resolvedBy = resolvedBy;
       found.resolvedAt = resolvedAt;
       found.updatedAt = resolvedAt;
-      return found;
+      return { ...found };
     },
 
     async listPendingApprovals(companyId, status) {
@@ -439,5 +439,60 @@ describe("externalConnectorService enforcement (OPE-13026)", () => {
     expect(page.total).toBe(1);
     expect(page.entries[0].actionId).toBe("task:write");
     expect(page.entries[0].actorId).toBe(AGENT_ID);
+  });
+
+  it("concurrent approve resolutions execute dispatcher exactly once and reject concurrent race with 409 conflict", async () => {
+    let dispatchCount = 0;
+    const slowDispatcher: ConnectorDispatcher = async () => {
+      dispatchCount += 1;
+      await new Promise((r) => setTimeout(r, 20));
+      return { ok: true, output: { dispatched: true } };
+    };
+
+    const { svc } = setup();
+    await svc.putGrants(
+      COMPANY_ID,
+      {
+        agentId: AGENT_ID,
+        connectorId: CONNECTOR_ID,
+        grants: [{ actionId: "*", mode: "confirm" }],
+      },
+      { actorId: "admin-1", actorType: "user" },
+    );
+
+    const invokeRes = await svc.invoke(
+      COMPANY_ID,
+      {
+        actor: { type: "agent", id: AGENT_ID },
+        connectorId: CONNECTOR_ID,
+        actionId: "task:purge",
+        payload: { target: "all" },
+      },
+      slowDispatcher,
+    );
+    expect(invokeRes.decision).toBe("pending");
+    const approvalId = invokeRes.pendingApproval!.id;
+
+    // Fire two concurrent resolutions against the same approvalId
+    const results = await Promise.allSettled([
+      svc.resolvePendingApproval(COMPANY_ID, approvalId, "approved", "operator-alpha", slowDispatcher),
+      svc.resolvePendingApproval(COMPANY_ID, approvalId, "approved", "operator-beta", slowDispatcher),
+    ]);
+
+    const fulfilled = results.filter((r) => r.status === "fulfilled");
+    const rejected = results.filter((r) => r.status === "rejected");
+
+    expect(fulfilled).toHaveLength(1);
+    expect(rejected).toHaveLength(1);
+
+    const err = (rejected[0] as PromiseRejectedResult).reason as {
+      status?: number;
+      code?: string;
+    };
+    expect(err.status).toBe(409);
+    expect(err.code).toBe("approval_already_resolved");
+
+    // External dispatcher must have been executed exactly once
+    expect(dispatchCount).toBe(1);
   });
 });

@@ -98,13 +98,13 @@ function createMemoryStore(): ConnectorPolicyStore {
       return approvals.find((a) => a.companyId === companyId && a.id === id) ?? null;
     },
     async resolvePendingApproval(companyId, id, status, resolvedBy, resolvedAt) {
-      const f = approvals.find((a) => a.companyId === companyId && a.id === id);
-      if (!f) throw new Error("not found");
+      const f = approvals.find((a) => a.companyId === companyId && a.id === id && a.status === "pending");
+      if (!f) return null;
       f.status = status;
       f.resolvedBy = resolvedBy;
       f.resolvedAt = resolvedAt;
       f.updatedAt = resolvedAt;
-      return f;
+      return { ...f };
     },
     async listPendingApprovals(companyId, status) {
       return approvals.filter((a) => a.companyId === companyId && (!status || a.status === status));
@@ -131,7 +131,7 @@ const actionModes: Record<string, string> = {
   "task:purge": "confirm",
 };
 
-function app(actor: unknown) {
+function app(actor: unknown, customDispatcher?: (req: unknown) => Promise<{ ok: boolean; [key: string]: unknown }>) {
   const svc = externalConnectorService({} as never, {
     store: createMemoryStore(),
     actionModeResolver: (_c: string, a: string) => actionModes[a] ?? null,
@@ -147,10 +147,13 @@ function app(actor: unknown) {
     "/api",
     externalConnectorsRoutes({} as never, {
       service: svc,
-      dispatcher: async (req) => {
+      dispatcher: (async (req: unknown) => {
         dispatched.push(req);
+        if (customDispatcher) {
+          return customDispatcher(req);
+        }
         return { ok: true, result: { executed: true } };
-      },
+      }) as never,
     }),
   );
   server.use(errorHandler);
@@ -397,5 +400,46 @@ describe("myrmidon(OPE-13026) external-connectors routes", () => {
       .post(`${BASE}/pending-approvals/${approvalId}/resolve`)
       .send({ decision: "approved", resolvedBy: "user-operator" })
       .expect(409);
+  });
+
+  it("concurrent POST resolve requests result in exactly one 200 and one 409, dispatching exactly once", async () => {
+    let callCount = 0;
+    const countingDispatcher = async () => {
+      callCount += 1;
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      return { ok: true, executed: true };
+    };
+
+    const a = app(agentActor, countingDispatcher);
+    await a.svc.putGrants(
+      COMPANY_ID,
+      { agentId: AGENT_ID, connectorId: "test-system", grants: [{ actionId: "*", mode: "confirm" }] },
+      { actorId: "admin", actorType: "user" },
+    );
+    await request(a.server)
+      .post(`${BASE}/invoke`)
+      .send({
+        actor: { type: "agent", id: AGENT_ID },
+        connectorId: "test-system",
+        actionId: "task:read",
+        payload: {},
+      })
+      .expect(202);
+    const list = await request(a.server).get(`${BASE}/pending-approvals`).expect(200);
+    const approvalId = list.body.approvals[0].id;
+
+    // Fire two concurrent resolution HTTP requests against the same pending approval
+    const [res1, res2] = await Promise.all([
+      request(a.server)
+        .post(`${BASE}/pending-approvals/${approvalId}/resolve`)
+        .send({ decision: "approved", resolvedBy: "operator-1" }),
+      request(a.server)
+        .post(`${BASE}/pending-approvals/${approvalId}/resolve`)
+        .send({ decision: "approved", resolvedBy: "operator-2" }),
+    ]);
+
+    const statuses = [res1.status, res2.status].sort();
+    expect(statuses).toEqual([200, 409]);
+    expect(callCount).toBe(1);
   });
 });
