@@ -47169,11 +47169,21 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       Promise.race([
         first.then(() => "acknowledged" as const),
         new Promise<"timed_out">((resolve) =>
-          setTimeout(() => resolve("timed_out"), 250),
+          // 5s matches the other loaded-host acknowledgement races in this
+          // file; the post hook below stays blocked the whole time, so any
+          // resolution within the budget still proves the decoupling.
+          setTimeout(() => resolve("timed_out"), 5_000),
         ),
       ]),
     ).resolves.toBe("acknowledged");
-    await vi.waitFor(() => expect(postEntered).toHaveBeenCalledTimes(1));
+    // CI shards run this file alongside several workers against one embedded
+    // Postgres; the default 1s waitFor budget is smaller than a single loaded
+    // admission round-trip. Wait on the hook with an explicit budget instead
+    // of depending on machine timing.
+    await vi.waitFor(
+      () => expect(postEntered).toHaveBeenCalledTimes(1),
+      { timeout: 20_000, interval: 100 },
+    );
     const concurrentRetry = callbacks.onSlashCommand(slashEvent);
     releasePost();
     await Promise.all([first, concurrentRetry]);
@@ -47190,7 +47200,14 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
         text: "Starting a task…",
       },
     ]);
-    await vi.waitFor(() => expect(wakeup).toHaveBeenCalledTimes(1));
+    // CI shards run this file alongside several workers against one embedded
+    // Postgres; the default 1s waitFor budget is smaller than a single loaded
+    // admission round-trip. Wait on the durable wake with an explicit budget
+    // instead of depending on machine timing.
+    await vi.waitFor(
+      () => expect(wakeup).toHaveBeenCalledTimes(1),
+      { timeout: 20_000, interval: 100 },
+    );
     const conversations = await service.listConversations(endpoint.id);
     expect(conversations).toEqual([
       expect.objectContaining({
@@ -47207,28 +47224,35 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
     // The wake callback runs before slash admission commits its terminal
     // receipt. Observe that exact durable receipt before simulating an
     // operator resolution, rather than racing the final admission write.
-    const [action] = await vi.waitFor(async () => {
-      const actions = await db
-        .select()
-        .from(chatActions)
-        .where(
-          and(
-            eq(chatActions.endpointId, endpoint.id),
-            eq(chatActions.kind, "slash_task_start"),
-          ),
-        );
-      expect(actions).toEqual([
-        expect.objectContaining({
-          kind: "slash_task_start",
-          status: "processed",
-          result: expect.objectContaining({
-            threadId: starterThreadId,
-            providerMessageId: "outbound-1",
+    const [action] = await vi.waitFor(
+      async () => {
+        const actions = await db
+          .select()
+          .from(chatActions)
+          .where(
+            and(
+              eq(chatActions.endpointId, endpoint.id),
+              eq(chatActions.kind, "slash_task_start"),
+            ),
+          );
+        expect(actions).toEqual([
+          expect.objectContaining({
+            kind: "slash_task_start",
+            status: "processed",
+            result: expect.objectContaining({
+              threadId: starterThreadId,
+              providerMessageId: "outbound-1",
+            }),
           }),
-        }),
-      ]);
-      return actions;
-    });
+        ]);
+        return actions;
+      },
+      // CI shards run this file alongside several workers against one
+      // embedded Postgres; the default 1s waitFor budget is smaller than a
+      // single loaded admission round-trip. Observe the durable receipt with
+      // an explicit budget instead of depending on machine timing.
+      { timeout: 20_000, interval: 100 },
+    );
 
     await db
       .update(chatActions)
