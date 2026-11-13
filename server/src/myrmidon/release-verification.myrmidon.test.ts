@@ -98,7 +98,9 @@ describe("verifyReleaseComposition", () => {
     expect(result.members.every((m) => m.membership === "present")).toBe(true);
     expect(result.checkedAt).toBe("2026-11-13T12:00:00.000Z");
     // Both members were actually checked against the release contract.
-    expect(calls.length).toBe(2);
+    // Each member is checked against the two default release refs
+    // (myr-v<prefix> tag and rel/<prefix>-fixes branch), so 2 members × 2 refs = 4 calls.
+    expect(calls.length).toBe(4);
   });
 
   it("fails the release with a reason when one member is missing", async () => {
@@ -192,6 +194,7 @@ describe("verifyReleaseComposition", () => {
       },
       now: NOW,
     });
-    expect(seen).toHaveLength(3);
+    // 3 members × 2 default release refs = 6 calls.
+    expect(seen).toHaveLength(6);
   });
 });
