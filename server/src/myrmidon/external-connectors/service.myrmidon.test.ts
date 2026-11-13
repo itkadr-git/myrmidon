@@ -472,7 +472,7 @@ describe("externalConnectorService enforcement (OPE-13026)", () => {
       slowDispatcher,
     );
     expect(invokeRes.decision).toBe("pending");
-    const approvalId = invokeRes.pendingApproval!.id;
+    const approvalId = invokeRes.journalEntry.pendingApprovalId!;
 
     // Fire two concurrent resolutions against the same approvalId
     const results = await Promise.allSettled([

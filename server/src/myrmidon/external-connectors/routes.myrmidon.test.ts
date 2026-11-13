@@ -380,7 +380,7 @@ describe("myrmidon(OPE-13026) external-connectors routes", () => {
         expect(r.body.decision).toBe("approved");
         expect(r.body.journalEntry.outcome).toBe("approved_dispatch");
       });
-    expect(a.dispatched).toHaveLength(1);
+    expect(adminApp.dispatched).toHaveLength(1);
   });
 
   it("resolve endpoint rejects a second resolution with 409", async () => {
