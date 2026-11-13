@@ -132,12 +132,19 @@ test("stable fixture resolves each section to its expected state and count", asy
     covered: 6,
     counts: { data: 4, empty: 2, denied: 1, "not-found": 1, error: 2 },
   });
+  // missingAttribution is computed from the observed fixture rows, not copied
+  // from the section registry: a declared field is listed only when at least
+  // one returned row lacks it.
+  assert.deepEqual(byKey.agents.missingAttribution, []);
+  assert.deepEqual(byKey.issues.missingAttribution, ["dependency"]);
+  assert.deepEqual(byKey["projects-documents"].missingAttribution, ["ownerCompanyId"]);
+  assert.deepEqual(byKey["connections-tools"].missingAttribution, ["ownerCompanyId", "dependency"]);
+  assert.deepEqual(byKey["budgets-costs"].missingAttribution, ["ownerCompanyId"]);
+  assert.deepEqual(byKey["audit-approvals"].missingAttribution, ["ownerCompanyId", "dependency"]);
   for (const section of report.sections) {
     const definition = sectionForPath(section.path);
     assert.ok(definition, `no registry entry for ${section.path}`);
-    if (section.covered) {
-      assert.deepEqual(section.missingAttribution, definition.attribution);
-    } else {
+    if (!section.covered) {
       assert.deepEqual(section.missingAttribution, []);
     }
   }
@@ -279,6 +286,34 @@ test("empty payloads stay covered and remain distinct from denied and not-found"
   assert.equal(report.summary.covered, INVENTORY_SECTIONS.length);
   assert.equal(report.summary.counts.denied, 0);
   assert.equal(report.summary.counts["not-found"], 0);
+  // An empty payload observed no rows, so every declared field is reported missing.
+  for (const section of report.sections) {
+    assert.deepEqual(section.missingAttribution, sectionForPath(section.path).attribution);
+  }
+});
+
+test("missing attribution fields are computed from observed rows", async () => {
+  const report = await collectInventory(
+    makeGetOnlyTransport(({ path }) => {
+      if (path === "/agents") return { status: 200, ok: true, json: async () => ({ items: [{ id: "a1", ownerCompanyId: "c1" }, { id: "a2" }] }) };
+      if (path === "/issues") return { status: 200, ok: true, json: async () => [{ id: "i1", ownerCompanyId: "c1", dependency: "dep-1" }] };
+      if (path === "/projects-documents") return { status: 200, ok: true, json: async () => ({ items: [{ id: "p1", ownerCompanyId: null }] }) };
+      if (path === "/skills-policies") return { status: 200, ok: true, json: async () => ({ items: [{ id: "s1", dependency: "d1" }] }) };
+      return { status: 200, ok: true, json: async () => [] };
+    }),
+  );
+  const byKey = Object.fromEntries(report.sections.map((section) => [section.key, section]));
+
+  assert.equal(byKey.agents.state, "data");
+  assert.deepEqual(byKey.agents.missingAttribution, ["ownerCompanyId"]);
+  assert.deepEqual(byKey.issues.missingAttribution, []);
+  assert.deepEqual(byKey["projects-documents"].missingAttribution, ["ownerCompanyId"]);
+  assert.deepEqual(byKey["skills-policies"].missingAttribution, ["ownerCompanyId"]);
+
+  const rendered = renderInventory(report);
+  assert.ok(!rendered.includes("c1"));
+  assert.ok(!rendered.includes("dep-1"));
+  assert.ok(!rendered.includes("a1"));
 });
 
 test("unknown sections are absent from the registry and cannot be covered", () => {
