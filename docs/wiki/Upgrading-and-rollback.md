@@ -11,7 +11,7 @@ command again:
 curl -fsSL https://github.com/itkadr-git/myrmidon/releases/download/myr-v1.6.8/install.sh | sudo bash
 ```
 
-The current stable release is 1.6.8 ([operator notes](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/releases/1.6.8.md)). The installer is available
+The current release is 1.6.8 ([operator notes](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/releases/1.6.8.md)). The installer is available
 from release 1.6.5 onward; `releases/latest/download/install.sh` follows the
 latest stable release, so use the exact RC tag to install a candidate. The
 installer resolves the release, **dumps the database before anything changes**, switches to it and

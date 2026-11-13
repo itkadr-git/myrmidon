@@ -9,7 +9,7 @@ The shortest path to a running board. One command on a fresh server (see
 curl -fsSL https://github.com/itkadr-git/myrmidon/releases/download/myr-v1.6.8/install.sh | sudo bash
 ```
 
-The command pins the current stable release, 1.6.8; see
+The command pins the current release, 1.6.8; see
 [Installation](Installation) for release selection. The installer checks
 the machine, installs Docker when it is missing, downloads the release,
 creates all secrets and starts the service. At the end it prints the board

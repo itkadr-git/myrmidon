@@ -9,7 +9,7 @@ the server and run it — the installer does the rest itself:
 curl -fsSL https://github.com/itkadr-git/myrmidon/releases/download/myr-v1.6.8/install.sh | sudo bash
 ```
 
-The command above pins the current stable release, 1.6.8. Replace the tag with the release you intend to install; the
+The command above pins the current release, 1.6.8. Replace the tag with the release you intend to install; the
 permanent `releases/latest/download/install.sh` link follows the latest
 stable release and is not a substitute for a pinned candidate. The command
 needs an internet connection and `curl` (on a bare Ubuntu or Debian, run

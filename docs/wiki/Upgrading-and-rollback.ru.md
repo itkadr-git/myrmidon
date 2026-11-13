@@ -11,7 +11,7 @@
 curl -fsSL https://github.com/itkadr-git/myrmidon/releases/download/myr-v1.6.8/install.sh | sudo bash
 ```
 
-Текущий стабильный выпуск — 1.6.8 ([заметки для оператора](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/releases/1.6.8.ru.md)). Установщик доступен
+Текущий выпуск — 1.6.8 ([заметки для оператора](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/releases/1.6.8.ru.md)). Установщик доступен
 начиная с выпуска 1.6.5; ссылка `releases/latest/download/install.sh`
 ведёт на последний стабильный выпуск, поэтому для кандидата укажите точный
 тег. Установщик находит выпуск, **снимает копию базы данных до любых изменений**,
