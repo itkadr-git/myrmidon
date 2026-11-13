@@ -139,11 +139,11 @@ vi.mock("../services/execution-workspaces.js", () => ({
   STALE_REOPEN_PENDING_CONSUMPTION_GRACE_MS: 5 * 60 * 1000,
 }));
 
-function createApp() {
+function createApp(actorOverride?: Record<string, unknown>) {
   const app = express();
   app.use(express.json());
   app.use((req, _res, next) => {
-    (req as any).actor = {
+    (req as any).actor = actorOverride ?? {
       type: "board",
       userId: "local-board",
       companyIds: ["company-1"],
@@ -462,6 +462,74 @@ describe.sequential("issue goal context routes", () => {
     );
     expect(mockGoalService.getDefaultCompanyGoal).not.toHaveBeenCalled();
     expect(res.body.attachments).toEqual([]);
+  });
+
+  // myrmidon(REVIEW-STAGE-IN-CONTEXT): the stage participant sees the stage in
+  // the task context whatever woke the run; another agent sees an explicit
+  // "not a participant" instead of a missing field.
+  describe("execution stage in GET /issues/:id/heartbeat-context", () => {
+    const reviewerId = "77777777-7777-4777-8777-777777777777";
+    const otherAgentId = "88888888-8888-4888-8888-888888888888";
+    const stageId = "99999999-9999-4999-8999-999999999999";
+    const pendingReview = {
+      ...legacyProjectLinkedIssue,
+      status: "in_review",
+      executionState: {
+        status: "pending",
+        currentStageId: stageId,
+        currentStageIndex: 0,
+        currentStageType: "review",
+        currentParticipant: { type: "agent", agentId: reviewerId, userId: null },
+        returnAssignee: { type: "agent", agentId: legacyProjectLinkedIssue.assigneeAgentId, userId: null },
+        completedStageIds: [],
+        lastDecisionId: null,
+        lastDecisionOutcome: null,
+      },
+    };
+    const agentActor = (agentId: string) => ({
+      type: "agent",
+      agentId,
+      companyId: "company-1",
+      keyId: "key-1",
+      source: "agent_key",
+    });
+    const contextPath = `/api/issues/${legacyProjectLinkedIssue.id}/heartbeat-context`;
+
+    it("gives the current participant the stage with the decision it owes", async () => {
+      mockIssueService.getById.mockResolvedValue(pendingReview);
+      const res = await request(createApp(agentActor(reviewerId))).get(contextPath);
+      expect(res.status).toBe(200);
+      expect(res.body.executionStage).toMatchObject({
+        wakeRole: "reviewer",
+        stageId,
+        stageType: "review",
+        stageStatus: "pending",
+        isCurrentParticipant: true,
+        allowedActions: ["approve", "request_changes"],
+        currentParticipant: { type: "agent", agentId: reviewerId },
+      });
+      expect(res.body.executionStage.youAre).toContain("current participant");
+    });
+
+    it("tells another agent that it is not a participant", async () => {
+      mockIssueService.getById.mockResolvedValue(pendingReview);
+      const res = await request(createApp(agentActor(otherAgentId))).get(contextPath);
+      expect(res.status).toBe(200);
+      expect(res.body.executionStage).toMatchObject({
+        wakeRole: "observer",
+        stageType: "review",
+        isCurrentParticipant: false,
+        allowedActions: [],
+      });
+      expect(res.body.executionStage.youAre).toContain("not a participant");
+    });
+
+    it("is null when the task has no stage in flight", async () => {
+      mockIssueService.getById.mockResolvedValue({ ...legacyProjectLinkedIssue, executionState: null });
+      const res = await request(createApp(agentActor(reviewerId))).get(contextPath);
+      expect(res.status).toBe(200);
+      expect(res.body).toHaveProperty("executionStage", null);
+    });
   });
 
   it("preserves direct continuation summary lookup in GET /issues/:id/heartbeat-context", async () => {
