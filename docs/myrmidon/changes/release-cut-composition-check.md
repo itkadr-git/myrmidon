@@ -1,5 +1,3 @@
-# cut-rc.mjs checks the composition of the release before the tag
-
 ## changelog-en
 
 ### cut-rc.mjs refuses a tag when release-task deliveries are missing from the branch (OPE-13001)
