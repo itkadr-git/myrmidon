@@ -174,6 +174,105 @@ test("a failed GET stays an error-state coverage failure and is never reported a
   assert.equal(report.summary.covered, 0);
 });
 
+test("a transient transport failure in the first run stays error and the retried run covers the section", async () => {
+  const flakyPath = "/agents";
+  const pathCalls = new Map();
+  // Baseline: every section succeeds with a non-empty payload; only the scripted path flakes.
+  const transport = makeGetOnlyTransport(({ path }) => {
+    const call = (pathCalls.get(path) ?? 0) + 1;
+    pathCalls.set(path, call);
+    if (path === flakyPath && call === 1) {
+      return Promise.reject(new Error("transient transport failure"));
+    }
+    return { status: 200, ok: true, json: async () => ({ items: [{ id: `id-${path}` }] }) };
+  });
+
+  const first = await collectInventory(transport);
+  const firstSection = first.sections.find((section) => section.path === flakyPath);
+  assert.equal(firstSection.state, "error");
+  assert.equal(firstSection.covered, false);
+  assert.equal(firstSection.count, 0);
+  assert.deepEqual(firstSection.missingAttribution, []);
+  assert.equal(first.summary.counts.error, 1);
+  assert.equal(first.summary.counts.empty, 0);
+  assert.equal(first.summary.covered, INVENTORY_SECTIONS.length - 1);
+  // Exactly one GET for the flaky path in run one: the probe does not retry internally.
+  assert.equal(pathCalls.get(flakyPath), 1);
+
+  const second = await collectInventory(transport);
+  const secondSection = second.sections.find((section) => section.path === flakyPath);
+  assert.equal(secondSection.state, "data");
+  assert.equal(secondSection.covered, true);
+  assert.equal(secondSection.count, 1);
+  assert.deepEqual(secondSection.missingAttribution, [...sectionForPath(flakyPath).attribution]);
+  assert.equal(second.summary.counts.error, 0);
+  assert.equal(second.summary.covered, INVENTORY_SECTIONS.length);
+  assert.equal(pathCalls.get(flakyPath), 2);
+});
+
+test("a transient 5xx in the first run stays error and the retried run covers the section", async () => {
+  const flakyPath = "/connections-tools";
+  const pathCalls = new Map();
+  const transport = makeGetOnlyTransport(({ path }) => {
+    const call = (pathCalls.get(path) ?? 0) + 1;
+    pathCalls.set(path, call);
+    if (path === flakyPath && call === 1) {
+      return { status: 503, ok: false };
+    }
+    return { status: 200, ok: true, json: async () => ({ items: [{ id: `id-${path}` }] }) };
+  });
+
+  const first = await collectInventory(transport);
+  const firstSection = first.sections.find((section) => section.path === flakyPath);
+  assert.equal(firstSection.state, "error");
+  assert.equal(firstSection.covered, false);
+  assert.equal(firstSection.count, 0);
+  assert.deepEqual(firstSection.missingAttribution, []);
+  assert.equal(first.summary.counts.error, 1);
+  assert.equal(first.summary.counts.empty, 0);
+  assert.equal(first.summary.covered, INVENTORY_SECTIONS.length - 1);
+  assert.equal(pathCalls.get(flakyPath), 1);
+
+  const second = await collectInventory(transport);
+  const secondSection = second.sections.find((section) => section.path === flakyPath);
+  assert.equal(secondSection.state, "data");
+  assert.equal(secondSection.covered, true);
+  assert.equal(secondSection.count, 1);
+  assert.deepEqual(secondSection.missingAttribution, [...sectionForPath(flakyPath).attribution]);
+  assert.equal(second.summary.counts.error, 0);
+  assert.equal(second.summary.covered, INVENTORY_SECTIONS.length);
+  assert.equal(pathCalls.get(flakyPath), 2);
+});
+
+test("when no retry is performed the report keeps surfacing the error instead of an empty inventory", async () => {
+  const failingPath = "/chat-exchange-wake";
+  const pathCalls = new Map();
+  const transport = makeGetOnlyTransport(({ path }) => {
+    pathCalls.set(path, (pathCalls.get(path) ?? 0) + 1);
+    if (path === failingPath) {
+      return { status: 503, ok: false };
+    }
+    return { status: 200, ok: true, json: async () => ({ items: [{ id: `id-${path}` }] }) };
+  });
+
+  for (const run of [1, 2]) {
+    const report = await collectInventory(transport);
+    const section = report.sections.find((entry) => entry.path === failingPath);
+    assert.equal(section.state, "error", `run ${run} must stay error`);
+    assert.notEqual(section.state, "empty");
+    assert.equal(section.covered, false, `run ${run} must not count as covered`);
+    assert.equal(section.count, 0, `run ${run}`);
+    assert.deepEqual(section.missingAttribution, [], `run ${run}`);
+    assert.equal(report.summary.counts.error, 1, `run ${run}`);
+    assert.equal(report.summary.counts.empty, 0, `run ${run}`);
+    assert.equal(report.summary.covered, INVENTORY_SECTIONS.length - 1, `run ${run}`);
+  }
+  // Exactly one GET per run for the failing path: no hidden internal retry, the error stays visible.
+  assert.equal(pathCalls.get(failingPath), 2);
+  assert.ok(transport.methods.every((method) => method === INVENTORY_METHOD));
+});
+
+
 test("empty payloads stay covered and remain distinct from denied and not-found", async () => {
   const report = await collectInventory(makeGetOnlyTransport(() => ({ status: 200, ok: true, json: async () => [] })));
   assert.equal(report.summary.counts.empty, INVENTORY_SECTIONS.length);

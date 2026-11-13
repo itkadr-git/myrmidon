@@ -27,6 +27,9 @@ separation if repeated runs are safe and truthful:
 | a failed GET stays an error-state coverage failure and is never reported as empty | reject / 500 / malformed payload → `error`, `covered: false`, `counts.empty === 0` |
 | empty payloads stay covered and remain distinct from denied and not-found | 200 + `[]` → `empty`, covered, `denied`/`not-found` stay 0 |
 | unknown sections are absent from the registry and cannot be covered | `sectionForPath('/not-a-section')` → `undefined` |
+| a transient transport failure in the first run stays error and the retried run covers the section | reject on GET #1 → `error`, `covered: false`; second run → `data`, covered; exactly one GET per run (no hidden retry) |
+| a transient 5xx in the first run stays error and the retried run covers the section | 503 on GET #1 → `error`; second run → `data`, covered; exactly one GET per run |
+| when no retry is performed the report keeps surfacing the error instead of an empty inventory | repeated runs with a persistent 503 → `error` every run, `counts.empty === 0`, covered stays `total - 1` |
 
 ## Probe module contract (scripts/myrmidon/company-boundaries-inventory.mjs)
 
@@ -48,4 +51,4 @@ record every issued method and fail the probe on any non-GET.
 node --test scripts/myrmidon/company-boundaries-inventory.test.mjs
 ```
 
-7 tests, all green locally. No network, no database, no live board access.
+10 tests, all green locally. No network, no database, no live board access.
