@@ -30,6 +30,7 @@ describe("PaperclipRunnerToolAuthority", () => {
   const companyId = "00000000-0000-4000-8000-000000000101";
   const agentId = "00000000-0000-4000-8000-000000000102";
   const issueId = "00000000-0000-4000-8000-000000000103";
+  const targetAgentId = "00000000-0000-4000-8000-000000000105";
   const runId = "00000000-0000-4000-8000-000000000104";
 
   beforeAll(async () => {
@@ -50,6 +51,15 @@ describe("PaperclipRunnerToolAuthority", () => {
       adapterType: "paperclip_runner",
       adapterConfig: { provider: "codex", apiKey: "must-not-leak" },
       runtimeConfig: { token: "must-not-leak" },
+      status: "active",
+    });
+    await db.insert(agents).values({
+      id: targetAgentId,
+      companyId,
+      name: "Target agent",
+      adapterType: "paperclip_runner",
+      adapterConfig: { provider: "codex" },
+      runtimeConfig: {},
       status: "active",
     });
     await db.insert(issues).values({
@@ -755,7 +765,21 @@ describe("PaperclipRunnerToolAuthority", () => {
         parentId: issueId,
         status: "todo",
         assigneeActorId: agentId,
+        assigneeAgentName: "Runner agent",
       },
+    });
+    const explicitlyAssigned = await authority.execute({
+      tool: "create_task",
+      callId: "create-explicit-assignment",
+      arguments: {
+        idempotencyKey: "explicit-assignment",
+        title: "Explicitly assigned task",
+        assigneeActorId: targetAgentId,
+      },
+    });
+    expect(explicitlyAssigned).toMatchObject({
+      disposition: "applied",
+      task: { assigneeActorId: targetAgentId, assigneeAgentName: "Target agent" },
     });
     expect(wakes).toHaveLength(1);
     expect(wakes[0]).toMatchObject({
@@ -920,6 +944,17 @@ describe("PaperclipRunnerToolAuthority", () => {
           idempotencyKey: "foreign-assignee",
           title: "Invalid foreign assignment",
           assigneeActorId: foreignAgentId,
+        },
+      }),
+    ).rejects.toThrow("paperclip_runner_agent_not_found");
+    await expect(
+      retryAuthority.execute({
+        tool: "create_task",
+        callId: "unknown-assignee",
+        arguments: {
+          idempotencyKey: "unknown-assignee",
+          title: "Invalid unknown assignment",
+          assigneeActorId: "00000000-0000-4000-8000-000000000299",
         },
       }),
     ).rejects.toThrow("paperclip_runner_agent_not_found");
