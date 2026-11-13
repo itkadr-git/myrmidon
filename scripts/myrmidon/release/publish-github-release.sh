@@ -20,16 +20,22 @@
 #                      pushed tag, or the tag input of a workflow_dispatch
 #                      re-run; the tag must already exist on origin)
 #   --require-verification
-#                      VERIFY-ON-PROD gate (OPE-13017): refuse to publish
-#                      unless --verification-result names a JSON file with a
-#                      confirmed verdict whose deployedVersion equals the
-#                      tag's commit SHA.  The file is the JSON response of
-#                      POST /issues/:id/release-verify (OPE-13014).
+#                      kept for backward compatibility with the opt-in era;
+#                      the gate is now always enforced, so the flag is a
+#                      no-op (a warning is logged when it is used).
 #   --verification-result <file>
-#                      the verification verdict JSON (see above).  Without
-#                      --require-verification the file is accepted but not
-#                      enforced (the gate is opt-in while the release
-#                      pipeline wires the verification step to the publish).
+#                      the verification verdict JSON (see above).
+#
+# The verification gate is MANDATORY on the publish path (OPE-13017
+# acceptance: «релиз нельзя опубликовать без проверенной версии»).  The
+# verdict file is read from --verification-result or, when the flag is
+# omitted, from the MYRMIDON_RELEASE_VERIFICATION_RESULT env var — so the
+# release pipeline can wire the verification step without changing this
+# script.  An explicit rehearsal escape exists for dry runs only:
+# MYRMIDON_RELEASE_SKIP_VERIFICATION=1 refuses loudly and marks the release
+# body «REHEARSAL — NOT VERIFIED» (the same pattern as promote-latest.sh's
+# --skip-health-check); a plain invocation without any verification source
+# refuses the publish.
 #
 # Fail-closed and idempotent:
 #   1. Resolve the tag's commit (annotated tags dereferenced).
@@ -81,12 +87,12 @@ usage() {
 die() { printf '[myrmidon-release-publish] ERROR: %s\n' "$*" >&2; exit 1; }
 log() { printf '[myrmidon-release-publish] %s\n' "$*" >&2; }
 
-tag="" verification_file="" require_verification=0
+tag="" verification_file=""
 while (($#)); do
   case "$1" in
     --tag) tag="$2"; shift 2 ;;
     --verification-result) verification_file="$2"; shift 2 ;;
-    --require-verification) require_verification=1; shift ;;
+    --require-verification) log "WARNING: --require-verification is deprecated — the verification gate is always enforced now"; shift ;;
     -h|--help) usage ;;
     *) die "unknown argument: $1" ;;
   esac
@@ -149,15 +155,25 @@ fi
 # CI or an operator); the publish script never calls the board itself — the
 # file is the contract.
 #
-# The gate is opt-in via --require-verification so the current tag-push flow
-# keeps working while the release pipeline wires the verification step to the
-# publish.  Once wired, the workflow passes --require-verification and the
-# file; a missing file, a failed verdict, or a SHA mismatch refuses the
-# publish loudly.
+# The gate is MANDATORY on the publish path (OPE-13017 acceptance): a plain
+# invocation without a verification source refuses the publish.
+# MYRMIDON_RELEASE_SKIP_VERIFICATION=1 is the rehearsal escape (dry runs only —
+# it marks the body «REHEARSAL — NOT VERIFIED» and logs a loud warning, the
+# promote-latest.sh --skip-health-check pattern).
 verification_section=""
-if ((require_verification)); then
-  [[ -n "$verification_file" ]] \
-    || die "--require-verification needs --verification-result <file> (the JSON verdict of POST /issues/:id/release-verify)"
+rehearsal=0
+if [[ -z "$verification_file" && -n "${MYRMIDON_RELEASE_VERIFICATION_RESULT:-}" ]]; then
+  verification_file="$MYRMIDON_RELEASE_VERIFICATION_RESULT"
+fi
+if [[ -z "$verification_file" ]]; then
+  if [[ "${MYRMIDON_RELEASE_SKIP_VERIFICATION:-0}" == "1" ]]; then
+    rehearsal=1
+    log "WARNING: MYRMIDON_RELEASE_SKIP_VERIFICATION=1 — publishing WITHOUT the release verification gate (rehearsal only, the body is marked REHEARSAL — NOT VERIFIED)"
+  else
+    die "no release verification result — NOT publishing $tag. Run the release verification (POST /issues/:id/release-verify, OPE-13014) against the tag's commit and pass --verification-result <file> (or set MYRMIDON_RELEASE_VERIFICATION_RESULT); a rehearsal may set MYRMIDON_RELEASE_SKIP_VERIFICATION=1 explicitly."
+  fi
+fi
+if [[ -n "$verification_file" ]]; then
   [[ -f "$verification_file" ]] \
     || die "verification result file $verification_file does not exist — NOT publishing. Run the release verification (POST /issues/:id/release-verify) first and pass its JSON response."
   verification_json="$(cat "$verification_file")"
@@ -187,9 +203,15 @@ Verified on the production board before publication.
 - Board issue: $verification_issue_id
 EOF
 )
-elif [[ -n "$verification_file" ]]; then
-  [[ -f "$verification_file" ]] || die "verification result file $verification_file does not exist"
-  log "gate: verification result provided without --require-verification — publishing without the gate (pass --require-verification to enforce it)"
+fi
+if ((rehearsal)); then
+  verification_section=$(cat <<EOF
+
+## Release verification
+
+REHEARSAL — NOT VERIFIED: this release was published with MYRMIDON_RELEASE_SKIP_VERIFICATION=1 (a dry run). It is NOT bound to a board-side verification of its commit.
+EOF
+)
 fi
 
 # ------------------------------------------------------------- 2. CI gate ----

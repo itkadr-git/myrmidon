@@ -235,6 +235,11 @@ function runScript(sb, tag, { extraEnv = {}, args = [] } = {}) {
       MYRMIDON_RELEASE_REGISTRY_STATE: path.join(sb.dir, "registry-state.json"),
       MYRMIDON_RELEASE_POLL_SECONDS: "0",
       MYRMIDON_RELEASE_POLL_MAX: "4",
+      // The verification gate is MANDATORY (OPE-13017): the gate/body tests
+      // below are not about verification, so they take the explicit
+      // rehearsal escape — exactly the operator-facing dry-run path. The
+      // verification-gate describe block passes a real verdict file instead.
+      MYRMIDON_RELEASE_SKIP_VERIFICATION: "1",
       // RELEASE-PUBLISH-WAIT: the fake gh's runs-state switch (absent fixtures never read
       // it; 0 = the first runs read already answers "after")
       GH_RUNS_SWITCH_AFTER: "0",
@@ -1191,9 +1196,11 @@ describe("publish-github-release.sh: the release verification gate (OPE-13017)",
   it("publishes with the verification signature when the gate passes (confirmed, matching SHA)", () => {
     const sb = sandbox({ runs: GREEN_RUNS });
     const vf = verificationFile(sb);
-    const { code, out } = runScript(sb, "myr-v1.6.0", { extraEnv: {
-      MYRMIDON_RELEASE_VERIFICATION_RESULT: vf,
-    }, args: ["--require-verification", "--verification-result", vf] });
+    const { code, out } = runScript(sb, "myr-v1.6.0", {
+      extraEnv: {
+        MYRMIDON_RELEASE_VERIFICATION_RESULT: vf,
+      },
+    });
     assert.equal(code, 0, out);
     assert.match(out, /gate: release verification confirmed/);
     const mut = mutations(sb);
@@ -1204,18 +1211,36 @@ describe("publish-github-release.sh: the release verification gate (OPE-13017)",
     assert.match(mut, /Checked at: 2026-11-13T16:00:00Z/);
   });
 
-  it("refuses to publish without --verification-result when --require-verification is set", () => {
+  it("refuses to publish without any verification source (the default tag-push invocation)", () => {
+    // The gate is MANDATORY (OPE-13017 acceptance): an ordinary invocation —
+    // no --verification-result, no env, no rehearsal escape — must NOT
+    // publish, even with green tag CI.
     const sb = sandbox({ runs: GREEN_RUNS });
-    const { code, out } = runScript(sb, "myr-v1.6.0", { args: ["--require-verification"] });
+    const { code, out } = runScript(sb, "myr-v1.6.0", { extraEnv: {
+      MYRMIDON_RELEASE_SKIP_VERIFICATION: "",
+    } });
     assert.notEqual(code, 0, out);
-    assert.match(out, /--require-verification needs --verification-result/);
+    assert.match(out, /no release verification result.*NOT publishing/s);
+    assert.equal(mutations(sb), "");
+  });
+
+  it("the deprecated --require-verification flag alone does not satisfy the gate", () => {
+    // Backward compat: the flag from the opt-in era is accepted but the gate
+    // still demands a verdict file.
+    const sb = sandbox({ runs: GREEN_RUNS });
+    const { code, out } = runScript(sb, "myr-v1.6.0", { extraEnv: {
+      MYRMIDON_RELEASE_SKIP_VERIFICATION: "",
+    }, args: ["--require-verification"] });
+    assert.notEqual(code, 0, out);
+    assert.match(out, /--require-verification is deprecated/);
+    assert.match(out, /no release verification result.*NOT publishing/s);
     assert.equal(mutations(sb), "");
   });
 
   it("refuses to publish when the verification file does not exist", () => {
     const sb = sandbox({ runs: GREEN_RUNS });
     const missing = path.join(sb.dir, "no-such-file.json");
-    const { code, out } = runScript(sb, "myr-v1.6.0", { args: ["--require-verification", "--verification-result", missing] });
+    const { code, out } = runScript(sb, "myr-v1.6.0", { args: ["--verification-result", missing] });
     assert.notEqual(code, 0, out);
     assert.match(out, /does not exist.*NOT publishing/);
     assert.equal(mutations(sb), "");
@@ -1224,7 +1249,7 @@ describe("publish-github-release.sh: the release verification gate (OPE-13017)",
   it("refuses to publish when the verification verdict is not 'confirmed'", () => {
     const sb = sandbox({ runs: GREEN_RUNS });
     const vf = verificationFile(sb, { verdict: "failed", reason: "member_missing_from_release" });
-    const { code, out } = runScript(sb, "myr-v1.6.0", { args: ["--require-verification", "--verification-result", vf] });
+    const { code, out } = runScript(sb, "myr-v1.6.0", { args: ["--verification-result", vf] });
     assert.notEqual(code, 0, out);
     assert.match(out, /verdict is 'failed'.*NOT publishing/);
     assert.match(out, /member_missing_from_release/);
@@ -1235,32 +1260,54 @@ describe("publish-github-release.sh: the release verification gate (OPE-13017)",
     const sb = sandbox({ runs: GREEN_RUNS });
     const otherSha = "deadbeefcafebabe0123456789abcdef01234567";
     const vf = verificationFile(sb, { deployedVersion: otherSha });
-    const { code, out } = runScript(sb, "myr-v1.6.0", { args: ["--require-verification", "--verification-result", vf] });
+    const { code, out } = runScript(sb, "myr-v1.6.0", { args: ["--verification-result", vf] });
     assert.notEqual(code, 0, out);
     assert.match(out, /deployedVersion 'deadbeefcafebabe0123456789abcdef01234567' does not match the tag commit 'c78a6c9fde4992a98e5e76d3fd556e33bb87935a'/);
     assert.match(out, /NOT publishing/);
     assert.equal(mutations(sb), "");
   });
 
-  it("publishes without the gate when --verification-result is given without --require-verification (backward compat)", () => {
+  it("a --verification-result file is always enforced — a wrong-SHA verdict refuses the publish", () => {
+    // The old backward-compat path (a file accepted but not enforced) is
+    // gone: any present file goes through the full gate.
     const sb = sandbox({ runs: GREEN_RUNS });
-    const vf = verificationFile(sb);
+    const otherSha = "deadbeefcafebabe0123456789abcdef01234567";
+    const vf = verificationFile(sb, { deployedVersion: otherSha });
     const { code, out } = runScript(sb, "myr-v1.6.0", { args: ["--verification-result", vf] });
-    assert.equal(code, 0, out);
-    assert.match(out, /publishing without the gate/);
-    const mut = mutations(sb);
-    assert.match(mut, /create tag=myr-v1\.6\.0/);
-    // no verification section in the body without the gate
-    assert.doesNotMatch(mut, /## Release verification/);
+    assert.notEqual(code, 0, out);
+    assert.match(out, /does not match the tag commit/);
+    assert.match(out, /NOT publishing/);
+    assert.equal(mutations(sb), "");
   });
 
-  it("publishes as before when neither flag is given (the tag-push default)", () => {
+  it("publishes via the MYRMIDON_RELEASE_VERIFICATION_RESULT env var (the pipeline wiring seam)", () => {
+    // The release pipeline passes the verdict file through the env so the
+    // workflow needs no flag changes; the gate runs exactly as with
+    // --verification-result.
+    const sb = sandbox({ runs: GREEN_RUNS });
+    const vf = verificationFile(sb);
+    const { code, out } = runScript(sb, "myr-v1.6.0", { extraEnv: {
+      MYRMIDON_RELEASE_VERIFICATION_RESULT: vf,
+    } });
+    assert.equal(code, 0, out);
+    assert.match(out, /gate: release verification confirmed/);
+    const mut = mutations(sb);
+    assert.match(mut, /create tag=myr-v1\.6\.0/);
+    assert.match(mut, /## Release verification/);
+  });
+
+  it("the rehearsal escape publishes with a loud warning and a REHEARSAL — NOT VERIFIED body marker", () => {
+    // MYRMIDON_RELEASE_SKIP_VERIFICATION=1 (dry runs only): the publish
+    // proceeds but the body is explicitly marked as unverified — the
+    // promote-latest.sh --skip-health-check pattern.
     const sb = sandbox({ runs: GREEN_RUNS });
     const { code, out } = runScript(sb, "myr-v1.6.0");
     assert.equal(code, 0, out);
+    assert.match(out, /WARNING: MYRMIDON_RELEASE_SKIP_VERIFICATION=1/);
     const mut = mutations(sb);
     assert.match(mut, /create tag=myr-v1\.6\.0/);
-    assert.doesNotMatch(mut, /## Release verification/);
+    assert.match(mut, /REHEARSAL — NOT VERIFIED/);
+    assert.doesNotMatch(mut, /Verdict: confirmed/);
   });
 
   it("the verification section carries the immutable SHA bind in the release body", () => {
