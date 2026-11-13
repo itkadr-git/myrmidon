@@ -134,7 +134,7 @@ import { createPullRequestCiResolver, withCiResolveDeadline } from "../services/
 import { createPullRequestMergeDetailsResolver } from "../services/github-pull-request-merge.js";
 import { resolveGitHubRepositoryToken } from "../services/github-external-object-provider.js";
 import { checkCommitMembership, normaliseReleasePrefix, resolveReleaseRefs, routePullRequestVerdict } from "../myrmidon/release-membership.js";
-import { verifyReleaseComposition } from "../myrmidon/release-verification.js";
+import { verifyReleaseComposition, buildReleaseCandidateMembers } from "../myrmidon/release-verification.js";
 import { readBuildVersion } from "../build-version.js";
 import {
   companies,
@@ -9993,20 +9993,10 @@ export function issueRoutes(
         .find((prefix): prefix is string => prefix !== null) ?? null;
 
       const deployedVersion = readBuildVersion();
-      const members: Array<{
-        id: string;
-        repository: string;
-        mergeCommitSha: string | null;
-      }> = [];
-      for (const product of workProducts) {
-        if (product.type !== "pull_request") continue;
-        const metadata = product.metadata ?? {};
-        const repo = typeof metadata.repo === "string" ? metadata.repo : null;
-        const mergeCommitSha = typeof metadata.mergeCommitSha === "string" ? metadata.mergeCommitSha : null;
-        if (product.status === "merged" && repo) {
-          members.push({ id: `PR#${metadata.number ?? "?"}`, repository: repo, mergeCommitSha });
-        }
-      }
+      // The candidate set is the FULL set of pull_request work products —
+      // merged or not. Filtering to merged only would let an unmerged
+      // candidate vanish and the remaining incomplete list be confirmed.
+      const members = buildReleaseCandidateMembers(workProducts);
 
       // Without a release label we cannot name the release line to verify
       // against; fail closed instead of guessing.

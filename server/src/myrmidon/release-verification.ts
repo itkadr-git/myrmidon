@@ -33,6 +33,13 @@ export interface ReleaseCandidateMember {
   repository: string;
   /** Merge commit SHA to test against the deployed release refs. */
   mergeCommitSha: string | null;
+  /**
+   * True when the member's PR is merged and the merge SHA is recorded. A
+   * candidate that is still open/draft/closed-unmerged can never be proven
+   * present in the deployed release, so it must fail the check, not be
+   * silently dropped from the candidate set.
+   */
+  merged: boolean;
 }
 
 export interface MemberVerification {
@@ -50,6 +57,7 @@ export type ReleaseFailureReason =
   | "deployed_version_unknown"
   | "deployed_version_mismatch"
   | "member_sha_missing"
+  | "member_not_merged"
   | "member_membership_unknown"
   | "member_missing_from_release";
 
@@ -143,6 +151,38 @@ export function composeReleaseVerdict(memberships: readonly ReleaseMembershipVer
 }
 
 /**
+ * Build the full release candidate set from an issue's pull_request work
+ * products. Every pull_request work product is a candidate — merged or not —
+ * so the verification sees the complete set and an unmerged candidate fails
+ * the release instead of silently shrinking the proven list. Entries that are
+ * not pull_request work products are ignored (they carry no merge commit).
+ */
+export function buildReleaseCandidateMembers(
+  workProducts: readonly {
+    type: string;
+    status: string;
+    metadata?: unknown;
+  }[],
+): ReleaseCandidateMember[] {
+  const members: ReleaseCandidateMember[] = [];
+  for (const product of workProducts) {
+    if (product.type !== "pull_request") continue;
+    const metadata = (product.metadata ?? {}) as Record<string, unknown>;
+    const repo = typeof metadata.repo === "string" ? metadata.repo : "";
+    const number = typeof metadata.number === "number" ? metadata.number : null;
+    const mergeCommitSha = typeof metadata.mergeCommitSha === "string" ? metadata.mergeCommitSha : null;
+    if (!repo) continue;
+    members.push({
+      id: number !== null ? `PR#${number}` : "PR#?",
+      repository: repo,
+      mergeCommitSha,
+      merged: product.status === "merged",
+    });
+  }
+  return members;
+}
+
+/**
  * Verify the deployed release composition against the candidate set.
  *
  * For each member we call the release-membership contract once. A member with
@@ -217,11 +257,15 @@ export async function verifyReleaseComposition(
 
   const verified: MemberVerification[] = [];
   for (const member of members) {
-    if (!member.mergeCommitSha) {
+    if (!member.merged || !member.mergeCommitSha) {
+      // Not merged (open/draft/closed-unmerged) or merged without a recorded
+      // SHA: either way the member cannot be proven present. Keeping it in
+      // `verified` with membership "unknown" makes the incomplete candidate
+      // set visible instead of silently shrinking the release.
       verified.push({
         id: member.id,
         repository: member.repository,
-        mergeCommitSha: null,
+        mergeCommitSha: member.mergeCommitSha ?? null,
         membership: "unknown",
         releaseRefs: [],
       });
@@ -245,14 +289,32 @@ export async function verifyReleaseComposition(
     });
   }
 
-  // A member without a SHA cannot be proven present; surface it before the
-  // generic unknown-version bucket so the reason names the actual gap.
+  // A candidate whose PR is not merged can never be proven present in the
+  // deployed release: the release composition is unproven while any candidate
+  // is still open/draft/closed-unmerged. Surface it before the generic
+  // unknown-version bucket so the reason names the actual gap. A merged PR
+  // without a recorded SHA is a data gap, not an unmerged candidate.
+  const notMergedMembers = members.filter((m) => !m.merged);
+  if (notMergedMembers.length > 0) {
+    const names = notMergedMembers.map((m) => m.id).join(", ");
+    return {
+      verdict: "failed",
+      reason: `Не слиты ${notMergedMembers.length} кандидатов выпуска (${names}); состав не доказан.`,
+      failureReason: "member_not_merged",
+      releasePrefix: options.releasePrefix,
+      deployedVersion: options.deployedVersion ?? null,
+      members: verified,
+      allMembersPresent: false,
+      checkedAt,
+    };
+  }
+
   const shaMissing = verified.filter((v) => v.membership === "unknown" && !v.mergeCommitSha);
   if (shaMissing.length > 0) {
     const names = shaMissing.map((v) => v.id).join(", ");
     return {
       verdict: "failed",
-      reason: `У ${shaMissing.length} задач нет merge commit SHA (${names}); состав не доказан.`,
+      reason: `У ${shaMissing.length} слитых задач нет merge commit SHA (${names}); состав не доказан.`,
       failureReason: "member_sha_missing",
       releasePrefix: options.releasePrefix,
       deployedVersion: options.deployedVersion ?? null,

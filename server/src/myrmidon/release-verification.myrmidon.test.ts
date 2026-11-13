@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  buildReleaseCandidateMembers,
   composeReleaseVerdict,
   verifyReleaseComposition,
   type ReleaseCandidateMember,
@@ -48,8 +49,8 @@ function compareFake(
   };
 }
 
-function member(id: string, sha: string | null): ReleaseCandidateMember {
-  return { id, repository: REPO, mergeCommitSha: sha };
+function member(id: string, sha: string | null, merged = true): ReleaseCandidateMember {
+  return { id, repository: REPO, mergeCommitSha: sha, merged };
 }
 
 const NOW = () => new Date("2026-11-13T12:00:00.000Z");
@@ -310,5 +311,93 @@ describe("verifyReleaseComposition", () => {
     });
     expect(result.verdict).toBe("confirmed");
     expect(result.failureReason).toBeNull();
+  });
+
+  it("fails with member_not_merged when a candidate PR is not merged, even if the rest resolve", async () => {
+    // Review finding (PR #3093): the route used to drop unmerged candidates
+    // from the set, so a release with one merged and one open PR could be
+    // confirmed on the incomplete list. The full candidate set must include
+    // the unmerged PR and fail the release, naming it.
+    const calls: string[] = [];
+    const result = await verifyReleaseComposition({
+      releasePrefix: "1.6",
+      deployedVersion: "myr-v1.6.8",
+      members: [member("OPE-1", SHA_A, true), member("OPE-2", SHA_B, false)],
+      fetchImpl: compareFake(["myr-v1.6"], [], calls),
+      now: NOW,
+    });
+    expect(result.verdict).toBe("failed");
+    expect(result.failureReason).toBe("member_not_merged");
+    expect(result.reason).toContain("OPE-2");
+    expect(result.allMembersPresent).toBe(false);
+    // The unmerged member short-circuits before its membership is fetched;
+    // the merged member may already have been checked.
+    const unmergedCalls = calls.filter((c) => c.includes(SHA_B));
+    expect(unmergedCalls).toHaveLength(0);
+  });
+
+  it("fails with member_not_merged when a draft PR is in the candidate set", async () => {
+    const result = await verifyReleaseComposition({
+      releasePrefix: "1.6",
+      deployedVersion: "myr-v1.6.8",
+      members: [member("OPE-9", null, false)],
+      now: NOW,
+    });
+    expect(result.verdict).toBe("failed");
+    expect(result.failureReason).toBe("member_not_merged");
+  });
+
+  it("keeps an unmerged candidate visible in members instead of dropping it", async () => {
+    const result = await verifyReleaseComposition({
+      releasePrefix: "1.6",
+      deployedVersion: "myr-v1.6.8",
+      members: [member("OPE-1", SHA_A, true), member("OPE-2", null, false)],
+      fetchImpl: compareFake(["myr-v1.6"], [], []),
+      now: NOW,
+    });
+    const unmerged = result.members.find((m) => m.id === "OPE-2");
+    expect(unmerged).toBeDefined();
+    expect(unmerged?.membership).toBe("unknown");
+    expect(unmerged?.mergeCommitSha).toBeNull();
+  });
+});
+
+describe("buildReleaseCandidateMembers", () => {
+  const wp = (
+    type: string,
+    status: string,
+    metadata: Record<string, unknown>,
+  ): { type: string; status: string; metadata: Record<string, unknown> } => ({
+    type,
+    status,
+    metadata,
+  });
+
+  it("includes every pull_request work product, merged or not", () => {
+    const members = buildReleaseCandidateMembers([
+      wp("pull_request", "merged", { repo: REPO, number: 1, mergeCommitSha: SHA_A }),
+      wp("pull_request", "open", { repo: REPO, number: 2, mergeCommitSha: SHA_B }),
+      wp("pull_request", "draft", { repo: REPO, number: 3 }),
+    ]);
+    expect(members).toHaveLength(3);
+    expect(members[0]).toMatchObject({ id: "PR#1", merged: true, mergeCommitSha: SHA_A });
+    expect(members[1]).toMatchObject({ id: "PR#2", merged: false, mergeCommitSha: SHA_B });
+    expect(members[2]).toMatchObject({ id: "PR#3", merged: false, mergeCommitSha: null });
+  });
+
+  it("ignores non-pull_request work products", () => {
+    const members = buildReleaseCandidateMembers([
+      wp("preview_url", "running", { url: "https://example.test" }),
+      wp("pull_request", "merged", { repo: REPO, number: 7, mergeCommitSha: SHA_A }),
+    ]);
+    expect(members).toHaveLength(1);
+    expect(members[0].id).toBe("PR#7");
+  });
+
+  it("skips pull_request entries without a repository", () => {
+    const members = buildReleaseCandidateMembers([
+      wp("pull_request", "merged", { number: 5, mergeCommitSha: SHA_A }),
+    ]);
+    expect(members).toHaveLength(0);
   });
 });
