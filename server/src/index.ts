@@ -30,20 +30,20 @@ import {
   createDb,
   createPostgresJsClient,
   ensurePostgresDatabase,
-  formatEmbeddedPostgresError,
   getPostgresDataDirectory,
   inspectMigrations,
   applyPendingMigrations,
-  createEmbeddedPostgresLogBuffer,
-  prepareEmbeddedPostgresNativeRuntime,
   reconcilePendingMigrationHistory,
-  formatDatabaseBackupResult,
-  runDatabaseBackup,
+} from "@myrmidon/db/client";
+import { formatEmbeddedPostgresError, createEmbeddedPostgresLogBuffer } from "@myrmidon/db/embedded-postgres-error";
+import { prepareEmbeddedPostgresNativeRuntime } from "@myrmidon/db/embedded-postgres-native";
+import { formatDatabaseBackupResult, runDatabaseBackup } from "@myrmidon/db/backup-lib";
+import {
   authUsers,
   companies,
   companyMemberships,
   instanceUserRoles,
-} from "@myrmidon/db";
+} from "@myrmidon/db/schema";
 import detectPort from "detect-port";
 import { createApp } from "./app.js";
 import { loadConfig } from "./config.js";
