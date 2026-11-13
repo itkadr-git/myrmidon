@@ -1713,9 +1713,14 @@ export async function syncDirectoryFromSsh(input: {
       // the local ssh goes away; nothing was applied to the local workspace yet.
       const abortWatch = watchSshTransferAbort(input.signal, [ssh, tar]);
       let tarSignal: NodeJS.Signals | null = null; // myrmidon(OPE-12788)
-
+      // myrmidon(OPE-12914): true once all pending ssh stderr 'data' chunks
+      // have been delivered to the tail buffer; set on ssh 'close' ('data'
+      // always precedes 'close') and again after stopChildren(). The deferred
+      // tar branch uses it to keep waiting for ssh's diagnostic stderr.
+      let sshStderrFlushed = false;
       const maybeFinish = () => {
         if (settled || !sshExited || !tarExited) return;
+        if (!sshStderrFlushed) return; // myrmidon(OPE-12914): ssh stderr still in flight
         settled = true;
         abortWatch.detach();
         if (abortWatch.aborted()) {
@@ -1749,7 +1754,10 @@ export async function syncDirectoryFromSsh(input: {
       const stopChildren = () => {
         ssh.kill("SIGTERM");
         tar.kill("SIGTERM");
-        if (!sshExited) ssh.stdout?.destroy();
+        if (!sshExited) {
+          ssh.stdout?.destroy();
+          sshStderrFlushed = true; // myrmidon(OPE-12914): no full stderr is owed after SIGTERM
+        }
       };
 
       const fail = (error: Error) => {
@@ -1781,6 +1789,7 @@ export async function syncDirectoryFromSsh(input: {
       ssh.on("close", (code) => {
         sshExited = true;
         sshExitCode = code;
+        sshStderrFlushed = true; // myrmidon(OPE-12914): stderr 'data' events precede 'close'
         maybeFinish();
       });
       tar.on("close", (code, signal) => {
