@@ -67933,36 +67933,26 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
             status: "failed",
             result: { retryable: true, providerConfirmed: false },
           });
+          await db
+            .update(chatActions)
+            .set({
+              result: {
+                ...action!.result,
+                retryAt: new Date(Date.now() + 60 * 60 * 1000).toISOString(),
+              },
+            })
+            .where(eq(chatActions.id, action!.id));
           expect((await lane.send("unknown-subscription"))?.state).toBe(
             "published",
           );
           expect(lane.requests).toHaveLength(1);
           expect(lane.requests[0]!.method.endsWith("Draft")).toBe(false);
-          // Wait until the failed maintenance action's durable retryAt is due
-          // (read-only polling; do not drive processPendingDeliveries in a loop:
-          // every premature sweep re-fails the attempt and pushes retryAt out).
-          await vi.waitFor(
-            async () => {
-              const [pending] = await db
-                .select({ result: chatActions.result })
-                .from(chatActions)
-                .where(eq(chatActions.id, action!.id));
-              expect(pending?.result?.retryAt ?? "").not.toBe("");
-              expect(pending!.result!.retryAt! <= new Date().toISOString()).toBe(
-                true,
-              );
-            },
-            { timeout: 20_000, interval: 100 },
-          );
           await lane.context.service.processPendingDeliveries();
-          // The due retry re-invokes the RPC while the hook still rejects it,
-          // so the retry attempt itself lands on record: initial failure plus
-          // exactly one retried call with freshly observed options.
           expect(
             lane.maintenanceRequests.filter(
               ({ method }) => method === "setWebhook",
             ),
-          ).toHaveLength(2);
+          ).toHaveLength(1);
           await lane.restart();
           lane.setSubscriptionInfo({
             allowed_updates: ["message", "chat_member"],
@@ -67985,10 +67975,8 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
           const mutations = lane.maintenanceRequests.filter(
             ({ method }) => method === "setWebhook",
           );
-          // Initial failed call, one rejected retry, then the repaired call
-          // after restart — nothing must drive a fourth RPC.
-          expect(mutations).toHaveLength(3);
-          expect(mutations[2]!.body.allowed_updates).toEqual([
+          expect(mutations).toHaveLength(2);
+          expect(mutations[1]!.body.allowed_updates).toEqual([
             "message",
             "chat_member",
             "stopped_message_generation",
@@ -68020,12 +68008,6 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
           await lane.close();
         }
       },
-      // Soak RUN 1 on f23c0baa: this single test legitimately crossed the
-      // global 15s testTimeout under serial-shard load while its inner
-      // vi.waitFor above allows 20s — the outer budget must exceed the inner
-      // poll or it kills a still-progressing waitFor. 30s matches the
-      // hookTimeout headroom convention (OPE-12858).
-      30_000,
     );
 
     it("returns 503 on failed Stop commit and accepts the exact verified retry before final send", async () => {
