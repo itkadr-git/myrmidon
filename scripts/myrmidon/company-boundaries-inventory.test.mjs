@@ -248,6 +248,63 @@ const OPE_12910_UNRESOLVED_FIXTURE = [
   { id: "obj-partial-dep", dependency: { type: "issue" } },
   { id: "obj-null-dep", dependency: null },
 ];
+/**
+ * Secret-shaped values placed directly in the identifier slots (review gap:
+ * the slots themselves must be gated, not just unrelated payload fields).
+ * The owner value below IS in the known set — the gate must still not echo it.
+ */
+const OPE_12910_SECRET_SLOT_FIXTURE = [
+  { id: "obj-secret-owner", ownerCompanyId: "pcp_SECRET_SLOT_OWNER" },
+  { id: "obj-secret-dep-id", dependency: { type: "issue", id: "pcp_SECRET_REF_ID", companyId: "c2" } },
+  { id: "obj-secret-dep-company", dependency: { type: "issue", id: "issue-9", companyId: "sk-SECRETREFVALUE" } },
+  { id: "obj-oversize-owner", ownerCompanyId: `x${"y".repeat(200)}` },
+];
+
+test("secret-shaped values in identifier slots are never echoed, even when known", () => {
+  const knownWithSecret = ["c1", "pcp_SECRET_SLOT_OWNER"];
+  const { rows, summary } = formatOwnerAttribution(OPE_12910_SECRET_SLOT_FIXTURE, {
+    currentCompanyId: "c1",
+    knownCompanyIds: knownWithSecret,
+  });
+
+  const rendered = JSON.stringify(rows);
+  assert.ok(!rendered.includes("pcp_SECRET_SLOT_OWNER"), "owner slot must not echo a secret-shaped value");
+  assert.ok(!rendered.includes("pcp_SECRET_REF_ID"), "dependency id slot must not echo a secret-shaped value");
+  assert.ok(!rendered.includes("sk-SECRETREFVALUE"), "dependency companyId slot must not echo a secret-shaped value");
+  assert.ok(!rendered.includes("yyyy"), "oversize owner slot must not echo verbatim");
+  assert.equal(summary.resolved, 0, "no secret-slot row may count as resolved");
+  assert.equal(summary.unresolved, OPE_12910_SECRET_SLOT_FIXTURE.length);
+
+  const secretOwner = rows.find((row) => row.reason === OWNER_ATTRIBUTION_REASONS.unsafeIdentifier);
+  assert.ok(secretOwner, "secret-shaped owner must surface identifier-not-safe-to-echo");
+  assert.equal(secretOwner.ownerCompanyId, null, "unsafe owner must never populate ownerCompanyId");
+  assert.match(secretOwner.ownerRefHash, /^[0-9a-f]{12}$/, "unsafe owner is pseudonymized, not dropped");
+
+  const secretDepId = rows.find((row) => row.entityRef === formatOwnerAttribution([{ id: "obj-secret-dep-id" }]).rows[0].entityRef);
+  assert.ok(secretDepId, "the secret dependency-id fixture must produce a row");
+  assert.equal(secretDepId.attribution, "unresolved");
+  assert.deepEqual(secretDepId.dependency, { type: "issue", id: null, companyId: "c2" }, "unsafe ref value is dropped from the ref, safe ones stay");
+});
+
+test("exact safe identifiers still resolve after the identifier gate", () => {
+  const entities = [
+    { id: "obj-slug-owner", ownerCompanyId: "c1" },
+    { id: "obj-uuid-owner", ownerCompanyId: "9f8d1111-2222-4333-8444-555566667777" },
+    { id: "obj-mixed-dep", dependency: { type: "issue", id: "issue-77", companyId: "c2" } },
+  ];
+  const { rows, summary } = formatOwnerAttribution(entities, {
+    currentCompanyId: "c1",
+    knownCompanyIds: ["c1", "9f8d1111-2222-4333-8444-555566667777"],
+  });
+  const byEntity = new Map(rows.map((row) => [row.entityRef, row]));
+  const refOf = (id) => byEntity.get(formatOwnerAttribution([{ id }]).rows[0].entityRef);
+
+  assert.equal(refOf("obj-slug-owner").ownerCompanyId, "c1");
+  assert.equal(refOf("obj-uuid-owner").ownerCompanyId, "9f8d1111-2222-4333-8444-555566667777");
+  assert.deepEqual(refOf("obj-mixed-dep").dependency, { type: "issue", id: "issue-77", companyId: "c2" });
+  assert.equal(refOf("obj-mixed-dep").dependencyStatus, "cross-company");
+  assert.equal(summary.resolved, 3, "every exact safe identifier must still resolve");
+});
 
 test("an object without owner or dependency fields is unknown, not unresolved", () => {
   const { rows, summary } = formatOwnerAttribution(OPE_12910_MISSING_FIXTURE);

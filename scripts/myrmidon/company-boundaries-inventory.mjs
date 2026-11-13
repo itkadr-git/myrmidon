@@ -58,6 +58,28 @@ function missingAttribution(attribution, rows) {
 const OWNER_FIELD = "ownerCompanyId";
 const DEPENDENCY_FIELD = "dependency";
 const DEPENDENCY_REF_KEYS = Object.freeze(["type", "id", "companyId"]);
+/** Max exact-identifier length: company ids and ref keys are short; longer
+ * "identifiers" are payload masquerading in an id slot. */
+const IDENTIFIER_MAX_LENGTH = 100;
+/** UUID shape and lowercase slug shape: the only exact identifier shapes this
+ * formatter may echo verbatim. Company ids in this codebase are lowercase
+ * slugs ("c1") or UUIDs; anything longer, uppercase, or otherwise shaped is
+ * payload masquerading in an id slot and must never be serialized. */
+const SAFE_IDENTIFIER_RE = /^(?:[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}|[a-z][a-z0-9_-]{0,49})$/;
+/** Secret-shaped values never echo verbatim even if they fit an id shape.
+ * Mirrors the token-prefix rules of scripts/myrmidon/scan-text.mjs so the
+ * formatter and the publication scanner agree on what is secret-like. */
+const SECRET_SHAPED_RE = /(?:^|[^A-Za-z0-9])(?:pcp_[A-Za-z0-9_-]*|sk-[A-Za-z0-9_-]+|gh[ousr]_[A-Za-z0-9]+|github_pat_[A-Za-z0-9_]+)/;
+
+/** True when a string is safe to serialize verbatim as an identifier. */
+function isSafeIdentifier(value) {
+  return (
+    typeof value === "string" &&
+    value.length <= IDENTIFIER_MAX_LENGTH &&
+    !SECRET_SHAPED_RE.test(value) &&
+    SAFE_IDENTIFIER_RE.test(value)
+  );
+}
 
 /**
  * Attribution outcomes are deliberately distinct:
@@ -73,6 +95,7 @@ export const OWNER_ATTRIBUTION_REASONS = Object.freeze({
   ownerCompanyUnknown: "owner-company-not-in-known-set",
   dependencyRefInvalid: "dependency-ref-invalid",
   currentCompanyUnknown: "current-company-unknown",
+  unsafeIdentifier: "identifier-not-safe-to-echo",
 });
 
 function shortHash(value) {
@@ -92,7 +115,10 @@ function safeDependencyRef(ref) {
   const safe = {};
   let any = false;
   for (const key of DEPENDENCY_REF_KEYS) {
-    const value = typeof ref[key] === "string" && ref[key] ? ref[key] : null;
+    // Identifier slots get the same gate as the owner slot: a string that is
+    // not a safe identifier (secret-shaped, oversize, exotic punctuation) is
+    // dropped from the ref rather than echoed, and drops completeness.
+    const value = isSafeIdentifier(ref[key]) ? ref[key] : null;
     safe[key] = value;
     if (value !== null) any = true;
   }
@@ -112,9 +138,14 @@ function safeDependencyRef(ref) {
  * - only exact, safe identifiers are serialized: a resolved owner company id is
  *   echoed verbatim; a dependency ref contributes only its `type`/`id`/
  *   `companyId` strings; unverifiable refs are pseudonymized (truncated sha256).
+ *   Identifier slots are themselves gated: a value in `ownerCompanyId` or a
+ *   dependency ref key that is not a safe identifier shape (UUID or short
+ *   slug — this includes secret-shaped strings like token prefixes) is never
+ *   echoed; it is pseudonymized (owner) or dropped from the ref (dependency)
+ *   and the row reports `unresolved` with `identifier-not-safe-to-echo`.
  *
- * Sensitive values (payload fields beyond the identifier keys, secret-shaped
- * strings) never enter the output.
+ * Sensitive values never enter the output — neither from payload fields
+ * beyond the identifier keys nor from the identifier slots themselves.
  *
  * When both halves are present but unusable, the row's single `reason` names
  * the owner cause (owner field is the attribution field); with no owner field
@@ -152,6 +183,13 @@ export function formatOwnerAttribution(entities, { currentCompanyId, knownCompan
     } else if (typeof ownerRaw !== "string") {
       ownerReason = OWNER_ATTRIBUTION_REASONS.ownerRefNotString;
       ownerRefHash = shortHash(JSON.stringify(ownerRaw) ?? String(ownerRaw));
+    } else if (!isSafeIdentifier(ownerRaw)) {
+      // Secret-shaped or otherwise non-identifier values in the owner slot are
+      // never echoed verbatim: they are pseudonymized and the row stays
+      // unresolved even when the value is in the known set — "exact safe
+      // identifiers" is a property of the output, not of the lookup.
+      ownerReason = OWNER_ATTRIBUTION_REASONS.unsafeIdentifier;
+      ownerRefHash = shortHash(ownerRaw);
     } else if (known.size > 0 && !known.has(ownerRaw)) {
       ownerReason = OWNER_ATTRIBUTION_REASONS.ownerCompanyUnknown;
       ownerRefHash = shortHash(ownerRaw);
