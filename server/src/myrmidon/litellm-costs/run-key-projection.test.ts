@@ -10,7 +10,7 @@
 // the resolveExecutionRunAdapterConfig merge (ref lands in env + secretKeys,
 // never overrides an existing binding).
 
-import { describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const { getByNameMock, removeMock, resolveSecretValueMock } = vi.hoisted(() => ({
   getByNameMock: vi.fn(),
@@ -41,6 +41,18 @@ const ENV_WITH_KEY_ENV = {
   MYRMIDON_BOT_LLM_API_KEY_ENV: "MYRMIDON_LLM_API_KEY",
 };
 
+const RUN_SCOPED_REF = {
+  type: "secret_ref" as const,
+  secretId: SECRET_ID,
+  version: "latest" as const,
+};
+
+beforeEach(() => {
+  // Call history and per-test implementations must not leak between tests:
+  // the "not called at all" assertions below are order-sensitive otherwise.
+  vi.resetAllMocks();
+});
+
 describe("myrmidon(OPE-12932) findRunScopedGatewayKeyRef", () => {
   it("returns the secret_ref reference of the agent's managed key, not a value", async () => {
     getByNameMock.mockResolvedValue({
@@ -67,6 +79,7 @@ describe("myrmidon(OPE-12932) findRunScopedGatewayKeyRef", () => {
   });
 
   it("returns null when the key env name is not configured", async () => {
+    getByNameMock.mockResolvedValue(null);
     expect(
       await findRunScopedGatewayKeyRef({} as never, COMPANY_ID, AGENT_ID, {}),
     ).toBeNull();
@@ -119,10 +132,17 @@ describe("myrmidon(OPE-12932) removeRunScopedGatewayKeyRef", () => {
         ENV_WITH_KEY_ENV,
       ),
     ).toBe(false);
+    expect(removeMock).not.toHaveBeenCalled();
   });
 });
 
 describe("myrmidon(OPE-12932) resolveExecutionRunAdapterConfig runScopedSecretEnv", () => {
+  // Minimal RuntimeConfigSecretResolver (heartbeat.ts): the adapter-config
+  // resolver passes the card config through untouched (secret values are
+  // resolved by the real service only at dispatch), so the compiled config
+  // below shows exactly what the merge itself produced. The collectMissing*
+  // probes stay absent on purpose: resolveExecutionRunAdapterConfig guards
+  // them with typeof checks.
   const baseInput = () => ({
     companyId: COMPANY_ID,
     agentId: AGENT_ID,
@@ -132,6 +152,13 @@ describe("myrmidon(OPE-12932) resolveExecutionRunAdapterConfig runScopedSecretEn
     secretsSvc: {
       collectMissingRuntimeBindings: undefined,
       collectMissingAdapterConfigRuntimeBindings: undefined,
+      resolveAdapterConfigForRuntime: vi.fn(
+        async (_companyId: string, config: Record<string, unknown>) => ({
+          config,
+          secretKeys: new Set<string>(),
+          manifest: [],
+        }),
+      ),
       resolveEnvBindings: async () => ({
         env: {},
         secretKeys: new Set<string>(),
@@ -141,21 +168,19 @@ describe("myrmidon(OPE-12932) resolveExecutionRunAdapterConfig runScopedSecretEn
   });
 
   it("merges the secret_ref into the resolved env as a reference, never a raw value", async () => {
-    resolveSecretValueMock.mockResolvedValue("sk-raw-value-should-never-appear");
+    // Canary: even if some layer resolved the secret value, it must never
+    // surface in the compiled runtime config.
+    resolveSecretValueMock.mockResolvedValue("«redacted:sk-…»");
     const { resolvedConfig, secretKeys } = await resolveExecutionRunAdapterConfig({
       ...baseInput(),
       runScopedSecretEnv: {
-        MYRMIDON_LLM_API_KEY: { type: "secret_ref", secretId: SECRET_ID, version: "latest" },
+        MYRMIDON_LLM_API_KEY: { ...RUN_SCOPED_REF },
       },
     } as never);
 
     const env = resolvedConfig.env as Record<string, unknown>;
-    expect(env.MYRMIDON_LLM_API_KEY).toEqual({
-      type: "secret_ref",
-      secretId: SECRET_ID,
-      version: "latest",
-    });
-    expect(JSON.stringify(resolvedConfig)).not.toContain("sk-raw-value-should-never-appear");
+    expect(env.MYRMIDON_LLM_API_KEY).toEqual(RUN_SCOPED_REF);
+    expect(JSON.stringify(resolvedConfig)).not.toContain("«redacted:sk-…»");
     expect(secretKeys.has("MYRMIDON_LLM_API_KEY")).toBe(true);
   });
 
@@ -166,7 +191,7 @@ describe("myrmidon(OPE-12932) resolveExecutionRunAdapterConfig runScopedSecretEn
         env: { MYRMIDON_LLM_API_KEY: "own-binding-value" },
       },
       runScopedSecretEnv: {
-        MYRMIDON_LLM_API_KEY: { type: "secret_ref", secretId: SECRET_ID, version: "latest" },
+        MYRMIDON_LLM_API_KEY: { ...RUN_SCOPED_REF },
       },
     } as never);
 
@@ -181,17 +206,13 @@ describe("myrmidon(OPE-12932) resolveExecutionRunAdapterConfig runScopedSecretEn
         env: { OTHER_KEY: "plain" },
       },
       runScopedSecretEnv: {
-        MYRMIDON_LLM_API_KEY: { type: "secret_ref", secretId: SECRET_ID, version: "latest" },
+        MYRMIDON_LLM_API_KEY: { ...RUN_SCOPED_REF },
       },
     } as never);
 
     const env = resolvedConfig.env as Record<string, unknown>;
     expect(env.OTHER_KEY).toBe("plain");
-    expect(env.MYRMIDON_LLM_API_KEY).toEqual({
-      type: "secret_ref",
-      secretId: SECRET_ID,
-      version: "latest",
-    });
+    expect(env.MYRMIDON_LLM_API_KEY).toEqual(RUN_SCOPED_REF);
   });
 });
 
