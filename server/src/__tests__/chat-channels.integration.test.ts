@@ -19333,6 +19333,22 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       trigger: "subscribed_message",
     });
 
+    // The burst rows carry nextAttemptAt = Date.now() + 750ms (the Teams
+    // reorder window). On a slow host the wall clock can already be past that
+    // deadline by the time the first sweep runs, which would process the
+    // burst here and defeat the "held until due" assertion (soak v7 RUN 6).
+    // Pin the hold window into the future so the first sweep deterministically
+    // observes the burst as not-yet-due; the release below then exercises the
+    // provider-time ordered drain.
+    await db
+      .update(chatDeliveries)
+      .set({ nextAttemptAt: new Date(Date.now() + 60_000) })
+      .where(
+        and(
+          eq(chatDeliveries.endpointId, endpoint.id),
+          inArray(chatDeliveries.state, ["received", "retry"]),
+        ),
+      );
     await service.processPendingDeliveries();
     expect(wakeup).not.toHaveBeenCalled();
     await db
