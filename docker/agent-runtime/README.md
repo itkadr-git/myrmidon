@@ -204,7 +204,7 @@ One runner per agent:
 2. Start the container from `docker/agent-runtime/omp-ssh/compose.yml`. Use an
    env file with `OMP_RUNNER_NAME`, `OMP_RUNNER_IMAGE` (a digest from a
    successful signed workflow run), `OMP_RUNNER_AUTHORIZED_KEYS` (the public
-   key file) and `OMP_RUNNER_NETWORK` (the board container's network) and `OMP_RUNNER_DATA_DIR`: a directory on the bot data disk, not the root disk, with subdirectories `workspace/` (owned by 1000:1000), `home/` and `hostkeys/`. Agents clone and build repositories there, gigabytes per agent. Optionally
+   key file) and `OMP_RUNNER_NETWORK` (the board container's network) and `OMP_RUNNER_DATA_DIR`: a directory on the bot data disk, not the root disk, with subdirectories `workspace/` (owned by 1000:1000), `home/`, `hostkeys/` and `tmp/` (mode `1777`, like a system `/tmp`: `install -d -m 1777 <dir>/tmp`; it is the container's `/tmp`, kept on the data disk so tests and temporary task files do not fill the root disk of the host; the host GC removes entries older than 24 h). Agents clone and build repositories there, gigabytes per agent. Create all of them **before the first start**: docker creates a missing bind source as root. A runner started before `tmp/` was added: create the directory, add the `tmp` volume to its compose file and recreate the container. Optionally
    `OMP_RUNNER_CACHE_DIR` (the shared package cache above; create its `git` and
    `pnpm-omp` subdirectories first). The
    limits default to 4 GB, 1 CPU and 1024 processes, as for an engineer bot

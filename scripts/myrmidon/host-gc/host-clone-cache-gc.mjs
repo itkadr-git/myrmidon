@@ -8,6 +8,8 @@
 //                    run copies, OPE-12722; only when a runner root is configured)
 //   - vm-core:       <runner root>/<runner>/home/.npm/{_cacache,_npx} (runner agent npm/npx
 //                    caches, OPE-12855; only when a runner root is configured)
+//   - vm-core:       <runner root>/<runner>/tmp/* (the runner's /tmp bind-mounted from the data
+//                    disk, OPE-12966; only when a runner root is configured)
 //   - myr-dev-build: /srv/devbuild/* (build copies), /srv/devcache/* (build caches)
 //
 // Policy:
@@ -19,6 +21,9 @@
 //     runs only with --runner-root / HOST_GC_RUNNER_ROOTS
 //   - SSH runner npm/npx caches >4h (by the newest mtime in the cache tree, so a cache an
 //     npm/npx call is still writing stays fresh): remove; runs only with
+//     --runner-root / HOST_GC_RUNNER_ROOTS
+//   - SSH runner /tmp entries (top level of <runner>/tmp) whose newest mtime inside is >24h
+//     old: remove; symlinks and other filesystems are never entered; runs only with
 //     --runner-root / HOST_GC_RUNNER_ROOTS
 //   - SSH runner task folders for done/cancelled issues >24h: clean+pushed remove; unsafe
 //     git state archive first, then remove; active/board-unavailable folders stay
@@ -37,6 +42,7 @@
 //                         HOST_GC_RUNNER_ROOTS, colon-separated). No root, no pass.
 //   --run-copy-ttl <hours> Override the run-copy TTL (default 4; finite, at least 3 = longest run timeout)
 //   --npm-cache-ttl <hours> Override the npm cache TTL (default 4; finite, at least 1)
+//   --runner-tmp-ttl <hours> Override the runner /tmp TTL (default 24; finite, at least 3)
 
 import fs from "node:fs";
 import path from "node:path";
@@ -70,6 +76,14 @@ const DEFAULT_ENV_PATH = "/etc/myrmidon-host-gc.env";
 // run-copy pass; no root, no pass.
 const NPM_CACHE_TTL_HOURS = 4;
 const NPM_CACHE_MIN_TTL_HOURS = 1;
+
+// myrmidon(OPE-12966): the omp SSH runner's /tmp lives on the data volume
+// (`<runner>/tmp`, docker/agent-runtime/omp-ssh/compose.yml) instead of the container's write
+// layer on the root disk, and nothing removed what tests and task tooling leave there (15.8 GB
+// in two days on 13.11). The pass removes top-level entries of `<runner>/tmp` not changed
+// anywhere inside for the TTL; the same gate as the run-copy pass (a runner root is configured).
+const RUNNER_TMP_TTL_HOURS = 24;
+const RUNNER_TMP_MIN_TTL_HOURS = 3;
 
 // myrmidon(1.6.8-BOT-CONTAINER-ORPHAN / OPE-12654): the data directory of a decommissioned
 // bot (the gate A22 removed its container, the board logs `bot_data_left_for_host_gc`) is
@@ -165,6 +179,17 @@ export function npmCacheTtlError(hours) {
   return null;
 }
 
+/** `null` when `hours` is a usable runner /tmp TTL, otherwise the reason it is refused. */
+export function runnerTmpTtlError(hours) {
+  if (typeof hours !== "number" || !Number.isFinite(hours)) {
+    return `--runner-tmp-ttl must be a finite number of hours (got ${String(hours)})`;
+  }
+  if (hours < RUNNER_TMP_MIN_TTL_HOURS) {
+    return `--runner-tmp-ttl must be at least ${RUNNER_TMP_MIN_TTL_HOURS} hours, the longest run timeout (got ${hours})`;
+  }
+  return null;
+}
+
 export function parseArgs(argv) {
   let envPath = DEFAULT_ENV_PATH;
   for (let i = 2; i < argv.length; i++) {
@@ -195,6 +220,7 @@ export function parseArgs(argv) {
     procDir: process.env.PROC_DIR || "/proc",
     runnerRoots: (process.env.HOST_GC_RUNNER_ROOTS || "").split(":").map((r) => r.trim()).filter(Boolean),
     runCopyTtlHours: RUN_COPY_TTL_HOURS,
+    runnerTmpTtlHours: RUNNER_TMP_TTL_HOURS,
     npmCacheTtlHours: (() => {
       const envTtl = process.env.MYRMIDON_HOST_GC_NPM_CACHE_TTL_HOURS;
       return envTtl !== undefined && !isNaN(Number(envTtl)) ? Number(envTtl) : NPM_CACHE_TTL_HOURS;
@@ -215,9 +241,10 @@ export function parseArgs(argv) {
     else if (a === "--runner-root") args.runnerRoots.push(argv[++i]);
     else if (a === "--run-copy-ttl") args.runCopyTtlHours = Number(argv[++i]);
     else if (a === "--npm-cache-ttl") args.npmCacheTtlHours = Number(argv[++i]);
+    else if (a === "--runner-tmp-ttl") args.runnerTmpTtlHours = Number(argv[++i]);
     else if (a === "--env") i++;
     else if (a === "--help") {
-      console.log("Usage: host-clone-cache-gc.mjs [--apply|--dry-run] [--root path] [--scratch-root path] [--journal path] [--lock path] [--clone-ttl h] [--cache-ttl h] [--scratch-ttl h] [--proc-dir path] [--runner-root path] [--run-copy-ttl h (>= 3)] [--env path]");
+      console.log("Usage: host-clone-cache-gc.mjs [--apply|--dry-run] [--root path] [--scratch-root path] [--journal path] [--lock path] [--clone-ttl h] [--cache-ttl h] [--scratch-ttl h] [--proc-dir path] [--runner-root path] [--run-copy-ttl h (>= 3)] [--runner-tmp-ttl h (>= 3)] [--env path]");
       process.exit(0);
     }
   }
@@ -225,6 +252,8 @@ export function parseArgs(argv) {
   if (ttlError) throw new UsageError(ttlError);
   const npmTtlError = npmCacheTtlError(args.npmCacheTtlHours);
   if (npmTtlError) throw new UsageError(npmTtlError);
+  const tmpTtlError = runnerTmpTtlError(args.runnerTmpTtlHours);
+  if (tmpTtlError) throw new UsageError(tmpTtlError);
   return args;
 }
 
@@ -1274,6 +1303,149 @@ export function pruneRunnerNpmCaches(items, journalPath) {
   return removed;
 }
 
+// --- Runner /tmp (OPE-12966) ---------------------------------------------------
+
+/**
+ * Newest mtime (lstat, no symlink followed) of a tree and its apparent size. Stops early when
+ * something younger than `freshAfterMs` is found (the entry is fresh, the rest does not
+ * matter). A directory on another filesystem than `dev` (a mount inside the entry) makes the
+ * entry `crossesFs`: the removal would descend into it. `error` is set when something cannot be
+ * read; the caller keeps the entry then.
+ */
+function newestMtimeInTree(entryPath, dev, freshAfterMs) {
+  let maxMtimeMs = 0;
+  let sizeBytes = 0;
+  const stack = [entryPath];
+  while (stack.length) {
+    const current = stack.pop();
+    const { st, err } = lstatSafe(current);
+    if (err) {
+      if (isAbsent(err)) continue; // vanished between two calls
+      return { maxMtimeMs, sizeBytes, crossesFs: false, error: err };
+    }
+    if (st.dev !== dev) return { maxMtimeMs, sizeBytes, crossesFs: true, error: null };
+    if (st.mtimeMs > maxMtimeMs) maxMtimeMs = st.mtimeMs;
+    sizeBytes += st.size || 0;
+    if (maxMtimeMs >= freshAfterMs) return { maxMtimeMs, sizeBytes, crossesFs: false, error: null };
+    if (st.isDirectory()) {
+      let names;
+      try {
+        names = fs.readdirSync(current);
+      } catch (e) {
+        if (isAbsent(e)) continue;
+        return { maxMtimeMs, sizeBytes, crossesFs: false, error: e };
+      }
+      for (const n of names) stack.push(path.join(current, n));
+    }
+  }
+  return { maxMtimeMs, sizeBytes, crossesFs: false, error: null };
+}
+
+/**
+ * Top-level entries (files and directories) of `<runnersRoot>/<runner>/tmp`, the runner's
+ * /tmp bind-mounted from the data disk. An entry's age is the newest mtime anywhere inside it
+ * (a symlink is never followed, a directory on another filesystem keeps the entry), so an
+ * entry something wrote to within `ttlHours` is `fresh`; an older one is `ttl`. A top-level
+ * symlink is never listed for removal (`symlink`), `tmp` itself is never removed. Every path
+ * component (`<runner>`, `tmp`) must be a real directory. Failures go to `onEvent`
+ * (`runner-tmp-root-missing`, `runner-tmp-scan-failed`) and the scan goes on with the next
+ * runner or entry. Each item carries `runnersRoot`, the root the removal is guarded against.
+ */
+export function scanRunnerTmp(runnersRoot, now, ttlHours, { onEvent = () => {} } = {}) {
+  const results = [];
+  const ttlMs = ttlHours * HOUR_MS;
+  const fail = (extra, err) => {
+    onEvent({ event: "runner-tmp-scan-failed", root: runnersRoot, ...extra, error: err?.message || String(err) });
+  };
+  const rootStat = lstatSafe(runnersRoot);
+  if (rootStat.err) {
+    if (isAbsent(rootStat.err)) onEvent({ event: "runner-tmp-root-missing", root: runnersRoot });
+    else fail({}, rootStat.err);
+    return results;
+  }
+  if (!rootStat.st.isDirectory()) {
+    fail({}, new Error("runner root is not a directory (a symlink is not followed)"));
+    return results;
+  }
+  let runners;
+  try {
+    runners = fs.readdirSync(runnersRoot, { withFileTypes: true });
+  } catch (err) {
+    fail({}, err);
+    return results;
+  }
+  for (const runner of runners) {
+    if (!runner.isDirectory()) continue;
+    const tmpDirPath = path.join(runnersRoot, runner.name, "tmp");
+    try {
+      const { st: tmpSt, err: tmpErr } = lstatSafe(tmpDirPath);
+      if (tmpErr && !isAbsent(tmpErr)) throw tmpErr;
+      if (!tmpSt || !tmpSt.isDirectory()) continue;
+      for (const entry of fs.readdirSync(tmpDirPath, { withFileTypes: true })) {
+        const entryPath = path.join(tmpDirPath, entry.name);
+        try {
+          const { st, err } = lstatSafe(entryPath);
+          if (err) {
+            if (!isAbsent(err)) fail({ runner: runner.name, path: entryPath }, err);
+            continue;
+          }
+          const base = { runner: runner.name, name: entry.name, path: entryPath, runnersRoot, mtimeMs: st.mtimeMs, ageMs: now - st.mtimeMs, sizeBytes: null };
+          if (st.isSymbolicLink()) {
+            results.push({ ...base, reason: "symlink" });
+            continue;
+          }
+          if (st.dev !== tmpSt.dev) {
+            results.push({ ...base, reason: "other-filesystem" });
+            continue;
+          }
+          const tree = newestMtimeInTree(entryPath, tmpSt.dev, now - ttlMs);
+          if (tree.error) {
+            fail({ runner: runner.name, path: entryPath }, tree.error);
+            results.push({ ...base, reason: "scan-failed" });
+            continue;
+          }
+          if (tree.crossesFs) {
+            results.push({ ...base, reason: "other-filesystem" });
+            continue;
+          }
+          const ageMs = now - Math.max(tree.maxMtimeMs, st.mtimeMs);
+          results.push({
+            ...base,
+            mtimeMs: Math.max(tree.maxMtimeMs, st.mtimeMs),
+            ageMs,
+            sizeBytes: tree.sizeBytes,
+            reason: ageMs >= ttlMs ? "ttl" : "fresh",
+          });
+        } catch (err) {
+          if (!isAbsent(err)) fail({ runner: runner.name, path: entryPath }, err);
+        }
+      }
+    } catch (err) {
+      if (!isAbsent(err)) fail({ runner: runner.name }, err);
+    }
+  }
+  return results;
+}
+
+/**
+ * Removes the planned runner /tmp entries (items of `scanRunnerTmp`, reason `ttl`), guarded
+ * against the configured runner root like the run copies. Returns the paths actually removed.
+ */
+export function pruneRunnerTmp(items, journalPath) {
+  const removed = [];
+  for (const r of items) {
+    try {
+      atomicDrop(r.path, r.runnersRoot);
+    } catch (err) {
+      journalRecord(journalPath, { event: "runner-tmp-remove-failed", path: r.path, runner: r.runner, error: err.message });
+      continue;
+    }
+    removed.push(r.path);
+    journalRecord(journalPath, { event: "runner-tmp-removed", path: r.path, runner: r.runner, ageHours: Math.round(r.ageMs / HOUR_MS), sizeBytes: r.sizeBytes });
+  }
+  return removed;
+}
+
 // --- Archive ----------------------------------------------------------------
 
 function archiveClone(clonePath, archiveRoot) {
@@ -1316,7 +1488,7 @@ async function main() {
     const cloneTtlMs = args.cloneTtlHours * HOUR_MS;
     const cacheTtlMs = args.cacheTtlHours * HOUR_MS;
 
-    const plan = { clones: [], caches: [], scratch: [], botData: [], runCopies: [], runnerTaskFolders: [], runnerNpmCaches: [], kept: [], removed: [], archived: [] };
+    const plan = { clones: [], caches: [], scratch: [], botData: [], runCopies: [], runnerTaskFolders: [], runnerNpmCaches: [], runnerTmp: [], kept: [], removed: [], archived: [] };
 
     // 1. Scan task clones
     const clones = scanTaskClones(root, now, args.cloneTtlHours);
@@ -1451,6 +1623,23 @@ async function main() {
       }
     }
 
+    // 3f. Runner /tmp (OPE-12966): the same gate as 3c. Entries whose newest mtime is inside
+    // the TTL, symlinks and other filesystems stay; only the journal says why for the odd ones.
+    for (const runnersRoot of args.runnerRoots) {
+      const items = scanRunnerTmp(runnersRoot, now, args.runnerTmpTtlHours, {
+        onEvent: (event) => journalRecord(args.journal, event),
+      });
+      for (const item of items) {
+        if (item.reason === "ttl") plan.runnerTmp.push({ ...item, action: "remove" });
+        else {
+          if (item.reason !== "fresh") {
+            journalRecord(args.journal, { event: "runner-tmp-skipped", path: item.path, runner: item.runner, reason: item.reason });
+          }
+          plan.kept.push({ ...item, action: "keep" });
+        }
+      }
+    }
+
     // 4. Execute or report
     if (args.dryRun) {
       journalRecord(args.journal, {
@@ -1461,6 +1650,7 @@ async function main() {
         runCopies: plan.runCopies.length,
         runnerTaskFolders: plan.runnerTaskFolders.length,
         runnerNpmCaches: plan.runnerNpmCaches.length,
+        runnerTmp: plan.runnerTmp.length,
         kept: plan.kept.length,
       });
       console.log(JSON.stringify({ ok: true, dryRun: true, plan }, null, 2));
@@ -1531,6 +1721,8 @@ async function main() {
       for (const gone of runCopiesGone) plan.removed.push({ path: gone });
       const npmCachesGone = pruneRunnerNpmCaches(plan.runnerNpmCaches.filter((x) => x.action === "remove"), args.journal);
       for (const gone of npmCachesGone) plan.removed.push({ path: gone });
+      const runnerTmpGone = pruneRunnerTmp(plan.runnerTmp, args.journal);
+      for (const gone of runnerTmpGone) plan.removed.push({ path: gone });
       let runnerTaskFoldersRemoved = 0;
       // myrmidon(1.6.8 OPE-12855): archive-then-remove for folders whose git state could not
       // be proven, plain removal for clean closed ones; both guarded against the runner root.
@@ -1565,6 +1757,7 @@ async function main() {
         runCopiesRemoved: runCopiesGone.length,
         runnerTaskFoldersRemoved,
         runnerNpmCachesRemoved: npmCachesGone.length,
+        runnerTmpRemoved: runnerTmpGone.length,
         kept: plan.kept.length,
       });
       console.log(JSON.stringify({
@@ -1577,6 +1770,7 @@ async function main() {
         runCopiesRemoved: runCopiesGone.length,
         runnerTaskFoldersRemoved,
         runnerNpmCachesRemoved: npmCachesGone.length,
+        runnerTmpRemoved: runnerTmpGone.length,
         kept: plan.kept.length,
       }, null, 2));
     }
