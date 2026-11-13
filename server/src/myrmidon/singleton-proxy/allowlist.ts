@@ -64,6 +64,11 @@ export const SINGLETON_ROUTES: readonly SingletonRoute[] = [
     methods: null,
     pattern: new RegExp(`^(?:/api/myrmidon)?/fleet/bots/${SEGMENT}(?:/.*)?$`),
   },
+  // myrmidon(OPE-12957): the stack registry probes (images through dockergate) run in
+  // `collectStackLocal`, and dockergate admits only the board's main process. An api
+  // process got `write EPIPE` and answered 503 "stack refresh failed". Not
+  // `GET /myrmidon/stack`: it reads the saved document from the database.
+  { group: "bot_container", methods: ["POST"], pattern: /^\/myrmidon\/stack\/(?:refresh|check)\/?$/ },
   {
     group: "workspace_runtime",
     methods: ["POST"],
