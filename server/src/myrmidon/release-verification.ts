@@ -48,6 +48,7 @@ export interface MemberVerification {
 export type ReleaseFailureReason =
   | "empty_candidate_set"
   | "deployed_version_unknown"
+  | "deployed_version_mismatch"
   | "member_sha_missing"
   | "member_membership_unknown"
   | "member_missing_from_release";
@@ -80,6 +81,12 @@ export interface ReleaseVerificationOptions {
    * the membership contract falls back to its own default candidates.
    */
   refs?: readonly ReleaseRef[];
+  /**
+   * Actual release refs resolved from the repository (tags/branches of the
+   * release line). When supplied, the deployedVersion must match one of these
+   * refs — otherwise the check fails with `deployed_version_mismatch`.
+   */
+  resolvedRefs?: readonly ReleaseRef[];
   /** Injectable fetch for deterministic tests. */
   fetchImpl?: (input: string, init?: RequestInit) => Promise<Response>;
   /** Clock injection for deterministic checkedAt. */
@@ -165,6 +172,33 @@ export async function verifyReleaseComposition(
       allMembersPresent: false,
       checkedAt,
     };
+  }
+
+  // The deployed version must correspond to a real release ref. The build
+  // version is typically `git describe` output ("v1.6.8-15-g4c55f0d") or a
+  // resolved tag ("v1.6.8"), so accept either an exact ref match or a describe
+  // string anchored at the ref. An arbitrary non-empty string must not let the
+  // membership check run against unrelated refs and claim success.
+  if (options.resolvedRefs && options.resolvedRefs.length > 0) {
+    const deployed = options.deployedVersion;
+    const matches = options.resolvedRefs.some(
+      (ref) => deployed === ref.ref || deployed.startsWith(`${ref.ref}-`),
+    );
+    if (!matches) {
+      const known = options.resolvedRefs.map((ref) => ref.ref).join(", ");
+      return {
+        verdict: "failed",
+        reason:
+          `Выкачанная версия "${options.deployedVersion}" не соответствует ` +
+          `ни одному реальному ref релиза (${known}); состав не доказан.`,
+        failureReason: "deployed_version_mismatch",
+        releasePrefix: options.releasePrefix,
+        deployedVersion: options.deployedVersion ?? null,
+        members: [],
+        allMembersPresent: false,
+        checkedAt,
+      };
+    }
   }
 
   const emptyGuard = composeReleaseVerdict([]);
