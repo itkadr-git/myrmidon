@@ -162,13 +162,57 @@ function isSelfReassignment(row: IssueActivitySample, agentId: string): boolean 
 }
 
 /**
+ * Fields an `issue.updated` row carries when a run only hands its task back to
+ * the queue: the status move, the execution lock its checkout took, and the
+ * assignment bookkeeping. Any other field next to them is a real change.
+ */
+const RETURN_TO_QUEUE_BOOKKEEPING_FIELDS: ReadonlySet<string> = new Set([
+  "status",
+  "statusVersion",
+  "checkoutRunId",
+  "executionRunId",
+  "executionLockedAt",
+  "executionAgentNameKey",
+  "assigneeAgentId",
+  "assigneeUserId",
+  "responsibleUserId",
+]);
+
+/**
+ * `issue.updated` that only put the task the run had taken back into the queue:
+ * `in_progress -> todo` with nothing but the execution lock and the assignment
+ * bookkeeping changing alongside. The checkout moved the task to `in_progress`,
+ * this row moves it back, so the run leaves the task exactly where it found it.
+ * A hand-over to another agent in the same PATCH, or any other field changing
+ * with the status, is a real change and is not covered. Neither is any other
+ * status pair (`blocked -> todo` unblocks the task, `backlog -> todo` starts it).
+ *
+ * myrmidon(EMPTY-RUNS-1): the 13.11 loop of the service bots. A bot took its
+ * own `todo` task, wrote "no new data, leaving it in todo" and PATCHed it back
+ * to `todo`; that PATCH counted as progress, the no-progress streak never
+ * started, and three bots ran 176 such pickups on ten tasks in eight hours.
+ */
+export function isReturnToQueue(row: IssueActivitySample, agentId: string): boolean {
+  if (row.action !== "issue.updated") return false;
+  const changes = readRecord(row.changes);
+  if (!changes) return false;
+  const status = readRecord(changes.status);
+  if (!status || status.from !== "in_progress" || status.to !== "todo") return false;
+  if (!Object.keys(changes).every((field) => RETURN_TO_QUEUE_BOOKKEEPING_FIELDS.has(field))) {
+    return false;
+  }
+  const assignee = readRecord(changes.assigneeAgentId);
+  return !assignee || assignee.to === agentId;
+}
+
+/**
  * Does this activity, attributed to a run of `agentId`, count as issue-visible
  * progress of that run? The listed actions do, except the run's own bookkeeping:
  * the echo of its final text (`run_presentation_resolver` comment), the release
- * of the task and the assignment back to itself. The 07.11 adm loop was exactly
- * that: every run released the task, assigned it to itself and got its answer
- * echoed as a comment, so every run looked like progress and the streak never
- * started.
+ * of the task, the assignment back to itself and the hand-back of the task to
+ * the queue (`isReturnToQueue`). The 07.11 adm loop was exactly that: every run
+ * released the task, assigned it to itself and got its answer echoed as a
+ * comment, so every run looked like progress and the streak never started.
  */
 export function isIssueProgressActivity(row: IssueActivitySample, agentId: string): boolean {
   if (!ISSUE_PROGRESS_ACTIVITY_ACTIONS.includes(row.action)) return false;
@@ -177,7 +221,48 @@ export function isIssueProgressActivity(row: IssueActivitySample, agentId: strin
     return false;
   }
   if (isSelfReassignment(row, agentId)) return false;
+  if (isReturnToQueue(row, agentId)) return false;
   return true;
+}
+
+/** One issue activity row attributed to a run. */
+export interface IssueRunActivitySample extends IssueActivitySample {
+  runId: string | null;
+}
+
+/**
+ * The runs among `rows` that left issue-visible progress behind.
+ *
+ * Row by row this is `isIssueProgressActivity`. One rule needs the whole run:
+ * a run that handed its task back to the queue (`isReturnToQueue`) says with
+ * that very move that it has nothing more to do on the task now, so a comment
+ * it writes next to the move is the note it parks the task with, not progress.
+ * Anything durable it left besides comments (a document, a work product, a
+ * sub-task, a blocker, a monitor, an interaction, a real field change) still
+ * counts, and so does every comment of a run that did not hand the task back.
+ *
+ * `agentIdOfRun` names the agent a run belongs to; the own-bookkeeping rules
+ * compare against it. Rows without a run id are ignored.
+ */
+export function collectRunIdsWithIssueProgress(
+  rows: readonly IssueRunActivitySample[],
+  agentIdOfRun: (runId: string) => string | null | undefined,
+): Set<string> {
+  const parkedRunIds = new Set<string>();
+  for (const row of rows) {
+    if (row.runId && isReturnToQueue(row, agentIdOfRun(row.runId) ?? "")) {
+      parkedRunIds.add(row.runId);
+    }
+  }
+  const withProgress = new Set<string>();
+  for (const row of rows) {
+    if (!row.runId) continue;
+    if (row.action === "issue.comment_added" && parkedRunIds.has(row.runId)) continue;
+    if (isIssueProgressActivity(row, agentIdOfRun(row.runId) ?? "")) {
+      withProgress.add(row.runId);
+    }
+  }
+  return withProgress;
 }
 
 export interface IssueRewakeCandidateInput {
