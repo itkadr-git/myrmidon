@@ -280,6 +280,9 @@ export function errorHandler(
   }
 
   const reportableError = sanitizeSecretSensitiveError(req, rootError);
+  // myrmidon(EMPTY-RUNS-3): a failed query reaches here wrapped; the reason
+  // (code and text of the Postgres error) is on its cause.
+  const dbErrorInfo = err instanceof Error ? postgresErrorInfo(err) : null;
   attachErrorContext(
     req,
     res,
@@ -290,9 +293,7 @@ export function errorHandler(
             message: err.message,
             stack: err.stack,
             name: err.name,
-            // myrmidon(EMPTY-RUNS-3): a failed query reaches here wrapped; the
-            // reason (code and text of the Postgres error) is on its cause.
-            ...(postgresErrorInfo(err) ? { db: postgresErrorInfo(err) } : {}),
+            ...(dbErrorInfo ? { db: dbErrorInfo } : {}),
           }
         : {
             message: String(err),
