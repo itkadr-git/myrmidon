@@ -4689,6 +4689,24 @@ describe.sequential("issue comment reopen routes", () => {
       expect(resolveReviewPullRequestCi).toHaveBeenCalledTimes(1);
       expect(heldWakeRecords()).toEqual([]);
     });
+
+    it("wakes the reviewer as before the gate when the kill switch turns it off", async () => {
+      const previous = process.env.MYRMIDON_REVIEW_COMMENT_WAKE_GATE_ENABLED;
+      process.env.MYRMIDON_REVIEW_COMMENT_WAKE_GATE_ENABLED = "off";
+      try {
+        const { options, resolveReviewPullRequestCi } = ciOptions({ state: "pending" });
+
+        const res = await postComment(await waitingReviewIssue(), engineerActor(), options);
+
+        expect(res.status).toBe(201);
+        await expectReviewerWokenByComment();
+        expect(resolveReviewPullRequestCi).not.toHaveBeenCalled();
+        expect(heldWakeRecords()).toEqual([]);
+      } finally {
+        if (previous === undefined) delete process.env.MYRMIDON_REVIEW_COMMENT_WAKE_GATE_ENABLED;
+        else process.env.MYRMIDON_REVIEW_COMMENT_WAKE_GATE_ENABLED = previous;
+      }
+    });
   });
 
   it("returns changes_requested on a blocked issue to the executor in_progress and wakes them", async () => {

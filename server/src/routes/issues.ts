@@ -82,6 +82,7 @@ import {
   REVIEW_COMMENT_WAKE_DEFERRED_ACTION,
   isExecutorCommentOnWaitingReview,
   readReviewAdmissionDecision,
+  readReviewCommentWakeGateEnabled,
 } from "../myrmidon/review-stage-recovery/comment-wake-gate.js";
 import {
   buildReviewApprovalPendingMergeNotice,
@@ -3859,6 +3860,9 @@ export function issueRoutes(
     try {
       // Cheap exits first: only an agent's comment on a task in review can be held.
       if (input.issue.status !== "in_review" || input.actor.actorType !== "agent") return false;
+      // The kill switch (`MYRMIDON_REVIEW_COMMENT_WAKE_GATE_ENABLED`): off means
+      // the comment wakes the assignee as before the gate.
+      if (!readReviewCommentWakeGateEnabled()) return false;
       if (
         !isExecutorCommentOnWaitingReview({
           issueStatus: input.issue.status,

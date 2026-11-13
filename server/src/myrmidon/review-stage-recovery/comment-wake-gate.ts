@@ -42,6 +42,19 @@ import type { ReviewHeadFailedChecksResolver, ReviewPullRequestCiResolver } from
 /** Activity row written for every comment wake the gate held back. */
 export const REVIEW_COMMENT_WAKE_DEFERRED_ACTION = "issue.review_comment_wake_deferred";
 
+/** Kill switch. Unset or any value but an explicit off keeps the gate on. */
+export const REVIEW_COMMENT_WAKE_GATE_ENABLED_ENV = "MYRMIDON_REVIEW_COMMENT_WAKE_GATE_ENABLED";
+
+/**
+ * The gate ships enabled (a defect fix): only an explicit off value turns it
+ * off, and then every comment wakes the assignee exactly as before the gate.
+ * Same reading as `readReviewReturnGuardEnabled` of the review return guard.
+ */
+export function readReviewCommentWakeGateEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
+  const raw = env[REVIEW_COMMENT_WAKE_GATE_ENABLED_ENV]?.trim().toLowerCase();
+  return !(raw === "0" || raw === "false" || raw === "off" || raw === "no");
+}
+
 /** A stage principal as the execution state stores it; only these fields are read. */
 export type StagePrincipalLike =
   | { type: string; agentId?: string | null; userId?: string | null }

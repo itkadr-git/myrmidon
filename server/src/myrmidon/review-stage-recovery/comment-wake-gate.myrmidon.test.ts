@@ -4,6 +4,8 @@ import {
   isExecutorCommentOnWaitingReview,
   isReviewCiWaitMonitorArmed,
   readReviewAdmissionDecision,
+  readReviewCommentWakeGateEnabled,
+  REVIEW_COMMENT_WAKE_GATE_ENABLED_ENV,
 } from "./comment-wake-gate.js";
 import { REVIEW_CI_WAIT_MONITOR_SERVICE_NAME, type ReviewPullRequestCiFacts } from "./policy.js";
 import type { ReviewHeadFailedChecks } from "./github-ci.js";
@@ -260,5 +262,23 @@ describe("readReviewAdmissionDecision", () => {
     await expect(readReviewAdmissionDecision({ ...base, ...noPr })).resolves.toBe("admit");
     const noCi = reads({ state: "not_configured", pullRequestUrl: PR_URL, headSha: HEAD });
     await expect(readReviewAdmissionDecision({ ...base, ...noCi })).resolves.toBe("admit");
+  });
+});
+
+describe("readReviewCommentWakeGateEnabled", () => {
+  const env = (value: string | undefined) =>
+    (value === undefined ? {} : { [REVIEW_COMMENT_WAKE_GATE_ENABLED_ENV]: value }) as NodeJS.ProcessEnv;
+
+  it("is on when the variable is unset, empty or anything but an explicit off", () => {
+    expect(REVIEW_COMMENT_WAKE_GATE_ENABLED_ENV).toBe("MYRMIDON_REVIEW_COMMENT_WAKE_GATE_ENABLED");
+    for (const value of [undefined, "", "  ", "1", "true", "on", "yes", "maybe"]) {
+      expect(readReviewCommentWakeGateEnabled(env(value)), JSON.stringify(value)).toBe(true);
+    }
+  });
+
+  it("is off only for an explicit off value, whatever its case or padding", () => {
+    for (const value of ["0", "false", "off", "no", "OFF", " False "]) {
+      expect(readReviewCommentWakeGateEnabled(env(value)), JSON.stringify(value)).toBe(false);
+    }
   });
 });
