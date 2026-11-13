@@ -41,8 +41,8 @@ export function buildReport({ version, label, health, tasks, generatedAt = new D
   return { version, label, generatedAt, verified: checks.every((check) => check.verified), checks, tasks: taskResults };
 }
 
-async function request(api, path, init = {}) {
-  const response = await fetch(`${api.url.replace(/\/$/, "")}${path}`, {
+async function request(api, path, init = {}, fetchImpl = globalThis.fetch) {
+  const response = await fetchImpl(`${api.url.replace(/\/$/, "")}${path}`, {
     ...init,
     headers: { ...(init.headers ?? {}), ...(api.key ? { Authorization: `Bearer ${api.key}` } : {}), Accept: "application/json" },
   });
@@ -50,15 +50,57 @@ async function request(api, path, init = {}) {
   return response.json();
 }
 
-export async function verifyOnProduction({ version, label, healthUrl, apiUrl, apiKey, companyId, token }) {
+export async function fetchReleaseTasks({
+  apiUrl,
+  apiKey,
+  companyId,
+  labelId,
+  pageSize = 100,
+  fetchImpl = globalThis.fetch,
+}) {
+  const issues = [];
+  for (let offset = 0; ; offset += pageSize) {
+    const batch = await request(
+      { url: apiUrl, key: apiKey },
+      `/api/companies/${encodeURIComponent(companyId)}/issues?labelId=${encodeURIComponent(labelId)}&limit=${pageSize}&offset=${offset}&view=compact`,
+      {},
+      fetchImpl,
+    );
+    if (!Array.isArray(batch)) {
+      throw new Error("expected array of issues from board API");
+    }
+    issues.push(...batch);
+    if (batch.length < pageSize) break;
+  }
+  return issues;
+}
+
+export async function verifyOnProduction({
+  version,
+  label,
+  healthUrl,
+  apiUrl,
+  apiKey,
+  companyId,
+  token,
+  pageSize = 100,
+  fetchImpl = globalThis.fetch,
+}) {
   const healthHeaders = token ? { Authorization: `Bearer ${token}` } : {};
-  const healthResponse = await fetch(healthUrl, { headers: healthHeaders });
+  const healthResponse = await fetchImpl(healthUrl, { headers: healthHeaders });
   if (!healthResponse.ok) throw new Error(`health: HTTP ${healthResponse.status}`);
   const health = await healthResponse.json();
-  const labels = await request({ url: apiUrl, key: apiKey }, `/api/companies/${encodeURIComponent(companyId)}/labels`);
-  const releaseLabel = labels.find((item) => item.name === label || item.name === `release:${label}`);
+  const labels = await request({ url: apiUrl, key: apiKey }, `/api/companies/${encodeURIComponent(companyId)}/labels`, {}, fetchImpl);
+  const releaseLabel = (Array.isArray(labels) ? labels : []).find((item) => item.name === label || item.name === `release:${label}`);
   if (!releaseLabel) throw new Error(`release label "${label}" not found`);
-  const tasks = await request({ url: apiUrl, key: apiKey }, `/api/companies/${encodeURIComponent(companyId)}/issues?labelId=${encodeURIComponent(releaseLabel.id)}&limit=100&view=compact`);
+  const tasks = await fetchReleaseTasks({
+    apiUrl,
+    apiKey,
+    companyId,
+    labelId: releaseLabel.id,
+    pageSize,
+    fetchImpl,
+  });
   return buildReport({ version, label, health, tasks });
 }
 
@@ -86,7 +128,7 @@ function usage() {
   node scripts/myrmidon/release/verify-on-prod.mjs --version X.Y.Z --health-url <url>
     --api-url <board-api-url> --company-id <uuid>
     [--label <release-label>] [--api-key <key>] [--api-key-env]
-    [--health-token-file <file>] [--report <out.json>]
+    [--health-token-file <file>] [--report <out.json>] [--page-size <n>]
 
 Exit codes: 0 = verified (board runs X.Y.Z, every release task done),
 1 = verification failed (report still printed/written), 2 = usage error.`);
@@ -107,6 +149,9 @@ export async function main(argv) {
   const apiKey = args["api-key"] === true || args["api-key"] === undefined
     ? process.env.PAPERCLIP_API_KEY
     : args["api-key"];
+  const pageSize = args["page-size"] && /^\d+$/.test(args["page-size"])
+    ? Number.parseInt(args["page-size"], 10)
+    : 100;
   const report = await verifyOnProduction({
     version: args.version,
     label: args.label || args.version.split(".").slice(0, 2).join("."),
@@ -115,6 +160,7 @@ export async function main(argv) {
     apiKey,
     companyId: args["company-id"],
     token,
+    pageSize,
   });
   const json = `${JSON.stringify(report, null, 2)}\n`;
   const output = args.report ? json : formatReport(report);
