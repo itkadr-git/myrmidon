@@ -47,6 +47,8 @@ export interface BotContainerStatus {
     idleStopped: boolean;
     lastStoppedAt: string | null;
     lastStartedAt: string | null;
+    /** ms from the previous stop to the last start; null when unknown. */
+    coldStartDurationMs: number | null;
   } | null;
   /** The instance has a container runtime wired. */
   runtimeConfigured: boolean;
