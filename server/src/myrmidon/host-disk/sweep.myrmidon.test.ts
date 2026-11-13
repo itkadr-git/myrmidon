@@ -9,6 +9,7 @@ function deps(overrides: Partial<HostDiskSweepDeps> = {}): HostDiskSweepDeps {
     resolveSettings: async () => ({ usageThresholdPercent: 85 }),
     logActivity: vi.fn(async () => undefined),
     lastSignalAt: async () => null,
+    listCompanyIds: async () => ["company-1"],
     logger: { error: vi.fn(), info: vi.fn(), debug: vi.fn() },
     ...overrides,
   };
@@ -259,5 +260,84 @@ describe("createHostDiskSweep", () => {
       expect(sweep.lastResult()?.usedPercent).toBe(percent);
       void expected;
     }
+  });
+
+  // OPE-12958: activity_log.company_id is NOT NULL, so the signal line is
+  // written once per company and never with an empty company id.
+  describe("signal line company (OPE-12958)", () => {
+    it("writes one line per company and never one without a company id", async () => {
+      const logActivity = vi.fn(async () => undefined);
+      const sweep = createHostDiskSweep({
+        ...deps({ logActivity, listCompanyIds: async () => ["company-a", "company-b"] }),
+        measureUsage: async () => usage(90),
+        now: () => new Date("2026-10-03T00:00:00Z"),
+      });
+      const result = await sweep.sweep();
+      expect(result.signalled).toBe(true);
+      const entries = (logActivity as ReturnType<typeof vi.fn>).mock.calls.map(
+        (call) => call[0] as { companyId: string | null; action: string },
+      );
+      expect(entries.map((e) => e.companyId).sort()).toEqual(["company-a", "company-b"]);
+      for (const entry of entries) {
+        expect(entry.companyId).toBeTruthy();
+        expect(entry.action).toBe("host.disk_threshold_exceeded");
+      }
+    });
+
+    it("without any company it writes nothing, logs once and does not throw", async () => {
+      const logActivity = vi.fn(async () => undefined);
+      const logger = { error: vi.fn(), info: vi.fn(), debug: vi.fn() };
+      const sweep = createHostDiskSweep({
+        ...deps({ logActivity, logger, listCompanyIds: async () => [] }),
+        measureUsage: async () => usage(90),
+        now: () => new Date("2026-10-03T00:00:00Z"),
+      });
+      const first = await sweep.sweep();
+      const second = await sweep.sweep();
+      expect(first.overThreshold).toBe(true);
+      expect(first.signalled).toBe(false);
+      expect(second.signalled).toBe(false);
+      expect(logActivity).not.toHaveBeenCalled();
+      expect(logger.error).not.toHaveBeenCalled();
+      const noCompanyLines = logger.info.mock.calls.filter((call) =>
+        String(call[1]).includes("no company"),
+      );
+      expect(noCompanyLines).toHaveLength(1);
+    });
+
+    it("a failed write is logged and does not abort the sweep result", async () => {
+      const logActivity = vi.fn(async () => {
+        throw new Error("insert failed");
+      });
+      const logger = { error: vi.fn(), info: vi.fn(), debug: vi.fn() };
+      const sweep = createHostDiskSweep({
+        ...deps({ logActivity, logger }),
+        measureUsage: async () => usage(90),
+        now: () => new Date("2026-10-03T00:00:00Z"),
+      });
+      const result = await sweep.sweep();
+      expect(result.state).toBe("measured");
+      expect(result.overThreshold).toBe(true);
+      expect(result.signalled).toBe(false);
+      expect(logger.error).toHaveBeenCalledTimes(1);
+      expect(sweep.lastResult()).toBe(result);
+    });
+
+    it("after a written line the next sweep inside the interval writes no new one", async () => {
+      let lastSignal: Date | null = null;
+      const at = new Date("2026-10-03T00:00:00Z");
+      const logActivity = vi.fn(async () => {
+        lastSignal = at;
+      });
+      const sweep = createHostDiskSweep({
+        ...deps({ logActivity }),
+        measureUsage: async () => usage(90),
+        now: () => at,
+        lastSignalAt: async () => lastSignal,
+      });
+      await sweep.sweep();
+      await sweep.sweep();
+      expect(logActivity).toHaveBeenCalledTimes(1);
+    });
   });
 });
