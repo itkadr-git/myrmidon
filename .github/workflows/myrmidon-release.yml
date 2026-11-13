@@ -63,6 +63,11 @@ jobs:
           # observed queue delay; the job timeout is 90 min and the wait
           # exits early once the verdict appears.
           MYRMIDON_RELEASE_POLL_MAX: "240"
+          # VERIFY-ON-PROD (OPE-13017): the HMAC shared secret the publish
+          # script verifies the release-verification verdict signature with.
+          # Without it the publish refuses (fail closed).  The same secret
+          # MUST sign the verdict on the release-verify step side.
+          MYRMIDON_RELEASE_VERIFICATION_KEY: ${{ secrets.MYRMIDON_RELEASE_VERIFICATION_KEY }}
         run: |
           set -euo pipefail
           ./scripts/myrmidon/release/publish-github-release.sh --tag "$TAG"

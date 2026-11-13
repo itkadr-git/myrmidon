@@ -33,6 +33,19 @@ const REPO = "itkadr-git/myrmidon";
 const COMMIT = "c78a6c9fde4992a98e5e76d3fd556e33bb87935a";
 const TAG_OBJECT = "0123456789abcdef0123456789abcdef01234567";
 
+// The shared HMAC secret the tests sign/verify the verdict with.  The real
+// key is the GitHub Actions secret MYRMIDON_RELEASE_VERIFICATION_KEY on the
+// release workflow; the tests only need a stable non-empty value.
+const VERIFICATION_KEY = "test-verification-key";
+// Sign exactly as the publish script verifies: HMAC-SHA256 over
+// verdict|deployedVersion|checkedAt|issueId, hex output.
+function signVerdict({ verdict, deployedVersion, checkedAt, issueId, key = VERIFICATION_KEY }) {
+  const canonical = `${verdict}|${deployedVersion}|${checkedAt}|${issueId}`;
+  return spawnSync("openssl", ["dgst", "-sha256", "-hmac", key, "-r"], {
+    input: canonical, encoding: "utf8",
+  }).stdout.trim().split(/\s+/)[0];
+}
+
 const CHANGELOG = `# Myrmidon changelog
 
 ## 1.6.0
@@ -212,15 +225,20 @@ function sandbox({ runs = [], releases = {}, changelog = CHANGELOG, auditReport 
   fs.writeFileSync(path.join(dir, "registry-state.json"), JSON.stringify(registryState));
   fs.writeFileSync(path.join(dir, "calls.log"), "");
   fs.writeFileSync(path.join(dir, "mutations.log"), "");
-  // A default verified verdict (confirmed, matching the fake tag commit) so
-  // the publish-path tests reach the publish step; the verification-gate
-  // describe block overrides this with its own files via extraEnv.
-  fs.writeFileSync(path.join(dir, "verification.json"), JSON.stringify({
+  // A default verified verdict (confirmed, matching the fake tag commit,
+  // SIGNED with the test HMAC key) so the publish-path tests reach the
+  // publish step; the verification-gate describe block overrides this with
+  // its own files via extraEnv.
+  const defaultVerdict = {
     verdict: "confirmed",
     deployedVersion: COMMIT,
     checkedAt: "2026-11-13T16:00:00Z",
     issueId: "5f38f2aa-381b-476c-97a8-d8ba190c099b",
     reason: "all members present",
+  };
+  fs.writeFileSync(path.join(dir, "verification.json"), JSON.stringify({
+    ...defaultVerdict,
+    signature: signVerdict(defaultVerdict),
   }));
   return { dir, bin };
 }
@@ -251,6 +269,10 @@ function runScript(sb, tag, { extraEnv = {}, args = [] } = {}) {
       // block overrides this with its own files via extraEnv. Tests that
       // exercise the no-verdict refusal clear MYRMIDON_RELEASE_VERIFICATION_RESULT.
       MYRMIDON_RELEASE_VERIFICATION_RESULT: path.join(sb.dir, "verification.json"),
+      // The HMAC shared secret for the verdict signature (the publish script
+      // refuses to publish without it — fail closed).  Tests that exercise
+      // the missing-key refusal clear this.
+      MYRMIDON_RELEASE_VERIFICATION_KEY: VERIFICATION_KEY,
       // RELEASE-PUBLISH-WAIT: the fake gh's runs-state switch (absent fixtures never read
       // it; 0 = the first runs read already answers "after")
       GH_RUNS_SWITCH_AFTER: "0",
@@ -941,6 +963,12 @@ describe("myrmidon-release.yml: the tag input wins over ref_name", () => {
     // The budget (20 s x 240 = 80 min) must stay inside the job's own timeout.
     assert.match(workflow, /timeout-minutes: 90/);
   });
+
+  // VERIFY-ON-PROD (OPE-13017 review): the publish script refuses without the
+  // shared HMAC secret, so the workflow MUST wire it from the repo secrets.
+  it("wires the verification signature secret into the publish step", () => {
+    assert.match(workflow, /MYRMIDON_RELEASE_VERIFICATION_KEY: \$\{\{ secrets\.MYRMIDON_RELEASE_VERIFICATION_KEY \}\}/);
+  });
 });
 
 // TAG-CI (the 1.6.4 incident): the tag has its own un-cancellable CI run
@@ -1193,14 +1221,22 @@ describe("release manifest (release-components.json)", () => {
 });
 
 // VERIFY-ON-PROD (OPE-13017): the publish gate binds the release to the
-// immutable verified candidate.  The verification JSON is the response of
-// POST /issues/:id/release-verify (OPE-13014); the gate is opt-in via
-// --require-verification so the tag-push flow keeps working while the
-// pipeline wires verification to publish.
+// immutable verified candidate.  The verification JSON is the SIGNED
+// response of POST /issues/:id/release-verify (OPE-13014): the verdict file
+// carries an HMAC-SHA256 signature over verdict|deployedVersion|checkedAt|
+// issueId, keyed with the shared secret MYRMIDON_RELEASE_VERIFICATION_KEY.
+// An unsigned or wrongly-signed confirmed JSON is FORGED and refuses the
+// publish (OPE-13017 review).
 describe("publish-github-release.sh: the release verification gate (OPE-13017)", () => {
-  const verificationFile = (sb, { verdict = "confirmed", deployedVersion = COMMIT, checkedAt = "2026-11-13T16:00:00Z", issueId = "5f38f2aa-381b-476c-97a8-d8ba190c099b", reason = "all members present" } = {}) => {
+  const verificationFile = (sb, { verdict = "confirmed", deployedVersion = COMMIT, checkedAt = "2026-11-13T16:00:00Z", issueId = "5f38f2aa-381b-476c-97a8-d8ba190c099b", reason = "all members present", sign = true, key = VERIFICATION_KEY } = {}) => {
     const file = path.join(sb.dir, "verification.json");
-    fs.writeFileSync(file, JSON.stringify({ verdict, deployedVersion, checkedAt, issueId, reason }));
+    const body = { verdict, deployedVersion, checkedAt, issueId, reason };
+    if (sign) {
+      // Sign exactly as the release-verify step does: HMAC-SHA256 over
+      // verdict|deployedVersion|checkedAt|issueId with the given key.
+      body.signature = signVerdict({ verdict, deployedVersion, checkedAt, issueId, key });
+    }
+    fs.writeFileSync(file, JSON.stringify(body));
     return file;
   };
 
@@ -1214,12 +1250,73 @@ describe("publish-github-release.sh: the release verification gate (OPE-13017)",
     });
     assert.equal(code, 0, out);
     assert.match(out, /gate: release verification confirmed/);
+    assert.match(out, /signature verified/);
     const mut = mutations(sb);
     assert.match(mut, /create tag=myr-v1\.6\.0/);
     assert.match(mut, /## Release verification/);
     assert.match(mut, /Commit: `c78a6c9fde4992a98e5e76d3fd556e33bb87935a`/);
     assert.match(mut, /Verdict: confirmed/);
     assert.match(mut, /Checked at: 2026-11-13T16:00:00Z/);
+  });
+
+  it("refuses a forged confirmed JSON — a verdict without a signature is unproven", () => {
+    // The OPE-13017 review gap: a caller could fabricate {verdict: confirmed,
+    // deployedVersion: <sha>} locally and the publisher accepted it.  The
+    // file MUST carry the HMAC signature of the release-verify step.
+    const sb = sandbox({ runs: GREEN_RUNS });
+    const vf = verificationFile(sb, { sign: false });
+    const { code, out } = runScript(sb, "myr-v1.6.0", {
+      extraEnv: { MYRMIDON_RELEASE_VERIFICATION_RESULT: vf },
+    });
+    assert.notEqual(code, 0, out);
+    assert.match(out, /carries NO signature.*NOT publishing/s);
+    assert.equal(mutations(sb), "");
+  });
+
+  it("refuses a forged confirmed JSON — a signature made with the WRONG key does not verify", () => {
+    const sb = sandbox({ runs: GREEN_RUNS });
+    const vf = verificationFile(sb, { key: "attacker-key" });
+    const { code, out } = runScript(sb, "myr-v1.6.0", {
+      extraEnv: { MYRMIDON_RELEASE_VERIFICATION_RESULT: vf },
+    });
+    assert.notEqual(code, 0, out);
+    assert.match(out, /signature is INVALID.*NOT publishing/s);
+    assert.equal(mutations(sb), "");
+  });
+
+  it("refuses to publish when the shared verification key is not configured (fail closed)", () => {
+    // No MYRMIDON_RELEASE_VERIFICATION_KEY: the signature cannot be checked,
+    // so the proof is absent — the publish must not proceed.
+    const sb = sandbox({ runs: GREEN_RUNS });
+    const vf = verificationFile(sb);
+    const { code, out } = runScript(sb, "myr-v1.6.0", {
+      extraEnv: {
+        MYRMIDON_RELEASE_VERIFICATION_RESULT: vf,
+        MYRMIDON_RELEASE_VERIFICATION_KEY: "",
+      },
+    });
+    assert.notEqual(code, 0, out);
+    assert.match(out, /MYRMIDON_RELEASE_VERIFICATION_KEY is not set.*NOT publishing/s);
+    assert.equal(mutations(sb), "");
+  });
+
+  it("a signature over a TAMPERED verdict (edited field, original signature) does not verify", () => {
+    // The signer produced a confirmed verdict for COMMIT at T; an attacker
+    // edits a non-binding field (checkedAt) but keeps the ORIGINAL
+    // signature, hoping the file still looks signed.  The publish recomputes
+    // the HMAC over the file's own fields, so the signature no longer
+    // matches and the publish refuses.
+    const sb = sandbox({ runs: GREEN_RUNS });
+    const genuine = { verdict: "confirmed", deployedVersion: COMMIT, checkedAt: "2026-11-13T16:00:00Z", issueId: "5f38f2aa-381b-476c-97a8-d8ba190c099b", reason: "all members present" };
+    const file = path.join(sb.dir, "verification.json");
+    const signature = signVerdict(genuine);
+    fs.writeFileSync(file, JSON.stringify({ ...genuine, checkedAt: "2026-11-13T17:00:00Z", signature }));
+    const { code, out } = runScript(sb, "myr-v1.6.0", {
+      extraEnv: { MYRMIDON_RELEASE_VERIFICATION_RESULT: file },
+    });
+    assert.notEqual(code, 0, out);
+    assert.match(out, /signature is INVALID.*NOT publishing/s);
+    assert.equal(mutations(sb), "");
   });
 
   it("refuses to publish without any verification source (the default tag-push invocation)", () => {

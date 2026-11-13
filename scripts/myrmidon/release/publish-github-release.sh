@@ -156,6 +156,16 @@ fi
 # CI or an operator); the publish script never calls the board itself — the
 # file is the contract.
 #
+# The file MUST carry an HMAC-SHA256 signature (field `signature`, hex) over
+# the canonical string
+#   verdict|deployedVersion|checkedAt|issueId
+# keyed with the shared secret MYRMIDON_RELEASE_VERIFICATION_KEY (a GitHub
+# Actions secret; the release-verify step signs, this script verifies).  A
+# confirmed verdict with a matching SHA but WITHOUT a valid signature is
+# FORGED and refuses the publish (OPE-13017 review: the verification
+# prerequisite must not be forgeable by editing a JSON file).  When the key
+# itself is absent the publish also refuses (fail closed: no key, no proof).
+#
 # The gate is MANDATORY on the publish path (OPE-13017 acceptance): a plain
 # invocation without a verification source refuses the publish.
 # MYRMIDON_RELEASE_SKIP_VERIFICATION=1 is the rehearsal escape (dry runs only —
@@ -192,7 +202,23 @@ if [[ -n "$verification_file" ]]; then
   [[ "$verification_deployed" == "$sha" ]] \
     || die "release verification deployedVersion '$verification_deployed' does not match the tag commit '$sha' — NOT publishing $tag. The verification must be re-run against this exact commit."
 
-  log "gate: release verification confirmed for $sha (checked at $verification_checked_at, issue $verification_issue_id)"
+  # Signature provenance: the verdict file must carry a valid HMAC-SHA256
+  # signature over verdict|deployedVersion|checkedAt|issueId, keyed with the
+  # shared secret.  A forged confirmed JSON (any editable file with a matching
+  # SHA) refuses here — the gate is only satisfied by a verdict SIGNED by the
+  # release-verify step.
+  verification_key="${MYRMIDON_RELEASE_VERIFICATION_KEY:-}"
+  [[ -n "$verification_key" ]] \
+    || die "MYRMIDON_RELEASE_VERIFICATION_KEY is not set — NOT publishing $tag. The verification signature cannot be checked without the shared secret (configure it as a GitHub Actions secret on the release workflow)."
+  verification_signature_actual="$(jq -r '.signature // "missing"' <<<"$verification_json")"
+  [[ "$verification_signature_actual" != "missing" && -n "$verification_signature_actual" ]] \
+    || die "release verification result carries NO signature — NOT publishing $tag. A confirmed verdict without the HMAC signature is unproven (forgeable); the release-verify step must sign the result."
+  verification_canonical="${verification_verdict}|${verification_deployed}|${verification_checked_at}|${verification_issue_id}"
+  verification_signature_expected="$(printf '%s' "$verification_canonical" | openssl dgst -sha256 -hmac "$verification_key" -r | awk '{print $1}')"
+  [[ "$verification_signature_actual" == "$verification_signature_expected" ]] \
+    || die "release verification signature is INVALID — NOT publishing $tag. The verdict file does not match its HMAC signature (forged or corrupted result); re-run the release verification to obtain a signed verdict."
+
+  log "gate: release verification confirmed for $sha (checked at $verification_checked_at, issue $verification_issue_id, signature verified)"
   verification_section=$(cat <<EOF
 
 ## Release verification
