@@ -166,8 +166,14 @@ async function probeDockerImages(
     if (!summary) continue;
     found = true;
     runningOn.push(summary.repoTag ?? ref);
-    if (!states.version && summary.repoTag) states.version = summary.repoTag;
-    if (!states.digest && summary.digest) states.digest = summary.digest;
+    // Through dockergate the answer is labels-only (no RepoTags/RepoDigests):
+    // for an exact operator ref the ref itself is the version, and a
+    // repo@sha256:<digest> ref carries its digest.
+    if (!states.version) states.version = summary.repoTag ?? (exact ? ref : null);
+    if (!states.digest) {
+      const refDigest = exact && ref.includes("@sha256:") ? ref.slice(ref.indexOf("@") + 1) : null;
+      states.digest = summary.digest ?? refDigest;
+    }
   }
   if (found) {
     states.runningOn = runningOn.join(", ");
