@@ -10,7 +10,7 @@ version file to edit. Base Paperclip version is in the image label
 
 ## Unreleased
 
-## 1.6.7
+## 1.6.8
 
 ### The omp SSH runner's /tmp moves to the data disk and is pruned (OPE-12966)
 
@@ -27,8 +27,6 @@ version file to edit. Base Paperclip version is in the image label
   symlink or leaves the filesystem, and never removes `tmp` itself. Journal events
   `runner-tmp-removed`, `runner-tmp-remove-failed`, `runner-tmp-skipped`,
   `runner-tmp-scan-failed`; the counter `runnerTmpRemoved`.
-
-## 1.6.7
 
 ### Bots of agents that left the bot runtime are decommissioned (OPE-12654)
 
@@ -60,8 +58,6 @@ version file to edit. Base Paperclip version is in the image label
 - Terminating or deleting an agent decommissions its bot through the same route (the old
   cleanup's delete was always refused by the gate); a bot on a fleetd site still goes through
   the site's cleanup.
-
-## 1.6.7
 
 ### GitHub App disabled-webhook attention card and addressable silence alarms (1.6.8 OPE-12868)
 
@@ -105,8 +101,6 @@ version file to edit. Base Paperclip version is in the image label
 
 - dockergate has a new optional `inspectOnlyImages` config list: exact image refs (tag or digest) whose image inspect is allowed read-only, with the same labels-only answer. They are never allowed for container create; only `images` is.
 - The stack registry probe takes the exact refs of a docker-image component from `MYRMIDON_STACK_IMAGE_<NAME>` (for example `MYRMIDON_STACK_IMAGE_CLICKHOUSE`) instead of the tagless seed refs that resolved to `:latest` and answered 404. Unset keeps the old behaviour. Point `MYRMIDON_STACK_DOCKER_SOCKET` at the dockergate socket and list the same refs in `inspectOnlyImages`.
-
-## 1.6.7
 
 ### IDLE-STOP works for fleetd bots: stopIdle route, idle-stopped mark, one warning per process (OPE-12663)
 
@@ -173,8 +167,6 @@ version file to edit. Base Paperclip version is in the image label
   dockergate policy tests drop the `pnpm-store` pair; the pnpm-wrapper purge test
   (`pnpm-wrapper-purge.test.mjs`) asserts `--config.confirm-modules-purge=false` on
   install/add and its absence on the light lanes.
-
-## 1.6.7
 
 ### A bot's npx and cargo caches stay under a byte quota (OPE-12110)
 
@@ -814,6 +806,88 @@ Upstream model provider stub replies (e.g. maintenance notices or overloaded mes
 - Resubmitting an issue to `in_review` after a `changes_requested` review stage no longer returns `422 missing review_path`. When a review/approval stage is configured, the executor resubmitting from the recovery-action route now lands back in `in_review` with the reviewer continuation preserved: the same review stage, `returnAssignee` stays with the original executor, and no recovery loop.
 - Two fixes in `server/src/routes/issues.ts` (PR #1966, merge `ddc27433`): the review-path validator now falls back to `input.existing.executionPolicy` when the resubmit PATCH carries no `executionPolicy` field, and in `POST /api/issues/:id/recovery-actions/resolve` the execution-policy transition is applied before `assertInReviewReviewPath` so the validator sees the typed reviewer continuation in the update fields.
 - Covered by regression tests: recovery route (`server/src/__tests__/issue-recovery-actions.test.ts`), issue PATCH route (`server/src/__tests__/issue-execution-policy-routes.test.ts`).
+
+### fleetd no longer leaks memory through per-call Docker transports (OPE-12923)
+
+- Stopped the memory leak that OOM-killed the fleetd site agent on a remote site. Every Docker API call (request, pull, logs) built a throwaway `http.Transport` whose pooled keep-alive connection pinned its goroutines forever, so fleetd grew without limit (about 45 MB/h at rest, about 220 MB/h during a bot roll) until the OOM killer fired at `MemoryMax`.
+- All Docker calls now share one transport with a bounded idle pool (`IdleConnTimeout` 1m); the per-call budgets stay the same (30 s request/logs, 15 min pull). A regression test runs 1000 recreate/profile/status cycles against a fake Docker socket and fails when goroutines or the GC'd heap grow (limit: 20 MB above the 10-cycle baseline).
+
+### Stack refresh and check run on the main board process (OPE-12957)
+
+- `POST /api/myrmidon/stack/refresh` and `POST /api/myrmidon/stack/check` failed with 503 on a split board: an api process served them and its image probes reached dockergate, which admits only the main board process (`write EPIPE`, `caller_not_board_main`).
+- Both routes now join the `bot_container` group of single routes, so an api process forwards them to the main process. `GET /api/myrmidon/stack` still reads the database and stays on the api process.
+
+### The host disk threshold signal is written per company (OPE-12958)
+
+- The host disk sweep wrote the `host.disk_threshold_exceeded` activity line without a company, which violates the NOT NULL `company_id` column; the write failed on every sweep and the signal interval never started.
+- The line is now written once per company, like the other instance-level host-disk lines. With no company the sweep skips the write and logs once, and a failed write is logged instead of aborting the measurement result.
+
+### Warm authority rotation: the outbox acknowledgement wait is renewable (OPE-12098)
+
+- The old-authority outbox acknowledgement wait uses the same renewable window as the terminal result wait (OPE-12021): each cumulative ACK that advances the cursor re-arms the 2 s window (capped at 10 s total), so a controller that commits the retained event backlog slowly no longer trips the fixed 2 s fence.
+- A repeated ACK without progress does not extend the window; a silent controller still times out one window after its last advancing ACK, never later than the hard cap. The arithmetic lives in the shared pure `terminal_result_ack_deadline` helper, with unit tests on synthetic `Instant`s.
+
+### A queued run keeps its scheduled retry when the environment lease is released (OPE-12204)
+
+- `terminalizeRunOnLeaseRelease` no longer forces a queued run that still carries `scheduled_retry_at` to `interrupted` / `lease_released_before_terminal`. A retry scheduled before the lease cleanup survives it and is dispatched instead of burning the wake-up.
+
+### Botd git-base repack works on partial clones (OPE-12263)
+
+- The botd git-base repack now supports partial clones: bitmap writing is disabled, stale temporary pack/index files older than 30 minutes are removed when no Git lock exists (after a failed repack and at botd startup), and failed repack attempts back off for six hours with the failure reason logged. A high pack count does not bypass the backoff.
+
+### Secrets: a value that contains the redaction mask is refused on write (OPE-12270)
+
+- The board refuses to store any plain env binding or adapter config secret field whose value CONTAINS the `***REDACTED***` sentinel, not only a value equal to it. Agent GET redacts plain values, including keys nested inside JSON-string env values such as `adapterConfig.env.PAPERCLIP_OMP_PROVIDERS`; a read-modify-write PATCH then sent the literal mask to the provider (LiteLLM 401).
+- The write-time guard now rejects the whole roundtrip with 422 «value came from a redacted response, send the original value» instead of storing the mask.
+
+### Bot resource-ceiling updates work when the dockergate config is read-only (OPE-12383)
+
+- Bot resource-ceiling updates no longer fail as an opaque dockergate upstream error when dockergate's config file is mounted read-only. The gate writes the mutable per-bot limits (and the ceilings the first update pinned) to a separate limits-override file on the writable state bind (`limitsOverrideFile` in `config.json`; fresh installs point it at `/run/myrmidon-dockergate-state/limits.json`) and never rewrites the read-only main config.
+- An update the gate cannot persist is refused with `config_read_only` (HTTP 403) instead of `upstream_error` (502), which the board driver surfaces as a clear operator-facing fault instead of a retried upstream failure.
+
+### The lead role joins the default shared-cache roles (OPE-12384)
+
+- The default `general.botDisk.sharedCacheRoles` now includes `lead`, so a lead bot gets the same shared package-cache, git-mirror and uv-cache mounts as the coding roles. A lead runs the same devbuild/build toolchain on the same repositories as the engineers it reviews; before this change its container had no `/cache/*` mounts, so the uv-cache, shared-objects and devbuild startup self-checks failed on every restart.
+- The change applies on the next reconcile pass without a restart: exactly the bots whose role membership changed (the leads) are recreated with the mounts.
+
+### Gateway slot reconcile no longer re-probes finished runs (OPE-12890)
+
+- The run-start slot reconcile probed up to 64 finished runs of the agent on every pass and resolved the agent's secrets for each probe, which wrote a `secret_access_events` row per secret per probed run — up to 3.6 million audit rows a day on the fleet, faster than the retention sweep could delete them.
+- A pass now resolves the agent's gateway credentials once and reuses them for every probe and stop, and a run the gateway has confirmed closed is not probed again.
+
+### The reviewer is not woken again while CI is still running (OPE-12859)
+
+- The board now records the review verdict as structured data next to the decision: the decision, the pull request head SHA and the pull request number (OPE-12181). A verdict counts only for the head it was given on.
+- When the recorded verdict already covers the current pull request head, the board no longer wakes the reviewer while CI is pending: the review is done, and the merge gate checks `CI result` on its own. On the fleet this loop produced up to 60 % empty reviewer runs.
+- The reviewer's wake text now tells it to review the diff and submit the decision without waiting for CI.
+
+### tokens-trace routes require company-scoped board access (OPE-12675)
+
+- `GET /api/myrmidon/companies/:companyId/tokens-trace/agents` and `/reconcile` ran their queries before any authorization check, so any caller that reached the route could read another company's token aggregates. Both handlers now check company access first (401 without credentials, 403 for a foreign board user) and then board access (403 for agent keys).
+
+### Ready tasks of an unstaffed caste reach idle engineers (OPE-12846)
+
+- Free engineers sat idle while ready tasks waited in the queue: the tasks belonged to castes with no staffed agent, and the swarm never offered them to anyone. The routing predicate shared by the queue read, the matcher and claim revalidation now routes such tasks to the default role.
+
+### Fewer secret resolutions when minting GitHub App tokens (OPE-12537)
+
+- The GitHub App private key is resolved only on a token cache miss, and a cold mint resolves it once instead of twice. Warm paths resolve nothing, which removes the matching rows from `secret_access_events`.
+
+### A task is not treated as live because of its own watchdog (OPE-9590)
+
+- Blocker attention counted a running watchdog recovery task as live work of the task it watches. The source task looked alive because its own watchdog was running, and the watchdog's recovery was refused with stale 409 errors. Watchdog-origin tasks are now excluded from that liveness check.
+
+### Queued-run resweep timer no longer outlives its owner
+
+- `scheduleQueuedResweep()` armed a module-level timer that nothing cancelled; it could fire later with stale state and adopt runs it did not own. The timer is now cancelled when the service drains its runs or resets its admission state.
+
+### dockergate: an expected quota-entry refusal is not logged as an error (OPE-12959)
+
+- When a bot container is recreated its data directory stays, so dockergate rightly refuses to drop the bot's disk quota entry. This expected refusal was logged as `disk_project_remove_failed` at error level on every recreate, with no cause. It is now an informational `disk_project_still_has_directory` event; a real removal failure is still an error and carries its cause.
+
+### Host GC removes task folders of closed runner issues (OPE-12903)
+
+- The host GC of the release line gained the pass from OPE-12855: task folders of done or cancelled issues under the omp runner roots are removed after the clone TTL. A folder whose git state cannot be proven clean and pushed is archived first; folders of open issues and an unreachable board keep everything in place. The pass runs only when a runner root is configured.
 
 ## 1.6.7
 
