@@ -341,6 +341,85 @@ describeEmbeddedPostgres("run-dispatch: pending interaction addressee wake (P2)"
     });
   });
 
+  // myrmidon(RESUME-QUEUE-AGE): the pause of an agent is not time spent waiting for
+  // a start. The resume stamps the queued runs (`queueWaitResumedAt`) and the age
+  // counts from the stamp; both the sweep's selection (SQL) and the cancellation
+  // check (TS) read it.
+  describe("age of a run that stood in the queue during a pause (RESUME-QUEUE-AGE)", () => {
+    const MIN = 60 * 1000;
+    const staleAfterMs = 30 * MIN;
+
+    async function seedPausedQueueRun(input: { resumedMinAgo: number | null; waitReason?: string }) {
+      const { companyId, assigneeId, issueId } = await seed();
+      const now = new Date();
+      const runId = await seedRun({
+        companyId,
+        agentId: assigneeId,
+        contextSnapshot: {
+          issueId,
+          waitReason: input.waitReason ?? "agent_concurrency",
+          ...(input.resumedMinAgo === null
+            ? {}
+            : { queueWaitResumedAt: new Date(now.getTime() - input.resumedMinAgo * MIN).toISOString() }),
+        },
+        createdAt: new Date(now.getTime() - 63 * MIN),
+      });
+      return { companyId, agentId: assigneeId, runId, now };
+    }
+
+    async function listedAsStale(runId: string, now: Date) {
+      const rows = await db
+        .select({ id: heartbeatRuns.id })
+        .from(heartbeatRuns)
+        .where(and(eq(heartbeatRuns.id, runId), eq(heartbeatRuns.status, "queued"), queuedRunWaitedAtLeastSql(now, staleAfterMs)));
+      return rows.length === 1;
+    }
+
+    const cancel = (companyId: string, runId: string, now: Date) =>
+      createPostgresRunDispatchAdapter(db).cancelStaleQueuedRun({
+        runId, companyId, expectedStatus: "queued", staleAfterMs, now,
+      });
+
+    it("does not list or cancel a 63-minute-old run right after the resume, with no run of the agent running", async () => {
+      const { companyId, runId, now } = await seedPausedQueueRun({ resumedMinAgo: 0 });
+
+      expect(await listedAsStale(runId, now)).toBe(false);
+      expect((await cancel(companyId, runId, now)).outcome).toBe("not_stale");
+      expect(await runStatus(runId)).toMatchObject({ status: "queued", errorCode: null });
+    });
+
+    it("keeps a second run that waits for the slot of the agent's first resumed run", async () => {
+      const { companyId, agentId, runId, now } = await seedPausedQueueRun({ resumedMinAgo: 5 });
+      await db.insert(heartbeatRuns).values({
+        id: randomUUID(), companyId, agentId, invocationSource: "automation", status: "running",
+        contextSnapshot: {}, startedAt: new Date(now.getTime() - 5 * MIN),
+      });
+
+      expect(await listedAsStale(runId, now)).toBe(false);
+      expect((await cancel(companyId, runId, now)).outcome).toBe("not_stale");
+    });
+
+    it("still cancels a run whose slot has been free longer than the threshold since the resume", async () => {
+      const { companyId, runId, now } = await seedPausedQueueRun({ resumedMinAgo: 31 });
+
+      expect(await listedAsStale(runId, now)).toBe(true);
+      expect(await cancel(companyId, runId, now)).toMatchObject({ outcome: "cancelled", errorCode: "queued_run_stale_timeout" });
+    });
+
+    it("ignores a stamp that is in the future or is not a date", async () => {
+      const future = await seedPausedQueueRun({ resumedMinAgo: -10 });
+      expect(await listedAsStale(future.runId, future.now)).toBe(true);
+      const { companyId, assigneeId, issueId } = await seed();
+      const now = new Date();
+      const runId = await seedRun({
+        companyId, agentId: assigneeId, contextSnapshot: { issueId, queueWaitResumedAt: "not-a-date" },
+        createdAt: new Date(now.getTime() - 63 * MIN),
+      });
+      expect(await listedAsStale(runId, now)).toBe(true);
+      expect((await cancel(companyId, runId, now)).outcome).toBe("cancelled");
+    });
+  });
+
   // myrmidon(EMPTY-RUNS-6): a queued run that stands behind its own agent's
   // running runs is a queue, not a stale run. Expiring it by age queued the
   // same run behind the same ceiling again, and after the second expiry the

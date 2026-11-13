@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { eq } from "drizzle-orm";
 import { agentWakeupRequests, agents, companies, createDb, heartbeatRuns, issues } from "@myrmidon/db";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
 
@@ -93,14 +94,16 @@ describeEmbeddedPostgres("resumeAgentAfterPause (L3)", () => {
   }
 
   async function seedLiveRun(input: { companyId: string; agentId: string; issueId: string; status: string }) {
+    const id = randomUUID();
     await db.insert(heartbeatRuns).values({
-      id: randomUUID(),
+      id,
       companyId: input.companyId,
       agentId: input.agentId,
       status: input.status,
       invocationSource: "automation",
       contextSnapshot: { issueId: input.issueId },
     });
+    return id;
   }
 
   // myrmidon(L1): a stranded issue's most recent run -- the one the agent's
@@ -200,6 +203,39 @@ describeEmbeddedPostgres("resumeAgentAfterPause (L3)", () => {
     );
     // Without an identifiable user the marker is absent.
     expect(deps.enqueueWakeup.mock.calls[1]![1]).not.toHaveProperty("resumedByUserId");
+  });
+
+  // myrmidon(RESUME-QUEUE-AGE): the resume restarts the wait of the agent's queued
+  // runs (stamp read by the stale-run age rule); other agents' runs and runs that
+  // are not queued are left alone.
+  it("stamps the agent's queued runs with the resume time before promoting them", async () => {
+    const { companyId, agentId } = await seedAgent();
+    const other = await seedAgent();
+    const issueId = await seedIssue({ companyId, agentId, status: "in_progress" });
+    const queued = await seedLiveRun({ companyId, agentId, issueId, status: "queued" });
+    const running = await seedLiveRun({ companyId, agentId, issueId, status: "running" });
+    const otherIssue = await seedIssue({ companyId: other.companyId, agentId: other.agentId, status: "in_progress" });
+    const otherQueued = await seedLiveRun({ companyId: other.companyId, agentId: other.agentId, issueId: otherIssue, status: "queued" });
+    const stampAtPromotion: unknown[] = [];
+    const deps = fakeDeps({
+      startNextQueuedRunForAgent: async () => {
+        const [row] = await db.select({ snapshot: heartbeatRuns.contextSnapshot }).from(heartbeatRuns).where(eq(heartbeatRuns.id, queued));
+        stampAtPromotion.push((row?.snapshot as Record<string, unknown>)?.queueWaitResumedAt);
+        return [];
+      },
+    });
+    const before = Date.now();
+
+    await resumeAgentAfterPause(deps, agentId);
+
+    expect(typeof stampAtPromotion[0]).toBe("string");
+    const stamp = new Date(stampAtPromotion[0] as string).getTime();
+    expect(stamp).toBeGreaterThanOrEqual(before - 1000);
+    const snapshots = await db.select({ id: heartbeatRuns.id, snapshot: heartbeatRuns.contextSnapshot }).from(heartbeatRuns);
+    const byId = new Map(snapshots.map((row) => [row.id, row.snapshot as Record<string, unknown>]));
+    expect(byId.get(queued)?.issueId).toBe(issueId);
+    expect(byId.get(running)).not.toHaveProperty("queueWaitResumedAt");
+    expect(byId.get(otherQueued)).not.toHaveProperty("queueWaitResumedAt");
   });
 
   it("ignores issues outside todo/in_progress", async () => {
