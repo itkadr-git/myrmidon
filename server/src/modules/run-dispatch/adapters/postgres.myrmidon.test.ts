@@ -554,6 +554,119 @@ describeEmbeddedPostgres("run-dispatch: pending interaction addressee wake (P2)"
     });
   });
 
+  // myrmidon(EMPTY-RUNS-6C): in the pass that frees the slot the start sweep takes
+  // the heaviest waiting run and renames the wait of the others to `priority`.
+  // The age sweep of the same second must treat that wait as the wait for the
+  // agent's own slot (14.11, adm-dev-eng-24: two runs waited 77 and 47 minutes,
+  // the running run failed, both were cancelled with `waitReason = priority`).
+  describe("runs renamed to a priority wait at slot release are not expired (EMPTY-RUNS-6C)", () => {
+    const MIN = 60 * 1000;
+    const staleAfterMs = 30 * MIN;
+
+    /**
+     * Two runs of the assignee waiting 77 and 47 minutes with their own wake
+     * reasons and the wait reason the start pass left on them; the agent's
+     * previous run ended with `previous` a second ago; `next` is the run the
+     * pass started in the same second (or none).
+     */
+    async function seedSlotRelease(input: {
+      previous: "failed" | "succeeded" | "cancelled";
+      next: "running" | null;
+      waitReason?: string;
+    }) {
+      const { companyId, assigneeId, issueId } = await seed();
+      const now = new Date();
+      const waitReason = input.waitReason ?? "priority";
+      const oldest = await seedRun({
+        companyId, agentId: assigneeId,
+        contextSnapshot: { issueId, wakeReason: "pause_resume", waitReason },
+        createdAt: new Date(now.getTime() - 77 * MIN),
+      });
+      const younger = await seedRun({
+        companyId, agentId: assigneeId,
+        contextSnapshot: { issueId, wakeReason: "execution_changes_requested", waitReason },
+        createdAt: new Date(now.getTime() - 47 * MIN),
+      });
+      const startedAt = new Date(now.getTime() - 58 * MIN);
+      await db.insert(heartbeatRuns).values({
+        id: randomUUID(), companyId, agentId: assigneeId, invocationSource: "automation",
+        status: input.previous, contextSnapshot: {},
+        createdAt: startedAt, startedAt, finishedAt: new Date(now.getTime() - 1000),
+      });
+      if (input.next) {
+        await db.insert(heartbeatRuns).values({
+          id: randomUUID(), companyId, agentId: assigneeId, invocationSource: "automation",
+          status: input.next, contextSnapshot: {},
+          createdAt: new Date(now.getTime() - 26 * MIN), startedAt: new Date(now.getTime() - 500), finishedAt: null,
+        });
+      }
+      return { companyId, runIds: [oldest, younger], now };
+    }
+
+    const expire = (companyId: string, runId: string, now: Date) =>
+      createPostgresRunDispatchAdapter(db).cancelStaleQueuedRun({
+        runId, companyId, expectedStatus: "queued", staleAfterMs, now,
+      });
+
+    for (const previous of ["failed", "succeeded", "cancelled"] as const) {
+      it(`keeps both waiting runs when the running run ended ${previous} and another run of the agent started`, async () => {
+        const { companyId, runIds, now } = await seedSlotRelease({ previous, next: "running" });
+        for (const runId of runIds) {
+          expect((await expire(companyId, runId, now)).outcome).toBe("not_stale");
+          expect(await runStatus(runId)).toMatchObject({ status: "queued", errorCode: null });
+        }
+        const [oldest, younger] = await Promise.all(runIds.map(async (id) =>
+          (await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, id)))[0]!));
+        expect(oldest!.contextSnapshot).toMatchObject({ wakeReason: "pause_resume" });
+        expect(younger!.contextSnapshot).toMatchObject({ wakeReason: "execution_changes_requested" });
+      });
+
+      it(`keeps both waiting runs when the running run ended ${previous} and nothing started yet`, async () => {
+        const { companyId, runIds, now } = await seedSlotRelease({ previous, next: null });
+        for (const runId of runIds) {
+          expect((await expire(companyId, runId, now)).outcome).toBe("not_stale");
+        }
+      });
+    }
+
+    it("keeps the runs that still carry agent_concurrency when the running run failed", async () => {
+      const { companyId, runIds, now } = await seedSlotRelease({
+        previous: "failed", next: "running", waitReason: "agent_concurrency",
+      });
+      for (const runId of runIds) expect((await expire(companyId, runId, now)).outcome).toBe("not_stale");
+    });
+
+    it("still expires a priority-waiting run of an agent with a free slot: nothing running, slot free past the threshold", async () => {
+      const { companyId, assigneeId, issueId } = await seed();
+      const now = new Date();
+      const runId = await seedRun({
+        companyId, agentId: assigneeId,
+        contextSnapshot: { issueId, wakeReason: "ci_completed", waitReason: "priority" },
+        createdAt: new Date(now.getTime() - 40 * MIN),
+      });
+      const startedAt = new Date(now.getTime() - 90 * MIN);
+      await db.insert(heartbeatRuns).values({
+        id: randomUUID(), companyId, agentId: assigneeId, invocationSource: "automation",
+        status: "failed", contextSnapshot: {}, createdAt: startedAt, startedAt,
+        finishedAt: new Date(now.getTime() - 60 * MIN),
+      });
+      expect(await expire(companyId, runId, now))
+        .toMatchObject({ outcome: "cancelled", errorCode: "queued_run_stale_timeout" });
+    });
+
+    it("still expires a run with a free slot and no run of the agent at all", async () => {
+      const { companyId, assigneeId, issueId } = await seed();
+      const now = new Date();
+      const runId = await seedRun({
+        companyId, agentId: assigneeId,
+        contextSnapshot: { issueId, wakeReason: "ci_completed" },
+        createdAt: new Date(now.getTime() - 40 * MIN),
+      });
+      expect(await expire(companyId, runId, now))
+        .toMatchObject({ outcome: "cancelled", errorCode: "queued_run_stale_timeout" });
+    });
+  });
+
   it("does not let another agent borrow the addressee wake context", async () => {
     const { companyId, assigneeId, issueId, interactionId } = await seed();
     const outsiderId = randomUUID();

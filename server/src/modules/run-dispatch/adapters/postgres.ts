@@ -127,6 +127,19 @@ type CancelSuppressedRetryResult = { applied: true; run: HeartbeatRun } | { appl
  */
 const QUEUED_RUN_OWN_SLOT_WAIT_REASON = "agent_concurrency";
 
+/**
+ * myrmidon(EMPTY-RUNS-6C): the wait reasons that mean "standing in the queue of
+ * the agent's own slots". Besides the ceiling itself this is `priority`: in the
+ * pass that frees the slot the start sweep takes the heaviest run and renames
+ * the wait of every other ready run of the agent from `agent_concurrency` to
+ * `priority` (`passedOver` in `startNextQueuedRunForAgent`). Both name the same
+ * wait; the second is only a later label of it.
+ */
+const QUEUED_RUN_OWN_SLOT_WAIT_REASONS: ReadonlySet<string> = new Set([
+  QUEUED_RUN_OWN_SLOT_WAIT_REASON,
+  "priority",
+]);
+
 const NO_REVIEW_PARTICIPANT: ReviewParticipantFacts = {
   isInReview: false,
   hasParticipant: false,
@@ -1186,6 +1199,13 @@ export function createPostgresRunDispatchAdapter(
   // the end of the agent's last started run when that is later than the start of
   // the wait: a slot freed just now leaves the age near zero, a slot free for the
   // whole threshold without the run starting is a lost start and expires.
+  //
+  // myrmidon(EMPTY-RUNS-6C): the reason is not only `agent_concurrency`. When the
+  // slot freed, the start pass took the heaviest waiting run and wrote
+  // `priority` over the wait of the others; the age sweep that follows in the
+  // same second saw a reason outside the set, and cancelled them with a
+  // replacement wake that lost the original wake reason (14.11, adm-dev-eng-24:
+  // two runs cancelled at 00:54:26 with `waitReason = priority`).
   async function queuedRunWaitsForOwnAgentSlot(
     tx: Db,
     run: HeartbeatRun,
@@ -1193,7 +1213,7 @@ export function createPostgresRunDispatchAdapter(
     staleAfterMs: number,
   ): Promise<boolean> {
     const waitReason = readNonEmptyString(parseObject(run.contextSnapshot).waitReason);
-    if (waitReason !== QUEUED_RUN_OWN_SLOT_WAIT_REASON) return false;
+    if (waitReason === null || !QUEUED_RUN_OWN_SLOT_WAIT_REASONS.has(waitReason)) return false;
     const running = await tx
       .select({ id: heartbeatRuns.id })
       .from(heartbeatRuns)
