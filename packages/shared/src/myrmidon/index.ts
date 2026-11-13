@@ -112,6 +112,7 @@ export * from "../recovery-factory.js";
 export * from "../task-card-readiness.js";
 export * from "./acceptance-scenarios.js";
 export * from "./adm-access-request.js";
+export * from "./external-connectors/index.js";
 export * from "./ideas.js";
 export * from "./provider-garbage.js";
 export * from "./provider-package-expiry.js";
