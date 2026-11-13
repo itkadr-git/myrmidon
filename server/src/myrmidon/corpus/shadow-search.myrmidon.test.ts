@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { createCorpusShadowSearch } from "./shadow-search.js";
+import { DEFAULT_CORPUS_CONTEXT_TOKEN_BUDGET } from "./contract.js";
 import type { CorpusMcpPort } from "./contract.js";
 
 const search = vi.fn(async () => ({ query: "q", datasets: ["dataset-1"], topK: 10, hits: [{ chunkId: "chunk-1" }] }));
@@ -15,7 +16,7 @@ describe("createCorpusShadowSearch", () => {
     await expect(shadow.search({ companyId: "company-1", dataset: "contracts", text: "q" }))
       .resolves.toEqual([{ chunkId: "chunk-1" }]);
     expect(provider).toHaveBeenCalledWith("company-1");
-    expect(search).toHaveBeenCalledWith({ query: "q", datasets: ["dataset-1"], topK: 10, minScore: null });
+    expect(search).toHaveBeenCalledWith({ query: "q", datasets: ["dataset-1"], topK: 10, minScore: null, contextTokenBudget: DEFAULT_CORPUS_CONTEXT_TOKEN_BUDGET });
   });
 
   it("rejects missing company or unknown/ambiguous dataset scope", async () => {
@@ -42,7 +43,7 @@ describe("createCorpusShadowSearch", () => {
     const shadow = createCorpusShadowSearch({} as never);
     await expect(shadow.search({ companyId: "company-1", dataset: "abc123", text: "q" }))
       .resolves.toEqual([{ chunkId: "chunk-1" }]);
-    expect(search).toHaveBeenCalledWith({ query: "q", datasets: ["dataset-1"], topK: 10, minScore: null });
+    expect(search).toHaveBeenCalledWith({ query: "q", datasets: ["dataset-1"], topK: 10, minScore: null, contextTokenBudget: DEFAULT_CORPUS_CONTEXT_TOKEN_BUDGET });
   });
 
   it("does not take a partial or unbracketed id for a RAGFlow dataset id, and refuses a shared one", async () => {

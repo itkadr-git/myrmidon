@@ -175,6 +175,7 @@ describe("createCorpusMcpProvider (OPE-12028)", () => {
       datasets: [],
       topK: 5,
       minScore: null,
+      contextTokenBudget: 2000,
     });
 
     expect(result.hits).toHaveLength(1);
@@ -229,7 +230,7 @@ describe("createCorpusMcpProvider: the search hot path does not count datasets (
     const spy = newSpy();
     const tools = await provider(spy)(COMPANY_ID);
 
-    const result = await tools!.search({ query: "weber grill", datasets: [], topK: 5, minScore: null });
+    const result = await tools!.search({ query: "weber grill", datasets: [], topK: 5, minScore: null, contextTokenBudget: 2000 });
 
     expect(spy.listDatasets).toBe(0);
     expect(spy.getDataset).toBe(0);
@@ -243,8 +244,8 @@ describe("createCorpusMcpProvider: the search hot path does not count datasets (
     const spy = newSpy();
     const tools = await provider(spy)(COMPANY_ID);
 
-    const byName = await tools!.search({ query: "weber grill", datasets: ["bbq-craft"], topK: 5, minScore: null });
-    const byId = await tools!.search({ query: "weber grill", datasets: [DATASET_ID, "bbq-craft"], topK: 5, minScore: null });
+    const byName = await tools!.search({ query: "weber grill", datasets: ["bbq-craft"], topK: 5, minScore: null, contextTokenBudget: 2000 });
+    const byId = await tools!.search({ query: "weber grill", datasets: [DATASET_ID, "bbq-craft"], topK: 5, minScore: null, contextTokenBudget: 2000 });
 
     expect(spy.listDatasets).toBe(0);
     expect(spy.indexSearch.map((call) => call.datasetIds)).toEqual([[DATASET_ID], [DATASET_ID]]);
@@ -257,7 +258,7 @@ describe("createCorpusMcpProvider: the search hot path does not count datasets (
     const spy = newSpy();
     const tools = await provider(spy)(COMPANY_ID);
 
-    const result = await tools!.search({ query: "weber grill", datasets: ["no-such-dataset"], topK: 3, minScore: null });
+    const result = await tools!.search({ query: "weber grill", datasets: ["no-such-dataset"], topK: 3, minScore: null, contextTokenBudget: 2000 });
 
     expect(result).toEqual({ query: "weber grill", datasets: [], topK: 3, hits: [] });
     expect(spy.indexSearch).toHaveLength(0);
@@ -267,7 +268,7 @@ describe("createCorpusMcpProvider: the search hot path does not count datasets (
   it("search keeps its answer: the same hit, the same score, the min-score floor", async () => {
     const tools = await provider(newSpy())(COMPANY_ID);
 
-    const result = await tools!.search({ query: "weber grill", datasets: ["bbq-craft"], topK: 5, minScore: null });
+    const result = await tools!.search({ query: "weber grill", datasets: ["bbq-craft"], topK: 5, minScore: null, contextTokenBudget: 2000 });
     expect(result).toEqual({
       query: "weber grill",
       datasets: [DATASET_ID],
@@ -281,7 +282,7 @@ describe("createCorpusMcpProvider: the search hot path does not count datasets (
       }],
     });
 
-    const filtered = await tools!.search({ query: "weber grill", datasets: ["bbq-craft"], topK: 5, minScore: 0.99 });
+    const filtered = await tools!.search({ query: "weber grill", datasets: ["bbq-craft"], topK: 5, minScore: 0.99, contextTokenBudget: 2000 });
     expect(filtered.hits).toHaveLength(0);
   });
 

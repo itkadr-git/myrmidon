@@ -50,6 +50,12 @@ export const MAX_CORPUS_TOP_K = 50;
 /** Largest accepted body of a single search query. */
 export const MAX_CORPUS_QUERY_CHARS = 2000;
 
+/** Default context budget for one agent corpus search result. */
+export const DEFAULT_CORPUS_CONTEXT_TOKEN_BUDGET = 2000;
+
+/** Largest context budget accepted for one corpus search result. */
+export const MAX_CORPUS_CONTEXT_TOKEN_BUDGET = 16_000;
+
 /**
  * The module as far as a tool is concerned. `enabled` is the whole gate: with it
  * false the endpoint lists no tools at all, so a bot of an instance that never
@@ -84,6 +90,8 @@ export interface CorpusSearchRequest {
   topK: number;
   /** Drop hits below this score; null keeps everything the index returns. */
   minScore: number | null;
+  /** Maximum estimated tokens in the cited context returned alongside hits. */
+  contextTokenBudget: number;
 }
 
 /** Where a hit came from: the bot needs the document, not just the chunk. */
@@ -109,12 +117,28 @@ export interface CorpusChunkHit {
   score: number;
 }
 
+export interface CorpusPackedContext {
+  text: string;
+  tokenCount: number;
+  fragments: Array<{
+    chunkId: string;
+    ordinal: number;
+    text: string;
+    score: number;
+    source: CorpusDocumentRef;
+    citation: string;
+    tokenCount: number;
+  }>;
+}
+
 export interface CorpusSearchResult {
   query: string;
   /** Datasets the search was restricted to; empty means all of them. */
   datasets: string[];
   topK: number;
   hits: CorpusChunkHit[];
+  /** Ranked hits packed as whole, source-cited fragments for agent context. */
+  context: CorpusPackedContext;
 }
 
 /** One dataset as `corpus_list_datasets` reports it. */
