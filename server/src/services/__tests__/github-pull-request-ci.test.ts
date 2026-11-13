@@ -492,6 +492,31 @@ describe("summarizeCheckRuns", () => {
         expect(summary.cancelledJobs?.map((j) => j.name)).toEqual(["tests (rerun only)"]);
       });
 
+      it("first run entirely cancelled + a later stray-label run entirely skipped under the same names, no successful CI result -> cancelled, not SUCCESS", () => {
+        const names = ["plan", "tests (server 1/6)", "tests (server 2/6)", "typecheck + build", "CI result"];
+        const runs = [
+          ...names.map((n) => rec(n, "cancelled", "2026-11-14T02:00:00Z", 100)),
+          ...names.map((n) => rec(n, "skipped", "2026-11-14T03:00:00Z", 400)),
+        ];
+        for (const input of [runs, [...runs].reverse()]) {
+          const summary = summarizeCheckRuns(input);
+          expect(summary.conclusion).toBe("cancelled");
+          expect(summary.conclusion).not.toBe("success");
+          expect(summary.failedJobs).toEqual([]);
+          expect(summary.cancelledJobs?.map((j) => j.name).sort()).toEqual([...names].sort());
+        }
+      });
+
+      it("a cancelled record of a LATER run than the successful CI result stays cancelled even with an earlier start time", () => {
+        const runs = [
+          rec("CI result", "success", "2026-11-14T02:30:00Z", 200),
+          rec("tests (server 1/6)", "cancelled", "2026-11-14T02:00:00Z", 300),
+        ];
+        const summary = summarizeCheckRuns(runs);
+        expect(summary.conclusion).toBe("cancelled");
+        expect(summary.cancelledJobs?.map((j) => j.name)).toEqual(["tests (server 1/6)"]);
+      });
+
       it("D: a stray-label run with every job skipped after the green full run -> SUCCESS", () => {
         const runs = [
           rec("tests (server 1/6)", "success", "2026-11-14T02:10:00Z", 200),
@@ -644,12 +669,12 @@ describe("summarizeCheckRuns", () => {
       expect(summary.failedJobs).toEqual([]);
     });
 
-    it("a skipped record of another run replaces an older cancelled one; a skipped gate of the same run does not", () => {
+    it("a later skipped record never replaces a cancelled one, of the same or of another run (OPE-12841)", () => {
       const other: PullRequestCiJob[] = [
         { id: 571, name: "hot files review", status: "completed", conclusion: "cancelled", url: "https://github.com/itkadr-git/myrmidon/actions/runs/940/job/571", startedAt: "2026-11-14T10:00:00Z", completedAt: "2026-11-14T10:00:00Z" },
         { id: 572, name: "hot files review", status: "completed", conclusion: "skipped", url: "https://github.com/itkadr-git/myrmidon/actions/runs/941/job/572", startedAt: "2026-11-14T10:05:00Z", completedAt: "2026-11-14T10:05:00Z" },
       ];
-      expect(summarizeCheckRuns(other).conclusion).toBe("success");
+      expect(summarizeCheckRuns(other).conclusion).toBe("cancelled");
       const same: PullRequestCiJob[] = [
         { id: 581, name: "CI result", status: "completed", conclusion: "cancelled", url: "https://github.com/itkadr-git/myrmidon/actions/runs/950/job/581", startedAt: "2026-11-14T10:00:00Z", completedAt: "2026-11-14T10:00:00Z" },
         { id: 582, name: "CI result", status: "completed", conclusion: "skipped", url: "https://github.com/itkadr-git/myrmidon/actions/runs/950/job/582", startedAt: "2026-11-14T10:05:00Z", completedAt: "2026-11-14T10:05:00Z" },

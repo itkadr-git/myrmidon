@@ -193,16 +193,13 @@ export function summarizeCheckRuns(
     );
     if (inflight && (!verdict || compareRuns(inflight, verdict) > 0)) return inflight;
     if (verdict) return verdict;
+    // No verdict. A `cancelled` record always represents the name: a later
+    // `skipped` (e.g. a run started by a stray label, which publishes every job
+    // under the same name as `skipped`, OPE-12841) is not a replacement - the
+    // checks never ran on this head. Only `skipped`/`neutral` records: the latest.
     const cancelled = latestOf(completed.filter((r) => r.conclusion === "cancelled"));
-    const quiet = latestOf(completed.filter((r) => r.conclusion !== "cancelled"));
-    if (cancelled && quiet) {
-      const cancelledRun = workflowRunIdOf(cancelled);
-      const quietRun = workflowRunIdOf(quiet);
-      const quietIsReplacement =
-        cancelledRun !== null && quietRun !== null && cancelledRun !== quietRun && compareRuns(quiet, cancelled) > 0;
-      return quietIsReplacement ? quiet : cancelled;
-    }
-    return (cancelled ?? quiet ?? inflight) as PullRequestCiJob;
+    if (cancelled) return cancelled;
+    return (latestOf(completed) ?? inflight) as PullRequestCiJob;
   };
   const groupsByName = new Map<string, PullRequestCiJob[]>();
   for (const run of runs) {
@@ -267,9 +264,9 @@ export function summarizeCheckRuns(
   // A completed successful `CI result` of the head means the run that produced
   // it is the one that counts. A cancelled check is ignored (it belongs to a run
   // that was replaced) when it is not newer than that `CI result` (same order key:
-  // time, then id), or - when run numbers are known - it belongs to the same
-  // workflow run, or to a run with a smaller number than the run of the `CI
-  // result`. This is what a `full-ci` label or a re-run leaves behind: orphan
+  // time, then id) - used only when a run number is unknown - or, when both run
+  // numbers are known, it belongs to the same or an older workflow run than the
+  // `CI result` (run numbers decide first). This is what a `full-ci` label or a re-run leaves behind: orphan
   // cancelled jobs of the replaced run with names the new run does not have.
   // A cancelled record NEWER than the successful `CI result` (a later run was
   // cancelled) still gives `cancelled`. Real failures are never affected.
@@ -277,11 +274,13 @@ export function summarizeCheckRuns(
     const ci = latestCiResultSuccess as PullRequestCiJob | null;
     const record = cancelledRecords.get(job);
     if (!ci || !record) return false;
-    if (compareRuns(record, ci) <= 0) return true;
     const cancelledRun = workflowRunIdOf(record);
     const ciRun = workflowRunIdOf(ci);
-    if (cancelledRun === null || ciRun === null) return false;
-    return cancelledRun === ciRun || BigInt(cancelledRun) < BigInt(ciRun);
+    // Run numbers first: a cancelled record of a LATER run than the successful
+    // `CI result` is never absorbed, whatever its time. Time decides only when a
+    // run number is unknown.
+    if (cancelledRun !== null && ciRun !== null) return BigInt(cancelledRun) <= BigInt(ciRun);
+    return compareRuns(record, ci) <= 0;
   });
   for (const job of absorbedCancelledJobs) cancelledJobs.splice(cancelledJobs.indexOf(job), 1);
 
