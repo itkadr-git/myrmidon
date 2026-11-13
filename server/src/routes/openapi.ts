@@ -1855,7 +1855,11 @@ registry.registerPath({
     200: r.ok(
       z.object({
         status: z.enum(["ok", "unhealthy"]),
-        version: z.string().optional(),
+        // Release version: the same value the CI image workflow writes to the
+        // image's `org.opencontainers.image.version` label. Null when the
+        // build carries no release stamp (local development). Present on
+        // every response shape, including redacted ones.
+        version: z.string().nullable(),
         // Running build commit (full git SHA), or null when git metadata is
         // unavailable. Present on every response shape, including redacted ones.
         commit: z.string().nullable(),
@@ -1931,7 +1935,7 @@ registry.registerPath({
         "application/json": {
           schema: z.object({
             status: z.literal("unhealthy"),
-            version: z.string(),
+            version: z.string().nullable(),
             serverVersion: z.string(),
             commit: z.string().nullable(),
             error: z.literal("database_unreachable"),
