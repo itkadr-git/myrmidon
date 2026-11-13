@@ -1163,8 +1163,9 @@ describeEmbeddedPostgres("myrmidon review admission atomic wake persistence", ()
     expect(secondIssue?.monitorNextCheckAt).toBeInstanceOf(Date);
     expect(secondIssue?.monitorNextCheckAt!.getTime()).toBeGreaterThan(Date.now());
 
-    // Next tick: the quota clears and the deferred wake goes out.
+    // Next tick: the quota clears and the deferred wake goes out when re-entering review.
     clearReviewWakesQuotas(new Date(Date.now() + 60_000));
+    await ctx.db.update(issues).set({ status: "in_progress" }).where(eq(issues.id, secondIssueId));
     const third = await patchToInReview(secondIssueId);
     expect(third.status).toBe(200);
     const deferredWakes = await ctx.db

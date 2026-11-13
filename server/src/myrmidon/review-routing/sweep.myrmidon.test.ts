@@ -39,13 +39,11 @@ function row(id: string, overrides: Partial<InReviewIssueRow> = {}): InReviewIss
     identifier: `T-${id}`,
     title: `Task ${id}`,
     status: "in_review",
-    // myrmidon(OPE-12886): the default row is FRESH (< the 4-minute stale
-    // window) so tests exercise their own lane; stale-first rows carry an
-    // explicit old updatedAt — as on the board, where the assigned queue
-    // sits untouched for hours. A stale default made the liveness lane wake
-    // the holder in every rebalance/pool test.
+    // Keep the generic fixture outside both recovery age gates: assignment
+    // tests need the 15-minute review-path window, while liveness tests use
+    // explicit updatedAt overrides for their stale/fresh cases.
     createdAt: new Date(NOW.getTime() - 6 * 60 * 60_000),
-    updatedAt: new Date(NOW.getTime() - 60_000),
+    updatedAt: new Date(NOW.getTime() - 6 * 60 * 60_000),
     assigneeAgentId: ASSIGNEE,
     assigneeUserId: null,
     createdByAgentId: AUTHOR,
@@ -1502,7 +1500,9 @@ describe("own-group review pools (OPE-12683)", () => {
       currentParticipant: { type: "agent", agentId: holderId },
       returnAssignee: { type: "agent", agentId: ASSIGNEE },
     };
-    return row("1", { assigneeAgentId: holderId, executionPolicy: policy, executionState: state });
+    // Branch liveness has no load gate (OPE-12886): a stale holder row would
+    // get a liveness wake alongside the rebalance lane. Keep the holder fresh.
+    return row("1", { assigneeAgentId: holderId, executionPolicy: policy, executionState: state, updatedAt: NOW });
   }
 
   function rebalanceSetup(reviewers: Fixture["reviewers"], loads: Array<[string, number]>, holderId = REV_A) {
