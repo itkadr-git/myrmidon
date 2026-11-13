@@ -119,6 +119,14 @@ type CancelSuppressedRetryInput = {
 };
 type CancelSuppressedRetryResult = { applied: true; run: HeartbeatRun } | { applied: false };
 
+/**
+ * myrmidon(EMPTY-RUNS-6): the wait reason the start sweep writes onto a queued
+ * run when the agent's own concurrency ceiling is full (`writeQueuedRunWaitReason`
+ * in services/heartbeat.ts, the `availableSlots <= 0` branch of
+ * `startNextQueuedRunForAgent`). Keep the two literals equal.
+ */
+const QUEUED_RUN_OWN_SLOT_WAIT_REASON = "agent_concurrency";
+
 const NO_REVIEW_PARTICIPANT: ReviewParticipantFacts = {
   isInReview: false,
   hasParticipant: false,
@@ -1157,6 +1165,35 @@ export function createPostgresRunDispatchAdapter(
     return { issueId, facts, decision: decideQueuedRunStaleness(facts, now) };
   }
 
+  // myrmidon(EMPTY-RUNS-6): is this queued run simply standing in its own
+  // agent's queue? The start sweep names the wait on the run
+  // (`contextSnapshot.waitReason = "agent_concurrency"`: the agent's own
+  // concurrency ceiling is full), and the agent has a run in `running` right
+  // now. Such a run is not stale by age: it starts when the agent's running run
+  // ends. Expiring it bought nothing — the wake that follows the expiry queues
+  // the same run behind the same ceiling — and after two expiries the rewake
+  // throttle froze the task with "N runs without progress" although no run of
+  // it had ever started (13.11: seven tasks assigned to one engineer at once,
+  // two slots; 46 of 50 expiries in 72 h carried this wait reason). A named
+  // ceiling without a running run behind it is a lost start, not a queue, and
+  // expires as before.
+  async function queuedRunWaitsForOwnAgentSlot(tx: Db, run: HeartbeatRun): Promise<boolean> {
+    const waitReason = readNonEmptyString(parseObject(run.contextSnapshot).waitReason);
+    if (waitReason !== QUEUED_RUN_OWN_SLOT_WAIT_REASON) return false;
+    const running = await tx
+      .select({ id: heartbeatRuns.id })
+      .from(heartbeatRuns)
+      .where(
+        and(
+          eq(heartbeatRuns.companyId, run.companyId),
+          eq(heartbeatRuns.agentId, run.agentId),
+          eq(heartbeatRuns.status, "running"),
+        ),
+      )
+      .limit(1);
+    return running.length > 0;
+  }
+
   async function cancelStaleQueuedRun(
     input: CancelStaleQueuedRunInput,
   ): Promise<CancelStaleQueuedRunOutcome> {
@@ -1169,7 +1206,10 @@ export function createPostgresRunDispatchAdapter(
         input.expectedStatus === "queued" &&
         input.staleAfterMs !== undefined &&
         input.staleAfterMs > 0 &&
-        staleAgeMs >= input.staleAfterMs
+        staleAgeMs >= input.staleAfterMs &&
+        // myrmidon(EMPTY-RUNS-6): a run that stands in its own agent's queue is
+        // not expired by age; the task-state checks below still apply to it.
+        !(await queuedRunWaitsForOwnAgentSlot(tx, run))
       ) {
         return cancelStaleRunInTx(
           tx,

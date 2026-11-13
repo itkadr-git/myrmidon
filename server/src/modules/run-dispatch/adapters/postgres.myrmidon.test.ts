@@ -341,6 +341,121 @@ describeEmbeddedPostgres("run-dispatch: pending interaction addressee wake (P2)"
     });
   });
 
+  // myrmidon(EMPTY-RUNS-6): a queued run that stands behind its own agent's
+  // running runs is a queue, not a stale run. Expiring it by age queued the
+  // same run behind the same ceiling again, and after the second expiry the
+  // rewake throttle froze the task with "2 runs without progress" although no
+  // run of it had started (13.11: seven tasks assigned to one engineer with two
+  // slots; two high-priority tasks were frozen while the engineer was working).
+  describe("a run standing in its own agent's queue is not expired by age (EMPTY-RUNS-6)", () => {
+    const MIN = 60 * 1000;
+    const staleAfterMs = 30 * MIN;
+    const ownSlotWait = {
+      waitReason: "agent_concurrency",
+      waitDetail: { limit: 1, running: 1, limitSource: "board" },
+    };
+
+    /** A run queued 40 minutes ago, plus (optionally) another run of the assignee or of the second agent. */
+    async function seedWaitingRun(input: {
+      waitContext?: Record<string, unknown>;
+      otherRun?: { agent: "same" | "other"; status: "running" | "succeeded" } | null;
+      wakeReason?: string;
+    }) {
+      const { companyId, assigneeId, reviewerId, issueId } = await seed();
+      const now = new Date();
+      const runId = await seedRun({
+        companyId,
+        agentId: assigneeId,
+        contextSnapshot: {
+          issueId,
+          ...(input.wakeReason ? { wakeReason: input.wakeReason } : {}),
+          ...(input.waitContext ?? {}),
+        },
+        createdAt: new Date(now.getTime() - 40 * MIN),
+      });
+      if (input.otherRun) {
+        const startedAt = new Date(now.getTime() - 50 * MIN);
+        await db.insert(heartbeatRuns).values({
+          id: randomUUID(),
+          companyId,
+          agentId: input.otherRun.agent === "same" ? assigneeId : reviewerId,
+          invocationSource: "automation",
+          status: input.otherRun.status,
+          contextSnapshot: {},
+          createdAt: startedAt,
+          startedAt,
+          finishedAt: input.otherRun.status === "running" ? null : new Date(now.getTime() - 45 * MIN),
+        });
+      }
+      return { companyId, runId, issueId, reviewerId, now };
+    }
+
+    const expire = (companyId: string, runId: string, now: Date) =>
+      createPostgresRunDispatchAdapter(db).cancelStaleQueuedRun({
+        runId, companyId, expectedStatus: "queued", staleAfterMs, now,
+      });
+
+    it("keeps a run that waits for its agent's own slot while that agent has a running run", async () => {
+      const { companyId, runId, now } = await seedWaitingRun({
+        waitContext: ownSlotWait,
+        otherRun: { agent: "same", status: "running" },
+      });
+
+      const outcome = await expire(companyId, runId, now);
+
+      expect(outcome.outcome).toBe("not_stale");
+      expect(await runStatus(runId)).toMatchObject({ status: "queued", errorCode: null });
+    });
+
+    it("still expires it when no run of the agent is running: a named ceiling without a run behind it is a lost start", async () => {
+      const finished = await seedWaitingRun({
+        waitContext: ownSlotWait,
+        otherRun: { agent: "same", status: "succeeded" },
+      });
+      expect(await expire(finished.companyId, finished.runId, finished.now))
+        .toMatchObject({ outcome: "cancelled", errorCode: "queued_run_stale_timeout" });
+
+      const alone = await seedWaitingRun({ waitContext: ownSlotWait, otherRun: null });
+      expect(await expire(alone.companyId, alone.runId, alone.now))
+        .toMatchObject({ outcome: "cancelled", errorCode: "queued_run_stale_timeout" });
+    });
+
+    it("still expires it when only another agent is running", async () => {
+      const { companyId, runId, now } = await seedWaitingRun({
+        waitContext: ownSlotWait,
+        otherRun: { agent: "other", status: "running" },
+      });
+
+      expect(await expire(companyId, runId, now))
+        .toMatchObject({ outcome: "cancelled", errorCode: "queued_run_stale_timeout" });
+    });
+
+    it("still expires a run the sweep holds for another reason, or for none, even while the agent runs", async () => {
+      const unnamed = await seedWaitingRun({ otherRun: { agent: "same", status: "running" } });
+      expect(await expire(unnamed.companyId, unnamed.runId, unnamed.now))
+        .toMatchObject({ outcome: "cancelled", errorCode: "queued_run_stale_timeout" });
+
+      const maintenance = await seedWaitingRun({
+        waitContext: { waitReason: "maintenance" },
+        otherRun: { agent: "same", status: "running" },
+      });
+      expect(await expire(maintenance.companyId, maintenance.runId, maintenance.now))
+        .toMatchObject({ outcome: "cancelled", errorCode: "queued_run_stale_timeout" });
+    });
+
+    it("does not shield the run from the task-state checks: a reassigned task still cancels it", async () => {
+      const { companyId, runId, issueId, reviewerId, now } = await seedWaitingRun({
+        wakeReason: "issue_assigned",
+        waitContext: ownSlotWait,
+        otherRun: { agent: "same", status: "running" },
+      });
+      await db.update(issues).set({ assigneeAgentId: reviewerId }).where(eq(issues.id, issueId));
+
+      expect(await expire(companyId, runId, now))
+        .toMatchObject({ outcome: "cancelled", errorCode: "issue_assignee_changed" });
+    });
+  });
+
   it("does not let another agent borrow the addressee wake context", async () => {
     const { companyId, assigneeId, issueId, interactionId } = await seed();
     const outsiderId = randomUUID();
