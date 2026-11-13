@@ -1359,7 +1359,7 @@ describe("review rebalancing", () => {
       currentParticipant: { type: "agent", agentId: REV_A },
       returnAssignee: { type: "agent", agentId: ASSIGNEE },
     };
-    t.fixture.rows.set("1", row("1", { assigneeAgentId: REV_A, executionPolicy: policy, executionState: state }));
+    t.fixture.rows.set("1", row("1", { assigneeAgentId: REV_A, executionPolicy: policy, executionState: state, updatedAt: NOW }));
     t.fixture.history.set("1", {
       lastAt: new Date(NOW.getTime() - 45 * 60 * 1000),
       reviewerAgentIds: [REV_A],
@@ -1393,7 +1393,7 @@ describe("review rebalancing", () => {
       currentParticipant: { type: "agent", agentId: REV_A },
       returnAssignee: { type: "agent", agentId: ASSIGNEE },
     };
-    t.fixture.rows.set("1", row("1", { assigneeAgentId: REV_A, executionPolicy: policy, executionState: state }));
+    t.fixture.rows.set("1", row("1", { assigneeAgentId: REV_A, executionPolicy: policy, executionState: state, updatedAt: NOW }));
     t.fixture.history.set("1", {
       lastAt: new Date(NOW.getTime() - 15 * 60 * 1000), // only 15 min, threshold 30
       reviewerAgentIds: [REV_A],
@@ -1429,7 +1429,7 @@ describe("review rebalancing", () => {
       escalationToParticipant: { type: "agent", agentId: REV_A },
       escalationReason: "max_review_rounds_exceeded",
     };
-    t.fixture.rows.set("1", row("1", { assigneeAgentId: REV_A, executionPolicy: policy, executionState: state }));
+    t.fixture.rows.set("1", row("1", { assigneeAgentId: REV_A, executionPolicy: policy, executionState: state, updatedAt: NOW }));
     t.fixture.history.set("1", {
       lastAt: new Date(NOW.getTime() - 60 * 60 * 1000),
       reviewerAgentIds: [REV_A],
