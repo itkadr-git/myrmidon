@@ -120,16 +120,26 @@ docker создаёт от root.
   владельца только у каталога от root (его создал docker) и никогда не делает
   chown каталога другого uid: пишет предупреждение и оставляет кеши по
   умолчанию.
+- `<OMP_RUNNER_CACHE_DIR>/pnpm-store-omp` → `/cache/pnpm-store` (чтение и
+  запись). **Общее хранилище pnpm** для всех исполнителей (OPE-13018),
+  владелец — uid 1000:
+  `install -d -o 1000 -g 1000 -m 0755 <OMP_RUNNER_CACHE_DIR>/pnpm-store-omp`.
+  Одно хранилище на хост вместо копии по 2,5 ГБ на исполнителя; оно должно
+  лежать на той же файловой системе XFS, что и тома исполнителей, чтобы
+  работал рефлинк.
 
-Хранилище pnpm (**store**) лежит ни там, ни там. Entrypoint пишет
-`/etc/profile.d/omp-runner-pnpm.sh` со строками
-`npm_config_store_dir=/workspace/.paperclip-runtime/pnpm-store` и
-`npm_config_package_import_method=clone-or-copy`: одно хранилище на исполнителя,
-в томе `workspace`. Ссылка не проходит через границу файловых систем, поэтому
-хранилищу не место на привязке `/cache` (BOT-DISK-D в образе bot-runtime): оно
-должно быть на том же монтировании, что и клоны. Внутри `.paperclip-runtime`
-оно лежит потому, что доска чистит синхронизируемую рабочую папку по своим
-правилам (`git clean -fdx -e .paperclip-runtime`, очистка каталога кроме
+Хранилище pnpm (**store**, OPE-13018). Entrypoint пишет
+`/etc/profile.d/omp-runner-pnpm.sh` со строкой
+`npm_config_store_dir=/cache/pnpm-store`, когда compose-файл монтирует общее
+хранилище, и возвращается к старому хранилищу исполнителя
+`/workspace/.paperclip-runtime/pnpm-store`, когда монтирования нет (исполнитель
+с compose до OPE-13018). Общее хранилище работает потому, что лежит на той же
+файловой системе XFS, что и тома исполнителей: pnpm делает рефлинк
+`node_modules` через bind-монтирования, не копируя пакеты. Хранилище на другой
+файловой системе заставило бы pnpm копировать каждый пакет в каждый клон
+(BOT-DISK-D в образе bot-runtime). Старое хранилище внутри workspace лежит во
+`.paperclip-runtime` потому, что доска чистит синхронизируемую рабочую папку по
+своим правилам (`git clean -fdx -e .paperclip-runtime`, очистка каталога кроме
 `.paperclip-runtime`, очистка после прогона, оставляющая только
 `.paperclip-runtime`) и этот каталог не синхронизирует; удаляется лишь
 `.paperclip-runtime/runs/`. Хранилище в `/workspace/.pnpm-store` такой защиты не
@@ -163,7 +173,7 @@ docker создаёт от root.
    - `OMP_RUNNER_AUTHORIZED_KEYS` — файл открытого ключа;
    - `OMP_RUNNER_NETWORK` — сеть контейнера доски.
    - `OMP_RUNNER_DATA_DIR` — каталог на диске данных ботов, не на корне. В нём подкаталоги `workspace/` (владелец 1000:1000), `home/`, `hostkeys/` и `tmp/` (режим `1777`, как у системного `/tmp`: `install -d -m 1777 <каталог>/tmp`; это `/tmp` контейнера, он лежит на диске данных, чтобы тесты и временные файлы задач не занимали корневой диск хоста; записи старше 24 часов убирает host-gc). Создать все до первого запуска: docker создаёт отсутствующий источник привязки от root. Исполнитель, запущенный до появления `tmp/`: создать каталог, добавить том `tmp` в его compose-файл и пересоздать контейнер. Агенты клонируют и собирают там репозитории, по нескольку гигабайт на каждого.
-   - `OMP_RUNNER_CACHE_DIR` (необязательно) — общий кеш пакетов выше; сначала создать его подкаталоги `git` и `pnpm-omp`.
+   - `OMP_RUNNER_CACHE_DIR` (необязательно) — общий кеш пакетов выше; сначала создать его подкаталоги `git`, `pnpm-omp` и `pnpm-store-omp`.
 
    Лимиты по умолчанию — как у контейнера бота-инженера: 4 ГБ, 1 CPU, 1024 процесса. Команда:
    `docker compose -p <имя> --env-file <файл> -f docker/agent-runtime/omp-ssh/compose.yml up -d`.
@@ -193,23 +203,54 @@ docker создаёт от root.
 2. По желанию добавить `OMP_RUNNER_CACHE_DIR=<sharedPackageCachePath доски>`. Без
    строки исполнитель получит собственный кеш в `${OMP_RUNNER_DATA_DIR}/cache` и
    будет работать как раньше.
-3. Создать два каталога (на общем пути; иначе docker создаст их от root):
-   `install -d -o <uid доски> -m 0755 <OMP_RUNNER_CACHE_DIR>/git` и
-   `install -d -o 1000 -g 1000 -m 0755 <OMP_RUNNER_CACHE_DIR>/pnpm-omp`.
+3. Создать три каталога (на общем пути; иначе docker создаст их от root):
+   `install -d -o <uid доски> -m 0755 <OMP_RUNNER_CACHE_DIR>/git`,
+   `install -d -o 1000 -g 1000 -m 0755 <OMP_RUNNER_CACHE_DIR>/pnpm-omp` и
+   `install -d -o 1000 -g 1000 -m 0755 <OMP_RUNNER_CACHE_DIR>/pnpm-store-omp`.
    Каталог `git` — это каталог зеркал доски; если доска уже зеркалирует туда, он
-   существует и ничего не меняется.
+   существует и ничего не меняется. Каталог `pnpm-store-omp` — общее хранилище
+   pnpm (OPE-13018); оно начинается пустым и наполняется при первой установке.
 4. Пересоздать: `docker compose -p <имя> --env-file <файл> -f docker/agent-runtime/omp-ssh/compose.yml up -d`.
    Тома `workspace`, `home` и `hostkeys` сохраняются, так что закреплённый ключ
    хоста не меняется и SSH-окружение на доске править не нужно.
 5. Проверить: `docker logs <имя> 2>&1 | grep omp-runner:` показывает
-   `shared package download cache at /cache/pnpm` и
+   `shared package download cache at /cache/pnpm`,
+   `shared pnpm store at /cache/pnpm-store` и
    `git mirrors at /cache/git: N repositories`
    (и нет `WARNING /cache/pnpm is owned by uid`);
    `docker exec -u paperclip <имя> sh -c '. /etc/profile; command -v git; echo $npm_config_store_dir; echo $npm_config_cache_dir; echo $npm_config_cache'`
-   печатает `/usr/local/bin/git`, `/workspace/.paperclip-runtime/pnpm-store` и
-   `/cache/pnpm` дважды.
+   печатает `/usr/local/bin/git`, `/cache/pnpm-store` и `/cache/pnpm` дважды.
 
 Хранилище pnpm исполнителя начинается пустым и наполняется при первой установке.
+
+### Перенос работающего исполнителя на общее хранилище pnpm (OPE-13018)
+
+Исполнитель, запущенный до появления общего хранилища, держит своё хранилище
+в `/workspace/.paperclip-runtime/pnpm-store`. Entrypoint возвращается к нему,
+когда `/cache/pnpm-store` не смонтирован, так что исполнитель работает как
+прежде. Перенос — по одному исполнителю, пока у его агента нет прогона в работе
+(пересоздание останавливает sshd и любой прогон на нём):
+
+1. Создать общий каталог хранилища на хосте:
+   `install -d -o 1000 -g 1000 -m 0755 <OMP_RUNNER_CACHE_DIR>/pnpm-store-omp`.
+   Compose-файл исполнителя уже ссылается на него (том добавлен в OPE-13018);
+   если compose исполнителя старше этого изменения — сначала обновить его.
+2. Пересоздать контейнер (та же команда, что в п. 4 выше). Entrypoint печатает
+   `shared pnpm store at /cache/pnpm-store`.
+3. Проверить профиль:
+   `docker exec -u paperclip <имя> sh -c '. /etc/profile; echo $npm_config_store_dir'`
+   печатает `/cache/pnpm-store`.
+4. В рабочей копии задачи один раз выполнить `pnpm install`: pnpm наполнит
+   общее хранилище из реестра (или из существующего хранилища исполнителя
+   через `pnpm store import`, если хочется его посеять). Проверить, что
+   установка работает, прежде чем удалять старое хранилище.
+5. Удалить хранилище исполнителя:
+   `rm -rf <OMP_RUNNER_DATA_DIR>/workspace/.paperclip-runtime/pnpm-store`.
+   Оно больше не используется; entrypoint теперь указывает каждую сессию на
+   общее монтирование.
+
+Пока все исполнители хоста не перенесены, их старые хранилища остаются на
+месте; общее хранилище просто наполняется с первого перенесённого исполнителя.
 
 ## Публикация и подпись
 

@@ -166,20 +166,29 @@ docker creates a missing bind source as root.
   profile.d is what every board-spawned SSH command and agent shell sources).
   It fixes only a root-owned directory (docker created it) and never chowns one
   of another uid: it logs a warning and leaves the default caches.
+- `<OMP_RUNNER_CACHE_DIR>/pnpm-store-omp` → `/cache/pnpm-store` (read-write).
+  The **shared pnpm store** for all runners (OPE-13018), owned by uid 1000:
+  `install -d -o 1000 -g 1000 -m 0755 <OMP_RUNNER_CACHE_DIR>/pnpm-store-omp`.
+  One store for the whole host instead of a 2.5 GB copy per runner; it must sit
+  on the same XFS filesystem as the runner volumes for reflink to work.
 
-The pnpm **store** is on neither mount. The entrypoint writes
+The pnpm **store** (OPE-13018). The entrypoint writes
 `/etc/profile.d/omp-runner-pnpm.sh` with
-`npm_config_store_dir=/workspace/.paperclip-runtime/pnpm-store` and
-`npm_config_package_import_method=clone-or-copy`, one store per runner, in the
-`workspace` volume. A link cannot cross a filesystem boundary, so the store must
-not sit on the `/cache` bind (BOT-DISK-D in the bot-runtime image); it must be on
-the same mount as the clones. It sits inside `.paperclip-runtime` because the
-board cleans the synchronized workspace on its own terms (`git clean -fdx -e
-.paperclip-runtime`, emptying the directory except `.paperclip-runtime`, a
-post-run cleanup that keeps only `.paperclip-runtime`) and never syncs that
-directory; only `.paperclip-runtime/runs/` is pruned. A store at
-`/workspace/.pnpm-store` would not have that protection. The reasoning is also
-in the header of `omp-ssh/compose.yml`.
+`npm_config_store_dir=/cache/pnpm-store` when the compose file mounts the
+shared store, and falls back to the legacy per-runner store
+`/workspace/.paperclip-runtime/pnpm-store` when the mount is absent (a runner
+whose compose predates OPE-13018). The shared store works because it sits on
+the same XFS filesystem as the runner volumes: pnpm reflinks `node_modules`
+across the bind mounts without copying package bytes. A store on another
+filesystem would make pnpm copy every package into every clone (BOT-DISK-D in
+the bot-runtime image). The legacy in-workspace store sits inside
+`.paperclip-runtime` because the board cleans the synchronized workspace on its
+own terms (`git clean -fdx -e .paperclip-runtime`, emptying the directory
+except `.paperclip-runtime`, a post-run cleanup that keeps only
+`.paperclip-runtime`) and never syncs that directory; only
+`.paperclip-runtime/runs/` is pruned. A store at `/workspace/.pnpm-store` would
+not have that protection. The reasoning is also in the header of
+`omp-ssh/compose.yml`.
 
 `clone-or-copy` makes pnpm reflink packages from the store where the filesystem
 supports it (XFS with reflink enabled) and copy them otherwise. pnpm 9 does not
@@ -205,8 +214,8 @@ One runner per agent:
    env file with `OMP_RUNNER_NAME`, `OMP_RUNNER_IMAGE` (a digest from a
    successful signed workflow run), `OMP_RUNNER_AUTHORIZED_KEYS` (the public
    key file) and `OMP_RUNNER_NETWORK` (the board container's network) and `OMP_RUNNER_DATA_DIR`: a directory on the bot data disk, not the root disk, with subdirectories `workspace/` (owned by 1000:1000), `home/`, `hostkeys/` and `tmp/` (mode `1777`, like a system `/tmp`: `install -d -m 1777 <dir>/tmp`; it is the container's `/tmp`, kept on the data disk so tests and temporary task files do not fill the root disk of the host; the host GC removes entries older than 24 h). Agents clone and build repositories there, gigabytes per agent. Create all of them **before the first start**: docker creates a missing bind source as root. A runner started before `tmp/` was added: create the directory, add the `tmp` volume to its compose file and recreate the container. Optionally
-   `OMP_RUNNER_CACHE_DIR` (the shared package cache above; create its `git` and
-   `pnpm-omp` subdirectories first). The
+   `OMP_RUNNER_CACHE_DIR` (the shared package cache above; create its `git`,
+   `pnpm-omp` and `pnpm-store-omp` subdirectories first). The
    limits default to 4 GB, 1 CPU and 1024 processes, as for an engineer bot
    container. Run
    `docker compose -p <runner-name> --env-file <file> -f docker/agent-runtime/omp-ssh/compose.yml up -d`.
@@ -237,23 +246,55 @@ progress (a recreate stops sshd and any run on it):
 2. Optional: add `OMP_RUNNER_CACHE_DIR=<the board's sharedPackageCachePath>`.
    Without the line the runner gets a private cache under
    `${OMP_RUNNER_DATA_DIR}/cache` and works as before.
-3. Create the two directories (on the shared path; docker would create them as
-   root): `install -d -o <board uid> -m 0755 <OMP_RUNNER_CACHE_DIR>/git` and
-   `install -d -o 1000 -g 1000 -m 0755 <OMP_RUNNER_CACHE_DIR>/pnpm-omp`. The
-   `git` directory is the board's mirror directory; if the board already
-   mirrors there, it exists and nothing changes.
+3. Create the three directories (on the shared path; docker would create them as
+   root): `install -d -o <board uid> -m 0755 <OMP_RUNNER_CACHE_DIR>/git`,
+   `install -d -o 1000 -g 1000 -m 0755 <OMP_RUNNER_CACHE_DIR>/pnpm-omp` and
+   `install -d -o 1000 -g 1000 -m 0755 <OMP_RUNNER_CACHE_DIR>/pnpm-store-omp`.
+   The `git` directory is the board's mirror directory; if the board already
+   mirrors there, it exists and nothing changes. The `pnpm-store-omp`
+   directory is the shared pnpm store (OPE-13018); it starts empty and fills
+   on the first install.
 4. Recreate: `docker compose -p <runner-name> --env-file <file> -f docker/agent-runtime/omp-ssh/compose.yml up -d`.
    The `workspace`, `home` and `hostkeys` volumes are kept, so the pinned host
    key is unchanged and the board's SSH environment needs no edit.
 5. Check: `docker logs <runner-name> 2>&1 | grep omp-runner:` shows
-   `shared package download cache at /cache/pnpm` and
+   `shared package download cache at /cache/pnpm`,
+   `shared pnpm store at /cache/pnpm-store` and
    `git mirrors at /cache/git: N repositories`
    (and no `WARNING /cache/pnpm is owned by uid`);
    `docker exec -u paperclip <runner-name> sh -c '. /etc/profile; command -v git; echo $npm_config_store_dir; echo $npm_config_cache_dir; echo $npm_config_cache'`
-   prints `/usr/local/bin/git`, `/workspace/.paperclip-runtime/pnpm-store` and
-   `/cache/pnpm` twice.
+   prints `/usr/local/bin/git`, `/cache/pnpm-store` and `/cache/pnpm` twice.
 
 The pnpm store of the runner starts empty and fills on the first install.
+
+### Migrating an existing runner to the shared pnpm store (OPE-13018)
+
+A runner started before the shared store keeps its per-runner store at
+`/workspace/.paperclip-runtime/pnpm-store`. The entrypoint falls back to it
+when `/cache/pnpm-store` is not mounted, so the runner works as before. To
+migrate a runner, one at a time, while its agent has no run in progress (a
+recreate stops sshd and any run on it):
+
+1. Create the shared store directory on the host:
+   `install -d -o 1000 -g 1000 -m 0755 <OMP_RUNNER_CACHE_DIR>/pnpm-store-omp`.
+   The runner's compose file already references it (OPE-13018 added the volume);
+   if the runner's compose predates the change, update the compose file first.
+2. Recreate the container (same command as step 4 above). The entrypoint prints
+   `shared pnpm store at /cache/pnpm-store`.
+3. Verify the profile:
+   `docker exec -u paperclip <runner-name> sh -c '. /etc/profile; echo $npm_config_store_dir'`
+   prints `/cache/pnpm-store`.
+4. In a task copy, run `pnpm install` once: pnpm fills the shared store from
+   the registry (or from the existing per-runner store via
+   `pnpm store import`, if you prefer to seed it). Check that the install
+   works before dropping the old store.
+5. Drop the per-runner store:
+   `rm -rf <OMP_RUNNER_DATA_DIR>/workspace/.paperclip-runtime/pnpm-store`.
+   It is no longer referenced; the entrypoint now points every session at the
+   shared mount.
+
+Until every runner on the host is migrated the per-runner stores stay where
+they are; the shared store simply fills from the first migrated runner onward.
 
 ## Publishing and Signing
 
