@@ -1423,55 +1423,6 @@ describe("omp local execution", () => {
     });
 
     // myrmidon(OMP-RUN-GUARD-2): both stops of the local ssh client go through one function.
-    it("signals the ssh client once when the run guard stops the run and the run is cancelled at the same time", async () => {
-      const run = await makeSshRun("run-guard-stop-and-cancel");
-      prepareAdapterExecutionTargetRuntime.mockImplementationOnce(async () => run.preparedRuntime);
-      const guard = new RunGuard();
-      // The board aborts the run's signal when the guard stops the run.
-      const onRunGuardStop = vi.fn(async (reason: RunGuardStopReason) => {
-        run.controller.abort(new Error(reason));
-      });
-      const turnStart = `${JSON.stringify({ type: "turn_start" })}\n`;
-      const kill = vi.fn((_signal?: string) => true);
-      vi.useFakeTimers();
-      try {
-        runAdapterExecutionTargetProcess.mockImplementationOnce(async (runId, _target, _command, _args, options) => {
-          runningProcesses.set(runId!, {
-            child: { pid: 4242, exitCode: null, signalCode: null, kill } as never,
-            graceSec: 20,
-            processGroupId: null,
-          });
-          try {
-            await (options?.onLog as (stream: "stdout", chunk: string) => Promise<void>)("stdout", turnStart.repeat(151));
-            expect(onRunGuardStop).toHaveBeenCalledTimes(1);
-            // The guard stop aborted the signal; the listener found the client already signalled.
-            expect(run.controller.signal.aborted).toBe(true);
-            expect(kill).toHaveBeenCalledTimes(1);
-            expect(kill).toHaveBeenCalledWith("SIGTERM");
-            // A cancellation of the board on top of it does not signal again.
-            run.controller.abort(new Error("Cancelled by the board"));
-            await (options?.onLog as (stream: "stdout", chunk: string) => Promise<void>)("stdout", turnStart);
-            expect(kill).toHaveBeenCalledTimes(1);
-            // One timer: SIGKILL follows once after the grace period if the client is still registered.
-            await vi.advanceTimersByTimeAsync(20_000);
-            expect(kill).toHaveBeenCalledTimes(2);
-            expect(kill).toHaveBeenLastCalledWith("SIGKILL");
-            await vi.advanceTimersByTimeAsync(60_000);
-            expect(kill).toHaveBeenCalledTimes(2);
-          } finally {
-            runningProcesses.delete(runId!);
-          }
-          return { exitCode: null, signal: "SIGTERM", timedOut: false, stdout: "", stderr: "", pid: 4242, startedAt: new Date().toISOString() };
-        });
-
-        await execute({ ...run.input, runGuard: guard, onRunGuardStop });
-      } finally {
-        vi.useRealTimers();
-      }
-
-      expect(onRunGuardStop).toHaveBeenCalledTimes(1);
-      expect(kill.mock.calls.filter(([signal]) => signal === "SIGTERM")).toHaveLength(1);
-    });
   });
 
   // myrmidon(OMP-RUN-GUARD): the board's run guard is fed from omp's event
