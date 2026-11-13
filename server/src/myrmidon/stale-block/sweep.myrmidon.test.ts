@@ -18,7 +18,12 @@ import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
 } from "../../__tests__/helpers/embedded-postgres.js";
-import { createStaleBlockSweep, type StaleBlockSweepDeps } from "./sweep.js";
+import {
+  createStaleBlockSweep,
+  describeStaleBlockSweepFailure,
+  type StaleBlockSweepDeps,
+} from "./sweep.js";
+import { HttpError, unprocessable } from "../../errors.js";
 import { toBlockedLoopEvent } from "../blocked-loop/history.js";
 import { readStaleBlockSignals, resetStaleBlockSignals } from "./attention.js";
 
@@ -329,6 +334,82 @@ describeEmbeddedPostgres("stale block sweep", () => {
     expect(result).toMatchObject({ scanned: 1, unblocked: 0, skippedLive: 1 });
     const [issue] = await db.select().from(issues).where(eq(issues.id, seeded.issueId));
     expect(issue!.status).toBe("blocked");
+  });
+
+  // myrmidon(STALE-BLOCK-LIVE-EDGES): the cited reason died, but a blocker of
+  // the task is still open. The issue service refuses `in_progress` for such a
+  // task ("Issue is blocked by unresolved blockers"), so the unblock threw and
+  // the pass reported `failed` for the same task on every tick (13.11 on the
+  // live board: 14 tasks, about 50 "stale block sweep failed" warnings an hour).
+  it("a dead reasonRef with an open blocker keeps the task blocked and does not fail", async () => {
+    const seeded = await seed({
+      blockerStatus: "in_progress",
+      withRelation: true,
+      unblockDescriptor: {
+        owner: "board",
+        action: "wait until the freeze ends",
+        reasonRef: { kind: "date", dueAt: "2026-10-01T00:00:00.000Z" },
+      },
+    });
+    const { injected, sweep } = sweepWith();
+
+    const result = await sweep.sweep();
+
+    expect(result).toMatchObject({ scanned: 1, unblocked: 0, skippedLive: 1, failed: 0 });
+    const [issue] = await db.select().from(issues).where(eq(issues.id, seeded.issueId));
+    expect(issue!.status).toBe("blocked");
+    const relations = await db
+      .select()
+      .from(issueRelations)
+      .where(and(eq(issueRelations.companyId, seeded.companyId), eq(issueRelations.relatedIssueId, seeded.issueId)));
+    expect(relations).toHaveLength(1);
+    const comments = await db
+      .select()
+      .from(issueComments)
+      .where(eq(issueComments.issueId, seeded.issueId));
+    expect(comments).toHaveLength(0);
+    expect(injected.logActivity).not.toHaveBeenCalled();
+  });
+
+  it("a cleared event reasonRef with an open blocker keeps the task blocked and does not fail", async () => {
+    const seeded = await seed({
+      blockerStatus: "blocked",
+      withRelation: true,
+      unblockDescriptor: {
+        owner: "board",
+        action: "wait for the recovery incident",
+        reasonRef: { kind: "event", eventKey: "recovery.liveness:11111111-1111-4111-8111-111111111111" },
+      },
+    });
+    const { sweep } = sweepWith({ isEventStillSet: vi.fn(async () => false) });
+
+    const result = await sweep.sweep();
+
+    // The blocker of this case is itself a bare block (status blocked, no reason), as on prod: the same pass
+    // scans it too and releases it. It stays an open blocker either way, so the task it holds is counted
+    // as live and is left blocked, whichever of the two the pass reaches first.
+    expect(result).toMatchObject({ scanned: 2, unblocked: 1, skippedLive: 1, failed: 0 });
+    const [issue] = await db.select().from(issues).where(eq(issues.id, seeded.issueId));
+    expect(issue!.status).toBe("blocked");
+  });
+
+  it("a dead reasonRef whose blocker is closed is unblocked as before", async () => {
+    const seeded = await seed({
+      blockerStatus: "done",
+      withRelation: true,
+      unblockDescriptor: {
+        owner: "board",
+        action: "wait until the freeze ends",
+        reasonRef: { kind: "date", dueAt: "2026-10-01T00:00:00.000Z" },
+      },
+    });
+    const { sweep } = sweepWith();
+
+    const result = await sweep.sweep();
+
+    expect(result).toMatchObject({ scanned: 1, unblocked: 1, skippedLive: 0, failed: 0 });
+    const [issue] = await db.select().from(issues).where(eq(issues.id, seeded.issueId));
+    expect(issue!.status).toBe("in_progress");
   });
 
   it("T4: unblocks a blocked task with no reasons (reasons.length === 0) to todo without assignee", async () => {
@@ -666,5 +747,35 @@ describeEmbeddedPostgres("stale block sweep", () => {
     const secondResult = await sweep.sweep({ force: true, at: new Date(NOW.getTime() + 10_000) });
     expect(secondResult.oldestUnsweptAgeMs).toBeLessThan(60 * 60 * 1000);
     expect(secondResult.starvationAlert).toBe(false);
+  });
+});
+
+// myrmidon(STALE-BLOCK-LIVE-EDGES): the failure warning names the class and the
+// HTTP status of the exception and nothing else of it.
+describe("describeStaleBlockSweepFailure", () => {
+  it("names an update the issue service refused", () => {
+    expect(describeStaleBlockSweepFailure(unprocessable("Issue is blocked by unresolved blockers", { secret: "s3cr3t" })))
+      .toEqual({ errorName: "HttpError", errorStatus: 422 });
+    expect(describeStaleBlockSweepFailure(new HttpError(409, "conflict"))).toEqual({ errorName: "HttpError", errorStatus: 409 });
+  });
+
+  it("names the class of any other error and never copies its text", () => {
+    const described = describeStaleBlockSweepFailure(new TypeError("token=s3cr3t in the message"));
+    expect(described).toEqual({ errorName: "TypeError", errorStatus: null });
+    expect(JSON.stringify(described)).not.toContain("s3cr3t");
+  });
+
+  it("drops a status outside the HTTP error range and a status that is not a number", () => {
+    expect(describeStaleBlockSweepFailure(Object.assign(new Error("x"), { status: 200 }))).toEqual({ errorName: "Error", errorStatus: null });
+    expect(describeStaleBlockSweepFailure(Object.assign(new Error("x"), { status: "422" }))).toEqual({ errorName: "Error", errorStatus: null });
+    expect(describeStaleBlockSweepFailure(Object.assign(new Error("x"), { status: 422.5 }))).toEqual({ errorName: "Error", errorStatus: null });
+  });
+
+  it("drops a class name that is not a plain identifier and reads nothing from a non-object", () => {
+    const odd = Object.create({ constructor: { name: "token s3cr3t" } });
+    expect(describeStaleBlockSweepFailure(odd)).toEqual({ errorName: null, errorStatus: null });
+    expect(describeStaleBlockSweepFailure("boom")).toEqual({ errorName: null, errorStatus: null });
+    expect(describeStaleBlockSweepFailure(null)).toEqual({ errorName: null, errorStatus: null });
+    expect(describeStaleBlockSweepFailure(undefined)).toEqual({ errorName: null, errorStatus: null });
   });
 });
