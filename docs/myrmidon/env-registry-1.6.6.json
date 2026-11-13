@@ -14952,6 +14952,18 @@
       "secret_ref_or_instance_setup": "отдельной настройки нет: класс определяется именем в entries",
       "ticket_or_pr": "OPE-8820",
       "decision": "не отдельная переменная; учтено правилом алиасов"
+    },
+    {
+      "id": "stack-image-exact-refs",
+      "template": "MYRMIDON_STACK_IMAGE_<NAME>",
+      "prefix": "MYRMIDON_STACK_IMAGE_",
+      "suffix_domain": "имя компонента реестра стека в верхнем регистре, «-» заменён на «_» (HERMES_AGENT, CLICKHOUSE, BASE_IMAGES)",
+      "classification": "infra",
+      "scope": "instance",
+      "source": "server/src/myrmidon/stack-registry/collector.ts (STACK_IMAGE_ENV_PREFIX)",
+      "secret_ref_or_instance_setup": "не секрет; точные ссылки образов (тег или дайджест) через запятую, задаются при установке экземпляра",
+      "ticket_or_pr": "OPE-12922",
+      "decision": "настройка установки; те же ссылки должны быть в inspectOnlyImages dockergate"
     }
   ]
 }
