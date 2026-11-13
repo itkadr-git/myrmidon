@@ -88,7 +88,9 @@ describe("verifyReleaseComposition", () => {
       releasePrefix: "1.6",
       deployedVersion: "myr-v1.6.8",
       members: [member("OPE-1", SHA_A), member("OPE-2", SHA_B)],
-      fetchImpl: compareFake(["myr-v1.6"], [], calls),
+      resolvedRefs: [{ ref: "myr-v1.6.8", kind: "tag" }],
+      refs: [{ ref: "myr-v1.6.8", kind: "tag" }],
+      fetchImpl: compareFake(["myr-v1.6.8"], [], calls),
       now: NOW,
     });
 
@@ -99,17 +101,20 @@ describe("verifyReleaseComposition", () => {
     expect(result.members.every((m) => m.membership === "present")).toBe(true);
     expect(result.checkedAt).toBe("2026-11-13T12:00:00.000Z");
     // Both members were actually checked against the release contract.
-    // Each member is checked against the two default release refs
-    // (myr-v<prefix> tag and rel/<prefix>-fixes branch), so 2 members × 2 refs = 4 calls.
-    expect(calls.length).toBe(4);
+    // The explicit ref list overrides the default candidates, so each member
+    // is checked against exactly one ref: 2 members × 1 ref = 2 calls.
+    expect(calls.length).toBe(2);
   });
 
   it("fails the release with a reason when one member is missing", async () => {
+    const resolvedRefs = [{ ref: "myr-v1.6.8", kind: "tag" as const }];
     const result = await verifyReleaseComposition({
       releasePrefix: "1.6",
       deployedVersion: "myr-v1.6.8",
       members: [member("OPE-1", SHA_A), member("OPE-2", SHA_B)],
-      fetchImpl: compareFake(["myr-v1.6"], [], []),
+      resolvedRefs,
+      refs: resolvedRefs,
+      fetchImpl: compareFake(["myr-v1.6.8"], [], []),
       now: NOW,
     });
 
@@ -118,6 +123,8 @@ describe("verifyReleaseComposition", () => {
       releasePrefix: "1.6",
       deployedVersion: "myr-v1.6.8",
       members: [member("OPE-1", SHA_A), member("OPE-2", SHA_B)],
+      resolvedRefs,
+      refs: resolvedRefs,
       fetchImpl: (input) => {
         const url = new URL(input);
         const sha = url.pathname.split("...")[1];
@@ -144,6 +151,7 @@ describe("verifyReleaseComposition", () => {
       releasePrefix: "1.6",
       deployedVersion: "myr-v1.6.8",
       members: [],
+      resolvedRefs: [{ ref: "myr-v1.6.8", kind: "tag" }],
       now: NOW,
     });
     expect(result.verdict).toBe("failed");
@@ -156,7 +164,8 @@ describe("verifyReleaseComposition", () => {
       releasePrefix: "1.6",
       deployedVersion: "myr-v1.6.8",
       members: [member("OPE-1", SHA_A), member("OPE-2", null)],
-      fetchImpl: compareFake(["myr-v1.6"], [], []),
+      resolvedRefs: [{ ref: "myr-v1.6.8", kind: "tag" }],
+      fetchImpl: compareFake(["myr-v1.6.8"], [], []),
       now: NOW,
     });
     expect(result.verdict).toBe("failed");
@@ -300,19 +309,47 @@ describe("verifyReleaseComposition", () => {
     expect(result.allMembersPresent).toBe(true);
   });
 
-  it("skips the mismatch guard when resolvedRefs is empty (resolution unavailable)", async () => {
-    // When the repository ref listing could not be resolved, we cannot prove
-    // the deployed version is wrong — fall through to membership checks.
+  it("fails closed with deployed_version_unknown when resolvedRefs is empty, even if membership would resolve present", async () => {
+    // Review finding (PR #3093, second round): when the repository ref
+    // listing comes back empty (API failure, missing tags/branches, or no PR
+    // work products to name a repo), the deployed version cannot be tied to
+    // any real release ref. Falling through to membership checks against the
+    // default prefix refs would let an arbitrary deployed version be
+    // confirmed whenever those defaults resolve — exactly the fail-open path
+    // the acceptance criteria forbid. Empty/unresolved refs must fail closed.
+    const calls: string[] = [];
     const result = await verifyReleaseComposition({
       releasePrefix: "1.6",
       deployedVersion: "myr-v1.6.8",
       members: [member("OPE-1", SHA_A)],
       resolvedRefs: [],
-      fetchImpl: compareFake(["myr-v1.6"], [], []),
+      fetchImpl: compareFake(["myr-v1.6"], [], calls),
       now: NOW,
     });
-    expect(result.verdict).toBe("confirmed");
-    expect(result.failureReason).toBeNull();
+    expect(result.verdict).toBe("failed");
+    expect(result.failureReason).toBe("deployed_version_unknown");
+    expect(result.allMembersPresent).toBe(false);
+    expect(result.reason).toMatch(/refs не разрешены/);
+    // The guard short-circuits before any membership check.
+    expect(calls).toHaveLength(0);
+  });
+
+  it("fails closed with deployed_version_unknown when resolvedRefs is omitted, even if membership would resolve present", async () => {
+    // Same fail-open hole via the optional-field path: a caller that never
+    // resolves refs has no proven mapping between the deployed version and a
+    // real release ref, so confirmation is forbidden.
+    const calls: string[] = [];
+    const result = await verifyReleaseComposition({
+      releasePrefix: "1.6",
+      deployedVersion: "myr-v1.6.8",
+      members: [member("OPE-1", SHA_A)],
+      fetchImpl: compareFake(["myr-v1.6"], [], calls),
+      now: NOW,
+    });
+    expect(result.verdict).toBe("failed");
+    expect(result.failureReason).toBe("deployed_version_unknown");
+    expect(result.allMembersPresent).toBe(false);
+    expect(calls).toHaveLength(0);
   });
 
   it("fails with member_not_merged when a candidate PR is not merged, even if the rest resolve", async () => {
@@ -325,7 +362,8 @@ describe("verifyReleaseComposition", () => {
       releasePrefix: "1.6",
       deployedVersion: "myr-v1.6.8",
       members: [member("OPE-1", SHA_A, true), member("OPE-2", SHA_B, false)],
-      fetchImpl: compareFake(["myr-v1.6"], [], calls),
+      resolvedRefs: [{ ref: "myr-v1.6.8", kind: "tag" }],
+      fetchImpl: compareFake(["myr-v1.6.8"], [], calls),
       now: NOW,
     });
     expect(result.verdict).toBe("failed");
@@ -343,6 +381,7 @@ describe("verifyReleaseComposition", () => {
       releasePrefix: "1.6",
       deployedVersion: "myr-v1.6.8",
       members: [member("OPE-9", null, false)],
+      resolvedRefs: [{ ref: "myr-v1.6.8", kind: "tag" }],
       now: NOW,
     });
     expect(result.verdict).toBe("failed");
@@ -354,7 +393,8 @@ describe("verifyReleaseComposition", () => {
       releasePrefix: "1.6",
       deployedVersion: "myr-v1.6.8",
       members: [member("OPE-1", SHA_A, true), member("OPE-2", null, false)],
-      fetchImpl: compareFake(["myr-v1.6"], [], []),
+      resolvedRefs: [{ ref: "myr-v1.6.8", kind: "tag" }],
+      fetchImpl: compareFake(["myr-v1.6.8"], [], []),
       now: NOW,
     });
     const unmerged = result.members.find((m) => m.id === "OPE-2");
