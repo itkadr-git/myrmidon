@@ -5,6 +5,9 @@ import {
   INVENTORY_METHOD,
   INVENTORY_SECTIONS,
   inventoryReportHash,
+  isUnresolvedDependencyStatus,
+  formatCrossCompanyDependency,
+  formatInventoryDependencies,
   normalizeInventoryReport,
   renderInventory,
   sectionForPath,
@@ -100,10 +103,15 @@ test("two consecutive probe runs on the same stable fixture produce the same nor
   assert.match(inventoryReportHash(first), /^[0-9a-f]{64}$/);
 
   // Deterministic ordering: normalization sorts object keys, so an equivalently
-  // re-keyed report still normalizes and hashes identically.
+  // re-keyed report still normalizes and hashes identically. The dependency
+  // view, when present, is carried along with re-keyed rows.
   const reordered = {
     summary: { counts: second.summary.counts, covered: second.summary.covered, total: second.summary.total },
     sections: second.sections.map(({ path, ...rest }) => ({ ...rest, path })),
+    dependencies:
+      second.dependencies === undefined
+        ? undefined
+        : second.dependencies.map(({ section, ...rest }) => ({ ...rest, section })),
   };
   assert.deepEqual(normalizeInventoryReport(reordered), normalizeInventoryReport(second));
   assert.equal(inventoryReportHash(reordered), inventoryReportHash(second));
@@ -311,12 +319,175 @@ test("missing attribution fields are computed from observed rows", async () => {
   assert.deepEqual(byKey["skills-policies"].missingAttribution, ["ownerCompanyId"]);
 
   const rendered = renderInventory(report);
-  assert.ok(!rendered.includes("c1"));
+  // Section metadata stays free of observed row payload values (pre-OPE-12905 intent).
+  const sectionsJson = JSON.stringify(report.sections);
+  assert.ok(!sectionsJson.includes("c1"));
+  assert.ok(!sectionsJson.includes("dep-1"));
+  assert.ok(!sectionsJson.includes("a1"));
+  // The allowlisted dependency view (OPE-12905) intentionally carries
+  // owner/company identifiers for dependency-bearing objects, but raw
+  // dependency values (plain strings here) are never copied into the report.
   assert.ok(!rendered.includes("dep-1"));
+  assert.ok(!rendered.includes("d1"));
   assert.ok(!rendered.includes("a1"));
 });
 
 test("unknown sections are absent from the registry and cannot be covered", () => {
   assert.equal(sectionForPath("/not-a-section"), undefined);
   assert.ok(INVENTORY_SECTIONS.every((section) => sectionForPath(section.path)));
+});
+
+/* --- Cross-company dependency visibility (OPE-12905) --- */
+
+/**
+ * Fixture A: supported inventory objects that DO carry an explicit
+ * cross-company dependency reference (issue → issue in another company).
+ * Payload values include secret-shaped strings to prove they never leak.
+ */
+const CROSS_COMPANY_FIXTURE = [
+  {
+    id: "issue-9",
+    ownerCompanyId: "c1",
+    dependency: { type: "issue", id: "issue-77", companyId: "c2" },
+    title: "payload must not be copied",
+    secretToken: "pcp_SUPER_SECRET_VALUE",
+    webhookUrl: "https://hooks.internal/never-leak",
+  },
+  {
+    id: "issue-10",
+    ownerCompanyId: "c1",
+    dependency: { type: "issue", id: "issue-88", companyId: "c1" },
+  },
+];
+
+/** Fixture B: same objects but with no reference, or an unresolvable one. */
+const UNRESOLVED_FIXTURE = [
+  { id: "issue-11", ownerCompanyId: "c1" },
+  { id: "issue-12", ownerCompanyId: "c1", dependency: { unresolved: true } },
+  { id: "issue-13", ownerCompanyId: "c1", dependency: { type: "issue" } },
+  { id: "issue-14", ownerCompanyId: "c1", dependency: null },
+  "not-an-object",
+];
+
+test("explicit cross-company reference stays visible in the collected report with type and identifier, without payload values", async () => {
+  const transport = makeGetOnlyTransport(({ path }) => {
+    if (path === "/issues") {
+      return { status: 200, ok: true, json: async () => CROSS_COMPANY_FIXTURE };
+    }
+    return { status: 403, ok: false };
+  });
+  const report = await collectInventory(transport, { currentCompanyId: "c1" });
+
+  // The path under test IS the report: collectInventory → report.dependencies.
+  assert.ok(Array.isArray(report.dependencies), "report must carry the dependency view");
+  const cross = report.dependencies.find((d) => d.objectId === "issue-9");
+  assert.ok(cross, "report must keep the cross-company object visible");
+  assert.equal(cross.section, "issues");
+  assert.equal(cross.status, "cross-company");
+  assert.deepEqual(cross.dependency, { type: "issue", id: "issue-77", companyId: "c2" });
+  assert.equal(cross.ownerCompanyId, "c1");
+  assert.ok(isUnresolvedDependencyStatus(cross.status) === false);
+  assert.notEqual(cross.status, "unknown");
+
+  const same = report.dependencies.find((d) => d.objectId === "issue-10");
+  assert.ok(same, "report must keep the same-company object visible");
+  assert.equal(same.status, "same-company");
+  assert.deepEqual(same.dependency, { type: "issue", id: "issue-88", companyId: "c1" });
+
+  // Rendered report shows the link type/identifier; payload-only fields never leak.
+  const rendered = renderInventory(report);
+  assert.ok(rendered.includes("issue-77"));
+  assert.ok(rendered.includes("c2"));
+  assert.ok(!rendered.includes("pcp_SUPER_SECRET_VALUE"));
+  assert.ok(!rendered.includes("never-leak"));
+  assert.ok(!rendered.includes("title"));
+});
+
+test("missing or unresolvable references stay unknown/unresolved in the collected report and never fold into no-links", async () => {
+  const transport = makeGetOnlyTransport(({ path }) => {
+    if (path === "/issues") {
+      return { status: 200, ok: true, json: async () => UNRESOLVED_FIXTURE };
+    }
+    return { status: 403, ok: false };
+  });
+  const report = await collectInventory(transport, { currentCompanyId: "c1" });
+
+  // Unresolvable objects still produce visible rows — absence of links is never
+  // reported as "no dependencies" at the report level either.
+  assert.ok(Array.isArray(report.dependencies), "unresolved references must stay visible in the report");
+  const byId = Object.fromEntries(report.dependencies.filter((d) => d.objectId).map((d) => [d.objectId, d]));
+
+  // No reference at all → status unknown, dependency null — visibly not "no links".
+  assert.equal(byId["issue-11"].status, "unknown");
+  assert.equal(byId["issue-11"].dependency, null);
+  assert.ok(isUnresolvedDependencyStatus(byId["issue-11"].status));
+
+  // dependency.unresolved=true → status unresolved.
+  assert.equal(byId["issue-12"].status, "unresolved");
+  assert.equal(byId["issue-12"].dependency, null);
+  assert.ok(isUnresolvedDependencyStatus(byId["issue-12"].status));
+
+  // Reference present but missing type/id/companyId → unresolved with partial hint.
+  assert.equal(byId["issue-13"].status, "unresolved");
+  assert.deepEqual(byId["issue-13"].dependency, { type: "issue", id: null, companyId: null });
+  assert.ok(isUnresolvedDependencyStatus(byId["issue-13"].status));
+
+  // dependency explicitly null → unresolved (field present but unresolvable).
+  assert.equal(byId["issue-14"].status, "unresolved");
+  assert.ok(isUnresolvedDependencyStatus(byId["issue-14"].status));
+
+  // Non-object entries produce no link identity at all (status unknown, nothing resolvable).
+  assert.equal(report.dependencies.filter((d) => d.objectId === null).length, 1);
+  assert.equal(report.dependencies.find((d) => d.objectId === null).status, "unknown");
+  assert.equal(report.dependencies.find((d) => d.objectId === null).dependency, null);
+
+  // No state ever collapses into "no links": rows exist for every listed object.
+  for (const entry of report.dependencies) {
+    assert.ok(["unknown", "unresolved", "same-company", "cross-company"].includes(entry.status));
+  }
+});
+
+test("report path is deterministic and secret-free; failed sections contribute no rows; empty dependency sections omit the view", async () => {
+  // Deterministic across repeated runs: identical collected reports, same hash,
+  // input order of the fixture does not change the rendered report.
+  const makeTransport = () =>
+    makeGetOnlyTransport(({ path }) => {
+      if (path === "/issues") {
+        return { status: 200, ok: true, json: async () => [...CROSS_COMPANY_FIXTURE].reverse() };
+      }
+      return { status: 403, ok: false };
+    });
+  const first = await collectInventory(makeTransport(), { currentCompanyId: "c1" });
+  const second = await collectInventory(makeTransport(), { currentCompanyId: "c1" });
+  assert.deepEqual(first.dependencies, second.dependencies);
+  assert.equal(inventoryReportHash(first), inventoryReportHash(second));
+  const rendered = renderInventory(first);
+  assert.ok(rendered.includes("issue-77"));
+  assert.ok(rendered.includes("c2"));
+  assert.ok(!rendered.includes("pcp_SUPER_SECRET_VALUE"));
+  assert.ok(!rendered.includes("never-leak"));
+  assert.ok(!rendered.includes("title"));
+
+  // Unit-level sorting contract is unchanged: input order never affects the sorted rows.
+  assert.deepEqual(
+    formatInventoryDependencies([...CROSS_COMPANY_FIXTURE].reverse(), { currentCompanyId: "c1" }),
+    formatInventoryDependencies(CROSS_COMPANY_FIXTURE, { currentCompanyId: "c1" }),
+  );
+
+  // No dependency-attributed section covered → the report carries no dependencies view at all.
+  const noDep = await collectInventory(makeGetOnlyTransport(() => ({ status: 403, ok: false })));
+  assert.equal(noDep.dependencies, undefined);
+  assert.deepEqual(normalizeInventoryReport(noDep), { sections: noDep.sections, summary: noDep.summary });
+
+  // A covered section without the dependency attribution never contributes rows.
+  const agentsOnly = await collectInventory(
+    makeGetOnlyTransport(({ path }) => {
+      if (path === "/agents") {
+        return { status: 200, ok: true, json: async () => [{ id: "a-1", dependency: { type: "issue", id: "x", companyId: "c2" } }] };
+      }
+      return { status: 403, ok: false };
+    }),
+    { currentCompanyId: "c1" },
+  );
+  assert.equal(agentsOnly.dependencies, undefined);
 });
