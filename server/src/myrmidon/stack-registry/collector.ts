@@ -109,11 +109,28 @@ function imageRefWithoutTag(ref: string): string {
   return lastSegment.includes(":") ? ref.slice(0, ref.lastIndexOf(":")) : ref;
 }
 
+/** OPE-12922: operator binding of the exact image refs of a docker-image component. */
+export const STACK_IMAGE_ENV_PREFIX = "MYRMIDON_STACK_IMAGE_";
+
+/** MYRMIDON_STACK_IMAGE_<NAME>: NAME is the component name upper-cased, "-" -> "_". */
+export function stackImageEnvName(componentName: string): string {
+  return `${STACK_IMAGE_ENV_PREFIX}${componentName.toUpperCase().replace(/-/g, "_")}`;
+}
+
 async function probeDockerImages(
   seed: StackSeedComponent,
   images: DockerImagesPort,
+  env: NodeJS.ProcessEnv = {},
 ): Promise<StackSnapshot["local"]> {
-  const refs = seed.imageRefs ?? [];
+  // OPE-12922: the seed refs carry no tag, and an untagged inspect resolves to
+  // ":latest", which production does not run. The operator names the exact
+  // refs (tag or digest), comma-separated; they are inspected untouched.
+  const override = (env[stackImageEnvName(seed.name)] ?? "")
+    .split(",")
+    .map((r) => r.trim())
+    .filter((r) => r !== "");
+  const exact = override.length > 0;
+  const refs = exact ? override : (seed.imageRefs ?? []);
   const states: StackSnapshot["local"] = {
     version: null,
     commit: null,
@@ -135,12 +152,18 @@ async function probeDockerImages(
     // the previous cache survives. A missing image or an unreachable docker
     // socket (null — see dockerImagesPort) is a normal, per-component unknown,
     // not a failure: the board container has no docker.sock by design.
-    const summary = await images(imageRefWithoutTag(ref));
+    const summary = await images(exact ? ref : imageRefWithoutTag(ref));
     if (!summary) continue;
     found = true;
     runningOn.push(summary.repoTag ?? ref);
-    if (!states.version && summary.repoTag) states.version = summary.repoTag;
-    if (!states.digest && summary.digest) states.digest = summary.digest;
+    // Through dockergate the answer is labels-only (no RepoTags/RepoDigests):
+    // for an exact operator ref the ref itself is the version, and a
+    // repo@sha256:<digest> ref carries its digest.
+    if (!states.version) states.version = summary.repoTag ?? (exact ? ref : null);
+    if (!states.digest) {
+      const refDigest = exact && ref.includes("@sha256:") ? ref.slice(ref.indexOf("@") + 1) : null;
+      states.digest = summary.digest ?? refDigest;
+    }
   }
   if (found) {
     states.runningOn = runningOn.join(", ");
@@ -361,7 +384,7 @@ export async function collectStackLocal(options: CollectStackLocalOptions = {}):
         break;
       }
       case "docker-image": {
-        snapshot.local = { ...(await probeDockerImages(seed, images)), checkedAt, patches: seededPatches };
+        snapshot.local = { ...(await probeDockerImages(seed, images, env)), checkedAt, patches: seededPatches };
         break;
       }
       case "env": {
