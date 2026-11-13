@@ -245,22 +245,27 @@ describe("external-agent task envelope — invalid/partial envelopes are rejecte
 
 describe("external-agent secrets hygiene", () => {
   it("never serializes a nested API key into the validated task payload", () => {
+    // Neutral placeholder: matches the Paperclip-key value shape, carries no
+    // real-looking credential (CI gitleaks must stay clean, CONVENTIONS §7).
+    const placeholderPaperclipKey = "pcp_aaaaaaaaaaaaaaaa";
     const outcome = validateExternalAgentTask({
       ...validTask("claude"),
-      credentials: { apiToken: "pcp_aaaaaaaaaaaaaaaa" },
+      credentials: { apiToken: placeholderPaperclipKey },
     });
     expect(outcome.ok).toBe(false);
     if (outcome.ok) return;
     const secretIssue = outcome.issues.find((i) => i.code === "secret_in_payload");
     expect(secretIssue?.path).toBe("/credentials/apiToken");
     // The message carries only a digest, never the value.
-    expect(secretIssue?.message).not.toContain("pcp_aaaaaaaaaaaaaaaa");
+    expect(secretIssue?.message).not.toContain(placeholderPaperclipKey);
     expect(secretIssue?.message).toMatch(/digest sha256:[0-9a-f]{16}/);
   });
 
   it("flags secret-shaped values regardless of their key name", () => {
-    expect(isExternalAgentSecretLeaf("notes", "sk-proj-AAAAAAAAAAAAAAAA1")).toBe(true);
-    expect(isExternalAgentSecretLeaf("notes", "ghp_0123456789abcdefghijAAAA")).toBe(true);
+    // Neutral placeholders that still match the module's secret value shapes
+    // (real-shaped credentials stay out of the repo, CONVENTIONS §7).
+    expect(isExternalAgentSecretLeaf("notes", "sk-aaaaaaaaaaaaaaaa")).toBe(true);
+    expect(isExternalAgentSecretLeaf("notes", "ghp_aaaaaaaaaaaaaaaaaaaa")).toBe(true);
     expect(isExternalAgentSecretLeaf("auth", "Bearer abc.def")).toBe(true);
     expect(isExternalAgentSecretLeaf("PAPERCLIP_API_KEY", "pcp_kkkk11112222")).toBe(true);
     // Ordinary prompt/cwd/model content is not a secret.
@@ -274,8 +279,8 @@ describe("external-agent secrets hygiene", () => {
       ...validTask("gemini"),
       context: { launch: { env: { GEMINI_API_KEY: "0000000000000000" } } },
     });
-    // The Google key shape is not in the closed value list, but the KEY NAME
-    // `GEMINI_API_KEY` normalizes to apikey and must fail the leaf check.
+    // A Google-key-shaped value is not in the closed value list, but the KEY
+    // NAME `GEMINI_API_KEY` normalizes to apikey and must fail the leaf check.
     expect(outcome.ok).toBe(false);
     if (!outcome.ok) {
       const secretIssue = outcome.issues.find((i) => i.code === "secret_in_payload");
