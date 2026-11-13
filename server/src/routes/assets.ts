@@ -1,6 +1,7 @@
 import { Router, type Request, type Response } from "express";
 import multer from "multer";
 import type { Db } from "@myrmidon/db";
+import type { JSDOM } from "jsdom";
 import { ASSET_NAMESPACE_RULE, createAssetImageMetadataSchema } from "@myrmidon/shared";
 import type { StorageService } from "../storage/types.js";
 import { assetService, logActivity } from "../services/index.js";

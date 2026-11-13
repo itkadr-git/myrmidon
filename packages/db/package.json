@@ -14,8 +14,6 @@
   "type": "module",
   "exports": {
     ".": "./src/index.ts",
-    "./schema": "./src/schema/index.ts",
-    "./schema/*": "./src/schema/*.ts",
     "./*": "./src/*.ts"
   },
   "publishConfig": {
@@ -24,14 +22,6 @@
       ".": {
         "types": "./dist/index.d.ts",
         "import": "./dist/index.js"
-      },
-      "./schema": {
-        "types": "./dist/schema/index.d.ts",
-        "import": "./dist/schema/index.js"
-      },
-      "./schema/*": {
-        "types": "./dist/schema/*.d.ts",
-        "import": "./dist/schema/*.js"
       },
       "./*": {
         "types": "./dist/*.d.ts",
