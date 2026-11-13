@@ -988,6 +988,11 @@ import {
   readWakeBatchWindowMs,
   splitBatchedWakeRuns,
 } from "../myrmidon/wake-batch.js";
+// myrmidon(OPE-12929): the optional not-before hold on deferred agent runs.
+import {
+  RUN_NOT_BEFORE_CONTEXT_KEY,
+  splitRunsHeldByNotBefore,
+} from "../myrmidon/run-not-before.js";
 // myrmidon(PERF-DIET-K): issue-scoped session generations for the container
 // Hermes gateway — one task's session key gains a `:g<N>` once it passes its
 // age/activity threshold, so the task's Hermes state stays bounded
@@ -4252,6 +4257,9 @@ export interface WakeupOptions {
   requestedByActorId?: string | null;
   continuationEventId?: string | null;
   contextSnapshot?: Record<string, unknown>;
+  // myrmidon(OPE-12929): optional ISO-8601 instant; the dispatcher holds the
+  // queued run back until it is reached. Missing/invalid keeps prior behavior.
+  notBefore?: string | null;
   externalSession?: { connectionId: string; grantId: string; model: string };
   issueStateGuard?: {
     statuses: string[];
@@ -7404,6 +7412,7 @@ function enrichWakeContextSnapshot(input: {
   source: WakeupOptions["source"];
   triggerDetail: WakeupOptions["triggerDetail"] | null;
   payload: Record<string, unknown> | null;
+  notBefore?: string | null;
 }) {
   const { contextSnapshot, reason, source, triggerDetail, payload } = input;
   const issueIdFromPayload =
@@ -7484,6 +7493,19 @@ function enrichWakeContextSnapshot(input: {
     triggerDetail
   ) {
     contextSnapshot.wakeTriggerDetail = triggerDetail;
+  }
+  // myrmidon(OPE-12929): persist the caller's not-before instant into the run
+  // context so the queued-run dispatcher can hold the run back until the
+  // instant is reached. The stored value is validated again at start time by
+  // decideRunNotBefore — a value that never parses is ignored there, so a
+  // broken value never parks a run.
+  {
+    const notBeforeCandidate =
+      readNonEmptyString(payload?.["notBefore"]) ??
+      readNonEmptyString(input.notBefore);
+    if (notBeforeCandidate) {
+      contextSnapshot[RUN_NOT_BEFORE_CONTEXT_KEY] = notBeforeCandidate;
+    }
   }
   normalizeInteractionContinuationWakeContext(contextSnapshot, payload);
 
@@ -23806,6 +23828,20 @@ export function heartbeatService(
     );
   }
 
+  // myrmidon(OPE-12929): a held not-before run is retried when its instant
+  // arrives instead of waiting for the next scheduler tick. The resweep timer
+  // is one per process, so a pending wake-batch/admission resweep already
+  // covers the wait and this call is then a no-op.
+  function scheduleNotBeforeResweep(delayMs: number) {
+    scheduleQueuedResweep(
+      () =>
+        resumeQueuedRuns().catch((err) =>
+          logger.error({ err }, "queued run resweep after the not-before delay failed"),
+        ),
+      Math.max(delayMs, 250),
+    );
+  }
+
   async function recoverActiveSessionGoals() {
     if ((await getSchedulingSuppression()).suppressed) {
       return { scanned: 0, enqueued: 0 };
@@ -24538,6 +24574,27 @@ export function heartbeatService(
       });
 
       const claimedRuns: Array<typeof heartbeatRuns.$inferSelect> = [];
+      // myrmidon(OPE-12929): an optional not-before instant in the run context
+      // keeps a deferred run out of this pass until the instant is reached.
+      // Held runs are left out of the pass below: they must not take an
+      // admission slot for a start that will not happen yet. The missing or
+      // unparsable value never holds (see decideRunNotBefore), so the
+      // pre-feature behavior is unchanged.
+      const notBeforeSplit = splitRunsHeldByNotBefore(prioritizedRuns, {
+        now: new Date(),
+      });
+      if (notBeforeSplit.held.length > 0) {
+        logger.debug(
+          {
+            agentId,
+            heldRunIds: notBeforeSplit.held.map((hold) => hold.runId),
+            heldIssueIds: notBeforeSplit.held.map((hold) => hold.issueId),
+            resweepDelayMs: notBeforeSplit.resweepDelayMs,
+          },
+          "not-before boundary holds queued runs back",
+        );
+        scheduleNotBeforeResweep(notBeforeSplit.resweepDelayMs ?? 0);
+      }
       // myrmidon(1.6.6 INBOX-BATCH): a comment wake waits out its debounce
       // window before it starts (see myrmidon/wake-batch). The comments that
       // arrive inside the window find this run as the task's execution and the
@@ -24546,7 +24603,7 @@ export function heartbeatService(
       // runs are left out of the pass below: they must not take an admission
       // slot for a start that will not happen yet.
       const wakeBatchWindowMs = readWakeBatchWindowMs();
-      const wakeBatch = splitBatchedWakeRuns(prioritizedRuns, {
+      const wakeBatch = splitBatchedWakeRuns(notBeforeSplit.runnable, {
         now: new Date(),
         windowMs: wakeBatchWindowMs,
       });
@@ -32160,6 +32217,7 @@ export function heartbeatService(
       source,
       triggerDetail,
       payload,
+      notBefore: opts.notBefore ?? null,
     });
     let issueId =
       readNonEmptyString(enrichedContextSnapshot.issueId) ?? issueIdFromPayload;

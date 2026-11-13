@@ -112,6 +112,8 @@ describe("splitRunsHeldByNotBefore", () => {
       remainingMs: 30_000,
     });
     expect(split.held[1]?.remainingMs).toBe(10_000);
+    // The resweep arms at the earliest hold lift, not the latest.
+    expect(split.resweepDelayMs).toBe(10_000);
   });
 
   it("carries the issue id for the log line", () => {
@@ -127,6 +129,19 @@ describe("splitRunsHeldByNotBefore", () => {
     expect(splitRunsHeldByNotBefore(rows, { now: NOW })).toEqual({
       runnable: rows,
       held: [],
+      resweepDelayMs: null,
     });
+  });
+
+  it("clamps a non-negative resweep delay for an instant in the past relative to now", () => {
+    // A run cannot be held with a past instant (decideRunNotBefore releases
+    // it), so a held set always lifts at or after `now`; the clamp only
+    // guards the sub-millisecond rounding at the exact boundary tick.
+    const split = splitRunsHeldByNotBefore(
+      [run("a", "2026-11-13T12:00:00.000Z+00:00")],
+      { now: new Date("2026-11-13T11:59:59.500Z") },
+    );
+    expect(split.held.map((h) => h.runId)).toEqual(["a"]);
+    expect(split.resweepDelayMs).toBe(500);
   });
 });

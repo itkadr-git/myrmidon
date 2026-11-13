@@ -73,6 +73,11 @@ export type RunNotBeforeSplit<T> = {
   runnable: T[];
   /** The runs the instant holds back, in the order it received them. */
   held: RunNotBeforeHold[];
+  /**
+   * Milliseconds until the earliest held run lifts its hold, or `null` when
+   * nothing is held — the delay the dispatcher arms its resweep with.
+   */
+  resweepDelayMs: number | null;
 };
 
 /**
@@ -87,6 +92,7 @@ export function splitRunsHeldByNotBefore<
 >(runs: readonly T[], options: { now: Date }): RunNotBeforeSplit<T> {
   const runnable: T[] = [];
   const held: RunNotBeforeHold[] = [];
+  let earliestHoldLiftMs: number | null = null;
   for (const run of runs) {
     const decision = decideRunNotBefore({
       contextSnapshot: run.contextSnapshot,
@@ -102,6 +108,17 @@ export function splitRunsHeldByNotBefore<
       notBefore: decision.notBefore,
       remainingMs: decision.notBefore.getTime() - options.now.getTime(),
     });
+    earliestHoldLiftMs =
+      earliestHoldLiftMs === null
+        ? decision.notBefore.getTime()
+        : Math.min(earliestHoldLiftMs, decision.notBefore.getTime());
   }
-  return { runnable, held };
+  return {
+    runnable,
+    held,
+    resweepDelayMs:
+      earliestHoldLiftMs === null
+        ? null
+        : Math.max(earliestHoldLiftMs - options.now.getTime(), 0),
+  };
 }

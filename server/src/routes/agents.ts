@@ -6689,6 +6689,15 @@ function getActorIdentityPart(req: Request): string {
       requestedByActorType: req.actor.type === "agent" ? "agent" : "user",
       requestedByActorId: req.actor.type === "agent" ? req.actor.agentId ?? null : req.actor.userId ?? null,
       externalSession: req.body.externalSession,
+      // myrmidon(OPE-12929): the optional not-before instant rides into the
+      // run context (top-level field or payload field) and the dispatcher
+      // holds the queued run back until it is reached.
+      notBefore:
+        typeof req.body.notBefore === "string" && req.body.notBefore.length > 0
+          ? req.body.notBefore
+          : typeof wakePayload?.notBefore === "string" && wakePayload.notBefore.length > 0
+            ? wakePayload.notBefore
+            : null,
       contextSnapshot: {
         triggeredBy: req.actor.type,
         originIdentityContextId: req.actor.identityContextId ?? null,
@@ -6809,6 +6818,7 @@ function getActorIdentityPart(req: Request): string {
       reason: unknown;
       payload: unknown;
       idempotencyKey: unknown;
+      notBefore: unknown;
       forceFreshSession: unknown;
       triggerDetail: unknown;
       debug: unknown;
@@ -6840,6 +6850,11 @@ function getActorIdentityPart(req: Request): string {
     };
     if (typeof body.reason === "string" && body.reason.length > 0) {
       wakeOpts.reason = body.reason;
+    }
+    // myrmidon(OPE-12929): the legacy invoke endpoint carries the optional
+    // not-before instant the same way the validated wakeup route does.
+    if (typeof body.notBefore === "string" && body.notBefore.length > 0) {
+      wakeOpts.notBefore = body.notBefore;
     }
     if (body.payload && typeof body.payload === "object" && !Array.isArray(body.payload)) {
       wakeOpts.payload = req.actor.type === "agent"
