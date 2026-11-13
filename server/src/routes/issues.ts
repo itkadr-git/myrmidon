@@ -56,6 +56,13 @@ import {
   reviewCommentReferencesCode,
   withChangesRequestedHeadSha,
 } from "../myrmidon/review-return-guard/policy.js";
+// myrmidon(OPE-12181, REVIEW-CHECKS-NATIVE): the review verdict is recorded as
+// structure (decision + head sha + PR number) next to the decision id, so
+// consumers read data instead of re-parsing the decision comment text.
+import {
+  extractReviewVerdictRecord,
+  withReviewVerdictRecord,
+} from "../myrmidon/review-verdict/record.js";
 import {
   REVIEW_CI_FINAL_CHECK_NAME,
   REVIEW_CI_WAIT_INTERVAL_MS,
@@ -10498,10 +10505,16 @@ export function issueRoutes(
                   "Execution policy decision patch is missing executionState",
                 );
               }
-              updateFields.executionState = {
-                ...nextExecutionState,
-                lastDecisionId: decisionId,
-              };
+              updateFields.executionState = withReviewVerdictRecord(
+                {
+                  ...nextExecutionState,
+                  lastDecisionId: decisionId,
+                },
+                extractReviewVerdictRecord({
+                  outcome: transition.decision.outcome,
+                  body: transition.decision.body,
+                }),
+              );
               await tx.insert(issueExecutionDecisions).values({
                 id: decisionId,
                 companyId: lockedIssue.companyId,
@@ -14772,10 +14785,16 @@ export function issueRoutes(
             "Execution policy decision patch is missing executionState",
           );
         }
-        transition.patch.executionState = {
-          ...nextExecutionState,
-          lastDecisionId: decisionId,
-        };
+        transition.patch.executionState = withReviewVerdictRecord(
+          {
+            ...nextExecutionState,
+            lastDecisionId: decisionId,
+          },
+          extractReviewVerdictRecord({
+            outcome: transition.decision?.outcome,
+            body: transition.decision?.body,
+          }),
+        );
       }
       Object.assign(updateFields, transition.patch);
       // myrmidon(OPE-10045): the active participant approved the last stage
@@ -15957,10 +15976,16 @@ export function issueRoutes(
               if (!nextExecutionState || typeof nextExecutionState !== "object") {
                 throw new Error("Execution policy decision patch is missing executionState");
               }
-              updateFields.executionState = {
-                ...nextExecutionState,
-                lastDecisionId: lockedDecisionId,
-              };
+              updateFields.executionState = withReviewVerdictRecord(
+                {
+                  ...nextExecutionState,
+                  lastDecisionId: lockedDecisionId,
+                },
+                extractReviewVerdictRecord({
+                  outcome: lockedTransition.decision?.outcome,
+                  body: lockedTransition.decision?.body,
+                }),
+              );
               issueUpdateData.executionState = updateFields.executionState;
             }
             // myrmidon(HANDOFF-CAS): the authoritative compare — re-read the
@@ -16579,6 +16604,10 @@ export function issueRoutes(
           issueId: currentIssue.id,
           decisionOutcome: decision?.outcome ?? "approved",
           verdictBody: decision?.body ?? null,
+          verdictRecord: extractReviewVerdictRecord({
+            outcome: decision?.outcome ?? "approved",
+            body: decision?.body ?? null,
+          }),
           actor: {
             actorType: actor.actorType,
             actorId: actor.actorId,
@@ -20988,10 +21017,16 @@ export function issueRoutes(
               "Execution policy decision patch is missing executionState",
             );
           }
-          transition.patch.executionState = {
-            ...nextExecutionState,
-            lastDecisionId: decisionId,
-          };
+          transition.patch.executionState = withReviewVerdictRecord(
+            {
+              ...nextExecutionState,
+              lastDecisionId: decisionId,
+            },
+            extractReviewVerdictRecord({
+              outcome: transition.decision?.outcome,
+              body: transition.decision?.body,
+            }),
+          );
         }
 
         issueBeforeCommentDecision = currentIssue;
@@ -21187,6 +21222,10 @@ export function issueRoutes(
             issueId: currentIssue.id,
             decisionOutcome: transition.decision?.outcome ?? "approved",
             verdictBody: transition.decision?.body ?? req.body?.body ?? null,
+            verdictRecord: extractReviewVerdictRecord({
+              outcome: transition.decision?.outcome ?? "approved",
+              body: transition.decision?.body ?? req.body?.body ?? null,
+            }),
             actor: {
               actorType: actor.actorType,
               actorId: actor.actorId,
