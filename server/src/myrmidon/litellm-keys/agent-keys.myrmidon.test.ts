@@ -461,6 +461,79 @@ describe("myrmidon(M2-B) agent gateway keys", () => {
     expect(store.size).toBe(1); // only the admin key secret
     expect([...expiries.keys()]).toEqual([]);
   });
+  it("myrmidon(OPE-12930 KEY-TTL): a failed secret create after a gateway accept removes the orphan key", async () => {
+    const agent = { id: "agent-a", name: "alpha" };
+    const { deps, store, gateway } = depsWithAgent(agent, { "gateway-admin": "admin-value" });
+    const original = deps.createSecret;
+    deps.createSecret = async (input) => {
+      throw Object.assign(new Error("store down"), { status: 500 });
+    };
+    await expect(
+      createAgentGatewayKey(deps, { companyId: "company-a", agentId: agent.id }),
+    ).rejects.toMatchObject({ status: 500 });
+    // The compensating delete ran before the store error surfaced: the gateway
+    // holds no key for this agent and the store was never written.
+    expect(gateway.calls.at(-1)).toMatchObject({ op: "delete", alias: "llm-gateway-key-alpha-agent-a" });
+    expect(gateway.installed.has("llm-gateway-key-alpha-agent-a")).toBe(false);
+    expect(store.has("llm-gateway-key-alpha-agent-a")).toBe(false);
+    void original;
+  });
+
+  it("myrmidon(OPE-12930 KEY-TTL): a failed store rotation restores the gateway to the stored old value", async () => {
+    vi.useFakeTimers();
+    try {
+      vi.setSystemTime(new Date("2026-06-01T12:00:00.000Z"));
+      const agent = { id: "agent-a", name: "alpha" };
+      const { deps, store, expiries, gateway } = depsWithAgent(agent, { "gateway-admin": "admin-value" });
+      const created = await createAgentGatewayKey(deps, { companyId: "company-a", agentId: agent.id });
+      const valueBefore = store.get(created.view.secretName)!;
+      const expiryBefore = expiries.get(created.view.secretName)!.toISOString();
+
+      vi.setSystemTime(new Date("2026-06-01T18:00:00.000Z"));
+      deps.rotateSecret = async () => {
+        throw Object.assign(new Error("store down"), { status: 500 });
+      };
+      await expect(
+        rotateAgentGatewayKey(deps, { companyId: "company-a", agentId: agent.id }),
+      ).rejects.toMatchObject({ status: 500 });
+
+      // The gateway was moved BACK to the stored old value and deadline: the
+      // halves agree again and the agent keeps authenticating with the value
+      // the store can resolve.
+      expect(gateway.calls.at(-1)).toMatchObject({
+        op: "rotate",
+        alias: created.view.secretName,
+        value: valueBefore,
+        expires: expiryBefore,
+      });
+      expect(gateway.installed.has(created.view.secretName)).toBe(true);
+      // The store still holds the old value and deadline; no new deadline.
+      expect(store.get(created.view.secretName)).toBe(valueBefore);
+      expect(expiries.get(created.view.secretName)?.toISOString()).toBe(expiryBefore);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("myrmidon(OPE-12930 KEY-TTL): a failed store rotation with an unreadable old value removes the gateway key", async () => {
+    const agent = { id: "agent-a", name: "alpha" };
+    const { deps, gateway } = depsWithAgent(agent, { "gateway-admin": "admin-value" });
+    await createAgentGatewayKey(deps, { companyId: "company-a", agentId: agent.id });
+    deps.rotateSecret = async () => {
+      throw Object.assign(new Error("store down"), { status: 500 });
+    };
+    const originalRead = deps.readSecretValue;
+    deps.readSecretValue = async (companyId, secretName) => {
+      if (secretName === "llm-gateway-key-alpha-agent-a") throw new Error("store down");
+      return originalRead(companyId, secretName);
+    };
+    await expect(
+      rotateAgentGatewayKey(deps, { companyId: "company-a", agentId: agent.id }),
+    ).rejects.toMatchObject({ status: 500 });
+    // Fail closed: a live key nobody can resolve is worse than no key.
+    expect(gateway.calls.at(-1)).toMatchObject({ op: "delete", alias: "llm-gateway-key-alpha-agent-a" });
+    expect(gateway.installed.has("llm-gateway-key-alpha-agent-a")).toBe(false);
+  });
 
   it("myrmidon(OPE-12930 KEY-TTL): a read reports the stored deadline, null when metadata is unreadable", async () => {
     vi.useFakeTimers();

@@ -47,8 +47,11 @@ import { AGENT_SPEND_WINDOW_MS, readAgentSpendWindows, type AgentSpendWindow } f
  * `/key/generate`, `/key/update`) and the board secret's metadata row
  * (secretService.create/rotate `expiresAt`), so the store's own resolution and
  * the gateway's enforcement refuse the same expired value. A rotation that
- * the gateway did not apply (404) still refreshes the secret's deadline, and a
- * failed gateway write never leaves a fresh secret behind.
+ * the gateway did not apply (404) still refreshes the secret's deadline, a
+ * failed gateway write never leaves a fresh secret behind, and a failed board
+ * write after a gateway accept compensates the half that moved: create removes
+ * the fresh gateway key, rotation restores the stored old value — or removes
+ * the gateway key when that value is unreadable.
  */
 
 /** Upper bound for a managed gateway key's lifetime (OPE-12930 KEY-TTL). */
@@ -219,19 +222,36 @@ export async function createAgentGatewayKey(
 
   const adminKey = await requireAdminKey(deps, input.companyId, settings);
   const value = generateGatewayKeyValue();
-  await deps.gateway({ baseUrl: settings.baseUrl!, adminKey }).createKey({
+  const port = deps.gateway({ baseUrl: settings.baseUrl!, adminKey });
+  await port.createKey({
     alias: secretName,
     value,
     models: input.models,
     expiresAt,
   });
-  await deps.createSecret({
-    companyId: input.companyId,
-    name: secretName,
-    value,
-    description: `LLM gateway key of agent "${agent.name}"; the board rotates it for this agent only`,
-    expiresAt,
-  });
+  try {
+    await deps.createSecret({
+      companyId: input.companyId,
+      name: secretName,
+      value,
+      description: `LLM gateway key of agent "${agent.name}"; the board rotates it for this agent only`,
+      expiresAt,
+    });
+  } catch (error) {
+    // myrmidon(OPE-12930 KEY-TTL): the gateway accepted a value the board can
+    // never store — nobody could resolve it, so it is an active orphan. The
+    // compensating delete runs before the store error surfaces; a failed
+    // compensation is logged, never masked.
+    try {
+      await port.deleteKey({ alias: secretName });
+    } catch (deleteError) {
+      log(deps).warn(
+        { companyId: input.companyId, agentId: agent.id, secretName, error: String(deleteError) },
+        "agent gateway key orphan delete failed after a failed secret create",
+      );
+    }
+    throw error;
+  }
   log(deps).info({ companyId: input.companyId, agentId: agent.id }, "agent gateway key created");
   return {
     view: {
@@ -245,6 +265,59 @@ export async function createAgentGatewayKey(
     },
     value,
   };
+}
+/**
+ * Undoes a rotation whose board-side half failed (OPE-12930 KEY-TTL): the
+ * gateway already holds the new value, the store still holds the old. The
+ * gateway is moved BACK to the stored old value with its stored old deadline,
+ * so the agent keeps authenticating with the value the store can resolve and
+ * the two halves agree again. When the old value cannot be read (or the read
+ * fails), the key is removed from the gateway instead: a missing key fails
+ * closed on every request, a live gateway key the store cannot resolve does
+ * not. Compensation errors are logged and swallowed so the store error — the
+ * cause the caller must see — is never masked.
+ */
+async function compensateFailedRotation(
+  deps: AgentGatewayKeyDeps,
+  port: GatewayKeyAdminPort,
+  companyId: string,
+  secretName: string,
+): Promise<void> {
+  let oldValue: string | null = null;
+  let oldExpiresAt: Date | null = null;
+  try {
+    oldValue = await deps.readSecretValue(companyId, secretName);
+    if (oldValue && deps.readSecretExpiresAt) {
+      oldExpiresAt = await deps.readSecretExpiresAt(companyId, secretName);
+    }
+  } catch (readError) {
+    log(deps).warn(
+      { companyId, secretName, error: String(readError) },
+      "agent gateway key rotation compensation could not read the stored value",
+    );
+    oldValue = null;
+  }
+  if (oldValue) {
+    try {
+      await port.rotateKey({ alias: secretName, value: oldValue, expiresAt: oldExpiresAt ?? undefined });
+    } catch (restoreError) {
+      log(deps).warn(
+        { companyId, secretName, error: String(restoreError) },
+        "agent gateway key rotation compensation restore failed; removing the key",
+      );
+      oldValue = null;
+    }
+  }
+  if (!oldValue) {
+    try {
+      await port.deleteKey({ alias: secretName });
+    } catch (deleteError) {
+      log(deps).warn(
+        { companyId, secretName, error: String(deleteError) },
+        "agent gateway key rotation compensation delete failed",
+      );
+    }
+  }
 }
 
 /**
@@ -260,8 +333,11 @@ export async function createAgentGatewayKey(
  *
  * myrmidon(OPE-12930 KEY-TTL): a rotation moves BOTH deadlines — `expires` on
  * the gateway key and `expiresAt` on the board secret — from ONE computed
- * instant, so neither half can outlive the other.
+ * instant, so neither half can outlive the other. A failed board-side half is
+ * compensated: the gateway is moved back to the stored old value — or the key
+ * is removed when that value is unreadable.
  */
+
 export async function rotateAgentGatewayKey(
   deps: AgentGatewayKeyDeps,
   input: AgentGatewayKeyInput,
@@ -281,16 +357,24 @@ export async function rotateAgentGatewayKey(
   const adminKey = await requireAdminKey(deps, input.companyId, settings);
   const value = generateGatewayKeyValue();
   const expiresAt = keyExpiry(input.ttlMs);
-  const applied = await deps
-    .gateway({ baseUrl: settings.baseUrl!, adminKey })
-    .rotateKey({ alias: secretName, value, expiresAt });
+  const port = deps.gateway({ baseUrl: settings.baseUrl!, adminKey });
+  const applied = await port.rotateKey({ alias: secretName, value, expiresAt });
   if (!applied) {
     throw unprocessable(
       `the gateway does not hold a key named "${secretName}"; the store was left unchanged`,
       { code: "gateway_key_unknown", secretName },
     );
   }
-  await deps.rotateSecret(secretId, value, expiresAt);
+  try {
+    await deps.rotateSecret(secretId, value, expiresAt);
+  } catch (error) {
+    // myrmidon(OPE-12930 KEY-TTL): the gateway now holds the NEW value while
+    // the store still holds the old one — the halves split in the direction
+    // that locks the agent out. Restore the gateway to the stored old value
+    // and deadline, or remove the key when that is impossible.
+    await compensateFailedRotation(deps, port, input.companyId, secretName);
+    throw error;
+  }
   log(deps).info({ companyId: input.companyId, agentId: agent.id }, "agent gateway key rotated");
   return {
     agentId: agent.id,
