@@ -242,8 +242,11 @@ describe("verifyReleaseComposition", () => {
       },
       now: NOW,
     });
-    // 3 members × 2 default release refs = 6 calls.
-    expect(seen).toHaveLength(6);
+    // 3 members × 1 deployed ref (myr-v1.6.8) = 3 calls. Membership is
+    // checked against the exact ref the deployed version corresponds to,
+    // not the whole release-line ref set (review finding PR #3093 round 4).
+    expect(seen).toHaveLength(3);
+    for (const url of seen) expect(url).toContain("compare/myr-v1.6.8...");
   });
 
   it("fails with deployed_version_mismatch when deployedVersion is not among the resolved release refs", async () => {
@@ -308,6 +311,58 @@ describe("verifyReleaseComposition", () => {
     expect(result.verdict).toBe("confirmed");
     expect(result.failureReason).toBeNull();
     expect(result.allMembersPresent).toBe(true);
+  });
+
+  it("fails when a candidate SHA exists only in a later release tag than the deployed one", async () => {
+    // Review finding (PR #3093, round 4): the deployed version is validated
+    // against the full resolved ref set, but membership must be proven against
+    // the EXACT ref the deployed version corresponds to. If refs include both
+    // myr-v1.8.0 and myr-v1.8.1, the deployed version is myr-v1.8.0, and a
+    // candidate SHA exists only in myr-v1.8.1, the old code counted it present
+    // (checked against ALL refs) and confirmed a release whose deployed build
+    // omits that candidate.
+    const calls: string[] = [];
+    const resolvedRefs = [
+      { ref: "myr-v1.8.0", kind: "tag" as const },
+      { ref: "myr-v1.8.1", kind: "tag" as const },
+    ];
+    const result = await verifyReleaseComposition({
+      releasePrefix: "1.8",
+      deployedVersion: "myr-v1.8.0",
+      members: [member("OPE-1", SHA_A), member("OPE-2", SHA_B)],
+      resolvedRefs,
+      fetchImpl: (input) => {
+        calls.push(input);
+        const url = new URL(input);
+        const compareRef = decodeURIComponent(
+          url.pathname.replace(/^\/repos\/[^/]+\/[^/]+\/compare\//, ""),
+        );
+        const base = compareRef.split("...")[0];
+        // SHA_A is in myr-v1.8.0; SHA_B only landed in myr-v1.8.1.
+        const sha = compareRef.split("...")[1];
+        const present = base === "myr-v1.8.0" && sha === SHA_A;
+        return Promise.resolve({
+          ok: true,
+          status: 200,
+          json: async () =>
+            present ? { status: "identical", ahead_by: 0 } : { status: "diverged", ahead_by: 4 },
+        } as unknown as Response);
+      },
+      now: NOW,
+    });
+
+    expect(result.verdict).toBe("failed");
+    expect(result.failureReason).toBe("member_missing_from_release");
+    expect(result.allMembersPresent).toBe(false);
+    // Only the deployed ref (myr-v1.8.0) may be consulted — never the later tag.
+    expect(calls).toHaveLength(2);
+    for (const call of calls) {
+      expect(call).toContain("compare/myr-v1.8.0...");
+      expect(call).not.toContain("myr-v1.8.1");
+    }
+    const ope2 = result.members.find((m) => m.id === "OPE-2");
+    expect(ope2?.membership).toBe("missing_from_release");
+    expect(ope2?.releaseRefs).toEqual(["myr-v1.8.0"]);
   });
 
   it("fails closed with deployed_version_unknown when resolvedRefs is empty, even if membership would resolve present", async () => {
