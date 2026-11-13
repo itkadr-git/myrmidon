@@ -1,8 +1,6 @@
-// myrmidon(OPE-13019): barrel for the external-connector catalog contract.
-// Keep this file a pure re-export of the catalog module; add new files in
-// this directory only when the contract genuinely splits into a second
-// domain (e.g. grants, journal) in a later slice. OPE-13026 adds the grants
-// (policy) and journal (invocation audit) contract as the second domain.
+// myrmidon(OPE-13019, OPE-13026): barrel for the external-connector contracts.
+// Exports both the catalog contract (OPE-13019) and the per-agent policy & invocation
+// audit contract (OPE-13026).
 
 export * from "./catalog.js";
 export * from "./policy.js";

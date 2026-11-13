@@ -1,8 +1,9 @@
 // myrmidon(OPE-12633 OMP-SSH-RUNNER): contract of the omp SSH runner image —
 // pinned toolchain, key-only sshd, and the signed CI image lane.
-// myrmidon(OPE-12722 OMP-RUNNER-SHARED-CACHE): the shared package cache —
-// board git mirrors read through the wrapper, the runners' own pnpm metadata
-// cache, and the per-runner pnpm store in the workspace volume.
+// myrmidon(OPE-12722 OMP-RUNNER-SHARED-CACHE, OPE-13018 OMP-RUNNER-DISK):
+// the shared package cache — board git mirrors read through the wrapper, the
+// runners' own pnpm metadata cache, the shared pnpm store mount, and the
+// per-runner pnpm store in the workspace volume as a fallback.
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import fs from "node:fs";
@@ -96,31 +97,34 @@ describe("omp SSH runner image", () => {
   });
 });
 
-// myrmidon(OPE-12722 OMP-RUNNER-SHARED-CACHE): the runner shares the board's
-// package cache the way the bot containers do — git mirrors read-only through
-// a wrapper, the runners' own pnpm metadata cache read-write, and the pnpm
-// STORE in the workspace volume (a link cannot cross a filesystem boundary),
-// inside `.paperclip-runtime`, the one directory the board's cleanups spare.
-describe("omp SSH runner shared cache (OPE-12722)", () => {
+// myrmidon(OPE-12722 OMP-RUNNER-SHARED-CACHE, OPE-13018 OMP-RUNNER-DISK):
+// the runner shares the board's package cache the way the bot containers do —
+// git mirrors read-only through a wrapper, the runners' own pnpm metadata
+// cache read-write, and the pnpm STORE mounted at /cache/pnpm-store (a shared
+// store across all runners on the host, on the same XFS filesystem as the
+// runner volumes, so reflink works). A runner whose compose predates the
+// shared store falls back to the legacy per-runner store inside the workspace
+// volume, inside `.paperclip-runtime`, the one directory the board's cleanups
+// spare.
+describe("omp SSH runner shared cache (OPE-12722, OPE-13018)", () => {
   // ${OMP_RUNNER_CACHE_DIR:-${OMP_RUNNER_DATA_DIR:?...}/cache}
   const cacheRoot = String.raw`\$\{OMP_RUNNER_CACHE_DIR:-\$\{OMP_RUNNER_DATA_DIR:\?[^}]*\}/cache\}`;
 
-  it("mounts the shared cache: git mirrors read-only, the runners' own download cache writable", () => {
+  it("mounts the shared cache: git mirrors read-only, the runners' own download cache and the shared pnpm store writable", () => {
     assert.match(compose, new RegExp(`^\\s+- ${cacheRoot}/git:/cache/git:ro$`, "m"));
     assert.match(compose, new RegExp(`^\\s+- ${cacheRoot}/pnpm-omp:/cache/pnpm$`, "m"));
+    assert.match(compose, new RegExp(`^\\s+- ${cacheRoot}/pnpm-store-omp:/cache/pnpm-store$`, "m"));
     // the bots' <cache>/pnpm (uid 10001, re-owned by their prepare step) is never mounted by a runner
     assert.doesNotMatch(compose, /^\s+- [^\n]*\/pnpm:\/cache\//m);
     // the cache directory is optional: an existing env file keeps working
     assert.doesNotMatch(compose, /OMP_RUNNER_CACHE_DIR:\?/);
-    // the store is never reached through a /cache bind (EXDEV, BOT-DISK-D)
-    assert.doesNotMatch(compose, /^\s+- [^\n]*pnpm-store/m);
-    assert.doesNotMatch(compose, /:\/cache\/pnpm-store/);
   });
 
   it("documents the cache directories and the store location in the compose header", () => {
     assert.match(compose, /OMP_RUNNER_CACHE_DIR +\(myrmidon OPE-12722/);
     assert.match(compose, /install -d -o <board uid> -m 0755 <cache>\/git/);
     assert.match(compose, /install -d -o 1000 -g 1000 -m 0755 <cache>\/pnpm-omp/);
+    assert.match(compose, /install -d -o 1000 -g 1000 -m 0755 <cache>\/pnpm-store-omp/);
     assert.match(compose, /\/workspace\/\.paperclip-runtime\/pnpm-store/);
     assert.match(compose, /git clean -fdx -e \.paperclip-runtime/);
     // the old claim that no host path but the key is mounted is false once the cache is bound
@@ -164,13 +168,17 @@ describe("omp SSH runner shared cache (OPE-12722)", () => {
     assert.doesNotMatch(dockerfile, /echo "[^"\n]*\$\((?:env -i|\/usr\/bin\/git)/);
   });
 
-  it("wires the pnpm store into the workspace volume and the download cache per start", () => {
+  it("wires the pnpm store into the shared mount and falls back to the workspace volume per start", () => {
     // ENV cannot reach SSH sessions (PermitUserEnvironment no): the entrypoint
     // writes profile.d files, which /etc/profile sources for every command.
     assert.doesNotMatch(dockerfile, /^ENV npm_config_/m);
     assert.match(entrypoint, /\/etc\/profile\.d\/omp-runner-pnpm\.sh/);
-    // the store sits inside .paperclip-runtime: every board cleanup of the workspace spares it
-    assert.match(entrypoint, /^export npm_config_store_dir=\/workspace\/\.paperclip-runtime\/pnpm-store$/m);
+    // OPE-13018: the shared store mount wins when the compose binds it; the
+    // legacy per-runner store inside .paperclip-runtime is the fallback
+    assert.match(entrypoint, /if \[ -d \/cache\/pnpm-store \]; then/);
+    assert.match(entrypoint, /store_dir=\/cache\/pnpm-store/);
+    assert.match(entrypoint, /npm_config_store_dir=\$store_dir/);
+    assert.match(entrypoint, /store_dir=\/workspace\/\.paperclip-runtime\/pnpm-store/);
     assert.doesNotMatch(entrypoint, /^export npm_config_store_dir=\/workspace\/\.pnpm-store/m);
     // pnpm 9 copies silently when a reflink is refused: clone-or-copy everywhere, never `clone` alone
     assert.match(entrypoint, /^export npm_config_package_import_method=clone-or-copy$/m);
@@ -185,7 +193,9 @@ describe("omp SSH runner shared cache (OPE-12722)", () => {
     assert.match(entrypoint, /npm reads it as cache/);
     // /cache/pnpm is chowned only while root owns it: a directory of another uid is never re-owned
     assert.match(entrypoint, /if \[ "\$cache_uid" = 0 \]; then\s+chown 1000:1000 \/cache\/pnpm/);
-    assert.equal(entrypoint.match(/^\s*chown [^\n]*\/cache\/pnpm/gm)?.length, 1);
+    assert.equal(entrypoint.match(/^\s*chown [^\n]*\/cache\/pnpm(?!-store)/gm)?.length, 1);
+    // the store mount gets the same chown-guard as the cache mount
+    assert.match(entrypoint, /chown 1000:1000 \/cache\/pnpm-store/);
     assert.match(entrypoint, /if \[ "\$cache_uid" = 1000 \]/);
     // the workspace must stay writable by uid 1000, or the store breaks
     assert.match(entrypoint, /chown 1000:1000 \/workspace/);
@@ -195,10 +205,13 @@ describe("omp SSH runner shared cache (OPE-12722)", () => {
     for (const doc of [readme, readmeRu]) {
       assert.match(doc, /OMP_RUNNER_CACHE_DIR/);
       assert.match(doc, /\/cache\/git/);
+      assert.match(doc, /\/cache\/pnpm-store/);
       assert.match(doc, /\/workspace\/\.paperclip-runtime\/pnpm-store/);
       assert.match(doc, /<OMP_RUNNER_CACHE_DIR>\/pnpm-omp/);
+      assert.match(doc, /<OMP_RUNNER_CACHE_DIR>\/pnpm-store-omp/);
       assert.match(doc, /install -d -o <(?:board uid|uid доски)> -m 0755 <OMP_RUNNER_CACHE_DIR>\/git/);
       assert.match(doc, /install -d -o 1000 -g 1000 -m 0755 <OMP_RUNNER_CACHE_DIR>\/pnpm-omp/);
+      assert.match(doc, /install -d -o 1000 -g 1000 -m 0755 <OMP_RUNNER_CACHE_DIR>\/pnpm-store-omp/);
       assert.match(doc, /clone-or-copy/);
       assert.doesNotMatch(doc, /fail loudly/i);
       // the acceptance measure is the disk's used space, not `du` (it counts every link)
@@ -212,6 +225,9 @@ describe("omp SSH runner shared cache (OPE-12722)", () => {
     assert.match(readmeRu, /shared package download cache at \/cache\/pnpm/);
     assert.match(readme, /### Updating a runner that already runs/);
     assert.match(readmeRu, /### Обновление работающего исполнителя/);
+    // the OPE-13018 migration path is documented in both languages
+    assert.match(readme, /### Migrating an existing runner to the shared pnpm store/);
+    assert.match(readmeRu, /### Перенос работающего исполнителя на общее хранилище pnpm/);
   });
 });
 

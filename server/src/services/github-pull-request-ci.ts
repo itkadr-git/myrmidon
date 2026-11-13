@@ -89,6 +89,11 @@ export interface PullRequestCiResult {
   failedRuns: number;
   failedJobs: PullRequestFailedJob[];
   optionalFailedJobs?: PullRequestFailedJob[];
+  /**
+   * myrmidon(CI-SNAPSHOT-CANCELLED): required checks whose latest record on
+   * this head is `cancelled` with no later replacement. Not a test failure.
+   */
+  cancelledJobs?: PullRequestFailedJob[];
   runs: PullRequestCiJob[];
 }
 
@@ -115,6 +120,7 @@ export function summarizeCheckRuns(
   failedRuns: number;
   failedJobs: PullRequestFailedJob[];
   optionalFailedJobs?: PullRequestFailedJob[];
+  cancelledJobs?: PullRequestFailedJob[];
 } {
   const meta = runs as unknown as {
     authoritative?: boolean;
@@ -160,32 +166,67 @@ export function summarizeCheckRuns(
     };
   }
 
-  // myrmidon(OPE-12624): a re-run of one check outside its workflow run leaves
-  // the older `cancelled` run next to the newer one; drop a `cancelled` run when
-  // the same check (name compared case-insensitively, trimmed) has a later run
-  // (by `startedAt`, ties/empty resolved by the larger `id`). Only `cancelled`
-  // collapses — older failures stay visible next to a newer success.
-  const runStartKey = (run: PullRequestCiJob): { at: number; id: number } => ({
-    at: run.startedAt ? new Date(run.startedAt).getTime() : Number.NaN,
-    id: run.id,
-  });
-  const isOutdatedCancelledRun = (run: PullRequestCiJob): boolean => {
-    if (run.conclusion !== "cancelled") return false;
-    const start = runStartKey(run);
-    const normalizedName = run.name.trim().toLowerCase();
-    return runs.some((other) => {
-      if (other === run) return false;
-      if (other.name.trim().toLowerCase() !== normalizedName) return false;
-      const otherStart = runStartKey(other);
-      if (Number.isNaN(otherStart.at) || Number.isNaN(start.at)) {
-        return otherStart.id > start.id;
-      }
-      if (otherStart.at !== start.at) return otherStart.at > start.at;
-      return otherStart.id > start.id;
-    });
+  // myrmidon(CI-SNAPSHOT-CANCELLED): per check name (trimmed, case-insensitive)
+  // exactly one record represents the check on this head - the last COMPLETED
+  // record that carries a verdict (success / failure / timed_out /
+  // action_required ...). Earlier records of the same name (cancelled by a
+  // replaced run, failed before a re-run) are superseded. Rules:
+  //  - a later `skipped` / `neutral` never displaces an earlier verdict (a
+  //    skipped gate job of a cancelled re-run must not hide a real failure);
+  //  - a later `cancelled` never displaces an earlier verdict either: the
+  //    failure of the last finished run stays visible;
+  //  - a record still queued / in progress that is newer than the last verdict
+  //    is the re-run in flight and represents the check (pending);
+  //  - with no verdict at all, the newest of the `cancelled` / `skipped` /
+  //    `neutral` records is taken; `skipped` replaces an older `cancelled` only
+  //    when it belongs to another (known) workflow run, otherwise the cancel
+  //    stays (a skipped gate of a cancelled run is not a replacement).
+  // Order is one deterministic key: time (`startedAt`, else `completedAt`; a
+  // record without time, e.g. queued, is the newest), then `id`.
+  const runTimeKey = (run: PullRequestCiJob): number => {
+    const raw = run.startedAt ?? run.completedAt;
+    const t = raw ? new Date(raw).getTime() : Number.NaN;
+    return Number.isNaN(t) ? Number.POSITIVE_INFINITY : t;
   };
-
-  const effectiveRuns = runs.filter((r) => !isOutdatedCancelledRun(r));
+  const compareRuns = (x: PullRequestCiJob, y: PullRequestCiJob): number => {
+    const a = runTimeKey(x);
+    const b = runTimeKey(y);
+    if (a !== b) return a > b ? 1 : -1;
+    return x.id - y.id;
+  };
+  const latestOf = (list: PullRequestCiJob[]): PullRequestCiJob | null =>
+    list.reduce<PullRequestCiJob | null>((best, r) => (!best || compareRuns(r, best) > 0 ? r : best), null);
+  const workflowRunIdOf = (run: PullRequestCiJob): string | null =>
+    /\/actions\/runs\/(\d+)/.exec(run.url ?? "")?.[1] ?? null;
+  const pickRepresentative = (group: PullRequestCiJob[]): PullRequestCiJob => {
+    const inflight = latestOf(group.filter((r) => r.status !== "completed"));
+    const completed = group.filter((r) => r.status === "completed");
+    const verdict = latestOf(
+      completed.filter((r) => r.conclusion !== "cancelled" && r.conclusion !== "skipped" && r.conclusion !== "neutral"),
+    );
+    if (inflight && (!verdict || compareRuns(inflight, verdict) > 0)) return inflight;
+    if (verdict) return verdict;
+    const cancelled = latestOf(completed.filter((r) => r.conclusion === "cancelled"));
+    const quiet = latestOf(completed.filter((r) => r.conclusion !== "cancelled"));
+    if (cancelled && quiet) {
+      const cancelledRun = workflowRunIdOf(cancelled);
+      const quietRun = workflowRunIdOf(quiet);
+      const quietIsReplacement =
+        cancelledRun !== null && quietRun !== null && cancelledRun !== quietRun && compareRuns(quiet, cancelled) > 0;
+      return quietIsReplacement ? quiet : cancelled;
+    }
+    return (cancelled ?? quiet ?? inflight) as PullRequestCiJob;
+  };
+  const groupsByName = new Map<string, PullRequestCiJob[]>();
+  for (const run of runs) {
+    const key = run.name.trim().toLowerCase();
+    const group = groupsByName.get(key);
+    if (group) group.push(run);
+    else groupsByName.set(key, [run]);
+  }
+  const representatives = new Set<PullRequestCiJob>();
+  for (const group of groupsByName.values()) representatives.add(pickRepresentative(group));
+  const effectiveRuns = runs.filter((r) => representatives.has(r));
   const totalRuns = effectiveRuns.length;
 
   const configuredRequired =
@@ -219,6 +260,9 @@ export function summarizeCheckRuns(
 
   const failedJobs: PullRequestFailedJob[] = [];
   const optionalFailedJobs: PullRequestFailedJob[] = [];
+  const cancelledJobs: PullRequestFailedJob[] = [];
+  const cancelledRunIds = new Map<PullRequestFailedJob, string | null>();
+  const ciResultSuccessRunIds = new Set<string>();
   let successfulRuns = 0;
   let successfulRequiredRuns = 0;
   let inProgressCount = 0;
@@ -248,6 +292,24 @@ export function summarizeCheckRuns(
       if (required) {
         successfulRequiredRuns++;
       }
+      if (run.name.trim().toLowerCase() === "ci result" && conclusion === "success") {
+        const runId = workflowRunIdOf(run);
+        if (runId) ciResultSuccessRunIds.add(runId);
+      }
+    } else if (conclusion === "cancelled") {
+      // The latest record of this check is cancelled and nothing replaced it:
+      // not a test failure, only a check that did not finish.
+      if (required) {
+        const job: PullRequestFailedJob = {
+          id: run.id,
+          name: run.name,
+          conclusion: "cancelled",
+          url: run.url,
+          completedAt: run.completedAt,
+        };
+        cancelledJobs.push(job);
+        cancelledRunIds.set(job, workflowRunIdOf(run));
+      }
     } else {
       const failedJob: PullRequestFailedJob = {
         id: run.id,
@@ -264,7 +326,16 @@ export function summarizeCheckRuns(
     }
   }
 
+  // A successful `CI result` absorbs only the cancelled required checks of its
+  // own workflow run (same run id). A cancelled check outside it - or one whose
+  // run cannot be told from the check data - keeps the summary `cancelled`.
+  const absorbedCancelledJobs = cancelledJobs.filter((job) => {
+    const runId = cancelledRunIds.get(job);
+    return runId !== null && runId !== undefined && ciResultSuccessRunIds.has(runId);
+  });
+  for (const job of absorbedCancelledJobs) cancelledJobs.splice(cancelledJobs.indexOf(job), 1);
   const failedRuns = failedJobs.length;
+  const cancelledNote = cancelledJobs.length > 0 ? `, ${cancelledJobs.length} cancelled` : "";
   let status: PullRequestCiStatus;
   let conclusion: PullRequestCiConclusion;
   let summary: string;
@@ -272,18 +343,23 @@ export function summarizeCheckRuns(
   if (failedRuns > 0) {
     conclusion = "failure";
     status = inProgressRequiredCount > 0 ? "in_progress" : "completed";
-    summary = `failure (${failedRuns} failed, ${successfulRequiredRuns} passed${inProgressRequiredCount > 0 ? `, ${inProgressRequiredCount} running` : ""})`;
+    summary = `failure (${failedRuns} failed, ${successfulRequiredRuns} passed${inProgressRequiredCount > 0 ? `, ${inProgressRequiredCount} running` : ""}${cancelledNote})`;
   } else if (inProgressRequiredCount > 0) {
     status = "in_progress";
     conclusion = "pending";
-    summary = `in progress (${inProgressRequiredCount} running, ${successfulRequiredRuns} passed)`;
+    summary = `in progress (${inProgressRequiredCount} running, ${successfulRequiredRuns} passed${cancelledNote})`;
+  } else if (cancelledJobs.length > 0) {
+    status = "completed";
+    conclusion = "cancelled";
+    summary = `cancelled, not a test failure (${cancelledJobs.length} cancelled, ${successfulRequiredRuns} passed): ${cancelledJobs.map((j) => j.name).join(", ")}; checks were cancelled and not replaced by a newer run - rerun CI`;
   } else {
     status = "completed";
     conclusion = "success";
+    const ignored = absorbedCancelledJobs.length > 0 ? `, ${absorbedCancelledJobs.length} cancelled of the same run as a successful CI result ignored` : "";
     if (optionalFailedJobs.length > 0) {
-      summary = `success (${successfulRuns}/${totalRuns} passed, ${optionalFailedJobs.length} optional failed (не влияет))`;
+      summary = `success (${successfulRuns}/${totalRuns} passed, ${optionalFailedJobs.length} optional failed (не влияет)${ignored})`;
     } else {
-      summary = `success (${successfulRuns}/${totalRuns} passed)`;
+      summary = `success (${successfulRuns}/${totalRuns} passed${ignored})`;
     }
   }
 
@@ -298,6 +374,7 @@ export function summarizeCheckRuns(
     failedRuns,
     failedJobs,
     optionalFailedJobs,
+    cancelledJobs,
   };
 }
 
@@ -1285,6 +1362,12 @@ export function formatAuthoritativeCiOutput(
     if (ci.failedJobs.length > 0) {
       lines.push("Failed checks:");
       for (const job of ci.failedJobs) {
+        lines.push(`  - ${job.name}: ${job.conclusion}${job.url ? ` (${job.url})` : ""}`);
+      }
+    }
+    if (ci.cancelledJobs && ci.cancelledJobs.length > 0) {
+      lines.push("Cancelled checks (cancelled, not a test failure):");
+      for (const job of ci.cancelledJobs) {
         lines.push(`  - ${job.name}: ${job.conclusion}${job.url ? ` (${job.url})` : ""}`);
       }
     }

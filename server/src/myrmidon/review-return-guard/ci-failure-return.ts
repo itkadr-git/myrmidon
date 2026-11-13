@@ -78,6 +78,14 @@ export const CI_RETURN_HOLD_METADATA_KEY = "ciReturnHold";
  */
 export const CI_FINAL_CHECK_SEEN_METADATA_KEY = "ciFinalCheckSeen";
 
+/**
+ * Key of the mark "a result of this head was handled" (head, verdict, time) in
+ * the metadata of the pull request work product. Unlike `lastCompletedCi` it is
+ * not cleared when a job of the head starts, so a later delivery of the same
+ * result — of any kind of event — does not wake anybody a second time.
+ */
+export const CI_VERDICT_HANDLED_METADATA_KEY = "ciVerdictHandled";
+
 /** Reasons of a hold, as written to the mark and to the `ci_infra_retry_needed` row. */
 export type CiReturnHoldReason = "ci_infra_only" | "base_branch_red";
 
