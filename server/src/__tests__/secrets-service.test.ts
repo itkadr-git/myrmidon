@@ -4787,4 +4787,37 @@ describeEmbeddedPostgres("secretService", () => {
       }),
     ).rejects.toThrow(/redacted placeholder/i);
   });
+
+  it("myrmidon(OPE-12930 KEY-TTL): refuses to resolve an expired secret and accepts an unexpired one", async () => {
+    const companyId = await seedCompany("TTL");
+    const svc = secretService(db);
+
+    const live = await svc.create(companyId, {
+      name: `live-key-${randomUUID()}`,
+      provider: "local_encrypted",
+      value: "live-value",
+      expiresAt: new Date(Date.now() + 60_000),
+    });
+    expect(await svc.resolveSecretValue(companyId, live.id, "latest")).toBe("live-value");
+
+    const expired = await svc.create(companyId, {
+      name: `expired-key-${randomUUID()}`,
+      provider: "local_encrypted",
+      value: "expired-value",
+      expiresAt: new Date(Date.now() - 60_000),
+    });
+    await expect(svc.resolveSecretValue(companyId, expired.id, "latest")).rejects.toMatchObject({
+      status: 422,
+      details: { code: "secret_expired" },
+    });
+
+    await svc.rotate(expired.id, { value: "revived-value", expiresAt: new Date(Date.now() + 60_000) });
+    expect(await svc.resolveSecretValue(companyId, expired.id, "latest")).toBe("revived-value");
+    await svc.rotate(expired.id, { value: "closed-again-value", expiresAt: new Date(Date.now() - 60_000) });
+    await expect(svc.resolveSecretValue(companyId, expired.id, "latest")).rejects.toMatchObject({
+      status: 422,
+      details: { code: "secret_expired" },
+    });
+  });
+
 });

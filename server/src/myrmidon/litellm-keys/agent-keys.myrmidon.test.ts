@@ -1,5 +1,5 @@
 import { createServer, type Server } from "node:http";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   assertAgentMayReadOwnGatewayKey,
   assertManagedKeySecretName,
@@ -23,24 +23,24 @@ const ENABLED_ENV = {
 
 /** A key-management port that records what it was asked to do. */
 function recordingGateway(): GatewayKeyAdminPort & {
-  calls: Array<{ op: string; alias: string; value?: string; models?: string[] }>;
+  calls: Array<{ op: string; alias: string; value?: string; models?: string[]; expires?: string }>;
   installed: Set<string>;
   modelsByAlias: Map<string, string[]>;
 } {
-  const calls: Array<{ op: string; alias: string; value?: string; models?: string[] }> = [];
+  const calls: Array<{ op: string; alias: string; value?: string; models?: string[]; expires?: string }> = [];
   const installed = new Set<string>();
   const modelsByAlias = new Map<string, string[]>();
   return {
     calls,
     installed,
     modelsByAlias,
-    async createKey({ alias, value, models }) {
-      calls.push({ op: "create", alias, value, models });
+    async createKey({ alias, value, models, expiresAt }) {
+      calls.push({ op: "create", alias, value, models, expires: expiresAt?.toISOString() });
       installed.add(alias);
       if (models) modelsByAlias.set(alias, models);
     },
-    async rotateKey({ alias, value }) {
-      calls.push({ op: "rotate", alias, value });
+    async rotateKey({ alias, value, expiresAt }) {
+      calls.push({ op: "rotate", alias, value, expires: expiresAt?.toISOString() });
       return installed.has(alias);
     },
     async deleteKey({ alias }) {
@@ -64,25 +64,32 @@ function recordingGateway(): GatewayKeyAdminPort & {
 /** A deps bundle over an in-memory secret store. */
 function makeDeps(seed: Record<string, string> = {}) {
   const store = new Map(Object.entries(seed));
+  const expiries = new Map<string, Date>();
   const gateway = recordingGateway();
   const deps: AgentGatewayKeyDeps = {
     db: { select: () => ({ from: () => ({ where: async () => [] }) }) } as never,
     env: ENABLED_ENV,
     readSecretValue: async (_companyId, name) => store.get(name) ?? null,
     findSecretId: async (_companyId, name) => (store.has(name) ? `id-${name}` : null),
-    createSecret: async ({ name, value }) => {
+    readSecretExpiresAt: async (_companyId, name) => expiries.get(name) ?? null,
+    createSecret: async ({ name, value, expiresAt }) => {
       store.set(name, value);
+      if (expiresAt) expiries.set(name, expiresAt);
       return { id: `id-${name}` };
     },
-    rotateSecret: async (secretId, value) => {
-      store.set(secretId.replace(/^id-/, ""), value);
+    rotateSecret: async (secretId, value, expiresAt) => {
+      const name = secretId.replace(/^id-/, "");
+      store.set(name, value);
+      if (expiresAt) expiries.set(name, expiresAt);
     },
     deleteSecret: async (secretId) => {
-      store.delete(secretId.replace(/^id-/, ""));
+      const name = secretId.replace(/^id-/, "");
+      store.delete(name);
+      expiries.delete(name);
     },
     gateway: () => gateway,
   };
-  return { deps, store, gateway };
+  return { deps, store, expiries, gateway };
 }
 
 /** A deps bundle whose agent lookup resolves one agent of a company. */
@@ -114,7 +121,7 @@ describe("myrmidon(M2-B) agent gateway keys", () => {
     expect(created.view.valueHash).toBe(gatewayKeyValueHash(created.value));
     // The gateway got the value; the store got the same value; nothing got a hash.
     expect(gateway.calls).toEqual([
-      { op: "create", alias: created.view.secretName, value: created.value },
+      { op: "create", alias: created.view.secretName, value: created.value, expires: created.view.expiresAt },
     ]);
     expect(store.get(created.view.secretName)).toBe(created.value);
   });
@@ -203,6 +210,7 @@ describe("myrmidon(M2-B) agent gateway keys", () => {
         alias: created.view.secretName,
         value: created.value,
         models: ["openai/gpt-4o", "anthropic/claude-3-5-sonnet"],
+        expires: created.view.expiresAt,
       },
     ]);
     expect(store.get(created.view.secretName)).toBe(created.value);
@@ -361,7 +369,127 @@ describe("myrmidon(M2-B) agent gateway keys", () => {
       }),
     ).rejects.toMatchObject({ status: 404 });
   });
+
+  it("myrmidon(OPE-12930 KEY-TTL): issues every new key with a 24-hour deadline on BOTH halves", async () => {
+    vi.useFakeTimers();
+    try {
+      vi.setSystemTime(new Date("2026-06-01T12:00:00.000Z"));
+      const agent = { id: "agent-a", name: "alpha" };
+      const { deps, store, expiries, gateway } = depsWithAgent(agent, { "gateway-admin": "admin-value" });
+      const created = await createAgentGatewayKey(deps, { companyId: "company-a", agentId: agent.id });
+      const expected = "2026-06-02T12:00:00.000Z";
+
+      expect(created.view.expiresAt).toBe(expected);
+      // The gateway got the same deadline in its request body.
+      expect(gateway.calls[0]).toMatchObject({ op: "create", alias: created.view.secretName, expires: expected });
+      // The board secret metadata carries it too.
+      expect(expiries.get(created.view.secretName)?.toISOString()).toBe(expected);
+      expect(store.has(created.view.secretName)).toBe(true);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("myrmidon(OPE-12930 KEY-TTL): honors a requested ttlMs and refuses one beyond 24 h (400)", async () => {
+    vi.useFakeTimers();
+    try {
+      vi.setSystemTime(new Date("2026-06-01T12:00:00.000Z"));
+      const agent = { id: "agent-a", name: "alpha" };
+      const { deps, expiries, gateway } = depsWithAgent(agent, { "gateway-admin": "admin-value" });
+      const created = await createAgentGatewayKey(deps, { companyId: "company-a", agentId: agent.id, ttlMs: 3_600_000 });
+      expect(created.view.expiresAt).toBe("2026-06-01T13:00:00.000Z");
+      expect(expiries.get(created.view.secretName)?.toISOString()).toBe("2026-06-01T13:00:00.000Z");
+
+      await expect(
+        createAgentGatewayKey(deps, { companyId: "company-a", agentId: agent.id, ttlMs: 25 * 60 * 60 * 1000 }),
+      ).rejects.toMatchObject({
+        status: 400,
+        details: { code: "gateway_key_ttl_invalid", maxTtlMs: 24 * 60 * 60 * 1000 },
+      });
+      await expect(
+        createAgentGatewayKey(deps, { companyId: "company-a", agentId: agent.id, ttlMs: 0 }),
+      ).rejects.toMatchObject({ status: 400, details: { code: "gateway_key_ttl_invalid" } });
+      // The refused requests never reached the gateway.
+      expect(gateway.calls.filter((call) => call.op === "create")).toHaveLength(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("myrmidon(OPE-12930 KEY-TTL): a rotation moves both deadlines to one new instant", async () => {
+    vi.useFakeTimers();
+    try {
+      vi.setSystemTime(new Date("2026-06-01T12:00:00.000Z"));
+      const agent = { id: "agent-a", name: "alpha" };
+      const { deps, expiries, gateway } = depsWithAgent(agent, { "gateway-admin": "admin-value" });
+      await createAgentGatewayKey(deps, { companyId: "company-a", agentId: agent.id });
+      vi.setSystemTime(new Date("2026-06-01T18:00:00.000Z"));
+      const rotated = await rotateAgentGatewayKey(deps, { companyId: "company-a", agentId: agent.id });
+      const expected = "2026-06-02T18:00:00.000Z";
+      expect(rotated.expiresAt).toBe(expected);
+      expect(expiries.get("llm-gateway-key-alpha-agent-a")?.toISOString()).toBe(expected);
+      expect(gateway.calls.at(-1)).toMatchObject({ op: "rotate", expires: expected });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("myrmidon(OPE-12930 KEY-TTL): a failed gateway rotation leaves the old value and deadline in place", async () => {
+    const agent = { id: "agent-a", name: "alpha" };
+    const { deps, store, expiries, gateway } = depsWithAgent(agent, { "gateway-admin": "admin-value" });
+    const created = await createAgentGatewayKey(deps, { companyId: "company-a", agentId: agent.id });
+    const valueBefore = store.get(created.view.secretName);
+    const expiryBefore = expiries.get(created.view.secretName)?.toISOString();
+    gateway.installed.delete(created.view.secretName); // the gateway no longer knows the alias
+
+    await expect(
+      rotateAgentGatewayKey(deps, { companyId: "company-a", agentId: agent.id }),
+    ).rejects.toMatchObject({ status: 422 });
+    expect(store.get(created.view.secretName)).toBe(valueBefore);
+    expect(expiries.get(created.view.secretName)?.toISOString()).toBe(expiryBefore);
+  });
+
+  it("myrmidon(OPE-12930 KEY-TTL): a gateway failure during create leaves NO secret behind (no orphan)", async () => {
+    const agent = { id: "agent-a", name: "alpha" };
+    const { deps, store, expiries, gateway } = depsWithAgent(agent, { "gateway-admin": "admin-value" });
+    gateway.createKey = async () => {
+      throw Object.assign(new Error("gateway down"), { status: 422 });
+    };
+    await expect(
+      createAgentGatewayKey(deps, { companyId: "company-a", agentId: agent.id }),
+    ).rejects.toMatchObject({ status: 422 });
+    expect(store.size).toBe(1); // only the admin key secret
+    expect([...expiries.keys()]).toEqual([]);
+  });
+
+  it("myrmidon(OPE-12930 KEY-TTL): a read reports the stored deadline, null when metadata is unreadable", async () => {
+    vi.useFakeTimers();
+    try {
+      vi.setSystemTime(new Date("2026-06-01T12:00:00.000Z"));
+      const agent = { id: "agent-a", name: "alpha" };
+      const { deps } = depsWithAgent(agent, { "gateway-admin": "admin-value" });
+      const created = await createAgentGatewayKey(deps, { companyId: "company-a", agentId: agent.id });
+      const view = await readAgentGatewayKey(deps, { companyId: "company-a", agentId: agent.id });
+      expect(view.expiresAt).toBe(created.view.expiresAt);
+
+      const failing = { ...deps, readSecretExpiresAt: async () => { throw new Error("metadata down"); } };
+      const tolerated = await readAgentGatewayKey(failing, { companyId: "company-a", agentId: agent.id });
+      expect(tolerated.expiresAt).toBeNull();
+      expect(tolerated.present).toBe(true);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("myrmidon(OPE-12930 KEY-TTL): revocation reports no deadline", async () => {
+    const agent = { id: "agent-a", name: "alpha" };
+    const { deps } = depsWithAgent(agent, { "gateway-admin": "admin-value" });
+    await createAgentGatewayKey(deps, { companyId: "company-a", agentId: agent.id });
+    const revoked = await revokeAgentGatewayKey(deps, { companyId: "company-a", agentId: agent.id });
+    expect(revoked.expiresAt).toBeNull();
+  });
 });
+
 
 describe("myrmidon(M2-B) key ownership guards", () => {
   it("lets an agent read its own key and refuses another agent's", () => {

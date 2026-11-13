@@ -1381,6 +1381,13 @@ export function secretService(db: Db | DbTransaction) {
       if (secret.status !== "active") {
         throw unprocessable("Secret is not active", { code: "secret_inactive" });
       }
+      // myrmidon(OPE-12930 KEY-TTL): an expired short-lived managed credential
+      // is "not active" for every consumer — the same fail-closed shape as a
+      // disabled version, so a stale LiteLLM gateway key stops resolving the
+      // moment its deadline passes, with no sweep in the loop.
+      if (secret.expiresAt && secret.expiresAt.getTime() <= Date.now()) {
+        throw unprocessable("Secret has expired", { code: "secret_expired" });
+      }
       const binding = await assertBindingContext(companyId, secret.id, bindingContext);
       const versionRow = await getSecretVersion(secret.id, resolvedVersion);
       if (!versionRow) throw new HttpError(404, "Secret version not found", { code: "version_missing" });
@@ -2291,6 +2298,8 @@ export function secretService(db: Db | DbTransaction) {
       externalRef?: string | null;
       providerVersionRef?: string | null;
       providerMetadata?: Record<string, unknown> | null;
+      /** Optional board-side expiry metadata for short-lived managed credentials. */
+      expiresAt?: Date | null;
     },
     actor?: { userId?: string | null; agentId?: string | null },
   ) {
@@ -2346,6 +2355,7 @@ export function secretService(db: Db | DbTransaction) {
         providerMetadata: input.providerMetadata ?? null,
         latestVersion: 0,
         description: input.description ?? null,
+        expiresAt: input.expiresAt ?? null,
         createdByAgentId: actor?.agentId ?? null,
         createdByUserId: actor?.userId ?? null,
       })
@@ -2506,6 +2516,9 @@ export function secretService(db: Db | DbTransaction) {
       // update matches the latest version, so a concurrent rotation between the
       // read and the write cannot pass. A mismatch throws a 409 conflict.
       expectedLatestVersion?: number;
+      // myrmidon(OPE-12930 KEY-TTL): replaces the board-side deadline with the
+      // rotation's. Undefined keeps the stored one; explicit null clears it.
+      expiresAt?: Date | null;
     },
     actor?: { userId?: string | null; agentId?: string | null },
   ) {
@@ -2646,6 +2659,7 @@ export function secretService(db: Db | DbTransaction) {
             externalRef: prepared.externalRef,
             providerConfigId,
             lastRotatedAt: new Date(),
+            ...(input.expiresAt !== undefined ? { expiresAt: input.expiresAt } : {}),
             updatedAt: new Date(),
           })
           .where(and(
@@ -4686,6 +4700,7 @@ export function secretService(db: Db | DbTransaction) {
         externalRef?: string | null;
         providerVersionRef?: string | null;
         providerMetadata?: Record<string, unknown> | null;
+        expiresAt?: Date | null;
       },
       actor?: { userId?: string | null; agentId?: string | null },
     ) => {
@@ -4719,6 +4734,7 @@ export function secretService(db: Db | DbTransaction) {
         providerVersionRef?: string | null;
         providerConfigId?: string | null;
         expectedLatestVersion?: number;
+        expiresAt?: Date | null;
       },
       actor?: { userId?: string | null; agentId?: string | null },
     ) => {
