@@ -1,5 +1,5 @@
 {
-  "id": "db668759-0b82-48cd-8444-db15891a53d2",
+  "id": "eee2f6de-43cd-46b0-abc7-c4bb3b660aad",
   "prevId": "f0400aca-ad5b-4163-b1f5-5650da5f145c",
   "version": "7",
   "dialect": "postgresql",
@@ -23100,15 +23100,10 @@
               "isExpression": false,
               "asc": true,
               "nulls": "last"
-            },
-            {
-              "expression": "\"status\" = 'pending'",
-              "asc": true,
-              "isExpression": true,
-              "nulls": "last"
             }
           ],
           "isUnique": false,
+          "where": "\"external_connector_pending_approvals\".\"status\" = 'pending'",
           "concurrently": false,
           "method": "btree",
           "with": {}

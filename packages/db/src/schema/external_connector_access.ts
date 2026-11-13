@@ -131,10 +131,9 @@ export const externalConnectorPendingApprovals = pgTable(
       table.status,
       table.createdAt,
     ),
-    index("external_connector_pending_approvals_invocation_idx").on(
-      table.invocationId,
-      sql`${table.status} = 'pending'`,
-    ),
+    index("external_connector_pending_approvals_invocation_idx")
+      .on(table.invocationId)
+      .where(sql`${table.status} = 'pending'`),
     uniqueIndex("external_connector_pending_approvals_invocation_uq").on(table.invocationId),
   ],
 );

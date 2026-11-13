@@ -56,7 +56,7 @@ CREATE INDEX "external_connector_invocations_company_created_idx" ON "external_c
 CREATE INDEX "external_connector_invocations_company_agent_created_idx" ON "external_connector_invocations" USING btree ("company_id","agent_id","created_at" DESC NULLS LAST);--> statement-breakpoint
 CREATE INDEX "external_connector_invocations_company_connector_created_idx" ON "external_connector_invocations" USING btree ("company_id","connector_id","created_at" DESC NULLS LAST);--> statement-breakpoint
 CREATE INDEX "external_connector_pending_approvals_company_status_idx" ON "external_connector_pending_approvals" USING btree ("company_id","status","created_at");--> statement-breakpoint
-CREATE INDEX "external_connector_pending_approvals_invocation_idx" ON "external_connector_pending_approvals" USING btree ("invocation_id","status" = 'pending');--> statement-breakpoint
+CREATE INDEX "external_connector_pending_approvals_invocation_idx" ON "external_connector_pending_approvals" USING btree ("invocation_id") WHERE "external_connector_pending_approvals"."status" = 'pending';--> statement-breakpoint
 CREATE UNIQUE INDEX "external_connector_pending_approvals_invocation_uq" ON "external_connector_pending_approvals" USING btree ("invocation_id");--> statement-breakpoint
 CREATE UNIQUE INDEX "external_connector_policy_grants_uq" ON "external_connector_policy_grants" USING btree ("company_id","agent_id","connector_id","action_id");--> statement-breakpoint
 CREATE INDEX "external_connector_policy_grants_lookup_idx" ON "external_connector_policy_grants" USING btree ("company_id","agent_id","enabled");
