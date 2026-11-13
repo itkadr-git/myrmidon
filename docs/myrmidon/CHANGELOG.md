@@ -12,6 +12,21 @@ version file to edit. Base Paperclip version is in the image label
 
 ## 1.6.9
 
+### A run that waited for its own agent's slot starts when the slot frees instead of expiring by age (EMPTY-RUNS-6B)
+
+- EMPTY-RUNS-6 spared a queued run that waits for its own agent's concurrency slot
+  (`waitReason = agent_concurrency`) from the age expiry only while the agent had a `running` run. In the
+  second that run ended the age sweep cancelled the waiting run with `queued_run_stale_timeout`, a
+  replacement with another wake reason started, and the rest of the agent's waiting runs were expired one
+  after another without starting, which froze the task with "N runs without progress".
+- Now such a wait is counted from the end of the agent's last started run when that is later than the start of the
+  wait. A slot freed just now leaves the age near zero: the run is kept and starts with its own wake reason
+  and data. A slot free for the whole threshold without the run starting is a lost start and expires as
+  before. While the agent has a `running` run nothing changes. Reassignment, task closure and the other
+  task-state checks still cancel the run.
+
+## 1.6.9
+
 ### Gateway slot reconcile ends its pass at the first unreachable probe (OPE-12984)
 
 - When the gateway was down, the `gateway-slot-reconcile` pass probed all of up to 64 finished runs one after another, one timeout per run, and the start of a run waited for all of them (OPE-12964).
