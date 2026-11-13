@@ -295,13 +295,18 @@ export function createOpenApiRestConnector(
       const action = actionById.get(actionId);
       if (!action) throw new Error(`Unknown OpenAPI REST action: ${actionId}`);
 
+      // Required-body and declared-only header checks happen here, once, at
+      // the boundary — matching the unknown-query-parameter rejection below.
+      if (action.requestBody?.required && input.body === undefined) {
+        throw new Error(`Action ${actionId} requires a request body`);
+      }
+
       const pathValues = input.path ?? {};
       const pathname = action.path.replace(/\{([^}]+)\}/g, (_match, name: string) => {
         if (!(name in pathValues)) throw new Error(`Missing path parameter: ${name}`);
         return encodeURIComponent(encodeParameterValue(pathValues[name]));
       });
       const url = new URL(`${baseUrl}${pathname}`);
-
       const queryValues = input.query ?? {};
       for (const parameter of action.parameters) {
         if (parameter.in !== "query") continue;
@@ -319,6 +324,12 @@ export function createOpenApiRestConnector(
       }
 
       const headerValues = headerValueMap(input.headers);
+      for (const key of Object.keys(headerValues)) {
+        const declared = action.parameters.some(
+          (parameter) => parameter.in === "header" && parameter.name === key,
+        );
+        if (!declared) throw new Error(`Unknown header parameter: ${key}`);
+      }
       for (const parameter of action.parameters) {
         if (parameter.in !== "header" || parameter.name in headerValues) continue;
         if (parameter.required) {

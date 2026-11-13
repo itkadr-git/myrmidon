@@ -134,6 +134,23 @@ describe("OpenAPI REST connector", () => {
     ).rejects.toThrow("Unknown query parameter: nope");
   });
 
+  it("rejects a call without the required request body", async () => {
+    const connector = connectorWith(recordingTransport(() => ({ status: 200 })));
+    await expect(connector.call("openapi_rest:create_thing")).rejects.toThrow(
+      "requires a request body",
+    );
+  });
+
+  it("rejects undeclared headers at call time", async () => {
+    const connector = connectorWith(recordingTransport(() => ({ status: 200 })));
+    await expect(
+      connector.call("openapi_rest:get_thing", {
+        path: { thingId: "t1" },
+        headers: { "x-undeclared": "nope" },
+      }),
+    ).rejects.toThrow("Unknown header parameter: x-undeclared");
+  });
+
   it("rejects malformed specs", () => {
     const transport = recordingTransport(() => ({ status: 200 }));
     const build = (document: unknown) => () => connectorWith(transport, document);
