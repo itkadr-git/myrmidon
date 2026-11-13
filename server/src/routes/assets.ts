@@ -1,8 +1,10 @@
 import { Router, type Request, type Response } from "express";
 import multer from "multer";
-import createDOMPurify from "dompurify";
-import { JSDOM } from "jsdom";
+import { createRequire } from "node:module";
+
 import type { Db } from "@myrmidon/db";
+import type DOMPurify from "dompurify";
+import type { JSDOM } from "jsdom";
 import { ASSET_NAMESPACE_RULE, createAssetImageMetadataSchema } from "@myrmidon/shared";
 import type { StorageService } from "../storage/types.js";
 import { assetService, logActivity } from "../services/index.js";
@@ -13,6 +15,21 @@ import {
   MAX_ATTACHMENT_BYTES,
 } from "../attachment-types.js";
 import { assertCompanyAccess, getAccessibleResource, getActorInfo } from "./authz.js";
+
+// jsdom/dompurify load only when an SVG upload actually needs sanitizing;
+// eager imports put them on the board's startup critical path (OPE-12179).
+let lazyDom: { createDOMPurify: typeof DOMPurify; JSDOM: typeof JSDOM } | null = null;
+function domTools(): { createDOMPurify: typeof DOMPurify; JSDOM: typeof JSDOM } {
+  lazyDom ??= (() => {
+    const require = createRequire(import.meta.url);
+    return {
+      createDOMPurify: require("dompurify") as typeof DOMPurify,
+      JSDOM: require("jsdom").JSDOM as typeof JSDOM,
+    };
+  })();
+  return lazyDom;
+}
+
 const SVG_CONTENT_TYPE = "image/svg+xml";
 const ALLOWED_COMPANY_LOGO_CONTENT_TYPES = new Set([
   "image/png",
@@ -27,6 +44,7 @@ function sanitizeSvgBuffer(input: Buffer): Buffer | null {
   const raw = input.toString("utf8").trim();
   if (!raw) return null;
 
+  const { createDOMPurify, JSDOM } = domTools();
   const baseDom = new JSDOM("");
   const domPurify = createDOMPurify(
     baseDom.window as unknown as Parameters<typeof createDOMPurify>[0],

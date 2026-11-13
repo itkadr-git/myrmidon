@@ -231,6 +231,8 @@ vi.mock("chat", () => ({
   },
 }));
 
+import { createDiscordAdapter as mockedCreateDiscordAdapter } from "@chat-adapter/discord";
+
 import {
   CHAT_SDK_SOURCE_REVISION,
   CHAT_SDK_VERSION,
@@ -238,9 +240,16 @@ import {
   ChatSdkEndpointNotRegisteredError,
   createChatSdkEndpointRuntime,
   createChatSdkRuntime,
+  setDiscordAdapterFactoryForTests,
   type CreateChatSdkEndpointRuntimeOptions,
 } from "./chat-sdk-runtime.js";
 
+// The runtime lazy-loads @chat-adapter/discord through require(), which
+// bypasses vi.mock's interception. Hand the mocked factory to the runtime so
+// adapter construction keeps recording configs in `captures`.
+setDiscordAdapterFactoryForTests((config) =>
+  mockedCreateDiscordAdapter(config),
+);
 const persistence: ChatSdkStatePersistence = {
   async compareAndSet() {
     return true;
@@ -282,7 +291,9 @@ interface CapturedWebhookOptions {
 
 describe("Chat SDK endpoint runtime", () => {
   beforeEach(() => {
-    for (const value of Object.values(captures)) value.length = 0;
+    for (const value of Object.values(captures)) {
+      if (Array.isArray(value)) value.length = 0;
+    }
   });
 
   it("pins the audited SDK release and configures Slack's automatic feature path", () => {

@@ -1,6 +1,8 @@
 import type { Attachment, Message } from "chat";
 import { createHash } from "node:crypto";
-import { JSDOM } from "jsdom";
+import { createRequire } from "node:module";
+
+import type { JSDOM } from "jsdom";
 import {
   isAllowedContentType,
   MAX_ATTACHMENT_BYTES,
@@ -11,6 +13,16 @@ import { guardedRemoteHttpFetch } from "./remote-http-fetch.js";
 // myrmidon(B1c): product name in user-facing texts; see product.ts.
 import { PRODUCT_NAME as PN } from "../myrmidon/product.js";
 
+// The canonical-target parser is the only jsdom consumer in this module; load
+// it on first canonical resolution instead of at board startup (OPE-12179).
+let jsdomModule: { JSDOM: typeof JSDOM } | null = null;
+function jsdom(): { JSDOM: typeof JSDOM } {
+  jsdomModule ??= (() => {
+    const require = createRequire(import.meta.url);
+    return { JSDOM: require("jsdom").JSDOM as typeof JSDOM };
+  })();
+  return jsdomModule;
+}
 const MAX_URL_LENGTH = 2048;
 const DOWNLOAD_TIMEOUT_MS = 20_000;
 export const GITHUB_ATTACHMENT_BATCH_TIMEOUT_MS = 60_000;
@@ -619,7 +631,7 @@ function resolveCanonicalAttachmentTargetOrThrow(
       ? target
       : null;
   };
-  const fragment = JSDOM.fragment(row.body_html);
+  const fragment = jsdom().JSDOM.fragment(row.body_html);
   const candidates: URL[] = [];
   for (const anchor of fragment.querySelectorAll("a[href]")) {
     const href = anchor.getAttribute("href")!;

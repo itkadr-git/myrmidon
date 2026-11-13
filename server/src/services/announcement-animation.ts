@@ -1,6 +1,22 @@
-import createDOMPurify from "dompurify";
-import { JSDOM } from "jsdom";
+import { createRequire } from "node:module";
+
 import { ANNOUNCEMENT_ANIMATION_MAX_BYTES } from "@myrmidon/shared";
+import type DOMPurify from "dompurify";
+import type { JSDOM as JSDOMClass } from "jsdom";
+
+// jsdom + dompurify sit at the front of the server's import graph but serve
+// only announcement animation validation. Resolve them on first use so a cold
+// board start does not pay their module load (~1 s, see OPE-12179).
+let domPurifyModule: typeof DOMPurify | null = null;
+let jsdomModule: { JSDOM: typeof JSDOMClass } | null = null;
+function lazyDomModules(): { createDOMPurify: typeof DOMPurify; JSDOM: typeof JSDOMClass } {
+  const require = createRequire(import.meta.url);
+  // dompurify's CJS entry exports the createDOMPurify factory directly; the
+  // ESM "default" export is an identical wrapper. Require gives the factory.
+  domPurifyModule ??= require("dompurify") as typeof DOMPurify;
+  jsdomModule ??= require("jsdom") as { JSDOM: typeof JSDOMClass };
+  return { createDOMPurify: domPurifyModule, JSDOM: jsdomModule.JSDOM };
+}
 
 // A visual HTML/CSS document, never an application. JSDOM does not execute
 // scripts or load resources. DOMPurify handles HTML parsing/normalization;
@@ -10,6 +26,7 @@ export function validateAnnouncementAnimation(bytes: Uint8Array): string {
     throw new Error("Invalid or oversized announcement animation");
   }
   const source = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
+  const { createDOMPurify, JSDOM } = lazyDomModules();
   const dom = new JSDOM("");
   try {
     const purifier = createDOMPurify(dom.window as unknown as Parameters<typeof createDOMPurify>[0]);

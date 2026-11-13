@@ -1,8 +1,28 @@
-import { DiscordFormatConverter } from "@chat-adapter/discord";
+import { createRequire } from "node:module";
+import { fileURLToPath } from "node:url";
+
+import type { DiscordFormatConverter as DiscordFormatConverterClass } from "@chat-adapter/discord";
 import type {
   ChatProviderInventoryResult,
   ChatProviderResourceInventoryItem,
 } from "./chat-provider-inventory.js";
+
+// The @chat-adapter/discord module graph costs ~1 s at startup and this module
+// needs only the Markdown converter. Resolve it on the first formatting check
+// so a cold board start does not pay for it (OPE-12179).
+let converterClass: typeof DiscordFormatConverterClass | null = null;
+function formatConverter(): DiscordFormatConverterClass {
+  converterClass ??= (() => {
+    // ESM-only package (no "default" export condition): resolve with the ESM
+    // resolver, then require() the real file. Node 24 loads sync ESM through
+    // require() and shares the cache with import(), so later Discord usage
+    // sees the same module instance.
+    const require = createRequire(import.meta.url);
+    return require(fileURLToPath(import.meta.resolve("@chat-adapter/discord")))
+      .DiscordFormatConverter as typeof DiscordFormatConverterClass;
+  })();
+  return new converterClass();
+}
 
 const DISCORD_API_URL = "https://discord.com/api/v10";
 const REQUEST_TIMEOUT_MS = 25_000;
@@ -31,7 +51,7 @@ const REQUIRED_CHANNEL_PERMISSIONS =
 
 const MESSAGE_CONTENT_FLAGS = (1 << 18) | (1 << 19);
 const DISCORD_MAX_MESSAGE_UTF16_CODE_UNITS = 2_000;
-const discordFormatConverter = new DiscordFormatConverter();
+
 
 /**
  * Discord applies its content limit after the chat adapter has normalized
@@ -41,7 +61,7 @@ const discordFormatConverter = new DiscordFormatConverter();
  */
 export function discordMarkdownRequiresAttachment(text: string): boolean {
   return (
-    discordFormatConverter.renderPostable({ markdown: text }).length >
+    formatConverter().renderPostable({ markdown: text }).length >
     DISCORD_MAX_MESSAGE_UTF16_CODE_UNITS
   );
 }

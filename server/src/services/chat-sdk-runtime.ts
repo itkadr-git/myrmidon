@@ -11,10 +11,9 @@ import {
   type GitHubAdapter,
   type GitHubAdapterConfig,
 } from "@chat-adapter/github";
-import {
-  createDiscordAdapter,
-  type DiscordAdapter,
-  type DiscordAdapterConfig,
+import type {
+  DiscordAdapter,
+  DiscordAdapterConfig,
 } from "@chat-adapter/discord";
 import {
   createSlackAdapter,
@@ -32,6 +31,9 @@ import {
   type TelegramRawMessage,
 } from "@chat-adapter/telegram";
 import { AsyncLocalStorage } from "node:async_hooks";
+
+import { createRequire } from "node:module";
+import { fileURLToPath } from "node:url";
 import {
   Chat,
   type ActionEvent,
@@ -1350,6 +1352,35 @@ export function scopeMicrosoftTeamsEgress(
   };
   return adapter;
 }
+// @chat-adapter/discord pulls a large module graph (~1 s at startup) that only
+// Discord endpoints need. Resolve it on first adapter construction instead of
+// at import time (OPE-12179).
+// The module is ESM-only (no "default" export condition): resolve with the ESM
+// resolver, then require() the real file. Node 24 loads sync ESM through
+// require() and shares the cache with import(), so gateway callbacks keep
+// hitting the same adapter module instance.
+// Tests override the factory directly: vi.mock intercepts import() but not
+// require(), so the default loader would bypass the mock.
+let discordAdapterFactory:
+  | ((config: DiscordAdapterConfig) => DiscordAdapter)
+  | null = null;
+export function setDiscordAdapterFactoryForTests(
+  factory: ((config: DiscordAdapterConfig) => DiscordAdapter) | null,
+): void {
+  discordAdapterFactory = factory;
+}
+function loadDiscordAdapterFactory(): (
+  config: DiscordAdapterConfig,
+) => DiscordAdapter {
+  discordAdapterFactory ??= (() => {
+    const require = createRequire(import.meta.url);
+    return require(fileURLToPath(import.meta.resolve("@chat-adapter/discord")))
+      .createDiscordAdapter as (
+        config: DiscordAdapterConfig,
+      ) => DiscordAdapter;
+  })();
+  return discordAdapterFactory;
+}
 
 function createProviderAdapter(
   config: ResolvedChatSdkProviderConfig,
@@ -1470,7 +1501,7 @@ function createProviderAdapter(
         },
         userName: config.userName,
       };
-      return createDiscordAdapter(adapterConfig);
+      return loadDiscordAdapterFactory()(adapterConfig);
     }
     case "microsoft-teams": {
       const adapterConfig: TeamsAdapterConfig = {
