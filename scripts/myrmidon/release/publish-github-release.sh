@@ -32,10 +32,11 @@
 # omitted, from the MYRMIDON_RELEASE_VERIFICATION_RESULT env var — so the
 # release pipeline can wire the verification step without changing this
 # script.  An explicit rehearsal escape exists for dry runs only:
-# MYRMIDON_RELEASE_SKIP_VERIFICATION=1 refuses loudly and marks the release
-# body «REHEARSAL — NOT VERIFIED» (the same pattern as promote-latest.sh's
-# --skip-health-check); a plain invocation without any verification source
-# refuses the publish.
+# MYRMIDON_RELEASE_SKIP_VERIFICATION=1 runs the full pipeline (CI gate,
+# body build) but REFUSES to create or update any GitHub Release — the
+# script stops before the publish step with a loud REHEARSAL message and
+# exits 0 without touching GitHub.  A plain invocation without any
+# verification source refuses the publish (exit 1).
 #
 # Fail-closed and idempotent:
 #   1. Resolve the tag's commit (annotated tags dereferenced).
@@ -158,8 +159,9 @@ fi
 # The gate is MANDATORY on the publish path (OPE-13017 acceptance): a plain
 # invocation without a verification source refuses the publish.
 # MYRMIDON_RELEASE_SKIP_VERIFICATION=1 is the rehearsal escape (dry runs only —
-# it marks the body «REHEARSAL — NOT VERIFIED» and logs a loud warning, the
-# promote-latest.sh --skip-health-check pattern).
+# it runs the full pipeline but REFUSES to create or update any GitHub
+# Release; the script stops before the publish step, the same fail-closed
+# posture as the missing-verdict refusal).
 verification_section=""
 rehearsal=0
 if [[ -z "$verification_file" && -n "${MYRMIDON_RELEASE_VERIFICATION_RESULT:-}" ]]; then
@@ -168,7 +170,7 @@ fi
 if [[ -z "$verification_file" ]]; then
   if [[ "${MYRMIDON_RELEASE_SKIP_VERIFICATION:-0}" == "1" ]]; then
     rehearsal=1
-    log "WARNING: MYRMIDON_RELEASE_SKIP_VERIFICATION=1 — publishing WITHOUT the release verification gate (rehearsal only, the body is marked REHEARSAL — NOT VERIFIED)"
+    log "WARNING: MYRMIDON_RELEASE_SKIP_VERIFICATION=1 — rehearsal dry run: the full pipeline runs, but NO GitHub Release will be created or updated."
   else
     die "no release verification result — NOT publishing $tag. Run the release verification (POST /issues/:id/release-verify, OPE-13014) against the tag's commit and pass --verification-result <file> (or set MYRMIDON_RELEASE_VERIFICATION_RESULT); a rehearsal may set MYRMIDON_RELEASE_SKIP_VERIFICATION=1 explicitly."
   fi
@@ -204,15 +206,8 @@ Verified on the production board before publication.
 EOF
 )
 fi
-if ((rehearsal)); then
-  verification_section=$(cat <<EOF
-
-## Release verification
-
-REHEARSAL — NOT VERIFIED: this release was published with MYRMIDON_RELEASE_SKIP_VERIFICATION=1 (a dry run). It is NOT bound to a board-side verification of its commit.
-EOF
-)
-fi
+# The rehearsal body marker is not needed: a rehearsal never reaches the
+# publish step (the dry-run guard below stops the script first).
 
 # ------------------------------------------------------------- 2. CI gate ----
 # Completed-run verdict of one workflow for THIS tag: prints "missing"
@@ -441,6 +436,19 @@ notes_vendor_section "$vendor_line" >> release-body.md
 if [[ -n "$verification_section" ]]; then
   printf '%s\n' "$verification_section" >> release-body.md
   log "release body carries the verification signature for $sha"
+fi
+
+# REHEARSAL DRY-RUN (OPE-13017 review): MYRMIDON_RELEASE_SKIP_VERIFICATION=1
+# validates the full pipeline (CI gate, body build) but must NOT create or
+# update any GitHub Release — an unverified release must never reach GitHub,
+# whatever marker its body would carry.  Stop here, before any mutating gh
+# call; the body that WOULD have been published is printed for inspection.
+if ((rehearsal)); then
+  log "REHEARSAL — NOT PUBLISHING: MYRMIDON_RELEASE_SKIP_VERIFICATION=1 is a dry run. The pipeline is valid (CI gate passed, body built), but NO GitHub Release was created or updated. Re-run without the rehearsal flag and with --verification-result <file> to publish."
+  printf '%s\n' '--- rehearsal dry run: the body that would have been published ---' >&2
+  cat release-body.md >&2
+  printf '%s\n' '--- end of rehearsal body ---' >&2
+  exit 0
 fi
 
 # -------------------------------------------------------- 4. publish --------

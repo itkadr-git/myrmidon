@@ -212,6 +212,16 @@ function sandbox({ runs = [], releases = {}, changelog = CHANGELOG, auditReport 
   fs.writeFileSync(path.join(dir, "registry-state.json"), JSON.stringify(registryState));
   fs.writeFileSync(path.join(dir, "calls.log"), "");
   fs.writeFileSync(path.join(dir, "mutations.log"), "");
+  // A default verified verdict (confirmed, matching the fake tag commit) so
+  // the publish-path tests reach the publish step; the verification-gate
+  // describe block overrides this with its own files via extraEnv.
+  fs.writeFileSync(path.join(dir, "verification.json"), JSON.stringify({
+    verdict: "confirmed",
+    deployedVersion: COMMIT,
+    checkedAt: "2026-11-13T16:00:00Z",
+    issueId: "5f38f2aa-381b-476c-97a8-d8ba190c099b",
+    reason: "all members present",
+  }));
   return { dir, bin };
 }
 
@@ -235,11 +245,12 @@ function runScript(sb, tag, { extraEnv = {}, args = [] } = {}) {
       MYRMIDON_RELEASE_REGISTRY_STATE: path.join(sb.dir, "registry-state.json"),
       MYRMIDON_RELEASE_POLL_SECONDS: "0",
       MYRMIDON_RELEASE_POLL_MAX: "4",
-      // The verification gate is MANDATORY (OPE-13017): the gate/body tests
-      // below are not about verification, so they take the explicit
-      // rehearsal escape — exactly the operator-facing dry-run path. The
-      // verification-gate describe block passes a real verdict file instead.
-      MYRMIDON_RELEASE_SKIP_VERIFICATION: "1",
+      // The verification gate is MANDATORY (OPE-13017): the publish-path
+      // tests below are not about the gate itself, so they carry the
+      // sandbox's default confirmed verdict; the verification-gate describe
+      // block overrides this with its own files via extraEnv. Tests that
+      // exercise the no-verdict refusal clear MYRMIDON_RELEASE_VERIFICATION_RESULT.
+      MYRMIDON_RELEASE_VERIFICATION_RESULT: path.join(sb.dir, "verification.json"),
       // RELEASE-PUBLISH-WAIT: the fake gh's runs-state switch (absent fixtures never read
       // it; 0 = the first runs read already answers "after")
       GH_RUNS_SWITCH_AFTER: "0",
@@ -1217,6 +1228,7 @@ describe("publish-github-release.sh: the release verification gate (OPE-13017)",
     // publish, even with green tag CI.
     const sb = sandbox({ runs: GREEN_RUNS });
     const { code, out } = runScript(sb, "myr-v1.6.0", { extraEnv: {
+      MYRMIDON_RELEASE_VERIFICATION_RESULT: "",
       MYRMIDON_RELEASE_SKIP_VERIFICATION: "",
     } });
     assert.notEqual(code, 0, out);
@@ -1229,6 +1241,7 @@ describe("publish-github-release.sh: the release verification gate (OPE-13017)",
     // still demands a verdict file.
     const sb = sandbox({ runs: GREEN_RUNS });
     const { code, out } = runScript(sb, "myr-v1.6.0", { extraEnv: {
+      MYRMIDON_RELEASE_VERIFICATION_RESULT: "",
       MYRMIDON_RELEASE_SKIP_VERIFICATION: "",
     }, args: ["--require-verification"] });
     assert.notEqual(code, 0, out);
@@ -1296,18 +1309,25 @@ describe("publish-github-release.sh: the release verification gate (OPE-13017)",
     assert.match(mut, /## Release verification/);
   });
 
-  it("the rehearsal escape publishes with a loud warning and a REHEARSAL — NOT VERIFIED body marker", () => {
-    // MYRMIDON_RELEASE_SKIP_VERIFICATION=1 (dry runs only): the publish
-    // proceeds but the body is explicitly marked as unverified — the
-    // promote-latest.sh --skip-health-check pattern.
+  it("the rehearsal escape is a dry run — it validates the pipeline but creates no GitHub Release", () => {
+    // MYRMIDON_RELEASE_SKIP_VERIFICATION=1 (dry runs only): the full
+    // pipeline runs (CI gate, body build) but the script stops before any
+    // mutating gh call — an unverified release must never reach GitHub,
+    // whatever marker its body would carry (OPE-13017 review: the rehearsal
+    // escape must not be able to create or update a GitHub Release).
     const sb = sandbox({ runs: GREEN_RUNS });
-    const { code, out } = runScript(sb, "myr-v1.6.0");
+    const { code, out } = runScript(sb, "myr-v1.6.0", { extraEnv: {
+      MYRMIDON_RELEASE_VERIFICATION_RESULT: "",
+      MYRMIDON_RELEASE_SKIP_VERIFICATION: "1",
+    } });
     assert.equal(code, 0, out);
     assert.match(out, /WARNING: MYRMIDON_RELEASE_SKIP_VERIFICATION=1/);
-    const mut = mutations(sb);
-    assert.match(mut, /create tag=myr-v1\.6\.0/);
-    assert.match(mut, /REHEARSAL — NOT VERIFIED/);
-    assert.doesNotMatch(mut, /Verdict: confirmed/);
+    assert.match(out, /REHEARSAL — NOT PUBLISHING/);
+    assert.match(out, /NO GitHub Release was created or updated/);
+    // the dry-run body is printed for inspection
+    assert.match(out, /rehearsal dry run: the body that would have been published/);
+    // and, critically, NO mutation of GitHub: no release create/edit/upload
+    assert.equal(mutations(sb), "");
   });
 
   it("the verification section carries the immutable SHA bind in the release body", () => {
