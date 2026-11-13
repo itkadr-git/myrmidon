@@ -1061,11 +1061,21 @@ import { readBudgetEnforcement } from "../myrmidon/budget-enforcement/settings.j
 import { evaluateBudgetLimitAdmission } from "../myrmidon/budget-limits/admission.js"; // myrmidon(1.7-BUDGET-CONFIG)
 import { deferredWakeFreshSince, deferredWakeRevisitCutoff } from "../myrmidon/deferred-wake-revisit.js"; // myrmidon(OPE-12807)
 import { guardrailsOnRunOutput } from "../myrmidon/guardrails/run-output.js"; // myrmidon(1.6-GRD)
+// myrmidon(1.8 HIBERNATE, OPE-12961): one single-flight guard per server
+// process; see wakeup-single-flight.ts. Two enqueues of the same wake racing
+// before either run is registered collapse into one promise, so an
+// idle-stopped agent's container is not cold-started twice for one task.
+import {
+  WakeupSingleFlight,
+  wakeupSingleFlightKey,
+} from "./wakeup-single-flight.js";
 import {
   deliverBudgetSignalOnly,
   type BudgetSignalOnlyInput,
   type BudgetSignalOnlyPorts,
 } from "../myrmidon/budget-enforcement/signal.js";
+
+const wakeupSingleFlight = new WakeupSingleFlight();
 
 const MAX_LIVE_LOG_CHUNK_BYTES = 8 * 1024;
 const MAX_PERSISTED_LOG_CHUNK_CHARS = 64 * 1024;
@@ -24844,18 +24854,35 @@ export function heartbeatService(
     return { created: true };
   }
 
+  // myrmidon(1.8 HIBERNATE, OPE-12961): the public wakeup entry point keeps a
+  // single-flight guard per key while a wake promise is in flight. Every
+  // assignment/enqueue caller (queueIssueAssignmentWakeup on create/child/
+  // decomposition, the PATCH wake merge, chat/interaction wakes) funnels
+  // through trackWakeup (heartbeat.wakeup), so two enqueues of the same wake
+  // racing before either run is registered collapse into one promise: the
+  // loser reuses the winner's promise, the task stays in the queue, and no
+  // duplicate wake/run row is created for an agent whose container may be
+  // idle-stopped (each duplicate would otherwise pay a cold container start).
+  // The winner is still registered in activeWakeupPromises so
+  // drainActiveRunExecutions can await it; the guard entry clears when the
+  // promise settles, so a later legitimate re-wake with the same key passes.
   function trackWakeup(
     agentId: string,
     opts: WakeupOptions = {},
   ): ReturnType<typeof enqueueWakeup> {
-    const promise = enqueueWakeup(agentId, opts);
-    activeWakeupPromises.add(promise);
-    void promise
-      .catch(() => {})
-      .finally(() => {
-        activeWakeupPromises.delete(promise);
-      });
-    return promise;
+    return wakeupSingleFlight.run(
+      wakeupSingleFlightKey(agentId, opts),
+      () => {
+        const promise = enqueueWakeup(agentId, opts);
+        activeWakeupPromises.add(promise);
+        void promise
+          .catch(() => {})
+          .finally(() => {
+            activeWakeupPromises.delete(promise);
+          });
+        return promise;
+      },
+    ) as ReturnType<typeof enqueueWakeup>;
   }
 
   async function executeRun(
