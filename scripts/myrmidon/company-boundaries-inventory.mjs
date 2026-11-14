@@ -95,7 +95,7 @@ export const SECTIONS = [
   { id: "costsByAgent", kind: "get", path: "/costs/by-agent", optional: true, note: "per-agent spend attribution (which agents accrue cost); values are volatile" },
   { id: "corpusDatasets", kind: "get", path: "/api/myrmidon/companies/:companyId/corpus/datasets", absolutePath: true, optional: true, attribution: ["ownerCompanyId"], note: "knowledge-corpus dataset list per company (id/name/description + documentCount/readyCount/failedCount/chunkCount); document bytes and parsed contents are never fetched" },
   { id: "corpusStats", kind: "get", path: "/api/myrmidon/companies/:companyId/corpus/stats", absolutePath: true, optional: true, note: "company corpus aggregate counters only (datasets/documents/ready/pending/failed/chunks/bytes); never includes document or chunk content" },
-  { id: "agentMemory", kind: "per-agent", path: "/api/myrmidon/agents/:agentId/memory", optional: true, note: "per-agent memory-bank metadata via board-only route: enabled / bank.bankId / bank.source (agent-card|plugin-config) / reason; memory items, /memory/memories and /memory/export are never queried (export would write an audit row)" },
+  { id: "agentMemory", kind: "per-agent", path: "/api/myrmidon/agents/:agentId/memory", optional: true, note: "per-agent memory-bank metadata via board-only route: enabled / bank.bankId / bank.source (agent-card|plugin-config) / reason; memory items, /memory/memories and /memory/export are never queried (export would write an audit row). Hermes profile memory (file-backed memories/ and session_search) is per-profile local workspace state in /bot/hermes/profiles/ and not managed across board companies" },
   { id: "aiConnections", kind: "get", path: "/ai-connections", optional: true, attribution: ["ownerCompanyId", "dependency"], note: "board-only route (assertBoard)" },
   { id: "chatEndpoints", kind: "get", path: "/chat-endpoints", optional: true, attribution: ["ownerCompanyId", "dependency"], note: "board-only route (assertBoard)" },
   { id: "exportFidelity", kind: "get", path: "/export/fidelity", optional: true, note: "CEO-or-board gate; counts-only report" },
@@ -603,6 +603,7 @@ export function summarizeAgentMemory(results) {
     unavailable: results.length - ok.length,
     agentsWithBank: perAgent.filter((a) => a.hasBank).length,
     byBankSource: countBy(perAgent.filter((a) => a.hasBank).map((a) => a.bankSource)),
+    profileMemoryScope: "hermes-agent-profile-local-unshared",
     perAgent,
   };
 }
