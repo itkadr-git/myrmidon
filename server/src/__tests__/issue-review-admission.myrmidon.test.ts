@@ -11,6 +11,7 @@ import {
   heartbeatRuns,
   agentWakeupRequests,
   agentTaskSessions,
+  companyMemberships,
   issueComments,
   issueWorkProducts,
   issues,
@@ -1258,6 +1259,18 @@ describeEmbeddedPostgres("myrmidon review admission atomic wake persistence", ()
       runtimeConfig: {},
       permissions: {},
     });
+
+    // Real agents are active company members; without membership the access
+    // layer answers 403 before the verdict check is reached.
+    await ctx.db.insert(companyMemberships).values(
+      [authorAgentId, reviewerAgentId, otherAgentId].map((principalId) => ({
+        companyId,
+        principalType: "agent" as const,
+        principalId,
+        status: "active" as const,
+        membershipRole: "member" as const,
+      })),
+    );
 
     const issueId = randomUUID();
     const stageId = randomUUID();
