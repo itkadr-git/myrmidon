@@ -66,13 +66,14 @@ options:
   --branch <name>        branch whose CI must be green (default: default branch)
   --board-label NAME     release label name (default: "<major>.<minor>" of --version)
   --dry-run              run every check, print the plan, tag nothing
+  --flaky-waiver-verify  accept a verified flaky-CI waiver for this tag only
   -h | --help`);
 }
 
 export function parseArgs(argv) {
   const args = {
     version: null, rc: null, override: null, journal: null, root: null,
-    sha: null, branch: null, boardLabel: null, dryRun: false,
+    sha: null, branch: null, boardLabel: null, dryRun: false, flakyWaiverVerify: false,
   };
   for (let i = 0; i < argv.length; i += 1) {
     const a = argv[i];
@@ -86,6 +87,7 @@ export function parseArgs(argv) {
       case "--branch": args.branch = argv[++i]; break;
       case "--board-label": args.boardLabel = argv[++i]; break;
       case "--dry-run": args.dryRun = true; break;
+      case "--flaky-waiver-verify": args.flakyWaiverVerify = true; break;
       case "-h": case "--help": args.help = true; break;
       default: throw new UsageError(`unknown argument: ${a}`);
     }
@@ -491,6 +493,18 @@ export async function run(args, deps = {}) {
     const ci = ghImpl(gitRoot, { repo: GITHUB_REPO, branch, sha, env: deps.env });
     if (!ci.ok) {
       ciProblem = ci.reason;
+    }
+  }
+  if (ciProblem && args.flakyWaiverVerify) {
+    const waiver = deps.verifyFlakyWaiver || (() => {
+      try {
+        execFileSync("node", [path.join(gitRoot, "scripts/myrmidon/release/release-flaky-waiver.mjs"), "verify", "--tag", tag], { encoding: "utf8", env: deps.env ? { ...process.env, ...deps.env } : process.env });
+        return true;
+      } catch { return false; }
+    });
+    if (waiver({ tag, sha, root: gitRoot })) {
+      log(`cut-rc: verified flaky waiver accepted for ${tag}`);
+      ciProblem = null;
     }
   }
 
