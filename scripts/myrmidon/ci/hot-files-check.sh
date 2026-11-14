@@ -15,13 +15,25 @@ SHA="${SHA:-${GITHUB_SHA:-}}"
 ACTION="${ACTION:-}"
 LABELS="${LABELS:-}"
 
-# A re-run (run_attempt > 1) keeps the ORIGINAL event payload: ACTION would still be
-# `synchronize` from the push that started the run, although nothing was pushed. The
-# `full-ci` label re-runs the run this way (rerun-full-ci.mjs); treating it as a push
-# would silently remove `review-approved`. Only a fresh run may drop the approval.
-if [[ "${GITHUB_RUN_ATTEMPT:-1}" -gt 1 ]]; then
-  echo "Перезапуск прогона (attempt ${GITHUB_RUN_ATTEMPT}): событие старое, метка review-approved не трогается."
-  ACTION=""
+# A rerun can still carry a synchronize event from its original push. Compare
+# issue label timestamps with the head commit instead of trusting run_attempt.
+if [[ "$ACTION" == "synchronize" && -n "$SHA" ]]; then
+  head_date="$(gh api "repos/$REPO/commits/$SHA" --jq '.commit.committer.date' 2>/dev/null || true)"
+  label_date="$(gh api "repos/$REPO/issues/$PR/events" --paginate --jq '[.[] | select(.event == "labeled" and .label.name == "review-approved") | .created_at] | max // empty' 2>/dev/null || true)"
+  if [[ -n "$head_date" && -n "$label_date" && "$label_date" > "$head_date" ]]; then
+    echo "Метка review-approved поставлена после коммита головы — сохраняем её."
+    ACTION=""
+  else
+    head="$(gh api "repos/$REPO/commits/$SHA" --jq '[(.parents|length),.author.login,.committer.login,(.commit.message|split("\n")[0])]|@tsv' 2>/dev/null || true)"
+    if [[ "$head" =~ ^2$'\t'[^$'\t']+$'\t'web-flow$'\t'Merge\ branch\ \'main\'\ into\  ]]; then
+      echo "Head — слияние main (update-branch, бот): метка review-approved остаётся."
+      ACTION=""
+    else
+      gh api -X DELETE "repos/$REPO/issues/$PR/labels/review-approved" >/dev/null 2>&1 || true
+      echo "Новый push после ревью — метка review-approved снята, нужно повторное ревью."
+      LABELS="$(grep -v '^review-approved$' <<<"${LABELS:-}" || true)"
+    fi
+  fi
 fi
 
 report_status() {
