@@ -9,9 +9,11 @@ import {
   clearCiCacheForTests,
   summarizeHeadLaneEvidence,
   resolveCiFailureTails,
+  fetchJobLog,
   formatJobLogTail,
   type PullRequestCiJob,
 } from "../github-pull-request-ci.js";
+import type { FetchLike } from "../github-external-object-provider.js";
 import { buildPaperclipTaskMarkdown } from "../heartbeat.js";
 
 describe("summarizeCheckRuns", () => {
@@ -2189,12 +2191,12 @@ describe("resolveCiFailureTails (red CI log tails, OPE-13078)", () => {
     let capturedSignal: AbortSignal | undefined;
     const fetchImpl: FetchLike = async (_url, init) => {
       capturedSignal = init?.signal as AbortSignal | undefined;
-      return new Promise((resolve, reject) => {
+      return new Promise<Response>((_resolve, reject) => {
         if (init?.signal?.aborted) {
           reject(init.signal.reason);
           return;
         }
-        init?.signal?.addEventListener("abort", () => reject(init.signal.reason), { once: true });
+        init?.signal?.addEventListener("abort", () => reject(init.signal?.reason), { once: true });
       });
     };
 
@@ -2212,12 +2214,12 @@ describe("resolveCiFailureTails (red CI log tails, OPE-13078)", () => {
 
   it("respects timeoutMs in fetchJobLog when hanging", async () => {
     const fetchImpl: FetchLike = async (_url, init) => {
-      return new Promise((resolve, reject) => {
+      return new Promise<Response>((_resolve, reject) => {
         if (init?.signal?.aborted) {
           reject(init.signal.reason);
           return;
         }
-        init?.signal?.addEventListener("abort", () => reject(init.signal.reason), { once: true });
+        init?.signal?.addEventListener("abort", () => reject(init.signal?.reason), { once: true });
       });
     };
 
@@ -2246,8 +2248,8 @@ describe("resolveCiFailureTails (red CI log tails, OPE-13078)", () => {
     };
 
     const jobs = [
-      { id: 101, name: "job-1", conclusion: "failure" as const, url: "https://github.com/o/r/actions/runs/1/job/101" },
-      { id: 102, name: "job-2", conclusion: "failure" as const, url: "https://github.com/o/r/actions/runs/1/job/102" },
+      { id: 101, name: "job-1", conclusion: "failure" as const, url: "https://github.com/o/r/actions/runs/1/job/101", completedAt: null },
+      { id: 102, name: "job-2", conclusion: "failure" as const, url: "https://github.com/o/r/actions/runs/1/job/102", completedAt: null },
     ];
 
     const tails = await resolveCiFailureTails(jobs, {
