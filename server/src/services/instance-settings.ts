@@ -866,6 +866,16 @@ export function instanceSettingsService(db: Db, options: InstanceSettingsService
             ...(patch.swarm !== undefined
               ? { swarm: mergeSwarmBlocks(storedGeneral.swarm, patch.swarm) }
               : {}),
+            // myrmidon(OPE-13110): `general.botDisk` is one object edited key by
+            // key (the settings screen sends only the field it changed); a
+            // PATCH naming a few keys keeps the stored rest, as the
+            // bot-disk route's own merge does. null clears the whole block.
+            ...(patch.botDisk !== undefined
+              ? {
+                  botDisk:
+                    patch.botDisk === null ? null : { ...(storedGeneral.botDisk ?? {}), ...patch.botDisk },
+                }
+              : {}),
           }),
           operatorDefaults,
         );
