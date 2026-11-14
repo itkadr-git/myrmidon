@@ -133,6 +133,9 @@ export async function processIntakeCard(
   const interactionService = issueThreadInteractionService(deps.db);
   const idempotencyKey = intakeCardApprovalIdempotencyKey(input.issueId, revisionId);
 
+  const verdicts: ("approve" | "reject")[] = ["approve", "reject"];
+  const requireReasonOn: ("approve" | "defer" | "reject")[] = ["reject"];
+
   const interaction = await interactionService.create(
     { id: input.issueId, companyId: input.companyId },
     {
@@ -154,8 +157,8 @@ export async function processIntakeCard(
           description: "Утвердить карточку требования",
           previewMarkdown: markdownBody,
         }],
-        verdicts: ["approve", "reject"],
-        requireReasonOn: ["reject"],
+        verdicts,
+        requireReasonOn,
         allowBulkApprove: false,
         target: {
           type: "issue_document",
