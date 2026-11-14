@@ -82,6 +82,7 @@ describeEmbeddedPostgres("heartbeat continuation wakes: status gate and real att
         await db.delete(environmentLeases);
         await db.delete(issueComments);
         await db.delete(issues);
+        await db.delete(projects);
         await db.delete(heartbeatRunEvents);
         await db.delete(activityLog);
         await db.delete(heartbeatRuns);
