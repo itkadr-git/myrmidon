@@ -496,7 +496,6 @@ interface AcpxPreparedRuntime {
 const defaultWarmHandles = new Map<string, RuntimeCacheEntry>();
 const defaultStagedRuntimes = new Map<string, StagedRuntimeCacheEntry>();
 const defaultStagingLocks = new Map<string, Promise<unknown>>();
-const defaultTerminalCallbackRegistry = new TerminalCallbackRegistry();
 
 function resolveEngineSettings(options: AcpxEngineExecutorOptions): AcpxEngineSettings {
   const moduleDir = path.resolve(options.moduleDir ?? defaultModuleDir);
@@ -3891,7 +3890,7 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
   const warmHandles = deps.warmHandles ?? defaultWarmHandles;
   const stagedRuntimes = deps.stagedRuntimes ?? defaultStagedRuntimes;
   const stagingLocks = deps.stagingLocks ?? defaultStagingLocks;
-  const terminalCallbackRegistry = deps.terminalCallbackRegistry ?? defaultTerminalCallbackRegistry;
+  const terminalCallbackRegistry = deps.terminalCallbackRegistry ?? new TerminalCallbackRegistry();
   const engine = resolveEngineSettings(deps);
 
   return async function executeAcpxEngine(ctx: AdapterExecutionContext): Promise<AdapterExecutionResult> {
