@@ -279,12 +279,14 @@ describe("the client", () => {
         method: "squash",
       });
     expect(await answer(409)).toEqual({ status: "head_moved" });
-    expect(await answer(405)).toEqual({ status: "refused", httpStatus: 405 });
-    expect(await answer(422)).toEqual({ status: "refused", httpStatus: 422 });
+    // myrmidon(OPE-13136): the refusal carries GitHub's message.
+    expect(await answer(405)).toEqual({ status: "refused", httpStatus: 405, message: "x" });
+    expect(await answer(422)).toEqual({ status: "refused", httpStatus: 422, message: "x" });
+    expect(await answer(405, "not an object")).toEqual({ status: "refused", httpStatus: 405, message: null });
     expect(await answer(403)).toEqual({ status: "failed", reason: "http_403" });
     expect(await answer(500)).toEqual({ status: "failed", reason: "http_500" });
     // A 200 that says it did not merge is not a merge.
-    expect(await answer(200, { merged: false, message: "no" })).toEqual({ status: "refused", httpStatus: 200 });
+    expect(await answer(200, { merged: false, message: "no" })).toEqual({ status: "refused", httpStatus: 200, message: "no" });
     const offline = vi.fn().mockRejectedValue(new Error("ECONNRESET"));
     expect(await client(offline).merge({ companyId: "c", repository: REPO, number: 7, headSha: HEAD, method: "squash" })).toEqual({
       status: "failed",

@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  DEFAULT_REVIEW_ROUTING_BOARD_MERGE_BLOCKED_ALERT_AFTER_MINUTES,
   DEFAULT_REVIEW_ROUTING_BOARD_MERGE_MAX_PER_PASS,
   DEFAULT_REVIEW_ROUTING_MAX_LOAD_PER_REVIEWER,
   DEFAULT_REVIEW_ROUTING_PR_MAX_MERGES_PER_STEWARD,
@@ -39,6 +40,7 @@ const BOARD_MERGE_DEFAULTS = {
   requiredChecks: ["CI result"],
   repositories: [],
   maxMergesPerPass: DEFAULT_REVIEW_ROUTING_BOARD_MERGE_MAX_PER_PASS,
+  blockedAlertAfterMinutes: DEFAULT_REVIEW_ROUTING_BOARD_MERGE_BLOCKED_ALERT_AFTER_MINUTES,
 };
 
 describe("myrmidon(REVIEW-ROUTING) settings contract", () => {
@@ -174,6 +176,9 @@ describe("myrmidon(REVIEW-ROUTING) settings contract", () => {
       { repositories: ["not a repo"] },
       { maxMergesPerPass: 0 },
       { maxMergesPerPass: 21 },
+      { blockedAlertAfterMinutes: -1 },
+      { blockedAlertAfterMinutes: 1441 },
+      { blockedAlertAfterMinutes: 1.5 },
     ]) {
       expect(normalizeReviewRoutingBoardMerge(malformed)).toEqual(BOARD_MERGE_DEFAULTS);
     }
@@ -196,6 +201,7 @@ describe("myrmidon(REVIEW-ROUTING) settings contract", () => {
           requiredChecks: ["CI result", "CI result", "hot files review"],
           repositories: ["acme/widgets", "acme/widgets"],
           maxMergesPerPass: 5,
+          blockedAlertAfterMinutes: 0,
         },
       }).boardMerge,
     ).toEqual({
@@ -205,9 +211,11 @@ describe("myrmidon(REVIEW-ROUTING) settings contract", () => {
       requiredChecks: ["CI result", "hot files review"],
       repositories: ["acme/widgets"],
       maxMergesPerPass: 5,
+      blockedAlertAfterMinutes: 0,
     });
     expect(reviewRoutingBoardMergeSchema.safeParse({ method: "fast-forward" }).success).toBe(false);
     expect(reviewRoutingBoardMergeSchema.safeParse({ maxMergesPerPass: 21 }).success).toBe(false);
+    expect(reviewRoutingBoardMergeSchema.safeParse({ blockedAlertAfterMinutes: -1 }).success).toBe(false);
     expect(reviewRoutingBoardMergeSchema.safeParse({ baseBranches: [] }).success).toBe(false);
     expect(reviewRoutingBoardMergeSchema.safeParse({ extra: true }).success).toBe(false);
     // The PUT of a screen that does not know the block still validates (defaults fill it).
