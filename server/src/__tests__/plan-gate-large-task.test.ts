@@ -1,6 +1,59 @@
-import { describe, expect, it } from "vitest";
+import { randomUUID } from "node:crypto";
+import { and, eq } from "drizzle-orm";
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
+
+import type { Db } from "@myrmidon/db";
+import {
+  agents,
+  agentWakeupRequests,
+  companies,
+  createDb,
+  heartbeatRuns,
+  issueDocuments,
+  issues,
+  labels,
+} from "@myrmidon/db";
+import type { EmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
+import {
+  getEmbeddedPostgresTestSupport,
+  startEmbeddedPostgresTestDatabase,
+} from "./helpers/embedded-postgres.js";
+import { drainHeartbeatRunsToQuiescence } from "./helpers/drain-heartbeat-runs.js";
 import { hasLargeSizeLabel, isLargeEngineeringTask } from "../myrmidon/plan-gate/large-task.js";
-import { buildPaperclipTaskMarkdown, buildReviewerInputFromTaskData } from "../services/heartbeat.js";
+import {
+  buildPaperclipTaskMarkdown,
+  buildReviewerInputFromTaskData,
+  heartbeatService,
+} from "../services/heartbeat.js";
+import { issueService } from "../services/issues.js";
+import { issueThreadInteractionService } from "../services/issue-thread-interactions.js";
+
+type HeartbeatServiceInstance = ReturnType<typeof heartbeatService>;
+type IssueServiceInstance = ReturnType<typeof issueService>;
+type InteractionServiceInstance = ReturnType<typeof issueThreadInteractionService>;
+
+const mockAdapterExecute = vi.hoisted(() =>
+  vi.fn(async () => ({
+    exitCode: 0,
+    signal: null,
+    timedOut: false,
+    errorMessage: null,
+    summary: "Plan gate test run.",
+    provider: "test",
+    model: "test-model",
+  })),
+);
+
+vi.mock("../adapters/index.js", async () => {
+  const actual = await vi.importActual<typeof import("../adapters/index.js")>("../adapters/index.js");
+  return {
+    ...actual,
+    getServerAdapter: vi.fn(() => ({
+      supportsLocalAgentJwt: false,
+      execute: mockAdapterExecute,
+    })),
+  };
+});
 
 describe("plan-gate large task detection and directives", () => {
   it("detects size:M and size:L labels", () => {
@@ -76,5 +129,371 @@ describe("plan-gate large task detection and directives", () => {
 
     expect(prompt).toContain("Plan invariants verification:");
     expect(prompt).toContain("Verify that the implementation satisfies the invariants specified in the task plan document.");
+  });
+});
+
+const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
+const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
+
+describeEmbeddedPostgres("plan-gate large task runtime behavior (issueService & heartbeatService)", () => {
+  let db!: Db;
+  let heartbeat!: HeartbeatServiceInstance;
+  let issuesSvc!: IssueServiceInstance;
+  let interactionsSvc!: InteractionServiceInstance;
+  let tempDb: EmbeddedPostgresTestDatabase | null = null;
+
+  beforeAll(async () => {
+    tempDb = await startEmbeddedPostgresTestDatabase("paperclip-plan-gate-test-");
+    db = createDb(tempDb.connectionString);
+    heartbeat = heartbeatService(db, { runtimeEnv: { ...process.env, PAPERCLIP_IN_WORKTREE: "false" } });
+    issuesSvc = issueService(db);
+    interactionsSvc = issueThreadInteractionService(db);
+  }, 60_000);
+
+  afterEach(async () => {
+    await drainHeartbeatRunsToQuiescence(db, heartbeat);
+    mockAdapterExecute.mockClear();
+  });
+
+  afterAll(async () => {
+    await tempDb?.cleanup();
+  });
+
+  async function seedFixture() {
+    const companyId = randomUUID();
+    const defaultUserId = "user-plan-gate";
+    await db.insert(companies).values({
+      id: companyId,
+      name: "plan-gate-company",
+      issuePrefix: `P${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      defaultResponsibleUserId: defaultUserId,
+      requireBoardApprovalForNewAgents: false,
+    });
+
+    const engineerAgentId = randomUUID();
+    await db.insert(agents).values({
+      id: engineerAgentId,
+      companyId,
+      name: "engineer-agent",
+      role: "engineer",
+      status: "active",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {
+        heartbeat: { enabled: true, wakeOnDemand: true, maxConcurrentRuns: 1 },
+      },
+      permissions: {},
+    });
+
+    const pmAgentId = randomUUID();
+    await db.insert(agents).values({
+      id: pmAgentId,
+      companyId,
+      name: "pm-agent",
+      role: "pm",
+      status: "active",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {
+        heartbeat: { enabled: true, wakeOnDemand: true, maxConcurrentRuns: 1 },
+      },
+      permissions: {},
+    });
+
+    const [labelM] = await db
+      .insert(labels)
+      .values({ companyId, name: "size:M", color: "#ffa500" })
+      .returning();
+    const [labelL] = await db
+      .insert(labels)
+      .values({ companyId, name: "size:L", color: "#ff4500" })
+      .returning();
+    const [labelS] = await db
+      .insert(labels)
+      .values({ companyId, name: "size:S", color: "#00ff00" })
+      .returning();
+
+    return {
+      companyId,
+      defaultUserId,
+      engineerAgentId,
+      pmAgentId,
+      labelM: labelM!,
+      labelL: labelL!,
+      labelS: labelS!,
+    };
+  }
+
+  describe("issueService.create plan gate", () => {
+    it("enters workMode 'planning' when created with size:M or size:L for an engineer", async () => {
+      const { companyId, engineerAgentId, labelM, labelL } = await seedFixture();
+
+      const issueM = await issuesSvc.create(companyId, {
+        title: "Large Task M",
+        assigneeAgentId: engineerAgentId,
+        labelIds: [labelM.id],
+      });
+      expect(issueM.workMode).toBe("planning");
+
+      const issueL = await issuesSvc.create(companyId, {
+        title: "Large Task L",
+        assigneeAgentId: engineerAgentId,
+        labelIds: [labelL.id],
+      });
+      expect(issueL.workMode).toBe("planning");
+    });
+
+    it("stays in workMode 'standard' for small tasks (size:S) or non-engineer roles", async () => {
+      const { companyId, engineerAgentId, pmAgentId, labelS, labelM } = await seedFixture();
+
+      const smallIssue = await issuesSvc.create(companyId, {
+        title: "Small Task S",
+        assigneeAgentId: engineerAgentId,
+        labelIds: [labelS.id],
+      });
+      expect(smallIssue.workMode).toBe("standard");
+
+      const pmIssue = await issuesSvc.create(companyId, {
+        title: "PM Large Task M",
+        assigneeAgentId: pmAgentId,
+        labelIds: [labelM.id],
+      });
+      expect(pmIssue.workMode).toBe("standard");
+    });
+
+    it("stays in workMode 'standard' when initialPlan is already provided", async () => {
+      const { companyId, engineerAgentId, labelM } = await seedFixture();
+
+      const issueWithPlan = await issuesSvc.create(companyId, {
+        title: "Large Task with Plan",
+        assigneeAgentId: engineerAgentId,
+        labelIds: [labelM.id],
+        initialPlan: "### Plan\n1. Do steps",
+      });
+      expect(issueWithPlan.workMode).toBe("standard");
+    });
+  });
+
+  describe("issueService.update plan gate & protected status boundary", () => {
+    it("transitions backlog/todo issue to 'planning' when size:L label is added and no plan exists", async () => {
+      const { companyId, engineerAgentId, labelL } = await seedFixture();
+
+      const issue = await issuesSvc.create(companyId, {
+        title: "Unsized Task",
+        status: "todo",
+        assigneeAgentId: engineerAgentId,
+      });
+      expect(issue.workMode).toBe("standard");
+
+      const updated = await issuesSvc.update(issue.id, {
+        labelIds: [labelL.id],
+      });
+      expect(updated.workMode).toBe("planning");
+    });
+
+    it("does not transition to 'planning' if a plan document already exists", async () => {
+      const { companyId, engineerAgentId, labelL } = await seedFixture();
+
+      const issue = await issuesSvc.create(companyId, {
+        title: "Task with Plan Doc",
+        status: "todo",
+        assigneeAgentId: engineerAgentId,
+      });
+      await db.insert(issueDocuments).values({
+        companyId,
+        issueId: issue.id,
+        key: "plan",
+        title: "Existing Plan",
+        format: "markdown",
+        body: "Existing plan content",
+      });
+
+      const updated = await issuesSvc.update(issue.id, {
+        labelIds: [labelL.id],
+      });
+      expect(updated.workMode).toBe("standard");
+    });
+
+    it("protected status boundary: does NOT transition started (in_progress) or in_review tasks to planning", async () => {
+      const { companyId, engineerAgentId, labelL } = await seedFixture();
+
+      const startedIssue = await issuesSvc.create(companyId, {
+        title: "Started Task",
+        status: "in_progress",
+        assigneeAgentId: engineerAgentId,
+      });
+      expect(startedIssue.workMode).toBe("standard");
+
+      const updatedStarted = await issuesSvc.update(startedIssue.id, {
+        labelIds: [labelL.id],
+      });
+      expect(updatedStarted.workMode).toBe("standard");
+
+      const inReviewIssue = await issuesSvc.create(companyId, {
+        title: "In Review Task",
+        status: "in_review",
+        assigneeAgentId: engineerAgentId,
+      });
+      expect(inReviewIssue.workMode).toBe("standard");
+
+      const updatedInReview = await issuesSvc.update(inReviewIssue.id, {
+        labelIds: [labelL.id],
+      });
+      expect(updatedInReview.workMode).toBe("standard");
+    });
+  });
+
+  describe("heartbeatService plan approval pending denial & release after approval", () => {
+    it("denies continuation wakes while plan confirmation is pending, releasing when approved", async () => {
+      const { companyId, defaultUserId, engineerAgentId, labelM } = await seedFixture();
+
+      const issue = await issuesSvc.create(companyId, {
+        title: "Large Task Planning Continuation",
+        status: "todo",
+        assigneeAgentId: engineerAgentId,
+        labelIds: [labelM.id],
+      });
+      expect(issue.workMode).toBe("planning");
+
+      // Attach plan doc and create pending plan approval confirmation
+      await db.insert(issueDocuments).values({
+        companyId,
+        issueId: issue.id,
+        key: "plan",
+        title: "Plan for Task",
+        format: "markdown",
+        body: "Plan body",
+      });
+
+      const interaction = await interactionsSvc.create(
+        { id: issue.id, companyId },
+        {
+          kind: "request_confirmation",
+          continuationPolicy: "wake_assignee_on_accept",
+          payload: {
+            version: 1,
+            prompt: "Accept plan?",
+            target: { type: "issue_document", key: "plan" },
+          },
+        },
+        { agentId: engineerAgentId },
+      );
+      expect(interaction.status).toBe("pending");
+
+      // 1. Continuation wake is skipped while plan confirmation is pending
+      const deniedWake = await heartbeat.enqueueWakeup(engineerAgentId, {
+        source: "automation",
+        triggerDetail: "system",
+        reason: "issue_continuation_needed",
+        payload: { issueId: issue.id },
+      });
+      expect(deniedWake).toBeNull();
+
+      const wakeRequests = await db
+        .select()
+        .from(agentWakeupRequests)
+        .where(
+          and(
+            eq(agentWakeupRequests.agentId, engineerAgentId),
+            eq(agentWakeupRequests.reason, "plan_approval_pending"),
+          ),
+        );
+      expect(wakeRequests).toHaveLength(1);
+      expect(wakeRequests[0]?.status).toBe("skipped");
+
+      const runsBeforeApproval = await db
+        .select()
+        .from(heartbeatRuns)
+        .where(eq(heartbeatRuns.agentId, engineerAgentId));
+      expect(runsBeforeApproval).toHaveLength(0);
+
+      // 2. Accept plan confirmation interaction
+      const accepted = await interactionsSvc.acceptInteraction(
+        { id: issue.id, companyId, goalId: null, projectId: null },
+        interaction.id,
+        {},
+        { userId: defaultUserId },
+      );
+      expect(accepted.interaction.status).toBe("accepted");
+
+      const [reloadedIssue] = await db
+        .select()
+        .from(issues)
+        .where(eq(issues.id, issue.id));
+      expect(reloadedIssue?.workMode).toBe("standard");
+
+      // 3. Continuation wake is admitted after approval
+      const admittedWake = await heartbeat.enqueueWakeup(engineerAgentId, {
+        source: "automation",
+        triggerDetail: "system",
+        reason: "issue_continuation_needed",
+        payload: { issueId: issue.id },
+      });
+      expect(admittedWake).not.toBeNull();
+      expect(admittedWake?.status).toBe("queued");
+    });
+
+    it("cancels queued runs with 'plan_approval_pending' while plan confirmation is pending", async () => {
+      const { companyId, engineerAgentId, labelL } = await seedFixture();
+
+      const issue = await issuesSvc.create(companyId, {
+        title: "Queued Run Planning Task",
+        status: "todo",
+        assigneeAgentId: engineerAgentId,
+        labelIds: [labelL.id],
+      });
+      expect(issue.workMode).toBe("planning");
+
+      await db.insert(issueDocuments).values({
+        companyId,
+        issueId: issue.id,
+        key: "plan",
+        title: "Plan for Task",
+        format: "markdown",
+        body: "Plan body",
+      });
+
+      // Pending plan confirmation
+      await interactionsSvc.create(
+        { id: issue.id, companyId },
+        {
+          kind: "request_confirmation",
+          continuationPolicy: "wake_assignee_on_accept",
+          payload: {
+            version: 1,
+            prompt: "Accept plan?",
+            target: { type: "issue_document", key: "plan" },
+          },
+        },
+        { agentId: engineerAgentId },
+      );
+
+      // Directly insert a queued run for this issue
+      const [queuedRun] = await db
+        .insert(heartbeatRuns)
+        .values({
+          companyId,
+          agentId: engineerAgentId,
+          status: "queued",
+          invocationSource: "automation",
+          triggerDetail: "system",
+          contextIssueId: issue.id,
+          contextSnapshot: { issueId: issue.id },
+        })
+        .returning();
+
+      expect(queuedRun).toBeDefined();
+
+      // Dispatch queued runs: claimQueuedRun detects pending plan approval and cancels the run
+      await heartbeat.sweepQueuedRunsWithoutRunning();
+
+      const [checkedRun] = await db
+        .select()
+        .from(heartbeatRuns)
+        .where(eq(heartbeatRuns.id, queuedRun!.id));
+
+      expect(checkedRun?.status).toBe("cancelled");
+      expect(checkedRun?.errorCode).toBe("plan_approval_pending");
+    });
   });
 });
