@@ -17,6 +17,12 @@ export interface ReleaseGate {
 
 export interface ReleaseArtifact {
   artifactId: string;
+  /** Exact immutable release tag, for example v2026.1114.1. */
+  tag: string;
+  /** Human-readable version represented by the tag. */
+  version: string;
+  /** Issue identifiers included in this candidate. */
+  composition: string[];
   digest: string;
   signedAt: string;
   signedBy: { type: "agent" | "board"; id: string; casteKey?: string };
@@ -42,6 +48,9 @@ export const releaseStageSchema = z.object({
   gates: z.array(releaseGateSchema).max(1000),
   artifact: z.object({
     artifactId: z.string().min(1).max(300),
+    tag: z.string().min(1).max(200),
+    version: z.string().min(1).max(100),
+    composition: z.array(z.string().min(1).max(200)).min(1).max(1000),
     digest: z.string().min(1).max(512),
     signedAt: z.string().datetime(),
     signedBy: z.object({ type: z.enum(["agent", "board"]), id: z.string().min(1), casteKey: z.string().optional() }),
