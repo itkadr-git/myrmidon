@@ -133,9 +133,11 @@ run_deploy() { # run_deploy <jobId> <digest>
     [[ "$state" == "on" ]] && break
     if ((waited >= timeout_sec)); then
       report "$job" error "maintenance window never reached on within ${timeout_sec}s (state $state)"
-      record_release_event "deploy.result" "$job" "$digest" "failed" "maintenance window did not reach on (state $state)" \
-        || log "WARNING: release audit: could not record deploy result for $job"
-      return 1
+      if ! record_release_event "deploy.result" "$job" "$digest" "failed" "maintenance window did not reach on (state $state)"; then
+        log "ERROR: release audit: could not record deploy result for $job"
+        report "$job" error "deploy result could not be recorded"
+        return 1
+      fi
     fi
     sleep "${POLL_INTERVAL_SEC:-5}"
     waited=$((waited + POLL_INTERVAL_SEC + 1))

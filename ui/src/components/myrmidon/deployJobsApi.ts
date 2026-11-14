@@ -48,9 +48,20 @@ export interface DeployJobView {
   abortable: boolean;
 }
 
+export interface ReleaseAuditEvent {
+  eventId: string;
+  event: string;
+  jobId: string | null;
+  digest: string | null;
+  status: string | null;
+  detail: string | null;
+  at: string;
+}
+
 export interface DeployJobState {
   job: DeployJobView | null;
   history: DeployJobView[];
+  audit: ReleaseAuditEvent[];
 }
 
 export interface DeployImagePreview {

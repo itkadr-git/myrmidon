@@ -10,7 +10,7 @@ import { maintenanceService } from "../maintenance/service.js";
 import { maintenanceHeartbeatPort } from "../maintenance/index.js";
 import { resolveZabbixSettings, zabbixMaintenanceHooks } from "../maintenance/zabbix.js"; // myrmidon(1.7, OPE-4101)
 import { heartbeatService } from "../../services/index.js";
-import { hostReportReader } from "./host-report.js";
+import { hostReportReader, releaseAuditReader } from "./host-report.js";
 import { resolveDeployJobsSettings } from "./settings.js"; // myrmidon(1.7, OPE-4101)
 import { deployJobsRoutes } from "./routes.js";
 import { deployJobsService, type DeployJobServiceDeps } from "./service.js";
@@ -54,6 +54,7 @@ function defaultDeps(db: Db): DeployJobServiceDeps {
       },
     },
     readHostReport: hostReportReader(process.env.MYRMIDON_DEPLOY_REPORTS_DIR?.trim() || null),
+    readReleaseAudit: releaseAuditReader(process.env.MYRMIDON_RELEASE_AUDIT_FILE?.trim() || (process.env.MYRMIDON_DEPLOY_REPORTS_DIR?.trim() ? `${process.env.MYRMIDON_DEPLOY_REPORTS_DIR.trim()}/release-events.jsonl` : null)),
     readHealth: async () => {
       // The board's own health, read the way verify-health.sh does: through
       // the HTTP endpoint, not the process state.
