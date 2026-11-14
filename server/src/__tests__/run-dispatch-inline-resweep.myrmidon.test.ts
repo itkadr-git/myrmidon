@@ -372,6 +372,27 @@ describe("queued resweep pass", () => {
     expect(wakeAgent).not.toHaveBeenCalled();
   });
 
+  it("does not wake the agent when a queued run on a closed issue is cancelled with issue_terminal_status (OPE-13068)", async () => {
+    const issueId = "5b3f8a52-6f0c-4f6b-9d21-0c1f5a3e7a10";
+    const staleRun = { id: "run-stale", agentId: "agent-stale", companyId: "company-1", createdAt: new Date(0), issueId };
+    const wakeAgent = vi.fn(async () => {});
+    // When a queued run's issue is terminal, createCancelStaleQueuedRun returns false so no replacement wake is queued
+    const createCancelStaleQueuedRun = vi.fn(async () => false);
+    const dispatcher = createRunStartDispatcher({
+      listQueuedAgents: async () => [],
+      startNextQueuedRunForAgent: async () => [],
+      loadSettings: async () => ({ runStartDispatch: "inline", queuedResweepSec: 30, queuedRunStaleAfterSec: 120 }),
+      listStaleQueuedRuns: async () => [staleRun],
+      createCancelStaleQueuedRun,
+      wakeAgent,
+    });
+
+    await dispatcher.sweepQueuedWithoutRunning();
+
+    expect(createCancelStaleQueuedRun).toHaveBeenCalledWith(staleRun, 120_000);
+    expect(wakeAgent).not.toHaveBeenCalled();
+  });
+
   it("continues cleanup after a stale cancellation fails", async () => {
     const error = vi.fn();
     const wakeAgent = vi.fn(async () => {});

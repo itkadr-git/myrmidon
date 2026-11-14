@@ -1273,6 +1273,10 @@ export function createPostgresRunDispatchAdapter(
   ): Promise<CancelStaleQueuedRunOutcome> {
     const cancelLockedRun = async (tx: Db, run: HeartbeatRun) => {
       if (run.status !== input.expectedStatus) return { outcome: "lost_race" as const };
+      const { issueId, facts, decision } = await decideCurrentRunStaleness(tx, run, input.now);
+      if (decision.stale && issueId) {
+        return cancelStaleRunInTx(tx, run, issueId, decision, input.expectedStatus, input.now);
+      }
       // myrmidon(OPE-11947): a promoted scheduled retry waits since its due time,
       // not since it was created (same measure as the sweep's selection).
       const staleAgeMs = input.now.getTime() - queuedRunWaitingSince(run, input.now).getTime();
@@ -1300,22 +1304,21 @@ export function createPostgresRunDispatchAdapter(
           input.now,
         );
       }
-      const { issueId, facts, decision } = await decideCurrentRunStaleness(tx, run, input.now);
-      if (!decision.stale || !issueId) {
-        if (input.expectedStatus === "queued" && facts?.isInteractionWake) {
-          // Preserve the authority accepted under the issue/run locks. Later
-          // preflight reads can observe a reassignment; they must not turn an
-          // assignee comment into a non-assignee subscription-wait exception.
-          await tx.update(heartbeatRuns).set({
-            runnerProfileJson: {
-              ...parseObject(run.runnerProfileJson),
-              aiConnectionNonAssigneeCommentWake: facts.issueAssigneeAgentId !== run.agentId,
-            },
-          }).where(and(eq(heartbeatRuns.id, run.id), eq(heartbeatRuns.companyId, run.companyId)));
-        }
+      if (!issueId) {
         return { outcome: "not_stale" as const };
       }
-      return cancelStaleRunInTx(tx, run, issueId, decision, input.expectedStatus, input.now);
+      if (input.expectedStatus === "queued" && facts?.isInteractionWake) {
+        // Preserve the authority accepted under the issue/run locks. Later
+        // preflight reads can observe a reassignment; they must not turn an
+        // assignee comment into a non-assignee subscription-wait exception.
+        await tx.update(heartbeatRuns).set({
+          runnerProfileJson: {
+            ...parseObject(run.runnerProfileJson),
+            aiConnectionNonAssigneeCommentWake: facts.issueAssigneeAgentId !== run.agentId,
+          },
+        }).where(and(eq(heartbeatRuns.id, run.id), eq(heartbeatRuns.companyId, run.companyId)));
+      }
+      return { outcome: "not_stale" as const };
     };
 
     return withIssueThenRunLocks(
