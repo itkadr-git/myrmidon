@@ -18,6 +18,7 @@ import {
   buildWorkspaceConfigFreshnessOperation,
   deriveTaskKeyWithHeartbeatFallback,
   formatRuntimeWorkspaceWarningLog,
+  isExecutionWorkspaceOwnedByIssue,
   mergeExecutionWorkspaceMetadataForPersistence,
   mergeCoalescedContextSnapshot,
   preflightLowTrustWorkspaceIsolation,
@@ -26,6 +27,7 @@ import {
   provisionExecutionWorkspaceForFreshnessDecision,
   reconcileReusedExecutionWorkspaceProjectWorkspaceId,
   resolveNativeRecoveryExecutionWorkspaceBinding,
+  isExecutionWorkspaceOwnedByIssue,
   resolveExecutionWorkspaceBranchOwnership,
   resolveExecutionWorkspaceConfigFreshness,
   resolveExecutionWorkspaceReuseRequestForIssue,
@@ -52,6 +54,35 @@ import {
 import type { TrustPresetResolution } from "../services/trust-preset-resolver.ts";
 
 const execFile = promisify(execFileCallback);
+
+describe("isExecutionWorkspaceOwnedByIssue", () => {
+  it("rejects a workspace row belonging to another issue or company", () => {
+    expect(isExecutionWorkspaceOwnedByIssue({
+      companyId: "company-1",
+      workspaceCompanyId: "company-1",
+      projectId: "project-1",
+      workspaceProjectId: "project-1",
+      sourceIssueId: "issue-1",
+      issueId: "issue-1",
+    })).toBe(true);
+    expect(isExecutionWorkspaceOwnedByIssue({
+      companyId: "company-1",
+      workspaceCompanyId: "company-1",
+      projectId: "project-1",
+      workspaceProjectId: "project-1",
+      sourceIssueId: "issue-2",
+      issueId: "issue-1",
+    })).toBe(false);
+    expect(isExecutionWorkspaceOwnedByIssue({
+      companyId: "company-1",
+      workspaceCompanyId: "company-2",
+      projectId: "project-1",
+      workspaceProjectId: "project-1",
+      sourceIssueId: "issue-1",
+      issueId: "issue-1",
+    })).toBe(false);
+  });
+});
 
 describe("shouldBindIssueToSharedExecutionWorkspace", () => {
   it("binds only the project-primary shared row owned by the same issue", () => {
