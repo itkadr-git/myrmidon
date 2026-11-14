@@ -152,35 +152,35 @@ describe("myrmidon-task-session-and-reviewer-isolation", () => {
       expect(isDeveloperRole(null as any)).toBe(false);
     });
 
-    it("gives developers a fresh session per run and never issue or agent", () => {
-      expect(resolveDeveloperSessionKeyStrategy("issue")).toBe("run");
-      expect(resolveDeveloperSessionKeyStrategy("agent")).toBe("run");
-      expect(resolveDeveloperSessionKeyStrategy(undefined)).toBe("run");
-      expect(resolveDeveloperSessionKeyStrategy(null)).toBe("run");
-      expect(resolveDeveloperSessionKeyStrategy("garbage")).toBe("run");
-      // An explicit card value of run/none is never upgraded.
+    it("gives developers issue-scoped session by default and honors card run/none but maps agent to issue", () => {
+      expect(resolveDeveloperSessionKeyStrategy("issue")).toBe("issue");
+      expect(resolveDeveloperSessionKeyStrategy("agent")).toBe("issue");
+      expect(resolveDeveloperSessionKeyStrategy(undefined)).toBe("issue");
+      expect(resolveDeveloperSessionKeyStrategy(null)).toBe("issue");
+      expect(resolveDeveloperSessionKeyStrategy("garbage")).toBe("issue");
+      // An explicit card value of run/none is honored.
       expect(resolveDeveloperSessionKeyStrategy("run")).toBe("run");
       expect(resolveDeveloperSessionKeyStrategy(" RUN ")).toBe("run");
       expect(resolveDeveloperSessionKeyStrategy("none")).toBe("none");
     });
   });
 
-  describe("Run config isolation (Alex 05.11, 06.11)", () => {
+  describe("Run config isolation (Alex 05.11, 14.11 OPE-13087)", () => {
     const base = { apiBaseUrl: "http://127.0.0.1:8642", timeoutSec: 5 };
 
-    it("gives a developer a fresh session per run and keeps a card's run or none", () => {
+    it("gives a developer an issue-scoped session by default and keeps card run or none", () => {
       const developer = { name: "adm-dev-eng-18", role: "engineer" };
       for (const sessionKeyStrategy of ["issue", "agent", undefined]) {
         const config = applyDeveloperRunIsolation({ ...base, sessionKeyStrategy }, developer);
         expect(config.developerOnlyTaskSession).toBe(true);
-        expect(config.sessionKeyStrategy).toBe("run");
+        expect(config.sessionKeyStrategy).toBe("issue");
         expect(config.apiBaseUrl).toBe(base.apiBaseUrl);
       }
       expect(applyDeveloperRunIsolation({ ...base, sessionKeyStrategy: "run" }, developer).sessionKeyStrategy).toBe("run");
       expect(applyDeveloperRunIsolation({ ...base, sessionKeyStrategy: "none" }, developer).sessionKeyStrategy).toBe("none");
       const reviewer = applyDeveloperRunIsolation({ ...base, sessionKeyStrategy: "issue" }, { name: "adm-dev-review-9", role: "reviewer" });
       expect(reviewer.developerOnlyTaskSession).toBe(true);
-      expect(reviewer.sessionKeyStrategy).toBe("run");
+      expect(reviewer.sessionKeyStrategy).toBe("issue");
     });
 
     it("leaves every other bot's configured strategy and context unchanged and ignores a card-supplied flag", () => {
