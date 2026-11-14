@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import express from "express";
 import request from "supertest";
 import { eq } from "drizzle-orm";
-import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { activityLog, agents, companies, companyMemberships, createDb, heartbeatRuns, issues, principalPermissionGrants } from "@myrmidon/db";
 import {
   getEmbeddedPostgresTestSupport,
@@ -15,6 +15,7 @@ import {
   ISSUE_LIST_SERVER_CACHE_MAX_ENTRIES,
   issueRoutes,
 } from "../routes/issues.js";
+import { issueService } from "../services/issues.js";
 import { issueRecoveryActionService } from "../services/issue-recovery-actions.js";
 import { ensureHumanRoleDefaultGrants } from "../services/principal-access-compatibility.js";
 import { resolveRequiredSuccessfulRunHandoffOnValidPath } from "../services/successful-run-handoff-state.js";
@@ -1007,5 +1008,188 @@ describeEmbeddedPostgres("issue list routes assigneeAgentId filter", () => {
       id: parentIssueId,
       liveDescendantCount: 1,
     });
+  });
+
+  it("rejects non-UUID and non-identifier values for list filter parameters without calling svc.list or performing queries", async () => {
+    const companyId = randomUUID();
+    const svc = issueService(db);
+    const listSpy = vi.spyOn(svc, "list");
+    const app = createApp(companyId, { issueService: svc });
+
+    const badFilters: Array<[string, Record<string, string>, string, boolean]> = [
+      ["projectId", { projectId: "PAP-123" }, "projectId must be a UUID", true],
+      ["participantAgentId", { participantAgentId: "PAP-123" }, "participantAgentId must be a UUID", true],
+      ["workspaceId", { workspaceId: "invalid" }, "workspaceId must be a UUID", true],
+      ["executionWorkspaceId", { executionWorkspaceId: "invalid" }, "executionWorkspaceId must be a UUID", true],
+      ["labelId", { labelId: "invalid" }, "labelId must be a UUID", true],
+      ["parentId malformed", { parentId: "not-a-valid-identifier-or-uuid" }, "parentId must be a UUID or issue identifier", true],
+      ["parentId non-existent key", { parentId: "PAP-999999" }, "parentId must be a UUID or issue identifier", false],
+      ["parentIssueId malformed", { parentIssueId: "not-a-valid-identifier-or-uuid" }, "parentId must be a UUID or issue identifier", true],
+      ["parentIssueId non-existent key", { parentIssueId: "PAP-999999" }, "parentId must be a UUID or issue identifier", false],
+      ["descendantOf malformed", { descendantOf: "not-a-valid-identifier-or-uuid" }, "descendantOf must be a UUID or issue identifier", true],
+      ["descendantOf non-existent key", { descendantOf: "PAP-999999" }, "descendantOf must be a UUID or issue identifier", false],
+      ["createdFromIssueId malformed", { createdFromIssueId: "not-a-valid-identifier-or-uuid" }, "createdFromIssueId must be a UUID or issue identifier", true],
+      ["createdFromIssueId non-existent key", { createdFromIssueId: "PAP-999999" }, "createdFromIssueId must be a UUID or issue identifier", false],
+    ];
+
+    for (const [name, query, expectedError, shouldBypassDb] of badFilters) {
+      listSpy.mockClear();
+      const selectSpy = shouldBypassDb ? vi.spyOn(db, "select") : null;
+      const res = await request(app)
+        .get(`/api/companies/${companyId}/issues`)
+        .query(query);
+      expect(res.status, `status for ${name}`).toBe(400);
+      expect(res.body.error, `error for ${name}`).toContain(expectedError);
+      expect(listSpy, `svc.list must not be called for ${name}`).not.toHaveBeenCalled();
+      if (selectSpy) {
+        expect(selectSpy, `db.select must not be called for ${name}`).not.toHaveBeenCalled();
+        selectSpy.mockRestore();
+      }
+    }
+  });
+
+  it("rejects repeated (array) values for identifier list filter parameters with 400 before any query", async () => {
+    const companyId = randomUUID();
+    const svc = issueService(db);
+    const listSpy = vi.spyOn(svc, "list");
+    const app = createApp(companyId, { issueService: svc });
+
+    const repeatedParams: Array<[string, string, string]> = [
+      ["projectId", "projectId must be a UUID"],
+      ["participantAgentId", "participantAgentId must be a UUID"],
+      ["workspaceId", "workspaceId must be a UUID"],
+      ["executionWorkspaceId", "executionWorkspaceId must be a UUID"],
+      ["labelId", "labelId must be a UUID"],
+      ["parentId", "parentId must be a UUID or issue identifier"],
+      ["parentIssueId", "parentId must be a UUID or issue identifier"],
+      ["descendantOf", "descendantOf must be a UUID or issue identifier"],
+      ["createdFromIssueId", "createdFromIssueId must be a UUID or issue identifier"],
+    ];
+
+    for (const [param, expectedError] of repeatedParams) {
+      listSpy.mockClear();
+      const selectSpy = vi.spyOn(db, "select");
+      const res = await request(app)
+        .get(`/api/companies/${companyId}/issues`)
+        .query(`${param}=value-one&${param}=value-two`);
+      expect(res.status, `status for repeated ${param}`).toBe(400);
+      expect(res.body.error, `error for repeated ${param}`).toContain(expectedError);
+      expect(listSpy, `svc.list must not be called for repeated ${param}`).not.toHaveBeenCalled();
+      expect(selectSpy, `db.select must not be called for repeated ${param}`).not.toHaveBeenCalled();
+      selectSpy.mockRestore();
+    }
+  });
+
+  it("resolves issue identifiers in parentId, descendantOf, and createdFromIssueId filters", async () => {
+    const companyId = randomUUID();
+    const prefix = uniqueIssuePrefix();
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Identifier Filter Test",
+      issuePrefix: prefix,
+      defaultResponsibleUserId: "cloud-user-1",
+    });
+    await seedCloudTenantMember(companyId);
+    const parentId = randomUUID();
+    await db.insert(issues).values({
+      id: parentId,
+      companyId,
+      identifier: `${prefix}-1`,
+      title: "Parent Issue",
+      status: "todo",
+      priority: "medium",
+    });
+    const childId = randomUUID();
+    await db.insert(issues).values({
+      id: childId,
+      companyId,
+      identifier: `${prefix}-2`,
+      title: "Child Issue",
+      status: "todo",
+      priority: "medium",
+      parentId,
+    });
+    const svc = issueService(db);
+    const listSpy = vi.spyOn(svc, "list");
+    const app = createApp(companyId, { issueService: svc });
+
+    const byParent = await request(app)
+      .get(`/api/companies/${companyId}/issues`)
+      .query({ parentId: `${prefix}-1` });
+    expect(byParent.status).toBe(200);
+    expect(byParent.body).toHaveLength(1);
+    expect(byParent.body[0].id).toBe(childId);
+    expect(listSpy).toHaveBeenCalledTimes(1);
+
+    listSpy.mockClear();
+    const byDescendant = await request(app)
+      .get(`/api/companies/${companyId}/issues`)
+      .query({ descendantOf: `${prefix}-1` });
+    expect(byDescendant.status).toBe(200);
+    expect(listSpy).toHaveBeenCalledTimes(1);
+
+    listSpy.mockClear();
+    const byCreatedFrom = await request(app)
+      .get(`/api/companies/${companyId}/issues`)
+      .query({ createdFromIssueId: `${prefix}-1` });
+    expect(byCreatedFrom.status).toBe(200);
+    expect(listSpy).toHaveBeenCalledTimes(1);
+  });
+
+  it("returns 422 for non-existent referenced entities when creating an issue", async () => {
+    const companyId = randomUUID();
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Issue Creation Ref Test",
+      issuePrefix: uniqueIssuePrefix(),
+      defaultResponsibleUserId: "cloud-user-1",
+    });
+    await seedCloudTenantMember(companyId);
+    const app = createApp(companyId);
+
+    const badProject = await request(app)
+      .post(`/api/companies/${companyId}/issues`)
+      .send({
+        title: "Test issue missing project",
+        projectId: randomUUID(),
+      });
+    expect(badProject.status).toBe(422);
+    expect(badProject.body.error).toContain("project not found");
+
+    const badParent = await request(app)
+      .post(`/api/companies/${companyId}/issues`)
+      .send({
+        title: "Test issue missing parent",
+        parentId: randomUUID(),
+      });
+    expect(badParent.status).toBe(422);
+    expect(badParent.body.error).toContain("parent issue not found");
+
+    const badAgent = await request(app)
+      .post(`/api/companies/${companyId}/issues`)
+      .send({
+        title: "Test issue missing agent",
+        assigneeAgentId: randomUUID(),
+      });
+    expect(badAgent.status).toBe(422);
+    expect(badAgent.body.error).toContain("agent not found");
+
+    const badGoal = await request(app)
+      .post(`/api/companies/${companyId}/issues`)
+      .send({
+        title: "Test issue missing goal",
+        goalId: randomUUID(),
+      });
+    expect(badGoal.status).toBe(422);
+    expect(badGoal.body.error).toContain("goal not found");
+
+    const badLabels = await request(app)
+      .post(`/api/companies/${companyId}/issues`)
+      .send({
+        title: "Test issue missing labels",
+        labelIds: [randomUUID()],
+      });
+    expect(badLabels.status).toBe(422);
+    expect(badLabels.body.error).toContain("label not found");
   });
 });

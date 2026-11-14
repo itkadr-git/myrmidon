@@ -177,6 +177,12 @@ export type QueuedRunFacts = {
    */
   isUnblockOwnerWake?: boolean;
   /**
+   * myrmidon(OPE-13095): the run is the starter-pack scout's wake
+   * (`starter_pack_scout`) on a new engineer task. The scout is not the assignee
+   * and must be allowed to start; the assignee does not change.
+   */
+  isStarterPackScoutWake?: boolean;
+  /**
    * myrmidon(OPE-11948): the run is an automatic `issue_continuation_needed`
    * wake of the system — no comment, no resume intent, no interaction. It is
    * only worth starting while the issue is todo or in_progress.
@@ -212,6 +218,8 @@ type OwnershipFacts = {
   isRunGuardStopNeedsInputWake?: boolean;
   // myrmidon(UNBLOCK-OWNER-WAKE): the block owner's unblock wake
   isUnblockOwnerWake?: boolean;
+  // myrmidon(OPE-13095): the starter-pack scout's wake on a new engineer task
+  isStarterPackScoutWake?: boolean;
 };
 
 type OwnershipOutcome = "current_owner" | "reassigned";
@@ -232,6 +240,7 @@ function decideIssueOwnership(facts: OwnershipFacts): OwnershipOutcome {
   if (facts.isAuthorizedSourceScopedRecovery) return "current_owner";
   if (facts.isRunGuardStopNeedsInputWake) return "current_owner";
   if (facts.isUnblockOwnerWake) return "current_owner";
+  if (facts.isStarterPackScoutWake) return "current_owner";
   return "reassigned";
 }
 
@@ -638,6 +647,7 @@ export function decideQueuedRunStaleness(
     isProductiveContinuationRecovery: facts.isProductiveContinuationRecovery,
     isRunGuardStopNeedsInputWake: facts.isRunGuardStopNeedsInputWake,
     isUnblockOwnerWake: facts.isUnblockOwnerWake,
+    isStarterPackScoutWake: facts.isStarterPackScoutWake,
   });
   if (ownership === "reassigned") {
     return {

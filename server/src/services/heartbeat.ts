@@ -100,6 +100,15 @@ import {
 } from "../myrmidon/run-guard-stop.js";
 // myrmidon(OPE-12577): the manager's wake after a final guard stop passes the execution hold.
 import { isRunGuardStopWakeRecipient, RUN_GUARD_STOP_NEEDS_INPUT_WAKE_REASON } from "../myrmidon/run-guard-escalation.js";
+import {
+  STARTER_PACK_READY_SOURCE,
+  STARTER_PACK_SCOUT_WAKE_REASON,
+  isStarterPackScoutIssueStatus,
+  isStarterPackScoutRunContext,
+  isStarterPackScoutWake,
+  wakeAssigneeAfterStarterPack,
+} from "../myrmidon/starter-pack.js";
+import { queueIssueAssignmentWakeup } from "./issue-assignment-wakeup.js";
 import { PRODUCT_NAME, productPossessive, productSaid } from "../myrmidon/product.js";
 // myrmidon(B1c): short alias for template literals below.
 import { PRODUCT_NAME as PN } from "../myrmidon/product.js";
@@ -172,7 +181,16 @@ import { clearChatHoldsOnOwnerMessage } from "../myrmidon/chat-holds/clear-on-me
 // myrmidon(L2, round 3 fix): retire the woken agent's own waiting run that the
 // bypassed hold would cancel at its claim, so the wake is not lost with it.
 import { cancelWaitingRunDoomedByHold, carryRetryBudgetToSuccessor } from "../myrmidon/settled-holds/cancel-waiting-run.js";
-import { createPullRequestCiResolver, withCiResolveDeadline, type PullRequestCiResult } from "./github-pull-request-ci.js";
+import {
+  createPullRequestCiResolver,
+  withCiResolveDeadline,
+  resolveCiFailureTails,
+  type PullRequestCiResult,
+} from "./github-pull-request-ci.js";
+import {
+  resolveGitHubRepositoryToken,
+  JOB_LOG_APP_PERMISSIONS,
+} from "./github-external-object-provider.js";
 import { connectionIntentService } from "./connection-intents.js";
 import { externalSessionScheduler, scheduleExternalSessionRun } from "./external-session-scheduler.js";
 import { prepareManagedAiRuntime, assertManagedAiProjectAuth, stripAiAuthBindings, isAiConnectionBusy, AI_AUTH_ENV_KEYS } from "./ai-connection-runtime.js";
@@ -187,6 +205,7 @@ import {
   isDeveloperRole,
   renderReviewerInputSection,
   type AiConnectionBinding,
+  type ExecutionContinuationEnvelope,
   type IssueBlockerMetadata,
   type ReviewerInputFixture,
   type ReviewerPullRequestRef,
@@ -691,6 +710,7 @@ import {
 import {
   continuationSummaryParksExecutor,
   getIssueContinuationSummaryDocument,
+  getIssueStarterPackDocument,
   refreshIssueContinuationSummary,
 } from "./issue-continuation-summary.js";
 import {
@@ -5953,6 +5973,19 @@ export function deriveTaskKeyWithHeartbeatFallback(
   return null;
 }
 
+/**
+ * Whether a run drops the saved task session. The role of the agent is not an
+ * input: developers get no Hindsight memory, but their task session continues
+ * between runs (strategy from the card, `issue` by default).
+ */
+export function shouldResetTaskSessionForRun(input: {
+  wakeReset: boolean;
+  configReset: boolean;
+  longTaskPlanReset?: boolean | null;
+}): boolean {
+  return input.wakeReset || input.configReset || (input.longTaskPlanReset ?? false);
+}
+
 export function shouldResetTaskSessionForWake(
   contextSnapshot: Record<string, unknown> | null | undefined,
 ) {
@@ -8133,6 +8166,9 @@ export async function attestReviewedExternalChatRun(input: {
   throw new Error("reviewed_chat_execution_binding_not_ready");
 }
 
+// OPE-13086: hard cap of the starter-pack body inside the wake payload.
+const MAX_WAKE_STARTER_PACK_BODY_CHARS = 8_000;
+
 export async function buildPaperclipWakePayload(input: {
   db: Db;
   companyId: string;
@@ -8140,6 +8176,14 @@ export async function buildPaperclipWakePayload(input: {
   runId?: string | null;
   contextSnapshot: Record<string, unknown>;
   continuationSummary?: {
+    key: string;
+    title: string | null;
+    body: string;
+    sourceTrust?: SourceTrustMetadata | null;
+    updatedAt: Date;
+  } | null;
+  // OPE-13086: the task starter-pack document, delivered as the first wake block.
+  starterPack?: {
     key: string;
     title: string | null;
     body: string;
@@ -8177,6 +8221,8 @@ export async function buildPaperclipWakePayload(input: {
   const conversationMode = input.contextSnapshot.conversationMode === true;
   const continuationSummary =
     conversationMode || isolatedReviewerWake ? null : input.continuationSummary ?? null;
+  const starterPack =
+    conversationMode || isolatedReviewerWake ? null : input.starterPack ?? null;
   const agentMessage: Record<string, unknown> = isolatedReviewerWake
     ? {}
     : parseObject(input.contextSnapshot[PAPERCLIP_AGENT_MESSAGE_KEY]);
@@ -8256,6 +8302,10 @@ export async function buildPaperclipWakePayload(input: {
     continuationSummary && !input.exposeLowTrustRaw
       ? redactQuarantinedBodyForHigherTrust(continuationSummary)
       : continuationSummary;
+  const safeStarterPack =
+    starterPack && !input.exposeLowTrustRaw
+      ? redactQuarantinedBodyForHigherTrust(starterPack)
+      : starterPack;
 
   for (const commentId of commentIds) {
     const row = commentsById.get(commentId);
@@ -8557,6 +8607,13 @@ export async function buildPaperclipWakePayload(input: {
     : [];
   let ciResult: PullRequestCiResult | null = null;
   let pullRequestsCi: PullRequestCiResult[] = [];
+  let ciFailureTails: Array<{
+    jobId: number;
+    jobName: string;
+    runId?: number | null;
+    logTail?: string | null;
+    unavailableReason?: string | null;
+  }> | undefined = undefined;
   if (issueId) {
     try {
       const ciResolver = createPullRequestCiResolver(input.db, { source: "run-context" });
@@ -8565,6 +8622,31 @@ export async function buildPaperclipWakePayload(input: {
         [],
       );
       ciResult = pullRequestsCi[0] ?? null;
+
+      const isCiCompletedWake = input.contextSnapshot.wakeReason === "ci_completed";
+      const isRedCi = ciResult && (ciResult.conclusion === "failure" || ciResult.conclusion === "timed_out");
+      if (isCiCompletedWake && isRedCi && ciResult.failedJobs && ciResult.failedJobs.length > 0) {
+        const repoStr = ciResult.repository;
+        const [owner, repo] = repoStr ? repoStr.split("/") : [];
+        if (owner && repo) {
+          const jobLogToken = await resolveGitHubRepositoryToken(
+            input.db,
+            input.companyId,
+            repoStr,
+            { permissions: JOB_LOG_APP_PERMISSIONS },
+          );
+          ciFailureTails = await withCiResolveDeadline(
+            resolveCiFailureTails(ciResult.failedJobs, {
+              owner,
+              repo,
+              token: jobLogToken,
+              fetchImpl: fetch,
+            }),
+            [],
+            8_000,
+          );
+        }
+      }
     } catch {
       // Non-blocking fallback
     }
@@ -8573,6 +8655,7 @@ export async function buildPaperclipWakePayload(input: {
   const payload = {
     ciResult,
     pullRequestsCi,
+    ciFailureTails,
     reason: readNonEmptyString(input.contextSnapshot.wakeReason),
     // myrmidon(RUN-SNAPSHOT-DEDUP): no second copy of the continuation here.
     // The canonical envelope is `contextSnapshot.executionContinuation`;
@@ -8737,6 +8820,19 @@ export async function buildPaperclipWakePayload(input: {
           bodyTruncated: safeContinuationSummary.body.length > 4_000,
           sourceTrust: safeContinuationSummary.sourceTrust ?? null,
           updatedAt: safeContinuationSummary.updatedAt.toISOString(),
+        }
+      : null,
+    starterPack: safeStarterPack
+      ? {
+          key: safeStarterPack.key,
+          title: safeStarterPack.title,
+          body:
+            safeStarterPack.body.length > MAX_WAKE_STARTER_PACK_BODY_CHARS
+              ? safeStarterPack.body.slice(0, MAX_WAKE_STARTER_PACK_BODY_CHARS)
+              : safeStarterPack.body,
+          bodyTruncated: safeStarterPack.body.length > MAX_WAKE_STARTER_PACK_BODY_CHARS,
+          sourceTrust: safeStarterPack.sourceTrust ?? null,
+          updatedAt: safeStarterPack.updatedAt.toISOString(),
         }
       : null,
     commentIds,
@@ -9466,7 +9562,25 @@ export function buildPaperclipTaskMarkdown(input: {
         if (ci.failedJobs && ci.failedJobs.length > 0) {
           lines.push("  - Failed jobs:");
           for (const job of ci.failedJobs) {
-            lines.push(`    - ${job.name}: ${job.conclusion} (${job.url})`);
+            const runId = job.url ? parseInt(job.url.match(/\/actions\/runs\/(\d+)/)?.[1] ?? "", 10) || null : null;
+            const runStr = runId ? String(runId) : "<run>";
+            lines.push(`    - ${job.name} (id: ${job.id}): ${job.conclusion} (${job.url})`);
+            lines.push(`      Investigate log: \`gh run view ${runStr} --job ${job.id} --log-failed | tail -80\``);
+          }
+        }
+        const effectiveFailureTails = ci.ciFailureTails ?? (wakePayload?.ciFailureTails as PullRequestCiResult["ciFailureTails"]);
+        if (effectiveFailureTails && effectiveFailureTails.length > 0) {
+          lines.push("  - Failing step log output (board-retrieved):");
+          if (effectiveFailureTails.some((tail) => Boolean(tail.logTail))) {
+            lines.push("    Do not poll CI: the failing output is below.");
+          }
+          for (const tail of effectiveFailureTails) {
+            if (tail.logTail) {
+              lines.push(`    --- Job ${tail.jobName} (id: ${tail.jobId}) log tail ---`);
+              lines.push(fenceTaskText(tail.logTail));
+            } else if (tail.unavailableReason) {
+              lines.push(`    --- Job ${tail.jobName} (id: ${tail.jobId}) log unavailable: ${tail.unavailableReason} ---`);
+            }
           }
         }
         if (ci.cancelledJobs && ci.cancelledJobs.length > 0) {
@@ -10620,7 +10734,7 @@ export function heartbeatService(
         });
         // myrmidon(1.6.6 RUN-DISPATCH-NOTIFY, OPE-6977): through the dispatcher
         // — an api process in `notify` publishes run_queued instead of starting.
-        await runStartDispatcher.dispatchRunStart(effect.run.agentId);
+        await runStartDispatcher.dispatchRunStartUnlessBusy(effect.run.agentId);
       } else {
         await logActivity(db, {
           companyId: effect.companyId,
@@ -23879,7 +23993,16 @@ export function heartbeatService(
     // The role gate of T1.1 and the bus publish of the `notify` mode.
     // `executesRuns` absent means a single-process deployment — the vendor
     // path, unchanged.
-    executesRuns: options.executesRuns !== undefined ? () => options.executesRuns! : undefined,
+    // myrmidon(OPE-13117): the dispatcher is built before `roleExecutesRuns`
+    // (below), so it reads it through a closure. Without this the ~30
+    // route/service builds passed `undefined`, which `notify` reads as "api".
+    executesRuns: () => roleExecutesRuns,
+    agentAtRunLimit: async (agentId) => {
+      const agent = await getAgent(agentId);
+      if (!agent) return false;
+      const running = await countRunningRunsForAgent(agentId);
+      return running >= parseHeartbeatPolicy(agent).maxConcurrentRuns;
+    },
     requestRemoteStart: options.processBus
       ? async (agentId) => {
           // The payload contract of T1.3: {agentId, companyId, schemaVersion: 1}.
@@ -25829,6 +25952,12 @@ export function heartbeatService(
         ? await getIssueContinuationSummaryDocument(db, issueRef.id)
         : null;
       const exposeLowTrustRaw = trustPreset.kind === "low_trust_review";
+      // OPE-13086: starter pack goes to the assignee only (same gate as
+      // executionContinuation); an isolated reviewer never gets it.
+      const starterPack =
+        issueRef && !isConversation(issueContext) && !isolatedReviewerRun && issueContext?.assigneeAgentId === agent.id
+          ? await getIssueStarterPackDocument(db, issueRef.id)
+          : null;
       const safeContinuationSummary =
         continuationSummary && !exposeLowTrustRaw
           ? redactQuarantinedBodyForHigherTrust(continuationSummary)
@@ -25864,20 +25993,147 @@ export function heartbeatService(
       } else {
         delete context.paperclipSkillTest;
       }
-      const executionContinuation =
-        issueRef && !isConversation(issueContext) && !isolatedReviewerRun && issueContext?.assigneeAgentId === agent.id
-          ? await buildExecutionContinuation({
-              db,
-              companyId: agent.companyId,
-              issueId: issueRef.id,
-              agentId: agent.id,
-              runId: run.id,
-              context,
-              previousContextRunId: taskSession?.lastRunId,
-              summary: safeContinuationSummary?.body ?? null,
-              exposeLowTrustRaw,
-            })
-          : null;
+      let executionContinuation: ExecutionContinuationEnvelope | null = null;
+      if (
+        issueRef &&
+        !isConversation(issueContext) &&
+        !isolatedReviewerRun &&
+        issueContext?.assigneeAgentId === agent.id
+      ) {
+        const cancelPrematureTerminalOrReassigned = async (
+          status: string,
+          errorCode: "issue_terminal_status" | "issue_assignee_changed",
+          reason: string,
+        ) => {
+          const now = new Date();
+          const cancelled = await setRunStatusIfRunning(run.id, "cancelled", {
+            finishedAt: now,
+            error: reason,
+            errorCode,
+          });
+          if (cancelled.updated) {
+            await setWakeupStatus(run.wakeupRequestId, "cancelled", {
+              finishedAt: now,
+              error: reason,
+            }).catch(() => undefined);
+            await releaseIssueExecutionAndPromote(run, {
+              suppressImmediateRecovery: true,
+            });
+            await finalizeAgentStatus(agent.id, "cancelled", null, {
+              wasFirstHeartbeat: timerClaimWasFirstHeartbeat(run),
+            });
+            logger.info(
+              { runId: run.id, issueId: issueRef.id, status, errorCode },
+              "cancelled run before execution continuation: issue terminal or reassigned",
+            );
+            return true;
+          }
+          return false;
+        };
+
+        const freshIssue = await db
+          .select({
+            status: issues.status,
+            assigneeAgentId: issues.assigneeAgentId,
+          })
+          .from(issues)
+          .where(
+            and(
+              eq(issues.id, issueRef.id),
+              eq(issues.companyId, agent.companyId),
+            ),
+          )
+          .then((rows) => rows[0] ?? null);
+
+        const currentStatus = freshIssue?.status ?? issueContext.status;
+        if (["done", "cancelled"].includes(currentStatus)) {
+          const reason = `Cancelled because issue reached terminal status (${currentStatus}) before execution could start`;
+          if (
+            await cancelPrematureTerminalOrReassigned(
+              currentStatus,
+              "issue_terminal_status",
+              reason,
+            )
+          ) {
+            return;
+          }
+        }
+        if (freshIssue && freshIssue.assigneeAgentId !== agent.id) {
+          const reason =
+            "Cancelled because issue assignee changed before execution could start";
+          if (
+            await cancelPrematureTerminalOrReassigned(
+              freshIssue.status,
+              "issue_assignee_changed",
+              reason,
+            )
+          ) {
+            return;
+          }
+        }
+
+        try {
+          executionContinuation = await buildExecutionContinuation({
+            db,
+            companyId: agent.companyId,
+            issueId: issueRef.id,
+            agentId: agent.id,
+            runId: run.id,
+            context,
+            previousContextRunId: taskSession?.lastRunId,
+            summary: safeContinuationSummary?.body ?? null,
+            exposeLowTrustRaw,
+          });
+        } catch (error) {
+          if (
+            error instanceof Error &&
+            error.message === "continuation_task_ownership_changed"
+          ) {
+            const recheckIssue = await db
+              .select({
+                status: issues.status,
+                assigneeAgentId: issues.assigneeAgentId,
+              })
+              .from(issues)
+              .where(
+                and(
+                  eq(issues.id, issueRef.id),
+                  eq(issues.companyId, agent.companyId),
+                ),
+              )
+              .then((rows) => rows[0] ?? null);
+            if (
+              !recheckIssue ||
+              ["done", "cancelled"].includes(recheckIssue.status)
+            ) {
+              const statusAtCatch = recheckIssue?.status ?? "unknown";
+              const reason = `Cancelled because issue reached terminal status (${statusAtCatch}) before execution could start`;
+              if (
+                await cancelPrematureTerminalOrReassigned(
+                  statusAtCatch,
+                  "issue_terminal_status",
+                  reason,
+                )
+              ) {
+                return;
+              }
+            } else if (recheckIssue.assigneeAgentId !== agent.id) {
+              const reason =
+                "Cancelled because issue assignee changed before execution could start";
+              if (
+                await cancelPrematureTerminalOrReassigned(
+                  recheckIssue.status,
+                  "issue_assignee_changed",
+                  reason,
+                )
+              ) {
+                return;
+              }
+            }
+          }
+          throw error;
+        }
+      }
       context.executionContinuation = executionContinuation;
       // myrmidon(DB-CARE DBC-3): the envelope is stored once, in
       // heartbeat_run_continuations. Every snapshot write below persists
@@ -25908,6 +26164,7 @@ export function heartbeatService(
         runId: run.id,
         contextSnapshot: context,
         continuationSummary,
+        starterPack,
         issueSummary: issueRef
           ? {
               id: issueRef.id,
@@ -26630,12 +26887,11 @@ export function heartbeatService(
       // Always replace this runtime-only field; caller wake data cannot supply skills.
       context.paperclipWake = { ...parseObject(context.paperclipWake), connectorSkillInstructions: connectorDelivery.instructions };
       let runtimeConfig: Record<string, unknown> = connectorDelivery.config;
-      // Owner 05.11/06.11: developers do not load previous runs. The flag is
-      // derived from the agent and always replaces whatever the card holds, so a
-      // non-developer cannot opt in; for a developer the effective session key
-      // strategy is "run" (a fresh session per run), never "issue" or "agent".
-      // A card that already says "run" or "none" is kept as is.
-      const developerRun = isDeveloperRole(agent);
+      // Developers get no Hindsight memory; the task session continues between
+      // runs (strategy from the card, `issue` by default). The flag is derived
+      // from the agent and always replaces whatever the card holds, so a
+      // non-developer cannot opt in; for a developer an `agent` strategy becomes
+      // `issue`, while `run` and `none` from the card are kept as is.
       runtimeConfig = applyDeveloperRunIsolation(runtimeConfig, agent);
       const latestAgentConfigRevision = await getLatestAgentConfigRevision(
         agent.companyId,
@@ -26736,13 +26992,13 @@ export function heartbeatService(
         preserveLegacySessionWithoutConfigMetadata:
           acceptedPlanContinuationWake && !acceptedPlanWakeRoutingDecision,
       });
-      // Owner 06.11: a developer run never resumes a saved session, so it loads
-      // nothing of its previous runs.
-      const resetTaskSession =
-        developerRun ||
-        shouldResetTaskSessionForWake(context) ||
-        sessionConfigFreshness.reset ||
-        (longTaskContext?.plan.reset ?? false);
+      // Developers get no Hindsight memory, but the task session continues
+      // between runs: no role-based reset here.
+      const resetTaskSession = shouldResetTaskSessionForRun({
+        wakeReset: shouldResetTaskSessionForWake(context),
+        configReset: sessionConfigFreshness.reset,
+        longTaskPlanReset: longTaskContext?.plan.reset,
+      });
       const sessionResetReason =
         [sessionConfigFreshness.reasons.join("; "), longTaskContext?.plan.reason]
           .filter((value): value is string => Boolean(value))
@@ -28595,7 +28851,7 @@ export function heartbeatService(
                     // A file-only wake must not inherit an old task objective.
                     const latestRequest =
                       executionContinuation?.messages.findLast(
-                        (message) =>
+                        (message: ExecutionContinuationEnvelope["messages"][number]) =>
                           message.authorType === "user" &&
                           !message.createdByRunId &&
                           !message.deleted &&
@@ -32082,8 +32338,45 @@ export function heartbeatService(
     await releaseSwarmClaimsForRunImpl({ db, settings: instanceSettings }, run);
   }
 
+  async function wakeAssigneeAfterStarterPackScoutRun(
+    run: Pick<typeof heartbeatRuns.$inferSelect, "id" | "companyId"> & {
+      contextSnapshot?: unknown;
+      invocationSource?: string | null;
+    },
+  ) {
+    // Early exit without a query: this runs when every run finishes. getRun only
+    // when the caller did not pass the context.
+    const scoutRun = run.contextSnapshot === undefined ? await getRun(run.id) : run;
+    if (!scoutRun) return;
+    const context = parseObject(scoutRun.contextSnapshot);
+    if (!isStarterPackScoutRunContext(context, scoutRun.invocationSource ?? undefined)) return;
+    const issueId = readNonEmptyString(context.issueId);
+    if (!issueId) return;
+    const [issue] = await db
+      .select()
+      .from(issues)
+      .where(and(eq(issues.companyId, scoutRun.companyId), eq(issues.id, issueId)))
+      .limit(1);
+    if (!issue) return;
+    await wakeAssigneeAfterStarterPack(db, issue, (idempotencyKey) =>
+      queueIssueAssignmentWakeup({
+        heartbeat: { wakeup: enqueueWakeup },
+        issue,
+        reason: "issue_assigned",
+        mutation: "starter_pack",
+        contextSource: STARTER_PACK_READY_SOURCE,
+        requestedByActorType: "system",
+        requestedByActorId: null,
+        idempotencyKey,
+      }),
+    );
+  }
+
   async function releaseIssueExecutionAndPromote(
-    run: Pick<typeof heartbeatRuns.$inferSelect, "id" | "companyId">,
+    run: Pick<typeof heartbeatRuns.$inferSelect, "id" | "companyId"> & {
+      contextSnapshot?: unknown;
+      invocationSource?: string | null;
+    },
     options: {
       suppressImmediateRecovery?: boolean;
       deferredWakesPostdateRun?: boolean;
@@ -32097,6 +32390,11 @@ export function heartbeatService(
     // the vendor release.
     await releaseSwarmClaimsForRun(run).catch((err) =>
       logger.warn({ err, runId: run.id }, "swarm claim release on run finish failed"),
+    );
+    // myrmidon(OPE-13095): the starter-pack scout's run ended (any status) — wake
+    // the assignee, with the document or without it. Best-effort and idempotent.
+    await wakeAssigneeAfterStarterPackScoutRun(run).catch((err) =>
+      logger.warn({ err, runId: run.id }, "assignee wake after the starter-pack scout run failed"),
     );
     try {
       const { postCommitEffects } = await wakeQueue.releaseIssueExecution({
@@ -33768,7 +34066,14 @@ export function heartbeatService(
             await isRunGuardStopWakeRecipient(tx as unknown as Db, {
               companyId: issue.companyId, assigneeAgentId: issue.assigneeAgentId, agentId,
             });
-          if (executionBlocker && !runGuardManagerWake && !(await admitExplicitNativeContinuation({
+          // myrmidon(OPE-13095): the starter-pack scout's wake passes the hold the same way.
+          const starterPackScoutWake = Boolean(executionBlocker) &&
+            reason === STARTER_PACK_SCOUT_WAKE_REASON && source === "automation" &&
+            isStarterPackScoutIssueStatus(issue.status) &&
+            await isStarterPackScoutWake(tx as unknown as Db, {
+              companyId: issue.companyId, assigneeAgentId: issue.assigneeAgentId, agentId,
+            });
+          if (executionBlocker && !runGuardManagerWake && !starterPackScoutWake && !(await admitExplicitNativeContinuation({
             db: tx as unknown as Db, companyId: issue.companyId, issueId: issue.id,
             agentId, actorType: opts.requestedByActorType, actorId: opts.requestedByActorId,
             reason, commentId: candidateCommentId, failedRunId: opts.failedRunId, successorRunId: explicitContinuationRunId,
@@ -35631,12 +35936,12 @@ export function heartbeatService(
       }
       if (outcome.kind === "deferred") return null;
       if (outcome.kind === "coalesced") {
-        await runStartDispatcher.dispatchRunStart(agent.id);
+        await runStartDispatcher.dispatchRunStartUnlessBusy(agent.id);
         return outcome.run;
       }
       if (outcome.kind === "replayed") {
         if (outcome.run.status === "queued")
-          await runStartDispatcher.dispatchRunStart(agent.id);
+          await runStartDispatcher.dispatchRunStartUnlessBusy(agent.id);
         return outcome.run;
       }
 
@@ -35653,7 +35958,7 @@ export function heartbeatService(
         },
       });
 
-      await runStartDispatcher.dispatchRunStart(agent.id);
+      await runStartDispatcher.dispatchRunStartUnlessBusy(agent.id);
       return newRun;
     }
 
@@ -35884,7 +36189,7 @@ export function heartbeatService(
       },
     });
 
-    await runStartDispatcher.dispatchRunStart(agent.id);
+    await runStartDispatcher.dispatchRunStartUnlessBusy(agent.id);
 
     return newRun;
   }

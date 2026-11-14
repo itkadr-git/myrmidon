@@ -193,7 +193,7 @@ export function isRepeatedEmptyLimitStop(input: {
 
 /**
  * myrmidon(OPE-12799): what the continuation of a call-limit stop is told. The
- * session is fresh (developers do not load previous runs), so the run would
+ * session may be fresh (a `run` or `none` strategy, or a reset), so the run would
  * otherwise start the task over.
  */
 export const CALL_LIMIT_CONTINUATION_HINT =

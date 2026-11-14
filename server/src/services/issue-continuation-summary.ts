@@ -5,6 +5,10 @@ import { ISSUE_CONTINUATION_SUMMARY_DOCUMENT_KEY, type SourceTrustMetadata } fro
 import { documentService } from "./documents.js";
 
 export { ISSUE_CONTINUATION_SUMMARY_DOCUMENT_KEY };
+
+// OPE-13086: the task starter pack is an ordinary issue document (written by the
+// pack generator, v2); the assignee wake delivers it as a separate first block.
+export const ISSUE_STARTER_PACK_DOCUMENT_KEY = "starter-pack" as const;
 export const ISSUE_CONTINUATION_SUMMARY_TITLE = "Continuation Summary";
 export const ISSUE_CONTINUATION_SUMMARY_MAX_BODY_CHARS = 8_000;
 const SUMMARY_SECTION_MAX_CHARS = 1_200;
@@ -306,4 +310,38 @@ export async function refreshIssueContinuationSummary(input: {
     createdByRunId: run.id,
   });
   return result.document;
+}
+
+export type IssueStarterPackDocument = {
+  key: typeof ISSUE_STARTER_PACK_DOCUMENT_KEY;
+  title: string | null;
+  body: string;
+  sourceTrust: SourceTrustMetadata | null;
+  updatedAt: Date;
+};
+
+export async function getIssueStarterPackDocument(
+  db: Db,
+  issueId: string,
+): Promise<IssueStarterPackDocument | null> {
+  const row = await db
+    .select({
+      title: documents.title,
+      body: documents.latestBody,
+      sourceTrust: documents.sourceTrust,
+      updatedAt: documents.updatedAt,
+    })
+    .from(issueDocuments)
+    .innerJoin(documents, eq(issueDocuments.documentId, documents.id))
+    .where(and(eq(issueDocuments.issueId, issueId), eq(issueDocuments.key, ISSUE_STARTER_PACK_DOCUMENT_KEY)))
+    .then((rows) => rows[0] ?? null);
+
+  if (!row) return null;
+  return {
+    key: ISSUE_STARTER_PACK_DOCUMENT_KEY,
+    title: row.title,
+    body: row.body,
+    sourceTrust: row.sourceTrust ?? null,
+    updatedAt: row.updatedAt,
+  };
 }
