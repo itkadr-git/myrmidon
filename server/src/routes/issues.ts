@@ -1659,6 +1659,7 @@ const ISSUE_WAKE_DIAGNOSTIC_KNOWN_REASONS = new Set([
   "run_guard_stop_needs_input",
   "run_liveness_continuation",
   "run_stalled",
+  "runs_without_commit_limit_reached",
   "skill_test_run_created",
   "starter_pack_scout",
   "swarm_claim_queue",
