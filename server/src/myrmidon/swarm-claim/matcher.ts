@@ -440,13 +440,8 @@ function freeAgentsOfPair(
 ): SwarmMatcherAgent[] {
   // The ceiling of the caste wins over the global one (the same reading the
   // sweeper's idle pass used before this file took the pass over).
-  // 1.6.6 (OPE-9678): Cap automatic assignment at two tasks per agent (DEFAULT_SWARM_MAX_ACTIVE_TASKS).
-  // A caste or settings ceiling can restrict further, but cannot exceed 2 for auto-assignment.
   const rawMax = caste?.maxActiveTasks ?? settings.maxActiveTasks;
-  const maxActiveTasks =
-    rawMax !== null && rawMax !== undefined
-      ? Math.min(rawMax, DEFAULT_SWARM_MAX_ACTIVE_TASKS ?? 2)
-      : (DEFAULT_SWARM_MAX_ACTIVE_TASKS ?? 2);
+  const maxActiveTasks = rawMax ?? DEFAULT_SWARM_MAX_ACTIVE_TASKS ?? 2;
   return pair.agents
     .filter((agent) => {
       if (
@@ -576,14 +571,9 @@ async function claimTaskForAgent(
       ) {
         throw new MatcherClaimLost();
       }
-      // 1.6.6 (SWARM-B / OPE-9678): the capacity check is atomic. Two passes (or a pass and
-      // the claim API) that pick the same agent queue on this lock; the second one
-      // counts the first one's committed assignment and stops at the ceiling.
-      // Auto-assignment is strictly capped at DEFAULT_SWARM_MAX_ACTIVE_TASKS (2).
-      const effectiveLimit =
-        target.maxActiveTasks !== undefined && target.maxActiveTasks !== null
-          ? Math.min(target.maxActiveTasks, DEFAULT_SWARM_MAX_ACTIVE_TASKS ?? 2)
-          : (DEFAULT_SWARM_MAX_ACTIVE_TASKS ?? 2);
+      // Respect the resolved caste/settings ceiling; do not impose a separate
+      // hard-coded automatic-assignment cap here.
+      const effectiveLimit = target.maxActiveTasks ?? DEFAULT_SWARM_MAX_ACTIVE_TASKS ?? 2;
       await txDb.execute(
         sql`select pg_advisory_xact_lock(hashtextextended(${`swarm-capacity:${target.agentId}`}, 0))`,
       );

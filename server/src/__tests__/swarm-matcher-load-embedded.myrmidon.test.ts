@@ -285,6 +285,29 @@ describeEmbeddedPostgres("matcher load and capacity", () => {
       expect(wakes).toEqual([]);
     });
 
+    it("honors a configured active-task ceiling above the default", async () => {
+      const companyId = await seedCompany();
+      const agent = await seedAgent(companyId, "agent-configured-five");
+      await seedTask(companyId, { assigneeAgentId: agent, status: "todo" });
+      await seedTask(companyId, { assigneeAgentId: agent, status: "in_progress" });
+      const task = await seedTask(companyId);
+      const wakes: string[] = [];
+
+      const result = await matchCompany(
+        deps(wakes, {
+          maxActiveTasks: 5,
+          casteDirectory: async () => [
+            { role: "engineer", casteKey: "engineer", maxActiveTasks: 5, description: "Configured engineer ceiling" },
+          ],
+        }),
+        companyId,
+      );
+
+      expect(result.pairs.map((pair) => pair.issueId)).toEqual([task]);
+      expect(await assigneeOf(task)).toBe(agent);
+      expect(wakes).toEqual([agent]);
+    });
+
     it("counts reserved todo and in_progress tasks against the ceiling, not only leases", async () => {
       const companyId = await seedCompany();
       const agent = await seedAgent(companyId, "agent-a");
