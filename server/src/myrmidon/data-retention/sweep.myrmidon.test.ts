@@ -17,6 +17,7 @@ import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest
 import {
   activityLog,
   agentTaskSessions,
+  agentWakeupRequests,
   agents,
   companies,
   completionContracts,
@@ -29,6 +30,9 @@ import {
   decisions,
   decisionTriage,
   decisionTriageEvents,
+  documents,
+  documentRevisions,
+  environmentLeases,
   financeEvents,
   heartbeatRunEvents,
   heartbeatRuns,
@@ -90,6 +94,10 @@ describeEmbeddedPostgres("myrmidon(1.6.5-DB-RETENTION) retention sweep in the da
     await db.delete(decisionTriage);
     await db.delete(decisionRetention);
     await db.delete(decisionQueues);
+    await db.delete(environmentLeases);
+    await db.delete(agentWakeupRequests);
+    await db.delete(documentRevisions);
+    await db.delete(documents);
     await db.delete(agentTaskSessions);
     await db.delete(costEvents);
     await db.delete(financeEvents);
@@ -207,6 +215,45 @@ describeEmbeddedPostgres("myrmidon(1.6.5-DB-RETENTION) retention sweep in the da
       .where(eq(heartbeatRuns.id, runId));
     return rows.length;
   }
+
+  it("retains recent and newest document revisions, and only prunes old terminal wakes and released leases", async () => {
+    const company = await seedCompany();
+    const { companyId, agentId } = company;
+    const documentId = randomUUID();
+    const old = new Date(Date.now() - 100 * DAY_MS);
+    const young = new Date(Date.now() - 10 * DAY_MS);
+    const revisions = Array.from({ length: 25 }, (_, index) => ({
+      id: randomUUID(), companyId, documentId, revisionNumber: index + 1,
+      body: `revision ${index + 1}`, format: "markdown",
+      createdAt: index === 0 ? old : young,
+    }));
+    await db.insert(documents).values({ id: documentId, companyId, latestBody: "latest", latestRevisionNumber: 25, latestRevisionId: revisions[24].id });
+    await db.insert(documentRevisions).values(revisions);
+    const wakeId = randomUUID();
+    await db.insert(agentWakeupRequests).values([
+      { id: wakeId, companyId, agentId, source: "test", status: "cancelled", requestedAt: old, finishedAt: old },
+      { companyId, agentId, source: "test", status: "queued", requestedAt: old },
+    ]);
+    const activeLeaseId = randomUUID();
+    await db.insert(environmentLeases).values([
+      { id: activeLeaseId, companyId, status: "active", acquiredAt: old, lastUsedAt: old },
+      { companyId, status: "released", releasedAt: old, acquiredAt: old, lastUsedAt: old },
+    ]);
+
+    const { sweep } = makeSweep({ freshBackup: true });
+    const result = await sweep.sweep();
+
+    expect(result.perTable.documentRevisions.deleted).toBe(1);
+    const keptRevisions = await db.select({ revisionNumber: documentRevisions.revisionNumber }).from(documentRevisions);
+    expect(keptRevisions).toHaveLength(24);
+    expect(keptRevisions.some(({ revisionNumber }) => revisionNumber === 1)).toBe(false);
+    expect(result.perTable.agentWakeupRequests.deleted).toBe(1);
+    const remainingWakes = await db.select({ status: agentWakeupRequests.status }).from(agentWakeupRequests);
+    expect(remainingWakes.map(({ status }) => status)).toContain("queued");
+    expect(result.perTable.environmentLeases.deleted).toBe(1);
+    const leases = await db.select({ id: environmentLeases.id, status: environmentLeases.status }).from(environmentLeases);
+    expect(leases).toEqual([{ id: activeLeaseId, status: "active" }]);
+  });
 
   async function seedIssue(input: { companyId: string; title: string }) {
     const issueId = randomUUID();
