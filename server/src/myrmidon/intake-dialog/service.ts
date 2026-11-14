@@ -154,8 +154,8 @@ export async function processIntakeCard(
           description: "Утвердить карточку требования",
           previewMarkdown: markdownBody,
         }],
-        verdicts: ["approve", "reject"] as const,
-        requireReasonOn: ["reject"] as const,
+        verdicts: ["approve", "reject"],
+        requireReasonOn: ["reject"],
         allowBulkApprove: false,
         target: {
           type: "issue_document",
