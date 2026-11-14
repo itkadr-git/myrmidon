@@ -10,9 +10,12 @@ export const REPACK_MIGRATED_MARKER = ".repack-migrated";
 const LOCK_STALE_MS = 900_000; // 15 minutes
 
 // myrmidon(1.6.6 BOT-DISK OPE-10311): fleet git mirror root. Candidate
-// discovery and mirror-covered pack removal read this one constant instead of
-// hard-coding /cache/git at each use.
-export const GIT_MIRROR_ROOT = process.env.MYRMIDON_GIT_MIRROR_ROOT || "/cache/git";
+// discovery and mirror-covered pack removal read this one constant instead
+// of hard-coding /cache/git at each use. Runtime lookup goes through
+// MYRMIDON_GIT_MIRROR_ROOT (see attachMirrorAlternates / findMirror); this
+// constant is only the production default and is read at call time, not
+// import time, so tests can point the migration at a fixture root.
+const GIT_MIRROR_ROOT = "/cache/git";
 // Loose objects older than this are pruned as unreachable (gc-equivalent).
 export const DEFAULT_PRUNE_EXPIRE = "2.weeks.ago";
 
@@ -161,22 +164,32 @@ export function resolveWorktreeGitDir(wsDir) {
 }
 
 /**
+ * OPE-13118: parse a git-base style path (<owner>/<repo>.git) into the
+ * lowercased owner/repo pair findMirror expects. Returns null for paths that
+ * do not follow the layout (e.g. a workspace .git dir).
+ */
+function parseGitDir(gitDir) {
+  const name = path.basename(gitDir);
+  if (!name.endsWith(".git")) return null;
+  const repo = name.slice(0, -4);
+  if (!repo) return null;
+  const ownerDir = path.dirname(gitDir);
+  const owner = path.basename(ownerDir);
+  if (!owner || owner === name) return null;
+  return { owner: owner.toLowerCase(), repo: repo.toLowerCase(), slug: `${owner.toLowerCase()}/${repo.toLowerCase()}` };
+}
+
+/**
  * OPE-13118: attach a base to the fleet mirror before repack. Writes
  * objects/info/alternates when a mirror exists (any case) and returns the
  * mirror objects dir, or null when no mirror is found.
  */
-function attachMirrorAlternates(gitDir) {
-  const name = path.basename(gitDir);
-  if (!name.endsWith(".git")) return null;
-  const repo = name.slice(0, -4);
-  const ownerDir = path.dirname(gitDir);
-  const owner = path.basename(ownerDir);
-  if (!owner || owner === name) return null;
-  const parsed = { owner: owner.toLowerCase(), repo: repo.toLowerCase(), slug: `${owner.toLowerCase()}/${repo.toLowerCase()}` };
-  const env = { ...process.env };
-  // Skip attach when a mirror override is set (test fixtures) — only the real
-  // fleet mirror root gets alternates.
-  if (env.MYRMIDON_GIT_MIRROR_ROOT) return null;
+function attachMirrorAlternates(gitDir, mirrorRoot) {
+  const parsed = parseGitDir(gitDir);
+  if (!parsed) return null;
+  // The mirror root is injected explicitly (production default
+  // GIT_MIRROR_ROOT); findMirror itself honors MYRMIDON_GIT_MIRROR_ROOT.
+  const env = { ...process.env, MYRMIDON_GIT_MIRROR_ROOT: mirrorRoot };
   try {
     return myrWsBase.syncMirrorAlternates(env, gitDir, parsed, { skipRepack: true });
   } catch {
@@ -184,23 +197,32 @@ function attachMirrorAlternates(gitDir) {
   }
 }
 
-function pushCandidate(candidates, gitDir) {
+function pushCandidate(candidates, gitDir, mirrorRoot) {
   const objectsDir = path.join(gitDir, "objects");
   const markerFile = path.join(objectsDir, "info", REPACK_MIGRATED_MARKER);
-  if (fs.existsSync(markerFile)) {
+  let markerContent = null;
+  try {
+    markerContent = fs.readFileSync(markerFile, "utf8").trim();
+  } catch {}
+  const mirror = (() => {
+    const parsed = parseGitDir(gitDir);
+    if (!parsed) return null;
+    const env = { ...process.env, MYRMIDON_GIT_MIRROR_ROOT: mirrorRoot };
+    try {
+      return myrWsBase.findMirror(parsed, env);
+    } catch {
+      return null;
+    }
+  })();
+  if (mirror) {
     // Marker records which mirror objects dir the repack used. If alternates
-    // appeared or changed since, the base needs another repack pass.
-    const markerContent = fs.readFileSync(markerFile, "utf8").trim();
-    const alternatesContent = readAlternates(objectsDir).trim();
-    const alternatesLines = alternatesContent ? alternatesContent.split(/\r?\n/).map((l) => l.trim()).filter(Boolean) : [];
-    const mirrorLines = alternatesLines.filter((l) => path.basename(l) === "objects");
-    if (markerContent && mirrorLines.length > 0 && markerContent === mirrorLines.join("\n")) {
-      return;
-    }
-    if (!markerContent && alternatesLines.length === 0) {
-      return;
-    }
-    // Marker exists but does not match current alternates → needs re-migration.
+    // appeared or changed since (a mirror was attached or replaced), the base
+    // needs another repack pass.
+    if (markerContent !== null && markerContent === path.join(mirror, "objects")) return;
+  } else if (markerContent !== null) {
+    // Already migrated without a mirror; a mirror appearing later re-triggers
+    // migration through the branch above.
+    return;
   }
   candidates.push({
     gitDir,
@@ -226,8 +248,12 @@ function isBareRepoDir(dir) {
  *   case) stay unpacked forever if only alternates repos are migrated.
  * - workspacesDir entries are resolved through their `.git` pointer files
  *   (gitdir: + commondir) to the repo that actually owns the objects.
+ * - A marked repo is only re-enqueued when a fleet mirror is present for it
+ *   (any case) and the marker does not record that mirror's objects dir —
+ *   i.e. when alternates appeared or changed since the last repack
+ *   (OPE-13118). mirrorRoot defaults to the production /cache/git.
  */
-export function findMigrationCandidates(baseDir, workspacesDir) {
+export function findMigrationCandidates(baseDir, workspacesDir, mirrorRoot = GIT_MIRROR_ROOT) {
   const candidates = [];
 
   if (baseDir && fs.existsSync(baseDir)) {
@@ -236,14 +262,14 @@ export function findMigrationCandidates(baseDir, workspacesDir) {
         if (!ent.isDirectory()) continue;
         const dir = path.join(baseDir, ent.name);
         if (isBareRepoDir(dir)) {
-          pushCandidate(candidates, dir);
+          pushCandidate(candidates, dir, mirrorRoot);
           continue;
         }
         // Nested layout: git-base/<owner>/<repo>.git
         for (const sub of fs.readdirSync(dir, { withFileTypes: true })) {
           if (!sub.isDirectory()) continue;
           const nested = path.join(dir, sub.name);
-          if (isBareRepoDir(nested)) pushCandidate(candidates, nested);
+          if (isBareRepoDir(nested)) pushCandidate(candidates, nested, mirrorRoot);
         }
       }
     } catch {}
@@ -257,7 +283,7 @@ export function findMigrationCandidates(baseDir, workspacesDir) {
         const gitDir = resolveWorktreeGitDir(ws) || resolveWorktreeGitDir(path.join(ws, "repo"));
         if (gitDir && isBareRepoDir(gitDir)) {
           // Avoid double-adding a base repo already found via baseDir.
-          if (!candidates.some((c) => c.gitDir === gitDir)) pushCandidate(candidates, gitDir);
+          if (!candidates.some((c) => c.gitDir === gitDir)) pushCandidate(candidates, gitDir, mirrorRoot);
         }
       }
     } catch {}
@@ -274,8 +300,8 @@ export function findMigrationCandidates(baseDir, workspacesDir) {
  * packs covered 100% by the mirror are removed, and only from repos whose
  * alternates point at that mirror, so reachability is preserved.
  */
-export function resolveMirrorGitDirs(objectsDir, alternatesContent, mirrorRoot = GIT_MIRROR_ROOT) {
-  const root = path.resolve(mirrorRoot);
+export function resolveMirrorGitDirs(objectsDir, alternatesContent, mirrorRoot) {
+  const root = path.resolve(mirrorRoot || GIT_MIRROR_ROOT);
   return alternatesContent
     .split(/\r?\n/)
     .map((line) => line.trim())
@@ -356,13 +382,14 @@ export function migrateIdleGitRepos({
   mirrorPackRemover = removeMirrorCoveredPacks,
   pruneExpire = DEFAULT_PRUNE_EXPIRE,
   lockPathOverride,
+  mirrorRoot = GIT_MIRROR_ROOT,
 }) {
   if (!enabled || !idle) {
     return { migrated: 0, skipped: true };
   }
 
   return withFleetMigrationLock(() => {
-    const candidates = findMigrationCandidates(baseDir, workspacesDir);
+    const candidates = findMigrationCandidates(baseDir, workspacesDir, mirrorRoot);
     let migrated = 0;
     let packsRemoved = 0;
 
@@ -371,14 +398,14 @@ export function migrateIdleGitRepos({
       try {
         // Attach to the fleet mirror before repack: writes alternates when a
         // mirror exists so repack -l can drop duplicate objects.
-        const mirror = attachMirrorAlternates(item.gitDir);
+        const mirror = attachMirrorAlternates(item.gitDir, mirrorRoot);
         const ok = repackRunner(item.gitDir, { pruneExpire });
         if (ok) {
           let removed = 0;
           const alternatesAfter = readAlternates(item.objectsDir);
           if (alternatesAfter.trim().length > 0) {
             try {
-              const res = mirrorPackRemover(item.gitDir, alternatesAfter);
+              const res = mirrorPackRemover(item.gitDir, alternatesAfter, { mirrorRoot });
               removed = (res && res.removed) || 0;
               packsRemoved += removed;
             } catch {}
