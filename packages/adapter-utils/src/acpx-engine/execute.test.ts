@@ -215,6 +215,7 @@ async function runExecutor(
     onMeta: async (payload: unknown) => {
       meta.push(payload as Record<string, unknown>);
     },
+    onExternalRunId: (options as Record<string, unknown>).onExternalRunId as ((id: string) => Promise<void>) | undefined,
     onEvent: async (event: { eventType: string; payload?: Record<string, unknown> }) => {
       events.push(event);
     },
@@ -7759,4 +7760,23 @@ describe("ACPX startup handshake guard and late-completion fence", () => {
       vi.useRealTimers();
     }
   }, 10000);
+
+  it("persists external agent job id via onExternalRunId and includes mappedTerminal in resultJson", async () => {
+    let persistedJobId: string | null = null;
+    const { result } = await runExecutor(
+      { agent: "claude" },
+      {
+        onExternalRunId: async (id: string) => {
+          persistedJobId = id;
+        },
+      } as never,
+    );
+    expect(persistedJobId).toBeTruthy();
+    expect(result.resultJson).toHaveProperty("mappedTerminal");
+    expect((result.resultJson as Record<string, unknown>).mappedTerminal).toMatchObject({
+      kind: "terminal",
+      boardState: "done",
+      providerJobId: persistedJobId,
+    });
+  });
 });

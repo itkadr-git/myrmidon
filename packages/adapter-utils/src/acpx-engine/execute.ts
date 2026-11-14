@@ -1,4 +1,5 @@
 import { cancellableSandboxStartup } from "./startup-cancellation.js";
+import { mapTerminalCallback } from "./terminal-callback-mapping.js";
 import fs from "node:fs/promises";
 import fsSync from "node:fs";
 import os from "node:os";
@@ -4755,6 +4756,14 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
           thinkingEffort: prepared.requestedThinkingEffort || null,
           fastMode: prepared.fastMode,
         });
+        const externalJobId = sessionHandle.backendSessionId ?? sessionHandle.agentSessionId ?? sessionHandle.runtimeSessionName;
+        if (externalJobId && ctx.onExternalRunId) {
+          try {
+            await ctx.onExternalRunId(externalJobId);
+          } catch {
+            // Failure to persist external run id does not abort ACP execution
+          }
+        }
         if (ctx.onMeta) {
           await ctx.onMeta({
             adapterType: engine.adapterType,
@@ -5029,6 +5038,15 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
             ? channelLostMessage
             : resultErrorMessage(terminal);
         const terminalStopReason = terminal.status === "failed" ? terminal.error.message : terminal.stopReason;
+        const mappedTerminal = mapTerminalCallback({
+          provider: prepared.acpxAgent,
+          providerJobId: sessionHandle.backendSessionId ?? sessionHandle.agentSessionId ?? sessionHandle.runtimeSessionName,
+          status: terminal.status,
+          completionEvidence: {
+            output: outputSegments.join("").trim() || null,
+            result: terminalStopReason || null,
+          },
+        });
         await emitAcpxLog(ctx, {
           type: turnSucceeded ? "acpx.result" : "acpx.error",
           summary: channelLost ? "duplex_channel_lost" : terminal.status,
@@ -5067,6 +5085,7 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
             requestedModel: prepared.requestedModel || null,
             requestedThinkingEffort: prepared.requestedThinkingEffort || null,
             fastMode: prepared.fastMode,
+            mappedTerminal,
             ...(turnUsage.usageDetail ? { usage: turnUsage.usageDetail } : {}),
             ...(turnUsage.cumulativeCostUsd != null
               ? { cumulativeCostUsd: turnUsage.cumulativeCostUsd }
