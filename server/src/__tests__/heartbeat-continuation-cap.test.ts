@@ -849,7 +849,7 @@ describeEmbeddedPostgres("heartbeat continuation wakes: status gate and real att
         expect(await statusOf(issueId)).not.toBe("blocked");
       });
 
-      it("resets the count when a person comments after the last run", async () => {
+      it("does not reset the count when a person comments after the last run", async () => {
         const { companyId, agentId, issueId } = await seedScene();
         await db.insert(issueComments).values({
           id: randomUUID(),
@@ -857,6 +857,56 @@ describeEmbeddedPostgres("heartbeat continuation wakes: status gate and real att
           issueId,
           authorUserId: "user-1",
           body: "Please look at the failing check again",
+          createdAt: minutesAgo(2),
+        });
+        expect(await wakeWith(agentId, issueId)).toBeNull();
+        expect(skippedWith(await wakeRequests(agentId), SKIP)).toHaveLength(1);
+        expect(await statusOf(issueId)).toBe("blocked");
+      });
+
+      it("does not reset the count on a user edit of title or assignee without a status change", async () => {
+        const { companyId, agentId, issueId } = await seedScene();
+        await db.insert(activityLog).values({
+          id: randomUUID(),
+          companyId,
+          entityType: "issue",
+          entityId: issueId,
+          action: "issue.updated",
+          actorType: "user",
+          actorId: "user-1",
+          details: {
+            title: "Renamed",
+            assigneeAgentId: agentId,
+            // the request body may echo the status even when it did not change
+            status: "in_progress",
+            changes: {
+              title: { from: "No commit scene", to: "Renamed" },
+              assigneeAgentId: { from: null, to: agentId },
+            },
+            _previous: { title: "No commit scene", assigneeAgentId: null },
+          },
+          createdAt: minutesAgo(2),
+        });
+        expect(await wakeWith(agentId, issueId)).toBeNull();
+        expect(skippedWith(await wakeRequests(agentId), SKIP)).toHaveLength(1);
+        expect(await statusOf(issueId)).toBe("blocked");
+      });
+
+      it("resets the count when a user manually moves the task from blocked to todo", async () => {
+        const { companyId, agentId, issueId } = await seedScene();
+        await db.insert(activityLog).values({
+          id: randomUUID(),
+          companyId,
+          entityType: "issue",
+          entityId: issueId,
+          action: "issue.updated",
+          actorType: "user",
+          actorId: "user-1",
+          details: {
+            status: "todo",
+            changes: { status: { from: "blocked", to: "todo" } },
+            _previous: { status: "blocked" },
+          },
           createdAt: minutesAgo(2),
         });
         await wakeWith(agentId, issueId);

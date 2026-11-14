@@ -163,7 +163,6 @@ import {
   readRunCapNoCommitHistory,
   readTaskCurrentHeadSha,
   readLatestManualUnblockAt,
-  readLatestUserCommentAt,
   isRunCapNoCommitRole,
   countRunsWithoutCommit,
   buildRunCapNoCommitBlockedPatch,
@@ -35268,17 +35267,7 @@ export function heartbeatService(
                 agent.companyId,
                 issue.id,
               );
-              const latestUserCommentAt = await readLatestUserCommentAt(
-                tx as unknown as Db,
-                agent.companyId,
-                issue.id,
-              );
-              const resetAfter =
-                latestManualUnblockAt && latestUserCommentAt
-                  ? latestManualUnblockAt > latestUserCommentAt
-                    ? latestManualUnblockAt
-                    : latestUserCommentAt
-                  : latestManualUnblockAt ?? latestUserCommentAt;
+              const resetAfter = latestManualUnblockAt;
               const history = await readRunCapNoCommitHistory(
                 tx as unknown as Db,
                 agent.companyId,

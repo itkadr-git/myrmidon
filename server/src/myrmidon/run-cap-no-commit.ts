@@ -1,11 +1,10 @@
-import { and, desc, eq, inArray, isNotNull, sql } from "drizzle-orm";
+import { and, desc, eq, inArray, sql } from "drizzle-orm";
 import type { Db } from "@myrmidon/db";
 import {
   activityLog,
   agents,
   heartbeatRuns,
   instanceSettings,
-  issueComments,
   issueWorkProducts,
   projects,
 } from "@myrmidon/db";
@@ -249,16 +248,10 @@ export async function readLatestManualUnblockAt(
         eq(activityLog.entityId, issueId),
         eq(activityLog.action, "issue.updated"),
         eq(activityLog.actorType, "user"),
-        sql`(
-          ${activityLog.details} #>> '{changes,status,from}' = 'blocked'
-          or ${activityLog.details} #>> '{_previous,status}' = 'blocked'
-          or ${activityLog.details} ->> 'previousStatus' = 'blocked'
-        )`,
-        sql`(
-          ${activityLog.details} #>> '{changes,status,to}' in ('todo', 'in_progress')
-          or ${activityLog.details} ->> 'status' in ('todo', 'in_progress')
-          or ${activityLog.details} #>> '{_next,status}' in ('todo', 'in_progress')
-        )`,
+        // Only a recorded status change blocked -> todo/in_progress counts. Other
+        // field or assignee edits never carry changes.status, so they do not match.
+        sql`${activityLog.details} #>> '{changes,status,from}' = 'blocked'`,
+        sql`${activityLog.details} #>> '{changes,status,to}' in ('todo', 'in_progress')`,
       ),
     )
     .orderBy(desc(activityLog.createdAt))
@@ -279,27 +272,6 @@ export function isAutomaticWakeRun(run: typeof heartbeatRuns.$inferSelect): bool
     if (ctx.manualUserWake === true) return false;
   }
   return true;
-}
-
-/** Latest comment a person wrote on the task: it resets the counter like a manual unblock. */
-export async function readLatestUserCommentAt(
-  db: Db,
-  companyId: string,
-  issueId: string,
-): Promise<Date | null> {
-  const [row] = await db
-    .select({ createdAt: issueComments.createdAt })
-    .from(issueComments)
-    .where(
-      and(
-        eq(issueComments.companyId, companyId),
-        eq(issueComments.issueId, issueId),
-        isNotNull(issueComments.authorUserId),
-      ),
-    )
-    .orderBy(desc(issueComments.createdAt))
-    .limit(1);
-  return row?.createdAt ?? null;
 }
 
 export async function readRunCapNoCommitHistory(
