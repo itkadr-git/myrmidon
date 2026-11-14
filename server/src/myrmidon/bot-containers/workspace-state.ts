@@ -46,7 +46,7 @@ export interface WorkspaceStateResult {
   state: WsDesiredWorkspaceState;
   prState: WsDesiredPrState;
   /** Why the copy is closing (absent for active); informational, not in the contract payload. */
-  reason?: "terminal" | "hidden" | "reassigned" | "pr_merged";
+  reason?: "terminal" | "hidden" | "reassigned" | "pr_merged" | "review_done";
 }
 
 /**
@@ -66,4 +66,25 @@ export function workspaceStateOf(
   if (issue.assigneeAgentId !== issue.botAgentId) return { state: "closing", prState, reason: "reassigned" };
   if (prState === "merged") return { state: "closing", prState, reason: "pr_merged" };
   return { state: "active", prState };
+}
+
+/**
+ * myrmidon(OPE-13107): the copy of a REVIEWER is released when its review stage is over.
+ * The bot is a reviewer, not the executor, when the task's execution state names another
+ * agent as `returnAssignee`. Its review stage is over when the task is no longer
+ * `in_review` or the current participant is no longer this bot. The executor's rule is
+ * unchanged, and an unknown execution state never closes anything.
+ */
+export function reviewStageEndedFor(input: {
+  botAgentId: string;
+  status: string;
+  executionState?: Record<string, unknown> | null;
+}): boolean {
+  const state = input.executionState;
+  if (!state || typeof state !== "object") return false;
+  const ret = state.returnAssignee as { type?: string; agentId?: string | null } | null | undefined;
+  if (!ret || ret.type !== "agent" || !ret.agentId || ret.agentId === input.botAgentId) return false;
+  if (input.status !== "in_review") return true;
+  const cur = state.currentParticipant as { type?: string; agentId?: string | null } | null | undefined;
+  return !(cur && cur.type === "agent" && cur.agentId === input.botAgentId);
 }

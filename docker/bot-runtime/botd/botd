@@ -111,6 +111,14 @@ function readJson(file, fallback) {
   }
 }
 
+// myrmidon(OPE-13107): fill of the bot data volume (/workspace lives on the bot XFS volume).
+function measureVolume() {
+  if (typeof fs.statfsSync !== "function") return null;
+  const s = fs.statfsSync(WORKSPACE_DIR);
+  const bsize = Number(s.bsize);
+  return { totalBytes: Number(s.blocks) * bsize, usedBytes: (Number(s.blocks) - Number(s.bfree)) * bsize };
+}
+
 function writeDiskState(state) {
   fs.mkdirSync(HOME, { recursive: true });
   const tmp = `${DISK_STATE_PATH}.${process.pid}.tmp`;
@@ -512,6 +520,7 @@ async function main() {
     cooldown,
     report: { build: reportMod.buildReport, send: reporter.send },
     writeDiskState,
+    measureVolume,
     log,
     botKey: process.env.MYRMIDON_BOT_KEY || process.env.MYRMIDON_BOT_SCOPE_SUBDIR || os.hostname(),
     imageGeneration: process.env.MYRMIDON_IMAGE_GENERATION || process.env.MYRMIDON_IMAGE_TAG || "unknown",

@@ -308,6 +308,62 @@ describe("GET /api/myrmidon/bots/me/workspaces", () => {
     expect(keys).not.toContain("ABC-1");
   });
 
+  // myrmidon(OPE-13107): a reviewer's copy is released once its review stage is over.
+  describe("reviewer copies after the review stage", () => {
+    const executor = { type: "agent", agentId: OTHER_BOT_ID };
+    const reviewing = (over: Record<string, unknown>) => ({
+      status: "in_review",
+      currentParticipant: { type: "agent", agentId: BOT_ID },
+      returnAssignee: executor,
+      ...over,
+    });
+
+    it("keeps the copy while this bot is the current review participant", async () => {
+      const row = issue({ identifier: "ABC-7", status: "in_review", executionState: reviewing({}) });
+      const res = await request(harness({ issues: [row] }).app(botActor)).get(URL);
+      expect(res.body.protectKeys).toEqual(["ABC-7"]);
+      expect(res.body.closedKeys).toEqual([]);
+      expect(res.body.workspaces[0].state).toBe("active");
+    });
+
+    it("releases the copy when the stage went to another participant", async () => {
+      const row = issue({
+        identifier: "ABC-7",
+        status: "in_review",
+        executionState: reviewing({ currentParticipant: { type: "agent", agentId: "55555555-5555-4555-8555-555555555555" } }),
+      });
+      const res = await request(harness({ issues: [row] }).app(botActor)).get(URL);
+      expect(res.body.protectKeys).toEqual([]);
+      expect(res.body.closedKeys).toEqual(["ABC-7"]);
+      expect(res.body.workspaces[0].state).toBe("closing");
+    });
+
+    it("releases the copy when the task is no longer in_review", async () => {
+      const row = issue({ identifier: "ABC-8", status: "in_progress", executionState: reviewing({}) });
+      const res = await request(harness({ issues: [row] }).app(botActor)).get(URL);
+      expect(res.body.protectKeys).toEqual([]);
+      expect(res.body.closedKeys).toEqual(["ABC-8"]);
+    });
+
+    it("the executor keeps the copy: returnAssignee is this bot, the participant is someone else", async () => {
+      const row = issue({
+        identifier: "ABC-9",
+        status: "in_review",
+        executionState: { status: "pending", returnAssignee: { type: "agent", agentId: BOT_ID }, currentParticipant: executor },
+      });
+      const res = await request(harness({ issues: [row] }).app(botActor)).get(URL);
+      expect(res.body.protectKeys).toEqual(["ABC-9"]);
+      expect(res.body.closedKeys).toEqual([]);
+    });
+
+    it("a task without an execution state is never released", async () => {
+      const row = issue({ identifier: "ABC-10", status: "in_review" });
+      const res = await request(harness({ issues: [row] }).app(botActor)).get(URL);
+      expect(res.body.protectKeys).toEqual(["ABC-10"]);
+      expect(res.body.closedKeys).toEqual([]);
+    });
+  });
+
   it("enabled=false switches the mechanism off: 503, so botd deletes nothing", async () => {
     const off = harness({ issues: [issue({ identifier: "ABC-1" })], settings: { enabled: false } });
     const res = await request(off.app(botActor)).get(URL);
@@ -331,7 +387,7 @@ describe("GET /api/myrmidon/bots/me/workspaces", () => {
 
   it("pressure is none without a dockergate snapshot, and passes the snapshot through when present", async () => {
     const none = await request(harness({}).app(botActor)).get(URL);
-    expect(none.body.pressure).toEqual({ quotaPercent: null, partitionPercent: 0, level: "none" });
+    expect(none.body.pressure).toEqual({ quotaPercent: null, partitionPercent: 0, level: "none", partitionMeasured: false });
 
     const snap = { quotaPercent: 93.5, partitionPercent: 88, level: "soft" as const };
     const withSnap = await request(harness({ pressure: async () => snap }).app(botActor)).get(URL);
@@ -585,6 +641,7 @@ describe("botWorkspacePressureFromPartition (BOT-DISK-H Д5)", () => {
       quotaPercent: null,
       partitionPercent: percent,
       level,
+      partitionMeasured: true,
     });
   });
 
@@ -596,6 +653,6 @@ describe("botWorkspacePressureFromPartition (BOT-DISK-H Д5)", () => {
     const res = await request(
       harness({ pressure: async () => botWorkspacePressureFromPartition(state(89)) }).app(botActor),
     ).get(URL);
-    expect(res.body.pressure).toEqual({ quotaPercent: null, partitionPercent: 89, level: "soft" });
+    expect(res.body.pressure).toEqual({ quotaPercent: null, partitionPercent: 89, level: "soft", partitionMeasured: true });
   });
 });
