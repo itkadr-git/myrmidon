@@ -3534,13 +3534,13 @@ function RunDetail({ run: initialRun, agentRouteId, adapterType, adapterConfig }
                 ?? `${selection.stepClass} -> ${selection.modelGroup}`;
               return (
                 <div
-                  data-testid=\"run-detail-model-selection\"
-                  className=\"text-(length:--text-micro) text-muted-foreground flex items-center gap-1.5 flex-wrap\"
+                  data-testid="run-detail-model-selection"
+                  className="text-(length:--text-micro) text-muted-foreground flex items-center gap-1.5 flex-wrap"
                 >
-                  <span className=\"bg-muted rounded px-1.5 py-0.5 text-(length:--text-nano) font-medium uppercase tracking-wide\">
+                  <span className="bg-muted rounded px-1.5 py-0.5 text-(length:--text-nano) font-medium uppercase tracking-wide">
                     {label}
                   </span>
-                  {selection.model ? <span className=\"font-mono\">{selection.model}</span> : null}
+                  {selection.model ? <span className="font-mono">{selection.model}</span> : null}
                 </div>
               );
             })()}

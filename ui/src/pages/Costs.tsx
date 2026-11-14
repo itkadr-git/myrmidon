@@ -638,14 +638,14 @@ export function Costs({
             />
             <MetricTile
               label={t("area.costs-budgets-2.costs.metrics.financeNet")}
-              value={formatCents(financeData?.summary.netCents ?? 0)}
-              subtitle={t("area.costs-budgets-2.costs.metrics.financeNetSubtitle", { debits: formatCents(financeData?.summary.debitCents ?? 0), credits: formatCents(financeData?.summary.creditCents ?? 0) })}
+              value={formatCents(financeData?.summary?.netCents ?? 0)}
+              subtitle={t("area.costs-budgets-2.costs.metrics.financeNetSubtitle", { debits: formatCents(financeData?.summary?.debitCents ?? 0), credits: formatCents(financeData?.summary?.creditCents ?? 0) })}
               icon={ReceiptText}
             />
             <MetricTile
               label={t("area.costs-budgets-2.costs.metrics.financeEvents")}
-              value={String(financeData?.summary.eventCount ?? 0)}
-              subtitle={t("area.costs-budgets-2.costs.metrics.financeEventsSubtitle", { amount: formatCents(financeData?.summary.estimatedDebitCents ?? 0) })}
+              value={String(financeData?.summary?.eventCount ?? 0)}
+              subtitle={t("area.costs-budgets-2.costs.metrics.financeEventsSubtitle", { amount: formatCents(financeData?.summary?.estimatedDebitCents ?? 0) })}
               icon={ArrowUpRight}
             />
           </div>
@@ -745,11 +745,11 @@ export function Costs({
                 </Card>
 
                 <FinanceSummaryCard
-                  debitCents={financeData?.summary.debitCents ?? 0}
-                  creditCents={financeData?.summary.creditCents ?? 0}
-                  netCents={financeData?.summary.netCents ?? 0}
-                  estimatedDebitCents={financeData?.summary.estimatedDebitCents ?? 0}
-                  eventCount={financeData?.summary.eventCount ?? 0}
+                  debitCents={financeData?.summary?.debitCents ?? 0}
+                  creditCents={financeData?.summary?.creditCents ?? 0}
+                  netCents={financeData?.summary?.netCents ?? 0}
+                  estimatedDebitCents={financeData?.summary?.estimatedDebitCents ?? 0}
+                  eventCount={financeData?.summary?.eventCount ?? 0}
                 />
               </div>
 
@@ -1146,11 +1146,11 @@ export function Costs({
           ) : (
             <>
               <FinanceSummaryCard
-                debitCents={financeData?.summary.debitCents ?? 0}
-                creditCents={financeData?.summary.creditCents ?? 0}
-                netCents={financeData?.summary.netCents ?? 0}
-                estimatedDebitCents={financeData?.summary.estimatedDebitCents ?? 0}
-                eventCount={financeData?.summary.eventCount ?? 0}
+                debitCents={financeData?.summary?.debitCents ?? 0}
+                creditCents={financeData?.summary?.creditCents ?? 0}
+                netCents={financeData?.summary?.netCents ?? 0}
+                estimatedDebitCents={financeData?.summary?.estimatedDebitCents ?? 0}
+                eventCount={financeData?.summary?.eventCount ?? 0}
               />
 
               <div className="grid gap-4 xl:grid-cols-(--gtc-33)">
@@ -1161,10 +1161,10 @@ export function Costs({
                       <CardDescription>{t("area.costs-budgets-2.costs.finance.byBillerDescription")}</CardDescription>
                     </CardHeader>
                     <CardContent className="grid gap-4 px-5 pb-5 pt-2 md:grid-cols-2">
-                      {(financeData?.byBiller.length ?? 0) === 0 ? (
+                      {(financeData?.byBiller?.length ?? 0) === 0 ? (
                         <p className="text-sm text-muted-foreground">{t("area.costs-budgets-2.costs.finance.empty")}</p>
                       ) : (
-                        financeData?.byBiller.map((row) => <FinanceBillerCard key={row.biller} row={row} />)
+                        financeData?.byBiller?.map((row) => <FinanceBillerCard key={row.biller} row={row} />)
                       )}
                     </CardContent>
                   </Card>

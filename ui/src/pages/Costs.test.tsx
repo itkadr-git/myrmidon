@@ -14,14 +14,20 @@ const costsApiMocks = vi.hoisted(() => ({
   byProject: vi.fn(),
   byAgentModel: vi.fn(),
   byStepClass: vi.fn().mockResolvedValue([]),
-  financeSummary: vi.fn(),
-  financeByBiller: vi.fn(),
-  financeByKind: vi.fn(),
-  financeEvents: vi.fn(),
-  byProvider: vi.fn(),
-  byBiller: vi.fn(),
-  windowSpend: vi.fn(),
-  quotaWindows: vi.fn(),
+  financeSummary: vi.fn().mockResolvedValue({
+    debitCents: 0,
+    creditCents: 0,
+    netCents: 0,
+    estimatedDebitCents: 0,
+    eventCount: 0,
+  }),
+  financeByBiller: vi.fn().mockResolvedValue([]),
+  financeByKind: vi.fn().mockResolvedValue([]),
+  financeEvents: vi.fn().mockResolvedValue([]),
+  byProvider: vi.fn().mockResolvedValue([]),
+  byBiller: vi.fn().mockResolvedValue([]),
+  windowSpend: vi.fn().mockResolvedValue({}),
+  quotaWindows: vi.fn().mockResolvedValue([]),
 }));
 
 vi.mock("../api/budgets", () => ({
