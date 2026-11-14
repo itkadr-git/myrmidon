@@ -37,11 +37,23 @@ export function createReviewRoutingScheduler(input: {
   track: (work: Promise<unknown>) => void;
 }): () => void {
   const settings = instanceSettingsService(input.db);
+  // myrmidon(OPE-13149): one CI reader for the life of the scheduler, so its cache
+  // is shared across passes (the GitHub App rate limit is shared by the board).
+  let reviewCiResolver: ((ref: { companyId: string; issueId: string }) => Promise<{ state: string; headSha?: string | null }>) | null = null;
   const sweep = createReviewRoutingSweep({
     store: createPgReviewRoutingStore(input.db),
     prResolver: createGitHubPrHeadResolver({ db: input.db }),
     // myrmidon(OPE-11767): the board-side merge of an approved, green pull request.
     boardMerge: createGitHubBoardMergeClient({ db: input.db }),
+    // myrmidon(OPE-13149): the liveness wake looks at the CI of the head under review
+    // with the board's own reader (the one REQUEST CHANGES is checked against).
+    resolveReviewCi: async (ref) => {
+      if (!reviewCiResolver) {
+        const { createReviewPullRequestCiResolver } = await import("../review-stage-recovery/github-ci.js");
+        reviewCiResolver = createReviewPullRequestCiResolver({ db: input.db });
+      }
+      return reviewCiResolver(ref);
+    },
     readSettings: () => readReviewRoutingSettings(settings),
     isUnderMaintenance: () => isInstanceUnderMaintenance(input.db),
     addComment: async (issueId, body, options) => {

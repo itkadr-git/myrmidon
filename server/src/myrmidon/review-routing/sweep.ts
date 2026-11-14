@@ -188,6 +188,14 @@ export interface ReviewRoutingSweepDeps {
     issueId: string;
     details: Record<string, unknown>;
   }) => Promise<void>;
+  /**
+   * myrmidon(OPE-13149): the board's own reader of the CI result of the
+   * pull request head under review (the one that makes REQUEST CHANGES refuse
+   * with "CI result ... is not complete"). Without it the wake lane does not
+   * look at CI (older behaviour); with it a reviewer is not woken while the
+   * head's CI is still running.
+   */
+  resolveReviewCi?: (input: { companyId: string; issueId: string }) => Promise<{ state: string; headSha?: string | null }>;
   isUnderMaintenance?: () => Promise<boolean>;
   intervalMs?: number;
   now?: () => Date;
@@ -231,6 +239,15 @@ export function createReviewRoutingSweep(deps: ReviewRoutingSweepDeps): ReviewRo
   const recentReassignments = new Map<string, { signal: ReviewRoutingSignal; untilMs: number }>();
   /** PR-lane signals from the lane's last actual run, kept through throttle gaps. */
   const prLaneSignalsByCompany = new Map<string, ReviewRoutingSignal[]>();
+  /**
+   * myrmidon(OPE-13149): the last wake of the liveness lane per
+   * (issue, reviewer, stage, PR head, CI state). The same key is not woken
+   * again by the periodic pass: a reviewer who ran and left no verdict has
+   * nothing new to look at until the head, the stage or the CI state moves.
+   * A cancelled run (failed dispatch) still retries; the key is dropped after
+   * REVIEW_WAKE_REARM_AFTER_MS like an exhausted series.
+   */
+  const livenessWakeByKey = new Map<string, number>();
   const boardMerger = deps.boardMerge
     ? createBoardMerger({
         store: deps.store,
@@ -309,7 +326,15 @@ export function createReviewRoutingSweep(deps: ReviewRoutingSweepDeps): ReviewRo
         : {};
       return state.status === "pending" && state.currentStageType === "review" && state.currentStageId === review.stageId && participant.type === "agent" && participant.agentId === review.reviewerAgentId && activeStageIdsByIssue.get(row.id)?.has(review.stageId) === true;
     });
-    const orderedPending = [...activeStages].sort((a, b) => a.row.createdAt.getTime() - b.row.createdAt.getTime());
+    // myrmidon(OPE-13149): only a task that is still `in_review` with a pending
+    // review stage awaiting this reviewer is woken; a task returned to the
+    // implementer (changes_requested, in_progress) has nothing for a reviewer.
+    const orderedPending = [...activeStages]
+      .filter(({ row }) => row.status === "in_review")
+      .sort((a, b) => a.row.createdAt.getTime() - b.row.createdAt.getTime());
+    for (const [key, at] of livenessWakeByKey) {
+      if (now.getTime() - at >= REVIEW_WAKE_REARM_AFTER_MS) livenessWakeByKey.delete(key);
+    }
     const reviewersWoken = new Set<string>();
     for (const { row, review } of orderedPending) {
       if (reviewersWoken.has(review.reviewerAgentId)) continue;
@@ -363,6 +388,30 @@ export function createReviewRoutingSweep(deps: ReviewRoutingSweepDeps): ReviewRo
           const lastActivity = row.updatedAt ?? row.createdAt;
           if (now.getTime() - lastActivity.getTime() < REVIEW_WAKE_STALE_AFTER_MS) continue;
         }
+        // myrmidon(OPE-13149): the reviewer cannot give a verdict on a head whose
+        // CI is still running (REQUEST CHANGES is refused with "CI result ... is
+        // not complete"), so a wake is an empty run. The `ci_completed` event
+        // wakes the reviewer when the result arrives; this pass stays a safety
+        // net for a completed head. An unreadable CI ("unknown") does not hold
+        // the wake: the backoff above still bounds it.
+        let ciState = "unread";
+        let headSha = "";
+        if (deps.resolveReviewCi) {
+          const ci = await deps.resolveReviewCi({ companyId, issueId: row.id }).catch(() => null);
+          if (ci) {
+            ciState = ci.state;
+            headSha = typeof ci.headSha === "string" ? ci.headSha : "";
+            if (ci.state === "pending") continue;
+          }
+        }
+        // The same head in the same stage and CI state was already woken and the
+        // run did not fail to dispatch: nothing new to review, no repeat wake.
+        const wakeKey = [row.id, review.reviewerAgentId, review.stageId, headSha, ciState].join("|");
+        const cancelledAfterWake = wakeState.lastCancelledRunAt != null
+          && (!wakeState.lastWakeAt || wakeState.lastCancelledRunAt > wakeState.lastWakeAt);
+        // Without a known head (no CI reader wired, or the head unreadable) there is
+        // no key to compare: the plain backoff above is the only bound.
+        if (headSha !== "" && livenessWakeByKey.has(wakeKey) && !cancelledAfterWake) continue;
         const attempt = seriesAttempts + 1;
         const wakeContext = buildReviewRoutingWakeContext(
           (row.executionState ?? {}) as Record<string, unknown>,
@@ -391,6 +440,7 @@ export function createReviewRoutingSweep(deps: ReviewRoutingSweepDeps): ReviewRo
           executionStage: wakeContext as unknown as Record<string, unknown>,
           retryAttempt: attempt,
         });
+        if (headSha !== "") livenessWakeByKey.set(wakeKey, now.getTime());
         liveByReviewer.set(review.reviewerAgentId, (liveByReviewer.get(review.reviewerAgentId) ?? 0) + 1);
         result.woken += 1;
       } catch (err) {
@@ -1333,6 +1383,7 @@ export function createReviewRoutingSweep(deps: ReviewRoutingSweepDeps): ReviewRo
       lastSweepAtMs = 0;
       lastPrLaneAtMs = 0;
       recentReassignments.clear();
+      livenessWakeByKey.clear();
       prLaneSignalsByCompany.clear();
       boardMerger?.resetForTest();
     },
