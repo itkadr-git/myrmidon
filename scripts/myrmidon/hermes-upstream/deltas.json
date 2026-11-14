@@ -637,9 +637,11 @@
       "kind": "patch",
       "patch": "docker/bot-runtime/patches/36-content-filter-retry.patch",
       "files": [
+        "agent/turn_iteration_prep.py",
+        "agent/turn_retry_state.py",
         "agent/turn_truncation.py"
       ],
-      "reason": "An HTTP-200 reply with finish_reason content_filter ended the turn at once; the provider's filter cut a harmless reply of a long session mid-word and the whole run failed. The same call is now re-issued first (at most 2 times per turn, where no fallback could take over) before the refusal falls through to the fallback chain and the terminal content_policy_blocked result.",
+      "reason": "An HTTP-200 reply with finish_reason content_filter ended the turn at once; the provider's filter cut a harmless reply of a long session mid-word and the whole run failed. The same call is now re-issued first (at most 2 times per call, without consuming turn restart_count, where no fallback could take over) before the refusal falls through to the fallback chain and the terminal content_policy_blocked result.",
       "dropCondition": "Upstream re-issues a content-filtered reply before failing the turn.",
       "offer": null,
       "offerNote": "Not offered yet.",
