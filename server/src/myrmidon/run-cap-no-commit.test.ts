@@ -250,7 +250,7 @@ describe("resolveRunCapNoCommitWakeTargetId", () => {
       select: () => ({
         from: () => ({
           where: () => ({
-            limit: () => Promise.resolve([{ leadAgentId: "lead-agent-1", casteKey: null }]),
+            limit: () => Promise.resolve([{ id: "lead-agent-1", leadAgentId: "lead-agent-1", casteKey: null, status: "idle" }]),
           }),
         }),
       }),
@@ -272,7 +272,7 @@ describe("resolveRunCapNoCommitWakeTargetId", () => {
           where: () => ({
             limit: () => {
               if (agentRead++ === 0) return Promise.resolve([{ leadAgentId: "assigned-lead", casteKey: "eng" }]);
-              return Promise.resolve([{ status: statuses.shift() }]);
+              return Promise.resolve([{ id: "assigned-lead", status: statuses.shift() }]);
             },
           }),
           innerJoin: () => ({ where: () => Promise.resolve([{ id: "assigned-lead" }, { id: "backup-lead" }]) }),
@@ -303,7 +303,7 @@ describe("resolveRunCapNoCommitWakeTargetId", () => {
       select: () => ({
         from: () => ({
           where: () => ({
-            limit: () => Promise.resolve([{ id: "adm-agent-1" }]),
+            limit: () => Promise.resolve([{ id: "adm-agent-1", status: "idle" }]),
           }),
         }),
       }),

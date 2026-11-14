@@ -237,7 +237,7 @@ export async function buildRunGuardStopWakeEvidence(db: Db, companyId: string, i
   const [pullRequests, comments] = await Promise.all([
     db.select({ title: issueWorkProducts.title, url: issueWorkProducts.url, metadata: issueWorkProducts.metadata })
       .from(issueWorkProducts)
-      .where(and(eq(issueWorkProducts.companyId, companyId), eq(issueWorkProducts.issueId, issueId), eq(issueWorkProducts.kind, "pull_request"))),
+      .where(and(eq(issueWorkProducts.companyId, companyId), eq(issueWorkProducts.issueId, issueId), eq(issueWorkProducts.type, "pull_request"))),
     db.select({ body: issueComments.body }).from(issueComments)
       .where(and(eq(issueComments.companyId, companyId), eq(issueComments.issueId, issueId), sql`${issueComments.deletedAt} is null`))
       .orderBy(desc(issueComments.createdAt)).limit(3),
