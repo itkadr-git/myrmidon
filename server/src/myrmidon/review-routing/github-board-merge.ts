@@ -48,7 +48,7 @@ export type BoardMergeOutcome =
   /** The head moved since it was read: GitHub refused to merge a different commit (409). */
   | { status: "head_moved" }
   /** GitHub says the PR is not mergeable as it stands (405 / 422): required checks, protection, method. */
-  | { status: "refused"; httpStatus: number }
+  | { status: "refused"; httpStatus: number; /** myrmidon(OPE-13136): GitHub's own message, when it sent one. */ message?: string | null }
   /** No token, network, auth or rate limit: nothing happened. */
   | { status: "failed"; reason: string };
 
@@ -84,6 +84,12 @@ const NOT_A_VERDICT_CONCLUSIONS: ReadonlySet<string> = new Set(["cancelled", "sk
 
 function asRecord(value: unknown): Record<string, unknown> | null {
   return value && typeof value === "object" && !Array.isArray(value) ? (value as Record<string, unknown>) : null;
+}
+
+/** myrmidon(OPE-13136): GitHub's `message` of a refused merge, bounded for the activity log. */
+function refusalMessage(body: Record<string, unknown> | null): string | null {
+  const message = asString(body?.message);
+  return message ? message.slice(0, 500) : null;
 }
 
 function asString(value: unknown): string | null {
@@ -393,13 +399,17 @@ export function createGitHubBoardMergeClient(input: {
       if (response.status === 401) forgetToken(companyId, repository);
       if (response.ok) {
         const body = asRecord(await response.json().catch(() => null));
-        if (body && body.merged === false) return { status: "refused", httpStatus: response.status };
+        if (body && body.merged === false) return { status: "refused", httpStatus: response.status, message: refusalMessage(body) };
         // myrmidon(OPE-12397): the provider's cached read of this PR still says "open".
         invalidateGitHubPullRequestCache(repository, number);
         return { status: "merged", sha: asString(body?.sha) };
       }
       if (response.status === 409) return { status: "head_moved" };
-      if (response.status === 405 || response.status === 422) return { status: "refused", httpStatus: response.status };
+      if (response.status === 405 || response.status === 422) {
+        // myrmidon(OPE-13136): keep GitHub's reason ("Required status check ... is expected"), it is the only clue.
+        const body = asRecord(await response.json().catch(() => null));
+        return { status: "refused", httpStatus: response.status, message: refusalMessage(body) };
+      }
       return { status: "failed", reason: `http_${response.status}` };
     },
   };
