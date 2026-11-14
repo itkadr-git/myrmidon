@@ -1426,7 +1426,7 @@ async function ciWaitingPullRequestIssueIds(db: Db, companyId: string): Promise<
     const repository = typeof metadata?.repository === "string" ? metadata.repository : typeof metadata?.repo === "string" ? metadata.repo : null;
     const number = typeof metadata?.number === "number" ? metadata.number : Number(product.externalId?.match(/#pull\/(\d+)$/)?.[1]);
     const ci = metadata?.activeCi && typeof metadata.activeCi === "object" ? metadata.activeCi as Record<string, unknown> : null;
-    if (product.issueStatus === "in_progress" && product.status === "open" && repository && Number.isSafeInteger(number) && number > 0) {
+    if (product.issueStatus === "in_progress" && repository && Number.isSafeInteger(number) && number > 0) {
       current.set(`${repository.toLowerCase()}#${number}`, { head: typeof ci?.headSha === "string" ? ci.headSha.toLowerCase() : "", issueId: product.issueId });
     }
   }
