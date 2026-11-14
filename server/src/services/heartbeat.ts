@@ -10641,7 +10641,7 @@ export function heartbeatService(
         });
         // myrmidon(1.6.6 RUN-DISPATCH-NOTIFY, OPE-6977): through the dispatcher
         // — an api process in `notify` publishes run_queued instead of starting.
-        await runStartDispatcher.dispatchRunStart(effect.run.agentId);
+        await runStartDispatcher.dispatchRunStartUnlessBusy(effect.run.agentId);
       } else {
         await logActivity(db, {
           companyId: effect.companyId,
@@ -23870,7 +23870,16 @@ export function heartbeatService(
     // The role gate of T1.1 and the bus publish of the `notify` mode.
     // `executesRuns` absent means a single-process deployment — the vendor
     // path, unchanged.
-    executesRuns: options.executesRuns !== undefined ? () => options.executesRuns! : undefined,
+    // myrmidon(OPE-13117): the dispatcher is built before `roleExecutesRuns`
+    // (below), so it reads it through a closure. Without this the ~30
+    // route/service builds passed `undefined`, which `notify` reads as "api".
+    executesRuns: () => roleExecutesRuns,
+    agentAtRunLimit: async (agentId) => {
+      const agent = await getAgent(agentId);
+      if (!agent) return false;
+      const running = await countRunningRunsForAgent(agentId);
+      return running >= parseHeartbeatPolicy(agent).maxConcurrentRuns;
+    },
     requestRemoteStart: options.processBus
       ? async (agentId) => {
           // The payload contract of T1.3: {agentId, companyId, schemaVersion: 1}.
@@ -35687,12 +35696,12 @@ export function heartbeatService(
       }
       if (outcome.kind === "deferred") return null;
       if (outcome.kind === "coalesced") {
-        await runStartDispatcher.dispatchRunStart(agent.id);
+        await runStartDispatcher.dispatchRunStartUnlessBusy(agent.id);
         return outcome.run;
       }
       if (outcome.kind === "replayed") {
         if (outcome.run.status === "queued")
-          await runStartDispatcher.dispatchRunStart(agent.id);
+          await runStartDispatcher.dispatchRunStartUnlessBusy(agent.id);
         return outcome.run;
       }
 
@@ -35709,7 +35718,7 @@ export function heartbeatService(
         },
       });
 
-      await runStartDispatcher.dispatchRunStart(agent.id);
+      await runStartDispatcher.dispatchRunStartUnlessBusy(agent.id);
       return newRun;
     }
 
@@ -35940,7 +35949,7 @@ export function heartbeatService(
       },
     });
 
-    await runStartDispatcher.dispatchRunStart(agent.id);
+    await runStartDispatcher.dispatchRunStartUnlessBusy(agent.id);
 
     return newRun;
   }
