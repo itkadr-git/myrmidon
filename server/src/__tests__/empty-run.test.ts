@@ -26,6 +26,7 @@ import {
 } from "./helpers/embedded-postgres.js";
 import { drainHeartbeatRunsToQuiescence } from "./helpers/drain-heartbeat-runs.js";
 import { heartbeatService } from "../services/heartbeat.ts";
+import { FINISH_SUCCESSFUL_RUN_HANDOFF_REASON } from "../services/recovery/successful-run-handoff.js";
 import { runningProcesses } from "../adapters/index.ts";
 import type * as adaptersModule from "../adapters/index.ts";
 
@@ -54,7 +55,6 @@ vi.mock("../adapters/index.ts", async () => {
     })),
   };
 });
-import {
   classifyEmptyRun,
   evaluateCompletionGate,
   checkAndHandleEmptyRunEscalation,
@@ -812,7 +812,7 @@ describeEmbeddedPostgres("empty-run escalation through the schedule settlement p
       .select({ count: sql<number>`count(*)::int` })
       .from(agentWakeupRequests)
       .where(
-        sql`${agentWakeupRequests.agentId} = ${agentId} and ${agentWakeupRequests.payload} ->> 'sourceRunId' = ${receipt?.runId}`,
+        sql`${agentWakeupRequests.agentId} = ${agentId} and ${agentWakeupRequests.reason} = ${FINISH_SUCCESSFUL_RUN_HANDOFF_REASON} and ${agentWakeupRequests.payload} ->> 'sourceRunId' = ${receipt?.runId}`,
       );
     expect(handoffWakes[0]?.count ?? 0).toBe(0);
   });
