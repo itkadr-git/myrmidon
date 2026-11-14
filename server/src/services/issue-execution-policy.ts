@@ -1023,6 +1023,7 @@ function requestChangesOrphanedPendingReviewStage(
 ): TransitionResult | null {
   if (
     input.requestedStatus !== "in_progress" ||
+    input.commentBody === undefined ||
     existingState.status !== PENDING_STATUS ||
     existingState.currentStageType !== "review" ||
     !existingState.currentStageId ||
