@@ -5,7 +5,6 @@ import {
   mkdtempSync,
   readFileSync,
   rmSync,
-  symlinkSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
@@ -54,12 +53,11 @@ const probeSource = readFileSync(
  * directory: a copy of the probe script (module resolution walks from a
  * script's own location, so the copy must sit where the fake `server`
  * directory expects it), a minimal but real `@sentry/node` package, and,
- * when `withTsxLoader` is true, a symbolic link at `node_modules/tsx` that
- * mirrors the real workspace install (a link out to a separate store
- * directory holding `dist/loader.mjs`). Omitting the link stands in for the
- * Sentry copy removing or shadowing it.
+ * when `withServerEntry` is true, an empty `dist/index.js` standing in for the
+ * compiled server bundle the production CMD (`node server/dist/index.js`)
+ * boots. Omitting it stands in for an image without the compiled bundle.
  */
-function buildFakeServerDir(withTsxLoader: boolean) {
+function buildFakeServerDir(withServerEntry: boolean) {
   const root = mkdtempSync(path.join(tmpdir(), "cloud-image-sentry-probe-"));
   const serverDir = path.join(root, "server");
   const sentryDir = path.join(serverDir, "node_modules", "@sentry", "node");
@@ -70,11 +68,10 @@ function buildFakeServerDir(withTsxLoader: boolean) {
   );
   writeFileSync(path.join(sentryDir, "index.mjs"), "export {};\n");
 
-  if (withTsxLoader) {
-    const tsxStoreDist = path.join(root, "tsx-store", "dist");
-    mkdirSync(tsxStoreDist, { recursive: true });
-    writeFileSync(path.join(tsxStoreDist, "loader.mjs"), "export {};\n");
-    symlinkSync(path.join("..", "..", "tsx-store"), path.join(serverDir, "node_modules", "tsx"));
+  if (withServerEntry) {
+    const distDir = path.join(serverDir, "dist");
+    mkdirSync(distDir, { recursive: true });
+    writeFileSync(path.join(distDir, "index.js"), "export {};\n");
   }
 
   const probeCopy = path.join(serverDir, "probe.mjs");
@@ -177,8 +174,8 @@ describe("cloud image Sentry install", () => {
   });
 });
 
-describe("cloud image Sentry probe: the server's tsx loader", () => {
-  it("exits non-zero and names the loader path when server/node_modules/tsx does not resolve", () => {
+describe("cloud image Sentry probe: the compiled server entry", () => {
+  it("exits non-zero and names the entry path when server/dist/index.js is missing", () => {
     const { root, probeCopy } = buildFakeServerDir(false);
     try {
       const result = runProbe(probeCopy);
@@ -186,14 +183,14 @@ describe("cloud image Sentry probe: the server's tsx loader", () => {
       expect(
         result.stderr,
         "the error must name the exact path the production CMD boots through",
-      ).toContain(path.join("node_modules", "tsx", "dist", "loader.mjs"));
+      ).toContain(path.join("dist", "index.js"));
       expect(result.stdout, "a failed probe must not print a version string").toBe("");
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
   });
 
-  it("still prints only the installed @sentry/node version when the loader resolves", () => {
+  it("still prints only the installed @sentry/node version when the server entry exists", () => {
     const { root, probeCopy } = buildFakeServerDir(true);
     try {
       const result = runProbe(probeCopy);
