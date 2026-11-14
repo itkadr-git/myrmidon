@@ -11,11 +11,7 @@ import {
   type GitHubAdapter,
   type GitHubAdapterConfig,
 } from "@chat-adapter/github";
-import {
-  createDiscordAdapter,
-  type DiscordAdapter,
-  type DiscordAdapterConfig,
-} from "@chat-adapter/discord";
+import type { DiscordAdapter, DiscordAdapterConfig } from "@chat-adapter/discord";
 import {
   createSlackAdapter,
   type SlackAdapterConfig,
@@ -137,6 +133,11 @@ const GITHUB_API_TIMEOUT_MS = 25_000;
 const DISCORD_GATEWAY_SESSION_MS = 24 * 60 * 60_000;
 const DISCORD_GATEWAY_RESTART_MAX_DELAY_MS = 60_000;
 const DISCORD_GATEWAY_HEALTHY_SESSION_MS = 60_000;
+
+async function createDiscordAdapterLazy(config: DiscordAdapterConfig): Promise<DiscordAdapter> {
+  const { createDiscordAdapter } = await import("@chat-adapter/discord");
+  return createDiscordAdapter(config);
+}
 
 /** Public Paperclip provider ids. The Teams SDK name remains an internal detail. */
 export type ChatSdkProvider =
@@ -1470,7 +1471,7 @@ function createProviderAdapter(
         },
         userName: config.userName,
       };
-      return createDiscordAdapter(adapterConfig);
+      return createDiscordAdapterLazy(adapterConfig);
     }
     case "microsoft-teams": {
       const adapterConfig: TeamsAdapterConfig = {
