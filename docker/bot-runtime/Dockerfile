@@ -629,9 +629,13 @@ RUN set -eu; \
     ln -s /opt/paperclip/bin/git /usr/bin/git; \
     chmod 0755 /opt/paperclip/libexec/git; \
     chmod 0755 /opt/paperclip/myr-ws/myr-ws; \
+    chmod 0755 /opt/paperclip/myr-ws/myr-handoff; \
     ln -s /opt/paperclip/myr-ws/myr-ws /opt/paperclip/bin/myr-ws; \
     ln -s /opt/paperclip/myr-ws/myr-ws /usr/local/bin/myr-ws; \
+    ln -s /opt/paperclip/myr-ws/myr-handoff /opt/paperclip/bin/myr-handoff; \
+    ln -s /opt/paperclip/myr-ws/myr-handoff /usr/local/bin/myr-handoff; \
     [ -x /usr/local/bin/myr-ws ] && [ -x /opt/paperclip/bin/myr-ws ] || { echo "myr-ws is not executable" >&2; exit 1; }; \
+    [ -x /usr/local/bin/myr-handoff ] && [ -x /opt/paperclip/bin/myr-handoff ] || { echo "myr-handoff is not executable" >&2; exit 1; }; \
     if [ -f /opt/paperclip/botd/botd ]; then \
       chmod 0755 /opt/paperclip/botd/botd; \
       sed -i '1s|.*|#!/opt/node24/bin/node|' /opt/paperclip/botd/botd; \
