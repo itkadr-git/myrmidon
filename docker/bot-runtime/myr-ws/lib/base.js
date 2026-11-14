@@ -128,6 +128,10 @@ function lastFetchMs(dir) {
   }
 }
 
+function isGitMirrorDir(c) {
+  return fs.existsSync(path.join(c, "HEAD")) && fs.existsSync(path.join(c, "objects"));
+}
+
 function findMirror(parsed, env) {
   const root = env.MYRMIDON_GIT_MIRROR_ROOT || "/cache/git";
   const candidates = [
@@ -136,10 +140,33 @@ function findMirror(parsed, env) {
   ];
 
   for (const c of candidates) {
-    if (fs.existsSync(path.join(c, "HEAD")) && fs.existsSync(path.join(c, "objects"))) {
+    if (isGitMirrorDir(c)) {
       return c;
     }
   }
+
+  // Case-insensitive fallback: mirror directories may use mixed-case owner/repo
+  // (e.g. BastionPrime/wellboard.git) while parsed owner/repo are lowercased.
+  // Scan /cache/git/*/* and compare in lowercase.
+  try {
+    const owners = fs.readdirSync(root, { withFileTypes: true });
+    for (const ownerEnt of owners) {
+      if (!ownerEnt.isDirectory()) continue;
+      if (ownerEnt.name.toLowerCase() !== parsed.owner) continue;
+      const ownerDir = path.join(root, ownerEnt.name);
+      const repos = fs.readdirSync(ownerDir, { withFileTypes: true });
+      for (const repoEnt of repos) {
+        if (!repoEnt.isDirectory()) continue;
+        const repoName = repoEnt.name.toLowerCase();
+        if (repoName !== `${parsed.repo}.git`) continue;
+        const candidate = path.join(ownerDir, repoEnt.name);
+        if (isGitMirrorDir(candidate)) {
+          return candidate;
+        }
+      }
+    }
+  } catch {}
+
   return null;
 }
 
@@ -232,10 +259,8 @@ function syncMirrorAlternates(env, dir, parsed, opts = {}) {
 
     return withSyncLock(dir, () => {
       let existing = "";
-      let hasExisting = false;
       try {
         existing = fs.readFileSync(alternatesFile, "utf8");
-        hasExisting = true;
       } catch {
         // does not exist yet
       }
@@ -244,37 +269,33 @@ function syncMirrorAlternates(env, dir, parsed, opts = {}) {
         .map((l) => l.trim())
         .filter(Boolean);
 
-      if (lines.includes(objectsDir)) {
-        if (opts.skipRepack) return mirror;
-        if (fs.existsSync(markerFile)) return mirror;
-        try {
-          mustGit(env, dir, ["repack", "-a", "-d", "-l", "--keep-unreachable"], EXIT.usage);
-          fs.writeFileSync(markerFile, `${new Date().toISOString()}\n`, "utf8");
-          return mirror;
-        } catch {
-          cleanTmpPacks(path.join(targetObjectsDir, "pack"));
-          return null;
-        }
+      const hasAlternates = lines.includes(objectsDir);
+      const markerContent = hasAlternates && fs.existsSync(markerFile)
+        ? fs.readFileSync(markerFile, "utf8")
+        : "";
+      // Marker records which alternates the last repack used. If alternates
+      // changed or appeared, repack must run again even when a marker exists.
+      const repackDone = markerContent.trim() === objectsDir;
+
+      if (hasAlternates && (opts.skipRepack || repackDone)) {
+        return mirror;
       }
 
-      fs.mkdirSync(path.dirname(alternatesFile), { recursive: true });
-
-      const newContent = existing ? (existing.endsWith("\n") ? `${existing}${targetLine}` : `${existing}\n${targetLine}`) : targetLine;
-      const tmpNew = `${alternatesFile}.tmp.${process.pid}.${Date.now()}`;
-      fs.writeFileSync(tmpNew, newContent, "utf8");
-      fs.renameSync(tmpNew, alternatesFile);
+      if (!hasAlternates) {
+        fs.mkdirSync(path.dirname(alternatesFile), { recursive: true });
+        const newContent = existing ? (existing.endsWith("\n") ? `${existing}${targetLine}` : `${existing}\n${targetLine}`) : targetLine;
+        const tmpNew = `${alternatesFile}.tmp.${process.pid}.${Date.now()}`;
+        fs.writeFileSync(tmpNew, newContent, "utf8");
+        fs.renameSync(tmpNew, alternatesFile);
+      }
 
       if (opts.skipRepack) {
         return mirror;
       }
 
-      if (fs.existsSync(markerFile)) {
-        return mirror;
-      }
-
       try {
         mustGit(env, dir, ["repack", "-a", "-d", "-l", "--keep-unreachable"], EXIT.usage);
-        fs.writeFileSync(markerFile, `${new Date().toISOString()}\n`, "utf8");
+        fs.writeFileSync(markerFile, `${objectsDir}\n`, "utf8");
       } catch (err) {
         // Failure path: clean up temporary pack files, never revert alternates!
         cleanTmpPacks(path.join(targetObjectsDir, "pack"));
