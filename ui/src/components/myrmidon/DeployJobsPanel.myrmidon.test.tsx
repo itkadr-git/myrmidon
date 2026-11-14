@@ -161,7 +161,7 @@ describe("DeployJobsPanel", () => {
 
   it("lists previous deploys from history", () => {
     const panel = render({
-      state: { job: null, history: [job({ status: "succeeded", active: false, abortable: false, id: "job-old" })], audit: [] }, audit: [] }
+      state: { job: null, history: [job({ status: "succeeded", active: false, abortable: false, id: "job-old" })], audit: [] },
     });
     expect(panel!.textContent).toContain("Previous deploys (1)");
     expect(panel!.textContent).toContain("Deployed");
