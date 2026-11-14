@@ -1,0 +1,245 @@
+import { describe, it, expect, beforeEach, afterEach } from "vitest";
+import { eq } from "drizzle-orm";
+import { createDatabaseForTest } from "../../__tests__/helpers/database.js";
+import { issueThreadInteractions, issues } from "../../schema.js";
+import { issueThreadInteractionService } from "../../services/issue-thread-interactions.js";
+import {
+  processIntakeCard,
+  intakeCardApprovalIdempotencyKey,
+  INTAKE_CARD_DOCUMENT_KEY,
+} from "./service.js";
+import type { RequirementCard } from "@myrmidon/shared";
+
+describe("myrmidon(1.8 INTAKE-DIALOG / OPE-13010): intake dialog clarification and customer confirmation", () => {
+  let db: any;
+  let teardown: () => Promise<void>;
+  let companyId: string;
+  let issueId: string;
+
+  beforeEach(async () => {
+    const helper = await createDatabaseForTest();
+    db = helper.db;
+    teardown = helper.teardown;
+
+    const company = await helper.createCompany({ name: "Intake Dialog Test Co" });
+    companyId = company.id;
+
+    const issue = await helper.createIssue({
+      companyId,
+      title: "Seed Intake Task",
+      status: "in_progress",
+    });
+    issueId = issue.id;
+  });
+
+  afterEach(async () => {
+    await teardown();
+  });
+
+  it("case 1: incomplete card (две фразы) → needs_clarification, neither interaction nor subtasks created", async () => {
+    const twoPhrasesCard: Partial<RequirementCard> = {
+      title: "Сделать кнопку",
+      summary: "Кнопка должна быть синей",
+    };
+
+    const initialIssues = await db
+      .select()
+      .from(issues)
+      .where(eq(issues.companyId, companyId));
+    expect(initialIssues.length).toBe(1);
+
+    const result = await processIntakeCard(
+      { db },
+      {
+        companyId,
+        issueId,
+        card: twoPhrasesCard,
+      },
+    );
+
+    expect(result.status).toBe("needs_clarification");
+    if (result.status === "needs_clarification") {
+      expect(result.missing).toContain("goal");
+      expect(result.missing).toContain("acceptanceCriteria");
+      expect(result.questions.length).toBeGreaterThanOrEqual(2);
+      expect(result.questions.some((q) => q.section === "goal")).toBe(true);
+      expect(result.questions.some((q) => q.section === "acceptanceCriteria")).toBe(true);
+    }
+
+    const interactions = await db
+      .select()
+      .from(issueThreadInteractions)
+      .where(eq(issueThreadInteractions.issueId, issueId));
+    expect(interactions.length).toBe(0);
+
+    const allIssues = await db
+      .select()
+      .from(issues)
+      .where(eq(issues.companyId, companyId));
+    expect(allIssues.length).toBe(1);
+  });
+
+  it("case 2: complete card → creates exactly one request_confirmation with target.type=issue_document and current revisionId", async () => {
+    const completeCard: RequirementCard = {
+      title: "Добавить кнопку экспорта в CSV",
+      summary: "Экспорт списка пользователей в файл CSV по клику на кнопку в шапке таблицы.",
+      goal: "Позволить операторам выгружать отчёты без обращения к разработчикам.",
+      acceptanceCriteria: [
+        "Кнопка 'Экспорт в CSV' отображается в шапке таблицы пользователей",
+        "При клике скачивается корректный файл CSV со всеми строками текущего фильтра",
+      ],
+    };
+
+    const result = await processIntakeCard(
+      { db },
+      {
+        companyId,
+        issueId,
+        card: completeCard,
+      },
+    );
+
+    expect(result.status).toBe("confirmation_requested");
+    if (result.status === "confirmation_requested") {
+      expect(result.documentId).toBeDefined();
+      expect(result.revisionId).toBeDefined();
+      expect(result.revisionNumber).toBe(1);
+      expect(result.interactionId).toBeDefined();
+
+      const [stored] = await db
+        .select()
+        .from(issueThreadInteractions)
+        .where(eq(issueThreadInteractions.id, result.interactionId));
+
+      expect(stored).toBeDefined();
+      expect(stored.kind).toBe("request_confirmation");
+      expect(stored.idempotencyKey).toBe(
+        intakeCardApprovalIdempotencyKey(issueId, result.revisionId),
+      );
+      expect(stored.target).toEqual({
+        type: "issue_document",
+        key: INTAKE_CARD_DOCUMENT_KEY,
+        revisionId: result.revisionId,
+        revisionNumber: 1,
+      });
+    }
+
+    const interactions = await db
+      .select()
+      .from(issueThreadInteractions)
+      .where(eq(issueThreadInteractions.issueId, issueId));
+    expect(interactions.length).toBe(1);
+
+    const allIssues = await db
+      .select()
+      .from(issues)
+      .where(eq(issues.companyId, companyId));
+    expect(allIssues.length).toBe(1);
+  });
+
+  it("case 3: repeat with the same card / same revision → does not create a second interaction (idempotent)", async () => {
+    const completeCard: RequirementCard = {
+      title: "Идемпотентный тест задачи",
+      summary: "Проверка повторного вызова с теми же данными",
+      goal: "Не создавать дубликатов подтверждений",
+      acceptanceCriteria: ["Один interaction при многократных вызовах"],
+    };
+
+    const result1 = await processIntakeCard(
+      { db },
+      {
+        companyId,
+        issueId,
+        card: completeCard,
+      },
+    );
+    expect(result1.status).toBe("confirmation_requested");
+
+    const result2 = await processIntakeCard(
+      { db },
+      {
+        companyId,
+        issueId,
+        card: completeCard,
+      },
+    );
+    expect(result2.status).toBe("confirmation_requested");
+
+    if (
+      result1.status === "confirmation_requested" &&
+      result2.status === "confirmation_requested"
+    ) {
+      expect(result2.interactionId).toBe(result1.interactionId);
+      expect(result2.revisionId).toBe(result1.revisionId);
+    }
+
+    const interactions = await db
+      .select()
+      .from(issueThreadInteractions)
+      .where(eq(issueThreadInteractions.issueId, issueId));
+    expect(interactions.length).toBe(1);
+  });
+
+  it("case 4: new revision → old confirmation gets stale_target / expired when a newer document revision is created", async () => {
+    const cardV1: RequirementCard = {
+      title: "Версия 1 постановки",
+      summary: "Первоначальное описание",
+      goal: "Цель номер 1",
+      acceptanceCriteria: ["Критерий 1"],
+    };
+
+    const resultV1 = await processIntakeCard(
+      { db },
+      {
+        companyId,
+        issueId,
+        card: cardV1,
+      },
+    );
+    expect(resultV1.status).toBe("confirmation_requested");
+    const v1InteractionId = (resultV1 as any).interactionId;
+
+    const cardV2: RequirementCard = {
+      title: "Версия 2 постановки (изменённая)",
+      summary: "Обновлённое описание после замечаний заказчика",
+      goal: "Обновлённая цель номер 2",
+      acceptanceCriteria: ["Критерий 1", "Критерий 2"],
+    };
+
+    const resultV2 = await processIntakeCard(
+      { db },
+      {
+        companyId,
+        issueId,
+        card: cardV2,
+      },
+    );
+    expect(resultV2.status).toBe("confirmation_requested");
+    const v2InteractionId = (resultV2 as any).interactionId;
+
+    expect(v2InteractionId).not.toBe(v1InteractionId);
+
+    const [v1Interaction] = await db
+      .select()
+      .from(issueThreadInteractions)
+      .where(eq(issueThreadInteractions.id, v1InteractionId));
+
+    expect(v1Interaction.status).toBe("expired");
+
+    const [v2Interaction] = await db
+      .select()
+      .from(issueThreadInteractions)
+      .where(eq(issueThreadInteractions.id, v2InteractionId));
+
+    expect(v2Interaction.status).toBe("pending");
+
+    const interactionService = issueThreadInteractionService(db);
+    await expect(
+      interactionService.resolve({
+        companyId,
+        interactionId: v1InteractionId,
+        status: "approved",
+      }),
+    ).rejects.toThrow();
+  });
+});
