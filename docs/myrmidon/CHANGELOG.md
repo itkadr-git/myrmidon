@@ -12,6 +12,287 @@ version file to edit. Base Paperclip version is in the image label
 
 ## 1.6.9
 
+### A bot container Docker marks unhealthy is no longer restarted while its run is alive (BOT-HEALTH-LIVE-RUN)
+
+- On 14.11 the container health probe (`curl /health`, 5 s timeout) timed out under host load (load 9-12) and Docker marked live bots `unhealthy`. The board restarted them at once and cut two running runs (`myrmidon_maintenance_interrupted`).
+- Now, when the container is `unhealthy` but the agent has a running run whose newest progress (run event, output flush or useful action) is younger than 120 s, the recovery waits for the next pass and the activity log records "health recovery deferred: live run". A silent run, or no run, is recovered as before.
+- The window is `MYRMIDON_BOT_HEALTH_LIVE_RUN_GRACE_SEC` (default 120, `0` = off).
+
+### botd sees the real fill of the bot volume, and a reviewer's copy is released after the review stage (OPE-13107)
+
+- On 14.11 the `disk-state.json` of a reviewer bot said `partitionPercent: 0`, `pressure: none` while the bot XFS volume
+  was at 86% (threshold 85%), so the fast cleanup under pressure never ran. The board answers `0 / none` when it has no
+  partition measurement (dockergate down or its sample stale), and botd took that for an empty disk.
+- The board now marks that answer `partitionMeasured: false`. When the board has no measurement, botd measures the bot data
+  volume itself (`statfs` of `/workspace`) and derives the level with the default thresholds (85% soft, 90% hard). When the
+  local measurement also fails or reports 0% with used bytes, `disk-state.json` carries a `warning` and botd logs it, instead
+  of a silent `none`. A measured board answer is never overridden.
+- The copy of a review participant is released when its review is over. A task row of a bot that is not the assignee is
+  closed only when the bot is a participant of a review stage of the task and is neither the current participant, nor the
+  return assignee, nor the assignee; its key goes to `closedKeys`. The executor's copy is kept until the task returns to it
+  (during a review the board makes the reviewer the assignee and keeps the executor as the return assignee). A dirty or
+  unpushed copy is still archived by botd, not dropped.
+
+### Clear git mirror toggle, effective defaults, and roles in bot disk settings (OPE-13116)
+
+The bot disk settings panel now explicitly reflects the active git mirror state via a toggle switch, displays the effective list of repositories (with a "default" badge when using default configuration), and shows which roles receive the shared mirror. Turning the switch off explicitly clears mirrored repositories.
+
+### The bot-disk settings answer shows the git mirror in force, and a general PATCH keeps the other botDisk keys (OPE-13110)
+
+- `GET /api/myrmidon/bot-disk` now also returns `effective`: `gitMirrorEnabled`, `gitMirrorRepos`, `gitMirrorReposIsDefault` (the stored settings carry no `gitMirrorRepos` key, so the built-in two repositories apply) and `sharedCacheRoles`. The settings screen no longer shows an empty field while the board mirrors two repositories.
+- `PATCH /api/instance/settings/general` merges `botDisk` by key: a request naming only `scratchTtlHours` no longer erases the stored `gitMirrorRepos` and the other keys. An absent key changes nothing; `null` clears the whole block.
+- SETTINGS.md: the default of `gitMirrorRepos` is the two built-in repositories (not "no mirrors"); `[]` turns the mirror off; only the `sharedCacheRoles` roles receive it; `<cache>/git` must belong to the board's process user (uid 1000 in production), otherwise new mirrors fail with EACCES.
+- An explicit `gitMirrorRepos: []` is now stored and turns the mirror off; an absent key (or `null`) means the default list. Before, the empty list was dropped on read and the default came back.
+
+### Developer runs resume the task session instead of always resetting it (OPE-13087)
+
+- Developers (engineers and reviewers) get no Hindsight memory, but their task session is meant to continue between
+  runs. The board still dropped the saved session on every developer run, so each run started without a `sessionId`.
+- The role-based reset is removed. A developer run now resumes the saved task session under the strategy from the card
+  (`issue` by default). The other resets are unchanged: a wake that asks for a fresh session, a changed configuration
+  and a long-task plan still start a new session.
+- Comments and the adapter documentation that said developers never resume a session now describe the actual rule.
+
+### An engineer agent handing a task to review without a review stage now gets a load-balanced review stage instead of a 422 (OPE-13099)
+
+- When an engineer agent sent `PATCH {status: "in_review"}` for a task with no review path (no review stage, card, approval, human assignee or monitor), the board answered 422 `missing: review_path`, so instructions carried a hand-made "reviewer by PR number modulo 6" rule that bypassed load balancing.
+- Now, with review routing enabled and a task that is not `human_only`, the board adds a review stage to the task's existing policy when the executor is an engineer. Its participants are the invokable reviewers of the executor's own group (the author and assignee are excluded), and the usual transition picks the least loaded one as the current participant in the same write.
+- With no reviewer in the group, or for a non-engineer executor, nothing is added and the previous 422 stays. A task that already has a review stage, a re-submission after `changes_requested`, and PATCH requests from the board or a user behave as before.
+
+### Host cleanup removes closed-task clones after 3 hours, runs every 30 minutes and leaves no partial archives (OPE-13104)
+
+- On 14.11 about 73 task clones (36 GB) were created in 4 hours, and the 24-hour retention with a pass every 2 hours made free space on the bot disk jump by 10-15 GB and fired HOST_DISK/BOTS_DISK alerts several times a day. The default clone TTL (`CLONE_TTL_HOURS`, `--clone-ttl`) is now 3 hours and the systemd timer runs the cleanup every 30 minutes (`OnCalendar=*-*-* *:10/30:00`). The rules that keep active clones and archive dirty ones first are unchanged.
+- When archiving a clone or a runner task folder fails, the unfinished `.tar.zst`/`.tar.gz` file is now deleted. Before, every pass left 1-2 GB of a partial archive of a folder that could never be archived. The error text now carries the exit code and the signal, because stderr is often empty; a timeout is reported as "timed out after N s".
+- The main cause of the failed archive: a 13 GB runner task folder (three repo copies with `node_modules`) did not fit the 600 s limit on any pass. Archives now skip `node_modules`, `.pnpm-store`, `.turbo`, `dist`, `.next` and `coverage` (restored by an install or a build); only build and dependency dirs that git ignores are excluded; `.git` with unpushed commits, working files and any file git does not ignore stay in.
+
+### Maintenance-interrupt retry continuation — EN text, run times, branch and head SHA (OPE-13077)
+
+When the board interrupts a run for maintenance (rollout), the retry used to
+receive a short Russian-only instruction with no timestamps and no pointer to
+the task branch. 55 of 88 maintenance-interrupted retries on 13–14 Nov started
+the task over from zero.
+
+The retry instruction now:
+
+- is written in English, matching the rest of the wake text;
+- names the interrupted run and the maintenance window;
+- reports the run start time, the interrupt time and how long it ran;
+- names the task branch and the latest commit (head SHA) when the board
+  knows them from the issue's pull-request work product;
+- tells the agent to run `git status` and `git log --oneline -5`, read the
+  latest comments, and continue from where the work stopped.
+
+Delivery path is unchanged: `scheduleBoundedRetry` copies
+`livenessContinuationInstruction` into the retry context snapshot,
+`buildPaperclipWakePayload` surfaces it as `livenessContinuation`, and the
+shared `renderPaperclipWakePrompt` prints the "Run liveness continuation:"
+block that hermes-gateway renders.
+
+Regular wakes (`issue_assigned`, `ci_completed`) do not receive the block:
+`livenessContinuation` is only populated when the retry context carries it.
+
+### Validate identifier parameters on issue routes (1.6.9 ISSUES-LIST-BAD-ID)
+
+- `GET /api/companies/:companyId/issues` validates identifier query parameters (`participantAgentId`, `projectId`, `workspaceId`, `executionWorkspaceId`, `labelId`) as UUIDs, returning 400 instead of a PostgreSQL 22P02 database error.
+- Task reference parameters (`parentId`, `parentIssueId`, `descendantOf`, `createdFromIssueId`) resolve issue identifiers before UUID verification, returning 400 for malformed values.
+- Repeated (array) values for any identifier parameter are rejected with 400 naming the parameter instead of a 500 TypeError.
+- `POST /api/companies/:companyId/issues` validates that referenced entities (`projectId`, `parentId`, `assigneeAgentId`, `labelIds`, `goalId`) exist, returning 422 instead of a foreign key constraint violation.
+
+### Neutralize RFC 2119 keywords line in OMP runner system prompt (1.6.9 OMP-PROMPT-AGY-429)
+
+- Replaces the `RFC 2119 keywords: MUST, REQUIRED, SHOULD, RECOMMENDED, MAY, OPTIONAL.` system prompt line in the bundled `@oh-my-pi/pi-coding-agent` CLI with neutral phrasing (`Keywords MUST, REQUIRED, SHOULD, RECOMMENDED, MAY, OPTIONAL follow their usual meaning.`) during image builds.
+- Prevents Antigravity/Google endpoint 429 quota exhaustion rejections triggered by upstream agent fingerprinting.
+- The build step fails fast if the target needle is missing or altered in newer package releases, with automated regression tests in CI.
+
+### myr-handoff CLI for bot runtime (1.6.9 PF-HANDOFF-REVIEW)
+
+- Added `myr-handoff` command to the bot-runtime image (`docker/bot-runtime/myr-ws/myr-handoff`).
+- Enables one-step review handoff: pushes current branch, creates or reuses GitHub PR with issue key in title, sets issue to `in_review` with summary comment via Myrmidon API (the board picks the reviewer), and verifies work product PR binding.
+
+### The pnpm store from the bot profile now wins over the image default (OPE-13112)
+
+- The board setting `general.botDisk.pnpmStoreDir` (`/cache/pnpm-store`) was written into the bot's `.env`, but processes of the bot still saw the image default `npm_config_store_dir=/workspace/.pnpm-store`, so `pnpm store path` and every install used a per-bot store instead of the shared one. The `pnpm` wrapper now reads `npm_config_store_dir` from `${HERMES_HOME}/.env` and uses it when it is an absolute path the bot can write to (the directory, or for a missing one its nearest existing parent).
+- If the profile sets nothing, or the directory is not writable, nothing changes: the store stays `/workspace/.pnpm-store`.
+
+### Reassignment releases a not-started queued run of the previous assignee (1.6.9 OPE-13097)
+
+- When an issue is reassigned and its execution lock is held by a `queued` or `scheduled_retry` run of the previous assignee that has not started, that run is now cancelled (`lock_released_on_reassignment`) before the new assignee is woken.
+- The new assignee's wake is queued immediately instead of waiting in `deferred_issue_execution`.
+- Runs of the current review-stage participant and running runs are not touched by this path.
+
+### Red CI wake payload carries failed job names, ids, investigation command, and step log tails (OPE-13078)
+
+When an engineer is woken by a red CI completion (`ci_completed` wake reason with failure or timed_out conclusion), the wake payload and assignment prompt now contain:
+- the names of the failing jobs, their numeric check-run / job ids, and a ready-to-run investigation command (`gh run view <run> --job <job> --log-failed | tail -80`);
+- the board-retrieved log tail (last 60 lines, window ending at the last `##[error]` line when present, ANSI stripped, secrets masked) for failing jobs (up to 3 jobs fetched concurrently, capped at 12,000 characters total) when the board installation token has `actions:read` permission;
+- a clear unavailable reason if log access is denied or unavailable.
+
+The sanitizer now also masks `ghs_`/`github_pat_`/`gh[ousr]_` GitHub tokens, `sk-` API keys, `Authorization:` header values, passwords in URLs (`https://user:pass@host`), and AWS access key ids and secret keys, along with the existing formats. The "Do not poll CI: the failing output is below" line is printed only when at least one job has a log tail.
+
+### `myr-ws open --review`: a review copy without a working directory (OPE-13111)
+
+- Reviewers held 14–17 full copies of 0.5–1.2 GB each. `myr-ws open <KEY> <owner/repo> --review` now creates a worktree
+  without a working directory (`git worktree add --no-checkout` with an empty sparse-checkout, so `git status` stays
+  clean): only the `.git` file and metadata, a review copy without a working directory takes kilobytes instead of ~0.5 GB.
+  No dependencies are installed and git hooks are switched off.
+- Before the copy is attached, the PR branch is fetched from the remote and a stale local branch is fast-forwarded to
+  `origin/<branch>`. If the branch is not on the remote and `--branch` is not given, `open` fails with "no PR branch,
+  pass --branch" instead of silently opening a copy of main. A local branch with commits that are not on the remote is
+  not moved (error).
+- The reviewer reads the change by refs: `gh pr diff <N>`, `git diff origin/main...HEAD`, `git show HEAD:<path>`. An
+  already open copy is returned as it is, with a warning when `--review` was asked. `--review` cannot be combined with
+  `--scratch`. Plain `open` is unchanged. The reviewer skill and the bot-runtime READMEs describe the mode.
+
+### The board's worker process no longer floods the log with "no process bus" lines (OPE-13117)
+
+- In a split deployment (`general.processes.mode = split`) the worker process logged "run start dispatch requested a remote start but no process bus is wired" 10-40 times a second for agents with one running and one queued run. The dispatchers built for routes and services received no `executesRuns`, which the `notify` mode reads as an api process; they now get the process role through a closure, so an executor process starts the run itself.
+- The line is written once per process; later occurrences go to the `debug` level.
+- The dispatch triggered by an event (a queued-run effect, a wakeup) is skipped for an agent that already runs as many runs as its limit allows: nothing can start, and the finish of its run dispatches again. The sweep and the run-finish paths are unchanged.
+- The dispatcher reads the run-dispatch settings at most once per 5 seconds instead of on every call.
+
+### Old bot git bases attach to the fleet mirror and re-repack on alternates change (OPE-13118)
+
+Bot dev bases live under `/data/hermes/.myrmidon/git-base/<owner>/<repo>.git`.
+72 of 126 fleet bases had no `objects/info/alternates` and together held
+14.3 GiB of object data duplicated in the fleet mirror `/cache/git`.
+
+Two gaps kept them detached:
+
+- `findMirror` in `myr-ws/lib/base.js` probed the mirror root with the
+  lowercased owner/repo path only. Mirror directories such as
+  `BastionPrime/wellboard.git` were never found, so 17 wellboard bases got
+  no alternates. `findMirror` now falls back to a case-insensitive scan of
+  `/cache/git/*/*` when the exact path misses.
+- The botd git migration (`botd/lib/git-migration.js`) only pruned and
+  repacked; it never wrote alternates, and its `.repack-migrated` marker
+  suppressed any later repack once a mirror appeared. The migration now
+  calls `syncMirrorAlternates` from `myr-ws/lib/base.js` before repack and
+  the marker records the mirror objects directory the repack used. When
+  alternates appear or change, the base is re-migrated and `repack -l`
+  drops the duplicated objects.
+
+The "repack only on an idle bot" fleet lock is unchanged.
+
+### Starter-pack scout wakes before the first engineer run (1.6.9 OPE-13095)
+
+- New instance setting `general.starterPackAgentId`. When it is set, a newly created task of an engineer wakes that scout agent first (wake reason `starter_pack_scout`) instead of the assignee. The scout only reads the code and writes the task document `starter-pack`.
+- The scout may write exactly the document `starter-pack` on the task; a document with any other key is still refused with 403. Right after that document is saved, and as a fallback when the scout's run ends without one (any run status), the board wakes the assignee with the usual `issue_assigned` wake, once per task. There is no timeout: the end of the scout's run is the signal, so a task cannot hang on the scout.
+- The scout is not placed when the setting is empty, the task already has a `starter-pack` document or the heading `### Стартовый пакет` in its description, or the assignee is not an engineer; the behaviour is then unchanged. Delivering the document to the engineer is a separate change (OPE-13086).
+
+### Starter pack delivered first in the assignee wake (1.6.9 STARTER-PACK-V1)
+
+- If a task has a document with the key `starter-pack`, its text is now delivered to the assignee as a separate block, `Starter pack (start here; do not re-explore the project):`, at the start of the wake prompt, ahead of the continuation summary and the task blocks.
+- The block body is capped at 8000 characters; a longer body is cut and ends with `[starter pack truncated]`. The document passes the same source-trust redaction as the continuation summary.
+- An isolated reviewer run does not get the block. A task without the document gets the same wake prompt as before.
+
+### Review verdict comments rejected with guidance (1.6.9 OPE-13115)
+
+- Reject comments starting with `APPROVE` or `REQUEST CHANGES` posted by the current review-stage participant on an `in_review` issue with HTTP 422 and actionable hint to use `PATCH /api/issues/<id>` instead.
+- Prevents review stages from stalling silently when reviewer agents accidentally post their verdict as a plain comment.
+- Normal comments from reviewers, non-verdict comments, and comments by operators or other agents remain unaffected.
+
+The wake diagnostic shows the reason starter_pack_scout instead of other.
+
+### Fallback to procfs for port ownership and avoid repeated lsof calls when lsof is missing (OPE-13075)
+
+When preparing an isolated workspace runtime, port verification checked listener ownership via `lsof`. On Linux environments without `lsof`, every candidate check spawned `lsof` repeatedly (~32 attempts taking ~19s total). Now, the absence of `lsof` is cached on the first missing/failed check (ENOENT/127), and Linux systems fall back to inspecting `/proc/net/tcp` and `/proc/<pid>/fd` to verify listener ownership without accepting unrelated listeners and without repeated spawns.
+
+### Terminal-workspace sweep no longer blocks on shared project directories
+
+The terminal-workspace sweep now archives `shared_workspace` rows of closed
+(done/cancelled) issues without inspecting git. These rows point at the
+project's shared directory, which has no per-task copy, is always dirty or
+unmerged, and has nothing to delete. Previously every such row was blocked and
+the board wrote an `issue_terminal_archive_blocked` event for each one (over
+180 000 events), loading the board every 30 seconds. The sweep still requires a
+closed issue tree, the cooldown and no active run, never writes the block event
+for these rows, and works through the backlog in passes of up to 200 shared
+rows, each archived by its own single-row update. For shared copies the sweep uses no
+git and no GitHub API (only the terminal state of the issue tree), and a copy
+with an open linked issue is not archived.
+
+The shared backlog is walked in batches taken under `FOR NO KEY UPDATE SKIP LOCKED` with a pause (1 s by default, `MYRMIDON_WORKSPACE_SHARED_SWEEP_PAUSE_MS`) between passes, so sweepers in several processes never take or archive the same row twice.
+
+### Plan gate for large engineering tasks (1.6.9 PF-PLAN-GATE, OPE-13081)
+
+- Engineering issues labeled `size:M` / `size:L` without a `plan` document now start in planning mode and require approval bound to the plan revision before implementation.
+- An update moves an issue to planning only while it is in `backlog` or `todo` and its labels or assignee actually changed; started work (`in_progress`, `in_review`) is never returned to planning. An explicit `workMode` on create is kept.
+- The approver is the first invokable `lead` / `architect` agent in the executor's manager chain, then any such agent of the company, then the agent `adm`. The board always sets the approver and rejects a plan request that would be approved by its author.
+- While plan approval is pending, no run of the assignee starts for any wake type (comment, interaction or automatic continuation); only the plan approval card's own resolution (accepted or rejected) passes the gate.
+
+### Run on a task closed after queue dequeue or with resumeIntent is cleanly cancelled during preparation (CLOSED-TASK-COMMENT-RUN-2)
+
+- Following CLOSED-TASK-COMMENT-RUN (#3169), a run taken from the queue before the task was closed (`done` or `cancelled`), or bypassing the queue check via `resumeIntent`, still reached preparation in `executeRun` and failed with `continuation_task_ownership_changed` (`setup_failed`) and an error-level log.
+- During run execution preparation, if the assigned task has reached terminal status (`done` or `cancelled`) or if `buildExecutionContinuation` detects an ownership/terminal status change, the run is now cleanly cancelled with `issue_terminal_status` (or `issue_assignee_changed`) instead of failing setup with an error-level log.
+
+### Assignee comment wake on a closed task is cancelled cleanly instead of failing setup (CLOSED-TASK-COMMENT-RUN)
+
+- Following RUN-SETUP-STALE-TASK (#3156), a comment wake on an already closed task (`done` or `cancelled`) still caused the assignee's queued run to start and fail in `buildExecutionContinuation` (`continuation_task_ownership_changed`) with an error-level log line.
+- The comment bypass for terminal task status no longer applies to runs of the task assignee: queued assignee runs on closed tasks are cancelled at claim time with `issue_terminal_status` (info log, no `failed`). Non-assignee comment wakes, explicit resume intents, and pending card responses continue to bypass as before.
+
+### A content-filter retry is counted per model call and no longer uses up the turn's restart budget (CONTENT-FILTER-RETRY-PER-CALL, OPE-13076)
+
+- The retry after a provider reply with `finish_reason: content_filter` now has its own counter for each model call (at most 2 per call) and no longer consumes the turn's shared `restart_count` (limit `api_max_retries`). Before, the retries competed with other restart reasons, so a turn with several filtered calls could end early. A bot with a fallback model chain still switches to the fallback first.
+
+### Suppress replacement wake for queued runs cancelled due to terminal issue status (OPE-13068)
+
+When a queued run was cancelled during queue sweep because its associated issue had reached a terminal status (`done` or `cancelled`), the sweep loop erroneously created a replacement wake with reason `queued_run_stale_timeout`. This led to infinite loops of creating and immediately cancelling runs for closed tasks.
+Fix:
+1. In `server/src/modules/run-dispatch/adapters/postgres.ts`, evaluate task staleness (including terminal status) before applying the age-based stale timeout.
+2. In `server/src/services/heartbeat.ts`, ensure `createCancelStaleQueuedRun` only triggers a replacement wake when the cancellation error code is actually `queued_run_stale_timeout`.
+
+### Verify review wake liveness after reviewer run completes without verdict (OPE-13070)
+
+When a reviewer run triggered by CI completion finishes without recording a verdict (leaving the review stage in `pending`), the review routing sweep liveness pass re-wakes the idle reviewer for this task once `REVIEW_WAKE_STALE_AFTER_MS` has elapsed since the task's last update. Subsequent passes observe `REVIEW_WAKE_RETRY_BACKOFF_MS`. Added regression coverage in `sweep.myrmidon.test.ts`.
+
+### Fixed: reject agent card save when extraMounts source is not in MYRMIDON_BOT_MOUNT_SOURCES (1.6.9 OPE-13074)
+
+- Saving or updating an agent card (`POST /api/agents`, `PATCH /api/agents/:id`) with `adapterConfig.container.extraMounts` now immediately validates mount sources against `MYRMIDON_BOT_MOUNT_SOURCES` (and UI-saved `bot_mount_sources`) using `validateExtraMounts`.
+- An update specifying a disallowed extra mount source is rejected immediately with HTTP 422 naming the offending source and referencing `MYRMIDON_BOT_MOUNT_SOURCES`, rather than saving the card and crashing bot container reconciliation in a loop. Partial updates that do not supply `extraMounts` do not reject already-saved mounts.
+- The reconciler and container build validation remain unchanged as defense-in-depth against direct database edits.
+
+### Consecutive runs without commit cap (PF-RUN-CAP-NO-COMMIT / OPE-13080)
+
+- Added automatic run cap when consecutive completed runs on an issue do not advance the PR head commit (`general.processes.taskRunsWithoutCommitLimit`, default: 4, 0 = disabled).
+- When reached: automatic continuations and re-wakes are skipped, the task transitions to `blocked` with recent run summaries and PR head SHA, and the project lead (or assignee's manager, or adm) is woken with the escalation details.
+- Counter resets on a new commit in the PR branch or on a manual unblock (a person moving the task from `blocked` to `todo`/`in_progress`); comments and other edits do not reset it.
+
+### Developers continue the task session between runs (1.6.9 DEV-SESSION-RESTORE, OPE-13087)
+
+- Developer agents (engineers and code reviewers) now keep the session strategy set on their card (`issue`, `run` or `none`) instead of being forced to a fresh session on every run; an agent-wide (`agent`) or empty strategy becomes `issue`, so a developer never gets an agent-wide session.
+- Design notes and code comments now state the rule correctly: developers get no long-term memory, while the task session continues between runs.
+
+### Developers Hermes profile omits Hindsight memory provider (DEV-NO-HINDSIGHT, OPE-13096)
+
+- For developer roles (`developerRoles`, e.g. `engineer`, `reviewer`, `release`), the Hermes profile compiler now omits `memory.provider: hindsight` from `config.yaml`. Developer agents do not require past memory loaded.
+- For all other roles or when the role is unset, the profile remains byte-for-byte identical to the previous version.
+
+### OPE-13098: run guard stop signal escalates to lead instead of reviewer
+
+- When a run guard permanently halts an engineer's task ("needs new inputs"), the stop signal (`run_guard_stop_needs_input`) now traverses up the `reports_to` hierarchy (up to 5 steps, cycle-guarded) to find the nearest invokable agent with role `lead` or `architect`.
+- Reviewers are skipped as wake recipients because they do not author or slice tasks. If no active lead or architect is found, it falls back to `adm`.
+- `isRunGuardStopWakeRecipient` mirrors this check so that execution dispatch only permits the target lead/architect or `adm` to run on the stopped task.
+
+### Orphan process cleanup on the OMP runner (OPE-13105)
+
+- Added `/usr/local/bin/run-reap` to the OMP SSH runner image (`docker/agent-runtime/Dockerfile.omp-ssh`).
+  When an agent run terminates (success, error, timeout, or cancellation), the OMP adapter invokes `run-reap <task_dir>`
+  on the runner to terminate lingering background processes (such as `@embedded-postgres` or child tools) whose working directory is inside the task workspace.
+- The reaper checks `/proc/<pid>/cwd`, exempts system and session processes (`PID 1`, `$$`, `$PPID`, `sshd`), sends `SIGTERM`, waits up to 5 seconds, and escalates to `SIGKILL` for survivors.
+- Process cleanup is executed in a `finally` block in `packages/adapters/omp-local/src/server/execute.ts` so cleanup failures are logged without altering the run outcome or failing the task.
+
+### Changed: omp SSH runners clone mirrored repositories with --reference and without --depth (OPE-13113)
+
+- The git wrapper for omp SSH runners (`docker/agent-runtime/omp-ssh/git-reference/git`) previously kept caller-provided shallow clone arguments (`--depth`, `--shallow-*`) when a bare mirror existed in `/cache/git/<owner>/<repo>.git`.
+- Now, when a local bare mirror exists for the target repository, the wrapper strips `--depth` and `--shallow-*` arguments and adds `--reference-if-able <mirror>`. The clone borrows objects from the mirror without creating a shallow boundary or duplicating history, keeping the clone's `.git` under 50 MB while preserving full history via alternates.
+- When no mirror exists for the repository, shallow options remain intact so non-mirrored clones continue to use shallow history.
+- Contract and end-to-end regression tests updated in `scripts/myrmidon/omp-ssh-image.test.mjs`.
+
+### Reviewer's changes_requested decision is recorded when review stage is missing from policy (REVIEW-CHANGES-LOST-STAGE)
+
+- When an issue's execution stage definition was lost from its execution policy (e.g. policy monitor overwriting stages with an empty array or policy reset), a reviewer's changes requested decision (`in_progress` with comment) was rejected or caused execution state to be cleared without recording a decision.
+- The stage participant's `changes_requested` transition is now properly recorded against the active pending review stage, bumping the review rounds count, moving the issue status back to `in_progress`, and returning assignment to the `returnAssignee`.
+
 ### A run queued while its agent was paused is not cancelled as stale right after the resume (RESUME-QUEUE-AGE)
 
 - Runs that stood in the queue while their agent was paused (waiting for a slot, `execution_changes_requested`) were cancelled by the queue-age sweep (`queued_run_stale_timeout`) in the second the pause was lifted: the pause counted as waiting time, the first resumed run had not reached `running` yet, so the slot-wait protection saw nothing. The replacement wake lost the original wake reason.
