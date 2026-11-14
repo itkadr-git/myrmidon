@@ -25,6 +25,10 @@ const {
   isTreeOpen,
   loadEnvConfig,
   listBotContainers,
+  listOmpRunnerContainers,
+  fetchAgentAdapter,
+  planStaleOmpRunners,
+  stopOmpRunner,
   fetchAgentDecommissionState,
   scanBotDataForUnpushedWork,
   clearBotDiskProject,
@@ -371,11 +375,11 @@ describe("runner /tmp (OPE-12966)", () => {
   const plan = (runners, events = []) =>
     Object.fromEntries(scanRunnerTmp(runners, Date.now(), 24, { onEvent: (e) => events.push(e) }).map((i) => [i.name, i]));
 
-  function runGc(flags) {
+  function runGc(flags, extraEnv = {}) {
     const botsRoot = path.join(tmpDir, "bots");
     fs.mkdirSync(botsRoot, { recursive: true });
     const journal = path.join(tmpDir, "gc.jsonl");
-    const env = { ...process.env, HOST_GC_RUNNER_ROOTS: "", PATH: process.env.PATH, PAPERCLIP_API_URL: "http://127.0.0.1:9" };
+    const env = { ...process.env, HOST_GC_RUNNER_ROOTS: "", PATH: process.env.PATH, PAPERCLIP_API_URL: "http://127.0.0.1:9", ...extraEnv };
     const res = subprocess.spawnSync(process.execPath, [
       GC_SCRIPT, "--env", "/nonexistent", "--root", botsRoot,
       "--journal", journal, "--lock", path.join(tmpDir, "gc.lock"), "--proc-dir", path.join(tmpDir, "proc"),
@@ -508,6 +512,129 @@ describe("runner /tmp (OPE-12966)", () => {
     assert.equal(parseArgs(["node", "gc", "--runner-tmp-ttl", "12"]).runnerTmpTtlHours, 12);
     assert.throws(() => parseArgs(["node", "gc", "--runner-tmp-ttl", "1"]), UsageError);
     assert.throws(() => parseArgs(["node", "gc", "--runner-tmp-ttl", "abc"]), UsageError);
+  });
+});
+
+describe("stale OMP runner collection", () => {
+  it("keeps eng10 on omp_local and marks switched or removed agents for cleanup", async () => {
+    const root = path.join(tmpDir, "omp-runners");
+    const plan = await planStaleOmpRunners(root, { docker: "docker-that-does-not-exist" });
+    assert.equal(plan.ok, false);
+    assert.equal(plan.reason, "docker-unavailable");
+  });
+
+  it("marks an absent agent for stale-runner cleanup", async () => {
+    const dir = path.join(tmpDir, "docker-mock");
+    fs.mkdirSync(dir);
+    const docker = path.join(dir, "docker");
+    fs.writeFileSync(docker, "#!/bin/sh\nprintf '%s\\n' myrmidon-omp-runner-eng10 myrmidon-omp-runner-gone\n");
+    fs.chmodSync(docker, 0o755);
+    const plan = await planStaleOmpRunners(path.join(tmpDir, "root"), {
+      docker,
+      fetchAdapter: async (agent) => ({ ok: true, adapterType: agent === "eng10" ? "omp_local" : null }),
+    });
+    assert.deepEqual(plan.plan.map((item) => [item.agentKey, item.action, item.reason]), [
+      ["eng10", "keep", "omp-local"],
+      ["gone", "stop-remove", "agent-deleted"],
+    ]);
+  });
+
+  it("removes stale runner homes even after their containers were already removed", async () => {
+    const dir = path.join(tmpDir, "docker-mock");
+    fs.mkdirSync(dir);
+    const docker = path.join(dir, "docker");
+    fs.writeFileSync(docker, "#!/bin/sh\nprintf ''\n");
+    fs.chmodSync(docker, 0o755);
+    const root = path.join(tmpDir, "omp-runners");
+    fs.mkdirSync(path.join(root, "eng8", "home", "wt"), { recursive: true });
+    const plan = await planStaleOmpRunners(root, {
+      docker,
+      fetchAdapter: async () => ({ ok: true, adapterType: "hermes_gateway" }),
+    });
+    assert.deepEqual(plan.plan.map((item) => [item.agentKey, item.action]), [["eng8", "remove-stale-home"]]);
+  });
+
+  it("parses runner keys and fails closed when board adapter lookup is unavailable", async () => {
+    const dir = path.join(tmpDir, "docker-mock");
+    fs.mkdirSync(dir);
+    const docker = path.join(dir, "docker");
+    fs.writeFileSync(docker, "#!/bin/sh\nprintf '%s\\n' myrmidon-omp-runner-eng10 myrmidon-omp-runner-eng8 not-a-runner myrmidon-omp-runner-../bad\n");
+    fs.chmodSync(docker, 0o755);
+    assert.deepEqual(listOmpRunnerContainers({ docker }), { ok: true, names: ["myrmidon-omp-runner-eng10", "myrmidon-omp-runner-eng8"] });
+    const plan = await planStaleOmpRunners(path.join(tmpDir, "root"), {
+      docker,
+      fetchAdapter: async () => ({ ok: false, reason: "board-unavailable" }),
+    });
+    assert.ok(plan.plan.every((item) => item.action === "keep" && item.reason === "board-unavailable"));
+  });
+
+  it("recognizes the active omp_local agent without treating it as stale", async () => {
+    const dir = path.join(tmpDir, "docker-mock");
+    fs.mkdirSync(dir);
+    const docker = path.join(dir, "docker");
+    fs.writeFileSync(docker, "#!/bin/sh\nprintf '%s\\n' myrmidon-omp-runner-eng10 myrmidon-omp-runner-eng8\n");
+    fs.chmodSync(docker, 0o755);
+    const plan = await planStaleOmpRunners(path.join(tmpDir, "root"), {
+      docker,
+      fetchAdapter: async (agent) => ({ ok: true, adapterType: agent === "eng10" ? "omp_local" : "hermes_gateway" }),
+    });
+    assert.deepEqual(plan.plan.map((item) => [item.agentKey, item.action, item.reason]), [
+      ["eng10", "keep", "omp-local"],
+      ["eng8", "stop-remove", "adapter-changed"],
+    ]);
+  });
+
+  it("fails closed on board errors", async () => {
+    const unavailable = await fetchAgentAdapter("eng8", { baseUrl: "http://board", fetchImpl: async () => { throw new Error("offline"); } });
+    assert.deepEqual(unavailable, { ok: false, reason: "board-unavailable" });
+  });
+
+  it("rejects unsafe agent ids without a board call", async () => {
+    const result = await fetchAgentAdapter("../etc", { baseUrl: "http://board", fetchImpl: async () => { throw new Error("must not be called"); } });
+    assert.deepEqual(result, { ok: false, reason: "bad-agent-id" });
+  });
+
+  it("--apply stops the stale runner, removes its workspace/home/tmp, preserves eng10 and reports count", async () => {
+    const root = path.join(tmpDir, "omp-runners");
+    const old = path.join(root, "eng8", "home", "wt", "OPE-12845");
+    const active = path.join(root, "eng10", "home", "wt", "OPE-12900");
+    fs.mkdirSync(old, { recursive: true });
+    fs.mkdirSync(active, { recursive: true });
+    fs.writeFileSync(path.join(old, "ghcred.json"), "sensitive");
+    const dir = path.join(tmpDir, "docker");
+    fs.mkdirSync(dir);
+    const docker = path.join(dir, "docker");
+    const calls = path.join(dir, "calls");
+    fs.writeFileSync(docker, `#!/bin/sh\nif [ "$1" = ps ]; then printf '%s\\n' myrmidon-omp-runner-eng8 myrmidon-omp-runner-eng10; else printf '%s\\n' "$@" >> '${calls}'; fi\n`);
+    fs.chmodSync(docker, 0o755);
+    const board = path.join(dir, "board");
+    fs.writeFileSync(board, "#!/bin/sh\nprintf '{\\\"adapterType\\\":\\\"%s\\\"}\\n' \"$(case \"$2\" in */eng10) echo omp_local;; *) echo hermes_gateway;; esac)\"\n");
+    fs.chmodSync(board, 0o755);
+    const { res, events } = runGc(["--apply", "--runner-root", root], { PATH: `${dir}:${process.env.PATH}`, MYRMIDON_HOST_GC_DOCKER: docker, BOARD_API_URL: "http://board" });
+    assert.equal(res.status, 0, res.stderr);
+    assert.equal(fs.existsSync(path.join(root, "eng8", "home")), false);
+    assert.equal(fs.existsSync(active), true);
+    assert.equal(fs.existsSync(path.join(old, "ghcred.json")), false);
+    const complete = events.find((event) => event.event === "apply-complete");
+    assert.equal(complete.staleOmpRunnersStopped, 1);
+  });
+
+  it("fetches the adapter from the agent endpoint and stops by exact container name", async () => {
+    let requestUrl;
+    const result = await fetchAgentAdapter("eng8", {
+      baseUrl: "http://board",
+      fetchImpl: async (url) => { requestUrl = url; return { ok: true, status: 200, json: async () => ({ adapterType: "hermes_gateway" }) }; },
+    });
+    assert.equal(requestUrl, "http://board/api/agents/eng8");
+    assert.deepEqual(result, { ok: true, adapterType: "hermes_gateway" });
+    const dir = path.join(tmpDir, "docker-mock");
+    fs.mkdirSync(dir);
+    const docker = path.join(dir, "docker");
+    const log = path.join(dir, "args");
+    fs.writeFileSync(docker, `#!/bin/sh\nprintf '%s\\n' "$@" > '${log}'\n`);
+    fs.chmodSync(docker, 0o755);
+    assert.equal(stopOmpRunner("myrmidon-omp-runner-eng8", { docker }), true);
+    assert.deepEqual(fs.readFileSync(log, "utf8").trim().split("\n"), ["rm", "-f", "myrmidon-omp-runner-eng8"]);
   });
 });
 
@@ -817,11 +944,11 @@ describe("SSH runner run copies", () => {
   const GC_SCRIPT = path.join(ROOT, "scripts/myrmidon/host-gc/host-clone-cache-gc.mjs");
 
   // Runs the CLI against an empty bots root; returns the process result and the parsed journal.
-  function runGc(flags) {
+  function runGc(flags, extraEnv = {}) {
     const botsRoot = path.join(tmpDir, "bots");
     fs.mkdirSync(botsRoot, { recursive: true });
     const journal = path.join(tmpDir, "gc.jsonl");
-    const env = { ...process.env, HOST_GC_RUNNER_ROOTS: "", PATH: process.env.PATH, PAPERCLIP_API_URL: "http://127.0.0.1:9" };
+    const env = { ...process.env, HOST_GC_RUNNER_ROOTS: "", PATH: process.env.PATH, PAPERCLIP_API_URL: "http://127.0.0.1:9", ...extraEnv };
     const res = subprocess.spawnSync(process.execPath, [
       GC_SCRIPT, "--env", "/nonexistent", "--root", botsRoot,
       "--journal", journal, "--lock", path.join(tmpDir, "gc.lock"), "--proc-dir", path.join(tmpDir, "proc"),
