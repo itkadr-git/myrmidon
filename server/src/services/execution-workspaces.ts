@@ -104,6 +104,11 @@ function issueTerminalTimestamp(issue: {
 const WORKSPACE_BRANCH_INCOHERENCE_REASON = "git_worktree_branch_incoherence";
 const WORKSPACE_VALIDATION_RECOVERY_CAUSE = "workspace_validation_failed";
 export const ISSUE_TERMINAL_WORKSPACE_CLEANUP_REASON = "issue_terminal";
+// myrmidon(OPE-13106): rows of the terminal sweep taken per pass for
+// shared_workspace, and the hard cap. Each row is archived by its own guarded
+// single-row UPDATE, so no statement touches more than one row.
+const SHARED_WORKSPACE_SWEEP_BATCH_SIZE = 500;
+const MAX_SHARED_WORKSPACE_SWEEP_BATCH_SIZE = 1000;
 
 // The reopen-failure reason kept on the row when a rebuild does not finish. The
 // value is sanitized: it never contains a repository URL, a host path, or git
@@ -1338,7 +1343,17 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
   // required: without it the query re-selects the oldest ineligible rows every
   // sweep and starves eligible rows behind them. The cursor resets to the start
   // when a sweep reaches the end of the candidate set.
-  let terminalSweepCursor: { updatedAt: Date; id: string } | null = null;
+  // myrmidon(OPE-13106): shared_workspace rows (the project's shared directory,
+  // no per-task copy) rotate on their own cursor and bound with a larger page,
+  // so a backlog of them cannot starve isolated copies behind a 50-row page.
+  type TerminalSweepScanState = {
+    cursor: { updatedAt: Date; id: string } | null;
+    boundary: Date | null;
+  };
+  const terminalSweepScanState: Record<"isolated" | "shared", TerminalSweepScanState> = {
+    isolated: { cursor: null, boundary: null },
+    shared: { cursor: null, boundary: null },
+  };
   // The reaper freezes an upper bound on updatedAt at the start of each
   // rotation. The scan only reads candidates at or below the bound, so a steady
   // stream of newer candidates cannot keep every page full and stop the cursor
@@ -1346,7 +1361,6 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
   // reaches a short page and resets, and older candidates that became eligible
   // are revisited on the next rotation. The next rotation captures a new bound,
   // so candidates updated after the previous bound enter the scan then.
-  let terminalSweepBoundary: Date | null = null;
   // The scheduler starts a sweep on each tick and does not wait for the previous
   // sweep to finish. A sweep that outlasts the tick interval overlaps the next
   // sweep. Both sweeps share the cursor and the boundary above. Interleaved
@@ -1510,6 +1524,9 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
     assessment: { cooldownAnchor: Date | null; deliveryState: ExecutionWorkspaceDeliveryState },
     reason: "dirty" | "undelivered",
   ): Promise<void> {
+    // myrmidon(OPE-13106): the project's shared directory is always dirty or
+    // unmerged; a block signal for it is noise (182k rows by 14.11.2026).
+    if (workspace.mode === "shared_workspace") return;
     const nowMs = now().getTime();
     const metadata = workspace.metadata as Record<string, unknown> | null;
     if (
@@ -2622,7 +2639,7 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
       };
     },
 
-    sweepTerminalWorkspaces: async (limit = 50) => {
+    sweepTerminalWorkspaces: async (limit = 50, sharedLimit = SHARED_WORKSPACE_SWEEP_BATCH_SIZE) => {
       // Skip this sweep while another sweep runs. A concurrent sweep would share
       // the cursor and the boundary and could corrupt the rotation state. A
       // skipped tick is safe: the next tick runs the sweep with intact state.
@@ -2654,49 +2671,67 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
         isNull(executionWorkspaces.closedAt),
         sql<boolean>`${executionWorkspaces.sourceIssueId} IS NOT NULL`,
       );
-      // Continue the scan after the previous sweep's last row. The keyset
+      // Continue each scan after the previous sweep's last row. The keyset
       // predicate uses the same (updatedAt, id) order as the query, so each
       // sweep advances past the rows it already inspected instead of re-reading
-      // the oldest ineligible candidates.
-      const cursor = terminalSweepCursor;
-      // Freeze an upper bound on updatedAt at the start of each rotation. Without
-      // a bound, a steady stream of newer candidates keeps every page full, so
-      // the cursor never reaches the end and never resets, and older candidates
-      // that became eligible are never revisited. The frozen bound makes the
-      // rotation cover a finite set, so the cursor always reaches a short page.
-      if (!cursor) {
-        terminalSweepBoundary = now();
-      }
-      const boundary = terminalSweepBoundary;
-      const boundaryFilter = boundary
-        ? lte(executionWorkspaces.updatedAt, boundary)
-        : undefined;
-      const cursorFilter = cursor
-        ? or(
-            gt(executionWorkspaces.updatedAt, cursor.updatedAt),
-            and(
-              eq(executionWorkspaces.updatedAt, cursor.updatedAt),
-              gt(executionWorkspaces.id, cursor.id),
-            ),
-          )
-        : undefined;
-      const scanFilter = and(baseCandidateFilter, boundaryFilter, cursorFilter);
-      const candidates = await db
-        .select()
-        .from(executionWorkspaces)
-        .where(scanFilter)
-        .orderBy(asc(executionWorkspaces.updatedAt), asc(executionWorkspaces.id))
-        .limit(limit);
-      // Advance the cursor to this page's last row. A short page means the scan
-      // reached the end of the bounded candidate set, so reset the cursor and
-      // the bound to start a new rotation on the next sweep.
-      if (candidates.length < limit) {
-        terminalSweepCursor = null;
-        terminalSweepBoundary = null;
-      } else {
-        const lastCandidate = candidates[candidates.length - 1]!;
-        terminalSweepCursor = { updatedAt: lastCandidate.updatedAt, id: lastCandidate.id };
-      }
+      // the oldest ineligible candidates. Freeze an upper bound on updatedAt at
+      // the start of each rotation. Without a bound, a steady stream of newer
+      // candidates keeps every page full, so the cursor never reaches the end
+      // and never resets, and older candidates that became eligible are never
+      // revisited. The frozen bound makes the rotation cover a finite set, so
+      // the cursor always reaches a short page.
+      const scanCandidates = async (
+        kind: "isolated" | "shared",
+        pageSize: number,
+      ): Promise<ExecutionWorkspaceRow[]> => {
+        const state = terminalSweepScanState[kind];
+        const cursor = state.cursor;
+        if (!cursor) {
+          state.boundary = now();
+        }
+        const boundary = state.boundary;
+        const boundaryFilter = boundary
+          ? lte(executionWorkspaces.updatedAt, boundary)
+          : undefined;
+        const cursorFilter = cursor
+          ? or(
+              gt(executionWorkspaces.updatedAt, cursor.updatedAt),
+              and(
+                eq(executionWorkspaces.updatedAt, cursor.updatedAt),
+                gt(executionWorkspaces.id, cursor.id),
+              ),
+            )
+          : undefined;
+        const modeFilter = kind === "shared"
+          ? eq(executionWorkspaces.mode, "shared_workspace")
+          : ne(executionWorkspaces.mode, "shared_workspace");
+        const page = await db
+          .select()
+          .from(executionWorkspaces)
+          .where(and(baseCandidateFilter, modeFilter, boundaryFilter, cursorFilter))
+          .orderBy(asc(executionWorkspaces.updatedAt), asc(executionWorkspaces.id))
+          .limit(pageSize);
+        // Advance the cursor to this page's last row. A short page means the
+        // scan reached the end of the bounded candidate set, so reset the cursor
+        // and the bound to start a new rotation on the next sweep.
+        if (page.length < pageSize) {
+          state.cursor = null;
+          state.boundary = null;
+        } else {
+          const lastCandidate = page[page.length - 1]!;
+          state.cursor = { updatedAt: lastCandidate.updatedAt, id: lastCandidate.id };
+        }
+        return page;
+      };
+      // Never more than MAX_SHARED_WORKSPACE_SWEEP_BATCH_SIZE rows per pass.
+      const sharedPageSize = Math.max(
+        1,
+        Math.min(Math.floor(sharedLimit), MAX_SHARED_WORKSPACE_SWEEP_BATCH_SIZE),
+      );
+      const candidates = [
+        ...(await scanCandidates("isolated", limit)),
+        ...(await scanCandidates("shared", sharedPageSize)),
+      ];
       const result = {
         checked: candidates.length,
         eligible: 0,
@@ -2719,7 +2754,15 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
 
       for (const workspace of candidates) {
         const executionWorkspace = toExecutionWorkspace(workspace);
-        const { git, statusInspectionSucceeded } = await inspectGitCloseReadiness(executionWorkspace);
+        // myrmidon(OPE-13106): a shared_workspace row points at the project's
+        // shared directory. It has no per-task copy, so there is nothing to
+        // delete and its git state (always dirty or unmerged) says nothing about
+        // the task. Skip the git inspection and the delivery and dirty gates; the
+        // terminal-tree, cooldown, reopen and active-run predicates still apply.
+        const isSharedWorkspace = workspace.mode === "shared_workspace";
+        const { git, statusInspectionSucceeded } = isSharedWorkspace
+          ? { git: null, statusInspectionSucceeded: true }
+          : await inspectGitCloseReadiness(executionWorkspace);
         if (!statusInspectionSucceeded) {
           result.skippedUndelivered += 1;
           result.skippedInspectFailed += 1;
@@ -2748,7 +2791,7 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
           result.skippedNonTerminalTree += 1;
           continue;
         }
-        if (assessment.workspaceDirty) {
+        if (!isSharedWorkspace && assessment.workspaceDirty) {
           // myrmidon(WORKSPACE-HYGIENE): a dirty tree can never be archived. If
           // it stays that way past the threshold, signal it once.
           await signalStuckUndeliverableWorkspace(workspace, assessment, "dirty");
@@ -2760,7 +2803,8 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
           continue;
         }
         if (
-          assessment.deliveryState !== "merged_via_pr"
+          !isSharedWorkspace
+          && assessment.deliveryState !== "merged_via_pr"
           && assessment.deliveryState !== "merged_by_ancestry"
         ) {
           // myrmidon(WORKSPACE-HYGIENE): unpushed or unknown work can never be
@@ -2973,6 +3017,35 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
             cleanupReason: ISSUE_TERMINAL_WORKSPACE_CLEANUP_REASON,
           },
         });
+
+        if (isSharedWorkspace) {
+          // Nothing to remove: the row only references the shared project
+          // directory. Stop services bound to the row and detach the issues, as
+          // the cleanup path does for a cleaned shared row, without touching git.
+          try {
+            const { stopRuntimeServicesForExecutionWorkspace } = await import("./workspace-runtime.js");
+            await stopRuntimeServicesForExecutionWorkspace({
+              db,
+              executionWorkspaceId: archived.id,
+              workspaceCwd: archived.cwd,
+            });
+            await db
+              .update(issues)
+              .set({ executionWorkspaceId: null, updatedAt: now() })
+              .where(and(
+                eq(issues.companyId, archived.companyId),
+                eq(issues.executionWorkspaceId, archived.id),
+              ));
+            result.archived += 1;
+          } catch (error) {
+            result.cleanupFailed += 1;
+            logger.warn(
+              { executionWorkspaceId: archived.id, err: error },
+              "shared workspace archived but detaching its issues or services failed",
+            );
+          }
+          continue;
+        }
 
         const capturedGeneration = readExecutionWorkspaceLifecycleGeneration(
           archived.metadata as Record<string, unknown> | null,

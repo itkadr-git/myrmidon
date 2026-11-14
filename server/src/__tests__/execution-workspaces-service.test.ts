@@ -562,6 +562,59 @@ describeEmbeddedPostgres("executionWorkspaceService.getCloseReadiness", () => {
     expect(workspace).toMatchObject({ status: "archived", cleanupReason: "issue_terminal" });
   }, 20_000);
 
+  it("archives a shared_workspace row of a closed issue without git checks or a block event", async () => {
+    // myrmidon(OPE-13106): the shared project directory is always dirty. The
+    // sweep must not inspect it, must not write a block event, and must not
+    // touch the directory.
+    const seeded = await seedAncestryTerminalWorkspace();
+    await db
+      .update(executionWorkspaces)
+      .set({ mode: "shared_workspace", strategyType: "project_primary", providerType: "local_fs" })
+      .where(eq(executionWorkspaces.id, seeded.executionWorkspaceId));
+    await fs.writeFile(path.join(seeded.worktreePath, "dirty.txt"), "uncommitted\n");
+
+    const sweep = await svc.sweepTerminalWorkspaces();
+    const [workspace] = await db
+      .select({
+        status: executionWorkspaces.status,
+        closedAt: executionWorkspaces.closedAt,
+        cleanupReason: executionWorkspaces.cleanupReason,
+      })
+      .from(executionWorkspaces)
+      .where(eq(executionWorkspaces.id, seeded.executionWorkspaceId));
+    const blockedEvents = await db
+      .select({ id: activityLog.id })
+      .from(activityLog)
+      .where(eq(activityLog.action, "execution_workspace.issue_terminal_archive_blocked"));
+
+    expect(sweep).toMatchObject({ archived: 1, cleanupFailed: 0, skippedDirty: 0, skippedUnmerged: 0 });
+    expect(workspace).toMatchObject({ status: "archived", cleanupReason: "issue_terminal" });
+    expect(workspace?.closedAt).toBeInstanceOf(Date);
+    expect(blockedEvents).toEqual([]);
+    await expect(fs.access(path.join(seeded.worktreePath, "dirty.txt"))).resolves.toBeUndefined();
+  }, 20_000);
+
+  it("leaves a shared_workspace row of an open issue untouched", async () => {
+    const seeded = await seedAncestryTerminalWorkspace();
+    await db
+      .update(executionWorkspaces)
+      .set({ mode: "shared_workspace", strategyType: "project_primary", providerType: "local_fs" })
+      .where(eq(executionWorkspaces.id, seeded.executionWorkspaceId));
+    await db
+      .update(issues)
+      .set({ status: "in_progress" })
+      .where(eq(issues.id, seeded.sourceIssueId));
+
+    const sweep = await svc.sweepTerminalWorkspaces();
+    const [workspace] = await db
+      .select({ status: executionWorkspaces.status, closedAt: executionWorkspaces.closedAt })
+      .from(executionWorkspaces)
+      .where(eq(executionWorkspaces.id, seeded.executionWorkspaceId));
+
+    expect(sweep).toMatchObject({ archived: 0, skippedNonTerminalTree: 1 });
+    expect(workspace).toMatchObject({ status: "active", closedAt: null });
+  }, 20_000);
+
   it("fails closed before archive when git status inspection is unavailable", async () => {
     const seeded = await seedAncestryTerminalWorkspace();
     const statusSpy = vi.spyOn(workspaceGitOperationScheduler, "run")
