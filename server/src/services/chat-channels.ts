@@ -36968,7 +36968,7 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
         persisted.transportPart ||
         persisted.card ||
         persisted.interactionId ||
-        !discordMarkdownRequiresAttachment(persisted.text)
+        !(await discordMarkdownRequiresAttachment(persisted.text))
       ) {
         return publication;
       }
@@ -36995,7 +36995,7 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
           currentPayload.card ||
           currentPayload.interactionId ||
           !["pending", "retry"].includes(current.state) ||
-          !discordMarkdownRequiresAttachment(currentPayload.text)
+          !(await discordMarkdownRequiresAttachment(currentPayload.text))
         ) {
           return current;
         }
