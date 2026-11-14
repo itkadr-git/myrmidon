@@ -1,5 +1,29 @@
 import { describe, expect, it } from "vitest";
-import { hasAgentShortnameCollision, deduplicateAgentName } from "../services/agents.ts";
+import {
+  deduplicateAgentName,
+  hasAgentNameCollision,
+  hasAgentShortnameCollision,
+} from "../services/agents.ts";
+
+describe("hasAgentNameCollision", () => {
+  it("rejects names that differ only by case", () => {
+    expect(
+      hasAgentNameCollision("ALPHA", [{ id: "a1", name: "alpha", status: "idle" }]),
+    ).toBe(true);
+  });
+
+  it("ignores terminated agents", () => {
+    expect(
+      hasAgentNameCollision("ALPHA", [{ id: "a1", name: "alpha", status: "terminated" }]),
+    ).toBe(false);
+  });
+
+  it("allows the current agent to retain its own name", () => {
+    expect(
+      hasAgentNameCollision("Alpha", [{ id: "a1", name: "alpha", status: "idle" }], { excludeAgentId: "a1" }),
+    ).toBe(false);
+  });
+});
 
 describe("hasAgentShortnameCollision", () => {
   it("detects collisions by normalized shortname", () => {

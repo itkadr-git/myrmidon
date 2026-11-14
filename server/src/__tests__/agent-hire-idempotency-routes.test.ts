@@ -180,10 +180,10 @@ describeEmbeddedPostgres("agent hire idempotency within a run", () => {
       .send({ name: "Sam", role: "engineer", adapterType: "process" });
     expect(first.status, JSON.stringify(first.body)).toBe(201);
 
-    // Same identity, corrected configuration: the agent meant a different hire.
+    // Distinct identity, corrected configuration: the agent meant a different hire.
     const corrected = await request(app)
       .post(`/api/companies/${company.id}/agent-hires`)
-      .send({ name: "Sam", role: "engineer", adapterType: "process", budgetMonthlyCents: 5000 });
+      .send({ name: "Sam 2", role: "engineer", adapterType: "process", budgetMonthlyCents: 5000 });
     expect(corrected.status, JSON.stringify(corrected.body)).toBe(201);
     expect(corrected.body.idempotent).toBeUndefined();
     expect(corrected.body.agent?.id).not.toBe(first.body.agent?.id);
@@ -228,9 +228,8 @@ describeEmbeddedPostgres("agent hire idempotency within a run", () => {
 
     const secondRunApp = createApp(db, agentActor(company.id, hiringAgent.id, secondRun!.id));
     const secondRunHire = await request(secondRunApp).post(`/api/companies/${company.id}/agent-hires`).send(payload);
-    // A genuinely separate run is not a retry, so the legacy dedup names it "Sam 2".
-    expect(secondRunHire.status, JSON.stringify(secondRunHire.body)).toBe(201);
-    expect(secondRunHire.body.idempotent).toBeUndefined();
-    expect(secondRunHire.body.agent?.name).toBe("Sam 2");
+    // A genuinely separate run is not a retry; with agent name collisions prohibited per OPE-13035, duplicate hire fails with 409 conflict.
+    expect(secondRunHire.status, JSON.stringify(secondRunHire.body)).toBe(409);
+    expect(secondRunHire.body.code ?? secondRunHire.body.details?.code).toBe("agent_name_conflict");
   });
 });
