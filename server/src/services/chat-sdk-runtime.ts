@@ -1471,7 +1471,7 @@ function createProviderAdapter(
         },
         userName: config.userName,
       };
-      return createDiscordAdapterLazy(adapterConfig);
+      return (await createDiscordAdapterLazy(adapterConfig)) as unknown as Adapter;
     }
     case "microsoft-teams": {
       const adapterConfig: TeamsAdapterConfig = {
