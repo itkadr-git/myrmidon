@@ -95,6 +95,14 @@ staying in review forever. The behavior is the `boardMerge` block of
 `boardMerge.enabled = false` restores the previous wait-for-a-human
 behavior.
 
+## Post-merge verification (VERIFY-ON-PROD)
+
+For release tasks, merge is not the end of the workflow: the runtime enforces a post-merge verification stage (`verify`) before the task can be completed (`done`).
+- **Independent verifier**: The verifying agent or user must differ from the task executor (`REVIEW-INDEPENDENCE`).
+- **Required evidence**: Verifier approval requires recorded evidence of the deployed version (`Deploy version: <version>`) and verification method (`Check method: <method>`).
+- **Done gate**: Release tasks with code work products cannot be closed directly without a completed verify stage or an explicit skip configuration (`requirements.skip: true`).
+- **Rejection return**: Rejecting the verification (`changes_requested`) automatically returns the task to the original executor, waking them with `execution_changes_requested`. Resubmitting routes directly back to the verify stage.
+
 ## Discussion rooms
 
 A discussion room lets 2–4 agents on different models debate a question
@@ -109,6 +117,7 @@ an optional finisher summarizes the outcome.
 - [Stale-block watchdog](Stale-block)
 - [Commander chat](Commander-chat)
 - [Discussion rooms](Agent-exchange)
+- [Verify execution stage (VERIFY-ON-PROD)](Verify-execution-stage)
 - Review routing: [SETTINGS.md](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/SETTINGS.md), section «REVIEW-ROUTING»
 
 ## Knowledge-note gate for system changes
