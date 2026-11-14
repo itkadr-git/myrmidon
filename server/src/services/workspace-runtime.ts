@@ -58,7 +58,6 @@ import {
   readLocalServiceProcessCwd,
   readLocalServiceProcessGroupId,
   readLocalServicePortOwner,
-  isLsofAvailable,
   resetLsofAvailabilityForTests,
   removeLocalServiceRegistryRecord,
   terminateLocalService,
@@ -5200,12 +5199,6 @@ async function waitForAllocatedPortBind(input: {
     // be attributed to this child after a stability delay, retry instead of accepting a sibling.
     // The presence read never binds the port, so it cannot steal the port from the child.
     if (await hasLoopbackPortListener(input.port)) {
-      if (process.platform !== "win32" && !(await isLsofAvailable())) {
-        if (input.child.exitCode === null && input.child.signalCode === null) {
-          return;
-        }
-        throw new Error("service process exited before binding its allocated port");
-      }
       await delay(250);
       if (input.child.exitCode !== null || input.child.signalCode !== null) {
         throw new Error("service process exited after losing its allocated port");

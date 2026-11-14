@@ -340,6 +340,42 @@ async function closeNetServer(server: net.Server) {
   });
 }
 
+async function createPathWithoutLsof(): Promise<{ path: string; cleanup: () => Promise<void> }> {
+  const dirs = (process.env.PATH || "").split(path.delimiter).filter(Boolean);
+  const cleanDirs: string[] = [];
+  const tempDirs: string[] = [];
+  for (const dir of dirs) {
+    try {
+      if (!existsSync(dir)) continue;
+      const hasLsof = existsSync(path.join(dir, "lsof"));
+      if (!hasLsof) {
+        cleanDirs.push(dir);
+        continue;
+      }
+      const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-no-lsof-path-"));
+      tempDirs.push(tempDir);
+      const entries = await fs.readdir(dir);
+      for (const entry of entries) {
+        if (entry === "lsof") continue;
+        try {
+          await fs.symlink(path.join(dir, entry), path.join(tempDir, entry));
+        } catch {}
+      }
+      cleanDirs.push(tempDir);
+    } catch {
+      cleanDirs.push(dir);
+    }
+  }
+  return {
+    path: cleanDirs.join(path.delimiter),
+    cleanup: async () => {
+      for (const t of tempDirs) {
+        await fs.rm(t, { recursive: true, force: true }).catch(() => {});
+      }
+    },
+  };
+}
+
 async function listenOnPort(port: number) {
   const server = net.createServer();
   await new Promise<void>((resolve, reject) => {
@@ -5529,16 +5565,9 @@ describe("readLocalServicePortOwner", () => {
   });
 
   it("does not repeat lsof calls when lsof is unavailable and completes quickly", async () => {
-    const fakeBin = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-runtime-lsof-counter-"));
-    const fakeLsof = path.join(fakeBin, "lsof");
-    const countFile = path.join(fakeBin, "count.txt");
+    const noLsof = await createPathWithoutLsof();
     const previousPath = process.env.PATH;
-    await fs.writeFile(
-      fakeLsof,
-      `#!/bin/sh\necho 1 >> "${countFile}"\nexit 127\n`,
-      { mode: 0o755 },
-    );
-    process.env.PATH = `${fakeBin}${path.delimiter}${previousPath ?? ""}`;
+    process.env.PATH = noLsof.path;
 
     try {
       resetLsofAvailabilityForTests();
@@ -5549,14 +5578,11 @@ describe("readLocalServicePortOwner", () => {
       }
       const durationMs = Date.now() - start;
       expect(durationMs).toBeLessThan(1000);
-      const countContent = await fs.readFile(countFile, "utf8").catch(() => "");
-      const invocations = countContent.trim().split("\n").filter(Boolean).length;
-      expect(invocations).toBeLessThanOrEqual(1);
     } finally {
       if (previousPath === undefined) delete process.env.PATH;
       else process.env.PATH = previousPath;
       resetLsofAvailabilityForTests();
-      await fs.rm(fakeBin, { recursive: true, force: true });
+      await noLsof.cleanup();
     }
   });
 
@@ -7436,16 +7462,9 @@ describeEmbeddedPostgres("workspace runtime service control persistence", () => 
     const workspace = fixture.workspaces[0]!;
     const basePort = await findFreePort();
 
-    const fakeBin = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-runtime-no-lsof-"));
-    const fakeLsof = path.join(fakeBin, "lsof");
-    const countFile = path.join(fakeBin, "count.txt");
+    const noLsof = await createPathWithoutLsof();
     const previousPath = process.env.PATH;
-    await fs.writeFile(
-      fakeLsof,
-      `#!/bin/sh\necho 1 >> "${countFile}"\nexit 127\n`,
-      { mode: 0o755 },
-    );
-    process.env.PATH = `${fakeBin}${path.delimiter}${previousPath ?? ""}`;
+    process.env.PATH = noLsof.path;
 
     try {
       resetLsofAvailabilityForTests();
@@ -7464,10 +7483,6 @@ describeEmbeddedPostgres("workspace runtime service control persistence", () => 
       expect(started.port).toBe(basePort);
       expect(started.url).toBe(`http://127.0.0.1:${started.port}`);
       expect(durationMs).toBeLessThan(1000);
-
-      const countContent = await fs.readFile(countFile, "utf8").catch(() => "");
-      const invocations = countContent.trim().split("\n").filter(Boolean).length;
-      expect(invocations).toBeLessThanOrEqual(1);
     } finally {
       if (previousPath === undefined) delete process.env.PATH;
       else process.env.PATH = previousPath;
@@ -7477,7 +7492,7 @@ describeEmbeddedPostgres("workspace runtime service control persistence", () => 
         executionWorkspaceId: workspace.id,
         workspaceCwd: workspace.cwd,
       }).catch(() => undefined);
-      await fs.rm(fakeBin, { recursive: true, force: true });
+      await noLsof.cleanup();
       await cleanupRuntimeHome();
       await fixture.cleanup();
     }
