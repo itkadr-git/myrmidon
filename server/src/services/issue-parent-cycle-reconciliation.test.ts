@@ -22,6 +22,18 @@ describe("reconcileIssueParentCyclesOnStartup", () => {
     expect(logActivity).toHaveBeenCalledTimes(3);
     expect(logActivity).toHaveBeenCalledWith(db, expect.objectContaining({
       action: "issue.parent_cycle_repaired",
+      entityId: "self",
+      details: { previousParentId: "self" },
+    }));
+    expect(logActivity).toHaveBeenCalledWith(db, expect.objectContaining({
+      action: "issue.parent_cycle_repaired",
+      entityId: "a",
+      details: { previousParentId: "b" },
+    }));
+    expect(logActivity).toHaveBeenCalledWith(db, expect.objectContaining({
+      action: "issue.parent_cycle_repaired",
+      entityId: "b",
+      details: { previousParentId: "a" },
     }));
   });
 });
