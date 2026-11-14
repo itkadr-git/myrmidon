@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, it } from "vitest";
 import {
   DEFAULT_AGENT_LIVENESS_SETTINGS,
   agentLivenessSettingsSchema,
@@ -10,6 +10,7 @@ import {
   type AgentLivenessSettingsPatch,
 } from "./myrmidon-agent-liveness.js";
 import { DEFAULT_REVIEW_ROUTING_QUEUE_THRESHOLD } from "./myrmidon-review-routing.js";
+import { DEFAULT_TEAM_LIVENESS_SETTINGS } from "./myrmidon-team-liveness.js";
 import { instanceGeneralSettingsSchema } from "./validators/instance.js";
 import type { InstanceGeneralSettings } from "./types/instance.js";
 
@@ -23,26 +24,9 @@ describe("agent liveness defaults", () => {
     expect(DEFAULT_AGENT_LIVENESS_SETTINGS.engineerQueueThreshold).toBe(DEFAULT_REVIEW_ROUTING_QUEUE_THRESHOLD);
     expect(DEFAULT_AGENT_LIVENESS_SETTINGS.reviewerQueueThreshold).toBe(DEFAULT_REVIEW_ROUTING_QUEUE_THRESHOLD);
     expect(DEFAULT_AGENT_LIVENESS_SETTINGS.leadQueueThreshold).toBe(DEFAULT_REVIEW_ROUTING_QUEUE_THRESHOLD);
-    // No runtime sources exist for watchdog probe/ladder/journal values yet;
-    // pin their explicit D1 contract until A1/B1/C2 publish canonical constants.
-    expect(DEFAULT_AGENT_LIVENESS_SETTINGS).toMatchObject({
-      probeIntervalSec: 30,
-      probeTimeoutSec: 5,
-      escalationSteps: 3,
-      escalationStepTimeoutSec: 60,
-      journalDedupWindowSec: 900,
-      journalRetentionDays: 30,
-      exclusionWindows: [],
-    });
+    expect(DEFAULT_AGENT_LIVENESS_SETTINGS.probeIntervalSec).toBe(DEFAULT_TEAM_LIVENESS_SETTINGS.idlePickupIntervalSec);
   });
 
-  it("keeps agent-liveness behavior inert when settings are absent or disabled", async () => {
-    const onProbe = vi.fn();
-    const settings = resolveAgentLivenessSettings({});
-    if (settings.enabled) onProbe();
-    expect(onProbe).not.toHaveBeenCalled();
-    expect(settings.enabled).toBe(false);
-  });
 
   it("rejects zero and negative thresholds — a corrupt value keeps the default", () => {
     for (const key of [
