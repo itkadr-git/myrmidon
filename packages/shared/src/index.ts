@@ -1287,6 +1287,7 @@ export type {
   CostByProviderModel,
   CostByBiller,
   CostByAgentModel,
+  CostByStepClass,
   CostWindowSpendRow,
   CostByProject,
   CostByDay,
