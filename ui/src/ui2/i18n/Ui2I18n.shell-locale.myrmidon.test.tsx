@@ -66,6 +66,20 @@ async function flushTicks(times = 5) {
   }
 }
 
+/** Wait until the predicate holds or `tries` macrotask turns elapse.
+ * The provider's mount effects run through React's scheduler (macrotasks)
+ * and the server GET resolves across microtasks, so the applied state can
+ * land after a single `setTimeout(0)` when the runner is loaded; polling
+ * keeps the contract assertions deterministic without changing timing
+ * semantics of the code under test. */
+async function waitUntil(predicate: () => boolean, tries = 50): Promise<void> {
+  for (let attempt = 0; attempt < tries && !predicate(); attempt += 1) {
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+  }
+}
+
 let container: HTMLDivElement;
 let shellRoot: HTMLDivElement;
 let root: Root | null;
@@ -130,9 +144,7 @@ describe("myrmidon(UI2) shell language contract", () => {
     // en is observable.
     i18nMock.language = "ru";
     renderTree("en");
-    await act(async () => {
-      await new Promise((resolve) => setTimeout(resolve, 0));
-    });
+    await waitUntil(() => i18nMock.changeLanguage.mock.calls.length > 0);
     await flushTicks();
     expect(i18nMock.changeLanguage).toHaveBeenCalledWith("en");
     expect(shellRoot.getAttribute("lang")).toBe("en");
@@ -171,10 +183,8 @@ describe("myrmidon(UI2) shell language contract", () => {
     apiMock.get.mockResolvedValue({ language: "ru", updatedAt: "2026-10-03T00:00:00.000Z" });
     renderTree("en");
     // Mount effect is async (post-paint) and the server GET resolves across
-    // several microtask turns; wait a macrotask then drain the microtask queue.
-    await act(async () => {
-      await new Promise((resolve) => setTimeout(resolve, 0));
-    });
+    // several microtask turns; wait until the state settles across macrotasks.
+    await waitUntil(() => probe.locale === "ru");
     await flushTicks();
     expect(probe.locale).toBe("ru");
     expect(i18nMock.changeLanguage).toHaveBeenCalledWith("ru");
