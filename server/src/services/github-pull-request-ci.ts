@@ -4,7 +4,12 @@ import { issueWorkProducts, issues, issueComments } from "@myrmidon/db";
 import { DEFAULT_GITHUB_TOKEN_SECRET_NAMES } from "./git-credentials.js";
 import { repositoryHasHostedCi, NO_HOSTED_CI_SUMMARY } from "./github-hosted-ci.js";
 import type { FetchLike } from "./github-external-object-provider.js";
-import { resetGitHubObjectCacheForTests, resolveGitHubRepositoryToken } from "./github-external-object-provider.js";
+import {
+  resetGitHubObjectCacheForTests,
+  resolveGitHubRepositoryToken,
+  JOB_LOG_APP_PERMISSIONS,
+} from "./github-external-object-provider.js";
+import { sanitizeSecrets } from "@myrmidon/shared";
 import type { GitHubPullRequestReference } from "./github-pull-request-merge.js";
 import {
   createPullRequestMergeDetailsResolver,
@@ -95,6 +100,13 @@ export interface PullRequestCiResult {
    */
   cancelledJobs?: PullRequestFailedJob[];
   runs: PullRequestCiJob[];
+  ciFailureTails?: Array<{
+    jobId: number;
+    jobName: string;
+    runId?: number | null;
+    logTail?: string | null;
+    unavailableReason?: string | null;
+  }>;
 }
 
 export const DEFAULT_REQUIRED_CHECKS: readonly string[] = ["CI result", "hot files review"];
@@ -104,6 +116,79 @@ export interface SummarizeCheckRunsOptions {
   repository?: string;
   pullNumber?: number;
   requiredChecks?: readonly string[];
+}
+
+export const runTimeKey = (run: PullRequestCiJob): number => {
+  const raw = run.startedAt ?? run.completedAt;
+  const t = raw ? new Date(raw).getTime() : Number.NaN;
+  return Number.isNaN(t) ? Number.POSITIVE_INFINITY : t;
+};
+
+export const compareRuns = (x: PullRequestCiJob, y: PullRequestCiJob): number => {
+  const a = runTimeKey(x);
+  const b = runTimeKey(y);
+  if (a !== b) return a > b ? 1 : -1;
+  return x.id - y.id;
+};
+
+export const latestOf = (list: readonly PullRequestCiJob[]): PullRequestCiJob | null =>
+  list.reduce<PullRequestCiJob | null>((best, r) => (!best || compareRuns(r, best) > 0 ? r : best), null);
+
+export const workflowRunIdOf = (run: PullRequestCiJob): string | null =>
+  /\/actions\/runs\/(\d+)/.exec(run.url ?? "")?.[1] ?? null;
+
+// myrmidon(CI-SNAPSHOT-CANCELLED): per check name (trimmed, case-insensitive)
+// exactly one record represents the check on this head - the last COMPLETED
+// record that carries a verdict (success / failure / timed_out /
+// action_required ...). Earlier records of the same name (cancelled by a
+// replaced run, failed before a re-run) are superseded. Rules:
+//  - a later `skipped` / `neutral` never displaces an earlier verdict (a
+//    skipped gate job of a cancelled re-run must not hide a real failure);
+//  - a later `cancelled` never displaces an earlier verdict either: the
+//    failure of the last finished run stays visible;
+//  - a record still queued / in progress that is newer than the last verdict
+//    is the re-run in flight and represents the check (pending);
+//  - with no verdict at all, the newest of the `cancelled` / `skipped` /
+//    `neutral` records is taken; `skipped` replaces an older `cancelled` only
+//    when it belongs to another (known) workflow run, otherwise the cancel
+//    stays (a skipped gate of a cancelled run is not a replacement).
+// Order is one deterministic key: time (`startedAt`, else `completedAt`; a
+// record without time, e.g. queued, is the newest), then `id`.
+export const pickRepresentativeRun = (group: readonly PullRequestCiJob[]): PullRequestCiJob => {
+  const inflight = latestOf(group.filter((r) => r.status !== "completed"));
+  const completed = group.filter((r) => r.status === "completed");
+  const verdict = latestOf(
+    completed.filter((r) => r.conclusion !== "cancelled" && r.conclusion !== "skipped" && r.conclusion !== "neutral"),
+  );
+  if (inflight && (!verdict || compareRuns(inflight, verdict) > 0)) return inflight;
+  if (verdict) return verdict;
+  const cancelled = latestOf(completed.filter((r) => r.conclusion === "cancelled"));
+  const quiet = latestOf(completed.filter((r) => r.conclusion !== "cancelled"));
+  if (cancelled && quiet) {
+    const cancelledRun = workflowRunIdOf(cancelled);
+    const quietRun = workflowRunIdOf(quiet);
+    const quietIsReplacement =
+      cancelledRun !== null && quietRun !== null && cancelledRun !== quietRun && compareRuns(quiet, cancelled) > 0;
+    return quietIsReplacement ? quiet : cancelled;
+  }
+  return (cancelled ?? quiet ?? inflight) as PullRequestCiJob;
+};
+
+export const pickRepresentative = pickRepresentativeRun;
+
+export function selectRepresentativeRuns(
+  runs: readonly PullRequestCiJob[],
+): PullRequestCiJob[] {
+  const groupsByName = new Map<string, PullRequestCiJob[]>();
+  for (const run of runs) {
+    const key = run.name.trim().toLowerCase();
+    const group = groupsByName.get(key);
+    if (group) group.push(run);
+    else groupsByName.set(key, [run]);
+  }
+  const representatives = new Set<PullRequestCiJob>();
+  for (const group of groupsByName.values()) representatives.add(pickRepresentativeRun(group));
+  return runs.filter((r) => representatives.has(r));
 }
 
 export function summarizeCheckRuns(
@@ -170,63 +255,8 @@ export function summarizeCheckRuns(
   // exactly one record represents the check on this head - the last COMPLETED
   // record that carries a verdict (success / failure / timed_out /
   // action_required ...). Earlier records of the same name (cancelled by a
-  // replaced run, failed before a re-run) are superseded. Rules:
-  //  - a later `skipped` / `neutral` never displaces an earlier verdict (a
-  //    skipped gate job of a cancelled re-run must not hide a real failure);
-  //  - a later `cancelled` never displaces an earlier verdict either: the
-  //    failure of the last finished run stays visible;
-  //  - a record still queued / in progress that is newer than the last verdict
-  //    is the re-run in flight and represents the check (pending);
-  //  - with no verdict at all, the newest of the `cancelled` / `skipped` /
-  //    `neutral` records is taken; `skipped` replaces an older `cancelled` only
-  //    when it belongs to another (known) workflow run, otherwise the cancel
-  //    stays (a skipped gate of a cancelled run is not a replacement).
-  // Order is one deterministic key: time (`startedAt`, else `completedAt`; a
-  // record without time, e.g. queued, is the newest), then `id`.
-  const runTimeKey = (run: PullRequestCiJob): number => {
-    const raw = run.startedAt ?? run.completedAt;
-    const t = raw ? new Date(raw).getTime() : Number.NaN;
-    return Number.isNaN(t) ? Number.POSITIVE_INFINITY : t;
-  };
-  const compareRuns = (x: PullRequestCiJob, y: PullRequestCiJob): number => {
-    const a = runTimeKey(x);
-    const b = runTimeKey(y);
-    if (a !== b) return a > b ? 1 : -1;
-    return x.id - y.id;
-  };
-  const latestOf = (list: PullRequestCiJob[]): PullRequestCiJob | null =>
-    list.reduce<PullRequestCiJob | null>((best, r) => (!best || compareRuns(r, best) > 0 ? r : best), null);
-  const workflowRunIdOf = (run: PullRequestCiJob): string | null =>
-    /\/actions\/runs\/(\d+)/.exec(run.url ?? "")?.[1] ?? null;
-  const pickRepresentative = (group: PullRequestCiJob[]): PullRequestCiJob => {
-    const inflight = latestOf(group.filter((r) => r.status !== "completed"));
-    const completed = group.filter((r) => r.status === "completed");
-    const verdict = latestOf(
-      completed.filter((r) => r.conclusion !== "cancelled" && r.conclusion !== "skipped" && r.conclusion !== "neutral"),
-    );
-    if (inflight && (!verdict || compareRuns(inflight, verdict) > 0)) return inflight;
-    if (verdict) return verdict;
-    const cancelled = latestOf(completed.filter((r) => r.conclusion === "cancelled"));
-    const quiet = latestOf(completed.filter((r) => r.conclusion !== "cancelled"));
-    if (cancelled && quiet) {
-      const cancelledRun = workflowRunIdOf(cancelled);
-      const quietRun = workflowRunIdOf(quiet);
-      const quietIsReplacement =
-        cancelledRun !== null && quietRun !== null && cancelledRun !== quietRun && compareRuns(quiet, cancelled) > 0;
-      return quietIsReplacement ? quiet : cancelled;
-    }
-    return (cancelled ?? quiet ?? inflight) as PullRequestCiJob;
-  };
-  const groupsByName = new Map<string, PullRequestCiJob[]>();
-  for (const run of runs) {
-    const key = run.name.trim().toLowerCase();
-    const group = groupsByName.get(key);
-    if (group) group.push(run);
-    else groupsByName.set(key, [run]);
-  }
-  const representatives = new Set<PullRequestCiJob>();
-  for (const group of groupsByName.values()) representatives.add(pickRepresentative(group));
-  const effectiveRuns = runs.filter((r) => representatives.has(r));
+  // replaced run, failed before a re-run) are superseded.
+  const effectiveRuns = selectRepresentativeRuns(runs);
   const totalRuns = effectiveRuns.length;
 
   const configuredRequired =
@@ -390,6 +420,289 @@ export type CheckRunsFetchResult = PullRequestCiJob[] & {
 
 function getResponseHeader(response: Response, name: string): string | null {
   return response.headers?.get(name) ?? null;
+}
+
+export function extractActionsRunId(url: string | null | undefined): number | null {
+  if (!url) return null;
+  const match = url.match(/\/actions\/runs\/(\d+)/);
+  if (!match?.[1]) return null;
+  const parsed = parseInt(match[1], 10);
+  return Number.isSafeInteger(parsed) && parsed > 0 ? parsed : null;
+}
+
+const GITHUB_USER_AGENT = "myrmidon-ci-resolver";
+
+export const MAX_CI_FAILURE_TAILS_JOBS = 3;
+export const MAX_CI_FAILURE_TAIL_LINES = 60;
+export const MAX_CI_FAILURE_TAILS_TOTAL_CHARS = 12000;
+
+interface CachedJobLog {
+  text?: string;
+  unavailableReason?: string;
+  expiresAt: number;
+}
+const jobLogCache = new Map<string, CachedJobLog>();
+const JOB_LOG_CACHE_MAX_ENTRIES = 200;
+const JOB_LOG_CACHE_SUCCESS_TTL_MS = 10 * 60 * 1000; // 10 minutes
+const JOB_LOG_CACHE_FAILURE_TTL_MS = 60 * 1000; // 1 minute
+
+export function stripAnsiCodes(text: string): string {
+  return text
+    .replace(/\u001B\][^\u0007]*(?:\u0007|\u001B\\)/g, "")
+    .replace(/\u001B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])/g, "");
+}
+
+const MAX_JOB_LOG_SCAN_CHARS = 500_000;
+const JOB_LOG_LINES_AFTER_ERROR = 4;
+
+/**
+ * ANSI stripped, secrets masked (on the whole scanned text, before windowing, so
+ * multi-line secrets are not cut), then a window of at most `maxLines` lines ending
+ * shortly after the last `##[error]` line (skips trailing "Post job cleanup" noise).
+ * Without `##[error]` the window is the last `maxLines` lines.
+ */
+export function formatJobLogTail(rawLog: string, maxLines = MAX_CI_FAILURE_TAIL_LINES): string {
+  const scanned = rawLog.length > MAX_JOB_LOG_SCAN_CHARS ? rawLog.slice(-MAX_JOB_LOG_SCAN_CHARS) : rawLog;
+  const stripped = sanitizeSecrets(stripAnsiCodes(scanned));
+  const lines = stripped.split(/\r?\n/);
+  let end = lines.length;
+  for (let i = lines.length - 1; i >= 0; i--) {
+    if (lines[i]!.includes("##[error]")) {
+      end = Math.min(lines.length, i + 1 + JOB_LOG_LINES_AFTER_ERROR);
+      break;
+    }
+  }
+  const start = Math.max(0, end - maxLines);
+  return lines.slice(start, end).join("\n").trim();
+}
+
+export function enforceTotalCharsCap(
+  tails: Array<{ logTail?: string | null }>,
+  maxChars: number = MAX_CI_FAILURE_TAILS_TOTAL_CHARS,
+): void {
+  const tailsWithText = tails.filter((t): t is typeof t & { logTail: string } => Boolean(t.logTail));
+  if (tailsWithText.length === 0) return;
+
+  const totalLength = tailsWithText.reduce((sum, t) => sum + t.logTail.length, 0);
+  if (totalLength <= maxChars) return;
+
+  const perTailBudget = Math.floor(maxChars / tailsWithText.length);
+  for (const item of tailsWithText) {
+    if (item.logTail.length > perTailBudget) {
+      const truncatedNotice = "...[truncated]...\n";
+      const keepLength = Math.max(0, perTailBudget - truncatedNotice.length);
+      item.logTail = truncatedNotice + item.logTail.slice(-keepLength);
+    }
+  }
+}
+
+export async function fetchJobLog(
+  owner: string,
+  repo: string,
+  jobId: number,
+  token: string | null,
+  fetchImpl: FetchLike = fetch,
+  options?: { timeoutMs?: number; signal?: AbortSignal },
+): Promise<{ ok: boolean; status: number; text?: string; unavailableReason?: string }> {
+  if (!token) {
+    return { ok: false, status: 401, unavailableReason: "no GitHub token available" };
+  }
+  const url = `https://api.github.com/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/actions/jobs/${jobId}/logs`;
+  const timeoutMs = options?.timeoutMs ?? GITHUB_REQUEST_TIMEOUT_MS;
+  const controller = new AbortController();
+  let timedOut = false;
+  const timer = setTimeout(() => {
+    timedOut = true;
+    controller.abort(new Error(`request timed out after ${timeoutMs}ms`));
+  }, timeoutMs);
+
+  let removeSignalListener: (() => void) | undefined;
+  if (options?.signal) {
+    if (options.signal.aborted) {
+      controller.abort(options.signal.reason);
+    } else {
+      const onAbort = () => {
+        controller.abort(options.signal!.reason);
+      };
+      options.signal.addEventListener("abort", onAbort, { once: true });
+      removeSignalListener = () => options.signal!.removeEventListener("abort", onAbort);
+    }
+  }
+
+  try {
+    const fetchPromise = fetchImpl(url, {
+      method: "GET",
+      headers: {
+        Authorization: `Bearer ${token}`,
+        Accept: "application/vnd.github+json",
+        "User-Agent": GITHUB_USER_AGENT,
+      },
+      redirect: "follow",
+      signal: controller.signal,
+    });
+
+    const abortPromise = new Promise<never>((_, reject) => {
+      if (controller.signal.aborted) {
+        reject(controller.signal.reason ?? new Error("aborted"));
+      } else {
+        controller.signal.addEventListener(
+          "abort",
+          () => reject(controller.signal.reason ?? new Error("aborted")),
+          { once: true },
+        );
+      }
+    });
+
+    const res = await Promise.race([fetchPromise, abortPromise]);
+    recordGitHubRequest("ci-resolver", res as Response);
+
+    if (res.status === 403 || res.status === 401) {
+      return { ok: false, status: res.status, unavailableReason: "token lacks actions:read permission or access denied (403)" };
+    }
+    if (res.status === 404) {
+      return { ok: false, status: 404, unavailableReason: "job log not found or expired (404)" };
+    }
+    if (res.status === 429) {
+      return { ok: false, status: 429, unavailableReason: "GitHub rate limit exceeded" };
+    }
+    if (!res.ok) {
+      return { ok: false, status: res.status, unavailableReason: `HTTP ${res.status}` };
+    }
+
+    const text = await res.text();
+    return { ok: true, status: res.status, text };
+  } catch (err) {
+    if (timedOut) {
+      return { ok: false, status: 0, unavailableReason: `request timed out after ${timeoutMs}ms` };
+    }
+    if (options?.signal?.aborted) {
+      const reason = options.signal.reason instanceof Error
+        ? options.signal.reason.message
+        : String(options.signal.reason ?? "request aborted");
+      return { ok: false, status: 0, unavailableReason: `request aborted: ${reason}` };
+    }
+    const reason = err instanceof Error ? err.message : String(err);
+    return { ok: false, status: 0, unavailableReason: `fetch failed: ${reason}` };
+  } finally {
+    clearTimeout(timer);
+    removeSignalListener?.();
+  }
+}
+
+export async function resolveCiFailureTails(
+  failedJobs: readonly PullRequestFailedJob[],
+  options: {
+    owner: string;
+    repo: string;
+    token: string | null;
+    fetchImpl: FetchLike;
+    signal?: AbortSignal;
+    timeoutMs?: number;
+  },
+): Promise<Array<{
+  jobId: number;
+  jobName: string;
+  runId?: number | null;
+  logTail?: string | null;
+  unavailableReason?: string | null;
+}>> {
+  const targetJobs = failedJobs.slice(0, MAX_CI_FAILURE_TAILS_JOBS);
+  const results: Array<{
+    jobId: number;
+    jobName: string;
+    runId?: number | null;
+    logTail?: string | null;
+    unavailableReason?: string | null;
+  }> = await Promise.all(
+    targetJobs.map(async (job) => {
+      const runId = extractActionsRunId(job.url);
+      const cacheKey = `${options.owner.toLowerCase()}/${options.repo.toLowerCase()}#${job.id}`;
+      const cached = jobLogCache.get(cacheKey);
+      if (cached && cached.expiresAt > Date.now()) {
+        return {
+          jobId: job.id,
+          jobName: job.name,
+          runId: runId ?? null,
+          logTail: cached.text ?? null,
+          unavailableReason: cached.unavailableReason ?? null,
+        };
+      }
+
+      if (isGitHubRateLimited()) {
+        return {
+          jobId: job.id,
+          jobName: job.name,
+          runId: runId ?? null,
+          logTail: null,
+          unavailableReason: `GitHub rate limit until ${getGitHubRateLimitResetTime() ?? "unknown"}`,
+        };
+      }
+
+      const res = await fetchJobLog(
+        options.owner,
+        options.repo,
+        job.id,
+        options.token,
+        options.fetchImpl,
+        {
+          signal: options.signal,
+          timeoutMs: options.timeoutMs ?? GITHUB_REQUEST_TIMEOUT_MS,
+        },
+      );
+
+      if (res.ok && res.text) {
+        const formatted = formatJobLogTail(res.text, MAX_CI_FAILURE_TAIL_LINES);
+        const sanitized = sanitizeSecrets(formatted);
+        if (!sanitized) {
+          return {
+            jobId: job.id,
+            jobName: job.name,
+            runId: runId ?? null,
+            logTail: null,
+            unavailableReason: "job log empty",
+          };
+        }
+
+        if (jobLogCache.size >= JOB_LOG_CACHE_MAX_ENTRIES) {
+          const oldestKey = jobLogCache.keys().next().value;
+          if (oldestKey !== undefined) jobLogCache.delete(oldestKey);
+        }
+        jobLogCache.set(cacheKey, {
+          text: sanitized,
+          expiresAt: Date.now() + JOB_LOG_CACHE_SUCCESS_TTL_MS,
+        });
+
+        return {
+          jobId: job.id,
+          jobName: job.name,
+          runId: runId ?? null,
+          logTail: sanitized,
+        };
+      } else {
+        const reason = res.unavailableReason ?? "job log unavailable";
+        if (jobLogCache.size >= JOB_LOG_CACHE_MAX_ENTRIES) {
+          const oldestKey = jobLogCache.keys().next().value;
+          if (oldestKey !== undefined) jobLogCache.delete(oldestKey);
+        }
+        jobLogCache.set(cacheKey, {
+          unavailableReason: reason,
+          expiresAt: Date.now() + JOB_LOG_CACHE_FAILURE_TTL_MS,
+        });
+
+        return {
+          jobId: job.id,
+          jobName: job.name,
+          runId: runId ?? null,
+          logTail: null,
+          unavailableReason: reason,
+        };
+      }
+    }),
+  );
+
+  enforceTotalCharsCap(results, MAX_CI_FAILURE_TAILS_TOTAL_CHARS);
+
+  return results;
 }
 
 export async function fetchCommitCheckRuns(
@@ -649,6 +962,7 @@ export function clearCiCacheForTests(): void {
   ciCache.clear();
   prHeadCache.clear();
   checkRunsCache.clear();
+  jobLogCache.clear();
   resetGitHubRateLimitForTests();
   resetGitHubObjectCacheForTests();
 }
@@ -1266,8 +1580,16 @@ export function summarizeHeadLaneEvidence(
   options?: { headSha?: string | null },
 ): PullRequestHeadLaneEvidence[] {
   const headSha = options?.headSha ?? null;
-  const testRuns = runs.filter((r) => isTestCheckRun(r.name));
-  const lintRuns = runs.filter((r) => isLintCheckRun(r.name));
+  // myrmidon(LANE-EVIDENCE-CANCELLED-2, OPE-13089): apply the same representative check selection
+  // as summarizeCheckRuns so cancelled checks superseded by newer runs do not keep the lane red.
+  const effectiveRuns = selectRepresentativeRuns(runs);
+  const testRuns = effectiveRuns.filter((r) => isTestCheckRun(r.name));
+  const lintRuns = effectiveRuns.filter((r) => isLintCheckRun(r.name));
+
+  const successfulCiResults = runs.filter(
+    (r) => r.name.trim().toLowerCase() === "ci result" && r.conclusion === "success",
+  );
+  const latestSuccessfulCiResult = latestOf(successfulCiResults);
 
   function summarizeLane(
     lane: PullRequestHeadLane,
@@ -1300,13 +1622,22 @@ export function summarizeHeadLaneEvidence(
       };
     }
 
-    const failedRun = laneRuns.find(
-      (r) =>
-        r.conclusion &&
-        r.conclusion !== "success" &&
-        r.conclusion !== "neutral" &&
-        r.conclusion !== "skipped",
-    );
+    const failedRun = laneRuns.find((r) => {
+      if (!r.conclusion || r.conclusion === "success" || r.conclusion === "neutral" || r.conclusion === "skipped") {
+        return false;
+      }
+      // myrmidon(LANE-EVIDENCE-CANCELLED, OPE-13072): a cancelled check does not
+      // make the lane red if it is not newer than a successful CI result of the same head.
+      if (
+        r.conclusion === "cancelled" &&
+        latestSuccessfulCiResult &&
+        compareRuns(r, latestSuccessfulCiResult) <= 0
+      ) {
+        return false;
+      }
+      return true;
+    });
+
     if (failedRun) {
       return {
         lane,
@@ -1335,7 +1666,7 @@ export function summarizeHeadLaneEvidence(
       state: "success",
       status: "completed",
       conclusion: "success",
-      finishedAt: latestCompletedAt,
+      finishedAt: latestCompletedAt ?? latestSuccessfulCiResult?.completedAt ?? null,
     };
   }
 

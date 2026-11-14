@@ -31,6 +31,10 @@ export const RUN_GUARD_STOP_NEEDS_INPUT_WAKE_REASON = "run_guard_stop_needs_inpu
 export const RUN_GUARD_STOP_NEEDS_INPUT_SOURCE = "myrmidon.run_guard_stop_needs_input";
 /** Name of the fallback recipient when the assignee has no usable manager. */
 export const RUN_GUARD_STOP_FALLBACK_AGENT_NAME = "adm";
+/** Maximum number of reports_to steps to walk up when searching for a lead or architect. */
+export const RUN_GUARD_STOP_MAX_ESCALATION_STEPS = 5;
+/** Roles that qualify as run guard stop wake recipients (Alex 14.11). */
+export const RUN_GUARD_STOP_TARGET_ROLES = new Set(["lead", "architect"]);
 
 interface EscalationIssue {
   id: string;
@@ -67,8 +71,9 @@ export function buildRunGuardStopWakeIdempotencyKey(input: { issueId: string; ru
 }
 
 /**
- * The agent to wake: the assignee's `reports_to` when it is another invokable agent of
- * the company, else the invokable agent named `adm`, else null (nobody is woken).
+ * The agent to wake: the nearest agent above the assignee in the `reports_to` chain
+ * (at most 5 steps, without cycles) whose role is in `{lead, architect}` and who is
+ * invokable; else the invokable agent named `adm`, else null (nobody is woken).
  * The assignee itself is never the recipient, and an assignee that is `adm` itself has
  * nobody above it: null.
  */
@@ -80,14 +85,28 @@ export async function resolveRunGuardStopWakeTargetId(db: Db, issue: EscalationI
     .where(and(eq(agents.id, issue.assigneeAgentId), eq(agents.companyId, issue.companyId)))
     .limit(1);
   if (!assignee || isFallbackAgentName(assignee.name)) return null;
-  if (assignee.reportsTo && assignee.reportsTo !== assignee.id) {
+
+  let currentId = assignee.reportsTo;
+  const visited = new Set<string>([assignee.id]);
+  let steps = 0;
+
+  while (currentId && !visited.has(currentId) && steps < RUN_GUARD_STOP_MAX_ESCALATION_STEPS) {
+    visited.add(currentId);
+    steps++;
     const [manager] = await db
-      .select({ id: agents.id, status: agents.status })
+      .select({ id: agents.id, status: agents.status, role: agents.role, reportsTo: agents.reportsTo })
       .from(agents)
-      .where(and(eq(agents.id, assignee.reportsTo), eq(agents.companyId, issue.companyId)))
+      .where(and(eq(agents.id, currentId), eq(agents.companyId, issue.companyId)))
       .limit(1);
-    if (manager && isAgentStatusInvokable(manager.status)) return manager.id;
+    if (!manager) break;
+
+    const role = (manager.role ?? "").trim().toLowerCase();
+    if (RUN_GUARD_STOP_TARGET_ROLES.has(role) && isAgentStatusInvokable(manager.status)) {
+      return manager.id;
+    }
+    currentId = manager.reportsTo;
   }
+
   const fallbacks = await db
     .select({ id: agents.id, status: agents.status })
     .from(agents)
@@ -102,9 +121,11 @@ export async function resolveRunGuardStopWakeTargetId(db: Db, issue: EscalationI
 }
 
 /**
- * True when `agentId` is a legitimate recipient of the wake for this issue: the
- * assignee's `reports_to`, or the agent named `adm` (never the assignee itself). The
- * run dispatch asks it before it lets a non-assignee run start on the assignee's issue.
+ * True when `agentId` is a legitimate recipient of the wake for this issue: an
+ * agent in the assignee's `reports_to` chain (at most 5 steps, without cycles)
+ * whose role is in `{lead, architect}`, or the agent named `adm` (never the
+ * assignee itself). The run dispatch asks it before it lets a non-assignee run start
+ * on the assignee's issue.
  */
 export async function isRunGuardStopWakeRecipient(
   db: Db,
@@ -112,13 +133,39 @@ export async function isRunGuardStopWakeRecipient(
 ): Promise<boolean> {
   if (!input.assigneeAgentId || input.assigneeAgentId === input.agentId) return false;
   const rows = await db
-    .select({ id: agents.id, name: agents.name, reportsTo: agents.reportsTo })
+    .select({ id: agents.id, name: agents.name, reportsTo: agents.reportsTo, role: agents.role })
     .from(agents)
     .where(and(eq(agents.companyId, input.companyId), inArray(agents.id, [input.assigneeAgentId, input.agentId])));
   const assignee = rows.find((row) => row.id === input.assigneeAgentId);
   const candidate = rows.find((row) => row.id === input.agentId);
   if (!assignee || !candidate || isFallbackAgentName(assignee.name)) return false;
-  return assignee.reportsTo === candidate.id || isFallbackAgentName(candidate.name);
+  if (isFallbackAgentName(candidate.name)) return true;
+
+  const candidateRole = (candidate.role ?? "").trim().toLowerCase();
+  if (!RUN_GUARD_STOP_TARGET_ROLES.has(candidateRole)) {
+    return false;
+  }
+
+  let currentId = assignee.reportsTo;
+  const visited = new Set<string>([assignee.id]);
+  let steps = 0;
+
+  while (currentId && !visited.has(currentId) && steps < RUN_GUARD_STOP_MAX_ESCALATION_STEPS) {
+    if (currentId === candidate.id) {
+      return true;
+    }
+    visited.add(currentId);
+    steps++;
+    const [manager] = await db
+      .select({ id: agents.id, reportsTo: agents.reportsTo })
+      .from(agents)
+      .where(and(eq(agents.id, currentId), eq(agents.companyId, input.companyId)))
+      .limit(1);
+    if (!manager) break;
+    currentId = manager.reportsTo;
+  }
+
+  return false;
 }
 
 /**

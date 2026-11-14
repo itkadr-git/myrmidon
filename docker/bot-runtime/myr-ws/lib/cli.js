@@ -23,7 +23,7 @@ function requireVerb(name) {
 const ADAPTERS = {
   open: (mod) => ({ positionals, flags, env }) =>
     mod.open(
-      mod.resolveOpenRequest({ positional: positionals, base: flags.base ?? null, branch: flags.branch ?? null, repository: flags.repository ?? null, scratch: flags.scratch === true, scratchName: null, json: false }),
+      mod.resolveOpenRequest({ positional: positionals, base: flags.base ?? null, branch: flags.branch ?? null, repository: flags.repository ?? null, scratch: flags.scratch === true, scratchName: null, json: false, review: flags.review === true }),
       { env },
     ),
   list: (mod) => mod.list,
@@ -54,7 +54,7 @@ function notImplemented(name) {
 }
 
 const USAGE =
-  "usage: myr-ws <open <KEY> [owner/repo] [--repository owner/repo] [--base <ref>] [--branch <name>] [--scratch] | list | close <KEY> [owner/repo] [--force] | restore <KEY> [owner/repo] | repair [KEY]> [--json]";
+  "usage: myr-ws <open <KEY> [owner/repo] [--repository owner/repo] [--base <ref>] [--branch <name>] [--review] [--scratch] | list | close <KEY> [owner/repo] [--force] | restore <KEY> [owner/repo] | repair [KEY]> [--json]";
 
 /** Splits argv into { command, positionals, flags } (flags: --json, --scratch, --force, --base <ref>, --branch <name>, --repository owner/repo). */
 function parseArgs(argv) {
@@ -65,6 +65,7 @@ function parseArgs(argv) {
     if (a === "--json") flags.json = true;
     else if (a === "--scratch") flags.scratch = true;
     else if (a === "--force") flags.force = true;
+    else if (a === "--review") flags.review = true;
     else if (a === "--base") {
       const v = argv[++i];
       if (v === undefined || v.startsWith("--")) throw new MyrWsError(EXIT.usage, "--base needs a ref");

@@ -215,4 +215,74 @@ describe("agent session wake messages", () => {
       continuationSummary: { body: "engineer continuation notes" },
     });
   });
+
+  describe("starter pack (OPE-13086)", () => {
+    const starterPack = {
+      key: "starter-pack",
+      title: "Starter pack",
+      body: "Start in server/src/a.ts",
+      updatedAt: new Date("2026-11-14T00:00:00.000Z"),
+    };
+    const base = {
+      db: {
+        select: () => ({ from: () => ({ where: async () => [] }) }),
+      } as never,
+      companyId: "company-1",
+      issueSummary: {
+        id: "issue-1",
+        identifier: "PAP-1",
+        title: "Task",
+        description: "Brief",
+        status: "in_progress",
+        priority: "high",
+        workMode: "standard",
+      },
+    };
+
+    it("puts the starter-pack document into the assignee wake payload", async () => {
+      const wakePayload = await buildPaperclipWakePayload({
+        ...base,
+        contextSnapshot: { wakeReason: "issue_assigned", issueId: "issue-1" },
+        starterPack,
+      });
+      expect(wakePayload?.starterPack).toMatchObject({
+        key: "starter-pack",
+        body: "Start in server/src/a.ts",
+        bodyTruncated: false,
+      });
+      expect(renderPaperclipWakePrompt(wakePayload)).toContain(
+        "Starter pack (start here; do not re-explore the project):",
+      );
+    });
+
+    it("caps the body at 8000 characters and flags truncation", async () => {
+      const wakePayload = await buildPaperclipWakePayload({
+        ...base,
+        contextSnapshot: { wakeReason: "issue_assigned", issueId: "issue-1" },
+        starterPack: { ...starterPack, body: "b".repeat(9_000) },
+      });
+      expect(wakePayload?.starterPack).toMatchObject({ bodyTruncated: true });
+      expect((wakePayload?.starterPack as { body: string }).body).toHaveLength(8_000);
+    });
+
+    it("does not deliver it to an isolated reviewer run or without a document", async () => {
+      const reviewer = await buildPaperclipWakePayload({
+        ...base,
+        contextSnapshot: {
+          wakeReason: "issue_assigned",
+          issueId: "issue-1",
+          executionStage: { wakeRole: "reviewer" },
+        },
+        isolateReviewerWake: true,
+        starterPack,
+      });
+      expect(reviewer?.starterPack ?? null).toBeNull();
+
+      const none = await buildPaperclipWakePayload({
+        ...base,
+        contextSnapshot: { wakeReason: "issue_assigned", issueId: "issue-1" },
+      });
+      expect(none?.starterPack ?? null).toBeNull();
+    });
+  });
 });

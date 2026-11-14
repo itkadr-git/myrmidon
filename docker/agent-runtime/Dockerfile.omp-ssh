@@ -40,6 +40,8 @@ RUN apt-get update \
   && rm -rf /var/lib/apt/lists/* \
   && rm -f /etc/ssh/ssh_host_*
 
+COPY scripts/myrmidon/patch-omp-cli.mjs /usr/local/share/myrmidon/patch-omp-cli.mjs
+
 # release downloads retry: github.com answers 504 to anonymous downloads while
 # GitHub throttles anonymous traffic.
 RUN set -eu \
@@ -49,6 +51,12 @@ RUN set -eu \
   && install -m 0755 /tmp/bun-extract/bun-linux-x64/bun /usr/local/bin/bun \
   && rm -rf /tmp/bun.zip /tmp/bun-extract \
   && bun add --global "@oh-my-pi/pi-coding-agent@${OMP_VERSION}" \
+  && CLI_PATH="$(bun pm bin -g)/../@oh-my-pi/pi-coding-agent/dist/cli.js" \
+  && if [ ! -f "$CLI_PATH" ]; then CLI_PATH="$(find /usr/local -name cli.js -path "*/@oh-my-pi/pi-coding-agent/*" 2>/dev/null | head -1)"; fi \
+  && test -f "$CLI_PATH" \
+  && node /usr/local/share/myrmidon/patch-omp-cli.mjs "$CLI_PATH" \
+  && ! grep -q "RFC 2119 keywords:" "$CLI_PATH" \
+  && grep -q "Keywords MUST, REQUIRED, SHOULD, RECOMMENDED, MAY, OPTIONAL follow their usual meaning." "$CLI_PATH" \
   && test -x /usr/local/bin/omp \
   && npm install --global "pnpm@${PNPM_VERSION}" \
   && curl -fsSL --retry 5 --retry-all-errors --retry-delay 5 -o /tmp/gh.tar.gz "https://github.com/cli/cli/releases/download/v${GH_VERSION}/gh_${GH_VERSION}_linux_amd64.tar.gz" \
@@ -59,6 +67,7 @@ RUN set -eu \
 
 COPY docker/agent-runtime/omp-ssh/sshd_config /etc/ssh/omp-runner/sshd_config
 COPY docker/agent-runtime/omp-ssh/entrypoint.sh /usr/local/bin/omp-runner-entrypoint
+COPY docker/agent-runtime/omp-ssh/run-reap /usr/local/bin/run-reap
 
 # myrmidon(OPE-12722 OMP-RUNNER-SHARED-CACHE): the git wrapper at
 # /usr/local/bin/git shadows /usr/bin/git on the default PATH (and in every
@@ -81,8 +90,9 @@ COPY docker/agent-runtime/omp-ssh/git-reference/git /usr/local/bin/git
 # a locked account ("!" in /etc/shadow), key authentication included. "*" is
 # "no usable password", not "locked".
 RUN set -eu \
-  && chmod 0755 /usr/local/bin/omp-runner-entrypoint /usr/local/bin/git \
+  && chmod 0755 /usr/local/bin/omp-runner-entrypoint /usr/local/bin/git /usr/local/bin/run-reap \
   && chmod 0644 /etc/ssh/omp-runner/sshd_config \
+  && test -x /usr/local/bin/run-reap \
   && node --check /usr/local/bin/git \
   && test -x /usr/bin/node \
   && test "$(head -n 1 /usr/local/bin/git)" = '#!/usr/bin/node' \
