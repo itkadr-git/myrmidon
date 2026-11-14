@@ -691,6 +691,7 @@ import {
 import {
   continuationSummaryParksExecutor,
   getIssueContinuationSummaryDocument,
+  getIssueStarterPackDocument,
   refreshIssueContinuationSummary,
 } from "./issue-continuation-summary.js";
 import {
@@ -8133,6 +8134,9 @@ export async function attestReviewedExternalChatRun(input: {
   throw new Error("reviewed_chat_execution_binding_not_ready");
 }
 
+// OPE-13086: hard cap of the starter-pack body inside the wake payload.
+const MAX_WAKE_STARTER_PACK_BODY_CHARS = 8_000;
+
 export async function buildPaperclipWakePayload(input: {
   db: Db;
   companyId: string;
@@ -8140,6 +8144,14 @@ export async function buildPaperclipWakePayload(input: {
   runId?: string | null;
   contextSnapshot: Record<string, unknown>;
   continuationSummary?: {
+    key: string;
+    title: string | null;
+    body: string;
+    sourceTrust?: SourceTrustMetadata | null;
+    updatedAt: Date;
+  } | null;
+  // OPE-13086: the task starter-pack document, delivered as the first wake block.
+  starterPack?: {
     key: string;
     title: string | null;
     body: string;
@@ -8177,6 +8189,8 @@ export async function buildPaperclipWakePayload(input: {
   const conversationMode = input.contextSnapshot.conversationMode === true;
   const continuationSummary =
     conversationMode || isolatedReviewerWake ? null : input.continuationSummary ?? null;
+  const starterPack =
+    conversationMode || isolatedReviewerWake ? null : input.starterPack ?? null;
   const agentMessage: Record<string, unknown> = isolatedReviewerWake
     ? {}
     : parseObject(input.contextSnapshot[PAPERCLIP_AGENT_MESSAGE_KEY]);
@@ -8256,6 +8270,10 @@ export async function buildPaperclipWakePayload(input: {
     continuationSummary && !input.exposeLowTrustRaw
       ? redactQuarantinedBodyForHigherTrust(continuationSummary)
       : continuationSummary;
+  const safeStarterPack =
+    starterPack && !input.exposeLowTrustRaw
+      ? redactQuarantinedBodyForHigherTrust(starterPack)
+      : starterPack;
 
   for (const commentId of commentIds) {
     const row = commentsById.get(commentId);
@@ -8737,6 +8755,19 @@ export async function buildPaperclipWakePayload(input: {
           bodyTruncated: safeContinuationSummary.body.length > 4_000,
           sourceTrust: safeContinuationSummary.sourceTrust ?? null,
           updatedAt: safeContinuationSummary.updatedAt.toISOString(),
+        }
+      : null,
+    starterPack: safeStarterPack
+      ? {
+          key: safeStarterPack.key,
+          title: safeStarterPack.title,
+          body:
+            safeStarterPack.body.length > MAX_WAKE_STARTER_PACK_BODY_CHARS
+              ? safeStarterPack.body.slice(0, MAX_WAKE_STARTER_PACK_BODY_CHARS)
+              : safeStarterPack.body,
+          bodyTruncated: safeStarterPack.body.length > MAX_WAKE_STARTER_PACK_BODY_CHARS,
+          sourceTrust: safeStarterPack.sourceTrust ?? null,
+          updatedAt: safeStarterPack.updatedAt.toISOString(),
         }
       : null,
     commentIds,
@@ -25829,6 +25860,12 @@ export function heartbeatService(
         ? await getIssueContinuationSummaryDocument(db, issueRef.id)
         : null;
       const exposeLowTrustRaw = trustPreset.kind === "low_trust_review";
+      // OPE-13086: starter pack goes to the assignee only (same gate as
+      // executionContinuation); an isolated reviewer never gets it.
+      const starterPack =
+        issueRef && !isConversation(issueContext) && !isolatedReviewerRun && issueContext?.assigneeAgentId === agent.id
+          ? await getIssueStarterPackDocument(db, issueRef.id)
+          : null;
       const safeContinuationSummary =
         continuationSummary && !exposeLowTrustRaw
           ? redactQuarantinedBodyForHigherTrust(continuationSummary)
@@ -25908,6 +25945,7 @@ export function heartbeatService(
         runId: run.id,
         contextSnapshot: context,
         continuationSummary,
+        starterPack,
         issueSummary: issueRef
           ? {
               id: issueRef.id,

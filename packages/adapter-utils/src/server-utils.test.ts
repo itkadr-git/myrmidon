@@ -3034,6 +3034,65 @@ describe("renderPaperclipWakePrompt", () => {
   });
 });
 
+describe("starter pack in the wake prompt (OPE-13086)", () => {
+  const STARTER_HEADER = "Starter pack (start here; do not re-explore the project):";
+  const basePayload = {
+    reason: "issue_assigned",
+    issue: {
+      id: "issue-1",
+      identifier: "PAP-200",
+      title: "Do the work",
+      status: "in_progress",
+      priority: "medium",
+      description: "Task description text.",
+    },
+    continuationSummary: {
+      key: "continuation-summary",
+      title: "Continuation Summary",
+      body: "# Continuation Summary\n\n## Next Action\n\n- Keep going.",
+      updatedAt: "2026-04-18T12:00:00.000Z",
+    },
+  };
+
+  it("renders the starter pack before the continuation summary and the task blocks", () => {
+    const prompt = renderPaperclipWakePrompt({
+      ...basePayload,
+      starterPack: {
+        key: "starter-pack",
+        title: "Starter pack",
+        body: "Files: server/src/a.ts\nRun: pnpm test a",
+        updatedAt: "2026-04-18T12:00:00.000Z",
+      },
+    });
+    expect(prompt).toContain(STARTER_HEADER);
+    expect(prompt).toContain("Files: server/src/a.ts");
+    expect(prompt.indexOf(STARTER_HEADER)).toBeGreaterThanOrEqual(0);
+    expect(prompt.indexOf(STARTER_HEADER)).toBeLessThan(
+      prompt.indexOf("Issue continuation summary:"),
+    );
+    expect(prompt.indexOf(STARTER_HEADER)).toBeLessThan(
+      prompt.indexOf("Issue description:"),
+    );
+    expect(prompt).not.toContain("[starter pack truncated]");
+  });
+
+  it("leaves the prompt unchanged when there is no starter pack", () => {
+    const without = renderPaperclipWakePrompt(basePayload);
+    expect(without).not.toContain("Starter pack");
+    expect(renderPaperclipWakePrompt({ ...basePayload, starterPack: null })).toBe(without);
+    expect(renderPaperclipWakePrompt({ ...basePayload, starterPack: { body: "   " } })).toBe(without);
+  });
+
+  it("truncates a 9000 character starter pack body to 8000 with a marker", () => {
+    const prompt = renderPaperclipWakePrompt({
+      ...basePayload,
+      starterPack: { key: "starter-pack", title: "Starter pack", body: "a".repeat(9_000) },
+    });
+    expect(prompt).toContain(`${"a".repeat(8_000)}\n[starter pack truncated]`);
+    expect(prompt).not.toContain("a".repeat(8_001));
+  });
+});
+
 describe("WATCHDOG_DEFAULT_MANDATE", () => {
   it("states the watchdog must verify stopped work instead of trusting agent claims", () => {
     expect(WATCHDOG_DEFAULT_MANDATE).toContain(

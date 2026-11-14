@@ -737,6 +737,14 @@ type PaperclipWakeContinuationSummary = {
   updatedAt: string | null;
 };
 
+type PaperclipWakeStarterPack = {
+  key: string | null;
+  title: string | null;
+  body: string;
+  bodyTruncated: boolean;
+  updatedAt: string | null;
+};
+
 type PaperclipWakeLivenessContinuation = {
   attempt: number | null;
   maxAttempts: number | null;
@@ -869,6 +877,7 @@ export type PaperclipWakePayload = {
   unresolvedBlockerSummaries: PaperclipWakeBlockerSummary[];
   executionStage: PaperclipWakeExecutionStage | null;
   continuationSummary: PaperclipWakeContinuationSummary | null;
+  starterPack: PaperclipWakeStarterPack | null;
   planReviewContext: PaperclipWakePlanReviewContext | null;
   documentReviewContext: PaperclipWakeDocumentReviewContext | null;
   livenessContinuation: PaperclipWakeLivenessContinuation | null;
@@ -1348,6 +1357,21 @@ function normalizePaperclipWakeContinuationSummary(
     body,
     bodyTruncated: asBoolean(summary.bodyTruncated, false),
     updatedAt: asString(summary.updatedAt, "").trim() || null,
+  };
+}
+
+function normalizePaperclipWakeStarterPack(
+  value: unknown,
+): PaperclipWakeStarterPack | null {
+  const pack = parseObject(value);
+  const body = asString(pack.body, "").trim();
+  if (!body) return null;
+  return {
+    key: asString(pack.key, "").trim() || null,
+    title: asString(pack.title, "").trim() || null,
+    body,
+    bodyTruncated: asBoolean(pack.bodyTruncated, false),
+    updatedAt: asString(pack.updatedAt, "").trim() || null,
   };
 }
 
@@ -1885,6 +1909,7 @@ export function normalizePaperclipWakePayload(
   const continuationSummary = normalizePaperclipWakeContinuationSummary(
     payload.continuationSummary,
   );
+  const starterPack = normalizePaperclipWakeStarterPack(payload.starterPack);
   const planReviewContext = normalizePaperclipWakePlanReviewContext(
     payload.planReviewContext,
   );
@@ -1976,6 +2001,7 @@ export function normalizePaperclipWakePayload(
     !executionStage &&
     !reviewRecoveryInstruction &&
     !continuationSummary &&
+    !starterPack &&
     !planReviewContext &&
     !documentReviewContext &&
     !livenessContinuation &&
@@ -2022,6 +2048,7 @@ export function normalizePaperclipWakePayload(
     reviewDecisionRetryAttempt,
     reviewDecisionMaxRetries,
     continuationSummary,
+    starterPack,
     planReviewContext,
     documentReviewContext,
     annotationDeltas,
@@ -2372,6 +2399,8 @@ export function renderWakeBlockDelta(
   return { blocks: rendered, digests };
 }
 
+const WAKE_STARTER_PACK_MAX_BODY_CHARS = 8_000;
+
 function renderPaperclipWakePromptBody(
   value: unknown,
   options: {
@@ -2623,6 +2652,22 @@ function renderPaperclipWakePromptBody(
         ...executionContractLines,
         ...wakeSummaryLines,
       ];
+
+  // OPE-13086: the task starter pack is the first task block of the wake,
+  // ahead of the continuation context, description and continuation summary.
+  if (normalized.starterPack) {
+    const packBody =
+      normalized.starterPack.body.length > WAKE_STARTER_PACK_MAX_BODY_CHARS
+        ? normalized.starterPack.body.slice(0, WAKE_STARTER_PACK_MAX_BODY_CHARS)
+        : normalized.starterPack.body;
+    lines.push("", "Starter pack (start here; do not re-explore the project):", packBody);
+    if (
+      normalized.starterPack.bodyTruncated ||
+      normalized.starterPack.body.length > WAKE_STARTER_PACK_MAX_BODY_CHARS
+    ) {
+      lines.push("[starter pack truncated]");
+    }
+  }
 
   if (normalized.executionContinuation) {
     if (normalized.executionContinuation.interruptedRunId) {
