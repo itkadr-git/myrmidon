@@ -9437,6 +9437,13 @@ export function buildPaperclipTaskMarkdown(input: {
       // Developer reviewer: the task text above plus the pull request reference
       // and the instruction to read the diff itself. The board attaches no diff.
       lines.push("", ...renderReviewerInputSection(input.reviewerInput));
+      if (input.taskPlan?.body.trim()) {
+        lines.push(
+          "",
+          "Plan invariants verification:",
+          "Verify that the implementation satisfies the invariants specified in the task plan document.",
+        );
+      }
     }
     const wakePayload = input.wakePayload;
     const prsCi = (
@@ -20124,12 +20131,46 @@ export function heartbeatService(
     }
 
     const claimedAt = new Date();
+    const issueContext = issueId
+      ? await getIssueExecutionContext(run.companyId, issueId)
+      : null;
+    if (issueId && issueContext?.workMode === "planning") {
+      const hasInteraction = Boolean(
+        readNonEmptyString(context.interactionId) ||
+          readNonEmptyString(context.interactionKind),
+      );
+      const hasWakeComment = Boolean(readNonEmptyString(context.wakeCommentId));
+      if (!hasInteraction && !hasWakeComment) {
+        const [pendingPlanConfirmation] = await db
+          .select({ id: issueThreadInteractions.id })
+          .from(issueThreadInteractions)
+          .where(
+            and(
+              eq(issueThreadInteractions.companyId, run.companyId),
+              eq(issueThreadInteractions.issueId, issueId),
+              eq(issueThreadInteractions.kind, "request_confirmation"),
+              eq(issueThreadInteractions.status, "pending"),
+            ),
+          )
+          .limit(1);
+        if (pendingPlanConfirmation) {
+          await cancelRunInternal(
+            run.id,
+            "Cancelled because plan approval is pending",
+            { errorCode: "plan_approval_pending" },
+          );
+          logger.info(
+            { runId: run.id, issueId },
+            "claimQueuedRun: cancelled queued run while plan approval is pending",
+          );
+          return null;
+        }
+      }
+    }
     const responsibleUserId = await resolveResponsibleUserIdForRun({
       run,
       contextSnapshot: context,
-      issueContext: issueId
-        ? await getIssueExecutionContext(run.companyId, issueId)
-        : null,
+      issueContext,
       routineEnvContext: {
         routineId: null,
         env: null,
@@ -34563,6 +34604,48 @@ export function heartbeatService(
                 finishedAt: new Date(),
               });
               return { kind: "skipped" as const };
+            }
+
+            if (issue.workMode === "planning" && !interactionContinuation) {
+              const [pendingPlanConfirmation] = await tx
+                .select({ id: issueThreadInteractions.id })
+                .from(issueThreadInteractions)
+                .where(
+                  and(
+                    eq(issueThreadInteractions.companyId, issue.companyId),
+                    eq(issueThreadInteractions.issueId, issue.id),
+                    eq(issueThreadInteractions.kind, "request_confirmation"),
+                    eq(issueThreadInteractions.status, "pending"),
+                  ),
+                )
+                .limit(1);
+              if (pendingPlanConfirmation) {
+                await tx.insert(agentWakeupRequests).values({
+                  ...durableReceiptFields,
+                  companyId: agent.companyId,
+                  agentId,
+                  source,
+                  triggerDetail,
+                  reason: "plan_approval_pending",
+                  payload: {
+                    ...(payload ?? {}),
+                    issueId,
+                    continuationSkipped: "plan_approval_pending",
+                    heartbeatSkip: {
+                      reason:
+                        "Plan approval is pending before implementation continuation can be admitted.",
+                      issueId: issue.id,
+                      workMode: issue.workMode,
+                    },
+                  },
+                  status: "skipped",
+                  requestedByActorType: opts.requestedByActorType ?? null,
+                  requestedByActorId: opts.requestedByActorId ?? null,
+                  idempotencyKey: opts.idempotencyKey ?? null,
+                  finishedAt: new Date(),
+                });
+                return { kind: "skipped" as const };
+              }
             }
 
             // myrmidon(OPE-11948): the real attempt counter. Succeeded

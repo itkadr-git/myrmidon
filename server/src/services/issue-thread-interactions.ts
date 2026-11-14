@@ -35,6 +35,7 @@ import {
 // myrmidon(N2): pending-card expiry is unconditional for terminal issues;
 // delivery receipts do not keep a closed issue actionable.
 import { resolveAgentHeadId, resolveAgentManagerChainIds } from "./responsible-head.js";
+import { resolvePlanApprovalRecipient } from "../myrmidon/plan-gate/plan-approval-recipient.js";
 import { resolveOwnerDecisionRecipient } from "../myrmidon/owner-delivery/telegram-owner-bindings.js";
 import {
   trackInteractionCreated,
@@ -3620,7 +3621,24 @@ export function issueThreadInteractionService(
           : { serviceQueue: "system" };
 
       let recipientCandidate: InteractionRecipient | null = null;
-      if (normalizedData.addresseeAgentId) {
+      const isPlanApproval = normalizedData.kind === "request_confirmation" &&
+        normalizedData.payload.target?.type === "issue_document" &&
+        normalizedData.payload.target.key === "plan";
+      if (isPlanApproval && actor.agentId && !normalizedData.addresseeAgentId && !normalizedData.addresseeUserId) {
+        const targetAgentId = await resolvePlanApprovalRecipient(
+          db,
+          issue.companyId,
+          issueContextRow?.projectId,
+          actor.agentId,
+        );
+        if (targetAgentId) {
+          normalizedData.addresseeAgentId = targetAgentId;
+          recipientCandidate = { agentId: targetAgentId };
+        }
+      }
+      if (recipientCandidate) {
+        // already resolved (e.g. plan approval routing)
+      } else if (normalizedData.addresseeAgentId) {
         recipientCandidate = { agentId: normalizedData.addresseeAgentId };
       } else if (normalizedData.addresseeUserId) {
         recipientCandidate = { userId: normalizedData.addresseeUserId };
