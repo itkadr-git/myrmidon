@@ -2,6 +2,11 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { run } from "../../../docker/bot-runtime/myr-ws/lib/handoff.js";
 
+const REVIEW_POLICY = {
+  mode: "normal",
+  stages: [{ id: "st-1", type: "review", approvalsNeeded: 1, participants: [{ id: "p-1", type: "agent", agentId: "reviewer-x", userId: null }] }],
+};
+
 test("myr-handoff requires --issue and --summary", async () => {
   const res = await run([]);
   assert.equal(res.exitCode, 1);
@@ -13,7 +18,7 @@ test("myr-handoff fails if git branch cannot be determined", async () => {
     env: { PAPERCLIP_API_KEY: "secret" },
     fetch: async () => ({
       ok: true,
-      json: async () => ({ id: "issue-uuid-123", identifier: "OPE-123" }),
+      json: async () => ({ id: "issue-uuid-123", identifier: "OPE-123", executionPolicy: REVIEW_POLICY }),
     }),
     runCommand: (cmd, args) => {
       if (cmd === "git" && args[0] === "branch") {
@@ -32,7 +37,7 @@ test("myr-handoff fails if git push fails", async () => {
     env: { PAPERCLIP_API_KEY: "secret" },
     fetch: async () => ({
       ok: true,
-      json: async () => ({ id: "issue-uuid-123", identifier: "OPE-123" }),
+      json: async () => ({ id: "issue-uuid-123", identifier: "OPE-123", executionPolicy: REVIEW_POLICY }),
     }),
     runCommand: (cmd, args) => {
       if (cmd === "git" && args[0] === "branch") {
@@ -88,7 +93,7 @@ test("myr-handoff creates new PR if none exists and patches issue to in_review",
         return {
           ok: true,
           status: 200,
-          json: async () => ({ id: "issue-uuid-123", identifier: "OPE-123" }),
+          json: async () => ({ id: "issue-uuid-123", identifier: "OPE-123", executionPolicy: REVIEW_POLICY }),
         };
       }
       if (url.endsWith("/api/issues/issue-uuid-123") && opts.method === "PATCH") {
@@ -160,7 +165,7 @@ test("myr-handoff reuses existing PR and updates title if needed", async () => {
         return {
           ok: true,
           status: 200,
-          json: async () => ({ id: "issue-uuid-999", identifier: "OPE-999" }),
+          json: async () => ({ id: "issue-uuid-999", identifier: "OPE-999", executionPolicy: REVIEW_POLICY }),
         };
       }
       if (url.endsWith("/api/issues/issue-uuid-999") && opts.method === "PATCH") {
@@ -260,7 +265,7 @@ test("myr-handoff fails if gh pr edit fails when updating existing PR title", as
     },
     fetch: async () => ({
       ok: true,
-      json: async () => ({ id: "issue-uuid-123", identifier: "OPE-123" }),
+      json: async () => ({ id: "issue-uuid-123", identifier: "OPE-123", executionPolicy: REVIEW_POLICY }),
     }),
   };
   const res = await run(["--issue", "OPE-123", "--summary", "done"], deps);
@@ -290,7 +295,7 @@ test("myr-handoff fails if PR binding fails when work product cannot be created"
     },
     fetch: async (url, opts) => {
       if (url.endsWith("/api/issues/OPE-55")) {
-        return { ok: true, json: async () => ({ id: "issue-uuid-55", identifier: "OPE-55" }) };
+        return { ok: true, json: async () => ({ id: "issue-uuid-55", identifier: "OPE-55", executionPolicy: REVIEW_POLICY }) };
       }
       if (url.endsWith("/api/issues/issue-uuid-55") && opts.method === "PATCH") {
         return { ok: true, json: async () => ({ id: "issue-uuid-55", status: "in_review" }) };
@@ -330,7 +335,7 @@ function makeDeps({ patchStatus = 200, getStatus = 200, prView, commandsRun = []
     fetch: async (url, opts) => {
       if (url.endsWith("/api/issues/OPE-5")) {
         if (getStatus !== 200) return { ok: false, status: getStatus, text: async () => "x".repeat(1000) };
-        return { ok: true, status: 200, json: async () => ({ id: "issue-uuid-5", identifier: "OPE-5" }) };
+        return { ok: true, status: 200, json: async () => ({ id: "issue-uuid-5", identifier: "OPE-5", executionPolicy: REVIEW_POLICY }) };
       }
       if (url.endsWith("/api/issues/issue-uuid-5") && opts.method === "PATCH") {
         if (patchStatus !== 200) return { ok: false, status: patchStatus, text: async () => "unprocessable" };
@@ -397,4 +402,59 @@ test("myr-handoff reports a fetch timeout with non-zero exit", async () => {
   const res = await run(["--issue", "OPE-5", "--summary", "s"], deps);
   assert.notEqual(res.exitCode, 0);
   assert.match(res.stderr, /timed out/);
+});
+
+
+function policyDeps(policy, sink) {
+  const deps = makeDeps();
+  const baseFetch = deps.fetch;
+  deps.fetch = async (url, opts) => {
+    if (url.endsWith("/api/issues/OPE-5")) {
+      return { ok: true, status: 200, json: async () => ({ id: "issue-uuid-5", identifier: "OPE-5", executionPolicy: policy }) };
+    }
+    if (opts && opts.method === "PATCH") sink.patches.push(JSON.parse(opts.body));
+    return baseFetch(url, opts);
+  };
+  const baseRun = deps.runCommand;
+  deps.runCommand = (cmd, args) => {
+    sink.commands.push([cmd, ...args]);
+    return baseRun(cmd, args);
+  };
+  return deps;
+}
+
+test("myr-handoff keeps an existing review stage: PATCH has no executionPolicy", async () => {
+  const sink = { patches: [], commands: [] };
+  const res = await run(["--issue", "OPE-5", "--summary", "s"], policyDeps(REVIEW_POLICY, sink));
+  assert.equal(res.exitCode, 0);
+  assert.equal(sink.patches.length, 1);
+  assert.equal("executionPolicy" in sink.patches[0], false);
+});
+
+test("myr-handoff without review stage and with --reviewer adds the stage and keeps policy fields", async () => {
+  const sink = { patches: [], commands: [] };
+  const policy = {
+    mode: "normal",
+    monitor: { intervalMinutes: 30 },
+    stages: [{ id: "st-a", type: "approval", approvalsNeeded: 1, participants: [{ type: "user", userId: "u1" }] }],
+  };
+  const res = await run(["--issue", "OPE-5", "--summary", "s", "--reviewer", "agent-r1"], policyDeps(policy, sink));
+  assert.equal(res.exitCode, 0);
+  const ep = sink.patches[0].executionPolicy;
+  assert.deepEqual(ep.monitor, { intervalMinutes: 30 });
+  assert.equal(ep.mode, "normal");
+  assert.equal(ep.stages.length, 2);
+  assert.deepEqual(ep.stages[0], policy.stages[0]);
+  assert.equal(ep.stages[1].type, "review");
+  assert.equal(ep.stages[1].approvalsNeeded, 1);
+  assert.deepEqual(ep.stages[1].participants, [{ type: "agent", agentId: "agent-r1" }]);
+});
+
+test("myr-handoff without review stage and without --reviewer fails and sends no PATCH", async () => {
+  const sink = { patches: [], commands: [] };
+  const res = await run(["--issue", "OPE-5", "--summary", "s"], policyDeps(null, sink));
+  assert.notEqual(res.exitCode, 0);
+  assert.match(res.stderr, /issue has no review stage: pass --reviewer <agentId> \(see your instructions\)/);
+  assert.equal(sink.patches.length, 0);
+  assert.equal(sink.commands.some((c) => c[0] === "git" && c[1] === "push"), false);
 });

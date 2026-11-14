@@ -63,6 +63,7 @@ async function run(args, deps = {}) {
       options: {
         issue: { type: "string" },
         summary: { type: "string" },
+        reviewer: { type: "string" },
       },
       strict: false,
     });
@@ -76,6 +77,7 @@ async function run(args, deps = {}) {
 
   const issueKeyOrId = parsed.values.issue;
   const summary = parsed.values.summary;
+  const reviewer = parsed.values.reviewer;
 
   if (!issueKeyOrId || !summary) {
     return {
@@ -147,6 +149,21 @@ async function run(args, deps = {}) {
       exitCode: 1,
       stdout: "",
       stderr: "myr-handoff: failed at step issue_admission: issue reviewPolicy is human_only; agent cannot transition to in_review\n",
+    };
+  }
+
+  // The board rejects a bare in_review PATCH from an agent when the issue has no review stage.
+  const existingPolicy =
+    issueData.executionPolicy && typeof issueData.executionPolicy === "object" ? issueData.executionPolicy : null;
+  const existingStages = Array.isArray(existingPolicy && existingPolicy.stages) ? existingPolicy.stages : [];
+  const hasReviewStage = existingStages.some(
+    (st) => st && st.type === "review" && Array.isArray(st.participants) && st.participants.length > 0
+  );
+  if (!hasReviewStage && !reviewer) {
+    return {
+      exitCode: 1,
+      stdout: "",
+      stderr: "myr-handoff: issue has no review stage: pass --reviewer <agentId> (see your instructions)\n",
     };
   }
 
@@ -263,6 +280,22 @@ async function run(args, deps = {}) {
     status: "in_review",
     comment: summary,
   };
+  if (!hasReviewStage) {
+    // Keep other stages and policy fields; replace any empty review stage with ours.
+    const otherStages = existingStages.filter((st) => !(st && st.type === "review"));
+    patchBody.executionPolicy = {
+      ...(existingPolicy || {}),
+      mode: (existingPolicy && existingPolicy.mode) || "normal",
+      stages: [
+        ...otherStages,
+        {
+          type: "review",
+          approvalsNeeded: 1,
+          participants: [{ type: "agent", agentId: reviewer }],
+        },
+      ],
+    };
+  }
 
   const patchHeaders = {
     Authorization: `Bearer ${paperclipKey}`,
