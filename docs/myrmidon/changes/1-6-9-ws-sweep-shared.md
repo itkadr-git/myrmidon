@@ -10,7 +10,9 @@ the board wrote an `issue_terminal_archive_blocked` event for each one (over
 180 000 events), loading the board every 30 seconds. The sweep still requires a
 closed issue tree, the cooldown and no active run, never writes the block event
 for these rows, and works through the backlog in passes of up to 200 shared
-rows, each archived by its own single-row update.
+rows, each archived by its own single-row update. For shared copies the sweep uses no
+git and no GitHub API (only the terminal state of the issue tree), and a copy
+with an open linked issue is not archived.
 
 ## changelog-ru
 
@@ -24,4 +26,6 @@ rows, each archived by its own single-row update.
 событий), нагружая доску каждые 30 секунд. Сторож по-прежнему требует закрытое
 дерево задач, cooldown и отсутствие активного прогона, не пишет событие
 блокировки для этих строк и разбирает накопленное проходами до 200 общих
-строк, каждая архивируется отдельным обновлением одной строки.
+строк, каждая архивируется отдельным обновлением одной строки. Для общих копий сторож не
+использует ни git, ни GitHub API (нужна только закрытость дерева задач), а копия с
+открытой привязанной задачей не архивируется.

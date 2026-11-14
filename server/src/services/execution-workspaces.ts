@@ -4,7 +4,7 @@ import { createHash } from "node:crypto";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { promisify } from "node:util";
-import { and, asc, desc, eq, gt, inArray, isNull, lte, ne, or, sql } from "drizzle-orm";
+import { and, asc, desc, eq, gt, inArray, isNull, lte, ne, notInArray, or, sql } from "drizzle-orm";
 import type { Db } from "@myrmidon/db";
 import {
   executionWorkspaces,
@@ -1428,6 +1428,12 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
   async function assessDelivery(
     workspace: ExecutionWorkspaceRow,
     git: ExecutionWorkspaceCloseGitReadiness | null,
+    // myrmidon(OPE-13106): a shared_workspace row has no per-task copy, so its
+    // delivery does not depend on any pull request. The sweep passes
+    // skipPullRequests to stay off the PR products and the GitHub API (a backlog
+    // of tens of thousands of rows would drain the shared GitHub App limit);
+    // only the terminality of the issue tree is needed.
+    opts: { skipPullRequests?: boolean } = {},
   ) {
     const issueTree = await listWorkspaceIssueTree(workspace);
     const sourceIssue = issueTree.find((issue) => issue.id === workspace.sourceIssueId) ?? null;
@@ -1452,7 +1458,7 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
         .catch(() => null)
       : null;
 
-    if (sourceIssueTerminal) {
+    if (sourceIssueTerminal && !opts.skipPullRequests) {
       const products = await listDeliveryPullRequestProducts(workspace);
       for (const product of products) {
         const references = extractGitHubPullRequestReferences([
@@ -1611,34 +1617,46 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
   }
 
   async function workspaceHasActiveRun(workspace: Pick<ExecutionWorkspaceRow, "id" | "companyId" | "sourceIssueId">) {
-    const linkedIssues = await db
-      .select({
-        checkoutRunId: issues.checkoutRunId,
-        executionRunId: issues.executionRunId,
-      })
-      .from(issues)
-      .where(and(
-        eq(issues.companyId, workspace.companyId),
-        or(
-          eq(issues.executionWorkspaceId, workspace.id),
-          ...(workspace.sourceIssueId ? [eq(issues.id, workspace.sourceIssueId)] : []),
-        ),
-      ));
-    const runIds = [...new Set(linkedIssues.flatMap((issue) => [
-      issue.checkoutRunId,
-      issue.executionRunId,
-    ]).filter((runId): runId is string => Boolean(runId)))];
-    if (runIds.length === 0) return false;
+    // myrmidon(OPE-13106): one bounded EXISTS probe instead of loading every
+    // linked issue of the row (a shared row can be linked to thousands).
     const active = await db
       .select({ id: heartbeatRuns.id })
       .from(heartbeatRuns)
       .where(and(
         eq(heartbeatRuns.companyId, workspace.companyId),
-        inArray(heartbeatRuns.id, runIds),
         inArray(heartbeatRuns.status, ["queued", "running"]),
+        sql<boolean>`EXISTS (
+          SELECT 1
+          FROM ${issues} linked_issue
+          WHERE linked_issue.company_id = ${workspace.companyId}
+            AND (
+              linked_issue.checkout_run_id = ${heartbeatRuns.id}
+              OR linked_issue.execution_run_id = ${heartbeatRuns.id}
+            )
+            AND (
+              linked_issue.execution_workspace_id = ${workspace.id}
+              ${workspace.sourceIssueId ? sql`OR linked_issue.id = ${workspace.sourceIssueId}` : sql``}
+            )
+        )`,
       ))
       .limit(1);
     return active.length > 0;
+  }
+
+  // myrmidon(OPE-13106): true when any non-terminal issue still points at the
+  // row. The manual close path blocks on these; the sweep must not archive a
+  // shared row from under an open issue either.
+  async function workspaceHasOpenLinkedIssue(workspace: Pick<ExecutionWorkspaceRow, "id" | "companyId">) {
+    const open = await db
+      .select({ id: issues.id })
+      .from(issues)
+      .where(and(
+        eq(issues.companyId, workspace.companyId),
+        eq(issues.executionWorkspaceId, workspace.id),
+        notInArray(issues.status, ["done", "cancelled"]),
+      ))
+      .limit(1);
+    return open.length > 0;
   }
 
   type FenceableWorkspaceRow = {
@@ -2650,6 +2668,7 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
           archived: 0,
           cleanupFailed: 0,
           skippedActiveRun: 0,
+          skippedOpenIssue: 0,
           skippedNonTerminalTree: 0,
           skippedUndelivered: 0,
           skippedInspectFailed: 0,
@@ -2738,6 +2757,7 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
         archived: 0,
         cleanupFailed: 0,
         skippedActiveRun: 0,
+        skippedOpenIssue: 0,
         skippedNonTerminalTree: 0,
         skippedUndelivered: 0,
         skippedInspectFailed: 0,
@@ -2774,7 +2794,7 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
           }
           continue;
         }
-        const assessment = await assessDelivery(workspace, git);
+        const assessment = await assessDelivery(workspace, git, { skipPullRequests: isSharedWorkspace });
         const reopenPending = metadataHasReopenPendingConsumption(
           workspace.metadata as Record<string, unknown> | null,
         );
@@ -2903,6 +2923,12 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
           result.skippedActiveRun += 1;
           continue;
         }
+        if (isSharedWorkspace && await workspaceHasOpenLinkedIssue(workspace)) {
+          // An open issue still uses this shared row: keep it. Closed issues
+          // are detached only after a later archive.
+          result.skippedOpenIssue += 1;
+          continue;
+        }
         result.eligible += 1;
         const closedAt = now();
         // Raise the lifecycle generation on archive. The cleanup below captures
@@ -2955,6 +2981,17 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
                   AND live_run.company_id = ${workspace.companyId}
                   AND live_run.status IN ('queued', 'running')
               )`,
+              // myrmidon(OPE-13106): a shared row with an open linked issue stays
+              // (same rule as the manual close path). Re-checked under the lock.
+              isSharedWorkspace
+                ? sql<boolean>`NOT EXISTS (
+                SELECT 1
+                FROM ${issues} open_issue
+                WHERE open_issue.company_id = ${workspace.companyId}
+                  AND open_issue.execution_workspace_id = ${workspace.id}
+                  AND open_issue.status NOT IN ('done', 'cancelled')
+              )`
+                : undefined,
               sql<boolean>`NOT EXISTS (
                 WITH RECURSIVE issue_tree(id, status) AS (
                   SELECT root.id, root.status
