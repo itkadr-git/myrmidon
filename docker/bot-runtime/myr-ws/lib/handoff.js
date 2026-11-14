@@ -212,7 +212,12 @@ async function run(args, deps = {}) {
         prNumber = data.number;
         prUrl = data.url || null;
         if (data.title && !data.title.includes(issueKey)) {
-          const editRes = execCmd("gh", ["pr", "edit", String(prNumber), "--title", `${issueKey}: ${data.title}`], { cwd, env });
+          const cleanTitle = data.title
+            .replace(new RegExp(`^${issueKeyOrId}:?\\s*`, "i"), "")
+            .replace(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}:?\s*/i, "")
+            .trim();
+          const newTitle = cleanTitle ? `${issueKey}: ${cleanTitle}` : `${issueKey}: handoff to review`;
+          const editRes = execCmd("gh", ["pr", "edit", String(prNumber), "--title", newTitle], { cwd, env });
           if (editRes.status !== 0) {
             return {
               exitCode: 1,

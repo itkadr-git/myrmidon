@@ -482,3 +482,104 @@ test("myr-handoff titles the PR with the issue key, not the UUID passed in --iss
   assert.match(title, /OPE-9999/);
   assert.ok(!title.includes(uuid));
 });
+
+test("myr-handoff reuses existing PR and updates title with issue key, stripping raw UUID when --issue is UUID", async () => {
+  const uuid = "123e4567-e89b-12d3-a456-426614174000";
+  const commands = [];
+  const deps = makeDeps({
+    commandsRun: commands,
+    prView: {
+      status: 0,
+      stdout: JSON.stringify({
+        number: 88,
+        state: "OPEN",
+        title: `${uuid}: previous feature branch`,
+        url: "https://github.com/itkadr-git/myrmidon/pull/88",
+      }),
+      stderr: "",
+    },
+  });
+  const baseFetch = deps.fetch;
+  deps.fetch = async (url, opts) => {
+    if (url.endsWith(`/api/issues/${uuid}`)) {
+      return { ok: true, status: 200, json: async () => ({ id: uuid, identifier: "OPE-9999", executionPolicy: REVIEW_POLICY }) };
+    }
+    if (url.endsWith(`/api/issues/${uuid}/work-products`)) {
+      return {
+        ok: true,
+        status: 200,
+        json: async () => [{ id: "wp-88", kind: "pull_request", metadata: { number: 88 } }],
+      };
+    }
+    if (opts && opts.method === "PATCH") return { ok: true, status: 200, json: async () => ({}) };
+    return baseFetch(url, opts);
+  };
+  const res = await run(["--issue", uuid, "--summary", "s"], deps);
+  assert.equal(res.exitCode, 0);
+  const edit = commands.find((c) => c[0] === "gh" && c[1] === "pr" && c[2] === "edit");
+  assert.ok(edit);
+  const title = edit[edit.indexOf("--title") + 1];
+  assert.equal(title, "OPE-9999: previous feature branch");
+  assert.ok(!title.includes(uuid));
+});
+
+test("myr-handoff fails on admission rejection with clear error and leaves status unchanged", async () => {
+  const commands = [];
+  let issueRecord = {
+    id: "issue-uuid-closed",
+    identifier: "OPE-777",
+    status: "done",
+    reviewPolicy: "standard",
+    executionPolicy: REVIEW_POLICY,
+  };
+
+  const deps = {
+    env: { PAPERCLIP_API_KEY: "secret", PAPERCLIP_API_URL: "http://paperclip-test:3100" },
+    runCommand: (cmd, args) => {
+      commands.push([cmd, ...args]);
+      return { status: 0, stdout: "", stderr: "" };
+    },
+    fetch: async (url, opts) => {
+      if (url.endsWith("/api/issues/OPE-777")) {
+        return { ok: true, status: 200, json: async () => ({ ...issueRecord }) };
+      }
+      if (opts && opts.method === "PATCH") {
+        issueRecord = { ...issueRecord, ...JSON.parse(opts.body) };
+        return { ok: true, status: 200, json: async () => issueRecord };
+      }
+      return { ok: false, status: 404 };
+    },
+  };
+
+  // Case 1: Closed issue (status: done) -> early admission fails, status remains done
+  const resDone = await run(["--issue", "OPE-777", "--summary", "try handoff"], deps);
+  assert.equal(resDone.exitCode, 1);
+  assert.match(resDone.stderr, /failed at step issue_admission/);
+  assert.match(resDone.stderr, /cannot transition closed issue \(status: done\) to in_review/);
+  assert.equal(issueRecord.status, "done"); // status NOT modified
+  assert.equal(commands.length, 0); // no git push, no gh pr create
+
+  // Case 2: Human only reviewPolicy -> early admission fails, status remains in_progress
+  issueRecord.status = "in_progress";
+  issueRecord.reviewPolicy = "human_only";
+  const resHumanOnly = await run(["--issue", "OPE-777", "--summary", "try handoff"], deps);
+  assert.equal(resHumanOnly.exitCode, 1);
+  assert.match(resHumanOnly.stderr, /failed at step issue_admission/);
+  assert.match(resHumanOnly.stderr, /issue reviewPolicy is human_only/);
+  assert.equal(issueRecord.status, "in_progress"); // status NOT modified
+  assert.equal(commands.length, 0);
+
+  // Case 3: Server PATCH rejects admission with 422 invalid_issue_disposition -> status remains in_progress
+  issueRecord.reviewPolicy = "standard";
+  const commandsLate = [];
+  const depsLate = makeDeps({
+    commandsRun: commandsLate,
+    patchStatus: 422,
+  });
+  // patchStatus: 422 returns { ok: false, status: 422, text: () => "invalid_issue_disposition: missing green CI" }
+  const resLate = await run(["--issue", "OPE-5", "--summary", "try handoff"], depsLate);
+  assert.equal(resLate.exitCode, 1);
+  assert.match(resLate.stderr, /failed at step issue_patch/);
+  assert.match(resLate.stderr, /HTTP 422/);
+  assert.match(resLate.stderr, /PR #77 sha abc123/);
+});
