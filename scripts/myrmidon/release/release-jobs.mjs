@@ -16,7 +16,12 @@
 //   - buildJobs(allJobs)                 -> the build set (gate job excluded)
 //   - gateDependencyJobs(yaml, gateId)   -> the gate's transitive needs
 //                                           closure (display names) — the
-//                                           ONLY jobs the gate may wait for
+//                                           ONLY jobs the gate may wait for.
+//                                           THROWS when a declared needs id
+//                                           cannot be resolved to a workflow
+//                                           job (typo or unsupported YAML
+//                                           form) — a partial set must never
+//                                           pass silently (fail closed)
 //   - matchesJob(observed, expected)     -> exact or template job-name match
 //   - isReleaseBuildJob(jobName, jobs)   -> does this job belong to the build?
 //   - computeQueueOrder(jobs)            -> queue positions with release priority
@@ -43,6 +48,8 @@
  * @returns {Array<{id: string, name: string, needs: string[]}>} jobs in file
  *   order; `name` is the display name (falls back to the id), `needs` is the
  *   literal job-id list from the job's `needs:` key (empty when absent).
+ * @throws {Error} when a `needs:` entry is malformed (not a job-id token) —
+ *   parsing must never silently drop a declared dependency.
  */
 export function extractJobGraph(yamlText) {
   const lines = yamlText.split("\n");
@@ -89,10 +96,24 @@ export function extractJobGraph(yamlText) {
         } else {
           const listMatch = /^\[(.*)\]$/.exec(raw);
           if (listMatch) {
-            current.needs = listMatch[1]
-              .split(",")
-              .map((s) => s.trim().replace(/^["']|["']$/g, ""))
-              .filter((s) => /^[a-zA-Z_][a-zA-Z0-9_-]*$/.test(s));
+            for (const item of listMatch[1].split(",")) {
+              const id = item.trim().replace(/^["']|["']$/g, "");
+              if (!/^[a-zA-Z_][a-zA-Z0-9_-]*$/.test(id)) {
+                throw new Error(
+                  `unparseable needs entry in job "${current.id}": ${JSON.stringify(item.trim())}`
+                );
+              }
+              current.needs.push(id);
+            }
+          } else {
+            // Single id form: needs: build
+            const id = raw.replace(/^["']|["']$/g, "");
+            if (!/^[a-zA-Z_][a-zA-Z0-9_-]*$/.test(id)) {
+              throw new Error(
+                `unparseable needs entry in job "${current.id}": ${JSON.stringify(raw)}`
+              );
+            }
+            current.needs.push(id);
           }
         }
         continue;
@@ -100,9 +121,15 @@ export function extractJobGraph(yamlText) {
       continue;
     }
     if (indent === 6 && collectingNeedsFor) {
-      const itemMatch = /^      -\s+([a-zA-Z_][a-zA-Z0-9_-]*)\s*$/.exec(line);
+      const itemMatch = /^      -\s+(.+)$/.exec(line);
       if (itemMatch) {
-        collectingNeedsFor.needs.push(itemMatch[1]);
+        const id = itemMatch[1].trim().replace(/^["']|["']$/g, "");
+        if (!/^[a-zA-Z_][a-zA-Z0-9_-]*$/.test(id)) {
+          throw new Error(
+            `unparseable needs entry in job "${collectingNeedsFor.id}": ${JSON.stringify(itemMatch[1].trim())}`
+          );
+        }
+        collectingNeedsFor.needs.push(id);
       }
     }
   }
@@ -139,8 +166,13 @@ export function buildJobs(allJobs) {
  * @param {string} yamlText
  * @param {string} gateJobId  the gate job's workflow id (e.g. "ci-result")
  * @returns {string[]} display names of the gate's dependency closure in file
- *   order; empty when the gate job is absent or has no resolvable needs
- *   (callers must fail closed on empty).
+ *   order; empty when the gate job is absent (callers must fail closed on
+ *   empty).
+ * @throws {Error} when a `needs:` entry of the gate or any of its transitive
+ *   dependencies references a job id that does not exist in this workflow.
+ *   A typo or a job defined below via an unsupported YAML construct must
+ *   fail closed with an explicit error, never yield a partial non-empty set
+ *   that silently omits a required job (reviewer finding on OPE-13002).
  */
 export function gateDependencyJobs(yamlText, gateJobId) {
   const graph = extractJobGraph(yamlText);
@@ -153,7 +185,11 @@ export function gateDependencyJobs(yamlText, gateJobId) {
     const id = stack.pop();
     if (seen.has(id)) continue;
     const job = byId.get(id);
-    if (!job) continue; // needs entry we cannot resolve — skip
+    if (!job) {
+      throw new Error(
+        `gate "${gateJobId}" declares dependency "${id}" which is not a job of this workflow — refusing an incomplete build set (fail closed)`
+      );
+    }
     seen.add(id);
     stack.push(...job.needs);
   }
@@ -245,6 +281,32 @@ export function computeQueueOrder(pendingBuilds) {
 export function isReleaseRun(run) {
   const branch = run.head_branch || "";
   return /^myr-v\d+\.\d+\.\d+(-rc\.\d+)?$/.test(branch);
+}
+
+/**
+ * Does this run occupy the priority runner pool (vars.CI_RUNNER_PRIORITY)?
+ * The routing decision lives in myrmidon-ci.yml plan job (is_release): a run
+ * is sent to the priority pool when its ref is main, a tag, or a release
+ * stream PR (title containing "rc.N"/"release", or head/base ref under
+ * rel/). The queue monitor MUST use the same predicate: classifying a
+ * priority-pool run as "ordinary" produces false inversions (a main push or
+ * release PR that legitimately started on the priority pool would be
+ * reported as blocking a queued tag build), and classifying an ordinary run
+ * as priority hides real inversions. GitHub's workflow_runs list exposes
+ * head_branch, event and display_title (the PR title for pull_request
+ * runs), which is enough to reproduce the plan predicate exactly.
+ *
+ * @param {{head_branch?: string, event?: string, display_title?: string}} run
+ * @returns {boolean}
+ */
+export function isPriorityPoolRun(run) {
+  const branch = run.head_branch || "";
+  if (/^myr-v\d+\.\d+\.\d+(-rc\.\d+)?$/.test(branch)) return true;
+  if (branch === "main") return true;
+  if (branch.startsWith("rel/")) return true;
+  const title = run.display_title || "";
+  if (/(rc\.[0-9]+|release)/.test(title)) return true;
+  return false;
 }
 
 /**
@@ -363,7 +425,13 @@ export function observedPriorityViolations(runs) {
   const normalized = runs.map((r) => ({
     id: String(r.id ?? r.head_branch ?? r.name ?? ""),
     name: r.head_branch || r.name || String(r.id ?? ""),
-    isRelease: isReleaseRun(r),
+    // The queue invariant is about the PRIORITY POOL, not just tag builds:
+    // every run routed to vars.CI_RUNNER_PRIORITY (tag builds, main pushes,
+    // release PRs) is allowed to start ahead of later-queued ordinary runs;
+    // only runs that never receive the priority label can commit an
+    // inversion. Classification mirrors the myrmidon-ci.yml plan predicate
+    // (isPriorityPoolRun) so no priority-pool run is misreported as ordinary.
+    isRelease: isPriorityPoolRun(r),
     queuedAt: r.created_at || "",
     startedAt: r.started_at || null,
     status: r.status || "",

@@ -17,6 +17,7 @@ import {
   isReleaseBuildJob,
   computeQueueOrder,
   isReleaseRun,
+  isPriorityPoolRun,
   isReleaseWorkflowRun,
   queueViolations,
   priorityViolations,
@@ -235,6 +236,78 @@ describe("isReleaseRun", () => {
     assert.ok(!isReleaseRun({ head_branch: "myr-v1.8" }));
     assert.ok(!isReleaseRun({ head_branch: "myr-v1.8.0-beta.1" }));
     assert.ok(!isReleaseRun({ head_branch: "v1.8.0" }));
+  });
+});
+
+// ---------------------------------------------------------------------------
+// isPriorityPoolRun — the monitor must classify runs by the same predicate
+// myrmidon-ci.yml plan uses to route them to vars.CI_RUNNER_PRIORITY
+// (reviewer finding on OPE-13002: misclassified priority-pool runs produced
+// false queue-priority inversions)
+// ---------------------------------------------------------------------------
+
+describe("isPriorityPoolRun", () => {
+  it("classifies release tag runs as priority pool", () => {
+    assert.ok(isPriorityPoolRun({ head_branch: "myr-v1.8.0" }));
+    assert.ok(isPriorityPoolRun({ head_branch: "myr-v1.8.0-rc.3" }));
+  });
+
+  it("classifies main pushes as priority pool", () => {
+    assert.ok(isPriorityPoolRun({ head_branch: "main", event: "push" }));
+  });
+
+  it("classifies rel/ branch runs as priority pool", () => {
+    assert.ok(isPriorityPoolRun({ head_branch: "rel/1.8.x", event: "push" }));
+  });
+
+  it("classifies release-stream PRs (title contains release or rc.N) as priority pool", () => {
+    assert.ok(
+      isPriorityPoolRun({
+        head_branch: "bot/OPE-9999",
+        event: "pull_request",
+        display_title: "1.9 release: queue wiring (OPE-9999)",
+      })
+    );
+    assert.ok(
+      isPriorityPoolRun({
+        head_branch: "bot/OPE-9998",
+        event: "pull_request",
+        display_title: "1.8 rc.2 cutoff (OPE-9998)",
+      })
+    );
+  });
+
+  it("rejects ordinary feature PRs and branch pushes", () => {
+    assert.ok(
+      !isPriorityPoolRun({
+        head_branch: "bot/OPE-13001",
+        event: "pull_request",
+        display_title: "1.8 RELEASE-STAGE: unrelated lanes (OPE-13001)",
+      })
+    );
+    assert.ok(
+      !isPriorityPoolRun({ head_branch: "feature-x", event: "push" })
+    );
+    assert.ok(
+      !isPriorityPoolRun({
+        head_branch: "bot/OPE-12345",
+        event: "pull_request",
+        display_title: "fix flaky plan test (OPE-12345)",
+      })
+    );
+  });
+
+  it("matches the myrmidon-ci.yml plan predicate case-sensitively (RELEASE != release)", () => {
+    // plan uses bash [[ =~ (rc\.[0-9]+|release) ]] — case-sensitive. A
+    // title with only uppercase RELEASE must NOT route to the priority pool
+    // in either place.
+    assert.ok(
+      !isPriorityPoolRun({
+        head_branch: "bot/OPE-13001",
+        event: "pull_request",
+        display_title: "1.8 RELEASE-STAGE gates (OPE-13001)",
+      })
+    );
   });
 });
 
@@ -573,6 +646,36 @@ describe("observedPriorityViolations — behavioral", () => {
     // (the tag CI step, the publish gate) apply the workflow-name filter
     // before calling. A started ordinary run in the input set blocks a
     // not-yet-started release run regardless of the workflow field.
+    // (The ordinary run here uses a feature branch — a main-branch run is a
+    // PRIORITY-POOL run per the myrmidon-ci.yml plan predicate and must not
+    // be reported as an inversion blocker.)
+    const runs = [
+      {
+        id: 1,
+        head_branch: "myr-v1.8.0",
+        name: "Myrmidon CI (tag)",
+        status: "queued",
+        created_at: "2026-11-13T10:00:00Z",
+        started_at: null,
+      },
+      {
+        id: 2,
+        head_branch: "feature-x",
+        name: "Myrmidon Image",
+        status: "in_progress",
+        created_at: "2026-11-13T10:05:00Z",
+        started_at: "2026-11-13T10:05:30Z",
+      },
+    ];
+    const violations = observedPriorityViolations(runs);
+    assert.equal(violations.length, 1);
+    assert.equal(violations[0].blockedBy, "feature-x");
+  });
+
+  it("does NOT flag a started priority-pool run (main push) as blocking a queued tag build", () => {
+    // Reviewer finding on OPE-13002: main pushes and release PRs receive the
+    // CI_RUNNER_PRIORITY label and legitimately start ahead of a queued tag
+    // build. Misclassifying them as ordinary produced false inversions.
     const runs = [
       {
         id: 1,
@@ -585,7 +688,55 @@ describe("observedPriorityViolations — behavioral", () => {
       {
         id: 2,
         head_branch: "main",
-        name: "Myrmidon Image",
+        name: "Myrmidon CI",
+        status: "in_progress",
+        created_at: "2026-11-13T10:05:00Z",
+        started_at: "2026-11-13T10:05:30Z",
+      },
+    ];
+    assert.deepEqual(observedPriorityViolations(runs), []);
+  });
+
+  it("does NOT flag a started release-stream PR as blocking a queued tag build", () => {
+    const runs = [
+      {
+        id: 1,
+        head_branch: "myr-v1.8.1",
+        name: "Myrmidon CI (tag)",
+        status: "queued",
+        created_at: "2026-11-13T10:00:00Z",
+        started_at: null,
+      },
+      {
+        id: 2,
+        head_branch: "bot/OPE-9999",
+        name: "Myrmidon CI",
+        event: "pull_request",
+        display_title: "1.9 release: queue wiring (OPE-9999)",
+        status: "in_progress",
+        created_at: "2026-11-13T10:05:00Z",
+        started_at: "2026-11-13T10:05:30Z",
+      },
+    ];
+    assert.deepEqual(observedPriorityViolations(runs), []);
+  });
+
+  it("still flags a started ordinary PR run as blocking a queued tag build", () => {
+    const runs = [
+      {
+        id: 1,
+        head_branch: "myr-v1.8.0",
+        name: "Myrmidon CI (tag)",
+        status: "queued",
+        created_at: "2026-11-13T10:00:00Z",
+        started_at: null,
+      },
+      {
+        id: 2,
+        head_branch: "bot/OPE-13001",
+        name: "Myrmidon CI",
+        event: "pull_request",
+        display_title: "1.8 RELEASE-STAGE: unrelated lanes (OPE-13001)",
         status: "in_progress",
         created_at: "2026-11-13T10:05:00Z",
         started_at: "2026-11-13T10:05:30Z",
@@ -593,7 +744,8 @@ describe("observedPriorityViolations — behavioral", () => {
     ];
     const violations = observedPriorityViolations(runs);
     assert.equal(violations.length, 1);
-    assert.equal(violations[0].blockedBy, "main");
+    assert.equal(violations[0].release, "myr-v1.8.0");
+    assert.equal(violations[0].blockedBy, "bot/OPE-13001");
   });
 
   it("flags each blocked release run separately", () => {
@@ -873,6 +1025,64 @@ describe("gateDependencyJobs", () => {
   it("returns an empty set when the gate job is absent (fail closed)", () => {
     assert.deepEqual(gateDependencyJobs(GRAPH_YAML, "no-such-gate"), []);
     assert.deepEqual(gateDependencyJobs("name: x\n", "ci-result"), []);
+  });
+
+  it("THROWS when the gate needs a job id that does not exist (fail closed)", () => {
+    // Reviewer finding on OPE-13002: a typo in the gate's dependency list
+    // must not silently yield a partial non-empty set — that would let the
+    // gate pass while ignoring a declared dependency.
+    const yaml = [
+      "jobs:",
+      "  build:",
+      "    name: build",
+      "    runs-on: ubuntu-latest",
+      "    steps:",
+      "      - run: echo hi",
+      "  ci-result:",
+      "    name: CI result",
+      "    needs: [build, typo-lane]",
+      "    runs-on: ubuntu-latest",
+      "    steps:",
+      "      - run: echo hi",
+    ].join("\n");
+    assert.throws(() => gateDependencyJobs(yaml, "ci-result"), /typo-lane/);
+  });
+
+  it("THROWS when a transitive dependency references an unknown job id", () => {
+    const yaml = [
+      "jobs:",
+      "  checks:",
+      "    name: checks",
+      "    needs: [gone]",
+      "    runs-on: ubuntu-latest",
+      "    steps:",
+      "      - run: echo hi",
+      "  ci-result:",
+      "    name: CI result",
+      "    needs: [checks]",
+      "    runs-on: ubuntu-latest",
+      "    steps:",
+      "      - run: echo hi",
+    ].join("\n");
+    assert.throws(() => gateDependencyJobs(yaml, "ci-result"), /gone/);
+  });
+
+  it("THROWS on a malformed inline needs entry instead of dropping it", () => {
+    const yaml = [
+      "jobs:",
+      "  build:",
+      "    name: build",
+      "    runs-on: ubuntu-latest",
+      "    steps:",
+      "      - run: echo hi",
+      "  ci-result:",
+      "    name: CI result",
+      "    needs: [build, ${{ env.foo }}]",
+      "    runs-on: ubuntu-latest",
+      "    steps:",
+      "      - run: echo hi",
+    ].join("\n");
+    assert.throws(() => extractJobGraph(yaml), /unparseable needs entry/);
   });
 
   it("the real tag workflow closure equals the full tier the gate needs", () => {
