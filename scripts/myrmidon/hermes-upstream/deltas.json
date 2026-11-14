@@ -565,6 +565,40 @@
       }
     },
     {
+      "id": "32-compaction-summary-9-sections",
+      "kind": "patch",
+      "patch": "docker/bot-runtime/patches/32-compaction-summary-9-sections.patch",
+      "files": [
+        "agent/context_compressor.py"
+      ],
+      "reason": "Unifies context compaction summary structure across fresh, iterative-update, and deterministic fallback summaries into 9 standardized sections: USER_CONTEXT, TASK_TRACKING, COMPLETED, PENDING, CURRENT_STATE, CODE_STATE, TESTS, CHANGES, VERSION_CONTROL_STATUS, with verbatim task/ticket IDs and PR numbers, while preserving legacy task snapshot heading parsers.",
+      "dropCondition": "Upstream adopts a 9-section structured compaction summary with verbatim task and ticket ID tracking.",
+      "offer": null,
+      "offerNote": "Not offered yet.",
+      "probe": {
+        "source": "hermes",
+        "path": "agent/context_compressor.py",
+        "upstreamMarker": "TASK_TRACKING|VERSION_CONTROL_STATUS"
+      }
+    },
+    {
+      "id": "33-compaction-tool-pairs-sampling",
+      "kind": "patch",
+      "patch": "docker/bot-runtime/patches/33-compaction-tool-pairs-sampling.patch",
+      "files": [
+        "agent/context_compressor.py"
+      ],
+      "reason": "When sampling session history for the summarizer, _serialize_records_for_summary emitted each message as an independent record and slice boundaries cut between assistant tool calls and their tool results, leaving orphaned results or unmatched calls in the summary prompt. Serialization now treats each assistant message with tool calls and all its corresponding tool results (paired via tool_call_id variants) as one atomic record. Orphaned results without a call are omitted from the summary transcript, and oversized atomic records bound intra-record while preserving both the tool calls section and tool results.",
+      "dropCondition": "Upstream treats tool calls and their results as atomic units during summary serialization and sampling.",
+      "offer": null,
+      "offerNote": "Not offered yet.",
+      "probe": {
+        "source": "hermes",
+        "path": "agent/context_compressor.py",
+        "upstreamMarker": "atomic record|tool_result_id_variants|consumed_results"
+      }
+    },
+    {
       "id": "34-run-idempotency-txn-rollback",
       "kind": "patch",
       "patch": "docker/bot-runtime/patches/34-run-idempotency-txn-rollback.patch",
@@ -603,9 +637,11 @@
       "kind": "patch",
       "patch": "docker/bot-runtime/patches/36-content-filter-retry.patch",
       "files": [
+        "agent/turn_iteration_prep.py",
+        "agent/turn_retry_state.py",
         "agent/turn_truncation.py"
       ],
-      "reason": "An HTTP-200 reply with finish_reason content_filter ended the turn at once; the provider's filter cut a harmless reply of a long session mid-word and the whole run failed. The same call is now re-issued first (at most 2 times per turn, where no fallback could take over) before the refusal falls through to the fallback chain and the terminal content_policy_blocked result.",
+      "reason": "An HTTP-200 reply with finish_reason content_filter ended the turn at once; the provider's filter cut a harmless reply of a long session mid-word and the whole run failed. The same call is now re-issued first (at most 2 times per call, without consuming turn restart_count, where no fallback could take over) before the refusal falls through to the fallback chain and the terminal content_policy_blocked result.",
       "dropCondition": "Upstream re-issues a content-filtered reply before failing the turn.",
       "offer": null,
       "offerNote": "Not offered yet.",

@@ -3,10 +3,11 @@
 
 An HTTP-200 reply with ``finish_reason == "content_filter"`` is re-issued only where it used to end the
 turn at once: an agent with a fallback left still goes to the fallback exactly as before (no re-issue);
-an agent without one (or with all of them used) re-issues the same model call, at most twice per turn
-(the restart flag is armed and the loop is told to "break" into the rebuilt-message restart), and the
-refusal after that ends the turn with the typed ``content_policy_blocked`` result. The re-issues leave
-room in the turn's restart limit for the configured fallbacks. A new turn starts the count from zero.
+an agent without one (or with all of them used) re-issues the same model call, at most twice per call
+(the restart flag is armed and the loop is told to "break" into the rebuilt-message restart without
+consuming the turn's restart_count), and the refusal after that ends the turn with the typed
+``content_policy_blocked`` result. The re-issues leave room in the turn's restart limit for the
+configured fallbacks. A new call or turn starts the count from zero.
 
 ``handle_content_policy_refusal`` is the real function; the agent is a stub that records the calls.
 
@@ -85,18 +86,29 @@ def main() -> None:
         return state["used"] if isinstance(state, dict) else 0
 
     limit = tt._CONTENT_FILTER_RETRIES
-    check("per-turn limit is 2", limit == 2, str(limit))
+    check("per-call limit is 2", limit == 2, str(limit))
 
-    # ---- agent WITHOUT a fallback: two re-issues, an answered call in between does not reset, third ends
+    from agent.turn_iteration_prep import apply_retry_restarts
+
+    def prep(agent, retry, restart_count=0, call=1, max_retries=3):
+        return apply_retry_restarts(
+            agent, _retry=retry, response=None, interrupted=False, messages=[],
+            conversation_history=[], user_message=None, api_kwargs={}, current_turn_user_idx=0,
+            final_response=None, retry_count=0, max_retries=max_retries, api_call_count=call,
+            restart_count=restart_count, length_continue_retries=0,
+            _preflight_compression_blocked=True, _turn_exit_reason="",
+        )
+
+    # ---- agent WITHOUT a fallback: two re-issues per call, third refusal on same call ends it
     agent = make_agent()
-    for i, call in enumerate((1, 1)):
+    for i in (1, 2):
         retry = TurnRetryState()
-        verdict = refuse(agent, retry, call=call)
-        check(f"no fallback, refusal {i + 1}: re-issued", restarted(verdict, retry), verdict.action)
-        check(f"no fallback, refusal {i + 1}: session not persisted", not agent._persist_session.called)
+        verdict = refuse(agent, retry, call=1)
+        check(f"no fallback, call 1 refusal {i}: re-issued", restarted(verdict, retry), verdict.action)
+        check(f"no fallback, call 1 refusal {i}: session not persisted", not agent._persist_session.called)
     retry = TurnRetryState()
-    verdict = refuse(agent, retry, call=2)
-    check("third refusal of the turn ends it", verdict.action == "return", verdict.action)
+    verdict = refuse(agent, retry, call=1)
+    check("third refusal on same call ends it", verdict.action == "return", verdict.action)
     result = verdict.result or {}
     check("terminal result is content_policy_blocked", result.get("failure_reason") == "content_policy_blocked", str(result.get("failure_reason")))
     check("terminal result is failed", result.get("failed") is True and result.get("completed") is False)
@@ -104,45 +116,84 @@ def main() -> None:
     check("terminal restart not armed", retry.restart_with_rebuilt_messages is False)
     check("terminal result persists the session once", agent._persist_session.call_count == 1)
 
-    # ---- agent WITH a fallback left: goes to the fallback as before, no re-issue counted
+    # ---- three content-filter refusals across different calls of one turn (empty fallback chain)
+    agent = make_agent(chain=0, available=0)
+    restart_count = 0
+    all_reissued = True
+    for call in (1, 2, 3):
+        retry = TurnRetryState()
+        verdict = refuse(agent, retry, call=call, turn_id="turn-cf-calls")
+        if not restarted(verdict, retry):
+            all_reissued = False
+            break
+        pv = prep(agent, retry, restart_count=restart_count, call=call, max_retries=3)
+        if pv.action != "continue":
+            all_reissued = False
+            break
+        restart_count = pv.restart_count
+
+    check("three filter refusals across different calls: each call re-issued", all_reissued)
+    check("three filter refusals across different calls: turn not ended by restart_count", restart_count == 0 and all_reissued, f"restart_count={restart_count}")
+
+    # ---- agent WITH two fallbacks configured: behavior as before (reserves first, no re-issues after)
     agent = make_agent(chain=2, available=2)
+    restart_count = 0
     retry = TurnRetryState()
-    verdict = refuse(agent, retry)
+    verdict = refuse(agent, retry, call=1)
     check("fallback left: the fallback is activated", agent._try_activate_fallback.call_count == 1)
     check("fallback left: the loop restarts on it", restarted(verdict, retry), verdict.action)
     check("fallback left: no re-issue is counted", counter(agent) == 0, str(agent._content_filter_retries))
+    pv = prep(agent, retry, restart_count=restart_count, call=1)
+    restart_count = pv.restart_count
+    check("fallback restart consumes restart_count", restart_count == 1, f"restart_count={restart_count}")
+
     retry = TurnRetryState()
     verdict = refuse(agent, retry, call=1)
     check("second fallback left: used too, still no re-issue", restarted(verdict, retry) and counter(agent) == 0)
+    pv = prep(agent, retry, restart_count=restart_count, call=1)
+    restart_count = pv.restart_count
+    check("second fallback restart consumes restart_count", restart_count == 2, f"restart_count={restart_count}")
 
-    # ---- two fallbacks configured and both used: the restarts leave no room, the refusal ends the turn as before
+    # ---- two fallbacks configured and both used: re-issue does not depend on _fallback_chain (2 re-issues per call)
     retry = TurnRetryState()
     verdict = refuse(agent, retry, call=1)
-    check("two fallbacks used: no re-issue fits the restart limit", verdict.action == "return" and counter(agent) == 0, verdict.action)
+    check("two fallbacks used: call 1 gets re-issue 1", restarted(verdict, retry) and counter(agent) == 1, verdict.action)
+    pv = prep(agent, retry, restart_count=restart_count, call=1)
+    check("two fallbacks used: filter re-issue does not consume restart_count", pv.restart_count == restart_count, f"restart_count={pv.restart_count}")
+
+    retry = TurnRetryState()
+    verdict = refuse(agent, retry, call=1)
+    check("two fallbacks used: call 1 gets re-issue 2", restarted(verdict, retry) and counter(agent) == 2, verdict.action)
+
+    retry = TurnRetryState()
+    verdict = refuse(agent, retry, call=1)
+    check("two fallbacks used: third refusal on call 1 ends it", verdict.action == "return", verdict.action)
     check("two fallbacks used: typed failed result", (verdict.result or {}).get("failed") is True and (verdict.result or {}).get("failure_reason") == "content_policy_blocked")
-    check("two fallbacks used: error carries no re-issue note", "re-issued" not in str((verdict.result or {}).get("error")))
+    check("two fallbacks used: error carries re-issue note", "repeated after 2 re-issued calls" in str((verdict.result or {}).get("error")))
 
-    # ---- one fallback configured and used: one re-issue fits (1 restart + 1 re-issue <= 2), then the old outcome
-    agent = make_agent(chain=1, available=1)
-    verdict = refuse(agent, TurnRetryState())
-    retry = TurnRetryState()
-    verdict = refuse(agent, retry, call=1)
-    check("one fallback used: one re-issue", restarted(verdict, retry) and counter(agent) == 1, verdict.action)
-    verdict = refuse(agent, TurnRetryState(), call=1)
-    check("one fallback used: then the old outcome", verdict.action == "return" and (verdict.result or {}).get("failed") is True, verdict.action)
-
-    # ---- the re-issues never exceed the turn's restart limit minus one
+    # ---- counter is per call: two refusals on call 1 (both re-issued), call 2 gets 2 re-issues again
     agent = make_agent()
-    verdict = refuse(agent, TurnRetryState(), max_retries=1)
-    check("with a restart limit of 1 nothing is re-issued", verdict.action == "return", verdict.action)
+    for i in (1, 2):
+        retry = TurnRetryState()
+        verdict = refuse(agent, retry, call=1)
+        check(f"call 1 refusal {i}: re-issued", restarted(verdict, retry))
+        check(f"call 1 counter is {i}", counter(agent) == i)
+    for i in (1, 2):
+        retry = TurnRetryState()
+        verdict = refuse(agent, retry, call=2)
+        check(f"call 2 refusal {i}: re-issued", restarted(verdict, retry))
+        check(f"call 2 counter is {i}", counter(agent) == i)
+    retry = TurnRetryState()
+    verdict = refuse(agent, retry, call=2)
+    check("third refusal on call 2 ends it", verdict.action == "return", verdict.action)
 
     # ---- a new turn starts from zero
     agent = make_agent()
-    for call in (1, 1):
-        refuse(agent, TurnRetryState(), call=call)
+    refuse(agent, TurnRetryState(), turn_id="turn-1", call=1)
+    refuse(agent, TurnRetryState(), turn_id="turn-1", call=1)
     retry = TurnRetryState()
     verdict = refuse(agent, retry, turn_id="turn-2", call=1)
-    check("new turn gets its own re-issues", restarted(verdict, retry), verdict.action)
+    check("new turn gets its own re-issues", restarted(verdict, retry) and counter(agent) == 1, verdict.action)
 
     if FAILS:
         print(f"{len(FAILS)} check(s) failed: {', '.join(FAILS)}")
