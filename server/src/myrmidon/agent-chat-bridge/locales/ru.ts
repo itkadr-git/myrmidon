@@ -189,4 +189,16 @@ export const bridgeTextRu: Record<BridgeTextKey, string> = {
   "bridge.thisAgent": "этим агентом",
   "bridge.refusalUnlinked":
     "Этот бот доступен только участникам рабочего пространства. Попросите администратора привязать ваш аккаунт Telegram.",
+
+  // myrmidon(1.7-TG-LOCALE / OPE-12616): owner-delivery card texts kept
+  // byte-for-byte from the previous literals. Acceptance criterion: false if
+  // an ru text differs from the pre-localization literals by even one byte.
+  "owner.needsYourDecision": "Нужно ваше решение.",
+  "owner.tooLongForTelegram": "Вопрос слишком длинный для Telegram.",
+  "owner.boardOnlyReply": "Ответить можно только на доске.",
+  "owner.defaultQuestionTitle": "Нужен ответ",
+  "owner.recommendedOptionSuffix": " (рекомендуется)",
+  "owner.questionReplyGuidance":
+    "Ответьте сообщением: номером варианта или своими словами.",
+  "owner.confirmationSubject": "Предмет согласования: {target}",
 };

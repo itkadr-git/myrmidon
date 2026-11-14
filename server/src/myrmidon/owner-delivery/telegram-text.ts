@@ -4,9 +4,11 @@ import type {
   RequestConfirmationInteraction,
 } from "@myrmidon/shared";
 import { projectSafeChatPublicationText } from "../../services/chat-publication-projection.js";
+import { t, type BridgeLocale } from "../agent-chat-bridge/locales/index.js";
 
 const MAX_TELEGRAM_MESSAGE_LENGTH = 4_096;
-const QUESTION_REPLY_GUIDANCE = "Ответьте сообщением: номером варианта или своими словами.";
+
+const QUESTION_REPLY_GUIDANCE_KEY = "owner.questionReplyGuidance" as const;
 
 /** The complete owner text does not fit into one Telegram message. */
 export class TelegramOwnerTextTooLongError extends Error {
@@ -32,20 +34,22 @@ function finishTelegramText(lines: string[]): string {
  * only). Carries no interaction content, so it always fits.
  */
 export function telegramOwnerBoardOnlyText(
+  locale: BridgeLocale,
   taskUrl: string | null,
   reason: "too_long" | "board_only",
 ): string {
   const lines = [
     reason === "too_long"
-      ? "Вопрос слишком длинный для Telegram."
-      : "Нужно ваше решение.",
-    "Ответить можно только на доске.",
+      ? t(locale, "owner.tooLongForTelegram")
+      : t(locale, "owner.needsYourDecision"),
+    t(locale, "owner.boardOnlyReply"),
   ];
   if (taskUrl) lines.push("", taskUrl);
   return finishTelegramText(lines);
 }
 
 export function telegramOwnerQuestionText(
+  locale: BridgeLocale,
   interaction: AskUserQuestionsInteraction,
   taskUrl: string | null,
 ): string {
@@ -54,7 +58,7 @@ export function telegramOwnerQuestionText(
     questionSet?.title?.trim() ||
       interaction.payload.title?.trim() ||
       interaction.title?.trim() ||
-      "Нужен ответ",
+      t(locale, "owner.defaultQuestionTitle"),
   ];
   if (questionSet?.description?.trim()) lines.push("", questionSet.description.trim());
 
@@ -70,18 +74,19 @@ export function telegramOwnerQuestionText(
     }
     for (const [index, option] of (question.options ?? []).entries()) {
       const recommendation = "recommended" in option && option.recommended
-        ? " (рекомендуется)"
+        ? t(locale, "owner.recommendedOptionSuffix")
         : "";
       lines.push(`${index + 1}. ${option.label.trim()}${recommendation}`);
       if (option.description?.trim()) lines.push(`   ${option.description.trim()}`);
     }
-    lines.push(QUESTION_REPLY_GUIDANCE);
+    lines.push(t(locale, QUESTION_REPLY_GUIDANCE_KEY));
   }
   if (taskUrl) lines.push(taskUrl);
   return finishTelegramText(lines);
 }
 
 export function telegramOwnerConfirmationText(
+  locale: BridgeLocale,
   interaction: RequestConfirmationInteraction,
   taskUrl: string | null,
 ): string | null {
@@ -97,24 +102,32 @@ export function telegramOwnerConfirmationText(
   // Only the human label of the target: internal ids, keys, revisions and
   // hrefs of the target never go into the owner message.
   const targetLabel = payload.target?.label?.trim();
-  if (targetLabel) lines.push("", `Предмет согласования: ${targetLabel}`);
+  if (targetLabel) {
+    lines.push(
+      "",
+      // myrmidon(1.7-TG-LOCALE): the ru value keeps the pre-localization
+      // wording byte-for-byte; the target label is data, not prose.
+      t(locale, "owner.confirmationSubject", { target: targetLabel }),
+    );
+  }
   // Text replies to a confirmation are not resolved by this delivery path, so
   // the message must not promise them: the decision is made on the board.
-  lines.push("", "Ответить можно только на доске.");
+  lines.push("", t(locale, "owner.boardOnlyReply"));
   if (taskUrl) lines.push("", taskUrl);
   return finishTelegramText(lines);
 }
 
 /** Return null for non-owner Telegram publications; the vendor path stays unchanged. */
 export function telegramOwnerInteractionText(
+  locale: BridgeLocale,
   interaction: IssueThreadInteraction,
   taskUrl: string | null,
   ownerOnly: boolean,
 ): string | null {
   if (!ownerOnly) return null;
   if (interaction.kind === "ask_user_questions")
-    return telegramOwnerQuestionText(interaction, taskUrl);
+    return telegramOwnerQuestionText(locale, interaction, taskUrl);
   if (interaction.kind === "request_confirmation")
-    return telegramOwnerConfirmationText(interaction, taskUrl);
+    return telegramOwnerConfirmationText(locale, interaction, taskUrl);
   return null;
 }
