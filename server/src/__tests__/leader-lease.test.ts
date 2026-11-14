@@ -154,6 +154,54 @@ describeDb("leader-lease protocol (PROCS-1.7)", () => {
     expect(seen.every((s) => s.epoch === 1)).toBe(true);
   });
 
+  it("expire+reacquire: same holder after expiry gets a new epoch and notification", async () => {
+    await cleanLeases();
+    const svc = leaderLeaseService(db, { ttlMs: 200, renewIntervalMs: 100 });
+    const seen: Array<{ holder: string; epoch: number }> = [];
+    const lease = svc.lease("scheduler", {
+      onLeaderChanged: (holder, epoch) => { seen.push({ holder, epoch }); },
+    });
+    lease.start();
+    await until(() => expect(lease.isLeader()).toBe(true));
+    expect(lease.currentEpoch()).toBe(1);
+    lease.stop(); // freeze renewals; the row will expire after 200 ms
+
+    // Wait past the TTL so the row is expired, then run a renew pass: the
+    // same holder must still get a new fencing epoch because the lease had
+    // expired.
+    await new Promise((r) => setTimeout(r, 350));
+    lease.start();
+    await until(() => expect(lease.currentEpoch()).toBe(2));
+    lease.stop();
+
+    const selfEvents = seen.filter((s) => s.holder === svc.bootId);
+    expect(selfEvents.length).toBe(2);
+    expect(selfEvents[0].epoch).toBe(1);
+    expect(selfEvents[1].epoch).toBe(2);
+  });
+
+  it("renew before expiry: same holder keeps epoch, no extra notification", async () => {
+    await cleanLeases();
+    const svc = leaderLeaseService(db, { ttlMs: 5_000, renewIntervalMs: 100 });
+    const seen: Array<{ holder: string; epoch: number }> = [];
+    const lease = svc.lease("scheduler", {
+      onLeaderChanged: (holder, epoch) => { seen.push({ holder, epoch }); },
+    });
+    lease.start();
+    await until(() => expect(lease.isLeader()).toBe(true));
+    const epochAfterAcquire = lease.currentEpoch();
+    expect(epochAfterAcquire).toBe(1);
+
+    // Drive several renew passes well before the 5 s TTL: epoch must stay 1
+    // and no additional onLeaderChanged fires.
+    await new Promise((r) => setTimeout(r, 500));
+    lease.stop();
+    expect(lease.currentEpoch()).toBe(1);
+    const selfEvents = seen.filter((s) => s.holder === svc.bootId);
+    expect(selfEvents.length).toBe(1);
+    expect(selfEvents[0].epoch).toBe(1);
+  });
+
   it("expire: a stalled holder is displaced after the TTL", async () => {
     await cleanLeases();
     const a = leaderLeaseService(db, { ttlMs: 300, renewIntervalMs: 100 });
