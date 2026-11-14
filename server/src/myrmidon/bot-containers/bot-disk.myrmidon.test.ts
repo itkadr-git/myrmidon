@@ -322,7 +322,7 @@ describe("myrmidon(OPE-13110) bot disk GET: effective git mirror", () => {
       gitMirrorEnabled: true,
       gitMirrorRepos: ["itkadr-git/myrmidon", "itkadr-git/myrmidon-deploy"],
       gitMirrorReposIsDefault: true,
-      sharedCacheRoles: ["engineer", "reviewer", "devops", "release", "qa"],
+      sharedCacheRoles: ["engineer", "lead", "reviewer", "devops", "release", "qa"],
     });
   });
 
