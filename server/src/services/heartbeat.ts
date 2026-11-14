@@ -163,6 +163,8 @@ import {
   readRunCapNoCommitHistory,
   readTaskCurrentHeadSha,
   readLatestManualUnblockAt,
+  readLatestUserCommentAt,
+  isRunCapNoCommitRole,
   countRunsWithoutCommit,
   buildRunCapNoCommitBlockedPatch,
   buildRunCapNoCommitComment,
@@ -32740,34 +32742,41 @@ export function heartbeatService(
           assigneeAgentId: stop.agentId,
         });
         if (wakeTargetId) {
-          await enqueueWakeup(wakeTargetId, {
-            source: "automation",
-            triggerDetail: "system",
-            reason: RUN_CAP_NO_COMMIT_REASON,
-            payload: {
-              issueId: stop.issueId,
-              assigneeAgentId: stop.agentId,
-              runCapNoCommit: {
-                count: stop.count,
-                limit: stop.limit,
-                headSha: stop.headSha,
-                summary: parked.comment,
-              },
-            },
-            requestedByActorType: "system",
-            requestedByActorId: null,
-            contextSnapshot: {
-              issueId: stop.issueId,
-              taskId: stop.issueId,
-              wakeReason: RUN_CAP_NO_COMMIT_REASON,
+          try {
+            await enqueueWakeup(wakeTargetId, {
               source: "automation",
-              runCapNoCommit: {
-                count: stop.count,
-                limit: stop.limit,
-                headSha: stop.headSha,
+              triggerDetail: "system",
+              reason: RUN_CAP_NO_COMMIT_REASON,
+              payload: {
+                issueId: stop.issueId,
+                assigneeAgentId: stop.agentId,
+                runCapNoCommit: {
+                  count: stop.count,
+                  limit: stop.limit,
+                  headSha: stop.headSha,
+                  summary: parked.comment,
+                },
               },
-            },
-          });
+              requestedByActorType: "system",
+              requestedByActorId: null,
+              contextSnapshot: {
+                issueId: stop.issueId,
+                taskId: stop.issueId,
+                wakeReason: RUN_CAP_NO_COMMIT_REASON,
+                source: "automation",
+                runCapNoCommit: {
+                  count: stop.count,
+                  limit: stop.limit,
+                  headSha: stop.headSha,
+                },
+              },
+            });
+          } catch (err) {
+            logger.warn(
+              { err: err instanceof Error ? err.message : String(err), issueId: stop.issueId, wakeTargetId },
+              "run cap no commit: the issue was parked as blocked but the lead or manager could not be woken",
+            );
+          }
         }
       }
     } catch (err) {
@@ -35231,7 +35240,8 @@ export function heartbeatService(
           // (agent, issue) did not advance its headSha up to taskRunsWithoutCommitLimit,
           // the wake is skipped, the task is blocked and the lead/manager is woken.
           // A person's wake, a resolved interaction card and the escalation wake
-          // itself are never capped.
+          // itself are never capped; neither is an agent that is not an engineer
+          // or a task with a live run (the run may still make the commit).
           const noCommitInteraction = Boolean(
             readNonEmptyString(enrichedContextSnapshot.interactionId) ??
               readNonEmptyString(payload?.interactionId),
@@ -35242,9 +35252,12 @@ export function heartbeatService(
             !opts.manualUserWake &&
             !noCommitInteraction &&
             reason !== RUN_CAP_NO_COMMIT_REASON &&
+            !activeExecutionRun &&
+            isRunCapNoCommitRole(agent.role) &&
             isContinuationActionable(issue, agentId)
           ) {
-            const noCommitLimit = await loadTaskRunsWithoutCommitLimit(tx as unknown as Db);
+            // Read outside the admission transaction: a failed query would abort it.
+            const noCommitLimit = await loadTaskRunsWithoutCommitLimit(db);
             const currentHeadSha =
               noCommitLimit > 0
                 ? await readTaskCurrentHeadSha(tx as unknown as Db, agent.companyId, issue.id)
@@ -35255,6 +35268,17 @@ export function heartbeatService(
                 agent.companyId,
                 issue.id,
               );
+              const latestUserCommentAt = await readLatestUserCommentAt(
+                tx as unknown as Db,
+                agent.companyId,
+                issue.id,
+              );
+              const resetAfter =
+                latestManualUnblockAt && latestUserCommentAt
+                  ? latestManualUnblockAt > latestUserCommentAt
+                    ? latestManualUnblockAt
+                    : latestUserCommentAt
+                  : latestManualUnblockAt ?? latestUserCommentAt;
               const history = await readRunCapNoCommitHistory(
                 tx as unknown as Db,
                 agent.companyId,
@@ -35263,7 +35287,7 @@ export function heartbeatService(
                 Math.max(20, noCommitLimit + 1),
               );
               const check = countRunsWithoutCommit(history, currentHeadSha, {
-                resetAfter: latestManualUnblockAt,
+                resetAfter,
               });
               if (check.count >= noCommitLimit) {
                 await tx.insert(agentWakeupRequests).values({

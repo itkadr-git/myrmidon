@@ -23,7 +23,7 @@ import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
 } from "./helpers/embedded-postgres.js";
-import { heartbeatService } from "../services/heartbeat.ts";
+import { heartbeatService, type WakeupOptions } from "../services/heartbeat.ts";
 import { drainHeartbeatRunsToQuiescence } from "./helpers/drain-heartbeat-runs.js";
 import { runningProcesses } from "../adapters/index.ts";
 import { CONTINUATION_CAP_COMMENT } from "../myrmidon/continuation-cap.js";
@@ -104,13 +104,13 @@ describeEmbeddedPostgres("heartbeat continuation wakes: status gate and real att
     await tempDb?.cleanup();
   });
 
-  async function seedAgent(companyId: string, name: string) {
+  async function seedAgent(companyId: string, name: string, role = "engineer") {
     const agentId = randomUUID();
     await db.insert(agents).values({
       id: agentId,
       companyId,
       name,
-      role: "engineer",
+      role,
       status: "active",
       adapterType: "codex_local",
       adapterConfig: {},
@@ -154,6 +154,9 @@ describeEmbeddedPostgres("heartbeat continuation wakes: status gate and real att
     headSha?: string | null;
     summary?: string | null;
     wakeReason?: string;
+    invocationSource?: string;
+    // Production shape: the head sits in paperclipWake.pullRequestsCi[0].headSha only.
+    headViaWake?: boolean;
   }) {
     const runId = randomUUID();
     const createdAt = minutesAgo(input.minutesAgo);
@@ -161,7 +164,7 @@ describeEmbeddedPostgres("heartbeat continuation wakes: status gate and real att
       id: runId,
       companyId: input.companyId,
       agentId: input.agentId,
-      invocationSource: "automation",
+      invocationSource: input.invocationSource ?? "automation",
       triggerDetail: "system",
       status: input.status ?? "succeeded",
       livenessState: "advanced",
@@ -175,12 +178,15 @@ describeEmbeddedPostgres("heartbeat continuation wakes: status gate and real att
         wakeReason: input.wakeReason ?? "issue_continuation_needed",
         retryReason: input.wakeReason ?? "issue_continuation_needed",
         source: "issue.continuation_recovery",
-        ...(input.headSha ? { prHeadSha: input.headSha } : {}),
+        ...(input.headSha && !input.headViaWake ? { prHeadSha: input.headSha } : {}),
+        ...(input.headSha && input.headViaWake
+          ? { paperclipWake: { pullRequestsCi: [{ headSha: input.headSha }] } }
+          : {}),
       },
       resultJson: {
         success: true,
         summary: input.summary ?? "done",
-        ...(input.headSha ? { prHeadSha: input.headSha } : {}),
+        ...(input.headSha && !input.headViaWake ? { prHeadSha: input.headSha } : {}),
       },
     });
     return runId;
@@ -695,6 +701,175 @@ describeEmbeddedPostgres("heartbeat continuation wakes: status gate and real att
       await continuationWake(agentId, issueId);
       const skipsAfterUnblock = skippedWith(await wakeRequests(agentId), "runs_without_commit_limit_reached");
       expect(skipsAfterUnblock).toHaveLength(0);
+    });
+
+    describe("run cap without commit: which wakes count and are capped (OPE-13080)", () => {
+      const headSha = "9ee06485da935dc36407e8eb5e0e2524d4d19575";
+      const SKIP = "runs_without_commit_limit_reached";
+
+      async function seedScene(opts: { role?: string; withPr?: boolean; runInvocationSource?: string } = {}) {
+        const companyId = randomUUID();
+        await db.insert(companies).values({ id: companyId, name: `NoCommit ${companyId.slice(0, 6)}` });
+        const agentId = await seedAgent(companyId, "engineer-x", opts.role ?? "engineer");
+        const issueId = randomUUID();
+        await db.insert(issues).values({
+          id: issueId,
+          companyId,
+          title: "No commit scene",
+          status: "in_progress",
+          assigneeAgentId: agentId,
+        });
+        if (opts.withPr !== false) {
+          await db.insert(issueWorkProducts).values({
+            id: randomUUID(),
+            companyId,
+            issueId,
+            type: "pull_request",
+            title: "PR #1",
+            metadata: { headSha },
+          });
+        }
+        for (let i = 4; i >= 1; i--) {
+          await seedContinuationRun({
+            companyId,
+            agentId,
+            issueId,
+            minutesAgo: i * 10,
+            headSha,
+            headViaWake: true,
+            wakeReason: "ci_completed",
+            invocationSource: opts.runInvocationSource,
+          });
+        }
+        return { companyId, agentId, issueId };
+      }
+
+      function wakeWith(
+        agentId: string,
+        issueId: string,
+        o: WakeupOptions & { interactionId?: string } = {},
+      ) {
+        const { interactionId, ...rest } = o;
+        return heartbeat.wakeup(agentId, {
+          source: "automation",
+          triggerDetail: "system",
+          reason: "ci_completed",
+          payload: { issueId, headSha, ...(interactionId ? { interactionId } : {}) },
+          contextSnapshot: {
+            issueId,
+            taskId: issueId,
+            wakeReason: "ci_completed",
+            ...(interactionId ? { interactionId } : {}),
+          },
+          requestedByActorType: "system",
+          requestedByActorId: null,
+          ...rest,
+        });
+      }
+
+      async function statusOf(issueId: string) {
+        const [row] = await db.select().from(issues).where(eq(issues.id, issueId));
+        return row?.status;
+      }
+
+      it("caps a ci_completed automation wake after four runs on the same head", async () => {
+        const { agentId, issueId } = await seedScene();
+        expect(await wakeWith(agentId, issueId)).toBeNull();
+        expect(skippedWith(await wakeRequests(agentId), SKIP)).toHaveLength(1);
+        expect(await statusOf(issueId)).toBe("blocked");
+      });
+
+      it("does not cap a person's wake", async () => {
+        const { agentId, issueId } = await seedScene();
+        await wakeWith(agentId, issueId, {
+          source: "on_demand",
+          triggerDetail: "manual",
+          reason: "issue_commented",
+          requestedByActorType: "user",
+          requestedByActorId: "user-1",
+        });
+        expect(skippedWith(await wakeRequests(agentId), SKIP)).toHaveLength(0);
+        expect(await statusOf(issueId)).not.toBe("blocked");
+      });
+
+      it("does not cap a wake that carries an interactionId", async () => {
+        const { agentId, issueId } = await seedScene();
+        await wakeWith(agentId, issueId, { interactionId: randomUUID() });
+        expect(skippedWith(await wakeRequests(agentId), SKIP)).toHaveLength(0);
+        expect(await statusOf(issueId)).not.toBe("blocked");
+      });
+
+      it("does not cap an assignment wake", async () => {
+        const { agentId, issueId } = await seedScene();
+        await wakeWith(agentId, issueId, { source: "assignment", reason: "issue_assigned" });
+        expect(skippedWith(await wakeRequests(agentId), SKIP)).toHaveLength(0);
+        expect(await statusOf(issueId)).not.toBe("blocked");
+      });
+
+      it("does not cap a manualUserWake", async () => {
+        const { agentId, issueId } = await seedScene();
+        await wakeWith(agentId, issueId, {
+          manualUserWake: true,
+          requestedByActorType: "user",
+          requestedByActorId: "user-1",
+        });
+        expect(skippedWith(await wakeRequests(agentId), SKIP)).toHaveLength(0);
+        expect(await statusOf(issueId)).not.toBe("blocked");
+      });
+
+      it("does not cap a task without a PR", async () => {
+        const { agentId, issueId } = await seedScene({ withPr: false });
+        await wakeWith(agentId, issueId);
+        expect(skippedWith(await wakeRequests(agentId), SKIP)).toHaveLength(0);
+        expect(await statusOf(issueId)).not.toBe("blocked");
+      });
+
+      it("does not park the task while a run of it is live", async () => {
+        const { companyId, agentId, issueId } = await seedScene();
+        const liveRunId = await seedContinuationRun({
+          companyId,
+          agentId,
+          issueId,
+          minutesAgo: 1,
+          status: "running",
+          headSha,
+          headViaWake: true,
+          wakeReason: "ci_completed",
+        });
+        await db.update(issues).set({ executionRunId: liveRunId }).where(eq(issues.id, issueId));
+        await wakeWith(agentId, issueId);
+        expect(skippedWith(await wakeRequests(agentId), SKIP)).toHaveLength(0);
+        expect(await statusOf(issueId)).not.toBe("blocked");
+      });
+
+      it("does not count runs that persons or assignments started", async () => {
+        const { agentId, issueId } = await seedScene({ runInvocationSource: "on_demand" });
+        await wakeWith(agentId, issueId);
+        expect(skippedWith(await wakeRequests(agentId), SKIP)).toHaveLength(0);
+        expect(await statusOf(issueId)).not.toBe("blocked");
+      });
+
+      it("resets the count when a person comments after the last run", async () => {
+        const { companyId, agentId, issueId } = await seedScene();
+        await db.insert(issueComments).values({
+          id: randomUUID(),
+          companyId,
+          issueId,
+          authorUserId: "user-1",
+          body: "Please look at the failing check again",
+          createdAt: minutesAgo(2),
+        });
+        await wakeWith(agentId, issueId);
+        expect(skippedWith(await wakeRequests(agentId), SKIP)).toHaveLength(0);
+        expect(await statusOf(issueId)).not.toBe("blocked");
+      });
+
+      it("does not cap an agent that is not an engineer", async () => {
+        const { agentId, issueId } = await seedScene({ role: "cto" });
+        await wakeWith(agentId, issueId);
+        expect(skippedWith(await wakeRequests(agentId), SKIP)).toHaveLength(0);
+        expect(await statusOf(issueId)).not.toBe("blocked");
+      });
     });
   });
 });

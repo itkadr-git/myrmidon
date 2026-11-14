@@ -1,10 +1,11 @@
-import { and, desc, eq, inArray, or, sql } from "drizzle-orm";
+import { and, desc, eq, inArray, isNotNull, sql } from "drizzle-orm";
 import type { Db } from "@myrmidon/db";
 import {
   activityLog,
   agents,
   heartbeatRuns,
   instanceSettings,
+  issueComments,
   issueWorkProducts,
   projects,
 } from "@myrmidon/db";
@@ -16,6 +17,12 @@ export const RUN_CAP_NO_COMMIT_UNBLOCK_ACTION = "runs_without_commit_cap_release
 export const TASK_RUNS_WITHOUT_COMMIT_LIMIT_KEY = "taskRunsWithoutCommitLimit";
 export const DEFAULT_TASK_RUNS_WITHOUT_COMMIT_LIMIT = 4;
 const DEFAULT_SINGLETON_KEY = "default";
+
+/** The cap applies only to agents that write code: a lead or coordinator with a PR on the task is not capped. */
+export const RUN_CAP_NO_COMMIT_ROLE = "engineer";
+export function isRunCapNoCommitRole(role: string | null | undefined): boolean {
+  return role === RUN_CAP_NO_COMMIT_ROLE;
+}
 
 function readProcessesRecord(general: unknown): Record<string, unknown> | null {
   if (!general || typeof general !== "object" || Array.isArray(general)) return null;
@@ -39,6 +46,11 @@ export function resolveTaskRunsWithoutCommitLimit(general: unknown): number {
   return Math.min(100, rounded);
 }
 
+/**
+ * Reads the limit. Call it with the pool `db`, never with an open transaction's
+ * `tx`: a failed query aborts the transaction, so the fallback below would not
+ * help the caller there.
+ */
 export async function loadTaskRunsWithoutCommitLimit(db: Db): Promise<number> {
   try {
     const [row] = await db
@@ -255,6 +267,41 @@ export async function readLatestManualUnblockAt(
   return act?.createdAt ?? null;
 }
 
+/**
+ * True for a run started by an automatic wake. Runs a person started, runs
+ * answering an interaction card and assignment runs are not counted.
+ */
+export function isAutomaticWakeRun(run: typeof heartbeatRuns.$inferSelect): boolean {
+  if (run.invocationSource !== "automation") return false;
+  const ctx = run.contextSnapshot as Record<string, any> | null;
+  if (ctx) {
+    if (typeof ctx.interactionId === "string" && ctx.interactionId.trim()) return false;
+    if (ctx.manualUserWake === true) return false;
+  }
+  return true;
+}
+
+/** Latest comment a person wrote on the task: it resets the counter like a manual unblock. */
+export async function readLatestUserCommentAt(
+  db: Db,
+  companyId: string,
+  issueId: string,
+): Promise<Date | null> {
+  const [row] = await db
+    .select({ createdAt: issueComments.createdAt })
+    .from(issueComments)
+    .where(
+      and(
+        eq(issueComments.companyId, companyId),
+        eq(issueComments.issueId, issueId),
+        isNotNull(issueComments.authorUserId),
+      ),
+    )
+    .orderBy(desc(issueComments.createdAt))
+    .limit(1);
+  return row?.createdAt ?? null;
+}
+
 export async function readRunCapNoCommitHistory(
   db: Db,
   companyId: string,
@@ -276,8 +323,9 @@ export async function readRunCapNoCommitHistory(
     .orderBy(desc(heartbeatRuns.createdAt))
     .limit(limit);
 
-  // Filter out maintenance runs
+  // Only runs of automatic wakes count; filter out maintenance runs too
   const filtered = rows.filter((r: typeof heartbeatRuns.$inferSelect) => {
+    if (!isAutomaticWakeRun(r)) return false;
     const wake = (r.contextSnapshot as Record<string, any> | null)?.paperclipWake;
     const reason = wake?.reason || (r.contextSnapshot as Record<string, any> | null)?.triggerReason;
     if (typeof reason === "string" && reason.startsWith("myrmidon_maintenance_")) {
