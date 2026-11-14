@@ -81,6 +81,7 @@ export * from "../myrmidon-product.js";
 export * from "../myrmidon-project-token-quota.js";
 export * from "../myrmidon-prompt-budget.js";
 export * from "../myrmidon-redact.js";
+export * from "../myrmidon-requirement-card.js";
 export * from "../myrmidon-review-rework.js";
 export * from "../myrmidon-review-routing.js";
 export * from "../myrmidon-run-priority.js";
