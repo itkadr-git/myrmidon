@@ -2973,6 +2973,8 @@ export * from "./myrmidon-autonomy.js";
 export * from "./myrmidon-knowledge-tools.js";
 // myrmidon(1.6-CTO-CHAT-B): the owner-message-to-epic proposal contract of the CTO chat.
 export * from "./myrmidon-cto-chat.js";
+// myrmidon(1.8-INTAKE-DIALOG / OPE-13007): requirement card types, evaluation and rendering.
+export * from "./myrmidon-requirement-card.js";
 // myrmidon(1.6.1-WIP-LIMIT-A): the shared contract of the per-agent WIP limit —
 // the settings shape, the limit resolver and the status feed rows.
 export * from "./myrmidon-wip-limit.js";
