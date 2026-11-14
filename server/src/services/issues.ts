@@ -10341,6 +10341,7 @@ export function issueService(db: Db) {
         if (
           !initialPlan?.trim() &&
           !issueData.workMode &&
+          (issueData.status === undefined || issueData.status === "backlog" || issueData.status === "todo") &&
           isLargeEngineeringTask({
             labels: createLabelNames,
             assigneeAgentRole: issueData.assigneeAgentId

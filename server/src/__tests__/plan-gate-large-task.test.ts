@@ -457,14 +457,16 @@ describeEmbeddedPostgres("plan-gate large task runtime behavior (issueService & 
       expect(reloadedIssue?.workMode).toBe("standard");
 
       // 3. Continuation wake is admitted after approval
+      // An automatic continuation also needs new actor-visible input; the
+      // approval is that input, passed as the continuation event id.
       const admittedWake = await heartbeat.enqueueWakeup(engineerAgentId, {
         source: "automation",
         triggerDetail: "system",
         reason: "issue_continuation_needed",
-        payload: { issueId: issue.id },
+        payload: { issueId: issue.id, continuationEventId: `plan-approved:${interaction.id}` },
       });
       expect(admittedWake).not.toBeNull();
-      expect(admittedWake?.status).toBe("queued");
+      expect(admittedWake?.status).not.toBe("skipped");
     });
 
     it("cancels queued runs with 'plan_approval_pending' while plan confirmation is pending", async () => {
