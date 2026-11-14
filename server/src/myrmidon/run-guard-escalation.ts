@@ -98,9 +98,9 @@ export async function resolveRunGuardStopWakeTargetId(db: Db, issue: EscalationI
       leadIds.push(...casteLeads.map((row) => row.id));
     }
     for (const id of [...new Set(leadIds)]) {
-      const [lead] = await db.select({ status: agents.status }).from(agents)
+      const [lead] = await db.select({ id: agents.id, status: agents.status }).from(agents)
         .where(and(eq(agents.id, id), eq(agents.companyId, issue.companyId))).limit(1);
-      if (lead && isAgentStatusInvokable(lead.status)) return id;
+      if (lead && isAgentStatusInvokable(lead.status)) return lead.id;
     }
   }
 
