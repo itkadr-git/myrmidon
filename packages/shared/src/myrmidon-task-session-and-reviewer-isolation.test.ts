@@ -12,6 +12,7 @@ import {
   renderReviewerInputSection,
   resolveDeveloperSessionKeyStrategy,
   sanitizeEnvironmentSecrets,
+  sanitizeSecrets,
   validateReviewVerdict,
   validateTaskSessionResumption,
   type RawIssueContextForReview,
@@ -381,13 +382,65 @@ describe("myrmidon-task-session-and-reviewer-isolation", () => {
       expect(threat.detectedThreats.length).toBeGreaterThan(0);
     });
 
+    it("sanitizeSecrets masks the whole Authorization-like header value", () => {
+      const long = "A1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6Q7r8S9t0";
+      const out = sanitizeSecrets(
+        [
+          `Authorization: Bearer ${long}`,
+          "Authorization: token abc",
+          "authorization: basic dXNlcjpwYXNz",
+          "X-Api-Key: k123456",
+          "Set-Cookie: sid=zzz999; Path=/",
+          "next log line stays",
+        ].join("\n"),
+      );
+      for (const leaked of [long, "abc", "dXNlcjpwYXNz", "k123456", "zzz999"]) {
+        expect(out).not.toContain(leaked);
+      }
+      expect(out).toContain("Authorization: <redacted_secret>");
+      expect(out.split("\n").pop()).toBe("next log line stays");
+      expect(out.split("\n")).toHaveLength(6);
+    });
+
+    it("sanitizeSecrets masks GitHub, OpenAI-style, Authorization, URL password and AWS secrets", () => {
+      const gho = ["gh", "o_"].join("") + "A1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6Q7r8";
+      const ghu = ["gh", "u_"].join("") + "A1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6Q7r8";
+      const sk = ["sk", "-"].join("") + "abcdefghijklmnopqrstuvwx0123456789";
+      const auth = "Authorization: token " + "abcdef1234567890";
+      const akia = ["AK", "IA"].join("") + "ABCDEFGHIJKLMNOP";
+      const awsSecret = "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY";
+      const text = [
+        gho,
+        ghu,
+        sk,
+        auth,
+        "https://user:hunter2pass@example.com/repo.git",
+        akia,
+        `aws_secret_access_key = ${awsSecret}`,
+        "plain line stays",
+      ].join("\n");
+      const out = sanitizeSecrets(text);
+      for (const secret of [gho, ghu, sk, "abcdef1234567890", "hunter2pass", akia, awsSecret]) {
+        expect(out).not.toContain(secret);
+      }
+      expect(out).toContain("https://<redacted_secret>@example.com/repo.git");
+      expect(out).toContain("plain line stays");
+      expect(sanitizeSecrets("task-management risk-assessment")).toBe("task-management risk-assessment");
+    });
+
     it("sanitizes secret patterns in code diffs", () => {
       const pcpPrefix = ["pc", "p_"].join("");
       const dummyPcp = `${pcpPrefix}testsecrettoken12345678901234567890`;
-      const secretDiff = `diff --git a/env.ts b/env.ts\n+const token = "${dummyPcp}";`;
+      const ghsPrefix = ["gh", "s_"].join("");
+      const dummyGhs = `${ghsPrefix}testinstallationtoken12345678901234567890`;
+      const patPrefix = ["github", "_pat_"].join("");
+      const dummyPat = `${patPrefix}testpersonalaccesstoken12345678901234567890`;
+      const secretDiff = `diff --git a/env.ts b/env.ts\n+const token = "${dummyPcp}";\n+const ghs = "${dummyGhs}";\n+const pat = "${dummyPat}";`;
 
       const threat = analyzeReviewerDiffThreats(secretDiff);
       expect(threat.sanitizedDiff).not.toContain(dummyPcp);
+      expect(threat.sanitizedDiff).not.toContain(dummyGhs);
+      expect(threat.sanitizedDiff).not.toContain(dummyPat);
       expect(threat.sanitizedDiff).toContain("<redacted_secret>");
     });
 
