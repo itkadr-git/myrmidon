@@ -1,11 +1,9 @@
 #!/usr/bin/env node
 // Prove two things about the target image's server directory, in order:
 //
-// 1. The production `CMD` can still find its ECMAScript module loader,
-//    `server/node_modules/tsx/dist/loader.mjs`. That path is a symbolic
-//    link into the workspace pnpm store, and the `cloud` stage's Sentry
-//    copy writes into the same `server/node_modules` directory. A copy
-//    that removes or shadows the link stops the container from booting.
+// 1. The production server entry point resolves as a plain file. The CMD
+//    boots `node server/dist/index.js` directly (no tsx loader), so the
+//    compiled bundle must exist on disk.
 // 2. The installed `@sentry/node` package resolves, the same way the
 //    server's own peer-version gate does
 //    (server/src/peer-version-check.ts). Then print its version.
@@ -21,25 +19,19 @@
 //     -v "$PWD/scripts/assert-cloud-image-sentry.mjs:/app/server/.ci-sentry-probe.mjs:ro" \
 //     --entrypoint node <image> /app/server/.ci-sentry-probe.mjs
 import { createRequire } from "node:module";
-import { existsSync, readFileSync, realpathSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const serverDir = dirname(fileURLToPath(import.meta.url));
 
-// The production `CMD` boots the server through this exact path, resolved
+// The production CMD boots the server through this exact path, resolved
 // as a plain relative file path from the container's `/app` working
-// directory (`./server/node_modules/tsx/dist/loader.mjs`), so it bypasses
-// package-export checks and only needs the file to exist once symbolic
-// links resolve. Follow the link the same way Node's own module loader
-// does, so a broken or missing link fails this probe before it fails a
-// live container.
-const tsxLoaderPath = join(serverDir, "node_modules", "tsx", "dist", "loader.mjs");
-try {
-  realpathSync(tsxLoaderPath);
-} catch (error) {
+// directory (`server/dist/index.js`). Verify the compiled bundle exists.
+const serverEntryPath = join(serverDir, "dist", "index.js");
+if (!existsSync(serverEntryPath)) {
   console.error(
-    `could not resolve ${tsxLoaderPath}: the production CMD boots through this path and the server cannot start without it (${error.message})`,
+    `could not find ${serverEntryPath}: the production CMD boots this file directly and the server cannot start without it`,
   );
   process.exit(1);
 }
