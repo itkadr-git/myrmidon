@@ -1412,8 +1412,8 @@ export async function openLoadByAgent(db: Db, companyId: string): Promise<Map<st
 }
 
 /**
- * Only a recently observed active CI state for the exact current PR head
- * discounts an assigned issue. Completed runs never release load.
+ * A linked PR waiting on CI or review discounts assigned load for at most
+ * fifteen minutes after the last activity observation; stale PRs count again.
  */
 async function ciWaitingPullRequestIssueIds(db: Db, companyId: string): Promise<Set<string>> {
   const products = await db.select({ issueId: issueWorkProducts.issueId, issueStatus: issues.status, metadata: issueWorkProducts.metadata, externalId: issueWorkProducts.externalId })
