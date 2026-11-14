@@ -201,6 +201,8 @@ export interface DeployJobServiceDeps {
   maintenance: DeployMaintenancePort;
   /** Read the host executor's report file (or fetch it); null when there is none yet. */
   readHostReport: (jobId: string) => Promise<HostReport | null>;
+  /** Read the host executor's release audit journal (mounted read-only). */
+  readReleaseAudit?: (jobId?: string) => Promise<import("./host-report.js").ReleaseAuditEvent[]>;
   /** Health facts of the running server, as /api/health reports them. */
   readHealth: () => Promise<{ version: string | null; commit: string | null } | null>;
   now?: () => Date;
@@ -464,7 +466,7 @@ export function deployJobsService(db: Db, deps: DeployJobServiceDeps) {
     }
   }
 
-  async function currentView(filters?: { mode?: string; status?: string; outcome?: string }): Promise<{ job: DeployJobView | null; history: DeployJobView[] }> {
+  async function currentView(filters?: { mode?: string; status?: string; outcome?: string }): Promise<{ job: DeployJobView | null; history: DeployJobView[]; audit: import("./host-report.js").ReleaseAuditEvent[] }> {
     const doc = await store.read();
     const active = doc.jobs.find((j) => isDeployJobActive(j.status)) ?? null;
     const last = doc.jobs[doc.jobs.length - 1] ?? doc.history[0] ?? null;
@@ -473,9 +475,11 @@ export function deployJobsService(db: Db, deps: DeployJobServiceDeps) {
       (!filters?.status || entry.status === filters.status) &&
       (!filters?.outcome || (filters.outcome === "rollback" ? entry.status.includes("rollback") : entry.status === filters.outcome)),
     );
+    const audit = deps.readReleaseAudit ? await deps.readReleaseAudit(active?.id ?? last?.id) : [];
     return {
       job: active ? toView(active) : last ? toView(last) : null,
       history: history.map(toView),
+      audit,
     };
   }
 
