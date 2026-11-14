@@ -20,6 +20,10 @@ const FAKE_SSH_SCRIPT = `#!/bin/sh
 case "$FAKE_SSH_MODE" in
   serve)
     exec tar -cf - -C "$FAKE_SSH_SOURCE_DIR" . ;;
+  serve-error)
+    tar -cf - -C "$FAKE_SSH_SOURCE_DIR" .
+    echo "ssh: write failed: No space left on device" >&2
+    exit 255 ;;
   refuse)
     echo "ssh: connect to host runner.invalid port 2222: Connection refused" >&2
     exit 255 ;;
@@ -209,7 +213,7 @@ describe.skipIf(process.platform === "win32")("syncDirectoryFromSsh staging dire
   }, 20_000);
 
   it("keeps ssh diagnostics ahead of tar failures across 50 failed restores", async () => {
-    setEnv("FAKE_SSH_MODE", "refuse");
+    setEnv("FAKE_SSH_MODE", "serve-error");
     setEnv("FAKE_TAR_MODE", "die-on-extract");
 
     for (let run = 0; run < 50; run += 1) {
@@ -223,9 +227,9 @@ describe.skipIf(process.platform === "win32")("syncDirectoryFromSsh staging dire
       expect(caughtError, `run ${run + 1} must reject`).toBeInstanceOf(Error);
       const message = (caughtError as Error).message;
       expect(message, `run ${run + 1}`).toContain(
-        "ssh: connect to host runner.invalid port 2222: Connection refused",
+        "ssh: write failed: No space left on device",
       );
-      expect(message, `run ${run + 1}`).toMatch(/\ntar exited with code 2$/);
+      expect(message, `run ${run + 1}`).toContain("tar: ./big.bin: Cannot write: No space left on device");
       expect(await leftoverStagingDirs(), `run ${run + 1}`).toEqual([]);
     }
   }, 60_000);
