@@ -620,20 +620,27 @@ describe("stale OMP runner collection", () => {
     const calls = path.join(dir, "calls");
     fs.writeFileSync(docker, `#!/bin/sh\nif [ "$1" = ps ]; then printf '%s\\n' myrmidon-omp-runner-eng8 myrmidon-omp-runner-eng10; else printf '%s\\n' "$@" >> '${calls}'; fi\n`);
     fs.chmodSync(docker, 0o755);
-    const http = await import("node:http");
-    const board = http.createServer((req, res) => {
-      const adapterType = req.url.endsWith("/eng10") ? "omp_local" : "hermes_gateway";
-      res.writeHead(200, { "Content-Type": "application/json" });
-      res.end(JSON.stringify({ adapterType }));
+    const boardScript = [
+      "const http = require('node:http');",
+      "const server = http.createServer((req, res) => {",
+      "  const adapterType = req.url.endsWith('/eng10') ? 'omp_local' : 'hermes_gateway';",
+      "  res.writeHead(200, { 'Content-Type': 'application/json' });",
+      "  res.end(JSON.stringify({ adapterType }));",
+      "});",
+      "server.listen(0, '127.0.0.1', () => console.log(server.address().port));",
+    ].join("\n");
+    const board = subprocess.spawn(process.execPath, ["-e", boardScript], { stdio: ["ignore", "pipe", "inherit"] });
+    const port = await new Promise((resolve, reject) => {
+      board.stdout.once("data", (chunk) => resolve(chunk.toString().trim()));
+      board.once("error", reject);
+      board.once("exit", (code) => reject(new Error(`board fixture exited: ${code}`)));
     });
-    await new Promise((resolve) => board.listen(0, "127.0.0.1", resolve));
-    const envOverrides = { PATH: `${dir}:${process.env.PATH}`, MYRMIDON_HOST_GC_DOCKER: docker, BOARD_API_URL: `http://127.0.0.1:${board.address().port}`, MYRMIDON_HOST_GC_DOCKER_BOT: docker };
+    const envOverrides = { PATH: `${dir}:${process.env.PATH}`, MYRMIDON_HOST_GC_DOCKER: docker, BOARD_API_URL: `http://127.0.0.1:${port}`, MYRMIDON_HOST_GC_DOCKER_BOT: docker };
     let result;
     try {
       result = runGc(["--apply", "--runner-root", root], envOverrides);
     } finally {
-      board.closeAllConnections();
-      await new Promise((resolve) => board.close(resolve));
+      board.kill();
     }
     const { res, events } = result;
     assert.equal(res.status, 0, res.stderr);
@@ -1761,8 +1768,8 @@ describe("runner task folders", () => {
 
   it("e2e: pipefail: tar fails (exit 2) while zstd succeeds, the failure is not masked", async () => {
     const { res, unpushed, left, failed } = await runWithFakeArchiveTools("OPE-9303", {
-      zstdBody: "#!/bin/sh\n[ \"$1\" = \"--version\" ] && exit 0\ncat > \"$3\"\nexit 0\n",
-      tarBody: "#!/bin/sh\nexit 2\n",
+      zstdBody: "#!/bin/sh\\n[ \\\"$1\\\" = \\\"--version\\\" ] && exit 0\\ncat > \\\"$3\\\"\\nexit 0\\n",
+      tarBody: "#!/bin/sh\\nexit 2\\n",
     });
     assert.equal(res.status, 0, res.stderr);
     assert.equal(fs.existsSync(unpushed), true, "folder stays");
