@@ -100,6 +100,15 @@ import {
 } from "../myrmidon/run-guard-stop.js";
 // myrmidon(OPE-12577): the manager's wake after a final guard stop passes the execution hold.
 import { isRunGuardStopWakeRecipient, RUN_GUARD_STOP_NEEDS_INPUT_WAKE_REASON } from "../myrmidon/run-guard-escalation.js";
+import {
+  STARTER_PACK_READY_SOURCE,
+  STARTER_PACK_SCOUT_WAKE_REASON,
+  isStarterPackScoutIssueStatus,
+  isStarterPackScoutRunContext,
+  isStarterPackScoutWake,
+  wakeAssigneeAfterStarterPack,
+} from "../myrmidon/starter-pack.js";
+import { queueIssueAssignmentWakeup } from "./issue-assignment-wakeup.js";
 import { PRODUCT_NAME, productPossessive, productSaid } from "../myrmidon/product.js";
 // myrmidon(B1c): short alias for template literals below.
 import { PRODUCT_NAME as PN } from "../myrmidon/product.js";
@@ -172,7 +181,16 @@ import { clearChatHoldsOnOwnerMessage } from "../myrmidon/chat-holds/clear-on-me
 // myrmidon(L2, round 3 fix): retire the woken agent's own waiting run that the
 // bypassed hold would cancel at its claim, so the wake is not lost with it.
 import { cancelWaitingRunDoomedByHold, carryRetryBudgetToSuccessor } from "../myrmidon/settled-holds/cancel-waiting-run.js";
-import { createPullRequestCiResolver, withCiResolveDeadline, type PullRequestCiResult } from "./github-pull-request-ci.js";
+import {
+  createPullRequestCiResolver,
+  withCiResolveDeadline,
+  resolveCiFailureTails,
+  type PullRequestCiResult,
+} from "./github-pull-request-ci.js";
+import {
+  resolveGitHubRepositoryToken,
+  JOB_LOG_APP_PERMISSIONS,
+} from "./github-external-object-provider.js";
 import { connectionIntentService } from "./connection-intents.js";
 import { externalSessionScheduler, scheduleExternalSessionRun } from "./external-session-scheduler.js";
 import { prepareManagedAiRuntime, assertManagedAiProjectAuth, stripAiAuthBindings, isAiConnectionBusy, AI_AUTH_ENV_KEYS } from "./ai-connection-runtime.js";
@@ -8576,6 +8594,13 @@ export async function buildPaperclipWakePayload(input: {
     : [];
   let ciResult: PullRequestCiResult | null = null;
   let pullRequestsCi: PullRequestCiResult[] = [];
+  let ciFailureTails: Array<{
+    jobId: number;
+    jobName: string;
+    runId?: number | null;
+    logTail?: string | null;
+    unavailableReason?: string | null;
+  }> | undefined = undefined;
   if (issueId) {
     try {
       const ciResolver = createPullRequestCiResolver(input.db, { source: "run-context" });
@@ -8584,6 +8609,31 @@ export async function buildPaperclipWakePayload(input: {
         [],
       );
       ciResult = pullRequestsCi[0] ?? null;
+
+      const isCiCompletedWake = input.contextSnapshot.wakeReason === "ci_completed";
+      const isRedCi = ciResult && (ciResult.conclusion === "failure" || ciResult.conclusion === "timed_out");
+      if (isCiCompletedWake && isRedCi && ciResult.failedJobs && ciResult.failedJobs.length > 0) {
+        const repoStr = ciResult.repository;
+        const [owner, repo] = repoStr ? repoStr.split("/") : [];
+        if (owner && repo) {
+          const jobLogToken = await resolveGitHubRepositoryToken(
+            input.db,
+            input.companyId,
+            repoStr,
+            { permissions: JOB_LOG_APP_PERMISSIONS },
+          );
+          ciFailureTails = await withCiResolveDeadline(
+            resolveCiFailureTails(ciResult.failedJobs, {
+              owner,
+              repo,
+              token: jobLogToken,
+              fetchImpl: fetch,
+            }),
+            [],
+            8_000,
+          );
+        }
+      }
     } catch {
       // Non-blocking fallback
     }
@@ -8592,6 +8642,7 @@ export async function buildPaperclipWakePayload(input: {
   const payload = {
     ciResult,
     pullRequestsCi,
+    ciFailureTails,
     reason: readNonEmptyString(input.contextSnapshot.wakeReason),
     // myrmidon(RUN-SNAPSHOT-DEDUP): no second copy of the continuation here.
     // The canonical envelope is `contextSnapshot.executionContinuation`;
@@ -9498,7 +9549,25 @@ export function buildPaperclipTaskMarkdown(input: {
         if (ci.failedJobs && ci.failedJobs.length > 0) {
           lines.push("  - Failed jobs:");
           for (const job of ci.failedJobs) {
-            lines.push(`    - ${job.name}: ${job.conclusion} (${job.url})`);
+            const runId = job.url ? parseInt(job.url.match(/\/actions\/runs\/(\d+)/)?.[1] ?? "", 10) || null : null;
+            const runStr = runId ? String(runId) : "<run>";
+            lines.push(`    - ${job.name} (id: ${job.id}): ${job.conclusion} (${job.url})`);
+            lines.push(`      Investigate log: \`gh run view ${runStr} --job ${job.id} --log-failed | tail -80\``);
+          }
+        }
+        const effectiveFailureTails = ci.ciFailureTails ?? (wakePayload?.ciFailureTails as PullRequestCiResult["ciFailureTails"]);
+        if (effectiveFailureTails && effectiveFailureTails.length > 0) {
+          lines.push("  - Failing step log output (board-retrieved):");
+          if (effectiveFailureTails.some((tail) => Boolean(tail.logTail))) {
+            lines.push("    Do not poll CI: the failing output is below.");
+          }
+          for (const tail of effectiveFailureTails) {
+            if (tail.logTail) {
+              lines.push(`    --- Job ${tail.jobName} (id: ${tail.jobId}) log tail ---`);
+              lines.push(fenceTaskText(tail.logTail));
+            } else if (tail.unavailableReason) {
+              lines.push(`    --- Job ${tail.jobName} (id: ${tail.jobId}) log unavailable: ${tail.unavailableReason} ---`);
+            }
           }
         }
         if (ci.cancelledJobs && ci.cancelledJobs.length > 0) {
@@ -32248,8 +32317,45 @@ export function heartbeatService(
     await releaseSwarmClaimsForRunImpl({ db, settings: instanceSettings }, run);
   }
 
+  async function wakeAssigneeAfterStarterPackScoutRun(
+    run: Pick<typeof heartbeatRuns.$inferSelect, "id" | "companyId"> & {
+      contextSnapshot?: unknown;
+      invocationSource?: string | null;
+    },
+  ) {
+    // Early exit without a query: this runs when every run finishes. getRun only
+    // when the caller did not pass the context.
+    const scoutRun = run.contextSnapshot === undefined ? await getRun(run.id) : run;
+    if (!scoutRun) return;
+    const context = parseObject(scoutRun.contextSnapshot);
+    if (!isStarterPackScoutRunContext(context, scoutRun.invocationSource ?? undefined)) return;
+    const issueId = readNonEmptyString(context.issueId);
+    if (!issueId) return;
+    const [issue] = await db
+      .select()
+      .from(issues)
+      .where(and(eq(issues.companyId, scoutRun.companyId), eq(issues.id, issueId)))
+      .limit(1);
+    if (!issue) return;
+    await wakeAssigneeAfterStarterPack(db, issue, (idempotencyKey) =>
+      queueIssueAssignmentWakeup({
+        heartbeat: { wakeup: enqueueWakeup },
+        issue,
+        reason: "issue_assigned",
+        mutation: "starter_pack",
+        contextSource: STARTER_PACK_READY_SOURCE,
+        requestedByActorType: "system",
+        requestedByActorId: null,
+        idempotencyKey,
+      }),
+    );
+  }
+
   async function releaseIssueExecutionAndPromote(
-    run: Pick<typeof heartbeatRuns.$inferSelect, "id" | "companyId">,
+    run: Pick<typeof heartbeatRuns.$inferSelect, "id" | "companyId"> & {
+      contextSnapshot?: unknown;
+      invocationSource?: string | null;
+    },
     options: {
       suppressImmediateRecovery?: boolean;
       deferredWakesPostdateRun?: boolean;
@@ -32263,6 +32369,11 @@ export function heartbeatService(
     // the vendor release.
     await releaseSwarmClaimsForRun(run).catch((err) =>
       logger.warn({ err, runId: run.id }, "swarm claim release on run finish failed"),
+    );
+    // myrmidon(OPE-13095): the starter-pack scout's run ended (any status) — wake
+    // the assignee, with the document or without it. Best-effort and idempotent.
+    await wakeAssigneeAfterStarterPackScoutRun(run).catch((err) =>
+      logger.warn({ err, runId: run.id }, "assignee wake after the starter-pack scout run failed"),
     );
     try {
       const { postCommitEffects } = await wakeQueue.releaseIssueExecution({
@@ -33934,7 +34045,14 @@ export function heartbeatService(
             await isRunGuardStopWakeRecipient(tx as unknown as Db, {
               companyId: issue.companyId, assigneeAgentId: issue.assigneeAgentId, agentId,
             });
-          if (executionBlocker && !runGuardManagerWake && !(await admitExplicitNativeContinuation({
+          // myrmidon(OPE-13095): the starter-pack scout's wake passes the hold the same way.
+          const starterPackScoutWake = Boolean(executionBlocker) &&
+            reason === STARTER_PACK_SCOUT_WAKE_REASON && source === "automation" &&
+            isStarterPackScoutIssueStatus(issue.status) &&
+            await isStarterPackScoutWake(tx as unknown as Db, {
+              companyId: issue.companyId, assigneeAgentId: issue.assigneeAgentId, agentId,
+            });
+          if (executionBlocker && !runGuardManagerWake && !starterPackScoutWake && !(await admitExplicitNativeContinuation({
             db: tx as unknown as Db, companyId: issue.companyId, issueId: issue.id,
             agentId, actorType: opts.requestedByActorType, actorId: opts.requestedByActorId,
             reason, commentId: candidateCommentId, failedRunId: opts.failedRunId, successorRunId: explicitContinuationRunId,
