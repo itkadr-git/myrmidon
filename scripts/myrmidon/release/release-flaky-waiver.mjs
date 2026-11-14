@@ -24,10 +24,10 @@ function tagSha(r, tag) {
   return gh(r, `git/tags/${ref.object.sha}`).object.sha;
 }
 function evidenceLive(r, evidence, tag) {
-  if (!evidence || evidence.tag !== tag || !evidence.headSha || !evidence.runId || !evidence.attempt) throw new Error("evidence must include tag, headSha, runId and attempt");
+  if (!evidence || evidence.tag !== tag || !evidence.headSha || !evidence.runId || !evidence.attempt || !evidence.previousAttempt) throw new Error("evidence must include tag, headSha, runId and rerun attempt transition");
   if (tagSha(r, tag) !== evidence.headSha) throw new Error("evidence headSha does not match the release tag");
   const run = gh(r, `actions/runs/${evidence.runId}`);
-  if (run.head_sha !== evidence.headSha || Number(run.run_attempt) < Number(evidence.attempt)) throw new Error("live run does not match evidence head or attempt");
+  if (run.head_sha !== evidence.headSha || Number(run.run_attempt) !== Number(evidence.attempt) || Number(evidence.attempt) <= Number(evidence.previousAttempt)) throw new Error("live run does not match the exact evidenced rerun attempt");
   if (run.status !== "completed" || run.conclusion !== "success") throw new Error("rerun is not completed successfully");
 }
 function waiverPath(tag) { return new URL(`../../../docs/myrmidon/releases/flaky-waivers/${tag}.json`, import.meta.url).pathname; }

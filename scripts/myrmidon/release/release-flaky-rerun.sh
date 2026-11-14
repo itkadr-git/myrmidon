@@ -38,7 +38,18 @@ if (( dry_run )); then
   printf '%s\n' "$evidence"
   exit 0
 fi
+[[ "$(jq -r '.status' <<<"$run")" == "completed" && "$(jq -r '.conclusion' <<<"$run")" != "success" ]] || { printf 'ERROR: selected run is not a completed failure\n' >&2; exit 1; }
 gh run rerun "$run_id" --failed --repo "$repo" >/dev/null
+# GitHub increments run_attempt for this workflow run. Refuse evidence unless
+# the dispatched attempt is visible, so a waiver can bind to this exact retry.
+for _ in {1..10}; do
+  rerun="$(gh api "repos/$repo/actions/runs/$run_id")"
+  rerun_attempt="$(jq -r '.run_attempt' <<<"$rerun")"
+  (( rerun_attempt > attempt )) && break
+  sleep 2
+done
+(( rerun_attempt > attempt )) || { printf 'ERROR: GitHub did not expose a new rerun attempt\n' >&2; exit 1; }
+evidence="$(jq -cn --arg tag "$tag" --arg headSha "$head_sha" --arg runId "$run_id" --argjson runNumber "$run_number" --argjson previousAttempt "$attempt" --argjson attempt "$rerun_attempt" --argjson jobs "$jobs" --arg url "$url" --arg dispatchedAt "$dispatched_at" '{tag,headSha,runId,runNumber,previousAttempt,attempt,jobs,url,dispatchedAt}')"
 printf '%s\n' "$evidence"
 if [[ -n "$evidence_file" ]]; then
   mkdir -p "$(dirname "$evidence_file")"
