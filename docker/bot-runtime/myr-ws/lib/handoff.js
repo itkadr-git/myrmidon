@@ -316,33 +316,6 @@ async function run(args, deps = {}) {
     patchHeaders["X-Paperclip-Run-Id"] = paperclipRunId;
   }
 
-  let patchRes;
-  try {
-    patchRes = await fetchFn(`${paperclipUrl}/api/issues/${issueId}`, {
-      method: "PATCH",
-      headers: patchHeaders,
-      body: JSON.stringify(patchBody),
-    });
-  } catch (err) {
-    return {
-      exitCode: 1,
-      stdout: "",
-      stderr: `myr-handoff: failed at step issue_patch: ${describeFetchError(err)}\n`,
-    };
-  }
-
-  if (!patchRes.ok) {
-    let errText = "";
-    try {
-      errText = String(await patchRes.text()).slice(0, 300);
-    } catch (_) {}
-    return {
-      exitCode: 1,
-      stdout: "",
-      stderr: `myr-handoff: failed at step issue_patch: PR #${prNumber} sha ${headSha} (branch ${branch}) exists, but status transition to in_review failed: HTTP ${patchRes.status} ${errText}\n`,
-    };
-  }
-
   let boundPr = false;
   let wpRes;
   try {
@@ -423,6 +396,33 @@ async function run(args, deps = {}) {
       exitCode: 1,
       stdout: "",
       stderr: `myr-handoff: failed at step work_product_binding: PR #${prNumber} is not bound to issue ${issueKey}\n`,
+    };
+  }
+
+  let patchRes;
+  try {
+    patchRes = await fetchFn(`${paperclipUrl}/api/issues/${issueId}`, {
+      method: "PATCH",
+      headers: patchHeaders,
+      body: JSON.stringify(patchBody),
+    });
+  } catch (err) {
+    return {
+      exitCode: 1,
+      stdout: "",
+      stderr: `myr-handoff: failed at step issue_patch: ${describeFetchError(err)}\n`,
+    };
+  }
+
+  if (!patchRes.ok) {
+    let errText = "";
+    try {
+      errText = String(await patchRes.text()).slice(0, 300);
+    } catch (_) {}
+    return {
+      exitCode: 1,
+      stdout: "",
+      stderr: `myr-handoff: failed at step issue_patch: PR #${prNumber} sha ${headSha} (branch ${branch}) exists, but status transition to in_review failed: HTTP ${patchRes.status} ${errText}\n`,
     };
   }
 

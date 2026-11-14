@@ -274,7 +274,14 @@ test("myr-handoff fails if gh pr edit fails when updating existing PR title", as
   assert.match(res.stderr, /permission denied/);
 });
 
-test("myr-handoff fails if PR binding fails when work product cannot be created", async () => {
+test("myr-handoff fails if PR binding fails when work product cannot be created, leaving status unchanged", async () => {
+  let patchCalled = false;
+  let issueRecord = {
+    id: "issue-uuid-55",
+    identifier: "OPE-55",
+    status: "in_progress",
+    executionPolicy: REVIEW_POLICY,
+  };
   const deps = {
     env: {
       PAPERCLIP_API_KEY: "secret",
@@ -295,10 +302,12 @@ test("myr-handoff fails if PR binding fails when work product cannot be created"
     },
     fetch: async (url, opts) => {
       if (url.endsWith("/api/issues/OPE-55")) {
-        return { ok: true, json: async () => ({ id: "issue-uuid-55", identifier: "OPE-55", executionPolicy: REVIEW_POLICY }) };
+        return { ok: true, json: async () => ({ ...issueRecord }) };
       }
-      if (url.endsWith("/api/issues/issue-uuid-55") && opts.method === "PATCH") {
-        return { ok: true, json: async () => ({ id: "issue-uuid-55", status: "in_review" }) };
+      if (url.endsWith("/api/issues/issue-uuid-55") && opts && opts.method === "PATCH") {
+        patchCalled = true;
+        issueRecord = { ...issueRecord, ...JSON.parse(opts.body) };
+        return { ok: true, json: async () => issueRecord };
       }
       if (url.endsWith("/api/issues/issue-uuid-55/work-products") && (!opts || !opts.method || opts.method === "GET")) {
         return { ok: true, json: async () => [] };
@@ -314,6 +323,58 @@ test("myr-handoff fails if PR binding fails when work product cannot be created"
   assert.equal(res.exitCode, 1);
   assert.match(res.stderr, /failed at step work_product_binding/);
   assert.match(res.stderr, /explicit binding failed/);
+  assert.equal(patchCalled, false, "issue status PATCH must NOT be called when work product binding fails");
+  assert.equal(issueRecord.status, "in_progress", "issue status must remain unchanged when work product binding fails");
+});
+
+test("myr-handoff fails if PR verification fails and leaves status unchanged", async () => {
+  let patchCalled = false;
+  let issueRecord = {
+    id: "issue-uuid-56",
+    identifier: "OPE-56",
+    status: "in_progress",
+    executionPolicy: REVIEW_POLICY,
+  };
+  const deps = {
+    env: {
+      PAPERCLIP_API_KEY: "secret",
+      PAPERCLIP_API_URL: "http://paperclip-test:3100",
+    },
+    runCommand: (cmd, args) => {
+      if (cmd === "git" && args[0] === "branch") return { status: 0, stdout: "bot/OPE-56\n", stderr: "" };
+      if (cmd === "git" && args[0] === "rev-parse") return { status: 0, stdout: "11223344\n", stderr: "" };
+      if (cmd === "git" && args[0] === "push") return { status: 0, stdout: "", stderr: "" };
+      if (cmd === "gh" && args[0] === "pr" && args[1] === "view") {
+        return {
+          status: 0,
+          stdout: JSON.stringify({ number: 56, state: "OPEN", title: "OPE-56: test", url: "https://github.com/itkadr-git/myrmidon/pull/56" }),
+          stderr: "",
+        };
+      }
+      return { status: 0, stdout: "", stderr: "" };
+    },
+    fetch: async (url, opts) => {
+      if (url.endsWith("/api/issues/OPE-56")) {
+        return { ok: true, json: async () => ({ ...issueRecord }) };
+      }
+      if (url.endsWith("/api/issues/issue-uuid-56") && opts && opts.method === "PATCH") {
+        patchCalled = true;
+        issueRecord = { ...issueRecord, ...JSON.parse(opts.body) };
+        return { ok: true, json: async () => issueRecord };
+      }
+      if (url.endsWith("/api/issues/issue-uuid-56/work-products")) {
+        return { ok: false, status: 502, text: async () => "Bad Gateway" };
+      }
+      return { ok: false, status: 404, text: async () => "not found" };
+    },
+  };
+
+  const res = await run(["--issue", "OPE-56", "--summary", "fail verify"], deps);
+  assert.equal(res.exitCode, 1);
+  assert.match(res.stderr, /failed at step work_product_verify/);
+  assert.match(res.stderr, /HTTP 502/);
+  assert.equal(patchCalled, false, "issue status PATCH must NOT be called when work product verification fails");
+  assert.equal(issueRecord.status, "in_progress", "issue status must remain unchanged when work product verification fails");
 });
 
 function makeDeps({ patchStatus = 200, getStatus = 200, prView, commandsRun = [] } = {}) {
