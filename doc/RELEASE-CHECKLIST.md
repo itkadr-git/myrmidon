@@ -116,11 +116,15 @@ query rewrites) — `docs/myrmidon/changes/db-audit-indexes.md`.
       the resolved version and soak state without publishing)
 - [ ] approve the `npm-stable` environment gate
 - [ ] `npm view paperclipai version` (dist-tag `latest`) shows the stable
+- [ ] the VERIFY-ON-PROD report for the version is produced
+      (`scripts/myrmidon/release/verify-on-prod.mjs`) and is passing: the board
+      runs exactly `X.Y.Z` and every task carrying the release label is
+      `done` — a report with any task not verified refuses the promotion
 - [ ] `vYYYY.MDD.P` tag pushed; GitHub Release created; `:latest` and the
       versioned Docker tags built
-- [ ] if the soak gate was bypassed, `skip_soak_justification` carries a
-      real written reason (it lands in the job summary)
-- [ ] open and merge the canonicalization PR
+- [ ] `promote-latest.sh --verify-on-prod-report <report.json>` accepted the
+      report and moved the marker (`--skip-health-check` does NOT bypass the
+      report requirement)
       (`release-notes/v<version>-canonicalize`) so the notes land at
       `releases/vYYYY.MDD.P.md`
 
