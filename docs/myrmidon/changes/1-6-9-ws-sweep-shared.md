@@ -9,7 +9,7 @@ unmerged, and has nothing to delete. Previously every such row was blocked and
 the board wrote an `issue_terminal_archive_blocked` event for each one (over
 180 000 events), loading the board every 30 seconds. The sweep still requires a
 closed issue tree, the cooldown and no active run, never writes the block event
-for these rows, and works through the backlog in passes of up to 500 shared
+for these rows, and works through the backlog in passes of up to 200 shared
 rows, each archived by its own single-row update.
 
 ## changelog-ru
@@ -23,5 +23,5 @@ rows, each archived by its own single-row update.
 писала по событию `issue_terminal_archive_blocked` на каждую (больше 180 000
 событий), нагружая доску каждые 30 секунд. Сторож по-прежнему требует закрытое
 дерево задач, cooldown и отсутствие активного прогона, не пишет событие
-блокировки для этих строк и разбирает накопленное проходами до 500 общих
+блокировки для этих строк и разбирает накопленное проходами до 200 общих
 строк, каждая архивируется отдельным обновлением одной строки.

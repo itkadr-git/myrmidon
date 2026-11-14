@@ -594,6 +594,111 @@ describeEmbeddedPostgres("executionWorkspaceService.getCloseReadiness", () => {
     await expect(fs.access(path.join(seeded.worktreePath, "dirty.txt"))).resolves.toBeUndefined();
   }, 20_000);
 
+  async function seedSharedProjectWithOpenNeighbour() {
+    // Task A is closed; task B of the same project is open. Both rows point at
+    // the project's shared directory (same cwd). B has a live service bound to
+    // its own row, and also references A's row from its issue.
+    const seeded = await seedAncestryTerminalWorkspace();
+    await db
+      .update(executionWorkspaces)
+      .set({ mode: "shared_workspace", strategyType: "project_primary", providerType: "local_fs" })
+      .where(eq(executionWorkspaces.id, seeded.executionWorkspaceId));
+    const issuePrefix = `P${seeded.companyId.slice(0, 8).toUpperCase()}`;
+    const rowBId = randomUUID();
+    const issueBId = randomUUID();
+    await db.insert(executionWorkspaces).values({
+      id: rowBId,
+      companyId: seeded.companyId,
+      projectId: seeded.projectId,
+      mode: "shared_workspace",
+      strategyType: "project_primary",
+      name: `${issuePrefix}-2`,
+      status: "active",
+      cwd: seeded.worktreePath,
+      providerType: "local_fs",
+    });
+    await db.insert(issues).values({
+      id: issueBId,
+      companyId: seeded.companyId,
+      projectId: seeded.projectId,
+      identifier: `${issuePrefix}-2`,
+      title: "Open neighbour",
+      status: "in_progress",
+      priority: "medium",
+      executionWorkspaceId: seeded.executionWorkspaceId,
+    });
+    await db
+      .update(executionWorkspaces)
+      .set({ sourceIssueId: issueBId })
+      .where(eq(executionWorkspaces.id, rowBId));
+    const serviceBId = randomUUID();
+    await db.insert(workspaceRuntimeServices).values({
+      id: serviceBId,
+      companyId: seeded.companyId,
+      projectId: seeded.projectId,
+      executionWorkspaceId: rowBId,
+      issueId: issueBId,
+      scopeType: "execution_workspace",
+      serviceName: "web",
+      status: "running",
+      lifecycle: "shared",
+      command: "pnpm dev",
+      cwd: seeded.worktreePath,
+      provider: "local_process",
+      healthStatus: "healthy",
+    });
+    return { ...seeded, rowBId, issueBId, serviceBId };
+  }
+
+  it("archiving a shared row never stops the open neighbour's service on the same cwd", async () => {
+    const seeded = await seedSharedProjectWithOpenNeighbour();
+
+    const sweep = await svc.sweepTerminalWorkspaces();
+
+    const [rowA] = await db
+      .select({ status: executionWorkspaces.status })
+      .from(executionWorkspaces)
+      .where(eq(executionWorkspaces.id, seeded.executionWorkspaceId));
+    const [rowB] = await db
+      .select({ status: executionWorkspaces.status })
+      .from(executionWorkspaces)
+      .where(eq(executionWorkspaces.id, seeded.rowBId));
+    const [serviceB] = await db
+      .select({ status: workspaceRuntimeServices.status, stoppedAt: workspaceRuntimeServices.stoppedAt })
+      .from(workspaceRuntimeServices)
+      .where(eq(workspaceRuntimeServices.id, seeded.serviceBId));
+    const summaries = await db
+      .select({ details: activityLog.details })
+      .from(activityLog)
+      .where(eq(activityLog.action, "execution_workspace.issue_terminal_archived_shared"));
+
+    expect(sweep).toMatchObject({ archived: 1 });
+    expect(rowA?.status).toBe("archived");
+    expect(rowB?.status).toBe("active");
+    expect(serviceB).toMatchObject({ status: "running", stoppedAt: null });
+    // One summary row per pass, not one row per archived shared row.
+    expect(summaries).toHaveLength(1);
+    expect(summaries[0]?.details).toMatchObject({ archivedCount: 1 });
+  }, 20_000);
+
+  it("detaches only closed issues from an archived shared row", async () => {
+    const seeded = await seedSharedProjectWithOpenNeighbour();
+
+    await svc.sweepTerminalWorkspaces();
+
+    const [issueA] = await db
+      .select({ executionWorkspaceId: issues.executionWorkspaceId })
+      .from(issues)
+      .where(eq(issues.id, seeded.sourceIssueId));
+    const [issueB] = await db
+      .select({ executionWorkspaceId: issues.executionWorkspaceId })
+      .from(issues)
+      .where(eq(issues.id, seeded.issueBId));
+
+    expect(issueA?.executionWorkspaceId).toBeNull();
+    expect(issueB?.executionWorkspaceId).toBe(seeded.executionWorkspaceId);
+  }, 20_000);
+
   it("leaves a shared_workspace row of an open issue untouched", async () => {
     const seeded = await seedAncestryTerminalWorkspace();
     await db

@@ -107,7 +107,7 @@ export const ISSUE_TERMINAL_WORKSPACE_CLEANUP_REASON = "issue_terminal";
 // myrmidon(OPE-13106): rows of the terminal sweep taken per pass for
 // shared_workspace, and the hard cap. Each row is archived by its own guarded
 // single-row UPDATE, so no statement touches more than one row.
-const SHARED_WORKSPACE_SWEEP_BATCH_SIZE = 500;
+const SHARED_WORKSPACE_SWEEP_BATCH_SIZE = 200;
 const MAX_SHARED_WORKSPACE_SWEEP_BATCH_SIZE = 1000;
 
 // The reopen-failure reason kept on the row when a rebuild does not finish. The
@@ -2752,6 +2752,9 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
         clearedStaleReopenPending: 0,
       };
 
+      // One summary activity row per company per pass for shared_workspace
+      // archives, instead of one row per archived shared row.
+      const sharedArchivedByCompany = new Map<string, { count: number; ids: string[] }>();
       for (const workspace of candidates) {
         const executionWorkspace = toExecutionWorkspace(workspace);
         // myrmidon(OPE-13106): a shared_workspace row points at the project's
@@ -3003,7 +3006,7 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
           continue;
         }
 
-        await logActivity(db, {
+        if (!isSharedWorkspace) await logActivity(db, {
           companyId: archived.companyId,
           actorType: "system",
           actorId: "workspace_terminality_reaper",
@@ -3020,14 +3023,16 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
 
         if (isSharedWorkspace) {
           // Nothing to remove: the row only references the shared project
-          // directory. Stop services bound to the row and detach the issues, as
-          // the cleanup path does for a cleaned shared row, without touching git.
+          // directory. Stop only services bound to this row's id. The cwd is
+          // deliberately not passed: it is the project's shared directory, and a
+          // cwd match would stop dev servers of other, open issues. Detach only
+          // closed issues; open issues that reference the row keep their link.
           try {
             const { stopRuntimeServicesForExecutionWorkspace } = await import("./workspace-runtime.js");
             await stopRuntimeServicesForExecutionWorkspace({
               db,
               executionWorkspaceId: archived.id,
-              workspaceCwd: archived.cwd,
+              workspaceCwd: null,
             });
             await db
               .update(issues)
@@ -3035,8 +3040,13 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
               .where(and(
                 eq(issues.companyId, archived.companyId),
                 eq(issues.executionWorkspaceId, archived.id),
+                inArray(issues.status, ["done", "cancelled"]),
               ));
             result.archived += 1;
+            const bucket = sharedArchivedByCompany.get(archived.companyId) ?? { count: 0, ids: [] as string[] };
+            bucket.count += 1;
+            if (bucket.ids.length < 20) bucket.ids.push(archived.id);
+            sharedArchivedByCompany.set(archived.companyId, bucket);
           } catch (error) {
             result.cleanupFailed += 1;
             logger.warn(
@@ -3078,6 +3088,21 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
             details: { sourceIssueId: archived.sourceIssueId, failure },
           });
         }
+      }
+      for (const [companyId, bucket] of sharedArchivedByCompany) {
+        await logActivity(db, {
+          companyId,
+          actorType: "system",
+          actorId: "workspace_terminality_reaper",
+          action: "execution_workspace.issue_terminal_archived_shared",
+          entityType: "execution_workspace",
+          entityId: bucket.ids[0]!,
+          details: {
+            archivedCount: bucket.count,
+            firstIds: bucket.ids,
+            cleanupReason: ISSUE_TERMINAL_WORKSPACE_CLEANUP_REASON,
+          },
+        });
       }
       return result;
       } finally {
