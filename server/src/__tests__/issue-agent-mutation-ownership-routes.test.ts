@@ -163,10 +163,22 @@ const mockAutonomyGate = vi.hoisted(() => ({
   decide: vi.fn(),
   assertAllowed: vi.fn(),
 }));
+// myrmidon(OPE-13095): the scout setting and the scout's wake lookup are the only
+// stubbed parts of the starter-pack module; the write decision stays the real one.
+const mockStarterPack = vi.hoisted(() => ({
+  readStarterPackAgentId: vi.fn(async () => null as string | null),
+  hasStarterPackScoutWake: vi.fn(async () => false),
+}));
 const mockLogActivity = vi.hoisted(() => vi.fn(async () => undefined));
 const mockObserveCrossIssueInfluence = vi.hoisted(() => vi.fn(async () => null));
 
 function registerRouteMocks() {
+  vi.doMock("../myrmidon/starter-pack.js", async () => ({
+    ...(await vi.importActual<typeof import("../myrmidon/starter-pack.js")>("../myrmidon/starter-pack.js")),
+    readStarterPackAgentId: mockStarterPack.readStarterPackAgentId,
+    hasStarterPackScoutWake: mockStarterPack.hasStarterPackScoutWake,
+  }));
+
   vi.doMock("../myrmidon/autonomy/gate.js", () => ({
     dbAutonomyGate: () => mockAutonomyGate,
   }));
@@ -496,6 +508,7 @@ describe("agent issue mutation checkout ownership", () => {
     vi.doUnmock("../routes/issues.js");
     vi.doUnmock("../routes/authz.js");
     vi.doUnmock("../myrmidon/autonomy/gate.js");
+    vi.doUnmock("../myrmidon/starter-pack.js");
     vi.doUnmock("../myrmidon/review-routing/settings.js");
     vi.doUnmock("../myrmidon/review-routing/store.js");
     vi.doUnmock("../middleware/index.js");
@@ -653,6 +666,10 @@ describe("agent issue mutation checkout ownership", () => {
     mockObserveCrossIssueInfluence.mockReset();
     mockObserveCrossIssueInfluence.mockResolvedValue(null);
     mockDocumentService.upsertIssueDocument.mockReset();
+    mockStarterPack.readStarterPackAgentId.mockReset();
+    mockStarterPack.readStarterPackAgentId.mockResolvedValue(null);
+    mockStarterPack.hasStarterPackScoutWake.mockReset();
+    mockStarterPack.hasStarterPackScoutWake.mockResolvedValue(false);
     mockWorkProductService.createForIssue.mockReset();
     mockWorkProductService.latestRunDiffSummary.mockReset();
     mockWorkProductService.latestRunDiffSummary.mockResolvedValue(null);
@@ -3189,6 +3206,55 @@ describe("agent issue mutation checkout ownership", () => {
       expect(res.status, JSON.stringify(res.body)).toBe(200);
       expect(mockAutonomyGate.assertAllowed).toHaveBeenCalledWith(expect.anything(), "delete");
       expect(mockIssueService.remove).toHaveBeenCalledWith(issueId);
+    });
+  });
+  // myrmidon(OPE-13095): route-level proof of the scout's document write. The
+  // scout is an agent that is not the assignee of the (idle) task.
+  describe("starter-pack scout document write", () => {
+    const scoutBody = { format: "markdown", body: "# Starter pack" };
+
+    beforeEach(() => {
+      mockIssueService.getById.mockResolvedValue(makeIssue({ status: "todo" }));
+      mockStarterPack.readStarterPackAgentId.mockResolvedValue(peerAgentId);
+    });
+
+    it("lets the woken scout write the starter-pack document (200)", async () => {
+      mockStarterPack.hasStarterPackScoutWake.mockResolvedValue(true);
+
+      const res = await request(await createApp(peerActor()))
+        .put(`/api/issues/${issueId}/documents/starter-pack`)
+        .send(scoutBody);
+
+      expect(res.status, JSON.stringify(res.body)).toBe(200);
+      expect(mockStarterPack.hasStarterPackScoutWake).toHaveBeenCalledWith(
+        expect.anything(),
+        expect.objectContaining({ issueId, companyId, scoutAgentId: peerAgentId }),
+      );
+      expect(mockDocumentService.upsertIssueDocument).toHaveBeenCalledWith(
+        expect.objectContaining({ issueId, key: "starter-pack", createdByAgentId: peerAgentId }),
+      );
+    });
+
+    it("refuses the same scout a document with another key (403)", async () => {
+      mockStarterPack.hasStarterPackScoutWake.mockResolvedValue(true);
+
+      const res = await request(await createApp(peerActor()))
+        .put(`/api/issues/${issueId}/documents/plan`)
+        .send(scoutBody);
+
+      expect(res.status, JSON.stringify(res.body)).toBe(403);
+      expect(mockDocumentService.upsertIssueDocument).not.toHaveBeenCalled();
+    });
+
+    it("refuses the scout on a task it was not woken for (403)", async () => {
+      mockStarterPack.hasStarterPackScoutWake.mockResolvedValue(false);
+
+      const res = await request(await createApp(peerActor()))
+        .put(`/api/issues/${issueId}/documents/starter-pack`)
+        .send(scoutBody);
+
+      expect(res.status, JSON.stringify(res.body)).toBe(403);
+      expect(mockDocumentService.upsertIssueDocument).not.toHaveBeenCalled();
     });
   });
 });
