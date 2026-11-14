@@ -25,7 +25,9 @@ import {
 import { drainHeartbeatRunsToQuiescence } from "./helpers/drain-heartbeat-runs.js";
 import { issueRoutes } from "../routes/issues.js";
 import { heartbeatService } from "../services/heartbeat.js";
+import { parseIssueExecutionState } from "../services/issue-execution-policy.js";
 import { REVIEW_CI_WAIT_MONITOR_SERVICE_NAME, reviewAdmissionDedupKey } from "../myrmidon/review-stage-recovery/policy.js";
+import { clearReviewWakesQuotas } from "../myrmidon/review-stage-recovery/review-wakes-quota.js";
 import { readReviewRoutingSignals, resetReviewRoutingSignals } from "../myrmidon/review-routing/attention.js";
 
 /**
@@ -181,6 +183,47 @@ describeEmbeddedPostgres("myrmidon review admission atomic wake persistence", ()
     expect(response.status).toBe(200);
     expect(readReviewRoutingSignals(companyId).filter((signal) => signal.issueId === issueId)).toHaveLength(1);
   });
+  // myrmidon(REVIEW-APPROVAL-RECORDED): the immediate review routing writes the
+  // stage into the stored policy; arming the admission monitor afterwards must
+  // keep that stage (it was rebuilt from the pre-routing policy and erased it,
+  // so the reviewer's approval hit the `done` gate with HTTP 409).
+  it("keeps the routed review stage in the policy when the admission monitor is armed (CI pending)", async () => {
+    const { companyId, actor } = await seedCompanyWithBoardAccess(ctx.db, "Review routing keeps stage");
+    const authorAgentId = randomUUID();
+    const reviewerAgentId = randomUUID();
+    await ctx.db.insert(agents).values({
+      id: authorAgentId, companyId, name: "adm-dev-eng-1", metadata: { telegramGroup: "adm" },
+      role: "engineer", status: "idle", adapterType: "codex_local",
+      adapterConfig: {}, runtimeConfig: {}, permissions: {},
+    });
+    await ctx.db.insert(agents).values({
+      id: reviewerAgentId, companyId, name: "adm-dev-review-1", metadata: { telegramGroup: "adm" },
+      role: "reviewer", status: "idle", adapterType: "codex_local",
+      adapterConfig: {}, runtimeConfig: {}, permissions: {},
+    });
+    const issueId = randomUUID();
+    await ctx.db.insert(issues).values({
+      id: issueId, companyId, title: "Routed stage must survive the admission monitor", status: "backlog",
+      priority: "medium", assigneeAgentId: authorAgentId, createdByAgentId: authorAgentId,
+    });
+    const routes = (db: any, storage: any) => issueRoutes(db, storage, {
+      resolveReviewPullRequestCi: async () => ({
+        state: "pending", pullRequestUrl: "https://github.com/acme/app/pull/7", headSha: "head-abc",
+      }),
+      resolveReviewHeadFailedChecks: async () => ({ state: "ok", headSha: "head-abc", failed: [] }),
+    });
+    const response = await request(routeApp(ctx.db, actor, routes as any))
+      .patch(`/api/issues/${issueId}`)
+      .send({ status: "in_review" });
+    expect(response.status).toBe(200);
+    const [issue] = await ctx.db.select().from(issues).where(eq(issues.id, issueId));
+    expect(issue?.status).toBe("in_review");
+    const state = issue?.executionState as { status?: string; currentStageId?: string; currentParticipant?: { agentId?: string } } | null;
+    expect(state).toMatchObject({ status: "pending", currentParticipant: { agentId: reviewerAgentId } });
+    const stages = ((issue?.executionPolicy as { stages?: Array<{ id: string }> } | null)?.stages) ?? [];
+    expect(stages.map((stage) => stage.id)).toContain(state?.currentStageId);
+  });
+
   it("defers reviewer admission while exact PR-head CI is pending", async () => {
     const { companyId, actor } = await seedCompanyWithBoardAccess(ctx.db, "Review admission waits for exact-head CI");
     const reviewerAgentId = randomUUID();
@@ -1081,5 +1124,96 @@ describeEmbeddedPostgres("myrmidon review admission atomic wake persistence", ()
       .where(eq(agentWakeupRequests.idempotencyKey, key));
     expect(wakes).toHaveLength(1);
     expect(wakes[0]?.status).toBe("queued");
+  });
+
+  it("quota of 1 admits the first issue and schedules the second for the next tick (OPE-12886)", async () => {
+    clearReviewWakesQuotas(new Date());
+    const { companyId, actor } = await seedCompanyWithBoardAccess(ctx.db, "Review wakes quota defer");
+    const reviewerAgentId = randomUUID();
+    await ctx.db.insert(agents).values({
+      id: reviewerAgentId,
+      companyId,
+      name: "Quota Reviewer",
+      role: "reviewer",
+      status: "idle",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+
+    const policy = {
+      mode: "normal",
+      stages: [
+        {
+          id: randomUUID(),
+          type: "review" as const,
+          approvalsNeeded: 1,
+          participants: [{ id: randomUUID(), type: "agent" as const, agentId: reviewerAgentId, userId: null }],
+        },
+      ],
+    };
+
+    const firstIssueId = randomUUID();
+    const secondIssueId = randomUUID();
+    for (const [issueId, title] of [
+      [firstIssueId, "Quota first admission"],
+      [secondIssueId, "Quota second admission"],
+    ] as const) {
+      await ctx.db.insert(issues).values({
+        id: issueId,
+        companyId,
+        title,
+        status: "todo",
+        priority: "medium",
+        executionPolicy: policy,
+      });
+      await insertPullRequestWorkProduct({ db: ctx.db, companyId, issueId, headSha: "head-abc" });
+    }
+
+    const routesWithSuccessCi = (db: any, storage: any) => issueRoutes(db, storage, {
+      resolveReviewPullRequestCi: async () => ({ state: "complete", pullRequestUrl: "https://github.com/acme/app/pull/7", headSha: "head-abc" }),
+      resolveReviewHeadFailedChecks: async () => ({ state: "unknown", reason: "not_under_test" }),
+    });
+    const patchToInReview = (issueId: string) =>
+      request(routeApp(ctx.db, actor, routesWithSuccessCi as any))
+        .patch(`/api/issues/${issueId}`)
+        .send({ status: "in_review", executionPolicy: policy });
+
+    // First admission of the tick spends the whole quota (1 per tick).
+    const first = await patchToInReview(firstIssueId);
+    expect(first.status).toBe(200);
+    const firstKey = reviewAdmissionDedupKey({ issueId: firstIssueId, headSha: "head-abc", agentId: reviewerAgentId });
+    expect((await ctx.db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.idempotencyKey, firstKey)))).toHaveLength(1);
+
+    // Second admission on the SAME tick hits quota_reached: deferred without
+    // loss, and the monitor must be re-armed as scheduled with a nextCheckAt,
+    // never left "triggered" with no timer (OPE-12886).
+    const second = await patchToInReview(secondIssueId);
+    expect(second.status).toBe(200);
+    const secondKey = reviewAdmissionDedupKey({ issueId: secondIssueId, headSha: "head-abc", agentId: reviewerAgentId });
+    expect((await ctx.db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.idempotencyKey, secondKey)))).toHaveLength(0);
+
+    const [secondIssue] = await ctx.db.select().from(issues).where(eq(issues.id, secondIssueId));
+    expect(secondIssue?.status).toBe("in_review");
+    expect(parseIssueExecutionState(secondIssue?.executionState)?.monitor).toMatchObject({
+      status: "scheduled",
+      serviceName: REVIEW_CI_WAIT_MONITOR_SERVICE_NAME,
+      nextCheckAt: expect.any(String),
+    });
+    expect(secondIssue?.monitorNextCheckAt).toBeInstanceOf(Date);
+    expect(secondIssue?.monitorNextCheckAt!.getTime()).toBeGreaterThan(Date.now());
+
+    // Next tick: the quota clears and the deferred wake goes out when re-entering review.
+    clearReviewWakesQuotas(new Date(Date.now() + 60_000));
+    await ctx.db.update(issues).set({ status: "in_progress" }).where(eq(issues.id, secondIssueId));
+    const third = await patchToInReview(secondIssueId);
+    expect(third.status).toBe(200);
+    const deferredWakes = await ctx.db
+      .select()
+      .from(agentWakeupRequests)
+      .where(eq(agentWakeupRequests.idempotencyKey, secondKey));
+    expect(deferredWakes).toHaveLength(1);
+    expect(deferredWakes[0]?.status).toBe("queued");
   });
 });

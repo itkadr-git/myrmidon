@@ -132,9 +132,9 @@ export function preserveBotRolloutDeferredGeneralKey(storedGeneral: unknown): Re
 
 /**
  * The pure side of the store: the mutations deferred-reconciler.ts and
- * index.ts need, each an idempotent document-to-document step. A fresh target
- * image restarts the record's clock (the previous deferral was about a
- * superseded image); the same image only refreshes the reason.
+ * index.ts need, each an idempotent document-to-document step. A bot that is
+ * already recorded keeps its clock (`firstDeferredAt`) whatever the target
+ * image; the entry only refreshes the image and the reason.
  */
 export function upsertBotRolloutDeferredRecord(
   doc: BotRolloutDeferredDocument,
@@ -142,12 +142,15 @@ export function upsertBotRolloutDeferredRecord(
   now: Date,
 ): BotRolloutDeferredDocument {
   const existing = doc.records.find((r) => r.botKey === entry.botKey);
-  if (existing && existing.targetImage === entry.targetImage) {
+  if (existing) {
+    // myrmidon(BOT-PROFILE-NO-RUN-INTERRUPT): the clock belongs to the bot's waiting, not to
+    // one image: when two sources alternate with different target images, a reset on every
+    // change would keep the soft timeout from ever arriving.
     return {
       ...doc,
       records: doc.records.map((r) =>
         r.botKey === entry.botKey
-          ? { ...r, attempts: entry.attempts ?? r.attempts, lastReason: entry.reason }
+          ? { ...r, targetImage: entry.targetImage, attempts: entry.attempts ?? r.attempts, lastReason: entry.reason }
           : r,
       ),
     };

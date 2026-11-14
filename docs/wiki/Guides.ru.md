@@ -248,6 +248,8 @@
 
 - [Очистка рабочих копий после слияния](Workspace-cleanup.ru)
 
+- [Чекпоинты turn'ов рабочих областей](Workspace-turn-checkpoints.ru)
+
 - [Хранение резервных копий базы данных](Backup-retention.ru)
 
 - [Автооткат по здоровью после выката](Deploy-auto-rollback.ru)

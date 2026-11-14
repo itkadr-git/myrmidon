@@ -1,5 +1,9 @@
 // myrmidon(UPSTREAM-13539): resume/delivery path for queued interaction-card responses.
 import { blockerOpenSql } from "../myrmidon/blocker-resolved.js";
+import {
+  classifyRunStep,
+  classifyRunStepFromContextSnapshot,
+} from "../myrmidon/run-step-class.js";
 // myrmidon(1.6.7 TOKENS-TRACE / OPE-10727): per-call LLM token trace persistence
 import {
   inferFromRunUsage,
@@ -8,9 +12,11 @@ import {
 } from "../myrmidon/tokens-trace/index.js";
 // myrmidon(OPE-10045): the CI-wait monitor of a pending review wakes the stage participant.
 import {
+  REVIEW_CI_WAIT_INTERVAL_MS,
   REVIEW_CI_WAIT_MONITOR_SERVICE_NAME,
   REVIEW_CI_WAIT_RECOVERY_INSTRUCTION,
   REVIEW_ADMISSION_KEY_PREFIX,
+  decideReviewCiWaitTick,
   reviewAdmissionDedupKey,
 } from "../myrmidon/review-stage-recovery/policy.js";
 import { isPendingCiForOpenPr } from "../myrmidon/stranded-autopolicy.js";
@@ -558,6 +564,7 @@ import {
 } from "./run-liveness.js";
 import { tryClaimContinuationKeyInTransaction } from "./continuation-dedupe.js";
 import {
+  MAX_CONSECUTIVE_EMPTY_RUNS,
   classifyEmptyRun,
   evaluateCompletionGate,
   checkAndHandleEmptyRunEscalation,
@@ -570,8 +577,8 @@ import {
   ISSUE_REWAKE_LOOKBACK_MS,
   ISSUE_REWAKE_RUN_SAMPLE_LIMIT,
   ISSUE_REWAKE_FREEZE_THRESHOLD,
+  collectRunIdsWithIssueProgress,
   evaluateIssueRewakeThrottle,
-  isIssueProgressActivity,
   isThrottleCandidateIssueRewake,
 } from "./issue-rewake-throttle.js";
 
@@ -584,6 +591,20 @@ async function getCachedFreezeThreshold(settings: { getGeneral: () => Promise<{ 
   const general = await settings.getGeneral().catch(() => null);
   const value = general?.issueRewakeFreezeThreshold ?? ISSUE_REWAKE_FREEZE_THRESHOLD;
   cachedFreezeThreshold = { value, expiresAt: now + 30_000 };
+  return value;
+}
+
+// myrmidon(1.8 AUTOPAUSE): cached read of the configurable empty-run streak
+// threshold, same 30 s pattern as the freeze threshold above.
+let cachedEmptyRunStreakThreshold: { value: number; expiresAt: number } | null = null;
+async function getCachedEmptyRunStreakThreshold(settings: { getGeneral: () => Promise<{ emptyRunStreakThreshold?: number | null }> }): Promise<number> {
+  const now = Date.now();
+  if (cachedEmptyRunStreakThreshold && cachedEmptyRunStreakThreshold.expiresAt > now) {
+    return cachedEmptyRunStreakThreshold.value;
+  }
+  const general = await settings.getGeneral().catch(() => null);
+  const value = general?.emptyRunStreakThreshold ?? MAX_CONSECUTIVE_EMPTY_RUNS;
+  cachedEmptyRunStreakThreshold = { value, expiresAt: now + 30_000 };
   return value;
 }
 // myrmidon(WAKE-GUARD): admission-side half of TASK-PR-SYNC — skips a run for a
@@ -988,6 +1009,11 @@ import {
   readWakeBatchWindowMs,
   splitBatchedWakeRuns,
 } from "../myrmidon/wake-batch.js";
+// myrmidon(OPE-12929): the optional not-before hold on deferred agent runs.
+import {
+  RUN_NOT_BEFORE_CONTEXT_KEY,
+  splitRunsHeldByNotBefore,
+} from "../myrmidon/run-not-before.js";
 // myrmidon(PERF-DIET-K): issue-scoped session generations for the container
 // Hermes gateway — one task's session key gains a `:g<N>` once it passes its
 // age/activity threshold, so the task's Hermes state stays bounded
@@ -1061,6 +1087,14 @@ import { readBudgetEnforcement } from "../myrmidon/budget-enforcement/settings.j
 import { evaluateBudgetLimitAdmission } from "../myrmidon/budget-limits/admission.js"; // myrmidon(1.7-BUDGET-CONFIG)
 import { deferredWakeFreshSince, deferredWakeRevisitCutoff } from "../myrmidon/deferred-wake-revisit.js"; // myrmidon(OPE-12807)
 import { guardrailsOnRunOutput } from "../myrmidon/guardrails/run-output.js"; // myrmidon(1.6-GRD)
+// myrmidon(1.8 HIBERNATE, OPE-12961): single-flight guard for assignment
+// wakes; see wakeup-single-flight.ts. Two enqueues of the same assignment
+// wake racing before either run is registered collapse into one promise, so
+// an idle-stopped agent's container is not cold-started twice for one task.
+import {
+  WakeupSingleFlight,
+  wakeupSingleFlightKey,
+} from "./wakeup-single-flight.js";
 import {
   deliverBudgetSignalOnly,
   type BudgetSignalOnlyInput,
@@ -4236,6 +4270,12 @@ export interface WakeupOptions {
   eventRevision?: string | null;
   /** Set only by authenticated board wake routes; never copied from caller payloads. */
   manualUserWake?: boolean;
+  /**
+   * myrmidon(RESUME-AFTER-CANCEL): set only by the resume of an operator's pause
+   * (myrmidon/pause-drain.ts) on a `pause_resume` system wake: the user who
+   * lifted the pause. Read only by the settled-hold check, never a requester.
+   */
+  resumedByUserId?: string;
   /** Internal resume of a queue with persisted board interruption intent. */
   queuedCommentInterruptId?: string;
   /** Internal delivery of an existing undelivered user comment. */
@@ -4252,6 +4292,9 @@ export interface WakeupOptions {
   requestedByActorId?: string | null;
   continuationEventId?: string | null;
   contextSnapshot?: Record<string, unknown>;
+  // myrmidon(OPE-12929): optional ISO-8601 instant; the dispatcher holds the
+  // queued run back until it is reached. Missing/invalid keeps prior behavior.
+  notBefore?: string | null;
   externalSession?: { connectionId: string; grantId: string; model: string };
   issueStateGuard?: {
     statuses: string[];
@@ -7404,6 +7447,7 @@ function enrichWakeContextSnapshot(input: {
   source: WakeupOptions["source"];
   triggerDetail: WakeupOptions["triggerDetail"] | null;
   payload: Record<string, unknown> | null;
+  notBefore?: string | null;
 }) {
   const { contextSnapshot, reason, source, triggerDetail, payload } = input;
   const issueIdFromPayload =
@@ -7484,6 +7528,19 @@ function enrichWakeContextSnapshot(input: {
     triggerDetail
   ) {
     contextSnapshot.wakeTriggerDetail = triggerDetail;
+  }
+  // myrmidon(OPE-12929): persist the caller's not-before instant into the run
+  // context so the queued-run dispatcher can hold the run back until the
+  // instant is reached. The stored value is validated again at start time by
+  // decideRunNotBefore — a value that never parses is ignored there, so a
+  // broken value never parks a run.
+  {
+    const notBeforeCandidate =
+      readNonEmptyString(payload?.["notBefore"]) ??
+      readNonEmptyString(input.notBefore);
+    if (notBeforeCandidate) {
+      contextSnapshot[RUN_NOT_BEFORE_CONTEXT_KEY] = notBeforeCandidate;
+    }
   }
   normalizeInteractionContinuationWakeContext(contextSnapshot, payload);
 
@@ -9412,6 +9469,12 @@ export function buildPaperclipTaskMarkdown(input: {
             lines.push(`    - ${job.name}: ${job.conclusion} (${job.url})`);
           }
         }
+        if (ci.cancelledJobs && ci.cancelledJobs.length > 0) {
+          lines.push("  - Cancelled jobs (cancelled, not a test failure; no newer run of the check exists):");
+          for (const job of ci.cancelledJobs) {
+            lines.push(`    - ${job.name}: ${job.conclusion} (${job.url})`);
+          }
+        }
         if (ci.optionalFailedJobs && ci.optionalFailedJobs.length > 0) {
           lines.push("  - Optional failed jobs (не влияет на вердикт):");
           for (const job of ci.optionalFailedJobs) {
@@ -10169,6 +10232,12 @@ export function heartbeatService(
   const instanceSettings = instanceSettingsService(db);
   // myrmidon(WAKE-GUARD): one cache per server process; see wake-guard.ts.
   const taskPrSyncWakeGuard = createTaskPrSyncWakeGuard();
+  // myrmidon(1.8 HIBERNATE, OPE-12961): one single-flight guard per heartbeat
+  // service instance; see wakeup-single-flight.ts. It scopes automated
+  // assignment wakes only (see trackWakeup below), so a duplicate enqueue of
+  // the same assignment wake collapses onto the in-flight promise instead of
+  // cold-starting an idle-stopped agent's container twice.
+  const wakeupSingleFlight = new WakeupSingleFlight();
   const getCurrentUserRedactionOptions = async () => ({
     enabled: (await instanceSettings.getGeneral()).censorUsernameInLogs,
   });
@@ -12525,15 +12594,53 @@ export function heartbeatService(
         // asleep until the final check is terminal; the next monitor tick is
         // the single transition wake.
         if (isReviewCiWaitMonitor) {
-          const { createReviewPullRequestCiResolver } = await import(
+          const { createReviewPullRequestCiResolver, createReviewHeadFailedChecksResolver } = await import(
             "../myrmidon/review-stage-recovery/github-ci.js"
           );
           const ci = await createReviewPullRequestCiResolver({ db })({
             companyId: claimed.companyId,
             issueId: claimed.id,
           });
-          if (ci.state === "pending" || ci.state === "unknown") {
-            const backoffMs = Math.min(10 * 60_000, 30_000 * Math.pow(2, Math.min(nextAttemptCount - 1, 4)));
+          // myrmidon(EMPTY-RUNS-2B): the tick applies the green-head rule of
+          // the hand-off (OPE-12176). A finished red head used to wake the
+          // reviewer ten minutes after the hand-off had refused to; now it
+          // keeps waiting, bounded by the CI-wait budget of a review stage
+          // (`decideReviewCiWaitTick`). The head verdict is read exactly as on
+          // the hand-off: the final check first, the failed-checks list only
+          // when the final check carries no verdict of its own.
+          const reviewIssueCritical = claimed.priority === "critical";
+          let reviewHeadFinalCheck: "green" | "red" | "unknown" = "unknown";
+          if (ci.state === "complete" && !reviewIssueCritical) {
+            if (ci.finalCheckConclusion === "failure") {
+              reviewHeadFinalCheck = "red";
+            } else if (ci.finalCheckConclusion === "success") {
+              reviewHeadFinalCheck = "green";
+            } else {
+              const headFailed = await createReviewHeadFailedChecksResolver({ db })({
+                companyId: claimed.companyId,
+                issueId: claimed.id,
+                headSha: ci.headSha ?? "",
+              });
+              reviewHeadFinalCheck =
+                headFailed.state === "ok" && headFailed.headSha === ci.headSha && headFailed.failed.length > 0
+                  ? "red"
+                  : "green";
+            }
+          }
+          const reviewCiWaitTick = decideReviewCiWaitTick({
+            ci: ci.state,
+            headFinalCheck: reviewHeadFinalCheck,
+            critical: reviewIssueCritical,
+            attempt: nextAttemptCount,
+          });
+          if (reviewCiWaitTick !== "wake") {
+            const deferReason = reviewCiWaitTick === "wait_red" ? "review_head_red" : "review_ci_pending";
+            // CI that is still running is polled with the short growing step;
+            // a red head changes only with a re-run or a new head, so it is
+            // re-read at the plain CI-wait interval.
+            const backoffMs = reviewCiWaitTick === "wait_red"
+              ? REVIEW_CI_WAIT_INTERVAL_MS
+              : Math.min(10 * 60_000, 30_000 * Math.pow(2, Math.min(nextAttemptCount - 1, 4)));
             const nextCheckAt = new Date(input.now.getTime() + backoffMs);
             await db.update(issues).set({
               monitorNextCheckAt: nextCheckAt,
@@ -12552,7 +12659,7 @@ export function heartbeatService(
               entityId: claimed.id,
               details: {
                 identifier: claimed.identifier,
-                reason: "review_ci_pending",
+                reason: deferReason,
                 ciState: ci.state,
                 ciReason: ci.reason ?? null,
                 headSha: ci.headSha,
@@ -12560,7 +12667,7 @@ export function heartbeatService(
                 attemptCount: nextAttemptCount,
               },
             });
-            return { outcome: "skipped" as const, reason: "review_ci_pending" };
+            return { outcome: "skipped" as const, reason: deferReason };
           }
         }
         const prProducts = await db.select().from(issueWorkProducts)
@@ -12995,18 +13102,38 @@ export function heartbeatService(
         const state = parseIssueExecutionState(row.executionState)?.monitor ?? null;
         const timeoutAt = parseMonitorDate(state?.timeoutAt ?? null);
         const lastTriggeredAt = row.monitorLastTriggeredAt ?? parseMonitorDate(state?.lastTriggeredAt ?? null);
-        if (!timeoutAt || !lastTriggeredAt) continue;
+        // myrmidon(OPE-12886): a "Review CI wait" monitor is armed without a
+        // timeout (`timeoutAt: null`), so the timeout-based recovery below can
+        // never pick it up. After the trigger consumed the schedule the review
+        // would sit `triggered` with no timer forever. Re-arm such a monitor to
+        // the next check so the wait resumes; the dispatch path re-reads the
+        // exact-head CI each wake and defers itself while CI is still pending.
+        const isReviewCiWaitMonitor =
+          state?.serviceName === REVIEW_CI_WAIT_MONITOR_SERVICE_NAME &&
+          timeoutAt === null;
+        if (!timeoutAt && !isReviewCiWaitMonitor) continue;
+        if (!lastTriggeredAt) continue;
 
-        if (now.getTime() < timeoutAt.getTime()) {
+        // Re-arm while the wait is still alive: inside the configured timeout
+        // window, or (OPE-12886) a "Review CI wait" monitor that has no
+        // timeout at all — its deferral is bounded by the tick budget, not by
+        // a deadline, so the recovery re-arms the check instead of closing it.
+        const backoffMs = Math.min(
+          10 * 60_000,
+          30_000 * Math.pow(2, Math.min(row.monitorAttemptCount ?? 0, 4)),
+        );
+        const rearmNextCheckAt =
+          timeoutAt && timeoutAt.getTime() > now.getTime()
+            ? new Date(Math.min(now.getTime() + backoffMs, timeoutAt.getTime()))
+            : isReviewCiWaitMonitor
+              ? new Date(now.getTime() + backoffMs)
+              : null;
+        if (rearmNextCheckAt) {
           // Still inside the configured timeout window: re-arm a bounded next
           // check so the wait can resume. Dispatch works without a policy
           // monitor (`issueMonitorLimitClearReason` then returns null and the
           // due wake goes out as a plain re-check of the external wait).
-          const backoffMs = Math.min(
-            10 * 60_000,
-            30_000 * Math.pow(2, Math.min(row.monitorAttemptCount ?? 0, 4)),
-          );
-          const nextCheckAt = new Date(Math.min(now.getTime() + backoffMs, timeoutAt.getTime()));
+          const nextCheckAt = rearmNextCheckAt;
           const [rearmed] = await db
             .update(issues)
             .set({
@@ -13035,7 +13162,7 @@ export function heartbeatService(
             details: {
               identifier: row.identifier,
               lastTriggeredAt: lastTriggeredAt.toISOString(),
-              timeoutAt: timeoutAt.toISOString(),
+              timeoutAt: timeoutAt?.toISOString() ?? null,
               nextCheckAt: nextCheckAt.toISOString(),
               attemptCount: row.monitorAttemptCount ?? 0,
               source: "scheduled",
@@ -13079,7 +13206,7 @@ export function heartbeatService(
           details: {
             identifier: row.identifier,
             lastTriggeredAt: lastTriggeredAt.toISOString(),
-            timeoutAt: timeoutAt.toISOString(),
+            timeoutAt: timeoutAt?.toISOString() ?? null,
             attemptCount: row.monitorAttemptCount ?? 0,
             notes: row.monitorNotes ?? null,
             serviceName: state?.serviceName ?? null,
@@ -15050,6 +15177,7 @@ export function heartbeatService(
           runId: run.id,
         });
       }
+      const emptyRunThreshold = await getCachedEmptyRunStreakThreshold(instanceSettings);
       const escalation = await checkAndHandleEmptyRunEscalation(db, {
         companyId: issue.companyId,
         issueId: issue.id,
@@ -15057,7 +15185,29 @@ export function heartbeatService(
         runId: run.id,
         classification: emptyClassification,
         gateResult,
+        threshold: emptyRunThreshold,
       });
+
+      // myrmidon(1.8 AUTOPAUSE): record the threshold event as a SKIPPED signal
+      // only. This receipt does not cancel the successful-run handoff below.
+      if (escalation.skippedSignal) {
+        const now = new Date();
+        await db.insert(agentWakeupRequests).values({
+          companyId: issue.companyId,
+          agentId: run.agentId,
+          source: "automation",
+          triggerDetail: "system",
+          reason: escalation.skippedSignal.reason,
+          payload: {
+            issueId: issue.id,
+            heartbeatSkip: { ...escalation.skippedSignal },
+          },
+          status: "skipped",
+          requestedByActorType: "system",
+          requestedByActorId: "heartbeat",
+          finishedAt: now,
+        });
+      }
 
       if (escalation.escalated || !escalation.shouldRewake) {
         if (isSuccessfulRunHandoffValidPathSkip(decision)) {
@@ -22921,12 +23071,6 @@ export function heartbeatService(
     running: number;
   };
 
-  function omitQueuedRunWaitDetail(context: Record<string, unknown>) {
-    if (context.waitDetail === undefined) return context;
-    const { waitDetail: _dropped, ...rest } = context;
-    return rest;
-  }
-
   async function writeQueuedRunWaitReason(
     runIds: ReadonlyArray<string>,
     waitReason: QueuedRunWaitReason,
@@ -22951,14 +23095,18 @@ export function heartbeatService(
       ) {
         continue;
       }
-      const next = waitDetail === undefined
-        // myrmidon(1.6.7 RUN-LIMITS): the detail belongs to the concurrency
-        // hold alone — any other reason (or a rewrite without numbers) drops it.
-        ? omitQueuedRunWaitDetail(context)
-        : { ...context, waitDetail: { ...waitDetail } };
+      // myrmidon(RESUME-QUEUE-AGE): merged on the database side, only the keys of
+      // this write; rewriting the object read above would erase a key (the resume
+      // stamp) written in between.
+      // myrmidon(1.6.7 RUN-LIMITS): the detail belongs to the concurrency
+      // hold alone — any other reason (or a rewrite without numbers) drops it.
+      const base = sql`(case when jsonb_typeof(${heartbeatRuns.contextSnapshot}) = 'object' then ${heartbeatRuns.contextSnapshot} else '{}'::jsonb end)`;
+      const merged = waitDetail === undefined
+        ? sql`(${base} - 'waitDetail') || jsonb_build_object('waitReason', ${waitReason}::text)`
+        : sql`${base} || jsonb_build_object('waitReason', ${waitReason}::text, 'waitDetail', ${JSON.stringify({ ...waitDetail })}::jsonb)`;
       await db
         .update(heartbeatRuns)
-        .set({ contextSnapshot: { ...next, waitReason }, updatedAt: at })
+        .set({ contextSnapshot: merged, updatedAt: at })
         .where(and(eq(heartbeatRuns.id, row.id), eq(heartbeatRuns.status, "queued")));
     }
   }
@@ -22981,16 +23129,12 @@ export function heartbeatService(
       ) {
         continue;
       }
-      const {
-        waitReason: _clearedReason,
-        queuePosition: _clearedPosition,
-        queueLength: _clearedLength,
-        waitDetail: _clearedDetail,
-        ...rest
-      } = context;
+      // myrmidon(RESUME-QUEUE-AGE): drop only these keys on the database side.
       await db
         .update(heartbeatRuns)
-        .set({ contextSnapshot: rest })
+        .set({
+          contextSnapshot: sql`(case when jsonb_typeof(${heartbeatRuns.contextSnapshot}) = 'object' then ${heartbeatRuns.contextSnapshot} else '{}'::jsonb end) - 'waitReason' - 'queuePosition' - 'queueLength' - 'waitDetail'`,
+        })
         .where(eq(heartbeatRuns.id, row.id));
     }
   }
@@ -23020,7 +23164,11 @@ export function heartbeatService(
       if (context.queuePosition === position && context.queueLength === queueLength) continue;
       await db
         .update(heartbeatRuns)
-        .set({ contextSnapshot: { ...context, queuePosition: position, queueLength }, updatedAt: at })
+        // myrmidon(RESUME-QUEUE-AGE): merged on the database side, only these keys.
+        .set({
+          contextSnapshot: sql`(case when jsonb_typeof(${heartbeatRuns.contextSnapshot}) = 'object' then ${heartbeatRuns.contextSnapshot} else '{}'::jsonb end) || jsonb_build_object('queuePosition', ${position}::int, 'queueLength', ${queueLength}::int)`,
+          updatedAt: at,
+        })
         .where(and(eq(heartbeatRuns.id, row.id), eq(heartbeatRuns.status, "queued")));
     }
   }
@@ -23684,7 +23832,11 @@ export function heartbeatService(
         // myrmidon(OPE-11947): a promoted scheduled retry is stale counted from its
         // due time (`scheduled_retry_at`), not from `created_at`: it is created at
         // the failure and queued hours later, and must not be cancelled on arrival.
-        .from(heartbeatRuns).where(and(eq(heartbeatRuns.status, "queued"), queuedRunWaitedAtLeastSql(new Date(), staleAfterMs), executionCutoff ? gte(heartbeatRuns.createdAt, executionCutoff) : undefined))
+        // myrmidon(RESUME-AFTER-CANCEL): the runs of a paused agent wait for the resume
+        // (cancelStaleQueuedRun does not expire them), so they are left out of the
+        // 200-row page here, otherwise a mass pause fills it with runs that stay.
+        .from(heartbeatRuns).innerJoin(agents, eq(agents.id, heartbeatRuns.agentId))
+        .where(and(eq(heartbeatRuns.status, "queued"), ne(agents.status, "paused"), queuedRunWaitedAtLeastSql(new Date(), staleAfterMs), executionCutoff ? gte(heartbeatRuns.createdAt, executionCutoff) : undefined))
         .orderBy(asc(heartbeatRuns.createdAt)).limit(200);
       return staleRuns.map((row) => ({
         id: row.id, agentId: row.agentId, companyId: row.companyId, createdAt: row.createdAt,
@@ -23698,7 +23850,7 @@ export function heartbeatService(
       });
       if (outcome.outcome !== "cancelled") return false;
       applyRunDispatchPostCommitEffects(outcome.postCommitEffects);
-      return true;
+      return outcome.errorCode === "queued_run_stale_timeout";
     },
     wakeAgent: async (agentId, companyId, { issueId }) => {
       // myrmidon(OPE-11947): resume the task the cancelled run stood on. The
@@ -23708,6 +23860,13 @@ export function heartbeatService(
       // run that stood on no task has nothing to resume, and an automatic wake
       // without a task is not allowed (INV-10): no wake then.
       if (!issueId) return;
+      // myrmidon(OPE-13068): do not queue a replacement wake if the task is closed.
+      const [issue] = await db
+        .select({ status: issues.status })
+        .from(issues)
+        .where(and(eq(issues.id, issueId), eq(issues.companyId, companyId)))
+        .limit(1);
+      if (issue && (issue.status === "done" || issue.status === "cancelled")) return;
       await enqueueWakeup(agentId, {
         source: "automation",
         reason: "queued_run_stale_timeout",
@@ -23801,6 +23960,20 @@ export function heartbeatService(
       () =>
         resumeQueuedRuns().catch((err) =>
           logger.error({ err }, "queued run resweep after the wake batch window failed"),
+        ),
+      Math.max(delayMs, 250),
+    );
+  }
+
+  // myrmidon(OPE-12929): a held not-before run is retried when its instant
+  // arrives instead of waiting for the next scheduler tick. The resweep timer
+  // is one per process, so a pending wake-batch/admission resweep already
+  // covers the wait and this call is then a no-op.
+  function scheduleNotBeforeResweep(delayMs: number) {
+    scheduleQueuedResweep(
+      () =>
+        resumeQueuedRuns().catch((err) =>
+          logger.error({ err }, "queued run resweep after the not-before delay failed"),
         ),
       Math.max(delayMs, 250),
     );
@@ -24538,6 +24711,27 @@ export function heartbeatService(
       });
 
       const claimedRuns: Array<typeof heartbeatRuns.$inferSelect> = [];
+      // myrmidon(OPE-12929): an optional not-before instant in the run context
+      // keeps a deferred run out of this pass until the instant is reached.
+      // Held runs are left out of the pass below: they must not take an
+      // admission slot for a start that will not happen yet. The missing or
+      // unparsable value never holds (see decideRunNotBefore), so the
+      // pre-feature behavior is unchanged.
+      const notBeforeSplit = splitRunsHeldByNotBefore(prioritizedRuns, {
+        now: new Date(),
+      });
+      if (notBeforeSplit.held.length > 0) {
+        logger.debug(
+          {
+            agentId,
+            heldRunIds: notBeforeSplit.held.map((hold) => hold.runId),
+            heldIssueIds: notBeforeSplit.held.map((hold) => hold.issueId),
+            resweepDelayMs: notBeforeSplit.resweepDelayMs,
+          },
+          "not-before boundary holds queued runs back",
+        );
+        scheduleNotBeforeResweep(notBeforeSplit.resweepDelayMs ?? 0);
+      }
       // myrmidon(1.6.6 INBOX-BATCH): a comment wake waits out its debounce
       // window before it starts (see myrmidon/wake-batch). The comments that
       // arrive inside the window find this run as the task's execution and the
@@ -24546,7 +24740,7 @@ export function heartbeatService(
       // runs are left out of the pass below: they must not take an admission
       // slot for a start that will not happen yet.
       const wakeBatchWindowMs = readWakeBatchWindowMs();
-      const wakeBatch = splitBatchedWakeRuns(prioritizedRuns, {
+      const wakeBatch = splitBatchedWakeRuns(notBeforeSplit.runnable, {
         now: new Date(),
         windowMs: wakeBatchWindowMs,
       });
@@ -24844,18 +25038,48 @@ export function heartbeatService(
     return { created: true };
   }
 
+  // myrmidon(1.8 HIBERNATE, OPE-12961): single-flight collapse applies to
+  // automated task-assignment wakes only (queueIssueAssignmentWakeup on
+  // create/child/decomposition and the direct assignment wake sites — all
+  // `source: "assignment"`, `triggerDetail: "system"`). Two enqueues of the
+  // same assignment wake racing before either run is registered collapse into
+  // one promise: the loser reuses the winner's promise, the task stays in the
+  // queue, and no duplicate wake/run row is created for an agent whose
+  // container may be idle-stopped (each duplicate would otherwise pay a cold
+  // container start). The winner is still registered in
+  // activeWakeupPromises so drainActiveRunExecutions can await it; the guard
+  // entry clears when the promise settles, so a later legitimate re-wake with
+  // the same key passes.
+  // Every other wake source keeps the plain enqueue path: continuation
+  // dedupe, retry/cleanup admission and the automation gates each run their
+  // own per-call database admission and must return their own verdict
+  // (admitted run or null with a skipped receipt) to every caller, and manual
+  // user wakes are never collapsed into an automatic one.
   function trackWakeup(
     agentId: string,
     opts: WakeupOptions = {},
   ): ReturnType<typeof enqueueWakeup> {
-    const promise = enqueueWakeup(agentId, opts);
-    activeWakeupPromises.add(promise);
-    void promise
-      .catch(() => {})
-      .finally(() => {
-        activeWakeupPromises.delete(promise);
-      });
-    return promise;
+    const start = () => {
+      const promise = enqueueWakeup(agentId, opts);
+      activeWakeupPromises.add(promise);
+      void promise
+        .catch(() => {})
+        .finally(() => {
+          activeWakeupPromises.delete(promise);
+        });
+      return promise;
+    };
+    if (
+      opts.source === "assignment" &&
+      opts.triggerDetail === "system" &&
+      !opts.manualUserWake
+    ) {
+      return wakeupSingleFlight.run(
+        wakeupSingleFlightKey(agentId, opts),
+        start,
+      ) as ReturnType<typeof enqueueWakeup>;
+    }
+    return start();
   }
 
   async function executeRun(
@@ -25385,6 +25609,14 @@ export function heartbeatService(
               "request_confirmation" &&
             readNonEmptyString(context.interactionStatus) === "accepted")
         : false;
+      // myrmidon(1.8 MODEL-BY-STEP, OPE-12996): one deterministic class per
+      // run start (review, acceptance, decomposition, background, execution),
+      // with the winning rule named for downstream model-by-step consumers.
+      const runStepClassification = issueContext && !isConversation(issueContext)
+        ? classifyRunStepFromContextSnapshot(context, issueContext.workMode)
+        : classifyRunStep({ source: readNonEmptyString(context.source) });
+      context.runStepClass = runStepClassification.stepClass;
+      context.runStepClassRule = runStepClassification.rule;
       const acceptedPlanWakeRoutingDecision = issueContext
         ? await resolveAcceptedPlanWakeRoutingDecision({
             db,
@@ -32160,6 +32392,7 @@ export function heartbeatService(
       source,
       triggerDetail,
       payload,
+      notBefore: opts.notBefore ?? null,
     });
     let issueId =
       readNonEmptyString(enrichedContextSnapshot.issueId) ?? issueIdFromPayload;
@@ -33499,17 +33732,24 @@ export function heartbeatService(
                   requestedByActorId: opts.requestedByActorId,
                 })
               : false;
+          // myrmidon(RESUME-AFTER-CANCEL): the resume of an operator's pause
+          // (myrmidon/pause-drain.ts) stays a system wake; the user who lifted the
+          // pause is carried as `resumedByUserId`, and only this hold check reads
+          // it: the wake passes a hold only when the run holding it was cancelled.
+          const resumedByOperator = reason === "pause_resume" && opts.requestedByActorType === "system" &&
+            source === "automation" && Boolean(opts.resumedByUserId);
           const wakeBypassesSettledHold = (bypassesSettledHold({
             source, triggerDetail, reason, commentId: candidateCommentId,
             requestedByActorType: opts.requestedByActorType ?? null,
             userCommentMentionsWokenAgent: userCommentMentionsWokenAgentFlag,
-          }) || chatOwnerMessage) && Boolean(opts.requestedByActorId);
+          }) || chatOwnerMessage || resumedByOperator) && Boolean(opts.requestedByActorId);
           const executionBlocker = await getExecutionBlocker(
             tx as unknown as Db, issue.companyId, issue.id,
             { conversationResetCommentId: opts.requestedByActorType === "user" ? candidateCommentId : null,
               // myrmidon(L2): an explicitly authorized wake ignores a settled
               // "do not replay" hold.
-              explicitWake: wakeBypassesSettledHold },
+              explicitWake: wakeBypassesSettledHold,
+              cancelledRunOnly: resumedByOperator },
           );
           // Prove eligibility without retiring the hold. Later gates can still
           // decline this wake; hold retirement and successor creation stay atomic.
@@ -34806,8 +35046,13 @@ export function heartbeatService(
                 );
               // myrmidon(1.6.6 OPE-12049): a run's own bookkeeping (release,
               // assign to itself, the echo of its final text) is not progress.
-              const progressRows = progressActivityRows.filter((row) =>
-                isIssueProgressActivity(row, agentId),
+              // myrmidon(EMPTY-RUNS-1): neither is handing the task back to
+              // the queue (`in_progress -> todo`) with the note it is parked
+              // with; the rule needs the rows of the whole run, so the read
+              // lives in `collectRunIdsWithIssueProgress`.
+              const runIdsWithIssueProgress = collectRunIdsWithIssueProgress(
+                progressActivityRows,
+                () => agentId,
               );
               const lastRunFinishedAt =
                 recentTerminalRuns[0]?.finishedAt ?? null;
@@ -34844,11 +35089,7 @@ export function heartbeatService(
                 now: throttleNow,
                 freezeThreshold,
                 recentTerminalRuns,
-                runIdsWithIssueProgress: new Set(
-                  progressRows
-                    .map((row) => row.runId)
-                    .filter((runId): runId is string => Boolean(runId)),
-                ),
+                runIdsWithIssueProgress,
                 // For an agent comment wake, the query excludes agent-authored
                 // activity while preserving genuinely new user/system input.
                 // Presentation/author metadata therefore cannot smuggle human
@@ -35100,7 +35341,9 @@ export function heartbeatService(
             await supersedeExplicitWakeSettledHold({
               db: tx as unknown as Db, companyId: issue.companyId, issueId: issue.id,
               successorRunId: explicitContinuationRunId,
-              requestedByActorType: "user", requestedByActorId: opts.requestedByActorId,
+              requestedByActorType: "user",
+              requestedByActorId: resumedByOperator ? opts.resumedByUserId! : opts.requestedByActorId,
+              cancelledRunOnly: resumedByOperator,
             });
           }
 
@@ -37078,13 +37321,14 @@ export function heartbeatService(
     // myrmidon(L3): wakes queued runs and stranded assigned todo/in_progress
     // issues a drained pause left idle; logic in myrmidon/pause-drain.ts.
     // Its sole caller is the agent resume route.
-    resumeAgentAfterPause: async (agentId: string) => {
+    resumeAgentAfterPause: async (agentId: string, options?: { operatorUserId?: string | null }) => {
       // myrmidon(OPE-12274): the dispatcher owns the role gate — an api process
       // publishes the wake instead of promoting the queued run locally, so a
       // split board never executes a runner session inside the api child.
       const resumed = await pauseResumeWakeAgent(
         { db, startNextQueuedRunForAgent: (id) => runStartDispatcher.dispatchRunStart(id), enqueueWakeup },
         agentId,
+        options,
       );
       // A paused conversation's accepted comments have no wake receipt until
       // delivery succeeds. Resume drains that durable outbox as well as the

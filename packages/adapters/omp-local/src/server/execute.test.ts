@@ -1,8 +1,12 @@
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { RunGuard, type RunGuardStopReason } from "@myrmidon/adapter-utils";
+import { buildRunGuardHintMessage } from "@myrmidon/adapter-utils/run-guard-hint";
+import { runningProcesses } from "@myrmidon/adapter-utils/server-utils";
 import { resetOmpModelsCacheForTests } from "./models.js";
+import { OMP_STEER_EXTENSION_FILE, OMP_STEER_EXTENSION_SOURCE, OMP_STEER_FILE_ENV } from "./run-guard.js";
 
 type ProcessResultShape = {
   exitCode: number | null;
@@ -29,6 +33,7 @@ const {
   runAdapterExecutionTargetProcess,
   runAdapterExecutionTargetShellCommand,
   prepareAdapterExecutionTargetRuntime,
+  ensureAdapterExecutionTargetDirectoryMock,
 } = vi.hoisted(() => ({
   runAdapterExecutionTargetProcess: vi.fn(
     async (
@@ -91,6 +96,11 @@ const {
       restoreWorkspace: vi.fn(async () => undefined),
     }),
   ),
+  // myrmidon(OPE-13018): records adapter-side directory ensures on SSH targets
+  // without opening a real ssh connection.
+  ensureAdapterExecutionTargetDirectoryMock: vi.fn(
+    async (..._args: ReadonlyArray<unknown>) => undefined,
+  ),
 }));
 
 vi.mock("./models.js", async (importOriginal) => {
@@ -133,9 +143,13 @@ vi.mock("@myrmidon/adapter-utils/execution-target", async (importOriginal) => {
     },
     // myrmidon(OPE-12801): the cancellation tests use an SSH target; creating
     // the session directory on it is not under test and must not open ssh.
+    // myrmidon(OPE-13018): calls are still recorded so tests can assert the
+    // adapter-derived task workspace folder.
     ensureAdapterExecutionTargetDirectory: (...args: Parameters<typeof actual.ensureAdapterExecutionTargetDirectory>) => {
       const target = args[1];
-      if (target?.kind === "remote" && target.transport === "ssh") return Promise.resolve();
+      if (target?.kind === "remote" && target.transport === "ssh") {
+        return ensureAdapterExecutionTargetDirectoryMock(...args);
+      }
       return actual.ensureAdapterExecutionTargetDirectory(...args);
     },
     prepareAdapterExecutionTargetRuntime: (...args: Parameters<typeof actual.prepareAdapterExecutionTargetRuntime>) => {
@@ -1289,6 +1303,94 @@ describe("omp local execution", () => {
       expect(errors[0].payload).toMatchObject({ reason: "remote_run_stop_failed", survivors: 1, survivorPids: [4242] });
     });
 
+    // myrmidon(OMP-RUN-GUARD-2): the adapter stops the local ssh client itself.
+    function registerClient(runId: string) {
+      const kill = vi.fn(() => true);
+      runningProcesses.set(runId, {
+        child: { pid: 4242, exitCode: null, signalCode: null, kill } as never,
+        graceSec: 20,
+        processGroupId: null,
+      });
+      return kill;
+    }
+    const signalledResult = () => ({
+      exitCode: null,
+      signal: "SIGTERM",
+      timedOut: false,
+      stdout: "",
+      stderr: "",
+      pid: 4242,
+      startedAt: new Date().toISOString(),
+    });
+
+    it("signals the local ssh client when the run is cancelled while OMP is running", async () => {
+      const run = await makeSshRun("run-cancel-signals-client");
+      prepareAdapterExecutionTargetRuntime.mockImplementationOnce(async () => run.preparedRuntime);
+      let kill = vi.fn(() => true);
+      runAdapterExecutionTargetProcess.mockImplementationOnce(async (runId) => {
+        kill = registerClient(runId!);
+        try {
+          expect(kill).not.toHaveBeenCalled();
+          run.controller.abort(new Error("Cancelled before issue reassignment"));
+          // The board did not get to the process: the adapter signals it.
+          expect(kill).toHaveBeenCalledTimes(1);
+          expect(kill).toHaveBeenCalledWith("SIGTERM");
+        } finally {
+          runningProcesses.delete(runId!);
+        }
+        return signalledResult();
+      });
+
+      await execute(run.input);
+
+      expect(kill).toHaveBeenCalledTimes(1);
+    });
+
+    it("signals the local ssh client at its start when the run was cancelled before it was registered", async () => {
+      const run = await makeSshRun("run-cancel-before-client");
+      prepareAdapterExecutionTargetRuntime.mockImplementationOnce(async () => run.preparedRuntime);
+      const spawned = vi.fn(async () => undefined);
+      let kill = vi.fn(() => true);
+      runAdapterExecutionTargetProcess.mockImplementationOnce(async (runId, _target, _command, _args, options) => {
+        // The abort found no process to stop: the client is not registered yet.
+        run.controller.abort(new Error("Cancelled before issue reassignment"));
+        kill = registerClient(runId!);
+        try {
+          await (options?.onSpawn as (meta: Record<string, unknown>) => Promise<void>)({ pid: 4242, startedAt: "now" });
+          expect(kill).toHaveBeenCalledWith("SIGTERM");
+        } finally {
+          runningProcesses.delete(runId!);
+        }
+        return signalledResult();
+      });
+
+      await execute({ ...run.input, onSpawn: spawned });
+
+      expect(spawned).toHaveBeenCalledTimes(1);
+      expect(kill).toHaveBeenCalledTimes(1);
+    });
+
+    it("leaves the client of a run that is not cancelled alone", async () => {
+      const run = await makeSshRun("run-not-cancelled-client");
+      prepareAdapterExecutionTargetRuntime.mockImplementationOnce(async () => run.preparedRuntime);
+      let kill = vi.fn(() => true);
+      runAdapterExecutionTargetProcess.mockImplementationOnce(async (runId, _target, _command, _args, options) => {
+        kill = registerClient(runId!);
+        try {
+          await (options?.onSpawn as (meta: Record<string, unknown>) => Promise<void>)({ pid: 4242, startedAt: "now" });
+        } finally {
+          runningProcesses.delete(runId!);
+        }
+        return { ...signalledResult(), exitCode: 0, signal: null };
+      });
+
+      await execute(run.input);
+      // Aborting after the run ended does not signal anything either.
+      run.controller.abort(new Error("late"));
+
+      expect(kill).not.toHaveBeenCalled();
+    });
+
     it("restores the workspace of an SSH run that was not cancelled", async () => {
       const run = await makeSshRun("run-ssh-not-cancelled");
       prepareAdapterExecutionTargetRuntime.mockImplementationOnce(async () => run.preparedRuntime);
@@ -1328,6 +1430,233 @@ describe("omp local execution", () => {
       expect(run.onCancellationReady).not.toHaveBeenCalled();
       const prepareCall = prepareAdapterExecutionTargetRuntime.mock.calls[0]?.[0];
       expect(prepareCall?.signal).toBeUndefined();
+    });
+
+    // myrmidon(OMP-RUN-GUARD-2): both stops of the local ssh client go through one function.
+  });
+
+  // myrmidon(OMP-RUN-GUARD): the board's run guard is fed from omp's event
+  // stream. Before this an omp run had no model call limit at all.
+  describe("run guard", () => {
+    type StreamLog = (stream: "stdout" | "stderr", chunk: string) => Promise<void>;
+    type RuntimeEvent = { eventType: string; level?: string; message?: string; payload?: Record<string, unknown> };
+
+    const TURN_START = `${JSON.stringify({ type: "turn_start" })}\n`;
+    const WRITE_CALL = `${JSON.stringify({
+      type: "tool_execution_start",
+      toolCallId: "call-edit",
+      toolName: "edit",
+      args: { path: "src/a.ts" },
+    })}\n`;
+    const WRAP_UP_TEXT = buildRunGuardHintMessage({ reason: "model_call_limit", modelCalls: 135, remaining: 15 });
+    const steerDir = path.join(os.homedir(), ".omp", "paperclips", "company-1", "agent-1", ".myrmidon");
+    const stoppedProcess = (): ProcessResultShape => ({
+      exitCode: null,
+      signal: "SIGTERM",
+      timedOut: false,
+      stdout: "",
+      stderr: "",
+      pid: 4242,
+      startedAt: new Date().toISOString(),
+    });
+
+    async function makeLocalRun(runId: string) {
+      const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-omp-run-guard-"));
+      cleanupDirs.push(rootDir);
+      const workspaceDir = path.join(rootDir, "workspace");
+      await mkdir(workspaceDir, { recursive: true });
+      const logs: string[] = [];
+      const input = {
+        runId,
+        agent: {
+          id: "agent-1",
+          companyId: "company-1",
+          name: "OMP Builder",
+          adapterType: "omp_local",
+          adapterConfig: {},
+        },
+        runtime: { sessionId: null, sessionParams: null, sessionDisplayId: null, taskKey: null },
+        config: { command: "omp", model: "openai/gpt-4o" },
+        context: { paperclipWorkspace: { cwd: workspaceDir, source: "project_primary" } },
+        onLog: async (_stream: "stdout" | "stderr", chunk: string) => {
+          logs.push(chunk);
+        },
+      };
+      const steerFile = path.join(steerDir, `steer-${runId}.txt`);
+      return { input, logs, steerFile };
+    }
+
+    afterEach(async () => {
+      await rm(steerDir, { recursive: true, force: true }).catch(() => undefined);
+    });
+
+    it("loads the steer extension and names the steer file when the run has a guard", async () => {
+      const run = await makeLocalRun("run-guard-args");
+
+      await execute({ ...run.input, runGuard: new RunGuard() });
+
+      const call = runAdapterExecutionTargetProcess.mock.calls[0];
+      const args = call?.[3] ?? [];
+      const extensionPath = path.join(steerDir, OMP_STEER_EXTENSION_FILE);
+      expect(args[args.indexOf("--extension") + 1]).toBe(extensionPath);
+      expect(call?.[4]?.env?.[OMP_STEER_FILE_ENV]).toBe(run.steerFile);
+      expect(await readFile(extensionPath, "utf8")).toBe(OMP_STEER_EXTENSION_SOURCE);
+    });
+
+    it("does not change the command of a run without a guard", async () => {
+      const run = await makeLocalRun("run-guard-absent");
+
+      await execute(run.input);
+
+      const call = runAdapterExecutionTargetProcess.mock.calls[0];
+      expect(call?.[3]).not.toContain("--extension");
+      expect(call?.[4]?.env?.[OMP_STEER_FILE_ENV]).toBeUndefined();
+    });
+
+    it("leaves the wrap-up hint in the steer file 15 model calls before the limit and lets the run go on", async () => {
+      const run = await makeLocalRun("run-guard-wrap-up");
+      const guard = new RunGuard();
+      const onRunGuardStop = vi.fn(async (_reason: RunGuardStopReason) => undefined);
+      runAdapterExecutionTargetProcess.mockImplementationOnce(async (_runId, _target, _command, _args, options) => {
+        const onLog = options?.onLog as StreamLog;
+        // 134 calls: nothing is said yet.
+        await onLog("stdout", TURN_START.repeat(134));
+        await expect(readFile(run.steerFile, "utf8")).rejects.toThrow();
+        // The 135th call arrives split across two chunks of the stream.
+        await onLog("stdout", TURN_START.slice(0, 9));
+        await onLog("stdout", TURN_START.slice(9));
+        return { exitCode: 0, signal: null, timedOut: false, stdout: "", stderr: "", pid: 4242, startedAt: new Date().toISOString() };
+      });
+
+      const result = await execute({ ...run.input, runGuard: guard, onRunGuardStop });
+
+      expect(guard.stats().modelCalls).toBe(135);
+      expect(await readFile(run.steerFile, "utf8")).toBe(WRAP_UP_TEXT);
+      expect(run.logs.join("")).toContain("Run guard hint left for OMP (wrap-up, 15 model calls left)");
+      expect(onRunGuardStop).not.toHaveBeenCalled();
+      expect(result.exitCode).toBe(0);
+      expect(result.errorCode ?? null).toBeNull();
+    });
+
+    it("stops the OMP process on the first model call past the limit and reports the guard's reason", async () => {
+      const run = await makeLocalRun("run-guard-stop");
+      const guard = new RunGuard();
+      const onRunGuardStop = vi.fn(async (_reason: RunGuardStopReason) => undefined);
+      const kill = vi.fn(() => true);
+      runAdapterExecutionTargetProcess.mockImplementationOnce(async (runId, _target, _command, _args, options) => {
+        const onLog = options?.onLog as StreamLog;
+        // What runChildProcess registers for the run: the adapter signals this child.
+        runningProcesses.set(runId!, {
+          child: { pid: 4242, exitCode: null, signalCode: null, kill } as never,
+          graceSec: 20,
+          processGroupId: null,
+        });
+        try {
+          await onLog("stdout", WRITE_CALL + TURN_START.repeat(150));
+          expect(kill).not.toHaveBeenCalled();
+          expect(onRunGuardStop).not.toHaveBeenCalled();
+          // The 151st model call.
+          await onLog("stdout", TURN_START);
+          expect(onRunGuardStop).toHaveBeenCalledTimes(1);
+          expect(kill).toHaveBeenCalledTimes(1);
+          // omp may still print before it dies; the stop is not repeated.
+          await onLog("stdout", TURN_START + WRITE_CALL);
+        } finally {
+          runningProcesses.delete(runId!);
+        }
+        return stoppedProcess();
+      });
+
+      const result = await execute({ ...run.input, runGuard: guard, onRunGuardStop });
+
+      expect(onRunGuardStop).toHaveBeenCalledTimes(1);
+      expect(onRunGuardStop).toHaveBeenCalledWith("model_call_limit");
+      expect(kill).toHaveBeenCalledTimes(1);
+      expect(kill).toHaveBeenCalledWith("SIGTERM");
+      expect(result.errorCode).toBe("model_call_limit");
+      expect(result.errorMessage).toBe("OMP was stopped by the run guard: model_call_limit.");
+      expect(result.signal).toBe("SIGTERM");
+      // The board reads these to decide whether the run is continued.
+      expect(guard.stats()).toMatchObject({ modelCalls: 150, writeCalls: 1 });
+      expect(runAdapterExecutionTargetProcess).toHaveBeenCalledTimes(1);
+      expect(run.logs.join("")).toContain("Run guard stopped OMP: model_call_limit (150 model calls)");
+    });
+
+    it("on an SSH run delivers the hint over ssh and restores the workspace after a guard stop", async () => {
+      const run = await makeLocalRun("run-guard-ssh");
+      const guard = new RunGuard();
+      const controller = new AbortController();
+      const events: RuntimeEvent[] = [];
+      const restoreWorkspace = vi.fn(async () => undefined);
+      let stagedAgentConfigFiles: string[] = [];
+      // The board aborts the run's signal when the guard stops the run.
+      const onRunGuardStop = vi.fn(async (reason: RunGuardStopReason) => {
+        controller.abort(new Error(reason));
+      });
+      prepareAdapterExecutionTargetRuntime.mockImplementationOnce(async (prepareInput) => {
+        const agentConfig = prepareInput?.assets?.find((asset) => asset.key === "agentConfig");
+        stagedAgentConfigFiles = agentConfig ? await readdir(agentConfig.localDir) : [];
+        return {
+          workspaceRemoteDir: "/remote/workspace",
+          runtimeRootDir: "/remote/runtime",
+          assetDirs: { skills: "/remote/runtime/skills", agentConfig: "/remote/runtime/agentConfig" },
+          restoreWorkspace,
+        };
+      });
+      runAdapterExecutionTargetProcess.mockImplementationOnce(async (_runId, _target, _command, _args, options) => {
+        const onLog = options?.onLog as StreamLog;
+        await onLog("stdout", WRITE_CALL + TURN_START.repeat(151));
+        return stoppedProcess();
+      });
+
+      const result = await execute({
+        ...run.input,
+        authToken: "test-host-api-token",
+        executionTarget: {
+          kind: "remote",
+          transport: "ssh",
+          remoteCwd: "/remote/workspace",
+          spec: {
+            host: "ssh.example.test",
+            port: 22,
+            username: "ssh-user",
+            remoteCwd: "/remote/workspace",
+            remoteWorkspacePath: "/remote/workspace",
+            privateKey: null,
+            knownHosts: null,
+            strictHostKeyChecking: true,
+          },
+        },
+        signal: controller.signal,
+        onCancellationReady: async () => undefined,
+        onEvent: async (event: RuntimeEvent) => {
+          events.push(event);
+        },
+        runGuard: guard,
+        onRunGuardStop,
+      });
+
+      // The extension travels with the agent config; the steer file is on the runner.
+      expect(stagedAgentConfigFiles).toContain(OMP_STEER_EXTENSION_FILE);
+      const call = runAdapterExecutionTargetProcess.mock.calls[0];
+      const args = call?.[3] ?? [];
+      expect(args[args.indexOf("--extension") + 1]).toBe(`/remote/runtime/agentConfig/${OMP_STEER_EXTENSION_FILE}`);
+      const remoteSteerFile = "/remote/runtime/sessions/company-1/agent-1/.myrmidon/steer-run-guard-ssh.txt";
+      expect(call?.[4]?.env?.[OMP_STEER_FILE_ENV]).toBe(remoteSteerFile);
+
+      const steerWrites = runAdapterExecutionTargetShellCommand.mock.calls
+        .map((shellCall) => String(shellCall[2] ?? ""))
+        .filter((command) => command.includes("steer-run-guard-ssh.txt"));
+      expect(steerWrites).toHaveLength(1);
+      expect(steerWrites[0]).toContain(`printf '%s' '${WRAP_UP_TEXT}' > '${remoteSteerFile}.tmp'`);
+      expect(steerWrites[0]).toContain(`mv '${remoteSteerFile}.tmp' '${remoteSteerFile}'`);
+
+      expect(onRunGuardStop).toHaveBeenCalledWith("model_call_limit");
+      expect(controller.signal.aborted).toBe(true);
+      expect(result.errorCode).toBe("model_call_limit");
+      // A guard stop is not a cancellation: the work comes back from the runner.
+      expect(restoreWorkspace).toHaveBeenCalledTimes(1);
+      expect(events.filter((event) => event.payload?.reason === "run_cancelled")).toEqual([]);
     });
   });
 
@@ -1397,5 +1726,100 @@ describe("omp local execution", () => {
     expect(prepareAdapterExecutionTargetRuntime).toHaveBeenLastCalledWith(
       expect.objectContaining({ workspaceSyncMode: "git_checkout" }),
     );
+  });
+
+  // myrmidon(OPE-13018): the adapter — not the agent — names the per-task
+  // folder on the runner, deriving it from the task identifier.
+  describe("task workspace folder derived from the task identifier", () => {
+    async function makeSshTaskRun(runId: string, taskKey: string | null, cwdBase: string) {
+      const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-omp-ssh-task-folder-"));
+      cleanupDirs.push(rootDir);
+      const workspaceDir = path.join(rootDir, cwdBase);
+      await mkdir(workspaceDir, { recursive: true });
+      const preparedRuntime = {
+        workspaceRemoteDir: "/remote/workspace",
+        runtimeRootDir: "/remote/runtime",
+        assetDirs: { skills: "/remote/runtime/skills", agentConfig: "/remote/runtime/agentConfig" },
+        restoreWorkspace: vi.fn(async () => undefined),
+      };
+      prepareAdapterExecutionTargetRuntime.mockImplementationOnce(async () => preparedRuntime);
+      const logs: string[] = [];
+      await execute({
+        runId,
+        authToken: "test-host-api-token",
+        executionTarget: {
+          kind: "remote" as const,
+          transport: "ssh" as const,
+          remoteCwd: "/remote/workspace",
+          spec: {
+            host: "ssh.example.test",
+            port: 22,
+            username: "ssh-user",
+            remoteCwd: "/remote/workspace",
+            remoteWorkspacePath: "/remote/workspace",
+            privateKey: null,
+            knownHosts: null,
+            strictHostKeyChecking: true,
+          },
+        },
+        agent: {
+          id: "agent-1",
+          companyId: "company-1",
+          name: "OMP Builder",
+          adapterType: "omp_local",
+          adapterConfig: {},
+        },
+        runtime: { sessionId: null, sessionParams: null, sessionDisplayId: null, taskKey },
+        config: { command: "omp", model: "openai/gpt-4o" },
+        context: { paperclipWorkspace: { cwd: workspaceDir, source: "project_primary" } },
+        onLog: async (_stream, line) => {
+          logs.push(line);
+        },
+      });
+      return { logs };
+    }
+
+    it("names the runner task folder from the task key and exports it to the agent env", async () => {
+      // The caller-provided cwd basename carries the historical typo; the
+      // adapter must derive the folder name from runtime.taskKey instead.
+      await makeSshTaskRun("run-task-folder", "OPE-12962", "OPR-12962");
+
+      const processCall = runAdapterExecutionTargetProcess.mock.calls[0] as unknown as
+        | [string, unknown, string, string[], { env?: Record<string, string> } | undefined]
+        | undefined;
+      expect(processCall).toBeDefined();
+      const env = processCall?.[4]?.env ?? {};
+      // The adapter writes only the MYRMIDON_* spelling for this new variable;
+      // assert no PAPERCLIP_* alias leaks through.
+      const paperclipKeys = Object.keys(env).filter((k) => k.startsWith("PAPERCLIP_"));
+      const expectedPaperclipFolderKey = ["PAPERCLIP", "TASK", "FOLDER", "NAME"].join("_");
+      expect(paperclipKeys).not.toContain(expectedPaperclipFolderKey);
+      expect(env.MYRMIDON_TASK_FOLDER_NAME).toBe("OPE-12962");
+
+      const ensuredDirs = ensureAdapterExecutionTargetDirectoryMock.mock.calls.map(
+        (call) => call[2] as string,
+      );
+      expect(ensuredDirs).toContain("/remote/workspace/OPE-12962");
+    });
+
+    it("keeps legacy behavior when no task key is available", async () => {
+      await makeSshTaskRun("run-task-folder-no-key", null, "workspace");
+
+      const processCall = runAdapterExecutionTargetProcess.mock.calls[0] as unknown as
+        | [string, unknown, string, string[], { env?: Record<string, string> } | undefined]
+        | undefined;
+      expect(processCall).toBeDefined();
+      const env = processCall?.[4]?.env ?? {};
+      // No task key — the adapter must not write either spelling.
+      const paperclipKeys = Object.keys(env).filter((k) => k.startsWith("PAPERCLIP_"));
+      const expectedPaperclipFolderKey = ["PAPERCLIP", "TASK", "FOLDER", "NAME"].join("_");
+      expect(paperclipKeys).not.toContain(expectedPaperclipFolderKey);
+      expect(env.MYRMIDON_TASK_FOLDER_NAME).toBeUndefined();
+
+      const ensuredDirs = ensureAdapterExecutionTargetDirectoryMock.mock.calls.map(
+        (call) => call[2] as string,
+      );
+      expect(ensuredDirs.some((dir) => dir.endsWith("/OPE-12962"))).toBe(false);
+    });
   });
 });

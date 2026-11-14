@@ -24,7 +24,7 @@ import {
 import { logger } from "../../middleware/logger.js";
 import { publishActivity, type ActivityPublication } from "../../services/activity-log.js";
 import type { IssuePostCommitAction } from "../../services/issues.js";
-import { readReasonRef } from "./reason.js";
+import { DEAD_BLOCKER_STATUSES, readReasonRef } from "./reason.js";
 import {
   collectStaleBlockReasons,
   describeStaleBlockReason,
@@ -62,13 +62,16 @@ export function buildStaleBlockComment(input: {
   at: Date;
   targetStatus?: "in_progress" | "todo";
 }): string {
-  if (input.targetStatus === "todo" || input.reasons.length === 0) {
+  if (input.reasons.length === 0) {
     return `Blocked status without reason removed; task returned to todo without assignee by the periodic stale-block sweep at ${input.at.toISOString()}.`;
   }
   const described = input.reasons
     .map((reason) => `${reason.label ?? "the reason"}: ${describeStaleBlockReason(reason.why)}`)
     .join("; ");
-  return `Stale block removed (${described}); task returned to ${input.targetStatus ?? "in_progress"} by the periodic stale-block sweep at ${input.at.toISOString()}.`;
+  // myrmidon(STALE-BLOCK-UNASSIGNED): a task with a dead cited reason but no
+  // assignee goes to todo (the issue service refuses in_progress without one).
+  const withoutAssignee = input.targetStatus === "todo" ? " without assignee" : "";
+  return `Stale block removed (${described}); task returned to ${input.targetStatus ?? "in_progress"}${withoutAssignee} by the periodic stale-block sweep at ${input.at.toISOString()}.`;
 }
 
 /**
@@ -385,8 +388,75 @@ async function judgeReasons(input: {
           : reason.dueAt,
     });
   }
+  // myrmidon(STALE-BLOCK-LIVE-EDGES): `reasonRef` wins as the cited reason
+  // (collectStaleBlockReasons), so with a reasonRef the blocked-by edges were
+  // never judged. A task whose cited reason died while one of its blockers is
+  // still open is not stale: the issue service refuses `in_progress` for it
+  // ("Issue is blocked by unresolved blockers"), so the unblock threw, the
+  // transaction rolled back and the pass logged "stale block sweep failed" for
+  // the same tasks on every tick (13.11: 14 tasks, about 50 warnings an hour). An
+  // open blocker on an edge the reasonRef does not cover is a live reason of
+  // its own; the task stays blocked and is woken through the ordinary
+  // `issue_blockers_resolved` path when that blocker closes. A blocker row
+  // that is gone holds nothing, exactly as the issue service reads it.
+  if (reasonRef) {
+    const covered = new Set(issueIds);
+    const uncovered = blockedByIssueIds.filter(
+      (blockerIssueId) => blockerIssueId !== "" && !covered.has(blockerIssueId),
+    );
+    if (uncovered.length > 0) {
+      const edgeStatuses = await blockerStatusMap(db, row.companyId, uncovered);
+      for (const blockerIssueId of uncovered) {
+        const status = edgeStatuses.get(blockerIssueId);
+        if (status !== undefined && !DEAD_BLOCKER_STATUSES.has(status)) liveCount += 1;
+      }
+    }
+  }
   void labelByIdentifier;
   return { reasons, dead, liveCount };
+}
+
+/**
+ * What may be logged about a failed unblock. The exception can carry a
+ * credential in its message, code, cause or stack, so none of those is logged:
+ * only the class name when it is a plain identifier, and the HTTP status when
+ * it is a number in the error range. That is enough to tell an update the
+ * issue service refused (HttpError 422) from a database or programming error
+ * without reading the payload; before this the warning said `sweep_failed`
+ * and nothing else, and the cause of a failure repeated on every tick could
+ * only be found by reading the code against the data.
+ */
+/**
+ * myrmidon(STALE-BLOCK-UNASSIGNED): the text of a refusal by the issue service
+ * (an HttpError with a 4xx status) is a fixed sentence written by the service
+ * ("in_progress issues require an assignee"), not task data, so it is logged to
+ * make the cause of a repeated 422 readable. Any other error keeps its text out
+ * of the log, and a message that is long or carries more than plain words is
+ * dropped.
+ */
+function describeRefusalMessage(err: object, status: unknown): string | null {
+  if (typeof status !== "number" || status < 400 || status > 499) return null;
+  if ((err as { constructor?: { name?: unknown } }).constructor?.name !== "HttpError") return null;
+  const message = (err as { message?: unknown }).message;
+  return typeof message === "string" && /^[A-Za-z0-9_ ,.:;'"()\-]{1,120}$/.test(message) ? message : null;
+}
+
+export function describeStaleBlockSweepFailure(err: unknown): {
+  errorName: string | null;
+  errorStatus: number | null;
+  errorMessage: string | null;
+} {
+  if (err === null || typeof err !== "object") return { errorName: null, errorStatus: null, errorMessage: null };
+  const name = (err as { constructor?: { name?: unknown } }).constructor?.name;
+  const status = (err as { status?: unknown }).status;
+  return {
+    errorName: typeof name === "string" && /^[A-Za-z][A-Za-z0-9]{0,39}$/.test(name) ? name : null,
+    errorStatus:
+      typeof status === "number" && Number.isInteger(status) && status >= 400 && status <= 599
+        ? status
+        : null,
+    errorMessage: describeRefusalMessage(err, status),
+  };
 }
 
 export function createStaleBlockSweep(deps: StaleBlockSweepDeps) {
@@ -408,6 +478,7 @@ export function createStaleBlockSweep(deps: StaleBlockSweepDeps) {
     const actions: IssuePostCommitAction[] = [];
     const svc = services.issueService(deps.db);
     let effectiveTargetStatus: "in_progress" | "todo" = isBareBlock ? "todo" : "in_progress";
+    let liftedBare = isBareBlock;
 
     const txStartedAtMs = Date.now();
     const done = await deps.db.transaction(async (tx) => {
@@ -425,6 +496,8 @@ export function createStaleBlockSweep(deps: StaleBlockSweepDeps) {
           status: issues.status,
           unblockDescriptor: issues.unblockDescriptor,
           updatedAt: issues.updatedAt,
+          assigneeAgentId: issues.assigneeAgentId,
+          assigneeUserId: issues.assigneeUserId,
         })
         .from(issues)
         .where(and(eq(issues.id, row.id), eq(issues.companyId, row.companyId)))
@@ -441,7 +514,13 @@ export function createStaleBlockSweep(deps: StaleBlockSweepDeps) {
       const lockedIsBareBlock = rejudged.reasons.length === 0;
       if (!lockedIsBareBlock && rejudged.dead.length === 0) return false;
 
-      effectiveTargetStatus = lockedIsBareBlock ? "todo" : "in_progress";
+      // myrmidon(STALE-BLOCK-UNASSIGNED): the issue service refuses
+      // in_progress for a task with neither an agent nor a user assignee
+      // (422 "in_progress issues require an assignee"), so such a task goes
+      // to todo, like a bare block does.
+      const hasAssignee = Boolean(locked.assigneeAgentId || locked.assigneeUserId);
+      effectiveTargetStatus = lockedIsBareBlock || !hasAssignee ? "todo" : "in_progress";
+      liftedBare = lockedIsBareBlock;
 
       const txSvc = services.issueService(tx as unknown as Db);
       const remaining = await blockedByEdgesFor(tx as unknown as Db, locked.companyId, locked.id);
@@ -542,7 +621,7 @@ export function createStaleBlockSweep(deps: StaleBlockSweepDeps) {
       companyId: row.companyId,
       identifier: row.identifier,
       title: row.title,
-      reasonTexts: effectiveTargetStatus === "todo"
+      reasonTexts: liftedBare
         ? ["blocked without a reason"]
         : dead.map((reason) => describeStaleBlockReason(reason.why)),
       liftedAt: at.toISOString(),
@@ -624,14 +703,15 @@ export function createStaleBlockSweep(deps: StaleBlockSweepDeps) {
           result.skippedLive += 1;
           lastSweptAtByIssueId.set(row.id, at.getTime());
         }
-      } catch {
-        // Log a constant errorKind only: the exception can carry a credential
-        // in its message, code, cause or stack. The task stays blocked for a
-        // later tick.
+      } catch (err) {
+        // Log a constant errorKind plus the class name and HTTP status only
+        // (`describeStaleBlockSweepFailure`): the exception can carry a
+        // credential in its message, code, cause or stack. The task stays
+        // blocked for a later tick.
         result.failed += 1;
         lastSweptAtByIssueId.set(row.id, at.getTime());
         logger.warn(
-          { errorKind: "sweep_failed", issueId: row.id },
+          { errorKind: "sweep_failed", issueId: row.id, ...describeStaleBlockSweepFailure(err) },
           "stale block sweep failed for one task",
         );
       }

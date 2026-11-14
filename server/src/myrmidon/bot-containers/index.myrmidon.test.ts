@@ -14,6 +14,8 @@ import {
   type BotMaintenanceServiceSlice,
   type BotProfilePass,
 } from "./index.js";
+import { botCanaryRuntimePort } from "./canary-index.js";
+import { setBotContainerRuntime } from "./routes-wiring.js";
 
 const ENABLED = { [BOT_CONTAINERS_ENV]: "1" };
 
@@ -870,6 +872,45 @@ describe("myrmidon(OPE-12654): the sweep decommissions the bots of agents that l
       expect(sink.entries.find((entry) => entry.details?.event === "bot_decommission_held")?.level).toBe("info");
     } finally {
       stop();
+    }
+  });
+});
+
+describe("myrmidon(BOT-PROFILE-NO-RUN-INTERRUPT) a busy bot: who defers and who drains", () => {
+  const busy = () => ({ ...fakeMaintenance(), activeRuns: async () => 1 });
+  function imageDriver() {
+    let currentImage = "old-image";
+    const recreated: string[] = [];
+    const driver = minimalDriver({
+      templateDrift: async (spec) => ({
+        drifted: spec.image !== currentImage,
+        fields: spec.image === currentImage ? [] : [{ field: "image", expected: spec.image, actual: currentImage }],
+      }),
+      recreate: async (spec) => {
+        recreated.push(spec.image);
+        currentImage = spec.image;
+      },
+    });
+    return { driver, recreated };
+  }
+
+  it("the periodic pass (and Apply now) defers an image change under a running run", async () => {
+    const { driver, recreated } = imageDriver();
+    const outcome = await applyBotContainerNow(agent({}, { image: "new-image" }), deps(driver, { maintenance: busy() }), { env: ENABLED });
+    expect(outcome.kind).toBe("deferred");
+    expect(recreated).toEqual([]);
+  });
+
+  it("the canary/rollout path does not defer: it drains and applies, as before", async () => {
+    const { driver, recreated } = imageDriver();
+    const runtime = deps(driver, { maintenance: busy() });
+    setBotContainerRuntime(runtime);
+    try {
+      const outcome = await botCanaryRuntimePort({} as never, ENABLED).applyNow(agent({}, { image: "old-image" }), "rollout-image", ENABLED);
+      expect(outcome).toEqual({ kind: "applied_restart" });
+      expect(recreated).toEqual(["rollout-image"]);
+    } finally {
+      setBotContainerRuntime(null);
     }
   });
 });

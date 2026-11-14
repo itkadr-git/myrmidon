@@ -10,27 +10,44 @@
 //   company A can never create (or later read) a complaint of company B —
 //   the actor middleware already binds the key to its company.
 // - GET /api/myrmidon/tool-complaints — the board lists one company's
-//   complaints with lifecycle statuses, newest first. Company-scoped: the
-//   company is the actor's own (an optional ?companyId= picks one of the
-//   board actor's memberships; anything outside them is refused). An agent
-//   may also read its own company's feed.
+//   complaints with lifecycle statuses, newest first, plus one threshold
+//   warning per tool (myrmidon(1.7 TOOL-COMPLAINTS-UI, OPE-12229)).
+//   Company-scoped: the company is the actor's own (an optional ?companyId=
+//   picks one of the board actor's memberships; anything outside them is
+//   refused). An agent may also read its own company's feed.
+// - PATCH /api/myrmidon/tool-complaints/:id — the board moves a complaint
+//   through its lifecycle (status open/acknowledged/resolved, OPE-12229).
+//   Board-only: an agent never closes another actor's complaint.
+//
+// The "disable tool for agent" triage action (OPE-12229) deliberately does
+// NOT live on this router: it travels the agent's existing permissions
+// endpoint (PATCH /api/agents/:id/permissions with
+// `permissions.toolAccess`, mode "listed" without the tool) so disabling can
+// never bypass the agent's tool rights — see toolComplaintsPermissionsPatch.
 //
 // Auth (AGENTS.md §8): agent access uses bearer agent keys; every mutation
 // writes an activity-log entry.
 
-import { desc, eq } from "drizzle-orm";
+import { desc, eq, and } from "drizzle-orm";
 import { Router, type Request } from "express";
 import { toolComplaints, type Db } from "@myrmidon/db";
 import {
   toolComplaintCreateSchema,
+  toolComplaintUpdateSchema,
   TOOL_COMPLAINT_CREATED_ACTION,
+  TOOL_COMPLAINT_TOOL_DISABLED_ACTION,
+  TOOL_COMPLAINT_UPDATED_ACTION,
   type ToolComplaint,
   type ToolComplaintCreate,
+  type ToolComplaintUpdate,
 } from "@myrmidon/shared";
-import { forbidden, unauthorized } from "../../errors.js";
+import { forbidden, notFound, unauthorized } from "../../errors.js";
 import { validate } from "../../middleware/validate.js";
-import { hasCompanyAccess } from "../../routes/authz.js";
+import { getActorInfo, hasCompanyAccess } from "../../routes/authz.js";
 import { persistActivity, publishActivity } from "../../services/activity-log.js";
+import { readAgentToolPermissions } from "@myrmidon/shared";
+import type { agents } from "@myrmidon/db";
+import { complaintThresholdWarnings } from "./threshold.js";
 
 /** The calling agent of a complaint request; anything else is refused. */
 function requireAgentActor(req: Request) {
@@ -132,8 +149,100 @@ export function toolComplaintRoutes(db: Db) {
       .from(toolComplaints)
       .where(eq(toolComplaints.companyId, companyId))
       .orderBy(desc(toolComplaints.createdAt));
-    res.json({ complaints: rows.map(toApiComplaint) });
+    // myrmidon(1.7 TOOL-COMPLAINTS-UI, OPE-12229): the feed travels with its
+    // threshold warnings — one per tool, computed by the pure core so the
+    // route and the service tests share one behaviour.
+    res.json({
+      complaints: rows.map(toApiComplaint),
+      thresholdWarnings: complaintThresholdWarnings(rows.map(toApiComplaint)),
+    });
   });
+
+  // myrmidon(1.7 TOOL-COMPLAINTS-UI, OPE-12229): the board triages a
+  // complaint (acknowledge, resolve). Board-only: an agent files complaints,
+  // it never closes them — the triage action is the operator's decision.
+  // The company scope travels the same path as the feed read: the row must
+  // belong to a company the actor may see.
+  router.patch(
+    "/myrmidon/tool-complaints/:id",
+    validate(toolComplaintUpdateSchema),
+    async (req, res) => {
+      const actorInfo = getActorInfo(req);
+      if (actorInfo.actorType !== "user") {
+        throw forbidden("Only board users can triage tool complaints");
+      }
+      const requested = typeof req.query.companyId === "string" ? req.query.companyId.trim() : "";
+      const companyId = requested || (req.actor.companyIds?.[0] ?? "");
+      if (!companyId || !hasCompanyAccess(req, companyId)) {
+        throw forbidden("User does not have access to this company");
+      }
+      const body = req.body as ToolComplaintUpdate;
+      const id = req.params.id as string;
+      // Status write and its audit entry commit atomically (same pattern as
+      // the create route): no status change lands without its activity log.
+      const { row, publication } = await db.transaction(async (tx) => {
+        const [updated] = await tx
+          .update(toolComplaints)
+          .set({ status: body.status, updatedAt: new Date() })
+          .where(and(eq(toolComplaints.id, id), eq(toolComplaints.companyId, companyId)))
+          .returning();
+        if (!updated) return {};
+        const { publication } = await persistActivity(tx as unknown as Db, {
+          companyId,
+          actorType: actorInfo.actorType,
+          actorId: actorInfo.actorId,
+          agentId: null,
+          action: TOOL_COMPLAINT_UPDATED_ACTION,
+          entityType: "tool_complaint",
+          entityId: updated.id,
+          details: { status: body.status, tool: updated.tool },
+        });
+        return { row: updated, publication };
+      });
+      if (!row) {
+        throw notFound("Tool complaint not found");
+      }
+      publishActivity(publication!);
+      res.json(toApiComplaint(row));
+    },
+  );
 
   return router;
 }
+
+/**
+ * The disable payload the complaints board sends to the agent's EXISTING
+ * permissions endpoint (myrmidon(1.7 TOOL-COMPLAINTS-UI, OPE-12229)).
+ *
+ * The disable travels the agent's own tool rights
+ * (`permissions.toolAccess`, mode "listed" without the tool) — never a
+ * side path: the gateway's S6 check then refuses the tool for exactly this
+ * agent. Everything else about the agent's rights (the three permission
+ * flags, its already-listed tools and connections) echoes back unchanged so
+ * the update cannot silently rewrite rights the operator did not touch.
+ */
+export function toolComplaintDisablePayload(
+  storedPermissions: unknown,
+  tool: string,
+): {
+  canCreateAgents: boolean;
+  canCreateSkills: boolean;
+  canAssignTasks: boolean;
+  toolAccess: { mode: "listed"; tools: string[]; connections: string[] };
+} {
+  const permissions = (storedPermissions ?? {}) as Record<string, unknown>;
+  const toolAccess = readAgentToolPermissions(permissions);
+  const tools = toolAccess.tools.filter((name) => name !== tool);
+  const connections = toolAccess.connections;
+  const canCreateAgents = permissions.canCreateAgents === true;
+  const canCreateSkills = permissions.canCreateSkills !== false;
+  const canAssignTasks = permissions.canAssignTasks === true;
+  return {
+    canCreateAgents,
+    canCreateSkills,
+    canAssignTasks,
+    toolAccess: { mode: "listed", tools, connections },
+  };
+}
+
+export type ToolComplaintDisableResult = typeof agents.$inferSelect;

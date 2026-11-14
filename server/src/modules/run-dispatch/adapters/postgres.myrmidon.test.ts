@@ -17,6 +17,7 @@ import {
 } from "../../../__tests__/helpers/embedded-postgres.js";
 import { createPostgresRunDispatchAdapter } from "./postgres.js";
 import { queuedRunWaitedAtLeastSql } from "./queued-run-age.js";
+import { queuedRunWaitingSince } from "../domain/queued-run-age.js";
 
 // P2: the wake of a pending interaction's addressee survives an assignee that is someone else.
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
@@ -256,6 +257,17 @@ describeEmbeddedPostgres("run-dispatch: pending interaction addressee wake (P2)"
     expect(issue?.executionRunId).toBeNull();
   });
 
+  it("prioritizes issue_terminal_status over queued_run_stale_timeout when run has also aged out (OPE-13068)", async () => {
+    const { companyId, assigneeId, issueId } = await seed();
+    await db.update(issues).set({ status: "done" }).where(eq(issues.id, issueId));
+    const runId = await seedRun({ companyId, agentId: assigneeId, contextSnapshot: { issueId } });
+    await db.update(heartbeatRuns).set({ createdAt: new Date(Date.now() - 31 * 60 * 1000) }).where(eq(heartbeatRuns.id, runId));
+    const outcome = await createPostgresRunDispatchAdapter(db).cancelStaleQueuedRun({
+      runId, companyId, expectedStatus: "queued", staleAfterMs: 30 * 60 * 1000, now: new Date(),
+    });
+    expect(outcome).toMatchObject({ outcome: "cancelled", errorCode: "issue_terminal_status" });
+  });
+
   // myrmidon(OPE-11947): a scheduled retry is created at the failure and enters
   // the queue when `scheduled_retry_at` falls due (30 min, 1 h, 2 h, 4 h, 6 h for
   // a model-unavailable wait). Its age as a queued run counts from that moment,
@@ -338,6 +350,443 @@ describeEmbeddedPostgres("run-dispatch: pending interaction addressee wake (P2)"
         runId, companyId, expectedStatus: "queued", staleAfterMs, now,
       });
       expect(outcome).toMatchObject({ outcome: "cancelled", errorCode: "queued_run_stale_timeout" });
+    });
+  });
+
+  // myrmidon(RESUME-QUEUE-AGE): the pause of an agent is not time spent waiting for
+  // a start. The resume stamps the queued runs (`queueWaitResumedAt`) and the age
+  // counts from the stamp; both the sweep's selection (SQL) and the cancellation
+  // check (TS) read it.
+  describe("age of a run that stood in the queue during a pause (RESUME-QUEUE-AGE)", () => {
+    const MIN = 60 * 1000;
+    const staleAfterMs = 30 * MIN;
+
+    async function seedPausedQueueRun(input: { resumedMinAgo: number | null; waitReason?: string }) {
+      const { companyId, assigneeId, issueId } = await seed();
+      const now = new Date();
+      const runId = await seedRun({
+        companyId,
+        agentId: assigneeId,
+        contextSnapshot: {
+          issueId,
+          waitReason: input.waitReason ?? "agent_concurrency",
+          ...(input.resumedMinAgo === null
+            ? {}
+            : { queueWaitResumedAtMs: now.getTime() - input.resumedMinAgo * MIN }),
+        },
+        createdAt: new Date(now.getTime() - 63 * MIN),
+      });
+      return { companyId, agentId: assigneeId, runId, now };
+    }
+
+    async function listedAsStale(runId: string, now: Date) {
+      const rows = await db
+        .select({ id: heartbeatRuns.id })
+        .from(heartbeatRuns)
+        .where(and(eq(heartbeatRuns.id, runId), eq(heartbeatRuns.status, "queued"), queuedRunWaitedAtLeastSql(now, staleAfterMs)));
+      return rows.length === 1;
+    }
+
+    const cancel = (companyId: string, runId: string, now: Date) =>
+      createPostgresRunDispatchAdapter(db).cancelStaleQueuedRun({
+        runId, companyId, expectedStatus: "queued", staleAfterMs, now,
+      });
+
+    it("does not list or cancel a 63-minute-old run right after the resume, with no run of the agent running", async () => {
+      const { companyId, runId, now } = await seedPausedQueueRun({ resumedMinAgo: 0 });
+
+      expect(await listedAsStale(runId, now)).toBe(false);
+      expect((await cancel(companyId, runId, now)).outcome).toBe("not_stale");
+      expect(await runStatus(runId)).toMatchObject({ status: "queued", errorCode: null });
+    });
+
+    it("keeps a second run that waits for the slot of the agent's first resumed run", async () => {
+      const { companyId, agentId, runId, now } = await seedPausedQueueRun({ resumedMinAgo: 5 });
+      await db.insert(heartbeatRuns).values({
+        id: randomUUID(), companyId, agentId, invocationSource: "automation", status: "running",
+        contextSnapshot: {}, startedAt: new Date(now.getTime() - 5 * MIN),
+      });
+
+      expect(await listedAsStale(runId, now)).toBe(false);
+      expect((await cancel(companyId, runId, now)).outcome).toBe("not_stale");
+    });
+
+    it("still cancels a run whose slot has been free longer than the threshold since the resume", async () => {
+      const { companyId, runId, now } = await seedPausedQueueRun({ resumedMinAgo: 31 });
+
+      expect(await listedAsStale(runId, now)).toBe(true);
+      expect(await cancel(companyId, runId, now)).toMatchObject({ outcome: "cancelled", errorCode: "queued_run_stale_timeout" });
+    });
+
+    it("ignores a stamp that is in the future or is not a date", async () => {
+      const future = await seedPausedQueueRun({ resumedMinAgo: -10 });
+      expect(await listedAsStale(future.runId, future.now)).toBe(true);
+      const { companyId, assigneeId, issueId } = await seed();
+      const now = new Date();
+      const runId = await seedRun({
+        companyId, agentId: assigneeId, contextSnapshot: { issueId, queueWaitResumedAt: "not-a-date" },
+        createdAt: new Date(now.getTime() - 63 * MIN),
+      });
+      expect(await listedAsStale(runId, now)).toBe(true);
+      expect((await cancel(companyId, runId, now)).outcome).toBe("cancelled");
+    });
+    // The same table goes through the TS rule and the SQL twin: a value that does
+    // not fit is ignored (the run keeps its old age), never an error.
+    const now = new Date("2026-11-14T00:00:00.000Z");
+    const nowMs = now.getTime();
+    const table: Array<{ label: string; value: unknown; honoured: boolean }> = [
+      { label: "an epoch-ms integer a minute ago", value: nowMs - MIN, honoured: true },
+      { label: "exactly now", value: nowMs, honoured: true },
+      { label: "null", value: null, honoured: false },
+      { label: "a numeric string", value: String(nowMs - MIN), honoured: false },
+      { label: "an ISO string", value: "2026-02-30T00:00:00Z", honoured: false },
+      { label: "a negative number", value: -5, honoured: false },
+      { label: "a fraction", value: nowMs - MIN + 0.5, honoured: false },
+      { label: "in the future", value: nowMs + MIN, honoured: false },
+      { label: "too short (seconds)", value: Math.floor((nowMs - MIN) / 1000), honoured: false },
+      { label: "too long (15 digits)", value: 123_456_789_012_345, honoured: false },
+      { label: "absurdly long", value: 1e300, honoured: false },
+      { label: "a boolean", value: true, honoured: false },
+      { label: "an object", value: { ms: nowMs }, honoured: false },
+    ];
+
+    it.each(table)("$label: TS rule and SQL twin agree (honoured: $honoured)", async ({ value, honoured }) => {
+      const { companyId, assigneeId, issueId } = await seed();
+      const createdAt = new Date(nowMs - 63 * MIN);
+      const runId = await seedRun({
+        companyId, agentId: assigneeId, createdAt,
+        contextSnapshot: { issueId, waitReason: "agent_concurrency", queueWaitResumedAtMs: value },
+      });
+      const tsSince = queuedRunWaitingSince({ createdAt, contextSnapshot: { queueWaitResumedAtMs: value } }, now);
+      expect(tsSince.getTime() !== createdAt.getTime()).toBe(honoured);
+      // honoured: the wait is short, so the run is not listed; ignored: it is 63 minutes old
+      expect(await listedAsStale(runId, now)).toBe(!honoured);
+    });
+  });
+
+  // myrmidon(EMPTY-RUNS-6): a queued run that stands behind its own agent's
+  // running runs is a queue, not a stale run. Expiring it by age queued the
+  // same run behind the same ceiling again, and after the second expiry the
+  // rewake throttle froze the task with "2 runs without progress" although no
+  // run of it had started (13.11: seven tasks assigned to one engineer with two
+  // slots; two high-priority tasks were frozen while the engineer was working).
+  describe("a run standing in its own agent's queue is not expired by age (EMPTY-RUNS-6)", () => {
+    const MIN = 60 * 1000;
+    const staleAfterMs = 30 * MIN;
+    const ownSlotWait = {
+      waitReason: "agent_concurrency",
+      waitDetail: { limit: 1, running: 1, limitSource: "board" },
+    };
+
+    /** A run queued 40 minutes ago, plus (optionally) another run of the assignee or of the second agent. */
+    async function seedWaitingRun(input: {
+      waitContext?: Record<string, unknown>;
+      otherRun?: { agent: "same" | "other"; status: "running" | "succeeded" } | null;
+      wakeReason?: string;
+    }) {
+      const { companyId, assigneeId, reviewerId, issueId } = await seed();
+      const now = new Date();
+      const runId = await seedRun({
+        companyId,
+        agentId: assigneeId,
+        contextSnapshot: {
+          issueId,
+          ...(input.wakeReason ? { wakeReason: input.wakeReason } : {}),
+          ...(input.waitContext ?? {}),
+        },
+        createdAt: new Date(now.getTime() - 40 * MIN),
+      });
+      if (input.otherRun) {
+        const startedAt = new Date(now.getTime() - 50 * MIN);
+        await db.insert(heartbeatRuns).values({
+          id: randomUUID(),
+          companyId,
+          agentId: input.otherRun.agent === "same" ? assigneeId : reviewerId,
+          invocationSource: "automation",
+          status: input.otherRun.status,
+          contextSnapshot: {},
+          createdAt: startedAt,
+          startedAt,
+          finishedAt: input.otherRun.status === "running" ? null : new Date(now.getTime() - 45 * MIN),
+        });
+      }
+      return { companyId, runId, issueId, reviewerId, now };
+    }
+
+    const expire = (companyId: string, runId: string, now: Date) =>
+      createPostgresRunDispatchAdapter(db).cancelStaleQueuedRun({
+        runId, companyId, expectedStatus: "queued", staleAfterMs, now,
+      });
+
+    it("keeps a run that waits for its agent's own slot while that agent has a running run", async () => {
+      const { companyId, runId, now } = await seedWaitingRun({
+        waitContext: ownSlotWait,
+        otherRun: { agent: "same", status: "running" },
+      });
+
+      const outcome = await expire(companyId, runId, now);
+
+      expect(outcome.outcome).toBe("not_stale");
+      expect(await runStatus(runId)).toMatchObject({ status: "queued", errorCode: null });
+    });
+
+    it("still expires it when no run of the agent is running: a named ceiling without a run behind it is a lost start", async () => {
+      const finished = await seedWaitingRun({
+        waitContext: ownSlotWait,
+        otherRun: { agent: "same", status: "succeeded" },
+      });
+      expect(await expire(finished.companyId, finished.runId, finished.now))
+        .toMatchObject({ outcome: "cancelled", errorCode: "queued_run_stale_timeout" });
+
+      const alone = await seedWaitingRun({ waitContext: ownSlotWait, otherRun: null });
+      expect(await expire(alone.companyId, alone.runId, alone.now))
+        .toMatchObject({ outcome: "cancelled", errorCode: "queued_run_stale_timeout" });
+    });
+
+    it("still expires it when only another agent is running", async () => {
+      const { companyId, runId, now } = await seedWaitingRun({
+        waitContext: ownSlotWait,
+        otherRun: { agent: "other", status: "running" },
+      });
+
+      expect(await expire(companyId, runId, now))
+        .toMatchObject({ outcome: "cancelled", errorCode: "queued_run_stale_timeout" });
+    });
+
+    it("still expires a run the sweep holds for another reason, or for none, even while the agent runs", async () => {
+      const unnamed = await seedWaitingRun({ otherRun: { agent: "same", status: "running" } });
+      expect(await expire(unnamed.companyId, unnamed.runId, unnamed.now))
+        .toMatchObject({ outcome: "cancelled", errorCode: "queued_run_stale_timeout" });
+
+      const maintenance = await seedWaitingRun({
+        waitContext: { waitReason: "maintenance" },
+        otherRun: { agent: "same", status: "running" },
+      });
+      expect(await expire(maintenance.companyId, maintenance.runId, maintenance.now))
+        .toMatchObject({ outcome: "cancelled", errorCode: "queued_run_stale_timeout" });
+    });
+
+    it("does not shield the run from the task-state checks: a reassigned task still cancels it", async () => {
+      const { companyId, runId, issueId, reviewerId, now } = await seedWaitingRun({
+        wakeReason: "issue_assigned",
+        waitContext: ownSlotWait,
+        otherRun: { agent: "same", status: "running" },
+      });
+      await db.update(issues).set({ assigneeAgentId: reviewerId }).where(eq(issues.id, issueId));
+
+      expect(await expire(companyId, runId, now))
+        .toMatchObject({ outcome: "cancelled", errorCode: "issue_assignee_changed" });
+    });
+  });
+
+  // myrmidon(EMPTY-RUNS-6B): the slot of the agent frees, and the run that waited
+  // for it must start (with its own wake reason), not be expired in that second.
+  describe("a run that waited for its agent's slot is not expired when the slot frees (EMPTY-RUNS-6B)", () => {
+    const MIN = 60 * 1000;
+    const staleAfterMs = 30 * MIN;
+    const ownSlotWait = { waitReason: "agent_concurrency", waitDetail: { limit: 1, running: 0 } };
+
+    /** Waiting runs created 40 min ago; the agent's other run ended `finishedAgoMs` before now (null: none). */
+    async function seedAfterSlotFreed(input: {
+      finishedAgoMs: number | null;
+      waiting?: number;
+      waitContext?: Record<string, unknown>;
+      other?: { agent?: "same" | "other"; started?: boolean };
+    }) {
+      const { companyId, assigneeId, reviewerId, issueId } = await seed();
+      const now = new Date();
+      const runIds: string[] = [];
+      for (let i = 0; i < (input.waiting ?? 1); i += 1) {
+        runIds.push(await seedRun({
+          companyId,
+          agentId: assigneeId,
+          contextSnapshot: { issueId, wakeReason: "ci_completed", ...(input.waitContext ?? ownSlotWait) },
+          createdAt: new Date(now.getTime() - 40 * MIN),
+        }));
+      }
+      if (input.finishedAgoMs !== null) {
+        const startedAt = new Date(now.getTime() - 60 * MIN);
+        const started = input.other?.started ?? true;
+        await db.insert(heartbeatRuns).values({
+          id: randomUUID(),
+          companyId,
+          agentId: input.other?.agent === "other" ? reviewerId : assigneeId,
+          invocationSource: "automation",
+          status: started ? "succeeded" : "cancelled",
+          contextSnapshot: {},
+          createdAt: startedAt,
+          startedAt: started ? startedAt : null,
+          finishedAt: new Date(now.getTime() - input.finishedAgoMs),
+        });
+      }
+      return { companyId, runIds, now };
+    }
+
+    const expire = (companyId: string, runId: string, now: Date) =>
+      createPostgresRunDispatchAdapter(db).cancelStaleQueuedRun({
+        runId, companyId, expectedStatus: "queued", staleAfterMs, now,
+      });
+
+    it("keeps a run waited 40 minutes behind a run that finished a second ago", async () => {
+      const { companyId, runIds, now } = await seedAfterSlotFreed({ finishedAgoMs: 1000 });
+      expect((await expire(companyId, runIds[0]!, now)).outcome).toBe("not_stale");
+      expect(await runStatus(runIds[0]!)).toMatchObject({ status: "queued", errorCode: null });
+    });
+
+    it("expires it as before when the slot has been free for longer than the threshold", async () => {
+      const { companyId, runIds, now } = await seedAfterSlotFreed({ finishedAgoMs: 35 * MIN });
+      expect(await expire(companyId, runIds[0]!, now))
+        .toMatchObject({ outcome: "cancelled", errorCode: "queued_run_stale_timeout" });
+    });
+
+    it("keeps every one of two waiting runs older than the threshold when the slot just freed", async () => {
+      const { companyId, runIds, now } = await seedAfterSlotFreed({ finishedAgoMs: 1000, waiting: 2 });
+      for (const runId of runIds) {
+        expect((await expire(companyId, runId, now)).outcome).toBe("not_stale");
+        expect(await runStatus(runId)).toMatchObject({ status: "queued", errorCode: null });
+      }
+    });
+
+    it("a run cancelled in the queue (never started) does not refresh the protection", async () => {
+      const { companyId, runIds, now } = await seedAfterSlotFreed({ finishedAgoMs: 1000, other: { started: false } });
+      expect(await expire(companyId, runIds[0]!, now))
+        .toMatchObject({ outcome: "cancelled", errorCode: "queued_run_stale_timeout" });
+    });
+
+    it("a run that ended before the wait began does not protect it", async () => {
+      // waiting since 40 min ago, the other run ended 45 min ago (threshold 35 min)
+      const { companyId, runIds, now } = await seedAfterSlotFreed({ finishedAgoMs: 45 * MIN });
+      expect(await createPostgresRunDispatchAdapter(db).cancelStaleQueuedRun({
+        runId: runIds[0]!, companyId, expectedStatus: "queued", staleAfterMs: 35 * MIN, now,
+      })).toMatchObject({ outcome: "cancelled", errorCode: "queued_run_stale_timeout" });
+    });
+
+    it("a run of another agent that just finished does not protect it", async () => {
+      const { companyId, runIds, now } = await seedAfterSlotFreed({ finishedAgoMs: 1000, other: { agent: "other" } });
+      expect(await expire(companyId, runIds[0]!, now))
+        .toMatchObject({ outcome: "cancelled", errorCode: "queued_run_stale_timeout" });
+    });
+
+    it("does not extend the wait of a run the sweep named for another reason", async () => {
+      const { companyId, runIds, now } = await seedAfterSlotFreed({
+        finishedAgoMs: 1000,
+        waitContext: { waitReason: "maintenance" },
+      });
+      expect(await expire(companyId, runIds[0]!, now))
+        .toMatchObject({ outcome: "cancelled", errorCode: "queued_run_stale_timeout" });
+    });
+  });
+
+  // myrmidon(EMPTY-RUNS-6C): in the pass that frees the slot the start sweep takes
+  // the heaviest waiting run and renames the wait of the others to `priority`.
+  // The age sweep of the same second must treat that wait as the wait for the
+  // agent's own slot (14.11, adm-dev-eng-24: two runs waited 77 and 47 minutes,
+  // the running run failed, both were cancelled with `waitReason = priority`).
+  describe("runs renamed to a priority wait at slot release are not expired (EMPTY-RUNS-6C)", () => {
+    const MIN = 60 * 1000;
+    const staleAfterMs = 30 * MIN;
+
+    /**
+     * Two runs of the assignee waiting 77 and 47 minutes with their own wake
+     * reasons and the wait reason the start pass left on them; the agent's
+     * previous run ended with `previous` a second ago; `next` is the run the
+     * pass started in the same second (or none).
+     */
+    async function seedSlotRelease(input: {
+      previous: "failed" | "succeeded" | "cancelled";
+      next: "running" | null;
+      waitReason?: string;
+    }) {
+      const { companyId, assigneeId, issueId } = await seed();
+      const now = new Date();
+      const waitReason = input.waitReason ?? "priority";
+      const oldest = await seedRun({
+        companyId, agentId: assigneeId,
+        contextSnapshot: { issueId, wakeReason: "pause_resume", waitReason },
+        createdAt: new Date(now.getTime() - 77 * MIN),
+      });
+      const younger = await seedRun({
+        companyId, agentId: assigneeId,
+        contextSnapshot: { issueId, wakeReason: "execution_changes_requested", waitReason },
+        createdAt: new Date(now.getTime() - 47 * MIN),
+      });
+      const startedAt = new Date(now.getTime() - 58 * MIN);
+      await db.insert(heartbeatRuns).values({
+        id: randomUUID(), companyId, agentId: assigneeId, invocationSource: "automation",
+        status: input.previous, contextSnapshot: {},
+        createdAt: startedAt, startedAt, finishedAt: new Date(now.getTime() - 1000),
+      });
+      if (input.next) {
+        await db.insert(heartbeatRuns).values({
+          id: randomUUID(), companyId, agentId: assigneeId, invocationSource: "automation",
+          status: input.next, contextSnapshot: {},
+          createdAt: new Date(now.getTime() - 26 * MIN), startedAt: new Date(now.getTime() - 500), finishedAt: null,
+        });
+      }
+      return { companyId, runIds: [oldest, younger], now };
+    }
+
+    const expire = (companyId: string, runId: string, now: Date) =>
+      createPostgresRunDispatchAdapter(db).cancelStaleQueuedRun({
+        runId, companyId, expectedStatus: "queued", staleAfterMs, now,
+      });
+
+    for (const previous of ["failed", "succeeded", "cancelled"] as const) {
+      it(`keeps both waiting runs when the running run ended ${previous} and another run of the agent started`, async () => {
+        const { companyId, runIds, now } = await seedSlotRelease({ previous, next: "running" });
+        for (const runId of runIds) {
+          expect((await expire(companyId, runId, now)).outcome).toBe("not_stale");
+          expect(await runStatus(runId)).toMatchObject({ status: "queued", errorCode: null });
+        }
+        const [oldest, younger] = await Promise.all(runIds.map(async (id) =>
+          (await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, id)))[0]!));
+        expect(oldest!.contextSnapshot).toMatchObject({ wakeReason: "pause_resume" });
+        expect(younger!.contextSnapshot).toMatchObject({ wakeReason: "execution_changes_requested" });
+      });
+
+      it(`keeps both waiting runs when the running run ended ${previous} and nothing started yet`, async () => {
+        const { companyId, runIds, now } = await seedSlotRelease({ previous, next: null });
+        for (const runId of runIds) {
+          expect((await expire(companyId, runId, now)).outcome).toBe("not_stale");
+        }
+      });
+    }
+
+    it("keeps the runs that still carry agent_concurrency when the running run failed", async () => {
+      const { companyId, runIds, now } = await seedSlotRelease({
+        previous: "failed", next: "running", waitReason: "agent_concurrency",
+      });
+      for (const runId of runIds) expect((await expire(companyId, runId, now)).outcome).toBe("not_stale");
+    });
+
+    it("still expires a priority-waiting run of an agent with a free slot: nothing running, slot free past the threshold", async () => {
+      const { companyId, assigneeId, issueId } = await seed();
+      const now = new Date();
+      const runId = await seedRun({
+        companyId, agentId: assigneeId,
+        contextSnapshot: { issueId, wakeReason: "ci_completed", waitReason: "priority" },
+        createdAt: new Date(now.getTime() - 40 * MIN),
+      });
+      const startedAt = new Date(now.getTime() - 90 * MIN);
+      await db.insert(heartbeatRuns).values({
+        id: randomUUID(), companyId, agentId: assigneeId, invocationSource: "automation",
+        status: "failed", contextSnapshot: {}, createdAt: startedAt, startedAt,
+        finishedAt: new Date(now.getTime() - 60 * MIN),
+      });
+      expect(await expire(companyId, runId, now))
+        .toMatchObject({ outcome: "cancelled", errorCode: "queued_run_stale_timeout" });
+    });
+
+    it("still expires a run with a free slot and no run of the agent at all", async () => {
+      const { companyId, assigneeId, issueId } = await seed();
+      const now = new Date();
+      const runId = await seedRun({
+        companyId, agentId: assigneeId,
+        contextSnapshot: { issueId, wakeReason: "ci_completed" },
+        createdAt: new Date(now.getTime() - 40 * MIN),
+      });
+      expect(await expire(companyId, runId, now))
+        .toMatchObject({ outcome: "cancelled", errorCode: "queued_run_stale_timeout" });
     });
   });
 

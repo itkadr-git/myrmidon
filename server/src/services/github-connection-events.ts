@@ -30,6 +30,30 @@ import type { IssueAssignmentWakeupDeps } from "./issue-assignment-wakeup.js";
 import { logger } from "../middleware/logger.js";
 import { parseIssueExecutionState } from "./issue-execution-policy.js";
 import { notifyBoardMergeTrigger } from "../myrmidon/review-routing/merge-trigger.js";
+// myrmidon(EMPTY-RUNS-3): a CI delivery is handled by the final result of the head.
+import {
+  CI_INFRA_RETRY_NEEDED_ACTION,
+  readReviewInfraCheckNames,
+  readReviewReturnGuardEnabled,
+} from "../myrmidon/review-return-guard/policy.js";
+import {
+  CI_FINAL_CHECK_SEEN_METADATA_KEY,
+  CI_RETURN_HOLD_METADATA_KEY,
+  CI_VERDICT_HANDLED_METADATA_KEY,
+  buildCiReturnHoldNote,
+  buildCiReturnNote,
+  ciVerdictOfHead,
+  classifyCiDelivery,
+  decideCiFailureReturn,
+  isCiVerdictConclusion,
+  isFailedCiConclusion,
+  readCiFinalOnlyEnabled,
+  readCiReturnHoldMark,
+  type CiReturnFactsResolver,
+  type CiReturnHeadFacts,
+  type CiReturnHoldMark,
+  type CiReturnHoldReason,
+} from "../myrmidon/review-return-guard/ci-failure-return.js";
 import { isRepositoryAllowed } from "../myrmidon/github-shared-identity/settings.js";
 import { listGitHubAppEntriesByAppId } from "../myrmidon/github-shared-identity/store.js";
 import {
@@ -37,6 +61,7 @@ import {
   pullRequestWorkProductData,
 } from "../myrmidon/task-pr-sync/linking.js";
 import { workProductService } from "./work-products.js";
+import { lockObjectInTransaction, postgresErrorInfo, runTransactionWithRetry } from "./postgres-transaction-retry.js";
 
 type LeasedEvent = SealedConnectorEvents["events"][number];
 type GitHubBinding = {
@@ -187,6 +212,9 @@ function normalizeLeasedPayload(event: LeasedEvent): Record<string, unknown> {
     const runId = identifier(payload.runId ?? checkRun.id ?? workflowRun.id);
     const checkSuiteId = identifier(payload.checkSuiteId ?? checkSuite.id ?? record(checkRun.check_suite ?? checkRun.checkSuite).id);
     const htmlUrl = githubUrl(payload.htmlUrl ?? checkRun.html_url ?? checkRun.htmlUrl ?? checkSuite.html_url ?? checkSuite.htmlUrl ?? workflowRun.html_url ?? workflowRun.htmlUrl);
+    // myrmidon(EMPTY-RUNS-3): the name of one check (`check_run` only), so a
+    // finished lane can be told from the final `CI result` of the head.
+    const checkName = event.event === "check_run" ? boundedString(payload.checkName ?? checkRun.name ?? rawCheckRun.name, 200) : null;
 
     return compact({
       ...base,
@@ -200,6 +228,7 @@ function normalizeLeasedPayload(event: LeasedEvent): Record<string, unknown> {
       runId,
       checkSuiteId,
       htmlUrl,
+      checkName,
     });
   }
   if (event.event === "installation_repositories") {
@@ -292,6 +321,9 @@ export function connectorPayloadFromGitHubWebhook(
         ? githubIdString(object.id)
         : githubIdString(object.check_suite_id ?? record(object.check_suite).id),
       htmlUrl: stringValue(object.html_url),
+      // myrmidon(EMPTY-RUNS-3): a check has a name of its own; a suite has none
+      // and the name of a workflow run is the workflow, not a check.
+      checkName: eventName === "check_run" ? stringValue(object.name) : null,
     });
   }
   return compact(base);
@@ -331,6 +363,27 @@ function bindingRows(rows: Array<{
       providerTenant: grant.providerTenant!,
     }));
   });
+}
+
+/**
+ * The key that serializes the deliveries of one pull request, or null when the
+ * delivery names none (an installation event, a check run on no pull request).
+ */
+function githubPullRequestLockKey(companyId: string, payload: Record<string, unknown>): string | null {
+  const repository = stringValue(payload.repository);
+  const number = positiveInteger(payload.pullRequestNumber) ?? positiveInteger(payload.number);
+  if (!repository || !number) return null;
+  return `github-pr:${companyId}:${repository.toLowerCase()}#${number}`;
+}
+
+/**
+ * myrmidon(EMPTY-RUNS-3): `metadata || patch` evaluated by Postgres on the row
+ * as it is when the update gets the row lock, not an object put together from a
+ * copy read earlier: two writers of different keys keep each other's keys. A
+ * key with a null value is set to null, as the spread of an object did.
+ */
+function mergeWorkProductMetadata(patch: Record<string, unknown>) {
+  return sql`coalesce(${issueWorkProducts.metadata}, '{}'::jsonb) || ${JSON.stringify(patch)}::jsonb`;
 }
 
 function githubSnapshotUpdate(payload: Record<string, unknown>) {
@@ -428,6 +481,13 @@ export async function linkPullRequestToIssue(
   return { linked: true, issueId: issueRow.id, workProductId: created.id };
 }
 
+/**
+ * myrmidon(EMPTY-RUNS-3): the check runs of a head are read from GitHub inside
+ * the delivery of one webhook. A read that takes longer than this is treated
+ * as unreadable.
+ */
+const CI_RETURN_FACTS_TIMEOUT_MS = 10_000;
+
 export function githubConnectionEventService(
   db: Db,
   options: {
@@ -436,6 +496,13 @@ export function githubConnectionEventService(
     now?: () => Date;
     wakeup?: NonNullable<Parameters<typeof issueThreadInteractionService>[1]>["wakeup"];
     assignmentWakeup?: IssueAssignmentWakeupDeps["wakeup"];
+    /**
+     * myrmidon(EMPTY-RUNS-3): reads the check runs of a pull request head. With
+     * it a CI delivery is handled by the final result of the head
+     * (`applyCiDeliveryByVerdict`); without it every completed delivery is
+     * handled as a finished CI, as before.
+     */
+    resolveCiReturnFacts?: CiReturnFactsResolver;
   } = {},
 ) {
   const now = options.now ?? (() => new Date());
@@ -457,7 +524,582 @@ export function githubConnectionEventService(
     return bindingRows(rows);
   }
 
-  async function applyCiCompletionEvent(companyId: string, event: LeasedEvent, database: Db = db) {
+  /**
+   * myrmidon(EMPTY-RUNS-3): the wakes one delivery asked for. They are sent
+   * after the transaction of the delivery commits: the admission of a wake
+   * locks the task row (`select ... for update` in the wake's own transaction),
+   * and the delivery has just written that very row — the return from review,
+   * the disarmed monitor. Sent from inside the transaction, a real wake waits
+   * for a lock its own caller holds until the caller ends, and the caller waits
+   * for the wake. A failed wake is logged; the delivery itself is committed.
+   */
+  type DeliveryWakes = Array<() => Promise<unknown>>;
+
+  async function sendOrDeferWake(afterCommit: DeliveryWakes | undefined, wake: () => Promise<unknown>) {
+    if (afterCommit) afterCommit.push(wake);
+    else await wake();
+  }
+
+  /**
+   * myrmidon(EMPTY-RUNS-3): what must happen once, after the delivery commits —
+   * the activity publications and the merge notice of the board. A delivery run
+   * again after a rollback (40P01) clears the queue, so none of it is sent twice
+   * and nothing is sent for a transaction that did not commit. A failure is
+   * logged with its reason and does not stop the rest.
+   */
+  async function sendOrDeferAction(
+    afterCommit: DeliveryWakes | undefined,
+    companyId: string,
+    what: string,
+    action: () => unknown,
+  ) {
+    const run = async () => {
+      try { await action(); }
+      catch (error) { logger.warn({ err: error, companyId }, `${what} failed after commit`); }
+    };
+    if (afterCommit) afterCommit.push(run);
+    else await run();
+  }
+
+  /** The interaction wake of the merged-PR sweep, deferred the same way. */
+  function deferInteractionWakeup(afterCommit: DeliveryWakes | undefined): typeof options.wakeup {
+    const send = options.wakeup;
+    if (!send || !afterCommit) return send;
+    const queue: DeliveryWakes = afterCommit;
+    return async (agentId, wakeOptions) => {
+      queue.push(() => send(agentId, wakeOptions));
+    };
+  }
+
+  // ---------------------------------------------------------------------------
+  // myrmidon(EMPTY-RUNS-3): a CI delivery handled by the final result of the
+  // head. The decisions are pure (review-return-guard/ci-failure-return.ts);
+  // what follows reads the rows, asks GitHub when it has to and writes.
+  // ---------------------------------------------------------------------------
+
+  /** The check runs of a head read from GitHub now; null when they cannot be read in time. */
+  async function readHeadCheckRuns(
+    resolveFacts: CiReturnFactsResolver,
+    input: { companyId: string; repository: string; pullRequestNumber: number; headSha: string },
+  ): Promise<CiReturnHeadFacts | null> {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    let reason = "read_timeout";
+    try {
+      const facts = await Promise.race([
+        resolveFacts(input),
+        new Promise<null>((resolve) => {
+          timer = setTimeout(() => resolve(null), CI_RETURN_FACTS_TIMEOUT_MS);
+        }),
+      ]);
+      if (facts && facts.state === "ok") return facts;
+      if (facts) reason = facts.reason;
+    } catch {
+      reason = "read_failed";
+    } finally {
+      if (timer) clearTimeout(timer);
+    }
+    // A short code only: the reason of a failed read never carries a token.
+    logger.info(
+      { companyId: input.companyId, repository: input.repository, pullRequestNumber: input.pullRequestNumber, headSha: input.headSha, reason },
+      "CI delivery: the check runs of the head could not be read",
+    );
+    return null;
+  }
+
+  /**
+   * Returns a task from its pending review stage to the executor for a failed
+   * CI of the head: the status, the stage decision, a system comment and the
+   * `issue.ci_failed` row, all or nothing under the lock of the task. Answers
+   * the executor, or null when the task is not in a pending review stage any
+   * more.
+   */
+  async function returnTaskFromReviewForFailedCi(database: Db, afterCommit: DeliveryWakes | undefined, input: {
+    companyId: string;
+    issueId: string;
+    event: LeasedEvent;
+    repository: string;
+    pullRequestNumber: number;
+    headSha: string;
+    runId: string;
+    htmlUrl: string | null;
+    conclusion: string;
+    failedChecks: string[] | null;
+    releasedHold: CiReturnHoldReason | null;
+  }): Promise<string | null> {
+    const { companyId, repository, pullRequestNumber, headSha, runId, htmlUrl, conclusion } = input;
+    const note = input.failedChecks
+      ? buildCiReturnNote({ failedChecks: input.failedChecks, releasedHold: input.releasedHold })
+      : "";
+    const returned: { executorId: string | null } = { executorId: null };
+    const publications: ActivityPublication[] = [];
+    // The transaction of the delivery (a savepoint inside it): a rollback and a
+    // re-run of the delivery take the comment, the row and the return with them.
+    await database.transaction(async (tx) => {
+      const [current] = await tx.select().from(issues).where(and(
+        eq(issues.id, input.issueId), eq(issues.companyId, companyId),
+      )).for("update");
+      if (!current || current.status !== "in_review" || current.workMode !== "standard") return;
+      const state = parseIssueExecutionState(current.executionState);
+      if (state && (state.status !== "pending" || state.currentStageType !== "review")) return;
+      const executor = state?.returnAssignee;
+      if (executor && executor.type !== "agent") return;
+      const executorId = executor?.agentId ?? current.assigneeAgentId;
+      if (!executorId) return;
+      const reason = `CI ${conclusion}: ${repository}#${pullRequestNumber}, head ${headSha}, ${input.event.event} ${runId}${htmlUrl ? ` — ${htmlUrl}` : ""}${note}`;
+      await tx.update(issues).set({
+        status: "in_progress",
+        statusVersion: sql`${issues.statusVersion} + 1`,
+        assigneeAgentId: executorId,
+        assigneeUserId: null,
+        ...(state ? { executionState: {
+          ...state, status: "changes_requested", reviewRequest: null,
+          lastDecisionOutcome: "changes_requested",
+        } } : {}),
+        updatedAt: now(),
+      }).where(and(eq(issues.id, current.id), eq(issues.companyId, companyId)));
+      await tx.insert(issueComments).values({
+        companyId, issueId: current.id, authorType: "system", body: reason,
+      });
+      await logActivity(tx as unknown as Db, {
+        companyId, actorType: "system", actorId: "system:github-ci",
+        action: "issue.ci_failed", entityType: "issue", entityId: current.id,
+        details: { previousStatus: "in_review", status: "in_progress", conclusion,
+          repository, pullRequestNumber, headSha, runId, htmlUrl, deliveryId: input.event.id,
+          ...(input.failedChecks ? { failedChecks: input.failedChecks, releasedHold: input.releasedHold } : {}) },
+      }, publications);
+      returned.executorId = executorId;
+    });
+    for (const publication of publications) {
+      await sendOrDeferAction(afterCommit, companyId, "CI return activity publication", () => publishActivity(publication));
+    }
+    return returned.executorId;
+  }
+
+  /**
+   * The trace of a failed CI that did not return the task — once per head: the
+   * mark on the pull request work product, a system note in the thread (it
+   * wakes nobody) and the `ci_infra_retry_needed` row the reviewer's return
+   * guard writes for the same situation.
+   */
+  async function recordCiReturnHold(
+    database: Db,
+    afterCommit: DeliveryWakes | undefined,
+    companyId: string,
+    target: { issueId: string; identifier: string | null; productId: string; pullRequestUrl: string | null },
+    input: {
+      reason: CiReturnHoldReason;
+      failedChecks: string[];
+      repository: string;
+      pullRequestNumber: number;
+      headSha: string;
+      deliveryId: string;
+    },
+  ) {
+    const heldAt = now();
+    const mark: CiReturnHoldMark = {
+      headSha: input.headSha,
+      reason: input.reason,
+      failedChecks: input.failedChecks,
+      heldAt: heldAt.toISOString(),
+    };
+    await database.update(issueWorkProducts).set({
+      metadata: sql`coalesce(${issueWorkProducts.metadata}, '{}'::jsonb) || ${JSON.stringify({ [CI_RETURN_HOLD_METADATA_KEY]: mark })}::jsonb`,
+      updatedAt: heldAt,
+    }).where(and(eq(issueWorkProducts.id, target.productId), eq(issueWorkProducts.companyId, companyId)));
+    const publications: ActivityPublication[] = [];
+    await database.transaction(async (tx) => {
+      await tx.insert(issueComments).values({
+        companyId,
+        issueId: target.issueId,
+        authorType: "system",
+        body: buildCiReturnHoldNote({ reason: input.reason, headSha: input.headSha, failedChecks: input.failedChecks }),
+      });
+      await logActivity(tx as unknown as Db, {
+        companyId, actorType: "system", actorId: "system:github-ci",
+        action: CI_INFRA_RETRY_NEEDED_ACTION, entityType: "issue", entityId: target.issueId,
+        details: {
+          issueId: target.issueId,
+          identifier: target.identifier,
+          headSha: input.headSha,
+          reason: input.reason,
+          failedChecks: input.failedChecks,
+          pullRequestUrl: target.pullRequestUrl,
+          repository: input.repository,
+          pullRequestNumber: input.pullRequestNumber,
+          source: "github_ci_completion",
+          deliveryId: input.deliveryId,
+        },
+      }, publications);
+    });
+    for (const publication of publications) {
+      await sendOrDeferAction(afterCommit, companyId, "CI hold activity publication", () => publishActivity(publication));
+    }
+  }
+
+  /** Writes one key into the metadata of the given work product rows, or removes it (`value` undefined). */
+  async function patchWorkProductMetadataKey(
+    database: Db,
+    companyId: string,
+    productIds: string[],
+    key: string,
+    value: unknown,
+  ) {
+    if (productIds.length === 0) return;
+    await database.update(issueWorkProducts).set({
+      metadata: value === undefined
+        ? sql`coalesce(${issueWorkProducts.metadata}, '{}'::jsonb) - ${key}::text`
+        : sql`coalesce(${issueWorkProducts.metadata}, '{}'::jsonb) || ${JSON.stringify({ [key]: value })}::jsonb`,
+      updatedAt: now(),
+    }).where(and(inArray(issueWorkProducts.id, productIds), eq(issueWorkProducts.companyId, companyId)));
+  }
+
+  /**
+   * myrmidon(EMPTY-RUNS-3): one CI delivery of a pull request, handled by the
+   * final result of the head.
+   *
+   *   - a job that starts marks the CI of the head as running, unless the head
+   *     already has its result (the re-run of a gate, an auxiliary workflow);
+   *   - a job that ends changes nothing: the monitor of the task stays armed
+   *     and nobody is woken. Only a held head is looked at again;
+   *   - the final result of the current head — the finished `CI result` check,
+   *     or, where a pull request has none, the moment GitHub shows every check
+   *     finished — is recorded as `lastCompletedCi`, announces a possible
+   *     merge when green, returns a task from review when red (unless the base
+   *     branch is red or only infrastructure failed: the task is held), disarms
+   *     the monitor and wakes the assignee, once per result.
+   */
+  async function applyCiDeliveryByVerdict(
+    database: Db,
+    companyId: string,
+    event: LeasedEvent,
+    delivery: {
+      status: string;
+      conclusion: string | null;
+      active: boolean;
+      repository: string;
+      pullRequestNumber: number;
+      headSha: string;
+      runId: string;
+    },
+    resolveFacts: CiReturnFactsResolver,
+    env: NodeJS.ProcessEnv,
+    afterCommit: DeliveryWakes | undefined,
+  ) {
+    const { repository, pullRequestNumber, headSha, runId } = delivery;
+    const payload = event.payload;
+    const currentTime = now();
+    const kind = classifyCiDelivery({ eventName: event.event, checkName: stringValue(payload.checkName) });
+    const candidates = await database.select().from(issueWorkProducts)
+      .where(and(
+        eq(issueWorkProducts.companyId, companyId),
+        eq(issueWorkProducts.type, "pull_request"),
+        eq(issueWorkProducts.provider, "github"),
+      ));
+    // Every row of this pull request, always in the same order: two deliveries
+    // of one pull request then take the rows in the same order as well.
+    const rows = candidates.filter((product) => {
+      const metadata = record(product.metadata);
+      const productRepository = stringValue(metadata.repository) ?? stringValue(metadata.repo);
+      const productNumber = positiveInteger(metadata.number)
+        ?? (product.externalId ? Number(product.externalId.match(/#pull\/(\d+)$/)?.[1]) : null);
+      return productRepository?.toLowerCase() === repository.toLowerCase() && productNumber === pullRequestNumber;
+    }).sort((left, right) => (left.id < right.id ? -1 : left.id > right.id ? 1 : 0));
+    const primary = rows[0];
+    if (!primary) return;
+    const rowIds = rows.map((row) => row.id);
+    // The rows of the pull request are locked in one order (by id) before any is
+    // written; the delivery's advisory lock keeps its own siblings out, this keeps
+    // out the other writers of these rows (the review-return mark, task sync).
+    await database.select({ id: issueWorkProducts.id }).from(issueWorkProducts)
+      .where(inArray(issueWorkProducts.id, rowIds)).orderBy(issueWorkProducts.id).for("update");
+    const finalCheckSeen = rows.some((row) => record(row.metadata)[CI_FINAL_CHECK_SEEN_METADATA_KEY] === true);
+
+    if (delivery.active) {
+      for (const row of rows) {
+        const metadata = record(row.metadata);
+        const recorded = record(metadata.lastCompletedCi);
+        // A job that starts after the result of this head — the re-run of a
+        // gate, an auxiliary workflow — does not reopen it; the final check does.
+        if (kind !== "final_check" && recorded.final === true && recorded.headSha === headSha) continue;
+        await database.update(issueWorkProducts).set({
+          metadata: mergeWorkProductMetadata({
+            activeCi: { repository, number: pullRequestNumber, headSha, runId, status: delivery.status, observedAt: currentTime.toISOString() },
+            lastCompletedCi: null,
+            ...(kind === "final_check" ? { [CI_FINAL_CHECK_SEEN_METADATA_KEY]: true } : {}),
+          }),
+          updatedAt: currentTime,
+        }).where(eq(issueWorkProducts.id, row.id));
+      }
+      return;
+    }
+
+    const conclusion = delivery.conclusion;
+    if (!conclusion) return;
+    // A result of an older head decides nothing for the current one.
+    const knownHeads = rows
+      .map((row) => {
+        const metadata = record(row.metadata);
+        return commitSha(metadata.headSha) ?? commitSha(metadata.sha);
+      })
+      .filter((head): head is string => head !== null);
+    if (knownHeads.length > 0 && !knownHeads.includes(headSha)) return;
+
+    const hold = rows
+      .map((row) => readCiReturnHoldMark(row.metadata))
+      .find((mark) => mark !== null && mark.headSha === headSha) ?? null;
+    const factsInput = { companyId, repository, pullRequestNumber, headSha };
+
+    // The result of the head this delivery carries, if it carries one.
+    let verdict: string | null = null;
+    let facts: CiReturnHeadFacts | null = null;
+    let markFinalCheckSeen = false;
+    if (kind === "final_check") {
+      markFinalCheckSeen = !finalCheckSeen;
+      if (isCiVerdictConclusion(conclusion)) verdict = conclusion;
+    } else if (kind === "whole_run" && !finalCheckSeen) {
+      // No final check was ever delivered for this pull request: a repository
+      // without the aggregate check, or the first run before the aggregate job
+      // exists. GitHub says which, and whether every check has finished.
+      facts = await readHeadCheckRuns(resolveFacts, factsInput);
+      if (facts) {
+        markFinalCheckSeen = facts.hasFinalCheck;
+        // myrmidon(EMPTY-RUNS-3B): the fallback "every check has finished" is for
+        // a head that has no `CI result` at all. A head that has one (finished,
+        // running, skipped or cancelled in a partial run) is decided by that
+        // check alone, whatever else GitHub shows finished.
+        verdict = facts.hasFinalCheck
+          ? (isCiVerdictConclusion(facts.finalCheckConclusion) ? facts.finalCheckConclusion : null)
+          : ciVerdictOfHead(facts);
+      }
+    }
+
+    if (verdict === null && !hold) {
+      // One finished job, or a run that did not finish the CI: the task is left
+      // alone — its monitor stays armed and nobody is woken.
+      if (markFinalCheckSeen) {
+        await patchWorkProductMetadataKey(database, companyId, rowIds, CI_FINAL_CHECK_SEEN_METADATA_KEY, true);
+      }
+      return;
+    }
+
+    const [issue] = await database
+      .select({
+        id: issues.id,
+        identifier: issues.identifier,
+        status: issues.status,
+        workMode: issues.workMode,
+        executionState: issues.executionState,
+        assigneeAgentId: issues.assigneeAgentId,
+        monitorNextCheckAt: issues.monitorNextCheckAt,
+      })
+      .from(issues)
+      .where(and(eq(issues.id, primary.issueId), eq(issues.companyId, companyId)))
+      .limit(1);
+    const reviewStagePending = (() => {
+      if (!issue || issue.status !== "in_review" || issue.workMode !== "standard") return false;
+      const state = parseIssueExecutionState(issue.executionState);
+      return !state || (state.status === "pending" && state.currentStageType === "review");
+    })();
+    const htmlUrl = githubUrl(payload.htmlUrl);
+    // With the return guard switched off no check is infrastructure: every
+    // failed final result returns the task.
+    const infraCheckNames = readReviewReturnGuardEnabled(env) ? readReviewInfraCheckNames(env) : [];
+    const assignmentWakeup = options.assignmentWakeup;
+
+    /**
+     * Disarms the monitor of the task and wakes `agentId` for the result of the
+     * head. The result is news for a task that is being worked on or reviewed,
+     * and for one whose agent armed a monitor for it; a parked task without a
+     * monitor and a closed task are not woken.
+     */
+    const finishWithWake = async (agentId: string, wakeConclusion: string, releasedHold: boolean) => {
+      if (!issue || !assignmentWakeup) return;
+      const closed = issue.status === "done" || issue.status === "cancelled";
+      const awaitsResult = issue.status === "in_progress" || issue.status === "in_review"
+        || (issue.monitorNextCheckAt !== null && !closed);
+      if (!awaitsResult) return;
+      if (issue.monitorNextCheckAt) {
+        await database.update(issues).set({
+          monitorNextCheckAt: null,
+          monitorWakeRequestedAt: null,
+          monitorLastTriggeredAt: currentTime,
+          executionPolicy: sql`jsonb_set(coalesce(${issues.executionPolicy}, '{}'::jsonb), '{monitor}', 'null'::jsonb)`,
+          executionState: sql`case when ${issues.executionState} is not null then jsonb_set(${issues.executionState}, '{monitor,status}', '"cleared"'::jsonb) else null end`,
+          updatedAt: currentTime,
+        }).where(eq(issues.id, issue.id));
+      }
+      const issueId = issue.id;
+      await sendOrDeferWake(afterCommit, () => assignmentWakeup(agentId, {
+        source: "automation",
+        triggerDetail: "system",
+        reason: "ci_completed",
+        payload: {
+          issueId,
+          repository,
+          pullRequestNumber,
+          headSha,
+          conclusion: wakeConclusion,
+          runId,
+          htmlUrl,
+          event: event.event,
+          deliveryId: event.id,
+        },
+        idempotencyKey: `ci_completed:${repository}:${pullRequestNumber}:${headSha}${releasedHold ? ":hold-released" : ""}`,
+        requestedByActorType: "system",
+        requestedByActorId: "system:github-ci",
+        contextSnapshot: {
+          issueId,
+          source: "github_ci_completion",
+          repository,
+          pullRequestNumber,
+          headSha,
+          conclusion: wakeConclusion,
+          runId,
+        },
+      }));
+    };
+
+    if (verdict === null) {
+      // Not the result of the head, but the head is held: it is looked at
+      // again — the re-run of `main-green` is delivered as such a job.
+      if (markFinalCheckSeen) {
+        await patchWorkProductMetadataKey(database, companyId, rowIds, CI_FINAL_CHECK_SEEN_METADATA_KEY, true);
+      }
+      if (!hold || !issue || !assignmentWakeup || !reviewStagePending) return;
+      const head = facts ?? await readHeadCheckRuns(resolveFacts, factsInput);
+      if (!head) return;
+      const decision = decideCiFailureReturn({ head, infraCheckNames });
+      if (decision.action === "none") {
+        await patchWorkProductMetadataKey(database, companyId, rowIds, CI_RETURN_HOLD_METADATA_KEY, undefined);
+        return;
+      }
+      if (decision.action !== "return") return;
+      const executorId = await returnTaskFromReviewForFailedCi(database, afterCommit, {
+        companyId, issueId: issue.id, event, repository, pullRequestNumber, headSha, runId, htmlUrl,
+        conclusion: "failure", failedChecks: decision.failedChecks, releasedHold: hold.reason,
+      });
+      if (!executorId) return;
+      await patchWorkProductMetadataKey(database, companyId, rowIds, CI_RETURN_HOLD_METADATA_KEY, undefined);
+      await finishWithWake(executorId, "failure", true);
+      return;
+    }
+
+    // The final result of the current head. `final` tells a result recorded
+    // here from the mark the old handling left for any finished job.
+    const recorded = record(record(primary.metadata).lastCompletedCi);
+    // myrmidon(EMPTY-RUNS-3B): the record above is cleared whenever a job of the
+    // head starts (a partial run, the re-run of a gate), and the next delivery
+    // of any kind then took the same result for a new one. The result a wake was
+    // sent for is also kept apart (`ciVerdictHandled`) and survives that; it is
+    // keyed by head and verdict only, so `check_run`, `check_suite` and
+    // `workflow_run` of one result wake once. A failed verdict is not kept: a
+    // red head returns the task each time it is delivered with the task in review.
+    const handled = rows
+      .map((row) => record(record(row.metadata)[CI_VERDICT_HANDLED_METADATA_KEY]))
+      .find((mark) => mark.headSha === headSha && mark.conclusion === verdict) ?? null;
+    const recordedRepeat = recorded.final === true && recorded.headSha === headSha && recorded.conclusion === verdict;
+    const repeated = recordedRepeat || (!isFailedCiConclusion(verdict) && handled !== null);
+    // The same result of the same head was handled already: nothing is written
+    // and nobody is woken a second time. A held head is still looked at.
+    // A result handled earlier whose record a started job cleared is written
+    // back, so the head does not look like it is still running; nobody is woken.
+    if (!recordedRepeat) {
+      const seen = kind === "final_check" || markFinalCheckSeen;
+      for (const row of rows) {
+        await database.update(issueWorkProducts).set({
+          metadata: mergeWorkProductMetadata({
+            activeCi: null,
+            lastCompletedCi: {
+              repository,
+              number: pullRequestNumber,
+              headSha,
+              conclusion: verdict,
+              runId,
+              completedAt: currentTime.toISOString(),
+              final: true,
+            },
+            ...(seen ? { [CI_FINAL_CHECK_SEEN_METADATA_KEY]: true } : {}),
+            // A failed result of the head ends the earlier green one: a later green
+            // result after a re-run is news again.
+            [CI_VERDICT_HANDLED_METADATA_KEY]: !isFailedCiConclusion(verdict)
+              ? { headSha, conclusion: verdict, at: currentTime.toISOString() }
+              : null,
+          }),
+          updatedAt: currentTime,
+        }).where(eq(issueWorkProducts.id, row.id));
+      }
+      // myrmidon(OPE-11767): a green result may be the moment an approved pull
+      // request becomes mergeable; the board's merge re-reads the checks itself.
+      if (verdict === "success" && !repeated) {
+        await sendOrDeferAction(afterCommit, companyId, "board merge notice", () =>
+          notifyBoardMergeTrigger({ companyId, repository, number: pullRequestNumber, headSha, source: "ci_completed" }));
+      }
+    }
+    if (repeated && !hold) return;
+    if (!assignmentWakeup || !issue || !issue.assigneeAgentId) return;
+
+    let wakeAgentId = issue.assigneeAgentId;
+    let returned = false;
+    if (!isFailedCiConclusion(verdict)) {
+      // A head that is green needs no hold.
+      if (hold) await patchWorkProductMetadataKey(database, companyId, rowIds, CI_RETURN_HOLD_METADATA_KEY, undefined);
+    } else if (reviewStagePending) {
+      const head = facts ?? await readHeadCheckRuns(resolveFacts, factsInput);
+      const decision = head ? decideCiFailureReturn({ head, infraCheckNames }) : null;
+      if (decision && decision.action === "hold") {
+        if (!hold) {
+          await recordCiReturnHold(database, afterCommit, companyId, {
+            issueId: issue.id,
+            identifier: issue.identifier ?? null,
+            productId: primary.id,
+            pullRequestUrl: primary.url ?? null,
+          }, {
+            reason: decision.reason,
+            failedChecks: decision.failedChecks,
+            repository,
+            pullRequestNumber,
+            headSha,
+            deliveryId: event.id,
+          });
+        }
+        // The task stays in review: its monitor stays armed, nobody is woken.
+        return;
+      }
+      if (decision && decision.action === "none") {
+        // GitHub shows nothing failed on the head any more: no return.
+        if (hold) await patchWorkProductMetadataKey(database, companyId, rowIds, CI_RETURN_HOLD_METADATA_KEY, undefined);
+      } else {
+        // A real failure of the head. The same holds when the check runs
+        // cannot be read, or GitHub has not caught up with the delivery of the
+        // final check yet: the delivery itself is the result.
+        const executorId = await returnTaskFromReviewForFailedCi(database, afterCommit, {
+          companyId, issueId: issue.id, event, repository, pullRequestNumber, headSha, runId, htmlUrl,
+          conclusion: verdict,
+          failedChecks: decision && decision.action === "return" ? decision.failedChecks : null,
+          releasedHold: hold ? hold.reason : null,
+        });
+        if (executorId) {
+          wakeAgentId = executorId;
+          returned = true;
+          if (hold) await patchWorkProductMetadataKey(database, companyId, rowIds, CI_RETURN_HOLD_METADATA_KEY, undefined);
+        }
+      }
+    }
+    if (repeated && !returned) return;
+    // myrmidon(EMPTY-RUNS-3B): the result of a task that is in review is news
+    // for the participant of its pending stage (review or approval), not for whoever is the
+    // assignee: another agent (or nobody, when the task has no stage) cannot
+    // decide anything and the run it would start is empty.
+    if (!returned && issue.status === "in_review") {
+      const state = parseIssueExecutionState(issue.executionState);
+      const participant = state?.status === "pending" ? state.currentParticipant : null;
+      if (!participant || participant.type !== "agent" || !participant.agentId) return;
+      wakeAgentId = participant.agentId;
+    }
+    await finishWithWake(wakeAgentId, verdict, returned && Boolean(hold));
+  }
+
+  async function applyCiCompletionEvent(companyId: string, event: LeasedEvent, database: Db = db, afterCommit?: DeliveryWakes) {
     if (event.event !== "workflow_run" && event.event !== "check_suite" && event.event !== "check_run") return;
     const payload = event.payload;
     const status = stringValue(payload.status) ?? (stringValue(payload.conclusion) ? "completed" : null);
@@ -472,6 +1114,17 @@ export function githubConnectionEventService(
 
     const active = status === "queued" || status === "in_progress";
     if (!active && !conclusion) return;
+    // myrmidon(EMPTY-RUNS-3): with a reader of the check runs wired, one finished
+    // job is not a finished CI — the delivery is handled by the final result of
+    // the head. Without the reader, and with the handling switched off
+    // (MYRMIDON_GITHUB_CI_FINAL_ONLY_ENABLED), everything below works as before.
+    const guardEnv = options.env ?? process.env;
+    if (options.resolveCiReturnFacts && readCiFinalOnlyEnabled(guardEnv)) {
+      await applyCiDeliveryByVerdict(database, companyId, event, {
+        status, conclusion, active, repository, pullRequestNumber, headSha, runId,
+      }, options.resolveCiReturnFacts, guardEnv, afterCommit);
+      return;
+    }
     const currentTime = now();
     const products = await database.select().from(issueWorkProducts)
       .where(and(
@@ -503,8 +1156,7 @@ export function githubConnectionEventService(
         ?? (product.externalId ? Number(product.externalId.match(/#pull\/(\d+)$/)?.[1]) : null);
       if (productRepository?.toLowerCase() !== repository.toLowerCase() || productNumber !== pullRequestNumber) continue;
       await database.update(issueWorkProducts).set({
-        metadata: {
-          ...metadata,
+        metadata: mergeWorkProductMetadata({
           activeCi: active ? { repository, number: pullRequestNumber, headSha, runId, status, observedAt: currentTime.toISOString() } : null,
           ...(active ? { lastCompletedCi: null } : {
             lastCompletedCi: {
@@ -516,7 +1168,7 @@ export function githubConnectionEventService(
               completedAt: currentTime.toISOString(),
             },
           }),
-        },
+        }),
         updatedAt: currentTime,
       }).where(eq(issueWorkProducts.id, product.id));
     }
@@ -525,7 +1177,8 @@ export function githubConnectionEventService(
     // pull request becomes mergeable; the board's merge re-reads the required
     // checks itself, so this only announces where to look.
     if (!active && conclusion === "success") {
-      notifyBoardMergeTrigger({ companyId, repository, number: pullRequestNumber, headSha, source: "ci_completed" });
+      await sendOrDeferAction(afterCommit, companyId, "board merge notice", () =>
+        notifyBoardMergeTrigger({ companyId, repository, number: pullRequestNumber, headSha, source: "ci_completed" }));
     }
 
     if (!options.assignmentWakeup || !conclusion || active) return;
@@ -556,7 +1209,7 @@ export function githubConnectionEventService(
     if (["failure", "timed_out", "action_required", "startup_failure"].includes(conclusion)
       && (!expectedHead || expectedHead === headSha)) {
       const publications: ActivityPublication[] = [];
-      await db.transaction(async (tx) => {
+      await database.transaction(async (tx) => {
         const [current] = await tx.select().from(issues).where(and(
           eq(issues.id, matching.issue.id), eq(issues.companyId, companyId),
         )).for("update");
@@ -591,8 +1244,7 @@ export function githubConnectionEventService(
         }, publications);
       });
       for (const publication of publications) {
-        try { publishActivity(publication); }
-        catch (error) { logger.warn({ err: error, companyId }, "CI return activity publication failed after commit"); }
+        await sendOrDeferAction(afterCommit, companyId, "CI return activity publication", () => publishActivity(publication));
       }
     }
 
@@ -608,7 +1260,9 @@ export function githubConnectionEventService(
     }
 
     const idempotencyKey = `ci_completed:${repository}:${pullRequestNumber}:${headSha}`;
-    await options.assignmentWakeup(assigneeAgentId, {
+    // myrmidon(EMPTY-RUNS-3): sent after the delivery commits (see DeliveryWakes).
+    const sendCiWake = options.assignmentWakeup;
+    await sendOrDeferWake(afterCommit, () => sendCiWake(assigneeAgentId, {
       source: "automation",
       triggerDetail: "system",
       reason: "ci_completed",
@@ -635,10 +1289,10 @@ export function githubConnectionEventService(
         conclusion,
         runId,
       },
-    });
+    }));
   }
 
-  async function applyPullRequestEvent(database: Db, companyId: string, event: LeasedEvent) {
+  async function applyPullRequestEvent(database: Db, companyId: string, event: LeasedEvent, afterCommit?: DeliveryWakes) {
     const snapshot = githubSnapshotUpdate(event.payload);
     if (!snapshot) return;
     // myrmidon(OPE-12483): bind bot-opened PRs (branch `bot/<KEY>` or the task
@@ -705,7 +1359,8 @@ export function githubConnectionEventService(
           companyGuard: companyId,
         }, database);
       }
-      await issueThreadInteractionService(database, { wakeup: options.wakeup })
+      // myrmidon(EMPTY-RUNS-3): the wake is sent after the delivery commits (see DeliveryWakes).
+      await issueThreadInteractionService(database, { wakeup: deferInteractionWakeup(afterCommit) })
         .sweepMergedPullRequestConfirmations([{
           companyId,
           owner: snapshot.owner,
@@ -795,7 +1450,10 @@ export function githubConnectionEventService(
             catch (error) { logger.warn({ err: error, companyId }, "Conflict return activity publication failed after commit"); }
           }
           if (options.assignmentWakeup && returnedAssigneeId) {
-            await options.assignmentWakeup(returnedAssigneeId, {
+            // myrmidon(EMPTY-RUNS-3): sent after the delivery commits (see DeliveryWakes).
+            const sendConflictWake = options.assignmentWakeup;
+            const conflictAssigneeId: string = returnedAssigneeId;
+            await sendOrDeferWake(afterCommit, () => sendConflictWake(conflictAssigneeId, {
               source: "automation",
               triggerDetail: "system",
               reason: "pr_merge_conflict",
@@ -816,7 +1474,7 @@ export function githubConnectionEventService(
                 repository: snapshot.repository,
                 pullRequestNumber: snapshot.number,
               },
-            });
+            }));
           }
         }
       }
@@ -925,10 +1583,12 @@ export function githubConnectionEventService(
       }).where(eq(connectionEventDeliveries.id, existing!.id));
     }
     const postCommitPublications: ActivityPublication[] = [];
+    // myrmidon(EMPTY-RUNS-3): the wakes of this delivery, sent after it commits.
+    const postCommitWakes: DeliveryWakes = [];
     try {
       const applyAndFinalize = async (database: Db) => {
-        if (event.event === "pull_request") await applyPullRequestEvent(database, companyId, normalizedEvent);
-        await applyCiCompletionEvent(companyId, normalizedEvent, database);
+        if (event.event === "pull_request") await applyPullRequestEvent(database, companyId, normalizedEvent, postCommitWakes);
+        await applyCiCompletionEvent(companyId, normalizedEvent, database, postCommitWakes);
         if (event.event === "installation" || event.event === "installation_repositories") {
           for (const binding of bindings) await applyInstallationEvent(database, binding, normalizedEvent);
         } else {
@@ -982,14 +1642,45 @@ export function githubConnectionEventService(
         }, postCommitPublications);
       };
       if (event.event === "pull_request" || event.event === "workflow_run" || event.event === "check_suite" || event.event === "check_run" || event.event === "installation" || event.event === "installation_repositories") {
-        await db.transaction(async (tx) => applyAndFinalize(tx as unknown as Db));
+        // myrmidon(EMPTY-RUNS-3): deliveries of one pull request (a dozen jobs
+        // finish within a second) used to take its work-product rows in their
+        // own order and killed each other with `deadlock detected` (40P01),
+        // the webhook answered 500 and the event was lost. They now run one
+        // after another (advisory lock of the pull request, taken first), and
+        // a transaction Postgres rolled back for a deadlock or a serialization
+        // failure runs again, a bounded number of times, from a clean slate.
+        const lockKey = githubPullRequestLockKey(companyId, normalizedEvent.payload);
+        await runTransactionWithRetry(async () => {
+          postCommitWakes.length = 0;
+          postCommitPublications.length = 0;
+          await db.transaction(async (tx) => {
+            if (lockKey) await lockObjectInTransaction(tx, lockKey);
+            await applyAndFinalize(tx as unknown as Db);
+          });
+        }, {
+          onRetry: ({ attempt, error }) => {
+            logger.warn({
+              companyId,
+              providerDeliveryId: event.id,
+              attempt,
+              pgCode: error.code,
+              pgMessage: error.message,
+            }, "GitHub delivery transaction rolled back by Postgres, running it again");
+          },
+        });
       } else {
         await applyAndFinalize(db);
       }
     } catch (error) {
       await db.update(connectionEventDeliveries).set({
         status: "failed",
-        lastError: error instanceof Error ? error.message.slice(0, 500) : "GitHub event processing failed",
+        // The wrapper of the query builder says only "Failed query"; the
+        // reason is the Postgres code and text behind it.
+        lastError: (() => {
+          const pg = postgresErrorInfo(error);
+          if (pg) return `postgres ${pg.code}: ${pg.message}`.slice(0, 500);
+          return error instanceof Error ? error.message.slice(0, 500) : "GitHub event processing failed";
+        })(),
         updatedAt: now(),
       }).where(and(
         eq(connectionEventDeliveries.companyId, companyId),
@@ -1010,6 +1701,21 @@ export function githubConnectionEventService(
           companyId,
           providerDeliveryId: event.id,
         }, "GitHub webhook activity publication failed after commit");
+      }
+    }
+    // myrmidon(EMPTY-RUNS-3): the delivery is committed and holds no lock any
+    // more: now its wakes can be admitted. A wake that fails is not a failure of
+    // the delivery; only the kind of the error is logged, never its text.
+    for (const wake of postCommitWakes) {
+      try {
+        await wake();
+      } catch (error) {
+        logger.warn({
+          errorKind: "delivery_wake_failed",
+          errorName: error instanceof Error ? error.name : typeof error,
+          companyId,
+          providerDeliveryId: event.id,
+        }, "GitHub delivery wake failed after commit");
       }
     }
     return "processed" as const;

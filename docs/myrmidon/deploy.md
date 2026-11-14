@@ -210,7 +210,11 @@ scripts/myrmidon/deploy/deploy.sh --config deploy.env --release myr-v1.6.2
   whose image is a digest-pinned image of one of our bot repositories (hermes, hermes-dev,
   hermes-node) that is not the release's image of that repository tracks and moves to the
   release image of the **same** repository; any other image (another repository, a tag, none)
-  is pinned and left alone. Cards switch in **batches of at most 5**
+  is pinned and left alone. Without `MYRMIDON_BOT_IMAGE_ROLLOUT_FLEET_HOSTS` the pre-pull
+  above runs on this host only: the fleet hosts do NOT get the release images in advance, so
+  the first recreate of every new image pulls it fleetd-side under the recreate request (the
+  driver waits up to 180 s for it, the start budget — the rc.27 rollout of 13.11 timed six
+  such recreates out at the old 60 s default). Cards switch in **batches of at most 5**
   (`MYRMIDON_BOT_IMAGE_ROLLOUT_BATCH_SIZE`, capped at 5), and a bot only while its agent is
   **paused or idle**; a busy bot is retried within `MYRMIDON_BOT_IMAGE_ROLLOUT_BOT_TIMEOUT_SEC`
   and otherwise keeps its old image (the periodic sweep applies it later), so no run is

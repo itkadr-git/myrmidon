@@ -77,6 +77,13 @@ import {
   reviewWakesQuotaForCompany,
   reviewWakesQuotaTickStarted,
 } from "../myrmidon/review-stage-recovery/review-wakes-quota.js";
+// myrmidon(EMPTY-RUNS-2): the comment wake path honours the green-CI review admission gate.
+import {
+  REVIEW_COMMENT_WAKE_DEFERRED_ACTION,
+  isExecutorCommentOnWaitingReview,
+  readReviewAdmissionDecision,
+  readReviewCommentWakeGateEnabled,
+} from "../myrmidon/review-stage-recovery/comment-wake-gate.js";
 import {
   buildReviewApprovalPendingMergeNotice,
   findApprovalPendingMergePullRequest,
@@ -125,6 +132,8 @@ import type { ChatChannelService } from "../services/chat-channels.js";
 import type { WakeupOptions } from "../services/heartbeat.js";
 import { createPullRequestCiResolver, withCiResolveDeadline } from "../services/github-pull-request-ci.js";
 import { createPullRequestMergeDetailsResolver } from "../services/github-pull-request-merge.js";
+import { resolveGitHubRepositoryToken } from "../services/github-external-object-provider.js";
+import { checkCommitMembership, normaliseReleasePrefix, resolveReleaseRefs, routePullRequestVerdict } from "../myrmidon/release-membership.js";
 import {
   companies,
   activityLog,
@@ -145,6 +154,7 @@ import {
   issueRelations,
   issueRecoveryActions,
   issueThreadInteractions,
+  issueLabels,
   labels,
   issues as issueRows,
   issueWorkProducts,
@@ -655,7 +665,7 @@ type ActivityExecutionParticipant = Pick<
   "type" | "agentId" | "userId"
 >;
 type ExecutionStageWakeContext = {
-  wakeRole: "reviewer" | "approver" | "executor";
+  wakeRole: "reviewer" | "approver" | "executor" | "observer";
   stageId: string | null;
   stageType: ParsedExecutionState["currentStageType"];
   currentParticipant: ParsedExecutionState["currentParticipant"];
@@ -2324,6 +2334,70 @@ function buildExecutionStageWakeContext(input: {
   };
 }
 
+/**
+ * myrmidon(REVIEW-STAGE-IN-CONTEXT): the execution stage as the caller of
+ * `GET /issues/:id/heartbeat-context` must see it, whatever woke the run.
+ * `executionStage` used to exist only in the context of stage wakes
+ * (`execution_review_requested`, ...), so a reviewer woken by CI, an idle
+ * pickup or an operator saw no stage and refused to record the decision.
+ * Same shape as the wake context (`buildExecutionStageWakeContext`) plus
+ * `isCurrentParticipant` and a one-line `youAre`. A caller that is not the
+ * stage participant gets `wakeRole: "observer"` and an explicit statement.
+ */
+function buildHeartbeatContextExecutionStage(input: {
+  executionState: unknown;
+  viewerAgentId: string | null;
+}) {
+  const state = parseIssueExecutionState(input.executionState);
+  if (!state || !state.currentStageType || (state.status !== "pending" && state.status !== "changes_requested")) {
+    return null;
+  }
+  const viewer = input.viewerAgentId;
+  const isCurrentParticipant =
+    state.status === "pending" &&
+    viewer !== null &&
+    state.currentParticipant?.type === "agent" &&
+    state.currentParticipant.agentId === viewer;
+  const isReturnAssignee =
+    state.status === "changes_requested" &&
+    viewer !== null &&
+    state.returnAssignee?.type === "agent" &&
+    state.returnAssignee.agentId === viewer;
+  const stageNoun = state.currentStageType === "approval" ? "approval" : "review";
+  const base = {
+    stageType: state.currentStageType,
+    stageStatus: state.status,
+    isCurrentParticipant,
+  };
+  if (isCurrentParticipant) {
+    return {
+      ...buildExecutionStageWakeContext({
+        state,
+        wakeRole: state.currentStageType === "approval" ? "approver" : "reviewer",
+        allowedActions: ["approve", "request_changes"],
+      }),
+      ...base,
+      youAre: `You are the current participant of the pending ${stageNoun} stage of this task. Record the decision with one PATCH /api/issues/{id} (status and comment); a verdict written only as a comment is not a decision.`,
+    };
+  }
+  if (isReturnAssignee) {
+    return {
+      ...buildExecutionStageWakeContext({
+        state,
+        wakeRole: "executor",
+        allowedActions: ["address_changes", "resubmit"],
+      }),
+      ...base,
+      youAre: `The ${stageNoun} stage returned this task to you for changes.`,
+    };
+  }
+  return {
+    ...buildExecutionStageWakeContext({ state, wakeRole: "observer", allowedActions: [] }),
+    ...base,
+    youAre: `You are not a participant of the ${stageNoun} stage of this task; do not record a stage decision.`,
+  };
+}
+
 function summarizeIssueRelationForActivity(relation: {
   id: string;
   identifier: string | null;
@@ -3825,6 +3899,96 @@ export function issueRoutes(
       sourceRun?.companyId === comment.companyId &&
       sourceRun.agentId === assigneeAgentId
     );
+  };
+  // myrmidon(EMPTY-RUNS-2): the comment wake honours the green-CI review
+  // admission gate (OPE-12176). While the board's own "Review CI wait" monitor
+  // is armed for the task and the pull request head is not admitted yet, the
+  // executor's comment does not wake the reviewer: the monitor's tick owes that
+  // wake and the comment waits in the thread for it. The CI is read only for a
+  // comment that passed the structural check, so every other comment costs
+  // nothing. Anything the gate cannot decide means "wake": the old behaviour.
+  const executorCommentHeldForReviewCi = async (input: {
+    issue: {
+      id: string;
+      companyId: string;
+      identifier?: string | null;
+      status: string;
+      priority?: string | null;
+      executionState?: unknown;
+      executionPolicy?: unknown;
+      monitorNextCheckAt?: Date | string | null;
+    };
+    recipientAgentId: string;
+    actor: { actorType: "user" | "agent"; agentId: string | null };
+    commentId: string;
+    reopened: boolean;
+    resumeRequested: boolean;
+  }): Promise<boolean> => {
+    try {
+      // Cheap exits first: only an agent's comment on a task in review can be held.
+      if (input.issue.status !== "in_review" || input.actor.actorType !== "agent") return false;
+      // The kill switch (`MYRMIDON_REVIEW_COMMENT_WAKE_GATE_ENABLED`): off means
+      // the comment wakes the assignee as before the gate.
+      if (!readReviewCommentWakeGateEnabled()) return false;
+      if (
+        !isExecutorCommentOnWaitingReview({
+          issueStatus: input.issue.status,
+          executionState: parseIssueExecutionState(input.issue.executionState),
+          executionPolicy: input.issue.executionPolicy ?? null,
+          monitorNextCheckAt: input.issue.monitorNextCheckAt ?? null,
+          recipientAgentId: input.recipientAgentId,
+          authorType: input.actor.actorType,
+          authorAgentId: input.actor.agentId,
+          reopened: input.reopened,
+          resumeRequested: input.resumeRequested,
+        })
+      ) {
+        return false;
+      }
+      const admission = await readReviewAdmissionDecision({
+        companyId: input.issue.companyId,
+        issueId: input.issue.id,
+        critical: input.issue.priority === "critical",
+        resolveCi: opts.resolveReviewPullRequestCi ?? createReviewPullRequestCiResolver({ db }),
+        resolveHeadFailedChecks:
+          opts.resolveReviewHeadFailedChecks ?? createReviewHeadFailedChecksResolver({ db }),
+      });
+      if (admission === "admit") return false;
+      // The trace of a held wake. It carries no run id on purpose: it is the
+      // board's note, not an action of the executor's run. A failed write does
+      // not undo the decision: the monitor still owes the reviewer its wake.
+      try {
+        await logActivity(db, {
+          companyId: input.issue.companyId,
+          actorType: "system",
+          actorId: "review-admission",
+          agentId: null,
+          runId: null,
+          action: REVIEW_COMMENT_WAKE_DEFERRED_ACTION,
+          entityType: "issue",
+          entityId: input.issue.id,
+          details: {
+            identifier: input.issue.identifier ?? null,
+            commentId: input.commentId,
+            reviewerAgentId: input.recipientAgentId,
+            executorAgentId: input.actor.agentId,
+            admission,
+          },
+        });
+      } catch (err) {
+        logger.warn(
+          { err, issueId: input.issue.id, commentId: input.commentId },
+          "failed to record a comment wake held for the review CI wait",
+        );
+      }
+      return true;
+    } catch (err) {
+      logger.warn(
+        { err, issueId: input.issue.id, commentId: input.commentId },
+        "review comment wake gate could not decide; the comment wakes the assignee as before",
+      );
+      return false;
+    }
   };
   const enqueueStalledReviewDecisionWakeup =
     opts.stalledReviewDecisionEnqueueWakeup ?? heartbeat.wakeup;
@@ -9708,6 +9872,10 @@ export function issueRoutes(
         : null,
       planReviewContext,
       documentReviewContext,
+      executionStage: buildHeartbeatContextExecutionStage({
+        executionState: issue.executionState,
+        viewerAgentId: req.actor.type === "agent" ? (req.actor.agentId ?? null) : null,
+      }),
       currentExecutionWorkspace: compactIssueExecutionWorkspace(
         currentExecutionWorkspace,
       ),
@@ -9755,6 +9923,110 @@ export function issueRoutes(
     } catch (err) {
       return res.status(500).json({
         error: err instanceof Error ? err.message : "Failed to resolve CI status",
+      });
+    }
+  });
+
+  // VERIFY-ON-PROD (OPE-12994): for every pull_request work product of the
+  // issue, report whether its merge commit is reachable from the release refs
+  // (tags myr-v<prefix>* and branches rel/<prefix>*) of the issue's release
+  // label ("<major>.<minor>"). verdict "missing_from_release" marks a PR merged
+  // into the default branch that is absent from the release line — the gap the
+  // done gate does not see (it only proves delivery to main or rel/*).
+  router.get("/issues/:id/release-status", async (req, res) => {
+    const id = req.params.id as string;
+    const issue = await getAccessibleResource(
+      req,
+      res,
+      getIssueById(req, id),
+      "Issue not found",
+    );
+    if (!issue) return;
+    if (!(await assertIssueReadAllowed(req, res, issue))) return;
+
+    try {
+      const refresh = req.query.refreshPullRequests === "true";
+      const workProducts = await workProductsSvc.listForIssue(issue.id, { refreshPullRequests: refresh });
+      const labelRows = await db
+        .select({ name: labels.name })
+        .from(issueLabels)
+        .innerJoin(labels, eq(labels.id, issueLabels.labelId))
+        .where(eq(issueLabels.issueId, issue.id));
+      const releasePrefix = labelRows
+        .map((row) => normaliseReleasePrefix(row.name))
+        .find((prefix): prefix is string => prefix !== null) ?? null;
+      const pullRequests = [] as Array<{
+        workProductId: string;
+        repo: string | null;
+        number: number | null;
+        url: string | null;
+        state: string;
+        mergeCommitSha: string | null;
+        inDefaultBranch: boolean | null;
+        verdict: "present" | "missing_from_release" | "no_release_label" | "unknown";
+        releaseRefs: string[];
+      }>;
+      for (const product of workProducts) {
+        if (product.type !== "pull_request") continue;
+        const metadata = product.metadata ?? {};
+        const repo = typeof metadata.repo === "string" ? metadata.repo : null;
+        const number = typeof metadata.number === "number" ? metadata.number : null;
+        const mergeCommitSha = typeof metadata.mergeCommitSha === "string" ? metadata.mergeCommitSha : null;
+        const baseRef = typeof metadata.baseRef === "string" ? metadata.baseRef : null;
+        const defaultBranch = typeof metadata.defaultBranch === "string" ? metadata.defaultBranch : "main";
+        const merged = product.status === "merged";
+        const inDefaultBranch = merged
+          ? (!baseRef || baseRef === defaultBranch)
+          : null;
+        if (!merged || !releasePrefix) {
+          pullRequests.push({
+            workProductId: product.id,
+            repo,
+            number,
+            url: product.url,
+            state: product.status,
+            mergeCommitSha,
+            inDefaultBranch,
+            verdict: merged && !releasePrefix ? "no_release_label" : "unknown",
+            releaseRefs: [],
+          });
+          continue;
+        }
+        const token = await resolveGitHubRepositoryToken(db, issue.companyId, repo ?? "");
+        const refs = await resolveReleaseRefs({
+          repository: repo ?? "",
+          releasePrefix,
+          token,
+        });
+        const membership = await checkCommitMembership({
+          repository: repo ?? "",
+          sha: mergeCommitSha,
+          releasePrefix,
+          refs,
+          token,
+        });
+        const verdict = routePullRequestVerdict({
+          merged,
+          releaseLabel: releasePrefix,
+          membershipVerdict: membership.verdict,
+          inDefaultBranch,
+        });
+        pullRequests.push({
+          workProductId: product.id,
+          repo,
+          number,
+          url: product.url,
+          state: product.status,
+          mergeCommitSha,
+          inDefaultBranch,
+          verdict,
+          releaseRefs: membership.releaseRefs.map((ref) => ref.ref),
+        });
+      }
+      return res.json({ issueId: issue.id, releaseLabel: releasePrefix, pullRequests });
+    } catch (err) {
+      return res.status(500).json({
+        error: err instanceof Error ? err.message : "Failed to resolve release status",
       });
     }
   });
@@ -16525,8 +16797,12 @@ export function issueRoutes(
                         });
                       }
                     }
+                    // myrmidon(REVIEW-APPROVAL-RECORDED): the base of the monitor policy is
+                    // the policy as persisted AFTER the update and the immediate review
+                    // routing (`updated`); `existing` predates the stage the routing just
+                    // wrote, and building the monitor on it erased `stages`.
                     const previousPolicy = normalizeIssueExecutionPolicy(
-                      (updateFields.executionPolicy ?? existing.executionPolicy) as any,
+                      (updateFields.executionPolicy ?? updated.executionPolicy ?? existing.executionPolicy) as any,
                     );
                     const monitor = {
                       nextCheckAt: new Date(Date.now() + REVIEW_CI_WAIT_INTERVAL_MS).toISOString(),
@@ -16617,7 +16893,7 @@ export function issueRoutes(
                   admitReviewer = false;
                   reviewerAdmissionDeferred = true;
                   const previousPolicy = normalizeIssueExecutionPolicy(
-                    (updateFields.executionPolicy ?? existing.executionPolicy) as any,
+                    (updateFields.executionPolicy ?? updated.executionPolicy ?? existing.executionPolicy) as any,
                   );
                   const monitor = {
                     nextCheckAt: new Date(Date.now() + REVIEW_CI_WAIT_INTERVAL_MS).toISOString(),
@@ -17748,6 +18024,54 @@ export function issueRoutes(
           ) === "quota_reached"
         ) {
           deferExecutionReviewWakeForCi = true;
+          // myrmidon(OPE-12886): re-arm the monitor as scheduled with a
+          // bounded next check (mirroring the transactional site above) so a
+          // deferred review wake never remains stuck with status="triggered"
+          // and no nextCheckAt.
+          const previousPolicy = normalizeIssueExecutionPolicy(
+            (issue.executionPolicy ?? existing.executionPolicy) as any,
+          );
+          const nextCheckAt = new Date(Date.now() + REVIEW_CI_WAIT_INTERVAL_MS);
+          const monitor = {
+            nextCheckAt: nextCheckAt.toISOString(),
+            notes: `Review admission waits for the next tick's reviewer-wake quota (${REVIEW_GATE_MAX_NEW_REVIEW_WAKES_PER_TICK} per tick); the reviewer is woken without loss once a slot frees.`,
+            scheduledBy: "assignee" as const,
+            kind: "external_service" as const,
+            serviceName: REVIEW_CI_WAIT_MONITOR_SERVICE_NAME,
+            externalRef: issue.id,
+            timeoutAt: null,
+            maxAttempts: null,
+            recoveryPolicy: "wake_owner" as const,
+          };
+          const nextPolicy = {
+            ...(previousPolicy ?? { mode: "normal", commentRequired: true, stages: [] }),
+            monitor,
+          } as any;
+          const quotaMonitorPatch = applyIssueMonitorPolicyTransition({
+            issue,
+            policy: nextPolicy,
+            previousPolicy,
+            requestedStatus: issue.status,
+            requestedAssigneePatch: {},
+            actor: {
+              agentId: actor.agentId ?? null,
+              userId: actor.actorType === "user" ? actor.actorId : null,
+            },
+            monitorExplicitlyUpdated: true,
+          });
+          const persistedQuotaMonitor = await svc.update(id, {
+            executionPolicy: nextPolicy,
+            monitorNextCheckAt: nextCheckAt,
+            monitorScheduledBy: monitor.scheduledBy,
+            monitorAttemptCount: 0,
+            monitorWakeRequestedAt: null,
+            monitorLastTriggeredAt: null,
+            ...quotaMonitorPatch.patch,
+          });
+          if (persistedQuotaMonitor) {
+            Object.assign(issue, persistedQuotaMonitor);
+            Object.assign(issueResponse, persistedQuotaMonitor);
+          }
           await logActivity(db, {
             companyId: issue.companyId,
             actorType: "system",
@@ -17761,6 +18085,7 @@ export function issueRoutes(
               idempotencyKey: `review-admission-quota-deferred:${issue.id}:${(reviewWakesQuotaTickStarted() ?? new Date(0)).toISOString()}`,
               quota: REVIEW_GATE_MAX_NEW_REVIEW_WAKES_PER_TICK,
               reviewerAgentId: executionStageWakeup?.agentId ?? null,
+              nextCheckAt: nextCheckAt.toISOString(),
             },
           });
         }
@@ -18153,11 +18478,29 @@ export function issueRoutes(
               suppressesWake: isPromptBudgetSignalNotice(comment),
             });
 
-          if (
+          // myrmidon(EMPTY-RUNS-2): the executor's comment does not wake the
+          // reviewer while the review stage waits for green CI.
+          const commentHeldForReviewCi =
             assigneeId &&
             !assigneeChanged &&
             !goalCommentSteered &&
             shouldWakeAssigneeForComment
+              ? await executorCommentHeldForReviewCi({
+                  issue,
+                  recipientAgentId: assigneeId,
+                  actor,
+                  commentId: comment.id,
+                  reopened,
+                  resumeRequested: resumeRequested === true,
+                })
+              : false;
+
+          if (
+            assigneeId &&
+            !assigneeChanged &&
+            !goalCommentSteered &&
+            shouldWakeAssigneeForComment &&
+            !commentHeldForReviewCi
           ) {
             addWakeup(assigneeId, {
               source: "automation",
@@ -21893,7 +22236,25 @@ export function issueRoutes(
           // agent whose prompt is already over budget.
           suppressesWake: isPromptBudgetSignalNotice(comment),
         });
-        if (assigneeId && !goalCommentSteered && shouldWakeAssigneeForComment) {
+        // myrmidon(EMPTY-RUNS-2): the executor's comment does not wake the
+        // reviewer while the review stage waits for green CI.
+        const commentHeldForReviewCi =
+          assigneeId && !goalCommentSteered && shouldWakeAssigneeForComment
+            ? await executorCommentHeldForReviewCi({
+                issue: wakeIssueSnapshot,
+                recipientAgentId: assigneeId,
+                actor,
+                commentId: comment.id,
+                reopened,
+                resumeRequested: resumeRequested === true,
+              })
+            : false;
+        if (
+          assigneeId &&
+          !goalCommentSteered &&
+          shouldWakeAssigneeForComment &&
+          !commentHeldForReviewCi
+        ) {
           if (reopened) {
             addWakeup(assigneeId, {
               source: "automation",

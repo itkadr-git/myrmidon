@@ -2582,6 +2582,7 @@ export function agentRoutes(
     adapterConfig: Record<string, unknown>;
     constraintAdapterConfig?: Record<string, unknown>;
     agentId?: string;
+    validateExtraMounts?: boolean;
   }): Promise<Record<string, unknown>> {
     const normalizedAdapterConfig = await secretsSvc.normalizeAdapterConfigForPersistence(
       input.companyId,
@@ -2598,6 +2599,7 @@ export function agentRoutes(
         ? { ...input.constraintAdapterConfig, ...normalizedAdapterConfig }
         : normalizedAdapterConfig,
       input.agentId,
+      { validateExtraMounts: input.validateExtraMounts },
     );
     return normalizePaperclipRunnerAdapterConfig(
       input.adapterType ?? "",
@@ -2814,6 +2816,7 @@ export function agentRoutes(
     adapterType: string | null | undefined,
     adapterConfig: Record<string, unknown>,
     agentId?: string,
+    options?: { validateExtraMounts?: boolean },
   ) {
     // myrmidon(OPE-12337): refuse limits exceeding enrolled dockergate ceilings.
     let ceilings: BotResourceCeilings | null = null;
@@ -2830,7 +2833,7 @@ export function agentRoutes(
       }
     }
     // myrmidon(1.6.4-BOT-CONTAINER-CARD, OPE-12337): refuse a container block the reconciler could never apply or exceeding ceilings.
-    const containerProblem = botContainerCardSaveProblem(adapterType, adapterConfig, process.env, ceilings);
+    const containerProblem = botContainerCardSaveProblem(adapterType, adapterConfig, process.env, ceilings, options);
     if (containerProblem) throw unprocessable(`Invalid hermes_gateway adapterConfig: ${containerProblem}`);
     const localProblem = localAdapterConfigProblem(adapterType, adapterConfig);
     if (localProblem) throw unprocessable(`Invalid ${adapterType} adapterConfig: ${localProblem}`);
@@ -5951,11 +5954,22 @@ function getActorIdentityPart(req: Request): string {
           rawEffectiveAdapterConfig,
         ),
       );
+      const incomingContainer =
+        requestedAdapterConfig &&
+        typeof requestedAdapterConfig.container === "object" &&
+        requestedAdapterConfig.container !== null &&
+        !Array.isArray(requestedAdapterConfig.container)
+          ? (requestedAdapterConfig.container as Record<string, unknown>)
+          : null;
+      const incomingExtraMountsSupplied =
+        (incomingContainer !== null && hasOwn(incomingContainer, "extraMounts")) ||
+        (requestedAdapterConfig !== null && hasOwn(requestedAdapterConfig, "extraMounts"));
       const normalizedEffectiveAdapterConfig = await normalizeMediatedAdapterConfigForPersistence({
         companyId: existing.companyId,
         adapterType: requestedAdapterType,
         adapterConfig: effectiveAdapterConfig,
         agentId: existing.id,
+        validateExtraMounts: incomingExtraMountsSupplied,
       });
       assertLocalAdapterSecurityChangeAllowed(
         req,
@@ -6146,7 +6160,11 @@ function getActorIdentityPart(req: Request): string {
     // wake it back up itself — queued runs and any assigned todo/in_progress
     // issue stranded without one. Best-effort: a wake failure must not fail
     // the resume response itself. Logic: myrmidon/pause-drain.ts.
-    await heartbeat.resumeAgentAfterPause(id).catch((err) => {
+    const resumeActor = getActorInfo(req);
+    await heartbeat.resumeAgentAfterPause(
+      id,
+      { operatorUserId: resumeActor.actorType === "user" ? resumeActor.actorId : null },
+    ).catch((err) => {
       logger.warn({ err, agentId: id }, "pause-resume wake failed after agent resume");
     });
 
@@ -6689,6 +6707,15 @@ function getActorIdentityPart(req: Request): string {
       requestedByActorType: req.actor.type === "agent" ? "agent" : "user",
       requestedByActorId: req.actor.type === "agent" ? req.actor.agentId ?? null : req.actor.userId ?? null,
       externalSession: req.body.externalSession,
+      // myrmidon(OPE-12929): the optional not-before instant rides into the
+      // run context (top-level field or payload field) and the dispatcher
+      // holds the queued run back until it is reached.
+      notBefore:
+        typeof req.body.notBefore === "string" && req.body.notBefore.length > 0
+          ? req.body.notBefore
+          : typeof wakePayload?.notBefore === "string" && wakePayload.notBefore.length > 0
+            ? wakePayload.notBefore
+            : null,
       contextSnapshot: {
         triggeredBy: req.actor.type,
         originIdentityContextId: req.actor.identityContextId ?? null,
@@ -6809,6 +6836,7 @@ function getActorIdentityPart(req: Request): string {
       reason: unknown;
       payload: unknown;
       idempotencyKey: unknown;
+      notBefore: unknown;
       forceFreshSession: unknown;
       triggerDetail: unknown;
       debug: unknown;
@@ -6840,6 +6868,11 @@ function getActorIdentityPart(req: Request): string {
     };
     if (typeof body.reason === "string" && body.reason.length > 0) {
       wakeOpts.reason = body.reason;
+    }
+    // myrmidon(OPE-12929): the legacy invoke endpoint carries the optional
+    // not-before instant the same way the validated wakeup route does.
+    if (typeof body.notBefore === "string" && body.notBefore.length > 0) {
+      wakeOpts.notBefore = body.notBefore;
     }
     if (body.payload && typeof body.payload === "object" && !Array.isArray(body.payload)) {
       wakeOpts.payload = req.actor.type === "agent"

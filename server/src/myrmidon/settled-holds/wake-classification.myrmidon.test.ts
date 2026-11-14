@@ -98,4 +98,10 @@ describe("isExplicitWake", () => {
   it("does not treat a person's comment without the verified mention flag as explicit", () => {
     expect(isExplicitWake({ source: "automation", triggerDetail: "system", reason: "issue_commented", commentId: "c1", requestedByActorType: "user" })).toBe(false);
   });
+
+  // myrmidon(RESUME-AFTER-CANCEL): pause_resume is not an explicit reason by
+  // itself; heartbeat.ts passes its own marker (resumedByUserId) to the hold check.
+  it("does not treat a pause_resume wake as explicit, whoever requested it", () => {
+    expect(isExplicitWake({ source: "automation", triggerDetail: "system", reason: "pause_resume", requestedByActorType: "system" })).toBe(false);
+  });
 });

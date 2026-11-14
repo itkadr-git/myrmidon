@@ -198,6 +198,14 @@ export interface InstanceGeneralSettings {
   /** Consecutive empty issue runs before automatic re-wakes freeze (default 6). */
   issueRewakeFreezeThreshold?: number;
   /**
+   * myrmidon(1.8 AUTOPAUSE): consecutive empty runs after which the empty-run
+   * streak monitor emits a SKIPPED signal with the reason. The signal is
+   * informational: it never blocks the issue and never suppresses rewakes by
+   * itself. Absent means the default (5). Kept in sync with the validator of
+   * the same field (packages/shared/src/validators/instance.ts).
+   */
+  emptyRunStreakThreshold?: number;
+  /**
    * myrmidon(1.6.6 PROCS-J): the counts of the board's process composition —
    * how many HTTP processes (`api`) and scheduler processes (`worker`) the
    * deployment asks for, read once at startup. An unusable row stops the board
