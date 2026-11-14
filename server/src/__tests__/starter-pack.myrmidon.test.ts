@@ -410,6 +410,7 @@ describeEmbeddedPostgres("the starter-pack scout on a new engineer task", () => 
       .send({ format: "markdown", body: "### Starter pack\n\nCode summary for engineer" });
     expect(createdRes.status).toBe(201);
     expect(createdRes.body.key).toBe("starter-pack");
+    expect(typeof createdRes.body.latestRevisionId).toBe("string");
 
     // 5. Assignee was woken exactly once
     const wakes = await db
@@ -425,10 +426,15 @@ describeEmbeddedPostgres("the starter-pack scout on a new engineer task", () => 
     expect(wakes).toHaveLength(1);
     expect(wakes[0]!.idempotencyKey).toBe(buildStarterPackReadyWakeIdempotencyKey(issueId));
 
-    // 6. Repeated update returns 200 and does not queue another wake
+    // 6. Repeated update (with the current baseRevisionId, as the document route requires
+    // for any update of an existing document) returns 200 and does not queue another wake
     const updateRes = await request(app)
       .put(`/api/issues/${issueId}/documents/starter-pack`)
-      .send({ format: "markdown", body: "### Starter pack v2" });
+      .send({
+        format: "markdown",
+        body: "### Starter pack v2",
+        baseRevisionId: createdRes.body.latestRevisionId,
+      });
     expect(updateRes.status).toBe(200);
 
     const wakesAfterUpdate = await db
