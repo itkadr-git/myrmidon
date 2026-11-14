@@ -93,6 +93,11 @@ export function agentExchangeFeedRoutes(deps: AgentExchangeFeedRoutesDeps): Rout
           companyId,
           limit: resolved.settings.feedLimit,
           skillCandidateEnabled: resolved.settings.skillCandidateEnabled,
+          // myrmidon(1.7 PRIVATE-TASKS G2): the feed prints the task number
+          // and title of every room, so an agent actor reads the private
+          // tasks' names here. The store then hides those rooms entirely
+          // (page and total); the owner's screen keeps the full feed.
+          excludePrivate: req.actor.type === "agent",
         },
       ),
     );
