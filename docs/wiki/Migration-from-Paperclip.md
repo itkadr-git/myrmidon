@@ -1,6 +1,6 @@
 # Migrating from Paperclip to Myrmidon
 
-> Russian version: [Migration-from-Paperclip.ru](Migration-from-Paperclip.ru)
+> Russian version: [migration-from-paperclip.ru.md](migration-from-paperclip.ru.md)
 
 The `myrmidon:migrate` command copies one Paperclip instance (database, files and secrets) into a
 clean Myrmidon installation. It never changes the source: it writes only to the empty target that
@@ -63,22 +63,9 @@ default value) and the release that introduced it.
 
 ## 2. Prerequisites and running the CLI
 
-The migration CLI is included in Myrmidon. Because the production Docker container does not
-install `paperclipai` in `$PATH` and has no prebuilt `dist/` bundle, execute the migration via
-`tsx` inside `/app/cli` or via the bundled `/usr/local/bin/myrmidon-migrate` wrapper:
+The migration CLI is included in Myrmidon. In a production Docker image, run the compiled CLI through the bundled `/usr/local/bin/myrmidon-migrate` wrapper:
 
-- **Via Docker image directly with tsx (recommended for production):**
-  ```sh
-  docker run --rm -i \
-    --entrypoint /app/cli/node_modules/.bin/tsx -w /app/cli \
-    -v /path/to/storage:/storage \
-    -v /path/to/keys:/keys:ro \
-    -v /path/to/state:/state \
-    -e SOURCE_DB_URL -e TARGET_DB_URL \
-    <image> src/index.ts myrmidon:migrate --help
-  ```
-
-- **Via Docker image wrapper script:**
+- **From the Docker image (production):**
   ```sh
   docker run --rm -i \
     -v /path/to/storage:/storage \
@@ -88,12 +75,13 @@ install `paperclipai` in `$PATH` and has no prebuilt `dist/` bundle, execute the
     <image> myrmidon-migrate --help
   ```
 
-- **From repository source (local development):**
+- **From repository source (local development only; uses tsx):**
   ```sh
   pnpm --filter myrmidon dev myrmidon:migrate --help
   ```
 
 Other requirements:
+
 - Network access to the source and target databases from the host/container running the command.
 - A target PostgreSQL database role that can create tables. Loading is fastest and exact with a
   role that may set `session_replication_role` (a superuser, or PostgreSQL 15+ with that
@@ -108,12 +96,10 @@ Other requirements:
 - Free disk space for a full copy of the storage directory and for the backup (section 3).
 
 > **Note on command syntax in examples below:** For brevity, the examples below show the command as
-> `myrmidon-migrate <flags>`. When executing inside Docker, prefix with your `docker run ... <image> myrmidon-migrate`
-> or `docker run ... --entrypoint /app/cli/node_modules/.bin/tsx -w /app/cli <image> src/index.ts myrmidon:migrate`.
+> `myrmidon-migrate <flags>`. When executing inside Docker, prefix with your `docker run ... <image> myrmidon-migrate`.
 
 Every command below uses placeholders. Keep real URLs and keys in files with mode `0600` or in
 environment variables; the command redacts URLs and keys from its errors and its JSON output.
-
 ## 3. Prepare and back up (before anything is changed)
 
 1. **Stop the writers.** Stop the Paperclip server and everything that writes to its database
@@ -297,7 +283,7 @@ rollback removes that data too.
 
 ## 9. Reference
 
-Flags (`myrmidon-migrate --help` / `src/index.ts myrmidon:migrate --help`):
+Flags (`myrmidon-migrate --help`):
 
 | Flag | Meaning |
 |---|---|
