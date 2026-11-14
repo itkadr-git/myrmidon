@@ -8,6 +8,8 @@ import {
   withCiResolveDeadline,
   clearCiCacheForTests,
   summarizeHeadLaneEvidence,
+  resolveCiFailureTails,
+  formatJobLogTail,
   type PullRequestCiJob,
 } from "../github-pull-request-ci.js";
 import { buildPaperclipTaskMarkdown } from "../heartbeat.js";
@@ -1890,7 +1892,7 @@ describe("createPullRequestCiResolver", () => {
       expect(markdown).toContain("Failed jobs:");
       expect(markdown).toContain("- lint (eslint) (id: 54321): failure");
       expect(markdown).toContain("gh run view 999999 --job 54321 --log-failed | tail -80");
-      expect(markdown).toContain("Do not poll CI: the failing output is below.");
+      expect(markdown).not.toContain("Do not poll CI");
       expect(markdown).toContain("Job lint (eslint) (id: 54321) log unavailable: token lacks actions:read permission or access denied (403)");
     });
   });
@@ -2095,3 +2097,90 @@ describe("summarizeHeadLaneEvidence (LANE-EVIDENCE-CANCELLED, OPE-13072)", () =>
   });
 });
 
+
+describe("resolveCiFailureTails (red CI log tails, OPE-13078)", () => {
+  const esc = String.fromCharCode(27);
+  const ghp = ["gh", "p_"].join("") + "A1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6Q7r8";
+  const gho = ["gh", "o_"].join("") + "A1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6Q7r8";
+  const sk = ["sk", "-"].join("") + "abcdefghijklmnopqrstuvwx0123456789";
+  const authToken = "opaque-credential-1234567890";
+  const urlPass = "hunter2pass";
+  const akia = ["AK", "IA"].join("") + "ABCDEFGHIJKLMNOP";
+  const awsSecret = "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY";
+
+  function makeJobs(n: number) {
+    return Array.from({ length: n }, (_, i) => ({
+      id: 1000 + i,
+      name: `job-${i}`,
+      conclusion: "failure",
+      url: `https://github.com/o/r/actions/runs/777/job/${1000 + i}`,
+      completedAt: "2026-11-14T02:00:00Z",
+    })) as any;
+  }
+
+  function hostileLog(): string {
+    const lines: string[] = [];
+    for (let i = 0; i < 100; i++) lines.push(`${esc}[31mline ${i} some output${esc}[0m`);
+    lines[90] = `token ${ghp} and ${gho}`;
+    lines[91] = `key ${sk}`;
+    lines[92] = `Authorization: token ${authToken}`;
+    lines[93] = `clone https://user:${urlPass}@example.com/repo.git`;
+    lines[94] = `id ${akia} aws_secret_access_key = ${awsSecret}`;
+    lines[95] = "##[error]Process completed with exit code 1.";
+    lines.push("Post job cleanup.");
+    return lines.join("\n");
+  }
+
+  const secrets = [ghp, gho, sk, authToken, urlPass, akia, awsSecret];
+
+  beforeEach(() => {
+    clearCiCacheForTests();
+  });
+
+  it("masks secrets, strips ANSI, caps lines, jobs and total size", async () => {
+    const fetchImpl = vi.fn(async () => new Response(hostileLog(), { status: 200 })) as any;
+    const tails = await resolveCiFailureTails(makeJobs(5), { owner: "o", repo: "r", token: "t", fetchImpl });
+    expect(tails).toHaveLength(3);
+    expect(fetchImpl).toHaveBeenCalledTimes(3);
+    let total = 0;
+    for (const t of tails) {
+      const text = t.logTail ?? "";
+      total += text.length;
+      for (const secret of secrets) expect(text).not.toContain(secret);
+      expect(text).not.toContain(esc);
+      expect(text.split("\n").length).toBeLessThanOrEqual(60);
+      expect(text).toContain("<redacted_secret>");
+      expect(text).toContain("##[error]Process completed");
+      expect(text).not.toContain("Post job cleanup");
+    }
+    expect(total).toBeLessThanOrEqual(12000);
+  });
+
+  it("caps total characters across jobs", async () => {
+    const big = Array.from({ length: 100 }, (_, i) => `line ${i} ${"x".repeat(300)}`).join("\n");
+    const fetchImpl = vi.fn(async () => new Response(big, { status: 200 })) as any;
+    const tails = await resolveCiFailureTails(makeJobs(3), { owner: "o", repo: "r", token: "t", fetchImpl });
+    const total = tails.reduce((sum, t) => sum + (t.logTail?.length ?? 0), 0);
+    expect(total).toBeLessThanOrEqual(12000);
+  });
+
+  it.each([403, 404, 429])("returns empty logTail without throwing on HTTP %i", async (status) => {
+    clearCiCacheForTests();
+    const fetchImpl = vi.fn(async () => new Response("nope", { status })) as any;
+    const tails = await resolveCiFailureTails(makeJobs(1), { owner: "o", repo: "r", token: "t", fetchImpl });
+    expect(tails).toHaveLength(1);
+    expect(tails[0]!.logTail ?? null).toBeNull();
+    expect(tails[0]!.unavailableReason).toBeTruthy();
+  });
+
+  it("windows the tail around the last ##[error] instead of the end of the log", () => {
+    const lines = Array.from({ length: 200 }, (_, i) => `l${i}`);
+    lines[120] = "##[error]boom";
+    const tail = formatJobLogTail(lines.join("\n"));
+    expect(tail).toContain("##[error]boom");
+    expect(tail).not.toContain("l199");
+    expect(tail.split("\n").length).toBeLessThanOrEqual(60);
+    const plain = formatJobLogTail(Array.from({ length: 200 }, (_, i) => `l${i}`).join("\n"));
+    expect(plain).toContain("l199");
+  });
+});

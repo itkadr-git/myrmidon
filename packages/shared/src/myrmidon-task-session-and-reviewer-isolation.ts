@@ -388,6 +388,17 @@ const SECRET_PATTERNS = [
   new RegExp(["github", "_pat_[a-zA-Z0-9_]{20,}"].join(""), "g"),
   /Bearer\s+[a-zA-Z0-9._-]{20,}/gi,
   /-----BEGIN\s+(?:RSA|OPENSSH|EC|PRIVATE)\s+KEY-----[\s\S]*?-----END/gi,
+  new RegExp(["gh", "[ousr]_[A-Za-z0-9]{30,}"].join(""), "g"),
+  new RegExp(["\\b", "sk", "-[A-Za-z0-9_-]{20,}"].join(""), "g"),
+  /Authorization:\s*\S+(?:\s+\S+)?/gi,
+  /\b(?:AKIA|ASIA)[A-Z0-9]{16}\b/g,
+  /aws_secret_access_key\s*[=:]\s*\S+/gi,
+];
+
+// Patterns that keep a non-secret prefix: [pattern, replacement].
+const SECRET_PATTERNS_WITH_REPLACEMENT: ReadonlyArray<readonly [RegExp, string]> = [
+  // Password inside a URL: https://user:pass@host -> https://<redacted_secret>@host
+  [/(https?:\/\/)[^\s:@\/]+:[^\s@\/]+@/g, "$1<redacted_secret>@"],
 ];
 
 export interface DiffThreatAnalysisResult {
@@ -400,6 +411,9 @@ export function sanitizeSecrets(text: string): string {
   let sanitized = text;
   for (const pattern of SECRET_PATTERNS) {
     sanitized = sanitized.replace(pattern, "<redacted_secret>");
+  }
+  for (const [pattern, replacement] of SECRET_PATTERNS_WITH_REPLACEMENT) {
+    sanitized = sanitized.replace(pattern, replacement);
   }
   return sanitized;
 }

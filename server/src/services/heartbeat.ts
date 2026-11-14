@@ -9517,7 +9517,9 @@ export function buildPaperclipTaskMarkdown(input: {
         const effectiveFailureTails = ci.ciFailureTails ?? (wakePayload?.ciFailureTails as PullRequestCiResult["ciFailureTails"]);
         if (effectiveFailureTails && effectiveFailureTails.length > 0) {
           lines.push("  - Failing step log output (board-retrieved):");
-          lines.push("    Do not poll CI: the failing output is below.");
+          if (effectiveFailureTails.some((tail) => Boolean(tail.logTail))) {
+            lines.push("    Do not poll CI: the failing output is below.");
+          }
           for (const tail of effectiveFailureTails) {
             if (tail.logTail) {
               lines.push(`    --- Job ${tail.jobName} (id: ${tail.jobId}) log tail ---`);

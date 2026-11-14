@@ -12,6 +12,7 @@ import {
   renderReviewerInputSection,
   resolveDeveloperSessionKeyStrategy,
   sanitizeEnvironmentSecrets,
+  sanitizeSecrets,
   validateReviewVerdict,
   validateTaskSessionResumption,
   type RawIssueContextForReview,
@@ -379,6 +380,32 @@ describe("myrmidon-task-session-and-reviewer-isolation", () => {
       const threat = analyzeReviewerDiffThreats(hostileDiff);
       expect(threat.hasPromptInjection).toBe(true);
       expect(threat.detectedThreats.length).toBeGreaterThan(0);
+    });
+
+    it("sanitizeSecrets masks GitHub, OpenAI-style, Authorization, URL password and AWS secrets", () => {
+      const gho = ["gh", "o_"].join("") + "A1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6Q7r8";
+      const ghu = ["gh", "u_"].join("") + "A1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6Q7r8";
+      const sk = ["sk", "-"].join("") + "abcdefghijklmnopqrstuvwx0123456789";
+      const auth = "Authorization: token " + "abcdef1234567890";
+      const akia = ["AK", "IA"].join("") + "ABCDEFGHIJKLMNOP";
+      const awsSecret = "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY";
+      const text = [
+        gho,
+        ghu,
+        sk,
+        auth,
+        "https://user:hunter2pass@example.com/repo.git",
+        akia,
+        `aws_secret_access_key = ${awsSecret}`,
+        "plain line stays",
+      ].join("\n");
+      const out = sanitizeSecrets(text);
+      for (const secret of [gho, ghu, sk, "abcdef1234567890", "hunter2pass", akia, awsSecret]) {
+        expect(out).not.toContain(secret);
+      }
+      expect(out).toContain("https://<redacted_secret>@example.com/repo.git");
+      expect(out).toContain("plain line stays");
+      expect(sanitizeSecrets("task-management risk-assessment")).toBe("task-management risk-assessment");
     });
 
     it("sanitizes secret patterns in code diffs", () => {

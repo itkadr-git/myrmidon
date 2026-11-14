@@ -452,11 +452,28 @@ export function stripAnsiCodes(text: string): string {
     .replace(/\u001B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])/g, "");
 }
 
+const MAX_JOB_LOG_SCAN_CHARS = 500_000;
+const JOB_LOG_LINES_AFTER_ERROR = 4;
+
+/**
+ * ANSI stripped, secrets masked (on the whole scanned text, before windowing, so
+ * multi-line secrets are not cut), then a window of at most `maxLines` lines ending
+ * shortly after the last `##[error]` line (skips trailing "Post job cleanup" noise).
+ * Without `##[error]` the window is the last `maxLines` lines.
+ */
 export function formatJobLogTail(rawLog: string, maxLines = MAX_CI_FAILURE_TAIL_LINES): string {
-  const stripped = stripAnsiCodes(rawLog);
+  const scanned = rawLog.length > MAX_JOB_LOG_SCAN_CHARS ? rawLog.slice(-MAX_JOB_LOG_SCAN_CHARS) : rawLog;
+  const stripped = sanitizeSecrets(stripAnsiCodes(scanned));
   const lines = stripped.split(/\r?\n/);
-  const tail = lines.slice(-maxLines).join("\n").trim();
-  return tail;
+  let end = lines.length;
+  for (let i = lines.length - 1; i >= 0; i--) {
+    if (lines[i]!.includes("##[error]")) {
+      end = Math.min(lines.length, i + 1 + JOB_LOG_LINES_AFTER_ERROR);
+      break;
+    }
+  }
+  const start = Math.max(0, end - maxLines);
+  return lines.slice(start, end).join("\n").trim();
 }
 
 export function enforceTotalCharsCap(
@@ -594,6 +611,10 @@ export async function resolveCiFailureTails(
     if (res.ok && res.text) {
       const formatted = formatJobLogTail(res.text, MAX_CI_FAILURE_TAIL_LINES);
       const sanitized = sanitizeSecrets(formatted);
+      if (!sanitized) {
+        results.push({ jobId: job.id, jobName: job.name, runId: runId ?? null, logTail: null, unavailableReason: "job log empty" });
+        continue;
+      }
 
       if (jobLogCache.size >= JOB_LOG_CACHE_MAX_ENTRIES) {
         const oldestKey = jobLogCache.keys().next().value;
