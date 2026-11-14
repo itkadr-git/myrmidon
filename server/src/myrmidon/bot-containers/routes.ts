@@ -182,6 +182,9 @@ export interface BotContainerItemStatus {
     idleStopped: boolean;
     lastStoppedAt: string | null;
     lastStartedAt: string | null;
+    /** myrmidon(1.8 HIBERNATE): lastStartedAt − lastStoppedAt in whole ms; null when
+     *  either time is missing or the start is not after the stop. */
+    coldStartDurationMs: number | null;
   } | null;
   /** myrmidon(L6-PROFILE-UPDATE-STARVATION): when the card has a profile change
    *  that has not been applied yet, the ISO timestamp of the agent's open
@@ -436,6 +439,7 @@ export async function buildBotContainerItemStatus(
         idleStopped: idleRuntime.idleStopped,
         lastStoppedAt: idleRuntime.lastStoppedAt?.toISOString() ?? null,
         lastStartedAt: idleRuntime.lastStartedAt?.toISOString() ?? null,
+        coldStartDurationMs: idleRuntime.coldStartDurationMs,
       };
       // myrmidon(CONCURRENCY-SYNC): the applied limit, as recorded by the last apply's
       // marker. Only a container that exists can carry one.

@@ -271,19 +271,36 @@ GitHub **Latest** release (the owner's requirement of 05.10):
    workflows re-run on the final tag and tag the release images `X.Y.Z` (same commit), and
    the publish workflow publishes the final release (same notes section `## X.Y.Z`, still
    never `latest`). Deploy the final tag with `deploy.sh --release myr-vX.Y.Z`.
-5. **Mark Latest explicitly.** Only after the final release runs on our board and passed
+5. **Verify the release on production, per release task (VERIFY-ON-PROD), then mark
+   Latest explicitly.** Only after the final release runs on our board and passed
    its smoke:
 
    ```bash
+   scripts/myrmidon/release/verify-on-prod.mjs --version X.Y.Z \
+     --health-url https://<board>/api/health [--health-token-file <board-key-file>] \
+     --api-url https://<board>/api --api-key-env \
+     --company-id <company-uuid> --report out/verify-X.Y.Z.json
+   ```
+
+   The script answers exit 0 only when `/api/health` reports `status ok` at exactly
+   `X.Y.Z` AND every board task carrying the release label (`<major>.<minor>`) is
+   `done`; the JSON report names the version and carries one PASS/FAIL row per task.
+   The report then gates the promotion:
+
+   ```bash
    scripts/myrmidon/release/promote-latest.sh --tag myr-vX.Y.Z \
-     --health-url https://<board>/api/health --health-token-file <board-key-file>
+     --health-url https://<board>/api/health --health-token-file <board-key-file> \
+     --verify-on-prod-report out/verify-X.Y.Z.json
    ```
 
    The command refuses (and changes nothing) when the tag is an rc, the release is a
-   pre-release, the release commit is not on `main`, or the board reports any version
-   other than `X.Y.Z` — the marker moves only with proof the release is the version
-   actually running on our production. `--skip-health-check` is the documented escape
-   hatch for a rehearsed promotion (staging, a drill); it logs loudly.
+   pre-release, the release commit is not on `main`, the board reports any version
+   other than `X.Y.Z`, or the VERIFY-ON-PROD report is missing or not a passing
+   report for `X.Y.Z` with every release task verified — the marker moves only with
+   proof the release is the version actually running on our production AND the
+   release's own tasks are confirmed there. `--skip-health-check` is the documented
+   escape hatch for a rehearsed promotion (staging, a drill); it logs loudly and
+   never bypasses the report requirement.
 
 A publish — rc or final — NEVER moves `latest` by itself: `publish-github-release.sh`
 does not pass `--latest` to GitHub anymore. An rc also never marks another release
