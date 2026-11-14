@@ -302,6 +302,7 @@ import {
   decideAdmAccessRequestSchema,
   revokeAdmAccessRequestSchema,
   executeAdmCapabilitySchema,
+  recoveryJournalQuerySchema,
 } from "@myrmidon/shared";
 import {
   COMPANY_IMPORT_TRANSFERS_API_PATH,
@@ -3443,6 +3444,27 @@ registry.registerPath({
     body: jsonBody(resetAgentSessionSchema),
   },
   responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized },
+});
+
+registry.registerPath({
+  method: "get",
+  path: "/api/agents/{id}/recovery-journal",
+  tags: ["agents"],
+  summary: "Get agent recovery journal entries",
+  request: {
+    params: z.object({ id: z.string() }),
+    query: recoveryJournalQuerySchema,
+  },
+  responses: {
+    200: r.ok(
+      z.object({
+        entries: z.array(z.record(z.string(), z.unknown())),
+        nextBefore: z.string().datetime().nullable(),
+      }),
+    ),
+    401: r.unauthorized,
+    404: r.notFound,
+  },
 });
 
 registry.registerPath({
