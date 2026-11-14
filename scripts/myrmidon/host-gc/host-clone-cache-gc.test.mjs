@@ -1768,8 +1768,8 @@ describe("runner task folders", () => {
 
   it("e2e: pipefail: tar fails (exit 2) while zstd succeeds, the failure is not masked", async () => {
     const { res, unpushed, left, failed } = await runWithFakeArchiveTools("OPE-9303", {
-      zstdBody: "#!/bin/sh\\n[ \\\"$1\\\" = \\\"--version\\\" ] && exit 0\\ncat > \\\"$3\\\"\\nexit 0\\n",
-      tarBody: "#!/bin/sh\\nexit 2\\n",
+      zstdBody: "#!/bin/sh\n[ \"$1\" = \"--version\" ] && exit 0\ncat > \"$3\"\nexit 0\n",
+      tarBody: "#!/bin/sh\nexit 2\n",
     });
     assert.equal(res.status, 0, res.stderr);
     assert.equal(fs.existsSync(unpushed), true, "folder stays");
