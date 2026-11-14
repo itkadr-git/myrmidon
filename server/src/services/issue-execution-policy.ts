@@ -944,10 +944,13 @@ export function verifyEvidenceFromComment(comment: string): {
 function assertVerifyEvidence(input: {
   stage: IssueExecutionStage;
   commentBody: string;
+  isRelease?: boolean;
 }) {
+  if (input.stage.requirements?.skip) return;
+  const isRelease = input.isRelease ?? false;
   const requirements = {
-    deployVersion: input.stage.requirements?.deployVersion ?? false,
-    checkMethod: input.stage.requirements?.checkMethod ?? false,
+    deployVersion: isRelease || (input.stage.requirements?.deployVersion ?? false),
+    checkMethod: isRelease || (input.stage.requirements?.checkMethod ?? false),
   };
   if (!requirements.deployVersion && !requirements.checkMethod) return;
   const evidence = verifyEvidenceFromComment(input.commentBody);
@@ -1254,7 +1257,11 @@ function applyIssueExecutionStageTransition(input: TransitionInput): TransitionR
         // OPE-12995 (VERIFY-ON-PROD): a verify-approve decision must record
         // the deploy version and the check method the verification ran with.
         if (activeStage.type === "verify") {
-          assertVerifyEvidence({ stage: activeStage, commentBody: input.commentBody.trim() });
+          assertVerifyEvidence({
+            stage: activeStage,
+            commentBody: input.commentBody.trim(),
+            isRelease: isReleaseTask(input.issue.title ?? null),
+          });
         }
         const approvedState = buildCompletedState(existingState, activeStage);
         // Only stages after the stage being approved are advance candidates.

@@ -2554,4 +2554,114 @@ describe("verify execution stages", () => {
       });
       expect(result.patch.executionState).toMatchObject({ status: "completed" });
     });
+
+    it("requires deploy version and check method on release tasks even when stage requirements are not configured", () => {
+      const unconfiguredVerifyPolicy = makePolicy([{
+        type: "verify",
+        participants: [{ type: "agent", agentId: qaAgentId }],
+      }]);
+      const releaseIssue = {
+        ...pendingIssue(unconfiguredVerifyPolicy),
+        title: "1.6.6 Core engine update",
+      };
+
+      // Empty comment rejected
+      expect(() => applyIssueExecutionPolicyTransition({
+        issue: releaseIssue,
+        policy: unconfiguredVerifyPolicy,
+        requestedStatus: "done",
+        requestedAssigneePatch: {},
+        actor: { agentId: qaAgentId },
+        commentBody: "   ",
+      })).toThrow(/Approving a review or approval stage requires a comment; verify stages require one too/);
+
+      // Plain / ordinary comment rejected
+      expect(() => applyIssueExecutionPolicyTransition({
+        issue: releaseIssue,
+        policy: unconfiguredVerifyPolicy,
+        requestedStatus: "done",
+        requestedAssigneePatch: {},
+        actor: { agentId: qaAgentId },
+        commentBody: "Verification passed on prod, everything looks good",
+      })).toThrow(/deploy version and check method/);
+
+      // Missing check method rejected
+      expect(() => applyIssueExecutionPolicyTransition({
+        issue: releaseIssue,
+        policy: unconfiguredVerifyPolicy,
+        requestedStatus: "done",
+        requestedAssigneePatch: {},
+        actor: { agentId: qaAgentId },
+        commentBody: "deploy version: 1.6.6-rc.1",
+      })).toThrow(/check method/);
+
+      // Missing deploy version rejected
+      expect(() => applyIssueExecutionPolicyTransition({
+        issue: releaseIssue,
+        policy: unconfiguredVerifyPolicy,
+        requestedStatus: "done",
+        requestedAssigneePatch: {},
+        actor: { agentId: qaAgentId },
+        commentBody: "check method: manual smoke on prod",
+      })).toThrow(/deploy version/);
+
+      // Succeeds when both deploy version and check method are present
+      const result = applyIssueExecutionPolicyTransition({
+        issue: releaseIssue,
+        policy: unconfiguredVerifyPolicy,
+        requestedStatus: "done",
+        requestedAssigneePatch: {},
+        actor: { agentId: qaAgentId },
+        commentBody: "deploy version: 1.6.6-rc.1\ncheck method: manual smoke on prod",
+      });
+      expect(result.patch.executionState).toMatchObject({
+        status: "completed",
+        completedStageIds: [unconfiguredVerifyPolicy.stages[0].id],
+      });
+    });
+
+    it("requires deploy version and check method on release tasks even when stage requirements explicitly disable them", () => {
+      const disabledRequirementsPolicy = makePolicy([{
+        type: "verify",
+        participants: [{ type: "agent", agentId: qaAgentId }],
+        requirements: { deployVersion: false, checkMethod: false },
+      }]);
+      const releaseIssue = {
+        ...pendingIssue(disabledRequirementsPolicy),
+        title: "1.6.6 Core engine update",
+      };
+
+      expect(() => applyIssueExecutionPolicyTransition({
+        issue: releaseIssue,
+        policy: disabledRequirementsPolicy,
+        requestedStatus: "done",
+        requestedAssigneePatch: {},
+        actor: { agentId: qaAgentId },
+        commentBody: "Verification passed without details",
+      })).toThrow(/deploy version and check method/);
+    });
+
+    it("does not require evidence for non-release tasks when stage requirements are not configured", () => {
+      const unconfiguredVerifyPolicy = makePolicy([{
+        type: "verify",
+        participants: [{ type: "agent", agentId: qaAgentId }],
+      }]);
+      const nonReleaseIssue = {
+        ...pendingIssue(unconfiguredVerifyPolicy),
+        title: "Fix minor typo in README",
+      };
+
+      const result = applyIssueExecutionPolicyTransition({
+        issue: nonReleaseIssue,
+        policy: unconfiguredVerifyPolicy,
+        requestedStatus: "done",
+        requestedAssigneePatch: {},
+        actor: { agentId: qaAgentId },
+        commentBody: "Typo fix verified, looks good",
+      });
+      expect(result.patch.executionState).toMatchObject({
+        status: "completed",
+        completedStageIds: [unconfiguredVerifyPolicy.stages[0].id],
+      });
+    });
   });
