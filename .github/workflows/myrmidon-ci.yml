@@ -79,12 +79,11 @@ env:
 jobs:
   plan:
     name: plan
-    if: ${{ (github.event_name != 'pull_request' || github.event.action != 'labeled' || github.event.label.name == 'full-ci') }}
     # OPE-13002: release runs (main pushes and release PRs — anything the plan
     # step classifies is_release=true) start on the priority runner pool
     # (vars.CI_RUNNER_PRIORITY) ahead of queued ordinary runs; ordinary runs
-    # never receive this label and stay on the shared pool. The tag-CI
-    # fail-closed monitor (myrmidon-ci-tag.yml) verifies the invariant.
+    # stay on the shared pool. The tag-CI fail-closed monitor
+    # (myrmidon-ci-tag.yml) verifies the invariant.
     needs: []
     runs-on: ${{ fromJSON((vars.CI_RUNNER_PRIORITY && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/') || contains(github.event.pull_request.title, 'rc.') || contains(github.event.pull_request.title, 'release') || contains(github.event.pull_request.labels.*.name, 'release') || startsWith(github.head_ref, 'rel/') || startsWith(github.base_ref, 'rel/')) && vars.CI_RUNNER_PRIORITY) || vars.CI_RUNNER_LIGHT || vars.MYR_RUNNER_LIGHT || '"vps-ci"') }}
     timeout-minutes: 10
@@ -1037,8 +1036,7 @@ jobs:
           node --test scripts/myrmidon/ci/check-deployed-migrations.test.mjs
 
   ci-result:
-    # Single stable check name for the ruleset. There is no label-noop run any
-    # more (see `on.pull_request.types`), so every run of this workflow
+    # Single stable check name for the ruleset. Every run of this workflow
     # publishes `CI result` with its real verdict. The `!cancelled()` gate
     # stays so a run whose `plan` failed still fails the summary (re-gating on
     # `needs.plan.result` would publish a satisfying `skipped` check on a red
