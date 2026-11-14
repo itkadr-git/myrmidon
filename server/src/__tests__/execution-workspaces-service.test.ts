@@ -267,6 +267,7 @@ describeEmbeddedPostgres("executionWorkspaceService.getCloseReadiness", () => {
       // cooldown is a separate knob, so disable it here too.
       workspaceReaperCooldownDays: 0,
       myrmidonWorkspaceMergedCooldownMs: 0,
+      sharedSweepPauseMs: 0,
     });
   }, 60_000);
 
@@ -834,6 +835,7 @@ describeEmbeddedPostgres("executionWorkspaceService.getCloseReadiness", () => {
         ?? { state: "unknown", headRef: null, headSha: null },
       workspaceReaperCooldownDays: 0,
       myrmidonWorkspaceMergedCooldownMs: 0,
+      sharedSweepPauseMs: 0,
     });
     const statuses = async () => {
       const rows = await db
@@ -861,6 +863,139 @@ describeEmbeddedPostgres("executionWorkspaceService.getCloseReadiness", () => {
     const pass3 = await batchSvc.sweepTerminalWorkspaces(50, 2);
     expect(pass3).toMatchObject({ checked: 1, archived: 1 });
     expect((await statuses()).shared.every((status) => status === "archived")).toBe(true);
+  }, 60_000);
+
+  async function seedSharedBacklog(count: number) {
+    const ids: string[] = [];
+    for (let i = 0; i < count; i += 1) {
+      const row = await seedTerminalWorkspace();
+      await db
+        .update(executionWorkspaces)
+        .set({
+          mode: "shared_workspace",
+          strategyType: "project_primary",
+          providerType: "local_fs",
+          updatedAt: new Date(Date.now() - 120_000 + i * 1000),
+        })
+        .where(eq(executionWorkspaces.id, row.executionWorkspaceId));
+      ids.push(row.executionWorkspaceId);
+    }
+    return ids;
+  }
+
+  it("two concurrent sweepers archive each shared row exactly once (SKIP LOCKED batches)", async () => {
+    // myrmidon(OPE-13106): two services = two processes in split mode (each has
+    // its own in-process guard and cursor). 10 shared rows, batch of 5.
+    const sharedIds = await seedSharedBacklog(10);
+    const makeSweeper = () => executionWorkspaceService(db, {
+      workspaceReaperCooldownDays: 0,
+      myrmidonWorkspaceMergedCooldownMs: 0,
+      sharedSweepPauseMs: 0,
+    });
+    const sweeperA = makeSweeper();
+    const sweeperB = makeSweeper();
+
+    const results = [
+      ...(await Promise.all([sweeperA.sweepTerminalWorkspaces(50, 5), sweeperB.sweepTerminalWorkspaces(50, 5)])),
+      ...(await Promise.all([sweeperA.sweepTerminalWorkspaces(50, 5), sweeperB.sweepTerminalWorkspaces(50, 5)])),
+      // A row that both sweepers skipped (locked by each other at scan time) is
+      // picked up on a later rotation; these passes only mop up, they never
+      // double-count a row.
+      await sweeperA.sweepTerminalWorkspaces(50, 5),
+      await sweeperB.sweepTerminalWorkspaces(50, 5),
+    ];
+
+    // Each row archived exactly once: the sum over all passes is 10, no errors.
+    expect(results.reduce((sum, result) => sum + result.archived, 0)).toBe(10);
+    expect(results.every((result) => result.cleanupFailed === 0)).toBe(true);
+    const rows = await db
+      .select({ id: executionWorkspaces.id, status: executionWorkspaces.status })
+      .from(executionWorkspaces)
+      .where(inArray(executionWorkspaces.id, sharedIds));
+    expect(rows.map((row) => row.status)).toEqual(sharedIds.map(() => "archived"));
+    // One summary event per pass that archived something, never one per row, and
+    // the total of archived ids in the summaries equals the row count.
+    const summaries = await db
+      .select({ details: activityLog.details })
+      .from(activityLog)
+      .where(eq(activityLog.action, "execution_workspace.issue_terminal_archived_shared"));
+    const summed = summaries.reduce(
+      (sum, row) => sum + Number((row.details as { archivedCount?: number } | null)?.archivedCount ?? 0),
+      0,
+    );
+    expect(summed).toBe(10);
+    const blockedEvents = await db
+      .select({ id: activityLog.id })
+      .from(activityLog)
+      .where(eq(activityLog.action, "execution_workspace.issue_terminal_archive_blocked"));
+    expect(blockedEvents).toEqual([]);
+  }, 90_000);
+
+  it("a row locked by another transaction is skipped by the shared scan, not waited for", async () => {
+    const [lockedId, freeId] = await seedSharedBacklog(2);
+    const sweeper = executionWorkspaceService(db, {
+      workspaceReaperCooldownDays: 0,
+      myrmidonWorkspaceMergedCooldownMs: 0,
+      sharedSweepPauseMs: 0,
+    });
+    let release!: () => void;
+    const released = new Promise<void>((resolve) => { release = resolve; });
+    let locked!: () => void;
+    const lockTaken = new Promise<void>((resolve) => { locked = resolve; });
+    const holder = db.transaction(async (tx) => {
+      await tx.execute(sql`select 1 from execution_workspaces where id = ${lockedId} for no key update`);
+      locked();
+      await released;
+    });
+    await lockTaken;
+    try {
+      const sweep = await sweeper.sweepTerminalWorkspaces(50, 10);
+      expect(sweep).toMatchObject({ checked: 1, archived: 1 });
+    } finally {
+      release();
+      await holder;
+    }
+    const statuses = await db
+      .select({ id: executionWorkspaces.id, status: executionWorkspaces.status })
+      .from(executionWorkspaces)
+      .where(inArray(executionWorkspaces.id, [lockedId, freeId]));
+    expect(new Map(statuses.map((row) => [row.id, row.status]))).toEqual(
+      new Map([[lockedId, "active"], [freeId, "archived"]]),
+    );
+  }, 60_000);
+
+  it("pauses the shared scan between passes; the isolated scan is not throttled", async () => {
+    const sharedIds = await seedSharedBacklog(4);
+    let clock = Date.now();
+    const sweeper = executionWorkspaceService(db, {
+      workspaceReaperCooldownDays: 0,
+      myrmidonWorkspaceMergedCooldownMs: 0,
+      sharedSweepPauseMs: 1000,
+      now: () => new Date(clock),
+    });
+
+    const first = await sweeper.sweepTerminalWorkspaces(50, 2);
+    expect(first).toMatchObject({ checked: 2, archived: 2 });
+
+    // Immediately after: the pause has not expired, no shared row is taken.
+    const second = await sweeper.sweepTerminalWorkspaces(50, 2);
+    expect(second).toMatchObject({ checked: 0, archived: 0 });
+
+    // An isolated row is still picked up inside the pause.
+    const isolated = await seedTerminalWorkspace({ mergedPr: true });
+    const third = await sweeper.sweepTerminalWorkspaces(50, 2);
+    expect(third.checked).toBe(1);
+
+    // Pause expired: the next batch of shared rows is taken.
+    clock += 1001;
+    const fourth = await sweeper.sweepTerminalWorkspaces(50, 2);
+    expect(fourth).toMatchObject({ archived: 2 });
+    const rows = await db
+      .select({ status: executionWorkspaces.status })
+      .from(executionWorkspaces)
+      .where(inArray(executionWorkspaces.id, sharedIds));
+    expect(rows.every((row) => row.status === "archived")).toBe(true);
+    expect(isolated.executionWorkspaceId).toBeTruthy();
   }, 60_000);
 
   it("leaves a shared_workspace row of an open issue untouched", async () => {

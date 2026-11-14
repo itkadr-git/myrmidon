@@ -109,6 +109,19 @@ export const ISSUE_TERMINAL_WORKSPACE_CLEANUP_REASON = "issue_terminal";
 // single-row UPDATE, so no statement touches more than one row.
 const SHARED_WORKSPACE_SWEEP_BATCH_SIZE = 200;
 const MAX_SHARED_WORKSPACE_SWEEP_BATCH_SIZE = 1000;
+// myrmidon(OPE-13106): after a pass that scanned shared rows the next shared
+// scan waits at least this long (the board keeps its breath on a backlog of tens
+// of thousands of rows). Env MYRMIDON_WORKSPACE_SHARED_SWEEP_PAUSE_MS, 0 = no pause.
+const SHARED_WORKSPACE_SWEEP_PAUSE_ENV = "MYRMIDON_WORKSPACE_SHARED_SWEEP_PAUSE_MS";
+const DEFAULT_SHARED_WORKSPACE_SWEEP_PAUSE_MS = 1000;
+function readSharedWorkspaceSweepPauseMs(): number {
+  const raw = process.env[SHARED_WORKSPACE_SWEEP_PAUSE_ENV]?.trim();
+  if (!raw) return DEFAULT_SHARED_WORKSPACE_SWEEP_PAUSE_MS;
+  const parsed = Number(raw);
+  return Number.isFinite(parsed) && parsed >= 0
+    ? Math.floor(parsed)
+    : DEFAULT_SHARED_WORKSPACE_SWEEP_PAUSE_MS;
+}
 
 // The reopen-failure reason kept on the row when a rebuild does not finish. The
 // value is sanitized: it never contains a repository URL, a host path, or git
@@ -260,6 +273,10 @@ export type ExecutionWorkspaceServiceOptions = {
   // tree or undelivered work) is signalled in the activity log once it has been
   // stuck for this long, at most once a day per copy. 0 signals immediately.
   myrmidonWorkspaceStuckSignalAfterMs?: number;
+  // myrmidon(OPE-13106): minimum pause between two passes that scan
+  // shared_workspace rows. Default: env MYRMIDON_WORKSPACE_SHARED_SWEEP_PAUSE_MS
+  // or 1000 ms; 0 disables it.
+  sharedSweepPauseMs?: number;
   inspectGitCloseReadiness?: (workspace: ExecutionWorkspace) => Promise<{
     git: ExecutionWorkspaceCloseGitReadiness | null;
     warnings: string[];
@@ -1368,6 +1385,9 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
   // removes the upper bound and makes the scan chase newer churn again. This
   // flag lets only one sweep run at a time, so one sweep owns the shared state.
   let terminalSweepInProgress = false;
+  // myrmidon(OPE-13106): the earliest moment the next pass may scan shared rows.
+  const sharedSweepPauseMs = Math.max(0, opts.sharedSweepPauseMs ?? readSharedWorkspaceSweepPauseMs());
+  let sharedSweepNotBefore = 0;
 
   async function listWorkspaceIssueTree(workspace: Pick<ExecutionWorkspaceRow, "companyId" | "sourceIssueId">) {
     if (!workspace.sourceIssueId) return [];
@@ -2724,12 +2744,24 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
         const modeFilter = kind === "shared"
           ? eq(executionWorkspaces.mode, "shared_workspace")
           : ne(executionWorkspaces.mode, "shared_workspace");
-        const page = await db
+        const selectPage = (runner: Db | DbTransaction) => runner
           .select()
           .from(executionWorkspaces)
           .where(and(baseCandidateFilter, modeFilter, boundaryFilter, cursorFilter))
           .orderBy(asc(executionWorkspaces.updatedAt), asc(executionWorkspaces.id))
           .limit(pageSize);
+        // myrmidon(OPE-13106): the shared page is taken in a transaction with
+        // FOR NO KEY UPDATE SKIP LOCKED, so rows another sweeper (another
+        // process in split mode) is archiving right now are skipped, not
+        // waited for. NO KEY UPDATE (not UPDATE) because the lock must not block
+        // foreign-key checks of child rows. The long steps (active-run and
+        // issue checks, service stop) must not hold row locks, so the lock is
+        // released with this short transaction; every row is claimed again under
+        // SKIP LOCKED inside its own archive transaction below.
+        const page = kind === "shared"
+          ? await db.transaction(async (tx) =>
+              selectPage(tx).for("no key update", { skipLocked: true }))
+          : await selectPage(db);
         // Advance the cursor to this page's last row. A short page means the
         // scan reached the end of the bounded candidate set, so reset the cursor
         // and the bound to start a new rotation on the next sweep.
@@ -2747,10 +2779,15 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
         1,
         Math.min(Math.floor(sharedLimit), MAX_SHARED_WORKSPACE_SWEEP_BATCH_SIZE),
       );
-      const candidates = [
-        ...(await scanCandidates("isolated", limit)),
-        ...(await scanCandidates("shared", sharedPageSize)),
-      ];
+      // myrmidon(OPE-13106): shared rows are scanned no more often than once per
+      // pause; the isolated scan is not throttled.
+      const scanShared = now().getTime() >= sharedSweepNotBefore;
+      const isolatedCandidates = await scanCandidates("isolated", limit);
+      const sharedCandidates = scanShared ? await scanCandidates("shared", sharedPageSize) : [];
+      if (scanShared && sharedSweepPauseMs > 0) {
+        sharedSweepNotBefore = now().getTime() + sharedSweepPauseMs;
+      }
+      const candidates = [...isolatedCandidates, ...sharedCandidates];
       const result = {
         checked: candidates.length,
         eligible: 0,
@@ -2944,6 +2981,18 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
         // lock, so it never archives a workspace that a reopen just restored.
         const archived = await db.transaction(async (tx) => {
           await acquireExecutionWorkspaceLifecycleLock(tx, workspace.id);
+          if (isSharedWorkspace) {
+            // myrmidon(OPE-13106): claim the row under SKIP LOCKED. A row another
+            // sweeper (or a writer) holds right now is theirs: skip it. The
+            // lock is taken after the lifecycle lock, the same order as the
+            // reopen and close paths, so it cannot deadlock with them.
+            const claimed = await tx
+              .select({ id: executionWorkspaces.id })
+              .from(executionWorkspaces)
+              .where(eq(executionWorkspaces.id, workspace.id))
+              .for("no key update", { skipLocked: true });
+            if (claimed.length === 0) return null;
+          }
           return tx
             .update(executionWorkspaces)
             .set({

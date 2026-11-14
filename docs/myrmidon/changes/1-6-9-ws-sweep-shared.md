@@ -14,6 +14,8 @@ rows, each archived by its own single-row update. For shared copies the sweep us
 git and no GitHub API (only the terminal state of the issue tree), and a copy
 with an open linked issue is not archived.
 
+The shared backlog is walked in batches taken under `FOR NO KEY UPDATE SKIP LOCKED` with a pause (1 s by default, `MYRMIDON_WORKSPACE_SHARED_SWEEP_PAUSE_MS`) between passes, so sweepers in several processes never take or archive the same row twice.
+
 ## changelog-ru
 
 ### Сторож закрытия рабочих копий больше не блокируется на общих каталогах проектов
@@ -29,3 +31,5 @@ with an open linked issue is not archived.
 строк, каждая архивируется отдельным обновлением одной строки. Для общих копий сторож не
 использует ни git, ни GitHub API (нужна только закрытость дерева задач), а копия с
 открытой привязанной задачей не архивируется.
+
+Накопленное разбирается пачками под блокировкой `FOR NO KEY UPDATE SKIP LOCKED` с паузой между проходами (по умолчанию 1 с, `MYRMIDON_WORKSPACE_SHARED_SWEEP_PAUSE_MS`): сторожа в нескольких процессах не берут и не архивируют одну строку дважды.
