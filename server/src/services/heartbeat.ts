@@ -525,6 +525,7 @@ import { reportRunFailure } from "./run-failure-report.js";
 import { companySkillService } from "./company-skills.js";
 import { budgetService, type BudgetEnforcementScope, type BudgetServiceHooks } from "./budgets.js";
 import { secretService, type MissingRuntimeBinding } from "./secrets.js";
+import { findRunScopedGatewayKeyRef, removeRunScopedGatewayKeyRef } from "../myrmidon/litellm-costs/bot-keys.js";
 import {
   resolveDefaultAgentWorkspaceDir,
   resolveManagedProjectWorkspaceDir,
@@ -2094,6 +2095,13 @@ export async function resolveExecutionRunAdapterConfig(input: {
   /** Audited class-3 values resolved by an internal credential broker. */
   trustedEnvProjection?: Record<string, string>;
   trustedEnvSecretKeys?: string[];
+  /**
+   * myrmidon(OPE-12932 KEY-TTL): a run-scoped secret_ref projection merged
+   * into the resolved env (lowest precedence — it never overrides a binding
+   * already present). The compiled config carries the reference, not the raw
+   * key; the secrets service resolves it once at dispatch.
+   */
+  runScopedSecretEnv?: Record<string, unknown>;
 }) {
   const executionRunConfig = stripForbiddenEnvFromAdapterConfig(
     input.executionRunConfig,
@@ -2399,6 +2407,26 @@ export async function resolveExecutionRunAdapterConfig(input: {
       ...input.trustedEnvProjection,
     };
     for (const key of input.trustedEnvSecretKeys ?? []) secretKeys.add(key);
+  }
+  // myrmidon(OPE-12932 KEY-TTL): the run-scoped projection lands LAST — it is
+  // the reference (secret_ref) of a run credential, never a raw value, and it
+  // never overrides a value a card/environment/project/routine binding already
+  // provided for the same env name.
+  if (
+    allowTrustedEnvProjection &&
+    input.runScopedSecretEnv &&
+    Object.keys(input.runScopedSecretEnv).length > 0
+  ) {
+    const existingEnv = parseObject(resolvedConfig.env);
+    const projectedEnv: Record<string, unknown> = {};
+    for (const [key, ref] of Object.entries(input.runScopedSecretEnv)) {
+      if (existingEnv[key] !== undefined) continue;
+      projectedEnv[key] = ref;
+      secretKeys.add(key);
+    }
+    if (Object.keys(projectedEnv).length > 0) {
+      resolvedConfig.env = { ...existingEnv, ...projectedEnv };
+    }
   }
   // Pre-dispatch credential gate for codex_local: a managed Codex home with no
   // usable auth.json and an empty OPENAI_API_KEY would dispatch a run that
@@ -26685,6 +26713,13 @@ export function heartbeatService(
           availableModels: availableModels.map((model) => model.id),
         });
       }
+      const runScopedGatewayKeyRef =
+        agent.adapterType === "hermes_gateway"
+          ? await findRunScopedGatewayKeyRef(db, agent.companyId, agent.id).catch(() => null)
+          : null;
+      const runScopedSecretEnv = runScopedGatewayKeyRef
+        ? { [runScopedGatewayKeyRef.envKey]: runScopedGatewayKeyRef.secretRef }
+        : undefined;
       const { resolvedConfig, secretKeys, secretManifest } =
         await resolveExecutionRunAdapterConfig({
           managedAiCredentials: Boolean(runScopedAiBinding),
@@ -26703,6 +26738,7 @@ export function heartbeatService(
           executionRunConfig: runScopedAiBinding ? { ...runAdapterConfig, env: stripAiAuthBindings(runAdapterConfig.env) } : runAdapterConfig,
           projectEnv: runScopedAiBinding ? stripAiAuthBindings(projectContext?.env) : projectContext?.env ?? null,
           routineEnv: runScopedAiBinding ? stripAiAuthBindings(routineEnvContext.env) : routineEnvContext.env,
+          runScopedSecretEnv,
           secretsSvc,
           trustPreset,
         });
@@ -30301,6 +30337,19 @@ export function heartbeatService(
             logger.warn(
               { err: revokeErr, runId: run.id, companyId: agent.companyId },
               "failed to revoke heartbeat-run MCP gateway tokens",
+            );
+          }
+          // myrmidon(OPE-12932 KEY-TTL): the run's gateway-key projection is
+          // revoked with the run. Deleting the managed key secret makes every
+          // stale run env reference resolve as unavailable (secret_deleted)
+          // from now on; the agent's next run looks the key up again (new
+          // ref/value) at dispatch. Best effort — never fails the finishing run.
+          try {
+            await removeRunScopedGatewayKeyRef(db, agent.companyId, agent.id);
+          } catch (keyRefErr) {
+            logger.warn(
+              { err: keyRefErr, runId: run.id, companyId: agent.companyId, agentId: agent.id },
+              "failed to remove the run-scoped gateway key binding",
             );
           }
         }

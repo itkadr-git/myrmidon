@@ -27,6 +27,7 @@
 
 import { and, eq, ne } from "drizzle-orm";
 import { agents, type Db } from "@myrmidon/db";
+import { agentKeySecretName, isAgentKeySecretName } from "@myrmidon/shared";
 import { secretService } from "../../services/index.js";
 import { cardUsesLlmGateway } from "../bot-containers/profile-input.js";
 
@@ -36,6 +37,20 @@ export const BOT_LLM_API_KEY_SECRET_ENV = "MYRMIDON_BOT_LLM_API_KEY_SECRET";
 export interface GatewayBotKey {
   agentId: string;
   keyValue: string;
+}
+
+/**
+ * myrmidon(OPE-12932 KEY-TTL): the run-scoped projection of an agent's managed
+ * gateway key. The run's compiled env carries only the REFERENCE
+ * ({ type: "secret_ref", secretId, version: "latest" }); the secrets service
+ * resolves it once at dispatch, masks the value, and records the access. The
+ * raw key never enters the persisted adapter config or the profile.
+ */
+export interface RunScopedGatewayKeyRef {
+  /** The env name the run receives the reference under (settings.keyEnv). */
+  envKey: string;
+  /** The secret store binding placed in the run env: reference, never a value. */
+  secretRef: { type: "secret_ref"; secretId: string; version: "latest" };
 }
 
 /** A bot card as the resolver needs it. */
@@ -173,6 +188,59 @@ function readVersion(value: unknown): number | "latest" | null {
   if (value === undefined || value === null || value === "latest") return "latest";
   if (typeof value === "number" && Number.isInteger(value) && value > 0) return value;
   return null;
+}
+
+/**
+ * myrmidon(OPE-12932 KEY-TTL): the run-scoped secret_ref for an agent's
+ * managed gateway key, for the run env. Returns null when the agent does not
+ * hold a managed key (nothing bound, foreign settings) — the run simply gets
+ * no key reference, like before. The lookup never reads the key value: the
+ * run env carries the reference, and the secrets service resolves it once at
+ * dispatch (audited, masked), so the raw key never enters the compiled config
+ * or profile.
+ */
+export async function findRunScopedGatewayKeyRef(
+  db: Db,
+  companyId: string,
+  agentId: string,
+  env: NodeJS.ProcessEnv = process.env,
+): Promise<RunScopedGatewayKeyRef | null> {
+  const settings = readGatewayBotKeySettings(env);
+  if (!settings.keyEnv) return null;
+  const secret = await secretService(db).getByName(companyId, agentKeySecretName({ agentId }));
+  if (!secret || secret.status !== "active" || secret.scope !== "company") return null;
+  return {
+    envKey: settings.keyEnv,
+    secretRef: { type: "secret_ref", secretId: secret.id, version: "latest" },
+  };
+}
+
+/**
+ * myrmidon(OPE-12932 KEY-TTL): deletes the agent's managed gateway key secret,
+ * which revokes the run-scoped projection with it — the next resolution of a
+ * stale run ref fails with `secret_deleted` instead of authenticating. Best
+ * effort by design: a missing secret (never created, already revoked) is
+ * success, and a provider outage must not fail the run that is finishing.
+ * Returns whether a secret was actually deleted.
+ */
+export async function removeRunScopedGatewayKeyRef(
+  db: Db,
+  companyId: string,
+  agentId: string,
+  env: NodeJS.ProcessEnv = process.env,
+): Promise<boolean> {
+  const settings = readGatewayBotKeySettings(env);
+  const secretName = agentKeySecretName({ agentId });
+  if (!isAgentKeySecretName(secretName)) return false;
+  const secrets = secretService(db);
+  const secret = await secrets.getByName(companyId, secretName).catch(() => null);
+  if (!secret) return false;
+  try {
+    await secrets.remove(secret.id);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 function asRecord(value: unknown): Record<string, unknown> | null {
