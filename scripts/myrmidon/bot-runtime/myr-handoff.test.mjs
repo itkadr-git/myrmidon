@@ -1,16 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { run, resolveReviewerAgentId } from "../../../docker/bot-runtime/myr-ws/lib/handoff.js";
-
-test("resolveReviewerAgentId resolves mod 6 mapping", () => {
-  assert.equal(resolveReviewerAgentId(0), "dbd3f01c-518e-4c1d-a05a-2a4bf25acf93"); // adm-dev-review-8
-  assert.equal(resolveReviewerAgentId(1), "d674a53a-3abd-43fe-8f49-696a04937323"); // adm-dev-review-9
-  assert.equal(resolveReviewerAgentId(2), "07555686-c5f7-4536-ac2b-c9ab1027e89f"); // adm-dev-review-10
-  assert.equal(resolveReviewerAgentId(3), "62640ae6-658b-4cde-ba3a-b6a88e708df9"); // adm-dev-review-11
-  assert.equal(resolveReviewerAgentId(4), "b7040a16-03a0-4d3c-8060-709038ccc403"); // adm-dev-review-12
-  assert.equal(resolveReviewerAgentId(5), "c85f5dac-4a13-4bdb-9498-c666fe45d4c9"); // adm-dev-review-13
-  assert.equal(resolveReviewerAgentId(6), "dbd3f01c-518e-4c1d-a05a-2a4bf25acf93"); // adm-dev-review-8
-});
+import { run } from "../../../docker/bot-runtime/myr-ws/lib/handoff.js";
 
 test("myr-handoff requires --issue and --summary", async () => {
   const res = await run([]);
@@ -121,8 +111,8 @@ test("myr-handoff creates new PR if none exists and patches issue to in_review",
   assert.equal(res.stdout, "PR #42 sha 0123456789abcdef status in_review bound yes\n");
   assert.equal(patchedPayload.status, "in_review");
   assert.equal(patchedPayload.comment, "acceptance confirmed");
-  // 42 % 6 = 0 -> adm-dev-review-8
-  assert.equal(patchedPayload.executionPolicy.stages[0].participants[0].agentId, "dbd3f01c-518e-4c1d-a05a-2a4bf25acf93");
+  assert.deepEqual(Object.keys(patchedPayload).sort(), ["comment", "status"]);
+  assert.equal("executionPolicy" in patchedPayload, false);
 });
 
 test("myr-handoff reuses existing PR and updates title if needed", async () => {
@@ -146,7 +136,7 @@ test("myr-handoff reuses existing PR and updates title if needed", async () => {
       if (cmd === "gh" && args[0] === "pr" && args[1] === "view") {
         return {
           status: 0,
-          stdout: JSON.stringify({ number: 43, title: "some work", url: "https://github.com/itkadr-git/myrmidon/pull/43" }),
+          stdout: JSON.stringify({ number: 43, state: "OPEN", title: "some work", url: "https://github.com/itkadr-git/myrmidon/pull/43" }),
           stderr: "",
         };
       }
@@ -188,4 +178,76 @@ test("myr-handoff reuses existing PR and updates title if needed", async () => {
   assert.ok(editCmd);
   assert.equal(editCmd[4], "--title");
   assert.equal(editCmd[5], "OPE-999: some work");
+});
+
+
+function makeDeps({ patchStatus = 200, getStatus = 200, prView, commandsRun = [] } = {}) {
+  return {
+    env: { PAPERCLIP_API_KEY: "secret", PAPERCLIP_API_URL: "http://paperclip-test:3100" },
+    runCommand: (cmd, args) => {
+      commandsRun.push([cmd, ...args]);
+      if (cmd === "git" && args[0] === "branch") return { status: 0, stdout: "bot/OPE-5\n", stderr: "" };
+      if (cmd === "git" && args[0] === "rev-parse") return { status: 0, stdout: "abc123\n", stderr: "" };
+      if (cmd === "gh" && args[0] === "pr" && args[1] === "view") {
+        return prView || { status: 1, stdout: "", stderr: "no pull requests found" };
+      }
+      if (cmd === "gh" && args[0] === "pr" && args[1] === "create") {
+        return { status: 0, stdout: "https://github.com/itkadr-git/myrmidon/pull/77\n", stderr: "" };
+      }
+      return { status: 0, stdout: "", stderr: "" };
+    },
+    fetch: async (url, opts) => {
+      if (url.endsWith("/api/issues/OPE-5")) {
+        if (getStatus !== 200) return { ok: false, status: getStatus, text: async () => "x".repeat(1000) };
+        return { ok: true, status: 200, json: async () => ({ id: "issue-uuid-5" }) };
+      }
+      if (url.endsWith("/api/issues/issue-uuid-5") && opts.method === "PATCH") {
+        if (patchStatus !== 200) return { ok: false, status: patchStatus, text: async () => "unprocessable" };
+        return { ok: true, status: 200, json: async () => ({}) };
+      }
+      return { ok: true, status: 200, json: async () => [] };
+    },
+  };
+}
+
+test("myr-handoff reports issue_patch HTTP 422 and exits non-zero", async () => {
+  const res = await run(["--issue", "OPE-5", "--summary", "s"], makeDeps({ patchStatus: 422 }));
+  assert.notEqual(res.exitCode, 0);
+  assert.match(res.stderr, /issue_patch: HTTP 422/);
+});
+
+test("myr-handoff reports issue_get HTTP 500 (not 'not found') with truncated body", async () => {
+  const res = await run(["--issue", "OPE-5", "--summary", "s"], makeDeps({ getStatus: 500 }));
+  assert.notEqual(res.exitCode, 0);
+  assert.match(res.stderr, /issue_get: HTTP 500/);
+  assert.doesNotMatch(res.stderr, /not found/);
+  assert.ok(res.stderr.length < 500);
+});
+
+test("myr-handoff creates a new PR when the branch only has a merged PR", async () => {
+  const commandsRun = [];
+  const deps = makeDeps({
+    commandsRun,
+    prView: {
+      status: 0,
+      stdout: JSON.stringify({ number: 10, state: "MERGED", title: "OPE-5: old", url: "https://github.com/itkadr-git/myrmidon/pull/10" }),
+      stderr: "",
+    },
+  });
+  const res = await run(["--issue", "OPE-5", "--summary", "s"], deps);
+  assert.equal(res.exitCode, 0);
+  assert.match(res.stdout, /^PR #77 /);
+  assert.ok(commandsRun.some((c) => c[0] === "gh" && c[1] === "pr" && c[2] === "create"));
+});
+
+test("myr-handoff reports a fetch timeout with non-zero exit", async () => {
+  const deps = makeDeps();
+  deps.fetch = async () => {
+    const e = new Error("aborted");
+    e.name = "TimeoutError";
+    throw e;
+  };
+  const res = await run(["--issue", "OPE-5", "--summary", "s"], deps);
+  assert.notEqual(res.exitCode, 0);
+  assert.match(res.stderr, /timed out/);
 });

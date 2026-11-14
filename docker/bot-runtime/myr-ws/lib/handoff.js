@@ -3,38 +3,45 @@
 const { spawnSync } = require("node:child_process");
 const { parseArgs } = require("node:util");
 
+const SPAWN_TIMEOUT_MS = 60000;
+const FETCH_TIMEOUT_MS = 15000;
+
 function runCommand(cmd, args, options = {}) {
   const res = spawnSync(cmd, args, {
     encoding: "utf8",
     stdio: ["pipe", "pipe", "pipe"],
+    timeout: SPAWN_TIMEOUT_MS,
     ...options,
   });
+  let stderr = res.stderr || "";
+  if (res.error) {
+    const reason = res.error.code === "ETIMEDOUT"
+      ? `${cmd} timed out after ${SPAWN_TIMEOUT_MS} ms`
+      : `${cmd}: ${res.error.message}`;
+    stderr = stderr ? `${stderr.trim()}\n${reason}` : reason;
+  }
   return {
     status: res.status ?? (res.error ? 1 : 0),
     stdout: res.stdout || "",
-    stderr: res.stderr || "",
+    stderr,
     error: res.error,
   };
 }
 
-function resolveReviewerAgentId(prNumber) {
-  const table = [
-    "dbd3f01c-518e-4c1d-a05a-2a4bf25acf93", // 0 -> adm-dev-review-8
-    "d674a53a-3abd-43fe-8f49-696a04937323", // 1 -> adm-dev-review-9
-    "07555686-c5f7-4536-ac2b-c9ab1027e89f", // 2 -> adm-dev-review-10
-    "62640ae6-658b-4cde-ba3a-b6a88e708df9", // 3 -> adm-dev-review-11
-    "b7040a16-03a0-4d3c-8060-709038ccc403", // 4 -> adm-dev-review-12
-    "c85f5dac-4a13-4bdb-9498-c666fe45d4c9", // 5 -> adm-dev-review-13
-  ];
-  const mod = Number(prNumber) % 6;
-  return table[mod];
+function describeFetchError(err) {
+  if (err && (err.name === "TimeoutError" || err.name === "AbortError")) {
+    return `request timed out after ${FETCH_TIMEOUT_MS} ms`;
+  }
+  return `network error: ${err && err.message ? err.message : String(err)}`;
 }
 
 async function run(args, deps = {}) {
   const cwd = deps.cwd || process.cwd();
   const env = deps.env || process.env;
   const execCmd = deps.runCommand || runCommand;
-  const fetchFn = deps.fetch || globalThis.fetch;
+  const rawFetch = deps.fetch || globalThis.fetch;
+  const fetchFn = (url, opts = {}) =>
+    rawFetch(url, { ...opts, signal: AbortSignal.timeout(FETCH_TIMEOUT_MS) });
 
   let parsed;
   try {
@@ -95,11 +102,11 @@ async function run(args, deps = {}) {
   }
 
   let prNumber = null;
-  const prViewRes = execCmd("gh", ["pr", "view", branch, "--json", "number,url,title"], { cwd, env });
+  const prViewRes = execCmd("gh", ["pr", "view", branch, "--json", "number,url,title,state"], { cwd, env });
   if (prViewRes.status === 0 && prViewRes.stdout.trim()) {
     try {
       const data = JSON.parse(prViewRes.stdout);
-      if (data && data.number) {
+      if (data && data.number && data.state === "OPEN") {
         prNumber = data.number;
         if (data.title && !data.title.includes(issueKeyOrId)) {
           execCmd("gh", ["pr", "edit", String(prNumber), "--title", `${issueKeyOrId}: ${data.title}`], { cwd, env });
@@ -134,10 +141,11 @@ async function run(args, deps = {}) {
     if (match) {
       prNumber = Number(match[1]);
     } else {
-      const checkView = execCmd("gh", ["pr", "view", branch, "--json", "number"], { cwd, env });
+      const checkView = execCmd("gh", ["pr", "view", branch, "--json", "number,state"], { cwd, env });
       if (checkView.status === 0) {
         try {
-          prNumber = JSON.parse(checkView.stdout).number;
+          const checked = JSON.parse(checkView.stdout);
+          if (checked && checked.state === "OPEN") prNumber = checked.number;
         } catch (_) {}
       }
     }
@@ -165,20 +173,29 @@ async function run(args, deps = {}) {
 
   let issueData = null;
   try {
-    const issueGetRes = await fetchFn(`${paperclipUrl}/api/issues/${issueKeyOrId}`, {
+    const issueGetRes = await fetchFn(`${paperclipUrl}/api/issues/${encodeURIComponent(issueKeyOrId)}`, {
       method: "GET",
       headers: {
         Authorization: `Bearer ${paperclipKey}`,
       },
     });
-    if (issueGetRes.ok) {
-      issueData = await issueGetRes.json();
+    if (!issueGetRes.ok) {
+      let body = "";
+      try {
+        body = String(await issueGetRes.text()).slice(0, 300);
+      } catch (_) {}
+      return {
+        exitCode: 1,
+        stdout: "",
+        stderr: `myr-handoff: failed at step issue_get: HTTP ${issueGetRes.status} ${body}\n`,
+      };
     }
+    issueData = await issueGetRes.json();
   } catch (err) {
     return {
       exitCode: 1,
       stdout: "",
-      stderr: `myr-handoff: failed at step issue_fetch: ${err.message}\n`,
+      stderr: `myr-handoff: failed at step issue_get: ${describeFetchError(err)}\n`,
     };
   }
 
@@ -186,31 +203,15 @@ async function run(args, deps = {}) {
     return {
       exitCode: 1,
       stdout: "",
-      stderr: `myr-handoff: failed at step issue_fetch: issue ${issueKeyOrId} not found\n`,
+      stderr: `myr-handoff: failed at step issue_get: response for ${issueKeyOrId} has no id\n`,
     };
   }
 
   const issueId = issueData.id;
-  const reviewerAgentId = resolveReviewerAgentId(prNumber);
 
   const patchBody = {
     status: "in_review",
     comment: summary,
-    executionPolicy: {
-      mode: "normal",
-      stages: [
-        {
-          type: "review",
-          approvalsNeeded: 1,
-          participants: [
-            {
-              type: "agent",
-              agentId: reviewerAgentId,
-            },
-          ],
-        },
-      ],
-    },
   };
 
   const patchHeaders = {
@@ -232,12 +233,15 @@ async function run(args, deps = {}) {
     return {
       exitCode: 1,
       stdout: "",
-      stderr: `myr-handoff: failed at step issue_patch: ${err.message}\n`,
+      stderr: `myr-handoff: failed at step issue_patch: ${describeFetchError(err)}\n`,
     };
   }
 
   if (!patchRes.ok) {
-    const errText = await patchRes.text();
+    let errText = "";
+    try {
+      errText = String(await patchRes.text()).slice(0, 300);
+    } catch (_) {}
     return {
       exitCode: 1,
       stdout: "",
@@ -260,7 +264,7 @@ async function run(args, deps = {}) {
           if (wp.kind === "pull_request") {
             const meta = wp.metadata || {};
             const url = wp.url || meta.url || "";
-            return url.includes(String(prNumber)) || meta.number === prNumber;
+            return meta.number === prNumber || new RegExp(`/pull/${prNumber}/?$`).test(url);
           }
           return false;
         });
@@ -277,5 +281,4 @@ async function run(args, deps = {}) {
 
 module.exports = {
   run,
-  resolveReviewerAgentId,
 };
