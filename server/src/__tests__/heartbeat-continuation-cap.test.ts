@@ -550,7 +550,7 @@ describeEmbeddedPostgres("heartbeat continuation wakes: status gate and real att
 
     it("caps automatic wakes when task runs without commit limit is reached (OPE-13080)", async () => {
       const companyId = randomUUID();
-      await db.insert(companies).values({ id: companyId, name: "Cap Run No Commit Co" });
+      await db.insert(companies).values({ id: companyId, name: "Cap Run No Commit Co", defaultResponsibleUserId: "responsible-user" });
 
       const leadAgentId = await seedAgent(companyId, "team-lead");
       const agentId = await seedAgent(companyId, "engineer");
@@ -629,7 +629,7 @@ describeEmbeddedPostgres("heartbeat continuation wakes: status gate and real att
 
     it("resets run cap without commit counter when user manually unblocks issue (OPE-13080)", async () => {
       const companyId = randomUUID();
-      await db.insert(companies).values({ id: companyId, name: "Unblock Reset Co" });
+      await db.insert(companies).values({ id: companyId, name: "Unblock Reset Co", defaultResponsibleUserId: "responsible-user" });
 
       const agentId = await seedAgent(companyId, "engineer");
       const issueId = randomUUID();
@@ -712,7 +712,11 @@ describeEmbeddedPostgres("heartbeat continuation wakes: status gate and real att
 
       async function seedScene(opts: { role?: string; withPr?: boolean; runInvocationSource?: string } = {}) {
         const companyId = randomUUID();
-        await db.insert(companies).values({ id: companyId, name: `NoCommit ${companyId.slice(0, 6)}` });
+        await db.insert(companies).values({
+          id: companyId,
+          name: `NoCommit ${companyId.slice(0, 6)}`,
+          defaultResponsibleUserId: "responsible-user",
+        });
         const agentId = await seedAgent(companyId, "engineer-x", opts.role ?? "engineer");
         const issueId = randomUUID();
         await db.insert(issues).values({
