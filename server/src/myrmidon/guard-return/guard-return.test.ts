@@ -227,6 +227,40 @@ describe("1.6.6 GUARD-RETURN: domain logic", () => {
     expect(decision.commentBody).toContain("Задача возвращена автору");
   });
 
+  it.each(["terminated", "paused"] as const)("falls back to a live engineer when the PR author is %s", (status) => {
+    const unavailableAuthor: AgentSummary = { id: "author", name: "author", role: "engineer", status, pausedAt: status === "paused" ? new Date() : null };
+    const liveEngineer: AgentSummary = { id: "live", name: "live", role: "engineer", status: "idle" };
+    const candidate: GuardReturnCandidate = {
+      issueId: "issue-unavailable-author", identifier: "OPE-13140", title: "Return", companyId: "comp-1",
+      status: "in_progress", assigneeAgentId: reviewerAgent.id, assigneeRole: reviewerAgent.role,
+      projectId: "proj-1", casteKey: "engineer", labels: [], executionState: { status: "changes_requested" },
+      prWorkProducts: [{ id: "pr-unavailable-author", type: "pull_request", status: "open", creatorAgentId: unavailableAuthor.id }],
+      comments: [], createdAt: new Date(), updatedAt: new Date(),
+    };
+    const decision = decideGuardReturn(candidate, new Map([
+      [unavailableAuthor.id, unavailableAuthor], [liveEngineer.id, liveEngineer], [reviewerAgent.id, reviewerAgent],
+    ]), undefined, [unavailableAuthor, liveEngineer]);
+    expect(decision.action).toBe("return");
+    expect(decision.targetAssigneeAgentId).toBe(liveEngineer.id);
+    expect(decision.targetKind).toBe("active_engineer");
+    expect(decision.commentBody).toContain("Задача возвращена автору (@live)");
+  });
+
+  it("preserves return to an invokable PR author", () => {
+    const candidate: GuardReturnCandidate = {
+      issueId: "issue-live-author", identifier: "OPE-13140", title: "Return", companyId: "comp-1",
+      status: "in_progress", assigneeAgentId: reviewerAgent.id, assigneeRole: reviewerAgent.role,
+      projectId: "proj-1", casteKey: "engineer", labels: [], executionState: { status: "changes_requested" },
+      prWorkProducts: [{ id: "pr-live-author", type: "pull_request", status: "open", creatorAgentId: engineerAgent.id }],
+      comments: [], createdAt: new Date(), updatedAt: new Date(),
+    };
+    const decision = decideGuardReturn(candidate, new Map([
+      [engineerAgent.id, { ...engineerAgent, status: "idle" }], [reviewerAgent.id, reviewerAgent],
+    ]));
+    expect(decision.targetAssigneeAgentId).toBe(engineerAgent.id);
+    expect(decision.targetKind).toBe("pr_author");
+  });
+
   it("skips guard-return for a code task already in review", () => {
     const agentMap = new Map<string, AgentSummary>([
       [engineerAgent.id, engineerAgent],
@@ -387,22 +421,17 @@ describe("1.6.6 GUARD-RETURN: sweeper execution", () => {
               // Handle queries based on table structure
               return {
                 orderBy: vi.fn().mockResolvedValue(mockComments),
-                then: (resolve: any) => {
-                  if (table?._?.name === "heartbeat_runs" || fields?.agentId) {
-                    return resolve([mockHeartbeatRun]);
-                  }
-                  if (table?._?.name === "issue_work_products" || fields?.externalId) {
-                    return resolve([prProduct]);
-                  }
-                  if (fields?.companyId && fields?.role) {
-                    return resolve([engineerAgent]);
-                  }
-                  if (fields?.name && fields?.role) {
-                    return resolve([
-                      { id: "agent-reviewer", name: "Reviewer 8", role: "reviewer" },
-                      engineerAgent,
-                    ]);
-                  }
+                then: (resolve: (value: unknown[]) => unknown) => {
+                  if (table?._?.name === "heartbeat_runs" || fields?.agentId) return resolve([mockHeartbeatRun]);
+                  if (table?._?.name === "issue_work_products" || fields?.externalId) return resolve([prProduct]);
+                  if (fields?.companyId && fields?.role) return resolve([engineerAgent]);
+                  if (fields?.pausedAt) return resolve([
+                    { ...engineerAgent, status: "idle", pausedAt: null },
+                    { id: "agent-reviewer", name: "Reviewer 8", role: "reviewer", status: "idle", pausedAt: null },
+                  ]);
+                  if (fields?.name && fields?.role) return resolve([
+                    { id: "agent-reviewer", name: "Reviewer 8", role: "reviewer" }, engineerAgent,
+                  ]);
                   return resolve([engineerAgent]);
                 },
               };
