@@ -1113,8 +1113,8 @@ export function githubConnectionEventService(
     const pullRequestNumber = positiveInteger(payload.pullRequestNumber) ?? positiveInteger(payload.number) ?? positiveInteger(payload.checkSuitePullRequestNumber);
     const headSha = commitSha(payload.headSha);
     const runId = identifier(payload.runId) ?? identifier(payload.checkSuiteId) ?? event.id;
-    if (!repository || !pullRequestNumber || !headSha || !runId) return;
-    const deliveryRunId = String(runId);
+    if (!repository || !pullRequestNumber || !headSha || runId === null) return;
+    const deliveryRunId = runId;
     invalidateCiCacheForHead(companyId, repository.toLowerCase(), headSha);
 
     const active = status === "queued" || status === "in_progress";
