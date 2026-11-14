@@ -24,6 +24,18 @@ export const INVENTORY_SECTIONS = Object.freeze([
 
 const SECTION_BY_PATH = new Map(INVENTORY_SECTIONS.map((section) => [section.path, section]));
 
+const OWNER_REF_FIELD = "ownerCompanyId";
+
+/** Reasons an agent owner ref can fail exact attribution. */
+export const OWNER_REF_REASONS = Object.freeze({
+  missingOwnerRef: "missing-owner-ref",
+  ownerCompanyUnknown: "owner-company-not-in-known-set",
+});
+
+function shortHash(value) {
+  return createHash("sha256").update(value).digest("hex").slice(0, 12);
+}
+
 export const INVENTORY_METHOD = "GET";
 
 function safePayload(body) {
@@ -36,6 +48,53 @@ function stateFor(response, payload) {
   if (response.status === 404) return "not-found";
   if (!response.ok || response.status >= 400) return "error";
   return payload ? (payload.length ? "data" : "empty") : "error";
+}
+
+/**
+ * Serialize the ownership attribution of one entity kind (agents) from an
+ * inventory payload. The probe performs no resolution lookups and no writes:
+ * attribution is derived purely from the fetched rows plus an optional
+ * caller-supplied set of company ids the board knows about.
+ *
+ * Contract (OPE-12906):
+ * - missing or unusable owner ref  -> { attribution: "unknown",   ownerCompanyId: null, reason: "missing-owner-ref" }
+ * - owner ref absent from the known set -> { attribution: "unresolved", ownerCompanyId: null, reason: "owner-company-not-in-known-set", ownerRefHash }
+ * - known owner ref                -> { attribution: "resolved", ownerCompanyId: <exact id> }
+ *
+ * Fail-closed: only a ref verifiably present in `knownCompanyIds` may
+ * serialize as resolved with its raw id. An empty or absent known set makes
+ * every present ref unresolved (pseudonymized), never resolved-by-default;
+ * a raw owner id can reach the report only when the board itself supplied it
+ * as known. An unknown owner ref is NEVER serialized as the zero domain or
+ * the current domain: `ownerCompanyId` stays `null` and the reason carries
+ * the cause.
+ * Entity and unresolved owner references are pseudonymized (truncated sha256)
+ * so reports stay deterministic without carrying raw identifiers.
+ * @param {Array<object>} entities agent rows in payload order (canonical)
+ * @param {{knownCompanyIds?: Iterable<string>}} [options] the set of company
+ *   ids the caller can verify; omitting it leaves every present ref unresolved
+ * @returns {Array<object>} deterministic serialized ownership records
+ */
+export function serializeAgentOwnership(entities, { knownCompanyIds } = {}) {
+  const known = knownCompanyIds instanceof Set ? knownCompanyIds : new Set(knownCompanyIds ?? []);
+  const rows = Array.isArray(entities) ? entities : [];
+  return rows.map((entity) => {
+    const entityRef = entity && typeof entity === "object" && typeof entity.id === "string" && entity.id ? shortHash(entity.id) : null;
+    const rawOwner = entity && typeof entity === "object" ? entity[OWNER_REF_FIELD] : undefined;
+    if (typeof rawOwner !== "string" || !rawOwner.trim()) {
+      return { entityRef, attribution: "unknown", ownerCompanyId: null, reason: OWNER_REF_REASONS.missingOwnerRef };
+    }
+    if (!known.has(rawOwner)) {
+      return {
+        entityRef,
+        attribution: "unresolved",
+        ownerCompanyId: null,
+        reason: OWNER_REF_REASONS.ownerCompanyUnknown,
+        ownerRefHash: shortHash(rawOwner),
+      };
+    }
+    return { entityRef, attribution: "resolved", ownerCompanyId: rawOwner };
+  });
 }
 
 /**
@@ -62,12 +121,13 @@ function missingAttribution(attribution, rows) {
  * visible row (`report.dependencies`), failed sections contribute none, and a
  * report with no collected objects carries no `dependencies` key at all.
  * @param {{request: (opts: {method: string, path: string}) => Promise<{status:number, ok:boolean, json?:() => Promise<unknown>}>}} transport
- * @param {{currentCompanyId?: string | null}} [options]
- * @returns {Promise<{sections: Array<object>, summary: object, dependencies?: Array<object>}>}
+ * @param {{currentCompanyId?: string | null, knownCompanyIds?: Iterable<string>}} [options]
+ * @returns {Promise<{sections: Array<object>, summary: object, ownership: {agents: Array<object>}, dependencies?: Array<object>}>}
  */
-export async function collectInventory(transport, { currentCompanyId = null } = {}) {
+export async function collectInventory(transport, { currentCompanyId = null, knownCompanyIds } = {}) {
   const sections = [];
   const dependencies = [];
+  let agentsPayload = null;
   for (const definition of INVENTORY_SECTIONS) {
     let response;
     let payload = null;
@@ -79,6 +139,7 @@ export async function collectInventory(transport, { currentCompanyId = null } = 
     }
     const state = stateFor(response, payload);
     const covered = state === "data" || state === "empty";
+    if (definition.key === "agents" && state === "data") agentsPayload = payload;
     const section = {
       key: definition.key,
       path: definition.path,
@@ -100,6 +161,7 @@ export async function collectInventory(transport, { currentCompanyId = null } = 
   const report = {
     sections,
     summary: { total: sections.length, covered: sections.filter((s) => s.covered).length, counts },
+    ownership: { agents: serializeAgentOwnership(agentsPayload ?? [], { knownCompanyIds }) },
   };
   if (dependencies.length > 0) {
     report.dependencies = dependencies;
@@ -194,6 +256,9 @@ export function isUnresolvedDependencyStatus(status) {
 /** Deterministic normalized form of a probe report (sorted object keys, section order preserved). */
 export function normalizeInventoryReport(report) {
   const base = { sections: report.sections, summary: report.summary };
+  if (report.ownership !== undefined) {
+    base.ownership = report.ownership;
+  }
   if (report.dependencies !== undefined) {
     base.dependencies = report.dependencies;
   }
