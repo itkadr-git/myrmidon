@@ -27,10 +27,12 @@
 import { useEffect, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Package } from "lucide-react";
+import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
+import { ToggleSwitch } from "@/components/ui/toggle-switch";
 import { useTranslation } from "@/i18n";
 import type { BotDiskSettingsPatch } from "@myrmidon/shared";
 import {
@@ -217,6 +219,7 @@ export function BotDiskSettingsPanel({ now, taskStatuses }: { now?: number; task
   const [error, setError] = useState<string | null>(null);
   const [reposDraft, setReposDraft] = useState<string | null>(null);
   const [reposError, setReposError] = useState<string | null>(null);
+  const [mirrorEnabledDraft, setMirrorEnabledDraft] = useState<boolean | null>(null);
   const [defaultRepoDraft, setDefaultRepoDraft] = useState<string | null>(null);
   const [defaultRepoError, setDefaultRepoError] = useState<string | null>(null);
   const [runtimeDraft, setRuntimeDraft] = useState<string | null>(null);
@@ -227,8 +230,16 @@ export function BotDiskSettingsPanel({ now, taskStatuses }: { now?: number; task
     if (view && draft === null) setDraft(view.settings.sharedPackageCachePath ?? "");
   }, [view, draft]);
   useEffect(() => {
-    if (view && reposDraft === null) setReposDraft((view.settings.gitMirrorRepos ?? []).join("\n"));
+    if (view && reposDraft === null) {
+      const initial = view.effective?.gitMirrorRepos ?? view.settings.gitMirrorRepos ?? [];
+      setReposDraft(initial.join("\n"));
+    }
   }, [view, reposDraft]);
+  useEffect(() => {
+    if (view?.effective && mirrorEnabledDraft === null) {
+      setMirrorEnabledDraft(view.effective.gitMirrorEnabled);
+    }
+  }, [view, mirrorEnabledDraft]);
   useEffect(() => {
     if (view && defaultRepoDraft === null) setDefaultRepoDraft(view.settings.defaultRepo ?? "");
   }, [view, defaultRepoDraft]);
@@ -236,11 +247,21 @@ export function BotDiskSettingsPanel({ now, taskStatuses }: { now?: number; task
     if (view && runtimeDraft === null) setRuntimeDraft(view.settings.sharedBotRuntimePath ?? "");
   }, [view, runtimeDraft]);
 
+  const mirrorEnabled = mirrorEnabledDraft ?? view?.effective?.gitMirrorEnabled ?? false;
+
   const saveRepos = useMutation({
-    mutationFn: (repos: string[]) => botDiskApi.setGitMirrorRepos(repos.length === 0 ? null : repos),
+    mutationFn: (repos: string[] | null) => botDiskApi.setGitMirrorRepos(repos),
     onSuccess: (saved) => {
       setReposError(null);
-      setReposDraft((saved.settings.gitMirrorRepos ?? []).join("\n"));
+      if (saved) {
+        const nextRepos = saved.effective?.gitMirrorRepos ?? saved.settings?.gitMirrorRepos ?? [];
+        setReposDraft(nextRepos.join("\n"));
+        if (saved.effective) {
+          setMirrorEnabledDraft(saved.effective.gitMirrorEnabled);
+        } else if (saved.settings?.gitMirrorRepos !== undefined) {
+          setMirrorEnabledDraft(saved.settings.gitMirrorRepos.length > 0);
+        }
+      }
       queryClient.invalidateQueries({ queryKey: botDiskQueryKey });
     },
     onError: (err) => setReposError(describeSettingsError(err, t, "area.settings-bots-host-1.bot-disk-settings-panel.errReposSave")),
@@ -259,7 +280,14 @@ export function BotDiskSettingsPanel({ now, taskStatuses }: { now?: number; task
       setReposError(t("area.settings-bots-host-1.bot-disk-settings-panel.errRepos", { name: bad }));
       return;
     }
-    saveRepos.mutate(repos);
+    saveRepos.mutate(repos.length === 0 ? null : repos);
+  };
+
+  const handleToggleMirror = (checked: boolean) => {
+    setMirrorEnabledDraft(checked);
+    if (!checked) {
+      saveRepos.mutate([]);
+    }
   };
 
   // myrmidon(BOT-DISK-D): where pnpm keeps its store and how it imports packages.
@@ -316,8 +344,9 @@ export function BotDiskSettingsPanel({ now, taskStatuses }: { now?: number; task
   };
   const uvCacheUnchanged = view !== undefined && (uvCacheDirDraft ?? "").trim() === (view.settings.uvCacheDir ?? "");
 
+  const currentGitMirrorRepos = view?.effective?.gitMirrorRepos ?? view?.settings.gitMirrorRepos ?? [];
   const reposUnchanged =
-    view !== undefined && parseRepos(reposDraft ?? "").join("\n") === (view.settings.gitMirrorRepos ?? []).join("\n");
+    view !== undefined && parseRepos(reposDraft ?? "").join("\n") === currentGitMirrorRepos.join("\n");
 
   const saveDefaultRepo = useMutation({
     mutationFn: (repo: string) => botDiskApi.setFields({ defaultRepo: repo === "" ? null : repo }),
@@ -410,7 +439,35 @@ export function BotDiskSettingsPanel({ now, taskStatuses }: { now?: number; task
         {save.isSuccess && !error && <p className="text-xs text-green-600">{t("area.settings-bots-host-1.bot-disk-settings-panel.saved")}</p>}
       </div>
       <div className="space-y-2">
-        <Label htmlFor="bot-disk-git-mirrors">{t("area.settings-bots-host-1.bot-disk-settings-panel.mirrorsLabel")}</Label>
+        <div className="flex items-center justify-between">
+          <div className="flex items-center gap-2">
+            <Label htmlFor="bot-disk-git-mirrors">{t("area.settings-bots-host-1.bot-disk-settings-panel.mirrorsLabel")}</Label>
+            {view?.effective?.gitMirrorReposIsDefault && (
+              <Badge variant="secondary" data-testid="bot-disk-git-mirrors-default-badge">
+                {t("area.settings-bots-host-1.bot-disk-settings-panel.mirrorsDefault")}
+              </Badge>
+            )}
+          </div>
+          {view?.effective !== undefined && (
+            <div className="flex items-center gap-2">
+              <ToggleSwitch
+                id="bot-disk-git-mirrors-toggle"
+                checked={mirrorEnabled}
+                onCheckedChange={handleToggleMirror}
+                disabled={!view?.settings.sharedPackageCachePath || saveRepos.isPending}
+                aria-label={t("area.settings-bots-host-1.bot-disk-settings-panel.mirrorsToggle")}
+                data-testid="bot-disk-git-mirrors-toggle"
+              />
+            </div>
+          )}
+        </div>
+        {view?.effective?.sharedCacheRoles && (
+          <p className="text-xs text-muted-foreground" data-testid="bot-disk-git-mirrors-roles">
+            {t("area.settings-bots-host-1.bot-disk-settings-panel.mirrorsRoles", {
+              roles: view.effective.sharedCacheRoles.join(", "),
+            })}
+          </p>
+        )}
         <Textarea
           id="bot-disk-git-mirrors"
           rows={3}

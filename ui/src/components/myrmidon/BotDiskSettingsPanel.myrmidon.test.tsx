@@ -364,3 +364,100 @@ describe("BotDiskSettingsPanel uv settings", () => {
     expect(setUv.mock.calls.at(-1)?.[0]).toEqual({ uvLinkMode: "hardlink" });
   });
 });
+
+describe("BotDiskSettingsPanel git mirror settings", () => {
+  beforeEach(async () => {
+    vi.restoreAllMocks();
+    document.body.innerHTML = "";
+    await i18n.changeLanguage("en");
+    vi.spyOn(botDiskLifecycleApi, "getPhysical").mockResolvedValue({ projects: [], gateReached: false } as never);
+    vi.spyOn(botDiskLifecycleApi, "getReports").mockResolvedValue({ reports: [] } as never);
+  });
+
+  it("shows repos and default badge with switch on when effective has defaults and no saved settings", async () => {
+    vi.spyOn(botDiskApi, "get").mockResolvedValue({
+      settings: { enabled: true, idleTtlMs: 3_600_000, sharedPackageCachePath: "/srv/cache" },
+      sources: { enabled: "settings", idleTtlMs: "settings" },
+      effective: {
+        gitMirrorEnabled: true,
+        gitMirrorRepos: ["itkadr-git/myrmidon", "itkadr-git/infra"],
+        gitMirrorReposIsDefault: true,
+        sharedCacheRoles: ["eng", "qa"],
+      },
+    } as never);
+
+    const container = renderPanel(reportAt);
+    await settle();
+
+    const textarea = container.querySelector('[data-testid="bot-disk-git-mirrors-input"]') as HTMLTextAreaElement;
+    expect(textarea.value).toBe("itkadr-git/myrmidon\nitkadr-git/infra");
+
+    const badge = container.querySelector('[data-testid="bot-disk-git-mirrors-default-badge"]');
+    expect(badge).not.toBeNull();
+    expect(badge?.textContent).toBe("default");
+
+    const toggle = container.querySelector('[data-testid="bot-disk-git-mirrors-toggle"]') as HTMLElement;
+    expect(toggle).not.toBeNull();
+    expect(toggle.getAttribute("aria-checked")).toBe("true");
+
+    const roles = container.querySelector('[data-testid="bot-disk-git-mirrors-roles"]');
+    expect(roles?.textContent).toContain("eng, qa");
+  });
+
+  it("saves empty array [] when turning the mirror switch off", async () => {
+    const setGitMirrorRepos = vi.spyOn(botDiskApi, "setGitMirrorRepos").mockResolvedValue({
+      settings: { enabled: true, idleTtlMs: 3_600_000, sharedPackageCachePath: "/srv/cache", gitMirrorRepos: [] },
+      sources: { enabled: "settings", idleTtlMs: "settings" },
+      effective: {
+        gitMirrorEnabled: false,
+        gitMirrorRepos: [],
+        gitMirrorReposIsDefault: false,
+        sharedCacheRoles: ["eng", "qa"],
+      },
+    } as never);
+
+    vi.spyOn(botDiskApi, "get").mockResolvedValue({
+      settings: { enabled: true, idleTtlMs: 3_600_000, sharedPackageCachePath: "/srv/cache" },
+      sources: { enabled: "settings", idleTtlMs: "settings" },
+      effective: {
+        gitMirrorEnabled: true,
+        gitMirrorRepos: ["itkadr-git/myrmidon", "itkadr-git/infra"],
+        gitMirrorReposIsDefault: true,
+        sharedCacheRoles: ["eng", "qa"],
+      },
+    } as never);
+
+    const container = renderPanel(reportAt);
+    await settle();
+
+    const toggle = container.querySelector('[data-testid="bot-disk-git-mirrors-toggle"]') as HTMLElement;
+    await act(async () => {
+      toggle.click();
+    });
+
+    expect(setGitMirrorRepos).toHaveBeenCalledTimes(1);
+    expect(setGitMirrorRepos).toHaveBeenCalledWith([]);
+  });
+
+  it("behaves as before when response has no effective field", async () => {
+    vi.spyOn(botDiskApi, "get").mockResolvedValue({
+      settings: { enabled: true, idleTtlMs: 3_600_000, sharedPackageCachePath: "/srv/cache" },
+      sources: { enabled: "settings", idleTtlMs: "settings" },
+    } as never);
+
+    const container = renderPanel(reportAt);
+    await settle();
+
+    const textarea = container.querySelector('[data-testid="bot-disk-git-mirrors-input"]') as HTMLTextAreaElement;
+    expect(textarea.value).toBe("");
+
+    const badge = container.querySelector('[data-testid="bot-disk-git-mirrors-default-badge"]');
+    expect(badge).toBeNull();
+
+    const toggle = container.querySelector('[data-testid="bot-disk-git-mirrors-toggle"]');
+    expect(toggle).toBeNull();
+
+    const roles = container.querySelector('[data-testid="bot-disk-git-mirrors-roles"]');
+    expect(roles).toBeNull();
+  });
+});
