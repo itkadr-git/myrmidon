@@ -40,17 +40,12 @@ export function sortEvalResults(
   results: readonly CasteModelEvalResultView[],
   bestModel: string | null,
 ): CasteModelEvalResultView[] {
-  const rank = (row: CasteModelEvalResultView): readonly number[] => {
-    const best = bestModel !== null && row.model === bestModel;
-    return [best ? 0 : 1, -row.score, row.model];
-  };
   const cmp = (a: CasteModelEvalResultView, b: CasteModelEvalResultView): number => {
-    const ra = rank(a);
-    const rb = rank(b);
-    for (let i = 0; i < ra.length; i += 1) {
-      if (ra[i] !== rb[i]) return ra[i] < rb[i]! ? -1 : 1;
-    }
-    return 0;
+    const aBest = bestModel !== null && a.model === bestModel;
+    const bBest = bestModel !== null && b.model === bestModel;
+    if (aBest !== bBest) return aBest ? -1 : 1;
+    if (a.score !== b.score) return b.score - a.score;
+    return a.model.localeCompare(b.model);
   };
   return [...results].sort(cmp);
 }
