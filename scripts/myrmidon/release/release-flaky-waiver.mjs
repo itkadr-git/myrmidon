@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 import fs from "node:fs";
 import { execFileSync } from "node:child_process";
+import { fileURLToPath } from "node:url";
 
 function die(message) { console.error(`RELEASE-FLAKY-WAIVER REFUSED: ${message}`); process.exitCode = 1; }
 function args(argv) {
@@ -23,12 +24,18 @@ function tagSha(r, tag) {
   if (ref.object.type !== "tag") return ref.object.sha;
   return gh(r, `git/tags/${ref.object.sha}`).object.sha;
 }
-function evidenceLive(r, evidence, tag) {
+export function validateEvidence(evidence, run, liveTagSha, tag) {
   if (!evidence || evidence.tag !== tag || !evidence.headSha || !evidence.runId || !evidence.attempt || !evidence.previousAttempt) throw new Error("evidence must include tag, headSha, runId and rerun attempt transition");
-  if (tagSha(r, tag) !== evidence.headSha) throw new Error("evidence headSha does not match the release tag");
-  const run = gh(r, `actions/runs/${evidence.runId}`);
+  if (liveTagSha !== evidence.headSha) throw new Error("evidence headSha does not match the release tag");
   if (run.head_sha !== evidence.headSha || Number(run.run_attempt) !== Number(evidence.attempt) || Number(evidence.attempt) <= Number(evidence.previousAttempt)) throw new Error("live run does not match the exact evidenced rerun attempt");
   if (run.status !== "completed" || run.conclusion !== "success") throw new Error("rerun is not completed successfully");
+  if (!Array.isArray(evidence.jobs) || evidence.jobs.length === 0 || evidence.jobs.some((job) => job.status !== "completed" || job.conclusion !== "success" || Number(job.runAttempt) !== Number(evidence.attempt))) throw new Error("evidence must prove every job succeeded on the exact rerun attempt");
+}
+function evidenceLive(r, evidence, tag) {
+  const liveSha = tagSha(r, tag);
+  const run = gh(r, `actions/runs/${evidence.runId}`);
+  const jobs = gh(r, `actions/runs/${evidence.runId}/jobs?per_page=100`);
+  validateEvidence(evidence, { ...run, jobs: jobs.jobs || [] }, liveSha, tag);
 }
 function waiverPath(tag) { return new URL(`../../../docs/myrmidon/releases/flaky-waivers/${tag}.json`, import.meta.url).pathname; }
 function main(argv) {
@@ -51,4 +58,6 @@ function main(argv) {
   fs.writeFileSync(file, `${JSON.stringify([...records, record], null, 2)}\n`);
   console.log(`waiver recorded: ${a.tag}`);
 }
-try { main(process.argv.slice(2)); } catch (error) { die(error.message); }
+if (process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1]) {
+  try { main(process.argv.slice(2)); } catch (error) { die(error.message); }
+}

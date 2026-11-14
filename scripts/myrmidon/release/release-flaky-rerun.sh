@@ -49,6 +49,7 @@ for _ in {1..10}; do
   sleep 2
 done
 (( rerun_attempt > attempt )) || { printf 'ERROR: GitHub did not expose a new rerun attempt\n' >&2; exit 1; }
+jobs="$(gh api --paginate "repos/$repo/actions/runs/$run_id/jobs?per_page=100" --jq '[.jobs[] | {id,name,status,conclusion,runAttempt: .run_attempt}]')"
 evidence="$(jq -cn --arg tag "$tag" --arg headSha "$head_sha" --arg runId "$run_id" --argjson runNumber "$run_number" --argjson previousAttempt "$attempt" --argjson attempt "$rerun_attempt" --argjson jobs "$jobs" --arg url "$url" --arg dispatchedAt "$dispatched_at" '{tag,headSha,runId,runNumber,previousAttempt,attempt,jobs,url,dispatchedAt}')"
 printf '%s\n' "$evidence"
 if [[ -n "$evidence_file" ]]; then
