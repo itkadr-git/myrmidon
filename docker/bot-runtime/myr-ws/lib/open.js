@@ -2,7 +2,7 @@
 // docker/bot-runtime/myr-ws/lib/open.js
 //
 // myrmidon(1.6.5-BOT-DISK-H2b): `myr-ws open <KEY> [owner/repo] [--base <ref>]
-// [--scratch [<name>]] [--json]`. A task copy is a git worktree of the bot's
+// [--scratch [<name>]] [--review] [--json]`. A task copy is a git worktree of the bot's
 // class-D base (`/workspace/<KEY>`, branch `bot/<KEY>`, no object store of its
 // own); a scratch copy is a worktree of the same base on a detached head, or an
 // empty directory when no repository is given (`/scratch/<name>`).
@@ -46,10 +46,11 @@ function usage(message) {
 // --- arguments ---------------------------------------------------------
 
 function parseOpenArgs(argv) {
-  const out = { positional: [], base: null, branch: null, repository: null, scratch: false, scratchName: null, json: false };
+  const out = { positional: [], base: null, branch: null, repository: null, scratch: false, scratchName: null, json: false, review: false };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     if (a === "--json") out.json = true;
+    else if (a === "--review") out.review = true;
     else if (a === "--base") {
       const v = argv[++i];
       if (v === undefined) throw usage("--base needs a ref");
@@ -111,6 +112,7 @@ function resolveOpenRequest(args) {
       throw usage(`invalid --branch ${JSON.stringify(args.branch)}`);
     }
   }
+  if (args.review && args.scratch) throw usage("--review cannot be used with --scratch");
   let key;
   if (args.scratch) {
     if (args.scratchName !== null) names.unshift(args.scratchName);
@@ -120,11 +122,11 @@ function resolveOpenRequest(args) {
       throw usage(`invalid scratch name ${JSON.stringify(key)} (letters, digits, . _ -; no '/' or '..')`);
     }
   } else {
-    if (names.length !== 1) throw usage("usage: myr-ws open <KEY> [owner/repo] [--repository owner/repo] [--base <ref>] [--branch <name>] [--scratch <name>] [--json]");
+    if (names.length !== 1) throw usage("usage: myr-ws open <KEY> [owner/repo] [--repository owner/repo] [--base <ref>] [--branch <name>] [--review] [--scratch <name>] [--json]");
     key = names[0];
     if (!ISSUE_KEY_RE.test(key)) throw usage(`invalid issue key ${JSON.stringify(key)} (expected PREFIX-123)`);
   }
-  return { key, repo, base: args.base, branch, scratch: args.scratch };
+  return { key, repo, base: args.base, branch, scratch: args.scratch, review: Boolean(args.review) };
 }
 
 // --- registry (C1 ws-registry.json) --------------------------------------
@@ -371,6 +373,11 @@ async function open(request, deps = {}) {
   const klass = scratch ? "G" : "E";
   let branch = scratch ? undefined : request.branch || `${TASK_BRANCH_PREFIX}${key}`;
   const git = makeGit(ctx);
+  // Review copy: the task branch checked out and nothing else. myr-ws never installs dependencies
+  // itself; review mode additionally switches git hooks off for the checkout (post-checkout
+  // preparation hooks of the base) so the copy is only the tree of the branch.
+  const review = Boolean(request.review) && !scratch;
+  const wtAdd = review ? ["-c", "core.hooksPath=/dev/null", "worktree", "add"] : ["worktree", "add"];
   const baseTarget = request.base ? `refs/remotes/origin/${request.base}` : "refs/remotes/origin/HEAD";
   let recovered = [];
   let recoveryRef;
@@ -524,18 +531,18 @@ async function open(request, deps = {}) {
     } else {
       const haveBranch = git(basePath, ["rev-parse", "--verify", "--quiet", `refs/heads/${branch}`], { allowFail: true }).status === 0;
       // A branch left by an earlier copy of this task keeps its commits: reattach it, do not reset it.
-      if (haveBranch) git(basePath, ["worktree", "add", dir, branch]);
+      if (haveBranch) git(basePath, [...wtAdd, dir, branch]);
       else {
         // An explicit --branch (the head branch of the task's pull request) starts from its
         // remote state when the repository has it, otherwise from the base ref.
         let from = target;
-        if (request.branch) {
+        if (request.branch || review) {
           const remote = `refs/remotes/origin/${branch}`;
           const has = () => git(basePath, ["rev-parse", "--verify", "--quiet", `${remote}^{commit}`], { allowFail: true }).status === 0;
           if (!has()) git(basePath, ["fetch", "--no-tags", "origin", `+refs/heads/${branch}:${remote}`], { allowFail: true });
           if (has()) from = remote;
         }
-        git(basePath, ["worktree", "add", "--no-track", "-b", branch, dir, from]);
+        git(basePath, [...wtAdd, "--no-track", "-b", branch, dir, from]);
       }
     }
   } else {

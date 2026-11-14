@@ -542,4 +542,56 @@ describe("myr-ws open — two repositories for one task (OPE-8946)", { skip: !ha
     assert.equal(second.path, first.path);
     assert.equal(second.repo, OTHER);
   });
+
+  describe("--review (OPE-13111)", () => {
+    // A hook of the base that a preparation step would use: it writes a marker, installs nothing.
+    // pnpm on PATH is a stub that writes its own marker; neither open mode may call it.
+    function setup(name) {
+      const base = ctx.ensureBase(REPO);
+      const marker = path.join(tmp, `${name}-hook-marker`);
+      const pnpmMarker = path.join(tmp, `${name}-pnpm-marker`);
+      fs.mkdirSync(path.join(base, "hooks"), { recursive: true });
+      fs.writeFileSync(path.join(base, "hooks", "post-checkout"), `#!/bin/sh\necho ran > "${marker}"\n`, { mode: 0o755 });
+      const bin = path.join(tmp, `${name}-bin`);
+      fs.mkdirSync(bin, { recursive: true });
+      fs.writeFileSync(path.join(bin, "pnpm"), `#!/bin/sh\necho "$@" > "${pnpmMarker}"\n`, { mode: 0o755 });
+      return { marker, pnpmMarker, env: { ...ctx.env, PATH: `${bin}:${ctx.env.PATH}` } };
+    }
+
+    it("opens the task branch with no node_modules, no pnpm call and no hooks", async () => {
+      const t = setup("review");
+      const r = copyOf(await run(["ABC-501", REPO, "--review", "--json"], { env: t.env }));
+      assert.equal(r.branch, "bot/ABC-501");
+      assert.equal(git(r.path, "rev-parse", "--abbrev-ref", "HEAD"), "bot/ABC-501");
+      assert.equal(fs.existsSync(path.join(r.path, "node_modules")), false);
+      assert.equal(fs.existsSync(t.pnpmMarker), false);
+      assert.equal(fs.existsSync(t.marker), false, "post-checkout hook must not run in review mode");
+    });
+
+    it("starts from the remote task branch when the repository has it", async () => {
+      const seed = path.join(tmp, `seed-review-${n}`);
+      git(tmp, "clone", "-q", originDir, seed);
+      git(seed, "checkout", "-q", "-b", "bot/ABC-502");
+      fs.writeFileSync(path.join(seed, "change.txt"), "pr\n");
+      git(seed, "add", ".");
+      git(seed, "commit", "-q", "-m", "pr change");
+      git(seed, "push", "-q", "origin", "bot/ABC-502");
+      const r = copyOf(await run(["ABC-502", REPO, "--review", "--json"]));
+      assert.equal(fs.readFileSync(path.join(r.path, "change.txt"), "utf8"), "pr\n");
+      assert.equal(git(r.path, "rev-parse", "--abbrev-ref", "HEAD"), "bot/ABC-502");
+    });
+
+    it("the plain open is unchanged: same branch, hooks run, still no install by myr-ws", async () => {
+      const t = setup("plain");
+      const r = copyOf(await run(["ABC-503", REPO, "--json"], { env: t.env }));
+      assert.equal(r.branch, "bot/ABC-503");
+      assert.equal(fs.existsSync(t.marker), true, "post-checkout hook runs in the plain open");
+      assert.equal(fs.existsSync(t.pnpmMarker), false);
+    });
+
+    it("rejects --review with --scratch", async () => {
+      const r = await run(["rv", "--scratch", "--review"]);
+      assert.equal(r.exitCode, 2);
+    });
+  });
 });
