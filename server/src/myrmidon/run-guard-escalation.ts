@@ -24,7 +24,7 @@
 // last link of the chain and there is no one above it to give it a new input.
 
 import { and, desc, eq, gt, inArray, ne, sql } from "drizzle-orm";
-import { activityLog, agentWakeupRequests, agents, type Db } from "@myrmidon/db";
+import { activityLog, agentWakeupRequests, agents, agentCastes, issueComments, issueWorkProducts, projects, type Db } from "@myrmidon/db";
 import { isAgentStatusInvokable } from "@myrmidon/shared";
 
 export const RUN_GUARD_STOP_NEEDS_INPUT_WAKE_REASON = "run_guard_stop_needs_input";
@@ -39,6 +39,7 @@ export const RUN_GUARD_STOP_TARGET_ROLES = new Set(["lead", "architect"]);
 interface EscalationIssue {
   id: string;
   companyId: string;
+  projectId?: string | null;
   assigneeAgentId: string | null;
 }
 
@@ -85,6 +86,23 @@ export async function resolveRunGuardStopWakeTargetId(db: Db, issue: EscalationI
     .where(and(eq(agents.id, issue.assigneeAgentId), eq(agents.companyId, issue.companyId)))
     .limit(1);
   if (!assignee || isFallbackAgentName(assignee.name)) return null;
+
+  if (issue.projectId) {
+    const [project] = await db.select({ leadAgentId: projects.leadAgentId, casteKey: projects.defaultCasteKey })
+      .from(projects).where(and(eq(projects.id, issue.projectId), eq(projects.companyId, issue.companyId))).limit(1);
+    const leadIds = project?.leadAgentId ? [project.leadAgentId] : [];
+    if (project?.casteKey) {
+      const casteLeads = await db.select({ id: agents.id }).from(agents)
+        .innerJoin(agentCastes, and(eq(agentCastes.companyId, agents.companyId), eq(agentCastes.key, project.casteKey)))
+        .where(and(eq(agents.companyId, issue.companyId), eq(agents.role, "lead")));
+      leadIds.push(...casteLeads.map((row) => row.id));
+    }
+    for (const id of [...new Set(leadIds)]) {
+      const [lead] = await db.select({ status: agents.status }).from(agents)
+        .where(and(eq(agents.id, id), eq(agents.companyId, issue.companyId))).limit(1);
+      if (lead && isAgentStatusInvokable(lead.status)) return id;
+    }
+  }
 
   let currentId = assignee.reportsTo;
   const visited = new Set<string>([assignee.id]);
@@ -215,6 +233,31 @@ export async function hasRunGuardStopWakeInBlockEpisode(
   return !left;
 }
 
+export async function buildRunGuardStopWakeEvidence(db: Db, companyId: string, issueId: string) {
+  const [pullRequests, comments] = await Promise.all([
+    db.select({ title: issueWorkProducts.title, url: issueWorkProducts.url, metadata: issueWorkProducts.metadata })
+      .from(issueWorkProducts)
+      .where(and(eq(issueWorkProducts.companyId, companyId), eq(issueWorkProducts.issueId, issueId), eq(issueWorkProducts.kind, "pull_request"))),
+    db.select({ body: issueComments.body }).from(issueComments)
+      .where(and(eq(issueComments.companyId, companyId), eq(issueComments.issueId, issueId), sql`${issueComments.deletedAt} is null`))
+      .orderBy(desc(issueComments.createdAt)).limit(3),
+  ]);
+  return {
+    pullRequests: pullRequests.map((pr) => {
+      const metadata = pr.metadata as Record<string, any> | null;
+      const ci = metadata?.activeCi ?? metadata?.lastCompletedCi ?? null;
+      return {
+        title: pr.title,
+        url: pr.url,
+        headSha: metadata?.headSha ?? null,
+        ci: ci ? { status: ci.status ?? ci.conclusion ?? null, headSha: ci.headSha ?? null, failedJobs: ci.failedJobs ?? [] } : null,
+        mergeable: metadata?.mergeable ?? metadata?.mergeableState ?? null,
+      };
+    }),
+    recentComments: comments.map((comment) => (comment.body ?? "").slice(0, 1500)),
+  };
+}
+
 /**
  * Wake the manager of a task whose run the guard stopped for good. Returns the id of
  * the agent woken, or null when nobody was (no recipient, or the issue was woken for
@@ -246,6 +289,7 @@ export async function wakeManagerForRunGuardStop(
       issueId: issue.id,
       assigneeAgentId: issue.assigneeAgentId,
       runGuardStop: stop,
+      evidence: await buildRunGuardStopWakeEvidence(db, issue.companyId, issue.id),
     },
     idempotencyKey: buildRunGuardStopWakeIdempotencyKey({ issueId: issue.id, runId: latestRun.id }),
     requestedByActorType: "system",
@@ -256,6 +300,7 @@ export async function wakeManagerForRunGuardStop(
       wakeReason: RUN_GUARD_STOP_NEEDS_INPUT_WAKE_REASON,
       source: RUN_GUARD_STOP_NEEDS_INPUT_SOURCE,
       runGuardStop: stop,
+      evidence: await buildRunGuardStopWakeEvidence(db, issue.companyId, issue.id),
     },
   });
   return targetId;
