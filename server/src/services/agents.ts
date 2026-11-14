@@ -364,9 +364,10 @@ export function hasAgentNameCollision(
   options?: AgentNameCollisionOptions,
 ): boolean {
   const normalizedCandidateName = candidateName.toLowerCase();
-  return existingAgents.some((agent) =>
-    agent.id !== options?.excludeAgentId && agent.name.toLowerCase() === normalizedCandidateName,
-  );
+  return existingAgents.some((agent) => {
+    if (agent.status === "terminated") return false;
+    return agent.id !== options?.excludeAgentId && agent.name.toLowerCase() === normalizedCandidateName;
+  });
 }
 
 export function hasAgentShortnameCollision(
