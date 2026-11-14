@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { validateEvidence } from "./release-flaky-waiver.mjs";
+import { validateEvidence, waiverRecordFromEvidence } from "./release-flaky-waiver.mjs";
 
 const proof = {
   tag: "myr-v1.8.0-rc.1", headSha: "abc123", runId: "42",
@@ -31,4 +31,16 @@ test("rejects any failed or unfinished job despite an overall successful run", (
 test("rejects a tag SHA or exact attempt mismatch", () => {
   assert.throws(() => validateEvidence(proof, success, "different", proof.tag), /tag/);
   assert.throws(() => validateEvidence(proof, { ...success, run_attempt: 3 }, "abc123", proof.tag), /exact evidenced/);
+});
+
+test("recorded waiver preserves proof required by a later verify", () => {
+  const record = waiverRecordFromEvidence(proof, {
+    reason: "transient infrastructure failure",
+    journal: "OPE-13003",
+    actor: "release-bot",
+    recordedAt: "2026-11-14T00:00:00.000Z",
+  });
+  assert.equal(record.headSha, proof.headSha);
+  assert.deepEqual(record.jobs, proof.jobs);
+  assert.doesNotThrow(() => validateEvidence(record, success, "abc123", proof.tag));
 });

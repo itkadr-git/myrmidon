@@ -31,6 +31,23 @@ export function validateEvidence(evidence, run, liveTagSha, tag) {
   if (run.status !== "completed" || run.conclusion !== "success") throw new Error("rerun is not completed successfully");
   if (!Array.isArray(evidence.jobs) || evidence.jobs.length === 0 || evidence.jobs.some((job) => job.status !== "completed" || job.conclusion !== "success" || Number(job.runAttempt) !== Number(evidence.attempt))) throw new Error("evidence must prove every job succeeded on the exact rerun attempt");
 }
+export function waiverRecordFromEvidence(evidence, { reason, journal, actor = process.env.GITHUB_ACTOR || process.env.USER || "unknown", recordedAt = new Date().toISOString() }) {
+  return {
+    tag: evidence.tag,
+    headSha: evidence.headSha,
+    runId: String(evidence.runId),
+    previousAttempt: Number(evidence.previousAttempt),
+    attempt: Number(evidence.attempt),
+    jobs: evidence.jobs,
+    url: evidence.url,
+    verdict: "not-related-to-changes",
+    reason,
+    journal,
+    actor,
+    recordedAt,
+  };
+}
+
 function evidenceLive(r, evidence, tag) {
   const liveSha = tagSha(r, tag);
   const run = gh(r, `actions/runs/${evidence.runId}`);
@@ -52,7 +69,7 @@ function main(argv) {
   if (!a.evidenceFile || !a.reason?.trim() || !a.journal) throw new Error("record requires --evidence-file, --reason and --journal");
   const evidence = JSON.parse(fs.readFileSync(a.evidenceFile, "utf8"));
   evidenceLive(repo(), evidence, a.tag);
-  const record = { tag: a.tag, sha: evidence.headSha, runId: String(evidence.runId), attempt: Number(evidence.attempt), verdict: "not-related-to-changes", reason: a.reason, journal: a.journal, actor: process.env.GITHUB_ACTOR || process.env.USER || "unknown", recordedAt: new Date().toISOString() };
+  const record = waiverRecordFromEvidence(evidence, { reason: a.reason, journal: a.journal });
   fs.mkdirSync(new URL("../../../docs/myrmidon/releases/flaky-waivers/", import.meta.url), { recursive: true });
   const records = fs.existsSync(file) ? JSON.parse(fs.readFileSync(file, "utf8")) : [];
   fs.writeFileSync(file, `${JSON.stringify([...records, record], null, 2)}\n`);
