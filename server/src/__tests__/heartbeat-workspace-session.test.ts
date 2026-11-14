@@ -30,6 +30,7 @@ import {
   resolveExecutionWorkspaceConfigFreshness,
   resolveExecutionWorkspaceReuseRequestForIssue,
   resolveExecutionWorkspaceReuseProvisioningPolicy,
+  shouldBindIssueToSharedExecutionWorkspace,
   resolveNextSessionState,
   resolveTaskSessionConfigFreshness,
   isWorkspaceSyncConflictFailure,
@@ -51,6 +52,29 @@ import {
 import type { TrustPresetResolution } from "../services/trust-preset-resolver.ts";
 
 const execFile = promisify(execFileCallback);
+
+describe("shouldBindIssueToSharedExecutionWorkspace", () => {
+  it("binds only the project-primary shared row owned by the same issue", () => {
+    expect(shouldBindIssueToSharedExecutionWorkspace({
+      mode: "shared_workspace",
+      strategyType: "project_primary",
+      sourceIssueId: "issue-1",
+      issueId: "issue-1",
+    })).toBe(true);
+    expect(shouldBindIssueToSharedExecutionWorkspace({
+      mode: "shared_workspace",
+      strategyType: "project_primary",
+      sourceIssueId: "issue-2",
+      issueId: "issue-1",
+    })).toBe(false);
+    expect(shouldBindIssueToSharedExecutionWorkspace({
+      mode: "isolated_workspace",
+      strategyType: "project_primary",
+      sourceIssueId: "issue-1",
+      issueId: "issue-1",
+    })).toBe(false);
+  });
+});
 
 function buildResolvedWorkspace(overrides: Partial<ResolvedWorkspaceForRun> = {}): ResolvedWorkspaceForRun {
   return {
