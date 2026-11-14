@@ -1192,10 +1192,11 @@ export function secretService(db: Db | DbTransaction) {
     const configPath = input.context.configPath;
     const isStaticAgentSecret =
       input.outcome === "success" &&
-      (input.context.consumerType === "agent" || input.context.consumerType === "agent_api") &&
+      input.context.consumerType === "agent" &&
       input.context.actorType === "agent" &&
+      input.secretScope !== "user" &&
       Boolean(input.context.actorId) &&
-      (configPath?.startsWith("env.") || configPath === "apiKey");
+      Boolean(configPath?.startsWith("env.") && configPath.length > "env.".length);
     if (isStaticAgentSecret) {
       const windowMs = Number(process.env.SECRET_ACCESS_AUDIT_DEDUPE_WINDOW_MS ?? 60 * 60_000);
       const since = new Date(Date.now() - (Number.isFinite(windowMs) && windowMs >= 0 ? windowMs : 60 * 60_000));
