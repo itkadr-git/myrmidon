@@ -458,3 +458,27 @@ test("myr-handoff without review stage and without --reviewer fails and sends no
   assert.equal(sink.patches.length, 0);
   assert.equal(sink.commands.some((c) => c[0] === "git" && c[1] === "push"), false);
 });
+
+test("myr-handoff titles the PR with the issue key, not the UUID passed in --issue", async () => {
+  const uuid = "123e4567-e89b-12d3-a456-426614174000";
+  const commands = [];
+  const deps = makeDeps({ commandsRun: commands });
+  const baseFetch = deps.fetch;
+  deps.fetch = async (url, opts) => {
+    if (url.endsWith(`/api/issues/${uuid}`)) {
+      return { ok: true, status: 200, json: async () => ({ id: uuid, identifier: "OPE-9999", executionPolicy: REVIEW_POLICY }) };
+    }
+    if (url.endsWith(`/api/issues/${uuid}/work-products`)) {
+      return { ok: true, status: 200, json: async () => [] };
+    }
+    if (opts && opts.method === "PATCH") return { ok: true, status: 200, json: async () => ({}) };
+    return baseFetch(url, opts);
+  };
+  const res = await run(["--issue", uuid, "--summary", "s"], deps);
+  assert.equal(res.exitCode, 0);
+  const create = commands.find((c) => c[0] === "gh" && c[1] === "pr" && c[2] === "create");
+  assert.ok(create);
+  const title = create[create.indexOf("--title") + 1];
+  assert.match(title, /OPE-9999/);
+  assert.ok(!title.includes(uuid));
+});

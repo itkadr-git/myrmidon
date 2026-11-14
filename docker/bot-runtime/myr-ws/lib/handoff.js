@@ -136,6 +136,12 @@ async function run(args, deps = {}) {
     };
   }
 
+  // Canonical key for PR titles even when --issue was given as a UUID.
+  const issueKey =
+    typeof issueData.identifier === "string" && issueData.identifier.trim()
+      ? issueData.identifier.trim()
+      : issueKeyOrId;
+
   // Early admission check
   if (issueData.status === "done" || issueData.status === "cancelled") {
     return {
@@ -205,8 +211,8 @@ async function run(args, deps = {}) {
       if (data && data.number && data.state === "OPEN") {
         prNumber = data.number;
         prUrl = data.url || null;
-        if (data.title && !data.title.includes(issueKeyOrId)) {
-          const editRes = execCmd("gh", ["pr", "edit", String(prNumber), "--title", `${issueKeyOrId}: ${data.title}`], { cwd, env });
+        if (data.title && !data.title.includes(issueKey)) {
+          const editRes = execCmd("gh", ["pr", "edit", String(prNumber), "--title", `${issueKey}: ${data.title}`], { cwd, env });
           if (editRes.status !== 0) {
             return {
               exitCode: 1,
@@ -228,7 +234,7 @@ async function run(args, deps = {}) {
         "--head",
         branch,
         "--title",
-        `${issueKeyOrId}: handoff to review`,
+        `${issueKey}: handoff to review`,
         "--body",
         summary,
       ],
@@ -411,7 +417,7 @@ async function run(args, deps = {}) {
     return {
       exitCode: 1,
       stdout: "",
-      stderr: `myr-handoff: failed at step work_product_binding: PR #${prNumber} is not bound to issue ${issueKeyOrId}\n`,
+      stderr: `myr-handoff: failed at step work_product_binding: PR #${prNumber} is not bound to issue ${issueKey}\n`,
     };
   }
 
