@@ -2048,6 +2048,7 @@ export class ChatSdkEndpointRuntime {
   private retired = false;
   private photonReceiver?: PhotonReceiver;
   private readonly runtimeOptions: CreateChatSdkEndpointRuntimeOptions;
+  private readonly adapterReady: Promise<Adapter>;
   private shutdownTask: Promise<void> | null = null;
   private shutdownCompleted = false;
 
@@ -2102,10 +2103,10 @@ export class ChatSdkEndpointRuntime {
       1,
       Math.min(options.webhookIngressTimeoutMs ?? 2_500, 10_000),
     );
-    this.adapter = options.providerConfig.provider === "imessage-photon"
-      ? new PhotonChatAdapter(options.providerConfig.userName,
+    this.adapterReady = options.providerConfig.provider === "imessage-photon"
+      ? Promise.resolve(new PhotonChatAdapter(options.providerConfig.userName,
           new PhotonLineAuthentication(options.providerConfig.credentials, options.providerConfig.credentials.projectSecret),
-          new PhotonState({ companyId: options.companyId, endpointId: options.endpointId }, options.persistence))
+          new PhotonState({ companyId: options.companyId, endpointId: options.endpointId }, options.persistence)))
       : createProviderAdapter(
       options.providerConfig,
       options.logger,
@@ -2115,6 +2116,7 @@ export class ChatSdkEndpointRuntime {
         this.discordGatewayFatal = fatal;
       },
     );
+    this.adapter = this.adapterReady as unknown as Adapter;
     if (this.provider === "telegram") {
       const adapter = this.adapter as unknown as {
         botUserId?: string;
@@ -2196,9 +2198,6 @@ export class ChatSdkEndpointRuntime {
       state,
       userName: options.providerConfig.userName,
     });
-    if (this.provider === "discord") {
-      assertDiscordAdapterCompatibility(this.adapter, this.chat);
-    }
     registerCallbacks(
       this.chat,
       this.endpointId,
@@ -2307,7 +2306,13 @@ export class ChatSdkEndpointRuntime {
     this.assertNotRetired();
     // The service still chooses when to initialize, after installing callback
     // context. Retirement owns the settlement of that exact SDK operation.
-    this.initialization ??= this.chat.initialize();
+    this.initialization ??= (async () => {
+      this.adapter = await this.adapterReady;
+      if (this.provider === "discord") {
+        assertDiscordAdapterCompatibility(this.adapter, this.chat);
+      }
+      await this.chat.initialize();
+    })();
     await this.initialization;
     this.assertNotRetired();
   }
