@@ -104,14 +104,18 @@ function processMayBeAlive(pid: number): boolean {
 
 /** A terminal conversation row does not prove that its execution authority ended.
  * Other adapters keep their existing bootstrap and ownership protocols.
+ * OPE-12899: a lease holds only while it is unreleased or still pending cleanup.
+ * A released lease with cleanup_status='failed' (the stale-lease sweep's terminal
+ * disposition after the teardown attempt cap) is bookkeeping: the operator
+ * attention card owns the leftover sandbox, and holding the issue forever would
+ * skip every wake.
  */
 export async function getConversationOwnershipBlocker(db: Db, companyId: string, issueId: string) {
   const activeLease = sql`exists (select 1 from ${environmentLeases}
     where ${environmentLeases.companyId} = "heartbeat_runs"."company_id"
       and ${environmentLeases.heartbeatRunId} = "heartbeat_runs"."id"
       and (${environmentLeases.releasedAt} is null
-        or ${environmentLeases.status} = 'pending_cleanup'
-        or ${environmentLeases.cleanupStatus} = 'failed'))`;
+        or ${environmentLeases.status} = 'pending_cleanup'))`;
   // myrmidon(RUN-SNAPSHOT-DEDUP): read only the columns this probe needs.
   // The previous `select { run: heartbeatRuns }` loaded the whole row — the
   // snapshot and the result JSON included — for every candidate run, several
