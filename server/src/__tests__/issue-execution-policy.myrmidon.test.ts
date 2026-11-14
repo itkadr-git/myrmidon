@@ -2555,4 +2555,3 @@ describe("verify execution stages", () => {
       expect(result.patch.executionState).toMatchObject({ status: "completed" });
     });
   });
-});

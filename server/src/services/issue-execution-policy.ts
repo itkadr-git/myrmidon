@@ -12,6 +12,7 @@ import type {
 } from "@myrmidon/shared";
 import { issueExecutionPolicySchema, issueExecutionStateSchema } from "@myrmidon/shared";
 import { unprocessable } from "../errors.js";
+import { isReleaseTask } from "../myrmidon/task-pr-sync/policy.js";
 
 type AssigneeLike = {
   assigneeAgentId?: string | null;
@@ -21,6 +22,7 @@ type AssigneeLike = {
 type IssueLike = AssigneeLike & {
   id?: string;
   status: string;
+  title?: string | null;
   projectId?: string | null;
   casteKey?: string | null;
   reviewEscalationPolicy?: ReviewEscalationPolicyLike | null;
