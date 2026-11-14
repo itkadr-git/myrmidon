@@ -11,7 +11,6 @@ import {
   heartbeatRuns,
   agentWakeupRequests,
   agentTaskSessions,
-  companyMemberships,
   issueComments,
   issueWorkProducts,
   issues,
@@ -1260,18 +1259,6 @@ describeEmbeddedPostgres("myrmidon review admission atomic wake persistence", ()
       permissions: {},
     });
 
-    // Real agents are active company members; without membership the access
-    // layer answers 403 before the verdict check is reached.
-    await ctx.db.insert(companyMemberships).values(
-      [authorAgentId, reviewerAgentId, otherAgentId].map((principalId) => ({
-        companyId,
-        principalType: "agent" as const,
-        principalId,
-        status: "active" as const,
-        membershipRole: "member" as const,
-      })),
-    );
-
     const issueId = randomUUID();
     const stageId = randomUUID();
     const policy = {
@@ -1301,23 +1288,37 @@ describeEmbeddedPostgres("myrmidon review admission atomic wake persistence", ()
         currentStageIndex: 0,
         currentStageType: "review",
         currentParticipant: { type: "agent", agentId: reviewerAgentId, userId: null },
+        // Required by issueExecutionStateSchema: without it parseIssueExecutionState
+        // returns null and the verdict gate never sees the review stage.
+        returnAssignee: { type: "agent", agentId: authorAgentId, userId: null },
         completedStageIds: [],
         lastDecisionId: null,
         lastDecisionOutcome: null,
       },
     });
 
+    // Agent comments need a persisted heartbeat run whose source issue is this
+    // issue (cross-issue influence gate, issues.ts assertCrossIssueInfluenceWithinRunCap).
+    const reviewerRunId = randomUUID();
+    const otherRunId = randomUUID();
+    await ctx.db.insert(heartbeatRuns).values([
+      { id: reviewerRunId, companyId, agentId: reviewerAgentId, status: "succeeded", contextSnapshot: { issueId } },
+      { id: otherRunId, companyId, agentId: otherAgentId, status: "succeeded", contextSnapshot: { issueId } },
+    ]);
+
     const reviewerActor = {
       type: "agent" as const,
       agentId: reviewerAgentId,
       companyId,
       source: "agent_key" as const,
+      runId: reviewerRunId,
     };
     const otherActor = {
       type: "agent" as const,
       agentId: otherAgentId,
       companyId,
       source: "agent_key" as const,
+      runId: otherRunId,
     };
 
     // 1. Current participant posts verdict comment -> 422 with hint, comment is not saved.
