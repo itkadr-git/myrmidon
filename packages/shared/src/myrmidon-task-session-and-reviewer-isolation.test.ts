@@ -384,10 +384,16 @@ describe("myrmidon-task-session-and-reviewer-isolation", () => {
     it("sanitizes secret patterns in code diffs", () => {
       const pcpPrefix = ["pc", "p_"].join("");
       const dummyPcp = `${pcpPrefix}testsecrettoken12345678901234567890`;
-      const secretDiff = `diff --git a/env.ts b/env.ts\n+const token = "${dummyPcp}";`;
+      const ghsPrefix = ["gh", "s_"].join("");
+      const dummyGhs = `${ghsPrefix}testinstallationtoken12345678901234567890`;
+      const patPrefix = ["github", "_pat_"].join("");
+      const dummyPat = `${patPrefix}testpersonalaccesstoken12345678901234567890`;
+      const secretDiff = `diff --git a/env.ts b/env.ts\n+const token = "${dummyPcp}";\n+const ghs = "${dummyGhs}";\n+const pat = "${dummyPat}";`;
 
       const threat = analyzeReviewerDiffThreats(secretDiff);
       expect(threat.sanitizedDiff).not.toContain(dummyPcp);
+      expect(threat.sanitizedDiff).not.toContain(dummyGhs);
+      expect(threat.sanitizedDiff).not.toContain(dummyPat);
       expect(threat.sanitizedDiff).toContain("<redacted_secret>");
     });
 

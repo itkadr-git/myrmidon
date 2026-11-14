@@ -384,6 +384,8 @@ const PROMPT_INJECTION_PATTERNS = [
 const SECRET_PATTERNS = [
   new RegExp(["pc", "p_[a-zA-Z0-9_-]{20,}"].join(""), "g"),
   new RegExp(["gh", "p_[a-zA-Z0-9]{30,}"].join(""), "g"),
+  new RegExp(["gh", "s_[a-zA-Z0-9]{30,}"].join(""), "g"),
+  new RegExp(["github", "_pat_[a-zA-Z0-9_]{20,}"].join(""), "g"),
   /Bearer\s+[a-zA-Z0-9._-]{20,}/gi,
   /-----BEGIN\s+(?:RSA|OPENSSH|EC|PRIVATE)\s+KEY-----[\s\S]*?-----END/gi,
 ];
@@ -392,6 +394,14 @@ export interface DiffThreatAnalysisResult {
   hasPromptInjection: boolean;
   detectedThreats: string[];
   sanitizedDiff: string;
+}
+
+export function sanitizeSecrets(text: string): string {
+  let sanitized = text;
+  for (const pattern of SECRET_PATTERNS) {
+    sanitized = sanitized.replace(pattern, "<redacted_secret>");
+  }
+  return sanitized;
 }
 
 export function analyzeReviewerDiffThreats(
@@ -406,10 +416,7 @@ export function analyzeReviewerDiffThreats(
     }
   }
 
-  let sanitized = diff;
-  for (const pattern of SECRET_PATTERNS) {
-    sanitized = sanitized.replace(pattern, "<redacted_secret>");
-  }
+  const sanitized = sanitizeSecrets(diff);
 
   return {
     hasPromptInjection: detectedThreats.length > 0,

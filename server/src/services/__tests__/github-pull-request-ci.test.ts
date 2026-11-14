@@ -1763,6 +1763,137 @@ describe("createPullRequestCiResolver", () => {
     expect(runs304.summary).toBe("checks unchanged (not modified)");
     expect(fetchRunsCalls).toBe(2);
   });
+
+  describe("PF-RED-CI-IN-WAKE: failing job log tails and directives", () => {
+    it("renders failing jobs, ids, and log tail in wake markdown when red CI", () => {
+      const pcpPrefix = ["pc", "p_"].join("");
+      const dummyPcp = `${pcpPrefix}mysecrettoken12345678901234567890`;
+      const ghsPrefix = ["gh", "s_"].join("");
+      const dummyGhs = `${ghsPrefix}myapptoken12345678901234567890`;
+      const patPrefix = ["github", "_pat_"].join("");
+      const dummyPat = `${patPrefix}mypattoken12345678901234567890`;
+
+      const rawLog = [
+        "Starting test runner...",
+        "Running vitest suite...",
+        `Error: unauthorized access with token ${dummyPcp} and ${dummyGhs} and ${dummyPat}`,
+        "FAIL server/src/test.ts > suite > test 1",
+        "  AssertionError: expected true to be false",
+      ].join("\n");
+
+      const markdown = buildPaperclipTaskMarkdown({
+        issue: {
+          id: "issue-ci-fail",
+          identifier: "OPE-13078",
+          title: "Red CI Wake Test",
+          status: "in_progress",
+        },
+        wakePayload: {
+          ciResult: {
+            repository: "itkadr-git/myrmidon",
+            pullNumber: 999,
+            headSha: "failed-sha-123",
+            headRef: "bot/OPE-13078",
+            status: "completed",
+            conclusion: "failure",
+            summary: "failure (1 failed)",
+            authoritative: true,
+            checkedAt: "2026-11-14T02:00:00Z",
+            completedAt: "2026-11-14T02:00:00Z",
+            totalRuns: 1,
+            successfulRuns: 0,
+            failedRuns: 1,
+            failedJobs: [
+              {
+                id: 12345,
+                name: "test (vitest)",
+                conclusion: "failure",
+                url: "https://github.com/itkadr-git/myrmidon/actions/runs/888888/job/12345",
+                completedAt: "2026-11-14T02:00:00Z",
+              },
+            ],
+            runs: [],
+          },
+          ciFailureTails: [
+            {
+              jobId: 12345,
+              jobName: "test (vitest)",
+              logTail: [
+                "Starting test runner...",
+                "Running vitest suite...",
+                "Error: unauthorized access with token <redacted_secret> and <redacted_secret> and <redacted_secret>",
+                "FAIL server/src/test.ts > suite > test 1",
+                "  AssertionError: expected true to be false",
+              ].join("\n"),
+            },
+          ],
+        },
+      });
+
+      expect(markdown).toContain("Failed jobs:");
+      expect(markdown).toContain("- test (vitest) (id: 12345): failure");
+      expect(markdown).toContain("gh run view 888888 --job 12345 --log-failed | tail -80");
+      expect(markdown).toContain("Do not poll CI: the failing output is below.");
+      expect(markdown).toContain("Job test (vitest) (id: 12345) log tail");
+      expect(markdown).toContain("FAIL server/src/test.ts > suite > test 1");
+      expect(markdown).toContain("<redacted_secret>");
+      expect(markdown).not.toContain(dummyPcp);
+      expect(markdown).not.toContain(dummyGhs);
+      expect(markdown).not.toContain(dummyPat);
+    });
+
+    it("renders fallback message when log is unavailable (e.g. 403 or no token)", () => {
+      const markdown = buildPaperclipTaskMarkdown({
+        issue: {
+          id: "issue-ci-fail-2",
+          identifier: "OPE-13078",
+          title: "Red CI Wake Fallback Test",
+          status: "in_progress",
+        },
+        wakePayload: {
+          ciResult: {
+            repository: "itkadr-git/myrmidon",
+            pullNumber: 999,
+            headSha: "failed-sha-123",
+            headRef: "bot/OPE-13078",
+            status: "completed",
+            conclusion: "failure",
+            summary: "failure (1 failed)",
+            authoritative: true,
+            checkedAt: "2026-11-14T02:00:00Z",
+            completedAt: "2026-11-14T02:00:00Z",
+            totalRuns: 1,
+            successfulRuns: 0,
+            failedRuns: 1,
+            failedJobs: [
+              {
+                id: 54321,
+                name: "lint (eslint)",
+                conclusion: "failure",
+                url: "https://github.com/itkadr-git/myrmidon/actions/runs/999999/job/54321",
+                completedAt: "2026-11-14T02:00:00Z",
+              },
+            ],
+            runs: [],
+          },
+          ciFailureTails: [
+            {
+              jobId: 54321,
+              jobName: "lint (eslint)",
+              logTail: null,
+              unavailableReason: "token lacks actions:read permission or access denied (403)",
+            },
+          ],
+        },
+      });
+
+      expect(markdown).toContain("Failed jobs:");
+      expect(markdown).toContain("- lint (eslint) (id: 54321): failure");
+      expect(markdown).toContain("gh run view 999999 --job 54321 --log-failed | tail -80");
+      expect(markdown).toContain("Do not poll CI: the failing output is below.");
+      expect(markdown).toContain("Job lint (eslint) (id: 54321) log unavailable: token lacks actions:read permission or access denied (403)");
+    });
+  });
 });
 
 describe("summarizeHeadLaneEvidence (LANE-EVIDENCE-CANCELLED, OPE-13072)", () => {
