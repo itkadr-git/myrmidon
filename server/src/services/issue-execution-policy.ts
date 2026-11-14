@@ -1125,8 +1125,10 @@ function applyIssueExecutionStageTransition(input: TransitionInput): TransitionR
     if (existingState) {
       const orphanApproval = approveOrphanedPendingReviewStage(input, existingState, actor);
       if (orphanApproval) return orphanApproval;
-      const orphanChanges = requestChangesOrphanedPendingReviewStage(input, existingState, actor);
-      if (orphanChanges) return orphanChanges;
+      if (!requestedAssigneePatchProvided) {
+        const orphanChanges = requestChangesOrphanedPendingReviewStage(input, existingState, actor);
+        if (orphanChanges) return orphanChanges;
+      }
       patch.executionState = null;
       if (input.issue.status === "in_review") {
         patch.status = requestedStatus ?? "in_progress";
@@ -1183,8 +1185,10 @@ function applyIssueExecutionStageTransition(input: TransitionInput): TransitionR
     }
     const orphanApproval = approveOrphanedPendingReviewStage(input, existingState, actor);
     if (orphanApproval) return orphanApproval;
-    const orphanChanges = requestChangesOrphanedPendingReviewStage(input, existingState, actor);
-    if (orphanChanges) return orphanChanges;
+    if (!requestedAssigneePatchProvided) {
+      const orphanChanges = requestChangesOrphanedPendingReviewStage(input, existingState, actor);
+      if (orphanChanges) return orphanChanges;
+    }
     clearExecutionStatePatch({
       patch,
       issueStatus: input.issue.status,
