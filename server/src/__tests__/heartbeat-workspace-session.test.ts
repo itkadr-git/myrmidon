@@ -27,7 +27,6 @@ import {
   provisionExecutionWorkspaceForFreshnessDecision,
   reconcileReusedExecutionWorkspaceProjectWorkspaceId,
   resolveNativeRecoveryExecutionWorkspaceBinding,
-  isExecutionWorkspaceOwnedByIssue,
   resolveExecutionWorkspaceBranchOwnership,
   resolveExecutionWorkspaceConfigFreshness,
   resolveExecutionWorkspaceReuseRequestForIssue,
