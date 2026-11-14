@@ -3,6 +3,8 @@
 // run dispatch admission and the once-only wake of the assignee run on embedded
 // Postgres, the same way as run-guard-escalate.myrmidon.test.ts.
 import { randomUUID } from "node:crypto";
+import express from "express";
+import request from "supertest";
 import { and, eq } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { agentWakeupRequests, agents, companies, createDb, instanceSettings, issueDocuments, issues, documents } from "@myrmidon/db";
@@ -10,6 +12,8 @@ import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
 } from "./helpers/embedded-postgres.js";
+import { issueRoutes } from "../routes/issues.js";
+import { errorHandler } from "../middleware/index.js";
 import {
   STARTER_PACK_DOCUMENT_KEY,
   STARTER_PACK_READY_SOURCE,
@@ -114,6 +118,18 @@ describeEmbeddedPostgres("the starter-pack scout on a new engineer task", () => 
   afterAll(async () => {
     await tempDb?.cleanup();
   });
+
+  function createApp(actor: Record<string, unknown>) {
+    const app = express();
+    app.use(express.json());
+    app.use((req, _res, next) => {
+      (req as { actor?: unknown }).actor = actor;
+      next();
+    });
+    app.use("/api", issueRoutes(db, {} as never));
+    app.use(errorHandler);
+    return app;
+  }
 
   async function setScout(agentId: string | null) {
     const general = agentId ? { starterPackAgentId: agentId } : {};
@@ -307,5 +323,124 @@ describeEmbeddedPostgres("the starter-pack scout on a new engineer task", () => 
 
     expect(await wakeAssigneeAfterStarterPack(db, issue, (key) => void queued.push(key))).toBe(true);
     expect(queued).toEqual([buildStarterPackReadyWakeIdempotencyKey(issueId)]);
+  });
+
+  it("enforces document permissions over the route: 403 on another key, 201 on starter-pack and wakes assignee once", async () => {
+    const { companyId, scoutId, engineerId, issueId } = await seed();
+    await setScout(scoutId);
+
+    // Scout has been woken for this task
+    await db.insert(agentWakeupRequests).values({
+      companyId,
+      agentId: scoutId,
+      source: "automation",
+      triggerDetail: "system",
+      reason: STARTER_PACK_SCOUT_WAKE_REASON,
+      payload: { issueId },
+      status: "queued",
+      idempotencyKey: buildStarterPackScoutWakeIdempotencyKey(issueId),
+    });
+
+    const app = createApp({
+      type: "agent",
+      agentId: scoutId,
+      companyId,
+      source: "agent_key",
+    });
+
+    // 1. Scout writes a document with another key -> 403 forbidden
+    const forbiddenRes = await request(app)
+      .put(`/api/issues/${issueId}/documents/notes`)
+      .send({ format: "markdown", body: "# Scout Notes" });
+    expect(forbiddenRes.status).toBe(403);
+    expect(forbiddenRes.body.error).toBe("Agent cannot mutate another agent's issue");
+
+    // No document was created for notes
+    const docsAfterForbidden = await db
+      .select()
+      .from(documents)
+      .where(eq(documents.companyId, companyId));
+    expect(docsAfterForbidden).toHaveLength(0);
+
+    // 2. Another agent (not scout and not assignee) tries to write starter-pack -> 403 forbidden
+    const strangerId = randomUUID();
+    await db.insert(agents).values({
+      id: strangerId,
+      companyId,
+      name: "Stranger",
+      role: "engineer",
+      status: "idle",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+    const strangerApp = createApp({
+      type: "agent",
+      agentId: strangerId,
+      companyId,
+      source: "agent_key",
+    });
+    const strangerRes = await request(strangerApp)
+      .put(`/api/issues/${issueId}/documents/starter-pack`)
+      .send({ format: "markdown", body: "# Intruder" });
+    expect(strangerRes.status).toBe(403);
+    expect(strangerRes.body.error).toBe("Agent cannot mutate another agent's issue");
+
+    // 3. Scout writes starter-pack on a task it was NOT woken for -> 403 forbidden
+    const other = await seed();
+    const unsolicitedRes = await request(app)
+      .put(`/api/issues/${other.issueId}/documents/starter-pack`)
+      .send({ format: "markdown", body: "# Unsolicited" });
+    expect(unsolicitedRes.status).toBe(403);
+    expect(unsolicitedRes.body.error).toBe("Agent cannot mutate another agent's issue");
+
+    // 4. Scout writes starter-pack -> 201 and document is created
+    const createdRes = await request(app)
+      .put(`/api/issues/${issueId}/documents/starter-pack`)
+      .send({ format: "markdown", body: "### Starter pack\n\nCode summary for engineer" });
+    expect(createdRes.status).toBe(201);
+    expect(createdRes.body.key).toBe("starter-pack");
+
+    // 5. Assignee was woken exactly once
+    const wakes = await db
+      .select()
+      .from(agentWakeupRequests)
+      .where(
+        and(
+          eq(agentWakeupRequests.companyId, companyId),
+          eq(agentWakeupRequests.agentId, engineerId),
+          eq(agentWakeupRequests.reason, "issue_assigned"),
+        ),
+      );
+    expect(wakes).toHaveLength(1);
+    expect(wakes[0]!.idempotencyKey).toBe(buildStarterPackReadyWakeIdempotencyKey(issueId));
+
+    // 6. Repeated update returns 200 and does not queue another wake
+    const updateRes = await request(app)
+      .put(`/api/issues/${issueId}/documents/starter-pack`)
+      .send({ format: "markdown", body: "### Starter pack v2" });
+    expect(updateRes.status).toBe(200);
+
+    const wakesAfterUpdate = await db
+      .select()
+      .from(agentWakeupRequests)
+      .where(
+        and(
+          eq(agentWakeupRequests.companyId, companyId),
+          eq(agentWakeupRequests.agentId, engineerId),
+          eq(agentWakeupRequests.reason, "issue_assigned"),
+        ),
+      );
+    expect(wakesAfterUpdate).toHaveLength(1);
+
+    // 7. Fallback wake after the scout's run ends is a no-op because wake was already queued
+    expect(
+      await wakeAssigneeAfterStarterPack(
+        db,
+        { id: issueId, companyId, assigneeAgentId: engineerId },
+        () => {},
+      ),
+    ).toBe(false);
   });
 });
