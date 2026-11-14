@@ -1208,7 +1208,7 @@ export function secretService(db: Db | DbTransaction) {
           eq(secretAccessEvents.secretId, input.secretId),
           eq(secretAccessEvents.actorType, "agent"),
           eq(secretAccessEvents.actorId, input.context.actorId!),
-          eq(secretAccessEvents.outcome, "success"),
+          ...(input.outcome === "success" ? [eq(secretAccessEvents.outcome, "success")] : []),
           sql`${secretAccessEvents.createdAt} >= ${since}`,
         ))
         .limit(1);
