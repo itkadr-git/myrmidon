@@ -187,6 +187,7 @@ import {
   isDeveloperRole,
   renderReviewerInputSection,
   type AiConnectionBinding,
+  type ExecutionContinuationEnvelope,
   type IssueBlockerMetadata,
   type ReviewerInputFixture,
   type ReviewerPullRequestRef,
@@ -28722,7 +28723,7 @@ export function heartbeatService(
                     // A file-only wake must not inherit an old task objective.
                     const latestRequest =
                       executionContinuation?.messages.findLast(
-                        (message) =>
+                        (message: ExecutionContinuationEnvelope["messages"][number]) =>
                           message.authorType === "user" &&
                           !message.createdByRunId &&
                           !message.deleted &&
