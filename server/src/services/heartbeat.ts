@@ -168,6 +168,7 @@ import {
   buildRunCapNoCommitBlockedPatch,
   buildRunCapNoCommitComment,
   resolveRunCapNoCommitWakeTargetId,
+  buildRunCapNoCommitWakeEvidence,
   loadTaskRunsWithoutCommitLimit,
   RUN_CAP_NO_COMMIT_REASON,
   type RunCapNoCommitStop,
@@ -32848,6 +32849,7 @@ export function heartbeatService(
                   headSha: stop.headSha,
                   summary: parked.comment,
                 },
+                evidence: await buildRunCapNoCommitWakeEvidence(db, stop.companyId, stop.issueId),
               },
               requestedByActorType: "system",
               requestedByActorId: null,
@@ -32861,6 +32863,7 @@ export function heartbeatService(
                   limit: stop.limit,
                   headSha: stop.headSha,
                 },
+                evidence: await buildRunCapNoCommitWakeEvidence(db, stop.companyId, stop.issueId),
               },
             });
           } catch (err) {

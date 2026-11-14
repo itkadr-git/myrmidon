@@ -24,7 +24,7 @@
 // last link of the chain and there is no one above it to give it a new input.
 
 import { and, desc, eq, gt, inArray, ne, sql } from "drizzle-orm";
-import { activityLog, agentWakeupRequests, agents, type Db } from "@myrmidon/db";
+import { activityLog, agentWakeupRequests, agents, agentCastes, projects, type Db } from "@myrmidon/db";
 import { isAgentStatusInvokable } from "@myrmidon/shared";
 
 export const RUN_GUARD_STOP_NEEDS_INPUT_WAKE_REASON = "run_guard_stop_needs_input";
@@ -39,6 +39,7 @@ export const RUN_GUARD_STOP_TARGET_ROLES = new Set(["lead", "architect"]);
 interface EscalationIssue {
   id: string;
   companyId: string;
+  projectId?: string | null;
   assigneeAgentId: string | null;
 }
 
@@ -85,6 +86,23 @@ export async function resolveRunGuardStopWakeTargetId(db: Db, issue: EscalationI
     .where(and(eq(agents.id, issue.assigneeAgentId), eq(agents.companyId, issue.companyId)))
     .limit(1);
   if (!assignee || isFallbackAgentName(assignee.name)) return null;
+
+  if (issue.projectId) {
+    const [project] = await db.select({ leadAgentId: projects.leadAgentId, casteKey: projects.defaultCasteKey })
+      .from(projects).where(and(eq(projects.id, issue.projectId), eq(projects.companyId, issue.companyId))).limit(1);
+    const leadIds = project?.leadAgentId ? [project.leadAgentId] : [];
+    if (project?.casteKey) {
+      const casteLeads = await db.select({ id: agents.id }).from(agents)
+        .innerJoin(agentCastes, and(eq(agentCastes.companyId, agents.companyId), eq(agentCastes.key, project.casteKey)))
+        .where(and(eq(agents.companyId, issue.companyId), eq(agents.role, "lead")));
+      leadIds.push(...casteLeads.map((row) => row.id));
+    }
+    for (const id of [...new Set(leadIds)]) {
+      const [lead] = await db.select({ status: agents.status }).from(agents)
+        .where(and(eq(agents.id, id), eq(agents.companyId, issue.companyId))).limit(1);
+      if (lead && isAgentStatusInvokable(lead.status)) return id;
+    }
+  }
 
   let currentId = assignee.reportsTo;
   const visited = new Set<string>([assignee.id]);

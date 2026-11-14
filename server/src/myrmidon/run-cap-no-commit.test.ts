@@ -250,7 +250,7 @@ describe("resolveRunCapNoCommitWakeTargetId", () => {
       select: () => ({
         from: () => ({
           where: () => ({
-            limit: () => Promise.resolve([{ leadAgentId: "lead-agent-1" }]),
+            limit: () => Promise.resolve([{ leadAgentId: "lead-agent-1", casteKey: null }]),
           }),
         }),
       }),
@@ -263,6 +263,24 @@ describe("resolveRunCapNoCommitWakeTargetId", () => {
     expect(target).toBe("lead-agent-1");
   });
 
+  it("falls back to another invokable lead when the assigned project lead is unavailable", async () => {
+    const statuses = ["paused", "idle"];
+    let agentRead = 0;
+    const db = {
+      select: () => ({
+        from: () => ({
+          where: () => ({
+            limit: () => {
+              if (agentRead++ === 0) return Promise.resolve([{ leadAgentId: "assigned-lead", casteKey: "eng" }]);
+              return Promise.resolve([{ status: statuses.shift() }]);
+            },
+          }),
+          innerJoin: () => ({ where: () => Promise.resolve([{ id: "assigned-lead" }, { id: "backup-lead" }]) }),
+        }),
+      }),
+    } as any;
+    expect(await resolveRunCapNoCommitWakeTargetId(db, { companyId: "c1", projectId: "p1" })).toBe("backup-lead");
+  });
   it("resolves reportsTo when assignee has a manager and project has no lead", async () => {
     const db = {
       select: () => ({

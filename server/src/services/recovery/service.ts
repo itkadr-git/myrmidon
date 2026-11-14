@@ -8447,7 +8447,7 @@ export function recoveryService(
   // `run_guard_stop_needs_input`, once per issue per 30 minutes. Callers: the guard
   // stop handling in heartbeat.ts and the stranded sweep below.
   async function wakeManagerForRunGuardStop(input: {
-    issue: { id: string; companyId: string; assigneeAgentId: string | null };
+    issue: { id: string; companyId: string; projectId?: string | null; assigneeAgentId: string | null };
     latestRun: { id: string; errorCode?: string | null; resultJson?: unknown };
     stopText?: string | null;
   }) {
@@ -8456,13 +8456,13 @@ export function recoveryService(
     // Only a task the escalation actually blocked is worth the manager's attention: a
     // deferred review stage or a rerouted task keeps its status and its own path.
     const current = await db
-      .select({ status: issues.status })
+      .select({ status: issues.status, projectId: issues.projectId })
       .from(issues)
       .where(and(eq(issues.companyId, input.issue.companyId), eq(issues.id, input.issue.id)))
       .then((rows) => rows[0] ?? null);
     if (current?.status !== "blocked") return null;
     return wakeManagerForRunGuardStopImpl(db, deps.enqueueWakeup, {
-      issue: input.issue,
+      issue: { ...input.issue, projectId: input.issue.projectId ?? current.projectId },
       latestRun: input.latestRun,
       stopReason,
       stopText: input.stopText ?? buildRunGuardStopComment(input.latestRun),
