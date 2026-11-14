@@ -8,6 +8,7 @@ import {
   agentWakeupRequests,
   companies,
   createDb,
+  documentRevisions,
   documents,
   heartbeatRuns,
   issueDocuments,
@@ -364,6 +365,7 @@ describeEmbeddedPostgres("plan-gate large task runtime behavior (issueService & 
       expect(issue.workMode).toBe("planning");
 
       // Attach plan doc and create pending plan approval confirmation
+      const rev1Id = randomUUID();
       const [doc1] = await db
         .insert(documents)
         .values({
@@ -371,6 +373,7 @@ describeEmbeddedPostgres("plan-gate large task runtime behavior (issueService & 
           title: "Plan for Task",
           format: "markdown",
           latestBody: "# Plan",
+          latestRevisionId: rev1Id,
         })
         .returning();
       await db.insert(issueDocuments).values({
@@ -378,6 +381,15 @@ describeEmbeddedPostgres("plan-gate large task runtime behavior (issueService & 
         issueId: issue.id,
         documentId: doc1.id,
         key: "plan",
+      });
+      await db.insert(documentRevisions).values({
+        id: rev1Id,
+        companyId,
+        documentId: doc1.id,
+        revisionNumber: 1,
+        title: "Plan for Task",
+        format: "markdown",
+        body: "# Plan",
       });
 
       const interaction = await interactionsSvc.create(
@@ -388,7 +400,14 @@ describeEmbeddedPostgres("plan-gate large task runtime behavior (issueService & 
           payload: {
             version: 1,
             prompt: "Accept plan?",
-            target: { type: "issue_document", key: "plan" },
+            target: {
+              type: "issue_document",
+              issueId: issue.id,
+              documentId: doc1.id,
+              key: "plan",
+              revisionId: rev1Id,
+              revisionNumber: 1,
+            },
           },
         },
         { agentId: engineerAgentId },
@@ -459,6 +478,7 @@ describeEmbeddedPostgres("plan-gate large task runtime behavior (issueService & 
       });
       expect(issue.workMode).toBe("planning");
 
+      const rev2Id = randomUUID();
       const [doc2] = await db
         .insert(documents)
         .values({
@@ -466,6 +486,7 @@ describeEmbeddedPostgres("plan-gate large task runtime behavior (issueService & 
           title: "Plan for Task",
           format: "markdown",
           latestBody: "# Plan",
+          latestRevisionId: rev2Id,
         })
         .returning();
       await db.insert(issueDocuments).values({
@@ -473,6 +494,15 @@ describeEmbeddedPostgres("plan-gate large task runtime behavior (issueService & 
         issueId: issue.id,
         documentId: doc2.id,
         key: "plan",
+      });
+      await db.insert(documentRevisions).values({
+        id: rev2Id,
+        companyId,
+        documentId: doc2.id,
+        revisionNumber: 1,
+        title: "Plan for Task",
+        format: "markdown",
+        body: "# Plan",
       });
 
       // Pending plan confirmation
@@ -484,7 +514,14 @@ describeEmbeddedPostgres("plan-gate large task runtime behavior (issueService & 
           payload: {
             version: 1,
             prompt: "Accept plan?",
-            target: { type: "issue_document", key: "plan" },
+            target: {
+              type: "issue_document",
+              issueId: issue.id,
+              documentId: doc2.id,
+              key: "plan",
+              revisionId: rev2Id,
+              revisionNumber: 1,
+            },
           },
         },
         { agentId: engineerAgentId },
