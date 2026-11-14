@@ -133,7 +133,6 @@ export function leaderLeaseService(db: Db, options: LeaderLeaseServiceOptions = 
         .update(boardLeases)
         .set({
           holderBootId: bootId,
-          epoch: sql`${boardLeases.epoch} + 1`,
           acquiredAt: sql`clock_timestamp()`,
           expiresAt: sql`clock_timestamp() + ${ttlMs} * interval '1 millisecond'`,
         })
@@ -146,9 +145,24 @@ export function leaderLeaseService(db: Db, options: LeaderLeaseServiceOptions = 
             ),
           ),
         )
-        .returning({ epoch: boardLeases.epoch });
+        .returning({ epoch: boardLeases.epoch, holderBootId: boardLeases.holderBootId });
       const row = rows[0];
-      return row ? Number(row.epoch) : null;
+      if (!row) return null;
+      const prevHolder = row.holderBootId;
+      // A renewal by the same holder must not bump the epoch (OPE-13146):
+      // the epoch fences a leadership handover, and an unchanged owner means
+      // the fence stays. Only a holder switch (or a fresh take after expiry)
+      // increments it.
+      if (prevHolder === bootId) {
+        return Number(row.epoch);
+      }
+      const bumped = await db
+        .update(boardLeases)
+        .set({ epoch: sql`${boardLeases.epoch} + 1` })
+        .where(and(eq(boardLeases.name, name), eq(boardLeases.holderBootId, bootId)))
+        .returning({ epoch: boardLeases.epoch });
+      const bumpedRow = bumped[0];
+      return bumpedRow ? Number(bumpedRow.epoch) : null;
     };
 
     /** One acquire pass: seed the row, then try to take it. */
@@ -177,6 +191,7 @@ export function leaderLeaseService(db: Db, options: LeaderLeaseServiceOptions = 
 
     /** One renew pass; failure (no row) means the lease is gone → onLost(). */
     const renewPass = async (): Promise<void> => {
+      const prevEpoch = epoch;
       const won = await tryTake();
       if (won === null) {
         log("warn", "leader lease renew returned no row — lease lost", { name, bootId });
@@ -184,7 +199,12 @@ export function leaderLeaseService(db: Db, options: LeaderLeaseServiceOptions = 
         return;
       }
       epoch = won;
-      hooks.onLeaderChanged?.(bootId, won);
+      // OPE-13146: a renewal that kept the same owner is not a handover —
+      // no live event, no activity-log noise. Only a real epoch bump (a new
+      // leadership fence) or an owner switch reaches the observers.
+      if (won !== prevEpoch) {
+        hooks.onLeaderChanged?.(bootId, won);
+      }
     };
 
     const pass = async () => {
