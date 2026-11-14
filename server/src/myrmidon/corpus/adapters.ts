@@ -6,6 +6,7 @@ import { createHttpDocumentParser, createPostgresSearchIndex, LocalBlobStore, Po
 import type { SqlExecutor } from "@myrmidon/corpus";
 import type { CorpusSettings } from "@myrmidon/shared";
 import type { CorpusPortContext } from "./ports.js";
+import { packCitedFragments } from "./fragment-packing.js";
 import type { CorpusMcpPortProvider } from "./contract.js";
 import type { CorpusDocumentRecord, CorpusPorts, CorpusJobRecord, CorpusDatasetRecord } from "./ports.js";
 import { secretService } from "../../services/secrets.js";
@@ -507,7 +508,13 @@ export function createCorpusMcpProvider(readSettings: (companyId: string) => Pro
           }
           targetIds = [...resolvedIds];
           if (targetIds.length === 0) {
-            return { query: request.query, datasets: [], topK: request.topK, hits: [] };
+            return {
+              query: request.query,
+              datasets: [],
+              topK: request.topK,
+              hits: [],
+              context: packCitedFragments([], { tokenBudget: request.contextTokenBudget }),
+            };
           }
         } else {
           targetIds = datasets.map((d) => d.id);
@@ -572,6 +579,10 @@ export function createCorpusMcpProvider(readSettings: (companyId: string) => Pro
           datasets: targetIds,
           topK: request.topK,
           hits: filteredHits,
+          context: packCitedFragments(filteredHits, {
+            tokenBudget: request.contextTokenBudget,
+            minScore: request.minScore ?? 0,
+          }),
         };
       },
       async getDocument({ documentId, includeText }) {

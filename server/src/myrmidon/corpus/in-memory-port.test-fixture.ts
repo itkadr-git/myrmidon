@@ -21,6 +21,7 @@ import type {
   CorpusSearchRequest,
   CorpusSearchResult,
 } from "./contract.js";
+import { packCitedFragments } from "./fragment-packing.js";
 import { CorpusError } from "./tools.js";
 
 interface StoredChunk {
@@ -125,6 +126,10 @@ export function createInMemoryCorpus(): InMemoryCorpus {
         datasets: request.datasets,
         topK: request.topK,
         hits: hits.slice(0, request.topK),
+        context: packCitedFragments(hits.slice(0, request.topK), {
+          tokenBudget: request.contextTokenBudget,
+          minScore: request.minScore ?? 0,
+        }),
       };
     },
 
