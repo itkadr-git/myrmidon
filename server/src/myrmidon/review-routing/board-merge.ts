@@ -44,7 +44,9 @@ import type { Logger } from "pino";
 import {
   REVIEW_ROUTING_APPROVED_LABEL,
   REVIEW_ROUTING_BOARD_MERGED_ACTION,
+  REVIEW_ROUTING_BOARD_MERGE_BLOCKED_ACTION,
   REVIEW_ROUTING_BOARD_MERGE_LABELED_ACTION,
+  REVIEW_ROUTING_BOARD_MERGE_REFUSED_ACTION,
   REVIEW_ROUTING_BOARD_MERGE_RETURNED_ACTION,
   type IssueCommentMetadata,
   type IssueCommentPresentation,
@@ -198,11 +200,22 @@ export function createBoardMerger(deps: BoardMergeDeps): BoardMerger {
   /** key -> epoch ms before which the sweep leaves the pull request alone. */
   const notBefore = new Map<string, number>();
   const warned = new Map<string, number>();
+  /**
+   * myrmidon(OPE-13136): pull request key -> when this head was first seen BLOCKED with the review
+   * marker present and the required checks green. `alerted` keeps the one alert per head.
+   */
+  const blockedSince = new Map<string, { headSha: string; since: number; seen: number; alerted: boolean }>();
+
+  /** True when this key may speak now (once per throttle window); marks it as spoken. */
+  function throttleOpen(key: string, now: Date): boolean {
+    const last = warned.get(key) ?? 0;
+    if (now.getTime() - last < WARN_THROTTLE_MS) return false;
+    warned.set(key, now.getTime());
+    return true;
+  }
 
   function warnThrottled(key: string, now: Date, fields: Record<string, unknown>, message: string) {
-    const last = warned.get(key) ?? 0;
-    if (now.getTime() - last < WARN_THROTTLE_MS) return;
-    warned.set(key, now.getTime());
+    if (!throttleOpen(key, now)) return;
     log.warn(fields, message);
   }
 
@@ -216,6 +229,46 @@ export function createBoardMerger(deps: BoardMergeDeps): BoardMerger {
     } catch (err) {
       log.warn({ err, ...fields }, `board merge: ${label} failed after the change was committed`);
     }
+  }
+
+  /** myrmidon(OPE-13136): one activity record and one warning per head that stays BLOCKED past the threshold. */
+  async function noteBlocked(
+    companyId: string,
+    row: ApprovedPrIssueRow,
+    key: string,
+    headSha: string,
+    requiredChecks: readonly string[],
+    afterMinutes: number,
+    now: Date,
+  ): Promise<void> {
+    let entry = blockedSince.get(key);
+    if (!entry || entry.headSha !== headSha) {
+      entry = { headSha, since: now.getTime(), seen: now.getTime(), alerted: false };
+      blockedSince.set(key, entry);
+    }
+    entry.seen = now.getTime();
+    if (afterMinutes <= 0 || entry.alerted) return;
+    const minutes = Math.floor((now.getTime() - entry.since) / 60_000);
+    if (minutes < afterMinutes) return;
+    entry.alerted = true;
+    const pr = `${row.repository}#${row.number}`;
+    const text = "GitHub reports the pull request BLOCKED although the required checks are green";
+    log.warn({ pr, headSha, minutesBlocked: minutes, requiredChecks }, `board merge: ${text}`);
+    await safely("activity", { pr }, () =>
+      deps.logActivity({
+        companyId,
+        action: REVIEW_ROUTING_BOARD_MERGE_BLOCKED_ACTION,
+        issueId: row.issueId,
+        details: {
+          repository: row.repository,
+          pullRequest: row.number,
+          headSha,
+          minutesBlocked: minutes,
+          requiredChecks,
+          message: text,
+        },
+      }),
+    );
   }
 
   async function evaluate(
@@ -315,12 +368,23 @@ export function createBoardMerger(deps: BoardMergeDeps): BoardMerger {
 
       const headSha = facts.headSha ?? "";
       const final = decision;
+      // myrmidon(OPE-13136): any state but "blocked with the marker present" ends the blocked spell.
+      if (!(final.kind === "wait" && final.reason === "blocked")) blockedSince.delete(key);
       switch (final.kind) {
         case "skip":
           rest(key, now, BOARD_MERGE_COOLDOWN_MS);
           return;
 
         case "wait":
+          // myrmidon(OPE-13136): `wait/blocked` means the marker is on, the required checks are green
+          // and GitHub still says BLOCKED (a required check left "expected", a protection rule).
+          // Nothing else tells anyone: count the time and alert once per head.
+          if (final.reason === "blocked") {
+            await noteBlocked(companyId, row, key, headSha, effectiveRequiredChecks, merge.blockedAlertAfterMinutes, now);
+          }
+          result.waiting += 1;
+          return;
+
         case "read_checks":
         case "read_files":
           result.waiting += 1;
@@ -433,7 +497,25 @@ export function createBoardMerger(deps: BoardMergeDeps): BoardMerger {
           if (outcome.status === "refused") {
             result.waiting += 1;
             rest(key, now, BOARD_MERGE_REFUSED_COOLDOWN_MS);
-            log.info({ pr, httpStatus: outcome.httpStatus }, "board merge: GitHub does not merge the pull request as it stands");
+            const message = outcome.message ?? null;
+            log.info({ pr, httpStatus: outcome.httpStatus, message }, "board merge: GitHub does not merge the pull request as it stands");
+            // myrmidon(OPE-13136): GitHub's refusal text is the only clue, put it on the task (throttled like the warning).
+            if (throttleOpen(`refused:${key}`, now)) {
+              await safely("activity", { pr }, () =>
+                deps.logActivity({
+                  companyId,
+                  action: REVIEW_ROUTING_BOARD_MERGE_REFUSED_ACTION,
+                  issueId: row.issueId,
+                  details: {
+                    repository: row.repository,
+                    pullRequest: row.number,
+                    headSha,
+                    httpStatus: outcome.httpStatus,
+                    message,
+                  },
+                }),
+              );
+            }
             return;
           }
           if (outcome.status === "failed") {
@@ -498,6 +580,8 @@ export function createBoardMerger(deps: BoardMergeDeps): BoardMerger {
     // Resting entries that ran out are dropped, so the maps hold only what is still waiting.
     for (const [key, until] of notBefore) if (until <= now.getTime()) notBefore.delete(key);
     for (const [key, at] of warned) if (now.getTime() - at >= WARN_THROTTLE_MS) warned.delete(key);
+    // myrmidon(OPE-13136): a blocked spell of a PR nobody has looked at for a day is gone (merged, closed, unapproved).
+    for (const [key, entry] of blockedSince) if (now.getTime() - entry.seen >= 24 * 60 * 60 * 1000) blockedSince.delete(key);
     const ctx: PassContext = { mergesLeft: settings.boardMerge.maxMergesPerPass, ignoreCooldown, stop: false };
     for (const row of rows) {
       if (ctx.stop) break;
@@ -520,6 +604,7 @@ export function createBoardMerger(deps: BoardMergeDeps): BoardMerger {
       inFlight.clear();
       notBefore.clear();
       warned.clear();
+      blockedSince.clear();
     },
 
     async sweepCompany(companyId, settings, now = nowFn()) {
