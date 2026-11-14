@@ -355,7 +355,7 @@ export function decideGuardReturn(
   const replacementReason = prAuthorId && !targetAssigneeAgentId
     ? `PR author is unavailable (${agentMap.get(prAuthorId)?.status ?? "unknown"})`
     : undefined;
-  let targetKind: "pr_author" | "return_assignee" | "active_engineer" = "pr_author";
+  let targetKind: "pr_author" | "return_assignee" | "active_engineer" | "project_lead" = "pr_author";
 
   // Priority 2: returnAssignee from executionState
   if (!targetAssigneeAgentId && candidate.executionState) {
