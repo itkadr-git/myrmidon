@@ -226,14 +226,13 @@ export function releaseStageRoutes(deps: ReleaseStageRoutesDeps): Router {
       const casteKey = baseActor.type === "agent" ? await deps.casteKeyOf(baseActor.id) : null;
       const actor = withCaste(baseActor, casteKey);
       const body = req.body as z.infer<typeof publishSchema>;
-      const previousStage = await deps.service.getStage(companyId, String(req.params.releaseId ?? ""));
       const stage = await deps.service.publishRelease({
         companyId,
         releaseId: String(req.params.releaseId ?? ""),
         publicationUrl: body.publicationUrl,
         actor,
       });
-      if (!previousStage.publishedAt) {
+      if (stage.publicationCreated) {
         await deps.logActivity({
           companyId,
           actorType: actor.type === "agent" ? "agent" : "user",

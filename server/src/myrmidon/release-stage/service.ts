@@ -138,9 +138,11 @@ export interface ReleaseStageView extends ReleaseStage {
   signaturePresent: boolean;
   /** True when the release has been published, with who and where. */
   published: boolean;
+  /** Internal route signal: this call transitioned the stage to published. */
+  publicationCreated: boolean;
 }
 
-export function releaseStageView(stage: ReleaseStage): ReleaseStageView {
+export function releaseStageView(stage: ReleaseStage, publicationCreated = false): ReleaseStageView {
   return {
     ...stage,
     gatesComplete: releaseGatesComplete(stage.gates),
@@ -148,6 +150,7 @@ export function releaseStageView(stage: ReleaseStage): ReleaseStageView {
       stage.artifact?.signedAt && stage.artifact?.verificationUrl,
     ),
     published: Boolean(stage.publishedAt && stage.publicationUrl && stage.publishedBy),
+    publicationCreated,
   };
 }
 
@@ -358,7 +361,7 @@ export function createReleaseStageService(deps: {
         publicationUrl: input.publicationUrl,
       };
       await deps.store.save(input.companyId, published);
-      return releaseStageView(published);
+      return releaseStageView(published, true);
     },
   };
 }
