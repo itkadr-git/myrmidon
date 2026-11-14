@@ -5,6 +5,7 @@ import {
   countRunsWithoutCommit,
   extractRunHeadSha,
   extractRunSummary,
+  resolveRunCapNoCommitWakeTargetId,
   resolveTaskRunsWithoutCommitLimit,
   DEFAULT_TASK_RUNS_WITHOUT_COMMIT_LIMIT,
   RUN_CAP_NO_COMMIT_BLOCK_REASON,
@@ -243,14 +244,71 @@ describe("resolveTaskRunsWithoutCommitLimit", () => {
   });
 });
 
-describe("resolveRunCapNoCommitLeadWakeTargetId", () => {
-  it("resolves leadAgentId when provided", async () => {
-    const db: any = {};
-    const target = await resolveRunCapNoCommitLeadWakeTargetId(db, {
+describe("resolveRunCapNoCommitWakeTargetId", () => {
+  it("resolves project leadAgentId when project has a lead", async () => {
+    const db = {
+      select: () => ({
+        from: () => ({
+          where: () => ({
+            limit: () => Promise.resolve([{ leadAgentId: "lead-agent-1" }]),
+          }),
+        }),
+      }),
+    } as any;
+    const target = await resolveRunCapNoCommitWakeTargetId(db, {
       companyId: "c1",
-      leadAgentId: "lead-agent-1",
+      projectId: "project-1",
       assigneeAgentId: "assignee-agent-1",
     });
     expect(target).toBe("lead-agent-1");
+  });
+
+  it("resolves reportsTo when assignee has a manager and project has no lead", async () => {
+    const db = {
+      select: () => ({
+        from: () => ({
+          where: () => ({
+            limit: () => Promise.resolve([{ reportsTo: "manager-agent-1" }]),
+          }),
+        }),
+      }),
+    } as any;
+    const target = await resolveRunCapNoCommitWakeTargetId(db, {
+      companyId: "c1",
+      assigneeAgentId: "assignee-agent-1",
+    });
+    expect(target).toBe("manager-agent-1");
+  });
+
+  it("falls back to adm agent when neither lead nor manager is found", async () => {
+    const db = {
+      select: () => ({
+        from: () => ({
+          where: () => ({
+            limit: () => Promise.resolve([{ id: "adm-agent-1" }]),
+          }),
+        }),
+      }),
+    } as any;
+    const target = await resolveRunCapNoCommitWakeTargetId(db, {
+      companyId: "c1",
+    });
+    expect(target).toBe("adm-agent-1");
+  });
+
+  it("returns null when no wake target exists", async () => {
+    const db = {
+      select: () => ({
+        from: () => ({
+          where: () => ({
+            limit: () => Promise.resolve([]),
+          }),
+        }),
+      }),
+    } as any;
+    const target = await resolveRunCapNoCommitWakeTargetId(db, {
+      companyId: "c1",
+    });
+    expect(target).toBeNull();
   });
 });

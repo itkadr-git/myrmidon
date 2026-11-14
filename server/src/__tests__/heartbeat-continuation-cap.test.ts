@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { eq } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import {
   activityLog,
@@ -15,7 +15,9 @@ import {
   heartbeatRunEvents,
   heartbeatRuns,
   issueComments,
+  issueWorkProducts,
   issues,
+  projects,
 } from "@myrmidon/db";
 import {
   getEmbeddedPostgresTestSupport,
