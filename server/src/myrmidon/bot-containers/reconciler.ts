@@ -120,6 +120,19 @@ export interface ReconcileBotInput {
    *  here; applyBotContainerNow passes "defer" unless the caller asks to drain. */
   busyPolicy?: BotBusyPolicy;
   /**
+   * myrmidon(OPE-13119): newest recorded progress (run event, output, useful
+   * action) across the agent's running runs, null when it has no running run.
+   * With it, an unhealthy container whose run progressed less than
+   * `liveRunGraceSec` ago is not recovered this pass (see the unhealthy branch).
+   * Absent = an unhealthy container is always recovered, as before.
+   */
+  readLiveRunActivity?: (agentId: string) => Promise<Date | null>;
+  /** Seconds of run silence after which an unhealthy container is recovered
+   *  anyway. Default {@link DEFAULT_HEALTH_LIVE_RUN_GRACE_SEC}. */
+  liveRunGraceSec?: number;
+  /** Test hook: the clock. */
+  now?: () => Date;
+  /**
    * myrmidon(1.6.5-BOT-SKILL-BACKIMPORT, OPE-6401): the company catalog side
    * of the bot-skill back-import, with the company this agent belongs to.
    * Read per pass; both absent (or the flag off) = the pass is exactly what
@@ -144,6 +157,15 @@ export type ReconcileOutcome =
   | { kind: "error"; message: string };
 
 export const DEFAULT_MAINTENANCE_DRAIN_TIMEOUT_SEC = 300;
+/** myrmidon(OPE-13119): an unhealthy container whose run wrote progress within this many seconds waits. */
+export const DEFAULT_HEALTH_LIVE_RUN_GRACE_SEC = 120;
+
+/** `MYRMIDON_BOT_HEALTH_LIVE_RUN_GRACE_SEC`: seconds, default 120; `0` switches the wait off; garbage keeps the default. */
+export function resolveHealthLiveRunGraceSec(env: NodeJS.ProcessEnv = process.env): number {
+  const raw = env.MYRMIDON_BOT_HEALTH_LIVE_RUN_GRACE_SEC?.trim();
+  if (!raw || !/^\d+$/.test(raw)) return DEFAULT_HEALTH_LIVE_RUN_GRACE_SEC;
+  return Math.min(Number(raw), 86_400);
+}
 const DRAIN_POLL_INTERVAL_MS = 2_000;
 /** How much longer than the drain timeout the reconciler keeps polling before
  *  giving up: R3's own tick (already running server-wide, started by
@@ -444,6 +466,19 @@ export async function reconcileBot(input: ReconcileBotInput): Promise<ReconcileO
         );
         await backimportBotSkillsIntoCatalog();
         return { kind: "applied_files" };
+      }
+    }
+
+    // myrmidon(OPE-13119): Docker's probe times out under host load while the
+    // run still writes events; recovering then kills a live run. Wait one pass.
+    if (status.state === "unhealthy" && input.busyPolicy === "defer" && input.readLiveRunActivity) {
+      const graceSec = input.liveRunGraceSec ?? resolveHealthLiveRunGraceSec(input.env ?? process.env);
+      const lastAt = graceSec > 0 ? await input.readLiveRunActivity(agentId) : null;
+      const nowMs = (input.now ?? (() => new Date()))().getTime();
+      if (lastAt && nowMs - lastAt.getTime() < graceSec * 1000) {
+        const silentSec = Math.max(0, Math.round((nowMs - lastAt.getTime()) / 1000));
+        await info("health recovery deferred: live run", { silentSec, graceSec, state: status.state });
+        return { kind: "deferred", reason: "the container is unhealthy but its run is alive; recovery is retried on a later pass" };
       }
     }
 
