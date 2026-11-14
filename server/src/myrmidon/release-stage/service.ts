@@ -215,7 +215,7 @@ export function createReleaseStageService(deps: {
     /** GET all stages of the company. */
     async listStages(companyId: string): Promise<ReleaseStageView[]> {
       const stages = await deps.store.list(companyId);
-      return stages.map(releaseStageView);
+      return stages.map((stage) => releaseStageView(stage));
     },
 
     /**
