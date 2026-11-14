@@ -242,3 +242,15 @@ describe("resolveTaskRunsWithoutCommitLimit", () => {
     );
   });
 });
+
+describe("resolveRunCapNoCommitLeadWakeTargetId", () => {
+  it("resolves leadAgentId when provided", async () => {
+    const db: any = {};
+    const target = await resolveRunCapNoCommitLeadWakeTargetId(db, {
+      companyId: "c1",
+      leadAgentId: "lead-agent-1",
+      assigneeAgentId: "assignee-agent-1",
+    });
+    expect(target).toBe("lead-agent-1");
+  });
+});

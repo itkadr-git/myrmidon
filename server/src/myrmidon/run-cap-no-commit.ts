@@ -151,26 +151,26 @@ export function buildRunCapNoCommitComment(input: {
 }
 
 export function extractRunHeadSha(run: typeof heartbeatRuns.$inferSelect): string | null {
-  const contextSnapshot = run.contextSnapshot as Record<string, any> | null;
-  if (!contextSnapshot) return null;
-
-  // 1. Direct record in contextSnapshot (written at finish or in wake context)
-  if (typeof contextSnapshot.prHeadSha === "string" && contextSnapshot.prHeadSha.trim()) {
-    return contextSnapshot.prHeadSha.trim();
-  }
-
-  // 2. Check resultJson if present
+  // 1. Check resultJson if present
   const resultJson = run.resultJson as Record<string, any> | null;
   if (resultJson && typeof resultJson.prHeadSha === "string" && resultJson.prHeadSha.trim()) {
     return resultJson.prHeadSha.trim();
   }
 
-  // 3. Fallback to wake payload pullRequestsCi
-  const wake = contextSnapshot.paperclipWake as Record<string, any> | null;
-  if (wake && Array.isArray(wake.pullRequestsCi) && wake.pullRequestsCi.length > 0) {
-    const sha = wake.pullRequestsCi[0]?.headSha;
-    if (typeof sha === "string" && sha.trim()) {
-      return sha.trim();
+  const contextSnapshot = run.contextSnapshot as Record<string, any> | null;
+  if (contextSnapshot) {
+    // 2. Direct record in contextSnapshot (written at finish or in wake context)
+    if (typeof contextSnapshot.prHeadSha === "string" && contextSnapshot.prHeadSha.trim()) {
+      return contextSnapshot.prHeadSha.trim();
+    }
+
+    // 3. Fallback to wake payload pullRequestsCi
+    const wake = contextSnapshot.paperclipWake as Record<string, any> | null;
+    if (wake && Array.isArray(wake.pullRequestsCi) && wake.pullRequestsCi.length > 0) {
+      const sha = wake.pullRequestsCi[0]?.headSha;
+      if (typeof sha === "string" && sha.trim()) {
+        return sha.trim();
+      }
     }
   }
 
@@ -236,10 +236,17 @@ export async function readLatestManualUnblockAt(
         eq(activityLog.entityType, "issue"),
         eq(activityLog.entityId, issueId),
         eq(activityLog.action, "issue.updated"),
-        or(
-          eq(activityLog.actorType, "user"),
-          sql`${activityLog.details}->>'previousStatus' = 'blocked'`,
-        ),
+        eq(activityLog.actorType, "user"),
+        sql`(
+          ${activityLog.details} #>> '{changes,status,from}' = 'blocked'
+          or ${activityLog.details} #>> '{_previous,status}' = 'blocked'
+          or ${activityLog.details} ->> 'previousStatus' = 'blocked'
+        )`,
+        sql`(
+          ${activityLog.details} #>> '{changes,status,to}' in ('todo', 'in_progress')
+          or ${activityLog.details} ->> 'status' in ('todo', 'in_progress')
+          or ${activityLog.details} #>> '{_next,status}' in ('todo', 'in_progress')
+        )`,
       ),
     )
     .orderBy(desc(activityLog.createdAt))
