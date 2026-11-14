@@ -2,6 +2,7 @@ import { definePlugin } from "@myrmidon/plugin-sdk";
 import type { PaperclipPlugin, ScopeKey } from "@myrmidon/plugin-sdk";
 import { formatMemories, HindsightClient, type FetchLike } from "./client.js";
 import { resolveBank } from "./bank.js";
+import { runConsolidationPass } from "./consolidation.js";
 
 export type { FetchLike };
 
@@ -43,6 +44,10 @@ export interface HindsightPluginConfig {
   enabledAgentIds?: string[];
   accessMode?: "all" | "roles" | "selected";
   enabledRoles?: string[];
+  consolidationEnabled?: boolean;
+  consolidationBankIds?: string[];
+  consolidationTimeBudgetMs?: number;
+  consolidationStallThreshold?: number;
 }
 
 const CLOSED_AGENT_RETAIN_MESSAGE = "Retain skipped — agent not mapped to a bank";
@@ -55,6 +60,18 @@ const LAST_RECALL_ISSUE_STATE_KEY = "hindsight-last-recall-issue";
 
 /** A comment shorter than this does not earn a line in a run digest. */
 const MIN_DIGEST_BODY_LENGTH = 200;
+const CONSOLIDATION_JOB_KEY = "nightly-consolidation";
+const CONSOLIDATION_REPORT_KEY = "hindsight-consolidation-report";
+const DEFAULT_CONSOLIDATION_BUDGET_MS = 5 * 60 * 1000;
+const activeConsolidationRuns = new Set<string>();
+
+function validPositiveNumber(value: unknown, fallback: number): number {
+  return typeof value === "number" && Number.isFinite(value) && value > 0 ? value : fallback;
+}
+
+function validPositiveInteger(value: unknown, fallback: number): number {
+  return typeof value === "number" && Number.isInteger(value) && value > 0 ? value : fallback;
+}
 
 /**
  * Board machinery rather than agent output: milestone blocks, status
@@ -194,6 +211,55 @@ export function createHindsightPlugin(deps: PluginDeps = {}): PaperclipPlugin {
       };
 
       const runStateKey = (scopeId: string, stateKey: string): ScopeKey => ({ scopeKind: "run", scopeId, stateKey });
+
+      ctx.jobs.register(CONSOLIDATION_JOB_KEY, async (job) => {
+        const config = await getConfig(ctx);
+        if (config.consolidationEnabled !== true) {
+          ctx.logger.info("Hindsight nightly consolidation is disabled", { runId: job.runId });
+          return;
+        }
+        const bankIds = Array.isArray(config.consolidationBankIds)
+          ? [...new Set(config.consolidationBankIds.filter((id): id is string => typeof id === "string" && id.trim().length > 0))]
+          : [];
+        const timeBudgetMs = validPositiveNumber(config.consolidationTimeBudgetMs, DEFAULT_CONSOLIDATION_BUDGET_MS);
+        const stallThreshold = validPositiveInteger(config.consolidationStallThreshold, 1);
+        const report = { recordsProcessed: 0, modelsUpdated: 0, operationsStoppedByWatchdog: 0 };
+        let consecutiveStalls = 0;
+        const startedAt = Date.now();
+        for (const bankId of bankIds) {
+          if (Date.now() - startedAt >= timeBudgetMs) {
+            report.operationsStoppedByWatchdog += 1;
+            break;
+          }
+          if (activeConsolidationRuns.has(bankId)) {
+            report.operationsStoppedByWatchdog += 1;
+            consecutiveStalls += 1;
+            if (consecutiveStalls >= stallThreshold) break;
+            continue;
+          }
+          activeConsolidationRuns.add(bankId);
+          try {
+            const result = await runConsolidationPass(await makeClient(config), {
+              bankId,
+              timeBudgetMs: Math.max(1, timeBudgetMs - (Date.now() - startedAt)),
+            });
+            report.recordsProcessed += result.documentsProcessed;
+            report.modelsUpdated += result.modelsRefreshed;
+            if (!result.completed) {
+              report.operationsStoppedByWatchdog += 1;
+              consecutiveStalls += 1;
+              if (consecutiveStalls >= stallThreshold) break;
+            } else {
+              consecutiveStalls = 0;
+            }
+          } finally {
+            activeConsolidationRuns.delete(bankId);
+          }
+        }
+        const completedReport = { ...report, runId: job.runId, finishedAt: new Date().toISOString() };
+        await ctx.state.set({ scopeKind: "instance", stateKey: CONSOLIDATION_REPORT_KEY }, completedReport);
+        ctx.logger.info("Hindsight nightly consolidation report", completedReport);
+      });
 
       ctx.events.on("agent.run.started", async (event) => {
         const payload = (event.payload ?? {}) as { agentId?: string | null; runId?: string | null; issueId?: string | null };
@@ -525,6 +591,12 @@ export function createHindsightPlugin(deps: PluginDeps = {}): PaperclipPlugin {
       if (c.requestTimeoutMs !== undefined) {
         if (typeof c.requestTimeoutMs !== "number" || !Number.isFinite(c.requestTimeoutMs) || c.requestTimeoutMs <= 0) {
           return { ok: false, errors: ["requestTimeoutMs must be a positive number"] };
+        }
+      }
+      for (const key of ["consolidationTimeBudgetMs", "consolidationStallThreshold"] as const) {
+        const value = c[key];
+        if (value !== undefined && (typeof value !== "number" || !Number.isFinite(value) || value <= 0)) {
+          return { ok: false, errors: [`${key} must be a positive number`] };
         }
       }
       try {
