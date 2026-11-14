@@ -907,6 +907,7 @@ describeEmbeddedPostgres("tool gateway: a failing tool does not take its connect
       // Breaker open: the failing tool fails fast without reaching the server and
       // without recording an invocation...
       const recordedBefore = await invocationCount();
+      const slowCallsBeforeBreakerCall = slowCallsReceived;
       await call(4).then(
         () => {
           throw new Error("Expected the paused tool to fail fast");
@@ -931,7 +932,7 @@ describeEmbeddedPostgres("tool gateway: a failing tool does not take its connect
           });
         },
       );
-      expect(slowCallsReceived).toBeLessThanOrEqual(3);
+      expect(slowCallsReceived).toBe(slowCallsBeforeBreakerCall);
       expect(await invocationCount()).toBe(recordedBefore);
       // ...while its sibling on the same connection keeps working.
       await expect(
