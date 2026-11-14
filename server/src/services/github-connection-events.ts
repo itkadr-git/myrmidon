@@ -13,6 +13,7 @@ import {
   type Db,
 } from "@myrmidon/db";
 import { and, desc, eq, inArray, sql } from "drizzle-orm";
+import { invalidateCiCacheForHead } from "./github-pull-request-ci.js";
 import {
   logActivity,
   publishActivity,
@@ -1102,15 +1103,18 @@ export function githubConnectionEventService(
   async function applyCiCompletionEvent(companyId: string, event: LeasedEvent, database: Db = db, afterCommit?: DeliveryWakes) {
     if (event.event !== "workflow_run" && event.event !== "check_suite" && event.event !== "check_run") return;
     const payload = event.payload;
+    const action = stringValue(payload.action);
     const status = stringValue(payload.status) ?? (stringValue(payload.conclusion) ? "completed" : null);
     const conclusion = stringValue(payload.conclusion);
-    if (!status || !["queued", "in_progress", "completed"].includes(status)) return;
+    const isRerequested = action === "rerequested";
+    if (!isRerequested && (!status || !["queued", "in_progress", "completed"].includes(status))) return;
     const repositoryValue = payload.repository;
     const repository = stringValue(repositoryValue) ?? stringValue(record(repositoryValue).full_name);
     const pullRequestNumber = positiveInteger(payload.pullRequestNumber) ?? positiveInteger(payload.number) ?? positiveInteger(payload.checkSuitePullRequestNumber);
     const headSha = commitSha(payload.headSha);
     const runId = identifier(payload.runId) ?? identifier(payload.checkSuiteId) ?? event.id;
     if (!repository || !pullRequestNumber || !headSha) return;
+    invalidateCiCacheForHead(companyId, repository.toLowerCase(), headSha);
 
     const active = status === "queued" || status === "in_progress";
     if (!active && !conclusion) return;
