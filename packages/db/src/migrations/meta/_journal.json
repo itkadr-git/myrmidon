@@ -1235,13 +1235,6 @@
       "breakpoints": true
     },
     {
-      "idx": 178,
-      "version": "7",
-      "when": 1784241827832,
-      "tag": "0178_summary_slots",
-      "breakpoints": true
-    },
-    {
       "idx": 179,
       "version": "7",
       "when": 1784241828832,
@@ -2794,6 +2787,13 @@
       "version": "7",
       "when": 1794535121132,
       "tag": "0483_rainy_blockbuster",
+      "breakpoints": true
+    },
+    {
+      "idx": 484,
+      "version": "7",
+      "when": 1794535121133,
+      "tag": "0484_secret_audit_slim",
       "breakpoints": true
     }
   ]
