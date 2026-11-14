@@ -4,7 +4,7 @@
 // mutations. The layout lives in CastesScreen.tsx. Split mirrors the
 // model-providers pattern so tests can drive the wire tier against a mocked
 // API client.
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useTranslation } from "@/i18n";
 import { useCompany } from "@/context/CompanyContext";
@@ -17,7 +17,9 @@ import { casteCounts } from "./casteCounts";
 import {
   castesApi,
   castesQueryKey,
+  casteModelEvalApi,
   type AddCasteInput,
+  type CasteModelEvalView,
   type CasteView,
   type UpdateCasteInput,
 } from "./castesApi";
@@ -116,6 +118,62 @@ export function CastesScreen() {
     },
   });
 
+  // myrmidon(1.8 CASTE-MODEL-EVAL OPE-12948): the reference-run model
+  // comparison. Probed per company (one call per caste — the endpoint serves
+  // one caste per call, OPE-12933); companies whose server predates the
+  // endpoint 404 here and the section simply stays hidden. The key carries
+  // the caste list, so a directory change re-probes.
+  const [evalSelectedKey, setEvalSelectedKey] = useState<string | null>(null);
+  const casteKeyList = castes?.map((caste) => caste.key).join(",") ?? "";
+  const evalQuery = useQuery({
+    queryKey: ["myrmidon", "castes", companyId, "model-eval", casteKeyList],
+    queryFn: async () => {
+      const keys = (castes ?? []).map((caste) => caste.key);
+      const outcomes = await Promise.all(
+        keys.map(async (key) => {
+          try {
+            return { key, eval: await casteModelEvalApi.view(companyId, key) };
+          } catch {
+            return { key, eval: null };
+          }
+        }),
+      );
+      const perCaste: Record<string, CasteModelEvalView> = {};
+      const withEval: string[] = [];
+      for (const outcome of outcomes) {
+        if (outcome.eval) {
+          withEval.push(outcome.key);
+          perCaste[outcome.key] = outcome.eval;
+        }
+      }
+      return { withEval, perCaste };
+    },
+    enabled: companyId.length > 0 && Boolean(castes),
+    staleTime: 60_000,
+    retry: false,
+  });
+  const evalData = evalQuery.data ?? null;
+
+  // Default the selection to the first caste that has a comparison.
+  const effectiveEvalKey =
+    evalSelectedKey !== null && evalData?.withEval.includes(evalSelectedKey)
+      ? evalSelectedKey
+      : (evalData?.withEval[0] ?? null);
+
+  // The displayed caste model comes from the PATCH response of the explicit
+  // confirmation (criterion: "the interface updates the displayed defaultModel
+  // from the API response") — not from a blind local guess. Kept per caste:
+  // confirming for one caste must not leak onto another.
+  const [evalConfirmed, setEvalConfirmed] = useState<{ key: string; model: string } | null>(null);
+  const evalConfirmMutation = useMutation({
+    mutationFn: (model: string) =>
+      castesApi.update(companyId, effectiveEvalKey ?? "", { defaultModel: model }),
+    onSuccess: (data) => {
+      setEvalConfirmed({ key: effectiveEvalKey ?? "", model: data.caste.defaultModel ?? "" });
+      void invalidate();
+    },
+  });
+
   if (companyId.length === 0) {
     return (
       <p className="text-sm text-muted-foreground" data-testid="myrmidon-castes-no-company">
@@ -159,12 +217,35 @@ export function CastesScreen() {
             ? readable(updateMutation.error)
             : defaultMutation.isError
               ? readable(defaultMutation.error)
-              : null
+              : evalConfirmMutation.isError
+                ? readable(evalConfirmMutation.error)
+                : null
       }
       removeNeedsTarget={removeMutation.isError ? isCasteInUse(removeMutation.error) : false}
       onSetDefault={(key) => defaultMutation.mutate(key)}
       defaulting={defaultMutation.isPending}
       counts={casteCounts(castes, agentsQuery.data ?? [], queueQuery.data ?? [])}
+      modelEval={{
+        castesWithEval: evalData?.withEval ?? [],
+        selectedKey: effectiveEvalKey,
+        onSelect: setEvalSelectedKey,
+        loading: evalQuery.isPending,
+        loadError: evalQuery.isError ? readable(evalQuery.error) : null,
+        results: effectiveEvalKey ? (evalData?.perCaste[effectiveEvalKey]?.results ?? []) : [],
+        suggestedModel: effectiveEvalKey
+          ? (evalData?.perCaste[effectiveEvalKey]?.suggestedModel ?? null)
+          : null,
+        // Criterion 3: after the owner confirms, the displayed default model
+        // comes from the PATCH response, not a local guess; the directory's
+        // value stays the fallback until the invalidated GET agrees.
+        displayModel: (key) =>
+          evalConfirmed && evalConfirmed.key === key
+            ? (evalConfirmed.model || null)
+            : (castes.find((caste) => caste.key === key)?.defaultModel ?? null),
+        confirming: evalConfirmMutation.isPending,
+        onConfirm: (model) => evalConfirmMutation.mutate(model),
+        onDecline: () => undefined,
+      }}
     />
   );
 }

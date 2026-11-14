@@ -15,6 +15,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import type { Issue, IssueDocument } from "@myrmidon/shared";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { IssueProperties } from "./IssueProperties";
+import { ReleaseComposition } from "./issue-properties/release-composition";
 import { queryKeys } from "../lib/queryKeys";
 
 const mockAgentsApi = vi.hoisted(() => ({
@@ -460,6 +461,27 @@ function renderProperties(container: HTMLDivElement, props: ComponentProps<typeo
   const { root } = renderPropertiesWithQueryClient(container, props);
   return root;
 }
+
+describe("ReleaseComposition", () => {
+  it("shows absent-from-release status and attention for a done task", async () => {
+    const container = document.createElement("div");
+    const root = createRoot(container);
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const issue = createIssue({
+      status: "done",
+      labels: [{ id: "release", companyId: "company-1", name: "release:1.8", color: "#000000", createdAt: new Date(), updatedAt: new Date() }],
+    });
+    queryClient.setQueryData(queryKeys.issues.releaseStatus(issue.id), {
+      issueId: issue.id,
+      releaseLabel: "1.8",
+      pullRequests: [{ workProductId: "pr-1", repo: "org/repo", number: 42, url: "https://github.com/org/repo/pull/42", state: "merged", mergeCommitSha: "abc", inDefaultBranch: true, verdict: "missing_from_release", releaseRefs: ["myr-v1.8.0"] }],
+    });
+    await act(async () => root.render(<QueryClientProvider client={queryClient}><ReleaseComposition issue={issue} /></QueryClientProvider>));
+    expect(container.textContent).toContain("Merged in main, absent from release branch");
+    expect(container.textContent).toContain("Done task has code missing from its release branch.");
+    await act(async () => root.unmount());
+  });
+});
 
 describe("IssueProperties", () => {
   let container: HTMLDivElement;
