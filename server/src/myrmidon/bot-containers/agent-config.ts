@@ -57,11 +57,21 @@ function isPlainRecord(value: unknown): value is Record<string, unknown> {
  * quiet for whoever saved it. A card without a `container` block is fine, and
  * so is any other adapter type.
  */
+export interface BotContainerCardSaveOptions {
+  /**
+   * Whether to validate extraMounts sources.
+   * Defaults to true (e.g. for card creation and direct checks).
+   * In partial PATCH where extraMounts was not supplied, can be set to false.
+   */
+  validateExtraMounts?: boolean;
+}
+
 export function botContainerCardSaveProblem(
   adapterType: string | null | undefined,
   adapterConfig: Record<string, unknown> | null | undefined,
   env: NodeJS.ProcessEnv = process.env,
   ceilings?: BotResourceCeilings | null,
+  options?: BotContainerCardSaveOptions,
 ): string | null {
   if (adapterType !== HERMES_GATEWAY_ADAPTER_TYPE) return null;
   const raw = adapterConfig?.container;
@@ -99,8 +109,10 @@ export function botContainerCardSaveProblem(
   }
   const imageProblem = botContainerImageSaveProblem(raw.image, env);
   if (imageProblem) return imageProblem;
-  const extraMountsProblem = botContainerExtraMountsSaveProblem(raw.extraMounts, env);
-  if (extraMountsProblem) return extraMountsProblem;
+  if (options?.validateExtraMounts !== false) {
+    const extraMountsProblem = botContainerExtraMountsSaveProblem(raw.extraMounts, env);
+    if (extraMountsProblem) return extraMountsProblem;
+  }
   return null;
 }
 
@@ -343,13 +355,7 @@ function readExtraMounts(
     if (typeof mount.source !== "string" || mount.source.trim().length === 0) {
       return { ok: false, reason: `${where}.source must be a non-empty string` };
     }
-    const containerPath =
-      typeof mount.containerPath === "string"
-        ? mount.containerPath
-        : typeof mount.path === "string"
-          ? mount.path
-          : null;
-    if (!containerPath || !containerPath.startsWith("/")) {
+    if (typeof mount.path !== "string" || !mount.path.startsWith("/")) {
       return { ok: false, reason: `${where}.path must be an absolute container path` };
     }
     if (mount.readOnly !== undefined && typeof mount.readOnly !== "boolean") {
@@ -361,7 +367,7 @@ function readExtraMounts(
         reason: `${where}.readOnly=false is not supported: a shared directory is only mounted read-only`,
       };
     }
-    mounts.push({ source: mount.source, containerPath, readOnly: true });
+    mounts.push({ source: mount.source, containerPath: mount.path, readOnly: true });
   }
   return { ok: true, mounts };
 }

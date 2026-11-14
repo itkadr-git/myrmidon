@@ -267,7 +267,7 @@ describe("botContainerCardSaveProblem extraMounts (1.6.9 OPE-13074)", () => {
     const env = { MYRMIDON_BOT_MOUNT_SOURCES: "/srv/shared/sources" };
     const problem = botContainerCardSaveProblem(
       "hermes_gateway",
-      card([{ source: "/srv/other/secret", containerPath: "/srv/other/secret", readOnly: true }]),
+      card([{ source: "/srv/other/secret", path: "/srv/other/secret", readOnly: true }]),
       env,
     );
     expect(problem).toContain('extra mount #1 source "/srv/other/secret" is not listed in MYRMIDON_BOT_MOUNT_SOURCES');
@@ -278,7 +278,7 @@ describe("botContainerCardSaveProblem extraMounts (1.6.9 OPE-13074)", () => {
     expect(
       botContainerCardSaveProblem(
         "hermes_gateway",
-        card([{ source: "/srv/shared/sources", containerPath: "/srv/shared/sources", readOnly: true }]),
+        card([{ source: "/srv/shared/sources", path: "/srv/shared/sources", readOnly: true }]),
         env,
       ),
     ).toBeNull();
@@ -289,10 +289,23 @@ describe("botContainerCardSaveProblem extraMounts (1.6.9 OPE-13074)", () => {
     expect(
       botContainerCardSaveProblem(
         "hermes_gateway",
-        card([{ source: "/srv/shared/sources", containerPath: "/srv/shared/sources", readOnly: false }]),
+        card([{ source: "/srv/shared/sources", path: "/srv/shared/sources", readOnly: false }]),
         env,
       ),
     ).toContain("readOnly=false is not supported");
+  });
+
+  it("skips extraMounts validation when options.validateExtraMounts is false", () => {
+    const env = { MYRMIDON_BOT_MOUNT_SOURCES: "/srv/shared/sources" };
+    expect(
+      botContainerCardSaveProblem(
+        "hermes_gateway",
+        card([{ source: "/srv/other/secret", path: "/srv/other/secret", readOnly: true }]),
+        env,
+        undefined,
+        { validateExtraMounts: false },
+      ),
+    ).toBeNull();
   });
 });
 

@@ -840,7 +840,7 @@ describe("agent routes adapter validation", () => {
             adapterConfig: {
               container: {
                 ...container,
-                extraMounts: [{ source: "/srv/other/disallowed", containerPath: "/srv/other/disallowed", readOnly: true }],
+                extraMounts: [{ source: "/srv/other/disallowed", path: "/srv/other/disallowed", readOnly: true }],
               },
             },
             replaceAdapterConfig: true,
@@ -851,7 +851,7 @@ describe("agent routes adapter validation", () => {
       expect(String(bad.body.error ?? bad.body.message ?? "")).toContain("MYRMIDON_BOT_MOUNT_SOURCES");
       expect(mockAgentService.update).not.toHaveBeenCalled();
 
-      // 2. PATCH with allowed mount source -> 200, card saved
+      // 2. PATCH with allowed mount source -> 200, card saved and persisted value verified
       mockAgentService.update.mockClear();
       const good = await requestApp(app, (baseUrl) =>
         request(baseUrl)
@@ -860,7 +860,7 @@ describe("agent routes adapter validation", () => {
             adapterConfig: {
               container: {
                 ...container,
-                extraMounts: [{ source: "/srv/allowed/sources", containerPath: "/srv/allowed/sources", readOnly: true }],
+                extraMounts: [{ source: "/srv/allowed/sources", path: "/srv/allowed/sources", readOnly: true }],
               },
             },
             replaceAdapterConfig: true,
@@ -868,6 +868,45 @@ describe("agent routes adapter validation", () => {
       );
       expect(good.status, JSON.stringify(good.body)).toBe(200);
       expect(mockAgentService.update).toHaveBeenCalled();
+      const saved = mockAgentService.update.mock.calls.at(-1)?.[1] as Record<string, unknown>;
+      expect(saved.adapterConfig).toMatchObject({
+        container: {
+          extraMounts: [{ source: "/srv/allowed/sources", path: "/srv/allowed/sources", readOnly: true }],
+        },
+      });
+      expect((good.body as Record<string, any>).adapterConfig.container.extraMounts).toEqual([
+        { source: "/srv/allowed/sources", path: "/srv/allowed/sources", readOnly: true },
+      ]);
+
+      // 3. Partial PATCH without extraMounts does not reject already-saved mount (OPE-13074)
+      mockAgentService.update.mockClear();
+      mockAgentService.getById.mockResolvedValue({
+        ...existing,
+        adapterType: "hermes_gateway",
+        adapterConfig: {
+          model: "gpt-4o-mini",
+          container: {
+            ...container,
+            extraMounts: [{ source: "/srv/legacy/disallowed", path: "/srv/legacy/disallowed", readOnly: true }],
+          },
+        },
+      });
+      const partialPatch = await requestApp(app, (baseUrl) =>
+        request(baseUrl)
+          .patch(agentPath)
+          .send({
+            adapterConfig: {
+              model: "gpt-4o",
+            },
+          }),
+      );
+      expect(partialPatch.status, JSON.stringify(partialPatch.body)).toBe(200);
+      expect(mockAgentService.update).toHaveBeenCalled();
+      const partialSaved = mockAgentService.update.mock.calls.at(-1)?.[1] as Record<string, unknown>;
+      expect((partialSaved.adapterConfig as Record<string, any>).model).toBe("gpt-4o");
+      expect((partialSaved.adapterConfig as Record<string, any>).container.extraMounts).toEqual([
+        { source: "/srv/legacy/disallowed", path: "/srv/legacy/disallowed", readOnly: true },
+      ]);
     } finally {
       if (originalEnv === undefined) {
         delete process.env.MYRMIDON_BOT_MOUNT_SOURCES;
