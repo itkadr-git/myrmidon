@@ -523,21 +523,27 @@ describeEmbeddedPostgres("@<alias> addressing in the bridged Telegram chat (X9b)
       text: "@gip check the schedule",
       endpointAgentId: fixture.assignedAgentId,
     });
-    expect(byAlias).toMatchObject({ agentId: fixture.gipAgentId, displayName: "ГИП" });
+    expect(byAlias).toEqual({
+      kind: "resolved",
+      addressee: expect.objectContaining({ agentId: fixture.gipAgentId, displayName: "ГИП" }),
+    });
     // name fallback (no aliases on Maya)
     const byName = await resolveBridgeAddressee(db, {
       companyId: fixture.companyId,
       text: "hey @maya question",
       endpointAgentId: fixture.assignedAgentId,
     });
-    expect(byName).toMatchObject({ agentId: fixture.assignedAgentId, displayName: "Maya" });
-    // nothing matches -> null, keeps the assigned-agent path
+    expect(byName).toEqual({
+      kind: "resolved",
+      addressee: expect.objectContaining({ agentId: fixture.assignedAgentId, displayName: "Maya" }),
+    });
+    // nothing matches -> { kind: "none" }, keeps the assigned-agent path
     const none = await resolveBridgeAddressee(db, {
       companyId: fixture.companyId,
       text: "@stranger hello",
       endpointAgentId: fixture.assignedAgentId,
     });
-    expect(none).toBeNull();
+    expect(none).toEqual({ kind: "none" });
   });
 
   it("scopes the alias lookup to the endpoint's company", async () => {
@@ -555,13 +561,16 @@ describeEmbeddedPostgres("@<alias> addressing in the bridged Telegram chat (X9b)
       text: "@gip hello",
       endpointAgentId: fixtureB.assignedAgentId,
     });
-    expect(other).toBeNull();
+    expect(other).toEqual({ kind: "none" });
     const own = await resolveBridgeAddressee(db, {
       companyId: fixtureA.companyId,
       text: "@gip hello",
       endpointAgentId: fixtureA.assignedAgentId,
     });
-    expect(own).toMatchObject({ agentId: fixtureA.gipAgentId });
+    expect(own).toEqual({
+      kind: "resolved",
+      addressee: expect.objectContaining({ agentId: fixtureA.gipAgentId }),
+    });
     expect(fixtureA.companyId).not.toBe(fixtureB.companyId);
   });
 
