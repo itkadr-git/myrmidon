@@ -226,35 +226,42 @@ export function createHindsightPlugin(deps: PluginDeps = {}): PaperclipPlugin {
         const report = { recordsProcessed: 0, modelsUpdated: 0, operationsStoppedByWatchdog: 0 };
         let consecutiveStalls = 0;
         const startedAt = Date.now();
-        for (const bankId of bankIds) {
-          if (Date.now() - startedAt >= timeBudgetMs) {
-            report.operationsStoppedByWatchdog += 1;
-            break;
-          }
-          if (activeConsolidationRuns.has(bankId)) {
-            report.operationsStoppedByWatchdog += 1;
-            consecutiveStalls += 1;
-            if (consecutiveStalls >= stallThreshold) break;
-            continue;
-          }
-          activeConsolidationRuns.add(bankId);
-          try {
-            const result = await runConsolidationPass(await makeClient(config), {
-              bankId,
-              timeBudgetMs: Math.max(1, timeBudgetMs - (Date.now() - startedAt)),
-            });
-            report.recordsProcessed += result.documentsProcessed;
-            report.modelsUpdated += result.modelsRefreshed;
-            if (!result.completed) {
+        const watchdogController = new AbortController();
+        const watchdogTimer = setTimeout(() => watchdogController.abort(), timeBudgetMs);
+        try {
+          for (const bankId of bankIds) {
+            if (watchdogController.signal.aborted || Date.now() - startedAt >= timeBudgetMs) {
+              report.operationsStoppedByWatchdog += 1;
+              break;
+            }
+            if (activeConsolidationRuns.has(bankId)) {
               report.operationsStoppedByWatchdog += 1;
               consecutiveStalls += 1;
               if (consecutiveStalls >= stallThreshold) break;
-            } else {
-              consecutiveStalls = 0;
+              continue;
             }
-          } finally {
-            activeConsolidationRuns.delete(bankId);
+            activeConsolidationRuns.add(bankId);
+            try {
+              const result = await runConsolidationPass(await makeClient(config), {
+                bankId,
+                timeBudgetMs: Math.max(1, timeBudgetMs - (Date.now() - startedAt)),
+                signal: watchdogController.signal,
+              });
+              report.recordsProcessed += result.documentsProcessed;
+              report.modelsUpdated += result.modelsRefreshed;
+              if (!result.completed) {
+                report.operationsStoppedByWatchdog += 1;
+                consecutiveStalls += 1;
+                if (consecutiveStalls >= stallThreshold) break;
+              } else {
+                consecutiveStalls = 0;
+              }
+            } finally {
+              activeConsolidationRuns.delete(bankId);
+            }
           }
+        } finally {
+          clearTimeout(watchdogTimer);
         }
         const completedReport = { ...report, runId: job.runId, finishedAt: new Date().toISOString() };
         await ctx.state.set({ scopeKind: "instance", stateKey: CONSOLIDATION_REPORT_KEY }, completedReport);

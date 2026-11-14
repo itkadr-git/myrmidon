@@ -818,6 +818,24 @@ describe("manifest", () => {
     assert.equal(properties["requestTimeoutMs"]?.default, 60000);
   });
 
+  it("reports a watchdog stop when the budget expires before the bank pass", async () => {
+    const harness = createTestHarness({
+      manifest: manifest as PaperclipPluginManifestV1,
+      config: {
+        hindsightApiUrl: API_URL,
+        consolidationEnabled: true,
+        consolidationBankIds: ["nightly-bank"],
+        consolidationTimeBudgetMs: 0.0001,
+      },
+    });
+    await createHindsightPlugin({ fetchImpl: async () => { throw new Error("pass should not start"); } }).definition.setup(harness.ctx);
+    await harness.runJob("nightly-consolidation", { runId: "consolidation-budget", scheduledAt: "2026-01-01T02:00:00.000Z" });
+    const report = harness.getState({ scopeKind: "instance", stateKey: "hindsight-consolidation-report" }) as Record<string, unknown>;
+    assert.equal(report["recordsProcessed"], 0);
+    assert.equal(report["modelsUpdated"], 0);
+    assert.equal(report["operationsStoppedByWatchdog"], 1);
+  });
+
   it("registers a nightly job that persists all numeric report counters", async () => {
     const mock = mockHindsight();
     const fetchImpl: FetchLike = async (url, init) => {
