@@ -53,6 +53,13 @@ import {
   RUN_GUARD_STOP_NEEDS_INPUT_WAKE_REASON,
   isRunGuardStopWakeRecipient,
 } from "../../../myrmidon/run-guard-escalation.js";
+// myrmidon(OPE-13095): the starter-pack scout's wake on a new engineer task is not the assignee's.
+import {
+  STARTER_PACK_SCOUT_SOURCE,
+  STARTER_PACK_SCOUT_WAKE_REASON,
+  isStarterPackScoutIssueStatus,
+  isStarterPackScoutWake,
+} from "../../../myrmidon/starter-pack.js";
 import type {
   QueuedRunFacts,
   QueuedRunStalenessErrorCode,
@@ -653,6 +660,22 @@ export function createPostgresRunDispatchAdapter(
         })),
     );
 
+    // myrmidon(OPE-13095): the scout's wake on a new engineer task. Bound to the
+    // exact automation source and wake reason and to the run's agent being the
+    // configured scout; any other stranger agent is cancelled as before.
+    const isStarterPackScoutRun = Boolean(
+      issue &&
+        isStarterPackScoutIssueStatus(issue.status) &&
+        input.invocationSource === "automation" &&
+        context.source === STARTER_PACK_SCOUT_SOURCE &&
+        wakeReason === STARTER_PACK_SCOUT_WAKE_REASON &&
+        (await isStarterPackScoutWake(dbOrTx, {
+          companyId: input.companyId,
+          assigneeAgentId: issue.assigneeAgentId,
+          agentId: input.agentId,
+        })),
+    );
+
     // myrmidon(UNBLOCK-OWNER-WAKE): `issue_unblock_requested` wakes the owner of the
     // block (stranded disposition, routable blocked) to resolve it; that owner is
     // usually not the assignee. Bound to the automation wake reason, the issue still
@@ -711,6 +734,7 @@ export function createPostgresRunDispatchAdapter(
       isProductiveContinuationRecovery,
       isRunGuardStopNeedsInputWake,
       isUnblockOwnerWake,
+      isStarterPackScoutWake: isStarterPackScoutRun,
       isAutomaticContinuationWake,
       isNonAssigneeWorkspaceBusyRetry: isNonAssigneeWorkspaceBusyRetry(retryReason, context),
       resumeIntent,
@@ -1151,11 +1175,38 @@ export function createPostgresRunDispatchAdapter(
     });
   }
 
+  // myrmidon(OPE-13095): the starter-pack scout's run on a new engineer task. The
+  // assignee's environment lease is an execution hold that must not make the scout's
+  // queued run stale. Bound to the exact automation source and wake reason and to the
+  // run's agent being the configured scout.
+  async function isStarterPackScoutRun(
+    tx: Db,
+    run: HeartbeatRun,
+    contextSnapshot: Record<string, unknown>,
+    issueId: string,
+  ): Promise<boolean> {
+    if (run.invocationSource !== "automation") return false;
+    if (contextSnapshot.source !== STARTER_PACK_SCOUT_SOURCE) return false;
+    if (readNonEmptyString(contextSnapshot.wakeReason) !== STARTER_PACK_SCOUT_WAKE_REASON) return false;
+    const [issue] = await tx
+      .select({ status: issues.status, assigneeAgentId: issues.assigneeAgentId })
+      .from(issues)
+      .where(and(eq(issues.companyId, run.companyId), eq(issues.id, issueId)))
+      .limit(1);
+    if (!issue || !isStarterPackScoutIssueStatus(issue.status)) return false;
+    return isStarterPackScoutWake(tx, {
+      companyId: run.companyId,
+      assigneeAgentId: issue.assigneeAgentId,
+      agentId: run.agentId,
+    });
+  }
+
   async function decideCurrentRunStaleness(tx: Db, run: HeartbeatRun, now: Date) {
     const contextSnapshot = parseObject(run.contextSnapshot);
     const issueId = readNonEmptyString(contextSnapshot.issueId);
     if (!issueId) return { issueId: null, facts: null, decision: { stale: false as const } };
-    const recovery = (await isRunGuardStopManagerRun(tx, run, contextSnapshot, issueId))
+    const recovery = ((await isRunGuardStopManagerRun(tx, run, contextSnapshot, issueId)) ||
+      (await isStarterPackScoutRun(tx, run, contextSnapshot, issueId)))
       ? null
       : await getExecutionBlocker(tx, run.companyId, issueId, { conversationResetCommentId: deriveCommentId(contextSnapshot) });
     if (recovery) return { issueId, facts: null, decision: { stale: true as const,

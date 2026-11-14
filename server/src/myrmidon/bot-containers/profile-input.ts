@@ -43,6 +43,7 @@ import type {
 import {
   BOT_DEVELOPER_ROLES_ENV,
   BOT_ROLE_TOOL_DIET_ENV,
+  botToolDietTier,
   parseBotDeveloperRoles,
   parseBotRoleToolDiet,
   resolveBotToolDiet,
@@ -1194,6 +1195,11 @@ export function buildHermesProfileInput(source: BotProfileSource, settings: BotP
     instanceDefaults: settingsInstanceDefaults,
     // myrmidon(TOOL-DIET-ROLES): role defaults for the tools the bot keeps out of its schema.
     roleToolDiet: buildRoleToolDiet(source.role, adapterConfig, settings),
+    // myrmidon(DEV-NO-HINDSIGHT, OPE-13087-B): developers get no Hindsight memory provider.
+    hindsightMemory:
+      source.role && botToolDietTier(source.role, settings.developerRoles) === "developer"
+        ? false
+        : true,
     // myrmidon(BOT-LSP-DEFAULTS): role policy + card pin -> the bot's `lsp` block.
     // Resolved here (not in the compiler) for the same reason as the helpers:
     // the pure compiler keeps no settings knowledge.

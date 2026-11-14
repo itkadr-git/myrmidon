@@ -580,6 +580,12 @@ How a bot gets its task copy now, per the interface contract
   `--filter`, `--depth`, `--mirror` and `--bare` are ignored with a message —
   the objects are already in the base. The real git lives at
   `/opt/paperclip/libexec/git` outside PATH.
+- `myr-ws open <KEY> <owner/repo> --review [--branch <PR branch>]` opens a
+  review copy: a worktree without a working directory (only the `.git` file,
+  kilobytes), no dependency install, git hooks off; the branch is fetched from
+  the remote first. Read it with `git diff origin/main...HEAD` and
+  `git show HEAD:<path>`; a missing remote branch is an error unless `--branch`
+  is given.
 - `myr-ws` commands: `open <KEY> [owner/repo] [--base <ref>] [--scratch]`,
   `list`, `close <KEY> [--force]`, `restore <KEY>`, `migrate`; global
   `--json`. Exit codes: `0` ok, `2` invalid arguments, `3` quota/disk
