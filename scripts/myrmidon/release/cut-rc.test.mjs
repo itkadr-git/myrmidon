@@ -378,7 +378,7 @@ test("run: merged PR whose merge commit is not on the branch refuses hard (compo
   assert.equal(runGit(root, ["tag", "-l", "myr-v1.7.0-rc.26"]), "");
 });
 
-test("run: done task with no delivery anywhere refuses as overridable board-class gap", async () => {
+test("run: done task with no delivery anywhere refuses hard (composition)", async () => {
   const run = await importRun();
   const root = makeRepo();
   // a repo whose history has no OPE-300/OPE-301 deliveries
@@ -395,12 +395,13 @@ test("run: done task with no delivery anywhere refuses as overridable board-clas
   assert.equal(code, 1);
   assert.equal(runGit(root, ["tag", "-l", "myr-v1.7.0-rc.25"]), "");
   const text = errors.join("\n");
+  assert.match(text, /RELEASE-CUT REFUSED/);
   assert.match(text, /OPE-300: no delivery on the release commit/);
   assert.match(text, /OPE-301: no delivery on the release commit/);
-  assert.match(text, /--override/);
+  assert.match(text, /Not bypassable/);
 });
 
-test("run: no-delivery gap + open task is overridable with journal (composition soft rides the override)", async () => {
+test("run: no-delivery composition gap cannot be bypassed with override + journal (blocks tag creation)", async () => {
   const run = await importRun();
   const root = makeRepo();
   const journal = issue("j1", "OPE-12408", "in_progress", "1.7 release journal");
@@ -409,15 +410,18 @@ test("run: no-delivery gap + open task is overridable with journal (composition 
     issues: [issue("i1", "OPE-300", "done"), issue("i2", "OPE-302", "todo", "stale open"), journal],
     workProductsByIssue: { i1: [], i2: [], j1: [] },
   });
+  const errors = [];
   const code = await run(
     { version: "1.7.0", rc: "25", root, boardLabel: "1.7", override: "board is stale; rc.24 shipped", journal: "OPE-12408" },
-    { api: API, fetchBoard: boardAll.fetchBoard, log: () => {}, err: () => {}, root, ciStatus: () => ({ ok: true }) },
+    { api: API, fetchBoard: boardAll.fetchBoard, log: () => {}, err: (m) => errors.push(m), root, ciStatus: () => ({ ok: true }) },
   );
-  assert.equal(code, 0);
-  assert.equal(runGit(root, ["tag", "-l", "myr-v1.7.0-rc.25"]), "myr-v1.7.0-rc.25");
-  const body = boardAll.postedComments[0].body;
-  assert.match(body, /composition: OPE-300: no delivery on the release commit/);
-  assert.match(body, /OPE-302 "stale open" \[todo\]/);
+  assert.equal(code, 1);
+  assert.equal(runGit(root, ["tag", "-l", "myr-v1.7.0-rc.25"]), "");
+  const text = errors.join("\n");
+  assert.match(text, /RELEASE-CUT REFUSED/);
+  assert.match(text, /composition: OPE-300: no delivery on the release commit/);
+  assert.match(text, /Not bypassable/);
+  assert.equal(boardAll.postedComments.length, 0);
 });
 
 test("run: done tasks delivered by commit subjects tag clean (composition pass)", async () => {

@@ -28,12 +28,10 @@ The script checks, in order:
    of the release must have its work on the commit the tag would point to:
    a merged PR counts when its merge commit is an ancestor of the release
    commit; a task without a merged PR counts when some commit on the branch
-   mentions the task id in the subject (`OPE-NNNN` as a whole token). A
-   merged PR whose merge commit is missing from the branch (a main fix that
-   never made it to the release, or a branch-foreign PR) is a **hard**
-   refusal naming the task and the PR — it is never bypassable. A `done`
-   task with no delivery trace at all is board-class: overridable like a
-   stale board, listed in the same override record.
+   mentions the task id in the subject (`OPE-NNNN` as a whole token). Any
+   composition gap (a merged PR missing from the branch, or a `done` task
+   with no delivery on the branch) is a **hard** refusal naming the task and
+   the missing delivery — it is never bypassable.
 4. **Changelog.** `## X.Y.Z` exists and is non-empty in both
    `docs/myrmidon/CHANGELOG.md` and `CHANGELOG.ru.md`, and the unreleased
    section (`Unreleased` / `Без выпуска`) is empty — the same contract as
@@ -66,11 +64,9 @@ node scripts/myrmidon/release/cut-rc.mjs --version 1.7.0 --rc 25 \
 - The script posts the record to the journal issue BEFORE tagging: the tag,
   the reason, the violation list and the open-task list. If the post fails,
   the cut is refused — no silent bypasses (owner decision 12.11, item 4a).
-- Changelog, git and CI problems are NOT bypassable: an override covers
-  stale board state only — including the board-class composition gaps (a
-  `done` task with no delivery trace). A merged PR missing from the release
-  commit is a fact about the repository, never bypassable. Fix the
-  repository or pick a green commit.
+- Changelog, composition, git and CI problems are NOT bypassable: an override covers
+  stale board state only. Missing deliveries on the release commit are facts about
+  the repository, never bypassable. Fix the repository or pick a green commit.
 
 ## Flags
 
@@ -103,9 +99,9 @@ Exit codes: `0` tagged (or dry-run clean), `1` refusal, `2` usage error.
 Tests: `scripts/myrmidon/release/cut-rc.test.mjs` (the board API and `gh`
 are faked, `git` is a throwaway repo per test: open task → refusal; done
 task with an unmerged PR → refusal; merged PR missing from the branch →
-hard refusal; done task with no delivery → overridable refusal; clean →
-tag; override → tag + board comment; failed comment post → refusal; red
-CI → refusal even with an override).
+hard refusal; done task with no delivery → hard refusal; clean → tag;
+override → tag + board comment; failed comment post → refusal; red CI →
+refusal even with an override).
 
 ---
 
@@ -137,12 +133,10 @@ node scripts/myrmidon/release/cut-rc.mjs --version 1.7.0 --rc 25
    выпуска работа должна быть на коммите, куда встанет тег: влитой PR
    засчитывается, когда его merge-коммит — предок релизного коммита; задача
    без влитого PR засчитывается, когда на ветке есть коммит, в чьём subject
-   упомянут идентификатор задачи (`OPE-NNNN` целым токеном). Влитой PR,
-   чей merge-коммит отсутствует на ветке (фикс из main не доехал до
-   релиза, или PR чужой ветки) — **жёсткий** отказ с именем задачи и
-   номера PR, обхода нет и не будет. `done`-задача без всякого следа
-   поставки — класс доски: обходится как устаревшая доска, попадает в ту
-   же запись обхода.
+   упомянут идентификатор задачи (`OPE-NNNN` целым токеном). Любое
+   расхождение по составу (влитой PR отсутствует на ветке или `done`-задача
+   без всякого следа поставки) — **жёсткий** отказ с именем задачи и
+   пропуска, обхода нет и не будет.
 4. **Журнал.** Секция `## X.Y.Z` есть и непуста в обоих
    `docs/myrmidon/CHANGELOG.md` и `CHANGELOG.ru.md`, секция «Unreleased» /
    «Без выпуска» пуста — тот же контракт, что `collect-fragments.mjs
@@ -173,11 +167,9 @@ node scripts/myrmidon/release/cut-rc.mjs --version 1.7.0 --rc 25 \
 - Скрипт пишет запись в задачу-журнал ДО постановки тега: тег, причина,
   список нарушений и открытых задач. Если пост не удался — отказ, тихих
   обходов нет (решение владельца 12.11, п. 4а).
-- Журнал, git и CI НЕ обходятся: override покрывает только устаревшее
-  состояние доски — включая провалы состава класса доски (`done`-задача
-  без следа поставки). Влитой PR, отсутствующий на релизном коммите, —
-  факт о репозитории, обхода нет. Чини репозиторий или бери зелёный
-  коммит.
+- Журнал, состав выпуска, git и CI НЕ обходятся: override покрывает только
+  устаревшее состояние доски. Расхождения по составу — факт о репозитории,
+  обхода нет. Чини репозиторий или бери зелёный коммит.
 
 ## Флаги
 
@@ -212,6 +204,6 @@ node scripts/myrmidon/release/cut-rc.mjs --version 1.7.0 --rc 25 \
 Тесты: `scripts/myrmidon/release/cut-rc.test.mjs` (API доски и `gh`
 подменены, `git` — одноразовый репозиторий на тест: открытая задача →
 отказ; закрытая задача с невлитым PR → отказ; влитой PR вне ветки →
-жёсткий отказ; `done` без поставки → обходаемый отказ; всё чисто → тег;
+жёсткий отказ; `done` без поставки → жёсткий отказ; всё чисто → тег;
 обход → тег и комментарий на доске; неудавшийся пост комментария → отказ;
 красный CI → отказ даже с обходом).

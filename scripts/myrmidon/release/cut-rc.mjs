@@ -132,7 +132,7 @@ export async function compositionViolationsOfIssue(
   if (violations.length > 0) return violations;
   // No delivery found through PRs: accept a plain commit on the branch whose
   // subject mentions the task id (small fixes are sometimes pushed without a
-  // PR). Board-class: an override may dismiss it as stale metadata.
+  // PR). Hard refusal: release composition must be complete before tagging.
   if (!(await listCommitsWithSubject(root, issue.identifier, "HEAD", { env }))) {
     violations.push(
       `${issue.identifier}: no delivery on the release commit (no merged PR, no commit mentioning ${issue.identifier})`,
@@ -142,16 +142,16 @@ export async function compositionViolationsOfIssue(
 }
 
 // Composition of the release: done tasks only (open/cancelled tasks already
-// refuse above; their composition is unknowable). Hard problems
-// (PR-merge-commit ancestry) go to `hard`, board-class ones to `soft`.
+// refuse above; their composition is unknowable). All composition violations
+// are hard problems: tag creation is blocked when release composition is
+// incomplete or inconsistent, and cannot be bypassed with an override.
 export async function collectCompositionViolations(issues, opts = {}) {
   const hard = [];
   const soft = [];
   for (const issue of issues) {
     if (!DONE_STATUSES.has(issue.status)) continue;
     for (const v of await compositionViolationsOfIssue(issue, opts)) {
-      if (v.includes("missing from the release commit")) hard.push(v);
-      else soft.push(v);
+      hard.push(v);
     }
   }
   return { hard, soft };
@@ -573,9 +573,9 @@ export async function run(args, deps = {}) {
   hardProblems.push(...changelogVersionOk(gitRoot, args.version).map((p) => `changelog: ${p}`));
 
   // 3. composition: the deliveries of the done release tasks must be on the
-  // release commit. Hard: a merged PR's merge commit missing from the
-  // candidate ancestry. Soft (board-class, override may dismiss): a done
-  // task with no merged PR and no matching commit subject.
+  // release commit. Any discrepancy (merged PR's merge commit missing from the
+  // candidate ancestry, or done task with no delivery on the branch) is a
+  // hard problem: tag creation is blocked and cannot be bypassed.
   const composition = await collectCompositionViolations(issues, {
     root: gitRoot,
     gh: deps.prDetails || undefined,
@@ -616,11 +616,11 @@ export async function run(args, deps = {}) {
     }
   }
 
-  const overridable = boardViolations.length + composition.soft.length > 0
+  const overridable = boardViolations.length > 0
     && hardProblems.length === 0
     && !ciProblem;
 
-  if (boardViolations.length === 0 && composition.soft.length === 0
+  if (boardViolations.length === 0
     && hardProblems.length === 0 && !ciProblem) {
     if (args.dryRun) {
       log(`dry-run: all checks clean — would create ${tag} at ${sha ? sha.slice(0, 12) : "?"}`);
@@ -633,11 +633,8 @@ export async function run(args, deps = {}) {
   }
 
   // Board violations present: an override is the only path past them.
-  // Soft composition gaps ride the same override record: they are listed in
-  // the journal comment next to the board violations they belong to.
-  const overrideViolations = [...boardViolations, ...composition.soft.map((p) => `composition: ${p}`)];
   if (overridable && args.override && args.journal) {
-    const comment = buildOverrideComment({ tagName: tag, version: args.version, rc: args.rc, reason: args.override, violations: overrideViolations, openIssues });
+    const comment = buildOverrideComment({ tagName: tag, version: args.version, rc: args.rc, reason: args.override, violations: boardViolations, openIssues });
     log(`cut-rc: override requested — posting the record to ${args.journal}`);
     try {
       await postOverrideComment(api, args.journal, comment, fetchBoard);
@@ -651,7 +648,7 @@ export async function run(args, deps = {}) {
       log(`dry-run: override recorded (see above) — would create ${tag} at ${sha ? sha.slice(0, 12) : "?"}`);
       return 0;
     }
-    log(`cut-rc: creating ${tag} at ${sha ? sha.slice(0, 12) : "?"}`);
+    log(`cut-rc: creating ${tag} at ${sha.slice(0, 12)}`);
     execFileSync("git", ["-C", gitRoot, "tag", tag, sha], { stdio: "inherit" });
     log(`cut-rc: done. Push it: git push origin ${tag}`);
     return 0;
@@ -659,7 +656,7 @@ export async function run(args, deps = {}) {
 
   err(formatRefusal({
     tag,
-    violations: [...boardViolations, ...hardProblems, ...composition.soft.map((p) => `composition: ${p}`)],
+    violations: [...boardViolations, ...hardProblems],
     ciProblem,
     overridable,
   }));

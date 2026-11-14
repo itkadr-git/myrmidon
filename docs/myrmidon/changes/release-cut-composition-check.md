@@ -8,15 +8,11 @@
   release commit; a task without a merged PR counts when a commit on the
   branch mentions the task id in the subject (`OPE-NNNN` as a whole token,
   `OPE-100` does not match `OPE-10084`).
-- A merged PR whose merge commit is missing from the release branch (a main
-  fix that never landed there, a branch-foreign PR, or an unresolvable PR)
-  is a hard refusal naming the task and the PR — never bypassable, same
-  class as git/CI problems.
-- A `done` task with no delivery trace at all is board-class: it rides the
-  existing `--override --journal` path and is listed in the posted override
-  record next to the board violations.
+- Any composition gap (a merged PR missing from the branch, or a done task
+  with no delivery trace at all) is a hard refusal naming the task and the
+  missing delivery — never bypassable, blocking tag creation completely.
 - Docs: `docs/myrmidon/releases/cut-rc.md` (EN + RU) documents the check,
-  the hard/overridable split and the new test cases.
+  the hard refusal contract and the test cases.
 
 ## changelog-ru
 
@@ -28,11 +24,8 @@
   коммита; задача без влитого PR — когда на ветке есть коммит с
   идентификатором задачи в subject (`OPE-NNNN` целым токеном: `OPE-100` не
   матчит `OPE-10084`).
-- Влитой PR, чей merge-коммит отсутствует на релизной ветке (фикс из main
-  не доехал, PR чужой ветки или PR нечитаем) — жёсткий отказ с именем
-  задачи и номера PR; обхода нет и не будет, как для git/CI.
-- `done`-задача без всякого следа поставки — класс доски: идёт через
-  существующий путь `--override --journal` и попадает в запись обхода на
-  доске рядом с нарушениями доски.
+- Любое расхождение по составу (влитой PR отсутствует на ветке или
+  `done`-задача без следов поставки) — жёсткий отказ с именем задачи и
+  пропуска; блокирует создание тега и не обходится через override.
 - Доки: `docs/myrmidon/releases/cut-rc.md` (EN + RU) описывают проверку,
-  деление на жёсткое/обходимое и новые тест-кейсы.
+  жёсткую блокировку тега и тест-кейсы.
