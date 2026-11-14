@@ -22,7 +22,7 @@ case "$FAKE_SSH_MODE" in
     exec tar -cf - -C "$FAKE_SSH_SOURCE_DIR" . ;;
   serve-error)
     tar -cf - -C "$FAKE_SSH_SOURCE_DIR" .
-    echo "ssh: write failed: No space left on device" >&2
+    echo "ssh: remote transfer aborted: connection reset by peer" >&2
     exit 255 ;;
   refuse)
     echo "ssh: connect to host runner.invalid port 2222: Connection refused" >&2
@@ -227,7 +227,7 @@ describe.skipIf(process.platform === "win32")("syncDirectoryFromSsh staging dire
       expect(caughtError, `run ${run + 1} must reject`).toBeInstanceOf(Error);
       const message = (caughtError as Error).message;
       expect(message, `run ${run + 1}`).toContain(
-        "ssh: write failed: No space left on device",
+        "ssh: remote transfer aborted: connection reset by peer",
       );
       expect(message, `run ${run + 1}`).toContain("tar: ./big.bin: Cannot write: No space left on device");
       expect(await leftoverStagingDirs(), `run ${run + 1}`).toEqual([]);
