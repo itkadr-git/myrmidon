@@ -27,7 +27,6 @@ describe("agent liveness defaults", () => {
     expect(DEFAULT_AGENT_LIVENESS_SETTINGS.probeIntervalSec).toBe(DEFAULT_TEAM_LIVENESS_SETTINGS.idlePickupIntervalSec);
   });
 
-
   it("rejects zero and negative thresholds — a corrupt value keeps the default", () => {
     for (const key of [
       "engineerQueueThreshold",
