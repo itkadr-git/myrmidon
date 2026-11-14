@@ -59,6 +59,7 @@ import {
   isLocalServiceProcessInWorkspace,
   readLocalServiceProcessCwd,
   readLocalServicePortOwner,
+  resetLsofAvailabilityForTests,
   writeLocalServiceRegistryRecord,
 } from "../services/local-service-supervisor.ts";
 import {
@@ -5554,6 +5555,7 @@ describe("readLocalServicePortOwner", () => {
     } finally {
       if (previousPath === undefined) delete process.env.PATH;
       else process.env.PATH = previousPath;
+      resetLsofAvailabilityForTests();
       await fs.rm(fakeBin, { recursive: true, force: true });
     }
   });
@@ -7469,6 +7471,7 @@ describeEmbeddedPostgres("workspace runtime service control persistence", () => 
     } finally {
       if (previousPath === undefined) delete process.env.PATH;
       else process.env.PATH = previousPath;
+      resetLsofAvailabilityForTests();
       await stopRuntimeServicesForExecutionWorkspace({
         db,
         executionWorkspaceId: workspace.id,
