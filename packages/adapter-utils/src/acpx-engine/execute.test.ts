@@ -7766,6 +7766,26 @@ describe("ACPX startup handshake guard and late-completion fence", () => {
     }
   }, 10000);
 
+  it("does not report success when the terminal callback lacks completion evidence", async () => {
+    const { result } = await runExecutor(
+      { agent: "claude" },
+      {
+        terminalCallbackRegistry: {
+          apply: () => ({
+            applied: true,
+            providerJobId: "job-without-evidence",
+            mapping: { kind: "non_terminal", holdReason: "completion_evidence_missing" },
+          }),
+        },
+      } as never,
+    );
+
+    expect(result.exitCode).toBe(1);
+    expect(result.resultJson).toMatchObject({
+      mappedTerminal: { kind: "non_terminal", holdReason: "completion_evidence_missing" },
+    });
+  });
+
   it("persists external agent job id via onExternalRunId and includes mappedTerminal in resultJson", async () => {
     let persistedJobId: string | null = null;
     const { result } = await runExecutor(

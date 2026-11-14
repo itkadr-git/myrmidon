@@ -5054,8 +5054,13 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
           },
         });
         const mappedTerminal = recordedCallback.mapping;
+        // Only an accepted terminal callback with completion evidence may mark
+        // this external turn successful. Holds remain failed for reconciliation.
+        const effectiveTurnSucceeded = turnSucceeded
+          && mappedTerminal.kind === "terminal"
+          && mappedTerminal.boardState === "done";
         await emitAcpxLog(ctx, {
-          type: turnSucceeded ? "acpx.result" : "acpx.error",
+          type: effectiveTurnSucceeded ? "acpx.result" : "acpx.error",
           summary: channelLost ? "duplex_channel_lost" : terminal.status,
           stopReason: terminalStopReason,
           message: errorMessage,
@@ -5063,9 +5068,9 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
         // The one clean-completion path clears the run failure flag; every other
         // path keeps it set, so the run root span closes with error status. A
         // completed terminal with a lost duplex channel keeps the flag set.
-        runFailed = turnSucceeded ? false : true;
+        runFailed = effectiveTurnSucceeded ? false : true;
         capturedResult = {
-          exitCode: turnSucceeded ? 0 : 1,
+          exitCode: effectiveTurnSucceeded ? 0 : 1,
           signal: timedOut ? "SIGTERM" : null,
           timedOut,
           errorMessage,
@@ -5109,13 +5114,23 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
         await emitPhase(
           "turn",
           turnPhaseStart,
-          turnSucceeded ? "ok" : "failed",
+          effectiveTurnSucceeded ? "ok" : "failed",
         );
         // Return the typed turn completion so the coordinator settles for the right
         // cause. The completion carries no live resources; the settlement claims the
         // ledger and owns the release. A clean completed turn carries no cause, so
         // the reuse decision can permit a save; a timed-out, failed, or cancelled
         // turn carries its cause, which forbids the save.
+        if (turnSucceeded && !effectiveTurnSucceeded) {
+          return {
+            kind: "failed",
+            cause: {
+              kind: "turn_failed",
+              error: new Error(`External terminal callback was not accepted: ${mappedTerminal.kind === "non_terminal" ? mappedTerminal.holdReason : mappedTerminal.boardState}`),
+            },
+            resources: emptyConsumed,
+          };
+        }
         if (timedOut) {
           return {
             kind: "timed_out",
