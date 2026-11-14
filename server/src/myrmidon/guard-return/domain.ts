@@ -378,7 +378,7 @@ export function decideGuardReturn(
   if (!targetAssigneeAgentId && candidate.projectId) {
     const projectLead = candidate.projectLeadAgentId;
     if (isAvailableLead(projectLead)) {
-      targetAssigneeAgentId = projectLead;
+      targetAssigneeAgentId = projectLead ?? null;
       targetKind = "active_engineer";
     }
   }
