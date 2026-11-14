@@ -29,11 +29,6 @@ import { heartbeatService } from "../services/heartbeat.ts";
 import { runningProcesses } from "../adapters/index.ts";
 import type * as adaptersModule from "../adapters/index.ts";
 
-// The settlement path must run through the real dispatch/settlement pipeline
-// without invoking the real codex_local adapter (which needs a local agent
-// JWT). The stub returns an empty summary, so the run settles as
-// `empty_response` and the empty-run streak escalation sees the same input a
-// genuinely empty agent answer produces.
 const mockAdapterExecute = vi.hoisted(() =>
   vi.fn(async () => ({
     exitCode: 0,
@@ -41,6 +36,9 @@ const mockAdapterExecute = vi.hoisted(() =>
     timedOut: false,
     errorMessage: null,
     summary: "",
+    result: "",
+    nextAction: "",
+    message: "",
     provider: "test",
     model: "test-model",
   })),
