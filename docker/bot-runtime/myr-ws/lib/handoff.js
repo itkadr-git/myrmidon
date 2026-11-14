@@ -79,6 +79,14 @@ async function run(args, deps = {}) {
   const summary = parsed.values.summary;
   const reviewer = parsed.values.reviewer;
 
+  if (reviewer) {
+    return {
+      exitCode: 1,
+      stdout: "",
+      stderr: "myr-handoff: --reviewer is not supported; use the issue's configured review workflow\n",
+    };
+  }
+
   if (!issueKeyOrId || !summary) {
     return {
       exitCode: 1,
@@ -159,17 +167,18 @@ async function run(args, deps = {}) {
   }
 
   // The board rejects a bare in_review PATCH from an agent when the issue has no review stage.
+  // Use the configured review workflow; creating/replacing executionPolicy stages from handoff is disallowed.
   const existingPolicy =
     issueData.executionPolicy && typeof issueData.executionPolicy === "object" ? issueData.executionPolicy : null;
   const existingStages = Array.isArray(existingPolicy && existingPolicy.stages) ? existingPolicy.stages : [];
   const hasReviewStage = existingStages.some(
     (st) => st && st.type === "review" && Array.isArray(st.participants) && st.participants.length > 0
   );
-  if (!hasReviewStage && !reviewer) {
+  if (!hasReviewStage) {
     return {
       exitCode: 1,
       stdout: "",
-      stderr: "myr-handoff: issue has no review stage: pass --reviewer <agentId> (see your instructions)\n",
+      stderr: "myr-handoff: failed at step issue_admission: issue has no configured review stage in executionPolicy\n",
     };
   }
 
@@ -291,22 +300,6 @@ async function run(args, deps = {}) {
     status: "in_review",
     comment: summary,
   };
-  if (!hasReviewStage) {
-    // Keep other stages and policy fields; replace any empty review stage with ours.
-    const otherStages = existingStages.filter((st) => !(st && st.type === "review"));
-    patchBody.executionPolicy = {
-      ...(existingPolicy || {}),
-      mode: (existingPolicy && existingPolicy.mode) || "normal",
-      stages: [
-        ...otherStages,
-        {
-          type: "review",
-          approvalsNeeded: 1,
-          participants: [{ type: "agent", agentId: reviewer }],
-        },
-      ],
-    };
-  }
 
   const patchHeaders = {
     Authorization: `Bearer ${paperclipKey}`,

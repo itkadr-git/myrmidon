@@ -492,30 +492,25 @@ test("myr-handoff keeps an existing review stage: PATCH has no executionPolicy",
   assert.equal("executionPolicy" in sink.patches[0], false);
 });
 
-test("myr-handoff without review stage and with --reviewer adds the stage and keeps policy fields", async () => {
+test("myr-handoff rejects --reviewer argument", async () => {
+  const sink = { patches: [], commands: [] };
+  const res = await run(["--issue", "OPE-5", "--summary", "s", "--reviewer", "agent-r1"], policyDeps(REVIEW_POLICY, sink));
+  assert.notEqual(res.exitCode, 0);
+  assert.match(res.stderr, /--reviewer is not supported; use the issue's configured review workflow/);
+  assert.equal(sink.patches.length, 0);
+  assert.equal(sink.commands.length, 0);
+});
+
+test("myr-handoff without review stage in executionPolicy fails and sends no PATCH", async () => {
   const sink = { patches: [], commands: [] };
   const policy = {
     mode: "normal",
     monitor: { intervalMinutes: 30 },
     stages: [{ id: "st-a", type: "approval", approvalsNeeded: 1, participants: [{ type: "user", userId: "u1" }] }],
   };
-  const res = await run(["--issue", "OPE-5", "--summary", "s", "--reviewer", "agent-r1"], policyDeps(policy, sink));
-  assert.equal(res.exitCode, 0);
-  const ep = sink.patches[0].executionPolicy;
-  assert.deepEqual(ep.monitor, { intervalMinutes: 30 });
-  assert.equal(ep.mode, "normal");
-  assert.equal(ep.stages.length, 2);
-  assert.deepEqual(ep.stages[0], policy.stages[0]);
-  assert.equal(ep.stages[1].type, "review");
-  assert.equal(ep.stages[1].approvalsNeeded, 1);
-  assert.deepEqual(ep.stages[1].participants, [{ type: "agent", agentId: "agent-r1" }]);
-});
-
-test("myr-handoff without review stage and without --reviewer fails and sends no PATCH", async () => {
-  const sink = { patches: [], commands: [] };
-  const res = await run(["--issue", "OPE-5", "--summary", "s"], policyDeps(null, sink));
+  const res = await run(["--issue", "OPE-5", "--summary", "s"], policyDeps(policy, sink));
   assert.notEqual(res.exitCode, 0);
-  assert.match(res.stderr, /issue has no review stage: pass --reviewer <agentId> \(see your instructions\)/);
+  assert.match(res.stderr, /failed at step issue_admission: issue has no configured review stage in executionPolicy/);
   assert.equal(sink.patches.length, 0);
   assert.equal(sink.commands.some((c) => c[0] === "git" && c[1] === "push"), false);
 });
