@@ -1113,7 +1113,9 @@ export function githubConnectionEventService(
     const pullRequestNumber = positiveInteger(payload.pullRequestNumber) ?? positiveInteger(payload.number) ?? positiveInteger(payload.checkSuitePullRequestNumber);
     const headSha = commitSha(payload.headSha);
     const runId = identifier(payload.runId) ?? identifier(payload.checkSuiteId) ?? event.id;
-    if (!repository || !pullRequestNumber || !headSha || runId === null) return;
+    if (!repository || !pullRequestNumber || !headSha) return;
+    const resolvedRunId = runId;
+    if (resolvedRunId === null) return;
     invalidateCiCacheForHead(companyId, repository.toLowerCase(), headSha);
 
     const active = status === "queued" || status === "in_progress";
@@ -1125,7 +1127,7 @@ export function githubConnectionEventService(
     const guardEnv = options.env ?? process.env;
     if (options.resolveCiReturnFacts && readCiFinalOnlyEnabled(guardEnv)) {
       await applyCiDeliveryByVerdict(database, companyId, event, {
-        status, conclusion, active, repository, pullRequestNumber, headSha, runId,
+        status, conclusion, active, repository, pullRequestNumber, headSha, runId: resolvedRunId,
       }, options.resolveCiReturnFacts, guardEnv, afterCommit);
       return;
     }
