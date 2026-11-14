@@ -182,6 +182,7 @@ export interface AgentKeyCreated {
   name: string;
   scope: AgentApiKeyScope;
   token: string;
+  expiresAt: Date | null;
   createdAt: Date;
 }
 
