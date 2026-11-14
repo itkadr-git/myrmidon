@@ -195,6 +195,7 @@ export function createGuardReturnSweep(deps: GuardReturnSweepDeps) {
     // Load agents relevant to these issues (assignees, engineers, run agents, pr authors)
     const neededAgentIds = new Set<string>();
     for (const r of candidateRows) if (r.assigneeAgentId) neededAgentIds.add(r.assigneeAgentId);
+    for (const r of candidateRows) if (r.projectLeadAgentId) neededAgentIds.add(r.projectLeadAgentId);
     for (const eng of allEngineers) neededAgentIds.add(eng.id);
     for (const aId of runAgentMap.values()) neededAgentIds.add(aId);
     for (const pr of prRows) {
@@ -257,7 +258,7 @@ export function createGuardReturnSweep(deps: GuardReturnSweepDeps) {
       };
 
       const activeEngineers = engineersByCompany.get(row.companyId) ?? [];
-      const decision = decideGuardReturn(candidate, agentMap, runAgentMap, [...activeEngineers, ...(row.projectLeadAgentId ? [agentMap.get(row.projectLeadAgentId)].filter((agent): agent is AgentSummary => Boolean(agent)) : [])]);
+      const decision = decideGuardReturn(candidate, agentMap, runAgentMap, activeEngineers);
 
       if (decision.action === "return" && decision.targetAssigneeAgentId) {
         try {
