@@ -16126,6 +16126,16 @@ export function issueRoutes(
         if (existing.executionRunId && existing.executionRunId !== interruptedRunId) {
           const notStartedHolder = await heartbeat.getRun(existing.executionRunId);
           if (shouldCancelNotStartedHolderOnReassignment(existing, notStartedHolder)) {
+            // Deferred wakes of the previous assignee go first, so the promotion
+            // inside cancelRun cannot re-take the lock for them.
+            if (svc.cancelDeferredExecutionsForAgentOnReassignment) {
+              await svc.cancelDeferredExecutionsForAgentOnReassignment(
+                existing.assigneeAgentId,
+                existing.id,
+                existing.companyId,
+                db
+              );
+            }
             const released = await heartbeat.cancelRun(
               notStartedHolder!.id,
               "Execution lock released after issue reassigned to a different agent",
@@ -16135,16 +16145,7 @@ export function issueRoutes(
                 eventPayload: { issueId: existing.id },
               },
             );
-            if (released?.status === "cancelled") {
-              if (svc.cancelDeferredExecutionsForAgentOnReassignment) {
-                await svc.cancelDeferredExecutionsForAgentOnReassignment(
-                  existing.assigneeAgentId,
-                  existing.id,
-                  existing.companyId,
-                  db
-                );
-              }
-            } else if (released) {
+            if (released && released.status !== "cancelled") {
               logger.warn(
                 { issueId: existing.id, runId: released.id, status: released.status },
                 "reassignment could not release the previous assignee's not-started run",
