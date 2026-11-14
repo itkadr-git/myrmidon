@@ -7,6 +7,8 @@ import type { StoredRunLimits } from "../myrmidon-runtime-limits.js";
 import type { RunStallValues } from "../myrmidon-run-stall.js";
 // myrmidon(1.6.6 PROCS-J): the board's process composition stored in instance settings
 import type { StoredBoardProcessesSettings } from "../myrmidon-board-processes.js";
+// myrmidon(AGENT-LIVENESS-D1): the instance-wide liveness thresholds stored in the same general row.
+import type { AgentLivenessSettingsPatch } from "../myrmidon-agent-liveness.js";
 // myrmidon(PROCS-1.1): the board's process settings, see myrmidon-processes.ts.
 import type { ProcessesSettings } from "../myrmidon-processes.js";
 // myrmidon(1.6.6 CORPUS-2.0 ч.C): the knowledge-corpus module settings of the same row
@@ -591,6 +593,13 @@ export interface InstanceGeneralSettings {
   vendorNameCheck?: StoredVendorNameCheckSettings;
   /** Owner active-channel inactivity threshold. */
   ownerActiveChannel?: OwnerActiveChannelSettings;
+  /**
+   * myrmidon(AGENT-LIVENESS-D1): instance-wide liveness thresholds, stored as
+   * a partial patch (absent keys keep the defaults of
+   * DEFAULT_AGENT_LIVENESS_SETTINGS). Kept in sync with the validator of the
+   * same field (packages/shared/src/validators/instance.ts).
+   */
+  agentLiveness?: AgentLivenessSettingsPatch;
 }
 
 

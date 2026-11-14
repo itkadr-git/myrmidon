@@ -1,0 +1,120 @@
+import { describe, expect, it, vi } from "vitest";
+import {
+  DEFAULT_AGENT_LIVENESS_SETTINGS,
+  agentLivenessSettingsSchema,
+  patchAgentLivenessSettingsSchema,
+  resolveAgentLivenessSettings,
+  storedAgentLivenessSettingsSchema,
+  AGENT_LIVENESS_SETTINGS_KEY,
+  type AgentLivenessSettings,
+  type AgentLivenessSettingsPatch,
+} from "./myrmidon-agent-liveness.js";
+import { DEFAULT_REVIEW_ROUTING_QUEUE_THRESHOLD } from "./myrmidon-review-routing.js";
+import { instanceGeneralSettingsSchema } from "./validators/instance.js";
+import type { InstanceGeneralSettings } from "./types/instance.js";
+
+describe("agent liveness defaults", () => {
+  it("resolve to the feature-OFF defaults when nothing is stored, without touching a DB", () => {
+    expect(resolveAgentLivenessSettings()).toEqual(DEFAULT_AGENT_LIVENESS_SETTINGS);
+    expect(resolveAgentLivenessSettings(undefined)).toEqual(DEFAULT_AGENT_LIVENESS_SETTINGS);
+    expect(resolveAgentLivenessSettings(null)).toEqual(DEFAULT_AGENT_LIVENESS_SETTINGS);
+    expect(resolveAgentLivenessSettings({})).toEqual(DEFAULT_AGENT_LIVENESS_SETTINGS);
+    expect(DEFAULT_AGENT_LIVENESS_SETTINGS.enabled).toBe(false);
+    expect(DEFAULT_AGENT_LIVENESS_SETTINGS.engineerQueueThreshold).toBe(DEFAULT_REVIEW_ROUTING_QUEUE_THRESHOLD);
+    expect(DEFAULT_AGENT_LIVENESS_SETTINGS.reviewerQueueThreshold).toBe(DEFAULT_REVIEW_ROUTING_QUEUE_THRESHOLD);
+    expect(DEFAULT_AGENT_LIVENESS_SETTINGS.leadQueueThreshold).toBe(DEFAULT_REVIEW_ROUTING_QUEUE_THRESHOLD);
+    // No runtime sources exist for watchdog probe/ladder/journal values yet;
+    // pin their explicit D1 contract until A1/B1/C2 publish canonical constants.
+    expect(DEFAULT_AGENT_LIVENESS_SETTINGS).toMatchObject({
+      probeIntervalSec: 30,
+      probeTimeoutSec: 5,
+      escalationSteps: 3,
+      escalationStepTimeoutSec: 60,
+      journalDedupWindowSec: 900,
+      journalRetentionDays: 30,
+      exclusionWindows: [],
+    });
+  });
+
+  it("keeps agent-liveness behavior inert when settings are absent or disabled", async () => {
+    const onProbe = vi.fn();
+    const settings = resolveAgentLivenessSettings({});
+    if (settings.enabled) onProbe();
+    expect(onProbe).not.toHaveBeenCalled();
+    expect(settings.enabled).toBe(false);
+  });
+
+  it("rejects zero and negative thresholds — a corrupt value keeps the default", () => {
+    for (const key of [
+      "engineerQueueThreshold",
+      "reviewerQueueThreshold",
+      "leadQueueThreshold",
+      "probeIntervalSec",
+      "probeTimeoutSec",
+      "escalationSteps",
+      "escalationStepTimeoutSec",
+      "journalDedupWindowSec",
+      "journalRetentionDays",
+    ] as const) {
+      expect(storedAgentLivenessSettingsSchema.safeParse({ [key]: 0 }).success).toBe(false);
+      expect(storedAgentLivenessSettingsSchema.safeParse({ [key]: -1 }).success).toBe(false);
+      expect(storedAgentLivenessSettingsSchema.safeParse({ [key]: 1.5 }).success).toBe(false);
+    }
+    // A stored row that cannot parse resolves to the defaults, not an error.
+    expect(resolveAgentLivenessSettings({ probeIntervalSec: 0 })).toEqual(DEFAULT_AGENT_LIVENESS_SETTINGS);
+  });
+
+  it("rejects unknown keys and non-string exclusion windows", () => {
+    expect(storedAgentLivenessSettingsSchema.safeParse({ nope: true }).success).toBe(false);
+    expect(
+      storedAgentLivenessSettingsSchema.safeParse({ exclusionWindows: [42] }).success,
+    ).toBe(false);
+    expect(
+      storedAgentLivenessSettingsSchema.safeParse({ exclusionWindows: ["release freeze"] }).success,
+    ).toBe(true);
+  });
+
+  it("applies a stored patch onto the defaults", () => {
+    const resolved = resolveAgentLivenessSettings({
+      enabled: true,
+      engineerQueueThreshold: 12,
+      probeIntervalSec: 90,
+      exclusionWindows: ["weekdays 09:00-18:00"],
+    });
+    expect(resolved).toMatchObject({
+      enabled: true,
+      engineerQueueThreshold: 12,
+      probeIntervalSec: 90,
+      exclusionWindows: ["weekdays 09:00-18:00"],
+    });
+    // Keys the patch does not carry stay at the defaults.
+    expect(resolved.reviewerQueueThreshold).toBe(8);
+    expect(resolved.journalRetentionDays).toBe(30);
+    expect(resolved.probeTimeoutSec).toBe(5);
+    expect(resolved.journalDedupWindowSec).toBe(900);
+  });
+
+  it("is a field of the instance general settings, in step with its interface", () => {
+    const parsed = instanceGeneralSettingsSchema.safeParse({
+      agentLiveness: { enabled: true, engineerQueueThreshold: 5 },
+    });
+    expect(parsed.success).toBe(true);
+    // Compile-time guard: the hand-written interface and the validator must
+    // agree on agentLiveness, or this assignment stops type-checking.
+    const view: InstanceGeneralSettings = parsed.success ? parsed.data : ({} as InstanceGeneralSettings);
+    const typed: AgentLivenessSettingsPatch | undefined = view.agentLiveness;
+    expect(typed?.enabled).toBe(true);
+    expect(typed?.engineerQueueThreshold).toBe(5);
+    expect(instanceGeneralSettingsSchema.safeParse({}).success).toBe(true);
+    expect(patchAgentLivenessSettingsSchema.safeParse({ engineerQueueThreshold: -3 }).success).toBe(false);
+    expect(AGENT_LIVENESS_SETTINGS_KEY).toBe("agentLiveness");
+  });
+
+  it("keeps the resolved shape strict against the schema", () => {
+    const resolved = resolveAgentLivenessSettings({ enabled: true });
+    expect(agentLivenessSettingsSchema.safeParse(resolved).success).toBe(true);
+    expect(
+      agentLivenessSettingsSchema.safeParse({ ...resolved, unknown: 1 }).success,
+    ).toBe(false);
+  });
+});

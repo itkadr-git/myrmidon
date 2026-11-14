@@ -21605,6 +21605,7 @@ export function heartbeatService(
   // all resolve `instance_settings.general.teamLiveness` over the environment on
   // every pass, so a saved change takes effect without a restart.
   const teamLivenessRead = myrmidonTeamLivenessReader(db);
+  // myrmidon(AGENT-LIVENESS-D1): the instance-thresholds getter.
   /** The agent row's card as a plain object; anything else reads as an empty card. */
   const readAgentCard = (raw: unknown): Record<string, unknown> =>
     raw && typeof raw === "object" && !Array.isArray(raw) ? (raw as Record<string, unknown>) : {};
@@ -37952,6 +37953,10 @@ export function heartbeatService(
         ),
       });
     },
+    // myrmidon(AGENT-LIVENESS-D1): thresholds are re-read per pass through
+    // readAgentLivenessSettings; nothing to apply live until D2 wires a
+    // consumer, so the hook stays a no-op for now.
+    applyAgentLiveness: async () => {},
     enqueueWakeup,
     insertReviewAdmissionWakeup,
     dispatchPendingNativeStatusWakeups,

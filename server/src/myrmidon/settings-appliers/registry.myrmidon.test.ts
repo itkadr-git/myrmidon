@@ -52,6 +52,12 @@ describe("settings appliers", () => {
     expect(resetMaintenanceGateCaches).not.toHaveBeenCalled();
     expect(startProcessesSettings).not.toHaveBeenCalled();
   });
+  it("invokes the agent-liveness applier on its key", async () => {
+    const applyAgentLiveness = vi.fn().mockResolvedValue(undefined);
+    await applySettingsChanged({ changedKeys: ["agentLiveness"] }, { db, applyAgentLiveness });
+    expect(applyAgentLiveness).toHaveBeenCalledTimes(1);
+    expect(startRuntimeLimits).not.toHaveBeenCalled();
+  });
 
   it("resets maintenance caches and re-applies the processes settings", async () => {
     const supervisor = {} as never;
