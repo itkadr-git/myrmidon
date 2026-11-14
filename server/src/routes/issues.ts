@@ -15109,23 +15109,31 @@ export function issueRoutes(
             const executorRow = executorAgentId
               ? await routingStore.getAgent(existing.companyId, executorAgentId)
               : null;
-            const reviewerRows = await routingStore.listReviewerAgents(
-              existing.companyId,
-              reviewRoutingSettings.reviewerRoles,
-            );
-            const reviewerIds = selectHandoffReviewerIds({
-              reviewers: reviewerRows,
-              groupKey: resolveAgentGroupKey(executorRow ?? undefined),
-              excludedAgentIds: [actor.agentId, existing.assigneeAgentId, existing.createdByAgentId].filter(
-                (id): id is string => typeof id === "string" && id.length > 0,
-              ),
-            });
-            const handoffPolicy = buildHandoffReviewPolicy(
-              currentPolicy as unknown as Record<string, unknown> | null,
-              reviewerIds,
-            );
-            if (handoffPolicy) {
-              updateFields.executionPolicy = normalizeIssueExecutionPolicy(handoffPolicy);
+            const actorRow =
+              actor.agentId && actor.agentId !== executorAgentId
+                ? await routingStore.getAgent(existing.companyId, actor.agentId)
+                : executorRow;
+            const isEngineer =
+              executorRow?.role === "engineer" && (actorRow?.role === "engineer" || !actor.agentId);
+            if (isEngineer) {
+              const reviewerRows = await routingStore.listReviewerAgents(
+                existing.companyId,
+                reviewRoutingSettings.reviewerRoles,
+              );
+              const reviewerIds = selectHandoffReviewerIds({
+                reviewers: reviewerRows,
+                groupKey: resolveAgentGroupKey(executorRow ?? undefined),
+                excludedAgentIds: [actor.agentId, existing.assigneeAgentId, existing.createdByAgentId].filter(
+                  (id): id is string => typeof id === "string" && id.length > 0,
+                ),
+              });
+              const handoffPolicy = buildHandoffReviewPolicy(
+                currentPolicy as unknown as Record<string, unknown> | null,
+                reviewerIds,
+              );
+              if (handoffPolicy) {
+                updateFields.executionPolicy = normalizeIssueExecutionPolicy(handoffPolicy);
+              }
             }
           }
         }

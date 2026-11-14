@@ -157,12 +157,17 @@ describeEmbeddedPostgres("myrmidon review admission atomic wake persistence", ()
   });
 
   describe("agent handoff without a review stage (OPE-13099)", () => {
-    async function seedHandoff(label: string, reviewerCount: number) {
+    async function seedHandoff(
+      label: string,
+      reviewerCount: number,
+      options?: { executorRole?: string },
+    ) {
+      const executorRole = options?.executorRole ?? "engineer";
       const { companyId } = await seedCompanyWithBoardAccess(ctx.db, label);
       const engineerId = randomUUID();
       const runId = randomUUID();
       const base = { companyId, status: "idle", adapterType: "codex_local", adapterConfig: {}, runtimeConfig: {}, permissions: {} };
-      await ctx.db.insert(agents).values({ ...base, id: engineerId, name: "adm-dev-eng-1", role: "engineer", metadata: { telegramGroup: "adm" } });
+      await ctx.db.insert(agents).values({ ...base, id: engineerId, name: `adm-dev-${executorRole}-1`, role: executorRole, metadata: { telegramGroup: "adm" } });
       const reviewerIds: string[] = [];
       for (let i = 0; i < reviewerCount; i += 1) {
         const id = randomUUID();
@@ -216,6 +221,63 @@ describeEmbeddedPostgres("myrmidon review admission atomic wake persistence", ()
       const res = await request(app).patch(`/api/issues/${issueId}`).send({ status: "in_review" });
       expect(res.status).toBe(422);
       expect(res.body.details?.missing).toBe("review_path");
+    });
+
+    it("keeps the 422 missing review_path when the executor is not an engineer", async () => {
+      const { issueId, app } = await seedHandoff("Handoff from non-engineer", 2, { executorRole: "qa" });
+      const res = await request(app).patch(`/api/issues/${issueId}`).send({ status: "in_review" });
+      expect(res.status).toBe(422);
+      expect(res.body.details?.missing).toBe("review_path");
+    });
+
+    it("preserves an existing review stage without replacing its participants", async () => {
+      const { reviewerIds, issueId, app } = await seedHandoff("Handoff with existing review stage", 2);
+      const existingPolicy = {
+        mode: "normal",
+        stages: [
+          {
+            id: randomUUID(),
+            type: "review",
+            approvalsNeeded: 1,
+            participants: [{ type: "agent", agentId: reviewerIds[0] }],
+          },
+        ],
+      };
+      await ctx.db.update(issues).set({ executionPolicy: existingPolicy }).where(eq(issues.id, issueId));
+
+      const res = await request(app).patch(`/api/issues/${issueId}`).send({ status: "in_review" });
+      expect(res.status, JSON.stringify(res.body)).toBe(200);
+      const stages = res.body.executionPolicy?.stages ?? [];
+      expect(stages).toHaveLength(1);
+      expect(stages[0].type).toBe("review");
+      expect(stages[0].participants).toHaveLength(1);
+      expect(stages[0].participants[0].agentId).toBe(reviewerIds[0]);
+      expect(res.body.executionState?.currentParticipant).toMatchObject({ type: "agent", agentId: reviewerIds[0] });
+    });
+
+    it("preserves existing non-review policy stages when adding the handoff review stage", async () => {
+      const { reviewerIds, issueId, app } = await seedHandoff("Handoff with approval stage", 2);
+      const approvalStageId = randomUUID();
+      const existingPolicy = {
+        mode: "normal",
+        stages: [
+          {
+            id: approvalStageId,
+            type: "approval",
+            approvalsNeeded: 1,
+            participants: [{ type: "agent", agentId: reviewerIds[0] }],
+          },
+        ],
+      };
+      await ctx.db.update(issues).set({ executionPolicy: existingPolicy }).where(eq(issues.id, issueId));
+
+      const res = await request(app).patch(`/api/issues/${issueId}`).send({ status: "in_review" });
+      expect(res.status, JSON.stringify(res.body)).toBe(200);
+      const stages = res.body.executionPolicy?.stages ?? [];
+      expect(stages).toHaveLength(2);
+      expect(stages[0].type).toBe("review");
+      expect(stages[1].type).toBe("approval");
+      expect(stages[1].id).toBe(approvalStageId);
     });
   });
 
