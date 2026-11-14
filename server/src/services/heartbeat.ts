@@ -27515,7 +27515,10 @@ export function heartbeatService(
           issueRef?.executionWorkspacePreference === "reuse_existing" ||
           requestedExecutionWorkspaceMode === "isolated_workspace" ||
           requestedExecutionWorkspaceMode === "operator_branch" ||
-          warmReusableExecutionWorkspace;
+          warmReusableExecutionWorkspace ||
+          (workspace.mode === "shared_workspace" &&
+            workspace.strategyType === "project_primary" &&
+            workspace.sourceIssueId === issueId);
         const nextIssuePatch: Record<string, unknown> = {};
         if (issueExecutionWorkspaceIdForRun !== workspace.id) {
           nextIssuePatch.executionWorkspaceId = workspace.id;
