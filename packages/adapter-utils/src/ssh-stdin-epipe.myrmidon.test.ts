@@ -176,27 +176,28 @@ describe.skipIf(process.platform === "win32")("ssh stdin EPIPE and stderr tail (
   it("caps stderr above the tail limit with the truncation marker, keeping the end", async () => {
     setEnv("FAKE_SSH_MODE", "large-stderr");
 
-    // The download direction reports ssh's stderr through the tail buffer when
-    // ssh closes: every 'data' chunk is delivered before 'close', so the cap
-    // and the marker are deterministic here.
-    let caughtError: unknown = null;
-    try {
-      await syncDirectoryFromSsh({ spec, remoteDir: "/workspace", localDir: sourceDir });
-    } catch (error) {
-      caughtError = error;
+    // Repeat the public operation under load so the competing tar/ssh exits
+    // exercise the ordering race, rather than merely testing one lucky schedule.
+    for (let run = 0; run < 50; run++) {
+      let caughtError: unknown = null;
+      try {
+        await syncDirectoryFromSsh({ spec, remoteDir: "/workspace", localDir: sourceDir });
+      } catch (error) {
+        caughtError = error;
+      }
+
+      expect(caughtError, `run ${run + 1} must reject`).toBeInstanceOf(Error);
+      const message = (caughtError as Error).message;
+      // Keep the truncation marker strict on every run, along with both useful
+      // diagnostics and proof that the discarded head did not survive.
+      expect(message, `run ${run + 1}`).toMatch(/^…обрезано \d+ байт/);
+      expect(message, `run ${run + 1}`).toContain("stderr-line-2000");
+      expect(message, `run ${run + 1}`).toContain("transfer closed with 1 error");
+      expect(message, `run ${run + 1}`).toContain("tar:");
+      expect(message, `run ${run + 1}`).not.toContain("stderr-line-0001");
+
+      // Each failed restore must clean up its staging directory.
+      expect(await leftoverStagingDirs(), `run ${run + 1}`).toEqual([]);
     }
-
-    expect(caughtError).toBeInstanceOf(Error);
-    const message = (caughtError as Error).message;
-    // Marker with the dropped byte count, and the kept tail reaches the final
-    // diagnostic line while the dropped head is gone.
-    expect(message).toMatch(/^…обрезано \d+ байт/);
-    expect(message).toContain("stderr-line-2000");
-    expect(message).toContain("transfer closed with 1 error");
-    expect(message).toContain("tar:");
-    expect(message).not.toContain("stderr-line-0001");
-
-    // The failed restore still removed its staging directory.
-    expect(await leftoverStagingDirs()).toEqual([]);
   }, 20_000);
 });
