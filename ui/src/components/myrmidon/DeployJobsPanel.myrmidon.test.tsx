@@ -60,7 +60,7 @@ function render(props: Partial<Parameters<typeof DeployJobsPanelView>[0]> = {}) 
   flushSync(() =>
     root.render(
       <DeployJobsPanelView
-        state={{ job: null, history: [] } as DeployJobState}
+        state={{ job: null, history: [], audit: [] } as DeployJobState}
         preview={null}
         onPreview={() => undefined}
         onStart={() => undefined}
@@ -82,14 +82,14 @@ describe("DeployJobsPanel", () => {
   });
 
   it("shows the live job with its status and steps, and the abort while abortable", () => {
-    const panel = render({ state: { job: job(), history: [] } });
+    const panel = render({ state: { job: job(), history: [], audit: [] } });
     expect(panel!.textContent).toContain("Waiting for the maintenance window to drain");
     expect(panel!.textContent).toContain("job created");
     expect(panel!.textContent).toContain("Abort");
   });
 
   it("hides the abort once the switch started", () => {
-    const panel = render({ state: { job: job({ status: "running", abortable: false }), history: [] } });
+    const panel = render({ state: { job: job({ status: "running", abortable: false }), history: [], audit: [] } });
     expect(panel!.textContent).toContain("Switching the image");
     expect(panel!.textContent).not.toContain("Abort");
   });
@@ -98,7 +98,7 @@ describe("DeployJobsPanel", () => {
     const panel = render({
       state: {
         job: job({ status: "failed_verification", active: false, abortable: false, failureReason: "digest is not sha256" }),
-        history: [],
+        history: [], audit: [],
       },
     });
     expect(panel!.textContent).toContain("Image refused");
@@ -153,7 +153,7 @@ describe("DeployJobsPanel", () => {
 
   it("shows version and commit identity in previous deploys", () => {
     const panel = render({
-      state: { job: null, history: [job({ status: "succeeded", active: false, abortable: false, id: "job-identity" })] },
+      state: { job: null, history: [job({ status: "succeeded", active: false, abortable: false, id: "job-identity" })], audit: [] },
     });
     expect(panel!.textContent).toContain("version 1.2.1");
     expect(panel!.textContent).toContain("commit 0123456789ab");
@@ -161,7 +161,7 @@ describe("DeployJobsPanel", () => {
 
   it("lists previous deploys from history", () => {
     const panel = render({
-      state: { job: null, history: [job({ status: "succeeded", active: false, abortable: false, id: "job-old" })] },
+      state: { job: null, history: [job({ status: "succeeded", active: false, abortable: false, id: "job-old" })], audit: [] }, audit: [] }
     });
     expect(panel!.textContent).toContain("Previous deploys (1)");
     expect(panel!.textContent).toContain("Deployed");
@@ -212,7 +212,7 @@ describe("DeployJobsPanel: automatic rollback copy (R5-C)", () => {
           abortable: false,
           failureReason: "health did not match",
         }),
-        history: [],
+        history: [], audit: [],
       },
     });
     expect(panel!.textContent).toContain("Rolled back automatically");
@@ -228,7 +228,7 @@ describe("DeployJobsPanel: automatic rollback copy (R5-C)", () => {
           abortable: false,
           failureReason: "the automatic rollback failed: rollback health check failed",
         }),
-        history: [],
+        history: [], audit: [],
       },
     });
     expect(panel!.textContent).toContain("Automatic rollback failed");
