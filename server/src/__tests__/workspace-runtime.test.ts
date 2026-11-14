@@ -45,6 +45,7 @@ import {
   resolveShell,
   sanitizeRuntimeServiceBaseEnv,
   setWorkspaceRuntimeExposureDepsForTests,
+  setWorkspaceRuntimePortAllocationAttemptsForTests,
   startRuntimeServicesForWorkspaceControl,
   stopRuntimeServicesForExecutionWorkspace,
   stopRuntimeServicesForProjectWorkspace,
