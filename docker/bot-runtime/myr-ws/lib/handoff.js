@@ -35,6 +35,19 @@ function describeFetchError(err) {
   return `network error: ${err && err.message ? err.message : String(err)}`;
 }
 
+function isMatchingPrWorkProduct(wp, prNumber, prUrl) {
+  if (!wp) return false;
+  const isPr = wp.kind === "pull_request" || wp.type === "pull_request";
+  if (!isPr) return false;
+  const meta = wp.metadata || {};
+  const url = wp.url || meta.url || "";
+  if (meta.number === prNumber || meta.number === String(prNumber)) return true;
+  if (prUrl && url === prUrl) return true;
+  if (new RegExp(`/pull/${prNumber}/?$`).test(url)) return true;
+  if (typeof wp.title === "string" && wp.title.includes(`#${prNumber}`)) return true;
+  return false;
+}
+
 async function run(args, deps = {}) {
   const cwd = deps.cwd || process.cwd();
   const env = deps.env || process.env;
@@ -72,93 +85,6 @@ async function run(args, deps = {}) {
     };
   }
 
-  const branchRes = execCmd("git", ["branch", "--show-current"], { cwd });
-  if (branchRes.status !== 0 || !branchRes.stdout.trim()) {
-    return {
-      exitCode: 1,
-      stdout: "",
-      stderr: `myr-handoff: failed at step git_branch: ${branchRes.stderr.trim() || "cannot determine current branch"}\n`,
-    };
-  }
-  const branch = branchRes.stdout.trim();
-
-  const headRes = execCmd("git", ["rev-parse", "HEAD"], { cwd });
-  if (headRes.status !== 0 || !headRes.stdout.trim()) {
-    return {
-      exitCode: 1,
-      stdout: "",
-      stderr: `myr-handoff: failed at step git_head: ${headRes.stderr.trim() || "cannot determine HEAD SHA"}\n`,
-    };
-  }
-  const headSha = headRes.stdout.trim();
-
-  const pushRes = execCmd("git", ["push", "-u", "origin", branch], { cwd });
-  if (pushRes.status !== 0) {
-    return {
-      exitCode: 1,
-      stdout: "",
-      stderr: `myr-handoff: failed at step git_push: ${pushRes.stderr.trim() || pushRes.stdout.trim()}\n`,
-    };
-  }
-
-  let prNumber = null;
-  const prViewRes = execCmd("gh", ["pr", "view", branch, "--json", "number,url,title,state"], { cwd, env });
-  if (prViewRes.status === 0 && prViewRes.stdout.trim()) {
-    try {
-      const data = JSON.parse(prViewRes.stdout);
-      if (data && data.number && data.state === "OPEN") {
-        prNumber = data.number;
-        if (data.title && !data.title.includes(issueKeyOrId)) {
-          execCmd("gh", ["pr", "edit", String(prNumber), "--title", `${issueKeyOrId}: ${data.title}`], { cwd, env });
-        }
-      }
-    } catch (_) {}
-  }
-
-  if (!prNumber) {
-    const prCreateRes = execCmd(
-      "gh",
-      [
-        "pr",
-        "create",
-        "--head",
-        branch,
-        "--title",
-        `${issueKeyOrId}: handoff to review`,
-        "--body",
-        summary,
-      ],
-      { cwd, env }
-    );
-    if (prCreateRes.status !== 0) {
-      return {
-        exitCode: 1,
-        stdout: "",
-        stderr: `myr-handoff: failed at step gh_pr_create: ${prCreateRes.stderr.trim() || prCreateRes.stdout.trim()}\n`,
-      };
-    }
-    const match = (prCreateRes.stdout + prCreateRes.stderr).match(/\/pull\/(\d+)/);
-    if (match) {
-      prNumber = Number(match[1]);
-    } else {
-      const checkView = execCmd("gh", ["pr", "view", branch, "--json", "number,state"], { cwd, env });
-      if (checkView.status === 0) {
-        try {
-          const checked = JSON.parse(checkView.stdout);
-          if (checked && checked.state === "OPEN") prNumber = checked.number;
-        } catch (_) {}
-      }
-    }
-  }
-
-  if (!prNumber) {
-    return {
-      exitCode: 1,
-      stdout: "",
-      stderr: "myr-handoff: failed at step gh_pr_detect: could not determine PR number\n",
-    };
-  }
-
   const paperclipUrl = env.PAPERCLIP_API_URL || "http://paperclip-server-1:3100";
   const paperclipKey = env.PAPERCLIP_API_KEY;
   const paperclipRunId = env.PAPERCLIP_RUN_ID;
@@ -171,6 +97,7 @@ async function run(args, deps = {}) {
     };
   }
 
+  // Pre-flight check: fetch issue before push/PR creation to avoid partial handoff on early rejection
   let issueData = null;
   try {
     const issueGetRes = await fetchFn(`${paperclipUrl}/api/issues/${encodeURIComponent(issueKeyOrId)}`, {
@@ -205,6 +132,129 @@ async function run(args, deps = {}) {
       stdout: "",
       stderr: `myr-handoff: failed at step issue_get: response for ${issueKeyOrId} has no id\n`,
     };
+  }
+
+  // Early admission check
+  if (issueData.status === "done" || issueData.status === "cancelled") {
+    return {
+      exitCode: 1,
+      stdout: "",
+      stderr: `myr-handoff: failed at step issue_admission: cannot transition closed issue (status: ${issueData.status}) to in_review\n`,
+    };
+  }
+  if (issueData.reviewPolicy === "human_only") {
+    return {
+      exitCode: 1,
+      stdout: "",
+      stderr: "myr-handoff: failed at step issue_admission: issue reviewPolicy is human_only; agent cannot transition to in_review\n",
+    };
+  }
+
+  const branchRes = execCmd("git", ["branch", "--show-current"], { cwd });
+  if (branchRes.status !== 0 || !branchRes.stdout.trim()) {
+    return {
+      exitCode: 1,
+      stdout: "",
+      stderr: `myr-handoff: failed at step git_branch: ${branchRes.stderr.trim() || "cannot determine current branch"}\n`,
+    };
+  }
+  const branch = branchRes.stdout.trim();
+
+  const headRes = execCmd("git", ["rev-parse", "HEAD"], { cwd });
+  if (headRes.status !== 0 || !headRes.stdout.trim()) {
+    return {
+      exitCode: 1,
+      stdout: "",
+      stderr: `myr-handoff: failed at step git_head: ${headRes.stderr.trim() || "cannot determine HEAD SHA"}\n`,
+    };
+  }
+  const headSha = headRes.stdout.trim();
+
+  const pushRes = execCmd("git", ["push", "-u", "origin", branch], { cwd });
+  if (pushRes.status !== 0) {
+    return {
+      exitCode: 1,
+      stdout: "",
+      stderr: `myr-handoff: failed at step git_push: ${pushRes.stderr.trim() || pushRes.stdout.trim()}\n`,
+    };
+  }
+
+  let prNumber = null;
+  let prUrl = null;
+  const prViewRes = execCmd("gh", ["pr", "view", branch, "--json", "number,url,title,state"], { cwd, env });
+  if (prViewRes.status === 0 && prViewRes.stdout.trim()) {
+    try {
+      const data = JSON.parse(prViewRes.stdout);
+      if (data && data.number && data.state === "OPEN") {
+        prNumber = data.number;
+        prUrl = data.url || null;
+        if (data.title && !data.title.includes(issueKeyOrId)) {
+          const editRes = execCmd("gh", ["pr", "edit", String(prNumber), "--title", `${issueKeyOrId}: ${data.title}`], { cwd, env });
+          if (editRes.status !== 0) {
+            return {
+              exitCode: 1,
+              stdout: "",
+              stderr: `myr-handoff: failed at step gh_pr_edit: ${editRes.stderr.trim() || editRes.stdout.trim() || "failed to update PR title"}\n`,
+            };
+          }
+        }
+      }
+    } catch (_) {}
+  }
+
+  if (!prNumber) {
+    const prCreateRes = execCmd(
+      "gh",
+      [
+        "pr",
+        "create",
+        "--head",
+        branch,
+        "--title",
+        `${issueKeyOrId}: handoff to review`,
+        "--body",
+        summary,
+      ],
+      { cwd, env }
+    );
+    if (prCreateRes.status !== 0) {
+      return {
+        exitCode: 1,
+        stdout: "",
+        stderr: `myr-handoff: failed at step gh_pr_create: ${prCreateRes.stderr.trim() || prCreateRes.stdout.trim()}\n`,
+      };
+    }
+    const fullOut = prCreateRes.stdout + prCreateRes.stderr;
+    const match = fullOut.match(/https:\/\/github\.com\/[^\s/]+\/[^\s/]+\/pull\/(\d+)/) || fullOut.match(/\/pull\/(\d+)/);
+    if (match) {
+      prNumber = Number(match[1]);
+      if (match[0].startsWith("http")) {
+        prUrl = match[0].trim();
+      }
+    } else {
+      const checkView = execCmd("gh", ["pr", "view", branch, "--json", "number,url,state"], { cwd, env });
+      if (checkView.status === 0) {
+        try {
+          const checked = JSON.parse(checkView.stdout);
+          if (checked && checked.state === "OPEN") {
+            prNumber = checked.number;
+            prUrl = checked.url || null;
+          }
+        } catch (_) {}
+      }
+    }
+  }
+
+  if (!prNumber) {
+    return {
+      exitCode: 1,
+      stdout: "",
+      stderr: "myr-handoff: failed at step gh_pr_detect: could not determine PR number\n",
+    };
+  }
+
+  if (!prUrl) {
+    prUrl = `https://github.com/itkadr-git/myrmidon/pull/${prNumber}`;
   }
 
   const issueId = issueData.id;
@@ -245,40 +295,101 @@ async function run(args, deps = {}) {
     return {
       exitCode: 1,
       stdout: "",
-      stderr: `myr-handoff: failed at step issue_patch: HTTP ${patchRes.status} ${errText}\n`,
+      stderr: `myr-handoff: failed at step issue_patch: PR #${prNumber} sha ${headSha} (branch ${branch}) exists, but status transition to in_review failed: HTTP ${patchRes.status} ${errText}\n`,
     };
   }
 
   let boundPr = false;
+  let wpRes;
   try {
-    const wpRes = await fetchFn(`${paperclipUrl}/api/issues/${issueId}/work-products`, {
+    wpRes = await fetchFn(`${paperclipUrl}/api/issues/${issueId}/work-products`, {
       method: "GET",
       headers: {
         Authorization: `Bearer ${paperclipKey}`,
       },
     });
-    if (wpRes.ok) {
-      const wps = await wpRes.json();
-      if (Array.isArray(wps)) {
-        boundPr = wps.some((wp) => {
-          if (wp.kind === "pull_request") {
-            const meta = wp.metadata || {};
-            const url = wp.url || meta.url || "";
-            return meta.number === prNumber || new RegExp(`/pull/${prNumber}/?$`).test(url);
-          }
-          return false;
-        });
-      }
+  } catch (err) {
+    return {
+      exitCode: 1,
+      stdout: "",
+      stderr: `myr-handoff: failed at step work_product_verify: ${describeFetchError(err)}\n`,
+    };
+  }
+
+  if (!wpRes.ok) {
+    let errText = "";
+    try {
+      errText = String(await wpRes.text()).slice(0, 300);
+    } catch (_) {}
+    return {
+      exitCode: 1,
+      stdout: "",
+      stderr: `myr-handoff: failed at step work_product_verify: HTTP ${wpRes.status} ${errText}\n`,
+    };
+  }
+
+  const wps = await wpRes.json().catch(() => []);
+  if (Array.isArray(wps)) {
+    boundPr = wps.some((wp) => isMatchingPrWorkProduct(wp, prNumber, prUrl));
+  }
+
+  if (!boundPr) {
+    // Attempt explicit binding if webhook hasn't created the work product yet
+    const bindPayload = {
+      type: "pull_request",
+      provider: "github",
+      title: `PR #${prNumber}`,
+      url: prUrl,
+      metadata: {
+        number: prNumber,
+        headSha,
+        branch,
+      },
+    };
+    let bindRes;
+    try {
+      bindRes = await fetchFn(`${paperclipUrl}/api/issues/${issueId}/work-products`, {
+        method: "POST",
+        headers: patchHeaders,
+        body: JSON.stringify(bindPayload),
+      });
+    } catch (err) {
+      return {
+        exitCode: 1,
+        stdout: "",
+        stderr: `myr-handoff: failed at step work_product_binding: ${describeFetchError(err)}\n`,
+      };
     }
-  } catch (_) {}
+    if (!bindRes.ok) {
+      let bindErr = "";
+      try {
+        bindErr = String(await bindRes.text()).slice(0, 300);
+      } catch (_) {}
+      return {
+        exitCode: 1,
+        stdout: "",
+        stderr: `myr-handoff: failed at step work_product_binding: PR #${prNumber} is not bound and explicit binding failed: HTTP ${bindRes.status} ${bindErr}\n`,
+      };
+    }
+    boundPr = true;
+  }
+
+  if (!boundPr) {
+    return {
+      exitCode: 1,
+      stdout: "",
+      stderr: `myr-handoff: failed at step work_product_binding: PR #${prNumber} is not bound to issue ${issueKeyOrId}\n`,
+    };
+  }
 
   return {
     exitCode: 0,
-    stdout: `PR #${prNumber} sha ${headSha} status in_review bound ${boundPr ? "yes" : "pending_sync"}\n`,
+    stdout: `PR #${prNumber} sha ${headSha} status in_review bound yes\n`,
     stderr: "",
   };
 }
 
 module.exports = {
   run,
+  isMatchingPrWorkProduct,
 };
