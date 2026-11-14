@@ -16135,7 +16135,16 @@ export function issueRoutes(
                 eventPayload: { issueId: existing.id },
               },
             );
-            if (released && released.status !== "cancelled") {
+            if (released?.status === "cancelled") {
+              if (svc.cancelDeferredExecutionsForAgentOnReassignment) {
+                await svc.cancelDeferredExecutionsForAgentOnReassignment(
+                  existing.assigneeAgentId,
+                  existing.id,
+                  existing.companyId,
+                  db
+                );
+              }
+            } else if (released) {
               logger.warn(
                 { issueId: existing.id, runId: released.id, status: released.status },
                 "reassignment could not release the previous assignee's not-started run",
