@@ -46,7 +46,7 @@ export interface WorkspaceStateResult {
   state: WsDesiredWorkspaceState;
   prState: WsDesiredPrState;
   /** Why the copy is closing (absent for active); informational, not in the contract payload. */
-  reason?: "terminal" | "hidden" | "reassigned" | "pr_merged" | "review_done";
+  reason?: "terminal" | "hidden" | "reassigned" | "pr_merged";
 }
 
 /**
@@ -69,22 +69,39 @@ export function workspaceStateOf(
 }
 
 /**
- * myrmidon(OPE-13107): the copy of a REVIEWER is released when its review stage has moved on.
- * True only when the task is `in_review`, the execution state is `pending`, the current
- * participant is not this bot and this bot is not the task's assignee (executor). Every other
- * case (any other status, a stale `returnAssignee`, an unknown state) keeps the copy:
- * reassignment is already caught by `workspaceStateOf`.
+ * myrmidon(OPE-13107): the copy of a REVIEW PARTICIPANT is released when its review is over.
+ * The row is a `lost` one (the bot is not the assignee) of a task that is not terminal. During
+ * a review the board makes the reviewer the assignee and keeps the executor in
+ * `executionState.returnAssignee`, so the executor's row looks the same as a finished
+ * reviewer's. The bot is released only when it is a participant of a review stage of the
+ * task's execution policy AND it is not the current participant, not the return assignee
+ * (executor) and not the assignee. A bot outside the review stages never matches, so an
+ * executor's copy is kept until the task returns to it.
  */
-export function reviewStageEndedFor(input: {
+export function reviewParticipationEndedFor(input: {
   botAgentId: string;
   status: string;
   assigneeAgentId: string | null;
   executionState?: Record<string, unknown> | null;
+  executionPolicy?: Record<string, unknown> | null;
 }): boolean {
-  if (input.status !== "in_review") return false;
+  if (input.status === "done" || input.status === "cancelled") return false;
   if (input.assigneeAgentId === input.botAgentId) return false;
+  const agentOf = (p: unknown): string | null => {
+    const v = p as { type?: string; agentId?: string | null } | null | undefined;
+    return v && v.type === "agent" && v.agentId ? v.agentId : null;
+  };
+  const stages = input.executionPolicy?.stages;
+  if (!Array.isArray(stages)) return false;
+  const wasReviewer = stages.some(
+    (stage) =>
+      stage && (stage as { type?: string }).type === "review" &&
+      Array.isArray((stage as { participants?: unknown }).participants) &&
+      ((stage as { participants: unknown[] }).participants).some((p) => agentOf(p) === input.botAgentId),
+  );
+  if (!wasReviewer) return false;
   const state = input.executionState;
-  if (!state || typeof state !== "object" || state.status !== "pending") return false;
-  const cur = state.currentParticipant as { type?: string; agentId?: string | null } | null | undefined;
-  return !(cur && cur.type === "agent" && cur.agentId === input.botAgentId);
+  if (agentOf(state?.currentParticipant) === input.botAgentId) return false;
+  if (agentOf(state?.returnAssignee) === input.botAgentId) return false;
+  return true;
 }

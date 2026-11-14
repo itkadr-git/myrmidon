@@ -9,10 +9,11 @@
   volume itself (`statfs` of `/workspace`) and derives the level with the default thresholds (85% soft, 90% hard). When the
   local measurement also fails or reports 0% with used bytes, `disk-state.json` carries a `warning` and botd logs it, instead
   of a silent `none`. A measured board answer is never overridden.
-- The copy of a reviewer is released when its review stage has moved on: the task is `in_review`, its execution state is
-  `pending`, the current participant is not this bot, and this bot is not the assignee (executor). Its key leaves `protectKeys`,
-  goes to `closedKeys`, and the copy becomes `closing`; a dirty or unpushed copy is still archived by botd, not dropped. An
-  assignee's copy is never released by this rule, whatever stale review state the task keeps.
+- The copy of a review participant is released when its review is over. A task row of a bot that is not the assignee is
+  closed only when the bot is a participant of a review stage of the task and is neither the current participant, nor the
+  return assignee, nor the assignee; its key goes to `closedKeys`. The executor's copy is kept until the task returns to it
+  (during a review the board makes the reviewer the assignee and keeps the executor as the return assignee). A dirty or
+  unpushed copy is still archived by botd, not dropped.
 
 ## changelog-ru
 
@@ -25,7 +26,8 @@
   (`statfs` от `/workspace`) и выводит уровень по порогам по умолчанию (85% — soft, 90% — hard). Если и локальный замер
   не удался или показал 0% при занятых байтах, в `disk-state.json` появляется `warning`, botd пишет его в журнал — вместо
   молчаливого `none`. Ответ доски с замером не переопределяется.
-- Копия ревьюера освобождается, когда стадия ревью ушла дальше: задача в `in_review`, состояние исполнения `pending`,
-  текущий участник — не этот бот, и бот не исполнитель (`assignee`). Ключ уходит из `protectKeys` в `closedKeys`, копия
-  получает состояние `closing`; грязную или не запушенную копию botd по-прежнему архивирует, а не удаляет. Копию
-  исполнителя это правило не закрывает никогда, какое бы старое состояние ревью ни осталось на задаче.
+- Копия участника ревью освобождается, когда ревью у него закончилось. Строка задачи бота, который не исполнитель,
+  закрывается, только если бот — участник стадии ревью этой задачи и при этом не текущий участник, не возвращаемый
+  исполнитель и не `assignee`; ключ уходит в `closedKeys`. Копия исполнителя сохраняется до возврата задачи (на время
+  ревью доска делает `assignee` ревьюера, а исполнителя держит в `returnAssignee`). Грязную или не запушенную копию
+  botd по-прежнему архивирует, а не удаляет.

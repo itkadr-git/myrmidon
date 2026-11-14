@@ -42,7 +42,7 @@ import {
 } from "@myrmidon/shared";
 import { instanceSettingsService } from "../../services/instance-settings.js";
 import { effectivePullRequestState, readPullRequestMetadata } from "../task-pr-sync/policy.js";
-import { prStateOf, reviewStageEndedFor, workspaceStateOf, type WorkspacePrFact } from "./workspace-state.js";
+import { prStateOf, reviewParticipationEndedFor, workspaceStateOf, type WorkspacePrFact } from "./workspace-state.js";
 // myrmidon(1.6.5-BOT-DISK-H4a-INVALIDATE): drop the per-bot cache entries on
 // the board event (status or assignee change), not only on TTL.
 import { registerDesiredStateDropper } from "./bot-workspaces-invalidation.js";
@@ -73,6 +73,8 @@ export interface WorkspaceIssueRow {
   updatedAt: Date;
   /** myrmidon(OPE-13107): the review stage state; lets a reviewer's copy be released after the verdict. */
   executionState?: Record<string, unknown> | null;
+  /** myrmidon(OPE-13107): the review stages (participants) of the task. */
+  executionPolicy?: Record<string, unknown> | null;
 }
 
 export interface WorkspacePrProductRow {
@@ -173,7 +175,13 @@ export function botWorkspacesService(deps: BotWorkspacesServiceDeps) {
             (row) =>
               row.status !== "done" &&
               row.status !== "cancelled" &&
-              reviewStageEndedFor({ botAgentId: input.agentId, status: row.status, assigneeAgentId: row.assigneeAgentId, executionState: row.executionState }),
+              reviewParticipationEndedFor({
+                botAgentId: input.agentId,
+                status: row.status,
+                assigneeAgentId: row.assigneeAgentId,
+                executionState: row.executionState,
+                executionPolicy: row.executionPolicy,
+              }),
           )
           .map((row) => row.identifier as string),
       );
@@ -185,7 +193,7 @@ export function botWorkspacesService(deps: BotWorkspacesServiceDeps) {
         const prFacts: WorkspacePrFact[] = issueProducts.map((product) => ({
           state: effectivePullRequestState({ storedStatus: product.status }),
         }));
-        let verdict = workspaceStateOf(
+        const verdict = workspaceStateOf(
           {
             status: row.status,
             assigneeAgentId: row.assigneeAgentId,
@@ -194,9 +202,6 @@ export function botWorkspacesService(deps: BotWorkspacesServiceDeps) {
           },
           prFacts,
         );
-        if (verdict.state === "active" && reviewDoneKeys.has(key)) {
-          verdict = { state: "closing", prState: prStateOf(prFacts), reason: "review_done" };
-        }
         // Project repository first; otherwise the latest pull request's repository;
         // otherwise the instance default repository (when one is set).
         const repo =
@@ -232,10 +237,7 @@ export function botWorkspacesService(deps: BotWorkspacesServiceDeps) {
       const protectKeys = keyed
         .filter(
           (row) =>
-            row.assigneeAgentId === input.agentId &&
-            row.status !== "done" &&
-            row.status !== "cancelled" &&
-            !reviewDoneKeys.has(row.identifier as string),
+            row.assigneeAgentId === input.agentId && row.status !== "done" && row.status !== "cancelled",
         )
         .map((row) => row.identifier as string);
 
@@ -379,6 +381,7 @@ export function botWorkspacesStore(db: Db): BotWorkspacesStore {
         cancelledAt: issues.cancelledAt,
         updatedAt: issues.updatedAt,
         executionState: issues.executionState,
+        executionPolicy: issues.executionPolicy,
       };
       const mine = await db
         .select(selected)
