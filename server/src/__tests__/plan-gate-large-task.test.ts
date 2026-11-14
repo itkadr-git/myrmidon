@@ -306,6 +306,7 @@ describeEmbeddedPostgres("plan-gate large task runtime behavior (issueService & 
           companyId,
           title: "Existing Plan",
           format: "markdown",
+          latestBody: "# Plan",
         })
         .returning();
       await db.insert(issueDocuments).values({
@@ -369,6 +370,7 @@ describeEmbeddedPostgres("plan-gate large task runtime behavior (issueService & 
           companyId,
           title: "Plan for Task",
           format: "markdown",
+          latestBody: "# Plan",
         })
         .returning();
       await db.insert(issueDocuments).values({
@@ -463,6 +465,7 @@ describeEmbeddedPostgres("plan-gate large task runtime behavior (issueService & 
           companyId,
           title: "Plan for Task",
           format: "markdown",
+          latestBody: "# Plan",
         })
         .returning();
       await db.insert(issueDocuments).values({
