@@ -71,6 +71,15 @@ export interface AutoUpdateSettings {
   mode: AutoUpdateMode;
   window: AutoUpdateWindow;
   canary: AutoUpdateCanary;
+  /**
+   * 1.7-AUTO-UPDATE-CANARY (OPE-12123): flat instance-general settings for the
+   * canary flag and the share of the fleet that switches first.  The values
+   * come from the instance settings screen (general.updateCanary /
+   * general.updateCanaryPercent) and are folded into the policy by
+   * resolveAutoUpdateSettings when no env override is present.
+   */
+  updateCanary: boolean;
+  updateCanaryPercent: number;
   /** Newest first; bounded by AUTO_UPDATE_APPROVAL_LIMIT. */
   approvals: AutoUpdateApproval[];
 }
@@ -84,6 +93,10 @@ export function defaultAutoUpdateSettings(): AutoUpdateSettings {
     // is gated until an operator picks days: see the window docs above.
     window: { days: [], fromMinute: 3 * 60, toMinute: 5 * 60 },
     canary: { enabled: true, sharePercent: 25, minBots: 1, maxBots: 4, healthSettleSec: 300 },
+    // OPE-12123: the flat canary settings default to the same values as the
+    // nested canary block — the screen writes them, the scheduler reads them.
+    updateCanary: true,
+    updateCanaryPercent: 25,
     approvals: [],
   };
 }
@@ -171,10 +184,15 @@ export function parseAutoUpdateSettings(raw: unknown): AutoUpdateSettings {
     healthSettleSec: readInt(rawCanary.healthSettleSec, defaults.canary.healthSettleSec, 0, 86_400),
   };
   if (canary.minBots > canary.maxBots) canary.maxBots = canary.minBots;
+  // OPE-12123: flat canary settings read from the stored document; a stored
+  // value outside the range falls back to the default instead of failing the
+  // whole parse (the same defensive contract as the rest of this parser).
+  const updateCanary = readBool(raw.updateCanary, defaults.updateCanary);
+  const updateCanaryPercent = readInt(raw.updateCanaryPercent, defaults.updateCanaryPercent, 0, 100);
   const approvals: AutoUpdateApproval[] = Array.isArray(raw.approvals)
     ? raw.approvals.filter(isRecord).map(parseApproval).filter((a): a is AutoUpdateApproval => a !== null)
     : [];
-  return { mode, window, canary, approvals: approvals.slice(0, AUTO_UPDATE_APPROVAL_LIMIT) };
+  return { mode, window, canary, updateCanary, updateCanaryPercent, approvals: approvals.slice(0, AUTO_UPDATE_APPROVAL_LIMIT) };
 }
 
 function parseApproval(raw: Record<string, unknown>): AutoUpdateApproval | null {
@@ -283,10 +301,14 @@ export interface CanaryPlan {
  * percentage of the fleet clamped by min/max, and the batch is never the whole
  * fleet unless the settings ask for it (share 100 or maxBots >= the fleet):
  * that case is honest but useless as a canary, and the screen says so.
+ *
+ * A sharePercent of 0 with enabled=true means the operator asked for 0 % of
+ * the fleet in the canary — semantically "no canary": the rollout happens in
+ * one batch, exactly the same as enabled=false.
  */
 export function canaryPlan(targets: readonly string[], canary: AutoUpdateCanary): CanaryPlan {
   const fleet = [...new Set(targets.map((key) => key.trim()).filter((key) => key.length > 0))];
-  if (!canary.enabled || fleet.length === 0) {
+  if (!canary.enabled || canary.sharePercent <= 0 || fleet.length === 0) {
     return {
       enabled: false,
       canary: [],
@@ -295,7 +317,9 @@ export function canaryPlan(targets: readonly string[], canary: AutoUpdateCanary)
       reason:
         fleet.length === 0
           ? "the fleet is empty: nothing to run a canary on"
-          : "the canary is off: the fleet moves in one batch",
+          : canary.enabled
+            ? "the canary share is 0%: the fleet moves in one batch"
+            : "the canary is off: the fleet moves in one batch",
     };
   }
   const share = Math.min(Math.max(canary.sharePercent, 1), 100);
@@ -411,6 +435,8 @@ export interface AutoUpdateResolution {
     mode: AutoUpdateValueSource;
     window: AutoUpdateValueSource;
     canary: AutoUpdateValueSource;
+    updateCanary: AutoUpdateValueSource;
+    updateCanaryPercent: AutoUpdateValueSource;
   };
   /** The env variables that are overriding an interface value, for the screen. */
   overridden: string[];
@@ -445,9 +471,17 @@ export function resolveAutoUpdateSettings(stored: AutoUpdateSettings, env: NodeJ
     mode: stored.mode,
     window: { ...stored.window, days: [...stored.window.days] },
     canary: { ...stored.canary },
+    updateCanary: stored.updateCanary,
+    updateCanaryPercent: stored.updateCanaryPercent,
     approvals: stored.approvals,
   };
-  const sources = { mode: "ui", window: "ui", canary: "ui" } as AutoUpdateResolution["sources"];
+  const sources = {
+    mode: "ui",
+    window: "ui",
+    canary: "ui",
+    updateCanary: "ui",
+    updateCanaryPercent: "ui",
+  } as AutoUpdateResolution["sources"];
   const overridden: string[] = [];
 
   const envMode = env.MYRMIDON_DEPLOY_UPDATE_MODE?.trim().toLowerCase();
@@ -513,6 +547,34 @@ export function resolveAutoUpdateSettings(stored: AutoUpdateSettings, env: NodeJ
   }
   if (settings.canary.minBots > settings.canary.maxBots) settings.canary.maxBots = settings.canary.minBots;
   if (sources.canary === "ui" && sameCanary(stored.canary, defaults.canary)) sources.canary = "default";
+
+  // OPE-12123: the flat canary settings may also be forced by env.  The env
+  // wins over the interface value, the same contract as the other keys.
+  const envUpdateCanary = readEnvBool(env, "MYRMIDON_DEPLOY_UPDATE_CANARY_ENABLED");
+  const envUpdateCanaryPercent = readEnvInt(env, "MYRMIDON_DEPLOY_UPDATE_CANARY_PERCENT", 0, 100);
+  if (envUpdateCanary !== null) {
+    settings.updateCanary = envUpdateCanary;
+    sources.updateCanary = "env";
+    overridden.push("MYRMIDON_DEPLOY_UPDATE_CANARY_ENABLED");
+  }
+  if (envUpdateCanaryPercent !== null) {
+    settings.updateCanaryPercent = envUpdateCanaryPercent;
+    sources.updateCanaryPercent = "env";
+    overridden.push("MYRMIDON_DEPLOY_UPDATE_CANARY_PERCENT");
+  }
+  if (sources.updateCanary === "ui" && stored.updateCanary === defaults.updateCanary) sources.updateCanary = "default";
+  if (sources.updateCanaryPercent === "ui" && stored.updateCanaryPercent === defaults.updateCanaryPercent) sources.updateCanaryPercent = "default";
+
+  // OPE-12123: the flat settings are what the update service reads.  When no
+  // env override forced the nested block, fold the flat values into it so the
+  // rollout path (canaryPlan / the fleet_canary state) consumes exactly what
+  // the operator configured on the screen.  sharePercent=0 is preserved
+  // verbatim (no floor); canaryPlan treats 0 as "no canary" — see below.
+  if (sources.canary !== "env") {
+    settings.canary.enabled = settings.updateCanary;
+    settings.canary.sharePercent = Math.min(settings.updateCanaryPercent, 100);
+    sources.canary = sources.updateCanary === "env" || sources.updateCanaryPercent === "env" ? "env" : sources.updateCanary;
+  }
 
   return { settings, sources, overridden };
 }

@@ -501,6 +501,12 @@ export const instanceGeneralSettingsSchema = z.object({
   // settings page and GET/PATCH /api/myrmidon/vendor-name-check; absent means
   // the module defaults (ratchet against the count the instance records).
   vendorNameCheck: vendorNameCheckSettingsSchema.optional(),
+  // myrmidon(1.7-AUTO-UPDATE-CANARY, OPE-12123): the flat canary settings for
+  // the auto-update service — the on/off switch and the share of the fleet
+  // that switches first (0–100).  When the switch is off the percent is
+  // accepted but ignored (the scheduler reads it only when the switch is on).
+  updateCanary: z.boolean().default(true),
+  updateCanaryPercent: z.number().int().min(0).max(100).default(25),
 }).strict();
 
 export const patchInstanceGeneralSettingsSchema = z

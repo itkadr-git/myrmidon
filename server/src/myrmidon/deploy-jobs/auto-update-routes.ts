@@ -67,6 +67,9 @@ export const autoUpdatePatchSchema = z
       })
       .strict()
       .optional(),
+    // OPE-12123: flat canary settings from the instance-general settings screen.
+    updateCanary: z.boolean().optional(),
+    updateCanaryPercent: z.number().int().min(0).max(100).optional(),
   })
   .strict();
 
@@ -148,6 +151,9 @@ export function autoUpdateRoutes(
         mode: (patch.mode as AutoUpdateSettings["mode"] | undefined) ?? current.mode,
         window: patch.window === undefined ? current.window : { ...patch.window },
         canary: patch.canary === undefined ? current.canary : { ...patch.canary },
+        updateCanary: patch.updateCanary === undefined ? current.updateCanary : patch.updateCanary,
+        updateCanaryPercent:
+          patch.updateCanaryPercent === undefined ? current.updateCanaryPercent : patch.updateCanaryPercent,
         approvals: current.approvals,
       };
       return { next, result: { previous: current, next } };

@@ -480,6 +480,10 @@ export function normalizeGeneralSettings(raw: unknown): InstanceGeneralSettings 
       // myrmidon(1.7-REBRAND-F): the stored vendor-name gate setting survives
       // every general write (it is edited on its own block of the instance page).
       ...(parsed.data.vendorNameCheck ? { vendorNameCheck: parsed.data.vendorNameCheck } : {}),
+      // OPE-12123: the flat canary settings survive every general write (they
+      // are edited on the auto-update block of the instance settings page).
+      ...(parsed.data.updateCanary !== undefined ? { updateCanary: parsed.data.updateCanary } : {}),
+      ...(parsed.data.updateCanaryPercent !== undefined ? { updateCanaryPercent: parsed.data.updateCanaryPercent } : {}),
       // myrmidon(1.7-ACTIVE-CHANNEL): the stored owner active-channel threshold
       // survives every general write (edited on its own settings block).
       ...(parsed.data.ownerActiveChannel ? { ownerActiveChannel: parsed.data.ownerActiveChannel } : {}),
@@ -963,6 +967,10 @@ export function instanceSettingsService(db: Db, options: InstanceSettingsService
                 ? { ownerActiveChannel: nextGeneral.ownerActiveChannel }
                 : {}),
               ...preserveUpdateSettingsGeneralKey(current.general), // myrmidon(1.7 AUTO-UPDATE-SETTINGS, OPE-10268)
+              // OPE-12123: the flat canary fields are top-level general keys;
+              // a patch carrying them wins over the preserved stored value.
+              ...(patch.updateCanary !== undefined ? { updateCanary: nextGeneral.updateCanary } : {}),
+              ...(patch.updateCanaryPercent !== undefined ? { updateCanaryPercent: nextGeneral.updateCanaryPercent } : {}),
             },
             updatedAt: now,
           })
