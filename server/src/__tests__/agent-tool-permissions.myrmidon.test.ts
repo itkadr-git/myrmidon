@@ -305,7 +305,6 @@ describeEmbeddedPostgres("myrmidon(S6) agent tool permission enforcement", () =>
     expect(denials.map((row) => row.decision)).toContain("deny");
     expect(denials.map((row) => row.runId)).toContain(analystRun.run.id);
   });
-});
 
   // myrmidon(1.6.5-F22): actor × grant → status matrix for the tools
   // gallery / connections surfaces. Board actors keep their behavior; an agent
