@@ -148,6 +148,15 @@ export async function processIntakeCard(
         version: 1,
         prompt: `Подтвердите постановку задачи: ${fullCard.title.trim()}`,
         detailsMarkdown: markdownBody,
+        items: [{
+          id: "requirement-card",
+          label: fullCard.title.trim(),
+          description: "Утвердить карточку требования",
+          previewMarkdown: markdownBody,
+        }],
+        verdicts: ["approve", "reject"],
+        requireReasonOn: ["reject"],
+        allowBulkApprove: false,
         target: {
           type: "issue_document",
           issueId: input.issueId,
