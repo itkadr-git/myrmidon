@@ -129,10 +129,26 @@ export function leaderLeaseService(db: Db, options: LeaderLeaseServiceOptions = 
 
     /** The §5.3 UPDATE; returns the new epoch when the pass won, else null. */
     const tryTake = async (): Promise<number | null> => {
+      // Whoever the row names before this pass decides whether this is a
+      // renewal (same holder) or a handover (different holder). Reading the
+      // pre-update holder is racy, but the UPDATE below is fenced by
+      // (expired OR holder=me), so a live different holder blocks the write
+      // and the take yields null; when the write lands, this process owns
+      // the row and the epoch bump in the same statement is safe.
+      const before = await db
+        .select({ holderBootId: boardLeases.holderBootId })
+        .from(boardLeases)
+        .where(eq(boardLeases.name, name));
+      const prevHolder = before[0]?.holderBootId;
       const rows = await db
         .update(boardLeases)
         .set({
           holderBootId: bootId,
+          // OPE-13146: a renewal by the same holder must not bump the epoch —
+          // the epoch fences a leadership handover, and an unchanged owner
+          // means the fence stays. A holder switch (or a fresh take after
+          // expiry) increments it in the same statement.
+          epoch: prevHolder === bootId ? boardLeases.epoch : sql`${boardLeases.epoch} + 1`,
           acquiredAt: sql`clock_timestamp()`,
           expiresAt: sql`clock_timestamp() + ${ttlMs} * interval '1 millisecond'`,
         })
@@ -145,33 +161,22 @@ export function leaderLeaseService(db: Db, options: LeaderLeaseServiceOptions = 
             ),
           ),
         )
-        .returning({ epoch: boardLeases.epoch, holderBootId: boardLeases.holderBootId });
-      const row = rows[0];
-      if (!row) return null;
-      const prevHolder = row.holderBootId;
-      // A renewal by the same holder must not bump the epoch (OPE-13146):
-      // the epoch fences a leadership handover, and an unchanged owner means
-      // the fence stays. Only a holder switch (or a fresh take after expiry)
-      // increments it.
-      if (prevHolder === bootId) {
-        return Number(row.epoch);
-      }
-      const bumped = await db
-        .update(boardLeases)
-        .set({ epoch: sql`${boardLeases.epoch} + 1` })
-        .where(and(eq(boardLeases.name, name), eq(boardLeases.holderBootId, bootId)))
         .returning({ epoch: boardLeases.epoch });
-      const bumpedRow = bumped[0];
-      return bumpedRow ? Number(bumpedRow.epoch) : null;
+      const row = rows[0];
+      return row ? Number(row.epoch) : null;
     };
 
     /** One acquire pass: seed the row, then try to take it. */
     const acquirePass = async (): Promise<boolean> => {
+      // Seed with no holder: an uncontended first pass must read a foreign
+      // (or absent) owner so it counts as a real take and bumps the epoch —
+      // seeding with ourselves would look like a renewal (epoch stays 0 and
+      // the contender never becomes leader).
       await db
         .insert(boardLeases)
         .values({
           name,
-          holderBootId: bootId,
+          holderBootId: null,
           epoch: 0,
           acquiredAt: sql`clock_timestamp()`,
           expiresAt: sql`clock_timestamp()`,
