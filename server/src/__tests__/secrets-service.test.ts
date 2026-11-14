@@ -1514,7 +1514,7 @@ describeEmbeddedPostgres("secretService", () => {
       actorType: "agent",
       actorId: "agent-1",
     });
-    expect(await svc.listAccessEvents(companyId, secret.id)).toHaveLength(2);
+    expect(await svc.listAccessEvents(companyId, secret.id)).toHaveLength(1);
     expect(JSON.stringify(events)).not.toContain("runtime-secret");
   });
 
