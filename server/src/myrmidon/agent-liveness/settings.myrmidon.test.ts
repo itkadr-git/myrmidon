@@ -8,25 +8,27 @@ import {
 } from "./settings.js";
 import { applySettingsChanged } from "../settings-appliers/index.js";
 
-function stubDb(general: Record<string, unknown> = {}) {
+function stubDb(general: Record<string, unknown> = {}, onSelect?: () => void) {
+  const row = {
+    id: "row-1",
+    singletonKey: "default",
+    general,
+    createdAt: new Date(),
+    updatedAt: new Date(),
+  };
+  const query: any = {
+    from: () => query,
+    where: () => query,
+    limit: () => query,
+    for: () => Promise.resolve([row]),
+    then: (onFulfilled: (v: any) => any, onRejected?: (err: any) => any) =>
+      Promise.resolve([row]).then(onFulfilled, onRejected),
+  };
   const db = {
-    select: () => ({
-      from: () => ({
-        where: () => ({
-          limit: () => ({
-            for: () => Promise.resolve([
-              {
-                id: "row-1",
-                singletonKey: "default",
-                general,
-                createdAt: new Date(),
-                updatedAt: new Date(),
-              },
-            ]),
-          }),
-        }),
-      }),
-    }),
+    select: () => {
+      onSelect?.();
+      return query;
+    },
   } as unknown as Db;
   return db;
 }
@@ -62,28 +64,12 @@ describe("server resolveAgentLivenessSettings", () => {
 
   it("caches resolved settings per companyId within TTL", async () => {
     let callCount = 0;
-    const db = {
-      select: () => {
+    const db = stubDb(
+      { agentLiveness: { enabled: true, engineerQueueThreshold: 10 } },
+      () => {
         callCount++;
-        return {
-          from: () => ({
-            where: () => ({
-              limit: () => ({
-                for: () => Promise.resolve([
-                  {
-                    id: "row-1",
-                    singletonKey: "default",
-                    general: { agentLiveness: { enabled: true, engineerQueueThreshold: 10 } },
-                    createdAt: new Date(),
-                    updatedAt: new Date(),
-                  },
-                ]),
-              }),
-            }),
-          }),
-        };
       },
-    } as unknown as Db;
+    );
 
     const baseTime = 1_000_000;
     const first = await resolveAgentLivenessSettings("company-1", { db, now: baseTime });
@@ -106,28 +92,12 @@ describe("server resolveAgentLivenessSettings", () => {
 
   it("invalidates cache when applySettingsChanged is triggered with agentLiveness", async () => {
     let callCount = 0;
-    const db = {
-      select: () => {
+    const db = stubDb(
+      { agentLiveness: { enabled: true } },
+      () => {
         callCount++;
-        return {
-          from: () => ({
-            where: () => ({
-              limit: () => ({
-                for: () => Promise.resolve([
-                  {
-                    id: "row-1",
-                    singletonKey: "default",
-                    general: { agentLiveness: { enabled: true } },
-                    createdAt: new Date(),
-                    updatedAt: new Date(),
-                  },
-                ]),
-              }),
-            }),
-          }),
-        };
       },
-    } as unknown as Db;
+    );
 
     await resolveAgentLivenessSettings("company-1", { db });
     expect(callCount).toBe(1);

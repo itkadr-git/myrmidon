@@ -3,6 +3,7 @@ import {
   resolveAgentLivenessSettings as resolveSharedAgentLivenessSettings,
   type AgentLivenessSettings,
 } from "@myrmidon/shared";
+export { DEFAULT_AGENT_LIVENESS_SETTINGS, type AgentLivenessSettings };
 import type { Db } from "@myrmidon/db";
 import { instanceSettingsService } from "../../services/instance-settings.js";
 
