@@ -38,6 +38,7 @@ import type { BotContainerAgentConfig } from "./agent-config.js";
 import type { SharedMountSettings } from "@myrmidon/shared";
 import { botKeyLock, type BotKeyLock } from "./bot-key-lock.js";
 import type { BotContainerDriver } from "./driver.js";
+import { readAgentLiveRunActivity } from "../run-stall/sweep.js";
 import { isBotSkillBackimportEnabled } from "./skill-backimport.js";
 import { createDbBotSkillBackimportPorts } from "./skill-backimport-ports.js";
 import { containerOomRecorder } from "./container-oom-store.js";
@@ -367,6 +368,8 @@ export async function applyBotContainerNow(
       maintenance: deps.maintenance,
       activity: deps.activity,
       busyPolicy: opts.drainBusy ? "drain" : "defer",
+      // myrmidon(OPE-13119): an unhealthy container with a live run waits.
+      ...(deps.db ? { readLiveRunActivity: (id: string) => readAgentLiveRunActivity(deps.db!, id) } : {}),
       // myrmidon(1.6.5-BOT-SKILL-BACKIMPORT, OPE-6401): the catalog ports are
       // built per pass, bound to the agent's company; the flag itself is read
       // inside the reconciler (off = nothing here is touched). An agent whose
