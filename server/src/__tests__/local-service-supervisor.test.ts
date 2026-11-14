@@ -12,8 +12,10 @@ import {
 import {
   doesLocalServiceCommandLineMatch,
   isLocalServiceCommandLineComparable,
+  isLsofAvailable,
   listLocalServiceRegistryRecords,
   readLocalServicePortOwner,
+  resetLsofAvailabilityForTests,
   resolveLocalServiceLogPath,
   terminateLocalService,
 } from "../services/local-service-supervisor.js";
@@ -161,5 +163,33 @@ describe("local service supervision", () => {
       recordedCommand: "node ./server.js",
       serviceName: "web",
     })).toBe(false);
+  });
+
+  it("determines lsof unavailability without repeated executions", async () => {
+    const fakeBin = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-supervisor-lsof-"));
+    const fakeLsof = path.join(fakeBin, "lsof");
+    const countFile = path.join(fakeBin, "count.txt");
+    const previousPath = process.env.PATH;
+    await fs.writeFile(
+      fakeLsof,
+      `#!/bin/sh\necho 1 >> "${countFile}"\nexit 127\n`,
+      { mode: 0o755 },
+    );
+    process.env.PATH = `${fakeBin}${path.delimiter}${previousPath ?? ""}`;
+
+    try {
+      resetLsofAvailabilityForTests();
+      expect(await isLsofAvailable()).toBe(false);
+      expect(await isLsofAvailable()).toBe(false);
+      expect(await readLocalServicePortOwner(42424)).toBeNull();
+      const countContent = await fs.readFile(countFile, "utf8").catch(() => "");
+      const invocations = countContent.trim().split("\n").filter(Boolean).length;
+      expect(invocations).toBe(1);
+    } finally {
+      if (previousPath === undefined) delete process.env.PATH;
+      else process.env.PATH = previousPath;
+      resetLsofAvailabilityForTests();
+      await fs.rm(fakeBin, { recursive: true, force: true });
+    }
   });
 });

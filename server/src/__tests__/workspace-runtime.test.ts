@@ -5527,6 +5527,37 @@ describe("readLocalServicePortOwner", () => {
     await expect(isLocalServiceProcessInWorkspace(serviceCwd, workspace)).resolves.toBe(true);
   });
 
+  it("does not repeat lsof calls when lsof is unavailable and completes quickly", async () => {
+    const fakeBin = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-runtime-lsof-counter-"));
+    const fakeLsof = path.join(fakeBin, "lsof");
+    const countFile = path.join(fakeBin, "count.txt");
+    const previousPath = process.env.PATH;
+    await fs.writeFile(
+      fakeLsof,
+      `#!/bin/sh\necho 1 >> "${countFile}"\nexit 127\n`,
+      { mode: 0o755 },
+    );
+    process.env.PATH = `${fakeBin}${path.delimiter}${previousPath ?? ""}`;
+
+    try {
+      resetLsofAvailabilityForTests();
+      const start = Date.now();
+      for (let i = 0; i < 5; i++) {
+        const owner = await readLocalServicePortOwner(40000 + i);
+        expect(owner).toBeNull();
+      }
+      const durationMs = Date.now() - start;
+      expect(durationMs).toBeLessThan(1000);
+      const countContent = await fs.readFile(countFile, "utf8").catch(() => "");
+      const invocations = countContent.trim().split("\n").filter(Boolean).length;
+      expect(invocations).toBeLessThanOrEqual(1);
+    } finally {
+      if (previousPath === undefined) delete process.env.PATH;
+      else process.env.PATH = previousPath;
+      await fs.rm(fakeBin, { recursive: true, force: true });
+    }
+  });
+
   it("preserves newlines and trailing whitespace from Darwin lsof cwd output", async () => {
     const fakeBin = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-runtime-lsof-tools-"));
     const previousPath = process.env.PATH;
@@ -7394,6 +7425,58 @@ describeEmbeddedPostgres("workspace runtime service control persistence", () => 
         portBlocker.once("close", resolve);
         portBlocker.once("error", reject);
       });
+    }
+  }, 20_000);
+
+  it("starts runtime service successfully and quickly on a free port when lsof is unavailable", async () => {
+    const fixture = await createRuntimeFixture();
+    const cleanupRuntimeHome = await createRuntimeHome();
+    const workspace = fixture.workspaces[0]!;
+    const basePort = await findFreePort();
+
+    const fakeBin = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-runtime-no-lsof-"));
+    const fakeLsof = path.join(fakeBin, "lsof");
+    const countFile = path.join(fakeBin, "count.txt");
+    const previousPath = process.env.PATH;
+    await fs.writeFile(
+      fakeLsof,
+      `#!/bin/sh\necho 1 >> "${countFile}"\nexit 127\n`,
+      { mode: 0o755 },
+    );
+    process.env.PATH = `${fakeBin}${path.delimiter}${previousPath ?? ""}`;
+
+    try {
+      resetLsofAvailabilityForTests();
+      const start = Date.now();
+      const started = (await startRuntimeServicesForWorkspaceControl({
+        db,
+        actor: fixture.actor,
+        issue: null,
+        workspace: fixture.realizedWorkspace(workspace),
+        executionWorkspaceId: workspace.id,
+        config: fixedPortRuntimeConfig(basePort),
+        adapterEnv: {},
+      }))[0]!;
+      const durationMs = Date.now() - start;
+
+      expect(started.port).toBe(basePort);
+      expect(started.url).toBe(`http://127.0.0.1:${started.port}`);
+      expect(durationMs).toBeLessThan(1000);
+
+      const countContent = await fs.readFile(countFile, "utf8").catch(() => "");
+      const invocations = countContent.trim().split("\n").filter(Boolean).length;
+      expect(invocations).toBeLessThanOrEqual(1);
+    } finally {
+      if (previousPath === undefined) delete process.env.PATH;
+      else process.env.PATH = previousPath;
+      await stopRuntimeServicesForExecutionWorkspace({
+        db,
+        executionWorkspaceId: workspace.id,
+        workspaceCwd: workspace.cwd,
+      }).catch(() => undefined);
+      await fs.rm(fakeBin, { recursive: true, force: true });
+      await cleanupRuntimeHome();
+      await fixture.cleanup();
     }
   }, 20_000);
 

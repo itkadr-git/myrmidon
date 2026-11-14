@@ -604,6 +604,28 @@ export async function terminateLocalService(
   throw new Error(`Failed to terminate local service ${target}${listener}`);
 }
 
+let lsofAvailableCache: boolean | null = null;
+
+export function resetLsofAvailabilityForTests() {
+  lsofAvailableCache = null;
+}
+
+export async function isLsofAvailable(): Promise<boolean> {
+  if (lsofAvailableCache !== null) return lsofAvailableCache;
+  try {
+    await execFileAsync("lsof", ["-v"]);
+    lsofAvailableCache = true;
+  } catch (error: any) {
+    if (error?.code === "ENOENT" || error?.code === 127 || error?.status === 127) {
+      lsofAvailableCache = false;
+    } else {
+      // Non-zero exit code or other error means binary exists
+      lsofAvailableCache = true;
+    }
+  }
+  return lsofAvailableCache;
+}
+
 export async function readLocalServicePortOwner(port: number) {
   if (!Number.isInteger(port) || port <= 0) return null;
   try {
@@ -623,12 +645,23 @@ export async function readLocalServicePortOwner(port: number) {
       }
       return null;
     }
-    const { stdout } = await execFileAsync("lsof", ["-nP", `-iTCP:${port}`, "-sTCP:LISTEN", "-t"]);
-    const firstPid = stdout
-      .split("\n")
-      .map((line) => Number.parseInt(line.trim(), 10))
-      .find((value) => Number.isInteger(value) && value > 0);
-    return firstPid ?? null;
+    if (lsofAvailableCache === false) return null;
+    try {
+      const { stdout } = await execFileAsync("lsof", ["-nP", `-iTCP:${port}`, "-sTCP:LISTEN", "-t"]);
+      lsofAvailableCache = true;
+      const firstPid = stdout
+        .split("\n")
+        .map((line) => Number.parseInt(line.trim(), 10))
+        .find((value) => Number.isInteger(value) && value > 0);
+      return firstPid ?? null;
+    } catch (error: any) {
+      if (error?.code === "ENOENT" || error?.code === 127 || error?.status === 127) {
+        lsofAvailableCache = false;
+        return null;
+      }
+      lsofAvailableCache = true;
+      return null;
+    }
   } catch {
     return null;
   }
