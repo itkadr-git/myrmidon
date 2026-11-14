@@ -724,12 +724,18 @@ export function agentService(
     }
   }
 
-  async function assertCompanyShortnameAvailable(
+  async function assertCompanyAgentNameAvailable(
     companyId: string,
     candidateName: string,
-    options?: AgentShortnameCollisionOptions,
+    options?: AgentNameCollisionOptions,
+    dbClient: Db = db,
   ) {
-    const existingAgents = await db
+    const normalizedCandidateName = candidateName.toLowerCase();
+    await dbClient.execute(
+      sql`select pg_advisory_xact_lock(hashtextextended(${`agent-name:${companyId}:${normalizedCandidateName}`}, 0))`,
+    );
+
+    const existingAgents = await dbClient
       .select({
         id: agents.id,
         name: agents.name,
@@ -989,10 +995,6 @@ export function agentService(
       await assertNoCycle(id, data.reportsTo);
     }
 
-    if (data.name !== undefined) {
-      await assertCompanyShortnameAvailable(existing.companyId, data.name, { excludeAgentId: id });
-    }
-
     if (Object.prototype.hasOwnProperty.call(data, "metadata")) {
       assertBuiltInAgentMetadataMutationAllowed(existing.metadata, data.metadata, options);
     }
@@ -1050,6 +1052,9 @@ export function agentService(
 
     type AgentUpdateResult = Awaited<ReturnType<typeof getById>>;
     const applyUpdate = async (txDb: Db): Promise<AgentUpdateResult> => {
+      if (data.name !== undefined) {
+        await assertCompanyAgentNameAvailable(existing.companyId, data.name, { excludeAgentId: id }, txDb);
+      }
       const updated = await txDb
         .update(agents)
         .set({ ...normalizedPatch, updatedAt: new Date() })
@@ -1162,8 +1167,6 @@ export function agentService(
         throw err;
       }
 
-      await assertCompanyShortnameAvailable(companyId, data.name);
-
       const role = data.role ?? "general";
       const normalizedPermissions = normalizeAgentPermissions(data.permissions, { context: "create" });
       const runtimeConfig = normalizeRuntimeConfigForNewAgent(data.runtimeConfig);
@@ -1190,6 +1193,7 @@ export function agentService(
       });
       return db.transaction(async (tx) => {
         const txDb = tx as unknown as Db;
+        await assertCompanyAgentNameAvailable(companyId, data.name, undefined, txDb);
         // Consume the stored-session claim and create the fixed definition inside
         // the same transaction that inserts the binding. A rejected claim rolls
         // back the whole transaction and inserts no binding.
@@ -1524,6 +1528,9 @@ export function agentService(
         if (!existing || existing.status !== "pending_approval") return null;
         const approvedPatch = approvedPayload ? configPatchFromApprovalPayload(approvedPayload) : {};
         let patch = { ...approvedPatch } as Partial<typeof agents.$inferInsert>;
+        if (patch.name !== undefined) {
+          await assertCompanyAgentNameAvailable(existing.companyId, patch.name, { excludeAgentId: id }, txDb);
+        }
         let approvalBindingDecision: ClaudeOAuthBindingInvariantDecision | null = null;
         if (
           Object.prototype.hasOwnProperty.call(patch, "adapterConfig") &&
