@@ -94,7 +94,7 @@ describe("deploy jobs routes", () => {
   it("lets a board member read the job state", async () => {
     const h = harness();
     const res = await request(h.app).get(URL).expect(200);
-    expect(res.body).toEqual({ job: null, history: [] });
+    expect(res.body).toEqual({ job: null, history: [], audit: [] });
   });
 
   it("refuses an agent token on read and write", async () => {
