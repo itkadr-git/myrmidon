@@ -15,8 +15,6 @@ SHA="${SHA:-${GITHUB_SHA:-}}"
 ACTION="${ACTION:-}"
 LABELS="${LABELS:-}"
 
-# A rerun can still carry a synchronize event from its original push. Compare
-# issue label timestamps with the head commit instead of trusting run_attempt.
 if [[ "$ACTION" == "synchronize" && -n "$SHA" ]]; then
   head_date="$(gh api "repos/$REPO/commits/$SHA" --jq '.commit.committer.date' 2>/dev/null || true)"
   label_date="$(gh api "repos/$REPO/issues/$PR/events" --paginate --jq '[.[] | select(.event == "labeled" and .label.name == "review-approved") | .created_at] | max // empty' 2>/dev/null || true)"
