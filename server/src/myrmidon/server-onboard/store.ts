@@ -9,6 +9,7 @@ import { myrmidonFleetOnboardJobs, myrmidonFleetServers, type Db } from "@myrmid
 import {
   ONBOARD_BOOTSTRAP_VERSION,
   appendStepLog,
+  stepsForJobKind,
   type OnboardJob,
   type OnboardJobKind,
   type OnboardJobStatus,
@@ -242,7 +243,7 @@ export function fleetOnboardStore(db: Db): FleetOnboardStore {
           accessKeySecretKey: server.accessKeySecretKey,
           hostKeyFingerprint: server.hostKeyFingerprint,
         },
-        steps: ["connect", "preflight", "access", "verify"],
+        steps: stepsForJobKind(job.kind as OnboardJobKind),
         options: { keepPassword: server.keepPassword, installDocker: false, role: server.role },
       };
     },
