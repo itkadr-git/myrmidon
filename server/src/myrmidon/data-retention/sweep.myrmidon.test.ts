@@ -814,6 +814,10 @@ describeEmbeddedPostgres("myrmidon(1.6.5-DB-RETENTION) retention sweep in the da
       activityLogDays: 90,
       accessAuditDays: 180,
       litellmCostEventsDays: 30,
+      documentRevisionDays: 90,
+      documentRevisionKeepPerDocument: 20,
+      agentWakeupRequestsDays: 30,
+      environmentLeasesDays: 30,
     });
   });
 
@@ -880,6 +884,10 @@ describeEmbeddedPostgres("myrmidon(1.6.5-DB-RETENTION) retention sweep in the da
       activityLogDays: 30,
       accessAuditDays: 180,
       litellmCostEventsDays: 30,
+      documentRevisionDays: 90,
+      documentRevisionKeepPerDocument: 20,
+      agentWakeupRequestsDays: 30,
+      environmentLeasesDays: 30,
     });
     const lastRun = await readDataRetentionLastRun(settings);
     expect(lastRun.freedBytesTotal).toBe(1234);
