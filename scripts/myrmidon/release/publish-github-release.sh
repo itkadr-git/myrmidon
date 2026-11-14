@@ -19,6 +19,24 @@
 #                      the release tag to publish (the workflow passes the
 #                      pushed tag, or the tag input of a workflow_dispatch
 #                      re-run; the tag must already exist on origin)
+#   --require-verification
+#                      kept for backward compatibility with the opt-in era;
+#                      the gate is now always enforced, so the flag is a
+#                      no-op (a warning is logged when it is used).
+#   --verification-result <file>
+#                      the verification verdict JSON (see above).
+#
+# The verification gate is MANDATORY on the publish path (OPE-13017
+# acceptance: «релиз нельзя опубликовать без проверенной версии»).  The
+# verdict file is read from --verification-result or, when the flag is
+# omitted, from the MYRMIDON_RELEASE_VERIFICATION_RESULT env var — so the
+# release pipeline can wire the verification step without changing this
+# script.  An explicit rehearsal escape exists for dry runs only:
+# MYRMIDON_RELEASE_SKIP_VERIFICATION=1 runs the full pipeline (CI gate,
+# body build) but REFUSES to create or update any GitHub Release — the
+# script stops before the publish step with a loud REHEARSAL message and
+# exits 0 without touching GitHub.  A plain invocation without any
+# verification source refuses the publish (exit 1).
 #
 # Fail-closed and idempotent:
 #   1. Resolve the tag's commit (annotated tags dereferenced).
@@ -63,17 +81,19 @@
 set -euo pipefail
 
 usage() {
-  sed -n '2,58p' "$0"
+  sed -n '2,68p' "$0"
   exit 0
 }
 
 die() { printf '[myrmidon-release-publish] ERROR: %s\n' "$*" >&2; exit 1; }
 log() { printf '[myrmidon-release-publish] %s\n' "$*" >&2; }
 
-tag=""
+tag="" verification_file=""
 while (($#)); do
   case "$1" in
     --tag) tag="$2"; shift 2 ;;
+    --verification-result) verification_file="$2"; shift 2 ;;
+    --require-verification) log "WARNING: --require-verification is deprecated — the verification gate is always enforced now"; shift ;;
     -h|--help) usage ;;
     *) die "unknown argument: $1" ;;
   esac
@@ -126,6 +146,94 @@ if ((prerelease == 0)); then
 else
   log "gate: rc tag — the database audit report is required only for the final tag (checked: $db_audit_report)"
 fi
+
+# -------------------------------------- 1c. release verification gate ---------
+# VERIFY-ON-PROD (OPE-13014 → OPE-13017): a publish binds to the immutable
+# verified candidate — the release is published only when the board-side
+# verification (POST /issues/:id/release-verify) has confirmed the deployed
+# version for the exact commit SHA this tag dereferences to.  The verification
+# result travels as a JSON file produced by the verification step (the board
+# CI or an operator); the publish script never calls the board itself — the
+# file is the contract.
+#
+# The file MUST carry an HMAC-SHA256 signature (field `signature`, hex) over
+# the canonical string
+#   verdict|deployedVersion|checkedAt|issueId
+# keyed with the shared secret MYRMIDON_RELEASE_VERIFICATION_KEY (a GitHub
+# Actions secret; the release-verify step signs, this script verifies).  A
+# confirmed verdict with a matching SHA but WITHOUT a valid signature is
+# FORGED and refuses the publish (OPE-13017 review: the verification
+# prerequisite must not be forgeable by editing a JSON file).  When the key
+# itself is absent the publish also refuses (fail closed: no key, no proof).
+#
+# The gate is MANDATORY on the publish path (OPE-13017 acceptance): a plain
+# invocation without a verification source refuses the publish.
+# MYRMIDON_RELEASE_SKIP_VERIFICATION=1 is the rehearsal escape (dry runs only —
+# it runs the full pipeline but REFUSES to create or update any GitHub
+# Release; the script stops before the publish step, the same fail-closed
+# posture as the missing-verdict refusal).
+verification_section=""
+rehearsal=0
+if [[ -z "$verification_file" && -n "${MYRMIDON_RELEASE_VERIFICATION_RESULT:-}" ]]; then
+  verification_file="$MYRMIDON_RELEASE_VERIFICATION_RESULT"
+fi
+if [[ -z "$verification_file" ]]; then
+  if [[ "${MYRMIDON_RELEASE_SKIP_VERIFICATION:-0}" == "1" ]]; then
+    rehearsal=1
+    log "WARNING: MYRMIDON_RELEASE_SKIP_VERIFICATION=1 — rehearsal dry run: the full pipeline runs, but NO GitHub Release will be created or updated."
+  else
+    die "no release verification result — NOT publishing $tag. Run the release verification (POST /issues/:id/release-verify, OPE-13014) against the tag's commit and pass --verification-result <file> (or set MYRMIDON_RELEASE_VERIFICATION_RESULT); a rehearsal may set MYRMIDON_RELEASE_SKIP_VERIFICATION=1 explicitly."
+  fi
+fi
+if [[ -n "$verification_file" ]]; then
+  [[ -f "$verification_file" ]] \
+    || die "verification result file $verification_file does not exist — NOT publishing. Run the release verification (POST /issues/:id/release-verify) first and pass its JSON response."
+  verification_json="$(cat "$verification_file")"
+  verification_verdict="$(jq -r '.verdict // "missing"' <<<"$verification_json")"
+  verification_deployed="$(jq -r '.deployedVersion // "missing"' <<<"$verification_json")"
+  verification_checked_at="$(jq -r '.checkedAt // "missing"' <<<"$verification_json")"
+  verification_issue_id="$(jq -r '.issueId // "unknown"' <<<"$verification_json")"
+
+  [[ "$verification_verdict" == "confirmed" ]] \
+    || die "release verification verdict is '$verification_verdict' (not 'confirmed') — NOT publishing $tag. Reason: $(jq -r '.reason // "unknown"' <<<"$verification_json")"
+  # The immutable bind: the deployed version must equal the commit this tag
+  # points at.  A verification for any other SHA (an older deploy, a different
+  # candidate) must not satisfy the gate.
+  [[ "$verification_deployed" == "$sha" ]] \
+    || die "release verification deployedVersion '$verification_deployed' does not match the tag commit '$sha' — NOT publishing $tag. The verification must be re-run against this exact commit."
+
+  # Signature provenance: the verdict file must carry a valid HMAC-SHA256
+  # signature over verdict|deployedVersion|checkedAt|issueId, keyed with the
+  # shared secret.  A forged confirmed JSON (any editable file with a matching
+  # SHA) refuses here — the gate is only satisfied by a verdict SIGNED by the
+  # release-verify step.
+  verification_key="${MYRMIDON_RELEASE_VERIFICATION_KEY:-}"
+  [[ -n "$verification_key" ]] \
+    || die "MYRMIDON_RELEASE_VERIFICATION_KEY is not set — NOT publishing $tag. The verification signature cannot be checked without the shared secret (configure it as a GitHub Actions secret on the release workflow)."
+  verification_signature_actual="$(jq -r '.signature // "missing"' <<<"$verification_json")"
+  [[ "$verification_signature_actual" != "missing" && -n "$verification_signature_actual" ]] \
+    || die "release verification result carries NO signature — NOT publishing $tag. A confirmed verdict without the HMAC signature is unproven (forgeable); the release-verify step must sign the result."
+  verification_canonical="${verification_verdict}|${verification_deployed}|${verification_checked_at}|${verification_issue_id}"
+  verification_signature_expected="$(printf '%s' "$verification_canonical" | openssl dgst -sha256 -hmac "$verification_key" -r | awk '{print $1}')"
+  [[ "$verification_signature_actual" == "$verification_signature_expected" ]] \
+    || die "release verification signature is INVALID — NOT publishing $tag. The verdict file does not match its HMAC signature (forged or corrupted result); re-run the release verification to obtain a signed verdict."
+
+  log "gate: release verification confirmed for $sha (checked at $verification_checked_at, issue $verification_issue_id, signature verified)"
+  verification_section=$(cat <<EOF
+
+## Release verification
+
+Verified on the production board before publication.
+
+- Commit: \`$sha\`
+- Verdict: confirmed
+- Checked at: $verification_checked_at
+- Board issue: $verification_issue_id
+EOF
+)
+fi
+# The rehearsal body marker is not needed: a rehearsal never reaches the
+# publish step (the dry-run guard below stops the script first).
 
 # ------------------------------------------------------------- 2. CI gate ----
 # Completed-run verdict of one workflow for THIS tag: prints "missing"
@@ -347,6 +455,27 @@ else
   log "vendor-share metric not computed — the notes say «не посчитано»"
 fi
 notes_vendor_section "$vendor_line" >> release-body.md
+
+# VERIFY-ON-PROD (OPE-13017): the release body carries the verification
+# signature when the gate ran — the immutable link between the published
+# release and the board-side verification of its commit.
+if [[ -n "$verification_section" ]]; then
+  printf '%s\n' "$verification_section" >> release-body.md
+  log "release body carries the verification signature for $sha"
+fi
+
+# REHEARSAL DRY-RUN (OPE-13017 review): MYRMIDON_RELEASE_SKIP_VERIFICATION=1
+# validates the full pipeline (CI gate, body build) but must NOT create or
+# update any GitHub Release — an unverified release must never reach GitHub,
+# whatever marker its body would carry.  Stop here, before any mutating gh
+# call; the body that WOULD have been published is printed for inspection.
+if ((rehearsal)); then
+  log "REHEARSAL — NOT PUBLISHING: MYRMIDON_RELEASE_SKIP_VERIFICATION=1 is a dry run. The pipeline is valid (CI gate passed, body built), but NO GitHub Release was created or updated. Re-run without the rehearsal flag and with --verification-result <file> to publish."
+  printf '%s\n' '--- rehearsal dry run: the body that would have been published ---' >&2
+  cat release-body.md >&2
+  printf '%s\n' '--- end of rehearsal body ---' >&2
+  exit 0
+fi
 
 # -------------------------------------------------------- 4. publish --------
 # RC-VERSIONS: a publish NEVER touches the `latest` marker — that is the

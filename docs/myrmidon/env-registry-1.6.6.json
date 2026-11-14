@@ -41,8 +41,8 @@
     "Динамически собираемые имена не перечисляются поимённо, а описаны шаблонами в dynamic_patterns (префикс, допустимый набор значений, класс, источник); скрипт проверки находит в коде все динамические сборки имён и требует шаблон на каждую. Фактический набор имён в рантайме (по ботам/провайдерам экземпляра) определяется данными экземпляра и этим реестром не фиксируется."
   ],
   "counts": {
-    "unique_names": 909,
-    "secret": 108,
+    "unique_names": 910,
+    "secret": 109,
     "infra": 375,
     "product": 426
   },
@@ -9947,6 +9947,24 @@
       "secret_ref_or_instance_setup": "не секрет; env-резерв настройки экземпляра",
       "ticket_or_pr": "OPE-12044",
       "decision": "оставить в env до решения владельца о настройке в UI"
+    },
+    {
+      "name": "MYRMIDON_RELEASE_VERIFICATION_KEY",
+      "aliases": [
+        "PAPERCLIP_RELEASE_VERIFICATION_KEY"
+      ],
+      "in_main_code": true,
+      "in_audit_20261008": false,
+      "in_settings_md": true,
+      "consumer": "server/src/routes/issues.ts (release-verify route, readProductEnv)",
+      "audit_reason": "shared HMAC secret binding the release-verify verdict to the publish gate (OPE-13017)",
+      "classification": "secret",
+      "class_basis": "OPE-13017",
+      "scope": "process",
+      "ui_or_store": "UI нет; секрет процесса доски, общий с GitHub Actions-секретом MYRMIDON_RELEASE_VERIFICATION_KEY на publish-воркфлоу",
+      "secret_ref_or_instance_setup": "значение секрета только в env доски и в GitHub Actions secret publish-воркфлоу; совпадение обеих сторон обязательно (иначе подпись не сойдётся и публикация откажет — fail closed)",
+      "ticket_or_pr": "OPE-13017",
+      "decision": "оставить секретом процесса; перенос в хранилище секретов доски не требуется (должен совпадать с CI-секретом)"
     },
     {
       "name": "MYRMIDON_RELEASE_VENDOR_SHARE_STATE",
