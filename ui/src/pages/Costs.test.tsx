@@ -13,6 +13,7 @@ const costsApiMocks = vi.hoisted(() => ({
   byAgent: vi.fn(),
   byProject: vi.fn(),
   byAgentModel: vi.fn(),
+  byStepClass: vi.fn().mockResolvedValue([]),
   financeSummary: vi.fn(),
   financeByBiller: vi.fn(),
   financeByKind: vi.fn(),
@@ -88,5 +89,68 @@ describe("Costs embedded Audit surfaces", () => {
     expect(container.querySelector('[role="tab"]')).toBeFalsy();
     expect(setBreadcrumbsMock).not.toHaveBeenCalled();
     for (const mock of Object.values(costsApiMocks)) expect(mock).not.toHaveBeenCalled();
+  });
+
+  it("renders spend breakdown by step class card with model selection rules (OPE-12999)", async () => {
+    costsApiMocks.summary.mockResolvedValue({
+      spendCents: 650,
+      budgetCents: 10000,
+      utilizationPercent: 6.5,
+      unpricedEvents: 0,
+      unpricedTokens: 0,
+      forecastCents: null,
+    });
+    costsApiMocks.byAgent.mockResolvedValue([]);
+    costsApiMocks.byProject.mockResolvedValue([]);
+    costsApiMocks.byAgentModel.mockResolvedValue([]);
+    costsApiMocks.byStepClass.mockResolvedValue([
+      {
+        stepClass: "reviewer",
+        modelGroup: "strong",
+        ruleSource: "step_importance",
+        ruleLabel: "reviewer -> strong",
+        costCents: 500,
+        inputTokens: 1000,
+        cachedInputTokens: 200,
+        outputTokens: 300,
+        events: 1,
+        runs: 1,
+      },
+      {
+        stepClass: "background",
+        modelGroup: "economy",
+        ruleSource: "step_importance",
+        ruleLabel: "background -> economy",
+        costCents: 150,
+        inputTokens: 500,
+        cachedInputTokens: 0,
+        outputTokens: 100,
+        events: 1,
+        runs: 1,
+      },
+    ]);
+
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    root = createRoot(container);
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <Costs />
+        </QueryClientProvider>,
+      );
+      await Promise.resolve();
+    });
+
+    await act(async () => {
+      await vi.waitFor(() => {
+        const card = container.querySelector('[data-testid="costs-by-step-class"]');
+        expect(card).toBeTruthy();
+        expect(card?.textContent).toContain("reviewer");
+        expect(card?.textContent).toContain("strong");
+        expect(card?.textContent).toContain("reviewer -> strong");
+        expect(card?.textContent).toContain("background");
+        expect(card?.textContent).toContain("economy");
+      });
+    });
   });
 });

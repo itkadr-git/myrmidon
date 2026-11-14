@@ -66,6 +66,12 @@
           "title": "By agent",
           "tok": "{{value}} tok"
         },
+        "byStepClass": {
+          "title": "By step class",
+          "description": "Run spend grouped by the model-selection snapshot recorded for each run (step class and model group). Records without a snapshot are counted separately as unknown.",
+          "empty": "No run costs in this period.",
+          "unknown": "no selection snapshot"
+        },
         "byProject": {
           "description": "Run costs attributed through project-linked tasks.",
           "empty": "No project-attributed run costs yet.",

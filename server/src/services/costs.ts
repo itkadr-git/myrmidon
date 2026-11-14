@@ -1,8 +1,8 @@
-import { and, desc, eq, gte, isNotNull, isNull, lt, lte, sql, type SQL } from "drizzle-orm";
+import { and, asc, desc, eq, gte, isNotNull, isNull, lt, lte, sql, type SQL } from "drizzle-orm";
 import { alias } from "drizzle-orm/pg-core";
 import type { Db } from "@myrmidon/db";
 import { activityLog, agents, companies, costEvents, heartbeatRuns, issues, projects } from "@myrmidon/db";
-import type { CostByDay } from "@myrmidon/shared";
+import { UNKNOWN_STEP_CLASS, type CostByDay, type CostByStepClass } from "@myrmidon/shared";
 import { badRequest, notFound, unprocessable } from "../errors.js";
 import { agentPromptStats, type AgentPromptStats } from "../myrmidon/prompt-budget/fleet-prompt-report.js"; // myrmidon(1.6.3 PROMPT-BUDGET D)
 import { budgetService, type BudgetServiceHooks } from "./budgets.js";
@@ -668,6 +668,75 @@ export function costService(db: Db, budgetHooks: BudgetServiceHooks = {}) {
         inputTokens: Number(row.inputTokens),
         cachedInputTokens: Number(row.cachedInputTokens),
         outputTokens: Number(row.outputTokens),
+        runs: Number(row.runs ?? 0),
+      }));
+    },
+
+    // myrmidon(1.8 MODEL-BY-STEP OPE-12999): cost report grouped by the run's
+    // model-selection snapshot (context_snapshot.modelSelection). The snapshot
+    // is the ONLY source of the cost class: cost events with no run (or a run
+    // recorded before the snapshot existed) are reported under the "unknown"
+    // step class. Base prices are untouched — this is grouping only.
+    byStepClass: async (companyId: string, range?: CostDateRange): Promise<CostByStepClass[]> => {
+      const conditions: SQL[] = [eq(costEvents.companyId, companyId)];
+      if (range?.from) conditions.push(gte(costEvents.occurredAt, range.from));
+      if (range?.to) conditions.push(lte(costEvents.occurredAt, range.to));
+
+      const stepClassExpr = sql<string>`case
+        when ${heartbeatRuns.contextSnapshot} -> 'modelSelection' ->> 'stepClass' is not null then ${heartbeatRuns.contextSnapshot} -> 'modelSelection' ->> 'stepClass'
+        when ${heartbeatRuns.contextSnapshot} -> 'stepModel' ->> 'stepClass' is not null then ${heartbeatRuns.contextSnapshot} -> 'stepModel' ->> 'stepClass'
+        else '${sql.raw(UNKNOWN_STEP_CLASS)}'
+      end`;
+      const modelGroupExpr = sql<string | null>`coalesce(
+        ${heartbeatRuns.contextSnapshot} -> 'modelSelection' ->> 'modelGroup',
+        ${heartbeatRuns.contextSnapshot} -> 'stepModel' ->> 'modelGroup'
+      )`;
+      const ruleSourceExpr = sql<string | null>`coalesce(
+        ${heartbeatRuns.contextSnapshot} -> 'modelSelection' ->> 'ruleSource',
+        ${heartbeatRuns.contextSnapshot} -> 'stepModel' ->> 'ruleSource',
+        ${heartbeatRuns.contextSnapshot} -> 'stepModel' ->> 'reason'
+      )`;
+      const ruleLabelExpr = sql<string | null>`coalesce(
+        ${heartbeatRuns.contextSnapshot} -> 'modelSelection' ->> 'ruleLabel',
+        ${heartbeatRuns.contextSnapshot} -> 'stepModel' ->> 'ruleLabel'
+      )`;
+      const costCentsExpr = sumAsNumber(costEvents.costCents);
+
+      const rows = await db
+        .select({
+          stepClass: stepClassExpr,
+          modelGroup: modelGroupExpr,
+          ruleSource: ruleSourceExpr,
+          ruleLabel: ruleLabelExpr,
+          costCents: costCentsExpr,
+          inputTokens: sumAsNumber(costEvents.inputTokens),
+          cachedInputTokens: sumAsNumber(costEvents.cachedInputTokens),
+          outputTokens: sumAsNumber(costEvents.outputTokens),
+          events: sql<number>`count(*)::int`,
+          runs: sql<number>`count(distinct ${costEvents.heartbeatRunId})::int`,
+        })
+        .from(costEvents)
+        .leftJoin(
+          heartbeatRuns,
+          and(
+            eq(costEvents.heartbeatRunId, heartbeatRuns.id),
+            eq(heartbeatRuns.companyId, companyId),
+          ),
+        )
+        .where(and(...conditions))
+        .groupBy(stepClassExpr, modelGroupExpr, ruleSourceExpr, ruleLabelExpr)
+        .orderBy(desc(costCentsExpr), asc(stepClassExpr));
+
+      return rows.map((row) => ({
+        stepClass: row.stepClass,
+        modelGroup: row.modelGroup ?? null,
+        ruleSource: row.ruleSource ?? null,
+        ruleLabel: row.ruleLabel ?? null,
+        costCents: Number(row.costCents),
+        inputTokens: Number(row.inputTokens),
+        cachedInputTokens: Number(row.cachedInputTokens),
+        outputTokens: Number(row.outputTokens),
+        events: Number(row.events ?? 0),
         runs: Number(row.runs ?? 0),
       }));
     },

@@ -117,6 +117,7 @@ import {
   type WorkspaceOperation,
   isResponsibleUserDenialCode,
   responsibleUserLabel,
+  readRunModelSelection,
 } from "@myrmidon/shared";
 import { ResponsibleUserDenialNotice } from "../components/ResponsibleUserDenialNotice";
 import { RunWorkspaceRecoverySurface } from "../components/RunWorkspaceRecoverySurface";
@@ -3522,6 +3523,24 @@ function RunDetail({ run: initialRun, agentRouteId, adapterType, adapterConfig }
                   {!displayProvider && displayModel && (
                     <span>{displayModel}</span>
                   )}
+                </div>
+              );
+            })()}
+            {/* myrmidon(1.8 MODEL-BY-STEP OPE-12999): the applied step class / rule from the run snapshot */}
+            {(() => {
+              const selection = readRunModelSelection(run.contextSnapshot);
+              if (!selection) return null;
+              const label = selection.ruleLabel
+                ?? `${selection.stepClass} -> ${selection.modelGroup}`;
+              return (
+                <div
+                  data-testid=\"run-detail-model-selection\"
+                  className=\"text-(length:--text-micro) text-muted-foreground flex items-center gap-1.5 flex-wrap\"
+                >
+                  <span className=\"bg-muted rounded px-1.5 py-0.5 text-(length:--text-nano) font-medium uppercase tracking-wide\">
+                    {label}
+                  </span>
+                  {selection.model ? <span className=\"font-mono\">{selection.model}</span> : null}
                 </div>
               );
             })()}
