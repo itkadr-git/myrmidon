@@ -86,6 +86,7 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { IssuePropertiesPlansTab } from "./IssuePropertiesPlansTab";
 import { IssuePropertiesArtifactsTab } from "./IssuePropertiesArtifactsTab";
+import { ReleaseComposition } from "./release-composition";
 import { User, ArrowUpRight, Plus, X, GitBranch, FolderOpen, HardDrive, Check, Clock, RotateCcw, Loader2, CheckCircle2, ArchiveRestore, ChevronLeft } from "lucide-react";
 import { AgentIcon } from "../AgentIconPicker";
 import { InlineEntitySelector, type InlineEntityOption } from "../InlineEntitySelector";
@@ -2640,6 +2641,10 @@ export function IssueProperties({
         >
           {labelsContent}
         </PropertyPicker>
+      </PropertySection>
+
+      <PropertySection title="Release composition" streamlined={streamlinedPropertiesEnabled}>
+        <ReleaseComposition issue={issue} />
       </PropertySection>
 
       <PropertySection title={t("area.issue-properties-panels-2.issue-properties.sections.relationships")} streamlined={streamlinedPropertiesEnabled}>
