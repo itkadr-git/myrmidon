@@ -1,5 +1,5 @@
 import test, { describe, it, before, after } from "node:test";
-import { createHash } from "node:crypto";)
+import { createHash } from "node:crypto";
 import assert from "node:assert/strict";
 import { mkdtempSync, writeFileSync, readFileSync } from "node:fs";
 import { join } from "node:path";
@@ -46,11 +46,8 @@ import {
   formatInventoryDependencies,
   isUnresolvedDependencyStatus,
   normalizeInventoryReport,
-<<<<<<< HEAD
   OWNER_REF_REASONS,
-=======
   inventoryReportHash,
->>>>>>> c37d3526cd (OPE-12764: company-boundaries inventory dry-run probe + report (rebased onto fresh main; ports OPE-12905 injected-transport collector + cross-company dependency formatter from main #3035 as exported module surface alongside the real-route probe; 59 tests))
   renderInventory,
   sectionForPath,
   serializeAgentOwnership,
