@@ -49,6 +49,27 @@ jobs:
           ref: ${{ inputs.tag || github.ref_name }}
           persist-credentials: false
 
+      - name: Fetch the signed release-verification verdict from the board
+        # VERIFY-ON-PROD (OPE-13017): the publish gate only trusts a verdict
+        # SIGNED by the production board (HMAC over
+        # verdict|deployedVersion|checkedAt|issueId). This step calls the
+        # board's release-verify route through the fetch CLI and persists the
+        # signed JSON; the publish step consumes it via
+        # MYRMIDON_RELEASE_VERIFICATION_RESULT.
+        env:
+          PAPERCLIP_API_URL: ${{ secrets.PAPERCLIP_API_URL }}
+          PAPERCLIP_API_KEY: ${{ secrets.PAPERCLIP_API_KEY }}
+          PAPERCLIP_COMPANY_ID: ${{ secrets.PAPERCLIP_COMPANY_ID }}
+          RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
+        run: |
+          set -euo pipefail
+          version="${RELEASE_TAG#myr-v}"
+          version="${version%%-rc.*}"
+          node scripts/myrmidon/release/fetch-release-verdict.mjs \
+            --version "$version" \
+            --out "$RUNNER_TEMP/release-verification.json"
+          echo "MYRMIDON_RELEASE_VERIFICATION_RESULT=$RUNNER_TEMP/release-verification.json" >> "$GITHUB_ENV"
+
       - name: Publish the GitHub Release for the tag
         env:
           GITHUB_TOKEN: ${{ github.token }}

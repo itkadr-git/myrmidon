@@ -22,6 +22,7 @@ import {
   type ReleaseMembershipVerdict,
   type ReleaseRef,
 } from "./release-membership.js";
+import { createHmac } from "node:crypto";
 
 export type ReleaseVerificationVerdict = "confirmed" | "failed";
 
@@ -454,4 +455,23 @@ export async function verifyReleaseComposition(
     allMembersPresent: verdict.verdict === "confirmed",
     checkedAt,
   };
+}
+
+/**
+ * OPE-13017: the release verification verdict is the publish prerequisite —
+ * the publisher (scripts/myrmidon/release/publish-github-release.sh) binds the
+ * GitHub Release to the immutable verified candidate and must be able to prove
+ * the verdict came from THIS board, not from an edited JSON file.  The proof
+ * is an HMAC-SHA256 signature over the canonical string
+ *   verdict|deployedVersion|checkedAt|issueId
+ * keyed with the shared secret MYRMIDON_RELEASE_VERIFICATION_KEY (env alias
+ * RELEASE_VERIFICATION_KEY via readProductEnv).  The publisher verifies the
+ * same signature; a verdict without it is forged and refuses the publish.
+ */
+export function signReleaseVerificationVerdict(
+  input: { verdict: string; deployedVersion: string | null; checkedAt: string; issueId: string },
+  key: string,
+): string {
+  const canonical = `${input.verdict}|${input.deployedVersion ?? ""}|${input.checkedAt}|${input.issueId}`;
+  return createHmac("sha256", key).update(canonical).digest("hex");
 }

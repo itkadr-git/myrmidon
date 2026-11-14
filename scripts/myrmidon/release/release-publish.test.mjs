@@ -969,6 +969,32 @@ describe("myrmidon-release.yml: the tag input wins over ref_name", () => {
   it("wires the verification signature secret into the publish step", () => {
     assert.match(workflow, /MYRMIDON_RELEASE_VERIFICATION_KEY: \$\{\{ secrets\.MYRMIDON_RELEASE_VERIFICATION_KEY \}\}/);
   });
+
+  // OPE-13017: the workflow must PRODUCE the signed verdict file, not only
+  // verify it: a step runs the fetch CLI against the production board and
+  // hands the file to the publish step via MYRMIDON_RELEASE_VERIFICATION_RESULT.
+  it("fetches the signed verdict from the board before publishing", () => {
+    assert.match(
+      workflow,
+      /node scripts\/myrmidon\/release\/fetch-release-verdict\.mjs/,
+      "the workflow must call the fetch CLI to obtain the signed verdict",
+    );
+    assert.match(
+      workflow,
+      /MYRMIDON_RELEASE_VERIFICATION_RESULT=\$RUNNER_TEMP\/release-verification\.json/,
+      "the fetched verdict file must be handed to the publish step via MYRMIDON_RELEASE_VERIFICATION_RESULT",
+    );
+    assert.match(
+      workflow,
+      /PAPERCLIP_API_KEY: \$\{\{ secrets\.PAPERCLIP_API_KEY \}\}/,
+      "the fetch step must be authenticated against the production board",
+    );
+    // The fetch step must run before the publish step.
+    const fetchIdx = workflow.indexOf("fetch-release-verdict.mjs");
+    const publishIdx = workflow.indexOf("Publish the GitHub Release");
+    assert.ok(fetchIdx !== -1 && publishIdx !== -1 && fetchIdx < publishIdx,
+      "fetch step must precede the publish step");
+  });
 });
 
 // TAG-CI (the 1.6.4 incident): the tag has its own un-cancellable CI run

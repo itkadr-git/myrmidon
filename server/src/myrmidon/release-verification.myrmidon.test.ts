@@ -4,6 +4,7 @@ import {
   aggregateReleaseCandidates,
   buildReleaseCandidateMembers,
   composeReleaseVerdict,
+  signReleaseVerificationVerdict,
   verifyReleaseComposition,
   type ReleaseCandidateMember,
 } from "./release-verification.js";
@@ -650,5 +651,62 @@ describe("aggregateReleaseCandidates", () => {
     expect(result.verdict).toBe("failed");
     expect(result.failureReason).toBe("member_metadata_incomplete");
     expect(result.reason).toContain("OPE-2:PR#3");
+  });
+});
+
+describe("signReleaseVerificationVerdict (OPE-13017)", () => {
+  // The publisher (scripts/myrmidon/release/publish-github-release.sh)
+  // verifies HMAC-SHA256 over the canonical string
+  //   verdict|deployedVersion|checkedAt|issueId
+  // keyed with MYRMIDON_RELEASE_VERIFICATION_KEY. These vectors pin the
+  // canonical format and prove the signature is stable and key-dependent
+  // (a different key or field set must not verify).
+  const KEY = "test-verification-key";
+  const KEY_OTHER = "other-key";
+  const INPUT = {
+    verdict: "confirmed",
+    deployedVersion: "abc123abc123abc123abc123abc123abc123abc1",
+    checkedAt: "2026-11-14T04:00:00.000Z",
+    issueId: "5f38f2aa-381b-476c-97a8-d8ba190c099b",
+  };
+
+  it("produces a deterministic HMAC-SHA256 hex signature", () => {
+    const sig = signReleaseVerificationVerdict(INPUT, KEY);
+    expect(sig).toMatch(/^[0-9a-f]{64}$/);
+    expect(signReleaseVerificationVerdict(INPUT, KEY)).toBe(sig);
+  });
+
+  it("matches an independent openssl computation of the canonical string", async () => {
+    const { createHmac } = await import("node:crypto");
+    const canonical = `${INPUT.verdict}|${INPUT.deployedVersion}|${INPUT.checkedAt}|${INPUT.issueId}`;
+    const expected = createHmac("sha256", KEY).update(canonical).digest("hex");
+    expect(signReleaseVerificationVerdict(INPUT, KEY)).toBe(expected);
+  });
+
+  it("differs when any canonical field changes", () => {
+    const base = signReleaseVerificationVerdict(INPUT, KEY);
+    expect(signReleaseVerificationVerdict({ ...INPUT, verdict: "failed" }, KEY)).not.toBe(base);
+    expect(
+      signReleaseVerificationVerdict({ ...INPUT, deployedVersion: "deadbeef" }, KEY),
+    ).not.toBe(base);
+    expect(signReleaseVerificationVerdict({ ...INPUT, checkedAt: "2026-11-15T00:00:00.000Z" }, KEY)).not.toBe(base);
+    expect(
+      signReleaseVerificationVerdict({ ...INPUT, issueId: "other-issue" }, KEY),
+    ).not.toBe(base);
+  });
+
+  it("differs when the key differs", () => {
+    expect(signReleaseVerificationVerdict(INPUT, KEY_OTHER)).not.toBe(
+      signReleaseVerificationVerdict(INPUT, KEY),
+    );
+  });
+
+  it("normalises a null deployedVersion to the empty field", async () => {
+    const { createHmac } = await import("node:crypto");
+    const canonical = `${INPUT.verdict}||${INPUT.checkedAt}|${INPUT.issueId}`;
+    const expected = createHmac("sha256", KEY).update(canonical).digest("hex");
+    expect(
+      signReleaseVerificationVerdict({ ...INPUT, deployedVersion: null }, KEY),
+    ).toBe(expected);
   });
 });

@@ -145,7 +145,9 @@ import { createPullRequestCiResolver, withCiResolveDeadline } from "../services/
 import { createPullRequestMergeDetailsResolver } from "../services/github-pull-request-merge.js";
 import { resolveGitHubRepositoryToken } from "../services/github-external-object-provider.js";
 import { checkCommitMembership, normaliseReleasePrefix, resolveReleaseRefs, routePullRequestVerdict } from "../myrmidon/release-membership.js";
-import { verifyReleaseComposition, aggregateReleaseCandidates } from "../myrmidon/release-verification.js";
+import { verifyReleaseComposition, aggregateReleaseCandidates, signReleaseVerificationVerdict } from "../myrmidon/release-verification.js";
+import { readBuildCommit } from "../build-commit.js";
+import { readProductEnv } from "@myrmidon/shared/env-alias";
 import { readBuildVersion } from "../build-version.js";
 import {
   companies,
@@ -10285,7 +10287,13 @@ export function issueRoutes(
         .map((row) => normaliseReleasePrefix(row.name))
         .find((prefix): prefix is string => prefix !== null) ?? null;
 
-      const deployedVersion = readBuildVersion();
+      // The publisher binds the release to the exact commit SHA the tag
+      // dereferences to (scripts/myrmidon/release/publish-github-release.sh
+      // compares deployedVersion against that SHA), so the verified
+      // deployedVersion MUST be the build commit, not the human-readable
+      // version/describe string.  OPE-13017 review.
+      const deployedVersion = readBuildCommit();
+      const deployedVersionLabel = readBuildVersion();
       // Without a release label we cannot name the release line to verify
       // against; fail closed instead of guessing.
       if (!releasePrefix) {
@@ -10359,13 +10367,34 @@ export function issueRoutes(
         `- Release label: ${releasePrefix ?? "none"}`,
         `- Candidate issues scanned: ${candidateIssueIds.length}`,
         `- Deployed version: ${result.deployedVersion ?? "not set"}`,
+        ...(deployedVersionLabel && deployedVersionLabel !== result.deployedVersion
+          ? [`- Deployed version label: ${deployedVersionLabel}`]
+          : []),
         `- Reason: ${result.reason}`,
         `- Checked at: ${result.checkedAt}`,
         ...(memberLines.length ? [``, ...memberLines] : []),
       ].join("\n");
 
       await svc.addComment(issue.id, body, {}, { authorType: "system" });
-      return res.json({ issueId: issue.id, releaseLabel: releasePrefix, candidateIssueIds, deployedVersion: result.deployedVersion, verdict: result.verdict, failureReason: result.failureReason, reason: result.reason, checkedAt: result.checkedAt, members: result.members });
+      // OPE-13017: the verdict is the publish prerequisite.  Sign it with the
+      // shared secret so the publisher can prove the file came from this
+      // board (fail closed in publish-github-release.sh on a missing or
+      // invalid signature).  No key configured → the response stays unsigned,
+      // which the publisher refuses; the verification itself still runs and
+      // its system comment is persisted above.
+      const verificationKey = readProductEnv("RELEASE_VERIFICATION_KEY");
+      const signature = verificationKey
+        ? signReleaseVerificationVerdict(
+            {
+              verdict: result.verdict,
+              deployedVersion: result.deployedVersion,
+              checkedAt: result.checkedAt,
+              issueId: issue.id,
+            },
+            verificationKey,
+          )
+        : undefined;
+      return res.json({ issueId: issue.id, releaseLabel: releasePrefix, candidateIssueIds, deployedVersion: result.deployedVersion, verdict: result.verdict, failureReason: result.failureReason, reason: result.reason, checkedAt: result.checkedAt, members: result.members, ...(signature ? { signature } : {}) });
     } catch (err) {
       return res.status(500).json({
         error: err instanceof Error ? err.message : "Failed to verify release composition",
