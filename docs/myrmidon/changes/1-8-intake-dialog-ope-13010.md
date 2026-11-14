@@ -1,5 +1,3 @@
-# 1.8 INTAKE-DIALOG: диалог уточнения и утверждение заказчиком (OPE-13010)
-
 ## changelog-en
 - Added server intake-dialog service (`server/src/myrmidon/intake-dialog/`) to evaluate requirement cards, request clarifications on incomplete requirements, and publish idempotent confirmation requests tied to requirement-card document revisions.
 - Added `@myrmidon/shared` requirement card types, evaluation logic, and markdown rendering.

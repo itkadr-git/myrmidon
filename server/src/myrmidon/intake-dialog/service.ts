@@ -145,8 +145,15 @@ export async function processIntakeCard(
         revisionNumber,
       },
       payload: {
+        version: 1,
         prompt: `Подтвердите постановку задачи: ${fullCard.title.trim()}`,
-        actionLabel: "Утвердить",
+        target: {
+          type: "issue_document",
+          issueId: input.issueId,
+          key: INTAKE_CARD_DOCUMENT_KEY,
+          revisionId,
+          revisionNumber,
+        },
       },
     },
     { agentId: input.authorAgentId ?? null, userId: input.authorUserId ?? null },
