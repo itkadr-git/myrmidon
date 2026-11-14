@@ -168,6 +168,9 @@ export async function appendAgentRecoveryJournal<T = unknown>(
       actionResult,
     };
   }
+  if (appendResult.disposition === "committed" && appendResult.suppressed) {
+    throw new Error("Suppressed recovery action must roll back its enclosing transaction");
+  }
 
   return {
     ...appendResult,

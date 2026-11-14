@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { eq } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
-import { agentWakeupRequests, agents, companies, createDb, heartbeatRuns, issues } from "@myrmidon/db";
+import { agentRecoveryJournal, agentWakeupRequests, agents, companies, createDb, heartbeatRuns, issues } from "@myrmidon/db";
 import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
@@ -94,6 +94,13 @@ describeEmbeddedPostgres("reconcileAbandonedExecutionControl reports a genuine f
     const result = await sweep();
 
     expect(result.surfaced).toBe(1);
+    const [journalEntry] = await db.select().from(agentRecoveryJournal).where(eq(agentRecoveryJournal.agentId, agentId));
+    expect(journalEntry).toMatchObject({
+      agentId,
+      step: "execution_control_finalization",
+      cause: "execution_finalization_deadline_exceeded",
+      suppressedReason: null,
+    });
     const [run] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId));
     expect(run?.status).toBe("failed");
     expect(run?.errorCode).toBe("execution_finalization_deadline_exceeded");

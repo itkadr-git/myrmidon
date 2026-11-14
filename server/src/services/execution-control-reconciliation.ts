@@ -11,6 +11,10 @@ import {
 } from "@myrmidon/db";
 import { parseIssueExecutionState } from "./issue-execution-policy.js";
 import { issueRecoveryActionService } from "./issue-recovery-actions.js";
+import {
+  appendAgentRecoveryJournal,
+  type AppendAgentRecoveryJournalResult,
+} from "./agent-recovery-journal.js";
 import { reportRunFailure } from "./run-failure-report.js";
 
 /** Only newly recorded control deadlines are eligible. Upgrades never replay ambiguous historical runs. */
@@ -21,7 +25,16 @@ export async function reconcileAbandonedExecutionControl(
   // this pass moved to a terminal status on the board's deadline, so the caller
   // can close the remote gateway run the board no longer supervises. Never
   // awaited and never allowed to fail the reconciliation.
-  options: { onTerminalRun?: (run: typeof heartbeatRuns.$inferSelect) => void } = {},
+  options: {
+    onTerminalRun?: (run: typeof heartbeatRuns.$inferSelect) => void;
+    onRecoveryAction?: (input: {
+      companyId: string;
+      agentId: string;
+      runId: string;
+      issueId: string;
+      action: () => Promise<void>;
+    }) => Promise<AppendAgentRecoveryJournalResult>;
+  } = {},
 ) {
   const nativeDue = await db
     .select({
@@ -237,28 +250,58 @@ export async function reconcileAbandonedExecutionControl(
             .update(issues)
             .set({ executionRunId: null, checkoutRunId: null, updatedAt: now })
             .where(eq(issues.id, task.id));
-          await issueRecoveryActionService(
-            tx as unknown as Db,
-          ).upsertSourceScoped({
-            companyId: run.companyId,
-            sourceIssueId: task.id,
-            kind: "active_run_watchdog",
-            ownerType: "board",
-            ownerAgentId: null,
-            returnOwnerAgentId: task.assigneeAgentId,
-            cause,
-            fingerprint: `execution-control:${run.id}`,
-            evidence: {
+          const recoveryAction = async () => {
+            await issueRecoveryActionService(
+              tx as unknown as Db,
+            ).upsertSourceScoped({
+              companyId: run.companyId,
+              sourceIssueId: task.id,
+              kind: "active_run_watchdog",
+              ownerType: "board",
+              ownerAgentId: null,
+              returnOwnerAgentId: task.assigneeAgentId,
+              cause,
+              fingerprint: `execution-control:${run.id}`,
+              evidence: {
+                runId: run.id,
+                ...(isCurrentReviewer ? { reviewParticipantAgentId: run.agentId } : {}),
+                originalFailureCode: coordinator?.failureCode ?? run.errorCode,
+                providerOwnership: "unverified",
+              },
+              nextAction,
+              wakePolicy: null,
+              maxAttempts: 3,
+              supersedeOnIdentityChange: true,
+            });
+          };
+          if (options.onRecoveryAction) {
+            const result = await options.onRecoveryAction({
+              companyId: run.companyId,
+              agentId: run.agentId,
               runId: run.id,
-              ...(isCurrentReviewer ? { reviewParticipantAgentId: run.agentId } : {}),
-              originalFailureCode: coordinator?.failureCode ?? run.errorCode,
-              providerOwnership: "unverified",
-            },
-            nextAction,
-            wakePolicy: null,
-            maxAttempts: 3,
-            supersedeOnIdentityChange: true,
-          });
+              issueId: task.id,
+              action: recoveryAction,
+            });
+            if (result.suppressed) {
+              throw new Error("Suppressed recovery action must roll back execution-control reconciliation");
+            }
+          } else {
+            const result = await appendAgentRecoveryJournal(
+              tx as unknown as Db,
+              {
+                companyId: run.companyId,
+                agentId: run.agentId,
+                step: "execution_control_finalization",
+                cause,
+                dedupKey: `execution-control:${run.id}`,
+                payload: { runId: run.id, issueId: task.id },
+                action: recoveryAction,
+              },
+            );
+            if (result.suppressed) {
+              throw new Error("Suppressed recovery action must roll back execution-control reconciliation");
+            }
+          }
           return true;
         });
         if (repaired) surfaced += 1;
