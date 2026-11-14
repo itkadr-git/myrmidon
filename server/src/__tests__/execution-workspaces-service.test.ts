@@ -548,6 +548,13 @@ describeEmbeddedPostgres("executionWorkspaceService.getCloseReadiness", () => {
     return { companyId, projectId, executionWorkspaceId, sourceIssueId, worktreePath };
   }
 
+  it("reaper completes when source issue has a self-parent cycle", async () => {
+    const seeded = await seedTerminalWorkspace({ mergedPr: true });
+    await db.update(issues).set({ parentId: seeded.sourceIssueId }).where(eq(issues.id, seeded.sourceIssueId));
+    const sweep = await svc.sweepTerminalWorkspaces();
+    expect(sweep.skippedInspectFailed).toBe(0);
+  }, 20_000);
+
   it("archives a terminal workspace delivered by ancestry with no pull request", async () => {
     const seeded = await seedAncestryTerminalWorkspace();
 
