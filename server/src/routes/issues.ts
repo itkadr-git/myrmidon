@@ -17631,6 +17631,54 @@ export function issueRoutes(
           ) === "quota_reached"
         ) {
           deferExecutionReviewWakeForCi = true;
+          // myrmidon(OPE-12886): re-arm the monitor as scheduled with a
+          // bounded next check (mirroring the transactional site above) so a
+          // deferred review wake never remains stuck with status="triggered"
+          // and no nextCheckAt.
+          const previousPolicy = normalizeIssueExecutionPolicy(
+            (issue.executionPolicy ?? existing.executionPolicy) as any,
+          );
+          const nextCheckAt = new Date(Date.now() + REVIEW_CI_WAIT_INTERVAL_MS);
+          const monitor = {
+            nextCheckAt: nextCheckAt.toISOString(),
+            notes: `Review admission waits for the next tick's reviewer-wake quota (${REVIEW_GATE_MAX_NEW_REVIEW_WAKES_PER_TICK} per tick); the reviewer is woken without loss once a slot frees.`,
+            scheduledBy: "assignee" as const,
+            kind: "external_service" as const,
+            serviceName: REVIEW_CI_WAIT_MONITOR_SERVICE_NAME,
+            externalRef: issue.id,
+            timeoutAt: null,
+            maxAttempts: null,
+            recoveryPolicy: "wake_owner" as const,
+          };
+          const nextPolicy = {
+            ...(previousPolicy ?? { mode: "normal", commentRequired: true, stages: [] }),
+            monitor,
+          } as any;
+          const quotaMonitorPatch = applyIssueMonitorPolicyTransition({
+            issue,
+            policy: nextPolicy,
+            previousPolicy,
+            requestedStatus: issue.status,
+            requestedAssigneePatch: {},
+            actor: {
+              agentId: actor.agentId ?? null,
+              userId: actor.actorType === "user" ? actor.actorId : null,
+            },
+            monitorExplicitlyUpdated: true,
+          });
+          const persistedQuotaMonitor = await svc.update(id, {
+            executionPolicy: nextPolicy,
+            monitorNextCheckAt: nextCheckAt,
+            monitorScheduledBy: monitor.scheduledBy,
+            monitorAttemptCount: 0,
+            monitorWakeRequestedAt: null,
+            monitorLastTriggeredAt: null,
+            ...quotaMonitorPatch.patch,
+          });
+          if (persistedQuotaMonitor) {
+            Object.assign(issue, persistedQuotaMonitor);
+            Object.assign(issueResponse, persistedQuotaMonitor);
+          }
           await logActivity(db, {
             companyId: issue.companyId,
             actorType: "system",
@@ -17644,6 +17692,7 @@ export function issueRoutes(
               idempotencyKey: `review-admission-quota-deferred:${issue.id}:${(reviewWakesQuotaTickStarted() ?? new Date(0)).toISOString()}`,
               quota: REVIEW_GATE_MAX_NEW_REVIEW_WAKES_PER_TICK,
               reviewerAgentId: executionStageWakeup?.agentId ?? null,
+              nextCheckAt: nextCheckAt.toISOString(),
             },
           });
         }
