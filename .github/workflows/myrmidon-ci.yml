@@ -391,6 +391,22 @@ jobs:
       - name: Build plugin SDK dependencies
         run: pnpm --filter @myrmidon/plugin-sdk ensure-build-deps
 
+      # The fast tier has no workspace build before this point (see the fast
+      # branch of "typecheck + build"), but the affected lane owns the prod-boot
+      # smoke: bare `node server/dist/index.js` boots only when every package
+      # of the server closure has a dist and its entry fields point at dist —
+      # the prod-runtime-exports preflight fails all-or-nothing on the first
+      # missing dist. Mirror the Dockerfile build sequence (OPE-12188 Ч2):
+      # closure build, then server build (its prepare:runner-vendor stages the
+      # runner vendor dist and pulls in cargo, available on CI runners), then
+      # apply.
+      - name: Build production server bundle for boot smoke
+        run: |
+          set -euo pipefail
+          pnpm --filter "@myrmidon/server^..." --filter "!@myrmidon/paperclip-runner" build
+          pnpm --filter @myrmidon/server build
+          node scripts/myrmidon/prod-runtime-exports.mjs apply --entry @myrmidon/server
+
       - name: Run affected tests
         run: node scripts/myrmidon/ci/affected-tests.mjs run --plan "$RUNNER_TEMP/plan.json"
 
