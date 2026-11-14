@@ -1048,6 +1048,38 @@ describeEmbeddedPostgres("issue list routes assigneeAgentId filter", () => {
     }
   });
 
+  it("rejects repeated (array) values for identifier list filter parameters with 400 before any query", async () => {
+    const companyId = randomUUID();
+    const svc = issueService(db);
+    const listSpy = vi.spyOn(svc, "list");
+    const app = createApp(companyId, { issueService: svc });
+
+    const repeatedParams: Array<[string, string, string]> = [
+      ["projectId", "projectId must be a UUID"],
+      ["participantAgentId", "participantAgentId must be a UUID"],
+      ["workspaceId", "workspaceId must be a UUID"],
+      ["executionWorkspaceId", "executionWorkspaceId must be a UUID"],
+      ["labelId", "labelId must be a UUID"],
+      ["parentId", "parentId must be a UUID or issue identifier"],
+      ["parentIssueId", "parentId must be a UUID or issue identifier"],
+      ["descendantOf", "descendantOf must be a UUID or issue identifier"],
+      ["createdFromIssueId", "createdFromIssueId must be a UUID or issue identifier"],
+    ];
+
+    for (const [param, expectedError] of repeatedParams) {
+      listSpy.mockClear();
+      const selectSpy = vi.spyOn(db, "select");
+      const res = await request(app)
+        .get(`/api/companies/${companyId}/issues`)
+        .query(`${param}=value-one&${param}=value-two`);
+      expect(res.status, `status for repeated ${param}`).toBe(400);
+      expect(res.body.error, `error for repeated ${param}`).toContain(expectedError);
+      expect(listSpy, `svc.list must not be called for repeated ${param}`).not.toHaveBeenCalled();
+      expect(selectSpy, `db.select must not be called for repeated ${param}`).not.toHaveBeenCalled();
+      selectSpy.mockRestore();
+    }
+  });
+
   it("resolves issue identifiers in parentId, descendantOf, and createdFromIssueId filters", async () => {
     const companyId = randomUUID();
     const prefix = uniqueIssuePrefix();

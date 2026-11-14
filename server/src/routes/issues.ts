@@ -8914,6 +8914,14 @@ export function issueRoutes(
     const rawParticipantAgentId = req.query.participantAgentId as string | undefined;
     let participantAgentId: string | undefined;
     if (rawParticipantAgentId !== undefined) {
+      if (typeof rawParticipantAgentId !== "string") {
+        logger.warn(
+          { parameter: "participantAgentId", value: rawParticipantAgentId, companyId },
+          "invalid identifier query parameter format",
+        );
+        res.status(400).json({ error: "participantAgentId must be a UUID" });
+        return;
+      }
       const trimmed = rawParticipantAgentId.trim();
       if (!isUuidLike(trimmed)) {
         logger.warn(
@@ -8929,6 +8937,14 @@ export function issueRoutes(
     const rawProjectId = req.query.projectId as string | undefined;
     let projectId: string | undefined;
     if (rawProjectId !== undefined) {
+      if (typeof rawProjectId !== "string") {
+        logger.warn(
+          { parameter: "projectId", value: rawProjectId, companyId },
+          "invalid identifier query parameter format",
+        );
+        res.status(400).json({ error: "projectId must be a UUID" });
+        return;
+      }
       const trimmed = rawProjectId.trim();
       if (!isUuidLike(trimmed)) {
         logger.warn(
@@ -8944,6 +8960,14 @@ export function issueRoutes(
     const rawWorkspaceId = req.query.workspaceId as string | undefined;
     let workspaceId: string | undefined;
     if (rawWorkspaceId !== undefined) {
+      if (typeof rawWorkspaceId !== "string") {
+        logger.warn(
+          { parameter: "workspaceId", value: rawWorkspaceId, companyId },
+          "invalid identifier query parameter format",
+        );
+        res.status(400).json({ error: "workspaceId must be a UUID" });
+        return;
+      }
       const trimmed = rawWorkspaceId.trim();
       if (!isUuidLike(trimmed)) {
         logger.warn(
@@ -8959,6 +8983,14 @@ export function issueRoutes(
     const rawExecutionWorkspaceId = req.query.executionWorkspaceId as string | undefined;
     let executionWorkspaceId: string | undefined;
     if (rawExecutionWorkspaceId !== undefined) {
+      if (typeof rawExecutionWorkspaceId !== "string") {
+        logger.warn(
+          { parameter: "executionWorkspaceId", value: rawExecutionWorkspaceId, companyId },
+          "invalid identifier query parameter format",
+        );
+        res.status(400).json({ error: "executionWorkspaceId must be a UUID" });
+        return;
+      }
       const trimmed = rawExecutionWorkspaceId.trim();
       if (!isUuidLike(trimmed)) {
         logger.warn(
@@ -8974,6 +9006,14 @@ export function issueRoutes(
     const rawLabelId = req.query.labelId as string | undefined;
     let labelId: string | undefined;
     if (rawLabelId !== undefined) {
+      if (typeof rawLabelId !== "string") {
+        logger.warn(
+          { parameter: "labelId", value: rawLabelId, companyId },
+          "invalid identifier query parameter format",
+        );
+        res.status(400).json({ error: "labelId must be a UUID" });
+        return;
+      }
       const trimmed = rawLabelId.trim();
       if (!isUuidLike(trimmed)) {
         logger.warn(
@@ -8989,6 +9029,14 @@ export function issueRoutes(
     const rawParentId = (req.query.parentId ?? req.query.parentIssueId) as string | undefined;
     let parentId: string | undefined;
     if (rawParentId !== undefined) {
+      if (typeof rawParentId !== "string") {
+        logger.warn(
+          { parameter: "parentId", value: rawParentId, companyId },
+          "invalid identifier query parameter format",
+        );
+        res.status(400).json({ error: "parentId must be a UUID or issue identifier" });
+        return;
+      }
       const trimmed = rawParentId.trim();
       if (isUuidLike(trimmed)) {
         parentId = trimmed;
@@ -9011,6 +9059,14 @@ export function issueRoutes(
     const rawDescendantOf = req.query.descendantOf as string | undefined;
     let descendantOf: string | undefined;
     if (rawDescendantOf !== undefined) {
+      if (typeof rawDescendantOf !== "string") {
+        logger.warn(
+          { parameter: "descendantOf", value: rawDescendantOf, companyId },
+          "invalid identifier query parameter format",
+        );
+        res.status(400).json({ error: "descendantOf must be a UUID or issue identifier" });
+        return;
+      }
       const trimmed = rawDescendantOf.trim();
       if (isUuidLike(trimmed)) {
         descendantOf = trimmed;
@@ -9033,6 +9089,14 @@ export function issueRoutes(
     const rawCreatedFromIssueId = req.query.createdFromIssueId as string | undefined;
     let createdFromIssueId: string | undefined;
     if (rawCreatedFromIssueId !== undefined) {
+      if (typeof rawCreatedFromIssueId !== "string") {
+        logger.warn(
+          { parameter: "createdFromIssueId", value: rawCreatedFromIssueId, companyId },
+          "invalid identifier query parameter format",
+        );
+        res.status(400).json({ error: "createdFromIssueId must be a UUID or issue identifier" });
+        return;
+      }
       const trimmed = rawCreatedFromIssueId.trim();
       if (isUuidLike(trimmed)) {
         createdFromIssueId = trimmed;
