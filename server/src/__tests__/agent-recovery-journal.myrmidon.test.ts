@@ -186,6 +186,36 @@ describe("agent recovery journal append", () => {
     expect(db.rows).toHaveLength(1);
   });
 
+  it("records exclusion suppression within an active standard maintenance window (state=on)", async () => {
+    const db = fakeDb();
+    readMaintenanceDocument.mockResolvedValueOnce({
+      version: 1,
+      windows: [
+        {
+          id: "mw-live",
+          state: "on",
+          scope: { type: "instance" },
+          companyId: null,
+          reason: "upgrade",
+        } as never,
+      ],
+      history: [],
+    });
+    const action = vi.fn(async () => ({ status: "recovering" }));
+    const result = await appendAgentRecoveryJournal(
+      db as never,
+      { ...input, action },
+      { now: new Date("2026-11-13T10:30:00Z") },
+    );
+
+    expect(result.disposition).toBe("committed");
+    expect(result.suppressed).toBe(true);
+    expect(result.row?.suppressedReason).toBe("exclusion_window");
+    expect(result.executed).toBe(false);
+    expect(action).not.toHaveBeenCalled();
+    expect(db.rows).toHaveLength(1);
+  });
+
   it("commits an unsuppressed row outside exclusion windows and executes the action", async () => {
     const db = fakeDb();
     const action = vi.fn(async () => ({ status: "recovered" }));

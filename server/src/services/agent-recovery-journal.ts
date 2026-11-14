@@ -103,9 +103,30 @@ export async function appendAgentRecoveryJournal<T = unknown>(
 
       const placement = await agentPlacement(tx as unknown as Db, input.agentId, input.companyId);
       const maintenance = await readMaintenanceDocument(tx as unknown as Db);
-      const maintenanceSuppressed = blockingWindows(maintenance).some((window) =>
-        windowCoversAgent(window, placement),
-      );
+      const rawWindows = Array.isArray(maintenance?.windows)
+        ? (maintenance.windows as Array<Record<string, unknown>>)
+        : [];
+      const timedOrCustomSuppressed = rawWindows.some((window) => {
+        const scope = (window.scope && typeof window.scope === "object" ? window.scope : {}) as Record<string, unknown>;
+        const covers =
+          scope.all === true ||
+          scope.type === "instance" ||
+          (scope.type === "company" && (scope.id === input.companyId || window.companyId === input.companyId)) ||
+          (scope.type === "agent" && scope.id === input.agentId);
+        if (!covers) return false;
+        if (
+          (typeof window.startAt === "string" || window.startAt instanceof Date) &&
+          (typeof window.endAt === "string" || window.endAt instanceof Date)
+        ) {
+          return isWithinAgentRecoveryExclusionWindow(now, [
+            { startAt: window.startAt as string | Date, endAt: window.endAt as string | Date },
+          ]);
+        }
+        return window.state === "entering" || window.state === "on" || !window.state;
+      });
+      const maintenanceSuppressed =
+        blockingWindows(maintenance).some((window) => windowCoversAgent(window, placement)) ||
+        timedOrCustomSuppressed;
       const excluded =
         maintenanceSuppressed || isWithinAgentRecoveryExclusionWindow(now, input.exclusionWindows ?? []);
 
