@@ -481,7 +481,8 @@ export function createDataRetentionSweep(deps: DataRetentionSweepDeps) {
         : group.key === "activity"
           ? deleteActivityGroup
           : group.key === "access"
-            ? (tx, groupCutoff, batch) => deleteAccessTable(tx, accessTable ?? "tool_access_audit_events", groupCutoff, batch)
+            ? async (tx: Db, groupCutoff: string, batch: number) =>
+                deleteAccessTable(tx, accessTable ?? "tool_access_audit_events", groupCutoff, batch)
             : deleteLitellmCostEventsGroup;
     let deleted = 0;
     let freedBytes = 0;
