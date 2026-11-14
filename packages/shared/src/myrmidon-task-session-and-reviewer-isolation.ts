@@ -6,13 +6,12 @@ import { z } from "zod";
  * Owner decisions (Alex):
  * - 05.11: isolation applies ONLY to developers (engineers and code reviewers);
  *   every other bot keeps its memory and context unchanged.
- * - 06.11: developers do not load previous runs at all. Every developer run
- *   starts a fresh Hermes session (session key strategy `run`).
+ * - Alex 06.11, clarified 14.11: developers get no Hindsight memory; the task session continues between runs (strategy `issue`); never an agent-wide session.
  *
  * Contracts:
  * 1. Developer scope (`isDeveloperRole`) and the developer session key strategy
- *    (`resolveDeveloperSessionKeyStrategy`): a fresh session per run, never
- *    `issue`/`agent`.
+ *    (`resolveDeveloperSessionKeyStrategy`): task session continues between runs
+ *    (strategy `issue`, or card's `run`/`none`), never an agent-wide session.
  * 2. Reviewer isolation: the reviewer input is the task text plus a pull request
  *    REFERENCE and an instruction to read the diff itself. The board never
  *    fetches the diff (no GitHub HTTP calls to build the input), and the
@@ -22,7 +21,7 @@ import { z } from "zod";
  *    sanitization) for diff text a reviewer or tool handles.
  */
 
-// --- 0. Developer Role Isolation Scope (Alex 05.11, 06.11) ---
+// --- 0. Developer Role Isolation Scope (Alex 05.11; Alex 06.11, clarified 14.11) ---
 
 /**
  * Developer cards are the engineers and code reviewers of the dev team:
@@ -49,13 +48,15 @@ export function isDeveloperRole(agent: {
   return DEVELOPER_AGENT_NAME_PATTERN.test(name);
 }
 
-export type DeveloperSessionKeyStrategy = "run" | "none";
+export type DeveloperSessionKeyStrategy = "issue" | "run" | "none";
 
 /**
- * Owner 06.11: developers do not load previous runs at all, so the effective
- * session key strategy of a developer is `run` (a fresh Hermes session per run).
- * It is never `issue` (a task session carrying earlier runs' history) or `agent`.
- * A card that already says `run` or `none` is kept as is and never upgraded.
+ * Alex 06.11, clarified 14.11: developers get no Hindsight memory; the task session
+ * continues between runs (strategy `issue`); never an agent-wide session.
+ *
+ * For developers, session key strategy from the card is respected (`issue`, `run`, `none`).
+ * `agent` (shared session across all tasks) is replaced with `issue`.
+ * Blank / unknown values default to `issue`.
  */
 export function resolveDeveloperSessionKeyStrategy(
   configuredStrategy: unknown,
@@ -64,14 +65,17 @@ export function resolveDeveloperSessionKeyStrategy(
     typeof configuredStrategy === "string"
       ? configuredStrategy.trim().toLowerCase()
       : "";
-  return raw === "none" ? "none" : "run";
+  if (raw === "run" || raw === "none") {
+    return raw;
+  }
+  return "issue";
 }
 
 /**
  * The run config the board hands to the adapter. `developerOnlyTaskSession` is
  * always derived from the agent and replaces whatever the card holds, so a
  * non-developer cannot opt in. For a developer the session key strategy becomes
- * the developer strategy (`run`, or `none` if the card says `none`); every other
+ * the developer strategy (`issue`, or card's `run` / `none`); every other
  * agent keeps its configured strategy and its context unchanged.
  */
 export function applyDeveloperRunIsolation(
@@ -90,10 +94,10 @@ export function applyDeveloperRunIsolation(
 
 // --- 1. Task Session Guards ---
 //
-// Pure guards that constrain a session resumption to the exact task. Since the
-// 06.11 decision developers do not resume any session (strategy `run`), these
-// only apply if a resumption is ever attempted; they never widen what a
-// developer loads.
+// Pure guards that constrain a session resumption to the exact task.
+// Alex 06.11, clarified 14.11: developers get no Hindsight memory; the task session
+// continues between runs (strategy `issue`); never an agent-wide session.
+// These guards ensure sessions are never widened across tasks or agents.
 
 export interface TaskSessionKeyInput {
   companyId: string;

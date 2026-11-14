@@ -310,12 +310,12 @@ function issueIdFromContext(ctx: AdapterExecutionContext): string | null {
 /**
  * The session key strategy a run actually uses.
  *
- * Owner decisions: 05.11 isolation applies only to developers, 06.11 developers
- * do not load previous runs at all. The board sets `developerOnlyTaskSession`
- * (derived from the agent, never from the card) for developer runs; those get a
- * fresh Hermes session per run (`run`), never `issue` (a task session that
- * carries earlier runs' history) or `agent`. A card that already says `run` or
- * `none` is never upgraded. Every other agent keeps its configured strategy.
+ * Alex 06.11, clarified 14.11: developers get no Hindsight memory; the task session
+ * continues between runs (strategy `issue`); never an agent-wide session.
+ *
+ * The board sets `developerOnlyTaskSession` (derived from the agent, never from the card)
+ * for developer runs. Developers respect the session key strategy from the card (`issue`,
+ * `run`, `none`); `agent` is replaced with `issue`.
  *
  * Kept in step with `resolveDeveloperSessionKeyStrategy` in @myrmidon/shared,
  * which this package deliberately does not import.
@@ -325,7 +325,10 @@ export function resolveEffectiveSessionKeyStrategy(input: {
   developerOnlyTaskSession?: boolean;
 }): SessionKeyStrategy {
   if (input.developerOnlyTaskSession !== true) return input.configuredStrategy;
-  return input.configuredStrategy === "none" ? "none" : "run";
+  if (input.configuredStrategy === "run" || input.configuredStrategy === "none") {
+    return input.configuredStrategy;
+  }
+  return "issue";
 }
 
 export function resolveSessionKey(input: {

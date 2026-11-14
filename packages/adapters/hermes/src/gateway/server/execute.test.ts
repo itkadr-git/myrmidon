@@ -152,10 +152,10 @@ afterEach(() => {
 });
 
 describe("resolveSessionKey", () => {
-  it("gives developers a fresh session per run and never upgrades a card's run or none", () => {
-    for (const configuredStrategy of ["issue", "agent", "run"] as const) {
-      expect(resolveEffectiveSessionKeyStrategy({ configuredStrategy, developerOnlyTaskSession: true })).toBe("run");
-    }
+  it("gives developers issue-scoped session by default, honors run or none, and maps agent to issue", () => {
+    expect(resolveEffectiveSessionKeyStrategy({ configuredStrategy: "issue", developerOnlyTaskSession: true })).toBe("issue");
+    expect(resolveEffectiveSessionKeyStrategy({ configuredStrategy: "agent", developerOnlyTaskSession: true })).toBe("issue");
+    expect(resolveEffectiveSessionKeyStrategy({ configuredStrategy: "run", developerOnlyTaskSession: true })).toBe("run");
     // "none" is kept: the card asked for no session key at all.
     expect(resolveEffectiveSessionKeyStrategy({ configuredStrategy: "none", developerOnlyTaskSession: true })).toBe("none");
   });
