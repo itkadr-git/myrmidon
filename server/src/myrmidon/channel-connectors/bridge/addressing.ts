@@ -5,10 +5,13 @@
 // serve the addressee resolution and the leading-token strip; without one the
 // legacy module answers (fail-open).
 import * as legacy from "../../agent-chat-bridge/addressing.js";
-import type { TelegramAddressee } from "../../agent-chat-bridge/addressing.js";
+import type {
+  TelegramAddressee,
+  BridgeAddresseeResult,
+} from "../../agent-chat-bridge/addressing.js";
 import { channelBridgeTheme } from "./themes.js";
 
-export type { TelegramAddressee };
+export type { TelegramAddressee, BridgeAddresseeResult };
 
 const theme = () => channelBridgeTheme("agent-chat-bridge/addressing", legacy);
 

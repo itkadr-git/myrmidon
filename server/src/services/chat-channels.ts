@@ -292,7 +292,10 @@ import {
 // bridge seam, so a channel connector can serve it.
 import { stripLeadingMentionToken as x9StripAddressToken } from "../myrmidon/channel-connectors/bridge/addressing.js";
 import { resolveBridgedAddressee } from "../myrmidon/channel-connectors/bridge/agent-bridge.js";
-import type { TelegramAddressee } from "../myrmidon/channel-connectors/bridge/addressing.js";
+import type {
+  TelegramAddressee,
+  BridgeAddresseeResult,
+} from "../myrmidon/channel-connectors/bridge/addressing.js";
 // myrmidon(1.7-ACTIVE-CHANNEL): Telegram inbound activity tracking.
 import { markOwnerActivityBestEffort } from "../myrmidon/owner-active-channel/store.js";
 // myrmidon(U2): company-wide interaction lookup for callbacks on cards
@@ -16215,11 +16218,60 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
         (x8Dm.applies || addressed) &&
         principalResolution.userId !== null
       ) {
-        x9Addressee = await resolveBridgedAddressee(db, {
+        const x9Result: BridgeAddresseeResult = await resolveBridgedAddressee(db, {
           companyId: endpoint.companyId,
           endpointAgentId: endpoint.assignedAgentId,
           text: message.text,
         });
+        if (x9Result.kind === "ambiguous") {
+          const candidateList = x9Result.candidates
+            .map((c) => `${c.name} (${c.agentId})`)
+            .join(", ");
+          const refusalText = `Ambiguous mention "@${x9Result.handle}": multiple agents match (${candidateList}). Please specify by agent ID.`;
+          await db
+            .update(chatDeliveries)
+            .set({
+              state: "filtered",
+              normalizedEvent: redactedDestinationNormalized,
+              principalId: null,
+              nextAttemptAt: null,
+              redactedError: `Ambiguous agent mention: @${x9Result.handle}`,
+              processedAt: new Date(),
+              updatedAt: new Date(),
+            })
+            .where(eq(chatDeliveries.id, activeDelivery.id));
+          const effectContext =
+            runtimeContext ??
+            runtimeContextForRecord(
+              (await endpointRecord(endpoint.id)) ??
+                (() => {
+                  throw new Error("Chat endpoint is unavailable");
+                })(),
+            );
+          const effect = await db.transaction((tx) =>
+            stageProviderEffect(tx, {
+              endpoint,
+              deliveryId: activeDelivery.id,
+              principalId: principalResolution.principal.id,
+              providerActionId: `provider_effect:delivery:${activeDelivery.id}`,
+              payload: {
+                version: 1,
+                effect: "thread_message",
+                threadId: thread.id,
+                text: refusalText,
+                settleDelivery: true,
+                resourceId: resource.id,
+              },
+              runtimeContext: effectContext,
+            }),
+          );
+          if (effect) {
+            await processProviderEffect(effect.id, thread);
+          }
+          return;
+        } else if (x9Result.kind === "resolved") {
+          x9Addressee = x9Result.addressee;
+        }
       }
       if (x8Dm.detachExisting) {
         existingConversation = null;
