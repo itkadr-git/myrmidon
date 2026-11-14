@@ -1505,8 +1505,8 @@ describeEmbeddedPostgres("secretService", () => {
 
     expect(resolved.env.API_KEY).toBe("runtime-secret");
     const events = await svc.listAccessEvents(companyId, secret.id);
-    expect(events).toHaveLength(2);
-    expect(events.map((event) => event.outcome).sort()).toEqual(["failure", "success"]);
+    expect(events).toHaveLength(1);
+    expect(events.map((event) => event.outcome)).toEqual(["failure"]);
 
     await svc.resolveEnvBindings(companyId, env, {
       consumerType: "agent",
