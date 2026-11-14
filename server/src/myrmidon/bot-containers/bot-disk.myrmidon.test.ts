@@ -338,7 +338,7 @@ describe("myrmidon(OPE-13110) bot disk GET: effective git mirror", () => {
 
   it("with a stored list: that list, not default", async () => {
     const h = harness({
-      initial: { botDisk: { sharedPackageCachePath: CACHE, gitMirrorRepos: ["Owner/Repo"], sharedCacheRoles: ["QA"] } },
+      initial: { botDisk: { sharedPackageCachePath: CACHE, gitMirrorRepos: ["Owner/Repo"], sharedCacheRoles: ["qa"] } },
     });
     const res = await request(h.withActor(member)).get(URL).expect(200);
     expect(res.body.effective).toEqual({
