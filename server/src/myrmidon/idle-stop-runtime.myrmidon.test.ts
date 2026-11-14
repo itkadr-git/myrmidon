@@ -15,6 +15,41 @@ describe("idleStopRuntimeFromStatus", () => {
     expect(runtime.lastStoppedAt?.toISOString()).toBe("2026-10-20T02:00:00.000Z");
   });
 
+  it("computes the cold-start duration when the start follows the stop", () => {
+    const runtime = idleStopRuntimeFromStatus({
+      botKey: "b",
+      state: "running",
+      inspect: { State: { StartedAt: "2026-10-20T02:01:35.500Z", FinishedAt: "2026-10-20T02:00:00.000Z" } },
+    });
+    expect(runtime.coldStartDurationMs).toBe(95_500);
+  });
+
+  it("leaves the cold-start duration null when the start is not after the stop", () => {
+    const equal = idleStopRuntimeFromStatus({
+      botKey: "b",
+      state: "stopped",
+      inspect: { State: { StartedAt: "2026-10-20T02:00:00.000Z", FinishedAt: "2026-10-20T02:00:00.000Z" } },
+    });
+    const before = idleStopRuntimeFromStatus({
+      botKey: "b",
+      state: "stopped",
+      inspect: { State: { StartedAt: "2026-10-20T01:00:00.000Z", FinishedAt: "2026-10-20T02:00:00.000Z" } },
+    });
+    expect(equal.coldStartDurationMs).toBeNull();
+    expect(before.coldStartDurationMs).toBeNull();
+  });
+
+  it("leaves the cold-start duration null when either timestamp is missing", () => {
+    const noStop = idleStopRuntimeFromStatus({
+      botKey: "b",
+      state: "running",
+      inspect: { State: { StartedAt: "2026-10-20T01:00:00.000Z", FinishedAt: "0001-01-01T00:00:00Z" } },
+    });
+    const noInspect = idleStopRuntimeFromStatus({ botKey: "b", state: "missing" });
+    expect(noStop.coldStartDurationMs).toBeNull();
+    expect(noInspect.coldStartDurationMs).toBeNull();
+  });
+
   it("reads docker's zero time and a missing inspect as never", () => {
     const zero = idleStopRuntimeFromStatus({
       botKey: "b",
@@ -27,6 +62,7 @@ describe("idleStopRuntimeFromStatus", () => {
       idleStopped: false,
       lastStoppedAt: null,
       lastStartedAt: null,
+      coldStartDurationMs: null,
     });
   });
 });
