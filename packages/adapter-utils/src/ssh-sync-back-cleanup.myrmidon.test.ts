@@ -158,6 +158,24 @@ describe.skipIf(process.platform === "win32")("syncDirectoryFromSsh staging dire
     expect(await leftoverStagingDirs()).toEqual([]);
   }, 20_000);
 
+  it("keeps the ssh diagnostic when tar also rejects the empty stream", async () => {
+    setEnv("FAKE_SSH_MODE", "refuse");
+    setEnv("FAKE_TAR_MODE", "die-on-extract");
+
+    let caughtError: unknown = null;
+    try {
+      await syncDirectoryFromSsh({ spec, remoteDir: "/workspace", localDir });
+    } catch (error) {
+      caughtError = error;
+    }
+
+    expect(caughtError).toBeInstanceOf(Error);
+    const message = (caughtError as Error).message;
+    expect(message).toContain("ssh: connect to host runner.invalid port 2222: Connection refused");
+    expect(message).toMatch(/\ntar exited with code 2$/);
+    expect(await leftoverStagingDirs()).toEqual([]);
+  }, 20_000);
+
   it("reports why tar failed, not the exit code ssh gives to the SIGTERM that stops it", async () => {
     setEnv("FAKE_SSH_MODE", "serve-term255");
     setEnv("FAKE_TAR_MODE", "die-on-extract");
