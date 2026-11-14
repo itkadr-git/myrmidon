@@ -121,7 +121,7 @@ describe("parseArgs", () => {
     assert.equal(args.dryRun, true);
     assert.equal(args.journal, "/var/log/myrmidon-host-gc.jsonl");
     assert.equal(args.lock, "/var/run/myrmidon-host-gc.lock");
-    assert.equal(args.cloneTtlHours, 24);
+    assert.equal(args.cloneTtlHours, 3);
     assert.equal(args.cacheTtlHours, 72);
   });
 
@@ -1419,6 +1419,39 @@ describe("runner task folders", () => {
       assert.equal(done.runnerUnrecognized, 1);
       assert.ok(events.some((e) => e.event === "runner-unrecognized-workspace-folder" && e.name === "OPR-9001"));
       assert.ok(fs.existsSync(typoDir), "typo folder must survive --apply (report-only)");
+    } finally {
+      fake.close();
+    }
+  });
+
+  it("e2e: a failed archive (tar exits 2) leaves no partial archive and is journaled with the exit code", async () => {
+    const runners = path.join(tmpDir, "runners");
+    const unpushed = makeTaskFolder(runners, "eng21", "OPE-9201", { ageHours: 30, ahead: true });
+    const fakeBin = path.join(tmpDir, "fakebin");
+    fs.mkdirSync(fakeBin, { recursive: true });
+    // No zstd, so the script takes the tar.gz path; the fake tar writes a partial archive and fails with code 2.
+    fs.writeFileSync(path.join(fakeBin, "zstd"), "#!/bin/sh\nexit 1\n", { mode: 0o755 });
+    fs.writeFileSync(path.join(fakeBin, "tar"), "#!/bin/sh\nhead -c 1024 /dev/zero > \"$2\"\nexit 2\n", { mode: 0o755 });
+    const http = await import("node:http");
+    const fake = http.createServer((req, res) => {
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ status: "done" }));
+    });
+    await new Promise((resolve) => fake.listen(0, "127.0.0.1", resolve));
+    const port = fake.address().port;
+    try {
+      const { res, events } = await runGcTask(["--apply", "--runner-root", runners], {
+        PAPERCLIP_API_URL: `http://127.0.0.1:${port}`,
+        PATH: `${fakeBin}:/usr/bin:/bin`,
+      });
+      assert.equal(res.status, 0, res.stderr);
+      assert.equal(fs.existsSync(unpushed), true, "folder must stay when the archive failed");
+      const archiveDir = path.join(runners, ".gc-archive");
+      const left = fs.existsSync(archiveDir) ? fs.readdirSync(archiveDir).filter((n) => n.startsWith("OPE-9201-")) : [];
+      assert.deepEqual(left, [], "no partial archive may remain");
+      const failed = events.find((e) => e.event === "runner-task-folder-archive-failed" && e.path === unpushed);
+      assert.ok(failed, "failure journaled");
+      assert.match(failed.error, /exit code 2/);
     } finally {
       fake.close();
     }

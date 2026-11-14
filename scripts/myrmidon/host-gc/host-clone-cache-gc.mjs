@@ -13,8 +13,8 @@
 //   - myr-dev-build: /srv/devbuild/* (build copies), /srv/devcache/* (build caches)
 //
 // Policy:
-//   - Task clones (done/cancelled >24h, clean+pushed): remove
-//   - Task clones (done/cancelled >24h, dirty/unpushed): archive first, then remove
+//   - Task clones (done/cancelled >3h, clean+pushed): remove
+//   - Task clones (done/cancelled >3h, dirty/unpushed): archive first, then remove
 //   - Active checkouts/worktrees: never touch
 //   - Build caches >72h: LRU eviction by mtime
 //   - SSH runner run copies >4h (by the run directory's mtime, set when the run starts): remove;
@@ -25,7 +25,7 @@
 //   - SSH runner /tmp entries (top level of <runner>/tmp) whose newest mtime inside is >24h
 //     old: remove; symlinks and other filesystems are never entered; runs only with
 //     --runner-root / HOST_GC_RUNNER_ROOTS
-//   - SSH runner task folders for done/cancelled issues >24h: clean+pushed remove; unsafe
+//   - SSH runner task folders for done/cancelled issues >3h: clean+pushed remove; unsafe
 //     git state archive first, then remove; active/board-unavailable folders stay
 //   - Atomic guards: lockfile, symlink checks, TOCTOU-safe deletion
 //   - JSONL journal at /var/log/myrmidon-host-gc.jsonl
@@ -36,7 +36,7 @@
 //   --root <path>         Override root directory (for testing)
 //   --journal <path>      Override journal path (for testing)
 //   --lock <path>         Override lockfile path (for testing)
-//   --clone-ttl <hours>   Override clone TTL (default 24)
+//   --clone-ttl <hours>   Override clone TTL (default 3)
 //   --cache-ttl <hours>   Override cache TTL (default 72)
 //   --runner-root <path>  SSH runner root to prune run copies under (repeatable; also
 //                         HOST_GC_RUNNER_ROOTS, colon-separated). No root, no pass.
@@ -51,7 +51,7 @@ import { spawnSync } from "node:child_process";
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 const HOUR_MS = 60 * 60 * 1000;
-const CLONE_TTL_HOURS = 24;
+const CLONE_TTL_HOURS = 3;
 const CACHE_TTL_HOURS = 72;
 const SCRATCH_TTL_HOURS = 12;
 // myrmidon(1.6.8 OPE-12722 / OPE-12759): an SSH runner (the omp container) keeps one copy of
@@ -1552,9 +1552,17 @@ function archiveClone(clonePath, archiveRoot) {
     result = spawnSync("tar", ["-czf", archivePath, "-C", path.dirname(clonePath), name], { timeout: 120000 });
     verify = ["tar", ["-tzf", archivePath]];
   }
-  if (result.status !== 0) throw new Error(`archive failed for ${clonePath}: ${result.stderr}`);
+  if (result.status !== 0) {
+    // A failed run leaves a partial archive of 1-2 GB behind on every pass; remove exactly this file.
+    fs.rmSync(archivePath, { force: true });
+    // stderr is often empty (a killed or timed-out child), so the exit code and signal go in the text.
+    throw new Error(`archive failed for ${clonePath}: exit code ${result.status}, signal ${result.signal}: ${String(result.stderr ?? "").trim()}`);
+  }
   const verification = spawnSync(verify[0], verify[1], { timeout: 60000, stdio: "ignore" });
-  if (verification.status !== 0) throw new Error(`archive verification failed for ${archivePath}`);
+  if (verification.status !== 0) {
+    fs.rmSync(archivePath, { force: true });
+    throw new Error(`archive verification failed for ${archivePath}`);
+  }
   return archivePath;
 }
 
