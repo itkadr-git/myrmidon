@@ -156,10 +156,16 @@ describe("myrmidon(1.8 RELEASE-STAGE) routes: positive permissions", () => {
       .set("x-test-actor", "agent-rel")
       .send({
         artifactId: "myrmidon-1.8.0",
+        tag: "v2026.1114.1",
+        version: "1.8.0-rc.1",
+        composition: ["OPE-13005", "OPE-13008"],
         digest: "sha256:abc123",
         verificationUrl: "https://releases.example.com/1.8.0/verify",
       })
       .expect(200);
+    expect(signRes.body.stage.artifact.tag).toBe("v2026.1114.1");
+    expect(signRes.body.stage.artifact.version).toBe("1.8.0-rc.1");
+    expect(signRes.body.stage.artifact.composition).toEqual(["OPE-13005", "OPE-13008"]);
     expect(signRes.body.stage.artifact.signedAt).toBe("2026-11-13T12:00:00.000Z");
     expect(signRes.body.stage.artifact.signedBy).toEqual({
       type: "agent",
@@ -184,6 +190,12 @@ describe("myrmidon(1.8 RELEASE-STAGE) routes: positive permissions", () => {
     expect(publishRes.body.stage.signaturePresent).toBe(true);
     // Auditable: gates, signature and publication each wrote an activity row,
     // the signing/publication rows carrying the release-manager authorship.
+    const repeatedPublish = await request(server)
+      .post(`/api/myrmidon/release-stages/${RELEASE_ID}/publish?companyId=${COMPANY_ID}`)
+      .set("x-test-actor", "agent-rel")
+      .send({ publicationUrl: "https://releases.example.com/1.8.0" })
+      .expect(200);
+    expect(repeatedPublish.body.stage.publishedAt).toBe(publishRes.body.stage.publishedAt);
     expect(activity.map((row) => row.action)).toEqual([
       "release_stage_gates_defined",
       "release_artifact_signed",
@@ -200,6 +212,9 @@ describe("myrmidon(1.8 RELEASE-STAGE) routes: positive permissions", () => {
       .post(`/api/myrmidon/release-stages/${RELEASE_ID}/sign?companyId=${COMPANY_ID}`)
       .send({
         artifactId: "myrmidon-1.8.0",
+        tag: "v2026.1114.1",
+        version: "1.8.0-rc.1",
+        composition: ["OPE-13005", "OPE-13008"],
         digest: "sha256:abc123",
         verificationUrl: "https://releases.example.com/1.8.0/verify",
       })
@@ -221,6 +236,9 @@ describe("myrmidon(1.8 RELEASE-STAGE) routes: negative permissions", () => {
       .post(`/api/myrmidon/release-stages/${RELEASE_ID}/sign?companyId=${COMPANY_ID}`)
       .send({
         artifactId: "myrmidon-1.8.0",
+        tag: "v2026.1114.1",
+        version: "1.8.0-rc.1",
+        composition: ["OPE-13005", "OPE-13008"],
         digest: "sha256:abc123",
         verificationUrl: "https://releases.example.com/1.8.0/verify",
       })
@@ -252,6 +270,9 @@ describe("myrmidon(1.8 RELEASE-STAGE) routes: negative permissions", () => {
       .post(`/api/myrmidon/release-stages/${RELEASE_ID}/sign?companyId=${COMPANY_ID}`)
       .send({
         artifactId: "myrmidon-1.8.0",
+        tag: "v2026.1114.1",
+        version: "1.8.0-rc.1",
+        composition: ["OPE-13005", "OPE-13008"],
         digest: "sha256:abc123",
         verificationUrl: "https://releases.example.com/1.8.0/verify",
       })
@@ -280,6 +301,9 @@ describe("myrmidon(1.8 RELEASE-STAGE) routes: negative permissions", () => {
       .post(`/api/myrmidon/release-stages/${RELEASE_ID}/sign?companyId=${COMPANY_ID}`)
       .send({
         artifactId: "myrmidon-1.8.0",
+        tag: "v2026.1114.1",
+        version: "1.8.0-rc.1",
+        composition: ["OPE-13005", "OPE-13008"],
         digest: "sha256:abc123",
         verificationUrl: "https://releases.example.com/1.8.0/verify",
       })
@@ -289,6 +313,22 @@ describe("myrmidon(1.8 RELEASE-STAGE) routes: negative permissions", () => {
 });
 
 describe("myrmidon(1.8 RELEASE-STAGE) routes: publication gates", () => {
+  it("refuses release notes with missing tag, version, or composition", async () => {
+    const { server } = app(boardMember);
+    await defineStage(server, GOOD_GATES);
+    const response = await request(server)
+      .post(`/api/myrmidon/release-stages/${RELEASE_ID}/sign?companyId=${COMPANY_ID}`)
+      .send({
+        artifactId: "myrmidon-1.8.0",
+        digest: "sha256:abc123",
+        verificationUrl: "https://releases.example.com/1.8.0/verify",
+      })
+      .expect(400);
+    expect(response.body.details ?? response.body.issues ?? response.body.message).toBeDefined();
+    const stage = await request(server).get(`/api/myrmidon/release-stages/${RELEASE_ID}?companyId=${COMPANY_ID}`).expect(200);
+    expect(stage.body.stage.artifact).toBeNull();
+  });
+
   it("publish refuses while any gate is incomplete (409 release_gates_incomplete), even for the board", async () => {
     const { server } = app(boardMember);
     await defineStage(server, [
@@ -320,6 +360,9 @@ describe("myrmidon(1.8 RELEASE-STAGE) routes: publication gates", () => {
       .post(`/api/myrmidon/release-stages/${RELEASE_ID}/sign?companyId=${COMPANY_ID}`)
       .send({
         artifactId: "myrmidon-1.8.0",
+        tag: "v2026.1114.1",
+        version: "1.8.0-rc.1",
+        composition: ["OPE-13005", "OPE-13008"],
         digest: "sha256:abc123",
         verificationUrl: "https://releases.example.com/1.8.0/verify",
       })

@@ -255,6 +255,9 @@ export function createReleaseStageService(deps: {
       companyId: string;
       releaseId: string;
       artifactId: string;
+      tag: string;
+      version: string;
+      composition: string[];
       digest: string;
       verificationUrl: string;
       actor: ReleaseActor;
@@ -281,6 +284,9 @@ export function createReleaseStageService(deps: {
         ...stage,
         artifact: {
           artifactId: input.artifactId,
+          tag: input.tag,
+          version: input.version,
+          composition: [...new Set(input.composition)].sort(),
           digest: input.digest,
           signedAt: now().toISOString(),
           signedBy:
@@ -316,6 +322,13 @@ export function createReleaseStageService(deps: {
         });
       }
       const stage = await loadStage(input.companyId, input.releaseId);
+      if (stage.publishedAt) {
+        if (stage.publicationUrl === input.publicationUrl) return releaseStageView(stage);
+        throw conflict("release already published at a different URL", {
+          code: "release_already_published",
+          publicationUrl: stage.publicationUrl,
+        });
+      }
       const evaluation = evaluatePublication(input.actor, stage, matrix);
       if (!evaluation.ok) {
         if (evaluation.code === RELEASE_ACTION_FORBIDDEN_CODE) {
