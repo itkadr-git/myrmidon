@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { run } from "../../../docker/bot-runtime/myr-ws/lib/handoff.js";
+import { run, isMatchingPrWorkProduct } from "../../../docker/bot-runtime/myr-ws/lib/handoff.js";
 
 const REVIEW_POLICY = {
   mode: "normal",
@@ -434,7 +434,9 @@ test("myr-handoff reports issue_get HTTP 500 (not 'not found') with truncated bo
   assert.notEqual(res.exitCode, 0);
   assert.match(res.stderr, /issue_get: HTTP 500/);
   assert.doesNotMatch(res.stderr, /not found/);
-  assert.ok(res.stderr.length < 500);
+  assert.ok(res.stderr.length < 1200);
+  assert.ok(res.stderr.includes("x".repeat(1000)));
+  assert.ok(!res.stderr.includes("x".repeat(1001)));
 });
 
 test("myr-handoff creates a new PR when the branch only has a merged PR", async () => {
@@ -542,7 +544,7 @@ test("myr-handoff refuses to hand off from a protected branch and does not push"
     cmd === "git" && args[0] === "branch" ? { status: 0, stdout: "main\n", stderr: "" } : base(cmd, args);
   const res = await run(["--issue", "OPE-5", "--summary", "s"], deps);
   assert.equal(res.exitCode, 1);
-  assert.match(res.stderr, /protected branch main/);
+  assert.match(res.stderr, /only bot\/\* branches are accepted/);
   assert.equal(commands.some((c) => c[0] === "git" && c[1] === "push"), false);
 });
 
@@ -700,4 +702,197 @@ test("myr-handoff fails on admission rejection with clear error and leaves statu
   const reread = await (await depsLate.fetch("http://paperclip-test:3100/api/issues/OPE-5")).json();
   assert.equal(reread.status, statusBefore);
   assert.equal(reread.status, "in_progress");
+});
+
+// ---- strict flags -------------------------------------------------------------------------------
+for (const [name, args] of [
+  ["--summary without value", ["--issue", "OPE-5", "--summary"]],
+  ["--issue without value", ["--summary", "s", "--issue"]],
+  ["empty --summary=", ["--issue", "OPE-5", "--summary="]],
+  ["blank --issue", ["--issue", "  ", "--summary", "s"]],
+  ["unknown flag --base", ["--issue", "OPE-5", "--summary", "s", "--base", "main"]],
+  ["unknown flag --title", ["--issue", "OPE-5", "--summary", "s", "--title", "x"]],
+  ["stray positional", ["--issue", "OPE-5", "--summary", "s", "extra"]],
+  ["empty --reviewer=", ["--issue", "OPE-5", "--summary", "s", "--reviewer="]],
+]) {
+  test(`myr-handoff rejects ${name} before any command or request`, async () => {
+    const sink = { patches: [], commands: [] };
+    const deps = policyDeps(REVIEW_POLICY, sink);
+    let fetched = 0;
+    const baseFetch = deps.fetch;
+    deps.fetch = async (u, o) => { fetched++; return baseFetch(u, o); };
+    const res = await run(args, deps);
+    assert.equal(res.exitCode, 1);
+    assert.notEqual(res.stderr, "");
+    assert.equal(fetched, 0);
+    assert.equal(sink.commands.length, 0);
+    assert.equal(sink.patches.length, 0);
+  });
+}
+
+// ---- exact matching -----------------------------------------------------------------------------
+test("isMatchingPrWorkProduct: #31 does not match #317, externalId and URL do", () => {
+  const pr = (extra) => ({ type: "pull_request", ...extra });
+  assert.equal(isMatchingPrWorkProduct(pr({ title: "PR #317" }), 31, null), false);
+  assert.equal(isMatchingPrWorkProduct(pr({ title: "PR #31" }), 31, null), true);
+  assert.equal(isMatchingPrWorkProduct(pr({ title: "PR #31: fix" }), 31, null), true);
+  assert.equal(isMatchingPrWorkProduct(pr({ externalId: "31" }), 31, null), true);
+  assert.equal(isMatchingPrWorkProduct(pr({ externalId: "317" }), 31, null), false);
+  assert.equal(isMatchingPrWorkProduct(pr({ url: "https://github.com/o/r/pull/317" }), 31, null), false);
+  assert.equal(isMatchingPrWorkProduct(pr({ url: "https://github.com/o/r/pull/31" }), 31, null), true);
+});
+
+function titleCase(existingTitle, identifier) {
+  const commands = [];
+  const deps = makeDeps({
+    commandsRun: commands,
+    prView: { status: 0, stdout: JSON.stringify({ number: 77, state: "OPEN", title: existingTitle, url: "https://github.com/itkadr-git/myrmidon/pull/77" }), stderr: "" },
+  });
+  const baseFetch = deps.fetch;
+  deps.fetch = async (url, opts) =>
+    url.endsWith("/api/issues/OPE-5")
+      ? { ok: true, status: 200, json: async () => ({ id: "issue-uuid-5", identifier, executionPolicy: REVIEW_POLICY }) }
+      : baseFetch(url, opts);
+  return { commands, deps };
+}
+
+test("myr-handoff: OPE-130 in an existing title is not OPE-1307 (title gets rewritten)", async () => {
+  const { commands, deps } = titleCase("OPE-130: other work", "OPE-1307");
+  const res = await run(["--issue", "OPE-5", "--summary", "s"], deps);
+  assert.equal(res.exitCode, 0, res.stderr);
+  const edit = commands.find((c) => c[0] === "gh" && c[2] === "edit");
+  assert.equal(edit[edit.indexOf("--title") + 1], "OPE-1307: other work");
+});
+
+test("myr-handoff: foreign key at the start of the title is replaced, not stacked", async () => {
+  const { commands, deps } = titleCase("OPE-1: fix the thing", "OPE-2");
+  const res = await run(["--issue", "OPE-5", "--summary", "s"], deps);
+  assert.equal(res.exitCode, 0, res.stderr);
+  const edit = commands.find((c) => c[0] === "gh" && c[2] === "edit");
+  assert.equal(edit[edit.indexOf("--title") + 1], "OPE-2: fix the thing");
+});
+
+test("myr-handoff: title that already starts with the own key is left alone", async () => {
+  const { commands, deps } = titleCase("OPE-2: fix the thing", "OPE-2");
+  const res = await run(["--issue", "OPE-5", "--summary", "s"], deps);
+  assert.equal(res.exitCode, 0, res.stderr);
+  assert.equal(commands.some((c) => c[0] === "gh" && c[2] === "edit"), false);
+});
+
+// ---- branch ---------------------------------------------------------------------------------------
+for (const b of ["main", "master", "rel/1.6.6-fixes", "feature/x", "ope-13099-foo"]) {
+  test(`myr-handoff rejects branch ${b}`, async () => {
+    const commands = [];
+    const deps = makeDeps({ commandsRun: commands });
+    const base = deps.runCommand;
+    deps.runCommand = (cmd, args) =>
+      cmd === "git" && args[0] === "branch" ? { status: 0, stdout: `${b}\n`, stderr: "" } : base(cmd, args);
+    const res = await run(["--issue", "OPE-5", "--summary", "s"], deps);
+    assert.equal(res.exitCode, 1);
+    assert.equal(commands.some((c) => c[0] === "git" && c[1] === "push"), false);
+  });
+}
+
+// ---- stateful board mock: rerun, work-product shapes, 422 ------------------------------------------
+function board({ status = "in_progress", wps = [], wpResponse, patchReject } = {}) {
+  const state = { issue: { id: "issue-uuid-5", identifier: "OPE-5", status, executionPolicy: REVIEW_POLICY }, wps: [...wps], posts: [], patches: [], comments: [] };
+  const commands = [];
+  const deps = {
+    env: { PAPERCLIP_API_KEY: "secret", PAPERCLIP_API_URL: "http://paperclip-test:3100" },
+    runCommand: (cmd, args) => {
+      commands.push([cmd, ...args]);
+      if (cmd === "git" && args[0] === "branch") return { status: 0, stdout: "bot/OPE-5\n", stderr: "" };
+      if (cmd === "git" && args[0] === "rev-parse") return { status: 0, stdout: "abc123\n", stderr: "" };
+      if (cmd === "gh" && args[1] === "view")
+        return { status: 0, stdout: JSON.stringify({ number: 77, state: "OPEN", title: "OPE-5: work", url: "https://github.com/itkadr-git/myrmidon/pull/77" }), stderr: "" };
+      return { status: 0, stdout: "", stderr: "" };
+    },
+    fetch: async (url, opts = {}) => {
+      const m = opts.method || "GET";
+      if (url.endsWith("/api/issues/OPE-5")) return { ok: true, status: 200, json: async () => ({ ...state.issue }) };
+      if (url.endsWith("/api/issues/issue-uuid-5/work-products")) {
+        if (m === "POST") { state.posts.push(JSON.parse(opts.body)); state.wps.push({ type: "pull_request", metadata: { number: 77 } }); return { ok: true, status: 201, json: async () => ({}) }; }
+        if (wpResponse) return wpResponse;
+        return { ok: true, status: 200, json: async () => state.wps };
+      }
+      if (url.endsWith("/api/issues/issue-uuid-5") && m === "PATCH") {
+        const body = JSON.parse(opts.body);
+        state.patches.push(body);
+        if (patchReject) return { ok: false, status: 422, text: async () => patchReject };
+        state.issue.status = body.status;
+        state.comments.push(body.comment);
+        return { ok: true, status: 200, json: async () => ({ ...state.issue }) };
+      }
+      return { ok: false, status: 404, text: async () => "nf" };
+    },
+  };
+  return { state, commands, deps };
+}
+
+test("myr-handoff rerun: first run hands off, second run is a no-op (no POST, no comment, no push, no pr create)", async () => {
+  const b = board({});
+  const first = await run(["--issue", "OPE-5", "--summary", "s1"], b.deps);
+  assert.equal(first.exitCode, 0, first.stderr);
+  assert.equal(b.state.posts.length, 1);
+  assert.equal(b.state.comments.length, 1);
+  assert.equal(b.state.issue.status, "in_review");
+  const before = b.commands.length;
+  const second = await run(["--issue", "OPE-5", "--summary", "s2"], b.deps);
+  assert.equal(second.exitCode, 0, second.stderr);
+  assert.match(second.stdout, /already in review/);
+  assert.equal(b.state.posts.length, 1);
+  assert.equal(b.state.comments.length, 1);
+  assert.equal(b.state.patches.length, 1);
+  const added = b.commands.slice(before);
+  assert.equal(added.some((c) => c[0] === "git" && c[1] === "push"), false);
+  assert.equal(added.some((c) => c[0] === "gh" && c[2] === "create"), false);
+  assert.equal(added.some((c) => c[0] === "gh" && c[2] === "edit"), false);
+});
+
+test("myr-handoff already in_review but PR not bound: continues, binds and PATCHes", async () => {
+  const b = board({ status: "in_review" });
+  const res = await run(["--issue", "OPE-5", "--summary", "s"], b.deps);
+  assert.equal(res.exitCode, 0, res.stderr);
+  assert.equal(b.state.posts.length, 1);
+});
+
+for (const [name, resp] of [
+  ["object instead of array", { ok: true, status: 200, json: async () => ({ items: [] }) }],
+  ["null body", { ok: true, status: 200, json: async () => null }],
+  ["invalid JSON", { ok: true, status: 200, json: async () => { throw new SyntaxError("Unexpected token <"); } }],
+]) {
+  test(`myr-handoff GET work-products ${name}: error, no POST, no PATCH`, async () => {
+    const b = board({ wpResponse: resp });
+    const res = await run(["--issue", "OPE-5", "--summary", "s"], b.deps);
+    assert.equal(res.exitCode, 1);
+    assert.match(res.stderr, /work_product_verify/);
+    assert.equal(b.state.posts.length, 0);
+    assert.equal(b.state.patches.length, 0);
+    assert.equal(b.state.issue.status, "in_progress");
+  });
+}
+
+test("myr-handoff 422 on PATCH: status unchanged on the board, one binding POST at most, next steps in message", async () => {
+  const b = board({ patchReject: "invalid_issue_disposition: " + "y".repeat(800) });
+  const res = await run(["--issue", "OPE-5", "--summary", "s"], b.deps);
+  assert.equal(res.exitCode, 1);
+  assert.match(res.stderr, /HTTP 422 invalid_issue_disposition/);
+  assert.ok(res.stderr.includes("y".repeat(800)), "body is not truncated mid-way under 1000 chars");
+  assert.match(res.stderr, /rerun is safe/);
+  assert.equal(b.state.issue.status, "in_progress");
+  assert.equal(b.state.comments.length, 0);
+  assert.equal(b.state.posts.length, 1);
+  // retry after the cause is fixed: PR already bound, so no second POST
+  const retry = await run(["--issue", "OPE-5", "--summary", "s"], b.deps);
+  assert.equal(retry.exitCode, 1);
+  assert.equal(b.state.posts.length, 1, "retry must not duplicate the binding");
+});
+
+test("myr-handoff admission errors tell what to do next", async () => {
+  const b = board({ status: "done" });
+  const res = await run(["--issue", "OPE-5", "--summary", "s"], b.deps);
+  assert.equal(res.exitCode, 1);
+  assert.match(res.stderr, /issue_admission/);
+  assert.match(res.stderr, /rerun is safe/);
+  assert.equal(b.commands.length, 0);
 });

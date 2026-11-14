@@ -5,6 +5,7 @@ const { parseArgs } = require("node:util");
 
 const SPAWN_TIMEOUT_MS = 60000;
 const FETCH_TIMEOUT_MS = 15000;
+const BODY_LIMIT = 1000;
 
 function runCommand(cmd, args, options = {}) {
   const res = spawnSync(cmd, args, {
@@ -48,7 +49,8 @@ function isMatchingPrWorkProduct(wp, prNumber, prUrl) {
   if (meta.number === prNumber || meta.number === String(prNumber)) return true;
   if (prUrl && url === prUrl) return true;
   if (new RegExp(`/pull/${prNumber}/?$`).test(url)) return true;
-  if (typeof wp.title === "string" && wp.title.includes(`#${prNumber}`)) return true;
+  if (wp.externalId !== undefined && wp.externalId !== null && String(wp.externalId) === String(prNumber)) return true;
+  if (typeof wp.title === "string" && new RegExp(`(^|[^\\w])#${prNumber}(?!\\d)`).test(wp.title)) return true;
   return false;
 }
 
@@ -69,13 +71,13 @@ async function run(args, deps = {}) {
         summary: { type: "string" },
         reviewer: { type: "string" },
       },
-      strict: false,
+      strict: true,
     });
   } catch (err) {
     return {
       exitCode: 1,
       stdout: "",
-      stderr: `myr-handoff: invalid arguments: ${err.message}\n`,
+      stderr: `myr-handoff: invalid arguments: ${err.message} (usage: myr-handoff --issue <key|id> --summary <text>)\n`,
     };
   }
 
@@ -83,7 +85,7 @@ async function run(args, deps = {}) {
   const summary = parsed.values.summary;
   const reviewer = parsed.values.reviewer;
 
-  if (reviewer) {
+  if (reviewer !== undefined) {
     return {
       exitCode: 1,
       stdout: "",
@@ -91,7 +93,10 @@ async function run(args, deps = {}) {
     };
   }
 
-  if (!issueKeyOrId || !summary) {
+  if (
+    typeof issueKeyOrId !== "string" || !issueKeyOrId.trim() ||
+    typeof summary !== "string" || !summary.trim()
+  ) {
     return {
       exitCode: 1,
       stdout: "",
@@ -111,6 +116,37 @@ async function run(args, deps = {}) {
     };
   }
 
+  // GET /api/issues/{id}/work-products returns a plain JSON array (server/src/routes/issues.ts).
+  // Anything else is an error, never "not bound" (that would lead to a duplicate POST).
+  async function listWorkProducts(id) {
+    let res;
+    try {
+      res = await fetchFn(`${paperclipUrl}/api/issues/${id}/work-products`, {
+        method: "GET",
+        headers: { Authorization: `Bearer ${paperclipKey}` },
+      });
+    } catch (err) {
+      return { error: describeFetchError(err) };
+    }
+    if (!res.ok) {
+      let errText = "";
+      try {
+        errText = String(await res.text()).slice(0, BODY_LIMIT);
+      } catch (_) {}
+      return { error: `HTTP ${res.status} ${errText}` };
+    }
+    let body;
+    try {
+      body = await res.json();
+    } catch (err) {
+      return { error: `response is not valid JSON (${err.message})` };
+    }
+    if (!Array.isArray(body)) {
+      return { error: "unexpected response shape: expected a JSON array of work products" };
+    }
+    return { wps: body };
+  }
+
   // Pre-flight check: fetch issue before push/PR creation to avoid partial handoff on early rejection
   let issueData = null;
   try {
@@ -123,7 +159,7 @@ async function run(args, deps = {}) {
     if (!issueGetRes.ok) {
       let body = "";
       try {
-        body = String(await issueGetRes.text()).slice(0, 300);
+        body = String(await issueGetRes.text()).slice(0, BODY_LIMIT);
       } catch (_) {}
       return {
         exitCode: 1,
@@ -159,20 +195,22 @@ async function run(args, deps = {}) {
     return {
       exitCode: 1,
       stdout: "",
-      stderr: `myr-handoff: failed at step issue_admission: cannot transition closed issue (status: ${issueData.status}) to in_review\n`,
+      stderr: `myr-handoff: failed at step issue_admission: cannot transition closed issue (status: ${issueData.status}) to in_review. Nothing was pushed and the issue is unchanged; reopen the issue on the board or hand off the right one, then rerun (a rerun is safe)\n`,
     };
   }
   if (issueData.reviewPolicy === "human_only") {
     return {
       exitCode: 1,
       stdout: "",
-      stderr: "myr-handoff: failed at step issue_admission: issue reviewPolicy is human_only; agent cannot transition to in_review\n",
+      stderr: "myr-handoff: failed at step issue_admission: issue reviewPolicy is human_only; agent cannot transition to in_review. Nothing was pushed and the issue is unchanged; ask the owner or reviewer to take it from here\n",
     };
   }
 
   // Review stages are the board's business: since OPE-13099 the board adds the configured review stage when an
   // engineer hands off an issue without one. The CLI never reads, creates or replaces executionPolicy; any
   // admission/setup refusal comes back from the PATCH below and is shown verbatim.
+
+  const issueId = issueData.id;
 
   const branchRes = execCmd("git", ["branch", "--show-current"], { cwd });
   if (branchRes.status !== 0 || !branchRes.stdout.trim()) {
@@ -183,12 +221,37 @@ async function run(args, deps = {}) {
     };
   }
   const branch = branchRes.stdout.trim();
-  if (branch === "main" || branch === "master" || branch.startsWith("rel/")) {
+  if (!branch.startsWith("bot/")) {
     return {
       exitCode: 1,
       stdout: "",
-      stderr: `myr-handoff: failed at step git_branch: refusing to hand off from protected branch ${branch}; use a bot/OPE-* branch\n`,
+      stderr: `myr-handoff: failed at step git_branch: refusing to hand off from branch ${branch}: only bot/* branches are accepted (main, master and rel/* are rejected); run it from the working copy on your bot/OPE-* branch\n`,
     };
+  }
+
+  // Idempotent rerun: already in review with the PR bound -> nothing to do (no push, no PATCH, no second comment).
+  // Only read-only calls here: gh pr view and GET work-products.
+  if (issueData.status === "in_review") {
+    const viewRes = execCmd("gh", ["pr", "view", branch, "--json", "number,url,state"], { cwd, env });
+    if (viewRes.status === 0 && viewRes.stdout.trim()) {
+      let view = null;
+      try {
+        view = JSON.parse(viewRes.stdout);
+      } catch (_) {}
+      if (view && view.number && view.state === "OPEN") {
+        const list = await listWorkProducts(issueId);
+        if (list.error) {
+          return { exitCode: 1, stdout: "", stderr: `myr-handoff: failed at step work_product_verify: ${list.error}\n` };
+        }
+        if (list.wps.some((wp) => isMatchingPrWorkProduct(wp, view.number, view.url || null))) {
+          return {
+            exitCode: 0,
+            stdout: `PR #${view.number} already in review (issue ${issueKey} is in_review, PR is bound); nothing to do\n`,
+            stderr: "",
+          };
+        }
+      }
+    }
   }
 
   const headRes = execCmd("git", ["rev-parse", "HEAD"], { cwd });
@@ -219,10 +282,13 @@ async function run(args, deps = {}) {
       if (data && data.number && data.state === "OPEN") {
         prNumber = data.number;
         prUrl = data.url || null;
-        if (data.title && !data.title.includes(issueKey)) {
+        const ownPrefix = new RegExp(`^${escapeRegExp(issueKey)}(?![0-9A-Za-z-])`);
+        if (data.title && !ownPrefix.test(data.title)) {
+          // Replace a leading foreign key, the raw --issue value or a UUID; keep the rest of the title.
           const cleanTitle = data.title
             .replace(new RegExp(`^${escapeRegExp(issueKeyOrId)}:?\\s*`, "i"), "")
             .replace(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}:?\s*/i, "")
+            .replace(/^[A-Z][A-Z0-9]*-\d+(?![0-9A-Za-z-]):?\s*/, "")
             .trim();
           const newTitle = cleanTitle ? `${issueKey}: ${cleanTitle}` : `${issueKey}: handoff to review`;
           const editRes = execCmd("gh", ["pr", "edit", String(prNumber), "--title", newTitle], { cwd, env });
@@ -293,8 +359,6 @@ async function run(args, deps = {}) {
     prUrl = `https://github.com/itkadr-git/myrmidon/pull/${prNumber}`;
   }
 
-  const issueId = issueData.id;
-
   const patchBody = {
     status: "in_review",
     comment: summary,
@@ -309,38 +373,11 @@ async function run(args, deps = {}) {
   }
 
   let boundPr = false;
-  let wpRes;
-  try {
-    wpRes = await fetchFn(`${paperclipUrl}/api/issues/${issueId}/work-products`, {
-      method: "GET",
-      headers: {
-        Authorization: `Bearer ${paperclipKey}`,
-      },
-    });
-  } catch (err) {
-    return {
-      exitCode: 1,
-      stdout: "",
-      stderr: `myr-handoff: failed at step work_product_verify: ${describeFetchError(err)}\n`,
-    };
+  const wpList = await listWorkProducts(issueId);
+  if (wpList.error) {
+    return { exitCode: 1, stdout: "", stderr: `myr-handoff: failed at step work_product_verify: ${wpList.error}\n` };
   }
-
-  if (!wpRes.ok) {
-    let errText = "";
-    try {
-      errText = String(await wpRes.text()).slice(0, 300);
-    } catch (_) {}
-    return {
-      exitCode: 1,
-      stdout: "",
-      stderr: `myr-handoff: failed at step work_product_verify: HTTP ${wpRes.status} ${errText}\n`,
-    };
-  }
-
-  const wps = await wpRes.json().catch(() => []);
-  if (Array.isArray(wps)) {
-    boundPr = wps.some((wp) => isMatchingPrWorkProduct(wp, prNumber, prUrl));
-  }
+  boundPr = wpList.wps.some((wp) => isMatchingPrWorkProduct(wp, prNumber, prUrl));
 
   if (!boundPr) {
     // Attempt explicit binding if webhook hasn't created the work product yet
@@ -372,7 +409,7 @@ async function run(args, deps = {}) {
     if (!bindRes.ok) {
       let bindErr = "";
       try {
-        bindErr = String(await bindRes.text()).slice(0, 300);
+        bindErr = String(await bindRes.text()).slice(0, BODY_LIMIT);
       } catch (_) {}
       return {
         exitCode: 1,
@@ -409,12 +446,12 @@ async function run(args, deps = {}) {
   if (!patchRes.ok) {
     let errText = "";
     try {
-      errText = String(await patchRes.text()).slice(0, 300);
+      errText = String(await patchRes.text()).slice(0, BODY_LIMIT);
     } catch (_) {}
     return {
       exitCode: 1,
       stdout: "",
-      stderr: `myr-handoff: failed at step issue_patch: PR #${prNumber} sha ${headSha} (branch ${branch}) exists, but status transition to in_review failed: HTTP ${patchRes.status} ${errText}\n`,
+      stderr: `myr-handoff: failed at step issue_patch: PR #${prNumber} sha ${headSha} (branch ${branch}) exists, but status transition to in_review failed: HTTP ${patchRes.status} ${errText}\nThe issue status was not changed. Fix the cause named above (for admission errors: review stage, CI, issue state) and rerun the same command: a rerun is safe, the PR is reused and not duplicated.\n`,
     };
   }
 
