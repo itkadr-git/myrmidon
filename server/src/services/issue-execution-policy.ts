@@ -992,7 +992,12 @@ function approveOrphanedPendingReviewStage(
         id: existingState.currentStageId,
         type: "review",
         approvalsNeeded: 1,
-        participants: [existingState.currentParticipant],
+        participants: [
+          {
+            id: existingState.currentParticipant.agentId ?? existingState.currentParticipant.userId ?? existingState.currentStageId,
+            ...existingState.currentParticipant,
+          },
+        ],
       } as IssueExecutionStage),
     },
     decision: {
@@ -1022,12 +1027,10 @@ function requestChangesOrphanedPendingReviewStage(
     existingState.currentStageType !== "review" ||
     !existingState.currentStageId ||
     !existingState.currentParticipant ||
-    !principalsEqual(existingState.currentParticipant, actor)
+    !principalsEqual(existingState.currentParticipant, actor) ||
+    !input.commentBody?.trim()
   ) {
     return null;
-  }
-  if (!input.commentBody?.trim()) {
-    throw unprocessable(`Requesting changes requires a comment. ${STAGE_DECISION_COMMENT_HINT}`);
   }
   if (!existingState.returnAssignee) {
     throw unprocessable("This execution stage has no return assignee");
@@ -1037,7 +1040,12 @@ function requestChangesOrphanedPendingReviewStage(
     id: existingState.currentStageId,
     type: "review",
     approvalsNeeded: 1,
-    participants: [existingState.currentParticipant],
+    participants: [
+      {
+        id: existingState.currentParticipant.agentId ?? existingState.currentParticipant.userId ?? existingState.currentStageId,
+        ...existingState.currentParticipant,
+      },
+    ],
   };
 
   const decision = {
