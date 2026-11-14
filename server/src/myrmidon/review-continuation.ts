@@ -141,7 +141,7 @@ export async function tryDevReviewContinuationOnRelease(ctx: DevReviewReleaseCon
         contextSnapshot: {
           issueId: source.id, projectId: source.projectId, engineerId,
           wakeReason: "dev_project_queue_empty",
-          message: "Инженер сдал задачу на ревью; следующая доступная задача dev-проекта не подобрана. Проверьте очередь и ограничения допуска.",
+          message: "Инженер сдал задачу на ревью; нарежьте следующую часть открытой эпики проекта и назначьте готовые задачи в очередь. Проверьте очередь и ограничения допуска.",
         },
       });
     },

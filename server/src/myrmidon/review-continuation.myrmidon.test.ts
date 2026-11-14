@@ -182,18 +182,16 @@ describe("tryDevReviewContinuationOnRelease integration", () => {
       expect.objectContaining({
         reason: "dev_project_queue_empty",
         payload: { issueId: "issue-a", projectId: "project-a", engineerId: "engineer-a" },
+        contextSnapshot: expect.objectContaining({ message: expect.stringContaining("нарежьте следующую часть") }),
       }),
     );
     expect(logActivity).toHaveBeenCalledWith(
       mockDb,
-      expect.objectContaining({
-        action: "dev_project.queue_unavailable",
-        agentId: "engineer-a",
-      }),
+      expect.objectContaining({ action: "dev_project.queue_unavailable", agentId: "engineer-a" }),
     );
   });
 
-  it("returns false and does not match when releasedRun is for reviewer", async () => {
+  it("does not trigger continuation when released agent is the reviewer, not author", async () => {
     const mockDb = {
       select: vi.fn().mockReturnValue({
         from: vi.fn().mockReturnValue({

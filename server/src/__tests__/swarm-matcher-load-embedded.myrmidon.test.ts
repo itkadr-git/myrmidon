@@ -28,6 +28,7 @@ import {
   heartbeatRuns,
   issueClaims,
   issueRelations,
+  issueWorkProducts,
   issues,
   projectMemberships,
   projects,
@@ -61,6 +62,7 @@ describeEmbeddedPostgres("matcher load and capacity", () => {
     await db.delete(heartbeatRuns);
     await db.delete(agentWakeupRequests);
     await db.delete(issueClaims);
+    await db.delete(issueWorkProducts);
     await db.delete(issueRelations);
     await db.delete(issues);
     await db.delete(projectMemberships);
@@ -324,6 +326,25 @@ describeEmbeddedPostgres("matcher load and capacity", () => {
       expect(wakes).toEqual([]);
       const claims = await db.select().from(issueClaims).where(isNull(issueClaims.releasedAt));
       expect(claims).toHaveLength(0);
+    });
+
+    it("frees an in-progress issue with a recently updated PR in review", async () => {
+      const companyId = await seedCompany();
+      const agent = await seedAgent(companyId, "agent-reviewing");
+      const issueId = await seedTask(companyId, { assigneeAgentId: agent, status: "in_progress" });
+      await db.insert(issueWorkProducts).values({
+        id: randomUUID(), companyId, issueId, type: "pull_request", provider: "github",
+        title: "PR awaiting review", status: "open", reviewState: "ready_for_review",
+        updatedAt: new Date(Date.now() - 20 * 60_000),
+      });
+      expect((await openLoadByAgent(db, companyId)).get(agent)).toBe(1);
+
+      const task = await seedTask(companyId);
+      const wakes: string[] = [];
+      const result = await matchCompany(deps(wakes), companyId);
+
+      expect(result.pairs.map((pair) => pair.issueId)).toContain(task);
+      expect(await assigneeOf(task)).toBe(agent);
     });
 
     it("hands the task over once the executor is below the ceiling", async () => {

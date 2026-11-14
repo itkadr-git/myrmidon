@@ -1431,7 +1431,6 @@ async function ciWaitingPullRequestIssueIds(db: Db, companyId: string): Promise<
     }
   }
   if (!current.size) return new Set();
-  const now = Date.now();
   const waiting = new Set<string>();
   for (const product of products) {
     if (product.issueStatus !== "in_progress") continue;
@@ -1446,9 +1445,10 @@ async function ciWaitingPullRequestIssueIds(db: Db, companyId: string): Promise<
     const matchingCiHead = currentPr && ci && currentPr.head !== "" && currentPr.head === String(ci.headSha).toLowerCase();
     const observedAt = typeof ci?.observedAt === "string" ? Date.parse(ci.observedAt) : NaN;
     const lastActivityAt = Number.isFinite(observedAt) ? Math.max(observedAt, product.updatedAt.getTime()) : product.updatedAt.getTime();
-    const age = now - lastActivityAt;
+    const age = Date.now() - lastActivityAt;
     const recentReview = product.reviewState === "ready_for_review" && age >= 0 && age <= 15 * 60_000;
-    if (currentPr?.issueId === product.issueId && ((waitingForCi && matchingCiHead) || recentReview)) {
+    const recentCiWait = waitingForCi && matchingCiHead && age >= 0 && age <= 15 * 60_000;
+    if (currentPr?.issueId === product.issueId && (recentCiWait || recentReview)) {
       waiting.add(product.issueId);
     }
   }
