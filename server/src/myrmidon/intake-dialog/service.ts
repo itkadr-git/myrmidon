@@ -147,6 +147,7 @@ export async function processIntakeCard(
       payload: {
         version: 1,
         prompt: `Подтвердите постановку задачи: ${fullCard.title.trim()}`,
+        detailsMarkdown: markdownBody,
         target: {
           type: "issue_document",
           issueId: input.issueId,
