@@ -109,6 +109,7 @@ import {
 } from "./services/device-login-reaper.js";
 import { createProductionSetupTokenReaper } from "./services/setup-token-reaper.js";
 import { localAiLoginService } from "./services/local-ai-login.js";
+import { purgeExpiredAgentRecoveryJournal } from "./services/agent-recovery-journal.js";
 import { resolveWorktreeRunExecutionActivationState } from "./services/instance-settings.js";
 import {
   parseAdapterRegistryEnv,
@@ -1758,6 +1759,8 @@ async function startServerWithDatabaseTeardown(
     ["status_delivery", () => deliverExecutionStatuses(db)],
     ["automatic_disposition", () => settleUnrecoverableExecutions(db)],
     ["local_ai_login_cleanup", () => localAiLoginService(db).reapExpired()],
+    // myrmidon(1.8 AGENT-LIVENESS C2, OPE-13023): purge recovery journal older than retention limit
+    ["agent_recovery_journal_retention", () => purgeExpiredAgentRecoveryJournal(db)],
     ["run_stall", () => runStallSweep?.sweep()],
     // myrmidon(PAUSE-GUARD): lifts operator pauses left older than the threshold
     ["pause_guard", () => pauseGuardSweep?.sweep()],
