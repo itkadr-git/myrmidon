@@ -354,6 +354,7 @@ function makeCtx(deps = {}) {
     diskStateStaleSec: deps.diskStateStaleSec ?? DISK_STATE_STALE_SEC,
     sizeOf: deps.sizeOf || defaultSizeOf,
     ensureBase: deps.ensureBase || null,
+    warn: deps.warn || ((m) => process.stderr.write(`myr-ws: ${m}\n`)),
   };
 }
 
@@ -374,10 +375,16 @@ async function open(request, deps = {}) {
   let branch = scratch ? undefined : request.branch || `${TASK_BRANCH_PREFIX}${key}`;
   const git = makeGit(ctx);
   // Review copy: the task branch checked out and nothing else. myr-ws never installs dependencies
-  // itself; review mode additionally switches git hooks off for the checkout (post-checkout
-  // preparation hooks of the base) so the copy is only the tree of the branch.
+  // itself; review mode additionally has no working directory at all (worktree add --no-checkout
+  // plus an empty sparse-checkout, so `git status` stays clean) and git hooks are switched off.
+  // The reviewer reads the change by refs: git diff origin/main...HEAD, git show HEAD:<path>.
   const review = Boolean(request.review) && !scratch;
-  const wtAdd = review ? ["-c", "core.hooksPath=/dev/null", "worktree", "add"] : ["worktree", "add"];
+  const warn = ctx.warn;
+  const wtAdd = review ? ["-c", "core.hooksPath=/dev/null", "worktree", "add", "--no-checkout"] : ["worktree", "add"];
+  const finishReview = (wt) => {
+    git(wt, ["sparse-checkout", "set", "--no-cone", "/.myr-ws-review-empty"]);
+    git(wt, ["read-tree", "-m", "-u", "HEAD"]);
+  };
   const baseTarget = request.base ? `refs/remotes/origin/${request.base}` : "refs/remotes/origin/HEAD";
   let recovered = [];
   let recoveryRef;
@@ -403,6 +410,7 @@ async function open(request, deps = {}) {
       });
     }
     if (!healed || healed.action !== "fallthrough") {
+      if (review) warn(`${known.path} is already open: it was not recreated, so it may have a working directory and a stale branch (close it with myr-ws close ${key}, then open --review again)`);
       const nowBranch = healed && healed.branch ? healed.branch : known.branch;
       if (healed && nowBranch !== known.branch) {
         withRegistryLock(ctx, () => {
@@ -485,8 +493,9 @@ async function open(request, deps = {}) {
       baseRef = resolveBaseRef(git, basePath, request.base);
       const target = `refs/remotes/origin/${baseRef}`;
       const existingBranch = git(basePath, ["rev-parse", "--verify", "--quiet", `refs/heads/${branch}`], { allowFail: true }).status === 0;
-      if (existingBranch) git(basePath, ["worktree", "add", dir, branch]);
-      else git(basePath, ["worktree", "add", "--no-track", "-b", branch, dir, target]);
+      if (existingBranch) git(basePath, [...wtAdd, dir, branch]);
+      else git(basePath, [...wtAdd, "--no-track", "-b", branch, dir, target]);
+      if (review) finishReview(dir);
       if (sourceHead && sourceHead !== git(dir, ["rev-parse", "HEAD"])) {
         const recoveryBranch = `myr-ws/recovery/${key}`;
         const recoveryExists = git(basePath, ["rev-parse", "--verify", "--quiet", `refs/heads/${recoveryBranch}`], { allowFail: true }).status === 0;
@@ -530,19 +539,44 @@ async function open(request, deps = {}) {
       git(basePath, ["worktree", "add", "--detach", dir, target]);
     } else {
       const haveBranch = git(basePath, ["rev-parse", "--verify", "--quiet", `refs/heads/${branch}`], { allowFail: true }).status === 0;
-      // A branch left by an earlier copy of this task keeps its commits: reattach it, do not reset it.
-      if (haveBranch) git(basePath, [...wtAdd, dir, branch]);
-      else {
+      if (review) {
+        // Always refresh the branch from the remote first, so the reviewer never sees a stale state.
+        const remote = `refs/remotes/origin/${branch}`;
+        const fetched = git(basePath, ["fetch", "--no-tags", "origin", `+refs/heads/${branch}:${remote}`], { allowFail: true });
+        const hasRemote = git(basePath, ["rev-parse", "--verify", "--quiet", `${remote}^{commit}`], { allowFail: true }).status === 0;
+        if (!hasRemote && !request.branch) {
+          throw new MyrWsError(EXIT.notFound, `no PR branch ${branch} on origin (нет ветки PR, укажи --branch <ветка PR>)`);
+        }
+        if (hasRemote && fetched.status !== 0) warn(`fetch of ${branch} failed; the copy shows the last known state of origin/${branch}`);
+        if (haveBranch && hasRemote) {
+          const local = git(basePath, ["rev-parse", `refs/heads/${branch}`]).stdout;
+          const tip = git(basePath, ["rev-parse", remote]).stdout;
+          if (local !== tip) {
+            if (git(basePath, ["merge-base", "--is-ancestor", local, tip], { allowFail: true }).status !== 0) {
+              throw usage(`local branch ${branch} has commits that are not on origin/${branch}; refusing to move it for a review copy`);
+            }
+            git(basePath, ["update-ref", `refs/heads/${branch}`, tip, local]);
+          }
+        }
+        if (haveBranch || hasRemote) {
+          if (haveBranch) git(basePath, [...wtAdd, dir, branch]);
+          else git(basePath, [...wtAdd, "--no-track", "-b", branch, dir, remote]);
+        } else git(basePath, [...wtAdd, "--no-track", "-b", branch, dir, target]);
+        finishReview(dir);
+      } else if (haveBranch) {
+        // A branch left by an earlier copy of this task keeps its commits: reattach it, do not reset it.
+        git(basePath, ["worktree", "add", dir, branch]);
+      } else {
         // An explicit --branch (the head branch of the task's pull request) starts from its
         // remote state when the repository has it, otherwise from the base ref.
         let from = target;
-        if (request.branch || review) {
+        if (request.branch) {
           const remote = `refs/remotes/origin/${branch}`;
           const has = () => git(basePath, ["rev-parse", "--verify", "--quiet", `${remote}^{commit}`], { allowFail: true }).status === 0;
           if (!has()) git(basePath, ["fetch", "--no-tags", "origin", `+refs/heads/${branch}:${remote}`], { allowFail: true });
           if (has()) from = remote;
         }
-        git(basePath, [...wtAdd, "--no-track", "-b", branch, dir, from]);
+        git(basePath, ["worktree", "add", "--no-track", "-b", branch, dir, from]);
       }
     }
   } else {
