@@ -857,6 +857,9 @@ describeEmbeddedPostgres("myrmidon(1.6.5-DB-RETENTION) retention sweep in the da
         activity: { deletedTotal: 0, lastDeleted: 0, lastFreedBytes: 0 },
         access: { deletedTotal: 2, lastDeleted: 2, lastFreedBytes: 234 },
         litellmCostEvents: { deletedTotal: 0, lastDeleted: 0, lastFreedBytes: 0 },
+        documentRevisions: { deletedTotal: 0, lastDeleted: 0, lastFreedBytes: 0 },
+        agentWakeupRequests: { deletedTotal: 0, lastDeleted: 0, lastFreedBytes: 0 },
+        environmentLeases: { deletedTotal: 0, lastDeleted: 0, lastFreedBytes: 0 },
       },
     });
 
