@@ -119,8 +119,18 @@ export async function revokeRunGatewayKey(
   deps: AgentGatewayKeyDeps,
   input: { companyId: string; runId: string },
 ): Promise<RevokedRunGatewayKey> {
-  const settings = requireKeyManagement(deps.env ?? process.env);
+  const settings = readGatewayKeySettings(deps.env ?? process.env);
   const secretName = runKeySecretName(input.runId);
+
+  // Runs without gateway key management never mint a run key, so terminal
+  // cleanup is a no-op on those instances as well.
+  if (!settings.canManageKeys || !settings.baseUrl) {
+    return {
+      secretName,
+      gatewayDeleted: false,
+      secretDeleted: false,
+    };
+  }
 
   const adminKey = await requireAdminKey(deps, input.companyId, settings);
   await deps.gateway({ baseUrl: settings.baseUrl, adminKey }).deleteKey({ alias: secretName });

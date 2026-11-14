@@ -163,6 +163,20 @@ describe("myrmidon(1.8 KEY-TTL / OPE-12931) run gateway keys", () => {
     expect(gateway.installed.has(minted.secretName)).toBe(false);
   });
 
+  it("skips revocation cleanly when gateway key management is disabled", async () => {
+    const { deps, gateway } = makeDeps();
+    deps.env = {} as NodeJS.ProcessEnv;
+
+    await expect(
+      revokeRunGatewayKey(deps, { companyId: "company-a", runId: "run-1" }),
+    ).resolves.toEqual({
+      secretName: runKeySecretName("run-1"),
+      gatewayDeleted: false,
+      secretDeleted: false,
+    });
+    expect(gateway.calls).toEqual([]);
+  });
+
   it("refuses to mint when key management is disabled", async () => {
     const { deps, store, gateway } = makeDeps();
     deps.env = { MYRMIDON_LITELLM_BASE_URL: "http://gateway.internal:4000" } as NodeJS.ProcessEnv;
