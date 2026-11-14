@@ -139,16 +139,18 @@ describeEmbeddedPostgres("the starter-pack scout on a new engineer task", () => 
       .onConflictDoUpdate({ target: instanceSettings.singletonKey, set: { general } });
   }
 
-  async function seed(input: { assigneeRole?: string; description?: string | null } = {}) {
-    const companyId = randomUUID();
-    const issuePrefix = `S${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`;
-    await db.insert(companies).values({
-      id: companyId,
-      name: "company-a",
-      issuePrefix,
-      defaultResponsibleUserId: "responsible-user",
-      requireBoardApprovalForNewAgents: false,
-    });
+  async function seed(input: { companyId?: string; issuePrefix?: string; assigneeRole?: string; description?: string | null } = {}) {
+    const companyId = input.companyId ?? randomUUID();
+    const issuePrefix = input.issuePrefix ?? `S${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`;
+    if (!input.companyId) {
+      await db.insert(companies).values({
+        id: companyId,
+        name: "company-a",
+        issuePrefix,
+        defaultResponsibleUserId: "responsible-user",
+        requireBoardApprovalForNewAgents: false,
+      });
+    }
     const insertAgent = async (name: string, role: string) => {
       const id = randomUUID();
       await db.insert(agents).values({
@@ -167,6 +169,7 @@ describeEmbeddedPostgres("the starter-pack scout on a new engineer task", () => 
     const scoutId = await insertAgent("Scout", "researcher");
     const engineerId = await insertAgent("Engineer", input.assigneeRole ?? "engineer");
     const issueId = randomUUID();
+    const issueNumber = input.companyId ? 2 : 1;
     await db.insert(issues).values({
       id: issueId,
       companyId,
@@ -176,10 +179,10 @@ describeEmbeddedPostgres("the starter-pack scout on a new engineer task", () => 
       priority: "medium",
       responsibleUserId: "responsible-user",
       assigneeAgentId: engineerId,
-      issueNumber: 1,
-      identifier: `${issuePrefix}-1`,
+      issueNumber,
+      identifier: `${issuePrefix}-${issueNumber}`,
     });
-    return { companyId, issueId, scoutId, engineerId, issue: { id: issueId, companyId, assigneeAgentId: engineerId, description: input.description ?? null } };
+    return { companyId, issuePrefix, issueId, scoutId, engineerId, issue: { id: issueId, companyId, assigneeAgentId: engineerId, description: input.description ?? null } };
   }
 
   function recorder() {
@@ -326,7 +329,7 @@ describeEmbeddedPostgres("the starter-pack scout on a new engineer task", () => 
   });
 
   it("enforces document permissions over the route: 403 on another key, 201 on starter-pack and wakes assignee once", async () => {
-    const { companyId, scoutId, engineerId, issueId } = await seed();
+    const { companyId, issuePrefix, scoutId, engineerId, issueId } = await seed();
     await setScout(scoutId);
 
     // Scout has been woken for this task
@@ -355,7 +358,13 @@ describeEmbeddedPostgres("the starter-pack scout on a new engineer task", () => 
     expect(forbiddenRes.status).toBe(403);
     expect(forbiddenRes.body.error).toBe("Agent cannot mutate another agent's issue");
 
-    // No document was created for notes
+    const forbiddenPlanRes = await request(app)
+      .put(`/api/issues/${issueId}/documents/plan`)
+      .send({ format: "markdown", body: "# Scout Plan" });
+    expect(forbiddenPlanRes.status).toBe(403);
+    expect(forbiddenPlanRes.body.error).toBe("Agent cannot mutate another agent's issue");
+
+    // No document was created for notes or plan
     const docsAfterForbidden = await db
       .select()
       .from(documents)
@@ -388,7 +397,7 @@ describeEmbeddedPostgres("the starter-pack scout on a new engineer task", () => 
     expect(strangerRes.body.error).toBe("Agent cannot mutate another agent's issue");
 
     // 3. Scout writes starter-pack on a task it was NOT woken for -> 403 forbidden
-    const other = await seed();
+    const other = await seed({ companyId, issuePrefix });
     const unsolicitedRes = await request(app)
       .put(`/api/issues/${other.issueId}/documents/starter-pack`)
       .send({ format: "markdown", body: "# Unsolicited" });
