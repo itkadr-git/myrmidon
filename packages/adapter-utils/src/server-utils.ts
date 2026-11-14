@@ -2111,6 +2111,11 @@ export function stringifyPaperclipWakePayload(
   if (normalized.executionContinuation) {
     payload.executionContinuation = stripContinuationHistoryForJson(normalized.executionContinuation);
   }
+  // OPE-13086: the prompt text already carries the starter pack as its first
+  // block; the structured JSON copy does not repeat it.
+  if (normalized.starterPack) {
+    payload.starterPack = null;
+  }
   if (options.omitIssueDescription === true && normalized.issue) {
     payload.issue = {
       ...normalized.issue,

@@ -3083,6 +3083,17 @@ describe("starter pack in the wake prompt (OPE-13086)", () => {
     expect(renderPaperclipWakePrompt({ ...basePayload, starterPack: { body: "   " } })).toBe(without);
   });
 
+  it("does not repeat the starter pack body in the structured wake JSON", () => {
+    const json = stringifyPaperclipWakePayload({
+      ...basePayload,
+      starterPack: { key: "starter-pack", title: "Starter pack", body: "UNIQUE-PACK-BODY ".repeat(400) },
+    });
+    expect(json).not.toBeNull();
+    expect(json).not.toContain("UNIQUE-PACK-BODY");
+    expect(JSON.parse(json ?? "{}").starterPack).toBeNull();
+    expect(json).toContain("Keep going.");
+  });
+
   it("truncates a 9000 character starter pack body to 8000 with a marker", () => {
     const prompt = renderPaperclipWakePrompt({
       ...basePayload,
