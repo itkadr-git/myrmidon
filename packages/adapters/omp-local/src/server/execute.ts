@@ -1233,52 +1233,87 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       const stopLocalClientOnAbort = () => void stopLocalOmp();
       const abortSignal = sshCancellable ? ctx.signal : undefined;
       abortSignal?.addEventListener("abort", stopLocalClientOnAbort, { once: true });
-      const proc = await runAdapterExecutionTargetProcess(runId, runtimeExecutionTarget, command, args, {
-        inheritProcessEnv: readInheritProcessEnvFlag(config),
-        runEnvAdapterType: "omp_local",
-        cwd,
-        env: executionTargetIsRemote ? env : runtimeEnv,
-        stdin: userPrompt,
-        timeoutSec,
-        graceSec,
-        // An abort that came before the client was registered is applied here.
-        onSpawn: abortSignal
-          ? async (meta) => {
-              await onSpawn?.(meta);
-              if (abortSignal.aborted) stopLocalClientOnAbort();
-            }
-          : onSpawn,
-        onRuntimeProgress: ctx.onRuntimeProgress,
-        onLog: bufferedOnLog,
-        runLogTail: paperclipBridge?.runLogTail,
-        settleRunDisposition: paperclipBridge?.settleRunDisposition,
-        localProcessSandbox,
-        // myrmidon(OPE-12801): OMP and everything it started are stopped on
-        // the runner when the run is cancelled or times out. A stop that could
-        // not be verified goes to the run's events.
-        signal: sshCancellable ? ctx.signal : undefined,
-        onRemoteRunStop: async (report) => {
-          if (report.ok) return;
-          await ctx.onEvent?.({
-            eventType: "lifecycle",
-            stream: "system",
-            level: "error",
-            message: describeSshRemoteRunStop(report),
-            payload: {
-              reason: "remote_run_stop_failed",
-              found: report.found,
-              survivors: report.survivors,
-              survivorPids: report.survivorPids,
-              forced: report.forced,
-              error: report.error,
+
+      const reapRunnerProcesses = async () => {
+        if (!executionTargetIsRemote) return;
+        const reapCwd = effectiveExecutionCwd || cwd;
+        try {
+          const reapResult = await runAdapterExecutionTargetShellCommand(
+            runId,
+            runtimeExecutionTarget,
+            `run-reap ${shellQuote(reapCwd)}`,
+            {
+              cwd: reapCwd,
+              env: executionTargetIsRemote ? env : runtimeEnv,
+              timeoutSec: 15,
+              graceSec: 5,
             },
-          });
-        },
-      }).finally(() => {
-        abortSignal?.removeEventListener("abort", stopLocalClientOnAbort);
-        if (localStopTimer) clearTimeout(localStopTimer);
-        localStopTimer = null;
-      });
+          );
+          if (reapResult.stdout?.trim()) {
+            await onLog("stdout", `[paperclip] ${reapResult.stdout.trim()}\n`);
+          }
+          if (reapResult.stderr?.trim()) {
+            await onLog("stderr", `[paperclip] ${reapResult.stderr.trim()}\n`);
+          }
+        } catch (err) {
+          await onLog(
+            "stderr",
+            `[paperclip] Process cleanup failed: ${err instanceof Error ? err.message : String(err)}\n`,
+          ).catch(() => undefined);
+        }
+      };
+
+      let proc;
+      try {
+        proc = await runAdapterExecutionTargetProcess(runId, runtimeExecutionTarget, command, args, {
+          inheritProcessEnv: readInheritProcessEnvFlag(config),
+          runEnvAdapterType: "omp_local",
+          cwd,
+          env: executionTargetIsRemote ? env : runtimeEnv,
+          stdin: userPrompt,
+          timeoutSec,
+          graceSec,
+          // An abort that came before the client was registered is applied here.
+          onSpawn: abortSignal
+            ? async (meta) => {
+                await onSpawn?.(meta);
+                if (abortSignal.aborted) stopLocalClientOnAbort();
+              }
+            : onSpawn,
+          onRuntimeProgress: ctx.onRuntimeProgress,
+          onLog: bufferedOnLog,
+          runLogTail: paperclipBridge?.runLogTail,
+          settleRunDisposition: paperclipBridge?.settleRunDisposition,
+          localProcessSandbox,
+          // myrmidon(OPE-12801): OMP and everything it started are stopped on
+          // the runner when the run is cancelled or times out. A stop that could
+          // not be verified goes to the run's events.
+          signal: sshCancellable ? ctx.signal : undefined,
+          onRemoteRunStop: async (report) => {
+            if (report.ok) return;
+            await ctx.onEvent?.({
+              eventType: "lifecycle",
+              stream: "system",
+              level: "error",
+              message: describeSshRemoteRunStop(report),
+              payload: {
+                reason: "remote_run_stop_failed",
+                found: report.found,
+                survivors: report.survivors,
+                survivorPids: report.survivorPids,
+                forced: report.forced,
+                error: report.error,
+              },
+            });
+          },
+        }).finally(() => {
+          abortSignal?.removeEventListener("abort", stopLocalClientOnAbort);
+          if (localStopTimer) clearTimeout(localStopTimer);
+          localStopTimer = null;
+        });
+      } finally {
+        await reapRunnerProcesses();
+      }
 
       if (stdoutBuffer) {
         await onLog("stdout", stdoutBuffer);
