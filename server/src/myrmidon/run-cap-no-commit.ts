@@ -4,18 +4,53 @@ import {
   activityLog,
   agents,
   heartbeatRuns,
+  instanceSettings,
   issueWorkProducts,
   projects,
-  type HeartbeatRun,
 } from "@myrmidon/db";
-import {
-  DEFAULT_TASK_RUNS_WITHOUT_COMMIT_LIMIT,
-  loadRunDispatchSettings,
-} from "./run-dispatch/settings.js";
 
 export const RUN_CAP_NO_COMMIT_REASON = "runs_without_commit_limit_reached";
 export const RUN_CAP_NO_COMMIT_BLOCK_REASON = "human_decision";
 export const RUN_CAP_NO_COMMIT_UNBLOCK_ACTION = "runs_without_commit_cap_released";
+
+export const TASK_RUNS_WITHOUT_COMMIT_LIMIT_KEY = "taskRunsWithoutCommitLimit";
+export const DEFAULT_TASK_RUNS_WITHOUT_COMMIT_LIMIT = 4;
+const DEFAULT_SINGLETON_KEY = "default";
+
+function readProcessesRecord(general: unknown): Record<string, unknown> | null {
+  if (!general || typeof general !== "object" || Array.isArray(general)) return null;
+  const processes = (general as Record<string, unknown>).processes;
+  if (!processes || typeof processes !== "object" || Array.isArray(processes)) return null;
+  return processes as Record<string, unknown>;
+}
+
+export function resolveTaskRunsWithoutCommitLimit(general: unknown): number {
+  const processes = readProcessesRecord(general);
+  const raw = processes?.[TASK_RUNS_WITHOUT_COMMIT_LIMIT_KEY];
+  const numeric =
+    typeof raw === "number"
+      ? raw
+      : typeof raw === "string" && raw.trim() !== ""
+        ? Number(raw)
+        : Number.NaN;
+  if (!Number.isFinite(numeric)) return DEFAULT_TASK_RUNS_WITHOUT_COMMIT_LIMIT;
+  const rounded = Math.round(numeric);
+  if (rounded <= 0) return 0;
+  return Math.min(100, rounded);
+}
+
+export async function loadTaskRunsWithoutCommitLimit(db: Db): Promise<number> {
+  try {
+    const [row] = await db
+      .select({ general: instanceSettings.general })
+      .from(instanceSettings)
+      .where(eq(instanceSettings.singletonKey, DEFAULT_SINGLETON_KEY))
+      .limit(1);
+    return resolveTaskRunsWithoutCommitLimit(row?.general ?? {});
+  } catch {
+    return DEFAULT_TASK_RUNS_WITHOUT_COMMIT_LIMIT;
+  }
+}
 
 export const ACTIONABLE_RUN_STATUSES = [
   "succeeded",

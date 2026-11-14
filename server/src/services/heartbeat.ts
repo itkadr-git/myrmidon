@@ -154,6 +154,7 @@ import {
   buildRunCapNoCommitBlockedPatch,
   buildRunCapNoCommitComment,
   resolveRunCapNoCommitWakeTargetId,
+  loadTaskRunsWithoutCommitLimit,
   RUN_CAP_NO_COMMIT_REASON,
   type RunCapNoCommitStop,
 } from "../myrmidon/run-cap-no-commit.js"; // myrmidon(OPE-13080)
@@ -34663,8 +34664,7 @@ export function heartbeatService(
             // If the task has a PR and consecutive runs of (agent, issue) finished
             // without advancing headSha up to taskRunsWithoutCommitLimit, block the task
             // and wake the lead/manager.
-            const runDispatchSettings = await loadRunDispatchSettings(tx as unknown as Db);
-            const noCommitLimit = runDispatchSettings.taskRunsWithoutCommitLimit;
+            const noCommitLimit = await loadTaskRunsWithoutCommitLimit(tx as unknown as Db);
             if (noCommitLimit > 0 && !interactionContinuation && !opts.manualUserWake) {
               const currentHeadSha = await readTaskCurrentHeadSha(tx as unknown as Db, agent.companyId, issue.id);
               if (currentHeadSha) {

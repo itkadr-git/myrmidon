@@ -5,6 +5,8 @@ import {
   countRunsWithoutCommit,
   extractRunHeadSha,
   extractRunSummary,
+  resolveTaskRunsWithoutCommitLimit,
+  DEFAULT_TASK_RUNS_WITHOUT_COMMIT_LIMIT,
   RUN_CAP_NO_COMMIT_BLOCK_REASON,
   RUN_CAP_NO_COMMIT_UNBLOCK_ACTION,
   type RunCommitObservation,
@@ -208,5 +210,35 @@ describe("extractRunHeadSha and extractRunSummary", () => {
       error: "Error message",
     };
     expect(extractRunSummary(run3)).toBe("Error message");
+  });
+});
+
+describe("resolveTaskRunsWithoutCommitLimit", () => {
+  it("defaults to 4 when nothing is stored or input is null/empty", () => {
+    expect(resolveTaskRunsWithoutCommitLimit({})).toBe(DEFAULT_TASK_RUNS_WITHOUT_COMMIT_LIMIT);
+    expect(resolveTaskRunsWithoutCommitLimit(null)).toBe(DEFAULT_TASK_RUNS_WITHOUT_COMMIT_LIMIT);
+    expect(resolveTaskRunsWithoutCommitLimit({ processes: {} })).toBe(DEFAULT_TASK_RUNS_WITHOUT_COMMIT_LIMIT);
+    expect(resolveTaskRunsWithoutCommitLimit({ processes: "invalid" })).toBe(DEFAULT_TASK_RUNS_WITHOUT_COMMIT_LIMIT);
+  });
+
+  it("handles 0 to disable", () => {
+    expect(resolveTaskRunsWithoutCommitLimit({ processes: { taskRunsWithoutCommitLimit: 0 } })).toBe(0);
+    expect(resolveTaskRunsWithoutCommitLimit({ processes: { taskRunsWithoutCommitLimit: "0" } })).toBe(0);
+    expect(resolveTaskRunsWithoutCommitLimit({ processes: { taskRunsWithoutCommitLimit: -5 } })).toBe(0);
+  });
+
+  it("accepts valid positive numbers and numeric strings, clamping at 100", () => {
+    expect(resolveTaskRunsWithoutCommitLimit({ processes: { taskRunsWithoutCommitLimit: 10 } })).toBe(10);
+    expect(resolveTaskRunsWithoutCommitLimit({ processes: { taskRunsWithoutCommitLimit: "15" } })).toBe(15);
+    expect(resolveTaskRunsWithoutCommitLimit({ processes: { taskRunsWithoutCommitLimit: 500 } })).toBe(100);
+  });
+
+  it("falls back to default on invalid non-numeric values", () => {
+    expect(resolveTaskRunsWithoutCommitLimit({ processes: { taskRunsWithoutCommitLimit: "invalid" } })).toBe(
+      DEFAULT_TASK_RUNS_WITHOUT_COMMIT_LIMIT,
+    );
+    expect(resolveTaskRunsWithoutCommitLimit({ processes: { taskRunsWithoutCommitLimit: true } })).toBe(
+      DEFAULT_TASK_RUNS_WITHOUT_COMMIT_LIMIT,
+    );
   });
 });
