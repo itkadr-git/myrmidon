@@ -13047,18 +13047,38 @@ export function heartbeatService(
         const state = parseIssueExecutionState(row.executionState)?.monitor ?? null;
         const timeoutAt = parseMonitorDate(state?.timeoutAt ?? null);
         const lastTriggeredAt = row.monitorLastTriggeredAt ?? parseMonitorDate(state?.lastTriggeredAt ?? null);
-        if (!timeoutAt || !lastTriggeredAt) continue;
+        // myrmidon(OPE-12886): a "Review CI wait" monitor is armed without a
+        // timeout (`timeoutAt: null`), so the timeout-based recovery below can
+        // never pick it up. After the trigger consumed the schedule the review
+        // would sit `triggered` with no timer forever. Re-arm such a monitor to
+        // the next check so the wait resumes; the dispatch path re-reads the
+        // exact-head CI each wake and defers itself while CI is still pending.
+        const isReviewCiWaitMonitor =
+          state?.serviceName === REVIEW_CI_WAIT_MONITOR_SERVICE_NAME &&
+          timeoutAt === null;
+        if (!timeoutAt && !isReviewCiWaitMonitor) continue;
+        if (!lastTriggeredAt) continue;
 
-        if (now.getTime() < timeoutAt.getTime()) {
+        // Re-arm while the wait is still alive: inside the configured timeout
+        // window, or (OPE-12886) a "Review CI wait" monitor that has no
+        // timeout at all — its deferral is bounded by the tick budget, not by
+        // a deadline, so the recovery re-arms the check instead of closing it.
+        const backoffMs = Math.min(
+          10 * 60_000,
+          30_000 * Math.pow(2, Math.min(row.monitorAttemptCount ?? 0, 4)),
+        );
+        const rearmNextCheckAt =
+          timeoutAt && timeoutAt.getTime() > now.getTime()
+            ? new Date(Math.min(now.getTime() + backoffMs, timeoutAt.getTime()))
+            : isReviewCiWaitMonitor
+              ? new Date(now.getTime() + backoffMs)
+              : null;
+        if (rearmNextCheckAt) {
           // Still inside the configured timeout window: re-arm a bounded next
           // check so the wait can resume. Dispatch works without a policy
           // monitor (`issueMonitorLimitClearReason` then returns null and the
           // due wake goes out as a plain re-check of the external wait).
-          const backoffMs = Math.min(
-            10 * 60_000,
-            30_000 * Math.pow(2, Math.min(row.monitorAttemptCount ?? 0, 4)),
-          );
-          const nextCheckAt = new Date(Math.min(now.getTime() + backoffMs, timeoutAt.getTime()));
+          const nextCheckAt = rearmNextCheckAt;
           const [rearmed] = await db
             .update(issues)
             .set({
@@ -13087,7 +13107,7 @@ export function heartbeatService(
             details: {
               identifier: row.identifier,
               lastTriggeredAt: lastTriggeredAt.toISOString(),
-              timeoutAt: timeoutAt.toISOString(),
+              timeoutAt: timeoutAt?.toISOString() ?? null,
               nextCheckAt: nextCheckAt.toISOString(),
               attemptCount: row.monitorAttemptCount ?? 0,
               source: "scheduled",
@@ -13131,7 +13151,7 @@ export function heartbeatService(
           details: {
             identifier: row.identifier,
             lastTriggeredAt: lastTriggeredAt.toISOString(),
-            timeoutAt: timeoutAt.toISOString(),
+            timeoutAt: timeoutAt?.toISOString() ?? null,
             attemptCount: row.monitorAttemptCount ?? 0,
             notes: row.monitorNotes ?? null,
             serviceName: state?.serviceName ?? null,
