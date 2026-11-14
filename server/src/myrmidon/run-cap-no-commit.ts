@@ -345,7 +345,7 @@ export async function resolveRunCapNoCommitWakeTargetId(
     for (const leadId of [...new Set(leadIds)]) {
       const [lead] = await db.select({ id: agents.id, status: agents.status }).from(agents)
         .where(and(eq(agents.companyId, input.companyId), eq(agents.id, leadId))).limit(1);
-      if (lead && isAgentStatusInvokable(lead.status)) return lead.id;
+      if (lead && isAgentStatusInvokable(lead.status)) return lead.id ?? leadId;
     }
   }
   if (input.assigneeAgentId) {
@@ -357,7 +357,7 @@ export async function resolveRunCapNoCommitWakeTargetId(
     if (assignee?.reportsTo) {
       const [manager] = await db.select({ id: agents.id, status: agents.status }).from(agents)
         .where(and(eq(agents.companyId, input.companyId), eq(agents.id, assignee.reportsTo))).limit(1);
-      if (manager && isAgentStatusInvokable(manager.status)) return manager.id;
+      if (manager && isAgentStatusInvokable(manager.status)) return manager.id ?? assignee.reportsTo;
     }
   }
   const [admAgent] = await db

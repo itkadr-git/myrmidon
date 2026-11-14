@@ -100,7 +100,7 @@ export async function resolveRunGuardStopWakeTargetId(db: Db, issue: EscalationI
     for (const id of [...new Set(leadIds)]) {
       const [lead] = await db.select({ id: agents.id, status: agents.status }).from(agents)
         .where(and(eq(agents.id, id), eq(agents.companyId, issue.companyId))).limit(1);
-      if (lead && isAgentStatusInvokable(lead.status)) return lead.id;
+      if (lead && isAgentStatusInvokable(lead.status)) return lead.id ?? id;
     }
   }
 
