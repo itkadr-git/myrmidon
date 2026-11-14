@@ -224,6 +224,35 @@ describe("review wake liveness", () => {
     return row(id, { assigneeAgentId: reviewerId, executionState: state, executionPolicy: policy, ...overrides });
   }
 
+  it("does not wake a reviewer for a partial CI failure, then wakes once the final head result is green", async () => {
+    const stale = { updatedAt: new Date(NOW.getTime() - 10 * 60_000) };
+    let ci: PullRequestHeadState["ci"] = "pending";
+    let fetchedHead = "aaaaaaaa";
+    const resolver = {
+      resolve: async () => ({
+        repository: "acme/widgets", number: 7, open: true, draft: false, headSha: fetchedHead,
+        ci, reviewDecision: null, fetchFailed: false, mergeable: true,
+      }),
+      listOpenPullRequests: async () => [],
+      resetCache: () => undefined,
+    } as unknown as PullRequestHeadResolver;
+    const t = setup({}, {
+      wakeStates: new Map([["1", { activeRun: false, pendingWake: false, lastWakeAt: null, attempts: 0 }]]),
+    }, resolver);
+    t.fixture.rows.set("1", pending("1", REV_A, stale));
+    t.fixture.prWorkProducts = new Map([["1", { repository: "acme/widgets", number: 7, headSha: "bbbbbbbb", title: null, url: null, authorLogin: null, baseRef: null, draft: false }]]);
+
+    expect((await t.sweep.sweep(NOW, { force: true })).woken).toBe(0);
+    expect(t.wakes).toHaveLength(0);
+
+    ci = "green";
+    t.fixture.rows.set("1", pending("1", REV_A, { updatedAt: new Date(NOW.getTime() + 60_000) }));
+    t.fixture.wakeStates!.set("1", { activeRun: false, pendingWake: false, lastWakeAt: null, attempts: 0 });
+    expect((await t.sweep.sweep(new Date(NOW.getTime() + 60_000), { force: true })).woken).toBe(1);
+    expect(t.wakes).toHaveLength(1);
+    expect(t.wakes[0]).toMatchObject({ agentId: REV_A, issueId: "1" });
+  });
+
   it("wakes one stale pending review per reviewer when no run or wake exists", async () => {
     // myrmidon(OPE-12886): the default fixture age is fresh (< stale window),
     // so the stale-first rows carry an explicit old updatedAt — as on the

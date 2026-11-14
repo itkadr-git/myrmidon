@@ -313,6 +313,17 @@ export function createReviewRoutingSweep(deps: ReviewRoutingSweepDeps): ReviewRo
     const reviewersWoken = new Set<string>();
     for (const { row, review } of orderedPending) {
       if (reviewersWoken.has(review.reviewerAgentId)) continue;
+      const prProduct = await deps.store.findPrWorkProduct(companyId, row.id);
+      if (prProduct && deps.prResolver) {
+        try {
+          const head = await deps.prResolver.resolve({ companyId, repository: prProduct.repository, number: prProduct.number });
+          // CI admission applies only to the exact PR head attached to this task.
+          if (head.fetchFailed || head.headSha !== prProduct.headSha || head.ci !== "green") continue;
+        } catch (err) {
+          log.warn({ err, issueId: row.id }, "failed to resolve PR head before reviewer wake");
+          continue;
+        }
+      }
       // myrmidon(OPE-12886): liveness is about runs, not queue depth. On the
       // incident of 13.11 every reviewer sat idle (0 runs) behind 4-7 assigned
       // in_review tasks, so any load-derived skip here skipped ALL of them:

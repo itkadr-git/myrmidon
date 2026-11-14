@@ -202,7 +202,7 @@ describe("readReviewAdmissionDecision", () => {
     expect(r.resolveHeadFailedChecks).not.toHaveBeenCalled();
   });
 
-  it("waits for CI while the head CI is pending", async () => {
+  it("does not admit a head with an early failed job while other CI checks are still running", async () => {
     const r = reads({ state: "pending", pullRequestUrl: PR_URL, headSha: HEAD });
     await expect(readReviewAdmissionDecision({ ...base, ...r })).resolves.toBe("wait_for_ci");
     expect(r.resolveCi).toHaveBeenCalledWith({ companyId: "company-1", issueId: "issue-1" });
