@@ -1490,6 +1490,61 @@ describe("runner task folders", () => {
     }
   });
 
+  // Shared by the two failing-archive tests: fake tar/zstd on PATH, a fake board that says "done".
+  const runWithFakeArchiveTools = async (name, { tarBody, zstdBody }, envExtra = {}) => {
+    const runners = path.join(tmpDir, "runners");
+    const unpushed = makeTaskFolder(runners, "eng21", name, { ageHours: 30, ahead: true });
+    const fakeBin = path.join(tmpDir, "fakebin2");
+    fs.mkdirSync(fakeBin, { recursive: true });
+    fs.writeFileSync(path.join(fakeBin, "zstd"), zstdBody, { mode: 0o755 });
+    fs.writeFileSync(path.join(fakeBin, "tar"), tarBody, { mode: 0o755 });
+    const http = await import("node:http");
+    const fake = http.createServer((req, res) => {
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ status: "done" }));
+    });
+    await new Promise((resolve) => fake.listen(0, "127.0.0.1", resolve));
+    try {
+      const out = await runGcTask(["--apply", "--runner-root", runners], {
+        PAPERCLIP_API_URL: `http://127.0.0.1:${fake.address().port}`,
+        PATH: `${fakeBin}:/usr/bin:/bin`,
+        ...envExtra,
+      });
+      const archiveDir = path.join(runners, ".gc-archive");
+      const left = fs.existsSync(archiveDir) ? fs.readdirSync(archiveDir).filter((n) => n.startsWith(`${name}-`)) : [];
+      return { ...out, unpushed, left, failed: out.events.find((e) => e.event === "runner-task-folder-archive-failed" && e.path === unpushed) };
+    } finally {
+      fake.close();
+    }
+  };
+
+  it("e2e: a hanging tar is killed by the archive timeout, no archive is left, the journal says timed out", async () => {
+    const started = Date.now();
+    // tar.gz branch (fake zstd refuses --version); the fake tar writes a partial file and then hangs.
+    const { res, unpushed, left, failed } = await runWithFakeArchiveTools("OPE-9302", {
+      zstdBody: "#!/bin/sh\nexit 1\n",
+      tarBody: "#!/bin/sh\nhead -c 1024 /dev/zero > \"$2\"\nsleep 60\n",
+    }, { HOST_GC_ARCHIVE_TIMEOUT_SECONDS: "2" });
+    assert.equal(res.status, 0, res.stderr);
+    assert.ok(Date.now() - started < 40_000, "the hang was cut short by the timeout");
+    assert.equal(fs.existsSync(unpushed), true, "folder stays");
+    assert.deepEqual(left, [], "no partial archive remains");
+    assert.ok(failed, "failure journaled");
+    assert.match(failed.error, /timed out after 2 s/);
+  });
+
+  it("e2e: pipefail: tar fails (exit 2) while zstd succeeds, the failure is not masked", async () => {
+    const { res, unpushed, left, failed } = await runWithFakeArchiveTools("OPE-9303", {
+      zstdBody: "#!/bin/sh\n[ \"$1\" = \"--version\" ] && exit 0\ncat > \"$3\"\nexit 0\n",
+      tarBody: "#!/bin/sh\nexit 2\n",
+    });
+    assert.equal(res.status, 0, res.stderr);
+    assert.equal(fs.existsSync(unpushed), true, "folder stays");
+    assert.deepEqual(left, [], "no archive remains");
+    assert.ok(failed, "failure journaled");
+    assert.match(failed.error, /exit code 2/);
+  });
+
   it("e2e: an unreachable board keeps every folder (fail-closed apply)", async () => {
     const runners = path.join(tmpDir, "runners");
     const clean = makeTaskFolder(runners, "eng21", "OPE-9101", { ageHours: 30 });

@@ -213,7 +213,7 @@ configured (`--runner-root` / `HOST_GC_RUNNER_ROOTS`), per the same host matrix.
   is removed outright (`no-git-repos`).
 - Unpushed work, or a git state that cannot be proven from the host (a worktree whose gitdir
   is gone fails every git command) → the folder is archived to `<runner root>/.gc-archive/`
-  first (zstd/tar.gz + verification; `node_modules`, `.pnpm-store`, `.turbo`, `dist`, `.next` and `coverage` are excluded, `.git` and working files are kept; the 600 s limit failure is journaled as `timed out after 600 s`) and removed only after the archive verifies — the archive
+  first (zstd/tar.gz + verification; `node_modules`, `.pnpm-store`, `.turbo`, `dist`, `.next` and `coverage` are excluded, `.git` and working files are kept; the 600 s limit failure is the pipeline runs under `timeout` (kill-after 10 s, so `tar`/`zstd` die with it) with `pipefail`; a timeout is journaled as `timed out after 600 s`) and removed only after the archive verifies — the archive
   is the safety net for work the host could not inspect.
 - Every removal is guarded against the runner root (`runner-task-folder-remove-failed` on a
   containment violation); a missing root is journaled as `runner-folder-root-missing`, an
