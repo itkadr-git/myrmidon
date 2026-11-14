@@ -813,7 +813,7 @@ describe("PaperclipRunnerToolAuthority", () => {
       scheduledWakeIds: [],
       task: { parentId: issueId, status: "blocked", assigneeActorId: agentId },
     });
-    expect(wakes).toHaveLength(1);
+    expect(wakes).toHaveLength(2);
     await expect(
       issueService(db).getRelationSummaries(issueId),
     ).resolves.toMatchObject({
