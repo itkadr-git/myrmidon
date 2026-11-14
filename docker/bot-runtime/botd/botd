@@ -116,7 +116,7 @@ function measureVolume() {
   if (typeof fs.statfsSync !== "function") return null;
   const s = fs.statfsSync(WORKSPACE_DIR);
   const bsize = Number(s.bsize);
-  return { totalBytes: Number(s.blocks) * bsize, usedBytes: (Number(s.blocks) - Number(s.bfree)) * bsize };
+  return { totalBytes: Number(s.blocks) * bsize, usedBytes: (Number(s.blocks) - Number(s.bavail)) * bsize };
 }
 
 function writeDiskState(state) {

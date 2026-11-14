@@ -308,58 +308,59 @@ describe("GET /api/myrmidon/bots/me/workspaces", () => {
     expect(keys).not.toContain("ABC-1");
   });
 
-  // myrmidon(OPE-13107): a reviewer's copy is released once its review stage is over.
+  // myrmidon(OPE-13107): a reviewer's copy is released once its review stage has moved on.
   describe("reviewer copies after the review stage", () => {
     const executor = { type: "agent", agentId: OTHER_BOT_ID };
-    const reviewing = (over: Record<string, unknown>) => ({
-      status: "in_review",
-      currentParticipant: { type: "agent", agentId: BOT_ID },
+    const THIRD = "55555555-5555-4555-8555-555555555555";
+    const stage = (over: Record<string, unknown>) => ({
+      status: "pending",
+      currentParticipant: { type: "agent", agentId: THIRD },
       returnAssignee: executor,
       ...over,
     });
 
-    it("keeps the copy while this bot is the current review participant", async () => {
-      const row = issue({ identifier: "ABC-7", status: "in_review", executionState: reviewing({}) });
-      const res = await request(harness({ issues: [row] }).app(botActor)).get(URL);
-      expect(res.body.protectKeys).toEqual(["ABC-7"]);
-      expect(res.body.closedKeys).toEqual([]);
-      expect(res.body.workspaces[0].state).toBe("active");
-    });
-
-    it("releases the copy when the stage went to another participant", async () => {
-      const row = issue({
-        identifier: "ABC-7",
-        status: "in_review",
-        executionState: reviewing({ currentParticipant: { type: "agent", agentId: "55555555-5555-4555-8555-555555555555" } }),
-      });
+    it("releases the copy: in_review, the stage went to another participant, the bot is not the executor", async () => {
+      const row = issue({ identifier: "ABC-7", status: "in_review", assigneeAgentId: OTHER_BOT_ID, executionState: stage({}) });
       const res = await request(harness({ issues: [row] }).app(botActor)).get(URL);
       expect(res.body.protectKeys).toEqual([]);
       expect(res.body.closedKeys).toEqual(["ABC-7"]);
       expect(res.body.workspaces[0].state).toBe("closing");
     });
 
-    it("releases the copy when the task is no longer in_review", async () => {
-      const row = issue({ identifier: "ABC-8", status: "in_progress", executionState: reviewing({}) });
-      const res = await request(harness({ issues: [row] }).app(botActor)).get(URL);
-      expect(res.body.protectKeys).toEqual([]);
-      expect(res.body.closedKeys).toEqual(["ABC-8"]);
-    });
-
-    it("the executor keeps the copy: returnAssignee is this bot, the participant is someone else", async () => {
+    it("keeps the copy while this bot is the current participant", async () => {
       const row = issue({
-        identifier: "ABC-9",
+        identifier: "ABC-7",
         status: "in_review",
-        executionState: { status: "pending", returnAssignee: { type: "agent", agentId: BOT_ID }, currentParticipant: executor },
+        assigneeAgentId: OTHER_BOT_ID,
+        executionState: stage({ currentParticipant: { type: "agent", agentId: BOT_ID } }),
       });
       const res = await request(harness({ issues: [row] }).app(botActor)).get(URL);
-      expect(res.body.protectKeys).toEqual(["ABC-9"]);
       expect(res.body.closedKeys).toEqual([]);
     });
 
-    it("a task without an execution state is never released", async () => {
-      const row = issue({ identifier: "ABC-10", status: "in_review" });
+    it("never closes the assignee's copy: in_progress with a stale returnAssignee of another agent", async () => {
+      const row = issue({ identifier: "ABC-8", status: "in_progress", executionState: stage({}) });
       const res = await request(harness({ issues: [row] }).app(botActor)).get(URL);
-      expect(res.body.protectKeys).toEqual(["ABC-10"]);
+      expect(res.body.protectKeys).toEqual(["ABC-8"]);
+      expect(res.body.closedKeys).toEqual([]);
+      expect(res.body.workspaces[0].state).toBe("active");
+    });
+
+    it("never closes the assignee's copy in review either, nor a blocked one", async () => {
+      const rows = [
+        issue({ identifier: "ABC-9", status: "in_review", executionState: stage({}) }),
+        issue({ identifier: "ABC-10", status: "blocked", executionState: stage({}) }),
+      ];
+      const res = await request(harness({ issues: rows }).app(botActor)).get(URL);
+      expect(res.body.closedKeys).toEqual([]);
+    });
+
+    it("a task without a pending execution state is never released", async () => {
+      const rows = [
+        issue({ identifier: "ABC-11", status: "in_review", assigneeAgentId: OTHER_BOT_ID }),
+        issue({ identifier: "ABC-12", status: "in_review", assigneeAgentId: OTHER_BOT_ID, executionState: stage({ status: "idle" }) }),
+      ];
+      const res = await request(harness({ issues: rows }).app(botActor)).get(URL);
       expect(res.body.closedKeys).toEqual([]);
     });
   });

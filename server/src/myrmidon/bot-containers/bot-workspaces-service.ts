@@ -173,7 +173,7 @@ export function botWorkspacesService(deps: BotWorkspacesServiceDeps) {
             (row) =>
               row.status !== "done" &&
               row.status !== "cancelled" &&
-              reviewStageEndedFor({ botAgentId: input.agentId, status: row.status, executionState: row.executionState }),
+              reviewStageEndedFor({ botAgentId: input.agentId, status: row.status, assigneeAgentId: row.assigneeAgentId, executionState: row.executionState }),
           )
           .map((row) => row.identifier as string),
       );

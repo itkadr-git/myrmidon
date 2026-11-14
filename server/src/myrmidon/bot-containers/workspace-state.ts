@@ -69,22 +69,22 @@ export function workspaceStateOf(
 }
 
 /**
- * myrmidon(OPE-13107): the copy of a REVIEWER is released when its review stage is over.
- * The bot is a reviewer, not the executor, when the task's execution state names another
- * agent as `returnAssignee`. Its review stage is over when the task is no longer
- * `in_review` or the current participant is no longer this bot. The executor's rule is
- * unchanged, and an unknown execution state never closes anything.
+ * myrmidon(OPE-13107): the copy of a REVIEWER is released when its review stage has moved on.
+ * True only when the task is `in_review`, the execution state is `pending`, the current
+ * participant is not this bot and this bot is not the task's assignee (executor). Every other
+ * case (any other status, a stale `returnAssignee`, an unknown state) keeps the copy:
+ * reassignment is already caught by `workspaceStateOf`.
  */
 export function reviewStageEndedFor(input: {
   botAgentId: string;
   status: string;
+  assigneeAgentId: string | null;
   executionState?: Record<string, unknown> | null;
 }): boolean {
+  if (input.status !== "in_review") return false;
+  if (input.assigneeAgentId === input.botAgentId) return false;
   const state = input.executionState;
-  if (!state || typeof state !== "object") return false;
-  const ret = state.returnAssignee as { type?: string; agentId?: string | null } | null | undefined;
-  if (!ret || ret.type !== "agent" || !ret.agentId || ret.agentId === input.botAgentId) return false;
-  if (input.status !== "in_review") return true;
+  if (!state || typeof state !== "object" || state.status !== "pending") return false;
   const cur = state.currentParticipant as { type?: string; agentId?: string | null } | null | undefined;
   return !(cur && cur.type === "agent" && cur.agentId === input.botAgentId);
 }

@@ -710,6 +710,16 @@ describe("botd loop: bot volume pressure", () => {
     assert.match(r.states[0].warning, /no partition measurement/);
   });
 
+  it("an older board without partitionMeasured: the 0 / none / null triple means no data, botd measures", async () => {
+    const r = rig({
+      desired: { ok: true, state: desiredState({ pressure: { quotaPercent: null, partitionPercent: 0, level: "none" } }) },
+      measureVolume: async () => ({ totalBytes: 100 * GB, usedBytes: 86 * GB }),
+    });
+    await r.loop.runOnce();
+    assert.ok(r.states[0].partitionPercent >= 85);
+    assert.equal(r.states[0].pressure, "soft");
+  });
+
   it("a measured board answer is not overridden by the local volume", async () => {
     const r = rig({
       desired: { ok: true, state: desiredState({ pressure: { quotaPercent: null, partitionPercent: 55, level: "none", partitionMeasured: true } }) },
