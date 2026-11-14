@@ -18,7 +18,7 @@ import { readReviewRoutingSignals, replaceReviewRoutingSignals, resetReviewRouti
 import type { CreatePrRoutingTaskInput, InReviewIssueRow, PrCandidateRow, PrRoutingKind, ReviewRoutingStore, RoutingHistory } from "./store.js";
 import type { PrRoutedTask } from "./pr-policy.js";
 import type { RoutingIssue } from "./policy.js";
-import { createReviewRoutingSweep, REVIEW_WAKE_MAX_ATTEMPTS, REVIEW_WAKE_MAX_BACKOFF_MS, REVIEW_WAKE_REARM_AFTER_MS, REVIEW_WAKE_RETRY_BACKOFF_MS } from "./sweep.js";
+import { createReviewRoutingSweep, REVIEW_WAKE_MAX_ATTEMPTS, REVIEW_WAKE_MAX_BACKOFF_MS, REVIEW_WAKE_REARM_AFTER_MS, REVIEW_WAKE_RETRY_BACKOFF_MS, REVIEW_WAKE_STALE_AFTER_MS } from "./sweep.js";
 import type { PullRequestHeadResolver } from "./github.js";
 import type { BoardMergeClient } from "./github-board-merge.js";
 import type { BoardMergeFacts, PullRequestHeadState } from "./pr-policy.js";
@@ -245,6 +245,41 @@ describe("review wake liveness", () => {
     expect(t.wakes[0]).toMatchObject({ agentId: REV_A, issueId: "1", retryAttempt: 1 });
     expect(t.activities).toEqual([]);
     expect(t.fixture.history.get("1")).toBeUndefined();
+  });
+
+  it("wakes reviewer after completed run without verdict once stale threshold passes (OPE-13070)", async () => {
+    // 1. Reviewer woken by green CI (no REVIEW_ROUTING_WAKE_ACTION), run completed succeeded,
+    // review stage stays pending, updatedAt is the moment the run ended.
+    const runFinishedAt = NOW;
+    const t = setup({}, {
+      wakeStates: new Map([
+        ["1", { activeRun: false, pendingWake: false, lastWakeAt: null, attempts: 0 }],
+      ]),
+    });
+    t.fixture.rows.set("1", pending("1", REV_A, {
+      createdAt: new Date(runFinishedAt.getTime() - 60 * 60_000),
+      updatedAt: runFinishedAt,
+    }));
+
+    // 2. Pass earlier than REVIEW_WAKE_STALE_AFTER_MS after run ended: no wake.
+    const earlyPass = new Date(runFinishedAt.getTime() + REVIEW_WAKE_STALE_AFTER_MS - 60_000);
+    const earlyResult = await t.sweep.sweep(earlyPass, { force: true });
+    expect(earlyResult.woken).toBe(0);
+    expect(t.wakes).toHaveLength(0);
+
+    // 3. Pass after REVIEW_WAKE_STALE_AFTER_MS: exactly one wake for this reviewer/task.
+    const stalePass = new Date(runFinishedAt.getTime() + REVIEW_WAKE_STALE_AFTER_MS + 60_000);
+    const staleResult = await t.sweep.sweep(stalePass, { force: true });
+    expect(staleResult.woken).toBe(1);
+    expect(t.wakes).toHaveLength(1);
+    expect(t.wakes[0]).toMatchObject({ agentId: REV_A, issueId: "1", retryAttempt: 1 });
+
+    // 4. Second pass immediately after: no wake (REVIEW_WAKE_RETRY_BACKOFF_MS applies).
+    t.fixture.wakeStates!.set("1", { ...t.fixture.wakeStates!.get("1")!, pendingWake: false });
+    const immediatelyAfter = new Date(stalePass.getTime() + 60_000);
+    const secondResult = await t.sweep.sweep(immediatelyAfter, { force: true });
+    expect(secondResult.woken).toBe(0);
+    expect(t.wakes).toHaveLength(1);
   });
 
   it("records one wake activity event for a successful retry", async () => {
