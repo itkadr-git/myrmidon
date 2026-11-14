@@ -1,5 +1,4 @@
 import { supportsLocalAiLogin } from "../services/local-ai-login-policy.js";
-import { readVerifiedLocalAiCredential } from "../services/local-ai-credentials.js";
 import { localAiLoginService } from "../services/local-ai-login.js";
 import { z } from "zod";
 import { Router, type Request } from "express";
@@ -308,6 +307,7 @@ export function aiConnectionRoutes(db: Db, options: Parameters<typeof supportsLo
         return;
       }
       const attemptStartedAt = new Date();
+      const { readVerifiedLocalAiCredential } = await import("../services/local-ai-credentials.js");
       const credential = await readVerifiedLocalAiCredential(input.provider);
       res.status(201).json(await service.save(companyId, userId, input, credential, undefined, attemptStartedAt));
     },
