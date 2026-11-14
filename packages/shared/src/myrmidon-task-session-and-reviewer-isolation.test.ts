@@ -382,6 +382,26 @@ describe("myrmidon-task-session-and-reviewer-isolation", () => {
       expect(threat.detectedThreats.length).toBeGreaterThan(0);
     });
 
+    it("sanitizeSecrets masks the whole Authorization-like header value", () => {
+      const long = "A1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6Q7r8S9t0";
+      const out = sanitizeSecrets(
+        [
+          `Authorization: Bearer ${long}`,
+          "Authorization: token abc",
+          "authorization: basic dXNlcjpwYXNz",
+          "X-Api-Key: k123456",
+          "Set-Cookie: sid=zzz999; Path=/",
+          "next log line stays",
+        ].join("\n"),
+      );
+      for (const leaked of [long, "abc", "dXNlcjpwYXNz", "k123456", "zzz999"]) {
+        expect(out).not.toContain(leaked);
+      }
+      expect(out).toContain("Authorization: <redacted_secret>");
+      expect(out.split("\n").pop()).toBe("next log line stays");
+      expect(out.split("\n")).toHaveLength(6);
+    });
+
     it("sanitizeSecrets masks GitHub, OpenAI-style, Authorization, URL password and AWS secrets", () => {
       const gho = ["gh", "o_"].join("") + "A1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6Q7r8";
       const ghu = ["gh", "u_"].join("") + "A1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6Q7r8";

@@ -390,7 +390,6 @@ const SECRET_PATTERNS = [
   /-----BEGIN\s+(?:RSA|OPENSSH|EC|PRIVATE)\s+KEY-----[\s\S]*?-----END/gi,
   new RegExp(["gh", "[ousr]_[A-Za-z0-9]{30,}"].join(""), "g"),
   new RegExp(["\\b", "sk", "-[A-Za-z0-9_-]{20,}"].join(""), "g"),
-  /Authorization:\s*\S+(?:\s+\S+)?/gi,
   /\b(?:AKIA|ASIA)[A-Z0-9]{16}\b/g,
   /aws_secret_access_key\s*[=:]\s*\S+/gi,
 ];
@@ -398,6 +397,11 @@ const SECRET_PATTERNS = [
 // Patterns that keep a non-secret prefix: [pattern, replacement].
 const SECRET_PATTERNS_WITH_REPLACEMENT: ReadonlyArray<readonly [RegExp, string]> = [
   // Password inside a URL: https://user:pass@host -> https://<redacted_secret>@host
+  // Whole header value up to end of line, whatever the scheme (Bearer/token/Basic/raw).
+  [
+    /\b(Authorization|Proxy-Authorization|X-Api-Key|Api-Key|X-Auth-Token|Cookie|Set-Cookie)\s*:[ \t]*[^\r\n]*/gi,
+    "$1: <redacted_secret>",
+  ],
   [/(https?:\/\/)[^\s:@\/]+:[^\s@\/]+@/g, "$1<redacted_secret>@"],
 ];
 
