@@ -312,6 +312,31 @@ describe("consolidation pass", () => {
     );
   });
 
+  it("rejects malformed optional limits and checkpoints before making client calls", async () => {
+    const hindsight = mockHindsight();
+    const c = client(hindsight);
+    const invalidOptions = [
+      { pageSize: 0 },
+      { pageSize: 1.5 },
+      { pageSize: 501 },
+      { modelPageSize: -1 },
+      { modelPageSize: Number.NaN },
+      { maxModelRefreshes: -1 },
+      { maxModelRefreshes: 1.5 },
+      { checkpoint: { documentOffset: -1, documentTotal: 0 } },
+      { checkpoint: { documentOffset: 0, documentTotal: -1 } },
+    ];
+
+    for (const invalid of invalidOptions) {
+      await assert.rejects(runConsolidationPass(c, {
+        bankId: BANK,
+        timeBudgetMs: 1_000,
+        ...invalid,
+      }));
+    }
+    assert.equal(hindsight.calls.length, 0);
+  });
+
   it("a failed consolidation trigger does not lose the walk or the checkpoint", async () => {
     const hindsight = mockHindsight({ documents: 2, models: [] });
     // Break only the consolidate endpoint: the pass must still complete.
