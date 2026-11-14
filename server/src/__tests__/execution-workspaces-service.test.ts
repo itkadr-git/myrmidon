@@ -780,7 +780,8 @@ describeEmbeddedPostgres("executionWorkspaceService.getCloseReadiness", () => {
       .select({ status: executionWorkspaces.status })
       .from(executionWorkspaces)
       .where(eq(executionWorkspaces.id, seeded.executionWorkspaceId));
-    expect(next).toMatchObject({ archived: 1 });
+    // Row A and the neighbour's own row B (its source issue is now done too).
+    expect(next).toMatchObject({ archived: 2 });
     expect(after?.status).toBe("archived");
   }, 20_000);
 
@@ -983,6 +984,12 @@ describeEmbeddedPostgres("executionWorkspaceService.getCloseReadiness", () => {
 
     // An isolated row is still picked up inside the pause.
     const isolated = await seedTerminalWorkspace({ mergedPr: true });
+    // The injected clock is frozen, so the rotation bound sits at its value: place
+    // the isolated row before it, otherwise the bound hides a just-seeded row.
+    await db
+      .update(executionWorkspaces)
+      .set({ updatedAt: new Date(clock - 5000) })
+      .where(eq(executionWorkspaces.id, isolated.executionWorkspaceId));
     const third = await sweeper.sweepTerminalWorkspaces(50, 2);
     expect(third.checked).toBe(1);
 
