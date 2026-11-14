@@ -104,7 +104,7 @@ export async function appendAgentRecoveryJournal<T = unknown>(
       const placement = await agentPlacement(tx as unknown as Db, input.agentId, input.companyId);
       const maintenance = await readMaintenanceDocument(tx as unknown as Db);
       const rawWindows = Array.isArray(maintenance?.windows)
-        ? (maintenance.windows as Array<Record<string, unknown>>)
+        ? (maintenance.windows as unknown as Array<Record<string, unknown>>)
         : [];
       const timedOrCustomSuppressed = rawWindows.some((window) => {
         const scope = (window.scope && typeof window.scope === "object" ? window.scope : {}) as Record<string, unknown>;
