@@ -2,7 +2,7 @@ diff --git a/gateway/run.py b/gateway/run.py
 index cfe3a89..af611f4 100644
 --- a/gateway/run.py
 +++ b/gateway/run.py
-@@ -4662,7 +4662,23 @@ def _profile_sessions_dir(launch: Optional[Tuple[Path, Path]]) -> Path:
+@@ -4662,7 +4662,23 @@
      return home / "sessions"
  
  
@@ -27,17 +27,18 @@ index cfe3a89..af611f4 100644
      """Stale-session auto-archive plus auto-prune/VACUUM for ONE profile's state.db; both are gated
      by sessions.min_interval_hours (VACUUM additionally by its own throttles). Opens its own
      SessionDB — SQLite connections are thread-bound.
-@@ -4690,7 +4706,8 @@ def _housekeeping_state_db_maintenance(launch: Optional[Tuple[Path, Path]] = Non
+@@ -4690,7 +4706,9 @@
                  min_interval_hours=int(_sess_cfg.get("min_interval_hours", 24)),
                  min_vacuum_interval_days=int(_sess_cfg.get("min_vacuum_interval_days", 30)),
                  vacuum=bool(_sess_cfg.get("vacuum_after_prune", True)),
 -                sessions_dir=_profile_sessions_dir(launch))
++                vacuum_growth_trigger=float(_sess_cfg.get("vacuum_growth_trigger", 1.0)),
 +                sessions_dir=_profile_sessions_dir(launch),
 +                vacuum_defer=lambda: _vacuum_defer_reason(runner))
      finally:
          release_or_close(_adb)
  
-@@ -4788,8 +4805,8 @@ def _start_gateway_housekeeping(
+@@ -4788,8 +4805,8 @@
          (60, "state.db maintenance tick", profile_scoped_chore(
              runner,
              # Default-bound now, i.e. OUTSIDE any profile scope: this is the launch home's override.
@@ -65,7 +66,7 @@ index a87b6f5..51152be 100644
  
  from hermes_state_common import (
      AUTO_VACUUM_MIN_FREELIST_RATIO, _id_chunks, _placeholders, _sql_session_last_active, escape_like as _escape_like
-@@ -42,6 +44,34 @@ def _seconds_since(now: float, raw) -> Optional[float]:
+@@ -42,6 +44,34 @@
          return None
  
  
@@ -100,7 +101,7 @@ index a87b6f5..51152be 100644
  # Prune/archive filters in evaluation order: (kwarg, applies-when, builder -> (clauses, params)).
  # ``applies-when``: "notnone" (numeric/time bounds; 0 is a real bound) or "truthy" ("" = unset).
  _PRUNE_FILTERS = (
-@@ -368,16 +398,101 @@ class SessionMaintenanceMixin:
+@@ -368,16 +398,138 @@
              self._record_db_file_identity()
          return optimized
  
@@ -182,10 +183,41 @@ index a87b6f5..51152be 100644
 +                return reason
 +        return self._vacuum_space_error()
 +
++    def _size_growth_since_vacuum(self) -> Optional[float]:
++        """How much the file has grown since the last VACUUM, as a fraction of the
++        post-VACUUM size (e.g. 1.0 = the file doubled).  None when there is no
++        recorded baseline (no VACUUM yet, or the size cannot be read).
++        myrmidon: after a VACUUM the file holds only live data, so the
++        post-VACUUM size is the baseline; a large growth means a high-water mark
++        from deleted sessions whose pages were reused in place."""
++        raw = self.get_meta("last_vacuum_size_bytes")
++        if raw is None:
++            return None
++        try:
++            baseline = float(raw)
++        except (TypeError, ValueError):
++            return None
++        if baseline <= 0:
++            return None
++        current = self.logical_size_bytes()
++        if current is None:
++            return None
++        return (current - baseline) / baseline
++
++    def _vacuum_size_triggered(self, vacuum_growth_trigger: float) -> bool:
++        """Whether the file has grown enough since the last VACUUM to justify another
++        one, even when the freelist is small.  False when there is no baseline yet
++        (then the freelist ratio is the only signal)."""
++        growth = self._size_growth_since_vacuum()
++        if growth is None:
++            return False
++        return growth >= vacuum_growth_trigger
++
      def maybe_auto_prune_and_vacuum(
          self, retention_days: int = 90, min_interval_hours: int = 24, vacuum: bool = True,
          sessions_dir: Optional[Path] = None, min_vacuum_interval_days: int = 30,
          min_vacuum_freelist_ratio: float = AUTO_VACUUM_MIN_FREELIST_RATIO,
++        vacuum_growth_trigger: float = 1.0,
 +        vacuum_defer: Optional[Callable[[], Optional[str]]] = None,
      ) -> Dict[str, Any]:
          """Idempotent startup auto-maintenance (never raises): prune inactive sessions, reap stale open
@@ -195,15 +227,21 @@ index a87b6f5..51152be 100644
 -        rewrite.  Stale-open reconciliation: cron/kanban/subagent/one-shot CLI rows never set ``ended_at``
 +        rewrite.  myrmidon(G1): the VACUUM no longer needs the prune to have deleted rows in this very
 +        pass (``pruned > 0``): whatever was freed earlier, by this prune, by another process or by an API
-+        delete, is reclaimed once the ratio is reached.  It waits (and the whole pass is retried by the next
-+        housekeeping tick instead of the next ``min_interval_hours``) while a turn holds a session turn lease,
-+        while *vacuum_defer* returns a reason (the gateway passes "a turn is running"), and while the volume
++        delete, is reclaimed once the ratio is reached.  It fires when either ``freelist_count / page_count`` >
++        ``min_vacuum_freelist_ratio`` (many free pages) OR the file has grown by more than
++        ``vacuum_growth_trigger`` since the last VACUUM (high-water mark from steady write/delete cycles
++        where SQLite reuses pages in-place and the freelist never gets large).  myrmidon: the
++        size trigger catches the common bot pattern — sessions are pruned by the startup retention pass,
++        but the file keeps its high-water mark because new sessions reuse the freed pages before the
++        freelist reaches 25 %.  It waits (and the whole pass is retried by the next housekeeping tick
++        instead of the next ``min_interval_hours``) while a turn holds a session turn lease, while
++        *vacuum_defer* returns a reason (the gateway passes "a turn is running"), and while the volume
 +        cannot hold the rewrite (see :meth:`_vacuum_space_error`); the reason is in ``"vacuum_skipped"``.
 +        Stale-open reconciliation: cron/kanban/subagent/one-shot CLI rows never set ``ended_at``
          when their process dies and prune only deletes ended rows, so after pruning, open rows from
          :attr:`_AUTO_PRUNE_STALE_OPEN_SOURCES` older than ``retention_days`` are closed
          (``startup_orphan_reap``); they stay resumable and age from their close.  Returns ``{"skipped",
-@@ -427,45 +542,50 @@ class SessionMaintenanceMixin:
+@@ -427,45 +542,57 @@
                  respect_gateway_heartbeats=False,  # state-owned lifecycles, not gateway heartbeats
              )
              result["closed"] = len(closed)
@@ -245,13 +283,21 @@ index a87b6f5..51152be 100644
 -                    except Exception as exc:
 -                        logger.warning("state.db VACUUM failed: %s", exc)
 -                else:
-+                if ratio is not None and ratio <= min_vacuum_freelist_ratio:
-                     logger.debug("state.db auto-maintenance: skipping VACUUM, only "
-                                  "%.1f%% of pages reclaimable (threshold %.0f%%)",
-                                  ratio * 100.0, min_vacuum_freelist_ratio * 100.0)
+-                    logger.debug("state.db auto-maintenance: skipping VACUUM, only "
+-                                 "%.1f%% of pages reclaimable (threshold %.0f%%)",
+-                                 ratio * 100.0, min_vacuum_freelist_ratio * 100.0)
++                size_triggered = self._vacuum_size_triggered(vacuum_growth_trigger)
++                if (ratio is not None and ratio <= min_vacuum_freelist_ratio
++                        and not size_triggered):
++                    logger.debug("state.db auto-maintenance: skipping VACUUM, only "
++                                 "%.1f%% of pages reclaimable (threshold %.0f%%), "
++                                 "size growth %.0f%% < %.0f%%",
++                                 ratio * 100.0, min_vacuum_freelist_ratio * 100.0,
++                                 (self._size_growth_since_vacuum() or 0.0) * 100.0,
++                                 vacuum_growth_trigger * 100.0)
 -            # Record even when pruned == 0 so the throttle holds.
 -            self.set_meta("last_auto_prune", str(now))
-+                elif ratio is None and pruned <= 0:
++                elif ratio is None and pruned <= 0 and not size_triggered:
 +                    logger.debug("state.db auto-maintenance: skipping VACUUM, the page counts are unreadable")
 +                else:
 +                    reason = self._vacuum_skip_reason(vacuum_defer, result)
@@ -274,6 +320,8 @@ index a87b6f5..51152be 100644
 +                            result["vacuumed"] = True
 +                            self.set_meta("last_vacuum", str(now))
 +                            size_after = self.logical_size_bytes()
++                            if size_after is not None:
++                                self.set_meta("last_vacuum_size_bytes", str(size_after))
 +                            if size_before is not None and size_after is not None:
 +                                logger.info("state.db VACUUM: %.0f MB -> %.0f MB (%.1f%% of pages were free)",
 +                                            size_before / 1e6, size_after / 1e6,
