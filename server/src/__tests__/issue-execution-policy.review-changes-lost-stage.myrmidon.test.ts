@@ -92,4 +92,51 @@ describe("issue execution policy: changes requested when stage missing from poli
       changesRequestedCount: 2,
     });
   });
+
+  it("throws when comment is missing or whitespace with empty stages policy", () => {
+    const policy = normalizeIssueExecutionPolicy({
+      stages: [],
+    });
+    expect(() =>
+      applyIssueExecutionPolicyTransition({
+        issue: {
+          id: "issue-1",
+          companyId: "company-1",
+          status: "in_review",
+          assigneeAgentId: reviewerAgentId,
+          assigneeUserId: null,
+          executionPolicy: policy,
+          executionState: createPendingState(0),
+        },
+        policy,
+        previousPolicy: policy,
+        requestedStatus: "in_progress",
+        requestedAssigneePatch: {},
+        actor: { agentId: reviewerAgentId },
+        commentBody: "   ",
+      }),
+    ).toThrow(/requires a comment/);
+  });
+
+  it("throws when comment is missing or whitespace with null policy", () => {
+    expect(() =>
+      applyIssueExecutionPolicyTransition({
+        issue: {
+          id: "issue-2",
+          companyId: "company-1",
+          status: "in_review",
+          assigneeAgentId: reviewerAgentId,
+          assigneeUserId: null,
+          executionPolicy: null,
+          executionState: createPendingState(0),
+        },
+        policy: null,
+        previousPolicy: null,
+        requestedStatus: "in_progress",
+        requestedAssigneePatch: {},
+        actor: { agentId: reviewerAgentId },
+        commentBody: "",
+      }),
+    ).toThrow(/requires a comment/);
+  });
 });

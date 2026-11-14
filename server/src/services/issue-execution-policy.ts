@@ -1027,10 +1027,12 @@ function requestChangesOrphanedPendingReviewStage(
     existingState.currentStageType !== "review" ||
     !existingState.currentStageId ||
     !existingState.currentParticipant ||
-    !principalsEqual(existingState.currentParticipant, actor) ||
-    !input.commentBody?.trim()
+    !principalsEqual(existingState.currentParticipant, actor)
   ) {
     return null;
+  }
+  if (!input.commentBody?.trim()) {
+    throw unprocessable(`Requesting changes requires a comment. ${STAGE_DECISION_COMMENT_HINT}`);
   }
   if (!existingState.returnAssignee) {
     throw unprocessable("This execution stage has no return assignee");

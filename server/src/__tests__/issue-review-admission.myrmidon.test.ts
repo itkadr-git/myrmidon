@@ -334,6 +334,103 @@ describeEmbeddedPostgres("myrmidon review admission atomic wake persistence", ()
     });
   });
 
+  it("rejects changes_requested with 422 when comment is missing on lost-stage policy", async () => {
+    const { companyId } = await seedCompanyWithBoardAccess(ctx.db, "Review changes requested missing comment");
+    const authorAgentId = randomUUID();
+    const reviewerAgentId = randomUUID();
+    await ctx.db.insert(agents).values({
+      id: authorAgentId,
+      companyId,
+      name: "adm-dev-eng-2",
+      metadata: { telegramGroup: "adm" },
+      role: "engineer",
+      status: "idle",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+    await ctx.db.insert(agents).values({
+      id: reviewerAgentId,
+      companyId,
+      name: "adm-dev-review-2",
+      metadata: { telegramGroup: "adm" },
+      role: "reviewer",
+      status: "idle",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+    const issueId = randomUUID();
+    const stageId = randomUUID();
+    await ctx.db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Review changes requested missing comment on lost stage",
+      status: "in_review",
+      priority: "medium",
+      assigneeAgentId: reviewerAgentId,
+      createdByAgentId: authorAgentId,
+      executionPolicy: { mode: "normal", stages: [] } as any,
+      executionState: {
+        status: "pending",
+        currentStageId: stageId,
+        currentStageIndex: 0,
+        currentStageType: "review",
+        currentParticipant: { type: "agent", agentId: reviewerAgentId },
+        returnAssignee: { type: "agent", agentId: authorAgentId },
+        completedStageIds: [],
+        changesRequestedCount: 0,
+        lastDecisionId: null,
+        lastDecisionOutcome: null,
+      },
+    });
+
+    const reviewerRunId = randomUUID();
+    await ctx.db.insert(heartbeatRuns).values({
+      id: reviewerRunId,
+      companyId,
+      agentId: reviewerAgentId,
+      status: "running",
+      contextSnapshot: { issueId },
+    });
+
+    const reviewerActor = {
+      type: "agent" as const,
+      source: "agent_jwt" as const,
+      agentId: reviewerAgentId,
+      companyId,
+      runId: reviewerRunId,
+      isInstanceAdmin: false,
+    };
+
+    const routes = (db: any, storage: any) =>
+      issueRoutes(db, storage, {
+        resolveReviewPullRequestCi: async () => ({
+          state: "ok",
+          pullRequestUrl: "https://github.com/acme/app/pull/7",
+          headSha: "head-abc",
+        }),
+      });
+
+    const response = await request(routeApp(ctx.db, reviewerActor as any, routes as any))
+      .patch(`/api/issues/${issueId}`)
+      .send({
+        status: "in_progress",
+        comment: "   ",
+      });
+
+    expect(response.status).toBe(422);
+    expect(response.body.error).toMatch(/requires a comment/i);
+
+    const [updated] = await ctx.db.select().from(issues).where(eq(issues.id, issueId));
+    expect(updated?.status).toBe("in_review");
+    expect(updated?.assigneeAgentId).toBe(reviewerAgentId);
+    const updatedState = updated?.executionState as Record<string, unknown> | null;
+    expect(updatedState?.status).toBe("pending");
+  });
+
   it("defers reviewer admission while exact PR-head CI is pending", async () => {
     const { companyId, actor } = await seedCompanyWithBoardAccess(ctx.db, "Review admission waits for exact-head CI");
     const reviewerAgentId = randomUUID();

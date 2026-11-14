@@ -143,9 +143,10 @@ describe("changes requested for a pending review stage whose policy lost the sta
     expect(result.decision).toBeUndefined();
   });
 
-  it("does not record a changes_requested decision if comment is missing or whitespace", () => {
-    const result = requestChanges({ policy: monitorOnlyPolicy(), comment: "   " });
-    expect(result.decision).toBeUndefined();
+  it("asks for a comment instead of silently dropping the changes_requested decision", () => {
+    expect(() => requestChanges({ policy: monitorOnlyPolicy(), comment: "   " })).toThrow(/requires a comment/);
+    expect(() => requestChanges({ policy: null, comment: "   " })).toThrow(/requires a comment/);
+    expect(() => requestChanges({ policy: monitorOnlyPolicy(), comment: "" })).toThrow(/requires a comment/);
   });
 });
 
