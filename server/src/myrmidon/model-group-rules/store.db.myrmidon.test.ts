@@ -69,12 +69,12 @@ describeEmbeddedPostgres("myrmidon(1.8 MODEL-BY-STEP, OPE-12997) model-group-rul
 
   it("saves rules for company A and returns them isolated from company B", async () => {
     await store.replaceAll(companyAId, [
-      { stepClass: "run_start", modelGroup: "strong", casteKey: null },
+      { stepClass: "execution", modelGroup: "strong", casteKey: null },
       { stepClass: "review", modelGroup: "expert", casteKey: "caste-a1" },
     ]);
 
     await store.replaceAll(companyBId, [
-      { stepClass: "run_start", modelGroup: "economy", casteKey: null },
+      { stepClass: "execution", modelGroup: "economy", casteKey: null },
       { stepClass: "review", modelGroup: "fast", casteKey: "caste-b1" },
     ]);
 
@@ -116,14 +116,14 @@ describeEmbeddedPostgres("myrmidon(1.8 MODEL-BY-STEP, OPE-12997) model-group-rul
 
   it("enforces database unique constraint on (companyId, casteKey, stepClass)", async () => {
     await store.replaceAll(companyAId, [
-      { stepClass: "planning", modelGroup: "economy", casteKey: null },
+      { stepClass: "decomposition", modelGroup: "economy", casteKey: null },
     ]);
 
     // Direct insertion of a duplicate in the same scope (casteKey = null) must fail with unique violation
     await expect(
       db.insert(companyModelGroupRules).values({
         companyId: companyAId,
-        stepClass: "planning",
+        stepClass: "decomposition",
         modelGroup: "strong",
         casteKey: null,
       }),

@@ -185,12 +185,17 @@ describe("myrmidon(1.8 MODEL-BY-STEP) routes: validation", () => {
   });
 
   it("answers GET with stored rules and catalogUnavailable=true when gateway is down", async () => {
-    const { server, saved } = app(member, new Error("gateway unreachable"));
+    const { server, saved } = app(member, [], true);
     saved.push({
-      casteKey: null,
-      stepClass: "review",
-      modelGroup: "existing-strong",
-      updatedAt: new Date().toISOString(),
+      companyId: COMPANY_ID,
+      rules: [
+        {
+          casteKey: null,
+          stepClass: "review",
+          modelGroup: "existing-strong",
+          updatedAt: new Date().toISOString(),
+        },
+      ],
     });
     const get = await request(server).get(base).expect(200);
     expect(get.body.companyId).toBe(COMPANY_ID);
@@ -201,12 +206,17 @@ describe("myrmidon(1.8 MODEL-BY-STEP) routes: validation", () => {
   });
 
   it("allows PUT to retain or clear existing rules when catalog is unavailable", async () => {
-    const { server, saved } = app(member, new Error("gateway unreachable"));
+    const { server, saved } = app(member, [], true);
     saved.push({
-      casteKey: null,
-      stepClass: "review",
-      modelGroup: "existing-strong",
-      updatedAt: new Date().toISOString(),
+      companyId: COMPANY_ID,
+      rules: [
+        {
+          casteKey: null,
+          stepClass: "review",
+          modelGroup: "existing-strong",
+          updatedAt: new Date().toISOString(),
+        },
+      ],
     });
     const put = await request(server)
       .put(base)

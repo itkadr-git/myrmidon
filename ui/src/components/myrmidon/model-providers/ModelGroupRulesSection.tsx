@@ -72,8 +72,9 @@ export function ModelGroupRulesSection({ companyId }: { companyId: string }) {
   const castes = castesQuery.data?.castes ?? [];
   const groups = view?.availableGroups ?? [];
   const catalogUnavailable = Boolean(view?.catalogUnavailable);
+  const initialGroups = (view?.rules ?? []).map((r) => r.modelGroup).filter(Boolean);
   const configuredGroups = rules.map((r) => r.modelGroup).filter(Boolean);
-  const selectableGroups = Array.from(new Set([...groups, ...configuredGroups]));
+  const selectableGroups = Array.from(new Set([...groups, ...initialGroups, ...configuredGroups]));
   const language = i18n.language.startsWith("ru") ? "ru" : "en";
   const scopes: Array<{ key: string | null; label: string }> = [
     { key: null, label: t("area.settings-models-runtime-2.model-group-rules.companyScope") },
@@ -206,7 +207,11 @@ export function ModelGroupRulesSection({ companyId }: { companyId: string }) {
       <Button
         size="sm"
         onClick={() => void save()}
-        disabled={query.isFetching || castesQuery.isFetching || groups.length === 0}
+        disabled={
+          query.isFetching ||
+          castesQuery.isFetching ||
+          (groups.length === 0 && initialGroups.length === 0)
+        }
         data-testid="myrmidon-model-group-rules-save"
       >
         <Save className="mr-2 h-4 w-4" aria-hidden="true" />
