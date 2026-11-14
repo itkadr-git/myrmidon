@@ -7,6 +7,7 @@ import {
   createPullRequestCiResolver,
   withCiResolveDeadline,
   clearCiCacheForTests,
+  summarizeHeadLaneEvidence,
   type PullRequestCiJob,
 } from "../github-pull-request-ci.js";
 import { buildPaperclipTaskMarkdown } from "../heartbeat.js";
@@ -1763,3 +1764,164 @@ describe("createPullRequestCiResolver", () => {
     expect(fetchRunsCalls).toBe(2);
   });
 });
+
+describe("summarizeHeadLaneEvidence (LANE-EVIDENCE-CANCELLED, OPE-13072)", () => {
+  it("treats test lane as green when head has successful CI result and an older cancelled check", () => {
+    const runs: PullRequestCiJob[] = [
+      {
+        id: 101,
+        name: "test",
+        status: "completed",
+        conclusion: "cancelled",
+        url: "https://github.com/itkadr-git/myrmidon/actions/runs/1/job/101",
+        startedAt: "2026-11-14T01:00:00Z",
+        completedAt: "2026-11-14T01:02:00Z",
+      },
+      {
+        id: 102,
+        name: "lint",
+        status: "completed",
+        conclusion: "success",
+        url: "https://github.com/itkadr-git/myrmidon/actions/runs/1/job/102",
+        startedAt: "2026-11-14T01:00:00Z",
+        completedAt: "2026-11-14T01:03:00Z",
+      },
+      {
+        id: 103,
+        name: "CI result",
+        status: "completed",
+        conclusion: "success",
+        url: "https://github.com/itkadr-git/myrmidon/actions/runs/1/job/103",
+        startedAt: "2026-11-14T01:04:00Z",
+        completedAt: "2026-11-14T01:05:00Z",
+      },
+    ];
+
+    const lanes = summarizeHeadLaneEvidence(runs, { headSha: "sha-head-1" });
+    const testLane = lanes.find((l) => l.lane === "test");
+    const lintLane = lanes.find((l) => l.lane === "lint");
+
+    expect(testLane).toBeDefined();
+    expect(testLane?.state).toBe("success");
+    expect(testLane?.status).toBe("completed");
+    expect(testLane?.conclusion).toBe("success");
+    expect(testLane?.headSha).toBe("sha-head-1");
+
+    expect(lintLane).toBeDefined();
+    expect(lintLane?.state).toBe("success");
+    expect(lintLane?.status).toBe("completed");
+    expect(lintLane?.conclusion).toBe("success");
+  });
+
+  it("does not change behavior for real failure even with successful CI result", () => {
+    const runs: PullRequestCiJob[] = [
+      {
+        id: 201,
+        name: "test",
+        status: "completed",
+        conclusion: "failure",
+        url: "https://github.com/itkadr-git/myrmidon/actions/runs/2/job/201",
+        startedAt: "2026-11-14T01:00:00Z",
+        completedAt: "2026-11-14T01:02:00Z",
+      },
+      {
+        id: 202,
+        name: "CI result",
+        status: "completed",
+        conclusion: "success",
+        url: "https://github.com/itkadr-git/myrmidon/actions/runs/2/job/202",
+        startedAt: "2026-11-14T01:04:00Z",
+        completedAt: "2026-11-14T01:05:00Z",
+      },
+    ];
+
+    const lanes = summarizeHeadLaneEvidence(runs, { headSha: "sha-head-2" });
+    const testLane = lanes.find((l) => l.lane === "test");
+
+    expect(testLane).toBeDefined();
+    expect(testLane?.state).toBe("failure");
+    expect(testLane?.conclusion).toBe("failure");
+  });
+
+  it("does not change behavior for timed_out even with successful CI result", () => {
+    const runs: PullRequestCiJob[] = [
+      {
+        id: 301,
+        name: "test",
+        status: "completed",
+        conclusion: "timed_out",
+        url: "https://github.com/itkadr-git/myrmidon/actions/runs/3/job/301",
+        startedAt: "2026-11-14T01:00:00Z",
+        completedAt: "2026-11-14T01:02:00Z",
+      },
+      {
+        id: 302,
+        name: "CI result",
+        status: "completed",
+        conclusion: "success",
+        url: "https://github.com/itkadr-git/myrmidon/actions/runs/3/job/302",
+        startedAt: "2026-11-14T01:04:00Z",
+        completedAt: "2026-11-14T01:05:00Z",
+      },
+    ];
+
+    const lanes = summarizeHeadLaneEvidence(runs, { headSha: "sha-head-3" });
+    const testLane = lanes.find((l) => l.lane === "test");
+
+    expect(testLane).toBeDefined();
+    expect(testLane?.state).toBe("failure");
+    expect(testLane?.conclusion).toBe("timed_out");
+  });
+
+  it("marks lane as failure if cancelled check is newer than successful CI result", () => {
+    const runs: PullRequestCiJob[] = [
+      {
+        id: 401,
+        name: "CI result",
+        status: "completed",
+        conclusion: "success",
+        url: "https://github.com/itkadr-git/myrmidon/actions/runs/4/job/401",
+        startedAt: "2026-11-14T01:04:00Z",
+        completedAt: "2026-11-14T01:05:00Z",
+      },
+      {
+        id: 402,
+        name: "test",
+        status: "completed",
+        conclusion: "cancelled",
+        url: "https://github.com/itkadr-git/myrmidon/actions/runs/4/job/402",
+        startedAt: "2026-11-14T01:06:00Z",
+        completedAt: "2026-11-14T01:07:00Z",
+      },
+    ];
+
+    const lanes = summarizeHeadLaneEvidence(runs, { headSha: "sha-head-4" });
+    const testLane = lanes.find((l) => l.lane === "test");
+
+    expect(testLane).toBeDefined();
+    expect(testLane?.state).toBe("failure");
+    expect(testLane?.conclusion).toBe("cancelled");
+  });
+
+  it("marks lane as failure if cancelled check exists without successful CI result", () => {
+    const runs: PullRequestCiJob[] = [
+      {
+        id: 501,
+        name: "test",
+        status: "completed",
+        conclusion: "cancelled",
+        url: "https://github.com/itkadr-git/myrmidon/actions/runs/5/job/501",
+        startedAt: "2026-11-14T01:00:00Z",
+        completedAt: "2026-11-14T01:02:00Z",
+      },
+    ];
+
+    const lanes = summarizeHeadLaneEvidence(runs, { headSha: "sha-head-5" });
+    const testLane = lanes.find((l) => l.lane === "test");
+
+    expect(testLane).toBeDefined();
+    expect(testLane?.state).toBe("failure");
+    expect(testLane?.conclusion).toBe("cancelled");
+  });
+});
+
