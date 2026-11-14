@@ -17,10 +17,10 @@ export const TASK_RUNS_WITHOUT_COMMIT_LIMIT_KEY = "taskRunsWithoutCommitLimit";
 export const DEFAULT_TASK_RUNS_WITHOUT_COMMIT_LIMIT = 4;
 const DEFAULT_SINGLETON_KEY = "default";
 
-/** The cap applies only to agents that write code: a lead or coordinator with a PR on the task is not capped. */
+/** Automatic no-commit protection applies to every agent role assigned to a task. */
 export const RUN_CAP_NO_COMMIT_ROLE = "engineer";
 export function isRunCapNoCommitRole(role: string | null | undefined): boolean {
-  return role === RUN_CAP_NO_COMMIT_ROLE;
+  return typeof role === "string" && role.trim().length > 0;
 }
 
 function readProcessesRecord(general: unknown): Record<string, unknown> | null {
