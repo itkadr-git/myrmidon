@@ -106,6 +106,22 @@ export interface SummarizeCheckRunsOptions {
   requiredChecks?: readonly string[];
 }
 
+export const runTimeKey = (run: PullRequestCiJob): number => {
+  const raw = run.startedAt ?? run.completedAt;
+  const t = raw ? new Date(raw).getTime() : Number.NaN;
+  return Number.isNaN(t) ? Number.POSITIVE_INFINITY : t;
+};
+
+export const compareRuns = (x: PullRequestCiJob, y: PullRequestCiJob): number => {
+  const a = runTimeKey(x);
+  const b = runTimeKey(y);
+  if (a !== b) return a > b ? 1 : -1;
+  return x.id - y.id;
+};
+
+export const latestOf = (list: readonly PullRequestCiJob[]): PullRequestCiJob | null =>
+  list.reduce<PullRequestCiJob | null>((best, r) => (!best || compareRuns(r, best) > 0 ? r : best), null);
+
 export function summarizeCheckRuns(
   runs: readonly PullRequestCiJob[],
   options?: SummarizeCheckRunsOptions,
@@ -183,19 +199,6 @@ export function summarizeCheckRuns(
   //    stays (a skipped gate of a cancelled run is not a replacement).
   // Order is one deterministic key: time (`startedAt`, else `completedAt`; a
   // record without time, e.g. queued, is the newest), then `id`.
-  const runTimeKey = (run: PullRequestCiJob): number => {
-    const raw = run.startedAt ?? run.completedAt;
-    const t = raw ? new Date(raw).getTime() : Number.NaN;
-    return Number.isNaN(t) ? Number.POSITIVE_INFINITY : t;
-  };
-  const compareRuns = (x: PullRequestCiJob, y: PullRequestCiJob): number => {
-    const a = runTimeKey(x);
-    const b = runTimeKey(y);
-    if (a !== b) return a > b ? 1 : -1;
-    return x.id - y.id;
-  };
-  const latestOf = (list: PullRequestCiJob[]): PullRequestCiJob | null =>
-    list.reduce<PullRequestCiJob | null>((best, r) => (!best || compareRuns(r, best) > 0 ? r : best), null);
   const workflowRunIdOf = (run: PullRequestCiJob): string | null =>
     /\/actions\/runs\/(\d+)/.exec(run.url ?? "")?.[1] ?? null;
   const pickRepresentative = (group: PullRequestCiJob[]): PullRequestCiJob => {
@@ -1269,6 +1272,11 @@ export function summarizeHeadLaneEvidence(
   const testRuns = runs.filter((r) => isTestCheckRun(r.name));
   const lintRuns = runs.filter((r) => isLintCheckRun(r.name));
 
+  const successfulCiResults = runs.filter(
+    (r) => r.name.trim().toLowerCase() === "ci result" && r.conclusion === "success",
+  );
+  const latestSuccessfulCiResult = latestOf(successfulCiResults);
+
   function summarizeLane(
     lane: PullRequestHeadLane,
     laneRuns: readonly PullRequestCiJob[],
@@ -1300,13 +1308,22 @@ export function summarizeHeadLaneEvidence(
       };
     }
 
-    const failedRun = laneRuns.find(
-      (r) =>
-        r.conclusion &&
-        r.conclusion !== "success" &&
-        r.conclusion !== "neutral" &&
-        r.conclusion !== "skipped",
-    );
+    const failedRun = laneRuns.find((r) => {
+      if (!r.conclusion || r.conclusion === "success" || r.conclusion === "neutral" || r.conclusion === "skipped") {
+        return false;
+      }
+      // myrmidon(LANE-EVIDENCE-CANCELLED, OPE-13072): a cancelled check does not
+      // make the lane red if it is not newer than a successful CI result of the same head.
+      if (
+        r.conclusion === "cancelled" &&
+        latestSuccessfulCiResult &&
+        compareRuns(r, latestSuccessfulCiResult) <= 0
+      ) {
+        return false;
+      }
+      return true;
+    });
+
     if (failedRun) {
       return {
         lane,
@@ -1335,7 +1352,7 @@ export function summarizeHeadLaneEvidence(
       state: "success",
       status: "completed",
       conclusion: "success",
-      finishedAt: latestCompletedAt,
+      finishedAt: latestCompletedAt ?? latestSuccessfulCiResult?.completedAt ?? null,
     };
   }
 
