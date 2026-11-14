@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import express from "express";
 import request from "supertest";
 import { describe, expect, it } from "vitest";
 import { and, eq, notInArray, sql } from "drizzle-orm";
@@ -24,6 +25,7 @@ import {
 } from "./helpers/route-test-harness.js";
 import { drainHeartbeatRunsToQuiescence } from "./helpers/drain-heartbeat-runs.js";
 import { issueRoutes } from "../routes/issues.js";
+import { errorHandler } from "../middleware/index.js";
 import { heartbeatService } from "../services/heartbeat.js";
 import { parseIssueExecutionState } from "../services/issue-execution-policy.js";
 import { REVIEW_CI_WAIT_MONITOR_SERVICE_NAME, reviewAdmissionDedupKey } from "../myrmidon/review-stage-recovery/policy.js";
@@ -152,6 +154,131 @@ describeEmbeddedPostgres("myrmidon review admission atomic wake persistence", ()
       .send({ executionPolicy: policy });
     expect(assigned.status).toBe(200);
     expect(readReviewRoutingSignals(companyId).filter((signal) => signal.issueId === issueId)).toHaveLength(0);
+  });
+
+  describe("agent handoff without a review stage (OPE-13099)", () => {
+    async function seedHandoff(
+      label: string,
+      reviewerCount: number,
+      options?: { executorRole?: string },
+    ) {
+      const executorRole = options?.executorRole ?? "engineer";
+      const { companyId } = await seedCompanyWithBoardAccess(ctx.db, label);
+      const engineerId = randomUUID();
+      const runId = randomUUID();
+      const base = { companyId, status: "idle", adapterType: "codex_local", adapterConfig: {}, runtimeConfig: {}, permissions: {} };
+      await ctx.db.insert(agents).values({ ...base, id: engineerId, name: `adm-dev-${executorRole}-1`, role: executorRole, metadata: { telegramGroup: "adm" } });
+      const reviewerIds: string[] = [];
+      for (let i = 0; i < reviewerCount; i += 1) {
+        const id = randomUUID();
+        reviewerIds.push(id);
+        await ctx.db.insert(agents).values({ ...base, id, name: `adm-dev-review-${i + 1}`, role: "reviewer", metadata: { telegramGroup: "adm" } });
+      }
+      await ctx.db.insert(heartbeatRuns).values({ id: runId, companyId, agentId: engineerId, status: "running", invocationSource: "manual", startedAt: new Date() });
+      const issueId = randomUUID();
+      await ctx.db.insert(issues).values({
+        id: issueId,
+        companyId,
+        title: "Agent handoff without review stage",
+        status: "in_progress",
+        priority: "medium",
+        assigneeAgentId: engineerId,
+        createdByAgentId: engineerId,
+        checkoutRunId: runId,
+        executionRunId: runId,
+      });
+      await ctx.db.update(heartbeatRuns).set({ contextSnapshot: { issueId } }).where(eq(heartbeatRuns.id, runId));
+      const app = express();
+      app.use(express.json());
+      app.use((req, _res, next) => {
+        (req as any).actor = { type: "agent", agentId: engineerId, companyId, runId, source: "agent_jwt" };
+        next();
+      });
+      app.use("/api", issueRoutes(ctx.db, {} as any));
+      app.use(errorHandler);
+      return { companyId, engineerId, reviewerIds, issueId, app };
+    }
+
+    it("adds a review stage with the group reviewers and picks the least loaded one", async () => {
+      const { companyId, reviewerIds, issueId, app } = await seedHandoff("Handoff routes to reviewer", 2);
+      // The first reviewer already holds two tasks in flight.
+      for (let i = 0; i < 2; i += 1) {
+        await ctx.db.insert(issues).values({
+          id: randomUUID(), companyId, title: `Busy ${i}`, status: "in_review", priority: "medium", assigneeAgentId: reviewerIds[0],
+        });
+      }
+      const res = await request(app).patch(`/api/issues/${issueId}`).send({ status: "in_review" });
+      expect(res.status, JSON.stringify(res.body)).toBe(200);
+      const stages = res.body.executionPolicy?.stages ?? [];
+      expect(stages).toHaveLength(1);
+      expect(stages[0].type).toBe("review");
+      expect(stages[0].participants.map((p: { agentId: string }) => p.agentId).sort()).toEqual([...reviewerIds].sort());
+      expect(res.body.executionState?.currentParticipant).toMatchObject({ type: "agent", agentId: reviewerIds[1] });
+    });
+
+    it("keeps the 422 missing review_path when the group has no reviewer", async () => {
+      const { issueId, app } = await seedHandoff("Handoff without reviewers", 0);
+      const res = await request(app).patch(`/api/issues/${issueId}`).send({ status: "in_review" });
+      expect(res.status).toBe(422);
+      expect(res.body.details?.missing).toBe("review_path");
+    });
+
+    it("keeps the 422 missing review_path when the executor is not an engineer", async () => {
+      const { issueId, app } = await seedHandoff("Handoff from non-engineer", 2, { executorRole: "qa" });
+      const res = await request(app).patch(`/api/issues/${issueId}`).send({ status: "in_review" });
+      expect(res.status).toBe(422);
+      expect(res.body.details?.missing).toBe("review_path");
+    });
+
+    it("preserves an existing review stage without replacing its participants", async () => {
+      const { reviewerIds, issueId, app } = await seedHandoff("Handoff with existing review stage", 2);
+      const existingPolicy = {
+        mode: "normal",
+        stages: [
+          {
+            id: randomUUID(),
+            type: "review",
+            approvalsNeeded: 1,
+            participants: [{ type: "agent", agentId: reviewerIds[0] }],
+          },
+        ],
+      };
+      await ctx.db.update(issues).set({ executionPolicy: existingPolicy }).where(eq(issues.id, issueId));
+
+      const res = await request(app).patch(`/api/issues/${issueId}`).send({ status: "in_review" });
+      expect(res.status, JSON.stringify(res.body)).toBe(200);
+      const stages = res.body.executionPolicy?.stages ?? [];
+      expect(stages).toHaveLength(1);
+      expect(stages[0].type).toBe("review");
+      expect(stages[0].participants).toHaveLength(1);
+      expect(stages[0].participants[0].agentId).toBe(reviewerIds[0]);
+      expect(res.body.executionState?.currentParticipant).toMatchObject({ type: "agent", agentId: reviewerIds[0] });
+    });
+
+    it("preserves existing non-review policy stages when adding the handoff review stage", async () => {
+      const { reviewerIds, issueId, app } = await seedHandoff("Handoff with approval stage", 2);
+      const approvalStageId = randomUUID();
+      const existingPolicy = {
+        mode: "normal",
+        stages: [
+          {
+            id: approvalStageId,
+            type: "approval",
+            approvalsNeeded: 1,
+            participants: [{ type: "agent", agentId: reviewerIds[0] }],
+          },
+        ],
+      };
+      await ctx.db.update(issues).set({ executionPolicy: existingPolicy }).where(eq(issues.id, issueId));
+
+      const res = await request(app).patch(`/api/issues/${issueId}`).send({ status: "in_review" });
+      expect(res.status, JSON.stringify(res.body)).toBe(200);
+      const stages = res.body.executionPolicy?.stages ?? [];
+      expect(stages).toHaveLength(2);
+      expect(stages[0].type).toBe("review");
+      expect(stages[1].type).toBe("approval");
+      expect(stages[1].id).toBe(approvalStageId);
+    });
   });
 
   it("raises no_reviewer when only an out-of-group reviewer has capacity", async () => {

@@ -54,6 +54,7 @@ import {
   type RoutingIssue,
 } from "../myrmidon/review-routing/policy.js";
 import { readReviewRoutingSettings } from "../myrmidon/review-routing/settings.js";
+import { buildHandoffReviewPolicy, selectHandoffReviewerIds } from "../myrmidon/review-routing/handoff-stage.js";
 import { createPgReviewRoutingStore } from "../myrmidon/review-routing/store.js";
 // myrmidon(OPE-10460): gate REQUEST CHANGES on final CI status for the live PR head.
 import { createReviewHeadFailedChecksResolver, createReviewPullRequestCiResolver, readReviewPullRequestHeadSha } from "../myrmidon/review-stage-recovery/github-ci.js";
@@ -15363,6 +15364,91 @@ export function issueRoutes(
           actor.actorType,
         );
       }
+      // myrmidon(OPE-13099): an agent hands the task to review but it has no review
+      // path (assertInReviewReviewPath would answer 422 missing: review_path).
+      // Instead the board adds a review stage with the reviewers of the
+      // executor's group and names the least loaded one for the transition below.
+      let handoffPreferredReviewer: { type: "agent"; agentId: string; userId: null } | null = null;
+      if (
+        actor.actorType === "agent" &&
+        updateFields.status === "in_review" &&
+        existing.status !== "in_review" &&
+        requestedReviewInteractionId === undefined &&
+        reviewRequest === undefined &&
+        existing.reviewPolicy !== "human_only" &&
+        updateFields.reviewPolicy !== "human_only" &&
+        !isConversation(existing)
+      ) {
+        const currentPolicy =
+          updateFields.executionPolicy !== undefined
+            ? (updateFields.executionPolicy as NormalizedExecutionPolicy | null)
+            : safeNormalizeIssueExecutionPolicy(existing.executionPolicy ?? null);
+        const hasReviewStage = (currentPolicy?.stages ?? []).some((stage) => stage.type === "review");
+        const reviewRoutingSettings = hasReviewStage ? null : await readReviewRoutingSettings(instanceSettings);
+        if (reviewRoutingSettings?.enabled) {
+          let missingReviewPath = false;
+          try {
+            await assertInReviewReviewPath({
+              existing,
+              updateFields,
+              actorType: actor.actorType,
+              actorId: actor.actorId,
+              actorAgentId: actor.agentId,
+              actorRunId: actor.runId,
+            });
+          } catch (err) {
+            missingReviewPath =
+              err instanceof HttpError &&
+              err.status === 422 &&
+              (err.details as { missing?: unknown } | undefined)?.missing === "review_path";
+            if (!missingReviewPath) throw err;
+          }
+          if (missingReviewPath) {
+            const routingStore = createPgReviewRoutingStore(db);
+            const executorAgentId = existing.assigneeAgentId ?? actor.agentId ?? null;
+            const executorRow = executorAgentId
+              ? await routingStore.getAgent(existing.companyId, executorAgentId)
+              : null;
+            const actorRow =
+              actor.agentId && actor.agentId !== executorAgentId
+                ? await routingStore.getAgent(existing.companyId, actor.agentId)
+                : executorRow;
+            const isEngineer =
+              executorRow?.role === "engineer" && (actorRow?.role === "engineer" || !actor.agentId);
+            if (isEngineer) {
+              const reviewerRows = await routingStore.listReviewerAgents(
+                existing.companyId,
+                reviewRoutingSettings.reviewerRoles,
+              );
+              const selectedReviewerIds = selectHandoffReviewerIds({
+                reviewers: reviewerRows,
+                groupKey: resolveAgentGroupKey(executorRow ?? undefined),
+                excludedAgentIds: [actor.agentId, existing.assigneeAgentId, existing.createdByAgentId].filter(
+                  (id): id is string => typeof id === "string" && id.length > 0,
+                ),
+              });
+              // Least loaded first (ties by id): the explicit pick does not depend
+              // on the transition's own load lookup.
+              const handoffLoads =
+                selectedReviewerIds.length > 1
+                  ? await routingStore.loadByAgent(existing.companyId)
+                  : new Map<string, number>();
+              const reviewerIds = [...selectedReviewerIds].sort(
+                (left, right) =>
+                  (handoffLoads.get(left) ?? 0) - (handoffLoads.get(right) ?? 0) || left.localeCompare(right),
+              );
+              const handoffPolicy = buildHandoffReviewPolicy(
+                currentPolicy as unknown as Record<string, unknown> | null,
+                reviewerIds,
+              );
+              if (handoffPolicy) {
+                updateFields.executionPolicy = normalizeIssueExecutionPolicy(handoffPolicy);
+                handoffPreferredReviewer = { type: "agent", agentId: reviewerIds[0]!, userId: null };
+              }
+            }
+          }
+        }
+      }
       const previousExecutionPolicy = safeNormalizeIssueExecutionPolicy(
         existing.executionPolicy ?? null,
       );
@@ -15470,6 +15556,7 @@ export function issueRoutes(
         monitorExplicitlyUpdated:
           req.body.executionPolicy !== undefined && monitorChanged,
         candidateLoads,
+        restartPreferredParticipant: handoffPreferredReviewer,
       });
       // myrmidon(MON-RESTORE): capture and strip transient notice before persistence.
       const monitorClearNotice = transition.patch.monitorClearNotice as
