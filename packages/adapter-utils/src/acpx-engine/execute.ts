@@ -1,4 +1,8 @@
 import { cancellableSandboxStartup } from "./startup-cancellation.js";
+import {
+  mapTerminalCallback,
+  TerminalCallbackRegistry,
+} from "./terminal-callback-mapping.js";
 import fs from "node:fs/promises";
 import fsSync from "node:fs";
 import os from "node:os";
@@ -359,6 +363,7 @@ export interface AcpxRemoteManagedHomeResult {
 
 export interface AcpxEngineExecutorOptions {
   createRuntime?: AcpxRuntimeFactory;
+  terminalCallbackRegistry?: TerminalCallbackRegistry;
   now?: () => number;
   /**
    * The bound on how long the fail-fast seam waits for a cooperative
@@ -491,6 +496,7 @@ interface AcpxPreparedRuntime {
 const defaultWarmHandles = new Map<string, RuntimeCacheEntry>();
 const defaultStagedRuntimes = new Map<string, StagedRuntimeCacheEntry>();
 const defaultStagingLocks = new Map<string, Promise<unknown>>();
+const defaultTerminalCallbackRegistry = new TerminalCallbackRegistry();
 
 function resolveEngineSettings(options: AcpxEngineExecutorOptions): AcpxEngineSettings {
   const moduleDir = path.resolve(options.moduleDir ?? defaultModuleDir);
@@ -3885,6 +3891,7 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
   const warmHandles = deps.warmHandles ?? defaultWarmHandles;
   const stagedRuntimes = deps.stagedRuntimes ?? defaultStagedRuntimes;
   const stagingLocks = deps.stagingLocks ?? defaultStagingLocks;
+  const terminalCallbackRegistry = deps.terminalCallbackRegistry ?? defaultTerminalCallbackRegistry;
   const engine = resolveEngineSettings(deps);
 
   return async function executeAcpxEngine(ctx: AdapterExecutionContext): Promise<AdapterExecutionResult> {
@@ -4755,6 +4762,14 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
           thinkingEffort: prepared.requestedThinkingEffort || null,
           fastMode: prepared.fastMode,
         });
+        const externalJobId = sessionHandle.backendSessionId ?? sessionHandle.agentSessionId ?? sessionHandle.runtimeSessionName;
+        if (externalJobId && ctx.onExternalRunId) {
+          try {
+            await ctx.onExternalRunId(externalJobId);
+          } catch {
+            // Failure to persist external run id does not abort ACP execution
+          }
+        }
         if (ctx.onMeta) {
           await ctx.onMeta({
             adapterType: engine.adapterType,
@@ -5029,6 +5044,16 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
             ? channelLostMessage
             : resultErrorMessage(terminal);
         const terminalStopReason = terminal.status === "failed" ? terminal.error.message : terminal.stopReason;
+        const recordedCallback = terminalCallbackRegistry.apply({
+          provider: prepared.acpxAgent,
+          providerJobId: sessionHandle.backendSessionId ?? sessionHandle.agentSessionId ?? sessionHandle.runtimeSessionName,
+          status: terminal.status,
+          completionEvidence: {
+            output: outputSegments.join("").trim() || null,
+            result: terminalStopReason || null,
+          },
+        });
+        const mappedTerminal = recordedCallback.mapping;
         await emitAcpxLog(ctx, {
           type: turnSucceeded ? "acpx.result" : "acpx.error",
           summary: channelLost ? "duplex_channel_lost" : terminal.status,
@@ -5067,6 +5092,7 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
             requestedModel: prepared.requestedModel || null,
             requestedThinkingEffort: prepared.requestedThinkingEffort || null,
             fastMode: prepared.fastMode,
+            mappedTerminal,
             ...(turnUsage.usageDetail ? { usage: turnUsage.usageDetail } : {}),
             ...(turnUsage.cumulativeCostUsd != null
               ? { cumulativeCostUsd: turnUsage.cumulativeCostUsd }
