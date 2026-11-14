@@ -190,6 +190,28 @@ describe.skipIf(process.platform === "win32")("syncDirectoryFromSsh staging dire
     expect(await leftoverStagingDirs()).toEqual([]);
   }, 20_000);
 
+  it("keeps ssh diagnostics ahead of tar failures across 50 failed restores", async () => {
+    setEnv("FAKE_SSH_MODE", "refuse");
+    setEnv("FAKE_TAR_MODE", "die-on-extract");
+
+    for (let run = 0; run < 50; run += 1) {
+      let caughtError: unknown = null;
+      try {
+        await syncDirectoryFromSsh({ spec, remoteDir: "/workspace", localDir });
+      } catch (error) {
+        caughtError = error;
+      }
+
+      expect(caughtError, `run ${run + 1} must reject`).toBeInstanceOf(Error);
+      const message = (caughtError as Error).message;
+      expect(message, `run ${run + 1}`).toContain(
+        "ssh: connect to host runner.invalid port 2222: Connection refused",
+      );
+      expect(message, `run ${run + 1}`).toMatch(/\ntar exited with code 2$/);
+      expect(await leftoverStagingDirs(), `run ${run + 1}`).toEqual([]);
+    }
+  }, 60_000);
+
   it("removes a staging directory that holds read-only directories", async () => {
     setEnv("FAKE_SSH_MODE", "serve");
     const readOnlyDir = path.join(sourceDir, "pkg", "mod");
