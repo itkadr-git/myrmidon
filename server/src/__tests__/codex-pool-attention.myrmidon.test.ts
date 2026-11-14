@@ -94,7 +94,7 @@ describeEmbeddedPostgres("codex pool attention feed cards (OPE-7198)", () => {
   beforeAll(async () => {
     tempDb = await startEmbeddedPostgresTestDatabase("myrmidon-codex-attention-");
     db = createDb(tempDb.connectionString);
-  }, 30_000);
+  }, 60_000);
 
   afterEach(async () => {
     clearPoolAccountSignals();

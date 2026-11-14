@@ -192,6 +192,8 @@ import { IssueContinuationHandoff } from "../components/IssueContinuationHandoff
 import { IssueAttachmentsSection } from "../components/IssueAttachmentsSection";
 // myrmidon(U3): files trigger + on-demand drawer, replacing the fixed panel below.
 import { IssueFilesDrawer } from "@/components/myrmidon/IssueFilesDrawer";
+// myrmidon(1.7 TOKEN-BUDGET-SIGNAL, OPE-12232): the soft token-budget signal badge on the task card.
+import { TokenBudgetSignalBadge } from "@/components/myrmidon/TokenBudgetSignalBadge";
 import { IssueDocumentsSection } from "../components/IssueDocumentsSection";
 import { IssuePlanDecompositionsSection } from "../components/IssuePlanDecompositionsSection";
 import { IssueOutputSection } from "../components/issue-output/IssueOutputSection";
@@ -1461,6 +1463,10 @@ const IssueDetailChatTab = memo(function IssueDetailChatTab({
     enabled: !!issueId,
     placeholderData: keepPreviousDataForSameQueryTail<ActivityEvent[]>(issueId),
   });
+  // Issue detail queries are reconciled by the company live-events stream;
+  // keep a slow fallback only for missed events and stream reconnects.
+  const issueRunFallbackMs = 30_000;
+  const issueActiveRunFallbackMs = 30_000;
   const {
     data: liveRuns,
     isFetched: liveRunsFetched,
@@ -1470,7 +1476,7 @@ const IssueDetailChatTab = memo(function IssueDetailChatTab({
     queryKey: queryKeys.issues.liveRuns(issueId),
     queryFn: () => heartbeatsApi.liveRunsForIssue(issueId),
     enabled: !!issueId,
-    refetchInterval: 1000,
+    refetchInterval: issueRunFallbackMs,
     placeholderData:
       keepPreviousDataForSameQueryTail<LiveRunForIssue[]>(issueId),
   });
@@ -1487,7 +1493,7 @@ const IssueDetailChatTab = memo(function IssueDetailChatTab({
     queryKey: queryKeys.issues.activeRun(issueId),
     queryFn: () => heartbeatsApi.activeRunForIssue(issueId),
     enabled: activeRunQueryEnabled,
-    refetchInterval: liveRunCount > 0 ? false : 1000,
+    refetchInterval: liveRunCount > 0 ? false : issueActiveRunFallbackMs,
     placeholderData: keepPreviousDataForSameQueryTail<ActiveRunForIssue | null>(
       issueId,
     ),
@@ -1526,7 +1532,7 @@ const IssueDetailChatTab = memo(function IssueDetailChatTab({
       ),
     enabled: queuedCommentQueueEnabled,
     refetchInterval: (query) => queuedCommentQueueEnabled &&
-      (liveRuntimeRun || query.state.data?.entries.length) ? 1000 : false,
+      (liveRuntimeRun || query.state.data?.entries.length) ? 5_000 : false,
   });
   const [consumedQueuedCommentIds, setConsumedQueuedCommentIds] = useState<
     ReadonlySet<string>
@@ -1558,7 +1564,7 @@ const IssueDetailChatTab = memo(function IssueDetailChatTab({
     queryFn: () => activityApi.runsForIssue(issueId),
     enabled: !!issueId,
     refetchInterval:
-      hasLiveRuns || issueStatus === "in_progress" ? 1000 : false,
+      hasLiveRuns || issueStatus === "in_progress" ? issueRunFallbackMs : false,
     placeholderData: keepPreviousDataForSameQueryTail<RunForIssue[]>(issueId),
   });
   const resolvedActivity = activity ?? [];
@@ -2591,6 +2597,17 @@ function IssueDetailActivityTab({
         Awaited<ReturnType<typeof issuesApi.getCostSummary>>
       >(issueId),
   });
+  // myrmidon(1.7 TOKEN-BUDGET-SIGNAL, OPE-12232): the read-only soft signal of
+  // the issue's token budget. Absent payload means no active token budget and
+  // the badge renders nothing; the server never pauses on this path.
+  const { data: tokenBudgetSignal } = useQuery({
+    queryKey: queryKeys.issues.tokenBudgetSignal(issueId),
+    queryFn: () => issuesApi.getTokenBudgetSignal(issueId),
+    placeholderData:
+      keepPreviousDataForSameQueryTail<
+        Awaited<ReturnType<typeof issuesApi.getTokenBudgetSignal>> | null
+      >(issueId),
+  });
   const initialLoading =
     (activityLoading && activity === undefined) ||
     (linkedRunsLoading && linkedRuns === undefined);
@@ -2677,6 +2694,12 @@ function IssueDetailActivityTab({
           <div className="text-sm font-medium text-muted-foreground mb-1">
             {i18n.t("area.issue-threads-runs-2.issue-detail.costSummary")}
           </div>
+          {/* myrmidon(1.7 TOKEN-BUDGET-SIGNAL): the card view of the soft signal — informs, never stops. */}
+          {tokenBudgetSignal ? (
+            <div className="mb-1.5">
+              <TokenBudgetSignalBadge signal={tokenBudgetSignal} />
+            </div>
+          ) : null}
           {!issueCostSummary.hasCost &&
           !issueCostSummary.hasTokens &&
           !hasIssueTreeCost ? (

@@ -195,12 +195,15 @@ Docker: dockergate намеренно отказывает в произволь
 **Куда что пишет.** Корневая файловая система в рантайме доступна только для чтения, а
 записываемые каталоги бота — ровно его три тома, поэтому:
 
-- склад pnpm по умолчанию — `/workspace/.pnpm-store` через `npm_config_store_dir`, то есть
-  на том же монтировании, что и клоны: pnpm ставит `node_modules` жёсткими ссылками, а
-  жёсткая ссылка не пересекает монтирование (склад на `/data` или `/cache` заставлял pnpm
-  копировать каждый пакет в каждый клон; 1.6.2 BOT-DISK-C). `pnpm-hardlink-check.sh`
-  проверяет это при сборке. Склад можно вынести в общий кэш пакетов экземпляра
-  (`pnpmStore: "shared"`), см. [docs/myrmidon/bot-disk-cache.ru.md](../../docs/myrmidon/bot-disk-cache.ru.md);
+- склад pnpm — общее монтирование `/cache/pnpm-store` (OPE-12869), когда профиль доски несёт
+  `npm_config_store_dir` (боты с общим кэшем пакетов); собственное умолчание образа
+  `/workspace/.pnpm-store` действует для бота без этого монтирования. Общий склад работает,
+  потому что лежит на той же файловой системе XFS, что и тома ботов: pnpm импортирует
+  `node_modules` reflink'ом (`npm_config_package_import_method=clone`), одна физическая копия на
+  всех ботов; жёсткая ссылка не пересекает монтирование, а склад на другой файловой системе
+  (корневой диск 1.6.5) заставлял pnpm копировать каждый пакет в каждый клон.
+  `pnpm-hardlink-check.sh` проверяет это при сборке. Подробности о складе и
+  способе импорта — [docs/myrmidon/bot-disk-cache.ru.md](../../docs/myrmidon/bot-disk-cache.ru.md);
 - `RUSTUP_HOME`/`CARGO_HOME` остаются запечатанными под `/opt`, а `CARGO_TARGET_DIR` направляет
   артефакты `cargo` в `/data/hermes/.cache/cargo-target` (OPE-12105), вне рабочего дерева задачи.
   botd держит этот каталог в пределах квоты на бота (`cargoTargetQuotaBytes`, 2 ГиБ) и
@@ -568,6 +571,12 @@ loopback и стримит один кусок в секунду, чтобы п�
   `/scratch/<name>`. Флаги `--filter`, `--depth`, `--mirror` и `--bare`
   игнорируются с сообщением — объекты уже есть в базе. Настоящий git лежит в
   `/opt/paperclip/libexec/git` вне PATH.
+- `myr-ws open <KEY> <owner/repo> --review [--branch <ветка PR>]` открывает
+  копию для ревью: worktree без рабочего каталога (только файл `.git`,
+  килобайты), без установки зависимостей, git-хуки выключены; ветка сначала
+  обновляется с remote. Читать через `git diff origin/main...HEAD` и
+  `git show HEAD:<путь>`; нет ветки на remote — ошибка, если не задан
+  `--branch`.
 - Команды `myr-ws`: `open <KEY> [owner/repo] [--base <ref>] [--scratch]`,
   `list`, `close <KEY> [--force]`, `restore <KEY>`, `migrate`; общий флаг
   `--json`. Коды выхода: `0` — ок, `2` — неверные аргументы, `3` — отказ по

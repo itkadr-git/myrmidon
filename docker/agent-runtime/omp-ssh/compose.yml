@@ -1,0 +1,124 @@
+# myrmidon(OPE-12633 OMP-SSH-RUNNER): operator template, one SSH runner per
+# omp_local agent. See the "OMP SSH runner" section of
+# docker/agent-runtime/README.md for the whole procedure (key pair, board SSH
+# environment, agent default environment, cache directories, rollout).
+#
+# Required variables (an env file next to this compose file):
+#   OMP_RUNNER_NAME             container name, e.g. myrmidon-omp-runner-eng17
+#   OMP_RUNNER_IMAGE            ghcr.io/itkadr-git/agent-runtime-omp-ssh@sha256:<digest>
+#   OMP_RUNNER_AUTHORIZED_KEYS  host path of the board's public key (read-only mount)
+#   OMP_RUNNER_NETWORK          docker network shared with the board container
+#   OMP_RUNNER_DATA_DIR         host directory for the runner's workspace, home, /tmp and host key,
+#                               on the bot data disk (XFS), not the root disk: agents clone and
+#                               build repositories there, gigabytes per agent. It must hold the
+#                               subdirectories workspace/ (owned by 1000:1000), home/, hostkeys/
+#                               and tmp/ (mode 1777: the container's /tmp).
+# Optional variables:
+#   OMP_RUNNER_MEMORY, OMP_RUNNER_CPUS, OMP_RUNNER_PIDS. The defaults (4g, 1 CPU,
+#                               1024 processes) are those of an engineer bot container.
+#   OMP_RUNNER_CACHE_DIR        (myrmidon OPE-12722 OMP-RUNNER-SHARED-CACHE) the shared package
+#                               cache directory on the bot data disk, e.g. /srv/myrmidon-cache,
+#                               the board's general.botDisk.sharedPackageCachePath. Default:
+#                               ${OMP_RUNNER_DATA_DIR}/cache, a cache private to this runner (it
+#                               holds no board mirrors, so the git wrapper then does nothing).
+#                               Three subdirectories are bound, create all BEFORE the first start
+#                               (a missing bind source is created by docker as root):
+#     <cache>/git         -> /cache/git (read-only). The board's bare mirrors; the board writes and
+#                         refreshes them, the runner only reads them through the git wrapper at
+#                         /usr/local/bin/git. Owned by the BOARD's user, world-readable:
+#                           install -d -o <board uid> -m 0755 <cache>/git
+#                         If docker creates it as root instead, the board cannot write mirrors.
+#     <cache>/pnpm-omp    -> /cache/pnpm. The runners' own pnpm metadata cache (cache-dir), shared by
+#                         all runners, owned by uid 1000:
+#                           install -d -o 1000 -g 1000 -m 0755 <cache>/pnpm-omp
+#                         It is NOT <cache>/pnpm: that directory belongs to the hermes bots
+#                         (uid 10001), whose prepare step re-owns it, and a runner must never
+#                         chown a directory the bots share. The entrypoint chowns /cache/pnpm
+#                         only when it is root-owned (created by docker) and otherwise leaves it.
+#     <cache>/pnpm-store-omp -> /cache/pnpm-store. The shared pnpm store for all runners
+#                         (OPE-13018), owned by uid 1000:
+#                           install -d -o 1000 -g 1000 -m 0755 <cache>/pnpm-store-omp
+#                         One store for the host instead of a 2.5 GB copy per runner; it must sit
+#                         on the same XFS filesystem as the runner volumes for reflink to work.
+#
+# The pnpm STORE is the shared `/cache/pnpm-store` mount (myrmidon OPE-13018),
+# not a per-runner directory under `workspace`: one physical copy of every
+# package for all runners on the host instead of 2.5 GB per runner. It works
+# because the store sits on the same XFS filesystem as the runner volumes
+# (`/srv/myrmidon-xfs`), so pnpm imports `node_modules` by reflink across the
+# bind mounts without copying package bytes; a hard link cannot cross a mount
+# point (EXDEV), and a store on another filesystem would make pnpm copy every
+# package into every clone. The store directory is a sibling of the per-runner
+# `pnpm-omp` metadata directory in the same cache root and is owned by the
+# runner uid/gid (1000:1000). Create it before the first start (a missing bind
+# source is created by docker as root):
+#
+#   install -d -o 1000 -g 1000 -m 0755 <cache>/pnpm-store-omp
+#
+# The entrypoint points pnpm at /cache/pnpm-store through a profile.d file; a
+# runner whose compose predates the mount keeps the old in-workspace store at
+# /workspace/.paperclip-runtime/pnpm-store as a fallback, so existing runners
+# keep working until they are migrated (see README.md "Migrating an existing
+# runner"). That fallback store survives only because it sits inside
+# `.paperclip-runtime`, the one directory every board cleanup of the workspace
+# spares (git clean -fdx -e .paperclip-runtime, clearRemoteDirectory, the
+# post-run cleanup) and the sync never copies; only `.paperclip-runtime/runs/`
+# is ever pruned.
+#
+# Keep `nodeLinker: isolated` (the default): no node_modules symlinks escape
+# the container into the shared store.
+#
+# No port is published: the board reaches the runner by container name on the
+# shared network. The host paths mounted are the board's public key
+# (read-only), the four data volumes under OMP_RUNNER_DATA_DIR and the three
+# cache directories above. The cache is bound at /cache, outside /workspace, so
+# no host path sits inside the synchronized workspace (SANDBOX-REQUIREMENTS.md);
+# the docker socket is never mounted.
+services:
+  omp-runner:
+    image: ${OMP_RUNNER_IMAGE:?set OMP_RUNNER_IMAGE}
+    container_name: ${OMP_RUNNER_NAME:?set OMP_RUNNER_NAME}
+    restart: unless-stopped
+    networks: [board]
+    mem_limit: ${OMP_RUNNER_MEMORY:-4g}
+    memswap_limit: ${OMP_RUNNER_MEMORY:-4g}
+    cpus: ${OMP_RUNNER_CPUS:-1}
+    pids_limit: ${OMP_RUNNER_PIDS:-1024}
+    cap_drop: [ALL]
+    cap_add: [CHOWN, DAC_OVERRIDE, FOWNER, SETUID, SETGID, SYS_CHROOT, KILL, AUDIT_WRITE]
+    security_opt: ["no-new-privileges:true"]
+    logging:
+      driver: json-file
+      options: { max-size: "10m", max-file: "3" }
+    volumes:
+      - workspace:/workspace
+      - home:/home/paperclip
+      - ${OMP_RUNNER_CACHE_DIR:-${OMP_RUNNER_DATA_DIR:?set OMP_RUNNER_DATA_DIR}/cache}/git:/cache/git:ro
+      - ${OMP_RUNNER_CACHE_DIR:-${OMP_RUNNER_DATA_DIR:?set OMP_RUNNER_DATA_DIR}/cache}/pnpm-omp:/cache/pnpm
+      - ${OMP_RUNNER_CACHE_DIR:-${OMP_RUNNER_DATA_DIR:?set OMP_RUNNER_DATA_DIR}/cache}/pnpm-store-omp:/cache/pnpm-store
+      - hostkeys:/var/lib/omp-runner/hostkeys
+      # /tmp on the data disk: tests and task tooling write gigabytes there (15.8 GB in two days,
+      # OPE-12966), and a container's own /tmp sits in its write layer on the root disk.
+      # host-gc prunes entries older than 24 h (scripts/myrmidon/host-gc/README.md).
+      - tmp:/tmp
+      - ${OMP_RUNNER_AUTHORIZED_KEYS:?set OMP_RUNNER_AUTHORIZED_KEYS}:/etc/ssh/omp-runner/authorized_keys:ro
+
+networks:
+  board:
+    external: true
+    name: ${OMP_RUNNER_NETWORK:?set OMP_RUNNER_NETWORK}
+
+# Bind volumes: the data lives under OMP_RUNNER_DATA_DIR, never in /var/lib/docker on the root disk.
+volumes:
+  workspace:
+    driver: local
+    driver_opts: { type: none, o: bind, device: "${OMP_RUNNER_DATA_DIR:?set OMP_RUNNER_DATA_DIR}/workspace" }
+  home:
+    driver: local
+    driver_opts: { type: none, o: bind, device: "${OMP_RUNNER_DATA_DIR:?set OMP_RUNNER_DATA_DIR}/home" }
+  hostkeys:
+    driver: local
+    driver_opts: { type: none, o: bind, device: "${OMP_RUNNER_DATA_DIR:?set OMP_RUNNER_DATA_DIR}/hostkeys" }
+  tmp:
+    driver: local
+    driver_opts: { type: none, o: bind, device: "${OMP_RUNNER_DATA_DIR:?set OMP_RUNNER_DATA_DIR}/tmp" }

@@ -58,6 +58,7 @@ import {
   readLocalServiceProcessCwd,
   readLocalServiceProcessGroupId,
   readLocalServicePortOwner,
+  resetLsofAvailabilityForTests,
   removeLocalServiceRegistryRecord,
   terminateLocalService,
   touchLocalServiceRegistryRecord,
@@ -275,6 +276,16 @@ const exposurePortPairClaims = new ExposurePortPairClaims();
 const OPEN_EXECUTION_WORKSPACE_LEASE_STATUSES = ["active", "idle", "in_review"] as const;
 const DEFAULT_EXECUTE_PROCESS_OUTPUT_BYTES = 256 * 1024;
 export const WORKSPACE_RUNTIME_PORT_ALLOCATION_ATTEMPTS = 32;
+// Test-only override of the attempt bound. Each failed attempt spawns a real child and waits out
+// the listener-stability delay, so a test that must exhaust the bound can shrink it instead of
+// paying 32 sequential spawns. Production always uses the constant.
+let portAllocationAttemptsOverride: number | null = null;
+function portAllocationAttempts() {
+  return portAllocationAttemptsOverride ?? WORKSPACE_RUNTIME_PORT_ALLOCATION_ATTEMPTS;
+}
+export function setWorkspaceRuntimePortAllocationAttemptsForTests(attempts: number | null) {
+  portAllocationAttemptsOverride = attempts;
+}
 const ACTIVE_RUNTIME_PORT_RESERVATION_STATUSES = ["provisioning", "starting", "running"] as const;
 const DEFAULT_TAILSCALE_BROKER_SOCKET = "/run/paperclip-tailscale-broker/broker.sock";
 
@@ -533,6 +544,8 @@ export async function resetRuntimeServicesForTests(
   quarantinedRuntimeExposurePorts.clear();
   exposurePortPairClaims.clear();
   workspaceRuntimeExposureDeps = defaultWorkspaceRuntimeExposureDeps();
+  portAllocationAttemptsOverride = null;
+  resetLsofAvailabilityForTests();
 }
 
 function stableStringify(value: unknown): string {
@@ -4792,7 +4805,7 @@ async function allocateIsolatedWorkspacePort(input: {
 }) {
   const lastPort = Math.min(
     65_535,
-    input.preferredPort + WORKSPACE_RUNTIME_PORT_ALLOCATION_ATTEMPTS - 1,
+    input.preferredPort + portAllocationAttempts() - 1,
   );
   const candidates: number[] = [];
   const addCandidate = (port: number | null) => {
@@ -6064,7 +6077,7 @@ async function spawnLocalRuntimeService(input: StartLocalRuntimeServiceInput): P
         releasePortReservation(stoppedReuseCandidate.port);
       }
     }
-    for (let attempt = 0; port === null && attempt < WORKSPACE_RUNTIME_PORT_ALLOCATION_ATTEMPTS; attempt += 1) {
+    for (let attempt = 0; port === null && attempt < portAllocationAttempts(); attempt += 1) {
       // Reserves its candidate in-process and re-checks it for a live owner before returning.
       const candidate = await allocateRuntimeServicePort();
       if (input.excludedPorts?.has(candidate)) {
@@ -6077,7 +6090,7 @@ async function spawnLocalRuntimeService(input: StartLocalRuntimeServiceInput): P
     if (port === null) {
       throw conflict("No safe automatically allocated runtime service port is available.", {
         code: "workspace_runtime_port_allocation_exhausted",
-        attemptedPortCount: WORKSPACE_RUNTIME_PORT_ALLOCATION_ATTEMPTS,
+        attemptedPortCount: portAllocationAttempts(),
         remediation: "Retry the start or configure a different runtime service port.",
       });
     }
@@ -6785,7 +6798,7 @@ async function startLocalRuntimeService(
   const deferReadiness = Boolean(options?.deferReadiness);
 
   try {
-    for (let attempt = 0; attempt < WORKSPACE_RUNTIME_PORT_ALLOCATION_ATTEMPTS; attempt += 1) {
+    for (let attempt = 0; attempt < portAllocationAttempts(); attempt += 1) {
       try {
         started = await spawnLocalRuntimeService({
           ...input,
@@ -7857,7 +7870,7 @@ async function startRuntimeServicesForWorkspaceControlInvocation(
           }
 
           excludedPorts.add(error.port);
-          if (excludedPorts.size >= WORKSPACE_RUNTIME_PORT_ALLOCATION_ATTEMPTS) {
+          if (excludedPorts.size >= portAllocationAttempts()) {
             const portConfig = parseObject(pending.service.port);
             const portType = asString(portConfig.type, "");
             const preferredPort = asNumber(portConfig.value, asNumber(pending.service.port, 0));

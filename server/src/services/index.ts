@@ -40,6 +40,7 @@ export {
   ISSUE_CONTINUATION_SUMMARY_DOCUMENT_KEY,
   buildContinuationSummaryMarkdown,
   getIssueContinuationSummaryDocument,
+  getIssueStarterPackDocument,
   refreshIssueContinuationSummary,
 } from "./issue-continuation-summary.js";
 export { projectService } from "./projects.js";
@@ -96,6 +97,7 @@ export type {
   WorkTimelineSpan,
 } from "./work-timeline.js";
 export { approvalService } from "./approvals.js";
+export { admAccessRequestService, ADM_APPROVAL_TYPE, type AdmActorContext } from "./adm-access-request.js";
 export { budgetService } from "./budgets.js";
 export { secretService } from "./secrets.js";
 export { createRunSecretRedactionRegistry } from "./run-secret-redaction.js";

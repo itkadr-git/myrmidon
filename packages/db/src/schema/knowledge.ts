@@ -68,8 +68,8 @@ export type KnowledgeRevisionStatus = (typeof KNOWLEDGE_REVISION_STATUSES)[numbe
 export const KNOWLEDGE_REVISION_LANGS = ["en", "ru"] as const;
 export type KnowledgeRevisionLang = (typeof KNOWLEDGE_REVISION_LANGS)[number];
 
-/** Source kinds a claim may cite. */
-export const KNOWLEDGE_SOURCE_KINDS = ["task", "pr", "issue", "run", "document", "decision", "url"] as const;
+/** Source kinds a claim may cite. Single source of truth: server/domain.ts mirrors this list. */
+export const KNOWLEDGE_SOURCE_KINDS = ["task", "pr", "issue", "run", "document", "decision", "url", "debate"] as const;
 export type KnowledgeSourceKind = (typeof KNOWLEDGE_SOURCE_KINDS)[number];
 
 export const knowledgeItems = pgTable(

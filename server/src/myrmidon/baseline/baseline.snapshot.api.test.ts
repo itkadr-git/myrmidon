@@ -45,6 +45,7 @@ function metrics(): BaselineMetricsResponse {
     window: { from: FROM, to: TO },
     generatedAt: NOW.toISOString(),
     source: { statusLog: "activity_log", costs: "none" },
+    runSuccess: { succeeded: 0, failed: 0, total: 0, rate: null },
     byProject: [],
     byRole: [],
     overall: {

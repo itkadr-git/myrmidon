@@ -447,6 +447,14 @@ export function applyUnverifiedRule(
   verdict: GoalJudgeVerdict,
   input: GoalJudgeInput,
 ): GoalJudgeVerdict {
+  // The evidence scan exists to veto an unproven complete=true («заявлено, но
+  // не проверено = не сделано»). When the judge already returned complete=false,
+  // its missing list is authoritative: re-running the keyword heuristic here
+  // appended the raw criteria on top of the judge's paraphrases (2 -> 5 items)
+  // and zeroed the score, corrupting the very report the executor receives.
+  if (!verdict.complete) {
+    return verdict;
+  }
   const criteria = normalizeCriteria(input.criteria);
   const claims = input.claims ? normalizeCriteria(input.claims) : [];
   const candidateItems = Array.from(new Set([...criteria, ...claims]));

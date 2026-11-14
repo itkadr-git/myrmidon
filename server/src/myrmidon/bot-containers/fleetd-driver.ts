@@ -359,8 +359,17 @@ export function fleetdBotContainerDriver(
     },
 
     async recreate(spec: BotContainerSpec): Promise<void> {
+      // myrmidon(OPE-12901): the fleetd recreate pulls the new image when the
+      // host does not have it yet, and a pull does not fit the 60 s default —
+      // wait as long as a start (the rc.27 rollout lost six fleetd bots to the
+      // default timeout; the retry passed once the images were on the host).
       await noticeSharedPackageCache();
-      await callVoid({ method: "POST", path: `/bots/${encodeURIComponent(spec.botKey)}/recreate`, body: { spec: toFleetdWireSpec(spec) } });
+      await callVoid({
+        method: "POST",
+        path: `/bots/${encodeURIComponent(spec.botKey)}/recreate`,
+        body: { spec: toFleetdWireSpec(spec) },
+        timeoutMs: START_TIMEOUT_MS,
+      });
     },
 
     async writeProfile(botKey: string, profile: CompiledProfile): Promise<void> {
@@ -384,6 +393,19 @@ export function fleetdBotContainerDriver(
       await callVoid({
         method: "POST",
         path: `/bots/${encodeURIComponent(botKey)}/stop`,
+        timeoutMs: START_TIMEOUT_MS,
+      });
+    },
+
+    // myrmidon(OPE-12663): IDLE-STOP over the wire. fleetd stops the container
+    // and records the idle-stopped mark on its host, so the reconciler leaves
+    // the container down and the next wake starts it (the local driver's A17
+    // contract). The mark-write failure mode lives fleetd-side: it starts the
+    // container back up and answers the error, which surfaces here as-is.
+    async stopIdle(botKey: string): Promise<void> {
+      await callVoid({
+        method: "POST",
+        path: `/bots/${encodeURIComponent(botKey)}/stopIdle`,
         timeoutMs: START_TIMEOUT_MS,
       });
     },

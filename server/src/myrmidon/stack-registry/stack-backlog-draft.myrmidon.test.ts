@@ -74,6 +74,36 @@ describe("stack backlog drafts", () => {
     expect(second).toHaveLength(0);
   });
 
+  it("skips a closed task for the same component and release", () => {
+    const doc = documentWithUpstream({ langfuse: upstream({ behindBy: 2 }) });
+
+    expect(
+      decideStackBacklogDrafts(doc, {
+        existingDrafts: [{ title: "langfuse 3.2.0", originId: "langfuse:3.2.0" }],
+      }),
+    ).toHaveLength(0);
+  });
+
+  it("deduplicates by originId component:upstream.latest even when the stored title differs", () => {
+    const doc = documentWithUpstream({ langfuse: upstream({ behindBy: 2 }) });
+
+    expect(
+      decideStackBacklogDrafts(doc, {
+        existingDrafts: [{ title: "Reviewed langfuse update", originId: "langfuse:3.2.0" }],
+      }),
+    ).toHaveLength(0);
+  });
+
+  it("still drafts newer release when previous closed task was for an older release", () => {
+    const doc = documentWithUpstream({ langfuse: upstream({ behindBy: 2 }) });
+
+    expect(
+      decideStackBacklogDrafts(doc, {
+        existingDrafts: [{ title: "langfuse 3.1.0", originId: "langfuse:3.1.0" }],
+      }),
+    ).toHaveLength(1);
+  });
+
   it("does not draft after the security note is gone and the lag is gone", () => {
     const before = documentWithUpstream({
       langfuse: upstream({

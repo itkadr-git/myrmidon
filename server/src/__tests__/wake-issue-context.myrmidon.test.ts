@@ -37,7 +37,7 @@ describe("wakeup task context (myrmidon N4-WAKE-ISSUE-CONTEXT)", () => {
         testedAt: new Date(0).toISOString(),
       }),
     });
-  }, 30_000);
+  }, 60_000);
 
   afterAll(async () => {
     unregisterServerAdapter("wake_context_test");

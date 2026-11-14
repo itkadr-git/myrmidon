@@ -26,11 +26,11 @@ import type { ExecutionContinuationEnvelope } from "@myrmidon/shared";
  */
 export type PaperclipWakeHistoryMode = "summary" | "recent" | "full";
 
-export const PAPERCLIP_WAKE_SUMMARY_MAX_CHARS = 2_000;
-export const PAPERCLIP_WAKE_RECENT_MAX_MESSAGES = 8;
-export const PAPERCLIP_WAKE_RECENT_MESSAGE_MAX_CHARS = 1_000;
-export const PAPERCLIP_WAKE_RECENT_TOTAL_MAX_CHARS = 8_000;
-export const PAPERCLIP_WAKE_PAYLOAD_JSON_MAX_CHARS = 12_000;
+export const MYRMIDON_WAKE_SUMMARY_MAX_CHARS = 2_000;
+export const MYRMIDON_WAKE_RECENT_MAX_MESSAGES = 8;
+export const MYRMIDON_WAKE_RECENT_MESSAGE_MAX_CHARS = 1_000;
+export const MYRMIDON_WAKE_RECENT_TOTAL_MAX_CHARS = 8_000;
+export const MYRMIDON_WAKE_PAYLOAD_JSON_MAX_CHARS = 12_000;
 
 type Message = ExecutionContinuationEnvelope["messages"][number];
 
@@ -43,8 +43,9 @@ function asRecord(value: unknown): Record<string, unknown> {
 /**
  * The history mode of one agent card. An explicit `wakeHistory` wins; otherwise
  * the session strategy decides: a card whose session is new on every run
- * (`run`, `none`) has no earlier session to lean on, and by owner decision its
- * agent does not load previous runs, so it gets the summary only. Every other
+ * (`run`, `none`) has no earlier session to lean on, so it gets the summary
+ * only. (Developers get no Hindsight memory, but their task session continues
+ * between runs, so they take the `issue` branch below by default.) Every other
  * card keeps a short, bounded tail of the thread.
  */
 export function resolvePaperclipWakeHistoryMode(config: unknown): PaperclipWakeHistoryMode {
@@ -111,10 +112,10 @@ function selectRecentMessages(
   // Direction first (the comments this run was woken for and the latest human
   // request), then the newest of the rest, up to the message cap.
   const chosen = new Set<number>();
-  for (let index = messages.length - 1; index >= 0 && chosen.size < PAPERCLIP_WAKE_RECENT_MAX_MESSAGES; index--) {
+  for (let index = messages.length - 1; index >= 0 && chosen.size < MYRMIDON_WAKE_RECENT_MAX_MESSAGES; index--) {
     if (pinned.has(messages[index]!.id)) chosen.add(index);
   }
-  for (let index = messages.length - 1; index >= 0 && chosen.size < PAPERCLIP_WAKE_RECENT_MAX_MESSAGES; index--) {
+  for (let index = messages.length - 1; index >= 0 && chosen.size < MYRMIDON_WAKE_RECENT_MAX_MESSAGES; index--) {
     chosen.add(index);
   }
 
@@ -124,14 +125,14 @@ function selectRecentMessages(
     .sort((a, b) => a - b)
     .map((index) => {
       const message = messages[index]!;
-      if (typeof message.body !== "string" || message.body.length <= PAPERCLIP_WAKE_RECENT_MESSAGE_MAX_CHARS) return message;
+      if (typeof message.body !== "string" || message.body.length <= MYRMIDON_WAKE_RECENT_MESSAGE_MAX_CHARS) return message;
       shortened++;
-      return { ...message, body: truncateWakeText(message.body, PAPERCLIP_WAKE_RECENT_MESSAGE_MAX_CHARS, where) };
+      return { ...message, body: truncateWakeText(message.body, MYRMIDON_WAKE_RECENT_MESSAGE_MAX_CHARS, where) };
     });
 
   // Total budget: drop the oldest entries that carry no direction until it fits.
   const total = () => items.reduce((sum, message) => sum + (typeof message.body === "string" ? message.body.length : 0), 0);
-  while (total() > PAPERCLIP_WAKE_RECENT_TOTAL_MAX_CHARS) {
+  while (total() > MYRMIDON_WAKE_RECENT_TOTAL_MAX_CHARS) {
     const droppable = items.findIndex((message) => !pinned.has(message.id));
     if (droppable < 0) break;
     items.splice(droppable, 1);
@@ -166,7 +167,7 @@ export function slimExecutionContinuationHistory(
     if (summaryBody && completedWork.trim() === summaryBody) {
       completedWork = SAME_AS_CONTINUATION_SUMMARY;
     } else if (mode === "summary") {
-      completedWork = truncateWakeText(completedWork, PAPERCLIP_WAKE_SUMMARY_MAX_CHARS, "the full text is in the previous run result");
+      completedWork = truncateWakeText(completedWork, MYRMIDON_WAKE_SUMMARY_MAX_CHARS, "the full text is in the previous run result");
     }
   }
 
@@ -198,9 +199,9 @@ export function describeWakeHistory(note: PaperclipWakeHistoryNote): string {
 
 /** Cap for the continuation summary body rendered in `summary` mode. */
 export function capWakeSummaryBody(body: string, mode: PaperclipWakeHistoryMode): { body: string; truncated: boolean } {
-  if (mode !== "summary" || body.length <= PAPERCLIP_WAKE_SUMMARY_MAX_CHARS) return { body, truncated: false };
+  if (mode !== "summary" || body.length <= MYRMIDON_WAKE_SUMMARY_MAX_CHARS) return { body, truncated: false };
   return {
-    body: truncateWakeText(body, PAPERCLIP_WAKE_SUMMARY_MAX_CHARS, "the full summary is the issue continuation-summary document"),
+    body: truncateWakeText(body, MYRMIDON_WAKE_SUMMARY_MAX_CHARS, "the full summary is the issue continuation-summary document"),
     truncated: true,
   };
 }
@@ -269,7 +270,7 @@ const CAPPABLE_WAKE_PAYLOAD_KEYS = [
  */
 export function capWakePayloadJson(
   payload: Record<string, unknown>,
-  maxChars: number = PAPERCLIP_WAKE_PAYLOAD_JSON_MAX_CHARS,
+  maxChars: number = MYRMIDON_WAKE_PAYLOAD_JSON_MAX_CHARS,
 ): string {
   const original = JSON.stringify(payload);
   if (maxChars <= 0 || original.length <= maxChars) return original;

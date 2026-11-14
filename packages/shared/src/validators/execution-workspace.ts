@@ -160,6 +160,21 @@ export const updateExecutionWorkspaceSchema = z.object({
 
 const branchReconcileReasonSchema = z.string().trim().min(1);
 
+export const executionWorkspaceTurnRestoreSchema = z.object({
+  runId: z.string().uuid(),
+  targetTurnNumber: z.number().int().min(0),
+  reason: branchReconcileReasonSchema.optional().nullable(),
+}).strict();
+
+export const executionWorkspaceTurnDiffQuerySchema = z.object({
+  runId: z.string().uuid(),
+  fromTurn: z.coerce.number().int().min(0),
+  toTurn: z.coerce.number().int().min(0),
+}).strict();
+
+export type ExecutionWorkspaceTurnRestore = z.infer<typeof executionWorkspaceTurnRestoreSchema>;
+export type ExecutionWorkspaceTurnDiffQuery = z.infer<typeof executionWorkspaceTurnDiffQuerySchema>;
+
 export const reconcileExecutionWorkspaceBranchSchema = z.discriminatedUnion("mode", [
   z.object({
     mode: z.literal("forward"),

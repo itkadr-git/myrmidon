@@ -12,6 +12,7 @@ import type {
 } from "@myrmidon/shared";
 import { issueExecutionPolicySchema, issueExecutionStateSchema } from "@myrmidon/shared";
 import { unprocessable } from "../errors.js";
+import { isReleaseTask } from "../myrmidon/task-pr-sync/policy.js";
 
 type AssigneeLike = {
   assigneeAgentId?: string | null;
@@ -21,6 +22,7 @@ type AssigneeLike = {
 type IssueLike = AssigneeLike & {
   id?: string;
   status: string;
+  title?: string | null;
   projectId?: string | null;
   casteKey?: string | null;
   reviewEscalationPolicy?: ReviewEscalationPolicyLike | null;
@@ -454,6 +456,7 @@ export function normalizeIssueExecutionPolicy(input: unknown): IssueExecutionPol
         type: stage.type,
         approvalsNeeded: 1 as const,
         participants: dedupedParticipants,
+        ...(stage.requirements ? { requirements: stage.requirements } : {}),
       };
     })
     .filter((stage): stage is NonNullable<typeof stage> => stage !== null);
@@ -525,7 +528,7 @@ function principalsEqual(a: IssueExecutionStagePrincipal | null, b: IssueExecuti
   return a.type === "agent" ? a.agentId === b.agentId : a.userId === b.userId;
 }
 
-function resolveMaxReviewRounds(policy: IssueExecutionPolicy | null): number {
+export function resolveMaxReviewRounds(policy: IssueExecutionPolicy | null): number {
   const configured = policy?.reviewEscalationPolicy?.maxReviewRounds ?? policy?.maxReviewRounds;
   if (configured == null) return DEFAULT_MAX_REVIEW_ROUNDS;
   return typeof configured === "number" && configured > 0 ? configured : DEFAULT_MAX_REVIEW_ROUNDS;
@@ -541,7 +544,11 @@ export function resolveReviewEscalationParticipant(
   const configured = policy?.reviewEscalationPolicy ?? issue.reviewEscalationPolicy;
   const reviewOwnerIds = new Set([issue.responsibleUserId, issue.createdByUserId].filter((id): id is string => Boolean(id)));
   if (
-    configured && configured.policyRevision.trim().length > 0 && configured.participantRoles.length > 0
+    configured &&
+    typeof configured.policyRevision === "string" &&
+    configured.policyRevision.trim().length > 0 &&
+    Array.isArray(configured.participantRoles) &&
+    configured.participantRoles.length > 0
   ) {
     const lookup = (role: (typeof configured.participantRoles)[number]) =>
       issue.reviewEscalationParticipants?.[role] ?? configured.participants?.[role];
@@ -563,10 +570,12 @@ export function resolveReviewEscalationParticipant(
   }
   // Configured policies are strict: they never fall back to the issue owner or
   // another stage participant.
-  if (configured) return null;
+  if (configured && Array.isArray(configured.participantRoles) && configured.participantRoles.length > 0) return null;
   // myrmidon(OPE-9031): without a policy the stage goes to the next agent of
   // the senior chain, never to a human.
-  const chain = issue.defaultEscalationAgentIds;
+  const chain =
+    issue.defaultEscalationAgentIds ??
+    (Array.isArray((configured as any)?.escalationAgentIds) ? (configured as any).escalationAgentIds : null);
   if (!chain) return null;
   const holderIndex = escalatedHolder?.type === "agent" && escalatedHolder.agentId
     ? chain.indexOf(escalatedHolder.agentId)
@@ -704,6 +713,11 @@ function buildStateWithCompletedStages(input: {
     ...(input.previous?.lastChangesRequestedHeadSha
       ? { lastChangesRequestedHeadSha: input.previous.lastChangesRequestedHeadSha }
       : {}),
+    // myrmidon(1.7-GOAL-JUDGE, OPE-12149): the judge round budget must survive
+    // stage-completion bookkeeping, otherwise every new cycle restarts at round 1.
+    ...(input.previous?.goalJudgeRound !== undefined
+      ? { goalJudgeRound: input.previous.goalJudgeRound }
+      : {}),
   };
 }
 
@@ -758,6 +772,11 @@ function buildPendingState(input: {
     // return compares its PR head with the head of the previous return.
     ...(input.previous?.lastChangesRequestedHeadSha
       ? { lastChangesRequestedHeadSha: input.previous.lastChangesRequestedHeadSha }
+      : {}),
+    // myrmidon(1.7-GOAL-JUDGE, OPE-12149): the judge round budget must survive a
+    // re-entry into the review stage, otherwise every cycle restarts at round 1.
+    ...(input.previous?.goalJudgeRound !== undefined
+      ? { goalJudgeRound: input.previous.goalJudgeRound }
       : {}),
     ...(input.reviewCycleId ? { reviewCycleId: input.reviewCycleId } : {}),
     ...(input.escalationPolicyRevision || input.previous?.escalationPolicyRevision
@@ -887,12 +906,62 @@ function canAutoSkipPendingStage(input: {
   stage: IssueExecutionStage;
   returnAssignee: IssueExecutionStagePrincipal | null;
   requestedStatus?: string;
+  /** OPE-12995: only true when the stage itself declares requirements.skip. */
+  skipVerify?: boolean;
 }) {
-  if (input.requestedStatus !== "done" || input.stage.type !== "review" || !input.returnAssignee) {
+  if (input.requestedStatus !== "done" || !input.returnAssignee) {
+    return false;
+  }
+  // OPE-12995: a verify stage must never be skipped silently — its whole
+  // point is an independent record after deploy — unless the stage itself
+  // was configured with requirements.skip (docs/settings tasks).
+  if (input.stage.type === "verify" && !input.skipVerify) {
+    return false;
+  }
+  if (input.stage.type !== "review" && input.stage.type !== "verify") {
     return false;
   }
   return input.stage.participants.length > 0 &&
     input.stage.participants.every((participant) => principalsEqual(participant, input.returnAssignee));
+}
+
+/**
+ * OPE-12995 (VERIFY-ON-PROD): deploy version / check method evidence carried
+ * by a verify-approve decision comment (`deploy version: …`, `check method: …`).
+ */
+export function verifyEvidenceFromComment(comment: string): {
+  deployVersion: string | null;
+  checkMethod: string | null;
+} {
+  const deployVersion = /^\s*(?:deploy[_ -]?version|version)\s*[:=]\s*(.+)$/im.exec(comment)?.[1]?.trim() ?? null;
+  const checkMethod = /^\s*(?:check[_ -]?method|method)\s*[:=]\s*(.+)$/im.exec(comment)?.[1]?.trim() ?? null;
+  return {
+    deployVersion: deployVersion || null,
+    checkMethod: checkMethod || null,
+  };
+}
+
+function assertVerifyEvidence(input: {
+  stage: IssueExecutionStage;
+  commentBody: string;
+  isRelease?: boolean;
+}) {
+  if (input.stage.requirements?.skip) return;
+  const isRelease = input.isRelease ?? false;
+  const requirements = {
+    deployVersion: isRelease || (input.stage.requirements?.deployVersion ?? false),
+    checkMethod: isRelease || (input.stage.requirements?.checkMethod ?? false),
+  };
+  if (!requirements.deployVersion && !requirements.checkMethod) return;
+  const evidence = verifyEvidenceFromComment(input.commentBody);
+  const missing: string[] = [];
+  if (requirements.deployVersion && !evidence.deployVersion) missing.push("deploy version");
+  if (requirements.checkMethod && !evidence.checkMethod) missing.push("check method");
+  if (missing.length > 0) {
+    throw unprocessable(
+      `Approving a verify stage requires the ${missing.join(" and ")} in the decision comment (for example "deploy version: 2026.11.12" / "check method: manual smoke on the board"). ${STAGE_DECISION_COMMENT_HINT}`,
+    );
+  }
 }
 
 /**
@@ -944,6 +1013,147 @@ function executorPrincipals(input: {
   return principals;
 }
 
+/**
+ * myrmidon(REVIEW-APPROVAL-RECORDED): a pending review stage whose definition
+ * is missing from the policy (the policy lost its stages, or the whole policy
+ * is gone, e.g. a monitor was armed on a stale copy of it) still has a
+ * participant who owes a decision. Their approval (`done` with a comment) is
+ * recorded against the stored stage instead of clearing the state and leaving
+ * `done` to the PR gate (HTTP 409, OPE-13059/OPE-13061).
+ */
+function approveOrphanedPendingReviewStage(
+  input: TransitionInput,
+  existingState: IssueExecutionState,
+  actor: IssueExecutionStagePrincipal | null,
+): TransitionResult | null {
+  if (
+    input.requestedStatus !== "done" ||
+    existingState.status !== PENDING_STATUS ||
+    existingState.currentStageType !== "review" ||
+    !existingState.currentStageId ||
+    !existingState.currentParticipant ||
+    !principalsEqual(existingState.currentParticipant, actor)
+  ) {
+    return null;
+  }
+  if (!input.commentBody?.trim()) {
+    throw unprocessable(`Approving a review or approval stage requires a comment. ${STAGE_DECISION_COMMENT_HINT}`);
+  }
+  return {
+    patch: {
+      executionState: buildCompletedState(existingState, {
+        id: existingState.currentStageId,
+        type: "review",
+        approvalsNeeded: 1,
+        participants: [
+          {
+            id: existingState.currentParticipant.agentId ?? existingState.currentParticipant.userId ?? existingState.currentStageId,
+            ...existingState.currentParticipant,
+          },
+        ],
+      } as IssueExecutionStage),
+    },
+    decision: {
+      stageId: existingState.currentStageId,
+      stageType: "review",
+      outcome: "approved",
+      body: input.commentBody.trim(),
+    },
+  };
+}
+
+/**
+ * myrmidon(REVIEW-CHANGES-LOST-STAGE): a pending review stage whose definition
+ * is missing from the policy still has a participant who owes a decision. Their
+ * changes requested decision (`in_progress` with a comment) is recorded against
+ * the stored stage, advances the rounds counter, and returns the issue to the
+ * return assignee instead of clearing execution state and rejecting with 409/422.
+ */
+function requestChangesOrphanedPendingReviewStage(
+  input: TransitionInput,
+  existingState: IssueExecutionState,
+  actor: IssueExecutionStagePrincipal | null,
+): TransitionResult | null {
+  if (
+    input.requestedStatus !== "in_progress" ||
+    input.commentBody === undefined ||
+    existingState.status !== PENDING_STATUS ||
+    existingState.currentStageType !== "review" ||
+    !existingState.currentStageId ||
+    !existingState.currentParticipant ||
+    !principalsEqual(existingState.currentParticipant, actor)
+  ) {
+    return null;
+  }
+  if (!input.commentBody?.trim()) {
+    throw unprocessable(`Requesting changes requires a comment. ${STAGE_DECISION_COMMENT_HINT}`);
+  }
+  if (!existingState.returnAssignee) {
+    throw unprocessable("This execution stage has no return assignee");
+  }
+
+  const activeStage: IssueExecutionStage = {
+    id: existingState.currentStageId,
+    type: "review",
+    approvalsNeeded: 1,
+    participants: [
+      {
+        id: existingState.currentParticipant.agentId ?? existingState.currentParticipant.userId ?? existingState.currentStageId,
+        ...existingState.currentParticipant,
+      },
+    ],
+  };
+
+  const decision = {
+    stageId: activeStage.id,
+    stageType: activeStage.type,
+    outcome: "changes_requested" as const,
+    body: input.commentBody.trim(),
+  };
+
+  const actorIsHuman = actor?.type === "user";
+  const nextRounds = actorIsHuman ? 0 : (existingState.changesRequestedCount ?? 0) + 1;
+
+  const patch: Record<string, unknown> = {
+    status: "in_progress",
+  };
+
+  const requestedAssigneePatchProvided =
+    input.requestedAssigneePatch.assigneeAgentId !== undefined || input.requestedAssigneePatch.assigneeUserId !== undefined;
+  const explicitAssignee = assigneePrincipal(input.requestedAssigneePatch);
+
+  if (requestedAssigneePatchProvided) {
+    Object.assign(patch, patchForPrincipal(explicitAssignee));
+  } else {
+    const safeAssignee = replaceTerminatedReturnAssignee(
+      safeReturnAssignee(
+        existingState.returnAssignee,
+        activeStage,
+        input.issue,
+        actor,
+      ),
+      input.issue,
+    );
+    if (safeAssignee) Object.assign(patch, patchForPrincipal(safeAssignee));
+  }
+
+  patch.executionState = buildChangesRequestedState(existingState, activeStage, nextRounds);
+  const replacedReturnAssignee = replaceTerminatedReturnAssignee(existingState.returnAssignee, input.issue);
+  if (replacedReturnAssignee !== existingState.returnAssignee) {
+    const changesRequestedState = buildChangesRequestedState(existingState, activeStage, nextRounds);
+    patch.executionState = {
+      ...changesRequestedState,
+      returnAssignee: replacedReturnAssignee,
+    };
+  }
+
+  return {
+    patch,
+    decision,
+    workflowControlledAssignment: true,
+  };
+}
+
 function applyIssueExecutionStageTransition(input: TransitionInput): TransitionResult {
   const patch: Record<string, unknown> = {};
   const existingState = parseIssueExecutionState(input.issue.executionState);
@@ -967,6 +1177,12 @@ function applyIssueExecutionStageTransition(input: TransitionInput): TransitionR
 
   if (!input.policy) {
     if (existingState) {
+      const orphanApproval = approveOrphanedPendingReviewStage(input, existingState, actor);
+      if (orphanApproval) return orphanApproval;
+      if (!requestedAssigneePatchProvided) {
+        const orphanChanges = requestChangesOrphanedPendingReviewStage(input, existingState, actor);
+        if (orphanChanges) return orphanChanges;
+      }
       patch.executionState = null;
       if (input.issue.status === "in_review") {
         patch.status = requestedStatus ?? "in_progress";
@@ -1020,6 +1236,12 @@ function applyIssueExecutionStageTransition(input: TransitionInput): TransitionR
         },
         restartPreferredParticipant: existingState.currentParticipant ?? null,
       });
+    }
+    const orphanApproval = approveOrphanedPendingReviewStage(input, existingState, actor);
+    if (orphanApproval) return orphanApproval;
+    if (!requestedAssigneePatchProvided) {
+      const orphanChanges = requestChangesOrphanedPendingReviewStage(input, existingState, actor);
+      if (orphanChanges) return orphanChanges;
     }
     clearExecutionStatePatch({
       patch,
@@ -1135,7 +1357,16 @@ function applyIssueExecutionStageTransition(input: TransitionInput): TransitionR
     if (principalsEqual(currentParticipant, actor)) {
       if (requestedStatus === "done") {
         if (!input.commentBody?.trim()) {
-          throw unprocessable(`Approving a review or approval stage requires a comment. ${STAGE_DECISION_COMMENT_HINT}`);
+          throw unprocessable(`Approving a review or approval stage requires a comment; verify stages require one too. ${STAGE_DECISION_COMMENT_HINT}`);
+        }
+        // OPE-12995 (VERIFY-ON-PROD): a verify-approve decision must record
+        // the deploy version and the check method the verification ran with.
+        if (activeStage.type === "verify") {
+          assertVerifyEvidence({
+            stage: activeStage,
+            commentBody: input.commentBody.trim(),
+            isRelease: isReleaseTask(input.issue.title ?? null),
+          });
         }
         const approvedState = buildCompletedState(existingState, activeStage);
         // Only stages after the stage being approved are advance candidates.
@@ -1431,6 +1662,18 @@ function applyIssueExecutionStageTransition(input: TransitionInput): TransitionR
     return { patch };
   }
 
+  // OPE-12995: Release task gate for done status without verification.
+  // A release task with code work products (e.g. pull requests) must pass through a verify stage,
+  // unless explicitly configured with skip: true in its verify stage requirements.
+  const hasVerifyStage = input.policy.stages.some((stage) => stage.type === "verify");
+  const isVerifySkipped = input.policy.stages.some((stage) => stage.type === "verify" && stage.requirements?.skip === true);
+  const isRelease = isReleaseTask(input.issue.title ?? null);
+  if (requestedStatus === "done" && isRelease && !hasVerifyStage && !isVerifySkipped) {
+    throw unprocessable(
+      "Cannot mark release task done without a verify execution stage. A release task requires an independent verification stage with deploy version and check method, or an explicit skip configuration.",
+    );
+  }
+
   let pendingStage =
     existingState?.status === CHANGES_REQUESTED_STATUS && currentStage
       ? currentStage
@@ -1441,7 +1684,7 @@ function applyIssueExecutionStageTransition(input: TransitionInput): TransitionR
   const isReviewerRole = input.issue.assigneeAgentRole === "reviewer" || input.issue.assigneeAgentRole === "lead";
   const participantExclusion = isReviewerRole &&
     !existingState?.returnAssignee ? null : existingState?.returnAssignee ?? currentAssignee ?? actor;
-  const returnAssignee = canAutoSkipPendingStage({ stage: pendingStage, returnAssignee: participantExclusion, requestedStatus })
+  const returnAssignee = canAutoSkipPendingStage({ stage: pendingStage, returnAssignee: participantExclusion, requestedStatus, skipVerify: pendingStage.requirements?.skip === true })
     ? participantExclusion
     : safeReturnAssignee(
         participantExclusion,
@@ -1465,7 +1708,7 @@ function applyIssueExecutionStageTransition(input: TransitionInput): TransitionR
     ],
     candidateLoads: input.candidateLoads,
   });
-  while (!participant && canAutoSkipPendingStage({ stage: pendingStage, returnAssignee: participantExclusion, requestedStatus })) {
+  while (!participant && canAutoSkipPendingStage({ stage: pendingStage, returnAssignee: participantExclusion, requestedStatus, skipVerify: pendingStage.requirements?.skip === true })) {
     skippedStageIds.push(pendingStage.id);
     pendingStage = nextPendingStage(
       input.policy,
@@ -1777,4 +2020,59 @@ export function applyIssueExecutionPolicyTransition(input: TransitionInput): Tra
 
 export function applyIssueMonitorPolicyTransition(input: TransitionInput): TransitionResult {
   return { patch: applyMonitorTransition(input, {}) };
+}
+
+/**
+ * myrmidon(1.7-GOAL-JUDGE): applies a goal judge review round decision to
+ * transition fields before or during a review stage transition.
+ *
+ * - return_to_executor: complete=false returns the task to in_progress with
+ *   missing criteria comment and restores returnAssignee;
+ * - escalate_to_reviewer: keeps/sets status in_review, assigns escalation participant
+ *   if available, and records the score & missing report;
+ * - pass / noop: proceeds to review stage without blocking.
+ */
+export function applyGoalJudgeDecisionToTransition(input: {
+  issue: IssueLike;
+  policy: IssueExecutionPolicy | null;
+  decision: {
+    kind: "pass" | "return_to_executor" | "escalate_to_reviewer" | "noop";
+    patch?: Record<string, unknown>;
+    commentBody?: string | null;
+  };
+}): {
+  patch: Record<string, unknown>;
+  commentBody: string | null;
+  returnedToExecutor: boolean;
+  escalated: boolean;
+} {
+  const { decision } = input;
+  if (decision.kind === "return_to_executor") {
+    return {
+      patch: {
+        status: "in_progress",
+        ...(decision.patch ?? {}),
+      },
+      commentBody: decision.commentBody ?? null,
+      returnedToExecutor: true,
+      escalated: false,
+    };
+  }
+  if (decision.kind === "escalate_to_reviewer") {
+    return {
+      patch: {
+        status: "in_review",
+        ...(decision.patch ?? {}),
+      },
+      commentBody: decision.commentBody ?? null,
+      returnedToExecutor: false,
+      escalated: true,
+    };
+  }
+  return {
+    patch: decision.patch ?? {},
+    commentBody: decision.commentBody ?? null,
+    returnedToExecutor: false,
+    escalated: false,
+  };
 }

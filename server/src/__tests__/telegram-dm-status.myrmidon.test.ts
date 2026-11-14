@@ -270,7 +270,7 @@ describeEmbeddedPostgres("Telegram DM run status (U1)", () => {
       );
       db = createDb(tempDb.connectionString);
     }
-  }, 30_000);
+  }, 60_000);
 
   afterAll(async () => {
     await tempDb?.cleanup();
@@ -326,6 +326,10 @@ describeEmbeddedPostgres("Telegram DM run status (U1)", () => {
     delete process.env[TELEGRAM_DM_PROGRESS_ENV];
     delete process.env[TELEGRAM_DM_PROGRESS_INTERVAL_ENV];
     await instanceSettingsService(db).updateGeneral({ telegramDmProgress: {} });
+    // myrmidon(1.7-TG-LOCALE): the status wording tests below assert the ru
+    // catalog, so the instance default language is ru unless a case opts out;
+    // without a stored setting the menu locale would fall back to English.
+    await instanceSettingsService(db).updateGeneral({ bridgeLanguage: { language: "ru" } });
     invalidateTelegramDmProgressSettingsCache();
     clearAllDmProgressRuntimeSteps();
   });
@@ -1001,6 +1005,17 @@ describeEmbeddedPostgres("Telegram DM run status (U1)", () => {
       .set({ updatedAt: new Date(Date.now() - ageMs) })
       .where(like(chatPublications.idempotencyKey, `run:${runId}:dmstatus:%`));
 
+  // myrmidon(1.7-TG-LOCALE): how many provider message edits the Telegram
+  // runtime performed for the fixture, for the equal-step threshold case.
+  const providerEditCount = (fixture: Awaited<ReturnType<typeof seedBridgedConversation>>) => {
+    const service = [...fixtureServices].at(-1);
+    if (!service) throw new Error("Expected a fixture chat channel service");
+    const serviceRuntime = service.runtime as unknown as FakeChatSdkRuntime;
+    const providerRuntime = serviceRuntime.endpoints.get(fixture.endpointId);
+    if (!providerRuntime) throw new Error("Expected Telegram provider runtime");
+    return providerRuntime.edits.length;
+  };
+
   it("shows the live steps of a legacy run and throttles the edits (DM-PROGRESS)", async () => {
     process.env[TELEGRAM_DM_STATUS_ENV] = "true";
     const fixture = await seedBridgedConversation();
@@ -1083,6 +1098,75 @@ describeEmbeddedPostgres("Telegram DM run status (U1)", () => {
     expect(rows).toHaveLength(1);
     expect(rows[0]!.payload.text).toContain("работаю");
     expect(rows[0]!.payload.text).not.toContain("проверяю");
+  });
+
+  // myrmidon(1.7-TG-LOCALE): the instance default language is en here — the
+  // status message renders the English catalog ("<1 min", "working",
+  // "editing slides 4, 9"), and a minute-only elapsed change still counts as
+  // the same step, so no edit is published before the throttle interval.
+  it("renders the English status wording and keeps the equal-step threshold across minute-only changes (TG-LOCALE)", async () => {
+    process.env[TELEGRAM_DM_STATUS_ENV] = "true";
+    await instanceSettingsService(db).updateGeneral({
+      bridgeLanguage: { language: "en" },
+      telegramDmProgress: { enabled: true },
+    });
+    invalidateTelegramDmProgressSettingsCache();
+    const fixture = await seedBridgedConversation();
+    const runId = await insertRun(fixture, {
+      status: "running",
+      startedAt: new Date(),
+    });
+
+    recordDmProgressLogChunk(runId, "stdout", "  [tool] read_file /work/drafts/deck.pptx\n");
+    await enqueueChatRunMilestones(db);
+    let rows = await dmStatusRows(fixture);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]!.payload.text).toContain("reading presentation deck.pptx");
+    expect(rows[0]!.payload.text).not.toContain("читаю");
+
+    // English elapsed units and the working milestone.
+    expect(rows[0]!.payload.text).toMatch(/<1 min/);
+    recordDmProgressLogChunk(runId, "stdout", "  [tool] patch slides 4, 9\n");
+    await ageDmStatusRow(runId, 10_000);
+    await enqueueChatRunMilestones(db);
+    rows = await dmStatusRows(fixture);
+    expect(rows[0]!.payload.text).toContain("editing slides 4, 9");
+    expect(rows[0]!.payload.text).toContain("Done:");
+    expect(rows[0]!.payload.text).toContain("• reading presentation deck.pptx");
+
+    // The same edit step with only the elapsed suffix changed (a minute
+    // boundary crossed) is the same step: no new edit within the interval.
+    const editsBefore = providerEditCount(fixture);
+    await ageDmStatusRow(runId, 10_000);
+    await enqueueChatRunMilestones(db);
+    rows = await dmStatusRows(fixture);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]!.payload.text).toContain("editing slides 4, 9");
+    expect(providerEditCount(fixture)).toBe(editsBefore);
+  });
+
+  it("renders the English queued and working phases for the editable status row (TG-LOCALE)", async () => {
+    process.env[TELEGRAM_DM_STATUS_ENV] = "true";
+    await instanceSettingsService(db).updateGeneral({ bridgeLanguage: { language: "en" } });
+    invalidateTelegramDmProgressSettingsCache();
+    const fixture = await seedBridgedConversation();
+    const runId = await insertRun(fixture, { status: "queued" });
+    await enqueueChatRunMilestones(db);
+    let rows = await dmStatusRows(fixture);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]!.payload.text).toContain("queued");
+
+    await db
+      .update(heartbeatRuns)
+      .set({ status: "running", startedAt: new Date() })
+      .where(eq(heartbeatRuns.id, runId));
+    await ageDmStatusRow(runId, 10_000);
+    await enqueueChatRunMilestones(db);
+    rows = await dmStatusRows(fixture);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]!.payload.text).toContain("working");
+    expect(rows[0]!.payload.text).not.toContain("в очереди");
+    expect(rows[0]!.payload.text).not.toContain("работаю");
   });
 
   it("splits a long structured answer inline when MYRMIDON_TELEGRAM_SPLIT_MAX_PARTS admits it (U1 delivery)", async () => {

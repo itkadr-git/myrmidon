@@ -18,6 +18,7 @@
 - [Knowledge and learning](Knowledge-and-learning)
 - [Autonomy and guardrails](Safety-and-guardrails)
 - [Connectors and tools](Connectors-and-tools)
+- [Guides index](Guides) — the full guide catalog
 
 **Run the server**
 
@@ -51,6 +52,7 @@
 - [Знания и обучение](Knowledge-and-learning.ru)
 - [Автономия и ограждения](Safety-and-guardrails.ru)
 - [Коннекторы и инструменты](Connectors-and-tools.ru)
+- [Каталог руководств](Guides.ru)
 - [Dry-run онбординга сервера](Server-onboarding-dry-run.ru)
 - [Настройки в интерфейсе](Settings-in-the-interface.ru)
 - [Обновление и откат](Upgrading-and-rollback.ru)

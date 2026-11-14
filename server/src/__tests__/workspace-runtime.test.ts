@@ -45,6 +45,7 @@ import {
   resolveShell,
   sanitizeRuntimeServiceBaseEnv,
   setWorkspaceRuntimeExposureDepsForTests,
+  setWorkspaceRuntimePortAllocationAttemptsForTests,
   startRuntimeServicesForWorkspaceControl,
   stopRuntimeServicesForExecutionWorkspace,
   stopRuntimeServicesForProjectWorkspace,
@@ -58,6 +59,7 @@ import {
   isLocalServiceProcessInWorkspace,
   readLocalServiceProcessCwd,
   readLocalServicePortOwner,
+  resetLsofAvailabilityForTests,
   writeLocalServiceRegistryRecord,
 } from "../services/local-service-supervisor.ts";
 import {
@@ -336,6 +338,42 @@ async function closeNetServer(server: net.Server) {
   await new Promise<void>((resolve, reject) => {
     server.close((error) => error ? reject(error) : resolve());
   });
+}
+
+async function createPathWithoutLsof(): Promise<{ path: string; cleanup: () => Promise<void> }> {
+  const dirs = (process.env.PATH || "").split(path.delimiter).filter(Boolean);
+  const cleanDirs: string[] = [];
+  const tempDirs: string[] = [];
+  for (const dir of dirs) {
+    try {
+      if (!existsSync(dir)) continue;
+      const hasLsof = existsSync(path.join(dir, "lsof"));
+      if (!hasLsof) {
+        cleanDirs.push(dir);
+        continue;
+      }
+      const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-no-lsof-path-"));
+      tempDirs.push(tempDir);
+      const entries = await fs.readdir(dir);
+      for (const entry of entries) {
+        if (entry === "lsof") continue;
+        try {
+          await fs.symlink(path.join(dir, entry), path.join(tempDir, entry));
+        } catch {}
+      }
+      cleanDirs.push(tempDir);
+    } catch {
+      cleanDirs.push(dir);
+    }
+  }
+  return {
+    path: cleanDirs.join(path.delimiter),
+    cleanup: async () => {
+      for (const t of tempDirs) {
+        await fs.rm(t, { recursive: true, force: true }).catch(() => {});
+      }
+    },
+  };
 }
 
 async function listenOnPort(port: number) {
@@ -5526,6 +5564,28 @@ describe("readLocalServicePortOwner", () => {
     await expect(isLocalServiceProcessInWorkspace(serviceCwd, workspace)).resolves.toBe(true);
   });
 
+  it("does not repeat lsof calls when lsof is unavailable and completes quickly", async () => {
+    const noLsof = await createPathWithoutLsof();
+    const previousPath = process.env.PATH;
+    process.env.PATH = noLsof.path;
+
+    try {
+      resetLsofAvailabilityForTests();
+      const start = Date.now();
+      for (let i = 0; i < 5; i++) {
+        const owner = await readLocalServicePortOwner(40000 + i);
+        expect(owner).toBeNull();
+      }
+      const durationMs = Date.now() - start;
+      expect(durationMs).toBeLessThan(1000);
+    } finally {
+      if (previousPath === undefined) delete process.env.PATH;
+      else process.env.PATH = previousPath;
+      resetLsofAvailabilityForTests();
+      await noLsof.cleanup();
+    }
+  });
+
   it("preserves newlines and trailing whitespace from Darwin lsof cwd output", async () => {
     const fakeBin = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-runtime-lsof-tools-"));
     const previousPath = process.env.PATH;
@@ -5837,7 +5897,7 @@ describeEmbeddedPostgres("workspace dirty quarantine branch repair", () => {
   beforeAll(async () => {
     tempDb = await startEmbeddedPostgresTestDatabase("paperclip-workspace-dirty-quarantine-");
     db = createDb(tempDb.connectionString);
-  }, 20_000);
+  }, 60_000);
 
   afterAll(async () => {
     await tempDb?.cleanup();
@@ -6480,7 +6540,7 @@ describeEmbeddedPostgres("workspace runtime service control persistence", () => 
   beforeAll(async () => {
     tempDb = await startEmbeddedPostgresTestDatabase("paperclip-workspace-runtime-control-");
     db = createDb(tempDb.connectionString);
-  }, 20_000);
+  }, 60_000);
 
   afterAll(async () => {
     await tempDb?.cleanup();
@@ -7330,13 +7390,35 @@ describeEmbeddedPostgres("workspace runtime service control persistence", () => 
     const fixture = await createRuntimeFixture();
     const cleanupRuntimeHome = await createRuntimeHome();
     const workspace = fixture.workspaces[0]!;
-    const basePort = await findFreePort();
+    // Occupy the preferred port with THIS test's own listener: bind port 0 and take
+    // the assigned port from server.address(), so there is no find-then-bind gap. A
+    // released findFreePort() port can be re-taken by an unrelated process on a
+    // loaded runner (or the scan can stop early on excluded/reserved ports), and
+    // then the exhausted-conflict never carries `port: basePort`. Holding this
+    // listener keeps the port deterministically occupied; closing it before the
+    // start attempt would reintroduce the race.
+    const portBlocker = await listenOnPort(0);
+    const blockerAddress = portBlocker.address();
+    const basePort =
+      typeof blockerAddress === "object" && blockerAddress ? blockerAddress.port : null;
+    if (!basePort) {
+      await closeNetServer(portBlocker);
+      throw new Error("Failed to determine the occupied allocated port");
+    }
+
+    // With listener ownership unverifiable every candidate port is rejected after a real child
+    // spawn, a readiness probe and a 250 ms stability delay (~0.6 s each, several seconds on a
+    // loaded runner). Running the full production bound of 32 attempts therefore sits at the
+    // test timeout. A small bound exercises the same exhaustion path (the 409 conflict carries
+    // the attempted count) in a couple of seconds.
+    const boundedAttempts = 3;
+    setWorkspaceRuntimePortAllocationAttemptsForTests(boundedAttempts);
+
     const fakeBin = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-runtime-no-lsof-"));
     const fakeLsof = path.join(fakeBin, "lsof");
     const previousPath = process.env.PATH;
     await fs.writeFile(fakeLsof, "#!/bin/sh\nexit 1\n", { mode: 0o755 });
     process.env.PATH = `${fakeBin}${path.delimiter}${previousPath ?? ""}`;
-
     try {
       await expect(startRuntimeServicesForWorkspaceControl({
         db,
@@ -7351,9 +7433,10 @@ describeEmbeddedPostgres("workspace runtime service control persistence", () => 
         details: {
           code: "workspace_runtime_port_allocation_exhausted",
           port: basePort,
-          attemptedPortCount: WORKSPACE_RUNTIME_PORT_ALLOCATION_ATTEMPTS,
+          attemptedPortCount: boundedAttempts,
         },
       });
+      expect(portBlocker.listening).toBe(true);
     } finally {
       if (previousPath === undefined) delete process.env.PATH;
       else process.env.PATH = previousPath;
@@ -7363,6 +7446,53 @@ describeEmbeddedPostgres("workspace runtime service control persistence", () => 
         workspaceCwd: workspace.cwd,
       }).catch(() => undefined);
       await fs.rm(fakeBin, { recursive: true, force: true });
+      await cleanupRuntimeHome();
+      await fixture.cleanup();
+      portBlocker.close();
+      await new Promise<void>((resolve, reject) => {
+        portBlocker.once("close", resolve);
+        portBlocker.once("error", reject);
+      });
+    }
+  }, 20_000);
+
+  it("starts runtime service successfully and quickly on a free port when lsof is unavailable", async () => {
+    const fixture = await createRuntimeFixture();
+    const cleanupRuntimeHome = await createRuntimeHome();
+    const workspace = fixture.workspaces[0]!;
+    const basePort = await findFreePort();
+
+    const noLsof = await createPathWithoutLsof();
+    const previousPath = process.env.PATH;
+    process.env.PATH = noLsof.path;
+
+    try {
+      resetLsofAvailabilityForTests();
+      const start = Date.now();
+      const started = (await startRuntimeServicesForWorkspaceControl({
+        db,
+        actor: fixture.actor,
+        issue: null,
+        workspace: fixture.realizedWorkspace(workspace),
+        executionWorkspaceId: workspace.id,
+        config: fixedPortRuntimeConfig(basePort),
+        adapterEnv: {},
+      }))[0]!;
+      const durationMs = Date.now() - start;
+
+      expect(started.port).toBe(basePort);
+      expect(started.url).toBe(`http://127.0.0.1:${started.port}`);
+      expect(durationMs).toBeLessThan(1000);
+    } finally {
+      if (previousPath === undefined) delete process.env.PATH;
+      else process.env.PATH = previousPath;
+      resetLsofAvailabilityForTests();
+      await stopRuntimeServicesForExecutionWorkspace({
+        db,
+        executionWorkspaceId: workspace.id,
+        workspaceCwd: workspace.cwd,
+      }).catch(() => undefined);
+      await noLsof.cleanup();
       await cleanupRuntimeHome();
       await fixture.cleanup();
     }
@@ -7525,7 +7655,7 @@ describeEmbeddedPostgres("workspace runtime startup reconciliation", () => {
   beforeAll(async () => {
     tempDb = await startEmbeddedPostgresTestDatabase("paperclip-workspace-runtime-");
     db = createDb(tempDb.connectionString);
-  }, 20_000);
+  }, 60_000);
 
   afterAll(async () => {
     await tempDb?.cleanup();

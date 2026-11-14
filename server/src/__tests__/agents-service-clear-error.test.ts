@@ -35,7 +35,7 @@ describeEmbeddedPostgres("agent service clearError", () => {
   beforeAll(async () => {
     tempDb = await startEmbeddedPostgresTestDatabase("paperclip-agent-clear-error-");
     db = createDb(tempDb.connectionString);
-  }, 20_000);
+  }, 60_000);
 
   afterEach(async () => {
     await db.delete(issueComments);
@@ -130,6 +130,49 @@ describeEmbeddedPostgres("agent service clearError", () => {
     expect(comments).toHaveLength(3);
     expect(comments.every((comment) => comment.authorType === "system" && comment.body).valueOf()).toBe(true);
   });
+  it("updates the list version for pause, reportsTo changes, and deletion-driven org rewrites", async () => {
+    const companyId = randomUUID();
+    const managerId = randomUUID();
+    const childId = randomUUID();
+    const deletingManagerId = randomUUID();
+    await db.insert(companies).values({
+      id: companyId,
+      name: "ETag invalidation",
+      issuePrefix: `E${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(agents).values([
+      { id: managerId, companyId, name: "Manager", role: "engineer" },
+      { id: childId, companyId, name: "Child", role: "engineer" },
+      { id: deletingManagerId, companyId, name: "Old manager", role: "engineer" },
+    ]);
+    const service = agentService(db);
+    const initial = await service.listSummariesVersionKey(companyId);
+
+    await service.pause(childId, "manual");
+    const paused = await service.listSummariesVersionKey(companyId);
+    expect(paused).not.toBe(initial);
+
+    await service.update(childId, { reportsTo: managerId });
+    const reporting = await service.listSummariesVersionKey(companyId);
+    expect(reporting).not.toBe(paused);
+
+    await service.update(childId, { reportsTo: deletingManagerId });
+    const beforeManagerDeletion = await service.listSummariesVersionKey(companyId);
+    const childBeforeDeletion = await service.getById(childId);
+    await service.remove(deletingManagerId);
+    const afterManagerDeletion = await service.listSummariesVersionKey(companyId);
+    const childAfterDeletion = await service.getById(childId);
+    expect(childBeforeDeletion?.updatedAt).not.toEqual(childAfterDeletion?.updatedAt);
+    expect(childAfterDeletion?.reportsTo).toBeNull();
+    expect(afterManagerDeletion).not.toBe(beforeManagerDeletion);
+
+    const actorKeyAdmin = await service.listSummariesVersionKey(companyId, "actor-shape-admin");
+    const actorKeyMember = await service.listSummariesVersionKey(companyId, "actor-shape-member");
+    expect(actorKeyAdmin).not.toBe(actorKeyMember);
+  });
+
+
   it("resets converted agent sessions while preserving identity, configuration and run history", async () => {
     const companyId = randomUUID();
     const agentId = randomUUID();

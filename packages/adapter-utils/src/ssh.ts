@@ -21,6 +21,17 @@ import {
   type RuntimeProgressSink,
 } from "./runtime-progress.js";
 import { readProductEnv } from "@myrmidon/shared/env-alias"; // myrmidon(REBRAND-C)
+import { buildSshEnvStdinTransport, withSshEnvStdinPrefix } from "./myrmidon-ssh-env-transport.js"; // myrmidon(OPE-12810)
+import {
+  dropTrackedSshWorkspaceExcludeNames,
+  resolveSshWorkspaceExcludeNames,
+  sshWorkspaceExcludePatterns,
+} from "./ssh-workspace-excludes.js"; // myrmidon(OPE-12809)
+import {
+  SSH_TRANSFER_ABORT_KILL_DELAY_MS,
+  SshOperationAbortedError,
+  throwIfSshAborted,
+} from "./ssh-abort.js"; // myrmidon(OPE-12801)
 
 export interface SshConnectionConfig {
   host: string;
@@ -60,21 +71,18 @@ export function createSshCommandManagedRuntimeRunner(input: {
       const cwd = commandInput.cwd?.trim() || defaultCwd;
       const envEntries = Object.entries(commandInput.env ?? {})
         .filter((entry): entry is [string, string] => typeof entry[1] === "string");
-      const envPrefix = envEntries.length > 0
-        ? `env ${envEntries.map(([key, value]) => `${key}=${shellQuote(value)}`).join(" ")} `
-        : "";
-      const exportPrefix = envEntries.length > 0
-        ? envEntries.map(([key, value]) => `export ${key}=${shellQuote(value)};`).join(" ") + " "
-        : "";
+      // myrmidon(OPE-12810): env goes to runSshCommand, which sends it on stdin;
+      // it must not be embedded in the remote command line (visible in ps).
       const commandScript = command === "sh" || command === "bash"
         ? (args[0] === "-c" || args[0] === "-lc") && typeof args[1] === "string"
-          ? `${exportPrefix}${args[1]}`
-          : `${envPrefix}exec ${[shellQuote(command), ...args.map((arg) => shellQuote(arg))].join(" ")}`
-        : `${envPrefix}exec ${[shellQuote(command), ...args.map((arg) => shellQuote(arg))].join(" ")}`;
+          ? args[1]
+          : `exec ${[shellQuote(command), ...args.map((arg) => shellQuote(arg))].join(" ")}`
+        : `exec ${[shellQuote(command), ...args.map((arg) => shellQuote(arg))].join(" ")}`;
       const remoteCommand = `cd ${shellQuote(cwd)} && ${commandScript}`;
 
       try {
         const result = await runSshCommand(input.spec, remoteCommand, {
+          env: Object.fromEntries(envEntries),
           stdin: commandInput.stdin,
           timeoutMs: commandInput.timeoutMs,
           maxBuffer: maxBufferBytes,
@@ -156,10 +164,6 @@ export function shellQuote(value: string) {
   return `'${value.replace(/'/g, `'\"'\"'`)}'`;
 }
 
-function isValidShellEnvKey(value: string) {
-  return /^[A-Za-z_][A-Za-z0-9_]*$/.test(value);
-}
-
 export function parseSshRemoteExecutionSpec(value: unknown): SshRemoteExecutionSpec | null {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
     return null;
@@ -220,6 +224,50 @@ async function execFileText(
   });
 }
 
+const STDERR_TAIL_LIMIT_BYTES = 64 * 1024;
+
+interface StderrTailBuffer {
+  append(chunk: unknown): void;
+  text(): string;
+}
+
+function createStderrTailBuffer(limitBytes = STDERR_TAIL_LIMIT_BYTES): StderrTailBuffer {
+  let buf = Buffer.alloc(0);
+  let droppedBytes = 0;
+
+  return {
+    append(chunk: unknown) {
+      const next = Buffer.isBuffer(chunk) ? chunk : Buffer.from(String(chunk), "utf8");
+      if (next.length === 0) return;
+      if (next.length >= limitBytes) {
+        droppedBytes += buf.length + (next.length - limitBytes);
+        buf = Buffer.from(next.subarray(next.length - limitBytes));
+        return;
+      }
+      const combined = Buffer.concat([buf, next]);
+      if (combined.length <= limitBytes) {
+        buf = combined;
+        return;
+      }
+      const overflow = combined.length - limitBytes;
+      droppedBytes += overflow;
+      buf = Buffer.from(combined.subarray(overflow));
+    },
+    text() {
+      const tail = buf.toString("utf8");
+      if (droppedBytes === 0) return tail;
+      return `…обрезано ${droppedBytes} байт\n${tail}`;
+    },
+  };
+}
+
+function childWriteError(error: Error, processName: string, stderr: string, code: number | null): Error {
+  const exit = code == null ? "" : ` (код выхода ${code})`;
+  const details = stderr.trim();
+  return new Error(`${processName} stdin: ${error.message}${exit}${details ? `\n${details}` : ""}`, { cause: error });
+}
+
+
 async function spawnText(
   file: string,
   args: string[],
@@ -239,6 +287,7 @@ async function spawnText(
     let stderr = "";
     let settled = false;
     let timedOut = false;
+    let childExitCode: number | null = null;
 
     const finishReject = (error: Error & { stdout?: string; stderr?: string; code?: number | null; killed?: boolean }) => {
       if (settled) return;
@@ -306,6 +355,7 @@ async function spawnText(
 
     child.on("close", (code, signal) => {
       clearTimers();
+      childExitCode = code;
       if (settled) return;
       settled = true;
       if (code === 0) {
@@ -322,6 +372,9 @@ async function spawnText(
     });
 
     if (options.stdin != null && child.stdin) {
+      child.stdin.on("error", (error) => {
+        finishReject(Object.assign(childWriteError(error, file, stderr, childExitCode), { code: childExitCode }));
+      });
       child.stdin.end(options.stdin);
     }
   });
@@ -409,10 +462,43 @@ async function createSshAuthArgs(
   };
 }
 
+// myrmidon(OPE-12801): ties the run's cancellation to the local processes of
+// one transfer. TERM first, KILL after SSH_TRANSFER_ABORT_KILL_DELAY_MS; the
+// caller detaches once both processes have exited.
+function watchSshTransferAbort(
+  signal: AbortSignal | undefined,
+  children: Array<{ kill: (signal?: NodeJS.Signals | number) => boolean }>,
+): { aborted: () => boolean; detach: () => void } {
+  let aborted = false;
+  let killTimer: NodeJS.Timeout | null = null;
+  const onAbort = () => {
+    if (aborted) return;
+    aborted = true;
+    for (const child of children) child.kill("SIGTERM");
+    killTimer = setTimeout(() => {
+      for (const child of children) child.kill("SIGKILL");
+    }, SSH_TRANSFER_ABORT_KILL_DELAY_MS);
+  };
+  if (signal?.aborted) onAbort();
+  else signal?.addEventListener("abort", onAbort, { once: true });
+  return {
+    aborted: () => aborted,
+    detach: () => {
+      signal?.removeEventListener("abort", onAbort);
+      if (killTimer) clearTimeout(killTimer);
+      killTimer = null;
+    },
+  };
+}
+
 function tarExcludeArgs(exclude: string[] | undefined): string[] {
   const combined = ["._*", ...(exclude ?? [])];
   return combined.flatMap((entry) => ["--exclude", entry]);
 }
+
+// myrmidon(OPE-13041): how long the upload waits for the local tar to report
+// its exit after ssh already exited with code 0.
+const SSH_TAR_EXIT_GRACE_MS = 10_000;
 
 function tarSpawnEnv(): NodeJS.ProcessEnv {
   return {
@@ -583,6 +669,90 @@ async function runSshScript(
   );
 }
 
+const SSH_SYNC_BACK_DIR_PREFIX = "paperclip-ssh-sync-back-";
+// The longest run lasts three hours and a restore is a fraction of that, so a
+// sync-back directory older than this was left by a restore whose process died
+// (a board restart or kill) before its `finally` could run.
+const SSH_SYNC_BACK_STALE_MS = 4 * 60 * 60 * 1000;
+
+// Staging directories of the restores running in this process. The age check in
+// pruneStaleSshSyncBackDirs cannot tell them from leftovers: when tar finishes
+// extracting it gives the directory the mtime of the remote workspace root,
+// which can be days old, while the copy into the workspace is still running.
+const activeSshSyncBackDirs = new Set<string>();
+
+async function createSshSyncBackDir(): Promise<string> {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), SSH_SYNC_BACK_DIR_PREFIX));
+  activeSshSyncBackDirs.add(path.basename(dir));
+  return dir;
+}
+
+// Gives the owner rwx on every directory under `rootDir`. A restored workspace
+// can hold read-only directories (a Go module cache is 0555); unlinking an
+// entry needs write permission on its parent, so `fs.rm` fails on such a tree.
+async function makeTreeOwnerWritable(rootDir: string): Promise<void> {
+  const pending = [rootDir];
+  while (pending.length > 0) {
+    const dir = pending.pop();
+    if (!dir) continue;
+    await fs.chmod(dir, 0o700).catch(() => undefined);
+    const entries = await fs.readdir(dir, { withFileTypes: true }).catch(() => []);
+    for (const entry of entries) {
+      if (entry.isDirectory()) pending.push(path.join(dir, entry.name));
+    }
+  }
+}
+
+// Removes a sync-back staging directory and never throws: a restore must not
+// fail on its cleanup, and a failed cleanup is logged instead of swallowed so
+// a leak shows up in the board log. Retries cover tar still writing into the
+// directory after it was signalled; the second attempt repairs read-only
+// directories first.
+async function removeSshSyncBackDir(dir: string): Promise<void> {
+  const rmOptions = { recursive: true, force: true, maxRetries: 5, retryDelay: 200 };
+  try {
+    try {
+      await fs.rm(dir, rmOptions);
+      return;
+    } catch {
+      // Fall through to the permission repair below.
+    }
+    try {
+      await makeTreeOwnerWritable(dir);
+      await fs.rm(dir, rmOptions);
+    } catch (error) {
+      console.warn(
+        `[paperclip] Failed to remove SSH sync-back temp dir ${dir}: ${error instanceof Error ? error.message : String(error)}`,
+      );
+    }
+  } finally {
+    // The restore is over either way; a directory that is still there is a
+    // leftover now and the next prune retries it once it is old enough.
+    activeSshSyncBackDirs.delete(path.basename(dir));
+  }
+}
+
+// Removes sync-back directories that no `finally` will ever reach: the restore
+// that created them died with its process. Runs at the start of each restore.
+async function pruneStaleSshSyncBackDirs(nowMs: number = Date.now()): Promise<void> {
+  try {
+    const tmpRoot = os.tmpdir();
+    const entries = await fs.readdir(tmpRoot, { withFileTypes: true });
+    for (const entry of entries) {
+      if (!entry.isDirectory() || !entry.name.startsWith(SSH_SYNC_BACK_DIR_PREFIX)) continue;
+      if (activeSshSyncBackDirs.has(entry.name)) continue;
+      const dir = path.join(tmpRoot, entry.name);
+      const info = await fs.stat(dir).catch(() => null);
+      if (!info || nowMs - info.mtimeMs < SSH_SYNC_BACK_STALE_MS) continue;
+      await removeSshSyncBackDir(dir);
+    }
+  } catch (error) {
+    console.warn(
+      `[paperclip] Failed to prune stale SSH sync-back temp dirs: ${error instanceof Error ? error.message : String(error)}`,
+    );
+  }
+}
+
 async function clearLocalDirectory(
   localDir: string,
   preserveEntries: string[] = [],
@@ -669,8 +839,9 @@ async function streamLocalFileToSsh(input: {
       stdio: ["pipe", "ignore", "pipe"],
     });
 
-    let sshStderr = "";
+    const stderrTail = createStderrTailBuffer();
     let settled = false;
+    let sshExitCode: number | null = null;
 
     const fail = (error: Error) => {
       if (settled) return;
@@ -681,10 +852,11 @@ async function streamLocalFileToSsh(input: {
     };
 
     ssh.stderr?.on("data", (chunk) => {
-      sshStderr += String(chunk);
+      stderrTail.append(chunk);
     });
     source.on("error", fail);
     ssh.on("error", fail);
+    ssh.stdin?.on("error", (error) => fail(childWriteError(error, "ssh", stderrTail.text(), sshExitCode)));
     if (input.progress) {
       input.progress.counter.on("error", fail);
       source.pipe(input.progress.counter).pipe(ssh.stdin ?? null);
@@ -692,10 +864,11 @@ async function streamLocalFileToSsh(input: {
       source.pipe(ssh.stdin ?? null);
     }
     ssh.on("close", (code) => {
+      sshExitCode = code;
       if (settled) return;
       settled = true;
       if ((code ?? 0) !== 0) {
-        reject(new Error(sshStderr.trim() || `ssh exited with code ${code ?? -1}`));
+        reject(new Error(stderrTail.text().trim() || `ssh exited with code ${code ?? -1}`));
         return;
       }
       resolve();
@@ -724,8 +897,9 @@ async function streamSshToLocalFile(input: {
     });
     const sink = createWriteStream(input.localFile, { mode: 0o600 });
 
-    let sshStderr = "";
+    const stderrTail = createStderrTailBuffer();
     let settled = false;
+    let sshExitCode: number | null = null;
 
     const fail = (error: Error) => {
       if (settled) return;
@@ -742,16 +916,19 @@ async function streamSshToLocalFile(input: {
       ssh.stdout?.pipe(sink);
     }
     ssh.stderr?.on("data", (chunk) => {
-      sshStderr += String(chunk);
+      stderrTail.append(chunk);
     });
     ssh.on("error", fail);
+    ssh.on("close", (code) => {
+      sshExitCode = code;
+    });
     sink.on("error", fail);
     ssh.on("close", (code) => {
       sink.end(() => {
         if (settled) return;
         settled = true;
         if ((code ?? 0) !== 0) {
-          reject(new Error(sshStderr.trim() || `ssh exited with code ${code ?? -1}`));
+          reject(new Error(stderrTail.text().trim() || `ssh exited with code ${code ?? -1}`));
           return;
         }
         resolve();
@@ -1205,13 +1382,8 @@ export async function runSshCommand(
     const auth = await createSshAuthArgs(config);
     cleanup = auth.cleanup;
     const sshArgs = [...auth.args];
-    const envEntries = Object.entries(options.env ?? {})
-      .filter((entry): entry is [string, string] => typeof entry[1] === "string");
-    for (const [key] of envEntries) {
-      if (!isValidShellEnvKey(key)) {
-        throw new Error(`Invalid SSH environment variable key: ${key}`);
-      }
-    }
+    // myrmidon(OPE-12810): env values ride stdin, not the ssh argument list.
+    const envTransport = buildSshEnvStdinTransport(options.env ?? {});
 
     // Mirror buildSshSpawnTarget: source the login profiles first, then run
     // `env KEY=VAL cmd` so user-supplied identity overrides win over anything a
@@ -1224,15 +1396,13 @@ export async function runSshCommand(
     // .bash_profile typically sources .bashrc itself; only source .bashrc
     // directly when no .bash_profile exists, so a host that adds nvm in
     // .bashrc still resolves node without a double-run of the setup.
-    const envArgs = envEntries.map(([key, value]) => `${key}=${shellQuote(value)}`);
     const remoteScript = [
       'if [ -f /etc/profile ]; then . /etc/profile >/dev/null 2>&1 || true; fi',
       'if [ -f "$HOME/.profile" ]; then . "$HOME/.profile" >/dev/null 2>&1 || true; fi',
       'if [ -f "$HOME/.bash_profile" ]; then . "$HOME/.bash_profile" >/dev/null 2>&1 || true; elif [ -f "$HOME/.bashrc" ]; then . "$HOME/.bashrc" >/dev/null 2>&1 || true; fi',
       'if [ -f "$HOME/.zprofile" ]; then . "$HOME/.zprofile" >/dev/null 2>&1 || true; fi',
-      envArgs.length > 0
-        ? `exec env ${envArgs.join(" ")} sh -c ${shellQuote(remoteCommand)}`
-        : `exec sh -c ${shellQuote(remoteCommand)}`,
+      ...(envTransport.remoteReadSnippet ? [envTransport.remoteReadSnippet] : []),
+      `exec sh -c ${shellQuote(remoteCommand)}`,
     ].join(" && ");
 
     sshArgs.push(
@@ -1242,9 +1412,10 @@ export async function runSshCommand(
       `sh -c ${shellQuote(remoteScript)}`,
     );
 
-    return options.stdin != null
+    const stdin = withSshEnvStdinPrefix(envTransport.stdinPrefix, options.stdin);
+    return stdin != null
       ? await spawnText("ssh", sshArgs, {
-          stdin: options.stdin,
+          stdin,
           timeout: options.timeoutMs ?? 15_000,
           maxBuffer: options.maxBuffer ?? 1024 * 128,
         })
@@ -1265,18 +1436,14 @@ export async function buildSshSpawnTarget(input: {
 }): Promise<{
   command: string;
   args: string[];
+  /** myrmidon(OPE-12810): env block the caller must write to stdin before its own stdin. */
+  stdinPrefix: string;
   cleanup: () => Promise<void>;
 }> {
-  for (const key of Object.keys(input.env)) {
-    if (!isValidShellEnvKey(key)) {
-      throw new Error(`Invalid SSH environment variable key: ${key}`);
-    }
-  }
+  // myrmidon(OPE-12810): env values ride stdin, not the ssh argument list.
+  const envTransport = buildSshEnvStdinTransport(input.env);
   const auth = await createSshAuthArgs(input.spec);
   const sshArgs = [...auth.args];
-  const envArgs = Object.entries(input.env)
-    .filter((entry): entry is [string, string] => typeof entry[1] === "string")
-    .map(([key, value]) => `${key}=${shellQuote(value)}`);
   const remoteCommandParts = [shellQuote(input.command), ...input.args.map((arg) => shellQuote(arg))].join(" ");
   // Source the login profiles first, then run `env KEY=VAL cmd` so
   // user-supplied identity overrides win over anything a profile re-exports.
@@ -1295,9 +1462,8 @@ export async function buildSshSpawnTarget(input: {
     'if [ -f "$HOME/.bash_profile" ]; then . "$HOME/.bash_profile" >/dev/null 2>&1 || true; elif [ -f "$HOME/.bashrc" ]; then . "$HOME/.bashrc" >/dev/null 2>&1 || true; fi',
     'if [ -f "$HOME/.zprofile" ]; then . "$HOME/.zprofile" >/dev/null 2>&1 || true; fi',
     `cd ${shellQuote(input.spec.remoteCwd)}`,
-    envArgs.length > 0
-      ? `exec env ${envArgs.join(" ")} ${remoteCommandParts}`
-      : `exec ${remoteCommandParts}`,
+    ...(envTransport.remoteReadSnippet ? [envTransport.remoteReadSnippet] : []),
+    `exec ${remoteCommandParts}`,
   ].join(" && ");
 
   sshArgs.push(
@@ -1310,6 +1476,7 @@ export async function buildSshSpawnTarget(input: {
   return {
     command: "ssh",
     args: sshArgs,
+    stdinPrefix: envTransport.stdinPrefix,
     cleanup: auth.cleanup,
   };
 }
@@ -1322,7 +1489,10 @@ export async function syncDirectoryToSsh(input: {
   followSymlinks?: boolean;
   onProgress?: RuntimeProgressSink;
   progressLabel?: string;
+  /** myrmidon(OPE-12801): run cancellation; stops the local tar and ssh. */
+  signal?: AbortSignal;
 }): Promise<void> {
+  throwIfSshAborted(input.signal, "Workspace upload");
   const auth = await createSshAuthArgs(input.spec);
   const sshArgs = [
     ...auth.args,
@@ -1370,28 +1540,57 @@ export async function syncDirectoryToSsh(input: {
       stdio: ["pipe", "ignore", "pipe"],
     });
 
-    let tarStderr = "";
-    let sshStderr = "";
+    const tarStderrTail = createStderrTailBuffer();
+    const sshStderrTail = createStderrTailBuffer();
     let settled = false;
     let tarExited = false;
     let sshExited = false;
+    let tarStoppedAfterSshExit = false;
     let tarExitCode: number | null = null;
     let sshExitCode: number | null = null;
+    let tarGraceTimer: NodeJS.Timeout | null = null;
+    // myrmidon(OPE-12801): on cancellation both processes get TERM, then KILL;
+    // the transfer settles only after both have exited. The remote `tar -xf -`
+    // ends by itself when its input closes.
+    const abortWatch = watchSshTransferAbort(input.signal, [tar, ssh]);
 
     const maybeFinish = () => {
       if (settled || !tarExited || !sshExited) {
         return;
       }
       settled = true;
-      if ((tarExitCode ?? 0) !== 0) {
-        reject(new Error(tarStderr.trim() || `tar exited with code ${tarExitCode ?? -1}`));
+      if (tarGraceTimer) clearTimeout(tarGraceTimer);
+      abortWatch.detach();
+      if (abortWatch.aborted()) {
+        reject(new SshOperationAbortedError("Workspace upload"));
+        return;
+      }
+      if (!tarStoppedAfterSshExit && (tarExitCode ?? 0) !== 0) {
+        reject(new Error(tarStderrTail.text().trim() || `tar exited with code ${tarExitCode ?? -1}`));
         return;
       }
       if ((sshExitCode ?? 0) !== 0) {
-        reject(new Error(sshStderr.trim() || `ssh exited with code ${sshExitCode ?? -1}`));
+        reject(new Error(sshStderrTail.text().trim() || `ssh exited with code ${sshExitCode ?? -1}`));
+        return;
+      }
+      if (tarStoppedAfterSshExit) {
+        // ssh was done but tar neither finished nor failed within the grace
+        // window (or ssh stdin broke): name both processes and their codes.
+        reject(
+          new Error(
+            sshStderrTail.text().trim() ||
+              `tar did not finish within ${SSH_TAR_EXIT_GRACE_MS} ms after ssh exited (ssh code ${sshExitCode ?? -1}, tar code ${tarExitCode ?? -1})`,
+          ),
+        );
         return;
       }
       resolve();
+    };
+
+    const stopChildren = () => {
+      tar.kill("SIGTERM");
+      ssh.kill("SIGTERM");
+      if (!tarExited) tar.stdout?.destroy();
     };
 
     const fail = (error: Error) => {
@@ -1399,8 +1598,9 @@ export async function syncDirectoryToSsh(input: {
         return;
       }
       settled = true;
-      tar.kill("SIGTERM");
-      ssh.kill("SIGTERM");
+      if (tarGraceTimer) clearTimeout(tarGraceTimer);
+      abortWatch.detach();
+      stopChildren();
       reject(error);
     };
 
@@ -1410,11 +1610,18 @@ export async function syncDirectoryToSsh(input: {
     } else {
       tar.stdout?.pipe(ssh.stdin ?? null);
     }
+    ssh.stdin?.on("error", (error) => {
+      if (!tarExited) {
+        tarStoppedAfterSshExit = true;
+        tar.kill("SIGTERM");
+      }
+      fail(childWriteError(error, "ssh", sshStderrTail.text(), sshExitCode));
+    });
     tar.stderr?.on("data", (chunk) => {
-      tarStderr += String(chunk);
+      tarStderrTail.append(chunk);
     });
     ssh.stderr?.on("data", (chunk) => {
-      sshStderr += String(chunk);
+      sshStderrTail.append(chunk);
     });
 
     tar.on("error", fail);
@@ -1422,11 +1629,32 @@ export async function syncDirectoryToSsh(input: {
     tar.on("close", (code) => {
       tarExited = true;
       tarExitCode = code;
+      if ((code ?? 0) !== 0 && !sshExited) {
+        ssh.kill("SIGTERM");
+      }
       maybeFinish();
     });
     ssh.on("close", (code) => {
       sshExited = true;
       sshExitCode = code;
+      if (!tarExited) {
+        if ((code ?? -1) === 0 && !abortWatch.aborted()) {
+          // myrmidon(OPE-13041): ssh closing with code 0 means the remote tar
+          // consumed the whole stream; local tar's own 'close' event can still
+          // be in flight. The two events are unordered, so wait for tar and
+          // judge by its exit code instead of failing the transfer.
+          tarGraceTimer = setTimeout(() => {
+            tarGraceTimer = null;
+            if (tarExited || settled) return;
+            tarStoppedAfterSshExit = true;
+            stopChildren();
+          }, SSH_TAR_EXIT_GRACE_MS);
+          tarGraceTimer.unref?.();
+        } else {
+          tarStoppedAfterSshExit = true;
+          stopChildren();
+        }
+      }
       maybeFinish();
     });
     }).finally(auth.cleanup);
@@ -1445,15 +1673,24 @@ export async function syncDirectoryFromSsh(input: {
   preserveLocalEntries?: string[];
   onProgress?: RuntimeProgressSink;
   progressLabel?: string;
+  /** myrmidon(OPE-12801): run cancellation; stops the local ssh and tar. */
+  signal?: AbortSignal;
 }): Promise<void> {
+  throwIfSshAborted(input.signal, "Workspace download");
+  await pruneStaleSshSyncBackDirs();
   const auth = await createSshAuthArgs(input.spec);
-  const stagingDir = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-ssh-sync-back-"));
   const remoteTarScript = [
     `cd ${shellQuote(input.remoteDir)}`,
     `tar ${[...tarExcludeArgs(input.exclude).map(shellQuote), "-cf", "-", "."].join(" ")}`,
   ].join(" && ");
   const sshArgs = [
     ...auth.args,
+    // A restore that never settles never reaches the `finally` that removes the
+    // staging directory; a dead connection would hold it (and the run) forever.
+    "-o",
+    "ServerAliveInterval=30",
+    "-o",
+    "ServerAliveCountMax=6",
     "-p",
     String(input.spec.port),
     `${input.spec.username}@${input.spec.host}`,
@@ -1475,6 +1712,13 @@ export async function syncDirectoryFromSsh(input: {
     })
     : null;
 
+  // Nothing may sit between creating the staging directory and the `try` whose
+  // `finally` removes it.
+  const stagingDir = await createSshSyncBackDir().catch(async (error: unknown) => {
+    await auth.cleanup();
+    throw error;
+  });
+
   try {
     await new Promise<void>((resolve, reject) => {
       const ssh = spawn("ssh", sshArgs, {
@@ -1485,33 +1729,87 @@ export async function syncDirectoryFromSsh(input: {
         env: tarSpawnEnv(),
       });
 
-      let sshStderr = "";
-      let tarStderr = "";
+      const sshStderrTail = createStderrTailBuffer();
+      const tarStderrTail = createStderrTailBuffer();
       let settled = false;
       let sshExited = false;
       let tarExited = false;
+      let sshStoppedAfterTarFailure = false;
       let sshExitCode: number | null = null;
       let tarExitCode: number | null = null;
-
+      // myrmidon(OPE-12801): the remote `tar -cf -` ends on a closed pipe when
+      // the local ssh goes away; nothing was applied to the local workspace yet.
+      const abortWatch = watchSshTransferAbort(input.signal, [ssh, tar]);
+      let tarSignal: NodeJS.Signals | null = null; // myrmidon(OPE-12788)
+      // myrmidon(OPE-12914): true once all pending ssh stderr 'data' chunks
+      // have been delivered to the tail buffer; set on ssh 'close' ('data'
+      // always precedes 'close') and again after stopChildren(). The deferred
+      // tar branch uses it to keep waiting for ssh's diagnostic stderr.
+      let sshStderrFlushed = false;
       const maybeFinish = () => {
         if (settled || !sshExited || !tarExited) return;
+        if (!sshStderrFlushed) return; // myrmidon(OPE-12914): ssh stderr still in flight
         settled = true;
-        if ((sshExitCode ?? 0) !== 0) {
-          reject(new Error(sshStderr.trim() || `ssh exited with code ${sshExitCode ?? -1}`));
+        abortWatch.detach();
+        if (abortWatch.aborted()) {
+          reject(new SshOperationAbortedError("Workspace download"));
           return;
         }
-        if ((tarExitCode ?? 0) !== 0) {
-          reject(new Error(tarStderr.trim() || `tar exited with code ${tarExitCode ?? -1}`));
+        // ssh answers our SIGTERM with exit code 255; that must not hide why tar failed.
+        // However, if ssh failed with its own diagnostic (e.g. "Connection reset by peer")
+        // or tar failed only because the stream was cut (unexpected EOF), ssh is the root cause.
+        const sshStderr = sshStderrTail.text().trim();
+        const tarStderr = tarStderrTail.text().trim();
+        const isSshSigterm =
+          !sshStderr ||
+          sshStderr === "Killed by signal 15." ||
+          sshStderr.startsWith("Killed by signal");
+        const isTarEof =
+          tarStderr.toLowerCase().includes("unexpected eof") ||
+          tarStderr.toLowerCase().includes("unexpected end of archive") ||
+          tarStderr.includes("This does not look like a tar archive");
+        if (
+          (!sshStoppedAfterTarFailure || !isSshSigterm || isTarEof) &&
+          (sshExitCode ?? 0) !== 0
+        ) {
+          if (sshStderr || !sshStoppedAfterTarFailure) {
+            reject(new Error(sshStderr || `ssh exited with code ${sshExitCode ?? -1}`));
+            return;
+          }
+        }
+        // myrmidon(OPE-12788): code === null means tar was killed by a signal
+        // (e.g. the OOM killer); its staging copy is incomplete, so it is a failure.
+        if (tarExitCode === null) {
+          const tarStderrText = tarStderrTail.text().trim();
+          reject(new Error(`tar terminated by signal ${tarSignal ?? "unknown"}${tarStderrText ? `: ${tarStderrText}` : ""}`));
+          return;
+        }
+        if (tarExitCode !== 0) {
+          reject(new Error(tarStderrTail.text().trim() || `tar exited with code ${tarExitCode}`));
           return;
         }
         resolve();
       };
 
+      // Stopping a live pair takes more than `kill`: when tar dies while ssh
+      // still feeds it, ssh.stdout stays piped into the dead tar.stdin and,
+      // paused on a buffered chunk, its EOF never surfaces, so ssh's `close`
+      // never fires and the restore hangs forever (OPE-12875). Destroying the
+      // piped end unblocks the pair so both `close` events arrive.
+      const stopChildren = () => {
+        ssh.kill("SIGTERM");
+        tar.kill("SIGTERM");
+        if (!sshExited) {
+          ssh.stdout?.destroy();
+          sshStderrFlushed = true; // myrmidon(OPE-12914): no full stderr is owed after SIGTERM
+        }
+      };
+
       const fail = (error: Error) => {
         if (settled) return;
         settled = true;
-        ssh.kill("SIGTERM");
-        tar.kill("SIGTERM");
+        abortWatch.detach();
+        stopChildren();
         reject(error);
       };
 
@@ -1522,22 +1820,36 @@ export async function syncDirectoryFromSsh(input: {
         ssh.stdout?.pipe(tar.stdin ?? null);
       }
       ssh.stderr?.on("data", (chunk) => {
-        sshStderr += String(chunk);
+        sshStderrTail.append(chunk);
       });
       tar.stderr?.on("data", (chunk) => {
-        tarStderr += String(chunk);
+        tarStderrTail.append(chunk);
       });
 
+      // tar can exit before ssh does (disk full, a corrupt stream); the broken
+      // pipe is already reported through tar's exit code.
+      tar.stdin?.on("error", () => undefined);
       ssh.on("error", fail);
       tar.on("error", fail);
       ssh.on("close", (code) => {
         sshExited = true;
         sshExitCode = code;
+        sshStderrFlushed = true; // myrmidon(OPE-12914): stderr 'data' events precede 'close'
         maybeFinish();
       });
-      tar.on("close", (code) => {
+      tar.on("close", (code, signal) => {
         tarExited = true;
         tarExitCode = code;
+        tarSignal = signal;
+        // tar is gone; nothing reads its stdin anymore. Kill ssh AND destroy
+        // the piped stdout: SIGTERM alone leaves ssh.stdout paused on a full
+        // pipe to the dead tar.stdin, its EOF never surfaces, `close` never
+        // fires, and the restore hangs forever (OPE-12875). maybeFinish runs
+        // once both closes arrive.
+        if (code !== 0 && !sshExited) {
+          sshStoppedAfterTarFailure = true;
+          stopChildren();
+        }
         maybeFinish();
       });
     });
@@ -1549,21 +1861,81 @@ export async function syncDirectoryFromSsh(input: {
     await progress?.fail();
     throw error;
   } finally {
-    await fs.rm(stagingDir, { recursive: true, force: true }).catch(() => undefined);
+    await removeSshSyncBackDir(stagingDir);
     await auth.cleanup();
   }
+}
+
+// myrmidon(OPE-12809): resolves the reproducible directories the workspace
+// transfer skips (ssh-workspace-excludes.ts holds the list and the setting).
+// In a git workspace a name that git tracks files under stays in the transfer.
+// When the tracked file list cannot be read nothing is skipped: losing an
+// agent's edit is worse than a slow transfer.
+async function resolveSshWorkspaceTransferExcludes(input: {
+  localDir: string;
+  gitBacked: boolean;
+  extraExclude?: string[];
+  onProgress?: RuntimeProgressSink;
+}): Promise<string[]> {
+  let names = resolveSshWorkspaceExcludeNames();
+  if (input.gitBacked && names.length > 0) {
+    try {
+      const tracked = await runLocalGit(input.localDir, ["ls-files", "-z"], {
+        timeout: 60_000,
+        maxBuffer: 256 * 1024 * 1024,
+      });
+      names = dropTrackedSshWorkspaceExcludeNames(names, tracked.stdout.split("\0"));
+    } catch (error) {
+      names = [];
+      await Promise.resolve(
+        input.onProgress?.(
+          `[paperclip] Workspace sync: could not list tracked files, nothing is skipped. ${String(error).slice(0, 200)}\n`,
+        ),
+      ).catch(() => undefined);
+    }
+  }
+  if (names.length > 0) {
+    await Promise.resolve(
+      input.onProgress?.(`[paperclip] Workspace sync skips reproducible directories: ${names.join(", ")}\n`),
+    ).catch(() => undefined);
+  }
+  return [...new Set([...sshWorkspaceExcludePatterns(names), ...(input.extraExclude ?? [])])];
 }
 
 export async function prepareWorkspaceForSshExecution(input: {
   spec: SshRemoteExecutionSpec;
   localDir: string;
   remoteDir?: string;
+  /** Extra exclude patterns of the caller, added to the reproducible directories. */
+  exclude?: string[];
   onProgress?: RuntimeProgressSink;
-}): Promise<{ gitBacked: boolean }> {
+  /**
+   * myrmidon(OPE-12801): run cancellation. The tar transfer is stopped in
+   * flight; the git history import is not interrupted, the signal is checked
+   * before and after it.
+   */
+  signal?: AbortSignal;
+  gitOnly?: boolean;
+}): Promise<{ gitBacked: boolean; workspaceExclude: string[] }> {
   const remoteDir = input.remoteDir ?? input.spec.remoteCwd;
+  throwIfSshAborted(input.signal, "Workspace preparation");
   const gitSnapshot = await readLocalGitWorkspaceSnapshot(input.localDir);
+  // myrmidon(OPE-12809): the same patterns go to the upload here and, through
+  // the returned workspaceExclude, to the baseline snapshot and the restore.
+  // myrmidon(OPE-12795): a git-only checkout transfers no working tree, so
+  // there is nothing to exclude and nothing to report as skipped.
+  const gitOnlyCheckout = gitSnapshot !== null && input.gitOnly === true;
+  const workspaceExclude = gitOnlyCheckout
+    ? []
+    : await resolveSshWorkspaceTransferExcludes({
+        localDir: input.localDir,
+        gitBacked: gitSnapshot !== null,
+        extraExclude: input.exclude,
+        onProgress: input.onProgress,
+      });
 
   if (gitSnapshot) {
+    throwIfSshAborted(input.signal, "Workspace preparation");
     await importGitWorkspaceToSsh({
       spec: input.spec,
       localDir: input.localDir,
@@ -1571,22 +1943,27 @@ export async function prepareWorkspaceForSshExecution(input: {
       snapshot: gitSnapshot,
       onProgress: input.onProgress,
     });
-    await syncDirectoryToSsh({
-      spec: input.spec,
-      localDir: input.localDir,
-      remoteDir,
-      exclude: [".git", ".paperclip-runtime"],
-      onProgress: input.onProgress,
-      progressLabel: "workspace",
-    });
-    await removeDeletedPathsOnSsh({
-      spec: input.spec,
-      remoteDir,
-      deletedPaths: gitSnapshot.deletedPaths,
-    });
-    return { gitBacked: true };
+    if (!input.gitOnly) {
+      await syncDirectoryToSsh({
+        spec: input.spec,
+        localDir: input.localDir,
+        remoteDir,
+        exclude: [".git", ".paperclip-runtime", ...workspaceExclude],
+        onProgress: input.onProgress,
+        progressLabel: "workspace",
+        signal: input.signal,
+      });
+      throwIfSshAborted(input.signal, "Workspace preparation");
+      await removeDeletedPathsOnSsh({
+        spec: input.spec,
+        remoteDir,
+        deletedPaths: gitSnapshot.deletedPaths,
+      });
+    }
+    return { gitBacked: true, workspaceExclude };
   }
 
+  throwIfSshAborted(input.signal, "Workspace preparation");
   await clearRemoteDirectory({
     spec: input.spec,
     remoteDir,
@@ -1596,11 +1973,12 @@ export async function prepareWorkspaceForSshExecution(input: {
     spec: input.spec,
     localDir: input.localDir,
     remoteDir,
-    exclude: [".paperclip-runtime"],
+    exclude: [".paperclip-runtime", ...workspaceExclude],
     onProgress: input.onProgress,
     progressLabel: "workspace",
+    signal: input.signal,
   });
-  return { gitBacked: false };
+  return { gitBacked: false, workspaceExclude };
 }
 
 export async function restoreWorkspaceFromSshExecution(input: {
@@ -1613,7 +1991,7 @@ export async function restoreWorkspaceFromSshExecution(input: {
 }): Promise<void> {
   const remoteDir = input.remoteDir ?? input.spec.remoteCwd;
   if (input.baselineSnapshot) {
-    const stagingDir = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-ssh-sync-back-"));
+    const stagingDir = await createSshSyncBackDir();
     const importedRef = input.restoreGitHistory
       ? `refs/paperclip/ssh-sync/imported/${randomUUID()}`
       : null;
@@ -1658,7 +2036,7 @@ export async function restoreWorkspaceFromSshExecution(input: {
           maxBuffer: 16 * 1024,
         }).catch(() => undefined);
       }
-      await fs.rm(stagingDir, { recursive: true, force: true }).catch(() => undefined);
+      await removeSshSyncBackDir(stagingDir);
     }
     return;
   }

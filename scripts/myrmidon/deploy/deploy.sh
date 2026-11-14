@@ -693,6 +693,7 @@ if [[ "$DRY_RUN" == "1" ]]; then
     plan "10. post-deploy smoke: wait for bot gateways to be healthy (bot-apply-smoke.sh, >=${MYR_SMOKE_MIN_HEALTHY_PERCENT}% healthy, timeout ${MYR_SMOKE_TIMEOUT_SEC}s); on failure the deploy reports DEGRADED and prints the rollback commands"
   fi
   plan "11. DEPLOY-HYGIENE: remove the component images older than ${MYRMIDON_DEPLOY_IMAGE_KEEP:-1} previous release(s) per repository (MYRMIDON_DEPLOY_IMAGE_KEEP; images used by a container are always kept)"
+  plan "11b. IMAGE-GC (OPE-12696): remove the myrmidon*/agent-runtime* images NO container uses (docker ps -a is authoritative) and prune the build cache (MYRMIDON_DEPLOY_IMAGE_GC=0 switches it off)"
   exit 0
 fi
 
@@ -1068,9 +1069,13 @@ fi
 # re-apply; with MYRMIDON_BOT_IMAGE_ROLLOUT=0 no bot re-applies by design and
 # the smoke verifies the already-running gateways instead. DEPLOY-SMOKE-FALSE
 # (08.11): containers stopped before the deploy began and IDLE-STOP Exited(143)
-# stops are not crashes. Otherwise the deploy is DEGRADED with the rollback
-# commands. Skipped only when explicitly disabled or unconfigured
-# (no company): an unconfigured smoke on a bot fleet is itself reported.
+# stops are not crashes. DEPLOY-SMOKE-REMOTE (11.11): bots pinned to another
+# host are verified over their own apiBaseUrl /health, not the local docker.
+# DEPLOY-SMOKE-OOM-WARN (11.11): a single OOM of a container the deploy did
+# not touch is a WARNING, not a deploy failure (see bot-apply-smoke.sh).
+# Otherwise the deploy is DEGRADED with the rollback commands. Skipped only
+# when explicitly disabled or unconfigured (no company): an unconfigured smoke
+# on a bot fleet is itself reported.
 if [[ "$MYR_SMOKE_ENABLED" == "1" ]]; then
   if [[ -z "$MYR_SMOKE_COMPANY" ]]; then
     log "WARNING: post-deploy bot smoke skipped: MYRMIDON_DEPLOY_SMOKE_COMPANY is not set; the deploy cannot prove a bot re-applied"
@@ -1106,4 +1111,10 @@ if deploy_image_retention; then :; else
   log "WARNING: the old image cleanup failed; the deploy itself is complete and healthy (remove old images by hand: docker image ls)"
 fi
 
+# IMAGE-GC (OPE-12696): same success gate as DEPLOY-HYGIENE above — every
+# myrmidon*/agent-runtime* image that NO container uses is swept and the
+# build cache pruned. A failure of the sweep never fails the finished deploy.
+if deploy_image_gc; then :; else
+  log "WARNING: the unused image sweep failed; the deploy itself is complete and healthy (remove unused images by hand: docker image ls)"
+fi
 log "release gate passed: board and ${MYR_RELEASE_COMPONENTS:-no components} rolled out together, bots re-apply"

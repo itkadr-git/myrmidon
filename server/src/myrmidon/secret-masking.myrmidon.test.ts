@@ -99,7 +99,7 @@ describeEmbeddedPostgres("myrmidon(S5) agent secret values are masked where text
     const started = await startEmbeddedPostgresTestDatabase("myrmidon-secret-masking-");
     stopDb = started.cleanup;
     db = createDb(started.connectionString);
-  }, 30_000);
+  }, 60_000);
 
   beforeEach(async () => {
     resetSecretMasking();

@@ -1,0 +1,122 @@
+# myrmidon(OPE-12633 OMP-SSH-RUNNER): an SSH execution target for the
+# omp_local adapter. The board attaches an agent to an SSH environment that
+# points at a container from this image, so the omp CLI, its tool calls and the
+# builds they start (tsc, pnpm) run in that container under its own memory, CPU
+# and process limits instead of inside the board container. The board only
+# syncs the workspace and runtime assets over SSH and streams the output.
+#
+# Contents on top of agent-runtime-base (Ubuntu, Node 24, git, ripgrep, tini,
+# user paperclip uid 1000):
+# - Bun and omp, pinned exactly like the board image (the omp launcher is
+#   `#!/usr/bin/env bun`, so `npm install -g` alone yields a broken bin);
+# - pnpm, the GitHub CLI and a C toolchain, so engineering runs can install and
+#   build the repositories they work on;
+# - openssh-server. Only key authentication for user paperclip on port 2222;
+#   the authorized key is mounted read-only at
+#   /etc/ssh/omp-runner/authorized_keys; the host key is generated on first
+#   start into /var/lib/omp-runner/hostkeys (a volume, so the pinned host key
+#   survives a container recreate).
+#
+# Operator setup: docker/agent-runtime/omp-ssh/compose.yml and the "OMP SSH
+# runner" section of docker/agent-runtime/README.md.
+ARG BASE_TAG=dev
+FROM paperclipai/agent-runtime-base:${BASE_TAG}
+
+USER root
+
+ARG BUN_VERSION=1.3.14
+ARG BUN_SHA256=951ee2aee855f08595aeec6225226a298d3fea83a3dcd6465c09cbccdf7e848f
+ARG OMP_VERSION=18.9.2
+ARG PNPM_VERSION=9.15.4
+ARG GH_VERSION=2.103.3
+ARG GH_SHA256=4c806978ffce1cec70853302a56d70ac6da4f19bae7adca4e1a8ab00633dd91d
+
+ENV BUN_INSTALL=/usr/local
+
+RUN apt-get update \
+  && apt-get install -y --no-install-recommends \
+       openssh-server unzip jq fd-find build-essential python3 \
+  && ln -sf /usr/bin/fdfind /usr/local/bin/fd \
+  && rm -rf /var/lib/apt/lists/* \
+  && rm -f /etc/ssh/ssh_host_*
+
+COPY scripts/myrmidon/patch-omp-cli.mjs /usr/local/share/myrmidon/patch-omp-cli.mjs
+
+# release downloads retry: github.com answers 504 to anonymous downloads while
+# GitHub throttles anonymous traffic.
+RUN set -eu \
+  && curl -fsSL --retry 5 --retry-all-errors --retry-delay 5 -o /tmp/bun.zip "https://github.com/oven-sh/bun/releases/download/bun-v${BUN_VERSION}/bun-linux-x64.zip" \
+  && echo "${BUN_SHA256}  /tmp/bun.zip" | sha256sum -c - \
+  && unzip -q /tmp/bun.zip -d /tmp/bun-extract \
+  && install -m 0755 /tmp/bun-extract/bun-linux-x64/bun /usr/local/bin/bun \
+  && rm -rf /tmp/bun.zip /tmp/bun-extract \
+  && bun add --global "@oh-my-pi/pi-coding-agent@${OMP_VERSION}" \
+  && CLI_PATH="$(bun pm bin -g)/../@oh-my-pi/pi-coding-agent/dist/cli.js" \
+  && if [ ! -f "$CLI_PATH" ]; then CLI_PATH="$(find /usr/local -name cli.js -path "*/@oh-my-pi/pi-coding-agent/*" 2>/dev/null | head -1)"; fi \
+  && test -f "$CLI_PATH" \
+  && node /usr/local/share/myrmidon/patch-omp-cli.mjs "$CLI_PATH" \
+  && ! grep -q "RFC 2119 keywords:" "$CLI_PATH" \
+  && grep -q "Keywords MUST, REQUIRED, SHOULD, RECOMMENDED, MAY, OPTIONAL follow their usual meaning." "$CLI_PATH" \
+  && test -x /usr/local/bin/omp \
+  && npm install --global "pnpm@${PNPM_VERSION}" \
+  && curl -fsSL --retry 5 --retry-all-errors --retry-delay 5 -o /tmp/gh.tar.gz "https://github.com/cli/cli/releases/download/v${GH_VERSION}/gh_${GH_VERSION}_linux_amd64.tar.gz" \
+  && echo "${GH_SHA256}  /tmp/gh.tar.gz" | sha256sum -c - \
+  && tar -xzf /tmp/gh.tar.gz -C /tmp \
+  && install -m 0755 "/tmp/gh_${GH_VERSION}_linux_amd64/bin/gh" /usr/local/bin/gh \
+  && rm -rf /tmp/gh.tar.gz "/tmp/gh_${GH_VERSION}_linux_amd64"
+
+COPY docker/agent-runtime/omp-ssh/sshd_config /etc/ssh/omp-runner/sshd_config
+COPY docker/agent-runtime/omp-ssh/entrypoint.sh /usr/local/bin/omp-runner-entrypoint
+COPY docker/agent-runtime/omp-ssh/run-reap /usr/local/bin/run-reap
+
+# myrmidon(OPE-12722 OMP-RUNNER-SHARED-CACHE): the git wrapper at
+# /usr/local/bin/git shadows /usr/bin/git on the default PATH (and in every
+# login profile the board's SSH transport sources), adding
+# --reference-if-able /cache/git/<owner>/<repo>.git to plain GitHub clones
+# when the board's mirror exists. Consume-only: it never creates or refreshes
+# the mirror, and a clone never fails because of it (docker/bot-runtime/
+# git-reference/git is the full bot-side contract). The source tree ships a
+# CommonJS marker beside it (the bot wrapper's 984781988) so the extension-less
+# file keeps CJS semantics under the repo root's "type": "module"; the image
+# copy does not include it — /usr/local/bin has no parent package.json, so
+# node defaults the file to CommonJS there. Its shebang is the absolute
+# /usr/bin/node of the base image's NodeSource package, not `env node`: git runs
+# from hooks and `env -i` shells whose PATH may lack node. The build smoke below
+# RUNS the wrapper (a `git --version` through it, and a probe that the wrapper,
+# not /usr/bin/git, answered) and fails the build if it cannot.
+COPY docker/agent-runtime/omp-ssh/git-reference/git /usr/local/bin/git
+
+# The account must not be locked: with UsePAM off, sshd refuses every login of
+# a locked account ("!" in /etc/shadow), key authentication included. "*" is
+# "no usable password", not "locked".
+RUN set -eu \
+  && chmod 0755 /usr/local/bin/omp-runner-entrypoint /usr/local/bin/git /usr/local/bin/run-reap \
+  && chmod 0644 /etc/ssh/omp-runner/sshd_config \
+  && test -x /usr/local/bin/run-reap \
+  && node --check /usr/local/bin/git \
+  && test -x /usr/bin/node \
+  && test "$(head -n 1 /usr/local/bin/git)" = '#!/usr/bin/node' \
+  && test "$(env -i PATH=/usr/local/bin:/usr/bin:/bin sh -c 'command -v git')" = /usr/local/bin/git \
+  && real_git="$(/usr/bin/git --version)" \
+  && wrapped_git="$(env -i PATH=/usr/local/bin:/usr/bin:/bin sh -c 'git --version')" \
+  && test -n "$real_git" \
+  && test "$wrapped_git" = "$real_git" \
+  && test "$(env -i PATH=/usr/local/bin:/usr/bin:/bin MYRMIDON_GIT_REAL=/bin/echo sh -c 'git wrapper-ran')" = wrapper-ran \
+  && echo "git wrapper: $wrapped_git" \
+  && usermod -p '*' paperclip \
+  && mkdir -p /run/sshd /var/lib/omp-runner/hostkeys /workspace /home/paperclip/.cache \
+  && chown -R 1000:1000 /workspace /home/paperclip \
+  && echo "node: $(node --version)" \
+  && echo "bun: $(bun --version)" \
+  && echo "omp: $(omp --version)" \
+  && echo "pnpm: $(pnpm --version)" \
+  && echo "gh: $(gh --version | head -1)" \
+  && command -v omp && command -v git && command -v tar && command -v sh \
+  && ssh-keygen -q -t ed25519 -N '' -f /tmp/smoke_host_key \
+  && /usr/sbin/sshd -t -f /etc/ssh/omp-runner/sshd_config -h /tmp/smoke_host_key \
+  && rm -f /tmp/smoke_host_key /tmp/smoke_host_key.pub
+
+EXPOSE 2222
+WORKDIR /workspace
+ENTRYPOINT ["/usr/bin/tini", "--", "/usr/local/bin/omp-runner-entrypoint"]
+CMD []

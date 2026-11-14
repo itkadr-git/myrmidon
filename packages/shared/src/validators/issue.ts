@@ -397,11 +397,18 @@ export const issueExecutionStageParticipantSchema =
       }
     });
 
+export const issueExecutionStageRequirementsSchema = z.object({
+  deployVersion: z.boolean().default(false),
+  checkMethod: z.boolean().default(false),
+  skip: z.boolean().optional(),
+}).strict();
+
 export const issueExecutionStageSchema = z.object({
   id: z.string().guid().optional(),
   type: z.enum(ISSUE_EXECUTION_STAGE_TYPES),
   approvalsNeeded: z.literal(1).optional().default(1),
   participants: z.array(issueExecutionStageParticipantSchema).default([]),
+  requirements: issueExecutionStageRequirementsSchema.nullish(),
 });
 
 export const issueExecutionMonitorPolicySchema = z.object({
@@ -638,6 +645,23 @@ export const issueExecutionStateSchema = z.object({
       pullRequestNumber: z.number().int().positive().nullable(),
     })
     .nullish(),
+  // myrmidon(1.7-GOAL-JUDGE, OPE-12149): durable round state of the review-cycle
+  // goal judge; preserved by the execution-policy transition builders.
+  goalJudgeRound: z
+    .object({
+      rounds: z.number().int().nonnegative(),
+      lastJudgedAtMs: z.number().int().nullable(),
+      lastHeadSha: z.string().max(128).nullable(),
+      lastVerdict: z
+        .object({
+          score: z.number(),
+          complete: z.boolean(),
+          missing: z.array(z.string().max(2000)),
+          summary: z.string().max(4000).optional(),
+        })
+        .nullish(),
+    })
+    .nullish(),
 });
 
 export const issueRecoveryActionReadModelSchema = z.object({
@@ -858,6 +882,10 @@ const createIssueBaseSchema = z.object({
     .optional()
     .nullable(),
   inheritExecutionWorkspaceFromIssueId: z.string().guid().optional().nullable(),
+  // 1.7 (PRIVATE-TASKS): privacy flag. The schema accepts it; the route
+  // rejects it with 403 unless the actor is a board actor. Agents can never
+  // set or clear it.
+  isPrivate: z.boolean().optional(),
   title: z.string().min(1),
   description: multilineTextSchema.optional().nullable(),
   status: z.enum(ISSUE_STATUSES),

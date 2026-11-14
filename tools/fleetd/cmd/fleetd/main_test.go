@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/json"
@@ -15,6 +16,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 )
 
 // Everything here is placeholder data: fake bot keys, example.com images.
@@ -67,6 +69,9 @@ type fakeDocker struct {
 	calls           []string
 	startStopStatus int
 	logsBody        []byte
+	// inspectStatus overrides the State.Status the inspect answers (empty —
+	// "running"); OPE-12663 uses it to prove exited maps to stopped.
+	inspectStatus string
 	// missingImage makes the first create answer 404 "No such image" until an
 	// images/create (pull) arrives — OPE-12194.
 	missingImage bool
@@ -122,7 +127,11 @@ func (f *fakeDocker) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "no such container", http.StatusNotFound)
 			return
 		}
-		out := map[string]any{"State": map[string]any{"Status": "running"}, "Config": map[string]any{"Image": c["Image"], "User": c["User"]}, "HostConfig": c["HostConfig"]}
+		status := "running"
+		if f.inspectStatus != "" {
+			status = f.inspectStatus
+		}
+		out := map[string]any{"State": map[string]any{"Status": status}, "Config": map[string]any{"Image": c["Image"], "User": c["User"]}, "HostConfig": c["HostConfig"]}
 		_ = json.NewEncoder(w).Encode(out)
 	case r.Method == http.MethodPost && (strings.HasSuffix(path, "/start") || strings.HasSuffix(path, "/stop")):
 		if f.startStopStatus != 0 {
@@ -392,6 +401,32 @@ func TestTemplateDriftRefusesMismatchedKey(t *testing.T) {
 	rec := routeRequest(s, http.MethodPost, "/v1/bots/"+key+"/template-drift", fakeBearer(), body)
 	if rec.Code != http.StatusForbidden || rec.Body.String() != "name_label_mismatch\n" {
 		t.Fatalf("got %d %q", rec.Code, rec.Body.String())
+	}
+}
+
+func TestDriftFieldsIgnoresMissingUlimits(t *testing.T) {
+	s := &server{cfg: testConfig()}
+	sp := spec{
+		BotKey:    "bot-example-one",
+		Image:     "example.com/bot@sha256:aa",
+		MemoryMb:  1024,
+		Cpus:      1,
+		PidsLimit: 256,
+		Network:   "net-a",
+	}
+	var x dockerInspect
+	x.Config.Image = sp.Image
+	x.Config.User = "10001"
+	x.HostConfig.NetworkMode = s.cfg.Network
+	x.HostConfig.ReadonlyRootfs = true
+	x.HostConfig.Memory = sp.MemoryMb * 1024 * 1024
+	x.HostConfig.NanoCPUs = int64(sp.Cpus * 1e9)
+	x.HostConfig.PidsLimit = sp.PidsLimit
+	x.HostConfig.ShmSize = 64 * 1024 * 1024
+
+	fields := s.driftFields(sp, &x)
+	if len(fields) != 0 {
+		t.Fatalf("expected no drift fields for inspect without Ulimits, got %v", fields)
 	}
 }
 
@@ -766,6 +801,14 @@ func TestCreateAppliesFixedTemplateToHostConfig(t *testing.T) {
 	if opt, _ := host["SecurityOpt"].([]any); len(opt) != 1 || opt[0] != "no-new-privileges:true" {
 		t.Fatalf("SecurityOpt is %v", host["SecurityOpt"])
 	}
+	ulimits, _ := host["Ulimits"].([]any)
+	if len(ulimits) != 1 {
+		t.Fatalf("Ulimits is %v", host["Ulimits"])
+	}
+	u, _ := ulimits[0].(map[string]any)
+	if len(u) != 3 || u["Name"] != "core" || u["Soft"] != float64(0) || u["Hard"] != float64(0) {
+		t.Fatalf("Ulimits[0] is %v", ulimits[0])
+	}
 	if host["Memory"] != float64(1024*1024*1024) || host["NanoCpus"] != float64(1e9) || host["PidsLimit"] != float64(256) {
 		t.Fatalf("limits wrong: %v %v %v", host["Memory"], host["NanoCpus"], host["PidsLimit"])
 	}
@@ -972,9 +1015,13 @@ func TestHealthReportsRealResourcesAndDockerState(t *testing.T) {
 	if h.Status != "degraded" || h.EgressCheck.Ok || len(h.EgressCheck.FailedTargets) != 1 {
 		t.Fatalf("egress failure not reported: %+v", h)
 	}
-	// Docker down: the socket path no longer answers.
+	// Docker down: the shared transport no longer dials a live socket.
 	s.cfg.BoardAddress = ""
 	s.docker.socket = filepath.Join(t.TempDir(), "gone.sock")
+	s.docker.transport = &http.Transport{DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
+		return net.DialTimeout("unix", s.docker.socket, 5*time.Second)
+	}, DisableKeepAlives: true}
+	s.docker.client = &http.Client{Transport: s.docker.transport}
 	rec = routeRequest(s, http.MethodGet, "/v1/health", s.cfg.Token, "")
 	if err := json.Unmarshal(rec.Body.Bytes(), &h); err != nil {
 		t.Fatal(err)
@@ -992,6 +1039,105 @@ func TestDockerActionsAcceptAlreadyApplied304(t *testing.T) {
 		if err := s.docker.action(t.Context(), key, action); err != nil {
 			t.Fatalf("%s: %v", action, err)
 		}
+	}
+}
+
+// OPE-12663: the idle-stop route stops the container and records the
+// idle-stopped mark in the bot's volume root; the mark surfaces in the status
+// (so the reconciler leaves the container down) and a start clears it (the
+// next wake brings the container up like the local docker driver's A17).
+func TestStopIdleWritesMarkAndStartClearsIt(t *testing.T) {
+	s, _, _ := newServerWithDocker(t)
+	key := s.cfg.Bots[0].BotKey
+	markPath := filepath.Join(s.cfg.VolumeRoot, key, "hermes", ".myrmidon", "idle-stopped.json")
+
+	// The container must exist for stop/start to answer: create it first.
+	if rec := routeRequest(s, http.MethodPost, "/v1/bots", s.cfg.Token, `{"spec":{"botKey":"`+key+`","image":"example.com/bot@sha256:aa","memoryMb":1536,"cpus":1,"pidsLimit":256,"network":"net-a"}}`); rec.Code != http.StatusOK {
+		t.Fatalf("create failed: %d %s", rec.Code, rec.Body.String())
+	}
+	if rec := routeRequest(s, http.MethodPost, "/v1/bots/"+key+"/stopIdle", s.cfg.Token, ""); rec.Code != http.StatusOK {
+		t.Fatalf("stopIdle failed: %d %s", rec.Code, rec.Body.String())
+	}
+	if _, err := os.Stat(markPath); err != nil {
+		t.Fatalf("idle-stopped mark not written: %v", err)
+	}
+
+	// The status carries the mark so the board's reconciler honors it.
+	rec := routeRequest(s, http.MethodGet, "/v1/bots/"+key+"/status", s.cfg.Token, "")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status failed: %d %s", rec.Code, rec.Body.String())
+	}
+	var st botStatus
+	if err := json.Unmarshal(rec.Body.Bytes(), &st); err != nil {
+		t.Fatalf("body: %v", err)
+	}
+	if st.IdleStopped == nil || !*st.IdleStopped {
+		t.Fatalf("status does not report the idle-stopped mark: %+v", st)
+	}
+
+	// The next wake (driver.start) clears the mark.
+	if rec := routeRequest(s, http.MethodPost, "/v1/bots/"+key+"/start", s.cfg.Token, ""); rec.Code != http.StatusOK {
+		t.Fatalf("start failed: %d %s", rec.Code, rec.Body.String())
+	}
+	if _, err := os.Stat(markPath); !os.IsNotExist(err) {
+		t.Fatalf("start did not clear the idle-stopped mark: %v", err)
+	}
+	rec = routeRequest(s, http.MethodGet, "/v1/bots/"+key+"/status", s.cfg.Token, "")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status after start failed: %d %s", rec.Code, rec.Body.String())
+	}
+	var st2 botStatus
+	if err := json.Unmarshal(rec.Body.Bytes(), &st2); err != nil {
+		t.Fatalf("body: %v", err)
+	}
+	if st2.IdleStopped != nil {
+		t.Fatalf("status still reports the mark after start: %+v", st2)
+	}
+}
+
+// OPE-12663: an idle-stopped container is docker-"exited", and the board's
+// reconciler honors the idle-stopped mark only for state "stopped" — so any
+// non-running docker status must come back as "stopped" (the same mapping the
+// local docker driver does).
+func TestStatusMapsExitedToStopped(t *testing.T) {
+	s, _, fake := newServerWithDocker(t)
+	key := s.cfg.Bots[0].BotKey
+	if rec := routeRequest(s, http.MethodPost, "/v1/bots", s.cfg.Token, `{"spec":{"botKey":"`+key+`","image":"example.com/bot@sha256:aa","memoryMb":1536,"cpus":1,"pidsLimit":256,"network":"net-a"}}`); rec.Code != http.StatusOK {
+		t.Fatalf("create failed: %d %s", rec.Code, rec.Body.String())
+	}
+	fake.mu.Lock()
+	fake.inspectStatus = "exited"
+	fake.mu.Unlock()
+	rec := routeRequest(s, http.MethodGet, "/v1/bots/"+key+"/status", s.cfg.Token, "")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status failed: %d %s", rec.Code, rec.Body.String())
+	}
+	var st botStatus
+	if err := json.Unmarshal(rec.Body.Bytes(), &st); err != nil {
+		t.Fatalf("body: %v", err)
+	}
+	if st.State != "stopped" {
+		t.Fatalf("exited must read as stopped: %+v", st)
+	}
+}
+
+// OPE-12663: an operator stop is not an idle stop — it clears the mark so a
+// manually stopped bot is not resurrected by the reconciler as "idle-stopped".
+func TestOperatorStopClearsIdleMark(t *testing.T) {
+	s, _, _ := newServerWithDocker(t)
+	key := s.cfg.Bots[0].BotKey
+	markPath := filepath.Join(s.cfg.VolumeRoot, key, "hermes", ".myrmidon", "idle-stopped.json")
+	if err := os.MkdirAll(filepath.Dir(markPath), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(markPath, []byte(`{"botKey":"`+key+`","idleStopped":true}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if rec := routeRequest(s, http.MethodPost, "/v1/bots/"+key+"/stop", s.cfg.Token, ""); rec.Code != http.StatusOK {
+		t.Fatalf("stop failed: %d %s", rec.Code, rec.Body.String())
+	}
+	if _, err := os.Stat(markPath); !os.IsNotExist(err) {
+		t.Fatalf("operator stop did not clear the idle-stopped mark: %v", err)
 	}
 }
 

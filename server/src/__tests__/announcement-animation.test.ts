@@ -2,10 +2,10 @@ import { describe, expect, it } from "vitest";
 import { validateAnnouncementAnimation } from "../services/announcement-animation.js";
 
 describe("announcement animation documents", () => {
-  it("preserves CSS keyframes and visual HTML/SVG", () => {
+  it("preserves CSS keyframes and visual HTML/SVG", async () => {
     const html = "<html><head><style>@keyframes pulse{to{opacity:.5}}.dot{animation:pulse 2s infinite}</style></head><body><div class='dot'><svg viewBox='0 0 10 10'><circle cx='5' cy='5' r='3'/></svg></div></body></html>";
-    expect(validateAnnouncementAnimation(Buffer.from(html))).toContain("@keyframes pulse");
-    expect(validateAnnouncementAnimation(Buffer.from(html))).toContain('viewBox="0 0 10 10"');
+    expect(await validateAnnouncementAnimation(Buffer.from(html))).toContain("@keyframes pulse");
+    expect(await validateAnnouncementAnimation(Buffer.from(html))).toContain('viewBox="0 0 10 10"');
   });
   it.each([
     "<script>fetch('/api/companies')</script>", "<div onclick='alert(1)'>Click</div>",
@@ -16,12 +16,12 @@ describe("announcement animation documents", () => {
     "<svg><a xlink:href='https://evil.test'><text>Go</text></a></svg>",
     "<svg><animate attributeName='href' values='https://evil.test'/></svg>",
     "<object data='https://evil.test'></object>", "<button>Click</button>",
-  ])("rejects active or resource-loading markup: %s", (html) => {
-    expect(() => validateAnnouncementAnimation(Buffer.from(html))).toThrow();
+  ])("rejects active or resource-loading markup: %s", async (html) => {
+    await expect(validateAnnouncementAnimation(Buffer.from(html))).rejects.toThrow();
   });
-  it("rejects empty, oversized and invalid UTF-8 files", () => {
+  it("rejects empty, oversized and invalid UTF-8 files", async () => {
     for (const bytes of [Buffer.alloc(0), Buffer.alloc(128 * 1024 + 1), Buffer.from([0xff])]) {
-      expect(() => validateAnnouncementAnimation(bytes)).toThrow();
+      await expect(validateAnnouncementAnimation(bytes)).rejects.toThrow();
     }
   });
 });

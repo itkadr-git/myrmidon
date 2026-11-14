@@ -869,11 +869,20 @@ describeEmbeddedPostgres("heartbeat workspace branch containment", () => {
   let db!: Db;
   let tempDb: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | null = null;
   const tempRoots: string[] = [];
+  let previousIdlePickupEnabled: string | undefined;
 
   beforeAll(async () => {
+    // myrmidon(OPE-12797): the release path after a failed run wakes the freed
+    // agent on its next ready task (idle pickup). Here the siblings are exactly
+    // such tasks; the wake runs them against the same broken workspace and
+    // blocks them within milliseconds, racing the 50 ms side-effect poll below
+    // (main CI 07dec516). Containment of the source failure is what this suite
+    // checks, so the unrelated background pickup is switched off for it.
+    previousIdlePickupEnabled = process.env.MYRMIDON_IDLE_PICKUP_ENABLED;
+    process.env.MYRMIDON_IDLE_PICKUP_ENABLED = "false";
     tempDb = await startEmbeddedPostgresTestDatabase("paperclip-branch-containment-");
     db = createDb(tempDb.connectionString);
-  }, 20_000);
+  }, 60_000);
 
   afterEach(async () => {
     // Await every in-flight background heartbeat run to quiescence before the
@@ -926,6 +935,8 @@ describeEmbeddedPostgres("heartbeat workspace branch containment", () => {
   });
 
   afterAll(async () => {
+    if (previousIdlePickupEnabled === undefined) delete process.env.MYRMIDON_IDLE_PICKUP_ENABLED;
+    else process.env.MYRMIDON_IDLE_PICKUP_ENABLED = previousIdlePickupEnabled;
     await db.$client.end();
     await tempDb?.cleanup();
   }, 60_000);

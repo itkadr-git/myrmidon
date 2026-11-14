@@ -59,7 +59,7 @@ export async function prepareAnnouncementPublish(sourceDirectory: string, stagin
     const bytes = await readFile(file);
     const digest = createHash("sha256").update(bytes).digest("hex");
     if (!assetPath.startsWith(`assets/${digest}.`)) throw new Error("Asset filename must match its SHA-256 digest");
-    if (kind === "animation") validateAnnouncementAnimation(bytes);
+    if (kind === "animation") await validateAnnouncementAnimation(bytes);
     files.push({ file, key: `${prefix}/${assetPath}`, contentType: kind === "animation" ? "text/html" : assetPath.endsWith(".png") ? "image/png" : assetPath.endsWith(".jpg") ? "image/jpeg" : "image/webp", cacheControl: "public,max-age=31536000,immutable" });
   }
   files.push({ file: manifestPath, key: `${prefix}/current.json`, contentType: "application/json", cacheControl: "public,max-age=300" });

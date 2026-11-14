@@ -18,6 +18,7 @@ export { myrmidonProcessesRouter } from "./processes/index.js"; // myrmidon(PROC
 export { myrmidonPauseGuardRoutes } from "./pause-guard/index.js";
 export { myrmidonRunPriorityRoutes } from "./run-priority/index.js"; // myrmidon(1.6.5 RUN-PRIORITY A)
 export { myrmidonBudgetEnforcementRoutes } from "./budget-enforcement/index.js"; // myrmidon(1.7-BUDGET-CONFIG-B)
+export { nestRedactRoutes } from "./redact/index.js"; // myrmidon(1.7-REDACT): GET/PATCH per-nest redaction dictionaries and rules (OPE-8660)
 export { myrmidonBehaviorSettingsRoutes } from "./behavior-settings/index.js"; // myrmidon(SETTINGS-CORE)
 export { myrmidonTelegramDmProgressRoutes } from "./telegram-dm-progress/index.js"; // myrmidon(DM-PROGRESS)
 export { myrmidonBridgeLanguageRoutes } from "./bridge-language/index.js";
@@ -82,6 +83,7 @@ export { projectTokenQuotaRoutes } from "./project-token-quota/index.js"; // myr
 export { myrmidonPromptBudgetRoutes } from "./prompt-budget/index.js"; // myrmidon(1.6.3 PROMPT-BUDGET B)
 export { modelFallbackSignalRoutes } from "./litellm-fallback-signal/routes.js"; // myrmidon(BOT-RUNTIME-TUNING D2)
 export { myrmidonOwnerDeliveryRoutes } from "./owner-delivery/index.js"; // myrmidon(1.6.5-OWNER-DM-FILTER)
+export { toolComplaintRoutes } from "./tool-complaints/routes.js"; // myrmidon(1.7 TOOL-COMPLAINTS-API, OPE-12228)
 export { reviewRoutingRoutes } from "./review-routing/routes.js"; // myrmidon(REVIEW-ROUTING)
 export { reviewReworkRoutes } from "./review-rework/routes.js"; // myrmidon(REVIEW-REWORK)
 export { pluginEntitlementRoutes } from "./plugin-entitlement/index.js";
@@ -107,6 +109,7 @@ export { poolChatRoutes } from "./pool-chat/routes.js";
 export { createPoolChatHttpTransport } from "./pool-chat/transports.js";
 export type { PoolChatTransportResolver } from "./pool-chat/service.js";
 export { myrmidonAutonomyRoutes } from "./autonomy/index.js"; // myrmidon(1.6-AUTONOMY)
+export { myrmidonReleaseStageRoutes } from "./release-stage/routes.js"; // myrmidon(1.8 RELEASE-STAGE)
 export { myrmidonKnowledgeRoutes, myrmidonKnowledgeMcpRoutes } from "./knowledge/index.js"; // myrmidon(1.6.6 KNOWLEDGE-2.0 K-2)
 export { myrmidonKnowledgeSettingsRoutes } from "./knowledge/index.js"; // myrmidon(1.7 KNOWLEDGE-2.0 L-11): Settings → Knowledge
 export { sweepTelegramNotifyProactivity } from "./channel-connectors/bridge/notify-sweep.js";

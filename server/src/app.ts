@@ -80,6 +80,8 @@ import { onboardingSeedRoutes } from "./routes/onboarding-seed.js";
 import { serverOnboardingRoutes } from "./routes/servers.js";
 import { boardChatRoutes } from "./routes/board-chat.js";
 import { approvalRoutes } from "./routes/approvals.js";
+import { admAccessRequestRoutes } from "./routes/adm-access-requests.js";
+import { createAdmCapabilityToolExecutor } from "./services/adm-capability-tool-executor.js";
 import { secretRoutes } from "./routes/secrets.js";
 import { toolAccessRoutes } from "./routes/tool-access.js";
 import {
@@ -113,6 +115,7 @@ import {
   myrmidonPauseGuardRoutes,
   myrmidonRunPriorityRoutes,
   myrmidonBudgetEnforcementRoutes,
+  nestRedactRoutes,
   myrmidonBehaviorSettingsRoutes,
   myrmidonTelegramDmProgressRoutes,
   myrmidonBridgeLanguageRoutes,
@@ -178,6 +181,7 @@ import {
   myrmidonPromptBudgetRoutes,
   modelFallbackSignalRoutes,
   myrmidonOwnerDeliveryRoutes,
+  toolComplaintRoutes,
   reviewRoutingRoutes,
   reviewReworkRoutes,
   goalJudgeRoutes,
@@ -202,6 +206,7 @@ import {
   createPoolChatHttpTransport,
   type PoolChatTransportResolver,
   myrmidonAutonomyRoutes,
+  myrmidonReleaseStageRoutes,
   myrmidonKnowledgeRoutes,
   myrmidonKnowledgeMcpRoutes,
   myrmidonKnowledgeSettingsRoutes,
@@ -1212,6 +1217,9 @@ export async function createApp(
   api.use(serverOnboardingRoutes(db)); // myrmidon(SERVER-ONBOARD): SSH dry-run probe
   api.use(boardChatRoutes(db, { deploymentMode: opts.deploymentMode }));
   api.use(approvalRoutes(db, { pluginWorkerManager: workerManager }));
+  api.use(admAccessRequestRoutes(db, {
+    capabilityExecutor: createAdmCapabilityToolExecutor(db, () => app.locals.toolGateway),
+  })); // myrmidon(1.7 COMPANY-BOUNDARIES, OPE-12766)
   api.use(secretRoutes(db));
   api.use(managedAgentProfileRoutes(db));
   api.use(remoteAgentProfileRoutes(db));
@@ -1262,6 +1270,7 @@ export async function createApp(
   api.use(myrmidonCorpusRoutes(db, { ports: resolveCorpusPorts })); // myrmidon(1.6.6 CORPUS-2.0 ч.C): corpus datasets/documents/search + module settings
   api.use(myrmidonProcessesRouter(db as any, opts.processSupervisor ?? null, opts.processBus ?? null)); // myrmidon(PROCS-1.1/1.2): GET/PATCH /api/myrmidon/processes, applied without a restart; myrmidon(OPE-10011): the save reaches the worker's supervisor over the bus
   api.use(myrmidonBudgetEnforcementRoutes(db)); // myrmidon(1.7-BUDGET-CONFIG-B)
+  api.use(nestRedactRoutes(db)); // myrmidon(1.7-REDACT): GET/PATCH per-nest redaction dictionaries and rules (OPE-8660)
   api.use(myrmidonBehaviorSettingsRoutes(db)); // myrmidon(SETTINGS-CORE): unified behavior settings, UI→env→default without restart
   api.use(myrmidonTelegramDmProgressRoutes(db)); // myrmidon(DM-PROGRESS): live progress steps of the Telegram DM status
   api.use(myrmidonChannelSettingsRoutes(db)); // myrmidon(1.7-SETTINGS-TO-UI): GET/PATCH /api/myrmidon/channel-settings
@@ -1337,6 +1346,7 @@ export async function createApp(
   api.use(projectTokenQuotaRoutes(db)); // myrmidon(1.6.6 QUOTA-V2): project token quota read/write
   api.use(modelFallbackSignalRoutes(db)); // myrmidon(BOT-RUNTIME-TUNING D2): fallback-signal settings and the live per-agent fallback share
   api.use(myrmidonOwnerDeliveryRoutes(db)); // myrmidon(1.6.5-OWNER-DM-FILTER): GET/PATCH /api/myrmidon/owner-delivery
+  api.use(toolComplaintRoutes(db)); // myrmidon(1.7 TOOL-COMPLAINTS-API, OPE-12228): POST/GET /api/myrmidon/tool-complaints
   api.use(reviewRoutingRoutes(db)); // myrmidon(REVIEW-ROUTING): automatic reviewer routing settings
   api.use(reviewReworkRoutes(db)); // myrmidon(REVIEW-REWORK): review-return loop settings
   api.use(goalJudgeRoutes(db)); // myrmidon(1.7 GOAL-JUDGE): GET/PATCH /api/myrmidon/goal-judge
@@ -1357,6 +1367,7 @@ export async function createApp(
   api.use(myrmidonMonitoringLinkRoutes(db)); // myrmidon(1.6.6 MONITORING E): link liveness feed and the link pulse endpoint
   api.use(myrmidonPromptBudgetRoutes(db)); // myrmidon(1.6.3 PROMPT-BUDGET B): prompt-budget threshold settings and status
   api.use(myrmidonAutonomyRoutes(db)); // myrmidon(1.6-AUTONOMY): role × action-class matrix and regulations
+  api.use(myrmidonReleaseStageRoutes(db)); // myrmidon(1.8 RELEASE-STAGE): release authority, gates, signed publication
   api.use(myrmidonKnowledgeRoutes(db)); // myrmidon(1.6.6 KNOWLEDGE-2.0 K-2): one service, one set of rights (REST)
   api.use(myrmidonKnowledgeSettingsRoutes(db)); // myrmidon(1.7 KNOWLEDGE-2.0 L-11): Settings → Knowledge limits/schedule/reviewers
   api.use(myrmidonKnowledgeMcpRoutes(db)); // myrmidon(1.6.6 KNOWLEDGE-2.0 K-2): company knowledge MCP endpoint (tools/list + tools/call)

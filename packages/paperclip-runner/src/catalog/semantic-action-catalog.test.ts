@@ -43,7 +43,7 @@ describe("semantic action catalog", () => {
     const receipt = {
       commandId: "create-task-1", disposition: "applied", stateRevision: 1,
       entityRefs: ["task-1"], scheduledWakeIds: ["wake-1"],
-      task: { id: "task-1", identifier: "CHAT-1", parentId: null, projectId: "project-1", status: "todo", assigneeActorId: "agent-1" },
+      task: { id: "task-1", identifier: "CHAT-1", parentId: null, projectId: "project-1", status: "todo", assigneeActorId: "agent-1", assigneeAgentName: "Agent One" },
     };
     expect(validate(receipt), JSON.stringify(validate.errors)).toBe(true);
     const { projectId: _projectId, ...childTask } = receipt.task;

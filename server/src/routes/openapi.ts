@@ -129,6 +129,8 @@ import {
   updateExecutionWorkspaceSchema,
   workspaceOverviewQuerySchema,
   workspaceRuntimeControlTargetSchema,
+  executionWorkspaceTurnRestoreSchema,
+  executionWorkspaceTurnDiffQuerySchema,
   // Environments
   createEnvironmentSchema,
   cancelEnvironmentCustomImageSetupSessionSchema,
@@ -295,6 +297,11 @@ import {
   blockerGraphRootsResponseSchema,
   validateMaintenanceWindowCronRequestSchema,
   checkUpdatesRequestSchema,
+  // ADM access-request gateway
+  createAdmAccessRequestSchema,
+  decideAdmAccessRequestSchema,
+  revokeAdmAccessRequestSchema,
+  executeAdmCapabilitySchema,
 } from "@myrmidon/shared";
 import {
   COMPANY_IMPORT_TRANSFERS_API_PATH,
@@ -1388,6 +1395,13 @@ const BOARD_ONLY_OPERATIONS = new Set([
   "DELETE /api/companies/{companyId}/me/user-secrets/{secretId}",
   "POST /api/companies/{companyId}/secrets/remote-import",
   "POST /api/companies/{companyId}/secrets/remote-import/preview",
+  // myrmidon(1.7 COMPANY-BOUNDARIES, OPE-12766): the ADM gateway treats a
+  // wrong-company or unknown id identically (deny-by-default), so the
+  // not-found boundary is part of the contract of every cross-company route.
+  "GET /api/companies/{companyId}/adm/access-requests",
+  "GET /api/adm/access-requests/{id}",
+  "POST /api/companies/{companyId}/adm/access-requests/{id}/revoke",
+  "POST /api/companies/{companyId}/adm/capability/execute",
   "GET /api/secrets/{id}/usage",
   "GET /api/secrets/{id}/access-events",
   "POST /api/health/dev-server/restart",
@@ -1518,6 +1532,10 @@ const BOARD_ONLY_OPERATIONS = new Set([
   "GET /api/chat-endpoints/{endpointId}/conversations/{conversationId}/publications/{publicationId}/status",
   "GET /api/issues/{issueId}/chat-binding",
   "POST /api/issues/{id}/stalled-review-decision",
+  // myrmidon(1.7 COMPANY-BOUNDARIES, OPE-12766): only ADM control-plane board
+  // operators decide access requests; agent keys never act as ADM operators
+  // (the route rejects non-board actors outright).
+  "POST /api/adm/access-requests/{id}/decide",
 ]);
 
 const INSTANCE_ADMIN_OPERATIONS = new Set([
@@ -1537,6 +1555,8 @@ const CREATED_OPERATIONS = new Set([
   "POST /api/agents/{id}/keys",
   "POST /api/companies/{companyId}/approvals",
   "POST /api/approvals/{id}/comments",
+  "POST /api/companies/{companyId}/adm/access-requests",
+  "POST /api/adm/access-requests/{id}/decide",
   "POST /api/companies/{companyId}/assets/images",
   "POST /api/companies/{companyId}/logo",
   "POST /api/companies/{companyId}/onboarding-seed",
@@ -1837,7 +1857,11 @@ registry.registerPath({
     200: r.ok(
       z.object({
         status: z.enum(["ok", "unhealthy"]),
-        version: z.string().optional(),
+        // Release version: the same value the CI image workflow writes to the
+        // image's `org.opencontainers.image.version` label. Null when the
+        // build carries no release stamp (local development). Present on
+        // every response shape, including redacted ones.
+        version: z.string().nullable(),
         // Running build commit (full git SHA), or null when git metadata is
         // unavailable. Present on every response shape, including redacted ones.
         commit: z.string().nullable(),
@@ -1913,7 +1937,7 @@ registry.registerPath({
         "application/json": {
           schema: z.object({
             status: z.literal("unhealthy"),
-            version: z.string(),
+            version: z.string().nullable(),
             serverVersion: z.string(),
             commit: z.string().nullable(),
             error: z.literal("database_unreachable"),
@@ -4072,6 +4096,19 @@ registry.registerPath({
 
 registry.registerPath({
   method: "get",
+  path: "/api/issues/{id}/release-status",
+  tags: ["issues"],
+  summary:
+    "Release membership: whether each merged pull request of the issue is reachable from the release refs of the issue's release label",
+  request: {
+    params: z.object({ id: z.string() }),
+    query: z.object({ refreshPullRequests: z.enum(["true"]).optional() }),
+  },
+  responses: { 200: r.ok(), 401: r.unauthorized, 403: r.forbidden, 404: r.notFound },
+});
+
+registry.registerPath({
+  method: "get",
   path: "/api/companies/{companyId}/agents/{agentId}/empty-run-stats",
   tags: ["agents"],
   summary: "Empty-run statistics of an agent",
@@ -5276,6 +5313,132 @@ registry.registerPath({
     body: jsonBody(addApprovalCommentSchema),
   },
   responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized },
+});
+
+// ─── ADM access-request gateway (OPE-12766, ADR-0052) ────────────────────────
+//
+// 1.7 COMPANY-BOUNDARIES: the only cross-company control channel. Every route
+// is deny-by-default on company boundaries — the caller must already have
+// access to its own company, agent keys never speak for another company, and
+// the decision plane is reachable only from the configured ADM control-plane
+// company (or an instance admin on the board). Unknown and foreign ids answer
+// identically, so 404 is part of the documented contract.
+
+registry.registerPath({
+  method: "post",
+  path: "/api/companies/{companyId}/adm/access-requests",
+  tags: ["adm-access-requests"],
+  summary: "Create an ADM access request",
+  description:
+    "Ask the ADM control-plane company for a capability on a resource. " +
+    "The target is always the configured ADM control-plane company; " +
+    "raw tokens, secret values and arbitrary URLs in requestedScope are rejected by schema. " +
+    "Idempotent by idempotencyKey: an existing pending request returns 200, a new one returns 201.",
+  request: {
+    params: z.object({ companyId: z.string() }),
+    body: jsonBody(createAdmAccessRequestSchema),
+  },
+  responses: {
+    200: r.ok(),
+    201: r.ok(),
+    400: r.badRequest,
+    401: r.unauthorized,
+    403: r.forbidden,
+  },
+});
+
+registry.registerPath({
+  method: "get",
+  path: "/api/companies/{companyId}/adm/access-requests",
+  tags: ["adm-access-requests"],
+  summary: "List ADM access requests of a company",
+  request: { params: z.object({ companyId: z.string() }) },
+  responses: {
+    200: r.ok(),
+    401: r.unauthorized,
+    403: r.forbidden,
+  },
+});
+
+registry.registerPath({
+  method: "get",
+  path: "/api/adm/access-requests/{id}",
+  tags: ["adm-access-requests"],
+  summary: "Get an ADM access request",
+  description:
+    "Existence-oracle guard: unknown and forbidden ids answer identically with 404.",
+  request: { params: z.object({ id: z.string() }) },
+  responses: {
+    200: r.ok(),
+    401: r.unauthorized,
+    403: r.forbidden,
+    404: r.notFound,
+  },
+});
+
+registry.registerPath({
+  method: "post",
+  path: "/api/adm/access-requests/{id}/decide",
+  tags: ["adm-access-requests"],
+  summary: "Decide an ADM access request (ADM operators only)",
+  description:
+    "Approve or deny a pending request. Only ADM control-plane company operators " +
+    "(or an instance admin on the board) may decide; agent keys are rejected outright. " +
+    "Approval issues an audience-bound short-lived capability token; " +
+    "deciding a request that is not pending returns 409.",
+  request: {
+    params: z.object({ id: z.string() }),
+    body: jsonBody(decideAdmAccessRequestSchema),
+  },
+  responses: {
+    200: r.ok(),
+    400: r.badRequest,
+    401: r.unauthorized,
+    403: r.forbidden,
+    404: r.notFound,
+    409: r.conflict,
+  },
+});
+
+registry.registerPath({
+  method: "post",
+  path: "/api/companies/{companyId}/adm/access-requests/{id}/revoke",
+  tags: ["adm-access-requests"],
+  summary: "Revoke an ADM access request",
+  description:
+    "Revoke a request of the caller's own company. Unknown and foreign ids answer identically with 404.",
+  request: {
+    params: z.object({ companyId: z.string(), id: z.string() }),
+    body: jsonBody(revokeAdmAccessRequestSchema),
+  },
+  responses: {
+    200: r.ok(),
+    400: r.badRequest,
+    401: r.unauthorized,
+    403: r.forbidden,
+    404: r.notFound,
+  },
+});
+
+registry.registerPath({
+  method: "post",
+  path: "/api/companies/{companyId}/adm/capability/execute",
+  tags: ["adm-access-requests"],
+  summary: "Execute an ADM capability",
+  description:
+    "Run the approved capability in the source company namespace. " +
+    "The HMAC-signed token is audience-bound and re-checked against live request state immediately before any effect; " +
+    "invalid, expired, foreign or non-pending capabilities answer 403.",
+  request: {
+    params: z.object({ companyId: z.string() }),
+    body: jsonBody(executeAdmCapabilitySchema),
+  },
+  responses: {
+    200: r.ok(),
+    400: r.badRequest,
+    401: r.unauthorized,
+    403: r.forbidden,
+  },
 });
 
 // ─── Costs ───────────────────────────────────────────────────────────────────
@@ -8531,6 +8694,55 @@ registry.registerPath({
   responses: { 200: r.ok(), 401: r.unauthorized },
 });
 
+// OPE-12738 per-turn checkpoint introspection + restore.
+registry.registerPath({
+  method: "get",
+  path: "/api/execution-workspaces/{id}/turn-checkpoints",
+  tags: ["execution-workspaces"],
+  summary: "List per-turn checkpoint refs recorded on the workspace worktree for one run",
+  request: {
+    params: z.object({ id: z.string() }),
+    query: z.object({ runId: z.string().uuid() }),
+  },
+  responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized, 404: r.notFound, 409: r.conflict, 422: r.unprocessable },
+});
+
+registry.registerPath({
+  method: "get",
+  path: "/api/execution-workspaces/{id}/turn-checkpoints/diff",
+  tags: ["execution-workspaces"],
+  summary: "Diff two per-turn checkpoints of one run",
+  request: {
+    params: z.object({ id: z.string() }),
+    query: executionWorkspaceTurnDiffQuerySchema,
+  },
+  responses: { 200: r.ok(), 401: r.unauthorized, 404: r.notFound, 409: r.conflict, 422: r.unprocessable },
+});
+
+registry.registerPath({
+  method: "post",
+  path: "/api/execution-workspaces/{id}/turn-checkpoints/restore",
+  tags: ["execution-workspaces"],
+  summary: "Restore the working worktree to a previous turn's checkpoint",
+  description:
+    "Rewinds tracked working files and the index to the snapshot ref " +
+    "refs/myrmidon/turns/<runId>/<turnN> without moving the branch ref or " +
+    "touching untracked foreign edits. Refuses with 409 while the worktree is " +
+    "claimed by another active run.",
+  request: {
+    params: z.object({ id: z.string() }),
+    body: jsonBody(executionWorkspaceTurnRestoreSchema),
+  },
+  responses: {
+    200: r.ok(),
+    401: r.unauthorized,
+    403: r.forbidden,
+    404: r.notFound,
+    409: r.conflict,
+    422: r.unprocessable,
+  },
+});
+
 registry.registerPath({
   method: "patch",
   path: "/api/execution-workspaces/{id}",
@@ -10058,6 +10270,13 @@ registerCurrentRoute({
   path: "/api/issues/{id}/cost-summary",
   tags: ["costs"],
   summary: "Get issue cost summary",
+});
+
+registerCurrentRoute({
+  method: "get",
+  path: "/api/issues/{id}/token-budget-signal",
+  tags: ["costs"],
+  summary: "Get the issue token-budget signal (info/warn; never pauses or blocks)",
 });
 
 registerCurrentRoute({
@@ -12107,6 +12326,9 @@ registerCurrentRoute({
 // event, responds 202 with the intake id and enqueues the payload for parsing.
 // Per-source rate limits apply (429 with Retry-After); an optional per-source
 // token (configured via env refs) is verified by the route handler itself.
+// myrmidon(1.6.8 INTAKE-AUTH): source names are case-normalized; an unknown
+// source (absent from config.sources) answers 404, and a configured tokenRef
+// whose secret did not resolve answers 503 without enqueueing.
 registerCurrentRoute({
   method: "post",
   path: "/api/intake/{source}",
@@ -12124,7 +12346,9 @@ registerCurrentRoute({
     400: r.badRequest,
     401: r.unauthorized,
     403: r.forbidden,
+    404: r.notFound,
     429: r.tooManyRequests,
+    503: r.serverError,
   },
 });
 

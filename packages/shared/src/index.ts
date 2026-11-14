@@ -2092,6 +2092,8 @@ export {
   reconcileExecutionWorkspaceBranchSchema,
   updateExecutionWorkspaceSchema,
   workspaceOverviewQuerySchema,
+  executionWorkspaceTurnRestoreSchema,
+  executionWorkspaceTurnDiffQuerySchema,
   executionWorkspaceDeliveryStateSchema,
   executionWorkspaceStatusSchema,
   executionWorkspaceCloseActionKindSchema,
@@ -2145,6 +2147,8 @@ export {
   type ReconcileExecutionWorkspaceBranch,
   type UpdateExecutionWorkspace,
   type WorkspaceOverviewQuery,
+  type ExecutionWorkspaceTurnRestore,
+  type ExecutionWorkspaceTurnDiffQuery,
   normalizedWorkspaceFileAvailabilityQuerySchema,
   workspaceFileAvailabilityRequestSchema,
   workspaceFileAvailabilityResponseSchema,
@@ -3121,3 +3125,6 @@ export * from "./validators/geo-check.js";
 
 // myrmidon(1.7 WAKE-9, OPE-9501): session-per-task isolation and reviewer containment contracts.
 export * from "./myrmidon-task-session-and-reviewer-isolation.js";
+
+// myrmidon(1.7 REDACT, OPE-8660): per-nest redaction dictionaries and rules.
+export * from "./myrmidon-redact.js";

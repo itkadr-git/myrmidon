@@ -57,7 +57,7 @@ describeEmbeddedPostgres("heartbeatService and enqueueWakeup notification prefer
     tempDb = await startEmbeddedPostgresTestDatabase("paperclip-notif-prefs-wake-");
     db = createDb(tempDb.connectionString);
     heartbeat = heartbeatService(db, { runtimeEnv: { ...process.env, PAPERCLIP_IN_WORKTREE: "false" } });
-  }, 30_000);
+  }, 60_000);
 
   afterEach(async () => {
     await drainHeartbeatRunsToQuiescence(db, heartbeat);

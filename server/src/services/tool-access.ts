@@ -5845,7 +5845,7 @@ export function toolAccessService(
     ];
     // Organization grants can mirror connection-owned credentials, and more
     // than one personal grant can reference the same client registration.
-    // Binding rows are unique per secret/config path, so collapse those mirrors
+    // Binding rows are unique per target/config path, so collapse those mirrors
     // before replacing the durable projection declarations.
     const bindings = [
       ...new Map(
@@ -5927,9 +5927,13 @@ export function toolAccessService(
       userDeclarations,
       { replaceAll: true, db: dbClient },
     );
-    const companyBindings = bindings.filter(
-      (ref) => secretById.get(ref.secretId)?.scope !== "user",
-    );
+    const companyBindings = [
+      ...new Map(
+        bindings
+          .filter((ref) => secretById.get(ref.secretId)?.scope !== "user")
+          .map((ref) => [ref.configPath, ref]),
+      ).values(),
+    ];
     if (companyBindings.length === 0) return;
     await dbClient.insert(companySecretBindings).values(
       companyBindings.map((ref) => ({

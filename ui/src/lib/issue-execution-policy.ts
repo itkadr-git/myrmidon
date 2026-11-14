@@ -1,7 +1,7 @@
 import type { IssueExecutionPolicy, IssueExecutionStageParticipant, IssueExecutionStagePrincipal } from "@myrmidon/shared";
 import { parseAssigneeValue } from "./assignees";
 
-type StageType = "review" | "approval";
+type StageType = "review" | "approval" | "verify";
 
 function newId() {
   const webCrypto = globalThis.crypto;
@@ -104,6 +104,17 @@ export function buildExecutionPolicy(input: {
       type: "approval" as const,
       approvalsNeeded: 1 as const,
       participants: approvalParticipants,
+    });
+  }
+  // OPE-12995: verify stages are configured outside this panel (raw policy
+  // JSON); keep them and their requirements intact on every policy edit.
+  for (const existingVerifyStage of (input.existingPolicy?.stages ?? []).filter((stage) => stage.type === "verify")) {
+    stages.push({
+      id: existingVerifyStage.id,
+      type: "verify" as const,
+      approvalsNeeded: 1 as const,
+      participants: existingVerifyStage.participants,
+      ...(existingVerifyStage.requirements ? { requirements: existingVerifyStage.requirements } : {}),
     });
   }
 

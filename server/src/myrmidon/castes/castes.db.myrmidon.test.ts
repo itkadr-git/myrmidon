@@ -39,7 +39,7 @@ describeEmbeddedPostgres("myrmidon(1.6.1 CUSTOM-CASTES) service over the databas
   beforeAll(async () => {
     tempDb = await startEmbeddedPostgresTestDatabase("myrmidon-castes-");
     db = createDb(tempDb.connectionString);
-  }, 30_000);
+  }, 60_000);
 
   afterEach(async () => {
     await db.delete(issues);

@@ -33,6 +33,12 @@ export interface HostDiskSweepDeps {
   resolveSettings: () => Promise<HostDiskSettings>;
   logActivity: (entry: LogActivityInput) => Promise<unknown>;
   lastSignalAt: () => Promise<Date | null>;
+  /**
+   * Companies the instance-level signal line is written for. `activity_log.company_id`
+   * is NOT NULL, so the signal gets one line per company, exactly like the
+   * settings-update lines of `service.ts`.
+   */
+  listCompanyIds: () => Promise<string[]>;
   logger: {
     error: (entry: object, message: string) => void;
     info: (entry: object, message: string) => void;
@@ -47,6 +53,11 @@ export interface HostDiskSweepDeps {
   partitionClient?: import("./dockergate.js").DockergateDiskClient | null;
   /** myrmidon(1.6.5-BOT-DISK-H10): threshold state the sweep feeds with each measurement. */
   partitionRuntime?: import("./partition.js").BotPartitionThresholdRuntime | null;
+  /**
+   * myrmidon(1.6.8 OPE-12697, DISK-ALERT): host-root threshold state the
+   * sweep feeds with each measurement; null keeps the root unmeasured.
+   */
+  rootRuntime?: import("./root.js").HostRootThresholdRuntime | null;
   /**
    * myrmidon(1.6.5 F-03): how often an unmeasured sweep repeats the ERROR log
    * line. The transition into `unmeasured` logs one error at once; while the
@@ -88,11 +99,14 @@ export function createHostDiskSweep(deps: HostDiskSweepDeps): HostDiskSweep {
   let consumers: HostDiskConsumerEntry[] = [];
   const partitionClient = deps.partitionClient ?? null;
   const partitionRuntime = deps.partitionRuntime ?? null;
+  const rootRuntime = deps.rootRuntime ?? null;
   // myrmidon(1.6.5 F-03): null = "no result yet", so the first ever sweep
   // that fails logs the transition error; `lastUnmeasuredErrorAt` throttles
   // the repeats while the path stays missing.
   let measured: boolean | null = null;
   let lastUnmeasuredErrorAt: number | null = null;
+  // OPE-12958: no companies at all is logged once, not on every sweep.
+  let noCompaniesLogged = false;
 
   async function sweep(): Promise<HostDiskSweepResult> {
     const settings = await deps.resolveSettings();
@@ -133,6 +147,18 @@ export function createHostDiskSweep(deps: HostDiskSweepDeps): HostDiskSweep {
     if (partitionRuntime) {
       if (partitionUsage) await partitionRuntime.updateFromPartition(partitionUsage);
       else partitionRuntime.markUnmeasured();
+    }
+    // myrmidon(1.6.8 OPE-12697, DISK-ALERT): the host root (`/`) is measured
+    // from the same dockergate answer. The root signal mirrors the bot
+    // partition's: measured → the root runtime evaluates warn/critical;
+    // not measured → "not measured", nothing else changes. Observation and
+    // signal only — the sweep deletes nothing.
+    const rootUsage = partitionClient
+      ? await partitionClient.readRootUsage()
+      : null;
+    if (rootRuntime) {
+      if (rootUsage) await rootRuntime.updateFromRoot(rootUsage);
+      else rootRuntime.markUnmeasured();
     }
     if (!usage) {
       const error = hostDiskUnmeasuredError(deps.dataRootPath);
@@ -197,31 +223,65 @@ export function createHostDiskSweep(deps: HostDiskSweepDeps): HostDiskSweep {
       const last = await deps.lastSignalAt();
       const due = last === null || now().getTime() - last.getTime() >= signalIntervalMs;
       if (due) {
-        await deps.logActivity({
-          companyId: null as unknown as string,
-          actorType: "system",
-          actorId: "host-disk-sweep",
-          agentId: null,
-          runId: null,
-          action: HOST_DISK_THRESHOLD_EXCEEDED_ACTION,
-          entityType: "host_disk",
-          entityId: usage.path,
-          details: {
-            usedPercent: usage.usedPercent,
-            thresholdPercent: settings.usageThresholdPercent,
-            usedGb: gigabytesFromBytes(usage.usedBytes),
-            totalGb: gigabytesFromBytes(usage.totalBytes),
-            freeGb: gigabytesFromBytes(usage.freeBytes),
-            growthBytesPerHour,
-            measuredPath: usage.path,
-            consumers: consumers.map((c) => ({ path: c.path, sizeGb: gigabytesFromBytes(c.sizeBytes) })),
-          },
-        });
-        signalled = true;
-        deps.logger.info(
-          { usedPercent: usage.usedPercent, thresholdPercent: settings.usageThresholdPercent },
-          "host disk crossed the usage threshold",
-        );
+        // OPE-12958: the line is written per company (company_id is NOT NULL).
+        // A failure of the lookup or of the write is logged and leaves the
+        // signal not due-marked, so the next sweep retries; it never aborts
+        // the measurement result.
+        try {
+          const companyIds = await deps.listCompanyIds();
+          if (companyIds.length === 0) {
+            if (!noCompaniesLogged) {
+              noCompaniesLogged = true;
+              deps.logger.info(
+                { usedPercent: usage.usedPercent },
+                "host disk crossed the usage threshold but there is no company to write the signal for",
+              );
+            }
+          } else {
+            noCompaniesLogged = false;
+            const details = {
+              usedPercent: usage.usedPercent,
+              thresholdPercent: settings.usageThresholdPercent,
+              usedGb: gigabytesFromBytes(usage.usedBytes),
+              totalGb: gigabytesFromBytes(usage.totalBytes),
+              freeGb: gigabytesFromBytes(usage.freeBytes),
+              growthBytesPerHour,
+              measuredPath: usage.path,
+              consumers: consumers.map((c) => ({ path: c.path, sizeGb: gigabytesFromBytes(c.sizeBytes) })),
+            };
+            const outcomes = await Promise.allSettled(
+              companyIds.map((companyId) =>
+                deps.logActivity({
+                  companyId,
+                  actorType: "system",
+                  actorId: "host-disk-sweep",
+                  agentId: null,
+                  runId: null,
+                  action: HOST_DISK_THRESHOLD_EXCEEDED_ACTION,
+                  entityType: "host_disk",
+                  entityId: usage.path,
+                  details,
+                }),
+              ),
+            );
+            const failed = outcomes.filter((o) => o.status === "rejected");
+            if (failed.length > 0) {
+              deps.logger.error(
+                { failed: failed.length, total: outcomes.length, err: (failed[0] as PromiseRejectedResult).reason },
+                "host disk signal line could not be written",
+              );
+            }
+            if (failed.length < outcomes.length) {
+              signalled = true;
+              deps.logger.info(
+                { usedPercent: usage.usedPercent, thresholdPercent: settings.usageThresholdPercent },
+                "host disk crossed the usage threshold",
+              );
+            }
+          }
+        } catch (err) {
+          deps.logger.error({ err }, "host disk signal line could not be written");
+        }
       }
     }
 

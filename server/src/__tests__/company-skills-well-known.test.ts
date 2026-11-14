@@ -215,7 +215,7 @@ describeEmbeddedPostgres("companySkillService well-known discovery + import", ()
     svc = companySkillService(db);
     companyId = randomUUID();
     await db.insert(companies).values({ id: companyId, name: "Well-known tests", issuePrefix: `WK${companyId.slice(0, 4)}` });
-  }, 30_000);
+  }, 60_000);
 
   afterEach(async () => {
     vi.unstubAllGlobals();

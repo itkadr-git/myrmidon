@@ -1,10 +1,10 @@
 import { describe, expect, it } from "vitest";
 import {
-  PAPERCLIP_WAKE_PAYLOAD_JSON_MAX_CHARS,
-  PAPERCLIP_WAKE_RECENT_MAX_MESSAGES,
-  PAPERCLIP_WAKE_RECENT_MESSAGE_MAX_CHARS,
-  PAPERCLIP_WAKE_RECENT_TOTAL_MAX_CHARS,
-  PAPERCLIP_WAKE_SUMMARY_MAX_CHARS,
+  MYRMIDON_WAKE_PAYLOAD_JSON_MAX_CHARS,
+  MYRMIDON_WAKE_RECENT_MAX_MESSAGES,
+  MYRMIDON_WAKE_RECENT_MESSAGE_MAX_CHARS,
+  MYRMIDON_WAKE_RECENT_TOTAL_MAX_CHARS,
+  MYRMIDON_WAKE_SUMMARY_MAX_CHARS,
   normalizePaperclipWakePayload,
   renderPaperclipWakePrompt,
   resolvePaperclipWakeHistoryMode,
@@ -190,10 +190,10 @@ describe("summary history (run / none sessions)", () => {
     const wake = wakePayload({ completedWork: "W".repeat(9_000), summaryBody: "S".repeat(3_900) });
     const prompt = renderPaperclipWakePrompt(wake, { wakeHistory: "summary" });
     const completedWork = evidenceOf(prompt).completedWork as string;
-    expect(completedWork.length).toBeLessThanOrEqual(PAPERCLIP_WAKE_SUMMARY_MAX_CHARS);
+    expect(completedWork.length).toBeLessThanOrEqual(MYRMIDON_WAKE_SUMMARY_MAX_CHARS);
     expect(completedWork).toContain("[wake cap:");
     const summarySection = prompt.split("Issue continuation summary:\n")[1]!.split("\n[continuation summary truncated]")[0]!;
-    expect(summarySection.length).toBeLessThanOrEqual(PAPERCLIP_WAKE_SUMMARY_MAX_CHARS);
+    expect(summarySection.length).toBeLessThanOrEqual(MYRMIDON_WAKE_SUMMARY_MAX_CHARS);
     expect(prompt).toContain("[continuation summary truncated]");
   });
 
@@ -214,12 +214,12 @@ describe("recent history (other sessions)", () => {
     const prompt = renderPaperclipWakePrompt(wake, { wakeHistory: "recent" });
     const context = requestContextOf(prompt);
     const messages = context.messages as Array<{ id: string; body: string }>;
-    expect(messages.length).toBeLessThanOrEqual(PAPERCLIP_WAKE_RECENT_MAX_MESSAGES);
+    expect(messages.length).toBeLessThanOrEqual(MYRMIDON_WAKE_RECENT_MAX_MESSAGES);
     for (const entry of messages) {
-      expect(entry.body.length).toBeLessThanOrEqual(PAPERCLIP_WAKE_RECENT_MESSAGE_MAX_CHARS);
+      expect(entry.body.length).toBeLessThanOrEqual(MYRMIDON_WAKE_RECENT_MESSAGE_MAX_CHARS);
     }
     expect(messages.reduce((sum, entry) => sum + entry.body.length, 0)).toBeLessThanOrEqual(
-      PAPERCLIP_WAKE_RECENT_TOTAL_MAX_CHARS,
+      MYRMIDON_WAKE_RECENT_TOTAL_MAX_CHARS,
     );
     // The newest entries and the comment the run was woken for stay; the middle goes.
     expect(messages.map((entry) => entry.id)).toEqual([
@@ -239,7 +239,7 @@ describe("recent history (other sessions)", () => {
     const longest = (requestContextOf(prompt).messages as Array<{ id: string; body: string }>).find(
       (entry) => entry.id === "message-29",
     )!;
-    expect(longest.body.length).toBeLessThanOrEqual(PAPERCLIP_WAKE_RECENT_MESSAGE_MAX_CHARS);
+    expect(longest.body.length).toBeLessThanOrEqual(MYRMIDON_WAKE_RECENT_MESSAGE_MAX_CHARS);
     expect(longest.body).toContain("[wake cap:");
     expect(longest.body).toContain("/api/issues/issue-a/comments");
     expect(requestContextOf(prompt).wakeHistory.bodiesShortened).toBe(1);
@@ -268,11 +268,11 @@ describe("structured wake payload JSON cap", () => {
   it("caps the JSON at 12000 characters and names what it emptied", () => {
     const wake = { ...wakePayload(), comments: bigComments, commentWindow: { requestedCount: 12, includedCount: 12, missingCount: 0 } };
     const json = stringifyPaperclipWakePayload(wake)!;
-    expect(json.length).toBeLessThanOrEqual(PAPERCLIP_WAKE_PAYLOAD_JSON_MAX_CHARS);
+    expect(json.length).toBeLessThanOrEqual(MYRMIDON_WAKE_PAYLOAD_JSON_MAX_CHARS);
     const parsed = JSON.parse(json);
     expect(parsed.jsonTruncation.droppedKeys).toContain("comments");
-    expect(parsed.jsonTruncation).toMatchObject({ limitChars: PAPERCLIP_WAKE_PAYLOAD_JSON_MAX_CHARS });
-    expect(parsed.jsonTruncation.originalChars).toBeGreaterThan(PAPERCLIP_WAKE_PAYLOAD_JSON_MAX_CHARS);
+    expect(parsed.jsonTruncation).toMatchObject({ limitChars: MYRMIDON_WAKE_PAYLOAD_JSON_MAX_CHARS });
+    expect(parsed.jsonTruncation.originalChars).toBeGreaterThan(MYRMIDON_WAKE_PAYLOAD_JSON_MAX_CHARS);
     expect(parsed.comments).toEqual([]);
     // Flags and ids the guards read are never emptied.
     expect(parsed.reason).toBe("issue_continuation_needed");
@@ -286,7 +286,7 @@ describe("structured wake payload JSON cap", () => {
     expect(small.jsonTruncation).toBeUndefined();
     const wake = { ...wakePayload(), comments: bigComments, commentWindow: { requestedCount: 12, includedCount: 12, missingCount: 0 } };
     const uncapped = stringifyPaperclipWakePayload(wake, { maxChars: 0 })!;
-    expect(uncapped.length).toBeGreaterThan(PAPERCLIP_WAKE_PAYLOAD_JSON_MAX_CHARS);
+    expect(uncapped.length).toBeGreaterThan(MYRMIDON_WAKE_PAYLOAD_JSON_MAX_CHARS);
     expect(JSON.parse(uncapped).jsonTruncation).toBeUndefined();
   });
 

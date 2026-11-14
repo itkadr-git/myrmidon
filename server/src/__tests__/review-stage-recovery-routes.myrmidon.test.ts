@@ -78,7 +78,7 @@ describeEmbeddedPostgres("review stage recovery (route level)", () => {
       createdAt: now,
       updatedAt: now,
     });
-  }, 20_000);
+  }, 60_000);
 
   afterAll(async () => {
     await tempDb?.cleanup();
@@ -123,6 +123,7 @@ describeEmbeddedPostgres("review stage recovery (route level)", () => {
         companyId,
         name: name!,
         role: "engineer",
+        metadata: { telegramGroup: "dev" },
         status: "active",
         adapterType: "codex_local",
         adapterConfig: {},

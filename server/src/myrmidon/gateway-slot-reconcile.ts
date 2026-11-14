@@ -32,10 +32,23 @@
 // - Every probe/stop resolves the agent's adapterConfig secrets through the
 //   same resolution path as the board's own stop (stopRemoteGatewayRun), so a
 //   secret_ref apiKey works here too.
+// - myrmidon(OPE-12890): the resolution is shared — one pass resolves the
+//   agent's secrets at most once and hands the credentials to every probe and
+//   stop of that pass (a per-probe resolution wrote one secret_access_events
+//   row per secret per probe, ~20k rows/hour). Gateway runs already confirmed
+//   off-gateway (probed not_found/terminal, stopped here, or recorded
+//   gateway_remote_close_done in the run-close ledger) are not probed again
+//   within the TTL: a gateway run id is never resurrected, so the answer
+//   cannot change.
+// - myrmidon(OPE-12964): an `unreachable` probe ends the pass. The remaining
+//   rows would answer the same, and the run start must not wait on up to 64
+//   sequential timeouts against a dark gateway. unreachable is never
+//   remembered, so the next pass retries.
 
-import { and, eq, gte, isNotNull, or, sql } from "drizzle-orm";
-import { agents, heartbeatRuns, type Db } from "@myrmidon/db";
+import { and, eq, gte, inArray, isNotNull, or, sql } from "drizzle-orm";
+import { agents, heartbeatRunEvents, heartbeatRuns, type Db } from "@myrmidon/db";
 import { logger } from "../middleware/logger.js";
+import { GATEWAY_REMOTE_CLOSE_DONE_EVENT } from "./gateway-run-close.js";
 
 /**
  * Board statuses that mean "this run is over" — its gateway slot, if the
@@ -69,7 +82,43 @@ export const GATEWAY_SLOT_RECONCILE_LOOKBACK_MS = 24 * 60 * 60 * 1000;
  * (cooldown 0) so the next start verifies the slot actually freed. */
 export const GATEWAY_SLOT_RECONCILE_INTERVAL_MS = 60_000;
 
+export interface ResolvedGatewayCredentials {
+  baseUrl: string;
+  apiKey: string;
+  headers?: Record<string, string> | string | null;
+}
+
+/**
+ * Sentinel passed to port calls when the reconcile pass already attempted
+ * `port.resolveCredentials` and it either returned `null` or threw. Distinct
+ * from `null`/`undefined` ("not attempted — legacy per-call fallback") so
+ * `probeRemoteGatewayRun` / `stopRemoteGatewayRun` do not re-run
+ * `resolveExecutionRunAdapterConfig` for every candidate in the pass (OPE-12890).
+ */
+export const GATEWAY_CREDENTIALS_UNAVAILABLE = { unavailable: true } as const;
+export type GatewayCredentialsUnavailable = typeof GATEWAY_CREDENTIALS_UNAVAILABLE;
+export type PassGatewayCredentials =
+  | ResolvedGatewayCredentials
+  | GatewayCredentialsUnavailable;
+
+export function isGatewayCredentialsUnavailable(
+  value: PassGatewayCredentials | null | undefined,
+): value is GatewayCredentialsUnavailable {
+  return (
+    value !== null &&
+    value !== undefined &&
+    "unavailable" in value &&
+    value.unavailable === true
+  );
+}
+
 export interface GatewaySlotReconcilePort {
+  /** Resolves agent adapterConfig secrets once per pass so multiple probes do not re-audit. */
+  resolveCredentials?: (input: {
+    companyId: string;
+    agentId: string;
+    adapterConfig: Record<string, unknown> | null;
+  }) => Promise<ResolvedGatewayCredentials | null>;
   /** Same shape as the heartbeat service's probeRemoteGatewayRun: resolves
    * secret_ref credentials from adapterConfig when companyId is set. */
   probeGatewayRun: (input: {
@@ -82,6 +131,7 @@ export interface GatewaySlotReconcilePort {
     headers?: Record<string, string> | string | null;
     gatewayRunId: string;
     timeoutMs?: number;
+    resolvedCredentials?: PassGatewayCredentials | null;
   }) => Promise<{
     state: "live" | "terminal" | "not_found" | "unreachable";
     status: string | null;
@@ -99,6 +149,7 @@ export interface GatewaySlotReconcilePort {
       source: { code: string; endpoint?: string; actor?: string };
       reason: string;
     };
+    resolvedCredentials?: PassGatewayCredentials | null;
   }) => Promise<{ stopped: boolean }>;
 }
 
@@ -128,6 +179,68 @@ export interface GatewaySlotReconcileOptions {
   lookbackMs?: number;
   /** Skip the log when nothing was found (periodic noise control). */
   quiet?: boolean;
+  /** Pre-resolved gateway credentials for this agent: one secret resolution
+   * (one audit event per secret) is shared by every probe and stop of the
+   * pass (OPE-12890). When unset, the port's own resolveCredentials is used;
+   * when that is missing too, each port call resolves on its own — the
+   * pre-change behaviour. */
+  resolvedCredentials?: PassGatewayCredentials | null;
+}
+
+/**
+ * How long a gateway run confirmed "not on gateway" (probed not_found or
+ * terminal here, or recorded `gateway_remote_close_done` in the run-close
+ * ledger) stays remembered, so later passes skip its probe (OPE-12890). The
+ * bound matches GATEWAY_SLOT_RECONCILE_LOOKBACK_MS: beyond it the row leaves
+ * the reconcile's own lookback window anyway.
+ */
+export const GATEWAY_SLOT_PROBE_MEMORY_TTL_MS = GATEWAY_SLOT_RECONCILE_LOOKBACK_MS;
+
+/**
+ * myrmidon(OPE-12890): gateway runs this process has confirmed not on the
+ * gateway — probed not_found or terminal, stopped here, or already recorded
+ * `gateway_remote_close_done` in the run-close ledger. A gateway run id is
+ * never resurrected, so a fresh probe could only return the same answer; the
+ * memory saves the probe (and its secret resolution) for the TTL.
+ */
+const confirmedClosedGatewayRuns = new Map<string, number>();
+
+function confirmedClosedKey(agentId: string, gatewayRunId: string): string {
+  return `${agentId}:${gatewayRunId}`;
+}
+
+export function markGatewayRunConfirmedClosed(
+  agentId: string,
+  gatewayRunId: string,
+  nowMs: number = Date.now(),
+): void {
+  confirmedClosedGatewayRuns.set(confirmedClosedKey(agentId, gatewayRunId), nowMs);
+  // Bound the map: drop expired entries once it grows past a page.
+  if (confirmedClosedGatewayRuns.size > 4096) {
+    for (const [key, at] of confirmedClosedGatewayRuns) {
+      if (nowMs - at > GATEWAY_SLOT_PROBE_MEMORY_TTL_MS) {
+        confirmedClosedGatewayRuns.delete(key);
+      }
+    }
+  }
+}
+
+export function isGatewayRunConfirmedClosed(
+  agentId: string,
+  gatewayRunId: string,
+  nowMs: number = Date.now(),
+): boolean {
+  const recorded = confirmedClosedGatewayRuns.get(confirmedClosedKey(agentId, gatewayRunId));
+  if (recorded === undefined) return false;
+  if (nowMs - recorded > GATEWAY_SLOT_PROBE_MEMORY_TTL_MS) {
+    confirmedClosedGatewayRuns.delete(confirmedClosedKey(agentId, gatewayRunId));
+    return false;
+  }
+  return true;
+}
+
+export function resetGatewaySlotProbeMemoryForTest(): void {
+  confirmedClosedGatewayRuns.clear();
 }
 
 /**
@@ -144,7 +257,10 @@ export async function reconcileGatewaySlotsFromRows(
     status: string;
     externalRunId: string | null;
   }>,
-  port: Pick<GatewaySlotReconcilePort, "probeGatewayRun" | "stopGatewayRunForBoard">,
+  port: Pick<
+    GatewaySlotReconcilePort,
+    "probeGatewayRun" | "stopGatewayRunForBoard" | "resolveCredentials"
+  >,
   options: GatewaySlotReconcileOptions = {},
 ): Promise<GatewaySlotReconcileResult> {
   const result: GatewaySlotReconcileResult = {
@@ -159,6 +275,38 @@ export async function reconcileGatewaySlotsFromRows(
   };
   result.scanned = rows.length;
   const terminal = TERMINAL_BOARD_RUN_STATUSES as readonly string[];
+  const nowMs = Date.now();
+
+  // OPE-12890: one secret resolution per pass, lazy. When the heartbeat
+  // service provides resolveCredentials, its result (an audit event per
+  // secret) is produced once on the first probe/stop and handed to all
+  // subsequent calls. When all candidates are already remembered as
+  // confirmed off-gateway, no secrets are resolved at all. If
+  // resolveCredentials returns null or throws, pass GATEWAY_CREDENTIALS_UNAVAILABLE
+  // so port calls do not repeat per-run secret resolution in the same pass.
+  let resolvedCredentials: PassGatewayCredentials | null = options.resolvedCredentials ?? null;
+  let attemptedResolve = options.resolvedCredentials != null;
+  const getResolvedCredentials = async (): Promise<PassGatewayCredentials | null> => {
+    if (resolvedCredentials || attemptedResolve) return resolvedCredentials;
+    attemptedResolve = true;
+    if (port.resolveCredentials) {
+      try {
+        const resolved = await port.resolveCredentials({
+          companyId: agent.companyId,
+          agentId: agent.id,
+          adapterConfig: agent.adapterConfig,
+        });
+        resolvedCredentials = resolved ?? GATEWAY_CREDENTIALS_UNAVAILABLE;
+      } catch (err) {
+        resolvedCredentials = GATEWAY_CREDENTIALS_UNAVAILABLE;
+        logger.warn(
+          { err, agentId: agent.id },
+          "gateway slot reconcile: shared credential resolution failed; skipping per-call secret resolution for this pass",
+        );
+      }
+    }
+    return resolvedCredentials;
+  };
 
   for (const row of rows) {
     // A run the board still owns is never a stop candidate; it is also never
@@ -167,6 +315,15 @@ export async function reconcileGatewaySlotsFromRows(
     const gatewayRunId = row.externalRunId;
     if (!gatewayRunId) continue;
 
+    // OPE-12890: this gateway run was already confirmed off-gateway in this
+    // process (probed or closed earlier) — a fresh probe would answer the
+    // same thing and only re-resolve the agent's secrets.
+    if (isGatewayRunConfirmedClosed(agent.id, gatewayRunId, nowMs)) {
+      result.notFound += 1;
+      continue;
+    }
+
+    const creds = await getResolvedCredentials();
     let probe: Awaited<ReturnType<GatewaySlotReconcilePort["probeGatewayRun"]>>;
     try {
       probe = await port.probeGatewayRun({
@@ -175,6 +332,7 @@ export async function reconcileGatewaySlotsFromRows(
         runId: row.id,
         adapterConfig: agent.adapterConfig,
         gatewayRunId,
+        resolvedCredentials: creds,
       });
     } catch (err) {
       result.failed += 1;
@@ -188,16 +346,20 @@ export async function reconcileGatewaySlotsFromRows(
 
     if (probe.state === "not_found") {
       result.notFound += 1;
+      markGatewayRunConfirmedClosed(agent.id, gatewayRunId, nowMs);
       continue;
     }
     if (probe.state === "terminal") {
       // The gateway finished the run on its own; the slot freed by itself.
+      markGatewayRunConfirmedClosed(agent.id, gatewayRunId, nowMs);
       continue;
     }
     if (probe.state === "unreachable") {
-      // Best-effort: an unreachable gateway must not block run starts.
+      // Best-effort: an unreachable gateway must not block run starts. The
+      // remaining rows would answer the same, so the pass ends here instead of
+      // paying one timeout per row (OPE-12964).
       result.unreachable += 1;
-      continue;
+      break;
     }
 
     // probe.state === "live": the gateway still occupies a slot for a run the
@@ -209,6 +371,7 @@ export async function reconcileGatewaySlotsFromRows(
         runId: row.id,
         adapterConfig: agent.adapterConfig,
         gatewayRunId,
+        resolvedCredentials: creds,
         cancellation: {
           correlationId: `slot-reconcile-${row.id}`,
           source: {
@@ -222,6 +385,8 @@ export async function reconcileGatewaySlotsFromRows(
       if (stopped.stopped) {
         result.stopped += 1;
         result.stoppedRunIds.push({ runId: row.id, gatewayRunId });
+        // The stop freed the slot; the gateway forgot the run.
+        markGatewayRunConfirmedClosed(agent.id, gatewayRunId, nowMs);
       } else {
         // The stop did not land (404 between probe and stop, auth, network):
         // nothing more to do now; the next pass re-verifies.
@@ -321,6 +486,40 @@ export async function sweepGatewaySlotsForAgent(
     )
     .orderBy(sql`${heartbeatRuns.updatedAt} desc`)
     .limit(64);
+
+  // myrmidon(OPE-12890): seed this pass's probe memory from the durable
+  // gateway-run-close ledger. A terminal run already recorded
+  // gateway_remote_close_done was confirmed closed on the gateway (the
+  // close path probed it: terminal or not_found); re-probing it each minute
+  // only re-resolved the agent's secrets into secret_access_events. The
+  // memory is process-local with a TTL equal to the lookback, so the ledger
+  // stays the durable truth.
+  const nowMs = Date.now();
+  const externalIds = rows
+    .filter((row) => (TERMINAL_BOARD_RUN_STATUSES as readonly string[]).includes(row.status))
+    .map((row) => row.externalRunId)
+    .filter((id): id is string => id !== null && !isGatewayRunConfirmedClosed(input.agentId, id, nowMs));
+  if (externalIds.length > 0) {
+    const closedIds = await db
+      .select({ externalRunId: heartbeatRuns.externalRunId })
+      .from(heartbeatRunEvents)
+      .innerJoin(heartbeatRuns, eq(heartbeatRuns.id, heartbeatRunEvents.runId))
+      .where(
+        and(
+          eq(heartbeatRunEvents.runId, heartbeatRuns.id),
+          eq(heartbeatRunEvents.eventType, GATEWAY_REMOTE_CLOSE_DONE_EVENT),
+          eq(heartbeatRuns.agentId, input.agentId),
+          inArray(heartbeatRuns.externalRunId, externalIds),
+        ),
+      )
+      .groupBy(heartbeatRuns.externalRunId)
+      .limit(externalIds.length);
+    for (const closed of closedIds) {
+      if (closed.externalRunId) {
+        markGatewayRunConfirmedClosed(input.agentId, closed.externalRunId, nowMs);
+      }
+    }
+  }
 
   return reconcileGatewaySlotsFromRows(
     { id: agentRow.id, companyId: agentRow.companyId, adapterConfig },

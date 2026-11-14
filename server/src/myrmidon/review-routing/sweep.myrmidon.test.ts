@@ -18,7 +18,7 @@ import { readReviewRoutingSignals, replaceReviewRoutingSignals, resetReviewRouti
 import type { CreatePrRoutingTaskInput, InReviewIssueRow, PrCandidateRow, PrRoutingKind, ReviewRoutingStore, RoutingHistory } from "./store.js";
 import type { PrRoutedTask } from "./pr-policy.js";
 import type { RoutingIssue } from "./policy.js";
-import { createReviewRoutingSweep, REVIEW_WAKE_MAX_ATTEMPTS, REVIEW_WAKE_MAX_BACKOFF_MS, REVIEW_WAKE_REARM_AFTER_MS, REVIEW_WAKE_RETRY_BACKOFF_MS } from "./sweep.js";
+import { createReviewRoutingSweep, REVIEW_WAKE_MAX_ATTEMPTS, REVIEW_WAKE_MAX_BACKOFF_MS, REVIEW_WAKE_REARM_AFTER_MS, REVIEW_WAKE_RETRY_BACKOFF_MS, REVIEW_WAKE_STALE_AFTER_MS } from "./sweep.js";
 import type { PullRequestHeadResolver } from "./github.js";
 import type { BoardMergeClient } from "./github-board-merge.js";
 import type { BoardMergeFacts, PullRequestHeadState } from "./pr-policy.js";
@@ -39,6 +39,9 @@ function row(id: string, overrides: Partial<InReviewIssueRow> = {}): InReviewIss
     identifier: `T-${id}`,
     title: `Task ${id}`,
     status: "in_review",
+    // Keep the generic fixture outside both recovery age gates: assignment
+    // tests need the 15-minute review-path window, while liveness tests use
+    // explicit updatedAt overrides for their stale/fresh cases.
     createdAt: new Date(NOW.getTime() - 6 * 60 * 60_000),
     updatedAt: new Date(NOW.getTime() - 6 * 60 * 60_000),
     assigneeAgentId: ASSIGNEE,
@@ -56,6 +59,7 @@ interface Fixture {
   managerChain?: Map<string, Array<{ id: string; role: string; model?: string | null }>>;
   reviewers: Array<{
     id: string;
+    name?: string | null;
     role: string;
     metadata?: Record<string, unknown> | null;
     status?: string | null;
@@ -221,12 +225,16 @@ describe("review wake liveness", () => {
   }
 
   it("wakes one stale pending review per reviewer when no run or wake exists", async () => {
+    // myrmidon(OPE-12886): the default fixture age is fresh (< stale window),
+    // so the stale-first rows carry an explicit old updatedAt — as on the
+    // board, where the assigned queue sits untouched for hours.
+    const stale = { updatedAt: new Date(NOW.getTime() - 10 * 60_000) };
     const t = setup({}, { wakeStates: new Map([
       ["1", { activeRun: false, pendingWake: false, lastWakeAt: null, attempts: 0 }],
       ["2", { activeRun: false, pendingWake: false, lastWakeAt: null, attempts: 0 }],
     ]) });
-    t.fixture.rows.set("1", pending("1", REV_A));
-    t.fixture.rows.set("2", pending("2", REV_A));
+    t.fixture.rows.set("1", pending("1", REV_A, stale));
+    t.fixture.rows.set("2", pending("2", REV_A, stale));
     t.fixture.rows.set("3", pending("3", REV_B));
     t.fixture.wakeStates!.set("1", { activeRun: false, pendingWake: false, lastWakeAt: null, attempts: 0 });
     t.fixture.wakeStates!.set("2", { activeRun: false, pendingWake: false, lastWakeAt: null, attempts: 0 });
@@ -237,6 +245,41 @@ describe("review wake liveness", () => {
     expect(t.wakes[0]).toMatchObject({ agentId: REV_A, issueId: "1", retryAttempt: 1 });
     expect(t.activities).toEqual([]);
     expect(t.fixture.history.get("1")).toBeUndefined();
+  });
+
+  it("wakes reviewer after completed run without verdict once stale threshold passes (OPE-13070)", async () => {
+    // 1. Reviewer woken by green CI (no REVIEW_ROUTING_WAKE_ACTION), run completed succeeded,
+    // review stage stays pending, updatedAt is the moment the run ended.
+    const runFinishedAt = NOW;
+    const t = setup({}, {
+      wakeStates: new Map([
+        ["1", { activeRun: false, pendingWake: false, lastWakeAt: null, attempts: 0 }],
+      ]),
+    });
+    t.fixture.rows.set("1", pending("1", REV_A, {
+      createdAt: new Date(runFinishedAt.getTime() - 60 * 60_000),
+      updatedAt: runFinishedAt,
+    }));
+
+    // 2. Pass earlier than REVIEW_WAKE_STALE_AFTER_MS after run ended: no wake.
+    const earlyPass = new Date(runFinishedAt.getTime() + REVIEW_WAKE_STALE_AFTER_MS - 60_000);
+    const earlyResult = await t.sweep.sweep(earlyPass, { force: true });
+    expect(earlyResult.woken).toBe(0);
+    expect(t.wakes).toHaveLength(0);
+
+    // 3. Pass after REVIEW_WAKE_STALE_AFTER_MS: exactly one wake for this reviewer/task.
+    const stalePass = new Date(runFinishedAt.getTime() + REVIEW_WAKE_STALE_AFTER_MS + 60_000);
+    const staleResult = await t.sweep.sweep(stalePass, { force: true });
+    expect(staleResult.woken).toBe(1);
+    expect(t.wakes).toHaveLength(1);
+    expect(t.wakes[0]).toMatchObject({ agentId: REV_A, issueId: "1", retryAttempt: 1 });
+
+    // 4. Second pass immediately after: no wake (REVIEW_WAKE_RETRY_BACKOFF_MS applies).
+    t.fixture.wakeStates!.set("1", { ...t.fixture.wakeStates!.get("1")!, pendingWake: false });
+    const immediatelyAfter = new Date(stalePass.getTime() + 60_000);
+    const secondResult = await t.sweep.sweep(immediatelyAfter, { force: true });
+    expect(secondResult.woken).toBe(0);
+    expect(t.wakes).toHaveLength(1);
   });
 
   it("records one wake activity event for a successful retry", async () => {
@@ -259,12 +302,24 @@ describe("review wake liveness", () => {
     expect(t.wakeReviewer).toHaveBeenCalledTimes(1);
   });
 
-  it("measures the 30-minute stale threshold from last update, not issue creation", async () => {
+  it("measures the stale threshold from last update, not issue creation (OPE-12886: woken within 5 minutes)", async () => {
     const t = setup({}, { wakeStates: new Map() });
-    t.fixture.rows.set("1", pending("1", REV_A, { updatedAt: new Date(NOW.getTime() - 10 * 60_000) }));
-    const result = await t.sweep.sweep(NOW, { force: true });
-    expect(result.woken).toBe(0);
+    // Created 20h ago but last updated 5 minutes ago: staleness counts from
+    // the last update, and the 4-minute window lands the wake inside the
+    // 5-minute acceptance bound (the sweep pass runs every 60 seconds).
+    t.fixture.rows.set("1", pending("1", REV_A, {
+      createdAt: new Date(NOW.getTime() - 20 * 60 * 60_000),
+      updatedAt: new Date(NOW.getTime() - 5 * 60_000),
+    }));
+    // Three minutes after the update: inside the window, while the creation
+    // age is already 20h — a wake here would mean staleness from creation.
+    const resultAtThree = await t.sweep.sweep(new Date(NOW.getTime() - 2 * 60_000), { force: true });
+    expect(resultAtThree.woken).toBe(0);
     expect(t.wakes).toHaveLength(0);
+    // Five minutes after the update: past the 4-minute window — woken in 5.
+    const resultAtFive = await t.sweep.sweep(NOW, { force: true });
+    expect(resultAtFive.woken).toBe(1);
+    expect(t.wakes).toHaveLength(1);
   });
 
   it("uses the persisted wake time instead of a later issue update", async () => {
@@ -282,8 +337,11 @@ describe("review wake liveness", () => {
 
   it("reserves the one-dispatch budget before an attempted wake, even when it rejects", async () => {
     const t = setup({}, { wakeStates: new Map() });
+    // Both stale rows belong to REV_A: the budget is one dispatch per reviewer
+    // per pass, so the rejected first attempt still reserves REV_A and the
+    // second row must not retry him within the same pass.
     t.fixture.rows.set("1", pending("1", REV_A));
-    t.fixture.rows.set("2", pending("2", REV_B));
+    t.fixture.rows.set("2", pending("2", REV_A));
     t.wakeReviewer.mockRejectedValueOnce(new Error("first dispatch failed"));
     const result = await t.sweep.sweep(NOW, { force: true });
     expect(result.failed).toBe(1);
@@ -301,19 +359,26 @@ describe("review wake liveness", () => {
   });
 
   it("recovers stale reviews regardless of assignment load, while respecting active runs and pending wakes", async () => {
+    // myrmidon(OPE-12886): assigned queue depth no longer blocks the
+    // liveness wake — an idle reviewer (0 active runs) behind ANY queue is
+    // woken on the oldest stale review. This replicates the incident:
+    // loads 1..queueThreshold previously skipped such reviewers
+    // entirely (all six were idle behind 4-7 assigned tasks).
     const t = setup({ maxLoadPerReviewer: 1 }, { wakeStates: new Map() });
-    t.fixture.load.set(REV_A, 12);
+    t.fixture.load.set(REV_A, 5); // idle behind 5 assigned in_review tasks (< queueThreshold 8)
     t.fixture.wakeStates!.set("1", { activeRun: false, pendingWake: false, lastWakeAt: null, attempts: 0 });
     t.fixture.wakeStates!.set("2", { activeRun: true, pendingWake: false, lastWakeAt: null, attempts: 0 });
     t.fixture.wakeStates!.set("3", { activeRun: false, pendingWake: true, lastWakeAt: null, attempts: 0 });
-    t.fixture.rows.set("1", pending("1", REV_A));
-    t.fixture.rows.set("2", pending("2", REV_A));
-    t.fixture.rows.set("3", pending("3", REV_A));
+    const stale = { updatedAt: new Date(NOW.getTime() - 10 * 60_000) };
+    t.fixture.rows.set("1", pending("1", REV_A, stale));
+    t.fixture.rows.set("2", pending("2", REV_A, stale));
+    t.fixture.rows.set("3", pending("3", REV_A, stale));
     const result = await t.sweep.sweep(NOW, { force: true });
     expect(result.woken).toBe(1);
-    // Liveness wakes REV_A for "1"; REV_A is then overloaded (12 > queueThreshold 8),
-    // so "1" is rebalanced to REV_B and the reassignment wakes REV_B too.
-    expect(t.wakes.map(({ agentId, issueId }) => `${agentId}:${issueId}`)).toEqual([`${REV_A}:1`, `${REV_B}:1`]);
+    // Liveness wakes REV_A for the oldest stale row. Load 5 (+1 live) stays
+    // below queueThreshold 8, so the rebalance lane does not move anything —
+    // the extra wakes would only fire above the threshold.
+    expect(t.wakes.map(({ agentId, issueId }) => `${agentId}:${issueId}`)).toEqual([`${REV_A}:1`]);
   });
 
   it("does not wake another issue while the reviewer has an active run elsewhere", async () => {
@@ -1272,7 +1337,9 @@ describe("review rebalancing", () => {
       currentParticipant: { type: "agent", agentId: REV_A },
       returnAssignee: { type: "agent", agentId: ASSIGNEE },
     };
-    t.fixture.rows.set("1", row("1", { assigneeAgentId: REV_A, executionPolicy: policy, executionState: state }));
+    // Fresh updatedAt keeps the liveness lane out of this rebalance test:
+    // the move lane keys off routing history, not row age.
+    t.fixture.rows.set("1", row("1", { assigneeAgentId: REV_A, updatedAt: new Date(NOW.getTime() - 60_000), executionPolicy: policy, executionState: state }));
     t.fixture.history.set("1", {
       lastAt: new Date(NOW.getTime() - 45 * 60 * 1000), // 45 min ago
       reviewerAgentIds: [REV_A],
@@ -1327,7 +1394,7 @@ describe("review rebalancing", () => {
       currentParticipant: { type: "agent", agentId: REV_A },
       returnAssignee: { type: "agent", agentId: ASSIGNEE },
     };
-    t.fixture.rows.set("1", row("1", { assigneeAgentId: REV_A, executionPolicy: policy, executionState: state }));
+    t.fixture.rows.set("1", row("1", { assigneeAgentId: REV_A, executionPolicy: policy, executionState: state, updatedAt: NOW }));
     t.fixture.history.set("1", {
       lastAt: new Date(NOW.getTime() - 45 * 60 * 1000),
       reviewerAgentIds: [REV_A],
@@ -1361,7 +1428,7 @@ describe("review rebalancing", () => {
       currentParticipant: { type: "agent", agentId: REV_A },
       returnAssignee: { type: "agent", agentId: ASSIGNEE },
     };
-    t.fixture.rows.set("1", row("1", { assigneeAgentId: REV_A, executionPolicy: policy, executionState: state }));
+    t.fixture.rows.set("1", row("1", { assigneeAgentId: REV_A, executionPolicy: policy, executionState: state, updatedAt: NOW }));
     t.fixture.history.set("1", {
       lastAt: new Date(NOW.getTime() - 15 * 60 * 1000), // only 15 min, threshold 30
       reviewerAgentIds: [REV_A],
@@ -1397,7 +1464,7 @@ describe("review rebalancing", () => {
       escalationToParticipant: { type: "agent", agentId: REV_A },
       escalationReason: "max_review_rounds_exceeded",
     };
-    t.fixture.rows.set("1", row("1", { assigneeAgentId: REV_A, executionPolicy: policy, executionState: state }));
+    t.fixture.rows.set("1", row("1", { assigneeAgentId: REV_A, executionPolicy: policy, executionState: state, updatedAt: NOW }));
     t.fixture.history.set("1", {
       lastAt: new Date(NOW.getTime() - 60 * 60 * 1000),
       reviewerAgentIds: [REV_A],
@@ -1443,6 +1510,132 @@ describe("review rebalancing", () => {
   });
 });
 
+// myrmidon(OPE-12683): every pool of the routing holds only queue-eligible
+// reviewers of the task's own agent group. Shop and business bots (bbq*, work*,
+// dispatch) must never take a development review, and an empty own group means
+// no move at all, not a wider pool. Group = the telegramGroup metadata, else
+// the agent name prefix, as `resolveAgentGroupKey` reads it.
+const DEV_ENGINEER = { id: ASSIGNEE, name: "adm-dev-eng-23", role: "engineer" };
+const DEV_REVIEWER_A = { id: REV_A, name: "adm-dev-review-1", role: "reviewer" };
+const DEV_REVIEWER_B = { id: REV_B, name: "adm-dev-review-2", role: "reviewer" };
+// These ids sort before every dev id: an unfiltered pick lands on them first.
+const SHOP_ID_1 = "99999999-0000-4000-8000-000000000001";
+const SHOP_ID_2 = "99999999-0000-4000-8000-000000000002";
+const SHOP_REVIEWER_1 = { id: SHOP_ID_1, name: "bbq-worker-1", role: "reviewer" };
+const SHOP_REVIEWER_2 = { id: SHOP_ID_2, name: "bbq-worker-2", role: "reviewer" };
+const QUEUE_OFF = { swarmQueueEligible: false };
+
+describe("own-group review pools (OPE-12683)", () => {
+  function pendingReviewRow(holderId: string) {
+    const policy = { stages: [{ id: "s", type: "review", participants: [{ type: "agent", agentId: holderId }] }] };
+    const state = {
+      status: "pending",
+      currentStageId: "s",
+      currentStageType: "review",
+      currentParticipant: { type: "agent", agentId: holderId },
+      returnAssignee: { type: "agent", agentId: ASSIGNEE },
+    };
+    // Branch liveness has no load gate (OPE-12886): a stale holder row would
+    // get a liveness wake alongside the rebalance lane. Keep the holder fresh.
+    return row("1", { assigneeAgentId: holderId, executionPolicy: policy, executionState: state, updatedAt: NOW });
+  }
+
+  function rebalanceSetup(reviewers: Fixture["reviewers"], loads: Array<[string, number]>, holderId = REV_A) {
+    const t = setup(
+      { rebalanceAfterMinutes: 30, reassignAfterHours: 24 },
+      { reviewers, load: new Map(loads) },
+    );
+    t.fixture.rows.set("1", pendingReviewRow(holderId));
+    t.fixture.history.set("1", {
+      lastAt: new Date(NOW.getTime() - 45 * 60 * 1000),
+      reviewerAgentIds: [holderId],
+    });
+    return t;
+  }
+
+  it("rebalance never picks an agent of another group, even with an empty queue", async () => {
+    const t = rebalanceSetup([DEV_ENGINEER, DEV_REVIEWER_A, DEV_REVIEWER_B, SHOP_REVIEWER_1], [[REV_A, 5]]);
+
+    const result = await t.sweep.sweep(NOW, { force: true });
+
+    expect(result).toMatchObject({ reassigned: 1, failed: 0 });
+    expect(t.fixture.rows.get("1")?.assigneeAgentId).toBe(REV_B);
+    expect(t.wakes.map((wake) => wake.agentId)).toEqual([REV_B]);
+  });
+
+  it("rebalance never picks a reviewer switched out of the queue", async () => {
+    const dev3 = { id: "cccccccc-0000-4000-8000-0000000000a1", name: "adm-dev-review-3", role: "reviewer" };
+    const t = rebalanceSetup(
+      [DEV_ENGINEER, DEV_REVIEWER_A, { ...DEV_REVIEWER_B, metadata: QUEUE_OFF }, dev3],
+      [[REV_A, 5]],
+    );
+
+    const result = await t.sweep.sweep(NOW, { force: true });
+
+    expect(result).toMatchObject({ reassigned: 1, failed: 0 });
+    expect(t.fixture.rows.get("1")?.assigneeAgentId).toBe(dev3.id);
+  });
+
+  it("rebalance does nothing when the own group has no eligible reviewer to take the review", async () => {
+    const t = rebalanceSetup(
+      [DEV_ENGINEER, DEV_REVIEWER_A, { ...DEV_REVIEWER_B, metadata: QUEUE_OFF }, SHOP_REVIEWER_1],
+      [[REV_A, 5]],
+    );
+
+    const result = await t.sweep.sweep(NOW, { force: true });
+
+    expect(result).toMatchObject({ reassigned: 0, failed: 0 });
+    expect(t.fixture.rows.get("1")?.assigneeAgentId).toBe(REV_A);
+    expect(t.wakes).toHaveLength(0);
+    expect(t.comments).toHaveLength(0);
+  });
+
+  it("anchors a misrouted review on the engineer's group, not on the shop reviewer holding it", async () => {
+    // A development review sits with a shop reviewer. The issue's group is that
+    // of the engineer the review returns to, so the move goes back to dev.
+    const t = rebalanceSetup(
+      [DEV_ENGINEER, DEV_REVIEWER_B, SHOP_REVIEWER_1, SHOP_REVIEWER_2],
+      [[SHOP_ID_1, 5]],
+      SHOP_ID_1,
+    );
+
+    const result = await t.sweep.sweep(NOW, { force: true });
+
+    expect(result).toMatchObject({ reassigned: 1, failed: 0 });
+    expect(t.fixture.rows.get("1")?.assigneeAgentId).toBe(REV_B);
+  });
+
+  it("an overdue review is not reassigned to another group when its own group has no other reviewer", async () => {
+    const t = setup(
+      { reassignAfterHours: 24 },
+      { reviewers: [DEV_ENGINEER, DEV_REVIEWER_A, SHOP_REVIEWER_1] },
+    );
+    t.fixture.rows.set("1", pendingReviewRow(REV_A));
+    t.fixture.history.set("1", {
+      lastAt: new Date(NOW.getTime() - 30 * 60 * 60 * 1000),
+      reviewerAgentIds: [REV_A],
+    });
+
+    const result = await t.sweep.sweep(NOW, { force: true });
+
+    expect(result).toMatchObject({ reassigned: 0, signaled: 1, failed: 0 });
+    expect(t.fixture.rows.get("1")?.assigneeAgentId).toBe(REV_A);
+  });
+
+  it("a task with no reviewer raises no_reviewer instead of going to another group", async () => {
+    const t = setup({}, { reviewers: [DEV_ENGINEER, SHOP_REVIEWER_1] });
+    t.fixture.rows.set("1", row("1"));
+
+    const result = await t.sweep.sweep(NOW, { force: true });
+
+    expect(result).toMatchObject({ assigned: 0, signaled: 1 });
+    expect(t.fixture.rows.get("1")?.executionPolicy).toBeNull();
+    expect(readReviewRoutingSignals(COMPANY)).toEqual([
+      expect.objectContaining({ kind: "no_reviewer", issueId: "1" }),
+    ]);
+  });
+});
+
 describe("PR lane (fake store + fake resolver)", () => {
   interface PrFixture {
     candidates: PrCandidateRow[];
@@ -1454,12 +1647,14 @@ describe("PR lane (fake store + fake resolver)", () => {
     openMergeLoad: Map<string, number>;
     created: Array<{ title: string; kind: string; assigneeAgentId: string; headSha: string }>;
     cancelled: string[];
+    /** Overrides the default reviewer + steward agents of the fake store. */
+    reviewers?: Fixture["reviewers"];
   }
 
   function prStore(fx: PrFixture): ReviewRoutingStore {
     const base = makeStore({
       rows: fx.rows,
-      reviewers: [{ id: REV_A, role: "reviewer" }, { id: STEWARD, role: "devops" }],
+      reviewers: fx.reviewers ?? [{ id: REV_A, role: "reviewer" }, { id: STEWARD, role: "devops" }],
       load: new Map(),
       history: new Map(),
       activities: [],
@@ -1693,6 +1888,85 @@ describe("PR lane (fake store + fake resolver)", () => {
     });
     const result = await t.sweep.sweep(NOW, { force: true });
     expect(result.prTasksCreated).toBe(1);
+  });
+
+  // myrmidon(OPE-12683): the PR lane applies the same own-group + queue filter.
+  describe("own-group reviewers (OPE-12683)", () => {
+    const FLAGGED_FIRST = { id: "aaaaaaaa-1111-4000-8000-000000000001", name: "adm-dev-review-0", role: "reviewer", metadata: QUEUE_OFF };
+
+    function engineerTask() {
+      return row("existing", { status: "in_progress", assigneeAgentId: ASSIGNEE, createdByAgentId: AUTHOR });
+    }
+
+    it("hands an existing PR task only to a queue-eligible reviewer of its engineer's group", async () => {
+      const task = engineerTask();
+      const t = prSetup({ enabled: true, prWatch: { enabled: true } }, {
+        rows: new Map([["existing", task]]),
+        existingWork: [task],
+        headState: headState({ ci: "pending" }),
+        reviewers: [DEV_ENGINEER, SHOP_REVIEWER_1, FLAGGED_FIRST, DEV_REVIEWER_A],
+      });
+
+      const result = await t.sweep.sweep(NOW, { force: true });
+
+      expect(result.assigned).toBe(1);
+      expect(t.fixture.rows.get("existing")).toMatchObject({ status: "in_review", assigneeAgentId: REV_A });
+      expect(t.wakes).toEqual([expect.objectContaining({ agentId: REV_A, issueId: "existing" })]);
+    });
+
+    it("leaves an existing PR task alone when its group has no eligible reviewer", async () => {
+      const task = engineerTask();
+      const t = prSetup({ enabled: true, prWatch: { enabled: true } }, {
+        rows: new Map([["existing", task]]),
+        existingWork: [task],
+        headState: headState({ ci: "pending" }),
+        reviewers: [DEV_ENGINEER, SHOP_REVIEWER_1, FLAGGED_FIRST],
+      });
+
+      const result = await t.sweep.sweep(NOW, { force: true });
+
+      expect(result.assigned).toBe(0);
+      expect(t.fixture.rows.get("existing")?.status).toBe("in_progress");
+      expect(t.wakes).toHaveLength(0);
+      expect(t.fixture.created).toHaveLength(0);
+    });
+
+    it("routes a PR to a reviewer of the group of its author's linked agent", async () => {
+      const t = prSetup({}, {
+        authorAgents: [ASSIGNEE],
+        reviewers: [DEV_ENGINEER, SHOP_REVIEWER_1, FLAGGED_FIRST, DEV_REVIEWER_A],
+      });
+
+      const result = await t.sweep.sweep(NOW, { force: true });
+
+      expect(result).toMatchObject({ prTasksCreated: 1, failed: 0 });
+      expect(t.fixture.created).toEqual([expect.objectContaining({ kind: "review", assigneeAgentId: REV_A })]);
+      expect(t.wakes).toEqual([{ agentId: REV_A, issueId: "task-review-7" }]);
+    });
+
+    it("raises no_reviewer and creates no task when the author's group has no eligible reviewer", async () => {
+      const t = prSetup({}, {
+        authorAgents: [ASSIGNEE],
+        reviewers: [DEV_ENGINEER, SHOP_REVIEWER_1, FLAGGED_FIRST],
+      });
+
+      const result = await t.sweep.sweep(NOW, { force: true });
+
+      expect(result).toMatchObject({ prTasksCreated: 0, signaled: 1 });
+      expect(t.fixture.created).toHaveLength(0);
+      expect(readReviewRoutingSignals(COMPANY)).toEqual([
+        expect.objectContaining({ kind: "no_reviewer", pr: { repository: "acme/widgets", number: 7, headSha: "aaaaaaaa" } }),
+      ]);
+    });
+
+    it("an author with no linked agent has no known group: only the queue flag filters", async () => {
+      const t = prSetup({}, { reviewers: [FLAGGED_FIRST, DEV_REVIEWER_A] });
+
+      const result = await t.sweep.sweep(NOW, { force: true });
+
+      expect(result).toMatchObject({ prTasksCreated: 1, failed: 0 });
+      expect(t.fixture.created).toEqual([expect.objectContaining({ kind: "review", assigneeAgentId: REV_A })]);
+    });
   });
 });
 

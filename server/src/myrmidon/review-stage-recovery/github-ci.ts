@@ -413,34 +413,52 @@ export async function resolvePullRequestHeadCi(input: {
 }
 
 /** The pull request work product of an issue and its GitHub reference, as far as the board can read them. */
-type IssuePullRequestTarget =
+export type IssuePullRequestTarget =
   | { kind: "none" }
   | { kind: "unreadable"; pullRequestUrl: string | null }
   | { kind: "ok"; pullRequestUrl: string | null; reference: GitHubPullRequestReference };
 
-async function loadIssuePullRequestTarget(
+export async function loadIssuePullRequestTarget(
   db: Db,
   companyId: string,
   issueId: string,
 ): Promise<IssuePullRequestTarget> {
-  const products = await db
-    .select({
-      id: issueWorkProducts.id,
-      type: issueWorkProducts.type,
-      status: issueWorkProducts.status,
-      url: issueWorkProducts.url,
-      metadata: issueWorkProducts.metadata,
-      isPrimary: issueWorkProducts.isPrimary,
-      updatedAt: issueWorkProducts.updatedAt,
-    })
-    .from(issueWorkProducts)
-    .where(
-      and(
-        eq(issueWorkProducts.companyId, companyId),
-        eq(issueWorkProducts.issueId, issueId),
-        eq(issueWorkProducts.type, "pull_request"),
-      ),
-    );
+  let products: Array<{
+    id: string;
+    type: string;
+    status: string;
+    url: string | null;
+    metadata: unknown;
+    isPrimary: boolean | null;
+    updatedAt: Date;
+  }>;
+  try {
+    products = await db
+      .select({
+        id: issueWorkProducts.id,
+        type: issueWorkProducts.type,
+        status: issueWorkProducts.status,
+        url: issueWorkProducts.url,
+        metadata: issueWorkProducts.metadata,
+        isPrimary: issueWorkProducts.isPrimary,
+        updatedAt: issueWorkProducts.updatedAt,
+      })
+      .from(issueWorkProducts)
+      .where(
+        and(
+          eq(issueWorkProducts.companyId, companyId),
+          eq(issueWorkProducts.issueId, issueId),
+          eq(issueWorkProducts.type, "pull_request"),
+        ),
+      );
+  } catch {
+    // myrmidon(OPE-12146): a work-product read that fails (storage degraded,
+    // network loss) is NOT proof that no PR exists. Report it as `unreadable`
+    // so the self-check gate treats it as unknown evidence (a counted
+    // technical rejection), while recovery callers keep their bounded wait.
+    // Only a genuinely empty product list below answers `none`.
+    return { kind: "unreadable", pullRequestUrl: null };
+  }
   const product = selectOpenPullRequestWorkProduct(products);
   if (!product) return { kind: "none" };
   const metadata = asRecord(product.metadata) ?? {};
@@ -642,5 +660,74 @@ export function createReviewHeadFailedChecksResolver(input: {
     } catch {
       return { state: "unknown", reason: "read_failed" };
     }
+  };
+}
+
+/**
+ * myrmidon(EMPTY-RUNS-3): the check runs of one head commit as GitHub reports
+ * them right now, for the decision whether a failed CI returns a task from
+ * review (review-return-guard/ci-failure-return.ts).
+ *
+ * This read is deliberately NOT cached. The decision is made once, on the
+ * webhook delivery of the final check, and nothing asks again afterwards: a
+ * list remembered a few seconds earlier, while a lane was still running, would
+ * hide the final verdict for good. The shared rate-limit stop still applies
+ * (`readGitHub`), and a list that does not fit one page is "unknown".
+ */
+export type PullRequestHeadCheckRunsNow =
+  | {
+      state: "ok";
+      /** Names of the checks whose latest run finished with a failing conclusion. */
+      failed: string[];
+      /** The head has at least one check run and every one of them has finished. */
+      finished: boolean;
+      /** The head has a run of the final `CI result` check, whatever its state. */
+      hasFinalCheck: boolean;
+      /** Conclusion of the finished final check of this head; null while it is missing, running, cancelled or skipped. */
+      finalCheckConclusion: string | null;
+    }
+  | { state: "unknown"; reason: string };
+
+export async function readPullRequestHeadCheckRunsNow(input: {
+  reference: GitHubPullRequestReference;
+  token: string | null;
+  headSha: string;
+  fetch?: FetchLike;
+}): Promise<PullRequestHeadCheckRunsNow> {
+  const fetchImpl = input.fetch ?? ghFetch;
+  const apiBase = gitHubApiBase(input.reference.host);
+  const repository = `${encodeURIComponent(input.reference.owner)}/${encodeURIComponent(input.reference.repo)}`;
+  const url =
+    `${apiBase}/repos/${repository}/commits/${encodeURIComponent(input.headSha)}/check-runs` +
+    `?filter=latest&per_page=100`;
+  const read = await readGitHub(fetchImpl, url, input.token, "check_runs");
+  if (!read.ok) return { state: "unknown", reason: read.reason };
+  const body = asRecord(read.json);
+  const runs = body?.check_runs;
+  if (!body || !Array.isArray(runs)) return { state: "unknown", reason: "check_runs:unreadable_payload" };
+  const totalCount = body.total_count;
+  const total = typeof totalCount === "number" ? totalCount : runs.length;
+  if (total > runs.length) return { state: "unknown", reason: "check_runs:more_than_one_page" };
+  const failed: string[] = [];
+  let finished = runs.length > 0;
+  let hasFinalCheck = false;
+  for (const entry of runs) {
+    const run = asRecord(entry);
+    if (!run || typeof run.name !== "string") continue;
+    if (run.name === REVIEW_CI_FINAL_CHECK_NAME) hasFinalCheck = true;
+    if (run.status !== "completed") {
+      finished = false;
+      continue;
+    }
+    if (typeof run.conclusion === "string" && FAILED_CHECK_CONCLUSIONS.has(run.conclusion) && !failed.includes(run.name)) {
+      failed.push(run.name);
+    }
+  }
+  return {
+    state: "ok",
+    failed,
+    finished,
+    hasFinalCheck,
+    finalCheckConclusion: pullRequestHeadFinalCheckConclusion({ checkRuns: runs, headSha: input.headSha }),
   };
 }

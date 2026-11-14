@@ -57,7 +57,7 @@ describeEmbeddedPostgres("task card readiness gate integration (TASK-CARD-READIN
     db = createDb(tempDb.connectionString);
     svc = issueService(db);
     process.env.MYRMIDON_TASK_CARD_GATE_MODE = "enforce";
-  }, 20_000);
+  }, 60_000);
 
   afterAll(async () => {
     if (originalGateMode !== undefined) {

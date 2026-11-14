@@ -147,6 +147,8 @@ import { resolveProcessesSettings } from "@myrmidon/shared";
 import { createIdempotentShutdown } from "./shutdown-once.js"; // myrmidon(OPE-9107)
 import { singletonProxyOptionsFor } from "./myrmidon/singleton-proxy/index.js"; // myrmidon(1.6.6 PROCS-1.5 / OPE-5412)
 import { startBehaviorSettings } from "./myrmidon/behavior-settings/index.js"; // myrmidon(SETTINGS-CORE)
+import { createCiReturnFactsResolver } from "./myrmidon/review-return-guard/ci-failure-return-facts.js"; // myrmidon(EMPTY-RUNS-3)
+import { readCiFinalOnlyEnabled } from "./myrmidon/review-return-guard/ci-failure-return.js"; // myrmidon(EMPTY-RUNS-3)
 // myrmidon(PAUSE-GUARD): resumes operator pauses left older than a threshold
 import { createPauseGuardSweepFromHeartbeat } from "./myrmidon/pause-guard/index.js";
 import { startRunPriority } from "./myrmidon/run-priority/index.js"; // myrmidon(1.6.5 RUN-PRIORITY A)
@@ -184,6 +186,7 @@ import { startKnowledgeExport, stopKnowledgeExport } from "./myrmidon/knowledge/
 import { startLessonDistillSweep, stopLessonDistillSweep } from "./myrmidon/lesson-distill/index.js"; // myrmidon(1.7 KNOWLEDGE-2.0 L-4)
 import { configuredGitSkillRecord } from "./myrmidon/skill-git-record/index.js";
 import { startAlertsSweep } from "./myrmidon/monitoring/alerts/index.js"; // myrmidon(1.6.6-ALERTS)
+import { startIntakeWorker } from "./services/intake-worker.js"; // myrmidon(1.7 WEBHOOK-INTAKE)
 import { startRootFanoutAlertSweep } from "./myrmidon/monitoring/alerts/root-fanout.js"; // myrmidon(OPE-9165)
 import { startTracingAttentionSweep, stopTracingAttentionSweep } from "./myrmidon/tracing-health/attention-sweep.js"; // myrmidon(TRACING-HEALTH)
 import { startModelProviderPoolSweep, stopModelProviderPoolSweep } from "./myrmidon/model-providers/sweep.js"; // myrmidon(1.6.6 OPE-7198)
@@ -475,7 +478,7 @@ async function startServerWithDatabaseTeardown(
       if (Date.now() >= deadline) {
         throw new Error(
           `PostgreSQL migrations are still not applied after ${Math.round(MIGRATION_WAIT_TIMEOUT_MS / 1000)}s. ` +
-            `PAPERCLIP_PROCESS_ROLE=api waits for the migration-owning process (worker/all); ` +
+            `MYRMIDON_PROCESS_ROLE=api waits for the migration-owning process (worker/all); ` +
             `start it, or run pnpm db:migrate.`,
         );
       }
@@ -1185,7 +1188,7 @@ async function startServerWithDatabaseTeardown(
   // myrmidon(PROCS-1.1/1.2): the stored process settings are read once the
   // schema is in place. The worker resolves its supervisor first so this read
   // — and every later PATCH — drives it: a stored `split` forks the api
-  // children right away. The emergency escape PAPERCLIP_PROCESS_MODE=single
+  // children right away. The emergency escape MYRMIDON_PROCESS_MODE=single
   // wins over the stored row inside resolveProcessesSettings (§7.2).
   const processSupervisor = processRoleProfile.role === "worker"
     ? createProcessSupervisor({
@@ -2252,9 +2255,35 @@ async function startServerWithDatabaseTeardown(
         logger.error({ err }, "auto-resume sweep failed");
       }));
   };
+  // myrmidon(EMPTY-RUNS-3): the App webhook is served by the api processes, and
+  // an api process has no background heartbeat: `backgroundHeartbeat` is a stub
+  // there, so every wake the event service asked for was dropped without a
+  // trace (returns from review were written, the `ci_completed` wake never
+  // reached the queue). An api process enqueues the wake the way the worker's
+  // own heartbeat is built above — the role gate (it executes nothing itself)
+  // and the process bus that announces the queued run to the worker. The
+  // service is built on the first wake, not at start: an api process still
+  // creates no heartbeat service while it only serves the board.
+  // The real wake goes together with the handling by the final result only:
+  // with that switched off every finished job would wake an agent.
+  let githubEventsApiHeartbeat: ReturnType<typeof heartbeatService> | null = null;
+  const githubEventsWakeup: ReturnType<typeof heartbeatService>["wakeup"] = processRoleProfile.role === "api"
+    ? (agentId, opts) => {
+        if (!readCiFinalOnlyEnabled()) return backgroundHeartbeat.wakeup(agentId, opts);
+        githubEventsApiHeartbeat ??= heartbeatService(db as any, {
+          pluginWorkerManager,
+          executesRuns: false,
+          processBus,
+        });
+        return githubEventsApiHeartbeat.wakeup(agentId, opts);
+      }
+    : backgroundHeartbeat.wakeup;
   const githubConnectionEvents = githubConnectionEventService(db as any, {
-    wakeup: backgroundHeartbeat.wakeup,
-    assignmentWakeup: backgroundHeartbeat.wakeup,
+    wakeup: githubEventsWakeup,
+    assignmentWakeup: githubEventsWakeup,
+    // myrmidon(EMPTY-RUNS-3): one finished job is not a finished CI — a delivery
+    // is handled by the final result of the head, read from GitHub when needed.
+    resolveCiReturnFacts: createCiReturnFactsResolver({ db: db as any }),
   });
   // myrmidon(GITHUB-APP-WEBHOOK): the public App-webhook route (mounted in
   // createApp, before this exists) ingests through this very instance.
@@ -2549,13 +2578,17 @@ async function startServerWithDatabaseTeardown(
     startDistillSweep(db as any); // myrmidon(1.6.6-K5): knowledge distiller v2 pass; a no-op unless the distill setting (or MYRMIDON_DISTILL_ENABLED=1) is on
     startRedactionSubstitutionCleanup(db as any); // myrmidon(1.7-REDACT): expire reversible substitutions
     startKnowledgeExport(db as any); // myrmidon(1.7 KNOWLEDGE-2.0 L-8): no-op unless MYRMIDON_KNOWLEDGE_EXPORT_REPO is set
-    startLessonDistillSweep({ db: db as any }); // myrmidon(1.7 KNOWLEDGE-2.0 L-4): hindsight lessons -> knowledge suggestions; a no-op unless MYRMIDON_LESSON_DISTILL_ENABLED=1
+    startLessonDistillSweep({
+      db: db as any,
+      readGeneral: async () => ((await instanceSettingsService(db as any).getGeneral()) as any)?.agentMemory,
+    }); // myrmidon(1.7 KNOWLEDGE-2.0 L-4, OPE-12628): hindsight lessons -> knowledge suggestions
     // myrmidon(1.7 KNOWLEDGE-2.0 L-13): pull the verified-skill record at boot;
     // delivery stays fail-closed on a missing or changed git snapshot.
     void configuredGitSkillRecord()?.refresh().catch((error) =>
       logger.warn({ err: error }, "skill-git-record: startup refresh failed"),
     );
     startAlertsSweep(db as any); // myrmidon(1.6.6-ALERTS): dedup registry cleanup of closed alerts; a no-op unless MYRMIDON_ALERTS_SWEEP_INTERVAL_SEC is set
+    startIntakeWorker(db as any); // myrmidon(1.7 WEBHOOK-INTAKE): background parse worker for webhook drafts
     startRootFanoutAlertSweep(db); // myrmidon(OPE-9165): collect blocker roots every minute
     startTracingAttentionSweep(db as any); // myrmidon(TRACING-HEALTH): keep the "LLM tracing" operator signal fresh; a no-op unless the tracing settings are on
     startModelProviderPoolSweep(db as any); // myrmidon(1.6.6 OPE-7198): keep Codex/ChatGPT pool attention signals fresh

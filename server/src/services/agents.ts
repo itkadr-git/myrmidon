@@ -53,8 +53,13 @@ import {
   mergeCompanyBaseSkillsIntoAgentConfig,
 } from "./company-base-skill-keys.js";
 import { readCompanyBaseSkillKeysPort } from "./company-base-skill-keys-port.js";
-import { conflict, notFound, unprocessable, badRequest } from "../errors.js";
+import { conflict, notFound, unprocessable, badRequest, forbidden } from "../errors.js";
 import { isForeignKeyViolation } from "../db-errors.js";
+import {
+  createAgentsModule,
+  AgentQuotaExceededError,
+  type AgentsModule,
+} from "../modules/agents/index.js";
 import {
   collectSecretRefs,
   collectUserSecretRefs,
@@ -386,9 +391,11 @@ export function agentService(
     castes?: AgentCasteDirectoryPort;
     /** Cleans an enabled bot container before lifecycle state or row changes. */
     cleanupBotContainer?: (agent: { id: string; adapterType: string; adapterConfig: Record<string, unknown> }) => Promise<void>;
+    agentsModule?: AgentsModule;
   },
 ) {
   const secretsSvc = secretService(db);
+  const agentsMod = ports?.agentsModule ?? createAgentsModule(db);
 
   async function cleanupBotContainerIfEnabled(existing: { id: string; adapterType: string; adapterConfig: unknown }): Promise<void> {
     const config = existing.adapterConfig;
@@ -1136,6 +1143,16 @@ export function agentService(
         await ensureManager(companyId, data.reportsTo);
       }
 
+      // myrmidon(1.7 TIER-QUOTA-CHECK OPE-12092): enforce agent quota per company subscription tier
+      try {
+        await agentsMod.assertCompanyAgentQuota(companyId);
+      } catch (err: unknown) {
+        if (err instanceof AgentQuotaExceededError) {
+          throw forbidden(err.message, { code: "quota_exceeded" });
+        }
+        throw err;
+      }
+
       const existingAgents = await db
         .select({ id: agents.id, name: agents.name, status: agents.status })
         .from(agents)
@@ -1400,7 +1417,10 @@ export function agentService(
         try {
           await issueThreadInteractionService(tx as unknown as Db)
             .cancelPendingForDeletedAddressee(existing.companyId, id);
-          await tx.update(agents).set({ reportsTo: null }).where(eq(agents.reportsTo, id));
+          await tx
+            .update(agents)
+            .set({ reportsTo: null, updatedAt: new Date() })
+            .where(eq(agents.reportsTo, id));
           await tx
             .update(issues)
             .set({ assigneeAgentId: null, createdByAgentId: null })

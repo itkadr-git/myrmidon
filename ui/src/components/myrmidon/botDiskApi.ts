@@ -9,6 +9,13 @@
 import type { BotDiskSettingsPatch } from "@myrmidon/shared";
 import { api } from "@/api/client";
 
+export interface BotDiskEffective {
+  gitMirrorEnabled: boolean;
+  gitMirrorRepos: string[];
+  gitMirrorReposIsDefault: boolean;
+  sharedCacheRoles: string[];
+}
+
 export interface BotDiskView {
   settings: {
     enabled: boolean;
@@ -23,7 +30,7 @@ export interface BotDiskView {
     /** Roles whose bots get the shared cache; absent: the default list (1.6.6-SETTINGS-UI-B editable). */
     sharedCacheRoles?: string[];
     pnpmStore?: "workspace" | "shared";
-    /** pnpm store inside the bot's single mount; absent: /workspace/.pnpm-store. */
+    /** pnpm store; absent: the shared /cache/pnpm-store mount (OPE-12869; a path in the bot's own tree is a store per bot). */
     pnpmStoreDir?: string;
     /** Absent: hardlink. */
     pnpmImportMethod?: "hardlink" | "clone-or-copy" | "copy";
@@ -49,6 +56,7 @@ export interface BotDiskView {
     partitionCriticalPercent?: number;
   };
   sources: Record<"enabled" | "idleTtlMs", "settings" | "env" | "default">;
+  effective?: BotDiskEffective;
 }
 
 export const botDiskQueryKey = ["myrmidon", "bot-disk"] as const;

@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { eq } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import {
   activityLog,
@@ -15,13 +15,15 @@ import {
   heartbeatRunEvents,
   heartbeatRuns,
   issueComments,
+  issueWorkProducts,
   issues,
+  projects,
 } from "@myrmidon/db";
 import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
 } from "./helpers/embedded-postgres.js";
-import { heartbeatService } from "../services/heartbeat.ts";
+import { heartbeatService, type WakeupOptions } from "../services/heartbeat.ts";
 import { drainHeartbeatRunsToQuiescence } from "./helpers/drain-heartbeat-runs.js";
 import { runningProcesses } from "../adapters/index.ts";
 import { CONTINUATION_CAP_COMMENT } from "../myrmidon/continuation-cap.js";
@@ -70,7 +72,7 @@ describeEmbeddedPostgres("heartbeat continuation wakes: status gate and real att
     tempDb = await startEmbeddedPostgresTestDatabase("paperclip-heartbeat-continuation-cap-");
     db = createDb(tempDb.connectionString);
     heartbeat = heartbeatService(db);
-  }, 20_000);
+  }, 60_000);
 
   afterEach(async () => {
     runningProcesses.clear();
@@ -80,6 +82,7 @@ describeEmbeddedPostgres("heartbeat continuation wakes: status gate and real att
         await db.delete(environmentLeases);
         await db.delete(issueComments);
         await db.delete(issues);
+        await db.delete(projects);
         await db.delete(heartbeatRunEvents);
         await db.delete(activityLog);
         await db.delete(heartbeatRuns);
@@ -102,13 +105,13 @@ describeEmbeddedPostgres("heartbeat continuation wakes: status gate and real att
     await tempDb?.cleanup();
   });
 
-  async function seedAgent(companyId: string, name: string) {
+  async function seedAgent(companyId: string, name: string, role = "engineer") {
     const agentId = randomUUID();
     await db.insert(agents).values({
       id: agentId,
       companyId,
       name,
-      role: "engineer",
+      role,
       status: "active",
       adapterType: "codex_local",
       adapterConfig: {},
@@ -116,6 +119,25 @@ describeEmbeddedPostgres("heartbeat continuation wakes: status gate and real att
       permissions: {},
     });
     return agentId;
+  }
+
+  // issue_work_products: type, provider, title and status are NOT NULL.
+  async function seedPullRequestWorkProduct(input: {
+    companyId: string;
+    issueId: string;
+    headSha: string;
+    title?: string;
+  }) {
+    await db.insert(issueWorkProducts).values({
+      id: randomUUID(),
+      companyId: input.companyId,
+      issueId: input.issueId,
+      type: "pull_request",
+      provider: "github",
+      title: input.title ?? "PR",
+      status: "open",
+      metadata: { headSha: input.headSha },
+    });
   }
 
   async function seedCompanyAgentIssue(status = "in_progress") {
@@ -149,6 +171,12 @@ describeEmbeddedPostgres("heartbeat continuation wakes: status gate and real att
     issueId: string;
     minutesAgo: number;
     status?: string;
+    headSha?: string | null;
+    summary?: string | null;
+    wakeReason?: string;
+    invocationSource?: string;
+    // Production shape: the head sits in paperclipWake.pullRequestsCi[0].headSha only.
+    headViaWake?: boolean;
   }) {
     const runId = randomUUID();
     const createdAt = minutesAgo(input.minutesAgo);
@@ -156,7 +184,7 @@ describeEmbeddedPostgres("heartbeat continuation wakes: status gate and real att
       id: runId,
       companyId: input.companyId,
       agentId: input.agentId,
-      invocationSource: "automation",
+      invocationSource: input.invocationSource ?? "automation",
       triggerDetail: "system",
       status: input.status ?? "succeeded",
       livenessState: "advanced",
@@ -167,9 +195,18 @@ describeEmbeddedPostgres("heartbeat continuation wakes: status gate and real att
       contextSnapshot: {
         issueId: input.issueId,
         taskId: input.issueId,
-        wakeReason: "issue_continuation_needed",
-        retryReason: "issue_continuation_needed",
+        wakeReason: input.wakeReason ?? "issue_continuation_needed",
+        retryReason: input.wakeReason ?? "issue_continuation_needed",
         source: "issue.continuation_recovery",
+        ...(input.headSha && !input.headViaWake ? { prHeadSha: input.headSha } : {}),
+        ...(input.headSha && input.headViaWake
+          ? { paperclipWake: { pullRequestsCi: [{ headSha: input.headSha }] } }
+          : {}),
+      },
+      resultJson: {
+        success: true,
+        summary: input.summary ?? "done",
+        ...(input.headSha && !input.headViaWake ? { prHeadSha: input.headSha } : {}),
       },
     });
     return runId;
@@ -509,6 +546,380 @@ describeEmbeddedPostgres("heartbeat continuation wakes: status gate and real att
       const [issue] = await db.select().from(issues).where(eq(issues.id, issueId));
       expect(issue?.status).toBe("blocked");
       expect(issue?.blockerMetadata).toMatchObject({ blockReason: "human_decision" });
+    });
+
+    it("caps automatic wakes when task runs without commit limit is reached (OPE-13080)", async () => {
+      const companyId = randomUUID();
+      await db.insert(companies).values({ id: companyId, name: "Cap Run No Commit Co", defaultResponsibleUserId: "responsible-user" });
+
+      const leadAgentId = await seedAgent(companyId, "team-lead");
+      const agentId = await seedAgent(companyId, "engineer");
+      const projectId = randomUUID();
+      await db.insert(projects).values({
+        id: projectId,
+        companyId,
+        name: "Test Project",
+        leadAgentId,
+      });
+
+      const issueId = randomUUID();
+      await db.insert(issues).values({
+        id: issueId,
+        companyId,
+        projectId,
+        title: "Test Task Without Commit",
+        status: "in_progress",
+        assigneeAgentId: agentId,
+      });
+
+      const constantHeadSha = "4b27a2c0b2428ab1352c8af64cb8bd40328b4f3b";
+      await seedPullRequestWorkProduct({ companyId, issueId, headSha: constantHeadSha, title: "PR #123" });
+
+      const ctx = { companyId, issueId, agentId };
+
+      // Seed 4 completed runs with the same headSha and distinct summaries
+      for (let i = 4; i >= 1; i--) {
+        await seedContinuationRun({
+          ...ctx,
+          minutesAgo: i * 10,
+          headSha: constantHeadSha,
+          wakeReason: "issue_assigned",
+          summary: `Run summary iteration ${i}`,
+        });
+      }
+
+      // 5th wake attempt must be blocked by taskRunsWithoutCommitLimit (default 4)
+      expect(await continuationWake(agentId, issueId)).toBeNull();
+
+      const skips = skippedWith(await wakeRequests(agentId), "runs_without_commit_limit_reached");
+      expect(skips).toHaveLength(1);
+      expect(skips[0]).toMatchObject({ reason: "issue_rewake_throttled" });
+      expect(skips[0]!.payload).toMatchObject({
+        heartbeatSkip: {
+          consecutiveRunsWithoutCommit: 4,
+          limit: 4,
+          headSha: constantHeadSha,
+        },
+      });
+
+      // Issue must be marked blocked with reason human_decision
+      const [issue] = await db.select().from(issues).where(eq(issues.id, issueId));
+      expect(issue?.status).toBe("blocked");
+      expect(issue?.blockerMetadata).toMatchObject({
+        blockReason: "human_decision",
+        externalRef: `run_cap_no_commit:${constantHeadSha}:4`,
+        escalationPolicy: "escalate_to_manager",
+      });
+
+      // Issue comment must explain the block with sha and summaries
+      const comments = await db.select().from(issueComments).where(eq(issueComments.issueId, issueId));
+      expect(comments.length).toBeGreaterThan(0);
+      const capComment = comments.find((c) => c.body?.includes("4 прогонов без нового коммита"));
+      expect(capComment).toBeDefined();
+      expect(capComment!.body).toContain(constantHeadSha.slice(0, 8));
+
+      // Project lead should have been woken up
+      const leadWakes = await db
+        .select()
+        .from(agentWakeupRequests)
+        .where(and(eq(agentWakeupRequests.agentId, leadAgentId), eq(agentWakeupRequests.companyId, companyId)));
+      expect(leadWakes.length).toBeGreaterThan(0);
+      expect(leadWakes[0]!.reason).toBe("runs_without_commit_limit_reached");
+    });
+
+    it("resets run cap without commit counter when user manually unblocks issue (OPE-13080)", async () => {
+      const companyId = randomUUID();
+      await db.insert(companies).values({ id: companyId, name: "Unblock Reset Co", defaultResponsibleUserId: "responsible-user" });
+
+      const agentId = await seedAgent(companyId, "engineer");
+      const issueId = randomUUID();
+      await db.insert(issues).values({
+        id: issueId,
+        companyId,
+        title: "Test Manual Unblock Task",
+        status: "in_progress",
+        assigneeAgentId: agentId,
+      });
+
+      const constantHeadSha = "feedfacecafe0123456789abcdef0123456789ab";
+      await seedPullRequestWorkProduct({ companyId, issueId, headSha: constantHeadSha, title: "PR #456" });
+
+      const ctx = { companyId, issueId, agentId };
+
+      // Seed 4 runs
+      for (let i = 4; i >= 1; i--) {
+        await seedContinuationRun({
+          ...ctx,
+          minutesAgo: i * 15,
+          headSha: constantHeadSha,
+          wakeReason: "issue_assigned",
+        });
+      }
+
+      // Record an unrelated user edit (e.g. updating description or priority without unblocking)
+      await db.insert(activityLog).values({
+        id: randomUUID(),
+        companyId,
+        entityType: "issue",
+        entityId: issueId,
+        action: "issue.updated",
+        actorType: "user",
+        actorId: randomUUID(),
+        details: {
+          priority: "high",
+          changes: {
+            priority: { from: "medium", to: "high" },
+          },
+        },
+        createdAt: minutesAgo(10),
+      });
+
+      // Since the issue was NOT unblocked by the user, the 4 runs without commit must still be capped!
+      expect(await continuationWake(agentId, issueId)).toBeNull();
+      const skipsBeforeUnblock = skippedWith(await wakeRequests(agentId), "runs_without_commit_limit_reached");
+      expect(skipsBeforeUnblock).toHaveLength(1);
+
+      // Now record a genuine user manual unblock from blocked -> in_progress
+      await db.insert(activityLog).values({
+        id: randomUUID(),
+        companyId,
+        entityType: "issue",
+        entityId: issueId,
+        action: "issue.updated",
+        actorType: "user",
+        actorId: randomUUID(),
+        details: {
+          previousStatus: "blocked",
+          status: "in_progress",
+          changes: {
+            status: { from: "blocked", to: "in_progress" },
+          },
+        },
+        createdAt: minutesAgo(5),
+      });
+
+      // Clear previous wake requests and retry: now the continuation wake should proceed!
+      await db.delete(agentWakeupRequests).where(eq(agentWakeupRequests.companyId, companyId));
+      await db.update(issues).set({ status: "in_progress" }).where(eq(issues.id, issueId));
+      await continuationWake(agentId, issueId);
+      const skipsAfterUnblock = skippedWith(await wakeRequests(agentId), "runs_without_commit_limit_reached");
+      expect(skipsAfterUnblock).toHaveLength(0);
+    });
+
+    describe("run cap without commit: which wakes count and are capped (OPE-13080)", () => {
+      const headSha = "9ee06485da935dc36407e8eb5e0e2524d4d19575";
+      const SKIP = "runs_without_commit_limit_reached";
+
+      async function seedScene(opts: { role?: string; withPr?: boolean; runInvocationSource?: string } = {}) {
+        const companyId = randomUUID();
+        await db.insert(companies).values({
+          id: companyId,
+          name: `NoCommit ${companyId.slice(0, 6)}`,
+          defaultResponsibleUserId: "responsible-user",
+        });
+        const agentId = await seedAgent(companyId, "engineer-x", opts.role ?? "engineer");
+        const issueId = randomUUID();
+        await db.insert(issues).values({
+          id: issueId,
+          companyId,
+          title: "No commit scene",
+          status: "in_progress",
+          assigneeAgentId: agentId,
+        });
+        if (opts.withPr !== false) {
+          await seedPullRequestWorkProduct({ companyId, issueId, headSha, title: "PR #1" });
+        }
+        for (let i = 4; i >= 1; i--) {
+          await seedContinuationRun({
+            companyId,
+            agentId,
+            issueId,
+            minutesAgo: i * 10,
+            headSha,
+            headViaWake: true,
+            wakeReason: "ci_completed",
+            invocationSource: opts.runInvocationSource,
+          });
+        }
+        return { companyId, agentId, issueId };
+      }
+
+      function wakeWith(
+        agentId: string,
+        issueId: string,
+        o: WakeupOptions & { interactionId?: string } = {},
+      ) {
+        const { interactionId, ...rest } = o;
+        return heartbeat.wakeup(agentId, {
+          source: "automation",
+          triggerDetail: "system",
+          reason: "ci_completed",
+          payload: { issueId, headSha, ...(interactionId ? { interactionId } : {}) },
+          contextSnapshot: {
+            issueId,
+            taskId: issueId,
+            wakeReason: "ci_completed",
+            ...(interactionId ? { interactionId } : {}),
+          },
+          requestedByActorType: "system",
+          requestedByActorId: null,
+          ...rest,
+        });
+      }
+
+      async function statusOf(issueId: string) {
+        const [row] = await db.select().from(issues).where(eq(issues.id, issueId));
+        return row?.status;
+      }
+
+      it("caps a ci_completed automation wake after four runs on the same head", async () => {
+        const { agentId, issueId } = await seedScene();
+        expect(await wakeWith(agentId, issueId)).toBeNull();
+        expect(skippedWith(await wakeRequests(agentId), SKIP)).toHaveLength(1);
+        expect(await statusOf(issueId)).toBe("blocked");
+      });
+
+      it("does not cap a person's wake", async () => {
+        const { agentId, issueId } = await seedScene();
+        await wakeWith(agentId, issueId, {
+          source: "on_demand",
+          triggerDetail: "manual",
+          reason: "issue_commented",
+          requestedByActorType: "user",
+          requestedByActorId: "user-1",
+        });
+        expect(skippedWith(await wakeRequests(agentId), SKIP)).toHaveLength(0);
+        expect(await statusOf(issueId)).not.toBe("blocked");
+      });
+
+      it("does not cap a wake that carries an interactionId", async () => {
+        const { agentId, issueId } = await seedScene();
+        await wakeWith(agentId, issueId, { interactionId: randomUUID() });
+        expect(skippedWith(await wakeRequests(agentId), SKIP)).toHaveLength(0);
+        expect(await statusOf(issueId)).not.toBe("blocked");
+      });
+
+      it("does not cap an assignment wake", async () => {
+        const { agentId, issueId } = await seedScene();
+        await wakeWith(agentId, issueId, { source: "assignment", reason: "issue_assigned" });
+        expect(skippedWith(await wakeRequests(agentId), SKIP)).toHaveLength(0);
+        expect(await statusOf(issueId)).not.toBe("blocked");
+      });
+
+      it("does not cap a manualUserWake", async () => {
+        const { agentId, issueId } = await seedScene();
+        await wakeWith(agentId, issueId, {
+          manualUserWake: true,
+          requestedByActorType: "user",
+          requestedByActorId: "user-1",
+        });
+        expect(skippedWith(await wakeRequests(agentId), SKIP)).toHaveLength(0);
+        expect(await statusOf(issueId)).not.toBe("blocked");
+      });
+
+      it("does not cap a task without a PR", async () => {
+        const { agentId, issueId } = await seedScene({ withPr: false });
+        await wakeWith(agentId, issueId);
+        expect(skippedWith(await wakeRequests(agentId), SKIP)).toHaveLength(0);
+        expect(await statusOf(issueId)).not.toBe("blocked");
+      });
+
+      it("does not park the task while a run of it is live", async () => {
+        const { companyId, agentId, issueId } = await seedScene();
+        const liveRunId = await seedContinuationRun({
+          companyId,
+          agentId,
+          issueId,
+          minutesAgo: 1,
+          status: "running",
+          headSha,
+          headViaWake: true,
+          wakeReason: "ci_completed",
+        });
+        await db.update(issues).set({ executionRunId: liveRunId }).where(eq(issues.id, issueId));
+        await wakeWith(agentId, issueId);
+        expect(skippedWith(await wakeRequests(agentId), SKIP)).toHaveLength(0);
+        expect(await statusOf(issueId)).not.toBe("blocked");
+      });
+
+      it("does not count runs that persons or assignments started", async () => {
+        const { agentId, issueId } = await seedScene({ runInvocationSource: "on_demand" });
+        await wakeWith(agentId, issueId);
+        expect(skippedWith(await wakeRequests(agentId), SKIP)).toHaveLength(0);
+        expect(await statusOf(issueId)).not.toBe("blocked");
+      });
+
+      it("does not reset the count when a person comments after the last run", async () => {
+        const { companyId, agentId, issueId } = await seedScene();
+        await db.insert(issueComments).values({
+          id: randomUUID(),
+          companyId,
+          issueId,
+          authorUserId: "user-1",
+          body: "Please look at the failing check again",
+          createdAt: minutesAgo(2),
+        });
+        expect(await wakeWith(agentId, issueId)).toBeNull();
+        expect(skippedWith(await wakeRequests(agentId), SKIP)).toHaveLength(1);
+        expect(await statusOf(issueId)).toBe("blocked");
+      });
+
+      it("does not reset the count on a user edit of title or assignee without a status change", async () => {
+        const { companyId, agentId, issueId } = await seedScene();
+        await db.insert(activityLog).values({
+          id: randomUUID(),
+          companyId,
+          entityType: "issue",
+          entityId: issueId,
+          action: "issue.updated",
+          actorType: "user",
+          actorId: "user-1",
+          details: {
+            title: "Renamed",
+            assigneeAgentId: agentId,
+            // the request body may echo the status even when it did not change
+            status: "in_progress",
+            changes: {
+              title: { from: "No commit scene", to: "Renamed" },
+              assigneeAgentId: { from: null, to: agentId },
+            },
+            _previous: { title: "No commit scene", assigneeAgentId: null },
+          },
+          createdAt: minutesAgo(2),
+        });
+        expect(await wakeWith(agentId, issueId)).toBeNull();
+        expect(skippedWith(await wakeRequests(agentId), SKIP)).toHaveLength(1);
+        expect(await statusOf(issueId)).toBe("blocked");
+      });
+
+      it("resets the count when a user manually moves the task from blocked to todo", async () => {
+        const { companyId, agentId, issueId } = await seedScene();
+        await db.insert(activityLog).values({
+          id: randomUUID(),
+          companyId,
+          entityType: "issue",
+          entityId: issueId,
+          action: "issue.updated",
+          actorType: "user",
+          actorId: "user-1",
+          details: {
+            status: "todo",
+            changes: { status: { from: "blocked", to: "todo" } },
+            _previous: { status: "blocked" },
+          },
+          createdAt: minutesAgo(2),
+        });
+        await wakeWith(agentId, issueId);
+        expect(skippedWith(await wakeRequests(agentId), SKIP)).toHaveLength(0);
+        expect(await statusOf(issueId)).not.toBe("blocked");
+      });
+
+      it("does not cap an agent that is not an engineer", async () => {
+        const { agentId, issueId } = await seedScene({ role: "cto" });
+        await wakeWith(agentId, issueId);
+        expect(skippedWith(await wakeRequests(agentId), SKIP)).toHaveLength(0);
+        expect(await statusOf(issueId)).not.toBe("blocked");
+      });
     });
   });
 });

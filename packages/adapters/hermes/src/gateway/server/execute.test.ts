@@ -152,10 +152,10 @@ afterEach(() => {
 });
 
 describe("resolveSessionKey", () => {
-  it("gives developers a fresh session per run and never upgrades a card's run or none", () => {
-    for (const configuredStrategy of ["issue", "agent", "run"] as const) {
-      expect(resolveEffectiveSessionKeyStrategy({ configuredStrategy, developerOnlyTaskSession: true })).toBe("run");
-    }
+  it("gives developers issue-scoped session by default, honors run or none, and maps agent to issue", () => {
+    expect(resolveEffectiveSessionKeyStrategy({ configuredStrategy: "issue", developerOnlyTaskSession: true })).toBe("issue");
+    expect(resolveEffectiveSessionKeyStrategy({ configuredStrategy: "agent", developerOnlyTaskSession: true })).toBe("issue");
+    expect(resolveEffectiveSessionKeyStrategy({ configuredStrategy: "run", developerOnlyTaskSession: true })).toBe("run");
     // "none" is kept: the card asked for no session key at all.
     expect(resolveEffectiveSessionKeyStrategy({ configuredStrategy: "none", developerOnlyTaskSession: true })).toBe("none");
   });
@@ -207,7 +207,7 @@ describe("parseSseFramesForTest", () => {
 });
 
 describe("execute", () => {
-  it("gives a developer a fresh session on every run while a non-developer keeps its configured session", async () => {
+  it("gives a developer an issue-scoped session while a non-developer keeps its configured session", async () => {
     const fetchMock = vi.fn(async (input: RequestInfo | URL, _init?: RequestInit) => new Response(JSON.stringify(
       String(input).endsWith("/v1/runs")
         ? { run_id: "run-hermes-1", status: "started" }
@@ -226,9 +226,9 @@ describe("execute", () => {
       ctx.context = { ...ctx.context, issueId };
       expect((await execute(ctx)).exitCode).toBe(0);
     };
-    // Developer cards on "issue" and "agent" (not yet switched to "run"): the
-    // board flag still gives every run its own session, across runs of one task
-    // and across tasks.
+    // Developer cards on "issue": same session key across runs of the same task.
+    // Developer cards on "agent": mapped to "issue".
+    // Developer cards on "run": stays on "run".
     await runWith({ sessionKeyStrategy: "issue", developerOnlyTaskSession: true }, "run-1", "task-A");
     await runWith({ sessionKeyStrategy: "issue", developerOnlyTaskSession: true }, "run-2", "task-A");
     await runWith({ sessionKeyStrategy: "agent", developerOnlyTaskSession: true }, "run-3", "task-B");
@@ -242,15 +242,15 @@ describe("execute", () => {
       .filter(([input]) => String(input).endsWith("/v1/runs"));
     const keys = runCalls.map(([, init]) => (init?.headers as Record<string, string>)["X-Hermes-Session-Key"]);
     expect(keys).toEqual([
-      "paperclip:run:run-1",
-      "paperclip:run:run-2",
-      "paperclip:run:run-3",
+      "paperclip:company:company-1:agent:agent-1:issue:task-A",
+      "paperclip:company:company-1:agent:agent-1:issue:task-A",
+      "paperclip:company:company-1:agent:agent-1:issue:task-B",
       "paperclip:run:run-4",
       "paperclip:company:company-1:agent:agent-1:issue:task-A",
       "paperclip:company:company-1:agent:agent-1",
     ]);
-    // No developer key is shared with another run.
-    expect(new Set(keys.slice(0, 4)).size).toBe(4);
+    // Developer runs of task-A share the session key.
+    expect(keys[0]).toBe(keys[1]);
     // Six full execute() calls in one test: the default 5 s is not enough.
   }, 30_000);
 
@@ -1008,7 +1008,7 @@ describe("execute", () => {
     expect(runBodies[1]!.input).not.toContain(description);
   });
 
-  it("sends a developer the full brief and no previous-run content even when the board still holds a stored session", async () => {
+  it("resumes a stored session for a developer on issue strategy and gives a fresh session on run strategy", async () => {
     const description = "Task B must not inherit Task A context.";
     const fetchMock = vi.fn(async (input: RequestInfo | URL) => new Response(JSON.stringify(
       String(input).endsWith("/v1/runs")
@@ -1030,12 +1030,12 @@ describe("execute", () => {
       return ctx;
     };
 
-    // Developer on a card that still says "issue": the stored session is not resumed.
+    // Developer on a card that says "issue": the stored task session is resumed and the compact brief is used.
     expect((await execute(buildCtx(
       { sessionKeyStrategy: "issue", developerOnlyTaskSession: true },
       "paperclip:company:company-1:agent:agent-1:issue:task-B",
     ))).exitCode).toBe(0);
-    // Developer on a card already switched to "run".
+    // Developer on a card switched to "run": fresh session and full brief.
     expect((await execute(buildCtx(
       { sessionKeyStrategy: "run", developerOnlyTaskSession: true },
       "paperclip:run:earlier-run",
@@ -1050,11 +1050,17 @@ describe("execute", () => {
       .filter(([url]) => String(url).endsWith("/v1/runs"))
       .map(([, init]) => JSON.parse(String(init?.body)) as { input: string; session_id: string });
     expect(bodies).toHaveLength(3);
-    for (const body of bodies.slice(0, 2)) {
-      expect(body.input).toContain(description);
-      expect(body.input).not.toContain("Task B (compact)");
-      expect(body.session_id).toBe("paperclip:run:pc-run-1");
-    }
+    // Developer on "issue": compact brief and issue session
+    expect(bodies[0]!.input).toContain("Task B (compact)");
+    expect(bodies[0]!.input).not.toContain(description);
+    expect(bodies[0]!.session_id).toBe("paperclip:company:company-1:agent:agent-1:issue:task-B");
+
+    // Developer on "run": full brief and fresh run session
+    expect(bodies[1]!.input).toContain(description);
+    expect(bodies[1]!.input).not.toContain("Task B (compact)");
+    expect(bodies[1]!.session_id).toBe("paperclip:run:pc-run-1");
+
+    // Non-developer on "issue": compact brief and issue session
     expect(bodies[2]!.input).toContain("Task B (compact)");
     expect(bodies[2]!.input).not.toContain(description);
     expect(bodies[2]!.session_id).toBe("paperclip:company:company-1:agent:agent-1:issue:task-B");
@@ -3624,6 +3630,163 @@ describe("execute — managed instructions bundle (G4)", () => {
   });
 });
 
+// myrmidon(OPE-12796): the repeated-tool-failure guard counts the same call failing
+// again after the model saw the previous failure, not any failures of one tool.
+// myrmidon(OPE-12878): the first trip steers one hint instead of stopping; the
+// stop fires only when the same call fails a fresh limit times after the hint.
+describe("execute — repeated tool failure limit (OPE-12796 + OPE-12878)", () => {
+  const started = (tool: string, preview: string): string =>
+    `event: tool.started\ndata: ${JSON.stringify({ tool, preview })}\n\n`;
+  const completed = (tool: string, error: boolean | string): string =>
+    `event: tool.completed\ndata: ${JSON.stringify({ tool, duration: 0.1, error })}\n\n`;
+  const repeatedCall = (): string[] => [
+    started("terminal", "gh run rerun 9"),
+    completed("terminal", "exit 1"),
+  ];
+
+  async function runWithEvents(frames: string[]): Promise<{
+    lines: string[];
+    steerBodies: Array<Record<string, unknown>>;
+    events: Array<{ eventType: string }>;
+  }> {
+    const sse = `${frames.join("")}event: run.completed\ndata: {"status":"completed","output":"done"}\n\n`;
+    const steerBodies: Array<Record<string, unknown>> = [];
+    const events: Array<{ eventType: string }> = [];
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.endsWith("/v1/runs")) {
+        return new Response(JSON.stringify({ run_id: "run-tool-fail", status: "started" }), { status: 200 });
+      }
+      if (url.endsWith("/steer")) {
+        steerBodies.push(JSON.parse(String(init?.body)) as Record<string, unknown>);
+        return new Response(JSON.stringify({ object: "hermes.run.steer", run_id: "run-tool-fail", accepted: true }), { status: 200 });
+      }
+      if (url.endsWith("/events")) {
+        return new Response(sseStream(sse), { status: 200, headers: { "content-type": "text/event-stream" } });
+      }
+      return new Response(JSON.stringify({ status: "completed", output: "done" }), { status: 200 });
+    }));
+    const ctx = makeCtx({ apiBaseUrl: "http://127.0.0.1:8642", apiKey: "secret-key", timeoutSec: 5 });
+    ctx.onEvent = vi.fn(async (event: { eventType: string }) => {
+      events.push({ eventType: event.eventType });
+    });
+    await execute(ctx);
+    const lines = (ctx.onLog as ReturnType<typeof vi.fn>).mock.calls.map(([, line]) => String(line));
+    return { lines, steerBodies, events };
+  }
+  const stopped = (lines: string[]): boolean => lines.some((l) => l.includes("Repeated tool failure limit exceeded"));
+  const hinted = (lines: string[]): boolean => lines.some((l) => l.includes("run guard hint delivered (repeated_tool_failure)"));
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it("does not stop or hint on three parallel failing skill_view calls of one model turn", async () => {
+    const { lines, steerBodies } = await runWithEvents([
+      started("skill_view", "{\"name\":\"a\"}"), started("skill_view", "{\"name\":\"b\"}"), started("skill_view", "{\"name\":\"c\"}"),
+      completed("skill_view", true), completed("skill_view", true), completed("skill_view", true),
+    ]);
+    expect(stopped(lines)).toBe(false);
+    expect(steerBodies).toEqual([]);
+  });
+
+  it("does not stop or hint on three sequential failures with different arguments", async () => {
+    const { lines, steerBodies } = await runWithEvents([
+      started("terminal", "gh pr checks 1"), completed("terminal", true),
+      started("terminal", "jq .x f.json"), completed("terminal", true),
+      started("terminal", "gh run rerun 9"), completed("terminal", true),
+    ]);
+    expect(stopped(lines)).toBe(false);
+    expect(steerBodies).toEqual([]);
+  });
+
+  // The epic's scenario: three identical failures steer the hint (with the call
+  // and error text) and the run continues; three fresh failures of the same
+  // call after the hint stop the run. One hint per run, so the whole arc must
+  // play out in a single gateway run.
+  it("hints once on the third same-call failure, continues, and stops on three more after the hint", async () => {
+    const { lines, steerBodies, events } = await runWithEvents([
+      ...repeatedCall(), // streak 1-3: the hint fires on the third, streak resets
+      ...repeatedCall(),
+      ...repeatedCall(),
+      ...repeatedCall(), // fresh streak 1-3 after the hint: stop
+      ...repeatedCall(),
+      ...repeatedCall(),
+      "event: run.completed",
+      'data: {"status":"failed","error":"post-hint series"}',
+      "",
+    ]);
+    // Exactly one steer, with the call and error text; no second hint after it.
+    expect(steerBodies).toEqual([
+      {
+        input:
+          "Защита: terminal (gh run rerun 9) упал с той же ошибкой 3-й раз подряд. Ошибка: exit 1. Смени подход: исправь причину сбоя, используй другой инструмент или путь — повтор того же вызова остановит прогон",
+      },
+    ]);
+    expect(hinted(lines)).toBe(true);
+    const stop = lines.find((l) => l.includes("Repeated tool failure limit exceeded"));
+    expect(stop).toContain("terminal failed 3 times consecutively with the same error.");
+    expect(stop).toContain("gh run rerun 9");
+    const hintStops = events.filter((e) => e.eventType === "run_guard_hint_stop");
+    expect(hintStops).toHaveLength(1);
+  });
+
+  // The stop keeps the platform-matched message shape and persists the hint
+  // marker into resultJson + a run_guard_hint_stop event (via the terminal
+  // exit path), mirroring the RunGuard's own hint-stop assertions.
+  it("the post-hint stop records resultJson.runGuardHint and the run_guard_hint_stop event", async () => {
+    const steerBodies: Array<Record<string, unknown>> = [];
+    const sse = [
+      ...repeatedCall(),
+      ...repeatedCall(),
+      ...repeatedCall(),
+      ...repeatedCall(),
+      ...repeatedCall(),
+      ...repeatedCall(),
+      "event: run.completed",
+      'data: {"status":"failed","error":"post-hint series"}',
+      "",
+    ].join("\n");
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.endsWith("/v1/runs")) {
+        return new Response(JSON.stringify({ run_id: "run-tool-fail-2", status: "started" }), { status: 200 });
+      }
+      if (url.endsWith("/steer")) {
+        steerBodies.push(JSON.parse(String(init?.body)) as Record<string, unknown>);
+        return new Response(JSON.stringify({ object: "hermes.run.steer", run_id: "run-tool-fail-2", accepted: true }), { status: 200 });
+      }
+      if (url.endsWith("/events")) {
+        return new Response(sseStream(sse), { status: 200, headers: { "content-type": "text/event-stream" } });
+      }
+      return new Response(JSON.stringify({ status: "failed" }), { status: 200 });
+    }));
+    const ctx = makeCtx({ apiBaseUrl: "http://127.0.0.1:8642", apiKey: "secret-key", timeoutSec: 5 });
+    const stopEvents: Array<{ eventType: string; payload?: { runGuardHint?: { reason: string } } }> = [];
+    ctx.onEvent = vi.fn(async (event: { eventType: string; payload?: { runGuardHint?: { reason: string } } }) => {
+      stopEvents.push({ eventType: event.eventType, payload: event.payload });
+    });
+    const result = await execute(ctx);
+    expect(steerBodies).toHaveLength(1); // one hint, on the first trip
+    const hintStops = stopEvents.filter((e) => e.eventType === "run_guard_hint_stop");
+    expect(hintStops).toHaveLength(1);
+    expect(hintStops[0].payload?.runGuardHint).toEqual({ reason: "repeated_tool_failure" });
+    expect(result.resultJson?.runGuardHint).toEqual({ reason: "repeated_tool_failure" });
+  });
+
+  it("a success between two identical failures resets the counter", async () => {
+    const { lines, steerBodies } = await runWithEvents([
+      started("terminal", "x"), completed("terminal", true),
+      started("terminal", "x"), completed("terminal", true),
+      started("terminal", "y"), completed("terminal", false),
+      started("terminal", "x"), completed("terminal", true),
+      started("terminal", "x"), completed("terminal", true),
+    ]);
+    expect(stopped(lines)).toBe(false);
+    expect(steerBodies).toEqual([]);
+  });
+});
+
 describe("execute — compact progress logging (G4)", () => {
   // myrmidon(G4): tool.completed never carries preview/detail on the real wire
   // (gateway/platforms/api_server_runs.py's _FIXED_EVENT_FIELDS:
@@ -4823,6 +4986,37 @@ describe("execute — run guard hint-before-stop (RUN-GUARD-HINT B)", () => {
     expect(buildRunGuardHintMessage({ reason: "model_call_limit", modelCalls: 40 })).toBe(
       "Защита: лимит вызовов модели, записей не было — переходи к правке по месту из задачи или опиши блокер в комментарии",
     );
+  });
+
+  // myrmidon(OPE-12878): the tool failure guard's hint carries the call preview
+  // and the error text so the model can fix the cause, not just the repeat.
+  it("buildRunGuardHintMessage renders the tool failure guard's phrasing", () => {
+    expect(
+      buildRunGuardHintMessage({
+        reason: "repeated_tool_failure",
+        tool: "terminal",
+        repeatCount: 3,
+        callPreview: "gh run rerun 9",
+        errorText: "exit 1",
+      }),
+    ).toBe(
+      "Защита: terminal (gh run rerun 9) упал с той же ошибкой 3-й раз подряд. Ошибка: exit 1. Смени подход: исправь причину сбоя, используй другой инструмент или путь — повтор того же вызова остановит прогон",
+    );
+    expect(
+      buildRunGuardHintMessage({ reason: "repeated_tool_failure", tool: "terminal", repeatCount: 3 }),
+    ).toBe(
+      "Защита: terminal упал с той же ошибкой 3-й раз подряд. Смени подход: исправь причину сбоя, используй другой инструмент или путь — повтор того же вызова остановит прогон",
+    );
+  });
+
+  // myrmidon(OPE-12799): the wrap-up message before the call limit tells the agent
+  // to put its work where the next run (fresh session) will find it.
+  it("buildRunGuardHintMessage renders the wrap-up message when calls are left before the limit", () => {
+    const message = buildRunGuardHintMessage({ reason: "model_call_limit", modelCalls: 135, remaining: 15 });
+    expect(message).toContain("осталось 15 вызовов модели");
+    expect(message).toContain("закоммить и запушь");
+    expect(message).toContain("комментарий в задаче");
+    expect(message).not.toContain("записей не было");
   });
 
   it("steers one correction on the third repeated tool call, keeps the run going, and omits runGuardHint when the run completes normally", async () => {

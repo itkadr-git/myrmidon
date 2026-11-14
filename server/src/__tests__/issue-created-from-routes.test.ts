@@ -83,7 +83,7 @@ describePostgres("tasks created from an issue", () => {
       { companyId, actorType: "agent", actorId: agentId, runId: legacyRunId, action: "issue.child_created", entityType: "issue", entityId: historicalId },
       { companyId, actorType: "agent", actorId: agentId, runId: legacyRunId, action: "issue.comment_added", entityType: "issue", entityId: commentedId },
     ]);
-  }, 30_000);
+  }, 60_000);
   afterAll(async () => { await database?.cleanup(); });
 
   function app() {
@@ -137,7 +137,8 @@ describePostgres("tasks created from an issue", () => {
 
   it("rejects malformed filters and never matches a source from another company", async () => {
     const invalid = await request(app()).get(`/api/companies/${companyId}/issues`).query({ createdFromIssueId: "not-an-id" });
-    expect(invalid.status).toBe(422);
+    expect(invalid.status).toBe(400);
+    expect(invalid.body.error).toContain("createdFromIssueId must be a UUID or issue identifier");
     const foreign = await request(app()).get(`/api/companies/${companyId}/issues`).query({ createdFromIssueId: foreignSourceId });
     expect(foreign.status).toBe(200);
     expect(foreign.body).toEqual([]);

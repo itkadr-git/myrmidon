@@ -34,14 +34,14 @@ its catalog. Review the English-catalog coverage and the matched, missing, and
 extra keys in the searchable diff before pressing **Apply**. The chosen language
 changes without a restart. A failed server upload still applies the catalog in
 the current browser session, so the success message does not guarantee server
-persistence. See the [locale upload guide](../myrmidon/guides/locale-upload.md)
+persistence. See the [locale upload guide](Locale-upload)
 for the complete preview and persistence workflow.
 
 ## Run limits (the instance)
 
 **Instance → General → "Run limits"** — changeable at runtime, without
 restarting the server and without interrupting runs in flight
-([run-limits](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/guides/run-limits.md)):
+([run-limits](Run-limits)):
 
 | Setting | What it bounds | Default |
 |---|---|---|
@@ -80,7 +80,7 @@ off-feature state, not an API failure. Check `GET
 whether the module is off. If status says enabled but a list request fails or
 returns malformed data, investigate the API/service fault.
 
-See the full [Access hub operator guide](../myrmidon/guides/access-hub.md) for
+See the full [Access hub operator guide](Access-hub) for
 routes and behavior.
 
 ## Per-agent parallelism
@@ -103,11 +103,11 @@ agent may be active at once; the board normalizes the value into the 1–50
 range and writes it to the bot's gateway config. The card compares what the
 board asks with what the bot's gateway actually applied and flags a
 divergence
-([bot-container-card](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/guides/bot-container-card.md)).
+([bot-container-card](Bot-container-card)).
 
 Related: the **WIP limit** caps how many tasks one agent holds in flight —
 **Company Settings → WIP limit**, with the live load on every agent row
-([wip-limit](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/guides/wip-limit.md)).
+([wip-limit](Wip-limit)).
 Swarm self-organization parameters (starting pheromone strength per
 priority, waiting bonus, penalty for a failed run without a task change,
 lease TTL, per-agent active-task ceiling, P0 preemption) are
@@ -117,9 +117,9 @@ the task cooldown after a run that moved nothing (base 30 min, cap 24 h) is
 set by the wake guard (`general.swarm.cooldownBaseMin` /
 `cooldownCeilingHours`); how to
 switch the swarm on and verify it in three steps —
-[swarm-self-organization](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/guides/swarm-self-organization.md).
+[swarm-self-organization](Swarm-self-organization).
 Lower-level queue details —
-[swarm-claim-settings](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/guides/swarm-claim-settings.md).
+[swarm-claim-settings](Swarm-claim-settings).
 
 ## Parallel helpers
 
@@ -134,7 +134,7 @@ capacity hint summing the resolved limits against the host's build slots.
 Clearing either capacity field and saving sends `null` in the PATCH and removes
 the stored hint. Saving applies on every bot's
 next reconcile tick, without a restart. Details:
-[parallel-helpers](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/guides/parallel-helpers.md).
+[parallel-helpers](Parallel-helpers).
 
 ## Agent castes (the company role directory)
 
@@ -142,7 +142,7 @@ next reconcile tick, without a restart. Details:
 roles. It starts from the twelve built-in castes and the owner can create,
 edit, and delete castes; the role on the agent card is a key from this
 directory, and changes are visible to the swarm at once, without a restart
-([custom-castes](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/guides/custom-castes.md)).
+([custom-castes](Custom-castes)).
 
 ## Budgets (per-level spend limits)
 
@@ -162,9 +162,9 @@ environment variable, which locks the switch). The bottom table is the
 append-only change journal — who, when and what changed, newest first; a
 removed limit keeps its rows. Reads need company access, every mutation
 needs a board actor. Details:
-[budget limits](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/guides/budget-limits.md)
+[budget limits](Budget-limits)
 (the API and storage) and
-[the owner's screen](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/guides/budget-limits-ui.md).
+[the owner's screen](Budget-limits-ui).
 
 ## Backups
 
@@ -236,7 +236,7 @@ reads as the default — the same fallback the feed itself applies.
   payload's history is bounded by volume as well as by count. Tuned by
   `MYRMIDON_LONG_TASK_CONTEXT_*` and `MYRMIDON_CONTINUATION_*` (since 1.6.6)
   — details in the
-  [long-task-context](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/guides/long-task-context.md)
+  [long-task-context](Long-task-context)
   guide and in
   [SETTINGS.md](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/SETTINGS.md).
 
@@ -249,7 +249,7 @@ reads as the default — the same fallback the feed itself applies.
   instance settings page, with overrides on the agent card.
 - **Budget enforcement** — signal only, pause with a card to the owner, or
   hard refusal of new runs; set live for the instance
-  ([budget-enforcement](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/guides/budget-enforcement.md)).
+  ([budget-enforcement](Budget-enforcement)).
 - **Attention feed windows** — the "Attention feed" panel on Instance →
   General (since 1.6.6) edits how far back the attention feed looks for an
   unresolved failed or timed-out run (1–365 days, default 7) and how long
@@ -277,7 +277,8 @@ Starting with Myrmidon 1.7 (SETTINGS-TO-UI), runtime behavior settings can be re
 - `GET /api/myrmidon/behavior-settings/definitions` — list all setting definitions, scopes, types, and defaults.
 - `GET /api/myrmidon/behavior-settings` (and `?key=:key` or `/key/:key`) — read effective instance settings and sources (`ui`, `env`, `default`).
 - `PATCH /api/myrmidon/behavior-settings` (and `PUT` alias) — update instance-level settings (instance admin only).
-- `GET|PATCH /api/myrmidon/behavior-settings/company/:companyId` — read and update company-scoped settings (company access required).
+- `GET /api/myrmidon/behavior-settings/company/:companyId` — read company-scoped settings (company access required).
+- `PATCH /api/myrmidon/behavior-settings/company/:companyId` — update company-scoped settings (board users with company access, or agent keys holding the `users:manage_permissions` company grant; agent keys without the grant get 403).
 
 Scope isolation is strictly enforced: instance endpoints reject company-scoped keys, and company endpoints reject instance-scoped keys with HTTP 400. Full API specification and setting catalog: [SETTINGS.md](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/SETTINGS.md#17--behavior-settings-api-runtime-settings-settings-to-ui).
 

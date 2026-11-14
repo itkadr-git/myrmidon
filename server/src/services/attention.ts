@@ -12,6 +12,7 @@ import {
   decisionTrainingExamples,
   decisionTriage,
   decisions,
+  externalObjects,
   heartbeatRuns,
   instanceSettings,
   inboxDismissals,
@@ -22,6 +23,7 @@ import {
   issueRecoveryActions,
   issueRelations,
   issueThreadInteractions,
+  issueWorkProducts,
   issues,
   joinRequests,
   documents,
@@ -64,6 +66,10 @@ import {
   issueService,
 } from "./issues.js";
 import { executionIssueCondition } from "./issue-visibility.js";
+// myrmidon(OPE-12879): the done-with-open-PR attention card matches PRs the same
+// way the done gate and review-stage recovery do.
+import { OPEN_PULL_REQUEST_WORK_PRODUCT_STATUSES } from "../myrmidon/review-stage-recovery/policy.js";
+import { extractPullRequestIssueIdentifier } from "../myrmidon/task-pr-sync/linking.js";
 import { parseIssueExecutionState } from "./issue-execution-policy.js";
 import { isProspectiveBlockedTransition } from "./routable-blocked.js";
 import { evaluateAgentInvokability, type AgentOrgRow } from "./agent-invokability.js";
@@ -124,6 +130,15 @@ import {
   auth401BurstSignalSeverity,
   auth401BurstSignalWhyNow,
 } from "../myrmidon/auth-401-burst/attention.js";
+// myrmidon(OPE-12868): the GitHub App webhook-disabled operator signal
+// registry — webhook-sync latches it on a GitHub 404 and clears it on a
+// confirmed sync.
+import {
+  readGitHubAppWebhookDisabledSignals,
+  githubAppWebhookDisabledSignalDedupKey,
+  githubAppWebhookDisabledSignalSeverity,
+  githubAppWebhookDisabledSignalWhyNow,
+} from "../myrmidon/github-shared-identity/webhook-disabled-signal.js";
 // myrmidon(OPE-6011): the held-task card (a settled execution-reconciliation
 // hold silently skipping every wake of the task's assignee).
 import {
@@ -251,8 +266,21 @@ const ATTENTION_SOURCE_KINDS: AttentionSourceKind[] = [
   // myrmidon(1.6.6 OPE-7198): banned or exhausted Codex / ChatGPT subscription accounts.
   "codex_pool_alert",
   "provider_usage_warning",
+  // myrmidon(1.6.8 OPE-12709): a whole role's model channels are down (>=5
+  // finished runs in 30 min, 0 succeeded).
+  "role_model_down",
+  // myrmidon(1.6.8 OPE-12709): a provider channel has no credits (402 /
+  // insufficient_quota) — a top-up question for the owner, not a retry.
+  "provider_no_credits",
   // myrmidon(OPE-12517): one card per expiring/expired MCP gateway token.
   "mcp_gateway_token_expiring",
+  // myrmidon(OPE-12868): one card per App whose webhook GitHub reports as
+  // absent (HTTP 404 on the App-hook config PATCH) — the App's "Active"
+  // webhook switch is a GitHub-side setting no API can turn on, and while it
+  // is off the board receives no GitHub events at all.
+  "github_app_webhook_disabled",
+  // myrmidon(OPE-12879): one card per done task whose pull request is still open.
+  "done_pr_not_merged",
 ];
 
 const SEVERITY_RANK: Record<AttentionSeverity, number> = {
@@ -322,6 +350,12 @@ const SOURCE_RANK: Record<AttentionSourceKind, number> = {
   // with the other capacity signals.
   queue_stall: 14,
   provider_usage_warning: 19,
+  // myrmidon(1.6.8 OPE-12709): a whole role cannot run — an active stop for the
+  // affected role, ranked with the other auth/ops alerts.
+  role_model_down: 0,
+  // myrmidon(1.6.8 OPE-12709): "no credits" blocks the provider channel until
+  // the owner tops up — an active stop like the budget alerts.
+  provider_no_credits: 0,
   // myrmidon(1.6.5-F-23): off-run secret reads are a deliberate surface
   // extension — visible as advice, never a stop; ranked with the other
   // advisory notices.
@@ -331,16 +365,29 @@ const SOURCE_RANK: Record<AttentionSourceKind, number> = {
   codex_pool_alert: 4,
   // myrmidon(OPE-7932): overdue monitors need operator visibility, below blockers.
   issue_monitor_overdue: 12,
+  // myrmidon(OPE-12879): a done task with an open PR hides real release state —
+  // surfaced right after blockers.
+  done_pr_not_merged: 2,
   // myrmidon(OPE-12517): an expiring/expired MCP gateway token is ops advice —
   // the gateway keeps serving until expiry, and the card's job is a rotation
   // heads-up, ranked with the other advisory notices.
   mcp_gateway_token_expiring: 18,
+  // myrmidon(OPE-12868): a disabled App webhook stops every GitHub event (CI,
+  // PR, comments) for the whole board — an active ops stop ranked with the
+  // other auth/ops alerts.
+  github_app_webhook_disabled: 0,
 };
 
 const PENDING_INTERACTION_STATUSES = ["pending"] as const;
 const OPEN_RECOVERY_STATUSES = ["active", "escalated"] as const;
 const HUMAN_RECOVERY_OWNER_TYPES = ["user", "board"] as const;
 const DETAIL_EXCERPT_LENGTH = 160;
+// myrmidon(1.6.8 OPE-12709): ROLE-MODEL-DOWN detection window and floor. A
+// role whose agents finished at least ROLE_MODEL_DOWN_MIN_RUNS runs in the
+// last 30 min with zero successes AND at least that many finishes classified
+// as model refusals raises the "model channels down" card.
+const ROLE_MODEL_DOWN_WINDOW_MS = 30 * 60 * 1000;
+const ROLE_MODEL_DOWN_MIN_RUNS = 5;
 const DETAIL_IMAGE_LIMIT = 3;
 const OPEN_DECISION_DEFAULT_LIMIT = 500;
 const OPEN_DECISION_MAX_LIMIT = 1_000;
@@ -1501,6 +1548,144 @@ export function invalidateAttentionFeedCache(db: Db, companyId?: string) {
   }
 }
 
+// myrmidon(1.6.8 OPE-12709): the ONE query behind the role_model_down card and
+// the agent-list/card "model unavailable since HH:MM" mark. Per-role aggregate
+// of the finished runs in the detection window; downRoles holds the roles with
+// an active signal (floor reached, 0 succeeded, refusal floor reached).
+type RoleModelDownAgg = {
+  finishedCount: number;
+  succeededCount: number;
+  refusalCount: number;
+  lastError: string | null;
+  lastFinishedAt: string | null;
+  lastRefusalError: string | null;
+  lastRefusalAt: string | null;
+  firstRefusalAt: string | null;
+  primaryChannel: string;
+  primaryRuns: number;
+};
+
+async function loadRoleModelDownState(db: Db, companyId: string, now: number) {
+  const windowStart = new Date(now - ROLE_MODEL_DOWN_WINDOW_MS);
+  const channelExpr = sql<string>`coalesce(${heartbeatRuns.resultJson} ->> 'providerModelGroup', 'unknown')`;
+  // A finished run counts as a model refusal when the adapter marked the
+  // provider failure in resultJson (model_unavailable /
+  // provider_error_as_content) or the error text carries a provider
+  // quota/limit marker (model_unavailable / overload /
+  // insufficient_quota / credits insufficient / 402 / 429).
+  const modelRefusalExpr = sql`(
+    ${heartbeatRuns.resultJson} ->> 'model_unavailable' = 'true'
+    or ${heartbeatRuns.resultJson} ->> 'provider_error_as_content' = 'true'
+    or ${heartbeatRuns.error} ilike '%model_unavailable%'
+    or ${heartbeatRuns.error} ilike '%overload%'
+    or ${heartbeatRuns.error} ilike '%insufficient_quota%'
+    or ${heartbeatRuns.error} ilike '%credits insufficient%'
+    or ${heartbeatRuns.error} ~* '(^|[^[:alnum:]])(402|429)([^[:alnum:]]|$)'
+  )`;
+  // 402 / 429 match as whole numbers only: a substring match would fire on
+  // any id, port or duration that happens to contain those digits.
+  const noCreditsErrorExpr = sql`(${heartbeatRuns.error} is not null and (${heartbeatRuns.error} ~* '(^|[^[:alnum:]])402([^[:alnum:]]|$)' or ${heartbeatRuns.error} ilike '%insufficient_quota%' or ${heartbeatRuns.error} ilike '%credits insufficient%'))`;
+  const roleRows = await db
+    .select({
+      role: agents.role,
+      channel: channelExpr,
+      finishedCount: sql<number>`count(*)::int`,
+      succeededCount: sql<number>`count(*) filter (where ${heartbeatRuns.status} = 'succeeded')::int`,
+      refusalCount: sql<number>`count(*) filter (where ${modelRefusalExpr})::int`,
+      lastError: sql<string | null>`(array_agg(${heartbeatRuns.error} order by ${heartbeatRuns.finishedAt} desc nulls last))[1]`,
+      lastFinishedAt: sql<string | null>`max(${heartbeatRuns.finishedAt})::text`,
+      lastRefusalError: sql<string | null>`(array_agg(${heartbeatRuns.error} order by ${heartbeatRuns.finishedAt} desc nulls last) filter (where ${modelRefusalExpr}))[1]`,
+      lastRefusalAt: sql<string | null>`max(${heartbeatRuns.finishedAt}) filter (where ${modelRefusalExpr})::text`,
+      firstRefusalAt: sql<string | null>`min(${heartbeatRuns.finishedAt}) filter (where ${modelRefusalExpr})::text`,
+      noCreditsRunError: sql<string | null>`(array_agg(${heartbeatRuns.error} order by ${heartbeatRuns.finishedAt} desc nulls last) filter (where ${noCreditsErrorExpr}))[1]`,
+      noCreditsAt: sql<string | null>`max(${heartbeatRuns.finishedAt}) filter (where ${noCreditsErrorExpr})::text`,
+    })
+    .from(heartbeatRuns)
+    .innerJoin(agents, eq(agents.id, heartbeatRuns.agentId))
+    .where(and(
+      eq(heartbeatRuns.companyId, companyId),
+      eq(agents.companyId, companyId),
+      inArray(heartbeatRuns.status, ["succeeded", "failed", "timed_out"]),
+      isNotNull(heartbeatRuns.finishedAt),
+      gte(heartbeatRuns.finishedAt, windowStart),
+      // updated_at is never older than finished_at; the extra bound lets
+      // heartbeat_runs_company_status_updated_idx serve the window instead
+      // of scanning every finished run of the company.
+      gte(heartbeatRuns.updatedAt, windowStart),
+    ))
+    .groupBy(agents.role, channelExpr);
+
+  // Role cards: the >=5-refused / 0-succeeded threshold is per ROLE —
+  // runs across all channels of the role count together, so an outage
+  // spread over a primary and a fallback channel still trips it. Only
+  // runs classified as model refusals (adapter marker or provider
+  // quota/limit markers in the error text) count toward the floor:
+  // ordinary adapter/process failures must not raise this
+  // operator-critical signal.
+  const byRole = new Map<string, RoleModelDownAgg>();
+  for (const row of roleRows) {
+    const agg = byRole.get(row.role) ?? {
+      finishedCount: 0,
+      succeededCount: 0,
+      refusalCount: 0,
+      lastError: null,
+      lastFinishedAt: null,
+      lastRefusalError: null,
+      lastRefusalAt: null,
+      firstRefusalAt: null,
+      primaryChannel: row.channel,
+      primaryRuns: 0,
+    };
+    agg.finishedCount += row.finishedCount;
+    agg.succeededCount += row.succeededCount;
+    agg.refusalCount += row.refusalCount;
+    if (row.lastFinishedAt != null
+      && (agg.lastFinishedAt == null || row.lastFinishedAt > agg.lastFinishedAt)) {
+      agg.lastFinishedAt = row.lastFinishedAt;
+      agg.lastError = row.lastError;
+    }
+    if (row.lastRefusalAt != null
+      && (agg.lastRefusalAt == null || row.lastRefusalAt > agg.lastRefusalAt)) {
+      agg.lastRefusalAt = row.lastRefusalAt;
+      agg.lastRefusalError = row.lastRefusalError;
+    }
+    if (row.firstRefusalAt != null
+      && (agg.firstRefusalAt == null || row.firstRefusalAt < agg.firstRefusalAt)) {
+      agg.firstRefusalAt = row.firstRefusalAt;
+    }
+    if (row.finishedCount > agg.primaryRuns) {
+      agg.primaryRuns = row.finishedCount;
+      agg.primaryChannel = row.channel;
+    }
+    byRole.set(row.role, agg);
+  }
+  // The dedupKey is per ROLE (not per channel): ONE card per role even
+  // when several channels failed. The card disappears on the role's
+  // first successful run — the 0-succeeded condition drops out. The
+  // floor counts MODEL-REFUSAL finishes only; a role whose runs fail
+  // for ordinary (non-provider) reasons stays silent.
+  const downRoles = [...byRole.entries()]
+    .filter(([, agg]) => agg.finishedCount >= ROLE_MODEL_DOWN_MIN_RUNS
+      && agg.succeededCount === 0
+      && agg.refusalCount >= ROLE_MODEL_DOWN_MIN_RUNS);
+
+  return { roleRows, downRoles };
+}
+
+/**
+ * Roles with an active ROLE_MODEL_DOWN signal -> ISO time of the first model
+ * refusal in the window ("model unavailable since"). One query per company.
+ * The mark clears on the role's first successful run (0-succeeded condition).
+ */
+export async function listRoleModelDownSince(
+  db: Db,
+  companyId: string,
+  now: number = Date.now(),
+): Promise<Map<string, string>> {
+  const { downRoles } = await loadRoleModelDownState(db, companyId, now);
+  return new Map(downRoles.map(([role, agg]) => [role, toIso(agg.firstRefusalAt ?? agg.lastRefusalAt ?? agg.lastFinishedAt)]));
+}
+
 /**
  * Rebuild one cache key, at most once at a time.
  *
@@ -1600,6 +1785,116 @@ async function buildAttentionFeedSnapshot(
           relatedIssue: null,
           detail: { kind: "provider_usage", provider: warning.provider, windowKind: warning.window === "package" ? "package" : warning.window === "rolling_5h" ? "5h" : "week", usedPercent: warning.limit > 0 ? warning.used / warning.limit * 100 : 0, thresholdPercent: warning.thresholdPercent, resetsAt: warning.resetsAt, credentialRef: warning.credentialRef, images: [] },
         }));
+      }
+
+      // myrmidon(1.6.8 OPE-12709): ROLE-MODEL-DOWN + provider "no credits".
+      // One query over the last 30 min of finished runs joined to the agents
+      // table answers both signals:
+      //  - a role where >=5 runs finished (succeeded/failed/timed_out;
+      //    cancelled never counts — it is a deliberate stop, not a model
+      //    failure) and 0 succeeded is a role whose model channels are down —
+      //    but ONLY when every finished run failed as a MODEL REFUSAL: the
+      //    adapter marked the provider failure in resultJson
+      //    (model_unavailable / provider_error_as_content) or the error text
+      //    carries a provider quota/limit marker (model_unavailable, overload,
+      //    insufficient_quota, credits insufficient, 402, 429). Ordinary
+      //    adapter or process failures never raise this operator-critical
+      //    signal. ONE card per role with the model group and the last
+      //    provider error;
+      //  - a run whose error text carries a no-credits marker (HTTP 402 /
+      //    insufficient_quota / Credits insufficient) means the provider
+      //    channel has no money: ONE card per channel — a top-up question for
+      //    the owner, never silenced by the role cooldown.
+      // The feed rebuild is stateless, so the collector itself keeps no latch:
+      // the card disappears on the role's first successful run because the
+      // 0-succeeded condition drops out. The "at most once per hour per role"
+      // pacing of the Telegram delivery lives in the errors channel
+      // (errorChannelPublicationKey adds an hour bucket for these kinds).
+      {
+        const { roleRows, downRoles } = await loadRoleModelDownState(db, companyId, now);
+
+        for (const [role, agg] of downRoles) {
+          const observedAt = toIso(agg.lastRefusalAt ?? agg.lastFinishedAt);
+          add(createItem({
+            companyId,
+            sourceKind: "role_model_down",
+            subject: {
+              kind: "company",
+              id: `role_model_down:${companyId}:${role}`,
+              companyId,
+              title: `Role ${role}: model channels down`,
+              identifier: role,
+              status: "down",
+              href: `/${prefix}/agents`,
+              metadata: { role, modelGroup: agg.primaryChannel, finishedRuns: agg.finishedCount, refusedRuns: agg.refusalCount, succeededRuns: 0 },
+            },
+            whyNow: `All model channels for role "${role}" are down: ${agg.finishedCount} run(s) finished in the last 30 min, ${agg.refusalCount} failed as model refusals, 0 succeeded (model ${agg.primaryChannel}). Last provider error: ${agg.lastRefusalError ?? agg.lastError ?? "unknown"}.`,
+            decisionVerbs: decisionVerbs(
+              { id: "inspect", label: "Inspect", description: "Open the agents list and the provider routing." },
+              { id: "dismiss", label: "Dismiss", description: "Dismiss this alert (it re-raises when the role fails again)." },
+            ),
+            inlineResolvable: false,
+            entryRule: `${ROLE_MODEL_DOWN_MIN_RUNS}+ runs of the role finished in the last 30 min, ${ROLE_MODEL_DOWN_MIN_RUNS}+ of them model refusals (provider marked unavailable/quota-limited), 0 succeeded`,
+            exitRule: "the role's next run succeeds, or the row is dismissed.",
+            dedupKey: `role_model_down:${role}`,
+            severity: "critical",
+            activityAt: observedAt,
+            createdAt: observedAt,
+            updatedAt: observedAt,
+            relatedIssue: null,
+            detail: {
+              kind: "generic",
+              summaryExcerpt: excerpt(agg.lastError ?? "model_unavailable"),
+              images: [],
+            },
+          }));
+        }
+
+        // No-credits cards: an INDEPENDENT operator signal per channel ("a
+        // top-up question for the owner, not a repeat/cool-down" — task item
+        // 2). Raised even when its role is also down; the role card and this
+        // card answer different questions (why is the role dead vs. who pays).
+        const noCreditRows = roleRows.filter((row) => row.noCreditsRunError !== null);
+        const noCreditsSeen = new Set<string>();
+        for (const row of noCreditRows) {
+          if (noCreditsSeen.has(row.channel)) continue;
+          noCreditsSeen.add(row.channel);
+          const observedAt = toIso(row.noCreditsAt);
+          const channel = row.channel;
+          add(createItem({
+            companyId,
+            sourceKind: "provider_no_credits",
+            subject: {
+              kind: "company",
+              id: `provider_no_credits:${companyId}:${channel}`,
+              companyId,
+              title: `Provider channel ${channel}: no credits`,
+              identifier: channel,
+              status: "no_credits",
+              href: `/${prefix}/company/settings/models`,
+              metadata: { channel, role: row.role },
+            },
+            whyNow: `Provider channel "${channel}" answered "no credits" (402/insufficient_quota). The channel refuses work until the account is topped up.`,
+            decisionVerbs: decisionVerbs(
+              { id: "inspect", label: "Inspect", description: "Open the model settings and the provider billing." },
+              { id: "dismiss", label: "Dismiss", description: "Dismiss this alert (it re-raises while the channel keeps refusing)." },
+            ),
+            inlineResolvable: false,
+            entryRule: "a run's error text carries a no-credits marker (402 / insufficient_quota / Credits insufficient)",
+            exitRule: "the channel answers a run without a no-credits error, or the row is dismissed.",
+            dedupKey: `provider_no_credits:${channel}`,
+            severity: "critical",
+            activityAt: observedAt,
+            createdAt: observedAt,
+            updatedAt: observedAt,
+            relatedIssue: null,
+            detail: {
+              kind: "generic",
+              summaryExcerpt: excerpt(row.noCreditsRunError),
+              images: [],
+            },
+          }));
+        }
       }
 
       const pendingApprovals = await db
@@ -2136,6 +2431,111 @@ async function buildAttentionFeedSnapshot(
         }));
       }
 
+      // myrmidon(OPE-12879): a done task with an attached open (unmerged) pull
+      // request hides real release readiness — the six 12.11 LOST-PR closings
+      // happened exactly through this hole. Stored facts only (no GitHub calls):
+      // linked work products in an open status, plus unlinked open PR external
+      // objects matched by branch `bot/<KEY>` or the issue identifier in the title.
+      const doneIssuesWithOpenPrs = await db
+        .select({
+          id: issues.id,
+          companyId: issues.companyId,
+          identifier: issues.identifier,
+          title: issues.title,
+          status: issues.status,
+          priority: issues.priority,
+          assigneeAgentId: issues.assigneeAgentId,
+          assigneeUserId: issues.assigneeUserId,
+          updatedAt: issues.updatedAt,
+          createdAt: issues.createdAt,
+        })
+        .from(issues)
+        .where(and(
+          eq(issues.companyId, companyId),
+          eq(issues.status, "done"),
+          executionIssueCondition(),
+        ));
+      if (doneIssuesWithOpenPrs.length > 0) {
+        const doneIssueIds = doneIssuesWithOpenPrs.map((issue) => issue.id);
+        const doneOpenProducts = await db
+          .select({
+            issueId: issueWorkProducts.issueId,
+            status: issueWorkProducts.status,
+            url: issueWorkProducts.url,
+            title: issueWorkProducts.title,
+            metadata: issueWorkProducts.metadata,
+            updatedAt: issueWorkProducts.updatedAt,
+          })
+          .from(issueWorkProducts)
+          .where(and(
+            eq(issueWorkProducts.companyId, companyId),
+            inArray(issueWorkProducts.issueId, doneIssueIds),
+            eq(issueWorkProducts.type, "pull_request"),
+          ));
+        const doneOpenExternals = await db
+          .select({
+            externalId: externalObjects.externalId,
+            url: externalObjects.sanitizedCanonicalUrl,
+            data: externalObjects.data,
+            updatedAt: externalObjects.updatedAt,
+          })
+          .from(externalObjects)
+          .where(and(
+            eq(externalObjects.companyId, companyId),
+            eq(externalObjects.providerKey, "github"),
+            eq(externalObjects.objectType, "pull_request"),
+            eq(externalObjects.isTerminal, false),
+          ));
+        const prLabelFor = (url: string | null, fallback: string): string => url ?? fallback;
+        for (const issue of doneIssuesWithOpenPrs) {
+          const linkedOpen = doneOpenProducts.find((p) =>
+            issue.id === p.issueId && OPEN_PULL_REQUEST_WORK_PRODUCT_STATUSES.has(p.status)
+          );
+          let prUrl: string | null = null;
+          let prLabel: string | null = null;
+          let prActivityAt: Date | null = null;
+          if (linkedOpen) {
+            prUrl = linkedOpen.url ?? null;
+            prLabel = prLabelFor(prUrl, "the linked pull request");
+            prActivityAt = linkedOpen.updatedAt ?? null;
+          } else {
+            const targetBranch = `bot/${issue.identifier}`;
+            const external = doneOpenExternals.find((p) => {
+              const data = p.data && typeof p.data === "object" && !Array.isArray(p.data)
+                ? p.data as Record<string, unknown>
+                : {};
+              const branch = typeof data.headRef === "string" ? data.headRef : "";
+              if (branch === targetBranch) return true;
+              return extractPullRequestIssueIdentifier({ headRef: data.headRef, title: data.title }) === issue.identifier;
+            });
+            if (external) {
+              prUrl = external.url ?? null;
+              prLabel = prLabelFor(prUrl, "an unlinked open pull request");
+              prActivityAt = external.updatedAt ?? null;
+            }
+          }
+          if (!prLabel) continue;
+          add(createItem({
+            companyId,
+            sourceKind: "done_pr_not_merged",
+            subject: issueSubject(prefix, issue),
+            whyNow: `Task is marked done, but ${prLabel} is not merged — the fix is not in main or on production.`,
+            decisionVerbs: decisionVerbs({ id: "inspect", label: "Inspect", description: "Inspect the task and its open pull request." }),
+            inlineResolvable: false,
+            entryRule: "a done issue has an open (unmerged) pull request",
+            exitRule: "the pull request is merged or closed, or the issue is reopened",
+            dedupKey: `done-pr-not-merged:${issue.id}`,
+            severity: "high",
+            activityAt: toIso(prActivityAt ?? issue.updatedAt),
+            createdAt: toIso(issue.createdAt),
+            updatedAt: toIso(issue.updatedAt),
+            relatedIssue: null,
+            ...issueContext(issue),
+            detail: genericDetail(`Open pull request: ${prUrl ?? "unknown"}.`, []),
+          }));
+        }
+      }
+
       const reviewRows = await db
         .select({
           id: issues.id,
@@ -2430,6 +2830,67 @@ async function buildAttentionFeedSnapshot(
       // threshold is severity critical. Without dockergate data the statfs
       // block below runs unchanged ("not measured" — no partition card).
       const partitionState = hostDiskRuntime(db).partition.current();
+      // myrmidon(1.6.8 OPE-12697, DISK-ALERT): the host root (`/`) crossed a
+      // threshold in this process's sweep. The card names the fill level and
+      // the three consumers the board can name for the host root: docker
+      // volumes, docker images, workspace copies (paths to inspect live on
+      // the host; the board deletes nothing). One row for the whole
+      // instance, the dedup key stays constant while the level holds.
+      const rootState = hostDiskRuntime(db).root.current();
+      if (rootState.alertLevel === "warn" || rootState.alertLevel === "critical") {
+        const root = rootState.root!;
+        const thresholds = rootState.settings!;
+        const critical = rootState.alertLevel === "critical";
+        const dedupKey = "host_disk:root:/";
+        add(createItem({
+          companyId,
+          sourceKind: "host_disk_alert",
+          subject: {
+            kind: "agent",
+            id: "host-disk",
+            companyId,
+            title: "Host root disk",
+            identifier: null,
+            status: "alert",
+            href: `/${prefix}/instance`,
+            metadata: { measuredPath: root.mount, source: "dockergate" },
+          },
+          whyNow: critical
+            ? `Host root (${root.mount}) is ${Math.round(root.usedPercent)}% full — high-level alarm (critical threshold ${thresholds.rootCriticalPercent}%). Free space now: docker volumes, docker images, workspace copies.`
+            : `Host root (${root.mount}) is ${Math.round(root.usedPercent)}% full (threshold ${thresholds.rootThresholdPercent}%). Largest consumers to check: docker volumes, docker images, workspace copies.`,
+          decisionVerbs: decisionVerbs(
+            { id: "inspect", label: "Inspect", description: "Open the host disk panel and free space on the host root." },
+            { id: "dismiss", label: "Dismiss", description: "Dismiss this alert until usage drops and crosses again." },
+          ),
+          inlineResolvable: false,
+          entryRule: "the host root fill level crossed the saved threshold",
+          exitRule: "usage drops below the threshold or the row is dismissed",
+          dedupKey,
+          severity: critical ? "critical" : "high",
+          activityAt: toIso(rootState.evaluatedAt ?? root.at),
+          createdAt: toIso(root.at),
+          updatedAt: toIso(rootState.evaluatedAt ?? root.at),
+          relatedIssue: null,
+          detail: {
+            kind: "host_disk",
+            usedPercent: Math.round(root.usedPercent),
+            thresholdPercent: critical
+              ? thresholds.rootCriticalPercent
+              : thresholds.rootThresholdPercent,
+            usedGb: Math.round(root.usedBytes / (1024 * 1024 * 1024)),
+            totalGb: Math.round(root.totalBytes / (1024 * 1024 * 1024)),
+            freeGb: Math.round(root.freeBytes / (1024 * 1024 * 1024)),
+            growthBytesPerHour: null,
+            mountPoint: root.mount,
+            consumers: [
+              { path: "docker volumes", sizeGb: null },
+              { path: "docker images", sizeGb: null },
+              { path: "workspace copies", sizeGb: null },
+            ],
+            images: [],
+          },
+        }));
+      }
       if (partitionState.alertLevel === "warn" || partitionState.alertLevel === "critical") {
         const partition = partitionState.partition!;
         const thresholds = partitionState.settings!;
@@ -3115,6 +3576,55 @@ async function buildAttentionFeedSnapshot(
             },
           }));
         }
+      }
+
+      // myrmidon(OPE-12868): one card per GitHub App whose webhook GitHub
+      // reports as absent. webhook-sync (the operator endpoint that points an
+      // App's webhook at this board) latches the signal when the hook-config
+      // PATCH answers HTTP 404 — the App's "Active" webhook switch is off on
+      // the App's GitHub settings page — and clears it when a later sync is
+      // confirmed. While the switch is off the board receives no GitHub
+      // events at all, so this is an active stop, not advice. No credential
+      // reaches the signal: ids, the webhook host and timestamps only.
+      for (const signal of readGitHubAppWebhookDisabledSignals(companyId)) {
+        add(createItem({
+          companyId,
+          sourceKind: "github_app_webhook_disabled",
+          subject: {
+            kind: "company",
+            id: signal.entryId,
+            companyId,
+            title: "GitHub App webhook disabled",
+            identifier: null,
+            status: "alert",
+            href: `/${prefix}/instance`,
+            metadata: {
+              appId: signal.appId,
+              webhookHost: signal.webhookHost,
+              firstSeenAt: signal.firstSeenAt,
+              lastSeenAt: signal.lastSeenAt,
+            },
+          },
+          whyNow: githubAppWebhookDisabledSignalWhyNow(signal),
+          decisionVerbs: decisionVerbs(
+            { id: "inspect", label: "Inspect", description: "Open the GitHub shared identity settings and re-run webhook sync after enabling the webhook." },
+            { id: "dismiss", label: "Dismiss", description: "Dismiss this alert until the next sync reports the webhook again." },
+          ),
+          inlineResolvable: false,
+          entryRule: "a webhook sync got HTTP 404 from GitHub on the App's hook config (webhook not Active)",
+          exitRule: "a webhook sync is confirmed by GitHub or the row is dismissed",
+          dedupKey: githubAppWebhookDisabledSignalDedupKey(signal),
+          severity: githubAppWebhookDisabledSignalSeverity(),
+          activityAt: signal.lastSeenAt,
+          createdAt: signal.firstSeenAt,
+          updatedAt: signal.lastSeenAt,
+          relatedIssue: null,
+          detail: {
+            kind: "generic",
+            summaryExcerpt: excerpt(`App ${signal.appId}: webhook not Active on the App's GitHub settings page; board receives no GitHub events (webhook host ${signal.webhookHost}).`),
+            images: [],
+          },
+        }));
       }
 
       // myrmidon(REVIEW-ROUTING): one card per task whose review has no

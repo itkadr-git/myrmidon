@@ -134,19 +134,51 @@ function shorten(line: string, max: number): string {
  */
 export function extractReleaseNotes(
   releases: readonly StackReleaseRecord[],
-  options: { limit?: number; lineMax?: number } = {},
+  options: { limit?: number; lineMax?: number; localVersion?: string | null } = {},
 ): StackReleaseNotes | null {
   const limit = options.limit ?? STACK_NOTE_LINE_LIMIT;
   const lineMax = options.lineMax ?? STACK_NOTE_LINE_MAX;
   const lines: string[] = [];
   let truncated = false;
   let hasSecurity = false;
+
+  // Security notes should only flag security when the note is in
+  // upstream.latest or in releases newer than the running local version. The
+  // range is decided by version comparison, not feed position: the fetched
+  // window is bounded (per_page releases), so a local version older than the
+  // window is absent from the list yet still behind — a position lookup would
+  // classify it as unknown and skip the security releases between it and
+  // upstream.latest.
+  const ours = normaliseVersion(options.localVersion ?? null);
+  const relevantForSecurity = new Set<string>();
+  if (releases.length > 0) {
+    // Newest entry by version comparison; null when some tag carries no
+    // comparable version (a moving tag, a hash) — fall back to feed order,
+    // which the API returns newest-first.
+    const latestIndex = findMaxTagIndex(releases);
+    const latestTag = latestIndex != null ? releases[latestIndex].tag : releases[0].tag;
+    const behind = compareVersionTags(latestTag, ours);
+    if (behind == null || behind <= 0) {
+      // Unknown local version, or already running the newest release the feed
+      // offers (or something newer): only upstream.latest counts.
+      relevantForSecurity.add(releases[0].tag);
+    } else {
+      // Local version is behind: every release strictly newer than it is in range.
+      for (const release of releases) {
+        const newer = compareVersionTags(release.tag, ours);
+        if (newer != null && newer > 0) relevantForSecurity.add(release.tag);
+      }
+    }
+  }
+
   for (const release of releases) {
     if (!release.body) continue;
     for (const rawLine of release.body.split(/\r?\n/)) {
       if (rawLine.includes("|")) continue; // markdown table rows carry the whole row
       if (!NOTABLE_LINE.test(rawLine)) continue;
-      if (SECURITY_LINE.test(rawLine)) hasSecurity = true;
+      if (SECURITY_LINE.test(rawLine) && relevantForSecurity.has(release.tag)) {
+        hasSecurity = true;
+      }
       if (lines.length >= limit) {
         truncated = true;
         continue;
@@ -182,6 +214,57 @@ export function normaliseVersion(value: string | null): string | null {
   const afterColon = trimmed.slice(trimmed.lastIndexOf(":") + 1);
   const candidate = afterColon.includes("/") ? trimmed : afterColon;
   return candidate.replace(/^v(?=\d)/i, "").toLowerCase();
+}
+
+/**
+ * Compare two version tags: negative when `left` is older, positive when
+ * newer, 0 when equal. Null when either side carries no comparable core
+ * version (a moving tag, a bare hash) — callers must fall back to feed order
+ * instead of guessing. Numeric parts compare numerically ("2.10.0" > "2.9.0"),
+ * alphanumeric suffixes lexically ("3.2.0-beta" < "3.2.0").
+ */
+export function compareVersionTags(left: string | null, right: string | null): number | null {
+  const a = parseComparableVersion(left);
+  const b = parseComparableVersion(right);
+  if (!a || !b) return null;
+  const width = Math.max(a.numbers.length, b.numbers.length);
+  for (let i = 0; i < width; i++) {
+    const av = a.numbers[i] ?? 0;
+    const bv = b.numbers[i] ?? 0;
+    if (av !== bv) return av < bv ? -1 : 1;
+  }
+  // Suffixes: "3.2.0" (empty) is newer than "3.2.0-beta".
+  if (a.suffix !== b.suffix) {
+    if (!a.suffix) return 1;
+    if (!b.suffix) return -1;
+    return a.suffix < b.suffix ? -1 : 1;
+  }
+  return 0;
+}
+
+/** A tag is comparable when it carries a numeric core version ("3.2.0-rc1"). */
+function parseComparableVersion(value: string | null): { numbers: number[]; suffix: string } | null {
+  const normalised = normaliseVersion(value);
+  if (!normalised) return null;
+  const m = /^(\d+(?:\.\d+)*)(.*)$/.exec(normalised);
+  if (!m) return null;
+  return { numbers: m[1]!.split(".").map((part) => Number(part) || 0), suffix: m[2]! };
+}
+
+/**
+ * Index of the newest comparable tag in an ordered release list, or null when
+ * no tag carries a comparable core version. Ties keep the earliest entry.
+ */
+export function findMaxTagIndex(releases: readonly StackReleaseRecord[]): number | null {
+  let best: number | null = null;
+  for (let i = 0; i < releases.length; i++) {
+    const tag = releases[i]?.tag ?? null;
+    if (!parseComparableVersion(tag)) continue;
+    if (best == null || (compareVersionTags(tag, releases[best]!.tag) ?? 0) > 0) {
+      best = i;
+    }
+  }
+  return best;
 }
 
 /** True for pre-release / nightly / rc tags that must not count as "latest". */

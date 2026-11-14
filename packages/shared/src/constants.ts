@@ -538,7 +538,7 @@ export type ExternalObjectMentionConfidence = (typeof EXTERNAL_OBJECT_MENTION_CO
 export const ISSUE_EXECUTION_POLICY_MODES = ["normal", "auto"] as const;
 export type IssueExecutionPolicyMode = (typeof ISSUE_EXECUTION_POLICY_MODES)[number];
 
-export const ISSUE_EXECUTION_STAGE_TYPES = ["review", "approval"] as const;
+export const ISSUE_EXECUTION_STAGE_TYPES = ["review", "approval", "verify"] as const;
 export type IssueExecutionStageType = (typeof ISSUE_EXECUTION_STAGE_TYPES)[number];
 
 export const ISSUE_MONITOR_SCHEDULED_BY = ["assignee", "board"] as const;
@@ -893,10 +893,15 @@ export const FINANCE_UNITS = [
 ] as const;
 export type FinanceUnit = (typeof FINANCE_UNITS)[number];
 
-export const BUDGET_SCOPE_TYPES = ["company", "agent", "project"] as const;
+// myrmidon(1.7 TOKEN-BUDGET-SIGNAL, OPE-12232): the issue scope and the
+// issue_tokens metric carry the token budget — a signal, never a limit
+// (Alex's epic decision). The money pipeline branches on these values:
+// every pause/incident/admission path checks metric === "billed_cents"
+// and skips anything else, so a token policy can never pause a scope.
+export const BUDGET_SCOPE_TYPES = ["company", "agent", "project", "issue"] as const;
 export type BudgetScopeType = (typeof BUDGET_SCOPE_TYPES)[number];
 
-export const BUDGET_METRICS = ["billed_cents"] as const;
+export const BUDGET_METRICS = ["billed_cents", "issue_tokens"] as const;
 export type BudgetMetric = (typeof BUDGET_METRICS)[number];
 
 export const BUDGET_WINDOW_KINDS = ["calendar_month_utc", "lifetime"] as const;

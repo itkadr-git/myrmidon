@@ -29,6 +29,8 @@
 "use strict";
 
 const { spawn } = require("node:child_process");
+const fs = require("node:fs");
+const path = require("node:path");
 const { devbuildPresent, refusalMessage } = require("./devbuild-gate.js");
 const { applyHeavyFallback } = require("./heavy-fallback.js");
 
@@ -55,6 +57,76 @@ const LIGHT = new Set([
 // `pnpm store <probe>` passes; `pnpm store <anything else>` refuses.
 const STORE_LIGHT = new Set(["status", "path"]);
 
+// myrmidon(1.6.8 BOT-PNPM-STORE-FS): pnpm 10 refuses to purge an existing
+// node_modules whose .modules.yaml points at a different storeDir when the
+// session has no TTY (ERR_PNPM_ABORTED_REMOVE_MODULES_DIR_NO_TTY). Agents
+// install without a TTY, so the wrapper must inject the non-interactive
+// confirmation for the mutating subcommands that can hit this path.
+// `confirmModulesPurge` is only read from the CLI (env/.npmrc do NOT work),
+// hence the explicit --config.* flag here.
+const PURGE_SUBCOMMANDS = new Set(["install", "add"]);
+const PURGE_FLAG = "--config.confirm-modules-purge=false";
+
+// pnpm global/shared options that take their value as a SEPARATE argv
+// element (`--dir /x`, `-C /x`, `--filter foo`). The `--opt=value` form
+// carries its value in one element and needs no skipping. Boolean flags
+// (-r, -w, --frozen-lockfile, ...) and dotted `--config.x=y` are not here.
+const VALUE_OPTIONS = new Set([
+  "--dir",
+  "-C",
+  "--filter",
+  "-F",
+  "--filter-prod",
+  "--workspace-dir",
+  "--store-dir",
+  "--cache-dir",
+  "--state-dir",
+  "--global-dir",
+  "--global-bin-dir",
+  "--lockfile-dir",
+  "--modules-dir",
+  "--virtual-store-dir",
+  "--registry",
+  "--reporter",
+  "--loglevel",
+  "--use-node-version",
+  "--network-concurrency",
+  "--child-concurrency",
+  "--workspace-concurrency",
+  "--test-pattern",
+  "--changed-files-ignore-pattern",
+  "--package-import-method",
+  "--node-linker",
+  "--config",
+]);
+
+// First positional argument (the subcommand), skipping options and the
+// separate values of VALUE_OPTIONS; `--` ends option parsing, so the next
+// element is positional.
+function findSubcommand(argv) {
+  for (let i = 0; i < argv.length; i++) {
+    const a = argv[i];
+    if (a === "--") return argv[i + 1];
+    if (a.startsWith("-")) {
+      if (VALUE_OPTIONS.has(a)) i++; // consume the separate value
+      continue;
+    }
+    return a;
+  }
+  return undefined;
+}
+
+function needsPurgeFlag(argv) {
+  const first = findSubcommand(argv);
+  return first !== undefined && PURGE_SUBCOMMANDS.has(first);
+}
+
+function withPurgeFlag(argv) {
+  // Idempotent: do not duplicate the flag if the caller already passed it.
+  if (argv.includes(PURGE_FLAG)) return argv;
+  return [PURGE_FLAG, ...argv];
+}
+
 function isLight(argv) {
   // A flag cluster like `-v --loglevel warn` stays light if the FIRST
   // non-flag argument is a light subcommand.
@@ -69,6 +141,64 @@ function isLight(argv) {
   return false;
 }
 
+// myrmidon(OPE-13112): the image bakes `ENV npm_config_store_dir=/workspace/.pnpm-store`,
+// and the board's profile writes its own value (the shared /cache/pnpm-store) only
+// into ${HERMES_HOME}/.env. A process that did not get that file merged over its
+// environment (the agent's shell, anything below the gateway) still sees the image
+// default, so `pnpm store path` and every install used the per-bot store whatever
+// the profile said. The wrapper is the one door pnpm is reached through: it reads
+// the profile value itself and lets it win, provided it is an absolute path the bot
+// can write (the directory, or for a missing one its nearest existing parent). A
+// profile without the key, or with an unusable path, leaves the environment alone
+// (the image default /workspace/.pnpm-store stays).
+const STORE_ENV = "npm_config_store_dir";
+
+function profileEnvValue(file, name) {
+  let text;
+  try {
+    text = fs.readFileSync(file, "utf8");
+  } catch {
+    return "";
+  }
+  let value = "";
+  for (const line of text.split("\n")) {
+    if (line.startsWith(name + "=")) {
+      value = line.slice(name.length + 1).replace(/\r$/, "");
+      break;
+    }
+  }
+  const quoted = value.match(/^(["'])(.*)\1$/);
+  return (quoted ? quoted[2] : value).trim();
+}
+
+function writableOrCreatable(dir) {
+  let probe = dir;
+  for (let i = 0; i < 64; i++) {
+    try {
+      if (fs.statSync(probe).isDirectory()) {
+        fs.accessSync(probe, fs.constants.W_OK);
+        return true;
+      }
+      return false;
+    } catch (err) {
+      if (!err || err.code !== "ENOENT") return false;
+      const parent = path.dirname(probe);
+      if (parent === probe) return false;
+      probe = parent;
+    }
+  }
+  return false;
+}
+
+function withProfileStore(baseEnv) {
+  const home = baseEnv.HERMES_HOME || "/data/hermes";
+  const wanted = profileEnvValue(path.join(home, ".env"), STORE_ENV);
+  if (!wanted || !path.isAbsolute(wanted) || !writableOrCreatable(wanted)) {
+    return baseEnv;
+  }
+  return { ...baseEnv, [STORE_ENV]: wanted };
+}
+
 function runReal(argv, { light = false } = {}) {
   // myrmidon(1.6.5 DEVBUILD-IN-BOTS): a heavy pnpm lane (install/test/exec
   // — only reachable with the gateway present, i.e. in a build container)
@@ -80,6 +210,9 @@ function runReal(argv, { light = false } = {}) {
     env = fb.env;
     if (fb.warning) process.stderr.write(fb.warning + "\n");
   }
+  env = withProfileStore(env);
+  // argv already carries the purge flag when needed: main() injected it
+  // before the devbuild-gate decision so the refusal line shows it too.
   const child = spawn(REAL_PNPM, argv, { stdio: "inherit", env });
   for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"]) {
     process.on(signal, () => child.kill(signal));
@@ -94,7 +227,10 @@ function runReal(argv, { light = false } = {}) {
 }
 
 function main() {
-  const argv = process.argv.slice(2);
+  // Apply the purge-flag injection up front: it must be visible in the
+  // refusal message too (the operator copy-pastes the devbuild line).
+  let argv = process.argv.slice(2);
+  argv = needsPurgeFlag(argv) ? withPurgeFlag(argv) : argv;
   if (devbuildPresent()) {
     runReal(argv);
     return;

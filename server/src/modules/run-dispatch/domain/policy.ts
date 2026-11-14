@@ -177,6 +177,12 @@ export type QueuedRunFacts = {
    */
   isUnblockOwnerWake?: boolean;
   /**
+   * myrmidon(OPE-13095): the run is the starter-pack scout's wake
+   * (`starter_pack_scout`) on a new engineer task. The scout is not the assignee
+   * and must be allowed to start; the assignee does not change.
+   */
+  isStarterPackScoutWake?: boolean;
+  /**
    * myrmidon(OPE-11948): the run is an automatic `issue_continuation_needed`
    * wake of the system — no comment, no resume intent, no interaction. It is
    * only worth starting while the issue is todo or in_progress.
@@ -212,6 +218,8 @@ type OwnershipFacts = {
   isRunGuardStopNeedsInputWake?: boolean;
   // myrmidon(UNBLOCK-OWNER-WAKE): the block owner's unblock wake
   isUnblockOwnerWake?: boolean;
+  // myrmidon(OPE-13095): the starter-pack scout's wake on a new engineer task
+  isStarterPackScoutWake?: boolean;
 };
 
 type OwnershipOutcome = "current_owner" | "reassigned";
@@ -232,6 +240,7 @@ function decideIssueOwnership(facts: OwnershipFacts): OwnershipOutcome {
   if (facts.isAuthorizedSourceScopedRecovery) return "current_owner";
   if (facts.isRunGuardStopNeedsInputWake) return "current_owner";
   if (facts.isUnblockOwnerWake) return "current_owner";
+  if (facts.isStarterPackScoutWake) return "current_owner";
   return "reassigned";
 }
 
@@ -638,6 +647,7 @@ export function decideQueuedRunStaleness(
     isProductiveContinuationRecovery: facts.isProductiveContinuationRecovery,
     isRunGuardStopNeedsInputWake: facts.isRunGuardStopNeedsInputWake,
     isUnblockOwnerWake: facts.isUnblockOwnerWake,
+    isStarterPackScoutWake: facts.isStarterPackScoutWake,
   });
   if (ownership === "reassigned") {
     return {
@@ -683,8 +693,20 @@ export function decideQueuedRunStaleness(
     // Cancelling the run as terminal drops the addressee's only chance to
     // answer: the same false cancellation the ownership bypass (P2) already
     // prevents for a non-assignee addressee.
+    //
+    // myrmidon(RUN-SETUP-STALE-TASK / CLOSED-TASK-COMMENT-RUN): an assignment wake
+    // carries the hand-off comment, and an assignee comment wake on a closed task
+    // has no active execution continuation. When the task closed while that run
+    // waited for the agent's slot, the comment bypass let the run start and it
+    // then failed setup (`continuation_task_ownership_changed`, 17 failed runs in
+    // 7 days). For the assignee, a comment wake no longer bypasses terminal status;
+    // non-assignees still bypass.
     terminalBypass:
-      facts.resumeIntent || facts.wakeCommentIdPresent || facts.isPendingInteractionAddresseeWake === true,
+      facts.resumeIntent ||
+      (facts.wakeCommentIdPresent &&
+        facts.wakeReason !== "issue_assigned" &&
+        facts.runAgentId !== facts.issueAssigneeAgentId) ||
+      facts.isPendingInteractionAddresseeWake === true,
   });
   if (statusOutcome === "terminal") {
     return {

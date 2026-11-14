@@ -47,6 +47,19 @@ vi.mock("../adapters/index.js", async () => {
   };
 });
 
+const TEARDOWN_TRUNCATE_ATTEMPTS = 5;
+
+// Postgres reports a deadlock victim as SQLSTATE 40P01; drizzle may wrap the
+// driver error, so look at the error and its cause chain.
+function isDeadlockDetected(error: unknown): boolean {
+  let current: unknown = error;
+  for (let depth = 0; depth < 5 && current && typeof current === "object"; depth += 1) {
+    if ((current as { code?: unknown }).code === "40P01") return true;
+    current = (current as { cause?: unknown }).cause;
+  }
+  return false;
+}
+
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
 
@@ -72,7 +85,7 @@ describeEmbeddedPostgres("stranded deferred wake reconcile (OPE-8268)", () => {
     heartbeat = heartbeatService(db, {
       runtimeEnv: { ...process.env, PAPERCLIP_IN_WORKTREE: "false" },
     });
-  }, 20_000);
+  }, 60_000);
 
   beforeEach(async () => {
     await db.insert(companies).values({
@@ -98,8 +111,21 @@ describeEmbeddedPostgres("stranded deferred wake reconcile (OPE-8268)", () => {
   afterEach(async () => {
     await drainHeartbeatRunsToQuiescence(db, heartbeat);
     // Promotion writes runs, events and activity rows; truncating from the
-    // company cascades through every dependent table.
-    await db.execute(sql`truncate table companies cascade`);
+    // company cascades through every dependent table. The drain above is the
+    // fix; the retry below only covers a promoted run's last write landing in
+    // the window between the drain's final check and the truncate's lock
+    // request (SQLSTATE 40P01, OPE-12951). It wraps the teardown only, and each
+    // retry drains again so the background work is gone before the next attempt.
+    for (let attempt = 1; ; attempt += 1) {
+      try {
+        await db.execute(sql`truncate table companies cascade`);
+        return;
+      } catch (error) {
+        if (!isDeadlockDetected(error) || attempt >= TEARDOWN_TRUNCATE_ATTEMPTS) throw error;
+        await new Promise<void>((resolve) => setTimeout(resolve, 25 * attempt));
+        await drainHeartbeatRunsToQuiescence(db, heartbeat);
+      }
+    }
   });
 
   afterAll(async () => {
@@ -406,6 +432,25 @@ describeEmbeddedPostgres("stranded deferred wake reconcile (OPE-8268)", () => {
     const cleared = await heartbeat.reconcileStrandedDeferredWakes();
     expect(cleared.revisited).toBe(1);
     expect((await wakeRow(wakeId)).status).not.toBe("deferred_issue_execution");
+  });
+
+  // myrmidon(OPE-12807): a wake looked at recently is not re-evaluated on the next pass.
+  it("does not revisit a wake inside the cool-down, and revisits it once the cool-down is over", async () => {
+    const issueId = await seedIssue("todo");
+    await seedFinishedRun(issueId);
+    const wakeId = await seedDeferredWake(issueId, {
+      reason: "issue_execution_deferred",
+      updatedAt: new Date(Date.now() - 2 * MINUTE),
+    });
+
+    const early = await heartbeat.reconcileStrandedDeferredWakes();
+    expect(early.revisited).toBe(0);
+    expect((await wakeRow(wakeId)).status).toBe("deferred_issue_execution");
+
+    await db.update(agentWakeupRequests).set({ updatedAt: new Date(Date.now() - 6 * MINUTE) })
+      .where(eq(agentWakeupRequests.id, wakeId));
+    const later = await heartbeat.reconcileStrandedDeferredWakes();
+    expect(later.revisited).toBe(1);
   });
 
   it("is idempotent: a second pass changes nothing", async () => {

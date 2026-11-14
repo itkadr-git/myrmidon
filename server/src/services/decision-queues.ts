@@ -32,6 +32,7 @@ import { readStackDocument } from "../myrmidon/stack-registry/store.js";
 import { LITELLM_BUDGET_ATTENTION_DEDUP_PREFIX } from "../myrmidon/litellm-costs/attention.js";
 // myrmidon(OPE-11890): the auth-401 burst signal registry (process-level latch).
 import { readAuth401BurstSignal } from "../myrmidon/auth-401-burst/index.js";
+import { hasGitHubAppWebhookDisabledSignal } from "../myrmidon/github-shared-identity/webhook-disabled-signal.js";
 import { logActivity } from "./activity-log.js";
 import {
   authorizationService,
@@ -309,6 +310,12 @@ async function sourceIssueId(
     case "auth_401_burst": {
       return { exists: readAuth401BurstSignal() !== null, issueId: null };
     }
+    // myrmidon(OPE-12868): the webhook-disabled signal is process-level state;
+    // the source id is the App entry id — existence is the live latch, which
+    // webhook-sync clears on the next confirmed sync.
+    case "github_app_webhook_disabled": {
+      return { exists: hasGitHubAppWebhookDisabledSignal(companyId, sourceId), issueId: null };
+    }
     // myrmidon(1.6.5-PAUSE-GUARD): the leftover-pauses signal subject is the
     // company itself (one card per company), so existence is always true while
     // the board runs — the sweep computes the signal, nothing is stored.
@@ -347,7 +354,9 @@ async function sourceIssueId(
     case "issue_monitor_overdue":
     // myrmidon(1.6.5 BOT-DISK-H4c): the archive card sits on the task.
     case "bot_disk_archive":
-    // myrmidon(OPE-6011): the held-task card's subject is the held task.
+    // myrmidon(OPE-12879): the done-with-open-PR card sits on the task too.
+    case "done_pr_not_merged":
+    // myrmidon(1.6.5 F-09): the held-task card's subject is the held task.
     case "replay_blocked":
     case "execution_hold":
     case "stale_block": {
@@ -418,6 +427,13 @@ async function sourceIssueId(
       return { exists: true, issueId: null };
     }
     case "provider_usage_warning": {
+      return { exists: sourceId.length > 0, issueId: null };
+    }
+    // myrmidon(1.6.8 OPE-12709): role-model-down / no-credits cards are
+    // computed operator alerts (like provider_usage_warning) with no backing
+    // issue row — the subject id is the company-scoped card key.
+    case "role_model_down":
+    case "provider_no_credits": {
       return { exists: sourceId.length > 0, issueId: null };
     }
     // myrmidon(1.6.5-F-18): the empty-catalog card is computed from the

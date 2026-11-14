@@ -48,7 +48,7 @@ describeEmbeddedPostgres("run-dispatch postgres adapter", () => {
   beforeAll(async () => {
     tempDb = await startEmbeddedPostgresTestDatabase("paperclip-run-dispatch-postgres-adapter-");
     db = createDb(tempDb.connectionString);
-  }, 20_000);
+  }, 60_000);
 
   afterEach(async () => {
     await db.delete(activityLog);
@@ -595,6 +595,25 @@ describeEmbeddedPostgres("run-dispatch postgres adapter", () => {
       .from(heartbeatRuns).where(eq(heartbeatRuns.id, runId)).then((rows) => rows[0]);
     expect(persisted).toMatchObject({ status: "cancelled", errorCode: "queued_run_stale_timeout" });
     expect(persisted?.error).toContain("30 minutes");
+  });
+
+  // myrmidon(RESUME-AFTER-CANCEL): an old queued run of a paused agent waits for
+  // the resume; it is not expired, so no replacement wake is attempted.
+  it("does not expire an old queued run of a paused agent, and expires it once the agent is resumed", async () => {
+    const { companyId, agentId } = await seedCompanyAndAgent();
+    await db.update(agents).set({ status: "paused", pauseReason: "manual" }).where(eq(agents.id, agentId));
+    const now = new Date();
+    const runId = await seedRun({ companyId, agentId, now: new Date(now.getTime() - 31 * 60 * 1000) });
+    const input = { runId, companyId, expectedStatus: "queued" as const, staleAfterMs: 30 * 60 * 1000, now };
+
+    expect(await createPostgresRunDispatchAdapter(db).cancelStaleQueuedRun(input)).toMatchObject({ outcome: "not_stale" });
+    const held = await db.select({ status: heartbeatRuns.status }).from(heartbeatRuns).where(eq(heartbeatRuns.id, runId)).then((rows) => rows[0]);
+    expect(held?.status).toBe("queued");
+
+    await db.update(agents).set({ status: "idle", pauseReason: null }).where(eq(agents.id, agentId));
+    expect(await createPostgresRunDispatchAdapter(db).cancelStaleQueuedRun(input)).toMatchObject({
+      outcome: "cancelled", errorCode: "queued_run_stale_timeout",
+    });
   });
 
   it("maps a reassigned issue into a stale queued-run decision", async () => {

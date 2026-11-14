@@ -6,7 +6,10 @@
 
 import { getServerInfoSnapshot, type ServerInfoSnapshot } from "../../server-info.js";
 import { request as httpRequest } from "node:http";
+import type { Db } from "@myrmidon/db";
+import { GATEWAY_BASE_URL_ENV } from "@myrmidon/shared";
 import {
+  VENDOR_MIGRATION_SUPPORTED_VERSION,
   STACK_DOCUMENT_VERSION,
   STACK_SEED,
   emptyStackDocument,
@@ -17,6 +20,13 @@ import {
   type StackSeedComponent,
   type StackSnapshot,
 } from "./domain.js";
+import { readInstanceGeneral } from "./store.js";
+import { AGENT_MEMORY_SETTINGS_KEY } from "../agent-memory/settings.js";
+import { EVALS_LANGFUSE_BASE_URL_ENV } from "../evals/langfuse.js";
+import {
+  MEMORY_HINDSIGHT_API_URL_ENV,
+  MEMORY_BOT_HINDSIGHT_API_URL_ENV,
+} from "../agent-memory/settings.js";
 
 export const STACK_DOCKER_SOCKET_ENV = "MYRMIDON_STACK_DOCKER_SOCKET";
 export const DEFAULT_STACK_DOCKER_SOCKET = "/var/run/docker.sock";
@@ -109,11 +119,28 @@ function imageRefWithoutTag(ref: string): string {
   return lastSegment.includes(":") ? ref.slice(0, ref.lastIndexOf(":")) : ref;
 }
 
+/** OPE-12922: operator binding of the exact image refs of a docker-image component. */
+export const STACK_IMAGE_ENV_PREFIX = "MYRMIDON_STACK_IMAGE_";
+
+/** MYRMIDON_STACK_IMAGE_<NAME>: NAME is the component name upper-cased, "-" -> "_". */
+export function stackImageEnvName(componentName: string): string {
+  return `${STACK_IMAGE_ENV_PREFIX}${componentName.toUpperCase().replace(/-/g, "_")}`;
+}
+
 async function probeDockerImages(
   seed: StackSeedComponent,
   images: DockerImagesPort,
+  env: NodeJS.ProcessEnv = {},
 ): Promise<StackSnapshot["local"]> {
-  const refs = seed.imageRefs ?? [];
+  // OPE-12922: the seed refs carry no tag, and an untagged inspect resolves to
+  // ":latest", which production does not run. The operator names the exact
+  // refs (tag or digest), comma-separated; they are inspected untouched.
+  const override = (env[stackImageEnvName(seed.name)] ?? "")
+    .split(",")
+    .map((r) => r.trim())
+    .filter((r) => r !== "");
+  const exact = override.length > 0;
+  const refs = exact ? override : (seed.imageRefs ?? []);
   const states: StackSnapshot["local"] = {
     version: null,
     commit: null,
@@ -135,12 +162,18 @@ async function probeDockerImages(
     // the previous cache survives. A missing image or an unreachable docker
     // socket (null — see dockerImagesPort) is a normal, per-component unknown,
     // not a failure: the board container has no docker.sock by design.
-    const summary = await images(imageRefWithoutTag(ref));
+    const summary = await images(exact ? ref : imageRefWithoutTag(ref));
     if (!summary) continue;
     found = true;
     runningOn.push(summary.repoTag ?? ref);
-    if (!states.version && summary.repoTag) states.version = summary.repoTag;
-    if (!states.digest && summary.digest) states.digest = summary.digest;
+    // Through dockergate the answer is labels-only (no RepoTags/RepoDigests):
+    // for an exact operator ref the ref itself is the version, and a
+    // repo@sha256:<digest> ref carries its digest.
+    if (!states.version) states.version = summary.repoTag ?? (exact ? ref : null);
+    if (!states.digest) {
+      const refDigest = exact && ref.includes("@sha256:") ? ref.slice(ref.indexOf("@") + 1) : null;
+      states.digest = summary.digest ?? refDigest;
+    }
   }
   if (found) {
     states.runningOn = runningOn.join(", ");
@@ -158,16 +191,88 @@ const HTTP_VERSION_REQUEST_TIMEOUT_MS = 5_000;
 /**
  * The endpoint each http-version component is probed on, relative to the base
  * URL the operator binds through MYRMIDON_STACK_HTTP_<NAME> (the documented
- * contract: one GET <base>/<endpoint> returning JSON with a `version` field).
+ * contract: one GET <base>/<endpoint> returning JSON with a version field).
+ * LiteLLM has no /version route; its public model-hub info endpoint answers
+ * the version as `litellm_version` (see httpVersionField on the seed).
  */
 const HTTP_VERSION_ENDPOINT_PATHS: Record<string, string> = {
   hindsight: "/version",
-  litellm: "/version",
+  litellm: "/public/model_hub/info",
   langfuse: "/api/public/health",
 };
 
 function httpVersionEndpointFor(seedName: string): string {
   return HTTP_VERSION_ENDPOINT_PATHS[seedName] ?? "/version";
+}
+
+/**
+ * STACK-PROBE-ENDPOINTS: the board already knows where its pinned components
+ * live — the LLM gateway base URL (MYRMIDON_LITELLM_BASE_URL), the agent
+ * memory service (instance setting general.agentMemory.apiUrl, then
+ * MYRMIDON_HINDSIGHT_API_URL / MYRMIDON_BOT_HINDSIGHT_API_URL, the same
+ * precedence readMemoryUiSettings uses) and the evals Langfuse contour
+ * (MYRMIDON_EVALS_LANGFUSE_BASE_URL). Those addresses feed the http-version
+ * probe when the dedicated MYRMIDON_STACK_HTTP_<NAME> override is not set;
+ * the override stays the first choice.
+ */
+export interface BoardEndpoints {
+  litellm: string | null;
+  hindsight: string | null;
+  langfuse: string | null;
+}
+
+/** An http(s) URL string, or null when unset/invalid (never throws). */
+function readHttpUrl(value: string | undefined): string | null {
+  const trimmed = value?.trim();
+  if (!trimmed) return null;
+  try {
+    const parsed = new URL(trimmed);
+    if (parsed.protocol !== "http:" && parsed.protocol !== "https:") return null;
+  } catch {
+    return null;
+  }
+  return trimmed;
+}
+
+/** Hindsight address precedence mirror of readMemoryUiSettings: the instance
+ * setting, then MYRMIDON_HINDSIGHT_API_URL, then the bot-addressed fallback. */
+function hindsightBoardUrl(general: Record<string, unknown> | null, env: NodeJS.ProcessEnv): string | null {
+  const stored = general?.[AGENT_MEMORY_SETTINGS_KEY];
+  const apiUrl =
+    stored && typeof stored === "object" && !Array.isArray(stored)
+      ? readHttpUrl((stored as Record<string, unknown>).apiUrl as string | undefined)
+      : null;
+  return (
+    apiUrl ??
+    readHttpUrl(env[MEMORY_HINDSIGHT_API_URL_ENV]) ??
+    readHttpUrl(env.HINDSIGHT_API_URL) ??
+    readHttpUrl(env[MEMORY_BOT_HINDSIGHT_API_URL_ENV])
+  );
+}
+
+/** The addresses the board already knows, from the stored instance settings
+ * and the process environment. Absent db (unit tests) reads env-only. */
+export async function readBoardEndpoints(db: Pick<Db, "select"> | null, env: NodeJS.ProcessEnv): Promise<BoardEndpoints> {
+  const general = db ? await readInstanceGeneral(db).catch(() => null) : null;
+  return {
+    litellm: readHttpUrl(env[GATEWAY_BASE_URL_ENV]) ?? readHttpUrl(env.LITELLM_BASE_URL),
+    hindsight: hindsightBoardUrl(general, env),
+    langfuse: readHttpUrl(env[EVALS_LANGFUSE_BASE_URL_ENV]),
+  };
+}
+
+/** Board-address fallback per component; null when the component has none. */
+function boardEndpointFor(name: string, endpoints: BoardEndpoints): string | null {
+  switch (name) {
+    case "litellm":
+      return endpoints.litellm;
+    case "hindsight":
+      return endpoints.hindsight;
+    case "langfuse":
+      return endpoints.langfuse;
+    default:
+      return null;
+  }
 }
 
 interface HttpJsonResponse {
@@ -196,11 +301,12 @@ async function httpJsonRequest(url: URL): Promise<HttpJsonResponse> {
 }
 
 /**
- * Parse an HTTP version response body: JSON with a `version` or `api_version`
- * field (non-empty string). Any other shape answers null (an honest unknown
- * instead of crashing).
+ * Parse an HTTP version response body: JSON with the component's preferred
+ * version field (when the seed names one) or the generic `version` /
+ * `api_version` field (non-empty string). Any other shape answers null (an
+ * honest unknown instead of crashing).
  */
-function extractVersionField(body: string): string | null {
+function extractVersionField(body: string, preferredField?: string): string | null {
   let parsed: unknown;
   try {
     parsed = JSON.parse(body);
@@ -209,7 +315,9 @@ function extractVersionField(body: string): string | null {
   }
   if (!parsed || typeof parsed !== "object") return null;
   const obj = parsed as Record<string, unknown>;
-  for (const raw of [obj.version, obj.api_version]) {
+  const fields = preferredField ? [preferredField, "version", "api_version"] : ["version", "api_version"];
+  for (const field of fields) {
+    const raw = obj[field];
     if (typeof raw === "string" && raw.trim().length > 0) {
       return raw.trim();
     }
@@ -220,10 +328,18 @@ function extractVersionField(body: string): string | null {
 /**
  * http-version probe (STACK-WATCH-LIVE): read the component's own version over
  * HTTP. The endpoint URL never ships in the seed — only the env var name is
- * seeded; the operator binds the address through MYRMIDON_STACK_HTTP_<NAME>.
- * A missing binding is an honest per-component unknown, never a check failure.
+ * seeded; the operator binds the address through MYRMIDON_STACK_HTTP_<NAME>,
+ * and when that override is not set the probe falls back to the address the
+ * board already knows (STACK-PROBE-ENDPOINTS: the LLM gateway, the agent
+ * memory service, the evals Langfuse contour). A seed may name the JSON field
+ * the version rides in (httpVersionField, e.g. litellm_version). No binding
+ * at all is an honest per-component unknown, never a check failure.
  */
-async function probeHttpVersion(seed: StackSeedComponent): Promise<StackSnapshot["local"]> {
+async function probeHttpVersion(
+  seed: StackSeedComponent,
+  boardUrl: string | null,
+  env: NodeJS.ProcessEnv,
+): Promise<StackSnapshot["local"]> {
   const states: StackSnapshot["local"] = {
     version: null,
     commit: null,
@@ -238,20 +354,21 @@ async function probeHttpVersion(seed: StackSeedComponent): Promise<StackSnapshot
     states.unknownReason = "no http endpoint configured for this component";
     return states;
   }
-  const rawUrl = process.env[envName]?.trim();
+  const source = env[envName]?.trim() ? envName : `board settings (no ${envName} override)`;
+  const rawUrl = env[envName]?.trim() || boardUrl;
   if (!rawUrl) {
-    states.unknownReason = `http endpoint env ${envName} is not set`;
+    states.unknownReason = `http endpoint env ${envName} is not set and the board has no address for this component`;
     return states;
   }
   let url: URL;
   try {
     url = new URL(rawUrl);
   } catch {
-    states.unknownReason = `http endpoint env ${envName} is not a valid URL`;
+    states.unknownReason = `${source} is not a valid URL`;
     return states;
   }
   if (url.protocol !== "http:" && url.protocol !== "https:") {
-    states.unknownReason = `http endpoint env ${envName} must be http(s)`;
+    states.unknownReason = `${source} must be http(s)`;
     return states;
   }
   // The documented value is a base URL: one GET <base>/<endpoint> (hindsight
@@ -270,7 +387,7 @@ async function probeHttpVersion(seed: StackSeedComponent): Promise<StackSnapshot
     states.unknownReason = `http version endpoint ${url.toString()} answered ${res.status}`;
     return states;
   }
-  const version = extractVersionField(res.body);
+  const version = extractVersionField(res.body, seed.httpVersionField);
   if (!version) {
     states.unknownReason = `http version endpoint ${url.toString()} answered without a version field`;
     return states;
@@ -292,6 +409,14 @@ export interface CollectStackLocalOptions {
    * refresh never wipes the scheduled release check.
    */
   previous?: StackDocument;
+  /**
+   * STACK-PROBE-ENDPOINTS: the db handle the board-address fallback reads the
+   * stored instance settings (general.agentMemory) through. Absent (unit
+   * tests): the fallback reads the environment only.
+   */
+  db?: Pick<Db, "select"> | null;
+  /** Environment the probe reads; defaults to process.env. */
+  env?: NodeJS.ProcessEnv;
 }
 
 function carryPrevious(prev: StackSnapshot | undefined, snapshot: StackSnapshot): StackSnapshot {
@@ -317,7 +442,9 @@ function carryPrevious(prev: StackSnapshot | undefined, snapshot: StackSnapshot)
 export async function collectStackLocal(options: CollectStackLocalOptions = {}): Promise<StackDocument> {
   const checkedAt = (options.now ?? (() => new Date()))().toISOString();
   const previous = options.previous;
+  const env = options.env ?? process.env;
   const images = options.images ?? dockerImagesPort(process.env[STACK_DOCKER_SOCKET_ENV]?.trim() || DEFAULT_STACK_DOCKER_SOCKET);
+  const boardEndpoints = await readBoardEndpoints(options.db ?? null, env);
 
   const serverInfo = options.serverInfo ?? getServerInfoSnapshot();
   const boardGit = serverInfo.git;
@@ -354,7 +481,7 @@ export async function collectStackLocal(options: CollectStackLocalOptions = {}):
         break;
       }
       case "docker-image": {
-        snapshot.local = { ...(await probeDockerImages(seed, images)), checkedAt, patches: seededPatches };
+        snapshot.local = { ...(await probeDockerImages(seed, images, env)), checkedAt, patches: seededPatches };
         break;
       }
       case "env": {
@@ -362,7 +489,13 @@ export async function collectStackLocal(options: CollectStackLocalOptions = {}):
         break;
       }
       case "manual": {
-        snapshot.local.unknownReason = "managed by the operator; no automatic probe";
+        if (seed.name === "paperclip") {
+          snapshot.local.version = VENDOR_MIGRATION_SUPPORTED_VERSION;
+          snapshot.local.runningOn = "supported migration schema";
+          snapshot.local.unknownReason = null;
+        } else {
+          snapshot.local.unknownReason = "managed by the operator; no automatic probe";
+        }
         break;
       }
       case "none": {
@@ -374,7 +507,11 @@ export async function collectStackLocal(options: CollectStackLocalOptions = {}):
         break;
       }
       case "http-version": {
-        snapshot.local = { ...(await probeHttpVersion(seed)), checkedAt, patches: seededPatches };
+        snapshot.local = {
+          ...(await probeHttpVersion(seed, boardEndpointFor(seed.name, boardEndpoints), env)),
+          checkedAt,
+          patches: seededPatches,
+        };
         break;
       }
     }
