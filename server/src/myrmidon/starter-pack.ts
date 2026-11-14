@@ -245,3 +245,55 @@ export async function wakeAssigneeAfterStarterPack(
   await queueWake(buildStarterPackReadyWakeIdempotencyKey(issue.id));
   return true;
 }
+
+/** Early exit for the per-run hook: is this run context the scout's wake at all? No query. */
+export function isStarterPackScoutRunContext(
+  context: Record<string, unknown> | null | undefined,
+  invocationSource?: string | null,
+): boolean {
+  if (!context) return false;
+  if (invocationSource !== undefined && invocationSource !== "automation") return false;
+  const wakeReason = typeof context.wakeReason === "string" ? context.wakeReason.trim() : "";
+  return context.source === STARTER_PACK_SCOUT_SOURCE && wakeReason === STARTER_PACK_SCOUT_WAKE_REASON;
+}
+
+/** The scout's run is admitted only while the task is still open for the assignee. */
+export function isStarterPackScoutIssueStatus(status: string | null | undefined): boolean {
+  return status === "todo" || status === "in_progress";
+}
+
+/** The scout was woken for this very task (a wake request of any status). */
+export async function hasStarterPackScoutWake(
+  db: Db,
+  input: { companyId: string; issueId: string; scoutAgentId: string },
+): Promise<boolean> {
+  const [row] = await db
+    .select({ id: agentWakeupRequests.id })
+    .from(agentWakeupRequests)
+    .where(
+      and(
+        eq(agentWakeupRequests.companyId, input.companyId),
+        eq(agentWakeupRequests.agentId, input.scoutAgentId),
+        eq(agentWakeupRequests.idempotencyKey, buildStarterPackScoutWakeIdempotencyKey(input.issueId)),
+        sql`${agentWakeupRequests.payload} ->> 'issueId' = ${input.issueId}`,
+      ),
+    )
+    .limit(1);
+  return Boolean(row);
+}
+
+/** Pure: may this agent write document `key` on the task as the scout? */
+export function isStarterPackScoutWriteAllowed(
+  key: string,
+  actorAgentId: string | null | undefined,
+  scoutAgentId: string | null | undefined,
+  hasScoutWakeForIssue: boolean,
+): boolean {
+  return (
+    key.trim().toLowerCase() === STARTER_PACK_DOCUMENT_KEY &&
+    Boolean(actorAgentId) &&
+    Boolean(scoutAgentId) &&
+    actorAgentId === scoutAgentId &&
+    hasScoutWakeForIssue
+  );
+}

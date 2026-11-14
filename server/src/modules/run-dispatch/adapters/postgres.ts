@@ -57,6 +57,7 @@ import {
 import {
   STARTER_PACK_SCOUT_SOURCE,
   STARTER_PACK_SCOUT_WAKE_REASON,
+  isStarterPackScoutIssueStatus,
   isStarterPackScoutWake,
 } from "../../../myrmidon/starter-pack.js";
 import type {
@@ -664,6 +665,7 @@ export function createPostgresRunDispatchAdapter(
     // configured scout; any other stranger agent is cancelled as before.
     const isStarterPackScoutRun = Boolean(
       issue &&
+        isStarterPackScoutIssueStatus(issue.status) &&
         input.invocationSource === "automation" &&
         context.source === STARTER_PACK_SCOUT_SOURCE &&
         wakeReason === STARTER_PACK_SCOUT_WAKE_REASON &&
@@ -1187,11 +1189,11 @@ export function createPostgresRunDispatchAdapter(
     if (contextSnapshot.source !== STARTER_PACK_SCOUT_SOURCE) return false;
     if (readNonEmptyString(contextSnapshot.wakeReason) !== STARTER_PACK_SCOUT_WAKE_REASON) return false;
     const [issue] = await tx
-      .select({ assigneeAgentId: issues.assigneeAgentId })
+      .select({ status: issues.status, assigneeAgentId: issues.assigneeAgentId })
       .from(issues)
       .where(and(eq(issues.companyId, run.companyId), eq(issues.id, issueId)))
       .limit(1);
-    if (!issue) return false;
+    if (!issue || !isStarterPackScoutIssueStatus(issue.status)) return false;
     return isStarterPackScoutWake(tx, {
       companyId: run.companyId,
       assigneeAgentId: issue.assigneeAgentId,

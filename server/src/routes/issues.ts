@@ -3,6 +3,8 @@ import { isBlockerResolved } from "../myrmidon/blocker-resolved.js";
 import {
   STARTER_PACK_DOCUMENT_KEY,
   STARTER_PACK_READY_SOURCE,
+  hasStarterPackScoutWake,
+  isStarterPackScoutWriteAllowed,
   maybeWakeStarterPackScout,
   readStarterPackAgentId,
   wakeAssigneeAfterStarterPack,
@@ -11720,11 +11722,26 @@ export function issueRoutes(
       if (!issue) return;
       // myrmidon(OPE-13095): the starter-pack scout may write exactly the document
       // `starter-pack` on a task that is not its own; any other key stays refused.
-      const isStarterPackScoutWrite =
+      // The scout must also have been woken for this very task.
+      let isStarterPackScoutWrite = false;
+      if (
         req.actor.type === "agent" &&
-        String(req.params.key ?? "").trim().toLowerCase() === STARTER_PACK_DOCUMENT_KEY &&
-        Boolean(req.actor.agentId) &&
-        req.actor.agentId === (await readStarterPackAgentId(db));
+        String(req.params.key ?? "").trim().toLowerCase() === STARTER_PACK_DOCUMENT_KEY
+      ) {
+        const scoutAgentId = await readStarterPackAgentId(db);
+        isStarterPackScoutWrite = isStarterPackScoutWriteAllowed(
+          String(req.params.key ?? ""),
+          req.actor.agentId,
+          scoutAgentId,
+          scoutAgentId !== null && req.actor.agentId === scoutAgentId
+            ? await hasStarterPackScoutWake(db, {
+                companyId: issue.companyId,
+                issueId: issue.id,
+                scoutAgentId,
+              })
+            : false,
+        );
+      }
       if (
         !(await assertAgentIssueMutationAllowed(
           req,

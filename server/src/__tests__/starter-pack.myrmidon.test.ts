@@ -16,7 +16,12 @@ import {
   STARTER_PACK_SCOUT_SOURCE,
   STARTER_PACK_SCOUT_WAKE_REASON,
   buildStarterPackReadyWakeIdempotencyKey,
+  hasStarterPackScoutWake,
+  isStarterPackScoutIssueStatus,
+  isStarterPackScoutRunContext,
   isStarterPackScoutWake,
+  isStarterPackScoutWriteAllowed,
+  buildStarterPackScoutWakeIdempotencyKey,
   maybeWakeStarterPackScout,
   readStarterPackAgentId,
   shouldPlaceStarterPackScout,
@@ -67,6 +72,33 @@ describe("shouldPlaceStarterPackScout", () => {
   it("does not place the scout on its own task or on a task without an assignee", () => {
     expect(shouldPlaceStarterPackScout({ ...base, assigneeAgentId: "scout" })).toBe(false);
     expect(shouldPlaceStarterPackScout({ ...base, assigneeAgentId: null })).toBe(false);
+  });
+});
+
+describe("starter-pack scout pure guards", () => {
+  it("leaves the per-run hook without a query for a run that is not the scout's wake", () => {
+    expect(isStarterPackScoutRunContext({ source: "issue.create", wakeReason: "issue_assigned" }, "assignment")).toBe(false);
+    expect(isStarterPackScoutRunContext({}, "automation")).toBe(false);
+    expect(isStarterPackScoutRunContext(null)).toBe(false);
+    expect(
+      isStarterPackScoutRunContext({ source: STARTER_PACK_SCOUT_SOURCE, wakeReason: STARTER_PACK_SCOUT_WAKE_REASON }, "automation"),
+    ).toBe(true);
+  });
+
+  it("admits the scout's run only on a todo or in_progress task", () => {
+    expect(isStarterPackScoutIssueStatus("todo")).toBe(true);
+    expect(isStarterPackScoutIssueStatus("in_progress")).toBe(true);
+    expect(isStarterPackScoutIssueStatus("blocked")).toBe(false);
+    expect(isStarterPackScoutIssueStatus("done")).toBe(false);
+  });
+
+  it("allows the document write only for the scout, the key starter-pack and a woken task", () => {
+    const allow = isStarterPackScoutWriteAllowed;
+    expect(allow("starter-pack", "scout", "scout", true)).toBe(true);
+    expect(allow("notes", "scout", "scout", true)).toBe(false);
+    expect(allow("starter-pack", "other", "scout", true)).toBe(false);
+    expect(allow("starter-pack", "scout", "scout", false)).toBe(false);
+    expect(allow("starter-pack", "scout", null, true)).toBe(false);
   });
 });
 
@@ -166,6 +198,24 @@ describeEmbeddedPostgres("the starter-pack scout on a new engineer task", () => 
       payload: { issueId },
       contextSnapshot: { issueId, taskId: issueId, wakeReason: STARTER_PACK_SCOUT_WAKE_REASON, source: STARTER_PACK_SCOUT_SOURCE },
     });
+  });
+
+  it("finds the scout's wake request only for the task it was woken for", async () => {
+    const { companyId, scoutId, issueId } = await seed();
+    const otherIssueId = randomUUID();
+    expect(await hasStarterPackScoutWake(db, { companyId, issueId, scoutAgentId: scoutId })).toBe(false);
+    await db.insert(agentWakeupRequests).values({
+      companyId,
+      agentId: scoutId,
+      source: "automation",
+      triggerDetail: "system",
+      reason: STARTER_PACK_SCOUT_WAKE_REASON,
+      payload: { issueId },
+      status: "skipped",
+      idempotencyKey: buildStarterPackScoutWakeIdempotencyKey(issueId),
+    });
+    expect(await hasStarterPackScoutWake(db, { companyId, issueId, scoutAgentId: scoutId })).toBe(true);
+    expect(await hasStarterPackScoutWake(db, { companyId, issueId: otherIssueId, scoutAgentId: scoutId })).toBe(false);
   });
 
   it("wakes nobody (the caller wakes the assignee as before) when the setting is not set", async () => {
