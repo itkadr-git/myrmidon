@@ -1,11 +1,13 @@
-# 1.6.9 OPE-13087: DEV-SESSION-RESTORE
+## changelog-en
 
-## EN
+### Developers continue the task session between runs (1.6.9 DEV-SESSION-RESTORE, OPE-13087)
 
-- Fixed developer session strategy: developers (`adm-dev-eng*`, `adm-dev-review*`, `isDeveloperRole`) receive task-scoped sessions (`issue`, `run`, `none`), replacing previous misinterpretation of 06.11 decision. `agent` strategy is mapped to `issue`.
-- Updated documentation and code comments to clarify owner directive (Alex 06.11, clarified 14.11).
+- Developer agents (engineers and code reviewers) now keep the session strategy set on their card (`issue`, `run` or `none`) instead of being forced to a fresh session on every run; an agent-wide (`agent`) or empty strategy becomes `issue`, so a developer never gets an agent-wide session.
+- Design notes and code comments now state the rule correctly: developers get no long-term memory, while the task session continues between runs.
 
-## RU
+## changelog-ru
 
-- Исправлена стратегия сеансов разработчиков: разработчики (`adm-dev-eng*`, `adm-dev-review*`, `isDeveloperRole`) получают сеанс на задачу (`issue`, `run`, `none`), исправляя неверное толкование решения 06.11. Стратегия `agent` заменяется на `issue`.
-- Обновлены комментарии в коде и документация в соответствии с решением владельца (Alex 06.11, уточнено 14.11).
+### Разработчики продолжают сеанс задачи между прогонами (1.6.9 DEV-SESSION-RESTORE, OPE-13087)
+
+- Разработчики (инженеры и ревьюеры кода) теперь получают стратегию сеанса из карточки (`issue`, `run` или `none`), а не принудительно новый сеанс на каждый прогон. Стратегия на всего агента (`agent`) или пустая заменяется на `issue`: сеанса на всего агента у разработчика не бывает.
+- Документ дизайна и комментарии в коде исправлены: у разработчиков нет долговременной памяти, сеанс задачи между прогонами продолжается.
