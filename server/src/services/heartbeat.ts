@@ -5973,6 +5973,19 @@ export function deriveTaskKeyWithHeartbeatFallback(
   return null;
 }
 
+/**
+ * Whether a run drops the saved task session. The role of the agent is not an
+ * input: developers get no Hindsight memory, but their task session continues
+ * between runs (strategy from the card, `issue` by default).
+ */
+export function shouldResetTaskSessionForRun(input: {
+  wakeReset: boolean;
+  configReset: boolean;
+  longTaskPlanReset?: boolean | null;
+}): boolean {
+  return input.wakeReset || input.configReset || (input.longTaskPlanReset ?? false);
+}
+
 export function shouldResetTaskSessionForWake(
   contextSnapshot: Record<string, unknown> | null | undefined,
 ) {
@@ -26874,12 +26887,11 @@ export function heartbeatService(
       // Always replace this runtime-only field; caller wake data cannot supply skills.
       context.paperclipWake = { ...parseObject(context.paperclipWake), connectorSkillInstructions: connectorDelivery.instructions };
       let runtimeConfig: Record<string, unknown> = connectorDelivery.config;
-      // Owner 05.11/06.11: developers do not load previous runs. The flag is
-      // derived from the agent and always replaces whatever the card holds, so a
-      // non-developer cannot opt in; for a developer the effective session key
-      // strategy is "run" (a fresh session per run), never "issue" or "agent".
-      // A card that already says "run" or "none" is kept as is.
-      const developerRun = isDeveloperRole(agent);
+      // Developers get no Hindsight memory; the task session continues between
+      // runs (strategy from the card, `issue` by default). The flag is derived
+      // from the agent and always replaces whatever the card holds, so a
+      // non-developer cannot opt in; for a developer an `agent` strategy becomes
+      // `issue`, while `run` and `none` from the card are kept as is.
       runtimeConfig = applyDeveloperRunIsolation(runtimeConfig, agent);
       const latestAgentConfigRevision = await getLatestAgentConfigRevision(
         agent.companyId,
@@ -26980,13 +26992,13 @@ export function heartbeatService(
         preserveLegacySessionWithoutConfigMetadata:
           acceptedPlanContinuationWake && !acceptedPlanWakeRoutingDecision,
       });
-      // Owner 06.11: a developer run never resumes a saved session, so it loads
-      // nothing of its previous runs.
-      const resetTaskSession =
-        developerRun ||
-        shouldResetTaskSessionForWake(context) ||
-        sessionConfigFreshness.reset ||
-        (longTaskContext?.plan.reset ?? false);
+      // Developers get no Hindsight memory, but the task session continues
+      // between runs: no role-based reset here.
+      const resetTaskSession = shouldResetTaskSessionForRun({
+        wakeReset: shouldResetTaskSessionForWake(context),
+        configReset: sessionConfigFreshness.reset,
+        longTaskPlanReset: longTaskContext?.plan.reset,
+      });
       const sessionResetReason =
         [sessionConfigFreshness.reasons.join("; "), longTaskContext?.plan.reason]
           .filter((value): value is string => Boolean(value))
