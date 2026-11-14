@@ -21,3 +21,7 @@ settings-section: Track 5 — operations
 ## settings-en
 
 | `MYRMIDON_BOT_HEALTH_LIVE_RUN_GRACE_SEC` | OPE-13119 | `120` | Seconds of run silence after which a bot container Docker marked `unhealthy` is restarted. While the agent has a running run whose newest progress (run event, output flush, useful action) is younger than this, the health recovery is deferred to the next pass and the activity log records `health recovery deferred: live run`; a silent run or no run is recovered at once. Read on every pass | `0` — the wait is off (always recover). Unset, empty or non-numeric — the default; at most 86400 |
+
+## settings-ru
+
+| `MYRMIDON_BOT_HEALTH_LIVE_RUN_GRACE_SEC` | OPE-13119 | `120` | Секунды тишины прогона, после которых контейнер бота, помеченный Docker как `unhealthy`, перезапускается. Пока у агента идёт прогон, чей последний признак работы (событие прогона, вывод, полезное действие) моложе этого окна, восстановление откладывается до следующего прохода, а в журнал пишется `health recovery deferred: live run`; молчащий прогон или его отсутствие восстанавливаются сразу. Читается на каждом проходе | `0` — ожидание выключено (восстанавливать всегда). Не задана, пустая или не число — умолчание; не больше 86400 |
