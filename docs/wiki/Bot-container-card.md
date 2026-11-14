@@ -141,7 +141,10 @@ production host) bounded:
 ## Status and errors
 
 The section shows the container's state as a label: **Running**, **Stopped**,
-**Unhealthy**, or **Not created yet**. The image name is shown next to it.
+**Unhealthy**, or **Not created yet**. When the board has both the last stop and
+start timestamps, it also shows how long the most recent cold start took. The
+duration is omitted when either timestamp is unavailable or the start does not
+follow the stop.
 
 When the container runtime does not answer, the section shows
 **Container status unavailable: …** and the **Concurrent runs limit** block
