@@ -114,6 +114,16 @@ case "$sub" in
         else
           body="$(cat "$SANDBOX/runs.json")"
         fi ;;
+      *"actions/runs?per_page=100"*)
+        # OPE-13002 queue-priority gate: the whole-runs listing used by the
+        # publish gate to verify observed dispatch order. A dedicated fixture
+        # (queue-runs.json) holds the pending-runs state; absent, an empty
+        # listing (no pending runs competing) answers.
+        if [ -f "$SANDBOX/queue-runs.json" ]; then
+          body="$(cat "$SANDBOX/queue-runs.json")"
+        else
+          body='{"total_count":0,"workflow_runs":[]}'
+        fi ;;
       *) body="{}" ;;
     esac
     if [ -n "$jq_filter" ]; then
@@ -533,6 +543,82 @@ describe("publish-github-release.sh: the CI gate", () => {
     assert.notEqual(code, 0, out);
     assert.match(out, /tag must look like myr-vX\.Y\.Z/);
     assert.equal(mutations(sb), "");
+  });
+
+  it("refuses to publish when a later-queued ordinary run started while the release run is still queued", () => {
+    // OPE-13002 behavioral gate: the publish refuses on a PROVEN priority
+    // inversion — the tag's own CI run still has no started_at while an
+    // ordinary run that queued AFTER it has factually been dispatched.
+    const sb = sandbox({ runs: GREEN_RUNS });
+    fs.writeFileSync(path.join(sb.dir, "queue-runs.json"), JSON.stringify({
+      total_count: 2,
+      workflow_runs: [
+        {
+          id: 101,
+          name: "Myrmidon CI (tag)",
+          head_branch: "myr-v1.6.0",
+          status: "queued",
+          created_at: "2026-11-13T10:00:00Z",
+          started_at: null,
+        },
+        {
+          id: 102,
+          name: "Myrmidon CI",
+          head_branch: "feature-x",
+          status: "in_progress",
+          created_at: "2026-11-13T10:05:00Z",
+          started_at: "2026-11-13T10:06:00Z",
+        },
+      ],
+    }));
+    const { code, out } = runScript(sb, "myr-v1.6.0");
+    assert.notEqual(code, 0, out);
+    assert.match(out, /queue priority/);
+    assert.equal(mutations(sb), "");
+  });
+
+  it("refuses to publish when the queue-priority runs API is unreadable (fail-closed)", () => {
+    // An empty body from the runs listing must NOT be a silent pass: the
+    // gate cannot distinguish "no competing runs" from "API failure", so an
+    // unparseable/empty answer refuses the publish (retryable, never silent).
+    const sb = sandbox({ runs: GREEN_RUNS });
+    fs.writeFileSync(path.join(sb.dir, "queue-runs.json"), "");
+    const { code, out } = runScript(sb, "myr-v1.6.0");
+    assert.notEqual(code, 0, out);
+    assert.match(out, /queue priority/);
+    assert.equal(mutations(sb), "");
+  });
+
+  it("publishes when the release run holds the observed dispatch order", () => {
+    // The release run factually started before the later-queued ordinary run
+    // started — no inversion observable; publish proceeds.
+    const sb = sandbox({ runs: GREEN_RUNS });
+    fs.writeFileSync(path.join(sb.dir, "queue-runs.json"), JSON.stringify({
+      total_count: 2,
+      workflow_runs: [
+        {
+          id: 101,
+          name: "Myrmidon CI (tag)",
+          head_branch: "myr-v1.6.0",
+          status: "completed",
+          conclusion: "success",
+          created_at: "2026-11-13T10:00:00Z",
+          started_at: "2026-11-13T10:01:00Z",
+        },
+        {
+          id: 102,
+          name: "Myrmidon CI",
+          head_branch: "feature-x",
+          status: "in_progress",
+          created_at: "2026-11-13T10:05:00Z",
+          started_at: "2026-11-13T10:07:00Z",
+        },
+      ],
+    }));
+    const { code, out } = runScript(sb, "myr-v1.6.0");
+    assert.equal(code, 0, out);
+    assert.match(out, /queue priority holds/);
+    assert.match(mutations(sb), /create tag=myr-v1\.6\.0/);
   });
 });
 
@@ -1017,6 +1103,82 @@ describe("myrmidon-ci-tag.yml: the tag CI is a separate un-cancellable run", () 
     for (const expr of new Set(checkouts)) {
       assert.equal(expr, "inputs.tag || ''");
     }
+  });
+
+  it("OPE-13002: the CI result latency gate derives the job set from the workflow via release-jobs.mjs, not hardcoded names", () => {
+    // The latency check must import the build job set from release-jobs.mjs
+    // (single source of truth) instead of listing job names inline.
+    assert.match(workflow, /release-jobs\.mjs/);
+    assert.doesNotMatch(workflow, /name == "typecheck" or\s*\n\s*\.name == "build" or/);
+  });
+
+  it("OPE-13002: the latency gate reads THIS build's workflow from the checkout, not the default branch", () => {
+    // The workflow file must be read from the checked-out tag (local file).
+    // Reading it via the contents API from the default branch would let the
+    // gate watch a job set that drifted from the build being evaluated.
+    assert.match(workflow, /cat \.github\/workflows\/myrmidon-ci-tag\.yml/);
+    assert.doesNotMatch(workflow, /repos\/\$REPO\/contents\/\.github\/workflows\/myrmidon-ci-tag\.yml/);
+  });
+
+  it("OPE-13002: the CI result job cross-checks the observed jobs against the expected build set (fail closed)", () => {
+    // gateState() must run inside the gate: a lane the workflow declares but
+    // the run does not contain means the workflow file is not the one this
+    // build started from — the gate must fail closed, not silently degrade.
+    assert.match(workflow, /gateState\(build, observed\)/);
+    assert.match(workflow, /build jobs missing from this run/);
+  });
+
+  it("OPE-13002: the CI result job monitors release build queue priority by observed dispatch order", () => {
+    // The queue-priority step must judge priority from FACTUAL dispatch
+    // order (started_at recorded by the dispatcher), not from an assumed
+    // created_at sort of the API array (the API documents no ordering). It
+    // feeds every pending run of the two release CI workflows into
+    // observedPriorityViolations and fails closed on a proven inversion — a
+    // later-queued ordinary run already started while the release run has
+    // not. It must not judge unrelated workflows.
+    assert.match(workflow, /Verify release build queue priority/);
+    assert.match(workflow, /observedPriorityViolations/);
+    assert.doesNotMatch(workflow, /created_at\.localeCompare/);
+    assert.doesNotMatch(workflow, /priorityViolations\(/);
+    assert.doesNotMatch(workflow, /queueViolations\(queued\)/);
+  });
+
+  it("OPE-13002: the changelog gate enforces only for a real release-tag ref, so a verification dispatch on a commit SHA can go green", () => {
+    // A workflow_dispatch pointed at a commit SHA runs this full tag CI on
+    // that exact head (every lane, including the matrix/other/runner test
+    // tiers the PR workflow skips). Such a run is not a release and has no
+    // folded "## X.Y.Z" section, so the release changelog gate must skip it
+    // instead of failing it. A real release-tag ref still fails without its
+    // section: the gate keeps enforcing via the myr-v*.*.* case, and the
+    // publish gate independently refuses any myr-v tag without one.
+    assert.match(workflow, /case "\$TAG" in\s*\n\s*myr-v\*\.\*\.\*\) ;;/);
+    assert.match(workflow, /Not a release-tag ref/);
+    // The release-tag ref must still be judged by the release changelog gate.
+    assert.match(workflow, /version="\$\{TAG#myr-v\}"/);
+    assert.match(workflow, /collect-fragments\.mjs --version "\$version" --check/);
+    // The dispatch input documents the SHA verification path.
+    assert.match(workflow, /commit SHA to verify this tag CI on an exact head/);
+  });
+});
+
+describe("myrmidon-ci.yml: release runs hold queue priority via the priority runner pool", () => {
+  const MAIN_WORKFLOW = path.join(HERE, "..", "..", "..", ".github", "workflows", "myrmidon-ci.yml");
+  const mainWorkflow = fs.readFileSync(MAIN_WORKFLOW, "utf8");
+
+  it("the plan job routes release runs to the priority runner pool ahead of queued ordinary runs", () => {
+    // OPE-13002: the release-build queue priority is ENFORCED by runner
+    // labels — the plan job (the entry job every other lane waits on) starts
+    // on vars.CI_RUNNER_PRIORITY whenever the run is a release run (the same
+    // predicate as the concurrency group's release- prefix and the plan
+    // step's is_release). Ordinary runs never receive this label.
+    assert.match(mainWorkflow, /plan:/);
+    assert.match(
+      mainWorkflow,
+      /CI_RUNNER_PRIORITY && \(github\.ref == 'refs\/heads\/main'/
+    );
+    // The heavy lanes already follow plan.outputs.is_release to the priority
+    // pool; without the plan job itself starting there the priority is moot.
+    assert.match(mainWorkflow, /needs\.plan\.outputs\.is_release == 'true'\)\s*&&\s*fromJSON\(vars\.CI_RUNNER_PRIORITY/);
   });
 });
 
