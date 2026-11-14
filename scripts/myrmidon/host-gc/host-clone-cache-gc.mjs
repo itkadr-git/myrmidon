@@ -1548,7 +1548,7 @@ function archiveClone(clonePath, archiveRoot) {
   // repo copies with node_modules) never fit the timeout, an archive without it is ~0.5 GB.
   // Unpushed commits (.git) and working files stay in.
   const excludes = ARCHIVE_EXCLUDES.map((e) => `--exclude=${e}`);
-  const ARCHIVE_TIMEOUT_MS = 120000;
+  const ARCHIVE_TIMEOUT_MS = 600000;
   let result;
   let verify;
   if (hasZstd) {
