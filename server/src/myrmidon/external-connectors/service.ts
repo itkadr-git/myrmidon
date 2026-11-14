@@ -708,13 +708,19 @@ export function externalConnectorService(db: Db, opts: ExternalConnectorServiceO
       dispatch?: ConnectorInvocationDispatchResult;
       journalEntry: ConnectorInvocationJournalEntry;
     }> {
+      function approvalAlreadyResolvedConflict(status: string) {
+        const err = conflict(`Approval is already resolved (${status})`, {
+          code: "approval_already_resolved",
+          status,
+        });
+        Object.assign(err, { code: "approval_already_resolved" });
+        return err;
+      }
+
       const approval = await store.findPendingApproval(companyId, approvalId);
       if (!approval) throw notFound("Pending approval not found");
       if (approval.status !== "pending") {
-        throw conflict(`Approval is already resolved (${approval.status})`, {
-          code: "approval_already_resolved",
-          status: approval.status,
-        });
+        throw approvalAlreadyResolvedConflict(approval.status);
       }
 
       const now = new Date();
@@ -722,10 +728,7 @@ export function externalConnectorService(db: Db, opts: ExternalConnectorServiceO
       if (!updated) {
         const latest = await store.findPendingApproval(companyId, approvalId);
         if (!latest) throw notFound("Pending approval not found");
-        throw conflict(`Approval is already resolved (${latest.status})`, {
-          code: "approval_already_resolved",
-          status: latest.status,
-        });
+        throw approvalAlreadyResolvedConflict(latest.status);
       }
 
       if (decision === "rejected") {

@@ -489,9 +489,11 @@ describe("externalConnectorService enforcement (OPE-13026)", () => {
     const err = (rejected[0] as PromiseRejectedResult).reason as {
       status?: number;
       code?: string;
+      details?: { code?: string; status?: string };
     };
     expect(err.status).toBe(409);
     expect(err.code).toBe("approval_already_resolved");
+    expect(err.details?.code).toBe("approval_already_resolved");
 
     // External dispatcher must have been executed exactly once
     expect(dispatchCount).toBe(1);
