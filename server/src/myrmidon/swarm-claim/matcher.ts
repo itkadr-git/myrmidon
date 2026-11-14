@@ -1647,6 +1647,9 @@ function readyQueueConditions(db: Db, companyId: string): SQL[] {
     isNull(issues.assigneeUserId),
     isNull(issues.hiddenAt),
     isNull(issues.conversationAgentId),
+    // 1.7 PRIVATE-TASKS (OPE-12704): a private task is never a swarm
+    // candidate — even when it sits unassigned in a queue status.
+    eq(issues.isPrivate, false),
     inArray(issues.status, [...SWARM_CLAIM_QUEUE_ISSUE_STATUSES]),
     sql`not exists (
       select 1
