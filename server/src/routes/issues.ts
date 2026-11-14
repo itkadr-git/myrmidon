@@ -44,6 +44,7 @@ import {
   type RoutingIssue,
 } from "../myrmidon/review-routing/policy.js";
 import { readReviewRoutingSettings } from "../myrmidon/review-routing/settings.js";
+import { buildHandoffReviewPolicy, selectHandoffReviewerIds } from "../myrmidon/review-routing/handoff-stage.js";
 import { createPgReviewRoutingStore } from "../myrmidon/review-routing/store.js";
 // myrmidon(OPE-10460): gate REQUEST CHANGES on final CI status for the live PR head.
 import { createReviewHeadFailedChecksResolver, createReviewPullRequestCiResolver, readReviewPullRequestHeadSha } from "../myrmidon/review-stage-recovery/github-ci.js";
@@ -15063,6 +15064,71 @@ export function issueRoutes(
           normalizeIssueExecutionPolicy(req.body.executionPolicy),
           actor.actorType,
         );
+      }
+      // myrmidon(OPE-13099): an agent hands the task to review but it has no review
+      // path (assertInReviewReviewPath would answer 422 missing: review_path).
+      // Instead the board adds a review stage with the reviewers of the
+      // executor's group; the transition below picks the least loaded one.
+      if (
+        actor.actorType === "agent" &&
+        updateFields.status === "in_review" &&
+        existing.status !== "in_review" &&
+        requestedReviewInteractionId === undefined &&
+        reviewRequest === undefined &&
+        existing.reviewPolicy !== "human_only" &&
+        updateFields.reviewPolicy !== "human_only" &&
+        !isConversation(existing)
+      ) {
+        const currentPolicy =
+          updateFields.executionPolicy !== undefined
+            ? (updateFields.executionPolicy as NormalizedExecutionPolicy | null)
+            : safeNormalizeIssueExecutionPolicy(existing.executionPolicy ?? null);
+        const hasReviewStage = (currentPolicy?.stages ?? []).some((stage) => stage.type === "review");
+        const reviewRoutingSettings = hasReviewStage ? null : await readReviewRoutingSettings(instanceSettings);
+        if (reviewRoutingSettings?.enabled) {
+          let missingReviewPath = false;
+          try {
+            await assertInReviewReviewPath({
+              existing,
+              updateFields,
+              actorType: actor.actorType,
+              actorId: actor.actorId,
+              actorAgentId: actor.agentId,
+              actorRunId: actor.runId,
+            });
+          } catch (err) {
+            missingReviewPath =
+              err instanceof HttpError &&
+              err.status === 422 &&
+              (err.details as { missing?: unknown } | undefined)?.missing === "review_path";
+            if (!missingReviewPath) throw err;
+          }
+          if (missingReviewPath) {
+            const routingStore = createPgReviewRoutingStore(db);
+            const executorAgentId = existing.assigneeAgentId ?? actor.agentId ?? null;
+            const executorRow = executorAgentId
+              ? await routingStore.getAgent(existing.companyId, executorAgentId)
+              : null;
+            const reviewerRows = await routingStore.listReviewerAgents(
+              existing.companyId,
+              reviewRoutingSettings.reviewerRoles,
+            );
+            const reviewerIds = selectHandoffReviewerIds({
+              reviewers: reviewerRows,
+              groupKey: resolveAgentGroupKey(executorRow ?? undefined),
+              excludedAgentIds: [actor.agentId, existing.assigneeAgentId, existing.createdByAgentId].filter(
+                (id): id is string => typeof id === "string" && id.length > 0,
+              ),
+            });
+            const handoffPolicy = buildHandoffReviewPolicy(
+              currentPolicy as unknown as Record<string, unknown> | null,
+              reviewerIds,
+            );
+            if (handoffPolicy) {
+              updateFields.executionPolicy = normalizeIssueExecutionPolicy(handoffPolicy);
+            }
+          }
+        }
       }
       const previousExecutionPolicy = safeNormalizeIssueExecutionPolicy(
         existing.executionPolicy ?? null,
