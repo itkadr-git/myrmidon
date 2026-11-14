@@ -7,6 +7,7 @@ import { startProcessesSettings } from "../processes/index.js";
 import type { ProcessSupervisor } from "../processes/supervisor.js";
 import { applyTaskDrain } from "../../services/heartbeat.js";
 import { instanceSettingsService } from "../../services/instance-settings.js";
+import { clearAgentLivenessSettingsCache } from "../agent-liveness/settings.js";
 
 export const SETTINGS_CHANGED_KEYS = ["runLimits", "teamLiveness", "agentLiveness", "myrmidonMaintenance", "processes", "taskDrain"] as const;
 export interface SettingsChangedPayload { changedKeys?: string[] }
@@ -22,7 +23,10 @@ export async function applySettingsChanged(payload: SettingsChangedPayload, deps
   const keys = new Set(payload.changedKeys ?? []);
   if (keys.has("runLimits")) await startRuntimeLimits(deps.db);
   if (keys.has("teamLiveness")) await deps.applyTeamLiveness?.();
-  if (keys.has("agentLiveness")) await deps.applyAgentLiveness?.();
+  if (keys.has("agentLiveness")) {
+    clearAgentLivenessSettingsCache();
+    await deps.applyAgentLiveness?.();
+  }
   if (keys.has(MAINTENANCE_GENERAL_KEY)) resetMaintenanceGateCaches();
   if (keys.has("processes")) await startProcessesSettings(deps.db, deps.processSupervisor ?? null);
   if (keys.has("taskDrain")) {

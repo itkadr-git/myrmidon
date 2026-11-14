@@ -9,6 +9,7 @@ import {
   type AgentLivenessSettings,
   type AgentLivenessSettingsPatch,
 } from "./myrmidon-agent-liveness.js";
+import { DEFAULT_REVIEW_ROUTING_QUEUE_THRESHOLD } from "./myrmidon-review-routing.js";
 import { instanceGeneralSettingsSchema } from "./validators/instance.js";
 import type { InstanceGeneralSettings } from "./types/instance.js";
 
@@ -22,9 +23,16 @@ describe("agent liveness defaults", () => {
     expect(DEFAULT_AGENT_LIVENESS_SETTINGS.enabled).toBe(false);
     // Review-routing's queueThreshold constant (sweep.ts) — the number the
     // current behaviour uses; the settings default must not drift from it.
+    expect(DEFAULT_AGENT_LIVENESS_SETTINGS.engineerQueueThreshold).toBe(DEFAULT_REVIEW_ROUTING_QUEUE_THRESHOLD);
+    expect(DEFAULT_AGENT_LIVENESS_SETTINGS.reviewerQueueThreshold).toBe(DEFAULT_REVIEW_ROUTING_QUEUE_THRESHOLD);
+    expect(DEFAULT_AGENT_LIVENESS_SETTINGS.leadQueueThreshold).toBe(DEFAULT_REVIEW_ROUTING_QUEUE_THRESHOLD);
     expect(DEFAULT_AGENT_LIVENESS_SETTINGS.engineerQueueThreshold).toBe(8);
     expect(DEFAULT_AGENT_LIVENESS_SETTINGS.reviewerQueueThreshold).toBe(8);
     expect(DEFAULT_AGENT_LIVENESS_SETTINGS.leadQueueThreshold).toBe(8);
+    expect(DEFAULT_AGENT_LIVENESS_SETTINGS.probeIntervalSec).toBe(30);
+    expect(DEFAULT_AGENT_LIVENESS_SETTINGS.probeTimeoutSec).toBe(5);
+    expect(DEFAULT_AGENT_LIVENESS_SETTINGS.journalDedupWindowSec).toBe(900);
+    expect(DEFAULT_AGENT_LIVENESS_SETTINGS.journalRetentionDays).toBe(30);
   });
 
   it("rejects zero and negative thresholds — a corrupt value keeps the default", () => {
@@ -73,6 +81,8 @@ describe("agent liveness defaults", () => {
     // Keys the patch does not carry stay at the defaults.
     expect(resolved.reviewerQueueThreshold).toBe(8);
     expect(resolved.journalRetentionDays).toBe(30);
+    expect(resolved.probeTimeoutSec).toBe(5);
+    expect(resolved.journalDedupWindowSec).toBe(900);
   });
 
   it("is a field of the instance general settings, in step with its interface", () => {

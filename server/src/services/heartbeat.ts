@@ -190,7 +190,8 @@ import { tryClaimContinuationKey, releaseContinuationKey } from "./continuation-
 // settings against the environment, plus the per-agent card switch, so the three
 // automatic behaviours obey the settings page without a restart.
 import { myrmidonTeamLivenessReader } from "../myrmidon/team-liveness/index.js";
-import { resolveAgentTeamLiveness, resolveAgentLivenessSettings } from "@myrmidon/shared"; // myrmidon(AGENT-LIVENESS-D1)
+import { resolveAgentTeamLiveness } from "@myrmidon/shared";
+import { resolveAgentLivenessSettings } from "../myrmidon/agent-liveness/settings.js"; // myrmidon(AGENT-LIVENESS-D1)
 import {
   classifyProviderGarbageOutcome,
   detectProviderGarbageGroups,
@@ -21216,13 +21217,8 @@ export function heartbeatService(
   // all resolve `instance_settings.general.teamLiveness` over the environment on
   // every pass, so a saved change takes effect without a restart.
   const teamLivenessRead = myrmidonTeamLivenessReader(db);
-  // myrmidon(AGENT-LIVENESS-D1): the instance-thresholds getter. The watchdog
-  // sweeper (D2) resolves thresholds once per pass; nothing is cached yet —
-  // there is no live consumer, so a cache would be dead weight.
-  async function readAgentLivenessSettings() {
-    const general = (await instanceSettingsService(db).getGeneral()) as unknown as Record<string, unknown>;
-    return resolveAgentLivenessSettings(general.agentLiveness);
-  }
+  // myrmidon(AGENT-LIVENESS-D1): the instance-thresholds getter.
+  const readAgentLivenessSettings = () => resolveAgentLivenessSettings(null);
   /** The agent row's card as a plain object; anything else reads as an empty card. */
   const readAgentCard = (raw: unknown): Record<string, unknown> =>
     raw && typeof raw === "object" && !Array.isArray(raw) ? (raw as Record<string, unknown>) : {};
