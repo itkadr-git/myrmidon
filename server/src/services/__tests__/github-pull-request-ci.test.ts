@@ -1026,6 +1026,7 @@ describe("createPullRequestCiResolver", () => {
     });
 
     const resolver = createPullRequestCiResolver(mockDb as never, {
+      source: "ui-refresh",
       fetch: mockFetch as never,
       tokenProvider: async () => "token-123",
     });
@@ -1671,6 +1672,7 @@ describe("createPullRequestCiResolver", () => {
     });
 
     const resolver = createPullRequestCiResolver(mockDb as never, {
+      source: "ui-refresh",
       fetch: mockFetch as never,
       tokenProvider: async () => "token-123",
     });
