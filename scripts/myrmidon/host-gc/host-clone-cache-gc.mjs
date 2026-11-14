@@ -53,7 +53,9 @@ const DAY_MS = 24 * 60 * 60 * 1000;
 const HOUR_MS = 60 * 60 * 1000;
 const CLONE_TTL_HOURS = 3;
 const CACHE_TTL_HOURS = 72;
-// Left out of safety-net archives: restored by an install or a build (OPE-13104).
+// Names of build and dependency dirs left out of safety-net archives (restored by an install or a
+// build, OPE-13104), but only where git confirms the path is ignored: see archiveExcludes().
+// A file git does not ignore (user or uncommitted work) is always archived, even inside `dist/`.
 const ARCHIVE_EXCLUDES = ["node_modules", ".pnpm-store", ".turbo", "dist", ".next", "coverage"];
 const SCRATCH_TTL_HOURS = 12;
 // myrmidon(1.6.8 OPE-12722 / OPE-12759): an SSH runner (the omp container) keeps one copy of
@@ -1537,6 +1539,52 @@ export function pruneRunnerTmp(items, journalPath) {
 
 // --- Archive ----------------------------------------------------------------
 
+// Git repos inside a clone: the clone itself and nested ones (`.git` dir or file) a few levels down.
+function archiveRepos(clonePath) {
+  const repos = [];
+  const visit = (dir, depth) => {
+    if (fs.existsSync(path.join(dir, ".git"))) repos.push(dir);
+    if (depth === 0) return;
+    let entries;
+    try {
+      entries = fs.readdirSync(dir, { withFileTypes: true });
+    } catch {
+      return;
+    }
+    for (const entry of entries) {
+      if (entry.isSymbolicLink() || !entry.isDirectory()) continue;
+      if (entry.name === ".git" || ARCHIVE_EXCLUDES.includes(entry.name) || BOT_SCAN_SKIP_NAMES.has(entry.name)) continue;
+      visit(path.join(dir, entry.name), depth - 1);
+    }
+  };
+  visit(clonePath, 3);
+  return repos;
+}
+
+// tar `--exclude` arguments: exact member paths (`<clone name>/<path>`) that git reports as ignored
+// and whose last segment is in ARCHIVE_EXCLUDES. A git failure or a non-repo gives no excludes:
+// the archive is whole, the safe default.
+function archiveExcludes(clonePath) {
+  const name = path.basename(clonePath);
+  const out = new Set();
+  for (const repo of archiveRepos(clonePath)) {
+    let r;
+    try {
+      r = git(["ls-files", "-z", "--others", "--ignored", "--exclude-standard", "--directory"], repo);
+    } catch {
+      continue;
+    }
+    if (r.status !== 0 || typeof r.stdout !== "string") continue;
+    const repoRel = path.relative(clonePath, repo);
+    for (const entry of r.stdout.split("\0")) {
+      const rel = entry.replace(/\/+$/, "");
+      if (!rel || !ARCHIVE_EXCLUDES.includes(rel.split("/").pop())) continue;
+      out.add(`--exclude=${[name, repoRel, rel].filter(Boolean).join("/")}`);
+    }
+  }
+  return [...out];
+}
+
 function archiveClone(clonePath, archiveRoot) {
   if (!fs.existsSync(archiveRoot)) fs.mkdirSync(archiveRoot, { recursive: true });
   const name = path.basename(clonePath);
@@ -1546,8 +1594,10 @@ function archiveClone(clonePath, archiveRoot) {
   const archivePath = path.join(archiveRoot, `${name}-${ts}.${extension}`);
   // What an install or a build recreates is not worth archiving: a 13 GB task folder (three
   // repo copies with node_modules) never fit the timeout, an archive without it is ~0.5 GB.
-  // Unpushed commits (.git) and working files stay in.
-  const excludes = ARCHIVE_EXCLUDES.map((e) => `--exclude=${e}`);
+  // Only build and dependency dirs that git reports as ignored are left out, as exact paths
+  // (--anchored, --no-wildcards: a name with `*` or `[` matches literally, nowhere else).
+  // Unpushed commits (.git), working files and anything git does not ignore stay in.
+  const excludes = ["--no-wildcards", "--anchored", ...archiveExcludes(clonePath)];
   // Per-archive limit, 10 min by default. The test hook is the env var (finite, > 0).
   const envTimeoutS = Number(process.env.HOST_GC_ARCHIVE_TIMEOUT_SECONDS);
   const timeoutS = Number.isFinite(envTimeoutS) && envTimeoutS > 0 ? envTimeoutS : 600;
@@ -1560,7 +1610,7 @@ function archiveClone(clonePath, archiveRoot) {
   if (hasZstd) {
     // Prefer zstd, but do not make archival depend on an optional host binary.
     // pipefail: a failing tar must not be masked by zstd's exit code. Paths go in as arguments, not into the script text.
-    result = spawnSync("timeout", [...limit, "bash", "-c", `set -o pipefail; tar -cf - ${excludes.join(" ")} -C "$1" "$2" | zstd -q -o "$3"`, "archive", path.dirname(clonePath), name, archivePath], spawnOpts);
+    result = spawnSync("timeout", [...limit, "bash", "-c", `set -o pipefail; tar -cf - "\${@:4}" -C "$1" "$2" | zstd -q -o "$3"`, "archive", path.dirname(clonePath), name, archivePath, ...excludes], spawnOpts);
     verify = ["bash", ["-c", `zstd -q -d -c "${archivePath}" | tar -tf - > /dev/null`]];
   } else {
     result = spawnSync("timeout", [...limit, "tar", "-czf", archivePath, ...excludes, "-C", path.dirname(clonePath), name], spawnOpts);

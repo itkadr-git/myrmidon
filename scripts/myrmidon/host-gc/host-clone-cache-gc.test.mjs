@@ -1457,9 +1457,10 @@ describe("runner task folders", () => {
     }
   });
 
-  it("e2e: the archive skips node_modules and build outputs but keeps .git and working files", async () => {
+  it("e2e: the archive skips git-ignored node_modules and build outputs but keeps .git and working files", async () => {
     const runners = path.join(tmpDir, "runners");
     const folder = makeTaskFolder(runners, "eng21", "OPE-9301", { ageHours: 30, ahead: true });
+    fs.writeFileSync(path.join(folder, "repo", ".gitignore"), "node_modules\ndist\n");
     fs.mkdirSync(path.join(folder, "repo", "node_modules", "pkg"), { recursive: true });
     fs.writeFileSync(path.join(folder, "repo", "node_modules", "pkg", "index.js"), "module.exports = 1;\n");
     fs.mkdirSync(path.join(folder, "repo", "dist"), { recursive: true });
@@ -1487,6 +1488,79 @@ describe("runner task folders", () => {
       assert.ok(!list.stdout.includes("dist/out.js"), "build output is not archived");
     } finally {
       fake.close();
+    }
+  });
+
+  // Runs one archive pass over `folder` (already built by the caller) and returns the `tar -tf` listing.
+  const archiveListing = async (runners, taskName) => {
+    const http = await import("node:http");
+    const fake = http.createServer((req, res) => {
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ status: "done" }));
+    });
+    await new Promise((resolve) => fake.listen(0, "127.0.0.1", resolve));
+    const port = fake.address().port;
+    try {
+      const { res } = await runGcTask(["--apply", "--runner-root", runners], { PAPERCLIP_API_URL: `http://127.0.0.1:${port}` });
+      assert.equal(res.status, 0, res.stderr);
+      const archiveDir = path.join(runners, ".gc-archive");
+      const names = fs.readdirSync(archiveDir).filter((n) => n.startsWith(`${taskName}-`));
+      assert.equal(names.length, 1, "one archive");
+      const list = subprocess.spawnSync("tar", ["-tf", path.join(archiveDir, names[0])], { encoding: "utf8" });
+      assert.equal(list.status, 0, list.stderr);
+      return list.stdout;
+    } finally {
+      fake.close();
+    }
+  };
+
+  it("e2e: an uncommitted file git does not ignore inside dist/ is archived, an ignored node_modules is not", async () => {
+    const runners = path.join(tmpDir, "runners");
+    const folder = makeTaskFolder(runners, "eng21", "OPE-9302", { ageHours: 30, dirty: true });
+    fs.writeFileSync(path.join(folder, "repo", ".gitignore"), "node_modules\n");
+    fs.mkdirSync(path.join(folder, "repo", "dist"), { recursive: true });
+    fs.writeFileSync(path.join(folder, "repo", "dist", "keep.txt"), "my work\n");
+    fs.mkdirSync(path.join(folder, "repo", "node_modules", "x"), { recursive: true });
+    fs.writeFileSync(path.join(folder, "repo", "node_modules", "x", "y.js"), "1\n");
+    const listing = await archiveListing(runners, "OPE-9302");
+    assert.ok(listing.includes("OPE-9302/repo/dist/keep.txt"), "non-ignored file in dist/ is archived");
+    assert.ok(!listing.includes("node_modules"), "ignored node_modules is not archived");
+  });
+
+  it("e2e: ignored dirs are excluded by exact path, a similar path with a space or glob char elsewhere stays", async () => {
+    const runners = path.join(tmpDir, "runners");
+    const folder = makeTaskFolder(runners, "eng21", "OPE-9304", { ageHours: 30, dirty: true });
+    fs.writeFileSync(path.join(folder, "repo", ".gitignore"), "/dist\n/my app \\[1\\]/dist\n");
+    fs.mkdirSync(path.join(folder, "repo", "dist"), { recursive: true });
+    fs.writeFileSync(path.join(folder, "repo", "dist", "out.js"), "built\n");
+    fs.mkdirSync(path.join(folder, "repo", "my app [1]", "dist"), { recursive: true });
+    fs.writeFileSync(path.join(folder, "repo", "my app [1]", "dist", "out.js"), "built\n");
+    fs.mkdirSync(path.join(folder, "repo", "pkg", "dist"), { recursive: true });
+    fs.writeFileSync(path.join(folder, "repo", "pkg", "dist", "mine.txt"), "not ignored\n");
+    const listing = await archiveListing(runners, "OPE-9304");
+    assert.ok(!listing.includes("repo/dist/out.js"), "ignored /dist is not archived");
+    assert.ok(!listing.includes("my app [1]/dist"), "ignored path with space and brackets is not archived");
+    assert.ok(listing.includes("OPE-9304/repo/pkg/dist/mine.txt"), "dist elsewhere, not ignored, is archived");
+  });
+
+  it("e2e: a subtree without a working git repo is archived whole (git cannot confirm anything ignored)", async () => {
+    const runners = path.join(tmpDir, "runners");
+    const folder = makeTaskFolder(runners, "eng21", "OPE-9303", { ageHours: 30, dirty: true });
+    // `plain` has no .git at all; `broken` has a .git that is not a repository, so git fails there.
+    for (const sub of ["plain", "broken"]) {
+      fs.mkdirSync(path.join(folder, sub, "node_modules", "x"), { recursive: true });
+      fs.writeFileSync(path.join(folder, sub, "node_modules", "x", "y.js"), "1\n");
+      fs.mkdirSync(path.join(folder, sub, "dist"), { recursive: true });
+      fs.writeFileSync(path.join(folder, sub, "dist", "out.js"), "built\n");
+    }
+    fs.mkdirSync(path.join(folder, "broken", ".git"), { recursive: true });
+    // New subdirs bumped the folder's mtime: age it again so the TTL applies.
+    const aged = new Date(Date.now() - 30 * HOUR);
+    fs.utimesSync(folder, aged, aged);
+    const listing = await archiveListing(runners, "OPE-9303");
+    for (const sub of ["plain", "broken"]) {
+      assert.ok(listing.includes(`OPE-9303/${sub}/node_modules/x/y.js`), `${sub}: node_modules archived`);
+      assert.ok(listing.includes(`OPE-9303/${sub}/dist/out.js`), `${sub}: dist archived`);
     }
   });
 
