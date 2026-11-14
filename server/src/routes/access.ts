@@ -4175,7 +4175,7 @@ export function accessRoutes(
       .where(eq(invites.id, id))
       .then((rows) => rows[0] ?? null);
     if (!invite) throw notFound("Invite not found");
-    if (invite.inviteType === "bootstrap_ceo") {
+    if (invite.inviteType === "bootstrap_ceo" || invite.inviteType === "user_invite") {
       await assertInstanceAdmin(req);
     } else {
       if (!invite.companyId) throw conflict("Invite is missing company scope");

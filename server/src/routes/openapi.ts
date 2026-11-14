@@ -4073,6 +4073,22 @@ registry.registerPath({
   responses: { 200: r.ok(), 401: r.unauthorized, 403: r.forbidden, 404: r.notFound },
 });
 
+// myrmidon 1.7 USERS-ADMIN-INVITE (OPE-12090): invite a user by email and
+// role; the invite token is returned in the response body (no SMTP is used).
+registry.registerPath({
+  method: "post",
+  path: "/api/users/invite",
+  tags: ["users"],
+  summary: "Invite a user by email and role without SMTP; returns the invite token",
+  request: {
+    body: jsonBody(z.object({
+      email: z.string().trim().email().max(320),
+      role: z.enum(["member", "instance_admin"]).default("member"),
+    })),
+  },
+  responses: { 201: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden },
+});
+
 registry.registerPath({
   method: "post",
   path: "/api/companies/{companyId}/users/{userId}/block",
