@@ -2572,6 +2572,7 @@ export function agentRoutes(
     adapterConfig: Record<string, unknown>;
     constraintAdapterConfig?: Record<string, unknown>;
     agentId?: string;
+    validateExtraMounts?: boolean;
   }): Promise<Record<string, unknown>> {
     const normalizedAdapterConfig = await secretsSvc.normalizeAdapterConfigForPersistence(
       input.companyId,
@@ -2588,6 +2589,7 @@ export function agentRoutes(
         ? { ...input.constraintAdapterConfig, ...normalizedAdapterConfig }
         : normalizedAdapterConfig,
       input.agentId,
+      { validateExtraMounts: input.validateExtraMounts },
     );
     return normalizePaperclipRunnerAdapterConfig(
       input.adapterType ?? "",
@@ -2804,6 +2806,7 @@ export function agentRoutes(
     adapterType: string | null | undefined,
     adapterConfig: Record<string, unknown>,
     agentId?: string,
+    options?: { validateExtraMounts?: boolean },
   ) {
     // myrmidon(OPE-12337): refuse limits exceeding enrolled dockergate ceilings.
     let ceilings: BotResourceCeilings | null = null;
@@ -2820,7 +2823,7 @@ export function agentRoutes(
       }
     }
     // myrmidon(1.6.4-BOT-CONTAINER-CARD, OPE-12337): refuse a container block the reconciler could never apply or exceeding ceilings.
-    const containerProblem = botContainerCardSaveProblem(adapterType, adapterConfig, process.env, ceilings);
+    const containerProblem = botContainerCardSaveProblem(adapterType, adapterConfig, process.env, ceilings, options);
     if (containerProblem) throw unprocessable(`Invalid hermes_gateway adapterConfig: ${containerProblem}`);
     const localProblem = localAdapterConfigProblem(adapterType, adapterConfig);
     if (localProblem) throw unprocessable(`Invalid ${adapterType} adapterConfig: ${localProblem}`);
@@ -5914,11 +5917,22 @@ function getActorIdentityPart(req: Request): string {
           rawEffectiveAdapterConfig,
         ),
       );
+      const incomingContainer =
+        requestedAdapterConfig &&
+        typeof requestedAdapterConfig.container === "object" &&
+        requestedAdapterConfig.container !== null &&
+        !Array.isArray(requestedAdapterConfig.container)
+          ? (requestedAdapterConfig.container as Record<string, unknown>)
+          : null;
+      const incomingExtraMountsSupplied =
+        (incomingContainer !== null && hasOwn(incomingContainer, "extraMounts")) ||
+        (requestedAdapterConfig !== null && hasOwn(requestedAdapterConfig, "extraMounts"));
       const normalizedEffectiveAdapterConfig = await normalizeMediatedAdapterConfigForPersistence({
         companyId: existing.companyId,
         adapterType: requestedAdapterType,
         adapterConfig: effectiveAdapterConfig,
         agentId: existing.id,
+        validateExtraMounts: incomingExtraMountsSupplied,
       });
       assertLocalAdapterSecurityChangeAllowed(
         req,
