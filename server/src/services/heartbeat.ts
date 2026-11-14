@@ -187,6 +187,7 @@ import {
   isDeveloperRole,
   renderReviewerInputSection,
   type AiConnectionBinding,
+  type ExecutionContinuationEnvelope,
   type IssueBlockerMetadata,
   type ReviewerInputFixture,
   type ReviewerPullRequestRef,
@@ -691,6 +692,7 @@ import {
 import {
   continuationSummaryParksExecutor,
   getIssueContinuationSummaryDocument,
+  getIssueStarterPackDocument,
   refreshIssueContinuationSummary,
 } from "./issue-continuation-summary.js";
 import {
@@ -8133,6 +8135,9 @@ export async function attestReviewedExternalChatRun(input: {
   throw new Error("reviewed_chat_execution_binding_not_ready");
 }
 
+// OPE-13086: hard cap of the starter-pack body inside the wake payload.
+const MAX_WAKE_STARTER_PACK_BODY_CHARS = 8_000;
+
 export async function buildPaperclipWakePayload(input: {
   db: Db;
   companyId: string;
@@ -8140,6 +8145,14 @@ export async function buildPaperclipWakePayload(input: {
   runId?: string | null;
   contextSnapshot: Record<string, unknown>;
   continuationSummary?: {
+    key: string;
+    title: string | null;
+    body: string;
+    sourceTrust?: SourceTrustMetadata | null;
+    updatedAt: Date;
+  } | null;
+  // OPE-13086: the task starter-pack document, delivered as the first wake block.
+  starterPack?: {
     key: string;
     title: string | null;
     body: string;
@@ -8177,6 +8190,8 @@ export async function buildPaperclipWakePayload(input: {
   const conversationMode = input.contextSnapshot.conversationMode === true;
   const continuationSummary =
     conversationMode || isolatedReviewerWake ? null : input.continuationSummary ?? null;
+  const starterPack =
+    conversationMode || isolatedReviewerWake ? null : input.starterPack ?? null;
   const agentMessage: Record<string, unknown> = isolatedReviewerWake
     ? {}
     : parseObject(input.contextSnapshot[PAPERCLIP_AGENT_MESSAGE_KEY]);
@@ -8256,6 +8271,10 @@ export async function buildPaperclipWakePayload(input: {
     continuationSummary && !input.exposeLowTrustRaw
       ? redactQuarantinedBodyForHigherTrust(continuationSummary)
       : continuationSummary;
+  const safeStarterPack =
+    starterPack && !input.exposeLowTrustRaw
+      ? redactQuarantinedBodyForHigherTrust(starterPack)
+      : starterPack;
 
   for (const commentId of commentIds) {
     const row = commentsById.get(commentId);
@@ -8737,6 +8756,19 @@ export async function buildPaperclipWakePayload(input: {
           bodyTruncated: safeContinuationSummary.body.length > 4_000,
           sourceTrust: safeContinuationSummary.sourceTrust ?? null,
           updatedAt: safeContinuationSummary.updatedAt.toISOString(),
+        }
+      : null,
+    starterPack: safeStarterPack
+      ? {
+          key: safeStarterPack.key,
+          title: safeStarterPack.title,
+          body:
+            safeStarterPack.body.length > MAX_WAKE_STARTER_PACK_BODY_CHARS
+              ? safeStarterPack.body.slice(0, MAX_WAKE_STARTER_PACK_BODY_CHARS)
+              : safeStarterPack.body,
+          bodyTruncated: safeStarterPack.body.length > MAX_WAKE_STARTER_PACK_BODY_CHARS,
+          sourceTrust: safeStarterPack.sourceTrust ?? null,
+          updatedAt: safeStarterPack.updatedAt.toISOString(),
         }
       : null,
     commentIds,
@@ -25829,6 +25861,12 @@ export function heartbeatService(
         ? await getIssueContinuationSummaryDocument(db, issueRef.id)
         : null;
       const exposeLowTrustRaw = trustPreset.kind === "low_trust_review";
+      // OPE-13086: starter pack goes to the assignee only (same gate as
+      // executionContinuation); an isolated reviewer never gets it.
+      const starterPack =
+        issueRef && !isConversation(issueContext) && !isolatedReviewerRun && issueContext?.assigneeAgentId === agent.id
+          ? await getIssueStarterPackDocument(db, issueRef.id)
+          : null;
       const safeContinuationSummary =
         continuationSummary && !exposeLowTrustRaw
           ? redactQuarantinedBodyForHigherTrust(continuationSummary)
@@ -25864,20 +25902,147 @@ export function heartbeatService(
       } else {
         delete context.paperclipSkillTest;
       }
-      const executionContinuation =
-        issueRef && !isConversation(issueContext) && !isolatedReviewerRun && issueContext?.assigneeAgentId === agent.id
-          ? await buildExecutionContinuation({
-              db,
-              companyId: agent.companyId,
-              issueId: issueRef.id,
-              agentId: agent.id,
-              runId: run.id,
-              context,
-              previousContextRunId: taskSession?.lastRunId,
-              summary: safeContinuationSummary?.body ?? null,
-              exposeLowTrustRaw,
-            })
-          : null;
+      let executionContinuation: ExecutionContinuationEnvelope | null = null;
+      if (
+        issueRef &&
+        !isConversation(issueContext) &&
+        !isolatedReviewerRun &&
+        issueContext?.assigneeAgentId === agent.id
+      ) {
+        const cancelPrematureTerminalOrReassigned = async (
+          status: string,
+          errorCode: "issue_terminal_status" | "issue_assignee_changed",
+          reason: string,
+        ) => {
+          const now = new Date();
+          const cancelled = await setRunStatusIfRunning(run.id, "cancelled", {
+            finishedAt: now,
+            error: reason,
+            errorCode,
+          });
+          if (cancelled.updated) {
+            await setWakeupStatus(run.wakeupRequestId, "cancelled", {
+              finishedAt: now,
+              error: reason,
+            }).catch(() => undefined);
+            await releaseIssueExecutionAndPromote(run, {
+              suppressImmediateRecovery: true,
+            });
+            await finalizeAgentStatus(agent.id, "cancelled", null, {
+              wasFirstHeartbeat: timerClaimWasFirstHeartbeat(run),
+            });
+            logger.info(
+              { runId: run.id, issueId: issueRef.id, status, errorCode },
+              "cancelled run before execution continuation: issue terminal or reassigned",
+            );
+            return true;
+          }
+          return false;
+        };
+
+        const freshIssue = await db
+          .select({
+            status: issues.status,
+            assigneeAgentId: issues.assigneeAgentId,
+          })
+          .from(issues)
+          .where(
+            and(
+              eq(issues.id, issueRef.id),
+              eq(issues.companyId, agent.companyId),
+            ),
+          )
+          .then((rows) => rows[0] ?? null);
+
+        const currentStatus = freshIssue?.status ?? issueContext.status;
+        if (["done", "cancelled"].includes(currentStatus)) {
+          const reason = `Cancelled because issue reached terminal status (${currentStatus}) before execution could start`;
+          if (
+            await cancelPrematureTerminalOrReassigned(
+              currentStatus,
+              "issue_terminal_status",
+              reason,
+            )
+          ) {
+            return;
+          }
+        }
+        if (freshIssue && freshIssue.assigneeAgentId !== agent.id) {
+          const reason =
+            "Cancelled because issue assignee changed before execution could start";
+          if (
+            await cancelPrematureTerminalOrReassigned(
+              freshIssue.status,
+              "issue_assignee_changed",
+              reason,
+            )
+          ) {
+            return;
+          }
+        }
+
+        try {
+          executionContinuation = await buildExecutionContinuation({
+            db,
+            companyId: agent.companyId,
+            issueId: issueRef.id,
+            agentId: agent.id,
+            runId: run.id,
+            context,
+            previousContextRunId: taskSession?.lastRunId,
+            summary: safeContinuationSummary?.body ?? null,
+            exposeLowTrustRaw,
+          });
+        } catch (error) {
+          if (
+            error instanceof Error &&
+            error.message === "continuation_task_ownership_changed"
+          ) {
+            const recheckIssue = await db
+              .select({
+                status: issues.status,
+                assigneeAgentId: issues.assigneeAgentId,
+              })
+              .from(issues)
+              .where(
+                and(
+                  eq(issues.id, issueRef.id),
+                  eq(issues.companyId, agent.companyId),
+                ),
+              )
+              .then((rows) => rows[0] ?? null);
+            if (
+              !recheckIssue ||
+              ["done", "cancelled"].includes(recheckIssue.status)
+            ) {
+              const statusAtCatch = recheckIssue?.status ?? "unknown";
+              const reason = `Cancelled because issue reached terminal status (${statusAtCatch}) before execution could start`;
+              if (
+                await cancelPrematureTerminalOrReassigned(
+                  statusAtCatch,
+                  "issue_terminal_status",
+                  reason,
+                )
+              ) {
+                return;
+              }
+            } else if (recheckIssue.assigneeAgentId !== agent.id) {
+              const reason =
+                "Cancelled because issue assignee changed before execution could start";
+              if (
+                await cancelPrematureTerminalOrReassigned(
+                  recheckIssue.status,
+                  "issue_assignee_changed",
+                  reason,
+                )
+              ) {
+                return;
+              }
+            }
+          }
+          throw error;
+        }
+      }
       context.executionContinuation = executionContinuation;
       // myrmidon(DB-CARE DBC-3): the envelope is stored once, in
       // heartbeat_run_continuations. Every snapshot write below persists
@@ -25908,6 +26073,7 @@ export function heartbeatService(
         runId: run.id,
         contextSnapshot: context,
         continuationSummary,
+        starterPack,
         issueSummary: issueRef
           ? {
               id: issueRef.id,
@@ -28595,7 +28761,7 @@ export function heartbeatService(
                     // A file-only wake must not inherit an old task objective.
                     const latestRequest =
                       executionContinuation?.messages.findLast(
-                        (message) =>
+                        (message: ExecutionContinuationEnvelope["messages"][number]) =>
                           message.authorType === "user" &&
                           !message.createdByRunId &&
                           !message.deleted &&

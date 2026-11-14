@@ -59,6 +59,7 @@ import {
   isLocalServiceProcessInWorkspace,
   readLocalServiceProcessCwd,
   readLocalServicePortOwner,
+  resetLsofAvailabilityForTests,
   writeLocalServiceRegistryRecord,
 } from "../services/local-service-supervisor.ts";
 import {
@@ -337,6 +338,42 @@ async function closeNetServer(server: net.Server) {
   await new Promise<void>((resolve, reject) => {
     server.close((error) => error ? reject(error) : resolve());
   });
+}
+
+async function createPathWithoutLsof(): Promise<{ path: string; cleanup: () => Promise<void> }> {
+  const dirs = (process.env.PATH || "").split(path.delimiter).filter(Boolean);
+  const cleanDirs: string[] = [];
+  const tempDirs: string[] = [];
+  for (const dir of dirs) {
+    try {
+      if (!existsSync(dir)) continue;
+      const hasLsof = existsSync(path.join(dir, "lsof"));
+      if (!hasLsof) {
+        cleanDirs.push(dir);
+        continue;
+      }
+      const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-no-lsof-path-"));
+      tempDirs.push(tempDir);
+      const entries = await fs.readdir(dir);
+      for (const entry of entries) {
+        if (entry === "lsof") continue;
+        try {
+          await fs.symlink(path.join(dir, entry), path.join(tempDir, entry));
+        } catch {}
+      }
+      cleanDirs.push(tempDir);
+    } catch {
+      cleanDirs.push(dir);
+    }
+  }
+  return {
+    path: cleanDirs.join(path.delimiter),
+    cleanup: async () => {
+      for (const t of tempDirs) {
+        await fs.rm(t, { recursive: true, force: true }).catch(() => {});
+      }
+    },
+  };
 }
 
 async function listenOnPort(port: number) {
@@ -5527,6 +5564,28 @@ describe("readLocalServicePortOwner", () => {
     await expect(isLocalServiceProcessInWorkspace(serviceCwd, workspace)).resolves.toBe(true);
   });
 
+  it("does not repeat lsof calls when lsof is unavailable and completes quickly", async () => {
+    const noLsof = await createPathWithoutLsof();
+    const previousPath = process.env.PATH;
+    process.env.PATH = noLsof.path;
+
+    try {
+      resetLsofAvailabilityForTests();
+      const start = Date.now();
+      for (let i = 0; i < 5; i++) {
+        const owner = await readLocalServicePortOwner(40000 + i);
+        expect(owner).toBeNull();
+      }
+      const durationMs = Date.now() - start;
+      expect(durationMs).toBeLessThan(1000);
+    } finally {
+      if (previousPath === undefined) delete process.env.PATH;
+      else process.env.PATH = previousPath;
+      resetLsofAvailabilityForTests();
+      await noLsof.cleanup();
+    }
+  });
+
   it("preserves newlines and trailing whitespace from Darwin lsof cwd output", async () => {
     const fakeBin = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-runtime-lsof-tools-"));
     const previousPath = process.env.PATH;
@@ -7394,6 +7453,48 @@ describeEmbeddedPostgres("workspace runtime service control persistence", () => 
         portBlocker.once("close", resolve);
         portBlocker.once("error", reject);
       });
+    }
+  }, 20_000);
+
+  it("starts runtime service successfully and quickly on a free port when lsof is unavailable", async () => {
+    const fixture = await createRuntimeFixture();
+    const cleanupRuntimeHome = await createRuntimeHome();
+    const workspace = fixture.workspaces[0]!;
+    const basePort = await findFreePort();
+
+    const noLsof = await createPathWithoutLsof();
+    const previousPath = process.env.PATH;
+    process.env.PATH = noLsof.path;
+
+    try {
+      resetLsofAvailabilityForTests();
+      const start = Date.now();
+      const started = (await startRuntimeServicesForWorkspaceControl({
+        db,
+        actor: fixture.actor,
+        issue: null,
+        workspace: fixture.realizedWorkspace(workspace),
+        executionWorkspaceId: workspace.id,
+        config: fixedPortRuntimeConfig(basePort),
+        adapterEnv: {},
+      }))[0]!;
+      const durationMs = Date.now() - start;
+
+      expect(started.port).toBe(basePort);
+      expect(started.url).toBe(`http://127.0.0.1:${started.port}`);
+      expect(durationMs).toBeLessThan(1000);
+    } finally {
+      if (previousPath === undefined) delete process.env.PATH;
+      else process.env.PATH = previousPath;
+      resetLsofAvailabilityForTests();
+      await stopRuntimeServicesForExecutionWorkspace({
+        db,
+        executionWorkspaceId: workspace.id,
+        workspaceCwd: workspace.cwd,
+      }).catch(() => undefined);
+      await noLsof.cleanup();
+      await cleanupRuntimeHome();
+      await fixture.cleanup();
     }
   }, 20_000);
 
