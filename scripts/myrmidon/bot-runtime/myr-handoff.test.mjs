@@ -501,18 +501,66 @@ test("myr-handoff rejects --reviewer argument", async () => {
   assert.equal(sink.commands.length, 0);
 });
 
-test("myr-handoff without review stage in executionPolicy fails and sends no PATCH", async () => {
+test("myr-handoff without review stage: bare in_review PATCH, executionPolicy never written", async () => {
   const sink = { patches: [], commands: [] };
   const policy = {
     mode: "normal",
-    monitor: { intervalMinutes: 30 },
     stages: [{ id: "st-a", type: "approval", approvalsNeeded: 1, participants: [{ type: "user", userId: "u1" }] }],
   };
   const res = await run(["--issue", "OPE-5", "--summary", "s"], policyDeps(policy, sink));
-  assert.notEqual(res.exitCode, 0);
-  assert.match(res.stderr, /failed at step issue_admission: issue has no configured review stage in executionPolicy/);
-  assert.equal(sink.patches.length, 0);
-  assert.equal(sink.commands.some((c) => c[0] === "git" && c[1] === "push"), false);
+  assert.equal(res.exitCode, 0);
+  assert.equal(sink.patches.length, 1);
+  assert.deepEqual(Object.keys(sink.patches[0]).sort(), ["comment", "status"]);
+  assert.equal(sink.patches[0].status, "in_review");
+});
+
+test("myr-handoff board refusal for an issue without review stage is shown, status unchanged", async () => {
+  const sink = { patches: [], commands: [] };
+  const deps = policyDeps(null, sink);
+  let record = { id: "issue-uuid-5", status: "in_progress" };
+  const baseFetch = deps.fetch;
+  deps.fetch = async (url, opts) => {
+    if (opts && opts.method === "PATCH" && url.endsWith("/api/issues/issue-uuid-5")) {
+      sink.patches.push(JSON.parse(opts.body));
+      return { ok: false, status: 422, text: async () => "no review stage configured for this issue" };
+    }
+    return baseFetch(url, opts);
+  };
+  const res = await run(["--issue", "OPE-5", "--summary", "s"], deps);
+  assert.equal(res.exitCode, 1);
+  assert.match(res.stderr, /issue_patch/);
+  assert.match(res.stderr, /HTTP 422 no review stage configured for this issue/);
+  assert.equal(sink.patches.some((p) => "executionPolicy" in p), false);
+  assert.equal(record.status, "in_progress");
+});
+
+test("myr-handoff refuses to hand off from a protected branch and does not push", async () => {
+  const commands = [];
+  const deps = makeDeps({ commandsRun: commands });
+  const base = deps.runCommand;
+  deps.runCommand = (cmd, args) =>
+    cmd === "git" && args[0] === "branch" ? { status: 0, stdout: "main\n", stderr: "" } : base(cmd, args);
+  const res = await run(["--issue", "OPE-5", "--summary", "s"], deps);
+  assert.equal(res.exitCode, 1);
+  assert.match(res.stderr, /protected branch main/);
+  assert.equal(commands.some((c) => c[0] === "git" && c[1] === "push"), false);
+});
+
+test("myr-handoff treats regex metacharacters in --issue literally when cleaning an existing PR title", async () => {
+  const commands = [];
+  const deps = makeDeps({
+    commandsRun: commands,
+    prView: { status: 0, stdout: JSON.stringify({ number: 77, state: "OPEN", title: "old title", url: "https://github.com/itkadr-git/myrmidon/pull/77" }), stderr: "" },
+  });
+  const baseFetch = deps.fetch;
+  deps.fetch = async (url, opts) =>
+    url.endsWith("/api/issues/(")
+      ? { ok: true, status: 200, json: async () => ({ id: "issue-uuid-5", identifier: "OPE-5", executionPolicy: REVIEW_POLICY }) }
+      : baseFetch(url, opts);
+  const res = await run(["--issue", "(", "--summary", "s"], deps);
+  assert.equal(res.exitCode, 0, res.stderr);
+  const edit = commands.find((c) => c[0] === "gh" && c[1] === "pr" && c[2] === "edit");
+  assert.equal(edit[edit.indexOf("--title") + 1], "OPE-5: old title");
 });
 
 test("myr-handoff titles the PR with the issue key, not the UUID passed in --issue", async () => {
@@ -625,17 +673,31 @@ test("myr-handoff fails on admission rejection with clear error and leaves statu
   assert.equal(issueRecord.status, "in_progress"); // status NOT modified
   assert.equal(commands.length, 0);
 
-  // Case 3: Server PATCH rejects admission with 422 invalid_issue_disposition -> status remains in_progress
-  issueRecord.reviewPolicy = "standard";
-  const commandsLate = [];
-  const depsLate = makeDeps({
-    commandsRun: commandsLate,
-    patchStatus: 422,
-  });
-  // patchStatus: 422 returns { ok: false, status: 422, text: () => "invalid_issue_disposition: missing green CI" }
+  // Case 3: server rejects the PATCH (422 invalid_issue_disposition) -> stateful check: status unchanged
+  const serverIssue = { id: "issue-uuid-5", identifier: "OPE-5", status: "in_progress", executionPolicy: REVIEW_POLICY };
+  const patchAttempts = [];
+  const depsLate = makeDeps({ commandsRun: [] });
+  const baseFetch = depsLate.fetch;
+  depsLate.fetch = async (url, opts) => {
+    if (url.endsWith("/api/issues/OPE-5")) return { ok: true, status: 200, json: async () => ({ ...serverIssue }) };
+    if (url.endsWith("/api/issues/issue-uuid-5") && opts && opts.method === "PATCH") {
+      patchAttempts.push(JSON.parse(opts.body));
+      // a rejecting server leaves the record untouched
+      return { ok: false, status: 422, text: async () => "invalid_issue_disposition: missing green CI" };
+    }
+    return baseFetch(url, opts);
+  };
+  const statusBefore = serverIssue.status;
   const resLate = await run(["--issue", "OPE-5", "--summary", "try handoff"], depsLate);
   assert.equal(resLate.exitCode, 1);
   assert.match(resLate.stderr, /failed at step issue_patch/);
-  assert.match(resLate.stderr, /HTTP 422/);
+  assert.match(resLate.stderr, /HTTP 422 invalid_issue_disposition: missing green CI/);
   assert.match(resLate.stderr, /PR #77 sha abc123/);
+  assert.equal(patchAttempts.length, 1);
+  assert.equal(patchAttempts[0].status, "in_review");
+  assert.equal("executionPolicy" in patchAttempts[0], false);
+  // re-read the issue through the same API: status must be what it was before the rejected PATCH
+  const reread = await (await depsLate.fetch("http://paperclip-test:3100/api/issues/OPE-5")).json();
+  assert.equal(reread.status, statusBefore);
+  assert.equal(reread.status, "in_progress");
 });

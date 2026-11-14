@@ -28,6 +28,10 @@ function runCommand(cmd, args, options = {}) {
   };
 }
 
+function escapeRegExp(str) {
+  return String(str).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
 function describeFetchError(err) {
   if (err && (err.name === "TimeoutError" || err.name === "AbortError")) {
     return `request timed out after ${FETCH_TIMEOUT_MS} ms`;
@@ -166,21 +170,9 @@ async function run(args, deps = {}) {
     };
   }
 
-  // The board rejects a bare in_review PATCH from an agent when the issue has no review stage.
-  // Use the configured review workflow; creating/replacing executionPolicy stages from handoff is disallowed.
-  const existingPolicy =
-    issueData.executionPolicy && typeof issueData.executionPolicy === "object" ? issueData.executionPolicy : null;
-  const existingStages = Array.isArray(existingPolicy && existingPolicy.stages) ? existingPolicy.stages : [];
-  const hasReviewStage = existingStages.some(
-    (st) => st && st.type === "review" && Array.isArray(st.participants) && st.participants.length > 0
-  );
-  if (!hasReviewStage) {
-    return {
-      exitCode: 1,
-      stdout: "",
-      stderr: "myr-handoff: failed at step issue_admission: issue has no configured review stage in executionPolicy\n",
-    };
-  }
+  // Review stages are the board's business: since OPE-13099 the board adds the configured review stage when an
+  // engineer hands off an issue without one. The CLI never reads, creates or replaces executionPolicy; any
+  // admission/setup refusal comes back from the PATCH below and is shown verbatim.
 
   const branchRes = execCmd("git", ["branch", "--show-current"], { cwd });
   if (branchRes.status !== 0 || !branchRes.stdout.trim()) {
@@ -191,6 +183,13 @@ async function run(args, deps = {}) {
     };
   }
   const branch = branchRes.stdout.trim();
+  if (branch === "main" || branch === "master" || branch.startsWith("rel/")) {
+    return {
+      exitCode: 1,
+      stdout: "",
+      stderr: `myr-handoff: failed at step git_branch: refusing to hand off from protected branch ${branch}; use a bot/OPE-* branch\n`,
+    };
+  }
 
   const headRes = execCmd("git", ["rev-parse", "HEAD"], { cwd });
   if (headRes.status !== 0 || !headRes.stdout.trim()) {
@@ -222,7 +221,7 @@ async function run(args, deps = {}) {
         prUrl = data.url || null;
         if (data.title && !data.title.includes(issueKey)) {
           const cleanTitle = data.title
-            .replace(new RegExp(`^${issueKeyOrId}:?\\s*`, "i"), "")
+            .replace(new RegExp(`^${escapeRegExp(issueKeyOrId)}:?\\s*`, "i"), "")
             .replace(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}:?\s*/i, "")
             .trim();
           const newTitle = cleanTitle ? `${issueKey}: ${cleanTitle}` : `${issueKey}: handoff to review`;
@@ -419,9 +418,23 @@ async function run(args, deps = {}) {
     };
   }
 
+  // Show what the board answered, not what we asked for.
+  let boardStatus = "in_review";
+  try {
+    const patched = await patchRes.json();
+    if (patched && typeof patched.status === "string" && patched.status) boardStatus = patched.status;
+  } catch (_) {}
+  if (boardStatus !== "in_review") {
+    return {
+      exitCode: 1,
+      stdout: "",
+      stderr: `myr-handoff: failed at step issue_patch: PR #${prNumber} sha ${headSha} (branch ${branch}) exists, but the board answered status ${boardStatus} instead of in_review\n`,
+    };
+  }
+
   return {
     exitCode: 0,
-    stdout: `PR #${prNumber} sha ${headSha} status in_review bound yes\n`,
+    stdout: `PR #${prNumber} sha ${headSha} status ${boardStatus} bound yes\n`,
     stderr: "",
   };
 }
