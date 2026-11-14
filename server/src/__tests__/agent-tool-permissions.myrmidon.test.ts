@@ -13,6 +13,8 @@ import {
   activityLog,
   principalPermissionGrants,
   projects,
+  documents,
+  issueDocuments,
   toolAccessAuditEvents,
   toolCallEvents,
   toolProfileBindings,
@@ -27,6 +29,7 @@ import {
   startEmbeddedPostgresTestDatabase,
 } from "./helpers/embedded-postgres.js";
 import { createToolGatewayService, ToolGatewayHttpError } from "../services/tool-gateway.js";
+import type { PluginToolDispatcher } from "../services/plugin-tool-dispatcher.js";
 // myrmidon(DB-PERF-C-P4): the fixtures below write profiles, bindings and entries around the
 // tool-access CRUD, so they drop the company snapshot the way those CRUD paths do.
 import { invalidateToolPolicyCache } from "../myrmidon/tool-policy-cache/runtime.js";
@@ -187,8 +190,11 @@ describeEmbeddedPostgres("myrmidon(S6) agent tool permission enforcement", () =>
     return profile;
   }
 
-  function createGateway() {
-    return createToolGatewayService(db, { toolActionSigningSecret: "test-tool-action-signing-secret" });
+  function createGateway(options?: { pluginToolDispatcher?: PluginToolDispatcher }) {
+    return createToolGatewayService(db, {
+      toolActionSigningSecret: "test-tool-action-signing-secret",
+      pluginToolDispatcher: options?.pluginToolDispatcher,
+    });
   }
 
   it("refuses a tool the agent's list does not name, and writes it to the journal", async () => {
@@ -253,9 +259,76 @@ describeEmbeddedPostgres("myrmidon(S6) agent tool permission enforcement", () =>
     ).resolves.toMatchObject({ tool: FIXTURE_TOOL });
   });
 
-  it("enforces ANALYST_TOOL_PERMISSIONS: allows task & doc operations but denies code/exec tools with call_denied journal", async () => {
+  it("enforces ANALYST_TOOL_PERMISSIONS: allows task & doc mutations but denies code/exec tools with call_denied journal", async () => {
     const company = await createCompany();
-    const gateway = createGateway();
+
+    const taskUpdates: any[] = [];
+    const docWrites: any[] = [];
+    const codeExecCalls: any[] = [];
+
+    const dispatcher: PluginToolDispatcher = {
+      initialize: async () => {},
+      teardown: () => {},
+      listToolsForAgent: () => [
+        {
+          name: "update_task",
+          displayName: "Update Task",
+          description: "Update a task",
+          parametersSchema: { type: "object", properties: { issueId: { type: "string" }, title: { type: "string" } } },
+          pluginId: "core-task-plugin",
+        },
+        {
+          name: "write_document",
+          displayName: "Write Document",
+          description: "Write task document",
+          parametersSchema: { type: "object", properties: { issueId: { type: "string" }, key: { type: "string" }, body: { type: "string" } } },
+          pluginId: "core-doc-plugin",
+        },
+        {
+          name: "execute_code",
+          displayName: "Execute Code",
+          description: "Execute arbitrary code",
+          parametersSchema: { type: "object", properties: { code: { type: "string" } } },
+          pluginId: "core-code-plugin",
+        },
+      ],
+      getTool: (name: string) => null,
+      executeTool: async (name, params, ctx) => {
+        if (name === "update_task") {
+          taskUpdates.push({ params, ctx });
+          await db
+            .update(issues)
+            .set({ title: params.title as string })
+            .where(eq(issues.id, params.issueId as string));
+          return { content: "task updated", data: { updated: true } };
+        }
+        if (name === "write_document") {
+          docWrites.push({ params, ctx });
+          const [doc] = await db
+            .insert(documents)
+            .values({
+              companyId: ctx.companyId,
+              title: params.key as string,
+              latestBody: params.body as string,
+            })
+            .returning();
+          await db.insert(issueDocuments).values({
+            companyId: ctx.companyId,
+            issueId: params.issueId as string,
+            documentId: doc.id,
+            key: params.key as string,
+          });
+          return { content: "document written", data: { documentId: doc.id } };
+        }
+        if (name === "execute_code") {
+          codeExecCalls.push({ params, ctx });
+          return { content: "executed code", data: { executed: true } };
+        }
+        throw new Error(`Unexpected tool execution: ${name}`);
+      },
+    };
+
+    const gateway = createGateway({ pluginToolDispatcher: dispatcher });
 
     const analystAgent = await createAgent(company.id, {
       [AGENT_TOOL_PERMISSIONS_KEY]: ANALYST_TOOL_PERMISSIONS,
@@ -269,7 +342,7 @@ describeEmbeddedPostgres("myrmidon(S6) agent tool permission enforcement", () =>
       runId: analystRun.run.id,
     });
 
-    // Allowed tool (in ANALYST_TOOL_PERMISSIONS.tools)
+    // 1. Allowed built-in issue reads (in ANALYST_TOOL_PERMISSIONS.tools)
     await expect(
       gateway.executeTool({
         sessionToken: session.token,
@@ -278,16 +351,56 @@ describeEmbeddedPostgres("myrmidon(S6) agent tool permission enforcement", () =>
       }),
     ).resolves.toMatchObject({ tool: "paperclip-self:list_my_issues" });
 
-    // Denied code/exec tool (not in ANALYST_TOOL_PERMISSIONS.tools)
+    await expect(
+      gateway.executeTool({
+        sessionToken: session.token,
+        tool: "paperclip-self:get_issue_context",
+        parameters: { issueId: analystRun.issue.id },
+      }),
+    ).resolves.toMatchObject({ tool: "paperclip-self:get_issue_context" });
+
+    // 2. Allowed task mutation through gateway: update_task
+    await expect(
+      gateway.executeTool({
+        sessionToken: session.token,
+        tool: "update_task",
+        parameters: { issueId: analystRun.issue.id, title: "Analyst Updated Task Title" },
+      }),
+    ).resolves.toMatchObject({ tool: "update_task" });
+
+    const [updatedIssue] = await db
+      .select({ title: issues.title })
+      .from(issues)
+      .where(eq(issues.id, analystRun.issue.id));
+    expect(updatedIssue?.title).toBe("Analyst Updated Task Title");
+    expect(taskUpdates).toHaveLength(1);
+
+    // 3. Allowed document mutation: write_document
+    await expect(
+      gateway.executeTool({
+        sessionToken: session.token,
+        tool: "write_document",
+        parameters: { issueId: analystRun.issue.id, key: "spec", body: "# Analyst Specification" },
+      }),
+    ).resolves.toMatchObject({ tool: "write_document" });
+
+    const [createdDoc] = await db
+      .select({ title: documents.title, latestBody: documents.latestBody })
+      .from(documents)
+      .where(eq(documents.title, "spec"));
+    expect(createdDoc?.latestBody).toBe("# Analyst Specification");
+    expect(docWrites).toHaveLength(1);
+
+    // 4. Denied code/exec tool: execute_code (registered in tool gateway, but blocked by ANALYST_TOOL_PERMISSIONS)
     await gateway
       .executeTool({
         sessionToken: session.token,
-        tool: FIXTURE_TOOL,
-        parameters: { message: "run code" },
+        tool: "execute_code",
+        parameters: { code: "process.exit(1)" },
       })
       .then(
         () => {
-          throw new Error("Expected the tool call to be refused");
+          throw new Error("Expected the execute_code tool call to be refused");
         },
         (error) => {
           expect(error).toBeInstanceOf(ToolGatewayHttpError);
@@ -295,15 +408,36 @@ describeEmbeddedPostgres("myrmidon(S6) agent tool permission enforcement", () =>
           expect((error as ToolGatewayHttpError).reasonCode).toBe("deny_agent_permission");
         },
       );
+    expect(codeExecCalls).toHaveLength(0);
 
-    // Verify denial was journaled with call_denied and deny_agent_permission
+    // 5. Verify denial was journaled with call_denied, tool execute_code, and deny_agent_permission
     const denials = await db
       .select()
       .from(toolCallEvents)
       .where(eq(toolCallEvents.reasonCode, "deny_agent_permission"));
-    expect(denials.map((row) => row.agentId)).toContain(analystAgent.id);
-    expect(denials.map((row) => row.decision)).toContain("deny");
-    expect(denials.map((row) => row.runId)).toContain(analystRun.run.id);
+    const executeCodeDenial = denials.find((d) => d.toolName === "execute_code");
+    expect(executeCodeDenial).toBeDefined();
+    expect(executeCodeDenial!.agentId).toBe(analystAgent.id);
+    expect(executeCodeDenial!.decision).toBe("deny");
+    expect(executeCodeDenial!.runId).toBe(analystRun.run.id);
+
+    // 6. Compare with an engineer/unset agent to prove execute_code succeeds when tool permissions allow it
+    const engineerAgent = await createAgent(company.id, {});
+    const engineerRun = await createRunningRun(company.id, engineerAgent.id);
+    await allowAllToolsForAgent(company.id, engineerAgent.id);
+    const engineerSession = await gateway.createSession({
+      companyId: company.id,
+      agentId: engineerAgent.id,
+      runId: engineerRun.run.id,
+    });
+    await expect(
+      gateway.executeTool({
+        sessionToken: engineerSession.token,
+        tool: "execute_code",
+        parameters: { code: "console.log('engineer can run code')" },
+      }),
+    ).resolves.toMatchObject({ tool: "execute_code" });
+    expect(codeExecCalls).toHaveLength(1);
   });
 
   // myrmidon(1.6.5-F22): actor × grant → status matrix for the tools
