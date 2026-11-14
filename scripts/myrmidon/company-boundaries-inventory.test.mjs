@@ -805,6 +805,7 @@ describe("SECTIONS surface", () => {
     // Memory/corpus coverage from the review: real routes, metadata-only.
     const byId = new Map(SECTIONS.map((s) => [s.id, s]));
     assert.equal(byId.get("agentMemory").path, "/api/myrmidon/agents/:agentId/memory");
+    assert.ok(byId.get("agentMemory").note.includes("Hermes profile memory"), "agentMemory note explains profile memory scoping");
     assert.equal(byId.get("corpusDatasets").path, "/api/myrmidon/companies/:companyId/corpus/datasets");
     assert.equal(byId.get("corpusStats").path, "/api/myrmidon/companies/:companyId/corpus/stats");
     for (const id of ["agentMemory", "corpusDatasets", "corpusStats"]) {
