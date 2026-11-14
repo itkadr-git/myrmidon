@@ -171,6 +171,29 @@ function renderLedger(props: Partial<ComponentProps<typeof IssueRunLedgerContent
 }
 
 describe("IssueRunLedger", () => {
+  it("renders selected rule labels from reviewer and background run snapshots", () => {
+    renderLedger({
+      runs: [
+        createRun({
+          runId: "reviewer-run",
+          contextSnapshot: { modelSelection: { stepClass: "reviewer", modelGroup: "strong", model: "gpt-5.1", ruleLabel: "reviewer -> strong" } },
+        }),
+        createRun({
+          runId: "background-run",
+          contextSnapshot: { modelSelection: { stepClass: "background", modelGroup: "economy", model: "gpt-5.1-mini", ruleLabel: "background -> economy" } },
+        }),
+      ],
+    });
+
+    const labels = Array.from(container.querySelectorAll('[data-testid="run-model-selection"]'));
+    expect(labels.map((label) => label.textContent)).toEqual([
+      "reviewer -> strong",
+      "background -> economy",
+    ]);
+    expect(labels[0]?.getAttribute("title")).toContain("gpt-5.1");
+    expect(labels[1]?.getAttribute("title")).toContain("gpt-5.1-mini");
+  });
+
   it("renders every liveness state with exhausted continuation context", () => {
     const states: RunLivenessState[] = [
       "advanced",
