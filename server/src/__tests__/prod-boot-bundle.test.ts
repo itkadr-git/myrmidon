@@ -23,10 +23,19 @@ import { describe, expect, it } from "vitest";
  * suite never builds on its own so it stays hermetic, fast, and independent of
  * docker, databases-as-a-service, or the network. It boots with the embedded
  * PostgreSQL path (no DATABASE_URL) inside a throwaway data home.
+ *
+ * Lanes: the sharded vitest lanes (`tests (server N/6)`) run before/without a
+ * workspace build and without the dist substitution, so there the suite skips
+ * when `server/dist/index.js` is absent. Lanes that DO own a build (the
+ * affected lane and the full-tier build job, after `prod-runtime-exports
+ * apply`) set `PROD_BOOT_REQUIRED=1`: a missing dist is then a hard failure,
+ * not a skip.
  */
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..", "..");
 const serverDistIndex = join(repoRoot, "server", "dist", "index.js");
+const bundleRequired = process.env.PROD_BOOT_REQUIRED === "1";
+const runnable = bundleRequired || existsSync(serverDistIndex);
 
 /** Reserve an ephemeral port, then release it for the server to bind. */
 async function reserveFreePort(): Promise<number> {
@@ -48,7 +57,7 @@ async function fetchHealth(port: number, signal: AbortSignal): Promise<Response>
   return fetch(`http://127.0.0.1:${port}/api/health`, { signal });
 }
 
-describe("compiled server boots under bare node (no tsx)", () => {
+describe.skipIf(!runnable)("compiled server boots under bare node (no tsx)", () => {
   it(
     "answers 200 on /api/health without any loader in execArgv",
     { timeout: 120_000 },
