@@ -132,6 +132,8 @@ import type { ChatChannelService } from "../services/chat-channels.js";
 import type { WakeupOptions } from "../services/heartbeat.js";
 import { createPullRequestCiResolver, withCiResolveDeadline } from "../services/github-pull-request-ci.js";
 import { createPullRequestMergeDetailsResolver } from "../services/github-pull-request-merge.js";
+import { resolveGitHubRepositoryToken } from "../services/github-external-object-provider.js";
+import { checkCommitMembership, normaliseReleasePrefix, resolveReleaseRefs, routePullRequestVerdict } from "../myrmidon/release-membership.js";
 import {
   companies,
   activityLog,
@@ -152,6 +154,7 @@ import {
   issueRelations,
   issueRecoveryActions,
   issueThreadInteractions,
+  issueLabels,
   labels,
   issues as issueRows,
   issueWorkProducts,
@@ -9920,6 +9923,110 @@ export function issueRoutes(
     } catch (err) {
       return res.status(500).json({
         error: err instanceof Error ? err.message : "Failed to resolve CI status",
+      });
+    }
+  });
+
+  // VERIFY-ON-PROD (OPE-12994): for every pull_request work product of the
+  // issue, report whether its merge commit is reachable from the release refs
+  // (tags myr-v<prefix>* and branches rel/<prefix>*) of the issue's release
+  // label ("<major>.<minor>"). verdict "missing_from_release" marks a PR merged
+  // into the default branch that is absent from the release line — the gap the
+  // done gate does not see (it only proves delivery to main or rel/*).
+  router.get("/issues/:id/release-status", async (req, res) => {
+    const id = req.params.id as string;
+    const issue = await getAccessibleResource(
+      req,
+      res,
+      getIssueById(req, id),
+      "Issue not found",
+    );
+    if (!issue) return;
+    if (!(await assertIssueReadAllowed(req, res, issue))) return;
+
+    try {
+      const refresh = req.query.refreshPullRequests === "true";
+      const workProducts = await workProductsSvc.listForIssue(issue.id, { refreshPullRequests: refresh });
+      const labelRows = await db
+        .select({ name: labels.name })
+        .from(issueLabels)
+        .innerJoin(labels, eq(labels.id, issueLabels.labelId))
+        .where(eq(issueLabels.issueId, issue.id));
+      const releasePrefix = labelRows
+        .map((row) => normaliseReleasePrefix(row.name))
+        .find((prefix): prefix is string => prefix !== null) ?? null;
+      const pullRequests = [] as Array<{
+        workProductId: string;
+        repo: string | null;
+        number: number | null;
+        url: string | null;
+        state: string;
+        mergeCommitSha: string | null;
+        inDefaultBranch: boolean | null;
+        verdict: "present" | "missing_from_release" | "no_release_label" | "unknown";
+        releaseRefs: string[];
+      }>;
+      for (const product of workProducts) {
+        if (product.type !== "pull_request") continue;
+        const metadata = product.metadata ?? {};
+        const repo = typeof metadata.repo === "string" ? metadata.repo : null;
+        const number = typeof metadata.number === "number" ? metadata.number : null;
+        const mergeCommitSha = typeof metadata.mergeCommitSha === "string" ? metadata.mergeCommitSha : null;
+        const baseRef = typeof metadata.baseRef === "string" ? metadata.baseRef : null;
+        const defaultBranch = typeof metadata.defaultBranch === "string" ? metadata.defaultBranch : "main";
+        const merged = product.status === "merged";
+        const inDefaultBranch = merged
+          ? (!baseRef || baseRef === defaultBranch)
+          : null;
+        if (!merged || !releasePrefix) {
+          pullRequests.push({
+            workProductId: product.id,
+            repo,
+            number,
+            url: product.url,
+            state: product.status,
+            mergeCommitSha,
+            inDefaultBranch,
+            verdict: merged && !releasePrefix ? "no_release_label" : "unknown",
+            releaseRefs: [],
+          });
+          continue;
+        }
+        const token = await resolveGitHubRepositoryToken(db, issue.companyId, repo ?? "");
+        const refs = await resolveReleaseRefs({
+          repository: repo ?? "",
+          releasePrefix,
+          token,
+        });
+        const membership = await checkCommitMembership({
+          repository: repo ?? "",
+          sha: mergeCommitSha,
+          releasePrefix,
+          refs,
+          token,
+        });
+        const verdict = routePullRequestVerdict({
+          merged,
+          releaseLabel: releasePrefix,
+          membershipVerdict: membership.verdict,
+          inDefaultBranch,
+        });
+        pullRequests.push({
+          workProductId: product.id,
+          repo,
+          number,
+          url: product.url,
+          state: product.status,
+          mergeCommitSha,
+          inDefaultBranch,
+          verdict,
+          releaseRefs: membership.releaseRefs.map((ref) => ref.ref),
+        });
+      }
+      return res.json({ issueId: issue.id, releaseLabel: releasePrefix, pullRequests });
+    } catch (err) {
+      return res.status(500).json({
+        error: err instanceof Error ? err.message : "Failed to resolve release status",
       });
     }
   });
