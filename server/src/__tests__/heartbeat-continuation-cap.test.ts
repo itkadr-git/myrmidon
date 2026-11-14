@@ -120,6 +120,25 @@ describeEmbeddedPostgres("heartbeat continuation wakes: status gate and real att
     return agentId;
   }
 
+  // issue_work_products: type, provider, title and status are NOT NULL.
+  async function seedPullRequestWorkProduct(input: {
+    companyId: string;
+    issueId: string;
+    headSha: string;
+    title?: string;
+  }) {
+    await db.insert(issueWorkProducts).values({
+      id: randomUUID(),
+      companyId: input.companyId,
+      issueId: input.issueId,
+      type: "pull_request",
+      provider: "github",
+      title: input.title ?? "PR",
+      status: "open",
+      metadata: { headSha: input.headSha },
+    });
+  }
+
   async function seedCompanyAgentIssue(status = "in_progress") {
     const companyId = randomUUID();
     const issueId = randomUUID();
@@ -552,18 +571,8 @@ describeEmbeddedPostgres("heartbeat continuation wakes: status gate and real att
         assigneeAgentId: agentId,
       });
 
-      const prProduct = randomUUID();
       const constantHeadSha = "4b27a2c0b2428ab1352c8af64cb8bd40328b4f3b";
-      await db.insert(issueWorkProducts).values({
-        id: prProduct,
-        companyId,
-        issueId,
-        type: "pull_request",
-        title: "PR #123",
-        metadata: {
-          headSha: constantHeadSha,
-        },
-      });
+      await seedPullRequestWorkProduct({ companyId, issueId, headSha: constantHeadSha, title: "PR #123" });
 
       const ctx = { companyId, issueId, agentId };
 
@@ -632,14 +641,7 @@ describeEmbeddedPostgres("heartbeat continuation wakes: status gate and real att
       });
 
       const constantHeadSha = "feedfacecafe0123456789abcdef0123456789ab";
-      await db.insert(issueWorkProducts).values({
-        id: randomUUID(),
-        companyId,
-        issueId,
-        type: "pull_request",
-        title: "PR #456",
-        metadata: { headSha: constantHeadSha },
-      });
+      await seedPullRequestWorkProduct({ companyId, issueId, headSha: constantHeadSha, title: "PR #456" });
 
       const ctx = { companyId, issueId, agentId };
 
@@ -720,14 +722,7 @@ describeEmbeddedPostgres("heartbeat continuation wakes: status gate and real att
           assigneeAgentId: agentId,
         });
         if (opts.withPr !== false) {
-          await db.insert(issueWorkProducts).values({
-            id: randomUUID(),
-            companyId,
-            issueId,
-            type: "pull_request",
-            title: "PR #1",
-            metadata: { headSha },
-          });
+          await seedPullRequestWorkProduct({ companyId, issueId, headSha, title: "PR #1" });
         }
         for (let i = 4; i >= 1; i--) {
           await seedContinuationRun({
