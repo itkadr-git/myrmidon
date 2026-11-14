@@ -18,18 +18,21 @@ interface ReleasePullRequest {
 interface ReleaseStatus { issueId: string; releaseLabel: string | null; pullRequests: ReleasePullRequest[] }
 
 export function ReleaseComposition({ issue }: { issue: Issue }) {
+  const labels = issue.labels ?? [];
+  const releasePattern = /^release(?::|\/|\s)\d+\.\d+$/i;
+  const enabled = labels.some((label) => releasePattern.test(label.name));
   const query = useQuery({
     queryKey: queryKeys.issues.releaseStatus(issue.id),
     queryFn: () => api.get<ReleaseStatus>(`/issues/${issue.id}/release-status`),
-    enabled: issue.labels.some((label) => /^release(?::|\/|\s)\d+\.\d+$/i.test(label.name)),
+    enabled,
   });
-  if (!issue.labels.some((label) => /^release(?::|\/|\s)\d+\.\d+$/i.test(label.name))) return null;
+  if (!enabled) return null;
   if (query.isLoading) return <div className="px-3 py-2 text-xs text-muted-foreground">Loading release composition…</div>;
   if (query.isError) return <div role="alert" className="px-3 py-2 text-xs text-destructive">Release composition unavailable.</div>;
   const prs = query.data?.pullRequests ?? [];
   if (prs.length === 0) return <div className="px-3 py-2 text-xs text-muted-foreground">No release pull requests found.</div>;
   const missingDone = issue.status === "done" && prs.some((pr) => pr.verdict === "missing_from_release");
-  const releaseLabel = query.data?.releaseLabel ?? issue.labels.find((label) => /^release(?::|\/|\s)\d+\.\d+$/i.test(label.name))?.name.replace(/^release(?::|\/|\s)/i, "") ?? null;
+  const releaseLabel = query.data?.releaseLabel ?? labels.find((label) => releasePattern.test(label.name))?.name.replace(/^release(?::|\/|\s)/i, "") ?? null;
   return <section aria-label="Release composition" className="space-y-2 rounded-md border border-border p-3">
     <h3 className="text-sm font-semibold">Release composition {releaseLabel ? `· ${releaseLabel}` : ""}</h3>
     {missingDone && <p role="alert" className="flex items-center gap-2 text-sm text-destructive"><AlertTriangle className="size-4" />Done task has code missing from its release branch.</p>}

@@ -2643,7 +2643,7 @@ export function IssueProperties({
         </PropertyPicker>
       </PropertySection>
 
-      <PropertySection title="Release composition" streamlined={streamlinedPropertiesEnabled}>
+      <PropertySection title={t("area.issue-properties-panels-2.issue-properties.sections.releaseComposition")} streamlined={streamlinedPropertiesEnabled}>
         <ReleaseComposition issue={issue} />
       </PropertySection>
 
