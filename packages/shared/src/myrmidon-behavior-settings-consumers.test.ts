@@ -55,6 +55,17 @@ function searchableNames(key: string, envName: string): string[] {
  * is an ADM decision — this test only keeps the list honest.
  */
 const UNWIRED_SETTINGS: readonly string[] = [
+  "agent_liveness_enabled",
+  "agent_liveness_engineer_queue_threshold",
+  "agent_liveness_reviewer_queue_threshold",
+  "agent_liveness_lead_queue_threshold",
+  "agent_liveness_probe_interval_sec",
+  "agent_liveness_probe_timeout_sec",
+  "agent_liveness_ladder_steps",
+  "agent_liveness_ladder_step_timeout_sec",
+  "agent_liveness_journal_dedup_window_sec",
+  "agent_liveness_exclusion_windows",
+  "agent_liveness_journal_retention_days",
   "auto_resume_from_error",
   "autonomy_level",
   "debug_mode",
