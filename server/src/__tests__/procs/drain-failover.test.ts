@@ -138,15 +138,20 @@ async function heartbeat(): Promise<{ ok: boolean; error?: string }> {
 }
 
 /** The load generator: `rps` requests per second against the shared port for
- * `durationMs`, concurrent, each result recorded. */
+ * `durationMs`, concurrent, each result recorded. `failureOffsetsMs` carries
+ * the start time of every failed request relative to load start: the kill -9
+ * scenario judges failures against the kill window, so it needs the numeric
+ * offsets, not just the failure texts. */
 async function runHeartbeatLoad(options: { rps?: number; durationMs: number }): Promise<{
   total: number;
   failed: number;
   failures: string[];
+  failureOffsetsMs: number[];
 }> {
   const rps = options.rps ?? 10;
   const startedAt = Date.now();
   const failures: string[] = [];
+  const failureOffsetsMs: number[] = [];
   let total = 0;
   let failed = 0;
   const tickMs = 1_000 / rps;
@@ -158,14 +163,68 @@ async function runHeartbeatLoad(options: { rps?: number; durationMs: number }): 
       heartbeat().then((res) => {
         if (!res.ok) {
           failed += 1;
-          failures.push(`t+${firedAt - startedAt}ms (${res.error ?? "unknown"})`);
+          const offsetMs = firedAt - startedAt;
+          failureOffsetsMs.push(offsetMs);
+          failures.push(`t+${offsetMs}ms (${res.error ?? "unknown"})`);
         }
       }),
     );
     await new Promise((resolve) => setTimeout(resolve, tickMs));
   }
   await Promise.all(pending);
-  return { total, failed, failures };
+  return { total, failed, failures, failureOffsetsMs };
+}
+
+/** Kill -9 loss window (OPE-12692). The design tolerates heartbeats lost in a
+ * window around the SIGKILL: a request that raced the victim's death, plus
+ * requests the kernel kept hashing onto the victim's listening socket while
+ * the runner reaped the corpse and re-hashed the shared port — observed up to
+ * ~105 ms after the kill (CI run 42882040652, failures at t+503/t+605 ms with
+ * the kill at ~t+500 ms). KILL_WINDOW_AFTER_MS covers that with more than 2x
+ * headroom. A failure starting after the window's end is a design violation:
+ * the survivor owned the port by then. Failures before the kill were served
+ * normally, so nothing outside the window is tolerated. */
+export const KILL_WINDOW_BEFORE_MS = 300;
+export const KILL_WINDOW_AFTER_MS = 700;
+
+/** Pure classifier for the kill -9 loss window: a failure offset counts as an
+ * expected loss only when its request started inside
+ * `[killedAt - beforeMs, killedAt + afterMs]` (bounds inclusive). Anything
+ * outside the window is a violation — before the kill the port was served
+ * normally, after it the survivor alone owned the port. */
+export function classifyKillWindowFailures(
+  offsetsMs: number[],
+  killedAtMs: number,
+  options: { beforeMs: number; afterMs: number },
+): { inTolerance: boolean; expectedLosses: number; violations: number[] } {
+  const violations = offsetsMs
+    .filter((offset) => offset < killedAtMs - options.beforeMs || offset > killedAtMs + options.afterMs)
+    .sort((a, b) => a - b);
+  return {
+    inTolerance: violations.length === 0,
+    expectedLosses: offsetsMs.length - violations.length,
+    violations,
+  };
+}
+
+/** Kill -9 scenario assertion (OPE-12692): losses are tolerated only inside
+ * the SIGKILL window. The upper bound of tolerated losses follows from the
+ * window and the request rate — not from a "no more than one" constant. */
+function assertKillWindowLosses(
+  load: { failed: number; total: number; failures: string[]; failureOffsetsMs: number[] },
+  killedAtMs: number,
+  options: { beforeMs: number; afterMs: number } = {
+    beforeMs: KILL_WINDOW_BEFORE_MS,
+    afterMs: KILL_WINDOW_AFTER_MS,
+  },
+): void {
+  const verdict = classifyKillWindowFailures(load.failureOffsetsMs, killedAtMs, options);
+  expect(
+    verdict.violations,
+    `kill -9 dropped heartbeats outside the SIGKILL window [kill-${options.beforeMs}ms, kill+${options.afterMs}ms] ` +
+      `(${load.failed}/${load.total} failed, ${verdict.expectedLosses} inside the window): ` +
+      `violations at t+${verdict.violations.join(", t+")}ms of ${load.failures.slice(0, 5).join(", ")}`,
+  ).toEqual([]);
 }
 
 /** Settings value for apply() — the defaults plus the split override, the
@@ -654,15 +713,30 @@ describeProcs("drain and failover e2e: supervisor in-process, two api children (
     expect(preKillRun.processPid, "run PID matches victim child").toBe(victimPid);
     expect(await hasLiveLegacyController(db, preKillRun), "victim holds a live controller lease").toBe(true);
 
+    // Load flows for 500 ms before the kill so failures have an offset axis:
+    // killedAtOffsetMs anchors the SIGKILL on that axis, and the window check
+    // judges each failed request's own start offset against it (the load's
+    // internal axis starts within a scheduler tick of loadStartedAt — noise
+    // next to the 300/700 ms margins).
+    const loadStartedAt = Date.now();
     const loadPromise = runHeartbeatLoad({ rps: 10, durationMs: 5_000 });
     await new Promise((resolve) => setTimeout(resolve, 500));
+    const killedAtOffsetMs = Date.now() - loadStartedAt;
     process.kill(victimPid, "SIGKILL");
     const load = await loadPromise;
 
-    expect(
-      load.failed,
-      `kill -9 dropped heartbeats while the survivor served (${load.failed}/${load.total}): ${load.failures.slice(0, 5).join(", ")}`,
-    ).toBeLessThanOrEqual(1);
+    assertKillWindowLosses(load, killedAtOffsetMs);
+
+    // Calibration evidence for the window (OPE-12692): log every loss offset
+    // relative to the SIGKILL so CI runs accumulate measurements to size
+    // KILL_WINDOW_AFTER_MS (observed so far: ~+3 ms and ~+105 ms; the
+    // constant carries ×2 headroom over the largest).
+    if (load.failed > 0) {
+      const lossOffsets = load.failureOffsetsMs
+        .map((offset) => offset - killedAtOffsetMs)
+        .sort((a, b) => a - b);
+      process.stderr.write(`[OPE-12692] kill-window losses (ms relative to SIGKILL): ${lossOffsets.join(", ")}\n`);
+    }
 
     // The crash path: the supervisor restarts the slot with backoff (first
     // rung ~1 s, §7.1) and the fresh child reports ready over IPC. The slot
@@ -791,4 +865,50 @@ describeProcs("drain and failover e2e: supervisor in-process, two api children (
     const health = await requestApi(BOARD_URL, "/api/health");
     expect(health.status).toBe(200);
   }, 420_000);
+});
+
+describe("classifyKillWindowFailures (kill -9 loss window, OPE-12692)", () => {
+  it("accepts failures that started inside the window and counts them as expected losses", () => {
+    const result = classifyKillWindowFailures([400, 450, 500, 550, 600, 700, 1_200], 500, {
+      beforeMs: KILL_WINDOW_BEFORE_MS,
+      afterMs: KILL_WINDOW_AFTER_MS,
+    });
+    expect(result.inTolerance).toBe(true);
+    expect(result.violations).toEqual([]);
+    expect(result.expectedLosses).toBe(7);
+  });
+
+  it("rejects a failure that started after the window's end — the post-window port belongs to the survivor", () => {
+    const result = classifyKillWindowFailures([500, 1_201], 500, {
+      beforeMs: KILL_WINDOW_BEFORE_MS,
+      afterMs: KILL_WINDOW_AFTER_MS,
+    });
+    expect(result.inTolerance).toBe(false);
+    expect(result.violations).toEqual([1_201]);
+    expect(result.expectedLosses).toBe(1);
+  });
+
+  it("rejects failures that started before the window opened — pre-kill traffic was served normally", () => {
+    const result = classifyKillWindowFailures([100, 199], 500, {
+      beforeMs: KILL_WINDOW_BEFORE_MS,
+      afterMs: KILL_WINDOW_AFTER_MS,
+    });
+    expect(result.inTolerance).toBe(false);
+    expect(result.violations).toEqual([100, 199]);
+    expect(result.expectedLosses).toBe(0);
+  });
+
+  it("treats the window bounds as inclusive on both ends", () => {
+    const result = classifyKillWindowFailures([200, 1_200], 500, { beforeMs: 300, afterMs: 700 });
+    expect(result.inTolerance).toBe(true);
+    expect(result.expectedLosses).toBe(2);
+    expect(result.violations).toEqual([]);
+  });
+
+  it("accepts an empty failure list — zero losses always pass", () => {
+    const result = classifyKillWindowFailures([], 500, { beforeMs: 300, afterMs: 700 });
+    expect(result.inTolerance).toBe(true);
+    expect(result.expectedLosses).toBe(0);
+    expect(result.violations).toEqual([]);
+  });
 });
