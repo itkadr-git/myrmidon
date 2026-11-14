@@ -1755,6 +1755,14 @@ export async function syncDirectoryFromSsh(input: {
           reject(new SshOperationAbortedError("Workspace download"));
           return;
         }
+        // If both processes fail, retain the remote diagnostic first: the ssh
+        // stderr tail explains the transfer failure; tar's parser error is context.
+        if ((sshExitCode ?? 0) !== 0 && (tarExitCode ?? 0) !== 0) {
+          const sshError = sshStderrTail.text().trim() || `ssh exited with code ${sshExitCode ?? -1}`;
+          const tarError = tarStderrTail.text().trim() || `tar exited with code ${tarExitCode ?? -1}`;
+          reject(new Error(`${sshError}\n${tarError}`));
+          return;
+        }
         // ssh answers our SIGTERM with exit code 255; that must not hide why tar failed.
         if (!sshStoppedAfterTarFailure && (sshExitCode ?? 0) !== 0) {
           reject(new Error(sshStderrTail.text().trim() || `ssh exited with code ${sshExitCode ?? -1}`));

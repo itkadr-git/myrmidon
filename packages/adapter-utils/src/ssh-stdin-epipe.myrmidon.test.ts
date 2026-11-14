@@ -190,9 +190,10 @@ describe.skipIf(process.platform === "win32")("ssh stdin EPIPE and stderr tail (
     const message = (caughtError as Error).message;
     // Marker with the dropped byte count, and the kept tail reaches the final
     // diagnostic line while the dropped head is gone.
-    expect(message).toMatch(/…обрезано \d+ байт/);
+    expect(message).toMatch(/^…обрезано \d+ байт/);
     expect(message).toContain("stderr-line-2000");
     expect(message).toContain("transfer closed with 1 error");
+    expect(message).toContain("tar:");
     expect(message).not.toContain("stderr-line-0001");
 
     // The failed restore still removed its staging directory.
