@@ -28,7 +28,18 @@ const reportJobSchema = z
 const retryJobSchema = z
   .object({
     jobId: z.string().trim().min(1),
-    outcome: z.enum(["success", "failed"]).optional(),
+  })
+  .strict();
+
+const retryResultSchema = z
+  .object({
+    jobId: z.string().trim().min(1),
+    headSha: z.string().trim().min(1).max(128),
+    attempt: z.number().int().min(1),
+    outcome: z.enum(["success", "failed"]),
+    runId: z.string().trim().max(128).optional(),
+    url: z.string().url().max(2000).optional(),
+    failureDetail: z.string().max(2000).optional(),
   })
   .strict();
 
@@ -74,7 +85,19 @@ export function myrmidonReleaseFlakyWorkRoutes(
       assertBoardOrgAccess(req);
       const releaseId = String(req.params.releaseId ?? "");
       const body = req.body as z.infer<typeof retryJobSchema>;
-      const state = await service.retryJob(releaseId, body.jobId, body.outcome ?? "success");
+      const state = await service.retryJob(releaseId, body.jobId);
+      res.status(202).json(state);
+    },
+  );
+
+  router.post(
+    "/myrmidon/release-stages/:releaseId/flaky-work/retry-result",
+    validate(retryResultSchema),
+    (req, res) => {
+      assertBoardOrgAccess(req);
+      const releaseId = String(req.params.releaseId ?? "");
+      const body = req.body as z.infer<typeof retryResultSchema>;
+      const state = service.recordRetryResult(releaseId, body);
       res.json(state);
     },
   );

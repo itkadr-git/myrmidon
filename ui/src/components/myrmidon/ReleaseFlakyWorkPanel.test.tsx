@@ -90,16 +90,15 @@ describe("ReleaseFlakyWorkPanel (OPE-13066)", () => {
   it("retries failed job through the product", async () => {
     const updatedState: ReleaseFlakyGateState = {
       ...baseBlockedState,
-      gateStatus: "passed",
-      canResume: true,
-      blockingReason: undefined,
+      gateStatus: "blocked",
+      canResume: false,
       jobs: [
         {
           id: "job-1",
           jobName: "unit-test",
           headSha: "abc1234",
           attempt: 2,
-          status: "success",
+          status: "retrying",
         },
       ],
     };
@@ -122,11 +121,11 @@ describe("ReleaseFlakyWorkPanel (OPE-13066)", () => {
 
     expect(releaseFlakyWorkApi.retryJob).toHaveBeenCalledWith("rel-1.8.0-rc1", {
       jobId: "job-1",
-      outcome: "success",
     });
 
     const gateBadge = container.querySelector('[data-testid="gate-status-badge"]');
-    expect(gateBadge?.textContent).toBe("passed");
+    expect(gateBadge?.textContent).toBe("blocked");
+    expect(container.querySelector('[data-testid="job-status-job-1"]')?.textContent).toBe("retrying");
 
     root.unmount();
   });

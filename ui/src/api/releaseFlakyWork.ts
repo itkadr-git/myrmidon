@@ -17,7 +17,16 @@ export interface ReportFlakyJobParams {
 
 export interface RetryFlakyJobParams {
   jobId: string;
-  outcome?: "success" | "failed";
+}
+
+export interface RetryFlakyResultParams {
+  jobId: string;
+  headSha: string;
+  attempt: number;
+  outcome: "success" | "failed";
+  runId?: string;
+  url?: string;
+  failureDetail?: string;
 }
 
 export interface RecordFlakyWaiverParams {
@@ -47,6 +56,16 @@ export const releaseFlakyWorkApi = {
   ): Promise<ReleaseFlakyGateState> {
     return api.post<ReleaseFlakyGateState>(
       `/myrmidon/release-stages/${releaseId}/flaky-work/retry`,
+      params,
+    );
+  },
+
+  recordRetryResult(
+    releaseId: string,
+    params: RetryFlakyResultParams,
+  ): Promise<ReleaseFlakyGateState> {
+    return api.post<ReleaseFlakyGateState>(
+      `/myrmidon/release-stages/${releaseId}/flaky-work/retry-result`,
       params,
     );
   },

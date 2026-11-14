@@ -176,18 +176,35 @@ describe("release-flaky-work integration (OPE-13066)", () => {
     const jobId = reportRes.body.jobs[0].id;
     expect(reportRes.body.canResume).toBe(false);
 
-    // Retrying with green result
     const retryRes = await request(app)
       .post(`/api/myrmidon/release-stages/${releaseId}/flaky-work/retry`)
+      .send({ jobId });
+
+    expect(retryRes.status).toBe(202);
+    expect(retryRes.body.canResume).toBe(false);
+    expect(retryRes.body.jobs[0].status).toBe("retrying");
+    expect(retryRes.body.jobs[0].attempt).toBe(2);
+
+    const resultRes = await request(app)
+      .post(`/api/myrmidon/release-stages/${releaseId}/flaky-work/retry-result`)
       .send({
         jobId,
+        headSha: "sha9999",
+        attempt: 2,
         outcome: "success",
+        runId: "run-2",
+        url: "https://ci.example.com/runs/2",
       });
 
-    expect(retryRes.status).toBe(200);
-    expect(retryRes.body.canResume).toBe(true);
-    expect(retryRes.body.jobs[0].status).toBe("success");
-    expect(retryRes.body.jobs[0].attempt).toBe(2);
+    expect(resultRes.status).toBe(200);
+    expect(resultRes.body.canResume).toBe(true);
+    expect(resultRes.body.jobs[0].status).toBe("success");
+
+    const staleResultRes = await request(app)
+      .post(`/api/myrmidon/release-stages/${releaseId}/flaky-work/retry-result`)
+      .send({ jobId, headSha: "wrong-head", attempt: 2, outcome: "success" });
+    expect(staleResultRes.status).toBe(400);
+    expect(staleResultRes.body.error).toContain("headSha");
 
     // Gate can now be resumed cleanly
     const resumeRes = await request(app)

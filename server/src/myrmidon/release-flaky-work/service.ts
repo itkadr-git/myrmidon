@@ -83,7 +83,6 @@ export class ReleaseFlakyWorkService {
   public async retryJob(
     releaseId: string,
     jobId: string,
-    outcome: "success" | "failed" = "success",
   ): Promise<ReleaseFlakyGateState> {
     const state = this.getOrCreateState(releaseId);
     const job = state.jobs.find((j) => j.id === jobId || j.jobName === jobId);
@@ -93,10 +92,45 @@ export class ReleaseFlakyWorkService {
 
     job.attempt += 1;
     job.retriedAt = new Date().toISOString();
-    job.status = outcome === "success" ? "success" : "failed";
-    if (outcome === "success") {
+    job.status = "retrying";
+    job.resolvedAt = undefined;
+
+    this.recomputeGateState(state);
+    return state;
+  }
+
+  public recordRetryResult(
+    releaseId: string,
+    params: {
+      jobId: string;
+      headSha: string;
+      attempt: number;
+      outcome: "success" | "failed";
+      runId?: string;
+      url?: string;
+      failureDetail?: string;
+    },
+  ): ReleaseFlakyGateState {
+    const state = this.getOrCreateState(releaseId);
+    const job = state.jobs.find((j) => j.id === params.jobId || j.jobName === params.jobId);
+    if (!job) {
+      throw notFound(`Flaky CI job "${params.jobId}" not found for release ${releaseId}`);
+    }
+
+    if (job.headSha !== params.headSha) {
+      throw badRequest(`Retry result headSha "${params.headSha}" does not match target job headSha "${job.headSha}"`);
+    }
+    if (job.attempt !== params.attempt) {
+      throw badRequest(`Retry result attempt ${params.attempt} does not match current target attempt ${job.attempt}`);
+    }
+
+    job.status = params.outcome === "success" ? "success" : "failed";
+    if (params.outcome === "success") {
       job.resolvedAt = new Date().toISOString();
       job.failureDetail = undefined;
+    } else {
+      job.failureDetail = params.failureDetail ?? "Retry verification failed";
+      job.resolvedAt = undefined;
     }
 
     this.recomputeGateState(state);

@@ -65,7 +65,6 @@ export function ReleaseFlakyWorkPanel({
     try {
       const updated = await releaseFlakyWorkApi.retryJob(state.releaseId, {
         jobId: job.id,
-        outcome: "success",
       });
       updateState(updated);
     } catch (err: unknown) {
