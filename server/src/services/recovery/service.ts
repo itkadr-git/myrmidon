@@ -1261,6 +1261,7 @@ export function recoveryService(
       retryReason === EXECUTION_REVIEW_PARTICIPANT_RECOVERY_REASON ||
       wakeReason === "execution_review_requested" ||
       wakeReason === "execution_approval_requested" ||
+      wakeReason === "execution_verify_requested" ||
       // A continuation wake that carried the reviewer stage context (a
       // reviewer woken as the issue assignee).
       (retryReason === "issue_continuation_needed" &&
@@ -4543,7 +4544,8 @@ export function recoveryService(
     const retryReason = context.retryReason;
     if (retryReason !== EXECUTION_REVIEW_PARTICIPANT_RECOVERY_REASON &&
         wakeReason !== "execution_review_requested" &&
-        wakeReason !== "execution_approval_requested") return false;
+        wakeReason !== "execution_approval_requested" &&
+        wakeReason !== "execution_verify_requested") return false;
     const issue = await db.query.issues.findFirst({
       where: and(eq(issues.companyId, input.companyId), eq(issues.id, issueId)),
     });

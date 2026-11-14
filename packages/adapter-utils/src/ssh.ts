@@ -1756,9 +1756,26 @@ export async function syncDirectoryFromSsh(input: {
           return;
         }
         // ssh answers our SIGTERM with exit code 255; that must not hide why tar failed.
-        if (!sshStoppedAfterTarFailure && (sshExitCode ?? 0) !== 0) {
-          reject(new Error(sshStderrTail.text().trim() || `ssh exited with code ${sshExitCode ?? -1}`));
-          return;
+        // However, if ssh failed with its own diagnostic (e.g. "Connection reset by peer")
+        // or tar failed only because the stream was cut (unexpected EOF), ssh is the root cause.
+        const sshStderr = sshStderrTail.text().trim();
+        const tarStderr = tarStderrTail.text().trim();
+        const isSshSigterm =
+          !sshStderr ||
+          sshStderr === "Killed by signal 15." ||
+          sshStderr.startsWith("Killed by signal");
+        const isTarEof =
+          tarStderr.toLowerCase().includes("unexpected eof") ||
+          tarStderr.toLowerCase().includes("unexpected end of archive") ||
+          tarStderr.includes("This does not look like a tar archive");
+        if (
+          (!sshStoppedAfterTarFailure || !isSshSigterm || isTarEof) &&
+          (sshExitCode ?? 0) !== 0
+        ) {
+          if (sshStderr || !sshStoppedAfterTarFailure) {
+            reject(new Error(sshStderr || `ssh exited with code ${sshExitCode ?? -1}`));
+            return;
+          }
         }
         // myrmidon(OPE-12788): code === null means tar was killed by a signal
         // (e.g. the OOM killer); its staging copy is incomplete, so it is a failure.

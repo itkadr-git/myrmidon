@@ -12,6 +12,7 @@ import type {
 } from "@myrmidon/shared";
 import { issueExecutionPolicySchema, issueExecutionStateSchema } from "@myrmidon/shared";
 import { unprocessable } from "../errors.js";
+import { isReleaseTask } from "../myrmidon/task-pr-sync/policy.js";
 
 type AssigneeLike = {
   assigneeAgentId?: string | null;
@@ -21,6 +22,7 @@ type AssigneeLike = {
 type IssueLike = AssigneeLike & {
   id?: string;
   status: string;
+  title?: string | null;
   projectId?: string | null;
   casteKey?: string | null;
   reviewEscalationPolicy?: ReviewEscalationPolicyLike | null;
@@ -454,6 +456,7 @@ export function normalizeIssueExecutionPolicy(input: unknown): IssueExecutionPol
         type: stage.type,
         approvalsNeeded: 1 as const,
         participants: dedupedParticipants,
+        ...(stage.requirements ? { requirements: stage.requirements } : {}),
       };
     })
     .filter((stage): stage is NonNullable<typeof stage> => stage !== null);
@@ -903,12 +906,62 @@ function canAutoSkipPendingStage(input: {
   stage: IssueExecutionStage;
   returnAssignee: IssueExecutionStagePrincipal | null;
   requestedStatus?: string;
+  /** OPE-12995: only true when the stage itself declares requirements.skip. */
+  skipVerify?: boolean;
 }) {
-  if (input.requestedStatus !== "done" || input.stage.type !== "review" || !input.returnAssignee) {
+  if (input.requestedStatus !== "done" || !input.returnAssignee) {
+    return false;
+  }
+  // OPE-12995: a verify stage must never be skipped silently — its whole
+  // point is an independent record after deploy — unless the stage itself
+  // was configured with requirements.skip (docs/settings tasks).
+  if (input.stage.type === "verify" && !input.skipVerify) {
+    return false;
+  }
+  if (input.stage.type !== "review" && input.stage.type !== "verify") {
     return false;
   }
   return input.stage.participants.length > 0 &&
     input.stage.participants.every((participant) => principalsEqual(participant, input.returnAssignee));
+}
+
+/**
+ * OPE-12995 (VERIFY-ON-PROD): deploy version / check method evidence carried
+ * by a verify-approve decision comment (`deploy version: …`, `check method: …`).
+ */
+export function verifyEvidenceFromComment(comment: string): {
+  deployVersion: string | null;
+  checkMethod: string | null;
+} {
+  const deployVersion = /^\s*(?:deploy[_ -]?version|version)\s*[:=]\s*(.+)$/im.exec(comment)?.[1]?.trim() ?? null;
+  const checkMethod = /^\s*(?:check[_ -]?method|method)\s*[:=]\s*(.+)$/im.exec(comment)?.[1]?.trim() ?? null;
+  return {
+    deployVersion: deployVersion || null,
+    checkMethod: checkMethod || null,
+  };
+}
+
+function assertVerifyEvidence(input: {
+  stage: IssueExecutionStage;
+  commentBody: string;
+  isRelease?: boolean;
+}) {
+  if (input.stage.requirements?.skip) return;
+  const isRelease = input.isRelease ?? false;
+  const requirements = {
+    deployVersion: isRelease || (input.stage.requirements?.deployVersion ?? false),
+    checkMethod: isRelease || (input.stage.requirements?.checkMethod ?? false),
+  };
+  if (!requirements.deployVersion && !requirements.checkMethod) return;
+  const evidence = verifyEvidenceFromComment(input.commentBody);
+  const missing: string[] = [];
+  if (requirements.deployVersion && !evidence.deployVersion) missing.push("deploy version");
+  if (requirements.checkMethod && !evidence.checkMethod) missing.push("check method");
+  if (missing.length > 0) {
+    throw unprocessable(
+      `Approving a verify stage requires the ${missing.join(" and ")} in the decision comment (for example "deploy version: 2026.11.12" / "check method: manual smoke on the board"). ${STAGE_DECISION_COMMENT_HINT}`,
+    );
+  }
 }
 
 /**
@@ -1304,7 +1357,16 @@ function applyIssueExecutionStageTransition(input: TransitionInput): TransitionR
     if (principalsEqual(currentParticipant, actor)) {
       if (requestedStatus === "done") {
         if (!input.commentBody?.trim()) {
-          throw unprocessable(`Approving a review or approval stage requires a comment. ${STAGE_DECISION_COMMENT_HINT}`);
+          throw unprocessable(`Approving a review or approval stage requires a comment; verify stages require one too. ${STAGE_DECISION_COMMENT_HINT}`);
+        }
+        // OPE-12995 (VERIFY-ON-PROD): a verify-approve decision must record
+        // the deploy version and the check method the verification ran with.
+        if (activeStage.type === "verify") {
+          assertVerifyEvidence({
+            stage: activeStage,
+            commentBody: input.commentBody.trim(),
+            isRelease: isReleaseTask(input.issue.title ?? null),
+          });
         }
         const approvedState = buildCompletedState(existingState, activeStage);
         // Only stages after the stage being approved are advance candidates.
@@ -1600,6 +1662,18 @@ function applyIssueExecutionStageTransition(input: TransitionInput): TransitionR
     return { patch };
   }
 
+  // OPE-12995: Release task gate for done status without verification.
+  // A release task with code work products (e.g. pull requests) must pass through a verify stage,
+  // unless explicitly configured with skip: true in its verify stage requirements.
+  const hasVerifyStage = input.policy.stages.some((stage) => stage.type === "verify");
+  const isVerifySkipped = input.policy.stages.some((stage) => stage.type === "verify" && stage.requirements?.skip === true);
+  const isRelease = isReleaseTask(input.issue.title ?? null);
+  if (requestedStatus === "done" && isRelease && !hasVerifyStage && !isVerifySkipped) {
+    throw unprocessable(
+      "Cannot mark release task done without a verify execution stage. A release task requires an independent verification stage with deploy version and check method, or an explicit skip configuration.",
+    );
+  }
+
   let pendingStage =
     existingState?.status === CHANGES_REQUESTED_STATUS && currentStage
       ? currentStage
@@ -1610,7 +1684,7 @@ function applyIssueExecutionStageTransition(input: TransitionInput): TransitionR
   const isReviewerRole = input.issue.assigneeAgentRole === "reviewer" || input.issue.assigneeAgentRole === "lead";
   const participantExclusion = isReviewerRole &&
     !existingState?.returnAssignee ? null : existingState?.returnAssignee ?? currentAssignee ?? actor;
-  const returnAssignee = canAutoSkipPendingStage({ stage: pendingStage, returnAssignee: participantExclusion, requestedStatus })
+  const returnAssignee = canAutoSkipPendingStage({ stage: pendingStage, returnAssignee: participantExclusion, requestedStatus, skipVerify: pendingStage.requirements?.skip === true })
     ? participantExclusion
     : safeReturnAssignee(
         participantExclusion,
@@ -1634,7 +1708,7 @@ function applyIssueExecutionStageTransition(input: TransitionInput): TransitionR
     ],
     candidateLoads: input.candidateLoads,
   });
-  while (!participant && canAutoSkipPendingStage({ stage: pendingStage, returnAssignee: participantExclusion, requestedStatus })) {
+  while (!participant && canAutoSkipPendingStage({ stage: pendingStage, returnAssignee: participantExclusion, requestedStatus, skipVerify: pendingStage.requirements?.skip === true })) {
     skippedStageIds.push(pendingStage.id);
     pendingStage = nextPendingStage(
       input.policy,

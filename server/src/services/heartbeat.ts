@@ -1811,6 +1811,7 @@ const ISSUE_RESPONSIBLE_USER_WAKE_REASONS = new Set([
   "issue_recovery_action_restored",
   "execution_review_requested",
   "execution_approval_requested",
+  "execution_verify_requested",
   "execution_changes_requested",
   "approval_approved",
 ]);
@@ -6020,6 +6021,7 @@ export function shouldResetTaskSessionForWake(
     wakeReason === "issue_assigned" ||
     wakeReason === EXECUTION_REVIEW_PARTICIPANT_RECOVERY_WAKE_REASON ||
     wakeReason === "execution_approval_requested" ||
+    wakeReason === "execution_verify_requested" ||
     // PF-4: unscoped timer wakes are exploratory ("any new work?") and should
     // not accumulate low-value inbox scans. Issue-scoped timer wakes are
     // continuation work, so reuse their task session to avoid paying the full
@@ -6041,6 +6043,7 @@ function shouldRequireIssueCommentForWake(
     wakeReason === "issue_assigned" ||
     wakeReason === "execution_review_requested" ||
     wakeReason === "execution_approval_requested" ||
+    wakeReason === "execution_verify_requested" ||
     wakeReason === "execution_changes_requested"
   );
 }
@@ -6133,6 +6136,8 @@ export function describeSessionResetReason(
   }
   if (wakeReason === "execution_approval_requested")
     return "wake reason is execution_approval_requested";
+  if (wakeReason === "execution_verify_requested")
+    return "wake reason is execution_verify_requested";
   // PF-4: paired with shouldResetTaskSessionForWake — keep the reason wording
   // explicit so run logs make session reuse/reset behavior legible.
   if (
@@ -8225,7 +8230,8 @@ export async function buildPaperclipWakePayload(input: {
 }) {
   const executionStage = parseObject(input.contextSnapshot.executionStage);
   const isolatedReviewerWake =
-    input.isolateReviewerWake === true && executionStage.wakeRole === "reviewer";
+    input.isolateReviewerWake === true &&
+    (executionStage.wakeRole === "reviewer" || executionStage.wakeRole === "verifier");
   const commentIds = extractWakeCommentIds(input.contextSnapshot);
   const annotationCommentId = readNonEmptyString(
     input.contextSnapshot.annotationCommentId,
@@ -26066,7 +26072,8 @@ export function heartbeatService(
       // continuation messages and session messages are not delivered to it.
       const isolatedReviewerRun =
         isDeveloperRole(agent) &&
-        parseObject(context.executionStage).wakeRole === "reviewer";
+        (parseObject(context.executionStage).wakeRole === "reviewer" ||
+          parseObject(context.executionStage).wakeRole === "verifier");
       const continuationSummary = issueRef && !isConversation(issueContext) && !isolatedReviewerRun
         ? await getIssueContinuationSummaryDocument(db, issueRef.id)
         : null;

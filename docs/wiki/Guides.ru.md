@@ -46,6 +46,8 @@
 
 - [Планировщик чата с доской: текст владельца в предложенный эпик (CTO-CHAT B)](Cto-chat-planner.ru)
 
+- [Этап проверки выполнения (VERIFY-ON-PROD)](Verify-execution-stage.ru)
+
 
 
 ### Telegram и каналы
