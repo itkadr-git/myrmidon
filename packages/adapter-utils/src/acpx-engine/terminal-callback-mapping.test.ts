@@ -87,7 +87,7 @@ describe("TerminalCallbackRegistry", () => {
     const registry = new TerminalCallbackRegistry();
     const first = registry.apply(cb({ status: "completed" }));
     expect(first.applied).toBe(true);
-    expect(first.mapping).toEqual({ kind: "terminal", boardState: "done" });
+    expect(first.mapping).toEqual({ kind: "terminal", boardState: "done", providerJobId: "job-1" });
 
     // Same-status duplicate.
     const duplicateSame = registry.apply(cb({ status: "completed" }));
@@ -99,7 +99,7 @@ describe("TerminalCallbackRegistry", () => {
     expect(duplicateContradictory.applied).toBe(false);
     expect(duplicateContradictory.mapping).toEqual(first.mapping);
 
-    expect(registry.recordedMapping("job-1")).toEqual({ kind: "terminal", boardState: "done" });
+    expect(registry.recordedMapping("job-1")).toEqual({ kind: "terminal", boardState: "done", providerJobId: "job-1" });
   });
 
   it("keys idempotence by provider job id, not by provider or status", () => {
@@ -118,8 +118,8 @@ describe("TerminalCallbackRegistry", () => {
 
     const verdict = registry.apply(cb({ status: "completed" }));
     expect(verdict.applied).toBe(true);
-    expect(verdict.mapping).toEqual({ kind: "terminal", boardState: "done" });
-    expect(registry.recordedMapping("job-1")).toEqual({ kind: "terminal", boardState: "done" });
+    expect(verdict.mapping).toEqual({ kind: "terminal", boardState: "done", providerJobId: "job-1" });
+    expect(registry.recordedMapping("job-1")).toEqual({ kind: "terminal", boardState: "done", providerJobId: "job-1" });
   });
 
   it("never records done without evidence even across repeated callbacks", () => {

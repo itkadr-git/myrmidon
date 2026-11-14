@@ -36,6 +36,7 @@ import {
   summarizeAcpxTurnUsage,
   type AcpxEngineExecutorOptions,
 } from "./execute.js";
+import { TerminalCallbackRegistry } from "./terminal-callback-mapping.js";
 import { ACPX_HANDSHAKE_TIMEOUT_MS } from "./constants.js";
 import { runChildProcess } from "../server-utils.js";
 import { setExpensiveWorkspaceGitExecutor } from "../git-workspace-sync.js";
@@ -171,6 +172,7 @@ async function runExecutor(
     executionTarget?: Record<string, unknown>;
     runtimeMcp?: AdapterRuntimeMcpAccess;
     prepareRemoteManagedHome?: AcpxEngineExecutorOptions["prepareRemoteManagedHome"];
+    terminalCallbackRegistry?: AcpxEngineExecutorOptions["terminalCallbackRegistry"];
     startupTraceContext?: AdapterExecutionContext["startupTraceContext"];
   } = {},
 ) {
@@ -184,6 +186,9 @@ async function runExecutor(
   const execute = createAcpxEngineExecutor({
     ...(options.prepareRemoteManagedHome
       ? { prepareRemoteManagedHome: options.prepareRemoteManagedHome }
+      : {}),
+    ...(options.terminalCallbackRegistry
+      ? { terminalCallbackRegistry: options.terminalCallbackRegistry }
       : {}),
     createRuntime: (options) => {
       runtimeOptions.push(options as unknown as Record<string, unknown>);
@@ -7778,5 +7783,29 @@ describe("ACPX startup handshake guard and late-completion fence", () => {
       boardState: "done",
       providerJobId: persistedJobId,
     });
+  });
+
+  it("idempotently preserves the first mapped terminal callback across duplicate executions", async () => {
+    const registry = new TerminalCallbackRegistry();
+    const { result: firstResult } = await runExecutor(
+      { agent: "claude" },
+      {
+        terminalCallbackRegistry: registry,
+      } as never,
+    );
+    const firstMapped = (firstResult.resultJson as Record<string, unknown>).mappedTerminal;
+    expect(firstMapped).toMatchObject({
+      kind: "terminal",
+      boardState: "done",
+    });
+
+    const { result: secondResult } = await runExecutor(
+      { agent: "claude" },
+      {
+        terminalCallbackRegistry: registry,
+      } as never,
+    );
+    const secondMapped = (secondResult.resultJson as Record<string, unknown>).mappedTerminal;
+    expect(secondMapped).toEqual(firstMapped);
   });
 });
