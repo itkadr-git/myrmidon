@@ -287,7 +287,6 @@ export function createDatastoreCareRetentionRuntime(
                   lastPassAt: checkedAt.toISOString(),
                   statementTimeoutYield: result.timedOut,
                 },
-                updatedAt: checkedAt,
               })
               .where(eq(activityLog.id, existing.id));
           } else {
