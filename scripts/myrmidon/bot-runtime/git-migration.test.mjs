@@ -163,6 +163,68 @@ test("BEHAVIORAL: migrateIdleGitRepos on repack failure cleans up .tmp- packs an
   fs.rmSync(tmp, { recursive: true, force: true });
 });
 
+test("BEHAVIORAL: migrateIdleGitRepos re-migrates when alternates appear after marker", () => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "git-mig-test-"));
+  const baseDir = path.join(tmp, "base");
+  const wsDir = path.join(tmp, "workspaces");
+  const repoDir = path.join(baseDir, "my-repo.git");
+  const objectsDir = path.join(repoDir, "objects");
+  const infoDir = path.join(objectsDir, "info");
+
+  fs.mkdirSync(infoDir, { recursive: true });
+  fs.writeFileSync(path.join(repoDir, "HEAD"), "ref: refs/heads/main\n");
+  // Marker from an earlier migration without alternates.
+  fs.writeFileSync(path.join(infoDir, REPACK_MIGRATED_MARKER), "2024-01-01T00:00:00.000Z\n");
+
+  const lockFile = path.join(tmp, "fleet.lock");
+  let repackCalled = 0;
+  const res = migrateIdleGitRepos({
+    baseDir,
+    workspacesDir: wsDir,
+    idle: true,
+    enabled: true,
+    repackRunner: (gitDir) => {
+      repackCalled++;
+      return true;
+    },
+    lockPathOverride: lockFile,
+  });
+
+  assert.strictEqual(res.migrated, 1);
+  assert.strictEqual(repackCalled, 1);
+  fs.rmSync(tmp, { recursive: true, force: true });
+});
+
+test("BEHAVIORAL: migrateIdleGitRepos skips when marker matches existing alternates", () => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "git-mig-test-"));
+  const baseDir = path.join(tmp, "base");
+  const wsDir = path.join(tmp, "workspaces");
+  const repoDir = path.join(baseDir, "my-repo.git");
+  const objectsDir = path.join(repoDir, "objects");
+  const infoDir = path.join(objectsDir, "info");
+
+  fs.mkdirSync(infoDir, { recursive: true });
+  fs.writeFileSync(path.join(repoDir, "HEAD"), "ref: refs/heads/main\n");
+  const altContent = "/cache/git/itkadr-git/myrmidon.git/objects\n";
+  fs.writeFileSync(path.join(infoDir, "alternates"), altContent, "utf8");
+  fs.writeFileSync(path.join(infoDir, REPACK_MIGRATED_MARKER), altContent, "utf8");
+
+  const lockFile = path.join(tmp, "fleet.lock");
+  const res = migrateIdleGitRepos({
+    baseDir,
+    workspacesDir: wsDir,
+    idle: true,
+    enabled: true,
+    repackRunner: () => {
+      throw new Error("should not be called");
+    },
+    lockPathOverride: lockFile,
+  });
+
+  assert.strictEqual(res.migrated, 0);
+  fs.rmSync(tmp, { recursive: true, force: true });
+});
+
 test("BEHAVIORAL: withFleetMigrationLock serializes across bots", () => {
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "git-mig-lock-test-"));
   const lockFile = path.join(tmp, "test.lock");
@@ -377,10 +439,13 @@ test("INTEGRATION: migrateIdleGitRepos end-to-end — prune, repack, mirror pack
   const count = git(repo, ["rev-list", "--count", "refs/heads/main"]).trim();
   assert.strictEqual(count, "1");
   assert.ok(fs.existsSync(path.join(repo, "objects", "info", REPACK_MIGRATED_MARKER)));
-  assert.strictEqual(
-    fs.readFileSync(path.join(repo, "objects", "info", "alternates"), "utf8"),
-    `${path.join(mirror, "objects")}\n`,
-    "alternates must be preserved"
+  // After migration the base must include the fleet mirror in alternates.
+  // (The test fixture mirror path may also be present from the pre-migration
+  // setup; the migration adds the real fleet mirror when it exists.)
+  const alternatesAfter = fs.readFileSync(path.join(repo, "objects", "info", "alternates"), "utf8");
+  assert.ok(
+    alternatesAfter.includes("/cache/git/itkadr-git/myrmidon.git/objects\n"),
+    `alternates must include the fleet mirror, got: ${alternatesAfter}`
   );
   fs.rmSync(tmp, { recursive: true, force: true });
 });

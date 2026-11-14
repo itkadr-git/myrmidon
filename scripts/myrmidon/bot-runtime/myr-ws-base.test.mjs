@@ -273,6 +273,29 @@ describe("myr-ws base: ensureBase", { skip: !hasGit && "git missing" }, () => {
   });
 });
 
+describe("myr-ws base: mirror discovery", () => {
+  it("findMirror locates a mixed-case mirror directory", () => {
+    const home = newHome();
+    const mirrorRoot = path.join(tmp, "mirror-root");
+    const mirrorDir = path.join(mirrorRoot, "BastionPrime", "wellboard.git");
+    fs.mkdirSync(path.join(mirrorDir, "objects"), { recursive: true });
+    fs.writeFileSync(path.join(mirrorDir, "HEAD"), "ref: refs/heads/main\n");
+    const env = envFor(home, { MYRMIDON_GIT_MIRROR_ROOT: mirrorRoot });
+    const parsed = layout.parseRepo("bastionprime/wellboard");
+    const found = base.findMirror(parsed, env);
+    assert.equal(found, mirrorDir);
+  });
+
+  it("findMirror returns null when no mirror exists", () => {
+    const home = newHome();
+    const mirrorRoot = path.join(tmp, "empty-mirror-root");
+    fs.mkdirSync(mirrorRoot, { recursive: true });
+    const env = envFor(home, { MYRMIDON_GIT_MIRROR_ROOT: mirrorRoot });
+    const parsed = layout.parseRepo("acme/widgets");
+    assert.equal(base.findMirror(parsed, env), null);
+  });
+});
+
 describe("myr-ws CLI frame", () => {
   const run = (args, env = {}) => spawnSync(process.execPath, [ENTRY, ...args], { encoding: "utf8", env: { PATH: process.env.PATH, ...env } });
 

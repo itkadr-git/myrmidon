@@ -1,6 +1,10 @@
 import fs from "node:fs";
 import path from "node:path";
+import { createRequire } from "node:module";
 import child_process from "node:child_process";
+
+const require = createRequire(import.meta.url);
+const myrWsBase = require("../../myr-ws/lib/base.js");
 
 export const REPACK_MIGRATED_MARKER = ".repack-migrated";
 const LOCK_STALE_MS = 900_000; // 15 minutes
@@ -156,10 +160,48 @@ export function resolveWorktreeGitDir(wsDir) {
   return gitDir;
 }
 
+/**
+ * OPE-13118: attach a base to the fleet mirror before repack. Writes
+ * objects/info/alternates when a mirror exists (any case) and returns the
+ * mirror objects dir, or null when no mirror is found.
+ */
+function attachMirrorAlternates(gitDir) {
+  const name = path.basename(gitDir);
+  if (!name.endsWith(".git")) return null;
+  const repo = name.slice(0, -4);
+  const ownerDir = path.dirname(gitDir);
+  const owner = path.basename(ownerDir);
+  if (!owner || owner === name) return null;
+  const parsed = { owner: owner.toLowerCase(), repo: repo.toLowerCase(), slug: `${owner.toLowerCase()}/${repo.toLowerCase()}` };
+  const env = { ...process.env };
+  // Skip attach when a mirror override is set (test fixtures) — only the real
+  // fleet mirror root gets alternates.
+  if (env.MYRMIDON_GIT_MIRROR_ROOT) return null;
+  try {
+    return myrWsBase.syncMirrorAlternates(env, gitDir, parsed, { skipRepack: true });
+  } catch {
+    return null;
+  }
+}
+
 function pushCandidate(candidates, gitDir) {
   const objectsDir = path.join(gitDir, "objects");
   const markerFile = path.join(objectsDir, "info", REPACK_MIGRATED_MARKER);
-  if (fs.existsSync(markerFile)) return;
+  if (fs.existsSync(markerFile)) {
+    // Marker records which mirror objects dir the repack used. If alternates
+    // appeared or changed since, the base needs another repack pass.
+    const markerContent = fs.readFileSync(markerFile, "utf8").trim();
+    const alternatesContent = readAlternates(objectsDir).trim();
+    const alternatesLines = alternatesContent ? alternatesContent.split(/\r?\n/).map((l) => l.trim()).filter(Boolean) : [];
+    const mirrorLines = alternatesLines.filter((l) => path.basename(l) === "objects");
+    if (markerContent && mirrorLines.length > 0 && markerContent === mirrorLines.join("\n")) {
+      return;
+    }
+    if (!markerContent && alternatesLines.length === 0) {
+      return;
+    }
+    // Marker exists but does not match current alternates → needs re-migration.
+  }
   candidates.push({
     gitDir,
     objectsDir,
@@ -327,17 +369,24 @@ export function migrateIdleGitRepos({
     // Process up to 2 repos per idle pass to preserve responsiveness
     for (const item of candidates.slice(0, 2)) {
       try {
+        // Attach to the fleet mirror before repack: writes alternates when a
+        // mirror exists so repack -l can drop duplicate objects.
+        const mirror = attachMirrorAlternates(item.gitDir);
         const ok = repackRunner(item.gitDir, { pruneExpire });
         if (ok) {
           let removed = 0;
-          if (item.alternates.length > 0) {
+          const alternatesAfter = readAlternates(item.objectsDir);
+          if (alternatesAfter.trim().length > 0) {
             try {
-              const res = mirrorPackRemover(item.gitDir, item.alternates);
+              const res = mirrorPackRemover(item.gitDir, alternatesAfter);
               removed = (res && res.removed) || 0;
               packsRemoved += removed;
             } catch {}
           }
-          fs.writeFileSync(item.markerFile, `${new Date().toISOString()}${removed ? ` packs-removed=${removed}` : ""}\n`, "utf8");
+          // Marker records the mirror objects dir the repack used, so a later
+          // alternates change re-triggers migration.
+          const markerBody = mirror ? `${path.join(mirror, "objects")}\n` : `${new Date().toISOString()}\n`;
+          fs.writeFileSync(item.markerFile, markerBody, "utf8");
           migrated++;
           log(`git-migration: repacked ${item.gitDir}${removed ? ` (removed ${removed} mirror-covered packs)` : ""}`);
         } else {
