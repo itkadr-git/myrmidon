@@ -47,8 +47,8 @@ describeEmbeddedPostgres("queryApprovedReviewOutcomes — bounded review-history
     const database = await startEmbeddedPostgresTestDatabase("review-history-approved-outcomes-");
     cleanupDatabase = database.cleanup;
     db = createDb(database.connectionString);
-    await db.insert(companies).values({ id: companyId, name: "review-history-a", status: "active" });
-    await db.insert(companies).values({ id: otherCompanyId, name: "review-history-b", status: "active" });
+    await db.insert(companies).values({ id: companyId, name: "review-history-a", status: "active", issuePrefix: "RHA" });
+    await db.insert(companies).values({ id: otherCompanyId, name: "review-history-b", status: "active", issuePrefix: "RHB" });
   }, 120_000);
 
   afterEach(async () => {
