@@ -57,21 +57,21 @@ export type ReleaseStageDecision =
   | { allowed: false; action: ReleaseAction; code: "release_action_forbidden" | "release_gates_incomplete" | "release_signature_required" };
 
 export function canReleaseAction(casteKey: string | null | undefined, action: ReleaseAction): ReleaseStageDecision {
-  if (casteKey?.trim().toLowerCase() !== RELEASE_CASTER_KEY) {
+  if (casteKey?.trim().toLowerCase().replace(/-/g, "_") !== RELEASE_CASTER_KEY) {
     return { allowed: false, action, code: "release_action_forbidden" };
   }
   return { allowed: true, action };
 }
 
 export function canPublishRelease(stage: ReleaseStage, casteKey: string | null | undefined): ReleaseStageDecision {
-  const authority = canReleaseAction(casteKey, "publish_release");
-  if (!authority.allowed) return authority;
-  if (stage.gates.some((gate) => !gate.completed)) {
+  if (!stage.gates || stage.gates.length === 0 || stage.gates.some((gate) => !gate.completed)) {
     return { allowed: false, action: "publish_release", code: "release_gates_incomplete" };
   }
   if (!stage.artifact) {
     return { allowed: false, action: "publish_release", code: "release_signature_required" };
   }
+  const authority = canReleaseAction(casteKey, "publish_release");
+  if (!authority.allowed) return authority;
   return authority;
 }
 

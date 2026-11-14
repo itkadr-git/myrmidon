@@ -78,10 +78,11 @@ export function resolveReleaseAuthority(
   // autonomy matrix still supplies the explicit `allowed` verdict, including
   // agent-specific overrides; a broad deploy permission on another caste must
   // not become release authority accidentally.
-  const isReleaseManager = actor.casteKey?.trim().toLowerCase() === "release_manager";
+  const normalizedCaste = actor.casteKey?.trim().toLowerCase().replace(/-/g, "_") ?? null;
+  const isReleaseManager = normalizedCaste === "release_manager";
   if (
     !isReleaseManager ||
-    resolveAutonomy(actor.casteKey ?? null, actionClass, matrix, actor.id) !== "allowed"
+    resolveAutonomy(normalizedCaste, actionClass, matrix, actor.id) !== "allowed"
   ) {
     return { allowed: false, code: RELEASE_ACTION_FORBIDDEN_CODE, action, role: actor.casteKey ?? null };
   }
@@ -306,6 +307,14 @@ export function createReleaseStageService(deps: {
       actor: ReleaseActor;
     }): Promise<ReleaseStageView> {
       const matrix = await deps.matrixOf(input.companyId);
+      const authority = resolveReleaseAuthority(input.actor, "publish_release", matrix);
+      if (!authority.allowed) {
+        throw forbidden("this caste may not publish releases", {
+          code: RELEASE_ACTION_FORBIDDEN_CODE,
+          action: "publish_release",
+          role: authority.role,
+        });
+      }
       const stage = await loadStage(input.companyId, input.releaseId);
       const evaluation = evaluatePublication(input.actor, stage, matrix);
       if (!evaluation.ok) {
