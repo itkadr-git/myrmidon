@@ -30,12 +30,30 @@ separation if repeated runs are safe and truthful:
 | a transient transport failure in the first run stays error and the retried run covers the section | reject on GET #1 → `error`, `covered: false`; second run → `data`, covered; exactly one GET per run (no hidden retry) |
 | a transient 5xx in the first run stays error and the retried run covers the section | 503 on GET #1 → `error`; second run → `data`, covered; exactly one GET per run |
 | when no retry is performed the report keeps surfacing the error instead of an empty inventory | repeated runs with a persistent 503 → `error` every run, `counts.empty === 0`, covered stays `total - 1` |
+| agent ownership serialization keeps unknown owner refs unresolved with a reason | missing/empty/whitespace/null owner ref → `attribution: "unknown"`, `ownerCompanyId: null`, `reason: "missing-owner-ref"`, pseudonymized `entityRef` |
+| agent ownership serialization resolves exact attribution only for known company ids | known ref → `attribution: "resolved"` + exact `ownerCompanyId`; unknown ref → `attribution: "unresolved"`, `ownerCompanyId: null`, `reason`, pseudonymized `ownerRefHash`; empty/omitted known set → every present ref `unresolved` (fail-closed), no raw id; no zero/current-domain fallback |
+| probe report embeds agent ownership and hashes stay deterministic with unknown refs | `collectInventory(transport, { knownCompanyIds })` embeds `ownership.agents`; orphan/ghost fixtures keep unknown/unresolved states; repeated runs hash identically |
+| serialized ownership never leaks raw unknown ids or sensitive values | raw unknown owner value never appears in `renderInventory` output |
 
 ## Probe module contract (scripts/myrmidon/company-boundaries-inventory.mjs)
 
-- `collectInventory(transport)` calls `transport.request({ method: 'GET', path })`
-  once per registered section, in registry order.
+- `collectInventory(transport, { knownCompanyIds? })` calls
+  `transport.request({ method: 'GET', path })` once per registered section, in
+  registry order, and embeds `ownership: { agents: [...] }` in the report;
+  `normalizeInventoryReport` and the report hash cover ownership, keeping
+  repeated runs byte-identical.
 - `INVENTORY_METHOD = 'GET'` names the only method the probe may issue.
+- `serializeAgentOwnership(entities, { knownCompanyIds })` — ownership
+  serialization for one entity kind (agents). Missing/unusable owner ref stays
+  `unknown` with reason `missing-owner-ref`; a ref outside `knownCompanyIds`
+  stays `unresolved` with reason `owner-company-not-in-known-set`; a ref
+  verifiably present in the known set serializes exact `ownerCompanyId`.
+  Fail-closed: an empty or omitted known set makes every present ref
+  `unresolved` (pseudonymized) — never resolved-by-default, so a raw owner id
+  reaches the report only when the caller itself supplied it as known.
+  Unknown refs never serialize as the zero or current domain. Raw entity ids
+  and unknown owner refs are pseudonymized (truncated sha256), so reports stay
+  deterministic without sensitive values.
 - `normalizeInventoryReport(report)` — deterministic normalized form: object
   keys sorted recursively; section array order preserved (registry order is
   the canonical order).
@@ -51,4 +69,4 @@ record every issued method and fail the probe on any non-GET.
 node --test scripts/myrmidon/company-boundaries-inventory.test.mjs
 ```
 
-10 tests, all green locally. No network, no database, no live board access.
+14 tests, all green locally. No network, no database, no live board access.
