@@ -991,11 +991,12 @@ RUN chmod 0755 /opt/paperclip/bin/pnpm /opt/paperclip/bin/tsc /opt/paperclip/bin
 # The root filesystem is read-only at run time and the bot's writable
 # directories are exactly its single /bot mount, so every path pnpm or the
 # toolchains write to must live under it:
-#   - the pnpm store defaults to /workspace/.pnpm-store, INSIDE the /bot mount like
+#   - the pnpm store defaults to /cache/pnpm-store when mounted and writable,
+#     falling back to /workspace/.pnpm-store inside the /bot mount like
 #     every clone root (/data/hermes, /workspace, /scratch), because pnpm imports
 #     node_modules from its store with package-import-method=clone (cp
 #     --reflink, FICLONE) and reflinks cannot cross a superblock (EXDEV) — a
-#     store on /cache would make pnpm copy every package into every clone
+#     store on an unshared /cache would make pnpm copy every package into every clone
 #     (see README.md). pnpm 10 itself still COPIES when the kernel refuses the
 #     clone, so the guards are the build-time check below and the start-time
 #     reflink self-check in entrypoint.sh (BOT-DISK-D, BOT-DISK-H8b);

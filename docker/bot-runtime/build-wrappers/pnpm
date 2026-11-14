@@ -139,16 +139,35 @@ function isLight(argv) {
   return false;
 }
 
+// Resolve the pnpm store directory: prefer /cache/pnpm-store if mounted and writable,
+// otherwise fall back to process.env.npm_config_store_dir or /workspace/.pnpm-store.
+function resolveStoreDir(env = process.env) {
+  if (env.npm_config_store_dir && env.npm_config_store_dir !== "/workspace/.pnpm-store") {
+    return env.npm_config_store_dir;
+  }
+  const shared = "/cache/pnpm-store";
+  try {
+    fs.accessSync(shared, fs.constants.R_OK | fs.constants.W_OK);
+    return shared;
+  } catch {
+    return env.npm_config_store_dir || "/workspace/.pnpm-store";
+  }
+}
+
 function runReal(argv, { light = false } = {}) {
   // myrmidon(1.6.5 DEVBUILD-IN-BOTS): a heavy pnpm lane (install/test/exec
   // — only reachable with the gateway present, i.e. in a build container)
   // runs inside this container's cgroup: cap the child heap and say so.
   // Light subcommands (version/config/store probes) skip both.
-  let env = process.env;
+  let env = { ...process.env };
   if (!light) {
     const fb = applyHeavyFallback("pnpm");
     env = fb.env;
     if (fb.warning) process.stderr.write(fb.warning + "\n");
+  }
+  const storeDir = resolveStoreDir(env);
+  if (storeDir && env.npm_config_store_dir !== storeDir) {
+    env = { ...env, npm_config_store_dir: storeDir };
   }
   // argv already carries the purge flag when needed: main() injected it
   // before the devbuild-gate decision so the refusal line shows it too.

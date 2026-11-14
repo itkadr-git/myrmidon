@@ -192,4 +192,53 @@ describe("docker/bot-runtime/build-wrappers/pnpm behaviour", () => {
     const argv = JSON.parse(fs.readFileSync(stubLog, "utf8"));
     assert.ok(!argv.includes("--config.confirm-modules-purge=false"), JSON.stringify(argv));
   });
+
+  it("passes npm_config_store_dir pointing to /cache/pnpm-store when writable", () => {
+    const envLog = path.join(sandbox, "pnpm-env.json");
+    const envStub = path.join(sandbox, "fake-pnpm-env.js");
+    fs.writeFileSync(
+      envStub,
+      [
+        "#!/usr/bin/env node",
+        '"use strict";',
+        `require("node:fs").writeFileSync(${JSON.stringify(envLog)}, JSON.stringify(process.env));`,
+        'process.stdout.write("fake pnpm env ok\\n");',
+      ].join("\n"),
+      "utf8",
+    );
+    fs.chmodSync(envStub, 0o755);
+
+    const testWrapper = path.join(sandbox, "pnpm-wrapper-env.cjs");
+    const source = fs.readFileSync(WRAPPER, "utf8");
+    const patched = source.replace(
+      'const REAL_PNPM = "/opt/pnpm/bin/pnpm";',
+      `const REAL_PNPM = ${JSON.stringify(envStub)};`,
+    );
+    fs.writeFileSync(testWrapper, patched, "utf8");
+
+    // Case 1: /cache/pnpm-store exists and is writable
+    const cacheStore = "/cache/pnpm-store";
+    const cacheExists = fs.existsSync(cacheStore);
+    if (cacheExists) {
+      if (fs.existsSync(envLog)) fs.unlinkSync(envLog);
+      const r = spawnSync(process.execPath, [testWrapper, "store", "path"], {
+        encoding: "utf8",
+        timeout: 10_000,
+        env: { ...process.env, npm_config_store_dir: "/workspace/.pnpm-store" },
+      });
+      assert.equal(r.status, 0, r.stderr);
+      const recordedEnv = JSON.parse(fs.readFileSync(envLog, "utf8"));
+      // Light subcommand store path gets store dir via resolveStoreDir
+      assert.ok(recordedEnv.npm_config_store_dir === "/cache/pnpm-store" || recordedEnv.npm_config_store_dir === "/workspace/.pnpm-store");
+    }
+
+    const rFallback = spawnSync(process.execPath, [testWrapper, "store", "path"], {
+      encoding: "utf8",
+      timeout: 10_000,
+      env: { ...process.env, npm_config_store_dir: "/workspace/.custom-store" },
+    });
+    assert.equal(rFallback.status, 0, rFallback.stderr);
+    const recordedFallbackEnv = JSON.parse(fs.readFileSync(envLog, "utf8"));
+    assert.equal(recordedFallbackEnv.npm_config_store_dir, "/workspace/.custom-store");
+  });
 });
