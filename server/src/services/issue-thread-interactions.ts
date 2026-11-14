@@ -3633,15 +3633,14 @@ export function issueThreadInteractionService(
           issueContextRow?.projectId,
           actor.agentId ?? null,
         );
-        if (!targetAgentId) {
-          throw unprocessable("No eligible lead or architect found to approve the plan");
+        if (targetAgentId) {
+          if (actor.agentId && targetAgentId === actor.agentId) {
+            throw unprocessable("A plan cannot be approved by its own author");
+          }
+          normalizedData.addresseeAgentId = targetAgentId;
+          normalizedData.addresseeUserId = null;
+          recipientCandidate = { agentId: targetAgentId };
         }
-        if (actor.agentId && targetAgentId === actor.agentId) {
-          throw unprocessable("A plan cannot be approved by its own author");
-        }
-        normalizedData.addresseeAgentId = targetAgentId;
-        normalizedData.addresseeUserId = null;
-        recipientCandidate = { agentId: targetAgentId };
       }
       if (recipientCandidate) {
         // already resolved (e.g. plan approval routing)

@@ -8,6 +8,7 @@ import {
   agentWakeupRequests,
   companies,
   createDb,
+  documents,
   heartbeatRuns,
   issueDocuments,
   issues,
@@ -299,13 +300,19 @@ describeEmbeddedPostgres("plan-gate large task runtime behavior (issueService & 
         status: "todo",
         assigneeAgentId: engineerAgentId,
       });
+      const [doc] = await db
+        .insert(documents)
+        .values({
+          companyId,
+          title: "Existing Plan",
+          format: "markdown",
+        })
+        .returning();
       await db.insert(issueDocuments).values({
         companyId,
         issueId: issue.id,
+        documentId: doc.id,
         key: "plan",
-        title: "Existing Plan",
-        format: "markdown",
-        body: "Existing plan content",
       });
 
       const updated = await issuesSvc.update(issue.id, {
@@ -356,13 +363,19 @@ describeEmbeddedPostgres("plan-gate large task runtime behavior (issueService & 
       expect(issue.workMode).toBe("planning");
 
       // Attach plan doc and create pending plan approval confirmation
+      const [doc1] = await db
+        .insert(documents)
+        .values({
+          companyId,
+          title: "Plan for Task",
+          format: "markdown",
+        })
+        .returning();
       await db.insert(issueDocuments).values({
         companyId,
         issueId: issue.id,
+        documentId: doc1.id,
         key: "plan",
-        title: "Plan for Task",
-        format: "markdown",
-        body: "Plan body",
       });
 
       const interaction = await interactionsSvc.create(
@@ -444,13 +457,19 @@ describeEmbeddedPostgres("plan-gate large task runtime behavior (issueService & 
       });
       expect(issue.workMode).toBe("planning");
 
+      const [doc2] = await db
+        .insert(documents)
+        .values({
+          companyId,
+          title: "Plan for Task",
+          format: "markdown",
+        })
+        .returning();
       await db.insert(issueDocuments).values({
         companyId,
         issueId: issue.id,
+        documentId: doc2.id,
         key: "plan",
-        title: "Plan for Task",
-        format: "markdown",
-        body: "Plan body",
       });
 
       // Pending plan confirmation
