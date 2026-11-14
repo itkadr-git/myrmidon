@@ -1004,6 +1004,92 @@ function approveOrphanedPendingReviewStage(
   };
 }
 
+/**
+ * myrmidon(REVIEW-CHANGES-LOST-STAGE): a pending review stage whose definition
+ * is missing from the policy still has a participant who owes a decision. Their
+ * changes requested decision (`in_progress` with a comment) is recorded against
+ * the stored stage, advances the rounds counter, and returns the issue to the
+ * return assignee instead of clearing execution state and rejecting with 409/422.
+ */
+function requestChangesOrphanedPendingReviewStage(
+  input: TransitionInput,
+  existingState: IssueExecutionState,
+  actor: IssueExecutionStagePrincipal | null,
+): TransitionResult | null {
+  if (
+    input.requestedStatus !== "in_progress" ||
+    existingState.status !== PENDING_STATUS ||
+    existingState.currentStageType !== "review" ||
+    !existingState.currentStageId ||
+    !existingState.currentParticipant ||
+    !principalsEqual(existingState.currentParticipant, actor)
+  ) {
+    return null;
+  }
+  if (!input.commentBody?.trim()) {
+    throw unprocessable(`Requesting changes requires a comment. ${STAGE_DECISION_COMMENT_HINT}`);
+  }
+  if (!existingState.returnAssignee) {
+    throw unprocessable("This execution stage has no return assignee");
+  }
+
+  const activeStage: IssueExecutionStage = {
+    id: existingState.currentStageId,
+    type: "review",
+    approvalsNeeded: 1,
+    participants: [existingState.currentParticipant],
+  };
+
+  const decision = {
+    stageId: activeStage.id,
+    stageType: activeStage.type,
+    outcome: "changes_requested" as const,
+    body: input.commentBody.trim(),
+  };
+
+  const actorIsHuman = actor?.type === "user";
+  const nextRounds = actorIsHuman ? 0 : (existingState.changesRequestedCount ?? 0) + 1;
+
+  const patch: Record<string, unknown> = {
+    status: "in_progress",
+  };
+
+  const requestedAssigneePatchProvided =
+    input.requestedAssigneePatch.assigneeAgentId !== undefined || input.requestedAssigneePatch.assigneeUserId !== undefined;
+  const explicitAssignee = assigneePrincipal(input.requestedAssigneePatch);
+
+  if (requestedAssigneePatchProvided) {
+    Object.assign(patch, patchForPrincipal(explicitAssignee));
+  } else {
+    const safeAssignee = replaceTerminatedReturnAssignee(
+      safeReturnAssignee(
+        existingState.returnAssignee,
+        activeStage,
+        input.issue,
+        actor,
+      ),
+      input.issue,
+    );
+    if (safeAssignee) Object.assign(patch, patchForPrincipal(safeAssignee));
+  }
+
+  patch.executionState = buildChangesRequestedState(existingState, activeStage, nextRounds);
+  const replacedReturnAssignee = replaceTerminatedReturnAssignee(existingState.returnAssignee, input.issue);
+  if (replacedReturnAssignee !== existingState.returnAssignee) {
+    const changesRequestedState = buildChangesRequestedState(existingState, activeStage, nextRounds);
+    patch.executionState = {
+      ...changesRequestedState,
+      returnAssignee: replacedReturnAssignee,
+    };
+  }
+
+  return {
+    patch,
+    decision,
+    workflowControlledAssignment: true,
+  };
+}
+
 function applyIssueExecutionStageTransition(input: TransitionInput): TransitionResult {
   const patch: Record<string, unknown> = {};
   const existingState = parseIssueExecutionState(input.issue.executionState);
@@ -1029,6 +1115,8 @@ function applyIssueExecutionStageTransition(input: TransitionInput): TransitionR
     if (existingState) {
       const orphanApproval = approveOrphanedPendingReviewStage(input, existingState, actor);
       if (orphanApproval) return orphanApproval;
+      const orphanChanges = requestChangesOrphanedPendingReviewStage(input, existingState, actor);
+      if (orphanChanges) return orphanChanges;
       patch.executionState = null;
       if (input.issue.status === "in_review") {
         patch.status = requestedStatus ?? "in_progress";
@@ -1085,6 +1173,8 @@ function applyIssueExecutionStageTransition(input: TransitionInput): TransitionR
     }
     const orphanApproval = approveOrphanedPendingReviewStage(input, existingState, actor);
     if (orphanApproval) return orphanApproval;
+    const orphanChanges = requestChangesOrphanedPendingReviewStage(input, existingState, actor);
+    if (orphanChanges) return orphanChanges;
     clearExecutionStatePatch({
       patch,
       issueStatus: input.issue.status,
