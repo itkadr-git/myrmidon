@@ -74,6 +74,7 @@ const mockCostService = vi.hoisted(() => ({
   }),
   byAgent: vi.fn().mockResolvedValue([]),
   byAgentModel: vi.fn().mockResolvedValue([]),
+  byStepClass: vi.fn().mockResolvedValue([]),
   byProvider: vi.fn().mockResolvedValue([]),
   byBiller: vi.fn().mockResolvedValue([]),
   issueTreeSummary: vi.fn().mockResolvedValue({
@@ -561,6 +562,38 @@ describe("cost routes", () => {
       .expect(400);
 
     expect(res.body.error).toMatch(/invalid 'limit'/i);
+  });
+
+  it("handles GET /companies/:companyId/costs/by-step-class with query params (OPE-12999)", async () => {
+    const rows = [
+      {
+        stepClass: "reviewer",
+        modelGroup: "strong",
+        ruleSource: "step_importance",
+        ruleLabel: "reviewer -> strong",
+        costCents: 500,
+        inputTokens: 1000,
+        cachedInputTokens: 200,
+        outputTokens: 300,
+        events: 1,
+        runs: 1,
+      },
+    ];
+    mockCostService.byStepClass.mockResolvedValueOnce(rows);
+
+    const app = createApp();
+    const res = await request(app)
+      .get("/api/companies/company-1/costs/by-step-class?from=2026-04-10T00:00:00.000Z&to=2026-04-15T23:59:59.999Z")
+      .expect(200);
+
+    expect(mockCostService.byStepClass).toHaveBeenCalledWith(
+      "company-1",
+      {
+        from: new Date("2026-04-10T00:00:00.000Z"),
+        to: new Date("2026-04-15T23:59:59.999Z"),
+      },
+    );
+    expect(res.body).toEqual(rows);
   });
 });
 
@@ -1799,6 +1832,163 @@ describeEmbeddedPostgres("cost and finance aggregate overflow handling", () => {
     const eventWithoutIssueCost = 50;
     expect(sumIssueCosts + eventWithoutIssueCost).toBe(summary.spendCents);
     expect(summary.spendCents).toBe(950);
+  });
+
+  it("aggregates costs by step class: reviewer -> strong group, background -> economy group, and snapshot-less unknown (OPE-12999)", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "Step Agent",
+      role: "engineer",
+      status: "active",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+
+    const runReviewerId = randomUUID();
+    const runBackgroundId = randomUUID();
+    const runLegacyId = randomUUID();
+
+    await db.insert(heartbeatRuns).values([
+      {
+        id: runReviewerId,
+        companyId,
+        agentId,
+        status: "succeeded",
+        invocationSource: "agent_cycle",
+        contextSnapshot: {
+          modelSelection: {
+            schema: "paperclip.run_model_selection.v1",
+            stepClass: "reviewer",
+            modelGroup: "strong",
+            model: "gpt-5.1",
+            ruleSource: "step_importance",
+            ruleLabel: "reviewer -> strong",
+          },
+        },
+      },
+      {
+        id: runBackgroundId,
+        companyId,
+        agentId,
+        status: "succeeded",
+        invocationSource: "agent_cycle",
+        contextSnapshot: {
+          modelSelection: {
+            schema: "paperclip.run_model_selection.v1",
+            stepClass: "background",
+            modelGroup: "economy",
+            model: "gpt-5.1-mini",
+            ruleSource: "step_importance",
+            ruleLabel: "background -> economy",
+          },
+        },
+      },
+      {
+        id: runLegacyId,
+        companyId,
+        agentId,
+        status: "succeeded",
+        invocationSource: "agent_cycle",
+        contextSnapshot: {
+          legacyField: "no_model_selection",
+        },
+      },
+    ]);
+
+    await db.insert(costEvents).values([
+      {
+        companyId,
+        agentId,
+        heartbeatRunId: runReviewerId,
+        provider: "openai",
+        biller: "openai",
+        billingType: "metered_api",
+        model: "gpt-5.1",
+        inputTokens: 1000,
+        cachedInputTokens: 200,
+        outputTokens: 300,
+        costCents: 500,
+        occurredAt: new Date("2026-11-13T10:00:00.000Z"),
+      },
+      {
+        companyId,
+        agentId,
+        heartbeatRunId: runBackgroundId,
+        provider: "openai",
+        biller: "openai",
+        billingType: "metered_api",
+        model: "gpt-5.1-mini",
+        inputTokens: 500,
+        cachedInputTokens: 50,
+        outputTokens: 100,
+        costCents: 150,
+        occurredAt: new Date("2026-11-13T11:00:00.000Z"),
+      },
+      {
+        companyId,
+        agentId,
+        heartbeatRunId: runLegacyId,
+        provider: "openai",
+        biller: "openai",
+        billingType: "metered_api",
+        model: "gpt-4o",
+        inputTokens: 200,
+        cachedInputTokens: 0,
+        outputTokens: 50,
+        costCents: 50,
+        occurredAt: new Date("2026-11-13T12:00:00.000Z"),
+      },
+    ]);
+
+    const rows = await costs.byStepClass(companyId);
+
+    expect(rows).toHaveLength(3);
+    const reviewerRow = rows.find((r) => r.stepClass === "reviewer");
+    const backgroundRow = rows.find((r) => r.stepClass === "background");
+    const unknownRow = rows.find((r) => r.stepClass === "unknown");
+
+    expect(reviewerRow).toMatchObject({
+      stepClass: "reviewer",
+      modelGroup: "strong",
+      ruleLabel: "reviewer -> strong",
+      costCents: 500,
+      inputTokens: 1000,
+      cachedInputTokens: 200,
+      outputTokens: 300,
+      runs: 1,
+      events: 1,
+    });
+
+    expect(backgroundRow).toMatchObject({
+      stepClass: "background",
+      modelGroup: "economy",
+      ruleLabel: "background -> economy",
+      costCents: 150,
+      inputTokens: 500,
+      cachedInputTokens: 50,
+      outputTokens: 100,
+      runs: 1,
+      events: 1,
+    });
+
+    expect(unknownRow).toMatchObject({
+      stepClass: "unknown",
+      costCents: 50,
+      runs: 1,
+      events: 1,
+    });
   });
 
 });
