@@ -1058,8 +1058,8 @@ describeEmbeddedPostgres("issue list routes assigneeAgentId filter", () => {
     const badCreatedFrom = await request(app)
       .get(`/api/companies/${companyId}/issues`)
       .query({ createdFromIssueId: "not-a-valid-identifier-or-uuid" });
-    expect(badCreatedFrom.status).toBe(400);
-    expect(badCreatedFrom.body.error).toContain("createdFromIssueId must be a UUID or issue identifier");
+    expect(badCreatedFrom.status).toBe(422);
+    expect(badCreatedFrom.body.error).toContain("createdFromIssueId must be a UUID");
   });
 
   it("returns 422 for non-existent referenced entities when creating an issue", async () => {
