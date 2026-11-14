@@ -246,6 +246,9 @@ const runtimeState: AgentRuntimeState = {
   totalCachedInputTokens: 113_200,
   totalCostCents: 4320,
   lastError: "Previous run lost its Storybook Vite websocket after a local server restart.",
+  lastResponseAt: recent(2),
+  lastProbeAt: recent(2),
+  lastProbeOutcome: "ok",
   createdAt: recent(8_000),
   updatedAt: recent(2),
 };

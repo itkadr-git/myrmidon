@@ -33,6 +33,7 @@ import {
 } from "@myrmidon/db";
 import {
   AGENT_DEFAULT_MAX_CONCURRENT_RUNS,
+  deriveAgentProbeStatus,
   agentRuntimeConfigSchema,
   issueExecutionStateSchema,
   getAgentWorkEligibility,
@@ -506,6 +507,11 @@ export function agentService(
     createdAt: agents.createdAt,
     updatedAt: agents.updatedAt,
     adapterModel: sql<string | null>`${agents.adapterConfig}->>'model'`,
+    // myrmidon(OPE-13021): response-probe liveness projected from the
+    // agent's runtime state (left join below; absent state = all null).
+    lastResponseAt: agentRuntimeState.lastResponseAt,
+    lastProbeAt: agentRuntimeState.lastProbeAt,
+    lastProbeOutcome: agentRuntimeState.lastProbeOutcome,
   };
 
   const agentEligibilityColumns = {
@@ -525,7 +531,11 @@ export function agentService(
       conditions.push(ne(agents.status, "terminated"));
     }
     const [rows, allCompanyRows] = await Promise.all([
-      db.select(agentListSummaryColumns).from(agents).where(and(...conditions)),
+      db
+        .select(agentListSummaryColumns)
+        .from(agents)
+        .leftJoin(agentRuntimeState, eq(agentRuntimeState.agentId, agents.id))
+        .where(and(...conditions)),
       db.select(agentEligibilityColumns).from(agents).where(eq(agents.companyId, companyId)),
     ]);
     const hydrated = await hydrateAgentSpend<(typeof rows)[number]>(rows);
@@ -558,6 +568,15 @@ export function agentService(
       errorReason: row.errorReason,
       permissions: normalizeAgentPermissions(row.permissions),
       lastHeartbeatAt: row.lastHeartbeatAt,
+      lastResponseAt: row.lastResponseAt,
+      lastProbeAt: row.lastProbeAt,
+      lastProbeOutcome: (row.lastProbeOutcome ?? null) as AgentListItem["lastProbeOutcome"],
+      derivedStatus: deriveAgentProbeStatus({
+        lastProbeAt: row.lastProbeAt,
+        lastProbeOutcome: row.lastProbeOutcome,
+        lastResponseAt: row.lastResponseAt,
+        now: new Date(),
+      }),
       metadata: row.metadata,
       orgChainHealth: getAgentWorkEligibility({
         agent: toEligibilityAgent(row),
@@ -626,6 +645,15 @@ export function agentService(
           gte(costEvents.occurredAt, start),
         ),
       );
+    // myrmidon(OPE-13021): the liveness projection reads agent_runtime_state,
+    // so its churn must be part of the ETag too or a 304 could hide a fresh
+    // probe/response stamp. Cheap: one aggregate over the same company rows.
+    const [runtimeAgg] = await db
+      .select({
+        runtimeMaxUpdatedAt: sql<string | null>`max(${agentRuntimeState.updatedAt})`,
+      })
+      .from(agentRuntimeState)
+      .where(eq(agentRuntimeState.companyId, companyId));
 
     let filterKey: string | null = null;
     if (typeof filters === "string") {
@@ -650,6 +678,7 @@ export function agentService(
       agg?.rowCount ?? 0,
       agg?.maxUpdatedAt ?? null,
       agg?.maxStatus ?? null,
+      runtimeAgg?.runtimeMaxUpdatedAt ?? null,
       spendAgg?.spendSum ?? "0",
       spendAgg?.spendRowCount ?? 0,
       start.toISOString().slice(0, 10),
