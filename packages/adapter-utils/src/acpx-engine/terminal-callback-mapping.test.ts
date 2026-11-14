@@ -22,12 +22,12 @@ function cb(overrides: Partial<TerminalCallbackInput> = {}): TerminalCallbackInp
 
 describe("mapTerminalCallback", () => {
   it("maps each terminal status exactly once to its board state", () => {
-    expect(mapTerminalCallback(cb({ status: "completed" }))).toEqual({ kind: "terminal", boardState: "done" });
-    expect(mapTerminalCallback(cb({ status: "failed" }))).toEqual({ kind: "terminal", boardState: "failed" });
-    expect(mapTerminalCallback(cb({ status: "cancelled" }))).toEqual({ kind: "terminal", boardState: "cancelled" });
-    expect(mapTerminalCallback(cb({ status: "succeeded" }))).toEqual({ kind: "terminal", boardState: "done" });
-    expect(mapTerminalCallback(cb({ status: "error" }))).toEqual({ kind: "terminal", boardState: "failed" });
-    expect(mapTerminalCallback(cb({ status: "canceled" }))).toEqual({ kind: "terminal", boardState: "cancelled" });
+    expect(mapTerminalCallback(cb({ status: "completed" }))).toEqual({ kind: "terminal", boardState: "done", providerJobId: "job-1" });
+    expect(mapTerminalCallback(cb({ status: "failed" }))).toEqual({ kind: "terminal", boardState: "failed", providerJobId: "job-1" });
+    expect(mapTerminalCallback(cb({ status: "cancelled" }))).toEqual({ kind: "terminal", boardState: "cancelled", providerJobId: "job-1" });
+    expect(mapTerminalCallback(cb({ status: "succeeded" }))).toEqual({ kind: "terminal", boardState: "done", providerJobId: "job-1" });
+    expect(mapTerminalCallback(cb({ status: "error" }))).toEqual({ kind: "terminal", boardState: "failed", providerJobId: "job-1" });
+    expect(mapTerminalCallback(cb({ status: "canceled" }))).toEqual({ kind: "terminal", boardState: "cancelled", providerJobId: "job-1" });
   });
 
   it("does not close the issue on a completed callback without completion evidence", () => {
@@ -41,6 +41,7 @@ describe("mapTerminalCallback", () => {
     expect(mapTerminalCallback(cb({ completionEvidence: { output: null, result: "r" } }))).toEqual({
       kind: "terminal",
       boardState: "done",
+      providerJobId: "job-1",
     });
   });
 
@@ -65,11 +66,19 @@ describe("mapTerminalCallback", () => {
   });
 
   it("is case- and whitespace-tolerant for well-formed statuses", () => {
-    expect(mapTerminalCallback(cb({ status: "  Completed " }))).toEqual({ kind: "terminal", boardState: "done" });
+    expect(mapTerminalCallback(cb({ status: "  Completed " }))).toEqual({ kind: "terminal", boardState: "done", providerJobId: "job-1" });
   });
 
   it("normalizes a missing job id to a stable reconciliation key", () => {
-    expect(mapTerminalCallback(cb({ providerJobId: null }))).toEqual({ kind: "terminal", boardState: "done" });
+    expect(mapTerminalCallback(cb({ providerJobId: null }))).toEqual({ kind: "terminal", boardState: "done", providerJobId: null });
+  });
+
+  it("retains providerJobId on the mapping for reconciliation", () => {
+    expect(mapTerminalCallback(cb({ providerJobId: "job-ext-123" }))).toEqual({
+      kind: "terminal",
+      boardState: "done",
+      providerJobId: "job-ext-123",
+    });
   });
 });
 
@@ -120,5 +129,16 @@ describe("TerminalCallbackRegistry", () => {
       expect(outcome.mapping).toEqual({ kind: "non_terminal", holdReason: "completion_evidence_missing" });
     }
     expect(registry.recordedMapping("job-1")).toBeNull();
+  });
+
+  it("does not let multiple missing job IDs collide on a shared singleton key", () => {
+    const registry = new TerminalCallbackRegistry();
+    const first = registry.apply(cb({ providerJobId: null, status: "completed" }));
+    const second = registry.apply(cb({ providerJobId: undefined, status: "completed" }));
+    expect(first.applied).toBe(true);
+    expect(first.providerJobId).toBe("");
+    expect(second.applied).toBe(true);
+    expect(second.providerJobId).toBe("");
+    expect(registry.recordedMapping("")).toBeNull();
   });
 });

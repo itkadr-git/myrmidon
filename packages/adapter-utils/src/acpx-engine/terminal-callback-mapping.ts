@@ -29,7 +29,7 @@ export type BoardTerminalState = "done" | "failed" | "cancelled";
  * run on its existing hold/reconciliation path instead.
  */
 export type MappedTerminalCallback =
-  | { kind: "terminal"; boardState: BoardTerminalState }
+  | { kind: "terminal"; boardState: BoardTerminalState; providerJobId: string | null }
   | { kind: "non_terminal"; holdReason: string };
 
 export interface TerminalCallbackInput {
@@ -94,7 +94,8 @@ export function mapTerminalCallback(input: TerminalCallbackInput): MappedTermina
     // External callback cannot mark done without completion evidence.
     return { kind: "non_terminal", holdReason: "completion_evidence_missing" };
   }
-  return { kind: "terminal", boardState: known };
+  const normalizedJobId = nonEmpty(input.providerJobId) ? input.providerJobId.trim() : null;
+  return { kind: "terminal", boardState: known, providerJobId: normalizedJobId };
 }
 
 export interface RecordedTerminalCallback {
@@ -117,7 +118,14 @@ export class TerminalCallbackRegistry {
   private readonly recorded = new Map<string, MappedTerminalCallback>();
 
   apply(input: TerminalCallbackInput): RecordedTerminalCallback {
-    const providerJobId = nonEmpty(input.providerJobId) ? input.providerJobId : "<missing-job-id>";
+    const rawJobId = nonEmpty(input.providerJobId);
+    if (!rawJobId) {
+      // Missing or empty providerJobId cannot safely reconcile with any other job;
+      // evaluate mapping without latching a shared singleton key.
+      const mapping = mapTerminalCallback(input);
+      return { applied: mapping.kind === "terminal", providerJobId: "", mapping };
+    }
+    const providerJobId = String(input.providerJobId).trim();
     const recorded = this.recorded.get(providerJobId);
     if (recorded) {
       return { applied: false, providerJobId, mapping: recorded };
