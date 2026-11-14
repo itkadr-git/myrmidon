@@ -773,6 +773,16 @@ describe("conditional run-start recall", () => {
 });
 
 describe("manifest", () => {
+  it("declares an opt-in nightly consolidation job with safe budget defaults", () => {
+    assert.ok(manifest.capabilities.includes("jobs.schedule"));
+    assert.equal(manifest.jobs?.[0]?.jobKey, "nightly-consolidation");
+    assert.equal(manifest.jobs?.[0]?.schedule, "0 2 * * *");
+    const properties = manifest.instanceConfigSchema?.["properties"] as Record<string, { default?: unknown }>;
+    assert.equal(properties["consolidationEnabled"]?.default, false);
+    assert.equal(properties["consolidationTimeBudgetMs"]?.default, 300000);
+    assert.deepEqual(properties["consolidationBankIds"]?.default, undefined);
+  });
+
   it("replaces the upstream id and versions the fork", () => {
     assert.equal(manifest.id, "paperclip-plugin-hindsight");
     assert.equal(manifest.version, "0.3.0-myrmidon.2");
@@ -806,6 +816,30 @@ describe("manifest", () => {
     const properties = manifest.instanceConfigSchema?.["properties"] as Record<string, { type?: string; default?: unknown }>;
     assert.equal(properties["requestTimeoutMs"]?.type, "number");
     assert.equal(properties["requestTimeoutMs"]?.default, 60000);
+  });
+
+  it("registers a nightly job that persists all numeric report counters", async () => {
+    const mock = mockHindsight();
+    const fetchImpl: FetchLike = async (url, init) => {
+      const path = url.slice(API_URL.length);
+      const method = init?.method ?? "GET";
+      if (path.includes("/documents?")) return jsonResponse({ items: [{ id: "doc-1" }], total: 1 });
+      if (path.endsWith("/consolidate")) return jsonResponse({ operation_id: "op-1" });
+      if (path.includes("/mental-models?")) return jsonResponse({ items: [{ id: "model-1", is_stale: true }], total: 1 });
+      if (method === "POST" && path.endsWith("/model-1/refresh")) return jsonResponse({ operation_id: "refresh-1" });
+      return mock.fetch(url, init);
+    };
+    const harness = createTestHarness({
+      manifest: manifest as PaperclipPluginManifestV1,
+      config: { hindsightApiUrl: API_URL, consolidationEnabled: true, consolidationBankIds: ["nightly-bank"], consolidationTimeBudgetMs: 1000 },
+    });
+    await createHindsightPlugin({ fetchImpl }).definition.setup(harness.ctx);
+    await harness.runJob("nightly-consolidation", { runId: "consolidation-run", scheduledAt: "2026-01-01T02:00:00.000Z" });
+    const report = harness.getState({ scopeKind: "instance", stateKey: "hindsight-consolidation-report" }) as Record<string, unknown>;
+    assert.equal(report["recordsProcessed"], 1);
+    assert.equal(report["modelsUpdated"], 1);
+    assert.equal(report["operationsStoppedByWatchdog"], 0);
+    assert.equal(report["runId"], "consolidation-run");
   });
 });
 
