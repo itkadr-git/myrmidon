@@ -257,6 +257,17 @@ describeEmbeddedPostgres("run-dispatch: pending interaction addressee wake (P2)"
     expect(issue?.executionRunId).toBeNull();
   });
 
+  it("prioritizes issue_terminal_status over queued_run_stale_timeout when run has also aged out (OPE-13068)", async () => {
+    const { companyId, assigneeId, issueId } = await seed();
+    await db.update(issues).set({ status: "done" }).where(eq(issues.id, issueId));
+    const runId = await seedRun({ companyId, agentId: assigneeId, contextSnapshot: { issueId } });
+    await db.update(heartbeatRuns).set({ createdAt: new Date(Date.now() - 31 * 60 * 1000) }).where(eq(heartbeatRuns.id, runId));
+    const outcome = await createPostgresRunDispatchAdapter(db).cancelStaleQueuedRun({
+      runId, companyId, expectedStatus: "queued", staleAfterMs: 30 * 60 * 1000, now: new Date(),
+    });
+    expect(outcome).toMatchObject({ outcome: "cancelled", errorCode: "issue_terminal_status" });
+  });
+
   // myrmidon(OPE-11947): a scheduled retry is created at the failure and enters
   // the queue when `scheduled_retry_at` falls due (30 min, 1 h, 2 h, 4 h, 6 h for
   // a model-unavailable wait). Its age as a queued run counts from that moment,

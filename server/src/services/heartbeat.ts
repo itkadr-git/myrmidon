@@ -23720,7 +23720,7 @@ export function heartbeatService(
       });
       if (outcome.outcome !== "cancelled") return false;
       applyRunDispatchPostCommitEffects(outcome.postCommitEffects);
-      return true;
+      return outcome.errorCode === "queued_run_stale_timeout";
     },
     wakeAgent: async (agentId, companyId, { issueId }) => {
       // myrmidon(OPE-11947): resume the task the cancelled run stood on. The
@@ -23730,6 +23730,13 @@ export function heartbeatService(
       // run that stood on no task has nothing to resume, and an automatic wake
       // without a task is not allowed (INV-10): no wake then.
       if (!issueId) return;
+      // myrmidon(OPE-13068): do not queue a replacement wake if the task is closed.
+      const [issue] = await db
+        .select({ status: issues.status })
+        .from(issues)
+        .where(and(eq(issues.id, issueId), eq(issues.companyId, companyId)))
+        .limit(1);
+      if (issue && (issue.status === "done" || issue.status === "cancelled")) return;
       await enqueueWakeup(agentId, {
         source: "automation",
         reason: "queued_run_stale_timeout",
