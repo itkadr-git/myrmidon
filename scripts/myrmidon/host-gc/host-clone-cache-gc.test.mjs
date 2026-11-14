@@ -620,11 +620,22 @@ describe("stale OMP runner collection", () => {
     const calls = path.join(dir, "calls");
     fs.writeFileSync(docker, `#!/bin/sh\nif [ "$1" = ps ]; then printf '%s\\n' myrmidon-omp-runner-eng8 myrmidon-omp-runner-eng10; else printf '%s\\n' "$@" >> '${calls}'; fi\n`);
     fs.chmodSync(docker, 0o755);
-    const board = path.join(dir, "board");
-    fs.writeFileSync(board, "#!/bin/sh\nprintf '{\\\"adapterType\\\":\\\"%s\\\"}\\n' \"$(case \"$2\" in */eng10) echo omp_local;; *) echo hermes_gateway;; esac)\"\n");
-    fs.chmodSync(board, 0o755);
-    const envOverrides = { PATH: `${dir}:${process.env.PATH}`, MYRMIDON_HOST_GC_DOCKER: docker, BOARD_API_URL: "http://board", MYRMIDON_HOST_GC_DOCKER_BOT: docker };
-    const { res, events } = runGc(["--apply", "--runner-root", root], envOverrides);
+    const http = await import("node:http");
+    const board = http.createServer((req, res) => {
+      const adapterType = req.url.endsWith("/eng10") ? "omp_local" : "hermes_gateway";
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ adapterType }));
+    });
+    await new Promise((resolve) => board.listen(0, "127.0.0.1", resolve));
+    const envOverrides = { PATH: `${dir}:${process.env.PATH}`, MYRMIDON_HOST_GC_DOCKER: docker, BOARD_API_URL: `http://127.0.0.1:${board.address().port}`, MYRMIDON_HOST_GC_DOCKER_BOT: docker };
+    let result;
+    try {
+      result = runGc(["--apply", "--runner-root", root], envOverrides);
+    } finally {
+      board.closeAllConnections();
+      await new Promise((resolve) => board.close(resolve));
+    }
+    const { res, events } = result;
     assert.equal(res.status, 0, res.stderr);
     assert.equal(fs.existsSync(path.join(root, "eng8", "home")), false);
     assert.equal(fs.existsSync(active), true);

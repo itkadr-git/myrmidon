@@ -2006,11 +2006,11 @@ async function main() {
       staleOmpRunnersStopped = 0;
       let staleOmpRunnerDataRemoved = 0;
       for (const runner of plan.staleOmpRunners) {
-        if (runner.action === "stop-remove" && !stopOmpRunner(runner.name, { docker: args.docker })) {
-          journalRecord(args.journal, { event: "stale-omp-runner-stop-failed", name: runner.name, reason: runner.reason });
-          continue;
-        }
         if (runner.action === "stop-remove") {
+          if (!stopOmpRunner(runner.name, { docker: args.docker })) {
+            journalRecord(args.journal, { event: "stale-omp-runner-stop-failed", name: runner.name, reason: runner.reason });
+            continue;
+          }
           staleOmpRunnersStopped++;
           journalRecord(args.journal, { event: "stale-omp-runner-stopped", name: runner.name, reason: runner.reason });
         }
