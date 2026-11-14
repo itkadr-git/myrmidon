@@ -187,7 +187,7 @@ export interface JudgeDeps {
 }
 
 /** `/v1/chat/completions` unless the address already ends with `/v1`. */
-function chatCompletionsUrl(baseUrl: string): string {
+export function chatCompletionsUrl(baseUrl: string): string {
   const trimmed = baseUrl.replace(/\/+$/, "");
   return trimmed.endsWith("/v1")
     ? `${trimmed}/chat/completions`
