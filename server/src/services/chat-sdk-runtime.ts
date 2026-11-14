@@ -1358,7 +1358,7 @@ async function createProviderAdapter(
   callbacks: ChatSdkRuntimeCallbacks,
   endpointId: string,
   observeDiscordGatewayFatal?: (fatal: boolean) => void,
-): Adapter {
+): Promise<Adapter> {
   const resolvedLogger = adapterLogger(logger);
   switch (config.provider) {
     case "imessage-photon": throw new Error("Photon adapter requires scoped persistence");
