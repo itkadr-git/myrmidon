@@ -196,6 +196,7 @@
   "api.use(instanceDatabaseBackupRoutes(opts.databaseBackupService))",
   "api.use(blockerGraphRoutes(db))",
   "api.use(issueRoutes(db, opts.storageService, {\n    chatRunRetries: chatChannels,\n    feedbackExportService: opts.feedbackExportService,\n    pluginWorkerManager: workerManager,\n    approveToolActionRequest: (input) => toolGateway.approveActionRequest(input),\n    declineToolActionRequest: (input) => toolGateway.declineActionRequest(input),\n  }))",
+  "api.use(async (req, res, next) => {\n  if (!req.path.includes(\"ai-connections\")) return next();\n  try {\n    if (!cachedAiConnectionRoutes) {\n      const { aiConnectionRoutes } = await import(\"./routes/ai-connections.js\");\n      cachedAiConnectionRoutes = aiConnectionRoutes(db, {\n        deploymentMode: opts.deploymentMode,\n        deploymentExposure: opts.deploymentExposure,\n        trustedLocalStdioRuntimeHost,\n      });\n    }\n    cachedAiConnectionRoutes(req, res, next);\n  } catch (err) {\n    next(err);\n  }\n})",
   "api.use(\n    toolAccessRoutes(db, {\n      deploymentMode: opts.deploymentMode,\n      deploymentExposure: opts.deploymentExposure,\n      authPublicBaseUrl: opts.authPublicBaseUrl,\n      trustedLocalStdioRuntimeHost,\n      toolGateway,\n      connectionIntentHeartbeat,\n    }),\n  )",
   "api.use(connectionIntentBoardRoutes(db, connectionIntentHeartbeat))",
   "api.use(\n    smokeLabRoutes(db, {\n      deploymentMode: opts.deploymentMode,\n      deploymentExposure: opts.deploymentExposure,\n    }),\n  )",
