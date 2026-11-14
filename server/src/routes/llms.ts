@@ -2,7 +2,6 @@ import { Router, type Request } from "express";
 import type { Db } from "@myrmidon/db";
 import { AGENT_ICON_NAMES } from "@myrmidon/shared";
 import { forbidden } from "../errors.js";
-import { listServerAdapters } from "../adapters/index.js";
 import { hermesGatewayAgentConfigurationDoc } from "../adapters/hermes-gateway-doc.js";
 import { agentService } from "../services/agents.js";
 // myrmidon(B1c): product name in user-facing texts; see product.ts.
@@ -34,6 +33,7 @@ export function llmRoutes(db: Db) {
 
   router.get("/llms/agent-configuration.txt", async (req, res) => {
     await assertCanRead(req);
+    const { listServerAdapters } = await import("../adapters/index.js");
     const adapters = listServerAdapters().sort((a, b) => a.type.localeCompare(b.type));
     const lines = [
       `# ${PN} Agent Configuration Index`,
@@ -86,6 +86,7 @@ export function llmRoutes(db: Db) {
   router.get("/llms/agent-configuration/:adapterType.txt", async (req, res) => {
     await assertCanRead(req);
     const adapterType = req.params.adapterType as string;
+    const { listServerAdapters } = await import("../adapters/index.js");
     const adapter = listServerAdapters().find((entry) => entry.type === adapterType);
     if (!adapter) {
       const pluginOnlyDoc = pluginOnlyAdapterDocs.get(adapterType);

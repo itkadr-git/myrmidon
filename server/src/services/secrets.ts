@@ -65,7 +65,6 @@ import type {
 import { PRODUCT_NAME as PN } from "../myrmidon/product.js";
 import { isSecretProviderClientError } from "../secrets/types.js";
 import { authorizationDeniedDetails, authorizationService } from "./authorization.js";
-import { findActiveServerAdapter } from "../adapters/index.js";
 import { logActivity } from "./activity-log.js";
 // Only a `local_encrypted` secret can hold a literal directory path, so only a
 // `local_encrypted` secret can ever name a Codex account-home directory. A
@@ -2064,6 +2063,7 @@ export function secretService(db: Db | DbTransaction) {
 
   async function listAdapterSchemaSecretFieldKeys(adapterType: string | null | undefined): Promise<string[]> {
     if (!adapterType) return [];
+    const { findActiveServerAdapter } = await import("../adapters/index.js");
     const adapter = findActiveServerAdapter(adapterType);
     const fallback = [...(FALLBACK_ADAPTER_SCHEMA_SECRET_FIELDS[adapterType] ?? [])];
     if (!adapter?.getConfigSchema) return fallback;
