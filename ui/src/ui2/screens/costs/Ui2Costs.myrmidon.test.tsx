@@ -18,6 +18,8 @@ import { Ui2I18nProvider } from "../../i18n/Ui2I18n";
 const mockCostsApi = vi.hoisted(() => ({
   summary: vi.fn(),
   byAgent: vi.fn(),
+  byDay: vi.fn(),
+  byIssue: vi.fn(),
 }));
 
 vi.mock("@/api/costs", () => ({
@@ -134,6 +136,13 @@ describe("myrmidon(UI2) Ui2Costs screen parity", () => {
         runsAboveThresholdPct: null,
       },
     ]);
+    mockCostsApi.byDay.mockResolvedValue([
+      { day: "2026-04-02", costCents: 100_000, inputTokens: 0, cachedInputTokens: 0, outputTokens: 0, unpricedEvents: 0 },
+      { day: "2026-04-01", costCents: 57_400, inputTokens: 0, cachedInputTokens: 0, outputTokens: 0, unpricedEvents: 0 },
+    ]);
+    mockCostsApi.byIssue.mockResolvedValue([
+      { issueId: "issue-1", identifier: "OPE-123", title: "Expensive task", costCents: 150_000, inputTokens: 0, cachedInputTokens: 0, outputTokens: 0, runs: 4 },
+    ]);
     mockBudgetsApi.overview.mockResolvedValue({
       companyId: COMPANY_ID,
       policies: [
@@ -202,7 +211,7 @@ describe("myrmidon(UI2) Ui2Costs screen parity", () => {
   it("renders the spend tiles from the mocked costs summary", async () => {
     await renderScreen();
 
-    expect(mockCostsApi.summary).toHaveBeenCalledWith(COMPANY_ID);
+    expect(mockCostsApi.summary).toHaveBeenCalledWith(COMPANY_ID, expect.any(String), expect.any(String));
     const tileValues = [...container.querySelectorAll(".ui2-tile-value")].map(
       (tile) => tile.textContent,
     );
@@ -220,7 +229,7 @@ describe("myrmidon(UI2) Ui2Costs screen parity", () => {
   it("renders accessible spend breakdown rows for agents", async () => {
     await renderScreen();
 
-    const chart = container.querySelector(".ui2-costs-chart");
+    const chart = container.querySelector(".ui2-costs-agents");
     expect(chart).not.toBeNull();
     expect(chart?.hasAttribute("role")).toBe(false);
     expect(chart?.textContent).toContain("agent-a");
@@ -233,8 +242,8 @@ describe("myrmidon(UI2) Ui2Costs screen parity", () => {
     mockCostsApi.byAgent.mockResolvedValue([]);
     await renderScreen();
 
-    expect(container.querySelector(".ui2-costs-chart")).toBeNull();
-    expect(container.textContent).toContain("No spend in this period");
+    expect(container.querySelector(".ui2-costs-agents")).toBeNull();
+    expect(container.textContent).toContain("No spend is recorded for this window.");
   });
 
   it("keeps the zero budget amount without a redundant budget hint", async () => {
@@ -257,6 +266,43 @@ describe("myrmidon(UI2) Ui2Costs screen parity", () => {
     expect(budgetTile?.querySelector(".ui2-tile-hint")).toBeNull();
     expect(container.textContent).not.toContain("Unpriced");
     expect(container.textContent).not.toContain("Forecast through month-end");
+  });
+
+  it("renders the daily and issue sections using catalog strings", async () => {
+    await renderScreen();
+    expect(container.textContent).toContain("Daily spend");
+    expect(container.textContent).toContain("Expensive tasks for the period");
+  });
+
+  it("shows an API error state for failed daily costs", async () => {
+    mockCostsApi.byDay.mockRejectedValue(new Error("daily endpoint unavailable"));
+    await renderScreen();
+    expect(container.textContent).toContain("Could not load this data. Try again.");
+    expect(container.textContent).toContain("daily endpoint unavailable");
+    expect(container.querySelector(".ui2-costs-chart")).toBeNull();
+    expect(container.querySelector(".ui2-costs-issues")).not.toBeNull();
+  });
+
+  it("shows empty state for empty daily costs and issue results", async () => {
+    mockCostsApi.byDay.mockResolvedValue([]);
+    mockCostsApi.byIssue.mockResolvedValue([]);
+    await renderScreen();
+    expect(container.querySelector(".ui2-costs-chart")).toBeNull();
+    expect(container.textContent).toContain("No spend is recorded");
+    expect(container.textContent).toContain("No expensive tasks");
+  });
+
+  it("renders cumulative daily spend matching the spent tile and expensive tasks", async () => {
+    await renderScreen();
+    expect(container.textContent).toContain("$1,574.00");
+    expect(container.textContent).toContain("OPE-123 · Expensive task");
+    expect(container.querySelector('.ui2-costs-issues a')?.getAttribute("href")).toBe("/OPE-123");
+    const chart = container.querySelector(".ui2-costs-chart");
+    expect(chart?.textContent).toContain("$574.00");
+    expect(chart?.textContent).toContain("$1,574.00");
+    expect(chart?.getAttribute("data-total-cents")).toBe("157400");
+    expect(mockCostsApi.byDay).toHaveBeenCalledWith(COMPANY_ID, expect.any(String), expect.any(String));
+    expect(mockCostsApi.byIssue).toHaveBeenCalledWith(COMPANY_ID, expect.any(String), expect.any(String), 10);
   });
 
   it("renders the per-agent table from the mocked by-agent data", async () => {
