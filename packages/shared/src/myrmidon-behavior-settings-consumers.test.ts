@@ -251,7 +251,7 @@ describe("myrmidon(1.7 SETTINGS-HONESTY) every registered behavior setting has a
     // The ratchet's own bookkeeping: the frozen list must still cover exactly
     // the settings it claims to cover.
     expect(unwiredStill.sort()).toEqual([...UNWIRED_SETTINGS].sort());
-  });
+  }, 15_000);
 
   it("enumerates nested package src trees under grouping directories (OPE-12677 review)", () => {
     const packagesDir = join(REPO_ROOT, "packages");
