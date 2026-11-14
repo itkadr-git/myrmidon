@@ -17,7 +17,10 @@ name: Myrmidon CI (tag)
 #   - its `CI result` is the ONLY source of green the publish gate accepts
 #     (publish-github-release.sh refuses a tag whose tag-CI run is missing,
 #     failed or cancelled; a green main run of the same commit no longer
-#     counts).
+#     counts),
+#   - every job routes to the priority runner pool (vars.CI_RUNNER_PRIORITY)
+#     ahead of queued ordinary runs — a release tag build never waits behind
+#     an ordinary build (OPE-13002).
 #
 # The job bodies are kept in sync with myrmidon-ci.yml by
 # scripts/myrmidon/release/release-publish.test.mjs (the "tag CI workflow"
@@ -56,7 +59,12 @@ env:
 jobs:
   typecheck:
     name: typecheck
-    runs-on: ${{ fromJSON(vars.CI_RUNNER_MAIN || vars.CI_RUNNER_TYPECHECK || '"ubuntu-latest"') }}
+    # OPE-13002: every job of the tag CI is a release build job. Route to the
+    # priority runner pool (vars.CI_RUNNER_PRIORITY) ahead of queued ordinary
+    # runs; fall back to the shared pool labels when no priority runner is
+    # configured. The queue-priority monitor in the ci-result job asserts
+    # this wiring (release-jobs.test.mjs "tag CI workflow jobs").
+    runs-on: ${{ fromJSON(vars.CI_RUNNER_PRIORITY || vars.CI_RUNNER_MAIN || vars.CI_RUNNER_TYPECHECK || '"ubuntu-latest"') }}
     timeout-minutes: 30
     steps:
       - name: Checkout repository
@@ -109,7 +117,7 @@ jobs:
 
   build:
     name: build
-    runs-on: ${{ fromJSON(vars.CI_RUNNER_MAIN || vars.CI_RUNNER_BUILD || '"ubuntu-latest"') }}
+    runs-on: ${{ fromJSON(vars.CI_RUNNER_PRIORITY || vars.CI_RUNNER_MAIN || vars.CI_RUNNER_BUILD || '"ubuntu-latest"') }}
     timeout-minutes: 40
     env:
       NODE_OPTIONS: --max-old-space-size=4096
@@ -166,7 +174,7 @@ jobs:
 
   tests:
     name: tests (${{ matrix.label }})
-    runs-on: ${{ fromJSON(vars.CI_RUNNER_MAIN || vars.CI_RUNNER_TESTS || '"ubuntu-latest"') }}
+    runs-on: ${{ fromJSON(vars.CI_RUNNER_PRIORITY || vars.CI_RUNNER_MAIN || vars.CI_RUNNER_TESTS || '"ubuntu-latest"') }}
     timeout-minutes: 30
     strategy:
       fail-fast: false
@@ -247,7 +255,7 @@ jobs:
     # Packages whose tests `pnpm test:run` does not run (hermes adapter, MCP
     # servers, several adapters...): scripts/myrmidon/ci/extra-test-lanes.json.
     name: tests (other packages)
-    runs-on: ${{ fromJSON(vars.CI_RUNNER_MAIN || vars.CI_RUNNER_TESTS_OTHER || '"ubuntu-latest"') }}
+    runs-on: ${{ fromJSON(vars.CI_RUNNER_PRIORITY || vars.CI_RUNNER_MAIN || vars.CI_RUNNER_TESTS_OTHER || '"ubuntu-latest"') }}
     timeout-minutes: 20
     steps:
       - name: Checkout repository
@@ -292,7 +300,7 @@ jobs:
     # The vendor verifies the runner in its own lane (check:all: TypeScript,
     # protocol, Rust and API authority checks).
     name: tests (runner)
-    runs-on: ${{ fromJSON(vars.CI_RUNNER_MAIN || vars.CI_RUNNER_TESTS_RUNNER || '"ubuntu-latest"') }}
+    runs-on: ${{ fromJSON(vars.CI_RUNNER_PRIORITY || vars.CI_RUNNER_MAIN || vars.CI_RUNNER_TESTS_RUNNER || '"ubuntu-latest"') }}
     timeout-minutes: 40
     steps:
       - name: Checkout repository
@@ -347,7 +355,7 @@ jobs:
     # internal-address scan, dependency licenses and plugin compatibility.
     # Every step runs even if an earlier one failed.
     name: checks
-    runs-on: ${{ fromJSON(vars.CI_RUNNER_MAIN || '"ubuntu-latest"') }}
+    runs-on: ${{ fromJSON(vars.CI_RUNNER_PRIORITY || vars.CI_RUNNER_MAIN || '"ubuntu-latest"') }}
     timeout-minutes: 20
     env:
       GITLEAKS_VERSION: 8.30.1
@@ -504,7 +512,7 @@ jobs:
     # tools/fleetd: gofmt, go vet and the unit tests, in the same pinned Go
     # image the fleetd image workflow builds from.
     name: fleetd
-    runs-on: ${{ fromJSON(vars.CI_RUNNER_MAIN_GO || '"ubuntu-latest"') }}
+    runs-on: ${{ fromJSON(vars.CI_RUNNER_PRIORITY || vars.CI_RUNNER_MAIN_GO || '"ubuntu-latest"') }}
     timeout-minutes: 20
     env:
       GO_IMAGE: golang:1.25-bookworm@sha256:3b4a11519ad929d1e1d261a12cff056f0c85b735253d7d861346b9c6f8b36437
@@ -538,7 +546,7 @@ jobs:
     # tools/dockergate: gofmt, go vet, the unit tests, and the contract with
     # the driver (fixtures emitted afresh from the TypeScript of this commit).
     name: dockergate
-    runs-on: ${{ fromJSON(vars.CI_RUNNER_MAIN_GO || '"ubuntu-latest"') }}
+    runs-on: ${{ fromJSON(vars.CI_RUNNER_PRIORITY || vars.CI_RUNNER_MAIN_GO || '"ubuntu-latest"') }}
     timeout-minutes: 20
     env:
       GO_IMAGE: golang:1.25-bookworm@sha256:3b4a11519ad929d1e1d261a12cff056f0c85b735253d7d861346b9c6f8b36437
@@ -613,7 +621,7 @@ jobs:
     name: CI result
     if: ${{ !cancelled() }}
     needs: [typecheck, build, tests, tests-other, tests-runner, checks, dockergate, fleetd]
-    runs-on: ${{ fromJSON(vars.CI_RUNNER_LIGHT || vars.MYR_RUNNER_LIGHT || '"vps-ci"') }}
+    runs-on: ${{ fromJSON(vars.CI_RUNNER_PRIORITY || vars.CI_RUNNER_LIGHT || vars.MYR_RUNNER_LIGHT || '"vps-ci"') }}
     timeout-minutes: 5
     steps:
       - name: Ensure gh and jq (self-hosted runners may lack them)
@@ -751,11 +759,14 @@ jobs:
         run: |
           set -euo pipefail
           # OPE-13002: release builds of the release-tag CI get priority in the
-          # CI queue. The ENFORCEMENT mechanism is the priority runner pool:
-          # myrmidon-ci.yml sends every release run (plan.outputs.is_release,
-          # true for main pushes AND release PRs) to vars.CI_RUNNER_PRIORITY,
-          # a dedicated runner label ordinary runs never receive. A free
-          # priority runner always starts the OLDEST queued release run
+          # CI queue. The ENFORCEMENT mechanism is the priority runner pool
+          # (vars.CI_RUNNER_PRIORITY), a dedicated runner label ordinary runs
+          # never receive. BOTH release CI workflows route there:
+          #   - this tag workflow: every job's runs-on prepends
+          #     vars.CI_RUNNER_PRIORITY (a tag push is always a release build),
+          #   - myrmidon-ci.yml: plan.outputs.is_release (true for main pushes
+          #     AND release PRs) routes those runs to the same pool.
+          # A free priority runner always starts the OLDEST queued release run
           # before any ordinary run; ordinary runs only ever hold the shared
           # pool. This step is the fail-closed OBSERVED-ORDER monitor of that
           # invariant: it fails the release build when the FACTUAL dispatch

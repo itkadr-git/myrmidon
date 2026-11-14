@@ -93,6 +93,47 @@ describe("extractJobs", () => {
 });
 
 // ---------------------------------------------------------------------------
+// tag CI workflow jobs route to the priority runner pool (OPE-13002)
+// ---------------------------------------------------------------------------
+
+describe("tag CI workflow jobs route to the priority runner pool", () => {
+  const yaml = fs.readFileSync(TAG_WORKFLOW, "utf8");
+
+  it("every job's runs-on prepends vars.CI_RUNNER_PRIORITY", () => {
+    // Reviewer finding on OPE-13002: the tag workflow's jobs used the shared
+    // pool labels (CI_RUNNER_MAIN/BUILD/TESTS/...) but never CI_RUNNER_PRIORITY,
+    // so the release build itself did not hold queue priority — only main-CI
+    // release runs did. Every job of a tag build is a release job: each
+    // runs-on must try the priority pool first and fall back to the shared
+    // label only when no priority runner is configured.
+    const runsOnLines = yaml
+      .split("\n")
+      .filter((l) => /^\s+runs-on:/.test(l));
+    assert.ok(runsOnLines.length >= 9, `expected at least 9 runs-on lines, got ${runsOnLines.length}`);
+    for (const line of runsOnLines) {
+      assert.ok(
+        line.includes("vars.CI_RUNNER_PRIORITY"),
+        `tag CI job missing priority pool routing: ${line.trim()}`
+      );
+    }
+  });
+
+  it("falls back to the original shared-pool label, not to an unconfigured pool", () => {
+    // Each runs-on keeps its previous fallback chain intact after
+    // CI_RUNNER_PRIORITY so behaviour is unchanged when the priority var is
+    // unset.
+    assert.match(yaml, /vars\.CI_RUNNER_PRIORITY \|\| vars\.CI_RUNNER_MAIN \|\| vars\.CI_RUNNER_TYPECHECK/);
+    assert.match(yaml, /vars\.CI_RUNNER_PRIORITY \|\| vars\.CI_RUNNER_MAIN \|\| vars\.CI_RUNNER_BUILD/);
+    assert.match(yaml, /vars\.CI_RUNNER_PRIORITY \|\| vars\.CI_RUNNER_MAIN \|\| vars\.CI_RUNNER_TESTS \|\|/);
+    assert.match(yaml, /vars\.CI_RUNNER_PRIORITY \|\| vars\.CI_RUNNER_MAIN \|\| vars\.CI_RUNNER_TESTS_OTHER/);
+    assert.match(yaml, /vars\.CI_RUNNER_PRIORITY \|\| vars\.CI_RUNNER_MAIN \|\| vars\.CI_RUNNER_TESTS_RUNNER/);
+    assert.match(yaml, /vars\.CI_RUNNER_PRIORITY \|\| vars\.CI_RUNNER_MAIN \|\| '["]ubuntu-latest["]'/);
+    assert.match(yaml, /vars\.CI_RUNNER_PRIORITY \|\| vars\.CI_RUNNER_MAIN_GO/);
+    assert.match(yaml, /vars\.CI_RUNNER_PRIORITY \|\| vars\.CI_RUNNER_LIGHT \|\| vars\.MYR_RUNNER_LIGHT/);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // buildJobs
 // ---------------------------------------------------------------------------
 
