@@ -125,13 +125,13 @@ const GOOD_GATES = [
 describe("myrmidon(1.8 RELEASE-STAGE) routes: access", () => {
   it("denies another company on every route (403)", async () => {
     const { server } = app(outsider);
-    await request(server).get(`/api/myrmidon/release-stages?companyId=${OTHER_COMPANY}`).expect(403);
+    await request(server).get(`/api/myrmidon/release-stages?companyId=${COMPANY_ID}`).expect(403);
     await request(server)
-      .put(`/api/myrmidon/release-stages/${RELEASE_ID}/gates?companyId=${OTHER_COMPANY}`)
+      .put(`/api/myrmidon/release-stages/${RELEASE_ID}/gates?companyId=${COMPANY_ID}`)
       .send({ gates: GOOD_GATES })
       .expect(403);
     await request(server)
-      .post(`/api/myrmidon/release-stages/${RELEASE_ID}/publish?companyId=${OTHER_COMPANY}`)
+      .post(`/api/myrmidon/release-stages/${RELEASE_ID}/publish?companyId=${COMPANY_ID}`)
       .send({ publicationUrl: "https://releases.example.com/1.8.0" })
       .expect(403);
   });
@@ -171,6 +171,7 @@ describe("myrmidon(1.8 RELEASE-STAGE) routes: positive permissions", () => {
     // verifiable URL and the authorship of both the signer and the publisher.
     const publishRes = await request(server)
       .post(`/api/myrmidon/release-stages/${RELEASE_ID}/publish?companyId=${COMPANY_ID}`)
+      .set("x-test-actor", "agent-rel")
       .send({ publicationUrl: "https://releases.example.com/1.8.0" })
       .expect(200);
     expect(publishRes.body.stage.published).toBe(true);
