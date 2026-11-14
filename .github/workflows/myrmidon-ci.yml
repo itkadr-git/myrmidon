@@ -439,6 +439,8 @@ jobs:
           node scripts/myrmidon/prod-runtime-exports.mjs apply --entry @myrmidon/server
 
       - name: Run affected tests
+        env:
+          PROD_BOOT_REQUIRED: "1"
         run: node scripts/myrmidon/ci/affected-tests.mjs run --plan "$RUNNER_TEMP/plan.json"
 
   tests:
