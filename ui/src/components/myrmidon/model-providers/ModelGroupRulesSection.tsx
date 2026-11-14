@@ -71,6 +71,9 @@ export function ModelGroupRulesSection({ companyId }: { companyId: string }) {
   const view: CompanyModelGroupRulesView | undefined = query.data;
   const castes = castesQuery.data?.castes ?? [];
   const groups = view?.availableGroups ?? [];
+  const catalogUnavailable = Boolean(view?.catalogUnavailable);
+  const configuredGroups = rules.map((r) => r.modelGroup).filter(Boolean);
+  const selectableGroups = Array.from(new Set([...groups, ...configuredGroups]));
   const language = i18n.language.startsWith("ru") ? "ru" : "en";
   const scopes: Array<{ key: string | null; label: string }> = [
     { key: null, label: t("area.settings-models-runtime-2.model-group-rules.companyScope") },
@@ -137,57 +140,59 @@ export function ModelGroupRulesSection({ companyId }: { companyId: string }) {
           {t("area.settings-models-runtime-2.model-group-rules.description")}
         </p>
       </div>
-      {groups.length === 0 ? (
+      {catalogUnavailable ? (
         <p className="flex items-center gap-2 text-sm text-muted-foreground" role="status">
           <AlertTriangle className="h-4 w-4" aria-hidden="true" />
           {t("area.settings-models-runtime-2.model-group-rules.catalogUnavailable")}
         </p>
-      ) : (
-        <div className="overflow-x-auto rounded-md border border-border">
-          <table className="w-full text-sm">
-            <thead className="bg-muted/40 text-left">
-              <tr>
-                <th className="p-2 font-medium">{t("area.settings-models-runtime-2.model-group-rules.scope")}</th>
-                {RUN_STEP_CLASSES.map((stepClass) => (
-                  <th key={stepClass} className="p-2 font-medium">
-                    {t(`area.settings-models-runtime-2.model-group-rules.steps.${stepClass}`)}
-                  </th>
-                ))}
-              </tr>
-            </thead>
-            <tbody>
-              {scopes.map((scope) => (
-                <tr key={scope.key ?? "company"} className="border-t border-border">
-                  <th className="p-2 text-left font-medium">{scope.label}</th>
-                  {RUN_STEP_CLASSES.map((stepClass) => {
-                    const selected = rules.find(
-                      (rule) => rule.casteKey === scope.key && rule.stepClass === stepClass,
-                    )?.modelGroup ?? "";
-                    return (
-                      <td key={stepClass} className="p-2">
-                        <select
-                          className="w-full min-w-32 rounded-md border border-input bg-background px-2 py-1.5 text-sm"
-                          aria-label={`${scope.label}: ${t(`area.settings-models-runtime-2.model-group-rules.steps.${stepClass}`)}`}
-                          value={selected}
-                          onChange={(event) => update(scope.key, stepClass, event.target.value)}
-                          data-testid={`myrmidon-model-group-rule-${scope.key ?? "company"}-${stepClass}`}
-                        >
-                          <option value="">{t("area.settings-models-runtime-2.model-group-rules.inherit")}</option>
-                          {groups.map((group) => (
-                            <option key={group} value={group}>
-                              {group.slice(0, MODEL_GROUP_RULE_MAX_GROUP_CHARS)}
-                            </option>
-                          ))}
-                        </select>
-                      </td>
-                    );
-                  })}
-                </tr>
+      ) : null}
+      <div className="overflow-x-auto rounded-md border border-border">
+        <table className="w-full text-sm">
+          <thead className="bg-muted/40 text-left">
+            <tr>
+              <th className="p-2 font-medium">{t("area.settings-models-runtime-2.model-group-rules.scope")}</th>
+              {RUN_STEP_CLASSES.map((stepClass) => (
+                <th key={stepClass} className="p-2 font-medium">
+                  {t(`area.settings-models-runtime-2.model-group-rules.steps.${stepClass}`)}
+                </th>
               ))}
-            </tbody>
-          </table>
-        </div>
-      )}
+            </tr>
+          </thead>
+          <tbody>
+            {scopes.map((scope) => (
+              <tr key={scope.key ?? "company"} className="border-t border-border">
+                <th className="p-2 text-left font-medium">{scope.label}</th>
+                {RUN_STEP_CLASSES.map((stepClass) => {
+                  const selected = rules.find(
+                    (rule) => rule.casteKey === scope.key && rule.stepClass === stepClass,
+                  )?.modelGroup ?? "";
+                  const cellGroups = selected && !selectableGroups.includes(selected)
+                    ? [selected, ...selectableGroups]
+                    : selectableGroups;
+                  return (
+                    <td key={stepClass} className="p-2">
+                      <select
+                        className="w-full min-w-32 rounded-md border border-input bg-background px-2 py-1.5 text-sm"
+                        aria-label={`${scope.label}: ${t(`area.settings-models-runtime-2.model-group-rules.steps.${stepClass}`)}`}
+                        value={selected}
+                        onChange={(event) => update(scope.key, stepClass, event.target.value)}
+                        data-testid={`myrmidon-model-group-rule-${scope.key ?? "company"}-${stepClass}`}
+                      >
+                        <option value="">{t("area.settings-models-runtime-2.model-group-rules.inherit")}</option>
+                        {cellGroups.map((group) => (
+                          <option key={group} value={group}>
+                            {group.slice(0, MODEL_GROUP_RULE_MAX_GROUP_CHARS)}
+                          </option>
+                        ))}
+                      </select>
+                    </td>
+                  );
+                })}
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
       {error ? (
         <p className="text-sm text-destructive" role="alert" data-testid="myrmidon-model-group-rules-error">
           {error}

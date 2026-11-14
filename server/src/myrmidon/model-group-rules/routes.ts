@@ -60,6 +60,7 @@ export function modelGroupRulesRoutes(db: Db, deps: ModelGroupRulesRoutesDeps): 
     assertCompanyAccess(req, companyId);
     const rows = await store.list(companyId);
     let availableGroups: string[] = [];
+    let catalogUnavailable = false;
     try {
       availableGroups = await deps.catalog.listGroups(companyId);
     } catch {
@@ -67,9 +68,15 @@ export function modelGroupRulesRoutes(db: Db, deps: ModelGroupRulesRoutesDeps): 
       // stored rules when the gateway is down; the editor marks validation
       // unavailable instead of pretending the catalog is empty.
       availableGroups = [];
+      catalogUnavailable = true;
     }
     const rules: CompanyModelGroupRuleView[] = rows.map(ruleViewOf);
-    const body: CompanyModelGroupRulesView = { companyId, rules, availableGroups };
+    const body: CompanyModelGroupRulesView = {
+      companyId,
+      rules,
+      availableGroups,
+      catalogUnavailable,
+    };
     res.json(body);
   });
 
@@ -93,18 +100,35 @@ export function modelGroupRulesRoutes(db: Db, deps: ModelGroupRulesRoutesDeps): 
         }
         scopeKeys.add(key);
       }
-      const availableGroups = await deps.catalog.listGroups(companyId).catch(() => {
-        throw badRequest(
-          "the model group catalog is unavailable; save refused",
-          { code: "model_group_catalog_unavailable" },
-        );
-      });
-      const unknown = unknownModelGroupsInRules(rules, availableGroups);
-      if (unknown.length > 0) {
-        throw badRequest(
-          `unknown model groups: ${unknown.join(", ")}`,
-          { code: "model_group_unknown" },
-        );
+      let availableGroups: string[] = [];
+      let catalogUnavailable = false;
+      try {
+        availableGroups = await deps.catalog.listGroups(companyId);
+      } catch {
+        catalogUnavailable = true;
+      }
+      if (catalogUnavailable) {
+        // When catalog is down, allow retaining/clearing already stored rules,
+        // but refuse introducing new unvalidated groups.
+        const currentRules = await store.list(companyId);
+        const retainedGroups = new Set(currentRules.map((r) => r.modelGroup));
+        const unknown = rules
+          .map((r) => r.modelGroup)
+          .filter((g) => !retainedGroups.has(g));
+        if (unknown.length > 0) {
+          throw badRequest(
+            "the model group catalog is unavailable; cannot validate new model groups",
+            { code: "model_group_catalog_unavailable" },
+          );
+        }
+      } else {
+        const unknown = unknownModelGroupsInRules(rules, availableGroups);
+        if (unknown.length > 0) {
+          throw badRequest(
+            `unknown model groups: ${unknown.join(", ")}`,
+            { code: "model_group_unknown" },
+          );
+        }
       }
       const casteKeys: string[] = [
         ...new Set(
@@ -136,7 +160,12 @@ export function modelGroupRulesRoutes(db: Db, deps: ModelGroupRulesRoutesDeps): 
         details: { count: rows.length },
       });
       const views: CompanyModelGroupRuleView[] = rows.map(ruleViewOf);
-      const body: CompanyModelGroupRulesView = { companyId, rules: views, availableGroups };
+      const body: CompanyModelGroupRulesView = {
+        companyId,
+        rules: views,
+        availableGroups,
+        catalogUnavailable,
+      };
       res.json(body);
     },
   );

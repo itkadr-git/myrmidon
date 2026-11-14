@@ -170,16 +170,26 @@ describe("myrmidon(1.8 MODEL-BY-STEP, OPE-12997) model group rules editor", () =
     expect(container.textContent).not.toContain("sk-secret-value-12345");
   });
 
-  it("shows the catalog-unavailable notice when no groups exist", async () => {
-    mockedGet.mockResolvedValue(getResponse({ availableGroups: [] }));
+  it("shows the catalog-unavailable notice when catalog is unavailable while preserving stored rules", async () => {
+    mockedGet.mockResolvedValue(
+      getResponse({
+        availableGroups: [],
+        catalogUnavailable: true,
+        rules: [
+          { stepClass: "review", modelGroup: "stored-strong", casteKey: null, updatedAt: "2026-01-01T00:00:00.000Z" },
+        ],
+      }),
+    );
     render();
     await settle();
 
     expect(container.textContent).toContain("The model group catalog is unavailable");
+    const select = selectFor("company", "review");
+    expect(select.value).toBe("stored-strong");
     const button = container.querySelector<HTMLButtonElement>(
       '[data-testid="myrmidon-model-group-rules-save"]',
     );
-    expect(button?.disabled).toBe(true);
+    expect(button?.disabled).toBe(false);
   });
 
   it("renders caste rows from the company castes", async () => {

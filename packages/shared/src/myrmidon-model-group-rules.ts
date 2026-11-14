@@ -102,6 +102,8 @@ export interface CompanyModelGroupRulesView {
   rules: CompanyModelGroupRuleView[];
   /** The group names the gateway catalog currently offers (validation basis). */
   availableGroups: string[];
+  /** True when the model group catalog could not be reached. */
+  catalogUnavailable?: boolean;
 }
 
 /** Action of the company activity log entry a save writes. */

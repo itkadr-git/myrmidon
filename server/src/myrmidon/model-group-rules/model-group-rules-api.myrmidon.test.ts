@@ -181,6 +181,39 @@ describe("myrmidon(1.8 MODEL-BY-STEP) routes: validation", () => {
     expect(get.body.companyId).toBe(COMPANY_ID);
     expect(get.body.availableGroups).toEqual(["strong", "economy"]);
     expect(get.body.rules).toEqual([]);
+    expect(get.body.catalogUnavailable).toBe(false);
+  });
+
+  it("answers GET with stored rules and catalogUnavailable=true when gateway is down", async () => {
+    const { server, saved } = app(member, new Error("gateway unreachable"));
+    saved.push({
+      casteKey: null,
+      stepClass: "review",
+      modelGroup: "existing-strong",
+      updatedAt: new Date().toISOString(),
+    });
+    const get = await request(server).get(base).expect(200);
+    expect(get.body.companyId).toBe(COMPANY_ID);
+    expect(get.body.availableGroups).toEqual([]);
+    expect(get.body.catalogUnavailable).toBe(true);
+    expect(get.body.rules).toHaveLength(1);
+    expect(get.body.rules[0].modelGroup).toBe("existing-strong");
+  });
+
+  it("allows PUT to retain or clear existing rules when catalog is unavailable", async () => {
+    const { server, saved } = app(member, new Error("gateway unreachable"));
+    saved.push({
+      casteKey: null,
+      stepClass: "review",
+      modelGroup: "existing-strong",
+      updatedAt: new Date().toISOString(),
+    });
+    const put = await request(server)
+      .put(base)
+      .send({ rules: [] })
+      .expect(200);
+    expect(put.body.rules).toHaveLength(0);
+    expect(put.body.catalogUnavailable).toBe(true);
   });
 
   it("acceptance criteria: valid rule saved by owner returns from GET for company, can be overridden by caste, without affecting other companies", async () => {
