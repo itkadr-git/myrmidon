@@ -4,6 +4,7 @@ import { Loader2 } from "lucide-react";
 import { ApiError } from "@/api/client";
 import { Button } from "@/components/ui/button";
 import { i18n, useTranslation } from "@/i18n";
+import { formatDurationMs } from "@/lib/utils";
 import { CollapsibleSection, DraftInput, Field, ToggleField } from "../agent-config-primitives";
 import {
   APPLY_POLL_INTERVAL_MS,
@@ -116,8 +117,9 @@ function statusText(status: BotContainerStatus | null, statusError: string | nul
   const timestamps = runtime?.lastStoppedAt || runtime?.lastStartedAt
     ? `; last stopped ${runtime.lastStoppedAt ? new Date(runtime.lastStoppedAt).toLocaleString() : "never"}; last started ${runtime.lastStartedAt ? new Date(runtime.lastStartedAt).toLocaleString() : "never"}`
     : "";
+  const coldStart = runtime?.coldStartDurationMs ? `; cold start took ${formatDurationMs(runtime.coldStartDurationMs)}` : "";
   const label = runtime?.idleStopped ? "Stopped on idle (starts before the next run)" : stateLabel(status.container.state);
-  return `${label}${image}${timestamps}`;
+  return `${label}${image}${timestamps}${coldStart}`;
 }
 
 /** One line for the rollout category of the saved card, or null when the server did not say. */
@@ -317,6 +319,7 @@ export function AgentCardContainerFieldsView({
                 })}
                 {status?.idleStopRuntime?.lastStoppedAt && t("area.settings-agent-card.agent-card-container-fields.idleStopLastStopped", { at: new Date(status.idleStopRuntime.lastStoppedAt).toLocaleString() })}
                 {status?.idleStopRuntime?.lastStartedAt && t("area.settings-agent-card.agent-card-container-fields.idleStopLastStarted", { at: new Date(status.idleStopRuntime.lastStartedAt).toLocaleString() })}
+                {status?.idleStopRuntime?.coldStartDurationMs != null && t("area.settings-agent-card.agent-card-container-fields.idleStopColdStart", { duration: formatDurationMs(status.idleStopRuntime.coldStartDurationMs) })}
               </div>
             </div>
 
