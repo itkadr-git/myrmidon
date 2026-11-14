@@ -633,7 +633,7 @@ const support = await getEmbeddedPostgresTestSupport();
       text: "@life ping",
       endpointAgentId: groupedInfraId,
     });
-    expect(lifeMention).toEqual({ kind: "resolved", addressee: { agentId: groupedLifeId, displayName: "life-bot" } });
+    expect(lifeMention).toEqual({ kind: "resolved", addressee: { agentId: groupedLifeId, displayName: "life" } });
     // A computed alias is mentionable as well …
     const hostMention = await resolveBridgeAddressee(db, {
       companyId: groupedCompanyId,

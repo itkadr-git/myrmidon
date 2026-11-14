@@ -33,6 +33,22 @@ interface AgentRow {
  */
 function fakeDb(rowsByCompany: Record<string, AgentRow[]>) {
   const captured: { fields?: Record<string, unknown>; where?: SQL } = {};
+  const query = (condition: SQL) => {
+    captured.where = condition;
+    const rendered = new PgDialect().sqlToQuery(condition);
+    const companyId = rendered.params[0];
+    const rows =
+      (typeof companyId === "string" && rowsByCompany[companyId]) ?? [];
+    const promise = Promise.resolve(rows);
+    return {
+      orderBy() {
+        return promise;
+      },
+      then: promise.then.bind(promise),
+      catch: promise.catch.bind(promise),
+      finally: promise.finally.bind(promise),
+    };
+  };
   const chain = {
     select(fields: Record<string, unknown>) {
       captured.fields = fields;
@@ -42,12 +58,7 @@ function fakeDb(rowsByCompany: Record<string, AgentRow[]>) {
       return chain;
     },
     where(condition: SQL) {
-      captured.where = condition;
-      const rendered = new PgDialect().sqlToQuery(condition);
-      const companyId = rendered.params[0];
-      const rows =
-        (typeof companyId === "string" && rowsByCompany[companyId]) ?? [];
-      return Promise.resolve(rows);
+      return query(condition);
     },
   };
   return { db: chain as unknown as Db, captured };
