@@ -4815,7 +4815,7 @@ export function recoveryService(
         ...(input.issue.assigneeAgentId
           ? [eq(heartbeatRuns.agentId, input.issue.assigneeAgentId)]
           : []),
-        inArray(heartbeatRuns.status, [...ACTIVE_RUN_STATUSES]),
+        inArray(heartbeatRuns.status, [...EXECUTION_PATH_HEARTBEAT_RUN_STATUSES]),
         sql`${heartbeatRuns.contextSnapshot} ->> 'issueId' = ${input.issue.id}`,
       ))
       .limit(1);
