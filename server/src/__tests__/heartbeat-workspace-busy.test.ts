@@ -389,10 +389,10 @@ describeEmbeddedPostgres("shared-workspace run serialization", () => {
     expect(finishedRun?.status).toBe("succeeded");
     expect(executedRunIds).toContain(run!.id);
     expect(executedInputs.get(run!.id)?.context.paperclipTaskMarkdown).toContain(
-      `shared workspace is concurrently held by run ${fixture.holderRunId}`,
+      `This run is sharing the project workspace with run ${fixture.holderRunId}`,
     );
     expect(executedInputs.get(run!.id)?.context.paperclipTaskMarkdown).toContain(
-      "expect concurrent mutations, coordinate via commits",
+      "Do not treat it as a task-specific checkout; use the task's isolated workspace before editing code.",
     );
   });
 
@@ -479,7 +479,10 @@ describeEmbeddedPostgres("shared-workspace run serialization", () => {
     expect(finishedRun?.errorCode).not.toBe(WORKSPACE_BUSY_ERROR_CODE);
     expect(executedRunIds).toContain(run!.id);
     expect((finishedRun?.contextSnapshot as Record<string, unknown>)?.paperclipTaskMarkdown).toContain(
-      `shared workspace is concurrently held by run ${fixture.holderRunId}`,
+      `This run is sharing the project workspace with run ${fixture.holderRunId}`,
+    );
+    expect((finishedRun?.contextSnapshot as Record<string, unknown>)?.paperclipTaskMarkdown).toContain(
+      "Do not treat it as a task-specific checkout; use the task's isolated workspace before editing code.",
     );
     const retryRuns = await db
       .select({ id: heartbeatRuns.id })
