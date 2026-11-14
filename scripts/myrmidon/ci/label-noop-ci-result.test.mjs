@@ -1,31 +1,17 @@
 // scripts/myrmidon/ci/label-noop-ci-result.test.mjs
-// OPE-12841: a `labeled` run for any label other than `full-ci` must not
-// publish a check named `CI result` on the PR head. Before the fix, job
-// `ci-result` kept its name and skipped cleanly on the label gate: GitHub
-// still created a check run named `CI result` with conclusion `skipped`, and
-// the branch ruleset reads a skipped required check as satisfied — PR #2965
-// auto-merged on head c2a00a6e whose only real run was cancelled, with no
-// tests executed.
-//
-// Review round 1 (adm-dev-review-8): a test must prove the BEHAVIOUR, not
-// the workflow strings. label-noop-ci-result-sim.py is an execution engine
-// for the job graph of myrmidon-ci.yml: it parses the workflow YAML,
-// evaluates each job's real `if:`/`name:` expressions against concrete
-// event contexts (a `labeled` run with `review-approved` on a head whose
-// real run is cancelled / still running, a red plan, a green merge-queue
-// candidate), applies GitHub's needs/skip/check-run semantics, and reads
-// the result the way the branch ruleset does — the latest completed
-// `CI result` on the head, where BOTH `success` and `skipped` satisfy the
-// required check (the defect's mechanism). The fixed workflow must keep
-// every review-approved scenario blocked/pending, and the teeth check must
-// reproduce the original defect (`satisfied`) when ci-result is mutated
-// back to the static required name — proving the engine actually executes
-// the workflow rather than echoing expected verdicts.
-//
-// The `!cancelled()` gate deliberately stays: re-gating on
-// `needs.plan.result == 'success'` would make the job skip on a real run
-// with a red plan and publish a *satisfying* skipped required check — the
-// same defect class; the red-plan scenario proves it stays blocked.
+// OPE-12841 + CI-LABEL-NOOP-KEEPS-RESULT.
+// OPE-12841: a run for a label other than `full-ci` must never leave a
+// passing (skipped) required `CI result` on a head without a green real run
+// (PR #2965 auto-merged on a cancelled head). First fix: a renamed job in the
+// noop run. That run became the newest run of the workflow on the head, so the
+// required `CI result` of the real green run was read as "expected" and green
+// PRs (#3147, #3088, #3095) could not be merged.
+// Now: myrmidon-ci.yml has no `labeled` trigger (no noop run exists, the last
+// real verdict stays), `full-ci` is handled by myrmidon-ci-full-label.yml,
+// which cancels the running run and re-runs it, and `plan` reads PR labels
+// live. label-noop-ci-result-sim.py executes the trigger match and the
+// ruleset reading; the tests below add source tripwires on the pieces the
+// simulator cannot execute.
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
@@ -47,56 +33,35 @@ function runSimulator(extraArgs = []) {
   });
 }
 
-test('labeled review-approved on a head without a green real run never satisfies the required CI result gate (OPE-12841)', () => {
+test('a label other than full-ci creates no run of the main workflow and keeps the last real verdict (CI-LABEL-NOOP-KEEPS-RESULT, OPE-12841)', () => {
   const output = runSimulator();
-  assert.match(output, /scenario 0: pull_request\/labeled\/review-approved.*ruleset=blocked/);
-  assert.match(output, /scenario 1: pull_request\/labeled\/review-approved.*ruleset=pending/);
-  assert.match(output, /scenario 2: pull_request\/labeled\/review-approved.*ruleset=blocked/);
+  assert.match(output, /scenario 0: pull_request\/labeled\/review-approved real_run=success ruleset=satisfied/);
+  assert.match(output, /scenario 3: pull_request\/labeled\/review-approved real_run=cancelled ruleset=blocked/);
+  assert.match(output, /scenario 4: pull_request\/labeled\/review-approved real_run=in-progress ruleset=pending/);
+  assert.match(output, /scenario 5: pull_request\/labeled\/review-approved real_run=failure ruleset=blocked/);
   assert.match(output, /all scenarios pass/);
 });
 
-test('teeth: the simulator reproduces the defect on the pre-fix workflow shape', () => {
+test('full-ci is handled by the full-label workflow only', () => {
   const output = runSimulator();
-  assert.match(
-    output,
-    /teeth: pre-fix shape.*ruleset satisfied; the defect must reproduce as 'satisfied'/,
-  );
+  assert.match(output, /scenario 6: full-ci handled only by the full-label workflow/);
+  assert.match(output, /scenario 7: full-label workflow has another name/);
 });
 
-test('the executed graph publishes no check named CI result on a label-noop run', () => {
+test('teeth: with `labeled` back in the trigger the simulator reproduces the defect', () => {
   const output = runSimulator();
-  // Only the numbered scenario lines, not the teeth line (which deliberately
-  // reintroduces the required name to prove the engine has teeth).
-  const lines = output
-    .split('\n')
-    .filter((line) => line.startsWith('[ok] scenario') && line.includes('review-approved'));
-  assert.ok(lines.length >= 3, 'three review-approved scenarios ran');
-  for (const line of lines) {
-    assert.doesNotMatch(line, /\('CI result',/, 'no required-name check published');
-    assert.match(line, /CI result \(label noop\)/, 'the noop run publishes the renamed check');
-  }
+  assert.match(output, /teeth: .*the defect must reproduce as 'expected'/);
 });
 
-test('the red-plan real run publishes a failing CI result, never a satisfying skipped check', () => {
-  const output = runSimulator();
-  assert.match(
-    output,
-    /scenario 3: push\/-\/- tier=full plan=failure.*published=.*\('CI result', 'failure'\).*ruleset=blocked/,
-  );
-});
+// ---- workflow-source tripwires ----
 
-// ---- workflow-source tripwires kept from round 1 (cheap regression guards) ----
+const FULL_WORKFLOW = path.join(HERE, '../../../.github/workflows/myrmidon-ci-full-label.yml');
 
-// The label-noop condition used by the concurrency group, the plan gate and
-// the ci-result gate: true when the run is a REAL run (push, merge_group,
-// dispatch, or a `labeled` event carrying exactly the `full-ci` label).
-const REAL_RUN = "(github.event_name != 'pull_request' || github.event.action != 'labeled' || github.event.label.name == 'full-ci')";
-
-async function ciResultJobBlock() {
+async function jobBlock(name) {
   const content = await readFile(WORKFLOW, 'utf8');
   const lines = content.split('\n');
-  const start = lines.findIndex((line) => /^  ci-result:\s*$/.test(line));
-  assert.ok(start >= 0, 'ci-result job found in myrmidon-ci.yml');
+  const start = lines.findIndex((line) => line === `  ${name}:`);
+  assert.ok(start >= 0, `${name} job found in myrmidon-ci.yml`);
   const block = [];
   for (const line of lines.slice(start + 1)) {
     if (/^  [a-z][a-z0-9-]*:\s*$/.test(line)) break;
@@ -105,42 +70,36 @@ async function ciResultJobBlock() {
   return block;
 }
 
-test('ci-result keeps the !cancelled() gate over the label condition', async () => {
-  const block = await ciResultJobBlock();
+test('main workflow does not list `labeled` among its pull_request types and has no label-noop machinery', async () => {
+  const content = await readFile(WORKFLOW, 'utf8');
+  assert.match(content, /^    types: \[opened, synchronize, reopened\]$/m);
+  assert.doesNotMatch(content, /'-label-noop'|github\.event\.label\.name/);
+});
+
+test('ci-result keeps the static required name and the !cancelled() gate (no needs.plan.result re-gate)', async () => {
+  const block = await jobBlock('ci-result');
+  assert.ok(block.some((line) => line === '    name: CI result'), 'static required name');
   const ifLine = block.find((line) => /^    if: /.test(line));
-  assert.ok(ifLine, 'ci-result has an if condition');
-  const expr = ifLine.replace(/^    if: \$\{\{ /, '').replace(/ \}\}\s*$/, '');
-  assert.ok(expr.startsWith('!cancelled() && '), 'a red plan must still fail the summary (no needs.plan.result re-gate)');
-  assert.doesNotMatch(expr, /needs\.plan\.result == 'success'/, 're-gating on plan would publish a satisfying skipped check on a red plan');
-  assert.ok(expr.includes(REAL_RUN), 'the label condition stays in the gate');
+  assert.equal(ifLine, '    if: ${{ !cancelled() }}');
+  assert.doesNotMatch(ifLine, /needs\.plan\.result/, 'a red plan must still fail the summary, not skip');
 });
 
-test('labeled full-ci run still publishes the required name (regression guard)', async () => {
-  const block = await ciResultJobBlock();
-  const nameLine = block.find((line) => /^    name: /.test(line));
-  assert.match(nameLine, /&& 'CI result' \|\|/, 'real runs keep the required check name');
-});
-
-test('plan keeps the label-noop gate so non-full-ci labeled runs skip the lanes', async () => {
+test('plan reads the PR labels live so a re-run (old payload) goes to the full tier', async () => {
   const content = await readFile(WORKFLOW, 'utf8');
-  const lines = content.split('\n');
-  const start = lines.findIndex((line) => /^  plan:\s*$/.test(line));
-  assert.ok(start >= 0, 'plan job found');
-  const ifLine = lines.slice(start, start + 5).find((line) => /^    if: /.test(line));
-  assert.ok(ifLine, 'plan has an if condition');
-  assert.ok(ifLine.includes(REAL_RUN), 'plan skips on non-full-ci labeled events');
+  assert.match(content, /issues\/\$PR_NUMBER\/labels/);
+  assert.match(content, /grep -qx 'full-ci'/);
+  // attempt > 1 with an API failure must fail the step, not fall back to the stale payload
+  assert.match(content, /GITHUB_RUN_ATTEMPT:-1\}" -gt 1 \]; then[\s\S]{0,400}exit 1/);
 });
 
-test('workflow concurrency group keeps non-full-ci labeled runs out of the real run group', async () => {
-  const content = await readFile(WORKFLOW, 'utf8');
-  assert.match(
-    content,
-    /github\.event\.action != 'labeled' \|\| github\.event\.label\.name == 'full-ci'.*&& '' \|\| '-label-noop'/,
-    'non-full-ci labeled events get the -label-noop concurrency group',
-  );
-  assert.match(
-    content,
-    /cancel-in-progress: \$\{\{ github\.event_name == 'pull_request' && github\.run_attempt == 1 && \(github\.event\.action != 'labeled' \|\| github\.event\.label\.name == 'full-ci'\) \}\}/,
-    'label-noop runs do not cancel the real head run',
-  );
+test('full-label workflow: labeled only, job gated on full-ci, can re-run runs, never cancelled itself', async () => {
+  const content = await readFile(FULL_WORKFLOW, 'utf8');
+  assert.match(content, /types: \[labeled\]/);
+  assert.match(content, /if: \$\{\{ github\.event\.label\.name == 'full-ci' \}\}/);
+  assert.match(content, /actions: write/);
+  assert.match(content, /cancel-in-progress: false/);
+  assert.match(content, /rerun-full-ci\.mjs/);
+  // the script runs with actions: write: it comes from the base commit, not the PR merge ref
+  assert.match(content, /ref: \$\{\{ github\.event\.pull_request\.base\.sha \}\}/);
+  assert.match(content, /pull-requests: read/);
 });

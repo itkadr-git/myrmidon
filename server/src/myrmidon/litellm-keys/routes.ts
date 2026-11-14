@@ -8,6 +8,14 @@
 //   POST /api/myrmidon/companies/:companyId/litellm/keys/:agentId   (board only)
 //   POST /api/myrmidon/companies/:companyId/litellm/keys/:agentId/rotate (board only)
 //
+// myrmidon(OPE-12930 KEY-TTL): a create or a rotation carries an optional
+// `ttlMs` body field, at most 24 h (default 24 h). The resulting key has a
+// verifiable `expiresAt` on BOTH halves: the gateway key (`expires` on
+// /key/generate and /key/update) and the board secret metadata
+// (`company_secrets.expires_at`), and the store refuses to resolve the secret
+// past that instant. A new run therefore gets a fresh value by rotating the
+// key, with no operator action.
+//
 // Reads answer the state of a key — its store name and the sha256 of its value,
 // never the value. A create or a rotation is board-only: it mints a credential
 // and calls the gateway. When the instance has no gateway admin key configured
@@ -260,7 +268,8 @@ export function litellmKeysRoutes(db: Db, input: LitellmKeysRoutesDeps) {
     const models = Array.isArray(req.body?.models)
       ? (req.body.models as unknown[]).map(String)
       : undefined;
-    const created = await createAgentGatewayKey(input.deps, { companyId, agentId, models });
+    const ttlMs = typeof req.body?.ttlMs === "number" ? req.body.ttlMs : undefined;
+    const created = await createAgentGatewayKey(input.deps, { companyId, agentId, models, ttlMs });
     const actor = getActorInfo(req);
     await auditService.record({
       companyId, category: "keys", action: "litellm_key_created", entityId: agentId,
@@ -281,7 +290,8 @@ export function litellmKeysRoutes(db: Db, input: LitellmKeysRoutesDeps) {
       disabled(res);
       return;
     }
-    const rotated = await rotateAgentGatewayKey(input.deps, { companyId, agentId });
+    const ttlMs = typeof req.body?.ttlMs === "number" ? req.body.ttlMs : undefined;
+    const rotated = await rotateAgentGatewayKey(input.deps, { companyId, agentId, ttlMs });
     const actor = getActorInfo(req);
     await auditService.record({
       companyId,

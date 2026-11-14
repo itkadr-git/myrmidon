@@ -8,57 +8,49 @@
 # images) and judged "годно". publish-github-release.sh never moves the
 # marker; this script is the only way to move it.
 #
-#   promote-latest.sh --tag myr-vX.Y.Z
-#       [--health-url <url>] [--health-token-file <file>]
-#       [--skip-health-check]
+# Before moving Latest, run verify-on-prod.mjs and pass its JSON report:
+#   --verify-on-prod-report <report.json>   (REQUIRED)
 #
-# Refuses (exit 1, nothing changed) unless:
-#   1. the tag is a FINAL release tag myr-vX.Y.Z (a release candidate
-#      myr-vX.Y.Z-rc.N can never be Latest — cut the final tag of the same
-#      commit first);
-#   2. the release of the tag exists and is not a pre-release;
-#   3. the release commit is reachable from origin/main (the marker never
-#      points at code that never went through a PR);
-#   4. our production board's /api/health reports EXACTLY this version —
-#      a board on any other version (an older one, or a newer candidate)
-#      refuses the promotion. This is the "the release is currently working
-#      on our production and passed its smoke" check: the deploy itself only
-#      completes when health and the post-deploy smoke (a bot re-apply)
-#      passed, so a healthy board at this version is that proof.
-#      --health-url/--health-token-file name the production board
-#      (defaults: MYRMIDON_PROD_HEALTH_URL / MYRMIDON_PROD_HEALTH_TOKEN_FILE,
-#      else HEALTH_URL / HEALTH_TOKEN_FILE). In an `authenticated`
-#      deployment /api/health hides the version from anonymous callers —
-#      pass the board API key file. --skip-health-check is the documented
-#      escape hatch for a rehearsed promotion (staging, a drill); the skip
-#      is logged loudly.
-#
-# Idempotent: a release that is already Latest is reported and left alone.
-# Uses only GITHUB_TOKEN (contents: write). Read-only towards the board.
+# The report binds the production version to every task carrying the release
+# label. Latest cannot move on a health check alone: every release task must
+# be verified there first. --skip-health-check is a rehearsal-only escape
+# hatch for the health poll; it never bypasses the report requirement.
 
 set -euo pipefail
 
 die() { printf '[myrmidon-promote-latest] ERROR: %s\n' "$*" >&2; exit 1; }
 log() { printf '[myrmidon-promote-latest] %s\n' "$*" >&2; }
 
-tag="" health_url="" health_token_file="" skip_health=0
+tag="" health_url="" health_token_file="" verify_report="" skip_health=0
 while (($#)); do
   case "$1" in
     --tag) tag="$2"; shift 2 ;;
     --health-url) health_url="$2"; shift 2 ;;
     --health-token-file) health_token_file="$2"; shift 2 ;;
+    --verify-on-prod-report) verify_report="$2"; shift 2 ;;
     --skip-health-check) skip_health=1; shift ;;
-    -h|--help) sed -n '2,38p' "$0"; exit 0 ;;
-    *) die "unknown argument: $1" ;;
+    -h|--help) sed -n '2,19p' "$0"; exit 0 ;;
   esac
 done
 
 command -v gh >/dev/null 2>&1 || die "gh is not installed"
 command -v jq >/dev/null 2>&1 || die "jq is not installed"
 
-# 1. final tags only: an rc is the trial run, never Latest.
-[[ "$tag" =~ ^myr-v[0-9]+\.[0-9]+\.[0-9]+$ ]] \
-  || die "only a final release tag myr-vX.Y.Z can be promoted to Latest (got: $tag); a release candidate myr-vX.Y.Z-rc.N is the trial run — cut the final tag of the same commit first"
+if [[ ! "$tag" =~ ^myr-v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+  die "only a final release tag myr-vX.Y.Z can be promoted to Latest (got: $tag); a release candidate myr-vX.Y.Z-rc.N is the trial run — cut the final tag of the same commit first"
+fi
+
+if [[ -n "$verify_report" ]]; then
+  [[ -f "$verify_report" ]] || die "VERIFY-ON-PROD report not found: $verify_report"
+  jq -e --arg version "${tag#myr-v}" \
+    '.verified == true and .version == $version and ((.tasks // []) | length > 0) and all(.tasks[]; .verified == true)' \
+    "$verify_report" >/dev/null \
+    || die "VERIFY-ON-PROD report is not a passing report for ${tag#myr-v} with every release task verified"
+  log "VERIFY-ON-PROD report accepted: $verify_report"
+else
+  die "--verify-on-prod-report is required: Latest cannot move without per-task production verification"
+fi
+
 version="${tag#myr-v}"
 repo="${GITHUB_REPOSITORY:-itkadr-git/myrmidon}"
 

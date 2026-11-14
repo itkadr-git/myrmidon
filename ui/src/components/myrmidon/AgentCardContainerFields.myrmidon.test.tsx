@@ -330,6 +330,24 @@ describe("myrmidon(W2b) container card section", () => {
   it("describes the container status", () => {
     renderView();
     expect(text("status")).toBe("Running (bot-image:1)");
+  });
+
+  it("shows the computed cold-start duration when the server reports one", () => {
+    renderView({
+      status: {
+        ...STATUS,
+        idleStopRuntime: { idleStopped: false, lastStoppedAt: "2026-10-20T02:00:00.000Z", lastStartedAt: "2026-10-20T02:01:35.500Z", coldStartDurationMs: 95_500 },
+      },
+    });
+    expect(container.querySelector('[data-testid="myrmidon-bot-idle-stop-runtime"]')?.textContent).toContain("cold start took 1m 36s");
+  });
+
+  it("shows no cold-start duration when the server reports none", () => {
+    renderView({ status: { ...STATUS, idleStopRuntime: { idleStopped: true, lastStoppedAt: null, lastStartedAt: null, coldStartDurationMs: null } } });
+    expect(container.querySelector('[data-testid="myrmidon-bot-idle-stop-runtime"]')?.textContent).not.toContain("cold start");
+  });
+
+  it("describes every container state", () => {
     renderView({ status: { ...STATUS, container: { state: "missing", image: null } } });
     expect(text("status")).toBe("Not created yet");
     renderView({ status: { ...STATUS, container: { state: "stopped", image: "bot-image:1" } } });

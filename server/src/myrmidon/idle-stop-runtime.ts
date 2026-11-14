@@ -5,6 +5,9 @@ export interface IdleStopRuntime {
   idleStopped: boolean;
   lastStoppedAt: Date | null;
   lastStartedAt: Date | null;
+  /** myrmidon(1.8 HIBERNATE): lastStartedAt − lastStoppedAt in whole ms, null when either
+   *  time is missing or the start is not after the stop (no duration invented). */
+  coldStartDurationMs: number | null;
 }
 
 function dockerTime(value: unknown): Date | null {
@@ -21,9 +24,15 @@ function dockerTime(value: unknown): Date | null {
  */
 export function idleStopRuntimeFromStatus(status: BotContainerStatus): IdleStopRuntime {
   const state = (status.inspect as { State?: { StartedAt?: unknown; FinishedAt?: unknown } } | undefined)?.State;
+  const lastStoppedAt = dockerTime(state?.FinishedAt);
+  const lastStartedAt = dockerTime(state?.StartedAt);
   return {
     idleStopped: status.idleStopped === true,
-    lastStoppedAt: dockerTime(state?.FinishedAt),
-    lastStartedAt: dockerTime(state?.StartedAt),
+    lastStoppedAt,
+    lastStartedAt,
+    coldStartDurationMs:
+      lastStoppedAt && lastStartedAt && lastStartedAt.getTime() > lastStoppedAt.getTime()
+        ? lastStartedAt.getTime() - lastStoppedAt.getTime()
+        : null,
   };
 }
