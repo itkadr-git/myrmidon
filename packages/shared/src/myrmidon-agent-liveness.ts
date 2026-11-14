@@ -12,6 +12,7 @@
 // a value the watchdog must not change any behaviour on `main`.
 
 import { z } from "zod";
+import { DEFAULT_REVIEW_ROUTING_QUEUE_THRESHOLD } from "./myrmidon-review-routing.js";
 
 /** The key of the block inside `instance_settings.general`. */
 export const AGENT_LIVENESS_SETTINGS_KEY = "agentLiveness" as const;
@@ -24,9 +25,9 @@ export const AGENT_LIVENESS_SETTINGS_KEY = "agentLiveness" as const;
 export const DEFAULT_AGENT_LIVENESS_SETTINGS: AgentLivenessSettings = {
   // Feature OFF: no watchdog pass runs until an operator switches it on.
   enabled: false,
-  engineerQueueThreshold: 8,
-  reviewerQueueThreshold: 8,
-  leadQueueThreshold: 8,
+  engineerQueueThreshold: DEFAULT_REVIEW_ROUTING_QUEUE_THRESHOLD,
+  reviewerQueueThreshold: DEFAULT_REVIEW_ROUTING_QUEUE_THRESHOLD,
+  leadQueueThreshold: DEFAULT_REVIEW_ROUTING_QUEUE_THRESHOLD,
   probeIntervalSec: 30,
   probeTimeoutSec: 5,
   escalationSteps: 3,

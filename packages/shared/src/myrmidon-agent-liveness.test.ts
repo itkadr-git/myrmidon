@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
   DEFAULT_AGENT_LIVENESS_SETTINGS,
   agentLivenessSettingsSchema,
@@ -19,14 +19,29 @@ describe("agent liveness defaults", () => {
     expect(resolveAgentLivenessSettings(undefined)).toEqual(DEFAULT_AGENT_LIVENESS_SETTINGS);
     expect(resolveAgentLivenessSettings(null)).toEqual(DEFAULT_AGENT_LIVENESS_SETTINGS);
     expect(resolveAgentLivenessSettings({})).toEqual(DEFAULT_AGENT_LIVENESS_SETTINGS);
-    // The OFF posture is the main-behaviour contract of D1.
     expect(DEFAULT_AGENT_LIVENESS_SETTINGS.enabled).toBe(false);
-    // Review routing is the only existing runtime consumer constant in this
-    // checkout; the other watchdog values are new configuration, not live
-    // A1/B1/C2 behavior. Keep each role aligned with that source constant.
     expect(DEFAULT_AGENT_LIVENESS_SETTINGS.engineerQueueThreshold).toBe(DEFAULT_REVIEW_ROUTING_QUEUE_THRESHOLD);
     expect(DEFAULT_AGENT_LIVENESS_SETTINGS.reviewerQueueThreshold).toBe(DEFAULT_REVIEW_ROUTING_QUEUE_THRESHOLD);
     expect(DEFAULT_AGENT_LIVENESS_SETTINGS.leadQueueThreshold).toBe(DEFAULT_REVIEW_ROUTING_QUEUE_THRESHOLD);
+    // No runtime sources exist for watchdog probe/ladder/journal values yet;
+    // pin their explicit D1 contract until A1/B1/C2 publish canonical constants.
+    expect(DEFAULT_AGENT_LIVENESS_SETTINGS).toMatchObject({
+      probeIntervalSec: 30,
+      probeTimeoutSec: 5,
+      escalationSteps: 3,
+      escalationStepTimeoutSec: 60,
+      journalDedupWindowSec: 900,
+      journalRetentionDays: 30,
+      exclusionWindows: [],
+    });
+  });
+
+  it("keeps agent-liveness behavior inert when settings are absent or disabled", async () => {
+    const onProbe = vi.fn();
+    const settings = resolveAgentLivenessSettings({});
+    if (settings.enabled) onProbe();
+    expect(onProbe).not.toHaveBeenCalled();
+    expect(settings.enabled).toBe(false);
   });
 
   it("rejects zero and negative thresholds — a corrupt value keeps the default", () => {
