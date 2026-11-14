@@ -153,6 +153,7 @@ describeEmbeddedPostgres("heartbeat continuation wakes: status gate and real att
     status?: string;
     headSha?: string | null;
     summary?: string | null;
+    wakeReason?: string;
   }) {
     const runId = randomUUID();
     const createdAt = minutesAgo(input.minutesAgo);
@@ -171,8 +172,8 @@ describeEmbeddedPostgres("heartbeat continuation wakes: status gate and real att
       contextSnapshot: {
         issueId: input.issueId,
         taskId: input.issueId,
-        wakeReason: "issue_continuation_needed",
-        retryReason: "issue_continuation_needed",
+        wakeReason: input.wakeReason ?? "issue_continuation_needed",
+        retryReason: input.wakeReason ?? "issue_continuation_needed",
         source: "issue.continuation_recovery",
         ...(input.headSha ? { prHeadSha: input.headSha } : {}),
       },
@@ -566,6 +567,7 @@ describeEmbeddedPostgres("heartbeat continuation wakes: status gate and real att
           ...ctx,
           minutesAgo: i * 10,
           headSha: constantHeadSha,
+          wakeReason: "issue_assigned",
           summary: `Run summary iteration ${i}`,
         });
       }
@@ -573,13 +575,13 @@ describeEmbeddedPostgres("heartbeat continuation wakes: status gate and real att
       // 5th wake attempt must be blocked by taskRunsWithoutCommitLimit (default 4)
       expect(await continuationWake(agentId, issueId)).toBeNull();
 
-      const skips = skippedWith(await wakeRequests(agentId), "run_cap_no_commit_reached");
+      const skips = skippedWith(await wakeRequests(agentId), "runs_without_commit_limit_reached");
       expect(skips).toHaveLength(1);
       expect(skips[0]).toMatchObject({ reason: "issue_rewake_throttled" });
       expect(skips[0]!.payload).toMatchObject({
         heartbeatSkip: {
           consecutiveRunsWithoutCommit: 4,
-          taskRunsWithoutCommitLimit: 4,
+          limit: 4,
           headSha: constantHeadSha,
         },
       });
@@ -606,7 +608,7 @@ describeEmbeddedPostgres("heartbeat continuation wakes: status gate and real att
         .from(agentWakeupRequests)
         .where(and(eq(agentWakeupRequests.agentId, leadAgentId), eq(agentWakeupRequests.companyId, companyId)));
       expect(leadWakes.length).toBeGreaterThan(0);
-      expect(leadWakes[0]!.reason).toBe("run_cap_no_commit_escalation");
+      expect(leadWakes[0]!.reason).toBe("runs_without_commit_limit_reached");
     });
 
     it("resets run cap without commit counter when user manually unblocks issue (OPE-13080)", async () => {
@@ -641,6 +643,7 @@ describeEmbeddedPostgres("heartbeat continuation wakes: status gate and real att
           ...ctx,
           minutesAgo: i * 15,
           headSha: constantHeadSha,
+          wakeReason: "issue_assigned",
         });
       }
 
@@ -664,7 +667,7 @@ describeEmbeddedPostgres("heartbeat continuation wakes: status gate and real att
 
       // Since the issue was NOT unblocked by the user, the 4 runs without commit must still be capped!
       expect(await continuationWake(agentId, issueId)).toBeNull();
-      const skipsBeforeUnblock = skippedWith(await wakeRequests(agentId), "run_cap_no_commit_reached");
+      const skipsBeforeUnblock = skippedWith(await wakeRequests(agentId), "runs_without_commit_limit_reached");
       expect(skipsBeforeUnblock).toHaveLength(1);
 
       // Now record a genuine user manual unblock from blocked -> in_progress
@@ -687,9 +690,10 @@ describeEmbeddedPostgres("heartbeat continuation wakes: status gate and real att
       });
 
       // Clear previous wake requests and retry: now the continuation wake should proceed!
-      await db.delete(agentWakeupRequests);
+      await db.delete(agentWakeupRequests).where(eq(agentWakeupRequests.companyId, companyId));
+      await db.update(issues).set({ status: "in_progress" }).where(eq(issues.id, issueId));
       await continuationWake(agentId, issueId);
-      const skipsAfterUnblock = skippedWith(await wakeRequests(agentId), "run_cap_no_commit_reached");
+      const skipsAfterUnblock = skippedWith(await wakeRequests(agentId), "runs_without_commit_limit_reached");
       expect(skipsAfterUnblock).toHaveLength(0);
     });
   });
