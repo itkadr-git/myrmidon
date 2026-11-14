@@ -173,6 +173,24 @@
         "saveFailed": "Saving the tool policy cache settings failed.",
         "loadFailed": "Failed to load the tool policy cache settings."
       },
+      "model-group-rules": {
+        "title": "Model groups by run step",
+        "description": "Choose the LiteLLM model group for each run step. Caste rules override the company-wide rule for that step. These settings are saved for the company; applying them to new runs is outside this release.",
+        "scope": "Caste",
+        "companyScope": "Company default",
+        "inherit": "No override",
+        "loading": "Loading model group rules…",
+        "catalogUnavailable": "The model group catalog is unavailable. Restore the gateway catalog before saving.",
+        "saved": "Model group rules saved.",
+        "save": "Save model group rules",
+        "steps": {
+          "review": "Review",
+          "acceptance": "Acceptance",
+          "decomposition": "Decomposition",
+          "execution": "Execution",
+          "background": "Background"
+        }
+      },
       "castes-screen": {
         "keyPlaceholder": "e.g. data-steward",
         "modelPlaceholder": "qwen-plus",
