@@ -29,6 +29,10 @@ import {
 } from "../myrmidon/pr-wait-monitor/policy.js";
 import { readAgentLastLookAt } from "../myrmidon/pr-wait-monitor/store.js";
 import { loadRunPullRequest } from "../myrmidon/run-pull-request.js";
+// myrmidon(1.8 KEY-TTL / OPE-12931): run-scoped LiteLLM credential minted at
+// run prep, revoked at every terminal run outcome.
+import { mintRunGatewayKey, revokeRunGatewayKey } from "../myrmidon/litellm-keys/run-keys.js";
+import { defaultAgentGatewayKeyDeps } from "../myrmidon/litellm-keys/agent-keys.js";
 import {
   claimGatewayRemoteClose,
   deriveTerminalCloseProvenance,
@@ -210,6 +214,7 @@ import { prepareManagedAiRuntime, assertManagedAiProjectAuth, stripAiAuthBinding
 import { listAdapterModels } from "../adapters/registry.js";
 import { resolveAdminAssistantAdapterConfig } from "../myrmidon/admin-assistant/router.js";
 import { readBuiltInAgentMarker } from "./built-in-agent-metadata.js";
+import { readGatewayKeySettings } from "@myrmidon/shared";
 import {
   aiConnectionBindingSchema,
   applyDeveloperRunIsolation,
@@ -14413,6 +14418,27 @@ export function heartbeatService(
       emitTerminalAgentTaskRun(updated, previousStatus?.status ?? null);
       await closeWakeupOfTerminalRun(updated);
       scheduleRemoteGatewayCloseOfTerminalRun(updated, previousStatus?.status ?? null);
+      // myrmidon(1.8 KEY-TTL / OPE-12931): a genuine transition to a terminal
+      // status kills the run's LLM gateway key. setRunStatusFromLive can name
+      // a terminal status as its own source (idempotent "still failed"
+      // patches), so only a real status change revokes. Idempotent beside the
+      // dispatch-finally revoke: a second call deletes nothing.
+      if (
+        isHeartbeatRunTerminalStatus(updated.status) &&
+        (previousStatus?.status ?? null) !== updated.status
+      ) {
+        try {
+          await revokeRunGatewayKey(defaultAgentGatewayKeyDeps(db), {
+            companyId: updated.companyId,
+            runId: updated.id,
+          });
+        } catch (runKeyRevokeErr) {
+          logger.warn(
+            { err: runKeyRevokeErr, runId: updated.id, companyId: updated.companyId },
+            "failed to revoke heartbeat-run LLM gateway key",
+          );
+        }
+      }
     }
 
     return updated;
@@ -14508,6 +14534,27 @@ export function heartbeatService(
       emitTerminalAgentTaskRun(updated, previousStatus?.status ?? null);
       await closeWakeupOfTerminalRun(updated);
       scheduleRemoteGatewayCloseOfTerminalRun(updated, previousStatus?.status ?? null);
+      // myrmidon(1.8 KEY-TTL / OPE-12931): a genuine transition to a terminal
+      // status kills the run's LLM gateway key. setRunStatusFromLive can name
+      // a terminal status as its own source (idempotent "still failed"
+      // patches), so only a real status change revokes. Idempotent beside the
+      // dispatch-finally revoke: a second call deletes nothing.
+      if (
+        isHeartbeatRunTerminalStatus(updated.status) &&
+        (previousStatus?.status ?? null) !== updated.status
+      ) {
+        try {
+          await revokeRunGatewayKey(defaultAgentGatewayKeyDeps(db), {
+            companyId: updated.companyId,
+            runId: updated.id,
+          });
+        } catch (runKeyRevokeErr) {
+          logger.warn(
+            { err: runKeyRevokeErr, runId: updated.id, companyId: updated.companyId },
+            "failed to revoke heartbeat-run LLM gateway key",
+          );
+        }
+      }
       return { run: updated, updated: true as const };
     }
 
@@ -28086,6 +28133,47 @@ export function heartbeatService(
         };
         secretKeys.add("PAPERCLIP_GITHUB_BROKER_TOKEN");
       }
+        // myrmidon(1.8 KEY-TTL / OPE-12931): the run talks to the LLM gateway
+        // under its own run-scoped virtual key: minted here for this runId
+        // only, projected into the adapter config env, and revoked at every
+        // terminal run outcome. Key management off (no gateway address or
+        // admin key secret) and hermes_gateway runs are skipped: the hermes
+        // lane gets its gateway credential from the bot-container profile
+        // compiler, which does not read adapter config env. Any failure here
+        // downgrades the run to "no run key" — run prep never fails for key
+        // management.
+        const runKeySettings = readGatewayKeySettings(process.env);
+        if (runKeySettings.canManageKeys && agent.adapterType !== "hermes_gateway") {
+          try {
+            const minted = await mintRunGatewayKey(defaultAgentGatewayKeyDeps(db), {
+              companyId: agent.companyId,
+              runId: run.id,
+            });
+            const runKeyEnvName = runKeySettings.agentKeyEnv ?? "MYRMIDON_LLM_API_KEY";
+            runtimeConfig = {
+              ...runtimeConfig,
+              env: {
+                ...parseObject(runtimeConfig.env),
+                [runKeyEnvName]: minted.value,
+                ...(runKeySettings.baseUrl ? { MYRMIDON_LITELLM_BASE_URL: runKeySettings.baseUrl } : {}),
+              },
+            };
+            secretKeys.add(runKeyEnvName);
+            try {
+              await createRunSecretRedactionRegistry(db).register(agent.companyId, run.id, minted.value);
+            } catch (redactErr) {
+              logger.warn(
+                { err: redactErr, runId: run.id, companyId: agent.companyId },
+                "failed to register heartbeat-run LLM gateway key for log redaction",
+              );
+            }
+          } catch (mintErr) {
+            logger.warn(
+              { err: mintErr, runId: run.id, companyId: agent.companyId },
+              "failed to mint heartbeat-run LLM gateway key; the run continues without one",
+            );
+          }
+        }
       context.paperclipEnvironment = {
         id: selectedEnvironment.id,
         name: selectedEnvironment.name,
@@ -30517,6 +30605,17 @@ export function heartbeatService(
             logger.warn(
               { err: revokeErr, runId: run.id, companyId: agent.companyId },
               "failed to revoke heartbeat-run MCP gateway tokens",
+            );
+          }
+          try {
+            await revokeRunGatewayKey(defaultAgentGatewayKeyDeps(db), {
+              companyId: agent.companyId,
+              runId: run.id,
+            });
+          } catch (runKeyRevokeErr) {
+            logger.warn(
+              { err: runKeyRevokeErr, runId: run.id, companyId: agent.companyId },
+              "failed to revoke heartbeat-run LLM gateway key",
             );
           }
         }
