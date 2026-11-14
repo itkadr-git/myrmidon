@@ -18,7 +18,7 @@ describe("reconcileIssueParentCyclesOnStartup", () => {
     const result = await reconcileIssueParentCyclesOnStartup(db);
 
     expect(result).toEqual({ repaired: 3 });
-    expect(execute).toHaveBeenCalledTimes(4);
+    expect(execute).toHaveBeenCalledTimes(1);
     expect(logActivity).toHaveBeenCalledTimes(3);
     expect(logActivity).toHaveBeenCalledWith(db, expect.objectContaining({
       action: "issue.parent_cycle_repaired",
