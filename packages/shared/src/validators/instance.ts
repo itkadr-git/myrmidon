@@ -332,6 +332,10 @@ export const instanceGeneralSettingsSchema = z.object({
   // fix is ON — `{enabled: false}` restores the pre-feature agent behaviour
   // byte-for-byte (see packages/shared/src/myrmidon-issue-list-agent-defaults.ts).
   issuesListAgentDefaults: issueListAgentDefaultsSchema.optional(),
+  // myrmidon(OPE-13095): the agent that scouts a new engineer task and writes its
+  // `starter-pack` document before the first engineer run; absent means no scout
+  // (the assignee is woken at once, as before).
+  starterPackAgentId: z.string().uuid().optional(),
   // myrmidon(PAUSE-GUARD): the forgotten-pause guard (enabled, threshold,
   // interval, allowlist, per-pass ceiling), changed from
   // /api/myrmidon/pause-guard; absent means "use the environment variable, then

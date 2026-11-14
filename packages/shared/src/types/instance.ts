@@ -293,6 +293,13 @@ export interface InstanceGeneralSettings {
    */
   issuesListAgentDefaults?: IssueListAgentDefaultsSettings;
   /**
+   * myrmidon(OPE-13095): id of the agent that scouts a new engineer task and writes
+   * its `starter-pack` document before the first engineer run. Absent means no
+   * scout: the assignee is woken at once. Kept in sync with the validator of the
+   * same field (packages/shared/src/validators/instance.ts).
+   */
+  starterPackAgentId?: string;
+  /**
    * myrmidon(1.6.6 CORPUS-2.0 ч.C): the knowledge-corpus module settings (module
    * switch, parse-service base URL, embedder, limits), changed from
    * `GET`/`PATCH /api/myrmidon/corpus/settings`. Absent means "the module is off

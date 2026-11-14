@@ -366,6 +366,8 @@ export function normalizeGeneralSettings(raw: unknown): InstanceGeneralSettings 
       // myrmidon(F16): the stored issue-list agent-defaults toggle survives
       // every general write (it is a rollback switch, not a settings page).
       ...(parsed.data.issuesListAgentDefaults ? { issuesListAgentDefaults: parsed.data.issuesListAgentDefaults } : {}),
+      // myrmidon(OPE-13095): the starter-pack scout agent id survives every general read and write.
+      ...(parsed.data.starterPackAgentId ? { starterPackAgentId: parsed.data.starterPackAgentId } : {}),
       // myrmidon(1.7-BUDGET-CONFIG-B): the stored budget enforcement mode
       // survives every general write (it is edited on its own settings page).
       ...(parsed.data.budgetEnforcement ? { budgetEnforcement: parsed.data.budgetEnforcement } : {}),

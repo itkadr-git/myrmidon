@@ -96,6 +96,15 @@ import {
 } from "../myrmidon/run-guard-stop.js";
 // myrmidon(OPE-12577): the manager's wake after a final guard stop passes the execution hold.
 import { isRunGuardStopWakeRecipient, RUN_GUARD_STOP_NEEDS_INPUT_WAKE_REASON } from "../myrmidon/run-guard-escalation.js";
+import {
+  STARTER_PACK_READY_SOURCE,
+  STARTER_PACK_SCOUT_WAKE_REASON,
+  isStarterPackScoutIssueStatus,
+  isStarterPackScoutRunContext,
+  isStarterPackScoutWake,
+  wakeAssigneeAfterStarterPack,
+} from "../myrmidon/starter-pack.js";
+import { queueIssueAssignmentWakeup } from "./issue-assignment-wakeup.js";
 import { PRODUCT_NAME, productPossessive, productSaid } from "../myrmidon/product.js";
 // myrmidon(B1c): short alias for template literals below.
 import { PRODUCT_NAME as PN } from "../myrmidon/product.js";
@@ -32051,8 +32060,45 @@ export function heartbeatService(
     await releaseSwarmClaimsForRunImpl({ db, settings: instanceSettings }, run);
   }
 
+  async function wakeAssigneeAfterStarterPackScoutRun(
+    run: Pick<typeof heartbeatRuns.$inferSelect, "id" | "companyId"> & {
+      contextSnapshot?: unknown;
+      invocationSource?: string | null;
+    },
+  ) {
+    // Early exit without a query: this runs when every run finishes. getRun only
+    // when the caller did not pass the context.
+    const scoutRun = run.contextSnapshot === undefined ? await getRun(run.id) : run;
+    if (!scoutRun) return;
+    const context = parseObject(scoutRun.contextSnapshot);
+    if (!isStarterPackScoutRunContext(context, scoutRun.invocationSource ?? undefined)) return;
+    const issueId = readNonEmptyString(context.issueId);
+    if (!issueId) return;
+    const [issue] = await db
+      .select()
+      .from(issues)
+      .where(and(eq(issues.companyId, scoutRun.companyId), eq(issues.id, issueId)))
+      .limit(1);
+    if (!issue) return;
+    await wakeAssigneeAfterStarterPack(db, issue, (idempotencyKey) =>
+      queueIssueAssignmentWakeup({
+        heartbeat: { wakeup: enqueueWakeup },
+        issue,
+        reason: "issue_assigned",
+        mutation: "starter_pack",
+        contextSource: STARTER_PACK_READY_SOURCE,
+        requestedByActorType: "system",
+        requestedByActorId: null,
+        idempotencyKey,
+      }),
+    );
+  }
+
   async function releaseIssueExecutionAndPromote(
-    run: Pick<typeof heartbeatRuns.$inferSelect, "id" | "companyId">,
+    run: Pick<typeof heartbeatRuns.$inferSelect, "id" | "companyId"> & {
+      contextSnapshot?: unknown;
+      invocationSource?: string | null;
+    },
     options: {
       suppressImmediateRecovery?: boolean;
       deferredWakesPostdateRun?: boolean;
@@ -32066,6 +32112,11 @@ export function heartbeatService(
     // the vendor release.
     await releaseSwarmClaimsForRun(run).catch((err) =>
       logger.warn({ err, runId: run.id }, "swarm claim release on run finish failed"),
+    );
+    // myrmidon(OPE-13095): the starter-pack scout's run ended (any status) — wake
+    // the assignee, with the document or without it. Best-effort and idempotent.
+    await wakeAssigneeAfterStarterPackScoutRun(run).catch((err) =>
+      logger.warn({ err, runId: run.id }, "assignee wake after the starter-pack scout run failed"),
     );
     try {
       const { postCommitEffects } = await wakeQueue.releaseIssueExecution({
@@ -33735,7 +33786,14 @@ export function heartbeatService(
             await isRunGuardStopWakeRecipient(tx as unknown as Db, {
               companyId: issue.companyId, assigneeAgentId: issue.assigneeAgentId, agentId,
             });
-          if (executionBlocker && !runGuardManagerWake && !(await admitExplicitNativeContinuation({
+          // myrmidon(OPE-13095): the starter-pack scout's wake passes the hold the same way.
+          const starterPackScoutWake = Boolean(executionBlocker) &&
+            reason === STARTER_PACK_SCOUT_WAKE_REASON && source === "automation" &&
+            isStarterPackScoutIssueStatus(issue.status) &&
+            await isStarterPackScoutWake(tx as unknown as Db, {
+              companyId: issue.companyId, assigneeAgentId: issue.assigneeAgentId, agentId,
+            });
+          if (executionBlocker && !runGuardManagerWake && !starterPackScoutWake && !(await admitExplicitNativeContinuation({
             db: tx as unknown as Db, companyId: issue.companyId, issueId: issue.id,
             agentId, actorType: opts.requestedByActorType, actorId: opts.requestedByActorId,
             reason, commentId: candidateCommentId, failedRunId: opts.failedRunId, successorRunId: explicitContinuationRunId,
