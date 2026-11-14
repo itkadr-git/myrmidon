@@ -1352,7 +1352,7 @@ export function scopeMicrosoftTeamsEgress(
   return adapter;
 }
 
-function createProviderAdapter(
+async function createProviderAdapter(
   config: ResolvedChatSdkProviderConfig,
   logger: CreateChatSdkEndpointRuntimeOptions["logger"],
   callbacks: ChatSdkRuntimeCallbacks,
