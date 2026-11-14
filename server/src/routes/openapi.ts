@@ -4096,6 +4096,19 @@ registry.registerPath({
 
 registry.registerPath({
   method: "get",
+  path: "/api/issues/{id}/release-status",
+  tags: ["issues"],
+  summary:
+    "Release membership: whether each merged pull request of the issue is reachable from the release refs of the issue's release label",
+  request: {
+    params: z.object({ id: z.string() }),
+    query: z.object({ refreshPullRequests: z.enum(["true"]).optional() }),
+  },
+  responses: { 200: r.ok(), 401: r.unauthorized, 403: r.forbidden, 404: r.notFound },
+});
+
+registry.registerPath({
+  method: "get",
   path: "/api/companies/{companyId}/agents/{agentId}/empty-run-stats",
   tags: ["agents"],
   summary: "Empty-run statistics of an agent",

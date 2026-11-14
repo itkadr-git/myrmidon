@@ -198,6 +198,7 @@ RUN echo "cli-tools-epoch: ${CLI_TOOLS_CACHE_EPOCH}" \
 # BUN_INSTALL=/usr/local makes Bun place its global bins (omp) directly into
 # /usr/local/bin for all image users instead of root's ~/.bun/bin.
 # release downloads retry: github.com answers 504 to anonymous downloads while GitHub throttles anonymous traffic.
+COPY scripts/myrmidon/patch-omp-cli.mjs /usr/local/share/myrmidon/patch-omp-cli.mjs
 ENV BUN_INSTALL=/usr/local
 RUN set -eu \
   && curl -fsSL --retry 5 --retry-all-errors --retry-delay 5 -o /tmp/bun.zip "https://github.com/oven-sh/bun/releases/download/bun-v${BUN_VERSION}/bun-linux-x64.zip" \
@@ -207,6 +208,12 @@ RUN set -eu \
   && install -m 0755 "/tmp/bun-extract/bun-linux-x64/bun" /usr/local/bin/bun \
   && rm -rf /tmp/bun.zip /tmp/bun-extract \
   && bun add --global "@oh-my-pi/pi-coding-agent@${OMP_VERSION}" \
+  && CLI_PATH="$(bun pm bin -g)/../@oh-my-pi/pi-coding-agent/dist/cli.js" \
+  && if [ ! -f "$CLI_PATH" ]; then CLI_PATH="$(find /usr/local -name cli.js -path "*/@oh-my-pi/pi-coding-agent/*" 2>/dev/null | head -1)"; fi \
+  && test -f "$CLI_PATH" \
+  && node /usr/local/share/myrmidon/patch-omp-cli.mjs "$CLI_PATH" \
+  && ! grep -q "RFC 2119 keywords:" "$CLI_PATH" \
+  && grep -q "Keywords MUST, REQUIRED, SHOULD, RECOMMENDED, MAY, OPTIONAL follow their usual meaning." "$CLI_PATH" \
   && test -x /usr/local/bin/omp \
   && test -x /usr/local/bin/fd \
   && echo "bun: $(bun --version)" \

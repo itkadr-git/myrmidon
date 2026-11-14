@@ -101,3 +101,52 @@ describe("approval of a pending review stage whose policy lost the stage", () =>
     expect(approve({ policy }).decision).toMatchObject({ stageId, outcome: "approved" });
   });
 });
+
+function requestChanges(input: { policy: ReturnType<typeof normalizeIssueExecutionPolicy>; actorId?: string; comment?: string | null }) {
+  return applyIssueExecutionPolicyTransition({
+    issue: {
+      status: "in_review",
+      assigneeAgentId: reviewerId,
+      assigneeUserId: null,
+      executionPolicy: input.policy,
+      executionState: pendingState,
+    },
+    policy: input.policy,
+    previousPolicy: input.policy,
+    requestedStatus: "in_progress",
+    requestedAssigneePatch: {},
+    actor: { agentId: input.actorId ?? reviewerId },
+    commentBody: input.comment === undefined ? "Needs rework: tests failed" : input.comment,
+  });
+}
+
+describe("changes requested for a pending review stage whose policy lost the stage", () => {
+  it.each([
+    ["a policy with only the admission monitor armed", monitorOnlyPolicy],
+    ["no policy at all", () => null],
+  ])("is recorded as a changes_requested decision with %s", (_label, makePolicy) => {
+    const result = requestChanges({ policy: makePolicy() });
+    expect(result.decision).toMatchObject({ stageId, stageType: "review", outcome: "changes_requested" });
+    expect(result.patch.executionState).toMatchObject({
+      status: "changes_requested",
+      currentStageId: stageId,
+      changesRequestedCount: 1,
+      lastDecisionOutcome: "changes_requested",
+      returnAssignee: { type: "agent", agentId: engineerId },
+    });
+    expect(result.patch.status).toBe("in_progress");
+    expect(result.patch.assigneeAgentId).toBe(engineerId);
+  });
+
+  it("does not record a changes_requested decision if actor is not the participant", () => {
+    const result = requestChanges({ policy: monitorOnlyPolicy(), actorId: otherId });
+    expect(result.decision).toBeUndefined();
+  });
+
+  it("asks for a comment instead of silently dropping the changes_requested decision", () => {
+    expect(() => requestChanges({ policy: monitorOnlyPolicy(), comment: "   " })).toThrow(/requires a comment/);
+    expect(() => requestChanges({ policy: null, comment: "   " })).toThrow(/requires a comment/);
+    expect(() => requestChanges({ policy: monitorOnlyPolicy(), comment: "" })).toThrow(/requires a comment/);
+  });
+});
+

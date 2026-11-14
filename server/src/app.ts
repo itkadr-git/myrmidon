@@ -206,6 +206,7 @@ import {
   createPoolChatHttpTransport,
   type PoolChatTransportResolver,
   myrmidonAutonomyRoutes,
+  myrmidonReleaseStageRoutes,
   myrmidonKnowledgeRoutes,
   myrmidonKnowledgeMcpRoutes,
   myrmidonKnowledgeSettingsRoutes,
@@ -1366,6 +1367,7 @@ export async function createApp(
   api.use(myrmidonMonitoringLinkRoutes(db)); // myrmidon(1.6.6 MONITORING E): link liveness feed and the link pulse endpoint
   api.use(myrmidonPromptBudgetRoutes(db)); // myrmidon(1.6.3 PROMPT-BUDGET B): prompt-budget threshold settings and status
   api.use(myrmidonAutonomyRoutes(db)); // myrmidon(1.6-AUTONOMY): role × action-class matrix and regulations
+  api.use(myrmidonReleaseStageRoutes(db)); // myrmidon(1.8 RELEASE-STAGE): release authority, gates, signed publication
   api.use(myrmidonKnowledgeRoutes(db)); // myrmidon(1.6.6 KNOWLEDGE-2.0 K-2): one service, one set of rights (REST)
   api.use(myrmidonKnowledgeSettingsRoutes(db)); // myrmidon(1.7 KNOWLEDGE-2.0 L-11): Settings → Knowledge limits/schedule/reviewers
   api.use(myrmidonKnowledgeMcpRoutes(db)); // myrmidon(1.6.6 KNOWLEDGE-2.0 K-2): company knowledge MCP endpoint (tools/list + tools/call)
