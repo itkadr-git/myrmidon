@@ -15068,7 +15068,8 @@ export function issueRoutes(
       // myrmidon(OPE-13099): an agent hands the task to review but it has no review
       // path (assertInReviewReviewPath would answer 422 missing: review_path).
       // Instead the board adds a review stage with the reviewers of the
-      // executor's group; the transition below picks the least loaded one.
+      // executor's group and names the least loaded one for the transition below.
+      let handoffPreferredReviewer: { type: "agent"; agentId: string; userId: null } | null = null;
       if (
         actor.actorType === "agent" &&
         updateFields.status === "in_review" &&
@@ -15120,19 +15121,30 @@ export function issueRoutes(
                 existing.companyId,
                 reviewRoutingSettings.reviewerRoles,
               );
-              const reviewerIds = selectHandoffReviewerIds({
+              const selectedReviewerIds = selectHandoffReviewerIds({
                 reviewers: reviewerRows,
                 groupKey: resolveAgentGroupKey(executorRow ?? undefined),
                 excludedAgentIds: [actor.agentId, existing.assigneeAgentId, existing.createdByAgentId].filter(
                   (id): id is string => typeof id === "string" && id.length > 0,
                 ),
               });
+              // Least loaded first (ties by id): the explicit pick does not depend
+              // on the transition's own load lookup.
+              const handoffLoads =
+                selectedReviewerIds.length > 1
+                  ? await routingStore.loadByAgent(existing.companyId)
+                  : new Map<string, number>();
+              const reviewerIds = [...selectedReviewerIds].sort(
+                (left, right) =>
+                  (handoffLoads.get(left) ?? 0) - (handoffLoads.get(right) ?? 0) || left.localeCompare(right),
+              );
               const handoffPolicy = buildHandoffReviewPolicy(
                 currentPolicy as unknown as Record<string, unknown> | null,
                 reviewerIds,
               );
               if (handoffPolicy) {
                 updateFields.executionPolicy = normalizeIssueExecutionPolicy(handoffPolicy);
+                handoffPreferredReviewer = { type: "agent", agentId: reviewerIds[0]!, userId: null };
               }
             }
           }
@@ -15245,6 +15257,7 @@ export function issueRoutes(
         monitorExplicitlyUpdated:
           req.body.executionPolicy !== undefined && monitorChanged,
         candidateLoads,
+        restartPreferredParticipant: handoffPreferredReviewer,
       });
       // myrmidon(MON-RESTORE): capture and strip transient notice before persistence.
       const monitorClearNotice = transition.patch.monitorClearNotice as
