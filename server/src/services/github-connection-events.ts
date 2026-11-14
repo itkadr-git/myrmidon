@@ -1623,23 +1623,10 @@ export function githubConnectionEventService(
           eq(connectionEventDeliveries.provider, event.provider),
           eq(connectionEventDeliveries.providerDeliveryId, event.id),
         ));
-        await logActivity(database, {
-          companyId,
-          actorType: "system",
-          actorId: "system:github-webhook",
-          action: "tool_connection.webhook_processed",
-          entityType: "tool_connection",
-          entityId: bindings[0]?.connectionId ?? `github-app:${appId ?? "unknown"}`,
-          details: {
-            provider: "github",
-            event: event.event,
-            action: event.action,
-            deliveryId: event.id,
-            installationId: event.installationId,
-            repositoryId: event.repositoryId,
-            ...(appId ? { appId } : {}),
-          },
-        }, postCommitPublications);
+        // OPE-13146: the delivery receipt above is the audit trail; a per-event
+        // activity row for every processed webhook is noise (36k rows/day) and
+        // duplicates connection_event_deliveries. Only failures leave an
+        // activity entry (see the failed-path handler below).
       };
       if (event.event === "pull_request" || event.event === "workflow_run" || event.event === "check_suite" || event.event === "check_run" || event.event === "installation" || event.event === "installation_repositories") {
         // myrmidon(EMPTY-RUNS-3): deliveries of one pull request (a dozen jobs
@@ -1672,21 +1659,48 @@ export function githubConnectionEventService(
         await applyAndFinalize(db);
       }
     } catch (error) {
+      const failedAt = now();
+      const lastError = (() => {
+        const pg = postgresErrorInfo(error);
+        if (pg) return `postgres ${pg.code}: ${pg.message}`.slice(0, 500);
+        return error instanceof Error ? error.message.slice(0, 500) : "GitHub event processing failed";
+      })();
       await db.update(connectionEventDeliveries).set({
         status: "failed",
         // The wrapper of the query builder says only "Failed query"; the
         // reason is the Postgres code and text behind it.
-        lastError: (() => {
-          const pg = postgresErrorInfo(error);
-          if (pg) return `postgres ${pg.code}: ${pg.message}`.slice(0, 500);
-          return error instanceof Error ? error.message.slice(0, 500) : "GitHub event processing failed";
-        })(),
-        updatedAt: now(),
+        lastError,
+        updatedAt: failedAt,
       }).where(and(
         eq(connectionEventDeliveries.companyId, companyId),
         eq(connectionEventDeliveries.provider, event.provider),
         eq(connectionEventDeliveries.providerDeliveryId, event.id),
       ));
+      // OPE-13146: successful deliveries no longer write activity rows (the
+      // receipt above is the audit trail); a failed one still surfaces in
+      // activity_log so the attention feed sees it.
+      try {
+        await logActivity(db, {
+          companyId,
+          actorType: "system",
+          actorId: "system:github-webhook",
+          action: "tool_connection.webhook_failed",
+          entityType: "tool_connection",
+          entityId: bindings[0]?.connectionId ?? `github-app:${appId ?? "unknown"}`,
+          details: {
+            provider: "github",
+            event: event.event,
+            action: event.action,
+            deliveryId: event.id,
+            installationId: event.installationId,
+            repositoryId: event.repositoryId,
+            ...(appId ? { appId } : {}),
+            error: lastError,
+          },
+        }, postCommitPublications);
+      } catch {
+        // The failure row is best-effort; never mask the original error.
+      }
       throw error;
     }
     // Persistence is complete at this point (and installation deltas have
@@ -1943,16 +1957,22 @@ export function githubConnectionEventService(
           continue;
         }
 
-        const [lastActivity] = await db.select({ createdAt: activityLog.createdAt })
-          .from(activityLog)
+        // OPE-13146: the general-event freshness probe moved off activity_log
+        // (the per-webhook rows were removed as noise). The delivery receipt
+        // table carries the same signal — any GitHub event delivery, not only
+        // CI — and stays the single audit trail.
+        const [lastGeneralDelivery] = await db.select({ createdAt: connectionEventDeliveries.createdAt })
+          .from(connectionEventDeliveries)
           .where(and(
-            eq(activityLog.companyId, companyId),
-            eq(activityLog.action, "tool_connection.webhook_processed"),
+            eq(connectionEventDeliveries.companyId, companyId),
+            eq(connectionEventDeliveries.provider, "github"),
           ))
-          .orderBy(desc(activityLog.createdAt))
+          .orderBy(desc(connectionEventDeliveries.createdAt))
           .limit(1);
 
-        let lastEventAtMs: number | null = lastActivity?.createdAt ? new Date(lastActivity.createdAt).getTime() : null;
+        let lastEventAtMs: number | null = lastGeneralDelivery?.createdAt
+          ? new Date(lastGeneralDelivery.createdAt).getTime()
+          : null;
 
         for (const binding of bindings.filter((b) => b.companyId === companyId)) {
           const lastWebhookAt = binding.providerTenant?.github?.lastWebhookAt;
