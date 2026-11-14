@@ -1457,6 +1457,39 @@ describe("runner task folders", () => {
     }
   });
 
+  it("e2e: the archive skips node_modules and build outputs but keeps .git and working files", async () => {
+    const runners = path.join(tmpDir, "runners");
+    const folder = makeTaskFolder(runners, "eng21", "OPE-9301", { ageHours: 30, ahead: true });
+    fs.mkdirSync(path.join(folder, "repo", "node_modules", "pkg"), { recursive: true });
+    fs.writeFileSync(path.join(folder, "repo", "node_modules", "pkg", "index.js"), "module.exports = 1;\n");
+    fs.mkdirSync(path.join(folder, "repo", "dist"), { recursive: true });
+    fs.writeFileSync(path.join(folder, "repo", "dist", "out.js"), "built\n");
+    fs.writeFileSync(path.join(folder, "repo", "notes.txt"), "keep me\n");
+    const http = await import("node:http");
+    const fake = http.createServer((req, res) => {
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ status: "done" }));
+    });
+    await new Promise((resolve) => fake.listen(0, "127.0.0.1", resolve));
+    const port = fake.address().port;
+    try {
+      const { res } = await runGcTask(["--apply", "--runner-root", runners], { PAPERCLIP_API_URL: `http://127.0.0.1:${port}` });
+      assert.equal(res.status, 0, res.stderr);
+      const archiveDir = path.join(runners, ".gc-archive");
+      const names = fs.readdirSync(archiveDir).filter((n) => n.startsWith("OPE-9301-"));
+      assert.equal(names.length, 1, "one archive");
+      // GNU tar detects gzip and zstd by itself when listing a file.
+      const list = subprocess.spawnSync("tar", ["-tf", path.join(archiveDir, names[0])], { encoding: "utf8" });
+      assert.equal(list.status, 0, list.stderr);
+      assert.ok(list.stdout.includes("OPE-9301/repo/.git/HEAD"), "a .git file is archived");
+      assert.ok(list.stdout.includes("OPE-9301/repo/notes.txt"), "a working file is archived");
+      assert.ok(!list.stdout.includes("node_modules"), "node_modules is not archived");
+      assert.ok(!list.stdout.includes("dist/out.js"), "build output is not archived");
+    } finally {
+      fake.close();
+    }
+  });
+
   it("e2e: an unreachable board keeps every folder (fail-closed apply)", async () => {
     const runners = path.join(tmpDir, "runners");
     const clean = makeTaskFolder(runners, "eng21", "OPE-9101", { ageHours: 30 });

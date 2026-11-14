@@ -53,6 +53,8 @@ const DAY_MS = 24 * 60 * 60 * 1000;
 const HOUR_MS = 60 * 60 * 1000;
 const CLONE_TTL_HOURS = 3;
 const CACHE_TTL_HOURS = 72;
+// Left out of safety-net archives: restored by an install or a build (OPE-13104).
+const ARCHIVE_EXCLUDES = ["node_modules", ".pnpm-store", ".turbo", "dist", ".next", "coverage"];
 const SCRATCH_TTL_HOURS = 12;
 // myrmidon(1.6.8 OPE-12722 / OPE-12759): an SSH runner (the omp container) keeps one copy of
 // the workspace per run under `<runner>/workspace/.paperclip-runtime/runs/<runId>`. A run that
@@ -1542,21 +1544,30 @@ function archiveClone(clonePath, archiveRoot) {
   const hasZstd = spawnSync("zstd", ["--version"], { stdio: "ignore" }).status === 0;
   const extension = hasZstd ? "tar.zst" : "tar.gz";
   const archivePath = path.join(archiveRoot, `${name}-${ts}.${extension}`);
+  // What an install or a build recreates is not worth archiving: a 13 GB task folder (three
+  // repo copies with node_modules) never fit the timeout, an archive without it is ~0.5 GB.
+  // Unpushed commits (.git) and working files stay in.
+  const excludes = ARCHIVE_EXCLUDES.map((e) => `--exclude=${e}`);
+  const ARCHIVE_TIMEOUT_MS = 120000;
   let result;
   let verify;
   if (hasZstd) {
     // Prefer zstd, but do not make archival depend on an optional host binary.
-    result = spawnSync("bash", ["-c", `tar -cf - -C "${path.dirname(clonePath)}" "${name}" | zstd -q -o "${archivePath}"`], { timeout: 120000 });
+    result = spawnSync("bash", ["-c", `tar -cf - ${excludes.join(" ")} -C "${path.dirname(clonePath)}" "${name}" | zstd -q -o "${archivePath}"`], { timeout: ARCHIVE_TIMEOUT_MS });
     verify = ["bash", ["-c", `zstd -q -d -c "${archivePath}" | tar -tf - > /dev/null`]];
   } else {
-    result = spawnSync("tar", ["-czf", archivePath, "-C", path.dirname(clonePath), name], { timeout: 120000 });
+    result = spawnSync("tar", ["-czf", archivePath, ...excludes, "-C", path.dirname(clonePath), name], { timeout: ARCHIVE_TIMEOUT_MS });
     verify = ["tar", ["-tzf", archivePath]];
   }
   if (result.status !== 0) {
     // A failed run leaves a partial archive of 1-2 GB behind on every pass; remove exactly this file.
     fs.rmSync(archivePath, { force: true });
-    // stderr is often empty (a killed or timed-out child), so the exit code and signal go in the text.
-    throw new Error(`archive failed for ${clonePath}: exit code ${result.status}, signal ${result.signal}: ${String(result.stderr ?? "").trim()}`);
+    // stderr is often empty (a killed or timed-out child), so say why in words.
+    const timedOut = result.error?.code === "ETIMEDOUT";
+    const reason = timedOut
+      ? `timed out after ${ARCHIVE_TIMEOUT_MS / 1000} s`
+      : `exit code ${result.status}, signal ${result.signal}${result.error ? `, error ${result.error.message}` : ""}`;
+    throw new Error(`archive failed for ${clonePath}: ${reason}: ${String(result.stderr ?? "").trim()}`);
   }
   const verification = spawnSync(verify[0], verify[1], { timeout: 60000, stdio: "ignore" });
   if (verification.status !== 0) {
