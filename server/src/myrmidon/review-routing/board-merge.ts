@@ -346,7 +346,7 @@ export function createBoardMerger(deps: BoardMergeDeps): BoardMerger {
           // and GitHub still says BLOCKED (a required check left "expected", a protection rule).
           // Nothing else tells anyone: count the time and alert once per head.
           if (final.reason === "blocked") {
-            await noteBlocked(companyId, row, key, headSha, effectiveRequiredChecks, merge.blockedAlertAfterMinutes, now);
+            await noteBlocked(companyId, row, key, headSha, merge.requiredChecks, merge.blockedAlertAfterMinutes, now);
           }
           result.waiting += 1;
           return;
