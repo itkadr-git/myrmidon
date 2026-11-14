@@ -122,6 +122,11 @@ export interface CasteView {
  * (null = the global swarm limit). Idempotent: seeding inserts only the keys
  * the company is still missing.
  */
+export const ANALYST_CASTE_DESCRIPTION =
+  "Аналитик требований и постановок: исследует контекст, декомпозирует задачи, " +
+  "ведёт документацию, формулирует критерии приёмки и координирует согласование решений, " +
+  "не выполняя кодовых и инфраструктурных изменений.";
+
 export const BUILTIN_SENSITIVE_CASTES: ReadonlyArray<AgentRole> = ["cmo"];
 
 export const BUILTIN_CASTE_SEED: ReadonlyArray<{
@@ -131,9 +136,19 @@ export const BUILTIN_CASTE_SEED: ReadonlyArray<{
   color: CasteColor;
   /** See BUILTIN_SENSITIVE_CASTES: the caste's rules are the owner's. */
   sensitive: boolean;
+  swarmEligible: boolean;
+  description?: string;
 }> = AGENT_ROLES.map((key) => {
   const label = AGENT_ROLE_LABELS[key];
-  return { key, nameEn: label, nameRu: label, color: casteSeedColor(key), sensitive: BUILTIN_SENSITIVE_CASTES.includes(key) };
+  return {
+    key,
+    nameEn: label,
+    nameRu: label,
+    color: casteSeedColor(key),
+    sensitive: BUILTIN_SENSITIVE_CASTES.includes(key),
+    swarmEligible: key !== "analyst",
+    ...(key === "analyst" ? { description: ANALYST_CASTE_DESCRIPTION } : {}),
+  };
 });
 
 /**
@@ -160,6 +175,7 @@ function casteSeedColor(key: AgentRole): CasteColor {
     researcher: 10,
     general: 11,
     architect: 12,
+    analyst: 13,
   };
   const palette: CasteColor[] = [
     "violet",
