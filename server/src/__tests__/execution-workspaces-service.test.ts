@@ -562,6 +562,45 @@ describeEmbeddedPostgres("executionWorkspaceService.getCloseReadiness", () => {
     expect(workspace).toMatchObject({ status: "archived", cleanupReason: "issue_terminal" });
   }, 20_000);
 
+  it("archives shared_workspace for terminal issue with dirty directory without blocking activity signal", async () => {
+    const seeded = await seedAncestryTerminalWorkspace({
+      updatedAt: new Date(Date.now() - 10 * 86_400_000),
+    });
+    // Convert to shared_workspace
+    await db
+      .update(executionWorkspaces)
+      .set({
+        mode: "shared_workspace",
+        providerType: "local_fs",
+        strategyType: "project_primary",
+        updatedAt: new Date(Date.now() - 10 * 86_400_000),
+      })
+      .where(eq(executionWorkspaces.id, seeded.executionWorkspaceId));
+
+    // Make the repo dirty
+    await fs.writeFile(path.join(seeded.worktreePath, "untracked-dirty.txt"), "dirty content\n", "utf8");
+
+    const sweep = await svc.sweepTerminalWorkspaces();
+
+    const [workspace] = await db
+      .select({ status: executionWorkspaces.status, cleanupReason: executionWorkspaces.cleanupReason })
+      .from(executionWorkspaces)
+      .where(eq(executionWorkspaces.id, seeded.executionWorkspaceId));
+
+    expect(sweep).toMatchObject({ archived: 1, cleanupFailed: 0 });
+    expect(workspace).toMatchObject({ status: "archived", cleanupReason: "issue_terminal" });
+
+    // Assert no issue_terminal_archive_blocked activity log was written
+    const blockedSignals = await db
+      .select()
+      .from(activityLog)
+      .where(and(
+        eq(activityLog.action, "execution_workspace.issue_terminal_archive_blocked"),
+        eq(activityLog.entityId, seeded.executionWorkspaceId),
+      ));
+    expect(blockedSignals).toHaveLength(0);
+  }, 20_000);
+
   it("fails closed before archive when git status inspection is unavailable", async () => {
     const seeded = await seedAncestryTerminalWorkspace();
     const statusSpy = vi.spyOn(workspaceGitOperationScheduler, "run")

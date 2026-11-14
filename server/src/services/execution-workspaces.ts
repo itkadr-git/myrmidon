@@ -1530,6 +1530,7 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
     // the signal and skips it. A cross-process race can still write twice; the
     // sweep runs under a single-flight guard per process, so this is the
     // best-effort throttle the ticket asks for (at most once a day).
+    if (workspace.mode === "shared_workspace") return;
     const signalled = await db
       .update(executionWorkspaces)
       .set({ metadata: markWorkspaceStuckSignal(metadata, nowMs) })
@@ -2718,17 +2719,46 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
       };
 
       for (const workspace of candidates) {
-        const executionWorkspace = toExecutionWorkspace(workspace);
-        const { git, statusInspectionSucceeded } = await inspectGitCloseReadiness(executionWorkspace);
-        if (!statusInspectionSucceeded) {
-          result.skippedUndelivered += 1;
-          result.skippedInspectFailed += 1;
-          if (result.skippedInspectFailedSamples.length < 5) {
-            result.skippedInspectFailedSamples.push({ id: workspace.id, path: git?.workspacePath ?? executionWorkspace.providerRef ?? executionWorkspace.cwd ?? null });
+        const isSharedWorkspace = workspace.mode === "shared_workspace";
+        let git: ExecutionWorkspaceCloseGitReadiness | null = null;
+        let workspaceHeadSha: string | null = null;
+        let assessment: {
+          deliveryState: ExecutionWorkspaceDeliveryState;
+          sourceIssueTerminal: boolean;
+          subtreeTerminal: boolean;
+          cooldownAnchor: Date | null;
+          workspaceDirty: boolean;
+          workspaceHeadSha: string | null;
+        };
+
+        if (isSharedWorkspace) {
+          // For shared_workspace, there is no per-task worktree to delete, and the
+          // shared project directory is shared across tasks. We do not check git
+          // state (which is often dirty or unmerged from other work). We archive immediately
+          // once the issue tree is terminal and cooldown passed.
+          const evaluated = await assessDelivery(workspace, null);
+          git = null;
+          workspaceHeadSha = null;
+          assessment = {
+            ...evaluated,
+            deliveryState: "merged_via_pr",
+            workspaceDirty: false,
+          };
+        } else {
+          const executionWorkspace = toExecutionWorkspace(workspace);
+          const inspected = await inspectGitCloseReadiness(executionWorkspace);
+          if (!inspected.statusInspectionSucceeded) {
+            result.skippedUndelivered += 1;
+            result.skippedInspectFailed += 1;
+            if (result.skippedInspectFailedSamples.length < 5) {
+              result.skippedInspectFailedSamples.push({ id: workspace.id, path: inspected.git?.workspacePath ?? executionWorkspace.providerRef ?? executionWorkspace.cwd ?? null });
+            }
+            continue;
           }
-          continue;
+          git = inspected.git;
+          assessment = await assessDelivery(workspace, git);
+          workspaceHeadSha = assessment.workspaceHeadSha;
         }
-        const assessment = await assessDelivery(workspace, git);
         const reopenPending = metadataHasReopenPendingConsumption(
           workspace.metadata as Record<string, unknown> | null,
         );
@@ -2978,7 +3008,7 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
           archived.metadata as Record<string, unknown> | null,
         );
         try {
-          const cleanup = await cleanupTerminalWorkspace(archived, assessment.workspaceHeadSha, capturedGeneration);
+          const cleanup = await cleanupTerminalWorkspace(archived, workspaceHeadSha, capturedGeneration);
           if (cleanup.skippedReopened) result.skippedReopened += 1;
           else if (!cleanup.cleaned) result.cleanupFailed += 1;
           else result.archived += 1;
@@ -3841,6 +3871,67 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
           sourceIssueStatusChanged,
         };
       });
+    },
+
+    archiveAccumulatedSharedWorkspacesBatch: async (batchLimit = 500): Promise<number> => {
+      const limit = Math.min(Math.max(1, batchLimit), 1000);
+      const rows = await db.execute(sql`
+        WITH candidates AS (
+          SELECT ew.id
+          FROM ${executionWorkspaces} ew
+          JOIN ${issues} i
+            ON i.company_id = ew.company_id
+           AND i.id = ew.source_issue_id
+          WHERE ew.mode = 'shared_workspace'
+            AND ew.status IN ('active', 'idle', 'in_review')
+            AND ew.closed_at IS NULL
+            AND i.status IN ('done', 'cancelled')
+            AND (ew.metadata ->> ${EXECUTION_WORKSPACE_REOPEN_PENDING_METADATA_KEY}) IS DISTINCT FROM 'true'
+            AND NOT EXISTS (
+              SELECT 1
+              FROM ${issues} linked_issue
+              JOIN ${heartbeatRuns} live_run
+                ON live_run.id = linked_issue.checkout_run_id
+                OR live_run.id = linked_issue.execution_run_id
+              WHERE linked_issue.company_id = ew.company_id
+                AND (
+                  linked_issue.execution_workspace_id = ew.id
+                  OR linked_issue.id = ew.source_issue_id
+                )
+                AND live_run.company_id = ew.company_id
+                AND live_run.status IN ('queued', 'running')
+            )
+            AND NOT EXISTS (
+              WITH RECURSIVE issue_tree(id, status) AS (
+                SELECT root.id, root.status
+                FROM ${issues} root
+                WHERE root.company_id = ew.company_id
+                  AND root.id = ew.source_issue_id
+                UNION ALL
+                SELECT child.id, child.status
+                FROM ${issues} child
+                JOIN issue_tree parent ON child.parent_id = parent.id
+                WHERE child.company_id = ew.company_id
+              )
+              SELECT 1 FROM issue_tree WHERE status NOT IN ('done', 'cancelled')
+            )
+          ORDER BY ew.updated_at ASC, ew.id ASC
+          LIMIT ${limit}
+          FOR UPDATE SKIP LOCKED
+        )
+        UPDATE ${executionWorkspaces} ew
+        SET
+          status = 'archived',
+          closed_at = now(),
+          cleanup_eligible_at = COALESCE(ew.cleanup_eligible_at, now()),
+          cleanup_reason = ${ISSUE_TERMINAL_WORKSPACE_CLEANUP_REASON},
+          updated_at = now()
+        FROM candidates c
+        WHERE ew.id = c.id
+        RETURNING ew.id
+      `);
+      const updatedRows = (Array.isArray(rows) ? rows : (rows as { rows?: unknown[] } | null)?.rows ?? []) as Array<{ id: string }>;
+      return updatedRows.length;
     },
 
     clearEnvironmentSelection: async (companyId: string, environmentId: string) => {
