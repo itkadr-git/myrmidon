@@ -47,7 +47,7 @@ describe("omp SSH runner image", () => {
   });
 
   it("smoke-checks the toolchain and the sshd configuration at build time", () => {
-    for (const check of ["omp --version", "bun --version", "pnpm --version", "gh --version", "command -v git", "command -v tar", "sshd -t -f /etc/ssh/omp-runner/sshd_config"]) {
+    for (const check of ["omp --version", "bun --version", "pnpm --version", "gh --version", "command -v git", "command -v tar", "sshd -t -f /etc/ssh/omp-runner/sshd_config", "test -x /usr/local/bin/run-reap"]) {
       assert.ok(dockerfile.includes(check), `missing smoke check: ${check}`);
     }
     assert.match(dockerfile, /usermod -p '\*' paperclip/, "a locked account refuses key logins with UsePAM off");
