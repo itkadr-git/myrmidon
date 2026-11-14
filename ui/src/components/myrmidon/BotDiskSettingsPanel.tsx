@@ -280,7 +280,7 @@ export function BotDiskSettingsPanel({ now, taskStatuses }: { now?: number; task
       setReposError(t("area.settings-bots-host-1.bot-disk-settings-panel.errRepos", { name: bad }));
       return;
     }
-    saveRepos.mutate(repos.length === 0 ? null : repos);
+    saveRepos.mutate(repos);
   };
 
   const handleToggleMirror = (checked: boolean) => {
@@ -481,7 +481,12 @@ export function BotDiskSettingsPanel({ now, taskStatuses }: { now?: number; task
           data-testid="bot-disk-git-mirrors-input"
         />
         <div className="flex items-center gap-2">
-          <Button size="sm" onClick={submitRepos} disabled={saveRepos.isPending || reposDraft === null || reposUnchanged}>
+          <Button
+            size="sm"
+            onClick={submitRepos}
+            disabled={saveRepos.isPending || reposDraft === null || reposUnchanged}
+            data-testid="bot-disk-git-mirrors-save"
+          >
             {saveRepos.isPending ? t("area.settings-bots-host-1.bot-disk-settings-panel.saving") : t("common.save")}
           </Button>
         </div>
