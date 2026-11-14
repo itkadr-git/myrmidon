@@ -1010,36 +1010,41 @@ describeEmbeddedPostgres("issue list routes assigneeAgentId filter", () => {
     });
   });
 
-  it("rejects non-UUID and non-identifier values for list filter parameters without calling svc.list", async () => {
+  it("rejects non-UUID and non-identifier values for list filter parameters without calling svc.list or performing queries", async () => {
     const companyId = randomUUID();
     const svc = issueService(db);
     const listSpy = vi.spyOn(svc, "list");
     const app = createApp(companyId, { issueService: svc });
 
-    const badFilters: Array<[string, Record<string, string>, string]> = [
-      ["projectId", { projectId: "PAP-123" }, "projectId must be a UUID"],
-      ["participantAgentId", { participantAgentId: "PAP-123" }, "participantAgentId must be a UUID"],
-      ["workspaceId", { workspaceId: "invalid" }, "workspaceId must be a UUID"],
-      ["executionWorkspaceId", { executionWorkspaceId: "invalid" }, "executionWorkspaceId must be a UUID"],
-      ["labelId", { labelId: "invalid" }, "labelId must be a UUID"],
-      ["parentId malformed", { parentId: "not-a-valid-identifier-or-uuid" }, "parentId must be a UUID or issue identifier"],
-      ["parentId non-existent key", { parentId: "PAP-999999" }, "parentId must be a UUID or issue identifier"],
-      ["parentIssueId malformed", { parentIssueId: "not-a-valid-identifier-or-uuid" }, "parentId must be a UUID or issue identifier"],
-      ["parentIssueId non-existent key", { parentIssueId: "PAP-999999" }, "parentId must be a UUID or issue identifier"],
-      ["descendantOf malformed", { descendantOf: "not-a-valid-identifier-or-uuid" }, "descendantOf must be a UUID or issue identifier"],
-      ["descendantOf non-existent key", { descendantOf: "PAP-999999" }, "descendantOf must be a UUID or issue identifier"],
-      ["createdFromIssueId malformed", { createdFromIssueId: "not-a-valid-identifier-or-uuid" }, "createdFromIssueId must be a UUID or issue identifier"],
-      ["createdFromIssueId non-existent key", { createdFromIssueId: "PAP-999999" }, "createdFromIssueId must be a UUID or issue identifier"],
+    const badFilters: Array<[string, Record<string, string>, string, boolean]> = [
+      ["projectId", { projectId: "PAP-123" }, "projectId must be a UUID", true],
+      ["participantAgentId", { participantAgentId: "PAP-123" }, "participantAgentId must be a UUID", true],
+      ["workspaceId", { workspaceId: "invalid" }, "workspaceId must be a UUID", true],
+      ["executionWorkspaceId", { executionWorkspaceId: "invalid" }, "executionWorkspaceId must be a UUID", true],
+      ["labelId", { labelId: "invalid" }, "labelId must be a UUID", true],
+      ["parentId malformed", { parentId: "not-a-valid-identifier-or-uuid" }, "parentId must be a UUID or issue identifier", true],
+      ["parentId non-existent key", { parentId: "PAP-999999" }, "parentId must be a UUID or issue identifier", false],
+      ["parentIssueId malformed", { parentIssueId: "not-a-valid-identifier-or-uuid" }, "parentId must be a UUID or issue identifier", true],
+      ["parentIssueId non-existent key", { parentIssueId: "PAP-999999" }, "parentId must be a UUID or issue identifier", false],
+      ["descendantOf malformed", { descendantOf: "not-a-valid-identifier-or-uuid" }, "descendantOf must be a UUID or issue identifier", true],
+      ["descendantOf non-existent key", { descendantOf: "PAP-999999" }, "descendantOf must be a UUID or issue identifier", false],
+      ["createdFromIssueId malformed", { createdFromIssueId: "not-a-valid-identifier-or-uuid" }, "createdFromIssueId must be a UUID or issue identifier", true],
+      ["createdFromIssueId non-existent key", { createdFromIssueId: "PAP-999999" }, "createdFromIssueId must be a UUID or issue identifier", false],
     ];
 
-    for (const [name, query, expectedError] of badFilters) {
+    for (const [name, query, expectedError, shouldBypassDb] of badFilters) {
       listSpy.mockClear();
+      const selectSpy = shouldBypassDb ? vi.spyOn(db, "select") : null;
       const res = await request(app)
         .get(`/api/companies/${companyId}/issues`)
         .query(query);
       expect(res.status, `status for ${name}`).toBe(400);
       expect(res.body.error, `error for ${name}`).toContain(expectedError);
       expect(listSpy, `svc.list must not be called for ${name}`).not.toHaveBeenCalled();
+      if (selectSpy) {
+        expect(selectSpy, `db.select must not be called for ${name}`).not.toHaveBeenCalled();
+        selectSpy.mockRestore();
+      }
     }
   });
 
