@@ -645,9 +645,9 @@ export function normalizeStoredBotDiskSettings(raw: unknown): Partial<BotDiskSet
   if (typeof parsed.data.sharedBotRuntimePath === "string") {
     out.sharedBotRuntimePath = parsed.data.sharedBotRuntimePath;
   }
-  if (Array.isArray(parsed.data.gitMirrorRepos) && parsed.data.gitMirrorRepos.length > 0) {
-    out.gitMirrorRepos = parsed.data.gitMirrorRepos;
-  }
+  // myrmidon(OPE-13110): an explicit empty list is kept (the mirror is off);
+  // an absent key (or null) means the built-in default list.
+  if (Array.isArray(parsed.data.gitMirrorRepos)) out.gitMirrorRepos = parsed.data.gitMirrorRepos;
   if (typeof parsed.data.gitMirrorRefreshMs === "number") out.gitMirrorRefreshMs = parsed.data.gitMirrorRefreshMs;
   // myrmidon(1.6.5-BOT-DISK-H8a): the pnpm keys of an earlier release read as today's values.
   const pnpm = migrateBotDiskPnpm(parsed.data);
@@ -722,10 +722,10 @@ export function resolveBotDiskSettings(options: {
   };
 }
 
-/** The 1.6.2-BOT-DISK-C keys that are set, in canonical form (an empty list is absent). */
+/** The 1.6.2-BOT-DISK-C keys that are set, in canonical form (an empty `gitMirrorRepos` is kept: mirror off, OPE-13110). */
 function optionalLayoutKeys(values: Partial<BotDiskSettings>): Partial<BotDiskSettings> {
   return {
-    ...(values.gitMirrorRepos && values.gitMirrorRepos.length > 0 ? { gitMirrorRepos: values.gitMirrorRepos } : {}),
+    ...(values.gitMirrorRepos !== undefined ? { gitMirrorRepos: values.gitMirrorRepos } : {}),
     ...(values.gitMirrorRefreshMs !== undefined ? { gitMirrorRefreshMs: values.gitMirrorRefreshMs } : {}),
     ...(values.pnpmStoreDir !== undefined ? { pnpmStoreDir: values.pnpmStoreDir } : {}),
     ...(values.pnpmImportMethod !== undefined ? { pnpmImportMethod: values.pnpmImportMethod } : {}),

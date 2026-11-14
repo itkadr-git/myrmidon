@@ -1,0 +1,23 @@
+## changelog-en
+
+### The bot-disk settings answer shows the git mirror in force, and a general PATCH keeps the other botDisk keys (OPE-13110)
+
+- `GET /api/myrmidon/bot-disk` now also returns `effective`: `gitMirrorEnabled`, `gitMirrorRepos`, `gitMirrorReposIsDefault` (the stored settings carry no `gitMirrorRepos` key, so the built-in two repositories apply) and `sharedCacheRoles`. The settings screen no longer shows an empty field while the board mirrors two repositories.
+- `PATCH /api/instance/settings/general` merges `botDisk` by key: a request naming only `scratchTtlHours` no longer erases the stored `gitMirrorRepos` and the other keys. An absent key changes nothing; `null` clears the whole block.
+- SETTINGS.md: the default of `gitMirrorRepos` is the two built-in repositories (not "no mirrors"); `[]` turns the mirror off; only the `sharedCacheRoles` roles receive it; `<cache>/git` must belong to the board's process user (uid 1000 in production), otherwise new mirrors fail with EACCES.
+- An explicit `gitMirrorRepos: []` is now stored and turns the mirror off; an absent key (or `null`) means the default list. Before, the empty list was dropped on read and the default came back.
+
+## changelog-ru
+
+### Ответ настроек диска ботов показывает действующее git-зеркало, а общий PATCH сохраняет остальные ключи botDisk (OPE-13110)
+
+- `GET /api/myrmidon/bot-disk` теперь отдаёт и `effective`: `gitMirrorEnabled`, `gitMirrorRepos`, `gitMirrorReposIsDefault` (в сохранённом нет ключа `gitMirrorRepos`, действуют два встроенных репозитория) и `sharedCacheRoles`. Экран настроек больше не показывает пустое поле, пока доска зеркалирует два репозитория.
+- `PATCH /api/instance/settings/general` сливает `botDisk` по ключам: запрос только с `scratchTtlHours` больше не стирает сохранённый `gitMirrorRepos` и прочие ключи. Отсутствующий ключ ничего не меняет; `null` очищает весь блок.
+- SETTINGS.md: умолчание `gitMirrorRepos` — два встроенных репозитория (а не «зеркал нет»); `[]` выключает зеркало; получают его только роли из `sharedCacheRoles`; владельцем `<cache>/git` должен быть пользователь процесса доски (uid 1000 на бою), иначе новые зеркала не создаются (EACCES).
+- Явный `gitMirrorRepos: []` теперь сохраняется и выключает зеркало; отсутствие ключа (или `null`) — умолчание. Раньше пустой список отбрасывался при чтении, и возвращалось умолчание.
+
+## settings-en-replace
+
+<!-- section: 1.6.1 — BOT-DISK B: shared package cache for bot containers -->
+<!-- occurrence: 1 -->
+| `general.botDisk.gitMirrorRepos` | 1.6.2-BOT-DISK-C | `itkadr-git/myrmidon`, `itkadr-git/myrmidon-deploy` (when the key is absent) | `owner/repo` names of GitHub repositories the board keeps a bare mirror of under `<sharedPackageCachePath>/git/<owner>/<repo>.git`, refreshed by `git fetch --prune`; bots mount `<cache>/git` read-only at `/cache/git` and the image's git wrapper clones with `--reference-if-able`, so clones borrow objects instead of duplicating them. Needs `sharedPackageCachePath`. Only bots of the `sharedCacheRoles` roles receive the mirror. `GET /api/myrmidon/bot-disk` reports the list in force in `effective` (`gitMirrorRepos`, `gitMirrorReposIsDefault`, `gitMirrorEnabled`, `sharedCacheRoles`). Applies on the next reconcile pass / maintenance tick, no restart | `[]` — off (no mirrors, the bind goes away). **Operator step:** create `<cache>/git` owned by the board's user, mode 0755 (the board process user, uid 1000 in production; otherwise new mirrors cannot be created, EACCES) (dockergate already accepts it read-only under `packageCacheRoot`); a private repository needs a `GITHUB_TOKEN` on the server. Do not delete a mirror while a clone borrows it. See [bot-disk-cache.md](bot-disk-cache.md) |

@@ -20,7 +20,7 @@ export function botDiskRoutes(_db: Db, service: BotDiskService) {
 
   router.get("/myrmidon/bot-disk", async (req, res) => {
     assertBoardOrgAccess(req);
-    res.json(await service.read());
+    res.json(await service.readWithEffective());
   });
 
   router.patch("/myrmidon/bot-disk", validate(patchBotDiskSettingsSchema), async (req, res) => {
