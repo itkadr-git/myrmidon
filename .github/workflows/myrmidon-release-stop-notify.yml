@@ -4,12 +4,19 @@ name: Myrmidon release stop notification
 # event. It runs after every completed Myrmidon release publish workflow whose
 # conclusion is not success, so a failure in the publish or freeze stage is
 # recorded even when the failed job's own final step cannot execute.
+# The concurrency group pins one notification job per stop event id
+# (the stopped workflow run id), while the notification script itself
+# enforces distributed atomic locking and deduplication across concurrent executions.
 on:
   workflow_run:
     workflows: ["Myrmidon release publish"]
     types: [completed]
 
 permissions: {}
+
+concurrency:
+  group: release-stop-notify-${{ github.event.workflow_run.id }}
+  cancel-in-progress: false
 
 jobs:
   notify:
