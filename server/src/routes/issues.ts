@@ -145,6 +145,10 @@ import { createPullRequestCiResolver, withCiResolveDeadline } from "../services/
 import { createPullRequestMergeDetailsResolver } from "../services/github-pull-request-merge.js";
 import { resolveGitHubRepositoryToken } from "../services/github-external-object-provider.js";
 import { checkCommitMembership, normaliseReleasePrefix, resolveReleaseRefs, routePullRequestVerdict } from "../myrmidon/release-membership.js";
+import { verifyReleaseComposition, aggregateReleaseCandidates, signReleaseVerificationVerdict } from "../myrmidon/release-verification.js";
+import { readBuildCommit } from "../build-commit.js";
+import { readProductEnv } from "@myrmidon/shared/env-alias";
+import { readBuildVersion } from "../build-version.js";
 import {
   companies,
   activityLog,
@@ -10253,6 +10257,147 @@ export function issueRoutes(
     } catch (err) {
       return res.status(500).json({
         error: err instanceof Error ? err.message : "Failed to resolve release status",
+      });
+    }
+  });
+
+  // VERIFY-ON-PROD (OPE-13014): aggregate the full release candidate set from
+  // the issue's pull_request work products, verify the composition against the
+  // deployed version, and persist the verdict as a system comment. The release
+  // must not be treated as proven while this check is missing or failed.
+  router.post("/issues/:id/release-verify", async (req, res) => {
+    const id = req.params.id as string;
+    const issue = await getAccessibleResource(
+      req,
+      res,
+      getIssueById(req, id),
+      "Issue not found",
+    );
+    if (!issue) return;
+    if (!(await assertIssueReadAllowed(req, res, issue))) return;
+
+    try {
+      const refresh = req.query.refreshPullRequests === "true";
+      const labelRows = await db
+        .select({ name: labels.name })
+        .from(issueLabels)
+        .innerJoin(labels, eq(labels.id, issueLabels.labelId))
+        .where(eq(issueLabels.issueId, issue.id));
+      const releasePrefix = labelRows
+        .map((row) => normaliseReleasePrefix(row.name))
+        .find((prefix): prefix is string => prefix !== null) ?? null;
+
+      // The publisher binds the release to the exact commit SHA the tag
+      // dereferences to (scripts/myrmidon/release/publish-github-release.sh
+      // compares deployedVersion against that SHA), so the verified
+      // deployedVersion MUST be the build commit, not the human-readable
+      // version/describe string.  OPE-13017 review.
+      const deployedVersion = readBuildCommit();
+      const deployedVersionLabel = readBuildVersion();
+      // Without a release label we cannot name the release line to verify
+      // against; fail closed instead of guessing.
+      if (!releasePrefix) {
+        const body = [
+          `VERIFY-ON-PROD release composition check: failed`,
+          ``,
+          `- Release label: none`,
+          `- Deployed version: ${deployedVersion ?? "not set"}`,
+          `- Reason: На задаче нет релизной метки; состав выпуска не проверяем.`,
+        ].join("\n");
+        await svc.addComment(issue.id, body, {}, { authorType: "system" });
+        return res.status(409).json({ issueId: issue.id, releaseLabel: null, deployedVersion, verdict: "failed", failureReason: "release_label_missing", reason: "На задаче нет релизной метки; состав выпуска не проверяем." });
+      }
+
+      // The candidate set is the FULL set of pull_request work products across
+      // EVERY issue of this release (all issues carrying the same release
+      // label), merged or not. Review finding (PR #3093): restricting the set
+      // to the single issue's work products would let a release be confirmed
+      // on a partial list whenever sibling release issues were skipped.
+      const releaseLabelRows = await db
+        .select({ id: labels.id, name: labels.name })
+        .from(labels)
+        .where(eq(labels.companyId, issue.companyId));
+      const releaseLabelIds = releaseLabelRows
+        .filter((row) => normaliseReleasePrefix(row.name) === releasePrefix)
+        .map((row) => row.id);
+      const candidateIssueRows = releaseLabelIds.length
+        ? await db
+            .select({ issueId: issueLabels.issueId })
+            .from(issueLabels)
+            .where(inArray(issueLabels.labelId, releaseLabelIds))
+        : [];
+      const candidateIssueIds = [...new Set(candidateIssueRows.map((row) => row.issueId))];
+
+      // Include the current issue even if its label row was missed, so the
+      // route always verifies at least the issue it was called on.
+      if (!candidateIssueIds.includes(issue.id)) candidateIssueIds.push(issue.id);
+
+      const memberWorkProducts = new Map<string, Awaited<ReturnType<typeof workProductsSvc.listForIssue>>>();
+      for (const candidateIssueId of candidateIssueIds) {
+        const products = await workProductsSvc.listForIssue(candidateIssueId, { refreshPullRequests: refresh });
+        memberWorkProducts.set(candidateIssueId, products);
+      }
+      const members = aggregateReleaseCandidates(memberWorkProducts);
+
+      // Resolve the actual release refs from the repository so the deployed
+      // version can be validated against them (not just the prefix defaults).
+      // Members with incomplete metadata (no repo) are surfaced by the
+      // verification itself; here we just pick the first usable repo.
+      const firstRepo = members.find((m) => m.repository)?.repository ?? null;
+      const token = firstRepo ? await resolveGitHubRepositoryToken(db, issue.companyId, firstRepo) : null;
+      const resolvedRefs = firstRepo
+        ? await resolveReleaseRefs({ repository: firstRepo, releasePrefix, token })
+        : [];
+
+      const result = await verifyReleaseComposition({
+        releasePrefix,
+        deployedVersion,
+        members,
+        refs: resolvedRefs,
+        resolvedRefs,
+        token,
+      });
+
+      const memberLines = result.members.map(
+        (m) => `- ${m.id}: ${m.membership} (${m.releaseRefs.join(", ") || "no refs"})`,
+      );
+      const body = [
+        `VERIFY-ON-PROD release composition check: ${result.verdict}`,
+        ``,
+        `- Release label: ${releasePrefix ?? "none"}`,
+        `- Candidate issues scanned: ${candidateIssueIds.length}`,
+        `- Deployed version: ${result.deployedVersion ?? "not set"}`,
+        ...(deployedVersionLabel && deployedVersionLabel !== result.deployedVersion
+          ? [`- Deployed version label: ${deployedVersionLabel}`]
+          : []),
+        `- Reason: ${result.reason}`,
+        `- Checked at: ${result.checkedAt}`,
+        ...(memberLines.length ? [``, ...memberLines] : []),
+      ].join("\n");
+
+      await svc.addComment(issue.id, body, {}, { authorType: "system" });
+      // OPE-13017: the verdict is the publish prerequisite.  Sign it with the
+      // shared secret so the publisher can prove the file came from this
+      // board (fail closed in publish-github-release.sh on a missing or
+      // invalid signature).  No key configured → the response stays unsigned,
+      // which the publisher refuses; the verification itself still runs and
+      // its system comment is persisted above.
+      const verificationKey = readProductEnv("RELEASE_VERIFICATION_KEY");
+      const signature = verificationKey
+        ? signReleaseVerificationVerdict(
+            {
+              verdict: result.verdict,
+              deployedVersion: result.deployedVersion,
+              checkedAt: result.checkedAt,
+              issueId: issue.id,
+            },
+            verificationKey,
+          )
+        : undefined;
+      return res.json({ issueId: issue.id, releaseLabel: releasePrefix, candidateIssueIds, deployedVersion: result.deployedVersion, verdict: result.verdict, failureReason: result.failureReason, reason: result.reason, checkedAt: result.checkedAt, members: result.members, ...(signature ? { signature } : {}) });
+    } catch (err) {
+      return res.status(500).json({
+        error: err instanceof Error ? err.message : "Failed to verify release composition",
       });
     }
   });
