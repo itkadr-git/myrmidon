@@ -196,7 +196,6 @@
   "api.use(instanceDatabaseBackupRoutes(opts.databaseBackupService))",
   "api.use(blockerGraphRoutes(db))",
   "api.use(issueRoutes(db, opts.storageService, {\n    chatRunRetries: chatChannels,\n    feedbackExportService: opts.feedbackExportService,\n    pluginWorkerManager: workerManager,\n    approveToolActionRequest: (input) => toolGateway.approveActionRequest(input),\n    declineToolActionRequest: (input) => toolGateway.declineActionRequest(input),\n  }))",
-  "api.use(aiConnectionRoutes(db, { deploymentMode: opts.deploymentMode, deploymentExposure: opts.deploymentExposure, trustedLocalStdioRuntimeHost }))",
   "api.use(\n    toolAccessRoutes(db, {\n      deploymentMode: opts.deploymentMode,\n      deploymentExposure: opts.deploymentExposure,\n      authPublicBaseUrl: opts.authPublicBaseUrl,\n      trustedLocalStdioRuntimeHost,\n      toolGateway,\n      connectionIntentHeartbeat,\n    }),\n  )",
   "api.use(connectionIntentBoardRoutes(db, connectionIntentHeartbeat))",
   "api.use(\n    smokeLabRoutes(db, {\n      deploymentMode: opts.deploymentMode,\n      deploymentExposure: opts.deploymentExposure,\n    }),\n  )",
