@@ -290,7 +290,11 @@ process.stdout.write('token=' + (process.env.GH_TOKEN || '') + ' args=' + proces
     expect(gitEnv.GIT_AUTHOR_EMAIL).toBe("agent-a@example.test");
   });
 
-  it("resolves the credential of a git operation through the staged helper", async () => {
+  // OPE-12669 TEMPORARY ACCEPTANCE PROOF: run the timed-out test 20 times
+  // consecutively in CI; remove this commit once the green run is recorded.
+  it.each(Array.from({ length: 20 }, (_, index) => index + 1))(
+    "resolves the credential of a git operation through the staged helper (run $value)",
+    async () => {
     const { bin, repo, requests, env } = await stagedRun({ originUrl: "https://github.com/owner-a/repo-a.git" });
     const dump = await exec(path.join(bin, "git"), ["dump-env"], { cwd: repo, env });
     const gitEnv = JSON.parse(dump.stdout) as Record<string, string>;
@@ -307,7 +311,8 @@ process.stdout.write('token=' + (process.env.GH_TOKEN || '') + ' args=' + proces
     expect(fill.stdout).toContain("username=x-access-token");
     expect(fill.stdout).toContain(`password=${TEST_TOKEN}`);
     expect(requests.slice(before).map((request) => JSON.parse(request.body))).toEqual([{ repository: "owner-a/repo-a" }]);
-  });
+    },
+  );
 
   it("names the repository of a gh invocation and of a remote named in the arguments", async () => {
     const { bin, root, repo, requests, env } = await stagedRun({ originUrl: "https://github.com/owner-a/repo-a.git" });

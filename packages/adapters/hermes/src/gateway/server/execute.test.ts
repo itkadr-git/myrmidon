@@ -564,9 +564,12 @@ describe("execute", () => {
     // Launcher bodies are public program text: no capability, no token.
     const launcherText = JSON.stringify(body.github_launcher);
     expect(launcherText).not.toContain("broker-capability-token");
-    // The non-container launcher must use the internal board candidate without
-    // embedding any capability or token in the staged program body.
-    expect(launcherText).toContain("paperclip-server-1");
+    // OPE-12669: the staged launcher invents no board host of its own — its
+    // broker candidates come only from the run's environment (the bot
+    // container always sets MYRMIDON_BOT_BOARD_URL). A hardcoded internal
+    // hostname here stalled machines without that DNS name on a doomed first
+    // candidate before the configured broker URL was ever tried.
+    expect(launcherText).not.toContain("paperclip-server-1");
   });
 
   it("omits the github_launcher field when no broker env is configured, and ignores payloadTemplate attempts to forge one", async () => {
