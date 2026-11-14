@@ -1,5 +1,12 @@
 // myrmidon(UPSTREAM-13539): resolved interaction cards project into the comment queue (wait/steer/interrupt).
 import { isBlockerResolved } from "../myrmidon/blocker-resolved.js";
+import {
+  STARTER_PACK_DOCUMENT_KEY,
+  STARTER_PACK_READY_SOURCE,
+  maybeWakeStarterPackScout,
+  readStarterPackAgentId,
+  wakeAssigneeAfterStarterPack,
+} from "../myrmidon/starter-pack.js";
 import { queuedInteractionId, readQueuedInteractionResponse, hasQueuedInteractionResponse } from "../myrmidon/upstream-steer/queued-interaction-response.js";
 import { deliverConversationComments, isConversation } from "../services/agent-conversations.js";
 import { issueRecoveryActionReadModel } from "../services/issue-recovery-actions.js";
@@ -11711,7 +11718,22 @@ export function issueRoutes(
         "Issue not found",
       );
       if (!issue) return;
-      if (!(await assertAgentIssueMutationAllowed(req, res, issue))) return;
+      // myrmidon(OPE-13095): the starter-pack scout may write exactly the document
+      // `starter-pack` on a task that is not its own; any other key stays refused.
+      const isStarterPackScoutWrite =
+        req.actor.type === "agent" &&
+        String(req.params.key ?? "").trim().toLowerCase() === STARTER_PACK_DOCUMENT_KEY &&
+        Boolean(req.actor.agentId) &&
+        req.actor.agentId === (await readStarterPackAgentId(db));
+      if (
+        !(await assertAgentIssueMutationAllowed(
+          req,
+          res,
+          issue,
+          isStarterPackScoutWrite ? { allowVisibleIssueWrite: true } : {},
+        ))
+      )
+        return;
       if (
         !(await assertDeliverableMutationAllowedByRunContext(req, res, issue))
       )
@@ -11864,6 +11886,27 @@ export function issueRoutes(
         actor,
         documentChanged: true,
       });
+
+      // myrmidon(OPE-13095): the scout's document is ready — wake the assignee
+      // once (the end of the scout's run is the fallback, same idempotency key).
+      if (isStarterPackScoutWrite && doc.key === STARTER_PACK_DOCUMENT_KEY) {
+        try {
+          await wakeAssigneeAfterStarterPack(db, issue, (idempotencyKey) =>
+            queueIssueAssignmentWakeup({
+              heartbeat,
+              issue,
+              reason: "issue_assigned",
+              mutation: "starter_pack",
+              contextSource: STARTER_PACK_READY_SOURCE,
+              requestedByActorType: "system",
+              requestedByActorId: null,
+              idempotencyKey,
+            }),
+          );
+        } catch (err) {
+          logger.warn({ err, issueId: issue.id }, "failed to wake assignee after starter pack");
+        }
+      }
 
       res.status(result.created ? 201 : 200).json(doc);
     },
@@ -13724,15 +13767,21 @@ export function issueRoutes(
       // (deterministic, no LLM) and the user's first comment wakes the assignee
       // through the normal comment path. Every other create path keeps its wake.
       if (!isOnboardingFirstTask) {
-        void queueIssueAssignmentWakeup({
-          heartbeat,
-          issue,
-          reason: "issue_assigned",
-          mutation: "create",
-          contextSource: "issue.create",
-          requestedByActorType: actor.actorType,
-          requestedByActorId: actor.actorId,
-        });
+        // myrmidon(OPE-13095): with `general.starterPackAgentId` set, a new engineer
+        // task wakes the scout first; the assignee is woken after the scout's
+        // document or the end of the scout's run. Only this first wake is held back.
+        const scoutPlaced = await maybeWakeStarterPackScout(db, heartbeat.wakeup, issue);
+        if (!scoutPlaced) {
+          void queueIssueAssignmentWakeup({
+            heartbeat,
+            issue,
+            reason: "issue_assigned",
+            mutation: "create",
+            contextSource: "issue.create",
+            requestedByActorType: actor.actorType,
+            requestedByActorId: actor.actorId,
+          });
+        }
       }
       await queueTaskWatchdogEvaluation(issue, actor.runId);
 
