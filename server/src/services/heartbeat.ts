@@ -305,8 +305,14 @@ import {
   type RoutineRevisionSnapshotV1,
   type RunLivenessState,
   type SourceTrustMetadata,
+  STEP_MODEL_CLASSES,
+  resolveStepModelSelection,
+  type StepModelClass,
+  type StepModelSelection,
 } from "@myrmidon/shared";
 import {
+  agentCastes,
+  instanceSettings,
   agents,
   agentConfigRevisions,
   agentRuntimeState,
@@ -7096,6 +7102,190 @@ function readConfiguredModelFromAdapterConfig(
   adapterConfig: Record<string, unknown> | null | undefined,
 ) {
   return readNonEmptyString(adapterConfig?.model);
+}
+
+// ---------------------------------------------------------------------------
+// myrmidon(1.8 MODEL-BY-STEP / OPE-12998): per-run model selection.
+//
+// The run resolves its model once, before the adapter is dispatched, and
+// persists an immutable snapshot on the run row (step_class / step_model_group
+// / step_model / step_model_reason / step_model_snapshot_json). The decision
+// precedence is the caste rule over the company rule over the agent's own
+// effective model (safe fallback), so a run without any configured rule starts
+// exactly as it did before this feature. A run never changes its model
+// mid-flight: nothing after the start write touches these columns.
+//
+// The rule documents are read permissively here: OPE-12997 owns the settings
+// surface, and until its stored shape lands the reader accepts the documented
+// superset ({modelGroup?|group?, model?} per class) and ignores anything it
+// cannot understand — an unreadable rule must never break the run start, it
+// degrades to the agent fallback. The snapshot carries only names and ids:
+// no secrets, no credentials, no environment values ever enter it.
+// ---------------------------------------------------------------------------
+
+/** Resolution inputs the heartbeat service assembles once per run start. */
+export interface ResolveRunStepModelInput {
+  companyId: string;
+  agentId: string;
+  agentRole: string | null;
+  /** The wake/execution context of the run (parsed run.contextSnapshot). */
+  context: Record<string, unknown>;
+  /** The agent's effective configured model (adapterConfig.model or caste default). */
+  agentModel: string | null;
+}
+
+interface StepModelRuleDoc {
+  byClass?: Record<string, unknown>;
+  classes?: Record<string, unknown>;
+  [key: string]: unknown;
+}
+
+function readStepModelRuleDoc(value: unknown): StepModelRuleDoc | null {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return null;
+  return value as StepModelRuleDoc;
+}
+
+/**
+ * Reads a class → rule document without failing the run: an unusable document
+ * reads as "no rule". Accepts both documented key spellings (`byClass`,
+ * `classes`) so the OPE-12997 storage shape can land without touching this.
+ */
+function readClassRules(doc: StepModelRuleDoc | null): Record<string, unknown> {
+  for (const key of ["byClass", "classes"] as const) {
+    const value = doc?.[key];
+    if (typeof value === "object" && value !== null && !Array.isArray(value)) {
+      return value as Record<string, unknown>;
+    }
+  }
+  return {};
+}
+
+function readStepModelRule(value: unknown): { modelGroup: string | null; model: string | null } | null {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return null;
+  const record = value as Record<string, unknown>;
+  const modelGroup = readNonEmptyString(record.modelGroup) ?? readNonEmptyString(record.group);
+  const model = readNonEmptyString(record.model);
+  if (!modelGroup && !model) return null;
+  return { modelGroup, model };
+}
+
+/**
+ * Reads the company-wide class rules from instance_settings.general
+ * (`general.myrmidonStepModelRules`) — the same document OPE-12997's settings
+ * screen writes. Absent/unusable reads as "no company rule".
+ */
+export async function readCompanyStepModelRules(
+  db: Pick<Db, "select">,
+  companyId: string,
+): Promise<StepModelRuleDoc | null> {
+  try {
+    const row = await db
+      .select({ general: instanceSettings.general })
+      .from(instanceSettings)
+      .where(eq(instanceSettings.singletonKey, "default"))
+      .limit(1)
+      .then((rows) => rows[0] ?? null);
+    const general = row?.general;
+    if (typeof general !== "object" || general === null) return null;
+    const store = (general as Record<string, unknown>).myrmidonStepModelRules;
+    if (typeof store !== "object" || store === null || Array.isArray(store)) return null;
+    return readStepModelRuleDoc((store as Record<string, unknown>)[companyId]);
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Reads the caste override for this agent's caste (`agent_castes` row of the
+ * agent's role). The per-caste column OPE-12997 lands may be a JSON document
+ * (`stepModelRules`) or a plain mapping; both read permissively.
+ */
+export async function readCasteStepModelRules(
+  db: Pick<Db, "select">,
+  companyId: string,
+  casteKey: string | null,
+): Promise<StepModelRuleDoc | null> {
+  if (!casteKey) return null;
+  try {
+    const row = await db
+      .select({ rules: agentCastes.stepModelRules })
+      .from(agentCastes)
+      .where(and(eq(agentCastes.companyId, companyId), eq(agentCastes.key, casteKey)))
+      .limit(1)
+      .then((rows) => rows[0] ?? null);
+    if (!row) return null;
+    if (typeof row.rules === "string") {
+      try {
+        return readStepModelRuleDoc(JSON.parse(row.rules));
+      } catch {
+        return null;
+      }
+    }
+    return readStepModelRuleDoc(row.rules);
+  } catch {
+    return null;
+  }
+}
+
+export const RUN_STEP_MODEL_RESOLVER_VERSION = "step-model-v1";
+
+/**
+ * Resolves the run's model decision and returns the columns to persist at run
+ * start. Never throws for data problems: any unreadable rule degrades to the
+ * agent fallback. The snapshot column is written exactly once (the writer
+ * guards on `step_model_snapshot_json IS NULL`), which is what makes the
+ * snapshot immutable for the run; the frozen shape additionally keeps the
+ * in-memory copy from mutating before the write lands.
+ */
+export function resolveRunStepModel(
+  input: ResolveRunStepModelInput,
+  companyRuleDoc: StepModelRuleDoc | null,
+  casteRuleDoc: StepModelRuleDoc | null,
+): Partial<typeof heartbeatRuns.$inferInsert> {
+  const context = input.context ?? {};
+  // The step class rides the run context the same way review routing and
+  // effort policy receive it; an unknown value resolves to "execution".
+  const stepClassRaw = readNonEmptyString(context.stepClass);
+  const stepClass: StepModelClass = (STEP_MODEL_CLASSES as readonly string[]).includes(stepClassRaw ?? "")
+    ? (stepClassRaw as StepModelClass)
+    : "execution";
+
+  const companyRule = readStepModelRule(readClassRules(companyRuleDoc)[stepClass]);
+  const casteRule = readStepModelRule(readClassRules(casteRuleDoc)[stepClass]);
+
+  let selection: StepModelSelection | null = null;
+  try {
+    selection = resolveStepModelSelection({
+      stepClass,
+      companyRule: companyRule ?? undefined,
+      casteRule: casteRule ?? undefined,
+      agentModel: input.agentModel ?? "",
+      // The group→model catalog is OPE-12997's contract; permissive here.
+      modelGroups: readClassRules(companyRuleDoc).modelGroups as Record<string, string> | undefined,
+    });
+  } catch {
+    // No agent model and no usable rule: the run keeps its historical shape
+    // (no model columns) rather than inventing a model.
+    return {};
+  }
+
+  const snapshot = Object.freeze({
+    schema: "paperclip.step_model.v1",
+    stepClass: selection.stepClass,
+    modelGroup: selection.modelGroup,
+    model: selection.model,
+    reason: selection.reason,
+    resolverVersion: RUN_STEP_MODEL_RESOLVER_VERSION,
+    resolvedAt: new Date().toISOString(),
+  });
+
+  return {
+    stepClass: selection.stepClass,
+    stepModelGroup: selection.modelGroup,
+    stepModel: selection.model,
+    stepModelReason: selection.reason,
+    stepModelSnapshotJson: { ...snapshot, ...selection },
+  };
 }
 
 function attachPaperclipSessionMetadataToSessionParams(
@@ -20402,6 +20592,36 @@ export function heartbeatService(
         });
     if (!claimed) return null;
 
+    // Resolve and persist the model decision exactly once at the queue claim
+    // boundary, before any adapter dispatch. The guarded update makes parallel
+    // claim/retry paths converge on the first snapshot and prevents later
+    // lifecycle writes from changing the historical decision.
+    const stepModelResolution = resolveRunStepModel(
+      {
+        companyId: claimed.companyId,
+        agentId: claimed.agentId,
+        agentRole: agent.role,
+        context: parseObject(claimed.contextSnapshot),
+        agentModel: readConfiguredModelFromAdapterConfig(agent.adapterConfig),
+      },
+      await readCompanyStepModelRules(db, claimed.companyId),
+      await readCasteStepModelRules(db, claimed.companyId, agent.role),
+    );
+    if (stepModelResolution.stepModelSnapshotJson) {
+      // The `IS NULL` guard makes the write idempotent under concurrent
+      // claims: only the first snapshot for the run lands, and no later
+      // lifecycle writer can rewrite the run's historical decision.
+      await db
+        .update(heartbeatRuns)
+        .set(stepModelResolution)
+        .where(
+          and(
+            eq(heartbeatRuns.id, claimed.id),
+            isNull(heartbeatRuns.stepModelSnapshotJson),
+          ),
+        );
+    }
+
     publishLiveEvent({
       companyId: claimed.companyId,
       type: "heartbeat.run.status",
@@ -26221,8 +26441,20 @@ export function heartbeatService(
         mergedConfig,
         selectedEnvironmentId,
       );
-      const executionRunConfig =
+      let executionRunConfig =
         stripWorkspaceRuntimeFromExecutionRunConfig(mergedConfig);
+      const resolvedStepModel = readNonEmptyString(run.stepModel);
+      const resolvedStepModelGroup = readNonEmptyString(run.stepModelGroup);
+      if (resolvedStepModel) {
+        // The run-start snapshot is authoritative for the entire execution.
+        // Apply it before adapter configuration is resolved so every adapter
+        // receives the same model selected at claim time.
+        executionRunConfig = {
+          ...executionRunConfig,
+          model: resolvedStepModel,
+          ...(resolvedStepModelGroup ? { modelGroup: resolvedStepModelGroup } : {}),
+        };
+      }
       const runScopedMentionedSkillKeys =
         await resolveRunScopedMentionedSkillKeys({
           db,
@@ -26476,6 +26708,18 @@ export function heartbeatService(
         });
       const configuredModel =
         readConfiguredModelFromAdapterConfig(runtimeConfig);
+      const resolvedStepModel = readNonEmptyString(run.stepModel);
+      const resolvedStepModelGroup = readNonEmptyString(run.stepModelGroup);
+      if (resolvedStepModel) {
+        // The run-start snapshot is authoritative for the entire execution.
+        // Do not let mutable adapter/session configuration select a different
+        // model after the claim boundary.
+        runtimeConfig = {
+          ...runtimeConfig,
+          model: resolvedStepModel,
+          ...(resolvedStepModelGroup ? { modelGroup: resolvedStepModelGroup } : {}),
+        };
+      }
       const wakeSessionResetReason = describeSessionResetReason(context);
       // myrmidon(1.6.6 LONG-TASK-CONTEXT): drop a task session that is ALREADY
       // at the threshold before the run resumes it. The runtime's own

@@ -28,6 +28,7 @@ import {
   boolean,
   index,
   integer,
+  jsonb,
   pgTable,
   text,
   timestamp,
@@ -80,6 +81,12 @@ export const agentCastes = pgTable(
     // ('light'|'strong'); an agent's own `agents.model_tier` overrides it
     // (design §2.4).
     modelTier: text("model_tier").notNull().default("light"),
+    // myrmidon(1.8 MODEL-BY-STEP / OPE-12998): the per-caste override of the
+    // company step-class → model rule document ({byClass: {review: {modelGroup:
+    // "strong"}}}). Written by the OPE-12997 settings surface; the run-start
+    // resolver reads it permissively and an unusable document degrades to the
+    // company rule or the agent's own model. Null = no caste override.
+    stepModelRules: jsonb("step_model_rules").$type<Record<string, unknown>>(),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
   },
