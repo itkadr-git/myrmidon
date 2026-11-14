@@ -17,7 +17,7 @@ export async function reconcileIssueParentCyclesOnStartup(db: Db) {
         parent.id::text = ANY(walk.path)
       FROM walk
       JOIN issues parent ON parent.id::text = walk.parent_id
-      WHERE NOT walk.cycle AND cardinality(walk.path) <= 1000
+      WHERE NOT walk.cycle
     ), cycle_edges AS (
    SELECT DISTINCT ON (id) id, parent_id
    FROM walk WHERE cycle
