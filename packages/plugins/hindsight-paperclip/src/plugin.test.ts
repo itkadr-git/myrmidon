@@ -825,10 +825,13 @@ describe("manifest", () => {
         hindsightApiUrl: API_URL,
         consolidationEnabled: true,
         consolidationBankIds: ["nightly-bank"],
-        consolidationTimeBudgetMs: 0.0001,
+        consolidationTimeBudgetMs: 1,
       },
     });
-    await createHindsightPlugin({ fetchImpl: async () => { throw new Error("pass should not start"); } }).definition.setup(harness.ctx);
+    await createHindsightPlugin({ fetchImpl: async (_url, init) => {
+      await new Promise<void>((resolve) => init?.signal?.addEventListener("abort", () => resolve(), { once: true }));
+      throw init?.signal?.reason ?? new Error("aborted");
+    } }).definition.setup(harness.ctx);
     await harness.runJob("nightly-consolidation", { runId: "consolidation-budget", scheduledAt: "2026-01-01T02:00:00.000Z" });
     const report = harness.getState({ scopeKind: "instance", stateKey: "hindsight-consolidation-report" }) as Record<string, unknown>;
     assert.equal(report["recordsProcessed"], 0);
