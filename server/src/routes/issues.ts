@@ -9148,14 +9148,10 @@ export function issueRoutes(
     // get the defect-fix defaults (compact view, limit 200, max 500, description
     // omitted in compact) behind the instance setting `issuesListAgentDefaults`;
     // absent means ON, `{enabled: false}` restores the pre-feature behaviour byte-for-byte.
-    const isAgentOrBoardKey =
-      req.actor?.type === "agent" || req.actor?.source === "board_key";
-    const agentDefaultsEnabled = isAgentOrBoardKey
-      ? shouldApplyIssueListAgentDefaults(
-          req.actor,
-          (await instanceSettings.getGeneral()).issuesListAgentDefaults,
-        )
-      : false;
+    const agentDefaultsEnabled = shouldApplyIssueListAgentDefaults(
+      req.actor,
+      (await instanceSettings.getGeneral()).issuesListAgentDefaults,
+    );
     const limit =
       parsedLimit === null
         ? agentDefaultsEnabled
