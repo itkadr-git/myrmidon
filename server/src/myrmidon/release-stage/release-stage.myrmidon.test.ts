@@ -196,6 +196,7 @@ describe("myrmidon(1.8 RELEASE-STAGE) routes: positive permissions", () => {
       .send({ publicationUrl: "https://releases.example.com/1.8.0" })
       .expect(200);
     expect(repeatedPublish.body.stage.publishedAt).toBe(publishRes.body.stage.publishedAt);
+    expect(activity).toHaveLength(3);
     expect(activity.map((row) => row.action)).toEqual([
       "release_stage_gates_defined",
       "release_artifact_signed",

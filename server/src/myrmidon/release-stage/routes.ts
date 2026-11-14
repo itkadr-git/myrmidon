@@ -226,26 +226,29 @@ export function releaseStageRoutes(deps: ReleaseStageRoutesDeps): Router {
       const casteKey = baseActor.type === "agent" ? await deps.casteKeyOf(baseActor.id) : null;
       const actor = withCaste(baseActor, casteKey);
       const body = req.body as z.infer<typeof publishSchema>;
+      const previousStage = await deps.service.getStage(companyId, String(req.params.releaseId ?? ""));
       const stage = await deps.service.publishRelease({
         companyId,
         releaseId: String(req.params.releaseId ?? ""),
         publicationUrl: body.publicationUrl,
         actor,
       });
-      await deps.logActivity({
-        companyId,
-        actorType: actor.type === "agent" ? "agent" : "user",
-        actorId: actor.id,
-        action: "release_published",
-        entityType: "release_stage",
-        entityId: stage.releaseId,
-        details: {
-          publicationUrl: stage.publicationUrl,
-          publishedBy: stage.publishedBy,
-          signedBy: stage.artifact?.signedBy ?? null,
-          verificationUrl: stage.artifact?.verificationUrl ?? null,
-        },
-      });
+      if (!previousStage.publishedAt) {
+        await deps.logActivity({
+          companyId,
+          actorType: actor.type === "agent" ? "agent" : "user",
+          actorId: actor.id,
+          action: "release_published",
+          entityType: "release_stage",
+          entityId: stage.releaseId,
+          details: {
+            publicationUrl: stage.publicationUrl,
+            publishedBy: stage.publishedBy,
+            signedBy: stage.artifact?.signedBy ?? null,
+            verificationUrl: stage.artifact?.verificationUrl ?? null,
+          },
+        });
+      }
       res.json({ stage });
     },
   );
