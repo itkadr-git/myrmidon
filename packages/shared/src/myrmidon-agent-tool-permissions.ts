@@ -43,6 +43,27 @@ export const ALLOW_ALL_AGENT_TOOL_PERMISSIONS: AgentToolPermissions = {
   connections: [],
 };
 
+/**
+ * Default tool permissions for the built-in analyst role:
+ * allowed task, document, and interaction operations, but no code or execution tools.
+ */
+export const ANALYST_TOOL_PERMISSIONS: AgentToolPermissions = {
+  mode: "listed",
+  tools: [
+    "paperclip-self:list_my_issues",
+    "paperclip-self:get_issue_context",
+    "paperclip-self:update_issue",
+    "paperclip-self:create_task",
+    "paperclip-self:update_document",
+    "paperclip-self:create_document",
+    "paperclip-self:read_document",
+    "paperclip-self:list_documents",
+    "paperclip-self:create_comment",
+    "paperclip-self:interaction",
+  ],
+  connections: [],
+};
+
 function asRecord(value: unknown): Record<string, unknown> | null {
   return typeof value === "object" && value !== null && !Array.isArray(value)
     ? (value as Record<string, unknown>)

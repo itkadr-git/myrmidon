@@ -31,6 +31,8 @@ import { createToolGatewayService, ToolGatewayHttpError } from "../services/tool
 // tool-access CRUD, so they drop the company snapshot the way those CRUD paths do.
 import { invalidateToolPolicyCache } from "../myrmidon/tool-policy-cache/runtime.js";
 import {
+  AGENT_TOOL_PERMISSIONS_KEY,
+  ANALYST_TOOL_PERMISSIONS,
   agentToolPermissionAllows,
   normalizeAgentToolPermissions,
   readAgentToolPermissions,
@@ -71,6 +73,18 @@ describe("myrmidon(S6) agent tool permission model", () => {
     expect(agentToolPermissionAllows(listed, { toolName: "y", catalogEntryId: "x" })).toBe(true);
     expect(agentToolPermissionAllows(listed, { toolName: "y", connectionId: "c2" })).toBe(false);
     expect(agentToolPermissionAllows(listed, { toolName: "y" })).toBe(false);
+  });
+
+  it("ANALYST_TOOL_PERMISSIONS allows task and document operations but rejects code execution", () => {
+    expect(agentToolPermissionAllows(ANALYST_TOOL_PERMISSIONS, { toolName: "create_task" })).toBe(true);
+    expect(agentToolPermissionAllows(ANALYST_TOOL_PERMISSIONS, { toolName: "write_document" })).toBe(true);
+    expect(agentToolPermissionAllows(ANALYST_TOOL_PERMISSIONS, { toolName: "read_document" })).toBe(true);
+    expect(agentToolPermissionAllows(ANALYST_TOOL_PERMISSIONS, { toolName: "paperclip-self:list_my_issues" })).toBe(true);
+    expect(agentToolPermissionAllows(ANALYST_TOOL_PERMISSIONS, { toolName: "execute_code" })).toBe(false);
+    expect(agentToolPermissionAllows(ANALYST_TOOL_PERMISSIONS, { toolName: "terminal" })).toBe(false);
+    expect(agentToolPermissionAllows(ANALYST_TOOL_PERMISSIONS, { toolName: "bash" })).toBe(false);
+    expect(agentToolPermissionAllows(ANALYST_TOOL_PERMISSIONS, { toolName: "patch" })).toBe(false);
+    expect(agentToolPermissionAllows(ANALYST_TOOL_PERMISSIONS, { toolName: FIXTURE_TOOL })).toBe(false);
   });
 });
 
@@ -238,6 +252,60 @@ describeEmbeddedPostgres("myrmidon(S6) agent tool permission enforcement", () =>
       gateway.executeTool({ sessionToken: unsetSession.token, tool: FIXTURE_TOOL, parameters: { message: "unchanged" } }),
     ).resolves.toMatchObject({ tool: FIXTURE_TOOL });
   });
+
+  it("enforces ANALYST_TOOL_PERMISSIONS: allows task & doc operations but denies code/exec tools with call_denied journal", async () => {
+    const company = await createCompany();
+    const gateway = createGateway();
+
+    const analystAgent = await createAgent(company.id, {
+      [AGENT_TOOL_PERMISSIONS_KEY]: ANALYST_TOOL_PERMISSIONS,
+    });
+    const analystRun = await createRunningRun(company.id, analystAgent.id);
+    await allowAllToolsForAgent(company.id, analystAgent.id);
+
+    const session = await gateway.createSession({
+      companyId: company.id,
+      agentId: analystAgent.id,
+      runId: analystRun.run.id,
+    });
+
+    // Allowed tool (in ANALYST_TOOL_PERMISSIONS.tools)
+    await expect(
+      gateway.executeTool({
+        sessionToken: session.token,
+        tool: "paperclip-self:list_my_issues",
+        parameters: { limit: 10 },
+      }),
+    ).resolves.toMatchObject({ tool: "paperclip-self:list_my_issues" });
+
+    // Denied code/exec tool (not in ANALYST_TOOL_PERMISSIONS.tools)
+    await gateway
+      .executeTool({
+        sessionToken: session.token,
+        tool: FIXTURE_TOOL,
+        parameters: { message: "run code" },
+      })
+      .then(
+        () => {
+          throw new Error("Expected the tool call to be refused");
+        },
+        (error) => {
+          expect(error).toBeInstanceOf(ToolGatewayHttpError);
+          expect((error as ToolGatewayHttpError).status).toBe(403);
+          expect((error as ToolGatewayHttpError).reasonCode).toBe("deny_agent_permission");
+        },
+      );
+
+    // Verify denial was journaled with call_denied and deny_agent_permission
+    const denials = await db
+      .select()
+      .from(toolCallEvents)
+      .where(eq(toolCallEvents.reasonCode, "deny_agent_permission"));
+    expect(denials.map((row) => row.agentId)).toContain(analystAgent.id);
+    expect(denials.map((row) => row.decision)).toContain("deny");
+    expect(denials.map((row) => row.runId)).toContain(analystRun.run.id);
+  });
+});
 
   // myrmidon(1.6.5-F22): actor × grant → status matrix for the tools
   // gallery / connections surfaces. Board actors keep their behavior; an agent
