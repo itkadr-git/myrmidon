@@ -131,11 +131,15 @@ describeEmbeddedPostgres("myrmidon(1.8 INTAKE-DIALOG / OPE-13010): intake dialog
       expect(stored.idempotencyKey).toBe(
         intakeCardApprovalIdempotencyKey(issueId, result.revisionId),
       );
-      expect(stored.target).toEqual({
-        type: "issue_document",
-        key: INTAKE_CARD_DOCUMENT_KEY,
-        revisionId: result.revisionId,
-        revisionNumber: 1,
+      expect(stored.payload).toMatchObject({
+        version: 1,
+        target: {
+          type: "issue_document",
+          issueId,
+          key: INTAKE_CARD_DOCUMENT_KEY,
+          revisionId: result.revisionId,
+          revisionNumber: 1,
+        },
       });
     }
 
