@@ -510,10 +510,27 @@ export async function fetchJobLog(
   const url = `https://api.github.com/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/actions/jobs/${jobId}/logs`;
   const timeoutMs = options?.timeoutMs ?? GITHUB_REQUEST_TIMEOUT_MS;
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  let timedOut = false;
+  const timer = setTimeout(() => {
+    timedOut = true;
+    controller.abort(new Error(`request timed out after ${timeoutMs}ms`));
+  }, timeoutMs);
+
+  let removeSignalListener: (() => void) | undefined;
+  if (options?.signal) {
+    if (options.signal.aborted) {
+      controller.abort(options.signal.reason);
+    } else {
+      const onAbort = () => {
+        controller.abort(options.signal!.reason);
+      };
+      options.signal.addEventListener("abort", onAbort, { once: true });
+      removeSignalListener = () => options.signal!.removeEventListener("abort", onAbort);
+    }
+  }
 
   try {
-    const res = await fetchImpl(url, {
+    const fetchPromise = fetchImpl(url, {
       method: "GET",
       headers: {
         Authorization: `Bearer ${token}`,
@@ -521,8 +538,22 @@ export async function fetchJobLog(
         "User-Agent": GITHUB_USER_AGENT,
       },
       redirect: "follow",
-      signal: options?.signal ?? controller.signal,
+      signal: controller.signal,
     });
+
+    const abortPromise = new Promise<never>((_, reject) => {
+      if (controller.signal.aborted) {
+        reject(controller.signal.reason ?? new Error("aborted"));
+      } else {
+        controller.signal.addEventListener(
+          "abort",
+          () => reject(controller.signal.reason ?? new Error("aborted")),
+          { once: true },
+        );
+      }
+    });
+
+    const res = await Promise.race([fetchPromise, abortPromise]);
     recordGitHubRequest("ci-resolver", res as Response);
 
     if (res.status === 403 || res.status === 401) {
@@ -541,10 +572,20 @@ export async function fetchJobLog(
     const text = await res.text();
     return { ok: true, status: res.status, text };
   } catch (err) {
+    if (timedOut) {
+      return { ok: false, status: 0, unavailableReason: `request timed out after ${timeoutMs}ms` };
+    }
+    if (options?.signal?.aborted) {
+      const reason = options.signal.reason instanceof Error
+        ? options.signal.reason.message
+        : String(options.signal.reason ?? "request aborted");
+      return { ok: false, status: 0, unavailableReason: `request aborted: ${reason}` };
+    }
     const reason = err instanceof Error ? err.message : String(err);
     return { ok: false, status: 0, unavailableReason: `fetch failed: ${reason}` };
   } finally {
     clearTimeout(timer);
+    removeSignalListener?.();
   }
 }
 
@@ -556,6 +597,7 @@ export async function resolveCiFailureTails(
     token: string | null;
     fetchImpl: FetchLike;
     signal?: AbortSignal;
+    timeoutMs?: number;
   },
 ): Promise<Array<{
   jobId: number;
@@ -571,86 +613,92 @@ export async function resolveCiFailureTails(
     runId?: number | null;
     logTail?: string | null;
     unavailableReason?: string | null;
-  }> = [];
-
-  for (const job of targetJobs) {
-    const runId = extractActionsRunId(job.url);
-    const cacheKey = `${options.owner.toLowerCase()}/${options.repo.toLowerCase()}#${job.id}`;
-    const cached = jobLogCache.get(cacheKey);
-    if (cached && cached.expiresAt > Date.now()) {
-      results.push({
-        jobId: job.id,
-        jobName: job.name,
-        runId: runId ?? null,
-        logTail: cached.text ?? null,
-        unavailableReason: cached.unavailableReason ?? null,
-      });
-      continue;
-    }
-
-    if (isGitHubRateLimited()) {
-      results.push({
-        jobId: job.id,
-        jobName: job.name,
-        runId: runId ?? null,
-        logTail: null,
-        unavailableReason: `GitHub rate limit until ${getGitHubRateLimitResetTime() ?? "unknown"}`,
-      });
-      continue;
-    }
-
-    const res = await fetchJobLog(
-      options.owner,
-      options.repo,
-      job.id,
-      options.token,
-      options.fetchImpl,
-      { signal: options.signal },
-    );
-
-    if (res.ok && res.text) {
-      const formatted = formatJobLogTail(res.text, MAX_CI_FAILURE_TAIL_LINES);
-      const sanitized = sanitizeSecrets(formatted);
-      if (!sanitized) {
-        results.push({ jobId: job.id, jobName: job.name, runId: runId ?? null, logTail: null, unavailableReason: "job log empty" });
-        continue;
+  }> = await Promise.all(
+    targetJobs.map(async (job) => {
+      const runId = extractActionsRunId(job.url);
+      const cacheKey = `${options.owner.toLowerCase()}/${options.repo.toLowerCase()}#${job.id}`;
+      const cached = jobLogCache.get(cacheKey);
+      if (cached && cached.expiresAt > Date.now()) {
+        return {
+          jobId: job.id,
+          jobName: job.name,
+          runId: runId ?? null,
+          logTail: cached.text ?? null,
+          unavailableReason: cached.unavailableReason ?? null,
+        };
       }
 
-      if (jobLogCache.size >= JOB_LOG_CACHE_MAX_ENTRIES) {
-        const oldestKey = jobLogCache.keys().next().value;
-        if (oldestKey !== undefined) jobLogCache.delete(oldestKey);
+      if (isGitHubRateLimited()) {
+        return {
+          jobId: job.id,
+          jobName: job.name,
+          runId: runId ?? null,
+          logTail: null,
+          unavailableReason: `GitHub rate limit until ${getGitHubRateLimitResetTime() ?? "unknown"}`,
+        };
       }
-      jobLogCache.set(cacheKey, {
-        text: sanitized,
-        expiresAt: Date.now() + JOB_LOG_CACHE_SUCCESS_TTL_MS,
-      });
 
-      results.push({
-        jobId: job.id,
-        jobName: job.name,
-        runId: runId ?? null,
-        logTail: sanitized,
-      });
-    } else {
-      const reason = res.unavailableReason ?? "job log unavailable";
-      if (jobLogCache.size >= JOB_LOG_CACHE_MAX_ENTRIES) {
-        const oldestKey = jobLogCache.keys().next().value;
-        if (oldestKey !== undefined) jobLogCache.delete(oldestKey);
+      const res = await fetchJobLog(
+        options.owner,
+        options.repo,
+        job.id,
+        options.token,
+        options.fetchImpl,
+        {
+          signal: options.signal,
+          timeoutMs: options.timeoutMs ?? GITHUB_REQUEST_TIMEOUT_MS,
+        },
+      );
+
+      if (res.ok && res.text) {
+        const formatted = formatJobLogTail(res.text, MAX_CI_FAILURE_TAIL_LINES);
+        const sanitized = sanitizeSecrets(formatted);
+        if (!sanitized) {
+          return {
+            jobId: job.id,
+            jobName: job.name,
+            runId: runId ?? null,
+            logTail: null,
+            unavailableReason: "job log empty",
+          };
+        }
+
+        if (jobLogCache.size >= JOB_LOG_CACHE_MAX_ENTRIES) {
+          const oldestKey = jobLogCache.keys().next().value;
+          if (oldestKey !== undefined) jobLogCache.delete(oldestKey);
+        }
+        jobLogCache.set(cacheKey, {
+          text: sanitized,
+          expiresAt: Date.now() + JOB_LOG_CACHE_SUCCESS_TTL_MS,
+        });
+
+        return {
+          jobId: job.id,
+          jobName: job.name,
+          runId: runId ?? null,
+          logTail: sanitized,
+        };
+      } else {
+        const reason = res.unavailableReason ?? "job log unavailable";
+        if (jobLogCache.size >= JOB_LOG_CACHE_MAX_ENTRIES) {
+          const oldestKey = jobLogCache.keys().next().value;
+          if (oldestKey !== undefined) jobLogCache.delete(oldestKey);
+        }
+        jobLogCache.set(cacheKey, {
+          unavailableReason: reason,
+          expiresAt: Date.now() + JOB_LOG_CACHE_FAILURE_TTL_MS,
+        });
+
+        return {
+          jobId: job.id,
+          jobName: job.name,
+          runId: runId ?? null,
+          logTail: null,
+          unavailableReason: reason,
+        };
       }
-      jobLogCache.set(cacheKey, {
-        unavailableReason: reason,
-        expiresAt: Date.now() + JOB_LOG_CACHE_FAILURE_TTL_MS,
-      });
-
-      results.push({
-        jobId: job.id,
-        jobName: job.name,
-        runId: runId ?? null,
-        logTail: null,
-        unavailableReason: reason,
-      });
-    }
-  }
+    }),
+  );
 
   enforceTotalCharsCap(results, MAX_CI_FAILURE_TAILS_TOTAL_CHARS);
 

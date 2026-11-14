@@ -2183,4 +2183,81 @@ describe("resolveCiFailureTails (red CI log tails, OPE-13078)", () => {
     const plain = formatJobLogTail(Array.from({ length: 200 }, (_, i) => `l${i}`).join("\n"));
     expect(plain).toContain("l199");
   });
+
+  it("aborts fetchJobLog when options.signal is triggered", async () => {
+    const abortController = new AbortController();
+    let capturedSignal: AbortSignal | undefined;
+    const fetchImpl: FetchLike = async (_url, init) => {
+      capturedSignal = init?.signal as AbortSignal | undefined;
+      return new Promise((resolve, reject) => {
+        if (init?.signal?.aborted) {
+          reject(init.signal.reason);
+          return;
+        }
+        init?.signal?.addEventListener("abort", () => reject(init.signal.reason), { once: true });
+      });
+    };
+
+    const logPromise = fetchJobLog("owner", "repo", 9999, "ghp_tok", fetchImpl, {
+      signal: abortController.signal,
+    });
+
+    abortController.abort(new Error("deadline reached"));
+    const result = await logPromise;
+
+    expect(result.ok).toBe(false);
+    expect(result.unavailableReason).toContain("request aborted");
+    expect(capturedSignal?.aborted).toBe(true);
+  });
+
+  it("respects timeoutMs in fetchJobLog when hanging", async () => {
+    const fetchImpl: FetchLike = async (_url, init) => {
+      return new Promise((resolve, reject) => {
+        if (init?.signal?.aborted) {
+          reject(init.signal.reason);
+          return;
+        }
+        init?.signal?.addEventListener("abort", () => reject(init.signal.reason), { once: true });
+      });
+    };
+
+    const result = await fetchJobLog("owner", "repo", 9999, "ghp_tok", fetchImpl, {
+      timeoutMs: 25,
+    });
+
+    expect(result.ok).toBe(false);
+    expect(result.unavailableReason).toContain("timed out after 25ms");
+  });
+
+  it("fetches multiple logs concurrently in resolveCiFailureTails", async () => {
+    let activeRequests = 0;
+    let maxConcurrent = 0;
+    const fetchImpl: FetchLike = async () => {
+      activeRequests++;
+      if (activeRequests > maxConcurrent) {
+        maxConcurrent = activeRequests;
+      }
+      await new Promise((r) => setTimeout(r, 20));
+      activeRequests--;
+      return new Response("line 1\nline 2", {
+        status: 200,
+        headers: { "Content-Type": "text/plain" },
+      }) as unknown as Response;
+    };
+
+    const jobs = [
+      { id: 101, name: "job-1", conclusion: "failure" as const, url: "https://github.com/o/r/actions/runs/1/job/101" },
+      { id: 102, name: "job-2", conclusion: "failure" as const, url: "https://github.com/o/r/actions/runs/1/job/102" },
+    ];
+
+    const tails = await resolveCiFailureTails(jobs, {
+      owner: "o",
+      repo: "r",
+      token: "tok",
+      fetchImpl,
+    });
+
+    expect(tails).toHaveLength(2);
+    expect(maxConcurrent).toBe(2);
+  });
 });
