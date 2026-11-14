@@ -284,12 +284,21 @@ describeEmbeddedPostgres("myrmidon review admission atomic wake persistence", ()
       },
     });
 
+    const reviewerRunId = randomUUID();
+    await ctx.db.insert(heartbeatRuns).values({
+      id: reviewerRunId,
+      companyId,
+      agentId: reviewerAgentId,
+      status: "running",
+      contextSnapshot: { issueId },
+    });
+
     const reviewerActor = {
       type: "agent" as const,
       source: "agent_jwt" as const,
       agentId: reviewerAgentId,
       companyId,
-      runId: randomUUID(),
+      runId: reviewerRunId,
       isInstanceAdmin: false,
     };
 
