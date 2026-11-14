@@ -1837,21 +1837,177 @@ component_host_write_override() {
     install_preserving "$tmp" "$COMPONENT_OVERRIDE_PATH" || { rm -f "$tmp"; die "cannot write $COMPONENT_OVERRIDE_PATH"; }
   fi
 }
-# Parses MYR_<COMPONENT>_HOST into COMPONENT_REMOTE/COMPONENT_SKIP, die() on a
-# malformed value. Usage: component_host_parse <component> <host-value>.
+# Parses MYR_<COMPONENT>_HOST into COMPONENT_REMOTE/COMPONENT_SKIP/
+# COMPONENT_SITE, die() on a malformed value.
+#   local                 the service runs in this host's compose project;
+#   skip                  the component is not managed by this deploy;
+#   remote:<user>@<host>  the service runs on another host, in a compose
+#                         project (docker/compose through ssh, the override
+#                         file written there);
+#   site:<user>@<host>    the service is a systemd binary on another site
+#                         host (no compose there): the binary is extracted
+#                         from the release image on THIS host and installed
+#                         through ssh (see component_site_* below).
+# Usage: component_host_parse <component> <host-value>.
 component_host_parse() {
   local component="$1" value="${2:-local}"
-  COMPONENT_REMOTE="" COMPONENT_SKIP=0
+  COMPONENT_REMOTE="" COMPONENT_SKIP=0 COMPONENT_SITE=0
   case "$value" in
     local) ;;
     skip) COMPONENT_SKIP=1 ;;
     remote:*)
       COMPONENT_REMOTE="${value#remote:}"
       [[ "$COMPONENT_REMOTE" =~ ^[A-Za-z0-9._-]+@[A-Za-z0-9._-]+$ ]] \
-        || die "MYR_${component^^}_HOST must be local, skip or remote:<user>@<host>, got '$value'"
+        || die "MYR_${component^^}_HOST must be local, skip, remote:<user>@<host> or site:<user>@<host>, got '$value'"
       ;;
-    *) die "MYR_${component^^}_HOST must be local, skip or remote:<user>@<host>, got '$value'" ;;
+    site:*)
+      COMPONENT_SITE=1
+      COMPONENT_REMOTE="${value#site:}"
+      [[ "$COMPONENT_REMOTE" =~ ^[A-Za-z0-9._-]+@[A-Za-z0-9._-]+$ ]] \
+        || die "MYR_${component^^}_HOST must be local, skip, remote:<user>@<host> or site:<user>@<host>, got '$value'"
+      ;;
+    *) die "MYR_${component^^}_HOST must be local, skip, remote:<user>@<host> or site:<user>@<host>, got '$value'" ;;
   esac
+}
+
+# --- site mode (a systemd binary on a remote site host) ----------------------
+
+# The site settings of one component (the same dynamic naming as component_env,
+# read after component_host_parse set COMPONENT_SITE):
+#   MYR_<COMPONENT>_SITE_SERVICE      the systemd unit on the site host
+#                                     (default: myrmidon-<component>)
+#   MYR_<COMPONENT>_SITE_BINARY       the binary path on the site host
+#                                     (default: /usr/local/bin/<component>)
+#   MYR_<COMPONENT>_SITE_HEALTH_URL   REQUIRED in site mode: the health
+#                                     endpoint the deploy host can reach (an
+#                                     mTLS curl target; see deploy.env.example)
+component_site_env() {
+  local component="$1" up
+  up="$(printf '%s' "$component" | tr '[:lower:]' '[:upper:]')"
+  local svc_var="MYR_${up}_SITE_SERVICE" bin_var="MYR_${up}_SITE_BINARY" url_var="MYR_${up}_SITE_HEALTH_URL"
+  COMPONENT_SITE_SERVICE="${!svc_var:-myrmidon-$component}"
+  COMPONENT_SITE_BINARY="${!bin_var:-/usr/local/bin/$component}"
+  COMPONENT_SITE_HEALTH_URL="${!url_var:-}"
+}
+
+component_site_ssh() {
+  # shellcheck disable=SC2029
+  ssh "${component_host_ssh_opts[@]}" "$COMPONENT_REMOTE" "$@"
+}
+
+# The site-side activation script, run on the site host over `ssh … bash -s`:
+# back up the current binary, swap, restart the unit, and require `active`.
+# The binary itself was streamed separately (`ssh … cat > $SITE_BIN.new`), so
+# no half-written binary is ever started; on any failure the site host
+# restores its own backup and restarts again. The backup ($SITE_BIN.pre-deploy)
+# STAYS on the site: it is the rollback artifact rollback-component.sh uses.
+# shellcheck disable=SC2016  # single-quoted on purpose: the site's shell expands it, not this one
+COMPONENT_SITE_ACTIVATION_REMOTE='set -e
+test -s "$SITE_BIN.new"
+if [ -e "$SITE_BIN" ]; then cp -a "$SITE_BIN" "$SITE_BIN.pre-deploy"; fi
+install -m 0755 "$SITE_BIN.new" "$SITE_BIN.staged"
+mv "$SITE_BIN.staged" "$SITE_BIN"
+rm -f "$SITE_BIN.new"
+systemctl restart "$SITE_UNIT"
+if [ "$(systemctl is-active "$SITE_UNIT")" != "active" ]; then
+  echo "$SITE_UNIT is not active after the restart" >&2
+  if [ -e "$SITE_BIN.pre-deploy" ]; then
+    cp -a "$SITE_BIN.pre-deploy" "$SITE_BIN"
+    systemctl restart "$SITE_UNIT"
+  fi
+  exit 1
+fi'
+
+# Installs one site component through ssh. The binary of $ref is extracted on
+# THIS host into a temp file (docker create + docker cp — the image is
+# distroless, there is nothing to exec into), streamed to the site with
+# `cat > $SITE_BIN.new`, then the activation script above runs there. The
+# script text is passed on stdin as one ssh argument, so remote quoting stays
+# under control. Returns 1 when any step fails.
+component_site_rollout_binary() {
+  local ref="$1" cid rc=0 tmp
+  component_site_env "$COMPONENT_NAME"
+  log "site rollout: extracting the $COMPONENT_NAME binary from $ref"
+  mkdir -p "$STATE_DIR"
+  tmp="$STATE_DIR/$COMPONENT_NAME.new.bin"
+  cid="$(docker create --name "myr-site-extract-$COMPONENT_NAME-$$" "$ref")" \
+    || { log "cannot create the extract container from $ref"; return 1; }
+  if ! docker cp "${cid}:${COMPONENT_SITE_BINARY}" "$tmp"; then
+    docker rm -f "$cid" >/dev/null 2>&1 || true
+    log "cannot extract $COMPONENT_SITE_BINARY from $ref"
+    return 1
+  fi
+  docker rm -f "$cid" >/dev/null 2>&1 || true
+  # One stream per ssh call: the binary (cat), then the activation script.
+  # shellcheck disable=SC2029
+  { component_site_ssh "cat > '$COMPONENT_SITE_BINARY.new'" <"$tmp" \
+      && component_site_ssh "SITE_BIN='$COMPONENT_SITE_BINARY' SITE_UNIT='$COMPONENT_SITE_SERVICE' bash -s" <<<"$COMPONENT_SITE_ACTIVATION_REMOTE"; } || rc=$?
+  rm -f "$tmp"
+  ((rc == 0)) || { log "site rollout of $COMPONENT_NAME failed on $COMPONENT_REMOTE; the site host restored its previous binary"; return 1; }
+  # The history entry is the caller's job: only rollout-component.sh knows the
+  # previous digest worth recording next to the new ref.
+}
+
+# The site-side restore script: the body of a rollback driven by the SITE'S
+# OWN backup ($SITE_BIN.pre-deploy, made by the last activation). Installs the
+# backup without a restart — the caller (rollback-component.sh) restarts and
+# checks health. Exit 3 = no backup on the site: a first deploy never replaced
+# an earlier binary, so there is nothing to roll back to.
+# shellcheck disable=SC2016  # single-quoted on purpose: the site's shell expands it, not this one
+COMPONENT_SITE_RESTORE_BACKUP_REMOTE='set -e
+if [ ! -e "$SITE_BIN.pre-deploy" ]; then
+  echo "no backup $SITE_BIN.pre-deploy on this host: nothing to roll back to" >&2
+  exit 3
+fi
+cp -a "$SITE_BIN.pre-deploy" "$SITE_BIN.staged"
+mv "$SITE_BIN.staged" "$SITE_BIN"'
+
+# Restores the site's own backup (see the script above). ssh passes the remote
+# exit code through, so 3 here means "no backup on the site".
+component_site_restore_backup() {
+  component_site_env "$COMPONENT_NAME"
+  # shellcheck disable=SC2029
+  component_site_ssh "SITE_BIN='$COMPONENT_SITE_BINARY' bash -s" <<<"$COMPONENT_SITE_RESTORE_BACKUP_REMOTE"
+}
+
+# The sha256 of the site binary, as the site host sees it (empty when there is
+# none). One call, no temp files.
+component_site_current_digest() {
+  component_site_ssh "sha256sum '$COMPONENT_SITE_BINARY' 2>/dev/null" 2>/dev/null | cut -d" " -f1
+}
+
+# shellcheck disable=SC2016  # single-quoted on purpose: the site's shell expands it, not this one
+# The rollback variant of the activation for an explicit IMAGE ref: install
+# only, no backup and no restart — the caller (rollback-component.sh)
+# restarts and checks health.
+COMPONENT_SITE_INSTALL_REMOTE='set -e
+test -s "$SITE_BIN.new"
+install -m 0755 "$SITE_BIN.new" "$SITE_BIN.staged"
+mv "$SITE_BIN.staged" "$SITE_BIN"
+rm -f "$SITE_BIN.new"'
+
+# Installs the binary of $ref WITHOUT the restart or the health check: the
+# body of a site rollback, driven by rollback-component.sh.
+component_site_install_ref() {
+  local ref="$1" cid rc=0 tmp
+  component_site_env "$COMPONENT_NAME"
+  log "site rollback: extracting the $COMPONENT_NAME binary from $ref"
+  mkdir -p "$STATE_DIR"
+  tmp="$STATE_DIR/$COMPONENT_NAME.new.bin"
+  cid="$(docker create --name "myr-site-extract-$COMPONENT_NAME-$$" "$ref")" \
+    || { log "cannot create the extract container from $ref"; return 1; }
+  if ! docker cp "${cid}:${COMPONENT_SITE_BINARY}" "$tmp"; then
+    docker rm -f "$cid" >/dev/null 2>&1 || true
+    log "cannot extract $COMPONENT_SITE_BINARY from $ref"
+    return 1
+  fi
+  docker rm -f "$cid" >/dev/null 2>&1 || true
+  # One stream per ssh call: the binary (cat), then the plain install script.
+  # shellcheck disable=SC2029
+  { component_site_ssh "cat > '$COMPONENT_SITE_BINARY.new'" <"$tmp" \
+      && component_site_ssh "SITE_BIN='$COMPONENT_SITE_BINARY' bash -s" <<<"$COMPONENT_SITE_INSTALL_REMOTE"; } || rc=$?
+  rm -f "$tmp"
+  return "$rc"
 }
 
 # ONE-DEPLOY: shared helpers of the all-components deploy.
@@ -1860,11 +2016,21 @@ component_host_parse() {
 # when no container exists). One source of truth: what runs, not what a file
 # says. Reads the same host the rollout targets (MYR_<COMPONENT>_HOST); runs in
 # a subshell so the COMPONENT_* globals of the caller are not touched. Empty for
-# a component the deploy does not manage (host skip).
 component_current_ref() (
   component_env "$1"
   component_host_parse "$1" "$COMPONENT_HOST"
   [[ "$COMPONENT_SKIP" == "1" ]] && exit 0
+  if [[ "$COMPONENT_SITE" == "1" ]]; then
+    # ONE-DEPLOY view of a site: what the site runs is the sha256 of its
+    # binary (there is no container and no override); `site:<digest>` keeps the
+    # changed/unchanged comparison of deploy.sh honest and shows up in the
+    # plan as site:<…>.
+    COMPONENT_NAME="$1"
+    component_site_env "$1"
+    d="$(component_site_current_digest)"
+    [[ -n "$d" ]] && printf 'site:%s\n' "$d"
+    exit 0
+  fi
   component_host_previous_ref
 )
 
