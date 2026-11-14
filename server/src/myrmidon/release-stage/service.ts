@@ -278,10 +278,13 @@ export function createReleaseStageService(deps: {
       if (stage.publishedAt) {
         throw conflict("release already published", { code: "release_already_published" });
       }
-      if (stage.artifact && stage.artifact.signedBy.id !== input.actor.id) {
-        throw conflict("artifact already signed by another actor", {
-          code: "release_already_signed",
-        });
+      if (stage.artifact) {
+        throw conflict(
+          stage.artifact.signedBy.id === input.actor.id
+            ? "artifact already signed"
+            : "artifact already signed by another actor",
+          { code: "release_already_signed" },
+        );
       }
       const signed: ReleaseStage = {
         ...stage,

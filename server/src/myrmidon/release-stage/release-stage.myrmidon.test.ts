@@ -173,6 +173,27 @@ describe("myrmidon(1.8 RELEASE-STAGE) routes: positive permissions", () => {
       casteKey: "release_manager",
     });
 
+    const repeatSign = await request(server)
+      .post(`/api/myrmidon/release-stages/${RELEASE_ID}/sign?companyId=${COMPANY_ID}`)
+      .set("x-test-actor", "agent-rel")
+      .send({
+        artifactId: "different-artifact",
+        tag: "v2026.1114.2",
+        version: "1.8.0-rc.2",
+        composition: ["OPE-13015"],
+        digest: "sha256:changed",
+        verificationUrl: "https://releases.example.com/changed/verify",
+      })
+      .expect(409);
+    expect(repeatSign.body.details?.code ?? repeatSign.body.code).toBe("release_already_signed");
+    const stage = await request(server)
+      .get(`/api/myrmidon/release-stages/${RELEASE_ID}?companyId=${COMPANY_ID}`)
+      .expect(200);
+    expect(stage.body.stage.artifact.tag).toBe("v2026.1114.1");
+    expect(stage.body.stage.artifact.version).toBe("1.8.0-rc.1");
+    expect(stage.body.stage.artifact.composition).toEqual(["OPE-13005", "OPE-13008"]);
+    expect(stage.body.stage.artifact.digest).toBe("sha256:abc123");
+
     // The same releaser caste publishes: the publication reference carries the
     // verifiable URL and the authorship of both the signer and the publisher.
     const publishRes = await request(server)
