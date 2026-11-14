@@ -495,3 +495,57 @@ export function gateState(expectedJobs, observedJobs) {
     failed,
   };
 }
+
+/**
+ * Fail-closed configuration guard for the release-tag CI queue priority
+ * (OPE-13002 reviewer finding). The priority guarantee is the DEDICATED
+ * runner pool vars.CI_RUNNER_PRIORITY: ordinary runs never receive that
+ * label, so a free priority runner always dispatches the oldest queued
+ * release run first. When the variable is UNSET, every tag-CI job's
+ * runs-on silently degrades to the shared runner labels and the release
+ * build has NO priority over ordinary runs at all.
+ *
+ * That configuration must not pass: a release build without a guaranteed
+ * priority queue is a release that can ship behind ordinary work, so the
+ * tag CI fails closed instead. This helper is the single behaviour-level
+ * implementation of that guard; the "Verify release build queue priority"
+ * step of myrmidon-ci-tag.yml calls it before any observed-order check.
+ *
+ * @param {string|undefined|null} priorityPool  value of vars.CI_RUNNER_PRIORITY
+ * @throws {Error} when the pool is unset/empty or not a JSON runner label
+ *   array (a malformed value would silently break the runs-on expression).
+ * @returns {string[]} the parsed runner labels when configured.
+ */
+export function assertPriorityPoolConfigured(priorityPool) {
+  const raw = String(priorityPool ?? "").trim();
+  if (!raw) {
+    throw new Error(
+      "CI_RUNNER_PRIORITY is not configured: without the priority runner " +
+        "pool the release tag build has no queue priority over ordinary " +
+        "runs (jobs would fall back to the shared pool). Configure " +
+        "vars.CI_RUNNER_PRIORITY with the dedicated release runner label " +
+        "before tagging a release (fail closed)."
+    );
+  }
+  let labels;
+  try {
+    labels = JSON.parse(raw);
+  } catch {
+    throw new Error(
+      "CI_RUNNER_PRIORITY is not valid JSON: " +
+        JSON.stringify(raw) +
+        " — the runs-on expression would evaluate to a broken label; " +
+        "configure vars.CI_RUNNER_PRIORITY as a JSON runner-label array " +
+        "(fail closed)."
+    );
+  }
+  if (!Array.isArray(labels) || labels.length === 0 || labels.some((l) => typeof l !== "string" || !l.trim())) {
+    throw new Error(
+      "CI_RUNNER_PRIORITY must be a non-empty JSON array of runner labels; " +
+        "got " +
+        raw +
+        " (fail closed)."
+    );
+  }
+  return labels;
+}

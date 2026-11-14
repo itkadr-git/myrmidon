@@ -20,7 +20,9 @@ name: Myrmidon CI (tag)
 #     counts),
 #   - every job routes to the priority runner pool (vars.CI_RUNNER_PRIORITY)
 #     ahead of queued ordinary runs — a release tag build never waits behind
-#     an ordinary build (OPE-13002).
+#     an ordinary build (OPE-13002). If the priority pool is NOT configured,
+#     the `Verify release build queue priority` step fails the run closed:
+#     a release without a guaranteed priority queue must not ship.
 #
 # The job bodies are kept in sync with myrmidon-ci.yml by
 # scripts/myrmidon/release/release-publish.test.mjs (the "tag CI workflow"
@@ -61,9 +63,11 @@ jobs:
     name: typecheck
     # OPE-13002: every job of the tag CI is a release build job. Route to the
     # priority runner pool (vars.CI_RUNNER_PRIORITY) ahead of queued ordinary
-    # runs; fall back to the shared pool labels when no priority runner is
-    # configured. The queue-priority monitor in the ci-result job asserts
-    # this wiring (release-jobs.test.mjs "tag CI workflow jobs").
+    # runs; the fallback chain keeps the runs-on expression valid, but the
+    # ci-result job fails the run closed when CI_RUNNER_PRIORITY is unset —
+    # without the priority pool there is no queue priority to guarantee. The
+    # queue-priority monitor in the ci-result job asserts this wiring
+    # (release-jobs.test.mjs "tag CI workflow jobs").
     runs-on: ${{ fromJSON(vars.CI_RUNNER_PRIORITY || vars.CI_RUNNER_MAIN || vars.CI_RUNNER_TYPECHECK || '"ubuntu-latest"') }}
     timeout-minutes: 30
     steps:
@@ -756,8 +760,27 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           REPO: ${{ github.repository }}
           WORKFLOW: "Myrmidon CI (tag)"
+          # OPE-13002 (reviewer finding): the priority guarantee is the
+          # dedicated runner pool (vars.CI_RUNNER_PRIORITY). When it is
+          # UNSET, every job's runs-on silently degrades to the shared pool
+          # labels and the release build has NO priority over ordinary runs.
+          # That configuration must not pass: the release build either runs
+          # on the priority pool or the tag CI fails closed — the release
+          # gate and the publish step refuse a failed/missing tag run, so a
+          # release without a guaranteed priority queue never ships.
+          PRIORITY_POOL: ${{ vars.CI_RUNNER_PRIORITY }}
         run: |
           set -euo pipefail
+          # Fail closed when the priority runner pool is not configured or
+          # malformed (single behaviour-level guard implemented in
+          # release-jobs.mjs and covered by release-jobs.test.mjs):
+          # without the priority pool there is no mechanism that puts the
+          # release build ahead of queued ordinary runs.
+          PRIORITY_POOL="$PRIORITY_POOL" node --input-type=module -e '
+            const { assertPriorityPoolConfigured } = await import("./scripts/myrmidon/release/release-jobs.mjs");
+            const labels = assertPriorityPoolConfigured(process.env.PRIORITY_POOL);
+            console.log(`PASS: priority runner pool configured with label(s): ${labels.join(", ")}`);
+          '
           # OPE-13002: release builds of the release-tag CI get priority in the
           # CI queue. The ENFORCEMENT mechanism is the priority runner pool
           # (vars.CI_RUNNER_PRIORITY), a dedicated runner label ordinary runs

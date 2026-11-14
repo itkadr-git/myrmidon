@@ -23,6 +23,7 @@ import {
   priorityViolations,
   observedPriorityViolations,
   gateState,
+  assertPriorityPoolConfigured,
 } from "./release-jobs.mjs";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
@@ -118,10 +119,32 @@ describe("tag CI workflow jobs route to the priority runner pool", () => {
     }
   });
 
+  it("queue-priority step wires CI_RUNNER_PRIORITY through assertPriorityPoolConfigured", () => {
+    // Reviewer finding on OPE-13002 (REQUEST CHANGES at 85f924f836): when
+    // CI_RUNNER_PRIORITY is unset, the runs-on fallback to shared labels
+    // means the release build has NO priority at all. The tag CI must fail
+    // configuration closed instead — the guard is one behaviour-level
+    // helper (release-jobs.mjs assertPriorityPoolConfigured) invoked by the
+    // ci-result step with the repo variable.
+    assert.match(yaml, /PRIORITY_POOL:\s*\$\{\{\s*vars\.CI_RUNNER_PRIORITY\s*\}\}/);
+    assert.match(yaml, /assertPriorityPoolConfigured\(process\.env\.PRIORITY_POOL\)/);
+    // The step name is also mentioned in the workflow header comment, so
+    // split at the LAST occurrence (the actual step).
+    const step = yaml.split("Verify release build queue priority").pop() ?? "";
+    const guardIdx = step.indexOf("assertPriorityPoolConfigured");
+    const observedIdx = step.indexOf("observedPriorityViolations");
+    assert.ok(guardIdx !== -1 && observedIdx !== -1, "step must contain both guard and observed-order check");
+    assert.ok(
+      guardIdx < observedIdx,
+      "the priority-pool configuration guard must run BEFORE the observed-order check"
+    );
+  });
+
   it("falls back to the original shared-pool label, not to an unconfigured pool", () => {
     // Each runs-on keeps its previous fallback chain intact after
-    // CI_RUNNER_PRIORITY so behaviour is unchanged when the priority var is
-    // unset.
+    // CI_RUNNER_PRIORITY so the expression stays valid, but the ci-result
+    // job now fails the run closed when CI_RUNNER_PRIORITY is unset — the
+    // fallback never ships a release without priority.
     assert.match(yaml, /vars\.CI_RUNNER_PRIORITY \|\| vars\.CI_RUNNER_MAIN \|\| vars\.CI_RUNNER_TYPECHECK/);
     assert.match(yaml, /vars\.CI_RUNNER_PRIORITY \|\| vars\.CI_RUNNER_MAIN \|\| vars\.CI_RUNNER_BUILD/);
     assert.match(yaml, /vars\.CI_RUNNER_PRIORITY \|\| vars\.CI_RUNNER_MAIN \|\| vars\.CI_RUNNER_TESTS \|\|/);
@@ -130,6 +153,42 @@ describe("tag CI workflow jobs route to the priority runner pool", () => {
     assert.match(yaml, /vars\.CI_RUNNER_PRIORITY \|\| vars\.CI_RUNNER_MAIN \|\| '["]ubuntu-latest["]'/);
     assert.match(yaml, /vars\.CI_RUNNER_PRIORITY \|\| vars\.CI_RUNNER_MAIN_GO/);
     assert.match(yaml, /vars\.CI_RUNNER_PRIORITY \|\| vars\.CI_RUNNER_LIGHT \|\| vars\.MYR_RUNNER_LIGHT/);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// assertPriorityPoolConfigured — fail-closed configuration guard (OPE-13002)
+// ---------------------------------------------------------------------------
+
+describe("assertPriorityPoolConfigured (fail closed when priority pool unavailable)", () => {
+  it("accepts a configured JSON runner-label array", () => {
+    assert.deepStrictEqual(assertPriorityPoolConfigured('["myr-release-runner"]'), ["myr-release-runner"]);
+    assert.deepStrictEqual(assertPriorityPoolConfigured('["self-hosted", "release"]'), ["self-hosted", "release"]);
+  });
+
+  it("throws when the priority pool is unset (empty string)", () => {
+    assert.throws(() => assertPriorityPoolConfigured(""), /CI_RUNNER_PRIORITY is not configured/);
+  });
+
+  it("throws when the priority pool is undefined/null", () => {
+    assert.throws(() => assertPriorityPoolConfigured(undefined), /CI_RUNNER_PRIORITY is not configured/);
+    assert.throws(() => assertPriorityPoolConfigured(null), /CI_RUNNER_PRIORITY is not configured/);
+  });
+
+  it("throws when the value is whitespace only", () => {
+    assert.throws(() => assertPriorityPoolConfigured("   "), /CI_RUNNER_PRIORITY is not configured/);
+  });
+
+  it("throws when the value is not valid JSON (malformed runs-on expression input)", () => {
+    assert.throws(() => assertPriorityPoolConfigured("myr-release-runner"), /not valid JSON/);
+    assert.throws(() => assertPriorityPoolConfigured("{broken"), /not valid JSON/);
+  });
+
+  it("throws when the JSON value is not a non-empty array of non-empty strings", () => {
+    assert.throws(() => assertPriorityPoolConfigured("[]"), /non-empty JSON array/);
+    assert.throws(() => assertPriorityPoolConfigured('["ok", ""]'), /non-empty JSON array/);
+    assert.throws(() => assertPriorityPoolConfigured('["ok", 42]'), /non-empty JSON array/);
+    assert.throws(() => assertPriorityPoolConfigured('"just-a-string"'), /non-empty JSON array/);
   });
 });
 
@@ -524,7 +583,9 @@ describe("priorityViolations", () => {
     // only PROVEN inversions: a later-queued ordinary run already dispatched
     // (started_at) while the release run has not started.
     const yaml = fs.readFileSync(TAG_WORKFLOW, "utf8");
-    const step = yaml.split("Verify release build queue priority")[1] || "";
+    // The step name is also mentioned in the workflow header comment, so
+    // split at the LAST occurrence (the actual step).
+    const step = yaml.split("Verify release build queue priority").pop() || "";
     assert.match(step, /observedPriorityViolations/);
     // Competing workflows are the tag workflow and the main CI; unrelated
     // workflows (image/publish) never enter the comparison set.
