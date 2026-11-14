@@ -1410,7 +1410,7 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
               WHERE ${issues.companyId} = ${workspace.companyId}
                 AND ${issues.id} = ${workspace.sourceIssueId}
               UNION ALL
-              SELECT child.id, parent.path || child.id, parent.depth + 1
+              SELECT child.id, parent.path || child.id::text, parent.depth + 1
               FROM ${issues} child
               JOIN issue_tree parent ON child.parent_id = parent.id
               WHERE child.company_id = ${workspace.companyId}
@@ -3053,7 +3053,7 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
                   WHERE root.company_id = ${workspace.companyId}
                     AND root.id = ${workspace.sourceIssueId}
                   UNION ALL
-                  SELECT child.id, child.status, parent.path || child.id, parent.depth + 1
+                  SELECT child.id, child.status, parent.path || child.id::text, parent.depth + 1
                   FROM ${issues} child
                   JOIN issue_tree parent ON child.parent_id = parent.id
                   WHERE child.company_id = ${workspace.companyId}
@@ -3075,7 +3075,7 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
                   WHERE root.company_id = ${workspace.companyId}
                     AND root.id = ${workspace.sourceIssueId}
                   UNION ALL
-                  SELECT child.id, child.status, child.completed_at, child.cancelled_at, child.updated_at, parent.path || child.id, parent.depth + 1
+                  SELECT child.id, child.status, child.completed_at, child.cancelled_at, child.updated_at, parent.path || child.id::text, parent.depth + 1
                   FROM ${issues} child
                   JOIN cooldown_tree parent ON child.parent_id = parent.id
                   WHERE child.company_id = ${workspace.companyId}
