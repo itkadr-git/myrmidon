@@ -20,7 +20,6 @@ import {
 import { companySkillService } from "./company-skills.js";
 import { routineService } from "./routines.js";
 import { accessService } from "./access.js";
-import { listAdapterModels } from "../adapters/registry.js";
 import {
   resourceStatus,
   stableJson,
@@ -772,6 +771,7 @@ async function assertKnownBuiltInAgentModel(
   const model = typeof adapterConfig.model === "string" ? adapterConfig.model.trim() : "";
   if (!model || !hasCompleteAdapterConfig(adapterType, adapterConfig)) return;
 
+  const { listAdapterModels } = await import("../adapters/registry.js");
   const models = await listAdapterModels(adapterType);
   if (models.length === 0 || models.some((candidate) => candidate.id === model)) return;
 

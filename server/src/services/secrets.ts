@@ -65,7 +65,6 @@ import type {
 import { PRODUCT_NAME as PN } from "../myrmidon/product.js";
 import { isSecretProviderClientError } from "../secrets/types.js";
 import { authorizationDeniedDetails, authorizationService } from "./authorization.js";
-import { findActiveServerAdapter } from "../adapters/index.js";
 import { logActivity } from "./activity-log.js";
 // Only a `local_encrypted` secret can hold a literal directory path, so only a
 // `local_encrypted` secret can ever name a Codex account-home directory. A
@@ -82,10 +81,23 @@ import { logActivity } from "./activity-log.js";
 // create or a rotate calls it inside the same lock, right before it commits,
 // so a value that named a directory the cleanup just deleted fails instead of
 // writing a secret that points at nothing.
-import {
-  assertAccountHomeCacheDirStillValid,
-  withAccountHomeSecretMutationLock,
-} from "@myrmidon/adapter-codex-local/server";
+async function withAccountHomeSecretMutationLock<T>(
+  envOrHome: unknown,
+  companyId: string,
+  fn: () => Promise<T> | T,
+): Promise<T> {
+  const mod = await import("@myrmidon/adapter-codex-local/server");
+  return (mod.withAccountHomeSecretMutationLock as any)(envOrHome, companyId, fn);
+}
+
+async function assertAccountHomeCacheDirStillValid(
+  envOrHome: unknown,
+  companyId: string,
+  value: string | null | undefined,
+): Promise<void> {
+  const mod = await import("@myrmidon/adapter-codex-local/server");
+  return (mod.assertAccountHomeCacheDirStillValid as any)(envOrHome, companyId, value);
+}
 // myrmidon(S5): resolved secret values are masked in stored text
 import { registerSecretValues } from "../myrmidon/secret-masking.js";
 
@@ -2064,6 +2076,7 @@ export function secretService(db: Db | DbTransaction) {
 
   async function listAdapterSchemaSecretFieldKeys(adapterType: string | null | undefined): Promise<string[]> {
     if (!adapterType) return [];
+    const { findActiveServerAdapter } = await import("../adapters/index.js");
     const adapter = findActiveServerAdapter(adapterType);
     const fallback = [...(FALLBACK_ADAPTER_SCHEMA_SECRET_FIELDS[adapterType] ?? [])];
     if (!adapter?.getConfigSchema) return fallback;

@@ -185,17 +185,12 @@ import {
   readPendingNativeRuntimeRequest,
   type NativeRuntimeRequestResolver,
 } from "../services/native-runtime/runtime-request-resolution-authority.js";
-import {
-  NativeRuntimeRequestResolutionError,
-  resolveNativeRuntimeRequest,
-} from "../services/native-runtime/native-session-executor.js";
 import { renderOrgChartSvg, renderOrgChartPng, type OrgNode, type OrgChartStyle, ORG_CHART_STYLES } from "./org-chart-svg.js";
 import {
   instanceSettingsService,
   isTruthyRuntimeEnvValue,
   resolveWorktreeRunExecutionActivationState,
 } from "../services/instance-settings.js";
-import { runClaudeLogin } from "@myrmidon/adapter-claude-local/server";
 import { createInviteRateLimiter } from "../services/invite-rate-limit.js";
 import {
   SetupTokenSessionService,
@@ -6945,6 +6940,7 @@ function getActorIdentityPart(req: Request): string {
       buildActorSecretContext(req, { consumerType: "agent", consumerId: agent.id }),
       { adapterType: agent.adapterType },
     );
+    const { runClaudeLogin } = await import("@myrmidon/adapter-claude-local/server");
     const result = await runClaudeLogin({
       runId: `claude-login-${randomUUID()}`,
       agent: {
@@ -7860,6 +7856,10 @@ function getActorIdentityPart(req: Request): string {
         ) {
           throw conflict("This runtime request is stale or is no longer pending.");
         }
+        const {
+          NativeRuntimeRequestResolutionError,
+          resolveNativeRuntimeRequest,
+        } = await import("../services/native-runtime/native-session-executor.js");
         let queued: { commandId: string };
         try {
           queued = await resolveNativeRuntimeRequest({

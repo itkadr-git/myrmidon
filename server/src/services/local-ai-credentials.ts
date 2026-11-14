@@ -1,9 +1,6 @@
 import { readLocalAiCredentialFile } from "./local-ai-credential-file.js";
 import fs from "node:fs/promises";
 import path from "node:path";
-import { readClaudeToken, fetchClaudeQuota } from "@myrmidon/adapter-claude-local/server";
-import { readCodexAuthInfo, fetchCodexQuota } from "@myrmidon/adapter-codex-local/server";
-import { parseGrokAuthPayload, hasUsableGrokAuthValue } from "@myrmidon/adapter-grok-local/server";
 import type { AiProvider } from "@myrmidon/shared";
 import { unprocessable } from "../errors.js";
 // myrmidon(B1c): product name in user-facing texts; see product.ts.
@@ -16,6 +13,7 @@ export async function readVerifiedLocalAiCredential(provider: AiProvider, loginH
     throw unprocessable("Start a separate local sign-in for this connection before connecting.");
   try {
     if (provider === "anthropic") {
+      const { readClaudeToken, fetchClaudeQuota } = await import("@myrmidon/adapter-claude-local/server");
       // Never change process.env or fall back to the server account when an
       // authenticated user's isolated login is missing or invalid.
       let token: string | null = null;
@@ -36,12 +34,14 @@ export async function readVerifiedLocalAiCredential(provider: AiProvider, loginH
       return token;
     }
     if (provider === "openai") {
+      const { readCodexAuthInfo, fetchCodexQuota } = await import("@myrmidon/adapter-codex-local/server");
       const auth = await readCodexAuthInfo(loginHome);
       if (!auth?.accessToken || !auth.refreshToken || !auth.idToken) throw new Error("Missing login");
       await fetchCodexQuota(auth.accessToken, auth.accountId);
       return JSON.stringify({ tokens: { access_token: auth.accessToken, refresh_token: auth.refreshToken, id_token: auth.idToken, account_id: auth.accountId }, last_refresh: auth.lastRefresh });
     }
     const raw = await fs.readFile(path.join(loginHome!, "auth.json"), "utf8");
+    const { parseGrokAuthPayload, hasUsableGrokAuthValue } = await import("@myrmidon/adapter-grok-local/server");
     const payload = parseGrokAuthPayload(JSON.parse(raw));
     if (!payload || !hasUsableGrokAuthValue(payload.value)) throw new Error("Missing login");
     const response = await fetch("https://api.x.ai/v1/models", {

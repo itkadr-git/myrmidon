@@ -43,10 +43,6 @@ import {
   type LoginPtySession,
   type LoginPtySessionOpener,
 } from "@myrmidon/adapter-utils/login-pty-transport";
-import {
-  runSetupTokenLogin,
-  CLAUDE_SETUP_TOKEN_COMMAND,
-} from "@myrmidon/adapter-claude-local/server";
 import { randomUUID } from "node:crypto";
 import {
   deriveLoginSessionHome,
@@ -246,7 +242,7 @@ export function buildSetupTokenLoginTransport(
   // The binding fixes the login command. It never reads a command from a route, a
   // request body, an adapter configuration, or the dependency object, so a
   // runtime-supplied value cannot change the pseudo-terminal command.
-  const command = CLAUDE_SETUP_TOKEN_COMMAND;
+  const command = "claude setup-token";
   const log = deps.log ?? (() => {});
 
   // The pseudo-terminal opener that one acquire hands to the next factory call.
@@ -321,19 +317,21 @@ export function buildSetupTokenLoginTransport(
     // runner ends on the timeout or the signal before it reads the code.
     codeReady.catch(() => {});
 
-    const done: Promise<SetupTokenLoginOutcome> = runSetupTokenLogin(transport, {
-      command,
-      timeoutMs,
-      signal,
-      onPrompt: (prompt) => onPrompt({ url: prompt.url }),
-      provideCode: () => codeReady,
-      onCredential: async (authBytes) => {
-        // Forward the minted token to the owner-bound secret write. The service
-        // holds the token only for this call and never stores it.
-        await onCredential(authBytes.toString("utf8"));
-      },
-      log,
-    }).then((result) => result.outcome);
+    const done: Promise<SetupTokenLoginOutcome> = import("@myrmidon/adapter-claude-local/server")
+      .then(({ runSetupTokenLogin }) => runSetupTokenLogin(transport, {
+        command,
+        timeoutMs,
+        signal,
+        onPrompt: (prompt) => onPrompt({ url: prompt.url }),
+        provideCode: () => codeReady,
+        onCredential: async (authBytes) => {
+          // Forward the minted token to the owner-bound secret write. The service
+          // holds the token only for this call and never stores it.
+          await onCredential(authBytes.toString("utf8"));
+        },
+        log,
+      }))
+      .then((result) => result.outcome);
 
     return {
       done,

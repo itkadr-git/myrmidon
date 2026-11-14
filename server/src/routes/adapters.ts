@@ -19,17 +19,7 @@ import { readFile } from "node:fs/promises";
 import path from "node:path";
 import { promisify } from "node:util";
 import { Router } from "express";
-import {
-  listServerAdapters,
-  findServerAdapter,
-  findActiveServerAdapter,
-  listEnabledServerAdapters,
-  registerServerAdapter,
-  resolveExternalAdapterRegistration,
-  unregisterServerAdapter,
-  isOverridePaused,
-  setOverridePaused,
-} from "../adapters/registry.js";
+const getRegistry = () => import("../adapters/registry.js");
 import {
   listAdapterPlugins,
   addAdapterPlugin,
@@ -193,7 +183,12 @@ export function buildAdapterCapabilities(adapter: ServerAdapterModule): AdapterC
   };
 }
 
-function buildAdapterInfo(adapter: ServerAdapterModule, externalRecord: AdapterPluginRecord | undefined, disabledSet: Set<string>): AdapterInfo {
+function buildAdapterInfo(
+  adapter: ServerAdapterModule,
+  externalRecord: AdapterPluginRecord | undefined,
+  disabledSet: Set<string>,
+  isOverridePaused?: (type: string) => boolean,
+): AdapterInfo {
   const fromDisk = externalRecord ? readAdapterPackageVersionFromDisk(externalRecord) : undefined;
   return {
     type: adapter.type,
@@ -205,7 +200,7 @@ function buildAdapterInfo(adapter: ServerAdapterModule, externalRecord: AdapterP
     capabilities: buildAdapterCapabilities(adapter),
     ...(adapter.acp ? { acp: adapter.acp } : {}),
     overriddenBuiltin: externalRecord ? BUILTIN_ADAPTER_TYPES.has(adapter.type) : undefined,
-    overridePaused: BUILTIN_ADAPTER_TYPES.has(adapter.type) ? isOverridePaused(adapter.type) : undefined,
+    overridePaused: BUILTIN_ADAPTER_TYPES.has(adapter.type) && isOverridePaused ? isOverridePaused(adapter.type) : undefined,
     // Prefer on-disk package.json so the UI reflects bumps without relying on store-only fields.
     version: fromDisk ?? externalRecord?.version,
     packageName: externalRecord?.packageName,
@@ -249,7 +244,8 @@ async function normalizeLocalPath(rawPath: string): Promise<string> {
  * via `POST /api/adapters/install` has the same shape in the registry as the
  * same adapter loaded on the next server restart.
  */
-function registerWithSessionManagement(adapter: ServerAdapterModule): void {
+async function registerWithSessionManagement(adapter: ServerAdapterModule): Promise<void> {
+  const { registerServerAdapter, resolveExternalAdapterRegistration } = await getRegistry();
   registerServerAdapter(resolveExternalAdapterRegistration(adapter));
 }
 
@@ -275,6 +271,7 @@ export function adapterRoutes(options: {
     // instance-admin only because they affect the whole server runtime.
     assertBoardOrgAccess(_req);
 
+    const { listServerAdapters, isOverridePaused } = await getRegistry();
     const registeredAdapters = listServerAdapters();
     const externalRecords = new Map(
       listAdapterPlugins().map((r) => [r.type, r]),
@@ -285,7 +282,7 @@ export function adapterRoutes(options: {
     if (process.env.MYRMIDON_DISABLE_HERMES_LOCAL === "1") disabledSet.add("hermes_local");
 
     const result: AdapterInfo[] = registeredAdapters.map((adapter) =>
-      buildAdapterInfo(adapter, externalRecords.get(adapter.type), disabledSet),
+      buildAdapterInfo(adapter, externalRecords.get(adapter.type), disabledSet, isOverridePaused),
     ).sort((a, b) => a.type.localeCompare(b.type));
 
     res.json(result);
@@ -381,6 +378,7 @@ export function adapterRoutes(options: {
       // For built-in types the registry always returns the built-in, so we
       // additionally require an existing external plugin record to
       // distinguish a true reinstall from a first-time override.
+      const { findServerAdapter, unregisterServerAdapter } = await getRegistry();
       const existing = findServerAdapter(adapterModule.type);
       const isReinstall = existing !== null && !!getAdapterPluginByType(adapterModule.type);
       if (existing) {
@@ -389,7 +387,7 @@ export function adapterRoutes(options: {
       }
 
       // Register the new adapter
-      registerWithSessionManagement(adapterModule);
+      await registerWithSessionManagement(adapterModule);
 
       // Persist the record (use canonicalName without version suffix)
       const record: AdapterPluginRecord = {
@@ -430,6 +428,7 @@ export function adapterRoutes(options: {
     assertBoardOrgAccess(req);
 
     const adapterType = req.params.type;
+    const { findServerAdapter, isOverridePaused } = await getRegistry();
     const adapter = findServerAdapter(adapterType);
     if (!adapter) {
       res.status(404).json({ error: `Adapter "${adapterType}" is not registered.` });
@@ -441,7 +440,7 @@ export function adapterRoutes(options: {
     const nativeRunnerEnabled = await options.getNativeRunnerEnabled?.().catch(() => false) ?? false;
     if (!nativeRunnerEnabled) disabledSet.add("paperclip_runner");
     if (process.env.MYRMIDON_DISABLE_HERMES_LOCAL === "1") disabledSet.add("hermes_local");
-    res.json(buildAdapterInfo(adapter, externalRecord, disabledSet));
+    res.json(buildAdapterInfo(adapter, externalRecord, disabledSet, isOverridePaused));
   });
 
   /**
@@ -466,6 +465,7 @@ export function adapterRoutes(options: {
     }
 
     // Check that the adapter exists in the registry
+    const { findServerAdapter } = await getRegistry();
     const existing = findServerAdapter(adapterType);
     if (!existing) {
       res.status(404).json({ error: `Adapter "${adapterType}" is not registered.` });
@@ -507,6 +507,7 @@ export function adapterRoutes(options: {
       return;
     }
 
+    const { setOverridePaused } = await getRegistry();
     const changed = setOverridePaused(adapterType, paused);
 
     logger.info({ type: adapterType, paused, changed }, "Adapter override toggle");
@@ -540,6 +541,7 @@ export function adapterRoutes(options: {
     }
 
     // Check that the adapter exists in the registry
+    const { findServerAdapter, unregisterServerAdapter } = await getRegistry();
     const existing = findServerAdapter(adapterType);
     if (!existing) {
       res.status(404).json({
@@ -619,8 +621,9 @@ export function adapterRoutes(options: {
       }
 
       // Swap in the reloaded module
+      const { unregisterServerAdapter } = await getRegistry();
       unregisterServerAdapter(type);
-      registerWithSessionManagement(newModule);
+      await registerWithSessionManagement(newModule);
       configSchemaCache.delete(type);
 
       // Sync store.version from package.json (store may be missing version for local installs).
@@ -689,8 +692,9 @@ export function adapterRoutes(options: {
         return;
       }
 
+      const { unregisterServerAdapter } = await getRegistry();
       unregisterServerAdapter(type);
-      registerWithSessionManagement(newModule);
+      await registerWithSessionManagement(newModule);
       configSchemaCache.delete(type);
 
       // Sync store version from disk
@@ -730,6 +734,7 @@ export function adapterRoutes(options: {
     assertBoardOrgAccess(req);
     const { type } = req.params;
 
+    const { findActiveServerAdapter } = await getRegistry();
     const adapter = findActiveServerAdapter(type);
     if (!adapter) {
       res.status(404).json({ error: `Adapter "${type}" is not registered.` });

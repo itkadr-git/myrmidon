@@ -61,7 +61,6 @@ import { environmentRuntimeService } from "../services/environment-runtime.js";
 // myrmidon(B1c): product name in user-facing texts; see product.ts.
 import { PRODUCT_NAME as PN } from "../myrmidon/product.js";
 import { executionWorkspaceService } from "../services/execution-workspaces.js";
-import { closeWarmNativeSessionsForEnvironment } from "../services/native-runtime/native-session-executor.js";
 import { readProductEnv } from "@myrmidon/shared/env-alias"; // myrmidon(REBRAND-C)
 
 function isPlainRecord(value: unknown): value is Record<string, unknown> {
@@ -1320,6 +1319,7 @@ export function environmentRoutes(
       && impact.reusableSandboxLeaseCount > 0
       && impact.deleteBlockedReasons.every((reason) => reason === "reusable_sandbox_lease")
     ) {
+      const { closeWarmNativeSessionsForEnvironment } = await import("../services/native-runtime/native-session-executor.js");
       const warmSessions = await closeWarmNativeSessionsForEnvironment({
         environmentId: existing.id,
         reason: "environment deleted",

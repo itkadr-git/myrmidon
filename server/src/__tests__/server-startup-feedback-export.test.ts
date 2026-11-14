@@ -278,7 +278,6 @@ vi.mock("@myrmidon/db", async (importOriginal) => ({
   // of table exports at module scope, and a partial mock breaks as soon as the
   // graph gains a new edge. Only the startup-path functions are overridden.
   ...(await importOriginal<typeof import("@myrmidon/db")>()),
-  ...(await importOriginal<typeof import("@myrmidon/db")>()),
   createPostgresJsClient: vi.fn(() => ({ listen: vi.fn(async () => ({ unlisten: vi.fn(async () => undefined) })), unsafe: vi.fn(async () => undefined) })),
   createDb: createDbMock,
   ensurePostgresDatabase: vi.fn(),
@@ -286,6 +285,23 @@ vi.mock("@myrmidon/db", async (importOriginal) => ({
   inspectMigrations: inspectMigrationsMock,
   applyPendingMigrations: vi.fn(),
   reconcilePendingMigrationHistory: vi.fn(async () => ({ repairedMigrations: [] })),
+  formatDatabaseBackupResult: vi.fn(() => "ok"),
+  runDatabaseBackup: vi.fn(),
+}));
+
+vi.mock("@myrmidon/db/client", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@myrmidon/db/client")>()),
+  createPostgresJsClient: vi.fn(() => ({ listen: vi.fn(async () => ({ unlisten: vi.fn(async () => undefined) })), unsafe: vi.fn(async () => undefined) })),
+  createDb: createDbMock,
+  ensurePostgresDatabase: vi.fn(),
+  getPostgresDataDirectory: vi.fn(),
+  inspectMigrations: inspectMigrationsMock,
+  applyPendingMigrations: vi.fn(),
+  reconcilePendingMigrationHistory: vi.fn(async () => ({ repairedMigrations: [] })),
+}));
+
+vi.mock("@myrmidon/db/backup-lib", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@myrmidon/db/backup-lib")>()),
   formatDatabaseBackupResult: vi.fn(() => "ok"),
   runDatabaseBackup: vi.fn(),
 }));

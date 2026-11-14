@@ -893,7 +893,6 @@ import {
   classifyNotificationWakeReason,
   notificationWakeAllowed,
 } from "@myrmidon/shared";
-import { evaluateCodexCredentialReadiness } from "@myrmidon/adapter-codex-local/server";
 import { environmentService } from "./environments.js";
 import { parseExecutionPolicyBootstrapEnv } from "./execution-policy-bootstrap.js";
 import { retryChatControlAdmission } from "./chat-control-admission-retry.js";
@@ -2450,6 +2449,7 @@ export async function resolveExecutionRunAdapterConfig(input: {
     !input.managedAiCredentials && (input.adapterType ?? null) === "codex_local" &&
     (input.environmentDriver ?? null) !== "sandbox"
   ) {
+    const { evaluateCodexCredentialReadiness } = await import("@myrmidon/adapter-codex-local/server");
     const resolvedEnv = parseObject(resolvedConfig.env);
     const readiness = await evaluateCodexCredentialReadiness({
       env: process.env,
