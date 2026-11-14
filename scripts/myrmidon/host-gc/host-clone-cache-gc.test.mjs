@@ -565,6 +565,15 @@ describe("stale OMP runner collection", () => {
       fetchAdapter: async () => ({ ok: true, adapterType: "hermes_gateway" }),
     });
     assert.deepEqual(plan.plan.map((item) => [item.agentKey, item.action]), [["eng8", "remove-stale-home"]]);
+    const result = runGc(["--apply", "--runner-root", root], {
+      PATH: `${dir}:${process.env.PATH}`,
+      MYRMIDON_HOST_GC_DOCKER: docker,
+      MYRMIDON_HOST_GC_DOCKER_BOT: docker,
+      BOARD_API_URL: "http://board",
+    });
+    assert.equal(result.res.status, 0, result.res.stderr);
+    assert.equal(fs.existsSync(path.join(root, "eng8")), false);
+    assert.ok(result.events.some((event) => event.event === "stale-omp-runner-root-removed" && event.name === "myrmidon-omp-runner-eng8"));
   });
 
   it("parses runner keys and fails closed when board adapter lookup is unavailable", async () => {

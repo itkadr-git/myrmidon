@@ -2025,7 +2025,7 @@ async function main() {
             journalRecord(args.journal, { event: "stale-omp-runner-data-remove-failed", name: runner.name, path: target, error: err.message });
           }
         }
-        if (runner.action === "stop-remove" && !["workspace", "home", "tmp", "scratch"].some((child) => fs.existsSync(path.join(runner.path, child)))) {
+        if (!["workspace", "home", "tmp", "scratch"].some((child) => fs.existsSync(path.join(runner.path, child)))) {
           try {
             atomicDrop(runner.path, runner.runnersRoot);
             journalRecord(args.journal, { event: "stale-omp-runner-root-removed", name: runner.name, path: runner.path });
